@@ -6,7 +6,7 @@
 # outside git history (no clone gets heavier).
 #
 # 1. scan:     one job per UTC day (up to 10 in parallel, 50 MB/s each). Each scans that day's
-#              Old Faithful units (~1 h per day on a 4-core runner) and uploads them as
+#              Old Faithful units (~3.5 h per chain day at that cap) and uploads them as
 #              an artifact. Units that cross midnight are scanned by both neighbours;
 #              they are identical and the merge keeps one.
 # 2. finalize: downloads every day's units, runs `zeroed-scan finalize` (fails on any
@@ -60,7 +60,7 @@ jobs:
   scan:
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360 # ~600 GB per chain day at 50 MB/s is ~3.5 h
     strategy:
       fail-fast: false
       max-parallel: 10
