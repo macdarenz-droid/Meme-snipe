@@ -260,6 +260,8 @@ export class LiveStrategy implements Strategy {
 
   /** Positions whose partials were checked against the book in this process. */
   readonly #fromBook = new Set<string>();
+  /** Exit owners already said to be waiting for the first slot (said once each). */
+  readonly #waitingSlot = new Set<string>();
 
   /** The fee terms of the latest swap seen on a mint's pool (for the paper fill when no fee-context fact exists). */
   observedFees(mint: string): PoolFeeContext | undefined {
@@ -653,8 +655,17 @@ export class LiveStrategy implements Strategy {
     const lastRung = saved?.tracker.lastRung ?? null;
     const rung = Math.min(signed === 0 && owner !== undefined ? owner.startRung : Math.max(lastRung === null ? 0 : lastRung + 1, used), last);
     const height = this.#height;
-    const q = height === null ? 'no slot height yet' : this.#sellQuote(ctx, mint, quantity, rung);
-    if (typeof q === 'string' || height === null) {
+    if (height === null) {
+      // No slot seen yet (a restart's reconcile runs before the feeds start): the owner waits for the first slot. Booked
+      // blocked instead, it would wait out the blocked-retry time and go as a single last-rung retry (TEST-3).
+      if (!this.#waitingSlot.has(id)) {
+        this.#waitingSlot.add(id);
+        out.push({ action: null, reasons: ['exit waiting for the first slot', mint] });
+      }
+      return;
+    }
+    const q = this.#sellQuote(ctx, mint, quantity, rung);
+    if (typeof q === 'string') {
       out.push({ action: { type: 'exit_blocked', positionId: pid, reason: String(q) }, reasons: ['exit blocked', mint, String(q)] });
       return;
     }
