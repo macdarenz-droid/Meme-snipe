@@ -65,4 +65,13 @@ Our own survivorship-free study: 518 graduations in a 12-hour window plus about 
 
 ## Still open
 - RES-2 whale copy-trading study: results pending.
-- Fact-check sections are being appended to each report; corrections are applied to `docs/ARCHITECTURE.md` when they land.
+- Every report now ends with an independent "Fact-check" section (59 claims confirmed, 11 contradicted). The corrections are applied in `docs/ARCHITECTURE.md` and listed below.
+
+## Fact-check corrections (2026-10-03)
+- Venues: a transaction that mentions the migration authority is a migration only if it carries `CompletePumpAmmMigrationEvent` (~70% do). Never read the creator fee from `Global`. A fresh graduate holds ~67.4 SOL real plus ~17.6 SOL virtual quote reserve (BOOST).
+- Data: DexScreener `tokens/v1` is 300/min, not 60. DexScreener has a WebSocket, but only for profiles and boosts. LaserStream runs in 9 regions, not 7.
+- Execution: the Jito tip-floor figures were wrong and the percentiles move 3–5× within a minute, so read them live. A blockhash now lives ~40–48 s (slots ~0.27–0.32 s), not 60–90 s.
+- Safety: a PermanentDelegate can be revoked (by the current delegate). LaunchLab now splits migrated LP two ways. GoPlus returns `{authority, status}` objects; only three fields have `_upgradable`; missing keys, not nulls.
+- Risk: MELT's 60.71% loss is a no-fee, rebalanced-sample upper bound (v2 reports a 34-point cut). The "17% wash trades" headline is not reproducible from the paper's own counts. The "82.8% manipulated" figure mixes wash trading, LP inflation and concentration.
+- Quant: MELT's best AUPRC is 0.5827 (ensemble). Conformal risk control does not bound loss among accepted trades; use conformal selection for that. The AUROC 0.86 → 0.46 drop partly reflects unreliable labels.
+- Security: `blockExoticSubdeps` is opt-in on pnpm 10 (default true only from v11), so it must be set explicitly.

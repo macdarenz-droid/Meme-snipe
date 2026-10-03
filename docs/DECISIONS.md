@@ -47,6 +47,8 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-03 | Hosting approved: Vultr High Performance Frankfurt, about US$6/month; Hetzner as backup (owner) | Owner approval of the spend | [security.md](research/security.md) §4, [ARCHITECTURE.md](ARCHITECTURE.md) §12 |
 | 2026-10-03 | API keys live as GitHub repository secrets `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN`; the VPS gets them through a deploy workflow that encrypts them to the host's own age key (owner, supervisor) | No secret copied by hand or through chat | [ARCHITECTURE.md](ARCHITECTURE.md) §12.2, §20 OPS-1 |
 | 2026-10-03 | Pull-based install started once from the Vultr console; no domain assumed: watchdog on `workers.dev`, dashboard publishing waits for a domain | Owner may not own a domain; the dry run is headless | [ARCHITECTURE.md](ARCHITECTURE.md) §20 OPS-1 |
+| 2026-10-03 | Fact-check corrections applied: migrations counted only by `CompletePumpAmmMigrationEvent`; Jito tips and blockhash timeouts read live and measured in block height; acceptance by conformal selection, not conformal risk control; pnpm protections set explicitly | Independent fact-check of every report | `docs/research/*.md` "Fact-check" sections, [RESEARCH.md](RESEARCH.md) |
+| 2026-10-03 | Keep blocking any PermanentDelegate extension in the trial, even when revoked | Safest option; pump mints never carry it, so blocking costs nothing | [safety.md](research/safety.md) Fact-check F4 |
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
