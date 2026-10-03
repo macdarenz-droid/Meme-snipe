@@ -2,7 +2,6 @@
 // forward-only migrations, transactions and exact amount columns. Knows no table of either file.
 
 import { createHash } from 'node:crypto';
-import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 /** Which store a file holds. A file is opened only as the kind it was created as. */
@@ -52,40 +51,24 @@ const checksum = (kind: StoreKind, m: Migration): string =>
   createHash('sha256').update(`${kind}\n${m.version}\n${m.name}\n${m.sql}`).digest('hex');
 
 /**
- * A lock file next to the database so only one process writes it. A lock left by a dead process
- * (crash, kill) is taken over; a live holder is refused.
+ * Holds an exclusive SQLite lock on a sidecar file for the writer's whole life. The lock is an OS
+ * file lock: the kernel drops it when the process dies, so there is no pid file, no stale check
+ * and no window where two openers can both win. A second opener, in this process or another, is refused.
  */
 const takeWriterLock = (dbPath: string): (() => void) => {
-  const lockPath = `${dbPath}-writer.lock`;
-  for (let tries = 0; tries < 2; tries++) {
-    try {
-      const fd = openSync(lockPath, 'wx');
-      writeSync(fd, String(process.pid));
-      closeSync(fd);
-      return () => {
-        try {
-          if (readFileSync(lockPath, 'utf8') === String(process.pid)) unlinkSync(lockPath);
-        } catch { /* already gone */ }
-      };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      const holder = Number.parseInt(readFileSync(lockPath, 'utf8'), 10);
-      if (Number.isInteger(holder) && holder > 0 && isAlive(holder)) {
-        throw new LedgerError(`${dbPath} already has a writer (pid ${holder})`);
-      }
-      unlinkSync(lockPath); // stale: its process is gone
-    }
-  }
-  throw new LedgerError(`could not take the writer lock for ${dbPath}`);
-};
-
-const isAlive = (pid: number): boolean => {
+  const lock = new DatabaseSync(`${dbPath}-writer.lock`, { timeout: 0 });
   try {
-    process.kill(pid, 0);
-    return true;
+    lock.exec('PRAGMA locking_mode = EXCLUSIVE');
+    lock.exec('BEGIN EXCLUSIVE');
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
+    lock.close();
+    const message = (err as Error).message;
+    if (/locked|busy/i.test(message)) throw new LedgerError(`${dbPath} already has a writer`);
+    throw new LedgerError(`${dbPath}: cannot take the writer lock (${message})`);
   }
+  return () => {
+    if (lock.isOpen) lock.close(); // closing ends the transaction and releases the lock
+  };
 };
 
 export interface OpenedStore {
@@ -107,6 +90,7 @@ export const openWriter = (path: string, kind: StoreKind, migrations: readonly M
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = FULL');
     db.exec('PRAGMA trusted_schema = OFF');
+    db.exec('PRAGMA recursive_triggers = ON'); // so INSERT OR REPLACE fires the DELETE guard
     migrate(db, kind, migrations);
     return { db, release };
   } catch (err) {
@@ -120,6 +104,7 @@ export const openWriter = (path: string, kind: StoreKind, migrations: readonly M
 export const openReader = (path: string, kind: StoreKind, migrations: readonly Migration[]): DatabaseSync => {
   const db = new DatabaseSync(path, { readOnly: true, readBigInts: true, timeout: 5000 });
   try {
+    db.exec('PRAGMA recursive_triggers = ON');
     const applied = appliedMigrations(db);
     verifyApplied(path, kind, applied, migrations);
     if (applied.length !== migrations.length) throw new LedgerError(`${path} is at schema ${applied.length}, code expects ${migrations.length}; open the writer first`);

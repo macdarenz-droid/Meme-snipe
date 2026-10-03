@@ -1,6 +1,6 @@
 // The engine-facing ledger API cannot read labels, trials or gate results. Outcomes live in a separate
 // scoring file that the ledger code never opens, attaches or imports.
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as engineApi from '../../src/ledger/index.ts';
@@ -8,11 +8,12 @@ import { openLedger, openLedgerReader } from '../../src/ledger/index.ts';
 import { connectionOf } from '../../src/ledger/ledger.ts';
 import { openScoringReader, openScoringStore } from '../../src/ledger/scoring/index.ts';
 import { entryIntent, MINT } from '../fixtures.ts';
+import { importViolations } from './guard.ts';
 import { tempPath } from './helpers.ts';
 
 const CORE_SRC = resolve(dirname(new URL(import.meta.url).pathname), '../../src');
 const LEDGER_DIR = join(CORE_SRC, 'ledger');
-const PACKAGES = resolve(CORE_SRC, '../..');
+const REPO = resolve(CORE_SRC, '../../..');
 const MARKER = 'FUTURE_ONLY_MARKER_7f3a';
 const SCORING_TABLES = ['label_tb', 'experiment_trial', 'promotion_gate_result'];
 
@@ -104,22 +105,41 @@ describe('labels are out of the engine\'s reach', () => {
     }
   });
 
-  it('outside the ledger and the stats stage, no source file imports the scoring store or ledger internals', () => {
-    // Allowed: the ledger itself and the scoring stage (STATS-1). A new importer is added here only after review.
-    const ALLOWED = [`${CORE_SRC}/ledger/`, `${CORE_SRC}/stats/`];
-    const sources = readdirSync(PACKAGES, { recursive: true, encoding: 'utf8' })
-      .filter((f) => f.endsWith('.ts') && !f.includes('node_modules') && /^[^/]+\/src\//.test(f))
-      .map((f) => join(PACKAGES, f));
-    expect(sources.length).toBeGreaterThan(5);
-    for (const f of sources) {
-      if (ALLOWED.some((a) => f.startsWith(a))) continue;
-      for (const m of readFileSync(f, 'utf8').matchAll(/from\s+'([^']+)'/g)) {
-        const spec = m[1]!;
-        const target = spec.startsWith('.') ? resolve(dirname(f), spec) : spec;
-        const internal = target.includes('ledger/scoring') || (target.startsWith(`${CORE_SRC}/ledger/`) && target !== `${CORE_SRC}/ledger/index.ts`);
-        expect(internal, `${f} imports ${spec}`).toBe(false);
-      }
-    }
+  it('outside the ledger and the stats stage, nothing reaches the scoring store, ledger internals or node:sqlite', () => {
+    expect(importViolations(REPO)).toEqual([]);
+  });
+
+  it('the import guard catches every bypass, directly or through another module', () => {
+    const root = dirname(tempPath());
+    const put = (rel: string, text: string) => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), text);
+    };
+    put('packages/core/src/ledger/index.ts', "export * from './ledger.ts';\n");
+    put('packages/core/src/ledger/ledger.ts', "import { DatabaseSync } from 'node:sqlite';\n");
+    put('packages/core/src/ledger/scoring/index.ts', "import '../ledger.ts';\n");
+    put('packages/core/src/stats/index.ts', "import { x } from '../ledger/scoring/index.ts';\n");
+    put('packages/core/src/engine/ok.ts', "import { openLedger } from '@meme-snipe/core/ledger';\nimport { y } from '../units/index.ts';\n");
+    put('packages/core/src/units/index.ts', 'export const y = 1;\n');
+    expect(importViolations(root)).toEqual([]);
+
+    const probes: Record<string, string> = {
+      'sqlite.ts': "import { DatabaseSync } from 'node:sqlite';",
+      'dynamic.ts': "const s = await import('../ledger/scoring/index.ts');",
+      'computed.ts': "const p = '../ledger/scoring/index.ts'; await import(p);",
+      'require.ts': "const s = require('../ledger/scoring/index.ts');",
+      'reexport.ts': "export { x } from '../ledger/scoring/index.ts';",
+      'internal.ts': "import '../ledger/ledger.ts';",
+      'subpath.ts': "import { s } from '@meme-snipe/core/ledger/scoring';",
+      'via-stats.ts': "import { z } from '../stats/index.ts';",
+      'via-two.ts': "import '../units/two.ts';",
+    };
+    put('packages/core/src/units/two.ts', "import '../stats/index.ts';\n");
+    for (const [name, text] of Object.entries(probes)) put(`packages/core/src/engine/${name}`, `${text}\n`);
+    const found = importViolations(root).join('\n');
+    for (const name of Object.keys(probes)) expect(found, name).toContain(`engine/${name}`);
+    expect(found).toContain('units/two.ts -> packages/core/src/stats/index.ts');
+    expect(found).not.toContain('engine/ok.ts');
   });
 
   it('every engine read returns the same answer with or without labels present', () => {

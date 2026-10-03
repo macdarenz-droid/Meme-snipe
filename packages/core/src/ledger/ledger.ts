@@ -7,7 +7,7 @@ import type { Fill, TradeIntent, TransactionAttempt } from '../domain/index.ts';
 import type { Effect, IntentStatus, PositionStatus } from '../lifecycle/index.ts';
 import type { Lamports } from '../units/index.ts';
 import { fromJson, toJson } from './codec.ts';
-import { FEE_KINDS, INTENT_END_STATUSES, LEDGER_MIGRATIONS, OPERATOR_COMMANDS, type AUTH_LEVELS, type DECISION_MODES } from './migrations.ts';
+import { FEE_KINDS, INTENT_END_STATUSES, LEDGER_MIGRATIONS, OPERATOR_COMMANDS, type AUTH_LEVELS, type DECISION_MODES, type ISSUERS } from './migrations.ts';
 import { amountOf, amountText, inTransaction, LedgerError, openReader, openWriter } from './sqlite.ts';
 
 /** What the file is for. A backtest writes the same schema to its own file and can never open a live one. */
@@ -15,6 +15,7 @@ export type LedgerPurpose = 'live' | 'paper' | 'backtest';
 export type FeeKind = (typeof FEE_KINDS)[number];
 export type OperatorCommandName = (typeof OPERATOR_COMMANDS)[number];
 export type AuthLevel = (typeof AUTH_LEVELS)[number];
+export type Issuer = (typeof ISSUERS)[number];
 export type DecisionMode = (typeof DECISION_MODES)[number];
 /** Milliseconds from the caller's clock: the live clock, or the simulated clock in a backtest. */
 export type Millis = number;
@@ -125,7 +126,7 @@ export interface OperatorCommandInput {
   readonly command: OperatorCommandName;
   readonly args?: Readonly<Record<string, unknown>>;
   readonly authLevel: AuthLevel;
-  readonly issuedBy: string;
+  readonly issuedBy: Issuer;
   readonly issuedTs: Millis;
 }
 
@@ -255,7 +256,7 @@ class LedgerReads {
       command: String(r['command']) as OperatorCommandName,
       args: fromJson<Record<string, unknown>>(r['args']),
       authLevel: String(r['auth_level']) as AuthLevel,
-      issuedBy: String(r['issued_by']),
+      issuedBy: String(r['issued_by']) as Issuer,
       issuedTs: ms(r['issued_ts']),
     }));
   }
@@ -455,12 +456,20 @@ export class Ledger extends LedgerReads {
   }
 }
 
+/** Limits come from configuration at runtime; a missing or malformed limit must stop the trade, never let it through. */
+const checkLimits = (limits: ReservationLimits): void => {
+  const { maxHeld, maxCount } = limits ?? ({} as Partial<ReservationLimits>);
+  if (typeof maxHeld !== 'bigint' || maxHeld < 0n) throw new LedgerError(`maxHeld must be a bigint >= 0, got ${String(maxHeld)}`);
+  if (!Number.isSafeInteger(maxCount) || maxCount < 1) throw new LedgerError(`maxCount must be a safe integer >= 1, got ${String(maxCount)}`);
+};
+
 /**
  * The reservation check and insert. Must run inside BEGIN IMMEDIATE (the caller's transaction): the
  * write lock is taken before the held total is read, so no other connection can reserve in between.
  */
 export const reserveIn = (db: DatabaseSync, r: { readonly reservationId: string; readonly intentId: string; readonly amount: Lamports; readonly limits: ReservationLimits; readonly ts: Millis }): ReserveResult => {
   if (!db.isTransaction) throw new LedgerError('reserveIn must run inside a transaction');
+  checkLimits(r.limits);
   if (r.amount <= 0n) throw new LedgerError('a reservation must be positive');
   const intent = db.prepare('SELECT purpose FROM intent WHERE intent_id = ?').get(r.intentId);
   if (intent === undefined) return { ok: false, reason: 'unknown_intent' };

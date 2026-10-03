@@ -3,7 +3,7 @@
 export {
   Ledger, LedgerReader, openLedger, openLedgerReader,
   type AuthLevel, type DecisionInput, type DecisionMode, type FeatureSnapshotInput, type FeeKind, type HeldReservation,
-  type IntentRecord, type IntentTransition, type LedgerPurpose, type Millis, type ObservationInput, type OperatorCommandInput,
+  type IntentRecord, type IntentTransition, type Issuer, type LedgerPurpose, type Millis, type ObservationInput, type OperatorCommandInput,
   type OperatorCommandName, type OutboxItem, type PendingCommand, type PositionRecord, type RecordIntentResult,
   type ReservationLimits, type ReserveResult,
 } from './ledger.ts';

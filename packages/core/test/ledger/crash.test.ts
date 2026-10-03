@@ -3,6 +3,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { openLedger, openLedgerReader } from '../../src/ledger/index.ts';
+import { PADDING } from './constants.ts';
 import { runChild, tempPath } from './helpers.ts';
 
 const counts = (path: string) => {
@@ -10,7 +11,7 @@ const counts = (path: string) => {
   const n = (t: string) => Number(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()?.['n']);
   const result = {
     integrity: db.prepare('PRAGMA integrity_check').get()?.['integrity_check'],
-    intents: n('intent'), events: n('intent_event'), reservations: n('reservation'), outbox: n('outbox'),
+    intents: n('intent'), events: n('intent_event'), reservations: n('reservation'), outbox: n('outbox'), observations: n('observation'),
   };
   db.close();
   return result;
@@ -31,7 +32,7 @@ describe('crash safety', () => {
     expect(ledger.heldReservations().map((r) => r.intentId)).toEqual(['e1']);
     expect(ledger.pendingOutbox().map((o) => o.intentId)).toEqual(['e1', 'e1']);
     ledger.close();
-    expect(counts(path)).toEqual({ integrity: 'ok', intents: 1, events: 3, reservations: 1, outbox: 2 });
+    expect(counts(path)).toEqual({ integrity: 'ok', intents: 1, events: 3, reservations: 1, outbox: 2, observations: PADDING });
   }, 20_000);
 
   it('killed at random moments while writing, every trade is all there or not there at all', async () => {
@@ -46,8 +47,10 @@ describe('crash safety', () => {
       await child.exit;
       const c = counts(path);
       expect(c.integrity).toBe('ok');
-      // Each trade writes exactly 1 intent, 3 events, 1 reservation and 2 outbox rows in one transaction.
-      expect(c).toEqual({ integrity: 'ok', intents: c.intents, events: 3 * c.intents, reservations: c.intents, outbox: 2 * c.intents });
+      // Each trade writes 1 intent, PADDING observations, 3 events, 1 reservation and 2 outbox rows in one transaction,
+      // and the child spends nearly all its time inside that transaction, so the kill almost always lands mid-write.
+      // The deterministic proof is the test above; this one checks the invariant under real timing.
+      expect(c).toEqual({ integrity: 'ok', intents: c.intents, events: 3 * c.intents, reservations: c.intents, outbox: 2 * c.intents, observations: PADDING * c.intents });
       const reader = openLedgerReader(path);
       expect(reader.unresolvedIntents().every((r) => r.status === 'prepared')).toBe(true);
       reader.close();

@@ -19,6 +19,8 @@ export const INTENT_END_STATUSES = ['rejected', 'cancelled', 'abandoned', 'recon
 export const FEE_KINDS = ['network_base', 'priority', 'tip', 'venue', 'rent_paid', 'rent_recovered'] as const;
 export const OPERATOR_COMMANDS = ['pause', 'resume', 'close_position', 'session_start', 'session_stop'] as const;
 export const AUTH_LEVELS = ['telegram', 'dashboard', 'dashboard_passkey', 'host'] as const;
+/** Role labels only, so no Telegram id, email or other personal data can be stored as the issuer. */
+export const ISSUERS = ['owner', 'system'] as const;
 export const DECISION_MODES = ['replay', 'shadow', 'paper', 'live'] as const;
 
 const TABLES = [
@@ -193,13 +195,13 @@ CREATE TABLE outbox_done (
   ts        INTEGER NOT NULL
 ) STRICT;
 
--- operator commands with the auth level they arrived with; Telegram may only pause
+-- operator commands with the auth level they arrived with; Telegram may only pause; the issuer is a role, never a person's id
 CREATE TABLE operator_command (
   command_id TEXT PRIMARY KEY,
   command    TEXT NOT NULL CHECK (command IN (${list(OPERATOR_COMMANDS)})),
   args       TEXT NOT NULL DEFAULT '{}' CHECK (json_type(args) = 'object'),
   auth_level TEXT NOT NULL CHECK (auth_level IN (${list(AUTH_LEVELS)})),
-  issued_by  TEXT NOT NULL,
+  issued_by  TEXT NOT NULL CHECK (issued_by IN (${list(ISSUERS)})),
   issued_ts  INTEGER NOT NULL,
   CHECK (auth_level <> 'telegram' OR command = 'pause')
 ) STRICT;

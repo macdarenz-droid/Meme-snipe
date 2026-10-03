@@ -1,14 +1,15 @@
+import { writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { VENUES } from '../../src/domain/index.ts';
 import { INTENT_STATUSES, POSITION_STATUSES } from '../../src/lifecycle/index.ts';
-import { LedgerError, openLedger, openLedgerReader } from '../../src/ledger/index.ts';
+import { openLedger, openLedgerReader } from '../../src/ledger/index.ts';
 import { V1_INTENT_STATUSES, V1_POSITION_STATUSES, V1_VENUES } from '../../src/ledger/migrations.ts';
 import { connectionOf } from '../../src/ledger/ledger.ts';
 import { openReader, openWriter, type Migration } from '../../src/ledger/sqlite.ts';
 import { lamports, raw } from '../../src/units/index.ts';
 import { attempt, entryIntent, fill, MINT, sig } from '../fixtures.ts';
-import { tempPath } from './helpers.ts';
+import { runChild, tempPath } from './helpers.ts';
 
 const LIMITS = { maxHeld: lamports(50_000_000), maxCount: 2 };
 const raw_ = (path: string) => new DatabaseSync(path, { readBigInts: true });
@@ -29,6 +30,28 @@ describe('ledger storage settings', () => {
     expect(() => openLedger(path, 'paper')).toThrow(/already has a writer/);
     first.close();
     openLedger(path, 'paper').close();
+  });
+
+  it('six processes opening at the same moment get exactly one writer', async () => {
+    const path = tempPath();
+    openLedger(path, 'paper').close();
+    const startAt = Date.now() + 1_000;
+    const children = Array.from({ length: 6 }, () => runChild(['writer', path, String(startAt)]));
+    const outcomes = await Promise.all(children.map((c) => c.line('writer ')));
+    await Promise.all(children.map((c) => c.exit));
+    expect(outcomes.filter((o) => o === 'writer ok')).toHaveLength(1);
+    expect(outcomes.filter((o) => o.startsWith('writer refused') && o.includes('already has a writer'))).toHaveLength(5);
+  }, 20_000);
+
+  it('a leftover empty lock file does not let a second writer in, and a foreign one fails closed', () => {
+    const path = tempPath();
+    writeFileSync(`${path}-writer.lock`, '');
+    const first = openLedger(path, 'paper');
+    expect(() => openLedger(path, 'paper')).toThrow(/already has a writer/);
+    first.close();
+    const other = tempPath();
+    writeFileSync(`${other}-writer.lock`, '12345'); // half-written or foreign content: refuse, never take over
+    expect(() => openLedger(other, 'paper')).toThrow(/cannot take the writer lock/);
   });
 
   it('a backtest ledger and a live ledger never open as each other', () => {
@@ -59,6 +82,18 @@ describe('append-only and exact amounts', () => {
     expect(() => db.exec('DELETE FROM intent_event')).toThrow(/append-only: intent_event/);
     expect(() => db.exec('DELETE FROM schema_migrations')).toThrow(/append-only: schema_migrations/);
     db.close();
+  });
+
+  it('refuses INSERT OR REPLACE and upserts on the ledger\'s own connection', () => {
+    const ledger = openLedger(tempPath(), 'paper');
+    ledger.recordIntent(entryIntent(1), { status: 'candidate', ts: 1 });
+    const db = connectionOf(ledger);
+    const copy = `SELECT intent_id, idem_key, purpose, side, mint, venue, position_id, '999999', NULL, decision_id, created_ts FROM intent`;
+    expect(() => db.exec(`INSERT OR REPLACE INTO intent ${copy}`)).toThrow(/append-only: intent/);
+    expect(() => db.exec(`REPLACE INTO intent ${copy}`)).toThrow(/append-only: intent/);
+    expect(() => db.exec(`INSERT INTO intent ${copy} WHERE true ON CONFLICT (intent_id) DO UPDATE SET spend = excluded.spend`)).toThrow(/append-only: intent/);
+    expect(ledger.intent('e1')?.intent).toMatchObject({ spend: 16_000_000n });
+    ledger.close();
   });
 
   it('round-trips u64 amounts exactly and stores them as text, never as float', () => {
@@ -192,6 +227,28 @@ describe('intents, outbox and reservations', () => {
     ledger.close();
   });
 
+  it('refuses to reserve with a missing or malformed limit, and writes nothing', () => {
+    const ledger = openLedger(tempPath(), 'paper');
+    ledger.recordIntent(entryIntent(1), { status: 'risk_approved', ts: 1 });
+    const bad: unknown[] = [
+      { maxHeld: undefined, maxCount: Number.NaN },
+      { maxHeld: lamports(10), maxCount: Number.NaN },
+      { maxHeld: lamports(10), maxCount: 0 },
+      { maxHeld: lamports(10), maxCount: 1.5 },
+      { maxHeld: lamports(10), maxCount: Number.POSITIVE_INFINITY },
+      { maxHeld: 10, maxCount: 1 },
+      { maxHeld: -1n, maxCount: 1 },
+      { maxCount: 1 },
+      undefined,
+    ];
+    for (const limits of bad) {
+      expect(() => ledger.reserveExposure({ reservationId: 'r1', intentId: 'e1', amount: lamports(1_000_000_000_000), limits: limits as never, ts: 2 }), JSON.stringify(limits ?? null, (_k, v: unknown) => (typeof v === 'bigint' ? `${v}n` : v)))
+        .toThrow(/maxHeld|maxCount/);
+    }
+    expect(ledger.heldReservations()).toEqual([]);
+    ledger.close();
+  });
+
   it('refuses a reservation for an exit or an unknown intent', () => {
     const ledger = openLedger(tempPath(), 'paper');
     const exit = { id: 'x1', key: 'exit:p1:1', purpose: 'exit', side: 'sell', mint: MINT, venue: 'pumpswap', positionId: 'p1', quantity: raw(5) } as const;
@@ -231,6 +288,7 @@ describe('positions, decisions and commands', () => {
     expect(() => ledger.recordCommand({ commandId: 'c2', command: 'resume', authLevel: 'telegram', issuedBy: 'owner', issuedTs: 2 })).toThrow(/CHECK/);
     ledger.recordCommand({ commandId: 'c3', command: 'close_position', args: { positionId: 'p1' }, authLevel: 'dashboard_passkey', issuedBy: 'owner', issuedTs: 3 });
     expect(ledger.pendingCommands().map((c) => [c.commandId, c.authLevel])).toEqual([['c1', 'telegram'], ['c3', 'dashboard_passkey']]);
+    expect(() => ledger.recordCommand({ commandId: 'c4', command: 'pause', authLevel: 'dashboard', issuedBy: 'tg:123456789' as never, issuedTs: 5 })).toThrow(/CHECK/);
     ledger.recordCommandResult('c1', true, 'paused', 4);
     expect(ledger.pendingCommands().map((c) => c.commandId)).toEqual(['c3']);
     ledger.close();
@@ -294,9 +352,5 @@ describe('migrations', () => {
     expect([...V1_VENUES]).toEqual([...VENUES]);
     expect([...V1_INTENT_STATUSES]).toEqual([...INTENT_STATUSES]);
     expect([...V1_POSITION_STATUSES]).toEqual([...POSITION_STATUSES]);
-  });
-
-  it('LedgerError is exported for callers', () => {
-    expect(new LedgerError('x')).toBeInstanceOf(Error);
   });
 });
