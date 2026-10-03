@@ -76,7 +76,7 @@ export const poolVirtualQuoteReserves = (pool: Pool): bigint => pool.virtualQuot
 
 /** The pool account address: PDA(["pool", index (u16 LE), creator, base_mint, quote_mint], pump_amm). */
 export const poolAddress = (index: number, creator: Address, baseMint: Address, quoteMint: Address): Address => {
-  if (!Number.isInteger(index) || index < 0 || index >>> 16 !== 0) throw new RangeError(`pool index must be a u16, got ${index}`);
+  if (Uint16Array.of(index)[0] !== index) throw new RangeError(`pool index must be a u16, got ${index}`);
   return findProgramAddress(
     ['pool', Uint8Array.of(index & 0xff, index >> 8), addressBytes(creator), addressBytes(baseMint), addressBytes(quoteMint)],
     PUMP_AMM_PROGRAM,
