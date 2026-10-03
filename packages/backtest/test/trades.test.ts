@@ -79,3 +79,18 @@ describe('one entry, a filled position and a late one', () => {
     expect(trades.reduce((s, t) => s + t.rentPaid, 0n)).toBe(FILL_CONFIG.network.tokenAccountRent);
   });
 });
+
+describe('a fill without its attempt', () => {
+  test('is refused with a clear error instead of a guessed open time', () => {
+    const i = entryIntent(1);
+    const a = attempt(i.id, 1, 100n);
+    const book = apply([
+      ...entryToSubmitted(1, 100n),
+      on(i.id, { type: 'send_accepted' }),
+      on(i.id, { type: 'status', signature: a.signature, result: 'succeeded', commitment: 'confirmed', blockHeight: 10n, searchedHistory: false }),
+      on(i.id, { type: 'reconcile', fills: [fill(i.id, 1, 5_000n)], blockHeight: 11n }),
+    ]);
+    const run = { attempts: [], book, scenario: 'base', symbols: new Map(), endValue: () => 0n, endedAt: 9_000 } as unknown as RunResult;
+    expect(() => tradesOf(run, FILL_CONFIG)).toThrow(/has no landed attempt record/);
+  });
+});

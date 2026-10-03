@@ -26,9 +26,16 @@ export interface AmmSwapRow extends ChainPos {
   /** Replay input: base out or in, or the spend limit of an exact-quote-in buy. */
   readonly amount: bigint;
   readonly baseAmount: bigint;
-  /** Quote in (buy, before fees) or out (sell, before fees). */
+  /**
+   * The event's quote_amount_in / quote_amount_out as logged. Their meaning differs by instruction (CORE-2 golden test):
+   * on `buy` it is the net quote into the curve; on `buy_exact_quote_in(_v2)` it is the spend limit, which is why the
+   * replay input of an exact-quote-in buy is this field.
+   */
   readonly quoteAmount: bigint;
-  /** What the trader paid in or received, fees included. */
+  /**
+   * The event's user_quote_amount_in / _out as logged: on `buy` the total paid with fees, on `buy_exact_quote_in` the
+   * net swap input, on sells the user's proceeds. Kept for audit only; the backtest takes amounts from the exact replay.
+   */
   readonly userQuote: bigint;
   readonly pre: PoolState;
   readonly fees: ObservedFees;

@@ -78,6 +78,9 @@ export const POLICY_RULES: RuleTree<Policy> = {
     tMaxMs: 'max',
     partialMinShareBps: 'locked',
     partialAtRBps: 'locked',
+    partialAtGainBps: 'locked',
+    atrPeriod: 'locked',
+    atrBarMs: 'locked',
     trailAtrTenths: 'max',
     maxExitTxAtMinNotional: 'locked',
     maxExitTxAboveDoubleMin: 'locked',
@@ -87,6 +90,9 @@ export const POLICY_RULES: RuleTree<Policy> = {
       maxAttempts: 'locked',
       maxFeePerAttempt: 'locked',
     },
+    // Part of the exit path: fewer retries can strand a position, more spend the fee reserve.
+    blockedRetryMs: 'locked',
+    blockedRetryAttempts: 'locked',
   },
 };
 

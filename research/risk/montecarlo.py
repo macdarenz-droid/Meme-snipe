@@ -7,7 +7,7 @@ $20 start, the S1 to S3 return distributions, v = 3.5% and F = $0.03 on every tr
   R8  2 losses in a row: skip the next slot (2 h cooldown); 3: rest of the day; 5 in any 20: the path stops (review)
   R9  20% of week-start equity lost: rest of the week off (the review is assumed to pass at the week's end)
   R10 E <= 0.7 * HWM: the path stops (kill switch)
-C = $0.50, the worst-case costs of one trial trade (fees, token-account rent, exit ladder at its cap; RISK-1 fixture).
+C = $0.80, the worst-case costs of one trial trade (fees, token-account rent, the exit ladder and EXIT-1 blocked-exit retries at the fee cap; RISK-1 fixture, $0.794 rounded up).
 A path ends after 100 trades or 120 days. A second table lets every R8 review pass at once. Seeded: the same numbers on every run.
 
 Run: python3 research/risk/montecarlo.py
@@ -21,7 +21,7 @@ DAYS = 120
 START = 20.0
 V = 0.035
 F = 0.03
-C = 0.50
+C = 0.80
 B = 20.0
 
 DISTRIBUTIONS = {
