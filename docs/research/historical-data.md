@@ -17,7 +17,7 @@ Research and build date: 2026-10-03 (task DATA-1). This document covers which so
    - PumpSwap reserves rebuilt from events equal the vault balances recorded on-chain after the transaction in 230,784 of 230,784 checks.
    - Bonding-curve real reserves rebuild exactly in 145,213 of 145,213 trade pairs.
    - 51 of 51 idle curves and pools equal their live on-chain accounts.
-5. **Throughput limit:** the archive throttles heavy users (429 after ~0.6 TB in an hour from one machine). Scanning 30 days (~18 TB of reads) needs many machines, so the proposed GitHub Actions workflow uses one runner per day.
+5. **Throughput limit:** the archive throttles heavy users (429 after ~0.6 TB in an hour from one machine). The scan runs on one polite lane only (supervisor ruling): one GitHub Actions job at a time, at most 80 MB/s, stopping on any 429 and waiting at least an hour. 45 chain days take about 4 to 5 days of wall time at that pace.
 6. **Things the backtester must handle:**
    - Mayhem-mode curves re-price their virtual reserves inside the program, so use the event's reserves, not a local recomputation.
    - On 2026-10-02 pump.fun upgraded both programs without publishing a new IDL: trade events gained one 8-byte trailing field, and new event types appeared. Both are kept raw (see Limits).
@@ -57,14 +57,16 @@ Code: `research/historical/scanner` (Go 1.24). Tests: `go test ./...` in that fo
    - On the units compared, the byte ranges are identical to those given by the archive's own slot-to-CID and CID-to-offset indexes.
 2. **Stream:** the range is fetched in 16 MB chunks, in parallel and in order, over HTTP/1.1 (one HTTP/2 connection capped throughput at ~25 MB/s). Limits:
    - 40 requests/s and a byte cap (`-max-mbps`) per process;
-   - any 429 pauses every request of the process together (1 min, doubling to 15 min, at most 6 h in total) instead of failing units.
+   - the cap must be above 0 and at most 80 MB/s (1 MB = 10^6 bytes); anything else is refused (exit 2);
+   - a 429, or a 503 with `Retry-After`, stops the run by default (exit 75). The back-off end, max(1 h, the largest `Retry-After`), is persisted in `<out>/archive-429.state` and every 429 is logged in `<out>/429.log`, so any later run or rescan on that directory sleeps it out before its first request. `-on-429 pause` instead waits the same back-off inside the process, at most 6 h in total;
+   - `-parallel 2 × -dl 6` (the CI setting) means up to 12 connections, all under the one process-wide byte and request limit.
 
    Every streamed node is checked against its CID (sha256).
-3. **Filter:** votes are skipped. A transaction is kept if its message names either program, or (for versioned messages with lookup tables) its meta names either program. **53% of pump and PumpSwap transactions reach the programs only through address lookup tables** (48,667 of 91,540 in a 900-block test), so a static-key filter would miss most of them.
+3. **Filter:** vote transactions are skipped: every top-level instruction calls the vote program (or compute budget) and nothing is loaded from lookup tables; a byte search is only the fast pre-filter. A transaction is kept if its message names either program, or (for versioned messages with lookup tables) its meta names either program. **53% of pump and PumpSwap transactions reach the programs only through lookup tables**, so a static filter would miss them. A transaction without meta is counted as a decode failure (`missing_meta`), never skipped silently, and so is a meta in an unexpected format (`legacy_meta`).
 4. **Decode:**
    - Events are Anchor self-CPI instructions (`e445a52e51cb9a1d` tag plus 8-byte discriminator) issued by the program itself, decoded with the IDLs in `scanner/idl/` (copied from [pump-fun/pump-public-docs](https://github.com/pump-fun/pump-public-docs) at `cb188ce`, 2026-09-29).
    - Older events are prefixes of the current layout and decode cleanly. Bytes beyond the IDL are kept in `extra_hex`. Unknown discriminators are written raw as `Unknown` events.
-   - Failed transactions emit no events; they are counted per mint and hour.
+   - Failed transactions emit no events; each failed trade transaction of a sampled mint is kept as one `failed` row plus its raw record, and counted per mint and hour in `failed_hourly`. The archive keeps inner instructions for failed transactions (checked on a failed Jupiter→pump swap, slot 452,700,001, error 0x1771: 22 inner instructions in 3 groups), so failed aggregator→pump swaps are found too.
 5. **Cross-check columns:** for the last trade of a curve or pool in a transaction, the row also carries the balances the validator recorded after that transaction:
    - curve: lamports, base token account, quote token account;
    - pool: both vault token accounts.
@@ -82,23 +84,24 @@ Code: `research/historical/scanner` (Go 1.24). Tests: `go test ./...` in that fo
 8. **Speed and the archive's limit:**
    - About 138 blocks/s on the 4-core build container (CPU-bound), at 1.65 MB per block, so about 230 MB/s.
    - One chain day is about 324,000 blocks (0.267 s slots in October 2026), about 600 GB of reads.
-   - After about an hour at that rate (~0.6 TB), the archive answered every request from this machine with 429 "Your account has made too many requests; try again later". The limit is per client and unpublished. A single machine therefore has to scan slowly (`-max-mbps`), and many days need many machines (see the proposed workflow).
+   - After about an hour at that rate (~0.6 TB), the archive answered every request from this machine with 429 "Your account has made too many requests; try again later". The limit is per client and unpublished. So the scan runs slowly on one lane (`-max-mbps`, at most 80) and backs off for at least an hour after any 429; the supervisor ruled out more machines or addresses.
 
 ## Universe and sampling rule
 
 Fixed before looking at any outcome:
 
 - **Hash:** `h(mint) = first 8 bytes of sha256(mint pubkey bytes), big-endian, / 2^64`, a number in [0, 1). It depends only on the mint address, which is fixed when the token is created.
-- **Scanner sample:** every trade, liquidity event and failed trade of mints with `h < 0.25` is kept in the unit files. The dataset is cut from this, so its rates can be raised up to 25% without rescanning. Mints outside the sample still appear in the hourly census and in universe events.
+- **Scanner sample:** every trade, liquidity event and failed trade of mints with `h < s` is kept in the unit files, where `s` is the scanner's `-sample` (0.05 in CI). The dataset rates can be at most `s`, so with CI units they cannot be raised without a rescan; a local `-sample 0.25` scan allows re-cuts up to 25%. Mints outside the sample still count in the hourly census.
 - **Dataset universes** (defaults, recorded in `manifest.json`):
   - `launch`: the token's `CreateEvent` is inside the scanned coverage and `h < 0.05`. Tape: creation to creation + 72 h.
-  - `grad`: the token's `CompletePumpAmmMigrationEvent` is inside the coverage and `h < 0.05`. Tape: creation (or coverage start) to graduation + 15 days.
+  - `grad`: the token's `CompletePumpAmmMigrationEvent` is inside the coverage and `h < 0.05`. Tape: graduation to graduation + 15 days.
   - `direct_pool`: a PumpSwap pool created outside a migration is inside the coverage and `h(base mint) < 0.05`. Tape: pool creation to + 15 days.
   - The same hash threshold nests the universes: every sampled launch that graduates is also in `grad`.
+  - A mint's tape is the union of its intervals (column `tapes` in `mints.csv`, `kind:from-to` joined by `|`), never the span between them. A row before a graduation exists only when the launch tape covers it, exactly as for every other launch-sampled mint, so a row's presence never reveals a later graduation. `tape_from`/`tape_to` are only the outer bounds. Per-mint events that do not move reserves follow the same tape rule.
 - **Fixed-age universe** ("every token that is 24 h old with at least the configured liquidity"): computed at backtest time from the hourly census, which has every traded mint's closing reserves each hour. Full tapes exist for the sampled 5% of those tokens.
 - **Use with care:**
-  - The pre-graduation tape of `grad` tokens is conditioned on graduating. Do not use it for curve-phase strategies; use `launch` for those.
-  - The first 14 days of coverage are flagged `warm_up` (the lead-in): older tokens' creation is not in coverage, so the age-based universes are incomplete there.
+  - Curve-phase strategies use `launch`; `grad` tapes start at graduation.
+  - Lead-in: the dataset build requires 14 days of gap-free coverage before the window (`finalize -lead-in-days 14`, recorded as `window.lead_in_days`) and fails otherwise; a day without it would be flagged `warm_up`, and the strict QA fails on any such day.
   - Tapes cut by the end of coverage are flagged `censored` in `mints.csv`.
 
 ## Dataset layout
@@ -117,7 +120,7 @@ days/YYYY-MM-DD/
   blocks-NNN.csv.zst         every block: slot, time, parent, transaction counts, pump transactions ok and failed
 ```
 
-All files are RFC 4180 CSV (or JSON lines) compressed with zstd. Node 22 reads them with `zlib.zstdDecompressSync`. Files rotate at 45 MB. Amounts are raw integer units (lamports, token base units). `signer` is empty when equal to `user`, and the event `timestamp` is empty when equal to `block_time`.
+All files are RFC 4180 CSV (or JSON lines) compressed with zstd. Node 22 reads them with `zlib.zstdDecompressSync`. Files rotate after 1,900 MiB of uncompressed data (counted before compression, so the output is deterministic and every part is under the 2 GiB release asset limit). `manifest.json` carries no timestamp: finalize run twice on the same units gives byte-identical files (tested). Amounts are raw integer units (lamports, token base units). `signer` is empty when equal to `user`, and the event `timestamp` is empty when equal to `block_time`.
 
 Key columns:
 
@@ -138,18 +141,19 @@ Key columns:
 
   Swaps of universe mints on other venues are counted per unit (`other_venue_txs`), not stored. They would add about 2.5× to the raw records, and Zeroed trades only pump and PumpSwap. Fields:
   - `slot`, `blockTime`, `txIndex`, `signature`, and `transaction` (base64 wire bytes: legacy, v0, or v1 per SIMD-0385, where the signatures follow the message);
-  - `err` (null, or `{hex}` of the stored TransactionError bytes) and `mints`;
-  - `meta`: fee, computeUnitsConsumed, pre/post balances, loadedAddresses, innerInstructions (data base64), logMessages, pre/post token balances.
+  - `err`: null, or `{"hex": ...}` holding the TransactionError exactly as the validator stored it (bincode, hex). It is not the RPC JSON form; a non-null value means the transaction failed. `mints` lists the sampled mints it touches;
+  - `meta`: fee, computeUnitsConsumed, pre/post balances, loadedAddresses (base58), innerInstructions, logMessages, pre/post token balances. `innerInstructions` is `[]` when the transaction recorded none and `null` only when the archive marks them as not recorded (`inner_instructions_none`); `logMessages` likewise (`log_messages_none`). Inner instruction `data` is **base64**, unlike RPC's base58, so readers must not reuse `recordFromRpc`; `packages/backtest/src/dataset/parity.ts` has the converter to DEC-1's `TransactionRecord`.
 
   This is the input of the shared decoder (`transactionEvents`), so live and backtest decode with the same code.
+- **Decoder parity:** the CSV and event rows come from the scanner's own IDL decoder. `node --no-warnings research/historical/qa/parity.ts <dataset>` decodes every raw record with DEC-1's `transactionEvents` and matches every row on `(slot, tx_idx, outer_ix, inner_ix)`, event name and every value; any mismatch, duplicate, undecodable record or decoded trade of a universe mint inside its tape without a row fails the day (`qa/parity.json`). On the schema-2 test unit all 318 rows match. The backtest reads the CSVs, with this proof that they equal DEC-1.
 
 ## Decisions
 
 - **Old Faithful over RPC and third-party dumps:** it is the only free, complete and bulk source (Sources). Published dumps end before September 2026, lack PumpSwap, are unlicensed or non-commercial, or are paid.
 - **Stream whole blocks rather than look up single transactions:** single-transaction lookups through the archive's indexes take about 4.5 s each (several dependent range reads). Discovering signatures needs the public RPC (~1 call per second). And 53% of relevant transactions are only visible through lookup tables. Whole-block streaming gets every transaction for the price of bandwidth.
-- **Hash sample, not "interesting" tokens:** selection by `sha256(mint)` cannot depend on any outcome. A 25% superset keeps the option to widen the dataset without rescanning. Hourly census rows keep every mint countable.
+- **Hash sample, not "interesting" tokens:** selection by `sha256(mint)` cannot depend on any outcome. CI scans a 5% sample (the size limit); hourly census rows keep every mint counted.
 - **No AGPL code:** yellowstone-faithful's archive tools default to AGPL-3.0, and even its Apache-2.0 packages import AGPL ones. The scanner instead reads the archive with its own small decoders (CAR sections, DAG-CBOR nodes, protobuf metas) and needs no index files. Remaining dependencies are solana-go, gagliardetto/binary, klauspost/compress and mr-tron/base58.
-- **Release assets over a git branch for the full dataset:** about 150 to 200 MB per day compressed. A data branch would add gigabytes to every default clone, so the proposed workflow publishes release assets instead.
+- **Release assets over a git branch for the full dataset:** a data branch would add gigabytes to every default clone, so the workflow publishes release assets: one release per scanned day and one per assembled window.
 
 ## Point in time: what a live bot would have seen
 
@@ -169,21 +173,21 @@ The backtest replays rows strictly in `(slot, tx_idx, outer_ix, inner_ix)` order
 
 ## Running it on GitHub Actions (one lane)
 
-`.github/workflows/data-scan.yml`, approved by the supervisor as owner of `.github`, runs the same scanner on a single polite lane:
-- manual dispatch only, one concurrency group and `max-parallel: 1`, newest day first, at most 80 MB/s;
-- on any 429 the scanner stops, keeps finished units, waits at least an hour, and resumes on the same lane. If the job's time budget runs out, progress stays in the Actions cache and the run fails, so the next dispatch continues.
-- each day must pass `qa/check.mjs --strict` (live checks included) and a determinism rescan of one unit with identical file hashes before it is published to release `data-days`, as split tar parts plus `SHA256SUMS-<day>` and the QA report;
-- `mode=assemble` builds the multi-day dataset from those assets and publishes release `data-<from>-<to>`;
-- expected pace is about 2 to 2.5 h per chain day at 80 MB/s (about 600 GB), so 30 days takes about 2.5 days unless the archive operators allow more.
-- **Window plan** (44 days = 14-day lead-in + 30 decision days; 1 Oct is the newest complete day, because epoch 1048, from 2 Oct 21:49 UTC, is not published yet):
-  - decision days: 2026-09-02 to 2026-10-01;
+`.github/workflows/data-scan.yml`, approved by the supervisor as owner of `.github`, runs the scanner on a single polite lane. No other lane, machine or address is used.
+- Manual dispatch only, one concurrency group and `max-parallel: 1`, newest day first, at most 80 MB/s (refused in code above that).
+- `ci/scan-day.sh` first sleeps out any persisted back-off, then scans. On a 429 the scanner stops and keeps finished units; the script waits until the persisted back-off end (at least 1 h) and resumes on the same lane. Every 429 and back-off goes to the job summary. If the job's time budget runs out, progress stays in the Actions cache and the run fails, which stops the remaining days.
+- `ci/check-day.sh` finalizes the day alone (`-lead-in-days 0`), runs `qa/check.mjs --strict --live 30 --lead-in-days 0`, the decoder parity check and a determinism rescan of one unit (which also waits out a persisted back-off), then packs the units as tar parts under 1.9 GiB.
+- The publish job (the only job with `contents: write`; every checkout uses `persist-credentials: false`) creates one release per day, `data-day-YYYY-MM-DD`, with the tar parts, QA report, manifest, parity result and `SHA256SUMS-<day>`. An existing day release is never overwritten.
+- `mode=assemble` (`ci/assemble.sh FROM TO`) builds a dataset window of at most 10 days. It needs the 14 lead-in days before FROM and every window day as releases and fails before downloading if any is missing; no earlier day is read. One day at a time it checks free disk (3 × the day's tar size + 10 GB), downloads, verifies, extracts (lead-in days: only events, stats and block rows), deletes the parts and moves the units in. A unit crossing midnight appears in two days: files present in both copies must have equal sha256, or the run fails. Then finalize (`-lead-in-days 14`, one scanner revision unless `allow_revisions` lists more), strict QA, parity, and release `data-<from>-<to>` built by moving files (at most 990 assets).
+- Caveats: a scan job that hits its timeout is cancelled, so publish skips days finished earlier in that run (they are rescanned or restored from the cache next time). The Actions cache is 10 GB per repository with least-recently-used eviction, so a day's progress can be evicted and the day rescanned.
+- Expected pace: about 2 to 2.5 h per chain day at 80 MB/s (about 600 GB of reads), so 45 days take about 4 to 5 days of wall time, longer with back-offs.
+- **Window plan** (44 days = 14-day lead-in + 30 decision days; 1 Oct is the newest complete day, because epoch 1048, from 2 Oct 21:49 UTC, was not published on 2026-10-03):
+  - decision days: 2026-09-02 to 2026-10-01, assembled in three windows of 10 days;
   - lead-in: 2026-08-19 to 2026-09-01;
-  - scan order: 2026-10-02 (partial until epoch 1048 appears; a later run of that day adds the rest from the cache), then 2026-10-01 back to 2026-08-19, 45 days in all.
-- **Assembly** runs in windows of up to about 10 decision days: full units for window days, and only events and block rows for earlier days.
+  - scan order: 2026-10-02 (partial until epoch 1048 appears), then 2026-10-01 back to 2026-08-19, 45 days in all.
 - **Sizes against GitHub's release limits** (each asset under 2 GiB, at most 1,000 assets per release, no limit on total size or bandwidth; [GitHub docs](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)):
-  - Scanner units at the 5% sample are about 3.7 GB per chain day. This is extrapolated from one measured 446-block unit, so uncertain by roughly ±50% with the hour of day. About 165 GB for 45 days, as about 6 assets per day: tar parts under 1,900 MiB plus SHA256SUMS, QA report, QA JSON and manifest. About 270 assets in `data-days`. Fits.
-  - Each assembled window release uses 1,900 MB parts (`-part-mb 1900`), so it stays at dozens of assets.
-  - Most of the unit bytes belong to older sampled tokens that the universe rules then drop; the assembled datasets are smaller (not yet measured with 15-day tapes).
+  - Scanner units at the 5% sample: about 3.7 GB per chain day, extrapolated from one measured 446-block unit, so uncertain by about ±50% with the hour of day. One day release therefore holds about 2 to 4 tar parts plus 5 small files, far under 1,000 assets.
+  - Assembly disk: a 10-day window plus 14 lead-in days extracts up to about 37 GB of window units (10 × 3.7 GB) plus the much smaller events-only lead-in files; the free-space guard stops the run before the disk fills. The assembled dataset is smaller than its units (most unit bytes belong to sampled tokens outside their tapes) but has not yet been measured with 15-day tapes; its release uses 1,900 MiB parts.
 
 ## Coverage
 
@@ -195,10 +199,10 @@ Filled from `qa/report.md` (`node research/historical/qa/check.mjs <dataset> --l
 
 ## Limits and known issues
 
-- **Undocumented program upgrade on 2026-10-02:** from about 20:00 UTC, `TradeEvent`, `BuyEvent` and `SellEvent` carry 8 bytes more than the published IDL (almost always zero), kept as `extra_hex`. New event discriminators appear (`pump:742b4dbd117a482b`, `amm:82a42461e48287a5`), kept raw as `Unknown` events with `data_hex`. Decode them once pump.fun publishes the IDL; the on-chain Anchor IDL accounts are older than the docs repo.
+- **Undocumented program upgrade on 2026-10-02:** from about 20:00 UTC, `TradeEvent`, `BuyEvent` and `SellEvent` carry 8 bytes more than the published IDL (almost always zero), kept as `extra_hex`. New event discriminators appear, kept raw as `Unknown` events with `data_hex`: `pump:742b4dbd117a482b` and `amm:82a42461e48287a5` from about 20:00 UTC, and `pump:a943276d6686b6e8` from slot 452,709,000 (about 23:15 UTC; 139 in that unit). The strict QA allows exactly these three discriminators and 8 extra bytes on those three trade events; any other unknown event, extra length or older layout fails the day. Decode them once pump.fun publishes the IDL; the on-chain Anchor IDL accounts are older than the docs repo.
 - **Mayhem-mode curves:** the program changes their virtual reserves outside the trade amounts. Real reserves still rebuild exactly. Price from the event's virtual reserves.
 - **Archive lag:** Old Faithful publishes an epoch after it ends (about 1.4 days per epoch). The newest one to two days are not available; the live dry run covers the present.
-- **Failed transactions:** counted per mint and hour, not stored row by row (about 1.5 failed per successful trade on new tokens).
+- **Failed transactions:** every failed trade transaction of a sampled mint is stored as a `failed` row and a raw record, and counted per mint and hour (about 1.5 failed per successful trade on new tokens).
 - **Sample, not census, for tapes:** 5% of mints by default. The census (`agg_hourly`) covers all mints but only hourly.
 - **Non-SOL quote mints:** curves and pools quoted in other mints are kept, with `quote_mint`. Prices are in that mint's units.
 - **Bandwidth:** scanning reads the whole archive range, about 600 GB per chain day (≈18 TB for 30 days) from a free public host. Each process is capped at 40 requests/s.
@@ -206,9 +210,10 @@ Filled from `qa/report.md` (`node research/historical/qa/check.mjs <dataset> --l
 - **Rent changes without a logged extension:** a curve's lamports minus `real_sol_reserves` (its rent) changed 15 times in 139,261 checks without an `ExtendAccountEvent`. The changes are between standard account sizes, which fits an account resized inside a trade. Reserves are unaffected.
 - **Archive rate limit:** see How the scanner works, step 8. The supervisor ruled that the limit is not to be worked around with more machines or addresses: one lane, at most 80 MB/s, at least 1 h back-off after any 429.
 - **Not covered:**
-  - Token transfers of universe mints made in transactions that do not touch the pump programs (possible in a later schema, at a CPU cost).
+  - Swaps of universe mints on other venues, and plain token flows that call any program outside the basic list (for example Token-2022 transfer-hook programs or Lighthouse guard instructions that wallets add): counted per unit as `other_venue_txs`, not stored.
   - Every transaction in the slots around each creation: the Jito tip and `tx_idx` of the universe's own transactions are recorded instead.
   - The first funding transactions of creators and early buyers, which need per-wallet history from an RPC at about 1 call per second.
+  - Nothing limits the scanner's in-memory sample cache, which is fine for one day per process (how CI runs it); a multi-week local run grows it with every mint seen.
   - Mint authorities, which are not in transaction meta.
   - The state of fee and global parameters before the coverage starts (changes inside it are events, and every trade carries its fee rates).
 
@@ -217,10 +222,11 @@ Filled from `qa/report.md` (`node research/historical/qa/check.mjs <dataset> --l
 ```
 cd research/historical/scanner && go build -o zeroed-scan .
 ./zeroed-scan run -out DATA -from 2026-09-01 -to 2026-10-03          # resumable; re-run after any stop
-./zeroed-scan finalize -out DATA -dataset DATASET -from 2026-09-04 -to 2026-10-03
-node ../qa/check.mjs DATASET --live 60 --gecko 10
+./zeroed-scan finalize -out DATA -dataset DATASET -from 2026-09-15 -to 2026-10-03   # needs 14 lead-in days
+node ../qa/check.mjs DATASET --live 60 --gecko 10 --strict
+node --no-warnings ../qa/parity.ts DATASET
 ```
 
-- Scan at least 3 days before the dataset window (`-from` of `run` earlier than `finalize`), so tokens alive in the window have their creation in coverage.
-- To raise universe rates, use `finalize -launch-rate 0.25 -grad-rate 0.25 -pool-rate 0.25` (up to the scanner sample).
-- A proposed GitHub Actions workflow (`research/historical/workflow-proposal.yml`, supervisor approval needed) scans one day per runner in parallel and publishes the dataset as release assets.
+- Scan the 14 lead-in days before the dataset window (`-from` of `run` 14 days earlier than `finalize`); `finalize` refuses a window without them (`-lead-in-days`).
+- Rates can be raised only up to the units' `-sample` (5% in CI); a local `run -sample 0.25` scan allows `finalize -launch-rate 0.25 -grad-rate 0.25 -pool-rate 0.25`.
+- On GitHub, dispatch `data-scan.yml` with `mode=scan` and a list of days, then `mode=assemble` per window (see Running it on GitHub Actions). Tests: `go test ./...` in `scanner/`, `node --test research/historical/qa/*.test.mjs`, `bash research/historical/ci/test-ci.sh` (all run in CI).

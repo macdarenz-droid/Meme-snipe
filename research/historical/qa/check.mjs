@@ -23,10 +23,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 
+import { strictMisses } from './verdict.mjs';
+
+const USAGE = 'usage: node research/historical/qa/check.mjs <dataset-dir> [--live N] [--gecko N] [--strict] [--lead-in-days N]';
 const args = process.argv.slice(2);
 const ds = args[0];
-const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? Number(args[i + 1]) : d; };
+if (!ds || ds.startsWith('-') || !fs.existsSync(path.join(ds, 'manifest.json'))) {
+  console.error(ds && !ds.startsWith('-') ? `no manifest.json in ${ds}\n${USAGE}` : USAGE);
+  process.exit(args.includes('--help') ? 0 : 2);
+}
+const opt = (k, d) => {
+  const i = args.indexOf(k);
+  if (i < 0) return d;
+  const v = Number(args[i + 1]);
+  if (!Number.isInteger(v) || v < 0) { console.error(`${k} needs a whole number\n${USAGE}`); process.exit(2); }
+  return v;
+};
 const LIVE = opt('--live', 0), GECKO = opt('--gecko', 0);
+const LEAD_IN = opt('--lead-in-days', 14); // strict: the lead-in the window must carry
 const STRICT = args.includes('--strict'); // exit 1 on any miss (CI)
 const RPC = 'https://api.mainnet-beta.solana.com';
 const man = JSON.parse(fs.readFileSync(path.join(ds, 'manifest.json'), 'utf8'));
@@ -424,26 +438,8 @@ if (report.gecko) {
 // ---- strict verdict ----
 // Misses: anything that is not explained in docs/research/historical-data.md (mayhem
 // virtual re-pricing, rent changes without an extension event and quote-token excess
-// are documented and not counted).
-const misses = [];
-const c2 = report.curve, a2 = report.amm;
-if (man.decode_failures > 0) misses.push(`decode failures ${man.decode_failures}`);
-if ((man.chain_breaks || []).length > 0) misses.push(`parent-link breaks ${(man.chain_breaks || []).length}`);
-if ((man.coverage_gaps || []).length > 0) misses.push(`coverage gaps ${(man.coverage_gaps || []).length}`);
-const anomalies = man.units.reduce((s, u) => s + (u.length_anomalies || 0), 0);
-if (anomalies > 0) misses.push(`event length anomalies ${anomalies}`);
-if (c2.real_ok !== c2.real_pairs) misses.push(`curve real reserves ${c2.real_ok}/${c2.real_pairs}`);
-if (c2.virtual_ok !== c2.virtual_pairs) misses.push(`curve virtual reserves ${c2.virtual_ok}/${c2.virtual_pairs}`);
-if (c2.token_exact !== c2.token_checks) misses.push(`curve token balances ${c2.token_exact}/${c2.token_checks}`);
-if (c2.quote_balance_ge !== c2.quote_balance_checks) misses.push(`quote balance below reserves ${c2.quote_balance_checks - c2.quote_balance_ge}`);
-if (a2.chain_ok !== a2.chain_pairs) misses.push(`pool reserve chain ${a2.chain_ok}/${a2.chain_pairs}`);
-if (a2.chain_exact !== a2.chain_checks) misses.push(`pool vault balances ${a2.chain_exact}/${a2.chain_checks}`);
-if (report.raw) {
-  if (report.raw.signature_mismatch > 0) misses.push(`raw signature mismatches ${report.raw.signature_mismatch}`);
-  if (report.raw.trade_txs_with_raw !== report.raw.trade_txs) misses.push(`trade transactions without raw record ${report.raw.trade_txs - report.raw.trade_txs_with_raw}`);
-}
-const liveFail = report.live.filter((x) => !x.pass).length;
-if (liveFail > 0) misses.push(`live on-chain mismatches ${liveFail}`);
+// are documented and not counted). See verdict.mjs.
+const misses = strictMisses(man, report, { leadInDays: LEAD_IN });
 report.strict = { pass: misses.length === 0, misses };
 md.push('', '## Verdict', '', misses.length ? `FAIL: ${misses.join('; ')}` : 'PASS: no unexplained miss.');
 if (report.raw) md.push('', `Raw records: ${report.raw.records}; signature mismatches ${report.raw.signature_mismatch}; ${report.raw.trade_txs_with_raw} of ${report.raw.trade_txs} universe trade and failed transactions have their raw record.`);
