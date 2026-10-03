@@ -1,6 +1,6 @@
 """Single-edit mutation testing for packages/core/src/risk (RISK-1 review evidence). Standard library only.
 
-python3 research/risk/mutate.py [--only FILE:LINE,...] [--workers N] [--out DIR]
+python3 research/risk/mutate.py [--only FILE:LINE,...] [--workers N] [--out DIR] [--files A,B] [--test DIR]
 Each mutant changes one line of evaluate.ts, melbourne.ts or reservation.ts; it is killed when
 `vitest run packages/core/test/risk` fails. Survivors go to DIR/survivors.txt (file:line | operator | line).
 Workers run in copies of the repo under DIR (default: a temporary folder).
@@ -117,6 +117,9 @@ if __name__ == '__main__':
     if '--workers' in a: workers = int(a[a.index('--workers') + 1])
     if '--only' in a: only = set(a[a.index('--only') + 1].split(','))
     if '--out' in a: HERE = a[a.index('--out') + 1]
+    # Other sources and their tests, e.g. --files packages/core/src/exits/rules.ts --test packages/core/test/exits
+    if '--files' in a: FILES = a[a.index('--files') + 1].split(',')
+    if '--test' in a: TEST = a[a.index('--test') + 1]
     os.makedirs(HERE, exist_ok=True)
     ms = mutants()
     if only:
