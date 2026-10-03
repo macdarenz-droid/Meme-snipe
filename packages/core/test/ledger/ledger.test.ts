@@ -416,6 +416,21 @@ describe('migrations', () => {
     openLedgerReader(path).close();
   });
 
+  it('migration 2 applies once, and an edited migration 2 is refused', () => {
+    const path = tempPath();
+    openLedger(path, 'paper').close();
+    openLedger(path, 'paper').close(); // a second open applies nothing
+    const db = raw_(path);
+    expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r['version'])).toEqual([1n, 2n]);
+    expect(db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name = 'position_entry_intent'").get()?.['n']).toBe(1n);
+    db.close();
+    const edited = [LEDGER_MIGRATIONS[0]!, { ...LEDGER_MIGRATIONS[1]!, sql: `${LEDGER_MIGRATIONS[1]!.sql} ` }];
+    expect(() => openWriter(path, 'ledger', edited)).toThrow(/applied migration 2 does not match this code's ledger migration/);
+    expect(() => openReader(path, 'ledger', edited)).toThrow(/applied migration 2 does not match/);
+    // The flag is not part of the checksum: the applied file still opens with it changed, and migration 1 is untouched.
+    expect(() => openReader(path, 'ledger', [LEDGER_MIGRATIONS[0]!, { ...LEDGER_MIGRATIONS[1]!, rebuildsTables: false }]).close()).not.toThrow();
+  });
+
   it('schema 1 lists match the domain; a change there must ship as a new migration', () => {
     expect([...V1_VENUES]).toEqual([...VENUES]);
     expect([...V1_INTENT_STATUSES]).toEqual([...INTENT_STATUSES]);
