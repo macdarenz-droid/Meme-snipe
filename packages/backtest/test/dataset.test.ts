@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { loadDay, loadManifest, regimeBoundariesOf, tableOf, verifySums } from '../src/dataset/dataset.ts';
+import { loadCoverage, loadDay, loadManifest, loadMovements, regimeBoundariesOf, SUPPORTED_SCHEMA, tableOf, verifySums } from '../src/dataset/dataset.ts';
+import type { CoverageRow, MovementRow } from '../src/dataset/rows.ts';
 import { readSeries, usableFrom } from '../src/dataset/offchain.ts';
 import { writeDataset } from './dataset-writer.ts';
 import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
@@ -191,3 +192,49 @@ describe('G0 in the report (BT-1c item 1)', () => {
     expect(g0.checks.find((c) => c.label === 'parity')?.value).toBe('not run');
   });
 });
+
+describe('schema 3 (BT-1d)', () => {
+  test('the loader reads only schema 3, and every trade row carries its user token account and owner', () => {
+    expect(SUPPORTED_SCHEMA).toBe(3);
+    const m = loadManifest(dir);
+    const back = m.days.flatMap((d) => loadDay(dir, d));
+    const amm = back.filter((r) => r.kind === 'amm');
+    expect(amm.length).toBeGreaterThan(0);
+    for (const r of amm) {
+      expect(r.userTokenAccount).not.toBe('');
+      expect(r.userTokenOwner).toBe(r.user);
+    }
+    const old = mkdtempSync(join(tmpdir(), 'old-'));
+    try {
+      writeFileSync(join(old, 'manifest.json'), JSON.stringify({ ...m, schema: 2 }));
+      expect(() => loadManifest(old)).toThrow(/schema 2 is not supported/);
+    } finally {
+      rmSync(old, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('movements and coverage (schema 3)', () => {
+  test('read back exactly, only on request: a trading day never loads them', () => {
+    const d = mkdtempSync(join(tmpdir(), 'mv-'));
+    try {
+      const day0 = rows.find((r) => r.kind === 'block')!;
+      const movements: MovementRow[] = [
+        { slot: day0.slot, blockTime: day0.blockTime, txIdx: 3, outerIx: 1, innerIx: null, mint: 'M', kind: 'transfer', fromOwner: 'A', toOwner: 'B', amount: 5n, fromAccount: 'a', toAccount: 'b' },
+        { slot: day0.slot, blockTime: day0.blockTime, txIdx: 3, outerIx: 1, innerIx: 0, mint: 'M', kind: 'burn', fromOwner: 'B', toOwner: '', amount: 1n, fromAccount: 'b', toAccount: '' },
+      ];
+      const coverage: CoverageRow[] = [
+        { mint: '*', scope: 'no_movements', slot: null, reason: 'lead_in', count: null, txIdx: null, fromSlot: 1n, toSlot: 2n },
+        { mint: 'M', scope: 'unresolved', slot: day0.slot, reason: 'swap_owner_unknown', count: 1, txIdx: 3, fromSlot: day0.slot, toSlot: day0.slot + 10n },
+      ];
+      writeDataset(d, rows, { movements, coverage });
+      const m = loadManifest(d);
+      expect(loadMovements(d, m.days[0]!)).toEqual(movements);
+      expect(loadCoverage(d, m)).toEqual(coverage);
+      expect(loadDay(d, m.days[0]!).some((r) => !['amm', 'curve', 'block', 'event'].includes(r.kind))).toBe(false);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+

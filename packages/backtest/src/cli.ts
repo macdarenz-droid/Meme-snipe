@@ -4,8 +4,9 @@
 //   node packages/backtest/src/cli.ts run --dataset <dir> --sol-usd <file> [--scenario conservative] [--seed s0-1]
 //        [--replays 10] [--days 2026-09-01,2026-09-02] [--out report.json] [--evidence evidence.json] [--ledger bt.sqlite]
 //        [--delay measured|adverse|stress] [--burst-sweep]
-//   node packages/backtest/src/cli.ts holdout-register --dataset <dir> --sol-usd <file> --holdout-id <id>
-//        [--universe U2] [--family-size 1] [--scenario ...] [--seed ...]
+//   node packages/backtest/src/cli.ts holdout-plan --dataset <dir> --sol-usd <file> --plan <plan.json>
+//   node packages/backtest/src/cli.ts holdout-register --dataset <dir> --sol-usd <file> --holdout-id <id> --attempt <k>
+//        [--universe U2] [--scenario ...] [--seed ...]
 //   node packages/backtest/src/cli.ts holdout --dataset <dir> --sol-usd <file> --holdout-id <id>
 //        --ledger <new file> [--universe U2] [--days ...] [--scenario ...] [--seed ...]
 //
@@ -27,7 +28,7 @@ import type { Bps } from '../../core/src/units/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
 import { readSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
-import { authoriseHoldout, holdoutWindow, readHoldoutStore, researchDays, runAndSealHoldout } from './holdout.ts';
+import { authoriseHoldout, type HoldoutPlan, readHoldoutStore, researchDays, runAndSealHoldout, setHoldoutPlan } from './holdout.ts';
 import { leakTest, shiftTest } from './proofs.ts';
 import { economics } from './economics.ts';
 import { buildReport } from './report.ts';
@@ -65,7 +66,7 @@ const registryPath = join(registryRoot, RESEARCH_CONFIG.holdout.registryPath);
 if (args.includes('--registry')) throw new Error(`the holdout registry path is fixed by the research config (${RESEARCH_CONFIG.holdout.registryPath})`);
 const registryVcs = gitRegistryVcs({
   root: registryRoot, relPath: RESEARCH_CONFIG.holdout.registryPath, remote: RESEARCH_CONFIG.holdout.registryRemote,
-  branch: RESEARCH_CONFIG.holdout.registryBranch, fileName: 'registry.json',
+  branch: RESEARCH_CONFIG.holdout.registryBranch, fileName: 'registry.json', repo: RESEARCH_CONFIG.holdout.registryRepo,
 });
 // Every command sees the shared registry: research runs need its registered windows (H1), holdout commands its runs.
 registryVcs.check();
@@ -98,7 +99,7 @@ const plantedSwap = (token: string, slot: bigint, blockTime: number): DatasetRow
   quoteMint: 'So11111111111111111111111111111111111111112', side: 'buy', mode: 'exact-quote-in', amount: 1_000_000_000n, baseAmount: 0n, quoteAmount: 0n, userQuote: 0n,
   pre: { baseReserve: 200_000_000_000_000n, quoteVault: 80_000_000_000n, virtualQuoteReserves: 0n },
   fees: { split: { lp: 20 as Bps, protocol: 5 as Bps, creator: 95 as Bps }, buybackFeeBps: 0 as Bps, instruction: 'v1' },
-  baseSupply: 1_000_000_000_000_000n, ixName: 'buy_exact_quote_in', user: token,
+  baseSupply: 1_000_000_000_000_000n, ixName: 'buy_exact_quote_in', user: token, userTokenAccount: token, userTokenOwner: token,
 });
 const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, windowEnd: to, regimeBoundaries, ...(delay === undefined ? {} : { delay }) };
 
@@ -118,21 +119,27 @@ const codeId = (): string => {
   return dirty ? `${head}+dirty-${h.digest('hex').slice(0, 16)}` : head;
 };
 
-if (command === 'holdout-register' || command === 'holdout') {
+if (command === 'holdout-plan' || command === 'holdout-register' || command === 'holdout') {
   mkdirSync(dirname(registryPath), { recursive: true });
   const authority = { registryPath, codeCommit: codeId(), datasetId: `sha256:${manifestHash(dataset)}`, vcs: registryVcs };
   const universe = flag('universe', 'U2');
-  const holdoutId = flag('holdout-id');
   const window = { fromDay: days[0]!.day, toDay: days[days.length - 1]!.day };
-  if (command === 'holdout-register') {
+  if (command === 'holdout-plan') {
+    setHoldoutPlan(authority, JSON.parse(readFileSync(flag('plan'), 'utf8')) as HoldoutPlan, RESEARCH_CONFIG);
+    console.log(JSON.stringify({ plan: 'set' }));
+  } else if (command === 'holdout-register') {
+    const holdoutId = flag('holdout-id');
+    const index = Number(flag('attempt'));
     // The size requirement max(300, n_power, closed form) and its n_power seed come from the walk-forward; they are
     // frozen with the registration, before any holdout count exists (STATS-1c).
     const requirement = { requiredTrades: Number(flag('required-trades')), nPowerSeed: Number(flag('n-power-seed')) };
-    const store = authoriseHoldout(authority, Number(flag('family-size', '1')), { holdoutId, universe, requirement }, base);
-    const e = store.registry.entries.find((x) => x.holdoutId === holdoutId)!;
-    console.log(JSON.stringify({ registered: holdoutId, attempt: e.attempt, alpha: e.alpha, requirement: e.requirement, ...holdoutWindow(base), entryCutoffDay: RESEARCH_CONFIG.holdout.entryCutoffDay, tailEndDay: RESEARCH_CONFIG.holdout.tailEndDay }));
+    const st = authoriseHoldout(authority, { attempt: index, holdouts: [{ holdoutId, universe, requirement }] }, base);
+    const attempt = st.attempts.find((x) => x.index === index)!;
+    // The attempt's own window (attempt k >= 2 has its own), the α G2 spends on it (from the STATS-1c registry) and the
+    // frozen requirement.
+    console.log(JSON.stringify({ registered: holdoutId, attempt: index, alpha: attempt.alpha, requirement, ...attempt.window }));
   } else {
-    const sealed = runAndSealHoldout({ ...base, ledgerPath: flag('ledger') }, { ...authority, byUniverse: { [universe]: holdoutId }, window });
+    const sealed = runAndSealHoldout({ ...base, ledgerPath: flag('ledger') }, { ...authority, byUniverse: { [universe]: flag('holdout-id') }, window });
     console.log(JSON.stringify(sealed));
   }
 } else if (command === 'run') {

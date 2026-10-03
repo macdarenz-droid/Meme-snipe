@@ -42,6 +42,8 @@ export interface ResearchConfig {
     /** The remote branch that holds the registry (survives fresh clones); every write is pushed there. */
     readonly registryRemote: string;
     readonly registryBranch: string;
+    /** The only GitHub repository (`owner/name`) the registry remote may be. */
+    readonly registryRepo: string;
   };
   /** Running costs charged against results, apart from the bankroll and per-trade costs. */
   readonly operating: {
@@ -65,7 +67,7 @@ const VALUES: ResearchConfig = {
   s0: { u2WindowFromMs: 60 * MINUTE, u2WindowToMs: 240 * MINUTE, entryMinOutBelowBps: 300, blockedRetryMs: 10 * MINUTE, blockedRetries: 3, endMarginMs: 30 * MINUTE },
   heartbeatBlocks: 150,
   decisionCommitment: 'confirmed',
-  holdout: { fromDay: '2026-09-22', entryCutoffDay: '2026-10-20', tailEndDay: '2026-10-21', registryPath: 'research/holdout/registry.json', registryRemote: 'origin', registryBranch: 'holdout-registry' },
+  holdout: { fromDay: '2026-09-22', entryCutoffDay: '2026-10-20', tailEndDay: '2026-10-21', registryPath: 'research/holdout/registry.json', registryRemote: 'origin', registryBranch: 'holdout-registry', registryRepo: 'macdarenz-droid/Meme-snipe' },
   operating: { hostingUsdPerMonth: usd('6'), projectionBankrolls: [usd('20'), usd('100'), usd('200')] },
   g1EdgeTest: 'dsr',
 };
