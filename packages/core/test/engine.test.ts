@@ -384,9 +384,9 @@ describe('reconcile guard is fair under the cap', () => {
       ...Array.from({ length: 5 }, (_, n): Effect => ({ type: 'reconcile_orphan', intentId: `o${n}` as never, signature: `s${n}` as never })),
     ];
     const sent = new Map<number, number>();
-    for (let slot = 1; slot <= 3000; slot++) {
+    trapped(() => { for (let slot = 1; slot <= 3000; slot++) {
       keys.forEach((fx, k) => { if (g.admit(fx, at(slot)) === 'sent') sent.set(k, (sent.get(k) ?? 0) + 1); });
-    }
+    } });
     expect(sent.size).toBe(30);
     const counts = [...sent.values()];
     // Within a kind, rounds keep every key level (orphans go first, so they are sent more often).
@@ -403,35 +403,46 @@ describe('reconcile guard is fair under the cap', () => {
     const lastOrphanSend = new Map<number, number>();
     const balanceSent = new Set<number>();
     let worstGap = 0;
-    for (let slot = 1; slot <= 3000; slot++) {
+    trapped(() => { for (let slot = 1; slot <= 3000; slot++) {
       balances.forEach((fx, k) => { if (g.admit(fx, at(slot)) === 'sent') balanceSent.add(k); });
       orphans.forEach((fx, k) => {
         if (g.admit(fx, at(slot)) !== 'sent') return;
         worstGap = Math.max(worstGap, slot - (lastOrphanSend.get(k) ?? 1));
         lastOrphanSend.set(k, slot);
       });
-    }
+    } });
     expect(lastOrphanSend.size).toBe(5);
     // Asked last in tick order, an orphan still waits at most one window, then repeats every minSlotsBetween.
     expect(worstGap).toBeLessThanOrEqual(150);
     expect(balanceSent.size).toBe(30);
   });
 
-  it('persistent orphans never starve balance reads: one place per window is kept for them', () => {
+  it('persistent orphans never starve balance reads: a share of every window is reserved for them', () => {
+    const windowSlots = 150;
     for (const orphanCount of [3, 20, 25, 60]) {
       const g = new ReconcileGuard();
       const orphans = Array.from({ length: orphanCount }, (_, n): Effect => ({ type: 'reconcile_orphan', intentId: `o${n}` as never, signature: `s${n}` as never }));
-      const balance: Effect = { type: 'reconcile_balances', intentId: 'exit-1' as never };
-      let balanceSends = 0;
-      const orphanSent = new Set<number>();
-      for (let slot = 1; slot <= 5000; slot++) {
-        orphans.forEach((fx, k) => { if (g.admit(fx, at(slot)) === 'sent') orphanSent.add(k); });
-        if (g.admit(balance, at(slot)) === 'sent') balanceSends++;
-      }
-      expect(balanceSends, `${orphanCount} orphans`).toBeGreaterThanOrEqual(Math.floor(5000 / 150) - 1);
-      expect(orphanSent.size, `${orphanCount} orphans`).toBe(orphanCount);
+      const balances = Array.from({ length: 3 }, (_, n): Effect => ({ type: 'reconcile_balances', intentId: `exit-${n}` as never }));
+      const balanceWindows = balances.map(() => new Set<number>());
+      const lastOrphan = new Map<number, number>();
+      let worstOrphanGap = 0;
+      // One trap around the loop: nested trapped calls skip re-installing it.
+      trapped(() => { for (let slot = 1; slot <= 5000; slot++) {
+        orphans.forEach((fx, k) => {
+          if (g.admit(fx, at(slot)) !== 'sent') return;
+          worstOrphanGap = Math.max(worstOrphanGap, slot - (lastOrphan.get(k) ?? 1));
+          lastOrphan.set(k, slot);
+        });
+        balances.forEach((fx, k) => { if (g.admit(fx, at(slot)) === 'sent') balanceWindows[k]!.add(Math.floor((slot - 1) / windowSlots)); });
+      } });
+      const windows = Math.floor(5000 / windowSlots);
+      // Asked after the orphans have filled slot 1, a balance key waits at most one window, then is served in every window.
+      for (const seen of balanceWindows) for (let w = 1; w < windows; w++) expect(seen.has(w), `${orphanCount} orphans, window ${w}`).toBe(true);
+      // Every orphan is served within its bound: its turn among the orphans, in the 15 places per window left after the reserve.
+      expect(lastOrphan.size).toBe(orphanCount);
+      expect(worstOrphanGap, `${orphanCount} orphans`).toBeLessThanOrEqual((Math.ceil(orphanCount / 15) + 1) * windowSlots);
     }
-  });
+  }, 30_000);
 
   it('a waiter that is no longer asked for gives up its place', () => {
     const g = new ReconcileGuard({ minSlotsBetween: 1n, windowSlots: 10n, maxPerWindow: 1 });

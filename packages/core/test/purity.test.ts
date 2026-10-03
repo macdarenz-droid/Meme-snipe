@@ -4,7 +4,7 @@
 // spellings such as `Date['now']()`, `+new Date` or `const { random } = Math` are caught too.
 // Extend the lists when a new way in appears; never remove from them.
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, normalize, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SRC = join(import.meta.dirname, '..', 'src');
@@ -48,7 +48,7 @@ const GLOBAL_OBJECTS = new Set([
 ]);
 
 /** Inside ledger/: SQL that reads the clock or draws randomness, which would make the ledger nondeterministic. */
-const NONDETERMINISTIC_SQL = /'now'|\brandom\s*\(|\brandomblob\s*\(|\bcurrent_(timestamp|date|time)\b/i;
+const NONDETERMINISTIC_SQL = /\bnow\b|'now'|\brandom\s*\(|\brandomblob\s*\(|\bcurrent_(timestamp|date|time)\b/i;
 
 /** A module path that reaches into the ledger. Only ledger/ itself may; others go through the EffectRunner or an adapter. */
 const LEDGER_PATH = /(^|\/)ledger(\/|\.ts$|$)/;
@@ -222,6 +222,60 @@ const topFolder = (file: string): string => relative(SRC, file).split(sep)[0] ??
 const allowedFor = (file: string): ReadonlySet<string> => EXEMPTIONS.find((e) => e.folder === topFolder(file))?.allow ?? new Set();
 const folderBansFor = (file: string): ReadonlySet<string> => FOLDER_BANS[topFolder(file)] ?? new Set();
 
+/** Module specifiers a file imports or re-exports (static forms only; dynamic import is banned). */
+const specifiers = (source: string): string[] => {
+  const { tokens } = tokenize(source);
+  const out: string[] = [];
+  tokens.forEach((t, k) => {
+    if (t.type !== 'str') return;
+    const prev = tokens[k - 1]?.value;
+    if (prev === 'from' || (prev === 'import' && tokens[k - 2]?.value !== '.')) out.push(t.value);
+  });
+  return out;
+};
+
+/** Resolves a specifier to a file under src (relative paths and this package's own subpaths), or null for outside modules. */
+const resolveModule = (from: string, spec: string, files: ReadonlySet<string>): string | null => {
+  const self = /^@meme-snipe\/core(?:\/(.+))?$/.exec(spec);
+  const base = self ? join(SRC, self[1] ?? '', 'index.ts') : spec.startsWith('.') ? normalize(join(dirname(from), spec)) : null;
+  if (base === null) return null;
+  for (const candidate of [base, `${base}.ts`, join(base, 'index.ts')]) if (files.has(candidate)) return candidate;
+  return base;
+};
+
+/** Folders the engine may never reach, directly or through any chain of imports and re-exports. */
+const ENGINE_UNREACHABLE = new Set(['ledger', 'stats']);
+
+/** Every import chain from an engine file into a forbidden folder. `sources` maps absolute paths under src to file text. */
+const engineReaches = (sources: ReadonlyMap<string, string>): string[] => {
+  const files = new Set(sources.keys());
+  const edges = new Map([...sources].map(([f, text]) => [f, specifiers(text).map((sp) => resolveModule(f, sp, files)).filter((x): x is string => x !== null)]));
+  const found: string[] = [];
+  for (const start of files) {
+    if (topFolder(start) !== 'engine') continue;
+    const seen = new Set<string>([start]);
+    const stack: string[][] = [[start]];
+    while (stack.length > 0) {
+      const chain = stack.pop()!;
+      for (const next of edges.get(chain[chain.length - 1]!) ?? []) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        const path = [...chain, next];
+        if (ENGINE_UNREACHABLE.has(topFolder(next))) found.push(path.map((f) => relative(SRC, f)).join(' -> '));
+        else stack.push(path);
+      }
+    }
+  }
+  return found;
+};
+
+const allSourceFiles = (dir: string): string[] =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
+    const path = join(dir, d.name);
+    if (d.isDirectory()) return allSourceFiles(path);
+    return /\.(ts|mts|cts|js|mjs|cjs|tsx|jsx)$/.test(d.name) ? [path] : [];
+  });
+
 const sourceFiles = (dir: string): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
     const path = join(dir, d.name);
@@ -335,12 +389,32 @@ describe('purity guard', () => {
     const db = "import { DatabaseSync } from 'node:sqlite'; export { DatabaseSync }; export const now = (db: DatabaseSync) => db.prepare(`select julianday('now'), random()`).get();";
     const ledger = join(SRC, 'ledger', 'zz_db.ts');
     expect(scan(db, allowedFor(ledger), folderBansFor(ledger), { folder: 'ledger' })).toContain('SQL reading the clock or randomness');
-    for (const sql of ["'select randomblob(8)'", "'insert into t values (current_timestamp)'", '`select current_date`', "\"select datetime('now')\""]) {
+    for (const sql of ["'select now()'", "'select randomblob(8)'", "'insert into t values (current_timestamp)'", '`select current_date`', "\"select datetime('now')\""]) {
       expect(scan(`const q = ${sql};`, allowedFor(ledger), new Set(), { folder: 'ledger' }), sql).toContain('SQL reading the clock or randomness');
     }
     // Inside ledger/, its own modules are fine; outside, words such as "ledgers" in prose strings are not paths.
     expect(scan("import { codec } from './codec.ts'; import { x } from '../ledger/sqlite.ts';", allowedFor(ledger), new Set(), { folder: 'ledger' })).toEqual([]);
     expect(scan("const s = 'the ledger file';", new Set(), new Set(), { folder: 'engine' })).toEqual([]);
+  });
+
+  it('the engine cannot reach ledger/ or stats/ through any chain of imports or re-exports', () => {
+    // The reviewer's re-export case, routed through an adapter so the import text names no ledger path.
+    const probe = new Map([
+      [join(SRC, 'engine', 'zz_use.ts'), "import { now } from '../adapters/zz_bridge.ts'; export const t = now();"],
+      [join(SRC, 'adapters', 'zz_bridge.ts'), "export { now } from '../ledger/zz_db.ts';"],
+      [join(SRC, 'ledger', 'zz_db.ts'), "export { DatabaseSync } from 'node:sqlite'; export const now = () => 1;"],
+      [join(SRC, 'engine', 'zz_stats.ts'), "import { gate } from '@meme-snipe/core/stats';"],
+      [join(SRC, 'stats', 'index.ts'), 'export const gate = 1;'],
+      [join(SRC, 'engine', 'ok.ts'), "import { x } from '../units/index.ts';"],
+      [join(SRC, 'units', 'index.ts'), 'export const x = 1;'],
+    ]);
+    const chains = engineReaches(probe);
+    expect(chains).toContain(['engine/zz_use.ts', 'adapters/zz_bridge.ts', 'ledger/zz_db.ts'].join(' -> ').replaceAll('/', sep));
+    expect(chains).toContain(['engine/zz_stats.ts', 'stats/index.ts'].join(' -> ').replaceAll('/', sep));
+    expect(chains.some((c) => c.startsWith(join('engine', 'ok.ts')))).toBe(false);
+    // The real tree, adapters included.
+    const real = new Map(allSourceFiles(SRC).map((f) => [f, readFileSync(f, 'utf8')] as const));
+    expect(engineReaches(real)).toEqual([]);
   });
 
   it('the engine folder also bans asynchronous code', () => {

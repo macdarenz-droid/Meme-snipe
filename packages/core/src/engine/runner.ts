@@ -35,7 +35,7 @@ const reconcileKey = (fx: Effect): string | null => {
  * The runner rule from the CORE-1 review: every tick re-emits `reconcile_balances` for each intent with a
  * known outcome and `reconcile_orphan` for each unbooked landing, so repeats are de-duplicated and the
  * total is rate-limited. Under the cap, an unbooked landing (`reconcile_orphan`, which blocks every entry)
- * goes before a balance read, except that each window keeps one place for a balance read while one waits;
+ * goes before a balance read, except that each window reserves max(1, cap / 4) places for waiting balance reads;
  * within a kind, keys are served in rounds: a free place goes to the waiting key
  * sent the fewest times, then the one waiting longest. A new key joins the current round (it neither jumps ahead
  * of keys still owed a send nor falls behind), so no key is starved however many keys there are.
@@ -73,25 +73,40 @@ export class ReconcileGuard {
     const mine = this.#turnOf(key);
     const free = maxPerWindow - this.#recent.length;
     const isOrphan = (k: string) => k.startsWith('reconcile_orphan|');
-    const before = (k: string) => {
+    // One pass over the waiters: who is ahead of this key in rounds order, by kind.
+    let orphansAhead = 0;
+    let orphansWaiting = 0;
+    let balancesAhead = 0;
+    let balancesWaiting = 0;
+    for (const k of this.#waiting.keys()) {
+      if (k === key) continue;
       const theirs = this.#turnOf(k);
-      return theirs.sends < mine.sends || (theirs.sends === mine.sends && theirs.seq < mine.seq);
-    };
-    const others = [...this.#waiting.keys()].filter((k) => k !== key);
-    // Orphans go first, but every window keeps one place for a balance read while one waits, so exits
-    // still reconcile (and positions close) when orphan reads keep failing.
-    const balanceSentThisWindow = this.#recent.some((r) => !r.orphan);
+      const before = theirs.sends < mine.sends || (theirs.sends === mine.sends && theirs.seq < mine.seq);
+      if (isOrphan(k)) {
+        orphansWaiting++;
+        if (before) orphansAhead++;
+      } else {
+        balancesWaiting++;
+        if (before) balancesAhead++;
+      }
+    }
+    // Orphans go first, but each window reserves a share for balance reads (the larger of one place and a
+    // quarter of the cap), so exits still reconcile and positions close when orphan reads keep failing.
+    const reserve = Math.min(maxPerWindow, Math.max(1, Math.floor(maxPerWindow / 4)));
+    let balancesSent = 0;
+    for (const r of this.#recent) if (!r.orphan) balancesSent++;
+    const owed = Math.max(0, reserve - balancesSent);
     let ahead: number;
     let places = free;
     if (isOrphan(key)) {
-      ahead = others.filter((k) => isOrphan(k) && before(k)).length;
-      if (!balanceSentThisWindow && others.some((k) => !isOrphan(k))) places--;
-    } else if (!balanceSentThisWindow) {
-      // The reserved place: the first balance read in rounds order takes it, ahead of any orphan.
-      ahead = others.filter((k) => !isOrphan(k) && before(k)).length;
-      places = Math.min(free, 1);
+      ahead = orphansAhead;
+      places -= Math.min(owed, balancesWaiting);
+    } else if (owed > 0) {
+      // A reserved place: balance reads in rounds order take them ahead of any orphan.
+      ahead = balancesAhead;
+      places = Math.min(free, owed);
     } else {
-      ahead = others.filter((k) => isOrphan(k) || before(k)).length;
+      ahead = orphansWaiting + balancesAhead;
     }
     if (ahead >= places) {
       this.#waiting.set(key, now.slot);
