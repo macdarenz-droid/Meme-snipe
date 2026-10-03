@@ -130,6 +130,8 @@ describe('collapse', () => {
     expect(run([create(), trade({ sol: 9_999n }), trade({ sol: 0n })], cfg).labels).toHaveLength(0);
     expect(run([create(), trade({ sol: 10_000n }), trade({ sol: 0n })], cfg).labels).toHaveLength(1);
     expect(rugConfigIssues({ ...CFG, collapse: { ...CFG.collapse, minPeakLamports: 1.5 } })).toEqual(['collapse.minPeakLamports must be a non-negative integer']);
+    expect(rugConfigIssues({ ...CFG, materiality: { referenceLamports: 0, maxExitCostBps: 0 } })).toEqual(['materiality.referenceLamports must be a positive integer', 'materiality.maxExitCostBps must be an integer 1..10000']);
+    expect(rugConfigIssues({ ...CFG, materiality: { referenceLamports: 1.5, maxExitCostBps: 10_000 } })).toEqual(['materiality.referenceLamports must be a positive integer']);
   });
 
   it('needs a peak above zero', () => {
@@ -315,6 +317,37 @@ describe('observed event and materiality (fixed reference, never the bankroll)',
     for (const bad of [{ ...deep, quote: 0n }, { ...deep, base: 0n }, { ...deep, feeBps: -1n }, { ...deep, feeBps: BPS_DENOMINATOR }]) expect(exitCostBps(bad, 1n)).toBeNull();
     expect(exitCostBps(deep, 0n)).toBeNull();
     expect(exitCostBps({ ...deep, base: 1n }, 1n)).toBeNull();
+  });
+
+  it('one event that meets both rules gives one label, the deployer sale first', () => {
+    const r = run([create(), trade({ sol: 10_000n }), trade({ user: DEV, isBuy: false, tokens: 900_000n, sol: 0n })]);
+    expect(r.labels.map((x) => label(x).rule)).toEqual(['creator-dump']);
+  });
+
+  it('materiality uses every fee the venue charged, and is material at exactly the limit', () => {
+    const t = trade({ sol: 10_000n });
+    const d = { ...((t.value as { event: { data: Record<string, unknown> } }).event.data), feeBasisPoints: 95n, creatorFeeBasisPoints: 30n };
+    const [c] = run([create(), ev('pump', 'TradeEvent', d), trade({ sol: 0n })]).labels;
+    const cost = exitCostBps({ venue: 'curve', quote: 10_030n, base: 900n, feeBps: 125n }, 1_000n)!;
+    expect(label(c!).materiality).toEqual({ referenceLamports: 1_000n, exitCostBps: cost, material: false });
+    const at = { ...CFG, materiality: { referenceLamports: 1_000, maxExitCostBps: Number(cost) } };
+    expect(label(run([create(), ev('pump', 'TradeEvent', d), trade({ sol: 0n })], at).labels[0]!).materiality!.material).toBe(true);
+    const below = { ...CFG, materiality: { referenceLamports: 1_000, maxExitCostBps: Number(cost) - 1 } };
+    expect(label(run([create(), ev('pump', 'TradeEvent', d), trade({ sol: 0n })], below).labels[0]!).materiality!.material).toBe(false);
+    const p = sell({ vault: 10_000n, out: 9_950n, lp: 50n });
+    const pd = { ...((p.value as { event: { data: Record<string, unknown> } }).event.data), poolBaseTokenReserves: 1_000_000n, lpFeeBasisPoints: 20n, protocolFeeBasisPoints: 5n, coinCreatorFeeBasisPoints: 5n };
+    const [pc] = run([create(), migration(), ev('pump_amm', 'SellEvent', pd)]).labels;
+    const want = exitCostBps({ venue: 'pool', quote: 10_000n, base: 1_000_000n, feeBps: 30n }, 1_000n);
+    expect(want).not.toBe(exitCostBps({ venue: 'pool', quote: 10_000n, base: 1_000_000n, feeBps: 0n }, 1_000n));
+    expect(label(pc!).materiality!.exitCostBps).toBe(want);
+  });
+
+  it('materiality is unknown when the curve trade had no virtual quote reserve', () => {
+    const t = trade({ sol: 10_000n });
+    const data = { ...((t.value as { event: { data: Record<string, unknown> } }).event.data) };
+    delete data['virtualSolReserves'];
+    const [c] = run([create(), ev('pump', 'TradeEvent', data), trade({ sol: 0n })]).labels;
+    expect(label(c!).materiality!.exitCostBps).toBeNull();
   });
 
   it('labels do not depend on any trade size: the labeller reads only the rugs config', () => {

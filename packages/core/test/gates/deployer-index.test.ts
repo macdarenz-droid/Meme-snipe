@@ -343,6 +343,14 @@ describe('on-demand deployer check (RUG-1c)', () => {
     expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'prior-rug', detail: `${DEV} rugged P1 (creator-dump), P2 (collapse) within 14 days`, value: '2' }));
   });
 
+  it('a rug known to the index without a kind takes the kind the check found', () => {
+    const idx = withPrior();
+    idx.observe(marketOf('rug:P1', { mint: 'P1', creator: DEV }, old(2)));
+    const lab = { mint: 'P1', creator: DEV, rule: 'collapse', evidence: 'observed', atMs: 0, slot: 1n, version: 'v', detail: '', venue: 'curve', amounts: { peak: 2n, level: 0n } };
+    const r = h([check({}, [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'rug', detail: 'collapse', label: lab as never }])], idx);
+    expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'prior-rug', detail: `${DEV} rugged P1 (collapse) within 14 days` }));
+  });
+
   it('the stream coverage, when present, is used and a check is not needed', () => {
     const idx = withPrior();
     expect(notCovered(evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps('live'), request(), { stopAtFirst: false }))).toEqual([]);

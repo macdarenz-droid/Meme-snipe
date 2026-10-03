@@ -244,11 +244,8 @@ export class RugLabeller {
       levels.push({ level: pre, state: baseRes === null ? null : { venue: 'pool', quote: pre, base: baseRes, feeBps: fee } });
       const out = big(d['quoteAmountOut']);
       const lp = big(d['lpFee']);
-      const baseIn = big(d['baseAmountIn']);
-      if (sell && out !== null && lp !== null) {
-        const post = pre - out + lp;
-        levels.push({ level: post, state: baseRes === null || baseIn === null ? null : { venue: 'pool', quote: post, base: baseRes + baseIn, feeBps: fee } });
-      }
+      // The level after a sale is below the one before it, so it is never a peak and needs no pricing state.
+      if (sell && out !== null && lp !== null) levels.push({ level: pre - out + lp, state: null });
     }
     const user = str(d['user']);
     const amount = big(d['baseAmountIn']);
@@ -276,7 +273,6 @@ export class RugLabeller {
       this.#probe?.sale?.(l.mint, l.sold, at);
       if (open && l.supply !== null && age <= creatorDump.windowMs && l.sold * BPS_DENOMINATOR >= l.supply * BigInt(creatorDump.supplyBps)) {
         out = this.#label(e, l, at, 'creator-dump', `the deployer sold ${l.sold} of ${l.supply} tokens within ${age} ms of launch`, venue, { sold: l.sold, supply: l.supply });
-        if (this.#probe === undefined) return out;
       }
     }
     for (const { level, state } of levels) {
@@ -287,7 +283,6 @@ export class RugLabeller {
       this.#probe?.level?.(l.mint, level, l.peak, at, state);
       if (open && out.length === 0 && l.peak > 0n && l.peak >= BigInt(collapse.minPeakLamports) && age <= collapse.windowMs && level * BPS_DENOMINATOR <= l.peak * (BPS_DENOMINATOR - BigInt(collapse.dropBps))) {
         out = this.#label(e, l, at, 'collapse', `quote liquidity ${level} after a peak of ${l.peak}, within ${age} ms of launch`, venue, { peak: l.peak, level }, this.#materiality(l.peakState));
-        if (this.#probe === undefined) return out;
       }
     }
     return out;
