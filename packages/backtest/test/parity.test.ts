@@ -19,11 +19,17 @@ import {
 import {
   type MintInfo,
   type RawLine,
+  type Row,
+  DROP_EVENTS,
   ParityChecker,
+  SAMPLED_ONLY_EVENTS,
   ammRow,
   csvObjects,
   curveRow,
+  eventRow,
   failed,
+  failedRow,
+  parseTapes,
   runParity,
 } from '../src/dataset/parity.ts';
 
@@ -118,7 +124,7 @@ const eventIx = (programIdIndex: number, disc: Uint8Array, body: number[]) => ({
   stackHeight: 2,
 });
 
-const raw = (n: number, over: Partial<RawLine> = {}): RawLine => ({
+const raw = (n: number, over: Partial<RawLine> = {}, extra: ReturnType<typeof eventIx>[] = []): RawLine => ({
   slot: 452700000,
   blockTime: BLOCK_TIME,
   txIndex: n,
@@ -132,7 +138,7 @@ const raw = (n: number, over: Partial<RawLine> = {}): RawLine => ({
     loadedAddresses: { writable: [], readonly: [] },
     innerInstructions: [
       // An older TradeEvent version: the base fields and the first three added ones.
-      { index: 0, instructions: [eventIx(1, TradeEventLayout.discriminator, encode(tradeFields, trade))] },
+      { index: 0, instructions: [eventIx(1, TradeEventLayout.discriminator, encode(tradeFields, trade)), ...extra] },
       { index: 1, instructions: [eventIx(2, BuyEventLayout.discriminator, encode(buyFields, buy))] },
     ],
     logMessages: null,
@@ -166,11 +172,12 @@ const universe: MintInfo[] = [
   { mint: BASE, pool: POOL, tapeFrom: BLOCK_TIME - 100, tapeTo: BLOCK_TIME + 100 },
 ];
 
-const check = (rows: Record<string, string>[][], raws: RawLine[], mints = universe) => {
+const check = (rows: Record<string, string>[][], raws: RawLine[], mints = universe, other: Row[] = []) => {
   const c = new ParityChecker(mints);
   const [curve = [], amm = []] = rows;
   for (const v of curve) c.addRow(curveRow(v));
   for (const v of amm) c.addRow(ammRow(v));
+  for (const r of other) c.addRow(r);
   for (const r of raws) c.checkRaw(r);
   c.endBatch();
   return c.s;
@@ -218,7 +225,7 @@ describe('historical dataset decoder parity', () => {
   it('explains trades without rows of mints outside the universe or outside their tape', () => {
     const s = check([[], []], [raw(7)], [{ mint: BASE, pool: POOL, tapeFrom: BLOCK_TIME + 1, tapeTo: BLOCK_TIME + 100 }]);
     expect(failed(s)).toBe(false);
-    expect(s.explained_unrowed).toEqual({ non_universe: 1, outside_tape: 1, other_events: 0 });
+    expect(s.explained_unrowed).toEqual({ non_universe: 1, outside_tape: 1, dropped_events: 0 });
   });
 
   it('fails a row whose transaction failed, and a raw record the decoder refuses', () => {
@@ -230,13 +237,151 @@ describe('historical dataset decoder parity', () => {
     expect(s.raw_failed).toBe(1);
   });
 
-  it('counts rows without a raw record instead of matching them', () => {
+  it('fails a trade row without its raw record', () => {
     const s = check([[curveValues(9)], []], [raw(7)]);
-    expect(s.rows_without_raw).toBe(1);
+    expect(s.mismatches.filter((m) => m.key.tx_idx === 9).map((m) => [m.kind, m.field, m.row])).toEqual([['curve', '(raw record)', `TradeEvent ${MINT}`]]);
+    expect(s.rows_without_raw).toBe(0);
   });
 
   it('reads CSV rows as objects keyed by the header, quoted fields included', () => {
     expect(csvObjects('a,b\n"x,""y""",\n"multi\nline",z\n')).toEqual([{ a: 'x,"y"', b: '' }, { a: 'multi\nline', b: 'z' }]);
+  });
+});
+
+// ---- events DEC-1 keeps as 'other' (decoded with the scanner's IDL), failed rows, missing raw records ----
+
+const REPO = join(import.meta.dirname, '../../..');
+const idlDoc = (file: string) =>
+  JSON.parse(readFileSync(join(REPO, 'research/historical/scanner/idl', file), 'utf8')) as { events: { name: string; discriminator: number[] }[] };
+const idlDisc = (name: string) => Uint8Array.from(idlDoc('pump.json').events.find((e) => e.name === name)!.discriminator);
+const hex = (b: Iterable<number>) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+
+const UNKNOWN_DISC = '742b4dbd117a482b';
+const extendBody = [...decodeBase58(key(20)), ...decodeBase58(USER), ...le(100n, 8), ...le(200n, 8), ...le(BigInt(BLOCK_TIME), 8)];
+const unknownBody = [1, 2, 3, 4, 5];
+const dropBody = [...decodeBase58(PAYER), ...decodeBase58(USER), ...le(BigInt(BLOCK_TIME), 8)];
+const setCreatorBody = (mint: string) => [...le(BigInt(BLOCK_TIME), 8), ...decodeBase58(mint), ...decodeBase58(key(21)), ...decodeBase58(key(22))];
+/** Group 0 after the TradeEvent: ExtendAccountEvent (inner 1), an Unknown (2), InitUserVolumeAccumulatorEvent (3, dropped), SetCreatorEvent (4). */
+const extras = (creatorMint = MINT) => [
+  eventIx(1, idlDisc('ExtendAccountEvent'), extendBody),
+  eventIx(1, Uint8Array.from(Buffer.from(UNKNOWN_DISC, 'hex')), unknownBody),
+  eventIx(1, idlDisc('InitUserVolumeAccumulatorEvent'), dropBody),
+  eventIx(1, idlDisc('SetCreatorEvent'), setCreatorBody(creatorMint)),
+];
+const rich = (n: number, creatorMint = MINT) => raw(n, {}, extras(creatorMint));
+const evCtx = (n: number, inner: number, evIdx: number) => ({
+  slot: 452700000, block_time: BLOCK_TIME, tx_idx: n, ev_idx: evIdx, signature: encodeBase58(sig(n)), signer: PAYER, program: 'pump', outer_ix: 0, inner_ix: inner, jito_tip: '0',
+});
+const extendRow = (n: number, f: Record<string, string> = {}) =>
+  eventRow({ ...evCtx(n, 1, 1), event: 'ExtendAccountEvent', layout_fields: 5, fields: { account: key(20), user: USER, current_size: '100', new_size: '200', timestamp: String(BLOCK_TIME), ...f } });
+const unknownRow = (n: number, dataHex = hex(unknownBody)) => eventRow({ ...evCtx(n, 2, 2), event: 'Unknown', discriminator: UNKNOWN_DISC, data_hex: dataHex });
+const setCreatorRow = (n: number, mint = MINT) =>
+  eventRow({ ...evCtx(n, 4, 4), event: 'SetCreatorEvent', layout_fields: 4, fields: { timestamp: String(BLOCK_TIME), mint, bonding_curve: key(21), creator: key(22) } });
+const richAmm = (n: number) => ({ ...ammValues(n), ev_idx: '5' });
+const failedValues = (n: number): Record<string, string> => ({
+  slot: '452700000', block_time: String(BLOCK_TIME), tx_idx: String(n), signature: encodeBase58(sig(n)), signer: PAYER, tx_fee: '105000', cu: '72082',
+  programs: 'pump', mint_hint: MINT, error: '08000000041900000072170000',
+});
+const failedRaw = (n: number) => raw(n, { err: { hex: '08000000041900000072170000' } });
+
+describe('decoder parity: every kept event, each decoded event once, raw records present', () => {
+  it('matches events DEC-1 keeps as other on their bytes, and explains a dropped event', () => {
+    const s = check([[curveValues(7)], [richAmm(7)]], [rich(7)], universe, [extendRow(7), unknownRow(7), setCreatorRow(7)]);
+    expect(s.mismatches).toEqual([]);
+    expect(s.missing_rows).toEqual([]);
+    expect(s).toMatchObject({ decoded_events: 6, rows_matched: 5, name_only_matches: 3 });
+    expect(s.explained_unrowed).toEqual({ non_universe: 0, outside_tape: 0, dropped_events: 1 });
+  });
+
+  it('fails a decoded event matched by two rows, of the same kind or across trade and events rows', () => {
+    const dup = check([[curveValues(7), curveValues(7)], [ammValues(7)]], [raw(7)]);
+    expect(dup.mismatches.map((m) => [m.kind, m.field, m.decoded])).toEqual([['curve', '(duplicate row)', 'event already matched by a curve row']]);
+    const tradeAsEvent = eventRow({
+      ...evCtx(7, 0, 0), event: 'TradeEvent', layout_fields: 13,
+      fields: {
+        mint: MINT, sol_amount: '4541976', token_amount: '20825930166', is_buy: '0', user: USER, timestamp: String(BLOCK_TIME),
+        virtual_sol_reserves: '83785516724', virtual_token_reserves: '384195282731858', real_sol_reserves: '53785516724', real_token_reserves: '104295282731858',
+        fee_recipient: FEE_RECIPIENT, fee_basis_points: '95', fee: '43149',
+      },
+    });
+    // The events row alone matches the TradeEvent in full; with the curve row it is a second use of the same event.
+    expect(check([[], [ammValues(7)]], [raw(7)], universe, [tradeAsEvent]).mismatches).toEqual([]);
+    const cross = check([[curveValues(7)], [ammValues(7)]], [raw(7)], universe, [tradeAsEvent]);
+    expect(cross.mismatches.map((m) => [m.kind, m.field, m.decoded])).toEqual([['event', '(duplicate row)', 'event already matched by a curve row']]);
+  });
+
+  it('reports a kept named event and an Unknown event without a row', () => {
+    const s = check([[curveValues(7)], [richAmm(7)]], [rich(7)], universe, [setCreatorRow(7)]);
+    expect(s.missing_rows.map((m) => [m.key.inner_ix, m.event])).toEqual([[1, 'ExtendAccountEvent'], [2, `Unknown pump:${UNKNOWN_DISC}`]]);
+    expect(failed(s)).toBe(true);
+  });
+
+  it('requires a sampled-only event only when its mint is inside a tape', () => {
+    const inTape = check([[curveValues(7)], [richAmm(7)]], [rich(7)], universe, [extendRow(7), unknownRow(7)]);
+    expect(inTape.missing_rows).toEqual([
+      { key: { slot: 452700000, tx_idx: 7, outer_ix: 0, inner_ix: 4 }, signature: encodeBase58(sig(7)), event: 'SetCreatorEvent', mint: MINT, block_time: BLOCK_TIME },
+    ]);
+    const other = check([[curveValues(7)], [richAmm(7)]], [rich(7, key(40))], universe, [extendRow(7), unknownRow(7)]);
+    expect(other.missing_rows).toEqual([]);
+    expect(other.explained_unrowed).toEqual({ non_universe: 1, outside_tape: 0, dropped_events: 1 });
+  });
+
+  it('compares the bytes of a name-only match: Unknown data_hex and the fields of a named event', () => {
+    const s = check([[curveValues(7)], [richAmm(7)]], [rich(7)], universe, [extendRow(7, { new_size: '201' }), unknownRow(7, '0102030406'), setCreatorRow(7)]);
+    expect(s.mismatches.map((m) => [m.field, m.row, m.decoded])).toEqual([
+      ['fields.new_size', '201', '200'],
+      ['data_hex', '0102030406', '0102030405'],
+    ]);
+  });
+
+  it('treats a sampled-only event of a mint between two tape intervals as outside the tape', () => {
+    const gapped: MintInfo[] = [{ ...universe[0]!, tapes: [[BLOCK_TIME - 100, BLOCK_TIME - 1], [BLOCK_TIME + 1, BLOCK_TIME + 100]] }, universe[1]!];
+    const s = check([[], [richAmm(7)]], [rich(7)], gapped, [extendRow(7), unknownRow(7)]);
+    expect(s.missing_rows).toEqual([]);
+    expect(s.explained_unrowed).toEqual({ non_universe: 0, outside_tape: 2, dropped_events: 1 });
+    expect(parseTapes('launch:1-5|pool:9-12')).toEqual([[1, 5], [9, 12]]);
+    expect(parseTapes('')).toEqual([]);
+  });
+
+  it('fails an events row of a mint inside its tape without a raw record, and counts the others', () => {
+    const s = check([[], []], [], universe, [extendRow(9), setCreatorRow(9), setCreatorRow(9, key(40))]);
+    expect(s.mismatches.map((m) => [m.kind, m.field, m.row])).toEqual([['event', '(raw record)', `SetCreatorEvent ${MINT}`]]);
+    expect(s.rows_without_raw).toBe(2);
+  });
+
+  it('matches failed rows to failed raw records, and fails one without its record or on a success', () => {
+    const c = new ParityChecker(universe);
+    c.addRow(failedRow(failedValues(7)));
+    c.addRow(failedRow({ ...failedValues(8), error: '00' }));
+    c.addRow(failedRow(failedValues(9)));
+    c.addRow(failedRow(failedValues(10)));
+    c.checkRaw(failedRaw(7));
+    c.checkRaw(failedRaw(8));
+    c.checkRaw(raw(10));
+    c.endBatch();
+    expect(c.s.mismatches.map((m) => [m.kind, m.key.tx_idx, m.field, m.row, m.decoded])).toEqual([
+      ['failed', 8, 'error', '00', '08000000041900000072170000'],
+      ['failed', 10, '(failed)', '08000000041900000072170000', 'transaction succeeded'],
+      ['failed', 9, '(raw record)', `failed ${MINT}`, 'none'],
+    ]);
+    expect(c.s.rows_matched).toBe(1);
+  });
+
+  it('fails a successful record without inner instructions unless its full logs show no inner invocation', () => {
+    const noInner = (logMessages: string[] | null) => raw(7, { meta: { ...raw(7).meta, innerInstructions: null, logMessages } });
+    const top = [`Program ${PUMP_PROGRAM} invoke [1]`, 'Program log: Instruction: MigrateV2', `Program ${PUMP_PROGRAM} success`];
+    const field = (r: RawLine) => check([[], []], [r]).mismatches.map((m) => [m.kind, m.field]);
+    expect(field(noInner(null))).toEqual([['decode', 'innerInstructions']]);
+    expect(field(noInner([...top.slice(0, 2), `Program ${PUMP_PROGRAM} invoke [2]`, `Program ${PUMP_PROGRAM} success`, top[2]!]))).toEqual([['decode', 'innerInstructions']]);
+    expect(field(noInner([...top.slice(0, 2), 'Log truncated']))).toEqual([['decode', 'innerInstructions']]);
+    expect(field(noInner(top))).toEqual([]);
+  });
+
+  it('keeps the dropped and sampled-only event lists equal to the scanner (sample.go)', () => {
+    const go = readFileSync(join(REPO, 'research/historical/scanner/sample.go'), 'utf8');
+    const goMap = (name: string) => new Set([...go.match(new RegExp(`var ${name} = map\\[string\\]bool\\{([^}]*)\\}`))![1]!.matchAll(/"(\w+)": true/g)].map((m) => m[1]!));
+    expect(goMap('dropEvents')).toEqual(new Set(DROP_EVENTS));
+    expect(goMap('sampledOnlyEvents')).toEqual(new Set(SAMPLED_ONLY_EVENTS));
   });
 });
 
@@ -254,16 +399,18 @@ describe('parity over a dataset directory', () => {
     const day = join(dir, 'days', '2026-10-02');
     mkdirSync(day, { recursive: true });
     const z = (path: string, text: string) => writeFileSync(path, zstdCompressSync(Buffer.from(text)));
-    z(join(dir, 'mints-000.csv.zst'), csv(universe.map((m) => ({ mint: m.mint, pool: m.pool, tape_from: String(m.tapeFrom), tape_to: String(m.tapeTo) }))));
+    const tapes = (m: MintInfo) => `launch:${m.tapeFrom}-${m.tapeTo}`;
+    z(join(dir, 'mints-000.csv.zst'), csv(universe.map((m) => ({ mint: m.mint, pool: m.pool, tape_from: String(m.tapeFrom), tape_to: String(m.tapeTo), tapes: tapes(m) }))));
     z(join(day, 'curve_trades-000.csv.zst'), csv([curve]));
     z(join(day, 'amm_trades-000.csv.zst'), csv([ammValues(7)]));
-    z(join(day, 'raw-000.jsonl.zst'), `${JSON.stringify(raw(7))}\n`);
+    z(join(day, 'failed-000.csv.zst'), csv([failedValues(8)]));
+    z(join(day, 'raw-000.jsonl.zst'), `${JSON.stringify(raw(7))}\n${JSON.stringify(failedRaw(8))}\n`);
     return dir;
   };
 
-  it('reads the zstd files of every day', async () => {
+  it('reads the zstd files of every day, failed rows and tape intervals included', async () => {
     const s = await runParity(dataset(curveValues(7)));
-    expect(s).toMatchObject({ raw_records: 1, rows_checked: 2, rows_matched: 2, mismatch_count: 0, missing_row_count: 0 });
+    expect(s).toMatchObject({ raw_records: 2, raw_failed: 1, rows_checked: 3, rows_matched: 3, mismatch_count: 0, missing_row_count: 0 });
   });
 
   it('exits 1 on a mismatch and writes qa/parity.json', () => {
