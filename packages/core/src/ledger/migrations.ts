@@ -214,6 +214,32 @@ CREATE TABLE command_result (
 ${TABLES.map(appendOnly).join('\n')}
 `;
 
+// LEDGER-1b: a late buy landing gets its own position (`<position>.o<n>`) with the same entry intent as the position
+// it was meant for, so `entry_intent_id` can no longer be unique. The table is rebuilt (SQLite cannot drop a
+// constraint) with the same columns and checks, a plain index for lookups, and its append-only guard restored.
+const positionColumns = 'position_id, mint, venue, entry_intent_id, created_ts';
+// Copied out and back rather than renamed: ALTER TABLE RENAME opens SQLite's temp schema on the writer's connection,
+// and the label guard checks that the ledger connection holds no database but main.
+const positionManyPerEntry = `
+CREATE TABLE position_copy (
+  position_id TEXT NOT NULL, mint TEXT NOT NULL, venue TEXT NOT NULL, entry_intent_id TEXT NOT NULL, created_ts INTEGER NOT NULL
+) STRICT;
+INSERT INTO position_copy (${positionColumns}) SELECT ${positionColumns} FROM position ORDER BY rowid;
+DROP TABLE position;
+CREATE TABLE position (
+  position_id     TEXT PRIMARY KEY,
+  mint            TEXT NOT NULL,
+  venue           TEXT NOT NULL CHECK (venue IN (${list(V1_VENUES)})),
+  entry_intent_id TEXT NOT NULL REFERENCES intent (intent_id),
+  created_ts      INTEGER NOT NULL
+) STRICT;
+INSERT INTO position (${positionColumns}) SELECT ${positionColumns} FROM position_copy ORDER BY rowid;
+DROP TABLE position_copy;
+CREATE INDEX position_entry_intent ON position (entry_intent_id);
+${appendOnly('position')}
+`;
+
 export const LEDGER_MIGRATIONS: readonly Migration[] = [
   { version: 1, name: 'ledger tables', sql: init },
+  { version: 2, name: 'many positions per entry intent', sql: positionManyPerEntry, rebuildsTables: true },
 ];
