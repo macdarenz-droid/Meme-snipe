@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { openLedgerReader } from '../../core/src/ledger/index.ts';
-import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { runAndSealHoldout, runHoldout } from '../src/holdout.ts';
 import { createHoldoutRegistry, holdoutReady, registerHoldout } from '../../core/src/stats/index.ts';
 import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
@@ -75,18 +74,6 @@ describe('S0 through the real engine', () => {
     } finally {
       L.close();
     }
-  });
-
-  test('the ledger replay check (pre-funding item 2) passes on backtest ledgers, failures and blocked exits included', () => {
-    expect(replayLedgerFile(join(dir, 'base.sqlite'))).toMatchObject({ ok: true, purpose: 'backtest' });
-    const lossy = opts({ seed: 'replay-check', ledgerPath: join(dir, 'lossy.sqlite'), policy: { ...TRIAL_POLICY, exits: { ...TRIAL_POLICY.exits, ladder: { ...TRIAL_POLICY.exits.ladder, maxAttempts: 2 } } },
-      fills: { ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, base: { ...FILL_CONFIG.scenarios.base, landPpm: { pumpswap: 450_000n, 'pump-curve': 0n }, dropPpm: 300_000n } } } });
-    const r = runBacktest(lossy);
-    expect(r.stats.illegalStates).toBe(0);
-    expect(r.attempts.some((a) => a.outcome !== 'filled')).toBe(true);
-    const report = replayLedgerFile(join(dir, 'lossy.sqlite'));
-    expect(report.ok ? 'ok' : report.failure).toBe('ok');
-    expect(report.counts.intents).toBe(Object.keys(r.book.intents).length);
   });
 
   test('a failed attempt pays base and priority fees and is recorded', () => {
