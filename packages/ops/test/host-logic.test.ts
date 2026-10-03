@@ -381,34 +381,65 @@ describe('install.sh --update', () => {
   });
 
   describe('roll-back, run in bash', () => {
-    const fns = main.slice(main.indexOf('JOURNAL=/var/lib/zeroed-host/update-journal'), main.indexOf('if [ "$UPDATE" = 1 ]; then\n  # An update killed'));
-    const start = main.slice(main.indexOf('if [ "$UPDATE" = 1 ]; then\n  # An update killed'), main.indexOf('say "Packages"'));
+    const fns = main.slice(main.indexOf('JOURNAL=/var/lib/zeroed-host/update-journal'), main.indexOf('if [ "$UPDATE" = 0 ] && [ -e "$JOURNAL" ]; then'));
+    const start = main.slice(main.indexOf('if [ "$UPDATE" = 0 ] && [ -e "$JOURNAL" ]; then'), main.indexOf('say "Packages"'));
     const run = (dir: string, body: string) => {
       const r = spawnSync('bash', ['-c', `set -euo pipefail; UPDATE=1; say() { echo "$*"; }
         systemctl() { echo "systemctl $*" >> "${dir}/calls"; case "\${1:-} \${2:-}" in "is-enabled --quiet") [ -e "${dir}/enabled-\${3:-}" ];; "is-active --quiet") [ -e "${dir}/active-\${3:-}" ];; *) true;; esac; }
         nft() { echo "nft $*" >> "${dir}/calls"; }
+        sync() { echo "sync $*" >> "${dir}/calls"; }
         ${fns}
         JOURNAL="${dir}/journal"
+        MANAGED_ROOT="${dir}"
         ${body}`], { encoding: 'utf8' });
       return { ...r, calls: (() => { try { return readFileSync(join(dir, 'calls'), 'utf8'); } catch { return ''; } })() };
     };
     const fresh = (name: string) => {
       const dir = join(tmp, name);
       rmSync(dir, { recursive: true, force: true });
-      mkdirSync(dir, { recursive: true });
+      for (const d of ['opt/zeroed', 'usr/local/bin', 'etc']) mkdirSync(join(dir, d), { recursive: true });
       return dir;
     };
 
     it('puts a changed file back, keeps the first copy only, and removes a new file', () => {
       const dir = fresh('tx1');
-      writeFileSync(join(dir, 'a'), 'old a\n');
-      const r = run(dir, `keep_old "${dir}/a"; echo new > "${dir}/a"; keep_old "${dir}/a"; echo newer > "${dir}/a"
-        keep_old "${dir}/b"; echo b > "${dir}/b"
-        roll_back 2>/dev/null; cat "${dir}/a"; [ -e "${dir}/b" ] && echo b-left || echo b-gone; [ -e "${dir}/journal" ] && echo journal-left || echo journal-gone; ls "${dir}" | grep -c zeroed-old || true`);
+      const a = join(dir, 'opt/zeroed/a');
+      const b = join(dir, 'opt/zeroed/b');
+      writeFileSync(a, 'old a\n');
+      const r = run(dir, `keep_old "${a}"; echo new > "${a}"; keep_old "${a}"; echo newer > "${a}"
+        keep_old "${b}"; echo b > "${b}"
+        roll_back 2>/dev/null; cat "${a}"; [ -e "${b}" ] && echo b-left || echo b-gone; [ -e "${dir}/journal" ] && echo journal-left || echo journal-gone; ls "${dir}/opt/zeroed" | grep -c zeroed-old || true`);
       expect(r.status, r.stderr).toBe(0);
       expect(r.stdout.trim().split('\n')).toEqual(['old a', 'b-gone', 'journal-gone', '0']);
       expect(r.calls).toContain('systemctl daemon-reload');
       expect(r.calls).toContain('nft -f /etc/nftables.conf');
+      // Every journal line is synced to disk as it is written.
+      expect(r.calls.split('\n').filter((c) => c === `sync ${dir}/journal`)).toHaveLength(2);
+    });
+
+    it('touches only the paths this installer manages, whatever the journal says', () => {
+      const dir = fresh('tx5');
+      const own = join(dir, 'etc/passwd');
+      writeFileSync(own, 'root\n');
+      writeFileSync(`${own}.zeroed-old`, 'attacker\n');
+      const kept = join(dir, 'opt/zeroed/kept');
+      writeFileSync(kept, 'new\n');
+      writeFileSync(`${kept}.zeroed-old`, 'old\n');
+      writeFileSync(join(dir, 'journal'), [`backed ${own}`, `created ${dir}/etc/shadow`, `backed ${dir}/opt/zeroed/../../etc/passwd`, `backed /opt/zeroed/outside-root`, `backed ${kept}`, 'unit ../../evil 1 1', 'nonsense line', ''].join('\n'));
+      writeFileSync(join(dir, 'etc/shadow'), 'keep me\n');
+      const r = run(dir, `roll_back; cat "${own}"; cat "${dir}/etc/shadow"; cat "${kept}"`);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout.trim().split('\n')).toEqual(['root', 'keep me', 'old']);
+      for (const p of [own, `${dir}/etc/shadow`, `${dir}/opt/zeroed/../../etc/passwd`, '/opt/zeroed/outside-root']) expect(r.stderr).toContain(`Roll-back: skipped ${p} (not a path this installer manages).`);
+      expect(r.stderr).toContain('Roll-back: skipped an unknown journal line.');
+      expect(r.calls).not.toContain('evil');
+      const ok = (p: string) => sh(`MANAGED_ROOT=""; ${fns.slice(fns.indexOf('managed() {'), fns.indexOf('journal() {'))} managed "${p}" && echo y || echo n`).out;
+      expect(['/usr/local/sbin/zeroed-update', '/usr/local/lib/zeroed/common.sh', '/usr/local/share/zeroed/eff_large_wordlist.txt', '/usr/local/bin/node', '/etc/systemd/system/zeroed-check.timer', '/etc/zeroed/host.env', '/etc/nftables.conf', '/etc/apt/apt.conf.d/52zeroed-unattended-upgrades', '/etc/ssh/sshd_config.d/10-zeroed.conf', '/var/lib/zeroed-host/release-units', '/opt/zeroed/stub/worker.mjs'].map(ok)).toEqual(Array(11).fill('y'));
+      expect(['/etc/passwd', '/usr/local/sbin/sshd', '/usr/local/bin/nodejs', '/etc/systemd/system/ssh.service', '/etc/zeroed/../shadow', '/opt/zeroed/./x', '/root/.ssh/authorized_keys', '/etc/nftables.conf.d/x'].map(ok)).toEqual(Array(8).fill('n'));
+      // Every path the installer writes is one it manages.
+      const targets = [...read('ops/install.sh').matchAll(/^install_file (\S+) /gm)].map((m) => m[1]!);
+      expect(targets.length).toBeGreaterThan(30);
+      expect(targets.filter((t) => ok(t) !== 'y')).toEqual([]);
     });
 
     it('puts a repointed symlink back (the Node link), not the file it points to', () => {
@@ -417,9 +448,9 @@ describe('install.sh --update', () => {
       mkdirSync(join(dir, 'node-new'));
       writeFileSync(join(dir, 'node-old/node'), 'old');
       writeFileSync(join(dir, 'node-new/node'), 'new');
-      const r = run(dir, `ln -sfn "${dir}/node-old/node" "${dir}/node"
-        keep_old "${dir}/node"; ln -sfn "${dir}/node-new/node" "${dir}/node"
-        roll_back 2>/dev/null; readlink "${dir}/node"; cat "${dir}/node-new/node"`);
+      const r = run(dir, `ln -sfn "${dir}/node-old/node" "${dir}/usr/local/bin/node"
+        keep_old "${dir}/usr/local/bin/node"; ln -sfn "${dir}/node-new/node" "${dir}/usr/local/bin/node"
+        roll_back 2>/dev/null; readlink "${dir}/usr/local/bin/node"; cat "${dir}/node-new/node"`);
       expect(r.status, r.stderr).toBe(0);
       expect(r.stdout.trim().split('\n')).toEqual([join(dir, 'node-old/node'), 'new']);
     });
@@ -439,16 +470,31 @@ describe('install.sh --update', () => {
 
     it('an update killed half-way is rolled back by the next one before it starts', () => {
       const dir = fresh('tx4');
-      writeFileSync(join(dir, 'a'), 'new a\n');
-      writeFileSync(join(dir, 'a.zeroed-old'), 'old a\n');
-      writeFileSync(join(dir, 'b'), 'half-written\n');
-      writeFileSync(join(dir, 'journal'), `backed ${dir}/a\ncreated ${dir}/b\n`);
+      const a = join(dir, 'opt/zeroed/a');
+      const b = join(dir, 'opt/zeroed/b');
+      writeFileSync(a, 'new a\n');
+      writeFileSync(`${a}.zeroed-old`, 'old a\n');
+      writeFileSync(b, 'half-written\n');
+      writeFileSync(join(dir, 'journal'), `backed ${a}\ncreated ${b}\n`);
       const r = run(dir, `${start.replace('trap on_exit EXIT', ': no trap in the test')}
-        cat "${dir}/a"; [ -e "${dir}/b" ] && echo b-left || echo b-gone; [ -e "${dir}/a.zeroed-old" ] && echo old-left || echo old-gone; [ -e "$JOURNAL" ] && echo journal-left || echo journal-gone`);
+        cat "${a}"; [ -e "${b}" ] && echo b-left || echo b-gone; [ -e "${a}.zeroed-old" ] && echo old-left || echo old-gone; [ -e "$JOURNAL" ] && echo journal-left || echo journal-gone`);
       expect(r.status, r.stderr).toBe(0);
       expect(r.stdout).toContain('A previous update did not finish; putting its host files back first');
       expect(r.stdout).toContain('Previous update: every host file is back as it was (1 restored, 1 removed).');
       expect(r.stdout.trim().split('\n').slice(-4)).toEqual(['old a', 'b-gone', 'old-gone', 'journal-gone']);
+    });
+
+    it('a full install drops a journal left by an interrupted update, so no later update rolls back over it', () => {
+      const dir = fresh('tx6');
+      const a = join(dir, 'opt/zeroed/a');
+      writeFileSync(a, 'freshly installed\n');
+      writeFileSync(`${a}.zeroed-old`, 'from before\n');
+      writeFileSync(join(dir, 'journal'), `backed ${a}\ncreated ${dir}/opt/zeroed/b\n`);
+      const r = run(dir, `UPDATE=0; ${start.replace('trap on_exit EXIT', ': no trap in the test')}
+        cat "${a}"; [ -e "${a}.zeroed-old" ] && echo old-left || echo old-gone; [ -e "$JOURNAL" ] && echo journal-left || echo journal-gone`);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout.trim().split('\n')).toEqual(['freshly installed', 'old-gone', 'journal-gone']);
+      expect(r.calls).not.toContain('nft');
     });
   });
 

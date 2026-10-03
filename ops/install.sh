@@ -57,39 +57,57 @@ fi
 # killed half-way leaves the journal behind, and the next update rolls it back first. On success the old
 # copies and the journal are deleted. Known limit: packages apt added for a missing package stay.
 JOURNAL=/var/lib/zeroed-host/update-journal
+MANAGED_ROOT="" # only the tests point this elsewhere
+# managed PATH: true for the paths this installer manages. Roll-back touches nothing else, whatever the
+# journal says.
+managed() {
+  local p="${1#"$MANAGED_ROOT"}"
+  [ "$p" != "$1" ] || [ -z "$MANAGED_ROOT" ] || return 1
+  case "$p" in */../* | */./* | *//* | */.. | */.) return 1 ;; esac
+  case "$p" in
+    /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
+    /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
+    /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
+  esac
+  return 1
+}
+journal() { printf '%s\n' "$*" >> "$JOURNAL"; sync "$JOURNAL" 2>/dev/null || sync; }
 keep_old() { # path
   [ "$UPDATE" = 1 ] || return 0
   if grep -qxF -e "backed $1" -e "created $1" "$JOURNAL" 2>/dev/null; then return 0; fi
   if [ -e "$1" ] || [ -L "$1" ]; then
     cp -a "$1" "$1.zeroed-old"
-    printf 'backed %s\n' "$1" >> "$JOURNAL"
+    journal "backed $1"
   else
-    printf 'created %s\n' "$1" >> "$JOURNAL"
+    journal "created $1"
   fi
 }
 keep_unit() { # unit: its enabled and running state, before it is stopped
   [ "$UPDATE" = 1 ] || return 0
-  printf 'unit %s %s %s\n' "$1" "$(systemctl is-enabled --quiet "$1" 2>/dev/null && echo 1 || echo 0)" \
-    "$(systemctl is-active --quiet "$1" 2>/dev/null && echo 1 || echo 0)" >> "$JOURNAL"
+  journal "unit $1 $(systemctl is-enabled --quiet "$1" 2>/dev/null && echo 1 || echo 0) $(systemctl is-active --quiet "$1" 2>/dev/null && echo 1 || echo 0)"
 }
 roll_back() {
   local kind p en act b=0 c=0
   set +e
   [ -s "$JOURNAL" ] || return 0
   while read -r kind p _; do
-    [ "$kind" = created ] || continue
+    [ "$kind" = created ] || [ "$kind" = backed ] || [ "$kind" = unit ] || { printf 'Roll-back: skipped an unknown journal line.\n' >&2; continue; }
+    [ "$kind" = unit ] || managed "$p" || printf 'Roll-back: skipped %s (not a path this installer manages).\n' "$p" >&2
+  done < "$JOURNAL"
+  while read -r kind p _; do
+    [ "$kind" = created ] && managed "$p" || continue
     case "$p" in /etc/systemd/system/*) systemctl disable --now "$(basename "$p")" >/dev/null 2>&1 ;; esac
     rm -f "$p"
     c=$((c + 1))
   done < "$JOURNAL"
   while read -r kind p _; do
-    [ "$kind" = backed ] || continue
+    [ "$kind" = backed ] && managed "$p" || continue
     [ ! -e "$p.zeroed-old" ] && [ ! -L "$p.zeroed-old" ] || mv -f "$p.zeroed-old" "$p"
     b=$((b + 1))
   done < "$JOURNAL"
   systemctl daemon-reload
   while read -r kind p en act; do
-    [ "$kind" = unit ] || continue
+    [ "$kind" = unit ] && [[ "$p" =~ ^zeroed-[A-Za-z0-9@._-]+$ ]] || continue
     [ "$en" != 1 ] || systemctl enable "$p" >/dev/null 2>&1
     [ "$act" != 1 ] || systemctl start "$p" >/dev/null 2>&1
   done < "$JOURNAL"
@@ -107,6 +125,12 @@ on_exit() {
     rm -f "$JOURNAL"
   fi
 }
+if [ "$UPDATE" = 0 ] && [ -e "$JOURNAL" ]; then
+  # A full install replaces everything anyway: a journal left by an interrupted update must never roll a
+  # later update back over this install. Drop it and the old copies it lists.
+  while read -r kind p _; do [ "$kind" = backed ] && managed "$p" && rm -f "$p.zeroed-old"; done < "$JOURNAL" || true
+  rm -f "$JOURNAL"
+fi
 if [ "$UPDATE" = 1 ]; then
   # An update killed half-way (power loss, OOM) left its journal: put that one back before starting.
   if [ -s "$JOURNAL" ]; then
