@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, 7:25 AM Melbourne (AEDT).
+**Last updated:** Sun 4 Oct 2026, 8:05 AM Melbourne (AEDT).
 
 ## 1. Read first, in this order
 
@@ -52,7 +52,7 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
   - One concurrency group; it stops on HTTP 429 and resumes with back-off.
   - Each finished UTC day is published as a release tagged `data-day-YYYY-MM-DD`.
 
-## 4. Current state (4 Oct, 7:25 AM)
+## 4. Current state (4 Oct, 8:05 AM)
 
 **Merged since 3:50 AM:**
 - RES-3 #47 (signal research plan and code)
@@ -71,6 +71,9 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 - SIM-1 #59 (H15 round-trip simulation)
 - DATA-1 #46 (retention, schema 3 swap-leg owners, unattended run chaining)
 - SEED-1 #45 (deployer index seed at start-up)
+- APP-2b #67 (server card state per endpoint)
+- FACTS-1c #68 (mint-only Token-2022 holder scan, one indexed retry on -32600)
+- WORKER-1 #48 (always-on paper worker, recorder, API; exits never wait on the seed; rent as a cost)
 
 Earlier merges are listed in `PROJECT_STATE.md`.
 
@@ -78,23 +81,21 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 
 | Card | PR / branch | State | Next |
 |---|---|---|---|
-| DATA-1b delegations | new PR from `claude/data-historical` | Approve/ApproveChecked/Revoke/SetAuthority rows; chain gaps (QA-phase budget, chain only after a saved progress) | review; merge; 10-01 unit counts after the archive back-off (08:15); then dispatch scan run 1 (order in §6) |
+| DATA-1b delegations | #69 | code PASS at bc829fa; da3d7c2 adds the QA-phase 429 resume and phase timings | delta review with the 10-01 counts (after 08:16); merge; dispatch scan run 1 |
 | DATA-1b part 2 | after run 1 starts | pool and curve account at creation (data length, cashback flag, coin creator), back-filled from retained raw | review |
-| WORKER-1 worker | #48 | reviewer PASS except: exits must not wait on the seed (blocking), restart test for the 90 s cap, AbortSignal on a lost seed race, rent → `AccountHistory.costs` | delta review (WORKER-1 reviewer; risk reviewer for rent); merge; then FACTS-1b |
-| WORKER-1b | `claude/worker-1b` | RUN-1d fields, sell-only flatten for a missing universe, a one-off `--reconcile` test failure under investigation | PR after #48 |
-| FACTS-1c holder filter | #68 | two missing mutant tests; retry only on -32600 | delta review; merge |
-| FILL-2 trade-stream fills | PR opening | carries the as-of close rule | review (SEED-1 reviewer) |
-| PERSIST-1 | `claude/persist-1` | save and restore index, labeller and coverage, so the RPC fill runs once per host | build |
-| APP-2b server card | #67 | PASS plus an invariant test (checked) | CI on latest base; merge |
-| OPS-1e server extras | #66 | in review (OPS-1a reviewer) | merge; then the owner's install line and Tailscale steps, with the APK link |
-| BT-1c fills and holdout lock | #53 | A1, A2, B, C, D1–D3 in at ac8a1fa | delta review (also: why blocked exits fell while congestion rose) |
-| BT-1d | `claude/backtest-1d` | one holdout registry with typed sections; schema-3 loader | build; agree the holder-rebuild owner with BT-2 |
+| WORKER-1b | PR opening from `claude/worker-1b` | RUN-1d fields, sell-only flatten, PERSIST-1 wiring, NAV marks; a one-off `--reconcile` failure being root-caused | review (WORKER-1 reviewer) |
+| FACTS-1b live facts | `claude/facts-1b` | FACTS-1 readers into main.ts's FactSource hook | PR; review (FACTS-1 reviewer) |
+| FILL-2 trade-stream fills | #70 | PASS at 77fa5f9; conflicts with the base after #48 | builder merges base; CI; merge |
+| PERSIST-1 | #71 | FAIL: restart gap must cover every started watch; three more tests | fixes; delta review |
+| OPS-1e server extras | #66 | PASS at 4ad6103; e2e secret scan failed on the merged head (a test value found in a miniflare asset) | root cause; delta; merge; then the owner's install, Tailscale and branch-protection steps with the APK link |
+| BT-1c fills and holdout lock | #53 | PASS at ac8a1fa; conflicts with the base | builder merges base; CI; merge |
+| BT-1d | #73 (stacked on #53) | one holdout registry; next: attempt-2 window, schema-3 loader, congestion test, remote pin | review after #53 |
 | RUN-1d drills by cause | #64 | review FAIL items 1–7 plus qualifying guard | fixes; re-review |
-| STATS-1b G3 | #52 | blocking fixes | re-review |
+| STATS-1b G3 | #52 | FAIL at 7998c2c: B5 inside the holdout must not fail revalidation; R2 and U2 tests; keep creator ids across days | fixes; re-review |
 | STATS-1c SPA etc. | #62 | rework to the consensus spec | review; then owner sign-off on SPA |
 | BT-2 study | #41 (draft) | delegations marked partial; H17 fails without the creation record; next: schema 3, FACTS-1 parity, deployment replay, RES-3 rule kind | runs when practice days land |
 | RES-3b | #56 | wall at 2026-09-21T14:00Z (ruling); purge test fast | waits for STATS-1c |
-| RUG-1c / RUG-1b | `claude/rug-1c` (no PR yet) | validation run on 2 Oct launches (RPC-limited) | PR; review (RUG-1 reviewer) |
+| RUG-1c | #74 | on-demand deployer check (the rug restart-gap closer), label kinds, materiality | in review (RUG-1 reviewer); RUG-1b at about 9:20 AM |
 
 **Blocked or parked:**
 - The OPS-1d session was stopped by the auto-mode safety check while writing a server → GitHub evidence uploader. Its work was never pushed.
@@ -115,7 +116,6 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 | Builder | BT-2 | session_01VBTfAwrhgoCssEzST2J2q5 |
 | Builder | STATS-1b/1c | session_01J9yEWHRunNxvo5CaTbuYSe |
 | Builder | RUN-1d | session_01VgCLpHWaM7FjpwofRcgrwM |
-| Builder | APP-2b | session_01HxjfFhpHEFghtBnZkTjnFB |
 | Builder | OPS-1e | session_01VM97q6A98GgtoPKCamoiT6 |
 | Builder | RES-3b | session_018esLCVLp9yCExK5cdnzCz8 |
 | Builder (blocked) | OPS-1d | session_01Euok5FXtBGZBrweohP3K93 |
@@ -128,8 +128,7 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 | Reviewer | BT-1c | session_012efQfLAwWStK3PT6ZW2PHz |
 | Reviewer | STATS-1b/1c | session_01FHfbJwz7sbf2eVDNRxMigZ |
 | Reviewer | RUN-1d | session_01DdN4xy9WX2t7nLUq7ww4E5 |
-| Reviewer | APP-2 | session_01PJ6UTbVhQrbEyFzW9mA3N2 |
-| Reviewer | RUG-1 (needed for RUG-1c) | session_01Kr3kePFCkJYuctQVaMuALW |
+| Reviewer | RUG-1c | session_01Kr3kePFCkJYuctQVaMuALW |
 
 Sessions belong to the current supervisor's account. A supervisor on another account cannot message them; it would start its own sessions from this file.
 
@@ -158,7 +157,8 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 
 - **Soon:**
   - one re-paste of the server install line (from OPS-1e) — exact steps will be sent;
-  - Tailscale setup for the phone view — steps will be sent.
+  - Tailscale setup for the phone view — steps will be sent;
+  - a GitHub ruleset protecting the `holdout-registry` branch from deletion and force-push (Settings → Rules → Rulesets).
 - **About Mon 5 Oct:** yes or no on replacing the DSR gate with the SPA test, with STATS-1c's simulation evidence.
 - **Before live:**
   - R8 "5 losses in 20" rule;

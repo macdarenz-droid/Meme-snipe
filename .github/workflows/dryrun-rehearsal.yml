@@ -106,6 +106,10 @@ jobs:
           SHA: ${{ inputs.sha || github.sha }}
           HOURS: ${{ inputs.hours }}
           ENTRY: ${{ inputs.entry }}
+          # The rehearsal runs S0, the random-entry control, with a paper-only edge so trades open and the drills run
+          # mid-trade (supervisor ruling 2026-10-04). Non-qualifying: the worker journals entry_rule S0, qualifying false.
+          ZEROED_STRATEGY: S0
+          ZEROED_PAPER_EDGE_PPM: '400000'
         run: |
           set -o pipefail
           work="$RUNNER_TEMP/zeroed"
