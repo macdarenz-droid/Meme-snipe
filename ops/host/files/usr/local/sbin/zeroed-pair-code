@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Console only: makes a new Telegram pairing code (the old one stops working) and shows it.
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+lock
+[ -s "$CRED_DIR/telegram_bot_token" ] || { log "Keys not received yet: run Deploy first."; exit 1; }
+new_pair_code
+log "Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
+log "One try only; a wrong code needs a new one from here."

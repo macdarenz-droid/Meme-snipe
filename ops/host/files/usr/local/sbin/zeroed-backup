@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Hourly encrypted backup of every SQLite file under /var/lib/zeroed. Each file is copied with SQLite's
+# online backup (consistent under WAL), checked, listed in a manifest with its SHA-256, packed and
+# encrypted with age to /etc/zeroed/backup-recipients (the host key, plus the owner's key once the
+# Deploy workflow delivered one). Keeps the newest 72 locally.
+set -euo pipefail
+umask 077
+
+SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
+OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
+RECIPIENTS="${ZEROED_BACKUP_RECIPIENTS:-/etc/zeroed/backup-recipients}"
+KEEP="${ZEROED_BACKUP_KEEP:-72}"
+
+[ -s "$RECIPIENTS" ] || { echo "No backup recipients yet (keys not delivered); nothing backed up."; exit 0; }
+mapfile -t dbs < <(cd "$SRC" && find . -type f \( -name '*.sqlite' -o -name '*.db' \) | sed 's#^\./##' | LC_ALL=C sort)
+[ "${#dbs[@]}" -gt 0 ] || { echo "No SQLite files yet; nothing backed up."; exit 0; }
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/snap"
+for rel in "${dbs[@]}"; do
+  mkdir -p "$work/snap/$(dirname "$rel")"
+  sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'"
+  check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
+  [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
+done
+(cd "$work/snap" && sha256sum -- "${dbs[@]}") > "$work/snap/MANIFEST.sha256"
+
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$OUT"
+tar -C "$work/snap" -c . | age -R "$RECIPIENTS" -o "$OUT/zeroed-$ts.tar.age.new"
+mv -f "$OUT/zeroed-$ts.tar.age.new" "$OUT/zeroed-$ts.tar.age"
+ls -1 "$OUT"/zeroed-*.tar.age | LC_ALL=C sort -r | tail -n +"$((KEEP + 1))" | xargs -r rm -f
+echo "Backup zeroed-$ts.tar.age: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
