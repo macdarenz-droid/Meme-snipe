@@ -562,7 +562,7 @@ in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailsc
 # Funnel switched on by someone: alert, turned off, then cleared; installs run the same check.
 in_c "jq '.AllowFunnel = {\"zeroed.tail-e2e.ts.net:443\": true}' /var/lib/tailscale-stub/serve.json > /tmp/s && mv /tmp/s /var/lib/tailscale-stub/serve.json"
 chk
-tail -1 "$STATE/telegram.jsonl" | has "\"chat_id\":\"$T_CHAT2\",\"text\":\"ALERT Zeroed host: Tailscale Funnel was on (zeroed.tail-e2e.ts.net:443 )" || fail "no alert for Funnel on"
+tail -1 "$STATE/telegram.jsonl" | has "\"chat_id\":\"$T_CHAT2\",\"text\":\"ALERT Zeroed host: Tailscale Funnel was on (zeroed.tail-e2e.ts.net:443)" || fail "no alert for Funnel on"
 in_c "jq -e '(.AllowFunnel // {}) | length == 0' /var/lib/tailscale-stub/serve.json" >/dev/null || fail "Funnel not turned off"
 chk
 tail -1 "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: Tailscale Funnel is off.' || fail "Funnel alert not cleared"
