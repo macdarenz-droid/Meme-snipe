@@ -376,24 +376,30 @@ describe('off-chain moments', () => {
 // ---------- Review fixes (PR #10) ----------
 
 describe('reconcile guard is fair under the cap', () => {
-  it('serves every key when more keys are re-asked each tick than the cap allows', () => {
+  it('serves every key when more keys are re-asked each tick than the cap allows, within the stated bound', () => {
     const g = new ReconcileGuard();
     const keys: Effect[] = [
       ...Array.from({ length: 25 }, (_, n): Effect => ({ type: 'reconcile_balances', intentId: `i${String(n).padStart(2, '0')}` as never })),
       // Orphans come last in tick order, so they starve first under first come, first served.
       ...Array.from({ length: 5 }, (_, n): Effect => ({ type: 'reconcile_orphan', intentId: `o${n}` as never, signature: `s${n}` as never })),
     ];
-    const sent = new Map<number, number>();
+    const last = new Map<number, number>();
+    const worst = new Map<number, number>();
+    let total = 0;
     trapped(() => { for (let slot = 1; slot <= 3000; slot++) {
-      keys.forEach((fx, k) => { if (g.admit(fx, at(slot)) === 'sent') sent.set(k, (sent.get(k) ?? 0) + 1); });
+      keys.forEach((fx, k) => {
+        if (g.admit(fx, at(slot)) !== 'sent') return;
+        total++;
+        worst.set(k, Math.max(worst.get(k) ?? 0, slot - (last.get(k) ?? 1)));
+        last.set(k, slot);
+      });
     } });
-    expect(sent.size).toBe(30);
-    const counts = [...sent.values()];
-    // Within a kind, rounds keep every key level (orphans go first, so they are sent more often).
-    const balances = keys.flatMap((fx, k) => (fx.type === 'reconcile_balances' ? [sent.get(k)!] : []));
-    expect(Math.max(...balances) - Math.min(...balances)).toBeLessThanOrEqual(2);
+    expect(last.size).toBe(30);
+    keys.forEach((_fx, k) => worst.set(k, Math.max(worst.get(k) ?? 0, 3000 - (last.get(k) ?? 1))));
+    // Balance reads: 25 keys sharing at least the 5 reserved places a window wait at most ⌈25/5⌉ + 1 windows.
+    for (let k = 0; k < 25; k++) expect(worst.get(k)!, `balance ${k}`).toBeLessThanOrEqual((Math.ceil(25 / 5) + 1) * 150);
     // The cap still holds: 20 per 150 slots over 3000 slots.
-    expect(counts.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(20 * (3000 / 150) + 20);
+    expect(total).toBeLessThanOrEqual(20 * (3000 / 150) + 20);
   });
 
   it('unbooked-landing reconciles go first: each is served within one window and at its repeat interval after', () => {
@@ -412,6 +418,7 @@ describe('reconcile guard is fair under the cap', () => {
       });
     } });
     expect(lastOrphanSend.size).toBe(5);
+    for (const sent of lastOrphanSend.values()) worstGap = Math.max(worstGap, 3000 - sent);
     // Asked last in tick order, an orphan still waits at most one window, then repeats every minSlotsBetween.
     expect(worstGap).toBeLessThanOrEqual(150);
     expect(balanceSent.size).toBe(30);
@@ -442,6 +449,78 @@ describe('reconcile guard is fair under the cap', () => {
       expect(lastOrphan.size).toBe(orphanCount);
       expect(worstOrphanGap, `${orphanCount} orphans`).toBeLessThanOrEqual((Math.ceil(orphanCount / 15) + 1) * windowSlots);
     }
+  });
+
+  it('every cap from 1 to 8: neither kind waits more than 2 windows while it has demand', () => {
+    const windowSlots = 60;
+    trapped(() => {
+      for (let cap = 1; cap <= 8; cap++) {
+        const g = new ReconcileGuard({ minSlotsBetween: 5n, windowSlots: BigInt(windowSlots), maxPerWindow: cap });
+        const keys: Effect[] = [
+          ...Array.from({ length: 6 }, (_, n): Effect => ({ type: 'reconcile_balances', intentId: `b${n}` as never })),
+          ...Array.from({ length: 6 }, (_, n): Effect => ({ type: 'reconcile_orphan', intentId: `o${n}` as never, signature: `s${n}` as never })),
+        ];
+        const lastByKind = { reconcile_balances: 1, reconcile_orphan: 1 };
+        const worst = { reconcile_balances: 0, reconcile_orphan: 0 };
+        for (let slot = 1; slot <= 3000; slot++) {
+          for (const fx of keys) {
+            if (g.admit(fx, at(slot)) !== 'sent') continue;
+            const kind = fx.type as keyof typeof worst;
+            worst[kind] = Math.max(worst[kind], slot - lastByKind[kind]);
+            lastByKind[kind] = slot;
+          }
+        }
+        // The stretch after the last send counts too, so a kind never sent fails.
+        for (const kind of ['reconcile_balances', 'reconcile_orphan'] as const) worst[kind] = Math.max(worst[kind], 3000 - lastByKind[kind]);
+        expect(worst.reconcile_balances, `cap ${cap} balances`).toBeLessThanOrEqual(2 * windowSlots);
+        expect(worst.reconcile_orphan, `cap ${cap} orphans`).toBeLessThanOrEqual(2 * windowSlots);
+      }
+    });
+  });
+
+  it('churn: every key asked continuously is served within ⌈K / share⌉ + 1 windows, for random limits and arrivals', () => {
+    trapped(() => {
+      for (const seed of Array.from({ length: 12 }, (_, i) => `churn-${i + 1}`)) {
+        const rng = createRng(seed);
+        const cap = 1 + rng.int(8);
+        const windowSlots = 20 + rng.int(180);
+        const minSlotsBetween = 1 + rng.int(30);
+        const g = new ReconcileGuard({ minSlotsBetween: BigInt(minSlotsBetween), windowSlots: BigInt(windowSlots), maxPerWindow: cap });
+        const fx = (kind: 'balance' | 'orphan', id: string): Effect => (kind === 'balance'
+          ? { type: 'reconcile_balances', intentId: id as never }
+          : { type: 'reconcile_orphan', intentId: id as never, signature: `sig-${id}` as never });
+        // Persistent keys, asked every slot; a churning pool where keys come and go at random.
+        const persistent = [fx('balance', 'p0'), fx('orphan', 'p1'), fx('orphan', 'p2')];
+        const pool = Array.from({ length: 40 }, (_, n) => fx(n % 3 === 0 ? 'orphan' : 'balance', `c${n}`));
+        const present = new Set<number>();
+        const last = persistent.map(() => 1);
+        const worst = persistent.map(() => 0);
+        for (let slot = 1; slot <= 4000; slot++) {
+          for (let k = 0; k < 6; k++) {
+            const n = rng.int(pool.length);
+            if (present.has(n)) present.delete(n);
+            else present.add(n);
+          }
+          const asked = [...persistent.map((e, k) => ({ e, k })), ...[...present].map((n) => ({ e: pool[n]!, k: -1 }))];
+          for (let i = asked.length - 1; i > 0; i--) { const j = rng.int(i + 1); [asked[i], asked[j]] = [asked[j]!, asked[i]!]; }
+          for (const { e, k } of asked) {
+            if (g.admit(e, at(slot)) !== 'sent' || k < 0) continue;
+            worst[k] = Math.max(worst[k]!, slot - last[k]!);
+            last[k] = slot;
+          }
+        }
+        persistent.forEach((_e, k) => { worst[k] = Math.max(worst[k]!, 4000 - last[k]!); });
+        // K: keys of a kind that can be ahead (all of its persistent and pool keys). Share per window: the
+        // reserve for balance reads, the rest for orphans; with a cap of 1, one place every two windows.
+        const reserve = cap === 1 ? 0 : Math.min(cap - 1, Math.max(1, Math.floor(cap / 4)));
+        const kinds = { balance: 1 + pool.filter((e) => e.type === 'reconcile_balances').length, orphan: 2 + pool.filter((e) => e.type === 'reconcile_orphan').length };
+        persistent.forEach((e, k) => {
+          const kind = e.type === 'reconcile_balances' ? 'balance' : 'orphan';
+          const windows = cap === 1 ? 2 * kinds[kind] + 2 : Math.ceil(kinds[kind] / (kind === 'balance' ? reserve : cap - reserve)) + 1;
+          expect(worst[k]!, `${seed} cap ${cap} window ${windowSlots} min ${minSlotsBetween} key p${k}`).toBeLessThanOrEqual(windows * windowSlots + minSlotsBetween);
+        });
+      }
+    });
   });
 
   it('a waiter that is no longer asked for gives up its place', () => {

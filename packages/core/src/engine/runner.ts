@@ -34,22 +34,24 @@ const reconcileKey = (fx: Effect): string | null => {
 /**
  * The runner rule from the CORE-1 review: every tick re-emits `reconcile_balances` for each intent with a
  * known outcome and `reconcile_orphan` for each unbooked landing, so repeats are de-duplicated and the
- * total is rate-limited. Under the cap, an unbooked landing (`reconcile_orphan`, which blocks every entry)
- * goes before a balance read, except that each window reserves max(1, cap / 4) places for waiting balance reads;
- * within a kind, keys are served in rounds: a free place goes to the waiting key
- * sent the fewest times, then the one waiting longest. A new key joins the current round (it neither jumps ahead
- * of keys still owed a send nor falls behind), so no key is starved however many keys there are.
- * Dropping a repeat is safe because the lifecycle asks again on a later tick and the queue keeps its place.
- * Every other effect passes straight through.
+ * total is rate-limited. Dropping a repeat is safe: the lifecycle asks again on a later tick and the key keeps
+ * its place in line. Every other effect passes straight through.
+ *
+ * Under the cap:
+ * - Between kinds, an unbooked landing (`reconcile_orphan`, which blocks every entry) goes before a balance
+ *   read, but each window reserves max(1, ⌊cap/4⌋) places for waiting balance reads, never more than cap − 1,
+ *   so orphans always keep a place too. With a cap of 1 the two kinds alternate window by window while both wait.
+ * - Within a kind, the key served least recently goes first; a key never served counts as served when it was
+ *   first asked for (ties by key). A key asked continuously therefore waits behind at most the K keys of its
+ *   kind served before it: ⌈K / its share⌉ windows.
  */
 interface Turn {
-  /** Sends so far: the key's round. */
-  sends: number;
-  /** Place in line within a round; a sequence number, never tied. */
-  seq: number;
+  /** Slot of the last send, or of the first ask for a key never sent. */
+  served: bigint;
+  readonly key: string;
 }
 
-const beforeTurn = (a: Turn, b: Turn): boolean => a.sends < b.sends || (a.sends === b.sends && a.seq < b.seq);
+const beforeTurn = (a: Turn, b: Turn): boolean => a.served < b.served || (a.served === b.served && a.key < b.key);
 
 /** Keys of one kind waiting for a place, kept sorted by turn so a key's rank is a binary search. */
 class Line {
@@ -85,26 +87,29 @@ class Line {
     const at = this.rank(this.#turn(key));
     if (this.#keys[at] === key) this.#keys.splice(at, 1);
   }
-
-  first(): string | undefined {
-    return this.#keys[0];
-  }
 }
+
+type Kind = 'orphan' | 'balance';
 
 export class ReconcileGuard {
   readonly #limits: ReconcileLimits;
   readonly #reserve: number;
   readonly #lastSent = new Map<string, bigint>();
   readonly #turns = new Map<string, Turn>();
-  #seq = 0;
+  /** Slot each key was last asked for (sent, refused or duplicate). */
+  readonly #asked = new Map<string, bigint>();
   /** Keys refused for the cap, with the slot they were last asked for. */
   readonly #waiting = new Map<string, bigint>();
-  readonly #orphans = new Line((k) => this.#turns.get(k)!);
-  readonly #balances = new Line((k) => this.#turns.get(k)!);
+  readonly #lines: Record<Kind, Line> = {
+    orphan: new Line((k) => this.#turns.get(k)!),
+    balance: new Line((k) => this.#turns.get(k)!),
+  };
   /** Sends in the current window, oldest first, consumed from `#head`; counts kept incrementally. */
-  readonly #recent: { readonly slot: bigint; readonly orphan: boolean }[] = [];
+  readonly #recent: { readonly slot: bigint; readonly kind: Kind }[] = [];
   #head = 0;
   #balancesInWindow = 0;
+  /** With a cap of 1: the kind sent last, so the other goes next while both wait. */
+  #lastKind: Kind | null = null;
   #slot: bigint | null = null;
 
   constructor(limits: ReconcileLimits = DEFAULT_RECONCILE_LIMITS) {
@@ -112,37 +117,39 @@ export class ReconcileGuard {
       throw new RangeError('reconcile limits must be positive');
     }
     this.#limits = limits;
-    // Balance reads keep the larger of one place and a quarter of the cap in every window.
-    this.#reserve = Math.min(limits.maxPerWindow, Math.max(1, Math.floor(limits.maxPerWindow / 4)));
+    const cap = limits.maxPerWindow;
+    this.#reserve = cap === 1 ? 0 : Math.min(cap - 1, Math.max(1, Math.floor(cap / 4)));
   }
 
   /** Decides whether `effect` goes to the runner now. Records it as sent when it does. */
   admit(effect: Effect, now: Moment): Dispatch {
     const key = reconcileKey(effect);
     if (key === null) return 'sent';
+    this.#asked.set(key, now.slot);
     const last = this.#lastSent.get(key);
     if (last !== undefined && now.slot - last < this.#limits.minSlotsBetween) return 'duplicate';
     if (this.#slot !== now.slot) this.#newSlot(now.slot);
 
-    const orphan = key.startsWith('reconcile_orphan|');
-    const mine = this.#turnOf(key);
+    const kind: Kind = key.startsWith('reconcile_orphan|') ? 'orphan' : 'balance';
+    const other: Kind = kind === 'orphan' ? 'balance' : 'orphan';
+    const mine = this.#turnOf(key, now.slot);
     const waiting = this.#waiting.has(key);
-    const own = orphan ? this.#orphans : this.#balances;
+    const own = this.#lines[kind];
     const free = this.#limits.maxPerWindow - (this.#recent.length - this.#head);
-    const owed = Math.max(0, this.#reserve - this.#balancesInWindow);
-    const othersOf = (line: Line, mineInIt: boolean) => line.size - (mineInIt ? 1 : 0);
-    let ahead: number;
+    let ahead = own.rank(mine);
     let places = free;
-    if (orphan) {
-      // Orphans (unbooked landings block every entry) go first, minus the places owed to waiting balance reads.
-      ahead = own.rank(mine);
-      places -= Math.min(owed, othersOf(this.#balances, false));
-    } else if (owed > 0) {
-      // A reserved place: balance reads in rounds order take them ahead of any orphan.
-      ahead = own.rank(mine);
-      places = Math.min(free, owed);
+    if (this.#limits.maxPerWindow === 1) {
+      // One place per window: alternate kinds while both wait.
+      if (this.#lines[other].size > 0 && this.#lastKind === kind) places = 0;
     } else {
-      ahead = this.#orphans.size + own.rank(mine);
+      const owed = Math.max(0, this.#reserve - this.#balancesInWindow);
+      if (kind === 'orphan') {
+        places -= Math.min(owed, this.#lines.balance.size);
+      } else if (owed > 0) {
+        places = Math.min(free, owed);
+      } else {
+        ahead += this.#lines.orphan.size;
+      }
     }
     if (ahead >= places) {
       if (!waiting) own.add(key);
@@ -153,11 +160,11 @@ export class ReconcileGuard {
       own.remove(key);
       this.#waiting.delete(key);
     }
-    this.#recent.push({ slot: now.slot, orphan });
-    if (!orphan) this.#balancesInWindow++;
+    this.#recent.push({ slot: now.slot, kind });
+    if (kind === 'balance') this.#balancesInWindow++;
+    this.#lastKind = kind;
     this.#lastSent.set(key, now.slot);
-    mine.sends++;
-    mine.seq = this.#seq++;
+    mine.served = now.slot;
     return 'sent';
   }
 
@@ -166,34 +173,38 @@ export class ReconcileGuard {
     this.#slot = slot;
     const { windowSlots, minSlotsBetween } = this.#limits;
     while (this.#head < this.#recent.length && slot - this.#recent[this.#head]!.slot >= windowSlots) {
-      if (!this.#recent[this.#head]!.orphan) this.#balancesInWindow--;
+      if (this.#recent[this.#head]!.kind === 'balance') this.#balancesInWindow--;
       this.#head++;
     }
     if (this.#head > 512 && this.#head * 2 > this.#recent.length) {
       this.#recent.splice(0, this.#head);
       this.#head = 0;
     }
+    // A waiter not asked for in the last slot leaves the line, so a resolved intent never holds a place.
+    // Its turn is kept: asked again (the next tick), it rejoins at the same rank.
     for (const [k, asked] of this.#waiting) {
-      if (slot - asked <= windowSlots) continue;
-      (k.startsWith('reconcile_orphan|') ? this.#orphans : this.#balances).remove(k);
+      if (slot - asked <= 1n) continue;
+      this.#lines[k.startsWith('reconcile_orphan|') ? 'orphan' : 'balance'].remove(k);
       this.#waiting.delete(k);
     }
-    if (this.#lastSent.size > 512) {
-      for (const [k, sent] of this.#lastSent) {
-        if (slot - sent >= minSlotsBetween && !this.#waiting.has(k)) {
+    // Forget keys not asked for a whole window (and past their repeat interval): finished intents.
+    if (this.#turns.size > 512) {
+      for (const [k, asked] of this.#asked) {
+        const sent = this.#lastSent.get(k);
+        if (slot - asked > windowSlots && !this.#waiting.has(k) && (sent === undefined || slot - sent >= minSlotsBetween)) {
           this.#lastSent.delete(k);
           this.#turns.delete(k);
+          this.#asked.delete(k);
         }
       }
     }
   }
 
-  /** A key seen for the first time joins the current round: the fewest sends among the waiting keys. */
-  #turnOf(key: string): Turn {
+  /** A key seen for the first time counts as served at its first ask, behind every key already in line. */
+  #turnOf(key: string, slot: bigint): Turn {
     let t = this.#turns.get(key);
     if (t === undefined) {
-      const heads = [this.#orphans.first(), this.#balances.first()].flatMap((k) => (k === undefined ? [] : [this.#turns.get(k)!.sends]));
-      t = { sends: heads.length === 0 ? 0 : Math.min(...heads), seq: this.#seq++ };
+      t = { served: slot, key };
       this.#turns.set(key, t);
     }
     return t;
