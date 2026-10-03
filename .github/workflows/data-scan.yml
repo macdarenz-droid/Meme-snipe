@@ -24,7 +24,7 @@
 #   days published before it stay published.
 #   Progress lives in the Actions cache (10 GB per repo, least recently used evicted),
 #   so a day's progress may be evicted and the day then needs a full rescan.
-# - mode=assemble runs research/historical/ci/assemble.sh: windows of up to 10 days,
+# - mode=assemble runs research/historical/ci/assemble.sh: windows of up to 3 days,
 #   with the 14 lead-in days required, one day at a time, published as release
 #   `data-<from>-<to>`.
 # - Every checkout sets persist-credentials: false; inputs reach the shell only through
@@ -45,7 +45,7 @@ on:
         required: false
         default: ""
       from:
-        description: "assemble: first UTC day of the dataset window (windows of up to ~10 days fit a runner's disk)"
+        description: "assemble: first UTC day of the dataset window (windows of up to 3 days fit a runner's disk)"
         required: false
         default: ""
       to:

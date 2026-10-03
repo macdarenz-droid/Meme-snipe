@@ -20,7 +20,8 @@
 //      events cannot be decoded) unless its complete logs show no cross-program invocation, so it has no events.
 // A raw record the decoder refuses is a mismatch. The CLI prints the summary, writes <dataset-dir>/qa/parity.json and
 // exits 1 on any mismatch or missing row.
-import { createReadStream, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createZstdDecompress, zstdDecompressSync } from 'node:zlib';
@@ -33,6 +34,7 @@ import {
   PUMP_AMM_PROGRAM,
   PUMP_PROGRAM,
   accountKeys,
+  decodeBase58,
   decodeTransaction,
   encodeBase58,
   fromBase64,
@@ -480,8 +482,16 @@ export class ParityChecker {
     missing_rows: [],
   };
 
-  constructor(mints: readonly MintInfo[], idl: ReadonlyMap<string, IdlEvent> = loadScannerIdl()) {
+  /**
+   * rawSampleRate: the units' hash sample (manifest sampling.unit_sample_rate_min). Raw records exist only for
+   * transactions of mints with h(mint) below it (retention "curve-all,canonical-all,sample"), so only those rows
+   * must have one; 1 requires a raw record for every row.
+   */
+  private readonly rawSampleRate: number;
+
+  constructor(mints: readonly MintInfo[], idl: ReadonlyMap<string, IdlEvent> = loadScannerIdl(), rawSampleRate = 1) {
     this.idl = idl;
+    this.rawSampleRate = rawSampleRate;
     for (const m of mints) {
       this.mints.set(m.mint, m);
       if (m.pool) this.poolMint.set(m.pool, m.mint);
@@ -640,7 +650,7 @@ export class ParityChecker {
     for (const list of this.rows.values()) {
       for (const row of list) {
         const mint = row.kind === 'curve' ? (row.values.mint ?? '') : row.kind === 'amm' ? (row.values.base_mint ?? '') : row.kind === 'failed' ? (row.values.mint_hint ?? '') : row.fields?.mint || row.fields?.base_mint || '';
-        if (row.kind === 'event' && this.tape(mint, Number(row.values.block_time ?? 0)) !== 'in') {
+        if (!(mint !== '' && mintHash(mint) < this.rawSampleRate) || (row.kind === 'event' && this.tape(mint, Number(row.values.block_time ?? 0)) !== 'in')) {
           this.s.rows_without_raw++;
           continue;
         }
@@ -831,7 +841,10 @@ export const readMints = (dir: string): MintInfo[] =>
 
 /** Runs the check over every day of a dataset directory and returns the summary (does not exit). */
 export const runParity = async (dir: string): Promise<ParitySummary> => {
-  const checker = new ParityChecker(readMints(dir));
+  // Without a manifest every row must have its raw record (rate 1, the strictest reading).
+  const mp = join(dir, 'manifest.json');
+  const man = (existsSync(mp) ? JSON.parse(readFileSync(mp, 'utf8')) : {}) as { sampling?: { unit_sample_rate_min?: number } };
+  const checker = new ParityChecker(readMints(dir), loadScannerIdl(), man.sampling?.unit_sample_rate_min ?? 1);
   const daysDir = join(dir, 'days');
   for (const day of readdirSync(daysDir).sort()) {
     const d = join(daysDir, day);
@@ -844,5 +857,8 @@ export const runParity = async (dir: string): Promise<ParitySummary> => {
   }
   return checker.s;
 };
+
+/** h(mint): first 8 bytes of sha256(mint pubkey bytes), big-endian, / 2^64 (scanner sample.go mintHashFraction). */
+export const mintHash = (mint: string): number => Number(createHash('sha256').update(decodeBase58(mint)).digest().readBigUInt64BE(0)) / 2 ** 64;
 
 export const failed = (s: ParitySummary): boolean => s.mismatch_count > 0 || s.missing_row_count > 0;

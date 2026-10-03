@@ -132,8 +132,8 @@ R="$T/rel/data-2026-09-20-2026-09-22"
 [[ ! -e "$T/work/dataset/manifest.json" ]] && ok "release files were moved, not copied" || no "dataset files still present"
 
 # ---- 2. refusals ----
-run 2026-09-01 2026-09-12 "$T/w2" && no "11-day window accepted" || { grep -q "limit is 10" "$T/out.txt" && ok "window over 10 days refused" || no "window message: $(cat "$T/out.txt")"; }
-MAX_WINDOW_DAYS=3 run 2026-09-20 2026-09-24 "$T/w2" && no "MAX_WINDOW_DAYS ignored" || ok "MAX_WINDOW_DAYS is honoured"
+run 2026-09-01 2026-09-05 "$T/w2" && no "4-day window accepted" || { grep -q "limit is 3" "$T/out.txt" && ok "window over 3 days refused (default)" || no "window message: $(cat "$T/out.txt")"; }
+MAX_WINDOW_DAYS=2 run 2026-09-20 2026-09-23 "$T/w2" && no "MAX_WINDOW_DAYS ignored" || ok "MAX_WINDOW_DAYS is honoured"
 run 2026-09-22 2026-09-20 "$T/w2" && no "reversed window accepted" || ok "reversed window refused"
 run 2026-09-20 2026-09-22 "$T/w3" && no "existing dataset release replaced" || { grep -q "already exists" "$T/out.txt" && ok "existing dataset release refused" || no "existing release message"; }
 

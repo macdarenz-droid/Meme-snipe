@@ -29,6 +29,7 @@ import {
   eventRow,
   failed,
   failedRow,
+  mintHash,
   parseTapes,
   runParity,
 } from '../src/dataset/parity.ts';
@@ -421,5 +422,22 @@ describe('parity over a dataset directory', () => {
     expect(existsSync(join(bad, 'qa', 'parity.json'))).toBe(true);
     expect(JSON.parse(readFileSync(join(bad, 'qa', 'parity.json'), 'utf8')).mismatches[0]).toMatchObject({ field: 'fee', row: '1', decoded: '43149' });
     expect(spawnSync(process.execPath, ['--no-warnings', script, dataset(curveValues(7))]).status).toBe(0);
+  });
+});
+
+describe('decoder parity: raw records only for the hash sample', () => {
+  it('requires a raw record only for rows of mints below the units\' sample rate', () => {
+    const h = mintHash(MINT);
+    const run = (rate: number) => {
+      const c = new ParityChecker(universe, undefined, rate);
+      c.addRow(curveRow(curveValues(9)));
+      c.endBatch();
+      return c.s;
+    };
+    const outside = run(h); // h(MINT) is not below its own value: outside the sample
+    expect(outside.mismatches).toEqual([]);
+    expect(outside.rows_without_raw).toBe(1);
+    const inside = run(Math.min(1, h + 1e-9) === h ? 1 : h + 1e-9);
+    expect(inside.mismatches.map((m) => m.field)).toEqual(['(raw record)']);
   });
 });

@@ -56,8 +56,8 @@ import (
 
 // Universe rates (overridable on the command line, recorded in the manifest).
 var (
-	launchRate = 0.05
-	gradRate   = 0.05
+	launchRate = 1.0 // every mint created in coverage (needs retentionPolicy units)
+	gradRate   = 1.0 // every graduate in coverage (needs retentionPolicy units)
 	poolRate   = 0.05
 )
 
@@ -351,8 +351,21 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 			minRate = r
 		}
 	}
-	if launchRate > minRate || gradRate > minRate || poolRate > minRate {
-		return fmt.Errorf("universe rates exceed the smallest unit sample rate %v: rescan needed", minRate)
+	// Retention: units that keep every curve trade and every canonical-pool trade
+	// (retentionPolicy) allow launch and grad rates up to 1.0; the direct-pool universe
+	// (non-canonical pools) and older units stay limited to the hash sample.
+	retention := units[0].stats.Retention
+	for _, u := range units {
+		if u.stats.Retention != retention {
+			return fmt.Errorf("units of retention %q and %q mixed (%s); rescan", retention, u.stats.Retention, u.path)
+		}
+	}
+	rateCap := minRate
+	if retention == retentionPolicy {
+		rateCap = 1
+	}
+	if launchRate > rateCap || gradRate > rateCap || poolRate > minRate {
+		return fmt.Errorf("universe rates exceed what the units keep (launch/grad up to %v, direct pool up to %v): rescan needed", rateCap, minRate)
 	}
 	// Coverage: contiguous scanned slot ranges; the universe needs creation inside them.
 	covStart, covEnd := units[0].stats.FirstBlockTime, units[len(units)-1].stats.LastBlockTime
@@ -900,7 +913,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 		"programs":        map[string]string{"pump": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pump_amm": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"},
 		"window":          map[string]any{"from": fromDay, "to_exclusive": toDay, "lead_in_days": opt.LeadInDays},
 		"coverage":        map[string]any{"first_block_time": covStart, "last_block_time": covEnd, "first_slot": units[0].stats.FromSlot, "last_slot": units[len(units)-1].stats.ToSlot},
-		"sampling":        map[string]any{"hash": "first 8 bytes of sha256(mint pubkey bytes), big-endian, divided by 2^64", "launch_rate": launchRate, "grad_rate": gradRate, "direct_pool_rate": poolRate, "launch_tape_seconds": tapeHorizon, "grad_and_pool_tape_seconds": poolTapeHorizon, "unit_sample_rate_min": minRate},
+		"sampling":        map[string]any{"hash": "first 8 bytes of sha256(mint pubkey bytes), big-endian, divided by 2^64", "launch_rate": launchRate, "grad_rate": gradRate, "direct_pool_rate": poolRate, "launch_tape_seconds": tapeHorizon, "grad_and_pool_tape_seconds": poolTapeHorizon, "unit_sample_rate_min": minRate, "retention": retention},
 		"universe_counts": map[string]int{"launch": nLaunch, "grad": nGrad, "direct_pool": nPool, "mints_registered": len(ml)},
 		"decode_failures": decodeFail,
 		"coverage_gaps":   gaps,

@@ -6,7 +6,8 @@
 # Environment:
 #   GITHUB_REPOSITORY  owner/repo of the releases (required)
 #   GH_TOKEN           token for gh (the workflow's publish job)
-#   MAX_WINDOW_DAYS    largest window in days (default 10; a runner's disk holds about that)
+#   MAX_WINDOW_DAYS    largest window in days (default 3: units keep every curve and canonical-pool
+#                      trade, about 6.4-8.5 GB a day, so a runner holds about three days with the dataset)
 #   ALLOW_REVISIONS    optional comma list passed to finalize as -allow-revisions
 #   GITHUB_SHA         recorded in the release notes
 # Steps, one day at a time so the disk holds one day's parts at most:
@@ -32,7 +33,7 @@ die() { echo "assemble: $*" >&2; exit 1; }
 
 # check_window FROM TO: valid UTC days, FROM < TO, TO-FROM <= MAX_WINDOW_DAYS.
 check_window() {
-  local from=$1 to=$2 max=${MAX_WINDOW_DAYS:-10} f t
+  local from=$1 to=$2 max=${MAX_WINDOW_DAYS:-3} f t
   [[ "$from" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "$to" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
     die "from and to must be UTC days (YYYY-MM-DD), got '$from' and '$to'"
   f=$(date -u -d "$from" +%s) || die "bad day $from"

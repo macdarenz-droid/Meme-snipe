@@ -106,7 +106,10 @@ type UnitStats struct {
 	FinishedAt      string            `json:"finished_at"`
 	ScannerRevision string            `json:"scanner_revision"`
 	SampleRate      float64           `json:"sample_rate"`
-	mu              sync.Mutex
+	// Retention: which rows the unit keeps (retentionPolicy); empty for older units,
+	// which kept trades of sampled mints only.
+	Retention string `json:"retention"`
+	mu        sync.Mutex
 }
 
 func (s *UnitStats) decodeErr(msg string) {
@@ -217,7 +220,7 @@ type blockResult struct {
 func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlConc int, workers int) (*UnitStats, error) {
 	t0 := time.Now()
 	st := &UnitStats{Schema: schemaVersion, Epoch: e.N, RootCid: e.RootCid, FromSlot: from, ToSlot: to,
-		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ExtraBytes: map[string]int{}, FirstSeen: map[string]uint64{}, ScannerRevision: scannerRevision, SampleRate: sampleRate}
+		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ExtraBytes: map[string]int{}, FirstSeen: map[string]uint64{}, ScannerRevision: scannerRevision, SampleRate: sampleRate, Retention: retentionPolicy}
 	req0, ret0, r4290 := statHTTPRequests.Load(), statHTTPRetries.Load(), statHTTP429.Load()
 
 	start, end, firstBlock, err := e.ByteRange(ctx, from, to)

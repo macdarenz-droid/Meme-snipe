@@ -30,6 +30,8 @@ type fxUnit struct {
 	rev             string
 	skipRows        bool // events-only unit (as shipped for lead-in days)
 	curveHeader     []string
+	retention       string // "" = older units (sample only); set by f.unit to retentionPolicy unless old
+	oldRetention    bool
 }
 
 func writeZst(t *testing.T, path string, data []byte) {
@@ -80,13 +82,16 @@ func (f *fixture) unit(u fxUnit) {
 		writeZst(t, filepath.Join(dir, "agg_hourly.csv.zst"), csvBytes(aggCols, nil))
 		writeZst(t, filepath.Join(dir, "raw.jsonl.zst"), nil)
 	}
+	if !u.oldRetention {
+		u.retention = retentionPolicy
+	}
 	rev := u.rev
 	if rev == "" {
 		rev = "r1"
 	}
 	st := UnitStats{Schema: schemaVersion, Epoch: u.epoch, FromSlot: u.from, ToSlot: u.to, Blocks: u.blocks,
 		FirstBlockSlot: u.from, LastBlockSlot: u.from + uint64(u.blocks) - 1, FirstBlockTime: u.t0, LastBlockTime: u.t0 + int64(u.blocks) - 1,
-		ScannerRevision: rev, SampleRate: 0.05}
+		ScannerRevision: rev, SampleRate: 0.05, Retention: u.retention}
 	b, _ := json.Marshal(&st)
 	if err := os.WriteFile(filepath.Join(dir, "stats.json"), b, 0o644); err != nil {
 		t.Fatal(err)
@@ -328,5 +333,29 @@ func TestFinalizeFirstSeenSlotIsMinimumOverUnits(t *testing.T) {
 	fs := man["first_seen_slot"].(map[string]any)
 	if fs["unknown:pump:a943276d6686b6e8"] != float64(1002) || fs["extra:pump:TradeEvent:8"] != float64(1005) {
 		t.Fatalf("first_seen_slot %v", fs)
+	}
+}
+
+func TestFinalizeRatesFollowRetention(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	u := spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-02")+1800)
+	u.oldRetention = true
+	f.spanUnit(u)
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err == nil || !strings.Contains(err.Error(), "rates exceed") {
+		t.Fatalf("100%% universes accepted on sample-only units: %v", err)
+	}
+	defer func(l, g float64) { launchRate, gradRate = l, g }(launchRate, gradRate)
+	launchRate, gradRate = 0.05, 0.05
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
+		t.Fatalf("sample rates refused on sample-only units: %v", err)
+	}
+	f2 := &fixture{t: t, out: t.TempDir()}
+	f2.spanUnit(spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-01")+3600))
+	old := spanUnit(1, 1003, day("2026-09-01")+7200, day("2026-09-02")+1800)
+	old.oldRetention = true
+	f2.spanUnit(old)
+	if err := Finalize(f2.out, t.TempDir(), "2026-09-01", "2026-09-02", finalizeOpts{}); err == nil || !strings.Contains(err.Error(), "retention") {
+		t.Fatalf("mixed retention accepted: %v", err)
 	}
 }

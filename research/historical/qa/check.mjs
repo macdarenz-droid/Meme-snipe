@@ -22,6 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import crypto from 'node:crypto';
 
 import { strictMisses } from './verdict.mjs';
 
@@ -82,6 +83,8 @@ function b58decode(str) {
   const lead = str.match(/^1*/)[0].length;
   return Buffer.concat([Buffer.alloc(lead), Buffer.from(n === 0n ? '' : hex, 'hex')]);
 }
+// h(mint): first 8 bytes of sha256(mint pubkey bytes), big-endian, / 2^64 (scanner sample.go).
+const mintHash = (m) => Number(crypto.createHash('sha256').update(b58decode(m)).digest().readBigUInt64BE(0)) / 2 ** 64;
 const ALPH = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 function b58encode(buf) {
   let n = BigInt('0x' + (Buffer.from(buf).toString('hex') || '0')); let s = '';
@@ -297,10 +300,15 @@ if (man.schema >= 2) {
       rawKeys.add(`${r.slot}:${r.txIndex}`);
     }
   }
+  const sampleRate = man.sampling?.unit_sample_rate_min ?? 1;
+  const inRawSample = (m) => m !== '' && mintHash(m) < sampleRate;
   const seen = new Set();
   for (const base of ['curve_trades', 'amm_trades', 'failed']) {
     for (const f of dayFiles(base)) {
       for (const r of readTable(f)) {
+        // Raw records exist for transactions of hash-sampled mints only (retention
+        // "curve-all,canonical-all,sample": other mints' rows have none).
+        if (!inRawSample(r.mint ?? r.base_mint ?? r.mint_hint ?? '')) continue;
         const k = `${r.slot}:${r.tx_idx}`;
         if (seen.has(k)) continue;
         seen.add(k);
@@ -442,7 +450,7 @@ if (report.gecko) {
 const misses = strictMisses(man, report, { leadInDays: LEAD_IN });
 report.strict = { pass: misses.length === 0, misses };
 md.push('', '## Verdict', '', misses.length ? `FAIL: ${misses.join('; ')}` : 'PASS: no unexplained miss.');
-if (report.raw) md.push('', `Raw records: ${report.raw.records}; signature mismatches ${report.raw.signature_mismatch}; ${report.raw.trade_txs_with_raw} of ${report.raw.trade_txs} universe trade and failed transactions have their raw record.`);
+if (report.raw) md.push('', `Raw records: ${report.raw.records}; signature mismatches ${report.raw.signature_mismatch}; ${report.raw.trade_txs_with_raw} of ${report.raw.trade_txs} trade and failed transactions of hash-sampled mints have their raw record.`);
 fs.writeFileSync(path.join(ds, 'qa', 'report.json'), JSON.stringify(report, null, 2));
 fs.writeFileSync(path.join(ds, 'qa', 'report.md'), md.join('\n') + '\n');
 console.log(md.join('\n'));
