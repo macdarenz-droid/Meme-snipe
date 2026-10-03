@@ -5,7 +5,7 @@
 import type { Lamports, RawAmount } from '../units/index.ts';
 import { exitKey, type EntryIntent, type IntentId, type PositionId } from '../domain/index.ts';
 import {
-  applyIntentEvent, heldReservation, isTerminal, isUnresolved, newEntryIntent, newExitIntent,
+  applyIntentEvent, filledSol, filledTokens, heldReservation, isTerminal, isUnresolved, newEntryIntent, newExitIntent,
   type IntentEvent, type IntentState,
 } from './intent.ts';
 import { applyPositionEvent, newPosition, type ExitReason, type PositionEvent, type PositionState } from './position.ts';
@@ -94,7 +94,7 @@ const linkIntent = (book: Book, before: IntentState, after: IntentState, effects
   };
   const changed = after.status !== before.status;
   const ended = changed && (after.status === 'cancelled' || after.status === 'abandoned');
-  const filled = changed && after.status === 'reconciled' && after.fill !== null;
+  const filled = changed && after.status === 'reconciled' && after.fills.length > 0;
 
   if (after.intent.purpose === 'entry') {
     // Supervise from the moment the entry may have landed.
@@ -102,8 +102,8 @@ const linkIntent = (book: Book, before: IntentState, after: IntentState, effects
       positions = { ...positions, [pid]: newPosition({ id: pid, mint: after.intent.mint, venue: after.intent.venue, entryIntentId: after.intent.id }) };
       effects.push({ type: 'persist', entity: 'position', id: pid });
     }
-    if (filled && after.fill !== null) {
-      const err = movePosition({ type: 'entry_filled', quantity: after.fill.tokens, cost: after.fill.sol });
+    if (filled) {
+      const err = movePosition({ type: 'entry_filled', quantity: filledTokens(after) as RawAmount, cost: filledSol(after) as Lamports });
       if (err) return err;
     }
     if (ended && positions[pid]?.status === 'opening') {
@@ -115,8 +115,8 @@ const linkIntent = (book: Book, before: IntentState, after: IntentState, effects
       const err = movePosition({ type: 'exit_submitted' });
       if (err) return err;
     }
-    if (filled && after.fill !== null) {
-      const err = movePosition({ type: 'exit_filled', sold: after.fill.tokens });
+    if (filled) {
+      const err = movePosition({ type: 'exit_filled', sold: filledTokens(after) as RawAmount });
       if (err) return err;
     }
     if (ended && positions[pid]?.exitOwner?.intentId === after.intent.id) {
@@ -202,8 +202,8 @@ const step = (book: Book, e: BookEvent): Transition<Book> => {
         const i = intents[owner.intentId];
         if (i === undefined) return illegal(p.status, e.type, 'exit owner intent missing');
         // Blocked is only honest when no transaction of this exit can still land.
-        const end = i.status === 'reconciled' && i.fill === null ? 'abandon' : 'cancel';
-        if (isUnresolved(i) || (i.status === 'reconciled' && i.fill !== null)) return illegal(p.status, e.type, 'exit transaction may still land or already filled; resolve it first');
+        const end = i.status === 'reconciled' && i.fills.length === 0 ? 'abandon' : 'cancel';
+        if (isUnresolved(i) || (i.status === 'reconciled' && i.fills.length > 0)) return illegal(p.status, e.type, 'exit transaction may still land or already filled; resolve it first');
         const r = applyIntentEvent(i, { type: end });
         if (isIllegal(r)) return r;
         intents = { ...intents, [i.intent.id]: r.state };

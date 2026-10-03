@@ -145,7 +145,9 @@ export type Freshness =
   | { readonly fresh: false; readonly reason: FreshnessFailure; readonly ageMs: number | null };
 
 /**
- * Is this observation fresh enough to act on at `nowMs`? Missing evidence, a kind without a budget,
+ * Is this observation fresh enough to act on at `nowMs`? Age and timestamps only: quality flags and
+ * commitment are judged by the evidence gates (docs/DECISIONS.md), so fresh alone does not mean usable.
+ * Missing evidence, a kind without a budget,
  * non-integer or inconsistent times, a timestamp from the future and an over-age value all fail.
  * Age is measured from eventTime (when the fact happened), not from receipt.
  * `futureToleranceMs` absorbs clock skew; Solana block times have one-second resolution, so the default is 1,000 ms.

@@ -24,6 +24,8 @@ export type AlertCode =
   | 'cancel_after_broadcast'
   | 'status_balance_mismatch'
   | 'late_landing'
+  | 'unbooked_landing'
+  | 'double_fill'
   | 'exit_blocked'
   | 'restart_recovery';
 
