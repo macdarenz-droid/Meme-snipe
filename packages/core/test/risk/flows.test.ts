@@ -7,7 +7,7 @@ import { TRIAL_POLICY, usd } from '../../src/config/index.ts';
 import { type EntryAllowed, NO_LATCHES, economicNav, evaluateEntry, evaluateExit, evaluateWithdrawal, maxTradeCosts, opsReserve } from '../../src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
 import { fixedCosts } from '../../src/costs/index.ts';
-import { DAY_START, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest, codes, latches, trade } from './helpers.ts';
+import { DAY_START, HOUR, MINUTE, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest, codes, latches, trade } from './helpers.ts';
 
 const ofBpsUsd = (amount: bigint, bps: number) => mulDiv(amount, BigInt(bps), 10_000n, 'floor');
 
@@ -550,5 +550,53 @@ describe('RISK-1b edges (mutation, left operands)', () => {
   });
   test('a fractional stop distance is refused, never thrown on', () => {
     expect(codes(evaluateEntry(baseInput(), baseRequest({ stopBps: 1500.5 })))).toContain('stop_invalid');
+  });
+});
+
+describe('account costs (WORKER-1 setup rent): realized equity and day and week loss, never a trade', () => {
+  const setup = (atMs: number, amount: string) => ({ atMs, amount: usd(amount), kind: 'wallet_setup' as const });
+  test('a setup cost lowers equity, leaves the high-water mark and counts in today\'s loss', () => {
+    const d = evaluateEntry(baseInput({ account: account({ costs: [setup(DAY_START + HOUR, '0.5')] }) }), baseRequest());
+    expect(d.snapshot).toMatchObject({ equity: usd('19.5'), highWaterMark: usd('20'), dayLoss: usd('0.5'), weekLoss: usd('0.5') });
+    // Yesterday's cost is not today's loss.
+    const y = evaluateEntry(baseInput({ account: account({ costs: [setup(DAY_START - HOUR, '0.5')] }) }), baseRequest());
+    expect(y.snapshot).toMatchObject({ equity: usd('19.5'), dayLoss: 0n });
+    // A cost at the very start of the day is today's.
+    expect(evaluateEntry(baseInput({ account: account({ costs: [setup(DAY_START, '0.5')] }) }), baseRequest()).snapshot?.dayLoss).toBe(usd('0.5'));
+  });
+  test('a cost after a peak does not raise it, and a later winning trade is measured from the lower equity', () => {
+    const d = evaluateEntry(baseInput({ account: account({ costs: [setup(LAST_WEEK, '1')], closedTrades: [trade(THIS_WEEK, '0.5')] }) }), baseRequest());
+    expect(d.snapshot).toMatchObject({ equity: usd('19.5'), highWaterMark: usd('20') });
+  });
+  test('a cost is never a trade: streaks, cooldown, day pause, review count and R15 see only real trades', () => {
+    const losses = [trade(NOW - 3 * HOUR, '-0.2'), trade(NOW - 2 * HOUR, '-0.2', { notional: usd('3') })];
+    const win = [...losses.slice(0, 1), trade(NOW - 2 * HOUR, '0.1', { notional: usd('3') })];
+    const cost = [setup(NOW - HOUR, '0.5')];
+    // Two losses then a cost: still a streak of two (cooling down), and R15 caps at the last real trade's $3.
+    const a = evaluateEntry(baseInput({ account: account({ closedTrades: losses, costs: cost }) }), baseRequest());
+    const b = evaluateEntry(baseInput({ account: account({ closedTrades: losses }) }), baseRequest());
+    expect(a.snapshot?.lossStreak).toBe(2);
+    expect(codes(a).filter((c) => c.startsWith('loss_'))).toEqual(codes(b).filter((c) => c.startsWith('loss_')));
+    // A loss then a win then a cost: the streak is zero, not one.
+    expect(evaluateEntry(baseInput({ account: account({ closedTrades: win, costs: cost }) }), baseRequest()).snapshot?.lossStreak).toBe(0);
+    // Three losses then a cost pause the day exactly as without it; four losses and a cost are not five in twenty.
+    const three = [...losses, trade(NOW - 90 * MINUTE, '-0.2')];
+    expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: three, costs: cost }) }), baseRequest()))).toContain('loss_day_pause');
+    const four = Array.from({ length: 4 }, (_, i) => trade(LAST_WEEK + i * HOUR, '-0.1'));
+    const many = Array.from({ length: 5 }, (_, i) => setup(LAST_WEEK + i * HOUR + MINUTE, '0.01'));
+    expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: four, costs: many }) }), baseRequest()))).not.toContain('loss_review');
+    // R15: the last real trade was a $3 loss; the cost is not a trade of any size.
+    const caps = (evaluateEntry(baseInput({ account: account({ closedTrades: [trade(NOW - 3 * HOUR, '-0.2', { notional: usd('3') })], costs: cost }) }), baseRequest()) as EntryAllowed).caps;
+    expect(caps.find((c) => c.control === 'R15')?.notional).toBe(usd('3'));
+  });
+  test('a negative or future cost is refused', () => {
+    expect(codes(evaluateEntry(baseInput({ account: account({ costs: [setup(LAST_WEEK, '0.5')].map((c) => ({ ...c, amount: neg(c.amount) })) }) }), baseRequest()))).toContain('bankroll_invalid');
+    expect(codes(evaluateEntry(baseInput({ account: account({ costs: [setup(NOW + 1, '0.5')] }) }), baseRequest()))).toContain('bankroll_invalid');
+    expect(codes(evaluateEntry(baseInput({ account: account({ costs: [setup(LAST_WEEK, '0')] }) }), baseRequest()))).not.toContain('bankroll_invalid');
+  });
+  test('a cost is a change the balance must have seen before NAV counts', () => {
+    const i = baseInput({ account: account({ costs: [setup(NOW - 100, '0.5')] }) });
+    expect(evaluateEntry({ ...i, market: { ...i.market, solBalance: { value: lamports(SOL), atMs: NOW - 200 } } }, baseRequest()).snapshot?.nav).toBeNull();
+    expect(evaluateEntry({ ...i, market: { ...i.market, solBalance: { value: lamports(SOL), atMs: NOW - 50 } } }, baseRequest()).snapshot?.nav).not.toBeNull();
   });
 });

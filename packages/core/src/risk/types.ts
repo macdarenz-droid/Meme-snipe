@@ -119,6 +119,13 @@ export interface CashFlow {
   readonly navBefore: MicroUsd;
 }
 
+/** A cost of the account itself, not of a trade. `amount` is what was paid (zero or more). */
+export interface AccountCost {
+  readonly atMs: number;
+  readonly amount: MicroUsd;
+  readonly kind: 'wallet_setup';
+}
+
 /** An economic NAV (`economicNav`) the worker observed and recorded; the NAV high-water mark is the peak of these. */
 export interface NavMark {
   readonly atMs: number;
@@ -138,6 +145,12 @@ export interface AccountHistory {
   readonly openedAtMs: number;
   readonly flows: readonly CashFlow[];
   readonly closedTrades: readonly ClosedTrade[];
+  /**
+   * Account costs that are not trades (WORKER-1: the wallet's one-time setup rent). Each lowers realized equity at its
+   * time and counts toward the day's and week's loss; none is a trade for R8, R11, R15 or any trade statistic.
+   * A negative amount is refused (R1).
+   */
+  readonly costs: readonly AccountCost[];
   readonly openPositions: readonly OpenPosition[];
   readonly entries: readonly EntryRecord[];
   /** Entry intents not yet resolved (each holds a reservation), by mint. Each counts as an open position (R3). */

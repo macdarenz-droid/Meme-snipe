@@ -56,7 +56,7 @@ export const account = (patch: Omit<Partial<AccountHistory>, 'flows'> & { readon
   }));
   return {
     openingEquity: opening, openedAtMs: Date.UTC(2026, 8, 1), closedTrades: [], openPositions: [], entries: [],
-    unresolvedEntries: [], heldReservations: lamports(0n), version: 0n, markedAtDayStart: null, markedAtWeekStart: null, navMarks: [],
+    unresolvedEntries: [], heldReservations: lamports(0n), version: 0n, markedAtDayStart: null, markedAtWeekStart: null, navMarks: [], costs: [],
     ...patch, flows,
   };
 };
