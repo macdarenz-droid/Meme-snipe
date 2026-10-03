@@ -40,7 +40,7 @@ export interface SimRequest {
 
 /** What a scripted simulation returns: post accounts (null = closed or absent), or an error with logs. */
 export type SimScript = (req: SimRequest, accounts: ReadonlyMap<string, StubAccount>) =>
-  | { readonly post: readonly (StubAccount | null)[]; readonly units?: number; readonly extra?: ReadonlyMap<string, StubAccount | null> | undefined; readonly balances?: SimBalances }
+  | { readonly post: readonly (StubAccount | null)[]; readonly units?: number; readonly extra?: ReadonlyMap<string, StubAccount | null> | undefined; readonly balances?: SimBalances; readonly logs?: readonly string[] }
   | { readonly err: unknown; readonly logs: readonly string[] }
   | { readonly raw: unknown };
 
@@ -100,7 +100,7 @@ export const stubChain = (): { chain: StubChain; http: HttpClient } => {
         const post = addresses.map((a, i) => (i < r.post.length ? r.post[i] : (r.extra?.get(a) !== undefined ? r.extra.get(a) : chain.accounts.get(a) ?? null)));
         const tb = (l: SimBalances['preToken']) => l.map((x) => ({ accountIndex: x.accountIndex, mint: x.mint, uiTokenAmount: { amount: x.amount.toString(), decimals: 6 } }));
         const b = r.balances === undefined ? {} : { fee: 10_000, preBalances: r.balances.pre, postBalances: r.balances.post, preTokenBalances: tb(r.balances.preToken), postTokenBalances: tb(r.balances.postToken) };
-        return reply({ context, value: { err: null, logs: ['Program log: ok'], accounts: post.map(accountJson), unitsConsumed: r.units ?? 50_000, innerInstructions: [], ...b } });
+        return reply({ context, value: { err: null, logs: r.logs ?? ['Program log: ok'], accounts: post.map(accountJson), unitsConsumed: r.units ?? 50_000, innerInstructions: [], ...b } });
       }
       default:
         return { status: 200, header: () => null, text: json({ jsonrpc: '2.0', id: body.id, error: { code: -32601, message: 'Method not found' } }) };

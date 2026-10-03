@@ -2,10 +2,10 @@
 // program error, an insufficient stand-in, no usable holder, malformed responses, RPC and scheduler failures, the
 // structural equality of the stand-in build, and the report's thresholds at their boundaries.
 import { describe, expect, it } from 'vitest';
-import { type Address, NATIVE_MINT, PUMP_PROGRAM, TOKEN_PROGRAM, addressBytes, decodeTransaction } from '../../core/src/chain/index.ts';
+import { type Address, NATIVE_MINT, PUMP_PROGRAM, TOKEN_PROGRAM, addressBytes, decodeTransaction, toBase64 } from '../../core/src/chain/index.ts';
 import { POLICY, RATES, common, goldenOf, request } from '../../core/test/tx/fixtures-policy.ts';
 import type { Kind } from '../../core/test/tx/helpers.ts';
-import { associatedTokenAddress, buildTrade, pumpCreatorVault, rentExempt, type TradeRequest, userVolumeAccumulator } from '../../core/src/tx/index.ts';
+import { Writer, associatedTokenAddress, buildTrade, pumpCreatorVault, rentExempt, type TradeRequest, userVolumeAccumulator } from '../../core/src/tx/index.ts';
 import {
   type DryRunRecord, DRYRUN_GATE, amountErrorE4, dryRunReport, dryRunTrade, isBaseClose, rentPaidInto, type RawAccount, sameStructure, substitution,
 } from '../src/dryrun/index.ts';
@@ -340,7 +340,7 @@ describe('dry run: rent actually paid (review of PR #28)', () => {
     const { chain, deps } = setup();
     const t = tradeOf('curve-sell');
     const uvaRent = rentExempt(137, RENT);
-    fund(chain, t, { absent: [uvaOf(HOLDER)], rent: uvaRent, extra: new Map([[uvaOf(HOLDER), wallet(uvaRent)]]) });
+    fund(chain, t, { absent: [uvaOf(HOLDER)], rent: uvaRent, extra: new Map([[uvaOf(HOLDER), { ...wallet(uvaRent), data: new Uint8Array(137) }]]) });
     const r = await dryRunTrade(t, deps);
     expect(r).toMatchObject({ outcome: 'simulated', amountErrorE4: 0, rentPaid: uvaRent, rentDeclared: uvaRent });
   });
@@ -350,15 +350,16 @@ describe('dry run: rent actually paid (review of PR #28)', () => {
     const t = tradeOf('curve-sell');
     // The accumulator's wrapped-SOL account: written by the swap, never declared by the builder.
     const undeclared = associatedTokenAddress(uvaOf(HOLDER), NATIVE_MINT, TOKEN_PROGRAM);
-    fund(chain, t, { absent: [undeclared], rent: 2_039_280n, extra: new Map([[undeclared, wallet(2_039_280n)]]) });
+    const ataRent = rentExempt(165, RENT);
+    fund(chain, t, { absent: [undeclared], rent: ataRent, extra: new Map([[undeclared, { ...wallet(ataRent), data: new Uint8Array(165) }]]) });
     const r = await dryRunTrade(t, deps);
-    expect(r).toMatchObject({ outcome: 'amount-check', success: false, rentPaid: 2_039_280n, rentDeclared: 0n });
+    expect(r).toMatchObject({ outcome: 'amount-check', success: false, rentPaid: ataRent, rentDeclared: 0n });
     expect(r.error).toContain('declared 0');
   });
 
   it('rentPaidInto: a new account, a new wrapped-SOL account, growth, and the creator vault top-up', () => {
     const raw = (a: StubAccount | null): RawAccount | null => (a === null ? null : { executable: false, ...a });
-    const paidInto = (pre: StubAccount | null, post: StubAccount | null, vault: boolean) => rentPaidInto(raw(pre), raw(post), RENT, vault);
+    const paidInto = (pre: StubAccount | null, post: StubAccount | null, vault: boolean, fees: bigint | null = 0n) => rentPaidInto(raw(pre), raw(post), RENT, vault, fees);
     expect(paidInto(null, wallet(1_000n), false)).toBe(1_000n);
     expect(paidInto(null, null, false)).toBe(0n);
     const native = new Uint8Array(165);
@@ -368,14 +369,44 @@ describe('dry run: rent actually paid (review of PR #28)', () => {
     v.setBigUint64(64, 5_000_000n, true);
     native[108] = 1;
     v.setUint32(109, 1, true);
-    v.setBigUint64(113, 2_039_280n, true);
-    expect(paidInto(null, { owner: TOKEN_PROGRAM, lamports: 7_039_280n, data: native }, false)).toBe(2_039_280n);
+    const reserve = rentExempt(165, RENT);
+    v.setBigUint64(113, reserve, true);
+    expect(paidInto(null, { owner: TOKEN_PROGRAM, lamports: 5_000_000n + reserve, data: native }, false)).toBe(reserve);
+    // Review of PR #59: a new account counts at most the rent-exempt minimum for its size; the rest is not rent.
+    expect(paidInto(null, wallet(rentExempt(0, RENT) + 777n), false)).toBe(rentExempt(0, RENT));
+    v.setBigUint64(113, reserve * 3n, true);
+    expect(paidInto(null, { owner: TOKEN_PROGRAM, lamports: 5_000_000n + reserve, data: native }, false)).toBe(reserve);
     expect(paidInto({ owner: PUMP_PROGRAM, lamports: 9n, data: new Uint8Array(120) }, { owner: PUMP_PROGRAM, lamports: 9n, data: new Uint8Array(151) }, false)).toBe(31n * RENT.lamportsPerByte);
     expect(paidInto(wallet(5n), wallet(5n), false)).toBe(0n);
     const vaultRent = rentExempt(0, RENT);
     expect(paidInto(wallet(100n), wallet(10n ** 9n), true)).toBe(vaultRent - 100n);
     expect(paidInto(null, wallet(10n ** 9n), true)).toBe(vaultRent);
     expect(paidInto(wallet(vaultRent), wallet(10n ** 9n), true)).toBe(0n);
+    // The vault: creator fees paid into it are not rent; unknown fees count no top-up.
+    expect(paidInto(null, wallet(vaultRent + 5n), true, vaultRent + 5n)).toBe(0n);
+    expect(paidInto(null, wallet(vaultRent), true, 100_000n)).toBe(vaultRent - 100_000n);
+    expect(paidInto(null, wallet(vaultRent), true, null)).toBe(0n);
+  });
+
+  it('a new creator vault filled by the sell\'s creator fee: the fee is not counted as rent (review of PR #59)', async () => {
+    const { chain, deps } = setup();
+    const t = tradeOf('curve-sell', {}, false);
+    const req = t.request;
+    if (req.venue !== 'curve') throw new Error('curve');
+    const vault = pumpCreatorVault(req.market.curve.creator!);
+    const fee = rentExempt(0, RENT) + 50_000n;
+    fund(chain, t, { absent: [vault], rent: 0n, extra: new Map([[vault, wallet(fee)]]) });
+    // The sell's TradeEvent says the stand-in paid `fee` into the creator vault.
+    const w = new Writer().bytes(Uint8Array.of(189, 219, 127, 211, 78, 230, 97, 238)).pubkey(req.market.mint).u64(1n).u64(1n).bool(false).pubkey(HOLDER).u64(0n)
+      .u64(1n).u64(1n).u64(1n).u64(1n).pubkey(HOLDER).u64(0n).u64(0n).pubkey(HOLDER).u64(0n).u64(fee);
+    const logs = [`Program ${PUMP_PROGRAM} invoke [1]`, `Program data: ${toBase64(w.done())}`, `Program ${PUMP_PROGRAM} success`];
+    const ok = chain.simulate;
+    chain.simulate = (sim, accounts) => {
+      const r = ok(sim, accounts);
+      return 'post' in r ? { ...r, logs } : r;
+    };
+    const r = await dryRunTrade(t, deps);
+    expect(r).toMatchObject({ outcome: 'simulated', rentPaid: 0n, amountErrorE4: 0 });
   });
 
   it('the creator vault is read back and only its top-up counts, not the creator fee it receives', async () => {

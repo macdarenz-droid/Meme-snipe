@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 // Strict verdict of the data quality report (used by check.mjs, tested by
 // verdict.test.mjs). A miss is anything not explained in docs/research/historical-data.md.
 
@@ -6,6 +7,13 @@
 export const ALLOWED_UNKNOWN = new Set(['pump:742b4dbd117a482b', 'amm:82a42461e48287a5', 'pump:a943276d6686b6e8']);
 // The same upgrade appended 8 bytes to these trade events (kept as extra_hex).
 export const EXTRA8_EVENTS = new Set(['pump:TradeEvent', 'amm:BuyEvent', 'amm:SellEvent']);
+
+// Regime boundaries and pre-boundary layouts: one source of truth with finalize
+// (research/historical/regimes.json, copied into manifest.json by finalize -regimes).
+const REGIMES = JSON.parse(readFileSync(new URL('../regimes.json', import.meta.url), 'utf8'));
+export const REGIME_BOUNDARIES = REGIMES.boundaries;
+// Pre-B4 layouts: event key -> first slot of B4 on that program.
+export const PRE_B4_LAYOUTS = new Map(Object.entries(REGIMES.pre_layouts));
 
 const DAY = 86400;
 // The 2026-10-02 program upgrade is a regime boundary (supervisor ruling, 2026-10-03):
@@ -50,7 +58,17 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
     if (n !== 0 && !(n === 8 && EXTRA8_EVENTS.has(ev))) misses.push(`extra bytes ${k} x${v}`);
   }
   for (const [k, v] of Object.entries(sum('newer_layouts'))) if (!EXTRA8_EVENTS.has(k)) misses.push(`newer layout ${k} x${v}`);
-  for (const [k, v] of Object.entries(sum('older_layouts'))) misses.push(`older layout ${k} x${v}`);
+  // The dataset's own regimes (manifest.regime_boundaries, copied by finalize -regimes)
+  // win over the repository file.
+  const preLayouts = man.regime_boundaries?.pre_layouts ? new Map(Object.entries(man.regime_boundaries.pre_layouts)) : PRE_B4_LAYOUTS;
+  // Older layouts: only the pre-B4 layout, and only in units that start before B4 on
+  // that program (the unit holding the boundary may carry both).
+  for (const u of man.units || []) {
+    for (const [k, v] of Object.entries(u.older_layouts || {})) {
+      const b4 = preLayouts.get(k);
+      if (b4 === undefined || !(u.from_slot < b4)) misses.push(`older layout ${k} x${v}${b4 === undefined ? '' : ` in unit from slot ${u.from_slot}, after B4 (${b4})`}`);
+    }
+  }
   const anomalies = (man.units || []).reduce((s, u) => s + (u.length_anomalies || 0), 0);
   if (anomalies > 0) misses.push(`event length anomalies ${anomalies}`);
   // Reserve chains and recorded balances.
@@ -67,7 +85,26 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
   }
   if (report.raw) {
     if (report.raw.signature_mismatch > 0) misses.push(`raw signature mismatches ${report.raw.signature_mismatch}`);
+    if ((report.raw.create_rows_with_raw ?? 0) !== (report.raw.create_rows ?? 0)) misses.push(`create or migration transactions without raw record ${report.raw.create_rows - report.raw.create_rows_with_raw}`);
     if (report.raw.trade_txs_with_raw !== report.raw.trade_txs) misses.push(`trade transactions without raw record ${report.raw.trade_txs - report.raw.trade_txs_with_raw}`);
+  }
+  // Token movements (check.mjs "Token movements").
+  const mv = report.movements;
+  if (mv) {
+    if (mv.files === 0) misses.push('token movement files absent');
+    if (mv.malformed > 0) misses.push(`malformed movement rows ${mv.malformed}`);
+    if (mv.outside_coverage > 0) misses.push(`movement rows of non-pump mints outside movement_coverage ${mv.outside_coverage}`);
+    if ((mv.empty_owner_rows ?? 0) !== (mv.empty_owner_coverage ?? 0)) misses.push(`movement rows with an empty owner ${mv.empty_owner_rows}, coverage records count ${mv.empty_owner_coverage}`);
+    if (mv.coverage_bad_scope > 0) misses.push(`movement coverage rows with an unknown scope ${mv.coverage_bad_scope}`);
+    if (mv.supply_negative > 0) misses.push(`token supply below zero for ${mv.supply_negative} mints`);
+    if (mv.balance_exact !== mv.balance_checks) misses.push(`token balance changes unexplained by movement rows ${mv.balance_checks - mv.balance_exact}`);
+  }
+  // Swap attribution (check.mjs "Swap attribution").
+  const sa = report.swap_attribution;
+  if (!sa) misses.push('swap attribution not checked');
+  else {
+    if (sa.missing_column > 0) misses.push(`trade rows without user_token_account / user_token_owner ${sa.missing_column}`);
+    if (sa.owner_empty_unmarked > 0) misses.push(`trade rows with an empty user_token_owner and no swap_owner_unknown mark ${sa.owner_empty_unmarked}`);
   }
   const liveFail = (report.live || []).filter((x) => !x.pass).length;
   if (liveFail > 0) misses.push(`live on-chain mismatches ${liveFail}`);

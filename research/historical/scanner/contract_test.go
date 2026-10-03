@@ -110,8 +110,29 @@ func TestSampledMintsSeesPreBalancesOnly(t *testing.T) {
 	lean, _ := leanMeta(raw)
 	r := &blockResult{agg: map[aggKey]*aggVal{}}
 	st := &UnitStats{}
-	r.addRaw(st, &blockData{slot: 1, blockTime: 2}, 0, "sig", []byte{0}, raw, lean)
+	r.addRaw(st, &blockData{slot: 1, blockTime: 2}, 0, "sig", []byte{0}, raw, lean, nil)
 	if len(r.raw) != 1 || !strings.Contains(r.raw[0], in) {
 		t.Fatalf("no raw record for a mint seen only in pre-token balances")
+	}
+}
+
+func TestCreateKeepsRawRecordForAnyMint(t *testing.T) {
+	var out string
+	for i := 0; i < 5000 && out == ""; i++ {
+		if m := solana.NewWallet().PublicKey().String(); !inSample(m) {
+			out = m
+		}
+	}
+	raw := metaProto(false, false, nil)
+	lean, _ := leanMeta(raw)
+	r := &blockResult{agg: map[aggKey]*aggVal{}}
+	st := &UnitStats{}
+	r.addRaw(st, &blockData{slot: 1, blockTime: 2}, 0, "sig", []byte{0}, raw, lean, nil, out)
+	if len(r.raw) != 0 {
+		t.Fatalf("a transaction of an unsampled mint got a raw record")
+	}
+	r.addRaw(st, &blockData{slot: 1, blockTime: 2}, 0, "sig", []byte{0}, raw, lean, []string{out}, out)
+	if len(r.raw) != 1 || !strings.Contains(r.raw[0], `"mints":["`+out+`"]`) {
+		t.Fatalf("the create of an unsampled mint must keep its raw record listing the mint: %v", r.raw)
 	}
 }
