@@ -11,6 +11,7 @@ const RUG = FIXTURE.cases.find((c) => c.name === 'rug')!;
 
 const report = (over: Partial<LaunchReport>): LaunchReport => ({
   mint: 'M', creator: 'D', createdAtMs: 0, supply: '1000000', transactions: 1, creatorDumpAtMs: null, deployerSoldBps: 0, levels: [],
+  peak: '0', peakAtMs: null, peakVenue: null, peakExitCostBps: null, afterPeakBps: null,
   outsiderIn: '0', outsiderOut: '0', finalQuote: '0', executableLoss: '0', transferredBps: 0, transferSoldBps: 0, bundleBoughtBps: 0, bundleSoldBps: 0, ...over,
 });
 const lv = (atMs: number, level: number, peak: number) => ({ atMs, level: String(level), peak: String(peak) });
@@ -23,6 +24,11 @@ describe('launch analysis on the known rug', () => {
     expect(BigInt(r.outsiderIn)).toBeGreaterThan(0n);
     expect(BigInt(r.executableLoss)).toBe(BigInt(r.outsiderIn) - BigInt(r.outsiderOut) - BigInt(r.finalQuote));
     expect(r.levels.length).toBeGreaterThan(0);
+    const top = r.levels.reduce((a, l) => (BigInt(l.level) > BigInt(a.level) ? l : a));
+    expect(r).toMatchObject({ peak: top.level, peakAtMs: top.atMs, peakVenue: 'curve' });
+    expect(r.peakExitCostBps).not.toBeNull();
+    const i = r.levels.indexOf(top);
+    expect(r.afterPeakBps).toBe(i + 1 < r.levels.length ? Number((BigInt(r.levels[i + 1]!.level) * 10_000n) / BigInt(top.level)) : null);
   });
 
   it('a history without a create gives no report', () => {

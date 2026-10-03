@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { OFF_CHAIN, leakTest, replayOnce, type FeedEvent, type MarketEvent, type Moment, type ProofRun, type Strategy } from '../../src/engine/index.ts';
 import { DAY_MS, RUG_CONFIG, rugConfigIssues, type RugConfig } from '../../src/config/index.ts';
 import { NATIVE_MINT, SYSTEM_PROGRAM } from '../../src/chain/programs.ts';
-import { DeployerIndex, RugLabeller, type RugLabel } from '../../src/gates/index.ts';
+import { DeployerIndex, RugLabeller, exitCostBps, type RugLabel } from '../../src/gates/index.ts';
+import { BPS_DENOMINATOR } from '../../src/units/index.ts';
 import { CONFIG } from '../fixtures.ts';
 
 const DEV = 'Dev1111111111111111111111111111111111111111';
@@ -15,7 +16,7 @@ const POOL = 'Pool111111111111111111111111111111111111111';
 const T0 = 1_790_000_000n; // launch, chain seconds
 
 /** Small numbers so each boundary is one unit wide: 2% of 1,000,000 is 20,000; 1% of a 10,000 peak is 100. */
-const CFG: RugConfig = { version: 'rugs-test', creatorDump: { supplyBps: 200, windowMs: 10_000 }, collapse: { dropBps: 9_900, windowMs: 10_000, minPeakLamports: 0 } };
+const CFG: RugConfig = { version: 'rugs-test', creatorDump: { supplyBps: 200, windowMs: 10_000 }, collapse: { dropBps: 9_900, windowMs: 10_000, minPeakLamports: 0 }, materiality: { referenceLamports: 1_000, maxExitCostBps: 1_000 } };
 const SUPPLY = 1_000_000n;
 
 let n = 0;
@@ -281,6 +282,49 @@ describe('malformed and look-alike events', () => {
   });
 });
 
+describe('observed event and materiality (fixed reference, never the bankroll)', () => {
+  it('a dump records its venue and amounts; a collapse its venue, peak, level and materiality at the peak', () => {
+    const [d] = run([create(), trade({ user: DEV, isBuy: false, tokens: 20_000n, sol: 5n })]).labels;
+    expect(label(d!)).toMatchObject({ venue: 'curve', amounts: { sold: 20_000n, supply: SUPPLY } });
+    expect(label(d!).materiality).toBeUndefined();
+    const [c] = run([create(), trade({ sol: 10_000n }), trade({ sol: 0n })]).labels;
+    // The peak's state: virtual SOL 30 + 10,000, virtual tokens 900, no fee fields (0 bps).
+    const cost = exitCostBps({ venue: 'curve', quote: 10_030n, base: 900n, feeBps: 0n }, 1_000n);
+    expect(label(c!)).toMatchObject({ venue: 'curve', amounts: { peak: 10_000n, level: 0n }, materiality: { referenceLamports: 1_000n, exitCostBps: cost, material: cost! <= 1_000n } });
+  });
+
+  it('a pool collapse records the pool state at its peak, the sale after it included', () => {
+    const [c] = run([create(), migration(), sell({ vault: 10_000n, out: 9_950n, lp: 50n })]).labels;
+    expect(label(c!)).toMatchObject({ venue: 'pool', amounts: { peak: 10_000n, level: 100n } });
+    expect(label(c!).materiality!.exitCostBps).toBe(exitCostBps({ venue: 'pool', quote: 10_000n, base: 5n, feeBps: 0n }, 1_000n));
+  });
+
+  it('materiality is unknown when the peak had no pricing state', () => {
+    const t = trade({ sol: 10_000n });
+    const data = { ...((t.value as { event: { data: Record<string, unknown> } }).event.data) };
+    delete data['virtualTokenReserves'];
+    const [c] = run([create(), ev('pump', 'TradeEvent', data), trade({ sol: 0n })]).labels;
+    expect(label(c!).materiality).toEqual({ referenceLamports: 1_000n, exitCostBps: null, material: null });
+  });
+
+  it('exit cost: price impact grows as the peak gets thinner, fees add, unusable states are refused', () => {
+    const deep = { venue: 'pool' as const, quote: 1_000_000_000n, base: 1_000_000_000n, feeBps: 0n };
+    expect(exitCostBps(deep, 1_000_000n)).toBe(10n);
+    expect(exitCostBps({ ...deep, feeBps: 100n }, 1_000_000n)).toBe(109n);
+    expect(exitCostBps({ ...deep, quote: 1_000n, base: 1_000n }, 1_000_000n)).toBe(9_990n);
+    for (const bad of [{ ...deep, quote: 0n }, { ...deep, base: 0n }, { ...deep, feeBps: -1n }, { ...deep, feeBps: BPS_DENOMINATOR }]) expect(exitCostBps(bad, 1n)).toBeNull();
+    expect(exitCostBps(deep, 0n)).toBeNull();
+    expect(exitCostBps({ ...deep, base: 1n }, 1n)).toBeNull();
+  });
+
+  it('labels do not depend on any trade size: the labeller reads only the rugs config', () => {
+    const events = [create(), trade({ sol: 10_000n }), trade({ sol: 0n })];
+    const a = run(events).labels.map(label);
+    const b = run(events, { ...CFG }).labels.map(label);
+    expect(a).toEqual(b);
+  });
+});
+
 describe('probe (research runs)', () => {
   it('sees every level with its running peak and every deployer sale total, also after the label, and labels once', () => {
     const levels: [bigint, bigint][] = [];
@@ -305,7 +349,10 @@ describe('config', () => {
   it('the shipped config is valid and versioned', () => {
     expect(rugConfigIssues(RUG_CONFIG)).toEqual([]);
     // Changing a value needs a new version and a DECISIONS entry (docs/DECISIONS.md "Rug labels").
-    expect(RUG_CONFIG).toEqual({ version: 'rugs-2', creatorDump: { supplyBps: 200, windowMs: DAY_MS }, collapse: { dropBps: 9_900, windowMs: DAY_MS, minPeakLamports: 0 } });
+    expect(RUG_CONFIG).toEqual({
+      version: 'rugs-2', creatorDump: { supplyBps: 200, windowMs: DAY_MS }, collapse: { dropBps: 9_900, windowMs: DAY_MS, minPeakLamports: 0 },
+      materiality: { referenceLamports: 1_000_000_000, maxExitCostBps: 1_000 },
+    });
     expect(Object.isFrozen(RUG_CONFIG.collapse)).toBe(true);
   });
 

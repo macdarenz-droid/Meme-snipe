@@ -4,7 +4,7 @@
 // does, and nothing here feeds a decision. Labels come from the same labeller, through its probe.
 import { recordFromRpc, transactionEvents, type RpcTransactionBase64 } from '../../../core/src/chain/index.ts';
 import type { RugConfig } from '../../../core/src/config/rugs.ts';
-import { RugLabeller } from '../../../core/src/gates/index.ts';
+import { RugLabeller, exitCostBps, type VenueState } from '../../../core/src/gates/index.ts';
 import { BPS_DENOMINATOR } from '../../../core/src/units/index.ts';
 import { eventsOfFrame, rankIn, type Frame } from '../providers/canonical.ts';
 
@@ -26,6 +26,13 @@ export interface LaunchReport {
   readonly deployerSoldBps: number;
   /** Per level in the window: the running peak and the level, for minimum-peak sweeps. */
   readonly levels: readonly { readonly atMs: number; readonly level: string; readonly peak: string }[];
+  /** The highest quote liquidity in the window, when, on which venue, and the exit cost of the rugs reference position there. */
+  readonly peak: string;
+  readonly peakAtMs: number | null;
+  readonly peakVenue: string | null;
+  readonly peakExitCostBps: string | null;
+  /** The level just after the highest peak, bps of it: a one-transaction spike drops at once (null: nothing after). */
+  readonly afterPeakBps: number | null;
   /** Non-deployer wallets' SOL into and out of the mint's venues in the window, and the quote liquidity left at its end. */
   readonly outsiderIn: string;
   readonly outsiderOut: string;
@@ -49,10 +56,14 @@ export const analyzeLaunch = (txs: readonly { readonly signature: string; readon
   let create: Record<string, unknown> | null = null;
   let pool: string | null = null;
   const levels: { atMs: number; level: string; peak: string }[] = [];
+  let top: { level: bigint; atMs: number; state: VenueState | null; index: number } | null = null;
   let sold = 0n;
   let dumpAt: number | null = null;
   const labeller = new RugLabeller(rugs, {
-    level: (_m, level, peak, atMs) => levels.push({ atMs, level: String(level), peak: String(peak) }),
+    level: (_m, level, peak, atMs, state) => {
+      if (top === null || level > top.level) top = { level, atMs, state, index: levels.length };
+      levels.push({ atMs, level: String(level), peak: String(peak) });
+    },
     sale: (_m, total, atMs) => {
       sold = total;
       const supply = create === null ? 0n : big(create['tokenTotalSupply']);
@@ -134,9 +145,14 @@ export const analyzeLaunch = (txs: readonly { readonly signature: string; readon
   if (create === null) return null;
   const supply = big(create['tokenTotalSupply']);
   const finalQuote = levels.length === 0 ? 0n : BigInt(levels.at(-1)!.level);
+  const t = top as { level: bigint; atMs: number; state: VenueState | null; index: number } | null;
+  const after = t === null ? undefined : levels[t.index + 1];
+  const exit = t === null || t.state === null ? null : exitCostBps(t.state, BigInt(rugs.materiality.referenceLamports));
   return {
     mint: create['mint'] as string, creator: create['creator'] as string, createdAtMs: Number(big(create['timestamp'])) * 1_000, supply: String(supply),
     transactions: count, creatorDumpAtMs: dumpAt, deployerSoldBps: bps(sold, supply), levels,
+    peak: String(t?.level ?? 0n), peakAtMs: t?.atMs ?? null, peakVenue: t?.state?.venue ?? null, peakExitCostBps: exit === null ? null : String(exit),
+    afterPeakBps: t === null || after === undefined || t.level === 0n ? null : bps(BigInt(after.level), t.level),
     outsiderIn: String(outsiderIn), outsiderOut: String(outsiderOut), finalQuote: String(finalQuote),
     executableLoss: String(outsiderIn - outsiderOut - finalQuote),
     transferredBps: bps(transferred, supply), transferSoldBps: bps(transferSold, supply),

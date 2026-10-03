@@ -7,7 +7,7 @@ import { MintJudge, deployerCheckCovers, parseRugCheck, type MintStatus, type Ru
 const DEV = 'Dev1111111111111111111111111111111111111111';
 const MINT = 'Mint111111111111111111111111111111111111111';
 const T0 = 1_790_000_000n;
-const CFG: RugConfig = { version: 'rugs-test', creatorDump: { supplyBps: 200, windowMs: 10_000 }, collapse: { dropBps: 9_900, windowMs: 10_000, minPeakLamports: 0 } };
+const CFG: RugConfig = { version: 'rugs-test', creatorDump: { supplyBps: 200, windowMs: 10_000 }, collapse: { dropBps: 9_900, windowMs: 10_000, minPeakLamports: 0 }, materiality: { referenceLamports: 1_000, maxExitCostBps: 1_000 } };
 
 let n = 0;
 const ev = (name: string, data: Record<string, unknown>, slot: bigint): MarketEvent =>
@@ -80,7 +80,7 @@ describe('deployerCheckCovers', () => {
   });
   it('counts only rugs as rugs', () => {
     const m = (mint: string, status: MintStatus) => ({ mint, createdAtMs: 0, status, detail: '' });
-    const lab = { mint: 'D', creator: DEV, rule: 'creator-dump' as const, evidence: 'observed' as const, atMs: 0, slot: 1n, version: 'v', detail: '' };
+    const lab = { mint: 'D', creator: DEV, rule: 'creator-dump' as const, evidence: 'observed' as const, atMs: 0, slot: 1n, version: 'v', detail: '', venue: 'curve' as const, amounts: { sold: 1n, supply: 1n } };
     expect(deployerCheckCovers(f(100n, [m('A', 'rug'), m('B', 'open'), m('C', 'clear'), { ...m('D', 'rug'), label: lab }]), DEV, ['A', 'B', 'C', 'D'], 0, asOf(100n), cfg))
       .toEqual({ covered: true, rugs: [{ mint: 'A' }, { mint: 'D', kind: 'creator-dump' }] });
   });

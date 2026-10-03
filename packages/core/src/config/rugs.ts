@@ -18,6 +18,11 @@ export interface RugConfig {
      */
     readonly minPeakLamports: number;
   };
+  /**
+   * Materiality recorded with every collapse, at a fixed reference size and cost limit (never the bankroll): the cost
+   * of exiting a `referenceLamports` position at the peak, material when at most `maxExitCostBps`. Not used to decide.
+   */
+  readonly materiality: { readonly referenceLamports: number; readonly maxExitCostBps: number };
 }
 
 const VALUES: RugConfig = {
@@ -26,6 +31,8 @@ const VALUES: RugConfig = {
   creatorDump: { supplyBps: 200, windowMs: DAY_MS },
   // The TVL −99% label of Li et al., arXiv 2608.20271.
   collapse: { dropBps: 9_900, windowMs: DAY_MS, minPeakLamports: 0 },
+  // A provisional reference, recorded only: a 1 SOL position and a 10% exit cost. Set from practice-day measurements.
+  materiality: { referenceLamports: 1_000_000_000, maxExitCostBps: 1_000 },
 };
 
 export const RUG_CONFIG: RugConfig = deepFreeze(VALUES);
@@ -75,5 +82,7 @@ export const rugConfigIssues = (c: RugConfig): string[] => {
   bps('collapse.dropBps', c.collapse.dropBps);
   duration('collapse.windowMs', c.collapse.windowMs);
   if (!Number.isSafeInteger(c.collapse.minPeakLamports) || c.collapse.minPeakLamports < 0) issues.push('collapse.minPeakLamports must be a non-negative integer');
+  if (!Number.isSafeInteger(c.materiality.referenceLamports) || c.materiality.referenceLamports < 1) issues.push('materiality.referenceLamports must be a positive integer');
+  bps('materiality.maxExitCostBps', c.materiality.maxExitCostBps);
   return issues;
 };
