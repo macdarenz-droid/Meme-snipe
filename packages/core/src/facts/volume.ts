@@ -53,3 +53,72 @@ export const parseVolumeHoursCsv = (text: string, day: number): VolumeHour[] | n
   }
   return out;
 };
+
+/**
+ * `dailyChainVolume` kept up to date one hour row at a time (FACTS-1d review): each row touches only its own day, and
+ * hours older than the kept window are dropped once per new boundary day, so loading a whole window costs time in
+ * proportion to its rows. `add` says whether the complete days changed, so the producer releases a new fact only then.
+ * Same rules as `dailyChainVolume`: a contradicting repeat of an hour makes it uncovered, and only complete days count.
+ */
+export class ChainVolumeDays {
+  readonly #keepMs: number;
+  readonly #hours = new Map<number, Map<number, VolumeHour>>();
+  readonly #complete = new Map<number, bigint>();
+  #trimDay = Number.MIN_SAFE_INTEGER;
+  /** Hour rows visited so far (the linear-cost test reads it). */
+  steps = 0;
+
+  constructor(keepMs: number) {
+    this.#keepMs = keepMs;
+  }
+
+  add(r: VolumeHour): boolean {
+    const day = Math.floor(r.hourStartMs / DAY_MS);
+    const m = this.#hours.get(day) ?? new Map<number, VolumeHour>();
+    this.#hours.set(day, m);
+    const prev = m.get(r.hourStartMs);
+    m.set(r.hourStartMs, prev !== undefined && (prev.lamports !== r.lamports || prev.covered !== r.covered) ? { ...r, covered: false } : r);
+    let changed = this.#settle(day);
+    const cut = r.hourStartMs - this.#keepMs;
+    const cutDay = Math.floor(cut / DAY_MS);
+    if (cutDay > this.#trimDay) {
+      // A new boundary day: every older day goes, once.
+      this.#trimDay = cutDay;
+      for (const d of [...this.#hours.keys()]) {
+        if (d >= cutDay) continue;
+        this.#hours.delete(d);
+        changed = this.#complete.delete(d) || changed;
+      }
+    }
+    const edge = this.#hours.get(cutDay);
+    if (edge !== undefined) {
+      let cutHere = false;
+      for (const t of [...edge.keys()]) if (t < cut) cutHere = edge.delete(t) || cutHere;
+      if (cutHere) changed = this.#settle(cutDay) || changed;
+    }
+    return changed;
+  }
+
+  /** The complete days, oldest first, as `dailyChainVolume` returns them. */
+  days(): { readonly day: number; readonly volumeLamports: bigint }[] {
+    return [...this.#complete].sort((a, b) => a[0] - b[0]).map(([day, volumeLamports]) => ({ day, volumeLamports }));
+  }
+
+  /** Recomputes one day; true when its complete total changed. */
+  #settle(day: number): boolean {
+    const m = this.#hours.get(day);
+    let sum: bigint | null = 0n;
+    if (m === undefined || m.size !== HOURS_PER_DAY) sum = null;
+    else {
+      for (const h of m.values()) {
+        this.steps++;
+        if (!h.covered) sum = null;
+        else if (sum !== null) sum += h.lamports;
+      }
+    }
+    const before = this.#complete.get(day);
+    if (sum === null) return this.#complete.delete(day);
+    this.#complete.set(day, sum);
+    return before !== sum;
+  }
+}

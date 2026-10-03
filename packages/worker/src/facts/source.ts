@@ -17,7 +17,9 @@ import { producerOptions } from '../../../core/src/facts/index.ts';
 import { heliusRpcUrl, type HttpClient, type Secrets } from '../providers/index.ts';
 import type { Scheduler } from '../scheduler/index.ts';
 import { ASSUMPTIONS } from './budget.ts';
+import { join } from 'node:path';
 import { FactReaders, FactRpc } from './readers.ts';
+import { CHAIN_VOLUME_DIR, fileChainVolumeStore } from './volume-store.ts';
 import type { CandidateReason } from '../engine/strategy.ts';
 import type { FactContext, FactSource } from '../run/facts.ts';
 import type { TimerHandle } from '../scheduler/timers.ts';
@@ -66,6 +68,9 @@ export interface LiveFactsOptions {
 
 /** The counter fact: reads per UTC day by kind and outcome. Never read by a gate. */
 export const FACT_READS_KEY = 'worker:fact-reads';
+
+/** `{ detail, atMs }`: a verified chain-volume day whose release later changed (tamper signal; that day is unknown). */
+export const CHAIN_VOLUME_ALERT_KEY = 'worker:chain-volume-alert';
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -227,8 +232,11 @@ export interface LiveFactsWiring {
   /** Keyless APIs the worker has no scheduler for yet. */
   readonly goplus: Scheduler;
   readonly coinbase: Scheduler;
-  /** GitHub release downloads (GITHUB_RELEASES): chain volume. Without it, live chain volume is unknown. */
-  readonly github?: Scheduler;
+  /**
+   * Chain volume from DATA-1c's releases: the REST API (GITHUB_RELEASES), github.com downloads (GITHUB_DOWNLOADS) and
+   * the worker's state dir for verified days. Without it, live chain volume is unknown.
+   */
+  readonly github?: { readonly api: Scheduler; readonly downloads: Scheduler; readonly stateDir?: string };
 }
 
 /** Mint-history page caps (trial values, configuration): 20 signature pages, then 3 pages and 10 transactions a funder. */
@@ -243,7 +251,13 @@ export const liveFacts = (w: LiveFactsWiring): LiveFacts => {
       rpc: new FactRpc({ url: () => heliusRpcUrl(w.secrets), http: w.http, scheduler: ctx.schedulers.helius, timeoutMs: 10_000 }),
       rugcheck: { scheduler: ctx.schedulers.rugcheck }, goplus: { scheduler: w.goplus },
       jupiter: { scheduler: ctx.schedulers.jupiter, secrets: w.secrets }, coinbase: { scheduler: w.coinbase },
-      ...(w.github === undefined ? {} : { releases: { scheduler: w.github } }),
+      ...(w.github === undefined ? {} : {
+        releases: {
+          api: { scheduler: w.github.api }, downloads: { scheduler: w.github.downloads },
+          ...(w.github.stateDir === undefined ? {} : { store: fileChainVolumeStore(join(w.github.stateDir, CHAIN_VOLUME_DIR)) }),
+          alert: (detail: string) => ctx.sink.fact(CHAIN_VOLUME_ALERT_KEY, { detail, atMs: ctx.timers.now() }),
+        },
+      }),
     }),
     ...(w.github === undefined ? {} : { chainVolume: { volumeLagDays: w.policy.regime.volumeLagDays, volumeWindowDays: w.policy.regime.volumeWindowDays } }),
     tickMs: 1_000,

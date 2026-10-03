@@ -13,7 +13,8 @@ import {
 import { VOLUME_SERIES_START_DAY } from '../../../core/src/config/time.ts';
 import type { Policy } from '../../../core/src/config/policy.ts';
 import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
-import { dayName, volumeCheckPassed, volumeRelease, volumeReleaseAssets } from './volume-hours.ts';
+import { VOLUME_TAG, dayName, dayNumber, sha256Hex, volumeCheckPassed, volumeRelease, volumeReleaseAssets } from './volume-hours.ts';
+import type { ChainVolumeStore, StoredVolumeDay } from './volume-store.ts';
 import { P2, type Priority, type Scheduler, ScheduleRefused } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import type { FrameBody, Source } from '../providers/canonical.ts';
@@ -210,8 +211,8 @@ export interface FactReadersOptions {
   /** Jupiter Tokens (the shared main bucket; the `tokens` lane is capped at 6 a minute for P3). */
   readonly jupiter?: ThirdParty & { readonly secrets: Secrets };
   readonly coinbase?: ThirdParty;
-  /** DATA-1c's volume releases through the GitHub API (`base` is the API's repository URL): the regime's chain volume. */
-  readonly releases?: ThirdParty;
+  /** DATA-1c's volume releases: the regime's chain volume. */
+  readonly releases?: ReleasesSource;
   /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
   readonly token2022Filter?: Token2022Filter;
@@ -226,6 +227,21 @@ export const GOPLUS_BASE = 'https://api.gopluslabs.io';
 export const JUPITER_BASE = 'https://api.jup.ag';
 export const COINBASE_BASE = 'https://api.exchange.coinbase.com';
 export const RELEASES_BASE = 'https://api.github.com/repos/macdarenz-droid/Meme-snipe';
+export const DOWNLOADS_BASE = 'https://github.com/macdarenz-droid/Meme-snipe';
+/** Release list pages read per pass (100 releases a page); more would mean a runaway list, and the rest stay unknown. */
+export const RELEASE_PAGES_MAX = 10;
+
+/** Where chain volume comes from: the GitHub API (metadata, REST quota) and github.com (asset downloads, outside it). */
+export interface ReleasesSource {
+  /** The REST API's scheduler (GITHUB_RELEASES); `base` is the API's repository URL. */
+  readonly api: ThirdParty;
+  /** github.com downloads (GITHUB_DOWNLOADS); `base` is the repository's web URL. */
+  readonly downloads: ThirdParty;
+  /** Verified days kept across restarts; without it every start reads the whole window. */
+  readonly store?: ChainVolumeStore;
+  /** Told when a stored day's release changed (a tamper signal): that day is unknown from then on. */
+  readonly alert?: (detail: string) => void;
+}
 /** A day whose volume asset is not published yet is asked again at most once in this long. */
 export const VOLUME_RETRY_MS = 3_600_000;
 const HOUR_MS = 3_600_000;
@@ -254,9 +270,12 @@ export class FactReaders {
   readonly #layout = new Map<string, readonly string[]>();
   /** SOL/USD bars already ingested, by start. */
   readonly #bars = new Set<number>();
-  /** Chain-volume days ingested (never read again) and the last failed attempt of the others. */
-  readonly #volumeDays = new Set<number>();
+  /** Chain-volume days ingested (never read again, but checked against each listing), the last failed attempt of the
+   * others, and the days refused for good (their release changed after they were verified). */
+  readonly #volumeDays = new Map<number, StoredVolumeDay>();
   readonly #volumeTried = new Map<number, number>();
+  readonly #volumeTampered = new Set<number>();
+  #volumeStoreRead = false;
   readonly outcomes: ReadOutcome[] = [];
 
   constructor(o: FactReadersOptions) {
@@ -608,23 +627,85 @@ export class FactReaders {
   }
 
   /**
-   * The regime's chain volume (§6.4): each UTC day the volume window can reach (series start or the 365-day cap, up to
-   * yesterday) is read once from its `data-volume-DAY` release. The release is read through the GitHub API and must
-   * pass `volumeReleaseAssets` (GitHub Actions' own prerelease, not a draft); both assets are then downloaded by id,
-   * `volume-check-DAY.json` must be that day's passed cross-check, and `volume-hours-DAY.csv`'s 24 rows are ingested
-   * as `read:chain-volume-hour` (an uncovered hour as `covered: false`). A day not published yet, or refused, ingests
-   * nothing (unknown) and is asked again at most once per VOLUME_RETRY_MS; an ingested day is never asked again. Days
-   * are read one at a time, and a rate limit or a refused schedule ends the pass (the rest wait for the next one).
+   * The regime's chain volume (§6.4). Each pass:
+   * 1. On the first pass, days kept in the store are re-checked (text against its sha256, the cross-check, the CSV)
+   *    and ingested, so a restart reads only new days. A record that fails is ignored and its day read again.
+   * 2. The release list is read through the GitHub API (`releases?per_page=100`, 1 or 2 calls) and every
+   *    `data-volume-DAY` release is checked with `volumeReleaseAssets` (GitHub Actions' own prerelease, both assets
+   *    uploaded by it, with a sha256 digest).
+   * 3. A day already ingested whose listed asset ids or digests differ from what was verified is tampered: its hours
+   *    are ingested again as uncovered (the producer then drops the day), the store marks it, `alert` is told, and it
+   *    is never used again. Releases are never edited, so a change is not a publish delay.
+   * 4. Each other day the window reaches (series start or the 365-day cap, up to yesterday) is downloaded from
+   *    github.com, each asset checked against its digest, the cross-check against the day, and the CSV's 24 rows
+   *    ingested as `read:chain-volume-hour` (an uncovered hour as `covered: false`), then stored.
+   * A day missing or refused ingests nothing (unknown, never zero) and is tried again at most once per VOLUME_RETRY_MS.
+   * A rate limit or a refused schedule ends the pass; the next one goes on.
    */
   async readChainVolume(regime: Pick<Policy['regime'], 'volumeLagDays' | 'volumeWindowDays'>, priority: Priority = P2): Promise<boolean> {
-    const s = this.#o.releases;
-    if (s === undefined) return false;
-    const base = s.base ?? RELEASES_BASE;
-    const json = { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' };
+    const src = this.#o.releases;
+    if (src === undefined) return false;
     const today = Math.floor(this.#o.timers.now() / DAY_MS);
+    const first = Math.max(VOLUME_SERIES_START_DAY, today - regime.volumeLagDays - regime.volumeWindowDays + 1);
+    const downloadBase = src.downloads.base ?? DOWNLOADS_BASE;
+    if (!this.#volumeStoreRead) {
+      this.#volumeStoreRead = true;
+      for (const d of src.store?.load() ?? []) {
+        const day = dayNumber(d.day);
+        if (day === null || d.tag !== volumeRelease(d.day)) continue;
+        if (d.tampered) {
+          this.#volumeTampered.add(day);
+          continue;
+        }
+        if (day < first || day >= today) continue;
+        const rows = sha256Hex(d.hours.text) === d.hours.sha256 && sha256Hex(d.check.text) === d.check.sha256 && volumeCheckPassed(d.check.text, d.day)
+          ? parseVolumeHoursCsv(d.hours.text, day) : null;
+        if (rows === null) continue;
+        for (const r of rows) this.#ingest('github', RAW.volumeHour, r);
+        this.#volumeDays.set(day, d);
+        this.outcomes.push({ read: `chain-volume:${d.day}`, ok: true, detail: `${rows.length} hours from the store` });
+      }
+    }
+    const limited = (e: unknown): boolean => e instanceof ScheduleRefused || (e instanceof ProviderError && (e.kind === 'rate_limited' || e.status === 403));
+    // The release list: every data-volume release by tag (a tag listed twice is refused).
+    const listed = new Map<string, unknown>();
+    try {
+      const api = src.api;
+      const json = { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' };
+      for (let page = 1; page <= RELEASE_PAGES_MAX; page++) {
+        const v = JSON.parse(await this.#getText(api, 'github', 'release list', `${api.base ?? RELEASES_BASE}/releases?per_page=100&page=${page}`, priority, json)) as unknown;
+        if (!Array.isArray(v)) throw new ProviderError('github', 'shape', 'release list is not an array');
+        for (const r of v) {
+          const tag = typeof r === 'object' && r !== null ? (r as Record<string, unknown>)['tag_name'] : undefined;
+          if (typeof tag === 'string' && VOLUME_TAG.test(tag)) listed.set(tag, listed.has(tag) ? null : r);
+        }
+        if (v.length < 100) break;
+      }
+    } catch (e) {
+      this.outcomes.push({ read: 'chain-volume:list', ok: false, detail: e instanceof Error ? e.message : 'failed' });
+      return false;
+    }
+    // Days already verified must still match their release.
+    for (const [day, d] of this.#volumeDays) {
+      if (!listed.has(d.tag)) continue;
+      const refs = volumeReleaseAssets(listed.get(d.tag), d.day, downloadBase);
+      if (refs !== null && refs.hours.id === d.hours.id && refs.hours.sha256 === d.hours.sha256 && refs.check.id === d.check.id && refs.check.sha256 === d.check.sha256) continue;
+      const rows = parseVolumeHoursCsv(d.hours.text, day) ?? [];
+      for (const r of rows) this.#ingest('github', RAW.volumeHour, { ...r, covered: false });
+      this.#volumeDays.delete(day);
+      this.#volumeTampered.add(day);
+      src.store?.save({ ...d, tampered: true });
+      const detail = `${d.day} volume unknown: release ${d.tag} changed after it was verified`;
+      this.outcomes.push({ read: `chain-volume:${d.day}`, ok: false, detail });
+      src.alert?.(detail);
+    }
     let all = true;
-    for (let day = Math.max(VOLUME_SERIES_START_DAY, today - regime.volumeLagDays - regime.volumeWindowDays + 1); day < today; day++) {
+    for (let day = first; day < today; day++) {
       if (this.#volumeDays.has(day)) continue;
+      if (this.#volumeTampered.has(day)) {
+        all = false;
+        continue;
+      }
       const tried = this.#volumeTried.get(day);
       if (tried !== undefined && this.#o.timers.now() - tried < VOLUME_RETRY_MS) {
         all = false;
@@ -634,21 +715,30 @@ export class FactReaders {
       const read = `chain-volume:${name}`;
       try {
         const unknown = (why: string) => new ProviderError('github', 'shape', `${name} volume unknown: ${why}`);
-        const ids = volumeReleaseAssets(await this.#getText(s, 'github', 'volume release', `${base}/releases/tags/${volumeRelease(name)}`, priority, json), name);
-        if (ids === null) throw unknown('release provenance does not hold');
-        const asset = (id: number) => this.#getText(s, 'github', 'volume asset', `${base}/releases/assets/${id}`, priority, { accept: 'application/octet-stream' });
-        if (!volumeCheckPassed(await asset(ids.check), name)) throw unknown('the cross-check did not pass for this day');
-        const rows = parseVolumeHoursCsv(await asset(ids.hours), day);
+        const tag = volumeRelease(name);
+        if (!listed.has(tag)) throw unknown('not published');
+        const refs = volumeReleaseAssets(listed.get(tag), name, downloadBase);
+        if (refs === null) throw unknown('release provenance does not hold');
+        const get = async (ref: { readonly url: string; readonly sha256: string }) => {
+          const text = await this.#getText(src.downloads, 'github', 'volume asset', ref.url, priority);
+          if (sha256Hex(text) !== ref.sha256) throw unknown('an asset does not match its digest');
+          return text;
+        };
+        const check = await get(refs.check);
+        if (!volumeCheckPassed(check, name)) throw unknown('the cross-check did not pass for this day');
+        const hours = await get(refs.hours);
+        const rows = parseVolumeHoursCsv(hours, day);
         if (rows === null) throw unknown('malformed asset');
         for (const r of rows) this.#ingest('github', RAW.volumeHour, r);
-        this.#volumeDays.add(day);
+        const stored: StoredVolumeDay = { tag, day: name, hours: { id: refs.hours.id, sha256: refs.hours.sha256, text: hours }, check: { id: refs.check.id, sha256: refs.check.sha256, text: check }, tampered: false };
+        this.#volumeDays.set(day, stored);
+        src.store?.save(stored);
         this.outcomes.push({ read, ok: true, detail: `${rows.length} hours` });
       } catch (e) {
         this.outcomes.push({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
         this.#volumeTried.set(day, this.#o.timers.now());
         all = false;
-        const limited = e instanceof ScheduleRefused || (e instanceof ProviderError && (e.kind === 'rate_limited' || e.status === 403));
-        if (limited) return false;
+        if (limited(e)) return false;
       }
     }
     return all;

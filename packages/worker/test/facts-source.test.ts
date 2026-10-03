@@ -1,7 +1,9 @@
 // FACTS-1b: the live fact source on WORKER-1's FactSource hook. Reads follow each candidate's last reasons
 // (staging), raw answers go on the worker's Feed, and the engine's FactFeed makes the gate facts, live and in a
 // replay of the recording alike.
-import { readdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
@@ -11,12 +13,12 @@ import { holdersKey, migrationKey, mintKey, parsePool, poolKey } from '../../cor
 import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { FIX } from '../../core/test/facts/helpers.ts';
 import { feesKey, type CandidateReason } from '../src/engine/strategy.ts';
-import { FACT_READS_KEY, LiveFacts, liveFacts, readsFor, type LiveReaders, type MintHistoryOptions } from '../src/facts/index.ts';
+import { CHAIN_VOLUME_ALERT_KEY, FACT_READS_KEY, LiveFacts, liveFacts, readsFor, type LiveReaders, type MintHistoryOptions } from '../src/facts/index.ts';
 import { replayRecorded, type Frame, type HttpRequest, type HttpResponse, type Release, type Secrets } from '../src/providers/index.ts';
 import { engineFeed } from '../src/run/engine-feed.ts';
 import { parseTyped } from '../src/run/json.ts';
 import type { FactContext } from '../src/run/facts.ts';
-import { ALCHEMY_FREE, COINBASE_PUBLIC, GITHUB_RELEASES, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, ManualTimers, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
+import { ALCHEMY_FREE, COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, ManualTimers, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
 import { blockNetwork } from './helpers.ts';
 import { MINT, Market, T, makeWorker, passingMarket } from './worker-harness.ts';
 
@@ -402,30 +404,66 @@ describe('liveFacts: the production source', () => {
     expect(frames.every((f) => f.key === RAW.solUsd)).toBe(true);
   });
 
-  it('with a GitHub scheduler, reads DATA-1c\'s data-volume releases through the GitHub API from the policy window\'s first day (lag plus cap) at start', async () => {
-    const timers = new ManualTimers(Date.UTC(2026, 6, 20) + 500 * 86_400_000 + 3_600_000);
+  it('with GitHub wired, lists releases through the API, downloads from github.com from the window\'s first day (lag plus cap), keeps verified days in the state dir and alerts on a changed release', async () => {
+    const DAYMS = 86_400_000;
+    const today = 20_654 + 500;
+    const first = today - TRIAL_POLICY.regime.volumeLagDays - TRIAL_POLICY.regime.volumeWindowDays + 1;
+    const timers = new ManualTimers(today * DAYMS + 3_600_000);
+    const name = (d: number) => new Date(d * DAYMS).toISOString().slice(0, 10);
+    const csvOf = (d: number) => ['hour_start_ms,lamports,covered', ...Array.from({ length: 24 }, (_, h) => `${d * DAYMS + h * 3_600_000},5,1`)].join('\n') + '\n';
+    const checkOf = (d: number) => JSON.stringify({ day: name(d), hours: 24, mismatches: [], problems: [] });
+    const bot = { login: 'github-actions[bot]', id: 41_898_282 };
+    let forged = false;
+    const rel = (d: number) => {
+      const asset = (id: number, file: string, text: string) => ({ id, name: file, state: 'uploaded', uploader: bot, digest: `sha256:${createHash('sha256').update(forged ? `${text}x` : text).digest('hex')}`, browser_download_url: `https://github.com/macdarenz-droid/Meme-snipe/releases/download/data-volume-${name(d)}/${file}` });
+      return { tag_name: `data-volume-${name(d)}`, author: bot, draft: false, prerelease: true, assets: [asset(d * 10 + 1, `volume-hours-${name(d)}.csv`, csvOf(d)), asset(d * 10 + 2, `volume-check-${name(d)}.json`, checkOf(d))] };
+    };
     const urls: string[] = [];
     const http = async (req: HttpRequest): Promise<HttpResponse> => {
       urls.push(req.url);
+      const ok = (text: string) => ({ status: 200, text, header: () => null }) as unknown as HttpResponse;
+      if (req.url.startsWith('https://api.github.com/repos/macdarenz-droid/Meme-snipe/releases?per_page=100&page=')) return ok(JSON.stringify([rel(first - 1), rel(first)]));
+      const m = /releases\/download\/data-volume-(\d{4}-\d{2}-\d{2})\/volume-(hours|check)-/.exec(req.url);
+      if (m !== null) {
+        const d = Date.parse(`${m[1]}T00:00:00Z`) / DAYMS;
+        return ok(m[2] === 'hours' ? csvOf(d) : checkOf(d));
+      }
       return { status: 404, text: 'Not Found', header: () => null } as unknown as HttpResponse;
     };
     const sched = (spec: SchedulerSpec) => new Scheduler(spec, { timers });
+    const frames: { key: string; value: unknown }[] = [];
+    const facts: { key: string; value: unknown }[] = [];
     const ctx = {
-      sink: { fact: () => undefined, now: () => timers.now() }, timers, watched: () => new Set<string>(), candidates: () => new Map(), tip: () => null,
+      sink: { fact: (key: string, value: unknown) => void facts.push({ key, value }), now: () => timers.now() }, timers, watched: () => new Set<string>(), candidates: () => new Map(), tip: () => null,
       schedulers: { helius: sched(HELIUS_FREE), alchemy: sched(ALCHEMY_FREE), jupiter: sched(JUPITER_FREE), rugcheck: sched(RUGCHECK_FREE) },
-      ingest: { ingest: () => undefined },
+      ingest: { ingest: (_s: unknown, body: { type: string; key: string; value: unknown }) => void frames.push({ key: body.key, value: body.value }) },
     } as unknown as FactContext;
-    const src = liveFacts({ policy: TRIAL_POLICY, secrets: { get: () => 'k' } as unknown as Secrets, http, goplus: sched(GOPLUS_FREE), coinbase: sched(COINBASE_PUBLIC), github: sched(GITHUB_RELEASES) });
+    const stateDir = mkdtempSync(join(tmpdir(), 'facts-source-'));
+    const src = liveFacts({
+      policy: TRIAL_POLICY, secrets: { get: () => 'k' } as unknown as Secrets, http, goplus: sched(GOPLUS_FREE), coinbase: sched(COINBASE_PUBLIC),
+      github: { api: sched(GITHUB_RELEASES), downloads: sched(GITHUB_DOWNLOADS), stateDir },
+    });
     src.start(ctx);
-    for (let k = 0; k < 2_000 && urls.filter((u) => u.includes('api.github.com')).length < 40; k++) {
-      await new Promise<void>((r) => setImmediate(r));
-      timers.advance(500);
-    }
+    const settleAll = async () => {
+      for (let k = 0; k < 400; k++) {
+        await new Promise<void>((r) => setImmediate(r));
+        timers.advance(500);
+      }
+    };
+    await settleAll();
+    const gh = urls.filter((u) => u.includes('github.com'));
+    expect(gh).toEqual([
+      'https://api.github.com/repos/macdarenz-droid/Meme-snipe/releases?per_page=100&page=1',
+      `https://github.com/macdarenz-droid/Meme-snipe/releases/download/data-volume-${name(first)}/volume-check-${name(first)}.json`,
+      `https://github.com/macdarenz-droid/Meme-snipe/releases/download/data-volume-${name(first)}/volume-hours-${name(first)}.csv`,
+    ]);
+    expect(frames.filter((f) => f.key === RAW.volumeHour).length).toBe(24);
+    expect(readdirSync(join(stateDir, 'chain-volume'))).toEqual([`data-volume-${name(first)}.json`]);
+    // The next hour the listing shows another digest for that day: unknown, with an alert fact.
+    forged = true;
+    timers.advance(3_600_000);
+    await settleAll();
     src.stop();
-    const gh = urls.filter((u) => u.includes('api.github.com'));
-    // A release that is not found costs one API call: the window's days, oldest first, up to the hourly limit.
-    expect(gh[0]).toBe('https://api.github.com/repos/macdarenz-droid/Meme-snipe/releases/tags/data-volume-2026-11-30');
-    expect(gh.length).toBe(50); // GITHUB_RELEASES: 50 an hour
-    expect(gh[39]).toBe('https://api.github.com/repos/macdarenz-droid/Meme-snipe/releases/tags/data-volume-2027-01-08');
+    expect(facts.filter((f) => f.key === CHAIN_VOLUME_ALERT_KEY)).toEqual([{ key: CHAIN_VOLUME_ALERT_KEY, value: expect.objectContaining({ detail: expect.stringContaining(`data-volume-${name(first)} changed`) }) }]);
   });
 });
