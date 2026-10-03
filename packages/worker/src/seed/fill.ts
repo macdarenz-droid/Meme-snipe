@@ -132,7 +132,8 @@ export const fillTradeGaps = async (o: FillOptions): Promise<{ readonly fills: r
     const complete = stoppedBy === 'empty' || (r !== null && r.stoppedBy === 'done' && r.gaps.length === 0 && events.length === read.length);
     fills.push({
       gap, complete, events, records: r?.records ?? [],
-      coverage: gap.liveStart === undefined ? [] : [closeFact(gap, gap.liveStart, complete, i + 1)],
+      // A close that would land after asOf (close.at exactly at it) is not made: the gap stays open (fail safe).
+      coverage: gap.liveStart === undefined ? [] : [closeFact(gap, gap.liveStart, complete, i + 1)].filter((e) => compareMoments(e.moment, o.asOf) <= 0),
       report: {
         creditsUsed: r?.creditsUsed ?? 0, latencyMs: o.timers.now() - started, stoppedBy, calls: r?.calls ?? { getSignaturesForAddress: 0, getTransaction: 0 },
         retries: r?.retries ?? 0, droppedFuture: r?.droppedFuture ?? 0, reasons: r?.gaps.map((g) => g.reason) ?? [],

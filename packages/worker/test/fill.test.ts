@@ -202,6 +202,9 @@ describe('FILL-2 after a restart', () => {
     const after: Moment = { slot: ASOF.slot + 1_000n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt + 60_000 };
     await expect(fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { liveStart: after })], asOf: ASOF })).rejects.toThrow(/after the process start/);
     await expect(fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { close: { via: `logs:${QVC}`, fromSlot: DOWN_FROM, at: after } })], asOf: ASOF })).rejects.toThrow(/after the process start/);
+    // close.at exactly at asOf: the close would follow it by 1 ms, after asOf, so none is made (the gap stays open).
+    const equal = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { liveStart: { ...ASOF }, close: { via: `logs:${QVC}`, fromSlot: DOWN_FROM, at: { ...ASOF } } })], asOf: ASOF });
+    expect(equal.fills[0]!.coverage).toEqual([]);
   });
 
   it('a gap with nothing between the saved state and the live start is empty and complete, with no call', async () => {
