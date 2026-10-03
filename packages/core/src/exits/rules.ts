@@ -60,6 +60,13 @@ export interface Holding {
    * lives in the book, so a restart with a fresh tracker cannot hand out a new ladder.
    */
   readonly exitAttempts: number;
+  /**
+   * Raw balance of our token account. It can exceed `quantity` (dust, or tokens someone sent us); then closing the
+   * account would fail and roll back the sale, so the exit sells our quantity and leaves the account open.
+   */
+  readonly tokenAccountBalance: bigint;
+  /** An earlier sell-and-close of this position resolved failed at the close: later exits sell only (EXIT-1b). */
+  readonly closeFailed: boolean;
 }
 
 export interface Observed<T> {
@@ -164,6 +171,12 @@ export type ExitDecision =
     readonly startRung: number;
     readonly maxAttempts: number;
     readonly blocked: string | null;
+    /**
+     * Sell and close the token account in the same transaction (its rent comes back only if that lands). Only for a
+     * full exit of a clean account with no failed close before; otherwise the exit sells only and the rent stays
+     * locked until a later close succeeds. Selling always comes before reclaiming rent.
+     */
+    readonly closeAccount: boolean;
   }
   /** An exit owner already holds the quantity: add the reasons to it, create nothing (one exit owner, CORE-1). */
   | { readonly kind: 'merge'; readonly reasons: readonly ExitReason[]; readonly fired: readonly Trigger[] };
@@ -304,6 +317,7 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
       startRung: retry ? last : next,
       maxAttempts: retry ? 1 : Math.max(left, 0),
       blocked: retry || left > 0 ? null : `exit ladder used: ${used} attempts on this position`,
+      closeAccount: !partial && quantity === h.quantity && h.tokenAccountBalance === h.quantity && !h.closeFailed,
     },
     ignored,
   });

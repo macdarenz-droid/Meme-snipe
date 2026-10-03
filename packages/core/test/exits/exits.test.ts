@@ -45,6 +45,7 @@ const holding = (o: Partial<Holding> & { pnl?: bigint; vault?: bigint } = {}): H
   const realized = rest.realized ?? 0n;
   return {
     status: 'open', quantity, sold: 0n, realized, exitCost: EXIT_COST, exitSeq: 1, exitAttempts: 0,
+    tokenAccountBalance: rest.tokenAccountBalance ?? quantity, closeFailed: false,
     costBasis: realized + valueAt(vault, quantity) - EXIT_COST - pnl, ...rest,
   };
 };
@@ -864,5 +865,31 @@ describe('EXIT-1b edges (mutation)', () => {
     const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
     const after = decideExit(S, stop, holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 }), pending.tracker, obs(NOW + 60_000, null));
     expect(after.decision).toMatchObject({ kind: 'exit', retry: false, startRung: 0, maxAttempts: X.ladder.maxAttempts });
+  });
+});
+
+describe('EXIT-1b follow-up ruling: sell before reclaiming rent; a bounded sell-only recovery path', () => {
+  const stop = plan({ stopPrice: execPrice(V0, QTY) });
+  test('a full exit of a clean account sells and closes in one transaction (rent comes back only if it lands)', () => {
+    expect(decide(holding(), obs(NOW), stop).decision).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, closeAccount: true });
+  });
+  test('a partial never closes the account', () => {
+    const tp = (R * BigInt(X.partialAtRBps)) / 10_000n;
+    expect(decide(holding({ pnl: tp }), obs(NOW)).decision).toMatchObject({ kind: 'exit', partial: true, closeAccount: false });
+  });
+  test('dust or unsolicited tokens in the account do not block the sale: our quantity is sold and the account stays open', () => {
+    const extra = holding({ tokenAccountBalance: QTY + 1_000n });
+    expect(decide(extra, obs(NOW), stop).decision).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, closeAccount: false, value: { ok: true, value: V0 } });
+  });
+  test('after a sell-and-close failed at the close, later exits sell only, within the same ladder and retries', () => {
+    const failed = holding({ closeFailed: true, exitAttempts: 1 });
+    const d = decide(failed, obs(NOW), stop).decision;
+    expect(d).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, closeAccount: false, maxAttempts: X.ladder.maxAttempts - 1 });
+    // A blocked position retries sell-only too.
+    const blocked = { ...holdingOf(blockedBook().positions[PID]!), closeFailed: true };
+    const retry = decide(blocked, obs(X.blockedRetryMs), plan(), { ...newTracker(), blockedAtMs: 0 }).decision;
+    expect(retry).toMatchObject({ kind: 'exit', retry: true, closeAccount: false });
+    // Bounded: once the ladder is used, the exit is booked blocked like any other.
+    expect(decide({ ...failed, exitAttempts: X.ladder.maxAttempts }, obs(NOW), stop).decision).toMatchObject({ kind: 'exit', closeAccount: false, blocked: `exit ladder used: ${X.ladder.maxAttempts} attempts on this position` });
   });
 });
