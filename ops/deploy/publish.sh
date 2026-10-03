@@ -7,8 +7,8 @@
 # Inputs (environment): DEPLOY_CODE, ISSUED (run id, increasing), GH_REPO, GITHUB_SHA and the secrets
 # HELIUS_API_KEY ALCHEMY_API_KEY JUPITER_API_KEY TELEGRAM_BOT_TOKEN. With CLOUDFLARE_API_TOKEN and
 # CLOUDFLARE_ACCOUNT_ID (and WRANGLER, the locked tool from ops/watchdog/deploy) it also deploys the
-# watchdog, sets its secrets and the Telegram webhook, and hands its address and a fresh heartbeat key to
-# the server in the same bundle.
+# watchdog, sets its secrets, and hands its address, a fresh heartbeat key and the webhook secret to the
+# server in the same bundle (the server sets the Telegram webhook once paired).
 # Test knobs: PICKUP_TIMEOUT_S, PICKUP_POLL_S, PICKUP_GRACE_S, TELEGRAM_API, CLOUDFLARE_API_URL.
 #
 # Never prints or stores a value: no set -x; the code, the derived identity and the plaintext only pass
@@ -42,6 +42,7 @@ recipient="$(printf '%s' "$DEPLOY_CODE" | node "$here/../host/files/usr/local/li
 # Watchdog: only together with a key handoff, so the server and the watchdog always get the same new key.
 WATCHDOG_URL=""
 HEARTBEAT_HMAC_KEY=""
+WEBHOOK_SECRET=""
 if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || die "CLOUDFLARE_ACCOUNT_ID is missing."
   [ -n "${WRANGLER:-}" ] || die "WRANGLER is not set."
@@ -62,12 +63,10 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   printf '%s' "$HEARTBEAT_HMAC_KEY" | $WRANGLER secret put HEARTBEAT_HMAC_KEY >/dev/null
   printf '%s' "$TELEGRAM_BOT_TOKEN" | $WRANGLER secret put TELEGRAM_BOT_TOKEN >/dev/null
   printf '%s' "$hook_secret" | $WRANGLER secret put TELEGRAM_WEBHOOK_SECRET >/dev/null
-  # Token on stdin (-K -), never in argv or the log.
-  printf 'url = "%s/bot%s/setWebhook"\ndata-urlencode = "secret_token=%s"\n' "${TELEGRAM_API:-https://api.telegram.org}" "$TELEGRAM_BOT_TOKEN" "$hook_secret" |
-    curl -fsS -m 20 -o /dev/null -K - --data-urlencode "url=$WATCHDOG_URL/telegram" --data-urlencode 'allowed_updates=["message"]' ||
-    die "Telegram webhook could not be set."
-  unset hook_secret
-  echo "Watchdog deployed at $WATCHDOG_URL; its secrets and the Telegram webhook are set."
+  # The Telegram webhook is set by the server, not here: it reads /pair through getUpdates first, which
+  # Telegram refuses while a webhook is set. The secret travels to it in the encrypted bundle.
+  WEBHOOK_SECRET="$hook_secret"
+  echo "Watchdog deployed at $WATCHDOG_URL; its secrets are set. The server sets the Telegram webhook once paired."
 else
   echo "No CLOUDFLARE_API_TOKEN secret: the watchdog is not deployed."
 fi
@@ -79,10 +78,11 @@ bundle="$(mktemp -d)/bundle.age"
   for n in "${NAMES[@]}"; do printf '%s=%s\n' "$n" "${!n}"; done
   if [ -n "$WATCHDOG_URL" ]; then
     printf 'WATCHDOG_URL=%s\n' "$WATCHDOG_URL"
+    printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$WEBHOOK_SECRET"
     printf 'HEARTBEAT_HMAC_KEY=%s\n' "$HEARTBEAT_HMAC_KEY"
   fi
 } | age -r "$recipient" -o "$bundle"
-unset HEARTBEAT_HMAC_KEY
+unset HEARTBEAT_HMAC_KEY WEBHOOK_SECRET
 
 gh release delete handoff --yes --cleanup-tag >/dev/null 2>&1 || true
 gh release create handoff "$bundle" --prerelease --target "$GITHUB_SHA" --title "Key handoff" \
