@@ -3,7 +3,7 @@
 // slots and block heights are INTEGER; times are integer milliseconds from the caller's clock
 // (live or simulated), never read from the wall clock here.
 
-import { amountCheck as amount, appendOnly, type Migration } from './adapters/sqlite.ts';
+import { amountCheck as amount, appendOnly, type Migration } from './sqlite.ts';
 
 const list = (values: readonly string[]): string => values.map((v) => `'${v}'`).join(', ');
 const json = (column: string): string => `json_valid(${column})`;

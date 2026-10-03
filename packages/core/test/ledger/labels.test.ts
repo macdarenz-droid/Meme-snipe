@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as engineApi from '../../src/ledger/index.ts';
 import { openLedger, openLedgerReader } from '../../src/ledger/index.ts';
-import { connectionOf } from '../../src/ledger/adapters/ledger.ts';
+import { connectionOf } from '../../src/ledger/ledger.ts';
 import { openScoringReader, openScoringStore } from '../../src/ledger/scoring/index.ts';
 import { entryIntent, MINT } from '../fixtures.ts';
 import { importViolations } from './guard.ts';
@@ -97,7 +97,7 @@ describe('labels are out of the engine\'s reach', () => {
 
   it('no file the engine entry point imports mentions the scoring store or its tables', () => {
     const files = moduleGraph(join(LEDGER_DIR, 'index.ts'));
-    expect(files.some((f) => f.endsWith('ledger/adapters/ledger.ts'))).toBe(true);
+    expect(files.some((f) => f.endsWith('ledger/ledger.ts'))).toBe(true);
     for (const f of files) {
       expect(f).not.toContain(`${LEDGER_DIR}/scoring`);
       const text = readFileSync(f, 'utf8');

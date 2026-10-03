@@ -5,8 +5,8 @@
 //   reserve <db> <startAt> <maxHeld> <ids...>   waits for startAt, then reserves each id on its own connection
 import { DatabaseSync } from 'node:sqlite';
 import { openLedger, type Ledger } from '../../src/ledger/index.ts';
-import { reserveIn } from '../../src/ledger/adapters/ledger.ts';
-import { inTransaction } from '../../src/ledger/adapters/sqlite.ts';
+import { reserveIn } from '../../src/ledger/ledger.ts';
+import { inTransaction } from '../../src/ledger/sqlite.ts';
 import { lamports } from '../../src/units/index.ts';
 import { entryIntent } from '../fixtures.ts';
 import { PADDING } from './constants.ts';
