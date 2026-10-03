@@ -21,7 +21,7 @@ import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
-import type { Decision, MarketEvent, Strategy, StrategyContext } from '../../../core/src/engine/index.ts';
+import { type AsOfEntry, type Decision, type MarketEvent, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
 import { observedFeeContext } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
@@ -42,10 +42,15 @@ export const RESTORE_KEY = 'worker:restore';
 /** `{ value, atMs }`: the live SOL/USD price in micro-dollars (risk needs one younger than maxQuoteAgeMs). */
 export const SOL_PRICE_KEY = 'worker:sol-price';
 /**
- * `{ creates, coverage, fill, rugs, asOf }`: SEED-1's seed of the deployer index (the saved state and the day or RPC
- * seed), released first; the index is seeded from it before it observes any live event.
+ * `{ creates, coverage, fill, rugs, asOf, history }`: SEED-1's seed of the deployer index (the saved state and the day
+ * or RPC seed). It may arrive after live events: while a halt names `SEEDING`, released events wait for the index and
+ * are observed after the seed, in release order, so the index is still seeded before it observes any live event.
+ * `history` is the saved and seeded coverage, dated in the slot the worker reserved at reconcile (ahead of every live
+ * event); coverage reads see it there.
  */
 export const SEED_KEY = 'worker:seed';
+/** The halt reason while the seed is pending: entries wait, exits and monitoring go on. */
+export const SEEDING = 'deployer index seeding';
 /** A reject's typed reasons ride in its last reason as `gate_reasons <json>`; the desk journals them as `gate_reasons`. */
 export const GATE_REASONS_PREFIX = 'gate_reasons ';
 export interface GateReasonLine {
@@ -213,6 +218,11 @@ export class LiveStrategy implements Strategy {
   }
 
   #coverage: Coverage | null = null;
+  /** SEED-1's coverage history by key, dated in the reserved slot; merged into every history read. */
+  readonly #seedHistory = new Map<string, AsOfEntry[]>();
+  /** Events released while the seed is pending, observed after it; null when not waiting. */
+  #waiting: MarketEvent[] | null = null;
+  #seedApplied = false;
   /** Each watched mint's PumpSwap pool, from its migration or its pool fact, and back. */
   readonly #poolOfMint = new Map<string, string>();
   readonly #mintOfPool = new Map<string, string>();
@@ -270,6 +280,7 @@ export class LiveStrategy implements Strategy {
 
   onMarket(e: MarketEvent, ctx: StrategyContext): readonly Decision[] {
     const out: Decision[] = [];
+    if (e.key === HALT_KEY) this.#seedWait(unwrap(e.value));
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
@@ -281,9 +292,9 @@ export class LiveStrategy implements Strategy {
     this.#poolTrade(e, ctx);
     if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
-      this.#coverage = createsCoverage((k, f, t) => ctx.history(k, f, t), ctx.now, ctx.now.receivedAt - this.#d.session.policy.gates.deployerRugLookbackDays * 86_400_000);
+      this.#coverage = createsCoverage(this.#history(ctx), ctx.now, ctx.now.receivedAt - this.#d.session.policy.gates.deployerRugLookbackDays * 86_400_000);
     }
-    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers };
+    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: this.#history(ctx), deployers: this.#deployers };
     this.#track(e, ctx);
     this.#lifecycle(ctx, out);
     this.#manage(ctx, out);
@@ -296,8 +307,36 @@ export class LiveStrategy implements Strategy {
   #observe(e: MarketEvent): void {
     // The worker's own facts are not chain events: the index's start is the first chain event it sees (or the seed's).
     if (e.key.startsWith('worker:')) return;
+    if (this.#waiting !== null) {
+      this.#waiting.push(e);
+      return;
+    }
     this.#deployers.observe(e);
     for (const label of this.#labeller.observe(e)) this.#deployers.observe(label);
+  }
+
+  /** A halt naming SEEDING starts the wait; only the seed ends it (the worker places one whatever the seed's outcome). */
+  #seedWait(h: unknown): void {
+    if (isObj(h) && Array.isArray(h['reasons']) && h['reasons'].includes(SEEDING) && this.#waiting === null && !this.#seedApplied) this.#waiting = [];
+  }
+
+  /** Observes the events that waited for the seed, in release order. */
+  #release(): void {
+    const xs = this.#waiting ?? [];
+    this.#waiting = null;
+    for (const x of xs) this.#observe(x);
+  }
+
+  /** The engine's history with SEED-1's coverage history merged in (the same bounds, oldest first). */
+  #history(ctx: StrategyContext): GateContext['history'] {
+    return (k, f, t) => {
+      const r = ctx.history(k, f, t);
+      const pre = this.#seedHistory.get(k);
+      if (pre === undefined || !Array.isArray(r)) return r;
+      const to = t ?? ctx.now;
+      const inRange = pre.filter((x) => compareMoments(x.moment, f) >= 0 && compareMoments(x.moment, to) <= 0);
+      return inRange.length === 0 ? r : [...inRange, ...(r as readonly AsOfEntry[])].sort((a, b) => compareMoments(a.moment, b.moment));
+    };
   }
 
   #restore(v: unknown, out: Decision[]): void {
@@ -320,10 +359,30 @@ export class LiveStrategy implements Strategy {
 
   /** Seeds the index (SEED-1): saved and seeded creates and coverage, then the downtime fill, then saved rug labels. */
   #seed(v: unknown, out: Decision[]): void {
-    if (!isObj(v) || !Array.isArray(v['creates']) || !Array.isArray(v['coverage']) || !Array.isArray(v['fill']) || !Array.isArray(v['rugs']) || !isObj(v['asOf'])) {
+    try {
+      this.#seedOnce(v, out);
+    } finally {
+      this.#seedApplied = true;
+      this.#release();
+    }
+  }
+
+  #seedOnce(v: unknown, out: Decision[]): void {
+    if (this.#seedApplied) {
+      out.push({ action: null, reasons: ['seed refused', 'already seeded'] });
+      return;
+    }
+    if (!isObj(v) || !Array.isArray(v['creates']) || !Array.isArray(v['coverage']) || !Array.isArray(v['fill']) || !Array.isArray(v['rugs']) || !isObj(v['asOf']) || !Array.isArray(v['history'])
+      || !v['history'].every((h) => isObj(h) && typeof h['key'] === 'string' && typeof h['id'] === 'string' && isObj(h['moment']))) {
       out.push({ action: null, reasons: ['seed refused', 'malformed seed'] });
       return;
     }
+    for (const h of v['history'] as MarketEvent[]) {
+      const list = this.#seedHistory.get(h.key) ?? [];
+      list.push(Object.freeze({ moment: h.moment, value: h.value, source: h.id }));
+      this.#seedHistory.set(h.key, list);
+    }
+    for (const list of this.#seedHistory.values()) list.sort((a, b) => compareMoments(a.moment, b.moment));
     const asOf = v['asOf'] as unknown as MarketEvent['moment'];
     try {
       const s = this.#deployers.seed(v['creates'] as MarketEvent[], v['coverage'] as MarketEvent[], asOf);
@@ -757,6 +816,8 @@ export class LiveStrategy implements Strategy {
     const halt = ctx.lookup(HALT_KEY);
     const h = halt.ok ? unwrap(halt.value) : null;
     if (!isObj(h) || h['halted'] !== false) return;
+    // The halt that ends SEEDING may be released just before the seed itself: no entry until the index has it.
+    if (this.#waiting !== null) return;
     for (const cand of this.#cands.values()) {
       const from = cand.migratedAtMs + c.windowFromMs;
       const to = cand.migratedAtMs + c.windowToMs;

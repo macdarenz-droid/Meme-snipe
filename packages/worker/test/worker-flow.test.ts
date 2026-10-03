@@ -10,14 +10,16 @@ import type { LogRecord } from '../../core/src/engine/index.ts';
 import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
-import { HALT_KEY, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
+import { HALT_KEY, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { exitsFile } from '../src/run/state.ts';
+import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
-import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import type { SeedRpc } from '../src/seed/rpc.ts';
+import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, dueTimers, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const journalText = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
 const lines = (dir: string) => journalText(dir).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -488,6 +490,9 @@ describe('restart drill: H14 creates coverage across a restart (SEED-1 ruling 20
     expect(requests[0]!.saved.last).not.toBeNull();
     expect(requests[0]!.close).toEqual({ via: VIA, fromSlot: null });
     expect(h2.worker.strategy.coverage).toEqual(first);
+    // The seed came after live events, which waited for it: the index took it in full, never refused.
+    const seeds = lines(stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision' && /^seed/.test((l['reasons'] as string[])[0] ?? ''));
+    expect(seeds.map((l) => (l['reasons'] as string[])[0])).toEqual(['seed']);
     await h2.worker.stop();
 
     // Control: the same restart without a fill marks the downtime a gap, so H14 is not covered.
@@ -495,5 +500,79 @@ describe('restart drill: H14 creates coverage across a restart (SEED-1 ruling 20
     await boot(h3);
     expect(h3.worker.strategy.coverage).toMatchObject({ covered: false });
     await h3.worker.stop();
+  }, 60_000);
+
+  it('a restart whose fill does not answer within the 90 s cap: H14 is not covered across the downtime, and the fill stops its RPC', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const h = makeWorker({ stateDir, timers, seed: (r) => runSeed(r, { rpc: emptyRpc, timers }), config: ports(4) });
+    const m = await boot(h);
+    timers.set(timers.now() + 15 * 86_400_000);
+    await m.run(2_000, 400, () => m.slot());
+    expect(h.worker.strategy.coverage).toMatchObject({ covered: true });
+    await h.worker.kill();
+    timers.set(timers.now() + 10 * 60_000);
+    // The fill's first signature page hangs past the cap; answered later, it names a downtime transaction.
+    const calls: string[] = [];
+    let answer = (): void => undefined;
+    const hanging: SeedRpc = {
+      getSignaturesForAddress: async (_a, o) => {
+        calls.push('page');
+        return new Promise<SignatureInfo[]>((r) => {
+          answer = () => r([{ signature: 'in-the-downtime', slot: o.minContextSlot ?? 0n, err: null, blockTime: 0 }]);
+        });
+      },
+      getTransaction: async () => (calls.push('transaction'), null),
+    };
+    const h2 = makeWorker({ stateDir, timers, seed: (r) => runSeed(r, { rpc: hanging, timers }), seedMaxMs: 90_000, config: ports(5) });
+    const m2 = await boot(h2);
+    expect(h2.logs.some((l) => /Deployer index: none \(seed failed: no answer within 90000 ms\)/.test(l))).toBe(true);
+    expect(h2.worker.strategy.coverage).toMatchObject({ covered: false });
+    answer();
+    await m2.run(2_000, 400, () => m2.slot());
+    expect(calls).toEqual(['page']);
+    expect(h2.worker.strategy.coverage).toMatchObject({ covered: false });
+    await h2.worker.stop();
+  }, 60_000);
+});
+
+describe('exits never wait for the seed (review of 9fdf837)', () => {
+  it('a restart with an open position and a seed that never answers: the stop exits during the wait, before seedMaxMs; entries halt', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    expect(Object.values(h.worker.book.positions).some((p) => p.status === 'open')).toBe(true);
+    await h.worker.kill();
+
+    const t2 = dueTimers(h.timers.now());
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: t2, seed: () => new Promise(() => undefined), seedMaxMs: 90_000, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18836', ZEROED_API_ADDR: '127.0.0.1:18837' } });
+    const t0 = t2.now();
+    void h2.worker.start();
+    // Only the clock moves: every step is the worker's own loop.
+    const tick = async (): Promise<void> => {
+      t2.set(t2.now() + 100);
+      for (let k = 0; k < 4; k++) await new Promise<void>((r) => setImmediate(r));
+    };
+    for (let k = 0; k < 600 && !h2.order.includes('start helius-ws'); k++) await tick();
+    const m2 = new Market(h2);
+    const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    let exit: Record<string, unknown> | undefined;
+    for (let k = 0; k < 300 && exit === undefined; k++) {
+      m2.slot();
+      m2.pool(700_000n);
+      await tick();
+      exit = mine().find((l) => (l['reasons'] as string[])[0] === 'exit');
+    }
+    expect(exit).toBeDefined();
+    expect(Date.parse(exit!['ts'] as string) - t0).toBeLessThan(90_000);
+    expect(h2.logs.some((l) => /Deployer index/.test(l))).toBe(false);
+    expect(h2.worker.health().halt_reasons).toContain(SEEDING);
+    expect(mine().some((l) => l['action'] === 'enter')).toBe(false);
+    await h2.worker.stop();
   }, 60_000);
 });

@@ -32,8 +32,8 @@ export type RiskCode =
   | 'loss_cooldown' | 'loss_day_pause' | 'loss_review'
   // R9 weekly loss
   | 'weekly_loss' | 'weekly_review'
-  // R10 kill switch
-  | 'kill_switch'
+  // R10 kill switch, and the wallet's value below the kill line
+  | 'kill_switch' | 'wallet_below_kill_line'
   // R11 entries
   | 'entries_per_day' | 'entries_per_mint' | 'reentry_after_stop'
   // R12 liquidity floor
@@ -45,7 +45,9 @@ export type RiskCode =
   // R15 no martingale, policy locked
   | 'session_not_running' | 'add_to_position' | 'size_after_loss'
   // R16 regime gate
-  | 'regime_off' | 'regime_unknown';
+  | 'regime_off' | 'regime_unknown'
+  // Withdrawals (R4: the reserve and free cash)
+  | 'withdrawal_queued' | 'withdrawal_unreconciled' | 'withdrawal_over_free_cash' | 'withdrawal_invalid';
 
 export const CODE_CONTROL: Readonly<Record<RiskCode, ControlId>> = {
   bankroll_invalid: 'R1', sol_price_unknown: 'R1', sol_price_stale: 'R1', mark_unknown: 'R1', mark_stale: 'R1',
@@ -57,13 +59,14 @@ export const CODE_CONTROL: Readonly<Record<RiskCode, ControlId>> = {
   daily_loss: 'R7',
   loss_cooldown: 'R8', loss_day_pause: 'R8', loss_review: 'R8',
   weekly_loss: 'R9', weekly_review: 'R9',
-  kill_switch: 'R10',
+  kill_switch: 'R10', wallet_below_kill_line: 'R10',
   entries_per_day: 'R11', entries_per_mint: 'R11', reentry_after_stop: 'R11',
   liquidity_unknown: 'R12', liquidity_floor: 'R12',
   quote_stale: 'R13', quote_failed: 'R13', depth_cap: 'R13',
   cost_gate: 'R14', median_target_invalid: 'R14', expected_net_not_positive: 'R14',
   session_not_running: 'R15', add_to_position: 'R15', size_after_loss: 'R15',
   regime_off: 'R16', regime_unknown: 'R16',
+  withdrawal_queued: 'R4', withdrawal_unreconciled: 'R4', withdrawal_over_free_cash: 'R4', withdrawal_invalid: 'R4',
 };
 
 export interface RiskReason {
@@ -108,6 +111,25 @@ export interface OpenPosition {
 export interface CashFlow {
   readonly atMs: number;
   readonly amount: MicroUsd;
+  /**
+   * Economic NAV (`economicNav`) just before the flow. Units are issued or redeemed at it: the flow scales the
+   * high-water marks and the week's base by (navBefore + amount) / navBefore. Must be positive; otherwise the history is
+   * refused.
+   */
+  readonly navBefore: MicroUsd;
+}
+
+/** A cost of the account itself, not of a trade. `amount` is what was paid (zero or more). */
+export interface AccountCost {
+  readonly atMs: number;
+  readonly amount: MicroUsd;
+  readonly kind: 'wallet_setup';
+}
+
+/** An economic NAV (`economicNav`) the worker observed and recorded; the NAV high-water mark is the peak of these. */
+export interface NavMark {
+  readonly atMs: number;
+  readonly nav: MicroUsd;
 }
 
 /** Every entry that reserved exposure, whatever became of it (filled, failed, still unresolved). */
@@ -123,12 +145,26 @@ export interface AccountHistory {
   readonly openedAtMs: number;
   readonly flows: readonly CashFlow[];
   readonly closedTrades: readonly ClosedTrade[];
+  /**
+   * Account costs that are not trades (WORKER-1: the wallet's one-time setup rent). Each lowers realized equity at its
+   * time and counts toward the day's and week's loss; none is a trade for R8, R11, R15 or any trade statistic.
+   * A negative amount is refused (R1).
+   */
+  readonly costs: readonly AccountCost[];
   readonly openPositions: readonly OpenPosition[];
   readonly entries: readonly EntryRecord[];
   /** Entry intents not yet resolved (each holds a reservation), by mint. Each counts as an open position (R3). */
   readonly unresolvedEntries: readonly { readonly mint: Mint }[];
   /** Lamports held by those reservations right now (the reservation store's total). */
   readonly heldReservations: Lamports;
+  /** Marked equity recorded at the start of today and of this week (same valuation as `equity`); null if not recorded. */
+  readonly markedAtDayStart: MicroUsd | null;
+  readonly markedAtWeekStart: MicroUsd | null;
+  /**
+   * Economic NAV observations (R10). The worker records one at least at every evaluation that sees a fresh NAV and at
+   * every close; peaks between observations are not seen.
+   */
+  readonly navMarks: readonly NavMark[];
   /**
    * The ledger's account version for this snapshot. It advances with every change to the account (reservation, release,
    * fill, position, closed trade, flow); the reservation store refuses a request made from an older version.
@@ -213,9 +249,40 @@ export interface RiskSnapshot {
   readonly dayLoss: MicroUsd;
   readonly weekLoss: MicroUsd;
   readonly weekStartEquity: MicroUsd;
+  /** Week-start equity scaled by every deposit and withdrawal since (time-weighted). */
+  readonly weekBase: MicroUsd;
+  /** Loss this week measured against `weekBase` (zero if none). */
+  readonly weekBaseLoss: MicroUsd;
   /** Remaining full loss of open positions (mark or cost, whichever is lower). */
   readonly openExposure: MicroUsd;
   readonly lossStreak: number;
+  /**
+   * Change since the start of today and of this week at one valuation: equity now − marked equity at the boundary − net
+   * flows since. Reported next to `dayLoss` / `weekLoss`, which measure from realized equity at the boundary and so
+   * count an open loss carried over the boundary again (stricter; kept until the owner changes it). Null when the
+   * boundary valuation was not recorded.
+   */
+  readonly dayChangeMarked: MicroUsd | null;
+  readonly weekChangeMarked: MicroUsd | null;
+  /**
+   * Wallet-marked equity: wallet SOL above the operations floor at the fresh SOL/USD price, plus open positions at the
+   * same marks as `equity`. Null without a fresh price and balance (then no entry is allowed anyway).
+   */
+  readonly walletEquity: MicroUsd | null;
+  /** Capital every size and limit that scales with equity uses: the lower of `equity` and `walletEquity`. */
+  readonly capital: MicroUsd;
+  /**
+   * Economic NAV now (`economicNav`), and its time-weighted high-water mark (R10). Null when it cannot be valued
+   * consistently: no fresh price or balance, a position without a fresh mark, an entry still unresolved, or a balance
+   * read before the account's latest change.
+   */
+  readonly nav: MicroUsd | null;
+  readonly navHighWaterMark: MicroUsd | null;
+  /** The same figures in SOL at the fresh price; null without one. */
+  readonly equitySol: Lamports | null;
+  readonly capitalSol: Lamports | null;
+  readonly navSol: Lamports | null;
+  readonly navHighWaterMarkSol: Lamports | null;
 }
 
 export type Trip = 'kill_switch' | 'weekly_loss';
@@ -238,6 +305,13 @@ export interface EntryAllowed {
   readonly caps: readonly SizeCapEntry[];
   /** Round-trip cost at the chosen size, ppm of notional (R14). */
   readonly roundTripPpm: bigint;
+  /**
+   * Three loss figures, smallest to largest (RISK-1b). Planned R (R5): q × (stop + cost-gate ceiling) + F. Stressed
+   * executable loss: the stop is hit and the exit fills at the emergency rung's min-out below the trigger, so
+   * q × (1 − (1 − stop)(1 − emergency slippage)) + C. Reserved loss (R6): q + C, the whole notional plus every cost,
+   * which is what sizing and the reservation are bounded by.
+   */
+  readonly loss: { readonly plannedRisk: MicroUsd; readonly stressed: MicroUsd; readonly reserved: MicroUsd };
   /** Hand this to the reservation store before preparing the transaction. */
   readonly reservation: ReservationRequest;
 }
@@ -250,6 +324,23 @@ export interface EntryRefused {
 }
 
 export type EntryDecision = EntryAllowed | EntryRefused;
+
+/** A withdrawal of SOL from the bot wallet to the owner's saved wallet (RISK-1b; first release). */
+export interface WithdrawalRequest {
+  readonly amount: Lamports;
+  /** For the live operations reserve (R4): exit attempts and rent at current rates. */
+  readonly network: NetworkPolicy;
+  readonly rent: RentInputs;
+  /** The wallet's balances and the ledger agree (the last reconcile found no difference and nothing is pending). */
+  readonly reconciled: boolean;
+}
+
+export interface WithdrawalDecision {
+  readonly allow: boolean;
+  readonly reasons: readonly RiskReason[];
+  /** Most lamports that may leave now: the balance less the operations reserve (0 while anything is open). */
+  readonly maxAmount: bigint;
+}
 
 export interface ExitDecision {
   readonly allow: true;
