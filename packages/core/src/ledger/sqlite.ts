@@ -144,7 +144,7 @@ const verifyApplied = (path: string, kind: StoreKind, applied: readonly Applied[
 
 const migrate = (db: DatabaseSync, kind: StoreKind, migrations: readonly Migration[]): void => {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL);
+    version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL);
     CREATE TRIGGER IF NOT EXISTS schema_migrations_no_update BEFORE UPDATE ON schema_migrations BEGIN SELECT RAISE(ABORT, 'append-only: schema_migrations'); END;
     CREATE TRIGGER IF NOT EXISTS schema_migrations_no_delete BEFORE DELETE ON schema_migrations BEGIN SELECT RAISE(ABORT, 'append-only: schema_migrations'); END;`);
   const applied = appliedMigrations(db);
@@ -152,8 +152,7 @@ const migrate = (db: DatabaseSync, kind: StoreKind, migrations: readonly Migrati
   for (const m of migrations.slice(applied.length)) {
     inTransaction(db, () => {
       db.exec(m.sql);
-      db.prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)')
-        .run(m.version, m.name, checksum(kind, m), new Date().toISOString());
+      db.prepare('INSERT INTO schema_migrations (version, name, checksum) VALUES (?, ?, ?)').run(m.version, m.name, checksum(kind, m));
     });
   }
 };
