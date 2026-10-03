@@ -1,17 +1,13 @@
 // Mirrors the engine's decision log into a backtest ledger (LEDGER-1), outside the engine. Every applied book event is
-// replayed through the same CORE-1 reducer on a mirror book; the differences become ledger rows (intents and their
-// transitions with effects, attempts, fills, reservations, positions). Network fees of every attempt, failed ones
+// replayed through the same CORE-1 reducer on a mirror book and written by Ledger.recordBookEvent, the writer the
+// ledger replay check is built for. Network fees of every attempt, failed ones
 // included, come from the fill model. A record the reducer refuses, or a mirror that ends unlike the engine's book,
 // counts as an illegal state.
 import { canonical, type LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger, ReservationLimits } from '../../../core/src/ledger/index.ts';
-import { applyBookEvent, type Book, type BookConfig, emptyBook, isIllegal, isTerminal, type BookEvent, type Effect } from '../../../core/src/lifecycle/index.ts';
+import { applyBookEvent, type Book, type BookConfig, emptyBook, isIllegal, isTerminal, type BookEvent } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports } from '../../../core/src/units/index.ts';
 import type { AttemptRecord } from './world.ts';
-
-const effectIntent = (fx: Effect): string | null => ('intentId' in fx ? fx.intentId : null);
-
-const eventName = (e: BookEvent): string => (e.type === 'intent' ? e.event.type : e.type);
 
 export class LedgerSink {
   readonly #ledger: Ledger | null;
@@ -71,42 +67,20 @@ export class LedgerSink {
       if (fx.entity === 'intent') intents.add(fx.id);
       else if (fx.entity === 'position') positions.add(fx.id);
     }
-    const L = this.#ledger;
-    const name = eventName(event);
     for (const id of intents) {
       const after = next.intents[id];
       if (after === undefined) continue;
       if (isTerminal(after)) this.liveIntents.delete(id);
       else this.liveIntents.add(id);
-      const before = prev.intents[id];
-      if (L === null || before === after) continue;
-      if (before === undefined) {
-        L.recordIntent(after.intent, { status: after.status, ts });
-      } else if (before.status !== after.status) {
-        L.appendIntentTransition({ intentId: after.intent.id, status: after.status, event: name, effects: step.effects.filter((fx) => effectIntent(fx) === id), ts });
-      }
-      for (const a of after.attempts.slice(before?.attempts.length ?? 0)) L.recordAttempt(a, ts);
-      for (const f of after.fills.slice(before?.fills.length ?? 0)) L.recordFill(f, ts);
-      const rb = before?.reservation ?? null;
-      const ra = after.reservation;
-      if (ra !== null && rb === null) {
-        const res = L.reserveExposure({ reservationId: ra.id, intentId: ra.intentId, amount: ra.amount, limits: this.#limits, ts });
-        if (!res.ok) throw new RangeError(`ledger refused reservation ${ra.id}: ${res.reason}`);
-      }
-      if (ra !== null && rb !== null && rb.status === 'held' && ra.status !== 'held') L.endReservation(ra.id, ra.status, ts);
     }
     for (const id of positions) {
       const after = next.positions[id];
       if (after === undefined) continue;
       if (after.status === 'closed') this.openPositions.delete(id);
       else this.openPositions.add(id);
-      const before = prev.positions[id];
-      if (L === null || before === after) continue;
-      if (before === undefined) L.openPosition({ positionId: id, mint: after.mint, venue: after.venue, entryIntentId: after.entryIntentId, ts });
-      if (before === undefined ? after.status !== 'opening' : before.status !== after.status || before.quantity !== after.quantity || before.cost !== after.cost) {
-        L.appendPositionState({ positionId: id, status: after.status, quantity: after.quantity, cost: after.cost, event: name, ts });
-      }
     }
+    // The ledger's own writer (Ledger.recordBookEvent): the rows the ledger replay check reads, in one transaction.
+    this.#ledger?.recordBookEvent(prev, event, { ts, limits: this.#limits });
   }
 
   /** Network fees of a settled attempt, by kind. A dropped or expired attempt cost nothing. */
