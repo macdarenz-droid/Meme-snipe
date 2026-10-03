@@ -747,6 +747,8 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 				if (ix.program == pumpProgram || ix.program == ammProgram) && len(ix.accts) > 3 {
 					if ix.program == pumpProgram && len(ix.data) >= 8 && isCurveTradeIx(ix.data[:8]) {
 						mintHint = solana.PublicKey(key(ix.accts[2])).String()
+					} else if ix.program == pumpProgram && len(ix.data) >= 8 && isCurveTradeV2Ix(ix.data[:8]) {
+						mintHint = solana.PublicKey(key(ix.accts[1])).String()
 					} else if ix.program == ammProgram && len(ix.data) >= 8 && isAmmTradeIx(ix.data[:8]) {
 						mintHint = solana.PublicKey(key(ix.accts[3])).String()
 					}
@@ -857,8 +859,13 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 				if emitter != nil && len(emitter.accts) > 8 {
 					baseMint = solana.PublicKey(key(emitter.accts[3])).String()
 					quoteMint = solana.PublicKey(key(emitter.accts[4])).String()
-					vb = strconv.Itoa(emitter.accts[7])
-					vq = strconv.Itoa(emitter.accts[8])
+					// buy / sell / buy_exact_quote_in: pool vaults are accounts 7 and 8;
+					// boost_buy_and_burn: accounts 5 and 6 (pump_amm IDL).
+					if len(emitter.data) >= 8 && bytes.Equal(emitter.data[:8], boostBuyIx) {
+						vb, vq = strconv.Itoa(emitter.accts[5]), strconv.Itoa(emitter.accts[6])
+					} else {
+						vb, vq = strconv.Itoa(emitter.accts[7]), strconv.Itoa(emitter.accts[8])
+					}
 				}
 				side, baseAmt, quoteAmt, limit, adj, userQ := "buy", ev.get("base_amount_out"), ev.get("quote_amount_in"), ev.get("max_quote_amount_in"), ev.get("quote_amount_in_with_lp_fee"), ev.get("user_quote_amount_in")
 				if ev.def.name == "SellEvent" {
@@ -975,6 +982,8 @@ func findEmitter(g []ixRef, k int, program [32]byte) *ixRef {
 	return nil
 }
 
+var boostBuyIx = []byte{105, 68, 6, 175, 0, 7, 35, 162}
+
 var (
 	curveTradeIx = [][]byte{{102, 6, 61, 18, 1, 218, 235, 234}, {56, 252, 116, 8, 158, 223, 205, 95}, {51, 230, 133, 164, 1, 127, 131, 173}}
 	ammTradeIx   = [][]byte{{102, 6, 61, 18, 1, 218, 235, 234}, {198, 46, 21, 82, 180, 217, 232, 112}, {51, 230, 133, 164, 1, 127, 131, 173}}
@@ -988,6 +997,19 @@ func isCurveTradeIx(d []byte) bool {
 	}
 	return false
 }
+
+// buy_v2, sell_v2, buy_exact_quote_in_v2: base mint is account 1.
+var curveTradeV2Ix = [][]byte{{184, 23, 238, 97, 103, 197, 211, 61}, {93, 246, 130, 60, 231, 233, 64, 178}, {194, 171, 28, 70, 104, 77, 91, 47}}
+
+func isCurveTradeV2Ix(d []byte) bool {
+	for _, x := range curveTradeV2Ix {
+		if bytes.Equal(d, x) {
+			return true
+		}
+	}
+	return false
+}
+
 func isAmmTradeIx(d []byte) bool {
 	for _, x := range ammTradeIx {
 		if bytes.Equal(d, x) {
