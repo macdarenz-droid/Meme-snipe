@@ -1,0 +1,116 @@
+// The worker process contract (docs/ARCHITECTURE.md §12.4). WORKER-1 implements it; the stub in
+// ../stub/worker.ts implements it for RUN-1's tests and rehearsals. Pure types and pure checks only.
+
+/** Entry the runner starts by default; WORKER-1 creates it. Run from the release root with `node`. */
+export const WORKER_ENTRY = 'packages/worker/src/main.ts';
+export const STUB_ENTRY = 'packages/runner/stub/worker.ts';
+
+export const EXIT = { clean: 0, crash: 1, config: 2, reconcileFailed: 3 } as const;
+
+/** Runner exit codes. `refused` and `aborted` are in the host unit's RestartPreventExitStatus: never retried. */
+export const RUNNER_EXIT = { ok: 0, crash: 1, refused: 2, aborted: 4 } as const;
+
+/** The only worker entries the runner starts (it runs with the API keys in its environment). */
+export const ENTRIES: readonly string[] = ['packages/worker/src/main.ts', 'packages/runner/stub/worker.ts'];
+
+export const WORKER_UNIT = 'zeroed-worker.service';
+/** Host run names (qualifying-run.json, the zeroed-dryrun@<name> instance). */
+export const RUN_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/** Fallback chain limits: a run is at most 72 h, and a chain stops 2 jobs past what the run needs. */
+export const MAX_HOURS = 72;
+export const SEGMENT_MINUTES = 335;
+export const segmentAllowed = (segment: number, hours: number): boolean =>
+  Number.isInteger(segment) && segment >= 1 && hours > 0 && hours <= MAX_HOURS && segment <= Math.ceil((hours * 60) / SEGMENT_MINUTES) + 2;
+
+/** Credential names: files under CREDENTIALS_DIRECTORY (VPS) or the upper-case env variables (GitHub Actions). */
+export const SECRET_NAMES = ['HELIUS_API_KEY', 'ALCHEMY_API_KEY', 'JUPITER_API_KEY', 'TELEGRAM_BOT_TOKEN'] as const;
+
+/** Environment names that would mean key material is present. No signing key exists in a dry run. */
+export const KEY_ENV = /PRIVATE_KEY|SECRET_KEY|KEYPAIR|SEED|MNEMONIC|WALLET_KEY/i;
+
+export const STATE_FILES = {
+  journal: 'journal.jsonl',
+  recorder: 'recorder',
+  openIntents: 'open_intents',
+  drillToken: 'drill.token',
+  cleanStop: 'clean_stop',
+} as const;
+
+export const DEFAULT_HEALTH_ADDR = '127.0.0.1:8787';
+
+export interface FeedHealth {
+  readonly connected: boolean;
+  /** Age of the newest message, ms; null before the first one. */
+  readonly age_ms: number | null;
+  /** True when losing this feed must halt entries (§18 "data freezes"). */
+  readonly critical: boolean;
+  readonly dropped_by_drill: boolean;
+}
+
+/** GET /health. The heartbeat fields of docs/research/security.md §5.2 plus what the runner measures. */
+export interface Health {
+  readonly seq: number;
+  readonly ts: number;
+  readonly git_sha: string;
+  readonly policy_version: string;
+  readonly last_processed_slot: number | null;
+  readonly feed_ages_ms: Readonly<Record<string, number | null>>;
+  readonly open_position: { readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string } | null;
+  readonly unresolved_intents: { readonly count: number; readonly oldest_age_s: number | null };
+  readonly signer: string;
+  readonly lease_epoch: number | null;
+  readonly sol_reserve: string | null;
+  readonly paused: boolean;
+  readonly boot: string;
+  readonly pid: number;
+  readonly uptime_s: number;
+  readonly rss_bytes: number;
+  readonly mode: 'paper';
+  readonly recorder: 'on' | 'off';
+  readonly simulation: 'on' | 'off';
+  readonly reconciled: boolean;
+  readonly entries_halted: boolean;
+  readonly halt_reasons: readonly string[];
+  readonly feeds: Readonly<Record<string, FeedHealth>>;
+  readonly journal_seq: number;
+  /** Always false in a dry run: no signing key exists. */
+  readonly signing_key: false;
+  readonly stub?: true;
+}
+
+export type JournalKind =
+  | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair';
+
+/** One line of journal.jsonl. Written with a synchronous append per line, so a crash can tear only the last line. */
+export interface JournalLine {
+  readonly seq: number;
+  readonly ts: string;
+  readonly boot: string;
+  readonly kind: JournalKind;
+  readonly reasons?: readonly string[];
+  readonly trade?: string;
+  readonly ok?: boolean;
+  readonly [k: string]: unknown;
+}
+
+/** Kinds that must carry at least one reason ("every decision logged with its reasons", §15 item 3). */
+export const NEEDS_REASONS: ReadonlySet<JournalKind> = new Set(['decision', 'entry', 'exit', 'halt', 'resume']);
+
+export const isLoopback = (addr: string): boolean => /^(127\.0\.0\.1|\[::1\]):\d{1,5}$/.test(addr);
+
+export interface HealthCheck {
+  readonly ok: boolean;
+  readonly problems: readonly string[];
+}
+
+/** What the runner refuses to run with, from the first health reply. */
+export const checkStartHealth = (h: Health): HealthCheck => {
+  const problems: string[] = [];
+  if (h.mode !== 'paper') problems.push(`mode ${String(h.mode)}`);
+  if (h.recorder !== 'on') problems.push('recorder off');
+  if (h.simulation !== 'on') problems.push('simulation off');
+  if (h.signing_key !== false) problems.push('a signing key is loaded');
+  if (Object.keys(h.feeds).length === 0) problems.push('no feeds reported');
+  return { ok: problems.length === 0, problems };
+};

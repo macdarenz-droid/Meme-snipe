@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# wrangler stand-in for ops/test/e2e.sh (the real one is used for the local watchdog run). "deploy" prints a workers.dev address; "secret put NAME" keeps the
+# value (from stdin) in $STATE/wrangler-secrets/NAME so the local watchdog run can use the same keys.
+set -euo pipefail
+args=("$@")
+while [ "${#args[@]}" -gt 0 ] && [ "${args[0]}" = --config ]; do args=("${args[@]:2}"); done
+case "${args[0]} ${args[1]:-}" in
+  "deploy "*|"deploy") echo "Deployed zeroed-watchdog triggers"; echo "  https://zeroed-watchdog.e2e.workers.dev" ;;
+  "secret put") mkdir -p "$STATE/wrangler-secrets"; cat > "$STATE/wrangler-secrets/${args[2]}"; echo "secret put ${args[2]}" >> "$STATE/wrangler-calls.log" ;;
+  *) echo "wrangler stub: unhandled $*" >&2; exit 1 ;;
+esac

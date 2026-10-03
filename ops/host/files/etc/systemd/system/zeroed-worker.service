@@ -27,6 +27,8 @@ LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key
 LoadCredentialEncrypted=jupiter_api_key:/etc/credstore.encrypted/jupiter_api_key
 LoadCredentialEncrypted=telegram_bot_token:/etc/credstore.encrypted/telegram_bot_token
 LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_id
+# Optional: present once Deploy delivered the watchdog (ImportCredential does not fail when it is missing).
+ImportCredential=heartbeat_hmac_key
 StateDirectory=zeroed
 StateDirectoryMode=0700
 UMask=0077

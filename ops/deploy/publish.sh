@@ -5,8 +5,11 @@
 # nothing). Waits until the server downloaded it, or 15 minutes, then deletes the release and its tag.
 #
 # Inputs (environment): DEPLOY_CODE, ISSUED (run id, increasing), GH_REPO, GITHUB_SHA and the secrets
-# HELIUS_API_KEY ALCHEMY_API_KEY JUPITER_API_KEY TELEGRAM_BOT_TOKEN.
-# Test knobs: PICKUP_TIMEOUT_S, PICKUP_POLL_S, PICKUP_GRACE_S.
+# HELIUS_API_KEY ALCHEMY_API_KEY JUPITER_API_KEY TELEGRAM_BOT_TOKEN. With CLOUDFLARE_API_TOKEN and
+# CLOUDFLARE_ACCOUNT_ID (and WRANGLER, the locked tool from ops/watchdog/deploy) it also deploys the
+# watchdog, sets its secrets, and hands its address, a fresh heartbeat key and the webhook secret to the
+# server in the same bundle (the server sets the Telegram webhook once paired).
+# Test knobs: PICKUP_TIMEOUT_S, PICKUP_POLL_S, PICKUP_GRACE_S, TELEGRAM_API, CLOUDFLARE_API_URL.
 #
 # Never prints or stores a value: no set -x; the code, the derived identity and the plaintext only pass
 # through pipes and the process environment; only the ciphertext is ever a file.
@@ -36,12 +39,50 @@ recipient="$(printf '%s' "$DEPLOY_CODE" | node "$here/../host/files/usr/local/li
   die "DEPLOY_CODE must be the 6 words the server shows."
 [[ "$recipient" =~ ^age1[a-z0-9]{58}$ ]] || die "Could not derive the handoff key."
 
+# Watchdog: only together with a key handoff, so the server and the watchdog always get the same new key.
+WATCHDOG_URL=""
+HEARTBEAT_HMAC_KEY=""
+WEBHOOK_SECRET=""
+if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+  [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || die "CLOUDFLARE_ACCOUNT_ID is missing."
+  [ -n "${WRANGLER:-}" ] || die "WRANGLER is not set."
+  # Repository secrets are masked by GitHub already; these two are new, so mask them first. (A workflow
+  # command line is consumed by the runner and never shown in the log.)
+  HEARTBEAT_HMAC_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  hook_secret="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then echo "::add-mask::$HEARTBEAT_HMAC_KEY"; echo "::add-mask::$hook_secret"; fi
+  # The account needs a workers.dev subdomain once (registered only if Cloudflare clearly has none).
+  "$here/cf-subdomain.sh" >/dev/null
+  out="$($WRANGLER deploy 2>&1 || true)"
+  WATCHDOG_URL="$(printf '%s\n' "$out" | grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' | head -n 1 || true)"
+  if [ -z "$WATCHDOG_URL" ]; then
+    # Wrangler's output holds no secret (the token is only in its environment); its tail says what failed.
+    printf '%s\n' "$out" | tail -n 20 >&2
+    die "Watchdog deploy failed (no workers.dev address in wrangler's output; its last lines are above)."
+  fi
+  printf '%s' "$HEARTBEAT_HMAC_KEY" | $WRANGLER secret put HEARTBEAT_HMAC_KEY >/dev/null
+  printf '%s' "$TELEGRAM_BOT_TOKEN" | $WRANGLER secret put TELEGRAM_BOT_TOKEN >/dev/null
+  printf '%s' "$hook_secret" | $WRANGLER secret put TELEGRAM_WEBHOOK_SECRET >/dev/null
+  # The Telegram webhook is set by the server, not here: it reads /pair through getUpdates first, which
+  # Telegram refuses while a webhook is set. The secret travels to it in the encrypted bundle.
+  WEBHOOK_SECRET="$hook_secret"
+  echo "Watchdog deployed at $WATCHDOG_URL; its secrets are set. The server sets the Telegram webhook once paired."
+else
+  echo "No CLOUDFLARE_API_TOKEN secret: the watchdog is not deployed."
+fi
+
 bundle="$(mktemp -d)/bundle.age"
 {
   printf 'ZEROED_BUNDLE=1\n'
   printf 'ISSUED=%s\n' "$ISSUED"
   for n in "${NAMES[@]}"; do printf '%s=%s\n' "$n" "${!n}"; done
+  if [ -n "$WATCHDOG_URL" ]; then
+    printf 'WATCHDOG_URL=%s\n' "$WATCHDOG_URL"
+    printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$WEBHOOK_SECRET"
+    printf 'HEARTBEAT_HMAC_KEY=%s\n' "$HEARTBEAT_HMAC_KEY"
+  fi
 } | age -r "$recipient" -o "$bundle"
+unset HEARTBEAT_HMAC_KEY WEBHOOK_SECRET
 
 gh release delete handoff --yes --cleanup-tag >/dev/null 2>&1 || true
 gh release create handoff "$bundle" --prerelease --target "$GITHUB_SHA" --title "Key handoff" \

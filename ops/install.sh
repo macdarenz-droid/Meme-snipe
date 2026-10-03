@@ -120,6 +120,35 @@ table inet zeroed {
   }
 }
 __ZEROED_FILE__
+install_file /etc/systemd/system/zeroed-backup-offsite.service 0644 <<'__ZEROED_FILE__'
+[Unit]
+Description=Zeroed: daily off-server copy of the newest backup (silent Telegram document)
+After=network-online.target zeroed-backup.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zeroed-backup-offsite
+UMask=0077
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/zeroed-host /run
+__ZEROED_FILE__
+install_file /etc/systemd/system/zeroed-backup-offsite.timer 0644 <<'__ZEROED_FILE__'
+[Unit]
+Description=Zeroed: daily off-server backup copy
+
+[Timer]
+# 17:20 UTC is 03:20 Melbourne (AEST) or 04:20 (AEDT): after the hourly backup, in the quiet hours.
+OnCalendar=*-*-* 17:20:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+__ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup.service 0644 <<'__ZEROED_FILE__'
 [Unit]
 Description=Zeroed: encrypted backup of the SQLite files
@@ -288,6 +317,8 @@ LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key
 LoadCredentialEncrypted=jupiter_api_key:/etc/credstore.encrypted/jupiter_api_key
 LoadCredentialEncrypted=telegram_bot_token:/etc/credstore.encrypted/telegram_bot_token
 LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_id
+# Optional: present once Deploy delivered the watchdog (ImportCredential does not fail when it is missing).
+ImportCredential=heartbeat_hmac_key
 StateDirectory=zeroed
 StateDirectoryMode=0700
 UMask=0077
@@ -624,6 +655,7 @@ function signerStatus() {
 }
 
 let seq = 0;
+const ownerChat = loaded.includes('telegram_chat_id') ? readFileSync(join(credDir, 'telegram_chat_id'), 'utf8').trim() : null;
 let paused = false;
 // The heartbeat key arrives with the watchdog (OPS-1b); until then no heartbeat is sent.
 const key = credDir && existsSync(join(credDir, 'heartbeat_hmac_key')) ? readFileSync(join(credDir, 'heartbeat_hmac_key'), 'utf8') : '';
@@ -648,9 +680,11 @@ async function beat() {
     lease_epoch: null,
     sol_reserve: null,
     paused,
+    owner_chat_id: ownerChat,
   });
   const t = Math.floor(Date.now() / 1000);
-  const sig = createHmac('sha256', key).update(`${t}.${body}`).digest('hex');
+  // Signed text: timestamp, method, path, body (the watchdog refuses a signature on any other route).
+  const sig = createHmac('sha256', key).update(`${t}\nPOST\n/heartbeat\n${body}`).digest('hex');
   try {
     const res = await fetch(`${watchdog}/heartbeat`, {
       method: 'POST',
@@ -659,10 +693,11 @@ async function beat() {
       signal: AbortSignal.timeout(10_000),
     });
     const reply = await res.json().catch(() => ({}));
-    if (res.ok && reply.paused === true && !paused) {
-      paused = true;
-      event('pause', 'owner /pause via watchdog');
-      console.log('Entries paused by the owner (watchdog). Exits keep running.');
+    // Worker contract (ops/README.md): apply the watchdog's flag both ways, so the state and the message agree.
+    if (res.ok && typeof reply.paused === 'boolean' && reply.paused !== paused) {
+      paused = reply.paused;
+      event(paused ? 'pause' : 'resume', paused ? 'owner /pause via watchdog' : 'cleared from the host');
+      console.log(paused ? 'Entries paused by the owner (watchdog). Exits keep running.' : 'Entries allowed again (pause cleared from the host).');
     }
     if (!res.ok) console.log(`Heartbeat refused: HTTP ${res.status}`);
   } catch (e) {
@@ -717,7 +752,8 @@ tg() {
   cred telegram_bot_token | {
     IFS= read -r token || true
     printf 'url = "%s/bot%s/%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$method"
-    [ -z "${tg_chat:-}" ] || printf 'data-urlencode = "chat_id=%s"\n' "$tg_chat"
+    # $tg_field: data-urlencode (default) or form (for a multipart upload such as sendDocument).
+    [ -z "${tg_chat:-}" ] || printf '%s = "chat_id=%s"\n' "${tg_field:-data-urlencode}" "$tg_chat"
   } | curl -fsS -m 30 -K - "$@"
 }
 
@@ -755,11 +791,25 @@ new_deploy_code() {
   rm -f "$STATE_DIR/handoff_status"
 }
 
+# set_webhook: points the bot's webhook at the watchdog (its /pause and /status), once paired. Needs the
+# watchdog address and the webhook secret from the last handoff; the secret goes to curl on stdin.
+set_webhook() {
+  paired && [ -s "$CRED_DIR/telegram_webhook_secret" ] || return 0
+  local url
+  url="$(sed -n 's/^WATCHDOG_URL=//p' /etc/zeroed/worker.env 2>/dev/null || true)"
+  [ -n "$url" ] || return 0
+  cred telegram_webhook_secret | {
+    IFS= read -r secret || true
+    cred telegram_bot_token | { IFS= read -r token || true; printf 'url = "%s/bot%s/setWebhook"\ndata-urlencode = "secret_token=%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$secret"; }
+  } | curl -fsS -m 30 -o /dev/null -K - --data-urlencode "url=$url/telegram" --data-urlencode 'allowed_updates=["message"]'
+}
+
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }
 paired() { [ -s "$CRED_DIR/telegram_chat_id" ]; }
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/derive-key.mjs 0644 <<'__ZEROED_FILE__'
-// Derives the one-time age identity for the Deploy handoff from the deploy code (6 words), read on stdin.
+// Derives the one-time age identity for the Deploy handoff from the deploy code (6 words), read on stdin;
+// with --backup, the owner's backup identity from the backup code instead.
 // Prints AGE-SECRET-KEY-1... on stdout. The workflow encrypts to its public half (age-keygen -y); the host
 // decrypts with it. Same idea as age's passphrase mode (scrypt, age's own work factor logN 18, r 8, p 1),
 // which age 1.1.1 can only read from a terminal. The code is normalised (lowercase, single spaces), so
@@ -773,7 +823,10 @@ if (!/^[a-z-]+( [a-z-]+){5}$/.test(code)) {
   console.error('Deploy code must be 6 words.');
   process.exit(2);
 }
-const key = scryptSync(code, 'zeroed-deploy-handoff-v1', 32, { N: 2 ** 18, r: 8, p: 1, maxmem: 320 * 1024 * 1024 });
+// Domain separation by purpose: the deploy code (default) and the owner's backup code never share a key.
+const SALTS = { deploy: 'zeroed-deploy-handoff-v1', backup: 'zeroed-backup-v1' };
+const purpose = process.argv[2] === '--backup' ? 'backup' : 'deploy';
+const key = scryptSync(code, SALTS[purpose], 32, { N: 2 ** 18, r: 8, p: 1, maxmem: 320 * 1024 * 1024 });
 // RFC 7748 clamp, so the stored scalar is exactly the one X25519 uses (X25519 clamps on use anyway, so this
 // changes the encoded identity, never the key pair it stands for).
 key[0] &= 248;
@@ -846,6 +899,69 @@ mv -f "$OUT/zeroed-$ts.tar.age.new" "$OUT/zeroed-$ts.tar.age"
 ls -1 "$OUT"/zeroed-*.tar.age | LC_ALL=C sort -r | tail -n +"$((KEEP + 1))" | xargs -r rm -f
 echo "Backup zeroed-$ts.tar.age: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
 __ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-backup-code 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# Console, once: makes the owner's 6-word backup code and shows it one time. Only its public half (an age
+# recipient) is kept here, in /etc/zeroed/backup-recipients; the words themselves are never stored, so
+# write them down and keep them safe. Backups (and the daily copy sent to Telegram) can then be opened
+# anywhere with the words: node derive-key.mjs --backup, then age -d.
+set -euo pipefail
+umask 022
+. /usr/local/lib/zeroed/common.sh
+lock
+code="$(/usr/local/bin/node -e '
+  const { randomInt } = require("node:crypto");
+  const words = require("node:fs").readFileSync("/usr/local/share/zeroed/eff_large_wordlist.txt", "utf8").trim().split("\n");
+  if (words.length !== 7776) process.exit(1);
+  console.log(Array.from({ length: 6 }, () => words[randomInt(words.length)]).join(" "));
+')"
+recipient="$(printf '%s' "$code" | /usr/local/bin/node /usr/local/lib/zeroed/derive-key.mjs --backup | age-keygen -y)"
+{
+  age-keygen -y /etc/zeroed/age/host.key
+  printf '%s\n' "$recipient"
+} > /etc/zeroed/backup-recipients.new
+chmod 0644 /etc/zeroed/backup-recipients.new
+mv -f /etc/zeroed/backup-recipients.new /etc/zeroed/backup-recipients
+printf '%s\n' "$recipient" > "$STATE_DIR/owner_backup_recipient"
+log "Backup code (shown once, not stored here; write it down):"
+log ""
+log "  $code"
+log ""
+log "From the next backup on, backups open with these words. Run this again to replace the code."
+__ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-backup-offsite 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# Daily off-server copy of the newest backup, sent as a silent Telegram document to the paired chat (free;
+# Telegram takes files up to 50 MB). Off unless ops/host-config.json in the deployed release says
+# "offsite_backup": true: sending data to a third party needs the owner's approval (CLAUDE.md), and
+# switching it on is a reviewed commit. The copy is re-encrypted to the owner's backup code only, so
+# nothing on this server (the host key included) can open it. Runs from zeroed-backup-offsite.timer.
+set -euo pipefail
+umask 077
+. /usr/local/lib/zeroed/common.sh
+OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
+enabled="$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)"
+[ "$enabled" = true ] || { log "Off-server copy is off (ops/host-config.json; needs the owner's approval)."; exit 0; }
+owner="$(cat "$STATE_DIR/owner_backup_recipient" 2>/dev/null || true)"
+[[ "$owner" =~ ^age1[a-z0-9]{58}$ ]] || { log "No backup code yet (zeroed-backup-code): no off-server copy."; exit 0; }
+paired || { log "Telegram not paired: no off-server copy."; exit 0; }
+newest="$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1 || true)"
+[ -n "$newest" ] || { log "No backup yet."; exit 0; }
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+copy="$work/$(basename "$newest")"
+# Owner only: open with the host key, encrypt again to the owner's recipient alone (plaintext only in a pipe).
+age -d -i /etc/zeroed/age/host.key "$newest" | age -r "$owner" -o "$copy"
+size="$(stat -c %s "$copy")"
+[ "$size" -le 49000000 ] || { log "Backup is $size bytes, over Telegram's 50 MB: not sent."; notify "Zeroed server: backup too large for the Telegram copy ($size bytes)." || true; exit 1; }
+chat="$(cred telegram_chat_id)"
+tg_chat="$chat" tg_field=form tg sendDocument -o /dev/null -F "document=@$copy" -F "disable_notification=true" \
+  -F "caption=Zeroed backup $(basename "$newest" .tar.age). Opens only with your backup code." 2>/dev/null ||
+  { log "Sending the off-server copy failed."; exit 1; }
+printf '%s\n' "$(basename "$newest")" > "$STATE_DIR/last_offsite"
+log "Sent $(basename "$newest") ($size bytes, owner key only) to the paired Telegram chat."
+__ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-new-deploy-code 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Console only: makes a new one-time deploy code, for rotating the keys. Put it in the DEPLOY_CODE secret
@@ -915,6 +1031,15 @@ for k in "${API_NAMES[@]}"; do
 done
 
 for k in "${API_NAMES[@]}"; do printf '%s' "${v[$k]}" | store_cred "${k,,}"; done
+# Watchdog (when Deploy had the Cloudflare secrets): its address and the heartbeat key.
+watchdog="${v[WATCHDOG_URL]:-}"
+if [ -n "$watchdog" ] && [[ "$watchdog" =~ ^https://[A-Za-z0-9.-]+\.workers\.dev$ ]] && [ -n "${v[HEARTBEAT_HMAC_KEY]:-}" ]; then
+  printf '%s' "${v[HEARTBEAT_HMAC_KEY]}" | store_cred heartbeat_hmac_key
+  [ -z "${v[TELEGRAM_WEBHOOK_SECRET]:-}" ] || printf '%s' "${v[TELEGRAM_WEBHOOK_SECRET]}" | store_cred telegram_webhook_secret
+  printf 'WATCHDOG_URL=%s\n' "$watchdog" > /etc/zeroed/worker.env.new
+  chmod 0644 /etc/zeroed/worker.env.new
+  mv -f /etc/zeroed/worker.env.new /etc/zeroed/worker.env
+fi
 v=()
 printf '%s\n' "$issued" > "$STATE_DIR/last_issued"
 printf '%s\n' "$digest" > "$STATE_DIR/last_bundle"
@@ -927,6 +1052,7 @@ if paired; then
   # Rotation: restart the worker (reconcile first) and tell the owner.
   if systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
   notify "Zeroed server: keys replaced (issue $issued). Worker $w." || true
+  set_webhook || log "Could not set the Telegram webhook for the watchdog."
 else
   [ -s "$PAIR_CODE_FILE" ] || new_pair_code
 fi
@@ -981,6 +1107,26 @@ done < "$work/MANIFEST.sha256"
 [ "$files" -gt 0 ] || fail "backup holds no files"
 echo "PASS: $(basename "$backup"), $files file(s) restored to a scratch directory and verified."
 __ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-resume 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# Clears an owner /pause at the watchdog. Run as root at the host console; the request is signed with the
+# heartbeat key (read from its credential and passed on stdin, never as an argument).
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+. /etc/zeroed/worker.env
+[ -n "${WATCHDOG_URL:-}" ] || { log "No watchdog configured."; exit 1; }
+cred heartbeat_hmac_key | WATCHDOG_URL="$WATCHDOG_URL" /usr/local/bin/node --input-type=module -e '
+import { createHmac } from "node:crypto";
+let key = "";
+for await (const c of process.stdin) key += c;
+const body = "{}";
+const t = Math.floor(Date.now() / 1000);
+const sig = createHmac("sha256", key).update(`${t}\nPOST\n/resume\n${body}`).digest("hex");
+const res = await fetch(`${process.env.WATCHDOG_URL}/resume`, { method: "POST", headers: { "content-type": "application/json", "x-zeroed-signature": `t=${t},v1=${sig}` }, body });
+console.log(res.ok ? "Entries allowed again." : `Watchdog refused: HTTP ${res.status}`);
+process.exit(res.ok ? 0 : 1);
+'
+__ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-setup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Console: the setup screen. Shows the deploy code, waits for the keys, then shows the Telegram pairing
@@ -1033,6 +1179,13 @@ elif [ -s "$PAIR_CODE_FILE" ]; then
 elif keys_stored; then
   log "Telegram:  not paired; run zeroed-pair-code"
 fi
+if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" != true ]; then
+  log "Backups:   hourly here; off-server copy off (waits for the owner's approval)"
+elif [ -s "$STATE_DIR/owner_backup_recipient" ]; then
+  log "Backups:   hourly here; daily copy to Telegram ($(cat "$STATE_DIR/last_offsite" 2>/dev/null || echo 'none sent yet'))"
+else
+  log "Backups:   hourly here; run zeroed-backup-code once for the off-server copy"
+fi
 log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
@@ -1052,13 +1205,16 @@ lock
 # Until paired, read every message, so one sent while no code was pending never counts against a later code.
 [ -s "$CRED_DIR/telegram_bot_token" ] && ! paired || exit 0
 offset="$(cat "$STATE_DIR/tg_offset" 2>/dev/null || echo 0)"
-updates="$(tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]')" || {
-  log "Telegram getUpdates failed."
-  exit 0
-}
+get_updates() { tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]'; }
+if ! updates="$(get_updates 2>/dev/null)"; then
+  # Re-pairing while the watchdog's webhook is set: Telegram refuses getUpdates then. Turn it off for
+  # pairing; it is set again as soon as the pairing succeeds.
+  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the Telegram webhook while pairing; it comes back once paired." || true
+  updates="$(get_updates)" || { log "Telegram getUpdates failed."; exit 0; }
+fi
 want="$(cat "$PAIR_CODE_FILE" 2>/dev/null || true)"
 issued_at="$(stat -c %Y "$PAIR_CODE_FILE" 2>/dev/null || echo 0)"
-while IFS=$'\t' read -r id date chat text; do
+while IFS=$'\t' read -r id date chat kind text; do
   [ -n "$id" ] || continue
   printf '%s\n' "$((id + 1))" > "$STATE_DIR/tg_offset"
   [ -s "$PAIR_CODE_FILE" ] || continue
@@ -1066,19 +1222,21 @@ while IFS=$'\t' read -r id date chat text; do
   [[ "$date" =~ ^[0-9]+$ ]] && [ "$date" -ge "$issued_at" ] || continue
   [[ "$text" =~ ^/pair(@[A-Za-z0-9_]+)?([[:space:]]+(.*))?$ ]] || continue
   got="$(printf '%s' "${BASH_REMATCH[3]:-}" | tr -d '[:space:]')"
-  [[ "$chat" =~ ^-?[0-9]{1,20}$ ]] || continue
+  # Private chats only: a group or channel can never become the owner's chat.
+  [ "$kind" = private ] && [[ "$chat" =~ ^[0-9]{1,20}$ ]] || continue
   if [ "$got" = "$want" ]; then
     printf '%s' "$chat" | store_cred telegram_chat_id
     rm -f "$PAIR_CODE_FILE"
     log "Paired with the owner's Telegram chat."
     notify "Paired. Zeroed alerts come to this chat only." || true
+    set_webhook || log "Could not set the Telegram webhook for the watchdog."
     systemctl start zeroed-worker.service || true
   else
     rm -f "$PAIR_CODE_FILE"
     log "Wrong pairing code sent in Telegram; that code no longer works. Run zeroed-pair-code for a new one."
     send_to "$chat" "Code not accepted. Get a new one at the server console." || true
   fi
-done < <(printf '%s' "$updates" | jq -r '.result[]? | [(.update_id | tostring), ((.message.date // 0) | tostring), ((.message.chat.id // "") | tostring), ((.message.text // "") | gsub("[\t\n]"; " "))] | @tsv')
+done < <(printf '%s' "$updates" | jq -r '.result[]? | [(.update_id | tostring), ((.message.date // 0) | tostring), ((.message.chat.id // "-") | tostring), ((.message.chat.type // "-") | tostring), ((.message.text // "-") | gsub("[\t\n]"; " "))] | @tsv')
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-update 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1145,6 +1303,13 @@ fi
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
+
+# Repository switches, applied with each reviewed release (ops/host-config.json).
+if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
+  systemctl enable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
+else
+  systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
+fi
 
 # Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
 worker="not started (no keys yet)"
@@ -8998,6 +9163,8 @@ systemctl daemon-reload
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer >/dev/null
+# Installed but off: the off-server copy goes to a third party (Telegram) and waits for the owner's
+# approval, switched on by a reviewed commit to ops/host-config.json (applied by zeroed-update).
 # Starts once credentials exist (skipped by its ConditionPathExists until then).
 systemctl start zeroed-worker.service || true
 
