@@ -3,9 +3,9 @@ import { formatUsd } from '../lib/format.ts';
 import { emptyResults, type ResultsView } from '../performance/types.ts';
 import { Results } from '../performance/Results.tsx';
 import { RiskMeters } from '../performance/RiskMeters.tsx';
+import { sessionLabel } from '../shell/Status.tsx';
 import { EMPTY_SESSION, type SessionView } from './types.ts';
 
-const STATE: Record<SessionView['state'], string> = { 'not-started': 'Not started', running: 'Running', paused: 'Paused', ended: 'Ended' };
 const NOT_SET = 'Not set';
 
 const usd = (v: number | null) => (v === null ? NOT_SET : formatUsd(v));
@@ -20,7 +20,7 @@ export function SessionCard({ session }: { session: SessionView }) {
     ['Session loss', usd(session.sessionLossLimitUsd)],
   ];
   return (
-    <Section title="Session" aside={<Badge>{STATE[session.state]}</Badge>}>
+    <Section title="Session" aside={<Badge>{sessionLabel(session)}</Badge>}>
       <dl className="kv">
         {rows.map(([k, v]) => (
           <div key={k}>

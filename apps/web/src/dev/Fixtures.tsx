@@ -1,5 +1,7 @@
+import { useCallback, useState } from 'react';
 import { SampleScope } from '../components/Sample.tsx';
 import { Section } from '../components/ui.tsx';
+import { FundingSheet, type FundingKind } from '../funding/FundingSheet.tsx';
 import { ResultsStats } from '../performance/ResultsStats.tsx';
 import { RiskMeters } from '../performance/RiskMeters.tsx';
 import { Results } from '../performance/Results.tsx';
@@ -10,6 +12,8 @@ import { FIXTURE_MARKER, fixtureResults, fixtureResultsSmall, fixtureSession, fi
 
 /** Dev and preview review page. Every value here is made up; the shell shows the "Sample data" marker. */
 export default function Fixtures() {
+  const [funding, setFunding] = useState<FundingKind | null>(null);
+  const close = useCallback(() => setFunding(null), []);
   return (
     <SampleScope>
       <div className="screen-grid" data-marker={FIXTURE_MARKER}>
@@ -24,7 +28,8 @@ export default function Fixtures() {
           <ResultsStats stats={fixtureResultsSmall.stats} />
         </Section>
         <Results view={fixtureResults} />
-        <WalletSummary wallet={fixtureWallet} />
+        <WalletSummary wallet={fixtureWallet} onFund={setFunding} />
+        <FundingSheet kind={funding} onClose={close} savedWallet={fixtureWallet.savedWallet} botWallet={fixtureWallet.botAddress} gatePassed />
       </div>
     </SampleScope>
   );

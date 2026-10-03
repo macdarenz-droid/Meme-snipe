@@ -37,10 +37,12 @@ export function Sheet({ open, title, onClose, children, footer }: SheetProps) {
       const first = items[0];
       const last = items[items.length - 1];
       if (!first || !last) return;
-      if (e.shiftKey && document.activeElement === first) {
+      const active = document.activeElement as HTMLElement | null;
+      const inside = !!active && items.includes(active);
+      if (e.shiftKey && (active === first || !inside)) {
         e.preventDefault();
         last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
+      } else if (!e.shiftKey && (active === last || !inside)) {
         e.preventDefault();
         first.focus();
       }

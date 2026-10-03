@@ -1,4 +1,5 @@
 import { formatUsd, formatUsdCompact } from '../lib/format.ts';
+import { CALENDAR_TINT_MAX } from '../theme/contrast.ts';
 import type { DayResultView } from './types.ts';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -53,7 +54,7 @@ export function PnlCalendar({ month, days, onSelectDay }: Props) {
                 );
               }
               const tone = result.netUsd > 0 ? 'gain' : result.netUsd < 0 ? 'loss' : 'flat';
-              const strength = maxAbs ? 10 + Math.round((Math.abs(result.netUsd) / maxAbs) * 22) : 0;
+              const strength = maxAbs ? 10 + Math.round((Math.abs(result.netUsd) / maxAbs) * (CALENDAR_TINT_MAX - 10)) : 0;
               const count = result.tradeIds.length;
               return (
                 <div role="gridcell" key={i} className="calendar-cell">

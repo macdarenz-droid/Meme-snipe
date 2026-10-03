@@ -51,7 +51,7 @@ export function Results({ view }: { view: ResultsView }) {
       <Section title="Equity">
         <EquityCurve points={view.equity} />
       </Section>
-      <Section title="Costs">
+      <Section title="Costs" className="span-2">
         <CostBreakdown costs={view.costs} />
       </Section>
       <Section title="Trades" className="span-2">

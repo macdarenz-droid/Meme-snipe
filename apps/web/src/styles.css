@@ -284,8 +284,20 @@ input {
   border-bottom: 1px solid var(--border);
 }
 
-.mobile-status {
+.mobile-head .button {
   margin-left: auto;
+  min-height: 44px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.mobile-status {
+  flex-basis: 100%;
+  margin-top: -4px;
+}
+
+.mobile-head {
+  flex-wrap: wrap;
 }
 
 .mobile-controls {
@@ -523,7 +535,7 @@ input {
 }
 
 .segmented-option {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 10px;
   border: 0;
   border-radius: 6px;
@@ -573,6 +585,12 @@ input {
   overflow-x: auto;
   margin: 0 -16px;
   padding: 0 16px;
+  /* Edge shadows show when the table scrolls sideways. */
+  background:
+    linear-gradient(to right, var(--surface) 30%, transparent) left / 32px 100% no-repeat local,
+    linear-gradient(to left, var(--surface) 30%, transparent) right / 32px 100% no-repeat local,
+    linear-gradient(to right, color-mix(in srgb, var(--text) 10%, transparent), transparent) left / 12px 100% no-repeat scroll,
+    linear-gradient(to left, color-mix(in srgb, var(--text) 10%, transparent), transparent) right / 12px 100% no-repeat scroll;
 }
 
 .table {
@@ -703,7 +721,7 @@ input {
 
 .stat-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 16px;
 }
 
@@ -713,12 +731,17 @@ input {
   }
 }
 
+.stat {
+  min-width: 0;
+}
+
 .stat dt {
   font-size: 13px;
   color: var(--text-2);
 }
 
 .stat dd {
+  overflow-wrap: anywhere;
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -811,6 +834,11 @@ input {
 
 .calendar-day {
   color: var(--text-2);
+}
+
+/* On tinted cells the day number uses primary text (checked by the contrast test). */
+.calendar-button .calendar-day {
+  color: var(--text);
 }
 
 .calendar-net {
@@ -1008,6 +1036,12 @@ input {
   display: grid;
   gap: 4px;
   font-size: 14px;
+}
+
+.address {
+  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .field-label {

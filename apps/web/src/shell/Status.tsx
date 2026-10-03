@@ -1,5 +1,11 @@
+import { useId } from 'react';
 import { Dot } from '../components/ui.tsx';
 import type { SessionView } from '../screens/types.ts';
+
+const SESSION_STATE: Record<SessionView['state'], string> = { 'not-started': 'Not started', running: 'Running', paused: 'Paused', ended: 'Ended' };
+
+export const sessionLabel = (s: SessionView) => SESSION_STATE[s.state];
+export const dataLabel = (s: SessionView) => (s.workerConnected ? 'Connected' : 'No feed');
 
 export const modeLabel = (s: SessionView) => (s.mode === 'live' ? 'Live' : 'Paper');
 
@@ -16,24 +22,25 @@ export function StatusList({ session }: { session: SessionView }) {
       <div>
         <dt>Session</dt>
         <dd>
-          <Dot state="off" /> Not started
+          <Dot state={session.state === 'running' ? 'on' : 'off'} /> {sessionLabel(session)}
         </dd>
       </div>
       <div>
         <dt>Data</dt>
         <dd>
-          <Dot state="off" /> No feed
+          <Dot state={session.workerConnected ? 'on' : 'off'} /> {dataLabel(session)}
         </dd>
       </div>
     </dl>
   );
 }
 
-export function PauseButton() {
+export function PauseButton({ compact = false }: { compact?: boolean }) {
+  const noteId = useId();
   return (
-    <button type="button" className="button button-block" disabled aria-describedby="pause-note">
-      Pause new entries
-      <span id="pause-note" className="sr-only">
+    <button type="button" className={compact ? 'button' : 'button button-block'} disabled aria-label={compact ? 'Pause new entries' : undefined} aria-describedby={noteId}>
+      {compact ? 'Pause' : 'Pause new entries'}
+      <span id={noteId} className="sr-only">
         Worker not connected
       </span>
     </button>

@@ -13,11 +13,11 @@ export function TradeHistory({ trades, onSelect }: { trades: TradeView[]; onSele
         <thead>
           <tr>
             <th scope="col">Token</th>
-            <th scope="col">Closed</th>
+            <th scope="col" className="num">Net</th>
             <th scope="col" className="num">Size</th>
             <th scope="col" className="num">Fees</th>
-            <th scope="col" className="num">Net</th>
             <th scope="col" className="num">Held</th>
+            <th scope="col">Closed</th>
             <th scope="col">Exit</th>
           </tr>
         </thead>
@@ -30,11 +30,11 @@ export function TradeHistory({ trades, onSelect }: { trades: TradeView[]; onSele
                   <span className="mono muted">{shortAddress(t.mint)}</span>
                 </button>
               </td>
-              <td className="mono muted">{formatDateTime(t.closedAt)}</td>
+              <td className={`num ${tone(t.netUsd)}`}>{formatUsd(t.netUsd, true)}</td>
               <td className="num">{formatUsd(t.sizeUsd)}</td>
               <td className="num">{formatUsd(t.feesUsd)}</td>
-              <td className={`num ${tone(t.netUsd)}`}>{formatUsd(t.netUsd, true)}</td>
               <td className="num">{formatDuration(t.holdSeconds)}</td>
+              <td className="mono muted">{formatDateTime(t.closedAt)}</td>
               <td className="muted truncate">{t.reasonOut}</td>
             </tr>
           ))}
