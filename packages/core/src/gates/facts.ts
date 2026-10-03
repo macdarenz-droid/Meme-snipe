@@ -145,6 +145,8 @@ export interface DeployerFact {
   readonly mints: readonly { readonly mint: string; readonly createdAtMs: number }[];
   /** Prior rugs, each dated when the index learned of it. */
   readonly rugs: readonly { readonly mint: string; readonly knownAtMs: number }[];
+  /** Mints the rug labeller could not judge (RUG-1), each dated when the index learned of it. */
+  readonly unjudged?: readonly { readonly mint: string; readonly knownAtMs: number }[];
 }
 
 /** The head of a stream: processed through `obs.slot`, with no gap since `gapFreeSince`. */
@@ -341,6 +343,7 @@ export const parseDeployer = (v: unknown): DeployerFact | null =>
   withObs(v) && isMs(v['coverageFromMs'])
   && every(v['mints'], (m): m is DeployerFact['mints'][number] => isObj(m) && isStr(m['mint']) && isMs(m['createdAtMs']))
   && every(v['rugs'], (r): r is DeployerFact['rugs'][number] => isObj(r) && isStr(r['mint']) && isMs(r['knownAtMs']))
+  && (v['unjudged'] === undefined || every(v['unjudged'], (r): r is DeployerFact['rugs'][number] => isObj(r) && isStr(r['mint']) && isMs(r['knownAtMs'])))
     ? (v as unknown as DeployerFact) : null;
 
 export const parseStream = (v: unknown): StreamFact | null =>

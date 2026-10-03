@@ -13,3 +13,4 @@ export {
 export { PolicyError, assertValidPolicy, policyIssues } from './validate.ts';
 export { FILL_CONFIG, type FillConfig } from './fills.ts';
 export { RESEARCH_CONFIG, type ResearchConfig } from './research.ts';
+export { RUG_CONFIG, rugConfigIssues, type RugConfig } from './rugs.ts';
