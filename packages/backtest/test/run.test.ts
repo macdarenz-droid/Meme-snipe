@@ -1,11 +1,13 @@
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
-import { authoriseHoldout, holdoutConfigId, readHoldoutStore, researchDays, runAndSealHoldout, runHoldout, writeHoldoutStore } from '../src/holdout.ts';
+import { authoriseHoldout, holdoutConfigId, readHoldoutStore, type RegistryVcs, researchDays, runAndSealHoldout, runHoldout, writeHoldoutStore } from '../src/holdout.ts';
+import { gitRegistryVcs } from '../src/registry-git.ts';
 import { holdoutReady } from '../../core/src/stats/index.ts';
 import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
 import { buildReport } from '../src/report.ts';
@@ -287,6 +289,70 @@ describe('holdout mode', () => {
     // The longest hold any universe may have (the cap), so the tail holds for every registered universe.
     expect(tail).toBeGreaterThanOrEqual(TRIAL_POLICY.exits.tMaxCapMs + s0.blockedRetries * s0.blockedRetryMs + s0.endMarginMs);
     expect([h.fromDay, h.entryCutoffDay]).toEqual(['2026-09-22', '2026-10-20']);
+  });
+
+  test('the registry on a remote branch: a fresh clone sees the started window, a failed push or a race blocks the run, a symlink is refused (D2, D3)', () => {
+    const env = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+    for (const [k, v] of Object.entries(env)) process.env[k] = v;
+    const top = mkdtempSync(join(tmpdir(), 'reg-'));
+    const sh = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const origin = join(top, 'origin.git');
+    sh(top, 'init', '-q', '--bare', origin);
+    const clone = (name: string) => {
+      const d = join(top, name);
+      sh(top, 'clone', '-q', origin, d);
+      sh(d, 'commit', '-q', '--allow-empty', '-m', 'root');
+      return d;
+    };
+    const vcsAt = (root: string) => gitRegistryVcs({ root, relPath: 'research/holdout/registry.json', remote: 'origin', branch: 'holdout-registry', fileName: 'registry.json' });
+    const at = (root: string) => ({ registryPath: join(root, 'research/holdout/registry.json'), codeCommit: 'c', datasetId: 'd', vcs: vcsAt(root) });
+    try {
+      const a = clone('a');
+      const A = at(a);
+      A.vcs.check();
+      mkdirSync(join(a, 'research/holdout'), { recursive: true });
+      authoriseHoldout(A, 1, { holdoutId: 'h-git', universe: 'U2' }, opts());
+      expect(sh(top, '--git-dir', origin, 'show', 'holdout-registry:registry.json')).toContain('h-git');
+      // A push failure (the remote goes away after the check) blocks the run and leaves the local copy as the remote has it.
+      const before = readFileSync(A.registryPath, 'utf8');
+      const losing: RegistryVcs = { check: () => { A.vcs.check(); renameSync(origin, `${origin}.away`); }, commit: (m) => A.vcs.commit(m) };
+      expect(() => runAndSealHoldout({ ...opts(), ledgerPath: join(top, 'nopush.sqlite') }, { ...A, vcs: losing, byUniverse: { U2: 'h-git' }, window })).toThrow(/push|origin|repository/i);
+      expect(existsSync(join(top, 'nopush.sqlite'))).toBe(false);
+      expect(readFileSync(A.registryPath, 'utf8')).toBe(before);
+      renameSync(`${origin}.away`, origin);
+      // A race: another clone pushes after A's check, so A's start record cannot be pushed and nothing runs.
+      const b = clone('b');
+      const B = at(b);
+      B.vcs.check();
+      const race = () => {
+        const st = readHoldoutStore(B.registryPath);
+        writeHoldoutStore(B.registryPath, { ...st, runs: [...st.runs, { holdoutId: 'h-x', outcome: 'refused', configId: 'x', ledgerPath: 'x', at: 'x', reason: 'race' }] });
+        B.vcs.commit('race');
+      };
+      const racing: RegistryVcs = { check: () => { A.vcs.check(); race(); }, commit: (m) => A.vcs.commit(m) };
+      expect(() => runAndSealHoldout({ ...opts(), ledgerPath: join(top, 'race.sqlite') }, { ...A, vcs: racing, byUniverse: { U2: 'h-git' }, window })).toThrow(/rejected|fetch first|non-fast-forward|failed to push/);
+      expect(existsSync(join(top, 'race.sqlite'))).toBe(false);
+      // A runs once it is in step; a fresh clone then sees the started window and refuses to run it again.
+      rmSync(A.registryPath);
+      A.vcs.check();
+      runAndSealHoldout({ ...opts(), ledgerPath: join(top, 'run.sqlite') }, { ...A, byUniverse: { U2: 'h-git' }, window });
+      const c = clone('c');
+      const C = at(c);
+      C.vcs.check();
+      expect(readHoldoutStore(C.registryPath).runs.map((r) => r.outcome)).toContain('sealed');
+      expect(() => runAndSealHoldout({ ...opts(), ledgerPath: join(top, 'again.sqlite') }, { ...C, byUniverse: { U2: 'h-git' }, window })).toThrow(/already run/);
+      // A local copy that differs from the remote is refused.
+      writeFileSync(C.registryPath, `${readFileSync(C.registryPath, 'utf8')} `);
+      expect(() => C.vcs.check()).toThrow(/differs/);
+      // A symlinked registry path is refused.
+      const d = clone('d');
+      mkdirSync(join(d, 'research/holdout'), { recursive: true });
+      symlinkSync(C.registryPath, join(d, 'research/holdout/registry.json'));
+      expect(() => at(d).vcs.check()).toThrow(/symbolic link/);
+      expect(() => readHoldoutStore(join(d, 'research/holdout/registry.json'))).toThrow(/symbolic link/);
+    } finally {
+      rmSync(top, { recursive: true, force: true });
+    }
   });
 
   test('research days never include the reserved holdout start or a registered window (H1)', () => {

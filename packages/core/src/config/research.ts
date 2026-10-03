@@ -37,8 +37,11 @@ export interface ResearchConfig {
     readonly fromDay: string;
     readonly entryCutoffDay: string;
     readonly tailEndDay: string;
-    /** The registry file, relative to the repository root; tracked in git, so every start and burn is a commit. */
+    /** The local copy of the registry, relative to the repository root (ignored by the code branch). */
     readonly registryPath: string;
+    /** The remote branch that holds the registry (survives fresh clones); every write is pushed there. */
+    readonly registryRemote: string;
+    readonly registryBranch: string;
   };
   /** Running costs charged against results, apart from the bankroll and per-trade costs. */
   readonly operating: {
@@ -57,7 +60,7 @@ const VALUES: ResearchConfig = {
   s0: { u2WindowFromMs: 60 * MINUTE, u2WindowToMs: 240 * MINUTE, entryMinOutBelowBps: 300, blockedRetryMs: 10 * MINUTE, blockedRetries: 3, endMarginMs: 30 * MINUTE },
   heartbeatBlocks: 150,
   decisionCommitment: 'confirmed',
-  holdout: { fromDay: '2026-09-22', entryCutoffDay: '2026-10-20', tailEndDay: '2026-10-21', registryPath: 'research/holdout/registry.json' },
+  holdout: { fromDay: '2026-09-22', entryCutoffDay: '2026-10-20', tailEndDay: '2026-10-21', registryPath: 'research/holdout/registry.json', registryRemote: 'origin', registryBranch: 'holdout-registry' },
   operating: { hostingUsdPerMonth: usd('6'), projectionBankrolls: [usd('20'), usd('100'), usd('200')] },
 };
 

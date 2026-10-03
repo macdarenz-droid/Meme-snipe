@@ -3,7 +3,8 @@
 // only). Nothing else leaves this function: no exit count, fill, P&L or log line. The file is made read-only; only the
 // scoring stage opens it, once, after STATS-1's size check passes.
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { refuseSymlink } from './registry-git.ts';
 import { canonical } from '../../core/src/engine/index.ts';
 import { burnHoldout, createHoldoutRegistry, type HoldoutCounts, type HoldoutRegistry, registerHoldout, sealHoldout } from '../../core/src/stats/index.ts';
 import type { DatasetRow } from './dataset/rows.ts';
@@ -17,9 +18,9 @@ export interface SealedHoldout {
 }
 
 /**
- * Version control of the registry file (the CLI's is git): `check` refuses unless the file is tracked and unchanged
- * from HEAD (or, before the first registration, absent); `commit` records a write. Every start and burn becomes a
- * commit, so deleting or rewinding the file shows in history.
+ * Version control of the registry file (the CLI's keeps it on a remote branch, registry-git.ts): `check` refuses
+ * unless the local copy equals the shared one (a fresh clone takes the shared copy); `commit` records and publishes a
+ * write, and throws when it cannot (then the write is undone locally and nothing runs).
  */
 export interface RegistryVcs {
   check(): void;
@@ -94,7 +95,25 @@ export interface HoldoutStore {
   readonly runs: readonly HoldoutRunRecord[];
 }
 
-export const readHoldoutStore = (path: string): HoldoutStore => JSON.parse(readFileSync(path, 'utf8')) as HoldoutStore;
+export const readHoldoutStore = (path: string): HoldoutStore => {
+  refuseSymlink(path);
+  return JSON.parse(readFileSync(path, 'utf8')) as HoldoutStore;
+};
+
+/** Writes and publishes the store; when publishing fails, the local file goes back to what it was and the error stands. */
+const saveStore = (path: string, store: HoldoutStore, vcs: RegistryVcs | undefined, message: string): void => {
+  refuseSymlink(path);
+  const before = existsSync(path) ? readFileSync(path, 'utf8') : null;
+  writeHoldoutStore(path, store);
+  if (vcs === undefined) return;
+  try {
+    vcs.commit(message);
+  } catch (err) {
+    if (before === null) rmSync(path, { force: true });
+    else writeFileSync(path, before);
+    throw err;
+  }
+};
 
 /** Written whole to a temporary file and renamed, so a crash leaves the old or the new store, never half of one. */
 export const writeHoldoutStore = (path: string, store: HoldoutStore): void => {
@@ -118,8 +137,7 @@ export const authoriseHoldout = (a: HoldoutAuthority, familySize: number, entry:
   const clash = startedOverlapping(store, window, null);
   if (clash.length > 0) throw new RangeError(`holdout ${entry.holdoutId}: its window overlaps ${clash.join(', ')}, already run`);
   const next = { ...store, registry: registerHoldout(store.registry, { ...entry, ...window, configId: holdoutConfigId(o, a) }) };
-  writeHoldoutStore(a.registryPath, next);
-  a.vcs?.commit(`Holdout ${entry.holdoutId}: registered ${window.fromDay}..${window.toDay}, entries before ${o.research.holdout.entryCutoffDay}`);
+  saveStore(a.registryPath, next, a.vcs, `Holdout ${entry.holdoutId}: registered ${window.fromDay}..${window.toDay}, entries before ${o.research.holdout.entryCutoffDay}`);
   return next;
 };
 
@@ -146,10 +164,7 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
   t.vcs?.check();
   if (!existsSync(t.registryPath)) throw new RangeError(`no holdout registry at ${t.registryPath}: holdout not registered`);
   let store = readHoldoutStore(t.registryPath);
-  const save = (message: string) => {
-    writeHoldoutStore(t.registryPath, store);
-    t.vcs?.commit(message);
-  };
+  const save = (message: string) => saveStore(t.registryPath, store, t.vcs, message);
   const log = (holdoutId: string, outcome: HoldoutRunRecord['outcome'], reason: string) => {
     store = { ...store, runs: [...store.runs, { holdoutId, outcome, configId, ledgerPath: o.ledgerPath, at: new Date().toISOString(), reason }] };
   };

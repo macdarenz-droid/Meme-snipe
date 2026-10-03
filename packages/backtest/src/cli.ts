@@ -13,8 +13,8 @@
 // a registered window. holdout-register authorises the research config's window (entries before the cutoff, then the
 // tail) and the configuration id (strategy, policy, fill model, research settings, code and dataset) before any run.
 // The holdout command refuses anything not authorised and prints only the sealed ledger's hash and the per-universe
-// candidate and entry counts. The registry lives at the research config's path in the repository the command runs
-// in (the working directory); it must be tracked in git and unchanged, and every write to it is committed.
+// candidate and entry counts. The registry lives on the research config's remote branch (registry-git.ts), with a
+// local copy at a fixed path in the code's own repository; the command refuses to run from another repository.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -27,10 +27,11 @@ import type { Bps } from '../../core/src/units/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
 import { readSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
-import { authoriseHoldout, holdoutWindow, readHoldoutStore, type RegistryVcs, researchDays, runAndSealHoldout } from './holdout.ts';
+import { authoriseHoldout, holdoutWindow, readHoldoutStore, researchDays, runAndSealHoldout } from './holdout.ts';
 import { leakTest, shiftTest } from './proofs.ts';
 import { economics } from './economics.ts';
 import { buildReport } from './report.ts';
+import { gitRegistryVcs } from './registry-git.ts';
 import { burstSweep, ladderCongestion } from './stress.ts';
 import { runBacktest, type RunOptions } from './run.ts';
 import { tradesOf } from './trades.ts';
@@ -48,10 +49,26 @@ const dataset = flag('dataset');
 const sumsChecked = verifySums(dataset);
 const manifest = loadManifest(dataset);
 const only = args.includes('--days') ? new Set(flag('days').split(',')) : null;
-// The registry: a fixed path in the repository the command runs in, read here, written only by the holdout path.
-const registryRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+// The registry belongs to the code's own repository (D1): resolved from this file, never from the working directory,
+// and the command refuses to run from another repository. It is synced from its remote branch before any use (D2).
+const topOf = (cwd: string): string => execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', cwd, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+const registryRoot = topOf(import.meta.dirname);
+const here = (() => {
+  try {
+    return topOf(process.cwd());
+  } catch {
+    return null;
+  }
+})();
+if (here !== registryRoot) throw new Error(`run this command from the code's repository (${registryRoot}), not ${here ?? process.cwd()}`);
 const registryPath = join(registryRoot, RESEARCH_CONFIG.holdout.registryPath);
 if (args.includes('--registry')) throw new Error(`the holdout registry path is fixed by the research config (${RESEARCH_CONFIG.holdout.registryPath})`);
+const registryVcs = gitRegistryVcs({
+  root: registryRoot, relPath: RESEARCH_CONFIG.holdout.registryPath, remote: RESEARCH_CONFIG.holdout.registryRemote,
+  branch: RESEARCH_CONFIG.holdout.registryBranch, fileName: 'registry.json',
+});
+// Every command sees the shared registry: research runs need its registered windows (H1), holdout commands its runs.
+registryVcs.check();
 const selected = manifest.days.filter((d) => only === null || only.has(d.day));
 if (selected.length === 0) throw new Error('no days selected');
 // Research runs read practice days only (H1): chosen holdout days are refused, and without a choice they are left out.
@@ -94,38 +111,16 @@ const codeId = (): string => {
   const head = git('rev-parse', 'HEAD').trim();
   const top = git('rev-parse', '--show-toplevel').trim();
   const h = createHash('sha256').update(git('diff', 'HEAD'));
-  const untracked = git('ls-files', '--others', '--exclude-standard', '--', join(top, 'packages')).split('\n').filter((f) => f !== '').sort();
+  // Paths relative to the repository root (ls-files prints them relative to its working directory).
+  const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--', 'packages'], { encoding: 'utf8', cwd: top }).split('\n').filter((f) => f !== '').sort();
   for (const f of untracked) h.update(`\0${f}\0`).update(readFileSync(join(top, f)));
   const dirty = git('diff', 'HEAD') !== '' || untracked.length > 0;
   return dirty ? `${head}+dirty-${h.digest('hex').slice(0, 16)}` : head;
 };
 
-/** Git control of the registry file in the repository the command runs in (H3). */
-const registryVcs = (): RegistryVcs => {
-  const rel = RESEARCH_CONFIG.holdout.registryPath;
-  const g = (...a: string[]) => execFileSync('git', a, { encoding: 'utf8', cwd: registryRoot });
-  const check = () => {
-    const tracked = g('ls-files', '--', rel) !== '';
-    if (!existsSync(registryPath)) {
-      if (tracked) throw new Error(`the holdout registry ${rel} was deleted; restore it from git`);
-      return;
-    }
-    if (!tracked) throw new Error(`the holdout registry ${rel} is not tracked in git`);
-    if (g('status', '--porcelain', '--', rel) !== '') throw new Error(`the holdout registry ${rel} has changes not committed`);
-  };
-  return {
-    check,
-    commit: (message) => {
-      g('add', '--', rel);
-      g('commit', '-q', '-m', message, '--', rel);
-      check();
-    },
-  };
-};
-
 if (command === 'holdout-register' || command === 'holdout') {
   mkdirSync(dirname(registryPath), { recursive: true });
-  const authority = { registryPath, codeCommit: codeId(), datasetId: `sha256:${manifestHash(dataset)}`, vcs: registryVcs() };
+  const authority = { registryPath, codeCommit: codeId(), datasetId: `sha256:${manifestHash(dataset)}`, vcs: registryVcs };
   const universe = flag('universe', 'U2');
   const holdoutId = flag('holdout-id');
   const window = { fromDay: days[0]!.day, toDay: days[days.length - 1]!.day };

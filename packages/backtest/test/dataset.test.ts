@@ -97,57 +97,29 @@ describe('command line on an on-disk dataset', () => {
     expect(report.trades.length).toBe(summary['trades']);
   });
 
-  test('holdout: only the registered window, once, from a registry tracked in git; research runs never read it (H1-H3)', () => {
+  test('research runs never read holdout days; the registry belongs to the code\'s repository (H1, D1)', () => {
     const cli = join(import.meta.dirname, '..', 'src', 'cli.ts');
     const h = RESEARCH_CONFIG.holdout;
-    // A dataset whose first day is the reserved holdout start and whose last is the last tail day.
+    // A dataset whose days are holdout days.
     const shift = Date.parse(`${h.fromDay}T00:00:00Z`) / 1000 - T0 / 1000;
-    const head = rows.map((r) => ({ ...r, blockTime: r.blockTime + shift }));
-    const lastSlot = rows.reduce((m, r) => (r.slot > m ? r.slot : m), 0n);
-    const lastDay = Date.parse(`${h.tailEndDay}T00:00:00Z`) / 1000 - 3600;
-    // Enough tail blocks for every in-flight attempt to settle.
-    const tail = Array.from({ length: 600 }, (_, k) => ({ kind: 'block' as const, slot: lastSlot + 10n + BigInt(k), blockTime: lastDay + Math.floor(k / 3), parentSlot: lastSlot + 9n + BigInt(k) }));
     const hold = mkdtempSync(join(tmpdir(), 'hold-'));
-    const repo = mkdtempSync(join(tmpdir(), 'repo-'));
+    const elsewhere = mkdtempSync(join(tmpdir(), 'elsewhere-'));
     try {
-      writeDataset(hold, [...head, ...tail]);
+      writeDataset(hold, rows.map((r) => ({ ...r, blockTime: r.blockTime + shift })));
       const sol = join(hold, 'sol.csv');
       writeFileSync(sol, readFileSync(join(dir, 'sol.csv')));
-      const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
-      const git = (...a: string[]) => execFileSync('git', a, { cwd: repo, env, encoding: 'utf8' });
-      git('init', '-q');
-      git('commit', '-q', '--allow-empty', '-m', 'root');
-      const common = ['--dataset', hold, '--sol-usd', sol, '--scenario', 'conservative', '--holdout-id', 'h1'];
-      const cmd = (c: string, ...more: string[]) => execFileSync('node', [cli, c, ...common, ...more], { cwd: repo, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-      // Research runs over holdout days are refused and write nothing.
-      expect(() => cmd('run', '--days', h.fromDay, '--out', join(hold, 'r.json'), '--evidence', join(hold, 'e.json'))).toThrow(/holdout/);
-      expect(() => cmd('run', '--out', join(hold, 'r.json'), '--evidence', join(hold, 'e.json'))).toThrow(/no practice days/);
+      const common = ['--dataset', hold, '--sol-usd', sol, '--scenario', 'conservative', '--out', join(hold, 'r.json'), '--evidence', join(hold, 'e.json')];
+      const cmd = (c: string, cwd: string, ...more: string[]) => execFileSync('node', [cli, c, ...common, ...more], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const repo = join(import.meta.dirname, '..', '..', '..');
+      expect(() => cmd('run', repo, '--days', h.fromDay)).toThrow(/holdout/);
+      expect(() => cmd('run', repo)).toThrow(/no practice days/);
       expect(existsSync(join(hold, 'r.json'))).toBe(false);
-      // The registry path is fixed.
-      expect(() => cmd('holdout-register', '--registry', join(hold, 'x.json'))).toThrow(/fixed/);
-      expect(() => cmd('holdout', '--ledger', join(hold, 'h0.sqlite'))).toThrow(/not registered/);
-      cmd('holdout-register');
-      const reg = join(repo, h.registryPath);
-      // An edited registry is refused before anything runs.
-      writeFileSync(reg, `${readFileSync(reg, 'utf8')} `);
-      expect(() => cmd('holdout', '--ledger', join(hold, 'h1.sqlite'))).toThrow(/not committed/);
-      expect(existsSync(join(hold, 'h1.sqlite'))).toBe(false);
-      git('checkout', '--', h.registryPath);
-      const out = JSON.parse(cmd('holdout', '--ledger', join(hold, 'h.sqlite')).trim()) as Record<string, unknown>;
-      expect(Object.keys(out).sort()).toEqual(['counts', 'ledgerHash']);
-      expect(() => cmd('holdout', '--ledger', join(hold, 'h2.sqlite'))).toThrow(/already run/);
-      const store = JSON.parse(readFileSync(reg, 'utf8')) as { runs: { outcome: string }[]; registry: { entries: { seal: string; fromDay: string; toDay: string }[] } };
-      expect(store.registry.entries[0]).toMatchObject({ seal: 'sealed', fromDay: h.fromDay });
-      expect(store.runs.map((r) => r.outcome)).toEqual(['started', 'sealed', 'refused']);
-      // Every write is a commit (registered, started, sealed, refused), and the file is clean.
-      expect(git('log', '--format=%s').trim().split('\n').filter((m) => m.startsWith('Holdout')).length).toBe(4);
-      expect(git('status', '--porcelain', '--', h.registryPath)).toBe('');
-      // Deleting the registry is visible and refused.
-      rmSync(reg);
-      expect(() => cmd('holdout', '--ledger', join(hold, 'h3.sqlite'))).toThrow(/deleted/);
+      expect(() => cmd('holdout-register', repo, '--holdout-id', 'h1', '--registry', join(hold, 'x.json'))).toThrow(/fixed/);
+      // From another directory (not the code's repository) every command is refused.
+      expect(() => cmd('run', elsewhere)).toThrow(/code's repository/);
     } finally {
       rmSync(hold, { recursive: true, force: true });
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
     }
   });
 });
