@@ -209,6 +209,21 @@ describe.each(cases)('feasible size: %s', (_, setting, quote) => {
   });
 });
 
+describe('size searches treat an unquotable size as worse than any value', () => {
+  test('largestWithin stops below the first unquotable size', () => {
+    const { largestWithin } = costsModule;
+    expect(largestWithin(0n, 100n, 1_000n, (q) => (q > 40n ? null : q))).toBe(40n);
+    expect(largestWithin(0n, 100n, 1_000n, () => null)).toBeNull();
+    expect(largestWithin(0n, 100n, 50n, (q) => q)).toBe(50n);
+  });
+  test('peakOf never picks an unquotable size', () => {
+    const { peakOf } = costsModule;
+    // Rises with q, but sizes above 60 cannot be quoted.
+    expect(peakOf(0n, 100n, (q) => (q > 60n ? null : q))).toBe(60n);
+    expect(peakOf(0n, 100n, (q) => -((q - 30n) ** 2n))).toBe(30n);
+  });
+});
+
 describe('unquotable venues', () => {
   test('a state that cannot be quoted gives a typed no-trade reason, not an exception', () => {
     const done = { ...curve, realTokenReserves: 0n, complete: true };

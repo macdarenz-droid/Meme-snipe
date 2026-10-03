@@ -203,7 +203,7 @@ export const roundTripImpactPpm = (quote: RoundTripQuoter, spend: bigint): bigin
 const below = (x: bigint | null, y: bigint | null): boolean => (x === null ? y !== null : y !== null && x < y);
 
 /** Argmax of a unimodal `f` over integers in [lo, hi] (ternary search, then the best of the last few points). */
-const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint | null): bigint => {
+export const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint | null): bigint => {
   let a = lo;
   let b = hi;
   while (b - a > 2n) {
@@ -221,7 +221,7 @@ const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint | null): bigint
  * `measure` grows with size (constant-product impact does); the result is re-checked, so rounding noise can only make
  * it smaller, never unsafe.
  */
-const largestWithin = (lo: bigint, hi: bigint, limit: bigint, measure: (q: bigint) => bigint | null): bigint | null => {
+export const largestWithin = (lo: bigint, hi: bigint, limit: bigint, measure: (q: bigint) => bigint | null): bigint | null => {
   const within = (q: bigint) => { const m = measure(q); return m !== null && m <= limit; };
   if (!within(lo)) return null;
   if (within(hi)) return hi;
@@ -330,7 +330,8 @@ export const feasibleSize = (input: SizeInput): SizeDecision => {
     return v + mulDiv(edgePpm > 0n ? edgePpm : 0n, v, PPM, 'ceil');
   };
   const v0 = vAt(lo);
-  if (v0 === null) return reject('unquotable', 0n);
+  const reasonAt = (q: bigint): NoQuoteReason | undefined => { const r = quote(q); return r.ok ? undefined : r.reason; };
+  if (v0 === null) return reject('unquotable', 0n, reasonAt(lo));
   if (edgePpm <= v0) return reject('edge-not-above-cost', v0);
   // Impact grows with size, so q * (g - v(q)) rises and then falls. Past its peak a larger trade earns less in
   // expectation while risking more: cut the range there.
@@ -339,7 +340,7 @@ export const feasibleSize = (input: SizeInput): SizeDecision => {
 
   const vLo = v0;
   const vHi = vAt(hi);
-  if (vHi === null) return reject('unquotable', 0n);
+  if (vHi === null) return reject('unquotable', 0n, reasonAt(hi));
   const vPpm = vLo > vHi ? vLo : vHi;
   const common = { fixed, vPpm, maxUsd: maxUsdRaw as MicroUsd, bindingCap };
   const margin = edgePpm - vPpm;
