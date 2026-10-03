@@ -1,0 +1,42 @@
+[
+ {
+  "pool": "2Pk17kdBxF6jhj39j1FGscpXNRpi9HSzAka9gbxRNXL2",
+  "sig": "5QqMDrdqGPjYeGZo1vHn56gghBC5NhxAj4ygcs3FhAiN6myGcL55cz4tfGPUk3Yd25uwHk213tYiZqUUmZrL81mZ",
+  "lp_fee_bps": 20,
+  "protocol_fee_bps": 5,
+  "creator_fee_bps": 95,
+  "pool_quote_reserve_sol": 132.640760412
+ },
+ {
+  "pool": "2Pk17kdBxF6jhj39j1FGscpXNRpi9HSzAka9gbxRNXL2",
+  "sig": "wyVoAbUdVCxWVgeW9913tH1d42LL8Jf2d4N9USyEuWe5hP1edFbR2ysdtfG1NDcuj93AbVYnAA5sEvKa2aYoEpN",
+  "lp_fee_bps": 20,
+  "protocol_fee_bps": 5,
+  "creator_fee_bps": 95,
+  "pool_quote_reserve_sol": 132.24094862
+ },
+ {
+  "pool": "2Pk17kdBxF6jhj39j1FGscpXNRpi9HSzAka9gbxRNXL2",
+  "sig": "5chMH7CZ8kUAEN91o7VW6RPmrPvutMQXiNwVb9AjPezsUGS69rmpsHygz5o7bkue6xzRDBH7cCrPKr6xCRtvTQze",
+  "lp_fee_bps": 20,
+  "protocol_fee_bps": 5,
+  "creator_fee_bps": 95,
+  "pool_quote_reserve_sol": 132.241222526
+ },
+ {
+  "pool": "2Pk17kdBxF6jhj39j1FGscpXNRpi9HSzAka9gbxRNXL2",
+  "sig": "3tURQRpFj6fEeJh1gmFXj8W3H4j8xZ59M57MvYeQc1S5KF8JuqgSwNaZRM7WAjrp2xWrvU8JrXk89Y86KbvpkKYw",
+  "lp_fee_bps": 20,
+  "protocol_fee_bps": 5,
+  "creator_fee_bps": 95,
+  "pool_quote_reserve_sol": 132.240960322
+ },
+ {
+  "pool": "2wizeCkUbAdcz86rdejRAso9a9YaQwovi3zK7FAcgwCu",
+  "sig": "42d4N1gF5QzZNuM3ff5DdMXX1VdqKNehmG978DJg9KJh5X4HoXtMc8vZufd6WAUiACBmq38gumi5vTmaUpDPYyKX",
+  "lp_fee_bps": 2,
+  "protocol_fee_bps": 93,
+  "creator_fee_bps": 30,
+  "pool_quote_reserve_sol": 3.488136919
+ }
+]
