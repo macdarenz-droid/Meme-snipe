@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# gh stand-in for ops/test/e2e.sh: releases live in $STATE/releases/<tag> (shared with fake-services.mjs).
+set -euo pipefail
+echo "gh $1 $2 ${3:-}" >> "$STATE/gh-calls.log"
+case "$1 $2" in
+  "release create")
+    tag="$3"; file="$4"
+    mkdir -p "$STATE/releases/$tag"
+    cp "$file" "$STATE/releases/$tag/$(basename "$file")"
+    printf '{"author":"%s","download_count":0}' "${FAKE_RELEASE_AUTHOR:-github-actions[bot]}" > "$STATE/releases/$tag/meta.json" ;;
+  "release delete")
+    [ -d "$STATE/releases/$3" ] || exit 1
+    rm -rf "$STATE/releases/$3" ;;
+  "api repos/"*)
+    tag="${2##*/}"
+    [ -f "$STATE/releases/$tag/meta.json" ] || exit 1
+    sed -n 's/.*"download_count":\([0-9]*\).*/\1/p' "$STATE/releases/$tag/meta.json" ;;
+  *) echo "gh stub: unhandled $*" >&2; exit 1 ;;
+esac
