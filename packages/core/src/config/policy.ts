@@ -223,14 +223,15 @@ const TRIAL_VALUES: Policy = {
   },
   exits: {
     universes: {
-      // Paper trial values from risk.md S2 (T_flat 30 min, T_max 4 h, 50% at +2R, ATR14 on 5-minute bars × 3); where S2
-      // is silent, U2's value. The study sets the frozen ones.
+      // Paper trial values from risk.md S2 (T_flat 30 min, 50% at +2R, ATR14 on 5-minute bars × 3); where S2 is silent,
+      // U2's value. T_max stays at the phase-1 hard maximum of 120 min (§9): S2's 4 h is a variant that needs the owner.
+      // The study sets the frozen values.
       U1: {
         stopAtrTenths: 30,
         negativeFlowMinutes: 5,
         tFlatMs: 30 * MINUTE,
         flatMinRBps: 5000,
-        tMaxMs: 4 * HOUR,
+        tMaxMs: 120 * MINUTE,
         partialMinShareBps: 5000,
         partialAtRBps: 20_000,
         partialAtGainBps: 10_000,

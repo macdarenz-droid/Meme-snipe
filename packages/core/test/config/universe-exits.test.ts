@@ -19,13 +19,13 @@ describe('CFG-2: per-universe exit parameters', () => {
     expect(Object.keys(TRIAL_POLICY.exits.universes).sort()).toEqual(['U1', 'U2']);
   });
 
-  test("U2 keeps the values the single block had; U1 starts from risk.md S2 and U2's values where S2 is silent", () => {
+  test("U2 keeps the values the single block had; U1 starts from risk.md S2, U2's values where S2 is silent, and T_max at the 120-min hard maximum", () => {
     expect(TRIAL_POLICY.exits.universes.U2).toEqual({
       stopAtrTenths: 30, negativeFlowMinutes: 5, tFlatMs: 15 * MINUTE_MS, flatMinRBps: 5000, tMaxMs: 120 * MINUTE_MS,
       partialMinShareBps: 5000, partialAtRBps: 15_000, partialAtGainBps: 10_000, atrPeriod: 14, atrBarMs: MINUTE_MS, trailAtrTenths: 30,
     });
     expect(TRIAL_POLICY.exits.universes.U1).toEqual({
-      stopAtrTenths: 30, negativeFlowMinutes: 5, tFlatMs: 30 * MINUTE_MS, flatMinRBps: 5000, tMaxMs: 4 * HOUR_MS,
+      stopAtrTenths: 30, negativeFlowMinutes: 5, tFlatMs: 30 * MINUTE_MS, flatMinRBps: 5000, tMaxMs: 120 * MINUTE_MS,
       partialMinShareBps: 5000, partialAtRBps: 20_000, partialAtGainBps: 10_000, atrPeriod: 14, atrBarMs: 5 * MINUTE_MS, trailAtrTenths: 30,
     });
   });
@@ -36,8 +36,8 @@ describe('CFG-2: per-universe exit parameters', () => {
   });
 
   test('exitsFor selects the named universe and never falls back to another', () => {
-    expect(exitsFor(TRIAL_POLICY.exits, 'U1').tMaxMs).toBe(4 * HOUR_MS);
-    expect(exitsFor(TRIAL_POLICY.exits, 'U2').tMaxMs).toBe(120 * MINUTE_MS);
+    expect(exitsFor(TRIAL_POLICY.exits, 'U1').tFlatMs).toBe(30 * MINUTE_MS);
+    expect(exitsFor(TRIAL_POLICY.exits, 'U2').tFlatMs).toBe(15 * MINUTE_MS);
     for (const u of ['S0', 'U3', '', 'toString', '__proto__']) expect(() => exitsFor(TRIAL_POLICY.exits, u)).toThrow(/no exit parameters/);
   });
 
@@ -62,13 +62,18 @@ describe('CFG-2: per-universe exit parameters', () => {
   });
 
   test("tighten-only is measured against the same universe's baseline block", () => {
-    // U1 T_max 3 h is above U2's 2 h but below U1's own 4 h: a tightening.
-    const u1 = applyOverride(TRIAL_POLICY, { exits: { universes: { U1: { tMaxMs: 3 * HOUR_MS } } } });
+    // U1 T_flat 20 min is above U2's 15 but below U1's own 30: a tightening.
+    const u1 = applyOverride(TRIAL_POLICY, { exits: { universes: { U1: { tFlatMs: 20 * MINUTE_MS } } } });
     expect(u1.ok).toBe(true);
-    if (u1.ok) expect(u1.changes).toEqual([{ path: 'policy.exits.universes.U1.tMaxMs', from: 4 * HOUR_MS, to: 3 * HOUR_MS }]);
-    // U2 T_max 3 h is below U1's 4 h but above U2's own 2 h: a loosening.
-    const u2 = applyOverride(TRIAL_POLICY, { exits: { universes: { U2: { tMaxMs: 3 * HOUR_MS } } } });
-    expect(u2).toMatchObject({ ok: false, refusals: [{ kind: 'loosens', path: 'policy.exits.universes.U2.tMaxMs' }] });
+    if (u1.ok) expect(u1.changes).toEqual([{ path: 'policy.exits.universes.U1.tFlatMs', from: 30 * MINUTE_MS, to: 20 * MINUTE_MS }]);
+    // U2 T_flat 20 min is below U1's 30 but above U2's own 15: a loosening.
+    const u2 = applyOverride(TRIAL_POLICY, { exits: { universes: { U2: { tFlatMs: 20 * MINUTE_MS } } } });
+    expect(u2).toMatchObject({ ok: false, refusals: [{ kind: 'loosens', path: 'policy.exits.universes.U2.tFlatMs' }] });
+    // T_max may not rise in either universe (both sit at the 120-min hard maximum).
+    for (const u of EXIT_UNIVERSES) {
+      expect(applyOverride(TRIAL_POLICY, { exits: { universes: { [u]: { tMaxMs: 4 * HOUR_MS } } } }))
+        .toMatchObject({ ok: false, refusals: [{ kind: 'loosens', path: `policy.exits.universes.${u}.tMaxMs` }] });
+    }
     expect(applyOverride(TRIAL_POLICY, { exits: { universes: { U1: { atrBarMs: MINUTE_MS } } } }))
       .toMatchObject({ ok: false, refusals: [{ kind: 'locked', path: 'policy.exits.universes.U1.atrBarMs' }] });
     expect(applyOverride(TRIAL_POLICY, { exits: { universes: { S0: { tMaxMs: 1 } } } } as any))
@@ -81,14 +86,14 @@ describe('CFG-2: per-universe exit parameters', () => {
       (p: any) => { p.exits.universes.U1.tFlatMs += 1; },
       (p: any) => { p.exits.universes.U2.trailAtrTenths += 1; },
       (p: any) => { p.exits.universes.U1.flatMinRBps -= 1; },
-      (p: any) => { p.exits.universes.U2.tMaxMs = p.exits.universes.U1.tMaxMs; },
+      (p: any) => { p.exits.universes.U2.tFlatMs = p.exits.universes.U1.tFlatMs; },
     ]) expect(() => startSession(edit(mutate))).toThrow(PolicyError);
-    const session = startSession(edit((p) => { p.exits.universes.U1.tMaxMs = 3 * HOUR_MS; }));
+    const session = startSession(edit((p) => { p.exits.universes.U1.tMaxMs = 90 * MINUTE_MS; }));
     expect(session.changesFromBaseline.map((c) => c.path)).toEqual(['policy.exits.universes.U1.tMaxMs']);
-    const looser = edit((p) => { p.exits.universes.U1.tMaxMs = 5 * HOUR_MS; });
+    const looser = edit((p) => { p.exits.universes.U1.tMaxMs = 120 * MINUTE_MS; });
     expect(session.requestChange(looser)).toMatchObject({ ok: false, reason: expect.stringMatching(/locked while this session runs/) });
-    expect(session.policy.exits.universes.U1.tMaxMs).toBe(3 * HOUR_MS);
-    expect(() => { (session.policy.exits.universes.U1 as any).tMaxMs = 5 * HOUR_MS; }).toThrow(TypeError);
+    expect(session.policy.exits.universes.U1.tMaxMs).toBe(90 * MINUTE_MS);
+    expect(() => { (session.policy.exits.universes.U1 as any).tMaxMs = 120 * MINUTE_MS; }).toThrow(TypeError);
   });
 
   test("the hash changes when one universe's block changes, and covers every block", () => {

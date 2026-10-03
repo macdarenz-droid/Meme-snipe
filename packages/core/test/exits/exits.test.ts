@@ -253,13 +253,14 @@ describe('exits by the position\'s universe (CFG-2)', () => {
   const t = { ...newTracker(), flatMet: true };
 
   test("a U1 position uses U1's T_max and a U2 position U2's", () => {
-    expect(U1.tMaxMs).toBeGreaterThan(X.tMaxMs);
-    // At U2's T_max: U2 exits, U1 holds.
-    expect(codes(decide(holding(), obs(X.tMaxMs), plan({ universe: 'U2' }), t).decision)).toEqual(['time_max']);
-    expect(codes(decide(holding(), obs(X.tMaxMs), plan({ universe: 'U1' }), t).decision)).toEqual([]);
-    // U1 exits exactly at its own T_max.
-    expect(codes(decide(holding(), obs(U1.tMaxMs - 1), plan({ universe: 'U1' }), t).decision)).toEqual([]);
-    expect(codes(decide(holding(), obs(U1.tMaxMs), plan({ universe: 'U1' }), t).decision)).toEqual(['time_max']);
+    // Both are at the 120-min hard maximum in the trial policy, so U1's is tightened to 60 min to tell them apart.
+    const s = exitSettings(withU1({ tFlatMs: 30 * MINUTE_MS, tMaxMs: 60 * MINUTE_MS }), 'wick', FILL_CONFIG.network);
+    const at = (ms: number, universe: 'U1' | 'U2') => codes(decide(holding(), obs(ms), plan({ universe }), t, s).decision);
+    expect(at(60 * MINUTE_MS - 1, 'U1')).toEqual([]);
+    expect(at(60 * MINUTE_MS, 'U1')).toEqual(['time_max']);
+    expect(at(60 * MINUTE_MS, 'U2')).toEqual([]);
+    expect(at(X.tMaxMs - 1, 'U2')).toEqual([]);
+    expect(at(X.tMaxMs, 'U2')).toEqual(['time_max']);
   });
 
   test("T_flat and the partial follow the position's universe", () => {
