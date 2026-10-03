@@ -6,18 +6,26 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
 import { RUG_CONFIG } from '../../core/src/config/index.ts';
+import { BPS_DENOMINATOR as BPS } from '../../core/src/units/index.ts';
 import { compareMoments, type MarketEvent } from '../../core/src/engine/index.ts';
 import { RugLabeller, type RugLabel } from '../../core/src/gates/index.ts';
 import { eventsOfFrame, rankIn, type Frame, type FrameBody } from '../src/providers/canonical.ts';
 import { analyzeLaunch, type FullRpcTransaction } from '../src/research/rug-validate.ts';
+import { casesHash } from './fixtures/fixture-hash.ts';
 
 interface Case {
   readonly name: 'rug' | 'non-rug';
   readonly mint: string;
   readonly transactions: readonly (RpcTransactionBase64 & { readonly signature: string })[];
 }
-const FIXTURE = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures', 'rug-replay.json'), 'utf8')) as { meta: { fetchedAt: string }; cases: Case[] };
+const FIXTURE = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures', 'rug-replay.json'), 'utf8')) as { meta: { fetchedAt: string; sha256?: string }; cases: Case[] };
 const byName = (name: Case['name']) => FIXTURE.cases.find((c) => c.name === name)!;
+
+describe('the fixture', () => {
+  it('matches the content hash its fetch wrote: an edited case fails here', () => {
+    expect(FIXTURE.meta.sha256).toBe(casesHash(FIXTURE.cases));
+  });
+});
 
 type Mode = 'logs' | 'tx' | 'both';
 /** Every frame of the case in arrival order (logs at processed, then the fetched transaction), released in moment order. */
@@ -109,7 +117,10 @@ describe('a known traded non-rug (HfbH…pump, launched 2026-10-02 22:08 UTC, wh
     expect(events.filter((e) => e.key.startsWith('pump:TradeEvent:')).length).toBeGreaterThan(10);
     const r = analyzeLaunch(c.transactions.map((t) => ({ signature: t.signature, rpc: t as FullRpcTransaction })), RUG_CONFIG)!;
     expect(r).toMatchObject({ deployerSoldBps: 5, creatorDumpAtMs: null, collapseAtMs: null, peak: '59408092', finalQuote: '2287406' });
-    // The lowest level after the peak is above 1% of it: 2,287,406 × 10,000 > 59,408,092 × 100.
-    expect(2_287_406n * 10_000n).toBeGreaterThan(59_408_092n * 100n);
+    // The worst drop: the lowest level from the peak on, which stays above the collapse line (1% of the peak).
+    const after = r.levels.filter((l) => l.atMs >= r.peakAtMs!).map((l) => BigInt(l.level));
+    const low = after.reduce((x, y) => (y < x ? y : x));
+    expect(low).toBe(2_287_406n);
+    expect(low * BPS).toBeGreaterThan(BigInt(r.peak) * (BPS - BigInt(RUG_CONFIG.collapse.dropBps)));
   });
 });
