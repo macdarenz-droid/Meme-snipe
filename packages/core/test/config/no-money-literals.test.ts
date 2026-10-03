@@ -54,6 +54,9 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'stats/rng.ts', name: 'TWO_POW_53', value: '9007199254740992', why: '2^53, for a 53-bit double' },
   { file: 'stats/special.ts', name: 'MAXIT', value: '1000', why: 'iteration limit of the continued fractions' },
   { file: 'stats/special.ts', name: 'LANCZOS_C2', value: '1259.1392167224028', why: 'Lanczos log-gamma coefficient' },
+  { file: 'risk/melbourne.ts', name: 'MS_PER_MINUTE', value: '60000', why: 'time unit for the Melbourne day boundary, not money' },
+  { file: 'risk/melbourne.ts', name: 'EPOCH_YEAR', value: '1970', why: 'calendar year of the Unix epoch, not money' },
+  { file: 'risk/melbourne.ts', name: 'RULE_FROM_YEAR', value: '2008', why: 'first year of the Victorian daylight-saving rule, not money' },
 ];
 
 export const isAllowed = (file: string, finding: Finding, allowed: readonly Allowed[] = ALLOWED): boolean =>
