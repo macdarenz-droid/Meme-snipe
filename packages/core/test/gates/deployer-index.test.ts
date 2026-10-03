@@ -351,6 +351,19 @@ describe('on-demand deployer check (RUG-1c)', () => {
     expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'prior-rug', detail: `${DEV} rugged P1 (collapse) within 14 days` }));
   });
 
+  it('after a restart gap in the rug stream, a deployer checked on demand is covered, and only that deployer', () => {
+    // The stream started 30 days ago and has an open restart gap since an hour ago (PERSIST-1).
+    const restart: Row = ['coverage:rugs:gap', wrap({ fromSlot: SLOT - 9_000n, toSlot: null, reason: 'restart', via: 'rug-labeller' }), at(T - HOUR_MS, SLOT - 9_000n)];
+    const withGap = drop(passingFacts(), deployerKey(DEV));
+    const run = (rows: Row[]) => evaluateHardRejects(contextWith(rows, withGap, NOW, withPrior()), deps('live'), request(), { stopAtFirst: false });
+    expect(notCovered(run([restart]))).toEqual([expect.objectContaining({ detail: expect.stringContaining('open gap') })]);
+    expect(notCovered(run([restart, check()]))).toEqual([]);
+    // A check of another deployer covers nothing for this one.
+    expect(notCovered(run([restart, check({ creator: W(9) }), [rugCheckKey(W(9)), wrap({}), at(T - 1_000, SLOT - 10n)]]))).toHaveLength(1);
+    // A check that could not read every prior mint leaves this deployer not covered.
+    expect(notCovered(run([restart, check({}, [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'unfetched', detail: 'credit cap 500 reached' }])]))).toHaveLength(1);
+  });
+
   it('the stream coverage, when present, is used and a check is not needed', () => {
     const idx = withPrior();
     expect(notCovered(evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps('live'), request(), { stopAtFirst: false }))).toEqual([]);
