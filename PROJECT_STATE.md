@@ -45,7 +45,8 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 | RUN-1c | Quota, coverage and worker-down exposure in the dry-run report | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | building | 1–2 h |
 | APP-2 | Live screens in the app over Tailscale (PR #43) | session_01HxjfFhpHEFghtBnZkTjnFB | Opus 5.5 | building | 3–4 h |
 | OPS-1d | PR A: webhook retry, key-mismatch alerts, re-pair, `--update` hook. PR B: RUN-1 units, evidence relay, Tailscale serve | session_01Euok5FXtBGZBrweohP3K93 | Opus 5.5 | building | A about 1.5 h; B about 3 h |
-| Next | TEST-1 parity and TEST-3 fault injection after WORKER-1; RUN-1d drills by cause (process crash, reboot, RPC loss, host loss) after RUN-1c; SIGN-1 later | — | — | by dependency | — |
+| CFG-2 | Exit parameters per universe in the policy (before any freeze) | session_01P6GFTVQc9JzPTa5DWDdw3b | Opus 5.5 | building | 2–3 h |
+| Next | WATCH-1 (direct pool read when an open position's feed goes stale) after WORKER-1; TEST-1 parity and TEST-3 fault injection after WORKER-1; RUN-1d drills by cause after RUN-1c; SIGN-1 later | — | — | by dependency | — |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -62,6 +63,9 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - Runbook (RUN-1/WORKER-1): a v1 ledger must be opened once by a writer (migrates to 2) before `ledger:replay` or `openReader`.
 - Data: the owner declined asking Triton for a faster download (4 Oct); the scan stays at 80 MB/s on one lane.
 - Owner, before live (RISK-1): worst-case cost per trade C ≈ $0.79 after EXIT-1's retry budget; $5 entries stay blocked until week-start equity reaches $29; new entries stop at about 84% of the peak; the daily and weekly loss count an open loss again each day (stricter; switching to marked boundaries needs the owner's yes).
+- Owner, before live (third opinion): R8 "5 losses in any 20" pauses 79–97% of simulated paths within 8–11 trades, good strategy or bad; choose keep, or a threshold calibrated on practice data and validated separately (never the holdout). With C at about 40% of a $2 trade, one loss of about $0.70 ends the day.
+- Live regime volume: own on-chain volume needs every pump trade, which the free tier can't carry, so live stays paper-only on the regime gate until a source is chosen (owner, before live; may need a paid service).
+- Proof timeline: U2 may hold fewer than 300 holdout trades (unmeasured); BT-2 counts the funnel gate by gate on practice days before any freeze, and dates follow that count. "Not proven yet" for U2 is a possible honest result.
 - Owner sign-off, when STATS-1c's simulations are in: replace the DSR gate in G1 with the block-bootstrap SPA test.
 - Workflows: pinned actions target Node 20 and run forced on Node 24; re-pin when workflows are next touched (supervisor, `.github`).
 - RUN-1b: a negative quoteAgeSlots passes the decimal check (display only).
