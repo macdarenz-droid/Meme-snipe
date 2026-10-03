@@ -231,6 +231,12 @@ const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans
       found.push('property descriptor of a global');
     }
     if (t.type === 'str' && BANNED_STRINGS.has(t.value) && !allow.has(t.value)) found.push(`string '${t.value}'`);
+    // A computed member key must be one literal (or an identifier): `x['con' + 'structor']` or `x[`${a}b`]` is how
+    // a banned name is spelled past this scanner.
+    if (t.value === '[' && t.type === 'punct' && prev !== undefined && (prev.type === 'id' || prev.type === 'str' || prev.type === 'template' || prev.value === ')' || prev.value === ']' || prev.value === '?.')
+      && (next?.type === 'str' || next?.type === 'template') && tokens[k + 2]?.value !== ']') {
+      found.push('computed member key built from pieces');
+    }
     // `x['constructor']` reaches the Function constructor; a 'constructor' in a plain data list (a set of
     // keys to refuse) is not an access and stays legal. Computed spellings are left to the runtime trap.
     if ((t.type === 'str' || t.type === 'template') && t.value === 'constructor' && prev?.value === '[' && next?.value === ']') {
@@ -352,6 +358,10 @@ describe('purity guard', () => {
       "(() => 0).constructor('return Date.n' + 'ow()')();",
       "eval('1');",
       "((() => 0) as never)['constructor']('return Date.n' + 'ow()')();",
+      "((() => 0) as never)['con' + 'structor']('return Date.n' + 'ow()')();",
+      "const e = ((() => 0) as never)['con' + 'structor']('return pro' + 'cess.en' + 'v.HOME')();",
+      'const v = obj[`con${x}`];',
+      "const v = obj?.['a' + b];",
       "const f = obj['constructor'];",
       "const f = obj?.['constructor'];",
       'const f = obj[`constructor`];',
@@ -407,6 +417,7 @@ describe('purity guard', () => {
       'class C { #window = 1; }',
       "const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);",
       "const keys = ['constructor'];",
+      "const v = obj['key']; const w = arr[0]; const x = map[id]; const y = [['a' + b]];",
       'const q = arr[i]! / (z + i); const t = 1;',
       'const q = f(x)! / 2;',
     ];

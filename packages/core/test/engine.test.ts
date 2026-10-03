@@ -585,6 +585,10 @@ describe('runtime trap', () => {
       () => n['toLocale' + 'String']!(), () => (Math as unknown as Record<string, () => number>)['ran' + 'dom']!(),
       () => new (Object.getPrototypeOf(new Date(0)).constructor)(), () => d['getTimezone' + 'Offset']!(), () => d['get' + 'Hours']!(),
       () => 'a'.localeCompare('b'), () => 'a'.toLocaleUpperCase(), () => [1].toLocaleString(), () => (1n).toLocaleString(), () => String(new Date(0)),
+      // The Function constructor through a computed key, and the environment.
+      () => ((() => 0) as unknown as Record<string, (s: string) => () => unknown>)['con' + 'structor']!('return Date.n' + 'ow()')(),
+      () => ((() => 0) as unknown as Record<string, (s: string) => () => unknown>)['con' + 'structor']!('return pro' + 'cess.en' + 'v.HOME')(),
+      () => ((async () => {}) as unknown as { constructor: (s: string) => unknown }).constructor('return 1'), () => process.env['HOME'],
     ];
     for (const cheat of cheats) {
       const replay = createReplay([market('a', 1)]);
@@ -596,6 +600,9 @@ describe('runtime trap', () => {
     expect(typeof Date.now()).toBe('number');
     expect(typeof (1234.5).toLocaleString()).toBe('string');
     expect(typeof new Date(0).getTimezoneOffset()).toBe('number');
+    expect(typeof process.env['PATH']).toBe('string');
+    // The Function constructor stays closed for the whole run, outside engine code too (config included).
+    expect(() => ((() => 0) as unknown as Record<string, (s: string) => unknown>)['con' + 'structor']!('return 1')).toThrow(/trap/);
   });
 
   it('a strategy factory that reads the clock is trapped too', () => {

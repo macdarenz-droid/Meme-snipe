@@ -49,6 +49,8 @@ const install = (): (() => void) => {
   webCrypto.getRandomValues = fail('crypto.getRandomValues');
   webCrypto.randomUUID = fail('crypto.randomUUID');
   for (const t of TIMERS) g[t] = fail(t);
+  const savedEnv = proc.env;
+  proc.env = new Proxy({}, { get: (_t, p) => fail(`process.env.${String(p)}`)(), has: (_t, p) => fail(`process.env.${String(p)}`)(), ownKeys: () => fail('process.env')() });
   const savedMethods: (readonly [Record<string, unknown>, string, unknown])[] = [];
   for (const [proto, owner, names] of LOCALE_METHODS) {
     const target = proto as Record<string, unknown>;
@@ -58,6 +60,7 @@ const install = (): (() => void) => {
     }
   }
   return () => {
+    proc.env = savedEnv;
     for (const [target, name, original] of savedMethods) target[name] = original;
     g.Date = saved.Date;
     g.Intl = saved.Intl;
@@ -94,5 +97,23 @@ export const trapMethods = (proto: object, names: readonly string[]): void => {
     target[name] = function (this: unknown, ...args: unknown[]) {
       return trapped(() => (original as (...a: unknown[]) => unknown).apply(this, args));
     };
+  }
+};
+
+/**
+ * The Function constructor, reached as `fn.constructor` (also through a computed key such as
+ * `fn['con' + 'structor']`), compiles any string, so it is closed for the whole test run, config and
+ * every other module included, not only inside the trap. The async, generator and async-generator
+ * function constructors too.
+ */
+export const closeFunctionConstructors = (): void => {
+  const prototypes = [
+    Function.prototype,
+    Object.getPrototypeOf(async () => {}) as object,
+    Object.getPrototypeOf(function* () {}) as object,
+    Object.getPrototypeOf(async function* () {}) as object,
+  ];
+  for (const proto of prototypes) {
+    Object.defineProperty(proto, 'constructor', { value: fail('the Function constructor'), writable: false, configurable: false });
   }
 };
