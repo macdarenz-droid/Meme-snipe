@@ -12,33 +12,50 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Research finishing; build started on the parts that do not depend on it.
+Wave 1 merged. Wave 2 (risk, transactions, gates, live feed, backtester, ledger check, installer, funding screens) is in review and fix rounds. Historical data is limited by the archive's rate limit (DATA-1 is looking for a legitimate source). The whale test result is due about 03:05 AEDT on 4 Oct.
 
 ## Done
-- Owner rules copied into `AGENTS.md`; the starting brief is `docs/ARCHITECTURE.md`.
-- TypeScript workspace (pnpm, TypeScript 7, Vitest 5).
+- Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
+- TypeScript workspace (pnpm, TypeScript 7, Vitest 5); CI on every PR.
 - Brand files and guide (`brand/`, `docs/BRAND.md`).
-- AUD funding route researched.
+- Merged: WEB-1 (PR #1), CORE-2 (PR #2), CORE-1 (PR #3), APP-1 (PR #5), DOCS-1 (PR #6: architecture, RESEARCH.md, DECISIONS.md, build plan), CORE-1b (PR #7), APP-1b (PR #12: pinned actions, no backup, safe APK swap, verified on the live release), CFG-1 (PR #13: versioned policy, session lock, tighten-only, baselines), DOCS-1b (PR #15), DEC-1 (PR #11: chain decoders with mainnet golden vectors), CORE-2b (PR #14: typed no-quote reasons, coin guard, v2 vault accounting, Global as a checked input), ENG-1 (PR #10: engine core, blind-to-future proofs, purity guard and runtime trap), LEDGER-1 (PR #9: append-only SQLite ledger, atomic reservations, separate scoring store), STATS-1 (PR #8: labels, day-block bootstrap, e-process, sealed holdout, Holm), UI-2 (PR #17: dashboard data screens, strict report schema), FEED-1 (PR #21: live feed, provider adapters, quota scheduler, recorded release order for parity, coverage gap facts), LEDGER-REPLAY (PR #23: `pnpm ledger:replay` checks a ledger against the reducer; versioned strict book detail; orphan rows refused).
+- Android preview APK at a fixed link: https://github.com/macdarenz-droid/Meme-snipe/releases/download/preview/zeroed-preview.apk (sample data only). Real backtest results will show in its Backtest view once BT-1 publishes its first report (UI-2 loads it from the `backtest` release).
+- All four API keys checked from CI: they work.
 
 ## Board
-Builders run as separate sessions; the supervisor reviews and merges into `ccr-14987baf-i6lrsl`.
+Builders run as separate sessions; a fresh reviewer session checks each PR; the supervisor merges into `ccr-14987baf-i6lrsl` when review passed and CI is green on a head with the latest base.
 
 | Task | What | Session | Model | State | Estimate |
 |---|---|---|---|---|---|
-| CORE-1 | Domain types, order and position lifecycle | session_01SWQzPEHWtr3oCxUuGCCWxX | Opus 5.5 ultracode | fixing 3 blocking review findings (PR #3) | 30–60 m |
-| CORE-2 | AMM quotes (pump curve, PumpSwap), cost model, feasible size | session_0137WgVKuV7YThAEDRTjWsJ5 | Opus 5.5 ultracode | building | 1.5–2.5 h |
-| WEB-1 | Dashboard shell, two themes, motion, copy guard | session_01Ex3DnPXKguKRwSY7utcsPQ | Opus 5.5 ultracode | in review: PR #1, reviewer session_01XnyTYevtLoRFMdiwmaqqbV | 20–40 m |
-| APP-1 | Android preview APK at a fixed link (Capacitor, CI build) | session_01BLFtAQaZGeQKqXMBYYdLpJ | Sonnet 5.5 | building | 1–1.5 h |
-| RES-2 | Whale copy-trading study on real data (owner's idea) | session_01RXNoLW48c8Xj7FYScEujRg | Opus 5.5 ultracode | researching | 2–3 h |
-| DOCS-1 | Architecture improved from research, RESEARCH.md, DECISIONS.md, build plan | session_01F8fZH2zSWeP984nqQB1HyJ | Opus 5.5 ultracode | writing | 1–1.5 h |
-| Queued | Risk policy and sizing; evidence gates; exits; paper fills; stats and promotion gates; provider adapters and quota scheduler; ledger; paper worker; dashboard data screens; Deposit/Withdraw; TEST-1 market recorder and deterministic replay; TEST-2 dry-run transaction simulation; TEST-3 soak and fault injection | — | — | after DOCS-1 | 6–10 h in waves of 3–4 |
+| DATA-1 | Historical on-chain data (30–60 days, transaction-level) for backtesting | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 ultracode | PR #16; archive rate-limits after about 0.6 TB; finding a legitimate source; sending the 2 Oct slice to BT-1 | source decision pending |
+| RES-2 | Whale copy-trading study on real data (owner's idea) | session_01RXNoLW48c8Xj7FYScEujRg | Opus 5.5 ultracode | PR #4, pre-registered forward test running | result about 03:05 AEDT |
+| OPS-1 | OPS-1a: installer, encrypted key handoff (6-word code), Telegram pairing; OPS-1b: watchdog, backups, drills | session_01Euok5FXtBGZBrweohP3K93 | Opus 5.5 ultracode | PR #19 fixing 3 blocking + 3 small items (update gate checks CI; key-derivation vectors; Node deviation recorded); OPS-1b paused | installer about 03:30–04:30 AEDT |
+| FUND-1 | Deposit and Withdraw screens, two exchanges | session_01S7paz3YTUxTPdwVF54HgXA | Sonnet 5.5 medium | PR #25 review PASS (session_012W39dz49jKU5Zm5LD1YqrZ); one small round (step-up throw, notes) | 20 m |
+| RISK-1 | Risk policy and sizing (§8, R1–R16), Melbourne-day limits, exits never blocked | session_0135ruSv84BVjo7knvmTCPPK | Opus 5.5 ultracode | PR #18 fixing 3 blocking items (stale-snapshot double entry, exit trips dropped, 108 surviving mutants) | 1–2 h |
+| TX-1 | Unsigned transaction builders, signer policy checks, landing client | session_01E3n8DEetWYaqFAmKreihix | Opus 5.5 ultracode | PR #20 code PASS; two DECISIONS lines and base merge, then merge | 15 m |
+| GATE-1 | Evidence gates: hard rejects H1–H16, regime gate, as-of only | session_01MeeF4VytwgP5sqyAkqM2NS | Opus 5.5 ultracode | PR #22 re-review at dafe128 (session_01UhbBj5bHiTC8AUMzp5db7L) | 15–30 m |
+| BT-1 | Transaction-level backtester and paper fill model; publishes the backtest report | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 ultracode | PR #24 re-review at e3b3dd8 (session_012efQfLAwWStK3PT6ZW2PHz); then ledger detail via encodeBookDetail; real-data run waits on DATA-1 | 30–60 m, then real-data run |
+| LEDGER-1b | Migration so a late BUY landing can open its position | session_01PJYtrkyMYxKKrspbisEKTK | Opus 5.5 ultracode | building (reviewer session_01CsRTgh7XK7jvYdGPUu2YoR stays for it) | 45–75 m |
+| Queued | Build plan in docs/ARCHITECTURE.md §20 (PR #6): Wave C EXIT-1; Wave D BT-2, WORKER-1, RUN-1; Wave E TEST-1..3; later SIGN-1 | — | — | by dependency | about 37–47 h of build, 15–20 h wall time |
 
-## Next
-- Finish the research and a measured base-rate study of live Solana data.
-- Improve `docs/ARCHITECTURE.md` in place from the findings; record decisions in `docs/DECISIONS.md`.
-- Build the core engine (risk, costs, gates, exits, order lifecycle, paper fills) with tests.
-- Then the paper worker on live data, then the dashboard (charts and motion as above), with a copy guard test that fails on AI wording.
+## Follow-ups
+- Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
+- Money scanner: aliased unit constants and a regex right after `)` (CFG-1 review notes; defence in depth).
+- Chain: i16 0x8000/0x7fff and u32 0x80000000 boundary vectors (DEC-1 review note).
+- Quotes: a test for the initialVirtualSolReserves ≤ 0 refusal (CORE-2b review note).
+- BT-2: record and burn every holdout run in the STATS-1 registry, so a holdout can't be rerun into a new file (PR #24 review).
+- GATE-1b: read FEED-1's coverage facts as history; an open gap (toSlot null) is uncovered until its bounded gap or resume (matched by via + fromSlot).
+- FUND-1 → SIGN-1: re-check the destination and balance after the step-up; persisting the 24 h saved-wallet change is a new saved-data shape (owner approval).
+- TX-1 → SIGN-1: maxSolOut needs about 1.5M lamports of PumpSwap headroom; the policy charges Token-2022 ATAs at 170 bytes.
+- Repo tidy-up: branch `claude/ledger-replay-schema-v1` duplicates PR #23's 611a4bb; the safety check refused its deletion, so the owner may delete it.
+
+## Owner setup
+- Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
+- API keys are in GitHub repository secrets and verified: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` (bot @Zeroed_alerts_bot). Never in chat or in the repo.
+- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Next owner step when OPS-1a merges: console login, one install line, DEPLOY_CODE secret, Telegram /pair.
+- Cloudflare: Account API token (Edit Cloudflare Workers template, 1-year expiry) is in GitHub secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, verified active from CI. Renew before 2027-10-03.
+- Domain: none, and none will be bought (owner rule in CLAUDE.md). Watchdog on the free `workers.dev` address; live dashboard access later through Tailscale's free personal plan.
+- Telegram bot display name: change with /setname in BotFather (optional).
 
 ## Open questions
 - Owner: check "Zeroed" on IP Australia before public launch; check the chosen exchange on AUSTRAC's register.
-- No `main` branch exists yet, so no pull request can be opened.

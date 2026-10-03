@@ -3,11 +3,12 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.0",
-  "engines": { "node": ">=22.12" },
+  "engines": { "node": ">=22.18" },
   "scripts": {
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run",
-    "check": "pnpm typecheck && pnpm test"
+    "check": "pnpm typecheck && pnpm test",
+    "ledger:replay": "node --no-warnings packages/core/scripts/ledger-replay.ts"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

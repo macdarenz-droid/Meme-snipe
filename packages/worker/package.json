@@ -1,0 +1,14 @@
+{
+  "name": "@meme-snipe/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./providers": "./src/providers/index.ts",
+    "./scheduler": "./src/scheduler/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "probe": "node scripts/live-probe.ts"
+  }
+}
