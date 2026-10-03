@@ -449,3 +449,33 @@ A third reviewer read 8370c2a. Its new findings were checked in code; these ruli
 - **Graduate survival** (regime): a migration is dated at +30 min by the last reserve before the mark when the pool's trades are covered since migration, else by a confirmed account read landing within a minute after the mark; otherwise the graduate is left out (unknown), never guessed.
 - **Execution health** is never green without owner-set limits (`ExecHealthLimits`): live risk limits are the owner's.
 - **Live-only vetoes:** sim (H15), xcheck (H16), exec-health (regime); the gates already skip them in backtest mode. **Live reads with a historical source still to build:** mint, pool, LP (BT-2 must release DATA-1's mint and pool state and vault balances as `read:accounts` answers) and holders (rebuild from token balances; until then H12/H13 have no backtest input).
+
+## H15 round-trip simulation (SIM-1, `packages/worker/src/sim`)
+
+- **2026-10-04 · One unsigned transaction: the buy at the entry size, then a sell of exactly the quoted tokens,** built with the TX-1 builders for a funded stand-in (TEST-2's approach) after TX-1b's `checkShape`. It is simulated as TEST-2 does: `sigVerify: false`, `replaceRecentBlockhash: true`, `minContextSlot` at the feed head. It is never signed or sent; the no-send import-graph test covers this module too.
+  - The sell keeps its token account open. If the buy got more tokens than quoted, the leftover stays and counts as loss; if it got fewer, the sell fails. Both are conservative.
+  - The tip transfer is left out of the round trip. It does not touch the venue, so it cannot change the loss. Without it (and its jitodontfront marker), a PumpSwap round trip fits one packet with no lookup table: 1,241 bytes with it, over the 1,232 limit.
+- **2026-10-04 · The loss is measured, not modelled.**
+  - Loss = −(change in the stand-in's wallet, wSOL and base-account lamports) − the `fee` the node reports − the rent paid into other accounts. The balances are the node's own `preBalances`/`postBalances`, taken inside the simulation.
+  - Rent paid is counted for: a new account (for wSOL, its rent reserve), curve growth, and the creator vault's top-up only.
+  - `paid` is the buy leg's own figure: PumpSwap `BuyEvent.userQuoteAmountIn`, or pump `TradeEvent` solAmount + fee + creatorFee. Both are the model's terms, verified by the golden vectors. `proceeds = paid − loss`, so a charge the model misses lowers proceeds and H15 rejects on it.
+- **2026-10-04 · Fail-safe outcomes. No fact (H15 rejects the missing evidence):**
+  - unsupported shape;
+  - a refused build;
+  - an unfunded stand-in;
+  - a scheduler refusal ("not evaluated");
+  - a timeout, HTTP or RPC error;
+  - a malformed answer.
+- **2026-10-04 · Fail-safe outcomes. A failed fact (H15 rejects `sim-failed`):**
+  - a program error or a stale blockhash;
+  - no `fee`;
+  - balances missing, or disagreeing with the read-back;
+  - no buy event, or a truncated log;
+  - paid above the spend;
+  - a loss above paid.
+
+  Nothing short of a clean, fully measured simulation passes.
+- **2026-10-04 · Quota and cost.** Calls run at the shortlisted tier (P2; P0 and P1 are refused before any request).
+  - A simulation costs 1 Helius credit. A funding check of the stand-in costs 1 more, at most once per `standInCheckMs`. Both are recorded per simulation, with the latency.
+  - FACTS-1's budget counts 1 credit per evaluation for the simulation. The funding check adds 1 per check interval: at 60 s, about one more credit a minute in total, however many candidates there are.
+- **2026-10-04 · H15 stays a live-only veto** (the backtest applies the exact local round trip, §16.3). Every simulation returns a `SimRecord` (outcome, reason, credits, latency, measured and modelled loss). WORKER-1 journals it for each shortlisted candidate, next to the H15 reason the gate gives. G3's veto-bias measure (STATS-1b) reads those reasons.
