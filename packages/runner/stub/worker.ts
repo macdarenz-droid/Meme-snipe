@@ -124,7 +124,7 @@ const haltReasons = (now: number): string[] =>
 // TEST-2's DryRunRecord shape, bigints as strings; synthetic numbers that pass item 4's bounds.
 const stubSimulation = (): Record<string, unknown> => ({
   outcome: 'simulated', success: true, error: null, standIn: null, quotedOut: '1000000', simulatedOut: '1000100',
-  amountErrorE4: 1000, quoteAgeSlots: '2', rentDeclared: '0', rentPaid: '0', balancesFrom: 'simulation',
+  amountErrorE4: 100, quoteAgeSlots: '2', rentDeclared: '0', rentPaid: '0', balancesFrom: 'simulation',
 });
 
 let tradeTimer = 0;

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { JournalLine } from '../src/contract.ts';
-import { item4 } from '../src/item4.ts';
+import { item4, malformedReason } from '../src/item4.ts';
 import { checkJournal } from '../src/journal.ts';
 import { makePlan } from '../src/plan.ts';
 import { buildReport, reportMarkdown, type RunMeta } from '../src/report.ts';
@@ -13,11 +13,12 @@ const sim = (errE4: number | null, extra: Record<string, unknown> = {}): Journal
   seq += 1;
   return {
     seq, ts: '2026-10-03T00:00:00.000Z', boot: 'b', kind: 'simulation', trade: `t${seq}`, leg: 'entry',
-    outcome: 'simulated', success: true, error: null, standIn: null, quotedOut: '1000000', simulatedOut: '1000000',
+    // quotedOut 1,000,000: the amount error in E4 units is exactly the difference.
+    outcome: 'simulated', success: true, error: null, standIn: null, quotedOut: '1000000', simulatedOut: String(1_000_000 + (errE4 ?? 0)),
     amountErrorE4: errE4, quoteAgeSlots: '3', rentDeclared: '0', rentPaid: '0', balancesFrom: 'simulation', ...extra,
   };
 };
-const fail = (outcome: string): JournalLine => sim(null, { outcome, success: false, error: 'x' });
+const fail = (outcome: string): JournalLine => sim(null, { outcome, success: false, error: 'x', simulatedOut: null });
 const many = (n: number, f: () => JournalLine): JournalLine[] => Array.from({ length: n }, f);
 
 describe('item 4 bounds', () => {
@@ -54,11 +55,47 @@ describe('item 4 bounds', () => {
     expect(r.outcomes).toEqual({ simulated: 2, 'not-simulable': 1 });
     expect(r).toMatchObject({ close_omitted: 1, stand_ins: 1, median_quote_age_slots: 3 });
   });
-  it('never counts a rehearsal or the stub, whatever the numbers', () => {
+  it('never passes a rehearsal or the stub, whatever the numbers', () => {
     const lines = many(20, () => sim(0));
-    expect(item4(lines, 'rehearsal', false)).toMatchObject({ pass: true, counts: false, note: 'Rehearsal: does not count for item 4.' });
-    expect(item4(lines, 'vps', true)).toMatchObject({ pass: true, counts: false, note: 'Stub worker: does not count for item 4.' });
+    expect(item4(lines, 'rehearsal', false)).toMatchObject({ bounds_pass: true, pass: false, counts: false, note: 'Rehearsal: does not count for item 4.' });
+    expect(item4(lines, 'vps', true)).toMatchObject({ bounds_pass: true, pass: false, counts: false, note: 'Stub worker: does not count for item 4.' });
+    expect(item4(lines, 'vps', false)).toMatchObject({ bounds_pass: true, pass: true, counts: true });
     expect(item4([], 'vps', false).pass).toBe(false);
+  });
+});
+
+describe('bad simulation lines stay in the denominator as malformed', () => {
+  it('19 good and 1 without an outcome fails the 95% bound', () => {
+    const r = item4([...many(19, () => sim(0)), sim(0, { outcome: undefined })], 'vps', false);
+    expect(r).toMatchObject({ trades: 20, successes: 19, outcomes: { simulated: 19, malformed: 1 } });
+    expect(r.bounds.success.pass).toBe(true); // exactly 95%
+    const r2 = item4([...many(18, () => sim(0)), sim(0, { outcome: 'bogus' }), sim(0, { outcome: undefined })], 'vps', false);
+    expect(r2).toMatchObject({ trades: 20, successes: 18, pass: false });
+    expect(r2.bounds.success.pass).toBe(false);    // The reviewer's case: 19 good and 6 bad is 76%, not 19 of 19.
+    const r3 = item4([...many(19, () => sim(0)), ...many(3, () => sim(0, { outcome: 'bogus' })), ...many(3, () => sim(0, { amountErrorE4: -1 }))], 'vps', false);
+    expect(r3).toMatchObject({ trades: 25, successes: 19, pass: false });
+    expect(r3.bounds.success).toMatchObject({ pass: false, percent: 76 });
+  });
+  it.each([
+    ['a negative amount error', { amountErrorE4: -999_999 }, 'amountErrorE4 is not a non-negative integer'],
+    ['a fractional amount error', { amountErrorE4: 1.5e-9 }, 'amountErrorE4 is not a non-negative integer'],
+    ['a string amount error', { amountErrorE4: '0' }, 'amountErrorE4 is not a non-negative integer'],
+    ['an amount error that disagrees with the amounts', { amountErrorE4: 0, simulatedOut: '1030000' }, 'amountErrorE4 disagrees with the amounts'],
+    ['missing amounts', { quotedOut: null }, 'simulated without positive quotedOut and simulatedOut'],
+    ['a zero quote', { quotedOut: '0' }, 'simulated without positive quotedOut and simulatedOut'],
+    ['a non-numeric quote age', { quoteAgeSlots: 'soon' }, 'quoteAgeSlots is not a decimal string'],
+    ['a number where a bigint string belongs', { rentPaid: 5 }, 'rentPaid is not a decimal string'],
+    ['success with a failing outcome', { outcome: 'sim-error' }, 'success disagrees with outcome'],
+    ['a simulated outcome marked unsuccessful', { success: false }, 'success disagrees with outcome'],
+  ])('scores %s as a failed, malformed trade', (_, over, why) => {
+    const line = sim(0, over);
+    expect(malformedReason(line)).toBe(why);
+    const r = item4([line], 'vps', false);
+    expect(r).toMatchObject({ trades: 1, successes: 0, outcomes: { malformed: 1 }, pass: false });
+  });
+  it('accepts a well-formed line, recomputing its amount error', () => {
+    expect(malformedReason(sim(12_345))).toBeNull();
+    expect(malformedReason(fail('rpc-error'))).toBeNull();
   });
 });
 
@@ -87,5 +124,12 @@ describe('report', () => {
     const block = md.slice(md.indexOf('## Item 4'));
     expect(block).toBe(readFileSync(join(import.meta.dirname, 'golden', 'item4.md'), 'utf8'));
     expect(r.item4.counts).toBe(true);
+  });
+  it('never prints a pass for a run that does not count', () => {
+    const meta: RunMeta = { runId: 'r', label: 'rehearsal', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
+    const md = (lines: JournalLine[]) => reportMarkdown(buildReport(meta, [], 10, 100, checkJournal(''), [], [], item4(lines, 'rehearsal', false)));
+    expect(md(many(20, () => sim(0)))).toContain('Item 4: **not counted** (bounds met: yes)');
+    expect(md([fail('sim-error')])).toContain('Item 4: **not counted** (bounds met: no)');
+    expect(md(many(20, () => sim(0)))).not.toContain('Item 4: **pass**');
   });
 });
