@@ -64,6 +64,8 @@ export interface AccountFact {
    * any later moment, so it is read as of the decision. A live wallet's balance keeps its read time.
    */
   readonly paper: boolean;
+  /** Rent of the one-time accounts this wallet still lacks (0 once its setup made them): risk's `rent.oneTime`. */
+  readonly oneTimeRent: bigint;
 }
 
 /** Exit state of one position, saved after every step so a restart resumes the same stop and trail. */
@@ -345,7 +347,7 @@ export class LiveStrategy implements Strategy {
     const r = ctx.lookup(ACCOUNT_KEY);
     if (!r.ok) return null;
     const v = unwrap(r.value);
-    return isObj(v) && isObj(v['history']) && isObj(v['latches']) ? (v as unknown as AccountFact) : null;
+    return isObj(v) && isObj(v['history']) && isObj(v['latches']) && typeof v['oneTimeRent'] === 'bigint' ? (v as unknown as AccountFact) : null;
   }
 
   /** Entry intents that resolved without a fill end; exit owners that did get a new attempt or are booked blocked. */
@@ -593,7 +595,7 @@ export class LiveStrategy implements Strategy {
       { session, mode: 'paper', clock: { now: () => ctx.now }, account: this.#marked(acct.history, ctx, sol), latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
       {
         intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
-        quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: c.rent,
+        quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
       },
     );
     const trips = r.trips.map((t) => `${TRIP_PREFIX}${t}`);

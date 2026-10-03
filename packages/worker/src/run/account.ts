@@ -34,6 +34,8 @@ export interface AccountState {
   walletLamports: bigint | null;
   readonly trades: PaperTrade[];
   readonly entries: { readonly mint: string; readonly atMs: number }[];
+  /** The paper wallet's one-time accounts were paid at its setup; absent in files from before (paid at the next start). */
+  oneTimePaid?: boolean;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -48,9 +50,14 @@ export class PaperAccount {
   readonly #file: StateFile<AccountState>;
   readonly #s: AccountState;
 
-  constructor(file: StateFile<AccountState>, bankroll: MicroUsd, nowMs: number) {
+  readonly #oneTimeRent: bigint;
+
+  /** `oneTimeRent`: what a fresh wallet's first buy pays once for accounts it never closes (settings `oneTimeRent`). */
+  constructor(file: StateFile<AccountState>, bankroll: MicroUsd, nowMs: number, oneTimeRent: bigint) {
     this.#file = file;
+    this.#oneTimeRent = oneTimeRent;
     this.#s = file.read({ openedAtMs: nowMs, openingEquity: bankroll, walletLamports: null, trades: [], entries: [] });
+    this.#setUp();
     file.write(this.#s);
   }
 
@@ -62,7 +69,19 @@ export class PaperAccount {
   price(solPrice: MicroUsd | null): void {
     if (this.#s.walletLamports !== null || solPrice === null || solPrice <= 0n) return;
     this.#s.walletLamports = microUsdToLamports(this.#s.openingEquity, solPrice, 'floor');
+    this.#setUp();
     this.#file.write(this.#s);
+  }
+
+  /**
+   * The wallet's setup: its one-time accounts (the venue's volume accumulator) are made once, before the first trade,
+   * and their rent leaves the wallet for good. Paid at setup rather than by the first buy, so no trade's cost carries
+   * it: at the trial size the first trade would fail R14's cost gate for good and the accounts would never be made.
+   */
+  #setUp(): void {
+    if (this.#s.walletLamports === null || this.#s.oneTimePaid === true) return;
+    this.#s.walletLamports -= this.#oneTimeRent;
+    this.#s.oneTimePaid = true;
   }
 
   reserved(mint: string, atMs: number): void {
@@ -119,6 +138,9 @@ export class PaperAccount {
       unresolvedEntries: Object.values(book.intents).filter((i) => i.intent.purpose === 'entry' && !isTerminal(i) && i.reservation?.status === 'held').map((i) => ({ mint: i.intent.mint })),
       heldReservations: held, version,
     };
-    return { history, latches, solBalance: this.#s.walletLamports === null ? null : { value: this.#s.walletLamports as Lamports, atMs: nowMs }, paper: true };
+    return {
+      history, latches, solBalance: this.#s.walletLamports === null ? null : { value: this.#s.walletLamports as Lamports, atMs: nowMs }, paper: true,
+      oneTimeRent: this.#s.oneTimePaid === true ? 0n : this.#oneTimeRent,
+    };
   }
 }

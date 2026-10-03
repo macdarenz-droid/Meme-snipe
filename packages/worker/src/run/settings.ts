@@ -3,6 +3,7 @@
 import type { FillConfig, Policy, ResearchConfig } from '../../../core/src/config/index.ts';
 import type { FillScenario } from '../../../core/src/fills/index.ts';
 import { PPM } from '../../../core/src/costs/index.ts';
+import { MAX_CREATED_ACCOUNT_BYTES, USER_VOLUME_ACCUMULATOR_SIZE, rentExempt } from '../../../core/src/tx/rent.ts';
 import type { StrategyConfig } from '../engine/strategy.ts';
 
 /** The paper fill scenario: conservative (the safe side) until the dry run measures our own latency (§11). */
@@ -29,11 +30,19 @@ export const strategyConfig = (policy: Policy, fills: FillConfig, research: Rese
       exitPriorityFee: steps[0]!.priorityFeeLamports, tip: net.tip, entryFailurePpm: fail, exitFailurePpm: fail,
     },
     // A full exit closes the token account in the same transaction (TX-1 `closeTokenAccount`), so its rent comes back;
-    // one-time accounts (volume accumulators) are paid once per wallet, not per trade; the WSOL account is transient.
-    rent: { tokenAccount: net.tokenAccountRent, tokenAccountClosedOnExit: true, oneTime: 0n, transient: net.tokenAccountRent },
+    // the WSOL account is transient. One-time accounts (the volume accumulator) are paid once per wallet: the decision
+    // takes them from the paper wallet's state (`AccountFact.oneTimeRent`): paid at the wallet's setup, 0 after it.
+    rent: { tokenAccount: net.tokenAccountRent, tokenAccountClosedOnExit: true, oneTime: oneTimeRent(fills), transient: net.tokenAccountRent },
     blockhashValidBlocks: net.blockhashValidBlocks,
     evaluateEveryMs: policy.gates.maxQuoteAgeMs,
     barMs: policy.exits.atrBarMs,
     keepBars: policy.exits.atrPeriod * 4,
   };
 };
+
+/**
+ * Rent of the one-time accounts a fresh wallet still lacks: the venue's user volume accumulator (137 bytes), created by
+ * its first buy and never closed. At the configured rate (the token-account figure is 170 bytes at that rate).
+ */
+export const oneTimeRent = (fills: FillConfig): bigint =>
+  rentExempt(USER_VOLUME_ACCUMULATOR_SIZE, { lamportsPerByte: fills.network.tokenAccountRent / (128n + BigInt(MAX_CREATED_ACCOUNT_BYTES)) });

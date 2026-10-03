@@ -8,10 +8,13 @@ import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { HALT_KEY } from '../src/engine/strategy.ts';
+import { FILL_CONFIG } from '../../core/src/config/index.ts';
+import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
+import { oneTimeRent } from '../src/run/settings.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { exitsFile } from '../src/run/state.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
-import { LANDS, MINT, Market, T, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { LANDS, MINT, Market, SOL_PRICE, T, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const journalText = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
 const lines = (dir: string) => journalText(dir).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -89,6 +92,20 @@ describe('a paper trade end to end', () => {
     expect(abandoned.length).toBeGreaterThanOrEqual(1);
     await h.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+});
+
+describe('one-time rent from the paper wallet (review of f679188, item 7)', () => {
+  it('the paper wallet pays the volume accumulator rent once, at its setup, so no trade carries it', async () => {
+    const h = makeWorker();
+    const rent = oneTimeRent(FILL_CONFIG);
+    expect(rent).toBe((128n + 137n) * 5_080n);
+    await entered(h);
+    const a = JSON.parse(readFileSync(join(h.stateDir, 'account.json'), 'utf8'), (_k, v) => (v !== null && typeof v === 'object' && '$n' in v ? BigInt(v['$n']) : v)) as { oneTimePaid: boolean; walletLamports: bigint; trades: { booked: bigint }[] };
+    expect(a.oneTimePaid).toBe(true);
+    const opening = microUsdToLamports(h.session.policy.capital.bankroll, SOL_PRICE as MicroUsd, 'floor');
+    expect(a.walletLamports).toBe(opening + a.trades.reduce((s, t) => s + t.booked, 0n) - rent);
+    await h.worker.stop();
   });
 });
 

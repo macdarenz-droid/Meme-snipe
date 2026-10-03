@@ -232,4 +232,4 @@ export const passingMarket = async (h: Harness): Promise<Market> => {
   return m;
 };
 
-export { CREATED_AT, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, T };
+export { CREATED_AT, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, T };
