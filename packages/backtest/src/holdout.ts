@@ -16,13 +16,56 @@ export interface SealedHoldout {
   readonly counts: Readonly<Record<string, HoldoutCounts>>;
 }
 
+/**
+ * Version control of the registry file (the CLI's is git): `check` refuses unless the file is tracked and unchanged
+ * from HEAD (or, before the first registration, absent); `commit` records a write. Every start and burn becomes a
+ * commit, so deleting or rewinding the file shows in history.
+ */
+export interface RegistryVcs {
+  check(): void;
+  commit(message: string): void;
+}
+
 /** What a holdout run is bound to besides its options: the code it ran and the dataset it read. */
 export interface HoldoutAuthority {
   /** The registry file (JSON): the STATS-1 registry and every run attempt, kept across processes. */
   readonly registryPath: string;
   readonly codeCommit: string;
   readonly datasetId: string;
+  readonly vcs?: RegistryVcs;
 }
+
+/** The registered window of the research config's holdout: [fromDay, tailEndDay), as first and last UTC day. */
+export const holdoutWindow = (o: RunOptions): { readonly fromDay: string; readonly toDay: string } => {
+  const h = o.research.holdout;
+  return { fromDay: h.fromDay, toDay: new Date(Date.parse(`${h.tailEndDay}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) };
+};
+
+const overlaps = (a: { fromDay: string; toDay: string }, b: { fromDay: string; toDay: string }): boolean => a.fromDay <= b.toDay && b.fromDay <= a.toDay;
+
+/** Holdouts with a start record whose window overlaps `w`, other than `exceptId`. */
+const startedOverlapping = (store: HoldoutStore, w: { fromDay: string; toDay: string }, exceptId: string | null): string[] =>
+  store.registry.entries
+    .filter((e) => e.holdoutId !== exceptId && overlaps(e, w) && store.runs.some((r) => r.holdoutId === e.holdoutId && r.outcome !== 'refused'))
+    .map((e) => e.holdoutId);
+
+/**
+ * The days a research run may read (H1 of the BT-1c review): never a day at or after the reserved holdout start, nor
+ * one inside any registered window. Explicitly chosen days that break this are refused; without a choice, only
+ * allowed (practice) days are kept.
+ */
+export const researchDays = (days: readonly string[], research: RunOptions['research'], store: HoldoutStore | null, explicit: boolean): string[] => {
+  const why = (d: string): string | null => {
+    if (d >= research.holdout.fromDay) return `${d} is at or after the reserved holdout start ${research.holdout.fromDay}`;
+    const e = store?.registry.entries.find((x) => x.fromDay <= d && d <= x.toDay);
+    return e === undefined ? null : `${d} is inside holdout ${e.holdoutId}`;
+  };
+  const refused = days.map(why).filter((x): x is string => x !== null);
+  if (explicit && refused.length > 0) throw new RangeError(`research runs never read holdout days: ${refused.join('; ')}`);
+  const kept = days.filter((d) => why(d) === null);
+  if (kept.length === 0) throw new RangeError('no practice days to run');
+  return kept;
+};
 
 /**
  * The configuration id a holdout is registered under: sha256 of the strategy's resolved configuration, the policy, the
@@ -61,21 +104,32 @@ export const writeHoldoutStore = (path: string, store: HoldoutStore): void => {
 };
 
 /**
- * Registers a holdout window before anything runs: the window, and the configuration id of exactly these options under
- * this code and dataset. Creates the registry file (with the Holm family size) if it does not exist.
+ * Registers a holdout before anything runs: the research config's window (from the reserved start to the end of the
+ * tail; entries stop at the cutoff) and the configuration id of exactly these options under this code and dataset.
+ * Refuses a universe the strategy does not produce and a window overlapping one already started under any id or
+ * universe. Creates the registry file (with the Holm family size) if it does not exist.
  */
-export const authoriseHoldout = (a: HoldoutAuthority, familySize: number,
-  entry: { readonly holdoutId: string; readonly universe: string; readonly fromDay: string; readonly toDay: string }, o: RunOptions): HoldoutStore => {
+export const authoriseHoldout = (a: HoldoutAuthority, familySize: number, entry: { readonly holdoutId: string; readonly universe: string }, o: RunOptions): HoldoutStore => {
+  a.vcs?.check();
+  const produced = s0Config(o).universe;
+  if (entry.universe !== produced) throw new RangeError(`holdout ${entry.holdoutId}: the strategy produces ${produced}, not ${entry.universe}`);
+  const window = holdoutWindow(o);
   const store: HoldoutStore = existsSync(a.registryPath) ? readHoldoutStore(a.registryPath) : { registry: createHoldoutRegistry(familySize), runs: [] };
-  const next = { ...store, registry: registerHoldout(store.registry, { ...entry, configId: holdoutConfigId(o, a) }) };
+  const clash = startedOverlapping(store, window, null);
+  if (clash.length > 0) throw new RangeError(`holdout ${entry.holdoutId}: its window overlaps ${clash.join(', ')}, already run`);
+  const next = { ...store, registry: registerHoldout(store.registry, { ...entry, ...window, configId: holdoutConfigId(o, a) }) };
   writeHoldoutStore(a.registryPath, next);
+  a.vcs?.commit(`Holdout ${entry.holdoutId}: registered ${window.fromDay}..${window.toDay}, entries before ${o.research.holdout.entryCutoffDay}`);
   return next;
 };
 
 export interface HoldoutTargets extends HoldoutAuthority {
   /** The registered holdout id of each universe the run feeds. */
   readonly byUniverse: Readonly<Record<string, string>>;
-  /** The run's window, UTC calendar days; it must equal the registered one, and every row must fall inside it. */
+  /**
+   * The run's window, UTC calendar days; it must equal the registered one, and every row must fall inside it. One
+   * sealed ledger serves every registered universe of the run.
+   */
   readonly window: { readonly fromDay: string; readonly toDay: string };
 }
 
@@ -89,8 +143,13 @@ const utcDay = (blockTimeSeconds: number): string => new Date(blockTimeSeconds *
  */
 export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string }, t: HoldoutTargets): SealedHoldout => {
   const configId = holdoutConfigId(o, t);
+  t.vcs?.check();
   if (!existsSync(t.registryPath)) throw new RangeError(`no holdout registry at ${t.registryPath}: holdout not registered`);
   let store = readHoldoutStore(t.registryPath);
+  const save = (message: string) => {
+    writeHoldoutStore(t.registryPath, store);
+    t.vcs?.commit(message);
+  };
   const log = (holdoutId: string, outcome: HoldoutRunRecord['outcome'], reason: string) => {
     store = { ...store, runs: [...store.runs, { holdoutId, outcome, configId, ledgerPath: o.ledgerPath, at: new Date().toISOString(), reason }] };
   };
@@ -101,7 +160,7 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
   };
   const refuse = (holdoutId: string, reason: string): never => {
     log(holdoutId, 'refused', reason);
-    writeHoldoutStore(t.registryPath, store);
+    save(`Holdout ${holdoutId}: refused (${reason})`);
     throw new RangeError(`holdout ${holdoutId}: ${reason}`);
   };
   for (const [u, id] of Object.entries(t.byUniverse)) {
@@ -117,7 +176,10 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
     else if (e.fromDay !== t.window.fromDay || e.toDay !== t.window.toDay) refuse(id, `window ${t.window.fromDay}..${t.window.toDay} is not the authorised ${e.fromDay}..${e.toDay}`);
   }
   for (const id of Object.values(t.byUniverse)) log(id, 'started', '');
-  writeHoldoutStore(t.registryPath, store);
+  save(`Holdout ${Object.values(t.byUniverse).join(', ')}: started`);
+  t.vcs?.check();
+  // Entries stop at the cutoff; the run keeps observing to the end of the tail so every position can finish.
+  const cutoff = Date.parse(`${o.research.holdout.entryCutoffDay}T00:00:00Z`);
   // Rows outside the authorised window stop the run (and so burn the holdout).
   const inWindow = (): Iterator<DatasetRow> => {
     const it = o.rows();
@@ -132,12 +194,12 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
   };
   let sealed: SealedHoldout;
   try {
-    sealed = runHoldout({ ...o, rows: inWindow });
+    sealed = runHoldout({ ...o, rows: inWindow, entryCutoff: cutoff });
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     burnAll(why);
     for (const id of Object.values(t.byUniverse)) log(id, 'failed', why);
-    writeHoldoutStore(t.registryPath, store);
+    save(`Holdout ${Object.values(t.byUniverse).join(', ')}: failed and burned`);
     throw err;
   }
   for (const [u, id] of Object.entries(t.byUniverse)) {
@@ -146,7 +208,7 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
     store = { ...store, registry: step.registry };
     log(id, step.ok ? 'sealed' : 'failed', step.reason);
   }
-  writeHoldoutStore(t.registryPath, store);
+  save(`Holdout ${Object.values(t.byUniverse).join(', ')}: sealed ${sealed.ledgerHash.slice(0, 12)}`);
   return sealed;
 };
 

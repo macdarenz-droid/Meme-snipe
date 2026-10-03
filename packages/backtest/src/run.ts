@@ -33,6 +33,8 @@ export interface RunOptions {
   readonly s0?: Partial<S0Config>;
   /** Extra events (a planted leak marker), merged into the replay. */
   readonly extraEvents?: readonly FeedEvent[];
+  /** No entry starts at or after this time (ms): the holdout's entry cutoff; the run still observes to its end. */
+  readonly entryCutoff?: number;
   /** Deterministic failure bursts (stress): every attempt sent inside one never reaches a block. */
   readonly failureBursts?: { readonly perDay: number; readonly durationMs: number };
   /** Observation delay profile instead of the scenario's (a stress run). */
@@ -93,7 +95,7 @@ export const s0Config = (o: RunOptions): S0Config => {
     entryMinOutBelowBps: r.entryMinOutBelowBps,
     ladder: { steps: o.policy.exits.ladder.steps, maxAttempts: o.policy.exits.ladder.maxAttempts },
     blockhashValidBlocks: o.fills.network.blockhashValidBlocks,
-    stopEntriesAt: o.windowEnd - o.policy.exits.tMaxMs - r.endMarginMs,
+    stopEntriesAt: Math.min(o.windowEnd - o.policy.exits.tMaxMs - r.endMarginMs, o.entryCutoff ?? Number.POSITIVE_INFINITY),
     blockedRetryMs: r.blockedRetryMs,
     blockedRetries: r.blockedRetries,
     ...o.s0,

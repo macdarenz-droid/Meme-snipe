@@ -57,6 +57,8 @@ const tokenPrice = (sol: bigint, tokens: bigint, px: MicroUsd): string => (token
  * A trade in USD, each flow at its own time (item 6 of BT-1c): the entry, the entry leg's costs and the rent at the
  * entry-time price; the proceeds, the exit leg's costs and any rent returned at the exit-time price. SOL moving in
  * between therefore shows in the trade's USD result; its SOL result is reported apart (economics.ts).
+ * Approximation: every exit attempt's fees, failed ones included, use the price at the trade's close (the last sell
+ * landing, or the data's end for a blocked exit), not each attempt's own time; likewise for repeated entry attempts.
  */
 const reportTrade = (t: TradeRecord, group: ReportGroup, pxIn: MicroUsd, pxOut: MicroUsd): ReportTrade => {
   const both = (k: keyof TradeRecord['legs']['entry']) => toUsd(t.legs.entry[k], pxIn) + toUsd(t.legs.exit[k], pxOut);

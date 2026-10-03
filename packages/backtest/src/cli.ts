@@ -4,17 +4,21 @@
 //   node packages/backtest/src/cli.ts run --dataset <dir> --sol-usd <file> [--scenario conservative] [--seed s0-1]
 //        [--replays 10] [--days 2026-09-01,2026-09-02] [--out report.json] [--evidence evidence.json] [--ledger bt.sqlite]
 //        [--delay measured|adverse|stress] [--burst-sweep]
-//   node packages/backtest/src/cli.ts holdout-register --dataset <dir> --sol-usd <file> --registry <file> --holdout-id <id>
-//        [--universe U2] [--family-size 1] [--days ...] [--scenario ...] [--seed ...]
-//   node packages/backtest/src/cli.ts holdout --dataset <dir> --sol-usd <file> --registry <file> --holdout-id <id>
+//   node packages/backtest/src/cli.ts holdout-register --dataset <dir> --sol-usd <file> --holdout-id <id>
+//        [--universe U2] [--family-size 1] [--scenario ...] [--seed ...]
+//   node packages/backtest/src/cli.ts holdout --dataset <dir> --sol-usd <file> --holdout-id <id>
 //        --ledger <new file> [--universe U2] [--days ...] [--scenario ...] [--seed ...]
 //
-// holdout-register authorises the window and the configuration id (strategy, policy, fill model, research settings,
-// code and dataset) before any run. The holdout command refuses anything not authorised, logs every attempt in the
-// registry file and prints only the sealed ledger's hash and the per-universe candidate and entry counts.
+// `run` reads practice days only: never a day at or after the research config's reserved holdout start, nor one inside
+// a registered window. holdout-register authorises the research config's window (entries before the cutoff, then the
+// tail) and the configuration id (strategy, policy, fill model, research settings, code and dataset) before any run.
+// The holdout command refuses anything not authorised and prints only the sealed ledger's hash and the per-universe
+// candidate and entry counts. The registry lives at the research config's path in the repository the command runs
+// in (the working directory); it must be tracked in git and unchanged, and every write to it is committed.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { OFF_CHAIN } from '../../core/src/engine/index.ts';
 import { gateG0 } from '../../core/src/stats/index.ts';
@@ -23,7 +27,7 @@ import type { Bps } from '../../core/src/units/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
 import { readSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
-import { authoriseHoldout, runAndSealHoldout } from './holdout.ts';
+import { authoriseHoldout, holdoutWindow, readHoldoutStore, type RegistryVcs, researchDays, runAndSealHoldout } from './holdout.ts';
 import { leakTest, shiftTest } from './proofs.ts';
 import { economics } from './economics.ts';
 import { buildReport } from './report.ts';
@@ -44,8 +48,15 @@ const dataset = flag('dataset');
 const sumsChecked = verifySums(dataset);
 const manifest = loadManifest(dataset);
 const only = args.includes('--days') ? new Set(flag('days').split(',')) : null;
-const days: ManifestDay[] = manifest.days.filter((d) => only === null || only.has(d.day));
-if (days.length === 0) throw new Error('no days selected');
+// The registry: a fixed path in the repository the command runs in, read here, written only by the holdout path.
+const registryRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+const registryPath = join(registryRoot, RESEARCH_CONFIG.holdout.registryPath);
+if (args.includes('--registry')) throw new Error(`the holdout registry path is fixed by the research config (${RESEARCH_CONFIG.holdout.registryPath})`);
+const selected = manifest.days.filter((d) => only === null || only.has(d.day));
+if (selected.length === 0) throw new Error('no days selected');
+// Research runs read practice days only (H1): chosen holdout days are refused, and without a choice they are left out.
+const allowed = command === 'run' ? new Set(researchDays(selected.map((d) => d.day), RESEARCH_CONFIG, existsSync(registryPath) ? readHoldoutStore(registryPath) : null, only !== null)) : null;
+const days: ManifestDay[] = selected.filter((d) => allowed === null || allowed.has(d.day));
 const solUsd = readSeries(flag('sol-usd'));
 const scenario = flag('scenario', 'conservative') as ScenarioName;
 if (!SCENARIO_NAMES.includes(scenario)) throw new Error(`scenario must be one of ${SCENARIO_NAMES.join(', ')}`);
@@ -75,21 +86,52 @@ const plantedSwap = (token: string, slot: bigint, blockTime: number): DatasetRow
 const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, windowEnd: to, regimeBoundaries, ...(delay === undefined ? {} : { delay }) };
 
 const git = (...a: string[]) => execFileSync('git', a, { encoding: 'utf8', cwd: import.meta.dirname });
-/** The commit, plus a hash of any uncommitted change, so the id always names the code that ran. */
+/**
+ * The commit, plus a hash of any uncommitted change and of every untracked file under packages/ (names and contents),
+ * so the id always names the code that ran.
+ */
 const codeId = (): string => {
   const head = git('rev-parse', 'HEAD').trim();
-  const diff = git('diff', 'HEAD');
-  return diff === '' ? head : `${head}+dirty-${createHash('sha256').update(diff).digest('hex').slice(0, 16)}`;
+  const top = git('rev-parse', '--show-toplevel').trim();
+  const h = createHash('sha256').update(git('diff', 'HEAD'));
+  const untracked = git('ls-files', '--others', '--exclude-standard', '--', join(top, 'packages')).split('\n').filter((f) => f !== '').sort();
+  for (const f of untracked) h.update(`\0${f}\0`).update(readFileSync(join(top, f)));
+  const dirty = git('diff', 'HEAD') !== '' || untracked.length > 0;
+  return dirty ? `${head}+dirty-${h.digest('hex').slice(0, 16)}` : head;
+};
+
+/** Git control of the registry file in the repository the command runs in (H3). */
+const registryVcs = (): RegistryVcs => {
+  const rel = RESEARCH_CONFIG.holdout.registryPath;
+  const g = (...a: string[]) => execFileSync('git', a, { encoding: 'utf8', cwd: registryRoot });
+  const check = () => {
+    const tracked = g('ls-files', '--', rel) !== '';
+    if (!existsSync(registryPath)) {
+      if (tracked) throw new Error(`the holdout registry ${rel} was deleted; restore it from git`);
+      return;
+    }
+    if (!tracked) throw new Error(`the holdout registry ${rel} is not tracked in git`);
+    if (g('status', '--porcelain', '--', rel) !== '') throw new Error(`the holdout registry ${rel} has changes not committed`);
+  };
+  return {
+    check,
+    commit: (message) => {
+      g('add', '--', rel);
+      g('commit', '-q', '-m', message, '--', rel);
+      check();
+    },
+  };
 };
 
 if (command === 'holdout-register' || command === 'holdout') {
-  const authority = { registryPath: flag('registry'), codeCommit: codeId(), datasetId: `sha256:${manifestHash(dataset)}` };
+  mkdirSync(dirname(registryPath), { recursive: true });
+  const authority = { registryPath, codeCommit: codeId(), datasetId: `sha256:${manifestHash(dataset)}`, vcs: registryVcs() };
   const universe = flag('universe', 'U2');
   const holdoutId = flag('holdout-id');
   const window = { fromDay: days[0]!.day, toDay: days[days.length - 1]!.day };
   if (command === 'holdout-register') {
-    authoriseHoldout(authority, Number(flag('family-size', '1')), { holdoutId, universe, ...window }, base);
-    console.log(JSON.stringify({ registered: holdoutId, ...window }));
+    authoriseHoldout(authority, Number(flag('family-size', '1')), { holdoutId, universe }, base);
+    console.log(JSON.stringify({ registered: holdoutId, ...holdoutWindow(base), entryCutoffDay: RESEARCH_CONFIG.holdout.entryCutoffDay, tailEndDay: RESEARCH_CONFIG.holdout.tailEndDay }));
   } else {
     const sealed = runAndSealHoldout({ ...base, ledgerPath: flag('ledger') }, { ...authority, byUniverse: { [universe]: holdoutId }, window });
     console.log(JSON.stringify(sealed));

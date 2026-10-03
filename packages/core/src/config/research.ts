@@ -28,6 +28,18 @@ export interface ResearchConfig {
    * choice until WORKER-1 settles the live path).
    */
   readonly decisionCommitment: 'processed' | 'confirmed';
+  /**
+   * The sealed holdout (DECISIONS: holdout in UTC data days; final form). Days from `fromDay` are reserved before
+   * registration: research runs never touch them. The holdout admits entries before `entryCutoffDay` and observes
+   * until `tailEndDay` (exclusive) so every position can finish; it is opened once, after the tail.
+   */
+  readonly holdout: {
+    readonly fromDay: string;
+    readonly entryCutoffDay: string;
+    readonly tailEndDay: string;
+    /** The registry file, relative to the repository root; tracked in git, so every start and burn is a commit. */
+    readonly registryPath: string;
+  };
   /** Running costs charged against results, apart from the bankroll and per-trade costs. */
   readonly operating: {
     /** The Frankfurt VPS the owner approved (DECISIONS.md 2026-10-03, about US$6/month). */
@@ -45,6 +57,7 @@ const VALUES: ResearchConfig = {
   s0: { u2WindowFromMs: 60 * MINUTE, u2WindowToMs: 240 * MINUTE, entryMinOutBelowBps: 300, blockedRetryMs: 10 * MINUTE, blockedRetries: 3, endMarginMs: 30 * MINUTE },
   heartbeatBlocks: 150,
   decisionCommitment: 'confirmed',
+  holdout: { fromDay: '2026-09-22', entryCutoffDay: '2026-10-20', tailEndDay: '2026-10-21', registryPath: 'research/holdout/registry.json' },
   operating: { hostingUsdPerMonth: usd('6'), projectionBankrolls: [usd('20'), usd('100'), usd('200')] },
 };
 
