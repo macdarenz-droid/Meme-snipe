@@ -1,0 +1,5 @@
+// Zeroed: security updates every day, unattended. No automatic reboot (a reboot mid-trade is worse than a
+// pending kernel update); /status and the journal show when one is needed.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
