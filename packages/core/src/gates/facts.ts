@@ -229,6 +229,14 @@ export interface SoftFact {
   readonly keptLiquidityBps?: number;
   /** 5. Holders not in any cohort, gained over the last hour. */
   readonly independentHolderGrowth?: number;
+  /**
+   * 5. Holder owners split by point-in-time funding evidence (FACTS-1): linked to the dev or a common funder, shown
+   * unlinked by funding records as of now, and not yet resolved. Only the producer, which has the funding records,
+   * may call an owner independent; the gates never infer it from a holder list.
+   */
+  readonly knownLinkedOwners?: number;
+  readonly supportedIndependentOwners?: number;
+  readonly unresolvedOwners?: number;
   /** 6. Metadata. */
   readonly metadataMutable?: boolean;
   readonly duplicateNameOrUri?: boolean;
@@ -240,7 +248,7 @@ export interface SoftFact {
 
 export const SOFT_NUMBERS = [
   'buySolBps', 'creationSlotBuyers', 'twoSidedWalletBps', 'roundTripBps', 'microTradeBps', 'funderConcentrationBps', 'freshWalletBps',
-  'sizeEntropyMilli', 'devMigrations', 'devMints', 'keptLiquidityBps', 'independentHolderGrowth', 'socialLinks', 'rugcheckScore',
+  'sizeEntropyMilli', 'devMigrations', 'devMints', 'keptLiquidityBps', 'independentHolderGrowth', 'knownLinkedOwners', 'supportedIndependentOwners', 'unresolvedOwners', 'socialLinks', 'rugcheckScore',
 ] as const;
 export const SOFT_BIGINTS = ['solPerTrade', 'netInflowIndependent'] as const;
 export const SOFT_FLAGS = ['jitoTipInLaunchSlot', 'devBuySameTx', 'metadataMutable', 'duplicateNameOrUri', 'rugcheckSingleHolderFlag'] as const;
