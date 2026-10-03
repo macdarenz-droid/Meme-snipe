@@ -160,6 +160,30 @@ export const analyzeLaunch = (txs: readonly { readonly signature: string; readon
   };
 };
 
+/**
+ * The highest quote liquidity that was still there at the next observation (max over consecutive levels of the
+ * smaller one), up to and including level `upTo`: a one-transaction spike does not count (candidate rule, DECISIONS).
+ */
+export const sustainedPeak = (r: LaunchReport, upTo = r.levels.length - 1): bigint => {
+  let best = 0n;
+  for (let i = 0; i < upTo && i + 1 < r.levels.length; i++) {
+    const a = BigInt(r.levels[i]!.level);
+    const b = BigInt(r.levels[i + 1]!.level);
+    const held = a < b ? a : b;
+    if (held > best) best = held;
+  }
+  return best;
+};
+
+/** Collapse whose sustained reserve before it reached at least `line` (the candidate materiality rule). */
+export const collapsesSustained = (r: LaunchReport, rugs: RugConfig, line: bigint): boolean =>
+  r.levels.some((l, i) => {
+    const peak = BigInt(l.peak);
+    return peak > 0n && l.atMs - r.createdAtMs <= rugs.collapse.windowMs
+      && BigInt(l.level) * BPS_DENOMINATOR <= peak * (BPS_DENOMINATOR - BigInt(rugs.collapse.dropBps))
+      && sustainedPeak(r, i) >= line;
+  });
+
 /** Whether the collapse rule holds with this minimum peak (same test as the labeller, on the recorded levels). */
 export const collapses = (r: LaunchReport, rugs: RugConfig, minPeak: bigint): boolean =>
   r.levels.some((l) => {

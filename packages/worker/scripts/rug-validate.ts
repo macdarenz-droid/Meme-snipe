@@ -8,7 +8,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
-import { analyzeLaunch, collapses, misses, sweep, type FullRpcTransaction, type LaunchReport } from '../src/research/rug-validate.ts';
+import { TRIAL_POLICY } from '../../core/src/config/policy.ts';
+import { analyzeLaunch, collapses, collapsesSustained, misses, sustainedPeak, sweep, type FullRpcTransaction, type LaunchReport } from '../src/research/rug-validate.ts';
 
 const [mintsFile, outFile, cacheDir = '.rug-validate-cache', maxArg = '3000'] = process.argv.slice(2);
 if (mintsFile === undefined || outFile === undefined) throw new Error('usage: rug-validate.ts <mints.txt> <out.json> [cacheDir] [maxTxs]');
@@ -121,7 +122,14 @@ const out = {
   sweeps: Object.fromEntries([['loss>=0.1SOL', SOL / 10n], ['loss>=1SOL', SOL]].map(([name, loss]) => [name, sweep(reports, RUG_CONFIG, minPeaks, loss as bigint)])),
   misses: misses(reports, RUG_CONFIG),
   collapses: { collapseOnly: describe(collapsedOnly), all: describe(reports) },
-  reports: reports.map((r) => ({ ...r, peakUsd: usd(r) })),
+  // Candidate materiality rule: the collapse counts when the sustained reserve before it reached H8's dust line.
+  sustainedRule: {
+    lineLamports: String(TRIAL_POLICY.gates.dustPoolMinAtMigration),
+    collapseLabels: reports.filter((r) => collapses(r, RUG_CONFIG, 0n)).length,
+    materialBySustained: reports.filter((r) => collapsesSustained(r, RUG_CONFIG, BigInt(TRIAL_POLICY.gates.dustPoolMinAtMigration))).length,
+    materialByExitCost: reports.filter((r) => collapses(r, RUG_CONFIG, 0n) && r.peakExitCostBps !== null && Number(r.peakExitCostBps) <= RUG_CONFIG.materiality.maxExitCostBps).length,
+  },
+  reports: reports.map((r) => ({ ...r, peakUsd: usd(r), sustainedPeak: String(sustainedPeak(r)) })),
 };
 writeFileSync(outFile, `${JSON.stringify(out, null, 1)}\n`);
 console.log(`wrote ${reports.length} launches (${excluded.length} excluded) with ${calls} calls`);

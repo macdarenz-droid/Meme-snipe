@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RUG_CONFIG, type RugConfig } from '../../core/src/config/index.ts';
-import { analyzeLaunch, collapses, misses, sweep, type FullRpcTransaction, type LaunchReport } from '../src/research/rug-validate.ts';
+import { analyzeLaunch, collapses, collapsesSustained, misses, sustainedPeak, sweep, type FullRpcTransaction, type LaunchReport } from '../src/research/rug-validate.ts';
 
 type Tx = FullRpcTransaction & { readonly signature: string };
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures', 'rug-replay.json'), 'utf8')) as { cases: { name: string; mint: string; transactions: Tx[] }[] };
@@ -45,6 +45,20 @@ describe('minimum peak, sweep and misses', () => {
     expect(collapses(report({ levels: [lv(1, 100, 100), lv(2, 2, 100)] }), CFG, 0n)).toBe(false);
     expect(collapses(report({ levels: [lv(10_001, 0, 100)] }), CFG, 0n)).toBe(false);
     expect(collapses(report({ levels: [lv(10_000, 0, 100)] }), CFG, 0n)).toBe(true);
+  });
+
+  it('sustained reserve: a one-transaction spike does not count, a level held to the next trade does', () => {
+    const spike = report({ levels: [lv(1, 10, 10), lv(2, 900, 900), lv(3, 5, 900)] });
+    expect(sustainedPeak(spike)).toBe(10n);
+    expect(collapsesSustained(spike, CFG, 500n)).toBe(false);
+    expect(collapsesSustained(spike, CFG, 10n)).toBe(true);
+    expect(collapsesSustained(spike, CFG, 11n)).toBe(false);
+    const held = report({ levels: [lv(1, 900, 900), lv(2, 800, 900), lv(3, 5, 900)] });
+    expect(sustainedPeak(held)).toBe(800n);
+    expect(sustainedPeak(held, 1)).toBe(800n);
+    expect(sustainedPeak(held, 0)).toBe(0n);
+    expect(collapsesSustained(held, CFG, 800n)).toBe(true);
+    expect(collapsesSustained(held, CFG, 801n)).toBe(false);
   });
 
   it('scores labels against the loss outcome: precision and recall per minimum peak', () => {
