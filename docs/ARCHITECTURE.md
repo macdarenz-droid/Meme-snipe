@@ -299,7 +299,10 @@ Position lifecycle: `opening → open → exit requested → exit pending → op
 - pool state rebuilt per slot from swap events (`TradeEvent`, `BuyEvent`/`SellEvent` carry post-trade reserves);
 - our trade placed **after** every trade in its landing slot;
 - latency drawn from our measured distribution (p50 and p90 scenarios);
-- each attempt lands with probability p_land (defaults until we have our own data: 0.66 PumpSwap, 0.49 curve), a failed attempt pays base + priority fee, blockhash expiry respected;
+- each attempt lands with probability p_land (defaults until we have our own data: 0.66 PumpSwap, 0.49 curve in the base case; about 0.1 lower in conservative and higher in optimistic), a failed attempt pays base + priority fee, a dropped one never reaches a block and costs nothing, blockhash expiry respected;
+- stress (BT-1c): one persistent network state over 150-slot windows shared by every position and provider, whose entry probability rises with recent market activity (it cuts p_land and adds latency), provider failures and deterministic 10/30/60 s failure bursts that drop attempts, a long tail of landing delays, and a liquidity haircut on each repeated exit. Values are harsh, marked provisional in every report, with source and status in `config/fills.ts`; landing is refined only from observed-chain evidence and the canary;
+- rent comes back only when the atomic sell-and-close lands (a failed close rolls the sell back and still pays the fee; dust keeps the account open);
+- every on-chain observation (swap, lifecycle event, regime change) reaches the engine after event → processed, processed → confirmed and provider → worker delays, at the replay's real slot times (profiles measured, adverse 2 + 6 slots + 1 s, stress 4 + 12 slots + 2 s with 30 s and 60 s blackouts);
 - blocked exits recorded as `blocked`, valued at the end of the escalation ladder or 0;
 - three scenarios: base, conservative (slippage × 1.5, p90 latency, close-based take-profit, no rent recovery) and optimistic. **Promotion uses conservative only.** The wick-versus-close choice alone moved one rule from −20.5% to +0.5% per trade.
 - An audit sample logs a real Jupiter quote at the simulated fill moment to keep the model honest.
@@ -487,7 +490,9 @@ Proofs (both required, in CI):
 - **Our order is inserted into the real trade sequence** at its landing slot after the modelled latency, placed after every real trade in that slot (conservative), and later trades see the reserves our trade changed.
 - Fills use the exact integer quote math (CORE-2) and the §11 paper fill model: landing probability, failed-attempt fees, blockhash expiry, blocked exits, three scenarios.
 - Discovery delay is modelled too (our measured feed lag), so the engine learns of a token when the live bot would have.
-- Output: the decision log, simulated fills and the ledger, then labels from the separate scoring stage, then the gate report from STATS-1.
+- Output: the decision log, simulated fills and the ledger, then labels from the separate scoring stage, then the gate report from STATS-1. G0 in the report is STATS-1's `gateG0`; inputs a run does not measure read "not run".
+- Money (BT-1c): USD flows are converted at each flow's own time (entry leg at entry, exit leg at exit) and SOL results are reported apart; the bankroll and ops reserve are marked to market; results give the mean per filled trade and the all-in expectancy with every failed attempt's fees, daily returns for G1/G2 include those fees, and hosting is a separate line with the break-even net per trade.
+- Holdout runs only as registered (BT-1c): the research config's window ([09-22, 10-21) UTC, entries before the 10-20 cutoff, then the tail) and a configuration id (strategy, policy, fill model with scenario and seed, research settings, code including untracked files, dataset) are registered in the STATS-1 registry before the run; anything else, any overlap with a started window and any research run over holdout days is refused; a start record is written first; a failed or interrupted run burns the holdout; the registry lives on the remote `holdout-registry` branch (fetched and compared before every command, every write pushed before the run goes on).
 
 ### 16.3 Inputs: live and historical
 
