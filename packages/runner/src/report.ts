@@ -1,6 +1,7 @@
 // The dry-run report: uptime, memory, journal, drills, recorded data. Pure; the runner feeds it.
 import type { Item4 } from './item4.ts';
 import type { JournalReport } from './journal.ts';
+import type { CoverageReport, LookupLatency, QuotaReport, Rejections } from './quota.ts';
 import type { Drill } from './plan.ts';
 
 export type Label = 'rehearsal' | 'vps';
@@ -23,6 +24,21 @@ export interface Sample {
   /** Feed names the worker reported, sorted and comma-joined; fixed for the whole run. */
   readonly feeds: string | null;
   readonly feeds_down: readonly string[];
+  readonly exit_capable?: boolean;
+  /** Mark of the open position, decimal string. */
+  readonly mark?: string | null;
+}
+
+/** Unprotected exposure of a restart drill with an open position: the watchdog can alert but cannot sell. */
+export interface Exposure {
+  /** Kill → the new boot is exit capable; null when it never got there within the recovery limit. */
+  readonly duration_ms: number | null;
+  readonly reconciled_ms: number | null;
+  readonly mark_before: string | null;
+  readonly mark_after: string | null;
+  /** Worst price move over the window, basis points: from the two marks, or the worker's chain rebuild if worse. */
+  readonly worst_move_bps: number | null;
+  readonly move_source: 'marks' | 'chain';
 }
 
 export interface DrillOutcome {
@@ -33,6 +49,7 @@ export interface DrillOutcome {
   readonly pass: boolean;
   readonly midTrade?: boolean;
   readonly recoveredMs?: number | null;
+  readonly exposure?: Exposure;
   readonly feed?: string;
   readonly notes: readonly string[];
 }
@@ -86,6 +103,15 @@ export interface Report {
   readonly pass: boolean;
   /** §15 item 4, judged separately from the same run. */
   readonly item4: Item4;
+  readonly ops: Ops;
+  readonly exposure: { readonly drills: number; readonly worst_duration_ms: number | null; readonly worst_move_bps: number | null };
+}
+
+export interface Ops {
+  readonly quota: QuotaReport;
+  readonly lookups: LookupLatency;
+  readonly coverage: CoverageReport;
+  readonly rejections: Rejections;
 }
 
 /** systemd MemoryMax of the worker unit (OPS-1a). */
@@ -122,6 +148,7 @@ export const buildReport = (
   drills: readonly DrillOutcome[],
   recorded: readonly RecordedFile[],
   item4: Item4,
+  ops: Ops,
 ): Report => {
   const up = uptime(samples, sampleMs, meta.startedAt, endedAt);
   const rss = samples.flatMap((s) => (s.rss_bytes === null ? [] : [s.rss_bytes / MB])).sort((a, b) => a - b);
@@ -146,7 +173,14 @@ export const buildReport = (
     one_commit: commits.length === 1 && commits[0] === meta.commit,
     feeds_fixed: upSamples.every((s) => s.feeds === feedsPlanned.slice().sort().join(',')),
     real_worker: !stub,
+    // RUN-1c: the free plans must last the month, and exits and position monitoring (P0, P1) are never shed.
+    quota_reported: ops.quota.reported,
+    quota_within_free_tier: ops.quota.within_free_tier,
+    exit_capacity_never_shed: ops.quota.reported && ops.quota.exit_capacity_shed === 0,
+    exposure_measured: drills.every((d) => d.exposure === undefined || d.exposure.duration_ms !== null),
   };
+  const exposed = drills.flatMap((d) => (d.exposure ? [d.exposure] : []));
+  const maxOf = (xs: readonly (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);
   return {
     runId: meta.runId,
     label: meta.label,
@@ -178,6 +212,8 @@ export const buildReport = (
     checks,
     pass: Object.values(checks).every(Boolean),
     item4,
+    ops,
+    exposure: { drills: exposed.length, worst_duration_ms: maxOf(exposed.map((e) => e.duration_ms)), worst_move_bps: maxOf(exposed.map((e) => e.worst_move_bps)) },
   };
 };
 
@@ -219,6 +255,36 @@ export const reportMarkdown = (r: Report): string => {
         } | ${yes(d.pass)} | ${d.notes.join('; ').replace(/\|/g, '/')} |`,
     ),
   ];
+  const q = r.ops.quota;
+  lines.push(
+    '',
+    '## Quota and coverage',
+    '',
+    '| Provider | Credits used | P0 / P1 / P2 / P3 | Projected month | Free plan | Shed P0 / P1 |',
+    '| --- | --- | --- | --- | --- | --- |',
+    ...q.providers.map(
+      (p) =>
+        `| ${p.provider} | ${p.credits_used} | ${p.credits_by_class.join(' / ')} | ${p.projected_monthly ?? '-'} | ${p.monthly_credits === null ? 'rate only' : `${p.monthly_credits} (${p.within_free_tier ? 'fits' : 'EXCEEDED'})`} | ${p.shed[0]} / ${p.shed[1]} |`,
+    ),
+    '',
+    `Historical lookups: ${r.ops.lookups.count}, median ≤ ${r.ops.lookups.p50_ms_at_most ?? '-'} ms, p95 ≤ ${r.ops.lookups.p95_ms_at_most ?? '-'} ms, ${r.ops.lookups.slower_than_last_bound} slower than the last bucket.`,
+    '',
+    `Coverage gaps: ${Object.entries(r.ops.coverage).map(([k, v]) => `${k} ${v.gaps} (${v.open} open, ${v.total_s} s total, longest ${v.longest_s} s)`).join('; ') || 'none'}.`,
+    '',
+    `Rejections: ${r.ops.rejections.rejected} of ${r.ops.rejections.decisions} decisions; H16 not-covered ${r.ops.rejections.h16_not_covered.count} (${(r.ops.rejections.h16_not_covered.rate * 100).toFixed(2)}%).`,
+    ...Object.entries(r.ops.rejections.by_reason).map(([k, v]) => `- ${k}: ${v.count} (${(v.rate * 100).toFixed(2)}%)`),
+    '',
+    '## Unprotected exposure',
+    '',
+    r.exposure.drills === 0
+      ? 'No restart drill had an open position.'
+      : `${r.exposure.drills} restart drills with an open position. Longest time from kill to exit capable: ${r.exposure.worst_duration_ms === null ? 'not reached' : `${(r.exposure.worst_duration_ms / 1000).toFixed(1)} s`}. Worst price move in that window: ${r.exposure.worst_move_bps === null ? 'not measured' : `${r.exposure.worst_move_bps} bps`}.`,
+    ...r.drills.flatMap((d) =>
+      d.exposure
+        ? [`- ${d.id}: ${d.exposure.duration_ms === null ? 'not exit capable in time' : `${(d.exposure.duration_ms / 1000).toFixed(1)} s`} unprotected, reconciled after ${d.exposure.reconciled_ms === null ? '-' : `${(d.exposure.reconciled_ms / 1000).toFixed(1)} s`}, worst move ${d.exposure.worst_move_bps ?? '-'} bps (${d.exposure.move_source})`]
+        : [],
+    ),
+  );
   const i4 = r.item4;
   const pts = (x: number | null): string => (x === null ? '-' : `${x} pts`);
   lines.push(

@@ -48,6 +48,22 @@ export interface FeedHealth {
   readonly dropped_by_drill: boolean;
 }
 
+/** One provider's scheduler (FEED-1's SchedulerStatus plus credits by class and the plan's monthly budget). Counters start at 0 each boot. */
+export interface QuotaStatus {
+  readonly provider: string;
+  readonly credits_used: number;
+  /** Credits by class P0..P3; they sum to credits_used. */
+  readonly credits_by_class: readonly [number, number, number, number];
+  /** The free plan's monthly credits (Helius credits, Alchemy compute units); null for rate-only providers. */
+  readonly monthly_credits: number | null;
+  readonly granted: readonly [number, number, number, number];
+  readonly shed: readonly [number, number, number, number];
+  readonly halted: boolean;
+}
+
+/** Bucket upper bounds (ms) of the historical-lookup latency histogram; the last bucket is everything slower. */
+export const LOOKUP_BOUNDS_MS = [25, 50, 100, 200, 400, 800, 1600, 3200, 6400] as const;
+
 /** GET /health. The heartbeat fields of docs/research/security.md §5.2 plus what the runner measures. */
 export interface Health {
   readonly seq: number;
@@ -56,7 +72,8 @@ export interface Health {
   readonly policy_version: string;
   readonly last_processed_slot: number | null;
   readonly feed_ages_ms: Readonly<Record<string, number | null>>;
-  readonly open_position: { readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string } | null;
+  /** `mark`: the latest price the worker values the position at, decimal string in the same unit as entry. */
+  readonly open_position: { readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string; readonly mark: string } | null;
   readonly unresolved_intents: { readonly count: number; readonly oldest_age_s: number | null };
   readonly signer: string;
   readonly lease_epoch: number | null;
@@ -70,6 +87,11 @@ export interface Health {
   readonly recorder: 'on' | 'off';
   readonly simulation: 'on' | 'off';
   readonly reconciled: boolean;
+  /** Reconciled, an exit quote source and a landing path are up: an exit could be sent now (paper: simulated). */
+  readonly exit_capable: boolean;
+  readonly quota: readonly QuotaStatus[];
+  /** Historical lookups since boot: counts per LOOKUP_BOUNDS_MS bucket (length bounds + 1). */
+  readonly lookups: { readonly counts: readonly number[] };
   readonly entries_halted: boolean;
   readonly halt_reasons: readonly string[];
   readonly feeds: Readonly<Record<string, FeedHealth>>;
@@ -80,7 +102,11 @@ export interface Health {
 }
 
 export type JournalKind =
-  | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair';
+  | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair'
+  /** A closed (or, at stop, still open) coverage gap of a discovery stream: stream, from_ts, to_ts (null if open), reason. */
+  | 'coverage_gap'
+  /** After a restart with an open position: the worst price move over the down window, rebuilt from chain history. */
+  | 'exposure';
 
 /** One line of journal.jsonl. Written with a synchronous append per line, so a crash can tear only the last line. */
 export interface JournalLine {

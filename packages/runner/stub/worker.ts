@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { basename, join } from 'node:path';
-import { DEFAULT_HEALTH_ADDR, EXIT, isLoopback, SECRET_NAMES, STATE_FILES, type FeedHealth, type Health, type JournalKind } from '../src/contract.ts';
+import { DEFAULT_HEALTH_ADDR, EXIT, isLoopback, SECRET_NAMES, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus } from '../src/contract.ts';
 
 const env = process.env;
 const fail = (code: number, msg: string): never => {
@@ -73,6 +73,7 @@ if (process.argv.includes('--reconcile')) {
 // Journal: repair a torn last line left by a kill, then continue the sequence.
 let seq = 0;
 let repaired = false;
+let lastTs: string | null = null;
 if (existsSync(journalPath)) {
   const text = readFileSync(journalPath, 'utf8');
   const lines = text.split('\n');
@@ -90,7 +91,7 @@ if (existsSync(journalPath)) {
   }
   if (repaired) truncateSync(journalPath, Buffer.byteLength(text.slice(0, keep)));
   const lastGood = lines[lines.length - 1];
-  if (lastGood !== undefined) seq = (JSON.parse(lastGood) as { seq: number }).seq;
+  if (lastGood !== undefined) ({ seq, ts: lastTs } = JSON.parse(lastGood) as { seq: number; ts: string });
 }
 const boot = `${Date.now().toString(36)}-${process.pid}`;
 const journal = (kind: JournalKind, fields: Record<string, unknown> = {}): void => {
@@ -111,10 +112,18 @@ state.intent = null;
 saveState(state);
 writeFileSync(join(stateDir, STATE_FILES.openIntents), '0\n');
 journal('reconcile', { ok: true, settled: settled ? `${settled.leg} of ${settled.trade}` : null, open_position: state.position?.trade ?? null });
+// Back with a position open: the down window's worst move, as WORKER-1 rebuilds it from chain history (stub: flat).
+if (state.position && lastTs !== null) journal('exposure', { trade: state.position.trade, from_ts: lastTs, to_ts: new Date().toISOString(), worst_move_bps: 0 });
+const bootAt = Date.now();
+// Exit capable a little after reconcile (test hook), so the runner's exposure measure has a window to see.
+const exitDelayMs = Number(env['ZEROED_STUB_EXIT_DELAY_MS'] ?? 0);
+const creditsPerS = Number(env['ZEROED_STUB_CREDITS_PER_S'] ?? 0.1);
+const lookupCounts = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const STREAM: Record<string, string> = { pumpportal: 'creates', 'helius-ws': 'trades', 'alchemy-ws': 'rugs' };
 
 // Feeds.
 const FEEDS: Record<string, { critical: boolean }> = { pumpportal: { critical: true }, 'helius-ws': { critical: true }, 'alchemy-ws': { critical: false } };
-const feeds = new Map(Object.keys(FEEDS).map((n) => [n, { last: null as number | null, downUntil: 0 }]));
+const feeds = new Map(Object.keys(FEEDS).map((n) => [n, { last: null as number | null, downUntil: 0, downFrom: 0 }]));
 const recorderPath = join(stateDir, STATE_FILES.recorder, `${boot}.jsonl`);
 let slot = 0;
 let halted = false;
@@ -134,9 +143,11 @@ const tick = (): void => {
   for (const [name, f] of feeds) {
     if (f.downUntil > now) continue;
     if (f.downUntil !== 0) {
+      journal('coverage_gap', { stream: STREAM[name], from_ts: new Date(f.downFrom).toISOString(), to_ts: new Date(now).toISOString(), reason: 'disconnect' });
       f.downUntil = 0;
       journal('feed', { feed: name, connected: true });
     }
+    lookupCounts[slot % 3]! += 1;
     f.last = now;
     if (recorderOn) appendFileSync(recorderPath, `${JSON.stringify({ source: name, receivedAt: now, slot, kind: 'stub' })}\n`);
   }
@@ -153,7 +164,11 @@ const tick = (): void => {
   const phase = tradeTimer % cycleMs;
   if (!state.position && phase < tickMs) {
     if (halted) {
-      journal('decision', { action: 'skip', reasons: ['entries halted: ' + haltReasons(now).join(', ')] });
+      journal('decision', {
+        action: 'skip',
+        reasons: ['entries halted: ' + haltReasons(now).join(', ')],
+        gate_reasons: [{ gate: 'H16', code: 'not-covered', detail: 'stub: discovery stream down' }],
+      });
     } else {
       state.trades += 1;
       const trade = `${boot}-t${state.trades}`;
@@ -181,6 +196,14 @@ const tick = (): void => {
 const drillToken = randomBytes(16).toString('hex');
 if (drillsOn) writeFileSync(join(stateDir, STATE_FILES.drillToken), drillToken, { mode: 0o600 });
 
+const quota = (now: number): QuotaStatus[] => {
+  const used = ((now - bootAt) / 1000) * creditsPerS;
+  return [
+    { provider: 'helius', credits_used: used, credits_by_class: [used * 0.1, used * 0.4, used * 0.3, used * 0.2], monthly_credits: 1_000_000, granted: [1, 1, 1, 1], shed: [0, 0, 0, 0], halted: false },
+    { provider: 'jupiter', credits_used: 0, credits_by_class: [0, 0, 0, 0], monthly_credits: null, granted: [0, 0, 0, 0], shed: [0, 0, 0, 0], halted: false },
+  ];
+};
+
 const health = (): Health => {
   const now = Date.now();
   const feedHealth: Record<string, FeedHealth> = {};
@@ -197,7 +220,7 @@ const health = (): Health => {
     policy_version: 'stub',
     last_processed_slot: slot,
     feed_ages_ms: ages,
-    open_position: state.position ? { mint: 'stub', qty: '1', entry: '1', stop: '0.9' } : null,
+    open_position: state.position ? { mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1' } : null,
     unresolved_intents: { count: state.intent ? 1 : 0, oldest_age_s: state.intent ? 0 : null },
     signer: 'none',
     lease_epoch: null,
@@ -211,6 +234,9 @@ const health = (): Health => {
     recorder: recorderOn ? 'on' : 'off',
     simulation: simulationOn ? 'on' : 'off',
     reconciled: true,
+    exit_capable: now - bootAt >= exitDelayMs,
+    quota: quota(now),
+    lookups: { counts: lookupCounts },
     entries_halted: halted,
     halt_reasons: haltReasons(now),
     feeds: feedHealth,
@@ -240,6 +266,7 @@ const server = createServer((req, res) => {
         return;
       }
       f.downUntil = Date.now() + ms;
+      f.downFrom = Date.now();
       journal('feed', { feed, connected: false, cause: 'drill' });
       res.writeHead(202).end();
     });
