@@ -9,6 +9,7 @@ import type { Extension } from '../chain/token.ts';
 import type { Quote } from '../amm/fees.ts';
 import type { PolicySession } from '../config/session.ts';
 import type { Policy } from '../config/policy.ts';
+import { RUG_CHECK_CONFIG, type RugCheckConfig } from '../config/rugs.ts';
 import { ROUND_TRIP_ROUNDING_LAMPORTS, type RoundTrip } from '../costs/index.ts';
 import { isMint } from '../domain/index.ts';
 import { BPS_DENOMINATOR, type Lamports, type MicroUsd, lamportsToMicroUsd } from '../units/index.ts';
@@ -20,6 +21,7 @@ import {
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
 } from './facts.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
+import { deployerCheckCovers, parseRugCheck, rugCheckKey } from './deployer-check.ts';
 import type { AsOfEntry } from '../engine/asof.ts';
 import type { Commitment } from '../domain/index.ts';
 import { type Concentration, concentration, mintAccounts, ownerBalance, shareBps } from './holders.ts';
@@ -53,6 +55,8 @@ export interface GateDeps {
    * H16 `not-covered` (neededBy H14): no labels is never read as zero rugs.
    */
   readonly rugLabeller?: 'RUG-1';
+  /** Limits for accepting an on-demand deployer check (RUG-1c); the shipped config when not given. */
+  readonly rugCheck?: RugCheckConfig;
 }
 
 export const RUG_LABELS_UNAVAILABLE = 'rug labels unavailable (no reviewed labeller; RUG-1)';
@@ -79,6 +83,7 @@ interface Env {
   readonly history: GateContext['history'];
   readonly deployers: GateContext['deployers'];
   readonly rugLabeller: GateDeps['rugLabeller'];
+  readonly rugCheck: RugCheckConfig;
   readonly policy: Policy;
   readonly mode: Mode;
   readonly req: GateRequest;
@@ -412,14 +417,23 @@ const h14 = (env: Env): Outcome => {
     return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: RUG_LABELS_UNAVAILABLE }] };
   }
   const rugCov = createsCoverage(env.history, env.ev.now, now - lookback, 'rugs');
+  // Without stream coverage, an on-demand check of this deployer (RUG-1c) can cover its rug half alone.
+  let checked: readonly string[] = [];
   if (!rugCov.covered) {
-    return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}` }] };
+    const chk = env.ev.read('rug-check', rugCheckKey(cr.fact.creator), parseRugCheck, 'event', 'H14');
+    const prior = d.fact.mints.filter((m) => m.mint !== env.req.mint && m.createdAtMs >= now - lookback).map((m) => m.mint);
+    const cover = chk.ok ? deployerCheckCovers(chk.fact, cr.fact.creator, prior, now - lookback, env.ev.now, env.rugCheck) : null;
+    if (cover === null || !cover.covered) {
+      const why = cover === null ? (chk.ok ? '' : chk.reason.detail) : cover.covered ? '' : cover.detail;
+      return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}; deployer check: ${why}` }] };
+    }
+    checked = cover.rugs;
   }
   const unjudged = (d.fact.unjudged ?? []).filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
   if (unjudged.length > 0) {
     return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'deployer', neededBy: 'H14', detail: `${env.rugLabeller} could not judge ${unjudged.join(', ')} by ${cr.fact.creator}` }] };
   }
-  const rugs = d.fact.rugs.filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
+  const rugs = [...new Set([...d.fact.rugs.filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint), ...checked])].sort();
   if (rugs.length > 0) reasons.push({ gate: 'H14', code: 'prior-rug', input: 'deployer', detail: `${cr.fact.creator} rugged ${rugs.join(', ')} within ${g.deployerRugLookbackDays} days`, value: String(rugs.length), limit: '0' });
   return { reasons };
 };
@@ -513,7 +527,7 @@ export const evaluateHardRejects = (ctx: GateContext, deps: GateDeps, req: GateR
   if (!deps.session.running) return fail('policy-session-ended', 'the policy session has ended; start a new session');
   const problem = requestProblem(req);
   if (problem !== null) return fail('bad-request', problem);
-  const env: Env = { ev: new Evidence(ctx, deps.session.policy), history: (k, f, t) => ctx.history(k, f, t), deployers: ctx.deployers, rugLabeller: deps.rugLabeller, policy: deps.session.policy, mode: deps.mode, req, memo: new Map() };
+  const env: Env = { ev: new Evidence(ctx, deps.session.policy), history: (k, f, t) => ctx.history(k, f, t), deployers: ctx.deployers, rugLabeller: deps.rugLabeller, rugCheck: deps.rugCheck ?? RUG_CHECK_CONFIG, policy: deps.session.policy, mode: deps.mode, req, memo: new Map() };
   const evaluated: HardGate[] = [];
   const passed: HardGate[] = [];
   const failed: HardGate[] = [];

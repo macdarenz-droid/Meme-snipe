@@ -2,9 +2,10 @@
 import { describe, expect, it } from 'vitest';
 import { AsOfStore, OFF_CHAIN, SimClock, leakTest, replayOnce, type FeedEvent, type MarketEvent, type Moment, type ProofRun, type Strategy } from '../../src/engine/index.ts';
 import {
-  DAY_MS, DeployerIndex, HOUR_MS, createKey, createsCoverage, deployerKey, evaluateHardRejects, evaluateSoftFeatures, type GateContext, type GateReason, type HardGate,
+  DAY_MS, DeployerIndex, HOUR_MS, createKey, rugCheckKey, type RugCheckFact, createsCoverage, deployerKey, evaluateHardRejects, evaluateSoftFeatures, type GateContext, type GateReason, type HardGate,
 } from '../../src/gates/index.ts';
 import { CONFIG } from '../fixtures.ts';
+import { RUG_CHECK_CONFIG } from '../../src/config/index.ts';
 import { CREATED_AT, DEV, MINT, NOW, SLOT, T, W, deps, drop, passingFacts, request, session, type Facts } from './world.ts';
 
 const at = (receivedAt: number, slot: bigint, ix = OFF_CHAIN): Moment => ({ slot, txIndex: ix, ixIndex: ix, receivedAt });
@@ -273,6 +274,69 @@ describe('rug labels unavailable (RUG-1 review: not covered, never zero rugs)', 
     expect(f({ ...m, txIndex: 4 }).unjudged).toEqual([]);
     expect(f(m).rugs).toEqual([{ mint: 'Old', knownAtMs: T - HOUR_MS }]);
     expect(f(m).unjudged).toEqual([{ mint: 'U', knownAtMs: T - HOUR_MS }]);
+  });
+});
+
+describe('on-demand deployer check (RUG-1c)', () => {
+  const notCovered = (r: { reasons: readonly GateReason[] }) => r.reasons.filter((x) => x.gate === 'H16' && x.neededBy === 'H14');
+  const noStream = drop(drop(passingFacts(), deployerKey(DEV)), 'coverage:rugs:start');
+  const withPrior = () => {
+    const idx = started();
+    idx.observe(marketOf('logs:pump:CreateEvent:P1', createEvent('P1', DEV, T - 3 * DAY_MS, SLOT - 600_000n), old(3)));
+    return idx;
+  };
+  const check = (over: Partial<RugCheckFact> = {}, mints: RugCheckFact['mints'] = [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'clear', detail: '' }]): Row =>
+    [rugCheckKey(DEV), wrap({ obs: { provider: 'rug-check', slot: SLOT - 10n, receivedAt: T - 1_000, quality: [], commitment: 'confirmed' }, creator: DEV, version: 'rug-check-1', fromMs: T - 14 * DAY_MS, asOfMs: T - 5_000, mints, credits: 7, ...over }), at(T - 1_000, SLOT - 10n)];
+  const h = (rows: Row[], idx = withPrior()) => evaluateHardRejects(contextWith(rows, noStream, NOW, idx), deps('live'), request(), { stopAtFirst: false });
+
+  it('without stream coverage or a check, H14 is not covered', () => {
+    expect(notCovered(h([]))).toEqual([expect.objectContaining({ detail: expect.stringContaining('deployer check: no rug-check') })]);
+  });
+
+  it('a fresh, complete check covers the deployer: clear and open pass, a rug rejects', () => {
+    const ok = h([check()]);
+    expect(notCovered(ok)).toEqual([]);
+    expect(ok.passed).toContain('H14');
+    const open = h([check({}, [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'open', detail: '' }])]);
+    expect(notCovered(open)).toEqual([]);
+    expect(open.reasons.filter((x) => x.code === 'prior-rug')).toEqual([]);
+    const rug = h([check({}, [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'rug', detail: 'collapse' }])]);
+    expect(rug.reasons).toContainEqual(expect.objectContaining({ gate: 'H14', code: 'prior-rug', detail: expect.stringContaining('P1') }));
+  });
+
+  it('a check that missed, could not read or could not judge a prior mint is not coverage', () => {
+    expect(notCovered(h([check({}, [])]))).toEqual([expect.objectContaining({ detail: expect.stringContaining('did not list P1') })]);
+    for (const status of ['unfetched', 'unjudged'] as const) {
+      expect(notCovered(h([check({}, [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status, detail: 'x' }])]))).toHaveLength(1);
+    }
+  });
+
+  it('a check for another deployer, from after the look-back start, too old, or in the future is not coverage', () => {
+    expect(notCovered(h([check({ creator: W(9) })]))).toHaveLength(1);
+    expect(notCovered(h([check({ fromMs: T - 14 * DAY_MS + 1 })]))).toHaveLength(1);
+    expect(notCovered(h([check({ fromMs: T - 14 * DAY_MS - 1 })]))).toEqual([]);
+    const lag = RUG_CHECK_CONFIG.maxLagSlots;
+    const at = (slot: bigint) => check({ obs: { provider: 'rug-check', slot, receivedAt: T - 1_000, quality: [], commitment: 'confirmed' } });
+    expect(notCovered(h([at(SLOT - BigInt(lag))]))).toEqual([]);
+    expect(notCovered(h([at(SLOT - BigInt(lag) - 1n)]))).toHaveLength(1);
+    expect(notCovered(h([at(SLOT + 1n)]))).toHaveLength(1);
+  });
+
+  it('a check at processed commitment or in another shape is refused', () => {
+    expect(notCovered(h([check({ obs: { provider: 'rug-check', slot: SLOT - 10n, receivedAt: T - 1_000, quality: [], commitment: 'processed' } })]))).toHaveLength(1);
+    expect(notCovered(h([[rugCheckKey(DEV), wrap({ creator: DEV }), at(T - 1_000, SLOT - 10n)]]))).toHaveLength(1);
+  });
+
+  it('the check needs neither the candidate itself nor mints from before the look-back', () => {
+    const idx = withPrior();
+    idx.observe(marketOf(`logs:pump:CreateEvent:${MINT}`, createEvent(MINT, DEV, CREATED_AT, SLOT - 20_000n), at(CREATED_AT, SLOT - 20_000n)));
+    idx.observe(marketOf('logs:pump:CreateEvent:Old', createEvent('Old', DEV, T - 15 * DAY_MS, SLOT - 3_240_000n), old(15)));
+    expect(notCovered(h([check()], idx))).toEqual([]);
+  });
+
+  it('the stream coverage, when present, is used and a check is not needed', () => {
+    const idx = withPrior();
+    expect(notCovered(evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps('live'), request(), { stopAtFirst: false }))).toEqual([]);
   });
 });
 

@@ -22,6 +22,32 @@ const VALUES: RugConfig = {
 
 export const RUG_CONFIG: RugConfig = deepFreeze(VALUES);
 
+/** The on-demand check of one deployer's prior mints (RUG-1c). Operational limits, versioned apart from the definition. */
+export interface RugCheckConfig {
+  readonly version: string;
+  /** RPC credits one candidate's check may use; past it, the mints not yet read are unfetched (H14 not covered). */
+  readonly creditCapPerCandidate: number;
+  /** H14 accepts a check at most this many slots behind the decision. */
+  readonly maxLagSlots: number;
+}
+
+const CHECK_VALUES: RugCheckConfig = {
+  version: 'rug-check-1',
+  creditCapPerCandidate: 2_000,
+  maxLagSlots: 150,
+};
+
+export const RUG_CHECK_CONFIG: RugCheckConfig = deepFreeze(CHECK_VALUES);
+
+/** Problems with a rug check config; empty when it is usable. */
+export const rugCheckConfigIssues = (c: RugCheckConfig): string[] => {
+  const issues: string[] = [];
+  if (typeof c.version !== 'string' || c.version.length === 0) issues.push('version must be a non-empty string');
+  if (!Number.isSafeInteger(c.creditCapPerCandidate) || c.creditCapPerCandidate < 1) issues.push('creditCapPerCandidate must be a positive integer');
+  if (!Number.isSafeInteger(c.maxLagSlots) || c.maxLagSlots < 0) issues.push('maxLagSlots must be a non-negative integer');
+  return issues;
+};
+
 /** Problems with a rug config; empty when it is usable. */
 export const rugConfigIssues = (c: RugConfig): string[] => {
   const issues: string[] = [];
