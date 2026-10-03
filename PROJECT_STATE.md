@@ -12,13 +12,24 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Research and architecture (in progress).
+Research finishing; build started on the parts that do not depend on it.
 
 ## Done
 - Owner rules copied into `AGENTS.md`; the starting brief is `docs/ARCHITECTURE.md`.
 - TypeScript workspace (pnpm, TypeScript 7, Vitest 5).
 - Brand files and guide (`brand/`, `docs/BRAND.md`).
 - AUD funding route researched.
+
+## Board
+Builders run as separate sessions; the supervisor reviews and merges into `ccr-14987baf-i6lrsl`.
+
+| Task | What | Session | Model | State |
+|---|---|---|---|---|
+| CORE-1 | Domain types, order and position lifecycle | session_0156X5xPKiDDMBM7yAhZwoz1 | Opus 5.5 | building |
+| CORE-2 | AMM quotes (pump curve, PumpSwap), cost model, feasible size | session_01RasnmqVhMBTeGSsJxnSibs | Opus 5.5 | building |
+| WEB-1 | Dashboard shell, two themes, motion, copy guard | session_01Xbf2u9qDT5EPajdZtM3SPG | Opus 5.5 | building |
+| DOCS-1 | Architecture improved from research | — | Opus 5.5 | waiting on research |
+| Queued | Risk policy and sizing; evidence gates; exits; paper fills; stats and promotion gates; provider adapters and quota scheduler; ledger; paper worker; dashboard data screens; Deposit/Withdraw | — | — | after DOCS-1 |
 
 ## Next
 - Finish the research and a measured base-rate study of live Solana data.
