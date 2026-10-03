@@ -153,7 +153,10 @@ export class Market {
     this.#seriesAt = (opts.series ?? []).map(() => 0);
   }
 
-  /** All pools' real quote volume (lamports) per window: the market activity the network state's entry reads. */
+  /**
+   * All pools' real quote volume (lamports) per window, every window kept: the network state steps through each window
+   * from the one before's volume, so no window may read as zero once passed (one entry per active window, small).
+   */
   readonly #volume = new Map<bigint, bigint>();
 
   /** Market volume in window `win - 1` (complete when asked during `win`), lamports. */
@@ -164,7 +167,6 @@ export class Market {
   #tally(slot: bigint, lamports: bigint): void {
     const win = slot / BigInt(this.#opts.volumeWindowSlots);
     this.#volume.set(win, (this.#volume.get(win) ?? 0n) + lamports);
-    this.#volume.delete(win - 2n);
   }
 
   track(pool: string): PoolTrack | undefined {

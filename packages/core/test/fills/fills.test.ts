@@ -250,6 +250,14 @@ describe('stress in the fill model (BT-1c item 4)', () => {
       if (calm.congested(w)) q++;
     }
     expect(b).toBeGreaterThan(q);
+    // With varying activity, the state at w + k is the same whether or not the windows between were asked.
+    const vol = (w: bigint) => (w % 7n === 0n ? 10n ** 12n : 0n);
+    const every = new NetworkState('gap', c, vol);
+    const skip = new NetworkState('gap', c, vol);
+    every.congested(0n);
+    skip.congested(0n);
+    for (let w = 1n; w < 5_000n; w++) every.congested(w);
+    for (const w of [4_999n, 2_500n, 3n]) expect(skip.congested(w)).toBe(every.congested(w));
     let down = 0;
     for (let w = 0n; w < 50_000n; w++) if (providerDown('s', w, c)) down++;
     expect(Math.abs(down / 50_000 - Number(c.congestion.providerFailPpm) / 1e6)).toBeLessThan(0.005);

@@ -85,3 +85,19 @@ describe('regime boundaries', () => {
     expect(at(15)).toEqual([{ key: 'regime', slot: 15n }]);
   });
 });
+
+describe('market volume per window (BT-1c A1)', () => {
+  test('a window\'s volume reads the same at its boundary and long after, so the network chain never walks over zeros', async () => {
+    const { Market } = await import('../src/sim/market.ts');
+    const { syntheticRows } = await import('./synthetic.ts');
+    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {} });
+    const atBoundary = new Map<bigint, bigint>();
+    for (const r of syntheticRows({ mints: 4, slots: 2.5 * 3600 })) {
+      const win = r.slot / 150n;
+      if (!atBoundary.has(win)) atBoundary.set(win, market.volumeBefore(win));
+      market.release(r);
+    }
+    expect([...atBoundary.values()].filter((v) => v > 0n).length).toBeGreaterThan(10);
+    for (const [win, v] of atBoundary) expect(market.volumeBefore(win)).toBe(v);
+  });
+});
