@@ -67,7 +67,9 @@ export const evaluateSoftFeatures = (ctx: GateContext, deps: GateDeps, mint: str
     const now = ctx.now.receivedAt;
     const from = now - policy.gates.deployerRugLookbackDays * DAY_MS;
     features.push({ name: 'indexMints', value: String(dep.fact.mints.filter((m) => m.createdAtMs <= now && m.createdAtMs >= from).length) });
-    const rugCov = createsCoverage((k, f, t) => ctx.history(k, f, t), ctx.now, from, 'rugs');
+    const rugCov = deps.rugLabeller === undefined
+      ? { covered: false as const, detail: 'no reviewed labeller; RUG-1' }
+      : createsCoverage((k, f, t) => ctx.history(k, f, t), ctx.now, from, 'rugs');
     features.push(rugCov.covered
       ? { name: 'indexRugs', value: String(dep.fact.rugs.filter((r) => r.knownAtMs <= now && r.knownAtMs >= from).length) }
       : { name: 'indexRugs', value: null, note: `rug labels unavailable: ${rugCov.detail}` });

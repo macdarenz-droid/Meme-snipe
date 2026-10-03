@@ -38,11 +38,18 @@ export const createOf = (v: unknown): { readonly mint: string; readonly creator:
 export class DeployerIndex {
   readonly #mints = new Map<string, Map<string, number>>();
   readonly #rugs = new Map<string, Map<string, number>>();
+  /** Watches that carry the creates stream (the `via` of every `coverage:creates:start`). */
+  readonly #createVias = new Set<string>();
+  /** Log reads that may have lost a create, by signature: when seen and on which watch. Cleared by the fetched transaction. */
+  readonly #lost = new Map<string, { readonly atMs: number; readonly via: string }>();
+  #first: Moment | null = null;
   #last: Moment | null = null;
 
   /** Feed every released market event here, in release order. Unrelated events are ignored. */
   observe(e: MarketEvent): void {
+    this.#first ??= e.moment;
     this.#last = e.moment;
+    this.#trackLoss(e);
     if (e.key.startsWith(LOG_CREATE_PREFIX) || e.key.startsWith(TX_CREATE_PREFIX)) {
       const c = createOf(e.value);
       if (c === null) return;
@@ -62,8 +69,43 @@ export class DeployerIndex {
     }
   }
 
-  /** The deployer fact as of `now`: entries dated after now are left out. Coverage is judged separately (`createsCoverage`). */
+  /**
+   * FEED-1 marks a cut log (`truncated`) and emits `logs:truncated:<via>` or `logs:undecodable:<via>`: a create in it
+   * may be lost. Each stays a hole in the creates stream until the fetched transaction (`ev:<signature>:…`) is released.
+   */
+  #trackLoss(e: MarketEvent): void {
+    const v = payload(e.value);
+    if (e.key === 'coverage:creates:start' && v !== null && typeof v['via'] === 'string') this.#createVias.add(v['via']);
+    if (e.id.startsWith('ev:')) {
+      const sig = e.id.slice(3).split(':')[0];
+      if (sig !== undefined) this.#lost.delete(sig);
+      return;
+    }
+    const o = isObj(e.value) ? e.value : null;
+    if (o === null || typeof o['signature'] !== 'string') return;
+    const cut = e.key.startsWith('logs:truncated:') || e.key.startsWith('logs:undecodable:') || (e.key.startsWith('logs:') && o['truncated'] === true);
+    if (!cut) return;
+    const via = typeof o['via'] === 'string' ? o['via'] : e.key.startsWith('logs:truncated:') ? e.key.slice('logs:truncated:'.length) : e.key.slice('logs:undecodable:'.length);
+    if (!this.#lost.has(o['signature'])) this.#lost.set(o['signature'], { atMs: e.moment.receivedAt, via });
+  }
+
+  /** The first cut or undecodable creates log since `fromMs` whose transaction has not been fetched, or null. */
+  lostCreate(fromMs: number, now: Moment): { readonly signature: string; readonly atMs: number; readonly via: string } | null {
+    let found: { signature: string; atMs: number; via: string } | null = null;
+    for (const [signature, l] of this.#lost) {
+      if (!this.#createVias.has(l.via) || l.atMs < fromMs || l.atMs > now.receivedAt) continue;
+      if (found === null || l.atMs < found.atMs || (l.atMs === found.atMs && signature < found.signature)) found = { signature, ...l };
+    }
+    return found;
+  }
+
+  /**
+   * The deployer fact as of `now`: entries dated after now are left out. `coverageFromMs` is the later of the stream's
+   * coverage and this index's own first event: an index started mid-run (a restart) has not seen what came before.
+   */
   factFor(creator: string, now: Moment, coverageFromMs: number): DeployerFact {
+    const own = this.#first === null || this.#first.receivedAt > now.receivedAt ? Number.MAX_SAFE_INTEGER : this.#first.receivedAt;
+    coverageFromMs = Math.max(coverageFromMs, own);
     const sorted = (m: Map<string, number> | undefined) => [...(m ?? new Map<string, number>())].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     return {
       obs: { provider: 'deployer-index', slot: now.slot, receivedAt: now.receivedAt, quality: [], commitment: 'confirmed' },
