@@ -11,7 +11,7 @@ Research and build date: 2026-10-03 (task DATA-1). This document covers which so
    - Each trade row carries its slot, block time, position in the block, signature, user, amounts, reserves, every fee, and the pool or curve balances recorded on-chain after the transaction.
    - That is enough to rebuild pool state before every trade and insert our own simulated order at any slot.
 3. **Universe:** a fixed hash sample of mints, decided by the mint address alone, so it cannot depend on outcomes.
-   - Launch, graduation and direct-pool universes, each with a 72-hour tape.
+   - Launch (72-hour tape), graduation and direct-pool (15-day tapes, covering the "aged 24 h to 14 days" universe U1).
    - An hourly census of every mint that traded, sampled or not.
 4. **Checks** (see Quality), on the first finished slice (2026-10-02 09:07 to 21:49 UTC):
    - PumpSwap reserves rebuilt from events equal the vault balances recorded on-chain after the transaction in 230,784 of 230,784 checks.
@@ -92,13 +92,13 @@ Fixed before looking at any outcome:
 - **Scanner sample:** every trade, liquidity event and failed trade of mints with `h < 0.25` is kept in the unit files. The dataset is cut from this, so its rates can be raised up to 25% without rescanning. Mints outside the sample still appear in the hourly census and in universe events.
 - **Dataset universes** (defaults, recorded in `manifest.json`):
   - `launch`: the token's `CreateEvent` is inside the scanned coverage and `h < 0.05`. Tape: creation to creation + 72 h.
-  - `grad`: the token's `CompletePumpAmmMigrationEvent` is inside the coverage and `h < 0.05`. Tape: creation (or coverage start) to graduation + 72 h.
-  - `direct_pool`: a PumpSwap pool created outside a migration is inside the coverage and `h(base mint) < 0.05`. Tape: pool creation to + 72 h.
+  - `grad`: the token's `CompletePumpAmmMigrationEvent` is inside the coverage and `h < 0.05`. Tape: creation (or coverage start) to graduation + 15 days.
+  - `direct_pool`: a PumpSwap pool created outside a migration is inside the coverage and `h(base mint) < 0.05`. Tape: pool creation to + 15 days.
   - The same hash threshold nests the universes: every sampled launch that graduates is also in `grad`.
 - **Fixed-age universe** ("every token that is 24 h old with at least the configured liquidity"): computed at backtest time from the hourly census, which has every traded mint's closing reserves each hour. Full tapes exist for the sampled 5% of those tokens.
 - **Use with care:**
   - The pre-graduation tape of `grad` tokens is conditioned on graduating. Do not use it for curve-phase strategies; use `launch` for those.
-  - Days within 72 h after the coverage starts are flagged `warm_up`: older tokens' creation is not in coverage, so the age-based universes are incomplete there.
+  - The first 14 days of coverage are flagged `warm_up` (the lead-in): older tokens' creation is not in coverage, so the age-based universes are incomplete there.
   - Tapes cut by the end of coverage are flagged `censored` in `mints.csv`.
 
 ## Dataset layout
@@ -132,12 +132,16 @@ Key columns:
 - **Schema 2 additions** (`manifest.schema` = 2):
   - Every event row has `outer_ix` (top-level instruction) and `inner_ix` (position in that instruction's inner list). These give the ordering key `(slot, tx_idx, outer_ix, inner_ix)` agreed with the chain decoders.
   - Trade rows carry `jito_tip`: lamports the transaction moved into the 8 Jito tip accounts, for bundle detection.
-- **Raw records** (`raw-NNN.jsonl.zst`, schema 2): one JSON line per pump/PumpSwap transaction, successful or failed, that touches a universe mint. A mint counts if it appears in the transaction's token balances or events, so plain transfers inside those transactions are included. Fields:
+- **Raw records** (`raw-NNN.jsonl.zst`, schema 2): one JSON line per transaction, successful or failed, that touches a universe mint (the mint appears in its token balances or events). Two kinds are included:
+  - every such pump or PumpSwap transaction;
+  - transactions outside those programs whose invoked programs are all basic token programs (System, Compute Budget, SPL Token, Token-2022, Associated Token, Memo), which are plain transfers, burns, mint-to, authority and extension changes.
+
+  Swaps of universe mints on other venues are counted per unit (`other_venue_txs`), not stored. They would add about 2.5× to the raw records, and Zeroed trades only pump and PumpSwap. Fields:
   - `slot`, `blockTime`, `txIndex`, `signature`, and `transaction` (base64 wire bytes: legacy, v0, or v1 per SIMD-0385, where the signatures follow the message);
   - `err` (null, or `{hex}` of the stored TransactionError bytes) and `mints`;
   - `meta`: fee, computeUnitsConsumed, pre/post balances, loadedAddresses, innerInstructions (data base64), logMessages, pre/post token balances.
 
-  This is the input of the shared decoder (`transactionEvents`), so live and backtest decode with the same code. Size is about 1.7 GB per day at the 5% sample, measured on 446 blocks.
+  This is the input of the shared decoder (`transactionEvents`), so live and backtest decode with the same code.
 
 ## Decisions
 
@@ -171,6 +175,15 @@ The backtest replays rows strictly in `(slot, tx_idx, outer_ix, inner_ix)` order
 - each day must pass `qa/check.mjs --strict` (live checks included) and a determinism rescan of one unit with identical file hashes before it is published to release `data-days`, as split tar parts plus `SHA256SUMS-<day>` and the QA report;
 - `mode=assemble` builds the multi-day dataset from those assets and publishes release `data-<from>-<to>`;
 - expected pace is about 2 to 2.5 h per chain day at 80 MB/s (about 600 GB), so 30 days takes about 2.5 days unless the archive operators allow more.
+- **Window plan** (44 days = 14-day lead-in + 30 decision days; 1 Oct is the newest complete day, because epoch 1048, from 2 Oct 21:49 UTC, is not published yet):
+  - decision days: 2026-09-02 to 2026-10-01;
+  - lead-in: 2026-08-19 to 2026-09-01;
+  - scan order: 2026-10-02 (partial until epoch 1048 appears; a later run of that day adds the rest from the cache), then 2026-10-01 back to 2026-08-19, 45 days in all.
+- **Assembly** runs in windows of up to about 10 decision days: full units for window days, and only events and block rows for earlier days.
+- **Sizes against GitHub's release limits** (each asset under 2 GiB, at most 1,000 assets per release, no limit on total size or bandwidth; [GitHub docs](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)):
+  - Scanner units at the 5% sample are about 3.7 GB per chain day. This is extrapolated from one measured 446-block unit, so uncertain by roughly ±50% with the hour of day. About 165 GB for 45 days, as about 6 assets per day: tar parts under 1,900 MiB plus SHA256SUMS, QA report, QA JSON and manifest. About 270 assets in `data-days`. Fits.
+  - Each assembled window release uses 1,900 MB parts (`-part-mb 1900`), so it stays at dozens of assets.
+  - Most of the unit bytes belong to older sampled tokens that the universe rules then drop; the assembled datasets are smaller (not yet measured with 15-day tapes).
 
 ## Coverage
 
