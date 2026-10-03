@@ -65,8 +65,8 @@ describe('the swap stream of each watched pool', () => {
     const calls: string[] = [];
     let next = 1;
     const stream = {
-      watchLogs: (address: string, o: { priority: number; decodeLogs?: boolean; coverage?: string }) => {
-        calls.push(`watch ${address} P${o.priority} ${String(o.decodeLogs)} ${o.coverage}`);
+      watchLogs: (address: string, o: { priority: number; decodeLogs?: boolean; coverage?: string; commitment?: string }) => {
+        calls.push(`watch ${address} P${o.priority} ${String(o.decodeLogs)} ${o.coverage} ${o.commitment}`);
         return next++;
       },
       unwatch: (id: number, reason?: string) => void calls.push(`unwatch ${id} ${reason}`),
@@ -74,15 +74,15 @@ describe('the swap stream of each watched pool', () => {
     return { calls, stream };
   };
 
-  it('follows the list: a candidate at P3, a held pool at P1, dropped pools unwatched', () => {
+  it('follows the list at confirmed (POS-1: the pool state is built from these swaps): a candidate at P3, a held pool at P1, dropped pools unwatched', () => {
     const { calls, stream } = fake();
     let list = new Map([['poolA', { mint: 'mA', held: false }]]);
     const w = new PoolWatch({ stream, timers: new ManualTimers(0), pools: () => list, everyMs: 2_000 });
     w.sync();
-    expect(calls).toEqual([`watch poolA P${P3} true trades:poolA`]);
+    expect(calls).toEqual([`watch poolA P${P3} true trades:poolA confirmed`]);
     list = new Map([['poolA', { mint: 'mA', held: true }], ['poolB', { mint: 'mB', held: false }]]);
     w.sync();
-    expect(calls.slice(1)).toEqual(['unwatch 1 priority changed', `watch poolA P${P1} true trades:poolA`, `watch poolB P${P3} true trades:poolB`]);
+    expect(calls.slice(1)).toEqual(['unwatch 1 priority changed', `watch poolA P${P1} true trades:poolA confirmed`, `watch poolB P${P3} true trades:poolB confirmed`]);
     list = new Map();
     w.sync();
     expect(calls.slice(4)).toEqual(['unwatch 2 not watched', 'unwatch 3 not watched']);
@@ -100,7 +100,7 @@ describe('the swap stream of each watched pool', () => {
     expect(w.watching.size).toBe(0);
     refuse = false;
     w.sync();
-    expect(calls).toEqual([`watch poolA P${P3} true trades:poolA`]);
+    expect(calls).toEqual([`watch poolA P${P3} true trades:poolA confirmed`]);
     expect(w.watching.size).toBe(1);
   });
 });

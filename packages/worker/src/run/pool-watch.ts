@@ -1,5 +1,5 @@
 // The swap stream of every watched pool (WORKER-1): a logs watch on each candidate's and each open position's PumpSwap
-// pool, decoded from the log lines, named `trades:<pool>` (FACTS-1's stream name, for candles and coverage). The
+// pool, decoded from the log lines at confirmed, named `trades:<pool>` (FACTS-1's stream name, for candles and coverage). The
 // strategy reads the swaps for the pool's fee terms and EXIT-1's deployer-sell trigger. A position's pool is exit
 // traffic (P1); a candidate's is P3. Watches follow the strategy's list, re-read every `everyMs`.
 import { P1, P3, type Timers } from '../scheduler/index.ts';
@@ -58,7 +58,9 @@ export class PoolWatch {
     for (const [pool, { held }] of want) {
       if (this.#watching.has(pool)) continue;
       try {
-        const id = this.#o.stream.watchLogs(pool, { priority: held ? P1 : P3, decodeLogs: true, coverage: tradesStream(pool) });
+        // Confirmed (FACTS-1 STREAMS.trades): the producer builds the pool state from these swaps (POS-1) and never
+        // from processed ones, which can be rolled back.
+        const id = this.#o.stream.watchLogs(pool, { priority: held ? P1 : P3, decodeLogs: true, coverage: tradesStream(pool), commitment: 'confirmed' });
         this.#watching.set(pool, { id, held });
       } catch {
         // Refused (the provider's budget halt refuses new P3 watches): retried at the next sync.

@@ -9,13 +9,16 @@ import { PATHS } from '../../../apps/web/src/api/contract.ts';
 import { COMMANDS, route } from '../src/run/api.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
+/** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
+const HELD = { heldPoolFacts: true } as const;
+
 const ENDPOINTS: Exclude<Endpoint, 'calendar'>[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats'];
 
 describe('the app API (UI-2 contract)', () => {
   it('every endpoint of a worker with a closed paper trade and an open one passes the app\'s strict paper schema', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => { m.slot(); m.pool(); });
     await m.run(6_000, 400, () => { m.slot(); m.pool(700_000n); });
