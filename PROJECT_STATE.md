@@ -12,7 +12,7 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61), GATE-1f (#65), TX-1c (#63), FACTS-1 (#54), APP-2 (#43), EXIT-1b (#55), RISK-1b (#58), SIM-1 (#59), DATA-1 (#46), SEED-1 (#45), APP-2b (#67), FACTS-1c (#68), WORKER-1 (#48), BT-1c (#53), FILL-2 (#70), DATA-1b (#69), RUG-1c (#74), OPS-1e (#66). Scan run 1 (09-21 back to 09-14) started 8:42 AM.
+Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61), GATE-1f (#65), TX-1c (#63), FACTS-1 (#54), APP-2 (#43), EXIT-1b (#55), RISK-1b (#58), SIM-1 (#59), DATA-1 (#46), SEED-1 (#45), APP-2b (#67), FACTS-1c (#68), WORKER-1 (#48), BT-1c (#53), FILL-2 (#70), DATA-1b (#69), RUG-1c (#74), OPS-1e (#66), FACTS-1b (#75), OPS-1f (#72). Scan run 1 (09-21 back to 09-14) started 8:42 AM; the owner's server, Tailscale, APK and ruleset steps were sent at 9:25 AM.
 - **Server:** live and paired.
 - **History:** the download waits on DATA-1's final data-shape PR (#46: full curve and canonical-pool rows, raw records for every create and migration, owner-resolved token movements, regimes).
 - **Building:** the worker, gate-fact producers, start-up seed, rug check, backtest study, signal research, live app view, server extras, and the review fixes.
@@ -30,16 +30,16 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 
 | Task | What | Session | Model | State | Estimate (Melbourne, Sun 4 Oct) |
 |---|---|---|---|---|---|
-| DATA-1b | Delegation rows and chain gaps (before run 1); account at creation from raw (after) | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | building; 10-01 counts after the archive back-off | run 1 starts about 10 AM–noon (21 Sep back to 29 Aug first) |
-| WORKER-1b | RUN-1d fields, sell-only flatten, PERSIST-1 wiring, NAV marks (claude/worker-1b) | session_01F7UFCa8r4aee38kW7687Y3 | Opus 5.5 | PR opening; WORKER-1 merged | about 9–10 AM |
-| FACTS-1b | FACTS-1 readers wired into the worker | session_01GDycboQzFrFWxVniy6B6Ps | Opus 5.5 | building on the merged worker | about 9–10 AM |
-| FILL-2, PERSIST-1 | Pool trade-gap fill (PR opening); save and restore index, labeller and coverage | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | FILL-2 PR; reviewer session_01NZwyB8decLbgxKJoG2cAbP | FILL-2 about 8–9 AM; PERSIST-1 about noon |
-| RUG-1b/1c | Traded non-rug fixture; on-demand per-deployer rug check; label kinds; materiality measurement | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | validation run on 2 Oct launches | 1c PR about 8:30–9:30 AM |
-| BT-1c, 1d | Holdout lock, fills, delays (PR #53); one holdout registry and schema-3 loader (claude/backtest-1d) | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | #53 delta review (session_012efQfLAwWStK3PT6ZW2PHz) | #53 about 8–9 AM |
+| DATA-1c | Regime volume per hour (`data-volume-DAY`), exact cross-check, back-fill (PR #77); scan runs | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | emitRow change reverted; delta review (session_01DKMnUiqVLxVjHbaqdoBnJD) | merge between scan batches |
+| WORKER-1b | Flake fix first (worker-flow, run1c: await paper simulations, wait for effects); then RUN-1d fields, sell-only flatten, PERSIST-1 wiring, NAV marks, checkDeployer | session_01F7UFCa8r4aee38kW7687Y3 | Opus 5.5 | flake fix in load loops | flake PR about 10–11 AM |
+| FACTS-1d, 1e | Regime volume rule and live volume-hours reader (PR #78, session_019cENcTEidMc4LEhPydYAZK); re-evaluate when a read lands (FACTS-1e) | session_01GDycboQzFrFWxVniy6B6Ps | Opus 5.5 | #78 aligning with DATA-1c; FACTS-1b merged | #78 review about 10–11 AM |
+| PERSIST-1 | Save and restore index, labeller and coverage (PR #71) | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | PASS; waits for the worker flake fix | after the flake fix |
+| RUG-1b | Traded non-rug fixture (RUG-1c merged) | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | next PR | today |
+| BT-1d | One holdout registry with typed sections, schema-3 loader, HolderBook (PR #73) | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | fixing R1–R4; α and registration from the core registry | delta about 11 AM–1 PM |
 | BT-2 | Backtest study (PR #41): funnel count first, deployment replay, registry (E fixed, attempt rules) | session_01VBTfAwrhgoCssEzST2J2q5 | Opus 5.5 | building on fixtures; consuming CFG-2 | data from Mon 5 Oct |
-| STATS-1b, 1c | G3 levels by safety direction (PR #52); SPA, daily DSR, registry attempt rules (PR #62, rework) | session_01J9yEWHRunNxvo5CaTbuYSe | Opus 5.5 | #52 fixes; #62 rework after | #52 about 8 AM; #62 about 1–3 PM |
-| RUN-1d | Drills by cause, recovery to exit-capable, qualifying guard (PR #64) | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | in review (session_01DdN4xy9WX2t7nLUq7ww4E5) | about 8 AM |
-| OPS-1e | Server extras: webhook retry, re-pair, alerts, `--update`, units, update gate, `tailscale serve` (PR #66); no evidence upload | session_01VM97q6A98GgtoPKCamoiT6 | Opus 5.5 | in review (session_01Ty8Lvbxybv8cRixTifx6y3) | about 9–11 AM |
+| STATS-1b, 1c | G3 levels (PR #52); SPA, day-level DSR, registry attempt rules (PR #62) | session_01J9yEWHRunNxvo5CaTbuYSe | Opus 5.5 | #52 PASS, merging base; #62 retargets after, adapting BT-1c | #52 about 10 AM; #62 review after |
+| RUN-1d, 1e | Drills by cause, recovery to exit-capable (PR #64); tabletop follow-ups (PR #76) | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | #64 fixing the 'unknown' universe and label rule | delta about 10–11 AM |
+| OPS-1g | Full install clears a stale update journal; roll-back only on managed paths; sync per line (branch claude/ops-1g) | session_01VM97q6A98GgtoPKCamoiT6 | Opus 5.5 | PR opens now; OPS-1f merged | review about 10–11 AM |
 | Next | WATCH-1 after WORKER-1; FACTS-1b after #48/#54; TEST-1 parity and TEST-3 fault injection after WORKER-1; SIGN-1 later; evidence upload from the server needs an owner decision | — | — | by dependency | — |
 
 ## Follow-ups
@@ -69,7 +69,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
 - API keys are in GitHub repository secrets and verified: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` (bot @Zeroed_alerts_bot). Never in chat or in the repo.
-- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Set up on 2026-10-04 from the PR #36 line: keys stored (4), Telegram paired, signer active. One re-paste of OPS-1d's line comes later; after it, host changes arrive by update.
+- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Set up on 2026-10-04 from the PR #36 line: keys stored (4), Telegram paired, signer active. The owner was sent the re-paste of the current line (OPS-1f, pin 364476c), a new deploy code for the webhook, Tailscale and the holdout-registry ruleset on 4 Oct, 9:25 AM; after the re-paste, host changes arrive by update.
 - Cloudflare: Account API token (Edit Cloudflare Workers template, 1-year expiry) is in GitHub secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, verified active from CI. Renew before 2027-10-03.
 - Domain: none, and none will be bought (owner rule in CLAUDE.md). Watchdog on the free `workers.dev` address; live dashboard access later through Tailscale's free personal plan.
 - Telegram bot display name: change with /setname in BotFather (optional).
