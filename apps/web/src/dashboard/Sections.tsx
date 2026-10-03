@@ -21,6 +21,15 @@ export function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (m: Mode)
   );
 }
 
+/** The mode a section's numbers belong to. */
+export function ModeTag({ mode }: { mode: Mode }) {
+  return (
+    <span className="badge badge-neutral mode-tag" data-mode={mode}>
+      {MODE_LABEL[mode]}
+    </span>
+  );
+}
+
 export function StatusFlags({ status }: { status: WorkerStatus }) {
   if (!status.connected) return <span className="badge badge-neutral">Worker not connected</span>;
   if (status.flags.length === 0) return <span className="muted small">No alerts</span>;
