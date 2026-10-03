@@ -310,13 +310,17 @@ describe('holdout mode', () => {
     const sh = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     const origin = join(top, 'origin.git');
     sh(top, 'init', '-q', '--bare', origin);
+    // Each clone's origin reads as the project's GitHub URL, rewritten (insteadOf) to the local bare repository.
+    const GH = 'https://github.com/macdarenz-droid/Meme-snipe';
     const clone = (name: string) => {
       const d = join(top, name);
       sh(top, 'clone', '-q', origin, d);
+      sh(d, 'config', `url.${origin}.insteadOf`, GH);
+      sh(d, 'remote', 'set-url', 'origin', GH);
       sh(d, 'commit', '-q', '--allow-empty', '-m', 'root');
       return d;
     };
-    const vcsAt = (root: string) => gitRegistryVcs({ root, relPath: 'research/holdout/registry.json', remote: 'origin', branch: 'holdout-registry', fileName: 'registry.json' });
+    const vcsAt = (root: string) => gitRegistryVcs({ root, relPath: 'research/holdout/registry.json', remote: 'origin', branch: 'holdout-registry', fileName: 'registry.json', repo: 'macdarenz-droid/Meme-snipe' });
     const at = (root: string) => ({ registryPath: join(root, 'research/holdout/registry.json'), codeCommit: 'c', datasetId: 'd', vcs: vcsAt(root) });
     try {
       const a = clone('a');
@@ -356,6 +360,21 @@ describe('holdout mode', () => {
       // A local copy that differs from the remote is refused.
       writeFileSync(C.registryPath, `${readFileSync(C.registryPath, 'utf8')} `);
       expect(() => C.vcs.check()).toThrow(/differs/);
+      // The remote must be the project's repository.
+      sh(c, 'remote', 'set-url', 'origin', 'https://github.com/someone/else');
+      expect(() => C.vcs.check()).toThrow(/must be github.com\/macdarenz-droid\/Meme-snipe/);
+      sh(c, 'remote', 'set-url', 'origin', GH);
+      // A deleted registry branch, with a local record, is refused rather than read as empty.
+      writeFileSync(C.registryPath, sh(top, '--git-dir', origin, 'show', 'holdout-registry:registry.json'));
+      sh(top, '--git-dir', origin, 'update-ref', '-d', 'refs/heads/holdout-registry');
+      expect(() => C.vcs.check()).toThrow(/missing \(deleted or never pushed\)/);
+      // An emptied branch (an empty registry file, or none) is refused too.
+      const g = (input: string, ...args: string[]) => execFileSync('git', ['--git-dir', origin, ...args], { input, encoding: 'utf8' }).trim();
+      const emptyBlob = g('', 'hash-object', '-w', '--stdin');
+      g('', 'update-ref', 'refs/heads/holdout-registry', g('', 'commit-tree', g(`100644 blob ${emptyBlob}\tregistry.json\n`, 'mktree'), '-m', 'emptied'));
+      expect(() => C.vcs.check()).toThrow(/empty registry.json/);
+      g('', 'update-ref', 'refs/heads/holdout-registry', g('', 'commit-tree', g('', 'mktree'), '-m', 'no file'));
+      expect(() => C.vcs.check()).toThrow(/has no registry.json/);
       // A symlinked registry path is refused.
       const d = clone('d');
       mkdirSync(join(d, 'research/holdout'), { recursive: true });

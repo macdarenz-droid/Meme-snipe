@@ -66,7 +66,7 @@ const registryPath = join(registryRoot, RESEARCH_CONFIG.holdout.registryPath);
 if (args.includes('--registry')) throw new Error(`the holdout registry path is fixed by the research config (${RESEARCH_CONFIG.holdout.registryPath})`);
 const registryVcs = gitRegistryVcs({
   root: registryRoot, relPath: RESEARCH_CONFIG.holdout.registryPath, remote: RESEARCH_CONFIG.holdout.registryRemote,
-  branch: RESEARCH_CONFIG.holdout.registryBranch, fileName: 'registry.json',
+  branch: RESEARCH_CONFIG.holdout.registryBranch, fileName: 'registry.json', repo: RESEARCH_CONFIG.holdout.registryRepo,
 });
 // Every command sees the shared registry: research runs need its registered windows (H1), holdout commands its runs.
 registryVcs.check();
