@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -8,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const read = (p: string) => readFileSync(join(root, p), 'utf8');
 const walk = (dir: string): string[] =>
-  readdirSync(join(root, dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
+  readdirSync(join(root, dir), { withFileTypes: true }).filter((e) => e.name !== 'node_modules').flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
 const isShell = (p: string) => p.endsWith('.sh') || read(p).startsWith('#!/usr/bin/env bash');
 const shellScripts = [...walk('ops'), '.github/workflows/deploy.yml'].filter((p) => !p.endsWith('.mjs') && !p.endsWith('.md') && (p.endsWith('.yml') || isShell(p) || p.endsWith('/common.sh')));
 const sourced = (p: string) => read(p).includes('Sourced, never run');
@@ -121,6 +122,74 @@ describe('deploy code', () => {
     expect(createHash('sha256').update(read('ops/host/files/usr/local/share/zeroed/eff_large_wordlist.txt')).digest('hex')).toBe('6d557f0693958fb5e650b68b5bee585eb82cf4da32965505c789e924743bc522');
   });
 
+  // Known answer from ops/test/derive-key-kat.py (Python hashlib.scrypt, its own bech32 and RFC 7748 ladder).
+  const KAT_CODE = 'correct horse battery staple zebra apple';
+  const KAT_IDENTITY = 'AGE-SECRET-KEY-1WZ76MN6D25Z7YG7GGHLLDMJCQV25X8U3VS8A0F8CKDS4329KJ39S5JU9UT';
+  const KAT_RECIPIENT = 'age1pdc533pjcgkux8lah569p90yxvmx8djw42pycdt6k943e467tqcs4c4hf0';
+  const B32 = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+  const bech32Polymod = (v: number[]) => {
+    const G = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let c = 1;
+    for (const x of v) {
+      const t = c >>> 25;
+      c = ((c & 0x1ffffff) << 5) ^ x;
+      for (let i = 0; i < 5; i++) if ((t >>> i) & 1) c ^= G[i]!;
+    }
+    return c >>> 0;
+  };
+  const bech32 = (hrp: string, data: Uint8Array) => {
+    const d: number[] = [];
+    let acc = 0;
+    let bits = 0;
+    for (const b of data) {
+      acc = ((acc << 8) | b) & 0xffff;
+      bits += 8;
+      while (bits >= 5) {
+        bits -= 5;
+        d.push((acc >>> bits) & 31);
+      }
+    }
+    if (bits) d.push((acc << (5 - bits)) & 31);
+    const e = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
+    const m = bech32Polymod([...e, ...d, 0, 0, 0, 0, 0, 0]) ^ 1;
+    return `${hrp}1${[...d, ...[0, 1, 2, 3, 4, 5].map((i) => (m >>> (5 * (5 - i))) & 31)].map((x) => B32[x]).join('')}`;
+  };
+  const unbech32 = (s: string) => {
+    const words = [...s.toLowerCase().slice(s.lastIndexOf('1') + 1, -6)].map((c) => B32.indexOf(c));
+    const out: number[] = [];
+    let acc = 0;
+    let bits = 0;
+    for (const w of words) {
+      acc = ((acc << 5) | w) & 0xffff;
+      bits += 5;
+      if (bits >= 8) {
+        bits -= 8;
+        out.push((acc >>> bits) & 255);
+      }
+    }
+    return Uint8Array.from(out);
+  };
+
+  it('matches the independent known-answer vector, and its recipient is the X25519 public key of the clamped scalar', () => {
+    const r = derive(KAT_CODE);
+    expect(r.stdout.trim()).toBe(KAT_IDENTITY);
+    const scalar = unbech32(KAT_IDENTITY);
+    expect(scalar).toHaveLength(32);
+    expect(scalar[0]! & 7).toBe(0);
+    expect(scalar[31]! & 0xc0).toBe(0x40);
+    // Node's X25519 (not age, not our code) computes the public key; it must be the pinned recipient.
+    const priv = createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b656e04220420', 'hex'), Buffer.from(scalar)]), format: 'der', type: 'pkcs8' });
+    const pub = createPublicKey(priv).export({ format: 'der', type: 'spki' }).subarray(-32);
+    expect(bech32('age', pub)).toBe(KAT_RECIPIENT);
+    expect(bech32('age-secret-key-', scalar).toUpperCase()).toBe(KAT_IDENTITY);
+  }, 30_000);
+
+  it('is one implementation, called by both the workflow and the server', () => {
+    expect(read('ops/deploy/publish.sh')).toContain('node "$here/../host/files/usr/local/lib/zeroed/derive-key.mjs"');
+    expect(read('ops/host/files/usr/local/sbin/zeroed-pair')).toContain('/usr/local/bin/node /usr/local/lib/zeroed/derive-key.mjs < "$DEPLOY_CODE_FILE"');
+    expect(walk('ops').filter((p) => /scryptSync|hashlib\.scrypt|crypto\.scrypt/.test(read(p)) && !p.endsWith('.py')).sort()).toEqual(['ops/host/files/usr/local/lib/zeroed/derive-key.mjs', 'ops/install.sh']);
+  });
+
   it('derives the same age identity on both sides, ignoring case and extra spaces, and only from 6 words', () => {
     const a = derive('abacus abdomen able about above absent');
     const b = derive('  Abacus   ABDOMEN able about above absent\n');
@@ -183,4 +252,66 @@ describe('systemd units (ARCHITECTURE.md 12.1)', () => {
     expect(nft).toContain('meta skuid "zeroed-signer" drop');
     expect(nft).toContain('meta skuid "zeroed-worker" drop');
   });
+});
+
+describe('deploy tag (ops/deploy/tag.sh) on a fixture repository', () => {
+  it('skips an unsigned tip, a red and a pending signed merge, logs why, and tags the newest green signed merge', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zeroed-tag-'));
+    try {
+      const gnupg = join(dir, 'gnupg');
+      mkdirSync(gnupg, { mode: 0o700 });
+      const env = { ...process.env, GNUPGHOME: gnupg, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' };
+      const sh = (cmd: string, cwd = dir) => execFileSync('bash', ['-c', cmd], { cwd, env, encoding: 'utf8' }).trim();
+      sh("gpg --batch --passphrase '' --quick-gen-key 'Fixture <f@x>' ed25519 sign never 2>/dev/null");
+      const fpr = sh("gpg --batch --with-colons --fingerprint | awk -F: '$1 == \"fpr\" { print $10; exit }'");
+      sh(`gpg --batch --armor --export ${fpr} > key.asc`);
+      sh('git init -q --bare origin.git && git init -q -b int work');
+      const work = join(dir, 'work');
+      const commit = (msg: string, signed: boolean) => {
+        sh(`echo ${msg} >> f && git add f && git -c gpg.format=openpgp -c gpg.program=gpg -c user.signingkey=${fpr} commit -q ${signed ? '-S' : '--no-gpg-sign'} -m ${msg} && git rev-parse HEAD`, work);
+        return sh('git rev-parse HEAD', work);
+      };
+      const old = commit('green-older', true);
+      const green = commit('green', true);
+      const red = commit('red', true);
+      const pending = commit('pending', true);
+      const tip = commit('board', false);
+      sh('git remote add origin ../origin.git && git push -q origin int', work);
+      // gh stand-in: check runs per sha from files, the deploy ref missing, writes recorded.
+      const state = join(dir, 'state');
+      mkdirSync(join(state, 'checks'), { recursive: true });
+      const runs = (conclusion: string | null, status = 'completed') => JSON.stringify({ total_count: 2, check_runs: [{ name: 'check', status: 'completed', conclusion: 'success' }, { name: 'e2e', status, conclusion }, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null }] });
+      writeFileSync(join(state, 'checks', old), runs('success'));
+      writeFileSync(join(state, 'checks', green), runs('success'));
+      writeFileSync(join(state, 'checks', red), runs('failure'));
+      writeFileSync(join(state, 'checks', pending), runs(null, 'in_progress'));
+      writeFileSync(join(state, 'checks', tip), runs('success'));
+      writeFileSync(
+        join(dir, 'gh'),
+        `#!/usr/bin/env bash
+echo "$*" >> "${state}/calls"
+case "$2" in
+  repos/o/r/commits/*/check-runs*) s="\${2#repos/o/r/commits/}"; s="\${s%%/*}"; cat "${state}/checks/$s" 2>/dev/null || echo '{"total_count":0,"check_runs":[]}' ;;
+  repos/o/r/git/ref/tags/deploy) echo '{"message":"Not Found"}'; exit 1 ;;
+esac
+exit 0
+`,
+      );
+      chmodSync(join(dir, 'gh'), 0o755);
+      const r = spawnSync('bash', [join(root, 'ops/deploy/tag.sh')], {
+        cwd: work,
+        encoding: 'utf8',
+        env: { ...env, PATH: `${dir}:${process.env['PATH']}`, GH_REPO: 'o/r', GITHUB_SHA: tip, INTEGRATION_BRANCH: 'int', SIGNING_KEY_FILE: join(dir, 'key.asc'), SIGNING_FPR: fpr },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain(`Skipped ${tip.slice(0, 12)}: not signed by GitHub`);
+      expect(r.stdout).toContain(`Skipped ${pending.slice(0, 12)}: checks still running.`);
+      expect(r.stdout).toContain(`Skipped ${red.slice(0, 12)}: a check failed.`);
+      expect(r.stdout).toContain(`Tag deploy -> ${green.slice(0, 12)}.`);
+      expect(readFileSync(join(state, 'calls'), 'utf8')).toContain(`api -X POST repos/o/r/git/refs -f ref=refs/tags/deploy -f sha=${green}`);
+      expect(r.stdout).not.toContain(old.slice(0, 12));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

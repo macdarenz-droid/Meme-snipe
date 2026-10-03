@@ -96,7 +96,10 @@ done
 [ "$picked" = no ] || sleep "$grace_s"
 gh release delete handoff --yes --cleanup-tag >/dev/null
 if [ "$picked" = yes ]; then
-  echo "The server downloaded the keys; the release is deleted. The server's console shows the next step."
+  # The server cannot report back here, so say only what is known.
+  echo "The server downloaded the encrypted keys; the release is deleted. Look at the server console:"
+  echo "  - it shows a 6-digit pairing code: the code matched and the keys are stored;"
+  echo "  - it says the handoff \"does not open\": DEPLOY_CODE does not match; fix the secret and run Deploy again."
 else
   echo "No pickup within $((timeout_s / 60)) minutes; the release is deleted. Check the server shows a deploy code, then run Deploy again."
   exit 1

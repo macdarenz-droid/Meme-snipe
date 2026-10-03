@@ -13,6 +13,11 @@ if (!/^[a-z-]+( [a-z-]+){5}$/.test(code)) {
   process.exit(2);
 }
 const key = scryptSync(code, 'zeroed-deploy-handoff-v1', 32, { N: 2 ** 18, r: 8, p: 1, maxmem: 320 * 1024 * 1024 });
+// RFC 7748 clamp, so the stored scalar is exactly the one X25519 uses (X25519 clamps on use anyway, so this
+// changes the encoded identity, never the key pair it stands for).
+key[0] &= 248;
+key[31] &= 127;
+key[31] |= 64;
 
 // Bech32 (BIP 173), as age uses for identities.
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
