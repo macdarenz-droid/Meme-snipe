@@ -402,11 +402,13 @@ upd_run || true
 in_c "cat /var/lib/zeroed-host/deployed" | has -x 0000000000000000000000000000000000000000 || fail "deployed during an unfinished qualifying run"
 jl zeroed-update | has "the qualifying dry run e2e-q is active" || fail "update gate reason (unfinished run) not logged"
 in_c "printf '{\"pass\":false}' > /var/lib/zeroed-dryrun/evidence/vps-e2e/report.json"
-in_c "systemd-run --quiet --unit=zeroed-dryrun@e2e-unit.service sleep 300"
+# A stand-in for a running dry run: a unit file for this one instance in /run, which wins over RUN-1's
+# zeroed-dryrun@.service template when the deployed release already installed it.
+in_c "printf '[Service]\nExecStart=/bin/sleep 300\n' > /run/systemd/system/zeroed-dryrun@e2e-unit.service && systemctl daemon-reload && systemctl start zeroed-dryrun@e2e-unit.service"
 upd_run || true
 in_c "cat /var/lib/zeroed-host/deployed" | has -x 0000000000000000000000000000000000000000 || fail "deployed while a zeroed-dryrun@ unit is active"
 jl zeroed-update | has "the qualifying dry run e2e-unit is active" || fail "update gate reason (active unit) not logged"
-in_c "systemctl stop zeroed-dryrun@e2e-unit.service"
+in_c "systemctl stop zeroed-dryrun@e2e-unit.service && rm /run/systemd/system/zeroed-dryrun@e2e-unit.service && systemctl daemon-reload"
 upd_run || fail "update after the dry run ended"
 in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "no deploy after the dry run ended"
 pass "update gate: no deploy while a named dry run has no report (after a reboot drill) or while a zeroed-dryrun@ unit is active; deploys once both end"
