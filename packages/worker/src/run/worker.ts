@@ -596,7 +596,9 @@ export class Worker {
       return { ok: false, code: EXIT.crash, message: `health server: ${e instanceof Error ? e.message : 'error'}` };
     }
     try {
-      this.#api = await startApiServer(d.config.api.host, d.config.api.port, () => this.apiInputs());
+      this.#api = await startApiServer(d.config.api.host, d.config.api.port, () => this.apiInputs(), (command, auth) => {
+        this.#journal.write('decision', { action: 'command_refused', reasons: [`command ${command} refused`, auth === null ? 'unknown command' : `needs ${auth}`] });
+      });
     } catch (e) {
       return { ok: false, code: EXIT.crash, message: `API server: ${e instanceof Error ? e.message : 'error'}` };
     }

@@ -314,9 +314,31 @@ export const route = (path: string, inputs: () => ApiInputs): { readonly status:
   return { status: 200, body: { mode: MODE, asOf: asOf(i), data: views[endpoint as ApiEndpoint](i) } };
 };
 
-export const startApiServer = (host: string, port: number, inputs: () => ApiInputs): Promise<Server> => {
+/**
+ * The commands the app may one day send, each with the auth level it needs (supervisor ruling: never "came from
+ * loopback", since tailscale's proxied requests arrive on loopback). None is served: no level exists in this worker yet,
+ * so every command is refused (403) and journaled with the level it lacked. Pause stays with the watchdog's signed
+ * `/pause`; session control (paper to live) is the owner's alone and never an API call (AGENTS.md).
+ */
+export const COMMANDS = {
+  pause: 'owner-signed request (the watchdog HMAC today, its /pause)',
+  close: 'owner-signed request with a fresh nonce, per position',
+  session: 'owner only, on the host; never over the API',
+} as const;
+export type Command = keyof typeof COMMANDS;
+
+export const startApiServer = (host: string, port: number, inputs: () => ApiInputs, refused: (command: string, auth: string | null) => void = () => undefined): Promise<Server> => {
   const server = createServer((req, res) => {
     if (req.method !== 'GET') {
+      const m = /^\/api\/v1\/commands\/([a-z]+)$/.exec((req.url ?? '').split('?')[0]!);
+      if (req.method === 'POST' && m !== null) {
+        const auth = Object.hasOwn(COMMANDS, m[1]!) ? COMMANDS[m[1] as Command] : null;
+        refused(m[1]!, auth);
+        req.resume();
+        res.writeHead(auth === null ? 404 : 403, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+          .end(JSON.stringify({ error: auth === null ? 'no such command' : `refused: needs ${auth}` }));
+        return;
+      }
       res.writeHead(405, { allow: 'GET' }).end();
       return;
     }

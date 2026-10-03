@@ -1,10 +1,12 @@
 // The app's read API against the app's own contract (UI-2: apps/web/src/api/contract.ts and its strict schemas): every
 // endpoint, from a real worker that made a paper trade, passes checkEnvelope in paper mode; other modes are not served.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor, type Endpoint } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
-import { route } from '../src/run/api.ts';
+import { COMMANDS, route } from '../src/run/api.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 const ENDPOINTS: Exclude<Endpoint, 'calendar'>[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats'];
@@ -64,5 +66,22 @@ describe('the app API (UI-2 contract)', () => {
     expect((await fetch('http://127.0.0.1:18794/api/v1/paper/status', { method: 'POST' })).status).toBe(405);
     expect((await fetch('http://127.0.0.1:18795/api/v1/paper/status')).status).toBe(404);
     await h.worker.stop();
+  });
+
+  it('serves no command: pause, close and session are refused and journaled with the auth level each needs', async () => {
+    const h = makeWorker({ config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18797', ZEROED_API_ADDR: '127.0.0.1:18796' } });
+    expect(await h.worker.start()).toEqual({ ok: true });
+    for (const c of Object.keys(COMMANDS)) {
+      const r = await fetch(`http://127.0.0.1:18796/api/v1/commands/${c}`, { method: 'POST', body: '{}' });
+      expect(r.status, c).toBe(403);
+      expect(((await r.json()) as { error: string }).error).toBe(`refused: needs ${COMMANDS[c as keyof typeof COMMANDS]}`);
+    }
+    expect((await fetch('http://127.0.0.1:18796/api/v1/commands/buy', { method: 'POST' })).status).toBe(404);
+    await h.worker.stop();
+    const refused = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((l) => l['action'] === 'command_refused').map((l) => (l['reasons'] as string[])[0]);
+    expect(refused).toEqual(['command pause refused', 'command close refused', 'command session refused', 'command buy refused']);
+    expect(h.worker.book.positions).toEqual({});
+    expect(h.worker.health().paused).toBe(false);
   });
 });
