@@ -10,7 +10,7 @@ Copied from `macdarenz-droid/M-arc` CLAUDE.md (which imports AGENTS.md). Every a
 - If the owner is busy or silent, keep working. Do not stop or slow down while waiting; work on everything that does not need the answer. Speed never lowers accuracy.
 - Parallel work runs outside the supervisor's chat (owner, 2026-10-03): one visible session per task, which the supervisor starts and monitors. No hidden parallel agents inside the supervisor's chat.
 - Every report to the owner (owner, 2026-10-03) gives the approximate run time of each task (elapsed and remaining) and the totals, with the uncertainty stated plainly.
-- Model range (owner, 2026-10-03): high-complexity tasks on `claude-opus-5-5` with ultracode; lower-complexity tasks on `claude-sonnet-5-5` at medium effort. Never Fable or any lower tier.
+- Model range (owner, 2026-10-03): high-complexity tasks on `claude-opus-5-5` with ultracode; lower-complexity tasks on `claude-sonnet-5-5` at medium effort. Never Fable or any lower tier. The owner permits ultracode for every task that requires it; the supervisor must confirm a session's effort setting actually took effect (the session's model chip or record), not assume it from the prompt.
 
 ## Product
 - Zeroed trades only when the data proves the setup (owner, 2026-10-03): consistent, risk aware, data aware, built on research into what matters in the market. Missing, stale or unproven evidence means no trade.
