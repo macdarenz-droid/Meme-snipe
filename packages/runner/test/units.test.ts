@@ -2,6 +2,7 @@ import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { checkStartHealth, segmentAllowed, type Health } from '../src/contract.ts';
 import { item4 } from '../src/item4.ts';
+import { OPS_OK } from './fixtures.ts';
 import { checkJournal } from '../src/journal.ts';
 import { makePlan } from '../src/plan.ts';
 import { buildReport, reportMarkdown, uptime, type RunMeta, type Sample } from '../src/report.ts';
@@ -88,7 +89,7 @@ describe('report', () => {
     .concat([{ id: 'feed-f', kind: 'feed' as never, plannedAt: 0, at: 0, pass: true, midTrade: undefined as never, recoveredMs: 1, notes: [], feed: 'f' } as never]);
   const samples = Array.from({ length: 11 }, (_, i) => sample(i * 10, true));
   it('passes every check on a clean run and labels the rehearsal', () => {
-    const r = buildReport(meta, samples, 10, 100, journal, drills, [], item4([], 'rehearsal', false));
+    const r = buildReport(meta, samples, 10, 100, journal, drills, [], item4([], 'rehearsal', false), OPS_OK);
     expect(r.checks).toEqual(Object.fromEntries(Object.keys(r.checks).map((k) => [k, true])));
     expect(r.pass).toBe(true);
     expect(r.counts).toMatch(/Rehearsal: counts for none of §15 items 3, 4 or G3/);
@@ -105,7 +106,7 @@ describe('report', () => {
     ['run cut short', { end: 50 }, 'duration'],
     ['feed names changed', { samples: samples.map((s, i) => (i === 7 ? { ...s, feeds: 'f,g' } : s)) }, 'feeds_fixed'],
   ])('fails on %s', (_, over: { samples?: Sample[]; drills?: typeof drills; end?: number }, check) => {
-    const r = buildReport(meta, over.samples ?? samples, 10, over.end ?? 100, journal, over.drills ?? drills, [], item4([], 'rehearsal', false));
+    const r = buildReport(meta, over.samples ?? samples, 10, over.end ?? 100, journal, over.drills ?? drills, [], item4([], 'rehearsal', false), OPS_OK);
     expect(r.checks[check]).toBe(false);
     expect(r.pass).toBe(false);
   });
