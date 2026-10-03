@@ -69,6 +69,17 @@ describe('calendar arithmetic', () => {
     expect(daysFromCivil(2028, 2, 29) + 1).toBe(daysFromCivil(2028, 3, 1));
   });
 
+  test('leap years follow the Gregorian rule (2000 yes, 2100 no, 2028 yes)', () => {
+    expect(daysFromCivil(2000, 3, 1) - daysFromCivil(2000, 2, 28)).toBe(2);
+    expect(daysFromCivil(2100, 3, 1) - daysFromCivil(2100, 2, 28)).toBe(1);
+    expect(daysFromCivil(2028, 3, 1) - daysFromCivil(2028, 2, 28)).toBe(2);
+    expect(civilFromDays(daysFromCivil(2100, 2, 28) + 1)).toEqual({ year: 2100, month: 3, day: 1 });
+  });
+
+  test('a fractional instant after 2008 is refused', () => {
+    expect(() => melbourneOffsetMinutes(utc(2026, 1, 1) + 0.5)).toThrow(RangeError);
+  });
+
   test('instants before the 2008 rule are refused', () => {
     expect(() => melbourneOffsetMinutes(utc(2007, 12, 1))).toThrow(RangeError);
     expect(() => melbourneOffsetMinutes(1.5)).toThrow(RangeError);

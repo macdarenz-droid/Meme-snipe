@@ -88,8 +88,8 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
 
   const realizedNow = realizedBefore(a, nowMs + 1);
   const equity = realizedNow.equity + markedLoss;
-  const hwmRaw = highWaterMark(a, latches.killRearmedAtMs, nowMs);
-  const highWaterMark_ = maxBig(hwmRaw, equity);
+  // Never below equity: the mark only moves with flows (as equity does) and rises with realized equity; marks are <= 0.
+  const highWaterMark_ = highWaterMark(a, latches.killRearmedAtMs, nowMs);
   const day = melbourneDay(nowMs);
   const week = melbourneWeek(nowMs);
   const atDay = realizedBefore(a, day.start);
@@ -170,11 +170,11 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
     }
   }
 
-  // R9: weekly loss, latched until the week ends and the owner has reviewed it.
+  // R9: weekly loss, latched until the week ends and the owner has reviewed it (a review strictly after the trip).
   const weekLimit = ofBps(s.weekStartEquity, policy.loss.weeklyBps, 'floor');
   const weeklyTripped = latches.weeklyTrippedAtMs;
   const weeklyLatched = weeklyTripped !== null && (
-    latches.weeklyReviewedAtMs === null || latches.weeklyReviewedAtMs < weeklyTripped || nowMs < melbourneWeek(weeklyTripped).end
+    latches.weeklyReviewedAtMs === null || latches.weeklyReviewedAtMs <= weeklyTripped || nowMs < melbourneWeek(weeklyTripped).end
   );
   if (s.weekLoss >= weekLimit) {
     reasons.push(reason('weekly_loss', 'weekly loss trigger reached; paused for the week'));
@@ -182,10 +182,10 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   }
   if (weeklyLatched) reasons.push(reason('weekly_review', 'weekly loss trigger tripped; paused until the week ends and the owner reviews'));
 
-  // R10: kill switch at 70% of the high-water mark, latched until the owner re-arms.
+  // R10: kill switch at 70% of the high-water mark, latched until the owner re-arms (strictly after the trip).
   const killLine = ofBps(s.highWaterMark, policy.loss.killSwitchFloorBps, 'ceil');
   const killTripped = latches.killTrippedAtMs;
-  const killLatched = killTripped !== null && (latches.killRearmedAtMs === null || latches.killRearmedAtMs < killTripped);
+  const killLatched = killTripped !== null && (latches.killRearmedAtMs === null || latches.killRearmedAtMs <= killTripped);
   if (s.equity <= killLine || killLatched) {
     reasons.push(reason('kill_switch', 'equity at or below the kill line; only the owner re-arms'));
     if (!killLatched) trips.push('kill_switch');
@@ -353,9 +353,11 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   const capCode: Partial<Record<SizeCapEntry['control'], RiskCode>> = {
     R2: 'size_below_minimum', R4: 'ops_reserve', R5: 'planned_risk', R12: 'liquidity_floor', R15: 'size_after_loss',
   };
+  const capReason = (c: SizeCapEntry): RiskCode =>
+    c.control === 'R6' ? (c.name.includes('weekly') ? 'full_loss_week' : 'full_loss_kill_line') : capCode[c.control] ?? 'size_below_minimum';
   for (const c of caps) {
     if (c.notional >= qMin) continue;
-    const code = c.control === 'R6' ? (c.name.includes('weekly') ? 'full_loss_week' : 'full_loss_kill_line') : capCode[c.control] ?? 'size_below_minimum';
+    const code = capReason(c);
     if (!reasons.some((r) => r.code === code)) reasons.push(reason(code, `${c.name}: largest size is below the minimum`));
   }
   if (reasons.length > 0) return refuse(reasons, check.trips, s);
@@ -385,14 +387,11 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   if (!sized.trade) {
     const code: RiskCode = sized.reason === 'unquotable' ? 'quote_failed'
       : sized.reason === 'impact-above-limit' ? 'depth_cap'
-      : sized.reason === 'caps-below-minimum' ? (capCode[tightest.control] ?? 'size_below_minimum')
+      : sized.reason === 'caps-below-minimum' ? capReason(tightest)
       : 'expected_net_not_positive';
     return refuse([reason(code, `sizing refused: ${sized.reason} (${tightest.name})`)], check.trips, s);
   }
-  if (atMinimum && sized.range.maxLamports < minSpend) {
-    // A cap within one lamport of q_min: the minimum spend, rounded up, does not fit it.
-    return refuse([reason(capCode[tightest.control] ?? 'size_below_minimum', `${tightest.name}: the minimum spend does not fit`)], check.trips, s);
-  }
+  // feasibleSize's range starts at or above q_min in lamports, rounded up (minSpend), so only the low end needs a check.
   if (atMinimum && sized.range.minLamports > minSpend) {
     return refuse([reason('expected_net_not_positive', 'the minimum size does not clear its fixed costs')], check.trips, s);
   }
