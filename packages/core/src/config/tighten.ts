@@ -84,6 +84,7 @@ export const POLICY_RULES: RuleTree<Policy> = {
   exits: {
     // Checked per universe against the same universe's block in the baseline.
     universes: { U1: UNIVERSE_EXIT_RULES, U2: UNIVERSE_EXIT_RULES },
+    tMaxCapMs: 'max',
     deployerSellSupplyBps: 'max',
     liquidityDropBps: 'max',
     reverseQuoteFailures: 'max',

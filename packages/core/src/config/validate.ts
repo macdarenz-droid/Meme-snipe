@@ -104,6 +104,7 @@ const crossIssues = (p: Policy, out: string[]): void => {
   for (const u of EXIT_UNIVERSES) {
     const x = exits.universes[u];
     const at = `exits.universes.${u}`;
+    need(x.tMaxMs <= exits.tMaxCapMs, `${at}.tMaxMs is above exits.tMaxCapMs, the phase-1 hard maximum`);
     need(x.tFlatMs > 0 && x.tFlatMs <= x.tMaxMs, `${at}.tFlatMs must be above zero and no later than ${at}.tMaxMs`);
     need(x.stopAtrTenths >= 1 && x.trailAtrTenths >= 1, `${at}.stopAtrTenths and ${at}.trailAtrTenths: must be at least 1`);
     need(x.negativeFlowMinutes >= 1, `${at}.negativeFlowMinutes: must be at least 1`);

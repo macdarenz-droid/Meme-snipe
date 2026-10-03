@@ -51,6 +51,20 @@ describe('CFG-2: per-universe exit parameters', () => {
     expect(() => loadPolicy(savePolicy(TRIAL_POLICY).replace('"U1":', '"U9":'))).toThrow(PolicyError);
   });
 
+  test("validation refuses any universe's T_max above the phase-1 cap of 120 min, which is in the policy", () => {
+    expect(TRIAL_POLICY.exits.tMaxCapMs).toBe(120 * MINUTE_MS);
+    for (const u of EXIT_UNIVERSES) {
+      expect(policyIssues(edit((p) => { p.exits.universes[u].tMaxMs = 120 * MINUTE_MS; }))).toEqual([]);
+      expect(policyIssues(edit((p) => { p.exits.universes[u].tMaxMs = 120 * MINUTE_MS + 1; })))
+        .toEqual([`exits.universes.${u}.tMaxMs is above exits.tMaxCapMs, the phase-1 hard maximum`]);
+    }
+    // A saved file is held to the cap too.
+    expect(() => loadPolicy(savePolicy(TRIAL_POLICY).replace('"tMaxCapMs":7200000', '"tMaxCapMs":7199999'))).toThrow(/above exits.tMaxCapMs/);
+    // The cap itself may only fall: raising it needs a new version the owner approves.
+    expect(applyOverride(TRIAL_POLICY, { exits: { tMaxCapMs: 4 * HOUR_MS } })).toMatchObject({ ok: false, refusals: [{ kind: 'loosens', path: 'policy.exits.tMaxCapMs' }] });
+    expect(() => startSession(edit((p) => { p.exits.tMaxCapMs = 4 * HOUR_MS; p.exits.universes.U1.tMaxMs = 4 * HOUR_MS; }))).toThrow(PolicyError);
+  });
+
   test('cross-field checks run on each block', () => {
     expect(policyIssues(edit((p) => { p.exits.universes.U1.tFlatMs = p.exits.universes.U1.tMaxMs + 1; })))
       .toContain('exits.universes.U1.tFlatMs must be above zero and no later than exits.universes.U1.tMaxMs');

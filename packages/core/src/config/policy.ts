@@ -152,6 +152,8 @@ export interface Policy {
   readonly exits: {
     /** Strategy exits per universe. Every universe in use has a block; S0 uses the block of the universe it controls for. */
     readonly universes: { readonly [U in ExitUniverse]: UniverseExits };
+    /** Phase-1 hard maximum hold (§9): no universe's tMaxMs may exceed it. A longer hold is a new version the owner approves. */
+    readonly tMaxCapMs: number;
     readonly deployerSellSupplyBps: number;
     readonly liquidityDropBps: number;
     readonly reverseQuoteFailures: number;
@@ -253,6 +255,7 @@ const TRIAL_VALUES: Policy = {
         trailAtrTenths: 30,
       },
     },
+    tMaxCapMs: 120 * MINUTE,
     deployerSellSupplyBps: 200,
     liquidityDropBps: 3000,
     reverseQuoteFailures: 2,
