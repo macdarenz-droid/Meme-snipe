@@ -1,8 +1,8 @@
 // Venue-aware round-trip cost model and feasible trade size (docs/ARCHITECTURE.md, "Economics of the 20 dollar trial"):
 // expected net P&L(q) = q * (g - v) - F. Amounts are lamports unless named Usd (micro-dollars).
 // Costs round up, amounts received and caps round down.
-// Contract: an unquotable state (completed curve, effective reserve <= 0, a spend that buys nothing, a sell larger
-// than the real reserves) throws RangeError or CurveCompleteError from the quote; callers treat any throw as no trade.
+// Contract: quotes return Quote<T>. A state that cannot be quoted gives { ok: false, reason } and feasibleSize answers
+// 'unquotable' with that reason; only caller mistakes (non-positive amounts, invalid policy) throw.
 import {
   type CurveFeeContext, type NoQuoteReason, type Quote, type CurveState, type PoolFeeContext, type PoolState,
   curveBuyExactQuoteIn, curveSell, poolBuyExactQuoteIn, poolSell,

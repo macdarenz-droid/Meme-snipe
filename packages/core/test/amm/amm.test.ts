@@ -165,6 +165,9 @@ describe('quote shapes', () => {
     expect(ok(freshGlobal(reading, PUMP_GLOBAL_SLOT + 100n, 150n))).toBe(PUMP_GLOBAL);
     expect(freshGlobal(reading, PUMP_GLOBAL_SLOT + 151n, 150n)).toMatchObject({ ok: false, reason: 'stale-params' });
     expect(freshGlobal({ value: null, readAtSlot: 0n }, PUMP_GLOBAL_SLOT, 150n)).toMatchObject({ ok: false, reason: 'missing-params' });
+    // A reading from after the current slot (a backtest must never see the future) is refused, not treated as fresh.
+    expect(freshGlobal(reading, PUMP_GLOBAL_SLOT - 1n, 150n)).toMatchObject({ ok: false, reason: 'stale-params' });
+    expect(freshGlobal({ value: { ...PUMP_GLOBAL, tokenTotalSupply: 0n }, readAtSlot: PUMP_GLOBAL_SLOT }, PUMP_GLOBAL_SLOT, 150n)).toMatchObject({ ok: false, reason: 'missing-params' });
     expect(freshGlobal({ value: { ...PUMP_GLOBAL, initialRealTokenReserves: 0n }, readAtSlot: PUMP_GLOBAL_SLOT }, PUMP_GLOBAL_SLOT, 150n)).toMatchObject({ ok: false, reason: 'missing-params' });
   });
 

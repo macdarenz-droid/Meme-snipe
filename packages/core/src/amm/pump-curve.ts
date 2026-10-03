@@ -35,12 +35,17 @@ export interface PumpGlobalReading {
   readonly readAtSlot: bigint;
 }
 
-/** The Global parameters, or a no-quote reason when they are missing or older than `maxAgeSlots`. */
+/**
+ * The Global parameters, or a no-quote reason when they are missing, unusable, older than `maxAgeSlots`, or read after
+ * `currentSlot` (a backtest must only see data as of its simulated moment).
+ */
 export const freshGlobal = (reading: PumpGlobalReading, currentSlot: bigint, maxAgeSlots: bigint): Quote<PumpGlobalParams> => {
   if (maxAgeSlots < 0n) throw new RangeError('max age must be >= 0');
   if (!reading.value) return noQuote('missing-params', 'pump Global account not read');
+  if (reading.readAtSlot > currentSlot) return noQuote('stale-params', `pump Global read at slot ${reading.readAtSlot}, after the current slot ${currentSlot}`);
   if (currentSlot - reading.readAtSlot > maxAgeSlots) return noQuote('stale-params', `pump Global read at slot ${reading.readAtSlot}, now ${currentSlot}`);
-  if (reading.value.initialRealTokenReserves <= 0n || reading.value.initialVirtualTokenReserves <= reading.value.initialRealTokenReserves) {
+  const v = reading.value;
+  if (v.initialRealTokenReserves <= 0n || v.initialVirtualTokenReserves <= v.initialRealTokenReserves || v.tokenTotalSupply <= 0n || v.initialVirtualSolReserves <= 0n) {
     return noQuote('missing-params', 'pump Global parameters are not usable');
   }
   return { ok: true, trade: reading.value };
