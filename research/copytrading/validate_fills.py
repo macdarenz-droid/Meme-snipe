@@ -41,18 +41,19 @@ for k, e in errs.items():
         e = sorted(e)
         print(k, 'n', len(e), 'median err %.4f%%' % (100 * statistics.median(e)), 'p5 %.3f%% p95 %.3f%%' % (100 * e[len(e) // 20], 100 * e[-len(e) // 20]))
 print('curve chain consistent', chain_ok, 'inconsistent', chain_bad, 'share %.1f%%' % (100 * chain_bad / max(1, chain_ok + chain_bad)))
-# After calibration: predict each PumpSwap trade from the previous trade's after-state in the same pool (as the simulator does)
+# Vault + virtual model: predict each PumpSwap trade from the previous trade's after-state in the same pool (as the simulator does)
 import collections
 pmap = json.load(open(os.path.join(A.OUT, 'pool_map.json')))
-prevs = {}; e2 = {'buy': [], 'sell': []}
+prevs = {}; e2 = collections.defaultdict(list)
 for t in trades:
     slot, seq, bt, key, venue, user, buy, us, tok, S, T, fee, creator = t
     if venue != 'a' or pmap.get(key, [0, 0])[1] != A.WSOL: continue
     if key in prevs and tok > 0 and us >= 1_000_000 and S > 0 and T > 0:
-        st = prevs[key]
-        if buy: e2['buy'].append(A.buy_fill(st, us) / tok - 1)
-        else: e2['sell'].append(A.sell_fill(st, tok) / us - 1)
-    prevs[key] = ('a', S, T, fee)
+        st, pslot = prevs[key]
+        e = A.buy_fill(st, us) / tok - 1 if buy else A.sell_fill(st, tok) / us - 1
+        e2['buy' if buy else 'sell'].append(e)
+        if pslot < slot: e2[('buy' if buy else 'sell') + ', previous trade in an earlier slot'].append(e)
+    prevs[key] = (('a', S, T, fee), slot)
 for k, e in e2.items():
     e = sorted(e)
-    if e: print('calibrated AMM', k, 'n', len(e), 'median err %.3f%%' % (100 * statistics.median(e)), 'p10 %.2f%% p90 %.2f%%' % (100 * e[len(e) // 10], 100 * e[-len(e) // 10]), 'share within 1%%: %.1f%%' % (100 * sum(abs(x) < 0.01 for x in e) / len(e)))
+    if e: print('vault+virtual AMM (state from the previous trade)', k, 'n', len(e), 'median err %.3f%%' % (100 * statistics.median(e)), 'p10 %.2f%% p90 %.2f%%' % (100 * e[len(e) // 10], 100 * e[-len(e) // 10]), 'share within 1%%: %.1f%%' % (100 * sum(abs(x) < 0.01 for x in e) / len(e)))

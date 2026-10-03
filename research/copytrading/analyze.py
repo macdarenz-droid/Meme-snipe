@@ -67,7 +67,7 @@ def load():
     trades = []  # (slot, seq, bt, mint_or_pool, venue, user, is_buy, user_sol, tok, sA, tA, fee, creator)
     created = {}  # mint -> (slot, creator)
     pool_new = {}  # pool -> (base, quote)
-    calib = {}  # pool -> last 5 effective/event base reserve ratios
+    virt = {}  # pool -> last recovered virtual_quote_reserves (lamports)
     completed = {}  # mint -> curve completion slot
     max_slot = 0
     seq = 0
@@ -97,16 +97,19 @@ def load():
                     buy = r[6] == 1
                     q_user, base_amt, qb, bb, lp, pr, cr, q_gross = int(r[7]), int(r[8]), int(r[9]), int(r[10]), int(r[11]), int(r[12]), int(r[13] or 0), int(r[15])
                     lpfee = q_gross * lp // 10000
-                    # The event's base reserve does not price fills exactly on some pools (validate_fills.py): derive
-                    # the effective base reserve from this trade's own amounts, c = B_eff / B, kept per pool.
-                    if q_gross >= 1_000_000 and base_amt > 0 and qb > 0:
-                        b_eff = base_amt * (qb + q_gross) / q_gross if buy else qb * base_amt / q_gross - base_amt
-                        if b_eff > 0: calib.setdefault(r[4], []).append(b_eff / bb); calib[r[4]] = calib[r[4]][-5:]
-                    c = statistics.median(calib[r[4]]) if r[4] in calib else 1.0
+                    # PumpSwap prices on an effective quote reserve = vault + Pool.virtual_quote_reserves (signed i128,
+                    # often negative since 2026-09-30; packages/core/src/amm/pump-swap.ts). The collector did not store
+                    # the virtual term, so it is recovered from the trade's own amounts, which fix it exactly:
+                    # buy  base = B*q/(Qeff+q)  -> Qeff = q*B/base - q;  sell  q = Qeff*base/(B+base) -> Qeff = q*(B+base)/base.
+                    if q_gross >= 1_000_000 and base_amt > 0 and bb > 0:
+                        q_eff = q_gross * bb / base_amt - q_gross if buy else q_gross * (bb + base_amt) / base_amt
+                        virt[r[4]] = q_eff - qb
+                    qe = qb + virt.get(r[4], 0.0)
+                    # after the trade: LP fee stays in the pool; v2 fees retained in the vault are offset in the virtual term
                     if buy:
-                        qa, ba = qb + q_gross + lpfee, c * bb - base_amt
+                        qa, ba = qe + q_gross + lpfee, bb - base_amt
                     else:
-                        qa, ba = qb - (q_gross - lpfee), c * bb + base_amt
+                        qa, ba = qe - q_gross + lpfee, bb + base_amt
                     fee = (lp + pr + cr) / 1e4
                     trades.append((r[1], seq, bt, r[4], 'a', r[5], buy, q_user, base_amt, qa, ba, fee, None))
                 elif r[1] > max_slot:

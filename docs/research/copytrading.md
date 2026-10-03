@@ -18,22 +18,22 @@ on 2026-10-03.
 1. **The pre-registered main test loses money.** It copied the selected wallets that hold long enough to follow (S2),
    about 2 s behind, at $5, selling when the wallet sells.
    - n = 191 copied buys.
-   - Mean net result **-11.0%** per trade (95% CI -15.6% to -6.1%). Median -9.7%. 28% of trades won.
+   - Mean net result **-10.2%** per trade (95% CI -14.6% to -5.4%). Median -9.4%. 28% of trades won.
 2. **Nothing else made money either.** None of the 120 variants tried had a positive mean after costs, and none had a
    confidence interval above zero.
    - The variants covered 3 wallet sets, 4 delays (1, 5, 25 and 75 slots, about 0.4 s to 30 s), 4 sizes ($2, $5, $50,
      $200), 2 exits, and an optimistic 1-slot fill.
    - The best was an idealised copy of the top-PnL wallets, landing in the very next slot at $50 and mirroring their
-     sells: -2.5% (CI -6.7% to +2.4%).
+     sells: -2.4% (CI -6.6% to +2.5%).
    - With no adverse fill at all (0% instead of 0.5% per side), still no variant has a positive mean. The best is
-     -1.5% (CI -5.8% to +3.4%).
+     -1.4% (CI -5.7% to +3.5%).
 3. **Why it fails, from the data:**
    - **The wallets whose profits persist are too fast to copy.** The top-PnL wallets (S1) kept making money in the
      test window: 61% of them were positive, +127 SOL in total. But their median hold is 32 s. At a 2 s copy delay,
      56% of our fills cost more than 10% above the wallet's own price, and the copies lost (-5.9% mean).
-   - **The wallets slow enough to copy have no persistent edge.** Only 36% of S2 wallets (median hold 141 s) were
+   - **The wallets slow enough to copy have no persistent edge.** Only 38% of S2 wallets (median hold 141 s) were
      profitable in the test window. Their formation-window profit did not carry over.
-   - Copying random active wallets (control C0, n = 1,736) loses about the same, -10.1% mean at 2 s and $5. Selecting
+   - Copying random active wallets (control C0, n = 1,741) loses about the same, -9.8% mean at 2 s and $5. Selecting
      wallets by past PnL added nothing a copier can capture.
 4. **This matches the literature.** The one peer-reviewed study found that leaders make money (+14%) and plain copying
    loses; only a purpose-built filter left copiers +3%
@@ -123,9 +123,17 @@ direction, SOL and token amounts, and pool reserves.
   6.1 s). Block time has 1 s resolution, so each value is uncertain by ±0.5 s.
 - **Fill model** (`validate_fills.py`, formation data): each real buy is predicted from the pool state just before it.
   - Bonding curve: the median error is 0.00%.
-  - PumpSwap: the event's base reserve overprices fills on many pools (median +4.5%, p95 +30%). So the effective base
-    reserve is calibrated per pool from the pool's last 5 trades. After that, buys have a median error of -0.2%
-    (p10 -2.3%, which errs against us) and sells -0.01% (p10 -1.0%, p90 +1.1%).
+  - PumpSwap prices on an **effective quote reserve = vault + `Pool.virtual_quote_reserves`**. The virtual term is a
+    signed i128, often negative since 2026-09-30 (the same math as `packages/core/src/amm/pump-swap.ts`; BT-1 replays
+    353 real swaps exactly with it).
+    - Pricing on the vault alone (the event's `pool_quote_token_reserves`) is wrong by a median +4.5% (p95 +30%).
+    - The collector did not store the virtual term, so it is recovered exactly from each trade's own amounts:
+      buy `Qeff = q*B/base - q`, sell `Qeff = q*(B+base)/base`. That value is carried to the pool's next trade.
+    - Predicting each swap from the previous recorded trade in the pool gives a median error of 0.000% for buys and
+      sells.
+    - The tails remain: buys p10 -2.3%, which errs against us; sells p90 +1.2%. 60% of buys and 83% of sells are
+      within 1%. The tails are about the same when the previous trade is in an earlier slot. Their cause (pool changes
+      between recorded trades) was not verified.
   - In stream order, 13.5% of consecutive curve trades do not chain exactly. Most likely this is order within a slot.
 
 **Windows (pre-registered):**
@@ -150,7 +158,7 @@ pool at the end of F (with fees).
   tokens (control).
 
 **Signals:** a selected wallet's first buy of a token (at least 0.05 SOL) during T. Each token is copied once per set.
-This gave 331 signals for S1, 191 for S2 and 1,736 for C0.
+This gave 331 signals for S1, 191 for S2 and 1,741 for C0.
 
 **Copy simulation:**
 - **Entry:** our buy fills against the pool state at the end of slot `s + d`.
@@ -168,7 +176,7 @@ This gave 331 signals for S1, 191 for S2 and 1,736 for C0.
 ### Results
 
 **Pre-registered primary cell:** S2, 5 slots (about 2 s), $5, E1.
-- n = 191; mean **-11.0%** [-15.6, -6.1]; median -9.7% [-11.7, -7.4].
+- n = 191; mean **-10.2%** [-14.6, -5.4]; median -9.4% [-11.0, -6.4].
 - Win rate 28%; worst trade -101% (fixed costs on a full loss).
 - Under the pre-registered rule, the verdict is **"not a usable entry signal"**.
 
@@ -178,68 +186,68 @@ This gave 331 signals for S1, 191 for S2 and 1,736 for C0.
 
 | set | delay (slots) | size | exit | n | mean [95% CI] | median [95% CI] | win | worst | paid >10% over leader |
 |---|---|---|---|---|---|---|---|---|---|
-| S2 | 1 | $5 | E1 | 191 | -10.1% [-14.5, -5.3] | -8.1% [-11.0, -4.8] | 29% | -101% | 20% |
-| S2 | 1 | $5 | E2 | 191 | -9.9% [-15.0, -4.7] | -24.3% [-31.1, -18.1] | 30% | -100% | 20% |
-| S2 | 5 | $5 | E1 | 191 | -11.0% [-15.6, -6.1] | -9.7% [-11.7, -7.4] | 28% | -101% | 23% |
-| S2 | 5 | $5 | E2 | 191 | -9.1% [-14.2, -4.0] | -23.5% [-30.2, -11.9] | 32% | -101% | 23% |
-| S2 | 25 | $5 | E1 | 191 | -11.1% [-15.6, -6.4] | -9.7% [-11.9, -6.4] | 26% | -101% | 31% |
-| S2 | 25 | $5 | E2 | 191 | -11.8% [-16.9, -6.4] | -24.8% [-28.8, -16.2] | 28% | -101% | 31% |
-| S2 | 75 | $5 | E1 | 191 | -10.6% [-14.9, -6.2] | -9.7% [-11.6, -5.9] | 26% | -101% | 33% |
-| S2 | 75 | $5 | E2 | 191 | -12.2% [-17.5, -6.5] | -22.5% [-28.2, -12.8] | 27% | -101% | 33% |
-| S2 | 1 | $200 | E1 | 191 | -9.3% [-13.7, -4.7] | -7.3% [-10.2, -4.2] | 31% | -100% | 33% |
-| S2 | 1 | $200 | E2 | 191 | -9.3% [-14.2, -4.2] | -23.3% [-30.0, -15.2] | 30% | -100% | 33% |
-| S2 | 5 | $200 | E1 | 191 | -10.4% [-14.8, -5.6] | -9.0% [-11.0, -6.7] | 29% | -100% | 37% |
-| S2 | 5 | $200 | E2 | 191 | -8.5% [-13.5, -3.5] | -22.5% [-29.3, -11.2] | 32% | -100% | 37% |
-| S2 | 25 | $200 | E1 | 191 | -10.5% [-14.9, -5.8] | -8.9% [-11.1, -5.7] | 27% | -100% | 43% |
-| S2 | 25 | $200 | E2 | 191 | -11.3% [-16.4, -6.1] | -24.2% [-28.0, -15.4] | 28% | -100% | 43% |
-| S2 | 75 | $200 | E1 | 191 | -10.0% [-14.2, -5.7] | -9.0% [-10.9, -4.9] | 28% | -100% | 43% |
-| S2 | 75 | $200 | E2 | 191 | -11.7% [-17.0, -6.1] | -21.5% [-27.3, -12.0] | 27% | -100% | 43% |
-| S1 | 1 | $5 | E1 | 331 | -4.4% [-8.7, +0.5] | -11.2% [-13.7, -8.6] | 26% | -86% | 68% |
-| S1 | 1 | $5 | E2 | 331 | -4.9% [-9.5, -0.3] | -28.7% [-33.1, -22.0] | 36% | -82% | 68% |
-| S1 | 5 | $5 | E1 | 331 | -5.9% [-9.7, -1.6] | -9.0% [-11.2, -6.8] | 27% | -87% | 56% |
+| S2 | 1 | $5 | E1 | 191 | -9.3% [-13.7, -4.5] | -7.4% [-10.4, -4.2] | 29% | -101% | 18% |
+| S2 | 1 | $5 | E2 | 191 | -8.4% [-13.4, -3.2] | -21.3% [-29.0, -12.9] | 31% | -100% | 18% |
+| S2 | 5 | $5 | E1 | 191 | -10.2% [-14.6, -5.4] | -9.4% [-11.0, -6.4] | 28% | -101% | 22% |
+| S2 | 5 | $5 | E2 | 191 | -8.1% [-13.1, -3.0] | -21.1% [-29.2, -11.8] | 33% | -101% | 22% |
+| S2 | 25 | $5 | E1 | 191 | -10.4% [-14.9, -5.8] | -8.9% [-11.8, -6.2] | 26% | -101% | 29% |
+| S2 | 25 | $5 | E2 | 191 | -10.7% [-15.7, -5.3] | -21.2% [-28.5, -13.7] | 30% | -101% | 29% |
+| S2 | 75 | $5 | E1 | 191 | -10.1% [-14.3, -5.8] | -9.2% [-11.6, -5.3] | 27% | -101% | 32% |
+| S2 | 75 | $5 | E2 | 191 | -11.6% [-17.0, -5.9] | -22.5% [-28.1, -13.3] | 27% | -101% | 32% |
+| S2 | 1 | $200 | E1 | 191 | -8.7% [-13.0, -4.1] | -6.7% [-9.7, -3.6] | 30% | -100% | 31% |
+| S2 | 1 | $200 | E2 | 191 | -7.9% [-12.8, -2.8] | -20.6% [-27.9, -12.1] | 31% | -100% | 31% |
+| S2 | 5 | $200 | E1 | 191 | -9.6% [-14.0, -5.0] | -8.7% [-10.3, -5.8] | 28% | -100% | 35% |
+| S2 | 5 | $200 | E2 | 191 | -7.6% [-12.5, -2.6] | -20.1% [-28.1, -11.0] | 33% | -100% | 35% |
+| S2 | 25 | $200 | E1 | 191 | -9.9% [-14.3, -5.3] | -8.2% [-11.0, -5.6] | 28% | -100% | 42% |
+| S2 | 25 | $200 | E2 | 191 | -10.3% [-15.2, -5.0] | -20.2% [-27.7, -12.8] | 30% | -100% | 42% |
+| S2 | 75 | $200 | E1 | 191 | -9.6% [-13.6, -5.3] | -8.5% [-10.8, -4.7] | 29% | -100% | 41% |
+| S2 | 75 | $200 | E2 | 191 | -11.0% [-16.3, -5.4] | -21.5% [-27.1, -12.4] | 28% | -100% | 41% |
+| S1 | 1 | $5 | E1 | 331 | -4.4% [-8.7, +0.5] | -11.2% [-13.7, -8.6] | 26% | -86% | 67% |
+| S1 | 1 | $5 | E2 | 331 | -4.8% [-9.4, -0.2] | -28.6% [-33.1, -22.0] | 36% | -82% | 67% |
+| S1 | 5 | $5 | E1 | 331 | -5.9% [-9.7, -1.6] | -8.8% [-11.2, -6.7] | 27% | -87% | 56% |
 | S1 | 5 | $5 | E2 | 331 | -5.2% [-9.9, -0.3] | -21.0% [-26.3, -18.2] | 36% | -86% | 56% |
 | S1 | 25 | $5 | E1 | 331 | -3.7% [-7.4, +0.4] | -4.1% [-4.8, -4.1] | 26% | -85% | 47% |
-| S1 | 25 | $5 | E2 | 331 | -6.9% [-12.4, -1.1] | -18.2% [-23.3, -12.5] | 27% | -86% | 47% |
-| S1 | 75 | $5 | E1 | 331 | -4.3% [-7.6, -0.7] | -4.1% [-4.1, -4.1] | 22% | -86% | 47% |
-| S1 | 75 | $5 | E2 | 331 | -12.0% [-16.8, -7.1] | -13.0% [-20.3, -7.9] | 20% | -95% | 47% |
-| S1 | 1 | $200 | E1 | 331 | -4.0% [-8.1, +0.7] | -10.5% [-13.1, -7.9] | 27% | -85% | 77% |
-| S1 | 1 | $200 | E2 | 331 | -4.4% [-8.9, +0.2] | -27.7% [-32.1, -21.1] | 36% | -81% | 77% |
-| S1 | 5 | $200 | E1 | 331 | -5.4% [-9.1, -1.4] | -8.2% [-10.5, -6.1] | 27% | -86% | 68% |
-| S1 | 5 | $200 | E2 | 331 | -4.7% [-9.4, +0.2] | -20.1% [-25.4, -17.2] | 36% | -85% | 68% |
-| S1 | 25 | $200 | E1 | 331 | -3.3% [-6.8, +0.7] | -3.4% [-4.1, -3.4] | 27% | -85% | 54% |
-| S1 | 25 | $200 | E2 | 331 | -6.4% [-11.8, -0.7] | -17.3% [-22.2, -11.7] | 27% | -85% | 54% |
-| S1 | 75 | $200 | E1 | 331 | -3.8% [-6.9, -0.4] | -3.4% [-3.4, -3.4] | 22% | -86% | 52% |
-| S1 | 75 | $200 | E2 | 331 | -11.5% [-16.2, -6.6] | -12.2% [-19.5, -7.2] | 20% | -94% | 52% |
-| C0 | 1 | $5 | E1 | 1735 | -9.9% [-11.8, -7.9] | -6.7% [-7.3, -6.1] | 20% | -101% | 24% |
-| C0 | 1 | $5 | E2 | 1735 | -6.0% [-7.6, -4.3] | -8.7% [-10.1, -7.3] | 24% | -101% | 24% |
-| C0 | 5 | $5 | E1 | 1736 | -10.1% [-12.0, -8.2] | -5.9% [-6.5, -5.4] | 19% | -101% | 26% |
-| C0 | 5 | $5 | E2 | 1736 | -5.7% [-7.5, -3.9] | -7.4% [-8.7, -6.6] | 24% | -101% | 26% |
-| C0 | 25 | $5 | E1 | 1736 | -9.8% [-11.5, -8.0] | -4.5% [-4.8, -4.1] | 16% | -101% | 25% |
-| C0 | 25 | $5 | E2 | 1736 | -7.7% [-9.4, -5.9] | -6.9% [-7.7, -6.2] | 20% | -101% | 25% |
-| C0 | 75 | $5 | E1 | 1736 | -9.6% [-11.4, -7.4] | -4.1% [-4.1, -4.1] | 12% | -101% | 25% |
-| C0 | 75 | $5 | E2 | 1736 | -8.4% [-10.4, -6.1] | -6.2% [-7.1, -5.6] | 17% | -101% | 25% |
-| C0 | 1 | $200 | E1 | 1735 | -9.2% [-11.1, -7.2] | -6.0% [-6.6, -5.4] | 21% | -100% | 37% |
-| C0 | 1 | $200 | E2 | 1735 | -5.4% [-7.0, -3.7] | -7.9% [-9.3, -6.6] | 25% | -100% | 37% |
-| C0 | 5 | $200 | E1 | 1736 | -9.5% [-11.4, -7.6] | -5.3% [-5.8, -4.8] | 20% | -100% | 39% |
-| C0 | 5 | $200 | E2 | 1736 | -5.2% [-6.8, -3.4] | -6.7% [-7.9, -5.9] | 24% | -100% | 39% |
-| C0 | 25 | $200 | E1 | 1736 | -9.1% [-10.8, -7.5] | -3.9% [-4.1, -3.5] | 17% | -100% | 37% |
-| C0 | 25 | $200 | E2 | 1736 | -7.1% [-8.8, -5.4] | -6.2% [-7.0, -5.5] | 21% | -100% | 37% |
-| C0 | 75 | $200 | E1 | 1736 | -9.0% [-10.8, -6.9] | -3.4% [-3.4, -3.4] | 13% | -100% | 35% |
-| C0 | 75 | $200 | E2 | 1736 | -8.0% [-9.9, -5.9] | -5.5% [-6.4, -4.9] | 17% | -100% | 35% |
+| S1 | 25 | $5 | E2 | 331 | -6.8% [-12.3, -1.0] | -17.8% [-22.9, -12.4] | 27% | -86% | 47% |
+| S1 | 75 | $5 | E1 | 331 | -4.3% [-7.5, -0.6] | -4.1% [-4.1, -4.1] | 22% | -86% | 47% |
+| S1 | 75 | $5 | E2 | 331 | -12.1% [-17.0, -7.2] | -13.1% [-20.3, -7.9] | 20% | -95% | 47% |
+| S1 | 1 | $200 | E1 | 331 | -3.9% [-8.1, +0.8] | -10.5% [-13.1, -7.9] | 27% | -85% | 77% |
+| S1 | 1 | $200 | E2 | 331 | -4.3% [-8.9, +0.3] | -27.7% [-32.1, -21.1] | 36% | -81% | 77% |
+| S1 | 5 | $200 | E1 | 331 | -5.4% [-9.1, -1.3] | -8.1% [-10.5, -6.0] | 27% | -86% | 68% |
+| S1 | 5 | $200 | E2 | 331 | -4.7% [-9.3, +0.2] | -20.1% [-25.4, -17.2] | 36% | -85% | 68% |
+| S1 | 25 | $200 | E1 | 331 | -3.2% [-6.8, +0.7] | -3.4% [-4.1, -3.4] | 27% | -85% | 54% |
+| S1 | 25 | $200 | E2 | 331 | -6.3% [-11.7, -0.5] | -17.1% [-21.7, -11.6] | 27% | -85% | 54% |
+| S1 | 75 | $200 | E1 | 331 | -3.7% [-6.9, -0.3] | -3.4% [-3.4, -3.4] | 22% | -86% | 52% |
+| S1 | 75 | $200 | E2 | 331 | -11.6% [-16.3, -6.7] | -12.3% [-19.5, -7.2] | 20% | -94% | 52% |
+| C0 | 1 | $5 | E1 | 1740 | -9.5% [-11.4, -7.6] | -6.5% [-7.2, -6.0] | 19% | -101% | 22% |
+| C0 | 1 | $5 | E2 | 1740 | -5.6% [-7.2, -4.0] | -8.4% [-9.7, -7.2] | 24% | -101% | 22% |
+| C0 | 5 | $5 | E1 | 1741 | -9.8% [-11.6, -7.9] | -5.9% [-6.3, -5.4] | 19% | -101% | 25% |
+| C0 | 5 | $5 | E2 | 1741 | -5.4% [-7.1, -3.7] | -7.3% [-8.5, -6.5] | 24% | -101% | 25% |
+| C0 | 25 | $5 | E1 | 1741 | -9.5% [-11.1, -7.8] | -4.6% [-4.9, -4.2] | 16% | -101% | 23% |
+| C0 | 25 | $5 | E2 | 1741 | -7.3% [-9.0, -5.7] | -6.7% [-7.5, -6.1] | 20% | -101% | 23% |
+| C0 | 75 | $5 | E1 | 1741 | -9.1% [-10.9, -7.0] | -4.1% [-4.1, -4.1] | 12% | -101% | 24% |
+| C0 | 75 | $5 | E2 | 1741 | -7.9% [-9.9, -5.7] | -6.1% [-6.9, -5.5] | 17% | -101% | 24% |
+| C0 | 1 | $200 | E1 | 1740 | -8.8% [-10.7, -6.9] | -5.8% [-6.5, -5.3] | 20% | -100% | 34% |
+| C0 | 1 | $200 | E2 | 1740 | -5.0% [-6.6, -3.4] | -7.7% [-9.0, -6.5] | 25% | -100% | 34% |
+| C0 | 5 | $200 | E1 | 1741 | -9.1% [-10.9, -7.2] | -5.3% [-5.7, -4.8] | 20% | -100% | 35% |
+| C0 | 5 | $200 | E2 | 1741 | -4.8% [-6.5, -3.1] | -6.6% [-7.8, -5.8] | 25% | -100% | 35% |
+| C0 | 25 | $200 | E1 | 1741 | -8.8% [-10.4, -7.1] | -4.0% [-4.2, -3.6] | 17% | -100% | 33% |
+| C0 | 25 | $200 | E2 | 1741 | -6.7% [-8.4, -5.0] | -6.0% [-6.8, -5.4] | 21% | -100% | 33% |
+| C0 | 75 | $200 | E1 | 1741 | -8.6% [-10.3, -6.5] | -3.4% [-3.4, -3.4] | 13% | -100% | 32% |
+| C0 | 75 | $200 | E2 | 1741 | -7.5% [-9.5, -5.4] | -5.4% [-6.2, -4.8] | 17% | -100% | 32% |
 
 **Leader persistence** (the leaders' own PnL in T against F; positions marked at 14:50):
 
 | set | median hold in F | wallets active in T | share profitable in T | total PnL in F | total PnL in T |
 |---|---|---|---|---|---|
 | S1 (top PnL) | 32.5 s | 41 of 50 | 61% | +581 SOL | +127 SOL |
-| S2 (copyable hold) | 141 s | 45 of 50 | 36% | +128 SOL | +13.5 SOL (median wallet -0.12 SOL) |
+| S2 (copyable hold) | 141 s | 45 of 50 | 38% | +128 SOL | +15.0 SOL (median wallet -0.11 SOL) |
 
 **Sensitivity:**
 - **No adverse fill** (`ADVERSE=0 python3 analyze.py replay ...`): see `derived/final_replay_adverse0.txt`. This
-  removes 0.5% per side from every cell and does not change the conclusion. Primary cell: -10.1% [-14.7, -5.2]. 0 of 120 cells have a positive mean; the best is -1.5% [-5.8, +3.4].
+  removes 0.5% per side from every cell and does not change the conclusion. Primary cell: -9.2% [-13.8, -4.4]. 0 of 120 cells have a positive mean; the best is -1.4% [-5.7, +3.5].
 - **Size:** $200 results are within about 1 point of $5. At these pool sizes our own price impact is small next to the
   wallet's lead.
-- **Delay:** shorter delays do not rescue the copy. Even the optimistic same-next-slot fill loses (-2.5% best case,
+- **Delay:** shorter delays do not rescue the copy. Even the optimistic same-next-slot fill loses (-2.4% best case,
   S1 at $50). The lag measured on the free path (0.76 s median) makes 2 s or more the realistic case.
 
 ### Limits
@@ -266,9 +274,8 @@ This gave 331 signals for S1, 191 for S2 and 1,736 for C0.
 **Deviations from PREREG.md**
 
 Before the freeze (before 14:00, so no test data had been read):
-- The PumpSwap pool state uses the event's before-reserves plus the trade's own change, with a per-pool calibrated base
-  reserve. This replaces "the next trade's before-reserves". The reason: the raw event reserves misprice fills
-  (validation above).
+- The PumpSwap pool state is the event's before-reserves plus the trade's own change. This replaces "the next trade's
+  before-reserves". It now uses the effective quote reserve; see item 3 below.
 - Review fixes, commit `a46ba8e`:
   - our own buy kept in the pool;
   - dev runs blind to data at or after 14:00;
@@ -290,6 +297,17 @@ After the freeze (found while checking the test results):
    - Fixed with a proportional footprint, which gives about -100% on that trade, as a real holder would get.
    - The frozen-code output is kept: `derived/final_results_frozen_code.json` and `final_stdout_frozen_code.txt`.
    - Under the frozen code, 0 of 120 cells had a CI above zero, and the primary cell was the same (-11.0%).
+3. **PumpSwap price model** (after the supervisor's review, which used BT-1's measurement). The first results priced
+   PumpSwap on the vault reserve with a per-pool calibrated base reserve, the median of the pool's last 5 trades. No
+   cell ever priced fills on the vault alone; that model was only a diagnostic in `validate_fills.py`.
+   - The calibration matched spot price but put the depth on the wrong side: a scaled base instead of
+     vault + virtual quote.
+   - Recomputed with vault + virtual: every cell's mean moved by -0.1 to +1.5 points (median +0.4). The primary cell
+     moved from -11.0% to -10.2%.
+   - The move is slightly less negative, not more as expected. The reason was not investigated.
+   - The conclusion is unchanged: 0 of 120 cells positive.
+   - Earlier outputs are kept: `derived/final_results_basecalib.json` and `final_stdout_basecalib.txt`.
+4. SOL price at the final run was $119.66 (Jupiter, read at run time).
 
 **Variants tried:** 120 pre-registered cells, plus the 0% adverse sensitivity. Development runs used only formation
 data from before 14:00 (`derived/dev_*`).
@@ -299,13 +317,13 @@ data from before 14:00 (`derived/dev_*`).
 **No copy-trading signal in Zeroed.** Do not build wallet watching as an entry trigger.
 - On this evidence, the gain belongs to wallets that are faster than any copier.
 - The wallets slow enough to copy did not keep their edge.
-- Copying loses about 5-11% per trade after costs, at every delay and size tested.
+- Copying loses about 3-12% per trade on average after costs, at every delay and size tested.
 
 **Keep, as research tooling only (no trading use):**
 - `research/copytrading/collect.mjs` is a free, program-wide trade stream. It adds no product, user data or paid
   service, and is useful for future base-rate studies.
-- The finding that PumpSwap event reserves need per-pool calibration matters for any quote or simulation Zeroed builds
-  on these events. It belongs in `docs/research/execution.md` when that document is next updated.
+- Quotes and simulations built on PumpSwap events must price on vault + `virtual_quote_reserves`. Using the event's
+  vault reserve alone misprices fills by a median 4.5%. This is recorded in `docs/research/execution.md`.
 
 **What would reopen it.** A new pre-registered test should show a positive primary cell with a CI above zero. It would
 need two things this test lacked: a formation window of weeks of wallet history, and a delay measured on Zeroed's own
