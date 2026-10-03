@@ -90,8 +90,8 @@ export const parseWindow = (j: Record<string, unknown>, what: string): PracticeW
 export const loadWindow = (path: string): PracticeWindow => parseWindow(JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>, path);
 
 /**
- * The window a run may use: never a wall later than the committed one. A confirmed window must also match the STATS-1
- * registry: the wall is the Melbourne day with the date of every registered holdout's first UTC day.
+ * The window a run may use: never a wall later than the committed one. When a study or holdout registry is given, its
+ * boundary must agree: the wall is the Melbourne day with the date of every registered holdout's first UTC day.
  */
 /**
  * BT-2's study registry (`docs/evidence/bt2/registry.json`): the STATS-1 holdout registry plus the study plan. The plan's
@@ -114,8 +114,9 @@ export const resolveWindow = (committed: PracticeWindow, given: PracticeWindow, 
   }
   for (const w of [committed, given]) {
     if (w.confirmedBy === null) continue;
+    // The date is fixed by a recorded ruling (confirmedBy), so a missing registry does not block; one that is present
+    // must agree (supervisor, 2026-10-04).
     const starts = registry === null ? [] : registeredStarts(registry);
-    if (starts.length === 0) throw new HoldoutWallError(`the window says confirmed by ${w.confirmedBy}, but no study registry with a holdout boundary was given`);
     // The registry's fromDay is a UTC data day (BT-2 study-1; ARCHITECTURE.md §14). The window's wall must be the
     // Melbourne day of the same date, which starts 10–11 h before the registered holdout (conservative, supervisor).
     for (const e of starts) {

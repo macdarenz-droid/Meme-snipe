@@ -33,7 +33,11 @@ const drive = (over: Partial<DriveOptions> = {}): DriveOptions => ({
 describe('holdout wall', () => {
   test('the committed window keeps the wall on or before the B4 day until the registry confirms it', () => {
     const w = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
-    if (w.confirmedBy === null) expect(wallDay(w) <= '2026-09-12').toBe(true);
+    // Pinned (supervisor ruling, DECISIONS sealed window): the wall is the start of Melbourne 22 Sep, 10 h before the
+    // UTC holdout day; nothing later.
+    expect(new Date(wallMs(w)).toISOString()).toBe('2026-09-21T14:00:00.000Z');
+    expect(wallMs(w)).toBeLessThanOrEqual(Date.parse('2026-09-22T00:00:00Z') - 10 * 3_600_000);
+    expect(() => resolveWindow(w, { ...w, holdoutFrom: '2026-09-24' }, null)).toThrow(/later than the committed wall/);
     expect(isPracticeDay(w, wallDay(w))).toBe(false);
     expect(isPracticeDay(w, w.holdoutFrom)).toBe(false);
     expect(regimeAt(w, Date.parse('2026-08-03T00:00:00Z'))).toBe('B2-boost');
@@ -71,24 +75,31 @@ describe('holdout wall', () => {
     const earlier = { ...committed, holdoutFrom: addDays(committed.holdoutFrom, -3) };
     expect(resolveWindow(committed, earlier, null)).toBe(earlier);
     const confirmed = { ...earlier, confirmedBy: 'registry@abc' };
-    expect(() => resolveWindow(committed, confirmed, null)).toThrow(/no study registry/);
+    // The committed window agrees with a registry fixed on its own date, and is refused by one fixed a day earlier.
+    const own = { holdouts: createHoldoutRegistry(2), plan: { holdout: { fromDay: wallDay(committed) } } };
+    expect(resolveWindow(committed, committed, own)).toBe(committed);
+    expect(() => resolveWindow(committed, committed, { ...own, plan: { holdout: { fromDay: addDays(wallDay(committed), -1) } } })).toThrow(/must be equal/);
+    // Below: the registry checks on an earlier confirmed wall, against a committed window with no ruling of its own.
+    const committedOpen = { ...committed, confirmedBy: null };
     // The registry's fromDay is a UTC day; the confirmed wall must be the Melbourne day of that date.
     const fromDay = wallDay(earlier);
     const study = (holdouts: ReturnType<typeof createHoldoutRegistry>, planDay?: string) => ({ holdouts, ...(planDay === undefined ? {} : { plan: { holdout: { fromDay: planDay } } }) });
-    expect(() => resolveWindow(committed, confirmed, study(createHoldoutRegistry(2)))).toThrow(/no study registry/);
+    // A ruling fixes the date, so no registry (or one without a boundary) does not block; one that disagrees refuses.
+    expect(resolveWindow(committedOpen, confirmed, null)).toBe(confirmed);
+    expect(resolveWindow(committedOpen, confirmed, study(createHoldoutRegistry(2)))).toBe(confirmed);
     const reg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, -1), toDay: '2026-10-01' });
-    expect(() => resolveWindow(committed, confirmed, study(reg))).toThrow(/must be equal/);
+    expect(() => resolveWindow(committedOpen, confirmed, study(reg))).toThrow(/must be equal/);
     const laterReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, 1), toDay: '2026-10-01' });
-    expect(() => resolveWindow(committed, confirmed, study(laterReg))).toThrow(/must be equal/);
+    expect(() => resolveWindow(committedOpen, confirmed, study(laterReg))).toThrow(/must be equal/);
     const okReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay, toDay: '2026-10-01' });
     const ok = study(okReg);
     // The plan's boundary alone confirms a wall (entries come only when configurations freeze); it must agree too.
-    expect(resolveWindow(committed, confirmed, study(createHoldoutRegistry(2), fromDay))).toBe(confirmed);
-    expect(() => resolveWindow(committed, confirmed, study(createHoldoutRegistry(2), addDays(fromDay, 1)))).toThrow(/the study plan starts/);
-    expect(() => resolveWindow(committed, confirmed, study(okReg, addDays(fromDay, -1)))).toThrow(/must be equal/);
+    expect(resolveWindow(committedOpen, confirmed, study(createHoldoutRegistry(2), fromDay))).toBe(confirmed);
+    expect(() => resolveWindow(committedOpen, confirmed, study(createHoldoutRegistry(2), addDays(fromDay, 1)))).toThrow(/the study plan starts/);
+    expect(() => resolveWindow(committedOpen, confirmed, study(okReg, addDays(fromDay, -1)))).toThrow(/must be equal/);
     // The wall (Melbourne midnight) comes 10 h before the registered UTC day starts.
     expect(utcStart(fromDay) - wallMs(confirmed)).toBe(10 * 3_600_000);
-    expect(resolveWindow(committed, confirmed, ok)).toBe(confirmed);
+    expect(resolveWindow(committedOpen, confirmed, ok)).toBe(confirmed);
   });
 
   test('a planted holdout-day row stops both stages', () => {

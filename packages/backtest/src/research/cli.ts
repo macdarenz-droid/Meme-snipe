@@ -4,7 +4,7 @@
 // The wall comes from the committed research/signals/window.json; --window may only move it earlier. A confirmed window
 // needs the STATS-1 registry. Holdout and embargo days are dropped before any file is opened; a row past the wall stops
 // the run.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../../core/src/config/index.ts';
 import type { ScenarioName } from '../../../core/src/fills/index.ts';
@@ -26,7 +26,12 @@ const flag = (name: string, fallback?: string): string => {
 
 const dataset = flag('dataset');
 const committed = loadWindow(join(import.meta.dirname, '..', '..', '..', '..', 'research', 'signals', 'window.json'));
-const registry = args.includes('--registry') ? (JSON.parse(readFileSync(flag('registry'), 'utf8')) as StudyRegistry) : null;
+// The study registry, checked against the wall whenever it is present (one constant: the path will be repointed when
+// BT-1c's and BT-2's registries are unified). A missing file does not block: the date is fixed by a recorded ruling.
+export const REGISTRY_PATH = join(import.meta.dirname, '..', '..', '..', '..', 'docs', 'evidence', 'bt2', 'registry.json');
+const registryPath = args.includes('--registry') ? flag('registry') : REGISTRY_PATH;
+const registry = existsSync(registryPath) ? (JSON.parse(readFileSync(registryPath, 'utf8')) as StudyRegistry) : null;
+if (args.includes('--registry') && registry === null) throw new Error(`--registry ${registryPath} does not exist`);
 const window = resolveWindow(committed, args.includes('--window') ? loadWindow(flag('window')) : committed, registry);
 const out = flag('out', 'research/signals');
 const seed = flag('seed', 'res3-1');
