@@ -434,6 +434,10 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 	// is missing between the first and last scanned block.
 	chainBreaks := []string{}
 	var lastBlock uint64
+	// Program-upgrade boundary: first trade event with bytes beyond the IDL, and the
+	// first event with an unknown discriminator (both kept raw in the data).
+	extraCol := map[string]int{"curve_trades": indexOf(curveCols, "extra_hex"), "amm_trades": indexOf(ammCols, "extra_hex")}
+	upgradeFirst := map[string]*boundaryInfo{}
 	for _, u := range units {
 		for _, spec := range []struct {
 			base    string
@@ -455,6 +459,11 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 				}
 				slot, _ := strconv.ParseInt(rec[0], 10, 64)
 				bt, _ := strconv.ParseInt(rec[1], 10, 64)
+				if xc := extraCol[spec.base]; xc > 0 && xc < len(rec) && rec[xc] != "" {
+					if b := upgradeFirst[spec.base]; b == nil || slot < b.Slot {
+						upgradeFirst[spec.base] = &boundaryInfo{Slot: slot, BlockTime: bt, TxIdx: rec[2], Signature: rec[4]}
+					}
+				}
 				if spec.base == "blocks" {
 					parent, _ := strconv.ParseUint(rec[2], 10, 64)
 					if lastBlock != 0 && parent != lastBlock && len(chainBreaks) < 100 {
@@ -515,6 +524,11 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 			var e evLine
 			if err := json.Unmarshal(l, &e); err != nil {
 				return err
+			}
+			if e.Event == "Unknown" {
+				if b := upgradeFirst["unknown_event"]; b == nil || int64(e.Slot) < b.Slot {
+					upgradeFirst["unknown_event"] = &boundaryInfo{Slot: int64(e.Slot), BlockTime: e.BlockTime, TxIdx: strconv.Itoa(e.TxIdx), Signature: e.Signature}
+				}
 			}
 			if !inWindow(e.BlockTime) {
 				return nil
@@ -724,11 +738,17 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		"universe_counts": map[string]int{"launch": nLaunch, "grad": nGrad, "direct_pool": nPool, "mints_registered": len(ml)},
 		"decode_failures": decodeFail,
 		"coverage_gaps":   gaps,
-		"chain_breaks":    chainBreaks,
-		"completeness":    "every block's parent is the previous block in the scan (checked on all block rows), so no block is missing between the first and last scanned block",
-		"days":            manifestDays,
-		"mints_files":     mintFiles,
-		"units":           unitsInfo,
+		"program_upgrade_2026_10_02": map[string]any{
+			"note":                  "pump and pump_amm were upgraded without a published IDL: trade events gain 8 bytes (extra_hex) and new event discriminators appear (Unknown events). Earliest occurrences seen in the scanned coverage (any sampled mint for trades, any mint for events); they are lower bounds if coverage starts after the upgrade.",
+			"first_extra_hex_curve": upgradeFirst["curve_trades"],
+			"first_extra_hex_amm":   upgradeFirst["amm_trades"],
+			"first_unknown_event":   upgradeFirst["unknown_event"],
+		},
+		"chain_breaks": chainBreaks,
+		"completeness": "every block's parent is the previous block in the scan (checked on all block rows), so no block is missing between the first and last scanned block",
+		"days":         manifestDays,
+		"mints_files":  mintFiles,
+		"units":        unitsInfo,
 	}
 	mb, _ := json.MarshalIndent(man, "", "  ")
 	return os.WriteFile(filepath.Join(dsDir, "manifest.json"), mb, 0o644)
@@ -745,6 +765,22 @@ type failedVal struct {
 	n       int
 	signers map[string]bool
 	errs    map[string]int
+}
+
+type boundaryInfo struct {
+	Slot      int64  `json:"slot"`
+	BlockTime int64  `json:"block_time"`
+	TxIdx     string `json:"tx_idx"`
+	Signature string `json:"signature"`
+}
+
+func indexOf(cols []string, name string) int {
+	for i, c := range cols {
+		if c == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func aggFromRow(rec []string) *aggVal {

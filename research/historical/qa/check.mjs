@@ -70,7 +70,9 @@ function b58encode(buf) {
 const report = { dataset: path.resolve(ds), generated_at: new Date().toISOString(), coverage: [], decoding: {}, curve: {}, amm: {}, live: [], gecko: null };
 
 // 1-2. coverage and decoding
-for (const d of man.days) report.coverage.push({ day: d.day, blocks_expected: d.blocks_expected, blocks_scanned: d.blocks_scanned, missing: d.blocks_expected - d.blocks_scanned, warm_up: d.warm_up, rows: d.rows });
+// A day is complete when it lies wholly inside the parent-linked coverage; then no
+// block is missing by construction. Partly covered days are flagged, not counted.
+for (const d of man.days) report.coverage.push({ day: d.day, complete: d.complete, blocks_scanned: d.blocks_scanned, warm_up: d.warm_up, rows: d.rows });
 const unknown = {}, newer = {};
 for (const u of man.units) {
   for (const [k, v] of Object.entries(u.unknown_events || {})) unknown[k] = (unknown[k] || 0) + v;
@@ -236,7 +238,7 @@ const poolLast = new Map(); // pool -> {row, post}
   }
   // events after a pool's last trade (withdrawals, deposits) also move the vaults
   for (const [pool, evs] of liq) {
-    applyLiq(pool, 1n << 62n);
+    applyLiq(pool, 1n << 120n); // beyond any (slot, tx, event) key
     const last = evs[evs.length - 1];
     const pl = poolLast.get(pool);
     if (pl && state.has(pool)) {
@@ -355,8 +357,8 @@ fs.writeFileSync(path.join(ds, 'qa', 'report.json'), JSON.stringify(report, null
 const pct = (a, b) => (b ? ((100 * a) / b).toFixed(4) + '%' : 'n/a');
 const md = [];
 md.push(`# Data quality report`, '', `Dataset window ${man.window.from} to ${man.window.to_exclusive} (exclusive). Generated ${report.generated_at}.`, '');
-md.push('## Coverage', '', '| Day | Blocks expected | Scanned | Missing | Warm-up | Curve trades | AMM trades |', '|---|---|---|---|---|---|---|');
-for (const c of report.coverage) md.push(`| ${c.day} | ${c.blocks_expected} | ${c.blocks_scanned} | ${c.missing} | ${c.warm_up ? 'yes' : 'no'} | ${c.rows.curve_trades} | ${c.rows.amm_trades} |`);
+md.push('## Coverage', '', `Scanned slots ${man.coverage.first_slot} to ${man.coverage.last_slot} (block times ${new Date(man.coverage.first_block_time * 1000).toISOString()} to ${new Date(man.coverage.last_block_time * 1000).toISOString()}). Every block's parent is the previous scanned block (${(man.chain_breaks || []).length} breaks), so no block is missing in between.`, '', '| Day | Whole day covered | Blocks | Warm-up | Curve trades | AMM trades |', '|---|---|---|---|---|---|');
+for (const c of report.coverage) md.push(`| ${c.day} | ${c.complete ? 'yes' : 'partly'} | ${c.blocks_scanned} | ${c.warm_up ? 'yes' : 'no'} | ${c.rows.curve_trades} | ${c.rows.amm_trades} |`);
 md.push('', '## Decoding', '', `Decode failures: ${report.decoding.decode_failures}. Unknown events: ${JSON.stringify(report.decoding.unknown_events)}. Newer layouts than the IDL: ${JSON.stringify(report.decoding.newer_layouts)}. Coverage gaps: ${JSON.stringify(report.decoding.coverage_gaps)}.`);
 const c = report.curve, a = report.amm;
 md.push('', '## Reserve chain', '', `Bonding curve real reserves: ${c.real_ok} of ${c.real_pairs} consecutive trade pairs rebuild exactly (${pct(c.real_ok, c.real_pairs)}). Virtual reserves: ${c.virtual_ok} of ${c.virtual_pairs} (${pct(c.virtual_ok, c.virtual_pairs)}) on regular curves; on mayhem-mode curves, where the program re-prices virtual reserves, ${c.virtual_ok_mayhem} of ${c.virtual_pairs_mayhem}.`, `PumpSwap: ${a.chain_ok} of ${a.chain_pairs} trades start from exactly the rebuilt reserves (${pct(a.chain_ok, a.chain_pairs)}); ${a.liquidity_events} liquidity, boost and pool-creation events applied.`);
