@@ -2,8 +2,10 @@
 // and two narrow log streams on Helius and on Alchemy (creates, by the pump mint authority; migrations, by pump's
 // withdraw authority), and PumpPortal's free creates and migrations. Creates keep their log lines for the deployer
 // index (coverage `creates` on Helius); migrations are fetched at confirmed. Full trade streams for every mint are far
-// outside the free budgets (about 14M Helius credits a month for pump logs alone), so no `coverage:rugs:*` start is
-// claimed: H14 stays not covered until a paid stream or a backfill covers trades (RUG-1's wiring rule).
+// outside the free budgets (about 14M Helius credits a month for pump logs alone), so they are off by default and no
+// `coverage:rugs:*` start is claimed: H14 stays not covered until a paid stream (`tradeStreams`) or a backfill covers
+// trades (RUG-1's wiring rule).
+import { PUMP_AMM_PROGRAM, PUMP_PROGRAM } from '../../../core/src/chain/index.ts';
 import type { SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
 import { alchemyRpcUrl, alchemyWsUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
 import {
@@ -74,6 +76,11 @@ export class CreditBook {
 }
 
 export interface LiveProviderOptions {
+  /**
+   * Full pump and PumpSwap trade log streams with rug coverage (`coverage:rugs:*`). Off on the free plans (about 14M
+   * Helius credits a month for pump logs alone, data.md); without them H14 stays not covered.
+   */
+  readonly tradeStreams: boolean;
   readonly secrets: Secrets;
   readonly http: HttpClient;
   readonly factory: SocketFactory;
@@ -117,6 +124,10 @@ export class LiveProviders {
     helius.watchSlots(P1);
     helius.watchLogs(PUMP_CREATE_AUTHORITY, { priority: P3, decodeLogs: true, coverage: 'creates' });
     helius.watchLogs(PUMP_MIGRATION_AUTHORITY, { priority: P2, decodeLogs: true, fetch: P2 });
+    if (o.tradeStreams) {
+      helius.watchLogs(PUMP_PROGRAM, { priority: P3, decodeLogs: true, coverage: 'rugs' });
+      helius.watchLogs(PUMP_AMM_PROGRAM, { priority: P3, decodeLogs: true, coverage: 'rugs' });
+    }
     alchemy.watchSlots(P1);
     alchemy.watchLogs(PUMP_CREATE_AUTHORITY, { priority: P3, decodeLogs: true });
     alchemy.watchLogs(PUMP_MIGRATION_AUTHORITY, { priority: P2, decodeLogs: true });
@@ -128,8 +139,13 @@ export class LiveProviders {
     ];
   }
 
-  /** Item 9: the confirmed create of a shortlisted mint (live H9, H12–H14 read it), at P2. */
-  fetchCreate(signature: string): void {
-    this.#fetcher?.fetch(signature, P2).catch(() => undefined);
+  /** A transaction at confirmed (P2), put on the feed; true when found. */
+  async fetchTx(signature: string): Promise<boolean> {
+    if (this.#fetcher === null) return false;
+    try {
+      return (await this.#fetcher.fetch(signature, P2)) !== null;
+    } catch {
+      return false;
+    }
   }
 }

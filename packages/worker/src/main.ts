@@ -29,7 +29,7 @@ const config = parsed.config;
 const timers = systemTimers();
 const session = startSession(TRIAL_POLICY);
 const credits = new CreditBook(config.stateDir, timers);
-const providers = new LiveProviders({ secrets: environment.secrets, http: fetchHttp, factory: globalSocketFactory, credits });
+const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: fetchHttp, factory: globalSocketFactory, credits });
 const policy = session.policy;
 const rpc = new DryRunRpc({ url: () => heliusRpcUrl(environment.secrets), http: fetchHttp, scheduler: providers.helius, timeoutMs: 10_000 });
 let worker: Worker | null = null;
@@ -56,7 +56,7 @@ try {
     scenario: FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, timers,
     sources: (ctx) => providers.feeds(ctx),
     simulate,
-    fetchCreate: (sig) => providers.fetchCreate(sig),
+    fetchTx: (sig) => providers.fetchTx(sig),
     // SEED-1 supplies the seed (DeployerIndex.seed); until it lands the index starts empty and H14 stays not covered.
     seedDeployers: async () => 'not seeded (SEED-1 not wired yet); H14 not covered until the look-back passes',
     heartbeat: { http: fetchHttp, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },
@@ -66,24 +66,6 @@ try {
   fatal(e);
 }
 const w = worker!;
-
-if (environment.argv.includes('--reconcile')) {
-  const r = await w.reconcileOnly();
-  credits.flush();
-  if (!r.ok) {
-    console.error(r.message);
-    process.exit(r.code);
-  }
-  log(`Reconcile: done, open intents written.`);
-  process.exit(EXIT.clean);
-}
-
-const started = await w.start();
-if (!started.ok) {
-  console.error(started.message);
-  await w.stop(started.code);
-  process.exit(started.code);
-}
 let stopping = false;
 const stop = (): void => {
   if (stopping) return;
@@ -97,3 +79,21 @@ const stop = (): void => {
 };
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
+
+if (environment.argv.includes('--reconcile')) {
+  const r = await w.reconcileOnly();
+  credits.flush();
+  if (!r.ok) {
+    console.error(r.message);
+    process.exit(r.code);
+  }
+  log('Reconcile: done, open intents written.');
+  process.exit(EXIT.clean);
+}
+
+const started = await w.start();
+if (!started.ok && !stopping) {
+  console.error(started.message);
+  await w.stop(started.code);
+  process.exit(started.code);
+}

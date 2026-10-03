@@ -3,7 +3,7 @@
 // the month's credit use (FEED-1), the deployer index and rug labeller wiring (GATE-1b, RUG-1), the confirmed create of a
 // shortlisted mint, and SEED-1's hook before any live source.
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
@@ -292,6 +292,53 @@ describe('deployer index and rug labeller wiring (GATE-1b, RUG-1), and the confi
     await m.run(3_000);
     expect(fetched).toEqual([c.transactions[0]!.signature]);
     await h.worker.stop();
+  });
+});
+
+describe('a cut trade log on a rug-covered stream (RUG-1 wiring rule)', () => {
+  const PUMP = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+  const SIG = '5'.repeat(88);
+  const run = async (found: boolean, covered: boolean) => {
+    const fetched: string[] = [];
+    const h = makeWorker({ fetched, found });
+    await h.worker.reconcile();
+    const m = new Market(h);
+    m.slot(1_000n);
+    if (covered) m.offchain('coverage:rugs:start', { fromSlot: 900n, via: `logs:${PUMP}` });
+    h.worker.feed.ingest('helius', { type: 'logs', signature: SIG, slot: 1_001n, err: null, via: `logs:${PUMP}`, logs: [`Program ${PUMP} invoke [1]`, 'Log truncated'] }, { receivedAt: h.timers.now() });
+    await m.run(3_000, 200, () => m.slot());
+    await m.run(3_000, 200, () => m.slot());
+    const gaps = rowsOf(h.stateDir, 'coverage:rugs:gap');
+    await h.worker.stop();
+    return { fetched, gaps };
+  };
+  const rowsOf = (dir: string, key: string): unknown[] => {
+    const rec = join(dir, 'recorder');
+    // The frames still in the open recorder files (flushed every step).
+    const out: unknown[] = [];
+    for (const boot of readdirSync(rec)) {
+      for (const day of readdirSync(join(rec, boot, 'days'))) {
+        for (const f of readdirSync(join(rec, boot, 'days', day))) {
+          if (!f.startsWith('frames-') || !f.endsWith('.jsonl')) continue;
+          for (const l of readFileSync(join(rec, boot, 'days', day, f), 'utf8').split('\n')) if (l.includes(`"key":"${key}"`)) out.push(JSON.parse(l));
+        }
+      }
+    }
+    return out;
+  };
+
+  it('is fetched, and when its transaction is not found it becomes a bounded coverage:rugs:gap at its slot', async () => {
+    const r = await run(false, true);
+    expect(r.fetched).toEqual([SIG]);
+    expect(r.gaps).toHaveLength(1);
+    expect(JSON.stringify(r.gaps[0])).toContain('"fromSlot":{"$n":"1001"}');
+  });
+
+  it('a fetched transaction closes the hole (no gap), and a stream without rug coverage is left alone', async () => {
+    expect((await run(true, true)).gaps).toEqual([]);
+    const off = await run(false, false);
+    expect(off.fetched).toEqual([]);
+    expect(off.gaps).toEqual([]);
   });
 });
 

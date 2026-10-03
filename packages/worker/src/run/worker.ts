@@ -64,8 +64,11 @@ export interface WorkerDeps {
   readonly sources: (ctx: SourcesContext) => readonly FeedSource[];
   /** TEST-2's dryRunTrade for one leg (used when simulation is on). */
   readonly simulate: (leg: SimLeg) => Promise<DryRunRecord>;
-  /** Item 9: fetch the confirmed create transaction of a shortlisted mint (its signature from the creates stream). */
-  readonly fetchCreate: (signature: string) => void;
+  /**
+   * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
+   * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
+   */
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log') => Promise<boolean>;
   /** SEED-1's start-up hook: seeds the deployer index before the live streams are trusted. */
   readonly seedDeployers: (index: DeployerIndex) => Promise<string>;
   readonly heartbeat: { readonly http: HttpClient; readonly key: string | null; readonly ownerChatId: string | null };
@@ -115,6 +118,8 @@ export class Worker {
   #pools = new Map<string, unknown>();
   #fees = new Map<string, PoolFeeContext>();
   #createSig = new Map<string, string>();
+  /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
+  #rugVias = new Set<string>();
   #intentAt = new Map<string, number>();
   #halted: readonly string[] = [];
   #savedExits = '';
@@ -269,7 +274,12 @@ export class Worker {
         // The paper wallet exists from the first price on: risk needs its balance (R4).
         if (first && this.#account.state.walletLamports !== null && this.#reconciled) this.#publishAccount();
       }
-    } else if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') {
+    } else if (m.key === 'coverage:rugs:start') {
+      const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
+      if (isObj(v) && typeof v['via'] === 'string') this.#rugVias.add(v['via']);
+    }
+    this.#cutTradeLog(m);
+    if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') {
       this.#createSig.set(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
       if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
     }
@@ -281,6 +291,26 @@ export class Worker {
     const ctx = this.#fees.get(mint);
     if (p === null || ctx === undefined) return null;
     return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx };
+  }
+
+  /**
+   * RUG-1's wiring rule: a missed dump trade is a missed label, so a cut or undecodable log on a rug-covered watch is a
+   * coverage gap unless its transaction can be read. The transaction is fetched; if it is not found, a bounded
+   * `coverage:rugs:gap` for that slot goes on the feed (H14 is then not covered across it).
+   */
+  #cutTradeLog(m: MarketEvent): void {
+    const v = m.value;
+    if (!isObj(v) || typeof v['signature'] !== 'string') return;
+    const via = m.key.startsWith('logs:truncated:') ? m.key.slice('logs:truncated:'.length)
+      : m.key.startsWith('logs:undecodable:') ? m.key.slice('logs:undecodable:'.length)
+        : m.key.startsWith('logs:') && v['truncated'] === true && typeof v['via'] === 'string' ? v['via'] : null;
+    if (via === null || !this.#rugVias.has(via)) return;
+    const sig = v['signature'];
+    const slot = m.moment.slot;
+    void this.#d.fetchTx(sig, 'cut-log').catch(() => false).then((found) => {
+      if (found || this.#stopping) return;
+      this.#feed.ingest('worker', { type: 'offchain', key: 'coverage:rugs:gap', value: { fromSlot: slot, toSlot: slot, reason: `cut trade log ${sig}, transaction not found`, via } }, { receivedAt: this.#d.timers.now() });
+    });
   }
 
   #paperMarket(mint: string): PaperMarket | null {
@@ -334,7 +364,7 @@ export class Worker {
     if (r.reasons[0] === SHORTLIST) {
       const mint = r.reasons[2];
       const sig = mint === undefined ? undefined : this.#createSig.get(mint);
-      if (sig !== undefined) this.#d.fetchCreate(sig);
+      if (sig !== undefined) void this.#d.fetchTx(sig, 'create');
       else this.#d.log(`Shortlisted ${mint ?? '?'}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
     }
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
@@ -384,6 +414,7 @@ export class Worker {
     // restart's status reads first.
     const asked = new Set<string>();
     for (;;) {
+      if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start reconcile' };
       this.step();
       const book = this.#engine.book;
       for (const i of Object.values(book.intents)) {
@@ -572,8 +603,11 @@ export class Worker {
   /** For the `--reconcile` entry: settle, report, close without starting anything. */
   async reconcileOnly(): Promise<StartResult> {
     const r = await this.reconcile();
-    this.#recorder?.close();
-    this.#ledger.close();
+    // A signal during the reconcile runs the clean stop, which closes both.
+    if (!this.#stopping) {
+      this.#recorder?.close();
+      this.#ledger.close();
+    }
     return r;
   }
 }

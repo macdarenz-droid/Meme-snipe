@@ -234,7 +234,8 @@ const writeManifest = (dir: string, s: ManifestState): void => {
     units: [{ boot: s.boot, schema: RECORDER_SCHEMA, ...s.counts, unknown_events: {}, newer_layouts: {} }],
     days: dayEntries,
   };
-  writeFileSync(join(dir, 'manifest.json.tmp'), `${JSON.stringify(manifest, null, 2)}\n`);
+  // Plain JSON for DATA-1's tools: a bigint (a slot in a gap) is written as its decimal string.
+  writeFileSync(join(dir, 'manifest.json.tmp'), `${JSON.stringify(manifest, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v), 2)}\n`);
   renameSync(join(dir, 'manifest.json.tmp'), join(dir, 'manifest.json'));
 };
 
