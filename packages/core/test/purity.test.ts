@@ -47,8 +47,22 @@ const GLOBAL_OBJECTS = new Set([
   'Atomics', 'crypto', 'console', 'process', 'performance', 'globalThis', 'Function',
 ]);
 
-/** Inside ledger/: SQL that reads the clock or draws randomness, which would make the ledger nondeterministic. */
-const NONDETERMINISTIC_SQL = /\bnow\b|'now'|\brandom\s*\(|\brandomblob\s*\(|\bcurrent_(timestamp|date|time)\b/i;
+/**
+ * Inside ledger/: SQL that reads the clock, draws randomness or opens another database file. Applied to each
+ * string after adjacent pieces joined by `+` (JS) or `||` (SQL) are merged, so `'n' || 'ow'` is caught too.
+ */
+const NONDETERMINISTIC_SQL: readonly RegExp[] = [
+  /\bnow\b/i, // 'now', "now" (SQLite reads a double-quoted unknown name as a string), now()
+  /\bcurrent_(timestamp|date|time)\b/i,
+  /\b(datetime|date|time|julianday|unixepoch)\s*\(\s*\)/i, // no argument: the current time
+  /\bstrftime\s*\(\s*(['"])[^'"]*\1\s*\)/i, // a format with no time value: the current time
+  /\brandom(blob)?\s*\(/i,
+  /\b(attach|detach)\b/i,
+];
+const sqlReadsTheWorld = (text: string): boolean => {
+  const merged = text.replace(/(['"])\s*\|\|\s*\1/g, '');
+  return NONDETERMINISTIC_SQL.some((re) => re.test(merged));
+};
 
 /** A module path that reaches into the ledger. Only ledger/ itself may; others go through the EffectRunner or an adapter. */
 const LEDGER_PATH = /(^|\/)ledger(\/|\.ts$|$)/;
@@ -213,8 +227,20 @@ const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans
     }
     if (t.type === 'str' && BANNED_STRINGS.has(t.value) && !allow.has(t.value)) found.push(`string '${t.value}'`);
     if ((t.type === 'str' || t.type === 'template') && context.folder !== 'ledger' && LEDGER_PATH.test(t.value)) found.push('reaches into ledger/');
-    if ((t.type === 'str' || t.type === 'template') && context.folder === 'ledger' && NONDETERMINISTIC_SQL.test(t.value)) found.push('SQL reading the clock or randomness');
+
   });
+  if (context.folder === 'ledger') {
+    // Strings joined with + are checked as one, so a value split across pieces cannot hide.
+    for (let k = 0; k < tokens.length; k++) {
+      if (tokens[k]!.type !== 'str' && tokens[k]!.type !== 'template') continue;
+      let text = tokens[k]!.value;
+      while (tokens[k + 1]?.value === '+' && (tokens[k + 2]?.type === 'str' || tokens[k + 2]?.type === 'template')) {
+        text += tokens[k + 2]!.value;
+        k += 2;
+      }
+      if (sqlReadsTheWorld(text)) found.push('SQL reading the clock or randomness');
+    }
+  }
   return found;
 };
 
@@ -389,8 +415,15 @@ describe('purity guard', () => {
     const db = "import { DatabaseSync } from 'node:sqlite'; export { DatabaseSync }; export const now = (db: DatabaseSync) => db.prepare(`select julianday('now'), random()`).get();";
     const ledger = join(SRC, 'ledger', 'zz_db.ts');
     expect(scan(db, allowedFor(ledger), folderBansFor(ledger), { folder: 'ledger' })).toContain('SQL reading the clock or randomness');
-    for (const sql of ["'select now()'", "'select randomblob(8)'", "'insert into t values (current_timestamp)'", '`select current_date`', "\"select datetime('now')\""]) {
+    for (const sql of [
+      "'select datetime()'", "'select date( )'", "'select time()'", "'select julianday()'", "'select unixepoch()'",
+      "\"select strftime('%s')\"", "'select julianday(\"now\")'", "\"select julianday('n'||'ow')\"",
+      "\"select julianday('n' || 'ow')\"", "\"select julianday('\" + \"n\" + \"ow')\"", "\"attach database 'x.db' as x\"",
+      "'DETACH x'", "'select now()'", "'select randomblob(8)'", "'insert into t values (current_timestamp)'", '`select current_date`', "\"select datetime('now')\""]) {
       expect(scan(`const q = ${sql};`, allowedFor(ledger), new Set(), { folder: 'ledger' }), sql).toContain('SQL reading the clock or randomness');
+    }
+    for (const sql of ["'select datetime(?, ?)'", "\"select strftime('%s', ?)\"", "'insert into fills (slot, at) values (?, ?)'", "'select known from t'"]) {
+      expect(scan(`const q = ${sql};`, allowedFor(ledger), new Set(), { folder: 'ledger' }), sql).toEqual([]);
     }
     // Inside ledger/, its own modules are fine; outside, words such as "ledgers" in prose strings are not paths.
     expect(scan("import { codec } from './codec.ts'; import { x } from '../ledger/sqlite.ts';", allowedFor(ledger), new Set(), { folder: 'ledger' })).toEqual([]);

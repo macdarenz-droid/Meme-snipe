@@ -442,7 +442,7 @@ describe('reconcile guard is fair under the cap', () => {
       expect(lastOrphan.size).toBe(orphanCount);
       expect(worstOrphanGap, `${orphanCount} orphans`).toBeLessThanOrEqual((Math.ceil(orphanCount / 15) + 1) * windowSlots);
     }
-  }, 30_000);
+  });
 
   it('a waiter that is no longer asked for gives up its place', () => {
     const g = new ReconcileGuard({ minSlotsBetween: 1n, windowSlots: 10n, maxPerWindow: 1 });
