@@ -128,11 +128,16 @@ export interface ExitTracker {
   /** When the position was first seen blocked since the last attempt. */
   readonly blockedAtMs: number | null;
   readonly blockedRetries: number;
+  /**
+   * Full-exit reasons that fired while an exit was in flight and were merged into it. When that exit was a partial,
+   * its owner sells only its share, so the rest is exited the moment the position is open again (EXIT-1b).
+   */
+  readonly pendingFull: readonly ExitReason[] | null;
 }
 
 export const newTracker = (): ExitTracker => ({
   peak: null, trail: null, partials: 0, lastSold: 0n, partialSeq: null, lastRung: null,
-  quoteFailures: 0, lastQuoteAtMs: null, flatMet: false, blockedAtMs: null, blockedRetries: 0,
+  quoteFailures: 0, lastQuoteAtMs: null, flatMet: false, blockedAtMs: null, blockedRetries: 0, pendingFull: null,
 });
 
 /** Records the rung of a signed attempt. The attempt count itself comes from the book (`Holding.exitAttempts`). */
@@ -279,6 +284,7 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
   }
 
   if (h.status === 'exit_requested' || h.status === 'exit_pending') {
+    if (full.length > 0) t = { ...t, pendingFull: [...new Set([...(t.pendingFull ?? []), ...reasonsOf(full)])] };
     return fired.length === 0 ? hold('exit in progress') : { tracker: t, decision: { kind: 'merge', reasons: reasonsOf(fired), fired }, ignored };
   }
 
@@ -287,10 +293,13 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
   const left = x.ladder.maxAttempts - used;
   // Without a remembered rung (a restart), every attempt went at least one rung up from the first, so `used` is a floor.
   const next = Math.min(Math.max(t.lastRung === null ? 0 : t.lastRung + 1, used), last);
+  // Triggers read the whole holding's value; the order carries the quote for the quantity it sells (EXIT-1b), so its
+  // min-out and the fresh quote at attempt time describe the same sale.
+  const quoteFor = (quantity: bigint): Liquidation => (quantity === h.quantity || fresh === null ? liq : liquidationValue(fresh.value, quantity));
   const exit = (quantity: bigint, partial: boolean, retry: boolean, reasons: readonly ExitReason[]): ExitStep => ({
     tracker: t,
     decision: {
-      kind: 'exit', quantity, partial, retry, reasons, fired, value: liq,
+      kind: 'exit', quantity, partial, retry, reasons, fired, value: quoteFor(quantity),
       // Escalation never goes down: a new owner starts above the highest rung already tried.
       startRung: retry ? last : next,
       maxAttempts: retry ? 1 : Math.max(left, 0),
@@ -308,11 +317,20 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
     if (retries >= x.blockedRetryAttempts) return hold('exit blocked: retries used', fired);
     if (now < t.blockedAtMs! + x.blockedRetryMs) return hold('exit blocked: waiting to retry', fired);
     if (!liq.ok) return hold(`exit blocked: ${liq.detail}`, fired);
-    if (liq.value <= s.retryCost) return hold('exit blocked: the quote does not cover the attempt', fired);
-    t = { ...t, blockedAtMs: null, blockedRetries: retries + 1 };
+    // The retry goes at the last rung: the least it may receive is the quote less that rung's slippage, and that, not
+    // the quote, must pay for the attempt (EXIT-1b).
+    const leastProceeds = mulDiv(liq.value, BPS - BigInt(x.ladder.steps[last]!.minOutBelowTriggerBps), BPS, 'floor');
+    if (leastProceeds <= s.retryCost) return hold('exit blocked: the least accepted proceeds do not cover the attempt', fired);
+    t = { ...t, blockedAtMs: null, blockedRetries: retries + 1, pendingFull: null };
     return exit(h.quantity, false, true, fired.length > 0 ? reasonsOf(fired) : ['emergency']);
   }
 
+  if (t.pendingFull !== null) {
+    // A full exit fired while a partial was in flight: the rest goes now, whatever this step's market shows.
+    const reasons = [...new Set([...t.pendingFull, ...reasonsOf(fired)])];
+    t = { ...t, pendingFull: null };
+    return exit(h.quantity, false, false, reasons);
+  }
   if (full.length > 0) return exit(h.quantity, false, false, reasonsOf(fired));
   if (fired.length > 0) {
     const share = mulDiv(h.quantity, BigInt(x.partialMinShareBps), BPS, 'ceil');

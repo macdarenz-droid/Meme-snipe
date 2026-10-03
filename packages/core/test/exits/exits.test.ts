@@ -471,11 +471,12 @@ describe('a pool drained inside one update', () => {
   });
 });
 
+const blockedBook = (): Book => {
+  const step = decide(holding(), obs(NOW, 0n)).decision;
+  return apply(openBook(), exitBookEvents(PID, step, intentId('ex1'))).book;
+};
+
 describe('blocked exits: retried on the ladder, bounded, alerting', () => {
-  const blockedBook = (): Book => {
-    const step = decide(holding(), obs(NOW, 0n)).decision;
-    return apply(openBook(), exitBookEvents(PID, step, intentId('ex1'))).book;
-  };
 
   test('first seen blocked: wait; retry after blockedRetryMs at the last rung with one attempt', () => {
     const p = blockedBook().positions[PID]!;
@@ -508,8 +509,10 @@ describe('blocked exits: retried on the ladder, bounded, alerting', () => {
     expect(decide(h, obs(at, 0n), plan({ entryReserve: 1n }), t).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: pool has no usable reserves' });
     const v = valueAt(VAULT);
     const at0 = (retryCost: bigint) => ({ ...S, retryCost });
-    expect(decide(h, obs(at), plan(), t, at0(v)).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: the quote does not cover the attempt' });
-    expect(decide(h, obs(at), plan(), t, at0(v - 1n)).decision).toMatchObject({ kind: 'exit', retry: true });
+    // The least proceeds the last rung accepts must cover the attempt (EXIT-1b; the quote alone was not enough).
+    const least = (v * (10_000n - BigInt(X.ladder.steps[X.ladder.steps.length - 1]!.minOutBelowTriggerBps))) / 10_000n;
+    expect(decide(h, obs(at), plan(), t, at0(least)).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: the least accepted proceeds do not cover the attempt' });
+    expect(decide(h, obs(at), plan(), t, at0(least - 1n)).decision).toMatchObject({ kind: 'exit', retry: true });
     // The retry cost is base + the last rung's capped fee + tip, not the first-rung exit cost.
     const n = FILL_CONFIG.network;
     expect(S.retryCost).toBe(n.signaturesPerTx * n.baseFeePerSignature + X.ladder.maxFeePerAttempt + n.tip);
@@ -762,5 +765,70 @@ describe('policy validation of the new exit fields', () => {
     expect(policyIssues(withExits({ atrPeriod: 1 }))).toEqual([]);
     expect(policyIssues(withExits({ atrPeriod: 0 })).length).toBeGreaterThan(0);
     expect(policyIssues(withExits({ atrPeriod: 2.5 })).length).toBeGreaterThan(0);
+  });
+});
+
+// ---------- EXIT-1b (external review): each case first failed on the merged EXIT-1 ----------
+describe('EXIT-1b item 4: an exit quotes the quantity it sells', () => {
+  const tp = (R * BigInt(X.partialAtRBps)) / 10_000n;
+  test('a partial carries the quote for its own quantity, and the ladder, min-out and fill agree in an unchanged pool', () => {
+    const d = decide(holding({ pnl: tp }), obs(NOW)).decision;
+    if (d.kind !== 'exit') throw new Error('expected an exit');
+    expect(d.partial).toBe(true);
+    const half = valueAt(VAULT, d.quantity);
+    expect(d.value).toEqual({ ok: true, value: half });
+    expect(half).toBeLessThan(V0); // the whole holding's value is not what this order sells
+    if (!d.value.ok) throw new Error('unquotable');
+    // Every rung, the last included, accepts the fresh quote of the same quantity in the same pool.
+    for (let rung = 0; rung < X.ladder.steps.length; rung++) {
+      const p = planAttempt(X.ladder, 1, d.value.value, half, rung, 1);
+      expect(p, `rung ${rung}`).toMatchObject({ ok: true, rung });
+      if (!p.ok) continue;
+      const fill = poolSell(pool(VAULT), d.quantity, CTX);
+      expect(fill.ok && fill.trade.userQuote >= p.minOut, `rung ${rung}`).toBe(true);
+    }
+  });
+  test('a full exit still carries the whole holding\'s quote', () => {
+    const d = decide(holding(), obs(NOW), plan({ stopPrice: execPrice(V0, QTY) })).decision;
+    expect(d).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, value: { ok: true, value: V0 } });
+  });
+});
+
+describe('EXIT-1b item 5: a blocked retry must pay for itself after the worst slippage', () => {
+  test('the least proceeds the last rung accepts, not the quote, must exceed the attempt cost', () => {
+    const h = holdingOf(blockedBook().positions[PID]!);
+    const t = { ...newTracker(), blockedAtMs: 0 };
+    const at = X.blockedRetryMs;
+    const v = valueAt(VAULT);
+    const lastSlip = BigInt(X.ladder.steps[X.ladder.steps.length - 1]!.minOutBelowTriggerBps);
+    const leastProceeds = (v * (10_000n - lastSlip)) / 10_000n;
+    const withCost = (retryCost: bigint) => ({ ...S, retryCost });
+    // The quote is above the cost, but the least the last rung accepts is not: no retry.
+    expect(v).toBeGreaterThan(leastProceeds);
+    expect(decide(h, obs(at), plan(), t, withCost(leastProceeds)).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: the least accepted proceeds do not cover the attempt' });
+    expect(decide(h, obs(at), plan(), t, withCost(v - 1n)).decision.kind).toBe('hold');
+    expect(decide(h, obs(at), plan(), t, withCost(leastProceeds - 1n)).decision).toMatchObject({ kind: 'exit', retry: true });
+  });
+});
+
+describe('EXIT-1b item 6: when an in-flight partial resolves, the rest is reassessed at once', () => {
+  const tp = (R * BigInt(X.partialAtRBps)) / 10_000n;
+  test('a stop that fired during the partial exits the rest on the next step, even with no fresh quote', () => {
+    const stop = plan({ stopPrice: execPrice(V0, QTY) });
+    // The partial is in flight; the price stop fires on the whole holding and is merged into the partial's owner.
+    const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
+    expect(pending.decision.kind).toBe('merge');
+    // The partial fills (half sold); the market state is now stale. The rest must go now, not wait for a new trigger.
+    const after = decideExit(S, stop, holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 }), pending.tracker, obs(NOW + 60_000, null));
+    expect(after.decision).toMatchObject({ kind: 'exit', partial: false, quantity: QTY / 2n });
+    if (after.decision.kind !== 'exit') return;
+    expect(after.decision.reasons).toContain('stop');
+    expect(after.decision.value.ok).toBe(false); // no quote: booked blocked at once by exitBookEvents, never a fake fill
+    // Once taken, the remembered trigger is cleared.
+    expect(after.tracker.pendingFull).toBeNull();
+  });
+  test('a take-profit merged into an in-flight exit is not remembered as a full exit', () => {
+    const pending = decide(holding({ status: 'exit_pending', pnl: tp }), obs(NOW));
+    expect(pending.tracker.pendingFull).toBeNull();
   });
 });
