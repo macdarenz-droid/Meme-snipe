@@ -39,6 +39,7 @@ describe('pre-funding evidence (BT-3)', () => {
     expect(w.filesChecked).toBeGreaterThan(1);
     expect(w.sha256sumsSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(w.counts['rows']).toBe(rows.length);
+    expect(w.window).toEqual({ from: '2026-09-20', toExclusive: '2026-09-21' });
   });
 
   test('gate mode refuses a window without SHA256SUMS or without its 14 lead-in days; the labelled mode is never gate evidence', () => {

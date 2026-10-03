@@ -75,7 +75,7 @@ export const writeDataset = (dir: string, rows: readonly DatasetRow[], extra: {
   const first = rows[0]!;
   const last = rows[rows.length - 1]!;
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
-    schema: 3, window: { from: days[0]!.day, to_exclusive: days[days.length - 1]!.day, ...(extra.leadInDays === undefined ? {} : { lead_in_days: extra.leadInDays }) },
+    schema: 3, window: { from: days[0]!.day, to_exclusive: new Date(Date.parse(`${days[days.length - 1]!.day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10), ...(extra.leadInDays === undefined ? {} : { lead_in_days: extra.leadInDays }) },
     coverage: { first_slot: Number(first.slot), last_slot: Number(last.slot), first_block_time: first.blockTime, last_block_time: last.blockTime },
     days,
     mints_files: mintsFiles,
