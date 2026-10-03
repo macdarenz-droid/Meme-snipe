@@ -1,4 +1,4 @@
-// Hard rejects H1-H16 (docs/ARCHITECTURE.md §7.1). Any one fails, no entry. Every threshold comes from the locked
+// Hard rejects H1-H17 (docs/ARCHITECTURE.md §7.1). Any one fails, no entry. Every threshold comes from the locked
 // session policy; every input is read as of the decision moment through `Evidence`, so unknown, stale or degraded
 // input rejects under H16 with the gate that needed it. Evaluation order is fixed and cheapest first.
 import type { Address } from '../chain/bytes.ts';
@@ -11,6 +11,7 @@ import type { PolicySession } from '../config/session.ts';
 import type { Policy } from '../config/policy.ts';
 import { ROUND_TRIP_ROUNDING_LAMPORTS, type RoundTrip } from '../costs/index.ts';
 import { isMint } from '../domain/index.ts';
+import { checkShape } from '../tx/shape.ts';
 import { BPS_DENOMINATOR, type Lamports, type MicroUsd, lamportsToMicroUsd } from '../units/index.ts';
 import { Evidence, type GateContext, type Read } from './evidence.ts';
 import {
@@ -19,6 +20,7 @@ import {
   parseCandles, parseCreate, parseCurve, parseDeployer, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
 } from './facts.ts';
+import { checkCurveTails, checkPoolTails } from './tails.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
 import type { AsOfEntry } from '../engine/asof.ts';
 import type { Commitment } from '../domain/index.ts';
@@ -49,8 +51,8 @@ export interface GateDeps {
   readonly session: PolicySession;
   readonly mode: Mode;
   /**
-   * Set only once a reviewed rug labeller (RUG-1) is wired. Until then H14's prior-rug half is not applied and every
-   * evaluation that reaches H14 carries a `rug-labels-unavailable` note: no labels is never read as zero rugs.
+   * Set only once a reviewed rug labeller (RUG-1) is wired. Until then every evaluation that reaches H14 rejects with
+   * H16 `not-covered` (neededBy H14): no labels is never read as zero rugs.
    */
   readonly rugLabeller?: 'RUG-1';
 }
@@ -198,7 +200,45 @@ const h5 = (env: Env): Outcome => {
   if (pool.isMayhemMode === undefined) return { reasons: [{ gate: 'H16', code: 'missing', input: 'pool', neededBy: 'H5', detail: 'pool has no is_mayhem_mode field' }] };
   if (pool.isMayhemMode) return reject('H5', 'mayhem', `pool ${address} is a mayhem-mode coin`, { input: 'pool' });
   const canonical = isCanonicalPool(pool as unknown as Pool, address as Address);
-  return canonical ? PASS : reject('H5', 'not-canonical', `pool ${address} (index ${pool.index}, creator ${pool.creator}) is not the canonical pool`, { input: 'pool' });
+  if (!canonical) return reject('H5', 'not-canonical', `pool ${address} (index ${pool.index}, creator ${pool.creator}) is not the canonical pool`, { input: 'pool' });
+  // GATE-1c: the pool's trade events since migration must carry the upgrade's tail as zeros, at the right length.
+  const m = readMigration(env, 'H5');
+  if (!m.ok) return fromRead(m);
+  const ctx = { history: env.history, now: env.ev.now };
+  const pt = checkPoolTails(ctx, address, { slot: m.fact.obs.slot, ms: m.fact.migratedAtMs });
+  const t = pt.ok ? checkCurveTails(ctx, env.req.mint) : pt;
+  if (t.ok) return PASS;
+  if (t.code === 'event-tail') return reject('H5', 'event-tail', `unpublished trade-event bytes are live on this SOL pool: ${t.detail}`, { input: 'trades', ...(t.signature ? { value: t.signature } : {}) });
+  return { reasons: [{ gate: 'H16', code: t.code, input: 'trades', neededBy: 'H5', detail: t.detail, ...(t.signature ? { value: t.signature } : {}) }] };
+};
+
+/**
+ * H17 (TX-1b): the entry and its protective exit must be buildable. The one supported-shape check the builders use
+ * (`checkShape`), on the mint and the pool as read: mint program, extension set, mayhem and cashback flags, quote mint
+ * and the PumpSwap account layout. Runs after H5, so the shape is judged on a proven PumpSwap pool of this mint. A
+ * field the shape needs that was not read is unknown evidence (H16).
+ */
+const h17 = (env: Env): Outcome => {
+  const mint = readMint(env, 'H17');
+  if (!mint.ok) return fromRead(mint);
+  const m = mintAccount(env, 'H17');
+  if (!m.ok) return m.out;
+  const p = readPool(env, 'H17');
+  if (!p.ok) return fromRead(p);
+  const { pool, accountBytes } = p.fact;
+  const unread = [
+    ...(accountBytes === undefined ? ['account size'] : []),
+    ...(pool.isMayhemMode === undefined ? ['is_mayhem_mode'] : []),
+    ...(pool.isCashbackCoin === undefined ? ['is_cashback_coin'] : []),
+    ...(pool.coinCreator === undefined ? ['coin_creator'] : []),
+  ];
+  if (unread.length > 0) return { reasons: [{ gate: 'H16', code: 'missing', input: 'pool', neededBy: 'H17', detail: `pool ${unread.join(', ')} not read` }] };
+  const s = checkShape({
+    venue: 'pool', mintProgram: mint.fact.owner, extensions: m.account.extensions.map((e) => e.kind), quoteMint: pool.quoteMint,
+    mayhem: pool.isMayhemMode, cashback: pool.isCashbackCoin, coinCreator: pool.coinCreator, poolAccountBytes: accountBytes,
+  });
+  if (s.ok) return PASS;
+  return reject('H17', 'unsupported-shape', `the builders refuse this trade: ${s.detail}`, { input: s.reason === 'unsupported-mint' ? 'mint' : 'pool', value: s.reason });
 };
 
 const h6 = (env: Env): Outcome => {
@@ -321,10 +361,35 @@ const conc = (env: Env, gate: HardGate): Conc => {
   const pool: PoolFact = p.fact;
   const m = mintAccount(env, gate);
   if (!m.ok) return { ok: false, out: m.out };
+  const malformed = (detail: string): Conc => ({ ok: false, out: { reasons: [{ gate: 'H16', code: 'malformed', input: 'holders', neededBy: gate, detail }] } });
+  // GATE-1d review: a repeated account would count twice and hide unlisted supply; another mint's account is not a holder.
+  const seen = new Set<string>();
+  for (const a of h.fact.accounts) {
+    if (seen.has(a.address)) return malformed(`account ${a.address} is listed more than once`);
+    seen.add(a.address);
+    if (a.mint !== env.req.mint) return malformed(`account ${a.address} holds mint ${a.mint}, not ${env.req.mint}`);
+  }
+  if (h.fact.coverage === 'all') {
+    // GATE-1e: completeness is proven by the exact sum only when the mint supply was read first. With the mint
+    // authority none (H2), supply only falls, so a scan at or after the supply read sums to at most that supply, and
+    // equality means nothing was omitted. Read the other way round, a burn equal to an omitted balance hides it.
+    const mintRead = readMint(env, gate);
+    const ms = mintRead.ok ? mintRead.fact.obs.slot : null;
+    const hs = h.fact.obs.slot;
+    if (ms === null || hs === null || hs < ms) {
+      return { ok: false, out: { reasons: [{ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: gate, detail: `a complete holder set read at slot ${hs} before the mint supply read at slot ${ms}; the supply must be read first` }] } };
+    }
+  }
   if (m.account.supply !== h.fact.supply) {
     return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `holder read has supply ${h.fact.supply}, the mint ${m.account.supply}` }] } };
   }
   const c = memo(env, 'concentration', () => concentration(h.fact, mintAccounts(env.req.mint, { address: pool.address, baseVault: pool.pool.poolBaseTokenAccount })));
+  if (c.unaccounted < 0n) {
+    return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `listed accounts hold ${-c.unaccounted} more than the supply ${c.supply}` }] } };
+  }
+  if (c.coverage === 'all' && c.unaccounted !== 0n) {
+    return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `a complete account set holds ${c.supply - c.unaccounted} of the supply ${c.supply}` }] } };
+  }
   if (c.circulating <= 0n) return { ok: false, out: reject(gate, 'no-circulating', `supply ${c.supply}, excluded ${c.excluded}`, { input: 'holders' }) };
   const notes: GateNote[] = c.classes.filter((x) => x.cls === 'unknown-program' || x.cls === 'locker')
     .map((x) => (x.cls === 'locker'
@@ -339,8 +404,10 @@ const h12 = (env: Env): Outcome => {
   const { c, create, notes } = r;
   const g = env.policy.gates;
   const reasons: GateReason[] = [];
-  const top1 = c.top1 === null ? 0n : shareBps(c.top1.amount, c.circulating);
-  const dev = shareBps(ownerBalance(c, create.creator).amount, c.circulating);
+  const top1Held = c.top1 === null ? 0n : c.top1.amount;
+  const devHeld = ownerBalance(c, create.creator);
+  const top1 = shareBps(top1Held, c.circulating);
+  const dev = shareBps(devHeld, c.circulating);
   const top10 = shareBps(c.top10, c.circulating);
   const of = `of circulating ${c.circulating} (supply ${c.supply}, excluded ${c.excluded})`;
   if (top1 >= BigInt(g.hardHolderBps)) reasons.push({ gate: 'H12', code: 'hard-holder', input: 'holders', detail: `${c.top1?.owner} holds ${top1} bps ${of}`, value: String(top1), limit: String(g.hardHolderBps) });
@@ -349,7 +416,22 @@ const h12 = (env: Env): Outcome => {
     reasons.push({ gate: 'H12', code: 'single-holder', input: 'holders', detail: `${c.top1?.owner} holds ${top1} bps ${of}`, value: String(top1), limit: String(g.singleHolderBps) });
   }
   if (top10 > BigInt(g.top10Bps)) reasons.push({ gate: 'H12', code: 'top10', input: 'holders', detail: `top 10 hold ${top10} bps ${of}`, value: String(top10), limit: String(g.top10Bps) });
-  return { reasons, notes };
+  if (reasons.length > 0 || c.unaccounted === 0n) return { reasons, notes };
+  // GATE-1d: tokens the view does not list could all belong to one owner, listed or not, in any number of accounts.
+  // Pass only if the listed holdings plus all of them stay inside every limit; otherwise the view cannot judge H12.
+  const u = c.unaccounted;
+  // The dev is one of the owners, so the top holder's bound covers the dev's.
+  const worst = { top1: shareBps(top1Held + u, c.circulating), top10: shareBps(c.top10 + u, c.circulating) };
+  const over = [
+    // Both limits: singleHolderBps may equal hardHolderBps (validate.ts), and the hard limit rejects at ">=".
+    worst.top1 > BigInt(g.singleHolderBps) || worst.top1 >= BigInt(g.hardHolderBps) ? `one holder up to ${worst.top1} bps (limits ${g.singleHolderBps}, hard ${g.hardHolderBps})` : null,
+    worst.top10 > BigInt(g.top10Bps) ? `top 10 up to ${worst.top10} bps (limit ${g.top10Bps})` : null,
+  ].filter((x): x is string => x !== null);
+  if (over.length === 0) return { reasons, notes };
+  return {
+    reasons: [{ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12', detail: `${u} tokens are in accounts the view does not list; they could put ${over.join(', ')}; a complete account set is needed`, value: String(u) }],
+    notes,
+  };
 };
 
 const h13 = (env: Env): Outcome => {
@@ -359,14 +441,9 @@ const h13 = (env: Env): Outcome => {
   if (!i.ok) return fromRead(i);
   if (!i.fact.complete) return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'insiders', neededBy: 'H13', detail: 'insider precompute is not complete' }] };
   const { c, create } = r;
-  const notes: GateNote[] = [];
   const held = (wallets: readonly string[]): bigint => {
     let sum = 0n;
-    for (const w of [...new Set([create.creator, ...wallets])].sort()) {
-      const b = ownerBalance(c, w);
-      if (!b.listed) notes.push({ gate: 'H13', code: 'missing-insider-bounded', detail: `${w} is not among the listed holders; counted at the bound ${b.amount}` });
-      sum += b.amount;
-    }
+    for (const w of [...new Set([create.creator, ...wallets])].sort()) sum += ownerBalance(c, w);
     return sum;
   };
   const g = env.policy.gates;
@@ -375,7 +452,17 @@ const h13 = (env: Env): Outcome => {
   if (insider > BigInt(g.insiderBps)) reasons.push({ gate: 'H13', code: 'insider-supply', input: 'insiders', detail: `dev, creation-slot buyers and deployer-funded wallets hold ${insider} bps of circulating`, value: String(insider), limit: String(g.insiderBps) });
   const cluster = shareBps(held(i.fact.devCluster), c.circulating);
   if (cluster > BigInt(g.devClusterBps)) reasons.push({ gate: 'H13', code: 'dev-cluster', input: 'insiders', detail: `the dev's linked cluster holds ${cluster} bps of circulating`, value: String(cluster), limit: String(g.devClusterBps) });
-  return { reasons, notes: [...new Map(notes.map((n) => [n.detail, n])).values()] };
+  if (reasons.length > 0 || c.unaccounted === 0n) return { reasons };
+  // GATE-1d: unlisted tokens could all belong to the insiders (or the cluster) in accounts the view does not show.
+  const u = c.unaccounted;
+  const worstInsider = shareBps(held(i.fact.insiders) + u, c.circulating);
+  const worstCluster = shareBps(held(i.fact.devCluster) + u, c.circulating);
+  const over = [
+    worstInsider > BigInt(g.insiderBps) ? `insiders up to ${worstInsider} bps (limit ${g.insiderBps})` : null,
+    worstCluster > BigInt(g.devClusterBps) ? `the dev's cluster up to ${worstCluster} bps (limit ${g.devClusterBps})` : null,
+  ].filter((x): x is string => x !== null);
+  if (over.length === 0) return { reasons };
+  return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H13', detail: `${u} tokens are in accounts the view does not list; they could put ${over.join(', ')}; a complete account set is needed`, value: String(u) }] };
 };
 
 const h14 = (env: Env): Outcome => {
@@ -406,11 +493,18 @@ const h14 = (env: Env): Outcome => {
     reasons.push({ gate: 'H14', code: 'serial-deployer', input: 'deployer', detail: `${cr.fact.creator} created ${recent.size} mints in 24 h`, value: String(recent.size), limit: String(g.serialMaxMints24h) });
   }
   // Rug labels count only from a reviewed labeller (an explicit flag) that covered the whole look-back (its own
-  // coverage:rugs:* facts). Otherwise the prior-rug half is not judged and says so: no labels is never zero rugs.
-  if (env.rugLabeller === undefined) return { reasons, notes: [{ gate: 'H14', code: 'rug-labels-unavailable', detail: RUG_LABELS_UNAVAILABLE }] };
+  // coverage:rugs:* facts) and judged every mint in it. Otherwise H14 is not covered and rejects: no labels is never
+  // zero rugs (RUG-1 review).
+  if (env.rugLabeller === undefined) {
+    return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: RUG_LABELS_UNAVAILABLE }] };
+  }
   const rugCov = createsCoverage(env.history, env.ev.now, now - lookback, 'rugs');
   if (!rugCov.covered) {
-    return { reasons, notes: [{ gate: 'H14', code: 'rug-labels-unavailable', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}` }] };
+    return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}` }] };
+  }
+  const unjudged = (d.fact.unjudged ?? []).filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
+  if (unjudged.length > 0) {
+    return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'deployer', neededBy: 'H14', detail: `${env.rugLabeller} could not judge ${unjudged.join(', ')} by ${cr.fact.creator}` }] };
   }
   const rugs = d.fact.rugs.filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
   if (rugs.length > 0) reasons.push({ gate: 'H14', code: 'prior-rug', input: 'deployer', detail: `${cr.fact.creator} rugged ${rugs.join(', ')} within ${g.deployerRugLookbackDays} days`, value: String(rugs.length), limit: '0' });
@@ -466,7 +560,7 @@ const h16 = (env: Env): Outcome => {
 
 /**
  * Cheapest first: 0 compares fields of facts already read; 1 derives addresses (PDAs) or classifies holders;
- * 2 checks a quote and a simulation. Within a cost, table order (§7.1). Fixed, so the same input gives the same result.
+ * 2 checks a quote and a simulation. Within a cost, table order (§7.1); H17 follows H5, whose pool it judges. Fixed, so the same input gives the same result.
  */
 const STEPS: readonly { readonly gate: HardGate; readonly cost: 0 | 1 | 2; readonly run: (env: Env) => Outcome }[] = [
   { gate: 'H1', cost: 0, run: h1 },
@@ -482,6 +576,7 @@ const STEPS: readonly { readonly gate: HardGate; readonly cost: 0 | 1 | 2; reado
   { gate: 'H14', cost: 0, run: h14 },
   { gate: 'H16', cost: 0, run: h16 },
   { gate: 'H5', cost: 1, run: h5 },
+  { gate: 'H17', cost: 1, run: h17 },
   { gate: 'H12', cost: 1, run: h12 },
   { gate: 'H13', cost: 1, run: h13 },
   { gate: 'H15', cost: 2, run: h15 },
@@ -497,7 +592,7 @@ const requestProblem = (req: GateRequest): string | null => {
   return null;
 };
 
-/** Evaluates H1-H16 as of `ctx.now`. Pure: the same context, policy and request always give the same result. */
+/** Evaluates H1-H17 as of `ctx.now`. Pure: the same context, policy and request always give the same result. */
 export const evaluateHardRejects = (ctx: GateContext, deps: GateDeps, req: GateRequest, options: HardOptions = {}): HardResult => {
   const stopAtFirst = options.stopAtFirst ?? true;
   const base = { mode: deps.mode, mint: String(req.mint) };

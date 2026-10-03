@@ -1,7 +1,7 @@
 // One backtest run: the real engine (ENG-1) driven through a simulated clock by the DATA-1 dataset, with the S0
 // control as its strategy and the §11 fill model as its outside world. Live and backtest share the engine; only the
 // feed, clock and effect runner here are backtest parts (docs/ARCHITECTURE.md §16.1, §16.2).
-import type { Policy } from '../../core/src/config/index.ts';
+import { exitsFor, type Policy } from '../../core/src/config/index.ts';
 import type { FillConfig, ResearchConfig } from '../../core/src/config/index.ts';
 import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
 import { blockedExitValue, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
@@ -76,16 +76,19 @@ export interface RunResult {
 /** S0 settings from the policy (size, hold, ladder), the fill config and the research config; no code constants. */
 export const s0Config = (o: RunOptions): S0Config => {
   const r = o.research.s0;
+  // S0 controls for U2, so it holds for U2's T_max (CFG-2: selected by universe, never a default block).
+  const universe = 'U2';
+  const { tMaxMs } = exitsFor(o.policy.exits, universe);
   return {
-    universe: 'U2',
+    universe,
     windowFromMs: r.u2WindowFromMs,
     windowToMs: r.u2WindowToMs,
-    holdMs: o.policy.exits.tMaxMs,
+    holdMs: tMaxMs,
     notional: o.policy.capital.minNotional,
     entryMinOutBelowBps: r.entryMinOutBelowBps,
     ladder: { steps: o.policy.exits.ladder.steps, maxAttempts: o.policy.exits.ladder.maxAttempts },
     blockhashValidBlocks: o.fills.network.blockhashValidBlocks,
-    stopEntriesAt: o.windowEnd - o.policy.exits.tMaxMs - r.endMarginMs,
+    stopEntriesAt: o.windowEnd - tMaxMs - r.endMarginMs,
     blockedRetryMs: r.blockedRetryMs,
     blockedRetries: r.blockedRetries,
     ...o.s0,
