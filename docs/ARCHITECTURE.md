@@ -50,7 +50,7 @@ Each universe is selected survivorship-free at a fixed age (never from a trendin
 | --- | --- | --- | --- |
 | U1 | **Survivors**: canonical PumpSwap SOL pools aged 24 h–14 days, liquidity ≥ $50k, market cap ≥ 1,470 SOL | Selected after the dump window; Jupiter's young-token fee no longer applies; pool fee ≤ 1.15% per side, so the round trip is cheaper; the study recommends this universe next ([empirical.md](research/empirical.md) "Implications" 5, [risk.md](research/risk.md) S2) | Range breakout with volume and holder growth (risk S2) |
 | U2 | **Post-graduation reclaim**: graduates aged 60–240 min that still pass every hard reject | Most graduates are dead by 60 min, so the survivors are a different population; this tests whether any of them carry real demand ([risk.md](research/risk.md) S1, [venues.md](research/venues.md) §6 phase 4) | Flush, higher low, reclaim of VWAP since migration, positive SOL-weighted net flow from independent wallets |
-| U3 | **Smart-money confluence** | Studied in RES-2; results pending. Prior evidence: copiers got ~3% per trade where leaders got 14% ([risk.md](research/risk.md) §5.3) | Defined after RES-2 reports |
+| U3 | **Smart-money confluence** | **Excluded** (2026-10-04): RES-2 lost about 11% a trade over 178 buys, and 0 of 120 variants had a positive mean ([copytrading.md](research/copytrading.md)) | Not tested further |
 
 U1 needs history that starts at least 14 days before the first decision day, so its tokens' full lives are in the dataset (DATA-1 must cover that lead-in).
 
@@ -389,6 +389,10 @@ Defined by RUN-1 (2026-10-03); WORKER-1 implements it, and `packages/runner/stub
 
 The runner (`packages/runner`) checks the first health reply (paper, recorder on, simulation on, no signing key, feeds listed) and refuses the run otherwise. It fixes the drill plan before any drill: at least 6 restarts at evenly spaced times (each kills at the first open trade or unresolved intent within its window) and one drop per reported feed, halfway between restarts. Evidence goes to `evidence/dryrun/<label>-<UTC start>-<commit12>/`: `run.json` (commit, plan), `samples.jsonl`, `drills.json`, `recorded.json` (sha256 of every recorded file and where it is kept), `journal.jsonl`, `report.json` and `REPORT.md`. On the host, a merged `packages/runner/qualifying-run.json` (`{"run": "<name>"}`) starts `zeroed-dryrun@<name>` once (pull-based, `zeroed-dryrun-tick.timer`), and the same name resumes it after a reboot or a runner crash; the runner never creates a run on its own, and `run.json` records the unit (`systemd:zeroed-worker.service`) instead of an entry. In the fallback, the "Dry-run rehearsal" workflow chains the jobs: at most 72 h and the jobs the run needs plus 2; only a commit on the integration branch (or the run's own ref head) and only the worker or stub entry run with the keys; restored state that names another label or commit is refused before the worker starts; a 48 h rehearsal fails the 99% uptime check by design, because the gaps between jobs count as down time.
 
+### 12.5 Worker failure is an exposure the stop cannot control (2026-10-04)
+
+There is one trading VPS. The external watchdog detects a dead worker and alerts the owner, but it cannot sell. While the worker is down, an open position has no working stop. RUN-1c measures this window in every restart drill that has a position open: kill → reconciled → able to exit, plus the worst price move seen during it. TEST-3 and RISK-1b's loss scenarios include it. An exit-only standby comes later, and only with exclusive execution ownership and reconciliation before takeover, so a recovery can never sell twice.
+
 ## 13. Labels and validation
 
 ### 13.1 Labels
@@ -448,6 +452,8 @@ No deposit is asked for until all six pass on the same commit, with evidence kep
 | 6 | A proven strategy: in the historical backtest, rules fixed in advance, walk-forward, and a later untouched holdout with ≥ 300 out-of-sample trades whose 95% CI of mean net return is above zero (sample designed for 80% power: n ≥ max(300, n_power)); and the live dry-run paper trades stay consistent with the backtest | BT-2 + STATS-1 (G1, G2) and G3 from the qualifying run |
 
 **One qualifying dry run.** Items 3 and 4, the drills of item 5, G3 and the parity data must all come from the same run on the same commit, on the **VPS** (Frankfurt), started with the recorder and simulation on from its first minute. The GitHub Actions run (RUN-1 fallback) is a rehearsal: it finds bugs early and its evidence is kept, labelled "rehearsal", but it counts for none of the six items.
+
+**Shakedown first.** Without a registered strategy the worker makes no entries, so the first VPS run is an S0 shakedown with a paper-only edge setting (live mode refuses it). It proves the worker, the drills, the recorder and the simulation, and counts for none of the six items. The qualifying run starts on the commit that carries BT-2's registered configurations.
 
 Also required by the owner's "blind backtest" rule, and part of the evidence for items 1, 2 and 6: the **leak test** and the **live/backtest parity test** (§16.1).
 
