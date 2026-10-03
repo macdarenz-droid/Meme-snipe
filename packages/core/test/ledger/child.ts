@@ -5,7 +5,7 @@
 //   reserve <db> <startAt> <maxHeld> <ids...>   waits for startAt, then reserves each id on its own connection
 import { DatabaseSync } from 'node:sqlite';
 import { openLedger, type Ledger } from '../../src/ledger/index.ts';
-import { reserveIn } from '../../src/ledger/ledger.ts';
+import { accountVersionIn, reserveIn } from '../../src/ledger/ledger.ts';
 import { inTransaction } from '../../src/ledger/sqlite.ts';
 import { lamports } from '../../src/units/index.ts';
 import { entryIntent } from '../fixtures.ts';
@@ -28,7 +28,7 @@ const writeOneTrade = (ledger: Ledger, n: number, at?: { readonly stage: number;
     for (let k = 0; k < PADDING; k++) ledger.recordObservation({ provider: 'test', mint: intent.mint, kind: 'pad', receiptTs: n, payload: { k } });
     stop(2);
     ledger.reserveExposure({
-      reservationId: `r${n}`, intentId: intent.id, amount: lamports(1_000), ts: n,
+      reservationId: `r${n}`, intentId: intent.id, amount: lamports(1_000), ts: n, accountVersion: ledger.accountVersion(),
       limits: { maxHeld: lamports(10n ** 15n), maxCount: 1_000_000 },
       transition: { status: 'exposure_reserved', event: 'reserve', effects: [{ type: 'keep_reservation', intentId: intent.id, amount: lamports(1_000) }] },
     });
@@ -66,8 +66,9 @@ if (mode === 'hang') {
   const [startAt, maxHeld, ...ids] = rest;
   const db = new DatabaseSync(path, { readBigInts: true, timeout: 30_000, enableForeignKeyConstraints: true });
   while (Date.now() < Number(startAt)) { /* start together */ }
+  // The version is read inside the reservation's own transaction: each attempt decides from the account as it is.
   const results = ids.map((id, i) => inTransaction(db, () => reserveIn(db, {
-    reservationId: `r-${id}`, intentId: id, amount: lamports(1_000_000), ts: i,
+    reservationId: `r-${id}`, intentId: id, amount: lamports(1_000_000), ts: i, accountVersion: accountVersionIn(db),
     limits: { maxHeld: lamports(BigInt(maxHeld ?? '0')), maxCount: 1_000 },
   })).ok);
   console.log(`result ${JSON.stringify(results)}`);
