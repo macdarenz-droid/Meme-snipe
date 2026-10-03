@@ -6,6 +6,8 @@
 // judge freshness and quality from `obs`, so an old, degraded or missing fact rejects under H16.
 import { P2, P3, type Priority, type Scheduler } from '../scheduler/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
+import type { CandidateReason } from '../engine/strategy.ts';
+import type { Ingest } from '../facts/readers.ts';
 
 /** Keys the worker's strategy reads besides GATE-1's (`gates/*`): see engine/strategy.ts. */
 export const WORKER_FACT_KEYS = {
@@ -30,6 +32,16 @@ export interface FactContext {
   readonly schedulers: Readonly<Record<'helius' | 'alchemy' | 'jupiter' | 'rugcheck', Scheduler>>;
   /** Mints the strategy currently cares about: shortlisted candidates and open positions (refreshed each step). */
   readonly watched: () => ReadonlySet<string>;
+  /**
+   * FACTS-1b: the live Feed itself, for raw reads (`read:*`, `sol-usd` as `offchain` frames). They are recorded and
+   * released like every input, and the engine's FactFeed turns them into gate facts with core's producer, so a
+   * replay of the recording rebuilds the same facts.
+   */
+  readonly ingest: Ingest;
+  /** Each candidate's migration time and the typed reasons of its last evaluation (null before the first). */
+  readonly candidates: () => ReadonlyMap<string, { readonly migratedAtMs: number; readonly gates: readonly CandidateReason[] | null }>;
+  /** The newest slot the feed has seen (the decision slot for point-in-time reads), or null before any. */
+  readonly tip: () => bigint | null;
 }
 
 export interface FactSource {
