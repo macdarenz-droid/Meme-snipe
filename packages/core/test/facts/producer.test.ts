@@ -566,6 +566,26 @@ describe('complete holder set', () => {
     expect(r.reasons.some((x) => x.gate === 'H16' && x.neededBy === 'H12' && x.input === 'holders')).toBe(true);
   });
 
+  it('a fallback after a refused mint-only scan is counted, and an indexed answer missing a holding account forms no fact', () => {
+    const bufs = hc.gpa.accounts.map((a) => Buffer.from(a.data, 'base64'));
+    const holder = bufs.findIndex((b) => b.length > 165 && b.readBigUInt64LE(64) > 1n);
+    const plain = bufs.findIndex((b) => b.length === 165);
+    const v = bufs[holder]!.readBigUInt64LE(64);
+    bufs[holder]!.writeBigUInt64LE(v - v / 2n, 64);
+    bufs[plain]!.writeBigUInt64LE(v / 2n, 64);
+    const all = hc.gpa.accounts.map((a, i) => ({ ...a, data: bufs[i]!.toString('base64') }));
+    // Mint only (the default) counts the extension-less holder: the sum matches.
+    expect(parseHolders(fact(read({ accounts: all, filter: 'mintOnly', fallback: false })))!.accounts.some((a) => a.address === all[plain]!.address)).toBe(true);
+    const indexed = all.filter((_, i) => bufs[i]!.length > 165 && bufs[i]![165] === 2);
+    const w = new FactWorld().push(offchain(RAW.holdersAll(MINT), read({ accounts: indexed, filter: 'indexed', fallback: true }), BigInt(hc.gpa.slot), 1_791_100_000_000, 'helius'));
+    expect(w.facts(holdersKey(MINT))).toEqual([]);
+    expect(w.last(HOLDER_ABSTENTIONS_KEY)).toMatchObject({ counts: { 'mint-only-refused': 1, 'sum-mismatch': 1 } });
+    // A fallback whose indexed answer is complete still forms the fact, and is still counted.
+    const ok = new FactWorld().push(offchain(RAW.holdersAll(MINT), read({ filter: 'indexed', fallback: true }), BigInt(hc.gpa.slot), 1_791_100_000_000, 'helius'));
+    expect(ok.facts(holdersKey(MINT))).toHaveLength(1);
+    expect(ok.last(HOLDER_ABSTENTIONS_KEY)).toMatchObject({ counts: { 'mint-only-refused': 1 } });
+  });
+
   it('a repeated address, a wrong program, a mint read after the scan or a wrong total proves nothing', () => {
     expect(fact(read({ accounts: [...hc.gpa.accounts, hc.gpa.accounts[0]!] }))).toBeUndefined();
     expect(fact(read({ accounts: hc.gpa.accounts.map((a, i) => (i === 0 ? { ...a, owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' } : a)) }))).toBeUndefined();
