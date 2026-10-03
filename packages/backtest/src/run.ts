@@ -1,0 +1,193 @@
+// One backtest run: the real engine (ENG-1) driven through a simulated clock by the DATA-1 dataset, with the S0
+// control as its strategy and the §11 fill model as its outside world. Live and backtest share the engine; only the
+// feed, clock and effect runner here are backtest parts (docs/ARCHITECTURE.md §16.1, §16.2).
+import type { Policy } from '../../core/src/config/index.ts';
+import type { FillConfig } from '../../core/src/config/index.ts';
+import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
+import { blockedExitValue, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
+import { openLedger, type Ledger } from '../../core/src/ledger/index.ts';
+import { isTerminal, type Book } from '../../core/src/lifecycle/index.ts';
+import { type DatasetRow } from './dataset/rows.ts';
+import { type OffchainSeries, seriesReleases } from './dataset/offchain.ts';
+import { type Discovery, Market, rowMoment } from './sim/market.ts';
+import { type StreamSource, StreamReplay } from './sim/replay.ts';
+import { LedgerSink } from './sim/sink.ts';
+import { type AttemptRecord, World } from './sim/world.ts';
+import { S0, type S0Config } from './strategy/s0.ts';
+
+export interface RunOptions {
+  /** Rows in chain order, produced lazily (dataset days) or from memory (tests). */
+  readonly rows: () => Iterator<DatasetRow>;
+  readonly series: readonly OffchainSeries[];
+  readonly seed: string;
+  readonly scenario: ScenarioName;
+  readonly policy: Policy;
+  readonly fills: FillConfig;
+  /** End of the data window (ms): S0 plans no entry that could not finish inside it. */
+  readonly windowEnd: number;
+  /** Open a ledger file with purpose 'backtest' at this path. */
+  readonly ledgerPath?: string;
+  readonly heartbeatBlocks?: number;
+  /** A replacement strategy (the leak test wraps S0). Default: S0 with `s0` overrides. */
+  readonly strategy?: (config: S0Config) => Strategy;
+  readonly s0?: Partial<S0Config>;
+  /** Extra events (a planted leak marker), merged into the replay. */
+  readonly extraEvents?: readonly FeedEvent[];
+}
+
+export interface RunStats {
+  readonly rows: number;
+  readonly events: number;
+  readonly crashes: number;
+  readonly crash: string | null;
+  /** Illegal transitions and refused events in the log, plus records the mirror reducer refused. */
+  readonly illegalStates: number;
+  /** Intents not finished when the data ended. */
+  readonly unreconciledIntents: number;
+  readonly mirrorMatches: boolean;
+  readonly skippedSwaps: number;
+  readonly unquotableSwaps: number;
+  readonly alerts: Readonly<Record<string, number>>;
+  readonly elapsedMs: number;
+}
+
+export interface RunResult {
+  readonly logHash: string;
+  readonly records: readonly LogRecord[];
+  readonly stats: RunStats;
+  readonly attempts: readonly AttemptRecord[];
+  readonly book: Book;
+  readonly discoveries: ReadonlyMap<string, Discovery>;
+  readonly seed: string;
+  readonly scenario: ScenarioName;
+  readonly symbols: ReadonlyMap<string, string>;
+  /** What the last ladder rung would get for `tokens` of `mint` on the pool as the data ended (blocked exits, §11). */
+  readonly endValue: (mint: string, tokens: bigint) => bigint;
+  /** Our trades' remaining effect on a pool's reserves when the data ended. */
+  readonly poolDelta: (pool: string) => PoolDelta;
+  /** Block time (ms) of the last block released. */
+  readonly endedAt: number;
+}
+
+export const DEFAULT_HEARTBEAT_BLOCKS = 150;
+const MINUTE = 60_000;
+
+/** S0 settings from the policy (sizes, hold, ladder) and the fill config; nothing is a code constant. */
+export const s0Config = (o: RunOptions): S0Config => ({
+  universe: 'U2',
+  windowFromMs: 60 * MINUTE,
+  windowToMs: 240 * MINUTE,
+  holdMs: o.policy.exits.tMaxMs,
+  notional: o.policy.capital.minNotional,
+  entryMinOutBelowBps: 300,
+  ladder: { steps: o.policy.exits.ladder.steps, maxAttempts: o.policy.exits.ladder.maxAttempts },
+  blockhashValidBlocks: o.fills.network.blockhashValidBlocks,
+  stopEntriesAt: o.windowEnd - o.policy.exits.tMaxMs - 30 * MINUTE,
+  blockedRetryMs: 10 * MINUTE,
+  blockedRetries: 3,
+  ...o.s0,
+});
+
+/** Process-wide: performance.now is read only here, outside the engine, for the throughput figure. */
+const clockMs = (): number => performance.now();
+
+export const runBacktest = (o: RunOptions): RunResult => {
+  const started = clockMs();
+  const scenario = o.fills.scenarios[o.scenario];
+  const it = o.rows();
+  let rows = 0;
+  const extra = [...(o.extraEvents ?? [])];
+  const source: StreamSource<DatasetRow> = {
+    next: () => {
+      const r = it.next();
+      if (r.done) return null;
+      rows++;
+      return { moment: rowMoment(r.value), item: r.value };
+    },
+  };
+  let engine: Engine | null = null;
+  const book = (): Book => engine!.book;
+  let sink: LedgerSink | null = null;
+  // Activity as of the last drain: blocks are released in their own drain, so this is the state at the block.
+  const live = (): boolean => sink?.active ?? false;
+  let replay: StreamReplay<DatasetRow> | null = null;
+  const market: Market = new Market({
+    heartbeatBlocks: o.heartbeatBlocks ?? DEFAULT_HEARTBEAT_BLOCKS,
+    discoveryLag: (mint) => Math.max(1, drawDiscoverySlots(createRng(`${o.seed}:discovery:${mint}`), scenario)),
+    active: live,
+    schedule: (e) => replay!.schedule(e),
+    series: o.series.map((s) => ({ key: s.name === 'SOL/USD' ? 'sol-usd' : s.name, releases: seriesReleases(s) })),
+  });
+  const discoveries = new Map<string, Discovery>();
+  replay = new StreamReplay<DatasetRow>(source, (row) => market.release(row), (e) => {
+    if (e.kind === 'market' && e.key.startsWith('disc:')) {
+      const d = market.discovery(e.value as { mint: string; pool: string; graduatedAt: number });
+      discoveries.set(d.mint, d);
+      return { ...e, value: d } as MarketEvent;
+    }
+    return e;
+  });
+  for (const e of extra) replay.schedule(e);
+
+  const maxOpen = Number.MAX_SAFE_INTEGER;
+  let ledger: Ledger | null = null;
+  if (o.ledgerPath !== undefined) ledger = openLedger(o.ledgerPath, 'backtest');
+  sink = new LedgerSink(ledger, { maxOpenPositions: maxOpen }, { maxHeld: 2n ** 62n as never, maxCount: maxOpen });
+  const net = o.fills.network;
+  const world = new World({
+    replay: replay as StreamReplay<unknown>, market, book, rng: createRng(`${o.seed}:world`), scenario, network: net,
+    ladder: o.policy.exits.ladder.steps,
+    poolOf: (mint) => discoveries.get(mint)?.pool,
+    onSettled: (a) => sink!.fees(a, net.signaturesPerTx * net.baseFeePerSignature, net.tip, replay!.clock.now().receivedAt),
+  });
+  const config = s0Config(o);
+  const strategy = o.strategy?.(config) ?? new S0(config);
+  // The backtest takes every eligible candidate: no open-position cap beyond one entry in flight at a time (§14).
+  engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: world, seed: o.seed, book: { maxOpenPositions: maxOpen } });
+
+  let crash: string | null = null;
+  try {
+    for (;;) {
+      const step = replay.advance();
+      if (step === 'done') break;
+      if (step === 'events') engine.drain();
+      sink.consume(engine.records);
+    }
+  } catch (err) {
+    crash = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  } finally {
+    ledger?.close();
+  }
+  const records = engine.records;
+  let illegal = sink.divergences;
+  for (const r of records) if (r.type === 'fault' || ((r.type === 'decision' || r.type === 'world') && r.result === 'illegal')) illegal++;
+  const final = engine.book;
+  const unreconciled = Object.values(final.intents).filter((i) => !isTerminal(i)).length;
+  const mirrorMatches = sink.matches(final);
+  return {
+    logHash: engine.logHash(),
+    records,
+    book: final,
+    attempts: [...world.attempts.values()],
+    discoveries,
+    seed: o.seed,
+    scenario: o.scenario,
+    symbols: market.symbols,
+    endedAt: market.blockTime * 1000,
+    poolDelta: (pool) => market.track(pool)?.shifted.delta ?? { base: 0n, vault: 0n, virtual: 0n },
+    endValue: (mint, tokens) => {
+      const pool = discoveries.get(mint)?.pool;
+      const t = pool === undefined ? undefined : market.track(pool);
+      const steps = o.policy.exits.ladder.steps;
+      const last = steps[steps.length - 1];
+      if (t === undefined || last === undefined) return 0n;
+      return blockedExitValue(t.shifted.state, tokens, t.fees, t.baseSupply, { mayhemMode: false, transferFee: false, transferHook: false }, last.minOutBelowTriggerBps);
+    },
+    stats: {
+      rows, events: replay.released, crashes: crash === null ? 0 : 1, crash,
+      illegalStates: illegal + (mirrorMatches ? 0 : 1), unreconciledIntents: unreconciled, mirrorMatches,
+      skippedSwaps: market.skippedSwaps, unquotableSwaps: market.unquotableSwaps,
+      alerts: Object.fromEntries(world.alerts), elapsedMs: Math.round(clockMs() - started),
+    },
+  };
+};
