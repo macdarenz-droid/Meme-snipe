@@ -4,7 +4,7 @@
 import type { AttemptId, IntentId, Signature, TransactionAttempt } from '../../domain/index.ts';
 import type { EffectRunner, Moment } from '../../engine/index.ts';
 import type { Effect, IntentEvent } from '../../lifecycle/index.ts';
-import { type LandingEndpoints, type RpcSignatureStatus, type SendOutcome, LandingError, planBroadcast, planStatusCheck, sendEvent, statusEvents } from '../landing.ts';
+import { type LandingEndpoints, type SendOutcome, heightPoint, planBroadcast, planStatusCheck, sendEvent, statusEventsAt } from '../landing.ts';
 import type { Transport } from './http.ts';
 
 export interface SignedStore {
@@ -57,20 +57,17 @@ async function broadcast(deps: LandingRunnerDeps, effect: Extract<Effect, { type
 
 async function checkStatus(deps: LandingRunnerDeps, effect: Extract<Effect, { type: 'check_status' }>): Promise<void> {
   const plan = planStatusCheck(effect, deps.endpoints);
-  // Height first; the statuses are requested only after it answers (planStatusCheck explains why).
+  // Slot and height first, in one answer; the statuses only after it (planStatusCheck explains why).
   const height = await deps.transport.call(plan.height);
   // A failed read changes nothing: the lifecycle asks again on its next tick.
   if (height.kind !== 'ok') return;
-  if (typeof height.result !== 'number' || !Number.isSafeInteger(height.result) || height.result < 0) {
-    return deps.alert(effect.intentId, 'getBlockHeight answered without a non-negative integer');
-  }
-  const statuses = await deps.transport.call(plan.statuses);
-  if (statuses.kind !== 'ok') return;
   try {
-    const value = (statuses.result as { value?: unknown } | null)?.value;
-    if (!Array.isArray(value)) throw new LandingError('getSignatureStatuses answered without a value list');
-    const events = statusEvents(effect.signatures as readonly Signature[], value as RpcSignatureStatus[], BigInt(height.result), effect.searchHistory);
-    for (const e of events) deps.emit(effect.intentId, e);
+    const at = heightPoint(height.result);
+    const statuses = await deps.transport.call(plan.statuses);
+    if (statuses.kind !== 'ok') return;
+    // Null: the answering node was behind the height's slot, so its not-found proves nothing yet.
+    const events = statusEventsAt(effect.signatures as readonly Signature[], statuses.result, at, effect.searchHistory);
+    for (const e of events ?? []) deps.emit(effect.intentId, e);
   } catch (e) {
     deps.alert(effect.intentId, (e as Error).message);
   }

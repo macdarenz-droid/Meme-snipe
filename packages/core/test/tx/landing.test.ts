@@ -12,6 +12,7 @@ import {
   LandingError,
   buildTrade,
   firstAttemptAllowed,
+  heightPoint,
   planBlockhash,
   planBroadcast,
   planStatusCheck,
@@ -19,6 +20,7 @@ import {
   replacementAllowed,
   sendEvent,
   statusEvents,
+  statusEventsAt,
   tickEvent,
 } from '../../src/tx/index.ts';
 import { type Transport, type TransportResult } from '../../src/tx/adapters/http.ts';
@@ -133,7 +135,7 @@ describe('status reads keep CORE-1 commitment rules', () => {
   test('requests carry every signature, the history flag and the confirmed block height', () => {
     const { attempt } = submitted();
     const plan = planStatusCheck({ type: 'check_status', intentId: attempt.intentId, signatures: [attempt.signature], searchHistory: true }, ENDPOINTS);
-    expect(plan.height.body).toEqual({ jsonrpc: '2.0', id: 1, method: 'getBlockHeight', params: [{ commitment: 'confirmed' }] });
+    expect(plan.height.body).toEqual({ jsonrpc: '2.0', id: 1, method: 'getEpochInfo', params: [{ commitment: 'confirmed' }] });
     expect(plan.statuses.body).toEqual({ jsonrpc: '2.0', id: 1, method: 'getSignatureStatuses', params: [[attempt.signature], { searchTransactionHistory: true }] });
     expect(planTick(ENDPOINTS).body).toEqual({ jsonrpc: '2.0', id: 1, method: 'getBlockHeight', params: [{ commitment: 'confirmed' }] });
     expect(planBlockhash(ENDPOINTS).body).toEqual({ jsonrpc: '2.0', id: 1, method: 'getLatestBlockhash', params: [{ commitment: 'confirmed' }] });
@@ -233,9 +235,9 @@ describe('landing runner (adapter) on a stub transport', () => {
     const transport: Transport = {
       call: async (c) => {
         calls.push(c.body.method);
-        const answer: TransportResult = c.body.method === 'getBlockHeight'
-          ? { kind: 'ok', result: Number(height) }
-          : { kind: 'ok', result: { context: { slot: 1 }, value: [landed ? { slot: 9, err: null, confirmationStatus: 'confirmed' } : null] } };
+        const answer: TransportResult = c.body.method === 'getEpochInfo'
+          ? { kind: 'ok', result: { absoluteSlot: 5_000, blockHeight: Number(height) } }
+          : { kind: 'ok', result: { context: { slot: 5_001 }, value: [landed ? { slot: 5_001, err: null, confirmationStatus: 'confirmed' } : null] } };
         landed = true;
         height = LVBH + 1n;
         return answer;
@@ -246,12 +248,44 @@ describe('landing runner (adapter) on a stub transport', () => {
     landingRunner({ transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => events.push(e), alert: () => undefined }).run(effect, NOW);
     await flush();
     await flush();
-    expect(calls).toEqual(['getBlockHeight', 'getSignatureStatuses']);
+    expect(calls).toEqual(['getEpochInfo', 'getSignatureStatuses']);
     expect(events).toEqual([{ type: 'status', signature: attempt.signature, result: 'succeeded', commitment: 'confirmed', blockHeight: LVBH, searchedHistory: true }]);
     // Fed to CORE-1 the attempt is filled, never expired, so no replacement can follow.
     let s = step(state, { type: 'send_accepted' }).state;
     for (const e of events) s = step(s, e).state;
     expect(s.status).toBe('confirmed_fill');
+  });
+
+  test('re-check item 1: a status answer from a node behind the height read is no answer, so nothing expires', async () => {
+    // One RPC URL, two nodes: getEpochInfo is answered by a node at slot 9,000 whose confirmed height is past
+    // lastValidBlockHeight; getSignatureStatuses by a node at slot 8,990 that has not seen the landing block yet.
+    const { attempt, state } = submitted();
+    const answers = (statusSlot: number): Transport => ({
+      call: async (c) => (c.body.method === 'getEpochInfo'
+        ? { kind: 'ok', result: { absoluteSlot: 9_000, blockHeight: Number(LVBH + 1n) } }
+        : { kind: 'ok', result: { context: { slot: statusSlot }, value: [null] } }),
+    });
+    const effect: Extract<Effect, { type: 'check_status' }> = { type: 'check_status', intentId: attempt.intentId, signatures: [attempt.signature], searchHistory: true };
+    const run = async (transport: Transport) => {
+      const events: IntentEvent[] = [];
+      const alerts: string[] = [];
+      landingRunner({ transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => events.push(e), alert: (_i, m) => alerts.push(m) }).run(effect, NOW);
+      await flush();
+      await flush();
+      return { events, alerts };
+    };
+    const lagging = await run(answers(8_990));
+    expect(lagging).toEqual({ events: [], alerts: [] });
+    // The same not-found from a node at or past the height's slot does expire the attempt, as CORE-1 requires.
+    const current = await run(answers(9_000));
+    expect(current.events).toEqual([{ type: 'status', signature: attempt.signature, result: 'not_found', commitment: null, blockHeight: LVBH + 1n, searchedHistory: true }]);
+    const pending = step(state, { type: 'send_accepted' }).state;
+    expect(step(pending, current.events[0]!).state.status).toBe('expired_unfilled');
+    // Malformed answers are refused, never guessed.
+    expect(() => heightPoint({ absoluteSlot: 1 })).toThrow(LandingError);
+    expect(() => heightPoint(950)).toThrow(LandingError);
+    expect(() => statusEventsAt([attempt.signature], { value: [null] }, { slot: 1n, blockHeight: 1n }, true)).toThrow(/context slot/);
+    expect(statusEventsAt([attempt.signature], { context: { slot: 0 }, value: [null] }, { slot: 1n, blockHeight: 1n }, true)).toBeNull();
   });
 
   test('review item 4: no status request is sent before the height has answered', async () => {
@@ -262,11 +296,11 @@ describe('landing runner (adapter) on a stub transport', () => {
     const effect: Extract<Effect, { type: 'check_status' }> = { type: 'check_status', intentId: attempt.intentId, signatures: [attempt.signature], searchHistory: true };
     landingRunner({ transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => events.push(e), alert: () => undefined }).run(effect, NOW);
     await flush();
-    expect(pending.map((p) => p.method)).toEqual(['getBlockHeight']);
-    pending[0]!.resolve({ kind: 'ok', result: 990 });
+    expect(pending.map((p) => p.method)).toEqual(['getEpochInfo']);
+    pending[0]!.resolve({ kind: 'ok', result: { absoluteSlot: 7_000, blockHeight: 990 } });
     await flush();
-    expect(pending.map((p) => p.method)).toEqual(['getBlockHeight', 'getSignatureStatuses']);
-    pending[1]!.resolve({ kind: 'ok', result: { value: [null] } });
+    expect(pending.map((p) => p.method)).toEqual(['getEpochInfo', 'getSignatureStatuses']);
+    pending[1]!.resolve({ kind: 'ok', result: { context: { slot: 7_000 }, value: [null] } });
     await flush();
     expect(events).toEqual([{ type: 'status', signature: attempt.signature, result: 'not_found', commitment: null, blockHeight: 990n, searchedHistory: true }]);
   });
@@ -295,7 +329,7 @@ describe('landing runner (adapter) on a stub transport', () => {
   test('status checks report status events with the confirmed height; failed reads report nothing', async () => {
     const { attempt } = submitted();
     const effect: Extract<Effect, { type: 'check_status' }> = { type: 'check_status', intentId: attempt.intentId, signatures: [attempt.signature], searchHistory: false };
-    const ok = stub((c) => (c.body.method === 'getBlockHeight' ? { kind: 'ok', result: 950 } : { kind: 'ok', result: { context: { slot: 1 }, value: [{ slot: 9, err: null, confirmationStatus: 'confirmed' }] } }));
+    const ok = stub((c) => (c.body.method === 'getEpochInfo' ? { kind: 'ok', result: { absoluteSlot: 1, blockHeight: 950 } } : { kind: 'ok', result: { context: { slot: 1 }, value: [{ slot: 1, err: null, confirmationStatus: 'confirmed' }] } }));
     const events: IntentEvent[] = [];
     landingRunner({ transport: ok.transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => events.push(e), alert: () => undefined }).run(effect, NOW);
     await flush();

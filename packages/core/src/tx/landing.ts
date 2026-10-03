@@ -90,11 +90,15 @@ export const sendEvent = (outcomes: readonly SendOutcome[], expected: Signature)
 };
 
 /**
- * Requests for a CORE-1 `check_status` effect, in this order: first the confirmed block height, then, only after it
- * has answered, the statuses. The events carry that earlier height. CORE-1 expires an attempt on "not found after a
- * history search" when the height is past lastValidBlockHeight; a height read after the statuses could be newer than
- * the status snapshot, so a transaction that landed in between would be declared expired and replaced: a double
- * trade. Read in this order, a not-found answer is at least as new as the height it is judged against.
+ * Requests for a CORE-1 `check_status` effect, in this order: first one `getEpochInfo` at `confirmed` (its slot and
+ * block height come from the same node in one answer), then, only after it has answered, the statuses. The events
+ * carry that block height, and a status answer counts only if its `context.slot` is at least that slot.
+ *
+ * Why: CORE-1 expires an attempt on "not found after a history search" once the height is past lastValidBlockHeight.
+ * A height read after the statuses, or a status answer from a node that is behind (one RPC URL is load-balanced over
+ * several nodes), could judge a not-found against a height the answering node had not reached; a transaction that
+ * landed in that gap would be declared expired and replaced: a double trade. With both rules, every not-found was
+ * seen by a node at least as far along as the height it is judged against.
  */
 export const planStatusCheck = (
   effect: Extract<Effect, { type: 'check_status' }>,
@@ -102,9 +106,43 @@ export const planStatusCheck = (
 ): { readonly height: HttpCall; readonly statuses: HttpCall } => {
   if (effect.signatures.length === 0) throw new LandingError('no signatures to check');
   return {
-    height: { path: 'rpc', url: endpoints.rpcUrl, body: rpc('getBlockHeight', [{ commitment: 'confirmed' }]) },
+    height: { path: 'rpc', url: endpoints.rpcUrl, body: rpc('getEpochInfo', [{ commitment: 'confirmed' }]) },
     statuses: { path: 'rpc', url: endpoints.rpcUrl, body: rpc('getSignatureStatuses', [effect.signatures, { searchTransactionHistory: effect.searchHistory }]) },
   };
+};
+
+/** A confirmed slot and the block height at it, read in one answer. */
+export interface HeightPoint {
+  readonly slot: bigint;
+  readonly blockHeight: bigint;
+}
+
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+
+/** Reads a `getEpochInfo` result. Anything but two non-negative integers is refused. */
+export const heightPoint = (result: unknown): HeightPoint => {
+  const r = result as { absoluteSlot?: unknown; blockHeight?: unknown } | null;
+  if (r === null || typeof r !== 'object' || !isCount(r.absoluteSlot) || !isCount(r.blockHeight)) {
+    throw new LandingError('getEpochInfo answered without an absolute slot and block height');
+  }
+  return { slot: BigInt(r.absoluteSlot), blockHeight: BigInt(r.blockHeight) };
+};
+
+/**
+ * Lifecycle events from a `getSignatureStatuses` result judged against `at` (read before it). Null when the answering
+ * node was behind `at.slot`: such an answer is no answer, and the lifecycle asks again on its next tick.
+ */
+export const statusEventsAt = (
+  signatures: readonly Signature[],
+  result: unknown,
+  at: HeightPoint,
+  searchedHistory: boolean,
+): IntentEvent[] | null => {
+  const r = result as { context?: { slot?: unknown }; value?: unknown } | null;
+  if (r === null || typeof r !== 'object' || !isCount(r.context?.slot)) throw new LandingError('getSignatureStatuses answered without a context slot');
+  if (!Array.isArray(r.value)) throw new LandingError('getSignatureStatuses answered without a value list');
+  if (BigInt(r.context.slot) < at.slot) return null;
+  return statusEvents(signatures, r.value as RpcSignatureStatus[], at.blockHeight, searchedHistory);
 };
 
 /** One entry of `getSignatureStatuses` `value[]` (null when the node does not know the signature). */
@@ -118,7 +156,7 @@ const COMMITMENTS: ReadonlySet<string> = new Set(['processed', 'confirmed', 'fin
 
 /**
  * Lifecycle `status` events, one per signature, in request order. `blockHeight` is the confirmed height read before
- * the statuses were requested (see planStatusCheck). An entry without a known commitment level is refused rather
+ * the statuses were requested, by a node no further along than the one that answered them (see planStatusCheck). An entry without a known commitment level is refused rather
  * than guessed.
  */
 export const statusEvents = (
