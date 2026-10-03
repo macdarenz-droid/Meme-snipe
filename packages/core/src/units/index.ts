@@ -41,7 +41,7 @@ export const raw = (value: bigint | number): RawAmount => {
 export const microUsd = (value: bigint | number): MicroUsd => asInteger(value, 'micro-usd') as MicroUsd;
 
 export const bps = (value: number): Bps => {
-  if (!Number.isInteger(value) || value < 0 || value > 10_000) throw new RangeError(`bps must be an integer 0..10000, got ${value}`);
+  if (!Number.isInteger(value) || value < 0 || value > Number(BPS_DENOMINATOR)) throw new RangeError(`bps must be an integer 0..10000, got ${value}`);
   return value as Bps;
 };
 
