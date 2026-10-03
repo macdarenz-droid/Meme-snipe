@@ -12,3 +12,5 @@ data/
 *.sqlite-wal
 *.sqlite-shm
 .DS_Store
+*.keystore
+*.jks

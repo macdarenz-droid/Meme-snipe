@@ -1,0 +1,192 @@
+name: Android preview
+
+# Builds the Zeroed preview APK (apps/web wrapped with Capacitor). Pull requests and other branches
+# upload it as a workflow artifact only. A push (or manual run) on the integration branch also
+# replaces the single asset on the "preview" prerelease, so one fixed link always serves the newest build:
+# https://github.com/macdarenz-droid/Meme-snipe/releases/download/preview/zeroed-preview.apk
+
+on:
+  push:
+    branches: [ccr-14987baf-i6lrsl]
+  pull_request:
+    paths:
+      - 'apps/web/**'
+      - 'brand/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/android-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  INTEGRATION_BRANCH: ccr-14987baf-i6lrsl
+  APP_ID: com.macdarenz.zeroed
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # One build at a time per branch, so two runs never create different keystores on a cache miss.
+    concurrency:
+      group: android-preview-${{ github.ref }}
+      cancel-in-progress: false
+    outputs:
+      version_name: ${{ steps.version.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Version
+        id: version
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
+          echo "code=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "name=preview-${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Web build with the preview flag
+        run: pnpm --filter @meme-snipe/web build:preview
+
+      - name: Sync into the Android project
+        run: pnpm --filter @meme-snipe/web exec cap sync android
+
+      - name: Android SDK
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          mgr="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$mgr" --licenses > /dev/null || true
+          "$mgr" "platforms;android-36" "build-tools;36.0.0"
+
+      # Same debug keystore on every build, so a new APK installs over the old one. It is created on
+      # a cache miss and never committed. Caches from a pull request are not shared with the
+      # integration branch; releases always use the integration branch's own cache.
+      - name: Restore debug keystore
+        id: keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.zeroed-preview/debug.keystore
+          key: zeroed-preview-debug-keystore-v1
+
+      - name: Create debug keystore (cache miss only)
+        if: steps.keystore.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.zeroed-preview
+          keytool -genkeypair -keystore ~/.zeroed-preview/debug.keystore \
+            -storepass android -keypass android -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 36500 \
+            -dname "CN=Zeroed preview debug,O=Zeroed,C=AU"
+
+      - name: Build debug APK
+        working-directory: apps/web/android
+        run: |
+          export ZEROED_DEBUG_KEYSTORE="$HOME/.zeroed-preview/debug.keystore"
+          ./gradlew --no-daemon assembleDebug \
+            -PzeroedVersionCode='${{ steps.version.outputs.code }}' \
+            -PzeroedVersionName='${{ steps.version.outputs.name }}'
+
+      - name: Verify the APK
+        run: |
+          set -euo pipefail
+          apk=apps/web/android/app/build/outputs/apk/debug/app-debug.apk
+          bt="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          echo "Build tools: $bt"
+          "$bt/apksigner" verify --verbose --print-certs "$apk"
+          badging="$("$bt/aapt" dump badging "$apk")"
+          echo "$badging" | grep -E "^package:|^application-label:"
+          line="$(echo "$badging" | grep '^package:')"
+          echo "$line" | grep -q "name='$APP_ID'"
+          echo "$line" | grep -q "versionCode='${{ steps.version.outputs.code }}'"
+          echo "$line" | grep -q "versionName='${{ steps.version.outputs.name }}'"
+          mkdir -p out
+          cp "$apk" out/zeroed-preview.apk
+          sha256sum out/zeroed-preview.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeroed-preview-apk
+          path: out/zeroed-preview.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  # Runs only for a push or manual run on the integration branch. Pull requests and every other
+  # branch stop after the artifact above and never touch the release.
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: android-preview-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zeroed-preview-apk
+
+      - name: Skip if a newer commit exists
+        id: newest
+        run: |
+          head="$(gh api "repos/$GH_REPO/commits/$INTEGRATION_BRANCH" --jq .sha)"
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$INTEGRATION_BRANCH moved to $head; a newer run publishes the release."
+          fi
+
+      - name: Move the preview tag and write the notes
+        if: steps.newest.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          old="$(gh api "repos/$GH_REPO/git/ref/tags/preview" --jq .object.sha 2>/dev/null || true)"
+          subject="$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA" --jq '.commit.message | split("\n")[0]')"
+          {
+            echo "Preview build ${{ needs.build.outputs.version_name }}, commit \`${GITHUB_SHA}\`."
+            echo
+            echo "Latest: $subject"
+            if [ -n "$old" ] && [ "$old" != "$GITHUB_SHA" ]; then
+              echo
+              echo "Changes since the previous preview:"
+              gh api "repos/$GH_REPO/compare/$old...$GITHUB_SHA" \
+                --jq '.commits[] | "- " + .sha[0:7] + " " + (.commit.message | split("\n")[0])' | head -40 || true
+            fi
+            echo
+            echo "Sample numbers in this build are made up and carry a \"Sample data\" marker."
+          } > notes.md
+          if [ -n "$old" ]; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/preview" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/preview -f sha="$GITHUB_SHA" > /dev/null
+          fi
+
+      - name: Create or update the prerelease and replace its single asset
+        if: steps.newest.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          if gh release view preview > /dev/null 2>&1; then
+            gh release edit preview --prerelease --title "Zeroed preview" --notes-file notes.md
+          else
+            gh release create preview --prerelease --title "Zeroed preview" --notes-file notes.md --verify-tag
+          fi
+          gh release upload preview zeroed-preview.apk --clobber
+          gh release view preview --json assets --jq '.assets[] | .name + " " + (.size|tostring)'
