@@ -28,7 +28,7 @@ export { BOOK_DETAIL_VERSION, decodeBookDetail, encodeBookDetail } from './schem
 
 export type ReplaySource = Pick<LedgerReader,
   'purpose' | 'decisionModes' | 'allIntents' | 'intentEvents' | 'allPositions' | 'positionEvents' | 'allReservations' |
-  'attempts' | 'fills' | 'pendingOutbox'>;
+  'allAttempts' | 'allFills' | 'pendingOutbox' | 'foreignKeyViolations' | 'rowTotals'>;
 
 export interface ReplayOptions {
   /**
@@ -44,7 +44,7 @@ export interface ReplayOptions {
   readonly compact?: boolean;
 }
 
-export type ReplayTable = 'ledger_meta' | 'decision' | 'intent' | 'intent_event' | 'position' | 'position_event' | 'attempt' | 'fill' | 'reservation';
+export type ReplayTable = 'ledger_meta' | 'decision' | 'intent' | 'intent_event' | 'position' | 'position_event' | 'attempt' | 'fill' | 'reservation' | 'reservation_event';
 
 export interface ReplayFailure {
   /** `illegal`: the reducer refused the event. `divergence`: stored and replayed differ. `stamp`: purpose stamps. `schema`: a stored event off the schema. */
@@ -420,18 +420,34 @@ const replay = (src: ReplaySource, options: ReplayOptions, counts: { -readonly [
   return stamp;
 };
 
-/** Attempts, fills and reservations must be exactly those in the replayed intents. */
+/**
+ * Attempts, fills and reservations must be exactly those in the replayed intents. Per intent first, then whole
+ * tables: no row may lack its parent (`foreign_key_check`), and each table's total must equal the replayed total,
+ * so a row for an intent that does not exist cannot hide outside the per-intent reads.
+ */
 const checkTables = (src: ReplaySource, book: Book, intents: ReadonlyMap<string, IntentRecord>, fail: Fail): void => {
+  const replayed = { fill: 0, attempt: 0, reservation: 0, reservation_event: 0 };
+  const byIntent = <T extends { readonly intentId: string }>(rows: readonly T[]): Map<string, T[]> => {
+    const m = new Map<string, T[]>();
+    for (const r of rows) {
+      const list = m.get(r.intentId);
+      if (list === undefined) m.set(r.intentId, [r]);
+      else list.push(r);
+    }
+    return m;
+  };
+  const allAttempts = byIntent(src.allAttempts());
+  const allFills = byIntent(src.allFills());
   const reservations = new Map(src.allReservations().map((r) => [r.intentId, r]));
   const pending = new Set(src.pendingOutbox().flatMap((o) => (o.intentId === null ? [] : [`${o.effect.type}|${o.intentId}`])));
   for (const id of intents.keys()) {
     const state: IntentState | undefined = book.intents[id];
     if (state === undefined) fail({ kind: 'divergence', table: 'intent', seq: null, intentId: id, event: null, reason: 'stored intent that no replayed event created' });
-    const attempts = src.attempts(id);
+    const attempts = allAttempts.get(id) ?? [];
     if (!same(state.attempts, attempts)) {
       fail({ kind: 'divergence', table: 'attempt', seq: null, intentId: id, event: null, reason: 'stored attempts differ from the replay', expected: state.attempts, actual: attempts });
     }
-    const fills = src.fills(id);
+    const fills = allFills.get(id) ?? [];
     if (!same(state.fills, fills)) {
       fail({ kind: 'divergence', table: 'fill', seq: null, intentId: id, event: null, reason: 'stored fills differ from the replay', expected: state.fills, actual: fills });
     }
@@ -444,5 +460,22 @@ const checkTables = (src: ReplaySource, book: Book, intents: ReadonlyMap<string,
     if (!same(expected ?? null, actual ?? null) && !(awaitingRunner && same({ ...expected, status: 'held' }, actual))) {
       fail({ kind: 'divergence', table: 'reservation', seq: null, intentId: id, event: null, reason: 'stored reservation differs from the replay', expected: expected ?? null, actual: actual ?? null });
     }
+    replayed.attempt += state.attempts.length;
+    replayed.fill += state.fills.length;
+    if (want !== null) replayed.reservation++;
+    if (have?.ended != null) replayed.reservation_event++;
+  }
+  const orphan = src.foreignKeyViolations()[0];
+  if (orphan !== undefined) {
+    const table = (TOTALLED as readonly string[]).includes(orphan.table) ? (orphan.table as ReplayTable) : 'intent';
+    fail({ kind: 'divergence', table, seq: orphan.rowid, intentId: null, event: null, reason: `${orphan.table} row ${String(orphan.rowid)} has no ${orphan.parent} row`, actual: orphan });
+  }
+  const stored = src.rowTotals();
+  for (const table of TOTALLED) {
+    if (stored[table] !== replayed[table]) {
+      fail({ kind: 'divergence', table, seq: null, intentId: null, event: null, reason: `${table} holds ${stored[table]} rows, the replay accounts for ${replayed[table]}`, expected: replayed[table], actual: stored[table] });
+    }
   }
 };
+
+const TOTALLED = ['fill', 'attempt', 'reservation', 'reservation_event'] as const;

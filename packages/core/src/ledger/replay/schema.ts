@@ -32,8 +32,8 @@ const obj = (shape: Readonly<Record<string, Check>>, optional: readonly string[]
   }
 };
 
-const lit = (...values: readonly (string | boolean)[]): Check => (x, path) => {
-  if (!values.includes(x as string)) bad(path, `must be one of ${values.join(', ')}`);
+const lit = (...values: readonly string[]): Check => (x, path) => {
+  if (typeof x !== 'string' || !values.includes(x)) bad(path, `must be one of ${values.join(', ')}`);
 };
 const str: Check = (x, path) => {
   if (typeof x !== 'string' || x.length === 0) bad(path, 'must be a non-empty string');
@@ -46,6 +46,9 @@ const amount: Check = (x, path) => {
 };
 const int: Check = (x, path) => {
   if (!Number.isSafeInteger(x)) bad(path, 'must be a safe integer');
+};
+const nonNegativeInt: Check = (x, path) => {
+  if (!Number.isSafeInteger(x) || (x as number) < 0) bad(path, 'must be an integer >= 0');
 };
 const nullable = (check: Check): Check => (x, path) => {
   if (x !== null) check(x, path);
@@ -68,7 +71,7 @@ const pid = via(positionId);
 const sig = via(signature);
 const commitment = lit('processed', 'confirmed', 'finalized');
 
-const quote = obj({ provider: str, requestId: nullable(str), inAmount: amount, quotedOut: amount, minOut: amount, slippage: int, quotedAtSlot: nullable(amount) });
+const quote = obj({ provider: str, requestId: nullable(str), inAmount: amount, quotedOut: amount, minOut: amount, slippage: nonNegativeInt, quotedAtSlot: nullable(amount) });
 const attempt = obj({ id: via(attemptId), intentId: iid, signedBytesRef: str, signature: sig, blockhash: via(blockhash), lastValidBlockHeight: amount, quote });
 const fill = obj({ intentId: iid, signature: sig, slot: amount, commitment: lit('confirmed', 'finalized'), tokens: amount, sol: amount, fees: amount });
 const reservation = obj({ id: via(reservationId), intentId: iid, amount, status: lit('held', 'released', 'kept') });

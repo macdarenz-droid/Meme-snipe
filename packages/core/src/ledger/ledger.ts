@@ -215,27 +215,11 @@ class LedgerReads {
   }
 
   attempts(intentId: string): TransactionAttempt[] {
-    return this.#db.prepare('SELECT * FROM attempt WHERE intent_id = ? ORDER BY created_ts, rowid').all(intentId).map((r) => ({
-      id: String(r['attempt_id']),
-      intentId: String(r['intent_id']),
-      signedBytesRef: String(r['signed_bytes_ref']),
-      signature: String(r['signature']),
-      blockhash: String(r['blockhash']),
-      lastValidBlockHeight: BigInt(r['last_valid_block_height'] as bigint),
-      quote: fromJson(r['quote']),
-    }) as TransactionAttempt);
+    return this.#db.prepare('SELECT * FROM attempt WHERE intent_id = ? ORDER BY created_ts, rowid').all(intentId).map(toAttempt);
   }
 
   fills(intentId: string): Fill[] {
-    return this.#db.prepare('SELECT * FROM fill WHERE intent_id = ? ORDER BY fill_id').all(intentId).map((r) => ({
-      intentId: String(r['intent_id']),
-      signature: String(r['signature']),
-      slot: BigInt(r['slot'] as bigint),
-      commitment: String(r['commitment']),
-      tokens: amountOf(r['tokens']),
-      sol: amountOf(r['sol']),
-      fees: amountOf(r['fees']),
-    }) as Fill);
+    return this.#db.prepare('SELECT * FROM fill WHERE intent_id = ? ORDER BY fill_id').all(intentId).map(toFill);
   }
 
   hasSnapshot(snapshotId: bigint): boolean {
@@ -320,6 +304,16 @@ class LedgerReads {
     }));
   }
 
+  /** Every attempt, in the order `attempts` returns them per intent. One read: the replay never scans per intent. */
+  allAttempts(): TransactionAttempt[] {
+    return this.#db.prepare('SELECT * FROM attempt ORDER BY created_ts, rowid').all().map(toAttempt);
+  }
+
+  /** Every fill, in the order `fills` returns them per intent (`fill` has no index on `intent_id`). */
+  allFills(): Fill[] {
+    return this.#db.prepare('SELECT * FROM fill ORDER BY fill_id').all().map(toFill);
+  }
+
   /** Every position as created (not its current state), in creation order. */
   allPositions(): StoredPosition[] {
     return this.#db.prepare('SELECT * FROM position ORDER BY created_ts, position_id').all().map((r) => ({
@@ -356,6 +350,19 @@ class LedgerReads {
     }));
   }
 
+  /** Rows whose parent row is missing (`PRAGMA foreign_key_check`), in table and rowid order. Read-only. */
+  foreignKeyViolations(): { readonly table: string; readonly rowid: bigint | null; readonly parent: string }[] {
+    return this.#db.prepare('PRAGMA foreign_key_check').all()
+      .map((r) => ({ table: String(r['table']), rowid: r['rowid'] === null ? null : BigInt(r['rowid'] as bigint), parent: String(r['parent']) }))
+      .sort((a, b) => (a.table < b.table ? -1 : a.table > b.table ? 1 : Number((a.rowid ?? 0n) - (b.rowid ?? 0n))));
+  }
+
+  /** Row totals of the tables the replay checks whole. */
+  rowTotals(): Readonly<Record<'fill' | 'attempt' | 'reservation' | 'reservation_event', number>> {
+    const count = (table: string) => Number(this.#db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.['n']);
+    return { fill: count('fill'), attempt: count('attempt'), reservation: count('reservation'), reservation_event: count('reservation_event') };
+  }
+
   /** The distinct decision modes stored, sorted. */
   decisionModes(): DecisionMode[] {
     return this.#db.prepare('SELECT DISTINCT mode FROM decision ORDER BY mode').all().map((r) => String(r['mode']) as DecisionMode);
@@ -366,6 +373,26 @@ class LedgerReads {
     this.#db.prepare('VACUUM INTO ?').run(destPath);
   }
 }
+
+const toAttempt = (r: Row): TransactionAttempt => ({
+  id: String(r['attempt_id']),
+  intentId: String(r['intent_id']),
+  signedBytesRef: String(r['signed_bytes_ref']),
+  signature: String(r['signature']),
+  blockhash: String(r['blockhash']),
+  lastValidBlockHeight: BigInt(r['last_valid_block_height'] as bigint),
+  quote: fromJson(r['quote']),
+}) as TransactionAttempt;
+
+const toFill = (r: Row): Fill => ({
+  intentId: String(r['intent_id']),
+  signature: String(r['signature']),
+  slot: BigInt(r['slot'] as bigint),
+  commitment: String(r['commitment']),
+  tokens: amountOf(r['tokens']),
+  sol: amountOf(r['sol']),
+  fees: amountOf(r['fees']),
+}) as Fill;
 
 const INTENT_SELECT = `SELECT i.*, e.status AS status, e.ts AS status_ts FROM intent i
   JOIN intent_event e ON e.seq = (SELECT MAX(seq) FROM intent_event x WHERE x.intent_id = i.intent_id)`;

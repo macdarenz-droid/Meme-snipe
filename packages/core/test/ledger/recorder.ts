@@ -21,8 +21,13 @@ export const appliedEvents = (records: readonly LogRecord[]): Timed[] => records
   return [];
 });
 
+export interface RecordOptions {
+  /** End a reservation as soon as the reducer releases or keeps it (default true). False leaves it to the runner. */
+  readonly endReservations?: boolean;
+}
+
 /** Writes every applied event to the ledger. Returns the final book. Throws on an event the reducer refuses. */
-export const recordEvents = (ledger: Ledger, events: readonly Timed[], config: BookConfig): Book => {
+export const recordEvents = (ledger: Ledger, events: readonly Timed[], config: BookConfig, options: RecordOptions = {}): Book => {
   let book = emptyBook(config);
   const opened = new Set<string>();
   for (const { event, ts } of events) {
@@ -55,7 +60,7 @@ export const recordEvents = (ledger: Ledger, events: readonly Timed[], config: B
           const res = ledger.reserveExposure({ reservationId: r.id, intentId: id, amount: r.amount, limits: LIMITS, ts });
           if (!res.ok) throw new Error(`recorder: reservation refused: ${res.reason}`);
         }
-        if (r !== null && r.status !== 'held' && was?.reservation?.status !== r.status) ledger.endReservation(r.id, r.status, ts);
+        if (options.endReservations !== false && r !== null && r.status !== 'held' && was?.reservation?.status !== r.status) ledger.endReservation(r.id, r.status, ts);
       });
       for (const pid of rows.positions) {
         const p = book.positions[pid]!;

@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { positionId, type IntentId } from '../../src/domain/index.ts';
 import { canonical, replayOnce } from '../../src/engine/index.ts';
 import type { BookEvent } from '../../src/lifecycle/index.ts';
-import { openLedger, openLedgerReader, type LedgerPurpose } from '../../src/ledger/index.ts';
+import { openLedger, openLedgerReader, type LedgerPurpose, type LedgerReader } from '../../src/ledger/index.ts';
 import { connectionOf } from '../../src/ledger/ledger.ts';
 import { encodeBookDetail, replayLedger, replayLedgerFile, type ReplayReport, type ReplaySource } from '../../src/ledger/replay/index.ts';
 import { raw } from '../../src/units/index.ts';
@@ -90,6 +90,15 @@ const row = (db: DatabaseSync, sql: string, ...args: (string | bigint)[]) => {
   return r;
 };
 
+/** The reader as a replay source, with some reads replaced. */
+const sourceOf = (reader: LedgerReader, over: Partial<ReplaySource> = {}): ReplaySource => ({
+  purpose: () => reader.purpose(), decisionModes: () => reader.decisionModes(), allIntents: () => reader.allIntents(),
+  allPositions: () => reader.allPositions(), intentEvents: () => reader.intentEvents(), positionEvents: () => reader.positionEvents(),
+  allReservations: () => reader.allReservations(), allAttempts: () => reader.allAttempts(), allFills: () => reader.allFills(),
+  pendingOutbox: () => reader.pendingOutbox(), foreignKeyViolations: () => reader.foreignKeyViolations(), rowTotals: () => reader.rowTotals(),
+  ...over,
+});
+
 const failure = (report: ReplayReport) => {
   if (report.ok) throw new Error('expected the replay to fail');
   return report.failure;
@@ -157,12 +166,9 @@ describe('ledger replay: compaction', () => {
     const reader = openLedgerReader(bookLedger(events));
     expect(replayLedger(reader).ok).toBe(true);
     const e1 = reader.intent('e1')!;
-    const source: ReplaySource = {
-      purpose: () => reader.purpose(), decisionModes: () => reader.decisionModes(), allPositions: () => reader.allPositions(),
-      intentEvents: () => reader.intentEvents(), positionEvents: () => reader.positionEvents(), allReservations: () => reader.allReservations(),
-      attempts: (id) => reader.attempts(id), fills: (id) => reader.fills(id), pendingOutbox: () => reader.pendingOutbox(),
+    const source = sourceOf(reader, {
       allIntents: () => reader.allIntents().map((r) => (r.intent.id === 'e70' ? { ...r, intent: { ...r.intent, key: e1.intent.key } } : r)),
-    };
+    });
     for (const compact of [true, false]) {
       expect(failure(replayLedger(source, { compact }))).toMatchObject({ kind: 'illegal', intentId: 'e70', event: 'propose_entry', reason: 'idempotency key already used (from book)' });
     }
@@ -308,6 +314,7 @@ describe('ledger replay: stored event schema', () => {
     ['an amount that is not a bigint', "json_set(detail, '$.book.event.reservation.amount', 16000000)", /reservation\.amount: must be a bigint >= 0/],
     ['a negative amount', "json_set(detail, '$.book.event.reservation.amount', json('{\"$bigint\":\"-1\"}'))", /reservation\.amount: must be a bigint >= 0/],
     ['a malformed id', "json_set(detail, '$.book.intentId', 'bad id!')", /detail\.book\.intentId: intent id must be/],
+    ['a literal that is not a string', "json_set(detail, '$.book.event.reservation.status', json('true'))", /reservation\.status: must be one of held, released, kept/],
     ['an unknown event type', "json_set(detail, '$.book.event.type', 'teleport')", /detail\.book\.event\.type: must be one of/],
   ] as const) {
     it(`refuses ${label}`, () => {
@@ -319,11 +326,113 @@ describe('ledger replay: stored event schema', () => {
     });
   }
 
+  it('refuses a negative or fractional slippage in a stored quote', () => {
+    for (const [value, ok] of [['-1', false], ['0.5', false], ['0', true], ['1000', true]] as const) {
+      const path = engineLedger();
+      tamper(path, (db) => {
+        const s = row(db, "SELECT MIN(seq) AS s FROM intent_event WHERE event = 'prepare'")['s'] as bigint;
+        db.prepare(`UPDATE intent_event SET detail = json_set(detail, '$.book.event.quote.slippage', json('${value}')) WHERE seq = ?`).run(s);
+      });
+      const report = replayLedgerFile(path);
+      if (ok) expect(report.ok, value).toBe(true);
+      else expect(failure(report), value).toMatchObject({ kind: 'schema', event: 'prepare', reason: expect.stringMatching(/quote\.slippage: must be an integer >= 0/) });
+    }
+  });
+
   it('refuses to encode an event off the schema', () => {
     const e = entryToSubmitted(1, 1_000n)[0]!;
     expect(encodeBookDetail(e)).toEqual({ v: 1, book: e });
     expect(() => encodeBookDetail({ ...e, extra: 1 } as unknown as BookEvent)).toThrow(/detail\.book\.extra: unknown field/);
     expect(() => encodeBookDetail(on(E1, { type: 'reject', reason: '' }))).toThrow(/reason: must be a non-empty string/);
+  });
+});
+
+describe('ledger replay: whole tables', () => {
+  /** Inserts a row whose intent or reservation does not exist, with foreign keys off, as a bug or an attacker could. */
+  const ORPHANS = {
+    fill: "INSERT INTO fill (intent_id, signature, slot, commitment, tokens, sol, fees, ts) VALUES ('ghost', 'ghost-sig', 1, 'confirmed', '1', '1', '0', 1)",
+    attempt: "INSERT INTO attempt (attempt_id, intent_id, signed_bytes_ref, signature, blockhash, last_valid_block_height, quote, created_ts) VALUES ('ghost-a', 'ghost', 'b', 'ghost-sig', 'h', 1, '{}', 1)",
+    reservation: "INSERT INTO reservation (reservation_id, intent_id, amount, created_ts) VALUES ('ghost-r', 'ghost', '5', 1)",
+    reservation_event: "INSERT INTO reservation_event (reservation_id, status, ts) VALUES ('ghost-r', 'released', 1)",
+  } as const;
+  const orphaned = (table: keyof typeof ORPHANS): string => {
+    const path = engineLedger();
+    const db = new DatabaseSync(path);
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec(ORPHANS[table]);
+    db.close();
+    return path;
+  };
+
+  for (const table of Object.keys(ORPHANS) as (keyof typeof ORPHANS)[]) {
+    it(`an orphan ${table} row (its intent or reservation does not exist) fails, by foreign key and by total`, () => {
+      const path = orphaned(table);
+      const f = failure(replayLedgerFile(path));
+      expect(f).toMatchObject({ kind: 'divergence', table, reason: expect.stringMatching(new RegExp(`^${table} row \\d+ has no (intent|reservation) row$`)) });
+      // The totals catch it on their own, even if the foreign-key read missed it.
+      const reader = openLedgerReader(path);
+      const blind = failure(replayLedger(sourceOf(reader, { foreignKeyViolations: () => [] })));
+      reader.close();
+      expect(blind).toMatchObject({ kind: 'divergence', table, reason: expect.stringMatching(new RegExp(`^${table} holds \\d+ rows, the replay accounts for \\d+$`)) });
+      expect(Number(blind.actual) - Number(blind.expected)).toBe(1);
+    });
+  }
+
+  it('a late buy landing whose own position is missing fails with table position', () => {
+    // The reducer opens position p1.o1 for a buy that landed after entry 1 ended; the schema cannot store it yet (LEDGER-1b).
+    const events: BookEvent[] = [
+      ...entryToSubmitted(1, 1_000n),
+      notFound(E1, 1, 1_001n),
+      on(E1, { type: 'reconcile', fills: [], blockHeight: 1_001n }),
+      on(E1, { type: 'abandon' }),
+    ];
+    const late: BookEvent = { type: 'orphan_fill', fill: fill(E1, 1, 5n) };
+    const full = openLedger(tempPath(), 'paper');
+    expect(() => recordEvents(full, timed([...events, late]), CONFIG)).toThrow(/UNIQUE constraint failed: position\.entry_intent_id/);
+    full.close();
+    const path = tempPath();
+    const ledger = openLedger(path, 'paper');
+    const book = recordEvents(ledger, timed(events), CONFIG);
+    // Write what the schema allows: the intent row and the fill, without the new position.
+    ledger.atomically(() => {
+      ledger.appendIntentTransition({ intentId: E1, status: book.intents[E1]!.status, event: 'orphan_fill', detail: encodeBookDetail(late), ts: 99 });
+      ledger.recordFill(late.fill, 99);
+    });
+    ledger.close();
+    expect(failure(replayLedgerFile(path))).toMatchObject({
+      kind: 'divergence', table: 'position', positionId: 'p1.o1', reason: 'stored position differs from the replay', actual: null,
+    });
+  });
+});
+
+describe('ledger replay: a reservation the runner has not ended yet', () => {
+  /** Entry 1 reserves and is cancelled before broadcast: the reducer releases the reservation and asks the runner to. */
+  const cancelled = (): string => {
+    const path = tempPath();
+    const ledger = openLedger(path, 'paper');
+    recordEvents(ledger, timed([...entryToSubmitted(1, 1_000n).slice(0, 4), on(E1, { type: 'cancel' })]), CONFIG, { endReservations: false });
+    ledger.close();
+    return path;
+  };
+
+  it('passes while the release_reservation outbox row is pending', () => {
+    const path = cancelled();
+    const reader = openLedgerReader(path);
+    expect(reader.pendingOutbox().map((o) => o.effect.type)).toContain('release_reservation');
+    reader.close();
+    expect(replayLedgerFile(path).ok).toBe(true);
+  });
+
+  it('fails once that outbox row is done but the reservation was never ended', () => {
+    const path = cancelled();
+    const ledger = openLedger(path, 'paper');
+    const item = ledger.pendingOutbox().find((o) => o.effect.type === 'release_reservation')!;
+    ledger.completeOutbox(item.outboxId, 'done', 100);
+    ledger.close();
+    expect(failure(replayLedgerFile(path))).toMatchObject({
+      kind: 'divergence', table: 'reservation', intentId: E1,
+      expected: { status: 'released' }, actual: { status: 'held' },
+    });
   });
 });
 
