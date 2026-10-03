@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Publishes zeroed-preview.apk as the single asset of the "preview" prerelease without ever leaving the
-# fixed link dead: the new file is uploaded under a temporary name first, and only after that succeeds
-# is the old asset swapped out (renamed aside, replaced, then deleted; renamed back if the swap fails).
-# The tag move and the notes edit come last, so a failed upload changes nothing.
+# fixed link dead. Order: upload the new file as zeroed-preview.apk.new (no clobber), verify it (state
+# uploaded, size equal to the local file), swap it in (the old asset is renamed aside, the new one takes
+# the fixed name, then the old one is deleted; the old one is renamed back if the swap fails), and only
+# then move the tag and edit the notes. Any failure exits non-zero and nothing after it runs.
 # Needs: gh on PATH (GH_TOKEN set), GH_REPO, GITHUB_SHA, VERSION_NAME, and zeroed-preview.apk in the
 # current directory. Tested with a stubbed gh in apps/web/test/publish-preview.test.ts.
 set -euo pipefail
 
 : "${GH_REPO:?}" "${GITHUB_SHA:?}" "${VERSION_NAME:?}"
 ASSET=zeroed-preview.apk
-NEXT="$ASSET.next"
+NEXT="$ASSET.new"
 PREV="$ASSET.prev"
 
 # gh prints the 404 body to stdout on a missing ref, so only trust the output when the call
@@ -23,7 +24,12 @@ tag_sha() {
 
 # Id of the release asset with this name, or nothing.
 asset_id() {
-  gh api "repos/$GH_REPO/releases/tags/preview" --jq '.assets[] | "\(.name) \(.id)"' 2>/dev/null | awk -v n="$1" '$1 == n { print $2 }'
+  gh api "repos/$GH_REPO/releases/tags/preview" --jq '.assets[] | "\(.name) \(.id) \(.state) \(.size)"' 2>/dev/null | awk -v n="$1" '$1 == n { print $2 }'
+}
+
+# "state size" of the release asset with this name, or nothing.
+asset_state() {
+  gh api "repos/$GH_REPO/releases/tags/preview" --jq '.assets[] | "\(.name) \(.id) \(.state) \(.size)"' 2>/dev/null | awk -v n="$1" '$1 == n { print $3 " " $4 }'
 }
 
 rename_asset() { # id new-name
@@ -60,13 +66,21 @@ if gh release view preview > /dev/null 2>&1; then
   gh release upload preview "$NEXT"
   rm -f "$NEXT"
 
+  # 1b. Verify the upload before touching the old asset.
+  want="uploaded $(wc -c < "$ASSET" | tr -d ' ')"
+  got="$(asset_state "$NEXT")"
+  if [ "$got" != "$want" ]; then
+    echo "Upload check failed for $NEXT: expected '$want', found '${got:-no asset}'. The previous asset, the tag and the notes are unchanged." >&2
+    exit 1
+  fi
+
   # 2. Swap. The old asset is renamed aside, the new one takes the fixed name, then the old one is deleted.
   next_id="$(asset_id "$NEXT")"
   old_id="$(asset_id "$ASSET")"
   if [ -n "$old_id" ]; then rename_asset "$old_id" "$PREV"; fi
   if ! rename_asset "$next_id" "$ASSET"; then
     if [ -n "$old_id" ]; then rename_asset "$old_id" "$ASSET"; fi
-    echo "Could not give the new build the fixed name; the previous asset was put back." >&2
+    echo "Could not give the new build the fixed name. The new build is the release asset $NEXT (id $next_id); the previous asset was put back." >&2
     exit 1
   fi
   if [ -n "$old_id" ]; then gh api -X DELETE "repos/$GH_REPO/releases/assets/$old_id" > /dev/null; fi

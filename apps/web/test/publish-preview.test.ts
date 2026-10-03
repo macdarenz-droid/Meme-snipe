@@ -23,7 +23,7 @@ case "$*" in
     echo "$t"; exit 0 ;;
   "api repos/o/r/commits/"*) echo "Latest commit subject"; exit 0 ;;
   "api repos/o/r/compare/"*) echo "- abc1234 a change"; exit 0 ;;
-  "api repos/o/r/releases/tags/preview"*) [ -f "$S/release" ] || exit 1; cat "$S/assets"; exit 0 ;;
+  "api repos/o/r/releases/tags/preview"*) [ -f "$S/release" ] || exit 1; awk -v mode="$FAIL_VERIFY" '{ st = (mode == "state" && $1 ~ /\.new$/) ? "open" : "uploaded"; sz = (mode == "size" && $1 ~ /\.new$/) ? 999 : 3; print $1 " " $2 " " st " " sz }' "$S/assets"; exit 0 ;;
   "api -X PATCH repos/o/r/git/refs/tags/preview"*) PREFIX="sha=" ; arg "$@" > "$S/tag"; exit 0 ;;
   "api -X POST repos/o/r/git/refs"*) PREFIX="sha="; arg "$@" > "$S/tag"; exit 0 ;;
   "api -X PATCH repos/o/r/releases/assets/"*)
@@ -118,17 +118,28 @@ describe('publish-preview.sh', () => {
     expect(wrote(r.calls, /-X DELETE|-X PATCH|-X POST|^release edit/)).toBe(false);
   });
 
+  it.each(['state', 'size'])('keeps the old asset, tag and notes when the upload check fails on %s', (mode) => {
+    const r = run({ tag: OLD, release: true, assets: ['zeroed-preview.apk 100'], env: { FAIL_VERIFY: mode } });
+    expect(r.status).not.toBe(0);
+    expect(r.assets).toContain('zeroed-preview.apk 100');
+    expect(r.tag).toBe(OLD);
+    expect(wrote(r.calls, /-X DELETE|-X PATCH|-X POST|^release edit/)).toBe(false);
+    expect(r.stderr).toContain('zeroed-preview.apk.new');
+    expect(r.stderr).toContain('unchanged');
+  });
+
   it('puts the old asset back when the new one cannot take the fixed name', () => {
     const r = run({ tag: OLD, release: true, assets: ['zeroed-preview.apk 100'], env: { FAIL_NEXT_RENAME: '1' } });
     expect(r.status).not.toBe(0);
     expect(r.assets).toContain('zeroed-preview.apk 100');
     expect(r.tag).toBe(OLD);
     expect(wrote(r.calls, /^release edit/)).toBe(false);
+    expect(r.stderr).toContain('zeroed-preview.apk.new');
     expect(r.stderr).toContain('previous asset was put back');
   });
 
   it('recovers when an earlier run stopped between the renames', () => {
-    const r = run({ tag: OLD, release: true, assets: ['zeroed-preview.apk.prev 100', 'zeroed-preview.apk.next 150'] });
+    const r = run({ tag: OLD, release: true, assets: ['zeroed-preview.apk.prev 100', 'zeroed-preview.apk.new 150'] });
     expect(r.status).toBe(0);
     expect(r.assets).toEqual(['zeroed-preview.apk 200']);
   });
