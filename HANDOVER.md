@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, 9:25 AM Melbourne (AEDT).
+**Last updated:** Sun 4 Oct 2026, 10:25 AM Melbourne (AEDT).
 
 ## 1. Read first, in this order
 
@@ -52,7 +52,7 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
   - One concurrency group; it stops on HTTP 429 and resumes with back-off.
   - Each finished UTC day is published as a release tagged `data-day-YYYY-MM-DD`.
 
-## 4. Current state (4 Oct, 9:25 AM)
+## 4. Current state (4 Oct, 10:25 AM)
 
 **Merged since 3:50 AM:**
 - RES-3 #47 (signal research plan and code)
@@ -81,6 +81,12 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 - OPS-1e #66 (server extras; real worker behind a reviewed `"worker": "release"` switch; serve, never Funnel)
 - FACTS-1b #75 (live gate facts wired into the worker)
 - OPS-1f #72 (all-or-nothing `--update` with a journal; install line pinned at 364476c)
+- STATS-1b #52 (G3 levels by safety direction; B5 inside the holdout needs a no-change report)
+- OPS-1f e2e #80 (dry-run stand-in as a /run unit)
+- OPS-1g #79 (full install clears a stale journal; roll-back only on managed paths, never key material; pin e28788a)
+- BT-1d #73 (one registry; HolderBook with venue balances and supply; hash-checked owner-program supplement; endAttempt only for proven reasons)
+- RUG-1b #81 (traded non-rug fixture, content-hashed)
+- RUN-1d #64 (drills by cause; known universes only; pid-independent harness draws)
 
 Earlier merges are listed in `PROJECT_STATE.md`.
 
@@ -88,21 +94,22 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 
 | Card | PR / branch | State | Next |
 |---|---|---|---|
-| Scan run 1 | Actions run 37156026657 | 2026-09-21 back to 09-14, 80 MB/s, one lane | DATA-1 builder reports the first published day; then batch 2 (09-13 back to 09-06), and so on to 07-20; then holdout days |
-| Worker flakes | (WORKER builder) | worker-flow (abandon), run1c and worker-recorder fail sometimes under the full parallel suite | fix: `run` awaits paper simulations, effects waited for with `until`; load loops running; then PR; blocks clean merges |
-| PERSIST-1 | #71 | PASS at 436973e; merged-head CI hits the worker flake | merge after the flake fix |
-| FACTS-1d regime rule | #78 (session_019cENcTEidMc4LEhPydYAZK) | expanding window from 07-20, min 28 days, D−3 | align with `data-volume-DAY` (24 rows, covered), core parser shared with BT-2, LiveFacts schedule; then review (session_01UhbBj5bHiTC8AUMzp5db7L) |
-| DATA-1c volume assets | #77 | emitRow change reverted (units byte-identical with run 1) | reviewer confirms; merge between scan batches |
-| OPS-1g update safety | `claude/ops-1g` 10c142e | full install clears a stale journal; roll-back only on managed paths; sync per line | PR; review (session_01Ty8Lvbxybv8cRixTifx6y3) |
-| RUN-1d drills by cause | #64 | FAIL: 'unknown' universe passes; label guard | fixes; delta; merge |
-| RUN-1e | #76 (stacked on #64) | tabletop ownership, compare, pending-reboot, quota, no-strategy label | review after #64 |
-| BT-1d | #73 | FAIL R1–R4 + timeout | fixes; α and registration from the core registry; delta (session_012efQfLAwWStK3PT6ZW2PHz) |
-| BT-2 study | #41 (draft) | regime wired, rent cost, staged reads, conservative defaults | first funnel count when 09-21 is testable |
-| STATS-1b G3 | #52 | PASS at 9794b64 | builder merges base; CI; merge |
-| STATS-1c | #62 (bf5dae8) | rework done; adapts BT-1c's call sites when retargeted | review after #52; owner SPA sign-off; STATS-1d (U1 40-day window) after |
+| Base CI | — | worker tests fail by pid-seeded paper draws and fixed waits | flake PR `claude/worker-1-flake` (fixed boot seed, restart ordering, per-pool ports, `until`) → review session_01NZwyB8decLbgxKJoG2cAbP → merge first |
+| Scan run 1 | Actions run 37156026657 | 2026-09-21 scanning since 8:43 AM (days 09-21 → 09-14, one lane) | when it ends: merge #77, then batch 2 (09-13 → 09-06) and on to 07-20; then holdout days; forward days between batches |
+| DATA-1c volume assets | #77 (4b62676 green) | PASS; held until run 1 ends (a chained run on a new scanner revision would rescan the day in progress) | merge between batches; then `runVolumeCheck` on the core parser (delta); `mode=volume` back-fill for run 1's days |
+| FACTS-1d regime rule | #78 | provenance, check identity and prerelease done | list endpoint + `browser_download_url` verified by asset digest; persisted verified days; linear ingest; delta (session_01UhbBj5bHiTC8AUMzp5db7L) |
+| WORKER-1b | #82 | FAIL: run1d tests on fixed windows; flatten `tMaxMs` untested; u === null not sell-only | fixes after the flake PR; delta (session_012QdDAuRuYt57E9PCjHfuKT, risk session_017PBUwcGJWG4DJpJKVBcAas); then WORKER-1c (PERSIST-1 wiring, NAV marks) |
+| PERSIST-1 | #71 | PASS at 436973e | merge after the flake fix |
+| FACTS-1e | `claude/facts-1e` | FAIL: slotless reads mark when stale; boundary unpinned | fixes; PR; then FACTS-1f (live per-stage `only`), then TEST-1 parity |
+| POS-1 | `claude/pos-1` (new session) | live open positions get no pool-state refresh after entry | swap-derived pool state for held positions, fail closed on gaps; risk review |
+| TEST-3 | #83 | FAIL: the 429 case must show entries stop (gates fail closed) | fix; delta; then WATCH-1 (independent timer, coherent second-path read) |
+| EXIT-1c | BT builder | an exit decided at reconcile without a quote waits 60 s booked blocked | fire on the first fresh quote; risk review |
+| RUN-1e | #76 | PASS at e597d51 | bring up to base; merge; then RUN-1f (host loss counted only when compared; typed `recovered`) |
+| STATS-1c | #62 | adapting to BT-1d's merged layer: α, attempt index, endAttempt eligibility and n_power into core | review (session_01FHfbJwz7sbf2eVDNRxMigZ); BT delta; owner SPA sign-off; STATS-1d after |
+| BT-2 study | #41 (draft) | graduates aggregation to be one exported function | wire HolderBook, volume parser, core registry as they land |
+| BT-3 evidence | BT builder | 10× replay hashes, LEDGER-REPLAY, zero unreconciled on real windows | after EXIT-1c; first window once its 14 lead-in days are published |
+| BT-1e supplement | OPS builder | owner-program supplement workflow (Helius, release with digest) | PR; BT review |
 | RES-3b | #56 | wall at 2026-09-21T14:00Z | waits for STATS-1c |
-| WORKER-1b | `claude/worker-1b` | RUN-1d fields, sell-only flatten, PERSIST-1 wiring, all open positions in health, checkDeployer wiring | after the flake fix |
-| RUG-1b | RUG builder | next card | PR |
 
 **Blocked or parked:**
 - The OPS-1d session (archived) was stopped by the auto-mode safety check while writing a server → GitHub evidence uploader. OPS-1e rebuilt everything else. Evidence stays on the host; an upload path needs the owner's decision later.
@@ -112,27 +119,27 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 | Role | Card | Session |
 |---|---|---|
 | Builder | DATA-1c, scan runs | session_01XHH3k24fjmkpmmt28xSaYv |
-| Builder | WORKER-1, WORKER-1b | session_01F7UFCa8r4aee38kW7687Y3 |
-| Builder | FACTS-1b, FACTS-1e | session_01GDycboQzFrFWxVniy6B6Ps |
+| Builder | WORKER-1b, flake PR, WORKER-1c | session_01F7UFCa8r4aee38kW7687Y3 |
+| Builder | FACTS-1e, FACTS-1f, TEST-1 | session_01GDycboQzFrFWxVniy6B6Ps |
 | Builder | FACTS-1d | session_019cENcTEidMc4LEhPydYAZK |
-| Builder | FILL-2, PERSIST-1 | session_013LeD4RMaJMybRnPVRn4LXM |
-| Builder | RUG-1b/1c | session_01WGpxEWFacSgAuXL5KAzrKc |
-| Builder | BT-1c, BT-1d | session_016KSN98NC2xQxetiZkpCVtT |
+| Builder | PERSIST-1 | session_013LeD4RMaJMybRnPVRn4LXM |
+| Builder | TEST-3, WATCH-1 | session_01WGpxEWFacSgAuXL5KAzrKc |
+| Builder | POS-1 | session_01MtftXmPKCqdkXEop4h7vf1 |
+| Builder | EXIT-1c, BT-3 | session_016KSN98NC2xQxetiZkpCVtT |
 | Builder | BT-2 | session_01VBTfAwrhgoCssEzST2J2q5 |
-| Builder | STATS-1b/1c | session_01J9yEWHRunNxvo5CaTbuYSe |
-| Builder | RUN-1d, RUN-1e | session_01VgCLpHWaM7FjpwofRcgrwM |
-| Builder | OPS-1f, OPS-1g | session_01VM97q6A98GgtoPKCamoiT6 |
+| Builder | STATS-1c, STATS-1d | session_01J9yEWHRunNxvo5CaTbuYSe |
+| Builder | RUN-1e, RUN-1f | session_01VgCLpHWaM7FjpwofRcgrwM |
+| Builder | BT-1e | session_01VM97q6A98GgtoPKCamoiT6 |
 | Builder | RES-3b | session_018esLCVLp9yCExK5cdnzCz8 |
 | Reviewer | DATA-1 | session_01DKMnUiqVLxVjHbaqdoBnJD |
-| Reviewer | WORKER-1 | session_012QdDAuRuYt57E9PCjHfuKT |
-| Reviewer | FACTS-1c | session_01UhbBj5bHiTC8AUMzp5db7L |
-| Reviewer | SEED-1, FILL-2, PERSIST-1 | session_01NZwyB8decLbgxKJoG2cAbP |
-| Reviewer | risk (WORKER-1 rent, risk/**) | session_017PBUwcGJWG4DJpJKVBcAas |
-| Reviewer | OPS-1e/1f/1g | session_01Ty8Lvbxybv8cRixTifx6y3 |
-| Reviewer | BT-1c | session_012efQfLAwWStK3PT6ZW2PHz |
-| Reviewer | STATS-1b/1c | session_01FHfbJwz7sbf2eVDNRxMigZ |
-| Reviewer | RUN-1d | session_01DdN4xy9WX2t7nLUq7ww4E5 |
-| Reviewer | RUG-1c | session_01Kr3kePFCkJYuctQVaMuALW |
+| Reviewer | WORKER-1b, FACTS-1e/1f | session_012QdDAuRuYt57E9PCjHfuKT |
+| Reviewer | FACTS-1d | session_01UhbBj5bHiTC8AUMzp5db7L |
+| Reviewer | flake PR, PERSIST-1 | session_01NZwyB8decLbgxKJoG2cAbP |
+| Reviewer | risk (#82 sell-only, POS-1, WATCH-1, EXIT-1c) | session_017PBUwcGJWG4DJpJKVBcAas |
+| Reviewer | OPS | session_01Ty8Lvbxybv8cRixTifx6y3 |
+| Reviewer | BT (STATS-1c backtest delta, BT-1e, BT-3) | session_012efQfLAwWStK3PT6ZW2PHz |
+| Reviewer | STATS-1c | session_01FHfbJwz7sbf2eVDNRxMigZ |
+| Reviewer | RUN-1e/1f, TEST-3 | session_01DdN4xy9WX2t7nLUq7ww4E5 |
 
 Sessions belong to the current supervisor's account. A supervisor on another account cannot message them; it would start its own sessions from this file.
 
@@ -194,6 +201,10 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 - **Exits never wait:** not on the seed, a figure or a missing universe (sell-only flatten).
 - **Registry semantics in core:** α, registration day, attempt budget and the frozen requirement come only from `core/src/stats/holdout.ts`; the backtest layer stores and calls. The PR that changes an interface adapts its callers.
 - **Scan units byte-identical across scanner revisions:** a change that could alter a published unit is reverted unless measured to be a no-op.
+- **Live positions must be priced:** POS-1 derives a held position's pool state from its own swap events; WATCH-1's coherent second-path read is the fallback; a gap or mismatch is stale, never guessed.
+- **A rate limit stops entries through the gates failing closed** on the missing fact, not a global halt; exits keep their quota.
+- **Live volume releases are trusted only by provenance:** API metadata (github-actions[bot], prerelease, exact tag), download verified by the asset digest, verified days persisted so restarts do not refetch.
+- **Worker tests are deterministic:** a fixed harness boot seed and bounded waits on effects; production keeps a per-boot seed recorded in the recorder manifest for parity replay.
 
 ## 9. Infrastructure
 
@@ -212,4 +223,5 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 - **Free-tier credits:** Helius serves getProgramAccounts at 10 credits a call (gpa-probe run 37149567929); Alchemy answered 429 to back-to-back calls and is unmeasured. The RPC fill must run once per host (PERSIST-1): a 14-day create backfill on every boot projected 11.9M credits a month.
 - **Archive 429s:** each costs at least 1 h; run timings above include no allowance beyond that.
 - **Process:** base churn from docs pushes slows the merge queue (rule in §3).
+- **Session context loss:** a builder restarted (worker epoch) and redid a reassigned card; resend the full queue after any long silence and check its post-turn summary.
 - **Model fallback:** the WORKER builder's turns were served on claude-opus-5 by a runtime fallback (configured Opus 5.5). Its work still goes through fresh Opus 5.5 reviews and fail-before tests; check `last_served_model` with get_session before trusting a session's tier.

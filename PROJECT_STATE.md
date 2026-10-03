@@ -12,7 +12,7 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61), GATE-1f (#65), TX-1c (#63), FACTS-1 (#54), APP-2 (#43), EXIT-1b (#55), RISK-1b (#58), SIM-1 (#59), DATA-1 (#46), SEED-1 (#45), APP-2b (#67), FACTS-1c (#68), WORKER-1 (#48), BT-1c (#53), FILL-2 (#70), DATA-1b (#69), RUG-1c (#74), OPS-1e (#66), FACTS-1b (#75), OPS-1f (#72). Scan run 1 (09-21 back to 09-14) started 8:42 AM; the owner's server, Tailscale, APK and ruleset steps were sent at 9:25 AM.
+Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61), GATE-1f (#65), TX-1c (#63), FACTS-1 (#54), APP-2 (#43), EXIT-1b (#55), RISK-1b (#58), SIM-1 (#59), DATA-1 (#46), SEED-1 (#45), APP-2b (#67), FACTS-1c (#68), WORKER-1 (#48), BT-1c (#53), FILL-2 (#70), DATA-1b (#69), RUG-1c (#74), OPS-1e (#66), FACTS-1b (#75), OPS-1f (#72), STATS-1b (#52), OPS-1f e2e (#80), OPS-1g (#79), BT-1d (#73), RUG-1b (#81), RUN-1d (#64). Scan run 1 (09-21 back to 09-14) started 8:42 AM; the owner's server, Tailscale, APK and ruleset steps were sent at 9:25 AM.
 - **Server:** live and paired.
 - **History:** the download waits on DATA-1's final data-shape PR (#46: full curve and canonical-pool rows, raw records for every create and migration, owner-resolved token movements, regimes).
 - **Building:** the worker, gate-fact producers, start-up seed, rug check, backtest study, signal research, live app view, server extras, and the review fixes.
@@ -30,17 +30,17 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 
 | Task | What | Session | Model | State | Estimate (Melbourne, Sun 4 Oct) |
 |---|---|---|---|---|---|
-| DATA-1c | Regime volume per hour (`data-volume-DAY`), exact cross-check, back-fill (PR #77); scan runs | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | emitRow change reverted; delta review (session_01DKMnUiqVLxVjHbaqdoBnJD) | merge between scan batches |
-| WORKER-1b | Flake fix first (worker-flow, run1c: await paper simulations, wait for effects); then RUN-1d fields, sell-only flatten, PERSIST-1 wiring, NAV marks, checkDeployer | session_01F7UFCa8r4aee38kW7687Y3 | Opus 5.5 | flake fix in load loops | flake PR about 10–11 AM |
-| FACTS-1d, 1e | Regime volume rule and live volume-hours reader (PR #78, session_019cENcTEidMc4LEhPydYAZK); re-evaluate when a read lands (FACTS-1e) | session_01GDycboQzFrFWxVniy6B6Ps | Opus 5.5 | #78 aligning with DATA-1c; FACTS-1b merged | #78 review about 10–11 AM |
-| PERSIST-1 | Save and restore index, labeller and coverage (PR #71) | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | PASS; waits for the worker flake fix | after the flake fix |
-| RUG-1b | Traded non-rug fixture (RUG-1c merged) | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | next PR | today |
-| BT-1d | One holdout registry with typed sections, schema-3 loader, HolderBook (PR #73) | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | fixing R1–R4; α and registration from the core registry | delta about 11 AM–1 PM |
+| DATA-1c | Regime volume per hour, exact cross-check, back-fill (PR #77); scan runs | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | PASS, green; held until scan run 1 ends | merge between batches |
+| WORKER-1b | Flake PR first (fixed boot seed, restart ordering, ports, `until`); #82 RUN-1d contract, sell-only start; then WORKER-1c | session_01F7UFCa8r4aee38kW7687Y3 | Opus 5.5 | flake PR in proof loops; #82 fixes | flake PR about 11 AM |
+| FACTS-1d | Regime volume rule and live reader (PR #78, session_019cENcTEidMc4LEhPydYAZK) | session_019cENcTEidMc4LEhPydYAZK | Opus 5.5 | digest, persistence and linear ingest | delta about 11 AM–12 PM |
+| PERSIST-1 | Save and restore index, labeller and coverage (PR #71) | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | PASS; waits for the flake PR | after the flake PR |
+| TEST-3, WATCH-1 | Fault injection (PR #83); independent timer and coherent second-path read | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | #83 fixing the 429 entry case | WATCH-1 about 12–1 PM |
+| EXIT-1c, BT-3 | Reconcile-time exits fire on the first quote; real-data replay evidence | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | EXIT-1c building | EXIT-1c about 11 AM–12 PM |
 | BT-2 | Backtest study (PR #41): funnel count first, deployment replay, registry (E fixed, attempt rules) | session_01VBTfAwrhgoCssEzST2J2q5 | Opus 5.5 | building on fixtures; consuming CFG-2 | data from Mon 5 Oct |
-| STATS-1b, 1c | G3 levels (PR #52); SPA, day-level DSR, registry attempt rules (PR #62) | session_01J9yEWHRunNxvo5CaTbuYSe | Opus 5.5 | #52 PASS, merging base; #62 retargets after, adapting BT-1c | #52 about 10 AM; #62 review after |
-| RUN-1d, 1e | Drills by cause, recovery to exit-capable (PR #64); tabletop follow-ups (PR #76) | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | #64 fixing the 'unknown' universe and label rule | delta about 10–11 AM |
-| OPS-1g | Full install clears a stale update journal; roll-back only on managed paths; sync per line (branch claude/ops-1g) | session_01VM97q6A98GgtoPKCamoiT6 | Opus 5.5 | PR opens now; OPS-1f merged | review about 10–11 AM |
-| Next | WATCH-1 after WORKER-1; FACTS-1b after #48/#54; TEST-1 parity and TEST-3 fault injection after WORKER-1; SIGN-1 later; evidence upload from the server needs an owner decision | — | — | by dependency | — |
+| STATS-1c | SPA, day-level DSR, registry attempt rules into core (PR #62) | session_01J9yEWHRunNxvo5CaTbuYSe | Opus 5.5 | adapting to BT-1d; STATS-1b merged | review about 12 PM |
+| RUN-1e, 1f | Tabletop follow-ups (PR #76, PASS); host loss counted only when compared; typed `recovered` | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | #76 merging; RUN-1d merged | about 11 AM |
+| POS-1, BT-1e | Live position pool state from swaps (new session session_01MtftXmPKCqdkXEop4h7vf1); owner-program supplement workflow (session_01VM97q6A98GgtoPKCamoiT6) | — | Opus 5.5 | building | today |
+| Next | FACTS-1e, FACTS-1f, TEST-1 parity (session_01GDycboQzFrFWxVniy6B6Ps); STATS-1d; the real-worker switch (`"worker": "release"`) once WORKER-1b, FACTS-1d, POS-1 and WATCH-1 are in; SIGN-1 later; evidence upload from the server needs an owner decision | — | — | by dependency | — |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
