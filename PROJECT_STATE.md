@@ -31,8 +31,10 @@ Builders run as separate sessions; the supervisor reviews and merges into `ccr-1
 | APP-1 | Android preview APK at a fixed link (Capacitor, CI build) | session_01BLFtAQaZGeQKqXMBYYdLpJ | Sonnet 5.5 | building | 1–1.5 h |
 | DATA-1 | Historical on-chain data (30–60 days, transaction-level) for backtesting | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 ultracode | collecting | first 7 days 2–3 h; 30 days 4–8 h |
 | RES-2 | Whale copy-trading study on real data (owner's idea) | session_01RXNoLW48c8Xj7FYScEujRg | Opus 5.5 ultracode | researching | 2–3 h |
-| DOCS-1 | Architecture improved from research, RESEARCH.md, DECISIONS.md, build plan | session_01F8fZH2zSWeP984nqQB1HyJ | Opus 5.5 ultracode | writing | 1–1.5 h |
-| Queued | Risk policy and sizing; evidence gates; exits; paper fills; stats and promotion gates; provider adapters and quota scheduler; ledger; paper worker; dashboard data screens; Deposit/Withdraw; TEST-1 market recorder and deterministic replay; BACKTEST-1 transaction-level backtester on DATA-1; TEST-2 dry-run transaction simulation; TEST-3 soak and fault injection | — | — | after DOCS-1 | 6–10 h in waves of 3–4 |
+| DOCS-1 | Architecture improved from research, RESEARCH.md, DECISIONS.md, build plan | session_01F8fZH2zSWeP984nqQB1HyJ | Opus 5.5 ultracode | draft PR #6, waiting on fact-checks | 15–30 m |
+| STATS-1 | Labels, statistics, promotion gates | session_011t7agWEjn8osZJ4eD9FisM | Opus 5.5 ultracode | building | 2 h |
+| DEC-1 | Chain decoders (pump, PumpSwap, FeeConfig, Token-2022, events, v0/v1 messages) | session_01NMd1PaTb9y2BMfW1SvbkG9 | Opus 5.5 ultracode | building | 2–3 h |
+| Queued | Build plan in docs/ARCHITECTURE.md §20 (PR #6): Wave A ENG-1, CFG-1, LEDGER-1; Wave B BT-1, RISK-1, GATE-1, FEED-1, TX-1; Wave C EXIT-1, UI-2, FUND-1; Wave D BT-2, WORKER-1; Wave E OPS-1, TEST-1..3; later SIGN-1 | — | — | by dependency | about 37–47 h of build, 15–20 h wall time |
 
 ## Next
 - Finish the research and a measured base-rate study of live Solana data.
