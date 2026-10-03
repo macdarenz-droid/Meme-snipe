@@ -743,6 +743,7 @@ new_deploy_code() {
   ' > "$DEPLOY_CODE_FILE.new"
   chmod 0400 "$DEPLOY_CODE_FILE.new"
   mv -f "$DEPLOY_CODE_FILE.new" "$DEPLOY_CODE_FILE"
+  rm -f "$STATE_DIR/handoff_status"
 }
 
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }
@@ -975,8 +976,8 @@ set -euo pipefail
 . /usr/local/lib/zeroed/common.sh
 shown=""
 while :; do
-  /usr/local/sbin/zeroed-pair || true
-  /usr/local/sbin/zeroed-telegram-pair || true
+  /usr/local/sbin/zeroed-pair 2>/dev/null || true
+  /usr/local/sbin/zeroed-telegram-pair 2>/dev/null || true
   state="$(/usr/local/sbin/zeroed-status 2>/dev/null || true)"
   if [ "$state" != "$shown" ]; then
     clear 2>/dev/null || true

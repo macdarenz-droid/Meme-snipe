@@ -6,8 +6,8 @@ set -euo pipefail
 . /usr/local/lib/zeroed/common.sh
 shown=""
 while :; do
-  /usr/local/sbin/zeroed-pair || true
-  /usr/local/sbin/zeroed-telegram-pair || true
+  /usr/local/sbin/zeroed-pair 2>/dev/null || true
+  /usr/local/sbin/zeroed-telegram-pair 2>/dev/null || true
   state="$(/usr/local/sbin/zeroed-status 2>/dev/null || true)"
   if [ "$state" != "$shown" ]; then
     clear 2>/dev/null || true
