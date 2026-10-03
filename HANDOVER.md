@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, 6:55 AM Melbourne (AEDT).
+**Last updated:** Sun 4 Oct 2026, 6:45 AM Melbourne (AEDT).
 
 ## 1. Read first, in this order
 
@@ -52,7 +52,7 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
   - One concurrency group; it stops on HTTP 429 and resumes with back-off.
   - Each finished UTC day is published as a release tagged `data-day-YYYY-MM-DD`.
 
-## 4. Current state (4 Oct, 6:55 AM)
+## 4. Current state (4 Oct, 6:45 AM)
 
 **Merged since 3:50 AM:**
 - RES-3 #47 (signal research plan and code)
@@ -62,6 +62,7 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 - TEST-2 diagnostics #60
 - CFG-2 #57 (exit parameters per universe, T_max cap 120 min)
 - GATE-1e #61 (mint read first, delegates count as control)
+- GATE-1f #65 (mint read before any holder view, min() for partial delegation)
 
 Earlier merges are listed in `PROJECT_STATE.md`.
 
@@ -70,7 +71,7 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 | Card | PR / branch | State | Next |
 |---|---|---|---|
 | DATA-1 data shape | #46 | fixing swap-leg owner columns (`user_token_account`, `user_token_owner`) | delta review by the DATA-1 reviewer; merge; then dispatch scan run 1: days 2026-10-01 back to 2026-09-16 |
-| FACTS-1 fact producers | #54 | delta review (4 tests, V1 indexed filters, delegates, scans 100) | merge; then SIM-1 #59; then FACTS-1b adapters after WORKER-1 |
+| FACTS-1 fact producers | #54 | delta check of head 836a386 (legacy dataSize filter test, extensionless Token-2022 test) | merge; then SIM-1 #59; then FACTS-1b adapters after WORKER-1 |
 | SIM-1 H15 simulation | #59 | review PASS | merge right after #54 |
 | SEED-1 start-up seed | #45 | as-of guard on close.at/liveStart | re-review; merge; then FILL-2 PR (branch `claude/fill-2`) |
 | EXIT-1b exits | #55 | one test missing (`!liq.ok`) | risk re-review; merge |
@@ -84,8 +85,7 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 | BT-2 study | #41 (draft) | funnel count first; consuming CFG-2; registry (E fixed, attempt rules) | runs when practice days land |
 | RES-3b | #56 | waits for STATS-1c | daily DSR switch |
 | RUG-1c / RUG-1b | `claude/rug-1c` (no PR yet) | validation run on 2 Oct launches | PR about 8:30–9:30 AM; RUG-1b about 9:20 AM |
-| GATE-1f | `claude/gates-1f` | building | review |
-| APP-2 phone live view | #43 | review started | merge |
+| APP-2 phone live view | #43 | five review fixes in at 06cdb16; 30 s ticker test coming (plain function, fake timers, no DOM library) | delta review; merge; then send the owner the APK link |
 | OPS-1e server extras | `claude/ops-1e` | building (rebuild of OPS-1d) | review; then the owner pastes the install line once |
 
 **Blocked or parked:**
@@ -103,7 +103,6 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 | Builder | FACTS-1 | session_01GDycboQzFrFWxVniy6B6Ps |
 | Builder | SEED-1, FILL-2 | session_013LeD4RMaJMybRnPVRn4LXM |
 | Builder | RUG-1b/1c | session_01WGpxEWFacSgAuXL5KAzrKc |
-| Builder | GATE-1f | session_01MeeF4VytwgP5sqyAkqM2NS |
 | Builder | RISK-1b, EXIT-1b | session_0135ruSv84BVjo7knvmTCPPK |
 | Builder | BT-1c | session_016KSN98NC2xQxetiZkpCVtT |
 | Builder | BT-2 | session_01VBTfAwrhgoCssEzST2J2q5 |
@@ -127,7 +126,6 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 | Reviewer | RUN-1d | session_01DdN4xy9WX2t7nLUq7ww4E5 |
 | Reviewer | SIM-1, TEST-2 | session_01U2zaYUSEke1QcdtBVs4QTh |
 | Reviewer | CFG-2, EXIT-1 | session_01RC2m6JM3U6UaT9vgPSw5Cw |
-| Reviewer | GATE-1d/1e/1f | session_01GgekqDZufKTy9TNeR5R7YJ |
 | Reviewer | APP-2 | session_01PJ6UTbVhQrbEyFzW9mA3N2 |
 | Reviewer | RUG-1 (needed for RUG-1c) | session_01Kr3kePFCkJYuctQVaMuALW |
 
