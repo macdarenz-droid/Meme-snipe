@@ -57,10 +57,16 @@ if [ "$(state)" != Running ]; then
   up_pid=""
 fi
 
+# The intended target is checked before anything is published: the worker API on loopback, nothing else.
+[[ "$WORKER_API_ADDR" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]] || { log "Stopped: the worker API address is not loopback."; exit 1; }
 tailscale funnel --https=443 off >/dev/null 2>&1 || true
 tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >/dev/null
 if ! tailscale serve status --json | serve_ok; then
-  log "Stopped: tailscale serve is not publishing only the worker API with Funnel off. Run zeroed-tailscale --off and check."
+  # Anything else than exactly that (another target, another port, Funnel on) is taken down at once.
+  tailscale serve reset >/dev/null 2>&1 || true
+  tailscale funnel --https=443 off >/dev/null 2>&1 || true
+  rm -f "$STATE_DIR/live_view"
+  log "Stopped: tailscale serve did not publish only the worker API with Funnel off, so it was turned off again. Nothing is published."
   exit 1
 fi
 name="$(tailscale status --json | jq -r '.Self.DNSName // empty' | sed 's/\.$//')"
