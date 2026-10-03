@@ -1,0 +1,291 @@
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+const root = fileURLToPath(new URL('../../../', import.meta.url));
+const read = (p: string) => readFileSync(join(root, p), 'utf8');
+const walk = (dir: string): string[] =>
+  readdirSync(join(root, dir), { withFileTypes: true }).filter((e) => e.name !== 'node_modules').flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
+const isShell = (p: string) => p.endsWith('.sh') || read(p).startsWith('#!/usr/bin/env bash');
+const shellScripts = [...walk('ops'), '.github/workflows/deploy.yml'].filter((p) => !p.endsWith('.mjs') && !p.endsWith('.md') && (p.endsWith('.yml') || isShell(p) || p.endsWith('/common.sh')));
+const sourced = (p: string) => read(p).includes('Sourced, never run');
+
+describe('installer', () => {
+  it('is built from ops/host and its SHA-256 in the README is current', () => {
+    expect(() => execFileSync('node', [join(root, 'ops/build-install.mjs'), '--check'], { stdio: 'pipe' })).not.toThrow();
+  });
+
+  it('carries every host file byte for byte', () => {
+    const script = read('ops/install.sh');
+    const files = walk('ops/host/files');
+    const blocks = [...script.matchAll(/^install_file (\S+) (0755|0644) <<'__ZEROED_FILE__'\n([\s\S]*?)^__ZEROED_FILE__$/gm)];
+    expect(blocks.map((b) => b[1]).sort()).toEqual(files.map((f) => f.slice('ops/host/files'.length)).sort());
+    for (const b of blocks) expect(b[3], b[1]).toBe(read(join('ops/host/files', b[1]!)));
+  });
+
+  it('pins Node by version and SHA-256, and the GitHub merge key by fingerprint', () => {
+    const main = read('ops/host/install-main.sh');
+    expect(main).toMatch(/^NODE_VERSION=v22\.\d+\.\d+$/m);
+    expect(main).toMatch(/^NODE_SHA256=[0-9a-f]{64}$/m);
+    expect(main).toContain('sha256sum -c');
+    const fpr = '968479A1AFF927E37D1A566BB5690EEEBB952194';
+    expect(main).toContain(`WEB_FLOW_FPR=${fpr}`);
+    const keys = execFileSync('gpg', ['--show-keys', '--with-colons', join(root, 'ops/host/files/etc/zeroed/github-web-flow.asc')], { encoding: 'utf8' });
+    expect(keys.split('\n').filter((l) => l.startsWith('fpr:'))).toEqual([`fpr:::::::::${fpr}:`]);
+  });
+});
+
+describe('secrets never leak', () => {
+  it('no script turns on tracing', () => {
+    const code = (p: string) => read(p).split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    for (const p of shellScripts) expect(code(p), p).not.toMatch(/set -[a-z]*x|set -o xtrace|bash -x/);
+  });
+
+  it('every shell script stops on errors and parses', () => {
+    for (const p of shellScripts.filter((s) => !s.endsWith('.yml') && !sourced(s))) {
+      expect(read(p), p).toContain('set -euo pipefail');
+      expect(spawnSync('bash', ['-n', join(root, p)]).status, p).toBe(0);
+    }
+  });
+
+  it('the bot token only reaches curl on stdin, never as an argument', () => {
+    for (const p of shellScripts) {
+      const s = read(p);
+      expect(s, p).not.toMatch(/curl[^\n|]*bot\$/);
+      if (s.includes('/bot%s/')) expect(s, p).toMatch(/\|\s*\n?\s*curl [^\n]*-K -/);
+    }
+  });
+
+  it('credentials are encrypted from stdin and the plaintext bundle is never a file', () => {
+    const common = read('ops/host/files/usr/local/lib/zeroed/common.sh');
+    expect(common).toContain('systemd-creds encrypt --with-key=host --name="$1" - "$CRED_DIR/$1.new"');
+    const pair = read('ops/host/files/usr/local/sbin/zeroed-pair');
+    expect(pair).toContain(`for k in "\${API_NAMES[@]}"; do printf '%s' "\${v[$k]}" | store_cred "\${k,,}"; done`);
+    expect(pair).toContain('done < <(age -d -i <(/usr/local/bin/node /usr/local/lib/zeroed/derive-key.mjs < "$DEPLOY_CODE_FILE")');
+    expect(pair).toMatch(/shred -u "\$DEPLOY_CODE_FILE"/);
+    const publish = read('ops/deploy/publish.sh');
+    expect(publish).toMatch(/\} \| age -r "\$recipient" -o "\$bundle"/);
+    expect(publish).toContain('gh release create handoff "$bundle"');
+  });
+
+  it('the deploy workflow passes secrets and inputs only through env, uploads and caches nothing', () => {
+    const wf = read('.github/workflows/deploy.yml');
+    const runBlocks = wf.split('\n').reduce<string[]>((acc, line, i, all) => {
+      if (/^\s+run: /.test(line)) {
+        const indent = line.search(/\S/);
+        const block = [line];
+        for (let j = i + 1; j < all.length && (all[j]!.trim() === '' || all[j]!.search(/\S/) > indent); j++) block.push(all[j]!);
+        acc.push(block.join('\n'));
+      }
+      return acc;
+    }, []);
+    expect(runBlocks.length).toBeGreaterThan(2);
+    for (const b of runBlocks) expect(b).not.toMatch(/\$\{\{\s*(secrets|inputs|github\.event)\./);
+    expect(wf).not.toMatch(/upload-artifact|actions\/cache|set-output|GITHUB_ENV|GITHUB_OUTPUT/);
+    expect(wf).toContain('persist-credentials: false');
+    for (const line of wf.split('\n').filter((l) => /\buses:/.test(l))) expect(line).toMatch(/uses: [\w./-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+  });
+
+  const publish = (env: Record<string, string>) =>
+    spawnSync('bash', [join(root, 'ops/deploy/publish.sh')], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', GH_REPO: 'o/r', GITHUB_SHA: 'a'.repeat(40), ISSUED: '1', ...env } });
+
+  it('a missing secret is reported by name only', () => {
+    const r = publish({ DEPLOY_CODE: 'abacus abdomen able about above absent', HELIUS_API_KEY: 'TESTvalueHelius123', ALCHEMY_API_KEY: 'TESTvalueAlchemy123' });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('Missing repository secrets: JUPITER_API_KEY TELEGRAM_BOT_TOKEN');
+    expect(r.stdout + r.stderr).not.toMatch(/TESTvalue|abacus/);
+  });
+
+  it('without DEPLOY_CODE it sends nothing; a malformed code is refused without echoing it', () => {
+    const none = publish({});
+    expect(none.status).toBe(0);
+    expect(none.stdout).toContain('No DEPLOY_CODE secret: code update only');
+    const keys = { HELIUS_API_KEY: 'TESTa', ALCHEMY_API_KEY: 'TESTb', JUPITER_API_KEY: 'TESTc', TELEGRAM_BOT_TOKEN: '1:TESTd' };
+    const bad = publish({ DEPLOY_CODE: 'only three words', ...keys });
+    expect(bad.status).not.toBe(0);
+    expect(bad.stderr).toContain('DEPLOY_CODE must be the 6 words');
+    expect(bad.stdout + bad.stderr).not.toMatch(/three words/);
+  });
+});
+
+describe('deploy code', () => {
+  const derive = (code: string) => spawnSync('node', [join(root, 'ops/host/files/usr/local/lib/zeroed/derive-key.mjs')], { input: code, encoding: 'utf8' });
+
+  it('uses the EFF large wordlist, unchanged', () => {
+    const words = read('ops/host/files/usr/local/share/zeroed/eff_large_wordlist.txt').trim().split('\n');
+    expect(words).toHaveLength(7776);
+    expect(new Set(words).size).toBe(7776);
+    expect(createHash('sha256').update(read('ops/host/files/usr/local/share/zeroed/eff_large_wordlist.txt')).digest('hex')).toBe('6d557f0693958fb5e650b68b5bee585eb82cf4da32965505c789e924743bc522');
+  });
+
+  // Known answer from ops/test/derive-key-kat.py (Python hashlib.scrypt, its own bech32 and RFC 7748 ladder).
+  const KAT_CODE = 'correct horse battery staple zebra apple';
+  const KAT_IDENTITY = 'AGE-SECRET-KEY-1WZ76MN6D25Z7YG7GGHLLDMJCQV25X8U3VS8A0F8CKDS4329KJ39S5JU9UT';
+  const KAT_RECIPIENT = 'age1pdc533pjcgkux8lah569p90yxvmx8djw42pycdt6k943e467tqcs4c4hf0';
+  const B32 = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+  const bech32Polymod = (v: number[]) => {
+    const G = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let c = 1;
+    for (const x of v) {
+      const t = c >>> 25;
+      c = ((c & 0x1ffffff) << 5) ^ x;
+      for (let i = 0; i < 5; i++) if ((t >>> i) & 1) c ^= G[i]!;
+    }
+    return c >>> 0;
+  };
+  const bech32 = (hrp: string, data: Uint8Array) => {
+    const d: number[] = [];
+    let acc = 0;
+    let bits = 0;
+    for (const b of data) {
+      acc = ((acc << 8) | b) & 0xffff;
+      bits += 8;
+      while (bits >= 5) {
+        bits -= 5;
+        d.push((acc >>> bits) & 31);
+      }
+    }
+    if (bits) d.push((acc << (5 - bits)) & 31);
+    const e = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
+    const m = bech32Polymod([...e, ...d, 0, 0, 0, 0, 0, 0]) ^ 1;
+    return `${hrp}1${[...d, ...[0, 1, 2, 3, 4, 5].map((i) => (m >>> (5 * (5 - i))) & 31)].map((x) => B32[x]).join('')}`;
+  };
+  const unbech32 = (s: string) => {
+    const words = [...s.toLowerCase().slice(s.lastIndexOf('1') + 1, -6)].map((c) => B32.indexOf(c));
+    const out: number[] = [];
+    let acc = 0;
+    let bits = 0;
+    for (const w of words) {
+      acc = ((acc << 5) | w) & 0xffff;
+      bits += 5;
+      if (bits >= 8) {
+        bits -= 8;
+        out.push((acc >>> bits) & 255);
+      }
+    }
+    return Uint8Array.from(out);
+  };
+
+  it('matches the independent known-answer vector, and its recipient is the X25519 public key of the clamped scalar', () => {
+    const r = derive(KAT_CODE);
+    expect(r.stdout.trim()).toBe(KAT_IDENTITY);
+    const scalar = unbech32(KAT_IDENTITY);
+    expect(scalar).toHaveLength(32);
+    expect(scalar[0]! & 7).toBe(0);
+    expect(scalar[31]! & 0xc0).toBe(0x40);
+    // Node's X25519 (not age, not our code) computes the public key; it must be the pinned recipient.
+    const priv = createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b656e04220420', 'hex'), Buffer.from(scalar)]), format: 'der', type: 'pkcs8' });
+    const pub = createPublicKey(priv).export({ format: 'der', type: 'spki' }).subarray(-32);
+    expect(bech32('age', pub)).toBe(KAT_RECIPIENT);
+    expect(bech32('age-secret-key-', scalar).toUpperCase()).toBe(KAT_IDENTITY);
+  }, 30_000);
+
+  it('is one implementation, called by both the workflow and the server', () => {
+    expect(read('ops/deploy/publish.sh')).toContain('node "$here/../host/files/usr/local/lib/zeroed/derive-key.mjs"');
+    expect(read('ops/host/files/usr/local/sbin/zeroed-pair')).toContain('/usr/local/bin/node /usr/local/lib/zeroed/derive-key.mjs < "$DEPLOY_CODE_FILE"');
+    expect(walk('ops').filter((p) => /scryptSync|hashlib\.scrypt|crypto\.scrypt/.test(read(p)) && !p.endsWith('.py')).sort()).toEqual(['ops/host/files/usr/local/lib/zeroed/derive-key.mjs', 'ops/install.sh']);
+  });
+
+  it('ignores case and extra spaces, and takes exactly 6 words', () => {
+    // One scrypt run here (each is 256 MB and about a second): the normalised form must give the known answer.
+    const b = derive('  Correct   HORSE battery staple zebra apple\n');
+    expect(b.status).toBe(0);
+    expect(b.stdout.trim()).toBe(KAT_IDENTITY);
+    expect(derive('correct horse battery staple zebra apple extra').status).toBe(2);
+    expect(derive('correct horse battery staple zebra').status).toBe(2);
+  }, 30_000);
+});
+
+describe('systemd units (ARCHITECTURE.md 12.1)', () => {
+  const unit = (n: string) => read(`ops/host/files/etc/systemd/system/${n}`);
+  const common = ['NoNewPrivileges=yes', 'CapabilityBoundingSet=', 'ProtectSystem=strict', 'ProtectHome=yes', 'PrivateTmp=yes', 'PrivateDevices=yes', 'ProtectKernelTunables=yes', 'ProtectKernelModules=yes', 'ProtectControlGroups=yes', 'RestrictNamespaces=yes', 'RestrictSUIDSGID=yes', 'LockPersonality=yes', 'SystemCallArchitectures=native', 'SystemCallFilter=@system-service', 'UMask=0077'];
+
+  it('the signer has no network at all and W^X memory', () => {
+    const s = unit('zeroed-signer.service');
+    for (const k of [...common.filter((k) => k !== 'UMask=0077'), 'User=zeroed-signer', 'PrivateNetwork=yes', 'IPAddressDeny=any', 'RestrictAddressFamilies=AF_UNIX', 'MemoryDenyWriteExecute=yes']) expect(s, k).toMatch(new RegExp(`^${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+    expect(s).toContain('node --jitless');
+  });
+
+  it('the worker is sandboxed, loads only encrypted credentials, and reconciles before every start', () => {
+    const s = unit('zeroed-worker.service');
+    for (const k of [...common, 'User=zeroed-worker', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6']) expect(s, k).toMatch(new RegExp(`^${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+    expect(s).not.toMatch(/^LoadCredential=|^SetCredential=|^Environment=.*KEY/m);
+    expect(s.match(/^LoadCredentialEncrypted=/gm)).toHaveLength(5);
+    expect(s).toContain('ConditionPathExists=/etc/credstore.encrypted/telegram_chat_id');
+    expect(s).toMatch(/^ExecStartPre=.* --reconcile$/m);
+  });
+
+  it('the firewall drops all inbound and limits the worker to HTTPS and DNS out', () => {
+    const nft = read('ops/host/files/etc/nftables.conf');
+    expect(nft).toContain('type filter hook input priority filter; policy drop;');
+    expect(nft).toMatch(/^#SSH_RULE#/m);
+    expect(nft).toContain('meta skuid "zeroed-signer" drop');
+    expect(nft).toContain('meta skuid "zeroed-worker" drop');
+  });
+});
+
+describe('deploy tag (ops/deploy/tag.sh) on a fixture repository', () => {
+  it('skips an unsigned tip, a red and a pending signed merge, logs why, and tags the newest green signed merge', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zeroed-tag-'));
+    try {
+      const gnupg = join(dir, 'gnupg');
+      mkdirSync(gnupg, { mode: 0o700 });
+      const env = { ...process.env, GNUPGHOME: gnupg, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' };
+      const sh = (cmd: string, cwd = dir) => execFileSync('bash', ['-c', cmd], { cwd, env, encoding: 'utf8' }).trim();
+      sh("gpg --batch --passphrase '' --quick-gen-key 'Fixture <f@x>' ed25519 sign never 2>/dev/null");
+      const fpr = sh("gpg --batch --with-colons --fingerprint | awk -F: '$1 == \"fpr\" { print $10; exit }'");
+      sh(`gpg --batch --armor --export ${fpr} > key.asc`);
+      sh('git init -q --bare origin.git && git init -q -b int work');
+      const work = join(dir, 'work');
+      const commit = (msg: string, signed: boolean) => {
+        sh(`echo ${msg} >> f && git add f && git -c gpg.format=openpgp -c gpg.program=gpg -c user.signingkey=${fpr} commit -q ${signed ? '-S' : '--no-gpg-sign'} -m ${msg} && git rev-parse HEAD`, work);
+        return sh('git rev-parse HEAD', work);
+      };
+      const old = commit('green-older', true);
+      const green = commit('green', true);
+      const red = commit('red', true);
+      const pending = commit('pending', true);
+      const tip = commit('board', false);
+      sh('git remote add origin ../origin.git && git push -q origin int', work);
+      // gh stand-in: check runs per sha from files, the deploy ref missing, writes recorded.
+      const state = join(dir, 'state');
+      mkdirSync(join(state, 'checks'), { recursive: true });
+      const runs = (conclusion: string | null, status = 'completed') => JSON.stringify({ total_count: 2, check_runs: [{ name: 'check', status: 'completed', conclusion: 'success' }, { name: 'e2e', status, conclusion }, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null }] });
+      writeFileSync(join(state, 'checks', old), runs('success'));
+      writeFileSync(join(state, 'checks', green), runs('success'));
+      writeFileSync(join(state, 'checks', red), runs('failure'));
+      writeFileSync(join(state, 'checks', pending), runs(null, 'in_progress'));
+      writeFileSync(join(state, 'checks', tip), runs('success'));
+      writeFileSync(
+        join(dir, 'gh'),
+        `#!/usr/bin/env bash
+echo "$*" >> "${state}/calls"
+case "$2" in
+  repos/o/r/commits/*/check-runs*) s="\${2#repos/o/r/commits/}"; s="\${s%%/*}"; cat "${state}/checks/$s" 2>/dev/null || echo '{"total_count":0,"check_runs":[]}' ;;
+  repos/o/r/git/ref/tags/deploy) echo '{"message":"Not Found"}'; exit 1 ;;
+esac
+exit 0
+`,
+      );
+      chmodSync(join(dir, 'gh'), 0o755);
+      const r = spawnSync('bash', [join(root, 'ops/deploy/tag.sh')], {
+        cwd: work,
+        encoding: 'utf8',
+        env: { ...env, PATH: `${dir}:${process.env['PATH']}`, GH_REPO: 'o/r', GITHUB_SHA: tip, INTEGRATION_BRANCH: 'int', SIGNING_KEY_FILE: join(dir, 'key.asc'), SIGNING_FPR: fpr },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain(`Skipped ${tip.slice(0, 12)}: not signed by GitHub`);
+      expect(r.stdout).toContain(`Skipped ${pending.slice(0, 12)}: checks still running.`);
+      expect(r.stdout).toContain(`Skipped ${red.slice(0, 12)}: a check failed.`);
+      expect(r.stdout).toContain(`Tag deploy -> ${green.slice(0, 12)}.`);
+      expect(readFileSync(join(state, 'calls'), 'utf8')).toContain(`api -X POST repos/o/r/git/refs -f ref=refs/tags/deploy -f sha=${green}`);
+      expect(r.stdout).not.toContain(old.slice(0, 12));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});

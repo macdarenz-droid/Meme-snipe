@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Console: where setup stands, and what to do next. Prints codes the owner needs, never a key.
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+step=""
+if [ -s "$DEPLOY_CODE_FILE" ]; then
+  log "Keys:      waiting for Deploy ($(cat "$STATE_DIR/handoff_status" 2>/dev/null || echo 'nothing published yet'))"
+  log ""
+  log "  Deploy code:  $(cat "$DEPLOY_CODE_FILE")"
+  log ""
+  step="In GitHub: Settings > Secrets and variables > Actions > New repository secret, name DEPLOY_CODE, value: the 6 words above. Then Actions > Deploy > Run workflow."
+elif keys_stored; then
+  log "Keys:      stored (${#API_NAMES[@]})"
+else
+  log "Keys:      none, and no deploy code pending: run zeroed-new-deploy-code"
+fi
+if paired; then
+  log "Telegram:  paired"
+elif [ -s "$PAIR_CODE_FILE" ]; then
+  log "Telegram:  waiting for /pair"
+  log ""
+  log "  Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
+  log ""
+  [ -n "$step" ] || step="One try only. A wrong code needs a new one: zeroed-pair-code"
+elif keys_stored; then
+  log "Telegram:  not paired; run zeroed-pair-code"
+fi
+log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
+log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
+log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
+[ -z "$step" ] || { log ""; log "$step"; }
