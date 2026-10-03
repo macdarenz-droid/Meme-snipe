@@ -25,8 +25,9 @@ export const offlineApi: DashboardApi = {
 
 /** What httpApi tells about each request: good data, an answer that failed (HTTP error or bad data), or not reachable. */
 export interface Reachability {
-  reportOk(origin: string, at: string): void;
-  reportBad(origin: string, at: string): void;
+  /** `endpoint` names the request (its path), so one failing endpoint is not hidden by others answering well. */
+  reportOk(origin: string, at: string, endpoint: string): void;
+  reportBad(origin: string, at: string, endpoint: string): void;
   reportOffline(origin: string): void;
 }
 
@@ -36,7 +37,7 @@ export interface Reachability {
  */
 export function httpApi(origin: string, get: Getter = defaultGetter, reach?: Reachability, now: () => number = Date.now): DashboardApi {
   const base = origin.replace(/\/$/, '');
-  async function call<T>(path: string, mode: Mode, check: Check): Promise<Envelope<T>> {
+  async function call<T>(path: string, mode: Mode, check: Check, endpoint: string = path): Promise<Envelope<T>> {
     let res: Got;
     try {
       res = await get(base + path);
@@ -55,10 +56,10 @@ export function httpApi(origin: string, get: Getter = defaultGetter, reach?: Rea
         throw new DataError('bad-shape', 'response is not JSON');
       }
       const env = checkEnvelope<T>(body, mode, check);
-      reach?.reportOk(origin, at);
+      reach?.reportOk(origin, at, endpoint);
       return env;
     } catch (e) {
-      reach?.reportBad(origin, at);
+      reach?.reportBad(origin, at, endpoint);
       throw e;
     }
   }
@@ -67,7 +68,8 @@ export function httpApi(origin: string, get: Getter = defaultGetter, reach?: Rea
     funnel: (m) => call(PATHS.funnel(m), m, schemaFor('funnel', m)),
     decisions: (m) => call(PATHS.decisions(m), m, schemaFor('decisions', m)),
     position: (m) => call(PATHS.position(m), m, schemaFor('position', m)),
-    calendar: (m, month) => call(PATHS.calendar(m, month), m, schemaFor('calendar', m)),
+    // One key for every month, so a month the screen moved away from does not keep its old answer.
+    calendar: (m, month) => call(PATHS.calendar(m, month), m, schemaFor('calendar', m), `/api/v1/${m}/calendar`),
     trades: (m) => call(PATHS.trades(m), m, schemaFor('trades', m)),
     charts: (m) => call(PATHS.charts(m), m, schemaFor('charts', m)),
     stats: (m) => call(PATHS.stats(m), m, schemaFor('stats', m)),

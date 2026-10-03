@@ -246,13 +246,14 @@ func main() {
 		fs.Float64Var(&poolRate, "pool-rate", poolRate, "direct-pool universe hash threshold (<= 0.25)")
 		partMB := fs.Int64("part-mb", 1900, "rotate output files after this many MiB of uncompressed data (at most 1900)")
 		leadIn := fs.Int("lead-in-days", 14, "days of gap-free coverage required before -from (0 for a single-day check)")
+		regimes := fs.String("regimes", "", "JSON file of regime boundaries copied into the manifest (research/historical/regimes.json)")
 		allowRevs := fs.String("allow-revisions", "", "comma-separated scanner revisions accepted together (default: one revision)")
 		fs.Parse(os.Args[2:])
 		if *partMB < 1 || *partMB > 1900 {
 			log.Fatal("-part-mb must be between 1 and 1900")
 		}
 		partMaxBytes = *partMB << 20
-		opt := finalizeOpts{AllowGaps: *allowGaps, LeadInDays: *leadIn}
+		opt := finalizeOpts{AllowGaps: *allowGaps, LeadInDays: *leadIn, Regimes: *regimes}
 		if *allowRevs != "" {
 			opt.AllowRevisions = strings.Split(*allowRevs, ",")
 		}

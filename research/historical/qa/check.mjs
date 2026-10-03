@@ -10,6 +10,10 @@
 //      applied in between
 //   4. chain state: for the last trade of a curve or pool in a transaction, rebuilt
 //      reserves vs the account balances the validator recorded after that transaction
+//   5. token movements (movements-NNN.csv.zst, movement_coverage-NNN.csv.zst): row
+//      sanity, coverage of mints not ending in "pump", supply conservation of fully
+//      covered mints, and per-owner balance deltas of plain token transactions with a
+//      raw record against their movement rows (see the "Token movements" section)
 // Live checks (--live N): curves and pools with no transaction since the end of the
 //   scanned coverage are read from mainnet now; their on-chain reserves must equal
 //   the reserves rebuilt from our last event (1 raw unit tolerance).
@@ -22,8 +26,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import crypto from 'node:crypto';
 
-import { strictMisses } from './verdict.mjs';
+import { REGIME_BOUNDARIES, strictMisses } from './verdict.mjs';
 
 const USAGE = 'usage: node research/historical/qa/check.mjs <dataset-dir> [--live N] [--gecko N] [--strict] [--lead-in-days N]';
 const args = process.argv.slice(2);
@@ -71,6 +76,9 @@ function dayFiles(base) {
 }
 const B = (s) => (s === '' || s === undefined ? null : BigInt(s));
 
+const PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+const PUMP_AMM_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
+const U64_MAX = (1n << 64n) - 1n;
 const isQuoted = (r) => r.quote_mint !== '' && r.quote_mint !== '11111111111111111111111111111111' && r.quote_mint !== 'So11111111111111111111111111111111111111112';
 
 // ---- base58 ----
@@ -82,6 +90,8 @@ function b58decode(str) {
   const lead = str.match(/^1*/)[0].length;
   return Buffer.concat([Buffer.alloc(lead), Buffer.from(n === 0n ? '' : hex, 'hex')]);
 }
+// h(mint): first 8 bytes of sha256(mint pubkey bytes), big-endian, / 2^64 (scanner sample.go).
+const mintHash = (m) => Number(crypto.createHash('sha256').update(b58decode(m)).digest().readBigUInt64BE(0)) / 2 ** 64;
 const ALPH = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 function b58encode(buf) {
   let n = BigInt('0x' + (Buffer.from(buf).toString('hex') || '0')); let s = '';
@@ -102,6 +112,19 @@ for (const u of man.units) {
   for (const [k, v] of Object.entries(u.newer_layouts || {})) newer[k] = (newer[k] || 0) + v;
 }
 report.decoding = { decode_failures: man.decode_failures, unknown_events: unknown, newer_layouts: newer, units: man.units.length, coverage_gaps: man.coverage_gaps || [] };
+
+// Swap attribution (scanner user_token_account / user_token_owner): a swap credits or
+// debits user_token_owner, the owner of the token account the instruction used, never
+// the event's user or the signer. Rows with an empty owner are checked against the
+// swap_owner_unknown coverage marks in "Token movements".
+const swapAttr = { curve_trades: 0, amm_trades: 0, missing_column: 0, owner_ne_user: 0, owner_empty: 0, owner_empty_marked: 0, owner_empty_unmarked: 0, no_account_unmarked: 0, unmarked_rows: [] };
+const swapEmpty = []; // [mint, slot:tx_idx, account]
+const attribute = (r, mint, kind) => {
+  swapAttr[kind]++;
+  if (r.user_token_owner === undefined || r.user_token_account === undefined) { swapAttr.missing_column++; return; }
+  if (r.user_token_owner === '') { swapAttr.owner_empty++; swapEmpty.push([mint, `${r.slot}:${r.tx_idx}`, r.user_token_account]); }
+  else if (r.user_token_owner !== r.user) swapAttr.owner_ne_user++;
+};
 
 // 3-4. curves
 const curveLast = new Map(); // mint -> last row
@@ -129,6 +152,7 @@ const curveAddr = new Map(); // mint -> bonding curve account (from CreateEvent)
   for (const f of dayFiles('curve_trades')) {
     for (const r of readTable(f)) {
       st.trades++;
+      attribute(r, r.mint, 'curve_trades');
       const m = r.mint;
       const p = prev.get(m);
       // Curves quoted in another token keep their quote side in the *_quote_* fields
@@ -237,6 +261,7 @@ const poolLast = new Map(); // pool -> {row, post}
   for (const f of dayFiles('amm_trades')) {
     for (const r of readTable(f)) {
       st.trades++;
+      attribute(r, r.base_mint, 'amm_trades');
       const pool = r.pool;
       applyLiq(pool, ord(r.slot, r.tx_idx, r.ev_idx));
       const preB = B(r.pool_base_token_reserves), preQ = B(r.pool_quote_token_reserves);
@@ -274,9 +299,12 @@ const poolLast = new Map(); // pool -> {row, post}
 }
 
 // ---- raw records (schema 2): one per universe transaction, signature matches the wire bytes ----
+const movementBalance = new Map(); // slot:tx -> { balances: mint -> owner -> delta, moves: same from movement rows }
+let movementBalanceSkipped = 0;
 if (man.schema >= 2) {
   const st = { records: 0, v1: 0, signature_mismatch: 0, trade_txs: 0, trade_txs_with_raw: 0, missing: [] };
   const rawKeys = new Set();
+  const pumpBytes = [PUMP_PROGRAM, PUMP_AMM_PROGRAM].map(b58decode);
   for (const f of dayFiles('raw')) {
     const lines = zlib.zstdDecompressSync(fs.readFileSync(path.join(ds, f))).toString().split('\n').filter(Boolean);
     for (const l of lines) {
@@ -295,12 +323,53 @@ if (man.schema >= 2) {
         st.signature_mismatch++;
       }
       rawKeys.add(`${r.slot}:${r.txIndex}`);
+      // Balance check of token movements: successful transactions that do not reference
+      // pump or PumpSwap (statically or through a lookup table), so every token change of
+      // a "pump" mint in them is a movement row. Per owner, post minus pre of each token
+      // account, the owner taken as the movement rows take it (post over pre).
+      if (r.err != null) continue;
+      const loaded = [...(r.meta.loadedAddresses?.writable || []), ...(r.meta.loadedAddresses?.readonly || [])];
+      if (pumpBytes.some((b) => w.includes(b)) || loaded.includes(PUMP_PROGRAM) || loaded.includes(PUMP_AMM_PROGRAM)) { movementBalanceSkipped++; continue; }
+      const acct = new Map();
+      for (const [side, list] of [[-1n, r.meta.preTokenBalances || []], [1n, r.meta.postTokenBalances || []]]) {
+        for (const b of list) {
+          if (!b.mint.endsWith('pump')) continue;
+          const a = acct.get(b.accountIndex) || { mint: b.mint, owner: '', delta: 0n };
+          a.mint = b.mint; a.owner = b.owner || '';
+          a.delta += side * BigInt(b.uiTokenAmount?.amount || '0');
+          acct.set(b.accountIndex, a);
+        }
+      }
+      const byMint = new Map();
+      for (const a of acct.values()) {
+        if (!byMint.has(a.mint)) byMint.set(a.mint, new Map());
+        const o = byMint.get(a.mint);
+        o.set(a.owner, (o.get(a.owner) || 0n) + a.delta);
+      }
+      if (byMint.size) movementBalance.set(`${r.slot}:${r.txIndex}`, { balances: byMint, moves: new Map() });
     }
   }
+  // Every create and migration transaction keeps its raw record, whatever the mint's hash.
+  st.create_rows = 0; st.create_rows_with_raw = 0;
+  for (const f of dayFiles('events')) {
+    for (const l of zlib.zstdDecompressSync(fs.readFileSync(path.join(ds, f))).toString().split('\n').filter(Boolean)) {
+      const e = JSON.parse(l);
+      // Creates and migrations (whose transaction also creates the canonical pool).
+      if (e.event !== 'CreateEvent' && e.event !== 'CompletePumpAmmMigrationEvent') continue;
+      st.create_rows++;
+      if (rawKeys.has(`${e.slot}:${e.tx_idx}`)) st.create_rows_with_raw++;
+      else if (st.missing.length < 10) st.missing.push(`create ${e.slot}:${e.tx_idx}`);
+    }
+  }
+  const sampleRate = man.sampling?.unit_sample_rate_min ?? 1;
+  const inRawSample = (m) => m !== '' && mintHash(m) < sampleRate;
   const seen = new Set();
   for (const base of ['curve_trades', 'amm_trades', 'failed']) {
     for (const f of dayFiles(base)) {
       for (const r of readTable(f)) {
+        // Raw records exist for transactions of hash-sampled mints only (retention
+        // "curve-all,canonical-all,sample": other mints' rows have none).
+        if (!inRawSample(r.mint ?? r.base_mint ?? r.mint_hint ?? '')) continue;
         const k = `${r.slot}:${r.tx_idx}`;
         if (seen.has(k)) continue;
         seen.add(k);
@@ -311,6 +380,115 @@ if (man.schema >= 2) {
     }
   }
   report.raw = st;
+}
+
+// ---- token movements ----
+// Coverage rule: mints ending in "pump" have every movement of every successful
+// transaction (complete); other mints only movements inside transactions that carry a
+// pump or PumpSwap event of that mint, listed in movement_coverage with scope
+// "pump_transactions" for the units' slot ranges; their ownership outside those rows is
+// unresolved.
+{
+  const st = { files: 0, rows: 0, by_kind: {}, zero_amount: 0, malformed: 0, malformed_rows: [], partial_rows: 0, outside_coverage: 0, outside_coverage_rows: [],
+    coverage_rows: 0, coverage_bad_scope: 0, unresolved_mints: 0, unresolved_by_reason: {}, empty_owner_rows: 0, empty_owner_coverage: 0, balance_skipped_unresolved: 0, supply_mints: 0, supply_negative: 0, supply_bad: [], balance_checks: 0, balance_exact: 0, balance_bad: [], balance_skipped_pump_txs: movementBalanceSkipped };
+  const cover = new Map(); // mint -> [[from, to]]
+  const unresolvedFrom = new Map(); // mint -> first slot with ownership unresolved
+  const unresolvedTx = new Set(); // mint|slot:tx_idx of the marked transactions
+  const swapUnknownTx = new Set(); // mint|slot:tx_idx marked swap_owner_unknown
+  for (const f of fs.readdirSync(ds).filter((x) => x.startsWith('movement_coverage-')).sort()) {
+    for (const c of readTable(f)) {
+      st.coverage_rows++;
+      // Scopes (scanner movements.go): pump_transactions (searched only in pump
+      // transactions), unresolved (an undecoded token instruction: ownership unresolved
+      // from slot), empty_owner (rows with an unresolvable owner, counted), no_movements
+      // (lead-in units carry none).
+      if (c.scope === 'unresolved') {
+        if (!unresolvedFrom.has(c.mint) || BigInt(c.slot) < unresolvedFrom.get(c.mint)) unresolvedFrom.set(c.mint, BigInt(c.slot));
+        unresolvedTx.add(`${c.mint}|${c.slot}:${c.tx_idx}`);
+        if (c.reason === 'swap_owner_unknown') swapUnknownTx.add(`${c.mint}|${c.slot}:${c.tx_idx}`);
+        st.unresolved_by_reason[c.reason] = (st.unresolved_by_reason[c.reason] || 0) + Number(c.count || 0);
+        continue;
+      }
+      if (c.scope === 'empty_owner') { st.empty_owner_coverage += Number(c.count || 0); continue; }
+      if (c.scope === 'no_movements') { st.no_movements = { from_slot: c.from_slot, to_slot: c.to_slot }; continue; }
+      if (c.scope !== 'pump_transactions') { st.coverage_bad_scope++; continue; }
+      if (!cover.has(c.mint)) cover.set(c.mint, []);
+      cover.get(c.mint).push([BigInt(c.from_slot), BigInt(c.to_slot)]);
+    }
+  }
+  // Supply of fully covered mints ("pump" mints whose CreateEvent is in the dataset, so
+  // every movement since the create is too): token_total_supply + mints - burns. Burns
+  // inside PumpSwap (boost_buy_and_burn burns from the pool vault by CPI, so no movement
+  // row) come from BoostBuyAndBurnEvent base_amount_burned.
+  const supply = new Map(); // mint -> { total, minted, burned, event_burned }
+  const eventBurn = new Map();
+  for (const f of dayFiles('events')) {
+    for (const l of zlib.zstdDecompressSync(fs.readFileSync(path.join(ds, f))).toString().split('\n').filter(Boolean)) {
+      const e = JSON.parse(l);
+      if (e.event === 'CreateEvent' && e.fields.mint?.endsWith('pump') && e.fields.token_total_supply) supply.set(e.fields.mint, { total: BigInt(e.fields.token_total_supply), minted: 0n, burned: 0n });
+      else if (e.event === 'BoostBuyAndBurnEvent' && e.fields.base_amount_burned) eventBurn.set(e.fields.mint, (eventBurn.get(e.fields.mint) || 0n) + BigInt(e.fields.base_amount_burned));
+    }
+  }
+  const bad = (list, x) => { if (list.length < 10) list.push(x); };
+  const add = (m, k, v) => m.set(k, (m.get(k) || 0n) + v);
+  for (const f of dayFiles('movements')) {
+    st.files++;
+    for (const r of readTable(f)) {
+      st.rows++;
+      st.by_kind[r.kind] = (st.by_kind[r.kind] || 0) + 1;
+      const id = `${r.slot}:${r.tx_idx}:${r.outer_ix}:${r.inner_ix}`;
+      const amountOk = /^\d+$/.test(r.amount ?? '') && BigInt(r.amount) <= U64_MAX;
+      const shapeOk = r.kind === 'transfer' ? r.from_account !== '' && r.to_account !== ''
+        : r.kind === 'burn' ? r.from_account !== '' && r.to_account === '' && r.to_owner === ''
+        : r.kind === 'mint' ? r.to_account !== '' && r.from_account === '' && r.from_owner === '' : false;
+      if (!amountOk || !shapeOk || !r.mint) { st.malformed++; bad(st.malformed_rows, `${id} ${r.kind} ${r.amount}`); continue; }
+      const a = BigInt(r.amount);
+      if ((r.from_account !== '' && r.from_owner === '') || (r.to_account !== '' && r.to_owner === '')) st.empty_owner_rows++;
+      if (a === 0n) st.zero_amount++; // zero-amount transfers are valid on chain (address poisoning); reported, not a miss
+      if (!r.mint.endsWith('pump')) {
+        st.partial_rows++;
+        const s = BigInt(r.slot);
+        if (!(cover.get(r.mint) || []).some(([lo, hi]) => s >= lo && s <= hi)) { st.outside_coverage++; bad(st.outside_coverage_rows, `${id} ${r.mint}`); }
+        continue;
+      }
+      const sp = supply.get(r.mint);
+      if (sp && r.kind === 'burn') sp.burned += a;
+      if (sp && r.kind === 'mint') sp.minted += a;
+      const tx = movementBalance.get(`${r.slot}:${r.tx_idx}`);
+      if (tx) {
+        if (!tx.moves.has(r.mint)) tx.moves.set(r.mint, new Map());
+        const o = tx.moves.get(r.mint);
+        if (r.kind !== 'mint') add(o, r.from_owner, -a);
+        if (r.kind !== 'burn') add(o, r.to_owner, a);
+      }
+    }
+  }
+  for (const [mint, sp] of supply) {
+    st.supply_mints++;
+    const left = sp.total + sp.minted - sp.burned - (eventBurn.get(mint) || 0n);
+    if (left < 0n) { st.supply_negative++; bad(st.supply_bad, { mint, total: String(sp.total), minted: String(sp.minted), burned: String(sp.burned), event_burned: String(eventBurn.get(mint) || 0n) }); }
+  }
+  st.unresolved_mints = unresolvedFrom.size;
+  for (const [k, tx] of movementBalance) {
+    for (const [mint, bal] of tx.balances) {
+      // Only the marked transactions are skipped; later ones stay checked.
+      if (unresolvedTx.has(`${mint}|${k}`)) { st.balance_skipped_unresolved++; continue; }
+      st.balance_checks++;
+      const mv = tx.moves.get(mint) || new Map();
+      const diff = [...new Set([...bal.keys(), ...mv.keys()])].filter((o) => (bal.get(o) || 0n) !== (mv.get(o) || 0n));
+      if (diff.length === 0) st.balance_exact++;
+      else bad(st.balance_bad, { tx: k, mint, owners: diff.map((o) => ({ owner: o, balance_delta: String(bal.get(o) || 0n), movement_delta: String(mv.get(o) || 0n) })) });
+    }
+  }
+  report.movements = st;
+  // An empty swap owner needs its swap_owner_unknown mark; without an account
+  // (boost_buy_and_burn burns what it buys) the row credits nobody and needs none.
+  for (const [mint, k, account] of swapEmpty) {
+    if (swapUnknownTx.has(`${mint}|${k}`)) swapAttr.owner_empty_marked++;
+    else if (account === '') swapAttr.no_account_unmarked++;
+    else { swapAttr.owner_empty_unmarked++; if (swapAttr.unmarked_rows.length < 10) swapAttr.unmarked_rows.push(`${k} ${mint} ${account}`); }
+  }
+  report.swap_attribution = swapAttr;
 }
 
 // ---- live checks ----
@@ -426,6 +604,15 @@ md.push('', '## Decoding', '', `Decode failures: ${report.decoding.decode_failur
 const c = report.curve, a = report.amm;
 md.push('', '## Reserve chain', '', `Bonding curve real reserves: ${c.real_ok} of ${c.real_pairs} consecutive trade pairs rebuild exactly (${pct(c.real_ok, c.real_pairs)}). Virtual reserves: ${c.virtual_ok} of ${c.virtual_pairs} (${pct(c.virtual_ok, c.virtual_pairs)}) on regular curves; on mayhem-mode curves, where the program re-prices virtual reserves, ${c.virtual_ok_mayhem} of ${c.virtual_pairs_mayhem}.`, `PumpSwap: ${a.chain_ok} of ${a.chain_pairs} trades start from exactly the rebuilt reserves (${pct(a.chain_ok, a.chain_pairs)}); ${a.liquidity_events} liquidity, boost and pool-creation events applied.`);
 md.push('', '## Against recorded account balances', '', `Curves quoted in a token other than SOL: ${c.quote_curve_trades} trades; their quote token account equals real_quote_reserves in ${c.quote_balance_exact} of ${c.quote_balance_checks} checks and is never below it in ${c.quote_balance_ge} (the excess is quote tokens held by the curve outside its reserves, such as fees awaiting distribution; real reserves themselves rebuild exactly). Bonding curve token account: ${c.token_exact} of ${c.token_checks} checks equal real_token_reserves plus the reserved migration tokens exactly (${pct(c.token_exact, c.token_checks)}). Lamports: ${c.sol_exact} of ${c.sol_checks} checks keep the same rent offset as the previous check (${c.sol_changed_at_extend} of them changed exactly at an account extension) (${pct(c.sol_exact, c.sol_checks)}). Most common offsets (reserved tokens | rent): ${JSON.stringify(c.top_offsets)}.`, `PumpSwap: ${a.chain_exact} of ${a.chain_checks} checks match both vault balances exactly (${pct(a.chain_exact, a.chain_checks)}).`);
+{
+  const m = report.movements;
+  const sa = report.swap_attribution;
+if (sa) md.push('', '## Swap attribution', '', `A swap credits or debits user_token_owner (the owner of the token account the instruction used), never user or the signer. ${sa.curve_trades} curve and ${sa.amm_trades} PumpSwap trades; ${sa.owner_ne_user} with user_token_owner different from user; ${sa.owner_empty} with an empty owner, ${sa.owner_empty_marked} of them marked swap_owner_unknown, ${sa.no_account_unmarked} without a user account (boost buy-and-burn), ${sa.owner_empty_unmarked} unmarked; ${sa.missing_column} rows without the attribution columns.`);
+md.push('', '## Token movements', '', 'Coverage: mints ending in "pump" have every token movement of every successful transaction (complete); other mints have only the movements inside transactions that carry a pump or PumpSwap event of that mint, listed in movement_coverage (scope pump_transactions) for the units\' slot ranges, and their ownership outside those rows is unresolved.',
+    '', `${m.rows} rows in ${m.files} files (${JSON.stringify(m.by_kind)}); ${m.malformed} malformed; ${m.zero_amount} with amount 0 (valid on chain, not a miss); ${m.partial_rows} rows of other mints, ${m.outside_coverage} of them outside movement_coverage (${m.coverage_rows} coverage rows, ${m.coverage_bad_scope} with an unknown scope). Ownership unresolved for ${m.unresolved_mints} mints from the slot of an undecoded token instruction (${JSON.stringify(m.unresolved_by_reason)}); ${m.empty_owner_rows} rows with an owner that could not be resolved (coverage records count ${m.empty_owner_coverage}). ${m.no_movements ? `Lead-in slots ${m.no_movements.from_slot} to ${m.no_movements.to_slot} carry no movements, so holder ownership at the window start is unresolved until movements begin.` : ''}`,
+    '', `Supply: ${m.supply_mints} "pump" mints with their CreateEvent in the dataset; token_total_supply + mints - burns (movement rows) - BoostBuyAndBurnEvent burns is below zero for ${m.supply_negative}. Ownership per holder is not rebuilt here.`,
+    '', `Balances: ${m.balance_exact} of ${m.balance_checks} (transaction, "pump" mint) pairs match exactly: per owner, the token balance change in the raw record equals the sum of that transaction's movement rows. Scope: successful raw records of transactions that reference neither pump nor PumpSwap (plain token transactions of hash-sampled mints); ${m.balance_skipped_pump_txs} raw records that touch pump or PumpSwap are not balance-checked here (their movement rows are checked against the instructions by the parity check).`);
+}
 if (report.live.length) {
   const pass = report.live.filter((x) => x.pass).length;
   md.push('', '## Live on-chain checks', '', `${pass} of ${report.live.length} idle curves and pools match their current on-chain state within 1 raw unit.`, '', '| Kind | Account | Last event slot | Latest chain tx slot | Result |', '|---|---|---|---|---|');
@@ -441,8 +628,12 @@ if (report.gecko) {
 // are documented and not counted). See verdict.mjs.
 const misses = strictMisses(man, report, { leadInDays: LEAD_IN });
 report.strict = { pass: misses.length === 0, misses };
+report.regime_boundaries = REGIME_BOUNDARIES;
+md.push('', '## Regime boundaries', '', 'Program and configuration changes that split the data into regimes (UPG-1b, PR #44). Before B4 the trade events are exactly two fields (16 bytes) shorter; the strict QA allows that layout only in units that start before B4.', '', '| Id | UTC | Slots | Change |', '|---|---|---|---|');
+for (const b of REGIME_BOUNDARIES) md.push(`| ${b.id} | ${b.utc} | ${Object.entries(b.slots).map(([k, v]) => `${k} ${v}`).join(', ') || 'n/a'} | ${b.change} |`);
 md.push('', '## Verdict', '', misses.length ? `FAIL: ${misses.join('; ')}` : 'PASS: no unexplained miss.');
-if (report.raw) md.push('', `Raw records: ${report.raw.records}; signature mismatches ${report.raw.signature_mismatch}; ${report.raw.trade_txs_with_raw} of ${report.raw.trade_txs} universe trade and failed transactions have their raw record.`);
+if (report.raw) md.push('', `Parity scope: raw records, and so the decoder parity check (qa/parity.json), cover only transactions of hash-sampled mints (h(mint) < ${man.sampling?.unit_sample_rate_min ?? 1}, retention ${man.sampling?.retention || 'sample only'}). Rows of other mints come from the same decoder but are not re-decoded one by one; this is sample parity, not full-row parity.`);
+if (report.raw) md.push('', `Raw records: ${report.raw.records}; signature mismatches ${report.raw.signature_mismatch}; ${report.raw.trade_txs_with_raw} of ${report.raw.trade_txs} trade and failed transactions of hash-sampled mints have their raw record.`);
 fs.writeFileSync(path.join(ds, 'qa', 'report.json'), JSON.stringify(report, null, 2));
 fs.writeFileSync(path.join(ds, 'qa', 'report.md'), md.join('\n') + '\n');
 console.log(md.join('\n'));
