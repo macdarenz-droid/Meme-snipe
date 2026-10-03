@@ -56,6 +56,8 @@ importers:
 
   packages/ops: {}
 
+  packages/worker: {}
+
 packages:
 
   '@capacitor/android@8.5.2':
