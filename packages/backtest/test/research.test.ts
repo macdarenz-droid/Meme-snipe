@@ -6,7 +6,7 @@ import type { ManifestDay } from '../src/dataset/dataset.ts';
 import type { AmmSwapRow, DatasetRow } from '../src/dataset/rows.ts';
 import { evaluate, handoffs, type Obs, passes, type Registry, ruleId, score, selectRule, univariate, walkForward } from '../src/research/analysis.ts';
 import { type Candidate, collectCandidates, type DriveOptions, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
-import { appliesTo, PLAN_BARRIERS, scoreCandidates, type ScoreTarget } from '../src/research/outcome.ts';
+import { PLAN_BARRIERS, scoreCandidates, type ScoreTarget } from '../src/research/outcome.ts';
 import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
 import { observedFeeContext, replaySwap } from '../../core/src/fills/index.ts';
 import { bps } from '../../core/src/units/index.ts';
@@ -162,9 +162,6 @@ describe('outcome stage', () => {
   test('every candidate gets one label per barrier; deterministic', () => {
     expect(out.length).toBe(candidates.length);
     for (const o of out) expect(o.labels.map((l) => l.cfgId)).toEqual(PLAN_BARRIERS.map((b) => b.cfgId));
-    // B4 is U1's own 4 h time stop; U2 keeps B1–B3.
-    expect(PLAN_BARRIERS.filter((b) => appliesTo(b, 'U1')).map((b) => b.cfgId)).toEqual(['B1_tp50_sl20_h120m', 'B2_time_h120m', 'B3_tp30_sl15_h60m', 'B4_u1_time_h240m']);
-    expect(PLAN_BARRIERS.filter((b) => appliesTo(b, 'U2')).map((b) => b.cfgId)).toEqual(['B1_tp50_sl20_h120m', 'B2_time_h120m', 'B3_tp30_sl15_h60m']);
     expect(scoreCandidates(rows, targets(candidates), opts)).toEqual(out);
   });
 

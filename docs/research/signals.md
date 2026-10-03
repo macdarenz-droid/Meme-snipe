@@ -80,7 +80,6 @@ The outcome stage (`outcome.ts`) runs after the feature stage and is never impor
   - **B1 (primary): take-profit +50%, stop −20%, time stop 120 min** (policy `tMaxMs`).
   - B2: time stop only, 120 min (no take-profit, stop at −100%).
   - B3: take-profit +30%, stop −15%, time stop 60 min.
-  - B4 (U1 only, added before any data, §8): time stop only, 4 h (U1's exit from risk.md S2, T_max 4 h; CFG-2). U1's outcome window, and so its purge at the wall and at regime boundaries, is 4 h 30 min.
 - `r_net` = net SOL return ÷ entry cost, all costs. Unobserved windows are censored, never 0.
 - Base-scenario results are reported beside the conservative ones for context; **decisions use conservative only**.
 
@@ -104,7 +103,7 @@ Every result is reported per regime: base mean, the final rule's mean, and the w
 
 ## 6. Stopping rule and what is handed to BT-2
 
-**One configuration per universe.** The barriers are tried in the fixed order **B1 → B2 → B3 → B4** (B4 for U1 only); the first whose verdict passes every check below is handed over and later ones are not considered. The candidate is the rule the procedure picks on **all** practice days with that barrier, with its exact thresholds (`research/signals/handoff.json`, one entry per universe, with BT-2's `edgePpm`: the out-of-sample one-sided 95% lower bound in ppm, and `medianTargetBps`: the median out-of-sample winner). BT-2's `U1Rules`/`U2Rules` are fixed shapes; a feature-filter rule needs BT-2 to add a matching rule kind or map the conditions, which BT-2 decides. A verdict passes only if **all** of these hold on the pooled walk-forward out-of-sample trades (conservative scenario):
+**One configuration per universe.** The barriers are tried in the fixed order **B1 → B2 → B3**; the first whose verdict passes every check below is handed over and later ones are not considered. The candidate is the rule the procedure picks on **all** practice days with that barrier, with its exact thresholds (`research/signals/handoff.json`, one entry per universe, with BT-2's `edgePpm`: the out-of-sample one-sided 95% lower bound in ppm, and `medianTargetBps`: the median out-of-sample winner). BT-2's `U1Rules`/`U2Rules` are fixed shapes; a feature-filter rule needs BT-2 to add a matching rule kind or map the conditions, which BT-2 decides. A verdict passes only if **all** of these hold on the pooled walk-forward out-of-sample trades (conservative scenario):
 
 1. Mean `r_net` > 0 at the one-sided 95% day-block lower bound.
 2. The paired difference against base on the same days > 0 at the one-sided 95% lower bound.
@@ -142,7 +141,6 @@ Writes `research/signals/results.json`, `research/signals/handoff.json` (one con
 - 2026-10-04, before any data was read (the data had not landed): written while building the code. U1 liquidity and the H8/H11 proxies now follow GATE-1's exact reading (effective quote reserve; candle high ÷ open); the selection score is the deterministic CR1 t-bound instead of a seeded bootstrap; PBO uses STATS-1's CSCV; exit-cost details, common random numbers and no-quote handling are written out (§4); three features added from the literature pass (f_liqmig, f_turn60, f_early_sold). No result existed when these were made.
 - 2026-10-04, before any data was read: regimes added at the supervisor's request (§5a and check 7 in §6), after UPG-1b found boundaries B2, B3 and B4.
 - 2026-10-04, before any data was read, after the PR #47 review: Melbourne days; default wall moved to the B4 day; the wall can never move later than the committed file, and a confirmed window must match the STATS-1 registry; regimes tagged by exact instant; one configuration per universe by the fixed barrier order; the DSR counts selectable trials and runs once on the full registry; the univariate quintiles are trials. Re-review: holds crossing a regime boundary are purged (BT-2's rule); a confirmed holdoutFrom must equal the registry's fromDay; the latest regime comes from the window (B4), B5 stored.
-- 2026-10-04, before any data was read (supervisor, after the CFG-2 ruling on per-universe exits): barrier B4 for U1 only, a 4 h time stop, last in the order B1 → B2 → B3 → B4; every B4 trial counts in the registry.
 
 ## 9. Literature and evidence
 
