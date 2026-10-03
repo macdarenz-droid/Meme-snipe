@@ -8,6 +8,7 @@ export * from './solana-http.ts';
 export * from './solana-ws.ts';
 export * from './tx-fetcher.ts';
 export * from './pumpportal.ts';
+export * from './coinbase.ts';
 export * from './parsed-streams.ts';
 export * from './jupiter.ts';
 export * from './rugcheck.ts';
