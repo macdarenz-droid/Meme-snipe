@@ -36,6 +36,8 @@ const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
   config, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: decisionDays,
   rows: (from, to) => () => rows.filter((r) => dayOf(r) >= from && dayOf(r) <= to)[Symbol.iterator](),
   firstDay: '2026-09-05', series: [sol], sampleRate: 1, insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, delegatesComplete: true,
+  // The synthetic world produces no regime inputs: the walk-forward runs as a labelled diagnostic, the holdout as live.
+  regimeGate: 'assume-on',
   registryPath: join(dir, 'registry.json'), outDir: dir,
   ledgerReplay: (p) => { const r = replayLedgerFile(p); return { ok: r.ok, detail: JSON.stringify(r) }; }, seed: 'study', replays: 2, runHoldout: false, startedAt: '2026-10-04T00:00:00Z', ...over,
 });
@@ -48,6 +50,7 @@ describe('BT-2 study', () => {
     expect(first.walkForward.ledgerReplay.ok).toBe(true);
     expect(first.walkForward.ledgerReplay.detail).toContain('"purpose":"backtest"');
     expect(first.walkForward.s0Seeds).toBe(2);
+    expect(first.regimeGate).toBe('assumed on (diagnostic)');
     expect(first.plan.walkForward.days).toEqual(['2026-09-20', '2026-09-21']);
     expect(first.plan.holdout).toMatchObject({ fromDay: '2026-09-22', toDay: '2026-09-22' });
     // Every walk-forward trade opened and closed inside the walk-forward days.
@@ -96,7 +99,7 @@ describe('BT-2 study', () => {
   });
 
   it('runs the holdout once into read-only sealed files; G2 stays "not proven" and nothing is opened', () => {
-    const second = runFullStudy(inputs({ runHoldout: true }));
+    const second = runFullStudy(inputs({ runHoldout: true, regimeGate: 'evaluate' }));
     expect(second.holdout.ran).toBe(true);
     const reg = readStudyRegistry(join(dir, 'registry.json'));
     expect(reg.runs).toHaveLength(1);
@@ -116,7 +119,7 @@ describe('BT-2 study', () => {
     // The run is attempt 1 of the shared error budget, at family α 0.04.
     expect(reg.runs[0]).toMatchObject({ attempt: 1, alpha: 0.04 });
     // Asking again does not run it again.
-    const third = runFullStudy(inputs({ runHoldout: true }));
+    const third = runFullStudy(inputs({ runHoldout: true, regimeGate: 'evaluate' }));
     expect(readStudyRegistry(join(dir, 'registry.json')).runs).toHaveLength(1);
     expect(third.holdout.sealHash).toBeNull();
   });
@@ -127,6 +130,8 @@ describe('BT-2 study', () => {
     expect(readStudyRegistry(other).holdouts.entries).toEqual([]);
     expect(r.gates.G2.reasons.join(' ')).toMatch(/not frozen/);
     expect(() => runFullStudy(inputs({ config: { ...config, frozen: false }, registryPath: other, runHoldout: true }))).toThrow(/not frozen/);
+    // A diagnostic run with the regime assumed on never runs the holdout.
+    expect(() => runFullStudy(inputs({ registryPath: join(dir, 'registry-diag.json'), runHoldout: true }))).toThrow(/regime gate is assumed on/);
   });
 
   it('a second holdout run into a new file is refused and burns the holdout', () => {

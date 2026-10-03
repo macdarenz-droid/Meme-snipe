@@ -25,15 +25,16 @@ import {
 } from '../../../core/src/exits/index.ts';
 import { observedFeeContext, type ScenarioName } from '../../../core/src/fills/index.ts';
 import {
-  DeployerIndex, evaluateHardRejects, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
+  DeployerIndex, evaluateHardRejects, evaluateRegime, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
   migrationKey, parseMigration, concentration, mintAccounts, type HardResult, type HardGate, gatesOfStages,
 } from '../../../core/src/gates/index.ts';
 import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src/lifecycle/index.ts';
-import { economicNav, evaluateEntry, NO_LATCHES, type NavMark, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
+import { economicNav, evaluateEntry, NO_LATCHES, type NavMark, type AccountCost, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, LAMPORTS_PER_SOL, type MicroUsd, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
 import type { PoolView } from '../sim/market.ts';
 import type { FeatureRules, StudyConfig, U1Rules, U2Rules, UniverseConfig } from './config.ts';
 import { featuresKey, LANDED_PREFIX } from '../sim/facts.ts';
+import { oneTimeRent } from '../../../worker/src/run/settings.ts';
 import { BAR_MS, PoolTape, spotPrice } from './tape.ts';
 import { Funnel, NOT_COVERED_CODES, type Stage, type StopClass } from '../study/funnel.ts';
 
@@ -61,6 +62,11 @@ export interface StudyOptions {
    * same size, costs, delays and exits. Never used for a decision: the filters stay on.
    */
   readonly ablate?: readonly HardGate[];
+  /**
+   * 'evaluate' (default): the regime gate as live. 'assume-on': a labelled diagnostic for runs whose regime inputs are
+   * not produced yet (graduate survival and curve volume); every output of such a run says the regime was assumed on.
+   */
+  readonly regime?: 'evaluate' | 'assume-on';
 }
 
 const paperSignature = (id: string) =>
@@ -128,6 +134,7 @@ export class StudyStrategy implements Strategy {
   readonly #closed: ClosedTrade[] = [];
   readonly #entries: EntryRecord[] = [];
   readonly #navMarks: NavMark[] = [];
+  #setupCost: AccountCost | null = null;
   /** Candidates past stage 1 whose stage-2 and stage-3 reads have not landed yet, by tag and mint. */
   readonly #pending = new Map<string, { readonly n: number; readonly stage1: HardResult }>();
   #latches: Latches = NO_LATCHES;
@@ -174,10 +181,11 @@ export class StudyStrategy implements Strategy {
     }
     const unresolved = Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && !isTerminal(i)).map((i) => ({ mint: i.intent.mint }));
     const realized = this.#closed.reduce((a, c) => a + c.netPnl, 0n);
-    const equity = policy.capital.bankroll + realized + open.reduce((a, o) => a + ((o.mark ?? 0n) - o.notional), 0n);
+    const setupCost = this.#setupCost?.amount ?? 0n;
+    const equity = policy.capital.bankroll - setupCost + realized + open.reduce((a, o) => a + ((o.mark ?? 0n) - o.notional), 0n);
     if (equity > this.#stats.peakEquityUsd) this.#stats.peakEquityUsd = equity;
     if (this.#stats.peakEquityUsd - equity > this.#stats.maxDrawdownUsd) this.#stats.maxDrawdownUsd = this.#stats.peakEquityUsd - equity;
-    const cash = (policy.capital.bankroll + realized - committed) as MicroUsd;
+    const cash = (policy.capital.bankroll - setupCost + realized - committed) as MicroUsd;
     // The wallet holds the trading cash plus the operations floor, so economic NAV (RISK-1b) equals the trading equity.
     const wallet = (microUsdToLamports(cash, px, 'floor') + policy.reserve.opsFloor) as Lamports;
     // R10's high-water mark comes from recorded NAV observations, in the evaluator's own definition.
@@ -185,7 +193,7 @@ export class StudyStrategy implements Strategy {
     if (nav !== null && nav > 0n && this.#navMarks.at(-1)?.nav !== nav) this.#navMarks.push({ atMs: now, nav });
     return {
       history: {
-        openingEquity: policy.capital.bankroll, openedAtMs: this.#o.entriesFrom - 1, flows: [], costs: [], closedTrades: [...this.#closed], openPositions: open,
+        openingEquity: policy.capital.bankroll, openedAtMs: this.#o.entriesFrom - 1, flows: [], costs: this.#setupCost === null ? [] : [this.#setupCost], closedTrades: [...this.#closed], openPositions: open,
         entries: [...this.#entries], unresolvedEntries: unresolved, heldReservations: ctx.book.reserved,
         // Day and week start marks are reporting only in RISK-1; not recorded here.
         markedAtDayStart: null, markedAtWeekStart: null, navMarks: [...this.#navMarks],
@@ -226,6 +234,28 @@ export class StudyStrategy implements Strategy {
     this.#stats.closed++;
   }
 
+  /**
+   * The wallet's setup rent, booked as live books it (WORKER-1 `wallet_setup`, the worker's own `oneTimeRent`): one
+   * account cost at the walk-forward start, valued at that hour's SOL price and rounded up. Equity starts at bankroll
+   * minus the rent, and the rent counts toward day 1's loss, as live.
+   */
+  #walletSetup(e: MarketEvent): void {
+    const sol = parseSolUsd(e.value);
+    const px = sol === null ? null : solUsdAt(sol, this.#o.entriesFrom);
+    if (px === null) return;
+    this.#setupCost = { atMs: this.#o.entriesFrom, amount: lamportsToMicroUsd(oneTimeRent(this.#o.fills) as Lamports, px.price as MicroUsd, 'ceil'), kind: 'wallet_setup' };
+  }
+
+  /** NAV observations recorded for R10 (deployment modes). */
+  get navMarks(): readonly NavMark[] {
+    return this.#navMarks;
+  }
+
+  /** The booked setup cost (deployment modes; null until the start hour's SOL price is known). */
+  get walletSetup(): AccountCost | null {
+    return this.#setupCost;
+  }
+
   /** The deployer index the gates read (for tests). */
   get deployers(): DeployerIndex {
     return this.#deployers;
@@ -233,6 +263,7 @@ export class StudyStrategy implements Strategy {
 
   onMarket(e: MarketEvent, ctx: StrategyContext): readonly Decision[] {
     this.#deployers.observe(e);
+    if (this.#deploy && this.#setupCost === null && e.key === SOL_USD_KEY) this.#walletSetup(e);
     if (e.key === 'slot') this.#prune(ctx.now.receivedAt);
     const out: Decision[] = [];
     if (e.key.startsWith('pool:')) this.#tape(e, ctx);
@@ -323,6 +354,15 @@ export class StudyStrategy implements Strategy {
     if (now < this.#o.entriesFrom || now >= this.#o.entriesTo) return;
     if (c.target !== null && c.checks < c.target) return;
     if (c.checks === 1 || c.target === c.checks) say('candidate', `check ${c.checks}`);
+    // The regime gate first, as live (worker strategy: regime off rejects before any hard reject). Off is its own
+    // funnel stage, never skipped: "not covered" when its inputs are unknown, adverse when its conditions fail.
+    const gctxR: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers };
+    const regime = this.#o.regime === 'assume-on' ? null : evaluateRegime(gctxR, { session: this.#o.session, mode: 'backtest' });
+    if (regime !== null && !regime.on) {
+      const unknown = regime.reasons.length > 0 && regime.reasons.every((r) => r.code === 'unknown');
+      this.funnel.record(tag, mint, 'regime off', unknown ? 'not covered' : 'adverse');
+      return void say('regime off', ...regime.reasons.map((r) => `${r.code}${r.input === undefined ? '' : `:${r.input}`}`));
+    }
 
     const mig = parseMigration(ctx.lookup(migrationKey(mint)).ok ? (ctx.lookup(migrationKey(mint)) as { value: unknown }).value : null);
     const pool = mig?.pool ?? null;
@@ -413,8 +453,7 @@ export class StudyStrategy implements Strategy {
       session: this.#o.session, mode: deploy ? 'live' : 'backtest', clock: { now: () => ({ receivedAt: now }) },
       account: account?.history ?? { openingEquity: policy.capital.bankroll, openedAtMs: now - 1, flows: [], costs: [], closedTrades: [], openPositions: [], entries: [], unresolvedEntries: [], heldReservations: 0n as Lamports, markedAtDayStart: null, markedAtWeekStart: null, navMarks: [], version: 0n },
       latches: deploy ? this.#latches : NO_LATCHES,
-      // R16: the regime gate's inputs are not produced in the backtest yet (FACTS-1); the deployment replay reports it
-      // as not applied rather than refusing every entry.
+      // R16: the regime gate was evaluated at the check and was on (an off regime never reaches risk).
       market: { solPrice: { value: px.price as MicroUsd, atMs: now }, solBalance: { value: bankrollLamports as Lamports, atMs: now }, regime: deploy ? 'on' : 'unknown' },
     }, {
       intentId: id, reservationId: reservationId(`r:${tag}:${mint}`), mint: toMint(mint), universe: u.universe, stopBps, edgePpm: u.edgePpm,

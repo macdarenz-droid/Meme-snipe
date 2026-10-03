@@ -8,6 +8,7 @@ import { tradesOf } from '../src/trades.ts';
 import { mintHashFraction } from '../src/sim/facts.ts';
 import { key, type MintPlan, studyWorld, W0 } from './study-world.ts';
 import { SOL_USD } from './synthetic.ts';
+import { oneTimeRent } from '../../worker/src/run/settings.ts';
 import { POOL_ACCOUNTS } from './study-world.ts';
 
 vi.setConfig({ testTimeout: 300_000 });
@@ -24,7 +25,8 @@ const run = (plans: readonly MintPlan[], over: Partial<StudyRunOptions> = {}) =>
   const r = runStudy({
     rows: () => rows[Symbol.iterator](), series: [sol], seed: 'e', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
     windowEnd: W0 + 12 * 3_600_000, study: STUDY_CONFIG, mode: 'strategy', entriesFrom: W0, entriesTo: W0 + 10 * 3_600_000, sampleRate: 1,
-    insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, delegatesComplete: true, ...over,
+    // No regime inputs in the synthetic world: runs assume it on (labelled diagnostic) unless a test evaluates it.
+    insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, delegatesComplete: true, regime: 'assume-on', ...over,
   });
   return { r, mints };
 };
@@ -71,6 +73,16 @@ describe('BT-2 study runs', () => {
     const { r } = run([{ ...SETUP, ...patch }]);
     expect(decisions(r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
     expect(rejects(r.records)).toContain(code);
+  });
+
+  it('evaluates the regime gate first, as live: without its inputs every check stops at "regime off" (not covered)', () => {
+    let st: import('../src/strategy/study.ts').StudyStrategy | null = null;
+    const r = run([SETUP], { regime: 'evaluate', onStrategy: (x) => { st = x; } }).r;
+    expect(decisions(r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
+    expect(decisions(r.records).some((d) => d.reasons[0] === 'regime off' && d.reasons.slice(3).every((x) => x.startsWith('unknown')))).toBe(true);
+    const f = (st as unknown as import('../src/strategy/study.ts').StudyStrategy).funnel.summary()['U2']!;
+    expect(Object.keys(f.checksAt)).toEqual(['regime off']);
+    expect(f.checksAt['regime off']).toEqual({ adverse: 0, notCovered: f.checks });
   });
 
   it('stages the gates (FACTS-1): a stage-1 reject asks no reads, so stage-2 gates are "not evaluated"; past stage 1, H8 rejects', () => {
@@ -145,6 +157,21 @@ describe('BT-2 study runs', () => {
     const s = stats as unknown as import('../src/strategy/study.ts').DeploymentStats;
     expect(Object.values(s.rejected).reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
     expect(s.peakEquityUsd).toBeGreaterThan(0n);
+  });
+
+  it('deployment replay books the wallet setup rent as live does: equity starts at bankroll minus the rent', () => {
+    let st: import('../src/strategy/study.ts').StudyStrategy | null = null;
+    run([SETUP], { mode: 'deployment', onStrategy: (x) => { st = x; } });
+    const s = st as unknown as import('../src/strategy/study.ts').StudyStrategy;
+    const rent = oneTimeRent(FILL_CONFIG);
+    expect(rent).toBeGreaterThan(0n);
+    // SOL/USD is 120.00 all day: the rent in micro-dollars, rounded up.
+    const cost = (rent * 120_000_000n + 999_999_999n) / 1_000_000_000n;
+    expect(s.walletSetup).toEqual({ atMs: W0, amount: cost, kind: 'wallet_setup' });
+    // NAV values the wallet in lamports and back (floor both ways): at most one micro-dollar below bankroll − rent.
+    const nav = s.navMarks[0]!.nav;
+    expect(nav).toBeLessThanOrEqual(TRIAL_POLICY.capital.bankroll - cost);
+    expect(nav).toBeGreaterThanOrEqual(TRIAL_POLICY.capital.bankroll - cost - 1n);
   });
 
   it('deployment replay: S0 runs under the same one-position rule, under its own tags', () => {

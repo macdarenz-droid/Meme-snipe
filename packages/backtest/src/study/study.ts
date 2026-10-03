@@ -45,6 +45,8 @@ export interface StudyInputs {
   readonly insiders?: StudyRunOptions['insiders'];
   readonly poolAccounts?: StudyRunOptions['poolAccounts'];
   readonly delegatesComplete?: boolean;
+  /** The regime gate as live (default), or assumed on (a labelled diagnostic; the holdout refuses to run then). */
+  readonly regimeGate?: 'evaluate' | 'assume-on';
   readonly registryPath: string;
   /** Where the walk-forward and holdout ledgers go (new files). */
   readonly outDir: string;
@@ -124,6 +126,8 @@ export interface StudyReport {
   readonly holdoutRegime: string;
   readonly proofs: { readonly replayHashes: readonly string[]; readonly leak: ProofReport; readonly shift: ProofReport };
   readonly registry: StudyRegistry;
+  /** How the regime gate ran: 'evaluated' as live, or 'assumed on (diagnostic)'. */
+  readonly regimeGate: 'evaluated' | 'assumed on (diagnostic)';
 }
 
 const UNIVERSES = (c: StudyConfig) => c.universes.map((u) => u.universe);
@@ -155,6 +159,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     ...(i.insiders === undefined ? {} : { insiders: i.insiders }),
     ...(i.poolAccounts === undefined ? {} : { poolAccounts: i.poolAccounts }),
     ...(i.delegatesComplete === undefined ? {} : { delegatesComplete: i.delegatesComplete }),
+    ...(i.regimeGate === undefined ? {} : { regime: i.regimeGate }),
     ...(i.regimeBoundaries === undefined ? {} : { regimeBoundaries: i.regimeBoundaries }),
   });
 
@@ -223,6 +228,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   let sealed: ReturnType<typeof runSealedHoldout> | null = null;
   const alreadyRun = reg.runs.some((r) => r.holdoutIds.some((h) => universes.some((u) => holdoutIdOf(u) === h)));
   if (i.runHoldout && !c.frozen) throw new Error('the configurations are not frozen: the holdout cannot be run');
+  if (i.runHoldout && i.regimeGate === 'assume-on') throw new Error('the regime gate is assumed on (diagnostic): the holdout runs only with the gate evaluated as live');
   if (i.runHoldout && !alreadyRun) {
     const holdEnd = Date.parse(`${plan.holdout.toDay}T00:00:00Z`) + 86_400_000;
     const leadFrom = dayBefore(plan.holdout.fromDay, 14) < i.firstDay ? i.firstDay : dayBefore(plan.holdout.fromDay, 14);
@@ -355,6 +361,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     holdoutRegime: lastRegime,
     proofs: { replayHashes: hashes, leak, shift },
     registry: reg,
+    regimeGate: i.regimeGate === 'assume-on' ? 'assumed on (diagnostic)' : 'evaluated',
   };
 };
 

@@ -16,6 +16,8 @@ export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' |
   readonly mode: 'strategy' | 's0' | 'deployment' | 'deployment-s0';
   /** A paper-only ablation of these gates (StudyOptions.ablate). */
   readonly ablate?: readonly import('../../../core/src/gates/index.ts').HardGate[];
+  /** The regime gate: evaluated as live (default), or assumed on in a labelled diagnostic run (StudyOptions.regime). */
+  readonly regime?: 'evaluate' | 'assume-on';
   /** Receives the run's strategy (to read the deployment replay's figures after the run). */
   readonly onStrategy?: (s: StudyStrategy) => void;
   /** Entries are planned only inside [entriesFrom, entriesTo). */
@@ -79,6 +81,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
       const s = new StudyStrategy({
         config: o.study, session: startSession(o.policy), fills: o.fills, scenario: o.scenario, mode: o.mode, entriesFrom: o.entriesFrom, entriesTo: o.entriesTo,
         ...(o.ablate === undefined ? {} : { ablate: o.ablate }),
+        ...(o.regime === undefined ? {} : { regime: o.regime }),
       });
       o.onStrategy?.(s);
       return s;

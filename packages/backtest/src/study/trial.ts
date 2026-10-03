@@ -17,6 +17,8 @@ export interface TrialPart {
   readonly commit: string;
   readonly datasetId: string;
   readonly days: readonly string[];
+  /** The regime gate was assumed on (a labelled diagnostic run). */
+  readonly regimeAssumedOn?: boolean;
   readonly engine: { readonly replays: number; readonly identicalReplays: boolean; readonly crashes: number; readonly illegalStates: number; readonly unreconciledIntents: number; readonly leak: boolean; readonly ledgerReplay: boolean };
   readonly candidates: number;
   readonly entries: number;
@@ -83,6 +85,7 @@ export const trialReport = (i: TrialInput): BacktestReportV1 => {
     checks: [
       { mode: 'backtest', label: 'Trial in progress', value: `${days[0]} to ${days[days.length - 1]} (${days.length} days)`, limit: 'not a verdict', pass: true },
       { mode: 'backtest', label: 'Practice days only', value: `before ${holdoutDaysOf(i.config)[0]}`, limit: 'later days stay sealed', pass: true },
+      ...(i.parts.some((p) => p.regimeAssumedOn === true) ? [{ mode: 'backtest' as const, label: 'Regime gate', value: 'assumed on', limit: 'inputs not produced yet', pass: false }] : []),
     ],
   };
   const from = dayStart(days[0]!);

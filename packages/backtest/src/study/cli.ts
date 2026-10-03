@@ -5,7 +5,8 @@
 //   node packages/backtest/src/study/cli.ts study --dataset <dir> --sol-usd <file> --registry <file> [--run-holdout] [--replays 10] [--out <dir>]
 //   (each takes [--insiders <file>], a funding supplement: { mint: { knownAtMs, funded, devCluster } }, and
 //   [--pool-accounts <file>], H17's pool record: { pool: { knownAtMs, accountBytes, isCashbackCoin, coinCreator } }, and
-//   [--delegates-complete] only for a dataset that keeps every approval-changing transaction on tracked token accounts)
+//   [--delegates-complete] only for a dataset that keeps every approval-changing transaction on tracked token accounts;
+//   [--regime-assumed-on] a labelled diagnostic while the regime gate's inputs are not produced; refused with --run-holdout)
 //
 // `day` runs the strategies and S0 through the whole engine on the selected days and writes the engine evidence:
 // validity, replays, the leak test, the ledger replay check, counts and the reject mix. On a day of the fixed holdout
@@ -85,7 +86,7 @@ const ledgerReplay = (path: string): { ok: boolean; detail: string } => {
 const json = (v: unknown) => `${JSON.stringify(v, (_, x: unknown) => (typeof x === 'bigint' ? x.toString() : x), 1)}\n`;
 const clock = () => performance.now();
 const common = {
-  commit, dirty, dataset: { dir: dataset, id: datasetId, schema: manifest.schema, sampleRate, sumsChecked, days: manifest.days.map((d) => ({ day: d.day, complete: d.complete, warmUp: d.warm_up })) },
+  commit, dirty, regimeGate: has('regime-assumed-on') ? 'assumed on (diagnostic)' : 'evaluated', dataset: { dir: dataset, id: datasetId, schema: manifest.schema, sampleRate, sumsChecked, days: manifest.days.map((d) => ({ day: d.day, complete: d.complete, warmUp: d.warm_up })) },
   policy: TRIAL_POLICY.name, fills: FILL_CONFIG.version, research: RESEARCH_CONFIG.version, studyHash: studyHash(STUDY_CONFIG),
   configIds: Object.fromEntries(STUDY_CONFIG.universes.map((u) => [u.universe, configId(STUDY_CONFIG, u.universe)])),
   scenario: 'conservative',
@@ -145,7 +146,7 @@ if (command === 'day' || command === 'trial') {
     // Entries off on a holdout day: the run proves the engine on real data without trading the holdout.
     entriesTo: validityOnly ? from : last - Math.max(...STUDY_CONFIG.universes.map((u) => exitsFor(TRIAL_POLICY.exits, u.universe).tMaxMs)) - RESEARCH_CONFIG.s0.endMarginMs,
     sampleRate, regimeBoundaries: regimeBoundariesOf(manifest), ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
+    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), ...(has('regime-assumed-on') ? { regime: 'assume-on' as const } : {}), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
   };
   const t0 = clock();
   // The strategy object is made when the run starts; its funnel is read after the run.
@@ -183,7 +184,7 @@ if (command === 'day' || command === 'trial') {
     // The trial part the cumulative report is merged from (trial.ts): practice days only, checked again on merge.
     const tagged = (x: typeof r, tags: readonly string[]) => tradesOf(x, FILL_CONFIG).trades.map((t) => toPartTrade(t, tagOf(t.id))).filter((t) => tags.includes(t.tag));
     const part: TrialPart = {
-      kind: 'BT-2 trial part', runId, commit, datasetId, days,
+      kind: 'BT-2 trial part', runId, commit, datasetId, days, regimeAssumedOn: has('regime-assumed-on'),
       engine: { replays: hashes.length, identicalReplays: engine.identicalReplays, crashes: r.stats.crashes, illegalStates: r.stats.illegalStates, unreconciledIntents: r.stats.unreconciledIntents, leak: leak.ok, ledgerReplay: replayCheck.ok },
       candidates: Object.values(countsOf(r)).reduce((t, c) => t + c.candidates, 0), entries: Object.values(countsOf(r)).reduce((t, c) => t + c.entries, 0),
       trades: [...tagged(r, ['U1', 'U2']), ...(s0[0] === undefined ? [] : tagged(s0[0], ['S0-U1', 'S0-U2']))],
@@ -197,7 +198,7 @@ if (command === 'day' || command === 'trial') {
   const report = runFullStudy({
     config: STUDY_CONFIG, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: complete, rows: rowsOf, firstDay: first,
     series: [solUsd], sampleRate, ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
+    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), ...(has('regime-assumed-on') ? { regimeGate: 'assume-on' as const } : {}), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
     runHoldout: has('run-holdout'), startedAt: new Date().toISOString(), regimeBoundaries: regimeBoundariesOf(manifest), ledgerReplay,
   });
   const days = windowDays(STUDY_CONFIG);

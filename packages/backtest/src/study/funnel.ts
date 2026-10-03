@@ -12,8 +12,9 @@ import { type EvidenceCode, HARD_GATES, type HardGate, type HardResult } from '.
 const EVIDENCE: Record<EvidenceCode, true> = { missing: true, malformed: true, future: true, stale: true, degraded: true, gap: true, 'not-covered': true, inconsistent: true };
 export const NOT_COVERED_CODES: ReadonlySet<string> = new Set(Object.keys(EVIDENCE));
 
-// Stage-1 gates stop a check before any read is asked; 'not evaluated' is a spent read budget (FACTS-1 staging).
-export const STAGES = [...HARD_GATES, 'not evaluated', 'market data', 'setup', 'stop distance', 'book busy', 'risk', 'entered'] as const;
+// The regime gate (§6.4) comes first, as live; stage-1 gates stop a check before any read is asked; 'not evaluated' is a
+// spent read budget (FACTS-1 staging).
+export const STAGES = ['regime off', ...HARD_GATES, 'not evaluated', 'market data', 'setup', 'stop distance', 'book busy', 'risk', 'entered'] as const;
 export type Stage = (typeof STAGES)[number];
 export type StopClass = 'adverse' | 'not covered';
 
