@@ -251,6 +251,20 @@ describe('daily and weekly boundaries: the realized-boundary loss (kept) and the
     expect(d.snapshot?.dayChangeMarked).toBe(neg(usd('0.5')));
     expect(d.snapshot?.weekChangeMarked).toBeNull();
   });
+  test('neither boundary figure ever blocks a protective exit', () => {
+    // Both figures far past the daily and weekly limits, with a position open: exits are always allowed.
+    const open = { mint: MINT_B, openedAtMs: DAY_START - 5 * HOUR, notional: usd('5'), mark: usd('0'), markAtMs: NOW - 100 };
+    const input = baseInput({ account: account({ openPositions: [open], closedTrades: [trade(DAY_START + HOUR, '-4')],
+      markedAtDayStart: usd('25'), markedAtWeekStart: usd('25') }) });
+    const e = evaluateExit(input);
+    expect(e.allow).toBe(true);
+    expect(e.tripped.map((r) => r.code)).toEqual(expect.arrayContaining(['daily_loss', 'weekly_loss']));
+    const d = evaluateEntry(input, baseRequest());
+    expect(d.snapshot?.dayLoss).toBe(usd('9'));
+    expect(d.snapshot?.dayChangeMarked).toBe(neg(usd('14')));
+    // Malformed boundary inputs cannot block one either.
+    expect(evaluateExit(baseInput({ account: account({ markedAtDayStart: neg(usd('1000')), markedAtWeekStart: usd('1000000') }) })).allow).toBe(true);
+  });
 });
 
 // ---------- Third-opinion rulings: capital measured in SOL as well ----------
