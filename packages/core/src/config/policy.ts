@@ -9,7 +9,7 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
 /** Bump when the shape of Policy changes. Values are versioned by the hash of the whole policy. */
-export const POLICY_SCHEMA_VERSION = 2;
+export const POLICY_SCHEMA_VERSION = 3;
 
 /** One rung of the exit escalation ladder (section 9). */
 export interface LadderStep {
@@ -17,6 +17,30 @@ export interface LadderStep {
   readonly priorityFeeLamports: Lamports;
   /** Lowest acceptable output, in basis points below the trigger value. */
   readonly minOutBelowTriggerBps: number;
+}
+
+/** The universes that trade (ARCHITECTURE §3.2). U3 gets a block when RES-2 adds it. */
+export const EXIT_UNIVERSES = ['U1', 'U2'] as const;
+export type ExitUniverse = (typeof EXIT_UNIVERSES)[number];
+
+/** Section 9 exit parameters that belong to a strategy, so they differ by universe. */
+export interface UniverseExits {
+  /** ATR multiple for the price stop, in tenths (30 = 3.0). */
+  readonly stopAtrTenths: number;
+  /** Time stop: exit if not at flatMinRBps of R by this time. */
+  readonly tFlatMs: number;
+  readonly flatMinRBps: number;
+  readonly tMaxMs: number;
+  readonly partialMinShareBps: number;
+  /** Partial taken at this multiple of R (10,000 = 1R). The k-th partial needs k times this. */
+  readonly partialAtRBps: number;
+  /** Or at this gain on the cost basis (10,000 = +100%), whichever comes first; the k-th partial needs k times it. */
+  readonly partialAtGainBps: number;
+  /** ATR for the price stop cap and the trail: this many bars of this length (ATR(14) on 1-minute bars). */
+  readonly atrPeriod: number;
+  readonly atrBarMs: number;
+  /** ATR multiple for the trailing stop, in tenths (30 = 3.0). */
+  readonly trailAtrTenths: number;
 }
 
 export interface Policy {
@@ -118,28 +142,24 @@ export interface Policy {
     readonly maxQuoteAgeMs: number;
   };
 
-  /** Section 9. */
+  /**
+   * Section 9. The ladder, the exit-transaction counts, blocked retries and R9's thesis, flow, liquidity and quote stops are global: they feed
+   * the cost reservation (risk/evaluate.ts) and the fee reserve, so a reservation never depends on the universe. Time
+   * stops, partials, the ATR and its multiples are strategy parameters, one block per universe (CFG-2).
+   */
   readonly exits: {
-    /** ATR multiple for the price stop, in tenths (30 = 3.0). */
-    readonly stopAtrTenths: number;
+    /** Strategy exits per universe. Every universe in use has a block; S0 uses the block of the universe it controls for. */
+    readonly universes: { readonly [U in ExitUniverse]: UniverseExits };
+    /**
+     * Phase-1 hard maximum hold (§9): no universe's tMaxMs may exceed it, and validation keeps it at or below 120 min
+     * (PHASE1_T_MAX_MS). A longer hold is a new version the owner approves.
+     */
+    readonly tMaxCapMs: number;
     readonly deployerSellSupplyBps: number;
     readonly liquidityDropBps: number;
     readonly reverseQuoteFailures: number;
+    /** R9 flow stop: exit when net SOL flow has been negative this many minutes in a row. */
     readonly negativeFlowMinutes: number;
-    /** Time stop: exit if not at flatMinRBps of R by this time. */
-    readonly tFlatMs: number;
-    readonly flatMinRBps: number;
-    readonly tMaxMs: number;
-    readonly partialMinShareBps: number;
-    /** Partial taken at this multiple of R (10,000 = 1R). The k-th partial needs k times this. */
-    readonly partialAtRBps: number;
-    /** Or at this gain on the cost basis (10,000 = +100%), whichever comes first; the k-th partial needs k times it. */
-    readonly partialAtGainBps: number;
-    /** ATR for the price stop cap and the trail: this many bars of this length (ATR(14) on 1-minute bars). */
-    readonly atrPeriod: number;
-    readonly atrBarMs: number;
-    /** ATR multiple for the trailing stop, in tenths (30 = 3.0). */
-    readonly trailAtrTenths: number;
     readonly maxExitTxAtMinNotional: number;
     readonly maxExitTxAboveDoubleMin: number;
     readonly ladder: {
@@ -207,20 +227,40 @@ const TRIAL_VALUES: Policy = {
     maxQuoteAgeMs: 2000,
   },
   exits: {
-    stopAtrTenths: 30,
+    universes: {
+      // Paper trial values from risk.md S2 (T_flat 30 min, 50% at +2R, ATR14 on 5-minute bars × 3); where S2 is silent,
+      // U2's value. T_max stays at the phase-1 hard maximum of 120 min (§9): S2's 4 h is a variant that needs the owner.
+      // The study sets the frozen values.
+      U1: {
+        stopAtrTenths: 30,
+        tFlatMs: 30 * MINUTE,
+        flatMinRBps: 5000,
+        tMaxMs: 120 * MINUTE,
+        partialMinShareBps: 5000,
+        partialAtRBps: 20_000,
+        partialAtGainBps: 10_000,
+        atrPeriod: 14,
+        atrBarMs: 5 * MINUTE,
+        trailAtrTenths: 30,
+      },
+      U2: {
+        stopAtrTenths: 30,
+        tFlatMs: 15 * MINUTE,
+        flatMinRBps: 5000,
+        tMaxMs: 120 * MINUTE,
+        partialMinShareBps: 5000,
+        partialAtRBps: 15_000,
+        partialAtGainBps: 10_000,
+        atrPeriod: 14,
+        atrBarMs: MINUTE,
+        trailAtrTenths: 30,
+      },
+    },
+    tMaxCapMs: 120 * MINUTE,
     deployerSellSupplyBps: 200,
     liquidityDropBps: 3000,
     reverseQuoteFailures: 2,
     negativeFlowMinutes: 5,
-    tFlatMs: 15 * MINUTE,
-    flatMinRBps: 5000,
-    tMaxMs: 120 * MINUTE,
-    partialMinShareBps: 5000,
-    partialAtRBps: 15_000,
-    partialAtGainBps: 10_000,
-    atrPeriod: 14,
-    atrBarMs: MINUTE,
-    trailAtrTenths: 30,
     maxExitTxAtMinNotional: 2,
     maxExitTxAboveDoubleMin: 3,
     ladder: {
@@ -240,3 +280,12 @@ const TRIAL_VALUES: Policy = {
 
 /** The trial setting. Deep-frozen: nothing can change it at runtime. */
 export const TRIAL_POLICY: Policy = deepFreeze(TRIAL_VALUES);
+
+/**
+ * The strategy exits for a position's universe. Throws on a universe without a block: a position never falls back to
+ * another universe's exits.
+ */
+export const exitsFor = (exits: Policy['exits'], universe: string): UniverseExits => {
+  if (!Object.hasOwn(exits.universes, universe)) throw new RangeError(`no exit parameters for universe ${universe}`);
+  return exits.universes[universe as ExitUniverse];
+};

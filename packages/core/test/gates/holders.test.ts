@@ -12,7 +12,7 @@ import { ACC, HOLDER_ACCOUNTS, POOL, POOL_ADDRESS, W, byLabel, contextOf, deps, 
 const holderOf = (label: string, ownerProgram: string | null = null): HolderAccount & { mint: string; slot: string } => {
   const a = byLabel(label);
   const t = decodeTokenAccount(fromBase64(a.dataBase64), a.owner as Address);
-  return { address: a.address, owner: t.owner, ownerProgram, amount: t.amount, mint: t.mint, slot: a.slot };
+  return { address: a.address, owner: t.owner, ownerProgram, amount: t.amount, mint: t.mint, delegate: t.delegate, delegatedAmount: t.delegatedAmount, slot: a.slot };
 };
 const mintOf = (label: string) => byLabel(label).address;
 
@@ -65,7 +65,7 @@ describe('classification on mainnet accounts', () => {
   });
 
   it('an account owned by a Raydium locker PDA is classed as a locker and kept as a holder (built case)', () => {
-    const locker = { mint: MINT, address: ACC('locker'), owner: ACC('locker-pda'), ownerProgram: RAYDIUM_LOCKER_PROGRAM, amount: 5n };
+    const locker = { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('locker'), owner: ACC('locker-pda'), ownerProgram: RAYDIUM_LOCKER_PROGRAM, amount: 5n };
     expect(classifyHolder(locker, mintAccounts(MINT, null))).toBe('locker');
     const c = concentration({ obs: obs(), supply: 10n, coverage: 'all', accounts: [locker] }, mintAccounts(MINT, null));
     expect(c.excluded).toBe(0n);
@@ -81,13 +81,13 @@ describe('concentration', () => {
   it('measures shares of circulating supply after every exclusion, grouped by owner', () => {
     const accounts: HolderAccount[] = [
       vault, // pool vault
-      { mint: MINT, address: ACC('c'), owner: mintAccounts(vault.mint, null).curve, ownerProgram: PUMP_PROGRAM, amount: 100n }, // curve
-      { mint: MINT, address: ACC('m'), owner: MAYHEM_VAULT_OWNER, ownerProgram: null, amount: 100n },
-      { mint: MINT, address: ACC('b'), owner: INCINERATOR, ownerProgram: null, amount: 100n },
-      { mint: MINT, address: ACC('l'), owner: ACC('lp'), ownerProgram: RAYDIUM_LOCKER_PROGRAM, amount: 100n },
-      { mint: MINT, address: ACC('w1'), owner: W(1), ownerProgram: null, amount: 300n },
-      { mint: MINT, address: ACC('w1b'), owner: W(1), ownerProgram: null, amount: 100n },
-      { mint: MINT, address: ACC('w2'), owner: W(2), ownerProgram: null, amount: 600n },
+      { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('c'), owner: mintAccounts(vault.mint, null).curve, ownerProgram: PUMP_PROGRAM, amount: 100n }, // curve
+      { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('m'), owner: MAYHEM_VAULT_OWNER, ownerProgram: null, amount: 100n },
+      { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('b'), owner: INCINERATOR, ownerProgram: null, amount: 100n },
+      { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('l'), owner: ACC('lp'), ownerProgram: RAYDIUM_LOCKER_PROGRAM, amount: 100n },
+      { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('w1'), owner: W(1), ownerProgram: null, amount: 300n },
+      { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('w1b'), owner: W(1), ownerProgram: null, amount: 100n },
+      { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('w2'), owner: W(2), ownerProgram: null, amount: 600n },
     ];
     const supply = vault.amount + 1_400n;
     const c = concentration(fact(accounts, supply), known);
@@ -100,13 +100,13 @@ describe('concentration', () => {
   });
 
   it('keeps a PDA of an unknown program as a holder (it may be the dev)', () => {
-    const c = concentration(fact([{ mint: MINT, address: ACC('x'), owner: POOL_ADDRESS, ownerProgram: null, amount: 10n }], 10n), mintAccounts(MINT, null));
+    const c = concentration(fact([{ mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('x'), owner: POOL_ADDRESS, ownerProgram: null, amount: 10n }], 10n), mintAccounts(MINT, null));
     expect(c.classes[0]?.cls).toBe('unknown-program');
     expect(c.circulating).toBe(10n);
   });
 
   it('counts what no listed account holds as unaccounted, and an owner only by its listed accounts', () => {
-    const two = [{ mint: MINT, address: ACC('a'), owner: W(1), ownerProgram: null, amount: 50n }, { mint: MINT, address: ACC('b'), owner: W(2), ownerProgram: null, amount: 7n }];
+    const two = [{ mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('a'), owner: W(1), ownerProgram: null, amount: 50n }, { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('b'), owner: W(2), ownerProgram: null, amount: 7n }];
     const c = concentration(fact(two, 1_000n, 'largest'), known);
     expect(c.unaccounted).toBe(943n);
     expect(ownerBalance(c, W(1))).toBe(50n);
