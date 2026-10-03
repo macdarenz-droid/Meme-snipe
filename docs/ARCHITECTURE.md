@@ -249,7 +249,7 @@ Limits are written as a fraction of the bankroll B with a dollar value for the t
 | R15 | No martingale | Never add to a loser, never raise q after a loss, never edit policy mid-session | — |
 | R16 | Regime gate | §6.4 | — |
 
-Equity E, the high-water mark HWM and all loss figures are measured **net of deposits and withdrawals**: a deposit raises E and HWM by its amount, a withdrawal lowers both, so neither trips a trigger nor moves the kill line relative to trading results.
+Equity E, the high-water mark HWM and all loss figures are measured **net of deposits and withdrawals**, time-weighted (RISK-1b): a deposit or withdrawal scales HWM and the week's base by the same proportion as E, so the drawdown percentage is unchanged and a flow neither trips a trigger nor hides a loss. The weekly limit is counted both ways (in dollars against week-start equity and time-weighted against the scaled base) and the tighter applies. The daily trigger is a fixed share of B, so today's loss is counted in dollars, flow-neutral. Cash (R4), the reserve and loss affordability (R6) are enforced separately.
 
 Sizing: `maximum q = min(q_max, stop-stress size, full-loss allowance after costs, executable-depth cap, cash after reserve, remaining risk budget)`. Trade only if that maximum is at least q_min and the expected net (§5.2) is positive. A tight stop never overrides the full-loss allowance. Sizes step up only by the owner after G5 (§14); any 10% drawdown from the high-water mark returns to q_min.
 

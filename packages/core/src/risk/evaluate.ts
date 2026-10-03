@@ -47,26 +47,49 @@ const realizedBefore = (a: AccountHistory, t: number): { readonly equity: bigint
   flowsSince: sumBig(a.flows.filter((f) => f.atMs >= t).map((f) => f.amount)),
 });
 
+type AccountEvent = { readonly at: number; readonly kind: 'flow' | 'trade'; readonly amount: bigint };
+
+/** Flows and closed trades in time order; at the same instant trades come first, then flows. */
+const accountEvents = (a: AccountHistory): AccountEvent[] => [
+  ...a.closedTrades.map((c): AccountEvent => ({ at: c.closedAtMs, kind: 'trade', amount: c.netPnl })),
+  ...a.flows.map((f): AccountEvent => ({ at: f.atMs, kind: 'flow', amount: f.amount })),
+].sort((x, y) => x.at - y.at || (x.kind === y.kind ? 0 : x.kind === 'trade' ? -1 : 1));
+
 /**
- * High-water mark of realized equity, net of deposits and withdrawals (a flow moves equity and the mark together).
- * An owner re-arm of the kill switch restarts the mark at the equity of that moment.
+ * Time-weighted (unitized): a deposit or withdrawal scales a reference figure by the same proportion as equity
+ * (equity after / equity before, rounded up), so the drawdown measured against it is unchanged by the flow. Equity at
+ * or below zero is refused elsewhere (R1); there the flow is simply added.
+ */
+const scaleByFlow = (reference: bigint, equityBefore: bigint, amount: bigint): bigint =>
+  equityBefore > 0n ? mulDiv(reference, equityBefore + amount, equityBefore, 'ceil') : reference + amount;
+
+/**
+ * High-water mark of realized equity, time-weighted: trades raise it to a new equity peak, flows scale it with equity
+ * (RISK-1b; a withdrawal during a drawdown no longer deepens it, a deposit no longer hides it). An owner re-arm of the
+ * kill switch restarts the mark at the equity of that moment.
  */
 const highWaterMark = (a: AccountHistory, rearmAtMs: number | null, nowMs: number): bigint => {
-  // A flow and a trade at the same instant commute (max(h + f, e + f + p) = max(h, e + p) + f), so time order is enough.
-  type Ev = { readonly at: number; readonly kind: 'flow' | 'trade'; readonly amount: bigint };
-  const events: Ev[] = [
-    ...a.flows.map((f): Ev => ({ at: f.atMs, kind: 'flow', amount: f.amount })),
-    ...a.closedTrades.map((c): Ev => ({ at: c.closedAtMs, kind: 'trade', amount: c.netPnl })),
-  ].sort((x, y) => x.at - y.at);
   let equity: bigint = a.openingEquity;
   let hwm = equity;
   let rearmPending = rearmAtMs !== null && rearmAtMs <= nowMs;
-  for (const e of events) {
+  for (const e of accountEvents(a)) {
     if (rearmPending && rearmAtMs !== null && e.at >= rearmAtMs) { hwm = equity; rearmPending = false; }
+    if (e.kind === 'flow') hwm = scaleByFlow(hwm, equity, e.amount);
     equity += e.amount;
-    hwm = e.kind === 'flow' ? hwm + e.amount : maxBig(hwm, equity);
+    if (e.kind === 'trade') hwm = maxBig(hwm, equity);
   }
   return rearmPending ? equity : hwm;
+};
+
+/** The week's base, time-weighted: realized equity at the week start, scaled by every flow since. */
+const weekBase = (a: AccountHistory, weekStartMs: number, equityAtStart: bigint): bigint => {
+  let equity = equityAtStart;
+  let base = equityAtStart;
+  for (const e of accountEvents(a).filter((x) => x.at >= weekStartMs)) {
+    if (e.kind === 'flow') base = scaleByFlow(base, equity, e.amount);
+    equity += e.amount;
+  }
+  return base;
 };
 
 const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: number): Figures => {
@@ -100,6 +123,7 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
   const atWeek = realizedBefore(a, week.start);
   const dayLoss = maxBig(0n, atDay.equity + atDay.flowsSince - equity);
   const weekLoss = maxBig(0n, atWeek.equity + atWeek.flowsSince - equity);
+  const base = weekBase(a, week.start, atWeek.equity);
 
   const trades = [...a.closedTrades].sort(byClose);
   let lossStreak = 0;
@@ -112,7 +136,8 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
     snapshot: {
       nowMs, dayStartMs: day.start, weekStartMs: week.start,
       equity: usd(equity), highWaterMark: usd(highWaterMark_), dayLoss: usd(dayLoss), weekLoss: usd(weekLoss),
-      weekStartEquity: usd(atWeek.equity), openExposure: usd(openExposure), lossStreak,
+      weekStartEquity: usd(atWeek.equity), weekBase: usd(base), weekBaseLoss: usd(maxBig(0n, base - equity)),
+      openExposure: usd(openExposure), lossStreak,
     },
   };
 };
@@ -124,7 +149,7 @@ interface AccountCheck {
   readonly reasons: readonly RiskReason[];
   readonly trips: readonly Trip[];
   readonly killLine: bigint;
-  readonly weekLimit: bigint;
+  readonly weekRoom: bigint;
   readonly dailyLimit: bigint;
 }
 
@@ -175,12 +200,15 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   }
 
   // R9: weekly loss, latched until the week ends and the owner has reviewed it (a review strictly after the trip).
+  // Counted two ways and the tighter applies: in dollars against week-start equity, and time-weighted against the
+  // flow-scaled base (RISK-1b), so a flow can neither hide a weekly loss nor loosen the limit.
   const weekLimit = ofBps(s.weekStartEquity, policy.loss.weeklyBps, 'floor');
+  const weekBaseLimit = ofBps(s.weekBase, policy.loss.weeklyBps, 'floor');
   const weeklyTripped = latches.weeklyTrippedAtMs;
   const weeklyLatched = weeklyTripped !== null && (
     latches.weeklyReviewedAtMs === null || latches.weeklyReviewedAtMs <= weeklyTripped || nowMs < melbourneWeek(weeklyTripped).end
   );
-  if (s.weekLoss >= weekLimit) {
+  if (s.weekLoss >= weekLimit || s.weekBaseLoss >= weekBaseLimit) {
     reasons.push(reason('weekly_loss', 'weekly loss trigger reached; paused for the week'));
     if (!weeklyLatched) trips.push('weekly_loss');
   }
@@ -208,7 +236,9 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   if (live && market.regime === 'off') reasons.push(reason('regime_off', 'regime gate is off; paper only'));
   if (live && market.regime === 'unknown') reasons.push(reason('regime_unknown', 'regime gate state is unknown'));
 
-  return { figures: f, reasons, trips, killLine, weekLimit, dailyLimit };
+  // What the week still allows (before what is open or reserved): the tighter of the two counts.
+  const weekRoom = minBig(weekLimit - s.weekLoss, weekBaseLimit - s.weekBaseLoss);
+  return { figures: f, reasons, trips, killLine, weekRoom, dailyLimit };
 };
 
 /** The Melbourne rules refuse a non-integer or pre-2008 instant, so a bad clock throws before any figure is used. */
@@ -349,7 +379,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
       BigInt(request.stopBps + policy.costGate.maxRoundTripBps), 'floor'));
   }
   const killAllowance = s.equity - check.killLine - committed;
-  const weekAllowance = check.weekLimit - s.weekLoss - committed;
+  const weekAllowance = check.weekRoom - committed;
   cap('R6', 'full loss above the kill line', killAllowance - heldUsd - cMaxUsd);
   cap('R6', 'full loss inside the weekly limit', weekAllowance - heldUsd - cMaxUsd);
   if (request.poolLiquidity !== null) cap('R12', 'liquidity floor multiple', request.poolLiquidity / BigInt(policy.liquidity.floorNotionalMultiple));
@@ -441,8 +471,16 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
     limits: { maxHeld, maxCount: policy.positions.maxOpen - account.openPositions.length },
     accountVersion: account.version,
   };
+  const stop = BigInt(request.stopBps);
+  const slip = BigInt(policy.exits.ladder.steps.reduce((m, st) => Math.max(m, st.minOutBelowTriggerBps), 0));
+  const loss = {
+    plannedRisk: usd(mulDiv(notional, stop + BigInt(policy.costGate.maxRoundTripBps), BPS, 'ceil') + fixedUsd),
+    // 1 − (1 − s)(1 − e) = s + e − s·e, in bps of bps.
+    stressed: usd(mulDiv(notional, stop * BPS + slip * BPS - stop * slip, BPS * BPS, 'ceil') + cMaxUsd),
+    reserved: lamportsToMicroUsd(amount, price, 'ceil'),
+  };
   return {
     allow: true, reasons: [], trips: check.trips, snapshot: s, notional, spendLamports: spend, maxCostsLamports: cMax,
-    caps, roundTripPpm, reservation,
+    caps, roundTripPpm, loss, reservation,
   };
 };

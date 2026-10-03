@@ -213,6 +213,10 @@ export interface RiskSnapshot {
   readonly dayLoss: MicroUsd;
   readonly weekLoss: MicroUsd;
   readonly weekStartEquity: MicroUsd;
+  /** Week-start equity scaled by every deposit and withdrawal since (time-weighted). */
+  readonly weekBase: MicroUsd;
+  /** Loss this week measured against `weekBase` (zero if none). */
+  readonly weekBaseLoss: MicroUsd;
   /** Remaining full loss of open positions (mark or cost, whichever is lower). */
   readonly openExposure: MicroUsd;
   readonly lossStreak: number;
@@ -238,6 +242,13 @@ export interface EntryAllowed {
   readonly caps: readonly SizeCapEntry[];
   /** Round-trip cost at the chosen size, ppm of notional (R14). */
   readonly roundTripPpm: bigint;
+  /**
+   * Three loss figures, smallest to largest (RISK-1b). Planned R (R5): q × (stop + cost-gate ceiling) + F. Stressed
+   * executable loss: the stop is hit and the exit fills at the emergency rung's min-out below the trigger, so
+   * q × (1 − (1 − stop)(1 − emergency slippage)) + C. Reserved loss (R6): q + C, the whole notional plus every cost,
+   * which is what sizing and the reservation are bounded by.
+   */
+  readonly loss: { readonly plannedRisk: MicroUsd; readonly stressed: MicroUsd; readonly reserved: MicroUsd };
   /** Hand this to the reservation store before preparing the transaction. */
   readonly reservation: ReservationRequest;
 }
