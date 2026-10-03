@@ -83,7 +83,7 @@ describe('3. a host loss needs a backup that holds something', () => {
     const d = r.drills.find((x) => x.cause === 'host-loss')!;
     expect(d.pass).toBe(true);
     expect(d.keep).toBeGreaterThan(0);
-    expect(d.notes.join(' ')).toMatch(/a SQLite ledger copied that way can be torn/);
+    expect(d.notes.join(' ')).toMatch(/a ledger database copied that way can be torn/);
   }, 40_000);
 });
 

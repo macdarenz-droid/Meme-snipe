@@ -423,7 +423,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         if (p.killValid === false) state = { ...state, state_ok: false, notes: [...state.notes, 'the reply at the kill was missing or invalid: what had to be kept is unknown'] };
         notes.unshift(p.ok ? 'reconciled before any entry' : 'no successful reconcile before entry', ...state.notes);
         if (p.afterBackup?.length) notes.push(`opened after the backup, not expected back: ${p.afterBackup.join(', ')}`);
-        if (hostLossWipe) notes.push('rehearsal backup copied while the worker ran: a SQLite ledger copied that way can be torn (the host uses SQLite\'s online backup)');
+        if (hostLossWipe) notes.push('rehearsal backup copied while the worker ran: a ledger database copied that way can be torn (the host backs up with the database\'s own online backup)');
         if (p.table) {
           await o.control.endTabletop();
           notes.push('tabletop beside the qualifying run: the live worker kept running', offsiteNote(o.offsiteBackup));
