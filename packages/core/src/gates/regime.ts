@@ -95,7 +95,7 @@ const survival = (g: GraduatesFact, at: number, p: Policy['regime']): ConditionR
 const volume = (v: CurveVolumeFact, at: number, p: Policy['regime']): ConditionResult => {
   const lastDay = Math.floor(at / DAY_MS) - 1;
   const byDay = new Map<number, bigint>();
-  for (const d of v.days) if ((d.day + 1) * DAY_MS <= at) byDay.set(d.day, d.volumeUsd);
+  for (const d of v.days) if ((d.day + 1) * DAY_MS <= at) byDay.set(d.day, d.volumeLamports);
   const span: bigint[] = [];
   for (let day = lastDay - p.volumeWindowDays + 1; day <= lastDay; day++) {
     const x = byDay.get(day);
