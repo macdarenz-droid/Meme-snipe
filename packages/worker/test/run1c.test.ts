@@ -138,6 +138,7 @@ describe('typed gate_reasons and the health fields', () => {
     const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
     expect(health.open_position).toMatchObject({ trade: pid, mark: expect.stringMatching(/^\d+$/), mark_slot: expect.any(Number), mark_ts: expect.any(Number) });
     expect(health.ts - health.open_position!.mark_ts).toBeLessThanOrEqual(30_000);
+    expect(health.open_positions).toEqual([health.open_position]);
     expect(health.unresolved_intents.trades).toHaveLength(health.unresolved_intents.count);
     expect(health.lookups.counts).toHaveLength(10);
     // No live feed in this harness: no exit path is up.

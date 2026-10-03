@@ -11,7 +11,6 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
-import { execPrice } from '../../../core/src/exits/index.ts';
 import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
@@ -40,6 +39,7 @@ import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
+import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { parsePool } from '../../../core/src/gates/index.ts';
 import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
@@ -144,10 +144,6 @@ interface FeedState {
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/** A position's entry as a price per token (PRICE_SCALE), the unit of its stop and mark: entry spend over tokens bought. */
-const entryPrice = (p: { readonly cost: bigint; readonly quantity: bigint; readonly sold: bigint }): bigint =>
-  p.quantity + p.sold > 0n ? execPrice(p.cost, p.quantity + p.sold) : 0n;
 
 export class Worker {
   readonly #d: WorkerDeps;
@@ -831,20 +827,18 @@ export class Worker {
       ages[name] = age;
       feeds[name] = { connected: s.connected && s.droppedUntil <= now, age_ms: age, critical: s.src.critical, dropped_by_drill: s.droppedUntil > now };
     }
-    const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
-    const saved = p === undefined ? undefined : this.#strategy.saved()[p.id];
-    const mark = p === undefined ? null : this.#strategy.markOf(p.id);
+    const savedPlans = this.#strategy.saved();
+    const positions = openPositionsHealth(Object.values(this.#engine.book.positions), {
+      openedAt: (id) => this.#account.state.trades.find((t) => t.positionId === id)?.openedAtMs ?? null,
+      plan: (id) => savedPlans[id]?.plan ?? null,
+      mark: (id) => this.#strategy.markOf(id),
+    });
     const ops = this.#d.ops?.() ?? { quota: [], lookups: { counts: LOOKUP_BOUNDS_MS.map(() => 0).concat(0) } };
     return {
       seq: this.#beatSeq, ts: now, git_sha: this.#d.config.gitSha, policy_version: this.#d.session.versionHash,
       last_processed_slot: this.#lastSlot === null ? null : Number(this.#lastSlot), feed_ages_ms: ages,
-      open_position: p === undefined ? null : {
-        trade: p.id, mint: p.mint, qty: String(p.quantity), entry: String(entryPrice(p)), stop: saved === undefined ? 'unknown' : String(saved.plan.stopPrice),
-        // No mark read yet: the entry, seen at time 0, which the runner reads as unmeasured (older than 30 s).
-        mark: String(mark?.price ?? entryPrice(p)), mark_slot: mark === null ? 0 : Number(mark.slot), mark_ts: mark?.atMs ?? 0,
-        // The universe the position was entered under (CFG-2; RUN-1d contract); no saved plan: unknown, which fails the drill.
-        universe: saved === undefined ? 'unknown' : saved.plan.universe,
-      },
+      open_position: positions[0] ?? null,
+      open_positions: positions,
       // Trades with an exit planned or signed and not final (RUN-1d contract).
       pending_exits: Object.values(this.#engine.book.positions).filter((x) => x.status === 'exit_requested' || x.status === 'exit_pending' || x.status === 'exit_blocked').map((x) => x.id),
       unresolved_intents: this.#desk.unresolved(now, (id) => this.#intentAt.get(id) ?? null),

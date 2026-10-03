@@ -63,6 +63,9 @@ describe('2. the reply at a kill is validated', () => {
     ['an open position on a universe with no exit parameters', h({ open_position: { trade: 't', universe: 'U3' } }), false],
     ['a valid reply on U1', h({ pending_exits: [], open_position: { trade: 't', universe: 'U1' } }), true],
     ['a valid reply', h({ pending_exits: ['t'], open_position: { trade: 't', universe: 'U2' } }), true],
+    // WORKER-1c: every open position is checked, not only the first.
+    ['a second open position on universe \'unknown\'', h({ open_position: { trade: 't', universe: 'U2' }, open_positions: [{ trade: 't', universe: 'U2' }, { trade: 'u', universe: 'unknown' }] }), false],
+    ['two open positions on known universes', h({ open_position: { trade: 't', universe: 'U2' }, open_positions: [{ trade: 't', universe: 'U2' }, { trade: 'u', universe: 'U1' }] }), true],
   ])('%s', (_, reply, ok) => expect(killReplyValid(reply as Health | null)).toBe(ok));
   it.each(['unknown', 'U3', 'S0'])("a restored position on universe '%s' fails restored_universe_kept", (u) => {
     const rec = { seq: 2, ts: '2026-10-04T00:00:01.000Z', boot: 'b', kind: 'recovered', source: 'state', pending_exits: [], positions: [{ trade: 't', universe: u }] } as JournalLine;
