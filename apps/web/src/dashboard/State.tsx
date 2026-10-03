@@ -44,12 +44,17 @@ export function ErrorState({ reason }: { reason: keyof typeof ERROR_TEXT }) {
 /** How often a stale note re-reads the clock, so "updated 3m ago" stays true. */
 export const STALE_TICK_MS = 30_000;
 
+/** Calls `onTick` every `ms` until the returned stop function runs. */
+export function startStaleTicker(onTick: () => void, ms: number = STALE_TICK_MS): () => void {
+  const timer = setInterval(onTick, ms);
+  return () => clearInterval(timer);
+}
+
 export function StaleNote({ asOf, now: fixed }: { asOf: string; now?: number }) {
   const [tick, setTick] = useState(() => Date.now());
   useEffect(() => {
     if (fixed !== undefined) return;
-    const timer = window.setInterval(() => setTick(Date.now()), STALE_TICK_MS);
-    return () => window.clearInterval(timer);
+    return startStaleTicker(() => setTick(Date.now()));
   }, [fixed]);
   const now = fixed ?? tick;
   return (

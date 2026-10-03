@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CalendarMonth, StatsView } from '../src/api/contract.ts';
 import { DataError } from '../src/api/modes.ts';
 import { BacktestReportView, groupMonth } from '../src/dashboard/BacktestReport.tsx';
@@ -9,7 +9,7 @@ import { Boundary } from '../src/dashboard/Boundary.tsx';
 import { monthTotals, PnlCalendar } from '../src/dashboard/Calendar.tsx';
 import { Dashboard } from '../src/dashboard/Dashboard.tsx';
 import { headline, Journal, OpenPosition, Stats, StatusFlags } from '../src/dashboard/Sections.tsx';
-import { Load, OfflineContext } from '../src/dashboard/State.tsx';
+import { Load, OfflineContext, STALE_TICK_MS, startStaleTicker } from '../src/dashboard/State.tsx';
 import { TradeDetail, TradeTable } from '../src/dashboard/Trades.tsx';
 import { fixtureApi, fixtureDays, fixtureDecisions, fixturePosition, fixtureReport, fixtureStats, fixtureTrades } from '../src/dev/dashboardFixtures.ts';
 import { addUsd } from '../src/lib/money.ts';
@@ -164,6 +164,28 @@ describe('section error boundary', () => {
     // Every section body on the dashboard goes through Load.
     const dash = src('Dashboard.tsx');
     expect((dash.match(/<Section /g) ?? []).length).toBe((dash.match(/<Section [^>]*>\s*(<Load|\{backtest \?)/g) ?? []).length);
+  });
+});
+
+describe('stale note ticker', () => {
+  it('ticks every 30 s and stops on cleanup', () => {
+    vi.useFakeTimers();
+    try {
+      expect(STALE_TICK_MS).toBe(30_000);
+      let ticks = 0;
+      const stop = startStaleTicker(() => ticks++);
+      vi.advanceTimersByTime(29_999);
+      expect(ticks).toBe(0);
+      vi.advanceTimersByTime(1);
+      expect(ticks).toBe(1);
+      vi.advanceTimersByTime(30_000);
+      expect(ticks).toBe(2);
+      stop();
+      vi.advanceTimersByTime(120_000);
+      expect(ticks).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
