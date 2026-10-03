@@ -9,18 +9,63 @@ export interface RugConfig {
   /** The creator (or the launch signer) sold at least this share of total supply, in bps, within the window. */
   readonly creatorDump: { readonly supplyBps: number; readonly windowMs: number };
   /** Quote liquidity fell at least this far below its peak since launch, in bps of the peak, within the window. */
-  readonly collapse: { readonly dropBps: number; readonly windowMs: number };
+  readonly collapse: {
+    readonly dropBps: number;
+    readonly windowMs: number;
+    /**
+     * A collapse counts only from a peak of at least this much quote liquidity (raw units, lamports for SOL), so one
+     * small buy and its sale is not a rug. 0 until measured against executable losses on practice days (rugs-2).
+     */
+    readonly minPeakLamports: number;
+  };
+  /**
+   * Materiality recorded with every collapse, at a fixed reference size and cost limit (never the bankroll): the cost
+   * of exiting a `referenceLamports` position at the peak, material when at most `maxExitCostBps`. Not used to decide.
+   */
+  readonly materiality: { readonly referenceLamports: number; readonly maxExitCostBps: number };
 }
 
 const VALUES: RugConfig = {
-  version: 'rugs-1',
+  version: 'rugs-2',
   // R9's deployer-sale exit (risk.md, ARCHITECTURE §9, policy exits.deployerSellSupplyBps).
   creatorDump: { supplyBps: 200, windowMs: DAY_MS },
   // The TVL −99% label of Li et al., arXiv 2608.20271.
-  collapse: { dropBps: 9_900, windowMs: DAY_MS },
+  collapse: { dropBps: 9_900, windowMs: DAY_MS, minPeakLamports: 0 },
+  // A provisional reference, recorded only: a 1 SOL position and a 10% exit cost. Set from practice-day measurements.
+  materiality: { referenceLamports: 1_000_000_000, maxExitCostBps: 1_000 },
 };
 
 export const RUG_CONFIG: RugConfig = deepFreeze(VALUES);
+
+/** The on-demand check of one deployer's prior mints (RUG-1c). Operational limits, versioned apart from the definition. */
+export interface RugCheckConfig {
+  readonly version: string;
+  /** RPC credits one candidate's check may use; past it, the mints not yet read are unfetched (H14 not covered). */
+  readonly creditCapPerCandidate: number;
+  /** H14 accepts a check at most this many slots behind the decision. */
+  readonly maxLagSlots: number;
+}
+
+// Measured on 32 deployers of live graduations (docs/DECISIONS.md "Rug labels"): 24 of 25 measured cost 0 (no prior
+// mint), one 146 credits for 6 prior mints. 500 is over 3x the largest measured; a check over it rejects (fail-safe).
+// At the P2 share of Helius Free (5 requests a second) a full-cap check takes 100 s, about 250 slots, so a check is
+// accepted up to 300 slots (about 2 minutes) behind the decision.
+const CHECK_VALUES: RugCheckConfig = {
+  version: 'rug-check-1',
+  creditCapPerCandidate: 500,
+  maxLagSlots: 300,
+};
+
+export const RUG_CHECK_CONFIG: RugCheckConfig = deepFreeze(CHECK_VALUES);
+
+/** Problems with a rug check config; empty when it is usable. */
+export const rugCheckConfigIssues = (c: RugCheckConfig): string[] => {
+  const issues: string[] = [];
+  if (typeof c.version !== 'string' || c.version.length === 0) issues.push('version must be a non-empty string');
+  if (!Number.isSafeInteger(c.creditCapPerCandidate) || c.creditCapPerCandidate < 1) issues.push('creditCapPerCandidate must be a positive integer');
+  if (!Number.isSafeInteger(c.maxLagSlots) || c.maxLagSlots < 0) issues.push('maxLagSlots must be a non-negative integer');
+  return issues;
+};
 
 /** Problems with a rug config; empty when it is usable. */
 export const rugConfigIssues = (c: RugConfig): string[] => {
@@ -36,5 +81,8 @@ export const rugConfigIssues = (c: RugConfig): string[] => {
   duration('creatorDump.windowMs', c.creatorDump.windowMs);
   bps('collapse.dropBps', c.collapse.dropBps);
   duration('collapse.windowMs', c.collapse.windowMs);
+  if (!Number.isSafeInteger(c.collapse.minPeakLamports) || c.collapse.minPeakLamports < 0) issues.push('collapse.minPeakLamports must be a non-negative integer');
+  if (!Number.isSafeInteger(c.materiality.referenceLamports) || c.materiality.referenceLamports < 1) issues.push('materiality.referenceLamports must be a positive integer');
+  bps('materiality.maxExitCostBps', c.materiality.maxExitCostBps);
   return issues;
 };
