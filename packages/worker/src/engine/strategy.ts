@@ -70,6 +70,28 @@ export interface CandidateReason {
 /** `{ halted, reasons }`: entries stop while a critical feed is down or stale (§18); exits and monitoring go on. */
 export const HALT_KEY = 'worker:halt';
 export const feesKey = (mint: string): string => `worker:fees:${mint}`;
+/**
+ * `{ pool, slot, atMs, state, ctx }`: WATCH-1's coherent snapshot of a held position's pool (run/snapshot.ts), read by
+ * a second path when the feed's pool state went stale. When newer than the pool fact, it is the whole market: its
+ * reserves and its fee context together, never mixed with the feed's.
+ */
+export const SNAPSHOT_PREFIX = 'worker:snapshot:';
+export const snapshotKey = (mint: string): string => `${SNAPSHOT_PREFIX}${mint}`;
+
+export interface SnapshotFact {
+  readonly pool: string;
+  readonly slot: bigint;
+  readonly atMs: number;
+  readonly state: PoolState;
+  readonly ctx: PoolFeeContext;
+}
+
+export const parseSnapshotFact = (v: unknown): SnapshotFact | null => {
+  if (!isObj(v) || typeof v['pool'] !== 'string' || typeof v['slot'] !== 'bigint' || typeof v['atMs'] !== 'number' || !isObj(v['state']) || !isObj(v['ctx'])) return null;
+  const st = v['state'];
+  if (typeof st['baseReserve'] !== 'bigint' || typeof st['quoteVault'] !== 'bigint' || typeof st['virtualQuoteReserves'] !== 'bigint') return null;
+  return v as unknown as SnapshotFact;
+};
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
 /** Reason on a `shortlist` decision: the worker fetches the mint's confirmed create (live H9, H12–H14). */
@@ -523,8 +545,15 @@ export class LiveStrategy implements Strategy {
   /** The pool market of a mint as of now: the gate pool fact and the fee context. */
   #market(ctx: StrategyContext, mint: string): Market | string {
     const p = ctx.lookup(poolKey(mint));
+    const sr = ctx.lookup(snapshotKey(mint));
+    const snap = sr.ok ? parseSnapshotFact(unwrap(sr.value)) : null;
+    const pool = p.ok ? parsePool(p.value) : null;
+    // WATCH-1: a snapshot newer than the pool fact is the market, reserves and fee context alike.
+    if (snap !== null && (pool === null || snap.atMs > pool.obs.receivedAt)) {
+      this.#notePool(mint, snap.pool);
+      return { pool: snap.state, ctx: snap.ctx, atMs: snap.atMs, address: snap.pool };
+    }
     if (!p.ok) return 'pool state unknown';
-    const pool = parsePool(p.value);
     if (pool === null) return 'pool state malformed';
     this.#notePool(mint, pool.address);
     // A fee-context fact when one is published, else the terms of the latest swap seen on the pool.
@@ -539,8 +568,9 @@ export class LiveStrategy implements Strategy {
 
   /** Price bars per mint: the spot price (effective quote per base, PRICE_SCALE) at each pool update. */
   #track(e: MarketEvent, ctx: StrategyContext): void {
-    if (!e.key.startsWith(POOL_PREFIX)) return;
-    const mint = e.key.slice(POOL_PREFIX.length);
+    const prefix = e.key.startsWith(POOL_PREFIX) ? POOL_PREFIX : e.key.startsWith(SNAPSHOT_PREFIX) ? SNAPSHOT_PREFIX : null;
+    if (prefix === null) return;
+    const mint = e.key.slice(prefix.length);
     const held = [...this.#exits.keys()].filter((pid) => this.#mintOf(pid) === mint);
     if (!this.#cands.has(mint) && held.length === 0) return;
     const m = this.#market(ctx, mint);

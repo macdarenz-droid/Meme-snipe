@@ -844,5 +844,38 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - Feed gap. A critical feed goes silent past `staleFeedMs`, while the chain feed keeps its slots. No entry is proposed while it is out, exits stay able, and the candidate enters only after it is back. When the chain feed goes silent, `exit_capable` turns false. Guards: the stale clause in `#checkHalt`, the strategy failing closed on the halt fact, and the freshness check in `#exitCapable`.
 - **Found and fixed: an exit before the first slot was booked blocked.** A restart's reconcile runs before the feeds start, so it has no slot height yet. `#sendExit` booked such an exit blocked ("no slot height yet"), so the stop waited out `blockedRetryMs` (60 s) and went as a single last-rung retry. The owner now waits for the first slot, said once in the log. The kill-mid-trade case fails without the fix (exit not sent within 1 s of the first slot).
 - **Found, not fixed here (EXIT-1 follow-up).** An exit decided during the start reconcile without a fresh quote is booked blocked by `exitBookEvents` ("no executable quote") and waits 60 s. Examples: the time stop after downtime longer than T_max, or the deployer trigger. That is timing, not a dead pool, the same reasoning as EXIT-1b's `pendingFull`.
-- **Stale feed with an open position (§18 case 1) waits for WATCH-1.** No independent timer, second-path snapshot or critical alert exists yet. WATCH-1 builds them, with this case, in its own PR.
+- **Stale feed with an open position (§18 case 1).** Built by WATCH-1; see "Position watch (WATCH-1)".
 - **Ordering note for SIGN-1.** In the paper worker the engine runs effects (the paper broadcast) inside `drain`, before the desk writes the ledger. Live signing must store the signed attempt before the first broadcast, as the `attempt` table says.
+
+## Position watch (WATCH-1, `packages/worker/src/run/watch.ts`, `run/snapshot.ts`)
+
+- **2026-10-04 · What.** An independent timer (`ZEROED_WATCH_EVERY_MS`, default 1 s) looks at every open position. It runs on the worker's timers, outside the engine step, and needs no feed event.
+  - When the market the position is priced at is older than `ZEROED_WATCH_STALE_MS` (default 3 s), it reads a coherent snapshot through the second path.
+  - The snapshot is the pool, both vaults, the mint, PumpSwap's GlobalConfig and its pump-fees FeeConfig, read in one `getMultipleAccounts` at confirmed: one bank, one context slot.
+  - The read goes through Alchemy over HTTP (not the Helius socket the feed runs on), through Alchemy's quota scheduler at P1, above fills and seeds. It costs 20 CU (Alchemy's compute-unit page, checked 2026-10-04).
+  - The vault addresses are learned from one read of the pool account and kept. A snapshot that fails the vault or mint checks drops them, so the next read learns them again.
+- **The snapshot is the whole market.** `decodeSnapshot` builds the pool state and the full fee context from that read alone:
+  - the FeeConfig tiers;
+  - canonical, from pump's pool-authority PDA;
+  - the SOL quote;
+  - the live mint supply for the tier's market cap;
+  - the coin creator and the pool's own creator fee;
+  - mayhem mode;
+  - active Token-2022 transfer fee or hook;
+  - GlobalConfig's buyback share.
+  It goes on the feed as `worker:snapshot:<mint>` (recorded, so a replay makes the same decisions). The strategy's `#market` and the paper world's market take it whole when it is newer than the pool fact. Its reserves are never mixed with the feed's fee terms.
+  - Evidence: on a real mainnet read (`fixtures/watch-snapshot.json`), the pool's next swap, quoted from the snapshot alone, matches the chain to the lamport: LP, protocol, creator and buyback fees, and the amount paid. Edited real accounts prove each field's source.
+- **Failure is never "fine".** A read that fails, or that cannot be trusted, raises the critical alert once per episode:
+  - a journal `alert` line;
+  - Health `critical`, which the heartbeat carries;
+  - the watchdog's `worker_critical` alert to the owner.
+  The position is read again every period, and nothing is sent without a price. The alert clears on the first good snapshot.
+- **Acceptance (§18 case 1), on the real worker and virtual time.** The feed dies with a position open and the pool falls 40%.
+  - The watch reads the snapshot.
+  - The stop exit is submitted within the stale limit + one period + the feed's stale release + a step (6.5 s), its quote equal to `poolSell` on the snapshot.
+  - The price stays fresh for the 5 minutes.
+  - The position closes when the feed returns.
+  - A failing second path alerts once, retries every period, sends nothing, then clears and exits when the path recovers.
+  - Mutation evidence: 19 of 19 mutants fail the tests (7 on the watch and the strategy, 12 on the snapshot decoder).
+- **Limits.** A paper exit lands only on new slots, so with the slot feed dead it is submitted but lands when the feed returns. Exits are not halted by the feed state, but `exit_capable` still reports the chain feed.
+- **Found while building: live positions had no fresh pool state.** After the entry nothing refreshed a held position's pool fact (only candidate reads and the survival read make one). Until POS-1 prices held positions from their swap events, the watch is their only live price source: one 20 CU read per open position every stale period. With positions open around the clock that is about 0.58 M CU a day, against Alchemy's 30 M a month.

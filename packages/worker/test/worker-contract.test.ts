@@ -42,6 +42,9 @@ describe('config and exit codes (§12.4)', () => {
       [{ ZEROED_MODE: 'paper' }, /no state directory/],
       [{ ...base, ZEROED_HEALTH_ADDR: '0.0.0.0:8787' }, /loopback/],
       [{ ...base, ZEROED_HEARTBEAT_MS: '10' }, /HEARTBEAT/],
+      [{ ...base, ZEROED_WATCH_EVERY_MS: '50' }, /ZEROED_WATCH_EVERY_MS/],
+      [{ ...base, ZEROED_WATCH_EVERY_MS: 'x' }, /ZEROED_WATCH_EVERY_MS/],
+      [{ ...base, ZEROED_WATCH_EVERY_MS: '2000', ZEROED_WATCH_STALE_MS: '1000' }, /ZEROED_WATCH_STALE_MS/],
       [{ ...base, WATCHDOG_URL: 'http://plain.example' }, /https/],
       [{ ...base, ZEROED_WALLET: 'not-an-address' }, /ZEROED_WALLET/],
       [{ ...base, ZEROED_API_ADDR: '100.64.0.1:8788' }, /API address must be loopback/],
@@ -54,6 +57,15 @@ describe('config and exit codes (§12.4)', () => {
         expect(p.message).toMatch(why);
       }
     }
+  });
+
+  it('the position watch reads its period and stale limit from config (WATCH-1), 1 s and 3 s when unset', () => {
+    const watch = (env: Record<string, string>) => {
+      const p = parseConfig({ ...base, ...env }, () => null);
+      return p.ok ? p.config.watch : null;
+    };
+    expect(watch({})).toEqual({ everyMs: 1_000, staleMs: 3_000 });
+    expect(watch({ ZEROED_WATCH_EVERY_MS: '500', ZEROED_WATCH_STALE_MS: '500' })).toEqual({ everyMs: 500, staleMs: 500 });
   });
 
   it('reports its own release: ZEROED_GIT_SHA, else the release folder, else unknown', () => {

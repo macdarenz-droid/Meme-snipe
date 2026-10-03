@@ -20,7 +20,8 @@ import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SOL_PRICE_KEY, type StrategyConfig, TRIP_PREFIX } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, TRIP_PREFIX, parseSnapshotFact, snapshotKey } from '../engine/strategy.ts';
+import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, accountFile } from './account.ts';
@@ -118,6 +119,11 @@ export interface WorkerDeps {
    * the feed. Null loses it (an API call that timed out after the send); another event replaces it. Tests only.
    */
   readonly worldFault?: (event: BookEvent) => BookEvent | null;
+  /**
+   * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
+   * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
+   */
+  readonly watchRead?: (addresses: readonly string[]) => Promise<WatchRead>;
 }
 
 export interface SeedRequest {
@@ -179,6 +185,9 @@ export class Worker {
   #solPrice: MicroUsd | null = null;
   #pools = new Map<string, unknown>();
   #fees = new Map<string, PoolFeeContext>();
+  /** WATCH-1's latest snapshot per held mint, as released. */
+  #snapshots = new Map<string, SnapshotFact>();
+  #watch: PositionWatch | null = null;
   #createSig = new Map<string, string>();
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
@@ -393,6 +402,10 @@ export class Worker {
     if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) this.#lastSlot = m.value['slot'];
     else if (m.key.startsWith(POOL_PREFIX)) this.#pools.set(m.key.slice(POOL_PREFIX.length), m.value);
     else if (m.key.startsWith('worker:fees:')) this.#fees.set(m.key.slice('worker:fees:'.length), m.value as PoolFeeContext);
+    else if (m.key.startsWith(SNAPSHOT_PREFIX)) {
+      const snap = parseSnapshotFact(m.value);
+      if (snap !== null) this.#snapshots.set(m.key.slice(SNAPSHOT_PREFIX.length), snap);
+    }
     else if (m.key === SOL_PRICE_KEY) {
       const p = isObj(m.value) && typeof m.value['value'] === 'bigint' && m.value['value'] > 0n ? { price: m.value['value'] } : null;
       if (p !== null) {
@@ -426,11 +439,14 @@ export class Worker {
     return this.#facts.released();
   }
 
-  poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext } | null {
+  poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
     const p = parsePool(this.#pools.get(mint));
+    const snap = this.#snapshots.get(mint);
+    // The strategy's rule (#market): WATCH-1's snapshot, when newer than the pool fact, is the whole market.
+    if (snap !== undefined && (p === null || snap.atMs > p.obs.receivedAt)) return { address: snap.pool, state: snap.state, ctx: snap.ctx, atMs: snap.atMs };
     const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
     if (p === null || ctx === undefined) return null;
-    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx };
+    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: p.obs.receivedAt };
   }
 
   /**
@@ -454,10 +470,8 @@ export class Worker {
   }
 
   #paperMarket(mint: string): PaperMarket | null {
-    const p = parsePool(this.#pools.get(mint));
-    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
-    if (p === null || ctx === undefined) return null;
-    return { pool: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx };
+    const m = this.poolOf(mint);
+    return m === null ? null : { pool: m.state, ctx: m.ctx };
   }
 
   #publishAccount(): void {
@@ -675,6 +689,8 @@ export class Worker {
     }
     for (const s of this.#sources) s.start();
     this.#probe?.start();
+    this.#watch = this.#positionWatch();
+    this.#watch.start();
     // In the background: the exits must not wait for a chain history read.
     void this.#journalExposure().catch((e: unknown) => d.log(`Exposure rebuild failed: ${e instanceof Error ? e.message : 'error'}.`));
     if (d.facts !== undefined && d.facts.length > 0) {
@@ -813,6 +829,25 @@ export class Worker {
     return m === null || this.#d.timers.now() - m.atMs > 30_000 ? null : m;
   }
 
+  /** WATCH-1: the independent watch on held positions, on its own timer. */
+  #positionWatch(): PositionWatch {
+    const d = this.#d;
+    return new PositionWatch({
+      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs,
+      held: () => Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed' && p.quantity > 0n).map((p) => ({
+        mint: p.mint, pool: this.poolOf(p.mint)?.address ?? this.#strategy.saved()[p.id]?.pool ?? null,
+      })),
+      marketAt: (mint) => this.poolOf(mint)?.atMs ?? null,
+      read: d.watchRead ?? (() => Promise.reject(new Error('no second path configured'))),
+      put: (snap, atMs) => this.#fact(snapshotKey(snap.mint), { pool: snap.pool, slot: snap.slot, atMs, state: snap.state, ctx: snap.ctx }),
+      alert: (mint, reason) => {
+        this.#journal.write('alert', { level: 'critical', code: 'position_unpriced', mint, reasons: [`no fresh price for ${mint}`, reason] });
+        d.log(`Critical: no fresh price for the position in ${mint} (${reason}).`);
+      },
+      cleared: (mint) => this.#journal.write('alert', { level: 'cleared', code: 'position_unpriced', mint, reasons: [`fresh price for ${mint} again`] }),
+    });
+  }
+
   /** The drill: close one feed for `ms`, then reconnect. False for an unknown feed. */
   dropFeed(name: string, ms: number): boolean {
     const s = this.#feeds.get(name);
@@ -856,7 +891,7 @@ export class Worker {
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
       rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
     };
   }
 
@@ -904,6 +939,7 @@ export class Worker {
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
+    this.#watch?.stop();
     for (const f of d.facts ?? []) f.stop();
     const pending = [...this.#world.pending.values()];
     if (pending.length > 0) {
@@ -932,6 +968,7 @@ export class Worker {
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
     for (const s of this.#sources) s.stop();
+    this.#watch?.stop();
     this.#ledger.close();
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
     await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));

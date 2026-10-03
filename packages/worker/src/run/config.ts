@@ -17,6 +17,11 @@ export interface WorkerConfig {
   readonly gitSha: string;
   readonly watchdogUrl: string | null;
   readonly heartbeatMs: number;
+  /**
+   * WATCH-1: how often the position watch looks, and how old a held position's market may get before a snapshot is read
+   * through the second path (ZEROED_WATCH_EVERY_MS, ZEROED_WATCH_STALE_MS).
+   */
+  readonly watch: { readonly everyMs: number; readonly staleMs: number };
   /** The bot wallet's public address, when the signer has made one: the dry-run builds use it. */
   readonly wallet: string | null;
   /** Funded public wallets that stand in for the unfunded bot wallet in simulations (TEST-2). */
@@ -67,6 +72,10 @@ export const parseConfig = (
   if (api === null || apiAddr === addr) return refuse('refused: the API port is out of range or the same as the health port');
   const beat = env['ZEROED_HEARTBEAT_MS'] === undefined ? 20_000 : Number(env['ZEROED_HEARTBEAT_MS']);
   if (!Number.isSafeInteger(beat) || beat < 1_000) return refuse('refused: ZEROED_HEARTBEAT_MS must be a whole number of at least 1000');
+  const watchEvery = env['ZEROED_WATCH_EVERY_MS'] === undefined ? 1_000 : Number(env['ZEROED_WATCH_EVERY_MS']);
+  if (!Number.isSafeInteger(watchEvery) || watchEvery < 100) return refuse('refused: ZEROED_WATCH_EVERY_MS must be a whole number of at least 100');
+  const watchStale = env['ZEROED_WATCH_STALE_MS'] === undefined ? 3_000 : Number(env['ZEROED_WATCH_STALE_MS']);
+  if (!Number.isSafeInteger(watchStale) || watchStale < watchEvery) return refuse('refused: ZEROED_WATCH_STALE_MS must be a whole number of at least ZEROED_WATCH_EVERY_MS');
   const wallet = env['ZEROED_WALLET'] ?? null;
   if (wallet !== null && !ADDRESS.test(wallet)) return refuse('refused: ZEROED_WALLET is not an address');
   const standIns = (env['ZEROED_STANDINS'] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
@@ -98,7 +107,7 @@ export const parseConfig = (
       runId: env['ZEROED_RUN_ID'] ?? null, runLabel: env['ZEROED_RUN_LABEL'] ?? null,
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
-      heartbeatMs: beat, wallet, standIns,
+      heartbeatMs: beat, watch: { everyMs: watchEvery, staleMs: watchStale }, wallet, standIns,
       strategy: { name, paperEdgePpm, qualifying },
     },
   };

@@ -12,7 +12,12 @@ import { FACT_READS_KEY, FactRpc, liveFacts } from '../src/facts/index.ts';
 import type { FactSource } from '../src/run/facts.ts';
 import { ProviderError, rpcHandler, type Secrets, type Source, scriptedHttp } from '../src/providers/index.ts';
 import { ALCHEMY_FREE, COINBASE_PUBLIC, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, P1, P3, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
-import { MINT, Market, T, dueTimers, makeWorker, passingMarket, scriptedSource, tempState } from './worker-harness.ts';
+import { MINT, Market, POOL_ADDRESS, T, dueTimers, makeWorker, passingMarket, scriptedSource, tempState } from './worker-harness.ts';
+import { POOL, QUOTE_VAULT, account } from '../../core/test/gates/world.ts';
+import { poolSell } from '../../core/src/amm/index.ts';
+import { PUMP_AMM_GLOBAL_CONFIG, fromBase64 } from '../../core/src/chain/index.ts';
+import { PUMP_AMM_FEE_CONFIG, type ReadAccount, decodeSnapshot } from '../src/run/snapshot.ts';
+import type { WatchRead } from '../src/run/watch.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
@@ -315,4 +320,102 @@ describe('§18: a provider rate-limits (TEST-3)', () => {
     expect(raw).toEqual([]);
     await h.worker.stop();
   });
+});
+
+/** The harness pool's real accounts (core's chain fixtures), with the quote vault at `scalePpm` of its balance. */
+const chainAccount = (address: string): ReadAccount => {
+  const a = account(address);
+  return { owner: a.owner, data: fromBase64(a.dataBase64) };
+};
+const scaledRead = (h: H, scalePpm: () => bigint, calls: string[][]) => async (addresses: readonly string[]): Promise<WatchRead> => {
+  calls.push([...addresses]);
+  const accounts = addresses.map((address) => {
+    const acc = chainAccount(address);
+    if (address !== POOL.poolQuoteTokenAccount || acc === null) return acc;
+    const data = acc.data.slice();
+    new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(64, (QUOTE_VAULT * scalePpm()) / 1_000_000n, true);
+    return { owner: acc.owner, data };
+  });
+  return { slot: h.worker.feed.releasedThrough + 5n, accounts };
+};
+
+describe('§18: the feed dies for 5 minutes with a position open and the pool falls 40% (WATCH-1)', () => {
+  it('the watch sees the stale market on its own timer, reads a coherent snapshot by the second path, and the exit goes out priced from it alone', async () => {
+    let scale = 1_000_000n;
+    const calls: string[][] = [];
+    const feeds = [scriptedSource('helius-ws', true, ['helius'])];
+    const timers = dueTimers(T - 16 * 86_400_000);
+    let h!: H;
+    h = makeWorker({ timers, sources: () => feeds, watchRead: (a) => scaledRead(h, () => scale, calls)(a), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18904', ZEROED_API_ADDR: '127.0.0.1:18905', ZEROED_WATCH_EVERY_MS: '1000', ZEROED_WATCH_STALE_MS: '3000' } });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    await passingMarket(h);
+    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(m), 100);
+    const p0 = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!;
+    expect(calls).toEqual([]);
+    // The feed dies: no slot, no pool fact, nothing. The pool falls 40% on chain.
+    scale = 600_000n;
+    const deadAt = m.now;
+    const mine = () => kinds(h.stateDir, 'decision').filter((l) => Date.parse(String(l['ts'])) >= deadAt);
+    const took = await until(m, () => mine().some((l) => l['action'] === 'submit'), 60_000, undefined, 100);
+    // Within the set time: the stale limit, one watch period, the feed's stale release, and a step.
+    expect(took).toBeLessThanOrEqual(3_000 + 1_000 + 2_000 + 500);
+    // One read for the vault layout, then the coherent read: pool, vaults, mint, GlobalConfig, FeeConfig.
+    expect(calls[0]).toEqual([POOL_ADDRESS]);
+    expect(calls[1]).toEqual([POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenAccount, MINT, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG]);
+    // The exit is the price stop, priced from the snapshot alone: its reserves and its fee context.
+    expect(mine().find((l) => l['action'] === 'trigger_exit')!['reasons']).toEqual(expect.arrayContaining([expect.stringMatching(/^price_stop/)]));
+    const snap = decodeSnapshot(MINT, POOL_ADDRESS, 0n, calls[1]!.map((a) => (a === POOL.poolQuoteTokenAccount ? { ...chainAccount(a)!, data: (() => {
+      const d = chainAccount(a)!.data.slice();
+      new DataView(d.buffer, d.byteOffset, d.byteLength).setBigUint64(64, (QUOTE_VAULT * 600_000n) / 1_000_000n, true);
+      return d;
+    })() } : chainAccount(a))));
+    if (!snap.ok) throw new Error(snap.reason);
+    const exit = Object.values(h.worker.book.intents).find((i) => i.intent.purpose === 'exit' && i.intent.positionId === p0.id)!;
+    const q = poolSell(snap.snapshot.state, exit.attempts[0]!.quote.inAmount, snap.snapshot.ctx);
+    if (!q.ok) throw new Error(q.detail);
+    expect(exit.attempts[0]!.quote.quotedOut).toBe(q.trade.userQuote);
+    expect(kinds(h.stateDir, 'alert')).toEqual([]);
+    // Still dead for the rest of the 5 minutes: entries halted, no exit able to land, the watch keeps the price fresh.
+    await m.run(5 * 60_000 - (m.now - deadAt), 1_000);
+    expect(h.worker.health()).toMatchObject({ entries_halted: true, critical: [] });
+    expect(calls.length).toBeGreaterThan(50);
+    // The feed comes back at the fallen price: the exit lands and the position closes in full.
+    await until(m, () => h.worker.book.positions[p0.id]!.status === 'closed', 60_000, tick(m, 600_000n), 400);
+    expect(h.worker.book.positions[p0.id]!.sold).toBe(p0.quantity);
+    await h.worker.stop();
+  }, 60_000);
+
+  it('a second path that fails raises the critical alert once, keeps trying every period, and never prices the position meanwhile', async () => {
+    let failing = true;
+    const calls: string[][] = [];
+    const feeds = [scriptedSource('helius-ws', true, ['helius'])];
+    let h!: H;
+    h = makeWorker({
+      timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds,
+      watchRead: (a) => (failing ? (calls.push([...a]), Promise.reject(new Error('alchemy timed out'))) : scaledRead(h, () => 600_000n, calls)(a)),
+      config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18906', ZEROED_API_ADDR: '127.0.0.1:18907' },
+    });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    await passingMarket(h);
+    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(m), 100);
+    const p0 = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!;
+    const deadAt = m.now;
+    await until(m, () => h.worker.health().critical.length > 0, 10_000, undefined, 100);
+    expect(h.worker.health().critical).toEqual([`${MINT}: no fresh price (alchemy timed out)`]);
+    const n = calls.length;
+    await m.run(20_000, 500);
+    // Tried again every period, alerted once, and nothing was sent on a price it does not have.
+    expect(calls.length - n).toBeGreaterThanOrEqual(15);
+    expect(kinds(h.stateDir, 'alert').map((l) => l['level'])).toEqual(['critical']);
+    expect(kinds(h.stateDir, 'decision').filter((l) => Date.parse(String(l['ts'])) >= deadAt && l['action'] === 'submit')).toEqual([]);
+    expect(h.worker.book.positions[p0.id]!.status).toBe('open');
+    // The path recovers: the alert clears and the stop goes out on the snapshot.
+    failing = false;
+    await until(m, () => kinds(h.stateDir, 'decision').some((l) => Date.parse(String(l['ts'])) >= deadAt && l['action'] === 'submit'), 10_000, undefined, 100);
+    expect(kinds(h.stateDir, 'alert').map((l) => l['level'])).toEqual(['critical', 'cleared']);
+    expect(h.worker.health().critical).toEqual([]);
+    await h.worker.stop();
+  }, 60_000);
 });
