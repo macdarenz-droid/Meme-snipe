@@ -251,7 +251,7 @@ export const resolveLookups = (
 /**
  * Every account key in instruction-index order: static keys, then loaded writable, then loaded read-only. The loaded
  * lists must have exactly as many keys as the lookups ask for (a stored record that disagrees is corrupt), and a
- * transaction without lookups takes none.
+ * transaction without lookups takes none. A key that appears twice is refused, as the runtime refuses it.
  */
 export const accountKeys = (tx: DecodedTransaction, loaded?: LoadedAddresses): Address[] => {
   const w = tx.addressTableLookups.reduce((n, l) => n + l.writableIndexes.length, 0);
@@ -261,7 +261,10 @@ export const accountKeys = (tx: DecodedTransaction, loaded?: LoadedAddresses): A
   if (lw !== w || lr !== ro) {
     throw new DecodeError(`lookups ask for ${w} writable and ${ro} read-only keys; ${lw} and ${lr} were given`);
   }
-  return [...tx.staticAccountKeys, ...(loaded?.writable ?? []), ...(loaded?.readonly ?? [])];
+  const keys = [...tx.staticAccountKeys, ...(loaded?.writable ?? []), ...(loaded?.readonly ?? [])];
+  // The runtime refuses a transaction that names any account twice, static or loaded (AccountLoadedTwice).
+  if (new Set(keys).size !== keys.length) throw new DecodeError('an account key appears more than once');
+  return keys;
 };
 
 /** Whether the key at `index` is writable, per the header rules (and lookup position for loaded keys). */
