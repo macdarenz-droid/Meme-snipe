@@ -159,7 +159,7 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
 - **Holdout.**
   - The sealed window is UTC days 2026-09-22 to 2026-10-01 (data days are UTC), all after B4. It starts at 09-22T00:00Z, after the 2 h embargo, as BT-2's `study-1` registers it. RES-3 ends practice at the start of Melbourne day 09-22, 10 hours earlier; that is conservative, so no change. Trade days for the 10-day minimum are counted in Melbourne days, the stats day key.
   - G1 runs on every practice day. Results are reported by regime and described as cross-regime evidence. Only 8 practice days fall wholly after B4, below G1's 10-day minimum, so post-B4 practice results are descriptive only.
-  - The end of the holdout is a fixed date E. A stop triggered by counts is not outcome-independent, because entry counts move with the market (second reviewer). E is registered before any holdout count is known, from the post-B4 practice-day funnel rates with a safety margin, with E ≤ 10-20 (28 days in total).
+  - The end of the holdout is a fixed date, E = 2026-10-20, so the window is [09-22, 10-20). A stop triggered by counts is not outcome-independent, because entry counts move with the market (all three reviewers agree). E is registered before any holdout count is known.
   - E is one common endpoint for every registered universe, and no universe is dropped after counts. Entries stop at the cutoff, and an observation-only tail lets labels mature.
   - The holdout is opened once, at E. If it is short of n ≥ max(300, n_power) or of 10 trade days, the result is "not proven".
   - n_power is computed for each attempt's α and this procedure. The report gives power once n is reached, the probability of reaching n by E, and the overall pass probability.
@@ -236,6 +236,53 @@ A third reviewer read 8370c2a. Its new findings were checked in code, and the se
   - Anyone holding the bytes can send them.
   - It contradicts the execution contract (no durable nonces; the signer allows no nonce-advance).
   Recovery stays measured restart, reconciliation and small exposure.
+
+### Consensus of the three reviews (2026-10-04)
+
+The second reviewer, the third opinion and the supervisor reached one position on the second-round questions. These are supervisor rulings; only the SPA sign-off is the owner's.
+
+- **Holder snapshot.**
+  - The mint is read first, at confirmed commitment, with mint authority none; this gives S_A at slot A.
+  - Then one one-shot getProgramAccounts call (V1, never the cursor-paginated V2), at confirmed commitment with `withContext` and `minContextSlot` set to A.
+  - Filters:
+    - legacy SPL: dataSize 165 plus memcmp of the mint at offset 0;
+    - Token-2022: memcmp of the mint at offset 0 plus memcmp(165, [2]).
+  - Slot B ≥ A, and B within `maxStateSlotLag` of the decision moment.
+  - Every account is decoded and checked for its mint; repeated addresses are refused.
+  - All raw balances are summed before any exclusion, and the sum must equal S_A. Anything else is H16 inconsistent.
+  - Owners are aggregated after that. Later per-owner reads only confirm known dev and insider accounts and are never merged into the snapshot.
+  - Delegates count as control: min(delegated_amount, amount) is attributed to the delegate in the H12/H13 numerators, never in the sum check.
+  - With no complete set, the gate abstains. If a one-shot snapshot cannot meet the lag, the lag stays; the fallback is a snapshot plus a mint-filtered account subscription, with its WebSocket cost measured. This assumes one fork.
+  - Cards: GATE-1d, GATE-1e, FACTS-1.
+- **SPA.**
+  - Block length:
+    - an expected block length of 3 days, with 5 and 7 as required sensitivities;
+    - promotion on the largest p-value;
+    - resampling within regimes at registered weights, with no block across an upgrade boundary.
+  - The daily unit is P&L over a fixed capital base from the capacity-constrained deployment replay, on one calendar of T = 50 registered days.
+  - One joint test covers both benchmarks: each variant gets a t-statistic against zero and one against S0, and one critical value comes from the maximum over all 2K statistics. A variant passes only if both of its statistics exceed it.
+  - Studentisation is either Hansen's fixed ω̂ or per-replicate re-studentisation, whichever calibrates better in simulation, frozen before any data.
+  - Variants active on fewer than MIN_DAYS days are ineligible, decided from activity counts. An SE floor is fixed in advance.
+  - The selected configuration needs its own simultaneous evidence.
+  - The owner signs off before the SPA replaces DSR. STATS-1c.
+- **DSR while it gates.**
+  - Skewness is clamped to min(sample, 0) and kurtosis to max(sample, a registered floor). This only tightens.
+  - The paper's worked example (0.9004; 0.9505 at N = 46 and N = 88) is pinned as a unit test.
+  - Daily PSR and DSR are diagnostics. Sharpe uncertainty comes from a block bootstrap that recomputes the whole statistic.
+  - The third opinion's simulation shows DSR ≥ 0.95 rejecting a true +5% edge in 90–99% of runs on about 50 days. That puts the SPA sign-off on the critical path for pre-funding item 6.
+- **Holdout.**
+  - Fixed end E = 2026-10-20; one sealed ledger with one endpoint for every registered universe. Entries are cut off before the exit margin, followed by an observation-only tail.
+  - The holdout is opened once, and only after a G1 pass. If it is short of the frozen requirement, max(300, n_power, closed form), or of 10 trade days, the result is "not proven".
+  - Opening is mandatory once the counts are met.
+  - The registry records the attempt index and the α spent, fixes the family size per attempt, and gives G2 its level.
+  - Replicates are about 20/α. G2's one-sided false-pass rate is α/2.
+  - An attempt is spent only when a seal is opened and scored.
+  - B5 (Melbourne 10-03 01:47 AEST) is read as a decoder boundary, not a market boundary, with a non-gating per-regime line.
+  - Days 10-02 to 10-19 (plus a margin day) are holdout evaluation days. They go through the same download, QA, parity and publish path and are never practice days.
+- **Dry-run overlap.**
+  - Configurations are chosen from practice days only, and frozen and registered before any U1/U2 configuration runs live.
+  - The sessions that choose configurations do not read live shakedown P&L before the freeze. Opening at E is mandatory, so later live P&L cannot change anything.
+  - Residual risk: weak information from S0 shakedown P&L seen before the freeze. It is kept small by that read restriction.
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
