@@ -69,9 +69,10 @@ export const obj =
   (v, p) => {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return fail(p, 'expected an object');
     const o = v as Record<string, unknown>;
-    for (const k of Object.keys(o)) if (!(k in shape)) fail(`${p}.${k}`, 'unknown field');
+    // Own keys only: `in` would also match Object.prototype names such as constructor or toString.
+    for (const k of Object.keys(o)) if (!Object.hasOwn(shape, k)) fail(`${p}.${k}`, 'unknown field');
     for (const [k, c] of Object.entries(shape)) {
-      if (!(k in o)) fail(`${p}.${k}`, 'missing');
+      if (!Object.hasOwn(o, k)) fail(`${p}.${k}`, 'missing');
       c(o[k], `${p}.${k}`);
     }
   };

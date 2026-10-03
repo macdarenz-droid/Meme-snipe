@@ -117,3 +117,36 @@ describe('backtest report schema', () => {
     for (const l of lines) expect(l).toMatch(/^import type |^\/\//);
   });
 });
+
+describe('object keys that exist on every object', () => {
+  // Re-review of 25245d5: `k in shape` also matched Object.prototype names, so these extra fields slipped through.
+  const NAMES = ['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'];
+
+  it('a report file with any of them as an extra field is refused', () => {
+    for (const k of NAMES) {
+      const raw = JSON.parse(JSON.stringify(valid()).replace(/^\{/, `{"${k}":{"holdout":{"meanNetUsd":"9"}},`));
+      expect(Object.keys(raw), k).toContain(k);
+      expect(() => parseReport(raw), k).toThrow(/unknown field/);
+    }
+  });
+
+  it('a worker response with any of them as an extra field is refused', async () => {
+    const { schemaFor } = await import('../src/api/schemas.ts');
+    const { checkEnvelope } = await import('../src/api/modes.ts');
+    const status = (await import('../src/dev/dashboardFixtures.ts')).fixtureStatus.paper;
+    for (const k of NAMES) {
+      const data = JSON.parse(JSON.stringify(status).replace(/^\{/, `{"${k}":{"meanNetUsd":"9.99"},`));
+      const env = { mode: 'paper', asOf: '2026-10-03T00:00:00Z', data };
+      expect(() => checkEnvelope(env, 'paper', schemaFor('status', 'paper')), k).toThrow(/unknown field/);
+      const top = JSON.parse(`{"${k}":1,"mode":"paper","asOf":"2026-10-03T00:00:00Z","data":${JSON.stringify(status)}}`);
+      expect(() => checkEnvelope(top, 'paper', schemaFor('status', 'paper')), `envelope ${k}`).toThrow(/unknown field/);
+    }
+  });
+
+  it('a required field is not satisfied by a name inherited from Object.prototype', async () => {
+    const { obj } = await import('../src/api/schema.ts');
+    const anything = () => {};
+    expect(() => obj({ constructor: anything })({}, '$')).toThrow(/\$\.constructor: missing/);
+    expect(() => obj({ constructor: anything })(JSON.parse('{"constructor":1}'), '$')).not.toThrow();
+  });
+});
