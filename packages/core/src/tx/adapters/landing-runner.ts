@@ -1,7 +1,8 @@
 // Performs CORE-1's `broadcast` and `check_status` effects through a Transport and reports the answers as lifecycle
-// events. Shaped like ENG-1's EffectRunner (`run(effect, now): void`, results come back later as events, never as
-// return values) so the engine can hand it these two effect types once ENG-1 merges.
+// events. An ENG-1 EffectRunner: `run(effect, now)` returns nothing and results come back later as feed events, so
+// the engine stays deterministic. The worker routes these two effect types here (`handles`).
 import type { AttemptId, IntentId, Signature, TransactionAttempt } from '../../domain/index.ts';
+import type { EffectRunner, Moment } from '../../engine/index.ts';
 import type { Effect, IntentEvent } from '../../lifecycle/index.ts';
 import { type LandingEndpoints, type RpcSignatureStatus, type SendOutcome, LandingError, planBroadcast, planStatusCheck, sendEvent, statusEvents } from '../landing.ts';
 import type { Transport } from './http.ts';
@@ -23,10 +24,10 @@ export interface LandingRunnerDeps {
 
 export const LANDING_EFFECTS: ReadonlySet<Effect['type']> = new Set(['broadcast', 'check_status']);
 
-export const landingRunner = (deps: LandingRunnerDeps) => ({
+export const landingRunner = (deps: LandingRunnerDeps): EffectRunner & { handles(effect: Effect): boolean } => ({
   handles: (effect: Effect): boolean => LANDING_EFFECTS.has(effect.type),
 
-  run(effect: Effect, _now: unknown): void {
+  run(effect: Effect, _now: Moment): void {
     // A transport that throws is reported, never left as an unhandled rejection; the lifecycle retries on its tick.
     const report = (e: unknown) => deps.alert('intentId' in effect ? effect.intentId : ('' as IntentId), `landing ${effect.type} failed: ${(e as Error).message}`);
     if (effect.type === 'broadcast') broadcast(deps, effect).catch(report);

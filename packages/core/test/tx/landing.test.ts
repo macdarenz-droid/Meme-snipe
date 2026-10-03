@@ -23,11 +23,13 @@ import {
 } from '../../src/tx/index.ts';
 import { type Transport, type TransportResult } from '../../src/tx/adapters/http.ts';
 import { landingRunner } from '../../src/tx/adapters/landing-runner.ts';
+import { type Moment, OFF_CHAIN } from '../../src/engine/index.ts';
 import { entryIntent, reservation } from '../fixtures.ts';
 import { POLICY, common, goldenOf, request } from './fixtures-policy.ts';
 
 const ENDPOINTS: LandingEndpoints = { senderUrl: 'https://fra-sender.helius-rpc.com/fast', rpcUrl: 'https://rpc.example.invalid/' };
 const LVBH = 1_000n;
+const NOW: Moment = { slot: 1n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: 0 };
 
 /** A built pool buy with a stand-in signature in its slot (test bytes only: nothing here signs). */
 const signedFixture = (seed: number) => {
@@ -215,7 +217,7 @@ describe('landing runner (adapter) on a stub transport', () => {
     });
     expect(runner.handles(broadcast)).toBe(true);
     expect(runner.handles({ type: 'reconcile_balances', intentId: attempt.intentId })).toBe(false);
-    runner.run(broadcast, null);
+    runner.run(broadcast, NOW);
     await flush();
     expect(sentBytes(calls)).toEqual([bytes, bytes]);
     expect(events).toEqual([{ type: 'send_accepted' }]);
@@ -227,7 +229,7 @@ describe('landing runner (adapter) on a stub transport', () => {
     const transport: Transport = { call: async () => { throw new Error('socket closed'); } };
     const alerts: string[] = [];
     const events: IntentEvent[] = [];
-    landingRunner({ transport, endpoints: ENDPOINTS, store: { attempt: () => ({ attempt, bytes }) }, emit: (_i, e) => events.push(e), alert: (_i, m) => alerts.push(m) }).run(broadcast, null);
+    landingRunner({ transport, endpoints: ENDPOINTS, store: { attempt: () => ({ attempt, bytes }) }, emit: (_i, e) => events.push(e), alert: (_i, m) => alerts.push(m) }).run(broadcast, NOW);
     await flush();
     expect(alerts).toEqual(['landing broadcast failed: socket closed']);
     expect(events).toEqual([]);
@@ -237,7 +239,7 @@ describe('landing runner (adapter) on a stub transport', () => {
     const { broadcast } = submitted();
     const { calls, transport } = stub(() => ({ kind: 'ok', result: 'x' }));
     const alerts: string[] = [];
-    landingRunner({ transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: () => undefined, alert: (_i, m) => alerts.push(m) }).run(broadcast, null);
+    landingRunner({ transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: () => undefined, alert: (_i, m) => alerts.push(m) }).run(broadcast, NOW);
     await flush();
     expect(calls).toEqual([]);
     expect(alerts).toEqual([`attempt ${broadcast.attemptId} is not persisted; nothing sent`]);
@@ -248,12 +250,12 @@ describe('landing runner (adapter) on a stub transport', () => {
     const effect: Extract<Effect, { type: 'check_status' }> = { type: 'check_status', intentId: attempt.intentId, signatures: [attempt.signature], searchHistory: false };
     const ok = stub((c) => (c.body.method === 'getBlockHeight' ? { kind: 'ok', result: 950 } : { kind: 'ok', result: { context: { slot: 1 }, value: [{ slot: 9, err: null, confirmationStatus: 'confirmed' }] } }));
     const events: IntentEvent[] = [];
-    landingRunner({ transport: ok.transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => events.push(e), alert: () => undefined }).run(effect, null);
+    landingRunner({ transport: ok.transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => events.push(e), alert: () => undefined }).run(effect, NOW);
     await flush();
     expect(events).toEqual([{ type: 'status', signature: attempt.signature, result: 'succeeded', commitment: 'confirmed', blockHeight: 950n, searchedHistory: false }]);
     const bad = stub(() => ({ kind: 'http-error', status: 429 }));
     const none: IntentEvent[] = [];
-    landingRunner({ transport: bad.transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => none.push(e), alert: () => undefined }).run(effect, null);
+    landingRunner({ transport: bad.transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => none.push(e), alert: () => undefined }).run(effect, NOW);
     await flush();
     expect(none).toEqual([]);
   });
