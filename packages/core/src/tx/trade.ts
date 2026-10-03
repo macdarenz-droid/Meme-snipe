@@ -81,10 +81,13 @@ export interface BuildCommon {
   readonly quotedAtSlot: bigint | null;
 }
 
-/** What the CORE-2 quote for this trade promised. Structural, so both the merged and the CORE-2b quote shapes fit. */
-export type CurveBuyQuote = { readonly tokens: bigint; readonly userQuote: bigint };
+/**
+ * What the CORE-2 quote for this trade promised. Structural, so the CORE-2 trade fits once unwrapped. Buys carry the
+ * spend the quote was computed for: it must equal the request's spend, so min-out is never sized for a smaller trade.
+ */
+export type CurveBuyQuote = { readonly spend: bigint; readonly tokens: bigint; readonly userQuote: bigint };
 export type CurveSellQuote = { readonly tokens: bigint; readonly userQuote: bigint };
-export type PoolBuyQuote = { readonly base: bigint; readonly userQuote: bigint };
+export type PoolBuyQuote = { readonly spend: bigint; readonly base: bigint; readonly userQuote: bigint };
 export type PoolSellQuote = { readonly base: bigint; readonly userQuote: bigint };
 
 export type TradeRequest =
@@ -120,6 +123,15 @@ export interface BuiltTransaction {
 }
 
 export type BuildResult = { readonly ok: true; readonly tx: BuiltTransaction } | Refusal;
+
+/**
+ * Lamports an exact-spend quote may leave unspent: the fee components (LP, protocol, creator) are each rounded up
+ * once. Measured 0 on 40,000 random curve and pool quotes; a quote further from its spend was made for another trade.
+ */
+export const MAX_SPEND_ROUNDING_LAMPORTS = 3n;
+
+const quoteMatchesSpend = (spend: bigint, q: { readonly spend: bigint; readonly userQuote: bigint }): boolean =>
+  q.spend === spend && q.userQuote <= spend && spend - q.userQuote <= MAX_SPEND_ROUNDING_LAMPORTS;
 
 /** floor(quoted × (10,000 − slippage) / 10,000). */
 export const minOutFromQuote = (quotedOut: bigint, slippage: Bps): bigint => (quotedOut * (BPS_DENOMINATOR - BigInt(slippage))) / BPS_DENOMINATOR;
@@ -171,7 +183,8 @@ export const buildTrade = (req: TradeRequest, c: BuildCommon, policy: ExecutionP
     const curveTopUp = BigInt(Math.max(0, BONDING_CURVE_TARGET_BYTES - req.market.accountBytes)) * c.rates.rent.lamportsPerByte;
     const vaultTopUp = missing(creatorVault) ? rent(0) : 0n;
     if (req.side === 'buy') {
-      if (req.spend <= 0n || req.quote.userQuote > req.spend || req.quote.tokens <= 0n) return refuse('invalid-amount', 'the quote must spend at most the requested amount and buy tokens');
+      if (req.spend <= 0n || req.quote.tokens <= 0n) return refuse('invalid-amount', 'the buy must spend lamports and buy tokens');
+      if (!quoteMatchesSpend(req.spend, req.quote)) return refuse('invalid-amount', 'the quote was not computed for this spend');
       quotedOut = req.quote.tokens;
       inAmount = req.spend;
       minOut = minOutFromQuote(quotedOut, slippage);
@@ -197,14 +210,18 @@ export const buildTrade = (req: TradeRequest, c: BuildCommon, policy: ExecutionP
     if (req.mint.program !== (baseTokenProgram === TOKEN_PROGRAM ? 'spl-token' : 'token-2022')) return refuse('unsupported-mint', 'mint does not match the base token program');
     mustBeStatic.add(a.userBaseAta).add(a.userQuoteAta);
     const p = req.market.state;
-    // Created at the wallet's expense if missing (PumpSwap IDL docs on buy_exact_quote_in and sell).
+    // Created at the wallet's expense if missing (PumpSwap IDL docs on buy_exact_quote_in and sell). The buyback
+    // recipient's quote ATA is not listed there and all eight exist on chain, but the program is not open source, so
+    // it is charged too unless read as existing.
     const protocolAta = associatedTokenAddress(a.protocolFeeRecipient, NATIVE_MINT, TOKEN_PROGRAM);
     const creatorAta = associatedTokenAddress(poolCoinCreatorVaultAuthority(p.coinCreator!), NATIVE_MINT, TOKEN_PROGRAM);
-    const venueInits = (missing(protocolAta) ? rent(TOKEN_ACCOUNT_SIZE) : 0n) + (missing(creatorAta) ? rent(TOKEN_ACCOUNT_SIZE) : 0n);
+    const buybackAta = associatedTokenAddress(a.buybackFeeRecipient, NATIVE_MINT, TOKEN_PROGRAM);
+    const venueInits = [protocolAta, creatorAta, buybackAta].reduce((t, k) => t + (missing(k) ? rent(TOKEN_ACCOUNT_SIZE) : 0n), 0n);
     // The wrapped-SOL account is created and closed in this transaction: its rent comes back, so it nets to zero.
     ixs.push(createAssociatedTokenIdempotent(user, a.userQuoteAta, user, NATIVE_MINT, TOKEN_PROGRAM));
     if (req.side === 'buy') {
-      if (req.spend <= 0n || req.quote.userQuote > req.spend || req.quote.base <= 0n) return refuse('invalid-amount', 'the quote must spend at most the requested amount and buy tokens');
+      if (req.spend <= 0n || req.quote.base <= 0n) return refuse('invalid-amount', 'the buy must spend lamports and buy tokens');
+      if (!quoteMatchesSpend(req.spend, req.quote)) return refuse('invalid-amount', 'the quote was not computed for this spend');
       quotedOut = req.quote.base;
       inAmount = req.spend;
       minOut = minOutFromQuote(quotedOut, slippage);

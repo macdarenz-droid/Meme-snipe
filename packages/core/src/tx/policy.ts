@@ -26,6 +26,7 @@ import {
   TOKEN_SYNC_NATIVE,
 } from './native.ts';
 import { ASSOCIATED_TOKEN_PROGRAM, COMPUTE_BUDGET_PROGRAM, JITO_DONT_FRONT, associatedTokenAddress, userVolumeAccumulator } from './programs.ts';
+import { MAX_CREATED_ACCOUNT_BYTES, type RentRate, rentExempt } from './rent.ts';
 import { MICRO_LAMPORTS_PER_LAMPORT } from './trade.ts';
 import { DISC } from './venues.ts';
 
@@ -42,8 +43,8 @@ export interface SignerPolicyContext {
   /** The one saved owner address. Null: no withdrawal is possible. */
   readonly withdrawalAddress: Address | null;
   readonly lamportsPerSignature: bigint;
-  /** Upper bound charged for each account a swap may create or top up at the wallet's expense. */
-  readonly maxRentPerAccount: bigint;
+  /** The live rent rate. Each account a swap may create or top up is charged at the largest size any of them has. */
+  readonly rent: RentRate;
 }
 
 export interface PolicyVerdict {
@@ -60,7 +61,7 @@ const TOKEN_PROGRAMS = new Set<Address>([TOKEN_PROGRAM, TOKEN_2022_PROGRAM]);
 /**
  * Per swap instruction: the account positions that belong to the wallet (each must be a static key and match its
  * derivation), and how many accounts the swap may create or top up at the wallet's expense (venue docs; each is
- * charged at `maxRentPerAccount`).
+ * charged as the largest account any of them can be, `MAX_CREATED_ACCOUNT_BYTES`).
  */
 interface SwapRule {
   readonly program: Address;
@@ -78,8 +79,14 @@ interface SwapRule {
   /** Minimum account count (the named accounts); remaining accounts may follow. */
   readonly accounts: number;
   readonly inits: number;
-  /** Lamports the instruction itself takes from the wallet (curve buys pay native SOL from the wallet). */
+  /**
+   * Lamports the swap may spend: native SOL from the wallet (curve buys), or wrapped SOL from the wallet's ATA (PumpSwap
+   * buys). Wrapped SOL already sitting in that ATA (anyone can send some) would be spent too, so a PumpSwap spend is
+   * charged even when no wrap transfer in this transaction funds it.
+   */
   readonly solIn: (data: Uint8Array) => bigint;
+  /** True when `solIn` is paid from the wrapped-SOL ATA rather than native SOL. */
+  readonly fromWrap: boolean;
 }
 
 const u64At = (data: Uint8Array, offset: number): bigint => new Reader(data, offset).u64();
@@ -89,21 +96,23 @@ const SWAPS = new Map<string, SwapRule>([
   // pump buy_exact_quote_in_v2: user volume accumulator, creator-vault top-up and bonding-curve growth may be charged.
   [`${PUMP_PROGRAM}:${DISC.curveBuyExactQuoteInV2}`, {
     program: PUMP_PROGRAM, name: 'pump buy_exact_quote_in_v2', user: 13, baseMint: 1, quoteMint: 2, baseTokenProgram: 3, quoteTokenProgram: 4,
-    userBase: 14, userQuote: 15, userVolumeAccumulator: 20, alsoStatic: [21], accounts: 27, inits: 3, solIn: (d) => u64At(d, 8),
+    userBase: 14, userQuote: 15, userVolumeAccumulator: 20, alsoStatic: [21], accounts: 27, inits: 3, solIn: (d) => u64At(d, 8), fromWrap: false,
   }],
   [`${PUMP_PROGRAM}:${DISC.curveSellV2}`, {
     program: PUMP_PROGRAM, name: 'pump sell_v2', user: 13, baseMint: 1, quoteMint: 2, baseTokenProgram: 3, quoteTokenProgram: 4,
-    userBase: 14, userQuote: 15, userVolumeAccumulator: 19, alsoStatic: [20], accounts: 26, inits: 3, solIn: noSol,
+    userBase: 14, userQuote: 15, userVolumeAccumulator: 19, alsoStatic: [20], accounts: 26, inits: 3, solIn: noSol, fromWrap: false,
   }],
-  // PumpSwap v1: the protocol-fee and coin-creator quote ATAs (and, on buys, the user volume accumulator) if missing.
-  // The buy spends wrapped SOL that a transfer in the same transaction funded; that transfer is what is counted.
+  // PumpSwap v1: the protocol-fee, coin-creator and buyback-recipient quote ATAs (and, on buys, the user volume
+  // accumulator) if missing. The buyback ATAs all exist on chain (checked 2026-10-03, slot 452960110) and the IDL
+  // does not list them as created; the program is not open source, so they are charged anyway. The buy's spend is
+  // spendable_quote_in, charged against the larger of itself and the wrap transfers.
   [`${PUMP_AMM_PROGRAM}:${DISC.poolBuyExactQuoteIn}`, {
     program: PUMP_AMM_PROGRAM, name: 'PumpSwap buy_exact_quote_in', user: 1, baseMint: 3, quoteMint: 4, baseTokenProgram: 11, quoteTokenProgram: 12,
-    userBase: 5, userQuote: 6, userVolumeAccumulator: 20, alsoStatic: [], accounts: 23, inits: 3, solIn: noSol,
+    userBase: 5, userQuote: 6, userVolumeAccumulator: 20, alsoStatic: [], accounts: 23, inits: 4, solIn: (d) => u64At(d, 8), fromWrap: true,
   }],
   [`${PUMP_AMM_PROGRAM}:${DISC.poolSell}`, {
     program: PUMP_AMM_PROGRAM, name: 'PumpSwap sell', user: 1, baseMint: 3, quoteMint: 4, baseTokenProgram: 11, quoteTokenProgram: 12,
-    userBase: 5, userQuote: 6, userVolumeAccumulator: null, alsoStatic: [], accounts: 21, inits: 2, solIn: noSol,
+    userBase: 5, userQuote: 6, userVolumeAccumulator: null, alsoStatic: [], accounts: 21, inits: 3, solIn: noSol, fromWrap: false,
   }],
 ]);
 
@@ -117,6 +126,9 @@ export const checkSignerPolicy = (tx: DecodedTransaction, loaded: LoadedAddresse
   } catch (e) {
     return { ok: false, violations: [(e as Error).message], solOut: 0n };
   }
+  // The runtime refuses a key loaded twice (AccountLoadedTwice); accountKeys refuses it too. Checked here again so the
+  // policy never depends on the decoder for it.
+  if (new Set(keys).size !== keys.length) return { ok: false, violations: ['an account key appears more than once'], solOut: 0n };
   const nStatic = tx.staticAccountKeys.length;
   const isStatic = (index: number) => index < nStatic;
   const wsolAta = associatedTokenAddress(ctx.wallet, NATIVE_MINT, TOKEN_PROGRAM);
@@ -132,7 +144,9 @@ export const checkSignerPolicy = (tx: DecodedTransaction, loaded: LoadedAddresse
   let tips = 0;
   let tipTotal = 0n;
   let transfersOut = 0n;
+  let wrapIn = 0n;
   let swapSol = 0n;
+  let wrapSpend = 0n;
   let inits = 0;
   let swaps = 0;
   const created: Address[] = [];
@@ -186,6 +200,8 @@ export const checkSignerPolicy = (tx: DecodedTransaction, loaded: LoadedAddresse
         tipTotal += lamports;
       } else if (to === wsolAta && ctx.kind === 'trade') {
         wrapped.push(n);
+        transfersOut -= lamports;
+        wrapIn += lamports;
       } else if (ctx.kind === 'withdraw' && ctx.withdrawalAddress !== null && to === ctx.withdrawalAddress) {
         // The saved owner address: the only withdrawal destination.
       } else {
@@ -248,7 +264,8 @@ export const checkSignerPolicy = (tx: DecodedTransaction, loaded: LoadedAddresse
     if (rule.userVolumeAccumulator !== null && at(rule.userVolumeAccumulator) !== userVolumeAccumulator(rule.program, ctx.wallet)) {
       v.push(`${where}: ${rule.name} volume accumulator is not the wallet's`);
     }
-    swapSol += rule.solIn(d);
+    if (rule.fromWrap) wrapSpend += rule.solIn(d);
+    else swapSol += rule.solIn(d);
     inits += rule.inits;
   });
 
@@ -262,8 +279,10 @@ export const checkSignerPolicy = (tx: DecodedTransaction, loaded: LoadedAddresse
   if (wrapped.length > 0 && !closed.has(wsolAta)) v.push('wrapped SOL is never closed back to the wallet');
 
   // An account created and closed in this transaction returns its rent; any other creation is charged.
-  const rent = BigInt(created.filter((a) => !closed.has(a)).length + inits) * ctx.maxRentPerAccount;
-  const solOut = ctx.lamportsPerSignature * BigInt(tx.header.numRequiredSignatures) + priorityFee + transfersOut + swapSol + rent;
+  const rent = BigInt(created.filter((a) => !closed.has(a)).length + inits) * rentExempt(MAX_CREATED_ACCOUNT_BYTES, ctx.rent);
+  // Wrapped SOL leaves the wallet either through the wrap transfers or as the PumpSwap spend; the larger is charged.
+  const wrapOut = wrapIn > wrapSpend ? wrapIn : wrapSpend;
+  const solOut = ctx.lamportsPerSignature * BigInt(tx.header.numRequiredSignatures) + priorityFee + transfersOut + wrapOut + swapSol + rent;
   if (solOut > ctx.maxSolOut) v.push(`worst-case SOL out ${solOut} is above the allowed ${ctx.maxSolOut}`);
   return { ok: v.length === 0, violations: v, solOut };
 };

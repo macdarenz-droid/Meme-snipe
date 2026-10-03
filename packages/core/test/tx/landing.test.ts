@@ -132,11 +132,9 @@ describe('send outcomes', () => {
 describe('status reads keep CORE-1 commitment rules', () => {
   test('requests carry every signature, the history flag and the confirmed block height', () => {
     const { attempt } = submitted();
-    const calls = planStatusCheck({ type: 'check_status', intentId: attempt.intentId, signatures: [attempt.signature], searchHistory: true }, ENDPOINTS);
-    expect(calls.map((c) => c.body)).toEqual([
-      { jsonrpc: '2.0', id: 1, method: 'getSignatureStatuses', params: [[attempt.signature], { searchTransactionHistory: true }] },
-      { jsonrpc: '2.0', id: 1, method: 'getBlockHeight', params: [{ commitment: 'confirmed' }] },
-    ]);
+    const plan = planStatusCheck({ type: 'check_status', intentId: attempt.intentId, signatures: [attempt.signature], searchHistory: true }, ENDPOINTS);
+    expect(plan.height.body).toEqual({ jsonrpc: '2.0', id: 1, method: 'getBlockHeight', params: [{ commitment: 'confirmed' }] });
+    expect(plan.statuses.body).toEqual({ jsonrpc: '2.0', id: 1, method: 'getSignatureStatuses', params: [[attempt.signature], { searchTransactionHistory: true }] });
     expect(planTick(ENDPOINTS).body).toEqual({ jsonrpc: '2.0', id: 1, method: 'getBlockHeight', params: [{ commitment: 'confirmed' }] });
     expect(planBlockhash(ENDPOINTS).body).toEqual({ jsonrpc: '2.0', id: 1, method: 'getLatestBlockhash', params: [{ commitment: 'confirmed' }] });
   });
@@ -222,6 +220,55 @@ describe('landing runner (adapter) on a stub transport', () => {
     expect(sentBytes(calls)).toEqual([bytes, bytes]);
     expect(events).toEqual([{ type: 'send_accepted' }]);
     expect(alerts).toEqual([]);
+  });
+
+  test('review item 4: the height is read before the statuses, so a landing between the two reads is never expired', async () => {
+    // A chain that moves after every answer: at first the attempt has not landed and the height is lastValidBlockHeight;
+    // right after the first answer it lands in block LVBH and the confirmed height passes LVBH. Answers are given in
+    // the order requests arrive.
+    const { attempt, state } = submitted();
+    let landed = false;
+    let height = LVBH;
+    const calls: string[] = [];
+    const transport: Transport = {
+      call: async (c) => {
+        calls.push(c.body.method);
+        const answer: TransportResult = c.body.method === 'getBlockHeight'
+          ? { kind: 'ok', result: Number(height) }
+          : { kind: 'ok', result: { context: { slot: 1 }, value: [landed ? { slot: 9, err: null, confirmationStatus: 'confirmed' } : null] } };
+        landed = true;
+        height = LVBH + 1n;
+        return answer;
+      },
+    };
+    const events: IntentEvent[] = [];
+    const effect: Extract<Effect, { type: 'check_status' }> = { type: 'check_status', intentId: attempt.intentId, signatures: [attempt.signature], searchHistory: true };
+    landingRunner({ transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => events.push(e), alert: () => undefined }).run(effect, NOW);
+    await flush();
+    await flush();
+    expect(calls).toEqual(['getBlockHeight', 'getSignatureStatuses']);
+    expect(events).toEqual([{ type: 'status', signature: attempt.signature, result: 'succeeded', commitment: 'confirmed', blockHeight: LVBH, searchedHistory: true }]);
+    // Fed to CORE-1 the attempt is filled, never expired, so no replacement can follow.
+    let s = step(state, { type: 'send_accepted' }).state;
+    for (const e of events) s = step(s, e).state;
+    expect(s.status).toBe('confirmed_fill');
+  });
+
+  test('review item 4: no status request is sent before the height has answered', async () => {
+    const { attempt } = submitted();
+    const pending: { method: string; resolve: (r: TransportResult) => void }[] = [];
+    const transport: Transport = { call: (c) => new Promise((resolve) => pending.push({ method: c.body.method, resolve })) };
+    const events: IntentEvent[] = [];
+    const effect: Extract<Effect, { type: 'check_status' }> = { type: 'check_status', intentId: attempt.intentId, signatures: [attempt.signature], searchHistory: true };
+    landingRunner({ transport, endpoints: ENDPOINTS, store: { attempt: () => null }, emit: (_i, e) => events.push(e), alert: () => undefined }).run(effect, NOW);
+    await flush();
+    expect(pending.map((p) => p.method)).toEqual(['getBlockHeight']);
+    pending[0]!.resolve({ kind: 'ok', result: 990 });
+    await flush();
+    expect(pending.map((p) => p.method)).toEqual(['getBlockHeight', 'getSignatureStatuses']);
+    pending[1]!.resolve({ kind: 'ok', result: { value: [null] } });
+    await flush();
+    expect(events).toEqual([{ type: 'status', signature: attempt.signature, result: 'not_found', commitment: null, blockHeight: 990n, searchedHistory: true }]);
   });
 
   test('a transport that throws is reported as an alert, not an unhandled rejection', async () => {

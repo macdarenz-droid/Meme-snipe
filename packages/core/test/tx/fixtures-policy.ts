@@ -57,11 +57,11 @@ export const request = (kind: Kind, closeTokenAccount = true): TradeRequest => {
   const mint = mintOf(goldenAccount(g.mint)).mint;
   switch (kind) {
     case 'curve-buy':
-      return { venue: 'curve', side: 'buy', market: curveMarket(g), mint, spend: SPEND, quote: { tokens: 1_234_567_890n, userQuote: 39_999_000n } };
+      return { venue: 'curve', side: 'buy', market: curveMarket(g), mint, spend: SPEND, quote: { spend: SPEND, tokens: 1_234_567_890n, userQuote: SPEND } };
     case 'curve-sell':
       return { venue: 'curve', side: 'sell', market: curveMarket(g), mint, quote: { tokens: 1_234_567_890n, userQuote: 38_000_000n }, closeTokenAccount };
     case 'pool-buy':
-      return { venue: 'pool', side: 'buy', market: poolMarket(g), mint, spend: SPEND, quote: { base: 987_654_321n, userQuote: 40_000_000n } };
+      return { venue: 'pool', side: 'buy', market: poolMarket(g), mint, spend: SPEND, quote: { spend: SPEND, base: 987_654_321n, userQuote: SPEND - 2n } };
     case 'pool-sell':
       return { venue: 'pool', side: 'sell', market: poolMarket(g), mint, quote: { base: 987_654_321n, userQuote: 37_000_000n }, closeTokenAccount };
   }

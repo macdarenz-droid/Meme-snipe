@@ -6,9 +6,13 @@ import {
   type LoadedAddresses,
   type LookupTable,
   NATIVE_MINT,
+  PUMP_AMM_GLOBAL_CONFIG,
+  PUMP_AMM_PROGRAM,
+  PUMP_FEES_PROGRAM,
   SYSTEM_PROGRAM,
   TOKEN_PROGRAM,
   U64_MAX,
+  addressBytes,
   decodeTransaction,
   fromBase64,
   resolveLookups,
@@ -18,6 +22,7 @@ import {
   HELIUS_SENDER_TIP_ACCOUNTS,
   type Instruction,
   JITO_DONT_FRONT,
+  MAX_CREATED_ACCOUNT_BYTES,
   type SignerPolicyContext,
   associatedTokenAddress,
   buildTrade,
@@ -53,7 +58,7 @@ const ctxFor = (wallet: Address, over: Partial<SignerPolicyContext> = {}): Signe
   tipAccounts: POLICY.tipAccounts,
   withdrawalAddress: OWNER,
   lamportsPerSignature: RATES.lamportsPerSignature,
-  maxRentPerAccount: rentExempt(170, RATES.rent),
+  rent: RATES.rent,
   ...over,
 });
 
@@ -97,8 +102,9 @@ describe('built transactions pass the signer policy', () => {
     const tx = built('pool-buy');
     const v = verdict(tx.compiled.wire, ctxFor(WALLET));
     const fee = tx.priorityFee;
-    // Base ATA created and not closed (1) + three venue creations; the wrapped-SOL ATA is closed in the same transaction.
-    expect(v.solOut).toBe(5_000n + fee + 5_000n + 40_000_000n + 4n * rentExempt(170, RATES.rent));
+    // Base ATA created and not closed (1) + four venue creations (accumulator, protocol-fee, coin-creator and buyback
+    // quote ATAs); the wrapped-SOL ATA is closed in the same transaction. The wrap and the spend are both 0.04 SOL.
+    expect(v.solOut).toBe(5_000n + fee + 5_000n + 40_000_000n + 5n * rentExempt(170, RATES.rent));
   });
 });
 
@@ -171,9 +177,10 @@ describe('deny rules', () => {
     const loaded = resolveLookups(decoded.addressTableLookups, new Map([[table, lt]]), 10n);
     const v = checkSignerPolicy(decoded, loaded, ctxFor(WALLET)).violations;
     expect(v).toEqual(expect.arrayContaining([expect.stringMatching(/account 5 must be a static key/), expect.stringMatching(/account 6 must be a static key/), expect.stringMatching(/the new ATA must be a static key/)]));
-    // Someone hands the policy a lookup result that contains the wallet.
+    // Someone hands the policy a lookup result that contains the wallet. The wallet is always the static fee payer, so
+    // a loaded copy is a repeated key and refused before anything else is read.
     const forged: LoadedAddresses = { writable: [WALLET, ...loaded.writable.slice(1)], readonly: loaded.readonly };
-    expect(checkSignerPolicy(decoded, forged, ctxFor(WALLET)).violations).toContain('the bot wallet is loaded from a lookup table');
+    expect(checkSignerPolicy(decoded, forged, ctxFor(WALLET)).violations).toEqual(['an account key appears more than once']);
   });
 
   test('swaps: the user, base account, quote account and accumulator must be the wallet\'s', () => {
@@ -201,4 +208,55 @@ describe('deny rules', () => {
     expect(v.violations).toContain('transaction version 1 is not allowed');
     expect(v.ok).toBe(false);
   });
+
+  test('review item 1: a PumpSwap spend is charged even with no wrap transfer funding it (wSOL already in the ATA)', () => {
+    const tx = built('pool-buy');
+    const swapAt = tx.instructions.findIndex((ix) => ix.programId === PUMP_AMM_PROGRAM);
+    const swap = tx.instructions[swapAt]!;
+    const data = swap.data.slice();
+    new DataView(data.buffer).setBigUint64(8, 10_000_000_000n, true); // spendable_quote_in = 10 SOL
+    // Drop the wrap transfer and SyncNative; keep everything else, including the wSOL ATA create and close.
+    const ixs = tx.instructions
+      .map((ix, i) => (i === swapAt ? { ...swap, data } : ix))
+      .filter((ix) => !(ix.programId === SYSTEM_PROGRAM && ix.accounts[1]!.address === associatedTokenAddress(WALLET, NATIVE_MINT, TOKEN_PROGRAM)))
+      .filter((ix) => !(ix.programId === TOKEN_PROGRAM && ix.data.length === 1 && ix.data[0] === 17));
+    const v = verdict(compile(ixs), ctxFor(WALLET, { maxSolOut: 100_000_000n }));
+    expect(v.ok).toBe(false);
+    expect(v.solOut).toBeGreaterThan(10_000_000_000n);
+    expect(v.violations).toEqual([`worst-case SOL out ${v.solOut} is above the allowed 100000000`]);
+    // The normal build charges the spend once, not wrap plus spend.
+    const normal = verdict(tx.compiled.wire, ctxFor(WALLET));
+    expect(normal.solOut).toBeLessThan(2n * 40_000_000n);
+  });
+
+  test('review item 2: a repeated account key is refused (static or loaded)', () => {
+    const wire = built('pool-buy').compiled.wire.slice();
+    const decoded = decodeTransaction(wire);
+    const at = decoded.staticAccountKeys.indexOf(PUMP_AMM_GLOBAL_CONFIG);
+    expect(at).toBeGreaterThan(0);
+    // Overwrite the static GlobalConfig key with the pump-fees program key, which is already a static key.
+    const offset = wire.indexOf(0x80, 65) + 4 + 1 + 32 * at;
+    wire.set(addressBytes(PUMP_FEES_PROGRAM), offset);
+    const forged = decodeTransaction(wire);
+    expect(forged.staticAccountKeys[at]).toBe(PUMP_FEES_PROGRAM);
+    expect(new Set(forged.staticAccountKeys).size).toBe(forged.staticAccountKeys.length - 1);
+    expect(checkSignerPolicy(forged, NONE, ctxFor(WALLET))).toEqual({ ok: false, violations: ['an account key appears more than once'], solOut: 0n });
+    // A loaded key equal to a static key is refused the same way.
+    const plain = built('pool-buy');
+    const all = [...new Set(plain.instructions.flatMap((ix) => ix.accounts.map((m) => m.address)))];
+    const table = 'AddressLookupTab1e1111111111111111111111111' as Address;
+    const lt = built('pool-buy', true, { lookupTables: [{ address: table, addresses: all }] });
+    const d2 = decodeTransaction(lt.compiled.wire);
+    const loaded = resolveLookups(d2.addressTableLookups, new Map([[table, { deactivationSlot: U64_MAX, lastExtendedSlot: 1n, lastExtendedSlotStartIndex: 0, authority: null, addresses: all }]]), 10n);
+    const twice: LoadedAddresses = { writable: loaded.writable, readonly: [d2.staticAccountKeys[1]!, ...loaded.readonly.slice(1)] };
+    expect(checkSignerPolicy(d2, twice, ctxFor(WALLET)).violations).toEqual(['an account key appears more than once']);
+  });
+
+  test('review note: every possible creation is charged at the largest account size, never a caller figure', () => {
+    expect(MAX_CREATED_ACCOUNT_BYTES).toBe(170);
+    // Every size the builders can create or top up fits under it.
+    for (const bytes of [165, 170, 137, 151, 0]) expect(bytes).toBeLessThanOrEqual(MAX_CREATED_ACCOUNT_BYTES);
+    expect('maxRentPerAccount' in ctxFor(WALLET)).toBe(false);
+  });
 });
+

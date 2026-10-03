@@ -89,13 +89,22 @@ export const sendEvent = (outcomes: readonly SendOutcome[], expected: Signature)
   return { type: 'send_error', message };
 };
 
-/** Requests for a CORE-1 `check_status` effect: the statuses and, with them, the confirmed block height. */
-export const planStatusCheck = (effect: Extract<Effect, { type: 'check_status' }>, endpoints: LandingEndpoints): readonly HttpCall[] => {
+/**
+ * Requests for a CORE-1 `check_status` effect, in this order: first the confirmed block height, then, only after it
+ * has answered, the statuses. The events carry that earlier height. CORE-1 expires an attempt on "not found after a
+ * history search" when the height is past lastValidBlockHeight; a height read after the statuses could be newer than
+ * the status snapshot, so a transaction that landed in between would be declared expired and replaced: a double
+ * trade. Read in this order, a not-found answer is at least as new as the height it is judged against.
+ */
+export const planStatusCheck = (
+  effect: Extract<Effect, { type: 'check_status' }>,
+  endpoints: LandingEndpoints,
+): { readonly height: HttpCall; readonly statuses: HttpCall } => {
   if (effect.signatures.length === 0) throw new LandingError('no signatures to check');
-  return [
-    { path: 'rpc', url: endpoints.rpcUrl, body: rpc('getSignatureStatuses', [effect.signatures, { searchTransactionHistory: effect.searchHistory }]) },
-    { path: 'rpc', url: endpoints.rpcUrl, body: rpc('getBlockHeight', [{ commitment: 'confirmed' }]) },
-  ];
+  return {
+    height: { path: 'rpc', url: endpoints.rpcUrl, body: rpc('getBlockHeight', [{ commitment: 'confirmed' }]) },
+    statuses: { path: 'rpc', url: endpoints.rpcUrl, body: rpc('getSignatureStatuses', [effect.signatures, { searchTransactionHistory: effect.searchHistory }]) },
+  };
 };
 
 /** One entry of `getSignatureStatuses` `value[]` (null when the node does not know the signature). */
@@ -108,8 +117,9 @@ export type RpcSignatureStatus = {
 const COMMITMENTS: ReadonlySet<string> = new Set(['processed', 'confirmed', 'finalized']);
 
 /**
- * Lifecycle `status` events, one per signature, in request order. `blockHeight` is the confirmed height read with
- * the statuses. An entry without a known commitment level is refused rather than guessed.
+ * Lifecycle `status` events, one per signature, in request order. `blockHeight` is the confirmed height read before
+ * the statuses were requested (see planStatusCheck). An entry without a known commitment level is refused rather
+ * than guessed.
  */
 export const statusEvents = (
   signatures: readonly Signature[],

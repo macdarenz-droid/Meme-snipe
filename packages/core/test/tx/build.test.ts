@@ -238,16 +238,17 @@ describe('worst-case SOL out (SIMD-0437 rent, fees, tip)', () => {
     expect(tx.solOut.total).toBe(5_000n + tx.priorityFee + 5_000n + SPEND);
   });
 
-  test('pool buy: base ATA, PumpSwap volume accumulator, protocol-fee and coin-creator quote ATAs; the wrap nets to zero', () => {
+  test('pool buy: base ATA, PumpSwap volume accumulator, protocol-fee, coin-creator and buyback quote ATAs; the wrap nets to zero', () => {
     const req = request('pool-buy');
     if (req.venue !== 'pool') throw new Error('pool');
     const tx = build(req);
-    expect(tx.solOut.rent).toBe(T22_ATA + UVA + SPL_ATA + SPL_ATA);
+    expect(tx.solOut.rent).toBe(T22_ATA + UVA + 3n * SPL_ATA);
     const wallet = common(goldenOf('pool-buy')).wallet;
     const existing = new Set<Address>([
       associatedTokenAddress(wallet, req.market.state.baseMint, TOKEN_2022_PROGRAM),
       userVolumeAccumulator(PUMP_AMM_PROGRAM, wallet),
       associatedTokenAddress(req.market.globalConfig.protocolFeeRecipients[3]!, NATIVE_MINT, TOKEN_PROGRAM),
+      associatedTokenAddress(req.market.globalConfig.buybackFeeRecipients![5]!, NATIVE_MINT, TOKEN_PROGRAM),
       associatedTokenAddress(poolCoinCreatorVaultAuthority(req.market.state.coinCreator!), NATIVE_MINT, TOKEN_PROGRAM),
     ]);
     expect(build(req, { existing }).solOut.rent).toBe(0n);
@@ -256,7 +257,7 @@ describe('worst-case SOL out (SIMD-0437 rent, fees, tip)', () => {
   test('sells pay no swap SOL; a closed token account is never charged', () => {
     const tx = build(request('pool-sell', true));
     expect(tx.solOut.swap).toBe(0n);
-    expect(tx.solOut.rent).toBe(SPL_ATA + SPL_ATA);
+    expect(tx.solOut.rent).toBe(3n * SPL_ATA);
   });
 });
 
@@ -278,9 +279,26 @@ describe('refusals (no trade, with a reason)', () => {
   test('amounts: a quote that spends more than the request, a min-out that rounds to zero, a fee too small to price', () => {
     const buy = request('curve-buy');
     if (buy.venue !== 'curve' || buy.side !== 'buy') throw new Error('curve buy');
-    expect(refused({ ...buy, quote: { tokens: 10n, userQuote: SPEND + 1n } })).toBe('invalid-amount');
-    expect(refused({ ...buy, quote: { tokens: 1n, userQuote: 1n } })).toBe('invalid-amount');
+    expect(refused({ ...buy, quote: { spend: SPEND, tokens: 10n, userQuote: SPEND + 1n } })).toBe('invalid-amount');
+    expect(refused({ ...buy, quote: { spend: SPEND, tokens: 1n, userQuote: SPEND } })).toBe('invalid-amount');
     expect(refused(buy, { priorityFeeLamports: lamports(0n) })).toBe('invalid-amount');
+  });
+
+  test('review item 3: a quote computed for another spend is refused, so min-out is never sized for a smaller trade', () => {
+    for (const kind of ['curve-buy', 'pool-buy'] as const) {
+      const buy = request(kind);
+      if (buy.side !== 'buy') throw new Error('buy');
+      const out = buy.venue === 'curve' ? { tokens: buy.quote.tokens } : { base: buy.quote.base };
+      // A 0.5 SOL quote used for a 2 SOL spend.
+      const big = lamports(2_000_000_000n);
+      const small = { ...out, spend: 500_000_000n, userQuote: 500_000_000n };
+      expect(refused({ ...buy, spend: big, quote: small } as TradeRequest)).toBe('invalid-amount');
+      // The quote names the right spend but leaves more than fee rounding unspent.
+      expect(refused({ ...buy, quote: { ...out, spend: SPEND, userQuote: SPEND - 4n } } as TradeRequest)).toBe('invalid-amount');
+      // Within rounding it builds.
+      const ok = buildTrade({ ...buy, quote: { ...out, spend: SPEND, userQuote: SPEND - 3n } } as TradeRequest, common(goldenOf(kind)), POLICY);
+      expect(ok.ok).toBe(true);
+    }
   });
 
   test('coins and markets the builders do not trade', () => {

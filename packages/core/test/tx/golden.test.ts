@@ -12,7 +12,9 @@ import {
   TOKEN_2022_PROGRAM,
   TOKEN_PROGRAM,
   accountKeys,
+  decodeBase58,
   decodeGlobalConfig,
+  decodeTransaction,
   fromBase64,
 } from '../../src/chain/index.ts';
 import {
@@ -21,6 +23,7 @@ import {
   type Instruction,
   associatedTokenAddress,
   closeAccount,
+  compileV0,
   createAssociatedTokenIdempotent,
   curveAccounts,
   curveBuyIx,
@@ -117,24 +120,30 @@ const rebuildSwap = (g: GoldenTx, real: Instruction): Instruction => {
 };
 
 /** Our encoding of each native instruction in a real transaction. Returns how many were compared. */
+/** Our encoding of one native instruction of a real transaction, or null when it is not one we build. */
+const rebuildNative = (real: Instruction): Instruction | null => {
+  const at = (k: number) => real.accounts[k]!.address;
+  const d = real.data;
+  if (real.programId === COMPUTE_BUDGET_PROGRAM && d[0] === 2 && d.length === 5) return setComputeUnitLimit(Buffer.from(d).readUInt32LE(1));
+  if (real.programId === COMPUTE_BUDGET_PROGRAM && d[0] === 3 && d.length === 9) return setComputeUnitPrice(u64le(d, 1));
+  if (real.programId === ASSOCIATED_TOKEN_PROGRAM && d.length === 1 && d[0] === 1) {
+    expect(at(1)).toBe(associatedTokenAddress(at(2), at(3), at(5)));
+    return createAssociatedTokenIdempotent(at(0), at(1), at(2), at(3), at(5));
+  }
+  if (real.programId === SYSTEM_PROGRAM && d.length === 12 && Buffer.from(d).readUInt32LE(0) === 2 && real.accounts.length === 2) return transfer(at(0), at(1), u64le(d, 4));
+  if ((real.programId === TOKEN_PROGRAM || real.programId === TOKEN_2022_PROGRAM) && d.length === 1) {
+    if (d[0] === 17) return syncNative(at(0), real.programId);
+    if (d[0] === 9) return closeAccount(at(0), at(1), at(2), real.programId);
+  }
+  return null;
+};
+
+/** Our encoding of each native instruction in a real transaction. Returns how many were compared. */
 const compareNative = (r: RealTx): number => {
   let n = 0;
   r.tx.instructions.forEach((_, i) => {
     const real = realInstruction(r, i);
-    const at = (k: number) => real.accounts[k]!.address;
-    const d = real.data;
-    let mine: Instruction | null = null;
-    if (real.programId === COMPUTE_BUDGET_PROGRAM && d[0] === 2 && d.length === 5) mine = setComputeUnitLimit(Buffer.from(d).readUInt32LE(1));
-    else if (real.programId === COMPUTE_BUDGET_PROGRAM && d[0] === 3 && d.length === 9) mine = setComputeUnitPrice(u64le(d, 1));
-    else if (real.programId === ASSOCIATED_TOKEN_PROGRAM && d.length === 1 && d[0] === 1) {
-      mine = createAssociatedTokenIdempotent(at(0), at(1), at(2), at(3), at(5));
-      expect(at(1)).toBe(associatedTokenAddress(at(2), at(3), at(5)));
-    } else if (real.programId === SYSTEM_PROGRAM && d.length === 12 && Buffer.from(d).readUInt32LE(0) === 2 && real.accounts.length === 2) {
-      mine = transfer(at(0), at(1), u64le(d, 4));
-    } else if ((real.programId === TOKEN_PROGRAM || real.programId === TOKEN_2022_PROGRAM) && d.length === 1) {
-      if (d[0] === 17) mine = syncNative(at(0), real.programId);
-      if (d[0] === 9) mine = closeAccount(at(0), at(1), at(2), real.programId);
-    }
+    const mine = rebuildNative(real);
     if (mine === null) return;
     // Compute budget instructions carry no accounts; a real one may list a stray account, which we never add.
     if (real.programId === COMPUTE_BUDGET_PROGRAM && real.accounts.length > 0) {
@@ -209,5 +218,69 @@ describe('golden: a PumpSwap sell rebuilt from the DEC-1 fixtures', () => {
     if (!acc.ok) throw new Error(acc.detail);
     expectSame(poolSellIx(m, acc.accounts, user, u64le(real.data, 8), u64le(real.data, 16)), real, r, swapIndex);
     expect(compareNative(r)).toBeGreaterThanOrEqual(5);
+  });
+});
+
+describe('golden: whole compiled messages', () => {
+  // Every instruction of a real transaction rebuilt with our builders, then compiled with compileV0 against the same
+  // fee payer and blockhash: the message bytes (header, key order, instructions, lookups) must equal the signed ones.
+  const rebuildAll = (g: GoldenTx): Instruction[] | null => {
+    const r = realTx(g);
+    const out: Instruction[] = [];
+    for (let i = 0; i < r.tx.instructions.length; i++) {
+      const real = realInstruction(r, i);
+      const mine = i === g.swapIndex ? rebuildSwap(g, real) : rebuildNative(real);
+      if (mine === null || mine.accounts.length !== real.accounts.length) return null;
+      out.push(mine);
+    }
+    return out;
+  };
+
+  test('compileV0 reproduces real messages: byte for byte, or equal apart from the key order inside each group', () => {
+    const exact: string[] = [];
+    const reordered: string[] = [];
+    const differ: string[] = [];
+    const skipped: string[] = [];
+    for (const g of GOLDEN.golden) {
+      const r = realTx(g);
+      if (r.tx.addressTableLookups.length > 0) continue;
+      const ixs = rebuildAll(g);
+      if (ixs === null) {
+        skipped.push(`${g.kind} ${g.signature.slice(0, 8)}`);
+        continue;
+      }
+      const m = compileV0(r.keys[0]!, ixs, r.tx.recentBlockhash, [], () => false).message;
+      // A legacy message is the v0 body without the 0x80 prefix and the empty lookup list.
+      const ours = r.tx.version === 0 ? m : m.subarray(1, m.length - 1);
+      const name = `${g.kind} ${g.signature.slice(0, 8)}`;
+      if (hex(ours) === hex(r.tx.message)) {
+        exact.push(name);
+        continue;
+      }
+      // Some senders sort keys inside each signer/writable group (web3.js legacy compile); the runtime does not care.
+      // Then the header, the key set of each group, the blockhash and every instruction's program, accounts and data
+      // must still be identical.
+      const sigs = '1'.repeat(64);
+      const mine = decodeTransaction(Uint8Array.of(1, ...decodeBase58(sigs), ...m));
+      const groups = (t: typeof mine) => {
+        const h = t.header;
+        const k = t.staticAccountKeys;
+        const ws = h.numRequiredSignatures - h.numReadonlySignedAccounts;
+        const wn = k.length - h.numReadonlyUnsignedAccounts;
+        return [k.slice(0, ws), k.slice(ws, h.numRequiredSignatures), k.slice(h.numRequiredSignatures, wn), k.slice(wn)].map((x) => [...x].sort());
+      };
+      const resolved = (t: typeof mine) => t.instructions.map((ix) => [t.staticAccountKeys[ix.programIdIndex], ix.accounts.map((i) => t.staticAccountKeys[i]), hex(ix.data)]);
+      const same = JSON.stringify(mine.header) === JSON.stringify(r.tx.header)
+        && JSON.stringify(groups(mine)) === JSON.stringify(groups(r.tx))
+        && mine.recentBlockhash === r.tx.recentBlockhash
+        && JSON.stringify(resolved(mine)) === JSON.stringify(resolved(r.tx));
+      (same ? reordered : differ).push(name);
+    }
+    expect(exact.length).toBeGreaterThanOrEqual(3);
+    expect(exact.length + reordered.length).toBeGreaterThanOrEqual(8);
+    // The only allowed difference: the sender that marked a key writable where we (and the IDL) leave it read-only.
+    expect(differ).toEqual(differ.length === 0 ? [] : [expect.stringMatching(/^curve-buy /)]);
+    // Not rebuildable: a stray account on a compute-budget instruction, or the non-idempotent ATA Create; we send neither.
+    expect(skipped.length).toBeLessThanOrEqual(2);
   });
 });

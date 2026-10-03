@@ -10,6 +10,12 @@ export const TOKEN_ACCOUNT_SIZE = 165;
 /** pump and PumpSwap `UserVolumeAccumulator` (execution.md F3; checked on chain). */
 export const USER_VOLUME_ACCUMULATOR_SIZE = 137;
 
+/**
+ * The largest account a swap can create or top up at the wallet's expense: a Token-2022 ATA (170 bytes). The signer
+ * policy charges every possible creation at this size, so it never depends on a caller's figure.
+ */
+export const MAX_CREATED_ACCOUNT_BYTES = 170;
+
 /** Token-2022 account layout: base, the account-type byte, then TLV entries of 2 type + 2 length bytes + data. */
 const T22_ACCOUNT_TYPE_BYTE = 1;
 const TLV_HEADER = 4;
