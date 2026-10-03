@@ -135,10 +135,10 @@ export interface Harness {
 }
 
 /**
- * The conservative paper scenario, with every attempt landing unless a test asks otherwise. Its landing tail stays:
- * the boot is pinned (`boot-<n>`), so the draws are the same in every process.
+ * The conservative paper scenario, with every attempt landing, in its regular landing window, unless a test asks
+ * otherwise (RUN-1d). The draws are the same in every process anyway: the boot is pinned (`boot-<n>`).
  */
-export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
+export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n }, landingTail: { ...FILL_CONFIG.scenarios[PAPER_SCENARIO].landingTail, ppm: 0n } };
 
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
