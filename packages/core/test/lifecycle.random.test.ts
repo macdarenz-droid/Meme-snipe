@@ -329,6 +329,8 @@ describe('randomised lifecycle sequences', () => {
         }
         if (landingRead && e.event.type === 'status') w.revealed.add(e.event.signature);
         if (e.type === 'orphan_fill') orphansBooked++;
+        // After any late landing, new entries stay blocked until it is booked.
+        if (r.effects.some((f) => f.type === 'reconcile_orphan') && canOpenNewEntry(r.state).ok) throw new Error('entries open with an unbooked landing');
         if (e.type === 'propose_entry' && Object.keys(w.book.orphans).length > 0) throw new Error('entry accepted with an unbooked landing');
         if (e.type === 'propose_entry' && !canOpenNewEntry(w.book).ok) throw new Error('entry accepted while the guard said no');
         // Bytes leave the process on broadcast; a restart while signed may have leaked them too.
