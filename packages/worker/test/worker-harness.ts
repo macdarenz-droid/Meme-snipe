@@ -71,6 +71,9 @@ export const scriptedSource = (name: string, critical: boolean, sources: readonl
 
 export interface Harness {
   readonly worker: Worker;
+  /** The scripted sources, once start() built them; and the start order (seed hook, sources built, each start). */
+  readonly sources: ReturnType<typeof scriptedSource>[];
+  readonly order: string[];
   readonly timers: ReturnType<typeof virtualTimers>;
   readonly legs: SimLeg[];
   readonly logs: string[];
@@ -87,19 +90,36 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
   const session = startSession(TRIAL_POLICY);
   const legs: SimLeg[] = [];
   const logs: string[] = [];
+  const sources: ReturnType<typeof scriptedSource>[] = [];
+  const order: string[] = [];
   const worker = new Worker({
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
     strategy: strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n),
     scenario: o.scenario ?? LANDS, network: FILL_CONFIG.network, timers,
-    sources: () => [scriptedSource('helius-ws', true, ['helius']), scriptedSource('pumpportal', false, ['pumpportal'])],
+    sources: () => {
+      order.push('sources');
+      const made = [scriptedSource('helius-ws', true, ['helius']), scriptedSource('pumpportal', false, ['pumpportal'])];
+      for (const m of made) {
+        const start = m.start;
+        m.start = () => {
+          order.push(`start ${m.name}`);
+          start();
+        };
+      }
+      sources.push(...made);
+      return made;
+    },
     simulate: okSimulation(legs),
     fetchCreate: (sig) => void o.fetched?.push(sig),
-    seedDeployers: async () => 'test: not seeded',
+    seedDeployers: async () => {
+      order.push('seed');
+      return 'test: not seeded';
+    },
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },
     reconcileTimeoutMs: o.reconcileTimeoutMs ?? 120_000, loopMs: 100, staleFeedMs: 10_000, log: (l) => void logs.push(l),
   });
-  return { worker, timers, legs, logs, stateDir, session };
+  return { worker, timers, legs, logs, stateDir, session, sources, order };
 };
 
 /** Slot at a moment of the scripted market: one slot every 400 ms, SLOT at T. */

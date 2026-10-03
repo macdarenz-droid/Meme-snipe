@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
 import { Engine, type LogRecord, type MarketEvent } from '../../../core/src/engine/index.ts';
 import type { DeployerIndex } from '../../../core/src/gates/index.ts';
-import { openLedger, type Ledger } from '../../../core/src/ledger/index.ts';
+import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts';
@@ -25,7 +25,7 @@ import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release,
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
-import { Desk, bookEventsOf, openIntents } from './desk.ts';
+import { Desk, openIntents } from './desk.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { jsonText } from './json.ts';
@@ -110,6 +110,7 @@ export class Worker {
   #ctl: Control;
   #reconciled = false;
   #lastSlot: bigint | null = null;
+  #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
   #pools = new Map<string, unknown>();
   #fees = new Map<string, PoolFeeContext>();
@@ -145,7 +146,7 @@ export class Worker {
     for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
     this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024 }) : null;
 
-    this.#ledger = openLedger(join(c.stateDir, 'ledger.sqlite'), 'paper');
+    this.#ledger = openLedger(join(c.stateDir, Ledger.FILE), 'paper');
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
     this.#exitsFile = exitsFile(c.stateDir);
@@ -158,7 +159,7 @@ export class Worker {
     });
     this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
-    const stored = bookEventsOf(this.#ledger, bookConfig);
+    const stored = this.#ledger.storedBookEvents(bookConfig);
     this.#world = new PaperWorld({
       report: (event) => void this.#report(event),
       book: () => this.#engine.book,
@@ -211,6 +212,10 @@ export class Worker {
 
   get journal(): Journal {
     return this.#journal;
+  }
+
+  get strategyConfig(): StrategyConfig {
+    return this.#d.strategy;
   }
 
   get strategy(): LiveStrategy {
@@ -304,11 +309,12 @@ export class Worker {
     const records = this.#engine.records as LogRecord[];
     const n = records.length;
     for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);
-    this.#desk.consume(records, 0);
+    this.#desk.consume(records.slice(0, n));
     // Consumed records are dropped so a 48 h run keeps its memory flat; the engine keeps the log's hash.
     records.splice(0, n);
-    this.#desk.rewind();
-    if (this.#lastSlot !== null) {
+    if (this.#lastSlot !== null && this.#lastSlot !== this.#ticked) {
+      // Once per new paper block height: attempts due land, and intents in flight get their tick (rebroadcast, expiry).
+      this.#ticked = this.#lastSlot;
       this.#world.onSlot(this.#lastSlot);
       if (Object.values(this.#engine.book.intents).some((i) => !isTerminal(i) && (isUnresolved(i) || i.status === 'signed'))) {
         this.#report({ type: 'tick', blockHeight: this.#lastSlot });

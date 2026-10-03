@@ -5,51 +5,10 @@
 // back as a `reject`, so the strategy re-evaluates on a fresh snapshot; nothing is retried blindly.
 import type { IntentId, ReservationId } from '../../../core/src/domain/index.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
-import { type Ledger, LedgerError } from '../../../core/src/ledger/index.ts';
-import { decodeBookDetail, stepRows } from '../../../core/src/ledger/replay/index.ts';
-import { applyBookEvent, type Book, type BookConfig, type BookEvent, emptyBook, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
+import type { Ledger } from '../../../core/src/ledger/index.ts';
+import { applyBookEvent, type Book, type BookConfig, type BookEvent, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports } from '../../../core/src/units/index.ts';
 import { reservationOf } from '../engine/strategy.ts';
-
-/** The book events stored in a ledger, in order, rebuilt the way the ledger replay check reads them. */
-export const bookEventsOf = (ledger: Pick<Ledger, 'intentEvents' | 'allIntents' | 'positionEvents'>, config: BookConfig): { readonly events: BookEvent[]; readonly book: Book } => {
-  const intents = new Map(ledger.allIntents().map((r) => [r.intent.id as string, r]));
-  const triggers = new Map<string, BookEvent>();
-  for (const p of ledger.positionEvents()) {
-    if (p.detail === null) continue;
-    const e = decodeBookDetail(p.detail);
-    if (e.type === 'trigger_exit') triggers.set(e.intentId, e);
-  }
-  const rows = ledger.intentEvents();
-  const events: BookEvent[] = [];
-  let book = emptyBook(config);
-  let i = 0;
-  while (i < rows.length) {
-    const row = rows[i]!;
-    let event: BookEvent;
-    if (row.event === 'created' && row.detail === null) {
-      const rec = intents.get(row.intentId);
-      if (rec === undefined) throw new LedgerError(`ledger: intent ${row.intentId} has events but no record`);
-      if (rec.intent.purpose === 'entry') event = { type: 'propose_entry', intent: rec.intent };
-      else {
-        const t = triggers.get(row.intentId);
-        if (t === undefined) throw new LedgerError(`ledger: exit intent ${row.intentId} has no trigger_exit row`);
-        event = t;
-      }
-    } else if (row.detail !== null) {
-      event = decodeBookDetail(row.detail);
-    } else {
-      throw new LedgerError(`ledger: row ${row.seq} does not start a stored book event`);
-    }
-    const step = applyBookEvent(book, event);
-    if (isIllegal(step)) throw new LedgerError(`ledger: stored ${event.type} is refused by the reducer: ${step.reason}`);
-    const written = stepRows(book, event, step.effects);
-    i += Math.max(1, written?.intents.length ?? 1);
-    book = step.state;
-    events.push(event);
-  }
-  return { events, book };
-};
 
 /** Open intents for the host's update gate: intents not finished (`open_intents`, ops/README.md). */
 export const openIntents = (book: Book): number => Object.values(book.intents).filter((s) => !isTerminal(s)).length;
@@ -75,7 +34,6 @@ export interface DeskDeps {
 export class Desk {
   readonly #d: DeskDeps;
   #book: Book;
-  #cursor = 0;
   /** World event ids whose book event the ledger already holds (restored at start, or a reservation written first). */
   readonly #written = new Set<string>();
   /** Decision reasons per entry intent, carried onto its `entry` line. */
@@ -99,16 +57,9 @@ export class Desk {
     this.#written.add(eventId);
   }
 
-  /** Takes the records the engine added since the last call. Index-based, so the caller may drop consumed records. */
-  consume(records: readonly LogRecord[], from: number): number {
-    for (let k = Math.max(from, this.#cursor); k < records.length; k++) this.#one(records[k]!);
-    this.#cursor = records.length;
-    return records.length;
-  }
-
-  /** Forget the cursor after the caller dropped consumed records. */
-  rewind(): void {
-    this.#cursor = 0;
+  /** Takes records the engine added, each once, in order (the caller drops them afterwards). */
+  consume(records: readonly LogRecord[]): void {
+    for (const r of records) this.#one(r);
   }
 
   #one(r: LogRecord): void {

@@ -245,9 +245,10 @@ export class PaperWorld implements EffectRunner {
   #status(intentId: IntentId, sig: Signature, searchHistory: boolean): void {
     const att = this.#intent(intentId)?.attempts.find((x) => x.signature === sig);
     if (att === undefined) return;
-    const height = this.#heightFor(sig, att.lastValidBlockHeight);
-    if (height === null) return;
     const a = this.#attempts.get(sig);
+    // A landed attempt's reports can be dated by its landing slot when no slot was seen yet (a reconcile at start).
+    const height = this.#heightFor(sig, att.lastValidBlockHeight) ?? a?.landedSlot ?? null;
+    if (height === null) return;
     const base = { type: 'status' as const, signature: sig, blockHeight: height, searchedHistory: searchHistory || a === undefined };
     if (a === undefined || (a.outcome !== 'filled' && a.outcome !== 'failed')) {
       this.#d.report({ type: 'intent', intentId, event: { ...base, result: 'not_found', commitment: null } });
@@ -267,7 +268,7 @@ export class PaperWorld implements EffectRunner {
         fills.push(a.fill);
         continue;
       }
-      const h = this.#heightFor(att.signature, att.lastValidBlockHeight);
+      const h = this.#heightFor(att.signature, att.lastValidBlockHeight) ?? (a?.outcome === 'failed' ? a.landedSlot : null);
       const dead = a?.outcome === 'failed' || (h !== null && h > att.lastValidBlockHeight);
       // Balances are read only once no attempt can still land; the next tick asks again.
       if (!dead || h === null) return;

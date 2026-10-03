@@ -1,5 +1,6 @@
 // WORKER-1 end to end on a scripted market: gates, risk, the ledger reservation, TEST-2's simulation, the paper fill,
 // the exit engine, the journal the runner checks and the ledger the replay check reads; then a restart drill mid-trade.
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -156,6 +157,28 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
     expect(i.reservation?.status).toBe('released');
     expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('0\n');
     await h2.worker.stop();
+    expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+});
+
+describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
+  it('settles what a killed worker left open, writes open_intents 0 and exits 0, as a separate process', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h);
+    await m.run(4_000, 100, () => m.pool());
+    await h.worker.kill();
+    expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('1\n');
+    const root = join(import.meta.dirname, '..', '..', '..');
+    const r = spawnSync(process.execPath, ['--no-warnings', 'packages/worker/src/main.ts', '--reconcile'], {
+      cwd: root, encoding: 'utf8', timeout: 60_000,
+      env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: h.stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_GIT_SHA: 'testsha' },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('0\n');
+    const report = checkJournal(journalText(h.stateDir));
+    expect(report.problems).toEqual([]);
+    expect(lines(h.stateDir).filter((l) => l['kind'] === 'reconcile').at(-1)).toMatchObject({ ok: true });
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
   });
 });

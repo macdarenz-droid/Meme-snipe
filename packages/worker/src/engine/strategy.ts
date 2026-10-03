@@ -491,6 +491,7 @@ export class LiveStrategy implements Strategy {
       const to = cand.migratedAtMs + c.windowToMs;
       if (now >= to) {
         this.#cands.delete(cand.mint);
+        this.#bars.delete(cand.mint);
         out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
         continue;
       }
