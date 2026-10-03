@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 // The CPU-heavy suites (simulation, backtest runs) get their own project and two workers each project, so the heavy files
 // never take more than half the cores and cannot starve the rest. Measured on a 4-core runner: stats-g2 took 62 s on CI next to the
@@ -22,7 +22,7 @@ export default defineConfig({
           // The default 5 s sat 0.8 s above the 1 to 2.5 s tests, so a busy runner failed them. 30 s is 5x the slowest.
           testTimeout: 30_000,
           include: ['packages/*/test/**/*.test.ts', 'apps/*/test/**/*.test.ts'],
-          exclude: HEAVY,
+          exclude: [...configDefaults.exclude, ...HEAVY],
         },
       },
       {
