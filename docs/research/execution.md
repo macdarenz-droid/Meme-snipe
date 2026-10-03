@@ -235,7 +235,7 @@ All quantities are u64/u128 integers; `fee(x,bps) = ceil(x·bps/10_000)`.
 
 - `effectiveQuote = poolQuoteVault.amount + Pool.virtual_quote_reserves`.
 - `virtual_quote_reserves` is a **signed i128 and can be negative from 2026-09-30**. Decode it as signed; the program guarantees the sum is ≥ 0 and fits in u64 ([negative virtual reserves](https://github.com/pump-fun/pump-public-docs/blob/main/docs/NEGATIVE_VIRTUAL_QUOTE_RESERVES.md)).
-- Use vault + `virtual_quote_reserves`; no per-pool calibration. The event's `pool_quote_token_reserves` is the vault alone, and pricing on it misprices fills by a median 4.5% (p95 30%) on 2026-10-03 data. Vault + virtual replays real swaps exactly (BT-1, 353 swaps; RES-2 `docs/research/copytrading.md`).
+- Use vault + `virtual_quote_reserves`; no per-pool calibration. The event's `pool_quote_token_reserves` is the vault alone, and pricing on it misprices fills by a median 5.5% (p95 31%) on 2026-10-03 data. Vault + virtual replays real swaps exactly (BT-1, 353 swaps; RES-2, 317k swaps, 98.6–99.1% within 1%, `docs/research/copytrading.md`). In 504-byte BuyEvents, `quote_amount_in` and `user_quote_amount_in` sit in swapped positions compared with 489-byte ones.
 - Sell base `b`:
   - `quoteOut = floor(effectiveQuote · b / (baseReserve + b))`;
   - `final = quoteOut − fee(lp) − fee(protocol) − fee(creator)`, where the creator fee is 0 if `coin_creator` is the default key.
