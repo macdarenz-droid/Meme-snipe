@@ -242,8 +242,10 @@ describe('GATE-1e: the mint supply is read first, the complete holder set at or 
     expect(evaluate(reads(SLOT - 2n, SLOT - 1n, SUPPLY, omitted)).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: 'H12' }));
     expect(concentrationReasons(reads(SLOT - 2n, SLOT - 1n, SUPPLY, accounts))).toEqual([]);
     expect(concentrationReasons(reads(SLOT - 1n, SLOT - 1n, SUPPLY, accounts))).toEqual([]);
-    // A partial view is bounded by the worst case and does not need the order.
-    expect(concentrationReasons(patch(reads(SLOT - 1n, SLOT - 2n, SUPPLY, accounts), holdersKey(MINT), { coverage: 'largest' }))).toEqual([]);
+    // GATE-1f: a partial view needs the order too: a scan before a burn would understate the unlisted supply.
+    expect(concentrationReasons(patch(reads(SLOT - 1n, SLOT - 2n, SUPPLY, accounts), holdersKey(MINT), { coverage: 'largest' })))
+      .toEqual(['H12', 'H13'].map((neededBy) => expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy })));
+    expect(concentrationReasons(patch(reads(SLOT - 2n, SLOT - 1n, SUPPLY, accounts), holdersKey(MINT), { coverage: 'largest' }))).toEqual([]);
   });
 
   it('a mint or holder read at processed commitment is refused', () => {
@@ -279,6 +281,12 @@ describe('GATE-1e: a delegate controls what it may move', () => {
     // Delegated to the account's own owner, nothing is added.
     const self = base.map((a) => ({ ...a, delegate: a.owner, delegatedAmount: a.amount }));
     expect(codes(self)).toEqual([]);
+  });
+
+  it('a partial delegation counts only the delegated amount', () => {
+    // 4e12 of each 8e12 delegated: the dev controls 4e12 + 5 x 4e12 = 24e12 (8.8%): over the 5% cluster limit,
+    // under the 10% single and 15% insider limits (24e12 + W(0), W(1) = 40e12, 14.7%); the top 10 reach 96e12.
+    expect(codes(delegated(4_000_000_000_000n))).toEqual(['dev-cluster', 'top10']);
   });
 
   it('a delegated amount without a delegate is malformed', () => {
