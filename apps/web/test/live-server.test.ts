@@ -129,7 +129,7 @@ describe('server address', () => {
     expect(saveServer(ORIGIN, blocked)).toBe(false);
     const store = new ConnectionStore(blocked);
     expect(store.setServer(ORIGIN)).toBe(false);
-    expect(store.get()).toEqual({ origin: ORIGIN, state: 'connecting', lastOk: null });
+    expect(store.get()).toEqual({ origin: ORIGIN, state: 'connecting', lastOk: null, lastAnswer: null });
   });
 
   it('bad address: the form opens empty with the address field and no saved value', () => {
@@ -166,7 +166,7 @@ describe('contract mock server', () => {
       api.stats('paper'),
     ]);
     for (const env of envs) expect(env.mode).toBe('paper');
-    expect(store.get()).toEqual({ origin: ORIGIN, state: 'online', lastOk: '2026-10-03T07:30:00.000Z' });
+    expect(store.get()).toEqual({ origin: ORIGIN, state: 'online', lastOk: '2026-10-03T07:30:00.000Z', lastAnswer: '2026-10-03T07:30:00.000Z' });
     expect(loadSeen(ORIGIN, kv)).toBe('2026-10-03T07:30:00.000Z');
     expect(connectionLabel(store.get())).toBe('Online');
     // Read-only: GET only, no credentials of any kind.
@@ -178,14 +178,31 @@ describe('contract mock server', () => {
     }
   });
 
-  it('a response in another mode is refused, and still counts as the server answering', async () => {
+  it('a response in another mode, an HTTP error or a non-JSON body is never an update: Server error, last update kept', async () => {
     const leaky = await startMock(fixtureApi({ leakMode: 'live' }));
     try {
-      const store = new ConnectionStore(memory());
+      const kv = memory();
+      const store = new ConnectionStore(kv);
       store.setServer(ORIGIN);
-      const api = httpApi(ORIGIN, tailnetTo(leaky.base), store);
+      store.reportOk(ORIGIN, '2026-10-03T03:32:00.000Z');
+      const at = Date.parse('2026-10-03T03:40:00Z');
+      const api = httpApi(ORIGIN, tailnetTo(leaky.base), store, () => at);
       await expect(api.trades('paper')).rejects.toBeInstanceOf(DataError);
-      expect(store.get().state).toBe('online');
+      expect(store.get()).toEqual({ origin: ORIGIN, state: 'error', lastOk: '2026-10-03T03:32:00.000Z', lastAnswer: '2026-10-03T03:40:00.000Z' });
+      expect(loadSeen(ORIGIN, kv)).toBe('2026-10-03T03:32:00.000Z');
+      expect(connectionLabel(store.get())).toBe('Server error · last update 3 Oct, 13:32');
+      const view = text(renderToStaticMarkup(h(ServerView, { c: store.get(), onChange: noop, onRemove: noop })));
+      expect(view).toContain('Last update 3 Oct, 13:32');
+      expect(view).toContain('Last answer 3 Oct, 13:40');
+      expect(view).not.toContain('Online');
+
+      const fresh = new ConnectionStore(memory());
+      fresh.setServer(ORIGIN);
+      await expect(httpApi(ORIGIN, async () => ({ status: 500, body: 'oops' }), fresh).stats('paper')).rejects.toThrow('500');
+      await expect(httpApi(ORIGIN, async () => ({ status: 200, body: '<html>' }), fresh).stats('paper')).rejects.toBeInstanceOf(DataError);
+      expect(fresh.get().state).toBe('error');
+      expect(fresh.get().lastOk).toBeNull();
+      expect(connectionLabel(fresh.get())).toBe('Server error · no update yet');
     } finally {
       await new Promise<void>((ok) => leaky.server.close(() => ok()));
     }
@@ -228,15 +245,15 @@ describe('contract mock server', () => {
     store.reportOk(ORIGIN, '2026-10-03T03:32:00.000Z');
     const api = httpApi(ORIGIN, tailnetTo(base), store);
     await expect(api.status('paper')).rejects.toBeInstanceOf(OfflineError);
-    expect(store.get()).toEqual({ origin: ORIGIN, state: 'offline', lastOk: '2026-10-03T03:32:00.000Z' });
+    expect(store.get()).toEqual({ origin: ORIGIN, state: 'offline', lastOk: '2026-10-03T03:32:00.000Z', lastAnswer: '2026-10-03T03:32:00.000Z' });
     // 03:32 UTC is 13:32 in Melbourne (AEST, before the 4 Oct change).
     expect(connectionLabel(store.get())).toBe('Offline · last update 3 Oct, 13:32');
     const view = text(renderToStaticMarkup(h(ServerView, { c: store.get(), onChange: noop, onRemove: noop })));
     expect(view).toContain('Offline · last update 3 Oct, 13:32');
     expect(view).toContain('Read only');
     // A restart keeps the last update time.
-    expect(new ConnectionStore(kv).get()).toEqual({ origin: ORIGIN, state: 'connecting', lastOk: '2026-10-03T03:32:00.000Z' });
-    expect(connectionLabel({ origin: ORIGIN, state: 'offline', lastOk: null })).toBe('Offline · no update yet');
+    expect(new ConnectionStore(kv).get()).toEqual({ origin: ORIGIN, state: 'connecting', lastOk: '2026-10-03T03:32:00.000Z', lastAnswer: null });
+    expect(connectionLabel({ origin: ORIGIN, state: 'offline', lastOk: null, lastAnswer: null })).toBe('Offline · no update yet');
 
     const ready: Loaded<number> = { state: 'ready', data: 1, asOf: '2026-10-03T03:32:00.000Z', stale: false };
     const offline: Loaded<number> = { state: 'error', reason: 'offline' };
@@ -258,10 +275,11 @@ describe('contract mock server', () => {
     store.setServer(ORIGIN);
     store.setServer('https://other.tail1234.ts.net');
     store.reportOk(ORIGIN, '2026-10-03T00:00:00.000Z');
+    store.reportBad(ORIGIN, '2026-10-03T00:00:00.000Z');
     store.reportOffline(ORIGIN);
-    expect(store.get()).toEqual({ origin: 'https://other.tail1234.ts.net', state: 'connecting', lastOk: null });
+    expect(store.get()).toEqual({ origin: 'https://other.tail1234.ts.net', state: 'connecting', lastOk: null, lastAnswer: null });
     store.clear();
-    expect(store.get()).toEqual({ origin: null, state: 'none', lastOk: null });
+    expect(store.get()).toEqual({ origin: null, state: 'none', lastOk: null, lastAnswer: null });
   });
 });
 

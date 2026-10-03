@@ -23,9 +23,10 @@ export const offlineApi: DashboardApi = {
   backtestReport: offline,
 };
 
-/** What httpApi tells about each request: answered (any HTTP status) or not reachable. */
+/** What httpApi tells about each request: good data, an answer that failed (HTTP error or bad data), or not reachable. */
 export interface Reachability {
   reportOk(origin: string, at: string): void;
+  reportBad(origin: string, at: string): void;
   reportOffline(origin: string): void;
 }
 
@@ -43,16 +44,23 @@ export function httpApi(origin: string, get: Getter = defaultGetter, reach?: Rea
       reach?.reportOffline(origin);
       throw new OfflineError('worker not reachable');
     }
-    // An HTTP answer means the server is reachable, even when the answer is an error.
-    reach?.reportOk(origin, new Date(now()).toISOString());
-    if (res.status !== 200) throw new Error(`worker answered ${res.status}`);
-    let body: unknown;
+    // Only data that passes every check counts as an update; any other answer only shows the server is up.
+    const at = new Date(now()).toISOString();
     try {
-      body = JSON.parse(res.body ?? '');
-    } catch {
-      throw new DataError('bad-shape', 'response is not JSON');
+      if (res.status !== 200) throw new Error(`worker answered ${res.status}`);
+      let body: unknown;
+      try {
+        body = JSON.parse(res.body ?? '');
+      } catch {
+        throw new DataError('bad-shape', 'response is not JSON');
+      }
+      const env = checkEnvelope<T>(body, mode, check);
+      reach?.reportOk(origin, at);
+      return env;
+    } catch (e) {
+      reach?.reportBad(origin, at);
+      throw e;
     }
-    return checkEnvelope<T>(body, mode, check);
   }
   return {
     status: (m) => call(PATHS.status(m), m, schemaFor('status', m)),
