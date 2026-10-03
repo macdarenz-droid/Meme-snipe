@@ -46,7 +46,7 @@ export interface MintAccounts {
 export const mintAccounts = (mint: string, pool: MintAccounts['pool']): MintAccounts => ({ curve: bondingCurveAddress(mint as Address), pool });
 
 /** True for a PDA. An owner that is not a 32-byte address counts as one too: it is kept as a holder and noted. */
-const offCurve = (address: string): boolean => {
+export const offCurve = (address: string): boolean => {
   try {
     const bytes = decodeBase58(address);
     return bytes.length !== 32 || !isOnCurve(bytes);

@@ -2,7 +2,7 @@
 Description=Zeroed dry run check every 5 minutes
 
 [Timer]
-OnBootSec=3min
+OnBootSec=20s
 OnUnitActiveSec=5min
 
 [Install]

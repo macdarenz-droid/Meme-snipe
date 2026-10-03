@@ -1,0 +1,55 @@
+# RUN-1d host-loss tabletop on the qualifying host: a second worker, `--reconcile-only`, cold-starts beside the
+# live one from /var/lib/zeroed-tabletop (the newest backup, decrypted there by the runner, or empty for the
+# chain-rebuild variant). It sends nothing: no entries, no exits, no heartbeat, no signer. The runner starts and
+# stops it; it is never enabled. Installed only through OPS-1d's install path, with the worker unit's hardening.
+[Unit]
+Description=Zeroed worker, reconcile-only tabletop (dry-run drill)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zeroed-worker
+Group=zeroed-worker
+EnvironmentFile=/etc/zeroed/worker.env
+Environment=NODE_ENV=production
+# Its own port and state dir, and no drill endpoint; worker.env cannot point it at the live worker's.
+ExecStart=/usr/bin/env ZEROED_HEALTH_ADDR=127.0.0.1:8789 ZEROED_DRILLS=off WATCHDOG_URL= /usr/local/bin/node /opt/zeroed/current/packages/worker/src/main.ts --reconcile-only
+Restart=no
+TimeoutStopSec=30
+LoadCredentialEncrypted=helius_api_key:/etc/credstore.encrypted/helius_api_key
+LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key
+LoadCredentialEncrypted=jupiter_api_key:/etc/credstore.encrypted/jupiter_api_key
+StateDirectory=zeroed-tabletop
+StateDirectoryMode=0700
+UMask=0077
+MemoryMax=400M
+TasksMax=128
+LimitCORE=0
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+KeyringMode=private
+DevicePolicy=closed
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @debug @cpu-emulation @obsolete
+SystemCallErrorNumber=EPERM
