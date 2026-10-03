@@ -34,7 +34,7 @@ import {
   sharingConfigAddress,
   userVolumeAccumulator,
 } from './programs.ts';
-import type { ShapeRefusalReason, TradeShape } from './shape.ts';
+import { type ShapeRefusalReason, type TradeShape, checkShape } from './shape.ts';
 
 /** Anchor discriminators (pinned IDLs; PumpSwap's v1 family). */
 export const DISC = {
@@ -84,12 +84,22 @@ export const curveShape = (m: CurveMarket): Omit<TradeShape, 'extensions'> => ({
   coinCreator: m.curve.creator, curveComplete: m.curve.complete,
 });
 
+/** The mint's part of the shape: its extensions (the program is the market's `baseTokenProgram`). */
+export type MintShape = { readonly extensions: readonly { readonly kind: string }[] };
+
+const guard = (shape: Omit<TradeShape, 'extensions'>, mint: MintShape): Refusal | null => {
+  const s = checkShape({ ...shape, extensions: mint.extensions.map((e) => e.kind) });
+  return s.ok ? null : refuse(s.reason, s.detail);
+};
+
 /**
- * Picks the fee recipients for a curve trade. `feeIndex` and `buybackIndex` come from the engine's seeded randomness
- * (pump asks integrators to spread write locks over the 8 recipients). The caller has checked the trade's shape
- * (`checkShape`; `buildTrade` does it first).
+ * Checks the curve trade's shape (`checkShape`, the same check H17 runs) and picks the fee recipients. `feeIndex` and
+ * `buybackIndex` come from the engine's seeded randomness (pump asks integrators to spread write locks over the 8
+ * recipients).
  */
-export const curveAccounts = (m: CurveMarket, user: Address, feeIndex: number, buybackIndex: number): { ok: true; accounts: CurveAccounts } | Refusal => {
+export const curveAccounts = (m: CurveMarket, mint: MintShape, user: Address, feeIndex: number, buybackIndex: number): { ok: true; accounts: CurveAccounts } | Refusal => {
+  const refused = guard(curveShape(m), mint);
+  if (refused !== null) return refused;
   if (m.curve.creator === undefined) return refuse('missing-chain-field', 'curve creator is unread');
   if (m.pumpGlobal.buybackFeeRecipients === undefined) return refuse('missing-chain-field', 'Global has no buyback fee recipients');
   const fee = pick([m.pumpGlobal.feeRecipient, ...m.pumpGlobal.feeRecipients], feeIndex, 'fee recipient');
@@ -174,8 +184,10 @@ export const poolShape = (m: PoolMarket): Omit<TradeShape, 'extensions'> => ({
   coinCreator: m.state.coinCreator, poolAccountBytes: m.accountBytes,
 });
 
-/** Picks the fee recipients for a pool trade. The caller has checked the trade's shape (`checkShape`; `buildTrade` does it first). */
-export const poolAccounts = (m: PoolMarket, user: Address, feeIndex: number, buybackIndex: number): { ok: true; accounts: PoolAccounts } | Refusal => {
+/** Checks the pool trade's shape (`checkShape`, the same check H17 runs) and picks the fee recipients. */
+export const poolAccounts = (m: PoolMarket, mint: MintShape, user: Address, feeIndex: number, buybackIndex: number): { ok: true; accounts: PoolAccounts } | Refusal => {
+  const refused = guard(poolShape(m), mint);
+  if (refused !== null) return refused;
   const p = m.state;
   if (p.coinCreator === undefined) return refuse('missing-chain-field', 'pool coin creator is unread');
   if (m.globalConfig.buybackFeeRecipients === undefined) return refuse('missing-chain-field', 'GlobalConfig has no buyback fee recipients');
