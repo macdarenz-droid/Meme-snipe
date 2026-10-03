@@ -36,6 +36,8 @@ export interface Exposure {
   readonly reconciled_ms: number | null;
   /** Trades open or in flight at the kill, and those the worker's chain rebuild (`exposure` lines) covered. */
   readonly trades: readonly string[];
+  /** The health reply named every exposed trade (position trade set; one id per unresolved intent). */
+  readonly trades_complete: boolean;
   readonly chain_trades: readonly string[];
   readonly mark_before: string | null;
   readonly mark_after: string | null;
@@ -184,7 +186,12 @@ export const buildReport = (
     exposure_measured: drills.every(
       (d) =>
         d.exposure === undefined ||
-        (d.exposure.duration_ms !== null && d.exposure.worst_move_bps !== null && (stub || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
+        (d.exposure.duration_ms !== null &&
+          d.exposure.worst_move_bps !== null &&
+          // Exposed with no trade ids, or fewer ids than intents, cannot be checked: it fails, never passes vacuously.
+          d.exposure.trades.length > 0 &&
+          d.exposure.trades_complete &&
+          (stub || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
     ),
     coverage_valid: ops.coverage.problems.length === 0,
   };
@@ -279,6 +286,7 @@ export const reportMarkdown = (r: Report): string => {
     `Historical lookups: ${r.ops.lookups.count}, median ≤ ${r.ops.lookups.p50_ms_at_most ?? '-'} ms, p95 ≤ ${r.ops.lookups.p95_ms_at_most ?? '-'} ms, ${r.ops.lookups.slower_than_last_bound} slower than the last bucket.`,
     '',
     'Projections are linear: credits used so far, scaled from the run\'s wall time to 30 days.',
+    'Down windows start at each boot\'s last journal line, so a quiet journal makes an outage look longer, never shorter.',
     ...q.problems.map((p) => `- Quota problem: ${p}`),
     '',
     `Coverage gaps (worker gaps and down windows): ${Object.entries(r.ops.coverage.streams).map(([k, v]) => `${k} ${v.gaps} (${v.open} open, ${v.total_s} s total, longest ${v.longest_s} s)`).join('; ') || 'none'}.`,

@@ -6,7 +6,7 @@ import { item4 } from '../src/item4.ts';
 import { makePlan } from '../src/plan.ts';
 import { checkQuota, coverageGaps, FREE_PLANS, lookupLatency, quotaReport, rejections, type BootTotals } from '../src/quota.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Ops, type RunMeta, type Sample } from '../src/report.ts';
-import { exposedTrades, freshMark, moveBps, withChainMoves } from '../src/runner.ts';
+import { exposedTrades, freshMark, moveBps, tradeIdsComplete, withChainMoves } from '../src/runner.ts';
 import { OPS_OK } from './fixtures.ts';
 
 const H = 3_600_000;
@@ -176,7 +176,7 @@ describe('report checks', () => {
 
 describe('unprotected exposure', () => {
   const e = (duration_ms: number | null, worst_move_bps: number | null, chain = true): DrillOutcome['exposure'] => ({
-    duration_ms, reconciled_ms: 100, trades: ['t1'], chain_trades: chain ? ['t1'] : [], mark_before: '1', mark_after: '1', worst_move_bps, move_source: 'marks',
+    duration_ms, reconciled_ms: 100, trades: ['t1'], trades_complete: true, chain_trades: chain ? ['t1'] : [], mark_before: '1', mark_after: '1', worst_move_bps, move_source: 'marks',
   });
   it('reports the longest window and the worst move, and fails when a drill never became exit capable', () => {
     const r = report(OPS_OK, [restart(1, e(4200, 30)), restart(2, e(9100, 12)), restart(3), drills[3]!]);
@@ -198,6 +198,23 @@ describe('unprotected exposure', () => {
     expect(report(OPS_OK, missing).checks['exposure_measured']).toBe(false);
     const stubSamples = samples.map((x) => ({ ...x, stub: true }));
     expect(buildReport(meta, stubSamples, 10, 100, checkJournal(''), missing, [], item4([], 'vps', false), OPS_OK).checks['exposure_measured']).toBe(true);
+  });
+  it('probe G: an exposed drill without trade ids fails, for the stub too', () => {
+    const noIds = { ...e(4000, 10)!, trades: [], chain_trades: [] };
+    expect(report(OPS_OK, [restart(1, noIds), restart(2), restart(3), drills[3]!]).checks['exposure_measured']).toBe(false);
+    const stubSamples = samples.map((x) => ({ ...x, stub: true }));
+    expect(buildReport(meta, stubSamples, 10, 100, checkJournal(''), [restart(1, noIds), restart(2), restart(3), drills[3]!], [], item4([], 'vps', false), OPS_OK).checks['exposure_measured']).toBe(false);
+    const partial = { ...e(4000, 10)!, trades_complete: false };
+    expect(report(OPS_OK, [restart(1, partial), restart(2), restart(3), drills[3]!]).checks['exposure_measured']).toBe(false);
+  });
+  it('trade ids are complete only with a position trade and one id per unresolved intent', () => {
+    const h = (o: Record<string, unknown>): Health => ({ ts: 1, open_position: null, unresolved_intents: { count: 0, oldest_age_s: null, trades: [] }, ...o }) as unknown as Health;
+    expect(tradeIdsComplete(h({}))).toBe(true);
+    expect(tradeIdsComplete(h({ unresolved_intents: { count: 1, oldest_age_s: 0, trades: [] } }))).toBe(false);
+    expect(tradeIdsComplete(h({ unresolved_intents: { count: 1, oldest_age_s: 0 } }))).toBe(false);
+    expect(tradeIdsComplete(h({ unresolved_intents: { count: 1, oldest_age_s: 0, trades: [''] } }))).toBe(false);
+    expect(tradeIdsComplete(h({ open_position: { trade: '' } }))).toBe(false);
+    expect(tradeIdsComplete(h({ open_position: { trade: 't1' }, unresolved_intents: { count: 1, oldest_age_s: 0, trades: ['t2'] } }))).toBe(true);
   });
   it('a stale mark is unmeasured; an entry in flight is exposed', () => {
     const h = (o: Record<string, unknown>): Health => ({ ts: 100_000, open_position: null, unresolved_intents: { count: 0, oldest_age_s: null, trades: [] }, ...o }) as unknown as Health;

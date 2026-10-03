@@ -100,6 +100,7 @@ describe('runner with the stub worker', () => {
       expect(d.exposure!.duration_ms!).toBeGreaterThanOrEqual(d.exposure!.reconciled_ms!);
       expect(d.exposure!.worst_move_bps).toBe(0);
       expect(d.exposure!.chain_trades).toEqual([...d.exposure!.trades].sort());
+      expect(d.exposure!.trades_complete).toBe(true);
     }
     expect(r.pass).toBe(false);
     expect(readFileSync(join(t.evidenceDir, 'REPORT.md'), 'utf8')).toContain('Rehearsal: counts for none of §15 items 3, 4 or G3');

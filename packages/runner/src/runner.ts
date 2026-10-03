@@ -113,7 +113,7 @@ type Pending =
   | {
       kind: 'restart'; drill: Extract<Drill, { kind: 'restart' }>; since: number; killedAt?: number; prevBoot?: string | null; midTrade?: boolean;
       /** A position was open at the kill: measure the unprotected exposure until the new boot is exit capable. */
-      open?: boolean; trades?: readonly string[]; markBefore?: string | null; reconciledAt?: number; ok?: boolean;
+      open?: boolean; trades?: readonly string[]; tradesComplete?: boolean; markBefore?: string | null; reconciledAt?: number; ok?: boolean;
     }
   | { kind: 'feed'; drill: Extract<Drill, { kind: 'feed' }>; since: number; sawDown: boolean; sawHalt: boolean; critical: boolean; boot: string | null; stayedUp: boolean; requested: boolean }
   | { kind: 'handover'; since: number; prevBoot: string | null; midTrade: boolean; plannedAt: number };
@@ -240,6 +240,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
           // An entry in flight (an intent, no position yet) is exposed too.
           p.open = h !== null && (h.open_position != null || h.unresolved_intents.count > 0);
           p.trades = h ? exposedTrades(h) : [];
+          p.tradesComplete = h !== null && tradeIdsComplete(h);
           p.markBefore = h ? freshMark(h) : null;
           p.killedAt = Date.now();
           await o.control.kill();
@@ -253,14 +254,14 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         const k = p.killedAt;
         const notes = [p.ok ? 'reconciled before any entry' : 'no successful reconcile before entry'];
         const exposure = p.open
-          ? { duration_ms: t - k, reconciled_ms: p.reconciledAt - k, trades: p.trades ?? [], chain_trades: [], mark_before: p.markBefore ?? null, mark_after: h ? freshMark(h) : null, worst_move_bps: moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const }
+          ? { duration_ms: t - k, reconciled_ms: p.reconciledAt - k, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: h ? freshMark(h) : null, worst_move_bps: moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const }
           : undefined;
         if (exposure) notes.push(`exit capable ${(exposure.duration_ms / 1000).toFixed(1)} s after the kill`);
         record({ ...base, at: k, pass: p.ok === true, recoveredMs: p.reconciledAt - k, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (p.killedAt !== undefined && t - p.killedAt > recoverMs) {
         const stage = p.reconciledAt === undefined ? 'not ready' : 'not exit capable';
-        record({ ...base, at: p.killedAt, pass: false, recoveredMs: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, ...(p.open ? { exposure: { duration_ms: null, reconciled_ms: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, trades: p.trades ?? [], chain_trades: [], mark_before: p.markBefore ?? null, mark_after: null, worst_move_bps: null, move_source: 'marks' as const } } : {}), notes: [`${stage} ${recoverMs / 1000} s after the kill`] });
+        record({ ...base, at: p.killedAt, pass: false, recoveredMs: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, ...(p.open ? { exposure: { duration_ms: null, reconciled_ms: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: null, worst_move_bps: null, move_source: 'marks' as const } } : {}), notes: [`${stage} ${recoverMs / 1000} s after the kill`] });
         pending = null;
       }
     } else if (pending?.kind === 'feed') {
@@ -434,6 +435,13 @@ export const exposedTrades = (h: Health): string[] =>
   [...new Set([...(h.open_position ? [h.open_position.trade] : []), ...(Array.isArray(h.unresolved_intents.trades) ? h.unresolved_intents.trades : [])])].filter(
     (t) => typeof t === 'string' && t !== '',
   );
+
+/** Every exposed trade has an id: the open position's, and one per unresolved intent. */
+export const tradeIdsComplete = (h: Health): boolean => {
+  const id = (t: unknown): boolean => typeof t === 'string' && t !== '';
+  const u = h.unresolved_intents;
+  return (h.open_position === null || id(h.open_position.trade)) && Array.isArray(u.trades) && u.trades.length === u.count && u.trades.every(id);
+};
 
 /** The open position's mark when it is fresh (seen at most MARK_MAX_AGE_MS before the reply); otherwise unmeasured. */
 export const freshMark = (h: Health): string | null => {
