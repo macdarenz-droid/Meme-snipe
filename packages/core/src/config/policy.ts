@@ -9,7 +9,7 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
 /** Bump when the shape of Policy changes. Values are versioned by the hash of the whole policy. */
-export const POLICY_SCHEMA_VERSION = 1;
+export const POLICY_SCHEMA_VERSION = 2;
 
 /** One rung of the exit escalation ladder (section 9). */
 export interface LadderStep {
@@ -131,8 +131,13 @@ export interface Policy {
     readonly flatMinRBps: number;
     readonly tMaxMs: number;
     readonly partialMinShareBps: number;
-    /** Partial taken at this multiple of R (10,000 = 1R). */
+    /** Partial taken at this multiple of R (10,000 = 1R). The k-th partial needs k times this. */
     readonly partialAtRBps: number;
+    /** Or at this gain on the cost basis (10,000 = +100%), whichever comes first; the k-th partial needs k times it. */
+    readonly partialAtGainBps: number;
+    /** ATR for the price stop cap and the trail: this many bars of this length (ATR(14) on 1-minute bars). */
+    readonly atrPeriod: number;
+    readonly atrBarMs: number;
     /** ATR multiple for the trailing stop, in tenths (30 = 3.0). */
     readonly trailAtrTenths: number;
     readonly maxExitTxAtMinNotional: number;
@@ -144,6 +149,12 @@ export interface Policy {
       /** Ceiling on the priority fee of any single attempt. */
       readonly maxFeePerAttempt: Lamports;
     };
+    /**
+     * A blocked exit is tried again, at the last rung with a fresh quote, no sooner than this after the last block and
+     * at most this many times per position. Bounded so a dead pool cannot drain the fee reserve.
+     */
+    readonly blockedRetryMs: number;
+    readonly blockedRetryAttempts: number;
   };
 }
 
@@ -206,6 +217,9 @@ const TRIAL_VALUES: Policy = {
     tMaxMs: 120 * MINUTE,
     partialMinShareBps: 5000,
     partialAtRBps: 15_000,
+    partialAtGainBps: 10_000,
+    atrPeriod: 14,
+    atrBarMs: MINUTE,
     trailAtrTenths: 30,
     maxExitTxAtMinNotional: 2,
     maxExitTxAboveDoubleMin: 3,
@@ -219,6 +233,8 @@ const TRIAL_VALUES: Policy = {
       maxAttempts: 5,
       maxFeePerAttempt: sol('0.0005'),
     },
+    blockedRetryMs: MINUTE,
+    blockedRetryAttempts: 5,
   },
 };
 
