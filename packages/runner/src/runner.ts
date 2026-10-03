@@ -131,10 +131,12 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   const saveDrills = (): void => writeFileSync(P.drills, JSON.stringify(outcomes, null, 2));
 
   // Restored state is data from a previous job (an artifact): it cannot choose the label or the commit.
+  // Neither refusal builds a report: the restored run.json is untrusted, and a finished run keeps its own report.
   if (resumed) {
+    if (existsSync(join(ev, 'report.json'))) return finish('refused to resume: the run already has its final report', false);
     const m = readJson<RunMeta | null>(P.meta, null);
     if (!m || m.label !== o.identity.label || m.commit !== o.identity.commit) {
-      return finish(`refused to resume: restored run is ${m?.label ?? '?'} at ${m?.commit ?? '?'}, this runner is ${o.identity.label} at ${o.identity.commit}`);
+      return finish(`refused to resume: restored run is ${m?.label ?? '?'} at ${m?.commit ?? '?'}, this runner is ${o.identity.label} at ${o.identity.commit}`, false);
     }
   }
 
@@ -265,7 +267,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     log(`Drill ${d.id}: ${d.pass ? 'pass' : 'FAIL'} (${d.notes.join('; ')}).`);
   }
 
-  async function finish(aborted: string | null): Promise<SegmentResult> {
+  async function finish(aborted: string | null, trusted = true): Promise<SegmentResult> {
     const m = readJson<RunMeta | null>(P.meta, null);
     const runDone = aborted === null && m !== null && Date.now() >= m.startedAt + m.targetMs;
     const seg = segments[segments.length - 1]!;
@@ -280,6 +282,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       log(`Run aborted: ${aborted}`);
       writeFileSync(join(ev, 'ABORTED'), `${aborted}\n`);
     }
+    if (!trusted) return { done: true, aborted, report: null };
     collectRecorded();
     let report: Report | null = null;
     if (m && (runDone || aborted)) {

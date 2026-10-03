@@ -122,8 +122,26 @@ describe('runner with the stub worker', () => {
       identity: { label: 'rehearsal', commit: 'c0ffee' }, segmentEnd: Number.POSITIVE_INFINITY,
     });
     expect(res.aborted).toMatch(/^refused to resume/);
+    expect(res.report).toBeNull();
     expect(control.starts).toBe(0);
     expect(existsSync(join(t.stateDir, 'journal.jsonl'))).toBe(false);
+    expect(existsSync(join(t.evidenceDir, 'report.json'))).toBe(false);
+    expect(existsSync(join(t.evidenceDir, 'REPORT.md'))).toBe(false);
+  }, 30_000);
+
+  it('refuses to resume a run that already has its final report, and leaves that report alone', async () => {
+    const t = await setup();
+    mkdirSync(t.evidenceDir, { recursive: true });
+    writeFileSync(join(t.evidenceDir, 'run.json'), JSON.stringify({ runId: 'run', label: 'rehearsal', commit: 'c0ffee', startedAt: Date.now(), targetMs: 60_000, entry: STUB_ENTRY, plan: [] }));
+    writeFileSync(join(t.evidenceDir, 'report.json'), '{"final":true}');
+    const control = t.control();
+    const res = await runSegment({
+      control, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy', sampleMs: 100, log: quiet,
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, segmentEnd: Number.POSITIVE_INFINITY,
+    });
+    expect(res.aborted).toBe('refused to resume: the run already has its final report');
+    expect(control.starts).toBe(0);
+    expect(readFileSync(join(t.evidenceDir, 'report.json'), 'utf8')).toBe('{"final":true}');
   }, 30_000);
 });
 
