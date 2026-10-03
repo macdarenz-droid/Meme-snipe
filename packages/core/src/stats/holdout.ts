@@ -5,7 +5,8 @@
 // - The backtester runs the holdout into a sealed ledger file; the registry keeps only its hash and entry counts.
 //   The size check reads the counts alone.
 // - The seal opens once, and only when n ≥ max(300, n_power). Opening early, a hash mismatch, a second open, a re-run
-//   with a different configuration or any inspection outside the scoring stage burns the holdout. Scoring burns it too.
+//   with a different configuration, a run that fails or is interrupted ('run-failed') or any inspection outside the
+//   scoring stage burns the holdout. Scoring burns it too.
 // - New proof needs a new, later window that has never been run.
 
 /**
@@ -24,7 +25,7 @@ export interface HoldoutCounts {
 export const HOLDOUT_COUNT_FIELDS = ['candidates', 'entries', 'entryDays'] as const;
 
 export type SealState = 'registered' | 'sealed' | 'opened';
-export type BurnReason = 'scored' | 'early-open' | 'hash-mismatch' | 'count-mismatch' | 'second-open' | 'reconfigured' | 'inspected';
+export type BurnReason = 'scored' | 'early-open' | 'hash-mismatch' | 'count-mismatch' | 'second-open' | 'reconfigured' | 'inspected' | 'run-failed';
 
 export interface HoldoutEntry {
   readonly holdoutId: string;
