@@ -18,7 +18,7 @@
 
 import { canonical } from '../../engine/log.ts';
 import {
-  applyBookEvent, emptyBook, isIllegal, isTerminal, type Book, type BookEvent, type Effect, type IntentState, type PositionState,
+  applyBookEvent, emptyBook, isIllegal, isTerminal, type Book, type BookConfig, type BookEvent, type Effect, type IntentState, type PositionState,
 } from '../../lifecycle/index.ts';
 import { openLedgerReader, type IntentRecord, type LedgerPurpose, type LedgerReader, type StoredPositionEvent } from '../ledger.ts';
 import { LedgerError } from '../errors.ts';
@@ -146,6 +146,54 @@ class Failed extends Error {
     this.failure = failure;
   }
 }
+
+/**
+ * The book events a ledger stores, in order, and the book they make: what a restarting worker feeds back to its engine
+ * (WORKER-1). Read the way the replay check reads them: a `created` row stands for `propose_entry` (entry) or for the
+ * `trigger_exit` stored on its position's row (exit); every other event is the first row's detail; further rows of one
+ * event are skipped by the reducer's own row count. Throws a LedgerError on a row it cannot read or an event the reducer
+ * refuses (run the replay check for the full diagnosis).
+ */
+export const storedBookEvents = (src: Pick<LedgerReader, 'allIntents' | 'intentEvents' | 'positionEvents'>, config: BookConfig): { readonly events: BookEvent[]; readonly book: Book } => {
+  const intents = new Map(src.allIntents().map((r) => [r.intent.id as string, r]));
+  // The trigger that created each exit intent: a later trigger_exit naming the same id (a merge carries the next id)
+  // is always the creating one, so the last one per id wins.
+  const triggers = new Map<string, BookEvent>();
+  for (const p of src.positionEvents()) {
+    if (p.detail === null) continue;
+    const e = decodeBookDetail(p.detail);
+    if (e.type === 'trigger_exit') triggers.set(e.intentId, e);
+  }
+  const rows = src.intentEvents();
+  const events: BookEvent[] = [];
+  let book = emptyBook(config);
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i]!;
+    let event: BookEvent;
+    if (row.event === 'created' && row.detail === null) {
+      const rec = intents.get(row.intentId);
+      if (rec === undefined) throw new LedgerError(`ledger: intent ${row.intentId} has events but no record`);
+      if (rec.intent.purpose === 'entry') event = { type: 'propose_entry', intent: rec.intent };
+      else {
+        const t = triggers.get(row.intentId);
+        if (t === undefined) throw new LedgerError(`ledger: exit intent ${row.intentId} has no trigger_exit row`);
+        event = t;
+      }
+    } else if (row.detail !== null) {
+      event = decodeBookDetail(row.detail);
+    } else {
+      throw new LedgerError(`ledger: row ${row.seq} does not start a stored book event`);
+    }
+    const step = applyBookEvent(book, event);
+    if (isIllegal(step)) throw new LedgerError(`ledger: stored ${event.type} is refused by the reducer: ${step.reason}`);
+    const written = stepRows(book, event, step.effects);
+    i += Math.max(1, written?.intents.length ?? 1);
+    book = step.state;
+    events.push(event);
+  }
+  return { events, book };
+};
 
 /** Replays a ledger already open for reading. Never writes; the caller owns the connection. */
 export const replayLedger = (src: ReplaySource, options: ReplayOptions = {}): ReplayReport => {

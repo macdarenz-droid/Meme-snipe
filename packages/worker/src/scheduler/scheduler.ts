@@ -68,6 +68,8 @@ export interface SchedulerStatus {
   readonly queued: readonly [number, number, number, number];
   readonly granted: readonly [number, number, number, number];
   readonly shed: readonly [number, number, number, number];
+  /** Credits spent since this process started, by class (stream metering counts as P3: bulk discovery traffic). */
+  readonly creditsByClass: readonly [number, number, number, number];
 }
 
 interface Waiter {
@@ -104,6 +106,7 @@ export class Scheduler {
   readonly #queues: Waiter[][] = [[], [], [], []];
   readonly #granted = [0, 0, 0, 0];
   readonly #shed = [0, 0, 0, 0];
+  readonly #byClass = [0, 0, 0, 0];
   #floors: readonly [0, number, number, number];
   #used: number;
   #wake: TimerHandle | null = null;
@@ -181,7 +184,7 @@ export class Scheduler {
 
   /** Records stream usage (WebSocket bytes, Parsed Streams events) against the budget. */
   meter(credits: number): void {
-    this.#spend(credits);
+    this.#spend(credits, 3);
     this.#pump();
   }
 
@@ -217,6 +220,7 @@ export class Scheduler {
       queued: [q[0]!, q[1]!, q[2]!, q[3]!],
       granted: [this.#granted[0]!, this.#granted[1]!, this.#granted[2]!, this.#granted[3]!],
       shed: [this.#shed[0]!, this.#shed[1]!, this.#shed[2]!, this.#shed[3]!],
+      creditsByClass: [this.#byClass[0]!, this.#byClass[1]!, this.#byClass[2]!, this.#byClass[3]!],
     };
   }
 
@@ -225,13 +229,14 @@ export class Scheduler {
     this.#window.take(now);
     for (const cap of this.#caps) if (capMatches(cap.spec, p, lane)) cap.window.take(now);
     this.#granted[p]!++;
-    this.#spend(credits);
+    this.#spend(credits, p);
   }
 
-  #spend(credits: number): void {
+  #spend(credits: number, p: Priority): void {
     if (!(credits >= 0) || !Number.isFinite(credits)) throw new RangeError(`${this.spec.provider}: credits must be a finite number >= 0`);
     if (credits === 0) return;
     this.#used += credits;
+    this.#byClass[p]! += credits;
     this.#onSpend?.(this.#used);
   }
 
