@@ -230,6 +230,12 @@ describe('stress in the fill model (BT-1c item 4)', () => {
     expect(1 / (1 - stay)).toBeGreaterThan(2);
   });
 
+  test('the base network state is congested at least 8% of the time with no market activity (the earlier burst share)', () => {
+    const n = FILL_CONFIG.scenarios.base.congestion.network;
+    const enter = Number(n.enterPpm) / 1e6;
+    expect(enter / (enter + 1 - Number(n.stayPpm) / 1e6)).toBeGreaterThanOrEqual(0.08);
+  });
+
   test('market activity raises the entry probability up to a cap, never below the base; provider failures sit on top', () => {
     const n = c.congestion.network;
     expect(networkEnterPpm(c, 0n)).toBe(n.enterPpm);

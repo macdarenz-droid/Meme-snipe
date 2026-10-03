@@ -101,8 +101,8 @@ export interface FillScenario {
   /**
    * The final sell of a token account closes it in the same transaction (atomic sell-and-close). Share of such
    * transactions whose close succeeds, ppm; a failed close fails the whole transaction (the sell rolls back, the fee is
-   * charged) and the account falls back to sell-only, so its rent stays locked. An assumption:
-   * TEST-2's simulations test mechanics, not landing, so they are not a close probability.
+   * charged) and the account falls back to sell-only, so its rent stays locked. An assumption, with no refinement
+   * source yet.
    */
   readonly closeSuccessPpm: bigint;
   /** Share of token accounts left with dust or an unsolicited token, ppm: they cannot be closed, the rent stays locked. */
@@ -217,8 +217,11 @@ export const drawAttempt = (rng: Rng, s: FillScenario, venue: Venue, congested =
   return { landingSlots, fate: u - land < dropped ? 'dropped' : 'fails' };
 };
 
-/** One account-close draw (always taken for a landed final sell, so later draws never depend on the outcome). */
-export const drawCloseSucceeds = (rng: Rng, s: FillScenario): boolean => ppmDraw(rng) < s.closeSuccessPpm;
+/**
+ * Whether an attempt's account close succeeds, from a seed per attempt: it draws nothing from the shared stream, so
+ * scenarios keep common random numbers for every other draw.
+ */
+export const closeSucceeds = (seed: string, s: FillScenario): boolean => ppmDraw(createRng(`${seed}:close`)) < s.closeSuccessPpm;
 
 /** Whether a new token account ends up with dust or an unsolicited token, from a seed per account. */
 export const accountGetsDust = (seed: string, s: FillScenario): boolean => ppmDraw(createRng(`${seed}:dust`)) < s.dustPpm;

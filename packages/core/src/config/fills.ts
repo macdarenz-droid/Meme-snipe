@@ -13,7 +13,7 @@
 // |   activity term, provider failures)|                                                | assumption  | landing: these stay as set through it   |
 // | dropPpm                            | stress margin                                  | assumption  |                                         |
 // | exitRetryHaircutPpm                | proxy for sellers ahead of us                  | assumption  | exit fills of the canary                |
-// | closeSuccessPpm, dustPpm           | none measured                                  | assumption  | observed-chain closes, then the canary  |
+// | closeSuccessPpm, dustPpm           | none measured                                  | assumption  | no refinement source yet                |
 // | delays.measured                    | today's base values (2 slots + 200 ms)         | unmeasured  | the worker recorder on the VPS          |
 // | delays.adverse, delays.stress      | ruling values (2+6 slots + 1 s, 4+12 + 2 s)    | stress      | kept as stress budgets                  |
 // | slippagePpm, takeProfit, rent flag | §11                                            | §11 rule    |                                         |
@@ -65,7 +65,7 @@ const VALUES: FillConfig = {
     base: {
       name: 'base', landPpm: LAND, dropPpm: 300_000n,
       landingTail: { ppm: 30_000n, slots: [15, 30, 60] },
-      congestion: { windowSlots: WINDOW, network: { enterPpm: 30_000n, activityEnterPpmPerSol: 500n, maxEnterPpm: 200_000n, stayPpm: 600_000n }, providerFailPpm: 5_000n, landFactorPpm: 600_000n, extraLandingSlots: 8 },
+      congestion: { windowSlots: WINDOW, network: { enterPpm: 40_000n, activityEnterPpmPerSol: 500n, maxEnterPpm: 200_000n, stayPpm: 600_000n }, providerFailPpm: 5_000n, landFactorPpm: 600_000n, extraLandingSlots: 8 },
       exitRetryHaircutPpm: 25_000n,
       delay: 'measured',
       discoverySlots: [2, 3, 4, 5, 8], landingSlots: [1, 2, 2, 3, 4],

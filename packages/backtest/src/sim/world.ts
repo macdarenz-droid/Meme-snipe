@@ -4,7 +4,7 @@
 // swaps see its impact (market.ts). Results come back to the engine only as feed events, never as return values.
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { type EffectRunner, type Moment, OFF_CHAIN, type Rng } from '../../../core/src/engine/index.ts';
-import { accountGetsDust, attemptFee, drawAttempt, drawCloseSucceeds, NetworkState, providerDown, windowOf, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
+import { accountGetsDust, attemptFee, drawAttempt, closeSucceeds, NetworkState, providerDown, windowOf, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import type { LadderStep } from '../../../core/src/config/index.ts';
 import type { RawAmount, Lamports } from '../../../core/src/units/index.ts';
@@ -230,7 +230,7 @@ export class World implements EffectRunner {
     // A sell of the whole balance closes the account in the same transaction, unless the account is sell-only. Tokens
     // only: venue accounts and the SOL proceeds are never part of the refund.
     const closes = rec.purpose === 'exit' && x.paid === held && !this.#sellOnly.has(rec.mint);
-    if (closes && !drawCloseSucceeds(this.#d.rng, scenario)) {
+    if (closes && !closeSucceeds(`${this.#d.congestionSeed}:${rec.signature}`, scenario)) {
       // The close fails the transaction: the sell rolls back and the fee is still paid. Later sells are sell-only.
       this.#sellOnly.add(rec.mint);
       return fail('close failed');

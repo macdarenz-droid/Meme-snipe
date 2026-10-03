@@ -499,6 +499,14 @@ describe('rent follows the account-close outcome (BT-1c rent ruling)', () => {
     for (const t of trades) expect(t.rentReturned).toBe(0n);
   });
 
+  test('the close draw has its own seed, so scenarios keep common random numbers for every other draw', () => {
+    const fate = (f: typeof FILL_CONFIG) => runBacktest(opts({ fills: f, seed: 'crn' })).attempts.map((a) => `${a.signature}:${a.outcome}:${a.landedSlot}`);
+    // Closes always succeed; with dust no account closes, so no close is drawn. Nothing else may change.
+    const a = fate(withClose(1_000_000n, 0n));
+    expect(a.length).toBeGreaterThan(3);
+    expect(fate(withClose(1_000_000n, 1_000_000n))).toEqual(a);
+  });
+
   test('the rent comes back once, only with a landed sell-and-close; dust in the account keeps it locked', () => {
     const f = withClose(1_000_000n);
     const r = runBacktest(opts({ fills: f }));
