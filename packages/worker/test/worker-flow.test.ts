@@ -20,7 +20,7 @@ import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
 import type { SeedRpc } from '../src/seed/rpc.ts';
 import type { SimLeg } from '../src/run/paper-world.ts';
-import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, dueTimers, makeWorker, okSimulation, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, dueTimers, makeWorker, okSimulation, passingMarket, slotAt, tempState, until, virtualTimers } from './worker-harness.ts';
 
 const journalText = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
 const lines = (dir: string) => journalText(dir).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -92,10 +92,13 @@ describe('a paper trade end to end', () => {
 
   it('an attempt that lands failed is abandoned and its reservation released', async () => {
     const h = makeWorker({ scenario: { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n } } });
-    await entered(h);
+    const m = await entered(h);
     expect(positions(h).every((p) => p.quantity === 0n && p.status !== 'open')).toBe(true);
-    const abandoned = kinds(h.stateDir, 'decision').filter((d) => d['action'] === 'abandon');
-    expect(abandoned.length).toBeGreaterThanOrEqual(1);
+    const abandoned = () => kinds(h.stateDir, 'decision').filter((d) => d['action'] === 'abandon');
+    expect(await until(m, 60_000, () => abandoned().length >= 1, () => {
+      m.slot();
+      m.pool();
+    })).toBe(true);
     await h.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
   });
@@ -492,7 +495,13 @@ describe('a killed worker writes no state file afterwards', () => {
     const h = makeWorker({ simulate: held });
     await h.worker.reconcile();
     const m = await passingMarket(h);
-    await m.run(4_000, 100, () => m.pool());
+    // Stepped by hand: `run` awaits the paper simulations, and this one is held open on purpose.
+    for (let k = 0; k < 40; k++) {
+      m.pool();
+      h.worker.step();
+      h.timers.set(h.timers.now() + 100);
+      await new Promise<void>((r) => setImmediate(r));
+    }
     expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('1\n');
     await h.worker.kill();
     // The host unit's ExecStartPre settles the intent and writes 0 (here: what that next process would write).

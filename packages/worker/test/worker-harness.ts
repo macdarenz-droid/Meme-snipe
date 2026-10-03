@@ -22,18 +22,26 @@ import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 
 /** Virtual time: a wait moves the clock by its length and resolves on the next turn of the event loop. */
-export const virtualTimers = (start: number): Timers & { set(ms: number): void } => {
+/** The timers a test drives: it moves the clock, and may say how many callbacks are queued (see `virtualTimers`). */
+export type TestTimers = Timers & { set(ms: number): void; waiting?: () => number };
+
+export const virtualTimers = (start: number): TestTimers & { waiting(): number } => {
   let now = start;
   let next = 1;
+  let waiting = 0;
   const cancelled = new Set<number>();
   return {
     now: () => now,
     set: (ms) => {
       if (ms > now) now = ms;
     },
+    /** How many callbacks are queued and not run yet: a `run` waits for them, so its timeline never depends on load. */
+    waiting: () => waiting,
     setTimeout: (fn, ms) => {
       const id = next++;
+      waiting++;
       setImmediate(() => {
+        waiting--;
         if (cancelled.delete(id)) return;
         now += Math.max(0, ms);
         fn();
@@ -48,7 +56,7 @@ export const virtualTimers = (start: number): Timers & { set(ms: number): void }
  * Timers that fire only once the virtual clock reaches them (the test moves it with `set`): for a wait, such as the
  * seed's cap, that must not elapse at its first turn as `virtualTimers` lets it.
  */
-export const dueTimers = (start: number): Timers & { set(ms: number): void } => {
+export const dueTimers = (start: number): TestTimers => {
   let now = start;
   let next = 1;
   const due = new Map<number, { readonly at: number; readonly fn: () => void }>();
@@ -78,7 +86,7 @@ export const dueTimers = (start: number): Timers & { set(ms: number): void } => 
  * A clock that moves 1 ms every `everyNth` reads: the host's own, where the restored book's frames and the start facts
  * can fall on either side of a millisecond and ties are broken by id. The timers are otherwise `virtualTimers`'.
  */
-export const tickingTimers = (start: number, everyNth: number): Timers & { set(ms: number): void } => {
+export const tickingTimers = (start: number, everyNth: number): TestTimers => {
   const base = virtualTimers(start);
   let reads = 0;
   return {
@@ -124,7 +132,7 @@ export interface Harness {
   /** The scripted sources, once start() built them; and the start order (seed hook, sources built, each start). */
   readonly sources: ReturnType<typeof scriptedSource>[];
   readonly order: string[];
-  readonly timers: ReturnType<typeof virtualTimers>;
+  readonly timers: TestTimers;
   readonly legs: SimLeg[];
   readonly logs: string[];
   readonly stateDir: string;
@@ -134,7 +142,7 @@ export interface Harness {
 /** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord> } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord> } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -274,6 +282,17 @@ export class Market {
     this.#h.worker.step();
   }
 }
+
+/**
+ * Runs market time in slices until `ready` holds, up to `maxMs`; returns whether it held. Paper effects land through
+ * timers, so a busy machine moves when one lands inside the virtual timeline, never whether it lands: an assertion on
+ * an effect waits for it instead of assuming a fixed window.
+ */
+export const until = async (m: Market, maxMs: number, ready: () => boolean, each?: () => void): Promise<boolean> => {
+  const end = m.now + maxMs;
+  while (!ready() && m.now < end) await m.run(400, 400, each);
+  return ready();
+};
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
 export const passingMarket = async (h: Harness, o: { readonly fees?: boolean } = {}): Promise<Market> => {
