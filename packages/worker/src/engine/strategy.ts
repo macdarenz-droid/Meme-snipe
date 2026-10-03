@@ -83,6 +83,9 @@ export interface RestoreFact {
 export interface StrategyConfig {
   readonly version: string;
   readonly universe: 'U2';
+  /** `random`: S0's entry moment, drawn per candidate from `entrySalt` and the mint (see `strategyConfig`). */
+  readonly entryTiming: 'gates' | 'random';
+  readonly entrySalt: string;
   readonly windowFromMs: number;
   readonly windowToMs: number;
   readonly entryMinOutBelowBps: number;
@@ -142,6 +145,15 @@ interface EntrySeed {
   readonly stopPrice: bigint;
   readonly entryReserve: bigint;
 }
+
+/**
+ * S0's entry moment for a candidate: uniform in [from, to), from the first 48 bits of sha256(salt, mint). Independent
+ * of arrival order, so a replay draws the same moments.
+ */
+export const s0EntryAt = (salt: string, mint: string, from: number, to: number): number => {
+  const u = Number.parseInt(createHash('sha256').update(`s0|${salt}|${mint}`).digest('hex').slice(0, 12), 16) / 2 ** 48;
+  return from + Math.floor(u * (to - from));
+};
 
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
@@ -543,6 +555,7 @@ export class LiveStrategy implements Strategy {
         continue;
       }
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs)) continue;
+      if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
       if (Object.values(ctx.book.intents).some((i) => i.intent.mint === cand.mint && !isTerminal(i))) continue;
       cand.lastEvalMs = now;

@@ -21,6 +21,12 @@ export interface WorkerConfig {
   readonly wallet: string | null;
   /** Funded public wallets that stand in for the unfunded bot wallet in simulations (TEST-2). */
   readonly standIns: readonly string[];
+  /**
+   * What decides entries. `none`: the gates and risk only; with no proven edge risk refuses every entry. `S0`: the
+   * random-entry control (same gates, risk and exits, entry moment drawn in the window) for the non-qualifying
+   * shakedown (supervisor ruling 2026-10-04). A qualifying run takes a strategy BT-2 registers.
+   */
+  readonly strategy: { readonly name: 'none' | 'S0'; readonly paperEdgePpm: bigint | null; readonly qualifying: false };
 }
 
 export type Parsed = { readonly ok: true; readonly config: WorkerConfig } | { readonly ok: false; readonly code: number; readonly message: string };
@@ -31,6 +37,9 @@ export const parseConfig = (env: Readonly<Record<string, string | undefined>>, r
   const refuse = (message: string): Parsed => ({ ok: false, code: EXIT.config, message });
   const stateDir = env['STATE_DIRECTORY'] ?? env['ZEROED_STATE_DIR'];
   if (stateDir === undefined || stateDir === '') return refuse('no state directory (STATE_DIRECTORY or ZEROED_STATE_DIR)');
+  // A paper-only edge lets risk size S0's shakedown entries; it never reaches any other mode (supervisor ruling).
+  const edgeText = env['ZEROED_PAPER_EDGE_PPM'];
+  if (edgeText !== undefined && env['ZEROED_MODE'] !== 'paper') return refuse('refused: ZEROED_PAPER_EDGE_PPM is a paper-only setting');
   // Unset is refused too: the mode is always stated, never assumed.
   if (env['ZEROED_MODE'] !== 'paper') return refuse('refused: ZEROED_MODE must be paper');
   const addr = env['ZEROED_HEALTH_ADDR'] ?? DEFAULT_HEALTH_ADDR;
@@ -52,6 +61,14 @@ export const parseConfig = (env: Readonly<Record<string, string | undefined>>, r
   if (wallet !== null && !ADDRESS.test(wallet)) return refuse('refused: ZEROED_WALLET is not an address');
   const standIns = (env['ZEROED_STANDINS'] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
   if (standIns.some((s) => !ADDRESS.test(s))) return refuse('refused: ZEROED_STANDINS holds something that is not an address');
+  const name = env['ZEROED_STRATEGY'] ?? 'none';
+  if (name !== 'none' && name !== 'S0') return refuse('refused: ZEROED_STRATEGY must be none or S0 (no strategy is registered yet)');
+  let paperEdgePpm: bigint | null = null;
+  if (edgeText !== undefined) {
+    if (name !== 'S0') return refuse('refused: ZEROED_PAPER_EDGE_PPM is only for the S0 shakedown');
+    if (!/^[1-9][0-9]{0,6}$/.test(edgeText) || BigInt(edgeText) > 1_000_000n) return refuse('refused: ZEROED_PAPER_EDGE_PPM must be a whole number from 1 to 1000000');
+    paperEdgePpm = BigInt(edgeText);
+  }
   const watchdog = env['WATCHDOG_URL'] ?? '';
   if (watchdog !== '' && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(watchdog)) return refuse('refused: WATCHDOG_URL must be an https URL');
   return {
@@ -64,6 +81,7 @@ export const parseConfig = (env: Readonly<Record<string, string | undefined>>, r
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
       heartbeatMs: beat, wallet, standIns,
+      strategy: { name, paperEdgePpm, qualifying: false },
     },
   };
 };

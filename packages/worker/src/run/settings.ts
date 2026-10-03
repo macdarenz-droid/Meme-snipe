@@ -9,14 +9,24 @@ import type { StrategyConfig } from '../engine/strategy.ts';
 /** The paper fill scenario: conservative (the safe side) until the dry run measures our own latency (§11). */
 export const PAPER_SCENARIO = 'conservative';
 
-export const strategyConfig = (policy: Policy, fills: FillConfig, research: ResearchConfig, edgePpm: bigint = 0n): StrategyConfig => {
+/**
+ * `entry.timing`: `gates` enters once the gates and risk pass in the window; `random` is S0, the random-entry control
+ * (docs/ARCHITECTURE.md §3.2): each candidate's entry moment is drawn in its window from a hash of `entry.salt` and the
+ * mint (fixed and journaled before any entry), and the same gates, risk and exits then apply from that moment.
+ */
+export const strategyConfig = (
+  policy: Policy, fills: FillConfig, research: ResearchConfig, edgePpm: bigint = 0n,
+  entry: { readonly timing: 'gates' | 'random'; readonly salt: string } = { timing: 'gates', salt: '' },
+): StrategyConfig => {
   const net = fills.network;
   const s: FillScenario = fills.scenarios[PAPER_SCENARIO];
   const fail = PPM - s.landPpm.pumpswap;
   const steps = policy.exits.ladder.steps;
   return {
-    version: `paper-u2-0.${research.version}.${fills.version}`,
+    version: `${entry.timing === 'random' ? 's0' : 'paper'}-u2-0.${research.version}.${fills.version}`,
     universe: 'U2',
+    entryTiming: entry.timing,
+    entrySalt: entry.salt,
     windowFromMs: research.s0.u2WindowFromMs,
     windowToMs: research.s0.u2WindowToMs,
     entryMinOutBelowBps: research.s0.entryMinOutBelowBps,

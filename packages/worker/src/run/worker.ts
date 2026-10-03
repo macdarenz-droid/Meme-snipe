@@ -187,6 +187,7 @@ export class Worker {
     this.#journal.write('start', {
       git_sha: c.gitSha, run_id: c.runId, label: c.runLabel, recorder: c.recorder, simulation: c.simulate, mode: c.mode,
       policy_version: d.session.versionHash, strategy: d.strategy.version, seed, pid: process.pid,
+      entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
 

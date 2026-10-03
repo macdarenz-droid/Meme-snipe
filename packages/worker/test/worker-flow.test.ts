@@ -7,14 +7,14 @@ import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
-import { HALT_KEY } from '../src/engine/strategy.ts';
+import { HALT_KEY, s0EntryAt } from '../src/engine/strategy.ts';
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { exitsFile } from '../src/run/state.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
-import { LANDS, MINT, Market, SOL_PRICE, T, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { LANDS, MIGRATED_AT, MINT, Market, SOL_PRICE, T, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const journalText = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
 const lines = (dir: string) => journalText(dir).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -92,6 +92,33 @@ describe('a paper trade end to end', () => {
     expect(abandoned.length).toBeGreaterThanOrEqual(1);
     await h.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+});
+
+describe('S0, the random-entry control (shakedown mode, supervisor ruling 2026-10-04)', () => {
+  // The passing market's candidate migrated 90 min before T; U2's window is 60 to 240 min after, and it enters at T.
+  const from = MIGRATED_AT + 60 * 60_000;
+  const to = MIGRATED_AT + 240 * 60_000;
+  const saltWhere = (ok: (at: number) => boolean) => {
+    for (let k = 0; ; k++) if (ok(s0EntryAt(`salt-${k}`, MINT, from, to))) return `salt-${k}`;
+  };
+
+  it('enters only from its drawn moment, through the same gates and risk', async () => {
+    const early = makeWorker({ entry: { timing: 'random', salt: saltWhere((at) => at < T - 60_000) } });
+    await entered(early);
+    expect(positions(early).some((p) => String(p.mint) === String(MINT))).toBe(true);
+    await early.worker.stop();
+    const late = makeWorker({ entry: { timing: 'random', salt: saltWhere((at) => at > T + 10 * 60_000) } });
+    await entered(late);
+    expect(positions(late)).toEqual([]);
+    await late.worker.stop();
+  });
+
+  it('draws the same moment for the same salt and mint, in any order, inside the window', () => {
+    const a = s0EntryAt('run-1', MINT, from, to);
+    expect(s0EntryAt('run-1', MINT, from, to)).toBe(a);
+    expect(a >= from && a < to).toBe(true);
+    expect(s0EntryAt('run-2', MINT, from, to)).not.toBe(a);
   });
 });
 

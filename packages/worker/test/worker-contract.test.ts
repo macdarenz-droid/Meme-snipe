@@ -74,6 +74,26 @@ describe('config and exit codes (§12.4)', () => {
   });
 });
 
+describe('S0 shakedown settings (supervisor ruling 2026-10-04)', () => {
+  const base = { ZEROED_STATE_DIR: '/tmp/x', ZEROED_MODE: 'paper' };
+  const refused = (env: Record<string, string>) => {
+    const p = parseConfig(env, () => null);
+    return p.ok ? null : p.message;
+  };
+  it('the paper-only edge is refused in any other mode, without S0, and out of range', () => {
+    expect(refused({ ...base, ZEROED_MODE: 'live', ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' })).toBe('refused: ZEROED_PAPER_EDGE_PPM is a paper-only setting');
+    expect(refused({ ...base, ZEROED_PAPER_EDGE_PPM: '250000' })).toBe('refused: ZEROED_PAPER_EDGE_PPM is only for the S0 shakedown');
+    for (const v of ['0', '-5', '1.5', '1000001', 'x']) expect(refused({ ...base, ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: v }), v).toMatch(/whole number from 1 to 1000000/);
+    expect(refused({ ...base, ZEROED_STRATEGY: 'S1' })).toMatch(/none or S0/);
+  });
+  it('S0 is selectable and always non-qualifying; unset is none with no edge', () => {
+    const p = parseConfig({ ...base, ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' }, () => null);
+    expect(p.ok && p.config.strategy).toEqual({ name: 'S0', paperEdgePpm: 250_000n, qualifying: false });
+    const q = parseConfig(base, () => null);
+    expect(q.ok && q.config.strategy).toEqual({ name: 'none', paperEdgePpm: null, qualifying: false });
+  });
+});
+
 describe('journal (§12.4)', () => {
   it('continues seq across boots and cuts a torn last line with a repair flag', () => {
     const dir = tempState();

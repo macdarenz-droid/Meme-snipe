@@ -56,7 +56,7 @@ process.on('unhandledRejection', fatal);
 
 try {
   worker = new Worker({
-    config, session, rugs: RUG_CONFIG, strategy: strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG),
+    config, session, rugs: RUG_CONFIG, strategy: strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG, config.strategy.paperEdgePpm ?? 0n, config.strategy.name === 'S0' ? { timing: 'random', salt: config.runId ?? 'S0' } : { timing: 'gates', salt: '' }),
     scenario: FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, timers,
     sources: (ctx) => providers.feeds(ctx),
     simulate,
