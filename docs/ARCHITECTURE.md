@@ -242,7 +242,7 @@ Limits are written as a fraction of the bankroll B with a dollar value for the t
 | R7 | Daily loss trigger | Entry allowed only while `L_day + C < 0.075·B` (L_day = today's realized + marked loss); otherwise entries pause until midnight Melbourne time; exits keep running. Worst case for the day = trigger + one position's principal and costs | −$1.50 |
 | R8 | Consecutive losses | 2 → 2 h cooldown; 3 → paused for the day; 5 in any 20 → paused until reviewed | — |
 | R9 | Weekly loss trigger | 20% of week-start equity → paused for the week, review required. The week starts Monday 00:00 Melbourne time | −$4 |
-| R10 | Kill switch | E ≤ 0.7·HWM → entries disabled; only the owner re-arms, after a written review | ≤ $14 |
+| R10 | Kill switch | E ≤ 0.7·HWM on the trading ledger, or economic NAV ≤ 0.7 of its per-unit high-water mark (SOL at the fresh price plus positions at executable marks) → entries disabled; only the owner re-arms, after a written review | ≤ $14 |
 | R11 | Entries | 3 live entries per day; 1 per mint per day; no re-entry on a stopped mint for 24 h. The backtest and paper evaluation have no cap | — |
 | R12 | Liquidity floor | Pool liquidity ≥ max($15k, 1,000 × q); U1 also ≥ $50k | ≥ $15k |
 | R13 | Executable-depth cap | Largest q whose quoted entry + exit impact ≤ 1% at current reserves; caps scale with the pool | — |
@@ -250,7 +250,7 @@ Limits are written as a fraction of the bankroll B with a dollar value for the t
 | R15 | No martingale | Never add to a loser, never raise q after a loss, never edit policy mid-session | — |
 | R16 | Regime gate | §6.4 | — |
 
-Equity E, the high-water mark HWM and all loss figures are measured **net of deposits and withdrawals**: a deposit raises E and HWM by its amount, a withdrawal lowers both, so neither trips a trigger nor moves the kill line relative to trading results.
+Equity E, the high-water mark HWM and all loss figures are measured **net of deposits and withdrawals**, time-weighted (RISK-1b): a deposit or withdrawal scales HWM and the week's base by the same proportion as E, so the drawdown percentage is unchanged and a flow neither trips a trigger nor hides a loss. The weekly limit is counted both ways (in dollars against week-start equity and time-weighted against the scaled base) and the tighter applies. The daily trigger is a fixed share of B, so today's loss is counted in dollars, flow-neutral. Cash (R4), the reserve and loss affordability (R6) are enforced separately.
 
 Sizing: `maximum q = min(q_max, stop-stress size, full-loss allowance after costs, executable-depth cap, cash after reserve, remaining risk budget)`. Trade only if that maximum is at least q_min and the expected net (§5.2) is positive. A tight stop never overrides the full-loss allowance. Sizes step up only by the owner after G5 (§14); any 10% drawdown from the high-water mark returns to q_min.
 
