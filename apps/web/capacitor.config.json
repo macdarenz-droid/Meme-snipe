@@ -1,0 +1,13 @@
+{
+  "appId": "com.macdarenz.zeroed",
+  "appName": "Zeroed",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css"
+    }
+  }
+}

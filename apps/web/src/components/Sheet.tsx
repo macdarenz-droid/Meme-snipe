@@ -1,7 +1,9 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { DESKTOP, useMedia } from '../lib/media.ts';
+import { pushBack } from '../lib/backStack.ts';
 import { spring } from '../lib/motion.ts';
+import { SampleMarker, useSample } from './Sample.tsx';
 
 interface SheetProps {
   open: boolean;
@@ -16,6 +18,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
 /** Side panel on desktop, full-screen sheet on mobile, over a blurred backdrop. */
 export function Sheet({ open, title, onClose, children, footer }: SheetProps) {
   const desktop = useMedia(DESKTOP);
+  const sample = useSample();
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
   const returnTo = useRef<HTMLElement | null>(null);
@@ -43,10 +46,12 @@ export function Sheet({ open, title, onClose, children, footer }: SheetProps) {
       }
     };
     document.addEventListener('keydown', onKey, true);
+    const releaseBack = pushBack(onClose);
     document.body.style.overflow = 'hidden';
     requestAnimationFrame(() => panel.current?.focus());
     return () => {
       document.removeEventListener('keydown', onKey, true);
+      releaseBack();
       document.body.style.overflow = '';
       returnTo.current?.focus?.();
     };
@@ -80,6 +85,7 @@ export function Sheet({ open, title, onClose, children, footer }: SheetProps) {
           >
             <header className="sheet-head">
               <h2 id={titleId}>{title}</h2>
+              {sample && <SampleMarker />}
               <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
                 <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
                   <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />

@@ -1,8 +1,9 @@
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { lazy, Suspense, useEffect, type ReactNode } from 'react';
+import { SampleMarker } from './components/Sample.tsx';
 import { DESKTOP, useMedia } from './lib/media.ts';
 import { page } from './lib/motion.ts';
-import { SCREENS, useRoute, type Screen } from './lib/route.ts';
+import { hrefFor, SCREENS, useRoute, type Screen } from './lib/route.ts';
 import { Home } from './screens/Home.tsx';
 import { Snipe } from './screens/Snipe.tsx';
 import { Wallet } from './screens/Wallet.tsx';
@@ -11,10 +12,10 @@ import { Lockup, Mark } from './shell/Logo.tsx';
 import { PauseButton, StatusList } from './shell/Status.tsx';
 import { ThemeSwitch } from './shell/ThemeSwitch.tsx';
 
-// Dev-only: import.meta.env.DEV is false in production, so this import is dropped from the build.
-const Fixtures = import.meta.env.DEV ? lazy(() => import('./dev/Fixtures.tsx')) : null;
+// Dev and preview builds only: SAMPLES is a build-time constant, false in a normal production build, so the import is dropped.
+const Fixtures = import.meta.env.DEV || import.meta.env.VITE_PREVIEW === '1' ? lazy(() => import('./dev/Fixtures.tsx')) : null;
 
-const TITLES: Record<Screen, string> = { home: 'Home', snipe: 'Snipe', wallet: 'Wallet', fixtures: 'Fixtures' };
+const TITLES: Record<Screen, string> = { home: 'Home', snipe: 'Snipe', wallet: 'Wallet', fixtures: 'Samples' };
 
 function screenFor(s: Screen): ReactNode {
   if (s === 'snipe') return <Snipe />;
@@ -70,7 +71,7 @@ export function App() {
             <ul className="rail-nav">
               {SCREENS.map((s) => (
                 <li key={s.id}>
-                  <a href={`#/${s.id}`} className="rail-link" aria-current={screen === s.id ? 'page' : undefined}>
+                  <a href={hrefFor(s.id)} className="rail-link" aria-current={screen === s.id ? 'page' : undefined}>
                     <NavIcon id={s.id} />
                     <span>{s.label}</span>
                     <kbd>{s.key}</kbd>
@@ -88,6 +89,7 @@ export function App() {
           <header className="mobile-head">
             <Mark size={22} />
             <span className="badge badge-neutral">Paper</span>
+            {screen === 'fixtures' && <SampleMarker />}
             <span className="mobile-status muted small">Not started · No feed</span>
           </header>
         )}
@@ -95,6 +97,7 @@ export function App() {
         <main id="main" className="main" tabIndex={-1}>
           <header className="page-head">
             <h1>{TITLES[screen]}</h1>
+            {desktop && screen === 'fixtures' && <SampleMarker />}
           </header>
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
@@ -118,7 +121,7 @@ export function App() {
         {!desktop && (
           <nav className="tabs" aria-label="Main">
             {SCREENS.map((s) => (
-              <a key={s.id} href={`#/${s.id}`} className="tab" aria-current={screen === s.id ? 'page' : undefined}>
+              <a key={s.id} href={hrefFor(s.id)} className="tab" aria-current={screen === s.id ? 'page' : undefined}>
                 <NavIcon id={s.id} />
                 <span>{s.label}</span>
               </a>
