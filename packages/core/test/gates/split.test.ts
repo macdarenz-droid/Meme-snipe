@@ -4,8 +4,8 @@
 // belong to any one owner, listed or not, so the gates pass a partial view only when that worst case stays inside
 // every limit; otherwise they need a complete account set.
 import { describe, expect, it } from 'vitest';
-import { INCINERATOR, RAYDIUM_LOCKER_PROGRAM, evaluateHardRejects, holdersKey, insidersKey, type GateReason, type HolderAccount } from '../../src/gates/index.ts';
-import { ACC, DEV, MINT, POOL, POOL_ADDRESS, SUPPLY, VAULT_AMOUNT, W, contextOf, deps, holderAccounts, passingFacts, patch, request, session, type Facts } from './world.ts';
+import { INCINERATOR, RAYDIUM_LOCKER_PROGRAM, evaluateHardRejects, holdersKey, insidersKey, mintKey, type GateReason, type HolderAccount } from '../../src/gates/index.ts';
+import { ACC, DEV, MINT, POOL, POOL_ADDRESS, SUPPLY, VAULT_AMOUNT, W, contextOf, deps, holderAccounts, obs, passingFacts, patch, request, session, SLOT, type Facts } from './world.ts';
 
 const CIRC = SUPPLY - VAULT_AMOUNT;
 const vault: HolderAccount = { address: POOL.poolBaseTokenAccount, mint: MINT, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT };
@@ -177,6 +177,27 @@ describe('GATE-1d review: the holder read must be one clean snapshot of this min
       expect(evaluate(view(off, 'all')).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: 'H12' }));
     }
     expect(concentrationReasons(view(accounts, 'all'))).toEqual([]);
+  });
+
+  it('N1: a complete set needs one fresh response and an exact sum, not the mint read\'s slot', () => {
+    const f = passingFacts();
+    const mint = f.get(mintKey(MINT))!.value as { account: { supply: bigint } };
+    // The mint read and the holder read land on different slots; the sum is exact, so the set is covered.
+    const apart = patch(patch(f, mintKey(MINT), { obs: obs({ slot: SLOT - 1n }) }), holdersKey(MINT), { obs: obs({ slot: SLOT - 2n }) });
+    expect(concentrationReasons(apart)).toEqual([]);
+    // A burn of b between the two reads, in each order, breaks the exact sum.
+    const b = 5_000_000n;
+    const accounts = holderAccounts();
+    const burnedFromLast = accounts.map((a, i) => (i === accounts.length - 1 ? { ...a, amount: a.amount - b } : a));
+    // Mint read after the burn, holders before: the supply is below the sum.
+    const mintAfter = patch(patch(f, mintKey(MINT), { account: { ...mint.account, supply: SUPPLY - b } }), holdersKey(MINT), { supply: SUPPLY - b, accounts });
+    // Mint read before the burn, holders after: the supply is above the sum.
+    const mintBefore = patch(f, holdersKey(MINT), { accounts: burnedFromLast });
+    for (const g of [mintAfter, mintBefore]) {
+      expect(evaluate(g).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: 'H12' }));
+    }
+    // A holder read older than maxStateSlotLag (2 slots) is stale.
+    expect(evaluate(patch(f, holdersKey(MINT), { obs: obs({ slot: SLOT - 3n }) })).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'stale', input: 'holders', neededBy: 'H12' }));
   });
 
   it('N2: with the single-holder limit equal to the hard limit, the worst case at the hard limit is not covered', () => {
