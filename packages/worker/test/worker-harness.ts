@@ -10,8 +10,9 @@ import type { Timers } from '../src/scheduler/timers.ts';
 import { parseConfig, type WorkerConfig } from '../src/run/config.ts';
 import type { SimLeg } from '../src/run/paper-world.ts';
 import { PAPER_SCENARIO, strategyConfig } from '../src/run/settings.ts';
-import { type FeedSource, type SeedRequest, type SeedResult, type SourcesContext, Worker } from '../src/run/worker.ts';
+import { type FeedSource, type SeedRequest, type SeedResult, type SourcesContext, Worker, type WorkerDeps } from '../src/run/worker.ts';
 import type { FactSource } from '../src/run/facts.ts';
+import type { SeedRpc } from '../src/seed/rpc.ts';
 import { ALCHEMY_FREE, HELIUS_FREE, JUPITER_FREE, RUGCHECK_FREE, Scheduler } from '../src/scheduler/index.ts';
 import {
   CREATED_AT, DEV, FEE_CONTEXT, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, SUPPLY, T, passingFacts, roundTrip,
@@ -86,7 +87,7 @@ export interface Harness {
 /** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops'] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -122,12 +123,18 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       return o.seed === undefined ? { mode: 'none', creates: [], coverage: [], report: 'test: not seeded' } : o.seed(r);
     },
     seedWaitMs: o.seedWaitMs ?? 1_000,
+    ...(o.exposureRpc === undefined ? {} : { exposureRpc: o.exposureRpc }),
+    ...(o.ops === undefined ? {} : { ops: o.ops }),
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },
     ...(o.facts === undefined ? {} : { facts: o.facts, schedulers: { helius: new Scheduler(HELIUS_FREE, { timers }), alchemy: new Scheduler(ALCHEMY_FREE, { timers }), jupiter: new Scheduler(JUPITER_FREE, { timers }), rugcheck: new Scheduler(RUGCHECK_FREE, { timers }) } }),
     reconcileTimeoutMs: o.reconcileTimeoutMs ?? 120_000, loopMs: 100, staleFeedMs: 10_000, log: (l) => void logs.push(l),
   });
   return { worker, timers, legs, logs, stateDir, session, sources, order };
 };
+
+/** GATE-1's passing facts, built once (the fixture derives holder addresses on the curve, which is slow); read only. */
+let cachedFacts: ReturnType<typeof passingFacts> | null = null;
+const facts0 = (): ReturnType<typeof passingFacts> => (cachedFacts ??= passingFacts());
 
 /** Slot at a moment of the scripted market: one slot every 400 ms, SLOT at T. */
 export const slotAt = (ms: number): bigint => SLOT - BigInt(Math.floor((T - ms) / 400));
@@ -171,7 +178,7 @@ export class Market {
    */
   pool(quoteScalePpm: bigint = 1_000_000n): void {
     const slot = this.#h.worker.feed.openSlot - 1n;
-    const facts = passingFacts();
+    const facts = facts0();
     const now = (k: string, over: Partial<FactObs> = {}) => {
       const v = facts.get(k)!.value as { obs: FactObs };
       return { ...v, obs: { ...v.obs, slot: v.obs.slot === null ? null : slot, receivedAt: this.now - 50, ...over } };
@@ -223,7 +230,7 @@ export class Market {
 export const passingMarket = async (h: Harness, o: { readonly fees?: boolean } = {}): Promise<Market> => {
   const m = new Market(h);
   m.withFees = o.fees ?? true;
-  const facts = passingFacts();
+  const facts = facts0();
   // 15 days before T: the creates stream and a full trade stream start; the deployer index sees its first event.
   m.slot();
   for (const k of ['coverage:creates:start', 'coverage:rugs:start']) {

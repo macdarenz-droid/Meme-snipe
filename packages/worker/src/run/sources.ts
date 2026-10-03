@@ -16,6 +16,7 @@ import type { Timers } from '../scheduler/timers.ts';
 import { type Credits, creditMonth, creditsFile } from './state.ts';
 import { SOL_PRICE_KEY } from '../engine/strategy.ts';
 import { PoolWatch } from './pool-watch.ts';
+import { LOOKUP_BOUNDS_MS, type QuotaStatus } from '../../../runner/src/contract.ts';
 import type { FeedSource, SourcesContext } from './worker.ts';
 
 /** Pump's mint authority PDA: only `create`/`create_v2` mention it (venues.md, measured). */
@@ -105,6 +106,28 @@ export class LiveProviders {
   }
 
   readonly #o: LiveProviderOptions;
+  readonly #lookups = LOOKUP_BOUNDS_MS.map(() => 0).concat(0);
+
+  #lookup(ms: number): void {
+    const k = LOOKUP_BOUNDS_MS.findIndex((b) => ms <= b);
+    this.#lookups[k === -1 ? LOOKUP_BOUNDS_MS.length : k]!++;
+  }
+
+  /**
+   * RUN-1c's health fields: each free-plan provider's credits since this boot (by class, rounded up to whole credits so
+   * they sum), its plan's monthly credits, grants, sheds and halt; and the historical-lookup latency counts.
+   */
+  ops(): { readonly quota: readonly QuotaStatus[]; readonly lookups: { readonly counts: readonly number[] } } {
+    const quota = [this.helius, this.alchemy, this.jupiter].map((s): QuotaStatus => {
+      const st = s.status();
+      const cls = st.creditsByClass.map((c) => Math.ceil(c)) as [number, number, number, number];
+      return {
+        provider: st.provider, credits_used: cls[0] + cls[1] + cls[2] + cls[3], credits_by_class: cls,
+        monthly_credits: s.spec.budget?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
+      };
+    });
+    return { quota, lookups: { counts: [...this.#lookups] } };
+  }
 
   /** The feeds, built on the worker's live Feed. */
   feeds(ctx: SourcesContext): FeedSource[] {
@@ -112,7 +135,7 @@ export class LiveProviders {
     const { feed, timers } = ctx;
     const hRpc = new RpcHttp({ provider: 'helius', url: () => heliusRpcUrl(o.secrets), http: o.http, scheduler: this.helius, timeoutMs: 10_000 });
     const aRpc = new RpcHttp({ provider: 'alchemy', url: () => alchemyRpcUrl(o.secrets), http: o.http, scheduler: this.alchemy, timeoutMs: 10_000 });
-    const fetcher = new TxFetcher({ clients: [hRpc, aRpc], feed, timers, retries: 3, retryMs: 1_000, remember: 50_000 });
+    const fetcher = new TxFetcher({ clients: [hRpc, aRpc], feed, timers, retries: 3, retryMs: 1_000, remember: 50_000, onLookup: (ms) => this.#lookup(ms) });
     this.#fetcher = fetcher;
     const socket = { initialMs: 1_000, maxMs: 30_000, idleMs: 30_000 };
     const helius = new RpcStream({

@@ -11,6 +11,8 @@ export class Journal {
   readonly #boot: string;
   readonly #now: () => number;
   #seq = 0;
+  /** When the last whole line before this process was written (the previous process's last sign of life), or null. */
+  readonly previousMs: number | null = null;
   /** True when a torn last line was cut at open. */
   readonly repaired: boolean;
 
@@ -35,7 +37,12 @@ export class Journal {
         }
       }
       const good = lines[lines.length - 1];
-      if (good !== undefined) this.#seq = (JSON.parse(good) as { seq: number }).seq;
+      if (good !== undefined) {
+        const l = JSON.parse(good) as { seq: number; ts?: string };
+        this.#seq = l.seq;
+        const t = typeof l.ts === 'string' ? Date.parse(l.ts) : Number.NaN;
+        this.previousMs = Number.isFinite(t) ? t : null;
+      }
     }
     this.repaired = repaired;
   }

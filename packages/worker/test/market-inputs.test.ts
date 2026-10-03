@@ -11,6 +11,7 @@ import { rpcHandler, scriptedHttp } from '../src/providers/index.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders } from '../src/run/sources.ts';
 import { DelayProbe } from '../src/run/delay-probe.ts';
 import { Recorder } from '../src/run/recorder.ts';
+import { checkQuota } from '../../runner/src/quota.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx } from './helpers.ts';
 import { makeWorker, tempState } from './worker-harness.ts';
 
@@ -115,7 +116,7 @@ describe('LiveProviders on scripted sockets: a live migration reaches an entry d
     const http = scriptedHttp(rpcHandler((m) => (m === 'getTransaction' ? mig.base64 : m === 'getSignaturesForAddress' ? [] : null)));
     const stateDir = tempState();
     const providers = new LiveProviders({ tradeStreams: false, secrets: testSecrets, http, factory: hub.factory, credits: new CreditBook(stateDir, timers) });
-    const h = makeWorker({ stateDir, timers, seedWaitMs: 0, sources: (ctx) => providers.feeds(ctx), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18860', ZEROED_API_ADDR: '127.0.0.1:18861' } });
+    const h = makeWorker({ stateDir, timers, seedWaitMs: 0, sources: (ctx) => providers.feeds(ctx), ops: () => providers.ops(), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18860', ZEROED_API_ADDR: '127.0.0.1:18861' } });
     const socket = (part: string) => hub.sockets.filter((s) => s.url.includes(part)).at(-1);
     const acked = new Map<unknown, number>();
     const opened = new Set<unknown>();
@@ -167,6 +168,14 @@ describe('LiveProviders on scripted sockets: a live migration reaches an entry d
     // Every critical feed is up and fresh (helius-ws and coinbase-ws), so entries are not halted.
     expect(h.worker.health().halt_reasons).toEqual([]);
     expect(Object.keys(h.worker.health().feeds).sort()).toEqual(['coinbase-ws', 'helius-ws', 'pumpportal']);
+    // RUN-1c: the chain feed is up, so an exit could go out; every free-plan provider reports its credits by class.
+    const health = h.worker.health();
+    expect(health.exit_capable).toBe(true);
+    expect(checkQuota(health.quota)).toMatchObject({ ok: true });
+    const helius = health.quota.find((q) => q.provider === 'helius')!;
+    expect(helius.credits_used).toBeGreaterThan(0);
+    expect(helius.credits_by_class.reduce((a, b) => a + b, 0)).toBe(helius.credits_used);
+    expect(health.lookups.counts.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(1);
     await h.worker.stop();
     // The SOL price went on the feed as a fact from Coinbase (the recorder holds every frame).
     const frames = readdirSync(join(stateDir, 'recorder'), { recursive: true, encoding: 'utf8' }).filter((f) => /frames-\d+\.jsonl\.zst$/.test(f))
@@ -181,9 +190,10 @@ describe('processed and confirmed arrival of the same signature (supervisor ruli
     const record = recordOf(t);
     const timers = new ManualTimers(1_000_000);
     const rows: { row: Readonly<Record<string, unknown>>; at: number }[] = [];
+    let mono = 0;
     const reads: string[] = [];
     const probe = new DelayProbe({
-      timers, via: 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM', everyMs: 60_000, record: (row, at) => void rows.push({ row, at }),
+      timers, via: 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM', everyMs: 60_000, record: (row, at) => void rows.push({ row, at }), mono: () => (mono += 250.5),
       confirmed: async (sig) => {
         reads.push(sig);
         return record;
@@ -198,7 +208,7 @@ describe('processed and confirmed arrival of the same signature (supervisor ruli
     expect(reads).toEqual([t.signature]);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.row).toEqual({
-      signature: t.signature, slot: record.slot, processed_at_ms: 1_000_100, processed_path: 'helius logsSubscribe logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM', processed_commitment: 'processed',
+      signature: t.signature, slot: record.slot, processed_mono_ms: 250.5, confirmed_mono_ms: 501, delay_ms: 250.5, processed_at_ms: 1_000_100, processed_path: 'helius logsSubscribe logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM', processed_commitment: 'processed',
       confirmed_at_ms: 1_060_000, confirmed_path: 'helius getTransaction', confirmed_commitment: 'confirmed', confirmed_slot: record.slot,
       found: true, error: null, other_sightings: [{ source: 'pumpportal:create', at: 999_000 }],
     });

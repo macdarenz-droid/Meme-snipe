@@ -8,7 +8,7 @@ import type { LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
 import { applyBookEvent, type Book, type BookConfig, type BookEvent, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports } from '../../../core/src/units/index.ts';
-import { reservationOf } from '../engine/strategy.ts';
+import { GATE_REASONS_PREFIX, reservationOf } from '../engine/strategy.ts';
 
 /** Open intents for the host's update gate: intents not finished (`open_intents`, ops/README.md). */
 export const openIntents = (book: Book): number => Object.values(book.intents).filter((s) => !isTerminal(s)).length;
@@ -73,11 +73,24 @@ export class Desk {
     }
     if (r.type === 'decision') {
       const action = r.action;
+      // A candidate's reject carries its typed reasons (RUN-1c `gate_reasons`); an entry is `enter` (the runner's name).
+      const typed = r.reasons.find((x) => x.startsWith(GATE_REASONS_PREFIX));
+      const reasons = r.reasons.filter((x) => x !== typed);
+      const reject = action === null && reasons[0] === 'reject';
+      let gateReasons: unknown = null;
+      if (typed !== undefined) {
+        try {
+          gateReasons = JSON.parse(typed.slice(GATE_REASONS_PREFIX.length));
+        } catch {
+          gateReasons = [{ gate: 'worker', code: 'unreadable', detail: 'typed reasons could not be read' }];
+        }
+      }
       this.#d.journal('decision', {
-        action: action === null ? 'none' : action.type === 'intent' ? action.event.type : action.type,
+        action: action === null ? (reject ? 'reject' : 'none') : action.type === 'intent' ? action.event.type : action.type === 'propose_entry' ? 'enter' : action.type,
         intent: action === null ? null : action.type === 'intent' ? action.intentId : action.type === 'propose_entry' ? action.intent.id : null,
         result: r.result, ...(r.reason === undefined ? {} : { refused: r.reason }), event: r.eventId,
-        reasons: r.reasons.length > 0 ? r.reasons : ['no reason given'],
+        reasons: reasons.length > 0 ? reasons : ['no reason given'],
+        ...(reject ? { gate_reasons: gateReasons ?? [] } : {}),
       });
       if (r.result === 'illegal') this.illegal++;
       if (r.result !== 'applied' || action === null) return;
@@ -165,15 +178,18 @@ export class Desk {
   }
 
   /** Unresolved intents (reached the network, not reconciled): the heartbeat's count and the oldest age. */
-  unresolved(nowMs: number, createdAt: (id: string) => number | null): { readonly count: number; readonly oldest_age_s: number | null } {
+  /** Unresolved intents: how many, the oldest's age, and each one's trade (its position id, as in the journal). */
+  unresolved(nowMs: number, createdAt: (id: string) => number | null): { readonly count: number; readonly oldest_age_s: number | null; readonly trades: readonly string[] } {
     let oldest: number | null = null;
     let count = 0;
+    const trades: string[] = [];
     for (const s of Object.values(this.#book.intents)) {
       if (!isUnresolved(s)) continue;
       count++;
+      trades.push(s.intent.positionId);
       const t = createdAt(s.intent.id);
       if (t !== null && (oldest === null || t < oldest)) oldest = t;
     }
-    return { count, oldest_age_s: oldest === null ? null : Math.max(0, Math.round((nowMs - oldest) / 1000)) };
+    return { count, oldest_age_s: oldest === null ? null : Math.max(0, Math.round((nowMs - oldest) / 1000)), trades };
   }
 }

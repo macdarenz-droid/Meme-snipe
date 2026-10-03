@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
 import { RUG_CONFIG } from '../../core/src/config/index.ts';
 import { Engine, type LogRecord } from '../../core/src/engine/index.ts';
-import { LiveStrategy } from '../src/engine/strategy.ts';
+import { GATE_REASONS_PREFIX, LiveStrategy } from '../src/engine/strategy.ts';
 import { replayRecorded, type Frame, type Release } from '../src/providers/index.ts';
 import { parseTyped } from '../src/run/json.ts';
 import { Market, makeWorker, passingMarket } from './worker-harness.ts';
@@ -103,7 +103,7 @@ describe('the market recorder', () => {
     // World reports are recorded frames, so the replay needs no outside world: effects go nowhere.
     const engine = new Engine({ clock, feed, strategy, runner: { run: () => undefined }, seed: start.seed, book: { maxOpenPositions: h.session.policy.positions.maxOpen } });
     engine.drain();
-    const replayed = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' ? [{ event: r.eventId, reasons: [...r.reasons], result: r.result }] : []));
+    const replayed = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' ? [{ event: r.eventId, reasons: r.reasons.filter((x) => !x.startsWith(GATE_REASONS_PREFIX)), result: r.result }] : []));
     expect(replayed).toEqual(live);
     expect(existsSync(join(dir, 'manifest.json'))).toBe(true);
   });
@@ -142,7 +142,7 @@ describe('the market recorder', () => {
     const strategy = new LiveStrategy({ session: h2.session, rugs: RUG_CONFIG, config: h2.worker.strategyConfig });
     const engine = new Engine({ clock, feed, strategy, runner: { run: () => undefined }, seed: start.seed, book: { maxOpenPositions: h2.session.policy.positions.maxOpen } });
     engine.drain();
-    const replayed = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' ? [{ event: r.eventId, reasons: [...r.reasons], result: r.result }] : []));
+    const replayed = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' ? [{ event: r.eventId, reasons: r.reasons.filter((x) => !x.startsWith(GATE_REASONS_PREFIX)), result: r.result }] : []));
     expect(replayed).toEqual(live);
   });
 });

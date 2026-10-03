@@ -14,16 +14,22 @@ export interface DelayProbeOptions {
   /** The `via` of the processed sightings sampled (the creates watch). */
   readonly via: string;
   readonly everyMs: number;
+  /** A monotonic local clock (ms) for the arrival stamps; wall time is kept beside it for display only. */
+  readonly mono?: () => number;
 }
 
 export class DelayProbe {
   readonly #o: DelayProbeOptions;
-  #latest: { readonly signature: string; readonly slot: bigint | null; readonly at: number } | null = null;
+  #latest: { readonly signature: string; readonly slot: bigint | null; readonly at: number; readonly mono: number } | null = null;
   /** Recent sightings on other paths (PumpPortal publishes no commitment), the newest 5,000 signatures. */
   readonly #others = new Map<string, { source: string; at: number }[]>();
   #timer: ReturnType<Timers['setTimeout']> | null = null;
   #running = false;
   #inFlight = false;
+
+  #mono(): number {
+    return (this.#o.mono ?? (() => performance.now()))();
+  }
 
   constructor(o: DelayProbeOptions) {
     this.#o = o;
@@ -34,7 +40,7 @@ export class DelayProbe {
     const b = f.body;
     if (b.type !== 'seen' || b.err !== null) return;
     if (b.via === this.#o.via) {
-      if (!f.backfilled) this.#latest = { signature: b.signature, slot: b.slot, at: f.receivedAt };
+      if (!f.backfilled) this.#latest = { signature: b.signature, slot: b.slot, at: f.receivedAt, mono: this.#mono() };
       return;
     }
     const list = this.#others.get(b.signature);
@@ -76,8 +82,12 @@ export class DelayProbe {
       error = e instanceof Error ? e.message : 'error';
     }
     const at = this.#o.timers.now();
+    const mono = this.#mono();
     this.#o.record({
-      signature: s.signature, slot: s.slot, processed_at_ms: s.at, processed_path: `helius logsSubscribe ${this.#o.via}`, processed_commitment: 'processed',
+      signature: s.signature, slot: s.slot,
+      // The delay is measured on the monotonic clock (immune to wall-clock steps); the wall times are for display.
+      processed_mono_ms: s.mono, confirmed_mono_ms: r === null ? null : mono, delay_ms: r === null ? null : Math.round((mono - s.mono) * 1000) / 1000,
+      processed_at_ms: s.at, processed_path: `helius logsSubscribe ${this.#o.via}`, processed_commitment: 'processed',
       confirmed_at_ms: r === null ? null : at, confirmed_path: 'helius getTransaction', confirmed_commitment: 'confirmed', confirmed_slot: r?.slot ?? null,
       found: r !== null, error, other_sightings: this.#others.get(s.signature) ?? [],
     }, at);

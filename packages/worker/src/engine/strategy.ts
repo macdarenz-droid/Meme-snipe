@@ -46,6 +46,15 @@ export const SOL_PRICE_KEY = 'worker:sol-price';
  * seed), released first; the index is seeded from it before it observes any live event.
  */
 export const SEED_KEY = 'worker:seed';
+/** A reject's typed reasons ride in its last reason as `gate_reasons <json>`; the desk journals them as `gate_reasons`. */
+export const GATE_REASONS_PREFIX = 'gate_reasons ';
+export interface GateReasonLine {
+  /** H1–H16, `regime`, a risk control (R1–R14), `stop`, or `worker` (an input the worker lacks). */
+  readonly gate: string;
+  readonly code: string;
+  readonly detail: string;
+}
+
 /** `{ halted, reasons }`: entries stop while a critical feed is down or stale (§18); exits and monitoring go on. */
 export const HALT_KEY = 'worker:halt';
 export const feesKey = (mint: string): string => `worker:fees:${mint}`;
@@ -74,6 +83,9 @@ export interface SavedExit {
   readonly plan: EntryPlan;
   readonly tracker: ExitTracker;
   readonly bars: readonly PriceBar[];
+  /** The position's pool and its last spot price (PRICE_SCALE): the exposure rebuild after a kill reads them. */
+  readonly pool?: string | null;
+  readonly spot?: { readonly price: bigint; readonly atMs: number } | null;
 }
 
 export interface RestoreFact {
@@ -179,7 +191,9 @@ export class LiveStrategy implements Strategy {
   /** Exit state to save after each step (the worker writes it before the next event). */
   saved(): Record<string, SavedExit> {
     const out: Record<string, SavedExit> = {};
-    for (const [pid, s] of this.#exits) out[pid] = { ...s, bars: this.#bars.get(pid) ?? s.bars };
+    for (const [pid, s] of this.#exits) {
+      out[pid] = { ...s, bars: this.#bars.get(pid) ?? s.bars, pool: this.#poolOfMint.get(this.#mintOf(pid)) ?? s.pool ?? null, spot: this.#spot.get(pid) ?? s.spot ?? null };
+    }
     return out;
   }
 
@@ -202,6 +216,9 @@ export class LiveStrategy implements Strategy {
   readonly #deployerSales = new Map<string, { readonly ids: Set<string>; readonly list: { readonly atMs: number; readonly amount: bigint }[] }>();
   /** Positions whose deployer-sell trigger could not be judged, reported once each. */
   readonly #unjudgedDeployer = new Set<string>();
+  /** Each held position's last spot price, for the saved plan (the exposure rebuild's reference). */
+  readonly #spot = new Map<string, { readonly price: bigint; readonly atMs: number }>();
+
   /** Each held position's latest mark (executable price, PRICE_SCALE) with when it was read. */
   readonly #marks = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
 
@@ -283,6 +300,8 @@ export class LiveStrategy implements Strategy {
       const saved = s as unknown as SavedExit;
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
+      if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
+      if (saved.spot != null) this.#spot.set(pid, saved.spot);
       n++;
     }
     out.push({ action: null, reasons: ['restore', `${n} exit plans and trackers restored`] });
@@ -456,7 +475,10 @@ export class LiveStrategy implements Strategy {
       this.#bars.set(key, bars);
     };
     add(mint);
-    for (const pid of held) add(pid);
+    for (const pid of held) {
+      add(pid);
+      this.#spot.set(pid, { price, atMs: ctx.now.receivedAt });
+    }
   }
 
   #attempt(id: IntentId, n: number, quote: QuoteContext, height: bigint): TransactionAttempt {
@@ -587,6 +609,7 @@ export class LiveStrategy implements Strategy {
       if (p.status === 'closed') {
         if (this.#exits.delete(p.id)) this.#forget(p.mint);
         this.#marks.delete(p.id);
+        this.#spot.delete(p.id);
         this.#bars.delete(p.id);
         this.#unjudgedDeployer.delete(p.id);
         continue;
@@ -708,10 +731,18 @@ export class LiveStrategy implements Strategy {
       const r = this.#evaluate(cand, ctx, gctx, out);
       // A reject is logged when its reason changes (numbers aside), so a long wait does not fill the journal.
       const key = (x: string | null) => (x === null ? null : x.replace(/\d+/g, '#'));
-      if (r !== null && key(r) !== key(cand.lastReason)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r] });
+      if (r !== null && key(r) !== key(cand.lastReason)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`] });
       if (r !== null) cand.lastReason = r;
       if (out.some((d) => d.action !== null)) return;
     }
+  }
+
+  /** The typed reasons of the last reject `#evaluate` returned (RUN-1c's `gate_reasons`). */
+  #lastGates: readonly GateReasonLine[] = [];
+
+  #fail(text: string, gates: readonly GateReasonLine[]): string {
+    this.#lastGates = gates;
+    return text;
   }
 
   /** One candidate through regime, hard rejects and risk. Returns the reject reason, or null when it proposed an entry. */
@@ -720,30 +751,30 @@ export class LiveStrategy implements Strategy {
     const session = this.#d.session;
     const policy = session.policy;
     const regime = evaluateRegime(gctx, { session, mode: 'live' });
-    if (!regime.on) return `regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`;
+    if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })));
     const sol = this.#spotSol(ctx);
-    if (sol === null) return 'live SOL price unknown';
+    if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
     const m = this.#market(ctx, cand.mint);
-    if (typeof m === 'string') return m;
+    if (typeof m === 'string') return this.#fail(m, [{ gate: 'worker', code: 'no-market', detail: m }]);
     const notional = policy.capital.minNotional;
     const spend = microUsdToLamports(notional, sol.value, 'ceil');
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     const hard = evaluateHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1' }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
-    if (!hard.pass) return `hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`;
+    if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })));
     const acct = this.#account(ctx);
-    if (acct === null) return 'account snapshot unknown';
+    if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
     const rt = quoter(spend);
-    if (!rt.ok) return `no round trip: ${rt.reason}`;
+    if (!rt.ok) return this.#fail(`no round trip: ${rt.reason}`, [{ gate: 'worker', code: 'no-round-trip', detail: rt.reason }]);
     const entryPx = execPrice(rt.trade.proceeds, rt.trade.tokens);
     const range = atr(this.#bars.get(cand.mint) ?? [], policy.exits.atrPeriod, policy.exits.atrBarMs, ctx.now.receivedAt);
-    if (range === null) return 'stop: not enough price bars for the ATR';
+    if (range === null) return this.#fail('stop: not enough price bars for the ATR', [{ gate: 'stop', code: 'no-atr', detail: 'not enough price bars for the ATR' }]);
     const byAtr = (BigInt(policy.exits.stopAtrTenths) * range) / 10n;
     const byMax = (entryPx * BigInt(policy.loss.stopMaxBps)) / BPS;
     const distance = byAtr < byMax ? byAtr : byMax;
     const stopPrice = entryPx - distance;
     const stop = checkStopDistance(policy, entryPx, stopPrice, range);
-    if (!stop.ok) return `stop: ${stop.reason} ${stop.detail}`;
+    if (!stop.ok) return this.#fail(`stop: ${stop.reason} ${stop.detail}`, [{ gate: 'stop', code: stop.reason, detail: stop.detail }]);
     const stopBps = Number(mulDiv(distance, BPS, entryPx, 'ceil'));
     // Numbered from the book (restored at start), so a restart never reuses an intent id or key.
     cand.tries = 1 + Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length;
@@ -759,10 +790,10 @@ export class LiveStrategy implements Strategy {
     );
     const trips = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
     if (!r.allow) {
-      return `risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${trips.length > 0 ? `; ${trips.join(', ')}` : ''}`;
+      return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${trips.length > 0 ? `; ${trips.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
     }
     if (r.spendLamports !== spend) {
-      return `risk sized ${r.spendLamports} lamports, gates judged ${spend}`;
+      return this.#fail(`risk sized ${r.spendLamports} lamports, gates judged ${spend}`, [{ gate: 'worker', code: 'size-mismatch', detail: `risk sized ${r.spendLamports}, gates judged ${spend}` }]);
     }
     const pid = positionId(`p:${cand.mint}:${cand.tries}`);
     const tm = toMint(cand.mint);

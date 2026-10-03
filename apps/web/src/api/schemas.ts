@@ -15,7 +15,7 @@ const SIGNATURE = re(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/, 'a base58 signature');
 const MONTH = re(/^\d{4}-(0[1-9]|1[0-2])$/, 'a YYYY-MM month');
 const VENUE = oneOf('pump-curve', 'pumpswap');
 const UNIVERSE = oneOf('U1', 'U2', 'U3');
-const GATES = Array.from({ length: 16 }, (_, i) => `H${i + 1}`);
+const GATES = Array.from({ length: 17 }, (_, i) => `H${i + 1}`);
 const CHECK = oneOf(...GATES, 'cost', 'size', 'risk', 'regime');
 const EXIT_RULE = oneOf('price-stop', 'thesis-stop', 'time-stop', 'take-profit', 'trail');
 const EXIT_REASON = oneOf('price-stop', 'thesis-stop', 'time-stop', 'take-profit', 'trail', 'liquidity-drop', 'flow-stop', 'owner-close', 'blocked');

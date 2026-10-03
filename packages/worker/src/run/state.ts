@@ -64,6 +64,19 @@ export const NO_CONTROL: Control = { paused: false, pausedAtMs: null, latches: N
 export const controlFile = (dir: string) =>
   new StateFile<Control>(dir, 'control.json', (v) => (isObj(v) && typeof v['paused'] === 'boolean' && isObj(v['latches']) ? (v as unknown as Control) : null));
 
+/**
+ * Trades open or in flight when the previous process died, and when it last wrote (RUN-1c's exposure window): kept
+ * until the next full start journals their `exposure` lines, so a `--reconcile` run in between does not lose them.
+ */
+export interface Exposed {
+  readonly trades: readonly string[];
+  readonly fromMs: number;
+}
+/** Nothing pending. */
+export const NO_EXPOSED: Exposed = { trades: [], fromMs: 0 };
+export const exposedFile = (dir: string) =>
+  new StateFile<Exposed>(dir, 'exposure.json', (v) => (isObj(v) && Array.isArray(v['trades']) && typeof v['fromMs'] === 'number' ? (v as unknown as Exposed) : null));
+
 /** Exit plans, trackers and bars per open position (EXIT-1 restart acceptance). */
 export const exitsFile = (dir: string) =>
   new StateFile<Record<string, SavedExit>>(dir, 'exits.json', (v) => (isObj(v) && Object.values(v).every((s) => isObj(s) && isObj(s['plan']) && isObj(s['tracker']) && Array.isArray(s['bars'])) ? (v as Record<string, SavedExit>) : null));

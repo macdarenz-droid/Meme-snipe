@@ -45,6 +45,7 @@ const setup = async (envOver: Record<string, string> = {}) => {
         ZEROED_GIT_SHA: 'c0ffee',
         ZEROED_STUB_TICK_MS: '50',
         ZEROED_STUB_CYCLE_MS: '1000',
+        ZEROED_STUB_EXIT_DELAY_MS: '300',
         ...envOver,
       },
     });
@@ -84,6 +85,23 @@ describe('runner with the stub worker', () => {
     expect(r.item4).toMatchObject({ counts: false, bounds_pass: true, pass: false, note: 'Rehearsal: does not count for item 4.' });
     expect(r.item4.outcomes).toEqual({ simulated: r.journal.simulations });
     expect(r.item4.trades).toBe(r.journal.simulations);
+    // RUN-1c: quota, coverage, rejections and exposure come through from the worker's health and journal.
+    expect(r.ops.quota).toMatchObject({ reported: true, problems: [], within_free_tier: true, exit_capacity_shed: 0 });
+    expect(r.ops.quota.providers.map((p) => p.provider)).toEqual(['alchemy', 'helius', 'jupiter']);
+    expect(r.ops.coverage.problems).toEqual([]);
+    // Every stream has at least its feed drop plus the kills' down windows.
+    for (const s of ['creates', 'rugs', 'trades']) expect(r.ops.coverage.streams[s]!.gaps).toBeGreaterThan(1);
+    expect(r.ops.lookups.count).toBeGreaterThan(0);
+    expect(r.ops.rejections.decisions).toBeGreaterThan(0);
+    const exposed = r.drills.filter((d) => d.exposure);
+    expect(exposed.length).toBeGreaterThan(0);
+    for (const d of exposed) {
+      expect(d.exposure!.duration_ms).toBeGreaterThanOrEqual(300);
+      expect(d.exposure!.duration_ms!).toBeGreaterThanOrEqual(d.exposure!.reconciled_ms!);
+      expect(d.exposure!.worst_move_bps).toBe(0);
+      expect(d.exposure!.chain_trades).toEqual([...d.exposure!.trades].sort());
+      expect(d.exposure!.trades_complete).toBe(true);
+    }
     expect(r.pass).toBe(false);
     expect(readFileSync(join(t.evidenceDir, 'REPORT.md'), 'utf8')).toContain('Rehearsal: counts for none of §15 items 3, 4 or G3');
 

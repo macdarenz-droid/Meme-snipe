@@ -18,7 +18,7 @@ import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
-import { EXIT, STATE_FILES, type FeedHealth, type Health, type JournalKind } from '../../../runner/src/contract.ts';
+import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SHORTLIST, SOL_PRICE_KEY, type StrategyConfig, TRIP_PREFIX } from '../engine/strategy.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
@@ -28,6 +28,9 @@ import type { WorkerConfig } from './config.ts';
 import { Desk, openIntents } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { StartFeed } from './start-feed.ts';
+import { CoverageJournal } from './coverage-journal.ts';
+import { rebuildMove } from './exposure.ts';
+import type { SeedRpc } from '../seed/rpc.ts';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
 import { type ApiInputs, type DecisionRow, checkOf, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
@@ -37,7 +40,7 @@ import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
-import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile } from './state.ts';
+import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { parsePool } from '../../../core/src/gates/index.ts';
 import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
 
@@ -90,6 +93,10 @@ export interface WorkerDeps {
   readonly seedWaitMs: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
   readonly delayProbe?: { readonly confirmed: DelayProbeOptions['confirmed']; readonly via: string; readonly everyMs: number };
+  /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
+  readonly ops?: () => { readonly quota: readonly QuotaStatus[]; readonly lookups: { readonly counts: readonly number[] } };
+  /** RUN-1c's exposure rebuild: chain history reads (Helius) for each exposed trade's pool. */
+  readonly exposureRpc?: SeedRpc;
   /** The commitment each live path uses, for the recorder manifest. */
   readonly commitments?: Readonly<Record<string, string>>;
   readonly heartbeat: { readonly http: HttpClient; readonly key: string | null; readonly ownerChatId: string | null };
@@ -167,6 +174,8 @@ export class Worker {
   #diverged: readonly string[] = [];
   #savedExits = '';
   #probe: DelayProbe | null = null;
+  #exposedFile: ReturnType<typeof exposedFile>;
+  readonly #coverageJournal = new CoverageJournal((fields) => this.#journal.write('coverage_gap', fields));
   readonly #start: StartFeed;
   readonly #deployerStore: DeployerStore;
   readonly #saved: SavedDeployers;
@@ -225,6 +234,17 @@ export class Worker {
     this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
+    // RUN-1c: trades open or in flight when the previous process stopped writing, kept until a full start journals them.
+    const killed = [...new Set([
+      ...Object.values(stored.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id as string),
+      ...Object.values(stored.book.intents).filter((i) => isUnresolved(i)).map((i) => i.intent.positionId as string),
+    ])].sort();
+    this.#exposedFile = exposedFile(c.stateDir);
+    const before = this.#exposedFile.read(NO_EXPOSED);
+    const since = this.#journal.previousMs;
+    if (killed.length > 0 && since !== null) {
+      this.#exposedFile.write({ trades: [...new Set([...before.trades, ...killed])].sort(), fromMs: before.trades.length === 0 ? since : Math.min(before.fromMs, since) });
+    }
     this.#world = new PaperWorld({
       report: (event) => void this.#report(event),
       book: () => this.#engine.book,
@@ -332,7 +352,8 @@ export class Worker {
     if (b.type === 'offchain' && b.key === 'coverage:creates:start' && isObj(b.value) && typeof b.value['via'] === 'string' && b.value['via'].startsWith('logs:') && typeof b.value['fromSlot'] === 'bigint') {
       this.#liveStart ??= b.value['fromSlot'];
     }
-    if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:[a-z]+:gap$/.test(b.key)) this.#recorder?.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt });
+    if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:.+:gap$/.test(b.key)) this.#recorder?.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt });
+    if (b.type === 'offchain' || b.type === 'fact') this.#coverageJournal.fact(b.key, b.value, f.receivedAt);
   }
 
   #onRelease(e: { readonly kind: string; readonly key?: string; readonly value?: unknown; readonly moment: { readonly receivedAt: number } }, r: Release): void {
@@ -618,6 +639,8 @@ export class Worker {
     }
     for (const s of this.#sources) s.start();
     this.#probe?.start();
+    // In the background: the exits must not wait for a chain history read.
+    void this.#journalExposure().catch((e: unknown) => d.log(`Exposure rebuild failed: ${e instanceof Error ? e.message : 'error'}.`));
     await this.#seedIndex(this.#reserved);
     if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
     if (d.facts !== undefined && d.facts.length > 0) {
@@ -710,6 +733,35 @@ export class Worker {
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
   }
 
+  /**
+   * RUN-1c: one `exposure` line per trade open or in flight when the previous process stopped, with the worst move of
+   * its pool over the down window rebuilt from chain history; then the pending record is cleared.
+   */
+  async #journalExposure(): Promise<void> {
+    const pending = this.#exposedFile.read(NO_EXPOSED);
+    if (pending.trades.length === 0) return;
+    const saved = this.#exitsFile.read({});
+    const toMs = this.#d.timers.now();
+    for (const trade of pending.trades) {
+      const s = saved[trade];
+      const r = this.#d.exposureRpc === undefined
+        ? { worst_move_bps: null, swaps: 0, reason: 'no chain history reader configured' }
+        : await rebuildMove({ rpc: this.#d.exposureRpc, pool: s?.pool ?? null, ref: s?.spot?.price ?? null, fromMs: pending.fromMs, toMs, maxTx: 200 });
+      this.#journal.write('exposure', { trade, from_ts: new Date(pending.fromMs).toISOString(), to_ts: new Date(toMs).toISOString(), worst_move_bps: r.worst_move_bps, swaps: r.swaps, detail: r.reason, pool: s?.pool ?? null });
+    }
+    this.#exposedFile.write(NO_EXPOSED);
+  }
+
+  /**
+   * An exit could go out now: reconciled, and the chain feed that carries the slots, the pool states and the quotes
+   * (every critical feed with a chain source) is connected, fresh and not dropped. Paper lands by the paper world.
+   */
+  #exitCapable(now: number): boolean {
+    if (!this.#reconciled) return false;
+    const chain = [...this.#feeds.values()].filter((s) => s.src.critical && s.src.sources.some((x) => x === 'helius' || x === 'alchemy'));
+    return chain.length > 0 && chain.every((s) => s.connected && s.droppedUntil <= now && s.last !== null && now - s.last <= this.#d.staleFeedMs);
+  }
+
   /** A position's mark when read within the last 30 s (RUN-1c's MARK_MAX_AGE_MS); an older one is no price. */
   #freshMark(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
     const m = this.#strategy.markOf(pid);
@@ -744,16 +796,22 @@ export class Worker {
     }
     const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
     const saved = p === undefined ? undefined : this.#strategy.saved()[p.id];
+    const mark = p === undefined ? null : this.#strategy.markOf(p.id);
+    const ops = this.#d.ops?.() ?? { quota: [], lookups: { counts: LOOKUP_BOUNDS_MS.map(() => 0).concat(0) } };
     return {
       seq: this.#beatSeq, ts: now, git_sha: this.#d.config.gitSha, policy_version: this.#d.session.versionHash,
       last_processed_slot: this.#lastSlot === null ? null : Number(this.#lastSlot), feed_ages_ms: ages,
-      open_position: p === undefined ? null : { mint: p.mint, qty: String(p.quantity), entry: String(entryPrice(p)), stop: saved === undefined ? 'unknown' : String(saved.plan.stopPrice) },
+      open_position: p === undefined ? null : {
+        trade: p.id, mint: p.mint, qty: String(p.quantity), entry: String(entryPrice(p)), stop: saved === undefined ? 'unknown' : String(saved.plan.stopPrice),
+        // No mark read yet: the entry, seen at time 0, which the runner reads as unmeasured (older than 30 s).
+        mark: String(mark?.price ?? entryPrice(p)), mark_slot: mark === null ? 0 : Number(mark.slot), mark_ts: mark?.atMs ?? 0,
+      },
       unresolved_intents: this.#desk.unresolved(now, (id) => this.#intentAt.get(id) ?? null),
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
       rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], feeds, journal_seq: this.#journal.seq, signing_key: false,
     };
   }
 
