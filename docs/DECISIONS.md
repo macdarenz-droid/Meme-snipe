@@ -298,8 +298,6 @@ One row per decision in the table; detailed module decisions follow in sections 
 - **2026-10-04 · Wiring must-haves (WORKER-1 live, BT-2 backtest).** Both feed every released event to the labeller and its facts to the deployer index, and both emit `coverage:rugs:start/gap/resume` (via `rug-labeller`). Rug coverage follows trade-stream coverage: pump and PumpSwap trades for every mint created inside the look-back, and a missed or cut trade log whose transaction is not fetched is a gap, because a missed dump trade is a missed label. BT-2 must replay curve trades and creates, which BT-1's market drops today.
 - **2026-10-04 · Out of scope for `rugs-1`: transfer-then-sell and non-canonical venues.** A deployer who moves tokens to another wallet and sells there, or sells on a pool other than the canonical one (or off pump venues), is not counted. This only makes fewer labels, never more. R9's linked-cluster rule (the dev's funded and linked wallets, H13's cluster) is what would cover it, in a later config version.
 - **2026-10-04 · Future config item: a minimum collapse peak.** Today any peak above zero counts, so a launch whose only liquidity was one small buy and its sale is a collapse. Whether to require a minimum peak is judged on BT-2's H14 rejections by rule; until then the broader label stays (the conservative side).
-<<<<<<< HEAD
-=======
 
 ## Program upgrade 2026-10-02 (UPG-1)
 
@@ -308,4 +306,3 @@ One row per decision in the table; detailed module decisions follow in sections 
 - **2026-10-03 · A non-zero tail on a SOL market should block that market.** Every SOL-quoted event sampled has a zero tail. If one stops being zero, or a tail length other than 8 appears, the unpublished field is live where we price. Ruling: refuse that market until the field is identified (safest default). This belongs where per-market evidence is checked (GATE, or the worker's feed), so it is a follow-up task for the supervisor to assign; DEC-1 already exposes `trailing` and `extra`.
 - **2026-10-03 · The 3 new event discriminators stay `other`.** No published name matches them, and none appeared in 89 sampled blocks. DATA-1 has rows that carry them, so their signatures are the way to study them.
 - **2026-10-03 · Regime boundary.** Per ARCHITECTURE §13.2, the upgrade is a platform change. Backtest and validation use slot 452,654,883 as the boundary, which matches DATA-1's `program_upgrade_2026_10_02` label; pump's own change starts at 452,654,933. DATA-1's "about 20:00 UTC" should read 15:47 UTC.
->>>>>>> origin/ccr-14987baf-i6lrsl
