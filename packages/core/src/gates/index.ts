@@ -9,4 +9,5 @@ export * from './hard.ts';
 export * from './regime.ts';
 export * from './soft.ts';
 export * from './deployer-index.ts';
+export * from './tails.ts';
 export * from './rug-labeller.ts';
