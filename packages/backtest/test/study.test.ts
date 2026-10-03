@@ -64,7 +64,6 @@ describe('BT-2 study runs', () => {
   it.each([
     ['H2', { keepMintAuthority: true }, 'H2:mint-authority'],
     ['H4', { extraExtension: { kind: 'PermanentDelegate', type: 12 } }, 'H4:extension-blocked'],
-    ['H8', { migrationQuote: 4_000_000_000n }, 'H8:dust-at-migration'],
     ['H9', { graduateAfter: 4 * MIN }, 'H9:instant-graduation'],
     ['H5 tail', { tail: { after: 30 * MIN, hex: '0100000000000000' } }, 'H5:event-tail'],
     ['H1-H4 unknown', { noCreateRaw: true }, 'H1:missing'],
@@ -72,6 +71,37 @@ describe('BT-2 study runs', () => {
     const { r } = run([{ ...SETUP, ...patch }]);
     expect(decisions(r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
     expect(rejects(r.records)).toContain(code);
+  });
+
+  it('stages the gates (FACTS-1): a stage-1 reject asks no reads, so stage-2 gates are "not evaluated"; past stage 1, H8 rejects', () => {
+    const dust = { ...SETUP, migrationQuote: 4_000_000_000n };
+    // A dust pool's candles trip H11 (stage 1) first: H8 (stage 2) is never read.
+    const main = run([dust]);
+    const rj = decisions(main.r.records).filter((d) => d.reasons[0] === 'reject');
+    expect(rj.length).toBeGreaterThan(0);
+    for (const d of rj) {
+      expect(d.reasons.some((x) => x.startsWith('H11:'))).toBe(true);
+      expect(d.reasons.at(-1)).toMatch(/^not evaluated: .*\bH8\b/);
+      expect(d.reasons).not.toContain('H8:dust-at-migration');
+    }
+    // With H11 ablated, stage 1 lets it through, the reads land, and H8 rejects it in stage 2.
+    const past = run([dust], { ablate: ['H11'] });
+    expect(rejects(past.r.records)).toContain('H8:dust-at-migration');
+    expect(decisions(past.r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
+  });
+
+  it('charges the read latency: with reads landing 2 min after the check, the entry is 2 min later, at that moment\'s prices', () => {
+    const now = run([SETUP]);
+    const late = run([SETUP], { readLatencyMs: 120_000 });
+    const t0 = tradesOf(now.r, FILL_CONFIG).trades[0]!;
+    const t1 = tradesOf(late.r, FILL_CONFIG).trades[0]!;
+    expect(t1.openedAt - t0.openedAt).toBeGreaterThanOrEqual(120_000);
+  });
+
+  it('a spent read budget leaves the candidate "not evaluated", never a pass', () => {
+    const r = run([SETUP], { readBudget: () => false });
+    expect(decisions(r.r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
+    expect(decisions(r.r.records).some((d) => d.reasons[0] === 'not evaluated' && d.reasons[3] === 'read budget spent')).toBe(true);
   });
 
   it('H14: a serial deployer is rejected, and so is a deployer with a mint outside the sample', () => {

@@ -35,6 +35,9 @@ export const associatedTokenAddress = (owner: string, mint: string, tokenProgram
 /** The tie-break key of a check: sha256 of the salt, universe and mint (hex, compared as text). */
 export const tieHash = (salt: string, universe: string, mint: string): string => createHash('sha256').update(`${salt}|${universe}|${mint}`).digest('hex');
 
+/** The key of a check's stage-2/3 reads landing (FACTS-1 staging). */
+export const LANDED_PREFIX = 'landed:';
+
 /** The fact key of RES-3's features released with a check. */
 export const featuresKey = (mint: string): string => `features:${mint}`;
 
@@ -98,6 +101,14 @@ export interface FactOptions {
    * check, for configurations with a feature rule. Off by default.
    */
   readonly features?: boolean;
+  /**
+   * FACTS-1 staging: the stage-2 and stage-3 reads (accounts, cross-checks, the complete holder scan, funders) land this
+   * long after the check that asked for them, and the strategy decides then, on the facts as of that moment. 0 until
+   * live latency is measured (stated as unmeasured in every report).
+   */
+  readonly readLatencyMs?: number;
+  /** Whether the read budget allows a candidate's reads at a moment (live quota); always, when absent. */
+  readonly readBudget?: (atMs: number, mint: string) => boolean;
   readonly poolAccounts?: (pool: string) => { readonly knownAtMs: number; readonly accountBytes: number; readonly isCashbackCoin: boolean; readonly coinCreator: string } | null;
   readonly insiders?: (mint: string) => { readonly knownAtMs: number; readonly funded: readonly string[]; readonly devCluster: readonly string[] } | null;
   /**
@@ -179,6 +190,9 @@ export class FactProjector {
   #solAt = 0;
   readonly #solPoints: { tMs: number; price: bigint }[] = [];
   readonly #tracker: SignalTracker | null;
+  /** Stage-2/3 reads in flight, oldest landing first (one latency for all, so arrival order is ask order). */
+  readonly #reads: { atMs: number; mint: string; universe: string; n: number }[] = [];
+  #readSeq = 0;
   /** Counts for the report: rows seen by kind and problems by cause (no outcomes). */
   readonly counts = { creates: 0, sampledCreates: 0, unjudged: 0, labels: 0, checks: 0, holderProblems: 0, undecodableRaw: 0 };
 
@@ -534,6 +548,13 @@ export class FactProjector {
       this.#solPoints.push({ tMs: b.start + 3_600_000, price: solPriceMicroUsd(b.close) });
       if (this.#solPoints.length > this.#o.solUsdPoints) this.#solPoints.shift();
     }
+    // Reads asked at earlier checks that have landed by now: the facts as of now, then the landing.
+    while (this.#reads.length > 0 && this.#reads[0]!.atMs <= atMs) {
+      const r = this.#reads.shift()!;
+      const base = `r:${String(this.#readSeq++).padStart(9, '0')}:${r.mint}:${r.n}`;
+      out.push(...this.snapshot(r.mint, m, base));
+      out.push(this.#landed(`${base}:~landed`, m, r.mint, r.universe, r.n));
+    }
     this.#schedule(atMs);
     // Simultaneous signals: an earlier block's check always comes first, so the earliest fully eligible signal wins.
     // Checks due at the same block are true ties; they are released in the order of sha256(salt | universe | mint), so
@@ -551,7 +572,15 @@ export class FactProjector {
       const base = `k:${String(rank).padStart(5, '0')}:${mint}:${n}`;
       out.push(...this.snapshot(mint, m, base));
       out.push(this.#fact(`${base}:~check`, m, `check:${mint}`, { mint, universe, n, rank, blockHeight: this.#height }));
+      const latency = this.#o.readLatencyMs ?? 0;
+      if (latency === 0) out.push(this.#landed(`${base}:~landed`, m, mint, universe, n));
+      else this.#reads.push({ atMs: atMs + latency, mint, universe, n });
     });
+  }
+
+  #landed(id: string, m: Moment, mint: string, universe: string, n: number): MarketEvent {
+    const budget = this.#o.readBudget?.(m.receivedAt, mint) ?? true;
+    return this.#fact(id, m, `${LANDED_PREFIX}${mint}`, { mint, universe, n, budget, blockHeight: this.#height });
   }
 
   /** Marks the checks that fall due at this block for every tracked graduate. */

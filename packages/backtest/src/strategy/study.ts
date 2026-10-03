@@ -26,14 +26,14 @@ import {
 import { observedFeeContext, type ScenarioName } from '../../../core/src/fills/index.ts';
 import {
   DeployerIndex, evaluateHardRejects, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
-  migrationKey, parseMigration, concentration, mintAccounts, type HardResult, type HardGate,
+  migrationKey, parseMigration, concentration, mintAccounts, type HardResult, type HardGate, gatesOfStages,
 } from '../../../core/src/gates/index.ts';
 import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src/lifecycle/index.ts';
 import { economicNav, evaluateEntry, NO_LATCHES, type NavMark, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, LAMPORTS_PER_SOL, type MicroUsd, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
 import type { PoolView } from '../sim/market.ts';
 import type { FeatureRules, StudyConfig, U1Rules, U2Rules, UniverseConfig } from './config.ts';
-import { featuresKey } from '../sim/facts.ts';
+import { featuresKey, LANDED_PREFIX } from '../sim/facts.ts';
 import { BAR_MS, PoolTape, spotPrice } from './tape.ts';
 import { Funnel, NOT_COVERED_CODES, type Stage, type StopClass } from '../study/funnel.ts';
 
@@ -128,6 +128,8 @@ export class StudyStrategy implements Strategy {
   readonly #closed: ClosedTrade[] = [];
   readonly #entries: EntryRecord[] = [];
   readonly #navMarks: NavMark[] = [];
+  /** Candidates past stage 1 whose stage-2 and stage-3 reads have not landed yet, by tag and mint. */
+  readonly #pending = new Map<string, { readonly n: number; readonly stage1: HardResult }>();
   #latches: Latches = NO_LATCHES;
   readonly #stats: DeploymentStats = { trips: [], rejected: {}, peakEquityUsd: 0n, maxDrawdownUsd: 0n, closed: 0 };
   #prunedAt = Number.MIN_SAFE_INTEGER;
@@ -238,6 +240,7 @@ export class StudyStrategy implements Strategy {
     if (e.key.startsWith('pool:') || e.key === 'slot') this.#exits(e, ctx, out);
     // At most one entry per call, and only while nothing else acted on the book in this call (CORE-1).
     if (e.key.startsWith('check:') && !out.some((d) => d.action !== null)) this.#check(e, ctx, out);
+    if (e.key.startsWith(LANDED_PREFIX) && !out.some((d) => d.action !== null)) this.#landed(e, ctx, out);
     return out;
   }
 
@@ -247,7 +250,12 @@ export class StudyStrategy implements Strategy {
     this.#prunedAt = now;
     const horizon = Math.max(0, ...this.#o.config.universes.map((u) => u.window.toMs)) + 3_600_000;
     for (const [pool, t] of this.#tapes) if (now - t.startedAtMs > horizon && !this.#byPool.get(pool)?.size) this.#tapes.delete(pool);
-    for (const [k, c] of this.#candidates) if (!c.entered && !this.#tapes.has(this.#poolOf.get(c.mint) ?? '')) this.#candidates.delete(k);
+    for (const [k, c] of this.#candidates) {
+      if (!c.entered && !this.#tapes.has(this.#poolOf.get(c.mint) ?? '')) {
+        this.#candidates.delete(k);
+        this.#pending.delete(k);
+      }
+    }
   }
 
   // ---------- tape ----------
@@ -273,6 +281,24 @@ export class StudyStrategy implements Strategy {
 
   // ---------- entries ----------
 
+  /** One log line per change: an abstention repeated at every check with the same reasons is one decision. */
+  #say(c: Candidate, out: Decision[]): (...why: string[]) => void {
+    return (...why: string[]) => {
+      const k = why.map((w) => w.replace(/-?\d+/g, '#')).join('|');
+      if (k === c.said) return;
+      c.said = k;
+      out.push({ action: null, reasons: [why[0]!, c.tag, c.mint, ...why.slice(1)] });
+    };
+  }
+
+  /** The hard rejects of the given gates as of now, every one evaluated. */
+  #gates(ctx: StrategyContext, u: UniverseConfig, mint: string, roundTrip: ReturnType<ReturnType<typeof pumpSwapRoundTrip>>, spend: bigint, only: readonly HardGate[]): HardResult {
+    const policy = this.#o.session.policy;
+    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers };
+    return evaluateHardRejects(gctx, { session: this.#o.session, mode: 'backtest', rugLabeller: 'RUG-1' },
+      { mint, universe: (this.#s0 ? 'S0' : u.universe) as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip }, { stopAtFirst: false, only });
+  }
+
   #check(e: MarketEvent, ctx: StrategyContext, out: Decision[]): void {
     const { mint, universe, blockHeight } = e.value as { mint: string; universe: string; blockHeight: bigint };
     const u = this.#universes.get(universe);
@@ -291,14 +317,9 @@ export class StudyStrategy implements Strategy {
     }
     c.checks++;
     if (c.entered) return;
-    // One log line per change: an abstention repeated at every check with the same reasons is one decision.
-    const cand = c;
-    const say = (...why: string[]) => {
-      const k = why.map((w) => w.replace(/-?\d+/g, '#')).join('|');
-      if (k === cand.said) return;
-      cand.said = k;
-      out.push({ action: null, reasons: [why[0]!, tag, mint, ...why.slice(1)] });
-    };
+    // Reads asked at an earlier check are still in flight: no second ask until they land (as live).
+    if (this.#pending.has(key)) return;
+    const say = this.#say(c, out);
     if (now < this.#o.entriesFrom || now >= this.#o.entriesTo) return;
     if (c.target !== null && c.checks < c.target) return;
     if (c.checks === 1 || c.target === c.checks) say('candidate', `check ${c.checks}`);
@@ -316,11 +337,46 @@ export class StudyStrategy implements Strategy {
     const spend = microUsdToLamports(policy.capital.minNotional, px.price as MicroUsd, 'ceil');
     const quoter = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL));
 
-    // Hard rejects, every gate evaluated (calibration log): the reject mix by reason is a G3 input.
-    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers };
-    const gates = evaluateHardRejects(gctx, { session: this.#o.session, mode: 'backtest', rugLabeller: 'RUG-1' },
-      { mint, universe: (this.#s0 ? 'S0' : u.universe) as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip: quoter(spend) },
-      { stopAtFirst: false });
+    // Stage 1 (FACTS-1 staging): the stream-derived hard rejects, every one evaluated (calibration log). Only a
+    // candidate that passes asks for the reads of stages 2 and 3; their answers land later (`LANDED_PREFIX`).
+    const g1 = this.#gates(ctx, u, mint, quoter(spend), spend, STAGE_1);
+    const ablated1 = this.#o.ablate !== undefined && !g1.pass && g1.failed.every((g) => this.#o.ablate!.includes(g));
+    if (!g1.pass && !ablated1) return void (this.funnel.gates(tag, mint, g1), say('reject', ...gateCodes(g1), `not evaluated: ${STAGES_LATER.join(',')}`));
+    this.#pending.set(key, { n: (e.value as { n: number }).n, stage1: g1 });
+  }
+
+  /**
+   * The reads of stages 2 and 3 landed for a check (after the read latency, as of now): those gates, then the setup,
+   * risk and entry at this moment's prices. A spent read budget leaves the candidate "not evaluated", never a pass.
+   */
+  #landed(e: MarketEvent, ctx: StrategyContext, out: Decision[]): void {
+    const { mint, universe, n, budget, blockHeight } = e.value as { mint: string; universe: string; n: number; budget: boolean; blockHeight: bigint };
+    const u = this.#universes.get(universe);
+    if (u === undefined) return;
+    const now = ctx.now.receivedAt;
+    const tag = this.#s0 ? `S0-${u.universe}` : this.#o.ablate !== undefined ? `${u.universe}-no${this.#o.ablate.join('')}` : u.universe;
+    const key = `${tag}|${mint}`;
+    const c = this.#candidates.get(key);
+    const p = this.#pending.get(key);
+    if (c === undefined || p === undefined || p.n !== n || c.entered) return;
+    this.#pending.delete(key);
+    const say = this.#say(c, out);
+    const stop = (stage: Stage, cls: StopClass, gates?: HardResult) => this.funnel.record(tag, mint, stage, cls, gates);
+    if (!budget) return void (stop('not evaluated', 'not covered'), say('not evaluated', 'read budget spent', STAGES_LATER.join(',')));
+    if (now >= this.#o.entriesTo) return;
+    const mig = parseMigration(ctx.lookup(migrationKey(mint)).ok ? (ctx.lookup(migrationKey(mint)) as { value: unknown }).value : null);
+    const pool = mig?.pool ?? null;
+    const pv = pool === null ? null : ctx.lookup(`pool:${pool}`);
+    const view = pv !== null && pv.ok ? (pv.value as PoolView) : null;
+    const sol = parseSolUsd(ctx.lookup(SOL_USD_KEY).ok ? (ctx.lookup(SOL_USD_KEY) as { value: unknown }).value : null);
+    const px = sol === null ? null : solUsdAt(sol, now);
+    if (view === null || pool === null) return void (stop('market data', 'not covered'), say('no entry', 'pool state unknown'));
+    if (px === null) return void (stop('market data', 'not covered'), say('no entry', 'SOL/USD unknown'));
+    const policy = this.#o.session.policy;
+    const spend = microUsdToLamports(policy.capital.minNotional, px.price as MicroUsd, 'ceil');
+    const quoter = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL));
+    const g23 = this.#gates(ctx, u, mint, quoter(spend), spend, STAGES_LATER);
+    const gates: HardResult = { ...g23, pass: p.stage1.pass && g23.pass, evaluated: [...p.stage1.evaluated, ...g23.evaluated], passed: [...p.stage1.passed, ...g23.passed], failed: [...p.stage1.failed, ...g23.failed], reasons: [...p.stage1.reasons, ...g23.reasons], notes: [...p.stage1.notes, ...g23.notes] };
     const ablated = this.#o.ablate !== undefined && !gates.pass && gates.failed.every((g) => this.#o.ablate!.includes(g));
     if (!gates.pass && !ablated) return void (this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates)));
     // An ablation run enters only what the filter blocks: everything else is the main run's.
@@ -647,6 +703,9 @@ export const u1Setup = (r: U1Rules, tape: PoolTape, spot: bigint, now: number, c
 };
 
 export { LAMPORTS_PER_SOL };
+
+const STAGE_1 = gatesOfStages([1]);
+const STAGES_LATER = gatesOfStages([2, 3, 4]);
 
 const fixedStop = (stopBelowBps: number, spot: bigint): { ok: true; stopSpot: bigint } | { ok: false; why: string } => {
   const stop = (spot * (BPS - BigInt(stopBelowBps))) / BPS;

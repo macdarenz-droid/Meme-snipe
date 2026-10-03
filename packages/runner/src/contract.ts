@@ -133,6 +133,12 @@ export interface JournalLine {
 /** Kinds that must carry at least one reason ("every decision logged with its reasons", §15 item 3). */
 export const NEEDS_REASONS: ReadonlySet<JournalKind> = new Set(['decision', 'entry', 'exit', 'halt', 'resume']);
 
+/**
+ * Strategies BT-2 has registered (configurations fixed before the holdout): the only entry rules the qualifying run
+ * may use (worker refuses anything else; the report fails a named host run whose start lines differ). None yet.
+ */
+export const REGISTERED_STRATEGIES: readonly string[] = [];
+
 export const isLoopback = (addr: string): boolean => /^(127\.0\.0\.1|\[::1\]):\d{1,5}$/.test(addr);
 
 export interface HealthCheck {

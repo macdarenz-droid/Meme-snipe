@@ -28,6 +28,9 @@ export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' |
   readonly insiders?: ConstructorParameters<typeof FactProjector>[0]['insiders'];
   readonly poolAccounts?: ConstructorParameters<typeof FactProjector>[0]['poolAccounts'];
   readonly delegatesComplete?: boolean;
+  /** FACTS-1 staging: when stage-2/3 reads land after their check, and the read budget (live quota); 0 and unlimited by default. */
+  readonly readLatencyMs?: number;
+  readonly readBudget?: ConstructorParameters<typeof FactProjector>[0]['readBudget'];
   /** When trade rows begin (an assembled window's first day); see FactOptions.tradesFromMs. */
   readonly tradesFromMs?: number;
 }
@@ -65,6 +68,8 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
       ...(o.insiders === undefined ? {} : { insiders: o.insiders }),
       ...(o.poolAccounts === undefined ? {} : { poolAccounts: o.poolAccounts }),
       ...(o.delegatesComplete === undefined ? {} : { delegatesComplete: o.delegatesComplete }),
+      ...(o.readLatencyMs === undefined ? {} : { readLatencyMs: o.readLatencyMs }),
+      ...(o.readBudget === undefined ? {} : { readBudget: o.readBudget }),
       ...(o.tradesFromMs === undefined ? {} : { tradesFromMs: o.tradesFromMs }),
     }),
     // A fresh locked session per run: the policy cannot change while it runs (R15).
