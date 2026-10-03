@@ -9,6 +9,10 @@ import { mintHashFraction } from '../src/sim/facts.ts';
 import { key, type MintPlan, studyWorld, W0 } from './study-world.ts';
 import { SOL_USD } from './synthetic.ts';
 import { oneTimeRent } from '../../worker/src/run/settings.ts';
+import { ASSUMPTIONS } from '../../worker/src/facts/budget.ts';
+import { HOLDER_SCANS_PER_DAY } from '../../worker/src/facts/readers.ts';
+import { DEFAULT_LIVE_FEED } from '../../worker/src/providers/live-feed.ts';
+import { READ_LATENCY, READ_LIMITS } from '../src/study/reads.ts';
 import { POOL_ACCOUNTS } from './study-world.ts';
 
 vi.setConfig({ testTimeout: 300_000 });
@@ -102,18 +106,23 @@ describe('BT-2 study runs', () => {
     expect(decisions(past.r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
   });
 
-  it('charges the read latency: with reads landing 2 min after the check, the entry is 2 min later, at that moment\'s prices', () => {
-    const now = run([SETUP]);
-    const late = run([SETUP], { readLatencyMs: 120_000 });
-    const t0 = tradesOf(now.r, FILL_CONFIG).trades[0]!;
-    const t1 = tradesOf(late.r, FILL_CONFIG).trades[0]!;
-    expect(t1.openedAt - t0.openedAt).toBeGreaterThanOrEqual(120_000);
+  it('decides an entry only when the stage-3 answers land, never at the check itself', () => {
+    const { r } = base;
+    const enters = decisions(r.records).filter((d) => d.reasons[0] === 'enter');
+    expect(enters.length).toBeGreaterThan(0);
+    for (const d of enters) expect(d.eventId).toMatch(/^r:\d{9}:.*~landed$/);
   });
 
-  it('a spent read budget leaves the candidate "not evaluated", never a pass', () => {
-    const r = run([SETUP], { readBudget: () => false });
+  it('the holder scan budget is the live cap: spent, H12 and H13 are "not evaluated", never a pass', () => {
+    const r = run([SETUP], { readLimits: { ...READ_LIMITS, holderScansPerUtcDay: 0 } });
     expect(decisions(r.r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
-    expect(decisions(r.r.records).some((d) => d.reasons[0] === 'not evaluated' && d.reasons[3] === 'read budget spent')).toBe(true);
+    expect(decisions(r.r.records).some((d) => d.reasons[0] === 'not evaluated' && d.reasons[3] === 'holder scan budget spent')).toBe(true);
+  });
+
+  it('defaults to the live read caps and conservative latencies, never kinder than live', () => {
+    expect(READ_LIMITS).toEqual({ holderScansPerUtcDay: HOLDER_SCANS_PER_DAY, minReadGapMs: 60_000 / ASSUMPTIONS.evaluationsPerMinute });
+    expect(READ_LIMITS).toEqual({ holderScansPerUtcDay: 100, minReadGapMs: 60_000 });
+    expect(READ_LATENCY).toEqual({ accountsMs: 500, holderScanMs: 5_000, feedReleaseMs: DEFAULT_LIVE_FEED.staleReleaseMs });
   });
 
   it('H14: a serial deployer is rejected, and so is a deployer with a mint outside the sample', () => {

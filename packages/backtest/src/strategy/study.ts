@@ -34,6 +34,7 @@ import { type Bps, BPS_DENOMINATOR, type Lamports, LAMPORTS_PER_SOL, type MicroU
 import type { PoolView } from '../sim/market.ts';
 import type { FeatureRules, StudyConfig, U1Rules, U2Rules, UniverseConfig } from './config.ts';
 import { featuresKey, LANDED_PREFIX } from '../sim/facts.ts';
+import type { ReadLimits } from '../study/reads.ts';
 import { oneTimeRent } from '../../../worker/src/run/settings.ts';
 import { BAR_MS, PoolTape, spotPrice } from './tape.ts';
 import { Funnel, NOT_COVERED_CODES, type Stage, type StopClass } from '../study/funnel.ts';
@@ -67,6 +68,8 @@ export interface StudyOptions {
    * not produced yet (graduate survival and curve volume); every output of such a run says the regime was assumed on.
    */
   readonly regime?: 'evaluate' | 'assume-on';
+  /** The live read caps (READ_LIMITS). */
+  readonly readLimits: ReadLimits;
 }
 
 const paperSignature = (id: string) =>
@@ -136,7 +139,11 @@ export class StudyStrategy implements Strategy {
   readonly #navMarks: NavMark[] = [];
   #setupCost: AccountCost | null = null;
   /** Candidates past stage 1 whose stage-2 and stage-3 reads have not landed yet, by tag and mint. */
-  readonly #pending = new Map<string, { readonly n: number; readonly stage1: HardResult }>();
+  readonly #pending = new Map<string, { readonly n: number; readonly awaiting: 2 | 3; readonly gates: HardResult }>();
+  /** Complete holder scans spent per UTC day (the live cap). */
+  readonly #scans = new Map<string, number>();
+  /** When each mint's reads were last asked: at most one read round per mint per `minReadGapMs`. */
+  readonly #lastAsk = new Map<string, number>();
   #latches: Latches = NO_LATCHES;
   readonly #stats: DeploymentStats = { trips: [], rejected: {}, peakEquityUsd: 0n, maxDrawdownUsd: 0n, closed: 0 };
   #prunedAt = Number.MIN_SAFE_INTEGER;
@@ -285,6 +292,7 @@ export class StudyStrategy implements Strategy {
       if (!c.entered && !this.#tapes.has(this.#poolOf.get(c.mint) ?? '')) {
         this.#candidates.delete(k);
         this.#pending.delete(k);
+        this.#lastAsk.delete(c.mint);
       }
     }
   }
@@ -382,7 +390,11 @@ export class StudyStrategy implements Strategy {
     const g1 = this.#gates(ctx, u, mint, quoter(spend), spend, STAGE_1);
     const ablated1 = this.#o.ablate !== undefined && !g1.pass && g1.failed.every((g) => this.#o.ablate!.includes(g));
     if (!g1.pass && !ablated1) return void (this.funnel.gates(tag, mint, g1), say('reject', ...gateCodes(g1), `not evaluated: ${STAGES_LATER.join(',')}`));
-    this.#pending.set(key, { n: (e.value as { n: number }).n, stage1: g1 });
+    // One read round per mint per minute (live cap): a check inside that gap waits for the next one.
+    const last = this.#lastAsk.get(mint);
+    if (last !== undefined && now - last < this.#o.readLimits.minReadGapMs) return;
+    this.#lastAsk.set(mint, now);
+    this.#pending.set(key, { n: (e.value as { n: number }).n, awaiting: 2, gates: g1 });
   }
 
   /**
@@ -390,7 +402,7 @@ export class StudyStrategy implements Strategy {
    * risk and entry at this moment's prices. A spent read budget leaves the candidate "not evaluated", never a pass.
    */
   #landed(e: MarketEvent, ctx: StrategyContext, out: Decision[]): void {
-    const { mint, universe, n, budget, blockHeight } = e.value as { mint: string; universe: string; n: number; budget: boolean; blockHeight: bigint };
+    const { mint, universe, n, stage, blockHeight } = e.value as { mint: string; universe: string; n: number; stage: 2 | 3; blockHeight: bigint };
     const u = this.#universes.get(universe);
     if (u === undefined) return;
     const now = ctx.now.receivedAt;
@@ -398,26 +410,35 @@ export class StudyStrategy implements Strategy {
     const key = `${tag}|${mint}`;
     const c = this.#candidates.get(key);
     const p = this.#pending.get(key);
-    if (c === undefined || p === undefined || p.n !== n || c.entered) return;
-    this.#pending.delete(key);
+    if (c === undefined || p === undefined || p.n !== n || p.awaiting !== stage || c.entered) return;
     const say = this.#say(c, out);
-    const stop = (stage: Stage, cls: StopClass, gates?: HardResult) => this.funnel.record(tag, mint, stage, cls, gates);
-    if (!budget) return void (stop('not evaluated', 'not covered'), say('not evaluated', 'read budget spent', STAGES_LATER.join(',')));
-    if (now >= this.#o.entriesTo) return;
+    const stop = (st: Stage, cls: StopClass, gates?: HardResult) => this.funnel.record(tag, mint, st, cls, gates);
+    if (now >= this.#o.entriesTo) return void this.#pending.delete(key);
     const mig = parseMigration(ctx.lookup(migrationKey(mint)).ok ? (ctx.lookup(migrationKey(mint)) as { value: unknown }).value : null);
     const pool = mig?.pool ?? null;
     const pv = pool === null ? null : ctx.lookup(`pool:${pool}`);
     const view = pv !== null && pv.ok ? (pv.value as PoolView) : null;
     const sol = parseSolUsd(ctx.lookup(SOL_USD_KEY).ok ? (ctx.lookup(SOL_USD_KEY) as { value: unknown }).value : null);
     const px = sol === null ? null : solUsdAt(sol, now);
-    if (view === null || pool === null) return void (stop('market data', 'not covered'), say('no entry', 'pool state unknown'));
-    if (px === null) return void (stop('market data', 'not covered'), say('no entry', 'SOL/USD unknown'));
+    if (view === null || pool === null) return void (this.#pending.delete(key), stop('market data', 'not covered'), say('no entry', 'pool state unknown'));
+    if (px === null) return void (this.#pending.delete(key), stop('market data', 'not covered'), say('no entry', 'SOL/USD unknown'));
     const policy = this.#o.session.policy;
     const spend = microUsdToLamports(policy.capital.minNotional, px.price as MicroUsd, 'ceil');
     const quoter = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL));
-    const g23 = this.#gates(ctx, u, mint, quoter(spend), spend, STAGES_LATER);
-    const gates: HardResult = { ...g23, pass: p.stage1.pass && g23.pass, evaluated: [...p.stage1.evaluated, ...g23.evaluated], passed: [...p.stage1.passed, ...g23.passed], failed: [...p.stage1.failed, ...g23.failed], reasons: [...p.stage1.reasons, ...g23.reasons], notes: [...p.stage1.notes, ...g23.notes] };
+    const gates = mergeGates(p.gates, this.#gates(ctx, u, mint, quoter(spend), spend, stage === 2 ? STAGE_2 : STAGES_3_4));
     const ablated = this.#o.ablate !== undefined && !gates.pass && gates.failed.every((g) => this.#o.ablate!.includes(g));
+    if (stage === 2) {
+      if (!gates.pass && !ablated) return void (this.#pending.delete(key), this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates), `not evaluated: ${STAGES_3_4.join(',')}`));
+      // The complete holder scan runs only for a candidate past stage 2, within the live daily cap (FACTS-1's
+      // HOLDER_SCANS_PER_DAY); reached, H12 and H13 abstain: "not evaluated", never a pass.
+      const day = new Date(now).toISOString().slice(0, 10);
+      const used = this.#scans.get(day) ?? 0;
+      if (used >= this.#o.readLimits.holderScansPerUtcDay) return void (this.#pending.delete(key), stop('not evaluated', 'not covered'), say('not evaluated', 'holder scan budget spent', STAGES_3_4.join(',')));
+      this.#scans.set(day, used + 1);
+      this.#pending.set(key, { n, awaiting: 3, gates });
+      return;
+    }
+    this.#pending.delete(key);
     if (!gates.pass && !ablated) return void (this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates)));
     // An ablation run enters only what the filter blocks: everything else is the main run's.
     if (this.#o.ablate !== undefined && gates.pass) return;
@@ -745,6 +766,14 @@ export { LAMPORTS_PER_SOL };
 
 const STAGE_1 = gatesOfStages([1]);
 const STAGES_LATER = gatesOfStages([2, 3, 4]);
+const STAGE_2 = gatesOfStages([2]);
+const STAGES_3_4 = gatesOfStages([3, 4]);
+
+/** Two partial gate results as one (stages evaluated so far). */
+const mergeGates = (a: HardResult, b: HardResult): HardResult => ({
+  ...b, pass: a.pass && b.pass, evaluated: [...a.evaluated, ...b.evaluated], passed: [...a.passed, ...b.passed],
+  failed: [...a.failed, ...b.failed], reasons: [...a.reasons, ...b.reasons], notes: [...a.notes, ...b.notes],
+});
 
 const fixedStop = (stopBelowBps: number, spot: bigint): { ok: true; stopSpot: bigint } | { ok: false; why: string } => {
   const stop = (spot * (BPS - BigInt(stopBelowBps))) / BPS;

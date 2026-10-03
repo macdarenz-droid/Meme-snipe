@@ -24,6 +24,7 @@ import type { RawRow } from '../dataset/raw.ts';
 import type { AmmSwapRow, CurveTradeRow, DatasetRow, EventRow } from '../dataset/rows.ts';
 import type { PoolView } from './market.ts';
 import { SignalTracker } from '../research/tracker.ts';
+import { landings, type ReadLatency } from '../study/reads.ts';
 
 export const ATA_PROGRAM = toAddress('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 
@@ -102,13 +103,11 @@ export interface FactOptions {
    */
   readonly features?: boolean;
   /**
-   * FACTS-1 staging: the stage-2 and stage-3 reads (accounts, cross-checks, the complete holder scan, funders) land this
-   * long after the check that asked for them, and the strategy decides then, on the facts as of that moment. 0 until
-   * live latency is measured (stated as unmeasured in every report).
+   * FACTS-1 staging: when a check's stage-2 answers (accounts, cross-checks) and stage-3 answers (the complete holder
+   * scan, funders) land. The projector releases the facts as of each landing; the strategy decides on them then.
+   * Absent: both land at the check (tests only; study runs pass READ_LATENCY).
    */
-  readonly readLatencyMs?: number;
-  /** Whether the read budget allows a candidate's reads at a moment (live quota); always, when absent. */
-  readonly readBudget?: (atMs: number, mint: string) => boolean;
+  readonly readLatency?: ReadLatency;
   readonly poolAccounts?: (pool: string) => { readonly knownAtMs: number; readonly accountBytes: number; readonly isCashbackCoin: boolean; readonly coinCreator: string } | null;
   readonly insiders?: (mint: string) => { readonly knownAtMs: number; readonly funded: readonly string[]; readonly devCluster: readonly string[] } | null;
   /**
@@ -191,7 +190,7 @@ export class FactProjector {
   readonly #solPoints: { tMs: number; price: bigint }[] = [];
   readonly #tracker: SignalTracker | null;
   /** Stage-2/3 reads in flight, oldest landing first (one latency for all, so arrival order is ask order). */
-  readonly #reads: { atMs: number; mint: string; universe: string; n: number }[] = [];
+  readonly #reads: { atMs: number; mint: string; universe: string; n: number; stage: 2 | 3 }[] = [];
   #readSeq = 0;
   /** Counts for the report: rows seen by kind and problems by cause (no outcomes). */
   readonly counts = { creates: 0, sampledCreates: 0, unjudged: 0, labels: 0, checks: 0, holderProblems: 0, undecodableRaw: 0 };
@@ -553,7 +552,7 @@ export class FactProjector {
       const r = this.#reads.shift()!;
       const base = `r:${String(this.#readSeq++).padStart(9, '0')}:${r.mint}:${r.n}`;
       out.push(...this.snapshot(r.mint, m, base));
-      out.push(this.#landed(`${base}:~landed`, m, r.mint, r.universe, r.n));
+      out.push(this.#landed(`${base}:~landed`, m, r.mint, r.universe, r.n, r.stage));
     }
     this.#schedule(atMs);
     // Simultaneous signals: an earlier block's check always comes first, so the earliest fully eligible signal wins.
@@ -572,15 +571,18 @@ export class FactProjector {
       const base = `k:${String(rank).padStart(5, '0')}:${mint}:${n}`;
       out.push(...this.snapshot(mint, m, base));
       out.push(this.#fact(`${base}:~check`, m, `check:${mint}`, { mint, universe, n, rank, blockHeight: this.#height }));
-      const latency = this.#o.readLatencyMs ?? 0;
-      if (latency === 0) out.push(this.#landed(`${base}:~landed`, m, mint, universe, n));
-      else this.#reads.push({ atMs: atMs + latency, mint, universe, n });
+      if (this.#o.readLatency === undefined) {
+        out.push(this.#landed(`${base}:~landed2`, m, mint, universe, n, 2), this.#landed(`${base}:~landed3`, m, mint, universe, n, 3));
+      } else {
+        const at = landings(atMs, this.#o.readLatency);
+        this.#reads.push({ atMs: at.stage2, mint, universe, n, stage: 2 }, { atMs: at.stage3, mint, universe, n, stage: 3 });
+        this.#reads.sort((a, b) => a.atMs - b.atMs);
+      }
     });
   }
 
-  #landed(id: string, m: Moment, mint: string, universe: string, n: number): MarketEvent {
-    const budget = this.#o.readBudget?.(m.receivedAt, mint) ?? true;
-    return this.#fact(id, m, `${LANDED_PREFIX}${mint}`, { mint, universe, n, budget, blockHeight: this.#height });
+  #landed(id: string, m: Moment, mint: string, universe: string, n: number, stage: 2 | 3): MarketEvent {
+    return this.#fact(id, m, `${LANDED_PREFIX}${mint}`, { mint, universe, n, stage, blockHeight: this.#height });
   }
 
   /** Marks the checks that fall due at this block for every tracked graduate. */

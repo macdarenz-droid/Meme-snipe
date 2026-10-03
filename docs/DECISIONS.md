@@ -649,11 +649,19 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - stage 3: the complete holder scan and funders H12, H13;
   - stage 4: H15 (live only).
 
-  At a check the strategy evaluates stage 1 only. A reject there logs "not evaluated" for every later gate, and no read is asked. A candidate that passes asks for its reads, which land `readLatencyMs` later as a `landed:<mint>` event; the projector releases the facts as of that moment. The strategy then evaluates stages 2–3, followed by setup, risk and entry at that moment's prices. No second ask is made while a read is in flight. A spent read budget (`readBudget`, live quota) gives "not evaluated", never a pass, and the funnel has a stage for it. Latency is 0 and the budget unlimited until live measurements exist; both are hooks, and reports say so. Under staging a dust pool is stopped by H11 in stage 1 before H8 is read, which is the live order. H8 is tested past stage 1 through an H11 ablation. Tests: `packages/core/test/gates/stages.test.ts`, `test/study.test.ts`.
-  - regime volume will be one on-chain calculation, the same historically and live (FACTS-1); a coverage gap is unknown, never zero, and an unknown regime input means the regime is off;
-  - fill assumptions stay harsh (BT-1c) until measured evidence justifies a change.
-## Worker (WORKER-1, `packages/worker/src/run`, `packages/worker/src/engine`, `packages/worker/src/main.ts`)
+  At a check the strategy evaluates stage 1 only. A reject there logs "not evaluated" for every later gate, and no read is asked. A candidate that passes asks for its reads (at most one read round per mint per minute; none while one is in flight).
+  - The stage-2 answers land `accountsMs + feedReleaseMs` after the check, and the stage-3 answers `holderScanMs + feedReleaseMs` after that. Each lands as a `landed:<mint>` event, with the facts released again as of that moment.
+  - Stage 2 is evaluated when its answers land. A candidate past it spends one complete holder scan from the live daily cap. With the cap spent, H12 and H13 are "not evaluated", never a pass.
+  - Stage 3 (and 4) is evaluated when the scan lands, then setup, risk and entry at that moment's prices. An entry is only ever decided on a stage-3 landing.
 
+  No optimistic defaults (supervisor ruling), in `src/study/reads.ts`:
+  - `READ_LIMITS` is the worker's own configuration, imported: `HOLDER_SCANS_PER_DAY` (100 per UTC day) and one read round per mint per minute (`60_000 / ASSUMPTIONS.evaluationsPerMinute`).
+  - `READ_LATENCY` holds conservative named figures until the dry run measures p95s: account and largest-holder reads 500 ms; the complete holder scan 5,000 ms (gpa-probe: 4.3 s for a 569k-account legacy scan; Token-2022 0.07–0.26 s); plus the live feed's longest release hold, `DEFAULT_LIVE_FEED.staleReleaseMs` (2 s, per FACTS-1: receipt to engine takes 1–2 s).
+  - A test checks the defaults equal the live config.
+
+  The live worker does not stage by gate yet (FACTS-1b #75 stages on the H16 evidence reasons, and reads the funders in the account round). Adopting `only` per stage is a WORKER-1 follow-up after #41.
+
+  Under staging a dust pool is stopped by H11 in stage 1 before H8 is read, which is the live order. H8 is tested past stage 1 through an H11 ablation. Tests: `packages/core/test/gates/stages.test.ts`, `test/study.test.ts`, `test/facts.test.ts`.
 - **2026-10-04 · Wallet setup rent in the deployment replay (supervisor parity ruling).** Booked as live books it: one `wallet_setup` account cost at the walk-forward start, the worker's own `oneTimeRent(fills)` (imported, not copied), valued at that hour's SOL price and rounded up. Equity and cash start at bankroll minus the rent, and the rent counts toward day 1's loss. Test: `test/study.test.ts`; NAV is within one micro-dollar of bankroll − rent, because it values the wallet in lamports and back, flooring both ways.
 - **2026-10-04 · The regime gate in the backtest (supervisor parity question).** Before this change the backtest never evaluated it: research runs passed `regime: 'unknown'` to RISK-1, where R16 is live only, and the deployment replay passed `'on'`. The projector produces no graduate-survival or curve-volume facts, so if the regime were evaluated it would be off ("unknown") on every check, independent of the 365-day volume window.
 

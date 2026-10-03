@@ -9,7 +9,8 @@ import {
   parseMigration, parseMint, parsePool, parseSolUsd, poolKey, RUG_UNJUDGED_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey,
 } from '../../core/src/gates/index.ts';
 import { seriesReleases } from '../src/dataset/offchain.ts';
-import { FactProjector, type FactOptions, mintHashFraction, tieHash } from '../src/sim/facts.ts';
+import { FactProjector, type FactOptions, LANDED_PREFIX, mintHashFraction, tieHash } from '../src/sim/facts.ts';
+import { landings, READ_LATENCY } from '../src/study/reads.ts';
 import { Market, rowMoment } from '../src/sim/market.ts';
 import { SOL_USD } from './synthetic.ts';
 import { SLOT_MS, studyWorld, SUPPLY, W0, type MintPlan } from './study-world.ts';
@@ -19,10 +20,10 @@ const U2 = { universe: 'U2', fromMs: 60 * 60_000, toMs: 70 * 60_000, everyMs: 5 
 
 const solUsd = { ...SOL_USD, bars: SOL_USD.bars.map((b, k) => ({ ...b, start: W0 - 6 * 3_600_000 + k * 3_600_000 })) };
 
-const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts'], delegatesComplete = true) => {
+const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts'], delegatesComplete = true, readLatency?: FactOptions['readLatency']) => {
   const { rows, mints } = studyWorld({ mints: plans, slots });
   const facts = new FactProjector({
-    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete,
+    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete, ...(readLatency === undefined ? {} : { readLatency }),
     ...(tradesFromMs === undefined ? {} : { tradesFromMs }), ...(poolAccounts === undefined ? {} : { poolAccounts }),
   });
   const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
@@ -150,6 +151,24 @@ describe('fact projector', () => {
     // The mint read is unaffected.
     const mint = parseMint(r.events.filter((e) => e.key === mintKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
     expect(mint.obs.quality).toEqual([]);
+  });
+
+  it('lands stage-2 answers after the account read and release, stage-3 after the holder scan and release, facts as of then', () => {
+    const r = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, true, READ_LATENCY);
+    const c = r.events.find((e) => e.key.startsWith('check:'))!;
+    const n = (c.value as { n: number }).n;
+    const land = r.events.filter((e) => e.key === `${LANDED_PREFIX}${r.mints[0]!.mint}` && (e.value as { n: number }).n === n);
+    expect(land.map((e) => (e.value as { stage: number }).stage)).toEqual([2, 3]);
+    const at = landings(c.moment.receivedAt, READ_LATENCY);
+    // Released at the first block at or after each landing time (a block every slot, 400 ms).
+    expect(land[0]!.moment.receivedAt).toBeGreaterThanOrEqual(at.stage2);
+    expect(land[0]!.moment.receivedAt - at.stage2).toBeLessThan(SLOT_MS * 2);
+    expect(land[1]!.moment.receivedAt).toBeGreaterThanOrEqual(at.stage3);
+    expect(land[1]!.moment.receivedAt - at.stage3).toBeLessThan(SLOT_MS * 2);
+    expect(at.stage3 - c.moment.receivedAt).toBe(500 + 5_000 + 2 * READ_LATENCY.feedReleaseMs);
+    // The facts are released again with each landing, as of that moment.
+    const holdersAt = (m: number) => r.events.some((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.receivedAt === m);
+    expect(holdersAt(land[1]!.moment.receivedAt)).toBe(true);
   });
 
   it('flags holders and the mint partial after a missed token movement', () => {

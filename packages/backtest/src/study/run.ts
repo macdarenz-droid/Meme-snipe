@@ -9,6 +9,7 @@ import { seriesReleases } from '../dataset/offchain.ts';
 import { type RunOptions, type RunResult, runBacktest } from '../run.ts';
 import { FactProjector, gapsOf } from '../sim/facts.ts';
 import type { StudyConfig } from '../strategy/config.ts';
+import { READ_LATENCY, READ_LIMITS, type ReadLatency, type ReadLimits } from './reads.ts';
 import { StudyStrategy } from '../strategy/study.ts';
 
 export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' | 's0'> {
@@ -30,9 +31,9 @@ export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' |
   readonly insiders?: ConstructorParameters<typeof FactProjector>[0]['insiders'];
   readonly poolAccounts?: ConstructorParameters<typeof FactProjector>[0]['poolAccounts'];
   readonly delegatesComplete?: boolean;
-  /** FACTS-1 staging: when stage-2/3 reads land after their check, and the read budget (live quota); 0 and unlimited by default. */
-  readonly readLatencyMs?: number;
-  readonly readBudget?: ConstructorParameters<typeof FactProjector>[0]['readBudget'];
+  /** FACTS-1 staging: read latency and the live read caps (defaults READ_LATENCY and READ_LIMITS, never kinder than live). */
+  readonly readLatency?: ReadLatency;
+  readonly readLimits?: ReadLimits;
   /** When trade rows begin (an assembled window's first day); see FactOptions.tradesFromMs. */
   readonly tradesFromMs?: number;
 }
@@ -70,8 +71,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
       ...(o.insiders === undefined ? {} : { insiders: o.insiders }),
       ...(o.poolAccounts === undefined ? {} : { poolAccounts: o.poolAccounts }),
       ...(o.delegatesComplete === undefined ? {} : { delegatesComplete: o.delegatesComplete }),
-      ...(o.readLatencyMs === undefined ? {} : { readLatencyMs: o.readLatencyMs }),
-      ...(o.readBudget === undefined ? {} : { readBudget: o.readBudget }),
+      readLatency: o.readLatency ?? READ_LATENCY,
       ...(o.tradesFromMs === undefined ? {} : { tradesFromMs: o.tradesFromMs }),
     }),
     // A fresh locked session per run: the policy cannot change while it runs (R15).
@@ -82,6 +82,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
         config: o.study, session: startSession(o.policy), fills: o.fills, scenario: o.scenario, mode: o.mode, entriesFrom: o.entriesFrom, entriesTo: o.entriesTo,
         ...(o.ablate === undefined ? {} : { ablate: o.ablate }),
         ...(o.regime === undefined ? {} : { regime: o.regime }),
+        readLimits: o.readLimits ?? READ_LIMITS,
       });
       o.onStrategy?.(s);
       return s;
