@@ -51,8 +51,10 @@ export interface WatchOptions {
    * `coverage:<name>:start` when first subscribed and `coverage:<name>:gap` {fromSlot, toSlot, reason} for every
    * slot range it may have missed and backfill could not restore in full (with `decodeLogs`, any reconnect: backfill
    * has no log lines). A gap starts at the watch's own last log-notification slot, inclusive, and ends at the first
-   * slot this stream saw live after the resubscribe, once the backfill of that same connection finished; until both
-   * hold it is not closed. `toSlot` null means open-ended (unwatched, halted or refused). Readers mark those ranges
+   * slot this stream saw live after the resubscribe, once the backfill of that same connection finished. At the drop
+   * an open gap (`toSlot` null, reason `disconnect`) is reported at once; at the close it is settled by a bounded gap
+   * with the same `fromSlot`, or by `coverage:<name>:resume` {fromSlot, toSlot} when backfill restored it in full.
+   * `toSlot` null also means open-ended for unwatched, halted or refused watches. Readers mark those ranges
    * uncovered instead of counting fewer events.
    */
   readonly coverage?: string;
@@ -292,6 +294,8 @@ export class RpcStream {
         w.gap.liveAfter = null;
       } else {
         w.gap = { fromSlot: this.#openFrom(w), reason: 'disconnect', backfilled: false, lossy: w.opts.decodeLogs === true, liveAfter: null };
+        // Visible at once: decisions made during the outage must see the range as uncovered (the engine cannot wait for the end).
+        this.#fact(`coverage:${w.opts.coverage}:gap`, { fromSlot: w.gap.fromSlot, toSlot: null, reason: 'disconnect', via: `logs:${w.address}` });
       }
     }
     this.#status('down', { reason, lastSlot: this.#lastSlot });
@@ -373,7 +377,9 @@ export class RpcStream {
     w.gap = null;
     // Never an empty or inverted range: the end is at least the start.
     const to = g.fromSlot !== null && g.liveAfter < g.fromSlot ? g.fromSlot : g.liveAfter;
+    // The open gap reported at the drop is now settled: bounded if anything may be missing, otherwise restored in full.
     if (g.lossy) this.#coverageGap(w, g.fromSlot, to, g.reason);
+    else this.#fact(`coverage:${w.opts.coverage}:resume`, { fromSlot: g.fromSlot, toSlot: to, via: `logs:${w.address}` });
   }
 
   #coverageGap(w: Extract<Watch, { kind: 'logs' }>, fromSlot: bigint | null, toSlot: bigint | null, reason: string): void {

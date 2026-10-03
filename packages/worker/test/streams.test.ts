@@ -1,7 +1,8 @@
 // RPC streams on recorded frames: subscribe, notifications to frames, reconnect with backfill, halt, two providers.
 import { describe, expect, it } from 'vitest';
 import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL, transactionEvents } from '../../core/src/chain/index.ts';
-import { createReplay, type MarketEvent } from '../../core/src/engine/index.ts';
+import { createReplay, Engine, type MarketEvent } from '../../core/src/engine/index.ts';
+import { CONFIG } from '../../core/test/fixtures.ts';
 import {
   DEFAULT_LIVE_FEED, FakeSocketHub, frameEvents, LiveFeed, RpcHttp, RpcStream, rpcHandler, scriptedHttp, TxFetcher, type Frame,
 } from '../src/providers/index.ts';
@@ -262,11 +263,35 @@ describe('RPC stream', () => {
       const [slotSub] = await t.reopen();
       await settle(50); // resubscribed and backfilled, with no new slot yet: the gap stays open
       t.feed.ingest('alchemy', { type: 'slot', slot: 640n, parent: null, root: null }, { receivedAt: t.timers.now() }); // another provider's tip does not end it
-      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
+      // Only the open gap reported at the drop: the range is uncovered from that moment, and not yet bounded.
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: null, reason: 'disconnect', via: VIA }]);
       t.hub.last.push(slotNote(slotSub!, 612));
       expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: 612n, reason: 'disconnect', via: VIA }]);
       const again = run(() => []);
       expect(facts(again.feed, again.timers, 'coverage:creates:start')).toEqual([{ fromSlot: 600n, via: VIA }]);
+    });
+
+    it('an outage is visible to decisions while it lasts: an engine lookup during it sees the open gap', async () => {
+      const t = run(() => []);
+      const seen: unknown[] = [];
+      const engine = new Engine({
+        clock: t.feed.clock, feed: t.feed, runner: { run: () => undefined }, seed: 'outage', book: CONFIG,
+        strategy: { onMarket: (e, ctx) => {
+          if (e.key === 'chain:slot') {
+            const g = ctx.lookup('coverage:creates:gap');
+            seen.push(g.ok ? (g.value as { value: unknown }).value : g.reason);
+          }
+          return [];
+        } },
+      });
+      t.feed.advance(t.timers.now());
+      engine.drain();
+      t.drop(); // the stream is down and stays down: no reconnect, no backfill
+      t.feed.ingest('alchemy', { type: 'slot', slot: 630n, parent: null, root: null }, { receivedAt: t.timers.now() + 1 });
+      t.feed.advance(t.timers.now() + 60_000);
+      engine.drain();
+      expect(seen.at(0)).toBe('missing');
+      expect(seen.at(-1)).toEqual({ fromSlot: 603n, toSlot: null, reason: 'disconnect', via: VIA });
     });
 
     it('a sightings-only stream reports a gap only when backfill was cut short or failed', async () => {
@@ -280,9 +305,15 @@ describe('RPC stream', () => {
         const [slotSub] = await t.reopen();
         await settle(50);
         t.hub.last.push(slotNote(slotSub!, 612));
-        const gaps = facts(t.feed, t.timers, 'coverage:creates:gap');
-        expect(gaps).toHaveLength(expected);
-        if (expected) expect(gaps[0]).toEqual({ fromSlot: 603n, toSlot: 612n, reason: 'disconnect', via: VIA });
+        t.feed.advance(t.timers.now() + 60_000);
+        const settled: [string, unknown][] = [];
+        for (let e = t.feed.next(); e; e = t.feed.next()) if (e.kind === 'market' && e.key.startsWith('coverage:creates:') && !e.key.endsWith(':start')) settled.push([e.key, (e.value as { value: unknown }).value]);
+        // Always the open gap at the drop; then a bounded gap if anything may be missing, else a full resume.
+        expect(settled[0]).toEqual(['coverage:creates:gap', { fromSlot: 603n, toSlot: null, reason: 'disconnect', via: VIA }]);
+        expect(settled[1]).toEqual(expected
+          ? ['coverage:creates:gap', { fromSlot: 603n, toSlot: 612n, reason: 'disconnect', via: VIA }]
+          : ['coverage:creates:resume', { fromSlot: 603n, toSlot: 612n, via: VIA }]);
+        expect(settled).toHaveLength(2);
       }
     });
 
@@ -297,7 +328,8 @@ describe('RPC stream', () => {
         await settle(50);
         const [slotSub] = await t.reopen();
         t.hub.last.push(slotNote(slotSub!, 620)); // live again, but the second backfill has not answered
-        expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
+        expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: null, reason: 'disconnect', via: VIA }]); // one open gap for both drops
+        expect(facts(t.feed, t.timers, 'coverage:creates:resume')).toEqual([]);
         t.timers.advance(5_000);
         await settle(50);
         t.hub.last.push(slotNote(slotSub!, 621));
