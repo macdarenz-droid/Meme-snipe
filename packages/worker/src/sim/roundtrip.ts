@@ -127,30 +127,51 @@ const messageKeys = (compiled: BuiltTransaction['compiled'], tables: readonly Lo
   return [...compiled.staticKeys, ...compiled.lookups.flatMap((l) => pick(l.table, l.writable)), ...compiled.lookups.flatMap((l) => pick(l.table, l.readonly))];
 };
 
+export interface RentContext {
+  readonly lamportsPerByte: bigint;
+  /** Creator fees the stand-in's own trade events say went into the pump creator vault in this transaction. */
+  readonly creatorFees: bigint;
+  /**
+   * The curve's data length before the transaction, as read (null: not read, so growth is counted as none). Never the
+   * decision-time length.
+   */
+  readonly curveBytesBefore: number | null;
+}
+
 /**
- * Rent the transaction paid into one other account, from the node's before/after lamports and the account read back:
- * a new account's rent (a wrapped-SOL account's rent reserve, not its balance), a grown curve's added bytes, or the
- * creator vault's top-up to rent-exempt (it also receives fees, so only the top-up counts).
+ * Rent the transaction paid into one other account, from the node's before/after lamports and the account read back.
+ * Only rent counts; anything else that left the wallet stays in the loss (review of PR #59):
+ * - a new account: at most the rent-exempt minimum for its size (a wrapped-SOL account's rent reserve likewise);
+ * - the pump creator vault: what it gained beyond the creator fees paid into it, at most its shortfall to rent-exempt;
+ * - the curve: added bytes × the rate, against its measured length before.
  */
-export const rentInto = (
-  pre: bigint,
-  post: bigint,
-  after: RawAccount | null,
-  kind: 'vault' | 'curve' | 'other',
-  curveBytesBefore: number,
-  lamportsPerByte: bigint,
-): bigint => {
+export const rentInto = (pre: bigint, post: bigint, after: RawAccount | null, kind: 'vault' | 'curve' | 'other', ctx: RentContext): bigint => {
+  const rate = { lamportsPerByte: ctx.lamportsPerByte };
   if (kind === 'vault') {
-    const need = rentExempt(0, { lamportsPerByte });
-    return post > 0n && pre < need ? need - pre : 0n;
+    const need = rentExempt(0, rate);
+    const topUp = post - pre - ctx.creatorFees;
+    const shortfall = need - pre;
+    return topUp <= 0n || shortfall <= 0n ? 0n : topUp < shortfall ? topUp : shortfall;
   }
-  if (kind === 'curve') return after !== null && after.data.length > curveBytesBefore ? BigInt(after.data.length - curveBytesBefore) * lamportsPerByte : 0n;
+  if (kind === 'curve') {
+    return after !== null && ctx.curveBytesBefore !== null && after.data.length > ctx.curveBytesBefore ? BigInt(after.data.length - ctx.curveBytesBefore) * ctx.lamportsPerByte : 0n;
+  }
   if (pre !== 0n || post === 0n || after === null) return 0n;
+  const cap = rentExempt(after.data.length, rate);
+  let rent = post;
   if (after.owner === TOKEN_PROGRAM || after.owner === TOKEN_2022_PROGRAM) {
     const native = decodeTokenAccount(after.data, after.owner as Address).isNative;
-    if (native !== null) return native;
+    if (native !== null) rent = native;
   }
-  return post;
+  return rent < cap ? rent : cap;
+};
+
+/** The payer could not pay at all: the stand-in's funding, not the coin. */
+export const isFundingError = (err: unknown): boolean => {
+  if (err === 'InsufficientFundsForFee' || err === 'AccountNotFound') return true;
+  if (typeof err !== 'object' || err === null) return false;
+  const r = (err as Record<string, unknown>)['InsufficientFundsForRent'];
+  return typeof r === 'object' && r !== null && (r as Record<string, unknown>)['account_index'] === 0;
 };
 
 export class RoundTripSimulator {
@@ -238,6 +259,11 @@ export class RoundTripSimulator {
       const sim = await call(() => d.rpc.simulate(wire, readBack, req.minContextSlot, d.priority));
       const v = sim.value;
       rec = { ...rec, slot: sim.slot, unitsConsumed: v.unitsConsumed };
+      if (v.err !== null && isFundingError(v.err)) {
+        // Not evidence about the coin: no fact (so it neither vetoes nor enters G3's veto-bias count); check again next time.
+        this.#funded = null;
+        return done('stand-in-unfunded', `the stand-in could not pay: ${JSON.stringify(v.err)}`, null);
+      }
       if (v.err !== null) {
         const error = `${JSON.stringify(v.err)}${v.logs.length > 0 ? ` (${v.logs.slice(-LOG_TAIL).join(' | ')})` : ''}`;
         return done('sim-failed', error, failedRead(sim.slot, error));
@@ -254,36 +280,47 @@ export class RoundTripSimulator {
         const k = at(readBack[i]!);
         if (k < 0 || v.postBalances[k] !== (v.accounts[i]?.lamports ?? 0n)) return flag('the simulation\'s balances disagree with the accounts it read back');
       }
+      // The buy leg's own payment, from its venue event (inner `emit!` log line, DEC-1's reader).
+      const events = logEvents(v.logs, null);
+      if (events.truncated) return flag('the simulation log was truncated before the buy event');
+      let paid: bigint | null = null;
+      // Creator fees the stand-in's own trades paid into the creator vault (buy and sell): not rent.
+      let creatorFees = 0n;
+      for (const e of events.events) {
+        if (req.venue.venue === 'curve' && e.name === 'TradeEvent' && e.data.user === S && e.data.mint === mint) {
+          if (e.data.fee === undefined || e.data.creatorFee === undefined) return flag('a trade event has no fee fields');
+          creatorFees += e.data.creatorFee;
+          if (e.data.isBuy && paid === null) paid = e.data.solAmount + e.data.fee + e.data.creatorFee;
+        }
+        if (req.venue.venue === 'pool' && e.name === 'BuyEvent' && e.data.user === S && paid === null) paid = e.data.userQuoteAmountIn;
+      }
+      if (paid === null) return flag('no buy event from the stand-in in the simulation log');
+
       const own = [S, wsolAta, baseAta].map(at);
       const delta = own.reduce((s, k) => s + v.postBalances![k]! - v.preBalances![k]!, 0n);
       const vault = req.venue.venue === 'curve' && req.venue.market.curve.creator !== undefined ? pumpCreatorVault(req.venue.market.curve.creator) : null;
       const curve = req.venue.venue === 'curve' ? bondingCurveAddress(mint) : null;
+      // Curve growth is counted only against the curve's measured length. A curve longer after the simulation than
+      // the length the decision saw may have grown in this transaction, so it is read now (1 credit); a length that
+      // grew in between makes the counted growth smaller, never larger (sizes only grow), so the loss errs high.
+      let curveBytesBefore: number | null = null;
+      const curveIdx = curve === null ? -1 : readBack.indexOf(curve);
+      const curveAfter = curveIdx < 0 ? null : (v.accounts[curveIdx] ?? null);
+      if (req.venue.venue === 'curve' && curve !== null && curveAfter !== null && curveAfter.data.length > req.venue.market.accountBytes) {
+        const now = await call(() => d.rpc.getMultipleAccounts([curve], sim.slot, d.priority));
+        curveBytesBefore = now.accounts[0]?.data.length ?? null;
+      }
+      const ctx: RentContext = { lamportsPerByte: c.rates.rent.lamportsPerByte, creatorFees, curveBytesBefore };
       let rentPaid = 0n;
       for (let i = 3; i < readBack.length; i++) {
         const a = readBack[i]!;
         const k = at(a);
         const kind = a === vault ? 'vault' : a === curve ? 'curve' : 'other';
-        rentPaid += rentInto(v.preBalances[k]!, v.postBalances[k]!, v.accounts[i] ?? null, kind, req.venue.venue === 'curve' ? req.venue.market.accountBytes : 0, c.rates.rent.lamportsPerByte);
+        rentPaid += rentInto(v.preBalances[k]!, v.postBalances[k]!, v.accounts[i] ?? null, kind, ctx);
       }
       const loss = -delta - v.fee - rentPaid;
       rec = { ...rec, networkFee: v.fee, rentPaid, loss };
 
-      // The buy leg's own payment, from its venue event (inner `emit!` log line, DEC-1's reader).
-      const events = logEvents(v.logs, null);
-      if (events.truncated) return flag('the simulation log was truncated before the buy event');
-      let paid: bigint | null = null;
-      for (const e of events.events) {
-        if (req.venue.venue === 'curve' && e.name === 'TradeEvent' && e.data.isBuy && e.data.user === S && e.data.mint === mint) {
-          if (e.data.fee === undefined || e.data.creatorFee === undefined) return flag('the buy event has no fee fields');
-          paid = e.data.solAmount + e.data.fee + e.data.creatorFee;
-          break;
-        }
-        if (req.venue.venue === 'pool' && e.name === 'BuyEvent' && e.data.user === S) {
-          paid = e.data.userQuoteAmountIn;
-          break;
-        }
-      }
-      if (paid === null) return flag('no buy event from the stand-in in the simulation log');
       if (paid > req.spend) return flag(`the buy paid ${paid}, more than the spend ${req.spend}`, { paid });
       const proceeds = paid - loss;
       if (proceeds < 0n) return flag(`the round trip lost ${loss}, more than the ${paid} paid`, { paid });

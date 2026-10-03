@@ -45,11 +45,10 @@ const roundTripRequest = (venue: Venue, over: Partial<RoundTripRequest> = {}): R
 const mintOf = (q: RoundTripRequest) => (q.venue.venue === 'curve' ? q.venue.market.mint : q.venue.market.state.baseMint);
 
 /** Borsh bytes of the buy event the venue emits, as an Anchor `Program data:` log line inside its invoke. */
-const buyLog = (venue: Venue, mint: string, user: Address, paid: bigint): string[] => {
+const buyLog = (venue: Venue, mint: string, user: Address, paid: bigint, creatorFee = 100_000n): string[] => {
   const w = new Writer();
   if (venue === 'curve') {
     const fee = 400_000n;
-    const creatorFee = 100_000n;
     w.bytes(Uint8Array.from(TRADE_EVENT)).pubkey(mint as Address).u64(paid - fee - creatorFee).u64(1_000n).bool(true).pubkey(user).u64(0n)
       .u64(1n).u64(1n).u64(1n).u64(1n).pubkey(user).u64(95n).u64(fee).pubkey(user).u64(5n).u64(creatorFee);
   } else {
@@ -71,6 +70,10 @@ interface Script {
   readonly paid?: bigint;
   /** Accounts missing before that the round trip creates at the wallet's expense (address → lamports after). */
   readonly creates?: ReadonlyMap<string, bigint>;
+  /** Lamports the wallet pays into existing accounts besides the loss (address → lamports added). */
+  readonly pays?: ReadonlyMap<string, bigint>;
+  /** Data the round trip leaves in an account (e.g. a grown curve). */
+  readonly dataAfter?: ReadonlyMap<string, Uint8Array>;
   readonly logs?: (paid: bigint) => string[];
   /** Edits the JSON value before it is returned. */
   readonly tamper?: (value: Record<string, unknown>, keys: string[]) => void;
@@ -88,15 +91,18 @@ const script = (chain: StubChain, q: RoundTripRequest, sc: Script) => {
     const creates = sc.creates ?? new Map();
     const pre = new Map(keys.map((k) => [k, accounts.get(k)?.lamports ?? 0n] as const));
     const post = new Map(pre);
-    const rentCreated = [...creates.values()].reduce((a, b) => a + b, 0n);
+    const pays = sc.pays ?? new Map();
+    const rentCreated = [...creates.values(), ...pays.values()].reduce((a, b) => a + b, 0n);
     post.set(S, pre.get(S)! - FEE - sc.loss - ATA_RENT - rentCreated);
+    for (const [a, l] of pays) post.set(a, pre.get(a)! + l);
     post.set(baseAta, ATA_RENT);
     for (const [a, l] of creates) post.set(a, l);
     const after = (a: string): StubAccount | null => {
       const l = post.get(a) ?? 0n;
       if (l === 0n) return null;
       if (a === baseAta) return tokenAccount(mint as Address, S, 0n, ATA_RENT);
-      return { ...(accounts.get(a) ?? wallet(l)), lamports: l };
+      const data = sc.dataAfter?.get(a);
+      return { ...(accounts.get(a) ?? wallet(l)), lamports: l, ...(data === undefined ? {} : { data }) };
     };
     const paid = sc.paid ?? q.quote.paid;
     const value: Record<string, unknown> = {
@@ -167,7 +173,7 @@ describe('SIM-1: a clean round trip gives the fact FACTS-1 ingests', () => {
     const uva = userVolumeAccumulator(PUMP_PROGRAM, S);
     chain.accounts.delete(uva);
     const uvaRent = rentExempt(137, RATES.rent);
-    script(chain, q, { loss: 500_000n, creates: new Map([[uva, uvaRent]]) });
+    script(chain, q, { loss: 500_000n, creates: new Map([[uva, uvaRent]]), dataAfter: new Map([[uva, new Uint8Array(137)]]) });
     const r = await sim.simulate(q);
     expect(r.record).toMatchObject({ outcome: 'simulated', rentPaid: uvaRent, loss: 500_000n });
     expect(r.read?.proceeds).toBe(q.quote.paid - 500_000n);
@@ -295,23 +301,103 @@ describe('SIM-1: every failure gives no fact or a failed one, never a pass', () 
   });
 });
 
-describe('SIM-1: rent paid into other accounts', () => {
+describe('SIM-1: rent paid into other accounts (review of PR #59)', () => {
   const rate = RATES.rent.lamportsPerByte;
-  it('new plain account, new wrapped-SOL account (rent reserve only), creator-vault top-up, curve growth', () => {
-    const into = (pre: bigint, post: bigint, a: Omit<RawAccount, 'executable'> & { executable?: boolean }, kind: 'vault' | 'curve' | 'other', bytes: number, r: bigint) =>
-      rentInto(pre, post, { executable: false, ...a }, kind, bytes, r);
-    expect(into(0n, 1_000n, wallet(1_000n), 'other', 0, rate)).toBe(1_000n);
-    expect(into(5n, 5n, wallet(5n), 'other', 0, rate)).toBe(0n);
-    const wsol = tokenAccount(NATIVE_MINT, S, 7n, 7n + ATA_RENT);
+  const raw = (a: StubAccount): RawAccount => ({ executable: false, ...a });
+  const ctx = (o: { creatorFees?: bigint; curveBytesBefore?: number | null } = {}) => ({ lamportsPerByte: rate, creatorFees: o.creatorFees ?? 0n, curveBytesBefore: o.curveBytesBefore ?? null });
+  const need = rentExempt(0, RATES.rent);
+
+  it('a new account counts at most the rent-exempt minimum for its size; the rest stays in the loss', () => {
+    expect(rentInto(0n, need, raw(wallet(need)), 'other', ctx())).toBe(need);
+    expect(rentInto(0n, need + 777n, raw(wallet(need + 777n)), 'other', ctx())).toBe(need);
+    expect(rentInto(5n, 5n, raw(wallet(5n)), 'other', ctx())).toBe(0n);
+    const reserve = rentExempt(165, RATES.rent);
+    const wsol = tokenAccount(NATIVE_MINT, S, 7n, 7n + reserve);
     const native = { ...wsol, owner: TOKEN_PROGRAM, data: wsol.data.slice(0, 165) };
     const dv = new DataView(native.data.buffer, native.data.byteOffset);
     dv.setUint32(109, 1, true);
-    dv.setBigUint64(113, ATA_RENT, true);
-    expect(into(0n, 7n + ATA_RENT, native, 'other', 0, rate)).toBe(ATA_RENT);
+    dv.setBigUint64(113, reserve, true);
+    // The wrapped balance (7) is not rent.
+    expect(rentInto(0n, 7n + reserve, raw(native), 'other', ctx())).toBe(reserve);
+    dv.setBigUint64(113, reserve * 5n, true); // a reserve above the minimum is capped too
+    expect(rentInto(0n, 7n + reserve, raw(native), 'other', ctx())).toBe(reserve);
+  });
+
+  it('the creator vault: only what it gained beyond the creator fees, at most its shortfall', () => {
+    // An empty vault that receives fees >= the minimum needs no top-up.
+    expect(rentInto(0n, need + 5n, raw(wallet(need + 5n)), 'vault', ctx({ creatorFees: need + 5n }))).toBe(0n);
+    // Fees below the minimum: the wallet tops up the rest.
+    expect(rentInto(0n, need, raw(wallet(need)), 'vault', ctx({ creatorFees: 100_000n }))).toBe(need - 100_000n);
+    // A vault already rent-exempt gets no top-up whatever it gains.
+    expect(rentInto(need, need + 900_000n, raw(wallet(need + 900_000n)), 'vault', ctx({ creatorFees: 0n }))).toBe(0n);
+  });
+
+  it('curve growth counts only against a measured length, never without one', () => {
+    const curve = (n: number) => raw({ owner: PUMP_PROGRAM, lamports: 1n, data: new Uint8Array(n) });
+    expect(rentInto(1n, 1n, curve(151), 'curve', ctx({ curveBytesBefore: 120 }))).toBe(31n * rate);
+    expect(rentInto(1n, 1n, curve(151), 'curve', ctx({ curveBytesBefore: 151 }))).toBe(0n);
+    expect(rentInto(1n, 1n, curve(151), 'curve', ctx({ curveBytesBefore: null }))).toBe(0n);
+  });
+});
+
+describe('SIM-1: review fixes end to end (PR #59)', () => {
+  it('a new account that receives rent + X: X stays in the loss', async () => {
+    const { chain, sim, q } = setup('curve');
+    const uva = userVolumeAccumulator(PUMP_PROGRAM, S);
+    chain.accounts.delete(uva);
     const need = rentExempt(0, RATES.rent);
-    expect(into(100n, 10n ** 9n, wallet(10n ** 9n), 'vault', 0, rate)).toBe(need - 100n);
-    expect(into(need, 10n ** 9n, wallet(10n ** 9n), 'vault', 0, rate)).toBe(0n);
-    expect(into(1n, 1n, { owner: PUMP_PROGRAM, lamports: 1n, data: new Uint8Array(151) }, 'curve', 120, rate)).toBe(31n * rate);
-    expect(into(1n, 1n, { owner: SYSTEM, lamports: 1n, data: new Uint8Array(151) }, 'curve', 151, rate)).toBe(0n);
+    script(chain, q, { loss: 500_000n, creates: new Map([[uva, need + 12_345n]]) });
+    const r = await sim.simulate(q);
+    expect(r.record).toMatchObject({ outcome: 'simulated', rentPaid: need, loss: 500_000n + 12_345n });
+  });
+
+  it('the creator vault: fees from the trade events are not rent; a real top-up is', async () => {
+    const need = rentExempt(0, RATES.rent);
+    for (const [creatorFee, topUp] of [[700_000n, 0n], [100_000n, need - 100_000n]] as const) {
+      const { chain, sim, q } = setup('curve');
+      if (q.venue.venue !== 'curve') throw new Error('curve');
+      const vault = pumpCreatorVault(q.venue.market.curve.creator!);
+      chain.accounts.delete(vault);
+      // The vault gets the creator fee (inside the venue loss) plus any top-up (rent, paid by the wallet).
+      script(chain, q, { loss: 500_000n, creates: new Map([[vault, creatorFee + topUp]]), logs: (p) => buyLog('curve', mintOf(q), S, p, creatorFee) });
+      const r = await sim.simulate(q);
+      // The script charges the wallet creatorFee + topUp as "created": creatorFee is venue loss, topUp is rent.
+      expect(r.record).toMatchObject({ outcome: 'simulated', rentPaid: topUp, loss: 500_000n + creatorFee });
+    }
+  });
+
+  it('curve growth: read and counted when the curve grew; a grown-in-between curve leaves the charge in the loss', async () => {
+    const grown = new Uint8Array(151);
+    // Grew in this transaction: the curve is 120 bytes now, 151 after.
+    let { chain, sim, q } = setup('curve');
+    if (q.venue.venue !== 'curve') throw new Error('curve');
+    q = { ...q, venue: { venue: 'curve', market: { ...q.venue.market, accountBytes: 120 } } };
+    const curve = bondingCurveAddress(mintOf(q));
+    chain.accounts.set(curve, { ...chain.accounts.get(curve)!, data: new Uint8Array(120) });
+    const growth = 31n * RATES.rent.lamportsPerByte;
+    script(chain, q, { loss: 500_000n, pays: new Map([[curve, growth]]), dataAfter: new Map([[curve, grown]]) });
+    let r = await sim.simulate(q);
+    expect(r.record).toMatchObject({ outcome: 'simulated', rentPaid: growth, loss: 500_000n, credits: 3 });
+    // Already 151 bytes before (the decision saw 120): no growth to count, so the same payment stays in the loss.
+    ({ chain, sim } = setup('curve'));
+    chain.accounts.set(curve, { ...chain.accounts.get(curve)!, data: grown });
+    script(chain, q, { loss: 500_000n, pays: new Map([[curve, growth]]), dataAfter: new Map([[curve, grown]]) });
+    r = await sim.simulate(q);
+    expect(r.record).toMatchObject({ outcome: 'simulated', rentPaid: 0n, loss: 500_000n + growth });
+  });
+
+  it.each(['InsufficientFundsForFee', 'AccountNotFound', { InsufficientFundsForRent: { account_index: 0 } }])('payer error %j: stand-in unfunded, no fact, funding checked again', async (err) => {
+    const { chain, sim, q } = setup('pool');
+    chain.simulate = () => ({ err, logs: [] });
+    const r = await sim.simulate(q);
+    expect(r).toMatchObject({ read: null, record: { outcome: 'stand-in-unfunded' } });
+    script(chain, q, { loss: 1n });
+    expect((await sim.simulate(q)).record).toMatchObject({ outcome: 'simulated', credits: 2 });
+  });
+
+  it('a rent shortfall on another account is the coin\'s problem: a failed fact', async () => {
+    const { chain, sim, q } = setup('pool');
+    chain.simulate = () => ({ err: { InsufficientFundsForRent: { account_index: 7 } }, logs: [] });
+    expect((await sim.simulate(q)).record.outcome).toBe('sim-failed');
   });
 });

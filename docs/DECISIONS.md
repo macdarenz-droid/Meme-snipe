@@ -380,7 +380,7 @@ A third reviewer read 8370c2a. Its new findings were checked in code, and the se
 - **2026-10-03 · One allowed difference: a sell's close of the base account is left out when the holder has more tokens than the position.** A token account with a balance cannot be closed, and `simulateTransaction` has no state overrides, so keeping the close would fail every such sell for a reason that cannot happen to the bot wallet. The close is removed after building (same compute limit and price as the real shape) and the record says `closeOmitted`; the report counts them. A holder with exactly the position keeps the close.
 - **2026-10-03 · Amounts are measured from balances; rent is the rent actually paid (review of PR #28).**
   - **Buys:** the change in the stand-in's base-token balance, against the quote's tokens.
-  - **Sells:** the change in the stand-in's lamports, wSOL account and base account, plus the base fee, priority fee and tip the build declares, plus the rent the transaction actually paid. The base-token balance must fall by exactly the position.
+  - **Sells:** the change in the stand-in's lamports, wSOL account and base account, plus the base fee, priority fee and tip the build declares, plus the rent the transaction actually paid. Rent is counted as in SIM-1 (review of PR #59): a new account counts at most its rent-exempt minimum. The creator vault counts only what it gained beyond the creator fees in the stand-in's TradeEvents, and no top-up when the log was cut. Growth is measured against the length read before. The base-token balance must fall by exactly the position.
   - **Rent paid:** every account the build writes is read before and read back after, and the rent is taken from that state: a new account's lamports (for a wrapped-SOL account, its rent reserve), added bytes × the rent rate for a grown account, and the pump creator vault's top-up to rent-exempt only, since the vault also receives fees. Rent paid above what the build declares is an "amount-check" failure: the builder under-counts. Both figures are recorded.
   - **Where balances come from:** the stand-in's own balances come from the node's `preBalances`, `postBalances` and token balances inside the same simulation, when the provider returns them (Agave 4.3.0 does, checked 2026-10-03). These are atomic, so a transfer landing between our read and the simulation cannot move the amount. Otherwise they come from one `getMultipleAccounts` read at `processed`. The post balances must equal the accounts read back, or the trade is "malformed".
   - **Fee read-back:** the read-back fee payer already has the base and priority fee taken out (docs/evidence/DRYRUN_SMOKE.md).
@@ -472,9 +472,13 @@ A third reviewer read 8370c2a. Its new findings were checked in code, and the se
   - The tip transfer is left out of the round trip. It does not touch the venue, so it cannot change the loss. Without it (and its jitodontfront marker), a PumpSwap round trip fits one packet with no lookup table: 1,241 bytes with it, over the 1,232 limit.
 - **2026-10-04 · The loss is measured, not modelled.**
   - Loss = −(change in the stand-in's wallet, wSOL and base-account lamports) − the `fee` the node reports − the rent paid into other accounts. The balances are the node's own `preBalances`/`postBalances`, taken inside the simulation.
-  - Rent paid is counted for: a new account (for wSOL, its rent reserve), curve growth, and the creator vault's top-up only.
+  - Rent paid is counted narrowly (review of PR #59). A charge must not be booked as rent and drop out of the loss:
+    - a new account counts at most the rent-exempt minimum for its size; for wSOL, the rent reserve, capped the same way;
+    - the creator vault counts what it gained beyond the creator fees in the stand-in's own TradeEvents (buy and sell), at most its shortfall to rent-exempt;
+    - curve growth counts only against a measured length. When the curve is longer after the simulation than at the decision, it is read again (1 credit). A curve that grew in between makes the counted growth smaller, so the loss errs high. The decision-time length is never used to measure.
   - `paid` is the buy leg's own figure: PumpSwap `BuyEvent.userQuoteAmountIn`, or pump `TradeEvent` solAmount + fee + creatorFee. Both are the model's terms, verified by the golden vectors. `proceeds = paid − loss`, so a charge the model misses lowers proceeds and H15 rejects on it.
 - **2026-10-04 · Fail-safe outcomes. No fact (H15 rejects the missing evidence):**
+  - a payer error (`InsufficientFundsForFee`, `AccountNotFound`, `InsufficientFundsForRent` on account 0). This is the stand-in's funding, not the coin, so it gives "stand-in-unfunded" and drops the funding cache. It never becomes an H15 veto or enters G3's veto-bias count (review of PR #59);
   - unsupported shape;
   - a refused build;
   - an unfunded stand-in;
@@ -490,6 +494,7 @@ A third reviewer read 8370c2a. Its new findings were checked in code, and the se
   - a loss above paid.
 
   Nothing short of a clean, fully measured simulation passes.
+- **2026-10-04 · `checkShape` runs on the buy only.** The sell is built by the same builders for the same market and mint, so it has the same shape (review of PR #59).
 - **2026-10-04 · Quota and cost.** Calls run at the shortlisted tier (P2; P0 and P1 are refused before any request).
   - A simulation costs 1 Helius credit. A funding check of the stand-in costs 1 more, at most once per `standInCheckMs`. Both are recorded per simulation, with the latency.
   - FACTS-1's budget counts 1 credit per evaluation for the simulation. The funding check adds 1 per check interval: at 60 s, about one more credit a minute in total, however many candidates there are.
