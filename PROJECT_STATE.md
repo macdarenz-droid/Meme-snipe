@@ -12,7 +12,7 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D, plus fixes from an outside review (4 Oct 2026, Melbourne). All 20 findings are assigned; each must reproduce before it is fixed.
+Wave D, plus fixes from an outside review (4 Oct 2026, Melbourne). All 20 findings are assigned; each must reproduce before it is fixed. Follow-up rulings (holder live path, DSR method, holdout extension and error budget, rent, equity units, delays, ties, collapse size, standby) are in DECISIONS and sent to their builders.
 - **Server:** live and paired.
 - **History:** the download waits on DATA-1's final data-shape PR (#46: full curve and canonical-pool rows, raw records for every create and migration, owner-resolved token movements, regimes).
 - **Building:** the worker, gate-fact producers, start-up seed, rug check, backtest study, signal research, live app view, server extras, and the review fixes.
@@ -33,19 +33,20 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 | DATA-1 | Final data shape (PR #46), then run 1 (1 Oct back to 16 Sep), run 2, run 3; 60 decision days | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | #46 adding migrations raw, token movements, regimes; then re-review (session_01DKMnUiqVLxVjHbaqdoBnJD) | scan restart after merge; newest 14 days about 30–35 h later |
 | WORKER-1 | Worker, recorder, API (loopback), persistence and downtime fill | session_01F7UFCa8r4aee38kW7687Y3 | Opus 5.5 | building | PR about 11 AM–1 PM |
 | FACTS-1 | Shared fact producers (live and backtest), funding lookup, holders by owner, on-chain regime volume | session_01GDycboQzFrFWxVniy6B6Ps | Opus 5.5 | building | 3–5 h |
-| SEED-1 | Start-up seed and downtime fill (PR #45) | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | fixing 5 review items; reviewer session_01NZwyB8decLbgxKJoG2cAbP | 1 h |
+| SEED-1 | Start-up seed and downtime fill (PR #45) | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | tie-order fix 92cdd97 in re-review (session_01NZwyB8decLbgxKJoG2cAbP) | merge after review |
 | RUG-1b/1c | Traded non-rug fixture; on-demand per-deployer rug check; label kinds; collapse-size validation | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | building | 1c about 11 AM–1 PM |
-| GATE-1d | Holder check by owner with a worst-case bound; "observed distinct owners" | session_01MeeF4VytwgP5sqyAkqM2NS | Opus 5.5 | building | 1–2 h |
+| GATE-1d | Holder check by owner with a worst-case bound (PR #50); refuse repeated addresses and other-mint accounts | session_01MeeF4VytwgP5sqyAkqM2NS | Opus 5.5 | fixing review B1 and N1–N3; reviewer session_01GgekqDZufKTy9TNeR5R7YJ | 1 h |
 | RISK-1b, EXIT-1b | Unitized drawdown; stressed-loss reporting; risk simulation; partial-sell quote; retry affordability | session_0135ruSv84BVjo7knvmTCPPK | Opus 5.5 | building; risk reviewer session_017PBUwcGJWG4DJpJKVBcAas | 2–3 h |
 | BT-1c | Canonical G0, holdout authorisation, observation delays, harsher fills, all-in expectancy, currency split, operating costs | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | building | 3–4 h |
 | BT-2 | Backtest study (PR #41): deployment replay, frozen definitions, ablations, completeness manifest, trial view | session_01VBTfAwrhgoCssEzST2J2q5 | Opus 5.5 | building on fixtures; holdout boundary pending | 4–6 h, then data |
 | RES-3 | Signal research (PR #47), practice days only | session_018esLCVLp9yCExK5cdnzCz8 | Opus 5.5 | re-review (session_01FHfbJwz7sbf2eVDNRxMigZ) | data from about Tue 6 Oct |
-| STATS-1b | G3 veto bias and post-upgrade "agrees" criteria; cluster sensitivity; effective-trials DSR | session_01J9yEWHRunNxvo5CaTbuYSe | Opus 5.5 | building | 2–3 h |
+| STATS-1b, STATS-1c | 1b (PR #52): G3 veto bias, "agrees" criteria, cluster sensitivity. 1c: day-level PSR/DSR; block-bootstrap SPA test behind an off flag (owner sign-off); holdout error budget and extension rule | session_01J9yEWHRunNxvo5CaTbuYSe | Opus 5.5 | 1b in review (session_01FHfbJwz7sbf2eVDNRxMigZ); 1c next | 1c 3–5 h |
 | TX-1b | One supported-transaction-shape check for gates, backtest and builders | session_011NPXb9ohcgyccEx2RLgZn1 | Opus 5.5 | building | 1–2 h |
 | RUN-1c | Quota, coverage and worker-down exposure in the dry-run report | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | building | 1–2 h |
 | APP-2 | Live screens in the app over Tailscale (PR #43) | session_01HxjfFhpHEFghtBnZkTjnFB | Opus 5.5 | building | 3–4 h |
 | OPS-1d | PR A: webhook retry, key-mismatch alerts, re-pair, `--update` hook. PR B: RUN-1 units, evidence relay, Tailscale serve | session_01Euok5FXtBGZBrweohP3K93 | Opus 5.5 | building | A about 1.5 h; B about 3 h |
-| Next | TEST-1 parity and TEST-3 fault injection after WORKER-1; SIGN-1 later | — | — | by dependency | — |
+| CFG-2 | Exit parameters per universe in the policy (before any freeze) | session_01P6GFTVQc9JzPTa5DWDdw3b | Opus 5.5 | building | 2–3 h |
+| Next | WATCH-1 (direct pool read when an open position's feed goes stale) after WORKER-1; TEST-1 parity and TEST-3 fault injection after WORKER-1; RUN-1d drills by cause after RUN-1c; SIGN-1 later | — | — | by dependency | — |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -61,7 +62,11 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - OPS-1d: install RUN-1's zeroed-dryrun units and runner flags through code updates, hold deploys during a qualifying run, and give the VPS evidence a path into the repo.
 - Runbook (RUN-1/WORKER-1): a v1 ledger must be opened once by a writer (migrates to 2) before `ledger:replay` or `openReader`.
 - Data: the owner declined asking Triton for a faster download (4 Oct); the scan stays at 80 MB/s on one lane.
-- Owner, before live (RISK-1): worst-case cost per trade C ≈ $0.79 after EXIT-1's retry budget; $5 entries stay blocked until week-start equity reaches $29; new entries stop at about 84% of the peak.
+- Owner, before live (RISK-1): worst-case cost per trade C ≈ $0.79 after EXIT-1's retry budget; $5 entries stay blocked until week-start equity reaches $29; new entries stop at about 84% of the peak; the daily and weekly loss count an open loss again each day (stricter; switching to marked boundaries needs the owner's yes).
+- Owner, before live (third opinion): R8 "5 losses in any 20" pauses 79–97% of simulated paths within 8–11 trades, good strategy or bad; choose keep, or a threshold calibrated on practice data and validated separately (never the holdout). With C at about 40% of a $2 trade, one loss of about $0.70 ends the day.
+- Live regime volume: own on-chain volume needs every pump trade, which the free tier can't carry, so live stays paper-only on the regime gate until a source is chosen (owner, before live; may need a paid service).
+- Proof timeline: U2 may hold fewer than 300 holdout trades (unmeasured); BT-2 counts the funnel gate by gate on practice days before any freeze, and dates follow that count. "Not proven yet" for U2 is a possible honest result.
+- Owner sign-off, when STATS-1c's simulations are in: replace the DSR gate in G1 with the block-bootstrap SPA test.
 - Workflows: pinned actions target Node 20 and run forced on Node 24; re-pin when workflows are next touched (supervisor, `.github`).
 - RUN-1b: a negative quoteAgeSlots passes the decimal check (display only).
 - TX-1 → SIGN-1: maxSolOut needs about 1.5M lamports of PumpSwap headroom; the policy charges Token-2022 ATAs at 170 bytes.

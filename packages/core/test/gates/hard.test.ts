@@ -12,7 +12,7 @@ import {
 } from '../../src/gates/index.ts';
 import {
   BASE_VAULT, CREATED_AT, DEV, MIGRATED_AT, MIGRATION_PRICE, MINT, NON_CANONICAL_POOL, NOW, POOL, POOL_ADDRESS, QUOTE_VAULT, SLOT, SPEND, SUPPLY, T,
-  ACC, SOL_PRICE, W, account, contextOf, decodedPool, deps, drop, holderAccounts, obs, passingFacts, patch, request, roundTrip, session, streamObs, type Facts,
+  ACC, SOL_PRICE, VAULT_AMOUNT, W, account, balanced, contextOf, decodedPool, deps, drop, holderAccounts, obs, passingFacts, patch, request, roundTrip, session, streamObs, type Facts,
 } from './world.ts';
 import { microUsd } from '../../src/units/index.ts';
 import { NATIVE_MINT, PUMP_AMM_PROGRAM } from '../../src/chain/index.ts';
@@ -53,7 +53,7 @@ const withExtensions = (extensions: unknown[]) => (f: Facts) => {
   const base = mintFrom(MINT);
   return patch(f, mintKey(MINT), { account: { ...base.account, extensions } });
 };
-const holders = (accounts: ReturnType<typeof holderAccounts>) => (f: Facts) => patch(f, holdersKey(MINT), { accounts });
+const holders = (accounts: ReturnType<typeof holderAccounts>) => (f: Facts) => patch(f, holdersKey(MINT), { accounts: balanced(accounts) });
 
 const CASES: readonly Case[] = [
   ['H1', 'a mint owned by another program', (f) => patch(f, mintKey(MINT), { owner: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', account: null }), 'mint-program'],
@@ -79,9 +79,9 @@ const CASES: readonly Case[] = [
   ['H11', 'above the migration price at +5 min (U2)', (f) => patch(f, candlesKey(MINT), {
     candles: [{ startMs: MIGRATED_AT + 4 * MINUTE_MS, open: MIGRATION_PRICE, high: MIGRATION_PRICE, close: { quote: MIGRATION_PRICE.quote + 1n, base: MIGRATION_PRICE.base } }],
   }), 'chase-at-5m'],
-  ['H12', 'one wallet with 40% of circulating', holders([...holderAccounts(), { address: ACC('whale'), owner: W('whale'), ownerProgram: null, amount: 200_000_000_000_000n }]), 'hard-holder'],
-  ['H12', 'the dev with 40% of circulating', holders([...holderAccounts(), { address: ACC('devbag'), owner: DEV, ownerProgram: null, amount: 200_000_000_000_000n }]), 'dev-holder'],
-  ['H12', 'one wallet above 10%', holders([...holderAccounts(), { address: ACC('big'), owner: W('big'), ownerProgram: null, amount: 40_000_000_000_000n }]), 'single-holder'],
+  ['H12', 'one wallet with 40% of circulating', holders([...holderAccounts(), { mint: MINT, address: ACC('whale'), owner: W('whale'), ownerProgram: null, amount: 200_000_000_000_000n }]), 'hard-holder'],
+  ['H12', 'the dev with 40% of circulating', holders([...holderAccounts(), { mint: MINT, address: ACC('devbag'), owner: DEV, ownerProgram: null, amount: 200_000_000_000_000n }]), 'dev-holder'],
+  ['H12', 'one wallet above 10%', holders([...holderAccounts(), { mint: MINT, address: ACC('big'), owner: W('big'), ownerProgram: null, amount: 40_000_000_000_000n }]), 'single-holder'],
   ['H12', 'top 10 above 30%', holders(holderAccounts().map((a, i) => (i >= 2 && i < 12 ? { ...a, amount: 9_100_000_000_000n } : a))), 'top10'],
   ['H13', 'insiders above 15%', (f) => patch(f, insidersKey(MINT), { insiders: [0, 1, 2, 3, 4, 5].map(W) }), 'insider-supply'],
   ['H13', "the dev's cluster above 5%", (f) => patch(f, insidersKey(MINT), { devCluster: [W(0), W(1)] }), 'dev-cluster'],
@@ -334,11 +334,14 @@ describe('boundaries found by mutation testing', () => {
   });
 
   it('d: a holder at exactly 40% of circulating is a hard reject', () => {
-    const vault = 700_000_000_000_000n + ((SUPPLY - 700_000_000_000_000n) % 5n);
-    const circulating = SUPPLY - vault;
-    const accounts = holderAccounts().map((a) => (a.owner === POOL_ADDRESS ? { ...a, amount: vault } : a));
-    const whale = { address: ACC('w40'), owner: W('w40'), ownerProgram: null, amount: (circulating * 2n) / 5n };
-    expect(codes(patch(passingFacts(), holdersKey(MINT), { accounts: [...accounts, whale] }), 'H12')).toEqual(['hard-holder', 'top10']);
+    // The whale takes its tokens from the vault: whale = 2/3 of the other holders is 40% of circulating exactly.
+    const others = holderAccounts().filter((a) => a.owner !== POOL_ADDRESS);
+    const rest = others.reduce((s, a) => s + a.amount, 0n);
+    const trim = rest % 3n;
+    const accounts = others.map((a, i) => (i === others.length - 1 ? { ...a, amount: a.amount - trim } : a));
+    const whale = { mint: MINT, address: ACC('w40'), owner: W('w40'), ownerProgram: null, amount: ((rest - trim) * 2n) / 3n };
+    const exact = balanced([...holderAccounts().filter((a) => a.owner === POOL_ADDRESS), ...accounts, whale]);
+    expect(codes(patch(passingFacts(), holdersKey(MINT), { accounts: exact }), 'H12')).toEqual(['hard-holder', 'top10']);
   });
 
   it('e: the H15 tolerance is the rounding bound exactly; a simulated spend that differs is inconsistent', () => {
@@ -355,8 +358,8 @@ describe('boundaries found by mutation testing', () => {
   });
 
   it('g: the dev counts in the insider total; this mint counts in the serial total', () => {
-    const circulating = SUPPLY - 700_000_000_000_000n;
-    const devBag = holderAccounts().map((a) => (a.owner === DEV ? { ...a, amount: (circulating * 16n) / 100n } : a));
+    const circulating = SUPPLY - VAULT_AMOUNT; // the dev's bag comes from the vault: about 20% of the new circulating
+    const devBag = balanced(holderAccounts().map((a) => (a.owner === DEV ? { ...a, amount: circulating / 4n } : a)));
     const f = patch(patch(passingFacts(), holdersKey(MINT), { accounts: devBag }), insidersKey(MINT), { insiders: [], devCluster: [] });
     expect(codes(f, 'H13')).toEqual(['insider-supply', 'dev-cluster']);
     const two = patch(passingFacts(), deployerKey(DEV), { mints: [{ mint: 'A', createdAtMs: T - 1_000 }, { mint: 'B', createdAtMs: T - 2_000 }] });
@@ -389,10 +392,10 @@ describe('boundaries found by mutation testing', () => {
 describe('review round 1 blockers', () => {
   it('a whale in a non-canonical PumpSwap pool or a pump PDA is still a holder', () => {
     const extra = 20_000_000_000_000n;
-    const plain = holderAccounts().concat({ address: ACC('x'), owner: W('x'), ownerProgram: null, amount: extra });
+    const plain = balanced(holderAccounts().concat({ mint: MINT, address: ACC('x'), owner: W('x'), ownerProgram: null, amount: extra }));
     expect(codesFor(reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: plain })), 'H12')).toContain('top10');
     for (const ownerProgram of [PUMP_AMM_PROGRAM, '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P']) {
-      const hidden = holderAccounts().concat({ address: ACC('x'), owner: NON_CANONICAL_POOL, ownerProgram, amount: extra });
+      const hidden = balanced(holderAccounts().concat({ mint: MINT, address: ACC('x'), owner: NON_CANONICAL_POOL, ownerProgram, amount: extra }));
       expect(codesFor(reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: hidden })), 'H12')).toContain('top10');
     }
   });
@@ -410,27 +413,21 @@ describe('review round 1 blockers', () => {
 
 describe('review round 2 blockers', () => {
   it('a locker-owned 40% balance is a holder and rejects under H12, with a note', () => {
-    const locker = { address: ACC('locker40'), owner: ACC('locker-pda'), ownerProgram: 'LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE', amount: ((SUPPLY - 700_000_000_000_000n) * 2n) / 5n + 1n };
-    const r = run(patch(passingFacts(), holdersKey(MINT), { accounts: [...holderAccounts(), locker] }), 'live', request(), true);
+    const locker = { mint: MINT, address: ACC('locker40'), owner: ACC('locker-pda'), ownerProgram: 'LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE', amount: ((SUPPLY - VAULT_AMOUNT) * 2n) / 3n + 1n };
+    const r = run(patch(passingFacts(), holdersKey(MINT), { accounts: balanced([...holderAccounts(), locker]) }), 'live', request(), true);
     expect(codesFor(r.reasons, 'H12')).toContain('hard-holder');
     expect(r.notes).toContainEqual(expect.objectContaining({ gate: 'H12', code: 'locker-holder' }));
   });
 
   it('top 10 at exactly 30% of circulating passes; one unit more rejects', () => {
-    const vault = 700_000_000_000_000n + ((SUPPLY - 700_000_000_000_000n) % 10n);
-    const circulating = SUPPLY - vault;
-    const top = (circulating * 3n) / 10n;
-    const each = top / 10n;
-    const build = (extra: bigint) => {
-      let i = 0;
-      return holderAccounts().map((a) => {
-        if (a.owner === POOL_ADDRESS) return { ...a, amount: vault };
-        if (a.owner === DEV) return { ...a, amount: 1n };
-        const k = i++;
-        if (k >= 10) return { ...a, amount: 1_000_000n };
-        return { ...a, amount: k === 0 ? each + (top - each * 10n) + extra : each };
-      });
-    };
+    // Ten wallets hold 30 units of 100 in circulation, seventy wallets 1 each; the vault holds the rest of the supply.
+    const unit = 1_000_000_000_000n;
+    const vault = holderAccounts().filter((a) => a.owner === POOL_ADDRESS);
+    const build = (extra: bigint) => balanced([
+      ...vault,
+      ...Array.from({ length: 10 }, (_, i) => ({ mint: MINT, address: ACC(`top${i}`), owner: W(`top${i}`), ownerProgram: null, amount: 3n * unit + (i === 0 ? extra : 0n) })),
+      ...Array.from({ length: 70 }, (_, i) => ({ mint: MINT, address: ACC(`low${i}`), owner: W(`low${i}`), ownerProgram: null, amount: unit })),
+    ]);
     expect(codesFor(reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: build(0n) })), 'H12')).toEqual([]);
     const over = reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: build(1n) }));
     expect(over).toContainEqual(expect.objectContaining({ gate: 'H12', code: 'top10', value: '3001', limit: '3000' }));

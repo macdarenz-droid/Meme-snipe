@@ -98,7 +98,7 @@ The owner relayed an outside review of commit addc685 (20 findings). Each findin
 - **Statistics.**
   - G3 scores the paper outcomes of candidates vetoed only live, and passes only when the conservative lower bound stays positive. Too little evidence means extend the run.
   - Cluster sensitivity (multi-day blocks, creator and funder clusters) is required.
-  - The deflated Sharpe ratio counts effective independent trials.
+  - Deflated Sharpe: superseded by "Deflated Sharpe" in the follow-up rulings below (day-level PSR now; a block-bootstrap SPA test replaces the DSR gate only with the owner's sign-off).
   - "Agrees" for the post-upgrade (B5) dry run is defined before the run. Inconclusive is not agreement. STATS-1b.
 - **Study design.**
   - A separate deployment replay runs at the real size: 1 position, 3 entries a day, cooldowns, signal priority.
@@ -108,11 +108,193 @@ The owner relayed an outside review of commit addc685 (20 findings). Each findin
   - Each gate has a completeness manifest.
   - Strategies abstain where the evidence is unaffordable live.
   - BT-2, RES-3.
+- **Dry runs.** The first live run is an S0 shakedown with a paper-only edge setting: it proves the worker, the drills and the simulation, and does not count toward gate items 3 and 4. Live mode refuses that setting. The qualifying 48-hour run starts on the commit that carries BT-2's registered configurations. WORKER-1.
 - **Regime volume.** Our own on-chain volume, computed by the same code for history and live. A gap is unknown, never zero; unknown means the regime is off. FACTS-1.
 - **Rug labels.** The strict rules stay. Observed creator sales and collapses are separate label kinds. A minimum economic collapse size is measured before any relaxation. Transfer-then-sell and linked-wallet dumps are measured. RUG-1c.
 - **Execution shape.** One supported-transaction-shape check is shared by the gates, the backtest and the builders. TX-1b.
 - **Budget.** The dry run reports credits per provider and class, lookup latency, coverage gaps and rejection reasons. It fails if exits (P0/P1) were ever shed or the free tier is exceeded. RUN-1c.
 - **Worker failure.** It is an exposure the stop cannot control; it is measured, not assumed away (ARCHITECTURE §12.5).
+
+### Follow-up rulings (2026-10-04, second round)
+
+The same outside reviewer answered nine follow-up questions on 8370c2a. Each claim below was checked against the code before the ruling. These rulings are the supervisor's.
+
+- **Holder bound, live path.** With at most 20 observed owners the ten largest hold at least half of what is observed, so (top 10 + unlisted) / circulating ≥ 50%. Top-20 lists can therefore never pass H13's top-10 limit; they serve only for cheap, definite rejects.
+  - A pass needs a complete holder set:
+    - It comes from one getProgramAccounts response on the mint's own token program (Token-2022 for `create_v2` coins, whose accounts are 170 bytes or more, so there is no `dataSize: 165` filter).
+    - The mint is filtered at offset 0, and each account is decoded and checked.
+    - Balances are aggregated by owner, and the context slot and commitment are recorded.
+    - The response lies within `maxStateSlotLag`, with mint authority none.
+    - The balances sum exactly to supply.
+    - Duplicate addresses, a wrong mint or a truncated response mean H16 malformed or inconsistent.
+  - The same-slot wording is withdrawn: two calls rarely share a slot, and `minContextSlot` means "at least".
+  - Read order matters (second reviewer). If the supply is read after the scan, an incomplete response missing X tokens followed by a burn of X still sums exactly. So:
+    - the mint is read first, at confirmed commitment, slot A, with mint authority already none, and supply S_A recorded;
+    - getProgramAccounts then runs at confirmed commitment, with `withContext` and `minContextSlot = A`, and its actual slot B is recorded (B ≥ A);
+    - every account is validated and de-duplicated, and all raw balances are summed before any circulation exclusion;
+    - the sum must equal S_A.
+  - Then returned sum ≤ supply at B ≤ S_A, so equality proves that no positive balance was omitted and that no burn happened in between. A holder set read before the mint is H16 not-covered.
+  - This assumes one fork; reorg inconsistencies are rejected. Snapshot balances are never overwritten with later per-owner reads. Freshness is checked when the fact is used (GATE-1e, FACTS-1).
+  - Known dev and insider owners are resolved with mint-filtered getTokenAccountsByOwner.
+  - The full snapshot runs only for candidates that pass every other gate, and the backtest uses the same evaluation order and charges the same lookup latency, so reject mixes stay comparable for G3.
+  - With no complete set, the gate abstains. Credits per scan are measured, not assumed. GATE-1d, FACTS-1, BT-2.
+- **Deflated Sharpe.** Two faults point in opposite directions:
+  - The trial count is the raw registry size, with the variance floored at the null sampling variance, which over-penalises correlated variants.
+  - PSR counts trades as independent observations, which is too lenient when trades on a day move together.
+  - Effective-N clustering is dropped. With a few dozen daily observations, the correlation matrix's rank caps any effective N, and too little data would then shrink the penalty.
+  - STATS-1c instead:
+    - (a) reports PSR and DSR on daily returns as diagnostics. This is not "only stricter": aggregation can raise or lower them. Sharpe uncertainty comes from a block bootstrap of the daily series that recomputes the whole statistic;
+    - (b) keeps DSR as a reported diagnostic, with an effective-N sensitivity line;
+    - (c) builds the SPA test (Hansen, consistent recentring), as follows:
+      - daily differentials against the benchmark on the same calendar for every variant;
+      - long-run variance from the stationary bootstrap, with the same indices for all variants;
+      - an expected block length of 3 days, with 5 and 7 days as required sensitivities, and promotion on the largest of the three p-values;
+      - resampling within registered regimes at their weights, never across an upgrade boundary;
+      - two benchmarks, both required: zero and S0;
+      - simultaneous evidence for the selected configuration itself, then the holdout;
+      - support checks for sparse variants;
+      - p never reported as 0;
+    - (d) calibrates the complete rule by simulation across duplicate, independent, heavy-tailed, common-shock, sparse, regime-shift and idle-day scenarios. The false-positive rate is at most α at zero edge, and power is reported next to DSR's.
+  - Replacing the DSR gate in G1 with (c) is a change of method that can pass more strategies, so it merges only with the owner's sign-off on that evidence. Until then G1 keeps DSR ≥ 0.95.
+- **Holdout.**
+  - The sealed window is UTC days 2026-09-22 to 2026-10-01 (data days are UTC), all after B4. It starts at 09-22T00:00Z, after the 2 h embargo, as BT-2's `study-1` registers it. RES-3 ends practice at the start of Melbourne day 09-22, 10 hours earlier; that is conservative, so no change. Trade days for the 10-day minimum are counted in Melbourne days, the stats day key.
+  - G1 runs on every practice day. Results are reported by regime and described as cross-regime evidence. Only 8 practice days fall wholly after B4, below G1's 10-day minimum, so post-B4 practice results are descriptive only.
+  - The end of the holdout is a fixed date, E = 2026-10-20, so the window is [09-22, 10-20). A stop triggered by counts is not outcome-independent, because entry counts move with the market (all three reviewers agree). E is registered before any holdout count is known.
+  - E is one common endpoint for every registered universe, and no universe is dropped after counts. Entries stop at the cutoff, and an observation-only tail lets labels mature.
+  - The holdout is opened once, at E. If it is short of n ≥ max(300, n_power) or of 10 trade days, the result is "not proven".
+  - n_power is computed for each attempt's α and this procedure. The report gives power once n is reached, the probability of reaching n by E, and the overall pass probability.
+  - A window past 10-01 crosses B5 (10-02 15:47 UTC). UPG-1 found SOL-market fields, quotes, fees and rent unchanged there, and H5 refuses any non-zero tail, so B5 changes nothing we trade. Results are reported before and after B5. B2–B4 stay hard boundaries for every window.
+  - Repeated attempts share one error budget. Attempt 1 is tested at family α = 0.04 (Holm across universes, with n_power simulated at that level). Attempt k ≥ 2 is tested at 0.01 / 2^(k−1) on a new, later window. At most 0.05 family error is spent across attempts. The bound requires valid testing under each attempt's registered selection, stopping and dependence assumptions.
+  - The 48-hour dry run is operational evidence and G3 only. It is never part of the holdout. STATS-1b, BT-2.
+- **Rent.** Rent follows the transaction's real outcome:
+  - It is refunded once, when the atomic sell-and-close lands.
+  - It stays locked after a sell-only fallback, a partial exit, dust or an unsolicited token left in the account, a missing close authority, or withheld Token-2022 fees.
+  - A failed close rolls back the sell, and its fee is still charged.
+  - The backtest's refund is tied to the modelled account-close outcome, not to the position closing. Venue accounts and WSOL proceeds are never refunded or counted twice.
+  - A bounded sell-only recovery path starts once the original transaction is resolved. Selling comes before reclaiming rent.
+  - The "no rent recovery" line and full rent in worst-case reservations stay. BT-1c, EXIT-1b, TX-1b.
+- **Equity units.**
+  - Unitisation uses one executable valuation before and after each flow, and the high-water mark is kept per unit. A deposit never resets a latched trigger.
+  - A withdrawal triggers a fresh affordability check and can never take the SOL reserved for exits, fees, pending transactions or full-loss exposure.
+  - In the first release, withdrawals queue until there is no position or unresolved intent and the account is reconciled.
+  - The daily and weekly loss boundaries now use realised equity, so an open loss already counted yesterday is counted again today. That is stricter than "loss made today". The code keeps it until the owner signs off on the change, which is listed with the RISK-1 owner findings. RISK-1b adds the marked-boundary figure next to it, with a test that shows the double count. RISK-1b, WORKER-1.
+- **Observation delay and exit failures.**
+  - The fill model splits delay into event → processed availability, processed → confirmed (only when the decision path waits for confirmed), and provider → worker.
+  - Scenarios: measured; adverse 2 slots + 6 slots + 1 s; stress 4 + 12 + 2 s. These are stress budgets, not measured percentiles.
+  - Slots convert to time with the replay's real slot times. A delay already present in recorded receipt times is never charged twice.
+  - 30 s and 60 s blackouts with backlog recovery are stress cases. Stale state never becomes fresh through a new receipt time, and clocks and watchdogs keep running through feed stalls.
+  - Exit failures share one persistent network state over slot windows, with provider failures layered on top, plus deterministic 10, 30 and 60 s failure bursts. Results report how expectancy and survival change as bursts become more frequent.
+  - The worker's recorder logs processed and confirmed arrival for the same events on the VPS from the first shakedown, on a monotonic local clock, so the "measured" scenario comes from the real host. blockTime is whole seconds and estimated, so it is only a coarse check. Measured distributions sit beside the adverse, stress and blackout cases; they never replace them. BT-1c, WORKER-1.
+- **Simultaneous signals.**
+  - The deployment replay takes the earliest signal that was fully eligible and information-ready on the worker, and reserves capacity atomically.
+  - True ties break by a hash with a salt fixed and recorded before any replay. Trying salts counts as a strategy search.
+  - Any batch schedule is fixed, and its wait is charged.
+  - A highest-score rule is a later candidate, registered as a trial and frozen into the configuration before holdout. BT-2.
+- **Collapse materiality.** A rug label never depends on the current bankroll. Three separate fields:
+  - the observed event (collapse, creator sale, timing, venue);
+  - materiality at a fixed, versioned reference size and cost limit, with absolute SOL and USD liquidity recorded;
+  - current exposure at Zeroed's real size, used only for entry affordability.
+  One-transaction liquidity spikes are measured before any persistence rule. The strict rejection stays until the measured distribution supports a change. RUG-1c.
+- **Standby.** Deferred. A shorter holding time is not outage protection. The priorities are:
+  - automatic local restart;
+  - persisted exit state and pending signatures;
+  - recovery measured as "reconciled and able to exit";
+  - separate drills for process crash, reboot, RPC loss and host loss.
+  A later standby needs exclusive signing, fencing and reconciliation of already-signed transactions. It never relies on a second sell failing for lack of tokens. RUN-1d, OPS-1d.
+
+### Third-opinion rulings (2026-10-04)
+
+A third reviewer read 8370c2a. Its new findings were checked in code, and the second reviewer's corrections to it were applied; these rulings are the supervisor's.
+
+- **Funnel first.** The holdout may hold fewer than 300 U2 trades. No numeric forecast is used: the cited rates come from different populations and are not sequential pass rates. Before any definition is frozen, BT-2 counts the funnel gate by gate on the published practice days with the shared evaluator. Counts are not outcomes, so this burns nothing. The count separates adverse evidence (a reject) from missing evidence (not covered), and research-sample counts from deployment-admitted entries. H9 and H11 ablations (offline scores of blocked candidates) also run before the U2 freeze, not after. The board's dates follow from those counts. "Not proven yet" for U2 is an expected, honest result. BT-2.
+- **A dead feed leaves no price-based stop** (confirmed: `exits/rules.ts:236` treats stale state as no quote, so only T_flat, T_max and non-market triggers such as deployer, route and flow can fire, and `exits.test.ts:97` locks that in). WATCH-1:
+  - An independent timer detects staleness even when no feed event arrives.
+  - For every open position, the worker then fetches a coherent quote snapshot (pool, vaults, mint and fee state) through an independently healthy path, keeping the real context slot and freshness time.
+  - If it cannot, it escalates with the critical alert.
+  - Acceptance case (§18): the feed is dead for 5 minutes with a position open and the pool falls 40%; while the fallback provider and the execution path are available, the exit goes out within the set time. A total outage cannot guarantee liquidation. WATCH-1, after WORKER-1; TEST-3.
+- **Capital measured in SOL as well** (confirmed: equity is a USD ledger; wallet SOL only feeds R4's cash cap). There are three purposes, with three measures:
+  - The kill switch and unitisation use economic marked NAV per unit: idle SOL and positions at executable marks, in both directions, with one definition for flow pricing and drawdown.
+  - Daily and weekly loss limits use trading P&L only.
+  - Sizes and limits that scale with equity use the lower of ledger equity and wallet-marked equity, so SOL gains never enlarge a trade.
+  Results are reported in both USD and SOL. RISK-1b.
+- **Exits per universe** (confirmed: one `policy.exits` block, which BT-2 reads for every universe). The policy gets per-universe exit parameters before any freeze: time stops, partials, ATR bars and multiples. The ladder and the cost reservation stay global. Today's values become U2's. U1 starts from research/risk.md S2 (T_flat 30 min, 5-minute ATR bars, partial at 2R), with T_max held at the phase-1 hard maximum of 120 min (§9). A longer hold is a separate policy variant that needs the owner. The study sets the frozen values, and turning any universe live stays inside the owner's live switch. CFG-2.
+- **Smaller additions:**
+  - Test getProgramAccounts on both free providers and both token programs. Add a parity test on one real mint: live enumeration against balances rebuilt from movements, at the same slot (FACTS-1, DATA-1).
+  - Only repeated runs of the same executable configuration (same config id) count once. Different configurations with identical or perfectly correlated returns stay distinct hypotheses; the joint bootstrap handles their dependence (STATS-1c).
+  - TEST-2's simulations are not a rent-recovery probability: they omit the close when the stand-in holder owns more tokens, and they test mechanics, not landing. TEST-2 reports final-exit simulations, simulations with the real close, successful complete sell-and-close simulations, and omitted closes with reasons, as diagnostics. The rent model stays the modelled close outcome.
+  - Congestion is a shared network state affecting every position and provider. Pool activity adds to it but never defines it alone. The blocked-exit rate is reported when the whole ladder falls inside congestion; this feeds `y_severe` (BT-1c).
+  - After a withdrawal, the weekly budget re-bases to at most 20% of what remains, and the R4 reserve check repeats before the send (RISK-1b).
+  - S0 runs under the same one-position rule in the deployment replay (BT-2).
+  - A candidate materiality rule to test, not adopt: a collapse counts when the sustained quote reserve reached at least 5 SOL. H8's dust line measures a different event, so the threshold must prove it separates dust round trips from meaningful collapses. Creator sales are recorded separately, and how much each should weigh is measured. The strict rule stays meanwhile (RUG-1c).
+- **Owner, before live** (added to the RISK-1 findings):
+  - R8 ("5 losses in any 20") pauses 79–97% of simulated paths within about 8–11 trades, whether the strategy is bad or good. Choose one: keep the review every ~10 trades, or use a threshold calibrated on practice data and validated separately, never on the holdout. An e-process can supplement the dollar limits but never replace them.
+  - With C reserved at about 40% of a $2 trade, one loss of about $0.70 ends the day.
+- **Rejected: a pre-signed emergency sell on a durable nonce.**
+  - Signed bytes carry a fixed quantity, so after a partial sale or a later entry they can fail or sell the wrong position.
+  - Replacing the cached copy does not revoke old bytes.
+  - A failed sale can still advance the nonce and charge fees.
+  - Anyone holding the bytes can send them.
+  - It contradicts the execution contract (no durable nonces; the signer allows no nonce-advance).
+  Recovery stays measured restart, reconciliation and small exposure.
+
+### Consensus of the three reviews (2026-10-04)
+
+The second reviewer, the third opinion and the supervisor reached one position on the second-round questions. These are supervisor rulings; only the SPA sign-off is the owner's.
+
+- **Holder snapshot.**
+  - The mint is read first, at confirmed commitment, with mint authority none; this gives S_A at slot A.
+  - Then one one-shot getProgramAccounts call (V1, never the cursor-paginated V2), at confirmed commitment with `withContext` and `minContextSlot` set to A.
+  - Filters:
+    - legacy SPL: dataSize 165 plus memcmp of the mint at offset 0;
+    - Token-2022: memcmp of the mint at offset 0 plus memcmp(165, [2]).
+  - Slot B ≥ A, and B within `maxStateSlotLag` of the decision moment.
+  - Every account is decoded and checked for its mint; repeated addresses are refused.
+  - All raw balances are summed before any exclusion, and the sum must equal S_A. Anything else is H16 inconsistent.
+  - Owners are aggregated after that. Later per-owner reads only confirm known dev and insider accounts and are never merged into the snapshot.
+  - Delegates count as control: min(delegated_amount, amount) is attributed to the delegate in the H12/H13 numerators, never in the sum check.
+  - With no complete set, the gate abstains. If a one-shot snapshot cannot meet the lag, the lag stays; the fallback is a snapshot plus a mint-filtered account subscription, with its WebSocket cost measured. This assumes one fork.
+  - Cards: GATE-1d, GATE-1e, FACTS-1.
+- **SPA.**
+  - Block length:
+    - an expected block length of 3 days, with 5 and 7 as required sensitivities;
+    - promotion on the largest p-value;
+    - resampling within regimes at registered weights, with no block across an upgrade boundary.
+  - The daily unit is P&L over a fixed capital base from the capacity-constrained deployment replay, on one calendar of T = 50 registered days.
+  - One joint test covers both benchmarks: each variant gets a t-statistic against zero and one against S0, and one critical value comes from the maximum over all 2K statistics. A variant passes only if both of its statistics exceed it.
+  - Studentisation is either Hansen's fixed ω̂ or per-replicate re-studentisation, whichever calibrates better in simulation, frozen before any data.
+  - Variants active on fewer than MIN_DAYS days are ineligible, decided from activity counts. An SE floor is fixed in advance.
+  - The selected configuration needs its own simultaneous evidence.
+  - The owner signs off before the SPA replaces DSR. STATS-1c.
+- **DSR while it gates.**
+  - Skewness is clamped to min(sample, 0) and kurtosis to max(sample, a registered floor). This only tightens.
+  - The paper's worked example (0.9004; 0.9505 at N = 46 and N = 88) is pinned as a unit test.
+  - Daily PSR and DSR are diagnostics. Sharpe uncertainty comes from a block bootstrap that recomputes the whole statistic.
+  - The third opinion's simulation shows DSR ≥ 0.95 rejecting a true +5% edge in 90–99% of runs on about 50 days. That puts the SPA sign-off on the critical path for pre-funding item 6.
+- **Holdout.**
+  - Fixed end E = 2026-10-20; one sealed ledger with one endpoint for every registered universe. Entries are cut off before the exit margin, followed by an observation-only tail.
+  - The holdout is opened once, and only after a G1 pass. If it is short of the frozen requirement, max(300, n_power, closed form), or of 10 trade days, the result is "not proven".
+  - Opening is mandatory once the counts are met.
+  - The registry records the attempt index and the α spent, fixes the family size per attempt, and gives G2 its level.
+  - Replicates are about 20/α. G2's one-sided false-pass rate is α/2.
+  - An attempt is spent once its configuration is registered (see "Closing items").
+  - B5 (Melbourne 10-03 01:47 AEST) is read as a decoder boundary, not a market boundary, with a non-gating per-regime line.
+  - Days 10-02 to 10-19 (plus a margin day) are holdout evaluation days. They go through the same download, QA, parity and publish path and are never practice days.
+- **Closing items (all three agree).**
+  - E is the registered UTC entry cutoff. The seal is opened and scored once, only after the observation-only tail has matured.
+  - G3 levels follow the direction of safety:
+    - The veto-bias composite (holdout lower bound, v₉₅, |Δ|₉₅) uses α/3 for each part, giving at least 95% simultaneous coverage. Wider bounds are stricter there.
+    - The consistency checks (candidate rate, mean, fills, reject mix) are "agree" tests. They keep their individual registered levels, because widening them would make "agree" easier. A joint reject-mix test (G-test or chi-square) is added beside the per-reason intervals, and failing either counts as disagree.
+    - Power at 48 h is reported against registered inconsistencies (candidate rate halved, mean shifted 5 points, severe-reject share doubled, fill gap above 0.5 points). If power is short, the run gets longer; the bound is never loosened.
+  - Daily and weekly losses: the conservative guard stays until the owner approves a change. Actual period trading P&L is reported beside it, and neither ever touches an exit.
+  - Lead-in ownership: coverage comes only from a complete seed or reconstruction, never from elapsed time. Exclusions are reported and labelled "not covered", never as rejects.
+  - Attempt 2 is registered now as a rule, not as dates. Its configuration may be registered only after attempt 1 is scored. Its window starts on the first whole UTC day after that registration and runs 28 days, with a fixed entry cutoff and tail, at family α 0.005, under the same procedure, opened once.
+  - Live paper P&L is never part of the sealed holdout, and nothing can act on it. Configurations come from practice days only and are frozen before any U1/U2 configuration runs live; opening is mandatory once the counts are met, and a G1 pass is required first; attempt 2's data is always fresh. The sessions that choose configurations do not read live P&L before the freeze, while the owner's live view shows it.
+  - Registration commits the attempt, which closes optional stopping. At E the attempt is spent whatever happens: a window that is halted, abandoned or short counts as a failed attempt, and the next configuration takes the next level. This replaces "spent only when a seal is opened", so seeing live P&L can buy nothing.
+  - Slot lag: the 2-slot limit stays unchanged while it is measured against a healthy confirmed head. Each gate read records scan duration, receipt delay and freshness at decision time, and the wall-clock outage checks stay.
+- **Dry-run overlap.**
+  - Configurations are chosen from practice days only, and frozen and registered before any U1/U2 configuration runs live.
+  - The sessions that choose configurations do not read live shakedown P&L before the freeze. Opening at E is mandatory, so later live P&L cannot change anything.
+  - Residual risk: weak information from S0 shakedown P&L seen before the freeze. It is kept small by that read restriction.
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
@@ -196,10 +378,12 @@ The owner relayed an outside review of commit addc685 (20 findings). Each findin
 - **2026-10-03 · H8 compares the quote side alone with the R12 floor.** Effective quote reserve (vault + signed virtual reserve) valued at the latest hourly SOL/USD point, rounded down, against max(floor, 1,000 × size), and the U1 floor for U1. This is the literal reading of H8 and half of the two-sided "liquidity" figure, so it is the stricter one. A SOL/USD point older than 2 h (two steps of an hourly series) is stale.
 - **2026-10-03 · H11 needs 1-minute candles.** Any other interval is malformed: shorter candles would split a spike into small steps.
 - **2026-10-03 · H11 uses the candle high.** A 1-minute candle in the last 3 minutes whose high is more than 25% above its open rejects (stricter than the close). The +5 min price (U2 only) is the close of the last candle that ended by migration + 5 min; none means unknown.
-- **2026-10-03 · H12 and H13 measure shares of circulating supply, rounded up.** Circulating = supply − excluded balances. Excluded, by name only: this mint's curve accounts, the canonical pool's stored base vault (by address, not every account the pool owns), the mayhem vault (owner PDA ["sol-vault"] of `MAYHEM…`, checked equal to `BwWK17cb…`) and the incinerator. Locker accounts stay holders and are noted (review round 2): the Raydium locker escrows LP tokens and position NFTs, never a coin's own tokens, and its immutability is unproven. A locker is excluded only under a later decision with evidence: an immutable or pinned program, holding this mint's tokens, locked past our holding time. Any other PDA owner stays in the holder set and is noted, even one of pump's or PumpSwap's own programs: a non-canonical PumpSwap pool is a PumpSwap PDA whose LP owner can withdraw its tokens (review round 1; an earlier blanket "program account" exclusion let a whale hide there). The holder read's supply must equal the mint's, or H12 and H13 reject as inconsistent. Holders are grouped by owner. On a largest-accounts list, an insider who is not listed counts at the smallest listed balance (an upper bound). The dev counts in both the insider total and the dev cluster.
+- **2026-10-03 · H12 and H13 measure shares of circulating supply, rounded up.** Circulating = supply − excluded balances. Excluded, by name only: this mint's curve accounts, the canonical pool's stored base vault (by address, not every account the pool owns), the mayhem vault (owner PDA ["sol-vault"] of `MAYHEM…`, checked equal to `BwWK17cb…`) and the incinerator. Locker accounts stay holders and are noted (review round 2): the Raydium locker escrows LP tokens and position NFTs, never a coin's own tokens, and its immutability is unproven. A locker is excluded only under a later decision with evidence: an immutable or pinned program, holding this mint's tokens, locked past our holding time. Any other PDA owner stays in the holder set and is noted, even one of pump's or PumpSwap's own programs: a non-canonical PumpSwap pool is a PumpSwap PDA whose LP owner can withdraw its tokens (review round 1; an earlier blanket "program account" exclusion let a whale hide there). The holder read's supply must equal the mint's, or H12 and H13 reject as inconsistent. Holders are grouped by owner. The dev counts in both the insider total and the dev cluster. (An earlier bound, the smallest listed balance for an unlisted insider, was replaced by GATE-1d below.)
 - **2026-10-03 · H14 windows.** Serial: distinct mints by the creator with creation time in the last 24 h, this mint included, more than `serialMaxMints24h`. Rug: a prior rug the index learned of within the last `deployerRugLookbackDays` (inclusive). The index must be gap-free since at least that long ago, otherwise H14's input is not covered and rejects.
 - **2026-10-03 · H15's tolerance is the integer rounding bound, so no policy field is needed now.** Live, the simulated round trip may lose at most the local model's loss plus `ROUND_TRIP_ROUNDING_LAMPORTS` (16 lamports). This is the strictest tolerance that exact math allows. A looser one would be a new policy field (CFG-1 deferred it to this card); none is added.
 - **2026-10-03 · The regime gate checks on the hour, with the policy's hysteresis.** The current check is the latest hour boundary that the SOL/USD series and the graduate snapshot have both reached, and it must be within 2 h of now. Each check evaluates graduate survival (share of graduates whose +30 min mark fell in the last 24 h with effective reserves above 30 SOL, against the exact median of the 14 daily shares before), curve volume (last full UTC day against the nearest-rank 25th percentile of the 365 days ending with it) and SOL's 24 h change in basis points (above −800). Inside a snapshot, points dated after the check are ignored. The gate is off at once when the current check cannot be computed. Otherwise it is off when the last `failedChecksToDisable` checks all failed (an unknown earlier check counts as failed). Live, a missing, stale or red execution-health fact turns it off; in the backtest that input is absent.
+- **2026-10-04 · GATE-1d: a partial holder view is judged at its worst case, so splitting a balance cannot hide it.** A holder can spread tokens over any number of accounts, so a largest-accounts list (`getTokenLargestAccounts`, top 20) says nothing about owners or extra accounts it does not show (the smallest-listed-balance bound was wrong: the dev at 50% in 100 small accounts read as 1.4%). Every listed account is grouped by owner as before; the rest, `unaccounted` = supply − every listed balance (vault, curve, mayhem, burn and locker accounts are listed, so they are not in it), could all belong to any one owner, listed or not. H12 and H13 first judge what is listed (real rejects stay rejects). If nothing is unaccounted they are done. Otherwise they pass only if the top holder, the top 10, the insiders and the dev cluster each stay inside their limit with all of `unaccounted` added (the dev is one of the owners, so the top-holder bound covers the dev). Circulating stays supply − listed excluded balances: if part x of the unaccounted tokens were really in an excluded account that is not listed, the true share (a + u − x)/(C − x) is never above the bound (a + u)/C, because a + u ≤ C; if any could breach, they reject with H16 `not-covered` (input `holders`, neededBy H12 or H13, value = the unaccounted amount). A complete view (`coverage: 'all'`) must add up to the supply exactly, and listed balances above the supply are inconsistent. Review of PR #50: an account listed twice, or an account whose `mint` (now carried on every holder account) is missing or another mint, makes the read H16 `malformed` (a repeat would hide unlisted supply). A complete set is one `getProgramAccounts` response (one context slot) read within `maxStateSlotLag`, with the mint authority none (H2 rejects otherwise, so supply can only fall, by burns), and its balances must sum exactly to the supply read, else H16 `inconsistent`; a burn between the two reads fails the sum, the safe direction. The two reads are not required to share a slot (two RPC calls rarely do, and live would then never reach `'all'` while the backtest does). Burned tokens are subtracted once: a Burn instruction already lowers the mint supply, and the only burn exclusion is balances still held by the incinerator. The top holder's worst case rejects at `> singleHolderBps` or `>= hardHolderBps`, so equal limits (allowed) cannot let it pass at the hard limit. The passing world in the tests is a complete set that adds up to the supply. Parity: the backtest rebuilds every holder of a mint from its full token-balance history (every transfer, mint and burn since creation), so it supplies `coverage: 'all'`; the live view from `getTokenLargestAccounts` is `'largest'` and, for a young coin with most supply outside the top 20, is normally not covered. Live can pass where the backtest passes only with a complete account set (FACTS-1: `getProgramAccounts` by mint, filtered to token accounts of this mint, read at the same slot as the mint's supply). Both feed the same `holders` fact and the same bound, so a live view never passes where its own data is incomplete. A decision the backtest passed on `'all'` and live rejected as not covered is a known, safe difference (live trades less), to be measured in the dry run.
+- **2026-10-04 · "Independent" needs funding evidence (GATE-1d review).** The soft feature counting distinct owners in the holder read is `observedDistinctOwners`, not "independent holders": a holder list cannot show common funders. The split comes from FACTS-1, which has point-in-time funding records, as three reported counts on the soft fact: `knownLinkedOwners`, `supportedIndependentOwners` and `unresolvedOwners` (unknown when not reported). A test fails if a feature computed by the gates carries the word "independent".
 - **2026-10-03 · Soft features are logged, never scored yet.** Values come from the feed's precomputed soft fact, the holder exclusions and our deployer index. Unknown values stay unknown with the reason. RugCheck's single-holder flag is logged as false when the largest account is a known vault. Third-party fields (RugCheck score and flag) are logged as live only in the backtest, whatever the feed supplies. A rule score needs thresholds that only calibration (§13) can give.
 - **2026-10-03 · Evaluation order is fixed and cheapest first.** Field checks first (H1–H4, H6–H11, H14, H16), then address derivation and holder classification (H5, H12, H13), then the quote and simulation (H15). By default evaluation stops at the first failing gate; calibration runs can evaluate all. Each fact is looked up once per evaluation. Holder order in the input does not change the result.
 - **2026-10-03 · GATE-1c: H5 refuses a pool whose trade events carry the upgrade's tail wrongly.** Every PumpSwap trade event of the pool released since migration (FEED-1 keys `pump_amm:BuyEvent|SellEvent:<pool>` and their `logs:` copies, read from the as-of history) must carry a tail of the length the upgrade boundary allows: 0 bytes before slot 452,654,882, 8 after it, either in that slot itself (UPG-1's upgrade transaction). The tail must also be all zeros. Otherwise H5 rejects as `event-tail`, naming the first offending signature in release order. No trade event since migration is H16 `not-covered` (input `trades`); an event without a readable tail is H16 `malformed`. The pool's tape starts at the migration event's slot (the migration fact's `obs.slot`), or at its time when it has no slot. The mint's own curve tape (`pump:TradeEvent:<mint>` and its `logs:` copy) is checked with the same rule against pump's boundary (452,654,932), over every curve event as of now; a curve tape that is not there is not a failure, because the pool tape is the required evidence (review of PR #42). Cost: H5 rescans every trade event since migration (and the curve tape) on each evaluation, so it grows with the token's age; watch it in the dry run, and cache per pool if it shows. The backtest feed must emit the same trade-event keys.
