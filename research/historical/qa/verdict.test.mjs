@@ -67,7 +67,9 @@ test('an assembled window may not reach the 2026-10-02 regime boundary', () => {
 test('every create transaction must have its raw record', () => {
   const r = structuredClone(report);
   r.raw = { signature_mismatch: 0, trade_txs: 0, trade_txs_with_raw: 0, create_rows: 3, create_rows_with_raw: 2 };
-  assert.deepEqual(strictMisses(base(), r), ['create transactions without raw record 1']);
+  assert.deepEqual(strictMisses(base(), r), ['create or migration transactions without raw record 1']);
+});
+
 test('the pre-B4 layout (two fields shorter) is allowed only in units that start before B4', () => {
   const m = base();
   m.units.push({ from_slot: 446460000, older_layouts: { 'pump:TradeEvent:32': 5, 'amm:BuyEvent:37': 2, 'amm:SellEvent:30': 1 } });

@@ -217,7 +217,7 @@ main() {
   done
   finalize_guard "$work"
   zeroed-scan finalize -out "$work/data" -dataset "$work/dataset" -from "$from" -to "$to" \
-    -part-mb 1900 -lead-in-days "$LEAD_IN_DAYS" "${extra[@]}"
+    -part-mb 1900 -lead-in-days "$LEAD_IN_DAYS" -regimes "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../regimes.json" "${extra[@]}"
   node "$repo_root/research/historical/qa/check.mjs" "$work/dataset" --live 60 --strict
   node --no-warnings "$repo_root/research/historical/qa/parity.ts" "$work/dataset"
   build_release "$work/dataset" "$work/release"

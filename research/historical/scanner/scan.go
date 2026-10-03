@@ -820,7 +820,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 	evIdx := 0
 	tip := strconv.FormatUint(jitoTip(keys, meta.PreBalances, meta.PostBalances), 10)
 	var eventMints []string
-	var createdMints []string // every create keeps its raw record (DEC-1 parity of every CreateEvent row)
+	var createdMints []string // creates, migrations and canonical pool creations keep their raw record
 	for gi, g := range groups {
 		for k, ix := range g {
 			// position for the (slot, tx, outer, inner) ordering key; events are
@@ -930,8 +930,14 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 				}
 				m["fields"] = fields
 				eventMints = append(eventMints, fields["mint"], fields["base_mint"])
-				if prog == "pump" && ev.def.name == "CreateEvent" && fields["mint"] != "" {
+				// Raw records kept whatever the mint's hash: every create (mint authority and
+				// extensions), every migration and every canonical pool creation (LP mint,
+				// burn and pool setup of every graduate).
+				switch {
+				case prog == "pump" && (ev.def.name == "CreateEvent" || ev.def.name == "CompletePumpAmmMigrationEvent") && fields["mint"] != "":
 					createdMints = append(createdMints, fields["mint"])
+				case prog == "amm" && ev.def.name == "CreatePoolEvent" && isCanonicalPool(fields["pool"], fields["base_mint"], fields["quote_mint"]):
+					createdMints = append(createdMints, fields["base_mint"])
 				}
 				if len(ev.tail) > 0 {
 					m["extra_hex"] = hexs(ev.tail)

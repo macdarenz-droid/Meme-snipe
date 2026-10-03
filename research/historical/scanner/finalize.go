@@ -78,6 +78,7 @@ type finalizeOpts struct {
 	AllowGaps      bool     // testing only: holes in the scanned slot ranges
 	LeadInDays     int      // days of gap-free coverage required before the window (14 for the dataset)
 	AllowRevisions []string // scanner revisions accepted together; empty: all units must share one
+	Regimes        string   // JSON file of regime boundaries (research/historical/regimes.json), copied into the manifest
 }
 
 type unitDir struct {
@@ -929,6 +930,17 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 		"days":            manifestDays,
 		"mints_files":     mintFiles,
 		"units":           unitsInfo,
+	}
+	if opt.Regimes != "" {
+		b, err := os.ReadFile(opt.Regimes)
+		if err != nil {
+			return fmt.Errorf("regimes: %w", err)
+		}
+		var reg any
+		if err := json.Unmarshal(b, &reg); err != nil {
+			return fmt.Errorf("regimes %s: %w", opt.Regimes, err)
+		}
+		man["regime_boundaries"] = reg
 	}
 	mb, _ := json.MarshalIndent(man, "", "  ")
 	return os.WriteFile(filepath.Join(dsDir, "manifest.json"), mb, 0o644)

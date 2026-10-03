@@ -359,3 +359,23 @@ func TestFinalizeRatesFollowRetention(t *testing.T) {
 		t.Fatalf("mixed retention accepted: %v", err)
 	}
 }
+
+func TestFinalizeCopiesRegimesIntoManifest(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	f.spanUnit(spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-02")+1800))
+	reg := filepath.Join(t.TempDir(), "regimes.json")
+	os.WriteFile(reg, []byte(`{"boundaries":[{"id":"B4","slots":{"pump":446462760}}]}`), 0o644)
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{Regimes: reg}); err != nil {
+		t.Fatal(err)
+	}
+	man, _ := readDataset(t, ds)
+	b := man["regime_boundaries"].(map[string]any)["boundaries"].([]any)[0].(map[string]any)
+	if b["id"] != "B4" {
+		t.Fatalf("regimes not in manifest: %v", man["regime_boundaries"])
+	}
+	os.WriteFile(reg, []byte(`{not json`), 0o644)
+	if err := Finalize(f.out, t.TempDir(), "2026-09-01", "2026-09-02", finalizeOpts{Regimes: reg}); err == nil {
+		t.Fatalf("invalid regimes file accepted")
+	}
+}

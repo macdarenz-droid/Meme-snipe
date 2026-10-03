@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 // Strict verdict of the data quality report (used by check.mjs, tested by
 // verdict.test.mjs). A miss is anything not explained in docs/research/historical-data.md.
 
@@ -7,21 +8,12 @@ export const ALLOWED_UNKNOWN = new Set(['pump:742b4dbd117a482b', 'amm:82a42461e4
 // The same upgrade appended 8 bytes to these trade events (kept as extra_hex).
 export const EXTRA8_EVENTS = new Set(['pump:TradeEvent', 'amm:BuyEvent', 'amm:SellEvent']);
 
-// Regime boundaries found by UPG-1b (PR #44), listed in the QA report. B4 (2026-09-12
-// 15:24 UTC) added holder_rewards_bps and holder_rewards (16 bytes) to TradeEvent,
-// BuyEvent and SellEvent; before it those events are exactly two fields shorter.
-export const REGIME_BOUNDARIES = [
-  { id: 'B2', utc: '2026-07-21 14:23', slots: { admin: 434319990 }, what: 'admin BOOST on, migration economics' },
-  { id: 'B3', utc: '2026-09-09 19:30', slots: { pump: 445690911, pump_amm: 445691021, other: 445691085, admin: 445691266 }, what: 'fee and creator-fee config changes' },
-  { id: 'B4', utc: '2026-09-12 15:24', slots: { pump_amm: 446462733, pump: 446462760, admin: 446462883 }, what: 'Trade/Buy/Sell events +16 bytes (holder_rewards_bps, holder_rewards)' },
-  { id: 'B5', utc: '2026-10-02 ~20:00', slots: {}, what: 'undocumented upgrade: +8 bytes on trade events, new discriminators (regime boundary day)' },
-];
-// Pre-B4 layouts: event key -> [fields in that layout, first slot of B4 on that program].
-export const PRE_B4_LAYOUTS = new Map([
-  ['pump:TradeEvent:32', 446462760],
-  ['amm:BuyEvent:37', 446462733],
-  ['amm:SellEvent:30', 446462733],
-]);
+// Regime boundaries and pre-boundary layouts: one source of truth with finalize
+// (research/historical/regimes.json, copied into manifest.json by finalize -regimes).
+const REGIMES = JSON.parse(readFileSync(new URL('../regimes.json', import.meta.url), 'utf8'));
+export const REGIME_BOUNDARIES = REGIMES.boundaries;
+// Pre-B4 layouts: event key -> first slot of B4 on that program.
+export const PRE_B4_LAYOUTS = new Map(Object.entries(REGIMES.pre_layouts));
 
 const DAY = 86400;
 // The 2026-10-02 program upgrade is a regime boundary (supervisor ruling, 2026-10-03):
@@ -90,7 +82,7 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
   }
   if (report.raw) {
     if (report.raw.signature_mismatch > 0) misses.push(`raw signature mismatches ${report.raw.signature_mismatch}`);
-    if ((report.raw.create_rows_with_raw ?? 0) !== (report.raw.create_rows ?? 0)) misses.push(`create transactions without raw record ${report.raw.create_rows - report.raw.create_rows_with_raw}`);
+    if ((report.raw.create_rows_with_raw ?? 0) !== (report.raw.create_rows ?? 0)) misses.push(`create or migration transactions without raw record ${report.raw.create_rows - report.raw.create_rows_with_raw}`);
     if (report.raw.trade_txs_with_raw !== report.raw.trade_txs) misses.push(`trade transactions without raw record ${report.raw.trade_txs - report.raw.trade_txs_with_raw}`);
   }
   const liveFail = (report.live || []).filter((x) => !x.pass).length;

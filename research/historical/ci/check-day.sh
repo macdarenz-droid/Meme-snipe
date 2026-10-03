@@ -18,7 +18,7 @@ units_bytes=$(du -sb "$out/units" | cut -f1)
 ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
 # A single-day dataset without lead-in: universes are tokens created or graduated in
 # that day's units. The multi-day dataset (assemble.sh) uses the 14-day lead-in.
-zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0
+zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json"
 node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0
 node --no-warnings "$here/../qa/parity.ts" "$ds"
 cp "$ds/qa/report.md" "$assets/qa-$day.md"
