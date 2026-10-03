@@ -17,8 +17,8 @@ SupplementaryGroups=zeroed-signer
 EnvironmentFile=/etc/zeroed/worker.env
 Environment=NODE_ENV=production
 # Reconcile first: every start and restart settles open intents against the chain before trading.
-ExecStartPre=/usr/local/bin/node /opt/zeroed/stub/worker.mjs --reconcile
-ExecStart=/usr/local/bin/node /opt/zeroed/stub/worker.mjs
+ExecStartPre=/usr/local/lib/zeroed/worker-start --reconcile
+ExecStart=/usr/local/lib/zeroed/worker-start
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
