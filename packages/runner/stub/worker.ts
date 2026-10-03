@@ -121,6 +121,12 @@ let halted = false;
 const haltReasons = (now: number): string[] =>
   [...feeds].filter(([n, f]) => FEEDS[n]!.critical && (f.downUntil > now || f.last === null || now - f.last > 5 * tickMs)).map(([n]) => `feed ${n} stale`);
 
+// TEST-2's DryRunRecord shape, bigints as strings; synthetic numbers that pass item 4's bounds.
+const stubSimulation = (): Record<string, unknown> => ({
+  outcome: 'simulated', success: true, error: null, standIn: null, quotedOut: '1000000', simulatedOut: '1000100',
+  amountErrorE4: 1000, quoteAgeSlots: '2', rentDeclared: '0', rentPaid: '0', balancesFrom: 'simulation',
+});
+
 let tradeTimer = 0;
 const tick = (): void => {
   const now = Date.now();
@@ -154,7 +160,7 @@ const tick = (): void => {
       state.intent = { trade, leg: 'entry' };
       saveState(state);
       journal('decision', { action: 'enter', trade, reasons: ['stub: synthetic setup'] });
-      if (simulationOn) journal('simulation', { trade, leg: 'entry', ok: true, amount_error_pts: 0 });
+      if (simulationOn) journal('simulation', { trade, leg: 'entry', ...stubSimulation() });
       state.position = { trade, openedAt: now };
       state.intent = null;
       saveState(state);
@@ -164,7 +170,7 @@ const tick = (): void => {
     const trade = state.position.trade;
     state.intent = { trade, leg: 'exit' };
     saveState(state);
-    if (simulationOn) journal('simulation', { trade, leg: 'exit', ok: true, amount_error_pts: 0 });
+    if (simulationOn) journal('simulation', { trade, leg: 'exit', ...stubSimulation() });
     state.position = null;
     state.intent = null;
     saveState(state);

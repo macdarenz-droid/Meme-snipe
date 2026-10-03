@@ -81,6 +81,8 @@ describe('runner with the stub worker', () => {
     // Only two checks fail: it is the stub, and in a 16 s run three kills and a handover are well over 1% down time.
     expect(Object.entries(r.checks).filter(([, v]) => !v).map(([k]) => k).sort()).toEqual(['real_worker', 'uptime']);
     expect(r.uptime).toBeGreaterThan(0.5);
+    expect(r.item4).toMatchObject({ counts: false, pass: true, note: 'Rehearsal: does not count for item 4.' });
+    expect(r.item4.trades).toBe(r.journal.simulations);
     expect(r.pass).toBe(false);
     expect(readFileSync(join(t.evidenceDir, 'REPORT.md'), 'utf8')).toContain('Rehearsal: counts for none of §15 items 3, 4 or G3');
 

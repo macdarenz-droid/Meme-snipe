@@ -1,4 +1,5 @@
 // The dry-run report: uptime, memory, journal, drills, recorded data. Pure; the runner feeds it.
+import type { Item4 } from './item4.ts';
 import type { JournalReport } from './journal.ts';
 import type { Drill } from './plan.ts';
 
@@ -81,7 +82,10 @@ export interface Report {
   };
   readonly recorded: { readonly files: number; readonly bytes: number };
   readonly checks: Readonly<Record<string, boolean>>;
+  /** §15 item 3 (this report's checks). */
   readonly pass: boolean;
+  /** §15 item 4, judged separately from the same run. */
+  readonly item4: Item4;
 }
 
 /** systemd MemoryMax of the worker unit (OPS-1a). */
@@ -117,6 +121,7 @@ export const buildReport = (
   journal: JournalReport,
   drills: readonly DrillOutcome[],
   recorded: readonly RecordedFile[],
+  item4: Item4,
 ): Report => {
   const up = uptime(samples, sampleMs, meta.startedAt, endedAt);
   const rss = samples.flatMap((s) => (s.rss_bytes === null ? [] : [s.rss_bytes / MB])).sort((a, b) => a - b);
@@ -172,6 +177,7 @@ export const buildReport = (
     recorded: { files: recorded.length, bytes: recorded.reduce((a, f) => a + f.bytes, 0) },
     checks,
     pass: Object.values(checks).every(Boolean),
+    item4,
   };
 };
 
@@ -213,6 +219,24 @@ export const reportMarkdown = (r: Report): string => {
         } | ${yes(d.pass)} | ${d.notes.join('; ').replace(/\|/g, '/')} |`,
     ),
   ];
+  const i4 = r.item4;
+  const pts = (x: number | null): string => (x === null ? '-' : `${x} pts`);
+  lines.push(
+    '',
+    '## Item 4: dry-run simulation',
+    '',
+    `**${i4.counts ? 'Counts' : 'Does not count'}.** ${i4.note}`,
+    '',
+    '| Bound | Value | Limit | Result |',
+    '| --- | --- | --- | --- |',
+    `| Simulated successfully | ${i4.bounds.success.percent}% (${i4.successes} of ${i4.trades}) | ≥ ${i4.bounds.success.min_percent}% | ${yes(i4.bounds.success.pass)} |`,
+    `| Median amount error | ${pts(i4.bounds.median.points)} | ≤ ${i4.bounds.median.max_points} pts | ${yes(i4.bounds.median.pass)} |`,
+    `| Largest amount error | ${pts(i4.bounds.each.max_seen_points)} | ≤ ${i4.bounds.each.max_points} pts each | ${yes(i4.bounds.each.pass)} |`,
+    '',
+    `Outcomes: ${Object.entries(i4.outcomes).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}. Stand-in legs: ${i4.stand_ins}. Close omitted: ${i4.close_omitted}. Median quote age: ${i4.median_quote_age_slots ?? '-'} slots.`,
+    '',
+    `Item 4: **${i4.pass ? 'pass' : 'not passed'}**`,
+  );
   if (r.journal.problems.length) lines.push('', '## Journal problems', '', ...r.journal.problems.map((p) => `- ${p}`));
   return `${lines.join('\n')}\n`;
 };
