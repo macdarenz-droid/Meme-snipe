@@ -128,7 +128,7 @@ const mergeGaps = (gaps: readonly SeedGap[]): SeedGap[] => {
 export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
   if (o.untilSlot > o.asOf.slot) throw new RangeError(`untilSlot ${o.untilSlot} is after the process start slot ${o.asOf.slot}`);
   if (o.fill !== undefined && (o.days.length > 0 || o.rpcFrom !== undefined)) throw new RangeError('a downtime fill takes neither day releases nor rpcFrom');
-  if (o.fill !== undefined && o.fill.fromSlot > o.untilSlot + 1n) throw new RangeError(`fill starts at ${o.fill.fromSlot}, after untilSlot ${o.untilSlot}`);
+  if (o.fill !== undefined && o.fill.fromSlot > o.untilSlot) throw new RangeError(`fill starts at ${o.fill.fromSlot}, after untilSlot ${o.untilSlot}`);
   const nowMs = o.asOf.receivedAt;
   const clampMs = (ms: number | null): number => (ms === null || !Number.isFinite(ms) || ms > nowMs ? nowMs : ms);
   // A missing, altered or failed day is dropped and reported; it never stops the seed.
@@ -221,12 +221,16 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
     merged.forEach((g, i) => coverage.push(fact('gap', g.toSlot, Math.max(g.atMs, floorMs), { fromSlot: g.fromSlot, toSlot: g.toSlot, reason: g.reason }, i + 1)));
   }
   const close = o.fill?.close;
-  if (close !== undefined) {
-    // Dated at the process start: the saved watch's range is settled only now.
+  if (close !== undefined && o.fill !== undefined) {
+    // Dated strictly before any possible live start: the restarted watch's start is at untilSlot or later, so the
+    // close sits in slot untilSlot - 1, at the downtime's first block time (after the saved facts, before the
+    // restart). A close dated at or after the new start would come too late: the start would settle the saved open
+    // gap as lossy first (re-review of #45).
     const n = merged.length + 1;
+    const at = o.untilSlot - 1n;
     coverage.push(merged.length === 0
-      ? fact('resume', o.untilSlot, nowMs, { fromSlot: close.fromSlot, toSlot: o.untilSlot }, n, close.via)
-      : fact('gap', o.untilSlot, nowMs, { fromSlot: close.fromSlot, toSlot: o.untilSlot, reason: `downtime fill incomplete (${merged.length} gaps)` }, n, close.via));
+      ? fact('resume', at, o.fill.fromMs, { fromSlot: close.fromSlot, toSlot: o.untilSlot }, n, close.via)
+      : fact('gap', at, o.fill.fromMs, { fromSlot: close.fromSlot, toSlot: o.untilSlot, reason: `downtime fill incomplete (${merged.length} gaps)` }, n, close.via));
   }
   coverage.sort(compareEvents);
   return {

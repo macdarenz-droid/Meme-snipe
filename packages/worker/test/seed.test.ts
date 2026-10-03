@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { TransactionRecord } from '../../core/src/chain/index.ts';
-import { AsOfStore, OFF_CHAIN, SimClock, type MarketEvent, type Moment } from '../../core/src/engine/index.ts';
+import { AsOfStore, OFF_CHAIN, SimClock, compareEvents, type MarketEvent, type Moment } from '../../core/src/engine/index.ts';
 import { DAY_MS } from '../../core/src/config/time.ts';
 import { DeployerIndex, createOf, createsCoverage } from '../../core/src/gates/index.ts';
 import { eventsOfFrame, type Frame } from '../src/providers/canonical.ts';
@@ -410,11 +410,11 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
   ];
   const NOW: Moment = { ...ASOF, slot: ASOF.slot + 100n, receivedAt: ASOF.receivedAt + 1_000 };
   /** Saved facts, then the fill's facts, then the restarted watch's new start, through an as-of store. */
-  const coveredAfter = (fill: readonly MarketEvent[]) => {
+  const coveredAfter = (fill: readonly MarketEvent[], restartAt: Moment = { ...ASOF }) => {
     const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: Number.MIN_SAFE_INTEGER });
     const store = new AsOfStore(clock);
-    const restart: MarketEvent = { kind: 'market', id: 'restart-start', moment: { ...ASOF }, key: 'coverage:creates:start', value: wrapped({ fromSlot: UNTIL, via: VIA }) };
-    for (const e of [...saved, ...fill, restart].sort((a, b) => (a.moment.slot < b.moment.slot ? -1 : a.moment.slot > b.moment.slot ? 1 : a.moment.receivedAt - b.moment.receivedAt))) {
+    const restart: MarketEvent = { kind: 'market', id: 'restart-start', moment: restartAt, key: 'coverage:creates:start', value: wrapped({ fromSlot: UNTIL, via: VIA }) };
+    for (const e of [...saved, ...fill, restart].sort(compareEvents)) {
       clock.advanceTo(e.moment);
       store.record(e.key, e.value, e.moment, e.id);
     }
@@ -436,6 +436,8 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
     expect(seed.report.rpc?.result).toMatchObject({ stoppedBy: 'done', creates: CREATES.length, creditsUsed: 1 + CREATES.length });
     expect(seed.coverage.map((e) => [e.key, (e.value as { value: { via: string } }).value.via])).toEqual([['coverage:creates:resume', VIA]]);
     expect(coveredAfter(seed.coverage).covered).toBe(true);
+    // The tie case: the restarted watch's start in untilSlot itself, timed before asOf. The close must still come first.
+    expect(coveredAfter(seed.coverage, { slot: UNTIL, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt - 1_000 }).covered).toBe(true);
     // Fill creates reach the restored index, which has already seen live events, through fill(), and count.
     const idx = new DeployerIndex();
     for (const e of saved) idx.observe(e);
@@ -461,7 +463,7 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
 
   it('a fill takes no day releases and must start by untilSlot', async () => {
     await expect(buildSeed({ ...fillOpts(), days: [{ dir: dayRelease(DAY, UNITS), day: DAY }] })).rejects.toThrow(/neither day releases/);
-    await expect(buildSeed({ ...fillOpts(), fill: { fromSlot: UNTIL + 2n, fromMs: DOWN_MS } })).rejects.toThrow(/after untilSlot/);
+    await expect(buildSeed({ ...fillOpts(), fill: { fromSlot: UNTIL + 1n, fromMs: DOWN_MS } })).rejects.toThrow(/after untilSlot/);
   });
 });
 
