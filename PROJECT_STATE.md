@@ -7,6 +7,7 @@
 - Bankroll $20, entries $2 default and $5 max, paper mode first.
 - Easy deposit and withdraw in AUD. Stripe's onramp does not serve Australia (US and EU only). Deposit and Withdraw screens offer two exchanges to choose from, Independent Reserve and Kraken, with steps and costs; the bot only sends to the owner's saved wallet. Banxa in-app buying is possible later if a business (ABN) is registered.
 - Dashboard: P&L calendar, trade history with full details, profit charts and the other visuals needed to see what the bot is doing. Smooth UI: motion, transitions, blurred backdrops behind opened panels.
+- Two themes only: Paper (light) and Silent Black (dark); first open follows the device, then the owner's choice is remembered.
 - UI words read as written by a person: no AI wording anywhere (see `AGENTS.md`).
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 

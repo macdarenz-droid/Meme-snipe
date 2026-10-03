@@ -197,6 +197,21 @@ Start read-only and paper mode. The eventual live workflow must show the exact f
 
 Use a calm, compact working interface influenced by Linear and Vercel: charcoal surfaces, clear typography, subtle separators, restrained corners, tabular numbers, and one quiet accent color. Reserve green/red for financial or operational meaning. Avoid neon-heavy token marketing, oversized KPI cards, and fabricated performance scores. Support readable mobile layouts and keyboard operation. Proposed design tokens: background #0D0F12, surface #14171C, border #262B33, primary text #ECEFF3, with a restrained blue action accent. Use Geist Sans and tabular numerals; reserve monospace for addresses and timestamps. Start with a 216px desktop navigation rail and an optional 360px evidence panel; on mobile use three bottom tabs and a full-screen detail sheet. Use 16px body text, 14px regular controls and labels, and at least 44px touch targets. Validate contrast, focus visibility, overflow and text enlargement. These are proposed values, not measured copies of the references.
 
+**Themes (owner, 2026-10-03): two only, Paper and Silent Black.** No other themes, accent pickers or custom colours. The first open follows the device's light/dark setting; after that the owner's choice is remembered. Both themes share one set of semantic tokens, so every screen, chart and state works in both:
+
+| Token | Paper | Silent Black |
+| --- | --- | --- |
+| Background | #F7F7F5 (warm paper white) | #08090A (near-black, no glow) |
+| Surface | #FFFFFF | #0F1012 |
+| Raised surface | #F1F1EE | #16181B |
+| Border | #E3E3DF | #1F2226 |
+| Primary text | #0D0F12 | #ECEFF3 |
+| Secondary text | #5E636B | #8A9099 |
+| Accent (actions only) | #2F6BFF | #5B8CFF |
+| Gain / loss (money only) | #0F8A4B / #C93A3A | #3FB97A / #E5605E |
+
+Silent Black stays quiet: no neon, glow or gradients on surfaces; depth comes from one step of surface lightness and hairline borders. Paper is a soft off-white, not pure #FFFFFF, to cut glare. Blurred backdrops behind opened panels use the theme's background at partial opacity. These are proposed values: check WCAG AA contrast for text and chart marks in both themes before release.
+
 Persistent shell: a narrow navigation rail for **Home, Snipe, Wallet**; a clear Paper/Live mode label; session status; data freshness; and an accessible “Pause new entries” control. Token detail and journal panels can stay inside these screens.
 
 | Screen | Essential content and behavior |
