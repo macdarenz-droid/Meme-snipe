@@ -2,10 +2,13 @@
 // in-memory stand-in for LEDGER-1; the property test runs random sequences through the real evaluator and checks the
 // total reserved never exceeds the limit, computed independently from §8's formulas.
 import { describe, expect, test } from 'vitest';
+import { openLedger } from '../../src/ledger/index.ts';
+import { entryIntent } from '../fixtures.ts';
+import { tempPath } from '../ledger/helpers.ts';
 import { PolicyError, TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
 import { type Mint, intentId, reservationId } from '../../src/domain/index.ts';
 import {
-  type ClosedTrade, type EntryAllowed, type OpenPosition, type ReservationRequest, type RiskInput, evaluateEntry, maxTradeCosts,
+  type ClosedTrade, type EntryAllowed, type OpenPosition, type ReservationRequest, type ReservationStore, type RiskInput, evaluateEntry, maxTradeCosts,
   melbourneWeek, reserve,
 } from '../../src/risk/index.ts';
 import { type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
@@ -185,5 +188,20 @@ describe('item 1: a decision from an old snapshot cannot reserve after the accou
   test('the request carries the snapshot version', () => {
     const d = evaluateEntry(baseInput({ account: account({ version: 41n }) }), baseRequest()) as EntryAllowed;
     expect(d.reservation.accountVersion).toBe(41n);
+  });
+});
+
+describe('the real ledger is the reservation store (LEDGER-1c)', () => {
+  test('a decision from a withSnapshot read reserves; a second decision from the same snapshot is refused', () => {
+    const ledger = openLedger(tempPath(), 'paper');
+    for (const n of [1, 2]) ledger.recordIntent(entryIntent(n), { status: 'risk_approved', ts: n });
+    const store: ReservationStore = ledger;
+    const { version } = ledger.withSnapshot((v) => v);
+    const input = baseInput({ account: account({ version }) });
+    const a = evaluateEntry(input, baseRequest({ intentId: entryIntent(1).id })) as EntryAllowed;
+    const b = evaluateEntry(input, baseRequest({ intentId: entryIntent(2).id, mint: MINT_B })) as EntryAllowed;
+    expect(reserve(store, a.reservation, NOW)).toMatchObject({ ok: true });
+    expect(reserve(store, b.reservation, NOW)).toEqual({ ok: false, reason: 'stale_snapshot' });
+    ledger.close();
   });
 });
