@@ -62,7 +62,10 @@ const describe = (m: Moment): string => `slot ${m.slot} tx ${m.txIndex} ix ${m.i
  * Searches everything reachable from `root` through data (own properties, array items, map and set
  * entries; getters and function closures are not entered) for a string containing `token`.
  */
-export const reaches = (root: unknown, token: string, budget = 200_000): boolean => {
+/** Nodes a reachability search may visit before giving up. */
+const REACH_BUDGET = 200_000;
+
+export const reaches = (root: unknown, token: string, budget = REACH_BUDGET): boolean => {
   const seen = new Set<object>();
   const stack: unknown[] = [root];
   while (stack.length > 0 && budget-- > 0) {

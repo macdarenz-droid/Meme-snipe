@@ -30,6 +30,16 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'amm/pump-curve.ts', name: 'tokenTotalSupply', value: '1000000000000000', why: 'pump Global launch parameter' },
   { file: 'amm/pump-curve.ts', name: 'poolMigrationFee', value: '15000001', why: 'pump migrate fee, a protocol parameter read as an input' },
   { file: 'domain/index.ts', name: 'futureToleranceMs', value: '1000', why: 'clock skew allowance in milliseconds, not money' },
+  { file: 'engine/random.ts', name: 'M1', value: '597399067', why: 'cyrb128 hash multiplier, not money' },
+  { file: 'engine/random.ts', name: 'M2', value: '2869860233', why: 'cyrb128 hash multiplier, not money' },
+  { file: 'engine/random.ts', name: 'M3', value: '951274213', why: 'cyrb128 hash multiplier, not money' },
+  { file: 'engine/random.ts', name: 'M4', value: '2716044179', why: 'cyrb128 hash multiplier, not money' },
+  { file: 'engine/random.ts', name: 'TWO_POW_32', value: '4294967296', why: 'sfc32 output scale (2^32), not money' },
+  { file: 'engine/random.ts', name: 'h1', value: '1779033703', why: 'cyrb128 initial hash state, not money' },
+  { file: 'engine/random.ts', name: 'h2', value: '3144134277', why: 'cyrb128 initial hash state, not money' },
+  { file: 'engine/random.ts', name: 'h3', value: '1013904242', why: 'cyrb128 initial hash state, not money' },
+  { file: 'engine/random.ts', name: 'h4', value: '2773480762', why: 'cyrb128 initial hash state, not money' },
+  { file: 'engine/proofs.ts', name: 'REACH_BUDGET', value: '200000', why: 'node budget of the leak-test reachability search, not money' },
 ];
 
 export const isAllowed = (file: string, finding: Finding, allowed: readonly Allowed[] = ALLOWED): boolean =>

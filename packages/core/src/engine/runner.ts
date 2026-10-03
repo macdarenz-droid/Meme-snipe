@@ -169,7 +169,7 @@ export class ReconcileGuard {
       if (!this.#recent[this.#head]!.orphan) this.#balancesInWindow--;
       this.#head++;
     }
-    if (this.#head > 1024 && this.#head * 2 > this.#recent.length) {
+    if (this.#head > 512 && this.#head * 2 > this.#recent.length) {
       this.#recent.splice(0, this.#head);
       this.#head = 0;
     }
@@ -178,7 +178,7 @@ export class ReconcileGuard {
       (k.startsWith('reconcile_orphan|') ? this.#orphans : this.#balances).remove(k);
       this.#waiting.delete(k);
     }
-    if (this.#lastSent.size > 1024) {
+    if (this.#lastSent.size > 512) {
       for (const [k, sent] of this.#lastSent) {
         if (slot - sent >= minSlotsBetween && !this.#waiting.has(k)) {
           this.#lastSent.delete(k);

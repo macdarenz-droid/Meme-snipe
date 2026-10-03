@@ -10,6 +10,13 @@ export interface Rng {
   int(n: number): number;
 }
 
+// cyrb128's published multipliers and sfc32's output scale. Hash constants, not money.
+const M1 = 597399067;
+const M2 = 2869860233;
+const M3 = 951274213;
+const M4 = 2716044179;
+const TWO_POW_32 = 4294967296;
+
 const cyrb128 = (text: string): [number, number, number, number] => {
   let h1 = 1779033703;
   let h2 = 3144134277;
@@ -17,15 +24,15 @@ const cyrb128 = (text: string): [number, number, number, number] => {
   let h4 = 2773480762;
   for (let i = 0; i < text.length; i++) {
     const k = text.charCodeAt(i);
-    h1 = h2 ^ Math.imul(h1 ^ k, 597399067);
-    h2 = h3 ^ Math.imul(h2 ^ k, 2869860233);
-    h3 = h4 ^ Math.imul(h3 ^ k, 951274213);
-    h4 = h1 ^ Math.imul(h4 ^ k, 2716044179);
+    h1 = h2 ^ Math.imul(h1 ^ k, M1);
+    h2 = h3 ^ Math.imul(h2 ^ k, M2);
+    h3 = h4 ^ Math.imul(h3 ^ k, M3);
+    h4 = h1 ^ Math.imul(h4 ^ k, M4);
   }
-  h1 = Math.imul(h3 ^ (h1 >>> 18), 597399067);
-  h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
-  h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213);
-  h4 = Math.imul(h2 ^ (h4 >>> 19), 2716044179);
+  h1 = Math.imul(h3 ^ (h1 >>> 18), M1);
+  h2 = Math.imul(h4 ^ (h2 >>> 22), M2);
+  h3 = Math.imul(h1 ^ (h3 >>> 17), M3);
+  h4 = Math.imul(h2 ^ (h4 >>> 19), M4);
   h1 ^= h2 ^ h3 ^ h4;
   h2 ^= h1;
   h3 ^= h1;
@@ -49,13 +56,13 @@ export const createRng = (seed: string): Rng => {
   for (let i = 0; i < 12; i++) nextU32();
   return {
     nextU32,
-    next: () => nextU32() / 4294967296,
+    next: () => nextU32() / TWO_POW_32,
     int: (n) => {
       if (!Number.isSafeInteger(n) || n < 1) throw new RangeError(`n must be a positive integer, got ${n}`);
       // Two draws give 53 bits; rejection keeps the result unbiased.
       const limit = Math.floor(Number.MAX_SAFE_INTEGER / n) * n;
       for (;;) {
-        const x = (nextU32() >>> 11) * 4294967296 + nextU32();
+        const x = (nextU32() >>> 11) * TWO_POW_32 + nextU32();
         if (x < limit) return x % n;
       }
     },

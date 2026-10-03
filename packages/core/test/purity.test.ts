@@ -90,6 +90,7 @@ const FOLDER_BANS: Readonly<Record<string, ReadonlySet<string>>> = {
  */
 const EXEMPTIONS: readonly { readonly folder: string; readonly allow: ReadonlySet<string>; readonly why: string }[] = [
   { folder: 'ledger', allow: new Set(['node:sqlite']), why: 'LEDGER-1: append-only SQLite ledger and its scoring reader' },
+  { folder: 'config', allow: new Set(['constructor']), why: 'CFG-1: names prototype-polluting keys so a loaded policy can refuse them' },
 ];
 
 /** String literals that name a banned thing: computed access (`Math['random']`), `Reflect.get`, or a module import. */
