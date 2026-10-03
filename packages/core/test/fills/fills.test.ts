@@ -193,7 +193,7 @@ describe('scenario ordering', () => {
       expect(le(mid, best)).toBe(true);
     });
   const lower = (x: number, y: number) => x >= y; // lower is better: worse value is larger
-  better('landing share per venue', c.landPpm, b.landPpm, o.landPpm, (x, y) => x.pumpswap <= y.pumpswap && x['pump-curve'] <= y['pump-curve']);
+  better('landing share per venue', c.landPpm, b.landPpm, o.landPpm, (x, y) => (Object.keys(b.landPpm) as (keyof typeof x)[]).every((v) => x[v] <= y[v]));
   better('dropped share (a dropped attempt costs nothing; a failed one pays fees)', c.dropPpm, b.dropPpm, o.dropPpm, (x, y) => x <= y);
   better('discovery lag (mean and worst)', c.discoverySlots, b.discoverySlots, o.discoverySlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
   better('landing latency (mean and worst)', c.landingSlots, b.landingSlots, o.landingSlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));

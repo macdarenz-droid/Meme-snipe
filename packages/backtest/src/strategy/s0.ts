@@ -69,6 +69,8 @@ export class S0 implements Strategy {
   readonly #plans = new Map<string, Plan>();
   readonly #live = new Set<IntentId>();
   readonly #held = new Map<string, Held>();
+  /** Keys of height-less events already reported, so the log notes each once. */
+  readonly #warned = new Set<string>();
 
   constructor(config: S0Config) {
     if (config.windowToMs <= config.windowFromMs) throw new RangeError('the candidate window must be non-empty');
@@ -102,14 +104,17 @@ export class S0 implements Strategy {
   }
 
   /**
-   * The block height a transaction signed while handling `e` would take its blockhash from: carried on the event itself
-   * (pool swaps, discoveries and slot events all carry it), so a heartbeat's older height is never used.
+   * The block height a transaction signed while handling `e` takes its blockhash from. Every market event the backtest
+   * releases carries it; an event without one is never signed on (no fallback to an older height).
    */
-  #blockHeight(e: MarketEvent, ctx: StrategyContext): bigint | null {
+  #blockHeight(e: MarketEvent, out: Decision[]): bigint | null {
     const v = e.value as { blockHeight?: unknown } | null;
     if (v !== null && typeof v === 'object' && typeof v.blockHeight === 'bigint') return v.blockHeight;
-    const s = ctx.lookup('slot');
-    return s.ok ? (s.value as { blockHeight: bigint }).blockHeight : null;
+    if (!this.#warned.has(e.key)) {
+      this.#warned.add(e.key);
+      out.push({ action: null, reasons: ['not signing', `event ${e.key} carries no block height`] });
+    }
+    return null;
   }
 
   #attempt(id: IntentId, n: number, quote: QuoteContext, height: bigint): TransactionAttempt {
@@ -133,7 +138,7 @@ export class S0 implements Strategy {
         continue;
       }
       if (!canOpenNewEntry(ctx.book).ok) continue;
-      const height = this.#blockHeight(e, ctx);
+      const height = this.#blockHeight(e, out);
       if (height === null) continue;
       const px = ctx.lookup('sol-usd');
       if (!px.ok) {
@@ -207,7 +212,7 @@ export class S0 implements Strategy {
       const due = p.status === 'open' && h.openedAt !== null && now >= h.openedAt + this.#c.holdMs;
       const retry = p.status === 'exit_blocked' && h.blockedAt !== null && h.blocked <= this.#c.blockedRetries && now >= h.blockedAt + this.#c.blockedRetryMs;
       if (!due && !retry) continue;
-      const height = this.#blockHeight(e, ctx);
+      const height = this.#blockHeight(e, out);
       if (height === null) continue;
       const rung = this.#c.ladder.steps[0]!;
       const id = intentId(`ex:${h.mint}:${++h.exits}`);
@@ -246,7 +251,7 @@ export class S0 implements Strategy {
         continue;
       }
       const h = this.#held.get(mint);
-      const height = this.#blockHeight(e, ctx);
+      const height = this.#blockHeight(e, out);
       if (h === undefined || height === null) continue;
       const n = i.attempts.length + 1;
       const steps = this.#c.ladder.steps;

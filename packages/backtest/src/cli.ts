@@ -12,7 +12,7 @@ import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/confi
 import { OFF_CHAIN } from '../../core/src/engine/index.ts';
 import { SCENARIO_NAMES, type ScenarioName } from '../../core/src/fills/index.ts';
 import type { Bps } from '../../core/src/units/index.ts';
-import { loadDay, loadManifest, manifestHash, type ManifestDay } from './dataset/dataset.ts';
+import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
 import { readSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
 import { runHoldout } from './holdout.ts';
@@ -31,6 +31,7 @@ const flag = (name: string, fallback?: string): string => {
 };
 
 const dataset = flag('dataset');
+verifySums(dataset);
 const manifest = loadManifest(dataset);
 const only = args.includes('--days') ? new Set(flag('days').split(',')) : null;
 const days: ManifestDay[] = manifest.days.filter((d) => only === null || only.has(d.day));
@@ -50,7 +51,7 @@ function* rows(): Generator<DatasetRow> {
   for (const d of days) yield* loadDay(dataset, d);
 }
 
-const regimeBoundaries = (manifest.regime_boundaries ?? []).map((b) => ({ slot: BigInt(b.slot), label: b.label }));
+const regimeBoundaries = regimeBoundariesOf(manifest);
 /** A future-only PumpSwap swap carrying the marker, planted as a dataset row so it travels through the reader's stream. */
 const plantedSwap = (token: string, slot: bigint, blockTime: number): DatasetRow => ({
   kind: 'amm', slot, blockTime, txIdx: OFF_CHAIN - 4, evIdx: 0, signature: `plant-${token}`, pool: token, baseMint: token,
@@ -115,6 +116,7 @@ if (command === 'holdout') {
   });
   const evidence = {
     commit, dataset: { dir: dataset, manifestSha256: manifestHash(dataset), days: days.map((d) => d.day), complete: days.map((d) => d.complete) },
+    fillsVersion: FILL_CONFIG.version, researchVersion: RESEARCH_CONFIG.version, policyName: TRIAL_POLICY.name,
     scenario, seed, hashes, identicalReplays: identical, leak, stats: first.stats,
     throughput: { rows: first.stats.rows, elapsedMs: times, rowsPerSecond: Math.round(first.stats.rows / (first.stats.elapsedMs / 1000)), days: days.length,
       projected30DaysMinutes: Math.round(((first.stats.elapsedMs / days.length) * 30) / 60_000) },

@@ -146,8 +146,12 @@ export class Market {
     }
   }
 
-  #market(id: string, moment: Moment, key: string, value: unknown): MarketEvent {
-    return { kind: 'market', id, moment, key, value };
+  /**
+   * Every market event carries the height of the latest block when it was released: a transaction signed while
+   * handling it takes that block's hash. A discovery is stamped again when it is released (see discovery()).
+   */
+  #market(id: string, moment: Moment, key: string, value: Readonly<Record<string, unknown>>): MarketEvent {
+    return { kind: 'market', id, moment, key, value: { ...value, blockHeight: this.blockHeight } };
   }
 
   #block(row: BlockRow): FeedEvent[] {
@@ -201,7 +205,7 @@ export class Market {
       fees: row.fees, baseSupply: row.baseSupply, side: row.side, userQuote: row.userQuote, baseAmount: row.baseAmount,
       blockHeight: this.blockHeight,
     };
-    return [this.#market(`s:${row.signature}:${row.evIdx}`, rowMoment(row), `pool:${row.pool}`, view)];
+    return [this.#market(`s:${row.signature}:${row.evIdx}`, rowMoment(row), `pool:${row.pool}`, view as unknown as Readonly<Record<string, unknown>>)];
   }
 
   #event(row: EventRow): FeedEvent[] {

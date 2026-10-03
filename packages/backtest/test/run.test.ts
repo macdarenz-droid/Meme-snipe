@@ -10,7 +10,7 @@ import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
 import { buildReport } from '../src/report.ts';
 import { runBacktest, type RunOptions } from '../src/run.ts';
 import { tradesOf } from '../src/trades.ts';
-import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
+import { key, SOL_USD, syntheticRows, T0 } from './synthetic.ts';
 
 const rows = syntheticRows({ mints: 4, slots: 2.5 * 3600 * 6 });
 const opts = (over: Partial<RunOptions> = {}): RunOptions => ({
@@ -229,19 +229,29 @@ describe('many candidates at once', () => {
 });
 
 describe('signing heights and skipped slots', () => {
-  const crowd = syntheticRows({ mints: 12, slots: 2.5 * 3600 * 7, swapEvery: 37, seed: 'heights' });
+  const base = syntheticRows({ mints: 12, slots: 2.5 * 3600 * 7, swapEvery: 37, seed: 'heights' });
+  // The reviewer's repro: another mint's CreateEvent every 7 slots, so S0 often acts on lifecycle events.
+  const crowd = base.flatMap((r) => (r.kind === 'block' && r.slot % 7n === 0n
+    ? [{ kind: 'event' as const, slot: r.slot, blockTime: r.blockTime, txIdx: 900, evIdx: 0, signature: `create-${r.slot}`, program: 'pump', event: 'CreateEvent',
+      fields: { mint: key(`other-${r.slot}`), symbol: 'OTHER' } }, r]
+    : [r]));
   test('with no dropped attempts and landing under 150 slots, nothing expires, whatever the seed and scenario', () => {
     let betweenHeartbeats = 0;
+    let onLifecycle = 0;
     for (const scenario of ['base', 'conservative', 'optimistic'] as const) {
       for (const seed of ['h1', 'h2', 'h3']) {
         const r = runBacktest(opts({ rows: () => crowd[Symbol.iterator](), seed, scenario, windowEnd: T0 + 7 * 3_600_000 }));
         expect(r.stats.illegalStates).toBe(0);
         expect(r.attempts.filter((a) => a.outcome === 'expired' || a.outcome === 'dropped')).toEqual([]);
-        // Entries and time stops decided on a pool swap, between heartbeats, are covered.
-        betweenHeartbeats += r.records.filter((x) => x.type === 'decision' && x.eventId.startsWith('s:') && (x.reasons[0] === 'time stop' || x.reasons[0] === 'enter')).length;
+        // Entries and time stops decided between heartbeats, on pool swaps and on other mints' lifecycle events.
+        const acted = r.records.filter((x) => x.type === 'decision' && (x.reasons[0] === 'time stop' || x.reasons[0] === 'enter'));
+        betweenHeartbeats += acted.filter((x) => x.type === 'decision' && x.eventId.startsWith('s:')).length;
+        onLifecycle += acted.filter((x) => x.type === 'decision' && x.eventId.startsWith('e:')).length;
+        expect(r.records.some((x) => x.type === 'decision' && x.reasons[0] === 'not signing')).toBe(false);
       }
     }
     expect(betweenHeartbeats).toBeGreaterThan(5);
+    expect(onLifecycle).toBeGreaterThan(5);
   });
 
   test('a landing drawn for a skipped slot lands at the next block', () => {

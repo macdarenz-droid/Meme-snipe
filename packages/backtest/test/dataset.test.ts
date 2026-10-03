@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
-import { loadDay, loadManifest, tableOf } from '../src/dataset/dataset.ts';
+import { createHash } from 'node:crypto';
+import { loadDay, loadManifest, regimeBoundariesOf, tableOf, verifySums } from '../src/dataset/dataset.ts';
 import { readSeries, usableFrom } from '../src/dataset/offchain.ts';
 import { writeDataset } from './dataset-writer.ts';
 import { SOL_USD, syntheticRows } from './synthetic.ts';
@@ -99,5 +100,35 @@ describe('command line on an on-disk dataset', () => {
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     const out = JSON.parse(stdout.trim()) as Record<string, unknown>;
     expect(Object.keys(out).sort()).toEqual(['counts', 'ledgerHash']);
+  });
+});
+
+describe('release-asset layout', () => {
+  test('flat <day>__<file> names load, SHA256SUMS is enforced, and the program-upgrade key becomes a regime boundary', () => {
+    const flat = mkdtempSync(join(tmpdir(), 'flat-'));
+    try {
+      const m = loadManifest(dir);
+      const names: string[] = ['manifest.json'];
+      writeFileSync(join(flat, 'manifest.json'), readFileSync(join(dir, 'manifest.json')));
+      for (const d of m.days) for (const f of d.files) {
+        const name = `${d.day}__${f.path.slice(f.path.lastIndexOf('/') + 1)}`;
+        writeFileSync(join(flat, name), readFileSync(join(dir, f.path)));
+        names.push(name);
+      }
+      const sums = names.map((n) => `${createHash('sha256').update(readFileSync(join(flat, n))).digest('hex')}  ${n}`).join('\n');
+      writeFileSync(join(flat, 'SHA256SUMS'), `${sums}\n`);
+      expect(verifySums(flat)).toBe(names.length);
+      expect(m.days.flatMap((d) => loadDay(flat, d)).length).toBe(rows.length);
+      const victim = join(flat, names[1]!);
+      const raw = readFileSync(victim);
+      writeFileSync(victim, Buffer.concat([raw, Buffer.of(1)]));
+      expect(() => verifySums(flat)).toThrow(/does not match/);
+      writeFileSync(victim, raw);
+      const withUpgrade = { ...m, program_upgrade_2026_10_02: { note: 'x', first_extra_hex_curve: { slot: 452654900 }, first_extra_hex_amm: { slot: 452654883 }, first_unknown_event: null } };
+      expect(regimeBoundariesOf(withUpgrade)).toEqual([{ slot: 452654883n, label: 'program_upgrade_2026_10_02' }]);
+      expect(regimeBoundariesOf(m)).toEqual([]);
+    } finally {
+      rmSync(flat, { recursive: true, force: true });
+    }
   });
 });
