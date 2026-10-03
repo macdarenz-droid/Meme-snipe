@@ -47,7 +47,7 @@ describe('S0 through the real engine', () => {
     expect(trades.length).toBeGreaterThan(0);
     for (const t of trades) {
       expect(t.exitReason).toBe('time-stop');
-      expect(t.closedAt - t.openedAt).toBeGreaterThanOrEqual(TRIAL_POLICY.exits.tMaxMs);
+      expect(t.closedAt - t.openedAt).toBeGreaterThanOrEqual(TRIAL_POLICY.exits.universes.U2.tMaxMs);
       // A round trip on an unmoving-ish pool loses at least the fees.
       expect(t.net).toBe(t.exitSol - t.entrySol - t.networkBase - t.priority - t.tip - t.rentPaid + t.rentReturned);
     }
@@ -284,7 +284,8 @@ describe('holdout mode', () => {
     const h = RESEARCH_CONFIG.holdout;
     const tail = Date.parse(`${h.tailEndDay}T00:00:00Z`) - Date.parse(`${h.entryCutoffDay}T00:00:00Z`);
     const s0 = RESEARCH_CONFIG.s0;
-    expect(tail).toBeGreaterThanOrEqual(TRIAL_POLICY.exits.tMaxMs + s0.blockedRetries * s0.blockedRetryMs + s0.endMarginMs);
+    // The longest hold any universe may have (the cap), so the tail holds for every registered universe.
+    expect(tail).toBeGreaterThanOrEqual(TRIAL_POLICY.exits.tMaxCapMs + s0.blockedRetries * s0.blockedRetryMs + s0.endMarginMs);
     expect([h.fromDay, h.entryCutoffDay]).toEqual(['2026-09-22', '2026-10-20']);
   });
 
