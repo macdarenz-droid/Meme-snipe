@@ -27,6 +27,7 @@ export type AlertCode =
   | 'unbooked_landing'
   | 'double_fill'
   | 'oversold'
+  | 'orphan_cleared'
   | 'exit_blocked'
   | 'restart_recovery';
 
