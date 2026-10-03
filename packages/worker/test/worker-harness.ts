@@ -117,6 +117,9 @@ export interface Harness {
 /** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
 
+/** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
+const boots = new Map<string, number>();
+
 export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
@@ -125,7 +128,10 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
   const logs: string[] = [];
   const sources: ReturnType<typeof scriptedSource>[] = [];
   const order: string[] = [];
+  const n = boots.get(stateDir) ?? 0;
+  boots.set(stateDir, n + 1);
   const worker = new Worker({
+    boot: `boot-${n}`,
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
     strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }) },

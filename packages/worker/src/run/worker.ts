@@ -64,6 +64,12 @@ export interface SourcesContext {
 
 export interface WorkerDeps {
   readonly config: WorkerConfig;
+  /**
+   * The boot id; default `<start time base36>-<pid>`. It names the recorder folder and seeds the paper world's fill
+   * draws (`paper:<boot>`), so tests pin it: with the pid in it, whether a drawn landing tail or drop happens depended
+   * on the test process's pid.
+   */
+  readonly boot?: string;
   readonly session: PolicySession;
   readonly rugs: RugConfig;
   readonly strategy: StrategyConfig;
@@ -214,7 +220,7 @@ export class Worker {
     const now = d.timers.now();
     this.#started = now;
     this.#funnel.fromMs = now;
-    this.#boot = `${now.toString(36)}-${process.pid}`;
+    this.#boot = d.boot ?? `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
