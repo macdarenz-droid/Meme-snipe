@@ -8,12 +8,12 @@ import {
   pumpPoolAuthority, recordFromRpc, transactionEvents, type RpcTransactionBase64, type TransactionRecord,
 } from '../../../core/src/chain/index.ts';
 import {
-  type AccountsRead, type ExecStats, type FunderRead, type HoldersRead, type SimRead, RAW, parseExecStats, parseSimRead,
+  type AccountsRead, type ExecStats, type FunderRead, type HoldersRead, type SimRead, RAW, parseExecStats, parseSimRead, parseVolumeHoursCsv,
 } from '../../../core/src/facts/index.ts';
 import { VOLUME_SERIES_START_DAY } from '../../../core/src/config/time.ts';
 import type { Policy } from '../../../core/src/config/policy.ts';
 import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
-import { dayName, listedSha256, parseVolumeHoursCsv, sha256Hex, volumeHoursAsset, volumeSumsAsset } from './volume-hours.ts';
+import { dayName, volumeCheckAsset, volumeCheckPassed, volumeHoursAsset, volumeRelease } from './volume-hours.ts';
 import { P2, type Priority, type Scheduler } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import type { FrameBody, Source } from '../providers/canonical.ts';
@@ -609,8 +609,9 @@ export class FactReaders {
 
   /**
    * The regime's chain volume (§6.4): each UTC day the volume window can reach (series start or the 365-day cap, up to
-   * yesterday) is read once from its release, `volume-hours-DAY.csv` checked against `SHA256SUMS-DAY`, and its rows
-   * ingested as `read:chain-volume-hour`. A day not published yet, or refused, ingests nothing (unknown) and is asked
+   * yesterday) is read once from its `data-volume-DAY` release: `volume-check-DAY.json` must show a passed cross-check,
+   * then `volume-hours-DAY.csv`'s 24 rows are ingested as `read:chain-volume-hour` (an uncovered hour as
+   * `covered: false`). A day not published yet, or refused, ingests nothing (unknown) and is asked
    * again at most once per VOLUME_RETRY_MS; an ingested day is never asked again. Days are read one at a time.
    */
   async readChainVolume(regime: Pick<Policy['regime'], 'volumeLagDays' | 'volumeWindowDays'>, priority: Priority = P2): Promise<boolean> {
@@ -628,13 +629,10 @@ export class FactReaders {
       }
       const ok = await this.#guard(`chain-volume:${dayName(day)}`, async () => {
         const name = dayName(day);
-        const url = (asset: string) => `${s.base ?? RELEASES_BASE}/releases/download/data-day-${name}/${asset}`;
+        const url = (asset: string) => `${s.base ?? RELEASES_BASE}/releases/download/${volumeRelease(name)}/${asset}`;
         const unknown = (why: string) => new ProviderError('github', 'shape', `${name} volume unknown: ${why}`);
-        const want = listedSha256(await this.#getText(s, 'github', 'release sums', url(volumeSumsAsset(name)), priority), volumeHoursAsset(name));
-        if (want === null) throw unknown(`${volumeSumsAsset(name)} does not list ${volumeHoursAsset(name)}`);
-        const text = await this.#getText(s, 'github', 'volume hours', url(volumeHoursAsset(name)), priority);
-        if (sha256Hex(text) !== want) throw unknown('checksum does not match');
-        const rows = parseVolumeHoursCsv(text, name);
+        if (!volumeCheckPassed(await this.#getText(s, 'github', 'volume check', url(volumeCheckAsset(name)), priority))) throw unknown(`${volumeCheckAsset(name)} did not pass`);
+        const rows = parseVolumeHoursCsv(await this.#getText(s, 'github', 'volume hours', url(volumeHoursAsset(name)), priority), day);
         if (rows === null) throw unknown('malformed asset');
         for (const r of rows) this.#ingest('github', RAW.volumeHour, r);
         this.#volumeDays.add(day);

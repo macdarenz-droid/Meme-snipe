@@ -25,3 +25,31 @@ export const dailyChainVolume = (hours: readonly VolumeHour[]): { readonly day: 
   }
   return out.sort((a, b) => a.day - b.day);
 };
+
+/** Header of DATA-1c's `volume-hours-DAY.csv` (release `data-volume-DAY`; `days/DAY/volume_hours-NNN.csv.zst` in a dataset). */
+export const VOLUME_HOURS_HEADER = 'hour_start_ms,lamports,covered';
+const U64 = /^(0|[1-9][0-9]{0,19})$/;
+const U64_MAX = (1n << 64n) - 1n;
+
+/**
+ * DATA-1c's volume-hours CSV for UTC day number `day`, shared by the live reader and the backtest: the header, then
+ * exactly 24 rows in hour order (row i starts at day start + i hours), lamports a u64 of SOL-quoted curve and canonical
+ * WSOL PumpSwap buys and sells, covered `1` or `0`. An uncovered hour comes back `covered: false`, so its day stays
+ * unknown in `dailyChainVolume`. Null when anything differs: the whole day is refused (unknown, never zero).
+ */
+export const parseVolumeHoursCsv = (text: string, day: number): VolumeHour[] | null => {
+  const lines = text.split('\n').map((l) => l.replace(/\r$/, ''));
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length !== HOURS_PER_DAY + 1 || lines[0] !== VOLUME_HOURS_HEADER) return null;
+  const out: VolumeHour[] = [];
+  for (let i = 0; i < HOURS_PER_DAY; i++) {
+    const cells = lines[i + 1]!.split(',');
+    if (cells.length !== 3 || !U64.test(cells[1]!) || (cells[2] !== '0' && cells[2] !== '1')) return null;
+    const hourStartMs = day * DAY_MS + i * HOUR_MS;
+    if (cells[0] !== String(hourStartMs)) return null;
+    const lamports = BigInt(cells[1]!);
+    if (lamports > U64_MAX) return null;
+    out.push({ hourStartMs, lamports, covered: cells[2] === '1' });
+  }
+  return out;
+};

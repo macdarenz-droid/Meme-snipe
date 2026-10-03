@@ -162,7 +162,7 @@ Live entries only when all hold; otherwise paper only, exits keep running ([venu
 
 Off after two consecutive failed checks. Each condition is logged as a feature so its value can be measured.
 
-The backtest applies the same gate with the same code, from historical series read as of the simulated moment (§16.3): graduate survival from the DATA-1 dataset (its 14-day lead-in supplies the first median); curve volume from the chain itself: pump curve and canonical PumpSwap trade volume in lamports over complete UTC days, from DATA-1's hourly census (the series starts 2026-07-20, so the window grows from there to its 365-day cap), a day with any uncovered hour unknown (supervisor rulings 2026-10-03; DefiLlama dropped); SOL's 24 h change from an hourly SOL/USD series. Live reads the same sources (not a different provider), so the two agree: chain volume from the same hour rows, published by DATA-1c as `volume-hours-DAY.csv` with each day release; the D−3 lag covers the publish delay. Execution health has no history: it is a live-only veto (§16.3).
+The backtest applies the same gate with the same code, from historical series read as of the simulated moment (§16.3): graduate survival from the DATA-1 dataset (its 14-day lead-in supplies the first median); curve volume from the chain itself: pump curve and canonical PumpSwap trade volume in lamports over complete UTC days, from DATA-1's hourly census (the series starts 2026-07-20, so the window grows from there to its 365-day cap), a day with any uncovered hour unknown (supervisor rulings 2026-10-03; DefiLlama dropped); SOL's 24 h change from an hourly SOL/USD series. Live reads the same sources (not a different provider), so the two agree: chain volume from the same hour rows, published by DATA-1c as `volume-hours-DAY.csv` in release `data-volume-DAY`; the D−3 lag covers the publish delay. Execution health has no history: it is a live-only veto (§16.3).
 
 ### 6.5 Historical dataset, window and regimes (supervisor, 2026-10-04)
 
@@ -510,7 +510,7 @@ Every input a decision reads, with its historical source. Rule: a live-only inpu
 | Flow, wash and bot metrics (soft 1, 3, 5) | Own stream | Trade events |
 | Metadata and socials (soft 6) | Create event + URI fetch | Create event; URIs are content-addressed (IPFS) so fetching them later returns the same content; non-IPFS URIs marked "unverifiable as of" and excluded |
 | Freshness (H16 staleness) | Receipt times and slot lag | Dataset gaps flagged by DATA-1's coverage audit; candidates inside a gap are rejected the same way |
-| Regime: graduate survival, curve volume, SOL change (§6.4) | Same series as the backtest; chain volume from DATA-1c's `volume-hours-DAY.csv` release assets, day D−3 (a day not yet published is unknown) | Dataset; chain volume from DATA-1's hourly census; hourly SOL/USD history |
+| Regime: graduate survival, curve volume, SOL change (§6.4) | Same series as the backtest; chain volume from DATA-1c's `data-volume-DAY` releases (`volume-hours-DAY.csv`), day D−3 (a day not yet published is unknown) | Dataset; chain volume from DATA-1's hourly census; hourly SOL/USD history |
 | Discovery latency, landing, failures (§11) | Measured | Modelled from the measured live distributions |
 | **Live-only vetoes** | H15 `simulateTransaction`; H16 third-party cross-checks (RugCheck, GoPlus, Jupiter `audit`); Jupiter quotes and `feeBps` (the backtest prices direct venue routes only); execution health (§6.4) | None (absent; bias noted) |
 
