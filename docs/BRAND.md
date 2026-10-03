@@ -4,15 +4,15 @@
 Zeroed (owner, 2026-10-03). A rifle is zeroed when the shot lands exactly where it aims: precision earned by checking first.
 
 ## Mark
-A solid zero split by a Z-shaped cut that passes through dead centre. The two halves are identical, turned 180°.
+"Slot" (owner, 2026-10-03): a solid zero with a Z cut into it. The Z passes through dead centre and stops short of the edge, so the mark is one piece.
 
 Construction (512 grid, `brand/build.mjs` is the source of truth):
 - Disc diameter 416, centred.
-- Cut width 31 (7.5% of the diameter). Arms at 184 and 328; one 45° diagonal through the centre.
+- Cut width 37 (8.9% of the diameter). Arms at y 164 and 348; top arm x 144–348, bottom arm x 164–368; one 45° diagonal through the centre. The cut is symmetric under a 180° turn.
 - The two acute corners of the cut are bevelled, not mitred, so they stay crisp when small.
 - The 16 px favicon is drawn separately on a 16 grid, with the cut on whole pixels.
 
-Why this mark: research into Linear, Vercel, Height, Raycast, Cursor, Resend and Stripe found that premium marks are one solid idea, with the meaning carried by what is cut away, in one colour first, and with depth only on the app icon. Crosshairs and targets were rejected: they are free stock icons, a ring with a dot reads as Target's bullseye, and a target symbol beside "ZEROED" is a pending US firearm-accessory trademark (serial 90571035).
+Why this mark: research into Linear, Vercel, Height, Raycast, Cursor, Resend and Stripe found that premium marks are one solid idea, with the meaning carried by what is cut away, in one colour first, and with depth only on the app icon. Of the three cuts shown (Split, Slot, Tall zero), the owner chose Slot. Crosshairs and targets were rejected: they are free stock icons, a ring with a dot reads as Target's bullseye, and a target symbol beside "ZEROED" is a pending US firearm-accessory trademark (serial 90571035).
 
 ## Files (`brand/`)
 | File | Use |

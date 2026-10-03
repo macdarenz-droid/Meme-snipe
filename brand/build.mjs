@@ -8,32 +8,28 @@ const OUT = dirname(fileURLToPath(import.meta.url))
 const INK = '#0D0F12'
 const PAPER = '#ECEFF3'
 
-// The mark: a solid zero split by a Z-shaped cut. Arms at C±a, one 45° diagonal through the centre,
-// cut width w, bevelled joins at the two acute corners. The halves are identical, turned 180°.
-export function splitPaths(C, R, a, w) {
-  const h = w / 2
-  const yT = C - a - h
-  const yB = C + a - h
-  const k = 2 * C + h * Math.SQRT2
-  const top = [
-    [C - Math.sqrt(R * R - (yT - C) ** 2), yT],
-    [C + Math.sqrt(R * R - (yB - C) ** 2), yB],
-    [k - yB, yB],
-    [C + a + h / Math.SQRT2, C - a + h / Math.SQRT2],
-    [C + a, yT],
+// The mark: a solid zero with a Z cut into it. The Z stops short of the edge, so the mark is one piece.
+// Arms at C±a from x0 to x3 (butt ends), one 45° diagonal through the centre, cut width w,
+// bevelled joins at the two acute corners. The cut is symmetric under a 180° turn.
+export function slotPath(C, R, a, x0, x3, w) {
+  const h = w / 2, s = h * Math.SQRT2, q = h / Math.SQRT2
+  const yA = C - a, yB = C + a
+  const hole = [
+    [x0, yA - h], [C + a, yA - h], [C + a + q, yA + q],
+    [2 * C + s - (yB - h), yB - h], [x3, yB - h], [x3, yB + h],
+    [C - a, yB + h], [C - a - q, yB - q],
+    [2 * C - s - (yA + h), yA + h], [x0, yA + h],
   ]
-  const bottom = top.map(([x, y]) => [2 * C - x, 2 * C - y])
   const n = v => String(Number(v.toFixed(3)))
-  const p = ([x, y]) => `${n(x)} ${n(y)}`
-  const d = P => `M${p(P[0])}A${n(R)} ${n(R)} 0 0 1 ${p(P[1])}L${p(P[2])}L${p(P[3])}L${p(P[4])}Z`
-  return [d(top), d(bottom)]
+  const disc = `M${n(C - R)} ${n(C)}A${n(R)} ${n(R)} 0 1 1 ${n(C + R)} ${n(C)}A${n(R)} ${n(R)} 0 1 1 ${n(C - R)} ${n(C)}Z`
+  return disc + 'M' + hole.map(([x, y]) => `${n(x)} ${n(y)}`).join('L') + 'Z'
 }
 
-const MARK = splitPaths(256, 208, 72, 31)   // 512 grid: disc 416, cut 7.5% of the diameter
-const FAV = splitPaths(8, 7, 2.5, 1)        // 16 grid: drawn for real 16 px, cut on whole pixels
+const MARK = slotPath(256, 208, 92, 144, 368, 37)   // 512 grid: disc 416, cut 37 (8.9% of the diameter)
+const FAV = slotPath(8, 7, 2.5, 4.5, 11.5, 1)        // 16 grid: drawn for real 16 px, cut on whole pixels
 
-const markSvg = fill => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"><path fill="${fill}" d="${MARK[0]}"/><path fill="${fill}" d="${MARK[1]}"/></svg>\n`
-const faviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16"><style>path{fill:${INK}}@media (prefers-color-scheme:dark){path{fill:${PAPER}}}</style><path d="${FAV[0]}"/><path d="${FAV[1]}"/></svg>\n`
+const markSvg = fill => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"><path fill="${fill}" fill-rule="evenodd" d="${MARK}"/></svg>\n`
+const faviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16"><style>path{fill:${INK}}@media (prefers-color-scheme:dark){path{fill:${PAPER}}}</style><path fill-rule="evenodd" d="${FAV}"/></svg>\n`
 const appIconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
 <defs>
 <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2B2D31"/><stop offset="1" stop-color="#0E0F11"/></linearGradient>
@@ -44,8 +40,8 @@ const appIconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 10
 <rect width="1024" height="1024" rx="230" fill="url(#tile)"/>
 <rect width="1024" height="1024" rx="230" fill="url(#light)"/>
 <rect x="4" y="4" width="1016" height="1016" rx="226" fill="none" stroke="url(#edge)" stroke-width="8"/>
-<g transform="translate(512 540) scale(1.28) translate(-256 -256)" fill="#000" opacity="0.18"><path d="${MARK[0]}"/><path d="${MARK[1]}"/></g>
-<g transform="translate(512 512) scale(1.28) translate(-256 -256)" fill="url(#metal)"><path d="${MARK[0]}"/><path d="${MARK[1]}"/></g>
+<g transform="translate(512 540) scale(1.28) translate(-256 -256)" fill="#000" opacity="0.18"><path fill-rule="evenodd" d="${MARK}"/></g>
+<g transform="translate(512 512) scale(1.28) translate(-256 -256)" fill="url(#metal)"><path fill-rule="evenodd" d="${MARK}"/></g>
 </svg>\n`
 
 // Wordmark lockup: mark at 1.1x cap height, Geist SemiBold, tight tracking. Font embedded (Geist is SIL OFL 1.1).
@@ -53,7 +49,7 @@ const font = readFileSync(join(OUT, 'geist-semibold.woff2')).toString('base64')
 const lockupSvg = (ink, bg) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 160" width="560" height="160">
 <style>@font-face{font-family:"Geist";src:url(data:font/woff2;base64,${font}) format("woff2");font-weight:600}text{font-family:"Geist",sans-serif;font-weight:600;font-size:96px;letter-spacing:-4.3px}</style>
 ${bg ? `<rect width="560" height="160" fill="${bg}"/>` : ''}
-<g transform="translate(40 37) scale(0.1680)" fill="${ink}"><path d="${MARK[0]}"/><path d="${MARK[1]}"/></g>
+<g transform="translate(40 37) scale(0.1680)" fill="${ink}"><path fill-rule="evenodd" d="${MARK}"/></g>
 <text x="138" y="114" fill="${ink}">Zeroed</text>
 </svg>\n`
 

@@ -8,6 +8,6 @@
 <rect width="1024" height="1024" rx="230" fill="url(#tile)"/>
 <rect width="1024" height="1024" rx="230" fill="url(#light)"/>
 <rect x="4" y="4" width="1016" height="1016" rx="226" fill="none" stroke="url(#edge)" stroke-width="8"/>
-<g transform="translate(512 540) scale(1.28) translate(-256 -256)" fill="#000" opacity="0.18"><path d="M67.3 168.5A208 208 0 0 1 456.179 312.5L221.42 312.5L338.96 194.96L328 168.5Z"/><path d="M444.7 343.5A208 208 0 0 1 55.821 199.5L290.58 199.5L173.04 317.04L184 343.5Z"/></g>
-<g transform="translate(512 512) scale(1.28) translate(-256 -256)" fill="url(#metal)"><path d="M67.3 168.5A208 208 0 0 1 456.179 312.5L221.42 312.5L338.96 194.96L328 168.5Z"/><path d="M444.7 343.5A208 208 0 0 1 55.821 199.5L290.58 199.5L173.04 317.04L184 343.5Z"/></g>
+<g transform="translate(512 540) scale(1.28) translate(-256 -256)" fill="#000" opacity="0.18"><path fill-rule="evenodd" d="M48 256A208 208 0 1 1 464 256A208 208 0 1 1 48 256ZM144 145.5L348 145.5L361.081 177.081L208.663 329.5L368 329.5L368 366.5L164 366.5L150.919 334.919L303.337 182.5L144 182.5Z"/></g>
+<g transform="translate(512 512) scale(1.28) translate(-256 -256)" fill="url(#metal)"><path fill-rule="evenodd" d="M48 256A208 208 0 1 1 464 256A208 208 0 1 1 48 256ZM144 145.5L348 145.5L361.081 177.081L208.663 329.5L368 329.5L368 366.5L164 366.5L150.919 334.919L303.337 182.5L144 182.5Z"/></g>
 </svg>
