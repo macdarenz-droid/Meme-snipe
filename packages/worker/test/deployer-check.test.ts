@@ -113,7 +113,7 @@ describe('deployer check on real chain data', () => {
     const real = [...RUG.transactions].reverse().map((t): SignatureInfo => ({ signature: t.signature, slot: BigInt(t.slot), err: null, blockTime: t.blockTime }));
     const dump = real[0]!;
     // Not in the source: a failed one before the dump, and a later one after it. Reading either would fail the mint.
-    const failed: SignatureInfo = { signature: 'failedTx', slot: real[1]!.slot, err: { failed: true }, blockTime: real[1]!.blockTime };
+    const failed: SignatureInfo = { signature: 'failedTx', slot: real[1]!.slot, err: { failed: true }, blockTime: real[1]!.blockTime ?? null };
     const later: SignatureInfo = { signature: 'laterTx', slot: dump.slot + 5n, err: null, blockTime: dump.blockTime! + 2 };
     const list = [later, dump, failed, ...real.slice(1)];
     const base = fixtureSource([RUG]).source;
