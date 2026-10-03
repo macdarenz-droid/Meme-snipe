@@ -192,7 +192,13 @@ const capture = async (program: string, pages: number, source = program): Promis
         const body = new Reader(ix.data.subarray(16));
         const kind = program === PUMP ? (disc === DISC.trade ? 'trade' : null) : disc === DISC.buy ? 'buy' : disc === DISC.sell ? 'sell' : null;
         if (!kind) continue;
-        const event = kind === 'trade' ? decodeTrade(body) : kind === 'buy' ? decodeBuy(body) : decodeSell(body);
+        let event: Fields;
+        try {
+          event = kind === 'trade' ? decodeTrade(body) : kind === 'buy' ? decodeBuy(body) : decodeSell(body);
+        } catch {
+          console.error(`skipped an event in ${s.signature}: older layout`);
+          continue;
+        }
         out.push({ venue: program === PUMP ? 'pump' : 'pumpswap', kind, signature: s.signature, slot: tx.slot, blockTime: tx.blockTime, eventIndex: eventIndex++, ixData: lastIx, event });
       }
     }

@@ -8,9 +8,6 @@ import {
 import { type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../units/index.ts';
 
 export const PPM = 1_000_000n;
-/** The trial's size range (owner brief): never below $2, never above $5. */
-export const MIN_TRADE_USD = 2_000_000n as MicroUsd;
-export const MAX_TRADE_USD = 5_000_000n as MicroUsd;
 /** Solana base fee per signature, charged on failed transactions too (solana.com/docs/core/fees). Input, not assumed. */
 export const BASE_FEE_PER_SIGNATURE = 5_000n;
 /**
@@ -89,11 +86,22 @@ export interface RentInputs {
   readonly transient: bigint;
 }
 
+/**
+ * Trade size policy from configuration (CLAUDE.md "Capital and trade size scale"): the trial uses $2 to $5, later
+ * settings are larger. No size is a constant in code.
+ */
+export interface SizePolicy {
+  readonly minNotional: MicroUsd;
+  readonly maxNotional: MicroUsd;
+  /** Largest round-trip price impact accepted at the real size, ppm of notional. Sets a depth cap from the pool. */
+  readonly maxImpactPpm: bigint;
+}
+
 /** Caller limits on notional, in micro-dollars. Each one only lowers the maximum. */
 export interface SizeCaps {
   /** Largest loss accepted on this trade. Worst case is the whole notional plus fixed costs. */
   readonly lossAllowance: MicroUsd;
-  /** Largest notional the venue can execute within the caller's impact limit. */
+  /** Any other depth limit the caller holds (e.g. from a router quote); the pool's own impact cap applies as well. */
   readonly executableDepth: MicroUsd;
   /** Spendable balance; must also cover fixed costs and locked or transient rent. */
   readonly cash: MicroUsd;
@@ -169,6 +177,43 @@ export const costAtSize = (quote: RoundTripQuoter, spend: bigint, net: NetworkPo
   return { roundTrip, proportional, vPpm: mulDiv(proportional, PPM, roundTrip.paid, 'ceil'), fixed, totalLoss: proportional + fixed.total };
 };
 
+/** Round-trip price impact at `spend`, ppm of what was paid, rounded up. */
+export const roundTripImpactPpm = (quote: RoundTripQuoter, spend: bigint): bigint => {
+  const r = quote(spend);
+  return mulDiv(r.entryImpact + r.exitImpact, PPM, r.paid, 'ceil');
+};
+
+/**
+ * Largest spend in [lo, hi] whose `measure` stays at or below `limit`, or null if `lo` already exceeds it.
+ * `measure` grows with size (constant-product impact does); the result is re-checked, so rounding noise can only make
+ * it smaller, never unsafe.
+ */
+/** Argmax of a unimodal `f` over integers in [lo, hi] (ternary search, then the best of the last few points). */
+const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint): bigint => {
+  let a = lo;
+  let b = hi;
+  while (b - a > 2n) {
+    const m1 = a + (b - a) / 3n;
+    const m2 = b - (b - a) / 3n;
+    if (f(m1) < f(m2)) a = m1 + 1n; else b = m2;
+  }
+  let best = a;
+  for (let q = a + 1n; q <= b; q++) if (f(q) > f(best)) best = q;
+  return best;
+};
+
+const largestWithin = (lo: bigint, hi: bigint, limit: bigint, measure: (q: bigint) => bigint): bigint | null => {
+  if (measure(lo) > limit) return null;
+  if (measure(hi) <= limit) return hi;
+  let ok = lo;
+  let bad = hi;
+  while (bad - ok > 1n) {
+    const mid = (ok + bad) / 2n;
+    if (measure(mid) <= limit) ok = mid; else bad = mid;
+  }
+  return ok;
+};
+
 export type NoTradeReason =
   | 'caps-below-minimum'
   | 'edge-not-above-cost'
@@ -181,6 +226,7 @@ export interface SizeInput {
   readonly edgePpm: bigint;
   readonly network: NetworkPolicy;
   readonly rent: RentInputs;
+  readonly policy: SizePolicy;
   readonly caps: SizeCaps;
   /** Other proportional costs per round trip, ppm (e.g. a router fee on both legs). */
   readonly extraPpm?: bigint;
@@ -195,12 +241,18 @@ export interface SizeRange {
 
 interface SizeCommon {
   readonly fixed: FixedCosts;
-  /** Upper bound of v(q) over the candidate range, ppm. */
+  /**
+   * Upper bound of the proportional cost over the candidate range, ppm: v(q) plus a rounding allowance plus the cross
+   * term g * v (costs also apply to the gain). Break-even is F / (g - vPpm).
+   */
   readonly vPpm: bigint;
-  /** Largest size every cap and the $5 limit allow. */
+  /** Largest size every cap, the policy maximum and the pool allow. */
   readonly maxUsd: MicroUsd;
-  /** The cap that set `maxUsd`. */
-  readonly bindingCap: keyof SizeCaps | 'tradeMaximum';
+  /**
+   * What set `maxUsd`: a cap, the policy maximum, the pool's impact limit, or `costLimit` when larger sizes cost more
+   * (impact grows with size) than the edge pays.
+   */
+  readonly bindingCap: keyof SizeCaps | 'maxNotional' | 'impactLimit' | 'costLimit';
 }
 
 export type SizeDecision =
@@ -211,34 +263,55 @@ const minOf = <K extends string>(entries: readonly (readonly [K, bigint])[]): re
   entries.reduce((a, b) => (b[1] < a[1] ? b : a));
 
 /**
- * The sizes in [$2, $5] worth taking: expected net q * (g - v) - F > 0 within every cap.
- * v is the largest v(q) over the candidate range plus a rounding allowance, so the answer is conservative.
+ * The sizes in [policy.minNotional, policy.maxNotional] worth taking: expected net q * (g - v) - F > 0 within every cap,
+ * with v the largest v(q) over the candidate range plus a rounding allowance, so the answer is conservative. Impact is
+ * quoted from the pool at each real size; sizes whose impact passes the policy limit, or that lie past the size where
+ * expected net q * (g - v(q)) peaks, are cut off the top of the range.
  */
 export const feasibleSize = (input: SizeInput): SizeDecision => {
-  const { quote, solPrice, edgePpm, network, rent, caps } = input;
+  const { quote, solPrice, edgePpm, network, rent, policy, caps } = input;
   const extraPpm = input.extraPpm ?? 0n;
   if (solPrice <= 0n) throw new RangeError('SOL price must be > 0');
+  if (policy.minNotional <= 0n || policy.maxNotional < policy.minNotional) throw new RangeError('size policy needs 0 < minNotional <= maxNotional');
+  if (policy.maxImpactPpm < 0n) throw new RangeError('impact limit must be >= 0');
   const fixed = fixedCosts(network, rent);
   const fixedUsd = lamportsToMicroUsd(lamports(fixed.total), solPrice, 'ceil');
   const cashNeedsUsd = fixedUsd + lamportsToMicroUsd(lamports(fixed.recoverableRent + rent.transient), solPrice, 'ceil');
-  const [bindingCap, maxUsdRaw] = minOf<SizeCommon['bindingCap']>([
-    ['tradeMaximum', MAX_TRADE_USD],
+  let [bindingCap, maxUsdRaw] = minOf<SizeCommon['bindingCap']>([
+    ['maxNotional', policy.maxNotional],
     ['lossAllowance', caps.lossAllowance - fixedUsd],
     ['riskBudget', caps.riskBudget - fixedUsd],
     ['executableDepth', caps.executableDepth],
     ['cash', caps.cash - cashNeedsUsd],
   ]);
-  const maxUsd = maxUsdRaw as MicroUsd;
-  const lo = microUsdToLamports(MIN_TRADE_USD, solPrice, 'ceil');
-  const hi = maxUsd < MIN_TRADE_USD ? 0n : microUsdToLamports(maxUsd, solPrice, 'floor');
-  if (hi < lo) return { trade: false, reason: 'caps-below-minimum', fixed, vPpm: 0n, maxUsd, bindingCap };
+  const lo = microUsdToLamports(policy.minNotional, solPrice, 'ceil');
+  let hi = maxUsdRaw < policy.minNotional ? 0n : microUsdToLamports(maxUsdRaw as MicroUsd, solPrice, 'floor');
+  const reject = (reason: NoTradeReason, vPpm: bigint, breakEven?: bigint): SizeDecision => ({
+    trade: false, reason, fixed, vPpm, maxUsd: maxUsdRaw as MicroUsd, bindingCap, ...(breakEven === undefined ? {} : { breakEvenLamports: breakEven }),
+  });
+  if (hi < lo) return reject('caps-below-minimum', 0n);
 
-  const vLo = costAtSize(quote, lo, network, rent, extraPpm).vPpm;
-  const vHi = costAtSize(quote, hi, network, rent, extraPpm).vPpm;
-  const vPpm = (vLo > vHi ? vLo : vHi) + mulDiv(ROUND_TRIP_ROUNDING_LAMPORTS, PPM, lo, 'ceil');
-  const common = { fixed, vPpm, maxUsd, bindingCap };
-  if (edgePpm <= vPpm) return { ...common, trade: false, reason: 'edge-not-above-cost' };
+  // Depth from the pool itself: the largest size whose round-trip impact stays within policy.
+  const impactCap = largestWithin(lo, hi, policy.maxImpactPpm, (q) => roundTripImpactPpm(quote, q));
+  if (impactCap === null) { bindingCap = 'impactLimit'; return reject('caps-below-minimum', 0n); }
+  if (impactCap < hi) { hi = impactCap; bindingCap = 'impactLimit'; maxUsdRaw = lamportsToMicroUsd(lamports(hi), solPrice, 'floor'); }
 
+  const allowance = mulDiv(ROUND_TRIP_ROUNDING_LAMPORTS, PPM, lo, 'ceil');
+  // Fees and impact also take their share of the gain: net ~ q * (g - v - g*v), so the cross term counts as cost.
+  const vAt = (q: bigint) => {
+    const v = costAtSize(quote, q, network, rent, extraPpm).vPpm + allowance;
+    return v + mulDiv(edgePpm > 0n ? edgePpm : 0n, v, PPM, 'ceil');
+  };
+  if (edgePpm <= vAt(lo)) return reject('edge-not-above-cost', vAt(lo));
+  // Impact grows with size, so q * (g - v(q)) rises and then falls. Past its peak a larger trade earns less in
+  // expectation while risking more: cut the range there.
+  const peak = peakOf(lo, hi, (q) => q * (edgePpm - vAt(q)));
+  if (peak < hi) { hi = peak; bindingCap = 'costLimit'; maxUsdRaw = lamportsToMicroUsd(lamports(hi), solPrice, 'floor'); }
+
+  const vLo = vAt(lo);
+  const vHi = vAt(hi);
+  const vPpm = vLo > vHi ? vLo : vHi;
+  const common = { fixed, vPpm, maxUsd: maxUsdRaw as MicroUsd, bindingCap };
   const margin = edgePpm - vPpm;
   const breakEvenLamports = mulDiv(fixed.total, PPM, margin, 'ceil');
   // Smallest q with q * margin > F * 1e6 (strictly positive expected net).

@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   type CurveFeeContext, type CurveState, type PoolFeeContext, type PoolState,
-  curveBuyExactQuoteIn, curveBuyExactTokens, curveSell, effectiveQuoteReserve, poolBuyExactBase, poolBuyExactQuoteIn, poolSell,
+  curveBuyExactQuoteIn, curveBuyExactTokens, curveFees, curveSell, effectiveQuoteReserve, poolBuyExactBase, poolBuyExactQuoteIn, poolSell,
 } from '../../src/amm/index.ts';
 import { bps } from '../../src/units/index.ts';
 import { AMM_FEE_CONFIG, PUMP_FEE_CONFIG, readFixture } from './helpers.ts';
@@ -50,7 +50,7 @@ describe('pump curve golden vectors', () => {
     expect(t.after.realQuoteReserves).toBe(n(e.real_sol_reserves));
     expect(t.after.realTokenReserves).toBe(n(e.real_token_reserves));
     // The tier our code picks equals the rates the program charged.
-    expect(bps(Number(e.fee_basis_points))).toBe(PUMP_FEE_CONFIG.feeTiers[0]!.fees.protocol);
+    expect(curveFees(pre, ctx)).toEqual({ protocol: Number(e.fee_basis_points), creator: Number(e.creator_fee_basis_points) });
     if (v.ixName !== 'buy' && e.is_buy) expect(t.userQuote).toBeLessThanOrEqual(a0);
   });
 });
