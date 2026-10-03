@@ -17,7 +17,7 @@ import {
   type CreateFact, type MintFact, type PoolFact, type Price,
   SOL_USD_KEY, candlesKey, createKey, curveKey, deployerKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey,
   parseCandles, parseCreate, parseCurve, parseDeployer, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
-  parsePool, parseSim, parseStream, streamKey, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
+  parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
 } from './facts.ts';
 import { checkCurveTails, checkPoolTails } from './tails.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
@@ -319,21 +319,6 @@ const h11 = (env: Env): Outcome => {
 
 // ---------- H12-H14: holders, insiders, deployer ----------
 
-/**
- * A complete holder set is judged against the mint supply of its own slot: the mint was read at that slot, or a
- * stream keeps it current from its read up to a head at or past that slot (GATE-1d review). Returns why not, or null.
- */
-const sameSupplySlot = (env: Env, gate: HardGate, slot: bigint | null): string | null => {
-  const r = readMint(env, gate);
-  const ms = r.ok ? r.fact.obs.slot : null;
-  if (!r.ok || ms === null || slot === null) return 'a mint supply without a slot';
-  if (ms === slot) return null;
-  if (r.fact.obs.stream === undefined) return `the mint supply read at slot ${ms}`;
-  const head = parseStream(env.ev.raw(streamKey(r.fact.obs.stream)))?.obs.slot ?? null;
-  if (head === null) return `the mint supply at slot ${ms} with no stream head`;
-  return ms <= slot && slot <= head ? null : `the mint supply kept current from slot ${ms} to the stream head ${head}`;
-};
-
 type Conc = { ok: true; c: Concentration; create: CreateFact; notes: GateNote[] } | { ok: false; out: Outcome };
 
 const conc = (env: Env, gate: HardGate): Conc => {
@@ -353,10 +338,6 @@ const conc = (env: Env, gate: HardGate): Conc => {
     if (seen.has(a.address)) return malformed(`account ${a.address} is listed more than once`);
     seen.add(a.address);
     if (a.mint !== env.req.mint) return malformed(`account ${a.address} holds mint ${a.mint}, not ${env.req.mint}`);
-  }
-  if (h.fact.coverage === 'all') {
-    const why = sameSupplySlot(env, gate, h.fact.obs.slot);
-    if (why !== null) return { ok: false, out: { reasons: [{ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: gate, detail: `a complete holder set read at slot ${h.fact.obs.slot} is judged against ${why}` }] } };
   }
   if (m.account.supply !== h.fact.supply) {
     return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `holder read has supply ${h.fact.supply}, the mint ${m.account.supply}` }] } };

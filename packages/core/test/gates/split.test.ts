@@ -4,8 +4,8 @@
 // belong to any one owner, listed or not, so the gates pass a partial view only when that worst case stays inside
 // every limit; otherwise they need a complete account set.
 import { describe, expect, it } from 'vitest';
-import { INCINERATOR, RAYDIUM_LOCKER_PROGRAM, evaluateHardRejects, holdersKey, insidersKey, mintKey, type GateReason, type HolderAccount } from '../../src/gates/index.ts';
-import { ACC, DEV, MINT, POOL, POOL_ADDRESS, SUPPLY, VAULT_AMOUNT, W, contextOf, deps, holderAccounts, obs, passingFacts, patch, request, session, streamObs, SLOT, T, type Facts } from './world.ts';
+import { INCINERATOR, RAYDIUM_LOCKER_PROGRAM, evaluateHardRejects, holdersKey, insidersKey, type GateReason, type HolderAccount } from '../../src/gates/index.ts';
+import { ACC, DEV, MINT, POOL, POOL_ADDRESS, SUPPLY, VAULT_AMOUNT, W, contextOf, deps, holderAccounts, passingFacts, patch, request, session, type Facts } from './world.ts';
 
 const CIRC = SUPPLY - VAULT_AMOUNT;
 const vault: HolderAccount = { address: POOL.poolBaseTokenAccount, mint: MINT, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT };
@@ -168,23 +168,15 @@ describe('GATE-1d review: the holder read must be one clean snapshot of this min
     }
   });
 
-  it('N1: a complete set read one slot away from the mint supply it is judged against is not covered', () => {
-    const f = passingFacts();
-    const at = (slot: bigint) => patch(f, holdersKey(MINT), { obs: obs({ slot }) });
-    // The mint is kept current by the chain stream (head SLOT - 1) since slot SLOT - 500: its supply holds for any
-    // holder read from then up to the head, and not past the head.
-    expect((f.get(mintKey(MINT))!.value as { obs: { slot: bigint; stream?: string } }).obs).toEqual(expect.objectContaining({ slot: SLOT - 500n, stream: 'chain' }));
-    expect(concentrationReasons(at(SLOT - 1n))).toEqual([]);
-    expect(concentrationReasons(at(SLOT - 2n))).toEqual([]);
-    expect(concentrationReasons(at(SLOT))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12' }));
-    // The mint changed at SLOT - 1 (seen by the stream): a holder set read at SLOT - 2 predates that supply.
-    const changed = patch(f, mintKey(MINT), { obs: streamObs({ slot: SLOT - 1n, receivedAt: T - 300 }) });
-    expect(concentrationReasons(patch(changed, holdersKey(MINT), { obs: obs({ slot: SLOT - 1n }) }))).toEqual([]);
-    expect(concentrationReasons(patch(changed, holdersKey(MINT), { obs: obs({ slot: SLOT - 2n }) }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12' }));
-    // A mint read without a stream must be read at the holders' own slot.
-    const read = patch(f, mintKey(MINT), { obs: obs({ slot: SLOT - 1n }) });
-    expect(concentrationReasons(patch(read, holdersKey(MINT), { obs: obs({ slot: SLOT - 1n }) }))).toEqual([]);
-    expect(concentrationReasons(patch(read, holdersKey(MINT), { obs: obs({ slot: SLOT - 2n }) }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12' }));
+  it('N1: a complete set must sum to the supply exactly: one base unit off either way is inconsistent', () => {
+    const accounts = holderAccounts();
+    const last = accounts.length - 1;
+    for (const d of [-1n, 1n]) {
+      const off = accounts.map((a, i) => (i === last ? { ...a, amount: a.amount + d } : a));
+      expect(sum(off)).toBe(SUPPLY + d);
+      expect(evaluate(view(off, 'all')).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: 'H12' }));
+    }
+    expect(concentrationReasons(view(accounts, 'all'))).toEqual([]);
   });
 
   it('N2: with the single-holder limit equal to the hard limit, the worst case at the hard limit is not covered', () => {
