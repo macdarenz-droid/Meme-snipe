@@ -57,11 +57,15 @@ export interface StandInUse {
   readonly tokenAccount: Address | null;
   /** True when the real build's base-account close was left out (the holder has more tokens than the position). */
   readonly closeOmitted: boolean;
+  /** Why the close was left out, e.g. "the holder holds 3000, the position is 1000"; null when it was kept. */
+  readonly closeOmittedReason: string | null;
 }
 
 export interface DryRunRecord {
   readonly id: string;
   readonly side: 'buy' | 'sell';
+  /** A sell that closes the position's token account (the real build carries the close instruction). */
+  readonly finalExit: boolean;
   readonly venue: 'curve' | 'pool';
   readonly mint: Address;
   readonly outcome: DryRunOutcome;
@@ -223,7 +227,7 @@ const chooseBuyer = async (t: DryRunTrade, d: DryRunDeps): Promise<Chosen> => {
     if (!isPlainWallet(a)) continue;
     const b = buildFor(t, list[i]!, new Set(), false);
     if (typeof b === 'string') continue;
-    if (a.lamports >= b.tx.solOut.total + keep) return { standIn: { address: list[i]!, role: 'funded-wallet', tokenAccount: null, closeOmitted: false } };
+    if (a.lamports >= b.tx.solOut.total + keep) return { standIn: { address: list[i]!, role: 'funded-wallet', tokenAccount: null, closeOmitted: false, closeOmittedReason: null } };
   }
   return { none: 'no buy stand-in has enough SOL for the spend, fees and rent' };
 };
@@ -253,7 +257,9 @@ const chooseHolder = async (t: DryRunTrade, d: DryRunDeps): Promise<Chosen> => {
     const closeOmitted = req.side === 'sell' && req.closeTokenAccount && h.amount !== need;
     const b = buildFor(t, h.owner, new Set(), closeOmitted);
     if (typeof b === 'string') continue;
-    if (a.lamports >= b.tx.solOut.total + keep) return { standIn: { address: h.owner, role: 'holder', tokenAccount: h.tokenAccount, closeOmitted } };
+    if (a.lamports >= b.tx.solOut.total + keep) return {
+      standIn: { address: h.owner, role: 'holder', tokenAccount: h.tokenAccount, closeOmitted, closeOmittedReason: closeOmitted ? `the holder holds ${h.amount}, the position is ${need}` : null },
+    };
   }
   return { none: 'no holder can pay the fees and stay rent-exempt' };
 };
@@ -263,7 +269,7 @@ export const dryRunTrade = async (t: DryRunTrade, d: DryRunDeps): Promise<DryRun
   const req = t.request;
   const mint = baseMintOf(req);
   let rec: DryRunRecord = {
-    id: t.id, side: req.side, venue: req.venue, mint, outcome: 'internal-error', success: false, error: null, standIn: null, policy: null,
+    id: t.id, side: req.side, finalExit: req.side === 'sell' && req.closeTokenAccount, venue: req.venue, mint, outcome: 'internal-error', success: false, error: null, standIn: null, policy: null,
     quotedOut: null, simulatedOut: null, amountErrorE4: null, readSlot: null, quoteAgeSlots: null, rentDeclared: null, rentPaid: null, balancesFrom: null, simulatedSlot: null, unitsConsumed: null, logsTail: [],
   };
   const fail = (outcome: DryRunOutcome, error: string, more: Partial<DryRunRecord> = {}): DryRunRecord => ({ ...rec, ...more, outcome, success: false, error });
