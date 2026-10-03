@@ -16,6 +16,7 @@ import { OFF_CHAIN, compareEvents } from '../../../core/src/engine/index.ts';
 import { DAY_MS, SECOND_MS } from '../../../core/src/config/time.ts';
 import { TX_CREATE_PREFIX } from '../../../core/src/gates/index.ts';
 import { eventIxIndex } from '../providers/canonical.ts';
+import { callCost } from '../providers/solana-http.ts';
 import { type DayCreate, type DayRead, readDayRelease, type SlotRange } from './days.ts';
 import { backfillCreates, type BackfillOptions, type BackfillResult, type SlotGap, SIGNATURE_PAGE } from './rpc.ts';
 
@@ -32,10 +33,10 @@ export const RUGS_NOT_SEEDED =
   'rug labels are not seeded: day releases keep trades only for the 5% hash sample and an RPC trade backfill for every mint is far beyond the free plan, so no coverage:rugs fact is produced for the seeded range';
 
 /** Credits an RPC backfill of `spanMs` is expected to cost: one page per 1,000 signatures, one fetch per successful create. */
-export const estimateBackfillCredits = (spanMs: number, cost: BackfillOptions['cost']): number => {
+export const estimateBackfillCredits = (spanMs: number, provider: BackfillOptions['provider']): number => {
   const days = Math.max(0, spanMs) / DAY_MS;
   const sigs = days * CREATE_AUTHORITY_SIGNATURES_PER_DAY;
-  return Math.ceil(Math.ceil(sigs / SIGNATURE_PAGE) * cost.getSignaturesForAddress + sigs * (1 - CREATE_AUTHORITY_FAILED_SHARE) * cost.getTransaction);
+  return Math.ceil(Math.ceil(sigs / SIGNATURE_PAGE) * callCost(provider, 'getSignaturesForAddress') + sigs * (1 - CREATE_AUTHORITY_FAILED_SHARE) * callCost(provider, 'getTransaction'));
 };
 
 export interface SeedOptions {
@@ -51,7 +52,7 @@ export interface SeedOptions {
    * the saved coverage continues; every slot not fetched is a bounded gap. `close` names the saved watch's open gap
    * (its `via` and `fromSlot`), or the watch itself when none was open: a complete fill closes it with a `resume` up to
    * `untilSlot`, otherwise a bounded gap with the same `via` and `fromSlot` closes it as lossy. Fill creates go to
-   * the restored index through `observe`, like live events, and the coverage facts into the engine.
+   * the restored index through `DeployerIndex.fill`, and the coverage facts into the engine before the watch's new start.
    */
   readonly fill?: { readonly fromSlot: bigint; readonly fromMs: number; readonly close?: { readonly via: string; readonly fromSlot: bigint | null } };
   /** The live creates watch's first slot: the seed covers up to and including it. */
@@ -73,7 +74,8 @@ export interface SeedReport {
   readonly untilSlot: bigint;
   /** The seeded range's start, or null when nothing could be seeded (H14 then waits for a full live look-back). */
   readonly start: { readonly slot: bigint; readonly ms: number } | null;
-  readonly days: readonly { readonly day: string; readonly creates: number; readonly units: number; readonly gapUnits: number; readonly verified: number }[];
+  /** Every requested day: what it gave, or why it was dropped (its range is then a gap, or RPC's if it was the last). */
+  readonly days: readonly ({ readonly day: string; readonly creates: number; readonly units: number; readonly gapUnits: number; readonly verified: number } | { readonly day: string; readonly error: string })[];
   readonly rpc: {
     readonly fromSlot: bigint;
     readonly estimatedCredits: number | null;
@@ -129,7 +131,18 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
   if (o.fill !== undefined && o.fill.fromSlot > o.untilSlot + 1n) throw new RangeError(`fill starts at ${o.fill.fromSlot}, after untilSlot ${o.untilSlot}`);
   const nowMs = o.asOf.receivedAt;
   const clampMs = (ms: number | null): number => (ms === null || !Number.isFinite(ms) || ms > nowMs ? nowMs : ms);
-  const reads: DayRead[] = [...o.days].sort((a, b) => (a.day < b.day ? -1 : 1)).map((d) => readDayRelease(d.dir, d.day));
+  // A missing, altered or failed day is dropped and reported; it never stops the seed.
+  const dayReports: SeedReport['days'][number][] = [];
+  const reads: DayRead[] = [];
+  for (const d of [...o.days].sort((a, b) => (a.day < b.day ? -1 : 1))) {
+    try {
+      const r = readDayRelease(d.dir, d.day);
+      reads.push(r);
+      dayReports.push({ day: r.day, creates: r.creates.length, units: r.units.length, gapUnits: r.units.filter((u) => !u.covered).length, verified: r.verified });
+    } catch (e) {
+      dayReports.push({ day: d.day, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
 
   // Units, deduplicated across days (a unit crossing midnight is in both); a unit any copy calls a gap is a gap.
   const units = new Map<string, SlotRange>();
@@ -164,7 +177,7 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
       gaps.push({ fromSlot: afterSlot + 1n, toSlot: o.untilSlot, atMs: nowMs, reason: 'no RPC backfill configured' });
     } else {
       const fromMs = lastDay !== undefined && Number.isFinite(lastDay.toMs) ? lastDay.toMs : from?.fromMs ?? null;
-      const estimatedCredits = fromMs === null ? null : estimateBackfillCredits(nowMs - fromMs, o.rpc.cost);
+      const estimatedCredits = fromMs === null ? null : estimateBackfillCredits(nowMs - fromMs, o.rpc.provider);
       const r = await backfillCreates({ ...o.rpc, afterSlot, untilSlot: o.untilSlot });
       for (const g of r.gaps as readonly SlotGap[]) gaps.push({ fromSlot: g.fromSlot, toSlot: g.toSlot, atMs: clampMs(g.atMs), reason: g.reason });
       rpcCreates = r.creates;
@@ -172,7 +185,7 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
       const { creates: _c, gaps: _g, ...rest } = r;
       rpcReport = { fromSlot: afterSlot + 1n, estimatedCredits, creditCap: o.rpc.creditCap, fitsCap: estimatedCredits === null ? null : estimatedCredits <= o.rpc.creditCap, result: { ...rest, creates: r.creates.length } };
     }
-  } else if (afterSlot === null && o.rpc !== undefined) {
+  } else if (afterSlot === null && o.rpc !== undefined && o.days.length === 0) {
     throw new RangeError('an RPC-only seed needs rpcFrom (the look-back start slot and time)');
   }
 
@@ -220,7 +233,7 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
     creates, coverage,
     report: {
       mode: o.fill === undefined ? 'seed' : 'fill', asOf: o.asOf, untilSlot: o.untilSlot, start,
-      days: reads.map((r) => ({ day: r.day, creates: r.creates.length, units: r.units.length, gapUnits: r.units.filter((u) => !u.covered).length, verified: r.verified })),
+      days: dayReports,
       rpc: rpcReport, creates: creates.length, gaps: merged, droppedFuture, rugs: RUGS_NOT_SEEDED,
     },
   };

@@ -410,6 +410,22 @@ describe('SEED-1: seeding the index at start-up', () => {
     expect(idx.last).toBeNull();
   });
 
+  it('downtime fill: creates backfilled after a restart enter an index that already has live events; the start is kept', () => {
+    // Saved state restored (the watch has observed for 30 days), live events after the restart, then the fill.
+    const idx = started();
+    idx.observe(marketOf('tick', 0, LIVE));
+    const before = idx.factFor(DEV, NOW, 0).coverageFromMs;
+    const down = [seedCreate('D1', DEV, T - 3 * HOUR_MS, SLOT - 27_000n), seedCreate('D2', DEV, T - 2 * HOUR_MS, SLOT - 18_000n)];
+    expect(() => idx.seed(down, [], ASOF)).toThrow(/only be seeded once/);
+    expect(idx.fill(down, ASOF)).toEqual({ creates: 2 });
+    expect(idx.factFor(DEV, NOW, 0)).toMatchObject({ coverageFromMs: before, mints: [{ mint: 'D1' }, { mint: 'D2' }] });
+    // Same as-of and order checks, all or nothing.
+    const future = marketOf('pump:CreateEvent:F', createEvent('F', DEV, T - 2 * HOUR_MS, SLOT - 4_500n), at(T - 30 * 60_000, SLOT - 4_500n), 'ev:F:00000:00000');
+    expect(() => idx.fill([seedCreate('D3', DEV, T - 5 * HOUR_MS, SLOT - 45_000n), future], ASOF)).toThrow(/dated after the process start/);
+    expect(() => idx.fill([down[1]!, down[0]!], ASOF)).toThrow(/is not after/);
+    expect(idx.factFor(DEV, NOW, 0).mints.map((m) => m.mint)).toEqual(['D1', 'D2']);
+  });
+
   it('seeds once, only before any live event, in release order, creates only', () => {
     const live = new DeployerIndex();
     live.observe(marketOf('tick', 0, LIVE));

@@ -26,7 +26,6 @@ blockNetwork();
 
 const S = (iso: string) => Date.parse(iso) / 1_000;
 const BOUNDARY_S = S(`${REGIME_BOUNDARY_DAY}T00:00:00Z`);
-const COST = { getSignaturesForAddress: 1, getTransaction: 1 } as const;
 
 // ---------- a synthetic day release in the published layout ----------
 
@@ -63,7 +62,7 @@ const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
 /** Writes `units-DAY.tar.part00/01`, `manifest-DAY.json` and `SHA256SUMS-DAY` like DATA-1's publish-day.sh. */
-const dayRelease = (day: string, units: readonly UnitSpec[], tamper?: (dir: string) => void): string => {
+const dayRelease = (day: string, units: readonly UnitSpec[], tamper?: (dir: string) => void, reports?: (dir: string) => void): string => {
   const dir = mkdtempSync(join(tmpdir(), 'seed-day-'));
   dirs.push(dir);
   const parts: Buffer[] = [];
@@ -90,8 +89,11 @@ const dayRelease = (day: string, units: readonly UnitSpec[], tamper?: (dir: stri
   writeFileSync(join(dir, `units-${day}.tar.part01`), tar.subarray(cut));
   writeFileSync(join(dir, `manifest-${day}.json`), '{}');
   writeFileSync(join(dir, `qa-${day}.md`), 'ok');
+  writeFileSync(join(dir, `qa-${day}.json`), JSON.stringify({ strict: { pass: true, misses: [] } }));
+  writeFileSync(join(dir, `parity-${day}.json`), JSON.stringify({ mismatch_count: 0, missing_row_count: 0, rows_checked: 10 }));
+  reports?.(dir);
   const sha = (f: string) => createHash('sha256').update(readFileSync(join(dir, f))).digest('hex');
-  const names = [`units-${day}.tar.part00`, `units-${day}.tar.part01`, `qa-${day}.md`, `manifest-${day}.json`];
+  const names = [`units-${day}.tar.part00`, `units-${day}.tar.part01`, `qa-${day}.md`, `qa-${day}.json`, `parity-${day}.json`, `manifest-${day}.json`];
   writeFileSync(join(dir, `SHA256SUMS-${day}`), names.map((n) => `${sha(n)}  ${n}`).join('\n') + '\n');
   tamper?.(dir);
   return dir;
@@ -120,17 +122,20 @@ const ASOF: Moment = { slot: UNTIL + 10n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN
 interface FakeRpc extends SeedRpc {
   readonly fetched: string[];
   readonly pages: (string | undefined)[];
+  readonly contexts: (bigint | undefined)[];
 }
 
 /** Signatures newest first; `txs` answers getTransaction (a function may throw a fault). */
 const fakeRpc = (sigs: readonly SignatureInfo[], txs: (sig: string) => TransactionRecord | null, opts: { pageFault?: (n: number) => Error | null } = {}): FakeRpc => {
   const fetched: string[] = [];
   const pages: (string | undefined)[] = [];
+  const contexts: (bigint | undefined)[] = [];
   return {
-    fetched, pages,
+    fetched, pages, contexts,
     getSignaturesForAddress: async (address, o) => {
       expect(address).toBe(PUMP_CREATE_AUTHORITY);
       pages.push(o.before);
+      contexts.push(o.minContextSlot);
       const f = opts.pageFault?.(pages.length);
       if (f) throw f;
       const from = o.before === undefined ? 0 : sigs.findIndex((s) => s.signature === o.before) + 1;
@@ -145,9 +150,10 @@ const fakeRpc = (sigs: readonly SignatureInfo[], txs: (sig: string) => Transacti
 
 const sigOf = (f: ReturnType<typeof tx>): SignatureInfo => ({ signature: f.signature, slot: BigInt(f.slot), err: null, blockTime: f.base64.blockTime ?? null });
 /** A future-only marker: a signature after the process start whose transaction would seed mint FUTURE. */
-const FUTURE_SIG: SignatureInfo = { signature: 'FutureOnlyMarker1111111111111111111111111111', slot: UNTIL + 5n, err: null, blockTime: 1_791_032_690 };
+const FUTURE_SIG: SignatureInfo = { signature: 'FutureOnlyMarker1111111111111111111111111111', slot: UNTIL + 1n, err: null, blockTime: 1_791_032_690 };
 const SIGS: readonly SignatureInfo[] = [
   FUTURE_SIG,
+  { signature: 'FailedAtUntil111111111111111111111111111111', slot: UNTIL, err: { InstructionError: [0, 'x'] }, blockTime: 1_791_032_689 },
   ...CREATES.map(sigOf).sort((a, b) => (a.slot > b.slot ? -1 : a.slot < b.slot ? 1 : 0)),
   { signature: 'FailedCreate11111111111111111111111111111111', slot: 452_941_170n, err: { InstructionError: [0, 'x'] }, blockTime: 1_791_032_555 },
   { signature: 'OlderThanDays111111111111111111111111111111', slot: 452_702_900n, err: null, blockTime: t('23:59:59') },
@@ -166,7 +172,7 @@ const instantTimers = (): Timers & { readonly waits: number[] } => {
 
 const seedOpts = (over: Partial<SeedOptions> & { rpcImpl?: SeedRpc; creditCap?: number; timers?: Timers } = {}): SeedOptions => ({
   days: [{ dir: dayRelease(DAY, UNITS), day: DAY }],
-  rpc: { rpc: over.rpcImpl ?? fakeRpc(SIGS, byFixture), timers: over.timers ?? instantTimers(), creditCap: over.creditCap ?? 1_000, cost: COST },
+  rpc: { rpc: over.rpcImpl ?? fakeRpc(SIGS, byFixture), timers: over.timers ?? instantTimers(), creditCap: over.creditCap ?? 1_000, provider: 'helius' },
   untilSlot: UNTIL, asOf: ASOF, ...over,
 });
 
@@ -324,9 +330,9 @@ describe('SEED-1 RPC backfill', () => {
   });
 
   it('the cost estimate is reported: about 64k credits a day of catch-up, so 14 days exceed the 70% halt', async () => {
-    const perDay = estimateBackfillCredits(DAY_MS, COST);
+    const perDay = estimateBackfillCredits(DAY_MS, 'helius');
     expect(perDay).toBe(64_101);
-    expect(estimateBackfillCredits(14 * DAY_MS, COST)).toBeGreaterThan(0.7 * 1_000_000);
+    expect(estimateBackfillCredits(14 * DAY_MS, 'helius')).toBeGreaterThan(0.7 * 1_000_000);
     const seed = await buildSeed(seedOpts());
     expect(seed.report.rpc).toMatchObject({ estimatedCredits: expect.any(Number), creditCap: 1_000, fitsCap: false });
   });
@@ -384,11 +390,11 @@ describe('SEED-1 end to end with the index and H14 coverage', () => {
 
   it('an RPC-only seed starts at the given look-back slot', async () => {
     const from = { slot: 452_941_000n, ms: 1_791_032_400_000 };
-    const seed = await buildSeed({ days: [], rpc: { rpc: fakeRpc(SIGS.slice(0, 5), byFixture), timers: instantTimers(), creditCap: 100, cost: COST }, rpcFrom: from, untilSlot: UNTIL, asOf: ASOF });
+    const seed = await buildSeed({ days: [], rpc: { rpc: fakeRpc(SIGS, byFixture), timers: instantTimers(), creditCap: 100, provider: 'helius' }, rpcFrom: from, untilSlot: UNTIL, asOf: ASOF });
     expect(seed.report.start?.slot).toBe(452_941_000n);
     expect(seed.report.gaps).toEqual([]);
     expect(seed.creates).toHaveLength(CREATES.length);
-    await expect(buildSeed({ days: [], rpc: { rpc: fakeRpc([], byFixture), timers: instantTimers(), creditCap: 1, cost: COST }, untilSlot: UNTIL, asOf: ASOF })).rejects.toThrow(/rpcFrom/);
+    await expect(buildSeed({ days: [], rpc: { rpc: fakeRpc([], byFixture), timers: instantTimers(), creditCap: 1, provider: 'helius' }, untilSlot: UNTIL, asOf: ASOF })).rejects.toThrow(/rpcFrom/);
   });
 });
 
@@ -417,7 +423,7 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
   };
   const fillOpts = (over: { creditCap?: number; rpc?: false } = {}): SeedOptions => ({
     days: [], untilSlot: UNTIL, asOf: ASOF, fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM } },
-    ...(over.rpc === false ? {} : { rpc: { rpc: fakeRpc(SIGS, byFixture), timers: instantTimers(), creditCap: over.creditCap ?? 100, cost: COST } }),
+    ...(over.rpc === false ? {} : { rpc: { rpc: fakeRpc(SIGS, byFixture), timers: instantTimers(), creditCap: over.creditCap ?? 100, provider: 'helius' } }),
   });
 
   it('a restart without a fill is not covered: the new start settles the open gap as lossy', () => {
@@ -430,10 +436,11 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
     expect(seed.report.rpc?.result).toMatchObject({ stoppedBy: 'done', creates: CREATES.length, creditsUsed: 1 + CREATES.length });
     expect(seed.coverage.map((e) => [e.key, (e.value as { value: { via: string } }).value.via])).toEqual([['coverage:creates:resume', VIA]]);
     expect(coveredAfter(seed.coverage).covered).toBe(true);
-    // Fill creates reach the restored index through observe, like live events, and count.
+    // Fill creates reach the restored index, which has already seen live events, through fill(), and count.
     const idx = new DeployerIndex();
     for (const e of saved) idx.observe(e);
-    for (const e of seed.creates) idx.observe(e);
+    idx.observe({ kind: 'market', id: 'live-tick', moment: { ...ASOF }, key: 'tick', value: 0 });
+    idx.fill(seed.creates, ASOF);
     const creator = createOf(seed.creates[0]!.value)!.creator;
     expect(idx.factFor(creator, NOW, 0).mints.length).toBeGreaterThan(0);
   });
@@ -455,5 +462,124 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
   it('a fill takes no day releases and must start by untilSlot', async () => {
     await expect(buildSeed({ ...fillOpts(), days: [{ dir: dayRelease(DAY, UNITS), day: DAY }] })).rejects.toThrow(/neither day releases/);
     await expect(buildSeed({ ...fillOpts(), fill: { fromSlot: UNTIL + 2n, fromMs: DOWN_MS } })).rejects.toThrow(/after untilSlot/);
+  });
+});
+
+describe('SEED-1 review fixes', () => {
+  const sorted = () => CREATES.map(sigOf).sort((a, b) => (a.slot > b.slot ? -1 : a.slot < b.slot ? 1 : 0));
+
+  it('history end before afterSlot is not done: drop the oldest signature and the rest of the range is a gap', async () => {
+    const rpc = fakeRpc(SIGS.slice(0, -1), byFixture);
+    const seed = await buildSeed(seedOpts({ rpcImpl: rpc }));
+    expect(seed.report.rpc?.result).toMatchObject({ stoppedBy: 'history-end', creates: CREATES.length });
+    expect(seed.report.gaps.at(-1)).toMatchObject({ fromSlot: 452_702_901n, toSlot: 452_941_170n });
+    // An empty first page is the same.
+    const empty = await buildSeed(seedOpts({ rpcImpl: fakeRpc([], byFixture) }));
+    expect(empty.report.rpc?.result.stoppedBy).toBe('history-end');
+    expect(empty.report.gaps.at(-1)).toMatchObject({ fromSlot: 452_702_901n, toSlot: UNTIL });
+  });
+
+  it('the first page waits for confirmed to reach untilSlot (minContextSlot); never reached is a gap up to it', async () => {
+    let refusals = 2;
+    const notYet = () => new ProviderError('helius', 'rpc', 'getSignaturesForAddress error -32016');
+    const rpc = fakeRpc(SIGS, byFixture, { pageFault: () => (refusals-- > 0 ? notYet() : null) });
+    const timers = instantTimers();
+    const seed = await buildSeed(seedOpts({ rpcImpl: rpc, timers }));
+    expect(rpc.contexts[0]).toBe(UNTIL);
+    expect(rpc.contexts.slice(3)).toEqual(rpc.contexts.slice(3).map(() => undefined)); // later pages page by `before`
+    expect(timers.waits).toEqual([2_000, 4_000]);
+    expect(seed.report.rpc?.result.stoppedBy).toBe('done');
+    const never = await buildSeed(seedOpts({ rpcImpl: fakeRpc(SIGS, byFixture, { pageFault: notYet }) }));
+    expect(never.report.rpc?.result.stoppedBy).toBe('not-confirmed');
+    expect(never.report.gaps.at(-1)).toMatchObject({ fromSlot: 452_702_901n, toSlot: UNTIL });
+  });
+
+  it('RpcHttp sends minContextSlot and its -32016 answer is retried, through the real client', async () => {
+    let n = 0;
+    const scheduler = new Scheduler({ ...HELIUS_FREE, window: { limit: 1_000, windowMs: 1_000 } }, { timers: new ManualTimers(0) });
+    const seen: unknown[] = [];
+    const http = scriptedHttp((req) => {
+      const body = JSON.parse(req.body!) as { id: number; method: string; params: unknown[] };
+      if (body.method === 'getSignaturesForAddress') seen.push((body.params[1] as Record<string, unknown>)['minContextSlot']);
+      if (body.method === 'getSignaturesForAddress' && n++ === 0) return { status: 200, header: () => null, text: JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32016, message: 'Minimum context slot has not been reached' } }) };
+      return rpcHandler((method, params) => {
+        if (method === 'getSignaturesForAddress') return SIGS.map((x) => ({ signature: x.signature, slot: Number(x.slot), err: x.err, blockTime: x.blockTime }));
+        const f = CREATES.find((x) => x.signature === (params[0] as string));
+        return f === undefined ? null : f.base64;
+      })(req);
+    });
+    const rpc = new RpcHttp({ provider: 'helius', url: () => 'https://rpc.test/', http, scheduler, timeoutMs: 1_000 });
+    const seed = await buildSeed(seedOpts({ rpcImpl: rpc }));
+    expect(seen.slice(0, 2)).toEqual([Number(UNTIL), Number(UNTIL)]);
+    expect(seed.report.rpc?.result).toMatchObject({ stoppedBy: 'done', retries: 1, creates: CREATES.length });
+  });
+
+  it('the UNTIL+1 marker is dropped and a signature at exactly untilSlot is kept in range', async () => {
+    const rpc = fakeRpc(SIGS, byFixture);
+    const seed = await buildSeed(seedOpts({ rpcImpl: rpc }));
+    expect(seed.report.rpc?.result.droppedFuture).toBe(1);
+    expect(rpc.fetched).not.toContain(FUTURE_SIG.signature);
+  });
+
+  it('a transaction whose slot differs from its signature is a one-slot gap, never seeded', async () => {
+    const one = sorted()[0]!;
+    const rpc = fakeRpc(SIGS, (sig) => (sig === one.signature ? { ...byFixture(sig)!, slot: one.slot + 1n } : byFixture(sig)));
+    const seed = await buildSeed(seedOpts({ rpcImpl: rpc }));
+    expect(seed.report.gaps).toContainEqual(expect.objectContaining({ fromSlot: one.slot, toSlot: one.slot, reason: expect.stringContaining('differs') }));
+    expect(seed.creates.some((e) => e.id.includes(one.signature))).toBe(false);
+  });
+
+  it('a create placed by slot before untilSlot but timed after the process start is dropped', async () => {
+    // asOf in a later slot but at an earlier time than unit A's second create (22:01:00).
+    const asOf: Moment = { slot: 452_800_000n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: t('22:00:45') * 1_000 };
+    const seed = await buildSeed({ days: [{ dir: dayRelease(DAY, UNITS.slice(0, 1)), day: DAY }], untilSlot: 452_700_999n, asOf });
+    expect(seed.creates.map((e) => createOf(e.value)!.mint)).toEqual(['MintA1']);
+    expect(seed.report.droppedFuture).toBe(1);
+  });
+
+  it('a unit in two days (crossing midnight) that is defective in either copy is a gap', async () => {
+    const shared: UnitSpec = { from: 452_699_000, to: 452_699_999, firstS: S('2026-09-30T23:59:00Z'), lastS: S('2026-10-01T00:01:00Z') };
+    const bad: UnitSpec = { ...shared, stats: { missing_meta: 1 } };
+    for (const [first, second] of [[shared, bad], [bad, shared]] as const) {
+      const seed = await buildSeed({
+        days: [{ dir: dayRelease('2026-09-30', [first]), day: '2026-09-30' }, { dir: dayRelease(DAY, [second, UNITS[0]!]), day: DAY }], untilSlot: 452_700_999n, asOf: ASOF,
+      });
+      expect(seed.report.gaps[0]).toMatchObject({ fromSlot: 452_699_000n, toSlot: 452_699_999n, reason: expect.stringContaining('without meta') });
+    }
+  });
+
+  it('a missing or corrupt day is dropped and reported; its range becomes a gap, or RPC covers it when it was the last day', async () => {
+    const mid = '2026-09-30';
+    const missing = mkdtempSync(join(tmpdir(), 'seed-missing-'));
+    dirs.push(missing);
+    const early: UnitSpec = { from: 452_600_000, to: 452_600_999, firstS: S('2026-09-30T10:00:00Z'), lastS: S('2026-09-30T10:04:00Z') };
+    const seed = await buildSeed({ ...seedOpts(), days: [{ dir: dayRelease('2026-09-29', [early]), day: '2026-09-29' }, { dir: missing, day: mid }, { dir: dayRelease(DAY, UNITS), day: DAY }] });
+    expect(seed.report.days.find((d) => d.day === mid)).toMatchObject({ error: expect.stringContaining('SHA256SUMS') });
+    expect(seed.report.gaps[0]).toMatchObject({ fromSlot: 452_601_000n, toSlot: 452_699_999n });
+    // The last day corrupt: dropped, and the RPC backfill starts after the previous day's last slot.
+    const corrupt = dayRelease(DAY, UNITS, (d) => writeFileSync(join(d, `units-${DAY}.tar.part00`), 'altered'));
+    const older: SignatureInfo = { signature: 'OlderThanEarly11111111111111111111111111111', slot: 452_600_500n, err: null, blockTime: S('2026-09-30T10:02:00Z') };
+    const s2 = await buildSeed({ ...seedOpts({ rpcImpl: fakeRpc([...SIGS, older], byFixture) }), days: [{ dir: dayRelease('2026-09-29', [early]), day: '2026-09-29' }, { dir: corrupt, day: DAY }] });
+    expect(s2.report.days.find((d) => d.day === DAY)).toMatchObject({ error: expect.stringContaining('sha256') });
+    expect(s2.report.rpc?.fromSlot).toBe(452_601_000n);
+    expect(s2.report.rpc?.result.stoppedBy).toBe('done');
+    // Every day failing with no rpcFrom: nothing to start from, so nothing is seeded and no RPC runs.
+    const s3 = await buildSeed({ ...seedOpts(), days: [{ dir: corrupt, day: DAY }] });
+    expect(s3.report).toMatchObject({ start: null, rpc: null, creates: 0 });
+    expect(s3.coverage).toEqual([]);
+  });
+
+  it('a day whose strict QA or decoder parity failed, or whose report is missing, is refused', () => {
+    const failing = [
+      [(d: string) => writeFileSync(join(d, `qa-${DAY}.json`), JSON.stringify({ strict: { pass: false, misses: ['x'] } })), /strict QA did not pass/],
+      [(d: string) => writeFileSync(join(d, `parity-${DAY}.json`), JSON.stringify({ mismatch_count: 1, missing_row_count: 0 })), /decoder parity failed/],
+      [(d: string) => writeFileSync(join(d, `parity-${DAY}.json`), JSON.stringify({ mismatch_count: 0, missing_row_count: 2 })), /decoder parity failed/],
+      [(d: string) => writeFileSync(join(d, `parity-${DAY}.json`), JSON.stringify({})), /decoder parity failed/],
+      [(d: string) => writeFileSync(join(d, `qa-${DAY}.json`), 'not json'), /cannot be read/],
+    ] as const;
+    for (const [bad, msg] of failing) expect(() => readDayRelease(dayRelease(DAY, UNITS, undefined, bad), DAY)).toThrow(msg);
+    // Not listed in SHA256SUMS: refused even if present.
+    const unlisted = dayRelease(DAY, UNITS, (d) => writeFileSync(join(d, `SHA256SUMS-${DAY}`), readFileSync(join(d, `SHA256SUMS-${DAY}`), 'utf8').split('\n').filter((l) => !l.includes('parity-')).join('\n')));
+    expect(() => readDayRelease(unlisted, DAY)).toThrow(/parity-2026-10-01.json is not listed/);
   });
 });

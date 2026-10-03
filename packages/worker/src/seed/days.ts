@@ -81,14 +81,36 @@ export const verifyDayRelease = (dir: string, day: string): { readonly parts: re
   const parts = readdirSync(dir).filter((f) => f.startsWith(`units-${day}.tar.part`)).sort();
   if (parts.length === 0) throw new RangeError(`${day}: no units-${day}.tar.part* asset`);
   for (const p of parts) if (!listed.has(p)) throw new RangeError(`${day}: ${p} is not listed in SHA256SUMS-${day}`);
-  if (!listed.has(`manifest-${day}.json`)) throw new RangeError(`${day}: manifest-${day}.json is not listed in SHA256SUMS-${day}`);
+  for (const f of [`manifest-${day}.json`, `qa-${day}.json`, `parity-${day}.json`]) if (!listed.has(f)) throw new RangeError(`${day}: ${f} is not listed in SHA256SUMS-${day}`);
   for (const [name, want] of listed) {
     const path = join(dir, name);
     if (!existsSync(path)) throw new RangeError(`${day}: ${name} is listed in SHA256SUMS-${day} but missing`);
     const got = sha256File(path);
     if (got !== want) throw new RangeError(`${day}: ${name} has sha256 ${got}, SHA256SUMS-${day} says ${want}`);
   }
+  checkReports(dir, day);
   return { parts, verified: listed.size };
+};
+
+/**
+ * A day is used only when DATA-1's strict QA passed (`qa-DAY.json` `strict.pass`) and the decoder parity found no
+ * mismatch and no missing row (`parity-DAY.json`, the same rule as the backtest's `failed()`). Create rows outside a
+ * sampled tape have no raw record, so they are scanner-decoded; they are accepted only from days that passed both.
+ */
+const checkReports = (dir: string, day: string): void => {
+  const read = (f: string): Record<string, unknown> => {
+    try {
+      const v = JSON.parse(readFileSync(join(dir, f), 'utf8')) as unknown;
+      if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('not an object');
+      return v as Record<string, unknown>;
+    } catch (e) {
+      throw new RangeError(`${day}: ${f} cannot be read (${e instanceof Error ? e.message : String(e)})`);
+    }
+  };
+  const qa = read(`qa-${day}.json`)['strict'];
+  if (typeof qa !== 'object' || qa === null || (qa as Record<string, unknown>)['pass'] !== true) throw new RangeError(`${day}: the strict QA did not pass`);
+  const parity = read(`parity-${day}.json`);
+  if (parity['mismatch_count'] !== 0 || parity['missing_row_count'] !== 0) throw new RangeError(`${day}: decoder parity failed (mismatches ${String(parity['mismatch_count'])}, missing rows ${String(parity['missing_row_count'])})`);
 };
 
 /** Reads a tar split over several files as one stream: headers are read, unwanted bodies skipped without reading. */

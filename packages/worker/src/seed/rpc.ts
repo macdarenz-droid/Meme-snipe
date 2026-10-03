@@ -16,7 +16,7 @@ import { SECOND_MS } from '../../../core/src/config/time.ts';
 import { TX_CREATE_PREFIX } from '../../../core/src/gates/index.ts';
 import { eventIxIndex, LIVE_TX_BASE } from '../providers/canonical.ts';
 import { ProviderError } from '../providers/http.ts';
-import type { SignatureInfo } from '../providers/solana-http.ts';
+import { callCost, type SignatureInfo } from '../providers/solana-http.ts';
 import { P3, ScheduleRefused, type Priority } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 
@@ -26,7 +26,7 @@ export const SIGNATURE_PAGE = 1000;
 
 /** The two calls the backfill makes. `RpcHttp` is one; every call it makes goes through its scheduler. */
 export interface SeedRpc {
-  getSignaturesForAddress(address: string, opts: { readonly before?: string; readonly limit: number }, priority: Priority): Promise<SignatureInfo[]>;
+  getSignaturesForAddress(address: string, opts: { readonly before?: string; readonly limit: number; readonly minContextSlot?: bigint }, priority: Priority): Promise<SignatureInfo[]>;
   getTransaction(signature: string, priority: Priority): Promise<TransactionRecord | null>;
 }
 
@@ -50,8 +50,8 @@ export interface BackfillOptions {
   readonly untilSlot: bigint;
   /** Credits (or compute units) this run may spend. The scheduler's own monthly halt applies on top. */
   readonly creditCap: number;
-  /** Credits one call costs (`callCost` for the provider). */
-  readonly cost: { readonly getSignaturesForAddress: number; readonly getTransaction: number };
+  /** The provider `rpc` calls: each call is charged its `callCost`. */
+  readonly provider: 'helius' | 'alchemy';
   readonly retry?: RetryPolicy;
 }
 
@@ -63,7 +63,7 @@ export interface SlotGap {
   readonly reason: string;
 }
 
-export type StopReason = 'done' | 'credit-cap' | 'halted' | 'page-failed' | 'failures';
+export type StopReason = 'done' | 'credit-cap' | 'halted' | 'page-failed' | 'failures' | 'history-end' | 'not-confirmed';
 
 export interface BackfillResult {
   /** Create events in FEED-1's shape, oldest first. */
@@ -86,7 +86,10 @@ class Stop extends Error {
   }
 }
 
-const transient = (e: unknown): boolean =>
+/** JSON-RPC -32016: the node's `confirmed` bank is still below `minContextSlot`. */
+const notConfirmedYet = (e: unknown): boolean => e instanceof ProviderError && e.kind === 'rpc' && /error -32016$/.test(e.message);
+
+const transient = (e: unknown): boolean => notConfirmedYet(e) ||
   (e instanceof ProviderError && (e.kind === 'rate_limited' || e.kind === 'timeout' || e.kind === 'network' || (e.kind === 'http' && (e.status ?? 0) >= 500)))
   || (e instanceof ScheduleRefused && e.reason !== 'halted');
 
@@ -118,8 +121,9 @@ export const backfillCreates = async (o: BackfillOptions): Promise<BackfillResul
 
   const call = async <T>(method: keyof typeof calls, run: () => Promise<T>): Promise<T> => {
     for (let attempt = 1; ; attempt++) {
-      if (credits + o.cost[method] > o.creditCap) throw new Stop('credit-cap', `credit cap ${o.creditCap} reached after ${credits}`);
-      credits += o.cost[method]; // counted per attempt: a failed call may still be billed
+      const cost = callCost(o.provider, method);
+      if (credits + cost > o.creditCap) throw new Stop('credit-cap', `credit cap ${o.creditCap} reached after ${credits}`);
+      credits += cost; // counted per attempt: a failed call may still be billed
       calls[method]++;
       try {
         return await run();
@@ -143,13 +147,16 @@ export const backfillCreates = async (o: BackfillOptions): Promise<BackfillResul
   try {
     paging: for (;;) {
       let page: SignatureInfo[];
+      // The first page waits until the node's confirmed bank has reached untilSlot (minContextSlot), so the slots
+      // just before the live watch's start are not missed while they are only processed.
+      const first = before === undefined;
       try {
-        page = await call('getSignaturesForAddress', () => o.rpc.getSignaturesForAddress(PUMP_CREATE_AUTHORITY, { ...(before === undefined ? {} : { before }), limit: SIGNATURE_PAGE }, P3));
+        page = await call('getSignaturesForAddress', () => o.rpc.getSignaturesForAddress(PUMP_CREATE_AUTHORITY, before === undefined ? { limit: SIGNATURE_PAGE, minContextSlot: o.untilSlot } : { before, limit: SIGNATURE_PAGE }, P3));
       } catch (e) {
         if (e instanceof Stop) throw e;
+        if (first && notConfirmedYet(e)) throw new Stop('not-confirmed', `confirmed never reached slot ${o.untilSlot}`);
         throw new Stop('page-failed', `signature page failed: ${e instanceof Error ? e.message : String(e)}`);
       }
-      if (page.length === 0) break; // the address has no older history
       for (const s of page) {
         if (s.slot > o.untilSlot) {
           droppedFuture++; // newer than the process start: never fetched, never seeded
@@ -188,6 +195,8 @@ export const backfillCreates = async (o: BackfillOptions): Promise<BackfillResul
           creates.push(...read);
         }
       }
+      // A short or empty page is the end of the address's history: done only once afterSlot was reached (above).
+      if (page.length < SIGNATURE_PAGE) throw new Stop('history-end', `history ended at slot ${owedTo} before slot ${o.afterSlot + 1n}`);
       before = page[page.length - 1]!.signature;
     }
     owedTo = o.afterSlot; // done: nothing owed

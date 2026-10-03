@@ -77,8 +77,9 @@ export class RpcHttp {
   }
 
   /** Signatures for `address`, newest first, older than `before` and newer than `until` when given. */
-  async getSignaturesForAddress(address: string, opts: { readonly before?: string; readonly until?: string; readonly limit: number }, priority: Priority): Promise<SignatureInfo[]> {
+  async getSignaturesForAddress(address: string, opts: { readonly before?: string; readonly until?: string; readonly limit: number; readonly minContextSlot?: bigint }, priority: Priority): Promise<SignatureInfo[]> {
     const cfg: Record<string, unknown> = { commitment: 'confirmed', limit: opts.limit };
+    if (opts.minContextSlot !== undefined) cfg.minContextSlot = Number(opts.minContextSlot);
     if (opts.before !== undefined) cfg.before = opts.before;
     if (opts.until !== undefined) cfg.until = opts.until;
     const r = await this.call('getSignaturesForAddress', [address, cfg], priority);
