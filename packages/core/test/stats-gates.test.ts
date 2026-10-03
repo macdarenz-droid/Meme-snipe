@@ -343,6 +343,12 @@ describe('G2 cluster sensitivity (STATS-1b)', () => {
     expect(r.reasons.join()).toMatch(/clusters U1: 1 trades without a creator or funder cluster/);
     expect(r.registry.entries[0]!.seal).toBe('sealed');
   });
+  test('a walk-forward trade without a cluster label is refused too (n_power simulates the cluster rule)', () => {
+    const wfMissing = wfClustered.map((x, i) => (i === 3 ? { ...x, creatorCluster: '' } : x));
+    const r = gateG2(g2Pass({ universes: [u('U1', { walkForward: wfMissing })] }));
+    expect(r.status).toBe('fail');
+    expect(r.reasons.join()).toMatch(/walk-forward clusters U1: 1 walk-forward trades without a creator or funder cluster/);
+  });
 });
 
 const dry = bracketTrades(41, 0.1, 2, 30).map((t) => t.rNet);
@@ -631,59 +637,67 @@ describe('G5 proposal to the owner', () => {
   });
 });
 
-// Review STATS-1b, finding 3: B5 (2026-10-02) comes after the holdout window (ends 2026-10-01). ARCHITECTURE.md §14.
+// Review STATS-1b, finding 3 and the #52 review: B5 (2026-10-02 15:47) lies INSIDE the registered holdout window
+// [09-22, 10-20) but is marked economics-unchanged (UPG-1), so revalidation needs its before/after report, not a
+// post-B5 dry run. A change that changed economics, or was not reviewed, inside the window fails it.
 describe('post-change revalidation', () => {
-  const holdoutEndMs = Date.UTC(2026, 9, 2); // the holdout covers up to the end of 2026-10-01 UTC
+  const holdoutStartMs = Date.UTC(2026, 8, 22);
+  const holdoutEndMs = Date.UTC(2026, 9, 20); // E = 2026-10-20
   const b5 = KNOWN_PLATFORM_CHANGES.find((c) => c.id === 'B5')!;
-  const g3Ok = gateG3(g3Pass);
+  const report = { produced: true, economicsUnchanged: true };
   const ok: RevalidationInput = {
-    holdoutStartMs: Date.UTC(2026, 8, 22), holdoutEndMs, platformChanges: KNOWN_PLATFORM_CHANGES,
-    dryRun: { qualifyingRun: true, startMs: b5.atMs + DAY, g3: g3Ok }, postChangeBacktest: null,
+    holdoutStartMs, holdoutEndMs, platformChanges: KNOWN_PLATFORM_CHANGES, dryRun: null, postChangeBacktest: null, insideReport: report,
   };
-  test('B5 is recorded at 2026-10-02 15:47 UTC with economics unchanged (UPG-1)', () => {
+  test('B5 is recorded at 2026-10-02 15:47 UTC, inside the window, with economics unchanged (UPG-1)', () => {
     expect(b5).toMatchObject({ atMs: Date.UTC(2026, 9, 2, 15, 47), economicsUnchanged: true });
+    expect(b5.atMs > holdoutStartMs && b5.atMs < holdoutEndMs).toBe(true);
   });
-  test('passes with a qualifying post-B5 dry run that passed G3 against the holdout', () => {
+  test('passes when B5 is inside the window and its before/after report shows economics unchanged', () => {
     expect(evaluateRevalidation(ok)).toMatchObject({ passed: true, status: 'pass', reasons: [] });
   });
-  test('no post-change dry run, or one started before B5, is not proven; a failed G3 fails', () => {
-    expect(evaluateRevalidation({ ...ok, dryRun: null }).status).toBe('not-proven');
-    const early = evaluateRevalidation({ ...ok, dryRun: { ...ok.dryRun!, startMs: b5.atMs - 1 } });
-    expect(early.status).toBe('not-proven');
-    expect(early.reasons.join()).toMatch(/started before B5/);
-    expect(evaluateRevalidation({ ...ok, dryRun: { ...ok.dryRun!, qualifyingRun: false } }).status).toBe('not-proven');
-    expect(evaluateRevalidation({ ...ok, dryRun: { ...ok.dryRun!, g3: gateG3({ ...g3Pass, parityTestPassed: false }) } }).status).toBe('fail');
-    expect(evaluateRevalidation({ ...ok, dryRun: { ...ok.dryRun!, g3: gateG3({ ...g3Pass, vetoCounterfactuals: { returns: [], censored: 0 } }) } }).status).toBe('not-proven');
+  test('B5 inside with no report is not proven; with a report that found a change it fails', () => {
+    expect(evaluateRevalidation({ ...ok, insideReport: null }).status).toBe('not-proven');
+    expect(evaluateRevalidation({ ...ok, insideReport: null }).reasons.join()).toMatch(/inside-change report: B5 inside the window needs a before\/after report/);
+    const changed = evaluateRevalidation({ ...ok, insideReport: { produced: true, economicsUnchanged: false } });
+    expect(changed.status).toBe('fail');
+    expect(changed.reasons.join()).toMatch(/the report found a change/);
   });
-  const contradicted = KNOWN_PLATFORM_CHANGES.map((c) => (c.id === 'B5' ? { ...c, economicsUnchanged: false } : c));
-  test('if "economics unchanged" is contradicted, a backtest on >= 200 post-change candidates is also required', () => {
-    const base = { ...ok, platformChanges: contradicted };
-    expect(evaluateRevalidation(base).status).toBe('not-proven');
+  // Mutant R2: a breaking or unreviewed change inside the window, with nothing after it, must fail (not done('pass')).
+  test('an economics-changed or unreviewed change inside the window fails (no later change)', () => {
+    for (const eu of [false, null]) {
+      const changed = KNOWN_PLATFORM_CHANGES.map((c) => (c.id === 'B5' ? { ...c, economicsUnchanged: eu } : c));
+      const r = evaluateRevalidation({ ...ok, platformChanges: changed, insideReport: null });
+      expect(r.status, `economicsUnchanged ${eu}`).toBe('fail');
+      expect(r.reasons.join()).toMatch(/holdout regime: B5/);
+    }
+  });
+  // A change AFTER the window (E = 10-20) keeps the post-change dry run and backtest machinery.
+  const after = { id: 'B6', atMs: Date.UTC(2026, 9, 25), economicsUnchanged: true as boolean | null };
+  const withAfter = { ...ok, platformChanges: [...KNOWN_PLATFORM_CHANGES, after] };
+  test('a change after the window needs a qualifying post-change dry run that passed G3', () => {
+    expect(evaluateRevalidation(withAfter).status).toBe('not-proven');
+    expect(evaluateRevalidation(withAfter).reasons.join()).toMatch(/post-change dry run: none/);
+    const dry = { qualifyingRun: true, startMs: after.atMs + DAY, g3: gateG3(g3Pass) };
+    expect(evaluateRevalidation({ ...withAfter, dryRun: dry }).status).toBe('pass');
+    expect(evaluateRevalidation({ ...withAfter, dryRun: { ...dry, startMs: after.atMs - 1 } }).reasons.join()).toMatch(/started before B6/);
+    expect(evaluateRevalidation({ ...withAfter, dryRun: { ...dry, g3: gateG3({ ...g3Pass, parityTestPassed: false }) } }).status).toBe('fail');
+  });
+  test('an after-window change whose economics are contradicted also needs a backtest on >= 200 post-change candidates', () => {
+    const base = { ...withAfter, platformChanges: [...KNOWN_PLATFORM_CHANGES, { ...after, economicsUnchanged: false }], dryRun: { qualifyingRun: true, startMs: after.atMs + DAY, g3: gateG3(g3Pass) } };
     expect(evaluateRevalidation(base).reasons.join()).toMatch(/post-change backtest: none/);
-    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: b5.atMs + 1, candidates: 199, gatesPassed: true } }).status).toBe('not-proven');
-    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: b5.atMs - 1, candidates: 400, gatesPassed: true } }).status).toBe('not-proven');
-    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: b5.atMs + 1, candidates: 200, gatesPassed: false } }).status).toBe('fail');
-    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: b5.atMs + 1, candidates: 200, gatesPassed: true } }).status).toBe('pass');
+    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: after.atMs + 1, candidates: 199, gatesPassed: true } }).status).toBe('not-proven');
+    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: after.atMs - 1, candidates: 400, gatesPassed: true } }).status).toBe('not-proven');
+    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: after.atMs + 1, candidates: 200, gatesPassed: false } }).status).toBe('fail');
+    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: after.atMs + 1, candidates: 200, gatesPassed: true } }).status).toBe('pass');
   });
-  test('an unreviewed change (economics unknown) is treated as contradicted', () => {
-    const unknown = KNOWN_PLATFORM_CHANGES.map((c) => (c.id === 'B5' ? { ...c, economicsUnchanged: null } : c));
-    expect(evaluateRevalidation({ ...ok, platformChanges: unknown }).status).toBe('not-proven');
-  });
-  test('a platform change inside the holdout window fails', () => {
-    const inside = [...KNOWN_PLATFORM_CHANGES, { id: 'BX', atMs: Date.UTC(2026, 8, 25), economicsUnchanged: true }];
-    const r = evaluateRevalidation({ ...ok, platformChanges: inside });
-    expect(r.status).toBe('fail');
-    expect(r.reasons.join()).toMatch(/holdout regime: BX inside the holdout window/);
-    // B4 (09-12) is before the window that starts 09-22: fine.
-    expect(evaluateRevalidation(ok).checks.find((c) => c.name === 'holdout regime')!.passed).toBe(true);
-  });
-  test('changes before the holdout ends need nothing more; the minimum count only tightens', () => {
-    const before = KNOWN_PLATFORM_CHANGES.filter((c) => c.atMs < Date.UTC(2026, 8, 22)).map((c) => ({ ...c, economicsUnchanged: false }));
+  test('changes before the holdout starts need nothing more; the minimum count only tightens', () => {
+    const before = KNOWN_PLATFORM_CHANGES.filter((c) => c.atMs < holdoutStartMs).map((c) => ({ ...c, economicsUnchanged: false }));
     expect(before.length).toBeGreaterThan(0);
-    expect(evaluateRevalidation({ ...ok, platformChanges: before, dryRun: null }).status).toBe('pass');
+    expect(evaluateRevalidation({ ...ok, platformChanges: before, insideReport: null }).status).toBe('pass');
     expect(() => evaluateRevalidation(ok, { minPostChangeCandidates: 100 })).toThrow(/only be tightened/);
   });
 });
+
 
 const demotionQuiet: DemotionInput = {
   returns: live, returnCap: 0.27, driftAlarm: false,

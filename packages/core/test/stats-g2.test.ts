@@ -136,11 +136,13 @@ describe('n_power by simulating the G2 rule', () => {
   // Review of 437e60d: n_power simulates the exact G2 rule, cluster sensitivity included. 20 creators, each with its
   // own lasting edge or loss (±20 points), need more trades than the same returns from a creator each: a creator's
   // trades are not independent observations.
+  // Same returns either way; only the creator labels differ. With a creator per trade (single-day) the creator unit
+  // does not bind, so n is the day-block n. With 10 creators spanning every walk-forward day (multi-day: they keep
+  // their ids in the simulation, as a prolific deployer would), the creator-cluster CI is over 10 clusters and needs
+  // far more trades. Measured: nSpread 736, nFew 1,252.
   test('n_power includes the creator cluster unit: concentrated creators raise it', () => {
-    const base = bracketTrades(831, 0, 40, 30);
-    const effect = (k: number) => (k % 2 === 0 ? 0.2 : -0.2);
-    const spread = own(base).map((t, i) => ({ ...t, rNet: t.rNet + effect(i % 20) }));
-    const few = spread.map((t, i) => ({ ...t, creatorCluster: `c${i % 20}` }));
+    const spread = own(bracketTrades(831, 0, 40, 30));
+    const few = spread.map((t, i) => ({ ...t, creatorCluster: `c${i % 10}` }));
     const c = control(832, 40, 30);
     const nSpread = simulateG2Power({ walkForward: spread, control: c, seed: 4, ...opts }).nPower;
     const nFew = simulateG2Power({ walkForward: few, control: c, seed: 4, ...opts, maxTrades: 200_000 }).nPower;
