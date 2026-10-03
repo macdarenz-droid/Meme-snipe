@@ -1,0 +1,133 @@
+// Round trips of a finished run, in lamports, built after the run from the final book and the fill model's attempt
+// records (the scoring side; the engine never reads this). A position still held when the data ends, or whose exit
+// was blocked, is valued at what the last ladder rung would get on the final pool, or 0 (§11).
+import type { FillConfig } from '../../core/src/config/index.ts';
+import type { RunResult } from './run.ts';
+import type { AttemptRecord } from './sim/world.ts';
+
+export interface TradeRecord {
+  readonly id: string;
+  readonly mint: string;
+  readonly symbol: string;
+  readonly openedAt: number;
+  readonly closedAt: number;
+  /** Lamports paid for the tokens, venue fees included. */
+  readonly entrySol: bigint;
+  readonly tokens: bigint;
+  /** Lamports received, venue fees taken; for a blocked or held position, its end value. */
+  readonly exitSol: bigint;
+  readonly networkBase: bigint;
+  readonly priority: bigint;
+  readonly tip: bigint;
+  readonly venueFee: bigint;
+  readonly creatorFee: bigint;
+  /** Price impact both legs plus the scenario's extra slippage, lamports. */
+  readonly slippage: bigint;
+  readonly rentPaid: bigint;
+  readonly rentReturned: bigint;
+  readonly exitReason: 'time-stop' | 'blocked';
+  readonly net: bigint;
+  readonly attempts: number;
+  readonly failedAttempts: number;
+}
+
+/** Network fees of attempts that never became a position (failed entries): a real cost, kept apart from trades. */
+export interface StrayCost {
+  readonly at: number;
+  readonly lamports: bigint;
+}
+
+const fees = (a: AttemptRecord, base: bigint, tip: bigint) => ({
+  base: a.fee === 0n ? 0n : base,
+  priority: a.fee === 0n ? 0n : a.priorityFee,
+  tip: a.outcome === 'filled' ? tip : 0n,
+});
+
+const slippageLamports = (a: AttemptRecord): bigint => {
+  const c = a.costs;
+  const f = a.fill;
+  if (c === null || f === null) return 0n;
+  if (a.purpose === 'exit') return c.impact + c.extraSlippage;
+  // A buy's extra slippage is in tokens: value it at the fill's own price.
+  const bought = f.tokens + c.extraSlippage;
+  return c.impact + (bought === 0n ? 0n : (c.extraSlippage * f.sol) / bought);
+};
+
+export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: TradeRecord[]; readonly stray: StrayCost[] } => {
+  const net = fills.network;
+  const base = net.signaturesPerTx * net.baseFeePerSignature;
+  const scenario = fills.scenarios[r.scenario];
+  const byIntent = new Map<string, AttemptRecord[]>();
+  for (const a of r.attempts) byIntent.set(a.intentId, [...(byIntent.get(a.intentId) ?? []), a]);
+  const trades: TradeRecord[] = [];
+  const stray: StrayCost[] = [];
+  // Several positions can share an entry intent (LEDGER-1b): a late buy landing books `<position>.o<n>`, holding the
+  // intent's n-th fill. Each such position owns its fill and that fill's attempt; the main position owns the rest.
+  const lateFill = (pid: string): number | null => {
+    const m = /\.o(\d+)$/.exec(pid);
+    return m === null ? null : Number(m[1]) - 1;
+  };
+  const claimed = new Map<string, Set<string>>();
+  for (const p of Object.values(r.book.positions)) {
+    const k = lateFill(p.id);
+    const f = k === null ? undefined : r.book.intents[p.entryIntentId]?.fills[k];
+    if (f !== undefined) claimed.set(p.entryIntentId, (claimed.get(p.entryIntentId) ?? new Set<string>()).add(f.signature));
+  }
+  // One token account per entry: its rent is charged to the first trade of the entry intent only, and comes back only
+  // when every position of that intent is closed (the account is emptied and closed with the last sell).
+  const rentCharged = new Set<string>();
+  const allClosed = (entryIntentId: string) => Object.values(r.book.positions).every((q) => q.entryIntentId !== entryIntentId || q.status === 'closed');
+  const ordered = Object.values(r.book.positions).sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+  for (const p of ordered) {
+    const intent = r.book.intents[p.entryIntentId];
+    const k = lateFill(p.id);
+    const late = claimed.get(p.entryIntentId) ?? new Set<string>();
+    const fillsOf = k === null ? (intent?.fills ?? []).filter((f) => !late.has(f.signature)) : [intent?.fills[k]].filter((f) => f !== undefined);
+    const signatures = new Set<string>(fillsOf.map((f) => f.signature));
+    const entryAttempts = (byIntent.get(p.entryIntentId) ?? []).filter((a) => (k === null ? !late.has(a.signature) : signatures.has(a.signature)));
+    const entryFill = fillsOf.length === 0 ? null : {
+      sol: fillsOf.reduce((t, f) => t + f.sol, 0n), tokens: fillsOf.reduce((t, f) => t + f.tokens, 0n),
+      at: Math.min(...entryAttempts.filter((a) => signatures.has(a.signature)).map((a) => a.landedAt ?? r.endedAt)),
+    };
+    if (entryFill === null) {
+      for (const a of entryAttempts) if (a.fee > 0n) stray.push({ at: a.landedAt ?? r.endedAt, lamports: a.fee });
+      continue;
+    }
+    const exitIntents = Object.values(r.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === p.id).map((i) => i.intent.id);
+    const exitAttempts = exitIntents.flatMap((id) => byIntent.get(id) ?? []);
+    const all = [...entryAttempts, ...exitAttempts];
+    const sold = exitAttempts.filter((a) => a.outcome === 'filled' && a.fill !== null);
+    const soldSol = sold.reduce((t, a) => t + a.fill!.sol, 0n);
+    const held = p.quantity;
+    const blocked = p.status !== 'closed';
+    const endValue = blocked ? r.endValue(p.mint, held) : 0n;
+    const exitSol = soldSol + endValue;
+    let b = 0n;
+    let pr = 0n;
+    let tp = 0n;
+    for (const a of all) {
+      const f = fees(a, base, net.tip);
+      b += f.base;
+      pr += f.priority;
+      tp += f.tip;
+    }
+    const venue = all.reduce((t, a) => t + (a.costs === null ? 0n : a.costs.lpFee + a.costs.protocolFee), 0n);
+    const creator = all.reduce((t, a) => t + (a.costs?.creatorFee ?? 0n), 0n);
+    const slippage = all.reduce((t, a) => t + slippageLamports(a), 0n);
+    const firstOfEntry = !rentCharged.has(p.entryIntentId);
+    rentCharged.add(p.entryIntentId);
+    const rentPaid = firstOfEntry ? net.tokenAccountRent : 0n;
+    const rentReturned = firstOfEntry && scenario.rentRecovery && allClosed(p.entryIntentId) ? rentPaid : 0n;
+    const closedAt = blocked ? r.endedAt : Math.max(...sold.map((a) => a.landedAt ?? 0));
+    trades.push({
+      id: p.id, mint: p.mint, symbol: r.symbols.get(p.mint) ?? p.mint.slice(0, 6),
+      openedAt: entryFill.at, closedAt, entrySol: entryFill.sol, tokens: entryFill.tokens, exitSol,
+      networkBase: b, priority: pr, tip: tp, venueFee: venue, creatorFee: creator, slippage, rentPaid, rentReturned,
+      exitReason: blocked ? 'blocked' : 'time-stop',
+      net: exitSol - entryFill.sol - b - pr - tp - rentPaid + rentReturned,
+      attempts: all.length, failedAttempts: all.filter((a) => a.outcome !== 'filled').length,
+    });
+  }
+  trades.sort((x, y) => x.closedAt - y.closedAt || (x.id < y.id ? -1 : 1));
+  return { trades, stray };
+};
