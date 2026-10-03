@@ -294,7 +294,7 @@ export class LiveStrategy implements Strategy {
     // FACTS-1b: reads that landed on earlier events are judged now, after the facts their own release made (FactFeed
     // releases a read's facts right after it, at its moment). A mark set below applies from the next event on.
     const due = this.#due;
-    this.#due = new Set();
+    this.#due = new Map();
     if (e.key === HALT_KEY) this.#seedWait(unwrap(e.value));
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
@@ -304,7 +304,7 @@ export class LiveStrategy implements Strategy {
       if (isObj(s) && typeof s['slot'] === 'bigint' && (this.#height === null || s['slot'] > this.#height)) this.#height = s['slot'];
     }
     this.#discover(e, ctx, out);
-    this.#readLanded(e, ctx);
+    this.#readLanded(e);
     this.#poolTrade(e, ctx);
     if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
@@ -806,26 +806,39 @@ export class LiveStrategy implements Strategy {
     return saved;
   }
 
-  /** Candidates whose read landed: judged once more at the next event, outside the evaluation cadence (FACTS-1b). */
-  #due = new Set<string>();
+  /** Candidates whose read landed, with the read's slot (null for an off-chain read) and receipt: judged once more at the
+   * next event, outside the evaluation cadence, while the read is still fresh (FACTS-1e). */
+  #due = new Map<string, { readonly slot: bigint | null; readonly receivedAt: number }>();
+
+  /** Whether a landed read is still fresh at `now`: chain reads by slot lag, off-chain reads by age (evidence.ts's rules). */
+  #fresh(read: { readonly slot: bigint | null; readonly receivedAt: number }, now: StrategyContext['now']): boolean {
+    const g = this.#d.session.policy.gates;
+    return read.slot !== null ? now.slot - read.slot <= BigInt(g.maxStateSlotLag) : now.receivedAt - read.receivedAt <= g.maxQuoteAgeMs;
+  }
 
   /**
    * A raw read (`read:<kind>:<mint>`) landing for a candidate marks it for one more evaluation, so its fact is judged
    * while fresh instead of at the next cadence tick (supervisor ruling: the read's own recorded frame is the trigger,
-   * so a replay re-evaluates at the same release position). A read already older than the state lag when it lands
-   * marks nothing: its fact cannot pass.
+   * so a replay re-evaluates at the same release position). Freshness follows evidence.ts and is judged when the mark
+   * is used, at the next event: a chain read more than the state lag behind, or an off-chain read (RugCheck, GoPlus,
+   * Jupiter: no slot) older than the quote age, brings no evaluation (a quiet feed can outlive a read). Only
+   * candidates are evaluated, so a mark for any other mint is never used.
    */
-  #readLanded(e: MarketEvent, ctx: StrategyContext): void {
+  #readLanded(e: MarketEvent): void {
     if (!e.key.startsWith('read:')) return;
     const mint = e.key.slice(e.key.indexOf(':', 'read:'.length) + 1);
-    if (!this.#cands.has(mint)) return;
     const v = unwrap(e.value);
-    const slot = isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null;
-    if (slot !== null && ctx.now.slot - slot > BigInt(this.#d.session.policy.gates.maxStateSlotLag)) return;
-    this.#due.add(mint);
+    // Judged fresh when the mark is used (`#landedFresh`): at the read's own moment it cannot be older than that.
+    this.#due.set(mint, { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt });
   }
 
-  #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[], due: ReadonlySet<string>): void {
+  /** A read landed for the mint and is still fresh now: a slower event after it (a quiet feed) can outlive it. */
+  #landedFresh(due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>, mint: string, ctx: StrategyContext): boolean {
+    const read = due.get(mint);
+    return read !== undefined && this.#fresh(read, ctx.now);
+  }
+
+  #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[], due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>): void {
     const now = ctx.now.receivedAt;
     const c = this.#d.config;
     // Fails closed: entries only on a readable halt fact that says not halted.
@@ -844,7 +857,7 @@ export class LiveStrategy implements Strategy {
         out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
         continue;
       }
-      if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !due.has(cand.mint))) continue;
+      if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
       if (Object.values(ctx.book.intents).some((i) => i.intent.mint === cand.mint && !isTerminal(i))) continue;
