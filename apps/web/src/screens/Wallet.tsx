@@ -1,7 +1,9 @@
 import { useCallback, useState } from 'react';
 import { Empty, Section } from '../components/ui.tsx';
 import { FundingSheet, type FundingKind } from '../funding/FundingSheet.tsx';
-import { formatSol, formatUsd, shortAddress } from '../lib/format.ts';
+import { formatSolExact } from '../funding/sol.ts';
+import { unavailableStepUp, type StepUp } from '../funding/stepUp.ts';
+import { formatUsd, shortAddress } from '../lib/format.ts';
 import { EMPTY_WALLET, type WalletView } from './types.ts';
 
 export function WalletSummary({ wallet, onFund }: { wallet: WalletView; onFund?: (k: FundingKind) => void }) {
@@ -9,8 +11,9 @@ export function WalletSummary({ wallet, onFund }: { wallet: WalletView; onFund?:
     ['Address', wallet.botAddress && shortAddress(wallet.botAddress), true],
     ['Saved wallet', wallet.savedWallet && shortAddress(wallet.savedWallet), true],
     ['Available to trade', wallet.availableUsd === null ? null : formatUsd(wallet.availableUsd), false],
-    ['Protected SOL reserve', wallet.reserveSol === null ? null : formatSol(wallet.reserveSol), false],
-    ['Locked deposits', wallet.lockedSol === null ? null : formatSol(wallet.lockedSol), false],
+    ['Balance', wallet.balanceSol === null ? null : formatSolExact(wallet.balanceSol), false],
+    ['Protected SOL reserve', wallet.reserveSol === null ? null : formatSolExact(wallet.reserveSol), false],
+    ['Locked deposits', wallet.lockedSol === null ? null : formatSolExact(wallet.lockedSol), false],
     ['Open exposure', wallet.openExposureUsd === null ? null : formatUsd(wallet.openExposureUsd), false],
     ['Fees paid', wallet.feesPaidUsd === null ? null : formatUsd(wallet.feesPaidUsd), false],
   ];
@@ -39,7 +42,7 @@ export function WalletSummary({ wallet, onFund }: { wallet: WalletView; onFund?:
   );
 }
 
-export function Wallet({ wallet = EMPTY_WALLET }: { wallet?: WalletView }) {
+export function Wallet({ wallet = EMPTY_WALLET, stepUp = unavailableStepUp }: { wallet?: WalletView; stepUp?: StepUp }) {
   const [funding, setFunding] = useState<FundingKind | null>(null);
   const close = useCallback(() => setFunding(null), []);
   return (
@@ -48,7 +51,7 @@ export function Wallet({ wallet = EMPTY_WALLET }: { wallet?: WalletView }) {
       <Section title="History" className="span-2">
         <Empty title="No transactions" />
       </Section>
-      <FundingSheet kind={funding} onClose={close} savedWallet={wallet.savedWallet} botWallet={wallet.botAddress} gatePassed={false} />
+      <FundingSheet kind={funding} onClose={close} wallet={wallet} stepUp={stepUp} gatePassed={false} />
     </div>
   );
 }
