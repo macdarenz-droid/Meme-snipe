@@ -10,6 +10,9 @@ Our own survivorship-free study: 518 graduations in a 12-hour window plus about 
 - Negative signals: price above migration price at +5 min (median −97% at 1 h vs −67%), instant graduation. "Less bad" signals all still lost money.
 - Audit: conclusion holds under every perturbation; the sample-size estimate was at 50% power, so roughly double it for 80%; fixed costs were optimistic for early entries.
 
+## Signal research on practice days ([signals.md](research/signals.md))
+RES-3: which as-of signals separate positive from negative net return in U1 and U2 after conservative costs, on practice days only (a coded wall refuses holdout days). Pre-registered plan, 27 features, walk-forward with embargo, every rule logged as a trial; at most one candidate per universe goes to BT-2. Literature: no study measures forward returns for U1 or U2; for tokens this small the evidence points to reversal, not momentum. Results pending (practice days arrive from about 6 Oct).
+
 ## Venues and lifecycle ([venues.md](research/venues.md))
 - pump.fun is ~70–80% of launchpad volume ($177.5M/day curve); PumpSwap $321M/day. ~49.7k launches and ~2.6% graduation in the last 24 h (measured).
 - Fees: curve 1.25% per side; canonical PumpSwap 1.25% below 420 SOL market cap, 1.20% to 1,470 SOL, down to 0.30% at 98,240 SOL; non-canonical 0.30%. Graduation is at ~411 SOL (~$49k).

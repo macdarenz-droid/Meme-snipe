@@ -127,7 +127,14 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
     - The response lies within `maxStateSlotLag`, with mint authority none.
     - The balances sum exactly to supply.
     - Duplicate addresses, a wrong mint or a truncated response mean H16 malformed or inconsistent.
-  - The same-slot wording is withdrawn: two calls rarely share a slot, and `minContextSlot` means "at least". With mint authority none, supply can only fall, so a burn between the reads breaks the exact sum, which is the safe direction.
+  - The same-slot wording is withdrawn: two calls rarely share a slot, and `minContextSlot` means "at least".
+  - Read order matters (second reviewer). If the supply is read after the scan, an incomplete response missing X tokens followed by a burn of X still sums exactly. So:
+    - the mint is read first, at confirmed commitment, slot A, with mint authority already none, and supply S_A recorded;
+    - getProgramAccounts then runs at confirmed commitment, with `withContext` and `minContextSlot = A`, and its actual slot B is recorded (B ≥ A);
+    - every account is validated and de-duplicated, and all raw balances are summed before any circulation exclusion;
+    - the sum must equal S_A.
+  - Then returned sum ≤ supply at B ≤ S_A, so equality proves that no positive balance was omitted and that no burn happened in between. A holder set read before the mint is H16 not-covered.
+  - This assumes one fork; reorg inconsistencies are rejected. Snapshot balances are never overwritten with later per-owner reads. Freshness is checked when the fact is used (GATE-1e, FACTS-1).
   - Known dev and insider owners are resolved with mint-filtered getTokenAccountsByOwner.
   - The full snapshot runs only for candidates that pass every other gate, and the backtest uses the same evaluation order and charges the same lookup latency, so reject mixes stay comparable for G3.
   - With no complete set, the gate abstains. Credits per scan are measured, not assumed. GATE-1d, FACTS-1, BT-2.
@@ -136,17 +143,28 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
   - PSR counts trades as independent observations, which is too lenient when trades on a day move together.
   - Effective-N clustering is dropped. With a few dozen daily observations, the correlation matrix's rank caps any effective N, and too little data would then shrink the penalty.
   - STATS-1c instead:
-    - (a) computes PSR and DSR on day-level returns now, which only tightens;
-    - (b) keeps DSR as a reported diagnostic with an effective-N sensitivity line;
-    - (c) builds a joint day-block bootstrap maximum-statistic test (Hansen's SPA, studentised) over the frozen registry. It resamples the same calendar blocks for every variant, keeps idle days and every cost, and fixes the block-length rule in advance;
-    - (d) calibrates (c) by simulation across duplicate, independent, heavy-tailed, common-shock and idle-day scenarios: the false-positive rate is at most α at zero edge, and power is reported next to DSR's.
+    - (a) reports PSR and DSR on daily returns as diagnostics. This is not "only stricter": aggregation can raise or lower them. Sharpe uncertainty comes from a block bootstrap of the daily series that recomputes the whole statistic;
+    - (b) keeps DSR as a reported diagnostic, with an effective-N sensitivity line;
+    - (c) builds the SPA test (Hansen, consistent recentring), as follows:
+      - daily differentials against the benchmark on the same calendar for every variant;
+      - long-run variance from the stationary bootstrap, with the same indices for all variants;
+      - an expected block length of 3 days, with 5 and 7 days as required sensitivities, and promotion on the largest of the three p-values;
+      - resampling within registered regimes at their weights, never across an upgrade boundary;
+      - two benchmarks, both required: zero and S0;
+      - simultaneous evidence for the selected configuration itself, then the holdout;
+      - support checks for sparse variants;
+      - p never reported as 0;
+    - (d) calibrates the complete rule by simulation across duplicate, independent, heavy-tailed, common-shock, sparse, regime-shift and idle-day scenarios. The false-positive rate is at most α at zero edge, and power is reported next to DSR's.
   - Replacing the DSR gate in G1 with (c) is a change of method that can pass more strategies, so it merges only with the owner's sign-off on that evidence. Until then G1 keeps DSR ≥ 0.95.
 - **Holdout.**
   - The sealed window is UTC days 2026-09-22 to 2026-10-01 (data days are UTC), all after B4. It starts at 09-22T00:00Z, after the 2 h embargo, as BT-2's `study-1` registers it. RES-3 ends practice at the start of Melbourne day 09-22, 10 hours earlier; that is conservative, so no change. Trade days for the 10-day minimum are counted in Melbourne days, the stats day key.
   - G1 runs on every practice day. Results are reported by regime and described as cross-regime evidence. Only 8 practice days fall wholly after B4, below G1's 10-day minimum, so post-B4 practice results are descriptive only.
-  - The holdout can come up short on trades (n < max(300, n_power)) or on trade days (fewer than 10). The size check counts candidates and entries only, before any outcome is scored. In that case the window extends by whole UTC days from 10-02, as the days are published, for at most 28 days, and stops on the first day both counts are met. Past 28 days the result is "not proven". This extension rule is fixed now, before any holdout count is known.
-  - The extension may cross B5 (10-02 15:47 UTC). UPG-1 found SOL-market fields, quotes, fees and rent unchanged there, and H5 refuses any non-zero tail, so B5 changes nothing we trade. Results are reported before and after B5. B2–B4 stay hard boundaries for every window.
-  - Repeated attempts share one error budget. Attempt 1 is tested at family α = 0.04 (Holm across universes, with n_power simulated at that level). Attempt k ≥ 2 is tested at 0.01 / 2^(k−1) on a new, later window. All attempts together have a false-pass rate of at most 0.05.
+  - The end of the holdout is a fixed date E. A stop triggered by counts is not outcome-independent, because entry counts move with the market (second reviewer). E is registered before any holdout count is known, from the post-B4 practice-day funnel rates with a safety margin, with E ≤ 10-20 (28 days in total).
+  - E is one common endpoint for every registered universe, and no universe is dropped after counts. Entries stop at the cutoff, and an observation-only tail lets labels mature.
+  - The holdout is opened once, at E. If it is short of n ≥ max(300, n_power) or of 10 trade days, the result is "not proven".
+  - n_power is computed for each attempt's α and this procedure. The report gives power once n is reached, the probability of reaching n by E, and the overall pass probability.
+  - A window past 10-01 crosses B5 (10-02 15:47 UTC). UPG-1 found SOL-market fields, quotes, fees and rent unchanged there, and H5 refuses any non-zero tail, so B5 changes nothing we trade. Results are reported before and after B5. B2–B4 stay hard boundaries for every window.
+  - Repeated attempts share one error budget. Attempt 1 is tested at family α = 0.04 (Holm across universes, with n_power simulated at that level). Attempt k ≥ 2 is tested at 0.01 / 2^(k−1) on a new, later window. At most 0.05 family error is spent across attempts. The bound requires valid testing under each attempt's registered selection, stopping and dependence assumptions.
   - The 48-hour dry run is operational evidence and G3 only. It is never part of the holdout. STATS-1b, BT-2.
 - **Rent.** Rent follows the transaction's real outcome:
   - It is refunded once, when the atomic sell-and-close lands.
