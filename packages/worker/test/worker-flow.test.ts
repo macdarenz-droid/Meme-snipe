@@ -91,7 +91,8 @@ describe('a paper trade end to end', () => {
   });
 
   it('an attempt that lands failed is abandoned and its reservation released', async () => {
-    const h = makeWorker({ scenario: { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n } } });
+    // Never dropped: with landing off, a drop draw would leave nothing to abandon.
+    const h = makeWorker({ scenario: { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n } });
     const m = await entered(h);
     expect(positions(h).every((p) => p.quantity === 0n && p.status !== 'open')).toBe(true);
     const abandoned = () => kinds(h.stateDir, 'decision').filter((d) => d['action'] === 'abandon');

@@ -17,7 +17,18 @@ export interface GitRegistryOptions {
   readonly branch: string;
   /** The file's name on the registry branch. */
   readonly fileName: string;
+  /** The only repository the remote may be, `owner/name` on GitHub (research config); anything else is refused. */
+  readonly repo: string;
 }
+
+/** True when `url` (as configured, credentials ignored) is the GitHub repository `owner/name`. */
+export const isRepoUrl = (url: string, repo: string): boolean => {
+  const want = repo.toLowerCase();
+  const https = /^https:\/\/(?:[^@/]+@)?github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(url.trim());
+  const ssh = /^(?:ssh:\/\/)?git@github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(url.trim());
+  const got = (https ?? ssh)?.[1]?.toLowerCase();
+  return got === want;
+};
 
 /** Refuses a registry path that is a symbolic link (D3). */
 export const refuseSymlink = (path: string): void => {
@@ -44,10 +55,28 @@ export const gitRegistryVcs = (o: GitRegistryOptions): RegistryVcs => {
     }
     git(['fetch', '-q', o.remote, `refs/heads/${o.branch}`]);
     base = git(['rev-parse', 'FETCH_HEAD']).trim();
-    return git(['show', `${base}:${o.fileName}`]);
+    let text: string;
+    try {
+      text = git(['show', `${base}:${o.fileName}`]);
+    } catch {
+      throw new Error(`${o.remote}/${o.branch} has no ${o.fileName}: an emptied registry branch is refused`);
+    }
+    if (text.trim() === '') throw new Error(`${o.remote}/${o.branch} holds an empty ${o.fileName}: refused`);
+    return text;
+  };
+  const pinned = (): void => {
+    // The configured URL, before any insteadOf rewrite: the registry must belong to the project's own repository.
+    let url = '';
+    try {
+      url = git(['config', '--get', `remote.${o.remote}.url`]).trim();
+    } catch {
+      url = '';
+    }
+    if (!isRepoUrl(url, o.repo)) throw new Error(`the holdout registry remote ${o.remote} must be github.com/${o.repo}`);
   };
   const check = (): void => {
     refuseSymlink(path);
+    pinned();
     const remote = fetchRemote();
     const local = existsSync(path) ? readFileSync(path, 'utf8') : null;
     if (local === null) {
@@ -58,7 +87,8 @@ export const gitRegistryVcs = (o: GitRegistryOptions): RegistryVcs => {
       }
       return;
     }
-    if (remote === null) throw new Error(`the local holdout registry ${o.relPath} was never pushed to ${o.remote}/${o.branch}`);
+    // A local record and no remote branch: the branch was deleted or never pushed. Never read that as an empty registry.
+    if (remote === null) throw new Error(`the local holdout registry ${o.relPath} has records but ${o.remote}/${o.branch} is missing (deleted or never pushed)`);
     if (local !== remote) throw new Error(`the local holdout registry ${o.relPath} differs from ${o.remote}/${o.branch}`);
   };
   return {
