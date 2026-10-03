@@ -115,7 +115,9 @@ export interface Harness {
 }
 
 /** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
-export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
+// Every attempt lands, and in its regular landing window: the paper draw is seeded by the boot id, which holds the
+// process id, so a landing-tail draw would make a test's outcome depend on the test process's pid.
+export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n }, landingTail: { ...FILL_CONFIG.scenarios[PAPER_SCENARIO].landingTail, ppm: 0n } };
 
 export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead']; schedulers?: NonNullable<WorkerDeps['schedulers']> } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
@@ -179,6 +181,8 @@ export class Market {
   #swaps = 0;
   /** Publish the fee-context fact with each pool read (off: the strategy takes the terms of the latest swap). */
   withFees = true;
+  /** Fact keys never published (a fact a fault keeps from being read). */
+  omit: ReadonlySet<string> = new Set();
 
   constructor(h: Harness) {
     this.#h = h;
@@ -198,6 +202,7 @@ export class Market {
   }
 
   fact(key: string, value: unknown): void {
+    if (this.omit.has(key)) return;
     this.#h.worker.feed.ingest('worker', { type: 'fact', key, value }, { receivedAt: this.now });
   }
 
@@ -260,9 +265,10 @@ export class Market {
 }
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
-export const passingMarket = async (h: Harness, o: { readonly fees?: boolean } = {}): Promise<Market> => {
+export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly omit?: readonly string[] } = {}): Promise<Market> => {
   const m = new Market(h);
   m.withFees = o.fees ?? true;
+  m.omit = new Set(o.omit ?? []);
   const facts = facts0();
   // 15 days before T: the creates stream and a full trade stream start; the deployer index sees its first event.
   m.slot();

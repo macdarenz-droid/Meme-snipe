@@ -29,6 +29,16 @@ export const SECRET_NAMES = ['HELIUS_API_KEY', 'ALCHEMY_API_KEY', 'JUPITER_API_K
 /** Environment names that would mean key material is present. No signing key exists in a dry run. */
 export const KEY_ENV = /PRIVATE_KEY|SECRET_KEY|KEYPAIR|SEED|MNEMONIC|WALLET_KEY/i;
 
+/** Why the worker went down in a restart drill (DECISIONS "Follow-up rulings", Standby). */
+export type RestartCause = 'crash' | 'reboot' | 'host-loss' | 'chain-rebuild';
+export const RESTART_CAUSES: readonly RestartCause[] = ['crash', 'reboot', 'host-loss', 'chain-rebuild'];
+
+/**
+ * Evidence in the state dir: kept through a host-loss or chain-rebuild drill (the runner copies them aside and back),
+ * because they are the run's record, not the bot's state. Everything else in the state dir is bot state.
+ */
+export const EVIDENCE_FILES: readonly string[] = ['journal.jsonl', 'recorder'];
+
 export const STATE_FILES = {
   journal: 'journal.jsonl',
   recorder: 'recorder',
@@ -82,7 +92,11 @@ export interface Health {
   readonly open_position: {
     readonly trade: string; readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string;
     readonly mark: string; readonly mark_slot: number; readonly mark_ts: number;
+    /** The universe the position was entered under (CFG-2: its exit parameters come from it). */
+    readonly universe: string;
   } | null;
+  /** Trade ids with an exit planned or signed and not yet final: what a restart must not lose. */
+  readonly pending_exits: readonly string[];
   /** `trades`: the trade ids of the unresolved intents (an entry in flight has an intent and no position yet). */
   readonly unresolved_intents: { readonly count: number; readonly oldest_age_s: number | null; readonly trades: readonly string[] };
   readonly signer: string;
@@ -120,7 +134,18 @@ export type JournalKind =
   /** After a restart with an open position: the worst price move over the down window, rebuilt from chain history. */
   | 'exposure'
   /** A critical alert raised or cleared (WATCH-1: `level` critical or cleared, `code`, `mint`). */
-  | 'alert';
+  | 'alert'
+  /**
+   * Written once per boot right after the start reconcile: what the worker found and kept. `source`: 'state' (its
+   * own files) or 'chain' (no state: rebuilt from wallet balances and pending signatures by address);
+   * `pending_exits` (trade ids); `positions` ([{trade, universe}]).
+   */
+  | 'recovered'
+  /**
+   * The first moment in a boot the worker is able to exit: times a host reboot from the worker's own journal. Written
+   * before /health first reports `exit_capable: true` in that boot.
+   */
+  | 'exit_capable';
 
 /** One line of journal.jsonl. Written with a synchronous append per line, so a crash can tear only the last line. */
 export interface JournalLine {

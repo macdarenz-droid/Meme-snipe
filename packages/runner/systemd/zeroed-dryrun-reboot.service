@@ -1,0 +1,11 @@
+# RUN-1d reboot drill: the runner (zeroed-dryrun@<name>) starts this unit at a pre-set time of the qualifying
+# run. The host reboots; zeroed-dryrun-tick.timer resumes the run by name after boot, and the runner finishes the
+# drill from the journal (wall clock: last line before the reboot to the next start, then exit capable).
+# Installed only through OPS-1d's install path, never by hand.
+[Unit]
+Description=Zeroed dry run: reboot drill
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl reboot

@@ -40,7 +40,10 @@ const statePath = join(stateDir, 'stub-state.json');
 
 interface StubState {
   trades: number;
-  position: { trade: string; openedAt: number } | null;
+  /** `exitPlanned`: past 40% of the cycle the exit is planned (a pending exit a restart must keep). */
+  position: { trade: string; openedAt: number; universe: string; exitPlanned?: boolean } | null;
+  /** Set by --reconcile when it found no state at all: the start that follows reports `source: chain`. */
+  fromChain?: boolean;
   /** An intent that was being worked on when the process died: settled by reconcile. */
   intent: { trade: string; leg: 'entry' | 'exit' } | null;
   /** Set by --reconcile (ExecStartPre) when it settled an intent, so the start that follows journals its exposure. */
@@ -61,10 +64,17 @@ const saveState = (s: StubState): void => {
 // Test hook: a reconcile that cannot settle its intents exits 3, never serves `reconciled: false`.
 const reconcileFails = env['ZEROED_STUB_FAIL_RECONCILE'] === '1';
 
+// --reconcile-only (the host-loss tabletop): cold-start on this state dir, reconcile, report, and send nothing:
+// no entries, no exits, no heartbeat. It runs beside the live worker until it is stopped.
+const reconcileOnly = process.argv.includes('--reconcile-only');
+
 if (process.argv.includes('--reconcile')) {
   if (reconcileFails) fail(EXIT.reconcileFailed, 'Reconcile: intents left unresolved.');
   // ExecStartPre step: settle what a crash left behind, then report open intents for the host's update gate.
+  // No state on disk (host lost, no backup): rebuild from chain. A paper position is not on chain, so nothing comes back.
+  const found = existsSync(statePath);
   const s = loadState();
+  if (!found) s.fromChain = true;
   s.settledIntent = s.intent;
   s.intent = null;
   saveState(s);
@@ -102,20 +112,34 @@ const journal = (kind: JournalKind, fields: Record<string, unknown> = {}): void 
   appendFileSync(journalPath, `${JSON.stringify({ seq, ts: new Date().toISOString(), boot, kind, ...fields })}\n`);
 };
 rmSync(join(stateDir, STATE_FILES.cleanStop), { force: true });
-journal('start', { git_sha: gitSha, run_id: env['ZEROED_RUN_ID'] ?? null, label: env['ZEROED_RUN_LABEL'] ?? null, recorder: recorderOn, simulation: simulationOn, stub: true });
+journal('start', {
+  git_sha: gitSha, run_id: env['ZEROED_RUN_ID'] ?? null, label: env['ZEROED_RUN_LABEL'] ?? null, recorder: recorderOn, simulation: simulationOn, stub: true,
+  entry_rule: env['ZEROED_STRATEGY'] ?? 'none', paper_edge_ppm: env['ZEROED_PAPER_EDGE_PPM'] ?? null, s0_salt: env['ZEROED_STUB_SALT'] ?? null,
+});
 if (repaired) journal('journal_repair', { detail: 'torn last line removed' });
 
 if (reconcileFails) {
   journal('reconcile', { ok: false, reasons: ['stub: intents left unresolved'] });
   fail(EXIT.reconcileFailed, 'Reconcile failed: exiting before any entry.');
 }
+const stateFound = existsSync(statePath);
 const state = loadState();
+const fromChain = !stateFound || state.fromChain === true;
 const settled = state.intent ?? state.settledIntent ?? null;
 state.intent = null;
 state.settledIntent = null;
+delete state.fromChain;
 saveState(state);
 writeFileSync(join(stateDir, STATE_FILES.openIntents), '0\n');
 journal('reconcile', { ok: true, settled: settled ? `${settled.leg} of ${settled.trade}` : null, open_position: state.position?.trade ?? null });
+const pendingExits = (): string[] => [
+  ...new Set([...(state.position?.exitPlanned ? [state.position.trade] : []), ...(state.intent?.leg === 'exit' ? [state.intent.trade] : [])]),
+];
+journal('recovered', {
+  source: fromChain ? 'chain' : 'state',
+  pending_exits: [...pendingExits(), ...(settled?.leg === 'exit' && !pendingExits().includes(settled.trade) ? [settled.trade] : [])],
+  positions: state.position ? [{ trade: state.position.trade, universe: state.position.universe }] : [],
+});
 // Back with a position open: the down window's worst move, as WORKER-1 rebuilds it from chain history (stub: flat).
 // One line per trade that was open or in flight at the kill (the stub's market is flat: 0 bps).
 if (lastTs !== null) {
@@ -146,6 +170,7 @@ const stubSimulation = (): Record<string, unknown> => ({
 });
 
 let tradeTimer = 0;
+let exitCapableJournaled = false;
 const tick = (): void => {
   const now = Date.now();
   slot += 1;
@@ -168,6 +193,11 @@ const tick = (): void => {
     halted = false;
     journal('resume', { reasons: ['all critical feeds fresh'] });
   }
+  if (!exitCapableJournaled && now - bootAt >= exitDelayMs && rpcDownUntil <= now) {
+    exitCapableJournaled = true;
+    journal('exit_capable', {});
+  }
+  if (reconcileOnly) return;
   // Paper trading: open for 60% of each cycle, flat for the rest. Exits run even while entries are halted.
   tradeTimer += tickMs;
   const phase = tradeTimer % cycleMs;
@@ -185,11 +215,14 @@ const tick = (): void => {
       saveState(state);
       journal('decision', { action: 'enter', trade, reasons: ['stub: synthetic setup'] });
       if (simulationOn) journal('simulation', { trade, leg: 'entry', ...stubSimulation() });
-      state.position = { trade, openedAt: now };
+      state.position = { trade, openedAt: now, universe: 'U2' };
       state.intent = null;
       saveState(state);
       journal('entry', { trade, reasons: ['stub: synthetic setup'] });
     }
+  } else if (state.position && !state.position.exitPlanned && phase >= cycleMs * 0.4 && phase < cycleMs * 0.6) {
+    state.position.exitPlanned = true;
+    saveState(state);
   } else if (state.position && phase >= cycleMs * 0.6) {
     const trade = state.position.trade;
     state.intent = { trade, leg: 'exit' };
@@ -200,6 +233,16 @@ const tick = (): void => {
     saveState(state);
     journal('exit', { trade, reasons: ['stub: hold time reached'] });
   }
+};
+
+let rpcDownUntil = 0;
+const dropFeed = (name: string, ms: number): void => {
+  const f = feeds.get(name)!;
+  f.downUntil = Date.now() + ms;
+  f.downFrom = Date.now();
+  f.gapId = `${boot}-${name}-${f.downFrom}`;
+  journal('coverage_gap', { stream: STREAM[name], gap_id: f.gapId, from_ts: new Date(f.downFrom).toISOString(), to_ts: null, reason: 'disconnect' });
+  journal('feed', { feed: name, connected: false, cause: 'drill' });
 };
 
 const drillToken = randomBytes(16).toString('hex');
@@ -236,7 +279,7 @@ const health = (): Health => {
     policy_version: 'stub',
     last_processed_slot: slot,
     feed_ages_ms: ages,
-    open_position: state.position ? { trade: state.position.trade, mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1', mark_slot: slot, mark_ts: now } : null,
+    open_position: state.position ? { trade: state.position.trade, mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1', mark_slot: slot, mark_ts: now, universe: state.position.universe } : null,
     unresolved_intents: { count: state.intent ? 1 : 0, oldest_age_s: state.intent ? 0 : null, trades: state.intent ? [state.intent.trade] : [] },
     signer: 'none',
     lease_epoch: null,
@@ -250,7 +293,10 @@ const health = (): Health => {
     recorder: recorderOn ? 'on' : 'off',
     simulation: simulationOn ? 'on' : 'off',
     reconciled: true,
-    exit_capable: now - bootAt >= exitDelayMs,
+    // Never before its journal line: the runner times a reboot from that line.
+    exit_capable: exitCapableJournaled && now - bootAt >= exitDelayMs && rpcDownUntil <= now,
+    // Test hook: a reply whose pending exits are not ids (the runner must not trust it at a kill).
+    pending_exits: env['ZEROED_STUB_BAD_PENDING'] === '1' ? [''] : pendingExits(),
     quota: quota(now),
     lookups: { counts: lookupCounts },
     entries_halted: halted,
@@ -282,11 +328,27 @@ const server = createServer((req, res) => {
         res.writeHead(400).end();
         return;
       }
-      f.downUntil = Date.now() + ms;
-      f.downFrom = Date.now();
-      f.gapId = `${boot}-${feed}-${f.downFrom}`;
-      journal('coverage_gap', { stream: STREAM[feed!], gap_id: f.gapId, from_ts: new Date(f.downFrom).toISOString(), to_ts: null, reason: 'disconnect' });
-      journal('feed', { feed, connected: false, cause: 'drill' });
+      dropFeed(feed!, ms);
+      res.writeHead(202).end();
+    });
+    return;
+  }
+  // Every provider lost at once: all feeds down, and no exit can be quoted or landed until they are back.
+  if (drillsOn && req.method === 'POST' && req.url === '/drill/drop-rpc') {
+    if (req.headers['x-zeroed-drill-token'] !== drillToken) {
+      res.writeHead(403).end();
+      return;
+    }
+    let body = '';
+    req.on('data', (d: Buffer) => (body += d.toString()));
+    req.on('end', () => {
+      const { ms } = JSON.parse(body || '{}') as { ms?: number };
+      if (!(typeof ms === 'number' && ms > 0)) {
+        res.writeHead(400).end();
+        return;
+      }
+      rpcDownUntil = Date.now() + ms;
+      for (const name of feeds.keys()) dropFeed(name, ms);
       res.writeHead(202).end();
     });
     return;
