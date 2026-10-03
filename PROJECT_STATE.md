@@ -4,7 +4,7 @@
 - An intelligent, precise, fast sniper that is above all risk aware and trades like a disciplined professional.
 - Consistency. Risk aware, data aware. Research based on what actually matters in the market.
 - No guessing: the bot acts only when the data proves the setup. Unknown or stale evidence means no trade.
-- Bankroll $20, entries $2 default and $5 max, paper mode first.
+- Bankroll $20, entries $2 default and $5 max, paper mode first. This is the trial setting only: capital and trade size are configuration and will scale once the bot proves itself.
 - Easy deposit and withdraw in AUD. Stripe's onramp does not serve Australia (US and EU only). Deposit and Withdraw screens offer two exchanges to choose from, Independent Reserve and Kraken, with steps and costs; the bot only sends to the owner's saved wallet. Banxa in-app buying is possible later if a business (ABN) is registered.
 - Dashboard: P&L calendar, trade history with full details, profit charts and the other visuals needed to see what the bot is doing. Smooth UI: motion, transitions, blurred backdrops behind opened panels.
 - Two themes only: Paper (light) and Silent Black (dark); first open follows the device, then the owner's choice is remembered.
