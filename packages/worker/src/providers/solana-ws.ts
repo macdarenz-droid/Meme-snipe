@@ -1,7 +1,8 @@
 // Standard Solana pubsub on one provider (Helius or Alchemy): `slotSubscribe`, `logsSubscribe` and
 // `accountSubscribe` at `processed` (data.md §8.1B–C). Every notification becomes a frame on the live Feed.
-// Log lines are never decoded: a log notification is a sighting of its signature, and the transaction itself is
-// fetched and decoded by DEC-1's `transactionEvents` when the watch asks for it.
+// A log notification is a sighting of its signature. A watch may ask for the transaction to be fetched and decoded
+// by DEC-1's `transactionEvents`, or (the creates stream) for its log lines to be read by DEC-1's `logEvents`;
+// nothing here decodes bytes itself.
 //
 // Reconnect with backfill: when the stream drops, the feed holds its release point below the first slot we may
 // have missed; on reopen, each log watch reads the signatures it missed and each account watch reads its current
@@ -40,6 +41,11 @@ export interface WatchOptions {
   readonly priority: Priority;
   /** Fetch and decode each transaction seen, at this priority. Off by default: creates alone run ~50k a day. */
   readonly fetch?: Priority;
+  /**
+   * Keep the log lines and read events from them with DEC-1's `logEvents` (zero RPC credits). For the creates
+   * stream, so the deployer index gets creator, mint and slot for every create. Backfilled sightings carry no logs.
+   */
+  readonly decodeLogs?: boolean;
 }
 
 type Watch =
@@ -122,7 +128,12 @@ export class RpcStream {
         if (slot === null || !isSignature(signature)) return;
         this.#saw(slot);
         w.lastSignature = signature;
-        this.#seen(address, signature, slot, r.value.err ?? null, opts, false);
+        const err = r.value.err ?? null;
+        this.#seen(address, signature, slot, err, opts, false);
+        const lines = r.value.logs;
+        if (opts.decodeLogs === true && Array.isArray(lines) && lines.every((l) => typeof l === 'string')) {
+          this.#o.feed.ingest(this.provider, { type: 'logs', signature, slot, err, via: `logs:${address}`, logs: lines as string[] }, { receivedAt: this.#o.timers.now() });
+        }
       },
     });
   }

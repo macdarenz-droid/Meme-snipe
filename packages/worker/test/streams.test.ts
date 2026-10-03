@@ -1,12 +1,12 @@
 // RPC streams on recorded frames: subscribe, notifications to frames, reconnect with backfill, halt, two providers.
 import { describe, expect, it } from 'vitest';
-import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL } from '../../core/src/chain/index.ts';
-import type { MarketEvent } from '../../core/src/engine/index.ts';
+import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL, transactionEvents } from '../../core/src/chain/index.ts';
+import { createReplay, type MarketEvent } from '../../core/src/engine/index.ts';
 import {
-  DEFAULT_LIVE_FEED, FakeSocketHub, LiveFeed, RpcHttp, RpcStream, rpcHandler, scriptedHttp, TxFetcher, type Frame,
+  DEFAULT_LIVE_FEED, FakeSocketHub, frameEvents, LiveFeed, RpcHttp, RpcStream, rpcHandler, scriptedHttp, TxFetcher, type Frame,
 } from '../src/providers/index.ts';
 import { HELIUS_FREE, ManualTimers, P0, P1, P2, P3, Scheduler } from '../src/scheduler/index.ts';
-import { blockNetwork, settle, tx } from './helpers.ts';
+import { blockNetwork, recordOf, settle, tx } from './helpers.ts';
 
 blockNetwork();
 
@@ -152,6 +152,51 @@ describe('RPC stream', () => {
     expect(stream.socket.size).toBe(1);
     expect(() => stream.watchLogs(MINT_AUTH, { priority: P2 })).toThrow(/halted/);
     expect(stream.watchAccount(PUMP_GLOBAL, P0)).toBeGreaterThan(pos);
+  });
+
+  it('creates stream: creator, mint and slot from the log lines with no RPC call, even when PumpPortal saw it first', async () => {
+    const c = tx('pump CreateEvent');
+    const slot = Number(c.slot);
+    const calls: string[] = [];
+    const { hub, frames, feed, stream, timers } = setup((m) => { calls.push(m); return undefined; });
+    stream.watchLogs(MINT_AUTH, { priority: P3, decodeLogs: true });
+    stream.start();
+    hub.last.open();
+    const [sub] = ack(hub);
+    feed.ingest('pumpportal', { type: 'seen', signature: c.signature, slot: null, err: null, via: 'pumpportal:create', detail: {} }, { receivedAt: timers.now() });
+    hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: sub, result: { context: { slot }, value: { signature: c.signature, err: null, logs: c.base64.meta!.logMessages } } } });
+    feed.ingest('helius', { type: 'slot', slot: BigInt(slot) + 1n, parent: null, root: null }, { receivedAt: timers.now() + 1 });
+    await settle();
+    feed.advance(timers.now() + 10_000);
+    const released: MarketEvent[] = [];
+    for (let e = feed.next(); e; e = feed.next()) if (e.kind === 'market') released.push(e);
+    expect(calls).toEqual([]);
+    const create = released.find((e) => e.key.startsWith('logs:pump:CreateEvent:'))!;
+    const v = create.value as { event: { name: string; data: { mint: string; creator: string } }; txSlot: bigint; truncated: boolean };
+    const fromTx = recordOf(c);
+    const decoded = transactionEvents(fromTx).find((e) => e.name === 'CreateEvent')!;
+    expect(v.event.data).toEqual(decoded.data); // the log copy carries the same fields as DEC-1's instruction decode
+    expect(create.key).toBe(`logs:pump:CreateEvent:${v.event.data.mint}`);
+    expect(v.txSlot).toBe(BigInt(slot));
+    expect(v.truncated).toBe(false);
+    expect(create.moment.slot).toBe(BigInt(slot));
+    // The PumpPortal sighting won dedup, and the log frame survived it.
+    expect(frames.find((f) => f.body.type === 'seen' && f.source === 'helius')!.duplicate).toBe(true);
+    expect(frames.find((f) => f.body.type === 'logs')!.duplicate).toBe(false);
+    expect(frameEvents(frames).filter((e) => e.id.startsWith('log:')).map((e) => e.id)).toEqual(released.filter((e) => e.id.startsWith('log:')).map((e) => e.id));
+    expect(() => createReplay(frameEvents(frames))).not.toThrow();
+  });
+
+  it('cut or malformed log lines are reported as such, never guessed past', () => {
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 });
+    const sig = tx('pump CreateEvent').signature;
+    feed.ingest('alchemy', { type: 'logs', signature: sig, slot: 9n, err: null, via: 'logs:x', logs: [`Program ${PUMP_GLOBAL} invoke [1]`, 'Log truncated'] }, { receivedAt: 1 });
+    feed.ingest('alchemy', { type: 'logs', signature: tx('pump CreateEvent', 1).signature, slot: 9n, err: null, via: 'logs:x', logs: ['Program a invoke [2]'] }, { receivedAt: 2 });
+    feed.ingest('alchemy', { type: 'slot', slot: 9n, parent: null, root: null }, { receivedAt: 3 });
+    feed.advance(3);
+    const keys: string[] = [];
+    for (let e = feed.next(); e; e = feed.next()) if (e.kind === 'market') keys.push(e.key);
+    expect(keys).toEqual(['logs:truncated:logs:x', 'logs:undecodable:logs:x', 'chain:slot']);
   });
 
   it('two providers carry the position: the first copy wins and the slower provider adds nothing', async () => {
