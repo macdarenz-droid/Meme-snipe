@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Picks up the keys the Deploy workflow published for this host, stores them as encrypted systemd
+# credentials, restarts the worker (reconcile first) and confirms in Telegram. Runs every minute from
+# zeroed-pair.timer; does nothing while no bundle is published. Re-running Deploy (rotation) publishes a
+# newer bundle, which replaces every value. Never prints a value; never set -x.
+set -euo pipefail
+umask 077
+. /usr/local/lib/zeroed/common.sh
+
+TAG="pair-$PAIRING_CODE"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# 1. Is a bundle published? (404 until Deploy runs; quiet then.)
+code="$(curl -sS -L -m 30 -o "$WORK/bundle.age" -w '%{http_code}' \
+  "$ZEROED_GITHUB_URL/$ZEROED_REPO/releases/download/$TAG/secrets.age" || true)"
+[ "$code" = 200 ] || exit 0
+
+# 2. Only a release made by this repository's own workflow counts (only GitHub Actions can create it).
+author="$(curl -fsS -m 30 -H 'Accept: application/vnd.github+json' \
+  "$ZEROED_API_URL/repos/$ZEROED_REPO/releases/tags/$TAG" | jq -r '.author.login // empty')"
+if [ "$author" != "github-actions[bot]" ]; then
+  log "Ignored $TAG: not published by the repository's workflow."
+  exit 0
+fi
+
+# 3. Decrypt straight into memory (process substitution is a pipe; nothing touches disk).
+declare -A v=()
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  k="${line%%=*}"
+  val="${line#*=}"
+  [[ "$k" =~ ^[A-Z][A-Z0-9_]{0,40}$ ]] || { log "Rejected bundle: bad line."; exit 1; }
+  [[ "$val" =~ ^[A-Za-z0-9._:/+=@-]{0,512}$ ]] || { log "Rejected bundle: bad value for $k."; exit 1; }
+  v[$k]="$val"
+done < <(age -d -i /etc/zeroed/age/host.key "$WORK/bundle.age" 2>/dev/null || echo "DECRYPT_FAILED=1")
+rm -f "$WORK/bundle.age"
+
+if [ -n "${v[DECRYPT_FAILED]:-}" ] || [ "${v[ZEROED_BUNDLE]:-}" != 1 ]; then
+  log "Rejected $TAG: it was not made for this host's key."
+  exit 1
+fi
+if [ "${v[PAIRING_CODE]:-}" != "$PAIRING_CODE" ]; then
+  log "Rejected $TAG: pairing code inside does not match this host."
+  exit 1
+fi
+issued="${v[ISSUED]:-}"
+[[ "$issued" =~ ^[0-9]{1,20}$ ]] || { log "Rejected $TAG: no issue number."; exit 1; }
+last="$(cat "$STATE_DIR/last_issued" 2>/dev/null || echo 0)"
+if [ "$issued" -le "$last" ]; then
+  exit 0 # Already applied (or an older bundle): nothing to do.
+fi
+
+# 4. Store every value as an encrypted credential (stdin only; the value is never an argument).
+names=(HELIUS_API_KEY ALCHEMY_API_KEY JUPITER_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID HEARTBEAT_HMAC_KEY)
+for k in "${names[@]}"; do
+  [ -n "${v[$k]:-}" ] || { log "Rejected $TAG: $k is missing."; exit 1; }
+done
+for k in "${names[@]}"; do
+  n="${k,,}"
+  printf '%s' "${v[$k]}" | systemd-creds encrypt --with-key=host --name="$n" - "$CRED_DIR/$n.new"
+  chmod 0600 "$CRED_DIR/$n.new"
+done
+for k in "${names[@]}"; do
+  n="${k,,}"
+  mv -f "$CRED_DIR/$n.new" "$CRED_DIR/$n"
+done
+
+# 5. Non-secret settings.
+watchdog="${v[WATCHDOG_URL]:-}"
+[ -z "$watchdog" ] || [[ "$watchdog" =~ ^https?://[A-Za-z0-9.:-]+(/[A-Za-z0-9._/-]*)?$ ]] || { log "Rejected $TAG: bad WATCHDOG_URL."; exit 1; }
+printf 'WATCHDOG_URL=%s\n' "$watchdog" > /etc/zeroed/worker.env.new
+chmod 0644 /etc/zeroed/worker.env.new
+mv -f /etc/zeroed/worker.env.new /etc/zeroed/worker.env
+{
+  age-keygen -y /etc/zeroed/age/host.key
+  recipient="${v[BACKUP_RECIPIENT]:-}"
+  if [[ "$recipient" =~ ^age1[a-z0-9]{58}$ ]]; then printf '%s\n' "$recipient"; fi
+} > /etc/zeroed/backup-recipients.new
+chmod 0644 /etc/zeroed/backup-recipients.new
+mv -f /etc/zeroed/backup-recipients.new /etc/zeroed/backup-recipients
+owner_backup=no
+[ "$(wc -l < /etc/zeroed/backup-recipients)" -ge 2 ] && owner_backup=yes
+
+v=()
+printf '%s\n' "$issued" > "$STATE_DIR/last_issued"
+
+# 6. Restart the worker; its ExecStartPre reconciles before it trades.
+systemctl daemon-reload
+if systemctl restart zeroed-worker.service; then worker=running; else worker="failed to start"; fi
+log "Stored ${#names[@]} credentials from $TAG (issue $issued). Worker: $worker."
+if notify "Zeroed host: keys stored (${#names[@]} values, issue $issued). Worker $worker. Owner backup key: $owner_backup."; then
+  log "Telegram confirmation sent."
+else
+  log "Telegram confirmation failed."
+fi

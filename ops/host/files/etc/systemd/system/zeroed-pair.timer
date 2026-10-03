@@ -1,0 +1,10 @@
+[Unit]
+Description=Zeroed: check for keys from the Deploy workflow every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

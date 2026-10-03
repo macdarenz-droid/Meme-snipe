@@ -1,0 +1,66 @@
+[Unit]
+Description=Zeroed worker
+Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
+After=network-online.target zeroed-signer.service
+Wants=network-online.target
+# Starts only after the Deploy workflow delivered the keys.
+ConditionPathExists=/etc/credstore.encrypted/helius_api_key
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=zeroed-worker
+Group=zeroed-worker
+SupplementaryGroups=zeroed-signer
+EnvironmentFile=/etc/zeroed/worker.env
+Environment=NODE_ENV=production
+# Reconcile first: every start and restart settles open intents against the chain before trading.
+ExecStartPre=/usr/local/bin/node /opt/zeroed/stub/worker.mjs --reconcile
+ExecStart=/usr/local/bin/node /opt/zeroed/stub/worker.mjs
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+LoadCredentialEncrypted=helius_api_key:/etc/credstore.encrypted/helius_api_key
+LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key
+LoadCredentialEncrypted=jupiter_api_key:/etc/credstore.encrypted/jupiter_api_key
+LoadCredentialEncrypted=telegram_bot_token:/etc/credstore.encrypted/telegram_bot_token
+LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_id
+LoadCredentialEncrypted=heartbeat_hmac_key:/etc/credstore.encrypted/heartbeat_hmac_key
+StateDirectory=zeroed
+StateDirectoryMode=0700
+UMask=0077
+MemoryMax=800M
+TasksMax=256
+LimitCORE=0
+# Hardening (ARCHITECTURE.md 12.1). MemoryDenyWriteExecute is off here only: V8's JIT needs it.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+KeyringMode=private
+DevicePolicy=closed
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @debug @cpu-emulation @obsolete
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

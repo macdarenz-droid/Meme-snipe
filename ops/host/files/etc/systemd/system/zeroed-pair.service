@@ -1,0 +1,12 @@
+[Unit]
+Description=Zeroed: fetch keys published by the Deploy workflow
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zeroed-pair
+UMask=0077
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes

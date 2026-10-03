@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Code updates by the same pull path: fetch the "deploy" tag, accept its commit only if GitHub signed it
+# (the merge-commit key pinned at install) and it is on the integration branch, then switch to it and
+# restart the worker (reconcile first). Runs every 5 minutes from zeroed-update.timer.
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+
+REPO_DIR=/opt/zeroed/repo
+git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
+  "+refs/tags/deploy:refs/tags/deploy" "+refs/heads/$ZEROED_BRANCH:refs/remotes/origin/$ZEROED_BRANCH" 2>/dev/null || exit 0
+commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
+current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
+[ "$commit" != "$current" ] || exit 0
+
+# GitHub signs every merge it makes with its web-flow key; nothing else is accepted.
+status="$(GNUPGHOME=/etc/zeroed/gnupg git -C "$REPO_DIR" verify-commit --raw "$commit" 2>&1 || true)"
+signer="$(printf '%s\n' "$status" | awk '$2 == "VALIDSIG" { print $NF; exit }')"
+if [ "$signer" != "$WEB_FLOW_FPR" ] || ! printf '%s\n' "$status" | grep -q '^\[GNUPG:\] GOODSIG '; then
+  log "Refused deploy tag ${commit:0:12}: not signed by GitHub's merge key."
+  notify "Zeroed host: refused update ${commit:0:12} (signature check failed)." || true
+  exit 1
+fi
+if ! git -C "$REPO_DIR" merge-base --is-ancestor "$commit" "refs/remotes/origin/$ZEROED_BRANCH"; then
+  log "Refused deploy tag ${commit:0:12}: not on $ZEROED_BRANCH."
+  notify "Zeroed host: refused update ${commit:0:12} (not on $ZEROED_BRANCH)." || true
+  exit 1
+fi
+
+dest="/opt/zeroed/releases/$commit"
+if [ ! -d "$dest" ]; then
+  mkdir -p "$dest.new"
+  git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
+  mv "$dest.new" "$dest"
+fi
+ln -sfn "$dest" /opt/zeroed/current.new
+mv -Tf /opt/zeroed/current.new /opt/zeroed/current
+printf '%s\n' "$commit" > "$STATE_DIR/deployed"
+
+# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
+worker="not started (no keys yet)"
+if [ -s "$CRED_DIR/helius_api_key" ]; then
+  if systemctl restart zeroed-worker.service; then worker=restarted; else worker="failed to start"; fi
+fi
+log "Deployed ${commit:0:12}. Worker: $worker."
+notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true
