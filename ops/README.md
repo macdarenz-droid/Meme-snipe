@@ -1,6 +1,6 @@
 # Zeroed server
 
-How the server is installed, gets its keys, pairs with Telegram, updates and is backed up (ARCHITECTURE.md §12, OPS-1a). Nobody copies a key by hand. The only things typed by hand are a 6-word code and a 6-digit code.
+How the server is installed, gets its keys, pairs with Telegram, updates and is backed up (ARCHITECTURE.md §12, OPS-1a and OPS-1b). Nobody copies a key by hand. The only things typed by hand are a 6-word code and a 6-digit code.
 
 Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 LTS x64**. Ubuntu 24.04 gets standard security updates until 2029; Debian 12 left regular security support in June 2026.
 
@@ -80,9 +80,43 @@ To restore for real:
 3. `chown -R zeroed-worker: /var/lib/zeroed`
 4. `systemctl start zeroed-worker` (it reconciles first).
 
-## Later (OPS-1b)
+## Watchdog (OPS-1b)
 
-The Cloudflare watchdog (heartbeat, alerts, `/pause` and `/status`), off-server backup copies, and the owner's own backup key.
+`packages/ops` is a Cloudflare Worker on the free `workers.dev` address (Workers Free, cron triggers, SQLite-backed Durable Objects; no paid feature and no domain). It has a cron every minute and one Durable Object holding:
+- the last heartbeat;
+- the active alerts;
+- the pause flag;
+- the lease (with a fencing epoch).
+
+The worker posts an HMAC-signed heartbeat (`x-zeroed-signature: t=…,v1=…`, replays refused) every 20 s. That heartbeat also carries the paired Telegram chat, which is the only place the watchdog learns it.
+
+Checks:
+- heartbeat older than 90 s;
+- slot lag against a different RPC;
+- on-chain position versus reported;
+- stop breached with no exit attempt in 60 s;
+- unresolved intents past blockhash expiry;
+- SOL reserve below the floor;
+- signer unreachable.
+
+Alerts go to Telegram once, repeat every 5 minutes while active, and send a "cleared" line.
+
+Telegram commands: only `/pause` and `/status`, only from the paired chat, only with the webhook secret. `/pause` stops new entries and never stops exits. It is cleared only from the console (`zeroed-resume`, signed with the heartbeat key).
+
+The Deploy workflow deploys it only together with a key handoff, so the server and the watchdog always get the same fresh heartbeat key:
+- wrangler 4.141.0 from `ops/watchdog/deploy`, locked by its `package-lock.json`, installed with `npm ci --ignore-scripts`;
+- it discovers the Worker's address from wrangler's output and sends it to the server in the encrypted bundle;
+- it sets the Worker's secrets and the Telegram webhook.
+
+To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in GitHub:
+1. Paste the install line above again on the console. This updates the server's scripts and keeps everything.
+2. Run `zeroed-new-deploy-code`.
+3. Put the 6 words in `DEPLOY_CODE`.
+4. Run Deploy.
+
+If the chat is re-paired later (`zeroed-pair-code`), the server turns the webhook off to read `/pair`. Run Deploy again afterwards to turn it back on.
+
+Not yet: off-server backup copies (they need an R2 token) and the owner's own backup key.
 
 ## Test it
 

@@ -132,6 +132,31 @@ describe('deploy code', () => {
   }, 30_000);
 });
 
+describe('watchdog tooling', () => {
+  it('pins wrangler exactly, locks every package with an integrity hash, and installs without scripts', () => {
+    const pkg = JSON.parse(read('ops/watchdog/deploy/package.json')) as { devDependencies: Record<string, string> };
+    expect(pkg.devDependencies).toEqual({ wrangler: expect.stringMatching(/^\d+\.\d+\.\d+$/) });
+    const lock = JSON.parse(read('ops/watchdog/deploy/package-lock.json')) as { packages: Record<string, { version?: string; integrity?: string; resolved?: string; link?: boolean }> };
+    expect(lock.packages['node_modules/wrangler']?.version).toBe(pkg.devDependencies['wrangler']);
+    for (const [name, p] of Object.entries(lock.packages)) {
+      if (name === '' || p.link) continue;
+      expect(p.integrity, name).toMatch(/^sha512-/);
+      expect(p.resolved, name).toMatch(/^https:\/\/registry\.npmjs\.org\//);
+    }
+    const wf = read('.github/workflows/deploy.yml');
+    expect(wf).toContain('run: npm ci --ignore-scripts --no-audit --no-fund');
+    expect(wf).not.toMatch(/npx|npm install/);
+    expect(read('pnpm-workspace.yaml')).not.toMatch(/ops/);
+  });
+
+  it('runs on the free plan only', () => {
+    const toml = read('packages/ops/wrangler.toml');
+    expect(toml).toContain('workers_dev = true');
+    expect(toml).toContain('new_sqlite_classes = ["Watchdog"]');
+    expect(toml).not.toMatch(/^routes?\s*=|custom_domain|usage_model|\[\[kv_namespaces\]\]|\[\[r2_buckets\]\]/m);
+  });
+});
+
 describe('systemd units (ARCHITECTURE.md 12.1)', () => {
   const unit = (n: string) => read(`ops/host/files/etc/systemd/system/${n}`);
   const common = ['NoNewPrivileges=yes', 'CapabilityBoundingSet=', 'ProtectSystem=strict', 'ProtectHome=yes', 'PrivateTmp=yes', 'PrivateDevices=yes', 'ProtectKernelTunables=yes', 'ProtectKernelModules=yes', 'ProtectControlGroups=yes', 'RestrictNamespaces=yes', 'RestrictSUIDSGID=yes', 'LockPersonality=yes', 'SystemCallArchitectures=native', 'SystemCallFilter=@system-service', 'UMask=0077'];
