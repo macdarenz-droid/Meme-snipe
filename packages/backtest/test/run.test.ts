@@ -752,36 +752,15 @@ describe('exit failures (BT-1c exit-failure ruling)', () => {
 
 describe('exit failure responds to congestion (BT-1d, reviewer test)', () => {
   test('blocked exits and failed exit attempts: always congested > real ≥ congestion without effect, in both scenarios', () => {
-    const crowd = syntheticRows({ mints: 30, slots: 2.5 * 3600 * 8, swapEvery: 60, seed: 'crowd' });
-    type Mode = 'always' | 'real' | 'none';
-    const fillsFor = (mode: Mode): typeof FILL_CONFIG => ({
-      ...FILL_CONFIG,
-      scenarios: Object.fromEntries(Object.entries(FILL_CONFIG.scenarios).map(([k, s]) => [k, mode === 'real' ? s : {
-        ...s, congestion: mode === 'always'
-          ? { ...s.congestion, network: { ...s.congestion.network, enterPpm: 1_000_000n, maxEnterPpm: 1_000_000n, stayPpm: 1_000_000n } }
-          : { ...s.congestion, landFactorPpm: 1_000_000n, extraLandingSlots: 0 },
-      }])) as unknown as typeof FILL_CONFIG.scenarios,
-    });
+    // 30 mints, 8 h, swapEvery 60, seeds s0-s7, 3 modes x 2 scenarios = 48 replays, in their own process (see the script).
+    const out = JSON.parse(execFileSync('node', ['--no-warnings', join(import.meta.dirname, 'congestion-tally.ts')], { encoding: 'utf8' }).trim()) as
+      Record<'conservative' | 'base', Record<'always' | 'real' | 'none', { blocked: number; exits: number; failed: number }>>;
     for (const scenario of ['conservative', 'base'] as const) {
-      const tally = (mode: Mode) => {
-        let blocked = 0;
-        let exits = 0;
-        let failed = 0;
-        for (let k = 0; k < 8; k++) {
-          const r = runBacktest(opts({ rows: () => crowd[Symbol.iterator](), seed: `s${k}`, scenario, fills: fillsFor(mode), windowEnd: T0 + 8 * 3_600_000 }));
-          blocked += Object.values(r.book.positions).filter((p) => p.status === 'exit_blocked').length;
-          const ex = r.attempts.filter((a) => a.purpose === 'exit');
-          exits += ex.length;
-          failed += ex.filter((a) => a.outcome !== 'filled').length;
-        }
-        return { blocked, share: failed / exits };
-      };
-      const always = tally('always');
-      const real = tally('real');
-      const none = tally('none');
+      const { always, real, none } = out[scenario];
+      const share = (x: { exits: number; failed: number }) => x.failed / x.exits;
       expect(always.blocked).toBeGreaterThan(real.blocked);
       expect(real.blocked).toBeGreaterThanOrEqual(none.blocked);
-      expect(always.share).toBeGreaterThan(none.share);
+      expect(share(always)).toBeGreaterThan(share(none));
     }
-  }, 900_000);
+  });
 });
