@@ -207,10 +207,10 @@ Use a calm, compact working interface influenced by Linear and Vercel: charcoal 
 | Border | #E3E3DF | #1F2226 |
 | Primary text | #0D0F12 | #ECEFF3 |
 | Secondary text | #5E636B | #8A9099 |
-| Accent (actions only) | #2F6BFF | #5B8CFF |
-| Gain / loss (money only) | #0F8A4B / #C93A3A | #3FB97A / #E5605E |
+| Accent (actions only) | #2B61E8 | #5B8CFF |
+| Gain / loss (money only) | #0D7C44 / #C53939 | #3FB97A / #E5605E |
 
-Silent Black stays quiet: no neon, glow or gradients on surfaces; depth comes from one step of surface lightness and hairline borders. Paper is a soft off-white, not pure #FFFFFF, to cut glare. Blurred backdrops behind opened panels use the theme's background at partial opacity. These are proposed values: check WCAG AA contrast for text and chart marks in both themes before release.
+Silent Black stays quiet: no neon, glow or gradients on surfaces; depth comes from one step of surface lightness and hairline borders. Paper is a soft off-white, not pure #FFFFFF, to cut glare. Blurred backdrops behind opened panels use the theme's background at partial opacity. WCAG AA is checked by `apps/web/test/contrast.test.ts` against `apps/web/src/theme/tokens.css`. The proposed Paper accent (#2F6BFF), gain (#0F8A4B) and loss (#C93A3A) fell below 4.5:1 on Paper surfaces and were darkened to the values above (WEB-1, 2026-10-03). Gain and loss are not separable for red-green colour blindness, so every coloured amount also carries its sign (+/−).
 
 Persistent shell: a narrow navigation rail for **Home, Snipe, Wallet**; a clear Paper/Live mode label; session status; data freshness; and an accessible “Pause new entries” control. Token detail and journal panels can stay inside these screens.
 
