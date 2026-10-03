@@ -41,7 +41,7 @@ var curveCols = []string{
 	"track_volume", "ix_name", "mayhem_mode", "cashback_fee_basis_points", "cashback",
 	"buyback_fee_basis_points", "buyback_fee", "shareholders", "quote_mint", "quote_amount",
 	"virtual_quote_reserves", "real_quote_reserves", "holder_rewards_bps", "holder_rewards",
-	"layout_fields", "last_in_tx", "chain_curve_lamports", "chain_curve_base", "chain_curve_quote",
+	"extra_hex", "layout_fields", "last_in_tx", "chain_curve_lamports", "chain_curve_base", "chain_curve_quote",
 }
 
 var ammCols = []string{
@@ -53,7 +53,7 @@ var ammCols = []string{
 	"coin_creator_fee_basis_points", "coin_creator_fee", "track_volume", "min_base_amount_out", "ix_name",
 	"cashback_fee_basis_points", "cashback", "buyback_fee_basis_points", "buyback_fee",
 	"virtual_quote_reserves", "can_boost", "base_supply", "holder_rewards_bps", "holder_rewards",
-	"layout_fields", "last_in_tx", "chain_pool_base", "chain_pool_quote",
+	"extra_hex", "layout_fields", "last_in_tx", "chain_pool_base", "chain_pool_quote",
 }
 
 var blockCols = []string{"slot", "block_time", "parent_slot", "n_tx", "n_vote", "n_pump_tx", "n_pump_ok", "n_pump_failed", "n_events"}
@@ -818,6 +818,10 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 				st.mu.Lock()
 				st.UnknownEvents[prog+":"+hexs(disc)]++
 				st.mu.Unlock()
+				// kept raw for every mint: decodable once the layout is published
+				jb, _ := json.Marshal(map[string]any{"slot": b.slot, "block_time": b.blockTime, "tx_idx": txIdx, "ev_idx": evIdx,
+					"signature": sig, "signer": signer, "program": prog, "event": "Unknown", "discriminator": hexs(disc), "data_hex": hexs(body)})
+				r.other = append(r.other, string(jb))
 				evIdx++
 				continue
 			}
@@ -845,7 +849,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 					v := ev.get(c)
 					row = append(row, v)
 				}
-				row = append(row, strconv.Itoa(nFields), "0", "", "", "")
+				row = append(row, hexs(ev.tail), strconv.Itoa(nFields), "0", "", "", "")
 				rows = append(rows, pendingRow{"curve", ev.get("mint"), row})
 			case prog == "amm" && (ev.def.name == "BuyEvent" || ev.def.name == "SellEvent"):
 				emitter := findEmitter(g, k, ammProgram)
@@ -868,7 +872,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 					ev.get("coin_creator_fee_basis_points"), ev.get("coin_creator_fee"), ev.get("track_volume"), ev.get("min_base_amount_out"), ev.get("ix_name"),
 					ev.get("cashback_fee_basis_points"), ev.get("cashback"), ev.get("buyback_fee_basis_points"), ev.get("buyback_fee"),
 					ev.get("virtual_quote_reserves"), ev.get("can_boost"), ev.get("base_supply"), ev.get("holder_rewards_bps"), ev.get("holder_rewards"),
-					strconv.Itoa(nFields), "0", vb, vq)
+					hexs(ev.tail), strconv.Itoa(nFields), "0", vb, vq)
 				rows = append(rows, pendingRow{"amm", ev.get("pool"), row})
 			default:
 				m := map[string]any{"slot": b.slot, "block_time": b.blockTime, "tx_idx": txIdx, "ev_idx": evIdx, "signature": sig,
@@ -880,6 +884,9 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 					}
 				}
 				m["fields"] = fields
+				if len(ev.tail) > 0 {
+					m["extra_hex"] = hexs(ev.tail)
+				}
 				if ev.def.name == "CompletePumpAmmMigrationEvent" || ev.def.name == "CreatePoolEvent" || ev.def.name == "CreateEvent" {
 					// post-transaction state of the new pool / curve, for cross-checks
 					if pool := fields["pool"]; pool != "" {

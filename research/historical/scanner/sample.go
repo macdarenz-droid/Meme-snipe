@@ -39,7 +39,7 @@ func inSample(mint string) bool {
 var dropEvents = map[string]bool{
 	"CloseUserVolumeAccumulatorEvent": true, "InitUserVolumeAccumulatorEvent": true, "SyncUserVolumeAccumulatorEvent": true,
 	"ClaimCashbackEvent": true, "ClaimTokenIncentivesEvent": true, "CollectCreatorFeeEvent": true,
-	"CollectCoinCreatorFeeEvent": true, "ExtendAccountEvent": true, "MinimumDistributableFeeEvent": true,
+	"CollectCoinCreatorFeeEvent": true, "MinimumDistributableFeeEvent": true,
 }
 
 // Per-mint events that do not change reserves: kept only for sampled mints.

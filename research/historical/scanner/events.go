@@ -351,6 +351,7 @@ type decodedEvent struct {
 	values []string
 	extra  int // bytes after the last known field (newer layout than our IDL)
 	n      int // fields carried by this event version
+	tail   []byte
 }
 
 func (d *decodedEvent) get(name string) string {
@@ -381,6 +382,9 @@ func decodeEvent(program string, disc, body []byte) (*decodedEvent, bool) {
 		ev.n = i + 1
 	}
 	ev.extra = len(body) - p
+	if ev.extra > 0 {
+		ev.tail = body[p:]
+	}
 	return ev, true
 }
 
