@@ -1,6 +1,6 @@
 // Writes rows in DATA-1's on-disk layout (schema 3): manifest.json and days/<day>/<table>-000.<csv|jsonl>.zst.
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import type { CoverageRow, DatasetRow, MovementRow } from '../src/dataset/rows.ts';
@@ -24,7 +24,13 @@ const csv = (cols: readonly string[], rows: Record<string, string>[]): string =>
 
 const day = (blockTime: number): string => new Date(blockTime * 1000).toISOString().slice(0, 10);
 
-export const writeDataset = (dir: string, rows: readonly DatasetRow[], extra: { readonly movements?: readonly MovementRow[]; readonly coverage?: readonly CoverageRow[] } = {}): void => {
+export const writeDataset = (dir: string, rows: readonly DatasetRow[], extra: {
+  readonly movements?: readonly MovementRow[]; readonly coverage?: readonly CoverageRow[];
+  /** Recorded as manifest window.lead_in_days. */
+  readonly leadInDays?: number;
+  /** Write SHA256SUMS over every file, the manifest included (as a release does). */
+  readonly sums?: boolean;
+} = {}): void => {
   const byDay = new Map<string, DatasetRow[]>();
   for (const r of rows) byDay.set(day(r.blockTime), [...(byDay.get(day(r.blockTime)) ?? []), r]);
   const days = [];
@@ -69,9 +75,13 @@ export const writeDataset = (dir: string, rows: readonly DatasetRow[], extra: { 
   const first = rows[0]!;
   const last = rows[rows.length - 1]!;
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
-    schema: 3, window: { from: days[0]!.day, to_exclusive: days[days.length - 1]!.day },
+    schema: 3, window: { from: days[0]!.day, to_exclusive: days[days.length - 1]!.day, ...(extra.leadInDays === undefined ? {} : { lead_in_days: extra.leadInDays }) },
     coverage: { first_slot: Number(first.slot), last_slot: Number(last.slot), first_block_time: first.blockTime, last_block_time: last.blockTime },
     days,
     mints_files: mintsFiles,
   }, null, 1));
+  if (extra.sums === true) {
+    const all = [{ path: 'manifest.json' }, ...days.flatMap((d) => d.files), ...mintsFiles];
+    writeFileSync(join(dir, 'SHA256SUMS'), all.map((f) => `${createHash('sha256').update(readFileSync(join(dir, f.path))).digest('hex')}  ${f.path}`).join('\n') + '\n');
+  }
 };
