@@ -435,7 +435,7 @@ describe('install.sh --update', () => {
       expect(r.calls).not.toContain('evil');
       const ok = (p: string) => sh(`MANAGED_ROOT=""; ${fns.slice(fns.indexOf('managed() {'), fns.indexOf('journal() {'))} managed "${p}" && echo y || echo n`).out;
       expect(['/usr/local/sbin/zeroed-update', '/usr/local/lib/zeroed/common.sh', '/usr/local/share/zeroed/eff_large_wordlist.txt', '/usr/local/bin/node', '/etc/systemd/system/zeroed-check.timer', '/etc/zeroed/host.env', '/etc/nftables.conf', '/etc/apt/apt.conf.d/52zeroed-unattended-upgrades', '/etc/ssh/sshd_config.d/10-zeroed.conf', '/var/lib/zeroed-host/release-units', '/opt/zeroed/stub/worker.mjs'].map(ok)).toEqual(Array(11).fill('y'));
-      expect(['/etc/passwd', '/usr/local/sbin/sshd', '/usr/local/bin/nodejs', '/etc/systemd/system/ssh.service', '/etc/zeroed/../shadow', '/opt/zeroed/./x', '/root/.ssh/authorized_keys', '/etc/nftables.conf.d/x', '/etc/zeroed/age/host.key', '/etc/zeroed/age', '/etc/zeroed/gnupg/pubring.kbx'].map(ok)).toEqual(Array(11).fill('n'));
+      expect(['/etc/passwd', '/usr/local/sbin/sshd', '/usr/local/bin/nodejs', '/etc/systemd/system/ssh.service', '/etc/zeroed/../shadow', '/opt/zeroed/./x', '/root/.ssh/authorized_keys', '/etc/nftables.conf.d/x', '/etc/zeroed/age/host.key', '/etc/zeroed/age', '/etc/zeroed/gnupg/pubring.kbx', '/etc/zeroed/deploy-code', '/etc/zeroed/pair-code', '/etc/zeroed/backup-recipients', '/var/lib/zeroed-host/owner_backup_recipient'].map(ok)).toEqual(Array(15).fill('n'));
       // Every path the installer writes is one it manages.
       const targets = [...read('ops/install.sh').matchAll(/^install_file (\S+) /gm)].map((m) => m[1]!);
       expect(targets.length).toBeGreaterThan(30);
@@ -482,6 +482,24 @@ describe('install.sh --update', () => {
       expect(r.stdout).toContain('A previous update did not finish; putting its host files back first');
       expect(r.stdout).toContain('Previous update: every host file is back as it was (1 restored, 1 removed).');
       expect(r.stdout.trim().split('\n').slice(-4)).toEqual(['old a', 'b-gone', 'old-gone', 'journal-gone']);
+    });
+
+    it('never deletes or replaces key material, even when the journal names it', () => {
+      const dir = fresh('tx7');
+      mkdirSync(join(dir, 'etc/zeroed/age'), { recursive: true });
+      mkdirSync(join(dir, 'var/lib/zeroed-host'), { recursive: true });
+      const key = join(dir, 'etc/zeroed/age/host.key');
+      const code = join(dir, 'etc/zeroed/deploy-code');
+      const recipient = join(dir, 'var/lib/zeroed-host/owner_backup_recipient');
+      writeFileSync(key, 'AGE-SECRET-KEY-TEST\n');
+      writeFileSync(code, 'six test words here please now\n');
+      writeFileSync(recipient, 'age1owner\n');
+      writeFileSync(`${recipient}.zeroed-old`, 'age1attacker\n');
+      writeFileSync(join(dir, 'journal'), [`created ${key}`, `created ${code}`, `backed ${recipient}`, ''].join('\n'));
+      const r = run(dir, `roll_back; cat "${key}" "${code}" "${recipient}"`);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout.trim().split('\n')).toEqual(['AGE-SECRET-KEY-TEST', 'six test words here please now', 'age1owner']);
+      for (const p of [key, code, recipient]) expect(r.stderr).toContain(`Roll-back: skipped ${p} (not a path this installer manages).`);
     });
 
     it('a full install drops a journal left by an interrupted update, so no later update rolls back over it', () => {

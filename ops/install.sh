@@ -64,8 +64,12 @@ managed() {
   local p="${1#"$MANAGED_ROOT"}"
   [ "$p" != "$1" ] || [ -z "$MANAGED_ROOT" ] || return 1
   case "$p" in */../* | */./* | *//* | */.. | */.) return 1 ;; esac
-  # The host's age key and the GitHub signing keyring are never the installer's to roll back.
-  case "$p" in /etc/zeroed/age | /etc/zeroed/age/* | /etc/zeroed/gnupg | /etc/zeroed/gnupg/*) return 1 ;; esac
+  # Key material is never the installer's to roll back (an update never writes it): the host's age key, the
+  # GitHub merge-key keyring, the one-time codes and where backups are encrypted to.
+  case "$p" in
+    /etc/zeroed/age | /etc/zeroed/age/* | /etc/zeroed/gnupg | /etc/zeroed/gnupg/*) return 1 ;;
+    /etc/zeroed/deploy-code* | /etc/zeroed/pair-code* | /etc/zeroed/backup-recipients* | /var/lib/zeroed-host/owner_backup_recipient*) return 1 ;;
+  esac
   case "$p" in
     /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
