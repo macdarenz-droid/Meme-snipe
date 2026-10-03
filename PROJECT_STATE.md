@@ -42,6 +42,11 @@ Builders run as separate sessions; the supervisor reviews and merges into `ccr-1
 - Build the core engine (risk, costs, gates, exits, order lifecycle, paper fills) with tests.
 - Then the paper worker on live data, then the dashboard (charts and motion as above), with a copy guard test that fails on AI wording.
 
+## Owner setup
+- Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
+- API keys go into GitHub repository secrets (write-only; only this repo's workflows can read them): `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN`. Never in chat or in the repo.
+- Owner has Cloudflare and Telegram accounts. Vultr: account and payment now; the server itself is created when OPS-1's setup script is ready.
+
 ## Open questions
 - Owner: check "Zeroed" on IP Australia before public launch; check the chosen exchange on AUSTRAC's register.
 - No `main` branch exists yet, so no pull request can be opened.
