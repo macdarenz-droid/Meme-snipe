@@ -81,7 +81,7 @@ export interface Harness {
 /** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
 
-export const makeWorker = (o: { scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -97,7 +97,7 @@ export const makeWorker = (o: { scenario?: typeof LANDS; stateDir?: string; time
     fetchCreate: (sig) => void o.fetched?.push(sig),
     seedDeployers: async () => 'test: not seeded',
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },
-    reconcileTimeoutMs: 120_000, loopMs: 100, staleFeedMs: 10_000, log: (l) => void logs.push(l),
+    reconcileTimeoutMs: o.reconcileTimeoutMs ?? 120_000, loopMs: 100, staleFeedMs: 10_000, log: (l) => void logs.push(l),
   });
   return { worker, timers, legs, logs, stateDir, session };
 };

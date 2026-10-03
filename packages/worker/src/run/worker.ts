@@ -21,7 +21,7 @@ import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, STATE_FILES, type FeedHealth, type Health, type JournalKind } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SHORTLIST, SOL_PRICE_KEY, type StrategyConfig, TRIP_PREFIX } from '../engine/strategy.ts';
-import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release } from '../providers/index.ts';
+import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
@@ -224,7 +224,7 @@ export class Worker {
   /** Puts a world event on the feed; returns its event id. */
   #report(event: BookEvent): string {
     const f = this.#feed.ingest('worker', { type: 'world', event }, { receivedAt: this.#d.timers.now() });
-    return `world#${f.seq}`;
+    return `world#${seqId(f.seq)}`;
   }
 
   #fact(key: string, value: unknown): void {
@@ -373,27 +373,25 @@ export class Worker {
   async reconcile(): Promise<StartResult> {
     const d = this.#d;
     const deadline = d.timers.now() + d.reconcileTimeoutMs;
-    // Entries that were not sent before the stop are cancelled (their reservations released); exits re-trigger.
-    let cancelled = 0;
+    // Intents not on the network at the stop (not yet sent, or resolved without a fill) are cancelled: an entry's
+    // reservation is released, an exit's position re-triggers. Intents that may have been sent settle through the
+    // restart's status reads first.
+    const asked = new Set<string>();
     for (;;) {
       this.step();
       const book = this.#engine.book;
-      if (cancelled === 0) {
-        for (const i of Object.values(book.intents)) {
-          if (isTerminal(i) || isUnresolved(i) || i.status === 'signed') continue;
-          this.#report({ type: 'intent', intentId: i.intent.id, event: { type: 'cancel' } });
-          cancelled++;
-        }
-        if (cancelled > 0) cancelled = -cancelled;
+      for (const i of Object.values(book.intents)) {
+        if (isTerminal(i) || isUnresolved(i) || i.status === 'signed' || asked.has(i.intent.id)) continue;
+        this.#report({ type: 'intent', intentId: i.intent.id, event: { type: 'cancel' } });
+        asked.add(i.intent.id);
       }
-      const open = Object.values(book.intents).filter((i) => !isTerminal(i) && (isUnresolved(i) || i.status === 'signed' || i.status === 'unknown'));
-      const unsent = Object.values(book.intents).filter((i) => i.intent.purpose === 'entry' && !isTerminal(i) && !isUnresolved(i) && i.status !== 'signed');
+      const open = Object.values(book.intents).filter((i) => !isTerminal(i));
       // Done once everything put on the feed so far (the restored book, the restart, the paper world's answers) was
       // released and applied, and nothing is open.
       const fs = this.#feed.status();
-      if (fs.held === 0 && fs.ready === 0 && open.length === 0 && unsent.length === 0 && !book.recovering) break;
+      if (fs.held === 0 && fs.ready === 0 && open.length === 0 && !book.recovering) break;
       if (d.timers.now() >= deadline) {
-        this.#journal.write('reconcile', { ok: false, open: open.length + unsent.length, reasons: [`${open.length + unsent.length} intents left unresolved after ${d.reconcileTimeoutMs} ms`] });
+        this.#journal.write('reconcile', { ok: false, open: open.length, reasons: [`${open.length} intents left unresolved after ${d.reconcileTimeoutMs} ms`] });
         return { ok: false, code: EXIT.reconcileFailed, message: 'Reconcile failed: intents left unresolved; exiting before any entry.' };
       }
       await new Promise<void>((r) => d.timers.setTimeout(r, Math.min(d.loopMs, 200)));
@@ -402,7 +400,7 @@ export class Worker {
     this.#writeOpenIntents();
     this.#publishAccount();
     const positions = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
-    this.#journal.write('reconcile', { ok: true, restored_events: this.#ledgerEvents(), cancelled: -cancelled, open_positions: positions });
+    this.#journal.write('reconcile', { ok: true, restored_events: this.#ledgerEvents(), cancelled: asked.size, open_positions: positions });
     return { ok: true };
   }
 
