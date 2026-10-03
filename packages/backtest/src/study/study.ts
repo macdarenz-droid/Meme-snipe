@@ -41,6 +41,7 @@ export interface StudyInputs {
   readonly coverageGaps?: readonly unknown[];
   readonly insiders?: StudyRunOptions['insiders'];
   readonly poolAccounts?: StudyRunOptions['poolAccounts'];
+  readonly delegatesComplete?: boolean;
   readonly registryPath: string;
   /** Where the walk-forward and holdout ledgers go (new files). */
   readonly outDir: string;
@@ -146,6 +147,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     ...(i.coverageGaps === undefined ? {} : { coverageGaps: i.coverageGaps }),
     ...(i.insiders === undefined ? {} : { insiders: i.insiders }),
     ...(i.poolAccounts === undefined ? {} : { poolAccounts: i.poolAccounts }),
+    ...(i.delegatesComplete === undefined ? {} : { delegatesComplete: i.delegatesComplete }),
     ...(i.regimeBoundaries === undefined ? {} : { regimeBoundaries: i.regimeBoundaries }),
   });
 
@@ -294,7 +296,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       byRegime: Object.fromEntries(universes.map((u) => [u, Object.fromEntries(regimes.map((g) => [g, tradesOf(u).filter((t) => t.regime === g).length]))])),
     },
     completeness: {
-      manifest: completenessManifest({ funding: i.insiders !== undefined, poolAccounts: i.poolAccounts !== undefined, rugs: false, rawForAll: i.rawForAll ?? false }),
+      manifest: completenessManifest({ funding: i.insiders !== undefined, poolAccounts: i.poolAccounts !== undefined, delegates: i.delegatesComplete === true, rugs: false, rawForAll: i.rawForAll ?? false }),
       missing: missingEvidence(rejectMix(wf.records)),
     },
     funnel: { research, deployment: admitted },

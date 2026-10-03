@@ -83,6 +83,12 @@ export interface FactOptions {
    * it): data length, cashback flag and coin creator, known from `knownAtMs`. Without it those fields stay absent and
    * H17 rejects through H16 (missing), the safe failure. A coin creator in the CreatePoolEvent is used when present.
    */
+  /**
+   * The dataset keeps every Approve/ApproveChecked/Revoke/SetAuthority transaction on tracked mints' token accounts
+   * (DATA-1). Until it does, delegates can be missed, which is the permissive direction (live reads them directly),
+   * so every holder read is marked partial and H12 is "not covered" (supervisor ruling, 2026-10-04). Default false.
+   */
+  readonly delegatesComplete?: boolean;
   readonly poolAccounts?: (pool: string) => { readonly knownAtMs: number; readonly accountBytes: number; readonly isCashbackCoin: boolean; readonly coinCreator: string } | null;
   readonly insiders?: (mint: string) => { readonly knownAtMs: number; readonly funded: readonly string[]; readonly devCluster: readonly string[] } | null;
   /**
@@ -603,7 +609,8 @@ export class FactProjector {
     if (s.holders !== null) {
       const accounts: HolderAccount[] = [...s.holders].map(([address, h]) => ({ address, mint, owner: h.owner, ownerProgram: null, amount: h.amount, delegate: h.delegate, delegatedAmount: h.delegate === null ? 0n : h.delegated }))
         .sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.address < b.address ? -1 : 1));
-      put('holders', holdersKey(mint), { obs: obs(quality), supply: s.supply, coverage: 'all', accounts });
+      const holderQuality = quality.length === 0 && this.#o.delegatesComplete !== true ? ['partial' as const] : quality;
+      put('holders', holdersKey(mint), { obs: obs(holderQuality), supply: s.supply, coverage: 'all', accounts });
     }
     // Deployer-funded wallets and the dev's cluster are not in the dataset (DATA-1 "Not covered"): complete only with a
     // funding source dated at or before now, and with the create (creation-slot buyers) recorded.

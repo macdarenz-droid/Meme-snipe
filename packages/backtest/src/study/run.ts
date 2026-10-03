@@ -27,6 +27,7 @@ export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' |
   readonly rugs?: RugConfig;
   readonly insiders?: ConstructorParameters<typeof FactProjector>[0]['insiders'];
   readonly poolAccounts?: ConstructorParameters<typeof FactProjector>[0]['poolAccounts'];
+  readonly delegatesComplete?: boolean;
   /** When trade rows begin (an assembled window's first day); see FactOptions.tradesFromMs. */
   readonly tradesFromMs?: number;
 }
@@ -62,6 +63,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
       gaps: gapsOf(o.coverageGaps),
       ...(o.insiders === undefined ? {} : { insiders: o.insiders }),
       ...(o.poolAccounts === undefined ? {} : { poolAccounts: o.poolAccounts }),
+      ...(o.delegatesComplete === undefined ? {} : { delegatesComplete: o.delegatesComplete }),
       ...(o.tradesFromMs === undefined ? {} : { tradesFromMs: o.tradesFromMs }),
     }),
     // A fresh locked session per run: the policy cannot change while it runs (R15).

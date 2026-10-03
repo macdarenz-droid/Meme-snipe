@@ -4,7 +4,8 @@
 //   node packages/backtest/src/study/cli.ts trial --dataset <dir> --sol-usd <file> [--seeds 5] [--out <dir>]
 //   node packages/backtest/src/study/cli.ts study --dataset <dir> --sol-usd <file> --registry <file> [--run-holdout] [--replays 10] [--out <dir>]
 //   (each takes [--insiders <file>], a funding supplement: { mint: { knownAtMs, funded, devCluster } }, and
-//   [--pool-accounts <file>], H17's pool record: { pool: { knownAtMs, accountBytes, isCashbackCoin, coinCreator } })
+//   [--pool-accounts <file>], H17's pool record: { pool: { knownAtMs, accountBytes, isCashbackCoin, coinCreator } }, and
+//   [--delegates-complete] only for a dataset that keeps every approval-changing transaction on tracked token accounts)
 //
 // `day` runs the strategies and S0 through the whole engine on the selected days and writes the engine evidence:
 // validity, replays, the leak test, the ledger replay check, counts and the reject mix. On a day of the fixed holdout
@@ -144,7 +145,7 @@ if (command === 'day' || command === 'trial') {
     // Entries off on a holdout day: the run proves the engine on real data without trading the holdout.
     entriesTo: validityOnly ? from : last - Math.max(...STUDY_CONFIG.universes.map((u) => exitsFor(TRIAL_POLICY.exits, u.universe).tMaxMs)) - RESEARCH_CONFIG.s0.endMarginMs,
     sampleRate, regimeBoundaries: regimeBoundariesOf(manifest), ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
+    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
   };
   const t0 = clock();
   // The strategy object is made when the run starts; its funnel is read after the run.
@@ -196,7 +197,7 @@ if (command === 'day' || command === 'trial') {
   const report = runFullStudy({
     config: STUDY_CONFIG, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: complete, rows: rowsOf, firstDay: first,
     series: [solUsd], sampleRate, ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
+    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
     runHoldout: has('run-holdout'), startedAt: new Date().toISOString(), regimeBoundaries: regimeBoundariesOf(manifest), ledgerReplay,
   });
   const days = windowDays(STUDY_CONFIG);

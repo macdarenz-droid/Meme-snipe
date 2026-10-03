@@ -19,10 +19,10 @@ const U2 = { universe: 'U2', fromMs: 60 * 60_000, toMs: 70 * 60_000, everyMs: 5 
 
 const solUsd = { ...SOL_USD, bars: SOL_USD.bars.map((b, k) => ({ ...b, start: W0 - 6 * 3_600_000 + k * 3_600_000 })) };
 
-const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts']) => {
+const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts'], delegatesComplete = true) => {
   const { rows, mints } = studyWorld({ mints: plans, slots });
   const facts = new FactProjector({
-    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt,
+    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete,
     ...(tradesFromMs === undefined ? {} : { tradesFromMs }), ...(poolAccounts === undefined ? {} : { poolAccounts }),
   });
   const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
@@ -140,6 +140,16 @@ describe('fact projector', () => {
     const late = poolOf(replay([PLAN], SLOTS, 1, undefined, 'test-salt', () => ({ ...rec, knownAtMs: Number.MAX_SAFE_INTEGER })));
     expect(late.accountBytes).toBeUndefined();
     expect(late.pool.isCashbackCoin).toBeUndefined();
+  });
+
+  it('marks every holder read partial while the dataset may miss approvals (the permissive direction)', () => {
+    const r = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, false);
+    const c = r.events.find((e) => e.key.startsWith('check:'))!;
+    const h = parseHolders(r.events.filter((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
+    expect(h.obs.quality).toEqual(['partial']);
+    // The mint read is unaffected.
+    const mint = parseMint(r.events.filter((e) => e.key === mintKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
+    expect(mint.obs.quality).toEqual([]);
   });
 
   it('flags holders and the mint partial after a missed token movement', () => {
