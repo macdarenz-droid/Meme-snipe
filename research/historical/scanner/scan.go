@@ -89,6 +89,7 @@ type UnitStats struct {
 	FirstSeen       map[string]uint64 `json:"first_seen_slot"`
 	LengthAnomalies int64             `json:"length_anomalies"` // events longer than the IDL by other than 8 bytes
 	RawRecords      int64             `json:"raw_records"`
+	Movements       int64             `json:"movements"`         // token movement rows (movements.go)
 	MintOnlyRecords int64             `json:"mint_only_records"` // raw records of plain token transactions touching a sampled mint
 	OtherVenueTxs   int64             `json:"other_venue_txs"`   // transactions touching a sampled mint through other programs (counted, not stored)
 	LegacyMeta      int64             `json:"legacy_meta"`
@@ -214,6 +215,8 @@ type blockResult struct {
 	agg       map[aggKey]*aggVal
 	raw       []string
 	mintOnly  int64
+	moves     [][]string
+	partial   []string // non-"pump" mints with pump or PumpSwap events (movement coverage: pump transactions only)
 }
 
 // ScanUnit scans blocks in [from, to] of epoch e into dir/<from>-<to>/.
@@ -236,7 +239,8 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	}
 	outs := map[string]*csvOut{}
 	for name, cols := range map[string][]string{"curve_trades.csv.zst": curveCols, "amm_trades.csv.zst": ammCols,
-		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols, "raw.jsonl.zst": nil} {
+		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols, "raw.jsonl.zst": nil,
+		"movements.csv.zst": movementCols, "movement_coverage.csv.zst": movementCoverageCols} {
 		o, err := newCSV(filepath.Join(tmp, name), cols)
 		if err != nil {
 			return nil, err
@@ -280,6 +284,7 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	go func() {
 		pending := map[int]*blockResult{}
 		agg := map[aggKey]*aggVal{}
+		partial := map[string]bool{}
 		next := 0
 		for r := range results {
 			pending[r.seq] = r.res
@@ -291,10 +296,21 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 				delete(pending, next)
 				next++
 				writeResult(outs, res, st, agg)
+				for _, m := range res.partial {
+					partial[m] = true
+				}
 			}
 		}
 		for _, row := range aggRows(agg) {
 			outs["agg_hourly.csv.zst"].row(row)
+		}
+		pm := make([]string, 0, len(partial))
+		for m := range partial {
+			pm = append(pm, m)
+		}
+		sort.Strings(pm)
+		for _, m := range pm {
+			outs["movement_coverage.csv.zst"].row([]string{m, "pump_transactions"})
 		}
 		writeErr <- nil
 	}()
@@ -414,6 +430,7 @@ func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map
 	st.OtherEvents += int64(len(r.other))
 	st.RawRecords += int64(len(r.raw))
 	st.MintOnlyRecords += r.mintOnly
+	st.Movements += int64(len(r.moves))
 	st.mu.Unlock()
 	outs["blocks.csv.zst"].row(r.blockRow)
 	for _, row := range r.curve {
@@ -430,6 +447,9 @@ func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map
 	}
 	for _, l := range r.raw {
 		outs["raw.jsonl.zst"].line(l)
+	}
+	for _, row := range r.moves {
+		outs["movements.csv.zst"].row(row)
 	}
 }
 
@@ -1004,6 +1024,25 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 			r.emitRow("amm", row)
 		}
 	}
+	// Token movements outside the swaps: "pump" mints, and other mints with a pump or
+	// PumpSwap event in this transaction (their coverage is listed as partial).
+	active := map[string]bool{}
+	for _, m := range eventMints {
+		if m != "" && m != wsolMint {
+			active[m] = true
+			if !pumpSuffix(m) {
+				r.partial = append(r.partial, m)
+			}
+		}
+	}
+	if hasMovementOutsideSwaps(groups) {
+		full, err := fullMeta(metaRaw)
+		if err != nil {
+			st.decodeErr(fmt.Sprintf("slot %d idx %d: full meta for movements: %v", b.slot, txIdx, err))
+		} else {
+			r.moves = append(r.moves, movementRows(slot, bt, txIdx, keys, groups, full, func(m string) bool { return pumpSuffix(m) || active[m] })...)
+		}
+	}
 	r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, createdMints, eventMints...)
 }
 
@@ -1167,14 +1206,16 @@ func mintOnlyTxRaw(r *blockResult, st *UnitStats, b *blockData, txIdx int, txByt
 		st.decodeErr(fmt.Sprintf("slot %d idx %d: meta is not the expected protobuf (token balances unreadable)", b.slot, txIdx))
 		return
 	}
-	hit := false
+	hit, suffixHit := false, false
 	for _, m := range mints {
 		if m != wsolMint && inSample(m) {
 			hit = true
-			break
+		}
+		if pumpSuffix(m) {
+			suffixHit = true
 		}
 	}
-	if !hit {
+	if !hit && !suffixHit {
 		return
 	}
 	full, err := fullMeta(metaRaw)
@@ -1185,6 +1226,22 @@ func mintOnlyTxRaw(r *blockResult, st *UnitStats, b *blockData, txIdx int, txByt
 	var tx solana.Transaction
 	if err := tx.UnmarshalWithDecoder(bin.NewBinDecoder(txBytes)); err != nil || len(tx.Signatures) == 0 {
 		st.decodeErr(fmt.Sprintf("slot %d idx %d: tx: %v", b.slot, txIdx, err))
+		return
+	}
+	if suffixHit && (full.Err == nil || len(full.Err.Err) == 0) {
+		// Movements of "pump" mints in transactions outside pump and PumpSwap.
+		mk := make([][32]byte, 0, len(tx.Message.AccountKeys)+len(full.LoadedWritableAddresses)+len(full.LoadedReadonlyAddresses))
+		for _, k := range tx.Message.AccountKeys {
+			mk = append(mk, k)
+		}
+		for _, k := range append(append([][]byte{}, full.LoadedWritableAddresses...), full.LoadedReadonlyAddresses...) {
+			var kk [32]byte
+			copy(kk[:], k)
+			mk = append(mk, kk)
+		}
+		r.moves = append(r.moves, movementRows(strconv.FormatUint(b.slot, 10), strconv.FormatInt(b.blockTime, 10), txIdx, mk, ixGroups(tx, full, mk), full, pumpSuffix)...)
+	}
+	if !hit {
 		return
 	}
 	ms := sampledMints(full)
@@ -1225,6 +1282,43 @@ func mintOnlyTxRaw(r *blockResult, st *UnitStats, b *blockData, txIdx int, txByt
 	}
 	r.raw = append(r.raw, buildRawRecord(b.slot, b.blockTime, txIdx, tx.Signatures[0].String(), txBytes, full, ms))
 	r.mintOnly++
+}
+
+// ixGroups returns a transaction's instructions grouped by top-level instruction, in
+// execution order, with program keys resolved and stack heights from the meta.
+func ixGroups(tx solana.Transaction, m *TransactionStatusMeta, keys [][32]byte) [][]ixRef {
+	key := func(i int) [32]byte {
+		if i >= 0 && i < len(keys) {
+			return keys[i]
+		}
+		return [32]byte{}
+	}
+	groups := make([][]ixRef, len(tx.Message.Instructions))
+	for i, ix := range tx.Message.Instructions {
+		acc := make([]int, len(ix.Accounts))
+		for j, a := range ix.Accounts {
+			acc[j] = int(a)
+		}
+		groups[i] = []ixRef{{program: key(int(ix.ProgramIDIndex)), accts: acc, data: ix.Data, height: 1}}
+	}
+	for _, inner := range m.InnerInstructions {
+		gi := int(inner.Index)
+		if gi < 0 || gi >= len(groups) {
+			continue
+		}
+		for _, ii := range inner.Instructions {
+			acc := make([]int, len(ii.Accounts))
+			for j, a := range ii.Accounts {
+				acc[j] = int(a)
+			}
+			h := 0
+			if ii.StackHeight != nil {
+				h = int(*ii.StackHeight)
+			}
+			groups[gi] = append(groups[gi], ixRef{program: key(int(ii.ProgramIdIndex)), accts: acc, data: ii.Data, height: h})
+		}
+	}
+	return groups
 }
 
 // Programs of plain token activity.

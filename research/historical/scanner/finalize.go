@@ -289,7 +289,7 @@ var dayFileSpecs = []struct {
 }{
 	{"curve_trades", "csv", curveCols}, {"amm_trades", "csv", ammCols}, {"events", "jsonl", nil},
 	{"failed", "csv", failedCols}, {"failed_hourly", "csv", failedHourlyCols}, {"agg_hourly", "csv", aggCols}, {"blocks", "csv", blockCols},
-	{"raw", "jsonl", nil},
+	{"raw", "jsonl", nil}, {"movements", "csv", movementCols},
 }
 
 func dayOf(t int64) string { return time.Unix(t, 0).UTC().Format("2006-01-02") }
@@ -562,13 +562,16 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 			base    string
 			mintCol int
 			ev      bool
-		}{{"curve_trades", 8, true}, {"amm_trades", 9, true}, {"failed", 8, false}, {"blocks", -1, false}} {
+		}{{"curve_trades", 8, true}, {"amm_trades", 9, true}, {"failed", 8, false}, {"blocks", -1, false}, {"movements", 5, false}} {
 			// Column positions come from the unit's own header (older schemas differ).
 			userCol, tsCol, signerCol := -1, -1, -1
 			first := true
 			fp := filepath.Join(u.path, spec.base+".csv.zst")
 			if spec.base != "blocks" && beforeWindow(u) && !fileExists(fp) {
 				continue // events-only unit before the window (assembly in windows)
+			}
+			if spec.base == "movements" && !fileExists(fp) {
+				continue // units written before token movements were kept
 			}
 			err := readCSVZst(fp, func(rec []string) error {
 				if first {
@@ -597,6 +600,9 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 				}
 				if spec.base == "blocks" {
 					scanned[dayOf(bt)]++
+				} else if spec.base == "movements" {
+					// Kept for every mint the units kept (no tape filter): ownership needs the
+					// whole history, and presence then depends on nothing in the future.
 				} else if !inTape(rec[spec.mintCol], bt) {
 					return nil
 				}
@@ -606,6 +612,14 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 					k.tx, _ = strconv.ParseInt(rec[2], 10, 64)
 					if spec.ev {
 						k.ev, _ = strconv.ParseInt(rec[3], 10, 64)
+					}
+					if spec.base == "movements" {
+						o, _ := strconv.ParseInt(rec[3], 10, 64)
+						in := int64(-1)
+						if rec[4] != "" {
+							in, _ = strconv.ParseInt(rec[4], 10, 64)
+						}
+						k.ev = o*100000 + in + 1
 					}
 				}
 				if err := checkOrder(spec.base, k); err != nil {
@@ -888,6 +902,46 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 		mintFiles = append(mintFiles, fileInfo{Path: name, Bytes: fi.size, Sha256: fi.sum, Rows: mw.rows})
 	}
 	_ = mp
+
+	// Movement coverage: for mints not ending in "pump", the units whose pump and
+	// PumpSwap transactions were searched for their movements (scope pump_transactions);
+	// outside those rows their ownership is unresolved. "pump" mints are complete in
+	// every unit and are not listed.
+	cw := &partWriter{dir: dsDir, base: "movement_coverage", ext: "csv", header: []string{"mint", "scope", "from_slot", "to_slot"}}
+	var covRows [][]string
+	for _, u := range units {
+		p := filepath.Join(u.path, "movement_coverage.csv.zst")
+		if !fileExists(p) || u.stats.LastBlockTime < t0.Unix() || u.stats.FirstBlockTime >= t1.Unix() {
+			continue
+		}
+		first := true
+		if err := readCSVZst(p, func(rec []string) error {
+			if first {
+				first = false
+				return nil
+			}
+			covRows = append(covRows, []string{rec[0], rec[1], strconv.FormatUint(u.stats.FromSlot, 10), strconv.FormatUint(u.stats.ToSlot, 10)})
+			return nil
+		}); err != nil {
+			return fmt.Errorf("%s movement coverage: %w", u.path, err)
+		}
+	}
+	sort.SliceStable(covRows, func(i, j int) bool { return covRows[i][0] < covRows[j][0] })
+	for _, r := range covRows {
+		if err := cw.writeCSV(r); err != nil {
+			return err
+		}
+	}
+	if err := cw.closePart(); err != nil {
+		return err
+	}
+	for _, name := range cw.files {
+		fi, err := fileSum(filepath.Join(dsDir, name))
+		if err != nil {
+			return err
+		}
+		mintFiles = append(mintFiles, fileInfo{Path: name, Bytes: fi.size, Sha256: fi.sum, Rows: cw.rows})
+	}
 
 	// First slot of every unknown discriminator and extra-bytes key over all units.
 	firstSeen := map[string]uint64{}

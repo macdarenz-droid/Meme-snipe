@@ -379,3 +379,35 @@ func TestFinalizeCopiesRegimesIntoManifest(t *testing.T) {
 		t.Fatalf("invalid regimes file accepted")
 	}
 }
+
+func TestFinalizeRoutesMovementsAndCoverage(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	u := spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-02")+1800)
+	f.spanUnit(u)
+	dir := filepath.Join(f.out, "units", "1", strconv.FormatUint(u.from, 10)+"-"+strconv.FormatUint(u.to, 10))
+	mv := func(slot uint64, bt int64, tx, outer, inner, mint string) []string {
+		return []string{strconv.FormatUint(slot, 10), strconv.FormatInt(bt, 10), tx, outer, inner, mint, "transfer", "A", "B", "5", "a", "b"}
+	}
+	// any mint, any time in the window: no tape filter
+	writeZst(t, filepath.Join(dir, "movements.csv.zst"), csvBytes(movementCols, [][]string{
+		mv(1001, day("2026-09-01")+10, "0", "0", "", "XpumpMint"), mv(1001, day("2026-09-01")+10, "0", "1", "0", "Other")}))
+	writeZst(t, filepath.Join(dir, "movement_coverage.csv.zst"), csvBytes(movementCoverageCols, [][]string{{"Other", "pump_transactions"}}))
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	var rows, cov int
+	files, _ := filepath.Glob(filepath.Join(ds, "days", "2026-09-01", "movements-*.csv.zst"))
+	for _, p := range files {
+		readCSVZst(p, func([]string) error { rows++; return nil })
+	}
+	readCSVZst(filepath.Join(ds, "movement_coverage-000.csv.zst"), func(rec []string) error {
+		if rec[0] == "Other" && rec[1] == "pump_transactions" && rec[2] == "1000" {
+			cov++
+		}
+		return nil
+	})
+	if rows != 3 || cov != 1 { // header + 2 rows
+		t.Fatalf("movements rows %d (want header + 2), coverage rows %d", rows, cov)
+	}
+}
