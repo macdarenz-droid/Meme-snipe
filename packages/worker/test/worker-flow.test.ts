@@ -446,40 +446,53 @@ describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
 });
 
 describe('a restart rebuilds the stored book before it decides', () => {
-  it('an entry still in flight at the kill: no restored event is refused, so the ledger and the engine agree', async () => {
-    const h = makeWorker();
-    await h.worker.reconcile();
-    const m = await passingMarket(h);
-    await m.run(4_000, 100, () => m.pool());
-    // The entry reached the paper network and no fill has landed: the ledger carries it past what a fresh engine has.
-    expect(Object.values(h.worker.book.intents).map((i) => i.status)).toEqual(['pending']);
-    await h.worker.kill();
+  /** A clock that moves 1 ms on every read, as a host's wall clock does while a start opens the ledger and the book. */
+  const moving = (t: ReturnType<typeof virtualTimers>): ReturnType<typeof virtualTimers> => ({
+    ...t,
+    now: () => {
+      const v = t.now();
+      t.set(v + 1);
+      return v;
+    },
+  });
 
-    // Same clock instant as the stored events: before the fix the halt fact sorted first (ids: "work" < "worl"), so
-    // the strategy cancelled an intent the ledger had already carried further and the two books ended apart.
-    // Same clock instant as the stored book's frames, as on a host that reads the wall clock once a millisecond:
-    // before the fix the halt fact tied with them and won on id ("work" < "worl"), so the strategy saw the intent
-    // before the ledger's own events had rebuilt it and cancelled one the ledger had carried further.
-    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
-    expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    const dir = join(h.stateDir, 'recorder', h2.worker.boot);
-    const released = readdirSync(join(dir, 'days')).sort()
-      .flatMap((d) => readdirSync(join(dir, 'days', d)).filter((f) => /^releases-/.test(f)).sort().map((f) => join(dir, 'days', d, f)))
-      .flatMap((f) => readFileSync(f, 'utf8').split('\n').filter((l) => l !== '').map((l) => (JSON.parse(l) as { eventId: string }).eventId));
-    // Frames are numbered in arrival order, so the stored book's are every `world#` below the halt fact's own number.
-    const seqOf = (id: string) => Number(id.slice(id.indexOf('#') + 1));
-    const haltAt = released.findIndex((x) => x.startsWith(HALT_KEY));
-    expect(haltAt).toBeGreaterThanOrEqual(0);
-    const stored2 = released.map((x, k) => ({ x, k })).filter(({ x }) => x.startsWith('world#') && seqOf(x) < seqOf(released[haltAt]!));
-    expect(stored2.length).toBeGreaterThan(0);
-    expect(stored2.filter(({ k }) => k > haltAt)).toEqual([]);
-    const mine = lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot);
-    expect(mine.filter((l) => l['kind'] === 'halt')).toEqual([]);
-    expect(h2.worker.health().halt_reasons).not.toContain('ledger and book diverged');
-    // What the host unit's ExecStartPre reports: 0, from the ledger's book, which now matches the engine's.
-    expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('0\n');
-    await h2.worker.kill();
-  }, 60_000);
+  // Tying: every frame in one millisecond, so the order fell to the ids and `worker:halt` sorts before `world#`
+  // ("work" < "worl"). Moving: the restored frames are stamped after the constructor's first clock read, so a start
+  // fact dated from that read came before some of them.
+  it.each([['a tying clock', false], ['a clock that moves during the start', true]] as const)(
+    'an entry still in flight at the kill, on %s: the stored book is rebuilt first, so the ledger and the engine agree',
+    async (_name, move) => {
+      const h = makeWorker();
+      await h.worker.reconcile();
+      const m = await passingMarket(h);
+      await m.run(4_000, 100, () => m.pool());
+      // The entry reached the paper network and no fill has landed: the ledger carries it past what a fresh engine has.
+      expect(Object.values(h.worker.book.intents).map((i) => i.status)).toEqual(['pending']);
+      await h.worker.kill();
+
+      const timers = h.timers as ReturnType<typeof virtualTimers>;
+      const h2 = makeWorker({ stateDir: h.stateDir, timers: move ? moving(timers) : timers });
+      expect(await h2.worker.reconcile()).toEqual({ ok: true });
+      const dir = join(h.stateDir, 'recorder', h2.worker.boot);
+      const released = readdirSync(join(dir, 'days')).sort()
+        .flatMap((d) => readdirSync(join(dir, 'days', d)).filter((f) => /^releases-/.test(f)).sort().map((f) => join(dir, 'days', d, f)))
+        .flatMap((f) => readFileSync(f, 'utf8').split('\n').filter((l) => l !== '').map((l) => (JSON.parse(l) as { eventId: string }).eventId));
+      // Frames are numbered in arrival order, so the stored book's are every `world#` below the halt fact's own number.
+      const seqOf = (id: string) => Number(id.slice(id.indexOf('#') + 1));
+      const haltAt = released.findIndex((x) => x.startsWith(HALT_KEY));
+      expect(haltAt).toBeGreaterThanOrEqual(0);
+      const stored = released.map((x, k) => ({ x, k })).filter(({ x }) => x.startsWith('world#') && seqOf(x) < seqOf(released[haltAt]!));
+      expect(stored.length).toBeGreaterThan(0);
+      expect(stored.filter(({ k }) => k > haltAt)).toEqual([]);
+      const mine = lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot);
+      expect(mine.filter((l) => l['kind'] === 'halt')).toEqual([]);
+      expect(h2.worker.health().halt_reasons).not.toContain('ledger and book diverged');
+      // What the host unit's ExecStartPre reports: 0, from the ledger's book, which now matches the engine's.
+      expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('0\n');
+      await h2.worker.kill();
+    },
+    60_000,
+  );
 });
 
 describe('a killed worker writes no state file afterwards', () => {

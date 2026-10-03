@@ -310,11 +310,12 @@ export class Worker {
     });
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
     for (const e of stored.events) this.#desk.written(this.#report(e));
-    // The worker's own start facts are dated 1 ms later, so every restored event sorts before them whatever the
-    // clock's resolution: the engine rebuilds the stored book before the strategy sees anything and decides on an
-    // intent the ledger already carried further (which left the two books disagreeing; `--reconcile` then wrote
-    // `open_intents` 1 from the ledger's book after reporting success from the engine's).
-    const startAt = now + 1;
+    // The worker's own start facts are dated 1 ms after the last restored frame, so every restored event sorts before
+    // them whatever the clock's resolution: the engine rebuilds the stored book before the strategy sees anything and
+    // decides on an intent the ledger already carried further (which left the two books disagreeing; `--reconcile`
+    // then wrote `open_intents` 1 from the ledger's book after reporting success from the engine's). Measured after
+    // the restore, not from the constructor's start: opening the ledger and reading the book takes milliseconds.
+    const startAt = Math.max(this.#d.timers.now(), this.#feed.lastReceivedAt) + 1;
     this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt);
     this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}) }, startAt);
     if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt);
