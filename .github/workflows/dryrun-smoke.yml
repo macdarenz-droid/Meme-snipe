@@ -1,0 +1,95 @@
+name: Dry-run smoke
+
+# Manual only. Runs the TEST-2 dry-run smoke script (packages/worker/scripts/dryrun-smoke.ts) against mainnet on
+# Helius: read and simulate only, nothing is sent. The output is scanned for the key in every form a leak could take
+# before it is kept as an artifact. Record each run in docs/evidence/DRYRUN_SMOKE.md.
+on:
+  workflow_dispatch:
+    inputs:
+      payer:
+        description: Funded System-owned wallet used as the simulation's fee payer (public address)
+        required: true
+        default: 4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE
+      mint:
+        description: pump mint for the getTokenLargestAccounts check
+        required: true
+        default: 4gBSeMHUHK4yhgvjRYuMYsRaep3iTSDzxMMmdCQhoPgU
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run the smoke script
+        id: run
+        env:
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+          PAYER: ${{ inputs.payer }}
+          MINT: ${{ inputs.mint }}
+        run: |
+          [ -n "$HELIUS_API_KEY" ] || { echo "HELIUS_API_KEY: missing"; exit 1; }
+          b58='^[1-9A-HJ-NP-Za-km-z]{32,44}$'
+          [[ "$PAYER" =~ $b58 && "$MINT" =~ $b58 ]] || { echo "payer and mint must be base58 addresses"; exit 1; }
+          # The script reads keys the way the worker does: one file per key in a credentials directory.
+          creds="$RUNNER_TEMP/creds"
+          (umask 077 && mkdir -p "$creds" && printf '%s' "$HELIUS_API_KEY" > "$creds/HELIUS_API_KEY")
+          mkdir -p smoke
+          {
+            echo "commit: $GITHUB_SHA"
+            echo "started: $(date -u +%FT%TZ)"
+            echo "payer: $PAYER"
+            echo "mint: $MINT"
+          } > smoke/output.txt
+          status=0
+          ZEROED_LIVE_PROBE=1 CREDENTIALS_DIRECTORY="$creds" node packages/worker/scripts/dryrun-smoke.ts "$PAYER" "$MINT" >> smoke/output.txt 2>&1 || status=$?
+          rm -rf "$creds"
+          echo "exit: $status" >> smoke/output.txt
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Scan the output for the key
+        id: scan
+        env:
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+        run: |
+          forms=(
+            "$HELIUS_API_KEY"
+            "$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$HELIUS_API_KEY")"
+            "$(printf '%s' "$HELIUS_API_KEY" | base64 -w0)"
+            "$(printf '%s' "$HELIUS_API_KEY" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+            "$(printf '%s' "$HELIUS_API_KEY" | od -An -tx1 | tr -d ' \n')"
+            "$(printf '%s' "$HELIUS_API_KEY" | od -An -tx1 | tr -d ' \n' | tr 'a-f' 'A-F')"
+          )
+          for f in "${forms[@]}"; do
+            [ -n "$f" ] || continue
+            if grep -qF -- "$f" smoke/output.txt; then
+              echo "the key (or an encoding of it) appears in the output: not kept"
+              rm -f smoke/output.txt
+              exit 1
+            fi
+          done
+          echo "no form of the key in the output"
+          cat smoke/output.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.scan.outcome == 'success'
+        with:
+          name: dryrun-smoke-${{ github.run_id }}
+          path: smoke/output.txt
+          retention-days: 30
+
+      - name: Result
+        if: steps.scan.outcome == 'success'
+        env:
+          STATUS: ${{ steps.run.outputs.status }}
+        run: '[ "$STATUS" = "0" ] || { echo "smoke checks failed (exit $STATUS)"; exit 1; }'
