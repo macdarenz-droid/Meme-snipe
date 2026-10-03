@@ -23,7 +23,7 @@ simulateTransaction read-back includes fees: ok (payer spent 10000 = base fee + 
 - **Why that matters (an earlier run, same day):** with this busy tip account as payer, a separate read before the simulation was 200,000 lamports behind, because tips landed in between. The atomic fields remove that race.
 - **Not proven here:** `getTokenLargestAccounts` is always rate-limited (HTTP 429) on the keyless public RPC. The Helius run below covers it. (The error reads "helius:" because the dry-run client labels every error with its provider, Helius.)
 
-## 2026-10-04 02:53 AEST · commit fd010c2 · Helius (key from repository secrets), GitHub Actions
+## 2026-10-04 03:53 AEDT · commit fd010c2 · Helius (key from repository secrets), GitHub Actions
 
 Workflow `dryrun-smoke.yml`, run [37138505875](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37138505875) (job 111247866592), manual dispatch on `ccr-14987baf-i6lrsl` with the default inputs. Artifact `dryrun-smoke-37138505875` (kept 30 days).
 
