@@ -1,5 +1,6 @@
 // Tighten-only overrides. The engine may ask for a stricter policy, never a looser one (CLAUDE.md: code can only
 // load or tighten limits). Raising a cap or lowering a floor needs a new policy version made outside the engine.
+import { deepFreeze } from './freeze.ts';
 import { policyHash } from './hash.ts';
 import type { Policy } from './policy.ts';
 import { policyIssues } from './validate.ts';
@@ -8,7 +9,8 @@ import { policyIssues } from './validate.ts';
  * How a field may move in an override:
  * - max: a cap or trigger. It may fall, never rise (a lower number is stricter).
  * - min: a floor. It may rise, never fall.
- * - locked: not a risk limit (a window, a share, an attempt count). Any change needs a new version.
+ * - locked: not a risk limit (a window, a share, an attempt count), or part of the exit path (fees, priority-fee
+ *   ceilings, min-out and the emergency rung), where a lower number can stop an exit landing. Any change needs a new version.
  * - free: a label.
  */
 export type Rule = 'max' | 'min' | 'locked' | 'free';
@@ -59,12 +61,14 @@ export const POLICY_RULES: RuleTree<Policy> = {
     singleHolderBps: 'max',
     top10Bps: 'max',
     insiderBps: 'max',
+    devClusterBps: 'max',
     serialMaxMints24h: 'max',
+    deployerRugLookbackDays: 'min',
     maxStateSlotLag: 'max',
     maxQuoteAgeMs: 'max',
   },
   exits: {
-    stopAtrMultiple: 'max',
+    stopAtrTenths: 'max',
     deployerSellSupplyBps: 'max',
     liquidityDropBps: 'max',
     reverseQuoteFailures: 'max',
@@ -74,13 +78,14 @@ export const POLICY_RULES: RuleTree<Policy> = {
     tMaxMs: 'max',
     partialMinShareBps: 'locked',
     partialAtRBps: 'locked',
-    trailAtrMultiple: 'max',
+    trailAtrTenths: 'max',
     maxExitTxAtMinNotional: 'locked',
     maxExitTxAboveDoubleMin: 'locked',
     ladder: {
-      steps: { priorityFeeLamports: 'max', minOutBelowTriggerBps: 'max' },
+      // The exit path is never loosened or tightened by an override: lower fees or slippage can stop an exit landing.
+      steps: { priorityFeeLamports: 'locked', minOutBelowTriggerBps: 'locked' },
       maxAttempts: 'locked',
-      maxFeePerAttempt: 'max',
+      maxFeePerAttempt: 'locked',
     },
   },
 };
@@ -110,11 +115,12 @@ export type OverrideResult =
 type Json = Record<string, unknown>;
 const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+// Objects are built with fromEntries, which defines own properties: a "__proto__" key stays a plain (and refused) field.
 const merge = (base: unknown, patch: unknown): unknown => {
   if (isObject(base) && isObject(patch)) {
-    const out: Json = { ...base };
-    for (const [k, v] of Object.entries(patch)) out[k] = k in base ? merge(base[k], v) : v;
-    return out;
+    const entries = Object.entries(base).map(([k, v]): [string, unknown] => [k, Object.hasOwn(patch, k) ? merge(v, patch[k]) : v]);
+    for (const [k, v] of Object.entries(patch)) if (!Object.hasOwn(base, k)) entries.push([k, v]);
+    return Object.fromEntries(entries);
   }
   return patch === undefined ? base : patch;
 };
@@ -142,23 +148,26 @@ const walk = (rule: unknown, cur: unknown, next: unknown, path: string, refusals
   const r = rule as Json;
   const c = cur as Json;
   if (!isObject(next)) { refusals.push({ kind: 'wrong-type', path, reason: `${path}: expected an object` }); return; }
-  for (const k of Object.keys(next)) if (!(k in r)) refusals.push({ kind: 'unknown-field', path: `${path}.${k}`, reason: `${path}.${k}: no such policy field` });
+  for (const k of Object.keys(next)) if (!Object.hasOwn(r, k)) refusals.push({ kind: 'unknown-field', path: `${path}.${k}`, reason: `${path}.${k}: no such policy field` });
   for (const k of Object.keys(r)) walk(r[k], c[k], next[k], `${path}.${k}`, refusals, changes);
 };
 
 /**
  * Apply an override to a policy. Refused as a whole if any field loosens a limit, touches a locked field, is unknown or
- * mistyped, or leaves the policy inconsistent. Never mutates `current`.
+ * mistyped, or leaves the policy inconsistent. Never mutates `current`. The result is a deep-frozen copy.
  */
 export const applyOverride = (current: Policy, override: PolicyOverride): OverrideResult => {
-  const next = merge(current, override);
+  // Copy both inputs once, up front, so what is checked is what is returned (no getter can change between check and use)
+  // and the result shares nothing with either input.
+  const base = structuredClone(current);
+  const next = structuredClone(merge(base, structuredClone(override)));
   const refusals: Refusal[] = [];
   const changes: Change[] = [];
-  walk(POLICY_RULES, current, next, 'policy', refusals, changes);
+  walk(POLICY_RULES, base, next, 'policy', refusals, changes);
   if (refusals.length > 0) return { ok: false, refusals };
   const issues = policyIssues(next);
   if (issues.length > 0) return { ok: false, refusals: issues.map((reason) => ({ kind: 'invalid' as const, path: 'policy', reason })) };
-  const policy = next as Policy;
+  const policy = deepFreeze(next as Policy);
   return { ok: true, policy, versionHash: policyHash(policy), changes };
 };
 

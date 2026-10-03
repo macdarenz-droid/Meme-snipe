@@ -3,6 +3,7 @@
 // raises limits by creating a new policy version outside the running engine.
 import { type Lamports, type MicroUsd, lamports } from '../units/index.ts';
 import { sol, usd } from './amounts.ts';
+import { deepFreeze } from './freeze.ts';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -108,14 +109,19 @@ export interface Policy {
     readonly singleHolderBps: number;
     readonly top10Bps: number;
     readonly insiderBps: number;
+    /** H13: the dev's linked cluster, as a share of circulating supply. */
+    readonly devClusterBps: number;
     readonly serialMaxMints24h: number;
+    /** H14: a prior rug within this many days of our own index rejects. Same window live and in the backtest. */
+    readonly deployerRugLookbackDays: number;
     readonly maxStateSlotLag: number;
     readonly maxQuoteAgeMs: number;
   };
 
   /** Section 9. */
   readonly exits: {
-    readonly stopAtrMultiple: number;
+    /** ATR multiple for the price stop, in tenths (30 = 3.0). */
+    readonly stopAtrTenths: number;
     readonly deployerSellSupplyBps: number;
     readonly liquidityDropBps: number;
     readonly reverseQuoteFailures: number;
@@ -127,7 +133,8 @@ export interface Policy {
     readonly partialMinShareBps: number;
     /** Partial taken at this multiple of R (10,000 = 1R). */
     readonly partialAtRBps: number;
-    readonly trailAtrMultiple: number;
+    /** ATR multiple for the trailing stop, in tenths (30 = 3.0). */
+    readonly trailAtrTenths: number;
     readonly maxExitTxAtMinNotional: number;
     readonly maxExitTxAboveDoubleMin: number;
     readonly ladder: {
@@ -140,8 +147,8 @@ export interface Policy {
   };
 }
 
-/** The trial setting: $20 bankroll, $2 to $5 trades. Everything else is the paper default from section 8 to 9. */
-export const TRIAL_POLICY: Policy = {
+/** $20 bankroll, $2 to $5 trades. Everything else is the paper default from sections 6.4 to 9. */
+const TRIAL_VALUES: Policy = {
   schemaVersion: POLICY_SCHEMA_VERSION,
   name: 'trial',
   capital: { bankroll: usd('20'), minNotional: usd('2'), maxNotional: usd('5'), drawdownResetBps: 1000 },
@@ -180,14 +187,16 @@ export const TRIAL_POLICY: Policy = {
     candleWindowMs: 3 * MINUTE,
     hardHolderBps: 4000,
     singleHolderBps: 1000,
-    top10Bps: 3500,
+    top10Bps: 3000,
     insiderBps: 1500,
+    devClusterBps: 500,
     serialMaxMints24h: 2,
+    deployerRugLookbackDays: 14,
     maxStateSlotLag: 2,
     maxQuoteAgeMs: 2000,
   },
   exits: {
-    stopAtrMultiple: 3,
+    stopAtrTenths: 30,
     deployerSellSupplyBps: 200,
     liquidityDropBps: 3000,
     reverseQuoteFailures: 2,
@@ -197,7 +206,7 @@ export const TRIAL_POLICY: Policy = {
     tMaxMs: 120 * MINUTE,
     partialMinShareBps: 5000,
     partialAtRBps: 15_000,
-    trailAtrMultiple: 3,
+    trailAtrTenths: 30,
     maxExitTxAtMinNotional: 2,
     maxExitTxAboveDoubleMin: 3,
     ladder: {
@@ -212,3 +221,6 @@ export const TRIAL_POLICY: Policy = {
     },
   },
 };
+
+/** The trial setting. Deep-frozen: nothing can change it at runtime. */
+export const TRIAL_POLICY: Policy = deepFreeze(TRIAL_VALUES);

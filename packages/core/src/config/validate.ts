@@ -11,13 +11,16 @@ const shapeIssues = (template: unknown, value: unknown, path: string, out: strin
   }
   if (typeof template === 'object' && template !== null) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) { out.push(`${path}: must be an object`); return; }
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) { out.push(`${path}: must be a plain object`); return; }
     const t = template as Record<string, unknown>;
     const v = value as Record<string, unknown>;
+    // Own keys only: a field supplied through the prototype chain is not a field.
     for (const k of Object.keys(t)) {
-      if (!(k in v)) out.push(`${path}.${k}: missing`);
+      if (!Object.hasOwn(v, k)) out.push(`${path}.${k}: missing`);
       else shapeIssues(t[k], v[k], `${path}.${k}`, out);
     }
-    for (const k of Object.keys(v)) if (!(k in t)) out.push(`${path}.${k}: unknown field`);
+    for (const k of Object.keys(v)) if (!Object.hasOwn(t, k)) out.push(`${path}.${k}: unknown field`);
     return;
   }
   if (typeof value !== typeof template) out.push(`${path}: must be a ${typeof template}, got ${typeof value}`);
@@ -49,6 +52,7 @@ const BPS_FIELDS: readonly (readonly [string, (p: Policy) => number])[] = [
   ['gates.singleHolderBps', (p) => p.gates.singleHolderBps],
   ['gates.top10Bps', (p) => p.gates.top10Bps],
   ['gates.insiderBps', (p) => p.gates.insiderBps],
+  ['gates.devClusterBps', (p) => p.gates.devClusterBps],
   ['exits.deployerSellSupplyBps', (p) => p.exits.deployerSellSupplyBps],
   ['exits.liquidityDropBps', (p) => p.exits.liquidityDropBps],
   ['exits.partialMinShareBps', (p) => p.exits.partialMinShareBps],
@@ -91,17 +95,24 @@ const crossIssues = (p: Policy, out: string[]): void => {
 
   need(gates.singleHolderBps <= gates.hardHolderBps, 'gates.singleHolderBps is larger than gates.hardHolderBps');
   need(gates.singleHolderBps <= gates.top10Bps, 'gates.singleHolderBps is larger than gates.top10Bps');
+  need(gates.devClusterBps <= gates.insiderBps, 'gates.devClusterBps is larger than gates.insiderBps');
+  need(gates.deployerRugLookbackDays >= 1, 'gates.deployerRugLookbackDays: must be at least 1');
   need(gates.maxQuoteAgeMs > 0, 'gates.maxQuoteAgeMs: must be above zero');
 
   need(exits.tFlatMs > 0 && exits.tFlatMs <= exits.tMaxMs, 'exits.tFlatMs must be above zero and no later than exits.tMaxMs');
   need(exits.maxExitTxAtMinNotional >= 1 && exits.maxExitTxAtMinNotional <= exits.maxExitTxAboveDoubleMin, 'exits.maxExitTxAtMinNotional must be at least 1 and no larger than maxExitTxAboveDoubleMin');
+  need(exits.stopAtrTenths >= 1 && exits.trailAtrTenths >= 1, 'exits.stopAtrTenths and exits.trailAtrTenths: must be at least 1');
   need(exits.partialMinShareBps > 0, 'exits.partialMinShareBps: must be above zero');
 
   const { steps, maxAttempts, maxFeePerAttempt } = exits.ladder;
   need(steps.length >= 1, 'exits.ladder.steps: needs at least one step');
   need(maxAttempts >= steps.length, 'exits.ladder.maxAttempts is lower than the number of steps');
   need(p.reserve.exitAttempts >= maxAttempts, 'reserve.exitAttempts does not cover exits.ladder.maxAttempts');
+  need(maxFeePerAttempt > 0n, 'exits.ladder.maxFeePerAttempt: must be above zero');
   steps.forEach((step, i) => {
+    // A zero fee or zero slippage allowance can stop an exit landing, so no rung may have one.
+    need(step.priorityFeeLamports > 0n, `exits.ladder.steps[${i}].priorityFeeLamports: must be above zero`);
+    need(step.minOutBelowTriggerBps > 0, `exits.ladder.steps[${i}].minOutBelowTriggerBps: must be above zero`);
     need(step.priorityFeeLamports <= maxFeePerAttempt, `exits.ladder.steps[${i}] fee is above exits.ladder.maxFeePerAttempt`);
     const prev = steps[i - 1];
     if (prev) need(step.priorityFeeLamports >= prev.priorityFeeLamports && step.minOutBelowTriggerBps >= prev.minOutBelowTriggerBps, `exits.ladder.steps[${i}] is milder than the step before it`);

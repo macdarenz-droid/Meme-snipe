@@ -68,6 +68,58 @@ describe('CFG-1 item 4: tighten-only overrides', () => {
     }
   });
 
+  test('the exit path cannot be tightened or loosened by override (a lower fee or slippage allowance can stop an exit landing)', () => {
+    const exitPath = paths.filter((x) => x.startsWith('policy.exits.ladder'));
+    expect(exitPath.length).toBe(4);
+    for (const path of exitPath) expect(ruleAt(path), path).toBe('locked');
+    const zeroFees = TRIAL_POLICY.exits.ladder.steps.map((st) => ({ ...st, priorityFeeLamports: 0n, minOutBelowTriggerBps: 0 }));
+    const r = applyOverride(TRIAL_POLICY, { exits: { ladder: { steps: zeroFees as never, maxFeePerAttempt: 0n as never } } });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.refusals.every((x) => x.kind === 'locked')).toBe(true);
+  });
+
+  test('the result is a deep, frozen copy that shares nothing with its input', () => {
+    const input = structuredClone(TRIAL_POLICY);
+    const override = { loss: { dailyBps: 500 } };
+    const r = applyOverride(input, override);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.policy.capital).not.toBe(input.capital);
+    expect(r.policy.exits.ladder.steps).not.toBe(input.exits.ladder.steps);
+    expect(r.policy.exits.ladder.steps[0]).not.toBe(input.exits.ladder.steps[0]);
+    expect(r.policy.loss).not.toBe(override.loss);
+    const sharedWithFrozenPreset = applyOverride(TRIAL_POLICY, {});
+    expect(sharedWithFrozenPreset.ok && sharedWithFrozenPreset.policy.capital).not.toBe(TRIAL_POLICY.capital);
+    // Writing to the result throws and does not reach the input; writing to the input does not reach the result.
+    expect(() => { (r.policy.capital as any).maxNotional = 10n ** 10n; }).toThrow(TypeError);
+    expect(() => { (r.policy.exits.ladder.steps as any).push({}); }).toThrow(TypeError);
+    expect(input.capital.maxNotional).toBe(5_000_000n);
+    (input.capital as any).maxNotional = 4_000_000n;
+    (input.exits.ladder.steps[0] as any).priorityFeeLamports = 1n;
+    expect(r.policy.capital.maxNotional).toBe(5_000_000n);
+    expect(r.policy.exits.ladder.steps[0]?.priorityFeeLamports).toBe(20_000n);
+    override.loss.dailyBps = 100;
+    expect(r.policy.loss.dailyBps).toBe(500);
+  });
+
+  test('a "__proto__" key in an override is refused as an unknown field and changes nothing', () => {
+    const evil = JSON.parse('{"loss":{"__proto__":{"dailyBps":9000}}}');
+    const r = applyOverride(TRIAL_POLICY, evil);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.refusals.map((x) => x.kind)).toEqual(['unknown-field']);
+    expect(({} as any).dailyBps).toBeUndefined();
+    expect(TRIAL_POLICY.loss.dailyBps).toBe(750);
+  });
+
+  test('an override whose value changes between reads is checked and returned as one value', () => {
+    let reads = 0;
+    const hostile: any = { loss: {} };
+    Object.defineProperty(hostile.loss, 'dailyBps', { enumerable: true, get: () => (++reads <= 1 ? 500 : 9000) });
+    const r = applyOverride(TRIAL_POLICY, hostile);
+    expect(r.ok && r.policy.loss.dailyBps).toBe(500);
+    expect(r.ok && r.versionHash).toBe(policyHash(r.ok ? r.policy : TRIAL_POLICY));
+  });
+
   test('the label is free to change', () => {
     const r = applyOverride(TRIAL_POLICY, { name: 'tighter' });
     expect(r.ok && r.policy.name).toBe('tighter');

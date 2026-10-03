@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
-  PolicyError, TRIAL_POLICY, assertValidPolicy, canonicalPolicy, loadPolicy, policyHash, policyIssues, savePolicy, sol, startSession, usd,
+  APPROVED_BASELINES, DEFAULT_BASELINE_HASH, PolicyError, TRIAL_POLICY, assertValidPolicy, canonicalPolicy, loadPolicy, policyHash, policyIssues, savePolicy,
+  sol, startSession, startSessionFromText, usd,
   type Policy,
 } from '../../src/config/index.ts';
 import * as viaSubpath from '@meme-snipe/core/config';
@@ -24,7 +25,8 @@ describe('CFG-1 item 1: typed policy, trial preset, validation', () => {
     expect([p.loss.plannedRiskBps, p.loss.stopMaxBps, p.loss.dailyBps, p.loss.weeklyBps, p.loss.killSwitchFloorBps]).toEqual([275, 2000, 750, 2000, 7000]);
     expect(p.liquidity.floorUsd).toBe(15_000_000_000n);
     expect(p.costGate.maxRoundTripBps).toBe(500);
-    expect([p.gates.hardHolderBps, p.gates.singleHolderBps, p.gates.top10Bps, p.gates.insiderBps]).toEqual([4000, 1000, 3500, 1500]);
+    expect([p.gates.hardHolderBps, p.gates.singleHolderBps, p.gates.top10Bps, p.gates.insiderBps]).toEqual([4000, 1000, 3000, 1500]);
+    expect([p.gates.devClusterBps, p.gates.serialMaxMints24h, p.gates.deployerRugLookbackDays]).toEqual([500, 2, 14]);
     expect(p.exits.ladder.steps.map((s) => s.priorityFeeLamports)).toEqual([20_000n, 60_000n, 150_000n, 500_000n]);
     expect(p.exits.ladder.maxFeePerAttempt).toBe(500_000n);
   });
@@ -53,6 +55,11 @@ describe('CFG-1 item 1: typed policy, trial preset, validation', () => {
     ['u1 floor below base floor', (p) => { p.liquidity.u1FloorUsd = 1n; }, 'u1FloorUsd is lower'],
     ['flat time after max time', (p) => { p.exits.tFlatMs = p.exits.tMaxMs + 1; }, 'tFlatMs'],
     ['ladder fee above the per-attempt ceiling', (p) => { p.exits.ladder.steps[3].priorityFeeLamports = 600_000n; }, 'above exits.ladder.maxFeePerAttempt'],
+    ['zero exit fee', (p) => { p.exits.ladder.steps[0].priorityFeeLamports = 0n; }, 'steps[0].priorityFeeLamports: must be above zero'],
+    ['zero exit slippage allowance', (p) => { p.exits.ladder.steps[3].minOutBelowTriggerBps = 0; }, 'steps[3].minOutBelowTriggerBps: must be above zero'],
+    ['zero fee ceiling', (p) => { p.exits.ladder.maxFeePerAttempt = 0n; }, 'maxFeePerAttempt: must be above zero'],
+    ['dev cluster above insider cap', (p) => { p.gates.devClusterBps = 1600; }, 'devClusterBps is larger than gates.insiderBps'],
+    ['no rug look-back', (p) => { p.gates.deployerRugLookbackDays = 0; }, 'deployerRugLookbackDays: must be at least 1'],
     ['ladder gets milder', (p) => { p.exits.ladder.steps[2].minOutBelowTriggerBps = 100; }, 'milder than the step before'],
     ['reserve does not cover attempts', (p) => { p.reserve.exitAttempts = 4; }, 'does not cover'],
     ['unknown field', (p) => { p.extra = 1; }, 'unknown field'],
@@ -66,7 +73,25 @@ describe('CFG-1 item 1: typed policy, trial preset, validation', () => {
 
   test('reports every problem in one pass', () => {
     const issues = policyIssues(edit((p) => { p.capital.minNotional = 6_000_000n; p.positions.maxOpen = 0; }));
-    expect(issues.length).toBeGreaterThanOrEqual(2);
+    expect(issues).toEqual([
+      'capital.minNotional is larger than capital.maxNotional',
+      'positions.maxOpen: must be at least 1',
+    ]);
+  });
+
+  test('a field supplied through the prototype is not a field', () => {
+    const p = edit((x) => { delete x.loss.dailyBps; }) as any;
+    p.loss = Object.assign(Object.create({ dailyBps: 750 }), p.loss);
+    const issues = policyIssues(p);
+    expect(issues.join(' | ')).toMatch(/plain object|loss\.dailyBps: missing/);
+  });
+
+  test('the exported trial policy cannot be changed at runtime', () => {
+    expect(Object.isFrozen(TRIAL_POLICY)).toBe(true);
+    expect(() => { (TRIAL_POLICY.capital as any).maxNotional = 10n ** 10n; }).toThrow(TypeError);
+    expect(() => { (TRIAL_POLICY.exits.ladder.steps as any).push({}); }).toThrow(TypeError);
+    expect(() => { (TRIAL_POLICY.exits.ladder.steps[0] as any).priorityFeeLamports = 0n; }).toThrow(TypeError);
+    expect(TRIAL_POLICY.capital.maxNotional).toBe(5_000_000n);
   });
 
   test('the config subpath export resolves', () => {
@@ -142,18 +167,118 @@ describe('CFG-1 item 3: session lock', () => {
     expect(session.versionHash).toBe(policyHash(TRIAL_POLICY));
   });
 
+  test('a policy that changes between the check and the lock cannot get through (getter returns $5, then $20,000)', () => {
+    const hostile = structuredClone(TRIAL_POLICY) as any;
+    let reads = 0;
+    Object.defineProperty(hostile.capital, 'maxNotional', { enumerable: true, get: () => (++reads <= 4 ? 5_000_000n : 20_000_000_000n) });
+    let session: ReturnType<typeof startSession> | undefined;
+    try { session = startSession(hostile); } catch { /* refusing is fine */ }
+    if (session) {
+      // If it starts, the locked value must be the one that was validated, and it must be within the baseline.
+      expect(session.policy.capital.maxNotional).toBeLessThanOrEqual(5_000_000n);
+      expect(policyIssues(session.policy)).toEqual([]);
+    }
+    expect(reads).toBeLessThanOrEqual(1);
+  });
+
   test('a session will not start on an inconsistent policy', () => {
     expect(() => startSession(edit((p) => { p.capital.minNotional = 6_000_000n; }) as Policy)).toThrow(PolicyError);
   });
 
-  test('still refuses after the session ends; a new policy needs a new session', () => {
+  test('a session will not start on a policy with a missing field (it is not filled in from the baseline)', () => {
+    expect(() => startSession(edit((p) => { delete p.loss.dailyBps; }) as Policy)).toThrow(/loss\.dailyBps: missing/);
+  });
+
+  test('code cannot raise a limit: a looser policy is refused on every kind of field', () => {
+    for (const mutate of [
+      (p: any) => { p.capital.bankroll = 20_000_000_000n; p.capital.maxNotional = 20_000_000_000n; },
+      (p: any) => { p.capital.maxNotional = 5_000_001n; },
+      (p: any) => { p.loss.dailyBps = 751; },
+      (p: any) => { p.loss.killSwitchFloorBps = 6999; },
+      (p: any) => { p.positions.maxOpen = 2; },
+      (p: any) => { p.gates.top10Bps = 3001; },
+      (p: any) => { p.liquidity.floorUsd = 1n; },
+      (p: any) => { p.gates.deployerRugLookbackDays = 13; },
+    ]) {
+      expect(() => startSession(edit(mutate) as Policy)).toThrow(PolicyError);
+    }
+  });
+
+  test('a stricter policy starts, and records what differs from the baseline', () => {
+    const session = startSession(edit((p) => { p.loss.dailyBps = 500; p.capital.maxNotional = 4_000_000n; }) as Policy);
+    expect(session.baselineHash).toBe(DEFAULT_BASELINE_HASH);
+    expect(session.changesFromBaseline.map((c) => c.path).sort()).toEqual(['policy.capital.maxNotional', 'policy.loss.dailyBps']);
+    expect(session.versionHash).not.toBe(DEFAULT_BASELINE_HASH);
+  });
+
+  test('the baseline cannot be chosen freely: unknown hashes are refused and the approved list is frozen', () => {
+    expect(() => startSession(TRIAL_POLICY, { baselineHash: 'a'.repeat(64) })).toThrow(/not an approved policy version/);
+    expect(Object.isFrozen(APPROVED_BASELINES)).toBe(true);
+    expect(() => { (APPROVED_BASELINES as Policy[]).push(edit((p) => { p.capital.bankroll = 99_000_000n; }) as Policy); }).toThrow(TypeError);
+    expect(policyHash(APPROVED_BASELINES[0])).toBe(DEFAULT_BASELINE_HASH);
+    for (const b of APPROVED_BASELINES) expect(policyIssues(b)).toEqual([]);
+  });
+
+  test('a saved policy file goes through the same baseline check', () => {
+    expect(startSessionFromText(savePolicy(TRIAL_POLICY)).versionHash).toBe(policyHash(TRIAL_POLICY));
+    const looser = canonicalPolicy(edit((p) => { p.loss.dailyBps = 900; }));
+    expect(() => startSessionFromText(looser)).toThrow(PolicyError);
+  });
+
+  test('still refuses after the session ends', () => {
     const session = startSession(TRIAL_POLICY);
     session.end();
     expect(session.running).toBe(false);
     expect(session.requestChange(TRIAL_POLICY).reason).toContain('start a new session');
-    const next = startSession(edit((p) => { p.capital.maxNotional = 10_000_000n; }) as Policy);
-    expect(next.policy.capital.maxNotional).toBe(10_000_000n);
   });
 });
 
-const PINNED_TRIAL_HASH = '77fd9398521b87aadcded5758644e34162a0b45208d2de943e3153e6eb81fa7d';
+describe('CFG-1: hidden limits in a saved policy file', () => {
+  const text = (mutate: (p: any) => void): string => canonicalPolicy(edit(mutate));
+
+  test('a "__proto__" key cannot hide a limit (the reviewer\'s file)', () => {
+    const base = JSON.parse(savePolicy(TRIAL_POLICY));
+    delete base.loss.dailyBps;
+    const evil = JSON.stringify(base).replace('"loss":{', '"loss":{"__proto__":{"dailyBps":750.5},');
+    expect(() => loadPolicy(evil)).toThrow(/__proto__.*not allowed/);
+    // And through a merged policy object in code:
+    const p = structuredClone(TRIAL_POLICY) as any;
+    delete p.loss.dailyBps;
+    Object.setPrototypeOf(p.loss, { dailyBps: 750.5 });
+    expect(policyIssues(p).length).toBeGreaterThan(0);
+    expect(() => startSession(p)).toThrow(PolicyError);
+  });
+
+  test.each(['constructor', 'prototype'])('the key "%s" is refused', (key) => {
+    const evil = savePolicy(TRIAL_POLICY).replace('"loss":{', `"loss":{"${key}":{},`);
+    expect(() => loadPolicy(evil)).toThrow(/not allowed/);
+  });
+
+  test('duplicate keys are refused (the last would silently win)', () => {
+    const dup = savePolicy(TRIAL_POLICY).replace('"dailyBps":750', '"dailyBps":750,"dailyBps":9000');
+    expect(() => loadPolicy(dup)).toThrow(/duplicate key "dailyBps"/);
+  });
+
+  test('missing and unknown keys are refused', () => {
+    const missing = savePolicy(TRIAL_POLICY).replace('"dailyBps":750,', '');
+    expect(() => loadPolicy(missing)).toThrow(/loss\.dailyBps: missing/);
+    const extra = savePolicy(TRIAL_POLICY).replace('"loss":{', '"loss":{"hidden":1,');
+    expect(() => loadPolicy(extra)).toThrow(/loss\.hidden: unknown field/);
+  });
+
+  test('every field is range-checked on load, the same as in code', () => {
+    expect(() => loadPolicy(savePolicy(TRIAL_POLICY).replace('"dailyBps":750', '"dailyBps":750.5'))).toThrow(/whole number/);
+    expect(() => loadPolicy(savePolicy(TRIAL_POLICY).replace('"dailyBps":750', '"dailyBps":10001'))).toThrow(/cannot exceed 10,000/);
+    expect(() => loadPolicy(text((p) => { p.exits.ladder.steps[0].priorityFeeLamports = 0n; }))).toThrow(/above zero/);
+    expect(() => loadPolicy(savePolicy(TRIAL_POLICY) + ' x')).toThrow(/unexpected text/);
+    expect(() => loadPolicy('{"a":')).toThrow(PolicyError);
+  });
+
+  test('what loads is what is hashed: every field of the loaded policy is an own field covered by the hash', () => {
+    const { policy, versionHash } = loadPolicy(savePolicy(TRIAL_POLICY));
+    expect(policyHash(policy)).toBe(versionHash);
+    expect(canonicalPolicy(policy)).toBe(savePolicy(TRIAL_POLICY));
+  });
+});
+
+const PINNED_TRIAL_HASH = 'c026db59662bc95ae7ad8039ad6f3459d440bbe4f34e423176ece65a8b9b9730';

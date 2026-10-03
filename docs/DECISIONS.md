@@ -21,3 +21,12 @@ One entry per decision: what was decided, why, and where it lives. Newest last w
 ## Evidence (`packages/core/src/domain`)
 
 - **2026-10-03 · `checkFreshness` checks age and timestamps only.** It does not reject evidence flagged `fork-suspect`, `provider-degraded`, `partial` or `estimated`, nor evidence read at `processed` commitment. The evidence-gates task must reject these: unknown or degraded evidence is a failure, never a pass. Until that gate exists, `checkFreshness` alone does not prove evidence usable.
+
+## Configuration and policy (CFG-1, `packages/core/src/config`)
+
+- **2026-10-03 · Code loads limits and tightens them; it never raises them.** A session starts only from a policy that is tighter than or equal to an approved baseline on every field. Baselines are a frozen list in `baselines.ts`, starting with the trial preset. Raising a limit means adding a baseline in a reviewed pull request (the owner's step); nothing at runtime can add one.
+- **2026-10-03 · Every field has a direction.** `max` (a cap or trigger: may fall only), `min` (a floor: may rise only), `locked` (any change needs a new version), `free` (the label). A new field without a direction does not compile.
+- **2026-10-03 · The exit path is locked.** Exit fees, the fee ceiling, min-out and the emergency rung cannot be changed by override, and validation refuses a zero fee or a zero slippage allowance on any rung. A lower number there can stop an exit landing, so it is never "tighter".
+- **2026-10-03 · A saved policy is read by a strict reader.** Duplicate keys and `__proto__`, `constructor` and `prototype` keys are refused; every field is checked and covered by the hash; a field supplied through a prototype is not a field. The session copies, then validates, then locks the copy.
+- **2026-10-03 · Values deferred to the cards that own them** (new policy schema version when they land): the H15 round-trip tolerance, the regime's execution-health thresholds and entry slippage (GATE-1 and RISK-1). The H13 dev-cluster cap (5%) and the H14 14-day rug look-back are in the policy now.
+- **2026-10-03 · The money-literal scan reads tokens.** It flags any number of 1,000 or more in any notation, numeric strings given to `BigInt`, `Number`, `parseInt` and `parseFloat`, and money constructors built from a literal, anywhere in `packages/core/src` outside `config/`. The allow-list is by exact file, declared name and value, and a test fails if an entry goes stale. Limit: an amount assembled from small numbers is not seen.
