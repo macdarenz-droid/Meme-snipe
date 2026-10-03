@@ -853,7 +853,11 @@ export class Worker {
         trade: p.id, mint: p.mint, qty: String(p.quantity), entry: String(entryPrice(p)), stop: saved === undefined ? 'unknown' : String(saved.plan.stopPrice),
         // No mark read yet: the entry, seen at time 0, which the runner reads as unmeasured (older than 30 s).
         mark: String(mark?.price ?? entryPrice(p)), mark_slot: mark === null ? 0 : Number(mark.slot), mark_ts: mark?.atMs ?? 0,
+        // The universe the position was entered under (CFG-2; RUN-1d contract); no saved plan: unknown, which fails the drill.
+        universe: saved === undefined ? 'unknown' : saved.plan.universe,
       },
+      // Trades with an exit planned or signed and not final (RUN-1d contract).
+      pending_exits: Object.values(this.#engine.book.positions).filter((x) => x.status === 'exit_requested' || x.status === 'exit_pending' || x.status === 'exit_blocked').map((x) => x.id),
       unresolved_intents: this.#desk.unresolved(now, (id) => this.#intentAt.get(id) ?? null),
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
