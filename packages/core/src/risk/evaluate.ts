@@ -163,11 +163,11 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   }
   const reviewed = latches.lossReviewedAtMs;
   const sinceReview = f.trades.filter((t) => reviewed === null || t.closedAtMs > reviewed);
-  const window = policy.loss.reviewWindowTrades;
-  for (let i = 0; i < Math.max(1, sinceReview.length - window + 1); i++) {
-    const losses = sinceReview.slice(i, i + window).filter(isLoss).length;
+  const reviewWindow = policy.loss.reviewWindowTrades;
+  for (let i = 0; i < Math.max(1, sinceReview.length - reviewWindow + 1); i++) {
+    const losses = sinceReview.slice(i, i + reviewWindow).filter(isLoss).length;
     if (losses >= policy.loss.reviewLosses) {
-      reasons.push(reason('loss_review', `${losses} losses in ${window} trades; paused until reviewed`));
+      reasons.push(reason('loss_review', `${losses} losses in ${reviewWindow} trades; paused until reviewed`));
       break;
     }
   }
@@ -381,7 +381,8 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
     return refuse([reason('quote_failed', `the pool could not be quoted: ${String(e)}`)], check.trips, s);
   }
   if (!sized.trade) {
-    const code: RiskCode = sized.reason === 'impact-above-limit' ? 'depth_cap'
+    const code: RiskCode = sized.reason === 'unquotable' ? 'quote_failed'
+      : sized.reason === 'impact-above-limit' ? 'depth_cap'
       : sized.reason === 'caps-below-minimum' ? (capCode[tightest.control] ?? 'size_below_minimum')
       : 'expected_net_not_positive';
     return refuse([reason(code, `sizing refused: ${sized.reason} (${tightest.name})`)], check.trips, s);
@@ -401,8 +402,9 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   let roundTripPpm: bigint;
   try {
     const c = costAtSize(request.quote, spend, request.network, request.rent, request.extraPpm ?? 0n);
-    roundTrip = c.roundTrip;
-    roundTripPpm = mulDiv(c.totalLoss, PPM, roundTrip.paid, 'ceil');
+    if (!c.ok) return refuse([reason('quote_failed', `the chosen size could not be quoted: ${c.reason} (${c.detail})`)], check.trips, s);
+    roundTrip = c.trade.roundTrip;
+    roundTripPpm = mulDiv(c.trade.totalLoss, PPM, roundTrip.paid, 'ceil');
   } catch (e) {
     return refuse([reason('quote_failed', `the chosen size could not be quoted: ${String(e)}`)], check.trips, s);
   }

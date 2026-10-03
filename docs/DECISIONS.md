@@ -56,6 +56,7 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-03 | Ledger replay check under pre-funding item 2: every stored intent, position and book event sequence replayed through the CORE-1 reducer must reproduce the stored states exactly (supervisor, from the LEDGER-1 review) | Stored state must be provably what the lifecycle rules produce | [ARCHITECTURE.md](ARCHITECTURE.md) §15, §20 LEDGER-1 |
 | 2026-10-03 | The holdout is sealed: run into a sealed ledger, only hash and counts visible, opened once by the scoring stage after n is confirmed; any early look, mismatch or re-run burns it. Live-only veto rate capped at 10% in G3; DefiLlama snapshots stored with fetch dates; live deployer index needs a 14-day backfill (supervisor review) | Results must not be visible before the single allowed look; veto bias v·Δ ≤ 5 points | [ARCHITECTURE.md](ARCHITECTURE.md) §14, §16.3 |
 | 2026-10-03 | Before the holdout seal opens only per-universe candidate and entry counts are visible, never exit counts, fills or P&L; TEST-3 measures the veto gap Δ on dry-run counterfactual trades and G3 fails if v·\|Δ\|₉₅ > 5 points (Δ = 50 points when fewer than 10 vetoes; holdout mean for kept trades when fewer than 10); counterfactual trades are scored offline after the run, outside the worker, with no slot, reservation, entry count or quota, and never touch the live ledger or decision log (DOCS-1b, reviewer notes on PR #6) | Exit counts leak outcomes; the 10% cap alone assumed Δ instead of measuring it | [ARCHITECTURE.md](ARCHITECTURE.md) §14, §20 TEST-3 |
+| 2026-10-03 | The executor (TX-1) uses v1 PumpSwap instructions on SOL pools until v2 vault retention is verified on a SOL pool against chain data (supervisor ruling, CORE-2b review) | v2 keeps creator + protocol − buyback in the vault (offset in `virtual_quote_reserves`); verified on 41 exotic-quote v2 trades, none on SOL pools | `packages/core/test/amm/golden.test.ts` vault-balance test, PR #14 |
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
@@ -72,6 +73,20 @@ One row per decision in the table; detailed module decisions follow in sections 
   - a `finalized` status read for the signature either failed, or, with a history search, found nothing once the *finalized* block height is past the attempt's last valid height.
   The finalized height matters, because a landing just before expiry is not finalized yet. Without this proof the hold stays, which fails safe. Without the event at all, a fork-dropped report would block entries forever and stop unattended paper runs.
 - **2026-10-03 · A restart while `signed` never sends the bytes.** The intent becomes `unknown` and waits for expiry, because we cannot prove whether the bytes left before the restart.
+
+## Engine (ENG-1, `packages/core/src/engine`)
+
+- **2026-10-03 · The engine refuses events outside the total order; a live Feed must release in that order.** Events are ordered by (slot, transaction index, instruction index, receipt time, id). An event that is not after the previous one is logged `out_of_order` and refused, and one dated after now is logged `future_event`. Live, facts can arrive late (a slot-99 transaction after a slot-100 one, or after an off-chain status read in its own slot). So the live Feed holds facts behind a slot horizon and releases them in total order. The parity test replays the *recorded release sequence*, refused events included, rather than re-sorting the raw facts. Re-sorting would deliver facts that live dropped, and the decision logs would differ.
+- **2026-10-03 · Repeated reconciles are de-duplicated and rate-limited, and no key waits without bound.** The same `reconcile_balances` or `reconcile_orphan` is sent at most once per `minSlotsBetween`, and at most `maxPerWindow` reconciles go out per `windowSlots`. Under that cap:
+  - Orphans (unbooked landings, which block every entry) go before balance reads.
+  - Each window reserves max(1, ⌊cap/4⌋) places for waiting balance reads, never more than cap − 1, so exits still reconcile while orphan reads keep failing. With a cap of 1, the two kinds alternate window by window.
+  - Within a kind, the key served least recently goes first. A key never served counts as served at its first ask, so a key asked continuously waits at most ⌈K / share⌉ + 1 windows.
+  - A waiter that was not asked for in the last slot leaves the line but keeps its turn.
+
+  Earlier versions served first come, first served (which starved orphans), then in rounds by send count (which let returning keys starve a persistent one). This version changes which key is sent compared with those, by design: it is a fairness fix, not a refactor.
+- **2026-10-03 · Everything a strategy can reach is frozen.** The book, each decision before it is applied, the effects and the log records are all deep-frozen. A strategy cannot change engine state, or a decision after making it, outside the lifecycle. The log cannot drift from its hash. The replay freezes a copy of its input, never the caller's objects.
+- **2026-10-03 · Only the replay driver and its fill model hold a `Replay`.** `momentOf` and `pending` reveal whether future events exist, so neither the engine nor a strategy is given one. The engine gets only the `Clock` and the `Feed`.
+- **2026-10-03 · Effect runners are synchronous.** Results come back as feed events. A runner that returns a promise is refused, because results it scheduled after an `await` would arrive after the replay ended and be lost.
 
 ## Evidence (`packages/core/src/domain`)
 

@@ -8,9 +8,8 @@ import {
   type AccountHistory, type ClosedTrade, type EntryDecision, type EntryRequest, type Latches, type ReservationRequest,
   type ReservationStore, type ReserveResult, type RiskCode, type RiskInput, NO_LATCHES, evaluateEntry, evaluateExit,
 } from '../../src/risk/index.ts';
-import { type Lamports, type MicroUsd, lamports, solPriceMicroUsd } from '../../src/units/index.ts';
-import { PUMP_CURVE_PARAMS } from '../../src/amm/index.ts';
-import { AMM_FEE_CONFIG } from '../amm/helpers.ts';
+import { type Lamports, type MicroUsd, bps, lamports, solPriceMicroUsd } from '../../src/units/index.ts';
+import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_GLOBAL } from '../amm/helpers.ts';
 import { key32 } from '../fixtures.ts';
 
 export const SOL = 1_000_000_000n;
@@ -29,7 +28,7 @@ export const MINT_B: Mint = mint(key32(12));
 export const DEEP_POOL: PoolState = { baseReserve: 150_000_000_000_000n, quoteVault: 400n * SOL, virtualQuoteReserves: 0n };
 /** One SOL of quote: $2 moves it more than 1% round trip. */
 export const SHALLOW_POOL: PoolState = { baseReserve: 1_000_000_000_000n, quoteVault: SOL, virtualQuoteReserves: 0n };
-const poolCtx = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_CURVE_PARAMS.tokenTotalSupply, creatorFeeCharged: true };
+const poolCtx = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1' as const, buybackFeeBps: bps(5_000) };
 export const quoterFor = (pool: PoolState) => pumpSwapRoundTrip(pool, poolCtx);
 
 export const NETWORK: NetworkPolicy = {

@@ -310,8 +310,10 @@ describe('R13 executable depth', () => {
   test('a stale quote refuses', () => {
     expectRefusedButExitPasses(baseInput(), baseRequest({ quoteAtMs: NOW - TRIAL_POLICY.gates.maxQuoteAgeMs - 1 }), 'quote_stale', false);
   });
-  test('a pool that cannot be quoted refuses', () => {
-    const broken = () => { throw new RangeError('curve complete'); };
+  test('a pool that cannot be quoted refuses, whether the quote says so or throws', () => {
+    const complete = () => ({ ok: false as const, reason: 'curve-complete' as const, detail: 'curve complete' });
+    expectRefusedButExitPasses(baseInput(), baseRequest({ quote: complete }), 'quote_failed', false);
+    const broken = () => { throw new RangeError('bad state'); };
     expectRefusedButExitPasses(baseInput(), baseRequest({ quote: broken }), 'quote_failed', false);
   });
 });
