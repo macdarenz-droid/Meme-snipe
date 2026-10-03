@@ -61,7 +61,7 @@ export const syntheticRows = (o: SyntheticOptions = {}): DatasetRow[] => {
           amount: buy ? BigInt(Math.floor(rnd() * 2e9)) + 10_000_000n : BigInt(Math.floor(rnd() * 3e12)) + 1_000_000n,
           baseAmount: 0n, quoteAmount: 0n, userQuote: 0n, pre: p.state,
           fees: { split: { lp: bps(20), protocol: bps(5), creator: bps(95) }, buybackFeeBps: bps(5000), instruction: 'v1' },
-          baseSupply: 1_000_000_000_000_000n, ixName: buy ? 'buy_exact_quote_in' : 'sell', user: key(`u${s}`), lpFee: 0n, quoteLpAdjusted: 0n,
+          baseSupply: 1_000_000_000_000_000n, ixName: buy ? 'buy_exact_quote_in' : 'sell', user: key(`u${s}`), lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '',
         };
         const q = replaySwap(p.state, swap);
         if (q.ok) {

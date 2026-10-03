@@ -111,6 +111,15 @@ describe('fact projector', () => {
     expect(r.facts.state(r.mints[0]!.mint)!.holderProblem).toMatch(/held .* before/);
   });
 
+  it('releases a pool\'s first trade event since migration and every event with a tail, for H5', () => {
+    expect(events.filter((e) => e.key.startsWith(`pump_amm:`) && e.key.endsWith(m.pool))).toHaveLength(1);
+    const r = replay([{ ...PLAN, tail: { after: 30 * MIN, hex: '0100000000000000' } }], SLOTS);
+    const tails = r.events.filter((e) => e.key.startsWith('pump_amm:'));
+    expect(tails).toHaveLength(2);
+    expect(tails[1]!.value).toMatchObject({ event: { trailing: 8, extra: '0100000000000000' } });
+    expect(typeof (tails[1]!.value as { txSlot: unknown }).txSlot).toBe('bigint');
+  });
+
   it('drops a launch that never graduates after a week, and a graduate past every window', () => {
     const { rows, mints } = studyWorld({ mints: [{ ...PLAN, graduateAfter: 10 ** 9 }, PLAN], slots: SLOTS });
     const facts = new FactProjector({ sampleRate: 1, rugs: RUG_CONFIG, windows: [U2], solUsd: [], solUsdPoints: 30, candlesHead: 10, candlesTail: 360 });

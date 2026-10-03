@@ -117,6 +117,8 @@ interface MintState {
   view: PoolView | null;
   checks: Map<string, number>;
   checkSeq: number;
+  /** A pool trade event since migration was released (H5 needs one). */
+  tailSeen: boolean;
 }
 
 const priceOf = (v: PoolView): Price | null => {
@@ -162,7 +164,7 @@ export class FactProjector {
       s = {
         mint, sampled: true, create: null, graduatedAtMs: null, migration: null, pool: null,
         lp: { supply: 0n, known: false, minted: 0n, burned: 0n }, account: null, pendingExt: [], holders: null, supply: 0n, holderProblem: null,
-        candlesHead: [], candlesTail: [], creationBuyers: new Set(), view: null, checks: new Map(), checkSeq: 0,
+        candlesHead: [], candlesTail: [], creationBuyers: new Set(), view: null, checks: new Map(), checkSeq: 0, tailSeen: false,
       };
       this.#mints.set(mint, s);
     }
@@ -281,9 +283,21 @@ export class FactProjector {
     }
   }
 
+  /**
+   * The trade event as FEED-1 keys it, with its tail, for H5 (GATE-1c). The check rejects any event whose tail is
+   * not empty before the 2026-10-02 upgrade or not 8 zero bytes after it, needs at least one pool event since
+   * migration, and passes a curve with no events. So the feed releases a pool's first event since migration and
+   * every event that carries a tail (the only ones that can fail): the check sees the same answer as with every
+   * event, and the store does not hold millions of empty tails. Only the fields the check reads are kept.
+   */
+  #tail(id: string, key: string, row: { readonly slot: bigint; readonly signature: string; readonly extraHex: string }, m: Moment, out: FeedEvent[]): void {
+    out.push(this.#fact(id, m, key, { event: { trailing: row.extraHex.length / 2, extra: row.extraHex }, txSlot: row.slot, signature: row.signature }));
+  }
+
   #curve(row: CurveTradeRow, m: Moment, out: FeedEvent[]): void {
     const s = this.#mints.get(row.mint);
     if (s === undefined) return;
+    if (row.extraHex !== '') this.#tail(`te:${row.signature}:${row.evIdx}`, `pump:TradeEvent:${row.mint}`, row, m, out);
     if (s.create !== null && row.slot <= s.create.slot + 2n && row.isBuy) s.creationBuyers.add(row.user);
     const data = {
       mint: row.mint, solAmount: row.solAmount, tokenAmount: row.tokenAmount, isBuy: row.isBuy, user: row.user, timestamp: BigInt(row.blockTime),
@@ -297,6 +311,10 @@ export class FactProjector {
     const s = this.#mints.get(row.baseMint);
     if (s === undefined || !s.sampled) return;
     const sell = row.side === 'sell';
+    if (s.migration?.pool === row.pool && (!s.tailSeen || row.extraHex !== '')) {
+      s.tailSeen = true;
+      this.#tail(`te:${row.signature}:${row.evIdx}`, `pump_amm:${sell ? 'SellEvent' : 'BuyEvent'}:${row.pool}`, row, m, out);
+    }
     const data = {
       pool: row.pool, user: row.user, timestamp: BigInt(row.blockTime), poolQuoteTokenReserves: row.pre.quoteVault, poolBaseTokenReserves: row.pre.baseReserve,
       virtualQuoteReserves: row.pre.virtualQuoteReserves, lpFee: row.lpFee,

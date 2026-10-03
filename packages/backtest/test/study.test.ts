@@ -62,6 +62,7 @@ describe('BT-2 study runs', () => {
     ['H4', { extraExtension: { kind: 'PermanentDelegate', type: 12 } }, 'H4:extension-blocked'],
     ['H8', { migrationQuote: 4_000_000_000n }, 'H8:dust-at-migration'],
     ['H9', { graduateAfter: 4 * MIN }, 'H9:instant-graduation'],
+    ['H5 tail', { tail: { after: 30 * MIN, hex: '0100000000000000' } }, 'H5:event-tail'],
     ['H1-H4 unknown', { noCreateRaw: true }, 'H1:missing'],
   ] as const)('%s: the gate rejects with its reason in the log', (_, patch, code) => {
     const { r } = run([{ ...SETUP, ...patch }]);

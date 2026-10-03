@@ -26,12 +26,17 @@ export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' |
 
 /**
  * What the study reads from the past (and so keeps): every coverage fact (H14 reads their whole history), every
- * create and rug label (one per mint), and 7 h of holder facts (U1's 6 h holder growth). Every other key is read
- * as of now only, so its latest value is enough. Bounds the store over a 74-day run.
+ * create and rug label (one per mint), 7 h of holder facts (U1's 6 h holder growth) and the trade-event tails H5
+ * reads. Every other key is read as of now only, so its latest value is enough. Bounds the store over a 74-day run.
  */
 export const STUDY_RETENTION: Retention = (key) =>
   key.startsWith('coverage:') || key.startsWith('rug:') || key.startsWith('rug-unjudged:') || key.startsWith(TX_CREATE_PREFIX) ? null
-    : key.startsWith('gates/holders:') ? 7 * 3_600_000 : 0;
+    : key.startsWith('gates/holders:') ? 7 * 3_600_000
+    // H5 (GATE-1c) reads every trade event of the pool since migration and of the curve before it: kept past the
+    // longest check window (14 days after migration) with room for the curve phase.
+    : key.startsWith('pump_amm:') ? 15 * 86_400_000
+    : key.startsWith('pump:TradeEvent:') ? 22 * 86_400_000
+    : 0;
 
 export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
   const sol = o.series.find((s) => s.name === 'SOL/USD');

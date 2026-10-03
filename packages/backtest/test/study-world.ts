@@ -48,6 +48,8 @@ export interface MintPlan {
   /** Largest random buy, lamports (default 2 SOL), and the share of a holder's tokens a sell takes (1/n, default 2). */
   readonly buySize?: number;
   readonly sellDivisor?: number;
+  /** The first swap at or after this many slots since migration carries this tail (hex) in its event (H5). */
+  readonly tail?: { readonly after: number; readonly hex: string };
   /** Stop the mint's swaps this many slots after migration (dead pool). */
   readonly swapsFor?: number;
 }
@@ -103,7 +105,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
     const vault = associatedTokenAddress(pool, mint, TOKEN_2022_PROGRAM);
     const migrateSlot = p.createSlot + p.graduateAfter;
     out.push({ mint, creator, pool, lpMint, createSlot: p.createSlot, migrateSlot });
-    return { p, mint, creator, auth, pool, lpMint, curve, curveAta, vault, migrateSlot, holders: new Map<string, { owner: string; amount: bigint }>(), state: null as null | { baseReserve: bigint; quoteVault: bigint; virtualQuoteReserves: bigint }, dropped: false };
+    return { p, mint, creator, auth, pool, lpMint, curve, curveAta, vault, migrateSlot, holders: new Map<string, { owner: string; amount: bigint }>(), state: null as null | { baseReserve: bigint; quoteVault: bigint; virtualQuoteReserves: bigint }, dropped: false, tailed: false };
   });
   const raw = (s: number, tx: number, signature: string, mints: string[], balances: RawBalance[], ops: TokenOp[]): RawRow =>
     ({ kind: 'raw', slot: WSLOT0 + BigInt(s), blockTime: slotTime(s), txIdx: tx, evIdx: RAW_EV_IDX, signature, mints, balances, ops, undecodable: null });
@@ -166,7 +168,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         rows.push({
           kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 0, signature, mint: pl.mint, isBuy: true, solAmount: 30_000_000n, tokenAmount: amount,
           virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: 700_000_000_000_000n,
-          mayhem: false, quoteMint: '11111111111111111111111111111111', user,
+          mayhem: false, quoteMint: '11111111111111111111111111111111', user, extraHex: '',
         });
         rows.push(raw(s, tx, signature, [pl.mint], move(pl, [{ account: pl.curveAta, owner: pl.curve, delta: -amount }, { account: key(`${seed}:ata:${user}:${p.label}`), owner: user, delta: amount }]), []));
       }
@@ -205,12 +207,14 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
           side: buy ? 'buy' : 'sell', mode: buy ? 'exact-quote-in' : 'exact-base',
           amount: buy ? BigInt(Math.floor(rnd() * (p.buySize ?? 2e9))) + 50_000_000n : heldBy / BigInt(p.sellDivisor ?? 2) + 1n,
           baseAmount: 0n, quoteAmount: 0n, userQuote: 0n, pre: pl.state, fees: FEES, baseSupply: SUPPLY,
-          ixName: buy ? 'buy_exact_quote_in' : 'sell', user, lpFee: 0n, quoteLpAdjusted: 0n,
+          ixName: buy ? 'buy_exact_quote_in' : 'sell', user, lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '',
         };
         const q = replaySwap(pl.state, swap);
         if (!q.ok) continue;
         const base = q.trade.base;
-        rows.push({ ...swap, baseAmount: base, quoteAmount: buy ? swap.amount : q.trade.userQuote });
+        const tailHere = p.tail !== undefined && since >= p.tail.after && !pl.tailed;
+        if (tailHere) pl.tailed = true;
+        rows.push({ ...swap, baseAmount: base, quoteAmount: buy ? swap.amount : q.trade.userQuote, extraHex: tailHere ? p.tail!.hex : '' });
         pl.state = q.trade.after;
         const balances = move(pl, [{ account: pl.vault, owner: pl.pool, delta: buy ? -base : base }, { account: ata, owner: user, delta: buy ? base : -base }]);
         const drop = p.dropBalancesAfter !== undefined && since > p.dropBalancesAfter && !pl.dropped;

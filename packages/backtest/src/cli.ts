@@ -58,7 +58,7 @@ const plantedSwap = (token: string, slot: bigint, blockTime: number): DatasetRow
   quoteMint: 'So11111111111111111111111111111111111111112', side: 'buy', mode: 'exact-quote-in', amount: 1_000_000_000n, baseAmount: 0n, quoteAmount: 0n, userQuote: 0n,
   pre: { baseReserve: 200_000_000_000_000n, quoteVault: 80_000_000_000n, virtualQuoteReserves: 0n },
   fees: { split: { lp: 20 as Bps, protocol: 5 as Bps, creator: 95 as Bps }, buybackFeeBps: 0 as Bps, instruction: 'v1' },
-  baseSupply: 1_000_000_000_000_000n, ixName: 'buy_exact_quote_in', user: token, lpFee: 0n, quoteLpAdjusted: 0n,
+  baseSupply: 1_000_000_000_000_000n, ixName: 'buy_exact_quote_in', user: token, lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '',
 });
 const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, windowEnd: to, regimeBoundaries };
 

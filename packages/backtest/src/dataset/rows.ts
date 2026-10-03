@@ -49,6 +49,8 @@ export interface AmmSwapRow extends ChainPos {
   readonly lpFee: bigint;
   /** quote_amount_lp_adjusted: quote into the pool on a buy (LP fee included), out of it on a sell (LP fee excluded). */
   readonly quoteLpAdjusted: bigint;
+  /** Event bytes beyond the published layout (the 2026-10-02 upgrade's tail), hex; '' when none (GATE-1c). */
+  readonly extraHex: string;
 }
 
 export interface CurveTradeRow extends ChainPos {
@@ -64,6 +66,8 @@ export interface CurveTradeRow extends ChainPos {
   readonly mayhem: boolean;
   readonly quoteMint: string;
   readonly user: string;
+  /** Event bytes beyond the published layout, hex; '' when none (GATE-1c). */
+  readonly extraHex: string;
 }
 
 export interface BlockRow {
@@ -102,6 +106,14 @@ const optCol = (get: (c: string) => string, column: string): bigint => {
     return 0n;
   }
   return opt(v);
+};
+/** A text column added in a later scanner revision: '' when the file predates it. */
+const textCol = (get: (c: string) => string, column: string): string => {
+  try {
+    return get(column);
+  } catch {
+    return '';
+  }
 };
 const flag = (s: string): boolean => s === 'true' || s === '1';
 
@@ -142,6 +154,7 @@ export const readAmm = (text: string, out: DatasetRow[]): void =>
       user: get('user'),
       lpFee: optCol(get, 'lp_fee'),
       quoteLpAdjusted: optCol(get, 'quote_amount_lp_adjusted'),
+      extraHex: textCol(get, 'extra_hex'),
     });
   });
 
@@ -154,7 +167,7 @@ export const readCurve = (text: string, out: DatasetRow[]): void =>
       virtualTokenReserves: int(get('virtual_token_reserves'), 'virtual_token_reserves'),
       realSolReserves: int(get('real_sol_reserves'), 'real_sol_reserves'),
       realTokenReserves: int(get('real_token_reserves'), 'real_token_reserves'),
-      mayhem: flag(get('mayhem_mode')), quoteMint: get('quote_mint'), user: get('user'),
+      mayhem: flag(get('mayhem_mode')), quoteMint: get('quote_mint'), user: get('user'), extraHex: textCol(get, 'extra_hex'),
     });
   });
 

@@ -14,7 +14,7 @@ export const AMM_COLS = ['slot', 'block_time', 'tx_idx', 'ev_idx', 'signature', 
   'buyback_fee_basis_points', 'buyback_fee', 'virtual_quote_reserves', 'can_boost', 'base_supply', 'holder_rewards_bps', 'holder_rewards', 'extra_hex',
   'layout_fields', 'last_in_tx', 'chain_pool_base', 'chain_pool_quote'];
 export const CURVE_COLS = ['slot', 'block_time', 'tx_idx', 'ev_idx', 'signature', 'mint', 'is_buy', 'sol_amount', 'token_amount', 'virtual_sol_reserves',
-  'virtual_token_reserves', 'real_sol_reserves', 'real_token_reserves', 'mayhem_mode', 'quote_mint', 'user'];
+  'virtual_token_reserves', 'real_sol_reserves', 'real_token_reserves', 'mayhem_mode', 'quote_mint', 'user', 'extra_hex'];
 export const BLOCK_COLS = ['slot', 'block_time', 'parent_slot', 'n_tx', 'n_vote', 'n_pump_tx', 'n_pump_ok', 'n_pump_failed', 'n_events'];
 
 const csv = (cols: readonly string[], rows: Record<string, string>[]): string =>
@@ -57,13 +57,13 @@ export const writeDataset = (dir: string, rows: readonly DatasetRow[], opts: Wri
       user_quote_amount: String(r.userQuote), pool_base_token_reserves: String(r.pre.baseReserve), pool_quote_token_reserves: String(r.pre.quoteVault),
       virtual_quote_reserves: String(r.pre.virtualQuoteReserves), lp_fee_basis_points: String(r.fees.split.lp), protocol_fee_basis_points: String(r.fees.split.protocol),
       coin_creator_fee_basis_points: String(r.fees.split.creator), buyback_fee_basis_points: String(r.fees.buybackFeeBps), base_supply: String(r.baseSupply),
-      ix_name: r.ixName, user: r.user,
+      ix_name: r.ixName, user: r.user, extra_hex: r.extraHex,
     }]);
     const curve = list.flatMap((r) => r.kind !== 'curve' ? [] : [{
       slot: String(r.slot), block_time: String(r.blockTime), tx_idx: String(r.txIdx), ev_idx: String(r.evIdx), signature: r.signature, mint: r.mint,
       is_buy: String(r.isBuy), sol_amount: String(r.solAmount), token_amount: String(r.tokenAmount), virtual_sol_reserves: String(r.virtualSolReserves),
       virtual_token_reserves: String(r.virtualTokenReserves), real_sol_reserves: String(r.realSolReserves), real_token_reserves: String(r.realTokenReserves),
-      mayhem_mode: String(r.mayhem), quote_mint: r.quoteMint, user: r.user,
+      mayhem_mode: String(r.mayhem), quote_mint: r.quoteMint, user: r.user, extra_hex: r.extraHex,
     }]);
     const blocks = list.flatMap((r) => r.kind !== 'block' ? [] : [{ slot: String(r.slot), block_time: String(r.blockTime), parent_slot: String(r.parentSlot) }]);
     const events = list.flatMap((r) => r.kind !== 'event' ? [] : [JSON.stringify({ slot: Number(r.slot), block_time: r.blockTime, tx_idx: r.txIdx, ev_idx: r.evIdx, signature: r.signature, signer: '', program: r.program, event: r.event, layout_fields: 1, fields: r.fields })]);
