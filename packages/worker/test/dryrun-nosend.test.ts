@@ -29,8 +29,9 @@ const reachable = (entry: string): Map<string, string> => {
     if (out.has(f)) continue;
     const text = readFileSync(f, 'utf8');
     out.set(f, text);
-    for (const m of text.matchAll(/\b(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/g)) {
-      const spec = m[1]!;
+    // `import … from '…'`, `export … from '…'`, and side-effect imports `import '…'`.
+    const specs = [...text.matchAll(/\b(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/g), ...text.matchAll(/\bimport\s+['"]([^'"]+)['"]/g)].map((m) => m[1]!);
+    for (const spec of specs) {
       // Only relative imports and Node built-ins exist in this repo's source; a package import would be unchecked.
       if (spec.startsWith('.')) todo.push(resolve(dirname(f), spec));
       else expect(spec, `${relative(REPO, f)} imports a package`).toMatch(/^node:/);
@@ -79,11 +80,14 @@ describe('no send path: static import graph', () => {
     expect(callers).toEqual(['packages/worker/src/dryrun/rpc.ts']);
   });
 
-  it('the guard itself catches a send path (planted import)', () => {
+  it.each([
+    ['a named import', (p: string) => `import { planBroadcast } from '${p}';\nexport const x = planBroadcast;\n`],
+    ['a side-effect import', (p: string) => `import '${p}';\n`],
+  ])('the guard itself catches a send path (planted %s)', (_, source) => {
     const dir = mkdtempSync(join(tmpdir(), 'dryrun-plant-'));
     const planted = join(dir, 'planted.ts');
     const landing = relative(dir, join(REPO, 'packages/core/src/tx/landing.ts'));
-    writeFileSync(planted, `import { planBroadcast } from '${landing.startsWith('.') ? landing : `./${landing}`}';\nexport const x = planBroadcast;\n`);
+    writeFileSync(planted, source(landing.startsWith('.') ? landing : `./${landing}`));
     try {
       const g = reachable(planted);
       expect([...g.keys()].map((f) => relative(REPO, f))).toContain('packages/core/src/tx/landing.ts');

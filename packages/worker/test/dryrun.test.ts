@@ -2,16 +2,16 @@
 // program error, an insufficient stand-in, no usable holder, malformed responses, RPC and scheduler failures, the
 // structural equality of the stand-in build, and the report's thresholds at their boundaries.
 import { describe, expect, it } from 'vitest';
-import { type Address, NATIVE_MINT, TOKEN_PROGRAM, decodeTransaction } from '../../core/src/chain/index.ts';
+import { type Address, NATIVE_MINT, PUMP_PROGRAM, TOKEN_PROGRAM, addressBytes, decodeTransaction } from '../../core/src/chain/index.ts';
 import { POLICY, RATES, common, goldenOf, request } from '../../core/test/tx/fixtures-policy.ts';
 import type { Kind } from '../../core/test/tx/helpers.ts';
-import { associatedTokenAddress, buildTrade, type SignerPolicyContext, type TradeRequest } from '../../core/src/tx/index.ts';
+import { associatedTokenAddress, buildTrade, pumpCreatorVault, rentExempt, type SignerPolicyContext, type TradeRequest, userVolumeAccumulator } from '../../core/src/tx/index.ts';
 import {
-  type DryRunRecord, type DryRunTrade, DryRunRpc, DRYRUN_GATE, amountErrorE4, dryRunReport, dryRunTrade, isBaseClose, sameStructure, substitution,
+  type DryRunRecord, type DryRunTrade, DryRunRpc, DRYRUN_GATE, amountErrorE4, dryRunReport, dryRunTrade, isBaseClose, rentPaidInto, type RawAccount, sameStructure, substitution,
 } from '../src/dryrun/index.ts';
-import { HELIUS_FREE, ManualTimers, P2, Scheduler } from '../src/scheduler/index.ts';
+import { HELIUS_FREE, ManualTimers, P0, P1, P2, P3, Scheduler } from '../src/scheduler/index.ts';
 import { blockNetwork, KEYS } from './helpers.ts';
-import { type StubAccount, type StubChain, SYSTEM, feePayerOf, stubChain, testAddress, tokenAccount, wallet } from './dryrun-chain.ts';
+import { type SimBalances, type StubAccount, type StubChain, SYSTEM, feePayerOf, stubChain, testAddress, tokenAccount, wallet } from './dryrun-chain.ts';
 
 blockNetwork();
 
@@ -58,39 +58,62 @@ const setup = (opts: { scheduler?: Scheduler } = {}) => {
   return { chain, rpc, deps: { rpc, priority: P2, buyStandIns: [BUYER] } };
 };
 
+interface FundOptions {
+  /** The holder's token balance (default: exactly the position). */
+  readonly holderTokens?: bigint;
+  /** Added to the quoted amount the simulation delivers (tokens for buys, lamports for sells). */
+  readonly delta?: bigint;
+  /** Rent the simulated transaction takes from the wallet (default: what the stand-in build declares). */
+  readonly rent?: bigint;
+  /** Accounts the build writes that are left absent before the trade. */
+  readonly absent?: readonly Address[];
+  /** Post-state of accounts other than the stand-in's own three. */
+  readonly extra?: ReadonlyMap<string, StubAccount | null>;
+}
+
 /**
- * Puts a funded buyer and a holder on the stub chain, and scripts a simulation that moves exactly the quoted amount
- * plus `delta` (tokens for buys, lamports for sells), charging the fees, tip and rent the stand-in build declares.
+ * Puts a funded buyer and a holder on the stub chain, plus every other account the stand-in builds write (so the
+ * build declares no rent unless a test removes one), and scripts a simulation that moves exactly the quoted amount
+ * plus `delta`, charging the fees, tip and `rent`.
  */
-const fund = (chain: StubChain, t: DryRunTrade, holderTokens: bigint | null = null, delta = 0n) => {
+const fund = (chain: StubChain, t: DryRunTrade, o: FundOptions = {}) => {
   const req = t.request;
   const mint = mintOf(req);
   const prog = req.market.baseTokenProgram;
   chain.accounts.set(BUYER, wallet(10n ** 12n));
   chain.accounts.set(HOLDER, wallet(1_000_000_000n));
   const holderAta = associatedTokenAddress(HOLDER, mint, prog);
-  const held = holderTokens ?? need(req);
+  const held = o.holderTokens ?? need(req);
   chain.accounts.set(holderAta, tokenAccount(mint, HOLDER, held));
   chain.largest = [{ address: holderAta, amount: held.toString() }];
+  for (const s of [BUYER, HOLDER]) {
+    const b = buildTrade(req, { ...t.common, wallet: s, existing: new Set() }, t.policy);
+    if (!b.ok) throw new Error('stub build failed');
+    const own = new Set<string>([s, associatedTokenAddress(s, NATIVE_MINT, TOKEN_PROGRAM), associatedTokenAddress(s, mint, prog)]);
+    for (const ix of b.tx.instructions) for (const m of ix.accounts) if (m.writable && !m.signer && !own.has(m.address) && !chain.accounts.has(m.address)) chain.accounts.set(m.address, wallet(10n ** 9n));
+  }
+  for (const a of o.absent ?? []) chain.accounts.delete(a);
   chain.simulate = (sim, accounts) => {
     const [s, wsol, base] = sim.addresses as [Address, Address, Address];
     // The stand-in's build with the accounts the stub holds, as the dry run builds it.
     const existing = new Set([...accounts.keys()] as Address[]);
     const b = buildTrade(req, { ...t.common, wallet: s, existing }, t.policy);
     if (!b.ok) throw new Error('stub build failed');
-    const o = b.tx.solOut;
+    const out = b.tx.solOut;
+    const rent = o.rent ?? out.rent;
     const pre = (a: Address) => accounts.get(a) ?? null;
     const preTokens = pre(base) === null ? 0n : new DataView(pre(base)!.data.buffer).getBigUint64(64, true);
+    const delta = o.delta ?? 0n;
     if (req.side === 'buy') {
       const got = quoted(req) + delta;
-      return { post: [wallet(pre(s)!.lamports - o.total), pre(wsol), tokenAccount(mint, s, preTokens + got)] };
+      return { post: [wallet(pre(s)!.lamports - (out.total - out.rent) - rent), pre(wsol), tokenAccount(mint, s, preTokens + got)], extra: o.extra };
     }
     const left = preTokens - need(req);
     const closes = sim.wire.length > 0 && decodeTransaction(sim.wire).instructions.length === b.tx.instructions.length && req.closeTokenAccount;
     const baseLamports = pre(base)!.lamports;
     const proceeds = quoted(req) + delta;
-    const walletAfter = pre(s)!.lamports + proceeds - o.baseFee - o.priorityFee - o.tip - o.rent + (closes ? baseLamports : 0n);
-    return { post: [wallet(walletAfter), pre(wsol), closes ? null : tokenAccount(mint, s, left, baseLamports)] };
+    const walletAfter = pre(s)!.lamports + proceeds - out.baseFee - out.priorityFee - out.tip - rent + (closes ? baseLamports : 0n);
+    return { post: [wallet(walletAfter), pre(wsol), closes ? null : tokenAccount(mint, s, left, baseLamports)], extra: o.extra };
   };
 };
 
@@ -109,7 +132,10 @@ describe('dry run: success on every venue and side', () => {
     expect(cfg).toMatchObject({ encoding: 'base64', sigVerify: false, replaceRecentBlockhash: true, innerInstructions: true, commitment: 'processed' });
     expect(cfg.minContextSlot).toBeGreaterThanOrEqual(Number(r.readSlot));
     const s = r.standIn!.address;
-    expect((cfg.accounts as { addresses: string[] }).addresses).toEqual([s, associatedTokenAddress(s, NATIVE_MINT, TOKEN_PROGRAM), associatedTokenAddress(s, mintOf(t.request), t.request.market.baseTokenProgram)]);
+    // The stand-in's own accounts first, then every other account the build writes (to measure the rent paid).
+    const readBack = (cfg.accounts as { addresses: string[] }).addresses;
+    expect(readBack.length).toBeGreaterThan(3);
+    expect(readBack.slice(0, 3)).toEqual([s, associatedTokenAddress(s, NATIVE_MINT, TOKEN_PROGRAM), associatedTokenAddress(s, mintOf(t.request), t.request.market.baseTokenProgram)]);
     expect(feePayerOf(Uint8Array.from(Buffer.from(sim.params[0] as string, 'base64')))).toBe(s);
   });
 
@@ -117,7 +143,7 @@ describe('dry run: success on every venue and side', () => {
     const { chain, deps } = setup();
     const t = tradeOf('pool-sell');
     const q = quoted(t.request);
-    fund(chain, t, null, -(q / 100n)); // 1% short
+    fund(chain, t, { delta: -(q / 100n) }); // 1% short
     const r = await dryRunTrade(t, deps);
     expect(r.simulatedOut).toBe(q - q / 100n);
     expect(r.amountErrorE4).toBe(amountErrorE4(q - q / 100n, q));
@@ -127,7 +153,7 @@ describe('dry run: success on every venue and side', () => {
   it('a holder with more tokens than the position: the close is left out and recorded', async () => {
     const { chain, deps } = setup();
     const t = tradeOf('curve-sell');
-    fund(chain, t, need(t.request) * 3n);
+    fund(chain, t, { holderTokens: need(t.request) * 3n });
     const r = await dryRunTrade(t, deps);
     expect(r).toMatchObject({ outcome: 'simulated', standIn: { closeOmitted: true } });
     const wire = Uint8Array.from(Buffer.from(chain.requests.find((q) => q.method === 'simulateTransaction')!.params[0] as string, 'base64'));
@@ -342,7 +368,7 @@ describe('dry-run report thresholds', () => {
   const rec = (i: number, success: boolean, e4: number | null = 0, closeOmitted = false): DryRunRecord => ({
     id: `t${i}`, side: 'buy', venue: 'curve', mint: BOT, outcome: success ? 'simulated' : 'not-simulable', success, error: success ? null : 'x',
     standIn: { address: BUYER, role: 'funded-wallet', tokenAccount: null, closeOmitted }, policy: null, quotedOut: 1n, simulatedOut: success ? 1n : null,
-    amountErrorE4: success ? e4 : null, readSlot: null, simulatedSlot: null, unitsConsumed: null, logsTail: [],
+    amountErrorE4: success ? e4 : null, readSlot: null, quoteAgeSlots: null, rentDeclared: null, rentPaid: null, balancesFrom: null, simulatedSlot: null, unitsConsumed: null, logsTail: [],
   });
   const many = (ok: number, fail: number, e4 = 0) => [...Array.from({ length: ok }, (_, i) => rec(i, true, e4)), ...Array.from({ length: fail }, (_, i) => rec(ok + i, false))];
 
@@ -383,5 +409,189 @@ describe('dry-run report thresholds', () => {
     expect(amountErrorE4(1_000_001n, 1_000_000n)).toBe(1);
     expect(amountErrorE4(3_000_000_001n, 3_000_000_000n)).toBe(1);
     expect(() => amountErrorE4(1n, 0n)).toThrow(RangeError);
+  });
+});
+
+describe('dry run: rent actually paid (review of PR #28)', () => {
+  const RENT = RATES.rent;
+  const uvaOf = (w: Address) => userVolumeAccumulator(PUMP_PROGRAM, w);
+
+  it('declared rent that is not paid is not added to the proceeds (volume accumulator absent and not created)', async () => {
+    const { chain, deps } = setup();
+    const t = tradeOf('curve-sell');
+    fund(chain, t, { absent: [uvaOf(HOLDER)], rent: 0n });
+    const r = await dryRunTrade(t, deps);
+    expect(r).toMatchObject({ outcome: 'simulated', simulatedOut: quoted(t.request), amountErrorE4: 0, rentPaid: 0n, rentDeclared: rentExempt(137, RENT) });
+  });
+
+  it('declared curve growth that is not paid (the curve was already grown) is not added', async () => {
+    const { chain, deps } = setup();
+    const base = tradeOf('curve-sell');
+    const req = { ...base.request, market: { ...base.request.market, accountBytes: 120 } } as TradeRequest;
+    const t = { ...base, request: req };
+    fund(chain, t, { rent: 0n });
+    const r = await dryRunTrade(t, deps);
+    expect(r).toMatchObject({ outcome: 'simulated', amountErrorE4: 0, rentPaid: 0n, rentDeclared: 31n * RENT.lamportsPerByte });
+  });
+
+  it('rent paid as declared is measured exactly', async () => {
+    const { chain, deps } = setup();
+    const t = tradeOf('curve-sell');
+    const uvaRent = rentExempt(137, RENT);
+    fund(chain, t, { absent: [uvaOf(HOLDER)], rent: uvaRent, extra: new Map([[uvaOf(HOLDER), wallet(uvaRent)]]) });
+    const r = await dryRunTrade(t, deps);
+    expect(r).toMatchObject({ outcome: 'simulated', amountErrorE4: 0, rentPaid: uvaRent, rentDeclared: uvaRent });
+  });
+
+  it('rent paid above what the build declares is an amount-check failure', async () => {
+    const { chain, deps } = setup();
+    const t = tradeOf('curve-sell');
+    // The accumulator's wrapped-SOL account: written by the swap, never declared by the builder.
+    const undeclared = associatedTokenAddress(uvaOf(HOLDER), NATIVE_MINT, TOKEN_PROGRAM);
+    fund(chain, t, { absent: [undeclared], rent: 2_039_280n, extra: new Map([[undeclared, wallet(2_039_280n)]]) });
+    const r = await dryRunTrade(t, deps);
+    expect(r).toMatchObject({ outcome: 'amount-check', success: false, rentPaid: 2_039_280n, rentDeclared: 0n });
+    expect(r.error).toContain('declared 0');
+  });
+
+  it('rentPaidInto: a new account, a new wrapped-SOL account, growth, and the creator vault top-up', () => {
+    const raw = (a: StubAccount | null): RawAccount | null => (a === null ? null : { executable: false, ...a });
+    const paidInto = (pre: StubAccount | null, post: StubAccount | null, vault: boolean) => rentPaidInto(raw(pre), raw(post), RENT, vault);
+    expect(paidInto(null, wallet(1_000n), false)).toBe(1_000n);
+    expect(paidInto(null, null, false)).toBe(0n);
+    const native = new Uint8Array(165);
+    native.set(addressBytes(NATIVE_MINT), 0);
+    native.set(addressBytes(HOLDER), 32);
+    const v = new DataView(native.buffer);
+    v.setBigUint64(64, 5_000_000n, true);
+    native[108] = 1;
+    v.setUint32(109, 1, true);
+    v.setBigUint64(113, 2_039_280n, true);
+    expect(paidInto(null, { owner: TOKEN_PROGRAM, lamports: 7_039_280n, data: native }, false)).toBe(2_039_280n);
+    expect(paidInto({ owner: PUMP_PROGRAM, lamports: 9n, data: new Uint8Array(120) }, { owner: PUMP_PROGRAM, lamports: 9n, data: new Uint8Array(151) }, false)).toBe(31n * RENT.lamportsPerByte);
+    expect(paidInto(wallet(5n), wallet(5n), false)).toBe(0n);
+    const vaultRent = rentExempt(0, RENT);
+    expect(paidInto(wallet(100n), wallet(10n ** 9n), true)).toBe(vaultRent - 100n);
+    expect(paidInto(null, wallet(10n ** 9n), true)).toBe(vaultRent);
+    expect(paidInto(wallet(vaultRent), wallet(10n ** 9n), true)).toBe(0n);
+  });
+
+  it('the creator vault is read back and only its top-up counts, not the creator fee it receives', async () => {
+    const { chain, deps } = setup();
+    const t = tradeOf('curve-sell');
+    const req = t.request;
+    if (req.venue !== 'curve') throw new Error('curve');
+    const vault = pumpCreatorVault(req.market.curve.creator!);
+    fund(chain, t, { rent: 0n, extra: new Map([[vault, wallet(10n ** 9n + 123_456n)]]) });
+    const r = await dryRunTrade(t, deps);
+    expect(r).toMatchObject({ outcome: 'simulated', amountErrorE4: 0, rentPaid: 0n });
+    const sim = chain.requests.find((q) => q.method === 'simulateTransaction')!;
+    expect(((sim.params[1] as Record<string, unknown>).accounts as { addresses: string[] }).addresses).toContain(vault);
+  });
+});
+
+describe('dry run: priority, holder order and quote age (review of PR #28)', () => {
+  it.each([P0, P1])('P%s is refused before any request', async (p) => {
+    const { chain, rpc, deps } = setup();
+    const t = tradeOf('curve-buy');
+    fund(chain, t);
+    await expect(dryRunTrade(t, { ...deps, priority: p })).rejects.toBeInstanceOf(RangeError);
+    await expect(rpc.call('getMultipleAccounts', [[BUYER]], p)).rejects.toBeInstanceOf(RangeError);
+    expect(chain.requests).toHaveLength(0);
+  });
+
+  it('P3 is allowed', async () => {
+    const { chain, deps } = setup();
+    const t = tradeOf('curve-buy');
+    fund(chain, t);
+    expect((await dryRunTrade(t, { ...deps, priority: P3 })).outcome).toBe('simulated');
+  });
+
+  it('holders are tried by amount (largest first), then by address, whatever the provider order', async () => {
+    const t = tradeOf('pool-sell');
+    const mint = mintOf(t.request);
+    const prog = t.request.market.baseTokenProgram;
+    const n = need(t.request);
+    const others = [testAddress(4), testAddress(5)];
+    const atas = others.map((o) => associatedTokenAddress(o, mint, prog));
+    const first = atas[0]! < atas[1]! ? others[0]! : others[1]!;
+    for (const order of [[0, 1], [1, 0]]) {
+      const { chain, deps } = setup();
+      fund(chain, t);
+      for (const o of others) chain.accounts.set(o, wallet(10n ** 9n));
+      atas.forEach((a, i) => chain.accounts.set(a, tokenAccount(mint, others[i]!, n * 2n)));
+      // HOLDER (exact amount) is listed first, but the two larger holders come before it; equal ones by address.
+      chain.largest = [{ address: associatedTokenAddress(HOLDER, mint, prog), amount: n.toString() }, ...order.map((i) => ({ address: atas[i]!, amount: (n * 2n).toString() }))];
+      const r = await dryRunTrade(t, deps);
+      expect(r.standIn?.address).toBe(first);
+    }
+  });
+
+  it('records the quote age at the read and reports its median', async () => {
+    const { chain, deps } = setup();
+    const t = tradeOf('curve-buy', { common: common(goldenOf('curve-buy'), { wallet: BOT, quotedAtSlot: 990n }) });
+    fund(chain, t);
+    const r = await dryRunTrade(t, deps);
+    expect(r).toMatchObject({ readSlot: 1_000n, quoteAgeSlots: 10n });
+    const at = (age: bigint | null) => ({ ...r, quoteAgeSlots: age });
+    expect(dryRunReport([at(10n), at(2n), at(null), at(7n)]).medianQuoteAgeSlots).toBe(7);
+    expect(dryRunReport([at(10n), at(2n)]).medianQuoteAgeSlots).toBe(6);
+    expect(dryRunReport([at(null)]).medianQuoteAgeSlots).toBeNull();
+  });
+});
+
+describe('dry run: balances taken inside the simulation', () => {
+  /**
+   * A pool sell (no close) where `landed` lamports reach the stand-in between our read and the simulation. With
+   * `atomic` the stub returns the node's own pre/post balances, which include the transfer in both.
+   */
+  const run = async (atomic: boolean, tamper?: (b: SimBalances) => SimBalances) => {
+    const { chain, deps } = setup();
+    const t = tradeOf('pool-sell', {}, false);
+    const landed = 1_000_000n;
+    fund(chain, t);
+    const ok = chain.simulate;
+    chain.simulate = (sim, accounts) => {
+      const r = ok(sim, accounts);
+      if (!('post' in r)) return r;
+      const post = [r.post[0] === null ? null : wallet(r.post[0]!.lamports + landed), r.post[1]!, r.post[2]!];
+      if (!atomic) return { ...r, post };
+      const keys = decodeTransaction(sim.wire).staticAccountKeys;
+      const at = (a: string) => keys.indexOf(a as Address);
+      const [s, , base] = sim.addresses;
+      const lam = (a: string, after: boolean) => {
+        const i = sim.addresses.indexOf(a);
+        if (after && i >= 0 && i < 3) return post[i]?.lamports ?? 0n;
+        return (accounts.get(a)?.lamports ?? 0n) + (a === s ? landed : 0n);
+      };
+      const amount = (x: StubAccount | null) => (x === null ? 0n : new DataView(x.data.buffer).getBigUint64(64, true));
+      const mint = mintOf(t.request);
+      let balances: SimBalances = {
+        pre: keys.map((k) => lam(k, false)),
+        post: keys.map((k) => lam(k, true)),
+        preToken: [{ accountIndex: at(base!), mint, amount: amount(accounts.get(base!) ?? null) }],
+        postToken: [{ accountIndex: at(base!), mint, amount: amount(post[2]!) }],
+      };
+      if (tamper) balances = tamper(balances);
+      return { ...r, post, balances };
+    };
+    return { t, r: await dryRunTrade(t, deps) };
+  };
+
+  it('a transfer landing between the read and the simulation does not move the measured amount', async () => {
+    const { t, r } = await run(true);
+    expect(r).toMatchObject({ outcome: 'simulated', balancesFrom: 'simulation', simulatedOut: quoted(t.request), amountErrorE4: 0 });
+  });
+
+  it('without the simulation\'s own balances the same transfer shows as an amount error (why the atomic path is used)', async () => {
+    const { t, r } = await run(false);
+    expect(r).toMatchObject({ outcome: 'simulated', balancesFrom: 'read', simulatedOut: quoted(t.request) + 1_000_000n });
+  });
+
+  it('post balances that disagree with the read-back, or a token balance for another mint, are malformed', async () => {
+    let { r } = await run(true, (b) => ({ ...b, post: b.post.map((x, i) => (i === 0 ? x + 1n : x)) }));
+    expect(r.outcome).toBe('malformed');
+    ({ r } = await run(true, (b) => ({ ...b, preToken: b.preToken.map((x) => ({ ...x, mint: BOT })) })));
+    expect(r.outcome).toBe('malformed');
   });
 });

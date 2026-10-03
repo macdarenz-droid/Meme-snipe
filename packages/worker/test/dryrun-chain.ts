@@ -39,9 +39,17 @@ export interface SimRequest {
 
 /** What a scripted simulation returns: post accounts (null = closed or absent), or an error with logs. */
 export type SimScript = (req: SimRequest, accounts: ReadonlyMap<string, StubAccount>) =>
-  | { readonly post: readonly (StubAccount | null)[]; readonly units?: number }
+  | { readonly post: readonly (StubAccount | null)[]; readonly units?: number; readonly extra?: ReadonlyMap<string, StubAccount | null> | undefined; readonly balances?: SimBalances }
   | { readonly err: unknown; readonly logs: readonly string[] }
   | { readonly raw: unknown };
+
+/** The node's own before/after balances in a simulation result (Agave `preBalances`, `preTokenBalances`, ...). */
+export interface SimBalances {
+  readonly pre: readonly bigint[];
+  readonly post: readonly bigint[];
+  readonly preToken: readonly { readonly accountIndex: number; readonly mint: string; readonly amount: bigint }[];
+  readonly postToken: readonly { readonly accountIndex: number; readonly mint: string; readonly amount: bigint }[];
+}
 
 export interface StubChain {
   readonly accounts: Map<string, StubAccount>;
@@ -87,7 +95,11 @@ export const stubChain = (): { chain: StubChain; http: HttpClient } => {
         const r = chain.simulate({ wire: fromBase64(body.params[0] as string), config: cfg, addresses }, chain.accounts);
         if ('raw' in r) return reply(r.raw);
         if ('err' in r) return reply({ context, value: { err: r.err, logs: r.logs, accounts: null, unitsConsumed: 1234 } });
-        return reply({ context, value: { err: null, logs: ['Program log: ok'], accounts: r.post.map(accountJson), unitsConsumed: r.units ?? 50_000, innerInstructions: [] } });
+        // Accounts the script does not set are unchanged by the transaction.
+        const post = addresses.map((a, i) => (i < r.post.length ? r.post[i] : (r.extra?.get(a) !== undefined ? r.extra.get(a) : chain.accounts.get(a) ?? null)));
+        const tb = (l: SimBalances['preToken']) => l.map((x) => ({ accountIndex: x.accountIndex, mint: x.mint, uiTokenAmount: { amount: x.amount.toString(), decimals: 6 } }));
+        const b = r.balances === undefined ? {} : { fee: 10_000, preBalances: r.balances.pre, postBalances: r.balances.post, preTokenBalances: tb(r.balances.preToken), postTokenBalances: tb(r.balances.postToken) };
+        return reply({ context, value: { err: null, logs: ['Program log: ok'], accounts: post.map(accountJson), unitsConsumed: r.units ?? 50_000, innerInstructions: [], ...b } });
       }
       default:
         return { status: 200, header: () => null, text: json({ jsonrpc: '2.0', id: body.id, error: { code: -32601, message: 'Method not found' } }) };

@@ -24,6 +24,8 @@ export interface DryRunReport {
   /** Amount errors of the successful trades, in percentage points. */
   readonly medianErrorPoints: number | null;
   readonly maxErrorPoints: number | null;
+  /** Median of `readSlot − quotedAtSlot` over the trades that reached the read. */
+  readonly medianQuoteAgeSlots: number | null;
   readonly worst: { readonly id: string; readonly errorPoints: number } | null;
   readonly successPass: boolean;
   readonly medianPass: boolean;
@@ -47,8 +49,12 @@ export const dryRunReport = (records: readonly DryRunRecord[]): DryRunReport => 
   const successPass = trades > 0 && ok.length * 100 >= DRYRUN_GATE.minSuccessPercent * trades;
   const medianPass = median2 !== null && median2 <= 2 * DRYRUN_GATE.maxMedianE4;
   const eachPass = max !== null && max <= DRYRUN_GATE.maxEachE4;
+  const ages = records.flatMap((r) => (r.quoteAgeSlots === null ? [] : [r.quoteAgeSlots])).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const k = ages.length;
+  const medianQuoteAgeSlots = k === 0 ? null : k % 2 === 1 ? Number(ages[(k - 1) / 2]!) : Number(ages[k / 2 - 1]! + ages[k / 2]!) / 2;
   return {
     trades,
+    medianQuoteAgeSlots,
     successes: ok.length,
     successPercent: trades === 0 ? 0 : (ok.length * 100) / trades,
     outcomes,

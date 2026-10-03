@@ -3,7 +3,7 @@
 // the no-send test (test/dryrun-nosend.test.ts) proves no module that can send is reachable from here.
 import { fromBase64, toBase64 } from '../../../core/src/chain/index.ts';
 import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
-import type { Priority, Scheduler } from '../scheduler/scheduler.ts';
+import { P2, type Priority, type Scheduler } from '../scheduler/scheduler.ts';
 import { type HttpClient, parseJson, ProviderError, send } from '../providers/http.ts';
 
 /** Every JSON-RPC method the dry run may call. Frozen: nothing that sends a transaction is or may be added. */
@@ -45,6 +45,22 @@ export interface SimulationValue {
   /** Post-state of the requested accounts, in request order; null when the account does not exist afterwards. */
   readonly accounts: readonly (RawAccount | null)[];
   readonly unitsConsumed: bigint | null;
+  /**
+   * Balances before and after, taken by the node in the same simulation (Agave returns them since 2.x; checked on
+   * mainnet 2026-10-03 on 4.3.0). Lamports are indexed like the transaction's account keys; token balances name the
+   * account index. Null when the provider does not return them.
+   */
+  readonly fee: bigint | null;
+  readonly preBalances: readonly bigint[] | null;
+  readonly postBalances: readonly bigint[] | null;
+  readonly preTokenBalances: readonly TokenBalance[] | null;
+  readonly postTokenBalances: readonly TokenBalance[] | null;
+}
+
+export interface TokenBalance {
+  readonly accountIndex: number;
+  readonly mint: string;
+  readonly amount: bigint;
 }
 
 const PROVIDER = 'helius';
@@ -71,6 +87,25 @@ export const rawAccount = (v: unknown, what: string): RawAccount | null => {
   return { owner: v.owner, lamports: BigInt(v.lamports as number), data, executable: v.executable };
 };
 
+/** Optional lamport balances: absent or null is null; present but not safe non-negative integers is malformed. */
+const balances = (v: unknown, what: string): bigint[] | null => {
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v) || !v.every((x) => Number.isSafeInteger(x) && (x as number) >= 0)) throw shape(`simulateTransaction ${what} is malformed`);
+  return v.map((x) => BigInt(x as number));
+};
+
+const tokenBalances = (v: unknown, what: string): TokenBalance[] | null => {
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v)) throw shape(`simulateTransaction ${what} is malformed`);
+  return v.map((x: unknown) => {
+    const amount = isObj(x) && isObj(x.uiTokenAmount) ? x.uiTokenAmount.amount : undefined;
+    if (!isObj(x) || !Number.isSafeInteger(x.accountIndex) || typeof x.mint !== 'string' || typeof amount !== 'string' || !U64.test(amount)) {
+      throw shape(`simulateTransaction ${what} entry is malformed`);
+    }
+    return { accountIndex: x.accountIndex as number, mint: x.mint, amount: BigInt(amount) };
+  });
+};
+
 export class DryRunRpc {
   readonly #o: DryRunRpcOptions;
   #id = 1;
@@ -82,6 +117,8 @@ export class DryRunRpc {
   async call(method: DryRunMethod, params: readonly unknown[], priority: Priority): Promise<unknown> {
     // Runtime trap: checked first, so a forbidden method never reaches the scheduler or the network.
     if (!(DRYRUN_METHODS as readonly string[]).includes(method)) throw new NoSendPath(method);
+    // P0 and P1 belong to exits, reconciliation and open positions; the dry run never takes their capacity.
+    if (priority < P2) throw new RangeError(`dry run: priority P${priority} is reserved; use P2 or P3`);
     const o = this.#o;
     return o.scheduler.run(priority, HELIUS_RPC_CREDITS, async () => {
       const body = JSON.stringify({ jsonrpc: '2.0', id: this.#id++, method, params });
@@ -155,6 +192,20 @@ export class DryRunRpc {
     }
     const units = v.unitsConsumed;
     if (units !== undefined && units !== null && !Number.isSafeInteger(units)) throw shape('simulateTransaction unitsConsumed is malformed');
-    return { slot, value: { err, logs: logs as string[], accounts: post, unitsConsumed: typeof units === 'number' ? BigInt(units) : null } };
+    if (v.fee !== undefined && v.fee !== null && !(Number.isSafeInteger(v.fee) && (v.fee as number) >= 0)) throw shape('simulateTransaction fee is malformed');
+    return {
+      slot,
+      value: {
+        err,
+        logs: logs as string[],
+        accounts: post,
+        unitsConsumed: typeof units === 'number' ? BigInt(units) : null,
+        fee: typeof v.fee === 'number' ? BigInt(v.fee) : null,
+        preBalances: balances(v.preBalances, 'preBalances'),
+        postBalances: balances(v.postBalances, 'postBalances'),
+        preTokenBalances: tokenBalances(v.preTokenBalances, 'preTokenBalances'),
+        postTokenBalances: tokenBalances(v.postTokenBalances, 'postTokenBalances'),
+      },
+    };
   }
 }
