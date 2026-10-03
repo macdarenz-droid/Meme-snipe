@@ -1,5 +1,5 @@
 import { fromLamports, parseSol } from './sol.ts';
-import type { StepUp } from './stepUp.ts';
+import { approve, type StepUp } from './stepUp.ts';
 
 /**
  * Withdraw builds a transfer request and nothing else: it never signs and
@@ -99,7 +99,7 @@ export async function createTransferRequest(input: WithdrawInput, stepUp: StepUp
   const checked = checkWithdraw(input);
   if (!checked.ok) return checked;
   const amountSol = fromLamports(checked.lamports);
-  const approved = await stepUp.verify({ action: 'withdraw', summary: `Send ${amountSol} SOL to ${input.to.trim()}` }).catch(() => false);
+  const approved = await approve(stepUp, { action: 'withdraw', summary: `Send ${amountSol} SOL to ${input.to.trim()}` });
   if (!approved) return { ok: false, field: 'form', problem: 'step-up-failed' };
   return {
     ok: true,
@@ -130,7 +130,7 @@ export async function requestSavedWalletChange(current: string | null, next: str
   if (to === '') return { ok: false, problem: 'address-missing' };
   if (!isAddress(to)) return { ok: false, problem: 'address-malformed' };
   if (to === current) return { ok: false, problem: 'same-address' };
-  const approved = await stepUp.verify({ action: 'change-saved-wallet', summary: `Change your saved wallet to ${to}` }).catch(() => false);
+  const approved = await approve(stepUp, { action: 'change-saved-wallet', summary: `Change your saved wallet to ${to}` });
   if (!approved) return { ok: false, problem: 'step-up-failed' };
   return { ok: true, change: { next: to, requestedAt: now.toISOString(), effectiveAt: new Date(now.getTime() + SAVED_WALLET_DELAY_MS).toISOString() } };
 }

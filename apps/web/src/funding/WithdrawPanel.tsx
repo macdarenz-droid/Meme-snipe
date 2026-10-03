@@ -3,7 +3,7 @@ import { melDateTime } from '../dashboard/time.ts';
 import type { WalletView } from '../screens/types.ts';
 import { RouteInfo } from './RouteInfo.tsx';
 import { formatAud, formatLamports, fromLamports, parseSol } from './sol.ts';
-import type { StepUp } from './stepUp.ts';
+import { whileBusy, type StepUp } from './stepUp.ts';
 import {
   CHANGE_PROBLEM_TEXT,
   PROBLEM_TEXT,
@@ -46,18 +46,14 @@ export function WithdrawPanel({ wallet, stepUp }: { wallet: WalletView; stepUp: 
     const checked = checkWithdraw(input);
     if (!checked.ok) return fail(checked.field, checked.problem);
     setError(null);
-    setBusy(true);
-    const result = await createTransferRequest(input, stepUp);
-    setBusy(false);
+    const result = await whileBusy(setBusy, () => createTransferRequest(input, stepUp));
     if (result.ok) setRequest(result.request);
     else fail(result.field, result.problem);
   };
 
   const submitChange = async (e: FormEvent) => {
     e.preventDefault();
-    setBusy(true);
-    const result = await requestSavedWalletChange(wallet.savedWallet, next, stepUp);
-    setBusy(false);
+    const result = await whileBusy(setBusy, () => requestSavedWalletChange(wallet.savedWallet, next, stepUp));
     if (result.ok) {
       setPending(result.change);
       setChangeError(null);

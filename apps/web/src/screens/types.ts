@@ -38,7 +38,10 @@ export interface WalletView {
   balanceSol: string | null;
   /** SOL/AUD price as a decimal string, for the A$ line next to SOL amounts. */
   solAud: string | null;
-  /** Protected SOL reserve (docs/ARCHITECTURE.md §8 R4) and locked deposits, exact decimal strings. */
+  /**
+   * Protected SOL reserve and locked deposits, exact decimal strings. The reserve is the full §8 R4 amount
+   * (floor 0.015 SOL), which includes the locked rent, so Withdraw subtracts it once and never the rent again.
+   */
   reserveSol: string | null;
   lockedSol: string | null;
   openExposureUsd: number | null;

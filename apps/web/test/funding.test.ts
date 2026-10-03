@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { audCents, formatAud, formatLamports, fromLamports, parseSol } from '../src/funding/sol.ts';
-import { approvingStepUp, unavailableStepUp, type StepUp, type StepUpRequest } from '../src/funding/stepUp.ts';
+import { approve, approvingStepUp, unavailableStepUp, whileBusy, type StepUp, type StepUpRequest } from '../src/funding/stepUp.ts';
 import {
   SAVED_WALLET_DELAY_MS,
   TRANSFER_FEE_LAMPORTS,
@@ -102,6 +102,22 @@ describe('transfer request and passkey step-up', () => {
     for (const stepUp of [unavailableStepUp, { verify: () => Promise.reject(new Error('cancelled')) } as StepUp]) {
       expect(await createTransferRequest(base, stepUp, NOW)).toEqual({ ok: false, field: 'form', problem: 'step-up-failed' });
     }
+  });
+  it('treats a step-up that throws synchronously as a refusal and creates nothing', async () => {
+    const throwing: StepUp = {
+      verify: () => {
+        throw new Error('no passkey support');
+      },
+    };
+    expect(await approve(throwing, { action: 'withdraw', summary: 'x' })).toBe(false);
+    expect(await createTransferRequest(base, throwing, NOW)).toEqual({ ok: false, field: 'form', problem: 'step-up-failed' });
+    expect(await requestSavedWalletChange(SAVED, OTHER, throwing, NOW)).toEqual({ ok: false, problem: 'step-up-failed' });
+  });
+  it('turns the busy flag off after the work, whether it succeeds or throws', async () => {
+    const log: boolean[] = [];
+    await whileBusy((b) => log.push(b), () => Promise.resolve(1));
+    await expect(whileBusy((b) => log.push(b), () => Promise.reject(new Error('x')))).rejects.toThrow('x');
+    expect(log).toEqual([true, false, true, false]);
   });
   it('does not even ask for the step-up when the form is invalid', async () => {
     let asked = 0;

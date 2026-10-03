@@ -18,3 +18,22 @@ export interface StepUp {
 export const unavailableStepUp: StepUp = { verify: () => Promise.resolve(false) };
 
 export const approvingStepUp: StepUp = { verify: () => Promise.resolve(true) };
+
+/** Runs the check and treats a refusal, a rejection or a synchronous throw as "not approved". */
+export const approve = (stepUp: StepUp, request: StepUpRequest): Promise<boolean> =>
+  Promise.resolve()
+    .then(() => stepUp.verify(request))
+    .then(
+      (ok) => ok === true,
+      () => false,
+    );
+
+/** Keeps a busy flag on while the work runs and always turns it off, however the work ends. */
+export async function whileBusy<T>(setBusy: (busy: boolean) => void, work: () => Promise<T>): Promise<T> {
+  setBusy(true);
+  try {
+    return await work();
+  } finally {
+    setBusy(false);
+  }
+}
