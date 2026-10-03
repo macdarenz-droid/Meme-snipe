@@ -125,6 +125,11 @@ export interface G2PowerOptions {
   readonly replicates?: number;
   /** Largest n searched before giving up (default 50,000). */
   readonly maxTrades?: number;
+  /**
+   * Resampling units of the rule simulated (default all of G2_SENSITIVITY_VARIANTS). gateG2 accepts only an n_power
+   * simulated with every unit; a subset is for studying one property of the rule.
+   */
+  readonly units?: readonly G2SensitivityVariant[];
 }
 
 /** Fingerprint of the walk-forward data a simulation used, so G2 can check n_power belongs to its universe. */
@@ -154,6 +159,8 @@ export interface G2PowerResult {
   readonly level: number;
   /** Every n evaluated with its simulated power, in evaluation order. */
   readonly evaluations: readonly { readonly n: number; readonly power: number }[];
+  /** The resampling units simulated. */
+  readonly units: readonly G2SensitivityVariant[];
 }
 
 interface Day {
@@ -212,10 +219,16 @@ const simulateHoldout = (days: readonly Day[], n: number, shift: number, rng: Rn
 };
 
 /** The full G2 rule at `level`: the 1-day rule and then every other resampling unit, all below the level. */
-const fullRulePasses = (a: readonly ClusteredReturn[], b: readonly DayReturn[], level: number, opts: { readonly rng: Rng; readonly replicates?: number }): boolean => {
+const fullRulePasses = (
+  a: readonly ClusteredReturn[],
+  b: readonly DayReturn[],
+  level: number,
+  opts: { readonly rng: Rng; readonly replicates?: number },
+  units: readonly G2SensitivityVariant[],
+): boolean => {
   if (!g2RulePasses(g2Rule(a, b, level, opts), level)) return false;
   // One unit at a time, stopping at the first that fails (same answer, less work).
-  for (const v of ['creator', 'days-3', 'days-2', 'funder'] as const) {
+  for (const v of (['days-3', 'days-2', 'creator', 'funder'] as const).filter((x) => units.includes(x))) {
     if (!(g2Sensitivity(a, b, level, opts, [v])[0]!.p < level)) return false;
   }
   return true;
@@ -233,6 +246,7 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
   const sims = opts.simulations ?? 400;
   const replicates = opts.replicates ?? 500;
   const maxTrades = opts.maxTrades ?? DEFAULT_MAX_TRADES;
+  const units = [...new Set(['days-1' as const, ...(opts.units ?? G2_SENSITIVITY_VARIANTS)])];
   if (!Number.isInteger(universes) || universes < 1 || universes > 3) throw new RangeError('familySize must be 1, 2 or 3');
   if (!Number.isInteger(sims) || sims < 100) throw new RangeError('simulations must be an integer >= 100');
   if (opts.walkForward.length < 2 || opts.control.length === 0) throw new RangeError('need walk-forward trades and S0 control trades');
@@ -253,7 +267,7 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     for (let s = 0; s < sims; s++) {
       const h = simulateHoldout(days, n, shift, rng);
       // The gate needs MIN_DAYS days; a holdout on fewer days is "not proven", which counts as not passing.
-      if (h.days >= MIN_DAYS && fullRulePasses(h.a, h.b, level, { rng, replicates })) pass++;
+      if (h.days >= MIN_DAYS && fullRulePasses(h.a, h.b, level, { rng, replicates }, units)) pass++;
     }
     const pw = pass / sims;
     cache.set(n, pw);
@@ -291,5 +305,5 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     if (powerAt(mid) >= goal) hi = mid;
     else lo = mid;
   }
-  return { nPower: hi, powerAtN: powerAt(hi), level, evaluations, walkForward: summarizeWalkForward(opts.walkForward) };
+  return { nPower: hi, powerAtN: powerAt(hi), level, evaluations, walkForward: summarizeWalkForward(opts.walkForward), units };
 };

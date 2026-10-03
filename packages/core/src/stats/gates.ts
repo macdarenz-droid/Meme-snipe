@@ -4,7 +4,7 @@
 // (loosening needs the owner and a change to the defaults here).
 
 import { dayBlockMeanDiffInterval, dayBlockMeanInterval, type DayReturn } from './bootstrap.ts';
-import { describeSummary, g2Rule, g2Sensitivity, MIN_DAYS, sameSummary, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
+import { describeSummary, G2_SENSITIVITY_VARIANTS, g2Rule, g2Sensitivity, MIN_DAYS, sameSummary, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
 import { burnHoldout, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
 import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
@@ -431,6 +431,9 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     c.add(`S0 ${u.universe}`, u.controlRuns.length >= th.minControlSeeds, `${u.controlRuns.length} S0 seeds (need >= ${th.minControlSeeds})`);
     c.add(`n_power ${u.universe}`, Math.abs(u.power.level - level0) < 1e-12,
       `n_power was simulated at level ${fmt(u.power.level)}, the registry's family of ${registry.familySize} needs ${fmt(level0)}`);
+    const missingUnits = G2_SENSITIVITY_VARIANTS.filter((x) => !u.power.units.includes(x));
+    c.add(`n_power units ${u.universe}`, missingUnits.length === 0,
+      `n_power simulated without ${missingUnits.join(', ') || 'none'} (need every resampling unit of the rule)`);
     const wfNow = summarizeWalkForward(u.walkForward);
     c.add(`n_power inputs ${u.universe}`, sameSummary(wfNow, u.power.walkForward),
       `n_power was simulated on walk-forward ${describeSummary(u.power.walkForward)}, this universe's walk-forward is ${describeSummary(wfNow)}`);
