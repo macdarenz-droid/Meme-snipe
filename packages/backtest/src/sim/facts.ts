@@ -71,6 +71,12 @@ export interface FactOptions {
    * source, the insiders fact is incomplete and H13 rejects.
    */
   readonly insiders?: (mint: string) => { readonly knownAtMs: number; readonly funded: readonly string[]; readonly devCluster: readonly string[] } | null;
+  /**
+   * When trade rows begin (ms): an assembled window's lead-in days carry events, stats and blocks only (DATA-1). Rug
+   * coverage starts there, and a launch created before it is unjudged (its trades are not in the dataset). Default:
+   * trades from the first row.
+   */
+  readonly tradesFromMs?: number;
   /** Slot ranges the dataset did not scan (manifest `coverage_gaps`, "from-to"). */
   readonly gaps?: readonly { readonly fromSlot: bigint; readonly toSlot: bigint }[];
 }
@@ -137,6 +143,7 @@ export class FactProjector {
   /** Sampled mints with a migration: the only ones a check can be scheduled for. */
   readonly #graduates = new Set<string>();
   #started = false;
+  #rugsStarted = false;
   #prunedAt = Number.MIN_SAFE_INTEGER;
   #height = 0n;
   #gapAt = 0;
@@ -182,10 +189,11 @@ export class FactProjector {
     const out: FeedEvent[] = [];
     if (!this.#started) {
       this.#started = true;
-      for (const stream of ['creates', 'rugs']) {
-        const k = coverageKeys(stream).start;
-        out.push(this.#fact(`cov:${stream}:start`, m, k, { via: PROVIDER, fromSlot: row.slot }));
-      }
+      out.push(this.#fact('cov:creates:start', m, coverageKeys('creates').start, { via: PROVIDER, fromSlot: row.slot }));
+    }
+    if (!this.#rugsStarted && m.receivedAt >= (this.#o.tradesFromMs ?? Number.MIN_SAFE_INTEGER)) {
+      this.#rugsStarted = true;
+      out.push(this.#fact('cov:rugs:start', m, coverageKeys('rugs').start, { via: PROVIDER, fromSlot: row.slot }));
     }
     switch (row.kind) {
       case 'event':
@@ -231,24 +239,28 @@ export class FactProjector {
       out.push(this.#fact(`cr:${row.signature}:${row.evIdx}`, m, `${TX_CREATE_PREFIX}${f['mint']}`, wrap));
       const quote = f['quote_mint'];
       const solQuote = quote === undefined || quote === '' || quote === SYSTEM || quote === NATIVE_MINT;
+      const leadIn = m.receivedAt < (this.#o.tradesFromMs ?? Number.MIN_SAFE_INTEGER);
       const s = solQuote ? this.#state(f['mint']) : null;
-      if (s === null) {
-        // Not judged is not "not a rug" (RUG-1): outside the sample its trades are not recorded; a curve quoted in
-        // another mint carries its liquidity in fields the dataset's curve rows do not keep.
-        this.counts.unjudged++;
-        const key = `${RUG_UNJUDGED_PREFIX}${f['mint']}`;
-        const reason = !solQuote ? 'curve quoted in another mint: its liquidity is not in the curve rows'
-          : this.#o.sampleRate === null ? 'the dataset does not state its sample rate' : 'outside the dataset sample: its trades are not recorded';
-        out.push(this.#fact(key, m, key, { mint: f['mint'], creator: f['creator'], reason, version: this.#o.rugs.version }));
+      if (s !== null) {
+        const supply = typeof d['tokenTotalSupply'] === 'bigint' && d['tokenTotalSupply'] > 0n ? d['tokenTotalSupply'] : null;
+        s.create = {
+          createdAtMs: Number(seconds(row, d['timestamp'])) * 1000, creator: f['creator'], user: f['user'] ?? null, supply,
+          tokenProgram: f['token_program'] ?? null, slot: row.slot, receivedAt: m.receivedAt, signature: row.signature,
+        };
+        this.counts.sampledCreates++;
+      }
+      if (s !== null && !leadIn) {
+        this.#label(this.#labeller.observe({ kind: 'market', id: `ev:${row.signature}:${row.evIdx}`, moment: m, key: 'pump', value: wrap }), m, out);
         return;
       }
-      const supply = typeof d['tokenTotalSupply'] === 'bigint' && d['tokenTotalSupply'] > 0n ? d['tokenTotalSupply'] : null;
-      s.create = {
-        createdAtMs: Number(seconds(row, d['timestamp'])) * 1000, creator: f['creator'], user: f['user'] ?? null, supply,
-        tokenProgram: f['token_program'] ?? null, slot: row.slot, receivedAt: m.receivedAt, signature: row.signature,
-      };
-      this.counts.sampledCreates++;
-      this.#label(this.#labeller.observe({ kind: 'market', id: `ev:${row.signature}:${row.evIdx}`, moment: m, key: 'pump', value: wrap }), m, out);
+      // Not judged is not "not a rug" (RUG-1): outside the sample its trades are not recorded; on a lead-in day they are
+      // not in the window; a curve quoted in another mint carries its liquidity in fields the curve rows do not keep.
+      this.counts.unjudged++;
+      const key = `${RUG_UNJUDGED_PREFIX}${f['mint']}`;
+      const reason = leadIn ? 'created on a lead-in day: its trades are not in this dataset window'
+        : !solQuote ? 'curve quoted in another mint: its liquidity is not in the curve rows'
+        : this.#o.sampleRate === null ? 'the dataset does not state its sample rate' : 'outside the dataset sample: its trades are not recorded';
+      out.push(this.#fact(key, m, key, { mint: f['mint'], creator: f['creator'], reason, version: this.#o.rugs.version }));
       return;
     }
     if (name === 'CompleteEvent' && f['mint']) {

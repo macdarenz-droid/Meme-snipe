@@ -23,7 +23,9 @@ import type { DatasetRow } from '../dataset/rows.ts';
 import { replayHashes } from '../proofs.ts';
 import { STUDY_CONFIG, configId, studyHash } from '../strategy/config.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
-import { countsOf, rejectMix, scoreRun } from './score.ts';
+import { countsOf, rejectMix, scoreRun, tagOf } from './score.ts';
+import { assertPractice, toPartTrade, type TrialPart } from './trial.ts';
+import { tradesOf } from '../trades.ts';
 import { runFullStudy, studyLeak } from './study.ts';
 import { holdoutDaysOf, windowDays } from './plan.ts';
 
@@ -88,6 +90,9 @@ const common = {
 };
 
 const holdout = new Set(holdoutDaysOf(STUDY_CONFIG));
+// An assembled window's lead-in days carry no trade rows: trades (and rug coverage) start at the window's first day.
+const windowLeadIn = Number((manifest.window as { lead_in_days?: number }).lead_in_days ?? 0);
+const tradesFromMs = windowLeadIn > 0 ? Date.parse(`${manifest.window.from}T00:00:00Z`) : undefined;
 const complete = manifest.days.filter((d) => d.complete).map((d) => d.day).sort();
 const dayMs = 86_400_000;
 const day0 = (d: string) => Date.parse(`${d}T00:00:00Z`);
@@ -100,7 +105,11 @@ if (command === 'day' || command === 'trial') {
   } else {
     // Practice days: window days before the holdout, present and complete, each with its 14-day look-back present.
     const practice = windowDays(STUDY_CONFIG).filter((d) => !holdout.has(d));
-    const lookBack = (d: string) => Array.from({ length: STUDY_CONFIG.window.leadInDays }, (_, k) => new Date(day0(d) - (k + 1) * dayMs).toISOString().slice(0, 10)).every((x) => byDay.has(x));
+    // The 14-day look-back is there when its days are in the dataset, or when the dataset was assembled with a lead-in
+    // of at least 14 days before the window (DATA-1 windows: lead-in days hold events, stats and blocks).
+    const leadIn = Number((manifest.window as { lead_in_days?: number }).lead_in_days ?? 0);
+    const lookBack = (d: string) => (leadIn >= STUDY_CONFIG.window.leadInDays && d >= manifest.window.from)
+      || Array.from({ length: STUDY_CONFIG.window.leadInDays }, (_, k) => new Date(day0(d) - (k + 1) * dayMs).toISOString().slice(0, 10)).every((x) => byDay.has(x));
     days = practice.filter((d) => complete.includes(d) && lookBack(d));
     // One contiguous run: the longest run of consecutive practice days present.
     const runs: string[][] = [];
@@ -127,7 +136,7 @@ if (command === 'day' || command === 'trial') {
     // Entries off on a holdout day: the run proves the engine on real data without trading the holdout.
     entriesTo: validityOnly ? from : last - TRIAL_POLICY.exits.tMaxMs - RESEARCH_CONFIG.s0.endMarginMs,
     sampleRate, regimeBoundaries: regimeBoundariesOf(manifest), ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }),
+    ...(insiders === undefined ? {} : { insiders }), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
   };
   const t0 = clock();
   const r = runStudy({ ...opts, mode: 'strategy', ledgerPath });
@@ -158,6 +167,18 @@ if (command === 'day' || command === 'trial') {
       regimeBoundariesPassed: r.regimes.map((b) => ({ slot: b.slot.toString(), label: b.label, at: new Date(b.at).toISOString() })),
     };
   writeFileSync(join(out, `${runId}.json`), json(evidence));
+  if (command === 'trial') {
+    // The trial part the cumulative report is merged from (trial.ts): practice days only, checked again on merge.
+    const tagged = (x: typeof r, tags: readonly string[]) => tradesOf(x, FILL_CONFIG).trades.map((t) => toPartTrade(t, tagOf(t.id))).filter((t) => tags.includes(t.tag));
+    const part: TrialPart = {
+      kind: 'BT-2 trial part', runId, commit, datasetId, days,
+      engine: { replays: hashes.length, identicalReplays: engine.identicalReplays, crashes: r.stats.crashes, illegalStates: r.stats.illegalStates, unreconciledIntents: r.stats.unreconciledIntents, leak: leak.ok, ledgerReplay: replayCheck.ok },
+      candidates: Object.values(countsOf(r)).reduce((t, c) => t + c.candidates, 0), entries: Object.values(countsOf(r)).reduce((t, c) => t + c.entries, 0),
+      trades: [...tagged(r, ['U1', 'U2']), ...(s0[0] === undefined ? [] : tagged(s0[0], ['S0-U1', 'S0-U2']))],
+    };
+    assertPractice(STUDY_CONFIG, part.days, part.trades);
+    writeFileSync(join(out, `trial-part-${days[0]}-${days[days.length - 1]}.json`), json(part));
+  }
   console.log(json({ runId, validityOnly, stats: r.stats, identical: engine.identicalReplays, leak: leak.ok, ledgerReplay: replayCheck.ok, facts: r.facts?.counts ?? null }));
 } else if (command === 'study') {
   const first = [...byDay.keys()].sort()[0]!;
@@ -172,5 +193,5 @@ if (command === 'day' || command === 'trial') {
   writeFileSync(join(out, `${runId}.json`), json({ kind: 'BT-2 study', runId, ...common, ...report }));
   console.log(json({ runId, G0: report.gates.G0.status, G1: Object.fromEntries(Object.entries(report.gates.G1).map(([u, g]) => [u, g.status])), G2: report.gates.G2.status }));
 } else {
-  throw new Error('usage: cli.ts day|study --dataset <dir> --sol-usd <file> ...');
+  throw new Error('usage: cli.ts day|trial|study --dataset <dir> --sol-usd <file> ...');
 }

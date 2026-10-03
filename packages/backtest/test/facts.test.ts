@@ -19,10 +19,11 @@ const U2 = { universe: 'U2', fromMs: 60 * 60_000, toMs: 70 * 60_000, everyMs: 5 
 
 const solUsd = { ...SOL_USD, bars: SOL_USD.bars.map((b, k) => ({ ...b, start: W0 - 6 * 3_600_000 + k * 3_600_000 })) };
 
-const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1) => {
+const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number) => {
   const { rows, mints } = studyWorld({ mints: plans, slots });
   const facts = new FactProjector({
     sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360,
+    ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
   });
   const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
   const events: FeedEvent[] = [];
@@ -94,6 +95,17 @@ describe('fact projector', () => {
     expect(u).toHaveLength(1);
     expect((u[0]!.value as { reason: string }).reason).toMatch(/outside the dataset sample/);
     expect(r.facts.state(r.mints[0]!.mint)).toBeUndefined();
+  });
+
+  it('in an assembled window, a launch from a lead-in day keeps its create but is unjudged, and rug coverage starts with the trades', () => {
+    const from = W0 + 5 * 60_000;
+    const r = replay([PLAN], SLOTS, 1, from);
+    const mint = r.mints[0]!.mint;
+    const u = r.events.filter((e) => e.key === `${RUG_UNJUDGED_PREFIX}${mint}`);
+    expect((u[0]!.value as { reason: string }).reason).toMatch(/lead-in day/);
+    const start = r.events.find((e) => e.key === coverageKeys('rugs').start)!;
+    expect(start.moment.receivedAt).toBeGreaterThanOrEqual(from);
+    expect(r.events.some((e) => e.key === createKey(mint))).toBe(true);
   });
 
   it('follows the scanner hash for the sample', () => {
