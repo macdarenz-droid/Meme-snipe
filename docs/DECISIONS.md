@@ -610,10 +610,35 @@ The second reviewer, the third opinion and the supervisor reached one position o
 
 ## STATS-1c implementation (2026-10-04)
 
-- **2026-10-04 · Day-level DSR in G1** (ruling (a)). PSR and DSR use each trial's daily P&L from the G1 matrix (T = days, Sharpe per trial from its days, V floored at 1/(T − 1)); trades on one day no longer count as independent observations. Test: 600 trades with intra-day correlation 0.4 passed the per-trade DSR (≥ 0.95) and fail the day-level one. A trial whose series never moves counts with Sharpe 0 in V.
-- **2026-10-04 · DSR lines** (rulings (b) and the third opinion). The gate uses raw N. Reported only: de-duplicated N (day vectors exactly equal, never a similarity) and effective N (trials.ts clustering, a sensitivity line).
-- **2026-10-04 · SPA test as built** (ruling (c)). Hansen's SPA_c with consistent recentring over the whole registry, one circular day-block index sequence per replicate for every variant, block length ⌈D^(1/3)⌉ fixed in advance, idle days 0. One change from Hansen's form, from simulation: each replicate is re-studentised (bootstrap-t, batch-means long-run SD over the same blocks). With one fixed ω̂ the false-positive rate was 7% for one variant and 13% for five at 40 days; with a stationary bootstrap and re-studentising, 6.75–7.25%; with circular blocks aligned to the batch means, 4.0–5.25%. Calibration (400 runs each, 40 days, zero edge, α = 0.05): independent 4.75%, duplicates 3.5%, mixture 3.25%, heavy tails 1.5%, common shock 3.25%, idle days 2.25%, unequal lengths 0.5%, autocorrelated 4.5%, rule grid 1.0%. Power (200 runs; SPA / day-level DSR): rule grid with a +10%-a-trade rule 92.5% / 28%, +5% 30% / 5.5%; mixture 51% / 2%; duplicates 43.5% / 0.5%; heavy tails 20% / 25.5%; idle days 27.5% / 36.5%. G1 keeps DSR ≥ 0.95: `RESEARCH_CONFIG.g1EdgeTest` stays `dsr` until the owner signs off.
-- **2026-10-04 · Holdout attempt budget and extension** (holdout rulings). The registry numbers each universe's attempts (0.04, then 0.01/2^(k−1)) and stores the extension rule at registration; `extendHoldout` decides from cumulative counts only and resets the seal for the re-run.
+Built to the supervisor's revised spec and the consensus rulings that followed it; these entries replace the first STATS-1c draft (day-level DSR as the gate, count-driven extension), which those rulings withdrew.
+
+- **2026-10-04 · G1's gate is unchanged: the per-trade DSR over every registered trial, with clamped moments.** Skewness is clamped to min(sample, 0) and kurtosis to max(sample, 3), the normal floor, registered in code before any data (`DSR_KURTOSIS_FLOOR`). For a positive Sharpe above the benchmark this only widens the PSR denominator, so it is tighten-only. The paper's worked example is pinned: 0.9004 at N = 100, 0.9505 at N = 46, and 0.9505 at N = 88 with normal moments. Simulated pass rate of this gate at a true +5% edge on 50 days (best of N): 3 trades a day 0.5–2%, 10 a day 9.5–14% (N = 10, 72, 200). That is the evidence for the owner's SPA sign-off.
+- **2026-10-04 · Reported only, never gating:**
+  - the day-level DSR under raw N, configuration-de-duplicated N (repeated runs of one config id count once; different configurations with identical or scaled returns stay distinct), and effective N (`trials.ts` clustering);
+  - the block-bootstrap Sharpe of the selected trial's days, with the full statistic recomputed per replicate. Its null p-value is calibrated (5.0% at zero Sharpe, D = 50). Its percentile interval covered only 90–92%, so the interval is not reported as calibrated.
+- **2026-10-04 · The SPA test to the ruled spec** (`spa.ts`):
+  - both benchmarks in one test: 2K statistics, one critical value, and a variant passes only if both of its statistics exceed it;
+  - a step-down for the selected configuration;
+  - stationary bootstrap at expected block lengths 3, 5 and 7, with the largest p promoting;
+  - resampling only within registered regimes;
+  - variants active on fewer than 10 days, or all zero, left out before outcomes are read;
+  - a registered SE floor;
+  - p = (k + 1)/(B + 1), with B ≥ 20/α.
+
+  Both studentisations were calibrated at T = 50 across 12 scenarios (300 runs each, zero edge). Hansen's fixed ω̂ rejected globally in 12–42% of runs and passed a variant in up to 9.3%. Re-studentising every replicate rejected globally in at most 3.0% and passed a variant in at most 0.33%. The re-studentised form is frozen (`SPA_STUDENTISATION`). Power is in `stats-simulation.test.ts`; the headline is a +10%-a-trade rule among 8 × 9 variants: SPA passes it 60%, the day-level DSR 29.5%. G1 reports SPA every time and gates on it only when `RESEARCH_CONFIG.g1EdgeTest` is `spa`, which stays `dsr` until the owner signs off.
+- **2026-10-04 · Holdout registry** (`holdout.ts`):
+  - **Attempts:** an attempt is spent when its configuration is registered (attempt 1 at 0.04, attempt k at 0.01/2^(k−1)). A halted, abandoned or short window is a failed attempt, and the next registration takes level k + 1.
+  - **Windows:** every window has a fixed entry cutoff E, at most 28 entry days, and a registered observation tail. Attempt 1 of every universe shares one window. Attempt k ≥ 2 is registered only after the previous attempt is spent, starts the first whole UTC day after its registration and runs exactly 28 days.
+  - **Family size** counts every universe ever registered, so it cannot shrink.
+  - **Requirement:** max(300, n_power, closed form) and the n_power seed are frozen before any count is read.
+  - **Opening:** the seal opens only after the tail and a G1 pass. There is no count-driven extension: `extendHoldout` always refuses.
+  - **Storage:** a fresh registry would reset the attempt count. That is a storage rule (one append-only registry, BT-1c's `holdout-registry` branch) that this pure module cannot enforce.
+- **2026-10-04 · G2 takes its level from the registry** and refuses a bootstrap with fewer than 20/level replicates. Its false-pass rate for a positive-edge claim is α/2, because the test is two-sided. The error budget is at most 0.05 family error across attempts; the bound requires valid testing under each attempt's registered selection, stopping and dependence assumptions.
+- **2026-10-04 · n_power per attempt is reported with the chance of reaching n by E** (`holdoutPlan`: practice-day entry counts in 3-day runs) and the overall pass probability (P(reach) × power given n).
+- **2026-10-04 · G3 is judged at an end registered with the strategy** (`G3Registration.evaluateAtMs`: at least 48 h after the start, and never earlier). Power at 48 h / 7 days / 10 days: candidate rate halved, one reason's share doubled and a 0.75-point median fill gap are always caught; a 5-point mean shift is caught 27.6% / 60% / 74.2%.
+- **2026-10-04 · Demotion power, per universe at its own cap** (−10% decay, 20 trades a day, 30 days, ρ 0 / 0.05 / 0.1):
+  - U2 (cap +30%): 0.987 / 0.983 / 0.927.
+  - **U1 (cap +40%): 0.713 / 0.613 / 0.523, below the 80% target.** U1 would need 40 trading days (1.0 / 0.99 / 0.93) or a −12.5% detectable decay at 30 days (0.997 / 0.987 / 0.91). Nothing is changed; the choice is the supervisor's.
 
 ## Worker (WORKER-1, `packages/worker/src/run`, `packages/worker/src/engine`, `packages/worker/src/main.ts`)
 
