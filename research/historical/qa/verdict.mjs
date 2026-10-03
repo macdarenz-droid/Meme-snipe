@@ -7,6 +7,22 @@ export const ALLOWED_UNKNOWN = new Set(['pump:742b4dbd117a482b', 'amm:82a42461e4
 // The same upgrade appended 8 bytes to these trade events (kept as extra_hex).
 export const EXTRA8_EVENTS = new Set(['pump:TradeEvent', 'amm:BuyEvent', 'amm:SellEvent']);
 
+// Regime boundaries found by UPG-1b (PR #44), listed in the QA report. B4 (2026-09-12
+// 15:24 UTC) added holder_rewards_bps and holder_rewards (16 bytes) to TradeEvent,
+// BuyEvent and SellEvent; before it those events are exactly two fields shorter.
+export const REGIME_BOUNDARIES = [
+  { id: 'B2', utc: '2026-07-21 14:23', slots: { admin: 434319990 }, what: 'admin BOOST on, migration economics' },
+  { id: 'B3', utc: '2026-09-09 19:30', slots: { pump: 445690911, pump_amm: 445691021, other: 445691085, admin: 445691266 }, what: 'fee and creator-fee config changes' },
+  { id: 'B4', utc: '2026-09-12 15:24', slots: { pump_amm: 446462733, pump: 446462760, admin: 446462883 }, what: 'Trade/Buy/Sell events +16 bytes (holder_rewards_bps, holder_rewards)' },
+  { id: 'B5', utc: '2026-10-02 ~20:00', slots: {}, what: 'undocumented upgrade: +8 bytes on trade events, new discriminators (regime boundary day)' },
+];
+// Pre-B4 layouts: event key -> [fields in that layout, first slot of B4 on that program].
+export const PRE_B4_LAYOUTS = new Map([
+  ['pump:TradeEvent:32', 446462760],
+  ['amm:BuyEvent:37', 446462733],
+  ['amm:SellEvent:30', 446462733],
+]);
+
 const DAY = 86400;
 // The 2026-10-02 program upgrade is a regime boundary (supervisor ruling, 2026-10-03):
 // decision days stay before it, so an assembled dataset (lead-in > 0) may not include
@@ -50,7 +66,14 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
     if (n !== 0 && !(n === 8 && EXTRA8_EVENTS.has(ev))) misses.push(`extra bytes ${k} x${v}`);
   }
   for (const [k, v] of Object.entries(sum('newer_layouts'))) if (!EXTRA8_EVENTS.has(k)) misses.push(`newer layout ${k} x${v}`);
-  for (const [k, v] of Object.entries(sum('older_layouts'))) misses.push(`older layout ${k} x${v}`);
+  // Older layouts: only the pre-B4 layout, and only in units that start before B4 on
+  // that program (the unit holding the boundary may carry both).
+  for (const u of man.units || []) {
+    for (const [k, v] of Object.entries(u.older_layouts || {})) {
+      const b4 = PRE_B4_LAYOUTS.get(k);
+      if (b4 === undefined || !(u.from_slot < b4)) misses.push(`older layout ${k} x${v}${b4 === undefined ? '' : ` in unit from slot ${u.from_slot}, after B4 (${b4})`}`);
+    }
+  }
   const anomalies = (man.units || []).reduce((s, u) => s + (u.length_anomalies || 0), 0);
   if (anomalies > 0) misses.push(`event length anomalies ${anomalies}`);
   // Reserve chains and recorded balances.

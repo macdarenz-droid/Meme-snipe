@@ -37,7 +37,7 @@ test('the configured lead-in is enforced', () => {
 
 test('only the documented upgrade may differ from the IDL', () => {
   const m = base();
-  m.units.push({ unknown_events: { 'amm:0102030405060708': 1 }, extra_bytes: { 'pump:TradeEvent:4': 1, 'amm:CreatePoolEvent:8': 2 }, newer_layouts: { 'pump:CreateEvent': 1 }, older_layouts: { 'pump:TradeEvent:4': 7 } });
+  m.units.push({ from_slot: 1, unknown_events: { 'amm:0102030405060708': 1 }, extra_bytes: { 'pump:TradeEvent:4': 1, 'amm:CreatePoolEvent:8': 2 }, newer_layouts: { 'pump:CreateEvent': 1 }, older_layouts: { 'pump:TradeEvent:4': 7 } });
   assert.deepEqual(strictMisses(m, report), [
     'unknown event amm:0102030405060708 x1',
     'extra bytes pump:TradeEvent:4 x1',
@@ -68,4 +68,15 @@ test('every create transaction must have its raw record', () => {
   const r = structuredClone(report);
   r.raw = { signature_mismatch: 0, trade_txs: 0, trade_txs_with_raw: 0, create_rows: 3, create_rows_with_raw: 2 };
   assert.deepEqual(strictMisses(base(), r), ['create transactions without raw record 1']);
+test('the pre-B4 layout (two fields shorter) is allowed only in units that start before B4', () => {
+  const m = base();
+  m.units.push({ from_slot: 446460000, older_layouts: { 'pump:TradeEvent:32': 5, 'amm:BuyEvent:37': 2, 'amm:SellEvent:30': 1 } });
+  assert.deepEqual(strictMisses(m, report), []);
+  m.units.push({ from_slot: 446500000, older_layouts: { 'pump:TradeEvent:32': 1 } });
+  m.units.push({ from_slot: 446000000, older_layouts: { 'pump:TradeEvent:31': 1, 'amm:BuyEvent:36': 1 } });
+  assert.deepEqual(strictMisses(m, report), [
+    'older layout pump:TradeEvent:32 x1 in unit from slot 446500000, after B4 (446462760)',
+    'older layout pump:TradeEvent:31 x1',
+    'older layout amm:BuyEvent:36 x1',
+  ]);
 });

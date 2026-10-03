@@ -24,7 +24,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 
-import { strictMisses } from './verdict.mjs';
+import { REGIME_BOUNDARIES, strictMisses } from './verdict.mjs';
 
 const USAGE = 'usage: node research/historical/qa/check.mjs <dataset-dir> [--live N] [--gecko N] [--strict] [--lead-in-days N]';
 const args = process.argv.slice(2);
@@ -460,6 +460,9 @@ if (report.gecko) {
 // are documented and not counted). See verdict.mjs.
 const misses = strictMisses(man, report, { leadInDays: LEAD_IN });
 report.strict = { pass: misses.length === 0, misses };
+report.regime_boundaries = REGIME_BOUNDARIES;
+md.push('', '## Regime boundaries', '', 'Program and configuration changes that split the data into regimes (UPG-1b, PR #44). Before B4 the trade events are exactly two fields (16 bytes) shorter; the strict QA allows that layout only in units that start before B4.', '', '| Id | UTC | Slots | Change |', '|---|---|---|---|');
+for (const b of REGIME_BOUNDARIES) md.push(`| ${b.id} | ${b.utc} | ${Object.entries(b.slots).map(([k, v]) => `${k} ${v}`).join(', ') || 'n/a'} | ${b.what} |`);
 md.push('', '## Verdict', '', misses.length ? `FAIL: ${misses.join('; ')}` : 'PASS: no unexplained miss.');
 if (report.raw) md.push('', `Parity scope: raw records, and so the decoder parity check (qa/parity.json), cover only transactions of hash-sampled mints (h(mint) < ${man.sampling?.unit_sample_rate_min ?? 1}, retention ${man.sampling?.retention || 'sample only'}). Rows of other mints come from the same decoder but are not re-decoded one by one; this is sample parity, not full-row parity.`);
 if (report.raw) md.push('', `Raw records: ${report.raw.records}; signature mismatches ${report.raw.signature_mismatch}; ${report.raw.trade_txs_with_raw} of ${report.raw.trade_txs} trade and failed transactions of hash-sampled mints have their raw record.`);
