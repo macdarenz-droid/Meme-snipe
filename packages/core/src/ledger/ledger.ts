@@ -84,7 +84,7 @@ export interface ReservationLimits {
 
 export type ReserveResult =
   | { readonly ok: true; readonly heldAfter: Lamports }
-  | { readonly ok: false; readonly reason: 'over_limit' | 'too_many' | 'already_reserved' | 'not_an_entry' | 'unknown_intent' };
+  | { readonly ok: false; readonly reason: 'stale_snapshot' | 'over_limit' | 'too_many' | 'already_reserved' | 'not_an_entry' | 'unknown_intent' };
 
 export type RecordIntentResult =
   | { readonly ok: true }
@@ -240,6 +240,14 @@ class LedgerReads {
 
   heldExposure(): Lamports {
     return this.heldReservations().reduce((t, r) => t + r.amount, 0n) as Lamports;
+  }
+
+  /**
+   * The account version a risk snapshot is taken at (RISK-1 `AccountHistory.version`). Read it in the same read as
+   * the snapshot; `reserveExposure` refuses a reservation made from an older version.
+   */
+  accountVersion(): bigint {
+    return accountVersionIn(this.#db);
   }
 
   /** Effects written but not yet marked done, in the order they were written. */
@@ -454,7 +462,7 @@ export class Ledger extends LedgerReads {
    * step (the book after the event and its effects); the caller keeps the book for the next call.
    * The one writer the backtester and the worker share, so their ledgers cannot drift from the replay.
    */
-  recordBookEvent(before: Book, event: BookEvent, o: { readonly ts: Millis; readonly limits: ReservationLimits }): { readonly book: Book; readonly effects: readonly Effect[] } {
+  recordBookEvent(before: Book, event: BookEvent, o: { readonly ts: Millis; readonly limits: ReservationLimits; readonly accountVersion?: bigint }): { readonly book: Book; readonly effects: readonly Effect[] } {
     const step = applyBookEvent(before, event);
     if (isIllegal(step)) throw new LedgerError(`book event ${event.type} refused by the reducer: ${step.reason}`, { code: 'reducer_refused' });
     const book = step.state;
@@ -478,7 +486,7 @@ export class Ledger extends LedgerReads {
         for (const f of s.fills) if (!booked.has(f.signature)) this.recordFill(f, ts);
         const r = s.reservation;
         if (r !== null && was?.reservation == null) {
-          const res = this.reserveExposure({ reservationId: r.id, intentId: id, amount: r.amount, limits: o.limits, ts });
+          const res = this.reserveExposure({ reservationId: r.id, intentId: id, amount: r.amount, limits: o.limits, ts, ...(o.accountVersion === undefined ? {} : { accountVersion: o.accountVersion }) });
           if (!res.ok) throw new LedgerError(`reservation ${r.id} refused: ${res.reason}`);
         }
         if (r !== null && r.status !== 'held' && was?.reservation?.status !== r.status) this.endReservation(r.id, r.status, ts);
@@ -554,8 +562,9 @@ export class Ledger extends LedgerReads {
   }
 
   /**
-   * Reserves exposure for an entry intent. The limit check and the insert run in one BEGIN IMMEDIATE
-   * transaction, so concurrent attempts can never together exceed the limits. An optional transition
+   * Reserves exposure for an entry intent. The version check, the limit check and the insert run in one BEGIN
+   * IMMEDIATE transaction, so concurrent attempts, or two decided from one snapshot, can never together exceed the
+   * limits. An optional transition
    * (normally to `exposure_reserved`) is written in the same transaction.
    */
   reserveExposure(r: {
@@ -564,6 +573,12 @@ export class Ledger extends LedgerReads {
     readonly amount: Lamports;
     readonly limits: ReservationLimits;
     readonly ts: Millis;
+    /**
+     * The account version of the risk snapshot this reservation was decided on (RISK-1 `ReservationRequest`). Refused
+     * as `stale_snapshot` if the account changed since. Every risk-gated entry passes it; only a mirror of decisions
+     * already made (the backtest sink) may leave it out.
+     */
+    readonly accountVersion?: bigint;
     readonly transition?: Omit<IntentTransition, 'intentId' | 'ts'>;
   }): ReserveResult {
     return this.atomically(() => {
@@ -637,13 +652,32 @@ const checkLimits = (limits: ReservationLimits): void => {
 };
 
 /**
- * The reservation check and insert. Must run inside BEGIN IMMEDIATE (the caller's transaction): the
- * write lock is taken before the held total is read, so no other connection can reserve in between.
+ * Tables whose rows change a risk snapshot: reservations and their ends (held exposure, unresolved entries, entries
+ * per day), fills and fees (closed trades and P&L), positions and their states (open positions), and operator
+ * commands with their results (the owner's re-arms and reviews). All are append-only, so the sum of their row counts
+ * only ever rises: it is the account version. Intents, intent events and attempts are left out: an entry writes them
+ * itself between its decision and its reservation, and an unresolved entry is already counted by its reservation.
+ * Market data (observations, marks) is not an account change; see docs/DECISIONS.md (LEDGER-1c) for why a mark
+ * cannot change an allowed reservation.
  */
-export const reserveIn = (db: DatabaseSync, r: { readonly reservationId: string; readonly intentId: string; readonly amount: Lamports; readonly limits: ReservationLimits; readonly ts: Millis }): ReserveResult => {
+export const ACCOUNT_VERSION_TABLES = [
+  'reservation', 'reservation_event', 'fill', 'fee', 'position', 'position_event', 'operator_command', 'command_result',
+] as const;
+
+const ACCOUNT_VERSION_SQL = `SELECT ${ACCOUNT_VERSION_TABLES.map((t) => `(SELECT count(*) FROM ${t})`).join(' + ')} AS v`;
+
+export const accountVersionIn = (db: DatabaseSync): bigint => BigInt(db.prepare(ACCOUNT_VERSION_SQL).get()?.['v'] as number);
+
+/**
+ * The reservation check and insert. Must run inside BEGIN IMMEDIATE (the caller's transaction): the
+ * write lock is taken before the version and the held total are read, so no other connection can change the
+ * account or reserve in between.
+ */
+export const reserveIn = (db: DatabaseSync, r: { readonly reservationId: string; readonly intentId: string; readonly amount: Lamports; readonly limits: ReservationLimits; readonly ts: Millis; readonly accountVersion?: bigint }): ReserveResult => {
   if (!db.isTransaction) throw new LedgerError('reserveIn must run inside a transaction');
   checkLimits(r.limits);
   if (r.amount <= 0n) throw new LedgerError('a reservation must be positive');
+  if (r.accountVersion !== undefined && accountVersionIn(db) !== r.accountVersion) return { ok: false, reason: 'stale_snapshot' };
   const intent = db.prepare('SELECT purpose FROM intent WHERE intent_id = ?').get(r.intentId);
   if (intent === undefined) return { ok: false, reason: 'unknown_intent' };
   if (intent['purpose'] !== 'entry') return { ok: false, reason: 'not_an_entry' };
