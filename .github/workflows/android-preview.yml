@@ -34,16 +34,16 @@ jobs:
     outputs:
       version_name: ${{ steps.version.outputs.name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: 21
@@ -73,16 +73,18 @@ jobs:
           "$mgr" "platforms;android-36" "build-tools;36.0.0"
 
       # Same debug keystore on every build, so a new APK installs over the old one. It is created on
-      # a cache miss and never committed. Caches from a pull request are not shared with the
-      # integration branch; releases always use the integration branch's own cache.
+      # a cache miss and never committed. Pull requests from forks never touch the cache (a pull
+      # request can read its base branch's caches, which would hand them the key): they skip the
+      # restore, and so the save, and build with a throwaway key made below.
       - name: Restore debug keystore
         id: keystore
-        uses: actions/cache@v4
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.zeroed-preview/debug.keystore
           key: zeroed-preview-debug-keystore-v1
 
-      - name: Create debug keystore (cache miss only)
+      - name: Create debug keystore (cache miss, or a fork pull request)
         if: steps.keystore.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/.zeroed-preview
@@ -116,7 +118,7 @@ jobs:
           cp "$apk" out/zeroed-preview.apk
           sha256sum out/zeroed-preview.apk
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: zeroed-preview-apk
           path: out/zeroed-preview.apk
@@ -139,7 +141,12 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: zeroed-preview-apk
 
@@ -154,44 +161,8 @@ jobs:
             echo "::notice::$INTEGRATION_BRANCH moved to $head; a newer run publishes the release."
           fi
 
-      - name: Move the preview tag and write the notes
+      - name: Move the preview tag, write the notes, replace the single asset
         if: steps.newest.outputs.current == 'true'
-        run: |
-          set -euo pipefail
-          # gh prints the 404 body to stdout on a missing ref, so only trust the output when the call succeeds.
-          if out="$(gh api "repos/$GH_REPO/git/ref/tags/preview" --jq .object.sha 2>/dev/null)" && [[ "$out" =~ ^[0-9a-f]{40}$ ]]; then
-            old="$out"
-          else
-            old=""
-          fi
-          subject="$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA" --jq '.commit.message | split("\n")[0]')"
-          {
-            echo "Preview build ${{ needs.build.outputs.version_name }}, commit \`${GITHUB_SHA}\`."
-            echo
-            echo "Latest: $subject"
-            if [ -n "$old" ] && [ "$old" != "$GITHUB_SHA" ]; then
-              echo
-              echo "Changes since the previous preview:"
-              gh api "repos/$GH_REPO/compare/$old...$GITHUB_SHA" \
-                --jq '.commits[] | "- " + .sha[0:7] + " " + (.commit.message | split("\n")[0])' | head -40 || true
-            fi
-            echo
-            echo "Sample numbers in this build are made up and carry a \"Sample data\" marker."
-          } > notes.md
-          if [ -n "$old" ]; then
-            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/preview" -f sha="$GITHUB_SHA" -F force=true > /dev/null
-          else
-            gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/preview -f sha="$GITHUB_SHA" > /dev/null
-          fi
-
-      - name: Create or update the prerelease and replace its single asset
-        if: steps.newest.outputs.current == 'true'
-        run: |
-          set -euo pipefail
-          if gh release view preview > /dev/null 2>&1; then
-            gh release edit preview --prerelease --title "Zeroed preview" --notes-file notes.md
-          else
-            gh release create preview --prerelease --title "Zeroed preview" --notes-file notes.md --verify-tag
-          fi
-          gh release upload preview zeroed-preview.apk --clobber
-          gh release view preview --json assets --jq '.assets[] | .name + " " + (.size|tostring)'
+        env:
+          VERSION_NAME: ${{ needs.build.outputs.version_name }}
+        run: bash .github/scripts/publish-preview.sh
