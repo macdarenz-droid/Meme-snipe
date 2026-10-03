@@ -391,7 +391,7 @@ The runner (`packages/runner`) checks the first health reply (paper, recorder on
 
 ### 12.5 Worker failure is an exposure the stop cannot control (2026-10-04)
 
-There is one trading VPS. The external watchdog detects a dead worker and alerts the owner, but it cannot sell. While the worker is down, an open position has no working stop. RUN-1c measures this window in every restart drill that has a position open: kill → reconciled → able to exit, plus the worst price move seen during it. TEST-3 and RISK-1b's loss scenarios include it. An exit-only standby comes later, and only with exclusive execution ownership and reconciliation before takeover, so a recovery can never sell twice.
+There is one trading VPS. The external watchdog detects a dead worker and alerts the owner, but it cannot sell. While the worker is down, an open position has no working stop. RUN-1c measures this window in every restart drill that has a position open: kill → reconciled → able to exit, plus the worst price move seen during it. TEST-3 and RISK-1b's loss scenarios include it. An exit-only standby is deferred: at this bankroll, measured recovery with small exposure comes first. If one is added later, it needs exclusive signing, fencing and reconciliation of already-signed transactions before takeover; it never relies on a second sell failing for lack of tokens. A shorter holding time is not outage protection, because its timer cannot sell while the worker is dead. Drills are kept separate by cause (process crash, reboot, RPC loss, host loss) and recovery is timed to "reconciled and able to exit" (RUN-1d, OPS-1d).
 
 ## 13. Labels and validation
 
@@ -420,6 +420,7 @@ The evidence comes from the **transaction-level historical backtest** (§16.2), 
 **Holdout discipline** ([quant.md](research/quant.md) §2, review of 2026-10-03):
 - Exactly one pre-registered configuration per universe enters the holdout; with up to three universes (U1–U3), G2 uses a Holm correction across those that enter (family-wise α = 0.05).
 - **The holdout is sealed.** The backtester runs the holdout into a separate sealed ledger file: fills, exits and P&L are written there but never displayed, logged or read; the registry records only the file's hash and, per universe, the candidate and entry counts. **Before the seal opens nothing else is visible: never exit counts, fills or P&L** (an exit count hints at outcomes). The size check reads those two counts alone. The seal is opened (by the scoring stage, once) only after the counts show n ≥ max(300, n_power) for every universe that enters. If n is short, the sealed file stays closed and the answer is "not proven yet" (collect more history); n is never lowered.
+- Short holdout: the size check (counts only, before any outcome is scored) extends a holdout short of n ≥ max(300, n_power) or of 10 trade days by whole UTC days from 10-02 (it may cross B5, which changes nothing on SOL markets), at most 28 days, stopping on the first day both are met; past that it is "not proven". Attempts share one error budget: attempt 1 at family α = 0.04, attempt k ≥ 2 at 0.01 / 2^(k−1) on a new later window, so all attempts together keep the false-pass rate ≤ 0.05 (DECISIONS, follow-up rulings).
 - One look only: a holdout that was opened, unsealed early, inspected in any way (a hash mismatch, a read of the sealed file outside the scoring stage, a log line with a P&L value) or re-run with a different configuration counts as **burned** in the registry. New proof needs a new, later window that has never been run. There is no interim or futility look.
 - The e-process is not part of G2 (it is built for repeated looks); it runs where looks really are repeated: G5 and demotion.
 - **The holdout lies entirely after the last regime boundary before it (B4, 2026-09-12 15:24 UTC; supervisor, 2026-10-04).** Walk-forward results are reported per regime (B2–B3, B3–B4, after B4), never pooled silently; S0 runs per regime; costs are charged as of each trade's slot, from the fees in force then.
@@ -579,6 +580,7 @@ Visible states: waiting for evidence, no eligible candidate, stale data, rate li
 
 The build is incomplete until each is handled and covered by a test (TEST-3 runs them as fault injections):
 
+- The feed dies for 5 minutes with a position open and the pool falls 40%: an independent timer sees the stale state, the worker fetches a coherent quote snapshot (pool, vaults, mint, fee state) through an independently healthy path, and while that path and the execution path are up the exit goes out within the set time; otherwise the critical alert fires (WATCH-1).
 - An API timeout after a buy landed: reconcile without buying twice.
 - Two workers resume one intent: the fenced signer accepts only the current owner.
 - A stop and a take-profit trigger together: one exit intent, quantity reconciled.
