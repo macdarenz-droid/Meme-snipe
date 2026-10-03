@@ -74,6 +74,23 @@ export const dueTimers = (start: number): Timers & { set(ms: number): void } => 
   };
 };
 
+/**
+ * A clock that moves 1 ms every `everyNth` reads: the host's own, where the restored book's frames and the start facts
+ * can fall on either side of a millisecond and ties are broken by id. The timers are otherwise `virtualTimers`'.
+ */
+export const tickingTimers = (start: number, everyNth: number): Timers & { set(ms: number): void } => {
+  const base = virtualTimers(start);
+  let reads = 0;
+  return {
+    ...base,
+    now: () => {
+      const t = base.now();
+      if (++reads % everyNth === 0) base.set(t + 1);
+      return t;
+    },
+  };
+};
+
 export const tempState = (): string => mkdtempSync(join(tmpdir(), 'zeroed-worker-'));
 
 export const testConfig = (stateDir: string, over: Record<string, string> = {}): WorkerConfig => {
@@ -120,7 +137,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord> } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -149,7 +166,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       sources.push(...made);
       return made;
     }),
-    simulate: okSimulation(legs),
+    simulate: o.simulate ?? okSimulation(legs),
     fetchTx: async (sig) => {
       o.fetched?.push(sig);
       return o.found ?? false;
