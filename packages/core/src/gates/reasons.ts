@@ -1,7 +1,7 @@
 // Typed reasons for the journal. Every reject names its gate, a code, the input it read and the values compared,
 // so a decision can be rebuilt and counted without parsing text (docs/ARCHITECTURE.md §7, §6.3).
 
-export const HARD_GATES = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12', 'H13', 'H14', 'H15', 'H16'] as const;
+export const HARD_GATES = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12', 'H13', 'H14', 'H15', 'H16', 'H17'] as const;
 export type HardGate = (typeof HARD_GATES)[number];
 
 /** The facts the gates read, by name. Keys in the as-of store are built from these (facts.ts). */
@@ -40,6 +40,7 @@ export type RejectCode =
   | 'serial-deployer' | 'prior-rug'
   | 'round-trip-failed' | 'sim-failed' | 'sim-loss'
   | 'xcheck-disagree'
+  | 'unsupported-shape'
   | 'policy-session-ended' | 'bad-request';
 
 export interface GateReason {

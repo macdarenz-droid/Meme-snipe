@@ -92,6 +92,13 @@ const CASES: readonly Case[] = [
   ['H15', 'a simulation that loses more than the model', (f) => patch(f, simKey(MINT), { proceeds: 1n }), 'sim-loss'],
   ['H16', 'a third party reads a mint authority (live)', (f) => patch(f, xcheckKey(MINT), { sources: [{ provider: 'rugcheck', mintAuthority: 'set', freezeAuthority: 'none' }] }), 'xcheck-disagree'],
   ['H16', 'stale pool state (3 slots)', (f) => patch(f, poolKey(MINT), { obs: obs({ slot: SLOT - 3n }) }), 'stale'],
+  // TX-1b: H4 allows these (sellable), but the builders cannot trade them, so the shape gate rejects before any entry.
+  ['H17', 'a GroupPointer extension', withExtensions([...mintFrom(MINT).account.extensions, { kind: 'GroupPointer', type: 20, fields: { authority: null, groupAddress: null }, data: '' }]), 'unsupported-shape'],
+  ['H17', 'DefaultAccountState initialized', withExtensions([...mintFrom(MINT).account.extensions, { kind: 'DefaultAccountState', type: 6, fields: { state: 'initialized' }, data: '01' }]), 'unsupported-shape'],
+  ['H17', 'a cashback pool', (f) => patch(f, poolKey(MINT), { pool: { ...POOL, isCashbackCoin: true } }), 'unsupported-shape'],
+  ['H17', 'a 287-byte pool (needs extend_account)', (f) => patch(f, poolKey(MINT), { accountBytes: 287 }), 'unsupported-shape'],
+  ['H17', 'pool account size not read', (f) => patch(f, poolKey(MINT), { accountBytes: undefined }), 'missing'],
+  ['H17', 'cashback flag not read', (f) => patch(f, poolKey(MINT), { pool: { ...POOL, isCashbackCoin: undefined } }), 'missing'],
 ];
 
 describe('each hard reject has a trigger and a pass', () => {
@@ -248,7 +255,7 @@ describe('evaluation', () => {
   it('runs cheapest first, in a fixed order that names every gate once', () => {
     const costs = HARD_ORDER.map((s) => s.cost);
     expect([...costs].sort()).toEqual(costs);
-    expect(new Set(HARD_ORDER.map((s) => s.gate)).size).toBe(16);
+    expect(new Set(HARD_ORDER.map((s) => s.gate)).size).toBe(17);
   });
 
   it('stops at the first failing gate by default and names it', () => {
@@ -258,7 +265,7 @@ describe('evaluation', () => {
     expect(r.evaluated).toEqual(['H1', 'H2']);
     const all = run(f, 'live', request(), true);
     expect(all.failed).toEqual(expect.arrayContaining(['H2', 'H3', 'H6']));
-    expect(all.evaluated).toHaveLength(16);
+    expect(all.evaluated).toHaveLength(17);
   });
 
   it('gives the same result for the same input, every time (determinism)', () => {
