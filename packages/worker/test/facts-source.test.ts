@@ -1,7 +1,9 @@
 // FACTS-1b: the live fact source on WORKER-1's FactSource hook. Reads follow each candidate's last reasons
 // (staging), raw answers go on the worker's Feed, and the engine's FactFeed makes the gate facts, live and in a
 // replay of the recording alike.
-import { readdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
@@ -11,12 +13,12 @@ import { holdersKey, migrationKey, mintKey, parsePool, poolKey } from '../../cor
 import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { FIX } from '../../core/test/facts/helpers.ts';
 import { feesKey, type CandidateReason } from '../src/engine/strategy.ts';
-import { FACT_READS_KEY, LiveFacts, liveFacts, readsFor, type LiveReaders, type MintHistoryOptions } from '../src/facts/index.ts';
+import { CHAIN_VOLUME_ALERT_KEY, FACT_READS_KEY, LiveFacts, liveFacts, readsFor, type LiveReaders, type MintHistoryOptions } from '../src/facts/index.ts';
 import { replayRecorded, type Frame, type HttpRequest, type HttpResponse, type Release, type Secrets } from '../src/providers/index.ts';
 import { engineFeed } from '../src/run/engine-feed.ts';
 import { parseTyped } from '../src/run/json.ts';
 import type { FactContext } from '../src/run/facts.ts';
-import { ALCHEMY_FREE, COINBASE_PUBLIC, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, ManualTimers, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
+import { ALCHEMY_FREE, COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, ManualTimers, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
 import { blockNetwork } from './helpers.ts';
 import { MINT, Market, T, makeWorker, passingMarket } from './worker-harness.ts';
 
@@ -126,6 +128,39 @@ describe('LiveFacts', () => {
     s.src.stop();
   });
 
+  it('reads chain volume at start and each new hour with the policy window, only when wired', async () => {
+    const s = setup();
+    const w = { volumeLagDays: TRIAL_POLICY.regime.volumeLagDays, volumeWindowDays: TRIAL_POLICY.regime.volumeWindowDays };
+    const calls: unknown[] = [];
+    const readers: LiveReaders = { ...s.f.readers, readChainVolume: async (r) => (calls.push(r), true) };
+    const src = new LiveFacts({
+      readers: () => readers, tickMs: 1_000, minReadGapMs: MIN, survivalAfterMs: 30 * MIN, survivalReadDelayMs: 5_000, solUsdStartHours: 27,
+      mintHistory: { maxPages: 20, funderPages: 3, funderTransactions: 10, insiderSlots: 2, firstBuyers: 20 }, chainVolume: w,
+    });
+    src.start(s.ctx);
+    await s.flush();
+    expect(calls).toEqual([w]);
+    s.timers.advance(29 * MIN);
+    await s.flush();
+    expect(calls).toEqual([w]);
+    s.timers.advance(MIN);
+    await s.flush();
+    expect(calls).toEqual([w, w]);
+    expect(s.facts.at(-1)?.value).toMatchObject({ counts: { 'chain-volume': { ok: 2, failed: 0 } } });
+    src.stop();
+    // The reader alone, without the window: no read.
+    const t = setup();
+    const quiet: unknown[] = [];
+    const src2 = new LiveFacts({
+      readers: () => ({ ...t.f.readers, readChainVolume: async (r) => (quiet.push(r), true) }), tickMs: 1_000, minReadGapMs: MIN, survivalAfterMs: 30 * MIN,
+      survivalReadDelayMs: 5_000, solUsdStartHours: 27, mintHistory: { maxPages: 20, funderPages: 3, funderTransactions: 10, insiderSlots: 2, firstBuyers: 20 },
+    });
+    src2.start(t.ctx);
+    await t.flush();
+    expect(quiet).toEqual([]);
+    src2.stop();
+  });
+
   it('reads what the evidence reasons name, at most once a gap per kind and mint', async () => {
     const s = setup();
     s.src.start(s.ctx);
@@ -150,6 +185,21 @@ describe('LiveFacts', () => {
     s.timers.advance(1_000);
     await s.flush();
     expect(s.f.calls.slice(1)).toEqual([['holders-all', 'M2']]);
+    s.src.stop();
+  });
+
+  it('the regime turning on releases the reads (supervisor ruling: staging stays, a live volume source unblocks it)', async () => {
+    const s = setup();
+    s.src.start(s.ctx);
+    s.cands.set('M1', { migratedAtMs: T0, gates: [{ gate: 'regime', code: 'unknown', input: 'curve-volume' }] });
+    s.timers.advance(5_000);
+    await s.flush();
+    expect(s.f.calls.slice(1)).toEqual([]);
+    // The regime is on: the next evaluation reaches the hard rejects and names the missing evidence.
+    s.cands.set('M1', { migratedAtMs: T0, gates: [H16('mint'), H16('xcheck')] });
+    s.timers.advance(1_000);
+    await s.flush();
+    expect(s.f.calls.slice(1)).toEqual([['accounts', 'M1'], ['xcheck', 'M1']]);
     s.src.stop();
   });
 
@@ -307,7 +357,7 @@ describe('the strategy keeps each candidate\'s last reasons with their inputs (w
     // The critical feed is up, so entries are not halted and candidates are evaluated.
     h.worker.feed.ingest('helius', { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: c.sink.now() });
     const m = await passingMarket(h);
-    expect(c.candidates().get(MINT2)).toEqual({ migratedAtMs: T + 3 * MIN, gates: null });
+    expect(c.candidates().get(MINT2)).toEqual({ migratedAtMs: T + 3 * MIN, lastEvalMs: null, gates: null });
     // Every fact kept current except a holder read that cannot be parsed: the reject names the holders as evidence.
     await m.run(3_000, 400, () => {
       m.slot();
@@ -367,5 +417,68 @@ describe('liveFacts: the production source', () => {
     expect(Date.parse(u.searchParams.get('end')!) - Date.parse(u.searchParams.get('start')!)).toBe(hours * 3_600_000);
     expect(frames.length).toBeGreaterThan(0);
     expect(frames.every((f) => f.key === RAW.solUsd)).toBe(true);
+  });
+
+  it('with GitHub wired, lists releases through the API, downloads from github.com from the window\'s first day (lag plus cap), keeps verified days in the state dir and alerts on a changed release', async () => {
+    const DAYMS = 86_400_000;
+    const today = 20_654 + 500;
+    const first = today - TRIAL_POLICY.regime.volumeLagDays - TRIAL_POLICY.regime.volumeWindowDays + 1;
+    const timers = new ManualTimers(today * DAYMS + 3_600_000);
+    const name = (d: number) => new Date(d * DAYMS).toISOString().slice(0, 10);
+    const csvOf = (d: number) => ['hour_start_ms,lamports,covered', ...Array.from({ length: 24 }, (_, h) => `${d * DAYMS + h * 3_600_000},5,1`)].join('\n') + '\n';
+    const checkOf = (d: number) => JSON.stringify({ day: name(d), hours: 24, mismatches: [], problems: [] });
+    const bot = { login: 'github-actions[bot]', id: 41_898_282 };
+    let forged = false;
+    const rel = (d: number) => {
+      const asset = (id: number, file: string, text: string) => ({ id, name: file, state: 'uploaded', uploader: bot, digest: `sha256:${createHash('sha256').update(forged ? `${text}x` : text).digest('hex')}`, browser_download_url: `https://github.com/macdarenz-droid/Meme-snipe/releases/download/data-volume-${name(d)}/${file}` });
+      return { tag_name: `data-volume-${name(d)}`, author: bot, draft: false, prerelease: true, assets: [asset(d * 10 + 1, `volume-hours-${name(d)}.csv`, csvOf(d)), asset(d * 10 + 2, `volume-check-${name(d)}.json`, checkOf(d))] };
+    };
+    const urls: string[] = [];
+    const http = async (req: HttpRequest): Promise<HttpResponse> => {
+      urls.push(req.url);
+      const ok = (text: string) => ({ status: 200, text, header: () => null }) as unknown as HttpResponse;
+      if (req.url.startsWith('https://api.github.com/repos/macdarenz-droid/Meme-snipe/releases?per_page=100&page=')) return ok(JSON.stringify([rel(first - 1), rel(first)]));
+      const m = /releases\/download\/data-volume-(\d{4}-\d{2}-\d{2})\/volume-(hours|check)-/.exec(req.url);
+      if (m !== null) {
+        const d = Date.parse(`${m[1]}T00:00:00Z`) / DAYMS;
+        return ok(m[2] === 'hours' ? csvOf(d) : checkOf(d));
+      }
+      return { status: 404, text: 'Not Found', header: () => null } as unknown as HttpResponse;
+    };
+    const sched = (spec: SchedulerSpec) => new Scheduler(spec, { timers });
+    const frames: { key: string; value: unknown }[] = [];
+    const facts: { key: string; value: unknown }[] = [];
+    const ctx = {
+      sink: { fact: (key: string, value: unknown) => void facts.push({ key, value }), now: () => timers.now() }, timers, watched: () => new Set<string>(), candidates: () => new Map(), tip: () => null,
+      schedulers: { helius: sched(HELIUS_FREE), alchemy: sched(ALCHEMY_FREE), jupiter: sched(JUPITER_FREE), rugcheck: sched(RUGCHECK_FREE) },
+      ingest: { ingest: (_s: unknown, body: { type: string; key: string; value: unknown }) => void frames.push({ key: body.key, value: body.value }) },
+    } as unknown as FactContext;
+    const stateDir = mkdtempSync(join(tmpdir(), 'facts-source-'));
+    const src = liveFacts({
+      policy: TRIAL_POLICY, secrets: { get: () => 'k' } as unknown as Secrets, http, goplus: sched(GOPLUS_FREE), coinbase: sched(COINBASE_PUBLIC),
+      github: { api: sched(GITHUB_RELEASES), downloads: sched(GITHUB_DOWNLOADS), stateDir },
+    });
+    src.start(ctx);
+    const settleAll = async () => {
+      for (let k = 0; k < 400; k++) {
+        await new Promise<void>((r) => setImmediate(r));
+        timers.advance(500);
+      }
+    };
+    await settleAll();
+    const gh = urls.filter((u) => u.includes('github.com'));
+    expect(gh).toEqual([
+      'https://api.github.com/repos/macdarenz-droid/Meme-snipe/releases?per_page=100&page=1',
+      `https://github.com/macdarenz-droid/Meme-snipe/releases/download/data-volume-${name(first)}/volume-check-${name(first)}.json`,
+      `https://github.com/macdarenz-droid/Meme-snipe/releases/download/data-volume-${name(first)}/volume-hours-${name(first)}.csv`,
+    ]);
+    expect(frames.filter((f) => f.key === RAW.volumeHour).length).toBe(24);
+    expect(readdirSync(join(stateDir, 'chain-volume'))).toEqual([`data-volume-${name(first)}.json`]);
+    // The next hour the listing shows another digest for that day: unknown, with an alert fact.
+    forged = true;
+    timers.advance(3_600_000);
+    await settleAll();
+    src.stop();
+    expect(facts.filter((f) => f.key === CHAIN_VOLUME_ALERT_KEY)).toEqual([{ key: CHAIN_VOLUME_ALERT_KEY, value: expect.objectContaining({ detail: expect.stringContaining(`data-volume-${name(first)} changed`) }) }]);
   });
 });
