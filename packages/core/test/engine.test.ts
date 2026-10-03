@@ -5,6 +5,7 @@ import {
   replayOnce, runToEnd, shiftTest, SimClock, type AsOfEntry, type Decision, type Feed, type FeedEvent, type Marker, type Strategy,
 } from '../src/engine/index.ts';
 import { CONFIG, MINT, SPEND } from './fixtures.ts';
+import { trapped } from './trap.ts';
 import { at, generateStream, POOL, PRICE, stubRun, stubStrategy, stubWorld, TRADE } from './engine-fixtures.ts';
 
 const market = (id: string, slot: number, tx = 0, ix = 0, key = PRICE, value: unknown = { price: 1n }): FeedEvent =>
@@ -416,6 +417,22 @@ describe('reconcile guard is fair under the cap', () => {
     expect(balanceSent.size).toBe(30);
   });
 
+  it('persistent orphans never starve balance reads: one place per window is kept for them', () => {
+    for (const orphanCount of [3, 20, 25, 60]) {
+      const g = new ReconcileGuard();
+      const orphans = Array.from({ length: orphanCount }, (_, n): Effect => ({ type: 'reconcile_orphan', intentId: `o${n}` as never, signature: `s${n}` as never }));
+      const balance: Effect = { type: 'reconcile_balances', intentId: 'exit-1' as never };
+      let balanceSends = 0;
+      const orphanSent = new Set<number>();
+      for (let slot = 1; slot <= 5000; slot++) {
+        orphans.forEach((fx, k) => { if (g.admit(fx, at(slot)) === 'sent') orphanSent.add(k); });
+        if (g.admit(balance, at(slot)) === 'sent') balanceSends++;
+      }
+      expect(balanceSends, `${orphanCount} orphans`).toBeGreaterThanOrEqual(Math.floor(5000 / 150) - 1);
+      expect(orphanSent.size, `${orphanCount} orphans`).toBe(orphanCount);
+    }
+  });
+
   it('a waiter that is no longer asked for gives up its place', () => {
     const g = new ReconcileGuard({ minSlotsBetween: 1n, windowSlots: 10n, maxPerWindow: 1 });
     const fx = (n: number): Effect => ({ type: 'reconcile_balances', intentId: `i${n}` as never });
@@ -461,49 +478,22 @@ describe('a strategy cannot change engine state outside the lifecycle', () => {
 });
 
 describe('runtime trap', () => {
-  const trapped = <T>(fn: () => T): T => {
-    const g = globalThis as Record<string, unknown>;
-    const proc = process as unknown as Record<string, unknown>;
-    const perf = performance as unknown as Record<string, unknown>;
-    const RealDate = Date;
-    const saved = {
-      Date: g.Date, random: Math.random, perfNow: perf.now, setTimeout: g.setTimeout, setInterval: g.setInterval,
-      setImmediate: g.setImmediate, queueMicrotask: g.queueMicrotask, nextTick: proc.nextTick, hrtime: proc.hrtime,
-      getBuiltinModule: proc.getBuiltinModule,
-    };
-    const trap = (name: string) => () => { throw new Error(`trap: ${name} called during replay`); };
-    class TrapDate extends RealDate {
-      constructor(...args: unknown[]) {
-        if (args.length === 0) throw new Error('trap: new Date() called during replay');
-        super(...(args as [number]));
-      }
-      static override now(): number { throw new Error('trap: Date.now called during replay'); }
-    }
-    g.Date = TrapDate;
-    Math.random = trap('Math.random');
-    perf.now = trap('performance.now');
-    for (const name of ['setTimeout', 'setInterval', 'setImmediate', 'queueMicrotask']) g[name] = trap(name);
-    proc.nextTick = trap('process.nextTick');
-    proc.hrtime = trap('process.hrtime');
-    proc.getBuiltinModule = trap('process.getBuiltinModule');
-    try {
-      return fn();
-    } finally {
-      g.Date = saved.Date;
-      Math.random = saved.random;
-      perf.now = saved.perfNow;
-      for (const name of ['setTimeout', 'setInterval', 'setImmediate', 'queueMicrotask'] as const) g[name] = saved[name];
-      proc.nextTick = saved.nextTick;
-      proc.hrtime = saved.hrtime;
-      proc.getBuiltinModule = saved.getBuiltinModule;
-    }
-  };
-
   it('10 replays run with the clock, randomness, timers and module loading replaced by traps', () => {
     const run = stubRun(generateStream('replay', 600));
     const hashes = trapped(() => replayHashes(run, 10));
     expect(new Set(hashes).size).toBe(1);
     expect(hashes[0]).toBe(replayOnce(run).hash);
+  });
+
+  it('the setup file traps every engine test: a strategy reading the clock fails the run', () => {
+    for (const cheat of [() => Date.now(), () => new Date(), () => Math.random(), () => performance.now(), () => setTimeout(() => {}, 0), () => new Intl.DateTimeFormat().format(), () => crypto.randomUUID()]) {
+      const replay = createReplay([market('a', 1)]);
+      const strategy: Strategy = { onMarket: () => { cheat(); return []; } };
+      const engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: { run: () => {} }, seed: 's', book: CONFIG });
+      expect(() => runToEnd(replay, engine)).toThrow(/trap/);
+    }
+    // Outside engine code the globals are back.
+    expect(typeof Date.now()).toBe('number');
   });
 
   it('the trap fires on a forbidden call (positive control)', () => {

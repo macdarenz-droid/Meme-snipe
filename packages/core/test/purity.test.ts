@@ -16,7 +16,7 @@ const BANNED_IDENTIFIERS = new Set([
   'XMLHttpRequest', 'EventSource', 'WebTransport', 'RTCPeerConnection', 'Worker', 'navigator', 'document', 'location',
   'localStorage', 'sessionStorage', 'indexedDB', 'globalThis', 'global', 'window', 'self', 'eval', 'Function', 'require',
   'module', 'Deno', 'Bun', 'random', 'randomBytes', 'randomUUID', 'randomInt', 'randomFill', 'randomFillSync',
-  'getRandomValues', 'generateKeyPair', 'generateKeyPairSync', 'getBuiltinModule', 'WeakRef', 'FinalizationRegistry',
+  'getRandomValues', 'generateKeyPair', 'generateKeyPairSync', 'getBuiltinModule', 'WeakRef', 'FinalizationRegistry', 'crypto',
 ]);
 
 const IO_MODULES = [
@@ -40,6 +40,18 @@ const BANNED_PROPERTIES = new Set([
   'setMilliseconds', 'setYear', 'toLocaleString', 'toLocaleDateString', 'toLocaleTimeString', 'toLocaleUpperCase',
   'toLocaleLowerCase', 'localeCompare', 'toDateString', 'toTimeString',
 ]);
+
+/** Built-in globals. Reflection on them (`Reflect.*`, property descriptors) is how a ban-list gets bypassed. */
+const GLOBAL_OBJECTS = new Set([
+  'Math', 'Date', 'Intl', 'JSON', 'Object', 'Reflect', 'Number', 'String', 'Array', 'BigInt', 'Symbol', 'Proxy', 'Promise',
+  'Atomics', 'crypto', 'console', 'process', 'performance', 'globalThis', 'Function',
+]);
+
+/** Inside ledger/: SQL that reads the clock or draws randomness, which would make the ledger nondeterministic. */
+const NONDETERMINISTIC_SQL = /'now'|\brandom\s*\(|\brandomblob\s*\(|\bcurrent_(timestamp|date|time)\b/i;
+
+/** A module path that reaches into the ledger. Only ledger/ itself may; others go through the EffectRunner or an adapter. */
+const LEDGER_PATH = /(^|\/)ledger(\/|\.ts$|$)/;
 
 /** The only `Math` members core may use, always as `Math.<name>`: pure functions and constants. */
 const MATH_ALLOWED = new Set([
@@ -95,12 +107,19 @@ const tokenize = (source: string): { tokens: Token[]; problems: string[] } => {
     return false;
   };
   const readTemplate = () => {
-    // At the character after ` or }. Reads text up to the next ${ or closing `.
+    // At the character after ` or }. Reads text up to the next ${ or closing `; the text is kept for the SQL check.
+    let text = '';
     while (i < source.length) {
       const c = source[i]!;
-      if (c === '\\') { i += 2; continue; }
-      if (c === '`') { i++; tokens.push({ type: 'template', value: '`' }); return; }
-      if (c === '$' && source[i + 1] === '{') { i += 2; braces.push('template'); tokens.push({ type: 'punct', value: '${' }); return; }
+      if (c === '\\') { text += source[i + 1] ?? ''; i += 2; continue; }
+      if (c === '`') { i++; tokens.push({ type: 'template', value: text }); return; }
+      if (c === '$' && source[i + 1] === '{') {
+        i += 2;
+        braces.push('template');
+        tokens.push({ type: 'template', value: text }, { type: 'punct', value: '${' });
+        return;
+      }
+      text += c;
       i++;
     }
     problems.push('unterminated template literal');
@@ -171,7 +190,7 @@ const tokenize = (source: string): { tokens: Token[]; problems: string[] } => {
   return { tokens, problems };
 };
 
-const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans: ReadonlySet<string> = new Set()): string[] => {
+const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans: ReadonlySet<string> = new Set(), context: { readonly folder: string } = { folder: '' }): string[] => {
   const { tokens, problems } = tokenize(source);
   const found = [...problems];
   tokens.forEach((t, k) => {
@@ -188,7 +207,13 @@ const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans
       if (folderBans.has(t.value)) found.push(`${t.value} in this folder`);
       if (t.value === 'import' && !property && (next?.value === '(' || next?.value === '.')) found.push('dynamic import or import.meta');
     }
+    if (t.type === 'id' && t.value === 'Reflect' && !(next?.value === '.' && tokens[k + 2]?.value === 'ownKeys')) found.push('Reflect beyond ownKeys');
+    if (t.type === 'id' && (t.value === 'getOwnPropertyDescriptor' || t.value === 'getOwnPropertyDescriptors') && next?.value === '(' && GLOBAL_OBJECTS.has(tokens[k + 2]?.value ?? '')) {
+      found.push('property descriptor of a global');
+    }
     if (t.type === 'str' && BANNED_STRINGS.has(t.value) && !allow.has(t.value)) found.push(`string '${t.value}'`);
+    if ((t.type === 'str' || t.type === 'template') && context.folder !== 'ledger' && LEDGER_PATH.test(t.value)) found.push('reaches into ledger/');
+    if ((t.type === 'str' || t.type === 'template') && context.folder === 'ledger' && NONDETERMINISTIC_SQL.test(t.value)) found.push('SQL reading the clock or randomness');
   });
   return found;
 };
@@ -255,6 +280,11 @@ describe('purity guard', () => {
       'const c = a.localeCompare(b);',
       'const u = s.toLocaleUpperCase();',
       'const s = d.toDateString() + d.toTimeString();',
+      "const v = Reflect.apply(Math.max, null, []); const g = Reflect.get(o, 'k');",
+      "const d = Object.getOwnPropertyDescriptor(Date, 'now');",
+      'const ds = Object.getOwnPropertyDescriptors(Math);',
+      'const b = crypto.getRandomValues(new Uint8Array(4));',
+      'const fmt = Intl.NumberFormat;',
       "const f = obj.getBuiltinModule('x');",
       'const p = performance;',
       'const k = { a: process };',
@@ -296,6 +326,23 @@ describe('purity guard', () => {
     for (const e of EXEMPTIONS) expect(e.why.length).toBeGreaterThan(0);
   });
 
+  it('the ledger is reached only through the effect runner, and its SQL is deterministic', () => {
+    // The reviewer's probes: an engine file importing a ledger helper that runs julianday('now') and random().
+    const use = "import { now } from '../ledger/zz_db.ts'; export const t = now();";
+    expect(scan(use, new Set(), new Set(), { folder: 'engine' })).toContain('reaches into ledger/');
+    expect(scan("import { labels } from '../ledger/scoring/index.ts';", new Set(), new Set(), { folder: 'engine' })).toContain('reaches into ledger/');
+    expect(scan("import { x } from '@meme-snipe/core/ledger';", new Set(), new Set(), { folder: 'engine' })).toContain('reaches into ledger/');
+    const db = "import { DatabaseSync } from 'node:sqlite'; export { DatabaseSync }; export const now = (db: DatabaseSync) => db.prepare(`select julianday('now'), random()`).get();";
+    const ledger = join(SRC, 'ledger', 'zz_db.ts');
+    expect(scan(db, allowedFor(ledger), folderBansFor(ledger), { folder: 'ledger' })).toContain('SQL reading the clock or randomness');
+    for (const sql of ["'select randomblob(8)'", "'insert into t values (current_timestamp)'", '`select current_date`', "\"select datetime('now')\""]) {
+      expect(scan(`const q = ${sql};`, allowedFor(ledger), new Set(), { folder: 'ledger' }), sql).toContain('SQL reading the clock or randomness');
+    }
+    // Inside ledger/, its own modules are fine; outside, words such as "ledgers" in prose strings are not paths.
+    expect(scan("import { codec } from './codec.ts'; import { x } from '../ledger/sqlite.ts';", allowedFor(ledger), new Set(), { folder: 'ledger' })).toEqual([]);
+    expect(scan("const s = 'the ledger file';", new Set(), new Set(), { folder: 'engine' })).toEqual([]);
+  });
+
   it('the engine folder also bans asynchronous code', () => {
     const engine = folderBansFor(join(SRC, 'engine', 'x.ts'));
     for (const snippet of ['async function f() {}', 'await x;', 'Promise.resolve(1);', 'p.then(f);']) expect(scan(snippet, new Set(), engine), snippet).not.toEqual([]);
@@ -306,7 +353,7 @@ describe('purity guard', () => {
     const files = sourceFiles(SRC);
     expect(files.length).toBeGreaterThanOrEqual(15);
     expect(files.some((f) => f.includes(`${sep}engine${sep}`))).toBe(true);
-    const found = files.flatMap((f) => scan(readFileSync(f, 'utf8'), allowedFor(f), folderBansFor(f)).map((name) => `${relative(SRC, f)}: ${name}`));
+    const found = files.flatMap((f) => scan(readFileSync(f, 'utf8'), allowedFor(f), folderBansFor(f), { folder: topFolder(f) }).map((name) => `${relative(SRC, f)}: ${name}`));
     expect(found).toEqual([]);
   });
 });

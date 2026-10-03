@@ -35,7 +35,8 @@ const reconcileKey = (fx: Effect): string | null => {
  * The runner rule from the CORE-1 review: every tick re-emits `reconcile_balances` for each intent with a
  * known outcome and `reconcile_orphan` for each unbooked landing, so repeats are de-duplicated and the
  * total is rate-limited. Under the cap, an unbooked landing (`reconcile_orphan`, which blocks every entry)
- * goes before a balance read; within a kind, keys are served in rounds: a free place goes to the waiting key
+ * goes before a balance read, except that each window keeps one place for a balance read while one waits;
+ * within a kind, keys are served in rounds: a free place goes to the waiting key
  * sent the fewest times, then the one waiting longest. A new key joins the current round (it neither jumps ahead
  * of keys still owed a send nor falls behind), so no key is starved however many keys there are.
  * Dropping a repeat is safe because the lifecycle asks again on a later tick and the queue keeps its place.
@@ -49,7 +50,8 @@ export class ReconcileGuard {
   #seq = 0;
   /** Keys refused for the cap, with the slot they were last asked for. */
   readonly #waiting = new Map<string, bigint>();
-  #recent: bigint[] = [];
+  /** Sends in the current window: when, and whether it was an orphan reconcile. */
+  #recent: { readonly slot: bigint; readonly orphan: boolean }[] = [];
 
   constructor(limits: ReconcileLimits = DEFAULT_RECONCILE_LIMITS) {
     if (limits.minSlotsBetween < 1n || limits.windowSlots < 1n || !Number.isSafeInteger(limits.maxPerWindow) || limits.maxPerWindow < 1) {
@@ -65,25 +67,38 @@ export class ReconcileGuard {
     const { minSlotsBetween, windowSlots, maxPerWindow } = this.#limits;
     const last = this.#lastSent.get(key);
     if (last !== undefined && now.slot - last < minSlotsBetween) return 'duplicate';
-    this.#recent = this.#recent.filter((slot) => now.slot - slot < windowSlots);
+    this.#recent = this.#recent.filter((r) => now.slot - r.slot < windowSlots);
     // A waiter no longer asked for (its intent resolved) gives up its place.
     for (const [k, asked] of this.#waiting) if (now.slot - asked > windowSlots) this.#waiting.delete(k);
     const mine = this.#turnOf(key);
     const free = maxPerWindow - this.#recent.length;
-    let ahead = 0;
-    const rank = (k: string) => (k.startsWith('reconcile_orphan|') ? 0 : 1);
-    for (const k of this.#waiting.keys()) {
-      if (k === key) continue;
+    const isOrphan = (k: string) => k.startsWith('reconcile_orphan|');
+    const before = (k: string) => {
       const theirs = this.#turnOf(k);
-      const byKind = rank(k) - rank(key);
-      if (byKind < 0 || (byKind === 0 && (theirs.sends < mine.sends || (theirs.sends === mine.sends && theirs.seq < mine.seq)))) ahead++;
+      return theirs.sends < mine.sends || (theirs.sends === mine.sends && theirs.seq < mine.seq);
+    };
+    const others = [...this.#waiting.keys()].filter((k) => k !== key);
+    // Orphans go first, but every window keeps one place for a balance read while one waits, so exits
+    // still reconcile (and positions close) when orphan reads keep failing.
+    const balanceSentThisWindow = this.#recent.some((r) => !r.orphan);
+    let ahead: number;
+    let places = free;
+    if (isOrphan(key)) {
+      ahead = others.filter((k) => isOrphan(k) && before(k)).length;
+      if (!balanceSentThisWindow && others.some((k) => !isOrphan(k))) places--;
+    } else if (!balanceSentThisWindow) {
+      // The reserved place: the first balance read in rounds order takes it, ahead of any orphan.
+      ahead = others.filter((k) => !isOrphan(k) && before(k)).length;
+      places = Math.min(free, 1);
+    } else {
+      ahead = others.filter((k) => isOrphan(k) || before(k)).length;
     }
-    if (ahead >= free) {
+    if (ahead >= places) {
       this.#waiting.set(key, now.slot);
       return 'rate_limited';
     }
     this.#waiting.delete(key);
-    this.#recent.push(now.slot);
+    this.#recent.push({ slot: now.slot, orphan: isOrphan(key) });
     this.#lastSent.set(key, now.slot);
     mine.sends++;
     mine.seq = this.#seq++;
