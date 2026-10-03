@@ -24,8 +24,11 @@ case "$cmd" in
     jqx=""
     while (( $# )); do [[ "$1" == --jq ]] && jqx=$2; shift; done
     [[ -z "$jqx" ]] && exit 0
-    (cd "$dir" && for f in *; do printf '{"name":"%s","size":%d}\n' "$f" "$(stat -c %s "$f")"; done) |
-      jq -s '{assets: .}' | jq -r "$jqx" ;;
+    draft=false; [[ -e "$dir/.draft" ]] && draft=true
+    (cd "$dir" && for f in *; do [[ -e "$f" ]] || continue
+      st=uploaded; grep -qx "$f" .partial 2>/dev/null && st=starter
+      printf '{"name":"%s","size":%d,"state":"%s"}\n' "$f" "$(stat -c %s "$f")" "$st"; done) |
+      jq -s --argjson d "$draft" '{isDraft: $d, assets: .}' | jq -r "$jqx" ;;
   download)
     [[ -d "$dir" ]] || exit 1
     echo "$tag" >> "$T/downloads.log"
@@ -255,12 +258,26 @@ mkpd() {
 mkpd
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 7 ]] &&
   ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity and sums" || no "publish-day create"
+echo "rerun QA report with different live results" > "$pd/qa-2026-09-30.md"; echo '{"rerun":1}' > "$pd/qa-2026-09-30.json"
+(cd "$pd" && sha256sum units-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
-  ok "publish-day: an existing release with the same files is accepted and left unchanged" || no "publish-day existing same"
+  ! grep -q rerun "$T/rel/data-day-2026-09-30/qa-2026-09-30.md" &&
+  ok "publish-day: a complete release is accepted unchanged although the rerun's QA files differ in size" || no "publish-day complete rerun"
+o2=$(GITHUB_OUTPUT="$T/ghout" bash "$here/publish-day.sh" --check 2026-09-30) && grep -qx complete=true "$T/ghout" &&
+  ok "publish-day --check: a published, complete day is reported (the scan job then skips it before any read)" || no "publish-day check complete: $o2"
+: > "$T/ghout"; GITHUB_OUTPUT="$T/ghout" bash "$here/publish-day.sh" --check 2026-09-29 >/dev/null && grep -qx complete=false "$T/ghout" &&
+  ok "publish-day --check: an unpublished day is scanned" || no "publish-day check absent"
+touch "$T/rel/data-day-2026-09-30/.draft"
+out=$(bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && no "publish-day accepted a draft" ||
+  { [[ "$out" == *"draft"* && $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] && ok "publish-day: a draft release is refused and not touched" || no "publish-day draft: $out"; }
+rm "$T/rel/data-day-2026-09-30/.draft"; echo units-2026-09-30.tar.part00 > "$T/rel/data-day-2026-09-30/.partial"
+bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && no "publish-day accepted a half-uploaded asset" || ok "publish-day: an asset not fully uploaded is refused"
+rm "$T/rel/data-day-2026-09-30/.partial"
 rm "$T/rel/data-day-2026-09-30/units-2026-09-30.tar.part01"; before=$(ls "$T/rel/data-day-2026-09-30" | sort | tr '\n' ' ')
 out=$(bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && no "publish-day accepted an incomplete release" ||
-  { [[ "$out" == *"incomplete release"* && $(ls "$T/rel/data-day-2026-09-30" | sort | tr '\n' ' ') == "$before" && $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
-    ok "publish-day: an existing release missing a part fails the step and is not touched" || no "publish-day incomplete: $out"; }
+  { [[ "$out" == *"differ"* && $(ls "$T/rel/data-day-2026-09-30" | sort | tr '\n' ' ') == "$before" && $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
+    ok "publish-day: a release missing a part (count from its own SHA256SUMS) fails and is not touched" || no "publish-day incomplete: $out"; }
+GITHUB_OUTPUT="$T/ghout" bash "$here/publish-day.sh" --check 2026-09-30 >/dev/null 2>&1 && no "--check passed an incomplete release" || ok "publish-day --check: an incomplete release fails the job"
 rm -rf "$T/rel/data-day-2026-09-30"; mkpd; echo corrupt >> "$pd/units-2026-09-30.tar.part00"
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && no "publish-day published a corrupt part" ||
   { [[ ! -d "$T/rel/data-day-2026-09-30" ]] && ok "publish-day: a checksum mismatch publishes nothing" || no "publish-day corrupt"; }
@@ -282,6 +299,24 @@ tree=$(cd "$here" && git rev-parse HEAD:research/historical/scanner)
 [[ "$r1" == "$tree-go1.24.7" && "$r2" == "$tree-go1.24.8" ]] && ok "scanner-rev: a toolchain-only change gives a new revision ($r1 vs ...-go1.24.8)" || no "scanner-rev: $r1 / $r2"
 (cd "$here" && PATH="$G:$PATH" FAKE_GOVERSION=go1.25.0 GO_VERSION=1.24.7 bash "$here/scanner-rev.sh" >/dev/null 2>&1) && no "scanner-rev accepted another toolchain" ||
   ok "scanner-rev: a toolchain other than go\$GO_VERSION fails the build"
+
+# ---- data-scan.yml: a published day is skipped before any archive read; the token only in two clean steps ----
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check and publish steps, both in a clean shell" || no "workflow skip/token structure"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+i = next(k for k, s in enumerate(steps) if s.get("id") == "published")
+names = [s.get("name", s.get("uses", "")) for s in steps]
+assert all("Scan" not in n and "Build" not in n for n in names[:i]), names[:i]
+for s in steps[i + 1:]:
+    if "setup-node" in s.get("uses", ""):
+        continue
+    assert "steps.published.outputs.complete != 'true'" in s.get("if", ""), s
+tok = [s for s in steps if "github.token" in str(s)]
+assert [s.get("id") or s.get("name") for s in tok] == ["published", "Publish this day"], tok
+for s in tok:
+    assert s["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc"), s
+    assert s["env"]["BASH_ENV"] == "" and s["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), s
+PY
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
