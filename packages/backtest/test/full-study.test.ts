@@ -70,7 +70,7 @@ describe('BT-2 study', () => {
     expect(reg.trials.map((t) => t.trialId).sort()).toEqual([configId(config, 'U1'), configId(config, 'U2')].sort());
     // Reported per regime (here every trade is after B4) and pooled under its own label; 2 days are too few.
     expect(Object.keys(first.gates.G1)).toEqual(expect.arrayContaining(['U1 all regimes (pooled)', 'U2 all regimes (pooled)', 'U2 regime B4']));
-    for (const k of Object.keys(first.gates.G1)) expect(k).toMatch(/^U[12] (regime B\d|all regimes \(pooled\))$/);
+    for (const k of Object.keys(first.gates.G1)) expect(k).toMatch(/^U[12] (regime B\d|all regimes \(pooled\)(, sensitivity: no rent recovery)?)$/);
     for (const g of Object.values(first.gates.G1)) expect(g.status).toBe('not-proven');
     expect(first.holdoutRegime).toBe('B4');
     expect(first.gates.G2.status).toBe('not-proven');

@@ -18,6 +18,8 @@ export interface ScoredTrade extends TradeOutcome {
   readonly exitReason: TradeRecord['exitReason'];
   /** Still held when the data ended (valued at the last rung's quote): its window was not fully observed. */
   readonly censored: boolean;
+  /** Sensitivity line: the same trade with the token-account rent never returned (reported, never gating). */
+  readonly rNetNoRent: number;
 }
 
 /** The universe tag of a study position id `p:<tag>:<mint>`. */
@@ -28,11 +30,12 @@ export const scoreRun = (r: RunResult, fills: FillConfig): ScoredTrade[] => {
   const { trades } = tradesOf(r, fills);
   return trades.map((t) => {
     const rNet = Number(t.net) / Number(t.entrySol);
+    const rNetNoRent = Number(t.net - t.rentReturned) / Number(t.entrySol);
     const blocked = t.exitReason === 'blocked';
     return {
       tag: tagOf(t.id), mint: t.mint, day: melbourneDay(t.openedAt), rNet, ySevere: blocked || rNet <= -0.5, blocked,
       openedAt: t.openedAt, closedAt: t.closedAt, net: t.net.toString(), entrySol: t.entrySol.toString(), exitReason: t.exitReason,
-      censored: blocked && t.closedAt >= r.endedAt,
+      censored: blocked && t.closedAt >= r.endedAt, rNetNoRent,
     };
   });
 };

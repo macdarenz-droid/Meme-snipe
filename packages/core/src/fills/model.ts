@@ -32,7 +32,10 @@ export interface FillScenario {
   readonly slippagePpm: bigint;
   /** Take-profit judged on the trade's wick or on the slot's close (§11: conservative uses close). For the exit rules. */
   readonly takeProfit: 'wick' | 'close';
-  /** False: token-account rent counts as never returned (conservative). */
+  /**
+   * True: the token-account rent comes back when the position's final sell lands (the account is closed in that
+   * transaction); a blocked or unlanded final exit keeps it lost. False: never returned (a sensitivity line only).
+   */
   readonly rentRecovery: boolean;
 }
 

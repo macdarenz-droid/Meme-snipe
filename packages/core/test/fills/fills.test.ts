@@ -178,7 +178,9 @@ describe('landing draws', () => {
     const c = FILL_CONFIG.scenarios.conservative;
     expect(c.slippagePpm).toBe(1_500_000n);
     expect(c.takeProfit).toBe('close');
-    expect(c.rentRecovery).toBe(false);
+    // fills-2: rent returns when the final sell lands (the account closes in it); trades.ts keeps it lost otherwise.
+    expect(c.rentRecovery).toBe(true);
+    expect(FILL_CONFIG.version).toBe('fills-2');
     expect(Math.min(...c.landingSlots)).toBeGreaterThanOrEqual(Math.max(...base.landingSlots));
   });
 });

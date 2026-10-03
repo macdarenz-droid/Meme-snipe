@@ -41,6 +41,9 @@ describe('BT-2 study runs', () => {
     expect(enters[0]!.reasons[1]).toBe('U2');
     const { trades } = tradesOf(r, FILL_CONFIG);
     expect(trades).toHaveLength(1);
+    // fills-2: the final sell landed, so the conservative scenario returns the token-account rent with it.
+    expect(trades[0]!.exitReason).toBe('time-stop');
+    expect(trades[0]!.rentReturned).toBe(FILL_CONFIG.network.tokenAccountRent);
     // The exit came from EXIT-1's rules, booked under a lifecycle reason.
     expect(decisions(r.records).some((d) => /^exit (time_flat|time_max|price_stop|take_profit|negative_flow|trailing_stop|break_even|liquidity_drop)/.test(d.reasons[0]!))).toBe(true);
   });

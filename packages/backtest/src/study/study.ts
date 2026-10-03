@@ -144,6 +144,9 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       const pick = <T extends { regime: string }>(xs: readonly T[]) => (g === 'pooled' ? xs : xs.filter((t) => t.regime === g));
       G1[`${u} ${g === 'pooled' ? 'all regimes (pooled)' : `regime ${g}`}`] = g1({ universe: u, configId: ids[u]!, trades: pick(tradesOf(u)), control: pick(controlOf(u)) }, reg.trials, matrix, seedNumber(`${i.seed}:g1:${u}:${g}`), before);
     }
+    // Sensitivity, reported and never gating: the same trades with the token-account rent never returned (fills-2 note).
+    const noRent = <T extends { rNetNoRent: number }>(xs: readonly T[]) => xs.map((t) => ({ ...t, rNet: t.rNetNoRent }));
+    G1[`${u} all regimes (pooled), sensitivity: no rent recovery`] = g1({ universe: u, configId: ids[u]!, trades: noRent(tradesOf(u)), control: noRent(controlOf(u)) }, reg.trials, matrix, seedNumber(`${i.seed}:g1:${u}:norent`), before);
   }
 
   // 4. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14).
@@ -184,7 +187,12 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     });
     reg = { ...reg, holdouts: r.registry };
     writeStudyRegistry(i.registryPath, reg);
-    G2 = r;
+    // Sensitivity on the opened holdout (already scored above, so no further look): the mean with rent never returned.
+    const sens = ready.map((u) => {
+      const xs = (open.outcomes.strategy[u] ?? []).map((t) => t.rNetNoRent);
+      return `${u}: holdout mean with no rent recovery ${xs.length === 0 ? 'n/a' : (xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(4)} (sensitivity, not gating)`;
+    });
+    G2 = { ...r, notes: [...r.notes, ...sens] };
   }
 
   // 6. G0: replays, the leak test on the walk-forward data, the ledger replay check and the run's validity.

@@ -15,7 +15,7 @@ export interface FillConfig {
 const LAND = { pumpswap: 660_000n, 'pump-curve': 490_000n } as const;
 
 const VALUES: FillConfig = {
-  version: 'fills-1',
+  version: 'fills-2',
   network: {
     signaturesPerTx: 1n,
     baseFeePerSignature: 5_000n,
@@ -34,11 +34,13 @@ const VALUES: FillConfig = {
       discoverySlots: [2, 3, 4, 5, 8], landingSlots: [1, 2, 2, 3, 4],
       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick', rentRecovery: true,
     },
-    // p90 latency (a Jupiter-recent fallback is about 5 s), slippage x1.5, close-based take-profit, no rent recovery.
+    // p90 latency (a Jupiter-recent fallback is about 5 s), slippage x1.5, close-based take-profit. Rent comes back only
+    // when the final sell lands, because the builders close the token account in that transaction (fills-2,
+    // supervisor ruling 2026-10-04); a blocked or never-landed final exit keeps it lost.
     conservative: {
       name: 'conservative', landPpm: LAND, dropPpm: 0n,
       discoverySlots: [17], landingSlots: [6],
-      confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_500_000n, takeProfit: 'close', rentRecovery: false,
+      confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_500_000n, takeProfit: 'close', rentRecovery: true,
     },
     optimistic: {
       name: 'optimistic', landPpm: LAND, dropPpm: 0n,
