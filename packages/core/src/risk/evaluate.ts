@@ -71,9 +71,7 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
   const problems: RiskReason[] = [];
   const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...a.entries.map((e) => e.atMs)];
   if (times.some((t) => !isTime(t) || t > nowMs)) problems.push(reason('bankroll_invalid', 'account history has an invalid or future time'));
-  if (!Number.isSafeInteger(a.unresolvedEntries) || a.unresolvedEntries < 0 || a.heldReservations < 0n) {
-    problems.push(reason('bankroll_invalid', 'unresolved entries or held reservations are invalid'));
-  }
+  if (a.heldReservations < 0n) problems.push(reason('bankroll_invalid', 'held reservations are negative'));
 
   // Marked loss of open positions. An unknown or stale mark counts as a total loss here, and refuses entries.
   let markedLoss = 0n;
@@ -141,7 +139,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   else if (!fresh(market.solPrice.atMs, nowMs, policy.gates.maxQuoteAgeMs) || market.solPrice.value <= 0n) reasons.push(reason('sol_price_stale', 'SOL price is stale or invalid'));
 
   // R3: one open position, counting an unresolved entry.
-  const open = account.openPositions.length + account.unresolvedEntries;
+  const open = account.openPositions.length + account.unresolvedEntries.length;
   if (open >= policy.positions.maxOpen) reasons.push(reason('max_open_positions', `${open} open or unresolved, limit ${policy.positions.maxOpen}`));
 
   // R4: SOL balance known and fresh, and above the floor.
@@ -218,14 +216,16 @@ const clockNow = (input: RiskInput): number => {
 // ---------- Exits ----------
 
 /**
- * Exits are never blocked by any risk control. This only reports which entry controls are tripped, for the log; it
- * never throws, whatever the inputs.
+ * Exits are never blocked by any risk control. This reports which entry controls are tripped, for the log, and returns
+ * new trips (R9, R10) so that a marked dip seen while managing an exit is latched even if it recovers before the next
+ * entry is evaluated. It never throws, whatever the inputs.
  */
 export const evaluateExit = (input: RiskInput): ExitDecision => {
   try {
-    return { allow: true, tripped: accountCheck(input, clockNow(input)).reasons };
+    const check = accountCheck(input, clockNow(input));
+    return { allow: true, tripped: check.reasons, trips: check.trips };
   } catch {
-    return { allow: true, tripped: [] };
+    return { allow: true, tripped: [], trips: [] };
   }
 };
 
@@ -279,8 +279,10 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
       reasons.push(reason('reentry_after_stop', 'this mint was stopped out inside the re-entry window'));
     }
   }
-  // R15: never add to a position.
-  if (account.openPositions.some((p) => p.mint === request.mint)) reasons.push(reason('add_to_position', 'a position in this mint is open'));
+  // R15: never add to a position, open or still being entered.
+  if (account.openPositions.some((p) => p.mint === request.mint) || account.unresolvedEntries.some((u) => u.mint === request.mint)) {
+    reasons.push(reason('add_to_position', 'a position in this mint is open or being entered'));
+  }
   // R5: stop distance.
   const stopOk = Number.isSafeInteger(request.stopBps) && request.stopBps > 0 && request.stopBps <= Number(BPS);
   if (!stopOk) reasons.push(reason('stop_invalid', `stop distance ${request.stopBps} bps is not valid`));
@@ -429,6 +431,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
     intentId: request.intentId,
     amount,
     limits: { maxHeld, maxCount: policy.positions.maxOpen - account.openPositions.length },
+    accountVersion: account.version,
   };
   return {
     allow: true, reasons: [], trips: check.trips, snapshot: s, notional, spendLamports: spend, maxCostsLamports: cMax,

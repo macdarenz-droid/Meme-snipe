@@ -80,7 +80,10 @@ export interface RiskClock {
   now(): { readonly receivedAt: number };
 }
 
-/** A finished trade from the ledger. `netPnl` is after every fee and cost. */
+/**
+ * A finished trade from the ledger. `notional` is the entry's notional q as decided (`EntryAllowed.notional`), costs
+ * excluded, so R15 compares a new q with the last q. `netPnl` is after every fee and cost.
+ */
 export interface ClosedTrade {
   readonly mint: Mint;
   readonly openedAtMs: number;
@@ -122,10 +125,15 @@ export interface AccountHistory {
   readonly closedTrades: readonly ClosedTrade[];
   readonly openPositions: readonly OpenPosition[];
   readonly entries: readonly EntryRecord[];
-  /** Entry intents not yet resolved (each holds a reservation). Counts as an open position (R3). */
-  readonly unresolvedEntries: number;
+  /** Entry intents not yet resolved (each holds a reservation), by mint. Each counts as an open position (R3). */
+  readonly unresolvedEntries: readonly { readonly mint: Mint }[];
   /** Lamports held by those reservations right now (the reservation store's total). */
   readonly heldReservations: Lamports;
+  /**
+   * The ledger's account version for this snapshot. It advances with every change to the account (reservation, release,
+   * fill, position, closed trade, flow); the reservation store refuses a request made from an older version.
+   */
+  readonly version: bigint;
 }
 
 /**
@@ -247,4 +255,6 @@ export interface ExitDecision {
   readonly allow: true;
   /** Entry controls that are tripped right now, for the log. They never block an exit. */
   readonly tripped: readonly RiskReason[];
+  /** Triggers that tripped now and are not latched yet (R9, R10): the caller stores them, as for an entry. */
+  readonly trips: readonly Trip[];
 }

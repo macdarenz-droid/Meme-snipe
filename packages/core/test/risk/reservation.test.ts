@@ -3,17 +3,19 @@
 // total reserved never exceeds the limit, computed independently from §8's formulas.
 import { describe, expect, test } from 'vitest';
 import { PolicyError, TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
-import { intentId, reservationId } from '../../src/domain/index.ts';
+import { type Mint, intentId, reservationId } from '../../src/domain/index.ts';
 import {
-  type ClosedTrade, type EntryAllowed, type ReservationRequest, type RiskInput, evaluateEntry, melbourneWeek, reserve,
+  type ClosedTrade, type EntryAllowed, type OpenPosition, type ReservationRequest, type RiskInput, evaluateEntry, maxTradeCosts,
+  melbourneWeek, reserve,
 } from '../../src/risk/index.ts';
 import { type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
 import {
-  HOUR, MINT_A, MINT_B, MemoryReservationStore, NOW, PRICE, SOL, account, baseInput, baseRequest, clockAt, codes, trade,
+  HOUR, MINT_A, MINT_B, MemoryReservationStore, NETWORK, NOW, PRICE, RENT, SOL, account, baseInput, baseRequest, clockAt, codes, trade,
 } from './helpers.ts';
 
-const request = (amount: bigint, maxHeld: bigint, maxCount = 1, n = 1): ReservationRequest => ({
+const request = (amount: bigint, maxHeld: bigint, maxCount = 1, n = 1, accountVersion = 0n): ReservationRequest => ({
   reservationId: reservationId(`r-${n}`), intentId: intentId(`i-${n}`), amount: lamports(amount), limits: { maxHeld: lamports(maxHeld), maxCount },
+  accountVersion,
 });
 
 describe('reservation edge cases', () => {
@@ -26,16 +28,17 @@ describe('reservation edge cases', () => {
   });
   test('the limit includes what is already held', () => {
     const s = new MemoryReservationStore();
-    expect(reserve(s, request(600n, 1_000n, 2, 1), NOW).ok).toBe(true);
-    expect(reserve(s, request(400n, 1_000n, 2, 2), NOW)).toEqual({ ok: true, heldAfter: 1_000n });
-    expect(reserve(s, request(1n, 1_000n, 3, 3), NOW)).toEqual({ ok: false, reason: 'over_limit' });
+    expect(reserve(s, request(600n, 1_000n, 2, 1, 0n), NOW).ok).toBe(true);
+    expect(reserve(s, request(400n, 1_000n, 2, 2, 1n), NOW)).toEqual({ ok: true, heldAfter: 1_000n });
+    expect(reserve(s, request(1n, 1_000n, 3, 3, 2n), NOW)).toEqual({ ok: false, reason: 'over_limit' });
   });
   test('the count limit, duplicates and empty amounts are refused', () => {
     const s = new MemoryReservationStore();
-    expect(reserve(s, request(1n, 1_000n, 1, 1), NOW).ok).toBe(true);
-    expect(reserve(s, request(1n, 1_000n, 1, 2), NOW)).toEqual({ ok: false, reason: 'too_many' });
-    expect(reserve(s, request(1n, 1_000n, 5, 1), NOW)).toEqual({ ok: false, reason: 'already_reserved' });
-    expect(reserve(s, request(0n, 1_000n, 5, 9), NOW)).toEqual({ ok: false, reason: 'not_an_entry' });
+    expect(reserve(s, request(1n, 1_000n, 1, 1, 0n), NOW).ok).toBe(true);
+    expect(reserve(s, request(1n, 1_000n, 1, 2, 1n), NOW)).toEqual({ ok: false, reason: 'too_many' });
+    expect(reserve(s, request(1n, 1_000n, 5, 1, 1n), NOW)).toEqual({ ok: false, reason: 'already_reserved' });
+    expect(reserve(s, request(0n, 1_000n, 5, 9, 1n), NOW)).toEqual({ ok: false, reason: 'not_an_entry' });
+    expect(reserve(s, request(1n, 1_000n, 5, 10, 0n), NOW)).toEqual({ ok: false, reason: 'stale_snapshot' });
   });
   test('an allowed decision reserves q + C against the R6 allowance', () => {
     const d = evaluateEntry(baseInput(), baseRequest()) as EntryAllowed;
@@ -98,46 +101,89 @@ const oracleLimitLamports = (input: RiskInput, weekStart: number): bigint => {
 };
 
 describe('property: no sequence of inputs lets the total reserved exceed the limit', () => {
-  test.each([1, 2, 3, 4, 5, 6, 7, 8])('seed %i, 300 steps', (seed) => {
+  const ladderUsd = lamportsToMicroUsd(lamports(maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent: RENT }).ladderWorst), PRICE, 'ceil');
+  test.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])('seed %i, 300 steps', (seed) => {
     const r = rng(seed);
     const store = new MemoryReservationStore();
     const session = startSession(TRIAL_POLICY);
     let now = NOW;
     const closed: ClosedTrade[] = [];
-    const held: { id: string; amount: bigint; notional: MicroUsd }[] = [];
+    const held: { id: string; mint: Mint; amount: bigint; notional: MicroUsd }[] = [];
+    const open: (OpenPosition & { amount: bigint })[] = [];
     let n = 0;
     let reserved = 0;
+    let staleRefused = 0;
+    const snapshot = (): RiskInput => baseInput({
+      session, mode: r() < 0.5 ? 'live' : 'paper', clock: clockAt(now),
+      account: account({
+        closedTrades: [...closed], unresolvedEntries: held.map((h) => ({ mint: h.mint })), heldReservations: lamports(store.total),
+        openPositions: open.map((p) => ({ ...p, markAtMs: now })), version: store.version,
+      }),
+      market: { solPrice: { value: PRICE, atMs: now }, solBalance: { value: lamports(SOL * BigInt(1 + Math.floor(r() * 3))), atMs: now }, regime: 'on' },
+    });
+    let old = snapshot();
     for (let step = 0; step < 300; step++) {
-      const input = baseInput({
-        session, mode: r() < 0.5 ? 'live' : 'paper', clock: clockAt(now),
-        // Sometimes the snapshot lags the store (an entry it has not seen yet): the store's own check must still hold.
-        account: account({ closedTrades: [...closed], unresolvedEntries: r() < 0.7 ? held.length : 0, heldReservations: lamports(r() < 0.7 ? store.total : 0n) }),
-        market: { solPrice: { value: PRICE, atMs: now }, solBalance: { value: lamports(SOL * BigInt(1 + Math.floor(r() * 3))), atMs: now }, regime: 'on' },
-      });
+      const fresh = snapshot();
+      // A third of decisions use an older snapshot: entries the decision has not seen, positions it does not know.
+      const input = r() < 0.33 ? old : fresh;
+      if (r() < 0.3) old = fresh;
       const action = r();
-      if (action < 0.45) {
+      if (action < 0.4) {
         // Two entries decided from the same snapshot, reserved one after the other: the race the store must stop.
-        const reqs = [0, 1].map(() => { n++; return baseRequest({ intentId: intentId(`p-${seed}-${n}`), reservationId: reservationId(`p-${seed}-${n}`), mint: r() < 0.5 ? MINT_A : MINT_B, quoteAtMs: now, stopBps: 500 + Math.floor(r() * 1600) }); });
-        const decisions = reqs.map((q) => evaluateEntry(input, q));
-        const limit = oracleLimitLamports(input, melbourneWeek(now).start);
-        for (const d of decisions) {
+        const reqs = [0, 1].map(() => { n++; return baseRequest({ intentId: intentId(`p-${seed}-${n}`), reservationId: reservationId(`p-${seed}-${n}`), mint: r() < 0.5 ? MINT_A : MINT_B, quoteAtMs: input.clock.now().receivedAt, stopBps: 500 + Math.floor(r() * 1600) }); });
+        for (const d of reqs.map((q) => evaluateEntry(input, q))) {
           if (!d.allow) continue;
-          expect(d.reservation.limits.maxHeld).toBeLessThanOrEqual(limit);
           const res = reserve(store, d.reservation, now);
-          if (res.ok) { held.push({ id: d.reservation.reservationId, amount: d.reservation.amount, notional: d.notional }); reserved++; }
-          expect(store.total).toBeLessThanOrEqual(limit);
+          if (!res.ok && res.reason === 'stale_snapshot') staleRefused++;
+          if (!res.ok) continue;
+          reserved++;
+          held.push({ id: d.reservation.reservationId, mint: reqs[0]!.mint, amount: d.reservation.amount, notional: d.notional });
+          // Checked against the account as it is now, not as the decision saw it.
+          const limit = oracleLimitLamports(snapshot(), melbourneWeek(now).start);
+          const openLamports = open.reduce((t, p) => t + microUsdToLamports((p.notional + ladderUsd) as MicroUsd, PRICE, 'ceil'), 0n);
+          expect(store.total + openLamports).toBeLessThanOrEqual(limit);
         }
-      } else if (action < 0.75 && held.length > 0) {
-        // The entry resolves: the reservation ends and the trade closes with a loss up to its full reservation, or a gain.
+      } else if (action < 0.6 && held.length > 0) {
+        // The entry resolves: filled (the reservation ends and a position opens) or not filled (it ends).
         const h = held.shift()!;
         store.release(h.id);
-        const worst = lamportsToMicroUsd(lamports(h.amount), PRICE, 'ceil');
-        const pnl = BigInt(Math.floor((r() * 1.5 - 1) * Number(worst)));
-        closed.push({ ...trade(now, '0'), notional: h.notional, netPnl: pnl as MicroUsd, mint: MINT_B });
+        if (r() < 0.7) { open.push({ mint: h.mint, openedAtMs: now, notional: h.notional, mark: h.notional, markAtMs: now, amount: h.amount }); store.touch(); }
+      } else if (action < 0.8 && open.length > 0) {
+        // The position closes with a loss up to its full reservation, or a gain.
+        const p = open.shift()!;
+        store.touch();
+        const worst = lamportsToMicroUsd(lamports(p.amount), PRICE, 'ceil');
+        closed.push({ ...trade(now, '0'), mint: p.mint, notional: p.notional, netPnl: BigInt(Math.floor((r() * 1.5 - 1) * Number(worst))) as MicroUsd });
       } else {
         now += Math.floor(r() * 30 * HOUR);
       }
+      // R3: never more than one open or unresolved position, whatever the snapshots said.
+      expect(open.length + held.length).toBeLessThanOrEqual(TRIAL_POLICY.positions.maxOpen);
     }
     expect(reserved).toBeGreaterThan(0);
+    expect(staleRefused).toBeGreaterThan(0);
+  });
+});
+
+describe('item 1: a decision from an old snapshot cannot reserve after the account changed', () => {
+  test('A and B decided together; A reserves, fills and releases; B is refused', () => {
+    const store = new MemoryReservationStore();
+    const input = baseInput({ account: account({ version: store.version }) });
+    const a = evaluateEntry(input, baseRequest()) as EntryAllowed;
+    const b = evaluateEntry(input, baseRequest({ mint: MINT_B })) as EntryAllowed;
+    expect(a.allow && b.allow).toBe(true);
+    expect(reserve(store, a.reservation, NOW).ok).toBe(true);
+    store.release(a.reservation.reservationId); // A filled: its reservation ends ...
+    store.touch(); // ... and its position opens
+    expect(store.total).toBe(0n);
+    expect(reserve(store, b.reservation, NOW)).toEqual({ ok: false, reason: 'stale_snapshot' });
+    // Decided again from the current account, B is refused by R3 before it reaches the store.
+    const open = { mint: MINT_A, openedAtMs: NOW, notional: a.notional, mark: a.notional, markAtMs: NOW };
+    const again = evaluateEntry(baseInput({ account: account({ openPositions: [open], version: store.version }) }), baseRequest({ mint: MINT_B }));
+    expect(codes(again)).toContain('max_open_positions');
+  });
+  test('the request carries the snapshot version', () => {
+    const d = evaluateEntry(baseInput({ account: account({ version: 41n }) }), baseRequest()) as EntryAllowed;
+    expect(d.reservation.accountVersion).toBe(41n);
   });
 });

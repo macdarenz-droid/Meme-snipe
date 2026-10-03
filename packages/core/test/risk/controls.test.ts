@@ -23,7 +23,7 @@ describe('baseline', () => {
     expect(d.reservation.amount).toBe(d.spendLamports + d.maxCostsLamports);
     expect(d.reservation.limits.maxCount).toBe(TRIAL_POLICY.positions.maxOpen);
     expect(d.trips).toEqual([]);
-    expect(evaluateExit(baseInput())).toEqual({ allow: true, tripped: [] });
+    expect(evaluateExit(baseInput())).toEqual({ allow: true, tripped: [], trips: [] });
   });
 
   test('C counts fees, rent, priority fees and the exit ladder at its worst', () => {
@@ -83,7 +83,7 @@ describe('R2 trade size range', () => {
 
 describe('R3 open positions', () => {
   test('an unresolved entry counts as the one open position', () => {
-    expectRefusedButExitPasses(baseInput({ account: account({ unresolvedEntries: 1 }) }), baseRequest(), 'max_open_positions', true);
+    expectRefusedButExitPasses(baseInput({ account: account({ unresolvedEntries: [{ mint: MINT_B }] }) }), baseRequest(), 'max_open_positions', true);
   });
   test('an open position counts', () => {
     const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('2'), mark: usd('2'), markAtMs: NOW - 100 };
@@ -271,6 +271,28 @@ describe('R10 kill switch', () => {
   });
 });
 
+describe('item 2: exits return trips so a marked dip is latched', () => {
+  test('an open position marked below the kill line trips R10 on the exit path', () => {
+    const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('5'), mark: usd('0.5'), markAtMs: NOW - 100 };
+    const closed = [trade(LAST_WEEK, '-2', { notional: usd('5') })];
+    const exit = evaluateExit(baseInput({ account: account({ openPositions: [open], closedTrades: closed }) }));
+    expect(exit.allow).toBe(true);
+    expect(exit.trips).toContain('kill_switch');
+  });
+  test('a marked weekly loss trips R9 on the exit path', () => {
+    const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('5'), mark: usd('0.9'), markAtMs: NOW - 100 };
+    const exit = evaluateExit(baseInput({ account: account({ openPositions: [open] }) }));
+    expect(exit.trips).toContain('weekly_loss');
+    expect(exit.trips).not.toContain('kill_switch');
+  });
+  test('already latched trips are not returned again, and nothing is returned when nothing trips', () => {
+    const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('5'), mark: usd('0.9'), markAtMs: NOW - 100 };
+    const latched = baseInput({ account: account({ openPositions: [open] }), latches: latches({ weeklyTrippedAtMs: NOW - HOUR }) });
+    expect(evaluateExit(latched).trips).toEqual([]);
+    expect(evaluateExit(baseInput()).trips).toEqual([]);
+  });
+});
+
 describe('R11 entries (live only)', () => {
   const entries = (n: number, m = MINT_B) => Array.from({ length: n }, (_, i) => ({ mint: m, atMs: DAY_START + (i + 1) * HOUR }));
   test('3 live entries a day', () => {
@@ -371,13 +393,13 @@ describe('R16 regime gate (live only)', () => {
 
 describe('every reason names its control, and exits survive anything', () => {
   test('several controls tripped at once are all reported', () => {
-    const input = baseInput({ account: account({ unresolvedEntries: 1, closedTrades: [trade(LAST_WEEK, '-6', { notional: usd('5') })] }) });
+    const input = baseInput({ account: account({ unresolvedEntries: [{ mint: MINT_B }], closedTrades: [trade(LAST_WEEK, '-6', { notional: usd('5') })] }) });
     const d = evaluateEntry({ ...input, market: { ...input.market, regime: 'off' } }, baseRequest({ stopBps: 9000 }));
     expect(new Set(d.allow ? [] : d.reasons.map((r) => r.control))).toEqual(new Set(['R3', 'R5', 'R6', 'R10', 'R16']));
   });
   test('an exit passes even when the inputs are broken', () => {
     const input = baseInput({ clock: clockAt(Number.NaN) });
-    expect(evaluateExit(input)).toEqual({ allow: true, tripped: [] });
+    expect(evaluateExit(input)).toEqual({ allow: true, tripped: [], trips: [] });
     const nonsense = baseInput({ account: { ...account(), closedTrades: null as never } });
     expect(evaluateExit(nonsense).allow).toBe(true);
   });

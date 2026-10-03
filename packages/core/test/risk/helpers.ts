@@ -41,7 +41,7 @@ export const clockAt = (ms: number) => ({ now: () => ({ receivedAt: ms }) });
 
 export const account = (patch: Partial<AccountHistory> = {}): AccountHistory => ({
   openingEquity: usd('20'), openedAtMs: Date.UTC(2026, 8, 1), flows: [], closedTrades: [], openPositions: [], entries: [],
-  unresolvedEntries: 0, heldReservations: lamports(0n), ...patch,
+  unresolvedEntries: [], heldReservations: lamports(0n), version: 0n, ...patch,
 });
 
 export const trade = (closedAtMs: number, netPnl: string, patch: Partial<ClosedTrade> = {}): ClosedTrade => ({
@@ -87,10 +87,14 @@ export const expectRefusedButExitPasses = (input: RiskInput, request: EntryReque
   return d;
 };
 
-/** In-memory stand-in for LEDGER-1's atomic reservation: check and insert happen together. */
+/**
+ * In-memory stand-in for LEDGER-1's atomic reservation: the version check, the limit check and the insert happen
+ * together, and every account change advances the version.
+ */
 export class MemoryReservationStore implements ReservationStore {
   readonly held = new Map<string, Lamports>();
   readonly intents = new Set<string>();
+  version = 0n;
 
   get total(): bigint {
     let t = 0n;
@@ -99,15 +103,24 @@ export class MemoryReservationStore implements ReservationStore {
   }
 
   reserveExposure(r: ReservationRequest & { readonly ts: number }): ReserveResult {
+    if (r.accountVersion !== this.version) return { ok: false, reason: 'stale_snapshot' };
     if (this.intents.has(r.intentId) || this.held.has(r.reservationId)) return { ok: false, reason: 'already_reserved' };
     if (this.held.size + 1 > r.limits.maxCount) return { ok: false, reason: 'too_many' };
     if (this.total + r.amount > r.limits.maxHeld) return { ok: false, reason: 'over_limit' };
     this.held.set(r.reservationId, r.amount);
     this.intents.add(r.intentId);
+    this.version++;
     return { ok: true, heldAfter: lamports(this.total) };
   }
 
+  /** The reservation ends (released, or kept as a position). */
   release(reservationIdText: string): void {
     this.held.delete(reservationIdText);
+    this.version++;
+  }
+
+  /** Any other account change: a fill, a position, a closed trade, a flow. */
+  touch(): void {
+    this.version++;
   }
 }
