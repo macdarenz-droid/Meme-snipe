@@ -74,6 +74,7 @@ case "$1" in
 esac
 EOF
 chmod +x "$T/bin"/*
+REAL_NODE_DIR=$(dirname "$(command -v node)")
 export PATH="$T/bin:$PATH"
 
 # make_day DAY UNIT...: a day release whose tar holds units/900/UNIT with all files.
@@ -311,6 +312,67 @@ out=$(GH_BIN="$T/ghrec" bash "$here/publish-day.sh" 2026-10-02 "$pd" 2>&1) && no
   { [[ "$out" == *"regime boundary"* && ! -s "$T/ghcalls.log" ]] && ok "publish-day: 2026-10-02 and later refused before any gh call" || no "publish-day boundary: $out"; }
 unset GH_BIN
 
+# ---- volume-asset.sh and publish-volume.sh: release data-volume-DAY, never edited ----
+export GH_BIN="$T/bin/gh"
+vd="$T/vol"; rm -rf "$vd"; mkdir -p "$vd/ds/days/2026-09-30" "$vd/ds/qa" "$vd/assets"
+s0=$(date -u -d 2026-09-30 +%s)
+vrows() { echo "hour_start_ms,lamports,covered"; for i in $(seq 0 23); do echo "$(( (s0 + i * 3600) * 1000 )),$(( i == 5 ? ${1:-1123} : 0 )),1"; done; }
+vrows | "$REAL_NODE_DIR/node" -e 'const z=require("zlib");process.stdout.write(z.zstdCompressSync(require("fs").readFileSync(0)))' > "$vd/ds/days/2026-09-30/volume_hours-000.csv.zst"
+echo '{"mismatches": [], "problems": []}' > "$vd/ds/qa/volume.json"
+PATH="$REAL_NODE_DIR:$PATH" bash "$here/volume-asset.sh" "$vd/ds" 2026-09-30 "$vd/assets" >/dev/null && cmp -s <(vrows) "$vd/assets/volume-hours-2026-09-30.csv" &&
+  [[ -f "$vd/assets/volume-check-2026-09-30.json" ]] && ok "volume-asset: plain 24-hour CSV and the cross-check result" || no "volume-asset"
+rm -rf "$T/rel/data-volume-2026-09-30"; : > "$T/created.log"
+bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" >/dev/null && [[ $(ls "$T/rel/data-volume-2026-09-30" | wc -l) == 2 ]] &&
+  ok "publish-volume: release data-volume-DAY created with the CSV and its check" || no "publish-volume create"
+bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" >/dev/null && [[ $(grep -c data-volume-2026-09-30 "$T/created.log") == 1 ]] &&
+  ok "publish-volume: the same content again is accepted unchanged" || no "publish-volume rerun"
+vrows 1124 > "$vd/assets/volume-hours-2026-09-30.csv"
+out=$(bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" 2>&1) && no "publish-volume replaced a published release" ||
+  { [[ "$out" == *"other content"* ]] && grep -q ',1123,' "$T/rel/data-volume-2026-09-30/volume-hours-2026-09-30.csv" && ok "publish-volume: other content fails, the release is not touched" || no "publish-volume other: $out"; }
+rm -rf "$T/rel/data-volume-2026-09-30"
+vrows | head -24 > "$vd/assets/volume-hours-2026-09-30.csv"
+bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" >/dev/null 2>&1 && no "publish-volume published 23 hours" || ok "publish-volume: a CSV that is not 24 hours of the day publishes nothing"
+vrows | sed '3s/,1$/,2/' > "$vd/assets/volume-hours-2026-09-30.csv"
+bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" >/dev/null 2>&1 && no "publish-volume published covered=2" || ok "publish-volume: covered other than 0/1 publishes nothing"
+vrows > "$vd/assets/volume-hours-2026-09-30.csv"; echo '{"mismatches": [{"x":1}], "problems": []}' > "$vd/assets/volume-check-2026-09-30.json"
+bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" >/dev/null 2>&1 && no "publish-volume published a failed check" || ok "publish-volume: a cross-check with mismatches publishes nothing"
+echo '{"mismatches": [], "problems": []}' > "$vd/assets/volume-check-2026-09-30.json"
+FAKE_GH_ERROR=1 bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" >/dev/null 2>&1 && no "publish-volume treated a gh error as absent" ||
+  { [[ ! -d "$T/rel/data-volume-2026-09-30" ]] && ok "publish-volume: a gh error other than 'release not found' fails, never publishes" || no "publish-volume gh error"; }
+# volume-day.sh: back-fill from a published day's own units (no archive access)
+V="$T/vbin"; mkdir -p "$V"
+cat > "$V/zeroed-scan" <<'STUB'
+#!/usr/bin/env bash
+while (( $# )); do case "$1" in -dataset) ds=$2 ;; -from) from=$2 ;; -out) out=$2 ;; esac; shift; done
+[[ -f "$out/units/1046/1-2/stats.json" ]] || { echo "units not extracted" >&2; exit 1; }
+mkdir -p "$ds/days/$from"; cp "$T/vol-fixture.zst" "$ds/days/$from/volume_hours-000.csv.zst"
+STUB
+cat > "$V/node" <<STUB
+#!/usr/bin/env bash
+if [[ "\$2" == */volume.ts ]]; then mkdir -p "\$3/qa"; echo "\$4" > "\$T/volume.units"; echo '{"mismatches": [], "problems": []}' > "\$3/qa/volume.json"; exit 0; fi
+exec "$REAL_NODE_DIR/node" "\$@"
+STUB
+chmod +x "$V"/*
+cp "$vd/ds/days/2026-09-30/volume_hours-000.csv.zst" "$T/vol-fixture.zst"
+mkvday() {
+  local r="$T/rel/data-day-2026-09-30" u="$T/vday-src"
+  rm -rf "$r" "$u"; mkdir -p "$r" "$u/units/1046/1-2"; echo '{"blocks":1}' > "$u/units/1046/1-2/stats.json"
+  head -c 300000 /dev/urandom > "$u/units/1046/1-2/curve_trades.csv.zst"
+  (cd "$u" && tar -cf - units) | split -b 200000 -d -a 2 - "$r/units-2026-09-30.tar.part"
+  echo x > "$r/events-2026-09-30.tar"
+  (cd "$r" && sha256sum units-2026-09-30.tar.part* events-2026-09-30.tar > SHA256SUMS-2026-09-30)
+}
+vday() { rm -rf "$T/vday-assets"; PATH="$V:$PATH" GH_TOKEN=x bash "$here/volume-day.sh" 2026-09-30 "$T/vday-work" "$T/vday-assets" > "$T/out.txt" 2>&1; }
+mkvday
+vday && cmp -s <(vrows) "$T/vday-assets/volume-hours-2026-09-30.csv" && [[ $(cat "$T/volume.units") == "$T/vday-work/data-2026-09-30/units" ]] &&
+  ok "volume-day: a published day's tar parts are verified, extracted, finalized, cross-checked and turned into the volume asset" || no "volume-day: $(cat "$T/out.txt")"
+mkvday; echo corrupt >> "$T/rel/data-day-2026-09-30/units-2026-09-30.tar.part01"
+vday && no "volume-day used a corrupt part" || { [[ ! -e "$T/vday-assets/volume-hours-2026-09-30.csv" ]] && ok "volume-day: a part failing its checksum stops before any asset" || no "volume-day corrupt"; }
+mkvday; rm "$T/rel/data-day-2026-09-30/units-2026-09-30.tar.part01"
+vday && no "volume-day used an incomplete release" || { grep -q "differ from its SHA256SUMS" "$T/out.txt" && ok "volume-day: a missing part stops before extraction" || no "volume-day missing: $(cat "$T/out.txt")"; }
+rm -rf "$T/rel/data-day-2026-09-30"
+unset GH_BIN
+
 # ---- scanner-rev.sh: tree hash plus the Go version; another toolchain fails ----
 G="$T/gobin"; mkdir -p "$G"; printf '#!/usr/bin/env bash\necho "${FAKE_GOVERSION}"\n' > "$G/go"; chmod +x "$G/go"
 r1=$(cd "$here" && PATH="$G:$PATH" FAKE_GOVERSION=go1.24.7 GO_VERSION=1.24.7 bash "$here/scanner-rev.sh")
@@ -332,7 +394,7 @@ for s in steps[i + 1:]:
         continue
     assert "steps.published.outputs.complete != 'true'" in s.get("if", ""), s
 tok = [s for s in steps if "github.token" in str(s)]
-assert [s.get("id") or s.get("name") for s in tok] == ["published", "Publish this day"], tok
+assert [s.get("id") or s.get("name") for s in tok] == ["published", "Publish this day", "Publish this day's volume hours"], tok
 for s in tok:
     assert s["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc"), s
     assert s["env"]["BASH_ENV"] == "" and s["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), s
@@ -355,6 +417,18 @@ r = c["steps"][0]["run"]
 assert r.index('select(startswith("resume-"))') < r.index('-ge "$MAX_CHAIN"') < r.index("gh workflow run"), r
 assert '-f chain="$next"' in r and "-f days=\"$DAYS\"" in r, r
 assert wf[True]["workflow_dispatch"]["inputs"]["chain"]["default"] == "0"
+# volume back-fill: its own concurrency group, no archive access, token in two steps only,
+# publishing in the same clean shell as the day release
+assert wf["concurrency"]["group"] == "${{ inputs.mode == 'volume' && 'data-scan-volume' || 'data-scan' }}", wf["concurrency"]
+vj = wf["jobs"]["volume"]
+assert vj["if"] == "inputs.mode == 'volume'" and vj["strategy"]["max-parallel"] == 1, vj
+vsteps = vj["steps"]
+assert not any("scan-day.sh" in str(st) or "zeroed-scan run" in str(st) or "zeroed-scan unit" in str(st) for st in vsteps), "the back-fill must not read the archive"
+vtok = [st["name"] for st in vsteps if "github.token" in str(st)]
+assert vtok == ["Rebuild the day's volume hours from its units", "Publish the volume hours"], vtok
+pub = vsteps[-1]
+assert pub["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc") and pub["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin ") and "publish-volume.sh" in pub["run"], pub
+assert "volume" in wf[True]["workflow_dispatch"]["inputs"]["mode"]["options"]
 # QA-phase budget: checked after the progress save and before QA, against this job's own
 # timeout; QA, packaging and publishing never run on always(), so a stop skips them
 names = [s.get("id") or s.get("name") or s.get("uses") for s in steps]
@@ -397,7 +471,7 @@ STUB
 cat > "$C/node" <<'STUB'
 #!/usr/bin/env bash
 # check.mjs and parity.ts stand-ins: write their reports into the dataset
-for a in "$@"; do [[ -d "$a/qa" ]] && { echo r > "$a/qa/report.md"; echo '{}' > "$a/qa/report.json"; echo '{}' > "$a/qa/parity.json"; }; done
+for a in "$@"; do [[ -d "$a/qa" ]] && { echo r > "$a/qa/report.md"; echo '{}' > "$a/qa/report.json"; echo '{}' > "$a/qa/parity.json"; echo '{}' > "$a/qa/volume.json"; }; done
 exit 0
 STUB
 chmod +x "$C"/*
@@ -410,8 +484,8 @@ cdrun() {
 rc=0; cdrun a 75 || rc=$?
 [[ $rc == 75 ]] && grep -q "429 during the determinism rescan" "$T/summary.md" &&
   ok "check-day: a 429 in the determinism rescan exits 75 (resumable) with a summary line" || no "check-day 429: rc=$rc $(cat "$T/out.txt")"
-for p in finalize qa parity determinism; do grep -q "^phase $p (2026-09-20): [0-9]* s$" "$T/summary.md" || { no "check-day: no duration for $p"; break; }; done
-[[ $p == determinism ]] && grep -q "^phase determinism" "$T/summary.md" && ok "check-day: finalize, QA, parity and determinism durations are logged"
+for p in finalize qa parity volume determinism; do grep -q "^phase $p (2026-09-20): [0-9]* s$" "$T/summary.md" || { no "check-day: no duration for $p"; break; }; done
+[[ $p == determinism ]] && grep -q "^phase determinism" "$T/summary.md" && ok "check-day: finalize, QA, parity, volume and determinism durations are logged"
 rc=0; cdrun b 1 || rc=$?
 [[ $rc == 1 ]] && grep -q "determinism rescan failed (scanner exit 1)" "$T/summary.md" && ok "check-day: any other rescan failure exits 1 (not resumable)" || no "check-day rescan failure: rc=$rc"
 
