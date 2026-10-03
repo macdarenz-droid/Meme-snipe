@@ -5,6 +5,8 @@
 - Consistency. Risk aware, data aware. Research based on what actually matters in the market.
 - No guessing: the bot acts only when the data proves the setup. Unknown or stale evidence means no trade.
 - Bankroll $20, entries $2 default and $5 max, paper mode first.
+- Easy deposit and withdraw in AUD (route under research).
+- Dashboard: P&L calendar, trade history with full details, profit charts and the other visuals needed to see what the bot is doing. Smooth UI: motion, transitions, blurred backdrops behind opened panels.
 
 ## Phase
 Research and architecture (in progress).
@@ -17,6 +19,7 @@ Research and architecture (in progress).
 - Finish the research and a measured base-rate study of live Solana data.
 - Improve `docs/ARCHITECTURE.md` in place from the findings; record decisions in `docs/DECISIONS.md`.
 - Build the core engine (risk, costs, gates, exits, order lifecycle, paper fills) with tests.
+- Then the paper worker on live data, then the dashboard (charts and motion as above).
 
 ## Open questions
 - No `main` branch exists yet, so no pull request can be opened.
