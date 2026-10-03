@@ -814,19 +814,37 @@ describe('EXIT-1b item 5: a blocked retry must pay for itself after the worst sl
 
 describe('EXIT-1b item 6: when an in-flight partial resolves, the rest is reassessed at once', () => {
   const tp = (R * BigInt(X.partialAtRBps)) / 10_000n;
-  test('a stop that fired during the partial exits the rest on the next step, even with no fresh quote', () => {
+  test('a stop that fired during the partial exits the rest on the first step with a fresh quote, on the normal ladder', () => {
     const stop = plan({ stopPrice: execPrice(V0, QTY) });
     // The partial is in flight; the price stop fires on the whole holding and is merged into the partial's owner.
     const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
     expect(pending.decision.kind).toBe('merge');
-    // The partial fills (half sold); the market state is now stale. The rest must go now, not wait for a new trigger.
-    const after = decideExit(S, stop, holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 }), pending.tracker, obs(NOW + 60_000, null));
-    expect(after.decision).toMatchObject({ kind: 'exit', partial: false, quantity: QTY / 2n });
+    const rest = holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2, exitAttempts: 1 });
+    // The partial fills while the market state is stale: a timing artefact, so it waits and keeps the stop.
+    const atFill = decideExit(S, stop, rest, pending.tracker, obs(NOW + 60_000, null));
+    expect(atFill.decision).toMatchObject({ kind: 'hold', detail: 'full exit remembered: waiting for a fresh quote' });
+    expect(atFill.tracker.pendingFull).toEqual(pending.tracker.pendingFull);
+    // 2 s later with a fresh quote the rest goes at once: no blocked retry, the next rung, the attempts left.
+    const after = decideExit(S, stop, rest, atFill.tracker, obs(NOW + 62_000));
+    expect(after.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, quantity: QTY / 2n, maxAttempts: X.ladder.maxAttempts - 1 });
     if (after.decision.kind !== 'exit') return;
+    expect(after.decision.startRung).toBe(Math.min(Math.max(atFill.tracker.lastRung === null ? 0 : atFill.tracker.lastRung + 1, 1), X.ladder.steps.length - 1));
     expect(after.decision.reasons).toContain('stop');
-    expect(after.decision.value.ok).toBe(false); // no quote: booked blocked at once by exitBookEvents, never a fake fill
+    expect(after.decision.value.ok).toBe(true);
+    expect(after.decision.blocked).toBeNull();
     // Once taken, the remembered trigger is cleared.
     expect(after.tracker.pendingFull).toBeNull();
+  });
+  test('with no quote, a trigger that fires without one still takes the remembered exit at once', () => {
+    const stop = plan({ stopPrice: execPrice(V0, QTY) });
+    const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
+    const rest = holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 });
+    const late = decideExit(S, stop, rest, pending.tracker, obs(NOW + X.tMaxMs, null));
+    expect(late.decision).toMatchObject({ kind: 'exit', partial: false, retry: false });
+    if (late.decision.kind !== 'exit') return;
+    expect(late.decision.reasons).toEqual(expect.arrayContaining(['stop', 'max_hold']));
+    expect(late.decision.value.ok).toBe(false); // booked blocked by exitBookEvents through the quote-failure path
+    expect(late.tracker.pendingFull).toBeNull();
   });
   test('a take-profit merged into an in-flight exit is not remembered as a full exit', () => {
     const pending = decide(holding({ status: 'exit_pending', pnl: tp }), obs(NOW));
@@ -863,7 +881,7 @@ describe('EXIT-1b edges (mutation)', () => {
   test('the exit taken after a partial resolves is an ordinary exit on the ladder, not a blocked retry', () => {
     const stop = plan({ stopPrice: execPrice(V0, QTY) });
     const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
-    const after = decideExit(S, stop, holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 }), pending.tracker, obs(NOW + 60_000, null));
+    const after = decideExit(S, stop, holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 }), pending.tracker, obs(NOW + 60_000));
     expect(after.decision).toMatchObject({ kind: 'exit', retry: false, startRung: 0, maxAttempts: X.ladder.maxAttempts });
   });
 });

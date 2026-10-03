@@ -341,7 +341,10 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
   }
 
   if (t.pendingFull !== null) {
-    // A full exit fired while a partial was in flight: the rest goes now, whatever this step's market shows.
+    // A full exit fired while a partial was in flight: the rest goes on the first step with a fresh quote, on the normal
+    // ladder. A missing or stale quote at the fill is timing, not a dead pool, so it waits (EXIT-1b review); a trigger
+    // that fires without a quote (time, deployer, route, quote failures) still exits at once below.
+    if (!liq.ok && full.length === 0) return hold('full exit remembered: waiting for a fresh quote', fired);
     const reasons = [...new Set([...t.pendingFull, ...reasonsOf(fired)])];
     t = { ...t, pendingFull: null };
     return exit(h.quantity, false, false, reasons);
