@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { PREVIEW, SAMPLES } from './preview.ts';
+import { PREVIEW, SAMPLES, SAMPLES_PATH, SAMPLES_TITLE } from './preview.ts';
 
 export type Screen = 'home' | 'snipe' | 'wallet' | 'fixtures';
 
@@ -10,17 +10,17 @@ export const SCREENS: { id: NavScreen; label: string; key: string }[] = [
   { id: 'home', label: 'Home', key: '1' },
   { id: 'snipe', label: 'Snipe', key: '2' },
   { id: 'wallet', label: 'Wallet', key: '3' },
-  ...(PREVIEW ? [{ id: 'fixtures' as const, label: 'Samples', key: '4' }] : []),
+  ...(PREVIEW ? [{ id: 'fixtures' as const, label: SAMPLES_TITLE, key: '4' }] : []),
 ];
 
 export function hrefFor(s: Screen): string {
-  return s === 'fixtures' ? '#/dev/fixtures' : `#/${s}`;
+  return s === 'fixtures' ? `#/${SAMPLES_PATH}` : `#/${s}`;
 }
 
 function parse(hash: string): Screen {
   const id = hash.replace(/^#\/?/, '');
   if (id === 'snipe' || id === 'wallet') return id;
-  if (id === 'dev/fixtures' && SAMPLES) return 'fixtures';
+  if (SAMPLES && id === SAMPLES_PATH) return 'fixtures';
   return 'home';
 }
 
