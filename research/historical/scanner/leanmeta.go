@@ -350,3 +350,51 @@ func leanTokenBalance(b []byte) (*TokenBalance, error) {
 	}
 	return tb, nil
 }
+
+// metaMints returns the mints named in a meta's pre and post token balances, reading
+// nothing else (fields 7 and 8; mint is field 2 of TokenBalance).
+func metaMints(b []byte) ([]string, error) {
+	var out []string
+	for len(b) > 0 {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return nil, errProto
+		}
+		b = b[n:]
+		if (num == 7 || num == 8) && typ == protowire.BytesType {
+			v, n := protowire.ConsumeBytes(b)
+			if n < 0 {
+				return nil, errProto
+			}
+			for len(v) > 0 {
+				fn, ft, k := protowire.ConsumeTag(v)
+				if k < 0 {
+					return nil, errProto
+				}
+				v = v[k:]
+				if fn == 2 && ft == protowire.BytesType {
+					x, k := protowire.ConsumeBytes(v)
+					if k < 0 {
+						return nil, errProto
+					}
+					out = append(out, string(x))
+					v = v[k:]
+					continue
+				}
+				k = protowire.ConsumeFieldValue(fn, ft, v)
+				if k < 0 {
+					return nil, errProto
+				}
+				v = v[k:]
+			}
+			b = b[n:]
+			continue
+		}
+		n = protowire.ConsumeFieldValue(num, typ, b)
+		if n < 0 {
+			return nil, errProto
+		}
+		b = b[n:]
+	}
+	return out, nil
+}

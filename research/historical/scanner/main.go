@@ -225,7 +225,12 @@ func main() {
 		fs.Float64Var(&launchRate, "launch-rate", launchRate, "launch universe hash threshold (<= 0.25)")
 		fs.Float64Var(&gradRate, "grad-rate", gradRate, "graduation universe hash threshold (<= 0.25)")
 		fs.Float64Var(&poolRate, "pool-rate", poolRate, "direct-pool universe hash threshold (<= 0.25)")
+		partMB := fs.Int64("part-mb", 45, "rotate output files at this many MB (release builds: up to 1900)")
 		fs.Parse(os.Args[2:])
+		if *partMB < 1 || *partMB > 1900 {
+			log.Fatal("-part-mb must be between 1 and 1900")
+		}
+		partMaxBytes = *partMB << 20
 		if err := Finalize(*out, *ds, *fromDay, *toDay, *allowGaps); err != nil {
 			log.Fatal(err)
 		}

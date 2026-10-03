@@ -85,6 +85,8 @@ type UnitStats struct {
 	ExtraBytes      map[string]int `json:"extra_bytes"`      // event:extra -> count (0 = exact IDL layout)
 	LengthAnomalies int64          `json:"length_anomalies"` // events longer than the IDL by other than 8 bytes
 	RawRecords      int64          `json:"raw_records"`
+	MintOnlyRecords int64          `json:"mint_only_records"` // raw records of plain token transactions touching a sampled mint
+	OtherVenueTxs   int64          `json:"other_venue_txs"`   // transactions touching a sampled mint through other programs (counted, not stored)
 	LegacyMeta      int64          `json:"legacy_meta"`
 	MissingMeta     int64          `json:"missing_meta"`
 	LogEventsSeen   int64          `json:"log_events_seen"`
@@ -190,6 +192,7 @@ type blockResult struct {
 	pumpFail  int64
 	agg       map[aggKey]*aggVal
 	raw       []string
+	mintOnly  int64
 }
 
 // ScanUnit scans blocks in [from, to] of epoch e into dir/<from>-<to>/.
@@ -390,6 +393,7 @@ func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map
 	st.AmmTrades += int64(len(r.amm))
 	st.OtherEvents += int64(len(r.other))
 	st.RawRecords += int64(len(r.raw))
+	st.MintOnlyRecords += r.mintOnly
 	st.mu.Unlock()
 	outs["blocks.csv.zst"].row(r.blockRow)
 	for _, row := range r.curve {
@@ -504,6 +508,9 @@ func processBlock(b *blockData, st *UnitStats) *blockResult {
 		staticHit := bytes.Contains(txBytes, pumpProgram[:]) || bytes.Contains(txBytes, ammProgram[:])
 		// Programs reached through an address lookup table are only visible in the meta.
 		if !staticHit && !mayLoadAccounts(txBytes) {
+			if mintScan {
+				mintOnlyTx(r, st, b, txIdx, txBytes, metaBuf)
+			}
 			continue
 		}
 		var metaRaw []byte
@@ -520,6 +527,9 @@ func processBlock(b *blockData, st *UnitStats) *blockResult {
 			st.MetaOnlyChecks++
 			st.mu.Unlock()
 			if !(bytes.Contains(metaRaw, pumpProgram[:]) || bytes.Contains(metaRaw, ammProgram[:])) {
+				if mintScan {
+					mintOnlyTxRaw(r, st, b, txIdx, txBytes, metaRaw)
+				}
 				continue
 			}
 			st.mu.Lock()
@@ -1056,3 +1066,99 @@ func bondingCurvePDA(mint string) string {
 	pdaCache.Store(mint, s)
 	return s
 }
+
+// mintScan (schema 2): also keep raw records of transactions that do not touch the
+// pump programs but move, burn or re-authorise a sampled mint (any sampled mint in
+// their token balances). Approved by the supervisor for universe mints.
+var mintScan = true
+
+func mintOnlyTx(r *blockResult, st *UnitStats, b *blockData, txIdx int, txBytes, metaBuf []byte) {
+	if len(metaBuf) == 0 {
+		return
+	}
+	metaRaw, err := zstdDec.DecodeAll(metaBuf, nil)
+	if err != nil {
+		st.decodeErr(fmt.Sprintf("slot %d: meta zstd: %v", b.slot, err))
+		return
+	}
+	mintOnlyTxRaw(r, st, b, txIdx, txBytes, metaRaw)
+}
+
+func mintOnlyTxRaw(r *blockResult, st *UnitStats, b *blockData, txIdx int, txBytes, metaRaw []byte) {
+	mints, err := metaMints(metaRaw)
+	if err != nil {
+		return // not a protobuf meta; pump transactions report these, others are out of scope
+	}
+	hit := false
+	for _, m := range mints {
+		if m != wsolMint && inSample(m) {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		return
+	}
+	full, err := fullMeta(metaRaw)
+	if err != nil {
+		st.decodeErr(fmt.Sprintf("slot %d idx %d: full meta: %v", b.slot, txIdx, err))
+		return
+	}
+	var tx solana.Transaction
+	if err := tx.UnmarshalWithDecoder(bin.NewBinDecoder(txBytes)); err != nil || len(tx.Signatures) == 0 {
+		st.decodeErr(fmt.Sprintf("slot %d idx %d: tx: %v", b.slot, txIdx, err))
+		return
+	}
+	ms := sampledMints(full)
+	if len(ms) == 0 {
+		return
+	}
+	// Only plain token-program activity (transfers, burns, mint-to, authority and
+	// extension changes, account creation): every invoked program must be one of the
+	// basic ones. Swaps on other venues are counted, not stored (Zeroed trades only
+	// pump and PumpSwap; they would add ~2.5x to the raw records).
+	keys := make([][32]byte, 0, len(tx.Message.AccountKeys)+len(full.LoadedWritableAddresses)+len(full.LoadedReadonlyAddresses))
+	for _, k := range tx.Message.AccountKeys {
+		keys = append(keys, k)
+	}
+	for _, k := range append(append([][]byte{}, full.LoadedWritableAddresses...), full.LoadedReadonlyAddresses...) {
+		var kk [32]byte
+		copy(kk[:], k)
+		keys = append(keys, kk)
+	}
+	basicOnly := func(i int) bool { return i >= 0 && i < len(keys) && basicPrograms[keys[i]] }
+	for _, ix := range tx.Message.Instructions {
+		if !basicOnly(int(ix.ProgramIDIndex)) {
+			st.mu.Lock()
+			st.OtherVenueTxs++
+			st.mu.Unlock()
+			return
+		}
+	}
+	for _, ii := range full.InnerInstructions {
+		for _, ix := range ii.Instructions {
+			if !basicOnly(int(ix.ProgramIdIndex)) {
+				st.mu.Lock()
+				st.OtherVenueTxs++
+				st.mu.Unlock()
+				return
+			}
+		}
+	}
+	r.raw = append(r.raw, buildRawRecord(b.slot, b.blockTime, txIdx, tx.Signatures[0].String(), txBytes, full, ms))
+	r.mintOnly++
+}
+
+// Programs of plain token activity.
+var basicPrograms = func() map[[32]byte]bool {
+	m := map[[32]byte]bool{}
+	for _, a := range []string{
+		"11111111111111111111111111111111", "ComputeBudget111111111111111111111111111111",
+		"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+		"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+		"Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo",
+	} {
+		m[mustPK(a)] = true
+	}
+	return m
+}()

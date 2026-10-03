@@ -28,7 +28,7 @@ on:
         required: false
         default: ""
       from:
-        description: "assemble: first UTC day of the dataset window"
+        description: "assemble: first UTC day of the dataset window (windows of up to ~10 days fit a runner's disk)"
         required: false
         default: ""
       to:
@@ -180,19 +180,29 @@ jobs:
           sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go.tgz && rm go.tgz
           export PATH=/usr/local/go/bin:$PATH
           (cd research/historical/scanner && go build -trimpath -ldflags "-X main.scannerRevision=${GITHUB_SHA}" -o "$RUNNER_TEMP/zeroed-scan" .)
-          # about 2 GB per scanned day: work on the runner's larger /mnt volume
+          # about 4 GB per scanned day of units: work on the runner's larger /mnt volume
           sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work && W=/mnt/work
           df -h / /mnt
           mkdir -p "$W/dl" "$W/data"
-          gh release download data-days --repo "$GITHUB_REPOSITORY" --dir "$W/dl"
+          gh release download data-days --repo "$GITHUB_REPOSITORY" --dir "$W/dl" --pattern 'SHA256SUMS-*'
           cd "$W/dl"
-          for s in SHA256SUMS-*; do sha256sum -c "$s"; done
-          for d in $(ls SHA256SUMS-* | sed 's/SHA256SUMS-//'); do
-            cat units-"$d".tar.part* | tar -xf - -C "$W/data" --skip-old-files
+          # One day at a time (each about 4 GB): download, verify, extract, delete.
+          # Days inside the window: full units. Earlier days (lead-in): only events, stats
+          # and block rows, which give creations, graduations and the parent-link proof
+          # (finalize accepts such units when they end before the window).
+          for d in $(ls SHA256SUMS-* | sed 's/SHA256SUMS-//' | sort); do
+            [[ ! "$d" < "$TO" ]] && continue
+            gh release download data-days --repo "$GITHUB_REPOSITORY" --dir "$W/dl" --pattern "units-$d.tar.part*" --clobber
+            grep "units-$d.tar.part" "SHA256SUMS-$d" | sha256sum -c -
+            if [[ "$d" < "$FROM" ]]; then
+              cat units-"$d".tar.part* | tar -xf - -C "$W/data" --skip-old-files --wildcards '*/events.jsonl.zst' '*/stats.json' '*/blocks.csv.zst'
+            else
+              cat units-"$d".tar.part* | tar -xf - -C "$W/data" --skip-old-files
+            fi
             rm -f units-"$d".tar.part*
           done
           cd "$GITHUB_WORKSPACE"
-          "$RUNNER_TEMP/zeroed-scan" finalize -out "$W/data" -dataset "$W/dataset" -from "$FROM" -to "$TO"
+          "$RUNNER_TEMP/zeroed-scan" finalize -out "$W/data" -dataset "$W/dataset" -from "$FROM" -to "$TO" -part-mb 1900
           node research/historical/qa/check.mjs "$W/dataset" --live 60 --strict
           cd "$W/dataset"
           mkdir ../out

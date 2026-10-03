@@ -8,6 +8,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/mr-tron/base58"
 )
@@ -30,9 +31,16 @@ func mintHashFraction(mint string) (float64, bool) {
 	return float64(binary.BigEndian.Uint64(h[:8])) / math.Pow(2, 64), true
 }
 
+var sampleCache sync.Map // mint string -> bool
+
 func inSample(mint string) bool {
+	if v, ok := sampleCache.Load(mint); ok {
+		return v.(bool)
+	}
 	f, ok := mintHashFraction(mint)
-	return ok && f < sampleRate
+	in := ok && f < sampleRate
+	sampleCache.Store(mint, in)
+	return in
 }
 
 // Events that are per-user bookkeeping and never change a curve or pool: dropped.

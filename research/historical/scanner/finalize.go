@@ -20,9 +20,9 @@ package main
 //   launch: mint created (CreateEvent) inside the scanned coverage and hash < launchRate;
 //           tape from creation to creation + 72 h.
 //   grad:   mint graduated (CompletePumpAmmMigrationEvent) inside the coverage and
-//           hash < gradRate; tape from creation (or coverage start) to graduation + 72 h.
+//           hash < gradRate; tape from creation (or coverage start) to graduation + 15 days.
 //   pool:   PumpSwap pool created directly (CreatePoolEvent outside a migration)
-//           inside the coverage and hash(base mint) < poolRate; tape from pool creation + 72 h.
+//           inside the coverage and hash(base mint) < poolRate; tape to pool creation + 15 days.
 // Default rates are 5% each (nested: the same hash, so every launch-sampled mint that
 // graduates is also grad-sampled). The scanner keeps a 25% superset, so the dataset
 // can be re-cut at up to 25% without rescanning.
@@ -55,9 +55,15 @@ var (
 	poolRate   = 0.05
 )
 
-const (
-	tapeHorizon  = 72 * 3600
-	partMaxBytes = 45 << 20 // keep every file under GitHub's 50 MB warning size
+// Tape lengths: 72 h after creation for launches; 15 days after graduation or direct
+// pool creation, so the "aged 24 h to 14 days" universe (architecture U1) has every
+// trade of its tokens.
+var (
+	tapeHorizon     int64 = 72 * 3600
+	poolTapeHorizon int64 = 15 * 86400
+	// files rotate at this size: 45 MB keeps git-friendly files; release builds use
+	// up to 1900 MB to stay under 1000 assets per release.
+	partMaxBytes int64 = 45 << 20
 )
 
 type unitDir struct {
@@ -382,10 +388,10 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 			if start == 0 {
 				start = covStart
 			}
-			upd(start, mi.GradTime+tapeHorizon)
+			upd(start, mi.GradTime+poolTapeHorizon)
 		}
 		if mi.DirectPool {
-			upd(mi.PoolTime, mi.PoolTime+tapeHorizon)
+			upd(mi.PoolTime, mi.PoolTime+poolTapeHorizon)
 		}
 		mi.TapeFrom, mi.TapeTo = from, to
 		mi.Censored = to > covEnd
@@ -400,6 +406,20 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 	if err := os.MkdirAll(filepath.Join(dsDir, "days"), 0o755); err != nil {
 		return err
 	}
+	// Output headers are copied from the units (all units must agree), so data scanned
+	// by an older scanner keeps its own columns.
+	headers := map[string][]string{}
+	noteHeader := func(base string, rec []string) error {
+		h, ok := headers[base]
+		if !ok {
+			headers[base] = append([]string(nil), rec...)
+			return nil
+		}
+		if strings.Join(h, ",") != strings.Join(rec, ",") {
+			return fmt.Errorf("%s: units disagree on columns", base)
+		}
+		return nil
+	}
 	days := map[string]*dayFiles{}
 	dayW := func(day, base string) (*partWriter, error) {
 		df := days[day]
@@ -411,13 +431,24 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 			}
 			df = &dayFiles{dir: dir, w: map[string]*partWriter{}}
 			for _, s := range dayFileSpecs {
-				df.w[s.base] = &partWriter{dir: dir, base: s.base, ext: s.ext, header: s.header}
+				h := s.header
+				if uh, ok := headers[s.base]; ok && h != nil {
+					h = uh
+				}
+				df.w[s.base] = &partWriter{dir: dir, base: s.base, ext: s.ext, header: h}
 			}
 			days[day] = df
 		}
-		return df.w[base], nil
+		w := df.w[base]
+		if uh, ok := headers[base]; ok && w.f == nil && len(w.files) == 0 && w.header != nil {
+			w.header = uh // not opened yet: use the units' own columns
+		}
+		return w, nil
 	}
 	inWindow := func(t int64) bool { return t >= t0.Unix() && t < t1.Unix() }
+	// A unit wholly before the window contributes only its events (creations,
+	// graduations, pools) and block rows, so it may be shipped without row files.
+	beforeWindow := func(u unitDir) bool { return u.stats.LastBlockTime < t0.Unix() }
 	type ordKey struct{ slot, tx, ev int64 }
 	less := func(a, b ordKey) bool {
 		if a.slot != b.slot {
@@ -462,10 +493,14 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 				userCol, tsCol = 15, 16
 			}
 			first := true
-			err := readCSVZst(filepath.Join(u.path, spec.base+".csv.zst"), func(rec []string) error {
+			fp := filepath.Join(u.path, spec.base+".csv.zst")
+			if spec.base != "blocks" && beforeWindow(u) && !fileExists(fp) {
+				continue // events-only unit before the window (assembly in windows)
+			}
+			err := readCSVZst(fp, func(rec []string) error {
 				if first {
 					first = false
-					return nil
+					return noteHeader(spec.base, rec)
 				}
 				slot, _ := strconv.ParseInt(rec[0], 10, 64)
 				bt, _ := strconv.ParseInt(rec[1], 10, 64)
@@ -568,7 +603,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		if err != nil {
 			return fmt.Errorf("%s events: %w", u.path, err)
 		}
-		if u.stats.Schema >= 2 {
+		if u.stats.Schema >= 2 && !(beforeWindow(u) && !fileExists(filepath.Join(u.path, "raw.jsonl.zst"))) {
 			err = readZstLines(filepath.Join(u.path, "raw.jsonl.zst"), func(l []byte) error {
 				var r struct {
 					Slot      int64    `json:"slot"`
@@ -605,11 +640,14 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 				return fmt.Errorf("%s raw: %w", u.path, err)
 			}
 		}
+		if beforeWindow(u) && !fileExists(filepath.Join(u.path, "agg_hourly.csv.zst")) {
+			continue
+		}
 		first := true
 		err = readCSVZst(filepath.Join(u.path, "agg_hourly.csv.zst"), func(rec []string) error {
 			if first {
 				first = false
-				return nil
+				return noteHeader("agg_hourly", rec)
 			}
 			hour, _ := strconv.ParseInt(rec[0], 10, 64)
 			if !inWindow(hour) {
@@ -701,7 +739,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		if di.Complete {
 			di.BlocksExpected = di.BlocksScanned
 		}
-		di.WarmUp = dayStart.Unix() < covStart+tapeHorizon
+		di.WarmUp = dayStart.Unix() < covStart+14*86400 // U1 needs 14 days of history before a decision day
 		for _, s := range dayFileSpecs {
 			w := df.w[s.base]
 			if w.f == nil && len(w.files) == 0 {
@@ -789,7 +827,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		"programs":        map[string]string{"pump": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pump_amm": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"},
 		"window":          map[string]string{"from": fromDay, "to_exclusive": toDay},
 		"coverage":        map[string]any{"first_block_time": covStart, "last_block_time": covEnd, "first_slot": units[0].stats.FromSlot, "last_slot": units[len(units)-1].stats.ToSlot},
-		"sampling":        map[string]any{"hash": "first 8 bytes of sha256(mint pubkey bytes), big-endian, divided by 2^64", "launch_rate": launchRate, "grad_rate": gradRate, "direct_pool_rate": poolRate, "tape_horizon_seconds": tapeHorizon, "unit_sample_rate_min": minRate},
+		"sampling":        map[string]any{"hash": "first 8 bytes of sha256(mint pubkey bytes), big-endian, divided by 2^64", "launch_rate": launchRate, "grad_rate": gradRate, "direct_pool_rate": poolRate, "launch_tape_seconds": tapeHorizon, "grad_and_pool_tape_seconds": poolTapeHorizon, "unit_sample_rate_min": minRate},
 		"universe_counts": map[string]int{"launch": nLaunch, "grad": nGrad, "direct_pool": nPool, "mints_registered": len(ml)},
 		"decode_failures": decodeFail,
 		"coverage_gaps":   gaps,
@@ -873,6 +911,8 @@ func readCSVZst(path string, fn func(rec []string) error) error {
 		}
 	}
 }
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 type sumInfo struct {
 	size int64
