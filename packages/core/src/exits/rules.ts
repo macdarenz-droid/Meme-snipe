@@ -339,7 +339,7 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
     if (!liq.ok) return hold(`exit blocked: ${liq.detail}`, fired);
     // The retry goes at the last rung: the least it may receive is the quote less that rung's slippage, and that, not
     // the quote, must pay for the attempt (EXIT-1b).
-    const leastProceeds = mulDiv(liq.value, BPS - BigInt(x.ladder.steps[last]!.minOutBelowTriggerBps), BPS, 'floor');
+    const leastProceeds = mulDiv(liq.value, BPS - BigInt(g.ladder.steps[last]!.minOutBelowTriggerBps), BPS, 'floor');
     if (leastProceeds <= s.retryCost) return hold('exit blocked: the least accepted proceeds do not cover the attempt', fired);
     t = { ...t, blockedAtMs: null, blockedRetries: retries + 1, pendingFull: null };
     return exit(h.quantity, false, true, fired.length > 0 ? reasonsOf(fired) : ['emergency']);

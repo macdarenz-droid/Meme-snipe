@@ -563,7 +563,7 @@ describe('blocked exits: retried on the ladder, bounded, alerting', () => {
     const v = valueAt(VAULT);
     const at0 = (retryCost: bigint) => ({ ...S, retryCost });
     // The least proceeds the last rung accepts must cover the attempt (EXIT-1b; the quote alone was not enough).
-    const least = (v * (10_000n - BigInt(X.ladder.steps[X.ladder.steps.length - 1]!.minOutBelowTriggerBps))) / 10_000n;
+    const least = (v * (10_000n - BigInt(G.ladder.steps[G.ladder.steps.length - 1]!.minOutBelowTriggerBps))) / 10_000n;
     expect(decide(h, obs(at), plan(), t, at0(least)).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: the least accepted proceeds do not cover the attempt' });
     expect(decide(h, obs(at), plan(), t, at0(least - 1n)).decision).toMatchObject({ kind: 'exit', retry: true });
     // The retry cost is base + the last rung's capped fee + tip, not the first-rung exit cost.
@@ -834,8 +834,8 @@ describe('EXIT-1b item 4: an exit quotes the quantity it sells', () => {
     expect(half).toBeLessThan(V0); // the whole holding's value is not what this order sells
     if (!d.value.ok) throw new Error('unquotable');
     // Every rung, the last included, accepts the fresh quote of the same quantity in the same pool.
-    for (let rung = 0; rung < X.ladder.steps.length; rung++) {
-      const p = planAttempt(X.ladder, 1, d.value.value, half, rung, 1);
+    for (let rung = 0; rung < G.ladder.steps.length; rung++) {
+      const p = planAttempt(G.ladder, 1, d.value.value, half, rung, 1);
       expect(p, `rung ${rung}`).toMatchObject({ ok: true, rung });
       if (!p.ok) continue;
       const fill = poolSell(pool(VAULT), d.quantity, CTX);
@@ -852,9 +852,9 @@ describe('EXIT-1b item 5: a blocked retry must pay for itself after the worst sl
   test('the least proceeds the last rung accepts, not the quote, must exceed the attempt cost', () => {
     const h = holdingOf(blockedBook().positions[PID]!);
     const t = { ...newTracker(), blockedAtMs: 0 };
-    const at = X.blockedRetryMs;
+    const at = G.blockedRetryMs;
     const v = valueAt(VAULT);
-    const lastSlip = BigInt(X.ladder.steps[X.ladder.steps.length - 1]!.minOutBelowTriggerBps);
+    const lastSlip = BigInt(G.ladder.steps[G.ladder.steps.length - 1]!.minOutBelowTriggerBps);
     const leastProceeds = (v * (10_000n - lastSlip)) / 10_000n;
     const withCost = (retryCost: bigint) => ({ ...S, retryCost });
     // The quote is above the cost, but the least the last rung accepts is not: no retry.
@@ -879,9 +879,9 @@ describe('EXIT-1b item 6: when an in-flight partial resolves, the rest is reasse
     expect(atFill.tracker.pendingFull).toEqual(pending.tracker.pendingFull);
     // 2 s later with a fresh quote the rest goes at once: no blocked retry, the next rung, the attempts left.
     const after = decideExit(S, stop, rest, atFill.tracker, obs(NOW + 62_000));
-    expect(after.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, quantity: QTY / 2n, maxAttempts: X.ladder.maxAttempts - 1 });
+    expect(after.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, quantity: QTY / 2n, maxAttempts: G.ladder.maxAttempts - 1 });
     if (after.decision.kind !== 'exit') return;
-    expect(after.decision.startRung).toBe(Math.min(Math.max(atFill.tracker.lastRung === null ? 0 : atFill.tracker.lastRung + 1, 1), X.ladder.steps.length - 1));
+    expect(after.decision.startRung).toBe(Math.min(Math.max(atFill.tracker.lastRung === null ? 0 : atFill.tracker.lastRung + 1, 1), G.ladder.steps.length - 1));
     expect(after.decision.reasons).toContain('stop');
     expect(after.decision.value.ok).toBe(true);
     expect(after.decision.blocked).toBeNull();
@@ -893,7 +893,7 @@ describe('EXIT-1b item 6: when an in-flight partial resolves, the rest is reasse
     const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
     const recovered = holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2, vault: VAULT * 2n, pnl: R });
     const d = decideExit(S, stop, recovered, pending.tracker, obs(NOW + 1_000, VAULT * 2n));
-    expect(d.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, startRung: 0, maxAttempts: X.ladder.maxAttempts, fired: [] });
+    expect(d.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, startRung: 0, maxAttempts: G.ladder.maxAttempts, fired: [] });
     if (d.decision.kind !== 'exit') return;
     expect(d.decision.reasons).toEqual(['stop']);
     expect(d.tracker.pendingFull).toBeNull();
@@ -916,7 +916,7 @@ describe('EXIT-1b item 6: when an in-flight partial resolves, the rest is reasse
 });
 
 describe('EXIT-1b edges (mutation)', () => {
-  const L = X.ladder;
+  const L = G.ladder;
   test('min-out rounds down, to the lamport', () => {
     const trig = 1_000_003n; // trig x 9,200 is not a multiple of 10,000
     const p = planAttempt(L, 1, trig, trig);
@@ -945,7 +945,7 @@ describe('EXIT-1b edges (mutation)', () => {
     const stop = plan({ stopPrice: execPrice(V0, QTY) });
     const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
     const after = decideExit(S, stop, holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 }), pending.tracker, obs(NOW + 60_000));
-    expect(after.decision).toMatchObject({ kind: 'exit', retry: false, startRung: 0, maxAttempts: X.ladder.maxAttempts });
+    expect(after.decision).toMatchObject({ kind: 'exit', retry: false, startRung: 0, maxAttempts: G.ladder.maxAttempts });
   });
 });
 
@@ -965,12 +965,12 @@ describe('EXIT-1b follow-up ruling: sell before reclaiming rent; a bounded sell-
   test('after a sell-and-close failed at the close, later exits sell only, within the same ladder and retries', () => {
     const failed = holding({ closeFailed: true, exitAttempts: 1 });
     const d = decide(failed, obs(NOW), stop).decision;
-    expect(d).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, closeAccount: false, maxAttempts: X.ladder.maxAttempts - 1 });
+    expect(d).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, closeAccount: false, maxAttempts: G.ladder.maxAttempts - 1 });
     // A blocked position retries sell-only too.
     const blocked = { ...holdingOf(blockedBook().positions[PID]!), closeFailed: true };
-    const retry = decide(blocked, obs(X.blockedRetryMs), plan(), { ...newTracker(), blockedAtMs: 0 }).decision;
+    const retry = decide(blocked, obs(G.blockedRetryMs), plan(), { ...newTracker(), blockedAtMs: 0 }).decision;
     expect(retry).toMatchObject({ kind: 'exit', retry: true, closeAccount: false });
     // Bounded: once the ladder is used, the exit is booked blocked like any other.
-    expect(decide({ ...failed, exitAttempts: X.ladder.maxAttempts }, obs(NOW), stop).decision).toMatchObject({ kind: 'exit', closeAccount: false, blocked: `exit ladder used: ${X.ladder.maxAttempts} attempts on this position` });
+    expect(decide({ ...failed, exitAttempts: G.ladder.maxAttempts }, obs(NOW), stop).decision).toMatchObject({ kind: 'exit', closeAccount: false, blocked: `exit ladder used: ${G.ladder.maxAttempts} attempts on this position` });
   });
 });
