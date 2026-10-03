@@ -33,13 +33,21 @@ const reconcileKey = (fx: Effect): string | null => {
 /**
  * The runner rule from the CORE-1 review: every tick re-emits `reconcile_balances` for each intent with a
  * known outcome and `reconcile_orphan` for each unbooked landing, so repeats are de-duplicated and the
- * total is rate-limited. Dropping a repeat is safe: the lifecycle asks again on a later tick.
+ * total is rate-limited. Under the cap, keys are served in rounds: a free place goes to the waiting key sent
+ * the fewest times, then the one waiting longest. A new key joins the current round (it neither jumps ahead
+ * of keys still owed a send nor falls behind), so no key is starved however many keys there are.
+ * Dropping a repeat is safe because the lifecycle asks again on a later tick and the queue keeps its place.
  * Every other effect passes straight through.
  */
 export class ReconcileGuard {
   readonly #limits: ReconcileLimits;
   readonly #lastSent = new Map<string, bigint>();
-  #window: bigint[] = [];
+  /** Per key: sends so far (its round) and its place in line (a sequence number, never tied). */
+  readonly #turn = new Map<string, { sends: number; seq: number }>();
+  #seq = 0;
+  /** Keys refused for the cap, with the slot they were last asked for. */
+  readonly #waiting = new Map<string, bigint>();
+  #recent: bigint[] = [];
 
   constructor(limits: ReconcileLimits = DEFAULT_RECONCILE_LIMITS) {
     if (limits.minSlotsBetween < 1n || limits.windowSlots < 1n || !Number.isSafeInteger(limits.maxPerWindow) || limits.maxPerWindow < 1) {
@@ -52,15 +60,50 @@ export class ReconcileGuard {
   admit(effect: Effect, now: Moment): Dispatch {
     const key = reconcileKey(effect);
     if (key === null) return 'sent';
+    const { minSlotsBetween, windowSlots, maxPerWindow } = this.#limits;
     const last = this.#lastSent.get(key);
-    if (last !== undefined && now.slot - last < this.#limits.minSlotsBetween) return 'duplicate';
-    this.#window = this.#window.filter((slot) => now.slot - slot < this.#limits.windowSlots);
-    if (this.#window.length >= this.#limits.maxPerWindow) return 'rate_limited';
-    this.#window.push(now.slot);
+    if (last !== undefined && now.slot - last < minSlotsBetween) return 'duplicate';
+    this.#recent = this.#recent.filter((slot) => now.slot - slot < windowSlots);
+    // A waiter no longer asked for (its intent resolved) gives up its place.
+    for (const [k, asked] of this.#waiting) if (now.slot - asked > windowSlots) this.#waiting.delete(k);
+    const mine = this.#turnOf(key);
+    const free = maxPerWindow - this.#recent.length;
+    let ahead = 0;
+    for (const k of this.#waiting.keys()) {
+      if (k === key) continue;
+      const theirs = this.#turnOf(k);
+      if (theirs.sends < mine.sends || (theirs.sends === mine.sends && theirs.seq < mine.seq)) ahead++;
+    }
+    if (ahead >= free) {
+      this.#waiting.set(key, now.slot);
+      return 'rate_limited';
+    }
+    this.#waiting.delete(key);
+    this.#recent.push(now.slot);
     this.#lastSent.set(key, now.slot);
+    mine.sends++;
+    mine.seq = this.#seq++;
     if (this.#lastSent.size > 1024) {
-      for (const [k, slot] of this.#lastSent) if (now.slot - slot >= this.#limits.minSlotsBetween) this.#lastSent.delete(k);
+      for (const [k, slot] of this.#lastSent) {
+        if (now.slot - slot >= minSlotsBetween && !this.#waiting.has(k)) {
+          this.#lastSent.delete(k);
+          this.#turn.delete(k);
+        }
+      }
     }
     return 'sent';
+  }
+
+  /** A key seen for the first time joins the current round: the fewest sends among the keys tracked. */
+  #turnOf(key: string): { sends: number; seq: number } {
+    let t = this.#turn.get(key);
+    if (t === undefined) {
+      let round = Infinity;
+      for (const k of this.#waiting.keys()) round = Math.min(round, this.#turn.get(k)?.sends ?? 0);
+      if (round === Infinity) for (const other of this.#turn.values()) round = Math.min(round, other.sends);
+      t = { sends: round === Infinity ? 0 : round, seq: this.#seq++ };
+      this.#turn.set(key, t);
+    }
+    return t;
   }
 }

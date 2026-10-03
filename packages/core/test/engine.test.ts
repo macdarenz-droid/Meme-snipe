@@ -4,7 +4,7 @@ import {
   AsOfStore, canonical, checkCausality, compareEvents, createReplay, createRng, Engine, leakTest, OFF_CHAIN, ReconcileGuard, replayHashes,
   replayOnce, runToEnd, shiftTest, SimClock, type AsOfEntry, type Decision, type Feed, type FeedEvent, type Marker, type Strategy,
 } from '../src/engine/index.ts';
-import { CONFIG, MINT } from './fixtures.ts';
+import { CONFIG, MINT, SPEND } from './fixtures.ts';
 import { at, generateStream, POOL, PRICE, stubRun, stubStrategy, stubWorld, TRADE } from './engine-fixtures.ts';
 
 const market = (id: string, slot: number, tx = 0, ix = 0, key = PRICE, value: unknown = { price: 1n }): FeedEvent =>
@@ -369,5 +369,151 @@ describe('+1-slot shift test', () => {
 describe('off-chain moments', () => {
   it('sort after every transaction in their slot', () => {
     expect(compareEvents({ moment: at(4), id: 'a' }, { moment: at(4, OFF_CHAIN - 1, 0), id: 'z' })).toBeGreaterThan(0);
+  });
+});
+
+// ---------- Review fixes (PR #10) ----------
+
+describe('reconcile guard is fair under the cap', () => {
+  it('serves every key when more keys are re-asked each tick than the cap allows', () => {
+    const g = new ReconcileGuard();
+    const keys: Effect[] = [
+      ...Array.from({ length: 25 }, (_, n): Effect => ({ type: 'reconcile_balances', intentId: `i${String(n).padStart(2, '0')}` as never })),
+      // Orphans come last in tick order, so they starve first under first come, first served.
+      ...Array.from({ length: 5 }, (_, n): Effect => ({ type: 'reconcile_orphan', intentId: `o${n}` as never, signature: `s${n}` as never })),
+    ];
+    const sent = new Map<number, number>();
+    for (let slot = 1; slot <= 3000; slot++) {
+      keys.forEach((fx, k) => { if (g.admit(fx, at(slot)) === 'sent') sent.set(k, (sent.get(k) ?? 0) + 1); });
+    }
+    expect(sent.size).toBe(30);
+    const counts = [...sent.values()];
+    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(2);
+    // The cap still holds: 20 per 150 slots over 3000 slots.
+    expect(counts.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(20 * (3000 / 150) + 20);
+  });
+
+  it('a waiter that is no longer asked for gives up its place', () => {
+    const g = new ReconcileGuard({ minSlotsBetween: 1n, windowSlots: 10n, maxPerWindow: 1 });
+    const fx = (n: number): Effect => ({ type: 'reconcile_balances', intentId: `i${n}` as never });
+    expect(g.admit(fx(1), at(1))).toBe('sent');
+    expect(g.admit(fx(2), at(1))).toBe('rate_limited');
+    // i2 resolved and is never asked again; once the window frees, i3 is not held behind it forever.
+    expect(g.admit(fx(3), at(30))).toBe('sent');
+  });
+});
+
+describe('a strategy cannot change engine state outside the lifecycle', () => {
+  it('the book it sees is frozen', () => {
+    const replay = createReplay([market('a', 1)]);
+    const errors: unknown[] = [];
+    const strategy: Strategy = { onMarket: (_e, ctx) => {
+      try { (ctx.book as { reserved: bigint }).reserved = 123n; } catch (err) { errors.push(err); }
+      try { (ctx as { now: unknown }).now = at(9); } catch (err) { errors.push(err); }
+      return [];
+    } };
+    const engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: { run: () => {} }, seed: 's', book: CONFIG });
+    runToEnd(replay, engine);
+    expect(errors).toHaveLength(2);
+    expect(engine.book.reserved).toBe(0n);
+  });
+
+  it('a decision kept after it was made cannot be rewritten', () => {
+    const replay = createReplay(generateStream('frozen', 200));
+    let kept: { spend: bigint } | null = null;
+    const base = stubStrategy();
+    const strategy: Strategy = { onMarket: (e, ctx) => {
+      const out = base.onMarket(e, ctx);
+      const entry = out.find((d) => d.action?.type === 'propose_entry');
+      if (kept === null && entry?.action?.type === 'propose_entry') kept = entry.action.intent as { spend: bigint };
+      return out;
+    } };
+    const engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: stubWorld(replay), seed: 'seed-1', book: CONFIG });
+    runToEnd(replay, engine);
+    expect(kept).not.toBeNull();
+    expect(() => { kept!.spend = 999_999_999n; }).toThrow(TypeError);
+    expect(Object.values(engine.book.intents).every((i) => i.intent.purpose !== 'entry' || i.intent.spend === SPEND)).toBe(true);
+    expect(engine.records.every((r) => Object.isFrozen(r))).toBe(true);
+  });
+});
+
+describe('runtime trap', () => {
+  const trapped = <T>(fn: () => T): T => {
+    const g = globalThis as Record<string, unknown>;
+    const proc = process as unknown as Record<string, unknown>;
+    const perf = performance as unknown as Record<string, unknown>;
+    const RealDate = Date;
+    const saved = {
+      Date: g.Date, random: Math.random, perfNow: perf.now, setTimeout: g.setTimeout, setInterval: g.setInterval,
+      setImmediate: g.setImmediate, queueMicrotask: g.queueMicrotask, nextTick: proc.nextTick, hrtime: proc.hrtime,
+      getBuiltinModule: proc.getBuiltinModule,
+    };
+    const trap = (name: string) => () => { throw new Error(`trap: ${name} called during replay`); };
+    class TrapDate extends RealDate {
+      constructor(...args: unknown[]) {
+        if (args.length === 0) throw new Error('trap: new Date() called during replay');
+        super(...(args as [number]));
+      }
+      static override now(): number { throw new Error('trap: Date.now called during replay'); }
+    }
+    g.Date = TrapDate;
+    Math.random = trap('Math.random');
+    perf.now = trap('performance.now');
+    for (const name of ['setTimeout', 'setInterval', 'setImmediate', 'queueMicrotask']) g[name] = trap(name);
+    proc.nextTick = trap('process.nextTick');
+    proc.hrtime = trap('process.hrtime');
+    proc.getBuiltinModule = trap('process.getBuiltinModule');
+    try {
+      return fn();
+    } finally {
+      g.Date = saved.Date;
+      Math.random = saved.random;
+      perf.now = saved.perfNow;
+      for (const name of ['setTimeout', 'setInterval', 'setImmediate', 'queueMicrotask'] as const) g[name] = saved[name];
+      proc.nextTick = saved.nextTick;
+      proc.hrtime = saved.hrtime;
+      proc.getBuiltinModule = saved.getBuiltinModule;
+    }
+  };
+
+  it('10 replays run with the clock, randomness, timers and module loading replaced by traps', () => {
+    const run = stubRun(generateStream('replay', 600));
+    const hashes = trapped(() => replayHashes(run, 10));
+    expect(new Set(hashes).size).toBe(1);
+    expect(hashes[0]).toBe(replayOnce(run).hash);
+  });
+
+  it('the trap fires on a forbidden call (positive control)', () => {
+    expect(() => trapped(() => Date.now())).toThrow(/trap/);
+    expect(() => trapped(() => new Date())).toThrow(/trap/);
+    expect(() => trapped(() => Math.random())).toThrow(/trap/);
+    expect(trapped(() => new Date(0).getTime())).toBe(0);
+  });
+});
+
+describe('log and runner contracts', () => {
+  it('canonical refuses anything but plain objects and arrays', () => {
+    expect(() => canonical(new Map([['a', 1]]))).toThrow(TypeError);
+    expect(() => canonical(new Set([1]))).toThrow(TypeError);
+    expect(() => canonical(new Date(0))).toThrow(TypeError);
+    expect(() => canonical({ x: new (class Foo { a = 1; })() })).toThrow(TypeError);
+    expect(canonical(Object.assign(Object.create(null) as object, { a: 1 }))).toBe('{"a":1}');
+  });
+
+  it('an async effect runner is refused instead of losing its results', () => {
+    const replay = createReplay(generateStream('async', 200));
+    const asyncRunner = { run: async () => {} };
+    const engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy: stubStrategy(), runner: asyncRunner, seed: 'seed-1', book: CONFIG });
+    expect(() => runToEnd(replay, engine)).toThrow(/synchronous/);
+  });
+
+  it('a replay copies its input instead of freezing the caller\'s objects', () => {
+    const value = { price: 1n };
+    const event: FeedEvent = { kind: 'market', id: 'a', moment: at(1, 0, 0), key: PRICE, value };
+    const replay = createReplay([event]);
+    expect(Object.isFrozen(event) || Object.isFrozen(value)).toBe(false);
+    value.price = 2n;
+    replay.advance();
+    expect(replay.feed.next()).toMatchObject({ value: { price: 1n } });
   });
 });

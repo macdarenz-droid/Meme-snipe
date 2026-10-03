@@ -7,6 +7,7 @@ import { applyBookEvent, emptyBook, isIllegal, type Book, type BookConfig, type 
 import { AsOfStore, type AsOfEntry, type Lookup } from './asof.ts';
 import type { Clock } from './clock.ts';
 import type { Feed, FeedEvent, MarketEvent } from './feed.ts';
+import { deepFreeze } from './freeze.ts';
 import { canonical } from './log.ts';
 import { compareEvents, compareMoments, type Moment } from './moment.ts';
 import { createRng, type Rng } from './random.ts';
@@ -91,7 +92,7 @@ export class Engine {
     this.#rng = createRng(deps.seed);
     const limits = deps.reconcileLimits ?? DEFAULT_RECONCILE_LIMITS;
     this.#guard = new ReconcileGuard(limits);
-    this.#book = emptyBook(deps.book);
+    this.#book = deepFreeze(emptyBook(deps.book));
     this.#records = deps.keepLog === false ? null : [];
     this.#log({ type: 'start', seed: deps.seed, limits, book: deps.book });
   }
@@ -121,7 +122,7 @@ export class Engine {
   }
 
   #log(body: Body<LogRecord>): void {
-    const record = { ...body, seq: this.#seq++ } as LogRecord;
+    const record = deepFreeze({ ...body, seq: this.#seq++ } as LogRecord);
     this.#hash.update(`${canonical(record)}\n`, 'utf8');
     this.#records?.push(record);
   }
@@ -145,7 +146,7 @@ export class Engine {
     this.#store.record(e.key, e.value, e.moment, e.id);
     const inputs = new Set<string>([e.id]);
     const store = this.#store;
-    const ctx: StrategyContext = {
+    const ctx = Object.freeze<StrategyContext>({
       now,
       book: this.#book,
       rng: this.#rng,
@@ -159,10 +160,11 @@ export class Engine {
         if (Array.isArray(r)) for (const entry of r as readonly AsOfEntry[]) inputs.add(entry.source);
         return r;
       },
-    };
+    });
     const decisions = this.#strategy.onMarket(e, ctx);
     const read = [...inputs].sort();
-    for (const d of decisions) {
+    // Frozen before use: a strategy cannot change a decision after making it, nor reach engine state through it.
+    for (const d of deepFreeze(decisions)) {
       const base = { type: 'decision' as const, at: now, eventId: e.id, inputs: read, action: d.action, reasons: [...d.reasons] };
       if (d.action === null) this.#log({ ...base, result: 'abstained', effects: [] });
       else this.#log({ ...base, ...this.#apply(d.action, now) });
@@ -170,13 +172,18 @@ export class Engine {
   }
 
   #apply(event: BookEvent, now: Moment): { result: 'applied' | 'illegal'; reason?: string; effects: DispatchedEffect[] } {
-    const r = applyBookEvent(this.#book, event);
+    const r = applyBookEvent(this.#book, deepFreeze(event));
     if (isIllegal(r)) return { result: 'illegal', reason: `${r.reason} (from ${r.from})`, effects: [] };
-    this.#book = r.state;
+    // The book is shared with the strategy and the log; frozen, nobody can change it outside the lifecycle.
+    this.#book = deepFreeze(r.state);
     const effects: DispatchedEffect[] = [];
-    for (const effect of r.effects) {
+    for (const effect of deepFreeze(r.effects)) {
       const dispatch = this.#guard.admit(effect, now);
-      if (dispatch === 'sent') this.#runner.run(effect, now);
+      if (dispatch === 'sent') {
+        const out: unknown = this.#runner.run(effect, now);
+        // An async runner would deliver results after the replay ended; results must come back as feed events.
+        if (typeof (out as { then?: unknown } | null)?.then === 'function') throw new TypeError('EffectRunner.run must be synchronous; schedule results as feed events');
+      }
       effects.push({ effect, dispatch });
     }
     return { result: 'applied', effects };

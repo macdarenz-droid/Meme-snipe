@@ -1,60 +1,152 @@
-// Guard: core code never reads the wall clock, draws unseeded randomness, starts timers, or touches the
-// network or the file system. Only folders named `adapters` may (docs/ARCHITECTURE.md §16.1).
-// Extend FORBIDDEN when a new way in appears; never remove from it.
+// Guard: core code never reads the wall clock, draws unseeded randomness, schedules work, reads the
+// environment, or touches the network or the file system. Only folders named `adapters` may
+// (docs/ARCHITECTURE.md §16.1). Bans are by identifier over a token stream, not by call shape, so
+// spellings such as `Date['now']()`, `+new Date` or `const { random } = Math` are caught too.
+// Extend the lists when a new way in appears; never remove from them.
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SRC = join(import.meta.dirname, '..', 'src');
 
+/** Identifiers that reach the clock, randomness, scheduling, the environment, I/O or code generation. */
+const BANNED_IDENTIFIERS = new Set([
+  'performance', 'process', 'Intl', 'queueMicrotask', 'setTimeout', 'setInterval', 'setImmediate', 'clearTimeout',
+  'clearInterval', 'clearImmediate', 'requestAnimationFrame', 'requestIdleCallback', 'Atomics', 'fetch', 'WebSocket',
+  'XMLHttpRequest', 'EventSource', 'WebTransport', 'RTCPeerConnection', 'Worker', 'navigator', 'document', 'location',
+  'localStorage', 'sessionStorage', 'indexedDB', 'globalThis', 'global', 'window', 'self', 'eval', 'Function', 'require',
+  'module', 'Deno', 'Bun', 'random', 'randomBytes', 'randomUUID', 'randomInt', 'randomFill', 'randomFillSync',
+  'getRandomValues', 'generateKeyPair', 'generateKeyPairSync', 'getBuiltinModule', 'WeakRef', 'FinalizationRegistry',
+]);
+
 const IO_MODULES = [
   'fs', 'fs/promises', 'net', 'http', 'https', 'http2', 'dgram', 'dns', 'dns/promises', 'tls', 'child_process', 'cluster',
   'worker_threads', 'timers', 'timers/promises', 'perf_hooks', 'readline', 'inspector', 'os', 'process', 'module', 'vm',
-  'undici', 'ws', 'axios', 'node-fetch',
-].map((m) => m.replace('/', '\\/')).join('|');
-
-const FORBIDDEN: readonly { readonly name: string; readonly pattern: RegExp }[] = [
-  { name: 'Date.now', pattern: /\bDate\s*\.\s*now\b/ },
-  { name: 'new Date() without an argument', pattern: /\bnew\s+Date\s*\(\s*\)/ },
-  { name: 'Date() called for the current time', pattern: /(?<![\w.$]|new\s)Date\s*\(\s*\)/ },
-  { name: 'Math.random', pattern: /\bMath\s*\.\s*random\b/ },
-  { name: 'performance.now', pattern: /\bperformance\s*\.\s*now\b/ },
-  { name: 'process clock', pattern: /\bprocess\s*\.\s*(hrtime|uptime|cpuUsage)\b/ },
-  { name: 'timer', pattern: /\b(setTimeout|setInterval|setImmediate|clearTimeout|clearInterval|clearImmediate|requestAnimationFrame)\b/ },
-  { name: 'network', pattern: /\b(fetch|WebSocket|XMLHttpRequest|EventSource|WebTransport|RTCPeerConnection)\b/ },
-  { name: 'crypto randomness', pattern: /\b(randomBytes|randomUUID|randomInt|randomFill|randomFillSync|getRandomValues|generateKeyPair)\b/ },
-  { name: 'I/O module import', pattern: new RegExp(`(?:from|import|require)\\s*\\(?\\s*['"](?:node:)?(?:${IO_MODULES})['"]`) },
-  { name: 'dynamic import or require', pattern: /\bimport\s*\(|\brequire\s*\(/ },
-  { name: 'global escape hatch', pattern: /\b(globalThis|eval|Function)\s*[([.]/ },
+  'v8', 'async_hooks', 'diagnostics_channel', 'sqlite', 'undici', 'ws', 'axios', 'node-fetch',
 ];
 
-/** Removes comments so prose may mention what code may not do. Strings are kept and scanned. */
-const stripComments = (source: string): string => {
-  let out = '';
+/** String literals that name a banned thing: computed access (`Math['random']`), `Reflect.get`, or a module import. */
+const BANNED_STRINGS = new Set([
+  ...BANNED_IDENTIFIERS, 'now', 'constructor', 'Date', 'Math', 'timeOrigin', 'nextTick', 'hrtime', 'env',
+  ...IO_MODULES, ...IO_MODULES.map((m) => `node:${m}`),
+]);
+
+type Token = { readonly type: 'id' | 'str' | 'num' | 'regex' | 'punct' | 'template'; readonly value: string };
+
+/** Keywords after which a `/` starts a regular expression, not a division. */
+const REGEX_AFTER = new Set(['return', 'typeof', 'case', 'in', 'of', 'new', 'delete', 'void', 'throw', 'instanceof', 'yield', 'await', 'else', 'do']);
+
+/**
+ * A small tokenizer for our own TypeScript: skips comments and whitespace, reads strings (with escapes),
+ * template literals (text skipped, `${…}` scanned), regex literals and identifiers. Anything it cannot
+ * read, or an identifier written with a unicode escape, is reported rather than skipped.
+ */
+const tokenize = (source: string): { tokens: Token[]; problems: string[] } => {
+  const tokens: Token[] = [];
+  const problems: string[] = [];
+  const braces: ('code' | 'template')[] = [];
   let i = 0;
-  let quote: string | null = null;
+  const regexAllowed = () => {
+    const prev = tokens[tokens.length - 1];
+    if (prev === undefined) return true;
+    if (prev.type === 'id') return REGEX_AFTER.has(prev.value);
+    if (prev.type === 'punct') return prev.value !== ')' && prev.value !== ']';
+    return false;
+  };
+  const readTemplate = () => {
+    // At the character after ` or }. Reads text up to the next ${ or closing `.
+    while (i < source.length) {
+      const c = source[i]!;
+      if (c === '\\') { i += 2; continue; }
+      if (c === '`') { i++; tokens.push({ type: 'template', value: '`' }); return; }
+      if (c === '$' && source[i + 1] === '{') { i += 2; braces.push('template'); tokens.push({ type: 'punct', value: '${' }); return; }
+      i++;
+    }
+    problems.push('unterminated template literal');
+  };
   while (i < source.length) {
     const c = source[i]!;
     const next = source[i + 1];
-    if (quote !== null) {
-      out += c;
-      if (c === '\\') { out += next ?? ''; i += 2; continue; }
-      if (c === quote) quote = null;
-      i++;
+    if (/\s/.test(c)) { i++; continue; }
+    if (c === '/' && next === '/') { while (i < source.length && source[i] !== '\n') i++; continue; }
+    if (c === '/' && next === '*') {
+      const end = source.indexOf('*/', i + 2);
+      if (end === -1) { problems.push('unterminated comment'); break; }
+      i = end + 2;
       continue;
     }
-    if (c === '"' || c === "'" || c === '`') { quote = c; out += c; i++; continue; }
-    if (c === '/' && next === '/') { while (i < source.length && source[i] !== '\n') i++; continue; }
-    if (c === '/' && next === '*') { const end = source.indexOf('*/', i + 2); i = end === -1 ? source.length : end + 2; continue; }
-    out += c;
-    i++;
+    if (c === '"' || c === "'") {
+      let value = '';
+      i++;
+      while (i < source.length && source[i] !== c) {
+        if (source[i] === '\\') { value += source[i + 1] ?? ''; i += 2; continue; }
+        if (source[i] === '\n') { problems.push('unterminated string'); break; }
+        value += source[i];
+        i++;
+      }
+      i++;
+      tokens.push({ type: 'str', value });
+      continue;
+    }
+    if (c === '`') { i++; readTemplate(); continue; }
+    if (c === '}' && braces[braces.length - 1] === 'template') { braces.pop(); i++; readTemplate(); continue; }
+    if (c === '/' && regexAllowed()) {
+      let inClass = false;
+      i++;
+      while (i < source.length) {
+        const r = source[i]!;
+        if (r === '\\') { i += 2; continue; }
+        if (r === '\n') { problems.push('unterminated regex'); break; }
+        if (r === '[') inClass = true;
+        else if (r === ']') inClass = false;
+        else if (r === '/' && !inClass) break;
+        i++;
+      }
+      i++;
+      while (i < source.length && /[a-z]/i.test(source[i]!)) i++;
+      tokens.push({ type: 'regex', value: '/' });
+      continue;
+    }
+    if (/[A-Za-z_$\\]/.test(c) || c.charCodeAt(0) > 127) {
+      let value = '';
+      while (i < source.length && (/[\w$\\]/.test(source[i]!) || source.charCodeAt(i) > 127)) { value += source[i]; i++; }
+      if (/[\\]|[^\x00-\x7f]/.test(value)) problems.push(`identifier written with an escape or non-ASCII character: ${value}`);
+      tokens.push({ type: 'id', value });
+      continue;
+    }
+    if (/[0-9]/.test(c) || (c === '.' && next !== undefined && /[0-9]/.test(next))) {
+      let value = '';
+      while (i < source.length && /[\w.]/.test(source[i]!)) { value += source[i]; i++; }
+      tokens.push({ type: 'num', value });
+      continue;
+    }
+    if (c === '{') braces.push('code');
+    if (c === '}') braces.pop();
+    const three = source.slice(i, i + 3);
+    const value = three === '...' ? three : c === '?' && next === '.' ? '?.' : c;
+    i += value.length;
+    tokens.push({ type: 'punct', value });
   }
-  return out;
+  return { tokens, problems };
 };
 
 const scan = (source: string): string[] => {
-  const code = stripComments(source);
-  return FORBIDDEN.filter((f) => f.pattern.test(code)).map((f) => f.name);
+  const { tokens, problems } = tokenize(source);
+  const found = [...problems];
+  tokens.forEach((t, k) => {
+    const prev = tokens[k - 1];
+    const next = tokens[k + 1];
+    if (t.type === 'id') {
+      if (BANNED_IDENTIFIERS.has(t.value)) found.push(t.value);
+      // Date only as `new Date(<argument>)`: a date from data, never the current time.
+      if (t.value === 'Date' && !(prev?.value === 'new' && next?.value === '(' && tokens[k + 2]?.value !== ')')) found.push('Date without an argument');
+      if (t.value === 'Math' && next?.value === '[') found.push('computed Math access');
+      if (t.value === 'constructor' && (prev?.value === '.' || prev?.value === '?.')) found.push('.constructor');
+      if (t.value === 'import' && (next?.value === '(' || next?.value === '.')) found.push('dynamic import or import.meta');
+    }
+    if (t.type === 'str' && BANNED_STRINGS.has(t.value)) found.push(`string '${t.value}'`);
+  });
+  return found;
 };
 
 const sourceFiles = (dir: string): string[] =>
@@ -65,36 +157,59 @@ const sourceFiles = (dir: string): string[] =>
   });
 
 describe('purity guard', () => {
-  it('flags every forbidden way to reach the clock, randomness, timers, network or files', () => {
-    const bad: Record<string, string> = {
-      'Date.now': 'const t = Date.now();',
-      'new Date() without an argument': 'const d = new Date();',
-      'Date() called for the current time': 'const s = Date();',
-      'Math.random': 'const r = Math.random();',
-      'performance.now': 'const p = performance.now();',
-      'process clock': 'const h = process.hrtime.bigint();',
-      timer: 'setTimeout(() => {}, 10);',
-      network: "await fetch('https://example.com');",
-      'crypto randomness': "import { randomUUID } from 'node:crypto'; randomUUID();",
-      'I/O module import': "import { readFileSync } from 'node:fs';",
-      'dynamic import or require': "const m = await import('./x.ts');",
-      'global escape hatch': "globalThis['Date'].now();",
-    };
-    for (const [name, snippet] of Object.entries(bad)) expect(scan(snippet), snippet).toContain(name);
-    expect(scan("import * as fs from 'fs';")).toContain('I/O module import');
-    expect(scan("import net from 'node:net';")).toContain('I/O module import');
-    expect(scan('const ws = new WebSocket(url);')).toContain('network');
-    expect(scan('setInterval(f, 1)')).toContain('timer');
+  it('flags every way in, including the spellings found in review', () => {
+    const bad = [
+      'const t = Date.now();',
+      'const d = new Date();',
+      'const s = Date();',
+      'const n = +new Date;',
+      "const n = Date['now']();",
+      'const r = Math.random();',
+      'const { random } = Math;',
+      "const r = Math['ran' + 'dom']();",
+      "const r = Reflect.get(Math, 'random');",
+      'const p = performance.now();',
+      'const o = performance.timeOrigin;',
+      'const h = process.hrtime.bigint();',
+      "const fs = process.getBuiltinModule('node:fs');",
+      'process.nextTick(f);',
+      "const k = process.env['KEY'];",
+      'const f = new Intl.DateTimeFormat().format();',
+      'queueMicrotask(f);',
+      'setTimeout(() => {}, 10);',
+      'setInterval(f, 1)',
+      "await fetch('https://example.com');",
+      'const ws = new WebSocket(url);',
+      "import { randomUUID } from 'node:crypto'; randomUUID();",
+      "import { readFileSync } from 'node:fs';",
+      "import * as fs from 'fs';",
+      "import net from 'node:net';",
+      "const m = await import('./x.ts');",
+      "const g = globalThis['Date'];",
+      "(() => 0).constructor('return Date.n' + 'ow()')();",
+      "eval('1');",
+      'const re = /a\\//; const t = Date.now();',
+      'const re = /[/]/; const t = Date.now();',
+      'const t = `${Date.now()}`;',
+      'const t = `a${`b${Math.random()}`}`;',
+      'const x = \\u0044ate.now();',
+    ];
+    for (const snippet of bad) expect(scan(snippet), snippet).not.toEqual([]);
   });
 
-  it('allows what is deterministic: dates from data, hashing, and prose in comments', () => {
+  it('allows what is deterministic: dates from data, hashing, prose in comments, division', () => {
     const ok = [
       'const d = new Date(eventTime);',
       "import { createHash } from 'node:crypto';",
       '// never call Date.now or Math.random here',
       '/* setTimeout belongs in adapters */ const x = 1;',
-      'const updatedAt = row.date();',
-      'const fetched = true; const dateNow = 1;',
+      'const nowMs = clock.now().receivedAt;',
+      'const half = total / 2 / count;',
+      'const ratio = (a + b) / c; const y = arr[0] / 2;',
+      'const s = `slot ${m.slot} of ${n}`;',
+      'class A { constructor(x: number) { this.x = x; } }',
+      "const label = 'random draw';",
+      'const r = /^[0-9a-f]{64}$/.test(hash);',
     ];
     for (const snippet of ok) expect(scan(snippet), snippet).toEqual([]);
   });

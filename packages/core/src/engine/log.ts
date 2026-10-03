@@ -16,6 +16,10 @@ export const canonical = (value: unknown): string => {
     case 'boolean':
       return JSON.stringify(value);
     case 'object': {
+      const proto: unknown = Object.getPrototypeOf(value);
+      if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) {
+        throw new TypeError(`${Object.prototype.toString.call(value)} has no canonical form; log plain objects and arrays only`);
+      }
       if (Array.isArray(value)) return `[${value.map((v) => (v === undefined ? 'null' : canonical(v))).join(',')}]`;
       const entries = Object.keys(value)
         .filter((k) => (value as Record<string, unknown>)[k] !== undefined)
