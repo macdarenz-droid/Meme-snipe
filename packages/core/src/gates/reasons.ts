@@ -1,13 +1,13 @@
 // Typed reasons for the journal. Every reject names its gate, a code, the input it read and the values compared,
 // so a decision can be rebuilt and counted without parsing text (docs/ARCHITECTURE.md §7, §6.3).
 
-export const HARD_GATES = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12', 'H13', 'H14', 'H15', 'H16'] as const;
+export const HARD_GATES = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12', 'H13', 'H14', 'H15', 'H16', 'H17'] as const;
 export type HardGate = (typeof HARD_GATES)[number];
 
 /** The facts the gates read, by name. Keys in the as-of store are built from these (facts.ts). */
 export type FactName =
   | 'mint' | 'pool' | 'lp' | 'curve' | 'create' | 'migration' | 'candles' | 'holders' | 'insiders' | 'deployer'
-  | 'stream' | 'coverage' | 'sim' | 'xcheck' | 'soft' | 'sol-usd' | 'curve-volume' | 'graduates' | 'exec-health' | 'rug-check';
+  | 'stream' | 'coverage' | 'trades' | 'sim' | 'xcheck' | 'soft' | 'sol-usd' | 'curve-volume' | 'graduates' | 'exec-health' | 'rug-check';
 
 /** Why an input could not be used. Each one rejects (H16): unknown, stale or degraded evidence means no trade. */
 export type EvidenceCode =
@@ -31,7 +31,7 @@ export type EvidenceCode =
 export type RejectCode =
   | EvidenceCode
   | 'mint-program' | 'mint-authority' | 'freeze-authority' | 'extension-blocked'
-  | 'venue' | 'pool-owner' | 'not-canonical' | 'mayhem' | 'quote-mint'
+  | 'venue' | 'pool-owner' | 'not-canonical' | 'mayhem' | 'quote-mint' | 'event-tail'
   | 'lp-withdrawable' | 'curve-stuck'
   | 'dust-at-migration' | 'below-liquidity-floor'
   | 'instant-graduation' | 'excluded-window' | 'chase-at-5m' | 'candle-spike'
@@ -40,6 +40,7 @@ export type RejectCode =
   | 'serial-deployer' | 'prior-rug'
   | 'round-trip-failed' | 'sim-failed' | 'sim-loss'
   | 'xcheck-disagree'
+  | 'unsupported-shape'
   | 'policy-session-ended' | 'bad-request';
 
 export interface GateReason {
@@ -58,6 +59,6 @@ export interface GateReason {
 /** A note that does not reject but belongs in the journal (an unknown program account kept as a holder, a veto not applied). */
 export interface GateNote {
   readonly gate: HardGate;
-  readonly code: 'live-only-not-applied' | 'unknown-program-holder' | 'locker-holder' | 'missing-insider-bounded' | 'rug-labels-unavailable';
+  readonly code: 'live-only-not-applied' | 'unknown-program-holder' | 'locker-holder' | 'rug-labels-unavailable';
   readonly detail: string;
 }

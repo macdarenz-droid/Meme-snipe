@@ -5,7 +5,7 @@
 // touches an uncovered range is not judged (H16), so a gap can never make us count fewer mints.
 import type { AsOfEntry } from '../engine/asof.ts';
 import type { MarketEvent } from '../engine/feed.ts';
-import { compareMoments, type Moment } from '../engine/moment.ts';
+import { compareEvents, compareMoments, type Moment } from '../engine/moment.ts';
 import { SECOND_MS } from '../config/time.ts';
 import type { DeployerFact } from './facts.ts';
 
@@ -53,6 +53,7 @@ export class DeployerIndex {
   readonly #lost = new Map<string, { readonly atMs: number; readonly via: string }>();
   #first: Moment | null = null;
   #last: Moment | null = null;
+  #seeded = false;
 
   /** Feed every released market event here, in release order. Unrelated events are ignored. */
   observe(e: MarketEvent): void {
@@ -61,12 +62,7 @@ export class DeployerIndex {
     this.#trackLoss(e);
     if (e.key.startsWith(LOG_CREATE_PREFIX) || e.key.startsWith(TX_CREATE_PREFIX)) {
       const c = createOf(e.value);
-      if (c === null) return;
-      const m = this.#mints.get(c.creator) ?? new Map<string, number>();
-      // The same create from logs and from a fetched transaction counts once, at its earliest time.
-      const prev = m.get(c.mint);
-      m.set(c.mint, prev === undefined || c.createdAtMs < prev ? c.createdAtMs : prev);
-      this.#mints.set(c.creator, m);
+      if (c !== null) this.#addMint(this.#mints, c);
       return;
     }
     const into = e.key.startsWith(RUG_PREFIX) ? this.#rugs : e.key.startsWith(RUG_UNJUDGED_PREFIX) ? this.#unjudged : null;
@@ -78,6 +74,74 @@ export class DeployerIndex {
       if (!m.has(r['mint'])) m.set(r['mint'], { at: e.moment, kind: typeof r['rule'] === 'string' ? r['rule'] : null });
       into.set(r['creator'], m);
     }
+  }
+
+  /** The same create from logs and from a fetched transaction counts once, at its earliest time. */
+  #addMint(into: Map<string, Map<string, number>>, c: { readonly mint: string; readonly creator: string; readonly createdAtMs: number }): void {
+    const m = into.get(c.creator) ?? new Map<string, number>();
+    const prev = m.get(c.mint);
+    m.set(c.mint, prev === undefined || c.createdAtMs < prev ? c.createdAtMs : prev);
+    into.set(c.creator, m);
+  }
+
+  /**
+   * SEED-1: fills the index from history before its first live event (docs/DECISIONS.md, SEED-1), so a fresh or
+   * restarted worker does not reject H14 for a whole look-back. `creates` are create events in FEED-1's shape, in
+   * release order; `coverage` are the `coverage:creates:*` facts of the seeded range, which the worker must also
+   * release into the engine, because H14 reads coverage from the engine's history and never from here.
+   * As of `asOf` (the process start): an event or fact dated after it, or a create whose chain time is after it, is
+   * refused and nothing is seeded. The index's own start becomes the seeded range's first `coverage:creates:start`;
+   * without one the start is unchanged (the first live event), so a seed with no coverage never widens what the
+   * index claims to have watched. Gaps inside the range stay gaps: they are coverage facts, judged by H14.
+   */
+  seed(creates: readonly MarketEvent[], coverage: readonly MarketEvent[], asOf: Moment): { readonly creates: number; readonly fromMs: number | null } {
+    if (this.#first !== null || this.#seeded) throw new Error('the deployer index can only be seeded once, before it observes an event');
+    let start: Moment | null = null;
+    for (const f of coverage) {
+      if (compareMoments(f.moment, asOf) > 0) throw new RangeError(`seed coverage ${f.id} is dated after the process start`);
+      if (!f.key.startsWith('coverage:creates:')) throw new RangeError(`seed coverage ${f.id} is not a creates coverage fact (${f.key})`);
+      if (f.key === 'coverage:creates:start' && (start === null || compareMoments(f.moment, start) < 0)) start = f.moment;
+    }
+    const { mints, last } = this.#checked(creates, asOf, 'seed');
+    // Checked in full before anything changes: a refused seed leaves the index as it was.
+    this.#seeded = true;
+    this.#merge(mints);
+    if (start !== null) {
+      this.#first = start;
+      this.#last = last !== null && compareMoments(last, start) > 0 ? last : start;
+    }
+    return { creates: creates.length, fromMs: start === null ? null : start.receivedAt };
+  }
+
+  /**
+   * SEED-1 downtime fill: after a restart from saved state, the creates backfilled for the downtime, which are older
+   * than the live events already observed. Same as-of checks as `seed`, all or nothing; the index's own start is not
+   * touched (the saved state carries it). Whether the downtime is covered is decided by the fill's coverage facts in
+   * the engine's history, never here.
+   */
+  fill(creates: readonly MarketEvent[], asOf: Moment): { readonly creates: number } {
+    const { mints } = this.#checked(creates, asOf, 'fill');
+    this.#merge(mints);
+    return { creates: creates.length };
+  }
+
+  #checked(creates: readonly MarketEvent[], asOf: Moment, what: string): { readonly mints: Map<string, Map<string, number>>; readonly last: Moment | null } {
+    const mints = new Map<string, Map<string, number>>();
+    let prev: MarketEvent | null = null;
+    for (const e of creates) {
+      if (compareMoments(e.moment, asOf) > 0) throw new RangeError(`${what} create ${e.id} is dated after the process start`);
+      if (prev !== null && compareEvents(prev, e) >= 0) throw new RangeError(`${what} create ${e.id} is not after ${prev.id}`);
+      prev = e;
+      const c = e.key.startsWith(LOG_CREATE_PREFIX) || e.key.startsWith(TX_CREATE_PREFIX) ? createOf(e.value) : null;
+      if (c === null) throw new RangeError(`${what} event ${e.id} is not a create event`);
+      if (c.createdAtMs > asOf.receivedAt) throw new RangeError(`${what} create ${e.id} has a chain time after the process start`);
+      this.#addMint(mints, c);
+    }
+    return { mints, last: prev?.moment ?? null };
+  }
+
+  #merge(mints: Map<string, Map<string, number>>): void {
+    for (const [creator, m] of mints) for (const [mint, createdAtMs] of m) this.#addMint(this.#mints, { mint, creator, createdAtMs });
   }
 
   /**

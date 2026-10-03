@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { basename, join } from 'node:path';
-import { DEFAULT_HEALTH_ADDR, EXIT, isLoopback, SECRET_NAMES, STATE_FILES, type FeedHealth, type Health, type JournalKind } from '../src/contract.ts';
+import { DEFAULT_HEALTH_ADDR, EXIT, isLoopback, SECRET_NAMES, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus } from '../src/contract.ts';
 
 const env = process.env;
 const fail = (code: number, msg: string): never => {
@@ -43,6 +43,8 @@ interface StubState {
   position: { trade: string; openedAt: number } | null;
   /** An intent that was being worked on when the process died: settled by reconcile. */
   intent: { trade: string; leg: 'entry' | 'exit' } | null;
+  /** Set by --reconcile (ExecStartPre) when it settled an intent, so the start that follows journals its exposure. */
+  settledIntent?: { trade: string; leg: 'entry' | 'exit' } | null;
 }
 const loadState = (): StubState => {
   try {
@@ -63,6 +65,7 @@ if (process.argv.includes('--reconcile')) {
   if (reconcileFails) fail(EXIT.reconcileFailed, 'Reconcile: intents left unresolved.');
   // ExecStartPre step: settle what a crash left behind, then report open intents for the host's update gate.
   const s = loadState();
+  s.settledIntent = s.intent;
   s.intent = null;
   saveState(s);
   writeFileSync(join(stateDir, STATE_FILES.openIntents), '0\n');
@@ -73,6 +76,7 @@ if (process.argv.includes('--reconcile')) {
 // Journal: repair a torn last line left by a kill, then continue the sequence.
 let seq = 0;
 let repaired = false;
+let lastTs: string | null = null;
 if (existsSync(journalPath)) {
   const text = readFileSync(journalPath, 'utf8');
   const lines = text.split('\n');
@@ -90,7 +94,7 @@ if (existsSync(journalPath)) {
   }
   if (repaired) truncateSync(journalPath, Buffer.byteLength(text.slice(0, keep)));
   const lastGood = lines[lines.length - 1];
-  if (lastGood !== undefined) seq = (JSON.parse(lastGood) as { seq: number }).seq;
+  if (lastGood !== undefined) ({ seq, ts: lastTs } = JSON.parse(lastGood) as { seq: number; ts: string });
 }
 const boot = `${Date.now().toString(36)}-${process.pid}`;
 const journal = (kind: JournalKind, fields: Record<string, unknown> = {}): void => {
@@ -106,20 +110,40 @@ if (reconcileFails) {
   fail(EXIT.reconcileFailed, 'Reconcile failed: exiting before any entry.');
 }
 const state = loadState();
-const settled = state.intent;
+const settled = state.intent ?? state.settledIntent ?? null;
 state.intent = null;
+state.settledIntent = null;
 saveState(state);
 writeFileSync(join(stateDir, STATE_FILES.openIntents), '0\n');
 journal('reconcile', { ok: true, settled: settled ? `${settled.leg} of ${settled.trade}` : null, open_position: state.position?.trade ?? null });
+// Back with a position open: the down window's worst move, as WORKER-1 rebuilds it from chain history (stub: flat).
+// One line per trade that was open or in flight at the kill (the stub's market is flat: 0 bps).
+if (lastTs !== null) {
+  for (const trade of new Set([...(state.position ? [state.position.trade] : []), ...(settled ? [settled.trade] : [])])) {
+    journal('exposure', { trade, from_ts: lastTs, to_ts: new Date().toISOString(), worst_move_bps: 0 });
+  }
+}
+const bootAt = Date.now();
+// Exit capable a little after reconcile (test hook), so the runner's exposure measure has a window to see.
+const exitDelayMs = Number(env['ZEROED_STUB_EXIT_DELAY_MS'] ?? 0);
+const creditsPerS = Number(env['ZEROED_STUB_CREDITS_PER_S'] ?? 0.1);
+const lookupCounts = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const STREAM: Record<string, string> = { pumpportal: 'creates', 'helius-ws': 'trades', 'alchemy-ws': 'rugs' };
 
 // Feeds.
 const FEEDS: Record<string, { critical: boolean }> = { pumpportal: { critical: true }, 'helius-ws': { critical: true }, 'alchemy-ws': { critical: false } };
-const feeds = new Map(Object.keys(FEEDS).map((n) => [n, { last: null as number | null, downUntil: 0 }]));
+const feeds = new Map(Object.keys(FEEDS).map((n) => [n, { last: null as number | null, downUntil: 0, downFrom: 0, gapId: '' }]));
 const recorderPath = join(stateDir, STATE_FILES.recorder, `${boot}.jsonl`);
 let slot = 0;
 let halted = false;
 const haltReasons = (now: number): string[] =>
   [...feeds].filter(([n, f]) => FEEDS[n]!.critical && (f.downUntil > now || f.last === null || now - f.last > 5 * tickMs)).map(([n]) => `feed ${n} stale`);
+
+// TEST-2's DryRunRecord shape, bigints as strings; synthetic numbers that pass item 4's bounds.
+const stubSimulation = (): Record<string, unknown> => ({
+  outcome: 'simulated', success: true, error: null, standIn: null, quotedOut: '1000000', simulatedOut: '1000100',
+  amountErrorE4: 100, quoteAgeSlots: '2', rentDeclared: '0', rentPaid: '0', balancesFrom: 'simulation',
+});
 
 let tradeTimer = 0;
 const tick = (): void => {
@@ -128,9 +152,11 @@ const tick = (): void => {
   for (const [name, f] of feeds) {
     if (f.downUntil > now) continue;
     if (f.downUntil !== 0) {
+      journal('coverage_gap', { stream: STREAM[name], gap_id: f.gapId, from_ts: new Date(f.downFrom).toISOString(), to_ts: new Date(now).toISOString(), reason: 'disconnect' });
       f.downUntil = 0;
       journal('feed', { feed: name, connected: true });
     }
+    lookupCounts[slot % 3]! += 1;
     f.last = now;
     if (recorderOn) appendFileSync(recorderPath, `${JSON.stringify({ source: name, receivedAt: now, slot, kind: 'stub' })}\n`);
   }
@@ -147,14 +173,18 @@ const tick = (): void => {
   const phase = tradeTimer % cycleMs;
   if (!state.position && phase < tickMs) {
     if (halted) {
-      journal('decision', { action: 'skip', reasons: ['entries halted: ' + haltReasons(now).join(', ')] });
+      journal('decision', {
+        action: 'skip',
+        reasons: ['entries halted: ' + haltReasons(now).join(', ')],
+        gate_reasons: [{ gate: 'H16', code: 'not-covered', detail: 'stub: discovery stream down' }],
+      });
     } else {
       state.trades += 1;
       const trade = `${boot}-t${state.trades}`;
       state.intent = { trade, leg: 'entry' };
       saveState(state);
       journal('decision', { action: 'enter', trade, reasons: ['stub: synthetic setup'] });
-      if (simulationOn) journal('simulation', { trade, leg: 'entry', ok: true, amount_error_pts: 0 });
+      if (simulationOn) journal('simulation', { trade, leg: 'entry', ...stubSimulation() });
       state.position = { trade, openedAt: now };
       state.intent = null;
       saveState(state);
@@ -164,7 +194,7 @@ const tick = (): void => {
     const trade = state.position.trade;
     state.intent = { trade, leg: 'exit' };
     saveState(state);
-    if (simulationOn) journal('simulation', { trade, leg: 'exit', ok: true, amount_error_pts: 0 });
+    if (simulationOn) journal('simulation', { trade, leg: 'exit', ...stubSimulation() });
     state.position = null;
     state.intent = null;
     saveState(state);
@@ -174,6 +204,21 @@ const tick = (): void => {
 
 const drillToken = randomBytes(16).toString('hex');
 if (drillsOn) writeFileSync(join(stateDir, STATE_FILES.drillToken), drillToken, { mode: 0o600 });
+
+const quota = (now: number): QuotaStatus[] => {
+  // Whole credits (the contract), split across classes with the remainder on P1.
+  const used = Math.floor(((now - bootAt) / 1000) * creditsPerS);
+  const p0 = Math.floor(used / 10);
+  const p2 = Math.floor((used * 3) / 10);
+  const p3 = Math.floor(used / 5);
+  const cls: [number, number, number, number] = [p0, used - p0 - p2 - p3, p2, p3];
+  const zero: [number, number, number, number] = [0, 0, 0, 0];
+  return [
+    { provider: 'helius', credits_used: used, credits_by_class: cls, monthly_credits: 1_000_000, granted: [1, 1, 1, 1], shed: zero, halted: false },
+    { provider: 'alchemy', credits_used: 0, credits_by_class: zero, monthly_credits: 30_000_000, granted: zero, shed: zero, halted: false },
+    { provider: 'jupiter', credits_used: 0, credits_by_class: zero, monthly_credits: null, granted: zero, shed: zero, halted: false },
+  ];
+};
 
 const health = (): Health => {
   const now = Date.now();
@@ -191,8 +236,8 @@ const health = (): Health => {
     policy_version: 'stub',
     last_processed_slot: slot,
     feed_ages_ms: ages,
-    open_position: state.position ? { mint: 'stub', qty: '1', entry: '1', stop: '0.9' } : null,
-    unresolved_intents: { count: state.intent ? 1 : 0, oldest_age_s: state.intent ? 0 : null },
+    open_position: state.position ? { trade: state.position.trade, mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1', mark_slot: slot, mark_ts: now } : null,
+    unresolved_intents: { count: state.intent ? 1 : 0, oldest_age_s: state.intent ? 0 : null, trades: state.intent ? [state.intent.trade] : [] },
     signer: 'none',
     lease_epoch: null,
     sol_reserve: null,
@@ -205,6 +250,9 @@ const health = (): Health => {
     recorder: recorderOn ? 'on' : 'off',
     simulation: simulationOn ? 'on' : 'off',
     reconciled: true,
+    exit_capable: now - bootAt >= exitDelayMs,
+    quota: quota(now),
+    lookups: { counts: lookupCounts },
     entries_halted: halted,
     halt_reasons: haltReasons(now),
     feeds: feedHealth,
@@ -234,6 +282,9 @@ const server = createServer((req, res) => {
         return;
       }
       f.downUntil = Date.now() + ms;
+      f.downFrom = Date.now();
+      f.gapId = `${boot}-${feed}-${f.downFrom}`;
+      journal('coverage_gap', { stream: STREAM[feed!], gap_id: f.gapId, from_ts: new Date(f.downFrom).toISOString(), to_ts: null, reason: 'disconnect' });
       journal('feed', { feed, connected: false, cause: 'drill' });
       res.writeHead(202).end();
     });
