@@ -45,7 +45,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 | RUN-1c | Quota, coverage and worker-down exposure in the dry-run report | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | building | 1–2 h |
 | APP-2 | Live screens in the app over Tailscale (PR #43) | session_01HxjfFhpHEFghtBnZkTjnFB | Opus 5.5 | building | 3–4 h |
 | OPS-1d | PR A: webhook retry, key-mismatch alerts, re-pair, `--update` hook. PR B: RUN-1 units, evidence relay, Tailscale serve | session_01Euok5FXtBGZBrweohP3K93 | Opus 5.5 | building | A about 1.5 h; B about 3 h |
-| CFG-2 | Exit parameters per universe in the policy (before any freeze) | starting | Opus 5.5 | starting | 2–3 h |
+| CFG-2 | Exit parameters per universe in the policy (before any freeze) | session_01P6GFTVQc9JzPTa5DWDdw3b | Opus 5.5 | building | 2–3 h |
 | Next | WATCH-1 (direct pool read when an open position's feed goes stale) after WORKER-1; TEST-1 parity and TEST-3 fault injection after WORKER-1; RUN-1d drills by cause after RUN-1c; SIGN-1 later | — | — | by dependency | — |
 
 ## Follow-ups
