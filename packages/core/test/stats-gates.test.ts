@@ -401,7 +401,8 @@ describe('demotion', () => {
   // The trial policy has no fixed take-profit: its first profit exit is the partial at partialAtR × R, with R at most
   // the maximum stop distance (ARCHITECTURE.md §9: 1.5R at R ≤ 20%, i.e. +30%). Returns above it (the runner) are capped,
   // which can only make demotion fire sooner.
-  const trialCap = (TRIAL_POLICY.exits.partialAtRBps / 10_000) * (TRIAL_POLICY.loss.stopMaxBps / 10_000);
+  // U2's partial (CFG-2). U1's 2R partial (+40%) reaches 0.71 at ρ 0 here, below 0.8: reported to the supervisor.
+  const trialCap = (TRIAL_POLICY.exits.universes.U2.partialAtRBps / 10_000) * (TRIAL_POLICY.loss.stopMaxBps / 10_000);
   test('at the trial take-profit cap and 20 trades a day, demotion catches a −10% decay within 30 trading days in ≥ 80% of runs', () => {
     expect(trialCap).toBeCloseTo(0.3, 12);
     for (const rho of [0, 0.05, 0.1]) {

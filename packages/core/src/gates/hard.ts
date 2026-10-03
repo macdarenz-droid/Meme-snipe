@@ -369,6 +369,17 @@ const conc = (env: Env, gate: HardGate): Conc => {
     seen.add(a.address);
     if (a.mint !== env.req.mint) return malformed(`account ${a.address} holds mint ${a.mint}, not ${env.req.mint}`);
   }
+  if (h.fact.coverage === 'all') {
+    // GATE-1e: completeness is proven by the exact sum only when the mint supply was read first. With the mint
+    // authority none (H2), supply only falls, so a scan at or after the supply read sums to at most that supply, and
+    // equality means nothing was omitted. Read the other way round, a burn equal to an omitted balance hides it.
+    const mintRead = readMint(env, gate);
+    const ms = mintRead.ok ? mintRead.fact.obs.slot : null;
+    const hs = h.fact.obs.slot;
+    if (ms === null || hs === null || hs < ms) {
+      return { ok: false, out: { reasons: [{ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: gate, detail: `a complete holder set read at slot ${hs} before the mint supply read at slot ${ms}; the supply must be read first` }] } };
+    }
+  }
   if (m.account.supply !== h.fact.supply) {
     return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `holder read has supply ${h.fact.supply}, the mint ${m.account.supply}` }] } };
   }
