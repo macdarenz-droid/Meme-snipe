@@ -18,6 +18,14 @@ describe('installer', () => {
     expect(() => execFileSync('node', [join(root, 'ops/build-install.mjs'), '--check'], { stdio: 'pipe' })).not.toThrow();
   });
 
+  it('carries every host file byte for byte', () => {
+    const script = read('ops/install.sh');
+    const files = walk('ops/host/files');
+    const blocks = [...script.matchAll(/^install_file (\S+) (0755|0644) <<'__ZEROED_FILE__'\n([\s\S]*?)^__ZEROED_FILE__$/gm)];
+    expect(blocks.map((b) => b[1]).sort()).toEqual(files.map((f) => f.slice('ops/host/files'.length)).sort());
+    for (const b of blocks) expect(b[3], b[1]).toBe(read(join('ops/host/files', b[1]!)));
+  });
+
   it('pins Node by version and SHA-256, and the GitHub merge key by fingerprint', () => {
     const main = read('ops/host/install-main.sh');
     expect(main).toMatch(/^NODE_VERSION=v22\.\d+\.\d+$/m);

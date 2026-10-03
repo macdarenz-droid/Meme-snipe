@@ -27,7 +27,7 @@ export function build() {
     return `install_file ${target} ${mode} <<'${MARK}'\n${body}${MARK}`;
   });
   if (!main.includes('\n# @@FILES@@\n')) throw new Error('install-main.sh: missing # @@FILES@@');
-  return main.replace('\n# @@FILES@@\n', `\n${blocks.join('\n')}\n`);
+  return main.replace('\n# @@FILES@@\n', () => `\n${blocks.join('\n')}\n`); // a function: no $ patterns in file bodies
 }
 
 export const sha256 = (s) => createHash('sha256').update(s).digest('hex');
