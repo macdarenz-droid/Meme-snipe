@@ -60,6 +60,13 @@ export interface GateReasonLine {
   readonly detail: string;
 }
 
+/** A reason of a candidate's last evaluation with the fact it is about, if any (FACTS-1b reads what evidence reasons name). */
+export interface CandidateReason {
+  readonly gate: string;
+  readonly code: string;
+  readonly input?: string;
+}
+
 /** `{ halted, reasons }`: entries stop while a critical feed is down or stale (§18); exits and monitoring go on. */
 export const HALT_KEY = 'worker:halt';
 export const feesKey = (mint: string): string => `worker:fees:${mint}`;
@@ -154,6 +161,8 @@ interface Candidate {
   lastEvalMs: number | null;
   lastReason: string | null;
   tries: number;
+  /** The reasons of the last evaluation (null before the first, empty after a pass). */
+  gates: readonly CandidateReason[] | null;
 }
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
@@ -208,6 +217,11 @@ export class LiveStrategy implements Strategy {
       out[pid] = { ...s, bars: this.#bars.get(pid) ?? s.bars, pool: this.#poolOfMint.get(this.#mintOf(pid)) ?? s.pool ?? null, spot: this.#spot.get(pid) ?? s.spot ?? null };
     }
     return out;
+  }
+
+  /** Each candidate's migration time and the typed reasons of its last evaluation (FACTS-1b stages its reads on them). */
+  candidates(): ReadonlyMap<string, { readonly migratedAtMs: number; readonly gates: readonly CandidateReason[] | null }> {
+    return new Map([...this.#cands].map(([m, c]) => [m, { migratedAtMs: c.migratedAtMs, gates: c.gates }]));
   }
 
   /** Mints that need live facts: candidates in their window and every position not closed. */
@@ -404,7 +418,7 @@ export class LiveStrategy implements Strategy {
       const mint = e.key.slice(MIGRATION_PREFIX.length);
       if (f !== null) this.#notePool(mint, f.pool);
       if (f !== null && !this.#cands.has(mint)) {
-        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0 });
+        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0, gates: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
       }
       return;
@@ -420,7 +434,7 @@ export class LiveStrategy implements Strategy {
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
-    this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0 });
+    this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0, gates: null });
     out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${migratedAtMs}`] });
   }
 
@@ -812,6 +826,7 @@ export class LiveStrategy implements Strategy {
       if (Object.values(ctx.book.intents).some((i) => i.intent.mint === cand.mint && !isTerminal(i))) continue;
       cand.lastEvalMs = now;
       const r = this.#evaluate(cand, ctx, gctx, out);
+      cand.gates = r === null ? [] : this.#lastNeeds;
       // A reject is logged when its reason changes (numbers aside), so a long wait does not fill the journal.
       const key = (x: string | null) => (x === null ? null : x.replace(/\d+/g, '#'));
       if (r !== null && key(r) !== key(cand.lastReason)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`] });
@@ -823,8 +838,12 @@ export class LiveStrategy implements Strategy {
   /** The typed reasons of the last reject `#evaluate` returned (RUN-1c's `gate_reasons`). */
   #lastGates: readonly GateReasonLine[] = [];
 
-  #fail(text: string, gates: readonly GateReasonLine[]): string {
+  /** The same reasons with their inputs, for the candidate (not journaled: gate_reasons keeps its shape). */
+  #lastNeeds: readonly CandidateReason[] = [];
+
+  #fail(text: string, gates: readonly GateReasonLine[], needs: readonly CandidateReason[] = gates): string {
     this.#lastGates = gates;
+    this.#lastNeeds = needs.map((x) => ({ gate: x.gate, code: x.code, ...(x.input === undefined ? {} : { input: x.input }) }));
     return text;
   }
 
@@ -834,7 +853,7 @@ export class LiveStrategy implements Strategy {
     const session = this.#d.session;
     const policy = session.policy;
     const regime = evaluateRegime(gctx, { session, mode: 'live' });
-    if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })));
+    if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
     const m = this.#market(ctx, cand.mint);
@@ -843,7 +862,7 @@ export class LiveStrategy implements Strategy {
     const spend = microUsdToLamports(notional, sol.value, 'ceil');
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     const hard = evaluateHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1' }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
-    if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })));
+    if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
