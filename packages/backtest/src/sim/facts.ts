@@ -24,7 +24,7 @@ import type { RawRow } from '../dataset/raw.ts';
 import type { AmmSwapRow, CurveTradeRow, DatasetRow, EventRow } from '../dataset/rows.ts';
 import type { PoolView } from './market.ts';
 import { SignalTracker } from '../research/tracker.ts';
-import { FactProducer, type ProducerOptions } from '../../../core/src/facts/index.ts';
+import { FactProducer, graduatesFact, type ProducerOptions } from '../../../core/src/facts/index.ts';
 import { landings, type ReadLatency } from '../study/reads.ts';
 
 export const ATA_PROGRAM = toAddress('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
@@ -291,7 +291,7 @@ export class FactProjector {
    * that mint's completion, migration and pool creation, the pool's swaps up to its mark, and slot notices once the
    * mark has passed; it is dropped when the mark resolves or its read window ends. One producer for the whole run would
    * scan every pool's stream on every slot notice (about 94k pools over 16M slots in a 74-day run). The resolved items
-   * are kept for the producer's own window (`graduatesKeepMs`) and released as one graduates fact, as FACTS-1 does.
+   * go through FACTS-1's `graduatesFact` (the one aggregation the live producer uses) and are released as one fact.
    */
   #feedSurvival(row: DatasetRow, m: Moment, out: FeedEvent[]): void {
     const o = this.#o.survival!;
@@ -358,12 +358,9 @@ export class FactProjector {
       }
     }
     if (changed) {
-      const keepFrom = now - o.graduatesKeepMs;
-      for (let i = this.#graduateItems.length - 1; i >= 0; i--) if (this.#graduateItems[i]!.migratedAtMs < keepFrom) this.#graduateItems.splice(i, 1);
-      out.push(this.#fact(`gr:${row.slot}:${this.#survivalSeq++}`, m, GRADUATES_KEY, {
-        obs: { provider: 'facts', slot: null, receivedAt: now, quality: [] },
-        items: [...this.#graduateItems].sort((x, y) => x.migratedAtMs - y.migratedAtMs || (x.mint < y.mint ? -1 : x.mint > y.mint ? 1 : 0)),
-      }));
+      const g = graduatesFact(this.#graduateItems, now, o.graduatesKeepMs);
+      this.#graduateItems.splice(0, this.#graduateItems.length, ...g.kept);
+      out.push(this.#fact(`gr:${row.slot}:${this.#survivalSeq++}`, m, GRADUATES_KEY, g.value));
     }
   }
 

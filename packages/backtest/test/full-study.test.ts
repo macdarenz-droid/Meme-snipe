@@ -76,20 +76,34 @@ describe('BT-2 study', () => {
     expect(first.gates.G0.status).toBe('fail');
   });
 
+  it('a diagnostic run (regime assumed on) registers nothing, records no trial or G1, and reports G1 as descriptive only', () => {
+    const reg = readStudyRegistry(join(dir, 'registry.json'));
+    expect(reg.holdouts.entries).toEqual([]);
+    expect(reg.trials).toEqual([]);
+    expect(reg.g1 ?? []).toEqual([]);
+    for (const g of Object.values(first.gates.G1)) {
+      expect(g).toMatchObject({ passed: false, status: 'not-proven' });
+      expect(g.reasons[0]).toBe('regime gate assumed on (diagnostic): these counts never feed G1');
+    }
+  });
+
   it('registers one configuration per universe before any holdout run, and G1 is not proven on 2 days', () => {
+    // Run with the regime gate evaluated as live (the synthetic world has no regime inputs, so nothing enters).
+    const evaluated = runFullStudy(inputs({ regimeGate: 'evaluate' }));
     const reg = readStudyRegistry(join(dir, 'registry.json'));
     expect(reg.holdouts.familySize).toBe(2);
     expect(reg.holdouts.entries.map((e) => [e.universe, e.configId, e.seal])).toEqual([['U1', configId(config, 'U1'), 'registered'], ['U2', configId(config, 'U2'), 'registered']]);
     expect(reg.trials.map((t) => t.trialId).sort()).toEqual([configId(config, 'U1'), configId(config, 'U2')].sort());
-    // Reported per regime (here every trade is after B4) and pooled under its own label; 2 days are too few.
+    // Reported per regime (here every trade is after B4) and pooled under its own label (the diagnostic run has the
+    // trades); 2 days are too few.
     expect(Object.keys(first.gates.G1)).toEqual(expect.arrayContaining(['U1 all regimes (pooled)', 'U2 all regimes (pooled)', 'U2 regime B4']));
     for (const k of Object.keys(first.gates.G1)) expect(k).toMatch(/^U[12] (regime B\d|all regimes \(pooled\)(, sensitivity: no rent recovery)?)$/);
-    for (const g of Object.values(first.gates.G1)) expect(g.status).toBe('not-proven');
-    expect(first.holdoutRegime).toBe('B4');
-    expect(first.gates.G2.status).toBe('not-proven');
-    expect(first.holdout.ran).toBe(false);
+    for (const g of Object.values(evaluated.gates.G1)) expect(g.status).toBe('not-proven');
+    expect(evaluated.holdoutRegime).toBe('B4');
+    expect(evaluated.gates.G2.status).toBe('not-proven');
+    expect(evaluated.holdout.ran).toBe(false);
     // Funnel first: every check in the entry window is counted once, research sample and deployment replay apart.
-    for (const side of [first.funnel.research, first.funnel.deployment]) {
+    for (const side of [evaluated.funnel.research, evaluated.funnel.deployment]) {
       expect(Object.keys(side).length).toBeGreaterThan(0);
       for (const f of Object.values(side)) {
         expect(Object.values(f.checksAt).reduce((t, c) => t + c.adverse + c.notCovered, 0)).toBe(f.checks);

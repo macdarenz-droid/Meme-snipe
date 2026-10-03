@@ -194,10 +194,13 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const sameRegime = <T extends DayReturn & { regime: string }>(xs: readonly T[]): DayReturn[] => xs.filter((t) => t.regime === lastRegime);
 
   let reg = loadOrCreate(i.registryPath, universes.length);
-  for (const u of universes) reg = recordTrial(reg, { ...trialOf(ids[u]!, tradesOf(u)), configId: ids[u]!, evaluatedOn: `walk-forward ${wfDays[0]}..${wfDays[wfDays.length - 1]}` });
+  // A run with the regime assumed on is a labelled diagnostic: its counts never feed G1, the trial registry or a
+  // holdout registration (supervisor ruling).
+  const diagnostic = i.regimeGate === 'assume-on';
+  if (!diagnostic) for (const u of universes) reg = recordTrial(reg, { ...trialOf(ids[u]!, tradesOf(u)), configId: ids[u]!, evaluatedOn: `walk-forward ${wfDays[0]}..${wfDays[wfDays.length - 1]}` });
   // 3. One configuration per universe registered for the holdout window before any holdout run.
   const holdoutIdOf = (u: string) => `${u}-${plan.holdout.fromDay}-${plan.holdout.toDay}`;
-  const missing = c.frozen ? universes.filter((u) => !reg.holdouts.entries.some((e) => e.holdoutId === holdoutIdOf(u))) : [];
+  const missing = c.frozen && !diagnostic ? universes.filter((u) => !reg.holdouts.entries.some((e) => e.holdoutId === holdoutIdOf(u))) : [];
   reg = register(reg, missing.map((u) => ({ holdoutId: holdoutIdOf(u), universe: u, configId: ids[u]!, fromDay: plan.holdout.fromDay, toDay: plan.holdout.toDay })));
   writeStudyRegistry(i.registryPath, reg);
 
@@ -219,6 +222,11 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     const ex = research[u]?.coverageExclusions;
     const pooled = G1[`${u} all regimes (pooled)`]!;
     G1[`${u} all regimes (pooled)`] = { ...pooled, notes: [...pooled.notes, `coverage exclusions: ${ex?.mints ?? 0} of ${research[u]?.mints ?? 0} mints${ex?.share == null ? '' : ` (${(ex.share * 100).toFixed(1)}%)`}, abstained for missing evidence, not rejects`] };
+  }
+  if (diagnostic) {
+    for (const [k, r] of Object.entries(G1)) {
+      G1[k] = { ...r, passed: false, status: 'not-proven', reasons: ['regime gate assumed on (diagnostic): these counts never feed G1', ...r.reasons], notes: ['descriptive only', ...r.notes] };
+    }
   }
 
   // 4. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14).
@@ -244,7 +252,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const entryOf = (u: string) => reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u));
   for (const u of universes) {
     const e = entryOf(u);
-    if (e !== undefined && !e.burned && e.seal !== 'opened') {
+    if (!diagnostic && e !== undefined && !e.burned && e.seal !== 'opened') {
       reg = recordG1(reg, { holdoutId: e.holdoutId, configId: ids[u]!, passed: G1[`${u} all regimes (pooled)`]?.passed === true, evaluatedOn: `practice ${wfDays[0]}..${wfDays[wfDays.length - 1]} at ${i.startedAt}` });
     }
   }
