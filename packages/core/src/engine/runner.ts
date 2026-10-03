@@ -58,6 +58,9 @@ export class ReconcileGuard {
     if (this.#window.length >= this.#limits.maxPerWindow) return 'rate_limited';
     this.#window.push(now.slot);
     this.#lastSent.set(key, now.slot);
+    if (this.#lastSent.size > 1024) {
+      for (const [k, slot] of this.#lastSent) if (now.slot - slot >= this.#limits.minSlotsBetween) this.#lastSent.delete(k);
+    }
     return 'sent';
   }
 }
