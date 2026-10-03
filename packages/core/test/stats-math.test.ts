@@ -195,6 +195,7 @@ describe('e-process', () => {
     expect(bettingEProcess(losses).maxWealth).toBe(1);
     expect(() => reverseEProcess(losses, { cap: 30 })).toThrow(/cap must be in \(0, 3\]/);
     expect(() => reverseEProcess(losses, { cap: 0 })).toThrow(RangeError);
+    expect(() => reverseEProcess(losses, {} as never)).toThrow(/cap must be in/); // no default: the caller sets the take-profit
     expect(reverseEProcess(losses, { cap: 3 }).maxWealth).toBeGreaterThan(1);
   });
 });

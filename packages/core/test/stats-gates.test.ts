@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   createRng, evaluateDemotion, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
-  createHoldoutRegistry, nPower, registerHoldout, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
+  createHoldoutRegistry, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome,
 } from '../src/stats/index.ts';
 import { bracketTrades, type DayTrade } from './stats-fixtures.ts';
@@ -103,7 +103,8 @@ describe('G1 walk-forward', () => {
 const holdout = bracketTrades(31, 0.1, 25, 20);
 const counts = { candidates: 2000, entries: 500, entryDays: 25 };
 const controlRuns = Array.from({ length: 200 }, (_, k) => bracketTrades(1000 + k, -0.2, 25, 2).map(({ day, rNet }) => ({ day, rNet })));
-const power = (nPower: number, familySize = 1): G2PowerResult => ({ nPower, powerAtN: 0.8, level: 0.05 / familySize, evaluations: [] });
+type PowerSpec = Omit<G2PowerResult, 'walkForward'> & { readonly walkForward?: WalkForwardSummary };
+const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN: 0.8, level: 0.05 / familySize, evaluations: [] });
 const sealed = (familySize: number, universes: readonly string[], c = counts): HoldoutRegistry => {
   let reg = createHoldoutRegistry(familySize);
   for (const u of universes) {
@@ -112,10 +113,15 @@ const sealed = (familySize: number, universes: readonly string[], c = counts): H
   }
   return reg;
 };
-const u = (name: string, over: Partial<G2Universe> = {}, familySize = 1): G2Universe => ({
-  universe: name, configId: `${name}-v1`, holdoutId: `h-${name}`, ledgerHash: `hash-${name}`, trades: holdout, controlRuns,
-  walkForward: wf.map(({ day, rNet }) => ({ day, rNet })), power: power(330, familySize), ...over,
-});
+/** A universe whose n_power result fingerprints its own walk-forward unless the test says otherwise. */
+const u = (name: string, over: Partial<Omit<G2Universe, 'power'>> & { readonly power?: PowerSpec } = {}, familySize = 1): G2Universe => {
+  const walkForward = over.walkForward ?? wf.map(({ day, rNet }) => ({ day, rNet }));
+  const p = over.power ?? power(330, familySize);
+  return {
+    universe: name, configId: `${name}-v1`, holdoutId: `h-${name}`, ledgerHash: `hash-${name}`, trades: holdout, controlRuns, ...over,
+    walkForward, power: { ...p, walkForward: p.walkForward ?? summarizeWalkForward(walkForward) },
+  };
+};
 const g2Pass = (over: Partial<G2Input> = {}): G2Input => ({
   scenario: 'conservative', registry: sealed(1, ['U1']), universes: [u('U1')], nowMs: NOW, rng: createRng(2), replicates: 1000, ...over,
 });
@@ -174,6 +180,28 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     const r = gateG2(g2Pass({ universes: [u('U1', { walkForward: wide })] }));
     expect(r.universes[0]!.requiredTrades).toBeGreaterThan(1000);
     expect(r.status).toBe('not-proven');
+  });
+  test('Holm runs over the registry family: one ready universe of three is tested at α/3, absent ones count as p = 1', () => {
+    // Find a holdout with p ≈ 0.03: it would pass at α = 0.05 but must fail at α/3 = 0.0167.
+    let found: TradeOutcome[] | null = null;
+    for (let seed = 0; seed < 400 && !found; seed++) {
+      const t = bracketTrades(7000 + seed, 0.035, 25, 20);
+      const p = gateG2(g2Pass({ universes: [u('U1', { trades: t })] })).universes[0]!.p!;
+      if (p > 0.02 && p < 0.045) found = t;
+    }
+    expect(found).not.toBeNull();
+    const r = gateG2(g2Pass({ registry: sealed(3, ['U1', 'U2', 'U3']), universes: [u('U1', { trades: found! }, 3)] }));
+    expect(r.universes[0]).toMatchObject({ status: 'fail', level: 0.05 / 3 });
+    expect(r.status).toBe('fail');
+    // The other two stay sealed for a later call, which also runs Holm over the family of three.
+    expect(r.registry.entries.filter((e) => e.seal === 'sealed').map((e) => e.universe)).toEqual(['U2', 'U3']);
+  }, 120_000);
+  test('n_power must come from this universe\'s walk-forward', () => {
+    const other = wf.map(({ day, rNet }) => ({ day, rNet: rNet + 0.01 }));
+    const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), walkForward: summarizeWalkForward(other) } })] }));
+    expect(r.status).toBe('fail');
+    expect(r.reasons.join()).toMatch(/n_power inputs U1: n_power was simulated on walk-forward/);
+    expect(r.registry.entries[0]!.seal).toBe('sealed');
   });
   test('n_power must be simulated for the family size fixed in the registry', () => {
     const r = gateG2(g2Pass({ universes: [u('U1', { power: power(330, 3) })] }));
@@ -336,6 +364,14 @@ describe('demotion', () => {
     expect(evaluateDemotion({ ...demotionQuiet, blockedExitTimesMs: [NOW - 20 * DAY, NOW - 1 * DAY] }).demote).toBe(true);
     const missed = Array.from({ length: 100 }, (_, i) => i % 4 !== 0); // 25% miscoverage vs 2 × 10%
     expect(evaluateDemotion({ ...demotionQuiet, coverage: { targetMiscoverage: 0.1, covered: missed } }).reasons[0]).toMatch(/^miscoverage/);
+  });
+  test('with the cap at the take-profit, demotion catches a −10% decay within 30 days', () => {
+    let caught = 0;
+    for (let r = 0; r < 200; r++) {
+      const decay = bracketTrades(9000 + r, -0.1, 30, 10).map(({ day, rNet }) => ({ day, rNet }));
+      if (evaluateDemotion({ ...demotionQuiet, returns: decay, returnCap: 0.27 }).demote) caught++;
+    }
+    expect(caught / 200).toBeGreaterThanOrEqual(0.95);
   });
   test('the return cap is limited to (0, 3]: an out-of-range cap demotes instead of blinding the detector', () => {
     const decay = bracketTrades(53, -0.1, 100, 10).map(({ day, rNet }) => ({ day, rNet }));

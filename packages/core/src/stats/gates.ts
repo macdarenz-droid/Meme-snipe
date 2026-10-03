@@ -4,7 +4,7 @@
 // (loosening needs the owner and a change to the defaults here).
 
 import { dayBlockMeanDiffInterval, dayBlockMeanInterval, type DayReturn } from './bootstrap.ts';
-import { g2Rule, MIN_DAYS, type G2PowerResult } from './g2rule.ts';
+import { describeSummary, g2Rule, MIN_DAYS, sameSummary, summarizeWalkForward, type G2PowerResult } from './g2rule.ts';
 import { burnHoldout, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
 import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
@@ -17,8 +17,8 @@ import type { Rng } from './rng.ts';
 import { deflatedSharpe, type TrialRecord } from './sharpe.ts';
 
 export type GateName = 'G0' | 'G1' | 'G2' | 'G3' | 'G4' | 'G5';
-/** 'not-proven': too little data to decide (collect more, never lower n). 'futile': the version is rejected (G2). */
-export type GateStatus = 'pass' | 'fail' | 'not-proven' | 'futile';
+/** 'not-proven': too little data to decide (collect more, never lower n). */
+export type GateStatus = 'pass' | 'fail' | 'not-proven';
 
 export interface Check {
   readonly name: string;
@@ -391,6 +391,9 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     c.add(`S0 ${u.universe}`, u.controlRuns.length >= th.minControlSeeds, `${u.controlRuns.length} S0 seeds (need >= ${th.minControlSeeds})`);
     c.add(`n_power ${u.universe}`, Math.abs(u.power.level - level0) < 1e-12,
       `n_power was simulated at level ${fmt(u.power.level)}, the registry's family of ${registry.familySize} needs ${fmt(level0)}`);
+    const wfNow = summarizeWalkForward(u.walkForward);
+    c.add(`n_power inputs ${u.universe}`, sameSummary(wfNow, u.power.walkForward),
+      `n_power was simulated on walk-forward ${describeSummary(u.power.walkForward)}, this universe's walk-forward is ${describeSummary(wfNow)}`);
   }
   if (c.failed.length > 0) return failWith();
 
@@ -433,7 +436,10 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   // Score: the G2 rule per universe, then Holm across the universes that entered.
   const opts = { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) };
   const scored = entering.map(({ u }) => g2Rule(u.trades, u.controlRuns.flat(), th.familyAlpha, opts));
-  const h = holm(scored.map((r) => r.p), th.familyAlpha);
+  // Holm over the whole family fixed in the registry: universes that did not enter count as p = 1, so a universe scored
+  // now, or one scored in a later call, is never tested at a looser level than its place in the full family allows.
+  const familyP = [...scored.map((r) => r.p), ...Array<number>(registry.familySize - scored.length).fill(1)];
+  const h = holm(familyP, th.familyAlpha);
   const perUniverse: G2UniverseResult[] = sized.map(({ u, e, required, ready }) => {
     const k = entering.findIndex((x) => x.u === u);
     if (!ready || k < 0) {

@@ -107,14 +107,15 @@ export const MAX_RETURN_CAP = 3;
 
 /**
  * Evidence that the mean net return has fallen below zero (decay detector for demotion; quant.md §5.4).
- * Bets on −X, which needs an upper bound: returns are capped at `cap` (0 < cap ≤ 3, default 3). Capping can only lower
- * the returns, so it makes demotion more likely, never less. One bet per day.
+ * Bets on −X, which needs an upper bound: returns are capped at `cap`, which the caller must set to the configured
+ * take-profit (0 < cap ≤ 3; no default: at cap 3 a −10% decay went undetected for 50 days, review of PR #8). Capping
+ * can only lower the returns, so it makes demotion more likely, never less. One bet per day.
  */
 export const reverseEProcess = (
   trades: readonly DayReturn[],
-  opts: EProcessOptions & { readonly cap?: number } = {},
+  opts: EProcessOptions & { readonly cap: number },
 ): EProcessResult => {
-  const cap = opts.cap ?? MAX_RETURN_CAP;
+  const cap = opts.cap;
   if (!(cap > 0 && cap <= MAX_RETURN_CAP)) throw new RangeError(`cap must be in (0, ${MAX_RETURN_CAP}], got ${cap}`);
   return run(dayMeans(trades, (x) => -Math.min(x, cap) / cap), opts);
 };

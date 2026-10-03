@@ -66,7 +66,27 @@ export interface G2PowerOptions {
   readonly maxTrades?: number;
 }
 
+/** Fingerprint of the walk-forward data a simulation used, so G2 can check n_power belongs to its universe. */
+export interface WalkForwardSummary {
+  readonly n: number;
+  readonly days: number;
+  readonly mean: number;
+  readonly sd: number;
+}
+
+export const summarizeWalkForward = (wf: readonly DayReturn[]): WalkForwardSummary => {
+  const xs = wf.map((t) => t.rNet);
+  return { n: xs.length, days: new Set(wf.map((t) => t.day)).size, mean: xs.length ? mean(xs) : Number.NaN, sd: xs.length > 1 ? sd(xs) : Number.NaN };
+};
+
+export const sameSummary = (a: WalkForwardSummary, b: WalkForwardSummary): boolean =>
+  a.n === b.n && a.days === b.days && Object.is(a.mean, b.mean) && Object.is(a.sd, b.sd);
+
+export const describeSummary = (s: WalkForwardSummary): string => `(${s.n} trades, ${s.days} days, mean ${s.mean}, sd ${s.sd})`;
+
 export interface G2PowerResult {
+  /** The walk-forward data the simulation ran on. */
+  readonly walkForward: WalkForwardSummary;
   /** Smallest n found with simulated power ≥ the target. */
   readonly nPower: number;
   readonly powerAtN: number;
@@ -177,5 +197,5 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     if (powerAt(mid) >= goal) hi = mid;
     else lo = mid;
   }
-  return { nPower: hi, powerAtN: powerAt(hi), level, evaluations };
+  return { nPower: hi, powerAtN: powerAt(hi), level, evaluations, walkForward: summarizeWalkForward(opts.walkForward) };
 };
