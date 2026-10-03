@@ -8,6 +8,7 @@ if (!from || !to || !out) throw new Error('usage: fetch-sol-usd.ts <from> <to-ex
 const HOUR = 3_600_000;
 const start = Date.parse(`${from}T00:00:00Z`);
 const end = Date.parse(`${to}T00:00:00Z`);
+const fetchedAt = Date.now();
 const bars = new Map<number, string>();
 for (let t = start; t < end; t += 300 * HOUR) {
   const stop = Math.min(t + 300 * HOUR, end);
@@ -17,18 +18,19 @@ for (let t = start; t < end; t += 300 * HOUR) {
   // [time, low, high, open, close, volume], newest first.
   for (const [time, , , , close] of (await res.json()) as [number, number, number, number, number, number][]) {
     const ms = time * 1000;
-    if (ms >= start && ms < end) bars.set(ms, String(close));
+    // Only closed candles: a candle still open at fetch time would change, so it is not a fixed value.
+    if (ms >= start && ms < end && ms + HOUR <= fetchedAt) bars.set(ms, String(close));
   }
   await new Promise((r) => setTimeout(r, 400));
 }
 const rows = [...bars.entries()].sort((a, b) => a[0] - b[0]).map(([ms, c]) => `${new Date(ms).toISOString()},${c}`);
-const expected = (end - start) / HOUR;
+const expected = (Math.min(end, Math.floor(fetchedAt / HOUR) * HOUR) - start) / HOUR;
 writeFileSync(out, [
   '# name: SOL/USD',
   '# source: Coinbase Exchange SOL-USD 1h candles, close (api.exchange.coinbase.com/products/SOL-USD/candles)',
   '# tag: fixed',
   `# bar_ms: ${HOUR}`,
-  `# fetched_at: ${new Date().toISOString()}`,
+  `# fetched_at: ${new Date(fetchedAt).toISOString()}`,
   `# bars: ${rows.length} of ${expected} hours (a missing hour had no trades; the previous close stays in force)`,
   'start,close',
   ...rows,
