@@ -90,6 +90,13 @@ describe('worker API contract', () => {
       expect(state('position', pos)).toEqual({ state: 'error', reason: 'bad-data' });
     });
 
+    it('a reject by H17 (unsupported trade shape, TX-1b) is shown; an unknown check is refused', async () => {
+      const funnel = await paper((a) => a.funnel('paper'));
+      const withCheck = (check: string) => ({ ...funnel, rejects: [{ mode: 'paper', check, count: 3 }] });
+      expect(state('funnel', withCheck('H17')).state).not.toBe('error');
+      expect(state('funnel', withCheck('H18'))).toEqual({ state: 'error', reason: 'bad-data' });
+    });
+
     it('unknown and missing fields are refused', async () => {
       const stats = await paper((a) => a.stats('paper'));
       expect(state('stats', { ...stats, extra: '1' })).toEqual({ state: 'error', reason: 'bad-data' });
