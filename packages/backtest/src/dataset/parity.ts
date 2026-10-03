@@ -10,6 +10,9 @@
 //      either kind, fails. Events DEC-1 does not decode in full ('other') are compared byte for byte: an Unknown row's
 //      discriminator and data_hex, a named row's fields, layout_fields and extra_hex against the event bytes read with
 //      the scanner's own IDL (research/historical/scanner/idl). Every failed row matches a failed raw record.
+//      Curve and amm rows' user_token_account and user_token_owner equal the swap's user token account (the emitting
+//      instruction's account named associated_user, associated_base_user or user_base_token_account in the scanner's
+//      IDL) and its owner, resolved as for movements (post, pre, then the initialising instruction).
 //   2. Every decoded event of a successful raw record that the scanner keeps has a row (scanner sample.go keepEvent and
 //      finalize.go routing): trades of universe mints inside a tape interval; every other event except dropEvents,
 //      with sampledOnlyEvents only when their mint is inside a tape interval at the block time. Unrowed trades and
@@ -18,9 +21,17 @@
 //      (the scanner writes a raw record for every transaction touching such a mint). Events rows of other mints have
 //      none and are counted. A successful raw record touching pump or PumpSwap without inner instructions fails (its
 //      events cannot be decoded) unless its complete logs show no cross-program invocation, so it has no events.
+//   4. Token movements (scanner movements.go): the movement rows of every raw record's transaction equal the movements
+//      re-derived here from that record (same rows, every column): SPL Token and Token-2022 Transfer, TransferChecked,
+//      Burn, BurnChecked, MintTo and MintToChecked with no pump or PumpSwap instruction among their callers (by stack
+//      height), owners from the record's token balances (post over pre), else from the InitializeAccount,
+//      InitializeAccount2 or InitializeAccount3 that opened the account in this transaction, for mints ending in "pump"
+//      and for mints with a decoded pump or PumpSwap event in that transaction. A failed transaction has none. Movement rows of transactions
+//      without a raw record are counted (movements_without_raw).
 // A raw record the decoder refuses is a mismatch. The CLI prints the summary, writes <dataset-dir>/qa/parity.json and
 // exits 1 on any mismatch or missing row.
-import { createReadStream, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createZstdDecompress, zstdDecompressSync } from 'node:zlib';
@@ -32,7 +43,10 @@ import {
   EVENT_IX_TAG,
   PUMP_AMM_PROGRAM,
   PUMP_PROGRAM,
+  TOKEN_2022_PROGRAM,
+  TOKEN_PROGRAM,
   accountKeys,
+  decodeBase58,
   decodeTransaction,
   encodeBase58,
   fromBase64,
@@ -66,7 +80,16 @@ export interface RawLine {
     readonly loadedAddresses?: { readonly writable: readonly string[]; readonly readonly: readonly string[] } | null;
     readonly innerInstructions: readonly { readonly index: number; readonly instructions: readonly RawInstruction[] }[] | null;
     readonly logMessages?: readonly string[] | null;
+    readonly preTokenBalances?: readonly RawTokenBalance[] | null;
+    readonly postTokenBalances?: readonly RawTokenBalance[] | null;
   };
+}
+
+export interface RawTokenBalance {
+  readonly accountIndex: number;
+  readonly mint: string;
+  readonly owner?: string;
+  readonly uiTokenAmount?: { readonly amount: string };
 }
 
 /** A raw-NNN.jsonl line as the decoder's TransactionRecord (inner data base64 to bytes, `err` kept as given). */
@@ -409,7 +432,7 @@ export interface Key {
 }
 
 export interface Mismatch {
-  readonly kind: RowKind | 'decode';
+  readonly kind: RowKind | 'decode' | 'movement';
   readonly key: Key | { readonly slot: number; readonly tx_idx: number };
   readonly signature: string;
   readonly field: string;
@@ -450,6 +473,15 @@ export interface ParitySummary {
   mismatch_count: number;
   missing_row_count: number;
   unchecked_columns: readonly string[];
+  /** Raw records exist only for mints with h(mint) below this rate (and for every create), so this is sample parity, not full-row parity. */
+  raw_sample_rate: number;
+  /** Movement rows of transactions with a raw record (each compared with the re-derived movements). */
+  movements_checked: number;
+  /** Of those, rows equal to a re-derived movement in every column. */
+  movements_matched: number;
+  /** Movement rows whose transaction has no raw record (raw records exist only for the hash sample, creates and migrations). */
+  movements_without_raw: number;
+  scope: string;
   mismatches: Mismatch[];
   missing_rows: MissingRow[];
 }
@@ -462,7 +494,9 @@ export class ParityChecker {
   private readonly mints = new Map<string, MintInfo>();
   private readonly poolMint = new Map<string, string>();
   private readonly idl: ReadonlyMap<string, IdlEvent>;
+  private readonly swapIx = loadSwapUserPositions();
   private rows = new Map<string, Row[]>();
+  private moves = new Map<string, MovementRow[]>();
   readonly s: ParitySummary = {
     raw_records: 0,
     raw_failed: 0,
@@ -476,12 +510,26 @@ export class ParityChecker {
     mismatch_count: 0,
     missing_row_count: 0,
     unchecked_columns: UNCHECKED_COLUMNS,
+    raw_sample_rate: 1,
+    movements_checked: 0,
+    movements_matched: 0,
+    movements_without_raw: 0,
+    scope: 'rows of mints with h < raw_sample_rate, and every CreateEvent and migration row; movement rows of transactions with a raw record',
     mismatches: [],
     missing_rows: [],
   };
 
-  constructor(mints: readonly MintInfo[], idl: ReadonlyMap<string, IdlEvent> = loadScannerIdl()) {
+  /**
+   * rawSampleRate: the units' hash sample (manifest sampling.unit_sample_rate_min). Raw records exist only for
+   * transactions of mints with h(mint) below it (retention "curve-all,canonical-all,sample"), so only those rows
+   * must have one; 1 requires a raw record for every row.
+   */
+  private readonly rawSampleRate: number;
+
+  constructor(mints: readonly MintInfo[], idl: ReadonlyMap<string, IdlEvent> = loadScannerIdl(), rawSampleRate = 1) {
     this.idl = idl;
+    this.rawSampleRate = rawSampleRate;
+    this.s.raw_sample_rate = rawSampleRate;
     for (const m of mints) {
       this.mints.set(m.mint, m);
       if (m.pool) this.poolMint.set(m.pool, m.mint);
@@ -505,6 +553,15 @@ export class ParityChecker {
     if (r.kind === 'amm' && r.values.pool && r.values.base_mint) this.poolMint.set(r.values.pool, r.values.base_mint);
   }
 
+  /** Adds one movements row of the batch (movements-NNN.csv.zst). */
+  addMovement(v: Record<string, string>): void {
+    const m = movementRow(v);
+    const k = txKey(m.slot, m.txIdx);
+    const list = this.moves.get(k);
+    if (list) list.push(m);
+    else this.moves.set(k, [m]);
+  }
+
   private mismatch(m: Mismatch): void {
     this.s.mismatch_count++;
     if (this.s.mismatches.length < LIST_LIMIT) this.s.mismatches.push(m);
@@ -521,6 +578,9 @@ export class ParityChecker {
     const all = this.rows.get(k) ?? [];
     this.rows.delete(k);
     this.s.rows_checked += all.length;
+    const moveRows = this.moves.get(k) ?? [];
+    this.moves.delete(k);
+    this.s.movements_checked += moveRows.length;
     const txRef = { slot: line.slot, tx_idx: line.txIndex };
     const failed = line.err !== null && line.err !== undefined;
     if (failed) this.s.raw_failed++;
@@ -546,6 +606,9 @@ export class ParityChecker {
     }
     this.s.decoded_events += events.length;
     const ctx: Ctx = { line, rec, tx, keys };
+
+    // Rule 4: movement rows equal the movements re-derived from the record.
+    this.compareMovements(line, moveRows, failed ? [] : deriveMovements(ctx, events, this.idl));
 
     // Failed rows: one per failed transaction, equal to its record.
     const rows: Row[] = [];
@@ -640,7 +703,10 @@ export class ParityChecker {
     for (const list of this.rows.values()) {
       for (const row of list) {
         const mint = row.kind === 'curve' ? (row.values.mint ?? '') : row.kind === 'amm' ? (row.values.base_mint ?? '') : row.kind === 'failed' ? (row.values.mint_hint ?? '') : row.fields?.mint || row.fields?.base_mint || '';
-        if (row.kind === 'event' && this.tape(mint, Number(row.values.block_time ?? 0)) !== 'in') {
+        // Every CreateEvent and migration row needs its raw record (the scanner keeps them all);
+        // other rows only for hash-sampled mints, and events rows only inside a tape.
+        const isCreate = row.kind === 'event' && (row.event === 'CreateEvent' || row.event === 'CompletePumpAmmMigrationEvent');
+        if (!isCreate && (!(mint !== '' && mintHash(mint) < this.rawSampleRate) || (row.kind === 'event' && this.tape(mint, Number(row.values.block_time ?? 0)) !== 'in'))) {
           this.s.rows_without_raw++;
           continue;
         }
@@ -649,6 +715,46 @@ export class ParityChecker {
       }
     }
     this.rows = new Map();
+    for (const list of this.moves.values()) this.s.movements_without_raw += list.length;
+    this.moves = new Map();
+  }
+
+  /** Rule 4: same rows in every column; rows at one instruction position are compared column by column. */
+  private compareMovements(line: RawLine, rows: readonly MovementRow[], derived: readonly MovementRow[]): void {
+    const byPos = new Map<string, { rows: MovementRow[]; derived: MovementRow[] }>();
+    const at = (m: MovementRow) => {
+      const p = `${m.values.outer_ix}:${m.values.inner_ix}`;
+      let e = byPos.get(p);
+      if (!e) byPos.set(p, (e = { rows: [], derived: [] }));
+      return e;
+    };
+    for (const m of rows) at(m).rows.push(m);
+    for (const m of derived) at(m).derived.push(m);
+    for (const { rows: rs, derived: ds } of byPos.values()) {
+      const ref = rs[0] ?? ds[0]!;
+      const key: Key = { slot: line.slot, tx_idx: line.txIndex, outer_ix: Number(ref.values.outer_ix), inner_ix: ref.values.inner_ix === '' ? -1 : Number(ref.values.inner_ix) };
+      const report = (field: string, row: string | null, decoded: string | null) => this.mismatch({ kind: 'movement', key, signature: line.signature, field, row, decoded });
+      if (rs.length === 1 && ds.length === 1) {
+        let ok = true;
+        for (const c of MOVEMENT_COLUMNS) {
+          if (rs[0]!.values[c] !== ds[0]!.values[c]) {
+            ok = false;
+            report(c, rs[0]!.values[c] ?? null, ds[0]!.values[c] ?? null);
+          }
+        }
+        if (ok) this.s.movements_matched++;
+        continue;
+      }
+      const left = ds.map(movementText);
+      for (const r of rs) {
+        const i = left.indexOf(movementText(r));
+        if (i >= 0) {
+          left.splice(i, 1);
+          this.s.movements_matched++;
+        } else report('(movement row)', movementText(r), 'none');
+      }
+      for (const d of left) report('(movement row)', null, d);
+    }
   }
 
   private compare(row: Row, ev: LocatedEvent, evIdx: number, ctx: Ctx): [string, string | null, string | null][] {
@@ -731,6 +837,11 @@ export class ParityChecker {
       if (canonRow(r, dv) !== d) out.push([col, r, d]);
     };
 
+    if (row.kind === 'curve' || row.kind === 'amm') {
+      const su = swapUser(ctx, ev, this.swapIx);
+      eq('user_token_account', v.user_token_account, su.account);
+      eq('user_token_owner', v.user_token_owner, su.owner);
+    }
     if (row.kind === 'curve') {
       for (const c of CURVE_EVENT_COLUMNS) field(c, camel(c), v[c]);
     } else if (row.kind === 'amm') {
@@ -751,7 +862,125 @@ export class ParityChecker {
   }
 }
 
-interface Ctx {
+// ---- token movements (scanner movements.go), re-derived from a raw record ----
+
+export const MOVEMENT_COLUMNS = ['slot', 'block_time', 'tx_idx', 'outer_ix', 'inner_ix', 'mint', 'kind', 'from_owner', 'to_owner', 'amount', 'from_account', 'to_account'] as const;
+
+export interface MovementRow {
+  readonly slot: number;
+  readonly txIdx: number;
+  readonly values: Readonly<Record<string, string>>;
+}
+
+export const movementRow = (v: Record<string, string>): MovementRow => ({ slot: int(v.slot, 'slot'), txIdx: int(v.tx_idx, 'tx_idx'), values: v });
+
+const movementText = (m: MovementRow) => MOVEMENT_COLUMNS.map((c) => m.values[c] ?? '').join(',');
+
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
+/**
+ * Kind and account positions (source, destination, mint; -1 when absent) of an SPL Token / Token-2022 instruction that
+ * moves tokens: Transfer 3 (src 0, dst 1), TransferChecked 12 (src 0, mint 1, dst 2), Burn 8 and BurnChecked 15
+ * (src 0, mint 1), MintTo 7 and MintToChecked 14 (mint 0, dst 1). The amount is the u64 at data[1..9].
+ */
+const tokenMove = (data: Uint8Array): { kind: 'transfer' | 'burn' | 'mint'; src: number; dst: number; mint: number } | null => {
+  if (data.length < 9) return null;
+  switch (data[0]) {
+    case 3: return { kind: 'transfer', src: 0, dst: 1, mint: -1 };
+    case 12: return { kind: 'transfer', src: 0, dst: 2, mint: 1 };
+    case 8: case 15: return { kind: 'burn', src: 0, dst: -1, mint: 1 };
+    case 7: case 14: return { kind: 'mint', src: -1, dst: 1, mint: 0 };
+  }
+  return null;
+};
+
+/** The mints of a transaction's decoded pump and PumpSwap events (scanner processTx eventMints), WSOL excepted. */
+const eventMintSet = (ctx: Ctx, events: readonly LocatedEvent[], idl: ReadonlyMap<string, IdlEvent>): Set<string> => {
+  const out = new Set<string>();
+  const add = (m: unknown) => {
+    if (typeof m === 'string' && m !== '' && m !== WSOL_MINT) out.add(m);
+  };
+  for (const ev of events) {
+    if (ev.name === 'TradeEvent') add(ev.data.mint);
+    else if (ev.name === 'BuyEvent' || ev.name === 'SellEvent') add(emitterMints(ctx, ev)?.base);
+    else if (ev.name === 'other') {
+      const def = idl.get(`${ev.program}:${ev.discriminator}`);
+      const d = def === undefined ? null : decodeIdlEvent(def, eventBody(ctx, ev));
+      add(d?.fields.mint);
+      add(d?.fields.base_mint);
+    } else {
+      const data = ev.data as { mint?: unknown; baseMint?: unknown };
+      add(data.mint);
+      add(data.baseMint);
+    }
+  }
+  return out;
+};
+
+/**
+ * The movement rows of a successful raw record: token-program movement instructions with no pump or PumpSwap
+ * instruction among their callers, for mints ending in "pump" and mints of the transaction's decoded events.
+ * Callers come from stack heights: the top-level instruction is height 1, an inner one without a recorded height is
+ * taken as called by it (height 2).
+ */
+export const deriveMovements = (ctx: Ctx, events: readonly LocatedEvent[], idl: ReadonlyMap<string, IdlEvent>): MovementRow[] => {
+  const { line, rec, tx, keys } = ctx;
+  const active = eventMintSet(ctx, events, idl);
+  const want = (m: string) => m.endsWith('pump') || active.has(m);
+  const bal = new Map<number, { mint: string; owner: string }>();
+  for (const b of line.meta.preTokenBalances ?? []) bal.set(b.accountIndex, { mint: b.mint, owner: b.owner ?? '' });
+  for (const b of line.meta.postTokenBalances ?? []) bal.set(b.accountIndex, { mint: b.mint, owner: b.owner ?? '' });
+  const temp = tempOwners(ctx);
+  const owner = (i: number) => bal.get(i)?.owner ?? temp.get(i) ?? '';
+  const out: MovementRow[] = [];
+  tx.instructions.forEach((top, gi) => {
+    const seq: { programIdIndex: number; accounts: readonly number[]; data: Uint8Array; height: number }[] = [
+      { programIdIndex: top.programIdIndex, accounts: top.accounts, data: top.data, height: 1 },
+    ];
+    for (const g of rec.innerInstructions ?? []) {
+      if (g.index !== gi) continue;
+      for (const ix of g.instructions) seq.push({ programIdIndex: ix.programIdIndex, accounts: ix.accounts, data: ix.data, height: ix.stackHeight || 2 });
+    }
+    // callers[h - 1] is the program running at height h.
+    const callers: string[] = [];
+    seq.forEach((ix, k) => {
+      const h = k === 0 ? 1 : ix.height;
+      if (h - 1 < callers.length) callers.length = h - 1;
+      const inSwap = callers.some((p) => p === PUMP_PROGRAM || p === PUMP_AMM_PROGRAM);
+      const program = keys[ix.programIdIndex] ?? '';
+      callers.push(program);
+      if (inSwap || (program !== TOKEN_PROGRAM && program !== TOKEN_2022_PROGRAM)) return;
+      const mv = tokenMove(ix.data);
+      if (mv === null) return;
+      const acct = (pos: number) => (pos >= 0 && pos < ix.accounts.length ? ix.accounts[pos]! : -1);
+      const src = acct(mv.src);
+      const dst = acct(mv.dst);
+      let mint = mv.mint >= 0 ? (keys[acct(mv.mint)] ?? '') : '';
+      if (mint === '') mint = (mv.src >= 0 ? bal.get(src)?.mint : undefined) ?? (mv.dst >= 0 ? bal.get(dst)?.mint : undefined) ?? '';
+      if (mint === '' || !want(mint)) return;
+      let amount = 0n;
+      for (let i = 8; i >= 1; i--) amount = (amount << 8n) | BigInt(ix.data[i]!);
+      const values: Record<string, string> = {
+        slot: String(line.slot),
+        block_time: str(line.blockTime),
+        tx_idx: String(line.txIndex),
+        outer_ix: String(gi),
+        inner_ix: k === 0 ? '' : String(k - 1),
+        mint,
+        kind: mv.kind,
+        from_owner: mv.src >= 0 ? owner(src) : '',
+        to_owner: mv.dst >= 0 ? owner(dst) : '',
+        amount: String(amount),
+        from_account: mv.src >= 0 ? (keys[src] ?? '') : '',
+        to_account: mv.dst >= 0 ? (keys[dst] ?? '') : '',
+      };
+      out.push({ slot: line.slot, txIdx: line.txIndex, values });
+    });
+  });
+  return out;
+};
+
+export interface Ctx {
   readonly line: RawLine;
   readonly rec: TransactionRecord;
   readonly tx: DecodedTransaction;
@@ -769,6 +998,73 @@ export const logsShowNoCpi = (logs: readonly string[] | null | undefined): boole
 /** The event's body: its inner instruction's data after EVENT_IX_TAG and the 8-byte discriminator. */
 const eventBody = (ctx: Ctx, ev: LocatedEvent): Uint8Array =>
   ctx.rec.innerInstructions?.find((g) => g.index === ev.outerIx)?.instructions[ev.innerIx]?.data.subarray(16) ?? new Uint8Array();
+
+/**
+ * Owners of token accounts opened in the transaction (absent from the token balances when closed again): SPL Token or
+ * Token-2022 InitializeAccount (1: owner is account 2), InitializeAccount2 (16) and InitializeAccount3 (18: owner in
+ * data[1..33]), at any depth. A later initialisation of the same account wins.
+ */
+export const tempOwners = (ctx: Ctx): Map<number, string> => {
+  const out = new Map<number, string>();
+  const groups = new Map((ctx.rec.innerInstructions ?? []).map((g) => [g.index, g.instructions]));
+  ctx.tx.instructions.forEach((top, gi) => {
+    for (const ix of [top, ...(groups.get(gi) ?? [])]) {
+      const program = ctx.keys[ix.programIdIndex];
+      if ((program !== TOKEN_PROGRAM && program !== TOKEN_2022_PROGRAM) || ix.data.length === 0 || ix.accounts.length === 0) continue;
+      if (ix.data[0] === 1 && ix.accounts.length > 2) out.set(ix.accounts[0]!, ctx.keys[ix.accounts[2]!] ?? '');
+      else if ((ix.data[0] === 16 || ix.data[0] === 18) && ix.data.length >= 33) out.set(ix.accounts[0]!, encodeBase58(ix.data.subarray(1, 33)));
+    }
+  });
+  return out;
+};
+
+/** `<program>:<instruction discriminator hex>` -> position of the user's base-token account, from the scanner's IDLs. */
+type SwapPositions = ReadonlyMap<string, number>;
+const SWAP_USER_ACCOUNTS = new Set(['associated_user', 'associated_base_user', 'user_base_token_account']);
+
+/** Every pump and pump_amm instruction that names a user base-token account (associated_user, associated_base_user, user_base_token_account), with its position. */
+export const loadSwapUserPositions = (dir = IDL_DIR): SwapPositions => {
+  const out = new Map<string, number>();
+  for (const [program, file] of [[PUMP_PROGRAM, 'pump.json'], [PUMP_AMM_PROGRAM, 'pump_amm.json']] as const) {
+    const doc = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { instructions: { name: string; discriminator: number[]; accounts: { name: string }[] }[] };
+    for (const ix of doc.instructions) {
+      const pos = ix.accounts.findIndex((a) => SWAP_USER_ACCOUNTS.has(a.name));
+      if (pos >= 0) out.set(`${program}:${toHex(Uint8Array.from(ix.discriminator))}`, pos);
+    }
+  }
+  return out;
+};
+
+/** The instruction that emitted `ev`: the nearest earlier instruction of the event's program one stack level up, in the same top-level group. */
+const emitterIx = (ctx: Ctx, ev: LocatedEvent): { programIdIndex: number; accounts: readonly number[]; data: Uint8Array } | null => {
+  const outer = ctx.tx.instructions[ev.outerIx];
+  const group = ctx.rec.innerInstructions?.find((g) => g.index === ev.outerIx);
+  if (!outer || !group) return null;
+  const program = ev.program === 'pump' ? PUMP_PROGRAM : PUMP_AMM_PROGRAM;
+  const seq = [{ programIdIndex: outer.programIdIndex, accounts: outer.accounts, data: outer.data, stackHeight: 1 as number | null }, ...group.instructions];
+  const at = ev.innerIx + 1;
+  const h = seq[at]?.stackHeight ?? 0;
+  for (let i = at - 1; i >= 0; i--) {
+    const ix = seq[i]!;
+    if (ctx.keys[ix.programIdIndex] !== program) continue;
+    if (h !== 0 && ix.stackHeight !== h - 1) continue;
+    if (hasDiscriminator(ix.data, EVENT_IX_TAG)) continue;
+    return ix;
+  }
+  return null;
+};
+
+/** The token account a swap credits or debits and its owner (post balances, then pre, then the initialising instruction); empty when unknown. */
+export const swapUser = (ctx: Ctx, ev: LocatedEvent, positions: SwapPositions): { account: string; owner: string } => {
+  const ix = emitterIx(ctx, ev);
+  if (ix === null || ix.data.length < 8) return { account: '', owner: '' };
+  const pos = positions.get(`${ctx.keys[ix.programIdIndex]}:${toHex(ix.data.subarray(0, 8))}`);
+  if (pos === undefined || pos >= ix.accounts.length) return { account: '', owner: '' };
+  const i = ix.accounts[pos]!;
+  const find = (list: readonly RawTokenBalance[] | null | undefined) => list?.find((b) => b.accountIndex === i);
+  const tb = find(ctx.line.meta.postTokenBalances) ?? find(ctx.line.meta.preTokenBalances);
+  return { account: ctx.keys[i] ?? '', owner: tb ? (tb.owner ?? '') : (tempOwners(ctx).get(i) ?? '') };
+};
 
 /**
  * Base and quote mint of a PumpSwap trade: accounts 3 and 4 of the pump_amm instruction that emitted the event (the
@@ -831,7 +1127,10 @@ export const readMints = (dir: string): MintInfo[] =>
 
 /** Runs the check over every day of a dataset directory and returns the summary (does not exit). */
 export const runParity = async (dir: string): Promise<ParitySummary> => {
-  const checker = new ParityChecker(readMints(dir));
+  // Without a manifest every row must have its raw record (rate 1, the strictest reading).
+  const mp = join(dir, 'manifest.json');
+  const man = (existsSync(mp) ? JSON.parse(readFileSync(mp, 'utf8')) : {}) as { sampling?: { unit_sample_rate_min?: number } };
+  const checker = new ParityChecker(readMints(dir), loadScannerIdl(), man.sampling?.unit_sample_rate_min ?? 1);
   const daysDir = join(dir, 'days');
   for (const day of readdirSync(daysDir).sort()) {
     const d = join(daysDir, day);
@@ -839,10 +1138,14 @@ export const runParity = async (dir: string): Promise<ParitySummary> => {
     for (const f of filesWith(d, 'amm_trades')) for (const v of csvObjects(zstText(f))) checker.addRow(ammRow(v));
     for (const f of filesWith(d, 'failed')) for (const v of csvObjects(zstText(f))) checker.addRow(failedRow(v));
     for (const f of filesWith(d, 'events')) for await (const l of zstLines(f)) checker.addRow(eventRow(JSON.parse(l) as Record<string, unknown>));
+    for (const f of filesWith(d, 'movements')) for (const v of csvObjects(zstText(f))) checker.addMovement(v);
     for (const f of filesWith(d, 'raw')) for await (const l of zstLines(f)) checker.checkRaw(JSON.parse(l) as RawLine);
     checker.endBatch();
   }
   return checker.s;
 };
+
+/** h(mint): first 8 bytes of sha256(mint pubkey bytes), big-endian, / 2^64 (scanner sample.go mintHashFraction). */
+export const mintHash = (mint: string): number => Number(createHash('sha256').update(decodeBase58(mint)).digest().readBigUInt64BE(0)) / 2 ** 64;
 
 export const failed = (s: ParitySummary): boolean => s.mismatch_count > 0 || s.missing_row_count > 0;

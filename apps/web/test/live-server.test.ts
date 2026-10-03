@@ -5,11 +5,11 @@ import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { httpApi, OfflineError } from '../src/api/client.ts';
-import { ConnectionStore } from '../src/api/connection.ts';
+import { BAD_ANSWER_TTL_MS, ConnectionStore } from '../src/api/connection.ts';
 import { PATHS, type DashboardApi, type Mode } from '../src/api/contract.ts';
 import { DataError } from '../src/api/modes.ts';
 import { MAX_BACKOFF_MS, nextDelay, REFRESH_MS, documentForeground, startPolling, type Foreground, type Timers } from '../src/api/poll.ts';
-import type { Got } from '../src/api/reportLoader.ts';
+import { REQUEST_TIMEOUT_MS, type Got } from '../src/api/reportLoader.ts';
 import { reportData } from '../src/api/reportSchema.ts';
 import { schemaFor } from '../src/api/schemas.ts';
 import { keepOnOffline, settle, type Loaded } from '../src/api/useEndpoint.ts';
@@ -260,6 +260,55 @@ describe('contract mock server', () => {
     expect(keepOnOffline(ready, offline, 'paper')).toEqual({ ...ready, stale: true });
     expect(keepOnOffline(undefined, offline, 'paper')).toEqual(offline);
     expect(keepOnOffline(ready, { state: 'error', reason: 'bad-data' }, 'paper')).toEqual({ state: 'error', reason: 'bad-data' });
+  });
+
+  it('one endpoint failing its check keeps Server error steady while another endpoint answers well', async () => {
+    const store = new ConnectionStore(memory());
+    store.setServer(ORIGIN);
+    const fixtures = fixtureApi();
+    const get = async (url: string) =>
+      url.endsWith(PATHS.stats('paper')) ? { status: 200, body: JSON.stringify(await fixtures.stats('live')) } : { status: 200, body: JSON.stringify(await fixtures.trades('paper')) };
+    let t = Date.parse('2026-10-03T03:00:00Z');
+    const api = httpApi(ORIGIN, get, store, () => t);
+    const states: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      t += 10_000;
+      await api.trades('paper');
+      states.push(store.get().state);
+      t += 10_000;
+      await api.stats('paper').catch(() => {});
+      states.push(store.get().state);
+    }
+    expect(states.slice(1)).toEqual(Array(7).fill('error'));
+    // Good data still counts as an update.
+    expect(store.get().lastOk).toBe('2026-10-03T03:01:10.000Z');
+  });
+
+  it('a bad answer outlives the slowest poll, so a broken endpoint cannot flicker back to Online', () => {
+    // The slowest poll waits MAX_BACKOFF_MS plus 10% jitter, then up to REQUEST_TIMEOUT_MS for the answer.
+    expect(BAD_ANSWER_TTL_MS).toBeGreaterThan(MAX_BACKOFF_MS * 1.1 + REQUEST_TIMEOUT_MS);
+    expect(nextDelay(64, 0.999999)).toBeLessThanOrEqual(MAX_BACKOFF_MS * 1.1);
+  });
+
+  it('Server error clears once the bad endpoint answers well, or after it has not answered for 10 minutes', () => {
+    const store = new ConnectionStore(memory());
+    store.setServer(ORIGIN);
+    const at = (m: number) => new Date(Date.parse('2026-10-03T03:00:00Z') + m * 60_000).toISOString();
+    store.reportBad(ORIGIN, at(0), 'live/stats');
+    store.reportOk(ORIGIN, at(1), 'paper/trades');
+    expect(store.get().state).toBe('error');
+    store.reportOk(ORIGIN, at(2), 'live/stats');
+    expect(store.get().state).toBe('online');
+    store.reportBad(ORIGIN, at(3), 'live/stats');
+    store.reportOk(ORIGIN, at(12), 'paper/trades');
+    expect(store.get().state).toBe('error');
+    store.reportOk(ORIGIN, at(13) , 'paper/trades');
+    expect(store.get().state).toBe('online');
+    // A new address starts clean.
+    store.reportBad(ORIGIN, at(14), 'live/stats');
+    store.setServer('https://other.tail1234.ts.net');
+    store.reportOk('https://other.tail1234.ts.net', at(15), 'paper/trades');
+    expect(store.get().state).toBe('online');
   });
 
   it('a timed-out request counts as offline', async () => {
