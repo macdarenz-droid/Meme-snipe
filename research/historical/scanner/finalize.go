@@ -911,11 +911,11 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 			"first_unknown_event":   upgradeFirst["unknown_event"],
 		},
 		"first_seen_slot": firstSeen,
-		"chain_breaks": chainBreaks,
-		"completeness": "every block's parent is the previous block in the scan (checked on all block rows), so no block is missing between the first and last scanned block",
-		"days":         manifestDays,
-		"mints_files":  mintFiles,
-		"units":        unitsInfo,
+		"chain_breaks":    chainBreaks,
+		"completeness":    "every block's parent is the previous block in the scan (checked on all block rows), so no block is missing between the first and last scanned block",
+		"days":            manifestDays,
+		"mints_files":     mintFiles,
+		"units":           unitsInfo,
 	}
 	mb, _ := json.MarshalIndent(man, "", "  ")
 	return os.WriteFile(filepath.Join(dsDir, "manifest.json"), mb, 0o644)

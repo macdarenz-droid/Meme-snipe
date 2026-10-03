@@ -7,7 +7,22 @@
 # the day is done or the time budget runs out (exit 75, so the workflow saves progress
 # and stops). Any later run on the same directory sleeps out the back-off first.
 # Every 429 and back-off is appended to $GITHUB_STEP_SUMMARY when set.
+#   scan-day.sh --merge-state SRC DST
+# copies back-off state SRC over DST when SRC's back-off ends later (or DST has none);
+# the workflow uses it to share one back-off across days and runs.
 set -uo pipefail
+# state_end FILE: the back-off end (unix s) in a state file
+# "<unix last 429> <retry-after s> <unix until>", or nothing.
+state_end() { awk 'NF >= 3 && $3 ~ /^[0-9]+$/ {print $3; exit}' "$1" 2>/dev/null || true; }
+if [ "${1:-}" = --merge-state ]; then
+  [ $# -eq 3 ] || { echo "usage: scan-day.sh --merge-state SRC DST" >&2; exit 2; }
+  s=$(state_end "$2") d=$(state_end "$3")
+  [ -n "$s" ] || exit 0
+  if [ -z "$d" ] || [ "$s" -gt "$d" ]; then
+    mkdir -p "$(dirname "$3")" && cp "$2" "$3"
+  fi
+  exit 0
+fi
 day=$1 out=$2 mbps=$3 budget=$4
 next=$(date -u -d "$day + 1 day" +%F)
 start=$(date +%s)
@@ -18,8 +33,8 @@ mkdir -p "$out"
 # counts against the budget: when it would not fit, exit 75 and keep progress.
 backoff() {
   local min_s=$1 end wait_s elapsed
-  end=$(awk 'NF >= 3 {print $3}' "$out/archive-429.state" 2>/dev/null || true)
-  [[ "$end" =~ ^[0-9]+$ ]] || end=0
+  end=$(state_end "$out/archive-429.state")
+  [ -n "$end" ] || end=0
   wait_s=$(( end - $(date +%s) ))
   [ "$wait_s" -lt "$min_s" ] && wait_s=$min_s
   [ "$wait_s" -le 0 ] && return 0

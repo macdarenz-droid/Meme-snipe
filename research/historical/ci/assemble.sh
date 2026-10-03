@@ -15,9 +15,12 @@
 #   2. per day: free-space guard (3x the day's tar + 10 GB), download parts and
 #      SHA256SUMS, verify, extract (lead-in days: events, stats and block rows only),
 #      delete the parts, move each unit into OUT_DIR/data/units/EPOCH/RANGE. A unit that
-#      crosses midnight arrives twice: every file present in both copies must have the
-#      same sha256 (else stop); files only the new copy has are moved in;
-#   3. finalize, strict QA, decoder parity, then the release directory is built by
+#      crosses midnight arrives twice: every *.zst present in both copies must have the
+#      same sha256, and its two stats.json must agree on epoch, slots, blocks, schema and
+#      scanner revision (the first is kept), else stop; files only the new copy has are
+#      moved in;
+#   3. free-space guard (finalize_guard: 2x the extracted units + 10 GB), finalize,
+#      strict QA, decoder parity, then the release directory is built by
 #      moving files (never copying), checksummed and published.
 set -euo pipefail
 
@@ -68,10 +71,39 @@ free_guard() {
   (( avail >= need )) || die "not enough disk on $dir: $avail bytes free, need $need (3 x $tar + 10 GB)"
 }
 
-# merge_unit SRC DST: move unit dir SRC to DST. If DST exists, every file in both must
-# hash the same (else fail); files only in SRC are moved in; SRC is then removed.
+# stats_match A B: two stats.json copies of one unit describe the same scan. They are
+# written at scan time, so seconds, finished_at and the HTTP counters differ between the
+# two days' scans; the identity fields below must not.
+stats_match() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+a, b = (json.load(open(p)) for p in sys.argv[1:3])
+keys = ("epoch", "from_slot", "to_slot", "blocks", "schema", "scanner_revision")
+bad = [k for k in keys if k not in a or k not in b or a[k] != b[k]]
+if bad:
+    sys.exit("stats.json differs in " + ", ".join(f"{k} ({a.get(k)!r} vs {b.get(k)!r})" for k in bad))
+PY
+}
+
+# finalize_guard WORK: finalize reads OUT_DIR/data/units and writes the dataset next to
+# them; the release directory is then built by moving files, so it adds nothing.
+# Bound: free space >= 2 x the extracted units' size + 10 GB, i.e. room for a dataset
+# as large as the units it is built from, the same again as margin, and 10 GB for
+# temp files and QA output.
+finalize_guard() {
+  local work=$1 units avail need
+  units=$(du -sb "$work/data/units" | cut -f1)
+  avail=$(df -B1 --output=avail "$work" | tail -1 | tr -d ' ')
+  need=$(( 2 * units + 10 * 1000 * 1000 * 1000 ))
+  (( avail >= need )) || die "not enough disk on $work for finalize: $avail bytes free, need $need (2 x $units units + 10 GB)"
+}
+
+# merge_unit SRC DST: move unit dir SRC to DST. If DST exists (a unit crossing
+# midnight arrives with both days): every *.zst (and any other data file) in both copies
+# must hash the same; stats.json keeps the first copy and must match on the identity
+# fields (stats_match); files only in SRC are moved in; SRC is then removed.
 merge_unit() {
-  local src=$1 dst=$2 f name a b
+  local src=$1 dst=$2 f name a b why
   if [[ ! -e "$dst" ]]; then
     mkdir -p "$(dirname "$dst")"
     mv "$src" "$dst"
@@ -80,14 +112,18 @@ merge_unit() {
   for f in "$src"/*; do
     [[ -e "$f" ]] || continue
     name=$(basename "$f")
-    if [[ -e "$dst/$name" ]]; then
+    if [[ ! -e "$dst/$name" ]]; then
+      mv "$f" "$dst/$name"
+      continue
+    fi
+    if [[ "$name" == stats.json ]]; then
+      why=$(stats_match "$dst/$name" "$f" 2>&1) || die "unit ${dst#*/units/} differs between days: $why"
+    else
       a=$(sha256sum "$f" | cut -d' ' -f1)
       b=$(sha256sum "$dst/$name" | cut -d' ' -f1)
       [[ "$a" == "$b" ]] || die "unit ${dst#*/units/} differs between days in $name ($a vs $b)"
-      rm -f "$f"
-    else
-      mv "$f" "$dst/$name"
     fi
+    rm -f "$f"
   done
   rmdir "$src"
 }
@@ -162,6 +198,7 @@ main() {
     echo "assemble: day $day ($bytes bytes, lead-in=$leadin)"
     fetch_day "$day" "$leadin" "$work" "$work/data"
   done
+  finalize_guard "$work"
   zeroed-scan finalize -out "$work/data" -dataset "$work/dataset" -from "$from" -to "$to" \
     -part-mb 1900 -lead-in-days "$LEAD_IN_DAYS" "${extra[@]}"
   node "$repo_root/research/historical/qa/check.mjs" "$work/dataset" --live 60 --strict
