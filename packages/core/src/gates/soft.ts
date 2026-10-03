@@ -48,7 +48,7 @@ export const evaluateSoftFeatures = (ctx: GateContext, deps: GateDeps, mint: str
   else {
     const c = concentration(holders.fact, mintAccounts(mint, { address: pool.fact.address, baseVault: pool.fact.pool.poolBaseTokenAccount }));
     // Distinct owners seen in the holder read: not "independent" (no funding evidence here; FACTS-1 reports that split).
-    features.push({ name: 'observedDistinctOwners', value: String(c.owners.length), ...(holders.fact.coverage === 'largest' ? { note: 'largest accounts only' } : {}) });
+    features.push({ name: 'observedDistinctOwners', value: String(new Set(c.classes.filter((x) => !EXCLUDED.has(x.cls)).map((x) => x.owner)).size), ...(holders.fact.coverage === 'largest' ? { note: 'largest accounts only' } : {}) });
     features.push({ name: 'unknownProgramHolders', value: String(c.classes.filter((x) => x.cls === 'unknown-program').length) });
     const largest = [...c.classes].sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.address < b.address ? -1 : 1))[0];
     largestExcluded = largest === undefined ? null : EXCLUDED.has(largest.cls);

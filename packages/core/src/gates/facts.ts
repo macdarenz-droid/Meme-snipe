@@ -45,6 +45,8 @@ export interface PoolFact {
   readonly address: string;
   /** The program that owns the pool account. */
   readonly owner: string;
+  /** The pool account's data length: it decides the PumpSwap layout the builders need (H17). Absent: unread, H17 rejects. */
+  readonly accountBytes?: number;
   readonly pool: {
     readonly index: number;
     readonly creator: string;
@@ -56,6 +58,10 @@ export interface PoolFact {
     readonly lpSupply: bigint;
     /** Absent on pools written before the field existed: unknown, so H5 rejects. */
     readonly isMayhemMode?: boolean;
+    /** Absent: unread, so H17 rejects. */
+    readonly isCashbackCoin?: boolean;
+    /** Absent: unread, so H17 rejects. */
+    readonly coinCreator?: string;
     readonly virtualQuoteReserves?: bigint;
   };
   readonly baseVault: bigint;
@@ -116,6 +122,10 @@ export interface HolderAccount {
   /** The program that owns `owner`'s account, when known (null: not read, or a system wallet). */
   readonly ownerProgram: string | null;
   readonly amount: bigint;
+  /** The account's delegate, which may move up to `delegatedAmount` without the owner (null: none). */
+  readonly delegate: string | null;
+  /** 0 when there is no delegate. */
+  readonly delegatedAmount: bigint;
 }
 
 /**
@@ -318,6 +328,9 @@ export const parsePool = (v: unknown): PoolFact | null => {
   for (const k of POOL_KEYS) if (!isStr(p[k])) return null;
   if (!isNat(p['lpSupply'])) return null;
   if (p['isMayhemMode'] !== undefined && !isBool(p['isMayhemMode'])) return null;
+  if (p['isCashbackCoin'] !== undefined && !isBool(p['isCashbackCoin'])) return null;
+  if (p['coinCreator'] !== undefined && !isStr(p['coinCreator'])) return null;
+  if (v['accountBytes'] !== undefined && !(Number.isSafeInteger(v['accountBytes']) && (v['accountBytes'] as number) >= 0)) return null;
   if (p['virtualQuoteReserves'] !== undefined && !isBig(p['virtualQuoteReserves'])) return null;
   return v as unknown as PoolFact;
 };
@@ -340,7 +353,8 @@ export const parseCandles = (v: unknown): CandlesFact | null =>
   withObs(v) && isMs(v['intervalMs']) && (v['intervalMs'] as number) > 0 && every(v['candles'], isCandle) ? (v as unknown as CandlesFact) : null;
 
 const isHolder = (v: unknown): v is HolderAccount =>
-  isObj(v) && isStr(v['address']) && isStr(v['mint']) && isStr(v['owner']) && strOrNull(v['ownerProgram']) && isNat(v['amount']);
+  isObj(v) && isStr(v['address']) && isStr(v['mint']) && isStr(v['owner']) && strOrNull(v['ownerProgram']) && isNat(v['amount'])
+  && strOrNull(v['delegate']) && isNat(v['delegatedAmount']) && (v['delegate'] !== null || v['delegatedAmount'] === 0n);
 
 export const parseHolders = (v: unknown): HoldersFact | null =>
   withObs(v) && isNat(v['supply']) && (v['coverage'] === 'all' || v['coverage'] === 'largest') && every(v['accounts'], isHolder)

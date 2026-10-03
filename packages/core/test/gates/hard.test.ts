@@ -79,9 +79,9 @@ const CASES: readonly Case[] = [
   ['H11', 'above the migration price at +5 min (U2)', (f) => patch(f, candlesKey(MINT), {
     candles: [{ startMs: MIGRATED_AT + 4 * MINUTE_MS, open: MIGRATION_PRICE, high: MIGRATION_PRICE, close: { quote: MIGRATION_PRICE.quote + 1n, base: MIGRATION_PRICE.base } }],
   }), 'chase-at-5m'],
-  ['H12', 'one wallet with 40% of circulating', holders([...holderAccounts(), { mint: MINT, address: ACC('whale'), owner: W('whale'), ownerProgram: null, amount: 200_000_000_000_000n }]), 'hard-holder'],
-  ['H12', 'the dev with 40% of circulating', holders([...holderAccounts(), { mint: MINT, address: ACC('devbag'), owner: DEV, ownerProgram: null, amount: 200_000_000_000_000n }]), 'dev-holder'],
-  ['H12', 'one wallet above 10%', holders([...holderAccounts(), { mint: MINT, address: ACC('big'), owner: W('big'), ownerProgram: null, amount: 40_000_000_000_000n }]), 'single-holder'],
+  ['H12', 'one wallet with 40% of circulating', holders([...holderAccounts(), { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('whale'), owner: W('whale'), ownerProgram: null, amount: 200_000_000_000_000n }]), 'hard-holder'],
+  ['H12', 'the dev with 40% of circulating', holders([...holderAccounts(), { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('devbag'), owner: DEV, ownerProgram: null, amount: 200_000_000_000_000n }]), 'dev-holder'],
+  ['H12', 'one wallet above 10%', holders([...holderAccounts(), { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('big'), owner: W('big'), ownerProgram: null, amount: 40_000_000_000_000n }]), 'single-holder'],
   ['H12', 'top 10 above 30%', holders(holderAccounts().map((a, i) => (i >= 2 && i < 12 ? { ...a, amount: 9_100_000_000_000n } : a))), 'top10'],
   ['H13', 'insiders above 15%', (f) => patch(f, insidersKey(MINT), { insiders: [0, 1, 2, 3, 4, 5].map(W) }), 'insider-supply'],
   ['H13', "the dev's cluster above 5%", (f) => patch(f, insidersKey(MINT), { devCluster: [W(0), W(1)] }), 'dev-cluster'],
@@ -92,6 +92,13 @@ const CASES: readonly Case[] = [
   ['H15', 'a simulation that loses more than the model', (f) => patch(f, simKey(MINT), { proceeds: 1n }), 'sim-loss'],
   ['H16', 'a third party reads a mint authority (live)', (f) => patch(f, xcheckKey(MINT), { sources: [{ provider: 'rugcheck', mintAuthority: 'set', freezeAuthority: 'none' }] }), 'xcheck-disagree'],
   ['H16', 'stale pool state (3 slots)', (f) => patch(f, poolKey(MINT), { obs: obs({ slot: SLOT - 3n }) }), 'stale'],
+  // TX-1b: H4 allows these (sellable), but the builders cannot trade them, so the shape gate rejects before any entry.
+  ['H17', 'a GroupPointer extension', withExtensions([...mintFrom(MINT).account.extensions, { kind: 'GroupPointer', type: 20, fields: { authority: null, groupAddress: null }, data: '' }]), 'unsupported-shape'],
+  ['H17', 'DefaultAccountState initialized', withExtensions([...mintFrom(MINT).account.extensions, { kind: 'DefaultAccountState', type: 6, fields: { state: 'initialized' }, data: '01' }]), 'unsupported-shape'],
+  ['H17', 'a cashback pool', (f) => patch(f, poolKey(MINT), { pool: { ...POOL, isCashbackCoin: true } }), 'unsupported-shape'],
+  ['H17', 'a 287-byte pool (needs extend_account)', (f) => patch(f, poolKey(MINT), { accountBytes: 287 }), 'unsupported-shape'],
+  ['H17', 'pool account size not read', (f) => patch(f, poolKey(MINT), { accountBytes: undefined }), 'missing'],
+  ['H17', 'cashback flag not read', (f) => patch(f, poolKey(MINT), { pool: { ...POOL, isCashbackCoin: undefined } }), 'missing'],
 ];
 
 describe('each hard reject has a trigger and a pass', () => {
@@ -248,7 +255,7 @@ describe('evaluation', () => {
   it('runs cheapest first, in a fixed order that names every gate once', () => {
     const costs = HARD_ORDER.map((s) => s.cost);
     expect([...costs].sort()).toEqual(costs);
-    expect(new Set(HARD_ORDER.map((s) => s.gate)).size).toBe(16);
+    expect(new Set(HARD_ORDER.map((s) => s.gate)).size).toBe(17);
   });
 
   it('stops at the first failing gate by default and names it', () => {
@@ -258,7 +265,7 @@ describe('evaluation', () => {
     expect(r.evaluated).toEqual(['H1', 'H2']);
     const all = run(f, 'live', request(), true);
     expect(all.failed).toEqual(expect.arrayContaining(['H2', 'H3', 'H6']));
-    expect(all.evaluated).toHaveLength(16);
+    expect(all.evaluated).toHaveLength(17);
   });
 
   it('gives the same result for the same input, every time (determinism)', () => {
@@ -332,7 +339,7 @@ describe('boundaries found by mutation testing', () => {
     const rest = others.reduce((s, a) => s + a.amount, 0n);
     const trim = rest % 3n;
     const accounts = others.map((a, i) => (i === others.length - 1 ? { ...a, amount: a.amount - trim } : a));
-    const whale = { mint: MINT, address: ACC('w40'), owner: W('w40'), ownerProgram: null, amount: ((rest - trim) * 2n) / 3n };
+    const whale = { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('w40'), owner: W('w40'), ownerProgram: null, amount: ((rest - trim) * 2n) / 3n };
     const exact = balanced([...holderAccounts().filter((a) => a.owner === POOL_ADDRESS), ...accounts, whale]);
     expect(codes(patch(passingFacts(), holdersKey(MINT), { accounts: exact }), 'H12')).toEqual(['hard-holder', 'top10']);
   });
@@ -385,10 +392,10 @@ describe('boundaries found by mutation testing', () => {
 describe('review round 1 blockers', () => {
   it('a whale in a non-canonical PumpSwap pool or a pump PDA is still a holder', () => {
     const extra = 20_000_000_000_000n;
-    const plain = balanced(holderAccounts().concat({ mint: MINT, address: ACC('x'), owner: W('x'), ownerProgram: null, amount: extra }));
+    const plain = balanced(holderAccounts().concat({ mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('x'), owner: W('x'), ownerProgram: null, amount: extra }));
     expect(codesFor(reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: plain })), 'H12')).toContain('top10');
     for (const ownerProgram of [PUMP_AMM_PROGRAM, '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P']) {
-      const hidden = balanced(holderAccounts().concat({ mint: MINT, address: ACC('x'), owner: NON_CANONICAL_POOL, ownerProgram, amount: extra }));
+      const hidden = balanced(holderAccounts().concat({ mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('x'), owner: NON_CANONICAL_POOL, ownerProgram, amount: extra }));
       expect(codesFor(reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: hidden })), 'H12')).toContain('top10');
     }
   });
@@ -406,7 +413,7 @@ describe('review round 1 blockers', () => {
 
 describe('review round 2 blockers', () => {
   it('a locker-owned 40% balance is a holder and rejects under H12, with a note', () => {
-    const locker = { mint: MINT, address: ACC('locker40'), owner: ACC('locker-pda'), ownerProgram: 'LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE', amount: ((SUPPLY - VAULT_AMOUNT) * 2n) / 3n + 1n };
+    const locker = { mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC('locker40'), owner: ACC('locker-pda'), ownerProgram: 'LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE', amount: ((SUPPLY - VAULT_AMOUNT) * 2n) / 3n + 1n };
     const r = run(patch(passingFacts(), holdersKey(MINT), { accounts: balanced([...holderAccounts(), locker]) }), 'live', request(), true);
     expect(codesFor(r.reasons, 'H12')).toContain('hard-holder');
     expect(r.notes).toContainEqual(expect.objectContaining({ gate: 'H12', code: 'locker-holder' }));
@@ -418,8 +425,8 @@ describe('review round 2 blockers', () => {
     const vault = holderAccounts().filter((a) => a.owner === POOL_ADDRESS);
     const build = (extra: bigint) => balanced([
       ...vault,
-      ...Array.from({ length: 10 }, (_, i) => ({ mint: MINT, address: ACC(`top${i}`), owner: W(`top${i}`), ownerProgram: null, amount: 3n * unit + (i === 0 ? extra : 0n) })),
-      ...Array.from({ length: 70 }, (_, i) => ({ mint: MINT, address: ACC(`low${i}`), owner: W(`low${i}`), ownerProgram: null, amount: unit })),
+      ...Array.from({ length: 10 }, (_, i) => ({ mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC(`top${i}`), owner: W(`top${i}`), ownerProgram: null, amount: 3n * unit + (i === 0 ? extra : 0n) })),
+      ...Array.from({ length: 70 }, (_, i) => ({ mint: MINT, delegate: null, delegatedAmount: 0n, address: ACC(`low${i}`), owner: W(`low${i}`), ownerProgram: null, amount: unit })),
     ]);
     expect(codesFor(reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: build(0n) })), 'H12')).toEqual([]);
     const over = reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: build(1n) }));

@@ -39,6 +39,8 @@ export const POOL_ADDRESS = '9KBF3KqYErfs1NXRK35gb4J8wnAD2i9ePZAzcwn7yhFT';
 export const NON_CANONICAL_POOL = 'GgxBQH5so4CyNKF6sXmcGYcQn4feqGwivYjfpXNUaZud';
 export const decodedPool = (address: string): Pool => decodePool(fromBase64(account(address).dataBase64)).value;
 export const POOL = decodedPool(POOL_ADDRESS);
+/** The pool account's data length (301 bytes: the current layout). */
+export const POOL_BYTES = fromBase64(account(POOL_ADDRESS).dataBase64).length;
 export const MINT = POOL.baseMint;
 export const mintFixture = (address: string) => {
   const a = account(address);
@@ -83,7 +85,7 @@ export const W = (n: number | string): string => {
 /** A deterministic token-account address. */
 export const ACC = (n: number | string): string => encodeBase58(new Uint8Array(createHash('sha256').update(`account:${n}`).digest()));
 
-const wallet = (owner: string, amount: bigint, address = ACC(owner)): HolderAccount => ({ address, mint: MINT, owner, ownerProgram: null, amount });
+const wallet = (owner: string, amount: bigint, address = ACC(owner)): HolderAccount => ({ address, mint: MINT, owner, ownerProgram: null, amount, delegate: null, delegatedAmount: 0n });
 
 export type Facts = Map<string, { value: unknown; moment: Moment }>;
 
@@ -97,7 +99,7 @@ const FILLER = 1_000_000_000_000n;
 /** A complete account set: the balances add up to SUPPLY exactly (GATE-1d refuses a complete set that does not). */
 export const holderAccounts = (): HolderAccount[] => {
   const core = [
-    { address: POOL.poolBaseTokenAccount, mint: MINT, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT },
+    { address: POOL.poolBaseTokenAccount, mint: MINT, delegate: null, delegatedAmount: 0n, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT },
     wallet(DEV, 4_000_000_000_000n),
     ...Array.from({ length: 30 }, (_, i) => wallet(W(i), 8_000_000_000_000n)),
   ];
@@ -148,7 +150,7 @@ export const passingFacts = (): Facts => {
   put(`pump_amm:BuyEvent:${POOL_ADDRESS}`, tradeEvent('BuyEvent', 8, '0000000000000000', SLOT - 1_500n, 'SigBuy1'), at(T - 10 * MINUTE_MS, SLOT - 1_500n));
   put(streamKey('chain'), { obs: obs({ slot: SLOT - 1n }), gapFreeSince: SLOT - 10_000n }, head);
   put(mintKey(MINT), { obs: streamObs(), owner: m.owner, account: m.account }, at(T - 200_000, SLOT - 500n));
-  put(poolKey(MINT), { obs: obs(), address: POOL_ADDRESS, owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', pool: POOL, baseVault: BASE_VAULT, quoteVault: QUOTE_VAULT }, head);
+  put(poolKey(MINT), { obs: obs(), address: POOL_ADDRESS, owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', accountBytes: POOL_BYTES, pool: POOL, baseVault: BASE_VAULT, quoteVault: QUOTE_VAULT }, head);
   put(lpKey(MINT), { obs: obs(), lpMint: POOL.lpMint, supply: 0n }, head);
   put(createKey(MINT), { obs: eventObs(CREATED_AT, SLOT - 20_000n), createdAtMs: CREATED_AT, creator: DEV }, at(CREATED_AT, SLOT - 20_000n));
   put(migrationKey(MINT), {
