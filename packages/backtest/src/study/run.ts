@@ -13,7 +13,7 @@ import { StudyStrategy } from '../strategy/study.ts';
 
 export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' | 's0'> {
   readonly study: StudyConfig;
-  readonly mode: 'strategy' | 's0' | 'deployment';
+  readonly mode: 'strategy' | 's0' | 'deployment' | 'deployment-s0';
   /** A paper-only ablation of these gates (StudyOptions.ablate). */
   readonly ablate?: readonly import('../../../core/src/gates/index.ts').HardGate[];
   /** Receives the run's strategy (to read the deployment replay's figures after the run). */
@@ -56,6 +56,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
       rugs: o.rugs ?? RUG_CONFIG,
       windows: o.study.universes.map((u) => u.window),
       tieSalt: o.study.tieSalt,
+      features: o.study.universes.some((u) => u.rules.kind === 'features'),
       solUsd: sol === undefined ? [] : seriesReleases(sol),
       solUsdPoints: 30,
       candlesHead: 10,
@@ -68,7 +69,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
     }),
     // A fresh locked session per run: the policy cannot change while it runs (R15).
     // The deployment replay trades the real book: the policy's open-position limit (R3).
-    ...(o.mode === 'deployment' ? { maxOpenPositions: o.policy.positions.maxOpen } : {}),
+    ...(o.mode === 'deployment' || o.mode === 'deployment-s0' ? { maxOpenPositions: o.policy.positions.maxOpen } : {}),
     strategy: () => {
       const s = new StudyStrategy({
         config: o.study, session: startSession(o.policy), fills: o.fills, scenario: o.scenario, mode: o.mode, entriesFrom: o.entriesFrom, entriesTo: o.entriesTo,

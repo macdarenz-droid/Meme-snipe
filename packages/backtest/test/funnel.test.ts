@@ -46,3 +46,15 @@ describe('funnel', () => {
     expect(funnelLines(u2)).toContain('entered: checks 1; mints 1');
   });
 });
+
+describe('feature rule', () => {
+  const rule = { kind: 'features' as const, conds: [{ f: 'f_net15' as const, dir: 'ge' as const, t: '0.5' }, { f: 'f_age' as const, dir: 'le' as const, t: '90' }], stopBelowBps: 2000 };
+  it('holds only when every condition holds; an unknown feature fails; the stop is fixed below the spot', async () => {
+    const { featureSetup } = await import('../src/strategy/study.ts');
+    expect(featureSetup(rule, { features: { f_net15: 0.5, f_age: 90 } }, 1_000n)).toEqual({ ok: true, stopSpot: 800n });
+    expect(featureSetup(rule, { features: { f_net15: 0.49, f_age: 10 } }, 1_000n)).toMatchObject({ ok: false, why: 'f_net15 0.49 < 0.5' });
+    expect(featureSetup(rule, { features: { f_net15: 1, f_age: 91 } }, 1_000n)).toMatchObject({ ok: false, why: 'f_age 91 > 90' });
+    expect(featureSetup(rule, { features: { f_net15: null, f_age: 1 } }, 1_000n)).toMatchObject({ ok: false, why: 'f_net15 unknown' });
+    expect(featureSetup(rule, null, 1_000n)).toMatchObject({ ok: false });
+  });
+});

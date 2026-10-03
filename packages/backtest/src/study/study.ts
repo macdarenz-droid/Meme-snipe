@@ -19,6 +19,9 @@ import { foldSummary, purge, regimeOf, studyPlan, type StudyPlan } from './plan.
 import { g1Blocks, loadOrCreate, readStudyRegistry, recordG1, recordTrial, register, type StudyRegistry, writeStudyRegistry } from './registry.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { type FunnelSummary } from './funnel.ts';
+import { type SpaPanel, spaPanel } from './spa.ts';
+import { melbourneDay } from '../report.ts';
+import { microUsdToLamports, solPriceMicroUsd } from '../../../core/src/units/index.ts';
 import { openSealed, runSealedHoldout, sealedReady } from './sealed.ts';
 import { countsOf, rejectMix, scoreRun, type ScoredTrade } from './score.ts';
 import { completenessManifest, type ManifestRow, missingEvidence } from './completeness.ts';
@@ -94,6 +97,10 @@ export interface StudyReport {
     readonly killSwitchTrips: number;
     readonly weeklyTrips: number;
     readonly rejectedOpportunities: Readonly<Record<string, number>>;
+    /** S0 under the same deployment constraints, one entry per seed. */
+    readonly control: readonly { readonly seed: number; readonly stats: RunResult['stats']; readonly trades: number; readonly netLamports: string }[];
+    /** Daily P&L per variant over a fixed capital base for STATS-1c's SPA; null without a SOL/USD price for the base. */
+    readonly spa: SpaPanel | null;
     readonly notes: readonly string[];
   };
   /**
@@ -165,6 +172,8 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   let depStrategy: StudyStrategy | null = null;
   const dep = runStudy({ ...wfOpts, mode: 'deployment', seed: `${i.seed}:deployment`, onStrategy: (x) => { depStats = x.deployment; depStrategy = x; } });
   const admitted: Record<string, FunnelSummary> = (depStrategy as StudyStrategy | null)?.funnel.summary() ?? {};
+  // S0 under the same one-account rule, capacity, timing and costs, for the paired comparison (supervisor ruling).
+  const depS0 = Array.from({ length: c.s0SeedsWalkForward }, (_, k) => runStudy({ ...wfOpts, mode: 'deployment-s0', seed: `${i.seed}:deployment-s0:${k}` }));
 
   // 1c. Ablations (paper only, walk-forward days): what H9, H11 and H14 block, scored like accepted trades.
   const ABLATIONS: readonly (readonly ('H9' | 'H11' | 'H14')[])[] = [['H9'], ['H11'], ['H14']];
@@ -320,12 +329,25 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     deployment: (() => {
       const ds = depStats as DeploymentStats | null;
       const tr = scoreRun(dep, i.fills);
+      // SPA panel: every variant's daily P&L over one fixed capital base on the walk-forward's Melbourne calendar.
+      const wfStart = Date.parse(`${wfDays[0]}T00:00:00Z`);
+      const calendar: string[] = [];
+      for (let t = wfStart; melbourneDay(t) <= melbourneDay(wfEnd - 1); t += 86_400_000) calendar.push(melbourneDay(t));
+      const solBar = i.series.flatMap((x) => x.bars).filter((b) => b.start <= wfStart).sort((a, b) => b.start - a.start)[0];
+      const base = solBar === undefined ? null : microUsdToLamports(i.policy.capital.bankroll, solPriceMicroUsd(solBar.close), 'floor');
+      const s0Scored = depS0.map((r, k) => ({ k, trades: scoreRun(r, i.fills) }));
+      const spa = base === null || base <= 0n ? null : spaPanel([
+        ...universes.map((u) => ({ variant: u, trades: tr.filter((t) => t.tag === u) })),
+        ...s0Scored.flatMap(({ k, trades }) => universes.map((u) => ({ variant: `S0-${u} seed ${k}`, trades: trades.filter((t) => t.tag === `S0-${u}`) }))),
+      ], calendar, base);
       return {
+        control: depS0.map((r, k) => ({ seed: k, stats: r.stats, trades: s0Scored[k]!.trades.length, netLamports: s0Scored[k]!.trades.reduce((a, t) => a + BigInt(t.net), 0n).toString() })),
+        spa,
         stats: dep.stats, trades: tr.length, netLamports: tr.reduce((a, t) => a + BigInt(t.net), 0n).toString(),
         strandedLamports: tradesOfRun(dep, i.fills).trades.filter((t) => t.exitReason === 'blocked').reduce((a, t) => a + t.exitSol, 0n).toString(),
         maxDrawdownUsd: (ds?.maxDrawdownUsd ?? 0n).toString(), killSwitchTrips: ds?.trips.filter((x) => x.trip === 'kill_switch').length ?? 0,
         weeklyTrips: ds?.trips.filter((x) => x.trip === 'weekly_loss').length ?? 0, rejectedOpportunities: ds?.rejected ?? {},
-        notes: ['The regime gate (R16) is not applied: its inputs are not produced in the backtest yet (FACTS-1).', 'Signal priority at one block: U1 before U2, then the deeper pool, then the mint address.'],
+        notes: ['The regime gate (R16) is not applied: its inputs are not produced in the backtest yet (FACTS-1).', 'Signal priority: the earliest fully eligible signal wins; checks due at the same block break ties by sha256(salt | universe | mint), the salt fixed in the study configuration.', 'S0 runs under the same account, capacity, timing and cost rules (control).'],
       };
     })(),
     holdout: { ran: sealed !== null || alreadyRun, counts: sealed?.counts ?? Object.fromEntries(universes.map((u) => [u, entryOf(u)?.counts ?? null])), sealHash: sealed?.sealHash ?? null, required },

@@ -117,6 +117,36 @@ describe('BT-2 study runs', () => {
     expect(s.peakEquityUsd).toBeGreaterThan(0n);
   });
 
+  it('deployment replay: S0 runs under the same one-position rule, under its own tags', () => {
+    const four = ['a', 'b', 'c', 'd'].map((label) => ({ ...SETUP, label, creator: label }));
+    let bound = false;
+    for (const seed of ['d0', 'd1', 'd2', 'd3']) {
+      const overlap = (ts: readonly { openedAt: number; closedAt: number }[]) => ts.some((t, i) => i > 0 && t.openedAt < ts[i - 1]!.closedAt);
+      const research = tradesOf(run(four, { mode: 's0', seed }).r, FILL_CONFIG).trades;
+      const dep = run(four, { mode: 'deployment-s0', seed });
+      expect(dep.r.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
+      const trades = tradesOf(dep.r, FILL_CONFIG).trades;
+      expect(trades.every((t) => t.id.startsWith('p:S0-U'))).toBe(true);
+      expect(overlap(trades)).toBe(false);
+      if (overlap(research)) bound = true;
+    }
+    // On at least one seed the research S0 held two at once, so the rule was binding there.
+    expect(bound).toBe(true);
+  });
+
+  it('a RES-3 feature rule enters when its conditions hold on the as-of features, and never when one fails', () => {
+    const withRule = (conds: { f: 'f_liq' | 'f_age'; dir: 'ge' | 'le'; t: string }[]) => ({
+      ...STUDY_CONFIG,
+      universes: STUDY_CONFIG.universes.map((u) => (u.universe === 'U2' ? { ...u, rules: { kind: 'features' as const, conds, stopBelowBps: 2000 } } : u)),
+    });
+    const holds = run([SETUP], { study: withRule([{ f: 'f_liq', dir: 'ge', t: '0' }]) });
+    expect(holds.r.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
+    expect(decisions(holds.r.records).filter((d) => d.reasons[0] === 'enter' && d.reasons[1] === 'U2')).toHaveLength(1);
+    const fails = run([SETUP], { study: withRule([{ f: 'f_liq', dir: 'ge', t: '0' }, { f: 'f_liq', dir: 'le', t: '-1' }]) });
+    expect(decisions(fails.r.records).filter((d) => d.reasons[0] === 'enter' && d.reasons[1] === 'U2')).toHaveLength(0);
+    expect(decisions(fails.r.records).some((d) => d.reasons[0] === 'no setup' && /f_liq .* > -1/.test(d.reasons[3] ?? ''))).toBe(true);
+  });
+
   it('ablation: a candidate blocked only by H9 is entered on paper under its own tag; one passing every gate is not', () => {
     const blocked = run([{ ...SETUP, graduateAfter: 4 * MIN }], { ablate: ['H9'] });
     const enters = decisions(blocked.r.records).filter((d) => d.reasons[0] === 'enter');

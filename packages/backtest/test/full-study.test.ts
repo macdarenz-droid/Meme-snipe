@@ -53,6 +53,12 @@ describe('BT-2 study', () => {
     // Every walk-forward trade opened and closed inside the walk-forward days.
     for (const t of first.walkForward.trades) expect(t.closedAt).toBeLessThan(Date.parse('2026-09-22T00:00:00Z'));
     expect(first.walkForward.trades.length).toBeGreaterThan(0);
+    // S0 ran under the same deployment constraints, and the SPA panel holds every variant on one calendar.
+    expect(first.deployment.control).toHaveLength(config.s0SeedsWalkForward);
+    for (const x of first.deployment.control) expect(x.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
+    expect(first.deployment.spa).not.toBeNull();
+    expect(first.deployment.spa!.variants.map((v) => v.variant)).toEqual(['U1', 'U2', 'S0-U1 seed 0', 'S0-U2 seed 0', 'S0-U1 seed 1', 'S0-U2 seed 1']);
+    for (const v of first.deployment.spa!.variants) expect(v.daily).toHaveLength(first.deployment.spa!.calendar.length);
     // The deployment replay ran on the same days, at the real size, cleanly.
     expect(first.deployment.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
     expect(first.deployment.trades).toBeLessThanOrEqual(first.walkForward.trades.length + first.walkForward.purged + first.walkForward.embargoed);

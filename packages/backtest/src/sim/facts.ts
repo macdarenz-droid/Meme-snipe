@@ -23,6 +23,7 @@ import type { SeriesBar } from '../dataset/offchain.ts';
 import type { RawRow } from '../dataset/raw.ts';
 import type { AmmSwapRow, CurveTradeRow, DatasetRow, EventRow } from '../dataset/rows.ts';
 import type { PoolView } from './market.ts';
+import { SignalTracker } from '../research/tracker.ts';
 
 export const ATA_PROGRAM = toAddress('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 
@@ -33,6 +34,9 @@ export const associatedTokenAddress = (owner: string, mint: string, tokenProgram
 /** DATA-1's sampling hash: first 8 bytes of sha256(mint bytes), big-endian, over 2^64 (scanner sample.go). Null: not an address. */
 /** The tie-break key of a check: sha256 of the salt, universe and mint (hex, compared as text). */
 export const tieHash = (salt: string, universe: string, mint: string): string => createHash('sha256').update(`${salt}|${universe}|${mint}`).digest('hex');
+
+/** The fact key of RES-3's features released with a check. */
+export const featuresKey = (mint: string): string => `features:${mint}`;
 
 export const mintHashFraction = (mint: string): number | null => {
   let b: Uint8Array;
@@ -89,6 +93,11 @@ export interface FactOptions {
    * so every holder read is marked partial and H12 is "not covered" (supervisor ruling, 2026-10-04). Default false.
    */
   readonly delegatesComplete?: boolean;
+  /**
+   * Run RES-3's as-of signal tracker on the same rows (feed side, in chain order) and release its features with each
+   * check, for configurations with a feature rule. Off by default.
+   */
+  readonly features?: boolean;
   readonly poolAccounts?: (pool: string) => { readonly knownAtMs: number; readonly accountBytes: number; readonly isCashbackCoin: boolean; readonly coinCreator: string } | null;
   readonly insiders?: (mint: string) => { readonly knownAtMs: number; readonly funded: readonly string[]; readonly devCluster: readonly string[] } | null;
   /**
@@ -169,12 +178,20 @@ export class FactProjector {
   #gapAt = 0;
   #solAt = 0;
   readonly #solPoints: { tMs: number; price: bigint }[] = [];
+  readonly #tracker: SignalTracker | null;
   /** Counts for the report: rows seen by kind and problems by cause (no outcomes). */
   readonly counts = { creates: 0, sampledCreates: 0, unjudged: 0, labels: 0, checks: 0, holderProblems: 0, undecodableRaw: 0 };
 
   constructor(o: FactOptions) {
     this.#o = o;
     this.#labeller = new RugLabeller(o.rugs);
+    // SOL/USD for the tracker: the latest hourly close usable at the moment asked (the same points the gates see).
+    this.#tracker = o.features === true ? new SignalTracker({
+      solUsd: (ms) => {
+        const p = this.#solPoints.filter((x) => x.tMs <= ms).at(-1);
+        return p === undefined ? null : Number(p.price) / 1e6;
+      },
+    }) : null;
   }
 
   /** In the dataset's sample: its trades and raw records are recorded, so it can be judged and traded. */
@@ -206,6 +223,7 @@ export class FactProjector {
   /** Events this row releases besides the market's own, all at the row's moment. */
   observe(row: DatasetRow, m: Moment, blockHeight: bigint): FeedEvent[] {
     this.#height = blockHeight;
+    if (row.kind !== 'raw') this.#tracker?.push(row);
     const out: FeedEvent[] = [];
     if (!this.#started) {
       this.#started = true;
@@ -567,6 +585,15 @@ export class FactProjector {
     const quality = s.holderProblem === null ? [] : ['partial' as const];
     const obs = (q: readonly string[] = []): FactObs => ({ provider: PROVIDER, slot: m.slot, receivedAt: m.receivedAt, quality: q as FactObs['quality'], commitment: 'finalized' });
     const put = (k: string, key: string, value: unknown) => out.push(this.#fact(`${idBase}:${k}`, m, key, value));
+    if (this.#tracker !== null && s.pool !== null) {
+      // As of this moment only: the tracker refuses a question about a moment it has already passed (left out then).
+      try {
+        const features = this.#tracker.features(s.pool.address, Math.max(m.receivedAt, this.#tracker.nowMs), m.slot);
+        put('features', featuresKey(mint), { obs: { provider: PROVIDER, slot: m.slot, receivedAt: m.receivedAt, quality: [], commitment: 'finalized' }, features });
+      } catch {
+        // Not tracked or not as of now: no features, so a feature rule finds no setup.
+      }
+    }
     if (s.create !== null) {
       put('create', createKey(mint), { obs: { provider: PROVIDER, slot: s.create.slot, receivedAt: s.create.receivedAt, quality: [], commitment: 'finalized' }, createdAtMs: s.create.createdAtMs, creator: s.create.creator });
     }

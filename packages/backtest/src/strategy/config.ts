@@ -6,6 +6,7 @@
 // positive; docs/DECISIONS.md). The Holm family is U1 and U2.
 import { createHash } from 'node:crypto';
 import { canonical } from '../../../core/src/engine/index.ts';
+import type { FeatureId } from '../research/tracker.ts';
 import type { CheckWindow } from '../sim/facts.ts';
 
 const MIN = 60_000;
@@ -42,10 +43,22 @@ export interface U1Rules {
   readonly stopBelowLowBps: number;
 }
 
+/**
+ * A RES-3 handoff rule (research/signals/handoff.json): one or two conditions `feature >= t` / `feature <= t` over the
+ * as-of tracker features (src/research/tracker.ts), mapped one to one. Thresholds are kept as the exact decimal text
+ * handed over, so the configuration hash never depends on float formatting. A feature that is unknown at the check
+ * fails the condition. The stop is a fixed distance below the entry spot (the handed-over barrier's stop loss).
+ */
+export interface FeatureRules {
+  readonly kind: 'features';
+  readonly conds: readonly { readonly f: FeatureId; readonly dir: 'ge' | 'le'; readonly t: string }[];
+  readonly stopBelowBps: number;
+}
+
 export interface UniverseConfig {
   readonly universe: 'U1' | 'U2';
   readonly window: CheckWindow;
-  readonly rules: U1Rules | U2Rules;
+  readonly rules: U1Rules | U2Rules | FeatureRules;
   /** §5.2 conservative gross edge used by sizing (ppm of notional): the smallest edge worth trading (§14: +5%). */
   readonly edgePpm: bigint;
   /** R14: the strategy's median target, bps. */

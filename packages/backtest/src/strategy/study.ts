@@ -32,7 +32,8 @@ import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src
 import { evaluateEntry, NO_LATCHES, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, LAMPORTS_PER_SOL, type MicroUsd, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
 import type { PoolView } from '../sim/market.ts';
-import type { StudyConfig, U1Rules, U2Rules, UniverseConfig } from './config.ts';
+import type { FeatureRules, StudyConfig, U1Rules, U2Rules, UniverseConfig } from './config.ts';
+import { featuresKey } from '../sim/facts.ts';
 import { BAR_MS, PoolTape, spotPrice } from './tape.ts';
 import { Funnel, NOT_COVERED_CODES, type Stage, type StopClass } from '../study/funnel.ts';
 
@@ -49,7 +50,8 @@ export interface StudyOptions {
    * 's0': the random control for each universe; 'deployment': the setups at the real size against one running
    * account (positions, daily entries, cooldowns, loss triggers and the kill switch), marked at liquidation value.
    */
-  readonly mode: 'strategy' | 's0' | 'deployment';
+  /** 'deployment-s0': S0 under the deployment replay's constraints (one account, capacity, timing, costs) for the paired comparison. */
+  readonly mode: 'strategy' | 's0' | 'deployment' | 'deployment-s0';
   /** Entries are planned only inside [from, to) (a walk-forward fold or the holdout, embargo applied). */
   readonly entriesFrom: number;
   readonly entriesTo: number;
@@ -131,8 +133,15 @@ export class StudyStrategy implements Strategy {
   /** Every check inside the entry window, counted at the stage where it stopped (funnel first, review consensus). */
   readonly funnel = new Funnel();
 
+  /** S0's selection and stop (research or deployment). */
+  readonly #s0: boolean;
+  /** One running account with its limits (strategy or S0). */
+  readonly #deploy: boolean;
+
   constructor(o: StudyOptions) {
     this.#o = o;
+    this.#s0 = o.mode === 's0' || o.mode === 'deployment-s0';
+    this.#deploy = o.mode === 'deployment' || o.mode === 'deployment-s0';
     const net = o.fills.network;
     this.#settings = exitSettings(o.session.policy, o.fills.scenarios[o.scenario].takeProfit === 'close' ? 'close' : 'wick', net);
     this.#universes = new Map(o.config.universes.map((u) => [u.universe, u]));
@@ -259,13 +268,13 @@ export class StudyStrategy implements Strategy {
     const u = this.#universes.get(universe);
     if (u === undefined) return;
     const now = ctx.now.receivedAt;
-    const tag = this.#o.mode === 's0' ? `S0-${u.universe}` : this.#o.ablate !== undefined ? `${u.universe}-no${this.#o.ablate.join('')}` : u.universe;
+    const tag = this.#s0 ? `S0-${u.universe}` : this.#o.ablate !== undefined ? `${u.universe}-no${this.#o.ablate.join('')}` : u.universe;
     const key = `${tag}|${mint}`;
     let c = this.#candidates.get(key);
     if (c === undefined) {
       c = { tag, universe: u.universe, mint, target: null, checks: 0, entered: false, said: '' };
       this.#candidates.set(key, c);
-      if (this.#o.mode === 's0') {
+      if (this.#s0) {
         const slots = Math.max(1, Math.floor((u.window.toMs - u.window.fromMs) / u.window.everyMs));
         c.target = 1 + ctx.rng.int(slots);
       }
@@ -300,7 +309,7 @@ export class StudyStrategy implements Strategy {
     // Hard rejects, every gate evaluated (calibration log): the reject mix by reason is a G3 input.
     const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers };
     const gates = evaluateHardRejects(gctx, { session: this.#o.session, mode: 'backtest', rugLabeller: 'RUG-1' },
-      { mint, universe: (this.#o.mode === 's0' ? 'S0' : u.universe) as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip: quoter(spend) },
+      { mint, universe: (this.#s0 ? 'S0' : u.universe) as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip: quoter(spend) },
       { stopAtFirst: false });
     const ablated = this.#o.ablate !== undefined && !gates.pass && gates.failed.every((g) => this.#o.ablate!.includes(g));
     if (!gates.pass && !ablated) return void (this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates)));
@@ -312,7 +321,7 @@ export class StudyStrategy implements Strategy {
     if (tape === undefined || tape.last === null) return void (stop('market data', 'not covered'), say('no entry', 'no trades seen on the pool'));
     const spot = spotPrice(view);
     if (spot === null) return void (stop('market data', 'not covered'), say('no entry', 'pool has an empty side'));
-    const setup = this.#o.mode === 's0' ? this.#s0Stop(u, tape, spot, now) : this.#setup(u, tape, spot, now, ctx, mint, mig!.price);
+    const setup = this.#s0 ? this.#s0Stop(u, tape, spot, now) : this.#setup(u, tape, spot, now, ctx, mint, mig!.price);
     if (!setup.ok) return void (stop('setup', 'adverse'), say('no setup', setup.why));
     const stopBps = Number(((spot - setup.stopSpot) * BPS) / spot);
     const ux = exitsFor(policy.exits, u.universe);
@@ -320,7 +329,7 @@ export class StudyStrategy implements Strategy {
     const stopCheck = checkStopDistance(policy, u.universe, spot, setup.stopSpot, range);
     if (!stopCheck.ok) return void (stop('stop distance', 'adverse'), say('no entry', `stop ${stopCheck.reason}: ${stopCheck.detail}`));
     if (!canOpenNewEntry(ctx.book).ok) {
-      if (this.#o.mode === 'deployment') this.#stats.rejected['R3:book busy'] = (this.#stats.rejected['R3:book busy'] ?? 0) + 1;
+      if (this.#deploy) this.#stats.rejected['R3:book busy'] = (this.#stats.rejected['R3:book busy'] ?? 0) + 1;
       return void (stop('book busy', 'adverse'), say('no entry', 'book busy: another entry, an exit or the position limit'));
     }
 
@@ -331,7 +340,7 @@ export class StudyStrategy implements Strategy {
     // The bot closes the token account with its full exit (§9), so sizing counts the rent as recoverable (RISK-1's C
     // still carries it as a worst-case cost); the fill model returns it only when the final sell lands (fills-2).
     const rent = { tokenAccount: net.tokenAccountRent, tokenAccountClosedOnExit: true, oneTime: 0n, transient: 0n };
-    const deploy = this.#o.mode === 'deployment';
+    const deploy = this.#deploy;
     const account = deploy ? this.#account(ctx, px.price as MicroUsd, now) : null;
     const bankrollLamports = microUsdToLamports(account === null ? policy.capital.bankroll : account.cash, px.price as MicroUsd, 'floor');
     const risk = evaluateEntry({
@@ -357,12 +366,18 @@ export class StudyStrategy implements Strategy {
 
   /** The universe's setup at the spot price now, with its structure stop. */
   #setup(u: UniverseConfig, tape: PoolTape, spot: bigint, now: number, ctx: StrategyContext, mint: string, migration: { quote: bigint; base: bigint }): { ok: true; stopSpot: bigint } | { ok: false; why: string } {
+    if (u.rules.kind === 'features') {
+      const f = ctx.lookup(featuresKey(mint));
+      return featureSetup(u.rules, f.ok ? f.value : null, spot);
+    }
     return u.rules.kind === 'U2' ? u2Setup(u.rules, tape, spot, now, migration) : u1Setup(u.rules, tape, spot, now, ctx, mint);
   }
 
   /** S0's stop: the base universe's structure stop when it fits, else the widest stop the policy allows within 3 ATR. */
   #s0Stop(u: UniverseConfig, tape: PoolTape, spot: bigint, now: number): { ok: true; stopSpot: bigint } | { ok: false; why: string } {
     const r = u.rules;
+    // A feature rule's stop is a fixed distance below the spot: S0 uses the same, so the pair differs only in selection.
+    if (r.kind === 'features') return fixedStop(r.stopBelowBps, spot);
     const lowMs = r.kind === 'U2' ? r.recentMs : r.stopLowMs;
     const bars = tape.between(now - lowMs, now + BAR_MS);
     if (bars.length > 0) {
@@ -435,7 +450,7 @@ export class StudyStrategy implements Strategy {
       const p = ctx.book.positions[pid];
       if (p === undefined) continue;
       if (p.status === 'closed') {
-        if (this.#o.mode === 'deployment') this.#close(ctx, t, pid, now);
+        if (this.#deploy) this.#close(ctx, t, pid, now);
         this.#trades.delete(pid);
         this.#byPool.get(t.pool)?.delete(pid);
         continue;
@@ -472,7 +487,7 @@ export class StudyStrategy implements Strategy {
         sellRoute: null, flow, bars,
       });
       t.tracker = step.tracker;
-      if (this.#o.mode === 'deployment') {
+      if (this.#deploy) {
         // Equity marked at executable liquidation value on every update of the open position (drawdown).
         const sl = ctx.lookup(SOL_USD_KEY);
         const sp = sl.ok ? parseSolUsd(sl.value) : null;
@@ -619,3 +634,24 @@ export const u1Setup = (r: U1Rules, tape: PoolTape, spot: bigint, now: number, c
 };
 
 export { LAMPORTS_PER_SOL };
+
+const fixedStop = (stopBelowBps: number, spot: bigint): { ok: true; stopSpot: bigint } | { ok: false; why: string } => {
+  const stop = (spot * (BPS - BigInt(stopBelowBps))) / BPS;
+  return stop > 0n && stop < spot ? { ok: true, stopSpot: stop } : { ok: false, why: 'no room for the stop below the price' };
+};
+
+/**
+ * A RES-3 feature rule: every condition holds on the features released with this check (as of its moment, feed
+ * side), or no setup. An unknown or absent feature fails its condition.
+ */
+export const featureSetup = (r: FeatureRules, value: unknown, spot: bigint): { ok: true; stopSpot: bigint } | { ok: false; why: string } => {
+  const f = value !== null && typeof value === 'object' ? (value as { features?: Readonly<Record<string, number | null>> }).features : undefined;
+  if (f === undefined) return { ok: false, why: 'features not known at this check' };
+  for (const c of r.conds) {
+    const x = f[c.f];
+    if (x === null || x === undefined || !Number.isFinite(x)) return { ok: false, why: `${c.f} unknown` };
+    const t = Number(c.t);
+    if (c.dir === 'ge' ? !(x >= t) : !(x <= t)) return { ok: false, why: `${c.f} ${x} ${c.dir === 'ge' ? '<' : '>'} ${c.t}` };
+  }
+  return fixedStop(r.stopBelowBps, spot);
+};
