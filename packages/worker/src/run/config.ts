@@ -1,6 +1,6 @@
 // The worker's settings from its environment (docs/ARCHITECTURE.md §12.4). Pure: the entry passes the environment in
 // (boot/environment.ts is the one place that reads it). Anything refused exits 2; live is never set from here.
-import { DEFAULT_HEALTH_ADDR, EXIT, isLoopback } from '../../../runner/src/contract.ts';
+import { DEFAULT_HEALTH_ADDR, EXIT, REGISTERED_STRATEGIES, isLoopback } from '../../../runner/src/contract.ts';
 
 export interface WorkerConfig {
   readonly stateDir: string;
@@ -33,11 +33,8 @@ export type Parsed = { readonly ok: true; readonly config: WorkerConfig } | { re
 
 const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-/**
- * Strategies BT-2 has registered (their configurations fixed before the holdout): the only entry rules a qualifying
- * run may use. None yet, so no run qualifies.
- */
-export const REGISTERED_STRATEGIES: readonly string[] = [];
+/** The registered strategies live with the run contract (the runner checks the same list). */
+export { REGISTERED_STRATEGIES };
 
 /** A qualifying-run file that is present but cannot be read. */
 export const UNREADABLE = Symbol('unreadable');
@@ -78,7 +75,10 @@ export const parseConfig = (
   if (name !== 'none' && name !== 'S0' && !REGISTERED_STRATEGIES.includes(name)) return refuse(`refused: ZEROED_STRATEGY must be none, S0 or a registered strategy (${REGISTERED_STRATEGIES.join(', ') || 'none is registered yet'})`);
   // S0 and the paper-only edge never reach the qualifying run (supervisor ruling on the #48 re-review).
   if (qualifyingRun === UNREADABLE) return refuse('refused: packages/runner/qualifying-run.json is unreadable');
-  const qualifying = qualifyingRun !== null && env['ZEROED_RUN_ID'] === qualifyingRun;
+  // Fails closed (re-review of f55538f): on the host the worker unit sets no run id, so a release that asks for the
+  // qualifying run makes every worker without a run id qualifying. Rehearsals and the shakedown set theirs.
+  const runId = env['ZEROED_RUN_ID'];
+  const qualifying = qualifyingRun !== null && (runId === undefined || runId === '' || runId === qualifyingRun);
   if (qualifying && (name === 'S0' || edgeText !== undefined)) return refuse('refused: S0 and ZEROED_PAPER_EDGE_PPM are never used in the qualifying run');
   if (qualifying && !REGISTERED_STRATEGIES.includes(name)) return refuse('refused: the qualifying run needs a registered strategy in ZEROED_STRATEGY');
   let paperEdgePpm: bigint | null = null;

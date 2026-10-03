@@ -1,4 +1,5 @@
 // The dry-run report: uptime, memory, journal, drills, recorded data. Pure; the runner feeds it.
+import { REGISTERED_STRATEGIES } from './contract.ts';
 import type { Item4 } from './item4.ts';
 import type { JournalReport } from './journal.ts';
 import type { CoverageReport, LookupLatency, QuotaReport, Rejections } from './quota.ts';
@@ -194,6 +195,10 @@ export const buildReport = (
           (stub || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
     ),
     coverage_valid: ops.coverage.problems.length === 0,
+    // A named host run is the qualifying run: every boot must start with a registered strategy, no paper edge and
+    // qualifying true (re-review of #48). A run without a name (a rehearsal) is not judged here.
+    qualifying_start: meta.name === undefined || (journal.starts.length > 0 && journal.starts.every((s) =>
+      typeof s.entry_rule === 'string' && REGISTERED_STRATEGIES.includes(s.entry_rule) && s.paper_edge_ppm == null && s.qualifying === true)),
   };
   const exposed = drills.flatMap((d) => (d.exposure ? [d.exposure] : []));
   const maxOf = (xs: readonly (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);

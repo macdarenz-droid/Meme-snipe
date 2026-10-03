@@ -631,12 +631,11 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - **FACTS-1 merges before the qualifying run.** FACTS-1 is #54 plus FACTS-1b. Until it merges, no live producer makes GATE-1's facts, so every candidate is rejected (H16 not covered, regime unknown) and nothing trades, S0 included.
   - **The seed runs after the live sources start.** The order is reconcile, sources start, the seed up to the live creates watch's first slot, then the fact producers and the loop. Recorded in the SEED-1 entry above, and repeated here because the original order was seed first.
   - **A divergence halt is cleared by a restart.** A ledger/book divergence halts entries for the rest of the process. A restart rebuilds the book from the ledger, so the halt clears then. This is paper only, and both the halt and the new boot are journaled.
-  - **Qualifying is real.** A run whose `ZEROED_RUN_ID` is the name in `packages/runner/qualifying-run.json` refuses to start in each of these cases:
-    - with S0;
-    - with a paper edge;
-    - without a registered strategy (`REGISTERED_STRATEGIES`, empty until BT-2 registers one);
-    - with an unreadable file.
-    `qualifying` is true only for that run. Every other run journals `qualifying: false`.
+  - **Qualifying is real, and it fails closed.**
+    - When `packages/runner/qualifying-run.json` is in the release, a worker whose `ZEROED_RUN_ID` is unset, empty, or that file's name is the qualifying run. The host's worker unit sets no run id; rehearsals and the shakedown set theirs.
+    - The qualifying run refuses to start in each of these cases: with S0, with a paper edge, without a registered strategy, or with an unreadable file.
+    - The registered list is `REGISTERED_STRATEGIES` in the run contract. It is empty until BT-2 registers a strategy.
+    - The report's `qualifying_start` check fails a named host run when any `start` line has an unregistered entry rule, a paper edge, or `qualifying` other than true.
   - **Exits per universe (CFG-2).** The entry intent key starts with the universe (`entry:<mint>:<universe>.<version>.<n>`). The exit plan stores it, and a restored plan keeps it. A plan saved before this takes it from its intent key, never from the worker's own universe.
   - **Setup rent is booked as a realised cost (risk review).** It is valued at the setup SOL price, rounded up, as a closed record (`wallet-setup`), so equity, the high-water mark and the day and week losses include it.
     - AccountHistory has no cost record, so it rides with the closed trades.
