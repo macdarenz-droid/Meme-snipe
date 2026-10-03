@@ -3,9 +3,11 @@ import { describe, expect, test } from 'vitest';
 import {
   createRng, evaluateDemotion, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
   createHoldoutRegistry, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
-  type G3Input, type G4Input, type G5Input, type TradeOutcome,
+  type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
+  clopperPearsonUpper, evaluateRevalidation, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
+  type RevalidationInput,
 } from '../src/stats/index.ts';
-import { TRIAL_POLICY } from '../src/config/index.ts';
+import { KNOWN_PLATFORM_CHANGES, TRIAL_POLICY } from '../src/config/index.ts';
 import { bracketTrades, type DayTrade } from './stats-fixtures.ts';
 
 const DAY = 86_400_000;
@@ -101,7 +103,9 @@ describe('G1 walk-forward', () => {
 });
 
 // Holdout fixture: 25 days × 20 = 500 trades at +10%, sealed. S0 at −20% on the same days over 200 seeds.
-const holdout = bracketTrades(31, 0.1, 25, 20);
+const withClusters = (ts: readonly TradeOutcome[]): HoldoutTrade[] =>
+  ts.map((t, i) => ({ ...t, creatorCluster: `c${i % 211}`, funderCluster: `f${i % 157}` }));
+const holdout = withClusters(bracketTrades(31, 0.1, 25, 20));
 const counts = { candidates: 2000, entries: 500, entryDays: 25 };
 const controlRuns = Array.from({ length: 200 }, (_, k) => bracketTrades(1000 + k, -0.2, 25, 2).map(({ day, rNet }) => ({ day, rNet })));
 type PowerSpec = Omit<G2PowerResult, 'walkForward'> & { readonly walkForward?: WalkForwardSummary };
@@ -184,9 +188,9 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
   });
   test('Holm runs over the registry family: one ready universe of three is tested at α/3, absent ones count as p = 1', () => {
     // Find a holdout with p ≈ 0.03: it would pass at α = 0.05 but must fail at α/3 = 0.0167.
-    let found: TradeOutcome[] | null = null;
+    let found: HoldoutTrade[] | null = null;
     for (let seed = 0; seed < 400 && !found; seed++) {
-      const t = bracketTrades(7000 + seed, 0.035, 25, 20);
+      const t = withClusters(bracketTrades(7000 + seed, 0.035, 25, 20));
       const p = gateG2(g2Pass({ universes: [u('U1', { trades: t })] })).universes[0]!.p!;
       if (p > 0.02 && p < 0.045) found = t;
     }
@@ -202,7 +206,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
   // variant; the bound is α plus two Monte Carlo standard errors (0.05 + 2·√(0.05·0.95/2000) ≈ 0.0597).
   const FWER_REPS = 2000;
   const FWER_BOUND = 0.05 + 2 * Math.sqrt((0.05 * 0.95) / FWER_REPS);
-  const nullTrades = (seed: number) => bracketTrades(seed, 0, 25, 20);
+  const nullTrades = (seed: number) => withClusters(bracketTrades(seed, 0, 25, 20));
   const fwer = (plan: readonly (readonly string[])[], seedBase: number): number => {
     let anyPass = 0;
     for (let r = 0; r < FWER_REPS; r++) {
@@ -257,15 +261,15 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     expect(r.universes[0]!.diffVsS0Lower!).toBeLessThanOrEqual(0);
   });
   test('Holm across universes: a marginal universe passes alone but not as the weakest of three', () => {
-    let found: TradeOutcome[] | null = null;
+    let found: HoldoutTrade[] | null = null;
     for (let seed = 0; seed < 400 && !found; seed++) {
-      const t = bracketTrades(5000 + seed, 0.035, 25, 20);
+      const t = withClusters(bracketTrades(5000 + seed, 0.035, 25, 20));
       const p = gateG2(g2Pass({ universes: [u('U1', { trades: t })] })).universes[0]!.p!;
       if (p > 0.02 && p < 0.045) found = t;
     }
     expect(found).not.toBeNull();
     expect(gateG2(g2Pass({ universes: [u('U1', { trades: found! })] })).universes[0]!.status).toBe('pass');
-    const weak = bracketTrades(6000, -0.1, 25, 20);
+    const weak = withClusters(bracketTrades(6000, -0.1, 25, 20));
     const r = gateG2(g2Pass({
       registry: sealed(3, ['U1', 'U2', 'U3']),
       universes: [u('U1', { trades: found! }, 3), u('U2', { trades: weak }, 3), u('U3', { trades: weak }, 3)],
@@ -283,6 +287,57 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
   });
 });
 
+// Review STATS-1b, finding 2: 300 trades are not 300 independent observations. G2 also resamples multi-day blocks (2 and
+// 3 days) and creator and funder clusters, and passes only if every one of those CIs stays above zero.
+describe('G2 cluster sensitivity (STATS-1b)', () => {
+  // One creator (or funder) cluster carries the P&L: 50 trades at +100%, spread 2 a day, the other 450 at −2%.
+  const concentrated = (key: 'creatorCluster' | 'funderCluster'): HoldoutTrade[] =>
+    withClusters(bracketTrades(61, -0.02, 25, 20)).map((t, i) => (i % 10 === 0
+      ? { ...t, rNet: 1, [key]: 'whale' }
+      : { ...t, creatorCluster: `c-own-${i}`, funderCluster: `f-own-${i}` }));
+  test('a creator cluster that carries the P&L fails G2, though the day-block CI is above zero', () => {
+    const t = concentrated('creatorCluster');
+    const r = gateG2(g2Pass({ universes: [u('U1', { trades: t })] }));
+    expect(r.status).toBe('fail');
+    const s = r.universes[0]!.sensitivity;
+    expect(s.find((x) => x.variant === 'days-1')!.lower).toBeGreaterThan(0);
+    expect(s.find((x) => x.variant === 'creator')!.lower).toBeLessThanOrEqual(0);
+    expect(r.reasons.join()).toMatch(/proof U1: .*creator/);
+  });
+  test('a funder cluster that carries the P&L fails G2', () => {
+    const r = gateG2(g2Pass({ universes: [u('U1', { trades: concentrated('funderCluster') })] }));
+    expect(r.status).toBe('fail');
+    expect(r.universes[0]!.sensitivity.find((x) => x.variant === 'funder')!.lower).toBeLessThanOrEqual(0);
+  });
+  test('P&L that moves in 3-day runs fails on the 3-day blocks, though 1-day blocks pass', () => {
+    // 24 days; every 3-day run shares a shock of ±6 points, alternating: days are not independent, runs are.
+    const base = withClusters(bracketTrades(62, 0.05, 24, 20));
+    const t = base.map((x) => ({ ...x, rNet: x.rNet + (Math.floor(Number(x.day.slice(1)) / 3) % 2 === 0 ? 0.06 : -0.06) }));
+    const ctl = controlRuns.flat();
+    const lvl = 0.05;
+    const s = g2Sensitivity(t, ctl, lvl, { rng: createRng(3), replicates: 1000 });
+    const p = (v: string) => s.find((x) => x.variant === v)!.p;
+    expect(p('days-1')).toBeLessThan(lvl);
+    expect(p('days-3')).toBeGreaterThanOrEqual(lvl);
+    const r = gateG2(g2Pass({ universes: [u('U1', { trades: t })], registry: sealed(1, ['U1'], { ...counts, entries: 480, entryDays: 24 }) }));
+    expect(r.status).toBe('fail');
+    expect(r.universes[0]!.p!).toBeGreaterThanOrEqual(lvl);
+  });
+  test('the passing holdout passes every variant, and each variant is reported', () => {
+    const r = gateG2(g2Pass());
+    expect(r.status).toBe('pass');
+    expect(r.universes[0]!.sensitivity.map((x) => x.variant)).toEqual(['days-1', 'days-2', 'days-3', 'creator', 'funder']);
+    expect(r.universes[0]!.sensitivity.every((x) => x.lower! > 0)).toBe(true);
+  });
+  test('a holdout trade without a creator or funder cluster is refused before the seal opens', () => {
+    const t = holdout.map((x, i) => (i === 7 ? { ...x, funderCluster: '' } : x));
+    const r = gateG2(g2Pass({ universes: [u('U1', { trades: t })] }));
+    expect(r.status).toBe('fail');
+    expect(r.reasons.join()).toMatch(/clusters U1: 1 trades without a creator or funder cluster/);
+    expect(r.registry.entries[0]!.seal).toBe('sealed');
+  });
+});
+
 const dry = bracketTrades(41, 0.1, 2, 30).map((t) => t.rNet);
 const g3Pass: G3Input = {
   qualifyingRun: true, liveOnlyVetoes: { vetoed: 20, eligible: 1000 }, dryRunHours: 49, dryRunReturns: dry,
@@ -290,6 +345,9 @@ const g3Pass: G3Input = {
   candidates: { dryRunCount: 980, dryRunHours: 49, backtestCount: 20_000, backtestHours: 1000 },
   rejectMix: { dryRun: { H8: 210, H9: 700, H11: 70 }, backtest: { H8: 4300, H9: 14_200, H11: 1500 } },
   fillDifferences: [0.001, 0.002, 0.004, 0.003, 0.012], parityTestPassed: true,
+  // The 20 vetoed candidates scored as if entered, like the kept trades; the holdout's lower bound from G2.
+  vetoCounterfactuals: { returns: bracketTrades(42, 0.1, 1, 20).map((t) => t.rNet), censored: 0 },
+  holdoutLower: 0.06, returnCap: 0.3,
 };
 
 describe('G3 live dry-run consistency', () => {
@@ -329,6 +387,81 @@ describe('G3 live dry-run consistency', () => {
     expect(gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 101, eligible: 1000 } }).reasons[0]).toMatch(/^live-only vetoes/);
     expect(gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 0, eligible: 0 } }).passed).toBe(false);
   });
+  // Review STATS-1b, finding 1 (the reviewer's synthetic case): 20 paper trades averaging −1%, a +5% holdout and 10%
+  // live-only vetoes passed, because below 30 paper trades nothing compared returns and the veto gap was never measured.
+  const reviewerCase = (over: Partial<G3Input> = {}): G3Input => {
+    const kept = bracketTrades(43, -0.01, 1, 20).map((t) => t.rNet);
+    const shift = -0.01 - mean(kept);
+    return {
+      ...g3Pass, dryRunReturns: kept.map((x) => x + shift), liveOnlyVetoes: { vetoed: 100, eligible: 1000 },
+      holdout: { n: 500, mean: 0.05, sd: 0.33 }, holdoutLower: 0.02, vetoCounterfactuals: { returns: [], censored: 0 }, ...over,
+    };
+  };
+  test('the reviewer\'s case does not pass: with no vetoed candidate scored the dry run is extended', () => {
+    const r = gateG3(reviewerCase());
+    expect(r.passed).toBe(false);
+    expect(r.status).toBe('not-proven');
+    expect(r.reasons.join()).toMatch(/veto counterfactuals: 0 of 100 vetoed candidates scored/);
+  });
+  test('the reviewer\'s case with every veto scored: the measured gap and its uncertainty push the retained lower bound below 0', () => {
+    const raw = bracketTrades(44, 0.05, 1, 100).map((t) => t.rNet);
+    const cf = raw.map((x) => x + 0.05 - mean(raw)); // vetoed candidates at the holdout's +5%, kept trades at −1%
+    const r = gateG3(reviewerCase({ vetoCounterfactuals: { returns: cf, censored: 0 } }));
+    expect(r.passed).toBe(false);
+    expect(r.status).toBe('not-proven');
+    expect(r.metrics.vetoGap!).toBeCloseTo(0.06, 12);
+    expect(r.metrics.retainedLower!).toBeLessThanOrEqual(0);
+    expect(r.reasons.join()).toMatch(/retained expectancy: .*extend the dry run/);
+  });
+  test('vetoed candidates far better than kept trades fail outright: the point estimate is already below 0', () => {
+    const cf = bracketTrades(45, 0.2, 1, 100).map((t) => t.rNet + 0.3);
+    const kept = bracketTrades(46, -0.2, 1, 40).map((t) => t.rNet);
+    const r = gateG3({ ...g3Pass, dryRunReturns: kept, liveOnlyVetoes: { vetoed: 100, eligible: 1000 }, vetoCounterfactuals: { returns: cf, censored: 0 } });
+    expect(r.status).toBe('fail');
+    expect(r.reasons.join()).toMatch(/veto bias/);
+  });
+  test('the fixed 50-point gap is gone: the measured gap and its 95% upper bound are used and reported', () => {
+    const r = gateG3(g3Pass);
+    expect(r.passed).toBe(true);
+    const dryMean = mean(dry);
+    expect(r.metrics.vetoGap!).toBeCloseTo(mean(g3Pass.vetoCounterfactuals.returns) - dryMean, 12);
+    expect(r.metrics.vetoGapUpper95!).toBeGreaterThan(r.metrics.vetoGap!);
+    expect(r.metrics.vetoGapUpper95!).toBeLessThan(0.5);
+    expect(r.metrics.liveOnlyVetoUpper95!).toBeCloseTo(clopperPearsonUpper(20, 1000), 12);
+    expect(r.metrics.retainedLower!).toBeGreaterThan(0);
+  });
+  test('with fewer than 10 vetoed or kept trades the gap is the worst case the return range allows, never an assumption', () => {
+    const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 3, eligible: 1000 }, vetoCounterfactuals: { returns: [0.1, 0.2, -0.1], censored: 0 } });
+    expect(r.metrics.vetoGapUpper95).toBeCloseTo(0.3 - RETURN_FLOOR, 12);
+    // 3 of 1,000: the rate bound is small enough that even the worst gap keeps the retained bound above 0.
+    expect(r.passed).toBe(true);
+    const many = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 60, eligible: 1000 }, vetoCounterfactuals: { returns: Array(60).fill(0.1), censored: 0 }, dryRunReturns: dry.slice(0, 8) });
+    expect(many.metrics.vetoGapUpper95).toBeCloseTo(0.3 - RETURN_FLOOR, 12);
+    expect(many.status).toBe('not-proven');
+  });
+  test('an unscored or censored vetoed candidate is missing evidence; a count that does not add up fails', () => {
+    const censored = gateG3({ ...g3Pass, vetoCounterfactuals: { returns: g3Pass.vetoCounterfactuals.returns.slice(1), censored: 1 } });
+    expect(censored.status).toBe('not-proven');
+    expect(censored.reasons.join()).toMatch(/1 censored: wait for their windows to close/);
+    const extra = gateG3({ ...g3Pass, vetoCounterfactuals: { returns: [...g3Pass.vetoCounterfactuals.returns, 0.1], censored: 0 } });
+    expect(extra.status).toBe('fail');
+    expect(() => gateG3({ ...g3Pass, returnCap: 5 })).not.toThrow();
+    expect(gateG3({ ...g3Pass, returnCap: 5 }).reasons.join()).toMatch(/^return cap/);
+  });
+  test('the new G3 thresholds tighten but never loosen', () => {
+    expect(() => gateG3(g3Pass, { minVetoedForGap: 5 })).toThrow(/only be tightened/);
+    expect(() => gateG3(g3Pass, { vetoBiasMax: 0.1 })).toThrow(/only be tightened/);
+    expect(() => gateG3(g3Pass, { retainedLowerMin: -0.01 })).toThrow(/only be tightened/);
+    expect(gateG3(g3Pass, { retainedLowerMin: 0.2 }).passed).toBe(false);
+  });
+  test('counterfactual scoring takes the outcome-stage labels of the vetoed candidates and counts censored ones', () => {
+    const label = (rNet: number | null, censored = false): TripleBarrierLabel => ({
+      cfgId: 'tp30_sl15', entryFilled: rNet !== null, yTb: null, rNet, touchSlot: null, exitSlot: null, mfe: null, mae: null,
+      blocked: false, nExitAttempts: 1, yMeta: null, ySevere: null, censored,
+    });
+    expect(scoreVetoCounterfactuals([label(0.27), label(-0.18), label(null, true)])).toEqual({ returns: [0.27, -0.18], censored: 1 });
+    expect(() => scoreVetoCounterfactuals([label(0.27), { ...label(0.1), cfgId: 'other' }])).toThrow(/one barrier configuration/);
+  });
 });
 
 const g4Pass: G4Input = {
@@ -349,6 +482,11 @@ describe('G4 canary mechanics', () => {
   test('fewer than 30 clean trades is "not proven"; a double buy is still a fail', () => {
     expect(gateG4({ ...g4Pass, liveTrades: 12, firstAttemptLandingFailures: 1 }).status).toBe('not-proven');
     expect(gateG4({ ...g4Pass, liveTrades: 12, doubleBuys: 1 }).status).toBe('fail');
+  });
+  test('0 blocked exits in 30 trades is reported as a bound (about 9.5% one-sided), not a proof', () => {
+    const r = gateG4(g4Pass);
+    expect(r.metrics.blockedExitUpper95!).toBeCloseTo(0.0950, 4);
+    expect(r.notes.join()).toMatch(/0 blocked exits in 30 trades bounds the blocked-exit rate at 9\.5% \(one-sided 95%\), not 0/);
   });
 });
 
@@ -372,6 +510,52 @@ describe('G5 proposal to the owner', () => {
   });
   test('fewer than 100 live trades is "not proven"', () => {
     expect(gateG5({ ...g5Pass, liveReturns: live.slice(0, 40) }).status).toBe('not-proven');
+  });
+});
+
+// Review STATS-1b, finding 3: B5 (2026-10-02) comes after the holdout window (ends 2026-10-01). ARCHITECTURE.md §14.
+describe('post-change revalidation', () => {
+  const holdoutEndMs = Date.UTC(2026, 9, 2); // the holdout covers up to the end of 2026-10-01 UTC
+  const b5 = KNOWN_PLATFORM_CHANGES.find((c) => c.id === 'B5')!;
+  const g3Ok = gateG3(g3Pass);
+  const ok: RevalidationInput = {
+    holdoutEndMs, platformChanges: KNOWN_PLATFORM_CHANGES,
+    dryRun: { qualifyingRun: true, startMs: b5.atMs + DAY, g3: g3Ok }, postChangeBacktest: null,
+  };
+  test('B5 is recorded at 2026-10-02 15:47 UTC with economics unchanged (UPG-1)', () => {
+    expect(b5).toMatchObject({ atMs: Date.UTC(2026, 9, 2, 15, 47), economicsUnchanged: true });
+  });
+  test('passes with a qualifying post-B5 dry run that passed G3 against the holdout', () => {
+    expect(evaluateRevalidation(ok)).toMatchObject({ passed: true, status: 'pass', reasons: [] });
+  });
+  test('no post-change dry run, or one started before B5, is not proven; a failed G3 fails', () => {
+    expect(evaluateRevalidation({ ...ok, dryRun: null }).status).toBe('not-proven');
+    const early = evaluateRevalidation({ ...ok, dryRun: { ...ok.dryRun!, startMs: b5.atMs - 1 } });
+    expect(early.status).toBe('not-proven');
+    expect(early.reasons.join()).toMatch(/started before B5/);
+    expect(evaluateRevalidation({ ...ok, dryRun: { ...ok.dryRun!, qualifyingRun: false } }).status).toBe('not-proven');
+    expect(evaluateRevalidation({ ...ok, dryRun: { ...ok.dryRun!, g3: gateG3({ ...g3Pass, parityTestPassed: false }) } }).status).toBe('fail');
+    expect(evaluateRevalidation({ ...ok, dryRun: { ...ok.dryRun!, g3: gateG3({ ...g3Pass, vetoCounterfactuals: { returns: [], censored: 0 } }) } }).status).toBe('not-proven');
+  });
+  const contradicted = KNOWN_PLATFORM_CHANGES.map((c) => (c.id === 'B5' ? { ...c, economicsUnchanged: false } : c));
+  test('if "economics unchanged" is contradicted, a backtest on >= 200 post-change candidates is also required', () => {
+    const base = { ...ok, platformChanges: contradicted };
+    expect(evaluateRevalidation(base).status).toBe('not-proven');
+    expect(evaluateRevalidation(base).reasons.join()).toMatch(/post-change backtest: none/);
+    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: b5.atMs + 1, candidates: 199, gatesPassed: true } }).status).toBe('not-proven');
+    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: b5.atMs - 1, candidates: 400, gatesPassed: true } }).status).toBe('not-proven');
+    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: b5.atMs + 1, candidates: 200, gatesPassed: false } }).status).toBe('fail');
+    expect(evaluateRevalidation({ ...base, postChangeBacktest: { firstCandidateMs: b5.atMs + 1, candidates: 200, gatesPassed: true } }).status).toBe('pass');
+  });
+  test('an unreviewed change (economics unknown) is treated as contradicted', () => {
+    const unknown = KNOWN_PLATFORM_CHANGES.map((c) => (c.id === 'B5' ? { ...c, economicsUnchanged: null } : c));
+    expect(evaluateRevalidation({ ...ok, platformChanges: unknown }).status).toBe('not-proven');
+  });
+  test('changes before the holdout ends need nothing more; the minimum count only tightens', () => {
+    const before = KNOWN_PLATFORM_CHANGES.filter((c) => c.atMs < holdoutEndMs).map((c) => ({ ...c, economicsUnchanged: false }));
+    expect(before.length).toBeGreaterThan(0);
+    expect(evaluateRevalidation({ ...ok, platformChanges: before, dryRun: null }).status).toBe('pass');
+    expect(() => evaluateRevalidation(ok, { minPostChangeCandidates: 100 })).toThrow(/only be tightened/);
   });
 });
 

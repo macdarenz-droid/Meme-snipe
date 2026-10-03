@@ -29,6 +29,64 @@ export const g2Rule = (
   return { mean: m, vsControl: d, p };
 };
 
+/** A holdout trade with the clusters it belongs to, as known at decision time (quant.md §2: creator and funder groups). */
+export interface ClusteredReturn extends DayReturn {
+  readonly creatorCluster: string;
+  readonly funderCluster: string;
+}
+
+/** Resampling units G2 must pass under (review STATS-1b): 1-, 2- and 3-day blocks, creator and funder clusters. */
+export const G2_SENSITIVITY_VARIANTS = ['days-1', 'days-2', 'days-3', 'creator', 'funder'] as const;
+export type G2SensitivityVariant = (typeof G2_SENSITIVITY_VARIANTS)[number];
+
+export interface G2SensitivityResult {
+  readonly variant: G2SensitivityVariant;
+  readonly mean: MeanInterval | null;
+  /** The paired difference against S0; null for creator and funder clusters (S0 trades carry no cluster). */
+  readonly vsControl: MeanInterval | null;
+  /** max of the two-sided p-values, or 1 when an estimate is not positive or the interval cannot be formed. */
+  readonly p: number;
+  /** Error message when the interval cannot be formed (e.g. fewer than two blocks). */
+  readonly error: string | null;
+}
+
+/** Days relabelled into consecutive blocks of `len` observed days (strategy and S0 days together, in day order). */
+const relabelDays = <T extends DayReturn>(a: readonly T[], b: readonly DayReturn[], len: number): { a: DayReturn[]; b: DayReturn[] } => {
+  const days = [...new Set([...a.map((t) => t.day), ...b.map((t) => t.day)])].sort();
+  const block = new Map(days.map((d, i) => [d, `b${Math.floor(i / len)}`]));
+  const map = (t: DayReturn): DayReturn => ({ day: block.get(t.day)!, rNet: t.rNet });
+  return { a: a.map(map), b: b.map(map) };
+};
+
+/**
+ * The G2 statistics under every resampling unit of G2_SENSITIVITY_VARIANTS. Trades on nearby days, from one creator
+ * cluster or from one funder cluster are not independent (quant.md §2: the top 1% of creator clusters make 58.57% of
+ * coins), so 300 trades are fewer than 300 observations. Blocks of 2 and 3 days are non-overlapping runs of consecutive
+ * observed days; creator and funder clusters resample the mean only. G2 passes a universe only when the largest p of
+ * all variants is below its level, so every CI must exclude zero.
+ */
+export const g2Sensitivity = (
+  trades: readonly ClusteredReturn[],
+  control: readonly DayReturn[],
+  level: number,
+  opts: { readonly rng: Rng; readonly replicates?: number },
+  variants: readonly G2SensitivityVariant[] = G2_SENSITIVITY_VARIANTS,
+): G2SensitivityResult[] =>
+  variants.map((variant): G2SensitivityResult => {
+    try {
+      if (variant === 'creator' || variant === 'funder') {
+        const key = variant === 'creator' ? 'creatorCluster' : 'funderCluster';
+        const m = dayBlockMeanInterval(trades.map((t) => ({ day: t[key], rNet: t.rNet })), 1 - level, 'two', opts);
+        return { variant, mean: m, vsControl: null, p: m.mean > 0 ? m.pTwoSided : 1, error: null };
+      }
+      const r = relabelDays(trades, control, Number(variant.slice(5)));
+      const g = g2Rule(r.a, r.b, level, opts);
+      return { variant, mean: g.mean, vsControl: g.vsControl, p: g.p, error: null };
+    } catch (e) {
+      return { variant, mean: null, vsControl: null, p: 1, error: (e as Error).message };
+    }
+  });
+
 /** The gate's pass condition for one universe tested at `level` (the same comparison gateG2 makes after Holm). */
 export const g2RulePasses = (r: G2RuleResult, level: number): boolean => r.p < level;
 
