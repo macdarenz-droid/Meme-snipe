@@ -30,7 +30,8 @@ tg() {
   cred telegram_bot_token | {
     IFS= read -r token || true
     printf 'url = "%s/bot%s/%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$method"
-    [ -z "${tg_chat:-}" ] || printf 'data-urlencode = "chat_id=%s"\n' "$tg_chat"
+    # $tg_field: data-urlencode (default) or form (for a multipart upload such as sendDocument).
+    [ -z "${tg_chat:-}" ] || printf '%s = "chat_id=%s"\n' "${tg_field:-data-urlencode}" "$tg_chat"
   } | curl -fsS -m 30 -K - "$@"
 }
 
@@ -66,6 +67,19 @@ new_deploy_code() {
   chmod 0400 "$DEPLOY_CODE_FILE.new"
   mv -f "$DEPLOY_CODE_FILE.new" "$DEPLOY_CODE_FILE"
   rm -f "$STATE_DIR/handoff_status"
+}
+
+# set_webhook: points the bot's webhook at the watchdog (its /pause and /status), once paired. Needs the
+# watchdog address and the webhook secret from the last handoff; the secret goes to curl on stdin.
+set_webhook() {
+  paired && [ -s "$CRED_DIR/telegram_webhook_secret" ] || return 0
+  local url
+  url="$(sed -n 's/^WATCHDOG_URL=//p' /etc/zeroed/worker.env 2>/dev/null || true)"
+  [ -n "$url" ] || return 0
+  cred telegram_webhook_secret | {
+    IFS= read -r secret || true
+    cred telegram_bot_token | { IFS= read -r token || true; printf 'url = "%s/bot%s/setWebhook"\ndata-urlencode = "secret_token=%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$secret"; }
+  } | curl -fsS -m 30 -o /dev/null -K - --data-urlencode "url=$url/telegram" --data-urlencode 'allowed_updates=["message"]'
 }
 
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }

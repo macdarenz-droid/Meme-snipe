@@ -139,6 +139,8 @@ systemctl daemon-reload
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer >/dev/null
+# Installed but off: the off-server copy goes to a third party (Telegram) and waits for the owner's
+# approval, switched on by a reviewed commit to ops/host-config.json (applied by zeroed-update).
 # Starts once credentials exist (skipped by its ConditionPathExists until then).
 systemctl start zeroed-worker.service || true
 

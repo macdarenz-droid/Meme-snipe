@@ -18,7 +18,7 @@ import { microUsd } from '../../src/units/index.ts';
 import { NATIVE_MINT, PUMP_AMM_PROGRAM } from '../../src/chain/index.ts';
 
 const run = (facts: Facts, mode: Mode = 'live', req = request(), all = false): HardResult =>
-  evaluateHardRejects(contextOf(facts), deps(mode), req, { stopAtFirst: !all });
+  evaluateHardRejects(contextOf(facts), deps(mode, session(), 'RUG-1'), req, { stopAtFirst: !all });
 
 /** Every reason of every gate, with all gates evaluated. */
 const reasonsOf = (facts: Facts, mode: Mode = 'live', req = request()): readonly GateReason[] => run(facts, mode, req, true).reasons;
