@@ -832,3 +832,37 @@ describe('EXIT-1b item 6: when an in-flight partial resolves, the rest is reasse
     expect(pending.tracker.pendingFull).toBeNull();
   });
 });
+
+describe('EXIT-1b edges (mutation)', () => {
+  const L = X.ladder;
+  test('min-out rounds down, to the lamport', () => {
+    const trig = 1_000_003n; // trig x 9,200 is not a multiple of 10,000
+    const p = planAttempt(L, 1, trig, trig);
+    expect(p).toMatchObject({ ok: true, rung: 0, minOut: (trig * BigInt(10_000 - L.steps[0]!.minOutBelowTriggerBps)) / 10_000n });
+    expect((trig * BigInt(10_000 - L.steps[0]!.minOutBelowTriggerBps)) % 10_000n).not.toBe(0n);
+  });
+  test('the attempt number and start rung must be whole numbers', () => {
+    expect(() => planAttempt(L, 1.5, 1_000n, 1_000n)).toThrow(RangeError);
+    expect(() => planAttempt(L, Number.NaN, 1_000n, 1_000n)).toThrow(RangeError);
+    expect(() => planAttempt(L, 1, 1_000n, 1_000n, 0.5)).toThrow(RangeError);
+    expect(() => planAttempt(L, 1, 1_000n, 1_000n, Number.NaN)).toThrow(RangeError);
+  });
+  const afterPartial = { ...newTracker(), partials: 1, lastSold: QTY, flatMet: true };
+  const bars = flatBars(20, 1_000n, 0);
+  test('a runner with no quote yet: no trail, no break-even, no trailing stop, and nothing throws', () => {
+    const runner = holding({ sold: QTY });
+    const later = 21 * MINUTE_MS; // enough finished bars for an ATR
+    expect(atr(bars, X.atrPeriod, X.atrBarMs, later)).not.toBeNull();
+    const step = decide(runner, obs(later, null, { bars }), plan(), afterPartial);
+    expect(step.tracker.trail).toBeNull();
+    expect(codes(step.decision)).not.toContain('break_even');
+    const withTrail = decide(runner, obs(NOW, null, { bars }), plan(), { ...afterPartial, peak: 10n ** 30n, trail: 10n ** 30n });
+    expect(codes(withTrail.decision)).not.toContain('trailing_stop');
+  });
+  test('the exit taken after a partial resolves is an ordinary exit on the ladder, not a blocked retry', () => {
+    const stop = plan({ stopPrice: execPrice(V0, QTY) });
+    const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
+    const after = decideExit(S, stop, holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 }), pending.tracker, obs(NOW + 60_000, null));
+    expect(after.decision).toMatchObject({ kind: 'exit', retry: false, startRung: 0, maxAttempts: X.ladder.maxAttempts });
+  });
+});
