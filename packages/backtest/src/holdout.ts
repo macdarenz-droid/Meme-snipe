@@ -7,8 +7,8 @@ import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { refuseSymlink } from './registry-git.ts';
 import { canonical } from '../../core/src/engine/index.ts';
 import {
-  attemptAlpha as registryAlpha, burnHoldout, createHoldoutRegistry, freezeRequirement, type FrozenRequirement, type HoldoutCounts, type HoldoutEntry,
-  holdoutReady, type HoldoutRegistry, openHoldout, registerHoldout, sealHoldout,
+  ATTEMPT_ALPHA, attemptAlpha as registryAlpha, burnHoldout, createHoldoutRegistry, freezeRequirement, type FrozenRequirement, type HoldoutCounts, type HoldoutEntry,
+  type HoldoutRegistry, nextAttemptIndex, openHoldout, registerHoldout, sealHoldout, SPEND_REASONS, spendHoldout, type SpendReason,
 } from '../../core/src/stats/index.ts';
 import type { DatasetRow } from './dataset/rows.ts';
 import { melbourneDay } from './report.ts';
@@ -174,7 +174,7 @@ export interface HoldoutStore {
  * 0.01 / 2^(k-1), so all attempts together stay under 0.05. Any other plan is refused. G2 uses the attempt's α as its
  * family α (Holm across the attempt's universes).
  */
-export const RULED_ALPHA = { first: 0.04, laterBase: 0.01 } as const;
+export const RULED_ALPHA = ATTEMPT_ALPHA;
 
 /** The α of attempt `index` under a plan: the STATS-1c registry's schedule, which the plan must state (STATS-1c owns α). */
 export const attemptAlpha = (plan: HoldoutPlan, index: number): number => {
@@ -227,37 +227,27 @@ export const setHoldoutPlan = (a: HoldoutAuthority, plan: HoldoutPlan, research:
   });
 };
 
-/** Why an attempt ends without an opening. */
-export type SpentReason = 'g1-failed' | 'short' | 'never-run';
+/** Why an attempt ends without an opening (the STATS-1c registry's spend reasons). */
+export type SpentReason = SpendReason;
 
 /**
- * Ends attempt `index` once its tail has passed without an opening, and only for a reason the store proves for every
- * holdout of it not yet burned or opened (so a mandatory opening is never skipped):
+ * Ends attempt `index` once its tail has passed without an opening. Every holdout of it not yet burned or opened must
+ * qualify under the STATS-1c registry's rule (`spendHoldout`, so a mandatory opening is never skipped):
  * - 'g1-failed': its latest G1 is not a pass for the registered configuration (g1Blocks);
- * - 'short': it is not ready (holdoutReady with the required trades and days, passed in);
+ * - 'short': it is not ready against the requirement frozen at registration (trades and days, read from the registry);
  * - 'never-run': its seal is still 'registered'.
- * Those holdouts are burned 'spent' and the attempt is marked ended; then the next attempt may register. Refused before
- * the tail end and for any other reason. (α and the attempt count live in the STATS-1c registry; this end rule stays here until a follow-up moves it there.)
+ * Those holdouts are burned 'spent' and the attempt is marked ended; then the next attempt may register.
  */
-export const endAttempt = (a: HoldoutAuthority, index: number, why: SpentReason, now: Date = new Date(),
-  size?: { readonly requiredTrades: number; readonly minDays: number }): HoldoutStore =>
+export const endAttempt = (a: HoldoutAuthority, index: number, why: SpentReason, now: Date = new Date()): HoldoutStore =>
   mutate(a, `Holdout attempt ${index}: spent (${why})`, (s) => {
-    if (why !== 'g1-failed' && why !== 'short' && why !== 'never-run') throw new RangeError(`holdout attempt ${index}: "${String(why)}" is not a reason an attempt may end without an opening`);
+    if (!(SPEND_REASONS as readonly string[]).includes(why)) throw new RangeError(`holdout attempt ${index}: "${String(why)}" is not a reason an attempt may end without an opening`);
     const at = s?.attempts.find((x) => x.index === index);
     if (s === null || at === undefined) throw new RangeError(`holdout attempt ${index} is not registered`);
     if (now.getTime() < Date.parse(`${at.window.tailEndDay}T00:00:00Z`)) throw new RangeError(`holdout attempt ${index}: its tail runs until ${at.window.tailEndDay}`);
-    if (why === 'short' && size === undefined) throw new RangeError(`holdout attempt ${index}: 'short' needs the required trades and days`);
+    const nowDay = now.toISOString().slice(0, 10);
     const open = at.holdoutIds.map((id) => s.registry.entries.find((x) => x.holdoutId === id)!).filter((e) => e !== undefined && !e.burned && e.seal !== 'opened');
-    for (const e of open) {
-      if (why === 'short' && e.requirement !== null && size!.requiredTrades !== e.requirement.requiredTrades) {
-        throw new RangeError(`holdout ${e.holdoutId} froze ${e.requirement.requiredTrades} trades, not ${size!.requiredTrades}`);
-      }
-      if (why === 'g1-failed' && g1Blocks(s, e.holdoutId) === null) throw new RangeError(`holdout ${e.holdoutId}: its latest G1 passed, so it must be opened, not spent`);
-      if (why === 'short' && holdoutReady(e, size!.requiredTrades, size!.minDays)) throw new RangeError(`holdout ${e.holdoutId} is ready (${e.counts?.entries} entries on ${e.counts?.entryDays} days), so it is not short`);
-      if (why === 'never-run' && e.seal !== 'registered') throw new RangeError(`holdout ${e.holdoutId} was run (${e.seal}), so it is not never-run`);
-    }
     let registry = s.registry;
-    for (const e of open) registry = burnHoldout(registry, e.holdoutId, 'spent', why).registry;
+    for (const e of open) registry = spendHoldout(registry, e.holdoutId, { why, nowDay, g1Passed: g1Blocks(s, e.holdoutId) === null }).registry;
     const ended = at.ended?.outcome === 'spent' ? at.ended : { at: now.toISOString(), outcome: 'spent' as const, why };
     const store = { ...s, registry, attempts: s.attempts.map((x) => (x.index === index ? { ...x, ended } : x)) };
     return { store, value: store };
@@ -317,7 +307,8 @@ export const registerAttempt = (a: HoldoutAuthority,
     if (s === null || s.plan === null) throw new RangeError('no holdout plan: set the plan before registering an attempt');
     if (req.entries.length === 0) throw new RangeError('an attempt needs at least one holdout');
     const plan = s.plan;
-    const next = s.attempts.length + 1;
+    // The STATS-1c registry's next round (every BT attempt registers its holdouts at that attempt).
+    const next = nextAttemptIndex(s.registry);
     if (req.index !== next) {
       let reg = s.registry;
       const why = `attempt ${req.index} asked, next is ${next}`;
@@ -352,7 +343,9 @@ export const registerAttempt = (a: HoldoutAuthority,
     const registeredOnDay = now.toISOString().slice(0, 10);
     let registry = s.registry;
     for (const e of req.entries) {
-      registry = registerHoldout(registry, { holdoutId: e.holdoutId, universe: e.universe, configId: e.configId, fromDay: aw.fromDay, toDay: addDays(aw.entryCutoffDay, -1), registeredOnDay });
+      registry = registerHoldout(registry, {
+        holdoutId: e.holdoutId, universe: e.universe, configId: e.configId, fromDay: aw.fromDay, toDay: addDays(aw.entryCutoffDay, -1), registeredOnDay, attempt: req.index,
+      });
       const step = freezeRequirement(registry, e.holdoutId, e.requirement);
       if (!step.ok) throw new RangeError(step.reason);
       registry = step.registry;
@@ -360,9 +353,7 @@ export const registerAttempt = (a: HoldoutAuthority,
     const added = registry.entries.filter((e) => req.entries.some((x) => x.holdoutId === e.holdoutId));
     const tail = added.find((e) => e.tailEnd !== aw.tailEndDay);
     if (tail !== undefined) throw new RangeError(`holdout ${tail.holdoutId}: the registry's tail ends ${tail.tailEnd}, the attempt's ${aw.tailEndDay}`);
-    const alpha = attemptAlpha(plan, req.index);
-    const off = added.find((e) => e.alpha !== alpha);
-    if (off !== undefined) throw new RangeError(`holdout ${off.holdoutId} is its universe's attempt ${off.attempt} (α ${off.alpha}), not attempt ${req.index} (α ${alpha})`);
+    const alpha = added[0]!.alpha;
     const attempt: HoldoutAttempt = {
       index: req.index, alpha, window: aw, holdoutIds: req.entries.map((e) => e.holdoutId),
       configIds: Object.fromEntries(req.entries.map((e) => [e.holdoutId, e.configId])), registeredAt: now.toISOString(), started: null, ended: null,

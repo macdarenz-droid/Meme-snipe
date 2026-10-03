@@ -65,9 +65,14 @@ export interface AttemptRule {
 /** 28 entry days (09-22 .. 10-19, E = 10-20 for attempt 1) and one tail day: the trial exits end within 120 minutes. */
 export const DEFAULT_ATTEMPT_RULE: AttemptRule = { windowDays: 28, tailDays: 1 };
 
-/** The frozen size requirement and the seed its n_power simulation used. */
+/** The frozen size requirement (trades and days), the simulated n_power and the seed its simulation used. */
 export interface FrozenRequirement {
+  /** max(300, n_power, closed form) trades. */
   readonly requiredTrades: number;
+  /** Entry days the holdout needs (at least the gate's MIN_DAYS). */
+  readonly requiredDays: number;
+  /** The simulated n_power, recorded with its seed. */
+  readonly nPower: number;
   readonly nPowerSeed: number;
 }
 
@@ -113,11 +118,17 @@ export interface RegistryStep {
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
+/** The ruled error budget: attempt 1 at family α 0.04, attempt k ≥ 2 at 0.01 / 2^(k − 1), together under 0.05. */
+export const ATTEMPT_ALPHA = { first: 0.04, laterBase: 0.01 } as const;
+
 /** Family α for a universe's k-th holdout attempt: 0.04, then 0.01 / 2^(k − 1). */
 export const attemptAlpha = (attempt: number): number => {
   if (!Number.isInteger(attempt) || attempt < 1) throw new RangeError(`attempt must be an integer >= 1, got ${attempt}`);
-  return attempt === 1 ? 0.04 : 0.01 / 2 ** (attempt - 1);
+  return attempt === 1 ? ATTEMPT_ALPHA.first : ATTEMPT_ALPHA.laterBase / 2 ** (attempt - 1);
 };
+
+/** The next attempt round of the registry: one more than the highest attempt registered (1 when empty). */
+export const nextAttemptIndex = (registry: HoldoutRegistry): number => registry.entries.reduce((m, e) => Math.max(m, e.attempt), 0) + 1;
 
 const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -209,7 +220,11 @@ const burn = (registry: HoldoutRegistry, holdoutId: string, reason: BurnReason, 
  */
 export const registerHoldout = (
   registry: HoldoutRegistry,
-  entry: Pick<HoldoutEntry, 'holdoutId' | 'universe' | 'configId' | 'fromDay' | 'toDay' | 'registeredOnDay'> & { readonly alpha?: number },
+  entry: Pick<HoldoutEntry, 'holdoutId' | 'universe' | 'configId' | 'fromDay' | 'toDay' | 'registeredOnDay'> & {
+    /** When given, the attempt this registration must be (the universe's count of holdouts + 1); refused otherwise. */
+    readonly attempt?: number;
+    readonly alpha?: number;
+  },
 ): HoldoutRegistry => {
   const id = entry.holdoutId;
   if (!DAY.test(entry.fromDay) || !DAY.test(entry.toDay) || !DAY.test(entry.registeredOnDay) || entry.fromDay > entry.toDay) {
@@ -224,6 +239,9 @@ export const registerHoldout = (
     throw new RangeError(`the registry was created for ${registry.familySize} universes; ${[...universes].join(', ')} are registered`);
   }
   const attempt = same.length + 1;
+  if (entry.attempt !== undefined && entry.attempt !== attempt) {
+    throw new RangeError(`holdout ${id}: this is ${entry.universe}'s attempt ${attempt}, not attempt ${entry.attempt}`);
+  }
   const alpha = attemptAlpha(attempt);
   if (entry.alpha !== undefined && entry.alpha !== alpha) throw new RangeError(`holdout ${id}: attempt ${attempt} is tested at ${alpha}, not ${entry.alpha}`);
   const days = daysBetween(entry.fromDay, entry.toDay) + 1;
@@ -260,12 +278,44 @@ export const registerHoldout = (
  */
 export const freezeRequirement = (registry: HoldoutRegistry, holdoutId: string, req: FrozenRequirement): RegistryStep => {
   const e = find(registry, holdoutId);
-  if (!Number.isInteger(req.requiredTrades) || req.requiredTrades < 1 || !Number.isSafeInteger(req.nPowerSeed)) {
-    throw new RangeError('the requirement is a positive integer and the seed a safe integer');
+  if (!Number.isInteger(req.requiredTrades) || req.requiredTrades < 1 || !Number.isInteger(req.requiredDays) || req.requiredDays < 1
+    || !Number.isInteger(req.nPower) || req.nPower < 0 || !Number.isSafeInteger(req.nPowerSeed)) {
+    throw new RangeError('the required trades and days are positive integers, n_power an integer >= 0 and the seed a safe integer');
   }
+  if (req.requiredTrades < req.nPower) throw new RangeError(`the requirement ${req.requiredTrades} sits below n_power ${req.nPower}`);
   if (e.requirement) return { registry, ok: false, reason: `holdout ${holdoutId} already froze ${e.requirement.requiredTrades} trades` };
   if (e.seal !== 'registered' || e.burned) return { registry, ok: false, reason: `holdout ${holdoutId} is ${e.burned ? 'spent' : e.seal}: the requirement is frozen before any count` };
-  return { registry: update(registry, holdoutId, { requirement: { requiredTrades: req.requiredTrades, nPowerSeed: req.nPowerSeed } }), ok: true, reason: 'frozen' };
+  const requirement = { requiredTrades: req.requiredTrades, requiredDays: req.requiredDays, nPower: req.nPower, nPowerSeed: req.nPowerSeed };
+  return { registry: update(registry, holdoutId, { requirement }), ok: true, reason: 'frozen' };
+};
+
+/** Why an attempt's holdout may end after its tail without an opening. */
+export const SPEND_REASONS = ['g1-failed', 'short', 'never-run'] as const;
+export type SpendReason = (typeof SPEND_REASONS)[number];
+
+/**
+ * End a holdout after its tail without an opening, only for a reason the registry proves, so a mandatory opening is
+ * never skipped (BT-1d E1):
+ * - 'g1-failed': G1 has not passed for its registered configuration (`g1Passed` false);
+ * - 'short': it is not ready against its frozen requirement (trades and days), read from the registry;
+ * - 'never-run': its seal is still 'registered'.
+ * The holdout burns 'spent'; its attempt stays spent. Throws on any other reason, before the tail, or when unproven.
+ */
+export const spendHoldout = (registry: HoldoutRegistry, holdoutId: string, spend: { readonly why: SpendReason; readonly nowDay: string; readonly g1Passed: boolean }): RegistryStep => {
+  const { why } = spend;
+  if (!(SPEND_REASONS as readonly string[]).includes(why)) throw new RangeError(`holdout ${holdoutId}: "${String(why)}" is not a reason an attempt may end without an opening`);
+  const e = find(registry, holdoutId);
+  if (e.burned || e.seal === 'opened') throw new RangeError(`holdout ${holdoutId} is already ${e.burned ? `burned (${e.burnReason})` : 'opened'}`);
+  if (!DAY.test(spend.nowDay) || spend.nowDay < e.tailEnd) throw new RangeError(`holdout ${holdoutId}: its tail runs until ${e.tailEnd}`);
+  if (why === 'g1-failed' && spend.g1Passed) throw new RangeError(`holdout ${holdoutId}: its latest G1 passed, so it must be opened, not spent`);
+  if (why === 'short') {
+    if (!e.requirement) throw new RangeError(`holdout ${holdoutId} has no frozen requirement to be short of`);
+    if (holdoutReady(e, e.requirement.requiredTrades, e.requirement.requiredDays)) {
+      throw new RangeError(`holdout ${holdoutId} is ready (${e.counts?.entries} entries on ${e.counts?.entryDays} days), so it is not short`);
+    }
+  }
+  if (why === 'never-run' && e.seal !== 'registered') throw new RangeError(`holdout ${holdoutId} was run (${e.seal}), so it is not never-run`);
+  return burn(registry, holdoutId, 'spent', why);
 };
 
 /** Record a halted or abandoned window: the attempt stays spent (a failed attempt). */
@@ -326,8 +376,11 @@ export const openHoldout = (
   if (e.seal === 'registered') return { registry, ok: false, reason: `holdout ${holdoutId} has not been run and sealed` };
   if (!open.g1Passed) return { registry, ok: false, reason: `holdout ${holdoutId} stays sealed: G1 did not pass for ${e.configId}` };
   if (!(open.nowDay >= e.tailEnd)) return { registry, ok: false, reason: `holdout ${holdoutId} stays sealed until ${e.tailEnd}, when its observation tail has matured` };
-  if (e.requirement && open.requiredTrades !== e.requirement.requiredTrades) {
-    return { registry, ok: false, reason: `holdout ${holdoutId} froze ${e.requirement.requiredTrades} trades, the open asked for ${open.requiredTrades}` };
+  if (e.requirement && (open.requiredTrades !== e.requirement.requiredTrades || open.minDays !== e.requirement.requiredDays)) {
+    return {
+      registry, ok: false,
+      reason: `holdout ${holdoutId} froze ${e.requirement.requiredTrades} trades on ${e.requirement.requiredDays} days, the open asked for ${open.requiredTrades} on ${open.minDays}`,
+    };
   }
   if (e.seal === 'opened') return burn(registry, holdoutId, 'second-open', 'the seal was already opened');
   if (open.configId !== e.configId) return burn(registry, holdoutId, 'reconfigured', `scored as ${open.configId}, registered ${e.configId}`);

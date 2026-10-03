@@ -548,9 +548,11 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     const required = e.requirement!.requiredTrades;
     c.add(`requirement ${u.universe}`, required >= computed,
       `frozen ${required} trades (need >= max(${th.minTradesFloor}, simulated n_power ${u.power.nPower}, closed form ${closed}) = ${computed})`);
-    const ready = holdoutReady(e, required, MIN_DAYS);
+    // The frozen days count too; they never lower the gate's MIN_DAYS.
+    const days = Math.max(MIN_DAYS, e.requirement!.requiredDays);
+    const ready = holdoutReady(e, required, days);
     c.add(`sample ${u.universe}`, ready,
-      `${e.counts!.entries} sealed entries on ${e.counts!.entryDays} days at the cutoff (need >= ${required}, on >= ${MIN_DAYS} days)`);
+      `${e.counts!.entries} sealed entries on ${e.counts!.entryDays} days at the cutoff (need >= ${required}, on >= ${days} days)`);
     return { u, e, required, ready, fits: required >= computed };
   });
   if (sized.some((x) => !x.fits)) return failWith();

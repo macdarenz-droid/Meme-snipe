@@ -175,7 +175,7 @@ const sealed = (familySize: number, universes: readonly string[], c = counts, re
   let reg = createHoldoutRegistry(familySize);
   for (const u of universes) {
     reg = registerHoldout(reg, { holdoutId: `h-${u}`, universe: u, configId: `${u}-v1`, ...window1 });
-    reg = freezeRequirement(reg, `h-${u}`, { requiredTrades: required, nPowerSeed: 7 }).registry;
+    reg = freezeRequirement(reg, `h-${u}`, { requiredTrades: required, requiredDays: 10, nPower: 300, nPowerSeed: 7 }).registry;
     reg = sealHoldout(reg, `h-${u}`, { configId: `${u}-v1`, ledgerHash: `hash-${u}`, counts: c }).registry;
   }
   return reg;
@@ -377,7 +377,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     let reg = registerHoldout(createHoldoutRegistry(1), { holdoutId: 'h-old', universe: 'U1', configId: 'U1-v0', fromDay: '2026-07-01', toDay: '2026-07-25', registeredOnDay: '2026-06-20' });
     reg = burnHoldout(reg, 'h-old', 'inspected', 'test').registry;
     reg = registerHoldout(reg, { holdoutId: 'h-U1', universe: 'U1', configId: 'U1-v1', fromDay: '2026-08-03', toDay: '2026-08-30', registeredOnDay: '2026-08-02' });
-    reg = freezeRequirement(reg, 'h-U1', { requiredTrades: 600, nPowerSeed: 7 }).registry;
+    reg = freezeRequirement(reg, 'h-U1', { requiredTrades: 600, requiredDays: 10, nPower: 300, nPowerSeed: 7 }).registry;
     reg = sealHoldout(reg, 'h-U1', { configId: 'U1-v1', ledgerHash: 'hash-U1', counts }).registry;
     const refused = gateG2(g2Pass({ registry: reg }));
     expect(refused.reasons.join()).toMatch(/n_power U1: n_power was simulated at level 0.04, attempt α 0.005/);
