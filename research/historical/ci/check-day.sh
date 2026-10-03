@@ -22,7 +22,7 @@ epoch=$(basename "$(dirname "$first")")
 range=$(basename "$first")
 again=$(mktemp -d)
 mkdir -p "$again/cache" && cp "$out"/cache/* "$again/cache/" 2>/dev/null || true
-zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps 80 -on-429 stop
+zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps "${MAX_MBPS:-80}" -on-429 stop -state "$out"
 for f in "$first"/*.zst; do
   a=$(sha256sum "$f" | cut -d' ' -f1)
   b=$(sha256sum "$again/units/$epoch/$range/$(basename "$f")" | cut -d' ' -f1)

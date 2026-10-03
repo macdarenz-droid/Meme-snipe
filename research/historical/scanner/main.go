@@ -63,10 +63,20 @@ func main() {
 		workers := fs.Int("workers", 4, "block workers")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		prof := fs.String("cpuprofile", "", "write a CPU profile")
-		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s")
-		on429u := fs.String("on-429", "pause", "pause or stop (exit code 75)")
+		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 80")
+		on429u := fs.String("on-429", "stop", "stop: end the run (exit code 75); pause: wait max(1 h, Retry-After) and retry")
+		state := fs.String("state", "", "directory holding 429.log and the persisted back-off (default: -out)")
 		fs.Parse(os.Args[2:])
-		stopOn429 = *on429u == "stop"
+		if *state == "" {
+			*state = *out
+		}
+		if err := setupPoliteness(ctx, *state, *maxMBps, *on429u); err != nil {
+			log.Print(err)
+			if errors.Is(err, errRefused) {
+				os.Exit(2)
+			}
+			os.Exit(1)
+		}
 		if *prof != "" {
 			pf, err := os.Create(*prof)
 			if err != nil {
@@ -75,7 +85,6 @@ func main() {
 			pprof.StartCPUProfile(pf)
 			defer pprof.StopCPUProfile()
 		}
-		byteLimiter = newLimiter(*maxMBps)
 		e, err := OpenEpoch(*ep, filepath.Join(*out, "cache"))
 		if err != nil {
 			log.Fatal(err)
@@ -102,11 +111,13 @@ func main() {
 		newestFirst := fs.Bool("newest-first", true, "scan the most recent units first")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		slots := fs.String("slots", "", "only units inside this slot range, FROM-TO (for tests)")
-		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s")
-		on429 := fs.String("on-429", "pause", "pause: pause all requests and retry; stop: end the run (exit code 75) so a scheduler can back off")
+		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 80")
+		on429 := fs.String("on-429", "stop", "stop: end the run (exit code 75) so a scheduler can back off; pause: wait max(1 h, Retry-After) and retry")
 		fs.Parse(os.Args[2:])
-		stopOn429 = *on429 == "stop"
-		log429File = filepath.Join(*out, "429.log")
+		if !validMBps(*maxMBps) || (*on429 != "stop" && *on429 != "pause") {
+			log.Printf("refused: -max-mbps must be in (0, %d] and -on-429 stop or pause", maxAllowedMBps)
+			os.Exit(2)
+		}
 		t0, err := time.Parse("2006-01-02", *fromDay)
 		if err != nil {
 			log.Fatal(err)
@@ -126,6 +137,13 @@ func main() {
 			log.Fatalf("another run holds %s: %v", lf.Name(), err)
 		}
 		runLock = lf // keep the file (and its lock) alive for the whole run
+		if err := setupPoliteness(ctx, *out, *maxMBps, *on429); err != nil {
+			log.Print(err)
+			if errors.Is(err, errRefused) {
+				os.Exit(2)
+			}
+			os.Exit(1)
+		}
 		units, epochs, err := planUnits(*out, t0.Unix(), t1.Unix())
 		if err != nil {
 			if stopped.Load() {
@@ -134,7 +152,6 @@ func main() {
 			}
 			log.Fatal(err)
 		}
-		byteLimiter = newLimiter(*maxMBps)
 		if *slots != "" {
 			var a, b uint64
 			if _, err := fmt.Sscanf(*slots, "%d-%d", &a, &b); err != nil {

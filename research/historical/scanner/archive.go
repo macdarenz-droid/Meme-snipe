@@ -72,39 +72,22 @@ func (l *limiter) wait() {
 
 var reqLimiter = newLimiter(40)
 
-// Politeness towards the archive (a free public host):
+// Politeness towards the archive (a free public host); see polite.go for the rules
+// and the persisted back-off state.
 //   - request starts are spaced by reqLimiter;
-//   - bytes are paced by byteLimiter (-max-mbps);
-//   - a 429 pauses every request of the process together, starting at one minute and
-//     doubling up to 15 minutes, for at most maxBlockedWait in total, instead of
-//     retrying in a tight loop.
+//   - bytes are paced by byteLimiter (-max-mbps, tokens of 1e6 bytes);
+//   - a 429 (or a 503 with Retry-After) stops the run by default (-on-429 stop); with
+//     -on-429 pause every request of the process waits max(1 h, Retry-After), for at
+//     most maxBlockedWait in total.
 //
 // UserAgent identifies the scanner to the archive operators.
 const userAgent = "zeroed-historical-scanner/2 (research backtest; +https://github.com/macdarenz-droid/Meme-snipe)"
 
-// stopOn429 (-on-429 stop): the first 429 stops the whole run instead of pausing, so
-// a scheduler can wait at least an hour before resuming on the same single lane.
 var (
-	stopOn429  bool
+	stopOn429  = true
 	stopped    atomic.Bool
 	errStopped = errors.New("stopped: archive answered 429")
-	log429File string
-	log429Mu   sync.Mutex
 )
-
-func log429(retryAfter time.Duration) {
-	if log429File == "" {
-		return
-	}
-	log429Mu.Lock()
-	defer log429Mu.Unlock()
-	f, err := os.OpenFile(log429File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	fmt.Fprintf(f, "%s 429 retry_after=%s stop=%v\n", time.Now().UTC().Format(time.RFC3339), retryAfter, stopOn429)
-	f.Close()
-}
 
 func retryAfterOf(resp *http.Response) time.Duration {
 	v := resp.Header.Get("Retry-After")
@@ -120,12 +103,17 @@ func retryAfterOf(resp *http.Response) time.Duration {
 	return 0
 }
 
+// isBlocked: a 429, or a 503 that carries Retry-After, means "slow down".
+func isBlocked(resp *http.Response) bool {
+	return resp.StatusCode == http.StatusTooManyRequests ||
+		(resp.StatusCode == http.StatusServiceUnavailable && resp.Header.Get("Retry-After") != "")
+}
+
 var (
-	byteLimiter    = newLimiter(80) // MB/s; one token = 1 MB
+	byteLimiter    = newLimiter(80) // MB/s; one token = 1e6 bytes
 	maxBlockedWait = 6 * time.Hour
 	blockMu        sync.Mutex
 	blockedUntil   time.Time
-	blockBackoff   = time.Minute
 	blockedSince   time.Time
 )
 
@@ -145,37 +133,36 @@ func waitUnblocked(ctx context.Context) error {
 	}
 }
 
-// noteBlocked records a 429 and returns false once the total blocked time exceeds
-// maxBlockedWait.
+// noteBlocked records a 429 (persisted, see polite.go) and returns false when the run
+// must end: always in stop mode, and in pause mode once the total blocked time
+// exceeds maxBlockedWait.
 func noteBlocked(retryAfter time.Duration) bool {
 	blockMu.Lock()
 	defer blockMu.Unlock()
 	now := time.Now()
-	log429(retryAfter)
+	pause := backoffFor(retryAfter)
+	record429(now, retryAfter)
 	if stopOn429 {
 		stopped.Store(true)
 		return false
 	}
 	if blockedSince.IsZero() || now.Sub(blockedUntil) > 10*time.Minute {
-		blockedSince, blockBackoff = now, time.Minute
+		blockedSince = now
 	}
-	if now.Before(blockedUntil) {
-		return now.Sub(blockedSince) < maxBlockedWait // already paused by another request
-	}
-	pause := blockBackoff
-	if retryAfter > pause {
-		pause = retryAfter
-	}
-	blockedUntil = now.Add(pause)
-	log.Printf("archive answered 429: pausing all requests for %s", pause)
-	if blockBackoff < 15*time.Minute {
-		blockBackoff *= 2
+	if until := now.Add(pause); until.After(blockedUntil) {
+		blockedUntil = until
+		log.Printf("archive answered 429: pausing all requests for %s", pause)
 	}
 	return now.Sub(blockedSince) < maxBlockedWait
 }
 
+const mbToken = 1_000_000
+
+// byteTokens is the number of 1e6-byte tokens n bytes use.
+func byteTokens(n int64) int64 { return (n + mbToken - 1) / mbToken }
+
 func paceBytes(n int64) {
-	for mb := (n + (1 << 20) - 1) >> 20; mb > 0; mb-- {
+	for t := byteTokens(n); t > 0; t-- {
 		byteLimiter.wait()
 	}
 }
@@ -223,7 +210,7 @@ func fetchRange(ctx context.Context, url string, off, n int64) ([]byte, error) {
 			io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 			resp.Body.Close()
 			lastErr = fmt.Errorf("status %d for %s range %d+%d", resp.StatusCode, url, off, n)
-			if resp.StatusCode == 429 {
+			if isBlocked(resp) {
 				statHTTP429.Add(1)
 				if !noteBlocked(retryAfterOf(resp)) {
 					if stopOn429 {
@@ -260,11 +247,11 @@ var errNotInArchive = errors.New("not in archive")
 func smallRequest(method, url string) ([]byte, int64, error) {
 	var lastErr error
 	for attempt := 0; attempt < 6; {
-		if err := waitUnblocked(context.Background()); err != nil {
-			return nil, 0, err
-		}
 		if stopped.Load() {
 			return nil, 0, errStopped
+		}
+		if err := waitUnblocked(context.Background()); err != nil {
+			return nil, 0, err
 		}
 		reqLimiter.wait()
 		req, _ := http.NewRequest(method, url, nil)
@@ -278,7 +265,7 @@ func smallRequest(method, url string) ([]byte, int64, error) {
 				return b, resp.ContentLength, nil
 			case resp.StatusCode == 404:
 				return nil, 0, fmt.Errorf("%s %s: %w", method, url, errNotInArchive)
-			case resp.StatusCode == 429:
+			case isBlocked(resp):
 				statHTTP429.Add(1)
 				if !noteBlocked(retryAfterOf(resp)) {
 					if stopOn429 {
