@@ -378,25 +378,44 @@ describe('ledger replay: whole tables', () => {
     });
   }
 
-  it('a late buy landing whose own position is missing fails with table position', () => {
-    // The reducer opens position p1.o1 for a buy that landed after entry 1 ended; the schema cannot store it yet (LEDGER-1b).
+  /** Entry 1 expires and is abandoned; then its buy is found landed, and the reducer opens position p1.o1 for it. */
+  const LATE_BUY: readonly BookEvent[] = [
+    ...entryToSubmitted(1, 1_000n),
+    notFound(E1, 1, 1_001n),
+    on(E1, { type: 'reconcile', fills: [], blockHeight: 1_001n }),
+    on(E1, { type: 'abandon' }),
+    landed(E1, 1, 1_100n),
+    { type: 'orphan_fill', fill: fill(E1, 1, 5_000n) },
+  ];
+
+  it('a late buy landing is stored with its own position, and replays (LEDGER-1b)', () => {
+    // The late-buy position is then exited in full, so its exit intent and sale are stored and replayed too.
     const events: BookEvent[] = [
-      ...entryToSubmitted(1, 1_000n),
-      notFound(E1, 1, 1_001n),
-      on(E1, { type: 'reconcile', fills: [], blockHeight: 1_001n }),
-      on(E1, { type: 'abandon' }),
+      ...LATE_BUY,
+      { type: 'trigger_exit', positionId: positionId('p1.o1'), reasons: ['stop'], intentId: X1 },
+      on(X1, { type: 'prepare', quote }),
+      on(X1, { type: 'sign', attempt: attempt(X1, 11, 3_000n) }),
+      on(X1, { type: 'submit' }),
+      on(X1, { type: 'status', signature: sig(11), result: 'succeeded', commitment: 'confirmed', blockHeight: 2_000n, searchedHistory: false }),
+      on(X1, { type: 'reconcile', fills: [fill(X1, 11, 5_000n)], blockHeight: 2_000n }),
     ];
-    const late: BookEvent = { type: 'orphan_fill', fill: fill(E1, 1, 5n) };
-    const full = openLedger(tempPath(), 'paper');
-    expect(() => recordEvents(full, timed([...events, late]), CONFIG)).toThrow(/UNIQUE constraint failed: position\.entry_intent_id/);
-    full.close();
+    const path = bookLedger(events);
+    const reader = openLedgerReader(path);
+    expect(reader.allPositions().map((p) => [p.positionId, p.entryIntentId])).toEqual([['p1', 'e1'], ['p1.o1', 'e1']]);
+    expect(reader.positions().map((p) => [p.positionId, p.status, p.quantity])).toEqual([['p1', 'closed', 0n], ['p1.o1', 'closed', 0n]]);
+    reader.close();
+    expect(replayLedgerFile(path)).toMatchObject({ ok: true, counts: { intents: 2, positions: 2 } });
+  });
+
+  it('a late buy landing whose own position is missing fails with table position', () => {
+    const late = LATE_BUY[LATE_BUY.length - 1]!;
     const path = tempPath();
     const ledger = openLedger(path, 'paper');
-    const book = recordEvents(ledger, timed(events), CONFIG);
-    // Write what the schema allows: the intent row and the fill, without the new position.
+    const book = recordEvents(ledger, timed(LATE_BUY.slice(0, -1)), CONFIG);
+    // Write the intent row and the fill, but leave out the position the reducer opens.
     ledger.atomically(() => {
       ledger.appendIntentTransition({ intentId: E1, status: book.intents[E1]!.status, event: 'orphan_fill', detail: encodeBookDetail(late), ts: 99 });
-      ledger.recordFill(late.fill, 99);
+      if (late.type === 'orphan_fill') ledger.recordFill(late.fill, 99);
     });
     ledger.close();
     expect(failure(replayLedgerFile(path))).toMatchObject({

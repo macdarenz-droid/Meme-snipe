@@ -34,8 +34,16 @@ export interface WalletView {
   botAddress: string | null;
   savedWallet: string | null;
   availableUsd: number | null;
-  reserveSol: number | null;
-  lockedSol: number | null;
+  /** Bot wallet SOL balance, an exact decimal string with up to 9 places. */
+  balanceSol: string | null;
+  /** SOL/AUD price as a decimal string, for the A$ line next to SOL amounts. */
+  solAud: string | null;
+  /**
+   * Protected SOL reserve and locked deposits, exact decimal strings. The reserve is the full §8 R4 amount
+   * (floor 0.015 SOL), which includes the locked rent, so Withdraw subtracts it once and never the rent again.
+   */
+  reserveSol: string | null;
+  lockedSol: string | null;
   openExposureUsd: number | null;
   feesPaidUsd: number | null;
 }
@@ -56,6 +64,8 @@ export const EMPTY_WALLET: WalletView = {
   botAddress: null,
   savedWallet: null,
   availableUsd: null,
+  balanceSol: null,
+  solAud: null,
   reserveSol: null,
   lockedSol: null,
   openExposureUsd: null,
