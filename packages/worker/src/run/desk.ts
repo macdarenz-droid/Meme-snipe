@@ -25,6 +25,8 @@ export interface DeskDeps {
   readonly accountChanged: () => void;
   /** The set of open intents may have changed. */
   readonly intentsChanged: (open: number) => void;
+  /** The ledger refused an event the engine applied: the book and the ledger no longer agree. */
+  readonly diverged: (reason: string) => void;
   /** A reservation was stored (the account's entry record). */
   readonly reserved: (r: { readonly intentId: string; readonly mint: string; readonly amount: bigint; readonly atMs: number }) => void;
   /** A position filled or closed (the paper wallet and closed-trade records). */
@@ -101,7 +103,9 @@ export class Desk {
     } catch (e) {
       // The engine applied it, so the ledger refusing it is a divergence: counted, journaled, never hidden.
       this.ledgerRefusals++;
-      this.#d.journal('decision', { action: 'ledger_refused', reasons: [`ledger refused ${event.type}: ${e instanceof Error ? e.message : String(e)}`] });
+      const reason = `ledger refused ${event.type}: ${e instanceof Error ? e.message : String(e)}`;
+      this.#d.journal('decision', { action: 'ledger_refused', reasons: [reason] });
+      this.#d.diverged(reason);
       const step = applyBookEvent(before, event);
       if (!isIllegal(step)) this.#book = step.state;
       return;

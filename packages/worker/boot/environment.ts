@@ -26,6 +26,8 @@ export interface Environment {
   /** Environment names that look like key material (the worker refuses to start with any). */
   readonly keyMaterial: readonly string[];
   readonly argv: readonly string[];
+  /** Every credential value present, for the output redaction (never printed). */
+  readonly secretValues: () => readonly string[];
 }
 
 export const readEnvironment = (): Environment => {
@@ -56,6 +58,7 @@ export const readEnvironment = (): Environment => {
     host: { telegram_chat_id: fromFile('telegram_chat_id'), heartbeat_hmac_key: fromFile('heartbeat_hmac_key') },
     keyMaterial: Object.keys(all).filter((n) => KEY_ENV.test(n)),
     argv: process.argv.slice(2),
+    secretValues: () => [...KEYS.map(value), ...HOST.map(fromFile)].filter((v): v is string => v !== null),
     release: () => {
       try {
         return basename(readlinkSync('/opt/zeroed/current'));

@@ -9,6 +9,7 @@
 // files as they come and flushed before the engine acts on them; a file is compressed and listed in the manifest when
 // it is rotated, at a clean stop, or at the next start after a crash, so a kill loses no flushed line.
 import { createHash } from 'node:crypto';
+import { redact } from './redact.ts';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -169,7 +170,7 @@ export class Recorder {
     const buf = this.#buffer.get(t);
     const o = this.#open.get(t);
     if (buf === undefined || buf.length === 0 || o === undefined) return;
-    appendFileSync(o.path, `${buf.join('\n')}\n`);
+    appendFileSync(o.path, `${redact(buf.join('\n'))}\n`);
     buf.length = 0;
   }
 

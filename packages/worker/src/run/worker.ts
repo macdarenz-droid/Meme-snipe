@@ -149,7 +149,10 @@ export class Worker {
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
   #intentAt = new Map<string, number>();
-  #halted: readonly string[] = [];
+  /** Entries start halted: nothing enters before the first feed check says otherwise. */
+  #halted: readonly string[] = ['starting'];
+  /** A ledger/book divergence: a halt reason for the rest of the process. */
+  #diverged: readonly string[] = [];
   #savedExits = '';
   readonly #start: StartFeed;
   readonly #deployerStore: DeployerStore;
@@ -235,6 +238,12 @@ export class Worker {
       report: (event) => this.#report(event),
       accountChanged: () => this.#publishAccount(),
       intentsChanged: () => this.#writeOpenIntents(),
+      // Entries stop for the rest of this process; exits go on. A restart rebuilds the book from the ledger.
+      diverged: (reason) => {
+        if (this.#diverged.length === 0) this.#journal.write('halt', { reasons: ['ledger and book diverged; entries off until a restart', reason] });
+        this.#diverged = ['ledger and book diverged'];
+        this.#checkHalt(this.#d.timers.now());
+      },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       filled: (r) => {
         this.#account.filled(r, this.#solPrice);
@@ -243,6 +252,7 @@ export class Worker {
     });
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
     for (const e of stored.events) this.#desk.written(this.#report(e));
+    this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] });
     this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}) });
     if (stored.events.length > 0) this.#report({ type: 'restart' });
     if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' });
@@ -511,6 +521,7 @@ export class Worker {
       else if (s.last === null || now - s.last > this.#d.staleFeedMs) reasons.push(`feed ${s.src.name} stale`);
     }
     if (this.#ctl.paused) reasons.push('owner pause (watchdog)');
+    reasons.push(...this.#diverged);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
     if (same) return;
     const was = this.#halted.length > 0;

@@ -527,9 +527,10 @@ export class LiveStrategy implements Strategy {
   #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[]): void {
     const now = ctx.now.receivedAt;
     const c = this.#d.config;
+    // Fails closed: entries only on a readable halt fact that says not halted.
     const halt = ctx.lookup(HALT_KEY);
     const h = halt.ok ? unwrap(halt.value) : null;
-    if (isObj(h) && h['halted'] === true) return;
+    if (!isObj(h) || h['halted'] !== false) return;
     for (const cand of this.#cands.values()) {
       const from = cand.migratedAtMs + c.windowFromMs;
       const to = cand.migratedAtMs + c.windowToMs;

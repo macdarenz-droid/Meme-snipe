@@ -2,6 +2,7 @@
 // the last line. At open a torn last line is cut and a `journal_repair` line follows the boot's `start`; `seq` runs on
 // across restarts.
 import { appendFileSync, existsSync, readFileSync, truncateSync } from 'node:fs';
+import { redact } from './redact.ts';
 import type { JournalKind } from '../../../runner/src/contract.ts';
 import { jsonText } from './json.ts';
 
@@ -45,6 +46,6 @@ export class Journal {
 
   write(kind: JournalKind, fields: Readonly<Record<string, unknown>> = {}): void {
     this.#seq += 1;
-    appendFileSync(this.#path, `${jsonText({ seq: this.#seq, ts: new Date(this.#now()).toISOString(), boot: this.#boot, kind, ...fields })}\n`);
+    appendFileSync(this.#path, `${redact(jsonText({ seq: this.#seq, ts: new Date(this.#now()).toISOString(), boot: this.#boot, kind, ...fields }))}\n`);
   }
 }

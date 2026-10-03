@@ -12,18 +12,21 @@ import { parseConfig } from './run/config.ts';
 import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, LiveProviders } from './run/sources.ts';
+import { redact, setSecretValues } from './run/redact.ts';
 import { runSeed } from './run/seed-start.ts';
 import { Worker } from './run/worker.ts';
 
-const log = (line: string): void => console.log(line);
 const environment = readEnvironment();
+setSecretValues(environment.secretValues());
+const log = (line: string): void => console.log(redact(line));
+const fail = (line: string): void => console.error(redact(line));
 const parsed = parseConfig(environment.env, environment.release);
 if (!parsed.ok) {
-  console.error(parsed.message);
+  fail(parsed.message);
   process.exit(parsed.code);
 }
 if (environment.keyMaterial.length > 0) {
-  console.error(`refused: environment names that look like key material: ${environment.keyMaterial.join(', ')}`);
+  fail(`refused: environment names that look like key material: ${environment.keyMaterial.join(', ')}`);
   process.exit(EXIT.config);
 }
 const config = parsed.config;
@@ -45,7 +48,7 @@ const simulate = liveSimulator({
 log(`Credentials present: ${environment.present.length} of 3 provider keys; heartbeat key ${environment.host.heartbeat_hmac_key === null ? 'absent' : 'present'}.`);
 
 const fatal = (e: unknown): never => {
-  console.error(`Worker crashed: ${e instanceof Error ? `${e.name}: ${e.message}` : 'error'}`);
+  fail(`Worker crashed: ${e instanceof Error ? `${e.name}: ${e.message}` : 'error'}`);
   process.exit(EXIT.crash);
 };
 process.on('uncaughtException', fatal);
@@ -85,7 +88,7 @@ if (environment.argv.includes('--reconcile')) {
   const r = await w.reconcileOnly();
   credits.flush();
   if (!r.ok) {
-    console.error(r.message);
+    fail(r.message);
     process.exit(r.code);
   }
   log('Reconcile: done, open intents written.');
@@ -94,7 +97,7 @@ if (environment.argv.includes('--reconcile')) {
 
 const started = await w.start();
 if (!started.ok && !stopping) {
-  console.error(started.message);
+  fail(started.message);
   await w.stop(started.code);
   process.exit(started.code);
 }

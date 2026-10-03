@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
+import type { LogRecord } from '../../core/src/engine/index.ts';
+import { HALT_KEY } from '../src/engine/strategy.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { exitsFile } from '../src/run/state.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
@@ -87,6 +89,38 @@ describe('a paper trade end to end', () => {
     expect(abandoned.length).toBeGreaterThanOrEqual(1);
     await h.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+});
+
+describe('entry halts fail closed (review of f679188, items 5 and 6)', () => {
+  it('entries start halted, and a missing or malformed halt fact keeps them halted', async () => {
+    const h = makeWorker();
+    expect(h.worker.health().halt_reasons).toEqual(['starting']);
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    h.worker.step();
+    // A halt fact that cannot be read: the passing market that enters otherwise (the end-to-end test) makes no entry.
+    new Market(h).fact(HALT_KEY, { halted: 'no' });
+    const m = await passingMarket(h);
+    await m.run(4_000, 100, () => m.pool());
+    expect(positions(h)).toEqual([]);
+    await h.worker.stop();
+  });
+
+  it('a ledger/book divergence halts entries for the rest of the process; exits go on', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const open = positions(h).find((p) => p.status === 'open')!;
+    h.worker.desk.consume([{ type: 'world', seq: 1, at: { slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: 0 }, eventId: 'world#x', event: { type: 'intent', intentId: 'unknown', event: { type: 'cancel' } }, result: 'applied', effects: [] } as unknown as LogRecord]);
+    await m.run(400, 400, () => m.slot());
+    expect(h.worker.health().halt_reasons).toContain('ledger and book diverged');
+    expect(kinds(h.stateDir, 'halt').some((l) => String((l['reasons'] as string[])[0]).startsWith('ledger and book diverged'))).toBe(true);
+    await m.run(6_000, 400, () => {
+      m.slot();
+      m.pool(700_000n);
+    });
+    expect(h.worker.book.positions[open.id]!.status).toBe('closed');
+    expect(h.worker.health().halt_reasons).toContain('ledger and book diverged');
+    await h.worker.stop();
   });
 });
 

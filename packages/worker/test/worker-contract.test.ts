@@ -23,6 +23,7 @@ import { parseConfig } from '../src/run/config.ts';
 import { Desk } from '../src/run/desk.ts';
 import type { FactContext } from '../src/run/facts.ts';
 import { Journal } from '../src/run/journal.ts';
+import { redact, setSecretValues } from '../src/run/redact.ts';
 import { CreditBook } from '../src/run/sources.ts';
 import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
@@ -189,13 +190,25 @@ describe('the reservation goes through the ledger with the snapshot\'s account v
     ];
   };
 
-  const deskOn = (ledger: ReturnType<typeof openLedger>, reports: BookEvent[]) => new Desk({
+  const deskOn = (ledger: ReturnType<typeof openLedger>, reports: BookEvent[], diverged: string[] = []) => new Desk({
     ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
     journal: () => undefined, report: (e) => {
       reports.push(e);
       return `world#${reports.length}`;
     },
     accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined,
+    diverged: (r) => void diverged.push(r),
+  });
+
+  it('a world event the engine applied but the ledger refuses is a divergence, reported once per event', () => {
+    const ledger = openLedger(join(tempState(), 'ledger.sqlite'), 'paper');
+    const diverged: string[] = [];
+    const desk = deskOn(ledger, [], diverged);
+    desk.consume([{ type: 'world', seq: 1, at, eventId: 'world#x', event: { type: 'intent', intentId: intentId('unknown'), event: { type: 'cancel' } }, result: 'applied', effects: [] } as LogRecord]);
+    expect(desk.ledgerRefusals).toBe(1);
+    expect(diverged).toHaveLength(1);
+    expect(diverged[0]).toMatch(/^ledger refused intent/);
+    ledger.close();
   });
   /** Another account change between the snapshot and the reservation: a reservation stored by someone else. */
   const changeAccount = (ledger: ReturnType<typeof openLedger>) => {
@@ -369,5 +382,36 @@ describe('FEED-1 off-chain ids', () => {
     const out: string[] = [];
     for (let e = feed.next(); e !== null; e = feed.next()) out.push(e.id);
     expect(out).toEqual(ids);
+  });
+});
+
+describe('no key in any output (review of f679188, item 8)', () => {
+  it('redacts credential values and key-shaped URL parts', () => {
+    setSecretValues(['hk-1234567890abcdef', 'short', null]);
+    expect(redact('GET https://mainnet.helius-rpc.com/?api-key=hk-1234567890abcdef failed')).toBe('GET https://mainnet.helius-rpc.com/?api-key=[redacted] failed');
+    expect(redact('wss://x.test/?api-key=anotherkey99&x=1')).toBe('wss://x.test/?api-key=[redacted]&x=1');
+    expect(redact('https://solana-mainnet.g.alchemy.com/v2/abcDEF123456/x')).toBe('https://solana-mainnet.g.alchemy.com/v2/[redacted]/x');
+    expect(redact('https://api.telegram.org/bot12345:AAbb-cc_dd/sendMessage')).toBe('https://api.telegram.org/bot[redacted]/sendMessage');
+    expect(redact('error: token hk-1234567890abcdef refused')).toBe('error: token [redacted] refused');
+    expect(redact('short words stay')).toBe('short words stay');
+    setSecretValues([]);
+  });
+
+  it('the journal never holds a credential, whatever a message carries', () => {
+    setSecretValues(['hk-1234567890abcdef']);
+    const dir = tempState();
+    const j = new Journal(join(dir, 'journal.jsonl'), 'b', () => T);
+    j.write('decision', { reasons: ['seed failed: fetch https://rpc.test/?api-key=hk-1234567890abcdef'], detail: 'hk-1234567890abcdef' });
+    const text = readFileSync(join(dir, 'journal.jsonl'), 'utf8');
+    expect(text).not.toContain('hk-1234567890abcdef');
+    expect(text).toContain('[redacted]');
+    setSecretValues([]);
+  });
+
+  it('the entry prints only through the redacting log and fail', () => {
+    const src = readFileSync(join(import.meta.dirname, '..', 'src', 'main.ts'), 'utf8');
+    expect(src.match(/console\.(log|error|warn|info)\(/g)).toEqual(['console.log(', 'console.error(']);
+    expect(src).toContain('console.log(redact(line))');
+    expect(src).toContain('console.error(redact(line))');
   });
 });
