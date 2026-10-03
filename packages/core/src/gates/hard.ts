@@ -19,7 +19,7 @@ import {
   parseCandles, parseCreate, parseCurve, parseDeployer, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
 } from './facts.ts';
-import { checkPoolTails } from './tails.ts';
+import { checkCurveTails, checkPoolTails } from './tails.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
 import type { AsOfEntry } from '../engine/asof.ts';
 import type { Commitment } from '../domain/index.ts';
@@ -203,7 +203,9 @@ const h5 = (env: Env): Outcome => {
   // GATE-1c: the pool's trade events since migration must carry the upgrade's tail as zeros, at the right length.
   const m = readMigration(env, 'H5');
   if (!m.ok) return fromRead(m);
-  const t = checkPoolTails({ history: env.history, now: env.ev.now }, address, m.fact.migratedAtMs);
+  const ctx = { history: env.history, now: env.ev.now };
+  const pt = checkPoolTails(ctx, address, { slot: m.fact.obs.slot, ms: m.fact.migratedAtMs });
+  const t = pt.ok ? checkCurveTails(ctx, env.req.mint) : pt;
   if (t.ok) return PASS;
   if (t.code === 'event-tail') return reject('H5', 'event-tail', `unpublished trade-event bytes are live on this SOL pool: ${t.detail}`, { input: 'trades', ...(t.signature ? { value: t.signature } : {}) });
   return { reasons: [{ gate: 'H16', code: t.code, input: 'trades', neededBy: 'H5', detail: t.detail, ...(t.signature ? { value: t.signature } : {}) }] };

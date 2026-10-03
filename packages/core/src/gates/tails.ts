@@ -29,39 +29,64 @@ const allowedLengths = (program: keyof typeof EVENT_TAIL_UPGRADE_SLOT, slot: big
   return slot < b ? [0] : slot > b ? [EVENT_TAIL_BYTES] : [0, EVENT_TAIL_BYTES];
 };
 
+/** FEED-1 keys of a mint's bonding-curve trade events (pump `TradeEvent`). */
+export const curveTradeKeys = (mint: string): readonly string[] => [`pump:TradeEvent:${mint}`, `logs:pump:TradeEvent:${mint}`];
+
+/** Where the pool's tape starts: the migration event's slot when the migration fact has one, else its time. */
+export interface Since {
+  readonly slot: bigint | null;
+  readonly ms: number;
+}
+
+type Program = keyof typeof EVENT_TAIL_UPGRADE_SLOT;
+
 /**
- * Checks every trade event of the pool released between `fromMs` (migration) and now. Rejects on the first event, in
- * release order, whose tail is non-zero or of a length the boundary does not allow; refuses an unreadable event; and
- * is not covered when there is no trade event at all.
+ * Checks every trade event under `keys` released as of now (and since `since`, when given), in release order.
+ * Rejects on the first whose tail is non-zero or of a length the `program`'s boundary does not allow; refuses an
+ * unreadable event or a refused history; with `required`, no event at all is not covered.
  */
-export const checkPoolTails = (ctx: { readonly now: Moment; readonly history: GateContext['history'] }, pool: string, fromMs: number): TailCheck => {
+const checkTape = (
+  ctx: { readonly now: Moment; readonly history: GateContext['history'] }, keys: readonly string[], program: Program,
+  since: Since | null, required: boolean, what: string,
+): TailCheck => {
   const entries: AsOfEntry[] = [];
-  for (const key of poolTradeKeys(pool)) {
+  for (const key of keys) {
     const h = ctx.history(key, ORIGIN, ctx.now);
-    if (!Array.isArray(h)) return { ok: false, code: 'not-covered', detail: `trade history of ${pool} refused` };
-    entries.push(...(h as readonly AsOfEntry[]).filter((e) => e.moment.receivedAt >= fromMs));
+    if (!Array.isArray(h)) return { ok: false, code: 'not-covered', detail: `trade history of ${what} refused` };
+    entries.push(...(h as readonly AsOfEntry[]).filter((e) =>
+      since === null || (since.slot !== null ? e.moment.slot >= since.slot : e.moment.receivedAt >= since.ms)));
   }
   entries.sort((a, b) => (a.moment.slot < b.moment.slot ? -1 : a.moment.slot > b.moment.slot ? 1 : 0)
     || a.moment.txIndex - b.moment.txIndex || a.moment.ixIndex - b.moment.ixIndex || a.moment.receivedAt - b.moment.receivedAt
     || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
-  if (entries.length === 0) return { ok: false, code: 'not-covered', detail: `no trade event of pool ${pool} since migration` };
+  if (entries.length === 0) {
+    return required ? { ok: false, code: 'not-covered', detail: `no trade event of ${what} since migration` } : { ok: true, events: 0 };
+  }
   for (const e of entries) {
     const v = isObj(e.value) ? e.value : null;
     const ev = v !== null && isObj(v['event']) ? v['event'] : null;
     const slot = v?.['txSlot'];
     if (v === null || ev === null || typeof ev['trailing'] !== 'number' || typeof ev['extra'] !== 'string' || typeof slot !== 'bigint') {
-      return { ok: false, code: 'malformed', detail: `trade event ${e.source} of pool ${pool} has no readable tail`, signature: v === null ? e.source : signatureOf(e, v) };
+      return { ok: false, code: 'malformed', detail: `trade event ${e.source} of ${what} has no readable tail`, signature: v === null ? e.source : signatureOf(e, v) };
     }
     const signature = signatureOf(e, v);
     const trailing = ev['trailing'];
     const extra = ev['extra'];
-    const allowed = allowedLengths('pump_amm', slot);
+    const allowed = allowedLengths(program, slot);
     if (!allowed.includes(trailing) || extra.length !== 2 * trailing) {
-      return { ok: false, code: 'event-tail', signature, detail: `trade event tail is ${trailing} bytes at slot ${slot}; the upgrade boundary allows ${allowed.join(' or ')} (first offending signature ${signature})` };
+      return { ok: false, code: 'event-tail', signature, detail: `${what} trade event tail is ${trailing} bytes at slot ${slot}; the upgrade boundary allows ${allowed.join(' or ')} (first offending signature ${signature})` };
     }
     if (/[^0]/.test(extra)) {
-      return { ok: false, code: 'event-tail', signature, detail: `trade event tail is non-zero (${extra}) on a SOL-quoted pool (first offending signature ${signature})` };
+      return { ok: false, code: 'event-tail', signature, detail: `${what} trade event tail is non-zero (${extra}) on a SOL-quoted market (first offending signature ${signature})` };
     }
   }
   return { ok: true, events: entries.length };
 };
+
+type Ctx = { readonly now: Moment; readonly history: GateContext['history'] };
+
+/** The pool's trade events since migration: required (no event since migration is not covered). */
+export const checkPoolTails = (ctx: Ctx, pool: string, since: Since): TailCheck => checkTape(ctx, poolTradeKeys(pool), 'pump_amm', since, true, `pool ${pool}`);
+
+/** The mint's own curve tape (before migration): every event that is there must pass; none is not a failure. */
+export const checkCurveTails = (ctx: Ctx, mint: string): TailCheck => checkTape(ctx, curveTradeKeys(mint), 'pump', null, false, `curve of ${mint}`);
