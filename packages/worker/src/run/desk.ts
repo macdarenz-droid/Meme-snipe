@@ -33,6 +33,39 @@ export interface DeskDeps {
   readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[] }) => void;
 }
 
+/**
+ * The journal's `decision` line for one engine record (null when the record is not journaled): what the desk writes,
+ * and what TEST-1's parity harness rebuilds from a replay, so both sides go through the same mapping.
+ */
+export const journalFields = (r: LogRecord): Readonly<Record<string, unknown>> | null => {
+  if (r.type === 'start') return null;
+  if (r.type === 'fault') return { action: 'fault', event: r.eventId, reasons: [`engine refused event ${r.eventId}: ${r.fault}`] };
+  if (r.type === 'decision') {
+    const action = r.action;
+    // A candidate's reject carries its typed reasons (RUN-1c `gate_reasons`); an entry is `enter` (the runner's name).
+    const typed = r.reasons.find((x) => x.startsWith(GATE_REASONS_PREFIX));
+    const reasons = r.reasons.filter((x) => x !== typed);
+    const reject = action === null && reasons[0] === 'reject';
+    let gateReasons: unknown = null;
+    if (typed !== undefined) {
+      try {
+        gateReasons = JSON.parse(typed.slice(GATE_REASONS_PREFIX.length));
+      } catch {
+        gateReasons = [{ gate: 'worker', code: 'unreadable', detail: 'typed reasons could not be read' }];
+      }
+    }
+    return {
+      action: action === null ? (reject ? 'reject' : 'none') : action.type === 'intent' ? action.event.type : action.type === 'propose_entry' ? 'enter' : action.type,
+      intent: action === null ? null : action.type === 'intent' ? action.intentId : action.type === 'propose_entry' ? action.intent.id : null,
+      result: r.result, ...(r.reason === undefined ? {} : { refused: r.reason }), event: r.eventId,
+      reasons: reasons.length > 0 ? reasons : ['no reason given'],
+      ...(reject ? { gate_reasons: gateReasons ?? [] } : {}),
+    };
+  }
+  // A world event the engine refused; an applied one is not a decision line.
+  return r.result === 'illegal' ? { action: 'world_refused', event: r.eventId, reasons: [`world event ${r.event.type} refused: ${r.reason ?? ''}`] } : null;
+};
+
 export class Desk {
   readonly #d: DeskDeps;
   #book: Book;
@@ -65,33 +98,15 @@ export class Desk {
   }
 
   #one(r: LogRecord): void {
+    const line = journalFields(r);
+    if (line !== null) this.#d.journal('decision', line);
     if (r.type === 'start') return;
     if (r.type === 'fault') {
       this.illegal++;
-      this.#d.journal('decision', { action: 'fault', event: r.eventId, reasons: [`engine refused event ${r.eventId}: ${r.fault}`] });
       return;
     }
     if (r.type === 'decision') {
       const action = r.action;
-      // A candidate's reject carries its typed reasons (RUN-1c `gate_reasons`); an entry is `enter` (the runner's name).
-      const typed = r.reasons.find((x) => x.startsWith(GATE_REASONS_PREFIX));
-      const reasons = r.reasons.filter((x) => x !== typed);
-      const reject = action === null && reasons[0] === 'reject';
-      let gateReasons: unknown = null;
-      if (typed !== undefined) {
-        try {
-          gateReasons = JSON.parse(typed.slice(GATE_REASONS_PREFIX.length));
-        } catch {
-          gateReasons = [{ gate: 'worker', code: 'unreadable', detail: 'typed reasons could not be read' }];
-        }
-      }
-      this.#d.journal('decision', {
-        action: action === null ? (reject ? 'reject' : 'none') : action.type === 'intent' ? action.event.type : action.type === 'propose_entry' ? 'enter' : action.type,
-        intent: action === null ? null : action.type === 'intent' ? action.intentId : action.type === 'propose_entry' ? action.intent.id : null,
-        result: r.result, ...(r.reason === undefined ? {} : { refused: r.reason }), event: r.eventId,
-        reasons: reasons.length > 0 ? reasons : ['no reason given'],
-        ...(reject ? { gate_reasons: gateReasons ?? [] } : {}),
-      });
       if (r.result === 'illegal') this.illegal++;
       if (r.result !== 'applied' || action === null) return;
       if (action.type === 'propose_entry') this.#why.set(action.intent.id, r.reasons);
@@ -102,7 +117,6 @@ export class Desk {
     // A world event: written unless the ledger already holds it.
     if (r.result === 'illegal') {
       this.illegal++;
-      this.#d.journal('decision', { action: 'world_refused', event: r.eventId, reasons: [`world event ${r.event.type} refused: ${r.reason ?? ''}`] });
       return;
     }
     if (this.#written.delete(r.eventId)) return;
