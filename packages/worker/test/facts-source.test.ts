@@ -322,6 +322,22 @@ describe('the strategy keeps each candidate\'s last reasons with their inputs (w
   });
 });
 
+describe('a passing evaluation clears the candidate\'s reasons', () => {
+  it('after the entry, candidates() gives no reasons for the mint, so the source reads nothing more for it', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h);
+    // Earlier evaluations rejected (the ramp before every fact was there), so a reason list exists to be cleared.
+    await m.run(4_000, 100, () => m.pool());
+    const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8');
+    expect(journal).toContain('"reject"');
+    expect(journal).toContain('"enter"');
+    expect(h.worker.strategy.candidates().get(MINT)?.gates).toEqual([]);
+    expect(readsFor(h.worker.strategy.candidates().get(MINT)!.gates)).toEqual([]);
+    await h.worker.stop();
+  });
+});
+
 describe('liveFacts: the production source', () => {
   it('builds FACTS-1\'s readers on the worker\'s Feed and reads the policy\'s SOL/USD window at start', async () => {
     const timers = new ManualTimers(Date.parse(FIX.meta.fetchedAt));
