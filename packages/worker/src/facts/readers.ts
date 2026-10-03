@@ -39,6 +39,18 @@ export interface FactRpcOptions {
   readonly timeoutMs: number;
 }
 
+/** A JSON-RPC error answer, with its code (null when the provider gave none). */
+export class FactRpcError extends ProviderError {
+  readonly rpcCode: number | null;
+  constructor(method: string, code: number | null) {
+    super('helius', 'rpc', `${method} error ${code ?? 'unknown'}`);
+    this.rpcCode = code;
+  }
+}
+
+/** The code Helius answered a mint-only getProgramAccounts with when the set is too large (gpa-probe run 37149567929). */
+export const GPA_TOO_MANY_ACCOUNTS = -32600;
+
 /** Helius JSON-RPC reads at `confirmed`, each one standard call through the scheduler. */
 export class FactRpc {
   readonly #o: FactRpcOptions;
@@ -63,7 +75,7 @@ export class FactRpc {
       if (!isObj(json)) throw new ProviderError('helius', 'shape', `${method} returned no object`);
       if (json['error'] !== undefined) {
         const e = json['error'];
-        throw new ProviderError('helius', 'rpc', `${method} error ${isObj(e) && typeof e['code'] === 'number' ? e['code'] : 'unknown'}`);
+        throw new FactRpcError(method, isObj(e) && typeof e['code'] === 'number' ? e['code'] : null);
       }
       return json['result'];
     });
@@ -98,7 +110,7 @@ export class FactRpc {
   }
 
   /** Every account of `program` whose bytes at offset 0 are `mint` (token accounts of that mint), in one response. */
-  async getProgramAccounts(program: string, mint: string, minContextSlot: bigint, priority: Priority, token2022: Token2022Filter = 'indexed'): Promise<{ slot: bigint; accounts: { address: string; owner: string; data: string }[] }> {
+  async getProgramAccounts(program: string, mint: string, minContextSlot: bigint, priority: Priority, token2022: Token2022Filter = 'mintOnly'): Promise<{ slot: bigint; accounts: { address: string; owner: string; data: string }[] }> {
     const r = await this.call('getProgramAccounts', [program, { encoding: 'base64', commitment: 'confirmed', withContext: true, minContextSlot: Number(minContextSlot), filters: holderFilters(program, mint, token2022) }], priority);
     const slot = contextSlot(r, 'getProgramAccounts');
     const value = (r as Obj)['value'];
@@ -160,13 +172,13 @@ export class FactRpc {
  * call (never the cursor-paginated V2, which has no cross-page consistency). A Token-2022 account of exactly 165 bytes
  * (no extensions) would be missed; the exact sum to supply then fails and no holder fact is made, never a pass.
  */
-export const holderFilters = (program: string, mint: string, token2022: Token2022Filter = 'indexed'): readonly Record<string, unknown>[] =>
+export const holderFilters = (program: string, mint: string, token2022: Token2022Filter = 'mintOnly'): readonly Record<string, unknown>[] =>
   program === TOKEN_2022_PROGRAM
     ? token2022 === 'mintOnly' ? [{ memcmp: { offset: 0, bytes: mint } }] : [{ memcmp: { offset: 0, bytes: mint } }, { memcmp: { offset: 165, bytes: TOKEN_ACCOUNT_TYPE_B58 } }]
     : [{ dataSize: 165 }, { memcmp: { offset: 0, bytes: mint } }];
 /**
- * `indexed` (default until gpa-probe runs) or `mintOnly` (every Token-2022 account of the mint, including 165-byte ones
- * without extensions). Supervisor ruling: switch the default to mintOnly once the probe shows it is served in budget.
+ * `mintOnly` (the default: every Token-2022 account of the mint, including 165-byte ones without extensions; served by
+ * Helius in gpa-probe run 37149567929) or `indexed` (AccountType at 165; the fallback when a mint-only call is refused).
  */
 export type Token2022Filter = 'mintOnly' | 'indexed';
 
@@ -326,23 +338,31 @@ export class FactReaders {
    * cap nothing is read and H12/H13 stay not covered.
    */
   async readHoldersAll(mint: string, priority: Priority = P2): Promise<boolean> {
-    const day = Math.floor(this.#o.timers.now() / 86_400_000);
-    if (this.#scanDay !== day) {
-      this.#scanDay = day;
-      this.#scans = 0;
-    }
-    if (this.#scans >= (this.#o.holderScansPerDay ?? HOLDER_SCANS_PER_DAY)) {
+    if (!this.#takeScan()) {
       this.outcomes.push({ read: `holders-all:${mint}`, ok: false, detail: 'daily scan cap reached' });
       return false;
     }
-    this.#scans++;
     return this.#guard(`holders-all:${mint}`, async () => {
       const started = this.#o.timers.now();
       const m = await this.#o.rpc.getAccountInfo(mint, priority);
       if (m.account === null) throw new Error('mint account missing');
       // Supply first (slot A), then the scan at a bank no older than A (slot B >= A): with no mint authority the supply
       // can only fall, so balances summing to the supply at A prove nothing was left out and nothing burned between.
-      const gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority, this.#o.token2022Filter ?? 'indexed');
+      let filter: Token2022Filter = this.#o.token2022Filter ?? 'mintOnly';
+      let fallback = false;
+      let gpa: Awaited<ReturnType<FactRpc['getProgramAccounts']>>;
+      try {
+        gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority, filter);
+      } catch (e) {
+        // Only the refusal of a too-large mint-only scan (-32600) earns one indexed retry, counted as its own scan. Every
+        // other failure (a 429, a timeout, "minimum context slot not reached", a legacy program) propagates: no retry.
+        // The retry's result stays fail-safe: an extension-less account holding tokens breaks the sum and no fact forms.
+        if (!(e instanceof FactRpcError && e.rpcCode === GPA_TOO_MANY_ACCOUNTS && m.account.owner === TOKEN_2022_PROGRAM && filter === 'mintOnly')) throw e;
+        if (!this.#takeScan()) throw new Error('mint-only scan refused and the daily scan cap is reached');
+        filter = 'indexed';
+        fallback = true;
+        gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority, filter);
+      }
       if (gpa.slot < m.slot) throw new Error(`scan at slot ${gpa.slot} is older than the supply read at ${m.slot}`);
       const owners = new Set<string>();
       for (const a of gpa.accounts) {
@@ -362,13 +382,26 @@ export class FactReaders {
       }
       this.#ingest('helius', RAW.holdersAll(mint), {
         mint, slot: gpa.slot, commitment: 'confirmed', program: m.account.owner, mintSlot: m.slot, mintData: m.account.data, accounts: gpa.accounts, ownerPrograms,
+        filter: m.account.owner === TOKEN_2022_PROGRAM ? filter : 'legacy', fallback,
       });
-      return `${gpa.accounts.length} accounts at slot ${gpa.slot}, ${this.#o.timers.now() - started} ms`;
+      return `${gpa.accounts.length} accounts at slot ${gpa.slot}, ${filter}${fallback ? ' after a refused mint-only scan' : ''}, ${this.#o.timers.now() - started} ms`;
     });
   }
 
   #scanDay = -1;
   #scans = 0;
+
+  /** One scan off today's cap, or false when the cap is reached. */
+  #takeScan(): boolean {
+    const day = Math.floor(this.#o.timers.now() / 86_400_000);
+    if (this.#scanDay !== day) {
+      this.#scanDay = day;
+      this.#scans = 0;
+    }
+    if (this.#scans >= (this.#o.holderScansPerDay ?? HOLDER_SCANS_PER_DAY)) return false;
+    this.#scans++;
+    return true;
+  }
 
   /**
    * A wallet's first funder (`read:funder:<wallet>`): pages back through its signatures to the oldest successful one
