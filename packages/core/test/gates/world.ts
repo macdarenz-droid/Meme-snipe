@@ -113,7 +113,7 @@ export const solPoints = (endMs: number, count: number, f: (k: number) => bigint
   Array.from({ length: count }, (_, k) => ({ tMs: endMs - k * HOUR_MS, price: f(k) }));
 
 export const volumeDays = (lastDay: number, count: number, f: (k: number) => bigint = (k) => (k === 0 ? 20_000_000_000n : 10_000_000_000n + BigInt(k % 7) * 1_000_000_000n)) =>
-  Array.from({ length: count }, (_, k) => ({ day: lastDay - k, volumeUsd: f(k) }));
+  Array.from({ length: count }, (_, k) => ({ day: lastDay - k, volumeLamports: f(k) }));
 
 /** Every fact a passing live decision needs, keyed as the gates read them. */
 export const passingFacts = (): Facts => {

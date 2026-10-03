@@ -27,7 +27,9 @@ export const evaluateSoftFeatures = (ctx: GateContext, deps: GateDeps, mint: str
   const features: SoftFeature[] = [];
   const unknownAll = (names: readonly string[], note: string) => { for (const name of names) features.push({ name, value: null, note }); };
 
-  const soft = ev.read('soft', softKey(mint), parseSoft, 'state', 'H16');
+  // Read as an event: FACTS-1 writes soft values once their window is covered and they no longer change (creation-slot
+  // buyers, same-transaction dev buy, funding classes), so a fact from creation is still the value at the decision.
+  const soft = ev.read('soft', softKey(mint), parseSoft, 'event', 'H16');
   const third = deps.mode === 'live';
   // Third-party scores are live only (§16.3): never logged in the backtest, even if a feed supplied one.
   const names = [...SOFT_BIGINTS, ...SOFT_NUMBERS, ...SOFT_FLAGS].filter((n) => n !== 'rugcheckSingleHolderFlag' && (third || n !== 'rugcheckScore'));

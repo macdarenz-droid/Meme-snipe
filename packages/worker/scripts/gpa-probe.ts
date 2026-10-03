@@ -1,19 +1,26 @@
 // Is getProgramAccounts (memcmp on a mint at offset 0) served on the free providers, for both token programs, and at
 // what latency? Opt-in; prints availability, account counts, context slots and timings only, never a key or URL.
 //   ZEROED_GPA_PROBE=1 CREDENTIALS_DIRECTORY=<dir with HELIUS_API_KEY and ALCHEMY_API_KEY> node packages/worker/scripts/gpa-probe.ts
-// Credits per call are not reported by either API: read them from each dashboard's usage before and after the run.
-import { alchemyRpcUrl, credentialsDirectorySecrets, heliusRpcUrl } from '../src/providers/index.ts';
+// or, in the gpa-probe workflow, with HELIUS_API_KEY and ALCHEMY_API_KEY in the environment.
+// Neither API reports the credits a call used. The script prints the published price (Helius credits page:
+// getProgramAccounts 10 credits, data.md §1.2; Alchemy: not published for this method on its CU table, read the
+// dashboard's usage before and after a run).
+import { alchemyRpcUrl, credentialsDirectorySecrets, heliusRpcUrl, type Secrets } from '../src/providers/index.ts';
 
 if (process.env.ZEROED_GPA_PROBE !== '1') {
   console.error('gpa probe is opt-in: set ZEROED_GPA_PROBE=1 (it uses real provider credits)');
   process.exit(2);
 }
 const dir = process.env.CREDENTIALS_DIRECTORY;
-if (!dir) {
-  console.error('set CREDENTIALS_DIRECTORY');
-  process.exit(2);
-}
-const secrets = credentialsDirectorySecrets(dir);
+const fromEnv: Secrets = {
+  get: (name) => {
+    const v = process.env[name];
+    if (!v) throw new Error(`${name} is not set`);
+    return v;
+  },
+};
+const secrets = dir ? credentialsDirectorySecrets(dir) : fromEnv;
+const PRICE = { helius: '10 credits (published)', alchemy: 'not published; read the dashboard' } as const;
 /** A Token-2022 pump coin (create_v2) and a legacy SPL pump coin with few holders, recorded on 2026-10-03. */
 const CASES = [
   { program: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', mint: 'DRnMYnkK3dCwypBgZaH5jcVoQHQhoEr8NcMNLJ18pump' },
@@ -27,7 +34,7 @@ for (const [name, url] of [['helius', heliusRpcUrl(secrets)], ['alchemy', alchem
       const body = (await res.json()) as { result?: { context: { slot: number }; value: unknown[] }; error?: { code: number; message: string } };
       const ms = Date.now() - t0;
       if (body.error) console.log(`${name} ${c.program.slice(0, 8)}: refused (${body.error.code} ${body.error.message.slice(0, 80)}), ${ms} ms, HTTP ${res.status}`);
-      else console.log(`${name} ${c.program.slice(0, 8)}: served, ${body.result!.value.length} accounts at slot ${body.result!.context.slot}, ${ms} ms`);
+      else console.log(`${name} ${c.program.slice(0, 8)}: served, ${body.result!.value.length} accounts at slot ${body.result!.context.slot}, ${ms} ms, ${PRICE[name]}`);
     } catch (e) {
       console.log(`${name} ${c.program.slice(0, 8)}: failed (${(e as Error).name}), ${Date.now() - t0} ms`);
     }

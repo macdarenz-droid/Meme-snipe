@@ -205,14 +205,13 @@ const thirdParty = {
   jupiter: jup.find((t) => t.id === MINT)?.audit ?? null,
 };
 
-// 7. Series: hourly SOL/USD candles (Coinbase, the backtest's source) and DefiLlama's daily pump.fun volume.
+// 7. Series: hourly SOL/USD candles (Coinbase, the backtest's source).
 const end = Math.floor(fetchedAt / 3_600_000) * 3_600_000;
 const coinbase = await (await fetch(`https://api.exchange.coinbase.com/products/SOL-USD/candles?granularity=3600&start=${new Date(end - 72 * 3_600_000).toISOString()}&end=${new Date(end).toISOString()}`, { headers: { 'user-agent': 'zeroed-fixtures' } })).text();
-const llama = (await getJson('https://api.llama.fi/summary/dexs/pump.fun?dataType=dailyVolume')) as { totalDataChart: [number, number][] };
 
 save();
 writeFileSync(join(OUT, 'facts.json'), JSON.stringify({
   meta: { rpc: RPC, fetchedAt: new Date(fetchedAt).toISOString(), calls, mint: MINT, pool: POOL, migrationSlot: MIGRATION_SLOT, creationSlot: s0, creator, asOfSlot: String(AS_OF), firstBuyers: buyers },
-  transactions: txs, funders, accountsRead, holdersRaw, holdersComplete, thirdParty, coinbase, llama: llama.totalDataChart.slice(-400),
+  transactions: txs, funders, accountsRead, holdersRaw, holdersComplete, thirdParty, coinbase,
 }, null, 1) + '\n');
 console.log(`wrote facts.json: ${txs.length} transactions, ${funders.length} funders, ${calls} RPC calls`);

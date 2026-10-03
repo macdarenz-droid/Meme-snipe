@@ -19,7 +19,10 @@ export interface InsiderLinks {
 export const insiderLinks = (creator: string, wallets: readonly string[], funderOf: (wallet: string) => FunderRead | undefined): InsiderLinks | null => {
   const dev = funderOf(creator);
   const reads = wallets.map(funderOf);
-  if (dev === undefined || !dev.complete || reads.some((r) => r === undefined || !r.complete)) return null;
+  // A read without a funder is unknown, not "unlinked" (a third party may have sent the wallet's first transaction).
+  const found = (r: FunderRead | undefined): boolean => r !== undefined && r.complete && r.funder !== null;
+  if (!found(dev) || !reads.every(found)) return null;
+  if (dev === undefined) return null;
   const devFunder = dev.funder;
   const others = wallets.filter((w) => w !== creator);
   const funded = others.filter((w) => funderOf(w)!.funder === creator).sort();

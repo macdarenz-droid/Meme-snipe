@@ -91,12 +91,3 @@ export const COINBASE_PUBLIC: SchedulerSpec = {
   maxWaitMs: [NO_LIMIT, 30_000, 30_000, 30_000],
   maxQueue: 8,
 };
-
-/** DefiLlama free API: one daily-volume snapshot a few times a day; 1 request a minute is ample. */
-export const DEFILLAMA_FREE: SchedulerSpec = {
-  provider: 'defillama',
-  window: { limit: 1, windowMs: 60_000 },
-  floors: [0, 0, 0, 0],
-  maxWaitMs: [NO_LIMIT, 120_000, 120_000, 120_000],
-  maxQueue: 4,
-};

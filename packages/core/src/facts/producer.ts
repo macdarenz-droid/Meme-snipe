@@ -24,9 +24,11 @@ import {
 } from '../gates/facts.ts';
 import { HOURLY_MAX_AGE_MS } from '../gates/series.ts';
 import { insiderLinks } from './funding.ts';
+import { dailyChainVolume } from './volume.ts';
+import type { VolumeHour } from './raw.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
 import {
-  RAW, decimalToMicro, parseAccountsRead, parseCurveVolumeSnapshot, parseExecStats, parseFunderRead, parseGoPlusRead, parseHoldersRead,
+  RAW, decimalToMicro, parseAccountsRead, parseVolumeHour, parseExecStats, parseFunderRead, parseGoPlusRead, parseHoldersRead,
   parseHoldersAllRead, parseJupiterAuditRead, parseRugCheckRead, parseSimRead, parseSolUsdBar, type AccountsRead, type FunderRead,
   type HoldersAllRead, unwrap,
 } from './raw.ts';
@@ -65,6 +67,8 @@ export interface ProducerOptions {
   readonly survivalReadWindowMs: number;
   readonly graduatesKeepMs: number;
   readonly solUsdKeepMs: number;
+  /** Hours of chain volume kept: the regime's percentile window plus the last day. */
+  readonly volumeKeepMs: number;
   /** Creation-slot buyers: buys in slots s0 to s0 + this (§16.3: s0 to s0+2). */
   readonly insiderSlots: number;
   /** Funder lookups cover the first this many distinct buyers (§16.3: 20). */
@@ -81,6 +85,7 @@ export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): Produ
   survivalReadWindowMs: MINUTE_MS,
   graduatesKeepMs: (p.regime.survivalMedianDays + 2) * 24 * HOUR_MS + p.regime.survivalAfterMs,
   solUsdKeepMs: 24 * HOUR_MS + (p.regime.failedChecksToDisable + 1) * HOUR_MS + HOURLY_MAX_AGE_MS,
+  volumeKeepMs: (p.regime.volumeWindowDays + 2) * 24 * HOUR_MS,
   insiderSlots: 2,
   firstBuyers: 20,
   ...(execHealth === undefined ? {} : { execHealth }),
@@ -291,6 +296,7 @@ export class FactProducer {
   readonly #pending = new Map<string, Pending>();
   readonly #graduates: GraduatesFact['items'][number][] = [];
   readonly #sol = new Map<number, bigint>();
+  readonly #volume = new Map<number, VolumeHour>();
   #head: bigint | null = null;
   #graduatesChanged = false;
   /** The last insiders value written per mint, without its receipt time: unchanged values are not written again. */
@@ -546,9 +552,9 @@ export class FactProducer {
     const fundedBy = (w: string): FunderRead | undefined => {
       const f = this.#funders.get(w);
       if (f === undefined || !f.complete) return undefined;
-      // A found funding is fixed once it happened; a read oldest transaction without one stays so; "no transaction
-      // yet" holds only up to the slot it was read as of.
-      const known = f.slot !== null ? f.slot <= nowSlot : f.signature !== null || f.asOfSlot >= nowSlot;
+      // A found funding is fixed once it happened. No funder found is unknown, never "not funded by the dev": the
+      // first transaction may have been a third party's (a spam token account, a close refund).
+      const known = f.funder !== null && f.slot !== null && f.slot <= nowSlot;
       return known ? f : undefined;
     };
     const funders = wallets.map(fundedBy);
@@ -718,10 +724,13 @@ export class FactProducer {
         obs: { provider, slot: null, receivedAt: at, quality: [] },
         points: [...this.#sol].sort((a, b) => a[0] - b[0]).map(([tMs, price]) => ({ tMs, price })),
       });
-    } else if (key === RAW.curveVolume) {
-      const r = parseCurveVolumeSnapshot(v);
-      if (r === null) return;
-      put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: [...r.days].sort((a, b) => a.day - b.day) });
+    } else if (key === RAW.volumeHour) {
+      const r = parseVolumeHour(v);
+      // An hour row is usable only once its hour has ended: earlier it would be a look into the future.
+      if (r === null || at < r.hourStartMs + HOUR_MS) return;
+      this.#volume.set(r.hourStartMs, this.#volume.has(r.hourStartMs) && (this.#volume.get(r.hourStartMs)!.lamports !== r.lamports || this.#volume.get(r.hourStartMs)!.covered !== r.covered) ? { ...r, covered: false } : r);
+      for (const t of [...this.#volume.keys()]) if (t < r.hourStartMs - this.#o.volumeKeepMs) this.#volume.delete(t);
+      put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: dailyChainVolume([...this.#volume.values()]) });
     } else if (key === RAW.exec) {
       const r = parseExecStats(v);
       if (r === null) return;
@@ -856,12 +865,14 @@ export class FactProducer {
 
   // ---------- Graduate survival (§6.4) ----------
 
-  /** An account read of a pending graduate's pool, within the window after its mark, dates its survival. */
+  /**
+   * An account read of a pending graduate's pool at or after its mark dates its survival. The window's end needs no
+   * check here: `#survival` runs first on every event and drops a graduate once the window has passed.
+   */
   #readReserve(pool: string, effective: bigint, at: number): void {
     const p = this.#pending.get(pool);
     if (p === undefined) return;
-    const mark = p.migratedAtMs + this.#o.survivalAfterMs;
-    if (at >= mark && at <= mark + this.#o.survivalReadWindowMs) this.#resolve(p, effective);
+    if (at >= p.migratedAtMs + this.#o.survivalAfterMs) this.#resolve(p, effective);
   }
 
   #resolve(p: Pending, reserveAfter: bigint): void {

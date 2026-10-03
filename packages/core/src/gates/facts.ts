@@ -182,10 +182,13 @@ export interface SolUsdFact {
   readonly points: readonly { readonly tMs: number; readonly price: bigint }[];
 }
 
-/** DefiLlama daily pump.fun curve volume, as fetched (`obs.receivedAt` is the fetch time). `day`: UTC day number. */
+/**
+ * Daily on-chain trade volume of the pump curve and canonical PumpSwap pools, lamports, complete UTC days only (`day`:
+ * UTC day number). A day with any uncovered hour is absent: unknown, never zero (FACTS-1, supervisor ruling after review).
+ */
 export interface CurveVolumeFact {
   readonly obs: FactObs;
-  readonly days: readonly { readonly day: number; readonly volumeUsd: bigint }[];
+  readonly days: readonly { readonly day: number; readonly volumeLamports: bigint }[];
 }
 
 /** Graduates with their effective quote reserves at migration + `survivalAfterMs`, each known at that time. */
@@ -364,7 +367,7 @@ export const parseSolUsd = (v: unknown): SolUsdFact | null =>
     ? (v as unknown as SolUsdFact) : null;
 
 export const parseCurveVolume = (v: unknown): CurveVolumeFact | null =>
-  withObs(v) && every(v['days'], (d): d is CurveVolumeFact['days'][number] => isObj(d) && isMs(d['day']) && isNat(d['volumeUsd']))
+  withObs(v) && every(v['days'], (d): d is CurveVolumeFact['days'][number] => isObj(d) && isMs(d['day']) && isNat(d['volumeLamports']))
     ? (v as unknown as CurveVolumeFact) : null;
 
 export const parseGraduates = (v: unknown): GraduatesFact | null =>

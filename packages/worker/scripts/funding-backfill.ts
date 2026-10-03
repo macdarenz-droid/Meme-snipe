@@ -1,8 +1,8 @@
 // Builds the insider funding supplement for BT-2 (src/facts/supplement.ts). Opt-in: it spends Helius credits.
 //   ZEROED_FUNDING_BACKFILL=1 CREDENTIALS_DIRECTORY=<dir with HELIUS_API_KEY> \
 //     node packages/worker/scripts/funding-backfill.ts <inputs.jsonl> <out-dir> [funder pages, default 3]
-// inputs.jsonl: one {"mint","creator","firstBuyers":[...],"asOfSlot":"<decimal>"} per line (BT-2 derives it from
-// DATA-1: the create, the first buyers by the slot rule, the decision slot). Prints counts only, never a key.
+// inputs.jsonl: one {"mint","creator","createSlot":"<n>","firstBuyers":[{"wallet","slot":"<n>"}],"asOfSlot":"<n>"} per line
+// (BT-2 derives it from DATA-1: the create, the first buyers by the slot rule, the decision slot). Prints counts only.
 import { readFileSync } from 'node:fs';
 import { credentialsDirectorySecrets, fetchHttp, heliusRpcUrl } from '../src/providers/index.ts';
 import { HELIUS_FREE, P3, Scheduler, systemTimers } from '../src/scheduler/index.ts';
@@ -23,10 +23,13 @@ const timers = systemTimers();
 const rpc = new FactRpc({ url: () => heliusRpcUrl(secrets), http: fetchHttp, scheduler: new Scheduler(HELIUS_FREE, { timers }), timeoutMs: 15_000 });
 const readers = new FactReaders({ feed: { ingest: () => undefined }, rpc, http: fetchHttp, timers, timeoutMs: 15_000 });
 const maxPages = Number(pages ?? 3);
+/** Transactions read oldest first per wallet looking for its funding. */
+const maxTransactions = 10;
 const rows: SupplementRow[] = [];
 for (const line of readFileSync(inputs, 'utf8').split('\n').filter((l) => l.trim() !== '')) {
-  const i = JSON.parse(line) as { mint: string; creator: string; firstBuyers: string[]; asOfSlot: string };
-  rows.push(await supplementRow({ ...i, asOfSlot: BigInt(i.asOfSlot) }, (w, at) => readers.funderOf(w, maxPages, at, P3)));
+  const i = JSON.parse(line) as { mint: string; creator: string; createSlot: string; firstBuyers: { wallet: string; slot: string }[]; asOfSlot: string };
+  const input = { mint: i.mint, creator: i.creator, createSlot: BigInt(i.createSlot), asOfSlot: BigInt(i.asOfSlot), firstBuyers: i.firstBuyers.map((b) => ({ wallet: b.wallet, slot: BigInt(b.slot) })) };
+  rows.push(await supplementRow(input, (w, asOfSlot, beforeSlot) => readers.funderOf(w, { asOfSlot, beforeSlot, maxPages, maxTransactions }, P3)));
 }
 const m = writeSupplement(out, rows);
 console.log(`wrote ${m.rows} rows (${rows.filter((r) => r.devCluster !== null).length} complete), sha256 ${m.sha256}`);

@@ -5,6 +5,7 @@
 // it produces no fact, never a default.
 import type { Commitment } from '../domain/index.ts';
 import { solPriceMicroUsd } from '../units/index.ts';
+import { HOUR_MS } from '../config/time.ts';
 
 /** `getMultipleAccounts` at `commitment`, answered at `slot`. Data is base64; a missing account has owner and data null. */
 export interface AccountsRead {
@@ -95,10 +96,15 @@ export interface SolUsdBar {
   readonly close: string;
 }
 
-/** A stored DefiLlama snapshot of daily pump.fun curve volume, whole USD per UTC day number, as fetched. */
-export interface CurveVolumeSnapshot {
-  readonly fetchedAt: number;
-  readonly days: readonly { readonly day: number; readonly volumeUsd: bigint }[];
+/**
+ * One completed UTC hour of on-chain trade volume: every buy and sell on the pump curve and on canonical PumpSwap pools,
+ * quote side in lamports (curve sol_amount, pool quote amount). `covered` is false when any slot of the hour was not
+ * scanned (a dataset gap, a live stream gap): that hour, and its day, are unknown. Released only after the hour ends.
+ */
+export interface VolumeHour {
+  readonly hourStartMs: number;
+  readonly lamports: bigint;
+  readonly covered: boolean;
 }
 
 /** The bot's own execution health as measured by the worker (live only, §6.4). */
@@ -122,7 +128,7 @@ export const RAW = {
   funder: (wallet: string) => `read:funder:${wallet}`,
   /** BT-1's key for the SOL/USD series; the live fetcher releases the same bar shape under it. */
   solUsd: 'sol-usd',
-  curveVolume: 'read:defillama:pump-curve-volume',
+  volumeHour: 'read:chain-volume-hour',
   exec: 'read:exec-health',
 } as const;
 
@@ -178,10 +184,9 @@ export const parseFunderRead = (v: unknown): FunderRead | null =>
 export const parseSolUsdBar = (v: unknown): SolUsdBar | null =>
   isObj(v) && Number.isSafeInteger(v['start']) && typeof v['close'] === 'string' && /^\d+(\.\d+)?$/.test(v['close']) ? (v as unknown as SolUsdBar) : null;
 
-export const parseCurveVolumeSnapshot = (v: unknown): CurveVolumeSnapshot | null =>
-  isObj(v) && Number.isSafeInteger(v['fetchedAt'])
-  && every(v['days'], (d): d is CurveVolumeSnapshot['days'][number] => isObj(d) && Number.isSafeInteger(d['day']) && isNat(d['volumeUsd']))
-    ? (v as unknown as CurveVolumeSnapshot) : null;
+export const parseVolumeHour = (v: unknown): VolumeHour | null =>
+  isObj(v) && Number.isSafeInteger(v['hourStartMs']) && (v['hourStartMs'] as number) % HOUR_MS === 0 && isNat(v['lamports']) && typeof v['covered'] === 'boolean'
+    ? (v as unknown as VolumeHour) : null;
 
 export const parseExecStats = (v: unknown): ExecStats | null =>
   isObj(v) && isCount(v['attempts']) && isCount(v['failed']) && (v['failed'] as number) <= (v['attempts'] as number)

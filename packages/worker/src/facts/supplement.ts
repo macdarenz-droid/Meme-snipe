@@ -21,19 +21,23 @@ export interface SupplementRow {
 export interface SupplementInput {
   readonly mint: string;
   readonly creator: string;
-  readonly firstBuyers: readonly string[];
+  /** The create's slot: the dev's funding must come before it. */
+  readonly createSlot: bigint;
+  /** First buyers by the slot rule, each with the slot of its first buy. */
+  readonly firstBuyers: readonly { readonly wallet: string; readonly slot: bigint }[];
   readonly asOfSlot: bigint;
 }
 
-export type FunderLookup = (wallet: string, asOfSlot: bigint) => Promise<FunderRead>;
+/** Looks up a wallet's first funder as of `asOfSlot`, funded before `beforeSlot`. */
+export type FunderLookup = (wallet: string, asOfSlot: bigint, beforeSlot: bigint) => Promise<FunderRead>;
 
 /** Looks up the dev and every first buyer as of the decision slot and applies the shared link rule. */
 export const supplementRow = async (input: SupplementInput, lookup: FunderLookup): Promise<SupplementRow> => {
-  const wallets = [...new Set([input.creator, ...input.firstBuyers])];
-  const reads: FunderRead[] = [];
-  for (const w of wallets) reads.push(await lookup(w, input.asOfSlot));
+  const reads: FunderRead[] = [await lookup(input.creator, input.asOfSlot, input.createSlot)];
+  for (const b of input.firstBuyers) if (b.wallet !== input.creator) reads.push(await lookup(b.wallet, input.asOfSlot, b.slot));
   const byWallet = new Map(reads.map((r) => [r.wallet, r]));
-  const links = insiderLinks(input.creator, input.firstBuyers, (w) => byWallet.get(w));
+  const wallets = input.firstBuyers.map((b) => b.wallet);
+  const links = insiderLinks(input.creator, wallets, (w) => byWallet.get(w));
   return {
     mint: input.mint, creator: input.creator, asOfSlot: input.asOfSlot, reads,
     knownAtMs: links === null ? null : links.knownAtMs, funded: links?.funded ?? null, devCluster: links?.devCluster ?? null,
