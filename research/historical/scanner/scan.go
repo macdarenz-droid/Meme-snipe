@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,12 +23,7 @@ import (
 
 	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
-	"github.com/ipfs/go-cid"
 	"github.com/klauspost/compress/zstd"
-	"github.com/rpcpool/yellowstone-faithful/ipld/ipldbindcode"
-	"github.com/rpcpool/yellowstone-faithful/iplddecoders"
-	solanatxmetaparsers "github.com/rpcpool/yellowstone-faithful/solana-tx-meta-parsers"
-	"github.com/rpcpool/yellowstone-faithful/third_party/solana_proto/confirmed_block"
 )
 
 // Schema version of the output rows. Bump on any change of columns or meaning.
@@ -94,6 +90,8 @@ type UnitStats struct {
 	MetaOnlyHits    int64          `json:"meta_only_hits"`
 	BlocksExpected  int            `json:"blocks_expected"`
 	MissingBlocks   []uint64       `json:"missing_blocks"`
+	FirstParentSlot uint64         `json:"first_parent_slot"`
+	ChainBreaks     []string       `json:"chain_breaks"`
 	Seconds         float64        `json:"seconds"`
 	HTTPRequests    int64          `json:"http_requests"`
 	HTTPRetries     int64          `json:"http_retries"`
@@ -173,7 +171,7 @@ type blockData struct {
 	parent    uint64
 	blockTime int64
 	txNodes   [][]byte
-	frames    map[cid.Cid][]byte
+	frames    map[string][]byte
 }
 
 type blockResult struct {
@@ -197,15 +195,7 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ScannerRevision: scannerRevision, SampleRate: sampleRate}
 	req0, ret0, r4290 := statHTTPRequests.Load(), statHTTPRetries.Load(), statHTTP429.Load()
 
-	expected := map[uint64]bool{}
-	for s := from; s <= to; s++ {
-		if _, ok := e.BlockTime(s); ok {
-			expected[s] = true
-		}
-	}
-	st.BlocksExpected = len(expected)
-
-	start, end, err := e.ByteRange(from, to)
+	start, end, firstBlock, err := e.ByteRange(ctx, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +262,7 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 				}
 				delete(pending, next)
 				next++
-				writeResult(outs, res, st, expected, agg)
+				writeResult(outs, res, st, agg)
 			}
 		}
 		for _, row := range aggRows(agg) {
@@ -283,7 +273,7 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 
 	seq := 0
 	var readErr error
-	cur := &blockData{frames: map[cid.Cid][]byte{}}
+	cur := &blockData{frames: map[string][]byte{}}
 	for {
 		c, data, err := readSection(br)
 		if err != nil {
@@ -296,24 +286,21 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 			readErr = fmt.Errorf("short node")
 			break
 		}
-		kind := iplddecoders.Kind(data[1])
-		switch kind {
-		case iplddecoders.KindTransaction:
+		switch data[1] {
+		case kindTransaction:
 			cur.txNodes = append(cur.txNodes, data)
-		case iplddecoders.KindDataFrame:
+		case kindDataFrame:
 			cur.frames[c] = data
-		case iplddecoders.KindBlock:
-			blk, err := iplddecoders.DecodeBlock(data)
+		case kindBlock:
+			slot, parent, bt, err := blockNode(data)
 			if err != nil {
 				readErr = fmt.Errorf("decode block: %w", err)
 				break
 			}
-			cur.slot = uint64(blk.Slot)
-			cur.parent = uint64(blk.Meta.Parent_slot)
-			cur.blockTime = int64(blk.Meta.Blocktime)
+			cur.slot, cur.parent, cur.blockTime = slot, parent, bt
 			jobQ <- job{seq, cur}
 			seq++
-			cur = &blockData{frames: map[cid.Cid][]byte{}}
+			cur = &blockData{frames: map[string][]byte{}}
 		}
 		if readErr != nil {
 			break
@@ -348,13 +335,19 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 			return nil, err
 		}
 	}
-	for s := range expected {
-		st.MissingBlocks = append(st.MissingBlocks, s)
+	// Completeness: the range starts at the first block at or after `from`, and every
+	// block names the previous one as its parent, so no block of the chain is missing.
+	// Across units, finalize checks each unit's first parent against the previous
+	// unit's last block.
+	switch {
+	case firstBlock == nil && st.Blocks > 0:
+		return nil, fmt.Errorf("found %d blocks where the archive has none", st.Blocks)
+	case firstBlock != nil && st.FirstBlockSlot != firstBlock.Slot:
+		return nil, fmt.Errorf("first block %d, expected %d", st.FirstBlockSlot, firstBlock.Slot)
+	case len(st.ChainBreaks) > 0:
+		return nil, fmt.Errorf("%d parent-link breaks (first %s)", len(st.ChainBreaks), st.ChainBreaks[0])
 	}
-	if len(st.MissingBlocks) > 0 {
-		return nil, fmt.Errorf("%d expected blocks not found in the CAR range (first %d)", len(st.MissingBlocks), st.MissingBlocks[0])
-	}
-	sort.Slice(st.MissingBlocks, func(i, j int) bool { return st.MissingBlocks[i] < st.MissingBlocks[j] })
+	st.BlocksExpected = st.Blocks
 	st.Seconds = time.Since(t0).Seconds()
 	st.HTTPRequests = statHTTPRequests.Load() - req0
 	st.HTTPRetries = statHTTPRetries.Load() - ret0
@@ -371,13 +364,16 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	return st, nil
 }
 
-func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, expected map[uint64]bool, agg map[aggKey]*aggVal) {
-	delete(expected, r.slot)
+func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map[aggKey]*aggVal) {
 	mergeAgg(agg, r.agg)
 	st.mu.Lock()
+	parent, _ := strconv.ParseUint(r.blockRow[2], 10, 64)
 	if st.Blocks == 0 {
 		st.FirstBlockSlot = r.slot
 		st.FirstBlockTime, _ = strconv.ParseInt(r.blockRow[1], 10, 64)
+		st.FirstParentSlot = parent
+	} else if parent != st.LastBlockSlot && len(st.ChainBreaks) < 20 {
+		st.ChainBreaks = append(st.ChainBreaks, fmt.Sprintf("block %d parent %d, previous block %d", r.slot, parent, st.LastBlockSlot))
 	}
 	st.Blocks++
 	st.LastBlockSlot = r.slot
@@ -416,27 +412,31 @@ func (c *countR) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// readSection reads one CARv1 section: uvarint length, CID, data.
-func readSection(br *bufio.Reader) (cid.Cid, []byte, error) {
+// readSection reads one CARv1 section (uvarint length, CID, data) and verifies that
+// the data hashes to its CID: every archive node is DAG-CBOR with a sha2-256 CIDv1.
+func readSection(br *bufio.Reader) (string, []byte, error) {
 	l, err := readUvarint(br)
 	if err != nil {
-		return cid.Undef, nil, err
+		return "", nil, err
 	}
-	if l == 0 || l > 1<<30 {
-		return cid.Undef, nil, fmt.Errorf("bad section length %d", l)
+	if l < 36 || l > 1<<30 {
+		return "", nil, fmt.Errorf("bad section length %d", l)
 	}
 	buf := make([]byte, l)
 	if _, err := io.ReadFull(br, buf); err != nil {
 		if errors.Is(err, io.EOF) {
 			err = io.ErrUnexpectedEOF
 		}
-		return cid.Undef, nil, err
+		return "", nil, err
 	}
-	n, c, err := cid.CidFromBytes(buf)
-	if err != nil {
-		return cid.Undef, nil, fmt.Errorf("cid: %w", err)
+	if !bytes.Equal(buf[:4], cidPrefix) {
+		return "", nil, fmt.Errorf("unexpected CID prefix %x", buf[:4])
 	}
-	return c, buf[n:], nil
+	sum := sha256.Sum256(buf[36:])
+	if !bytes.Equal(sum[:], buf[4:36]) {
+		return "", nil, fmt.Errorf("node data does not match its CID")
+	}
+	return string(buf[:36]), buf[36:], nil
 }
 
 func readUvarint(br *bufio.Reader) (uint64, error) {
@@ -461,13 +461,13 @@ func readUvarint(br *bufio.Reader) (uint64, error) {
 	}
 }
 
-func frameGetter(b *blockData) func(context.Context, cid.Cid) (*ipldbindcode.DataFrame, error) {
-	return func(_ context.Context, c cid.Cid) (*ipldbindcode.DataFrame, error) {
+func frameGetter(b *blockData) frameGetterFn {
+	return func(c string) (*frame, error) {
 		raw, ok := b.frames[c]
 		if !ok {
-			return nil, fmt.Errorf("frame %s not in block", c)
+			return nil, fmt.Errorf("frame %x not in block", c)
 		}
-		return iplddecoders.DecodeDataFrame(raw)
+		return parseFrameNode(raw)
 	}
 }
 
@@ -484,25 +484,10 @@ func processBlock(b *blockData, st *UnitStats) *blockResult {
 			r.vote++
 			continue
 		}
-		txBytes, metaBuf, txIdx, ok := fastTxNode(raw)
-		if !ok {
-			txNode, err := iplddecoders.DecodeTransaction(raw)
-			if err != nil {
-				st.decodeErr(fmt.Sprintf("slot %d: tx node: %v", b.slot, err))
-				continue
-			}
-			if txBytes, err = ipldbindcode.LoadDataFromDataFrames(&txNode.Data, get); err != nil {
-				st.decodeErr(fmt.Sprintf("slot %d: tx data: %v", b.slot, err))
-				continue
-			}
-			if metaBuf, err = ipldbindcode.LoadDataFromDataFrames(&txNode.Metadata, get); err != nil {
-				st.decodeErr(fmt.Sprintf("slot %d: meta frames: %v", b.slot, err))
-				continue
-			}
-			txIdx = -1
-			if txNode.Index != nil && *txNode.Index != nil {
-				txIdx = **txNode.Index
-			}
+		txBytes, metaBuf, txIdx, err := txNode(raw, get)
+		if err != nil {
+			st.decodeErr(fmt.Sprintf("slot %d: tx node: %v", b.slot, err))
+			continue
 		}
 		if bytes.Contains(txBytes, voteProgram[:]) {
 			r.vote++
@@ -646,21 +631,13 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 		err = errProto // not a protobuf meta (or inconsistent): use the full parser
 	}
 	if err != nil {
-		mc, err2 := solanatxmetaparsers.ParseTransactionStatusMetaContainer(metaRaw)
-		if err2 != nil {
-			st.decodeErr(fmt.Sprintf("slot %d idx %d: meta: %v", b.slot, txIdx, err2))
-			return
-		}
-		if !mc.IsProtobuf() {
-			st.mu.Lock()
-			st.LegacyMeta++
-			st.mu.Unlock()
-			return
-		}
-		meta = mc.GetProtobuf()
+		// Older archive epochs store metas in a legacy (bincode) format; every epoch
+		// scanned so far is protobuf. Count and skip rather than guess.
 		st.mu.Lock()
-		st.FullMetaParses++
+		st.LegacyMeta++
 		st.mu.Unlock()
+		st.decodeErr(fmt.Sprintf("slot %d idx %d: meta is not the expected protobuf", b.slot, txIdx))
+		return
 	}
 	keys := make([][32]byte, 0, len(tx.Message.AccountKeys)+len(meta.LoadedWritableAddresses)+len(meta.LoadedReadonlyAddresses))
 	for _, k := range tx.Message.AccountKeys {
@@ -961,7 +938,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 
 const wsolMint = "So11111111111111111111111111111111111111112"
 
-func ownerBalances(post []*confirmed_block.TokenBalance, owner string) map[string]string {
+func ownerBalances(post []*TokenBalance, owner string) map[string]string {
 	out := map[string]string{}
 	for _, tb := range post {
 		if tb.Owner == owner && tb.UiTokenAmount != nil {

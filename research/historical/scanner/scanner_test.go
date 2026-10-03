@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"hash/crc64"
 	"math"
 	"testing"
 
@@ -143,23 +144,58 @@ func TestMayLoadAccounts(t *testing.T) {
 	}
 }
 
-func TestFastTxNode(t *testing.T) {
+func TestTxNode(t *testing.T) {
 	// [0, [6, null, null, null, h'0102', null], [6, null, null, null, h'03', null], 7, 2]
 	raw := []byte{0x85, 0x00,
 		0x86, 0x06, 0xf6, 0xf6, 0xf6, 0x42, 0x01, 0x02, 0xf6,
 		0x86, 0x06, 0xf6, 0xf6, 0xf6, 0x41, 0x03, 0xf6,
 		0x07, 0x02}
-	d, m, idx, ok := fastTxNode(raw)
-	if !ok || string(d) != "\x01\x02" || string(m) != "\x03" || idx != 2 {
-		t.Fatalf("got %v %v %v %v", d, m, idx, ok)
+	noFrames := func(string) (*frame, error) { return nil, errCBOR }
+	d, m, idx, err := txNode(raw, noFrames)
+	if err != nil || string(d) != "\x01\x02" || string(m) != "\x03" || idx != 2 {
+		t.Fatalf("got %v %v %v %v", d, m, idx, err)
 	}
-	// total = 2 (multi-frame) must fall back
-	multi := []byte{0x85, 0x00,
-		0x86, 0x06, 0xf6, 0xf6, 0x02, 0x42, 0x01, 0x02, 0xf6,
-		0x86, 0x06, 0xf6, 0xf6, 0xf6, 0x41, 0x03, 0xf6,
-		0x07, 0x02}
-	if _, _, _, ok := fastTxNode(multi); ok {
-		t.Fatalf("multi-frame node must use the full decoder")
+}
+
+func TestMultiFrameIsReassembledAndHashChecked(t *testing.T) {
+	// first frame: index 0, total 2, data "ab", next [link to second]; second: index 1, data "cd"
+	payload := []byte("abcd")
+	h := crc64.Checksum(payload, crcTable)
+	hb := make([]byte, 8)
+	binary.BigEndian.PutUint64(hb, h)
+	link := []byte{0x00, 0x01, 0x71, 0x12, 0x20}
+	link = append(link, make([]byte, 32)...)
+	first := []byte{0x86, 0x06, 0x1b}
+	first = append(first, hb...)
+	first = append(first, 0x00, 0x02, 0x42, 'a', 'b', 0x81, 0xd8, 0x2a, 0x58, byte(len(link)))
+	first = append(first, link...)
+	second := []byte{0x86, 0x06, 0xf6, 0x01, 0xf6, 0x42, 'c', 'd', 0xf6}
+	f, err := parseFrameNode(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(c string) (*frame, error) {
+		if c != string(link[1:]) {
+			t.Fatalf("asked for unexpected cid")
+		}
+		return parseFrameNode(second)
+	}
+	out, err := loadFrames(f, get)
+	if err != nil || string(out) != "abcd" {
+		t.Fatalf("got %q %v", out, err)
+	}
+	f.hash ^= 1
+	if _, err := loadFrames(f, get); err == nil {
+		t.Fatalf("hash mismatch not detected")
+	}
+}
+
+func TestBlockNode(t *testing.T) {
+	// [2, 100, [], [], [99, 1790000000, null], null]
+	raw := []byte{0x86, 0x02, 0x18, 0x64, 0x80, 0x80, 0x83, 0x18, 0x63, 0x1a, 0x6a, 0xb1, 0x3b, 0x80, 0xf6, 0xf6}
+	s, p, bt, err := blockNode(raw)
+	if err != nil || s != 100 || p != 99 || bt != 1790000000 {
+		t.Fatalf("got %d %d %d %v", s, p, bt, err)
 	}
 }
 

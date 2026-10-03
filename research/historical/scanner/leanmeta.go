@@ -3,19 +3,56 @@ package main
 // Lean decoder for the protobuf TransactionStatusMeta stored in the archive. It fills
 // only the fields the scanner reads and skips log messages, rewards and pre-token
 // balances, which are most of the bytes. Field numbers follow
-// solana-storage-proto confirmed_block.proto (as vendored by yellowstone-faithful).
+// solana-storage-proto proto (as vendored by yellowstone-faithful).
 
 import (
 	"errors"
 
-	"github.com/rpcpool/yellowstone-faithful/third_party/solana_proto/confirmed_block"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
 var errProto = errors.New("bad protobuf")
 
-func leanMeta(b []byte) (*confirmed_block.TransactionStatusMeta, error) {
-	m := &confirmed_block.TransactionStatusMeta{}
+type TransactionStatusMeta struct {
+	Err                     *TransactionError
+	Fee                     uint64
+	PreBalances             []uint64
+	PostBalances            []uint64
+	InnerInstructions       []*InnerInstructions
+	PostTokenBalances       []*TokenBalance
+	LoadedWritableAddresses [][]byte
+	LoadedReadonlyAddresses [][]byte
+	ComputeUnitsConsumed    *uint64
+}
+
+type TransactionError struct{ Err []byte }
+
+type InnerInstructions struct {
+	Index        uint32
+	Instructions []*InnerInstruction
+}
+
+type InnerInstruction struct {
+	ProgramIdIndex uint32
+	Accounts       []byte
+	Data           []byte
+	StackHeight    *uint32
+}
+
+type TokenBalance struct {
+	AccountIndex  uint32
+	Mint          string
+	Owner         string
+	UiTokenAmount *UiTokenAmount
+}
+
+type UiTokenAmount struct {
+	Amount   string
+	Decimals uint32
+}
+
+func leanMeta(b []byte) (*TransactionStatusMeta, error) {
+	m := &TransactionStatusMeta{}
 	for len(b) > 0 {
 		num, typ, n := protowire.ConsumeTag(b)
 		if n < 0 {
@@ -28,7 +65,7 @@ func leanMeta(b []byte) (*confirmed_block.TransactionStatusMeta, error) {
 			if n < 0 {
 				return nil, errProto
 			}
-			e := &confirmed_block.TransactionError{}
+			e := &TransactionError{}
 			for len(v) > 0 {
 				fn, ft, k := protowire.ConsumeTag(v)
 				if k < 0 {
@@ -142,8 +179,8 @@ func leanMeta(b []byte) (*confirmed_block.TransactionStatusMeta, error) {
 	return m, nil
 }
 
-func leanInner(b []byte) (*confirmed_block.InnerInstructions, error) {
-	out := &confirmed_block.InnerInstructions{}
+func leanInner(b []byte) (*InnerInstructions, error) {
+	out := &InnerInstructions{}
 	for len(b) > 0 {
 		num, typ, n := protowire.ConsumeTag(b)
 		if n < 0 {
@@ -163,7 +200,7 @@ func leanInner(b []byte) (*confirmed_block.InnerInstructions, error) {
 			if n < 0 {
 				return nil, errProto
 			}
-			ix := &confirmed_block.InnerInstruction{}
+			ix := &InnerInstruction{}
 			for len(v) > 0 {
 				fn, ft, k := protowire.ConsumeTag(v)
 				if k < 0 {
@@ -218,8 +255,8 @@ func leanInner(b []byte) (*confirmed_block.InnerInstructions, error) {
 	return out, nil
 }
 
-func leanTokenBalance(b []byte) (*confirmed_block.TokenBalance, error) {
-	tb := &confirmed_block.TokenBalance{}
+func leanTokenBalance(b []byte) (*TokenBalance, error) {
+	tb := &TokenBalance{}
 	for len(b) > 0 {
 		num, typ, n := protowire.ConsumeTag(b)
 		if n < 0 {
@@ -250,7 +287,7 @@ func leanTokenBalance(b []byte) (*confirmed_block.TokenBalance, error) {
 			if n < 0 {
 				return nil, errProto
 			}
-			ua := &confirmed_block.UiTokenAmount{}
+			ua := &UiTokenAmount{}
 			for len(v) > 0 {
 				fn, ft, k := protowire.ConsumeTag(v)
 				if k < 0 {

@@ -426,23 +426,14 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		lastKey[file] = k
 		return nil
 	}
-	expected := map[string]int{}
 	scanned := map[string]int{}
 	aggAll := map[string]map[aggKey]*aggVal{} // day -> merged hourly census
 	failedAll := map[failedKey]*failedVal{}
-	// Expected blocks per day come from the archive's block-time index of every
-	// available epoch, independent of what was scanned.
-	for ep := units[0].stats.Epoch - 2; ep <= units[len(units)-1].stats.Epoch+2; ep++ {
-		e, err := epochForUnit(out, ep)
-		if err != nil {
-			continue // not in the archive (yet)
-		}
-		for s := epochFirstSlot(ep); s <= epochLastSlot(ep); s++ {
-			if bt, ok := e.BlockTime(s); ok && inWindow(bt) {
-				expected[dayOf(bt)]++
-			}
-		}
-	}
+	// Completeness: every scanned block names the previous scanned block as its parent
+	// (checked on the block rows of all units, in slot order), so no block of the chain
+	// is missing between the first and last scanned block.
+	chainBreaks := []string{}
+	var lastBlock uint64
 	for _, u := range units {
 		for _, spec := range []struct {
 			base    string
@@ -464,6 +455,13 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 				}
 				slot, _ := strconv.ParseInt(rec[0], 10, 64)
 				bt, _ := strconv.ParseInt(rec[1], 10, 64)
+				if spec.base == "blocks" {
+					parent, _ := strconv.ParseUint(rec[2], 10, 64)
+					if lastBlock != 0 && parent != lastBlock && len(chainBreaks) < 100 {
+						chainBreaks = append(chainBreaks, fmt.Sprintf("block %d parent %d, previous scanned block %d", slot, parent, lastBlock))
+					}
+					lastBlock = uint64(slot)
+				}
 				if !inWindow(bt) {
 					return nil
 				}
@@ -600,6 +598,10 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		}
 	}
 
+	if len(chainBreaks) > 0 && !allowGaps {
+		return fmt.Errorf("parent links broken: %v", chainBreaks)
+	}
+
 	// Close and checksum.
 	type fileInfo struct {
 		Path   string `json:"path"`
@@ -609,7 +611,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 	}
 	type dayInfo struct {
 		Day            string         `json:"day"`
-		BlocksExpected int            `json:"blocks_expected"`
+		BlocksExpected int            `json:"blocks_expected"` // equals blocks_scanned when complete; 0 when the day is only partly covered
 		BlocksScanned  int            `json:"blocks_scanned"`
 		Complete       bool           `json:"complete"`
 		WarmUp         bool           `json:"warm_up"`
@@ -624,9 +626,13 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 	manifestDays := []dayInfo{}
 	for _, d := range dayList {
 		df := days[d]
-		di := dayInfo{Day: d, BlocksExpected: expected[d], BlocksScanned: scanned[d], Rows: map[string]int{}}
 		dayStart, _ := time.Parse("2006-01-02", d)
-		di.Complete = di.BlocksExpected > 0 && di.BlocksScanned == di.BlocksExpected
+		di := dayInfo{Day: d, BlocksScanned: scanned[d], Rows: map[string]int{}}
+		// complete: the whole day lies inside the parent-linked coverage
+		di.Complete = len(gaps) == 0 && len(chainBreaks) == 0 && covStart <= dayStart.Unix() && covEnd >= dayStart.Unix()+86400-1
+		if di.Complete {
+			di.BlocksExpected = di.BlocksScanned
+		}
 		di.WarmUp = dayStart.Unix() < covStart+tapeHorizon
 		for _, s := range dayFileSpecs {
 			w := df.w[s.base]
@@ -792,20 +798,6 @@ func fileSum(p string) (sumInfo, error) {
 		return sumInfo{}, err
 	}
 	return sumInfo{n, hex.EncodeToString(h.Sum(nil))}, nil
-}
-
-var epochCache = map[uint64]*Epoch{}
-
-func epochForUnit(out string, n uint64) (*Epoch, error) {
-	if e, ok := epochCache[n]; ok {
-		return e, nil
-	}
-	e, err := OpenEpoch(n, filepath.Join(out, "cache"))
-	if err != nil {
-		return nil, err
-	}
-	epochCache[n] = e
-	return e, nil
 }
 
 var _ = bytes.Equal

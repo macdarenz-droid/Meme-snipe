@@ -15,10 +15,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/ipfs/go-cid"
-	"github.com/rpcpool/yellowstone-faithful/blocktimeindex"
-	"github.com/rpcpool/yellowstone-faithful/indexes"
 )
 
 const archiveBase = "https://files.old-faithful.net"
@@ -127,35 +123,6 @@ func fetchRange(ctx context.Context, url string, off, n int64) ([]byte, error) {
 	return nil, fmt.Errorf("giving up: %w", lastErr)
 }
 
-// remoteFile is an io.ReaderAt over an archive file.
-type remoteFile struct {
-	url  string
-	size int64
-}
-
-func (r *remoteFile) ReadAt(p []byte, off int64) (int, error) {
-	if off >= r.size {
-		return 0, io.EOF
-	}
-	n := int64(len(p))
-	short := false
-	if off+n > r.size {
-		n = r.size - off
-		short = true
-	}
-	b, err := fetchRange(context.Background(), r.url, off, n)
-	if err != nil {
-		return 0, err
-	}
-	copy(p, b)
-	if short {
-		return int(n), io.EOF
-	}
-	return int(n), nil
-}
-func (r *remoteFile) Close() error { return nil }
-func (r *remoteFile) Size() int64  { return r.size }
-
 func headSize(url string) (int64, error) {
 	for attempt := 0; attempt < 6; attempt++ {
 		reqLimiter.wait()
@@ -201,15 +168,16 @@ func fetchSmall(url string) ([]byte, error) {
 	return nil, fmt.Errorf("unreachable")
 }
 
-// Epoch bundles what is needed to locate blocks of one epoch in its CAR file.
+// Epoch is one epoch's CAR file in the archive.
 type Epoch struct {
-	N          uint64
-	RootCid    string
-	CarURL     string
-	CarSize    int64
-	slotToCid  *indexes.SlotToCid_Reader
-	cidToOff   *indexes.CidToOffsetAndSize_Reader
-	blockTimes *blocktimeindex.Index
+	N         uint64
+	RootCid   string
+	CarURL    string
+	CarSize   int64
+	headerEnd int64
+	cacheDir  string
+	mu        sync.Mutex
+	bounds    map[uint64]boundVal
 }
 
 func epochFirstSlot(e uint64) uint64 { return e * 432000 }
@@ -241,97 +209,15 @@ func OpenEpoch(n uint64, cacheDir string) (*Epoch, error) {
 		return nil, fmt.Errorf("epoch %d not in archive yet: %w", n, err)
 	}
 	rootB, _ := os.ReadFile(cidPath)
-	root := strings.TrimSpace(string(rootB))
-	base := fmt.Sprintf("%s/%d/epoch-%d-%s-mainnet", archiveBase, n, n, root)
-	e := &Epoch{N: n, RootCid: root, CarURL: fmt.Sprintf("%s/%d/epoch-%d.car", archiveBase, n, n)}
+	e := &Epoch{N: n, RootCid: strings.TrimSpace(string(rootB)), CarURL: fmt.Sprintf("%s/%d/epoch-%d.car", archiveBase, n, n), cacheDir: cacheDir}
 	if e.CarSize, err = headSize(e.CarURL); err != nil {
 		return nil, err
 	}
-	s2c, err := cachedFile(cacheDir, base+"-slot-to-cid.index")
-	if err != nil {
+	if e.headerEnd, err = carHeaderSize(e.CarURL); err != nil {
 		return nil, err
 	}
-	if e.slotToCid, err = indexes.Open_SlotToCid(s2c); err != nil {
-		return nil, fmt.Errorf("slot-to-cid: %w", err)
-	}
-	btPath, err := cachedFile(cacheDir, base+"-slot-to-blocktime.index")
-	if err != nil {
-		return nil, err
-	}
-	btBytes, _ := os.ReadFile(btPath)
-	if e.blockTimes, err = blocktimeindex.FromBytes(btBytes); err != nil {
-		return nil, fmt.Errorf("slot-to-blocktime: %w", err)
-	}
-	c2oURL := base + "-cid-to-offset-and-size.index"
-	c2oSize, err := headSize(c2oURL)
-	if err != nil {
-		return nil, err
-	}
-	if e.cidToOff, err = indexes.OpenWithReader_CidToOffsetAndSize(&remoteFile{url: c2oURL, size: c2oSize}); err != nil {
-		return nil, fmt.Errorf("cid-to-offset: %w", err)
-	}
+	e.loadBounds()
 	return e, nil
-}
-
-// BlockTime returns the block time of slot, or false if the slot has no block.
-func (e *Epoch) BlockTime(slot uint64) (int64, bool) {
-	t, err := e.blockTimes.Get(slot)
-	if err != nil || t == 0 {
-		return 0, false
-	}
-	return t, true
-}
-
-// blockNode returns the CAR offset and size of the block node of slot (false if skipped).
-func (e *Epoch) blockNode(slot uint64) (uint64, uint64, bool, error) {
-	c, err := e.slotToCid.Get(slot)
-	if err != nil {
-		return 0, 0, false, nil // skipped slot
-	}
-	if c == cid.Undef {
-		return 0, 0, false, nil
-	}
-	os, err := e.cidToOff.Get(c)
-	if err != nil {
-		return 0, 0, false, fmt.Errorf("cid-to-offset for slot %d: %w", slot, err)
-	}
-	return os.Offset, os.Size, true, nil
-}
-
-// ByteRange returns the CAR byte range holding every node of blocks in [from, to].
-// Nodes of a block precede its block node, so the range starts right after the block
-// node of the last produced slot before `from` and ends after the block node of the
-// last produced slot <= `to`.
-func (e *Epoch) ByteRange(from, to uint64) (int64, int64, error) {
-	var start int64 = -1
-	for s := int64(from) - 1; s >= int64(epochFirstSlot(e.N)); s-- {
-		off, size, ok, err := e.blockNode(uint64(s))
-		if err != nil {
-			return 0, 0, err
-		}
-		if ok {
-			start = int64(off + size)
-			break
-		}
-	}
-	if start < 0 {
-		// first block of the epoch: the CAR header precedes it. Start after the header.
-		h, err := carHeaderSize(e.CarURL)
-		if err != nil {
-			return 0, 0, err
-		}
-		start = h
-	}
-	for s := int64(to); s >= int64(from); s-- {
-		off, size, ok, err := e.blockNode(uint64(s))
-		if err != nil {
-			return 0, 0, err
-		}
-		if ok {
-			return start, int64(off + size), nil
-		}
-	}
-	return start, start, nil // no produced block in range
 }
 
 func carHeaderSize(url string) (int64, error) {

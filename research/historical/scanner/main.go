@@ -208,6 +208,7 @@ func planUnits(out string, t0, t1 int64) ([]unitSpec, map[uint64]*Epoch, error) 
 	e1 := uint64(est(t1)/432000) + 2
 	epochs := map[uint64]*Epoch{}
 	var units []unitSpec
+	ctx := context.Background()
 	for e := e0; e <= e1; e++ {
 		ep, err := OpenEpoch(e, filepath.Join(out, "cache"))
 		if err != nil {
@@ -215,20 +216,31 @@ func planUnits(out string, t0, t1 int64) ([]unitSpec, map[uint64]*Epoch, error) 
 			continue
 		}
 		epochs[e] = ep
+		// Block time is interpolated between the epoch's first and (near) last block;
+		// two units of margin on each side absorb slot-time drift. Units outside the
+		// window are harmless: finalize keeps rows by block time.
+		first, err := ep.firstBlockFrom(ctx, 0)
+		if err != nil {
+			return nil, nil, fmt.Errorf("epoch %d first block: %w", e, err)
+		}
+		last, err := ep.firstBlockFrom(ctx, ep.CarSize-(64<<20))
+		if err != nil {
+			return nil, nil, fmt.Errorf("epoch %d last block: %w", e, err)
+		}
+		tAt := func(s uint64) int64 {
+			if last.Slot == first.Slot {
+				return first.BlockTime
+			}
+			return first.BlockTime + int64(float64(int64(s)-int64(first.Slot))*float64(last.BlockTime-first.BlockTime)/float64(last.Slot-first.Slot))
+		}
+		margin := int64(2 * unitSlots * 400 / 1000) // two units at up to 0.4 s per slot
 		for u := epochFirstSlot(e); u <= epochLastSlot(e); u += unitSlots {
-			last := u + unitSlots - 1
-			if last > epochLastSlot(e) {
-				last = epochLastSlot(e)
+			lastSlot := u + unitSlots - 1
+			if lastSlot > epochLastSlot(e) {
+				lastSlot = epochLastSlot(e)
 			}
-			in := false
-			for s := u; s <= last; s++ {
-				if bt, ok := ep.BlockTime(s); ok && bt >= t0 && bt < t1 {
-					in = true
-					break
-				}
-			}
-			if in {
-				units = append(units, unitSpec{e, u, last})
+			if tAt(u)-margin < t1 && tAt(lastSlot)+margin >= t0 {
+				units = append(units, unitSpec{e, u, lastSlot})
 			}
 		}
 	}
