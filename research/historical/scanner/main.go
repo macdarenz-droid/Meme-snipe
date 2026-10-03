@@ -1,7 +1,8 @@
 package main
 
 // zeroed-scan: builds the historical pump.fun / PumpSwap dataset from the Old Faithful
-// archive. See docs/research/historical-data.md.
+// archive. See docs/research/historical-data.md. Only .github/workflows/data-scan.yml
+// runs run/unit against the archive (one lane; no local scans, supervisor ruling).
 //
 //   zeroed-scan run -out DIR -from 2026-09-01 -to 2026-10-01 [-parallel 3]
 //   zeroed-scan unit -out DIR -epoch 1047 -from-slot S -to-slot S

@@ -213,7 +213,7 @@ func (p *partWriter) open() error {
 		return err
 	}
 	p.f = f
-	p.zw, _ = zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
+	p.zw, _ = zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression), zstd.WithEncoderConcurrency(1))
 	p.cnt = &countW{w: p.zw} // uncompressed bytes: independent of encoder timing
 	p.bw = bufio.NewWriterSize(p.cnt, 1<<20)
 	p.cw = csv.NewWriter(p.bw)
@@ -875,6 +875,15 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 	}
 	_ = mp
 
+	// First slot of every unknown discriminator and extra-bytes key over all units.
+	firstSeen := map[string]uint64{}
+	for _, u := range units {
+		for k, s := range u.stats.FirstSeen {
+			if v, ok := firstSeen[k]; !ok || s < v {
+				firstSeen[k] = s
+			}
+		}
+	}
 	unitsInfo := []map[string]any{}
 	var decodeFail int64
 	for _, u := range units {
@@ -882,7 +891,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 		unitsInfo = append(unitsInfo, map[string]any{"epoch": u.stats.Epoch, "root_cid": u.stats.RootCid, "from_slot": u.stats.FromSlot,
 			"to_slot": u.stats.ToSlot, "blocks": u.stats.Blocks, "decode_failures": u.stats.DecodeFailures,
 			"unknown_events": u.stats.UnknownEvents, "newer_layouts": u.stats.NewerLayouts, "extra_bytes": u.stats.ExtraBytes,
-			"length_anomalies": u.stats.LengthAnomalies, "older_layouts": u.stats.OlderLayouts, "raw_records": u.stats.RawRecords, "schema": u.stats.Schema, "legacy_meta": u.stats.LegacyMeta, "missing_meta": u.stats.MissingMeta,
+			"length_anomalies": u.stats.LengthAnomalies, "older_layouts": u.stats.OlderLayouts, "raw_records": u.stats.RawRecords, "schema": u.stats.Schema, "legacy_meta": u.stats.LegacyMeta, "first_seen_slot": u.stats.FirstSeen, "missing_meta": u.stats.MissingMeta,
 			"scanner_revision": u.stats.ScannerRevision})
 	}
 	man := map[string]any{
@@ -901,6 +910,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 			"first_extra_hex_amm":   upgradeFirst["amm_trades"],
 			"first_unknown_event":   upgradeFirst["unknown_event"],
 		},
+		"first_seen_slot": firstSeen,
 		"chain_breaks": chainBreaks,
 		"completeness": "every block's parent is the previous block in the scan (checked on all block rows), so no block is missing between the first and last scanned block",
 		"days":         manifestDays,

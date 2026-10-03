@@ -57,51 +57,55 @@ var blockCols = []string{"slot", "block_time", "parent_slot", "n_tx", "n_vote", 
 var failedCols = []string{"slot", "block_time", "tx_idx", "signature", "signer", "tx_fee", "cu", "programs", "mint_hint", "error"}
 
 type UnitStats struct {
-	Schema          int            `json:"schema"`
-	Epoch           uint64         `json:"epoch"`
-	RootCid         string         `json:"root_cid"`
-	FromSlot        uint64         `json:"from_slot"`
-	ToSlot          uint64         `json:"to_slot"`
-	ByteStart       int64          `json:"byte_start"`
-	ByteEnd         int64          `json:"byte_end"`
-	Blocks          int            `json:"blocks"`
-	FirstBlockSlot  uint64         `json:"first_block_slot"`
-	LastBlockSlot   uint64         `json:"last_block_slot"`
-	FirstBlockTime  int64          `json:"first_block_time"`
-	LastBlockTime   int64          `json:"last_block_time"`
-	Txs             int64          `json:"txs"`
-	VoteTxs         int64          `json:"vote_txs"`
-	PumpTxs         int64          `json:"pump_txs"`
-	PumpTxsFailed   int64          `json:"pump_txs_failed"`
-	CurveTrades     int64          `json:"curve_trades"`
-	AmmTrades       int64          `json:"amm_trades"`
-	OtherEvents     int64          `json:"other_events"`
-	EventCounts     map[string]int `json:"event_counts"`
-	UnknownEvents   map[string]int `json:"unknown_events"`
-	DecodeFailures  int64          `json:"decode_failures"`
-	DecodeErrors    []string       `json:"decode_errors"`
-	NewerLayouts    map[string]int `json:"newer_layouts"`
-	OlderLayouts    map[string]int `json:"older_layouts"`
-	ExtraBytes      map[string]int `json:"extra_bytes"`      // event:extra -> count (0 = exact IDL layout)
-	LengthAnomalies int64          `json:"length_anomalies"` // events longer than the IDL by other than 8 bytes
-	RawRecords      int64          `json:"raw_records"`
-	MintOnlyRecords int64          `json:"mint_only_records"` // raw records of plain token transactions touching a sampled mint
-	OtherVenueTxs   int64          `json:"other_venue_txs"`   // transactions touching a sampled mint through other programs (counted, not stored)
-	LegacyMeta      int64          `json:"legacy_meta"`
-	MissingMeta     int64          `json:"missing_meta"`
-	LogEventsSeen   int64          `json:"log_events_seen"`
-	MetaOnlyChecks  int64          `json:"meta_only_checks"`
-	FullMetaParses  int64          `json:"full_meta_parses"`
-	MetaOnlyHits    int64          `json:"meta_only_hits"`
-	FirstParentSlot uint64         `json:"first_parent_slot"`
-	ChainBreaks     []string       `json:"chain_breaks"`
-	Seconds         float64        `json:"seconds"`
-	HTTPRequests    int64          `json:"http_requests"`
-	HTTPRetries     int64          `json:"http_retries"`
-	HTTP429         int64          `json:"http_429"`
-	FinishedAt      string         `json:"finished_at"`
-	ScannerRevision string         `json:"scanner_revision"`
-	SampleRate      float64        `json:"sample_rate"`
+	Schema         int            `json:"schema"`
+	Epoch          uint64         `json:"epoch"`
+	RootCid        string         `json:"root_cid"`
+	FromSlot       uint64         `json:"from_slot"`
+	ToSlot         uint64         `json:"to_slot"`
+	ByteStart      int64          `json:"byte_start"`
+	ByteEnd        int64          `json:"byte_end"`
+	Blocks         int            `json:"blocks"`
+	FirstBlockSlot uint64         `json:"first_block_slot"`
+	LastBlockSlot  uint64         `json:"last_block_slot"`
+	FirstBlockTime int64          `json:"first_block_time"`
+	LastBlockTime  int64          `json:"last_block_time"`
+	Txs            int64          `json:"txs"`
+	VoteTxs        int64          `json:"vote_txs"`
+	PumpTxs        int64          `json:"pump_txs"`
+	PumpTxsFailed  int64          `json:"pump_txs_failed"`
+	CurveTrades    int64          `json:"curve_trades"`
+	AmmTrades      int64          `json:"amm_trades"`
+	OtherEvents    int64          `json:"other_events"`
+	EventCounts    map[string]int `json:"event_counts"`
+	UnknownEvents  map[string]int `json:"unknown_events"`
+	DecodeFailures int64          `json:"decode_failures"`
+	DecodeErrors   []string       `json:"decode_errors"`
+	NewerLayouts   map[string]int `json:"newer_layouts"`
+	OlderLayouts   map[string]int `json:"older_layouts"`
+	ExtraBytes     map[string]int `json:"extra_bytes"` // event:extra -> count (0 = exact IDL layout)
+	// FirstSeen: the first slot of each unknown discriminator ("unknown:prog:hex") and
+	// each non-zero extra-bytes key ("extra:prog:Event:n") in the unit, so the
+	// 2026-10-02 regime boundary and any later change are located exactly.
+	FirstSeen       map[string]uint64 `json:"first_seen_slot"`
+	LengthAnomalies int64             `json:"length_anomalies"` // events longer than the IDL by other than 8 bytes
+	RawRecords      int64             `json:"raw_records"`
+	MintOnlyRecords int64             `json:"mint_only_records"` // raw records of plain token transactions touching a sampled mint
+	OtherVenueTxs   int64             `json:"other_venue_txs"`   // transactions touching a sampled mint through other programs (counted, not stored)
+	LegacyMeta      int64             `json:"legacy_meta"`
+	MissingMeta     int64             `json:"missing_meta"`
+	LogEventsSeen   int64             `json:"log_events_seen"`
+	MetaOnlyChecks  int64             `json:"meta_only_checks"`
+	FullMetaParses  int64             `json:"full_meta_parses"`
+	MetaOnlyHits    int64             `json:"meta_only_hits"`
+	FirstParentSlot uint64            `json:"first_parent_slot"`
+	ChainBreaks     []string          `json:"chain_breaks"`
+	Seconds         float64           `json:"seconds"`
+	HTTPRequests    int64             `json:"http_requests"`
+	HTTPRetries     int64             `json:"http_retries"`
+	HTTP429         int64             `json:"http_429"`
+	FinishedAt      string            `json:"finished_at"`
+	ScannerRevision string            `json:"scanner_revision"`
+	SampleRate      float64           `json:"sample_rate"`
 	mu              sync.Mutex
 }
 
@@ -112,6 +116,13 @@ func (s *UnitStats) decodeErr(msg string) {
 		s.DecodeErrors = append(s.DecodeErrors, msg)
 	}
 	s.mu.Unlock()
+}
+
+// firstSeen records the first slot of key (caller holds s.mu).
+func (s *UnitStats) firstSeen(key string, slot uint64) {
+	if v, ok := s.FirstSeen[key]; !ok || slot < v {
+		s.FirstSeen[key] = slot
+	}
 }
 
 // missingMeta counts a transaction stored without its meta: what it touched cannot be
@@ -206,7 +217,7 @@ type blockResult struct {
 func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlConc int, workers int) (*UnitStats, error) {
 	t0 := time.Now()
 	st := &UnitStats{Schema: schemaVersion, Epoch: e.N, RootCid: e.RootCid, FromSlot: from, ToSlot: to,
-		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ExtraBytes: map[string]int{}, ScannerRevision: scannerRevision, SampleRate: sampleRate}
+		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ExtraBytes: map[string]int{}, FirstSeen: map[string]uint64{}, ScannerRevision: scannerRevision, SampleRate: sampleRate}
 	req0, ret0, r4290 := statHTTPRequests.Load(), statHTTPRetries.Load(), statHTTP429.Load()
 
 	start, end, firstBlock, err := e.ByteRange(ctx, from, to)
@@ -831,6 +842,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 			if ev == nil {
 				st.mu.Lock()
 				st.UnknownEvents[prog+":"+hexs(disc)]++
+				st.firstSeen("unknown:"+prog+":"+hexs(disc), b.slot)
 				st.mu.Unlock()
 				// kept raw for every mint: decodable once the layout is published
 				jb, _ := json.Marshal(map[string]any{"slot": b.slot, "block_time": b.blockTime, "tx_idx": txIdx, "ev_idx": evIdx,
@@ -852,6 +864,9 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 				st.NewerLayouts[prog+":"+ev.def.name]++
 			}
 			st.ExtraBytes[prog+":"+ev.def.name+":"+strconv.Itoa(ev.extra)]++
+			if ev.extra != 0 {
+				st.firstSeen("extra:"+prog+":"+ev.def.name+":"+strconv.Itoa(ev.extra), b.slot)
+			}
 			if ev.extra != 0 && ev.extra != 8 {
 				st.LengthAnomalies++
 			}
@@ -981,6 +996,24 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 
 // addRaw writes the raw record of a transaction that touches a sampled mint.
 func (r *blockResult) addRaw(st *UnitStats, b *blockData, txIdx int, sig string, txBytes, metaRaw []byte, meta *TransactionStatusMeta, extra ...string) {
+	// Cheap check first: the token balances' mints (pre and post) and the event mints.
+	hit := false
+	for _, m := range extra {
+		hit = hit || (m != "" && m != wsolMint && inSample(m))
+	}
+	if !hit {
+		ms, err := metaMints(metaRaw)
+		if err != nil {
+			st.decodeErr(fmt.Sprintf("slot %d idx %d: meta mints: %v", b.slot, txIdx, err))
+			return
+		}
+		for _, m := range ms {
+			hit = hit || (m != wsolMint && inSample(m))
+		}
+		if !hit {
+			return
+		}
+	}
 	// The full meta: the lean one has no pre-token balances, and a mint seen only
 	// there (an account closed by a full sell) must still get its record.
 	full, err := fullMeta(metaRaw)

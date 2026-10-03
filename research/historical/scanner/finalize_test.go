@@ -162,33 +162,37 @@ func (f *fixture) spanUnit(u fxUnit) {
 }
 
 func TestFinalizeNoLookAheadForGraduates(t *testing.T) {
+	// A mint sampled for launch and grad graduates 100 h after creation. Its row at
+	// +80 h lies after the 72 h launch tape and before graduation: a non-graduating
+	// launch mint would have no row there, so it must be excluded. The old single
+	// span (creation to graduation + 15 days) kept it.
 	f := &fixture{t: t, out: t.TempDir()}
-	grad, plain := sampledMint(t), sampledMint(t)
+	m := sampledMint(t)
 	start := day("2026-09-01") - 3600
-	end := day("2026-09-03") + 1800
+	end := day("2026-09-07")
 	u := spanUnit(1, 1000, start, end)
 	created := day("2026-09-01") + 3600
-	gradAt := day("2026-09-02") + 7200 // 25 h after creation: past the 72 h? no, inside; use rows after 72 h below
-	_ = gradAt
-	// Both mints are created before the window (not launch-sampled inside it): only
-	// grad's graduation is inside. Pre-graduation rows of either must not appear.
+	graduated := created + 100*3600
 	u.events = []map[string]any{
-		{"slot": 1001, "block_time": day("2026-09-02") + 3600, "tx_idx": 0, "event": "CompletePumpAmmMigrationEvent", "fields": map[string]string{"mint": grad, "pool": "P"}},
+		{"slot": 1001, "block_time": created, "tx_idx": 0, "event": "CreateEvent", "fields": map[string]string{"mint": m}},
+		{"slot": 1100, "block_time": graduated, "tx_idx": 0, "event": "CompletePumpAmmMigrationEvent", "fields": map[string]string{"mint": m, "pool": "P"}},
 	}
-	u.curve = [][]string{
-		curveRow(1000, created, grad), curveRow(1000, created, plain), // before graduation
-	}
-	u.curve[1][2] = "1"
+	u.curve = [][]string{curveRow(1010, created+10*3600, m), curveRow(1080, created+80*3600, m), curveRow(1101, graduated+3600, m)}
 	f.spanUnit(u)
 	ds := t.TempDir()
-	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-03", finalizeOpts{}); err != nil {
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-07", finalizeOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	_, rows := readDataset(t, ds)
+	got := map[string]bool{}
 	for _, r := range rows["curve"] {
-		if r[8] == grad {
-			t.Fatalf("pre-graduation row of a mint graduating later is in the dataset: %v", r[:4])
-		}
+		got[r[1]] = true
+	}
+	if got[strconv.FormatInt(created+80*3600, 10)] {
+		t.Fatalf("row between the launch tape and graduation is in the dataset (look-ahead)")
+	}
+	if !got[strconv.FormatInt(created+10*3600, 10)] || !got[strconv.FormatInt(graduated+3600, 10)] {
+		t.Fatalf("rows inside the launch or grad tape missing: %v", got)
 	}
 }
 
@@ -296,5 +300,33 @@ func TestFinalizeHeaderCopyAndBeforeWindowUnits(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("launch row created in the lead-in missing: %d rows", n)
+	}
+}
+
+func TestFinalizeFirstSeenSlotIsMinimumOverUnits(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	a := spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-01")+3600)
+	b := spanUnit(1, a.from+3, day("2026-09-01")+7200, day("2026-09-02")+1800)
+	f.spanUnit(a)
+	f.spanUnit(b)
+	set := func(u fxUnit, fs map[string]uint64) {
+		p := filepath.Join(f.out, "units", "1", strconv.FormatUint(u.from, 10)+"-"+strconv.FormatUint(u.to, 10), "stats.json")
+		var st UnitStats
+		bs, _ := os.ReadFile(p)
+		json.Unmarshal(bs, &st)
+		st.FirstSeen = fs
+		bs, _ = json.Marshal(&st)
+		os.WriteFile(p, bs, 0o644)
+	}
+	set(a, map[string]uint64{"unknown:pump:a943276d6686b6e8": 1002})
+	set(b, map[string]uint64{"unknown:pump:a943276d6686b6e8": 1004, "extra:pump:TradeEvent:8": 1005})
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	man, _ := readDataset(t, ds)
+	fs := man["first_seen_slot"].(map[string]any)
+	if fs["unknown:pump:a943276d6686b6e8"] != float64(1002) || fs["extra:pump:TradeEvent:8"] != float64(1005) {
+		t.Fatalf("first_seen_slot %v", fs)
 	}
 }

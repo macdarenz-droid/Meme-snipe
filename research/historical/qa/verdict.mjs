@@ -8,6 +8,10 @@ export const ALLOWED_UNKNOWN = new Set(['pump:742b4dbd117a482b', 'amm:82a42461e4
 export const EXTRA8_EVENTS = new Set(['pump:TradeEvent', 'amm:BuyEvent', 'amm:SellEvent']);
 
 const DAY = 86400;
+// The 2026-10-02 program upgrade is a regime boundary (supervisor ruling, 2026-10-03):
+// decision days stay before it, so an assembled dataset (lead-in > 0) may not include
+// this day or later. Single-day checks (lead-in 0) may.
+export const REGIME_BOUNDARY_DAY = '2026-10-02';
 const iso = (t) => new Date(t * 1000).toISOString().slice(0, 10);
 
 // windowDays lists the UTC days of [from, to).
@@ -28,6 +32,7 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
     else if (!d.complete) misses.push(`day ${day} incomplete`);
     else if (d.warm_up) misses.push(`day ${day} lacks its lead-in`);
   }
+  if (leadInDays > 0 && man.window.to_exclusive > REGIME_BOUNDARY_DAY) misses.push(`window reaches ${REGIME_BOUNDARY_DAY}, the program-upgrade regime boundary`);
   if ((man.window.lead_in_days ?? 0) < leadInDays) misses.push(`lead-in ${man.window.lead_in_days ?? 0} days, ${leadInDays} required`);
   if (man.decode_failures > 0) misses.push(`decode failures ${man.decode_failures}`);
   if ((man.chain_breaks || []).length > 0) misses.push(`parent-link breaks ${man.chain_breaks.length}`);

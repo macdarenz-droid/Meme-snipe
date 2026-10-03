@@ -199,7 +199,7 @@ Filled from `qa/report.md` (`node research/historical/qa/check.mjs <dataset> --l
 
 ## Limits and known issues
 
-- **Undocumented program upgrade on 2026-10-02:** from about 20:00 UTC, `TradeEvent`, `BuyEvent` and `SellEvent` carry 8 bytes more than the published IDL (almost always zero), kept as `extra_hex`. New event discriminators appear, kept raw as `Unknown` events with `data_hex`: `pump:742b4dbd117a482b` and `amm:82a42461e48287a5` from about 20:00 UTC, and `pump:a943276d6686b6e8` from slot 452,709,000 (about 23:15 UTC; 139 in that unit). The strict QA allows exactly these three discriminators and 8 extra bytes on those three trade events; any other unknown event, extra length or older layout fails the day. Decode them once pump.fun publishes the IDL; the on-chain Anchor IDL accounts are older than the docs repo.
+- **Undocumented program upgrade on 2026-10-02:** from about 20:00 UTC, `TradeEvent`, `BuyEvent` and `SellEvent` carry 8 bytes more than the published IDL (almost always zero), kept as `extra_hex`. New event discriminators appear, kept raw as `Unknown` events with `data_hex`: `pump:742b4dbd117a482b` and `amm:82a42461e48287a5` from about 20:00 UTC, and `pump:a943276d6686b6e8` from slot 452,709,000 (about 23:15 UTC; 139 in that unit). The first slot of every unknown discriminator and extra-bytes key is recorded per unit and in `manifest.json` (`first_seen_slot`). The strict QA allows exactly these three discriminators and 8 extra bytes on those three trade events; any further new discriminator, extra length or older layout fails QA until the supervisor rules on it. **Regime boundary** (supervisor ruling, 2026-10-03): the upgrade splits the data into regimes, so decision days stay 2026-09-02 to 2026-10-01 and 2026-10-02 is never a decision day; the strict QA fails an assembled window that reaches it. Identifying the upgrade is a separate task. Decode them once pump.fun publishes the IDL; the on-chain Anchor IDL accounts are older than the docs repo.
 - **Mayhem-mode curves:** the program changes their virtual reserves outside the trade amounts. Real reserves still rebuild exactly. Price from the event's virtual reserves.
 - **Archive lag:** Old Faithful publishes an epoch after it ends (about 1.4 days per epoch). The newest one to two days are not available; the live dry run covers the present.
 - **Failed transactions:** every failed trade transaction of a sampled mint is stored as a `failed` row and a raw record, and counted per mint and hour (about 1.5 failed per successful trade on new tokens).
@@ -218,6 +218,8 @@ Filled from `qa/report.md` (`node research/historical/qa/check.mjs <dataset> --l
   - The state of fee and global parameters before the coverage starts (changes inside it are events, and every trade carries its fee rates).
 
 ## How to extend
+
+**No local scans** (supervisor ruling, 2026-10-03): the archive is read only by `data-scan.yml` on its one lane. Never run `zeroed-scan run` or `unit` against the archive from a container or a laptop next to CI, since that adds a second lane. The commands below are for the CI scripts and for `finalize`, QA and parity on units already downloaded from releases.
 
 ```
 cd research/historical/scanner && go build -o zeroed-scan .

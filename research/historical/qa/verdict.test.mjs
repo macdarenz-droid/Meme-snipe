@@ -54,3 +54,12 @@ test('reserve, raw and live misses are counted', () => {
   r.live = [{ pass: false }];
   assert.deepEqual(strictMisses(base(), r), ['curve real reserves 0/1', 'raw signature mismatches 1', 'trade transactions without raw record 1', 'live on-chain mismatches 1']);
 });
+
+test('an assembled window may not reach the 2026-10-02 regime boundary', () => {
+  const m = base();
+  m.window = { from: '2026-10-01', to_exclusive: '2026-10-03', lead_in_days: 14 };
+  m.days = [okDay('2026-10-01'), okDay('2026-10-02')];
+  assert.deepEqual(strictMisses(m, report), ['window reaches 2026-10-02, the program-upgrade regime boundary']);
+  m.window.lead_in_days = 0;
+  assert.deepEqual(strictMisses(m, report, { leadInDays: 0 }), []);
+});
