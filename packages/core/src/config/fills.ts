@@ -13,7 +13,7 @@
 // |   provider failures)               |                                                | assumption  | landing: these stay as set through it   |
 // | dropPpm                            | stress margin                                  | assumption  |                                         |
 // | exitRetryHaircutPpm                | proxy for sellers ahead of us                  | assumption  | exit fills of the canary                |
-// | closeSuccessPpm, dustPpm           | none measured                                  | assumption  | TEST-2 mainnet simulations (close rate) |
+// | closeSuccessPpm, dustPpm           | none measured                                  | assumption  | observed-chain closes, then the canary  |
 // | delays.measured                    | today's base values (2 slots + 200 ms)         | unmeasured  | the worker recorder on the VPS          |
 // | delays.adverse, delays.stress      | ruling values (2+6 slots + 1 s, 4+12 + 2 s)    | stress      | kept as stress budgets                  |
 // | slippagePpm, takeProfit, rent flag | §11                                            | §11 rule    |                                         |

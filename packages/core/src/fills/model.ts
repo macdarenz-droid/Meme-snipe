@@ -99,8 +99,8 @@ export interface FillScenario {
   /**
    * The final sell of a token account closes it in the same transaction (atomic sell-and-close). Share of such
    * transactions whose close succeeds, ppm; a failed close fails the whole transaction (the sell rolls back, the fee is
-   * charged) and the account falls back to sell-only, so its rent stays locked. TEST-2's measured close-success rate
-   * replaces this once it exists.
+   * charged) and the account falls back to sell-only, so its rent stays locked. An assumption:
+   * TEST-2's simulations test mechanics, not landing, so they are not a close probability.
    */
   readonly closeSuccessPpm: bigint;
   /** Share of token accounts left with dust or an unsolicited token, ppm: they cannot be closed, the rent stays locked. */
