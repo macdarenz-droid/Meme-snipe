@@ -8,7 +8,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { zstdDecompressSync } from 'node:zlib';
 import { join } from 'node:path';
 import { rpcHandler, scriptedHttp } from '../src/providers/index.ts';
-import { CreditBook, LiveProviders } from '../src/run/sources.ts';
+import { CreditBook, FEED_COMMITMENTS, LiveProviders } from '../src/run/sources.ts';
+import { DelayProbe } from '../src/run/delay-probe.ts';
+import { Recorder } from '../src/run/recorder.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx } from './helpers.ts';
 import { makeWorker, tempState } from './worker-harness.ts';
 
@@ -171,4 +173,51 @@ describe('LiveProviders on scripted sockets: a live migration reaches an entry d
       .flatMap((f) => zstdDecompressSync(readFileSync(join(stateDir, 'recorder', f))).toString('utf8').split('\n').filter((l) => l !== ''));
     expect(frames.some((l) => l.includes('"source":"coinbase"') && l.includes('"key":"worker:sol-price"'))).toBe(true);
   }, 60_000);
+});
+
+describe('processed and confirmed arrival of the same signature (supervisor ruling 2026-10-04, BT-1c)', () => {
+  it('samples the newest processed sighting, reads it at confirmed and records both arrival times on this host', async () => {
+    const t = tx('pump CreateEvent');
+    const record = recordOf(t);
+    const timers = new ManualTimers(1_000_000);
+    const rows: { row: Readonly<Record<string, unknown>>; at: number }[] = [];
+    const reads: string[] = [];
+    const probe = new DelayProbe({
+      timers, via: 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM', everyMs: 60_000, record: (row, at) => void rows.push({ row, at }),
+      confirmed: async (sig) => {
+        reads.push(sig);
+        return record;
+      },
+    });
+    const seen = (via: string, at: number, backfilled = false): Frame => ({ seq: 0, receivedAt: at, source: 'helius', backfilled, place: { at: 'offchain', slot: 1n }, duplicate: false, body: { type: 'seen', signature: t.signature, slot: record.slot, err: null, via, detail: null } });
+    probe.frame(seen('pumpportal:create', 999_000));
+    probe.frame(seen('logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM', 1_000_100));
+    probe.start();
+    timers.advance(60_000);
+    await settle();
+    expect(reads).toEqual([t.signature]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.row).toEqual({
+      signature: t.signature, slot: record.slot, processed_at_ms: 1_000_100, processed_path: 'helius logsSubscribe logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM', processed_commitment: 'processed',
+      confirmed_at_ms: 1_060_000, confirmed_path: 'helius getTransaction', confirmed_commitment: 'confirmed', confirmed_slot: record.slot,
+      found: true, error: null, other_sightings: [{ source: 'pumpportal:create', at: 999_000 }],
+    });
+    // Nothing new seen: the next minute reads nothing (one credit a minute at most).
+    timers.advance(60_000);
+    await settle();
+    expect(reads).toHaveLength(1);
+    probe.stop();
+  });
+
+  it('the recorder keeps the samples in its own table and lists the commitment of each path in the manifest', () => {
+    const root = tempState();
+    const rec = new Recorder({ root, boot: 'b1', gitSha: 'abc', rotateBytes: 1 << 20, commitments: FEED_COMMITMENTS });
+    rec.delay({ signature: 's', slot: 5n, processed_at_ms: 1, confirmed_at_ms: 2 }, Date.parse('2026-10-04T00:00:00Z'));
+    rec.close();
+    const manifest = JSON.parse(readFileSync(join(root, 'b1', 'manifest.json'), 'utf8')) as { commitments: Record<string, string>; days: { files: { path: string }[] }[] };
+    expect(manifest.commitments['helius-ws logsSubscribe']).toBe('processed');
+    expect(manifest.commitments['helius getTransaction']).toBe('confirmed');
+    const file = manifest.days.flatMap((d) => d.files).find((f) => f.path.includes('delays-'))!;
+    expect(zstdDecompressSync(readFileSync(join(root, 'b1', file.path))).toString('utf8')).toBe('{"signature":"s","slot":"5","processed_at_ms":1,"confirmed_at_ms":2}\n');
+  });
 });

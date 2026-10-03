@@ -11,7 +11,7 @@ import { systemTimers } from './scheduler/index.ts';
 import { parseConfig } from './run/config.ts';
 import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
-import { CreditBook, LiveProviders } from './run/sources.ts';
+import { CreditBook, FEED_COMMITMENTS, LiveProviders, PUMP_CREATE_AUTHORITY } from './run/sources.ts';
 import { redact, setSecretValues } from './run/redact.ts';
 import { runSeed } from './run/seed-start.ts';
 import { Worker } from './run/worker.ts';
@@ -63,6 +63,8 @@ try {
     fetchTx: (sig) => providers.fetchTx(sig),
     seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, lookbackDays: policy.gates.deployerRugLookbackDays }),
     seedWaitMs: 30_000,
+    delayProbe: { confirmed: (sig) => providers.confirmed(sig), via: `logs:${PUMP_CREATE_AUTHORITY}`, everyMs: 60_000 },
+    commitments: FEED_COMMITMENTS,
     heartbeat: { http: fetchHttp, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },
     reconcileTimeoutMs: 60_000, loopMs: 100, staleFeedMs: 10_000, log,
   });

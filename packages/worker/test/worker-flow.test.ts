@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
-import { migrationKey } from '../../core/src/gates/index.ts';
+import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { HALT_KEY, s0EntryAt } from '../src/engine/strategy.ts';
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
@@ -191,6 +191,28 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
     const notJudged = kinds(h.stateDir, 'decision').filter((d) => (d['reasons'] as string[])[0] === 'deployer sell not judged');
     expect(notJudged).toHaveLength(1);
     expect(notJudged[0]!['reasons']).toEqual(expect.arrayContaining(['its create was not seen']));
+    await h.worker.stop();
+  });
+});
+
+describe('a stalled feed (supervisor ruling 2026-10-04: stale state never becomes fresh through a new receipt time)', () => {
+  it('while nothing new arrives, the clock keeps running, the facts age and the stale-data reject fires', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h);
+    // The feed stalls before the passing facts are released: only the clock moves (and slots, so the engine runs).
+    await m.run(6_000, 400, () => m.slot());
+    expect(positions(h)).toEqual([]);
+    const rejects = kinds(h.stateDir, 'decision').filter((d) => (d['reasons'] as string[])[0] === 'reject').map((d) => (d['reasons'] as string[])[3]!);
+    // The facts were read at T - 50 ms; 2 s later they are past maxQuoteAgeMs and named as old.
+    expect(rejects.some((r) => / \d+ ms old/.test(r))).toBe(true);
+    // The same old read put on the feed again (a replay after a stall) is dated by its own observation: still old.
+    const before = kinds(h.stateDir, 'decision').length;
+    m.fact(EXEC_HEALTH_KEY, passingFacts().get(EXEC_HEALTH_KEY)!.value);
+    await m.run(2_000, 400, () => m.slot());
+    expect(positions(h)).toEqual([]);
+    const later = kinds(h.stateDir, 'decision').slice(before).filter((d) => (d['reasons'] as string[])[0] === 'reject').map((d) => (d['reasons'] as string[])[3]!);
+    expect(later.every((r) => !r.includes('exec-health') || / \d+ ms old/.test(r))).toBe(true);
     await h.worker.stop();
   });
 });

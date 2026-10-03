@@ -5,7 +5,7 @@
 // outside the free budgets (about 14M Helius credits a month for pump logs alone), so they are off by default and no
 // `coverage:rugs:*` start is claimed: H14 stays not covered until a paid stream (`tradeStreams`) or a backfill covers
 // trades (RUG-1's wiring rule).
-import { PUMP_AMM_PROGRAM, PUMP_PROGRAM } from '../../../core/src/chain/index.ts';
+import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, type TransactionRecord } from '../../../core/src/chain/index.ts';
 import type { SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
 import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
 import {
@@ -154,6 +154,11 @@ export class LiveProviders {
     return new RpcHttp({ provider: 'helius', url: () => heliusRpcUrl(this.#o.secrets), http: this.#o.http, scheduler: this.helius, timeoutMs: 10_000 });
   }
 
+  /** A transaction read at confirmed (P3) and put on the feed, for the delay probe; null when not found. */
+  async confirmed(signature: string): Promise<TransactionRecord | null> {
+    return this.#fetcher === null ? null : this.#fetcher.fetch(signature, P3);
+  }
+
   /** A transaction at confirmed (P2), put on the feed; true when found. */
   async fetchTx(signature: string): Promise<boolean> {
     if (this.#fetcher === null) return false;
@@ -164,3 +169,16 @@ export class LiveProviders {
     }
   }
 }
+
+/**
+ * The commitment each live path actually uses (recorder manifest, for BT-1c's measured delay scenario). Helius
+ * subscriptions are made at processed (FEED-1); transactions are read at confirmed.
+ */
+export const FEED_COMMITMENTS: Readonly<Record<string, string>> = {
+  'helius-ws slotSubscribe': 'processed (slot notifications as the node processes them)',
+  'helius-ws logsSubscribe': 'processed',
+  'helius getTransaction': 'confirmed',
+  'helius getSignaturesForAddress (backfill)': 'confirmed',
+  pumpportal: 'not published by PumpPortal',
+  'coinbase-ws ticker': 'exchange trade time (off-chain)',
+};

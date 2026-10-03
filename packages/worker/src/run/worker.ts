@@ -27,6 +27,7 @@ import type { WorkerConfig } from './config.ts';
 import { Desk, openIntents } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { StartFeed } from './start-feed.ts';
+import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
 import { type ApiInputs, type DecisionRow, checkOf, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { startHealthServer } from './health.ts';
@@ -86,6 +87,10 @@ export interface WorkerDeps {
   readonly seed: (o: SeedRequest) => Promise<SeedResult>;
   /** How long the start waits for the live creates watch's first slot before seeding without it. */
   readonly seedWaitMs: number;
+  /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
+  readonly delayProbe?: { readonly confirmed: DelayProbeOptions['confirmed']; readonly via: string; readonly everyMs: number };
+  /** The commitment each live path uses, for the recorder manifest. */
+  readonly commitments?: Readonly<Record<string, string>>;
   readonly heartbeat: { readonly http: HttpClient; readonly key: string | null; readonly ownerChatId: string | null };
   /** How long the start reconcile may take before it exits 3. */
   readonly reconcileTimeoutMs: number;
@@ -156,6 +161,7 @@ export class Worker {
   /** A ledger/book divergence: a halt reason for the rest of the process. */
   #diverged: readonly string[] = [];
   #savedExits = '';
+  #probe: DelayProbe | null = null;
   readonly #start: StartFeed;
   readonly #deployerStore: DeployerStore;
   readonly #saved: SavedDeployers;
@@ -196,7 +202,9 @@ export class Worker {
     const recRoot = join(c.stateDir, STATE_FILES.recorder);
     mkdirSync(recRoot, { recursive: true });
     for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
-    this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024 }) : null;
+    this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
+    const rec = this.#recorder;
+    this.#probe = d.delayProbe === undefined || rec === null ? null : new DelayProbe({ timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs, record: (row, at) => rec.delay(row, at) });
 
     this.#ledger = openLedger(join(c.stateDir, Ledger.FILE), 'paper');
     this.#control = controlFile(c.stateDir);
@@ -304,6 +312,7 @@ export class Worker {
 
   #onFrame(f: Frame): void {
     this.#recorder?.frame(f);
+    this.#probe?.frame(f);
     for (const s of this.#feeds.values()) if (s.src.sources.includes(f.source)) s.last = f.receivedAt;
     const b = f.body;
     if (b.type === 'offchain' && b.key.startsWith('feed:status:') && isObj(b.value)) {
@@ -603,6 +612,7 @@ export class Worker {
       return { ok: false, code: EXIT.crash, message: `API server: ${e instanceof Error ? e.message : 'error'}` };
     }
     for (const s of this.#sources) s.start();
+    this.#probe?.start();
     await this.#seedIndex(this.#reserved);
     if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
     if (d.facts !== undefined && d.facts.length > 0) {
@@ -775,6 +785,7 @@ export class Worker {
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
     for (const s of this.#sources) s.stop();
+    this.#probe?.stop();
     for (const f of d.facts ?? []) f.stop();
     const pending = [...this.#world.pending.values()];
     if (pending.length > 0) {
