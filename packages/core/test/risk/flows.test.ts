@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'vitest';
 import { TRIAL_POLICY, usd } from '../../src/config/index.ts';
 import { type EntryAllowed, NO_LATCHES, evaluateEntry, evaluateExit, evaluateWithdrawal, maxTradeCosts, opsReserve } from '../../src/risk/index.ts';
-import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, mulDiv } from '../../src/units/index.ts';
+import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
 import { fixedCosts } from '../../src/costs/index.ts';
 import { DAY_START, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest, codes, trade } from './helpers.ts';
 
@@ -250,5 +250,48 @@ describe('daily and weekly boundaries: the realized-boundary loss (kept) and the
     const d = evaluateEntry(input, baseRequest());
     expect(d.snapshot?.dayChangeMarked).toBe(neg(usd('0.5')));
     expect(d.snapshot?.weekChangeMarked).toBeNull();
+  });
+});
+
+// ---------- Third-opinion rulings: capital measured in SOL as well ----------
+describe('capital is the lower of ledger equity and wallet-marked equity', () => {
+  // Wallet-marked equity: wallet SOL above the operations floor at a fresh SOL/USD price, plus open positions marked as
+  // today. Ledger equity stays $20 throughout these tests; only the wallet's value moves.
+  const walletAt = (usdValue: string, price = PRICE) => {
+    const lamportsFor = microUsdToLamports(usd(usdValue), price, 'ceil') + TRIAL_POLICY.reserve.opsFloor;
+    const i = baseInput();
+    return { ...i, market: { ...i.market, solBalance: { value: lamports(lamportsFor), atMs: NOW }, solPrice: { value: price, atMs: NOW } } };
+  };
+  test('a 30% fall in SOL reaches the kill line: new entries stop', () => {
+    const d = evaluateEntry(walletAt('14'), baseRequest());
+    expect(codes(d)).toContain('wallet_below_kill_line');
+    expect(d.snapshot?.walletEquity).toBe(usd('14'));
+    expect(d.trips).toEqual([]); // a price-driven stop is not latched; it lifts when the wallet's value comes back
+  });
+  test('a smaller fall tightens planned risk (R5) and the weekly room before anything trips', () => {
+    // $17 of wallet capital: 2.75% is $0.4675, so 1R at a 20% stop (plus the 5% cost ceiling) no longer fits $2;
+    // at $20 it does.
+    expect(codes(evaluateEntry(walletAt('17'), baseRequest({ stopBps: 2000 })))).toEqual(['planned_risk']);
+    expect(evaluateEntry(walletAt('20'), baseRequest({ stopBps: 2000 })).allow).toBe(true);
+    // $12: 20% is $2.40, less than q + C.
+    expect(codes(evaluateEntry(walletAt('12'), baseRequest()))).toContain('full_loss_week');
+  });
+  test('a rise in SOL loosens nothing', () => {
+    const at20 = evaluateEntry(walletAt('20'), baseRequest()) as EntryAllowed;
+    const at40 = evaluateEntry(walletAt('40'), baseRequest()) as EntryAllowed;
+    expect(at20.allow && at40.allow).toBe(true);
+    expect(at40.reservation.limits.maxHeld).toBe(at20.reservation.limits.maxHeld);
+    expect(at40.caps.map((c) => [c.name, c.notional]).filter(([n]) => n !== 'cash after the operations reserve'))
+      .toEqual(at20.caps.map((c) => [c.name, c.notional]).filter(([n]) => n !== 'cash after the operations reserve'));
+  });
+  test('a stale or missing SOL price, or no balance, means no entry', () => {
+    const i = walletAt('20');
+    expect(codes(evaluateEntry({ ...i, market: { ...i.market, solPrice: null } }, baseRequest()))).toContain('sol_price_unknown');
+    expect(codes(evaluateEntry({ ...i, market: { ...i.market, solBalance: null } }, baseRequest()))).toContain('balance_unknown');
+  });
+  test('after a withdrawal the weekly room is at most 20% of what remains', () => {
+    // No loss this week; $15 withdrawn leaves $5 of capital: the room is $1, so q + C cannot fit.
+    const input = baseInput({ account: account({ flows: [flow(THIS_WEEK, neg(usd('15')))] }) });
+    expect(codes(evaluateEntry(input, baseRequest()))).toContain('full_loss_week');
   });
 });

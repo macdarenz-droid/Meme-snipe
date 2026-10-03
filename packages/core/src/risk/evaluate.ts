@@ -141,6 +141,8 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
       openExposure: usd(openExposure), lossStreak,
       dayChangeMarked: a.markedAtDayStart === null ? null : usd(equity - a.markedAtDayStart - atDay.flowsSince),
       weekChangeMarked: a.markedAtWeekStart === null ? null : usd(equity - a.markedAtWeekStart - atWeek.flowsSince),
+      // Filled in by accountCheck, which has the market.
+      walletEquity: null, capital: usd(equity),
     },
   };
 };
@@ -160,7 +162,18 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   const { session, mode, account, latches, market } = input;
   const policy = session.policy;
   const f = figures(policy, account, latches, nowMs);
-  const s = f.snapshot;
+  // Capital measured in SOL as well: the wallet's SOL above the operations floor at the fresh price, plus open
+  // positions marked as in equity. Every size and limit that scales with equity uses the lower of the two, so a fall
+  // in SOL tightens and a rise loosens nothing.
+  const price = market.solPrice !== null && fresh(market.solPrice.atMs, nowMs, policy.gates.maxQuoteAgeMs) && market.solPrice.value > 0n ? market.solPrice.value : null;
+  const balance = market.solBalance !== null && fresh(market.solBalance.atMs, nowMs, policy.gates.maxQuoteAgeMs) ? market.solBalance.value : null;
+  const walletEquity = price === null || balance === null ? null
+    : mulDiv(balance - policy.reserve.opsFloor, price, LAMPORTS_PER_SOL, 'floor') + f.snapshot.openExposure;
+  const s: RiskSnapshot = {
+    ...f.snapshot,
+    walletEquity: walletEquity === null ? null : usd(walletEquity),
+    capital: usd(walletEquity === null ? f.snapshot.equity : minBig(f.snapshot.equity, walletEquity)),
+  };
   const reasons: RiskReason[] = [...f.problems];
   const trips: Trip[] = [];
   const live = mode === 'live';
@@ -225,6 +238,8 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
     reasons.push(reason('kill_switch', 'equity at or below the kill line; only the owner re-arms'));
     if (!killLatched) trips.push('kill_switch');
   }
+  // Not latched: it follows the SOL price and lifts when the wallet's value is back above the line.
+  if (s.walletEquity !== null && s.walletEquity <= killLine) reasons.push(reason('wallet_below_kill_line', 'the wallet\'s value at the SOL price is at or below the kill line'));
 
   // R11 (live only): entries per day.
   if (live) {
@@ -240,8 +255,9 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   if (live && market.regime === 'unknown') reasons.push(reason('regime_unknown', 'regime gate state is unknown'));
 
   // What the week still allows (before what is open or reserved): the tighter of the two counts.
-  const weekRoom = minBig(weekLimit - s.weekLoss, weekBaseLimit - s.weekBaseLoss);
-  return { figures: f, reasons, trips, killLine, weekRoom, dailyLimit };
+  // ... and never more than 20% of the capital that remains now (after a withdrawal or a fall in SOL).
+  const weekRoom = minBig(minBig(weekLimit - s.weekLoss, weekBaseLimit - s.weekBaseLoss), ofBps(s.capital, policy.loss.weeklyBps, 'floor'));
+  return { figures: { ...f, snapshot: s }, reasons, trips, killLine, weekRoom, dailyLimit };
 };
 
 /** The Melbourne rules refuse a non-integer or pre-2008 instant, so a bad clock throws before any figure is used. */
@@ -362,7 +378,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   // Size caps on the notional, each net of the costs C where the control counts them.
   const caps: SizeCapEntry[] = [];
   const cap = (control: SizeCapEntry['control'], name: string, notional: bigint) => caps.push({ control, name, notional: usd(notional) });
-  const drawdownReset = s.equity * BPS <= s.highWaterMark * (BPS - BigInt(policy.capital.drawdownResetBps));
+  const drawdownReset = s.capital * BPS <= s.highWaterMark * (BPS - BigInt(policy.capital.drawdownResetBps));
   cap('R2', 'maximum notional', policy.capital.maxNotional);
   // Phase 1 and any 10% drawdown trade at the minimum. That is a choice of size inside the range, not a cap on it.
   const atMinimum = !latches.sizeStepUpApproved || drawdownReset;
@@ -378,10 +394,10 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   const fixed = fixedCosts(request.network, request.rent);
   const fixedUsd = lamportsToMicroUsd(lamports(fixed.total), price, 'ceil');
   if (stopOk) {
-    cap('R5', 'planned risk per trade', mulDiv(ofBps(policy.capital.bankroll, policy.loss.plannedRiskBps, 'floor') - fixedUsd, BPS,
+    cap('R5', 'planned risk per trade', mulDiv(ofBps(minBig(policy.capital.bankroll, s.capital), policy.loss.plannedRiskBps, 'floor') - fixedUsd, BPS,
       BigInt(request.stopBps + policy.costGate.maxRoundTripBps), 'floor'));
   }
-  const killAllowance = s.equity - check.killLine - committed;
+  const killAllowance = s.capital - check.killLine - committed;
   const weekAllowance = check.weekRoom - committed;
   cap('R6', 'full loss above the kill line', killAllowance - heldUsd - cMaxUsd);
   cap('R6', 'full loss inside the weekly limit', weekAllowance - heldUsd - cMaxUsd);

@@ -32,8 +32,8 @@ export type RiskCode =
   | 'loss_cooldown' | 'loss_day_pause' | 'loss_review'
   // R9 weekly loss
   | 'weekly_loss' | 'weekly_review'
-  // R10 kill switch
-  | 'kill_switch'
+  // R10 kill switch, and the wallet's value below the kill line
+  | 'kill_switch' | 'wallet_below_kill_line'
   // R11 entries
   | 'entries_per_day' | 'entries_per_mint' | 'reentry_after_stop'
   // R12 liquidity floor
@@ -59,7 +59,7 @@ export const CODE_CONTROL: Readonly<Record<RiskCode, ControlId>> = {
   daily_loss: 'R7',
   loss_cooldown: 'R8', loss_day_pause: 'R8', loss_review: 'R8',
   weekly_loss: 'R9', weekly_review: 'R9',
-  kill_switch: 'R10',
+  kill_switch: 'R10', wallet_below_kill_line: 'R10',
   entries_per_day: 'R11', entries_per_mint: 'R11', reentry_after_stop: 'R11',
   liquidity_unknown: 'R12', liquidity_floor: 'R12',
   quote_stale: 'R13', quote_failed: 'R13', depth_cap: 'R13',
@@ -240,6 +240,13 @@ export interface RiskSnapshot {
    */
   readonly dayChangeMarked: MicroUsd | null;
   readonly weekChangeMarked: MicroUsd | null;
+  /**
+   * Wallet-marked equity: wallet SOL above the operations floor at the fresh SOL/USD price, plus open positions at the
+   * same marks as `equity`. Null without a fresh price and balance (then no entry is allowed anyway).
+   */
+  readonly walletEquity: MicroUsd | null;
+  /** Capital every size and limit that scales with equity uses: the lower of `equity` and `walletEquity`. */
+  readonly capital: MicroUsd;
 }
 
 export type Trip = 'kill_switch' | 'weekly_loss';

@@ -112,7 +112,8 @@ describe('R4 SOL operations reserve', () => {
     const input = baseInput();
     const thin = { value: lamports(TRIAL_POLICY.reserve.opsFloor + SOL / 100n), atMs: NOW };
     const d = expectRefusedButExitPasses({ ...input, market: { ...input.market, solBalance: thin } }, baseRequest(), 'ops_reserve', false);
-    expect(evaluateExit({ ...input, market: { ...input.market, solBalance: thin } }).tripped).toEqual([]);
+    // Not the account-level floor check (the balance is above the floor); the wallet's value is also low (R10).
+    expect(evaluateExit({ ...input, market: { ...input.market, solBalance: thin } }).tripped.map((r) => r.code)).toEqual(['wallet_below_kill_line']);
     expect(d.allow).toBe(false);
   });
 });
