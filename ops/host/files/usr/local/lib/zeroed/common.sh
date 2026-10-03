@@ -30,7 +30,8 @@ tg() {
   cred telegram_bot_token | {
     IFS= read -r token || true
     printf 'url = "%s/bot%s/%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$method"
-    [ -z "${tg_chat:-}" ] || printf 'data-urlencode = "chat_id=%s"\n' "$tg_chat"
+    # $tg_field: data-urlencode (default) or form (for a multipart upload such as sendDocument).
+    [ -z "${tg_chat:-}" ] || printf '%s = "chat_id=%s"\n' "${tg_field:-data-urlencode}" "$tg_chat"
   } | curl -fsS -m 30 -K - "$@"
 }
 

@@ -11,13 +11,16 @@ lock
 # Until paired, read every message, so one sent while no code was pending never counts against a later code.
 [ -s "$CRED_DIR/telegram_bot_token" ] && ! paired || exit 0
 offset="$(cat "$STATE_DIR/tg_offset" 2>/dev/null || echo 0)"
-updates="$(tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]')" || {
-  log "Telegram getUpdates failed."
-  exit 0
-}
+get_updates() { tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]'; }
+if ! updates="$(get_updates 2>/dev/null)"; then
+  # Re-pairing after the watchdog set its webhook: Telegram refuses getUpdates while one is set. Turn the
+  # webhook off (the watchdog's /pause and /status stop until the next Deploy run sets it again).
+  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the watchdog's Telegram webhook for pairing; run Deploy afterwards to turn it back on." || true
+  updates="$(get_updates)" || { log "Telegram getUpdates failed."; exit 0; }
+fi
 want="$(cat "$PAIR_CODE_FILE" 2>/dev/null || true)"
 issued_at="$(stat -c %Y "$PAIR_CODE_FILE" 2>/dev/null || echo 0)"
-while IFS=$'\t' read -r id date chat text; do
+while IFS=$'\t' read -r id date chat kind text; do
   [ -n "$id" ] || continue
   printf '%s\n' "$((id + 1))" > "$STATE_DIR/tg_offset"
   [ -s "$PAIR_CODE_FILE" ] || continue
@@ -25,7 +28,8 @@ while IFS=$'\t' read -r id date chat text; do
   [[ "$date" =~ ^[0-9]+$ ]] && [ "$date" -ge "$issued_at" ] || continue
   [[ "$text" =~ ^/pair(@[A-Za-z0-9_]+)?([[:space:]]+(.*))?$ ]] || continue
   got="$(printf '%s' "${BASH_REMATCH[3]:-}" | tr -d '[:space:]')"
-  [[ "$chat" =~ ^-?[0-9]{1,20}$ ]] || continue
+  # Private chats only: a group or channel can never become the owner's chat.
+  [ "$kind" = private ] && [[ "$chat" =~ ^[0-9]{1,20}$ ]] || continue
   if [ "$got" = "$want" ]; then
     printf '%s' "$chat" | store_cred telegram_chat_id
     rm -f "$PAIR_CODE_FILE"
@@ -37,4 +41,4 @@ while IFS=$'\t' read -r id date chat text; do
     log "Wrong pairing code sent in Telegram; that code no longer works. Run zeroed-pair-code for a new one."
     send_to "$chat" "Code not accepted. Get a new one at the server console." || true
   fi
-done < <(printf '%s' "$updates" | jq -r '.result[]? | [(.update_id | tostring), ((.message.date // 0) | tostring), ((.message.chat.id // "") | tostring), ((.message.text // "") | gsub("[\t\n]"; " "))] | @tsv')
+done < <(printf '%s' "$updates" | jq -r '.result[]? | [(.update_id | tostring), ((.message.date // 0) | tostring), ((.message.chat.id // "-") | tostring), ((.message.chat.type // "-") | tostring), ((.message.text // "-") | gsub("[\t\n]"; " "))] | @tsv')
