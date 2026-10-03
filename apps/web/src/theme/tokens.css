@@ -1,0 +1,53 @@
+/*
+ * Two themes only: Paper and Silent Black (docs/ARCHITECTURE.md, Themes table).
+ * test/contrast.test.ts reads this file and checks every text and chart pair
+ * against WCAG AA in both themes.
+ * Paper accent, gain and loss are darkened slightly from the proposed values
+ * so they reach 4.5:1 on every Paper surface.
+ */
+
+:root[data-theme='paper'] {
+  color-scheme: light;
+  --bg: #F7F7F5;
+  --surface: #FFFFFF;
+  --raised: #F1F1EE;
+  --border: #E3E3DF;
+  --text: #0D0F12;
+  --text-2: #5E636B;
+  --accent: #2B61E8;
+  --accent-fg: #FFFFFF;
+  --gain: #0D7C44;
+  --loss: #C53939;
+  --backdrop: rgb(247 247 245 / 0.6);
+  --shadow: 0 1px 2px rgb(13 15 18 / 0.04), 0 12px 32px rgb(13 15 18 / 0.08);
+}
+
+:root[data-theme='black'] {
+  color-scheme: dark;
+  --bg: #08090A;
+  --surface: #0F1012;
+  --raised: #16181B;
+  --border: #1F2226;
+  --text: #ECEFF3;
+  --text-2: #8A9099;
+  --accent: #5B8CFF;
+  --accent-fg: #08090A;
+  --gain: #3FB97A;
+  --loss: #E5605E;
+  --backdrop: rgb(8 9 10 / 0.6);
+  --shadow: 0 0 0 1px #1F2226, 0 16px 40px rgb(0 0 0 / 0.5);
+}
+
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
