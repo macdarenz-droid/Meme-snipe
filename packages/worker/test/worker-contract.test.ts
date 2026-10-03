@@ -205,7 +205,7 @@ describe('the reservation goes through the ledger with the snapshot\'s account v
       { type: 'intent', intentId: id, event: { type: 'mark_eligible' } },
       { type: 'intent', intentId: id, event: { type: 'approve_risk' } },
       { type: 'intent', intentId: id, event: { type: 'reserve_exposure', reservation: { id: 'r:other', intentId: id, amount: 2_000n, status: 'held' } } },
-    ] as BookEvent[]) book = ledger.recordBookEvent(book, e, { ts: T, limits: { maxHeld: 10n ** 12n as Lamports, maxCount: 10 } }).book;
+    ] as BookEvent[]) book = ledger.recordBookEvent(book, e, { ts: T, limits: { maxHeld: 10n ** 12n as Lamports, maxCount: 10 }, accountVersion: ledger.accountVersion() }).book;
   };
 
   it('a reservation decided on a snapshot the account has moved past is refused as stale and goes back as a reject', () => {

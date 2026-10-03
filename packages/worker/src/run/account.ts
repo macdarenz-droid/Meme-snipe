@@ -95,7 +95,7 @@ export class PaperAccount {
 
   /** The account snapshot risk reads, with the ledger's held reservations and version read in one transaction. */
   fact(ledger: Ledger, book: Book, latches: Latches, solPrice: MicroUsd | null, nowMs: number): AccountFact {
-    const { held, version } = ledger.atomically(() => ({ held: ledger.heldExposure(), version: ledger.accountVersion() }));
+    const { version, value: held } = ledger.withSnapshot(() => ledger.heldExposure());
     const closedTrades: ClosedTrade[] = this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).map((t) => ({
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
     }));
