@@ -113,7 +113,12 @@ export interface Policy {
     readonly survivalAfterMs: number;
     readonly survivalMedianDays: number;
     readonly volumePercentile: number;
+    /** Cap on the expanding volume window, in days. */
     readonly volumeWindowDays: number;
+    /** The volume day read is the check's UTC day minus this (the archive completes a day 0.4 to 1.9 days late). */
+    readonly volumeLagDays: number;
+    /** Fewest days the volume window must hold; fewer is unknown. */
+    readonly volumeMinDays: number;
     /** SOL 24 h change must be above this (signed). */
     readonly solChange24hFloorBps: number;
     readonly failedChecksToDisable: number;
@@ -205,6 +210,8 @@ const TRIAL_VALUES: Policy = {
     survivalMedianDays: 14,
     volumePercentile: 25,
     volumeWindowDays: 365,
+    volumeLagDays: 3,
+    volumeMinDays: 28,
     solChange24hFloorBps: -800,
     failedChecksToDisable: 2,
   },
