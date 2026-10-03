@@ -5,11 +5,11 @@ import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { httpApi, OfflineError } from '../src/api/client.ts';
-import { ConnectionStore } from '../src/api/connection.ts';
+import { BAD_ANSWER_TTL_MS, ConnectionStore } from '../src/api/connection.ts';
 import { PATHS, type DashboardApi, type Mode } from '../src/api/contract.ts';
 import { DataError } from '../src/api/modes.ts';
 import { MAX_BACKOFF_MS, nextDelay, REFRESH_MS, documentForeground, startPolling, type Foreground, type Timers } from '../src/api/poll.ts';
-import type { Got } from '../src/api/reportLoader.ts';
+import { REQUEST_TIMEOUT_MS, type Got } from '../src/api/reportLoader.ts';
 import { reportData } from '../src/api/reportSchema.ts';
 import { schemaFor } from '../src/api/schemas.ts';
 import { keepOnOffline, settle, type Loaded } from '../src/api/useEndpoint.ts';
@@ -282,6 +282,12 @@ describe('contract mock server', () => {
     expect(states.slice(1)).toEqual(Array(7).fill('error'));
     // Good data still counts as an update.
     expect(store.get().lastOk).toBe('2026-10-03T03:01:10.000Z');
+  });
+
+  it('a bad answer outlives the slowest poll, so a broken endpoint cannot flicker back to Online', () => {
+    // The slowest poll waits MAX_BACKOFF_MS plus 10% jitter, then up to REQUEST_TIMEOUT_MS for the answer.
+    expect(BAD_ANSWER_TTL_MS).toBeGreaterThan(MAX_BACKOFF_MS * 1.1 + REQUEST_TIMEOUT_MS);
+    expect(nextDelay(64, 0.999999)).toBeLessThanOrEqual(MAX_BACKOFF_MS * 1.1);
   });
 
   it('Server error clears once the bad endpoint answers well, or after it has not answered for 10 minutes', () => {
