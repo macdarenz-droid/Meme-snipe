@@ -190,10 +190,10 @@ describe('e. a VPS run on --strategy none', () => {
     const named = md(meta({ name: 'qual-1', strategy: 'none' }), 'none');
     expect(named.md).toContain('**No registered strategy, not qualifying.**');
     expect(named.r.counts).toBe('NOT qualifying: no registered strategy (--strategy none).');
-    // A VPS run without a name says it too; the guard itself judges only named runs.
+    // A VPS run without a name says it too, and never passes qualifying_start.
     const unnamed = md(meta({}), 'none');
     expect(unnamed.md).toContain('**No registered strategy, not qualifying.**');
-    expect(unnamed.r.checks['qualifying_start']).toBe(true);
+    expect(unnamed.r.checks['qualifying_start']).toBe(false);
   });
   it('not said for a rehearsal, or for a run on another strategy', () => {
     expect(md(meta({ label: 'rehearsal' }), 'none').md).not.toContain('No registered strategy');

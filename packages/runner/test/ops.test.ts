@@ -147,7 +147,8 @@ describe('coverage gaps and rejections', () => {
   });
 });
 
-const meta: RunMeta = { runId: 'r', label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'systemd:zeroed-worker.service', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
+// A named host run on a registered strategy (U2-v1 stands in for BT-2's), so every check can pass.
+const meta: RunMeta = { runId: 'r', name: 'qual-1', strategy: 'U2-v1', label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'systemd:zeroed-worker.service', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
 const samples: Sample[] = Array.from({ length: 11 }, (_, i) => ({
   t: i * 10, up: true, ready: true, boot: 'a', git_sha: 'c0ffee', rss_bytes: 100 * 1024 * 1024, in_trade: false, entries_halted: false,
   recorder: true, simulation: true, stub: false, feeds: 'f', feeds_down: [],
@@ -156,7 +157,8 @@ const restart = (i: number, exposure?: DrillOutcome['exposure']): DrillOutcome =
 const drills: DrillOutcome[] = fullDrills(meta.plan);
 /** The full passing set with the first restart replaced (its exposure under test). */
 const withFirst = (d: DrillOutcome): DrillOutcome[] => drills.map((x) => (x.id === 'restart-1' ? { ...x, ...d, cause: 'crash' } : x));
-const report = (ops: Ops, d = drills) => buildReport(meta, samples, 10, 100, checkJournal(''), d, [], item4([], 'vps', false), ops);
+const startLine = JSON.stringify({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot: 'a', kind: 'start', entry_rule: 'U2-v1', paper_edge_ppm: null, s0_salt: null, qualifying: true });
+const report = (ops: Ops, d = drills) => buildReport(meta, samples, 10, 100, checkJournal(startLine), d, [], item4([], 'vps', false), ops, ['U2-v1']);
 
 describe('report checks', () => {
   it('passes with quota inside the plan and nothing shed', () => {

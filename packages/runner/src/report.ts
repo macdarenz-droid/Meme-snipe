@@ -260,10 +260,10 @@ export const buildReport = (
           (stub || d.cause === 'chain-rebuild' || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
     ),
     coverage_valid: ops.coverage.problems.length === 0,
-    // A named host run is the qualifying run (a run without a name, a rehearsal or the shakedown, is not judged here):
-    // a start line, every boot on the run's registered --strategy with no paper edge and qualifying true, and neither
-    // the rule nor the salt changed between boots (RUN-1d guard and the re-review of #48, one check).
-    qualifying_start: guard === null || guard.ok,
+    // A rehearsal is never judged here. Any other run passes only as a named host run whose start lines pass the
+    // guard: a start line, every boot on the run's registered --strategy with no paper edge and qualifying true, and
+    // neither the rule nor the salt changed between boots. A 'vps' run without a name can never pass.
+    qualifying_start: meta.label === 'rehearsal' || guard?.ok === true,
     // RUN-1d: every planned cause drilled and passed (a crash, a reboot, a host loss, a chain rebuild, RPC loss).
     // A restart cause counts only when a passed drill of it had something to keep; a skipped drill never counts.
     drills_by_cause: [...RESTART_CAUSES, 'rpc'].every((c) => byCause[c]!.planned > 0 && (c === 'rpc' ? byCause[c]!.passed > 0 : byCause[c]!.exercised > 0)),
