@@ -471,12 +471,32 @@ describe('holdout mode', () => {
       const two = () => registerAttempt(a, { index: 2, entries: [{ holdoutId: 'two', universe: 'U2', configId }] }, new Date('2026-09-25T10:00:00Z'));
       expect(two).toThrow(/not scored yet/);
       // Not before the attempt's tail has ended (the synthetic tail ends 2026-09-21).
-      expect(() => endAttempt(a, 1, why, new Date('2026-09-20T12:00:00Z'))).toThrow(/tail/);
-      const st = endAttempt(a, 1, why, new Date('2026-09-22T00:00:00Z'));
+      const size = { requiredTrades: 300, minDays: 10 };
+      expect(() => endAttempt(a, 1, why, new Date('2026-09-20T12:00:00Z'), size)).toThrow(/tail/);
+      const st = endAttempt(a, 1, why, new Date('2026-09-22T00:00:00Z'), size);
       expect(st.registry.entries.find((e) => e.holdoutId === 'one')).toMatchObject({ burned: true, burnReason: 'spent' });
       expect(st.attempts[0]!.ended).toMatchObject({ outcome: 'spent', why });
       expect(two().attempts.map((x) => x.index)).toEqual([1, 2]);
     }
+  });
+
+  test('endAttempt never skips a mandatory opening: a sealed, ready attempt with a G1 pass is refused for any reason (E1)', () => {
+    const a = authority('mandatory');
+    register(a, 'ready');
+    const o = opts();
+    const configId = holdoutConfigId(o, a);
+    runAndSealHoldout({ ...o, ledgerPath: join(dir, 'mandatory.sqlite') }, { ...a, byUniverse: { U2: 'ready' }, window });
+    recordHoldoutG1(a, { holdoutId: 'ready', configId, passed: true, evaluatedOn: 'practice' });
+    const after = new Date('2026-09-22T00:00:00Z');
+    expect(() => endAttempt(a, 1, 'short', after, { requiredTrades: 1, minDays: 1 })).toThrow(/is ready/);
+    expect(() => endAttempt(a, 1, 'g1-failed', after)).toThrow(/G1 passed/);
+    expect(() => endAttempt(a, 1, 'never-run', after)).toThrow(/was run/);
+    expect(() => endAttempt(a, 1, 'tired' as never, after)).toThrow(/reason/);
+    expect(readHoldoutStore(a.registryPath).registry.entries[0]).toMatchObject({ burned: false, seal: 'sealed' });
+    // An attempt registered and never run may end as never-run.
+    const b = authority('never-run');
+    register(b, 'idle');
+    expect(endAttempt(b, 1, 'never-run', after).registry.entries[0]).toMatchObject({ burned: true, burnReason: 'spent' });
   });
 
   test('a run must feed every holdout of its attempt', () => {

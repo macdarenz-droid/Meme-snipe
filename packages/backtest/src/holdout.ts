@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { refuseSymlink } from './registry-git.ts';
 import { canonical } from '../../core/src/engine/index.ts';
-import { burnHoldout, createHoldoutRegistry, type HoldoutCounts, type HoldoutRegistry, openHoldout, registerHoldout, sealHoldout } from '../../core/src/stats/index.ts';
+import { burnHoldout, createHoldoutRegistry, type HoldoutCounts, holdoutReady, type HoldoutRegistry, openHoldout, registerHoldout, sealHoldout } from '../../core/src/stats/index.ts';
 import type { DatasetRow } from './dataset/rows.ts';
 import { melbourneDay } from './report.ts';
 import { type RunOptions, runBacktest, s0Config } from './run.ts';
@@ -214,21 +214,34 @@ export const setHoldoutPlan = (a: HoldoutAuthority, plan: HoldoutPlan, research:
   });
 };
 
+/** Why an attempt ends without an opening. */
+export type SpentReason = 'g1-failed' | 'short' | 'never-run';
+
 /**
- * Ends attempt `index` once its tail has passed without an opening: every holdout of it not yet burned or opened is
- * burned 'spent' (`why`: 'g1-failed', 'short', or another plain reason), and the attempt is marked ended. Then the next
- * attempt may register. Refused before the tail end.
+ * Ends attempt `index` once its tail has passed without an opening, and only for a reason the store proves for every
+ * holdout of it not yet burned or opened (so a mandatory opening is never skipped):
+ * - 'g1-failed': its latest G1 is not a pass for the registered configuration (g1Blocks);
+ * - 'short': it is not ready (holdoutReady with the required trades and days, passed in);
+ * - 'never-run': its seal is still 'registered'.
+ * Those holdouts are burned 'spent' and the attempt is marked ended; then the next attempt may register. Refused before
+ * the tail end and for any other reason. (When STATS-1c moves α into the core registry, this rule moves there too.)
  */
-export const endAttempt = (a: HoldoutAuthority, index: number, why: string, now: Date = new Date()): HoldoutStore =>
+export const endAttempt = (a: HoldoutAuthority, index: number, why: SpentReason, now: Date = new Date(),
+  size?: { readonly requiredTrades: number; readonly minDays: number }): HoldoutStore =>
   mutate(a, `Holdout attempt ${index}: spent (${why})`, (s) => {
+    if (why !== 'g1-failed' && why !== 'short' && why !== 'never-run') throw new RangeError(`holdout attempt ${index}: "${String(why)}" is not a reason an attempt may end without an opening`);
     const at = s?.attempts.find((x) => x.index === index);
     if (s === null || at === undefined) throw new RangeError(`holdout attempt ${index} is not registered`);
     if (now.getTime() < Date.parse(`${at.window.tailEndDay}T00:00:00Z`)) throw new RangeError(`holdout attempt ${index}: its tail runs until ${at.window.tailEndDay}`);
-    let registry = s.registry;
-    for (const id of at.holdoutIds) {
-      const e = registry.entries.find((x) => x.holdoutId === id);
-      if (e !== undefined && !e.burned && e.seal !== 'opened') registry = burnHoldout(registry, id, 'spent', why).registry;
+    if (why === 'short' && size === undefined) throw new RangeError(`holdout attempt ${index}: 'short' needs the required trades and days`);
+    const open = at.holdoutIds.map((id) => s.registry.entries.find((x) => x.holdoutId === id)!).filter((e) => e !== undefined && !e.burned && e.seal !== 'opened');
+    for (const e of open) {
+      if (why === 'g1-failed' && g1Blocks(s, e.holdoutId) === null) throw new RangeError(`holdout ${e.holdoutId}: its latest G1 passed, so it must be opened, not spent`);
+      if (why === 'short' && holdoutReady(e, size!.requiredTrades, size!.minDays)) throw new RangeError(`holdout ${e.holdoutId} is ready (${e.counts?.entries} entries on ${e.counts?.entryDays} days), so it is not short`);
+      if (why === 'never-run' && e.seal !== 'registered') throw new RangeError(`holdout ${e.holdoutId} was run (${e.seal}), so it is not never-run`);
     }
+    let registry = s.registry;
+    for (const e of open) registry = burnHoldout(registry, e.holdoutId, 'spent', why).registry;
     const ended = at.ended?.outcome === 'spent' ? at.ended : { at: now.toISOString(), outcome: 'spent' as const, why };
     const store = { ...s, registry, attempts: s.attempts.map((x) => (x.index === index ? { ...x, ended } : x)) };
     return { store, value: store };
