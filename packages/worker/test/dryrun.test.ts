@@ -5,117 +5,19 @@ import { describe, expect, it } from 'vitest';
 import { type Address, NATIVE_MINT, PUMP_PROGRAM, TOKEN_PROGRAM, addressBytes, decodeTransaction } from '../../core/src/chain/index.ts';
 import { POLICY, RATES, common, goldenOf, request } from '../../core/test/tx/fixtures-policy.ts';
 import type { Kind } from '../../core/test/tx/helpers.ts';
-import { associatedTokenAddress, buildTrade, pumpCreatorVault, rentExempt, type SignerPolicyContext, type TradeRequest, userVolumeAccumulator } from '../../core/src/tx/index.ts';
+import { associatedTokenAddress, buildTrade, pumpCreatorVault, rentExempt, type TradeRequest, userVolumeAccumulator } from '../../core/src/tx/index.ts';
 import {
-  type DryRunRecord, type DryRunTrade, DryRunRpc, DRYRUN_GATE, amountErrorE4, dryRunReport, dryRunTrade, isBaseClose, rentPaidInto, type RawAccount, sameStructure, substitution,
+  type DryRunRecord, DRYRUN_GATE, amountErrorE4, dryRunReport, dryRunTrade, isBaseClose, rentPaidInto, type RawAccount, sameStructure, substitution,
 } from '../src/dryrun/index.ts';
-import { HELIUS_FREE, ManualTimers, P0, P1, P2, P3, Scheduler } from '../src/scheduler/index.ts';
+import { HELIUS_FREE, ManualTimers, P0, P1, P3, Scheduler } from '../src/scheduler/index.ts';
 import { blockNetwork, KEYS } from './helpers.ts';
-import { type SimBalances, type StubAccount, type StubChain, SYSTEM, feePayerOf, stubChain, testAddress, tokenAccount, wallet } from './dryrun-chain.ts';
+import { type SimBalances, type StubAccount, type StubChain, SYSTEM, feePayerOf, testAddress, tokenAccount, wallet } from './dryrun-chain.ts';
+import {
+  BOT, BUYER, HEAD, HOLDER, KINDS, URL, fund, mintOf, need, quoted, setup, signerPolicy, tradeOf,
+} from './dryrun-fixture.ts';
 
 blockNetwork();
 
-const KINDS: readonly Kind[] = ['curve-buy', 'curve-sell', 'pool-buy', 'pool-sell'];
-const BOT = testAddress(1);
-const BUYER = testAddress(2);
-const HOLDER = testAddress(3);
-const URL = `https://mainnet.helius-rpc.com/?api-key=${KEYS.HELIUS_API_KEY}`;
-const HEAD = 1_000n;
-
-const signerPolicy = (over: Partial<SignerPolicyContext> = {}): SignerPolicyContext => ({
-  wallet: BOT,
-  kind: 'trade',
-  maxSolOut: 10n ** 12n,
-  maxPriorityFeeLamports: POLICY.maxPriorityFeeLamports,
-  maxTipLamports: POLICY.maxTipLamports,
-  tipAccounts: POLICY.tipAccounts,
-  withdrawalAddress: null,
-  lamportsPerSignature: RATES.lamportsPerSignature,
-  rent: RATES.rent,
-  ...over,
-});
-
-const tradeOf = (kind: Kind, over: Partial<DryRunTrade> = {}, closeTokenAccount = true): DryRunTrade => ({
-  id: `intent-${kind}`,
-  request: request(kind, closeTokenAccount),
-  common: common(goldenOf(kind), { wallet: BOT }),
-  policy: POLICY,
-  signerPolicy: signerPolicy(),
-  minContextSlot: HEAD,
-  ...over,
-});
-
-const mintOf = (req: TradeRequest): Address => (req.venue === 'curve' ? req.market.mint : req.market.state.baseMint);
-const need = (req: TradeRequest): bigint => (req.side === 'sell' ? (req.venue === 'curve' ? req.quote.tokens : req.quote.base) : 0n);
-const quoted = (req: TradeRequest): bigint =>
-  req.side === 'buy' ? (req.venue === 'curve' ? req.quote.tokens : req.quote.base) : req.quote.userQuote;
-
-const setup = (opts: { scheduler?: Scheduler } = {}) => {
-  const { chain, http } = stubChain();
-  const timers = new ManualTimers(1_000_000);
-  const scheduler = opts.scheduler ?? new Scheduler({ ...HELIUS_FREE, window: { limit: 1_000, windowMs: 1_000 } }, { timers });
-  const rpc = new DryRunRpc({ url: () => URL, http, scheduler, timeoutMs: 2_000 });
-  return { chain, rpc, deps: { rpc, priority: P2, buyStandIns: [BUYER] } };
-};
-
-interface FundOptions {
-  /** The holder's token balance (default: exactly the position). */
-  readonly holderTokens?: bigint;
-  /** Added to the quoted amount the simulation delivers (tokens for buys, lamports for sells). */
-  readonly delta?: bigint;
-  /** Rent the simulated transaction takes from the wallet (default: what the stand-in build declares). */
-  readonly rent?: bigint;
-  /** Accounts the build writes that are left absent before the trade. */
-  readonly absent?: readonly Address[];
-  /** Post-state of accounts other than the stand-in's own three. */
-  readonly extra?: ReadonlyMap<string, StubAccount | null>;
-}
-
-/**
- * Puts a funded buyer and a holder on the stub chain, plus every other account the stand-in builds write (so the
- * build declares no rent unless a test removes one), and scripts a simulation that moves exactly the quoted amount
- * plus `delta`, charging the fees, tip and `rent`.
- */
-const fund = (chain: StubChain, t: DryRunTrade, o: FundOptions = {}) => {
-  const req = t.request;
-  const mint = mintOf(req);
-  const prog = req.market.baseTokenProgram;
-  chain.accounts.set(BUYER, wallet(10n ** 12n));
-  chain.accounts.set(HOLDER, wallet(1_000_000_000n));
-  const holderAta = associatedTokenAddress(HOLDER, mint, prog);
-  const held = o.holderTokens ?? need(req);
-  chain.accounts.set(holderAta, tokenAccount(mint, HOLDER, held));
-  chain.largest = [{ address: holderAta, amount: held.toString() }];
-  for (const s of [BUYER, HOLDER]) {
-    const b = buildTrade(req, { ...t.common, wallet: s, existing: new Set() }, t.policy);
-    if (!b.ok) throw new Error('stub build failed');
-    const own = new Set<string>([s, associatedTokenAddress(s, NATIVE_MINT, TOKEN_PROGRAM), associatedTokenAddress(s, mint, prog)]);
-    for (const ix of b.tx.instructions) for (const m of ix.accounts) if (m.writable && !m.signer && !own.has(m.address) && !chain.accounts.has(m.address)) chain.accounts.set(m.address, wallet(10n ** 9n));
-  }
-  for (const a of o.absent ?? []) chain.accounts.delete(a);
-  chain.simulate = (sim, accounts) => {
-    const [s, wsol, base] = sim.addresses as [Address, Address, Address];
-    // The stand-in's build with the accounts the stub holds, as the dry run builds it.
-    const existing = new Set([...accounts.keys()] as Address[]);
-    const b = buildTrade(req, { ...t.common, wallet: s, existing }, t.policy);
-    if (!b.ok) throw new Error('stub build failed');
-    const out = b.tx.solOut;
-    const rent = o.rent ?? out.rent;
-    const pre = (a: Address) => accounts.get(a) ?? null;
-    const preTokens = pre(base) === null ? 0n : new DataView(pre(base)!.data.buffer).getBigUint64(64, true);
-    const delta = o.delta ?? 0n;
-    if (req.side === 'buy') {
-      const got = quoted(req) + delta;
-      return { post: [wallet(pre(s)!.lamports - (out.total - out.rent) - rent), pre(wsol), tokenAccount(mint, s, preTokens + got)], extra: o.extra };
-    }
-    const left = preTokens - need(req);
-    const closes = sim.wire.length > 0 && decodeTransaction(sim.wire).instructions.length === b.tx.instructions.length && req.closeTokenAccount;
-    const baseLamports = pre(base)!.lamports;
-    const proceeds = quoted(req) + delta;
-    const walletAfter = pre(s)!.lamports + proceeds - out.baseFee - out.priorityFee - out.tip - rent + (closes ? baseLamports : 0n);
-    return { post: [wallet(walletAfter), pre(wsol), closes ? null : tokenAccount(mint, s, left, baseLamports)], extra: o.extra };
-  };
-};
 
 describe('dry run: success on every venue and side', () => {
   it.each(KINDS)('%s simulates, records the stand-in and an exact amount', async (kind) => {
@@ -366,8 +268,8 @@ describe('stand-in build is structurally identical to the bot-wallet build', () 
 
 describe('dry-run report thresholds', () => {
   const rec = (i: number, success: boolean, e4: number | null = 0, closeOmitted = false): DryRunRecord => ({
-    id: `t${i}`, side: 'buy', venue: 'curve', mint: BOT, outcome: success ? 'simulated' : 'not-simulable', success, error: success ? null : 'x',
-    standIn: { address: BUYER, role: 'funded-wallet', tokenAccount: null, closeOmitted }, policy: null, quotedOut: 1n, simulatedOut: success ? 1n : null,
+    id: `t${i}`, side: 'buy', finalExit: false, venue: 'curve', mint: BOT, outcome: success ? 'simulated' : 'not-simulable', success, error: success ? null : 'x',
+    standIn: { address: BUYER, role: 'funded-wallet', tokenAccount: null, closeOmitted, closeOmittedReason: null }, policy: null, quotedOut: 1n, simulatedOut: success ? 1n : null,
     amountErrorE4: success ? e4 : null, readSlot: null, quoteAgeSlots: null, rentDeclared: null, rentPaid: null, balancesFrom: null, simulatedSlot: null, unitsConsumed: null, logsTail: [],
   });
   const many = (ok: number, fail: number, e4 = 0) => [...Array.from({ length: ok }, (_, i) => rec(i, true, e4)), ...Array.from({ length: fail }, (_, i) => rec(ok + i, false))];
@@ -595,5 +497,55 @@ describe('dry run: balances taken inside the simulation', () => {
     expect(r.outcome).toBe('malformed');
     ({ r } = await run(true, (b) => ({ ...b, postToken: b.postToken.map((x) => ({ ...x, amount: x.amount + 1n })) })));
     expect(r).toMatchObject({ outcome: 'malformed', error: 'the simulation\'s post balances disagree with the accounts it read back' });
+  });
+});
+
+describe('dry-run mechanics diagnostics (supervisor ruling, 90fac89)', () => {
+  it('counts final exits, real closes, complete sell-and-close and omitted closes with their reasons', async () => {
+    const records: DryRunRecord[] = [];
+    // A final exit by a holder with exactly the position: simulated with the real close.
+    let { chain, deps } = setup();
+    let t = tradeOf('curve-sell');
+    fund(chain, t);
+    records.push(await dryRunTrade(t, deps));
+    // A final exit whose close fails in the simulation: real close, not complete.
+    ({ chain, deps } = setup());
+    t = tradeOf('pool-sell', { id: 'close-fails' });
+    fund(chain, t);
+    chain.simulate = () => ({ err: { InstructionError: [5, { Custom: 11 }] }, logs: [] });
+    records.push(await dryRunTrade(t, deps));
+    // A final exit by a holder with more tokens: the close is left out, with the reason.
+    ({ chain, deps } = setup());
+    t = tradeOf('curve-sell', { id: 'omitted' });
+    fund(chain, t, { holderTokens: need(t.request) * 3n });
+    records.push(await dryRunTrade(t, deps));
+    // A partial sell and a buy: not final exits.
+    ({ chain, deps } = setup());
+    t = tradeOf('pool-sell', { id: 'partial' }, false);
+    fund(chain, t);
+    records.push(await dryRunTrade(t, deps));
+    ({ chain, deps } = setup());
+    t = tradeOf('curve-buy', { id: 'buy' });
+    fund(chain, t);
+    records.push(await dryRunTrade(t, deps));
+
+    expect(records.map((r) => r.finalExit)).toEqual([true, true, true, false, false]);
+    const position = need(tradeOf('curve-sell').request);
+    const m = dryRunReport(records).mechanics;
+    expect(m).toEqual({
+      label: 'mechanics diagnostics; not a landing or rent-recovery probability',
+      finalExitSimulations: 3,
+      withRealClose: 2,
+      completeSellAndClose: 1,
+      closeOmitted: 1,
+      closeOmittedReasons: [{ id: 'omitted', reason: `the holder holds ${position * 3n}, the position is ${position}` }],
+    });
+  });
+
+  it('a final exit that never reached the simulation is not counted as run with the real close', () => {
+    const base = { id: 'x', side: 'sell' as const, finalExit: true, venue: 'curve' as const, mint: BOT, error: 'no holder', standIn: null, policy: null, quotedOut: 1n, simulatedOut: null,
+      amountErrorE4: null, readSlot: null, quoteAgeSlots: null, rentDeclared: null, rentPaid: null, balancesFrom: null, simulatedSlot: null, unitsConsumed: null, logsTail: [] };
+    const m = dryRunReport([{ ...base, outcome: 'not-simulable', success: false }]).mechanics;
+    expect(m).toMatchObject({ finalExitSimulations: 1, withRealClose: 0, completeSellAndClose: 0, closeOmitted: 0 });
   });
 });

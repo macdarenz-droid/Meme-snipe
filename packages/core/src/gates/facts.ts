@@ -45,6 +45,8 @@ export interface PoolFact {
   readonly address: string;
   /** The program that owns the pool account. */
   readonly owner: string;
+  /** The pool account's data length: it decides the PumpSwap layout the builders need (H17). Absent: unread, H17 rejects. */
+  readonly accountBytes?: number;
   readonly pool: {
     readonly index: number;
     readonly creator: string;
@@ -56,6 +58,10 @@ export interface PoolFact {
     readonly lpSupply: bigint;
     /** Absent on pools written before the field existed: unknown, so H5 rejects. */
     readonly isMayhemMode?: boolean;
+    /** Absent: unread, so H17 rejects. */
+    readonly isCashbackCoin?: boolean;
+    /** Absent: unread, so H17 rejects. */
+    readonly coinCreator?: string;
     readonly virtualQuoteReserves?: bigint;
   };
   readonly baseVault: bigint;
@@ -321,6 +327,9 @@ export const parsePool = (v: unknown): PoolFact | null => {
   for (const k of POOL_KEYS) if (!isStr(p[k])) return null;
   if (!isNat(p['lpSupply'])) return null;
   if (p['isMayhemMode'] !== undefined && !isBool(p['isMayhemMode'])) return null;
+  if (p['isCashbackCoin'] !== undefined && !isBool(p['isCashbackCoin'])) return null;
+  if (p['coinCreator'] !== undefined && !isStr(p['coinCreator'])) return null;
+  if (v['accountBytes'] !== undefined && !(Number.isSafeInteger(v['accountBytes']) && (v['accountBytes'] as number) >= 0)) return null;
   if (p['virtualQuoteReserves'] !== undefined && !isBig(p['virtualQuoteReserves'])) return null;
   return v as unknown as PoolFact;
 };
