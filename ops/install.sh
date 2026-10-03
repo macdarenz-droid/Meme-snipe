@@ -1074,6 +1074,8 @@ install_file /usr/local/lib/zeroed/logic.sh 0644 <<'__ZEROED_FILE__'
 PAIR_CODE_TTL_S=1800       # a pairing code works for 30 minutes
 WEBHOOK_MAX_TRIES=5        # the owner is told after this many failed tries in a row
 WORKER_API_ADDR=127.0.0.1:8788 # the worker API, loopback only; tailscale serve publishes it to the tailnet
+TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
+RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
 backoff_s() {
@@ -1145,6 +1147,10 @@ serve_ok() {
     and ((.AllowFunnel // {}) | to_entries | all(.value != true))
     and ((.TCP // {}) | to_entries | all(.value.HTTPS == true))' >/dev/null 2>&1
 }
+
+# funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
+# public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
+funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
 
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
@@ -1275,6 +1281,7 @@ install_file /usr/local/sbin/zeroed-check 0755 <<'__ZEROED_FILE__'
 #     set; a change (another URL, or none) is an alert, and the server sets its own again.
 #  3. A worker restart that waits for the dry run to end (re-pairing) runs once nothing is in flight.
 #  4. The index of the dry-run evidence kept on the host, for the worker API.
+#  0. Tailscale Funnel must be off (the live view is tailnet only); on is an alert and it is turned off.
 # Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
 set -euo pipefail
 umask 077
@@ -1284,6 +1291,17 @@ lock
 # 4 first: it needs no keys.
 install -d -m 0755 "$(dirname "$EVIDENCE_INDEX")"
 (umask 022; evidence_index "$EVIDENCE_ROOT" > "$EVIDENCE_INDEX.new" 2>/dev/null && mv -f "$EVIDENCE_INDEX.new" "$EVIDENCE_INDEX") || rm -f "$EVIDENCE_INDEX.new"
+
+# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off.
+if command -v tailscale >/dev/null 2>&1; then
+  public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"
+  if [ -n "$public" ]; then
+    alert funnel-on "ALERT Zeroed host: Tailscale Funnel was on ($(printf '%s' "$public" | tr '\n' ' ')), which makes the worker API public. Turning it off."
+    for hp in $public; do tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
+  else
+    alert_clear funnel-on "CLEARED Zeroed host: Tailscale Funnel is off."
+  fi
+fi
 
 keys_stored || exit 0
 
@@ -9732,13 +9750,14 @@ fi
 
 say "Dry-run units"
 # RUN-1's units come with the deployed release (packages/runner/systemd), so the runner's owner changes them
-# by merge alone. Only zeroed-dryrun* names are taken; units a newer release dropped are removed.
+# by merge alone. Only zeroed-dryrun* and zeroed-worker-tabletop are taken (none enabled but the tick timer);
+# units a newer release dropped are removed.
 RELEASE_UNITS=/opt/zeroed/current/packages/runner/systemd
 new_units=()
 if [ -d "$RELEASE_UNITS" ]; then
   for f in "$RELEASE_UNITS"/*; do
     n="$(basename "$f")"
-    [[ "$n" =~ ^zeroed-dryrun[a-z0-9-]*@?\.(service|timer)$ ]] || continue
+    [[ "$n" =~ $RELEASE_UNIT_RE ]] || continue
     install_file "/etc/systemd/system/$n" 0644 < "$f"
     new_units+=("$n")
   done
@@ -9759,6 +9778,8 @@ systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer
 if [ -e /etc/systemd/system/zeroed-dryrun-tick.timer ]; then systemctl enable --now zeroed-dryrun-tick.timer >/dev/null; fi
 # Installed but off: the off-server copy goes to a third party (Telegram) and waits for the owner's
 # approval, switched on by a reviewed commit to ops/host-config.json (applied by zeroed-update).
+# Host checks once now (Funnel, keys, webhook, evidence index); the timer repeats them every minute.
+/usr/local/sbin/zeroed-check || true
 if [ "$UPDATE" = 1 ]; then
   # zeroed-update restarts the worker next (reconcile first); the signer only when its own files changed.
   for f in "${CHANGED[@]}"; do

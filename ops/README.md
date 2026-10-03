@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/89a2acde81a848a8f738ba688ad5975e45438c00/ops/install.sh -o i && echo 'bde8cbdd3263d31f4397652e93ee0ba03ef72d2f5fece12724f55c0f319b3352  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/89a2acde81a848a8f738ba688ad5975e45438c00/ops/install.sh -o i && echo 'dfef03f07b126c80e25283011aceb161c367274e904e522c48c42462017851d5  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/89a2acde
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `bde8cbdd3263d31f4397652e93ee0ba03ef72d2f5fece12724f55c0f319b3352`
+SHA-256 of `install.sh`: `dfef03f07b126c80e25283011aceb161c367274e904e522c48c42462017851d5`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -69,7 +69,7 @@ Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987b
 - no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
 - the worker reports no open intent (`/var/lib/zeroed/open_intents`).
 
-It then runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*`), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. If it fails, the owner is told and the next run tries again. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
+It then runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*` and `zeroed-worker-tabletop.service`, the host-loss tabletop worker on 127.0.0.1:8789, which is never published), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. If it fails, the owner is told and the next run tries again. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
 
 ## Backups
 
@@ -132,6 +132,7 @@ A failed webhook set is tried again after 1, 2, 4 and 8 minutes, then every 30 m
 `zeroed-check` runs every minute and alerts the paired chat once per problem, with a CLEARED line when it ends:
 - **Stored keys:** every credential must decrypt and match the ciphertext the key handoff or pairing stored. The check keeps the SHA-256 of the encrypted file, never of a value. A key that is missing, does not open, or changed outside those paths is an alert, naming the key only. To fix it: `zeroed-new-deploy-code`, then Deploy.
 - **Webhook:** what Telegram reports (address, certificate, connections, update types) must match what this server set. Any other webhook, or none, is an alert naming only the host, and the server sets its own back. If you did not change it, rotate the bot token at BotFather and run Deploy. While a pairing code is pending the webhook is off on purpose, so that is not an alert.
+- **Funnel:** Tailscale Funnel must be off on every port. The app cannot tell a public Funnel address from a tailnet one. Funnel found on is an alert, and the check turns it off. Every install and update runs the same check.
 - It also writes the evidence index for the worker API and runs a worker restart that was waiting for a safe moment.
 
 `zeroed-status` shows the key check, a failing webhook, the active dry run, the evidence and the live view.

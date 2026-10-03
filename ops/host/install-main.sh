@@ -162,13 +162,14 @@ fi
 
 say "Dry-run units"
 # RUN-1's units come with the deployed release (packages/runner/systemd), so the runner's owner changes them
-# by merge alone. Only zeroed-dryrun* names are taken; units a newer release dropped are removed.
+# by merge alone. Only zeroed-dryrun* and zeroed-worker-tabletop are taken (none enabled but the tick timer);
+# units a newer release dropped are removed.
 RELEASE_UNITS=/opt/zeroed/current/packages/runner/systemd
 new_units=()
 if [ -d "$RELEASE_UNITS" ]; then
   for f in "$RELEASE_UNITS"/*; do
     n="$(basename "$f")"
-    [[ "$n" =~ ^zeroed-dryrun[a-z0-9-]*@?\.(service|timer)$ ]] || continue
+    [[ "$n" =~ $RELEASE_UNIT_RE ]] || continue
     install_file "/etc/systemd/system/$n" 0644 < "$f"
     new_units+=("$n")
   done
@@ -189,6 +190,8 @@ systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer
 if [ -e /etc/systemd/system/zeroed-dryrun-tick.timer ]; then systemctl enable --now zeroed-dryrun-tick.timer >/dev/null; fi
 # Installed but off: the off-server copy goes to a third party (Telegram) and waits for the owner's
 # approval, switched on by a reviewed commit to ops/host-config.json (applied by zeroed-update).
+# Host checks once now (Funnel, keys, webhook, evidence index); the timer repeats them every minute.
+/usr/local/sbin/zeroed-check || true
 if [ "$UPDATE" = 1 ]; then
   # zeroed-update restarts the worker next (reconcile first); the signer only when its own files changed.
   for f in "${CHANGED[@]}"; do

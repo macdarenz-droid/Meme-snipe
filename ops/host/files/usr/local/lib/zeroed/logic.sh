@@ -5,6 +5,8 @@
 PAIR_CODE_TTL_S=1800       # a pairing code works for 30 minutes
 WEBHOOK_MAX_TRIES=5        # the owner is told after this many failed tries in a row
 WORKER_API_ADDR=127.0.0.1:8788 # the worker API, loopback only; tailscale serve publishes it to the tailnet
+TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
+RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
 backoff_s() {
@@ -76,6 +78,10 @@ serve_ok() {
     and ((.AllowFunnel // {}) | to_entries | all(.value != true))
     and ((.TCP // {}) | to_entries | all(.value.HTTPS == true))' >/dev/null 2>&1
 }
+
+# funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
+# public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
+funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
 
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }

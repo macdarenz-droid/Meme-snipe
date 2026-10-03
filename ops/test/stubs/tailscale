@@ -19,6 +19,11 @@ case "$1 ${2:-}" in
     cat "$S/serve.json" 2>/dev/null || echo '{}' ;;
   "serve reset")
     rm -f "$S/serve.json" ;;
-  "funnel "*) ;;
+  "funnel --https="*)
+    # "off" drops that port from AllowFunnel, as tailscaled does (the test turns Funnel on by editing serve.json).
+    port="${2#--https=}"
+    if [ "${3:-}" = off ] && [ -e "$S/serve.json" ]; then
+      jq --arg p ":$port" '.AllowFunnel |= ((. // {}) | with_entries(select(.key | endswith($p) | not)))' "$S/serve.json" > "$S/serve.json.new" && mv "$S/serve.json.new" "$S/serve.json"
+    fi ;;
   *) echo "tailscale stub: unhandled $*" >&2; exit 1 ;;
 esac

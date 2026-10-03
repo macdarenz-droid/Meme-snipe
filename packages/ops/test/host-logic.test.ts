@@ -218,6 +218,9 @@ describe('worker start and API address', () => {
     expect(sh('echo "$WORKER_API_ADDR"').out).toBe('127.0.0.1:8788');
     expect(read('packages/runner/systemd/zeroed-dryrun@.service')).toContain('--health-addr 127.0.0.1:8788');
     expect(read('ops/host/files/usr/local/sbin/zeroed-tailscale')).toContain('tailscale serve --bg --https=443 "http://$WORKER_API_ADDR"');
+    // 127.0.0.1:8789 is RUN-1d's tabletop worker: reserved, never the worker API, never published.
+    expect(sh('echo "$TABLETOP_API_ADDR"').out).toBe('127.0.0.1:8789');
+    for (const p of ['ops/host/files/usr/local/lib/zeroed/worker-start', 'ops/host/files/usr/local/sbin/zeroed-tailscale', 'packages/runner/systemd/zeroed-dryrun@.service']) expect(read(p), p).not.toContain('8789');
   });
 
   it('the stand-in serves /health on loopback only', () => {
@@ -240,6 +243,27 @@ describe('live view (tailscale serve)', () => {
     expect(status({ TCP: { 443: { HTTPS: true } }, Web: { 'zeroed.tail1.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:22' } } } } })).toBe('no');
     expect(status({ TCP: { 443: { HTTPS: true }, 22: { TCPForward: '127.0.0.1:22' } }, Web: web })).toBe('no');
     expect(status({})).toBe('no');
+  });
+
+  it('Funnel on for any port is found, alerted and turned off, by the minute check and by every install', () => {
+    const ports = (o: Record<string, unknown>) => sh('funnel_ports', JSON.stringify(o)).out;
+    expect(ports({ Web: web })).toBe('');
+    expect(ports({ AllowFunnel: { 'zeroed.tail1.ts.net:443': false } })).toBe('');
+    expect(ports({ AllowFunnel: { 'zeroed.tail1.ts.net:443': true, 'zeroed.tail1.ts.net:8443': true } })).toBe('zeroed.tail1.ts.net:443\nzeroed.tail1.ts.net:8443');
+    const check = read('ops/host/files/usr/local/sbin/zeroed-check');
+    expect(check).toContain('public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"');
+    expect(check).toContain('alert funnel-on "ALERT');
+    expect(check).toContain('tailscale funnel --https="${hp##*:}" off');
+    expect(check).toContain('alert_clear funnel-on "CLEARED');
+    // Before the early exit for a host without keys.
+    expect(check.indexOf('funnel_ports')).toBeLessThan(check.indexOf('keys_stored || exit 0'));
+    const main = read('ops/host/install-main.sh');
+    expect(main).toContain('/usr/local/sbin/zeroed-check || true');
+    expect(main.indexOf('/usr/local/sbin/zeroed-check || true')).toBeLessThan(main.indexOf('if [ "$UPDATE" = 1 ]; then\n  # zeroed-update restarts'));
+    // The only Funnel commands anywhere turn it off.
+    for (const p of ['ops/host/install-main.sh', 'ops/host/files/usr/local/sbin/zeroed-check', 'ops/host/files/usr/local/sbin/zeroed-tailscale']) {
+      for (const m of read(p).matchAll(/tailscale funnel[^\n]*/g)) expect(m[0], p).toMatch(/ off\b/);
+    }
   });
 
   it('is opt-in: the installer never installs or starts Tailscale, and the repository key is pinned', () => {
@@ -289,13 +313,13 @@ describe('install.sh --update', () => {
 
   it("installs RUN-1's units from the release by name, removes dropped ones, and enables only the tick timer", () => {
     expect(main).toContain('RELEASE_UNITS=/opt/zeroed/current/packages/runner/systemd');
-    expect(main).toContain('[[ "$n" =~ ^zeroed-dryrun[a-z0-9-]*@?\\.(service|timer)$ ]] || continue');
+    expect(main).toContain('[[ "$n" =~ $RELEASE_UNIT_RE ]] || continue');
     expect(main).toContain('if [ -e /etc/systemd/system/zeroed-dryrun-tick.timer ]; then systemctl enable --now zeroed-dryrun-tick.timer >/dev/null; fi');
-    expect(main).not.toMatch(/enable[^\n]*zeroed-dryrun@|enable[^\n]*zeroed-dryrun-reboot/);
+    expect(main).not.toMatch(/enable[^\n]*zeroed-dryrun@|enable[^\n]*zeroed-dryrun-reboot|enable[^\n]*zeroed-worker-tabletop/);
     expect(main).toContain('zeroed-check.timer');
-    const names = ['zeroed-dryrun@.service', 'zeroed-dryrun-tick.service', 'zeroed-dryrun-tick.timer', 'zeroed-dryrun-reboot.service', 'other.service', 'zeroed-dryrun@x.service'];
-    const ok = names.filter((n) => sh(`[[ "${n}" =~ ^zeroed-dryrun[a-z0-9-]*@?\\.(service|timer)$ ]] && echo y || echo n`).out === 'y');
-    expect(ok).toEqual(['zeroed-dryrun@.service', 'zeroed-dryrun-tick.service', 'zeroed-dryrun-tick.timer', 'zeroed-dryrun-reboot.service']);
+    const names = ['zeroed-dryrun@.service', 'zeroed-dryrun-tick.service', 'zeroed-dryrun-tick.timer', 'zeroed-dryrun-reboot.service', 'zeroed-worker-tabletop.service', 'zeroed-worker.service', 'zeroed-signer.service', 'other.service', 'zeroed-dryrun@x.service', 'zeroed-worker-tabletop.service.d'];
+    const ok = names.filter((n) => sh(`[[ "${n}" =~ $RELEASE_UNIT_RE ]] && echo y || echo n`).out === 'y');
+    expect(ok).toEqual(['zeroed-dryrun@.service', 'zeroed-dryrun-tick.service', 'zeroed-dryrun-tick.timer', 'zeroed-dryrun-reboot.service', 'zeroed-worker-tabletop.service']);
   });
 
   it('a running worker restarts for changed start files only when nothing is in flight', () => {

@@ -444,6 +444,7 @@ in_c "zeroed-status" | grep -q 'Evidence:  /var/lib/zeroed-dryrun/evidence (1 ru
 pass "install.sh --update through zeroed-update: RUN-1 units from the release installed (tick timer on, template off, runner on 127.0.0.1:8788), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on; worker API on loopback only lists the evidence kept on the host"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
+in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on
 WD_URL="$(in_c "sed -n 's/^WATCHDOG_URL=//p' /etc/zeroed/worker.env")/telegram"
 n0="$(wc -l <"$STATE/telegram.jsonl")"
 printf '{"url":"https://evil.example/hook"}' >"$STATE/webhook.json"
@@ -556,8 +557,21 @@ in_c "cat /var/lib/tailscale-stub/calls" >"$LOGS/tailscale-calls.txt"
 grep -qx 'up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m' "$LOGS/tailscale-calls.txt" && grep -qx 'funnel --https=443 off' "$LOGS/tailscale-calls.txt" && grep -qx 'serve --bg --https=443 http://127.0.0.1:8788' "$LOGS/tailscale-calls.txt" || fail "tailscale calls"
 in_c "zeroed-status" | grep -q 'Live view: https://zeroed.tail-e2e.ts.net' || fail "status after the live view"
 in_c "zeroed-tailscale" | grep -q 'Live view: https://zeroed' || fail "zeroed-tailscale is not safe to repeat"
+# Funnel switched on by someone: alert, turned off, then cleared; installs run the same check.
+in_c "jq '.AllowFunnel = {\"zeroed.tail-e2e.ts.net:443\": true}' /var/lib/tailscale-stub/serve.json > /tmp/s && mv /tmp/s /var/lib/tailscale-stub/serve.json"
+chk
+tail -1 "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT2\",\"text\":\"ALERT Zeroed host: Tailscale Funnel was on (zeroed.tail-e2e.ts.net:443 )" || fail "no alert for Funnel on"
+in_c "jq -e '(.AllowFunnel // {}) | length == 0' /var/lib/tailscale-stub/serve.json" >/dev/null || fail "Funnel not turned off"
+chk
+tail -1 "$STATE/telegram.jsonl" | grep -q 'CLEARED Zeroed host: Tailscale Funnel is off.' || fail "Funnel alert not cleared"
+in_c "jq '.AllowFunnel = {\"zeroed.tail-e2e.ts.net:443\": true}' /var/lib/tailscale-stub/serve.json > /tmp/s && mv /tmp/s /var/lib/tailscale-stub/serve.json"
+in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-funnel.txt" 2>&1 || fail "install --update (Funnel on)"
+in_c "jq -e '(.AllowFunnel // {}) | length == 0' /var/lib/tailscale-stub/serve.json" >/dev/null || fail "the installer's check left Funnel on"
+grep -q 'ALERT Zeroed host: Tailscale Funnel was on' <(tail -3 "$STATE/telegram.jsonl") || fail "the installer's check raised no Funnel alert"
+in_c "systemctl stop zeroed-check.timer"
+chk
 in_c "zeroed-tailscale --off" | grep -q 'Live view off' && grep -qx 'serve reset' <(in_c "cat /var/lib/tailscale-stub/calls") || fail "zeroed-tailscale --off"
-pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it; the firewall admits only tailnet HTTPS"
+pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
 
 # ---------- 11. Secret scan ----------
 in_c "journalctl --no-pager -o cat" >"$LOGS/container-journal.txt"

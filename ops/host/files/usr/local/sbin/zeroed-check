@@ -7,6 +7,7 @@
 #     set; a change (another URL, or none) is an alert, and the server sets its own again.
 #  3. A worker restart that waits for the dry run to end (re-pairing) runs once nothing is in flight.
 #  4. The index of the dry-run evidence kept on the host, for the worker API.
+#  0. Tailscale Funnel must be off (the live view is tailnet only); on is an alert and it is turned off.
 # Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
 set -euo pipefail
 umask 077
@@ -16,6 +17,17 @@ lock
 # 4 first: it needs no keys.
 install -d -m 0755 "$(dirname "$EVIDENCE_INDEX")"
 (umask 022; evidence_index "$EVIDENCE_ROOT" > "$EVIDENCE_INDEX.new" 2>/dev/null && mv -f "$EVIDENCE_INDEX.new" "$EVIDENCE_INDEX") || rm -f "$EVIDENCE_INDEX.new"
+
+# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off.
+if command -v tailscale >/dev/null 2>&1; then
+  public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"
+  if [ -n "$public" ]; then
+    alert funnel-on "ALERT Zeroed host: Tailscale Funnel was on ($(printf '%s' "$public" | tr '\n' ' ')), which makes the worker API public. Turning it off."
+    for hp in $public; do tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
+  else
+    alert_clear funnel-on "CLEARED Zeroed host: Tailscale Funnel is off."
+  fi
+fi
 
 keys_stored || exit 0
 
