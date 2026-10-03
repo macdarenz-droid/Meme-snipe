@@ -143,6 +143,33 @@ Full signatures, buffers and hashes are in `packages/core/test/chain/fixtures/up
 - Accounts created by swaps are the same size at the same rate before and after: volume accumulators 137 bytes (1,346,200 lamports) on both programs, SPL token accounts 165 bytes, Token-2022 ATAs 170 bytes, at 5,080 lamports per byte.
 - The CORE-2 quote goldens (313 curve and 353 PumpSwap swaps, slots 452,791,146–452,943,426) and the TX-1 compiled-message goldens (slots 452,954,462–452,954,827) were all recorded after the upgrade and reproduce exactly. A test now pins that.
 
+**Earlier boundaries, 2026-07-01 to 2026-10-01 (UPG-1b, read 2026-10-03).**
+
+Method:
+- Upgrades: every successful transaction on the three program-data accounts since 2026-07-01, kept when its log says `Upgraded program`.
+- Config changes: every successful transaction of the single admin `FFWtrEQ4B4PKQoVuHYzZq8FabGkVatYzDpEVHsK5rrhF`, which is the authority of pump Global and the admin of both FeeConfigs and of PumpSwap GlobalConfig. Its history reaches back to 2026-03-26, so the window is fully covered.
+- Effect of each change: event lengths (with the `ix_name` string removed), instruction shapes and fee bps compared in the 3–6 blocks before and after it.
+
+Times are UTC with Melbourne (AEST) in brackets.
+
+| # | Slot | When | What | Trade economics | Decoding |
+| --- | --- | --- | --- | --- | --- |
+| B1 | 433,095,571 (pump), 433,112,355 (PumpSwap) | 07-15 16:11 / 18:07 (07-16 02:11 / 04:07) | Upgrades | PumpSwap: none seen. pump: none seen | PumpSwap Buy/Sell +25 bytes (`virtual_quote_reserves` i128, `can_boost`, `base_supply`); pump TradeEvent unchanged |
+| B2 | 434,319,990 | 07-21 14:23 (07-22 00:23) | Admin `SetBoostAuthority`, `ToggleBoost` | Yes: BOOST on for new coins. About 20% of migration liquidity is held back and spent by buy-and-burn in the first 5 minutes (2.6) | None |
+| B3 | 445,690,911 (fees), 445,691,021 (pump), 445,691,085 (PumpSwap); admin 445,691,266 | 09-09 19:30–19:32 (09-10 05:30–05:32) | Upgrades of all three; admin `InitializeQuoteControl`, `SetQuoteControlAdmin`, `SetExoticFlatFees` ×2, `UpdateCreatorFeeConfig` (pump and PumpSwap) | Yes: creator-fee config and token-quoted flat fees change. pump trades failed with Anchor error 3003 for about 10–30 slots after the upgrade, then resumed | None seen |
+| B4 | 446,462,733 (PumpSwap), 446,462,760 (pump), 446,465,969 (fees); admin 446,462,883 | 09-12 15:24–15:41 (09-13 01:24–01:41) | Upgrades of all three; admin `UpdateHolderRewardConfig`, `UpdateCreatorFeeConfig` ×2 | Yes: holder-reward coins (creator fee paid to holders) | TradeEvent, BuyEvent, SellEvent +16 bytes (`holder_rewards_bps`, `holder_rewards`) |
+| B5 | 447,228,373 | 09-15 10:34 (09-15 20:34) | pump upgrade | None seen | None seen |
+| B6 | 449,734,335 | 09-23 14:45 (09-24 00:45) | pump upgrade | None seen | None seen |
+| B7 | 452,654,882 / 452,654,932 / 452,655,002 | 10-02 15:47 (10-03 01:47) | Above | None on SOL markets | +8 bytes |
+
+Notes:
+- No pump_fees upgrade happened between 2026-07-01 and 09-09.
+- The admin's only other transactions since 07-01 are a token-account creation (07-18) and a mayhem-program `UpdateGlobalParams` (07-15 16:04 UTC). Mayhem coins are refused.
+- pump fee bps were 95 protocol in every sample; creator bps of 0, 30 and 300 appear on both sides of every boundary.
+- "None seen" means 3–6 blocks on each side showed no change. It is not a proof that the upgrade changed nothing.
+
+**Old Faithful coverage.** The [CAR report](https://github.com/rpcpool/yellowstone-faithful/blob/gha-report/docs/CAR-REPORT.md), read 2026-10-03, lists epochs 1004–1047 with the CAR, SHA-256, BLAKE3, tx-meta check, PoH check, indexes and slot-range index all ✅. Epoch 1048 is still in progress. Epoch 1004 begins 07-18 17:00 UTC and 1019 ends about 08-21 07:45 UTC, so 2026-07-20 to 2026-08-19 is covered. Each epoch's CID and CAR are served, at 0.77–1.30 TB per CAR.
+
 ---
 
 ## 3. PumpSwap (graduation venue)
