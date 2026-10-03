@@ -4,11 +4,13 @@
 // (loosening needs the owner and a change to the defaults here).
 
 import { dayBlockMeanDiffInterval, dayBlockMeanInterval, type DayReturn } from './bootstrap.ts';
+import { g2Rule, type G2PowerResult } from './g2rule.ts';
+import { burnHoldouts, type HoldoutRegistry } from './holdout.ts';
+import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
 import { mean, median, sd } from './descriptive.ts';
 import { bettingEProcess, reverseEProcess } from './eprocess.ts';
 import { probabilityOfBacktestOverfitting } from './pbo.ts';
-import { requiredHoldoutTrades } from './power.ts';
 import { meanPredictiveInterval, type SampleSummary } from './predictive.ts';
 import type { Rng } from './rng.ts';
 import { deflatedSharpe, type TrialRecord } from './sharpe.ts';
@@ -31,6 +33,8 @@ export interface GateResult {
   readonly reasons: readonly string[];
   readonly checks: readonly Check[];
   readonly metrics: Readonly<Record<string, number | null>>;
+  /** Observations that are reported but do not gate (e.g. a predictive-interval miss that needs a written review). */
+  readonly notes: readonly string[];
 }
 
 export interface DemotionResult {
@@ -83,16 +87,12 @@ const G1_DIR = {
   blockedUpperMax: 'max', calibrationSlopeMin: 'min', calibrationSlopeMax: 'max', lowerBoundMin: 'min',
 } as const;
 
-export const G2_DEFAULTS = {
-  minTradesFloor: 300, minEffect: 0.05, eWealthMin: 20, futilityMinTrades: 400, futilityUpperMax: 0.02, lowerBoundMin: 0,
-};
-// futilityMinTrades and futilityUpperMax reject a version early; rejecting sooner is the stricter direction.
-const G2_DIR = {
-  minTradesFloor: 'min', minEffect: 'max', eWealthMin: 'min', futilityMinTrades: 'max', futilityUpperMax: 'min', lowerBoundMin: 'min',
-} as const;
+export const G2_DEFAULTS = { minTradesFloor: 300, familyAlpha: 0.05, minControlSeeds: 200 };
+const G2_DIR = { minTradesFloor: 'min', familyAlpha: 'max', minControlSeeds: 'min' } as const;
 
-export const G3_DEFAULTS = { minHours: 48, fillDiffMedianMax: 0.005 };
-const G3_DIR = { minHours: 'min', fillDiffMedianMax: 'max' } as const;
+export const G3_DEFAULTS = { minHours: 48, fillDiffMedianMax: 0.005, minPaperTradesForMean: 30 };
+// Fewer paper trades needed before the mean is checked means the check applies more often: stricter.
+const G3_DIR = { minHours: 'min', fillDiffMedianMax: 'max', minPaperTradesForMean: 'max' } as const;
 
 export const G4_DEFAULTS = { minTrades: 30, firstAttemptFailRateMax: 0.1, liveMinusPaperMedianMin: -0.01 };
 const G4_DIR = { minTrades: 'min', firstAttemptFailRateMax: 'max', liveMinusPaperMedianMin: 'min' } as const;
@@ -128,7 +128,7 @@ class Checks {
 }
 
 const result = (gate: GateName, checks: Checks, status: GateStatus, metrics: Record<string, number | null>): GateResult => ({
-  gate, passed: status === 'pass', status, reasons: checks.failed, checks: checks.list, metrics,
+  gate, passed: status === 'pass', status, reasons: checks.failed, checks: checks.list, metrics, notes: [],
 });
 
 const statusFrom = (checks: Checks): GateStatus => (checks.failed.length === 0 ? 'pass' : 'fail');
@@ -160,6 +160,8 @@ export interface G0Input {
   readonly survivorshipFree: boolean;
   /** Share of migrations also seen by a second source (coverage audit). */
   readonly secondSourceCoverage: number;
+  /** Every migration seen but not decoded is counted and reported (none dropped silently). */
+  readonly undecodedMigrationsReported: boolean;
   readonly leakTestPassed: boolean;
   readonly shiftTestPassed: boolean;
   /** Decision-log hash of each replay of the same data. */
@@ -178,6 +180,8 @@ export const gateG0 = (input: G0Input, overrides?: Partial<typeof G0_DEFAULTS>):
   c.add('survivorship', input.survivorshipFree, input.survivorshipFree ? 'dataset is survivorship-free' : 'dataset is not survivorship-free');
   c.add('coverage', input.secondSourceCoverage >= th.minSecondSourceCoverage,
     `second-source coverage ${fmt(input.secondSourceCoverage)} (need >= ${th.minSecondSourceCoverage})`);
+  c.add('undecoded', input.undecodedMigrationsReported,
+    input.undecodedMigrationsReported ? 'undecoded migrations counted and reported' : 'migrations seen but not decoded are not all counted and reported');
   c.add('leak test', input.leakTestPassed, input.leakTestPassed ? 'passed' : 'failed');
   c.add('shift test', input.shiftTestPassed, input.shiftTestPassed ? '+1-slot shift test passed' : '+1-slot shift test failed');
   const hashes = new Set(input.replayLogHashes);
@@ -294,77 +298,136 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
 
 // ---- G2 ---------------------------------------------------------------------------------------------------------
 
-export interface G2Input {
-  readonly scenario: string;
-  readonly rulesFrozenBeforeHoldout: boolean;
-  /** How many times the holdout has been evaluated, this one included. Must be 1. */
-  readonly holdoutEvaluations: number;
-  /** Holdout trades in decision-time order. */
-  readonly holdout: readonly TradeOutcome[];
-  /** Walk-forward trades: σ̂ and the predictive interval come from here, never from the holdout. */
+export interface G2Universe {
+  readonly universe: string;
+  /** The single pre-registered configuration; must match the holdout registry entry. */
+  readonly configId: string;
+  readonly holdoutId: string;
+  /** Holdout trades of that configuration, in decision-time order. */
+  readonly trades: readonly TradeOutcome[];
+  /** The random control S0 on the same eligible candidates and days, one run per seed. */
+  readonly controlRuns: readonly (readonly DayReturn[])[];
+  /** Walk-forward trades of the same configuration (for the reported predictive interval). */
   readonly walkForward: readonly DayReturn[];
+  /** n_power from `simulateG2Power` on the walk-forward data (never from the holdout). */
+  readonly power: G2PowerResult;
+}
+
+export interface G2Input {
+  /** Must be 'conservative' (ARCHITECTURE.md §14). */
+  readonly scenario: string;
+  readonly registry: HoldoutRegistry;
+  readonly universes: readonly G2Universe[];
   readonly rng: Rng;
   readonly replicates?: number;
 }
 
-/** G2 Holdout (proof, owner rule 6). */
-export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>): GateResult => {
+export interface G2UniverseResult {
+  readonly universe: string;
+  readonly status: GateStatus;
+  readonly requiredTrades: number;
+  readonly trades: number;
+  /** Holm-adjusted level the universe was tested at; null when it did not enter (too few trades). */
+  readonly level: number | null;
+  readonly p: number | null;
+  readonly mean: number | null;
+  readonly lower: number | null;
+  readonly diffVsS0: number | null;
+  readonly diffVsS0Lower: number | null;
+}
+
+export interface G2Result extends GateResult {
+  readonly universes: readonly G2UniverseResult[];
+  /** The registry after this run: every holdout that was scored is burned. Store it before using the result. */
+  readonly registry: HoldoutRegistry;
+}
+
+/**
+ * G2 Holdout (proof, owner rule 6). Per universe at its Holm-adjusted level: n ≥ max(300, n_power), the
+ * day-block-bootstrap CI of mean net return above zero, and the paired CI against S0 above zero. Size is checked from
+ * trade counts before any outcome is read; a short universe is "not proven", is not scored and is not burned.
+ * Every universe that is scored is burned; a second look is refused. Passes when at least one universe passes.
+ */
+export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>): G2Result => {
   const th = tighten('G2', G2_DEFAULTS, G2_DIR, overrides);
   const c = new Checks();
-  const n = input.holdout.length;
-  const metrics: Record<string, number | null> = { trades: n };
-  const integrity = [
-    c.add('scenario', input.scenario === 'conservative', `scenario "${input.scenario}" (need "conservative")`),
-    c.add('pre-registration', input.rulesFrozenBeforeHoldout,
-      input.rulesFrozenBeforeHoldout ? 'rules frozen before the holdout' : 'rules were not frozen before the holdout'),
-    c.add('evaluated once', input.holdoutEvaluations === 1, `holdout evaluated ${input.holdoutEvaluations} times (need exactly 1)`),
-    c.add('walk-forward', input.walkForward.length >= 2, `${input.walkForward.length} walk-forward trades (need >= 2 for σ̂)`),
-  ].every(Boolean);
-  if (!integrity) return result('G2', c, 'fail', metrics);
+  const notes: string[] = [];
+  const refuse = (): G2Result => ({ ...result('G2', c, 'fail', {}), universes: [], registry: input.registry });
 
-  const wf = input.walkForward.map((t) => t.rNet);
-  const sigmaHat = sd(wf);
-  metrics.sigmaHat = sigmaHat;
-  const required = sigmaHat > 0 ? requiredHoldoutTrades(sigmaHat, th.minEffect, th.minTradesFloor) : th.minTradesFloor;
-  metrics.requiredTrades = required;
-  const enough = c.add('sample size', n >= required, `${n} holdout trades (need >= max(${th.minTradesFloor}, n_power(σ̂ = ${fmt(sigmaHat)})) = ${required})`);
-  const days = new Set(input.holdout.map((t) => t.day)).size;
-  if (n < 2 || days < 2) {
-    c.add('days', false, `${n} trades on ${days} days`);
-    return result('G2', c, 'not-proven', metrics);
+  // Integrity: nothing is scored unless every universe is pre-registered, unscored and unique.
+  c.add('scenario', input.scenario === 'conservative', `scenario "${input.scenario}" (need "conservative")`);
+  c.add('universes', input.universes.length > 0, `${input.universes.length} universes`);
+  const seen = new Set<string>();
+  for (const u of input.universes) {
+    const entry = input.registry.find((e) => e.holdoutId === u.holdoutId);
+    const tag = `holdout ${u.universe}`;
+    if (seen.has(u.universe)) c.add(tag, false, `universe ${u.universe} appears twice: one configuration per universe`);
+    seen.add(u.universe);
+    if (!entry) c.add(tag, false, `holdout ${u.holdoutId} is not registered`);
+    else if (entry.burned) c.add(tag, false, `holdout ${u.holdoutId} is burned: it was already scored, a second look is refused`);
+    else if (entry.universe !== u.universe || entry.configId !== u.configId) {
+      c.add(tag, false, `holdout ${u.holdoutId} is registered for ${entry.universe}/${entry.configId}, not ${u.universe}/${u.configId}`);
+    }
+    c.add(`S0 ${u.universe}`, u.controlRuns.length >= th.minControlSeeds, `${u.controlRuns.length} S0 seeds (need >= ${th.minControlSeeds})`);
   }
+  if (c.failed.length > 0) return refuse();
+
+  // Size from counts alone, before any outcome is read.
+  const sized = input.universes.map((u) => {
+    const required = Math.max(th.minTradesFloor, u.power.nPower);
+    const days = new Set(u.trades.map((t) => t.day)).size;
+    const enough = u.trades.length >= required && days >= 2;
+    c.add(`sample ${u.universe}`, enough, `${u.trades.length} holdout trades on ${days} days (need >= max(${th.minTradesFloor}, n_power ${u.power.nPower}) = ${required}, on >= 2 days)`);
+    return { u, required, enough };
+  });
+  const entering = sized.filter((x) => x.enough);
   const opts = { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) };
-  const ci = dayBlockMeanInterval(input.holdout, 0.95, 'two', opts);
-  metrics.mean = ci.mean;
-  metrics.lower95 = ci.lower;
-  metrics.upper95 = ci.upper;
-  c.add('CI', ci.lower > th.lowerBoundMin, `two-sided 95% CI [${fmt(ci.lower)}, ${fmt(ci.upper)}] (need lower > ${th.lowerBoundMin})`);
 
-  const returns = input.holdout.map((t) => t.rNet);
-  const lowest = minReturn(returns);
-  if (lowest < RETURN_FLOOR) {
-    c.add('e-process', false, `a return of ${fmt(lowest)} is below the floor ${RETURN_FLOOR}`);
-  } else {
-    const e = bettingEProcess(returns, { lowerBound: RETURN_FLOOR, threshold: th.eWealthMin });
-    metrics.eWealthMax = e.maxWealth;
-    c.add('e-process', e.maxWealth >= th.eWealthMin, `max wealth ${fmt(e.maxWealth)} (need >= ${th.eWealthMin})`);
-  }
+  // Score the universes that entered: the G2 rule, then Holm across them.
+  const scored = entering.map(({ u }) => {
+    const control = u.controlRuns.flat();
+    return g2Rule(u.trades, control, th.familyAlpha, opts);
+  });
+  const h = holm(scored.map((r) => r.p), th.familyAlpha);
+  const perUniverse: G2UniverseResult[] = sized.map(({ u, required, enough }) => {
+    const k = entering.findIndex((x) => x.u === u);
+    if (!enough || k < 0) {
+      return { universe: u.universe, status: 'not-proven', requiredTrades: required, trades: u.trades.length, level: null, p: null, mean: null, lower: null, diffVsS0: null, diffVsS0Lower: null };
+    }
+    const level = h.levels[k]!;
+    const r = scored[k]!;
+    // Pass ⇔ Holm rejects at the universe's level: p < level means both two-sided (1 − level) CIs exclude zero, and
+    // p is 1 unless both estimates are positive. The intervals are reported at the family level (95%).
+    const passed = h.rejected[k]!;
+    c.add(`proof ${u.universe}`, passed,
+      `mean ${fmt(r.mean.mean)}, 95% CI [${fmt(r.mean.lower)}, ${fmt(r.mean.upper)}]; vs S0 ${fmt(r.vsControl.mean)}, 95% CI [${fmt(r.vsControl.lower)}, ${fmt(r.vsControl.upper)}]; p ${fmt(r.p)} (need < Holm level ${fmt(level)})`);
+    const wf = u.walkForward.map((t) => t.rNet);
+    if (wf.length >= 2) {
+      const pi = meanPredictiveInterval({ n: wf.length, mean: mean(wf), sd: sd(wf) }, u.trades.length, 0.9);
+      if (r.mean.mean < pi.lower || r.mean.mean > pi.upper) {
+        notes.push(`${u.universe}: holdout mean ${fmt(r.mean.mean)} is outside the walk-forward 90% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}]; write a review`);
+      }
+    }
+    return {
+      universe: u.universe, status: passed ? 'pass' : 'fail', requiredTrades: required, trades: u.trades.length, level, p: r.p,
+      mean: r.mean.mean, lower: r.mean.lower, diffVsS0: r.vsControl.mean, diffVsS0Lower: r.vsControl.lower,
+    };
+  });
 
-  const pi = meanPredictiveInterval({ n: wf.length, mean: mean(wf), sd: sigmaHat }, n, 0.9);
-  metrics.predictiveLower90 = pi.lower;
-  metrics.predictiveUpper90 = pi.upper;
-  c.add('predictive', ci.mean >= pi.lower && ci.mean <= pi.upper,
-    `holdout mean ${fmt(ci.mean)} vs walk-forward 90% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}]`);
-
-  const futile = n >= th.futilityMinTrades && ci.upper < th.futilityUpperMax;
-  if (futile) c.add('futility', false, `n = ${n} >= ${th.futilityMinTrades} and 95% upper bound ${fmt(ci.upper)} < ${th.futilityUpperMax}: reject this version`);
-  const status: GateStatus = futile ? 'futile' : !enough ? 'not-proven' : statusFrom(c);
-  return result('G2', c, status, metrics);
+  const registry = entering.length > 0 ? burnHoldouts(input.registry, entering.map((x) => x.u.holdoutId)) : input.registry;
+  const anyPass = perUniverse.some((x) => x.status === 'pass');
+  const status: GateStatus = anyPass ? 'pass' : entering.length === 0 ? 'not-proven' : 'fail';
+  const metrics: Record<string, number | null> = { universesEntered: entering.length, universesPassed: perUniverse.filter((x) => x.status === 'pass').length };
+  // Per-universe failures stay in `checks` and `universes`; the gate's reasons list them only when it does not pass.
+  return { ...result('G2', c, status, metrics), reasons: anyPass ? [] : c.failed, notes, universes: perUniverse, registry };
 };
+
 
 // ---- G3 ---------------------------------------------------------------------------------------------------------
 
 export interface G3Input {
+  /** The run is the single qualifying dry run (on the VPS, same commit; ARCHITECTURE.md §15), not a rehearsal. */
+  readonly qualifyingRun: boolean;
   readonly dryRunHours: number;
   /** Net returns of the dry-run paper trades. */
   readonly dryRunReturns: readonly number[];
@@ -373,6 +436,8 @@ export interface G3Input {
   readonly candidates: { readonly dryRunCount: number; readonly dryRunHours: number; readonly backtestCount: number; readonly backtestHours: number };
   /** Rejected candidates per reason code. */
   readonly rejectMix: { readonly dryRun: Readonly<Record<string, number>>; readonly backtest: Readonly<Record<string, number>> };
+  /** Share of dry-run candidates vetoed by checks that only exist live (reported, not gating). */
+  readonly liveOnlyVetoRate: number | null;
   /** |paper fill − simulated transaction amount| per simulated entry or exit, as a fraction of notional. */
   readonly fillDifferences: readonly number[];
   readonly parityTestPassed: boolean;
@@ -382,20 +447,22 @@ export interface G3Input {
 export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>): GateResult => {
   const th = tighten('G3', G3_DEFAULTS, G3_DIR, overrides);
   const c = new Checks();
+  const notes: string[] = [];
   const m = input.dryRunReturns.length;
-  const metrics: Record<string, number | null> = { dryRunTrades: m, dryRunHours: input.dryRunHours };
+  const metrics: Record<string, number | null> = { dryRunTrades: m, dryRunHours: input.dryRunHours, liveOnlyVetoRate: input.liveOnlyVetoRate };
+  c.add('qualifying run', input.qualifyingRun, input.qualifyingRun ? 'the qualifying dry run' : 'a rehearsal run counts for no gate');
   c.add('duration', input.dryRunHours >= th.minHours, `${fmt(input.dryRunHours)} h (need >= ${th.minHours})`);
   c.add('parity', input.parityTestPassed, input.parityTestPassed ? 'parity passed on the recorded dry-run data' : 'parity failed on the recorded dry-run data');
 
-  if (m === 0) {
-    c.add('paper trades', false, 'no dry-run paper trades to compare');
-  } else {
+  if (m >= th.minPaperTradesForMean) {
     const dm = mean(input.dryRunReturns);
     const pi = meanPredictiveInterval(input.holdout, m, 0.9);
     metrics.dryRunMean = dm;
     metrics.predictiveLower90 = pi.lower;
     metrics.predictiveUpper90 = pi.upper;
     c.add('mean', dm >= pi.lower && dm <= pi.upper, `dry-run mean ${fmt(dm)} vs holdout 90% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}] for ${m} trades`);
+  } else {
+    notes.push(`${m} paper trades (fewer than ${th.minPaperTradesForMean}): consistency rests on the candidate rate and the reject mix`);
   }
 
   const k = input.candidates;
@@ -427,8 +494,9 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
     metrics.fillDiffMedian = md;
     c.add('fills', md <= th.fillDiffMedianMax, `median |paper − simulated| ${fmt(md)} (need <= ${th.fillDiffMedianMax})`);
   }
-  return result('G3', c, statusWithSample(c, 'paper trades'), metrics);
+  return { ...result('G3', c, statusFrom(c), metrics), notes };
 };
+
 
 // ---- G4 ---------------------------------------------------------------------------------------------------------
 

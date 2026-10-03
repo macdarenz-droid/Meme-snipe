@@ -95,7 +95,22 @@ export interface MeanInterval {
   readonly lower: number;
   /** Upper bound, or +∞ for a one-sided lower interval. */
   readonly upper: number;
+  /**
+   * Two-sided percentile bootstrap p-value for "the mean is 0": 2·min(share of replicates ≤ 0, share ≥ 0), capped at 1.
+   * A two-sided (1 − α) interval excludes 0 exactly when this is below α (up to replicate granularity).
+   */
+  readonly pTwoSided: number;
 }
+
+const pTwoSided = (sorted: readonly number[]): number => {
+  let le = 0;
+  let ge = 0;
+  for (const v of sorted) {
+    if (v <= 0) le++;
+    if (v >= 0) ge++;
+  }
+  return Math.min(1, (2 * Math.min(le, ge)) / sorted.length);
+};
 
 export type Sides = 'two' | 'lower' | 'upper';
 
@@ -120,7 +135,7 @@ export const dayBlockMeanInterval = (
   for (const t of trades) s += t.rNet;
   const est = s / trades.length;
   const stats = replicateStats(days, est, opts, (sum, c) => (c > 0 ? sum / c : Number.NaN));
-  return { mean: est, n: trades.length, days: days.length, ...interval(stats, level, sides) };
+  return { mean: est, n: trades.length, days: days.length, ...interval(stats, level, sides), pTwoSided: pTwoSided(stats) };
 };
 
 /**
@@ -142,5 +157,5 @@ export const dayBlockMeanDiffInterval = (
   for (const t of b) sB += t.rNet;
   const est = sA / a.length - sB / b.length;
   const stats = replicateStats(days, est, opts, (xA, cA, xB, cB) => (cA > 0 && cB > 0 ? xA / cA - xB / cB : Number.NaN));
-  return { mean: est, n: a.length, days: days.length, ...interval(stats, level, sides) };
+  return { mean: est, n: a.length, days: days.length, ...interval(stats, level, sides), pTwoSided: pTwoSided(stats) };
 };
