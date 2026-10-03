@@ -1,0 +1,130 @@
+name: Dry-run rehearsal
+
+# RUN-1 fallback (docs/ARCHITECTURE.md §20): the 48 h dry run rehearsed on chained jobs until the VPS runs it.
+# Labelled "rehearsal": it counts for none of §15 items 3, 4 or G3. Manual start only; each job runs the
+# worker for 5 h 35 min, saves state as an artifact and starts the next job, which restores and reconciles
+# before any entry. This repo is public, so artifacts and logs are world-readable: the secret scan runs
+# before any upload and fails the job if a secret value appears. No signing key exists anywhere.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Run to resume (empty starts a new run)
+        default: ''
+      segment:
+        description: Job number in the chain
+        default: '1'
+      prev_run:
+        description: GitHub run id of the previous job (empty for the first)
+        default: ''
+      sha:
+        description: Commit under test (empty for this branch's head); every job of a run uses the same one
+        default: ''
+      hours:
+        description: Run length in hours
+        default: '48'
+      entry:
+        description: Worker entry (packages/runner/stub/worker.ts rehearses the pipeline before WORKER-1)
+        default: packages/worker/src/main.ts
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: dryrun-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  segment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Restore the previous job's state
+        if: inputs.prev_run != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dryrun-state
+          run-id: ${{ inputs.prev_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/zeroed
+
+      - name: Run the worker with drills
+        id: run
+        env:
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+          ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
+          JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+          SEGMENT: ${{ inputs.segment }}
+          SHA: ${{ inputs.sha || github.sha }}
+          HOURS: ${{ inputs.hours }}
+          ENTRY: ${{ inputs.entry }}
+        run: |
+          set -o pipefail
+          work="$RUNNER_TEMP/zeroed"
+          mkdir -p "$work/logs" "$work/evidence"
+          node --no-warnings packages/runner/src/cli.ts run --mode local ${RUN_ID:+--run-id "$RUN_ID"} \
+            --state-dir "$work/state" --evidence-root "$work/evidence" \
+            --recorded-dir "$work/recorded" --recorded-artifact "run $GITHUB_RUN_ID dryrun-recorded-$SEGMENT" \
+            --entry "$ENTRY" --hours "$HOURS" --segment-minutes 335 --commit "$SHA" \
+            2>&1 | tee "$work/logs/runner-$SEGMENT.log"
+
+      # Before any upload: the state, evidence, worker and runner logs and recorded data must not hold a secret.
+      - name: Secret scan
+        id: scan
+        if: always() && steps.run.outcome != 'skipped'
+        env:
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+          ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
+          JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: node --no-warnings packages/runner/src/cli.ts scan "$RUNNER_TEMP/zeroed"
+
+      - name: Save state and evidence
+        if: always() && steps.scan.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dryrun-state
+          path: |
+            ${{ runner.temp }}/zeroed/state
+            ${{ runner.temp }}/zeroed/evidence
+            ${{ runner.temp }}/zeroed/logs
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Save recorded data
+        if: always() && steps.scan.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dryrun-recorded-${{ inputs.segment }}
+          path: ${{ runner.temp }}/zeroed/recorded
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Start the next job
+        if: success() && steps.run.outputs.done == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.run.outputs.run_id }}
+          SEGMENT: ${{ inputs.segment }}
+          SHA: ${{ inputs.sha || github.sha }}
+          HOURS: ${{ inputs.hours }}
+          ENTRY: ${{ inputs.entry }}
+        run: |
+          gh workflow run dryrun-rehearsal.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+            -f run_id="$RUN_ID" -f segment="$((SEGMENT + 1))" -f prev_run="$GITHUB_RUN_ID" \
+            -f sha="$SHA" -f hours="$HOURS" -f entry="$ENTRY"

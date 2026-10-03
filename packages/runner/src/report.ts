@@ -1,0 +1,213 @@
+// The dry-run report: uptime, memory, journal, drills, recorded data. Pure; the runner feeds it.
+import type { JournalReport } from './journal.ts';
+import type { Drill } from './plan.ts';
+
+export type Label = 'rehearsal' | 'vps';
+
+export interface Sample {
+  /** Wall time, ms since epoch. */
+  readonly t: number;
+  /** The health endpoint answered. */
+  readonly up: boolean;
+  /** Answered and reconciled: the worker is doing its job. */
+  readonly ready: boolean;
+  readonly boot: string | null;
+  readonly git_sha: string | null;
+  readonly rss_bytes: number | null;
+  readonly in_trade: boolean;
+  readonly entries_halted: boolean;
+  readonly recorder: boolean;
+  readonly simulation: boolean;
+  readonly stub: boolean;
+  readonly feeds_down: readonly string[];
+}
+
+export interface DrillOutcome {
+  readonly id: string;
+  readonly kind: 'restart' | 'feed' | 'handover';
+  readonly plannedAt: number | null;
+  readonly at: number;
+  readonly pass: boolean;
+  readonly midTrade?: boolean;
+  readonly recoveredMs?: number | null;
+  readonly feed?: string;
+  readonly notes: readonly string[];
+}
+
+export interface RecordedFile {
+  readonly path: string;
+  readonly bytes: number;
+  readonly sha256: string;
+  /** Where the file is kept (an artifact name, or `host`). */
+  readonly kept: string;
+}
+
+export interface RunMeta {
+  readonly runId: string;
+  readonly label: Label;
+  readonly commit: string;
+  readonly startedAt: number;
+  readonly targetMs: number;
+  readonly entry: string;
+  readonly plan: readonly Drill[];
+}
+
+export interface Report {
+  readonly runId: string;
+  readonly label: Label;
+  readonly counts: string;
+  readonly commit: string;
+  readonly commits_seen: readonly string[];
+  readonly started: string;
+  readonly ended: string;
+  readonly duration_h: number;
+  readonly target_h: number;
+  readonly uptime: number;
+  readonly memory: { readonly max_mb: number | null; readonly p50_mb: number | null; readonly p95_mb: number | null; readonly limit_mb: number };
+  readonly recorder_on_from_start: boolean;
+  readonly simulation_on_from_start: boolean;
+  readonly stub: boolean;
+  readonly journal: JournalReport;
+  readonly drills: readonly DrillOutcome[];
+  readonly drills_summary: {
+    readonly restarts_mid_trade_passed: number;
+    readonly feeds_planned: readonly string[];
+    readonly feeds_passed: readonly string[];
+    readonly handovers: number;
+  };
+  readonly recorded: { readonly files: number; readonly bytes: number };
+  readonly checks: Readonly<Record<string, boolean>>;
+  readonly pass: boolean;
+}
+
+/** systemd MemoryMax of the worker unit (OPS-1a). */
+export const MEMORY_LIMIT_MB = 800;
+const MB = 1024 * 1024;
+
+/**
+ * Uptime: each ready sample credits the time to the next sample, capped at 2 sample intervals, so a gap with no
+ * samples (a crash of the runner, a GitHub job handover) counts as down. Denominator is wall time start → end.
+ */
+export const uptime = (samples: readonly Sample[], sampleMs: number, start: number, end: number): number => {
+  if (end <= start) return 0;
+  let credited = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i]!;
+    if (!s.ready) continue;
+    const next = samples[i + 1]?.t ?? end;
+    const from = Math.max(s.t, start);
+    const to = Math.min(next, end, s.t + 2 * sampleMs);
+    if (to > from) credited += to - from;
+  }
+  return Math.min(1, credited / (end - start));
+};
+
+const pct = (sorted: readonly number[], p: number): number | null =>
+  sorted.length === 0 ? null : sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))]!;
+
+export const buildReport = (
+  meta: RunMeta,
+  samples: readonly Sample[],
+  sampleMs: number,
+  endedAt: number,
+  journal: JournalReport,
+  drills: readonly DrillOutcome[],
+  recorded: readonly RecordedFile[],
+): Report => {
+  const up = uptime(samples, sampleMs, meta.startedAt, endedAt);
+  const rss = samples.flatMap((s) => (s.rss_bytes === null ? [] : [s.rss_bytes / MB])).sort((a, b) => a - b);
+  const commits = [...new Set(samples.flatMap((s) => (s.git_sha === null ? [] : [s.git_sha])))];
+  const firstUp = samples.find((s) => s.up);
+  const upSamples = samples.filter((s) => s.up);
+  const stub = upSamples.some((s) => s.stub);
+  const restartsMidTrade = drills.filter((d) => d.kind === 'restart' && d.pass && d.midTrade === true).length;
+  const feedsPlanned = meta.plan.flatMap((d) => (d.kind === 'feed' ? [d.feed] : []));
+  const feedsPassed = [...new Set(drills.flatMap((d) => (d.kind === 'feed' && d.pass && d.feed !== undefined ? [d.feed] : [])))].sort();
+  const durationMs = endedAt - meta.startedAt;
+  const maxMb = rss.length ? rss[rss.length - 1]! : null;
+  const checks: Record<string, boolean> = {
+    duration: durationMs >= meta.targetMs,
+    uptime: up >= 0.99,
+    memory: maxMb !== null && maxMb < MEMORY_LIMIT_MB * 0.875,
+    recorder_and_simulation_from_start: firstUp !== undefined && upSamples.every((s) => s.recorder && s.simulation),
+    journal_complete: journal.complete,
+    restart_drills: restartsMidTrade >= 3,
+    feed_drills: feedsPlanned.length > 0 && feedsPlanned.every((f) => feedsPassed.includes(f)),
+    every_drill_passed: drills.every((d) => d.pass),
+    one_commit: commits.length === 1 && commits[0] === meta.commit,
+    real_worker: !stub,
+  };
+  return {
+    runId: meta.runId,
+    label: meta.label,
+    // The fallback never counts (ARCHITECTURE.md §15): it is labelled so in the report itself.
+    counts:
+      meta.label === 'rehearsal'
+        ? 'Rehearsal: counts for none of §15 items 3, 4 or G3.'
+        : 'VPS run: candidate for §15 item 3 and the drills of item 5 only if every check passes; items 4 and G3 are judged from the same run by TEST-2 and STATS-1.',
+    commit: meta.commit,
+    commits_seen: commits,
+    started: new Date(meta.startedAt).toISOString(),
+    ended: new Date(endedAt).toISOString(),
+    duration_h: round(durationMs / 3_600_000, 3),
+    target_h: round(meta.targetMs / 3_600_000, 3),
+    uptime: round(up, 5),
+    memory: { max_mb: r1(maxMb), p50_mb: r1(pct(rss, 0.5)), p95_mb: r1(pct(rss, 0.95)), limit_mb: MEMORY_LIMIT_MB },
+    recorder_on_from_start: firstUp?.recorder === true,
+    simulation_on_from_start: firstUp?.simulation === true,
+    stub,
+    journal,
+    drills,
+    drills_summary: {
+      restarts_mid_trade_passed: restartsMidTrade,
+      feeds_planned: feedsPlanned,
+      feeds_passed: feedsPassed,
+      handovers: drills.filter((d) => d.kind === 'handover').length,
+    },
+    recorded: { files: recorded.length, bytes: recorded.reduce((a, f) => a + f.bytes, 0) },
+    checks,
+    pass: Object.values(checks).every(Boolean),
+  };
+};
+
+const round = (x: number, d: number): number => Math.round(x * 10 ** d) / 10 ** d;
+const r1 = (x: number | null): number | null => (x === null ? null : round(x, 1));
+
+export const reportMarkdown = (r: Report): string => {
+  const yes = (b: boolean): string => (b ? 'pass' : 'FAIL');
+  const lines = [
+    `# Dry run ${r.runId}`,
+    '',
+    `**${r.label === 'rehearsal' ? 'Rehearsal' : 'VPS run'}.** ${r.counts}`,
+    '',
+    `| Item | Value |`,
+    `| --- | --- |`,
+    `| Commit | \`${r.commit}\` |`,
+    `| Window (UTC) | ${r.started} → ${r.ended} |`,
+    `| Duration | ${r.duration_h} h of ${r.target_h} h |`,
+    `| Uptime | ${(r.uptime * 100).toFixed(3)}% |`,
+    `| Memory | max ${r.memory.max_mb ?? '-'} MB, p50 ${r.memory.p50_mb ?? '-'} MB, p95 ${r.memory.p95_mb ?? '-'} MB (limit ${r.memory.limit_mb} MB) |`,
+    `| Journal | ${r.journal.lines} lines, ${r.journal.boots} boots, ${r.journal.entries} entries, ${r.journal.exits} exits, ${r.journal.simulations} simulations, ${r.journal.repairs} torn-tail repairs |`,
+    `| Recorded data | ${r.recorded.files} files, ${r.recorded.bytes} bytes |`,
+    `| Worker | ${r.stub ? 'stub (contract test only)' : 'real'} |`,
+    '',
+    '## Checks',
+    '',
+    ...Object.entries(r.checks).map(([k, v]) => `- ${k}: ${yes(v)}`),
+    '',
+    `Overall: **${r.pass ? 'pass' : 'not passed'}**`,
+    '',
+    '## Drills',
+    '',
+    '| Drill | Kind | Time (UTC) | Mid-trade | Recovery | Result | Notes |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+    ...r.drills.map(
+      (d) =>
+        `| ${d.id} | ${d.kind}${d.feed ? ` (${d.feed})` : ''} | ${new Date(d.at).toISOString()} | ${d.midTrade === undefined ? '-' : d.midTrade ? 'yes' : 'no'} | ${
+          d.recoveredMs === undefined || d.recoveredMs === null ? '-' : `${(d.recoveredMs / 1000).toFixed(1)} s`
+        } | ${yes(d.pass)} | ${d.notes.join('; ').replace(/\|/g, '/')} |`,
+    ),
+  ];
+  if (r.journal.problems.length) lines.push('', '## Journal problems', '', ...r.journal.problems.map((p) => `- ${p}`));
+  return `${lines.join('\n')}\n`;
+};

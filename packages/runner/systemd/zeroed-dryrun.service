@@ -1,0 +1,29 @@
+# RUN-1 on the OPS-1 host: drills and evidence for the qualifying dry run (docs/ARCHITECTURE.md §15, §20).
+# Started by zeroed-dryrun-tick.timer when the deployed release holds packages/runner/qualifying-run.json.
+# Root only for `systemctl kill` (the restart drill) and to read the worker's journal; it holds no secret
+# and talks to the worker on 127.0.0.1 only.
+[Unit]
+Description=Zeroed dry run (drills and evidence)
+After=zeroed-worker.service
+Wants=zeroed-worker.service
+# A run that cannot start (worker not ready, recorder off) retries a few times, then stays down until the next tick.
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zeroed/current
+ExecStart=/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/runner/src/cli.ts run --mode systemd --resume-latest --state-dir /var/lib/zeroed --evidence-root /var/lib/zeroed-dryrun/evidence --hours 48
+Restart=on-failure
+RestartSec=30
+StateDirectory=zeroed-dryrun
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/var/lib/zeroed
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
