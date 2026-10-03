@@ -1,6 +1,6 @@
 # Zeroed server
 
-How the server is installed, gets its keys, pairs with Telegram, updates and is backed up (ARCHITECTURE.md §12, OPS-1a and OPS-1b). Nobody copies a key by hand. The only things typed by hand are a 6-word code and a 6-digit code.
+How the server is installed, gets its keys, pairs with Telegram, updates and is backed up (ARCHITECTURE.md §12, OPS-1a to OPS-1e). Nobody copies a key by hand. The only things typed by hand are a 6-word code and a 6-digit code.
 
 Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 LTS x64**. Ubuntu 24.04 gets standard security updates until 2029; Debian 12 left regular security support in June 2026.
 
@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/15f4d6af5a635b8586c9bab14156d567483bd695/ops/install.sh -o i && echo 'bde8459a073cae6221be53eb70c8a203df25e0b24998edb27f35bc0beb97e6aa  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/d4f3c740e8a958a18b81c53b2c0930c425668e0a/ops/install.sh -o i && echo 'bde8cbdd3263d31f4397652e93ee0ba03ef72d2f5fece12724f55c0f319b3352  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/15f4d6af
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `bde8459a073cae6221be53eb70c8a203df25e0b24998edb27f35bc0beb97e6aa`
+SHA-256 of `install.sh`: `bde8cbdd3263d31f4397652e93ee0ba03ef72d2f5fece12724f55c0f319b3352`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -52,7 +52,9 @@ Age's own passphrase mode reads only from a terminal, so a workflow cannot use i
 
 After the keys arrive, the server shows a 6-digit pairing code (`zeroed-telegram-pair`, which reads the bot's messages). `/pair <code>` with the right code stores that chat's id, encrypted and root-only, and replies "Paired". From then on, alerts go only to that chat.
 
-Each code has one try: any wrong `/pair` cancels it. A new code comes only from the console: `zeroed-pair-code`.
+Each code has one try and works for 30 minutes: any wrong `/pair` cancels it, and a late one finds it expired. A new code comes only from the console: `zeroed-pair-code`.
+
+**Pairing a different chat** (the server is already paired): run `zeroed-pair-code` and type `yes` when it asks. The current chat is told and stays paired, with every alert, until the new `/pair` succeeds. Then alerts move to the new chat and both chats are told. A wrong code or the 30 minutes running out cancels it, and the current chat stays paired. While the code is pending the webhook is off (Telegram allows only one reader); it is set again when the pairing ends either way. The worker reads the chat at start, so it restarts for the new chat at once, or, during a qualifying dry run or with open intents, as soon as neither holds (`zeroed-check`).
 
 ## Rotation
 
@@ -64,9 +66,10 @@ Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987b
 - the commit carries GitHub's merge signature (fingerprint `968479A1AFF927E37D1A566BB5690EEEBB952194`, pinned at install);
 - it is on the branch;
 - every check run on it finished green (public API);
+- no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
 - the worker reports no open intent (`/var/lib/zeroed/open_intents`).
 
-The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
+It then runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*`), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. If it fails, the owner is told and the next run tries again. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
 
 ## Backups
 
@@ -120,12 +123,42 @@ To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in G
 3. Put the 6 words in `DEPLOY_CODE`.
 4. Run Deploy.
 
-If the chat is re-paired later (`zeroed-pair-code`), the server turns the webhook off to read `/pair` and sets it again as soon as the pairing succeeds.
+If the chat is re-paired later (`zeroed-pair-code`), the server turns the webhook off to read `/pair` and sets it again as soon as the pairing ends.
+
+A failed webhook set is tried again after 1, 2, 4 and 8 minutes, then every 30 minutes. After 5 failed tries in a row the owner gets one notice in the paired chat (alerts still arrive; only `/pause` and `/status` are cut off), and a line when it works again.
+
+## Host checks
+
+`zeroed-check` runs every minute and alerts the paired chat once per problem, with a CLEARED line when it ends:
+- **Stored keys:** every credential must decrypt and match the ciphertext the key handoff or pairing stored. The check keeps the SHA-256 of the encrypted file, never of a value. A key that is missing, does not open, or changed outside those paths is an alert, naming the key only. To fix it: `zeroed-new-deploy-code`, then Deploy.
+- **Webhook:** what Telegram reports (address, certificate, connections, update types) must match what this server set. Any other webhook, or none, is an alert naming only the host, and the server sets its own back. If you did not change it, rotate the bot token at BotFather and run Deploy. While a pairing code is pending the webhook is off on purpose, so that is not an alert.
+- It also writes the evidence index for the worker API and runs a worker restart that was waiting for a safe moment.
+
+`zeroed-status` shows the key check, a failing webhook, the active dry run, the evidence and the live view.
+
+## Dry run
+
+The worker unit starts `/usr/local/lib/zeroed/worker-start`, for both the reconcile step and the run. The wrapper sets `ZEROED_MODE=paper`, `ZEROED_RECORDER=on`, `ZEROED_SIMULATE=on`, `ZEROED_DRILLS=on` and `ZEROED_HEALTH_ADDR=127.0.0.1:8788`. It runs `packages/worker/src/main.ts` from the deployed release once WORKER-1 lands, and the host's stand-in until then. Live is never set there or in any environment file.
+
+Evidence stays on the host in `/var/lib/zeroed-dryrun/evidence/<run id>/` (root only), written by `zeroed-dryrun@<name>`. Nothing uploads it; the way into the repository waits for the owner's decision. `zeroed-check` writes its index (id, name, label, commit, start, finished, pass, aborted reason, path) to `/var/lib/zeroed-index/evidence.json`. The worker API's `GET /health` lists it as `evidence`, and `zeroed-status` counts the runs. The restore drill for host-loss drills is `zeroed-restore-drill /etc/zeroed/age/host.key`. The reboot drill unit `zeroed-dryrun-reboot.service` arrives with RUN-1's units.
+
+## Live view
+
+The worker API listens on 127.0.0.1:8788 only. `zeroed-tailscale` publishes it to your own tailnet over HTTPS at `https://zeroed.<your tailnet>.ts.net`, with Funnel off. No public port opens: the firewall accepts HTTPS only on the `tailscale0` interface. It uses Tailscale Personal, which is free.
+
+Owner steps, once:
+1. Make a free Tailscale account at tailscale.com and install the Tailscale app on your phone. Log in to the app with that account.
+2. In the Tailscale admin console: **DNS** → turn on **MagicDNS** and **HTTPS Certificates**.
+3. On the server console, run `zeroed-tailscale`. It installs Tailscale (its package key is checked against a pinned fingerprint), then shows a login link. The link is also sent to your Telegram chat.
+4. Open the link on your phone and log in with the same account. The console then shows `Live view: https://zeroed.….ts.net`.
+
+The command is safe to run again. `zeroed-tailscale --off` stops publishing the API and leaves Tailscale installed.
 
 A server installed from an earlier line (before this fix) has its webhook off after pairing. To turn it on: paste the current install line (keys and pairing are kept), run `zeroed-new-deploy-code`, put the code in `DEPLOY_CODE`, and run Deploy; the server sets the webhook after that handoff.
 
 ## Worker contract (for WORKER-1)
 
+- Serve the API on `ZEROED_HEALTH_ADDR` (`127.0.0.1:8788` on the host, loopback only). `GET /health` includes `evidence`: the array in `/var/lib/zeroed-index/evidence.json`, or `[]` when that file is missing.
 - Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
 - Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
 - Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.
@@ -135,6 +168,9 @@ A server installed from an earlier line (before this fix) has its webhook off af
 `bash ops/test/e2e.sh` runs on a fresh Ubuntu 24.04 systemd container with test values only:
 - the README line, the install, and a wrong code;
 - the handoff, a replay, and Telegram pairing;
-- hardening, rotation, the code-update gates, backup and restore, and restart drills.
+- hardening, rotation, the code-update gates, backup and restore, and restart drills;
+- the dry-run update gate, `install.sh --update` through `zeroed-update` (with SSH kept open or closed), the worker wrapper and the worker API's evidence list;
+- webhook change alerts, retries with back-off and the notice after 5 failed tries; the stored-key check;
+- re-pairing (refused, wrong code, expiry, success during a dry run) and the live view with a Tailscale stand-in.
 
 It ends with a scan of every log and output for every test value and code. The `ops-e2e` workflow runs it on every change to `ops/`.

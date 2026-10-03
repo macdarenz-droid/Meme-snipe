@@ -65,7 +65,7 @@ evidence_index() {
       '{id: $id, name: (.name // null), label: (.label // null), commit: (.commit // null),
         started: (.startedAt // null), finished: $finished, pass: (if $finished then $report.pass else null end),
         aborted: (if $aborted == "" then null else $aborted end), path: $path}' "$d/run.json" 2>/dev/null || true
-  done | jq -s 'sort_by(.id) | reverse'
+  done | jq -s 'sort_by(.started // 0, .id) | reverse'
 }
 
 # serve_ok: reads `tailscale serve status --json` on stdin; true only when HTTPS 443 proxies to the worker API

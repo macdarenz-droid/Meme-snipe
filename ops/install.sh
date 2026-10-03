@@ -1134,7 +1134,7 @@ evidence_index() {
       '{id: $id, name: (.name // null), label: (.label // null), commit: (.commit // null),
         started: (.startedAt // null), finished: $finished, pass: (if $finished then $report.pass else null end),
         aborted: (if $aborted == "" then null else $aborted end), path: $path}' "$d/run.json" 2>/dev/null || true
-  done | jq -s 'sort_by(.id) | reverse'
+  done | jq -s 'sort_by(.started // 0, .id) | reverse'
 }
 
 # serve_ok: reads `tailscale serve status --json` on stdin; true only when HTTPS 443 proxies to the worker API
@@ -1793,9 +1793,10 @@ apply_host() {
   if bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then
     printf '%s\n' "$c" > "$STATE_DIR/host_applied"
     log "Host files from ${c:0:12} applied."
+    alert_clear host-apply "CLEARED Zeroed host: the host files of ${c:0:12} applied."
   else
     log "Host files from ${c:0:12} failed to apply (see $STATE_DIR/host_update.log); trying again next run."
-    notify "Zeroed host: the host files of ${c:0:12} failed to apply. The server tries again every 5 minutes." || true
+    alert host-apply "ALERT Zeroed host: the host files of ${c:0:12} failed to apply. The server tries again every 5 minutes."
     return 1
   fi
 }
@@ -1807,6 +1808,8 @@ if [ "$commit" = "$current" ]; then
   [ -n "$current" ] && [ "$(cat "$STATE_DIR/host_applied" 2>/dev/null || true)" != "$current" ] || exit 0
   [ -z "$(active_run)" ] || exit 0
   apply_host "$current" || exit 1
+  # A changed worker unit or wrapper takes effect at the next start; restart now if nothing is in flight.
+  worker_busy || systemctl try-restart zeroed-worker.service || true
   exit 0
 fi
 
@@ -9764,7 +9767,16 @@ if [ "$UPDATE" = 1 ]; then
   say "Updated: ${#CHANGED[@]} host files changed"
   exit 0
 fi
-# Starts once credentials exist (skipped by its ConditionPathExists until then).
+# Starts once credentials exist (skipped by its ConditionPathExists until then). A running worker whose
+# start files changed restarts (reconcile first) unless a dry run or an open intent is in the way.
+if systemctl is-active --quiet zeroed-worker.service; then
+  for f in "${CHANGED[@]}"; do
+    case "$f" in /etc/systemd/system/zeroed-worker.service | /usr/local/lib/zeroed/worker-start | /opt/zeroed/stub/worker.mjs)
+      worker_busy || systemctl restart zeroed-worker.service || true
+      break ;;
+    esac
+  done
+fi
 systemctl start zeroed-worker.service || true
 
 printf '\nInstalled. Next: the deploy code below goes into GitHub as the secret DEPLOY_CODE.\n\n'

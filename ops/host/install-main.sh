@@ -197,7 +197,16 @@ if [ "$UPDATE" = 1 ]; then
   say "Updated: ${#CHANGED[@]} host files changed"
   exit 0
 fi
-# Starts once credentials exist (skipped by its ConditionPathExists until then).
+# Starts once credentials exist (skipped by its ConditionPathExists until then). A running worker whose
+# start files changed restarts (reconcile first) unless a dry run or an open intent is in the way.
+if systemctl is-active --quiet zeroed-worker.service; then
+  for f in "${CHANGED[@]}"; do
+    case "$f" in /etc/systemd/system/zeroed-worker.service | /usr/local/lib/zeroed/worker-start | /opt/zeroed/stub/worker.mjs)
+      worker_busy || systemctl restart zeroed-worker.service || true
+      break ;;
+    esac
+  done
+fi
 systemctl start zeroed-worker.service || true
 
 printf '\nInstalled. Next: the deploy code below goes into GitHub as the secret DEPLOY_CODE.\n\n'

@@ -298,6 +298,15 @@ describe('install.sh --update', () => {
     expect(ok).toEqual(['zeroed-dryrun@.service', 'zeroed-dryrun-tick.service', 'zeroed-dryrun-tick.timer', 'zeroed-dryrun-reboot.service']);
   });
 
+  it('a running worker restarts for changed start files only when nothing is in flight', () => {
+    expect(main).toMatch(/\/etc\/systemd\/system\/zeroed-worker\.service \| \/usr\/local\/lib\/zeroed\/worker-start \| \/opt\/zeroed\/stub\/worker\.mjs\)\n\s+worker_busy \|\| systemctl restart zeroed-worker\.service/);
+    const s = read('ops/host/files/usr/local/sbin/zeroed-update');
+    expect(s).toContain('worker_busy || systemctl try-restart zeroed-worker.service || true');
+    // A failing apply alerts once per episode, not every 5 minutes.
+    expect(s).toContain('alert host-apply "ALERT');
+    expect(s).toContain('alert_clear host-apply "CLEARED');
+  });
+
   it('zeroed-update applies it after the switch and before the worker restart, and tries again after a failure', () => {
     const s = read('ops/host/files/usr/local/sbin/zeroed-update');
     expect(s.indexOf('apply_host "$commit" || true')).toBeGreaterThan(s.indexOf('mv -Tf /opt/zeroed/current.new /opt/zeroed/current'));
