@@ -50,7 +50,7 @@ set_values() { # suffix
 }
 set_values A
 VALUES_A=("$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM")
-T_CHAT="4242$(rnd 2 | tr -dc 0-9)42"
+T_CHAT="42$(od -An -N8 -tu8 /dev/urandom | tr -d " " | head -c 10)42" # 14 digits: a short id (as short as 424242) can occur by chance in vendored code and trip the scan
 STRANGER="7$(rnd 2 | tr -dc 0-9)7"
 CODES=()
 echo "Working in $E2E"
@@ -516,7 +516,7 @@ tail -1 "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: every stored key' ||
 pass "key check: quiet on good keys; a key re-encrypted outside the handoff and a key that does not open each alert once (names only), shown in zeroed-status, cleared once restored"
 
 # ---------- 10e. Re-pairing a paired server ----------
-T_CHAT2="5151$(rnd 2 | tr -dc 0-9)51"
+T_CHAT2="51$(od -An -N8 -tu8 /dev/urandom | tr -d " " | head -c 10)51" # 14 digits: long enough never to occur by chance in the repo (secret scan)
 chat_is() { [ "$(in_c "systemd-creds decrypt --name=telegram_chat_id /etc/credstore.encrypted/telegram_chat_id - | sha256sum | cut -c1-64")" = "$(printf '%s' "$1" | sha256sum | cut -c1-64)" ]; }
 repair_code() { in_c "echo yes | zeroed-pair-code" | tee -a "$LOGS/console/repair.txt" | sed -n 's/.*\/pair \([0-9]\{6\}\)$/\1/p'; }
 in_c "echo no | zeroed-pair-code" >"$LOGS/console/repair-no.txt" 2>&1 && fail "re-pair went ahead without yes"

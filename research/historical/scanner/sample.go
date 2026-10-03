@@ -50,7 +50,9 @@ var dropEvents = map[string]bool{
 	"CollectCoinCreatorFeeEvent": true, "MinimumDistributableFeeEvent": true,
 }
 
-// Per-mint events that do not change reserves: kept only for sampled mints.
+// Per-mint events that do not change reserves. Kept for every mint since the
+// "curve-all,canonical-all" retention (every mint can be in a dataset tape); the list
+// stays because finalize routes them by tape.
 var sampledOnlyEvents = map[string]bool{
 	"DistributeCreatorFeesEvent": true, "DistributeFeeToHoldersEvent": true, "MigrateBondingCurveCreatorEvent": true,
 	"MigratePoolCoinCreatorEvent": true, "SetMetaplexCreatorEvent": true, "SetMetaplexCoinCreatorEvent": true,
@@ -62,13 +64,6 @@ var sampledOnlyEvents = map[string]bool{
 func keepEvent(name string, fields map[string]string) bool {
 	if dropEvents[name] {
 		return false
-	}
-	if sampledOnlyEvents[name] {
-		m := fields["mint"]
-		if m == "" {
-			m = fields["base_mint"]
-		}
-		return m != "" && inSample(m)
 	}
 	return true
 }
@@ -182,13 +177,13 @@ func (r *blockResult) emitRow(kind string, row []string) {
 	if px > 0 && (px < a.lowPx || a.lowPx == 0) {
 		a.lowPx = px
 	}
-	mint := k.mint
-	if mint == "" || inSample(mint) {
-		if kind == "curve" {
-			r.curve = append(r.curve, row)
-		} else {
-			r.amm = append(r.amm, row)
-		}
+	// Retention (retentionPolicy): every curve trade, every trade in a canonical
+	// PumpSwap pool, and other pools' trades of sampled mints. Decided from the row
+	// alone, never from another day or the future.
+	if kind == "curve" {
+		r.curve = append(r.curve, row)
+	} else if mint := k.mint; mint == "" || inSample(mint) || isCanonicalPool(row[8], row[9], row[10]) {
+		r.amm = append(r.amm, row)
 	}
 }
 
