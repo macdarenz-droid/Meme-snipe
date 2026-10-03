@@ -220,8 +220,8 @@ export class LiveStrategy implements Strategy {
   }
 
   /** Each candidate's migration time and the typed reasons of its last evaluation (FACTS-1b stages its reads on them). */
-  candidates(): ReadonlyMap<string, { readonly migratedAtMs: number; readonly gates: readonly CandidateReason[] | null }> {
-    return new Map([...this.#cands].map(([m, c]) => [m, { migratedAtMs: c.migratedAtMs, gates: c.gates }]));
+  candidates(): ReadonlyMap<string, { readonly migratedAtMs: number; readonly lastEvalMs: number | null; readonly gates: readonly CandidateReason[] | null }> {
+    return new Map([...this.#cands].map(([m, c]) => [m, { migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates }]));
   }
 
   /** Mints that need live facts: candidates in their window and every position not closed. */
@@ -291,6 +291,10 @@ export class LiveStrategy implements Strategy {
 
   onMarket(e: MarketEvent, ctx: StrategyContext): readonly Decision[] {
     const out: Decision[] = [];
+    // FACTS-1b: reads that landed on earlier events are judged now, after the facts their own release made (FactFeed
+    // releases a read's facts right after it, at its moment). A mark set below applies from the next event on.
+    const due = this.#due;
+    this.#due = new Set();
     if (e.key === HALT_KEY) this.#seedWait(unwrap(e.value));
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
@@ -300,6 +304,7 @@ export class LiveStrategy implements Strategy {
       if (isObj(s) && typeof s['slot'] === 'bigint' && (this.#height === null || s['slot'] > this.#height)) this.#height = s['slot'];
     }
     this.#discover(e, ctx, out);
+    this.#readLanded(e, ctx);
     this.#poolTrade(e, ctx);
     if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
@@ -310,7 +315,7 @@ export class LiveStrategy implements Strategy {
     this.#lifecycle(ctx, out);
     this.#manage(ctx, out);
     // At most one entry step per call, and only while nothing else acted: ctx.book is the book before these decisions.
-    if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out);
+    if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
     return out;
   }
 
@@ -801,7 +806,26 @@ export class LiveStrategy implements Strategy {
     return saved;
   }
 
-  #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[]): void {
+  /** Candidates whose read landed: judged once more at the next event, outside the evaluation cadence (FACTS-1b). */
+  #due = new Set<string>();
+
+  /**
+   * A raw read (`read:<kind>:<mint>`) landing for a candidate marks it for one more evaluation, so its fact is judged
+   * while fresh instead of at the next cadence tick (supervisor ruling: the read's own recorded frame is the trigger,
+   * so a replay re-evaluates at the same release position). A read already older than the state lag when it lands
+   * marks nothing: its fact cannot pass.
+   */
+  #readLanded(e: MarketEvent, ctx: StrategyContext): void {
+    if (!e.key.startsWith('read:')) return;
+    const mint = e.key.slice(e.key.indexOf(':', 'read:'.length) + 1);
+    if (!this.#cands.has(mint)) return;
+    const v = unwrap(e.value);
+    const slot = isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null;
+    if (slot !== null && ctx.now.slot - slot > BigInt(this.#d.session.policy.gates.maxStateSlotLag)) return;
+    this.#due.add(mint);
+  }
+
+  #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[], due: ReadonlySet<string>): void {
     const now = ctx.now.receivedAt;
     const c = this.#d.config;
     // Fails closed: entries only on a readable halt fact that says not halted.
@@ -820,7 +844,7 @@ export class LiveStrategy implements Strategy {
         out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
         continue;
       }
-      if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs)) continue;
+      if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !due.has(cand.mint))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
       if (Object.values(ctx.book.intents).some((i) => i.intent.mint === cand.mint && !isTerminal(i))) continue;

@@ -153,6 +153,21 @@ describe('LiveFacts', () => {
     s.src.stop();
   });
 
+  it('the regime turning on releases the reads (supervisor ruling: staging stays, a live volume source unblocks it)', async () => {
+    const s = setup();
+    s.src.start(s.ctx);
+    s.cands.set('M1', { migratedAtMs: T0, gates: [{ gate: 'regime', code: 'unknown', input: 'curve-volume' }] });
+    s.timers.advance(5_000);
+    await s.flush();
+    expect(s.f.calls.slice(1)).toEqual([]);
+    // The regime is on: the next evaluation reaches the hard rejects and names the missing evidence.
+    s.cands.set('M1', { migratedAtMs: T0, gates: [H16('mint'), H16('xcheck')] });
+    s.timers.advance(1_000);
+    await s.flush();
+    expect(s.f.calls.slice(1)).toEqual([['accounts', 'M1'], ['xcheck', 'M1']]);
+    s.src.stop();
+  });
+
   it('never runs two reads of one kind for one mint at once', async () => {
     const s = setup();
     s.src.start(s.ctx);
@@ -307,7 +322,7 @@ describe('the strategy keeps each candidate\'s last reasons with their inputs (w
     // The critical feed is up, so entries are not halted and candidates are evaluated.
     h.worker.feed.ingest('helius', { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: c.sink.now() });
     const m = await passingMarket(h);
-    expect(c.candidates().get(MINT2)).toEqual({ migratedAtMs: T + 3 * MIN, gates: null });
+    expect(c.candidates().get(MINT2)).toEqual({ migratedAtMs: T + 3 * MIN, lastEvalMs: null, gates: null });
     // Every fact kept current except a holder read that cannot be parsed: the reject names the holders as evidence.
     await m.run(3_000, 400, () => {
       m.slot();

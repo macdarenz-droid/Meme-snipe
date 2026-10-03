@@ -38,8 +38,8 @@ export interface FactContext {
    * replay of the recording rebuilds the same facts.
    */
   readonly ingest: Ingest;
-  /** Each candidate's migration time and the typed reasons of its last evaluation (null before the first). */
-  readonly candidates: () => ReadonlyMap<string, { readonly migratedAtMs: number; readonly gates: readonly CandidateReason[] | null }>;
+  /** Each candidate's migration time, its last evaluation and that evaluation's typed reasons (null before the first). */
+  readonly candidates: () => ReadonlyMap<string, { readonly migratedAtMs: number; readonly lastEvalMs: number | null; readonly gates: readonly CandidateReason[] | null }>;
   /** The newest slot the feed has seen (the decision slot for point-in-time reads), or null before any. */
   readonly tip: () => bigint | null;
 }
