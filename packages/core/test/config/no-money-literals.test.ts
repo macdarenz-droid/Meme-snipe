@@ -35,8 +35,22 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'engine/random.ts', name: 'h3', value: '1013904242', why: 'cyrb128 initial hash state, not money' },
   { file: 'engine/random.ts', name: 'h4', value: '2773480762', why: 'cyrb128 initial hash state, not money' },
   { file: 'engine/proofs.ts', name: 'REACH_BUDGET', value: '200000', why: 'node budget of the leak-test reachability search, not money' },
+  { file: 'ledger/sqlite.ts', name: 'BUSY_TIMEOUT_MS', value: '5000', why: 'SQLite busy timeout in milliseconds, not money' },
   { file: 'chain/address.ts', name: 'ED25519_FIELD_PRIME', value: '57896044618658097711785492504343953926634992332820282019728792003956564819949', why: 'ed25519 field prime 2^255 - 19 (RFC 8032), for the PDA curve check' },
   { file: 'chain/address.ts', name: 'ED25519_D', value: '37095705934669439343138083508754565189542113879843219016388785533085940283555', why: 'ed25519 curve constant d (RFC 8032), for the PDA curve check' },
+  // STATS-1: statistical and generator constants, not money (pending the supervisor's OK on PR #8).
+  { file: 'stats/bootstrap.ts', name: 'DEFAULT_REPLICATES', value: '2000', why: 'bootstrap replicate count' },
+  { file: 'stats/g2rule.ts', name: 'DEFAULT_MAX_TRADES', value: '50000', why: 'upper end of the n_power search (a trade count)' },
+  { file: 'stats/g2rule.ts', name: 'SEED_STRIDE', value: '1000003', why: 'prime stride between random streams' },
+  { file: 'stats/gates.ts', name: 'MS_PER_DAY', value: '86400000', why: 'milliseconds in a day' },
+  { file: 'stats/rng.ts', name: 'GOLDEN_GAMMA', value: '2654435769', why: 'splitmix32 increment' },
+  { file: 'stats/rng.ts', name: 'MIX_1', value: '2246822507', why: 'murmur3 finalizer multiplier' },
+  { file: 'stats/rng.ts', name: 'MIX_2', value: '3266489909', why: 'murmur3 finalizer multiplier' },
+  { file: 'stats/rng.ts', name: 'TWO_POW_26', value: '67108864', why: '2^26, for a 53-bit double' },
+  { file: 'stats/rng.ts', name: 'TWO_POW_32', value: '4294967296', why: '2^32' },
+  { file: 'stats/rng.ts', name: 'TWO_POW_53', value: '9007199254740992', why: '2^53, for a 53-bit double' },
+  { file: 'stats/special.ts', name: 'MAXIT', value: '1000', why: 'iteration limit of the continued fractions' },
+  { file: 'stats/special.ts', name: 'LANCZOS_C2', value: '1259.1392167224028', why: 'Lanczos log-gamma coefficient' },
 ];
 
 export const isAllowed = (file: string, finding: Finding, allowed: readonly Allowed[] = ALLOWED): boolean =>
