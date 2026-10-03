@@ -70,3 +70,33 @@ export const RUGCHECK_FREE: SchedulerSpec = {
   maxWaitMs: [NO_LIMIT, 20_000, 15_000, 10_000],
   maxQueue: 16,
 };
+
+/**
+ * GoPlus Solana token security, keyless: its rate limit is unverified (safety.md §7), so one request per 5 s, the
+ * same order as RugCheck's verified spacing. Raise only on a measured limit.
+ */
+export const GOPLUS_FREE: SchedulerSpec = {
+  provider: 'goplus',
+  window: { limit: 1, windowMs: 5_000 },
+  floors: [0, 0, 0, 0],
+  maxWaitMs: [NO_LIMIT, 20_000, 15_000, 10_000],
+  maxQueue: 16,
+};
+
+/** Coinbase Exchange public market data: hourly SOL/USD candles, read a few times an hour; 1 request per 2 s is ample. */
+export const COINBASE_PUBLIC: SchedulerSpec = {
+  provider: 'coinbase',
+  window: { limit: 1, windowMs: 2_000 },
+  floors: [0, 0, 0, 0],
+  maxWaitMs: [NO_LIMIT, 30_000, 30_000, 30_000],
+  maxQueue: 8,
+};
+
+/** DefiLlama free API: one daily-volume snapshot a few times a day; 1 request a minute is ample. */
+export const DEFILLAMA_FREE: SchedulerSpec = {
+  provider: 'defillama',
+  window: { limit: 1, windowMs: 60_000 },
+  floors: [0, 0, 0, 0],
+  maxWaitMs: [NO_LIMIT, 120_000, 120_000, 120_000],
+  maxQueue: 4,
+};
