@@ -1,0 +1,24 @@
+{
+ "window": [
+  "2026-10-03T12:40:00Z",
+  "2026-10-03T12:50:00Z"
+ ],
+ "a": {
+  "keys": 10,
+  "rpc_success_sigs": 599,
+  "captured": 578,
+  "missed": 21,
+  "missed_checked": 21,
+  "missed_checked_with_trade_event": 0,
+  "trade_tx_capture_rate_est": 1.0
+ },
+ "c": {
+  "keys": 10,
+  "rpc_success_sigs": 316,
+  "captured": 209,
+  "missed": 107,
+  "missed_checked": 80,
+  "missed_checked_with_trade_event": 1,
+  "trade_tx_capture_rate_est": 0.9936411719260712
+ }
+}
