@@ -31,7 +31,7 @@ const flag = (name: string, fallback?: string): string => {
 };
 
 const dataset = flag('dataset');
-verifySums(dataset);
+const sumsChecked = verifySums(dataset);
 const manifest = loadManifest(dataset);
 const only = args.includes('--days') ? new Set(flag('days').split(',')) : null;
 const days: ManifestDay[] = manifest.days.filter((d) => only === null || only.has(d.day));
@@ -116,6 +116,7 @@ if (command === 'holdout') {
   });
   const evidence = {
     commit, dataset: { dir: dataset, manifestSha256: manifestHash(dataset), days: days.map((d) => d.day), complete: days.map((d) => d.complete) },
+    sumsChecked,
     fillsVersion: FILL_CONFIG.version, researchVersion: RESEARCH_CONFIG.version, policyName: TRIAL_POLICY.name,
     scenario, seed, hashes, identicalReplays: identical, leak, stats: first.stats,
     throughput: { rows: first.stats.rows, elapsedMs: times, rowsPerSecond: Math.round(first.stats.rows / (first.stats.elapsedMs / 1000)), days: days.length,

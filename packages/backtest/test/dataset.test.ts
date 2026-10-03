@@ -127,6 +127,12 @@ describe('release-asset layout', () => {
       const withUpgrade = { ...m, program_upgrade_2026_10_02: { note: 'x', first_extra_hex_curve: { slot: 452654900 }, first_extra_hex_amm: { slot: 452654883 }, first_unknown_event: null } };
       expect(regimeBoundariesOf(withUpgrade)).toEqual([{ slot: 452654883n, label: 'program_upgrade_2026_10_02' }]);
       expect(regimeBoundariesOf(m)).toEqual([]);
+      expect(regimeBoundariesOf({ ...withUpgrade, program_upgrade_2026_10_02: { ...withUpgrade.program_upgrade_2026_10_02, slot: 452654000 } })).toEqual([{ slot: 452654000n, label: 'program_upgrade_2026_10_02' }]);
+      // Names that leave the directory are refused before anything is read.
+      for (const bad of ['../outside.csv', '/etc/passwd', 'a/../../x', '..']) {
+        writeFileSync(join(flat, 'SHA256SUMS'), `${'0'.repeat(64)}  ${bad}\n`);
+        expect(() => verifySums(flat), bad).toThrow(/outside the dataset directory/);
+      }
     } finally {
       rmSync(flat, { recursive: true, force: true });
     }

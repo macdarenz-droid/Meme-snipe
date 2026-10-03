@@ -3,7 +3,7 @@
 // that would tell the engine the future. Lifecycle facts reach the engine only as the events of the day they happen.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { type DatasetRow, compareRows, readAmm, readBlocks, readCurve, readEvents } from './rows.ts';
 
@@ -104,7 +104,11 @@ export const verifySums = (dir: string): number => {
   for (const line of readFileSync(sums, 'utf8').split('\n')) {
     const m = /^([0-9a-f]{64})\s+\*?(.+)$/.exec(line.trim());
     if (m === null) continue;
-    const file = join(dir, m[2]!);
+    const name = m[2]!;
+    // Only plain names inside the directory: never "..", an absolute path, or anything that resolves outside it.
+    const root = resolve(dir);
+    const file = resolve(root, name);
+    if (isAbsolute(name) || name.split(/[\\/]/).includes('..') || !file.startsWith(root + sep)) throw new RangeError(`SHA256SUMS names ${name}, outside the dataset directory`);
     if (!existsSync(file)) throw new RangeError(`SHA256SUMS lists ${m[2]}, which is missing`);
     const got = createHash('sha256').update(readFileSync(file)).digest('hex');
     if (got !== m[1]) throw new RangeError(`${m[2]}: sha256 ${got} does not match SHA256SUMS`);
@@ -117,14 +121,16 @@ export const verifySums = (dir: string): number => {
 interface UpgradeMark { readonly slot?: number }
 
 /**
- * Regime boundaries from the manifest: every `program_upgrade_<date>` entry (DATA-1), at the earliest slot where its
- * effects were seen (extra event bytes on curve or PumpSwap trades, or a new event type). A lower bound when the
- * coverage starts after the upgrade.
+ * Regime boundaries from the manifest: every `program_upgrade_<date>` entry (DATA-1). Its exact `slot` when the
+ * manifest gives one; otherwise the earliest slot where its effects were seen (extra event bytes on curve or PumpSwap
+ * trades, or a new event type), which is an upper bound on the upgrade slot: the upgrade happened at or before it.
  */
 export const regimeBoundariesOf = (m: Manifest): { readonly slot: bigint; readonly label: string }[] =>
   Object.entries(m)
     .filter(([k, v]) => /^program_upgrade_/.test(k) && typeof v === 'object' && v !== null)
     .flatMap(([k, v]) => {
+      const exact = (v as UpgradeMark).slot;
+      if (Number.isSafeInteger(exact)) return [{ slot: BigInt(exact!), label: k }];
       const marks = ['first_extra_hex_curve', 'first_extra_hex_amm', 'first_unknown_event']
         .map((f) => (v as Record<string, UpgradeMark | null | undefined>)[f]?.slot)
         .filter((x): x is number => Number.isSafeInteger(x));

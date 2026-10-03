@@ -61,10 +61,30 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
   for (const a of r.attempts) byIntent.set(a.intentId, [...(byIntent.get(a.intentId) ?? []), a]);
   const trades: TradeRecord[] = [];
   const stray: StrayCost[] = [];
+  // Several positions can share an entry intent (LEDGER-1b): a late buy landing books `<position>.o<n>`, holding the
+  // intent's n-th fill. Each such position owns its fill and that fill's attempt; the main position owns the rest.
+  const lateFill = (pid: string): number | null => {
+    const m = /\.o(\d+)$/.exec(pid);
+    return m === null ? null : Number(m[1]) - 1;
+  };
+  const claimed = new Map<string, Set<string>>();
   for (const p of Object.values(r.book.positions)) {
-    const entryAttempts = byIntent.get(p.entryIntentId) ?? [];
-    const entry = entryAttempts.find((a) => a.outcome === 'filled');
-    if (entry === undefined || entry.fill === null) {
+    const k = lateFill(p.id);
+    const f = k === null ? undefined : r.book.intents[p.entryIntentId]?.fills[k];
+    if (f !== undefined) claimed.set(p.entryIntentId, (claimed.get(p.entryIntentId) ?? new Set<string>()).add(f.signature));
+  }
+  for (const p of Object.values(r.book.positions)) {
+    const intent = r.book.intents[p.entryIntentId];
+    const k = lateFill(p.id);
+    const late = claimed.get(p.entryIntentId) ?? new Set<string>();
+    const fillsOf = k === null ? (intent?.fills ?? []).filter((f) => !late.has(f.signature)) : [intent?.fills[k]].filter((f) => f !== undefined);
+    const signatures = new Set<string>(fillsOf.map((f) => f.signature));
+    const entryAttempts = (byIntent.get(p.entryIntentId) ?? []).filter((a) => (k === null ? !late.has(a.signature) : signatures.has(a.signature)));
+    const entryFill = fillsOf.length === 0 ? null : {
+      sol: fillsOf.reduce((t, f) => t + f.sol, 0n), tokens: fillsOf.reduce((t, f) => t + f.tokens, 0n),
+      at: Math.min(...entryAttempts.filter((a) => signatures.has(a.signature)).map((a) => a.landedAt ?? r.endedAt)),
+    };
+    if (entryFill === null) {
       for (const a of entryAttempts) if (a.fee > 0n) stray.push({ at: a.landedAt ?? r.endedAt, lamports: a.fee });
       continue;
     }
@@ -94,10 +114,10 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
     const closedAt = blocked ? r.endedAt : Math.max(...sold.map((a) => a.landedAt ?? 0));
     trades.push({
       id: p.id, mint: p.mint, symbol: r.symbols.get(p.mint) ?? p.mint.slice(0, 6),
-      openedAt: entry.landedAt ?? 0, closedAt, entrySol: entry.fill.sol, tokens: entry.fill.tokens, exitSol,
+      openedAt: entryFill.at, closedAt, entrySol: entryFill.sol, tokens: entryFill.tokens, exitSol,
       networkBase: b, priority: pr, tip: tp, venueFee: venue, creatorFee: creator, slippage, rentPaid, rentReturned,
       exitReason: blocked ? 'blocked' : 'time-stop',
-      net: exitSol - entry.fill.sol - b - pr - tp - rentPaid + rentReturned,
+      net: exitSol - entryFill.sol - b - pr - tp - rentPaid + rentReturned,
       attempts: all.length, failedAttempts: all.filter((a) => a.outcome !== 'filled').length,
     });
   }
