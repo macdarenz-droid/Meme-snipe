@@ -66,7 +66,7 @@ export class LedgerSink {
       try {
         step = this.#ledger.recordBookEvent(prev, event, { ts, limits: this.#limits });
       } catch (err) {
-        if (err instanceof LedgerError && err.message.includes('refused by the reducer')) {
+        if (err instanceof LedgerError && err.code === 'reducer_refused') {
           this.divergences++;
           return;
         }
