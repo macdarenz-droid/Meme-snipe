@@ -110,7 +110,9 @@ days/YYYY-MM-DD/
   curve_trades-NNN.csv.zst   bonding-curve trades of universe mints, in (slot, tx_idx, ev_idx) order
   amm_trades-NNN.csv.zst     PumpSwap trades of universe mints
   events-NNN.jsonl.zst       creates, completes, migrations, pool creations, deposits, withdrawals, boosts, account extensions, parameter changes, unknown events
-  failed_hourly-NNN.csv.zst  failed trade transactions of universe mints per hour (count, distinct signers, most common error)
+  failed-NNN.csv.zst         failed trade transactions of universe mints, one row each (schema 2)
+  failed_hourly-NNN.csv.zst  the same per hour (count, distinct signers, most common error)
+  raw-NNN.jsonl.zst          raw transaction records of every pump/PumpSwap transaction touching a universe mint (schema 2)
   agg_hourly-NNN.csv.zst     every mint that traded: buys, sells, volumes, open/close reserves, high/low price per hour
   blocks-NNN.csv.zst         every block: slot, time, parent, transaction counts, pump transactions ok and failed
 ```
@@ -127,6 +129,15 @@ Key columns:
   - A boost buy-and-burn is an ordinary `BuyEvent` (the bought tokens are burned outside the pool), followed by a `BoostBuyAndBurnEvent`.
   - `InitBoostEvent` moves quote from the vault into `virtual_quote_reserves` (`real_quote_reserves_after` is the new vault balance).
 - **Provenance:** `(slot, tx_idx)` locates the transaction in the archive's block, and `signature` locates it in any RPC. `(slot, tx_idx, ev_idx)` is unique and strictly increasing within every file; the finaliser fails otherwise.
+- **Schema 2 additions** (`manifest.schema` = 2):
+  - Every event row has `outer_ix` (top-level instruction) and `inner_ix` (position in that instruction's inner list). These give the ordering key `(slot, tx_idx, outer_ix, inner_ix)` agreed with the chain decoders.
+  - Trade rows carry `jito_tip`: lamports the transaction moved into the 8 Jito tip accounts, for bundle detection.
+- **Raw records** (`raw-NNN.jsonl.zst`, schema 2): one JSON line per pump/PumpSwap transaction, successful or failed, that touches a universe mint. A mint counts if it appears in the transaction's token balances or events, so plain transfers inside those transactions are included. Fields:
+  - `slot`, `blockTime`, `txIndex`, `signature`, and `transaction` (base64 wire bytes: legacy, v0, or v1 per SIMD-0385, where the signatures follow the message);
+  - `err` (null, or `{hex}` of the stored TransactionError bytes) and `mints`;
+  - `meta`: fee, computeUnitsConsumed, pre/post balances, loadedAddresses, innerInstructions (data base64), logMessages, pre/post token balances.
+
+  This is the input of the shared decoder (`transactionEvents`), so live and backtest decode with the same code. Size is about 1.7 GB per day at the 5% sample, measured on 446 blocks.
 
 ## Decisions
 
@@ -135,6 +146,31 @@ Key columns:
 - **Hash sample, not "interesting" tokens:** selection by `sha256(mint)` cannot depend on any outcome. A 25% superset keeps the option to widen the dataset without rescanning. Hourly census rows keep every mint countable.
 - **No AGPL code:** yellowstone-faithful's archive tools default to AGPL-3.0, and even its Apache-2.0 packages import AGPL ones. The scanner instead reads the archive with its own small decoders (CAR sections, DAG-CBOR nodes, protobuf metas) and needs no index files. Remaining dependencies are solana-go, gagliardetto/binary, klauspost/compress and mr-tron/base58.
 - **Release assets over a git branch for the full dataset:** about 150 to 200 MB per day compressed. A data branch would add gigabytes to every default clone, so the proposed workflow publishes release assets instead.
+
+## Point in time: what a live bot would have seen
+
+The backtest replays rows strictly in `(slot, tx_idx, outer_ix, inner_ix)` order through a simulated clock (CLAUDE.md: backtests are blind and reproduce live).
+
+- **Known at the transaction's slot:** every value in a trade, event, failed or raw row. These are on-chain facts of that transaction: amounts, reserves, fees, the balances after it (`chain_*`), the event's own fields, and the error of a failed transaction.
+  - A live bot learns them only once the block is observed: about one slot after `block_time` at processed commitment, later at confirmed.
+  - The replay should add that latency rather than act at the same slot.
+- **Known at creation:** `CreateEvent` fields, including name, symbol and URI. The metadata JSON behind the URI is **not** in the dataset, nor are holder counts or social data. Anything like that, fetched later, would be look-ahead.
+- **Known only after the fact; never use as an input:**
+  - `mints.csv`: graduation time, `tape_to`, `censored` and universe flags are bookkeeping and labels.
+  - `agg_hourly` rows: usable only after their hour ends (they aggregate the whole hour).
+  - `manifest.json` counts and the upgrade boundary.
+  - The engine should load these only for universe selection, which is fixed by the hash, or for evaluation.
+- **Fixed before outcomes:** the universe hash depends only on the mint address. The `grad` universe is chosen by the graduation event itself, which is observable when it happens. Do not use its pre-graduation tape for curve-phase decisions.
+- **Off-chain series:** none are in this dataset (SOL/USD comes from BT-1's Coinbase copy).
+
+## Running it on GitHub Actions (one lane)
+
+`.github/workflows/data-scan.yml`, approved by the supervisor as owner of `.github`, runs the same scanner on a single polite lane:
+- manual dispatch only, one concurrency group and `max-parallel: 1`, newest day first, at most 80 MB/s;
+- on any 429 the scanner stops, keeps finished units, waits at least an hour, and resumes on the same lane. If the job's time budget runs out, progress stays in the Actions cache and the run fails, so the next dispatch continues.
+- each day must pass `qa/check.mjs --strict` (live checks included) and a determinism rescan of one unit with identical file hashes before it is published to release `data-days`, as split tar parts plus `SHA256SUMS-<day>` and the QA report;
+- `mode=assemble` builds the multi-day dataset from those assets and publishes release `data-<from>-<to>`;
+- expected pace is about 2 to 2.5 h per chain day at 80 MB/s (about 600 GB), so 30 days takes about 2.5 days unless the archive operators allow more.
 
 ## Coverage
 
@@ -155,7 +191,13 @@ Filled from `qa/report.md` (`node research/historical/qa/check.mjs <dataset> --l
 - **Bandwidth:** scanning reads the whole archive range, about 600 GB per chain day (≈18 TB for 30 days) from a free public host. Each process is capped at 40 requests/s.
 - **Quote-token curves:** some bonding curves are quoted in another token (USDC and others): `quote_mint` names it, the `*_sol_*` fields are 0, and the reserves are in `virtual_quote_reserves`, `real_quote_reserves` and `quote_amount`. Their quote token account sometimes holds more than `real_quote_reserves` (never less). The excess is tokens held outside the reserves, such as fees awaiting distribution.
 - **Rent changes without a logged extension:** a curve's lamports minus `real_sol_reserves` (its rent) changed 15 times in 139,261 checks without an `ExtendAccountEvent`. The changes are between standard account sizes, which fits an account resized inside a trade. Reserves are unaffected.
-- **Archive rate limit:** see How the scanner works, step 8.
+- **Archive rate limit:** see How the scanner works, step 8. The supervisor ruled that the limit is not to be worked around with more machines or addresses: one lane, at most 80 MB/s, at least 1 h back-off after any 429.
+- **Not covered:**
+  - Token transfers of universe mints made in transactions that do not touch the pump programs (possible in a later schema, at a CPU cost).
+  - Every transaction in the slots around each creation: the Jito tip and `tx_idx` of the universe's own transactions are recorded instead.
+  - The first funding transactions of creators and early buyers, which need per-wallet history from an RPC at about 1 call per second.
+  - Mint authorities, which are not in transaction meta.
+  - The state of fee and global parameters before the coverage starts (changes inside it are events, and every trade carries its fee rates).
 
 ## How to extend
 
