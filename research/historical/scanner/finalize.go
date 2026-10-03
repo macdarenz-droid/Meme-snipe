@@ -724,6 +724,8 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		"universe_counts": map[string]int{"launch": nLaunch, "grad": nGrad, "direct_pool": nPool, "mints_registered": len(ml)},
 		"decode_failures": decodeFail,
 		"coverage_gaps":   gaps,
+		"chain_breaks":    chainBreaks,
+		"completeness":    "every block's parent is the previous block in the scan (checked on all block rows), so no block is missing between the first and last scanned block",
 		"days":            manifestDays,
 		"mints_files":     mintFiles,
 		"units":           unitsInfo,

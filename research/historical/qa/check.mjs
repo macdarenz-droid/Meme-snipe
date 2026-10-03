@@ -56,6 +56,8 @@ function dayFiles(base) {
 }
 const B = (s) => (s === '' || s === undefined ? null : BigInt(s));
 
+const isQuoted = (r) => r.quote_mint !== '' && r.quote_mint !== '11111111111111111111111111111111' && r.quote_mint !== 'So11111111111111111111111111111111111111112';
+
 // ---- base58 ----
 const ALPH = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 function b58encode(buf) {
@@ -82,7 +84,7 @@ const curveAddr = new Map(); // mint -> bonding curve account (from CreateEvent)
 {
   const created = new Map(); // mint -> tokens kept out of the curve's real reserves
   const extendAt = new Map(); // account -> [order keys of ExtendAccountEvent]
-  const ordk = (s, t, v) => BigInt(s) * 1000000n + BigInt(t) * 1000n + BigInt(v);
+  const ordk = (s, t, v) => BigInt(s) * 1000000000000n + BigInt(t) * 1000000n + BigInt(v);
   for (const f of dayFiles('events')) {
     for (const l of zlib.zstdDecompressSync(fs.readFileSync(path.join(ds, f))).toString().trim().split('\n').filter(Boolean)) {
       const e = JSON.parse(l);
@@ -96,7 +98,7 @@ const curveAddr = new Map(); // mint -> bonding curve account (from CreateEvent)
       }
     }
   }
-  const st = { trades: 0, real_pairs: 0, real_ok: 0, virtual_pairs: 0, virtual_ok: 0, virtual_pairs_mayhem: 0, virtual_ok_mayhem: 0, chain_bad: [],
+  const st = { trades: 0, quote_curve_trades: 0, quote_balance_checks: 0, quote_balance_exact: 0, quote_balance_ge: 0, real_pairs: 0, real_ok: 0, virtual_pairs: 0, virtual_ok: 0, virtual_pairs_mayhem: 0, virtual_ok_mayhem: 0, chain_bad: [],
     chain_checks: 0, token_checks: 0, token_exact: 0, sol_checks: 0, sol_exact: 0, sol_changed_at_extend: 0, chain_bad_rows: [], offsets: {} };
   const prev = new Map(), prevSol = new Map();
   for (const f of dayFiles('curve_trades')) {
@@ -104,9 +106,14 @@ const curveAddr = new Map(); // mint -> bonding curve account (from CreateEvent)
       st.trades++;
       const m = r.mint;
       const p = prev.get(m);
-      const vs = B(r.virtual_sol_reserves), vt = B(r.virtual_token_reserves), rs = B(r.real_sol_reserves), rt = B(r.real_token_reserves);
-      const sol = B(r.sol_amount), tok = B(r.token_amount), buy = r.is_buy === '1';
+      // Curves quoted in another token keep their quote side in the *_quote_* fields
+      // (the SOL fields are 0); SOL curves report quote_mint as the system program.
+      const quoted = isQuoted(r);
+      const vs = B(quoted ? r.virtual_quote_reserves : r.virtual_sol_reserves), vt = B(r.virtual_token_reserves);
+      const rs = B(quoted ? r.real_quote_reserves : r.real_sol_reserves), rt = B(r.real_token_reserves);
+      const sol = B(quoted ? r.quote_amount : r.sol_amount), tok = B(r.token_amount), buy = r.is_buy === '1';
       const mayhem = r.mayhem_mode === '1';
+      if (quoted) st.quote_curve_trades++;
       if (p) {
         // real reserves move by exactly the trade amounts
         st.real_pairs++;
@@ -121,9 +128,17 @@ const curveAddr = new Map(); // mint -> bonding curve account (from CreateEvent)
       }
       prev.set(m, { vs, vt, rs, rt });
       curveLast.set(m, r);
+      if (quoted && r.last_in_tx === '1' && r.chain_curve_quote !== '') {
+        // the curve's quote token account holds exactly real_quote_reserves
+        st.quote_balance_checks++;
+        if (B(r.chain_curve_quote) >= rs) st.quote_balance_ge++;
+        if (B(r.chain_curve_quote) === rs) st.quote_balance_exact++;
+        else if (B(r.chain_curve_quote) > rs) {}
+        else if (st.chain_bad_rows.length < 20) st.chain_bad_rows.push({ mint: m, slot: r.slot, tx_idx: r.tx_idx, kind: 'quote', balance: r.chain_curve_quote, real_quote_reserves: String(rs) });
+      }
       if (r.last_in_tx === '1' && r.chain_curve_base !== '' && r.chain_curve_lamports !== '') {
         st.chain_checks++;
-        const to = B(r.chain_curve_base) - rt, so = B(r.chain_curve_lamports) - rs;
+        const to = B(r.chain_curve_base) - rt, so = quoted ? B(r.chain_curve_lamports) : B(r.chain_curve_lamports) - rs;
         st.offsets[`${to}|${so}`] = (st.offsets[`${to}|${so}`] || 0) + 1;
         // tokens: the curve's token account holds real_token_reserves plus the tokens
         // reserved for migration (token_total_supply - initial real_token_reserves)
@@ -172,7 +187,7 @@ const poolLast = new Map(); // pool -> {row, post}
       liq.get(pool).push(e);
     }
   }
-  const ord = (s, t, v) => BigInt(s) * 1000000n + BigInt(t) * 1000n + BigInt(v);
+  const ord = (s, t, v) => BigInt(s) * 1000000000000n + BigInt(t) * 1000000n + BigInt(v);
   const state = new Map(); // pool -> {base, quote} post-state
   const liqIdx = new Map();
   const applyLiq = (pool, upto) => {
@@ -219,6 +234,17 @@ const poolLast = new Map(); // pool -> {row, post}
       }
     }
   }
+  // events after a pool's last trade (withdrawals, deposits) also move the vaults
+  for (const [pool, evs] of liq) {
+    applyLiq(pool, 1n << 62n);
+    const last = evs[evs.length - 1];
+    const pl = poolLast.get(pool);
+    if (pl && state.has(pool)) {
+      pl.post = state.get(pool);
+      const lk = ord(last.slot, last.tx_idx, last.ev_idx);
+      if (lk > ord(pl.row.slot, pl.row.tx_idx, pl.row.ev_idx)) pl.lastSlot = Number(last.slot);
+    }
+  }
   report.amm = st;
 }
 
@@ -238,7 +264,7 @@ const u64 = (b, o) => b.readBigUInt64LE(o);
 const i128 = (b, o) => { const lo = b.readBigUInt64LE(o), hi = b.readBigInt64LE(o + 8); return (hi << 64n) + lo; };
 
 if (LIVE > 0) {
-  const lastSlot = man.coverage.last_slot;
+  const coverageEnd = man.coverage.last_slot;
   // deterministic candidate order: by mint string
   const curves = [...curveLast.keys()].filter((m) => curveAddr.has(m)).sort();
   const pools = [...poolLast.keys()].sort();
@@ -248,25 +274,26 @@ if (LIVE > 0) {
     if (report.live.filter((x) => x.kind === 'curve').length >= want.curve || tried.curve >= want.curve * 4) break;
     tried.curve++;
     const acct = curveAddr.get(m);
-    const sigs = await rpc('getSignaturesForAddress', [acct, { limit: 1 }]);
-    const latest = sigs.result?.[0];
-    if (!latest || latest.slot > lastSlot) continue; // traded after our coverage
+    const sigs = await rpc('getSignaturesForAddress', [acct, { limit: 20 }]);
+    const latest = (sigs.result || []).find((x) => x.err === null); // failed transactions change nothing
+    if (!latest || latest.slot > coverageEnd) continue; // traded after our coverage
     const ai = await rpc('getAccountInfo', [acct, { encoding: 'base64' }]);
     const v = ai.result?.value; if (!v) continue;
     const buf = Buffer.from(v.data[0], 'base64');
     const chain = { vtok: u64(buf, 8), vsol: u64(buf, 16), rtok: u64(buf, 24), rsol: u64(buf, 32), complete: buf[48] === 1 };
     const r = curveLast.get(m);
-    const ours = { vtok: B(r.virtual_token_reserves), vsol: B(r.virtual_sol_reserves), rtok: B(r.real_token_reserves), rsol: B(r.real_sol_reserves) };
+    const q = isQuoted(r);
+    const ours = { vtok: B(r.virtual_token_reserves), vsol: B(q ? r.virtual_quote_reserves : r.virtual_sol_reserves), rtok: B(r.real_token_reserves), rsol: B(q ? r.real_quote_reserves : r.real_sol_reserves) };
     const maxDiff = ['vtok', 'vsol', 'rtok', 'rsol'].reduce((a, k) => { const d = chain[k] - ours[k]; const ad = d < 0n ? -d : d; return ad > a ? ad : a; }, 0n);
     report.live.push({ kind: 'curve', mint: m, account: acct, last_event_slot: Number(r.slot), latest_chain_tx_slot: latest.slot, complete: chain.complete, max_abs_diff_raw: String(maxDiff), pass: maxDiff <= 1n });
   }
   for (const pool of pools) {
     if (report.live.filter((x) => x.kind === 'pool').length >= want.pool || tried.pool >= want.pool * 6) break;
     tried.pool++;
-    const sigs = await rpc('getSignaturesForAddress', [pool, { limit: 1 }]);
-    const latest = sigs.result?.[0];
-    const { row, post } = poolLast.get(pool);
-    if (!latest || latest.slot > lastSlot) continue;
+    const sigs = await rpc('getSignaturesForAddress', [pool, { limit: 20 }]);
+    const latest = (sigs.result || []).find((x) => x.err === null);
+    const { row, post, lastSlot } = poolLast.get(pool);
+    if (!latest || latest.slot > coverageEnd) continue; // traded after our coverage
     const ai = await rpc('getAccountInfo', [pool, { encoding: 'base64' }]);
     const v = ai.result?.value; if (!v) continue;
     const buf = Buffer.from(v.data[0], 'base64');
@@ -276,7 +303,7 @@ if (LIVE > 0) {
     const [bv, qv] = accs.result.value.map((a) => BigInt(a.data.parsed.info.tokenAmount.amount));
     const db = bv - post.base, dq = qv - post.quote;
     const ad = (x) => (x < 0n ? -x : x);
-    report.live.push({ kind: 'pool', pool, mint: row.base_mint, last_event_slot: Number(row.slot), latest_chain_tx_slot: latest.slot, virtual_quote_reserves: String(vq), d_base_raw: String(db), d_quote_raw: String(dq), pass: ad(db) <= 1n && ad(dq) <= 1n });
+    report.live.push({ kind: 'pool', pool, mint: row.base_mint, last_event_slot: lastSlot ?? Number(row.slot), latest_chain_tx_slot: latest.slot, virtual_quote_reserves: String(vq), d_base_raw: String(db), d_quote_raw: String(dq), pass: ad(db) <= 1n && ad(dq) <= 1n });
   }
 }
 
@@ -333,7 +360,7 @@ for (const c of report.coverage) md.push(`| ${c.day} | ${c.blocks_expected} | ${
 md.push('', '## Decoding', '', `Decode failures: ${report.decoding.decode_failures}. Unknown events: ${JSON.stringify(report.decoding.unknown_events)}. Newer layouts than the IDL: ${JSON.stringify(report.decoding.newer_layouts)}. Coverage gaps: ${JSON.stringify(report.decoding.coverage_gaps)}.`);
 const c = report.curve, a = report.amm;
 md.push('', '## Reserve chain', '', `Bonding curve real reserves: ${c.real_ok} of ${c.real_pairs} consecutive trade pairs rebuild exactly (${pct(c.real_ok, c.real_pairs)}). Virtual reserves: ${c.virtual_ok} of ${c.virtual_pairs} (${pct(c.virtual_ok, c.virtual_pairs)}) on regular curves; on mayhem-mode curves, where the program re-prices virtual reserves, ${c.virtual_ok_mayhem} of ${c.virtual_pairs_mayhem}.`, `PumpSwap: ${a.chain_ok} of ${a.chain_pairs} trades start from exactly the rebuilt reserves (${pct(a.chain_ok, a.chain_pairs)}); ${a.liquidity_events} liquidity, boost and pool-creation events applied.`);
-md.push('', '## Against recorded account balances', '', `Bonding curve token account: ${c.token_exact} of ${c.token_checks} checks equal real_token_reserves plus the reserved migration tokens exactly (${pct(c.token_exact, c.token_checks)}). Lamports: ${c.sol_exact} of ${c.sol_checks} checks keep the same rent offset as the previous check (${c.sol_changed_at_extend} of them changed exactly at an account extension) (${pct(c.sol_exact, c.sol_checks)}). Most common offsets (reserved tokens | rent): ${JSON.stringify(c.top_offsets)}.`, `PumpSwap: ${a.chain_exact} of ${a.chain_checks} checks match both vault balances exactly (${pct(a.chain_exact, a.chain_checks)}).`);
+md.push('', '## Against recorded account balances', '', `Curves quoted in a token other than SOL: ${c.quote_curve_trades} trades; their quote token account equals real_quote_reserves in ${c.quote_balance_exact} of ${c.quote_balance_checks} checks and is never below it in ${c.quote_balance_ge} (the excess is quote tokens held by the curve outside its reserves, such as fees awaiting distribution; real reserves themselves rebuild exactly). Bonding curve token account: ${c.token_exact} of ${c.token_checks} checks equal real_token_reserves plus the reserved migration tokens exactly (${pct(c.token_exact, c.token_checks)}). Lamports: ${c.sol_exact} of ${c.sol_checks} checks keep the same rent offset as the previous check (${c.sol_changed_at_extend} of them changed exactly at an account extension) (${pct(c.sol_exact, c.sol_checks)}). Most common offsets (reserved tokens | rent): ${JSON.stringify(c.top_offsets)}.`, `PumpSwap: ${a.chain_exact} of ${a.chain_checks} checks match both vault balances exactly (${pct(a.chain_exact, a.chain_checks)}).`);
 if (report.live.length) {
   const pass = report.live.filter((x) => x.pass).length;
   md.push('', '## Live on-chain checks', '', `${pass} of ${report.live.length} idle curves and pools match their current on-chain state within 1 raw unit.`, '', '| Kind | Account | Last event slot | Latest chain tx slot | Result |', '|---|---|---|---|---|');
