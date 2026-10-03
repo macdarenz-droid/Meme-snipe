@@ -9,6 +9,7 @@ import { RUG_CONFIG } from '../../core/src/config/index.ts';
 import { compareMoments, type MarketEvent } from '../../core/src/engine/index.ts';
 import { RugLabeller, type RugLabel } from '../../core/src/gates/index.ts';
 import { eventsOfFrame, rankIn, type Frame, type FrameBody } from '../src/providers/canonical.ts';
+import { analyzeLaunch, type FullRpcTransaction } from '../src/research/rug-validate.ts';
 
 interface Case {
   readonly name: 'rug' | 'non-rug';
@@ -97,5 +98,18 @@ describe.each(FIXTURE.cases.filter((c) => c.name === 'non-rug').map((c) => [c.mi
     const launch = Math.min(...c.transactions.map((t) => t.blockTime ?? Infinity)) * 1_000;
     expect(Date.parse(FIXTURE.meta.fetchedAt) - launch).toBeGreaterThan(RUG_CONFIG.collapse.windowMs);
     expect(Date.parse(FIXTURE.meta.fetchedAt) - launch).toBeGreaterThan(RUG_CONFIG.creatorDump.windowMs);
+  });
+});
+
+describe('a known traded non-rug (HfbH…pump, launched 2026-10-02 22:08 UTC, whole first day replayed)', () => {
+  const c = FIXTURE.cases.find((x) => x.mint === 'HfbH3ou6oPpAVRdfmKqgZmCCgdPiEXbtKsM7Ef7Dpump')!;
+
+  it('traded through its window: a deployer sale of 0.05% and liquidity down to 3.9% of its peak, both inside rugs-2', () => {
+    const { events } = label(c, 'tx');
+    expect(events.filter((e) => e.key.startsWith('pump:TradeEvent:')).length).toBeGreaterThan(10);
+    const r = analyzeLaunch(c.transactions.map((t) => ({ signature: t.signature, rpc: t as FullRpcTransaction })), RUG_CONFIG)!;
+    expect(r).toMatchObject({ deployerSoldBps: 5, creatorDumpAtMs: null, collapseAtMs: null, peak: '59408092', finalQuote: '2287406' });
+    // The lowest level after the peak is above 1% of it: 2,287,406 × 10,000 > 59,408,092 × 100.
+    expect(2_287_406n * 10_000n).toBeGreaterThan(59_408_092n * 100n);
   });
 });
