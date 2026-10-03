@@ -22,12 +22,13 @@ import {
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
 import type { Decision, MarketEvent, Strategy, StrategyContext } from '../../../core/src/engine/index.ts';
+import { observedFeeContext } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
   atr, checkStopDistance, decideExit, execPrice, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type GateContext, DeployerIndex, RugLabeller, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
+  type Coverage, type GateContext, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
@@ -190,6 +191,36 @@ export class LiveStrategy implements Strategy {
   }
 
   #coverage: Coverage | null = null;
+  /** Each watched mint's PumpSwap pool, from its migration or its pool fact, and back. */
+  readonly #poolOfMint = new Map<string, string>();
+  readonly #mintOfPool = new Map<string, string>();
+  /** The fee terms of the latest released swap on each mint's pool (rates are per trade on chain). */
+  readonly #observedFees = new Map<string, PoolFeeContext>();
+  /** Receipt time of the latest released swap on each mint's pool: how current the sales below are. */
+  readonly #tradeAt = new Map<string, number>();
+  /** Sales by each mint's deployer (its creator and the create's signer), deduplicated by event id. */
+  readonly #deployerSales = new Map<string, { readonly ids: Set<string>; readonly list: { readonly atMs: number; readonly amount: bigint }[] }>();
+  /** Positions whose deployer-sell trigger could not be judged, reported once each. */
+  readonly #unjudgedDeployer = new Set<string>();
+
+  /** The fee terms of the latest swap seen on a mint's pool (for the paper fill when no fee-context fact exists). */
+  observedFees(mint: string): PoolFeeContext | undefined {
+    return this.#observedFees.get(mint);
+  }
+
+  /**
+   * The pools to watch for swaps (WORKER-1 subscribes `trades:<pool>`): every candidate in its window and every open
+   * position, with whether a position holds it (exit traffic).
+   */
+  watchedPools(): Map<string, { readonly mint: string; readonly held: boolean }> {
+    const held = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
+    const out = new Map<string, { mint: string; held: boolean }>();
+    for (const mint of this.watched()) {
+      const pool = this.#poolOfMint.get(mint);
+      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint) });
+    }
+    return out;
+  }
 
   /** H14's creates coverage as of the last slot, coverage fact or seed released; null before any. */
   get coverage(): Coverage | null {
@@ -210,6 +241,7 @@ export class LiveStrategy implements Strategy {
       if (isObj(s) && typeof s['slot'] === 'bigint' && (this.#height === null || s['slot'] > this.#height)) this.#height = s['slot'];
     }
     this.#discover(e, ctx, out);
+    this.#poolTrade(e, ctx);
     if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
       this.#coverage = createsCoverage((k, f, t) => ctx.history(k, f, t), ctx.now, ctx.now.receivedAt - this.#d.session.policy.gates.deployerRugLookbackDays * 86_400_000);
@@ -275,6 +307,7 @@ export class LiveStrategy implements Strategy {
       // GATE-1's migration fact (a fetched, confirmed migration) also names a candidate.
       const f = parseMigration(e.value);
       const mint = e.key.slice(MIGRATION_PREFIX.length);
+      if (f !== null) this.#notePool(mint, f.pool);
       if (f !== null && !this.#cands.has(mint)) {
         this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0 });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
@@ -288,11 +321,92 @@ export class LiveStrategy implements Strategy {
     const d = ev['data'];
     const mint = typeof d['mint'] === 'string' ? d['mint'] : null;
     const ts = typeof d['timestamp'] === 'bigint' ? Number(d['timestamp']) * 1000 : null;
+    if (mint !== null && typeof d['pool'] === 'string') this.#notePool(mint, d['pool']);
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
     this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0 });
     out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${migratedAtMs}`] });
+  }
+
+  /** Drops a mint's pool state once nothing watches it (its window ended and no position holds it). */
+  #forget(mint: string): void {
+    if (this.watched().has(mint)) return;
+    const pool = this.#poolOfMint.get(mint);
+    if (pool !== undefined) this.#mintOfPool.delete(pool);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales]) m.delete(mint);
+  }
+
+  #notePool(mint: string, pool: string): void {
+    const was = this.#poolOfMint.get(mint);
+    if (was === pool) return;
+    if (was !== undefined) this.#mintOfPool.delete(was);
+    this.#poolOfMint.set(mint, pool);
+    this.#mintOfPool.set(pool, mint);
+  }
+
+  /**
+   * A released PumpSwap swap on a watched pool: its fee terms become the mint's fee context (a flat schedule at the
+   * observed rates, BT-1's `observedFeeContext`), and a sale by the mint's deployer is counted for EXIT-1's
+   * deployer-sell trigger.
+   */
+  #poolTrade(e: MarketEvent, ctx: StrategyContext): void {
+    const v = e.value;
+    if (!isObj(v) || !isObj(v['event'])) return;
+    const ev = v['event'];
+    if (ev['program'] !== 'pump_amm' || (ev['name'] !== 'BuyEvent' && ev['name'] !== 'SellEvent') || !isObj(ev['data'])) return;
+    const d = ev['data'];
+    const mint = typeof d['pool'] === 'string' ? this.#mintOfPool.get(d['pool']) : undefined;
+    if (mint === undefined) return;
+    this.#tradeAt.set(mint, e.moment.receivedAt);
+    const n = (k: string): number | null => (typeof d[k] === 'bigint' && (d[k] as bigint) >= 0n && (d[k] as bigint) <= 10_000n ? Number(d[k]) : null);
+    const lp = n('lpFeeBasisPoints');
+    const protocol = n('protocolFeeBasisPoints');
+    const supply = typeof d['baseSupply'] === 'bigint' && d['baseSupply'] > 0n ? d['baseSupply'] : null;
+    if (lp !== null && protocol !== null && supply !== null) {
+      const ix = typeof d['ixName'] === 'string' && d['ixName'].endsWith('_v2') ? 'v2' : 'v1';
+      this.#observedFees.set(mint, observedFeeContext(
+        { split: { lp: bps(lp), protocol: bps(protocol), creator: bps(n('coinCreatorFeeBasisPoints') ?? 0) }, buybackFeeBps: bps(n('buybackFeeBasisPoints') ?? 0), instruction: ix },
+        supply, { mayhemMode: false, transferFee: false, transferHook: false },
+      ));
+    }
+    if (ev['name'] !== 'SellEvent' || typeof d['user'] !== 'string' || typeof d['baseAmountIn'] !== 'bigint') return;
+    const sellers = this.#deployerOf(mint, ctx);
+    if (sellers === null || !sellers.sellers.includes(d['user'])) return;
+    const s = this.#deployerSales.get(mint) ?? { ids: new Set<string>(), list: [] };
+    this.#deployerSales.set(mint, s);
+    const id = `${String(v['signature'] ?? e.id)}|${d['user']}|${d['baseAmountIn']}`;
+    if (s.ids.has(id)) return;
+    s.ids.add(id);
+    s.list.push({ atMs: e.moment.receivedAt, amount: d['baseAmountIn'] });
+  }
+
+  /** The deployer of a mint (creator and the create's signer) and its total supply, from the released create. */
+  #deployerOf(mint: string, ctx: StrategyContext): { readonly sellers: readonly string[]; readonly supply: bigint | null } | null {
+    for (const key of [`${TX_CREATE_PREFIX}${mint}`, `${LOG_CREATE_PREFIX}${mint}`]) {
+      const r = ctx.lookup(key);
+      const v = r.ok ? r.value : null;
+      const d = isObj(v) && isObj(v['event']) && isObj(v['event']['data']) ? v['event']['data'] : null;
+      if (d === null || typeof d['creator'] !== 'string') continue;
+      const sellers = typeof d['user'] === 'string' && d['user'] !== d['creator'] ? [d['creator'], d['user']] : [d['creator']];
+      return { sellers, supply: typeof d['tokenTotalSupply'] === 'bigint' && d['tokenTotalSupply'] > 0n ? d['tokenTotalSupply'] : null };
+    }
+    return null;
+  }
+
+  /** EXIT-1's deployer-sell observation for a position: the share of supply its deployer sold since the entry. */
+  #deployerSold(pid: string, mint: string, openedAtMs: number, ctx: StrategyContext, out: Decision[]): { atMs: number; value: number } | null {
+    const dep = this.#deployerOf(mint, ctx);
+    const why = dep === null ? 'its create was not seen' : dep.supply === null ? 'the create carries no total supply' : !this.#poolOfMint.has(mint) ? 'its pool is unknown' : null;
+    if (why !== null) {
+      if (!this.#unjudgedDeployer.has(pid)) {
+        this.#unjudgedDeployer.add(pid);
+        out.push({ action: null, reasons: ['deployer sell not judged', pid, why] });
+      }
+      return null;
+    }
+    const sold = (this.#deployerSales.get(mint)?.list ?? []).filter((x) => x.atMs >= openedAtMs).reduce((t, x) => t + x.amount, 0n);
+    return { atMs: this.#tradeAt.get(mint) ?? openedAtMs, value: Number((sold * BPS) / dep!.supply!) };
   }
 
   /** The pool market of a mint as of now: the gate pool fact and the fee context. */
@@ -301,9 +415,11 @@ export class LiveStrategy implements Strategy {
     if (!p.ok) return 'pool state unknown';
     const pool = parsePool(p.value);
     if (pool === null) return 'pool state malformed';
+    this.#notePool(mint, pool.address);
+    // A fee-context fact when one is published, else the terms of the latest swap seen on the pool.
     const f = ctx.lookup(feesKey(mint));
-    if (!f.ok) return 'fee context unknown';
-    const fees = unwrap(f.value) as PoolFeeContext;
+    const fees = f.ok ? (unwrap(f.value) as PoolFeeContext) : this.#observedFees.get(mint);
+    if (fees === undefined) return 'fee context unknown';
     return {
       pool: { baseReserve: pool.baseVault, quoteVault: pool.quoteVault, virtualQuoteReserves: pool.pool.virtualQuoteReserves ?? 0n },
       ctx: fees, atMs: pool.obs.receivedAt, address: pool.address,
@@ -460,8 +576,9 @@ export class LiveStrategy implements Strategy {
   #manage(ctx: StrategyContext, out: Decision[]): void {
     for (const p of Object.values(ctx.book.positions)) {
       if (p.status === 'closed') {
-        this.#exits.delete(p.id);
+        if (this.#exits.delete(p.id)) this.#forget(p.mint);
         this.#bars.delete(p.id);
+        this.#unjudgedDeployer.delete(p.id);
         continue;
       }
       if (p.status === 'opening') continue;
@@ -482,7 +599,7 @@ export class LiveStrategy implements Strategy {
       const step = decideExit(this.#settings, saved.plan, holding, saved.tracker, {
         nowMs: ctx.now.receivedAt, slotClose: true,
         market: typeof m === 'string' ? null : { atMs: m.atMs, value: { venue: 'pumpswap', pool: m.pool, ctx: m.ctx } },
-        deployerSoldBps: null, sellRoute: null, flow: [], bars: this.#bars.get(p.id) ?? saved.bars,
+        deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: [], bars: this.#bars.get(p.id) ?? saved.bars,
       });
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars };
       this.#exits.set(p.id, saved);
@@ -551,6 +668,7 @@ export class LiveStrategy implements Strategy {
       if (now >= to) {
         this.#cands.delete(cand.mint);
         this.#bars.delete(cand.mint);
+        this.#forget(cand.mint);
         out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
         continue;
       }

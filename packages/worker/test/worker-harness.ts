@@ -10,13 +10,13 @@ import type { Timers } from '../src/scheduler/timers.ts';
 import { parseConfig, type WorkerConfig } from '../src/run/config.ts';
 import type { SimLeg } from '../src/run/paper-world.ts';
 import { PAPER_SCENARIO, strategyConfig } from '../src/run/settings.ts';
-import { type FeedSource, type SeedRequest, type SeedResult, Worker } from '../src/run/worker.ts';
+import { type FeedSource, type SeedRequest, type SeedResult, type SourcesContext, Worker } from '../src/run/worker.ts';
 import type { FactSource } from '../src/run/facts.ts';
 import { ALCHEMY_FREE, HELIUS_FREE, JUPITER_FREE, RUGCHECK_FREE, Scheduler } from '../src/scheduler/index.ts';
 import {
-  CREATED_AT, FEE_CONTEXT, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, T, passingFacts, roundTrip,
+  CREATED_AT, DEV, FEE_CONTEXT, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, SUPPLY, T, passingFacts, roundTrip,
 } from '../../core/test/gates/world.ts';
-import { EXEC_HEALTH_KEY, holdersKey, lpKey, migrationKey, poolKey, simKey, softKey, streamKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
+import { EXEC_HEALTH_KEY, TX_CREATE_PREFIX, holdersKey, lpKey, migrationKey, poolKey, simKey, softKey, streamKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
 import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 
@@ -86,7 +86,7 @@ export interface Harness {
 /** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string } } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -99,7 +99,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     session, rugs: RUG_CONFIG,
     strategy: strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry),
     scenario: o.scenario ?? LANDS, network: FILL_CONFIG.network, timers,
-    sources: () => {
+    sources: o.sources ?? (() => {
       order.push('sources');
       const made = [scriptedSource('helius-ws', true, ['helius']), scriptedSource('pumpportal', false, ['pumpportal'])];
       for (const m of made) {
@@ -111,7 +111,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       }
       sources.push(...made);
       return made;
-    },
+    }),
     simulate: okSimulation(legs),
     fetchTx: async (sig) => {
       o.fetched?.push(sig);
@@ -136,6 +136,9 @@ export const slotAt = (ms: number): bigint => SLOT - BigInt(Math.floor((T - ms) 
 export class Market {
   readonly #h: Harness;
   #slot: bigint | null = null;
+  #swaps = 0;
+  /** Publish the fee-context fact with each pool read (off: the strategy takes the terms of the latest swap). */
+  withFees = true;
 
   constructor(h: Harness) {
     this.#h = h;
@@ -175,7 +178,7 @@ export class Market {
     };
     const base = now(poolKey(MINT)) as unknown as Record<string, unknown>;
     this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
-    this.fact(feesKey(MINT), FEE_CONTEXT);
+    if (this.withFees) this.fact(feesKey(MINT), FEE_CONTEXT);
     this.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: this.now - 50 });
     for (const k of [lpKey(MINT), holdersKey(MINT), softKey(MINT), xcheckKey(MINT), EXEC_HEALTH_KEY]) this.fact(k, now(k));
     // The simulation of the spend the worker will judge: q_min at the SOL price, rounded up to whole lamports.
@@ -185,6 +188,22 @@ export class Market {
     this.fact(simKey(MINT), { ...now(simKey(MINT)), spend, paid: q.trade.paid, proceeds: q.trade.proceeds });
     const stream = facts.get(streamKey('chain'))!.value as { obs: FactObs; gapFreeSince: bigint };
     this.fact(streamKey('chain'), { ...stream, obs: { ...stream.obs, slot, receivedAt: this.now - 50 } });
+  }
+
+  /** A PumpSwap swap on the passing pool, as decoded from its log line, at the passing fee terms. */
+  swap(name: 'BuyEvent' | 'SellEvent', user: string, baseAmount: bigint): void {
+    const n = ++this.#swaps;
+    const data = {
+      pool: POOL_ADDRESS, user, ...(name === 'SellEvent' ? { baseAmountIn: baseAmount } : { baseAmountOut: baseAmount }), timestamp: BigInt(Math.floor(this.now / 1000)),
+      lpFeeBasisPoints: 2n, protocolFeeBasisPoints: 93n, coinCreatorFeeBasisPoints: 30n, buybackFeeBasisPoints: 5_000n, ixName: name === 'SellEvent' ? 'sell' : 'buy_exact_quote_in_v2', baseSupply: SUPPLY,
+    };
+    this.fact(`logs:pump_amm:${name}:${POOL_ADDRESS}:${n}`, { event: { program: 'pump_amm', name, data }, signature: `swap-${n}` });
+  }
+
+  /** The mint's create as released from its transaction: the deployer (DEV) and the total supply. */
+  create(): void {
+    const data = { mint: MINT, creator: DEV, user: DEV, timestamp: BigInt(Math.floor(CREATED_AT / 1000)), tokenTotalSupply: SUPPLY };
+    this.fact(`${TX_CREATE_PREFIX}${MINT}`, { event: { program: 'pump', name: 'CreateEvent', data }, signature: 'create-1' });
   }
 
   /** Runs worker steps while moving the clock, `ms` at a time. */
@@ -201,8 +220,9 @@ export class Market {
 }
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
-export const passingMarket = async (h: Harness): Promise<Market> => {
+export const passingMarket = async (h: Harness, o: { readonly fees?: boolean } = {}): Promise<Market> => {
   const m = new Market(h);
+  m.withFees = o.fees ?? true;
   const facts = passingFacts();
   // 15 days before T: the creates stream and a full trade stream start; the deployer index sees its first event.
   m.slot();
@@ -232,4 +252,4 @@ export const passingMarket = async (h: Harness): Promise<Market> => {
   return m;
 };
 
-export { CREATED_AT, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, T };
+export { CREATED_AT, DEV, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, SUPPLY, T };

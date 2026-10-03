@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
+import { migrationKey } from '../../core/src/gates/index.ts';
+import { passingFacts } from '../../core/test/gates/world.ts';
 import { HALT_KEY, s0EntryAt } from '../src/engine/strategy.ts';
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
@@ -14,7 +16,7 @@ import { oneTimeRent } from '../src/run/settings.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { exitsFile } from '../src/run/state.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
-import { LANDS, MIGRATED_AT, MINT, Market, SOL_PRICE, T, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const journalText = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
 const lines = (dir: string) => journalText(dir).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -119,6 +121,77 @@ describe('S0, the random-entry control (shakedown mode, supervisor ruling 2026-1
     expect(s0EntryAt('run-1', MINT, from, to)).toBe(a);
     expect(a >= from && a < to).toBe(true);
     expect(s0EntryAt('run-2', MINT, from, to)).not.toBe(a);
+  });
+});
+
+describe('the swap stream of a watched pool (review of f679188, items 3 and 9)', () => {
+  it('with no fee-context fact, the terms of the latest swap on the pool price the entry', async () => {
+    const without = makeWorker();
+    expect(await without.worker.reconcile()).toEqual({ ok: true });
+    const m0 = await passingMarket(without, { fees: false });
+    await m0.run(4_000, 100, () => m0.pool());
+    expect(positions(without)).toEqual([]);
+    await without.worker.stop();
+
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    // The migration names the pool; the swap stream then gives its terms (before the minute bars the stop needs).
+    const pre = new Market(h);
+    pre.slot();
+    pre.fact(migrationKey(MINT), passingFacts().get(migrationKey(MINT))!.value);
+    pre.swap('BuyEvent', 'someone', 1_000n);
+    h.worker.step();
+    const m = await passingMarket(h, { fees: false });
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    expect(positions(h).some((p) => String(p.mint) === String(MINT) && p.status === 'open')).toBe(true);
+    // The pool is watched for swaps while the position is open (exit traffic).
+    expect([...h.worker.strategy.watchedPools()]).toEqual([[POOL_ADDRESS, { mint: MINT, held: true }]]);
+    await h.worker.stop();
+  });
+
+  it('the deployer selling more than the policy share of supply after the entry exits the position', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const pre = new Market(h);
+    pre.create();
+    h.worker.step();
+    const m = await passingMarket(h);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    const open = positions(h).find((p) => p.status === 'open')!;
+    expect(open).toBeDefined();
+    // Someone else selling, and the deployer selling up to the limit, keep it open.
+    m.swap('SellEvent', 'someone-else', SUPPLY / 10n);
+    m.swap('SellEvent', DEV, (SUPPLY * 200n) / 10_000n);
+    await m.run(2_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    expect(h.worker.book.positions[open.id]!.status).toBe('open');
+    m.swap('SellEvent', DEV, (SUPPLY * 2n) / 10_000n);
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    expect(h.worker.book.positions[open.id]!.status).toBe('closed');
+    expect(kinds(h.stateDir, 'exit')[0]!['reasons']).toEqual(expect.arrayContaining(['thesis_lost']));
+    await h.worker.stop();
+  });
+
+  it('a deployer-sell trigger that cannot be judged is said once, never silent', async () => {
+    const h = makeWorker();
+    await entered(h);
+    const notJudged = kinds(h.stateDir, 'decision').filter((d) => (d['reasons'] as string[])[0] === 'deployer sell not judged');
+    expect(notJudged).toHaveLength(1);
+    expect(notJudged[0]!['reasons']).toEqual(expect.arrayContaining(['its create was not seen']));
+    await h.worker.stop();
   });
 });
 

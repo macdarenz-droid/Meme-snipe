@@ -53,6 +53,8 @@ export interface FeedSource {
 export interface SourcesContext {
   readonly feed: LiveFeed;
   readonly timers: Timers;
+  /** The pools to watch for swaps: candidates' and open positions' (the strategy's `watchedPools`). */
+  readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean }>;
 }
 
 export interface WorkerDeps {
@@ -359,7 +361,7 @@ export class Worker {
   /** The latest pool fact of a mint, with its fee context: what the paper fill and the dry-run build use. */
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext } | null {
     const p = parsePool(this.#pools.get(mint));
-    const ctx = this.#fees.get(mint);
+    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
     if (p === null || ctx === undefined) return null;
     return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx };
   }
@@ -386,7 +388,7 @@ export class Worker {
 
   #paperMarket(mint: string): PaperMarket | null {
     const p = parsePool(this.#pools.get(mint));
-    const ctx = this.#fees.get(mint);
+    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
     if (p === null || ctx === undefined) return null;
     return { pool: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx };
   }
@@ -583,7 +585,7 @@ export class Worker {
     const d = this.#d;
     const r = await this.reconcile();
     if (!r.ok) return r;
-    this.#sources = d.sources({ feed: this.#feed, timers: d.timers });
+    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => this.#strategy.watchedPools() });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
     try {
       this.#server = await startHealthServer(d.config.health.host, d.config.health.port, {

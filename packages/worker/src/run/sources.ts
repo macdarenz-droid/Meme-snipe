@@ -7,13 +7,15 @@
 // trades (RUG-1's wiring rule).
 import { PUMP_AMM_PROGRAM, PUMP_PROGRAM } from '../../../core/src/chain/index.ts';
 import type { SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
-import { alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
+import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
 import {
   ALCHEMY_FREE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P1, P2, P3,
   RUGCHECK_FREE, Scheduler, type SchedulerSpec,
 } from '../scheduler/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { type Credits, creditMonth, creditsFile } from './state.ts';
+import { SOL_PRICE_KEY } from '../engine/strategy.ts';
+import { PoolWatch } from './pool-watch.ts';
 import type { FeedSource, SourcesContext } from './worker.ts';
 
 /** Pump's mint authority PDA: only `create`/`create_v2` mention it (venues.md, measured). */
@@ -126,19 +128,33 @@ export class LiveProviders {
     }
     // No Alchemy socket: on mainnet (rehearsal 37142749019) it refused slotSubscribe and logsSubscribe (-32601) and only
     // idled out every 30 s, each reconnect costing a 100-signature backfill. Alchemy stays the fetcher's second RPC.
+    const pools = new PoolWatch({ stream: helius, timers, pools: ctx.pools, everyMs: 2_000 });
     const pumpportal = new PumpPortalSource({ factory: o.factory, timers, feed, fetcher, migrationFetch: P3 });
+    const sol = new CoinbaseSolPrice({ factory: o.factory, timers, feed, key: SOL_PRICE_KEY });
     return [
-      { name: 'helius-ws', critical: true, sources: ['helius'], start: () => helius.start(), stop: () => helius.stop() },
+      {
+        name: 'helius-ws', critical: true, sources: ['helius'],
+        start: () => {
+          helius.start();
+          pools.start();
+        },
+        stop: () => {
+          pools.stop();
+          helius.stop();
+        },
+      },
       { name: 'pumpportal', critical: false, sources: ['pumpportal'], start: () => pumpportal.start(), stop: () => pumpportal.stop() },
+      // Critical: without a fresh SOL price risk refuses every entry anyway; marked so the halt says why.
+      { name: 'coinbase-ws', critical: true, sources: ['coinbase'], start: () => sol.start(), stop: () => sol.stop() },
     ];
   }
 
-  /** A transaction at confirmed (P2), put on the feed; true when found. */
   /** SEED-1's backfill RPC: Helius, charged to its scheduler like every other call. */
   seedRpc(): RpcHttp {
     return new RpcHttp({ provider: 'helius', url: () => heliusRpcUrl(this.#o.secrets), http: this.#o.http, scheduler: this.helius, timeoutMs: 10_000 });
   }
 
+  /** A transaction at confirmed (P2), put on the feed; true when found. */
   async fetchTx(signature: string): Promise<boolean> {
     if (this.#fetcher === null) return false;
     try {
