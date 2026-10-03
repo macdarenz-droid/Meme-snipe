@@ -107,6 +107,22 @@ Reading the table:
 - (b) $5 sizing only pays off when the edge is clearly positive, and even then it brings a 17% kill-switch hit rate.
 - (c) With a marginal edge, $5 sizing gives a 1-in-3 chance of halving the bankroll. Size up only after the edge is proven.
 
+**Re-run with the coded policy (RISK-1, 2026-10-03).** Same distributions, costs and 3 entries a day, now with R6 to R10 exactly as `packages/core/src/risk` applies them and worst-case costs C = $0.80 per trade (updated after EXIT-1: the exit ladder plus 5 blocked-exit retries at the fee cap). Script: `research/risk/montecarlo.py` (seeded; 20,000 paths, 100 trades or 120 days).
+
+| Scenario | q | §8 limits: P(B ≤ $10) | Median final | Killed | Paused for an R8 review | Mean trades |
+|---|---|---|---|---|---|---|
+| S1 negative | $2 | 0.00% | $17.94 | 0% | 79% | 8 |
+| S2 marginal | $2 | 0.00% | $19.70 | 0% | 94% | 10 |
+| S3 positive | $2 | 0.00% | $21.90 | 0% | 97% | 11 |
+| any | $5 | 0.00% | $20.00 | 0% | 0% | 0 |
+
+If every R8 review passes at once: S1 ends at a median $16.74 after 14 trades, S2 at $18.30 after 39, S3 at $40.70 after 77; still no path reaches $10 or the kill switch.
+
+What it shows:
+- R6(a) stops entries before the kill switch can trip: a new entry needs E ≥ 0.7·HWM + q + C, which is $16.80 at q = $2. The working floor is about 84% of the high-water mark, not 70%.
+- R6(b) blocks every $5 entry at B = $20: q + C = $5.80 is more than 20% of week-start equity ($4). A $5 trade needs E_week_start ≥ $29.
+- R8's "5 losses in any 20 trades" pauses almost every path within about 10 trades, even a profitable one, because these strategies lose 42% to 50% of trades. Expect a review pause roughly every 10 trades at that loss rate.
+
 ---
 
 ## 2. Stops
