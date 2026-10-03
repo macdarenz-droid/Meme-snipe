@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -62,6 +63,7 @@ func main() {
 		workers := fs.Int("workers", 4, "block workers")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		prof := fs.String("cpuprofile", "", "write a CPU profile")
+		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s")
 		fs.Parse(os.Args[2:])
 		if *prof != "" {
 			pf, err := os.Create(*prof)
@@ -71,6 +73,7 @@ func main() {
 			pprof.StartCPUProfile(pf)
 			defer pprof.StopCPUProfile()
 		}
+		byteLimiter = newLimiter(*maxMBps)
 		e, err := OpenEpoch(*ep, filepath.Join(*out, "cache"))
 		if err != nil {
 			log.Fatal(err)
@@ -94,6 +97,7 @@ func main() {
 		newestFirst := fs.Bool("newest-first", true, "scan the most recent units first")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		slots := fs.String("slots", "", "only units inside this slot range, FROM-TO (for tests)")
+		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s")
 		fs.Parse(os.Args[2:])
 		t0, err := time.Parse("2006-01-02", *fromDay)
 		if err != nil {
@@ -118,6 +122,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		byteLimiter = newLimiter(*maxMBps)
 		if *slots != "" {
 			var a, b uint64
 			if _, err := fmt.Sscanf(*slots, "%d-%d", &a, &b); err != nil {
@@ -226,8 +231,11 @@ func planUnits(out string, t0, t1 int64) ([]unitSpec, map[uint64]*Epoch, error) 
 	for e := e0; e <= e1; e++ {
 		ep, err := OpenEpoch(e, filepath.Join(out, "cache"))
 		if err != nil {
-			log.Printf("epoch %d: not available (%v)", e, err)
-			continue
+			if errors.Is(err, errNotInArchive) {
+				log.Printf("epoch %d: not in the archive yet", e)
+				continue
+			}
+			return nil, nil, err // never plan around an epoch we merely failed to reach
 		}
 		epochs[e] = ep
 		// Block time is interpolated between the epoch's first and (near) last block;

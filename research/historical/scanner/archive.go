@@ -6,8 +6,10 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -69,11 +71,72 @@ func (l *limiter) wait() {
 
 var reqLimiter = newLimiter(40)
 
-// fetchRange returns bytes [off, off+n) of url, retrying on network errors, 429 and 5xx.
+// Politeness towards the archive (a free public host):
+//   - request starts are spaced by reqLimiter;
+//   - bytes are paced by byteLimiter (-max-mbps);
+//   - a 429 pauses every request of the process together, starting at one minute and
+//     doubling up to 15 minutes, for at most maxBlockedWait in total, instead of
+//     retrying in a tight loop.
+var (
+	byteLimiter    = newLimiter(80) // MB/s; one token = 1 MB
+	maxBlockedWait = 6 * time.Hour
+	blockMu        sync.Mutex
+	blockedUntil   time.Time
+	blockBackoff   = time.Minute
+	blockedSince   time.Time
+)
+
+func waitUnblocked(ctx context.Context) error {
+	for {
+		blockMu.Lock()
+		d := time.Until(blockedUntil)
+		blockMu.Unlock()
+		if d <= 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+		}
+	}
+}
+
+// noteBlocked records a 429 and returns false once the total blocked time exceeds
+// maxBlockedWait.
+func noteBlocked() bool {
+	blockMu.Lock()
+	defer blockMu.Unlock()
+	now := time.Now()
+	if blockedSince.IsZero() || now.Sub(blockedUntil) > 10*time.Minute {
+		blockedSince, blockBackoff = now, time.Minute
+	}
+	if now.Before(blockedUntil) {
+		return now.Sub(blockedSince) < maxBlockedWait // already paused by another request
+	}
+	blockedUntil = now.Add(blockBackoff)
+	log.Printf("archive answered 429: pausing all requests for %s", blockBackoff)
+	if blockBackoff < 15*time.Minute {
+		blockBackoff *= 2
+	}
+	return now.Sub(blockedSince) < maxBlockedWait
+}
+
+func paceBytes(n int64) {
+	for mb := (n + (1 << 20) - 1) >> 20; mb > 0; mb-- {
+		byteLimiter.wait()
+	}
+}
+
+// fetchRange returns bytes [off, off+n) of url, retrying on network errors and 5xx,
+// and waiting out 429s.
 func fetchRange(ctx context.Context, url string, off, n int64) ([]byte, error) {
 	backoff := 500 * time.Millisecond
 	var lastErr error
-	for attempt := 0; attempt < 12; attempt++ {
+	for attempt := 0; attempt < 12; {
+		if err := waitUnblocked(ctx); err != nil {
+			return nil, err
+		}
 		if attempt > 0 {
 			statHTTPRetries.Add(1)
 			select {
@@ -86,6 +149,7 @@ func fetchRange(ctx context.Context, url string, off, n int64) ([]byte, error) {
 			}
 		}
 		reqLimiter.wait()
+		paceBytes(n)
 		statHTTPRequests.Add(1)
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
@@ -95,19 +159,25 @@ func fetchRange(ctx context.Context, url string, off, n int64) ([]byte, error) {
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = err
+			attempt++
 			continue
 		}
 		ok := resp.StatusCode == http.StatusPartialContent || (resp.StatusCode == http.StatusOK && off == 0)
 		if !ok {
 			io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 			resp.Body.Close()
+			lastErr = fmt.Errorf("status %d for %s range %d+%d", resp.StatusCode, url, off, n)
 			if resp.StatusCode == 429 {
 				statHTTP429.Add(1)
+				if !noteBlocked() {
+					return nil, fmt.Errorf("archive kept answering 429 for %s: %w", maxBlockedWait, lastErr)
+				}
+				continue // a 429 does not use up an attempt
 			}
-			lastErr = fmt.Errorf("status %d for %s range %d+%d", resp.StatusCode, url, off, n)
 			if resp.StatusCode == 404 || resp.StatusCode == 416 {
 				return nil, lastErr
 			}
+			attempt++
 			continue
 		}
 		buf := make([]byte, n)
@@ -115,6 +185,7 @@ func fetchRange(ctx context.Context, url string, off, n int64) ([]byte, error) {
 		resp.Body.Close()
 		if err != nil {
 			lastErr = err
+			attempt++
 			continue
 		}
 		statBytes.Add(n)
@@ -123,49 +194,54 @@ func fetchRange(ctx context.Context, url string, off, n int64) ([]byte, error) {
 	return nil, fmt.Errorf("giving up: %w", lastErr)
 }
 
-func headSize(url string) (int64, error) {
-	for attempt := 0; attempt < 6; attempt++ {
+// errNotInArchive marks a 404: the epoch (or file) is not published (yet).
+var errNotInArchive = errors.New("not in archive")
+
+// smallRequest performs a HEAD or GET, waiting out 429s like fetchRange.
+func smallRequest(method, url string) ([]byte, int64, error) {
+	var lastErr error
+	for attempt := 0; attempt < 6; {
+		if err := waitUnblocked(context.Background()); err != nil {
+			return nil, 0, err
+		}
 		reqLimiter.wait()
-		resp, err := httpClient.Head(url)
+		req, _ := http.NewRequest(method, url, nil)
+		resp, err := httpClient.Do(req)
 		if err == nil {
+			b, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 			resp.Body.Close()
-			if resp.StatusCode == 200 && resp.ContentLength > 0 {
-				return resp.ContentLength, nil
+			switch {
+			case resp.StatusCode == 200 && rerr == nil:
+				return b, resp.ContentLength, nil
+			case resp.StatusCode == 404:
+				return nil, 0, fmt.Errorf("%s %s: %w", method, url, errNotInArchive)
+			case resp.StatusCode == 429:
+				statHTTP429.Add(1)
+				if !noteBlocked() {
+					return nil, 0, fmt.Errorf("archive kept answering 429 for %s", maxBlockedWait)
+				}
+				continue
 			}
-			err = fmt.Errorf("HEAD %s: status %d", url, resp.StatusCode)
-			if resp.StatusCode == 404 {
-				return 0, err
-			}
+			err = fmt.Errorf("%s %s: status %d %v", method, url, resp.StatusCode, rerr)
 		}
-		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
-		if attempt == 5 {
-			return 0, err
-		}
+		lastErr = err
+		attempt++
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
 	}
-	return 0, fmt.Errorf("unreachable")
+	return nil, 0, lastErr
+}
+
+func headSize(url string) (int64, error) {
+	_, n, err := smallRequest("HEAD", url)
+	if err == nil && n <= 0 {
+		return 0, fmt.Errorf("HEAD %s: no content length", url)
+	}
+	return n, err
 }
 
 func fetchSmall(url string) ([]byte, error) {
-	for attempt := 0; attempt < 6; attempt++ {
-		reqLimiter.wait()
-		resp, err := httpClient.Get(url)
-		if err == nil {
-			b, rerr := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode == 200 && rerr == nil {
-				return b, nil
-			}
-			err = fmt.Errorf("GET %s: status %d %v", url, resp.StatusCode, rerr)
-			if resp.StatusCode == 404 {
-				return nil, err
-			}
-		}
-		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
-		if attempt == 5 {
-			return nil, err
-		}
-	}
-	return nil, fmt.Errorf("unreachable")
+	b, _, err := smallRequest("GET", url)
+	return b, err
 }
 
 // Epoch is one epoch's CAR file in the archive.
@@ -206,7 +282,7 @@ func OpenEpoch(n uint64, cacheDir string) (*Epoch, error) {
 	}
 	cidPath, err := cachedFile(cacheDir, fmt.Sprintf("%s/%d/epoch-%d.cid", archiveBase, n, n))
 	if err != nil {
-		return nil, fmt.Errorf("epoch %d not in archive yet: %w", n, err)
+		return nil, fmt.Errorf("epoch %d: %w", n, err)
 	}
 	rootB, _ := os.ReadFile(cidPath)
 	e := &Epoch{N: n, RootCid: strings.TrimSpace(string(rootB)), CarURL: fmt.Sprintf("%s/%d/epoch-%d.car", archiveBase, n, n), cacheDir: cacheDir}

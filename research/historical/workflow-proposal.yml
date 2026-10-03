@@ -5,7 +5,7 @@
 # and publishes it as release assets, so the data lives outside any container and
 # outside git history (no clone gets heavier).
 #
-# 1. scan:     one job per UTC day (up to 20 in parallel). Each scans that day's
+# 1. scan:     one job per UTC day (up to 10 in parallel, 50 MB/s each). Each scans that day's
 #              Old Faithful units (~1 h per day on a 4-core runner) and uploads them as
 #              an artifact. Units that cross midnight are scanned by both neighbours;
 #              they are identical and the merge keeps one.
@@ -14,7 +14,7 @@
 #              files, manifest and QA report as assets of release `data-<from>-<to>`.
 #
 # No secrets, keys or paid services. Old Faithful is a public archive; the scanner
-# limits itself to 40 requests/s per job and backs off on 429.
+# limits itself to 40 requests/s and 50 MB/s per job and pauses on any 429.
 
 name: historical-data
 
@@ -63,7 +63,7 @@ jobs:
     timeout-minutes: 300
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 10
       matrix:
         day: ${{ fromJSON(needs.plan.outputs.days) }}
     steps:
@@ -78,7 +78,7 @@ jobs:
       - name: Scan day
         run: |
           next=$(date -u -d "${{ matrix.day }} + 1 day" +%F)
-          "$RUNNER_TEMP/zeroed-scan" run -out "$RUNNER_TEMP/data" -from "${{ matrix.day }}" -to "$next" -parallel 3 -dl 8 -workers 2 -sample 0.05
+          "$RUNNER_TEMP/zeroed-scan" run -out "$RUNNER_TEMP/data" -from "${{ matrix.day }}" -to "$next" -parallel 3 -dl 8 -workers 2 -sample 0.05 -max-mbps 50
           rm -rf "$RUNNER_TEMP/data/cache"
       - uses: actions/upload-artifact@v4
         with:
