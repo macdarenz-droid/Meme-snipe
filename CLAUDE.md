@@ -9,7 +9,7 @@ Copied from `macdarenz-droid/M-arc` CLAUDE.md (which imports AGENTS.md). Every a
 - Ping the owner only for output no agent can produce, even with a workaround (a payment, a login, a secret, a real-device check, a legal or account action). Everything else is decided and recorded in the repo.
 - If the owner is busy or silent, keep working. Do not stop or slow down while waiting; work on everything that does not need the answer. Speed never lowers accuracy.
 - Parallel work runs outside the supervisor's chat (owner, 2026-10-03): one visible session per task, which the supervisor starts and monitors. No hidden parallel agents inside the supervisor's chat.
-- Every report to the owner (owner, 2026-10-03) gives the approximate run time of each task (elapsed and remaining) and the totals, with the uncertainty stated plainly.
+- Every report to the owner (owner, 2026-10-03) gives the approximate run time of each task (elapsed and remaining) and the totals, with the uncertainty stated plainly. Times are given in Melbourne time (Australia/Melbourne, AEST/AEDT), never UTC (owner, 2026-10-03).
 - Model range (owner, 2026-10-03): high-complexity tasks on `claude-opus-5-5` with ultracode; lower-complexity tasks on `claude-sonnet-5-5` at medium effort. Never Fable or any lower tier. The owner permits ultracode for every task that requires it; the supervisor must confirm a session's effort setting actually took effect (the session's model chip or record), not assume it from the prompt. How: start the session with `/effort ultracode` as its first and only prompt (a slash command works only as a session's opening message; sent later it arrives as plain text), then send the task card as the next message.
 
 ## Product
