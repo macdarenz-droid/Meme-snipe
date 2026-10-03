@@ -1,7 +1,7 @@
 // Every gate has a passing and a failing fixture; thresholds can be tightened but never loosened.
 import { describe, expect, test } from 'vitest';
 import {
-  createRng, evaluateDemotion, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
+  createRng, evaluateDemotion, G2_SENSITIVITY_VARIANTS, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
   createHoldoutRegistry, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
@@ -109,7 +109,7 @@ const holdout = withClusters(bracketTrades(31, 0.1, 25, 20));
 const counts = { candidates: 2000, entries: 500, entryDays: 25 };
 const controlRuns = Array.from({ length: 200 }, (_, k) => bracketTrades(1000 + k, -0.2, 25, 2).map(({ day, rNet }) => ({ day, rNet })));
 type PowerSpec = Omit<G2PowerResult, 'walkForward'> & { readonly walkForward?: WalkForwardSummary };
-const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN: 0.8, level: 0.05 / familySize, evaluations: [] });
+const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN: 0.8, level: 0.05 / familySize, evaluations: [], units: G2_SENSITIVITY_VARIANTS });
 const sealed = (familySize: number, universes: readonly string[], c = counts): HoldoutRegistry => {
   let reg = createHoldoutRegistry(familySize);
   for (const u of universes) {
@@ -239,6 +239,12 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), walkForward: summarizeWalkForward(other) } })] }));
     expect(r.status).toBe('fail');
     expect(r.reasons.join()).toMatch(/n_power inputs U1: n_power was simulated on walk-forward/);
+    expect(r.registry.entries[0]!.seal).toBe('sealed');
+  });
+  test('n_power simulated without every resampling unit is refused before the seal opens', () => {
+    const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), units: ['days-1'] } })] }));
+    expect(r.status).toBe('fail');
+    expect(r.reasons.join()).toMatch(/n_power units U1: n_power simulated without days-2, days-3, creator, funder/);
     expect(r.registry.entries[0]!.seal).toBe('sealed');
   });
   test('n_power must be simulated for the family size fixed in the registry', () => {
