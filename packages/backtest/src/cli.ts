@@ -4,8 +4,9 @@
 //   node packages/backtest/src/cli.ts run --dataset <dir> --sol-usd <file> [--scenario conservative] [--seed s0-1]
 //        [--replays 10] [--days 2026-09-01,2026-09-02] [--out report.json] [--evidence evidence.json] [--ledger bt.sqlite]
 //        [--delay measured|adverse|stress] [--burst-sweep]
-//   node packages/backtest/src/cli.ts holdout-register --dataset <dir> --sol-usd <file> --holdout-id <id>
-//        [--universe U2] [--family-size 1] [--scenario ...] [--seed ...]
+//   node packages/backtest/src/cli.ts holdout-plan --dataset <dir> --sol-usd <file> --plan <plan.json>
+//   node packages/backtest/src/cli.ts holdout-register --dataset <dir> --sol-usd <file> --holdout-id <id> --attempt <k>
+//        [--universe U2] [--scenario ...] [--seed ...]
 //   node packages/backtest/src/cli.ts holdout --dataset <dir> --sol-usd <file> --holdout-id <id>
 //        --ledger <new file> [--universe U2] [--days ...] [--scenario ...] [--seed ...]
 //
@@ -27,7 +28,7 @@ import type { Bps } from '../../core/src/units/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
 import { readSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
-import { authoriseHoldout, holdoutWindow, readHoldoutStore, researchDays, runAndSealHoldout } from './holdout.ts';
+import { authoriseHoldout, type HoldoutPlan, holdoutWindow, readHoldoutStore, researchDays, runAndSealHoldout, setHoldoutPlan } from './holdout.ts';
 import { leakTest, shiftTest } from './proofs.ts';
 import { economics } from './economics.ts';
 import { buildReport } from './report.ts';
@@ -118,17 +119,20 @@ const codeId = (): string => {
   return dirty ? `${head}+dirty-${h.digest('hex').slice(0, 16)}` : head;
 };
 
-if (command === 'holdout-register' || command === 'holdout') {
+if (command === 'holdout-plan' || command === 'holdout-register' || command === 'holdout') {
   mkdirSync(dirname(registryPath), { recursive: true });
   const authority = { registryPath, codeCommit: codeId(), datasetId: `sha256:${manifestHash(dataset)}`, vcs: registryVcs };
   const universe = flag('universe', 'U2');
-  const holdoutId = flag('holdout-id');
   const window = { fromDay: days[0]!.day, toDay: days[days.length - 1]!.day };
-  if (command === 'holdout-register') {
-    authoriseHoldout(authority, Number(flag('family-size', '1')), { holdoutId, universe }, base);
+  if (command === 'holdout-plan') {
+    setHoldoutPlan(authority, JSON.parse(readFileSync(flag('plan'), 'utf8')) as HoldoutPlan, RESEARCH_CONFIG);
+    console.log(JSON.stringify({ plan: 'set' }));
+  } else if (command === 'holdout-register') {
+    const holdoutId = flag('holdout-id');
+    authoriseHoldout(authority, { attempt: Number(flag('attempt')), holdouts: [{ holdoutId, universe }] }, base);
     console.log(JSON.stringify({ registered: holdoutId, ...holdoutWindow(base), entryCutoffDay: RESEARCH_CONFIG.holdout.entryCutoffDay, tailEndDay: RESEARCH_CONFIG.holdout.tailEndDay }));
   } else {
-    const sealed = runAndSealHoldout({ ...base, ledgerPath: flag('ledger') }, { ...authority, byUniverse: { [universe]: holdoutId }, window });
+    const sealed = runAndSealHoldout({ ...base, ledgerPath: flag('ledger') }, { ...authority, byUniverse: { [universe]: flag('holdout-id') }, window });
     console.log(JSON.stringify(sealed));
   }
 } else if (command === 'run') {
