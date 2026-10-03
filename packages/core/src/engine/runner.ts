@@ -3,7 +3,8 @@ import type { Moment } from './moment.ts';
 
 /**
  * Performs lifecycle effects in the outside world (persist, broadcast, status reads, reconciles).
- * Called synchronously and in order; results come back later as feed events, never as return values,
+ * Called synchronously and in order; it returns nothing (the engine refuses any returned value, a promise
+ * included). Results come back later as feed events, never as return values,
  * so the engine stays deterministic. Live: real adapters. Backtest: the fill model.
  */
 export interface EffectRunner {

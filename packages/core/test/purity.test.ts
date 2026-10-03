@@ -34,7 +34,24 @@ const IO_MODULES = [
 const BANNED_PROPERTIES = new Set([
   'random', 'randomBytes', 'randomUUID', 'randomInt', 'randomFill', 'randomFillSync', 'getRandomValues', 'generateKeyPair',
   'generateKeyPairSync', 'getBuiltinModule', 'constructor', 'nextTick', 'hrtime', 'timeOrigin',
+  // Locale and time-zone reads differ between machines and would break replay-versus-live parity.
+  'getTimezoneOffset', 'getFullYear', 'getMonth', 'getDate', 'getDay', 'getHours', 'getMinutes', 'getSeconds',
+  'getMilliseconds', 'getYear', 'setFullYear', 'setMonth', 'setDate', 'setHours', 'setMinutes', 'setSeconds',
+  'setMilliseconds', 'setYear', 'toLocaleString', 'toLocaleDateString', 'toLocaleTimeString', 'toLocaleUpperCase',
+  'toLocaleLowerCase', 'localeCompare', 'toDateString', 'toTimeString',
 ]);
+
+/** The only `Math` members core may use, always as `Math.<name>`: pure functions and constants. */
+const MATH_ALLOWED = new Set([
+  'abs', 'min', 'max', 'floor', 'ceil', 'round', 'trunc', 'sign', 'imul', 'clz32', 'fround', 'pow', 'sqrt', 'cbrt',
+  'hypot', 'log', 'log2', 'log10', 'log1p', 'exp', 'expm1', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+  'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh', 'PI', 'E', 'LN2', 'LN10', 'LOG2E', 'LOG10E', 'SQRT2', 'SQRT1_2',
+]);
+
+/** Extra bans per folder. The engine is synchronous by design: results come back as feed events. */
+const FOLDER_BANS: Readonly<Record<string, ReadonlySet<string>>> = {
+  engine: new Set(['async', 'await', 'Promise', 'then']),
+};
 
 /**
  * Narrow, named exemptions: a folder may use exactly these banned strings, nothing else.
@@ -154,7 +171,7 @@ const tokenize = (source: string): { tokens: Token[]; problems: string[] } => {
   return { tokens, problems };
 };
 
-const scan = (source: string, allow: ReadonlySet<string> = new Set()): string[] => {
+const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans: ReadonlySet<string> = new Set()): string[] => {
   const { tokens, problems } = tokenize(source);
   const found = [...problems];
   tokens.forEach((t, k) => {
@@ -164,9 +181,11 @@ const scan = (source: string, allow: ReadonlySet<string> = new Set()): string[] 
       const property = prev?.value === '.' || prev?.value === '?.' || prev?.value === '#';
       const key = next?.value === ':' && (prev?.value === '{' || prev?.value === ',');
       if (property ? BANNED_PROPERTIES.has(t.value) : !key && BANNED_IDENTIFIERS.has(t.value)) found.push(t.value);
-      // Date only as `new Date(<argument>)`: a date from data, never the current time.
-      if (t.value === 'Date' && !property && !key && !(prev?.value === 'new' && next?.value === '(' && tokens[k + 2]?.value !== ')')) found.push('Date without an argument');
-      if (t.value === 'Math' && next?.value === '[') found.push('computed Math access');
+      // No Date at all: times are integer milliseconds from data. This also rules out Date.parse and local-time reads.
+      if (t.value === 'Date' && !property && !key) found.push('Date (times are integer ms)');
+      // Math only as `Math.<allowed>`, so it cannot be aliased, reflected or indexed into.
+      if (t.value === 'Math' && !property && !key && !(next?.value === '.' && MATH_ALLOWED.has(tokens[k + 2]?.value ?? ''))) found.push('Math outside its allow-list');
+      if (folderBans.has(t.value)) found.push(`${t.value} in this folder`);
       if (t.value === 'import' && !property && (next?.value === '(' || next?.value === '.')) found.push('dynamic import or import.meta');
     }
     if (t.type === 'str' && BANNED_STRINGS.has(t.value) && !allow.has(t.value)) found.push(`string '${t.value}'`);
@@ -174,10 +193,9 @@ const scan = (source: string, allow: ReadonlySet<string> = new Set()): string[] 
   return found;
 };
 
-const allowedFor = (file: string): ReadonlySet<string> => {
-  const top = relative(SRC, file).split(sep)[0];
-  return EXEMPTIONS.find((e) => e.folder === top)?.allow ?? new Set();
-};
+const topFolder = (file: string): string => relative(SRC, file).split(sep)[0] ?? '';
+const allowedFor = (file: string): ReadonlySet<string> => EXEMPTIONS.find((e) => e.folder === topFolder(file))?.allow ?? new Set();
+const folderBansFor = (file: string): ReadonlySet<string> => FOLDER_BANS[topFolder(file)] ?? new Set();
 
 const sourceFiles = (dir: string): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
@@ -224,6 +242,19 @@ describe('purity guard', () => {
       'const t = `a${`b${Math.random()}`}`;',
       'const x = \\u0044ate.now();',
       'const x = foo.random();',
+      'const d = new Date(eventTime);',
+      'const t = new Date(...[]);',
+      "const t = Date.parse('2026-01-01');",
+      "Object.getOwnPropertyDescriptor(Math, 'ran' + 'dom')!.value();",
+      "Reflect.get(Math, 'ran' + 'dom')();",
+      "const M = Math as never; M['ran' + 'dom']();",
+      'const z = d.getTimezoneOffset();',
+      'const h = d.getHours();',
+      'd.setMinutes(0);',
+      'const s = n.toLocaleString();',
+      'const c = a.localeCompare(b);',
+      'const u = s.toLocaleUpperCase();',
+      'const s = d.toDateString() + d.toTimeString();',
       "const f = obj.getBuiltinModule('x');",
       'const p = performance;',
       'const k = { a: process };',
@@ -234,8 +265,9 @@ describe('purity guard', () => {
 
   it('allows what is deterministic: dates from data, hashing, prose in comments, division', () => {
     const ok = [
-      'const d = new Date(eventTime);',
       "import { createHash } from 'node:crypto';",
+      'const m = Math.max(a, Math.floor(b / 2)) + Math.PI;',
+      'const s = (10n).toString(); const u = d.getUTCHours();',
       '// never call Date.now or Math.random here',
       '/* setTimeout belongs in adapters */ const x = 1;',
       'const nowMs = clock.now().receivedAt;',
@@ -264,11 +296,17 @@ describe('purity guard', () => {
     for (const e of EXEMPTIONS) expect(e.why.length).toBeGreaterThan(0);
   });
 
+  it('the engine folder also bans asynchronous code', () => {
+    const engine = folderBansFor(join(SRC, 'engine', 'x.ts'));
+    for (const snippet of ['async function f() {}', 'await x;', 'Promise.resolve(1);', 'p.then(f);']) expect(scan(snippet, new Set(), engine), snippet).not.toEqual([]);
+    expect(scan('p.then(f);', new Set(), folderBansFor(join(SRC, 'ledger', 'x.ts')))).toEqual([]);
+  });
+
   it('packages/core/src outside adapters folders has none of them', () => {
     const files = sourceFiles(SRC);
     expect(files.length).toBeGreaterThanOrEqual(15);
     expect(files.some((f) => f.includes(`${sep}engine${sep}`))).toBe(true);
-    const found = files.flatMap((f) => scan(readFileSync(f, 'utf8'), allowedFor(f)).map((name) => `${relative(SRC, f)}: ${name}`));
+    const found = files.flatMap((f) => scan(readFileSync(f, 'utf8'), allowedFor(f), folderBansFor(f)).map((name) => `${relative(SRC, f)}: ${name}`));
     expect(found).toEqual([]);
   });
 });

@@ -181,8 +181,8 @@ export class Engine {
       const dispatch = this.#guard.admit(effect, now);
       if (dispatch === 'sent') {
         const out: unknown = this.#runner.run(effect, now);
-        // An async runner would deliver results after the replay ended; results must come back as feed events.
-        if (typeof (out as { then?: unknown } | null)?.then === 'function') throw new TypeError('EffectRunner.run must be synchronous; schedule results as feed events');
+        // Results come back only as feed events. A returned value (an async runner's promise above all) would be lost.
+        if (out !== undefined) throw new TypeError('EffectRunner.run must be synchronous and return nothing; schedule results as feed events');
       }
       effects.push({ effect, dispatch });
     }
