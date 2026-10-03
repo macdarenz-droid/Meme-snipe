@@ -100,6 +100,7 @@ type UnitStats struct {
 	HTTP429         int64          `json:"http_429"`
 	FinishedAt      string         `json:"finished_at"`
 	ScannerRevision string         `json:"scanner_revision"`
+	SampleRate      float64        `json:"sample_rate"`
 	mu              sync.Mutex
 }
 
@@ -193,7 +194,7 @@ type blockResult struct {
 func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlConc int, workers int) (*UnitStats, error) {
 	t0 := time.Now()
 	st := &UnitStats{Schema: schemaVersion, Epoch: e.N, RootCid: e.RootCid, FromSlot: from, ToSlot: to,
-		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ScannerRevision: scannerRevision}
+		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ScannerRevision: scannerRevision, SampleRate: sampleRate}
 	req0, ret0, r4290 := statHTTPRequests.Load(), statHTTPRetries.Load(), statHTTP429.Load()
 
 	expected := map[uint64]bool{}

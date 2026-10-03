@@ -1,0 +1,130 @@
+# PROPOSAL for .github/workflows/historical-data.yml (DATA-1). .github belongs to the
+# supervisor; this file is not active until the supervisor copies it there.
+#
+# Builds the historical dataset on GitHub-hosted runners (free for this public repo)
+# and publishes it as release assets, so the data lives outside any container and
+# outside git history (no clone gets heavier).
+#
+# 1. scan:     one job per UTC day (up to 20 in parallel). Each scans that day's
+#              Old Faithful units (~1 h per day on a 4-core runner) and uploads them as
+#              an artifact. Units that cross midnight are scanned by both neighbours;
+#              they are identical and the merge keeps one.
+# 2. finalize: downloads every day's units, runs `zeroed-scan finalize` (fails on any
+#              gap in the scanned slots) and the QA report, and publishes the dataset
+#              files, manifest and QA report as assets of release `data-<from>-<to>`.
+#
+# No secrets, keys or paid services. Old Faithful is a public archive; the scanner
+# limits itself to 40 requests/s per job and backs off on 429.
+
+name: historical-data
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: First UTC day (YYYY-MM-DD)
+        required: true
+      to:
+        description: End UTC day, exclusive (YYYY-MM-DD)
+        required: true
+      warmup_days:
+        description: Extra days scanned before `from` so older tokens have their creation in coverage
+        required: true
+        default: "3"
+
+permissions:
+  contents: write # release assets
+
+concurrency:
+  group: historical-data
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      days: ${{ steps.days.outputs.days }}
+      scan_from: ${{ steps.days.outputs.scan_from }}
+    steps:
+      - id: days
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import datetime, json, os
+          f = datetime.date.fromisoformat("${{ inputs.from }}") - datetime.timedelta(days=int("${{ inputs.warmup_days }}"))
+          t = datetime.date.fromisoformat("${{ inputs.to }}")
+          days = [(f + datetime.timedelta(days=i)).isoformat() for i in range((t - f).days)]
+          print("days=" + json.dumps(days))
+          print("scan_from=" + f.isoformat())
+          EOF
+
+  scan:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        day: ${{ fromJSON(needs.plan.outputs.days) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: research/historical/scanner/go.sum
+      - name: Build
+        working-directory: research/historical/scanner
+        run: go build -ldflags "-X main.scannerRevision=${GITHUB_SHA}" -o "$RUNNER_TEMP/zeroed-scan" .
+      - name: Scan day
+        run: |
+          next=$(date -u -d "${{ matrix.day }} + 1 day" +%F)
+          "$RUNNER_TEMP/zeroed-scan" run -out "$RUNNER_TEMP/data" -from "${{ matrix.day }}" -to "$next" -parallel 3 -dl 8 -workers 2 -sample 0.05
+          rm -rf "$RUNNER_TEMP/data/cache"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: units-${{ matrix.day }}
+          path: ${{ runner.temp }}/data/units
+          retention-days: 30
+          compression-level: 0 # files are already zstd
+
+  finalize:
+    needs: [plan, scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: research/historical/scanner/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build
+        working-directory: research/historical/scanner
+        run: go build -ldflags "-X main.scannerRevision=${GITHUB_SHA}" -o "$RUNNER_TEMP/zeroed-scan" .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: units-*
+          path: ${{ runner.temp }}/artifacts
+      - name: Merge units
+        run: |
+          mkdir -p "$RUNNER_TEMP/data/units"
+          for d in "$RUNNER_TEMP"/artifacts/units-*; do cp -rn "$d"/* "$RUNNER_TEMP/data/units/"; done
+      - name: Finalize and check
+        run: |
+          "$RUNNER_TEMP/zeroed-scan" finalize -out "$RUNNER_TEMP/data" -dataset "$RUNNER_TEMP/dataset" -from "${{ needs.plan.outputs.scan_from }}" -to "${{ inputs.to }}"
+          node research/historical/qa/check.mjs "$RUNNER_TEMP/dataset" --live 60
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="data-${{ inputs.from }}-${{ inputs.to }}"
+          cd "$RUNNER_TEMP/dataset"
+          # flat asset names: days/2026-09-26/amm_trades-000.csv.zst -> 2026-09-26__amm_trades-000.csv.zst
+          mkdir -p ../assets
+          find days -type f | while read -r f; do cp "$f" "../assets/$(echo "$f" | cut -d/ -f2)__$(basename "$f")"; done
+          cp manifest.json mints-*.csv.zst qa/report.md qa/report.json ../assets/
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Historical data ${{ inputs.from }} to ${{ inputs.to }}" \
+            --notes "Built by historical-data workflow at ${GITHUB_SHA}. See docs/research/historical-data.md." --prerelease || true
+          gh release upload "$tag" ../assets/* --repo "$GITHUB_REPOSITORY" --clobber

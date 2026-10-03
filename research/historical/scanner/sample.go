@@ -18,7 +18,7 @@ import (
 // address, which is fixed at creation, so it is independent of every outcome.
 // Narrower universes (for example 5% of launches) are nested inside it: they use a
 // lower threshold on the same number.
-const sampleRate = 0.25
+var sampleRate = 0.25 // -sample on run/unit; recorded in each unit's stats
 
 // mintHashFraction returns the mint's position in [0, 1).
 func mintHashFraction(mint string) (float64, bool) {

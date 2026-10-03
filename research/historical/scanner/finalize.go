@@ -261,6 +261,21 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 	if len(units) == 0 {
 		return fmt.Errorf("no finished units")
 	}
+	// Every unit must hold at least the sample the universe rates need. Units written
+	// before the rate was recorded used the 0.25 default.
+	minRate := 1.0
+	for _, u := range units {
+		r := u.stats.SampleRate
+		if r == 0 {
+			r = 0.25
+		}
+		if r < minRate {
+			minRate = r
+		}
+	}
+	if launchRate > minRate || gradRate > minRate || poolRate > minRate {
+		return fmt.Errorf("universe rates exceed the smallest unit sample rate %v: rescan needed", minRate)
+	}
 	// Coverage: contiguous scanned slot ranges; the universe needs creation inside them.
 	covStart, covEnd := units[0].stats.FirstBlockTime, units[len(units)-1].stats.LastBlockTime
 	gaps := []string{}
@@ -699,7 +714,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		"programs":        map[string]string{"pump": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pump_amm": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"},
 		"window":          map[string]string{"from": fromDay, "to_exclusive": toDay},
 		"coverage":        map[string]any{"first_block_time": covStart, "last_block_time": covEnd, "first_slot": units[0].stats.FromSlot, "last_slot": units[len(units)-1].stats.ToSlot},
-		"sampling":        map[string]any{"hash": "first 8 bytes of sha256(mint pubkey bytes), big-endian, divided by 2^64", "launch_rate": launchRate, "grad_rate": gradRate, "direct_pool_rate": poolRate, "tape_horizon_seconds": tapeHorizon, "scanner_superset_rate": sampleRate},
+		"sampling":        map[string]any{"hash": "first 8 bytes of sha256(mint pubkey bytes), big-endian, divided by 2^64", "launch_rate": launchRate, "grad_rate": gradRate, "direct_pool_rate": poolRate, "tape_horizon_seconds": tapeHorizon, "unit_sample_rate_min": minRate},
 		"universe_counts": map[string]int{"launch": nLaunch, "grad": nGrad, "direct_pool": nPool, "mints_registered": len(ml)},
 		"decode_failures": decodeFail,
 		"coverage_gaps":   gaps,

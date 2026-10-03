@@ -60,6 +60,7 @@ func main() {
 		to := fs.Uint64("to-slot", 0, "last slot")
 		dl := fs.Int("dl", 6, "parallel chunk downloads")
 		workers := fs.Int("workers", 4, "block workers")
+		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		prof := fs.String("cpuprofile", "", "write a CPU profile")
 		fs.Parse(os.Args[2:])
 		if *prof != "" {
@@ -91,6 +92,7 @@ func main() {
 		dl := fs.Int("dl", 4, "parallel chunk downloads per unit")
 		workers := fs.Int("workers", 2, "block workers per unit")
 		newestFirst := fs.Bool("newest-first", true, "scan the most recent units first")
+		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		fs.Parse(os.Args[2:])
 		t0, err := time.Parse("2006-01-02", *fromDay)
 		if err != nil {
@@ -187,9 +189,6 @@ func main() {
 		fs.Float64Var(&gradRate, "grad-rate", gradRate, "graduation universe hash threshold (<= 0.25)")
 		fs.Float64Var(&poolRate, "pool-rate", poolRate, "direct-pool universe hash threshold (<= 0.25)")
 		fs.Parse(os.Args[2:])
-		if launchRate > sampleRate || gradRate > sampleRate || poolRate > sampleRate {
-			log.Fatalf("rates above the scanner superset (%v) need a rescan", sampleRate)
-		}
 		if err := Finalize(*out, *ds, *fromDay, *toDay, *allowGaps); err != nil {
 			log.Fatal(err)
 		}
