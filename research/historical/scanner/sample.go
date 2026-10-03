@@ -135,9 +135,11 @@ func (r *blockResult) emitRow(kind string, row []string) {
 		quote, base = atou(row[10]), atou(row[11])
 		rq, rb = row[14], row[15]
 		qm = row[curveQuoteMintCol]
-		if qm != "" && qm != wsolMint {
+		if !solQuoted(qm) {
 			// Quote-token curve: sol_amount and virtual_sol_reserves are 0; the trade
-			// and the price are in the quote token.
+			// and the price are in the quote token. SOL curves (quote_mint empty, the
+			// system program or WSOL; volume.go solQuoted, QA isQuoted) keep sol_amount,
+			// the same field qa/volume.ts re-derives the regime volume from.
 			quote, rq = atou(row[curveQuoteAmountCol]), row[curveVirtualQuoteCol]
 		}
 		if b := atou(rb); b > 0 {

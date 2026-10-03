@@ -159,6 +159,12 @@ run 2026-09-20 2026-09-22 "$T/work"; grep -q "^data-day-2026-09-10$" "$T/downloa
 STATS_REV_2026_09_20=r2 reset_store
 run 2026-09-20 2026-09-22 "$T/work" && no "midnight unit with another scanner_revision accepted" ||
   { grep -q "differs between days: stats.json differs in scanner_revision" "$T/out.txt" && ok "midnight unit with a different scanner_revision fails" || no "revision message: $(cat "$T/out.txt")"; }
+STATS_REV_2026_09_20=r2 reset_store
+ALLOW_REVISIONS=r1,r2 run 2026-09-20 2026-09-22 "$T/work" && grep -q "allow-revisions r1,r2" "$T/finalize.args" &&
+  ok "midnight unit across two revisions merges when both are in ALLOW_REVISIONS (data files still hash equal)" || no "allowed revisions: $(tail -3 "$T/out.txt")"
+STATS_REV_2026_09_20=r2 reset_store
+ALLOW_REVISIONS=r1,r3 run 2026-09-20 2026-09-22 "$T/work" && no "midnight unit with an unlisted revision accepted" ||
+  { grep -q "stats.json differs in scanner_revision" "$T/out.txt" && ok "midnight unit fails when one of its two revisions is not in ALLOW_REVISIONS" || no "unlisted revision: $(cat "$T/out.txt")"; }
 
 reset_store
 ALLOW_REVISIONS="rev1;rm" run 2026-09-20 2026-09-22 "$T/work" && no "bad ALLOW_REVISIONS accepted" || ok "malformed ALLOW_REVISIONS refused"
@@ -362,7 +368,11 @@ mkvday() {
   echo x > "$r/events-2026-09-30.tar"
   (cd "$r" && sha256sum units-2026-09-30.tar.part* events-2026-09-30.tar > SHA256SUMS-2026-09-30)
 }
-vday() { rm -rf "$T/vday-assets"; PATH="$V:$PATH" GH_TOKEN=x bash "$here/volume-day.sh" 2026-09-30 "$T/vday-work" "$T/vday-assets" > "$T/out.txt" 2>&1; }
+vday() {
+  rm -rf "$T/vday-assets"
+  GH_TOKEN=x bash "$here/volume-day.sh" --download 2026-09-30 "$T/vday-work" > "$T/out.txt" 2>&1 &&
+    env -u GH_TOKEN PATH="$V:$PATH" bash "$here/volume-day.sh" 2026-09-30 "$T/vday-work" "$T/vday-assets" >> "$T/out.txt" 2>&1
+}
 mkvday
 vday && cmp -s <(vrows) "$T/vday-assets/volume-hours-2026-09-30.csv" && [[ $(cat "$T/volume.units") == "$T/vday-work/data-2026-09-30/units" ]] &&
   ok "volume-day: a published day's tar parts are verified, extracted, finalized, cross-checked and turned into the volume asset" || no "volume-day: $(cat "$T/out.txt")"
@@ -370,6 +380,9 @@ mkvday; echo corrupt >> "$T/rel/data-day-2026-09-30/units-2026-09-30.tar.part01"
 vday && no "volume-day used a corrupt part" || { [[ ! -e "$T/vday-assets/volume-hours-2026-09-30.csv" ]] && ok "volume-day: a part failing its checksum stops before any asset" || no "volume-day corrupt"; }
 mkvday; rm "$T/rel/data-day-2026-09-30/units-2026-09-30.tar.part01"
 vday && no "volume-day used an incomplete release" || { grep -q "differ from its SHA256SUMS" "$T/out.txt" && ok "volume-day: a missing part stops before extraction" || no "volume-day missing: $(cat "$T/out.txt")"; }
+mkvday; rm -rf "$T/vday-work"; GH_TOKEN=x bash "$here/volume-day.sh" --download 2026-09-30 "$T/vday-work" >/dev/null 2>&1
+GH_TOKEN=x PATH="$V:$PATH" bash "$here/volume-day.sh" 2026-09-30 "$T/vday-work" "$T/vday-assets" > "$T/out.txt" 2>&1 && no "volume-day rebuilt with a token in its environment" ||
+  { grep -q "runs without GH_TOKEN" "$T/out.txt" && ok "volume-day: the rebuild refuses to run with GH_TOKEN set (the token stays in the download step)" || no "volume-day token: $(cat "$T/out.txt")"; }
 rm -rf "$T/rel/data-day-2026-09-30"
 unset GH_BIN
 
@@ -425,7 +438,12 @@ assert vj["if"] == "inputs.mode == 'volume'" and vj["strategy"]["max-parallel"] 
 vsteps = vj["steps"]
 assert not any("scan-day.sh" in str(st) or "zeroed-scan run" in str(st) or "zeroed-scan unit" in str(st) for st in vsteps), "the back-fill must not read the archive"
 vtok = [st["name"] for st in vsteps if "github.token" in str(st)]
-assert vtok == ["Rebuild the day's volume hours from its units", "Publish the volume hours"], vtok
+assert vtok == ["Download the day's units", "Publish the volume hours"], vtok
+dl = next(st for st in vsteps if st.get("name") == "Download the day's units")
+assert "volume-day.sh --download" in dl["run"] and "zeroed-scan" not in dl["run"] and "node" not in dl["run"], dl
+rb = next(st for st in vsteps if st.get("name") == "Rebuild the day's volume hours from its units")
+assert "GH_TOKEN" not in str(rb) and "--download" not in rb["run"], rb
+assert vsteps.index(dl) < vsteps.index(rb) < vsteps.index(vsteps[-1])
 pub = vsteps[-1]
 assert pub["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc") and pub["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin ") and "publish-volume.sh" in pub["run"], pub
 assert "volume" in wf[True]["workflow_dispatch"]["inputs"]["mode"]["options"]

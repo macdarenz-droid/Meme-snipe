@@ -22,7 +22,7 @@ describe('volume hours', () => {
     const bt = String(T0 + 5 * 3600 + 7);
     addTradeRows(sums, [
       { block_time: bt, quote_mint: '', sol_amount: '100' },
-      { block_time: bt, quote_mint: '11111111111111111111111111111111', sol_amount: '20' },
+      { block_time: bt, quote_mint: '11111111111111111111111111111111', sol_amount: '20', quote_amount: '999' }, // SOL curve: sol_amount, as the scanner census (scanner_test.go TestCensusSystemProgramQuoteIsSolCurve)
       { block_time: bt, quote_mint: WSOL, sol_amount: '3' },
       { block_time: bt, quote_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', sol_amount: '0', quote_amount: '999' },
     ], [

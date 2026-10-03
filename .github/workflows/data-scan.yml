@@ -450,14 +450,19 @@ jobs:
           rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
           go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Rebuild the day's volume hours from its units
+      - name: Download the day's units
         env:
           GH_TOKEN: ${{ github.token }}
           DAY: ${{ matrix.day }}
         run: |
           sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
           research/historical/ci/disk-guard.sh /mnt/work 12000000000 "a day's units, extracted, and its one-day dataset"
-          research/historical/ci/volume-day.sh "$DAY" /mnt/work "$RUNNER_TEMP/assets"
+          research/historical/ci/volume-day.sh --download "$DAY" /mnt/work
+      # No token from here until publishing: extraction, finalize and node run without it.
+      - name: Rebuild the day's volume hours from its units
+        env:
+          DAY: ${{ matrix.day }}
+        run: research/historical/ci/volume-day.sh "$DAY" /mnt/work "$RUNNER_TEMP/assets"
       - name: Publish the volume hours
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
