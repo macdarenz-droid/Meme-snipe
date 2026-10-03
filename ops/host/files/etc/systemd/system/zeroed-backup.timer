@@ -1,0 +1,10 @@
+[Unit]
+Description=Zeroed: hourly encrypted backup
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=60s
+
+[Install]
+WantedBy=timers.target

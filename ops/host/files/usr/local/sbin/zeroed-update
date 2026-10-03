@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Code updates by the same pull path: fetch the "deploy" tag and accept its commit only if
+#  1. GitHub signed it (the merge-commit key pinned at install, i.e. a pull-request merge),
+#  2. it is on the integration branch,
+#  3. every check run on it finished green (public GitHub API), and
+#  4. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
+# Then switch to it and restart the worker, which reconciles before it trades. Runs every 5 minutes.
+# Residual risk (DECISIONS.md): write access to the repository is the ability to deploy; the signer
+# (SIGN-1) is the separate guard on funds.
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+
+REPO_DIR=/opt/zeroed/repo
+git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
+  "+refs/tags/deploy:refs/tags/deploy" "+refs/heads/$ZEROED_BRANCH:refs/remotes/origin/$ZEROED_BRANCH" 2>/dev/null || exit 0
+commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
+current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
+[ "$commit" != "$current" ] || exit 0
+
+# GitHub signs every merge it makes with its web-flow key; nothing else is accepted.
+status="$(GNUPGHOME=/etc/zeroed/gnupg git -C "$REPO_DIR" verify-commit --raw "$commit" 2>&1 || true)"
+signer="$(printf '%s\n' "$status" | awk '$2 == "VALIDSIG" { print $NF; exit }')"
+if [ "$signer" != "$WEB_FLOW_FPR" ] || ! printf '%s\n' "$status" | grep -q '^\[GNUPG:\] GOODSIG '; then
+  log "Refused deploy tag ${commit:0:12}: not signed by GitHub's merge key."
+  notify "Zeroed host: refused update ${commit:0:12} (signature check failed)." || true
+  exit 1
+fi
+if ! git -C "$REPO_DIR" merge-base --is-ancestor "$commit" "refs/remotes/origin/$ZEROED_BRANCH"; then
+  log "Refused deploy tag ${commit:0:12}: not on $ZEROED_BRANCH."
+  notify "Zeroed host: refused update ${commit:0:12} (not on $ZEROED_BRANCH)." || true
+  exit 1
+fi
+
+runs="$(curl -fsS -m 30 -H 'Accept: application/vnd.github+json' \
+  "$ZEROED_API_URL/repos/$ZEROED_REPO/commits/$commit/check-runs?per_page=100" || true)"
+# The Deploy job's own check run (job name zeroed-deploy) is left out: it says nothing about the code.
+verdict="$(printf '%s' "$runs" | jq -r '[(.check_runs // [])[] | select(.name != "zeroed-deploy")] as $r
+  | if (.total_count // 0) > ((.check_runs // []) | length) then "none"
+    elif ($r | length) == 0 then "none"
+    elif any($r[]; .status != "completed") then "pending"
+    elif all($r[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
+    else "red" end' 2>/dev/null || echo none)"
+if [ "$verdict" != green ]; then
+  log "Waiting on ${commit:0:12}: its checks are ${verdict/none/not reported yet}."
+  exit 0
+fi
+
+if systemctl is-active --quiet zeroed-worker.service; then
+  open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
+  if [ "$open" != 0 ]; then
+    log "Waiting on ${commit:0:12}: the worker has open intents ($open)."
+    exit 0
+  fi
+fi
+
+dest="/opt/zeroed/releases/$commit"
+if [ ! -d "$dest" ]; then
+  mkdir -p "$dest.new"
+  git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
+  mv "$dest.new" "$dest"
+fi
+ln -sfn "$dest" /opt/zeroed/current.new
+mv -Tf /opt/zeroed/current.new /opt/zeroed/current
+printf '%s\n' "$commit" > "$STATE_DIR/deployed"
+
+# Repository switches, applied with each reviewed release (ops/host-config.json).
+if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
+  systemctl enable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
+else
+  systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
+fi
+
+# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
+worker="not started (no keys yet)"
+if [ -s "$CRED_DIR/helius_api_key" ]; then
+  if systemctl restart zeroed-worker.service; then worker=restarted; else worker="failed to start"; fi
+fi
+log "Deployed ${commit:0:12}. Worker: $worker."
+notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true

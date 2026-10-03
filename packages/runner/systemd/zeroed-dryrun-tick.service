@@ -1,0 +1,7 @@
+[Unit]
+Description=Zeroed dry run: start or resume when the release asks
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/zeroed/current
+ExecStart=/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/runner/src/cli.ts vps-tick

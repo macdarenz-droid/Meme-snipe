@@ -62,6 +62,10 @@ importers:
 
   packages/core: {}
 
+  packages/ops: {}
+
+  packages/runner: {}
+
   packages/worker: {}
 
 packages:
