@@ -658,7 +658,7 @@ The second reviewer, the third opinion and the supervisor reached one position o
     - The registered list is `REGISTERED_STRATEGIES` in the run contract. It is empty until BT-2 registers a strategy.
     - The report's `qualifying_start` check fails a named host run when any `start` line has an unregistered entry rule, a paper edge, or `qualifying` other than true.
   - **Exits per universe (CFG-2).** The entry intent key starts with the universe (`entry:<mint>:<universe>.<version>.<n>`). The exit plan stores it, and a restored plan keeps it. A plan saved before this takes it from its intent key, never from the worker's own universe.
-  - **Setup rent is booked as a realised cost (risk review).** It is valued at the setup SOL price, rounded up, as a closed record (`wallet-setup`), so equity, the high-water mark and the day and week losses include it.
+  - **Setup rent is an account cost (risk review, RISK-1b).** It is one `AccountHistory.costs` entry (`wallet_setup`) valued at the setup SOL price and rounded up, so equity and the day and week losses include it. It is not a closed trade, so R8, R11, R15 and trade statistics never see it; a first real losing trade starts no cooldown because of it.
     - AccountHistory has no cost record, so it rides with the closed trades.
     - It carries the policy's largest notional, so R15 never caps a size by it.
     - It may count once toward R8 (the safe side).

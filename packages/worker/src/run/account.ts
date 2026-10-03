@@ -4,7 +4,7 @@
 import type { Mint } from '../../../core/src/domain/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
 import { type Book, isTerminal } from '../../../core/src/lifecycle/index.ts';
-import type { AccountHistory, ClosedTrade, Latches } from '../../../core/src/risk/index.ts';
+import type { AccountCost, AccountHistory, ClosedTrade, Latches } from '../../../core/src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../../core/src/units/index.ts';
 import type { AccountFact } from '../engine/strategy.ts';
 import { StateFile } from './state.ts';
@@ -45,9 +45,6 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 export const accountFile = (dir: string) =>
   new StateFile<AccountState>(dir, 'account.json', (v) => (isObj(v) && typeof v['openedAtMs'] === 'number' && typeof v['openingEquity'] === 'bigint' && Array.isArray(v['trades']) && Array.isArray(v['entries']) ? (v as unknown as AccountState) : null));
 
-/** The setup cost's entry among closed trades: no real mint (never blocks a re-entry). */
-export const SETUP_MINT = 'wallet-setup' as Mint;
-
 const STOPS = new Set(['stop', 'trailing_stop', 'thesis_lost', 'liquidity']);
 const EXIT_REASONS = new Set(['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency']);
 
@@ -58,15 +55,8 @@ export class PaperAccount {
   readonly #oneTimeRent: bigint;
   #now: number;
 
-  readonly #maxNotional: MicroUsd;
-
-  /**
-   * `oneTimeRent`: what a fresh wallet pays once for accounts it never closes (settings `oneTimeRent`). `maxNotional`:
-   * the policy's largest trade, given to the setup cost's record so R15 (no larger size after a loss) does not read
-   * the setup as a small losing trade.
-   */
-  constructor(file: StateFile<AccountState>, bankroll: MicroUsd, nowMs: number, oneTimeRent: bigint, maxNotional: MicroUsd) {
-    this.#maxNotional = maxNotional;
+  /** `oneTimeRent`: what a fresh wallet pays once for accounts it never closes (settings `oneTimeRent`). */
+  constructor(file: StateFile<AccountState>, bankroll: MicroUsd, nowMs: number, oneTimeRent: bigint) {
     this.#file = file;
     this.#oneTimeRent = oneTimeRent;
     this.#s = file.read({ openedAtMs: nowMs, openingEquity: bankroll, walletLamports: null, trades: [], entries: [] });
@@ -142,11 +132,10 @@ export class PaperAccount {
     const closedTrades: ClosedTrade[] = this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).map((t) => ({
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
     }));
-    // The wallet's setup rent, booked as a realised cost at setup, so equity, the high-water mark and the day and week
-    // losses include it. AccountHistory has no cost record, so it rides as a closed "trade": it may count once toward
-    // R8's losses (the safe side), and it carries the largest notional so R15 never caps the next size by it.
+    // The wallet's setup rent is an account cost (RISK-1b `costs`): it lowers equity and counts toward the day's and
+    // week's loss, and it is never a trade (R8, R11, R15 and statistics do not see it).
     const su = this.#s.setup;
-    if (su !== undefined) closedTrades.unshift({ mint: SETUP_MINT, openedAtMs: su.atMs, closedAtMs: su.atMs, notional: this.#maxNotional, netPnl: -su.cost as MicroUsd, stoppedOut: false });
+    const costs: AccountCost[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, kind: 'wallet_setup' }];
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id).reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);
@@ -154,7 +143,10 @@ export class PaperAccount {
       return { mint: p.mint, openedAtMs: t?.openedAtMs ?? nowMs, notional: solPrice === null ? (t?.notional ?? (0n as MicroUsd)) : lamportsToMicroUsd(basis, solPrice, 'ceil'), mark: null, markAtMs: null };
     });
     const history: AccountHistory = {
-      openingEquity: this.#s.openingEquity, openedAtMs: this.#s.openedAtMs, flows: [], closedTrades, openPositions,
+      openingEquity: this.#s.openingEquity, openedAtMs: this.#s.openedAtMs, flows: [], closedTrades, costs, openPositions,
+      // Not recorded yet (WORKER-1b): the marked-boundary figures are reported as unknown, and R10's NAV peak is taken
+      // from NAV now only.
+      markedAtDayStart: null, markedAtWeekStart: null, navMarks: [],
       entries: this.#s.entries.map((e) => ({ mint: e.mint as Mint, atMs: e.atMs })),
       unresolvedEntries: Object.values(book.intents).filter((i) => i.intent.purpose === 'entry' && !isTerminal(i) && i.reservation?.status === 'held').map((i) => ({ mint: i.intent.mint })),
       heldReservations: held, version,

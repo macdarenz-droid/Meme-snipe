@@ -229,7 +229,7 @@ export class Worker {
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
     this.#exitsFile = exitsFile(c.stateDir);
-    this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime, d.session.policy.capital.maxNotional);
+    this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
 
     this.#feed = new LiveFeed({
       ...DEFAULT_LIVE_FEED,
