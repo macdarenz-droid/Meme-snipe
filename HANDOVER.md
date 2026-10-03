@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, 9:05 AM Melbourne (AEDT).
+**Last updated:** Sun 4 Oct 2026, 9:25 AM Melbourne (AEDT).
 
 ## 1. Read first, in this order
 
@@ -52,7 +52,7 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
   - One concurrency group; it stops on HTTP 429 and resumes with back-off.
   - Each finished UTC day is published as a release tagged `data-day-YYYY-MM-DD`.
 
-## 4. Current state (4 Oct, 9:05 AM)
+## 4. Current state (4 Oct, 9:25 AM)
 
 **Merged since 3:50 AM:**
 - RES-3 #47 (signal research plan and code)
@@ -79,6 +79,8 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 - DATA-1b #69 (delegation rows; QA phase budget; resumable QA 429s)
 - RUG-1c #74 (on-demand deployer rug check, the rug restart-gap closer)
 - OPS-1e #66 (server extras; real worker behind a reviewed `"worker": "release"` switch; serve, never Funnel)
+- FACTS-1b #75 (live gate facts wired into the worker)
+- OPS-1f #72 (all-or-nothing `--update` with a journal; install line pinned at 364476c)
 
 Earlier merges are listed in `PROJECT_STATE.md`.
 
@@ -87,18 +89,17 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 | Card | PR / branch | State | Next |
 |---|---|---|---|
 | Scan run 1 | Actions run 37156026657 | 2026-09-21 back to 09-14, 80 MB/s, one lane | DATA-1 builder reports the first published day; then batch 2 (09-13 back to 09-06), and so on to 07-20; then holdout days |
-| Worker flakes | (WORKER builder, `claude/worker-1-flake`) | worker-flow, run1c and worker-recorder tests fail about 1 in 7 on the base | root cause and fix PR; blocks clean merges |
-| PERSIST-1 | #71 | PASS at 76df453; merged-head CI hits the worker flake | merge after the flake fix |
-| FACTS-1b live facts | #75 | delta review at f5fb54d | merge; then FACTS-1e (re-evaluate when a read lands) |
-| FACTS-1d regime rule | new builder, `claude/facts-1d` | expanding window from 07-20, min 28 days, D−3; shared asset parser | review |
-| DATA-1c volume assets | DATA-1 builder | `volume-hours-DAY.csv` per day plus back-fill | review; feeds FACTS-1d and BT-2 |
-| OPS-1f update safety | #72 | FAIL: trap after the Node step; plus unit state and leftover backups | fixes; delta; merge; then the owner's install, Tailscale and branch-protection steps with the APK link |
+| Worker flakes | (WORKER builder) | worker-flow (abandon), run1c and worker-recorder fail sometimes under the full parallel suite | fix: `run` awaits paper simulations, effects waited for with `until`; load loops running; then PR; blocks clean merges |
+| PERSIST-1 | #71 | PASS at 436973e; merged-head CI hits the worker flake | merge after the flake fix |
+| FACTS-1d regime rule | #78 (session_019cENcTEidMc4LEhPydYAZK) | expanding window from 07-20, min 28 days, D−3 | align with `data-volume-DAY` (24 rows, covered), core parser shared with BT-2, LiveFacts schedule; then review (session_01UhbBj5bHiTC8AUMzp5db7L) |
+| DATA-1c volume assets | #77 | emitRow change reverted (units byte-identical with run 1) | reviewer confirms; merge between scan batches |
+| OPS-1g update safety | `claude/ops-1g` 10c142e | full install clears a stale journal; roll-back only on managed paths; sync per line | PR; review (session_01Ty8Lvbxybv8cRixTifx6y3) |
 | RUN-1d drills by cause | #64 | FAIL: 'unknown' universe passes; label guard | fixes; delta; merge |
 | RUN-1e | #76 (stacked on #64) | tabletop ownership, compare, pending-reboot, quota, no-strategy label | review after #64 |
-| BT-1d | #73 | one registry, attempt-2 window, schema-3 loader, HolderBook, congestion test (44 s), remote pin | in review |
+| BT-1d | #73 | FAIL R1–R4 + timeout | fixes; α and registration from the core registry; delta (session_012efQfLAwWStK3PT6ZW2PHz) |
 | BT-2 study | #41 (draft) | regime wired, rent cost, staged reads, conservative defaults | first funnel count when 09-21 is testable |
-| STATS-1b G3 | #52 | FAIL: B5 inside the holdout must not fail revalidation; R2/U2 tests | fixes; re-review |
-| STATS-1c | #62 | rework after #52 | review; owner SPA sign-off |
+| STATS-1b G3 | #52 | PASS at 9794b64 | builder merges base; CI; merge |
+| STATS-1c | #62 (bf5dae8) | rework done; adapts BT-1c's call sites when retargeted | review after #52; owner SPA sign-off; STATS-1d (U1 40-day window) after |
 | RES-3b | #56 | wall at 2026-09-21T14:00Z | waits for STATS-1c |
 | WORKER-1b | `claude/worker-1b` | RUN-1d fields, sell-only flatten, PERSIST-1 wiring, all open positions in health, checkDeployer wiring | after the flake fix |
 | RUG-1b | RUG builder | next card | PR |
@@ -120,14 +121,14 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 | Builder | BT-2 | session_01VBTfAwrhgoCssEzST2J2q5 |
 | Builder | STATS-1b/1c | session_01J9yEWHRunNxvo5CaTbuYSe |
 | Builder | RUN-1d, RUN-1e | session_01VgCLpHWaM7FjpwofRcgrwM |
-| Builder | OPS-1f | session_01VM97q6A98GgtoPKCamoiT6 |
+| Builder | OPS-1f, OPS-1g | session_01VM97q6A98GgtoPKCamoiT6 |
 | Builder | RES-3b | session_018esLCVLp9yCExK5cdnzCz8 |
 | Reviewer | DATA-1 | session_01DKMnUiqVLxVjHbaqdoBnJD |
 | Reviewer | WORKER-1 | session_012QdDAuRuYt57E9PCjHfuKT |
 | Reviewer | FACTS-1c | session_01UhbBj5bHiTC8AUMzp5db7L |
 | Reviewer | SEED-1, FILL-2, PERSIST-1 | session_01NZwyB8decLbgxKJoG2cAbP |
 | Reviewer | risk (WORKER-1 rent, risk/**) | session_017PBUwcGJWG4DJpJKVBcAas |
-| Reviewer | OPS-1e | session_01Ty8Lvbxybv8cRixTifx6y3 |
+| Reviewer | OPS-1e/1f/1g | session_01Ty8Lvbxybv8cRixTifx6y3 |
 | Reviewer | BT-1c | session_012efQfLAwWStK3PT6ZW2PHz |
 | Reviewer | STATS-1b/1c | session_01FHfbJwz7sbf2eVDNRxMigZ |
 | Reviewer | RUN-1d | session_01DdN4xy9WX2t7nLUq7ww4E5 |
@@ -159,9 +160,7 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 ## 7. Waiting on the owner
 
 - **Soon:**
-  - one re-paste of the server install line (from OPS-1e) — exact steps will be sent;
-  - Tailscale setup for the phone view — steps will be sent;
-  - a GitHub ruleset protecting the `holdout-registry` branch from deletion and force-push (Settings → Rules → Rulesets).
+  - steps sent 9:25 AM, with a push: re-paste the install line (pin 364476c), a new deploy code into `DEPLOY_CODE` and Deploy (turns the webhook on), Tailscale and `zeroed-tailscale`, the new APK with the server address, and a GitHub ruleset on `holdout-registry` (no deletion, no force-push). Check the server reports Online in the app once done.
 - **About Mon 5 Oct:** yes or no on replacing the DSR gate with the SPA test, with STATS-1c's simulation evidence.
 - **Before live:**
   - R8 "5 losses in 20" rule;
@@ -193,6 +192,8 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 - **Scan order:** pre-holdout days first (21 Sep back to 20 Jul, newest first), then the holdout days, then forward days. Research and G1 need only pre-holdout days; the holdout opens only after G1, and the live index fills from RPC.
 - **One holdout registry:** BT-1c's file on the remote `holdout-registry` branch, with sections plan, g1, attempts and windows.
 - **Exits never wait:** not on the seed, a figure or a missing universe (sell-only flatten).
+- **Registry semantics in core:** α, registration day, attempt budget and the frozen requirement come only from `core/src/stats/holdout.ts`; the backtest layer stores and calls. The PR that changes an interface adapts its callers.
+- **Scan units byte-identical across scanner revisions:** a change that could alter a published unit is reverted unless measured to be a no-op.
 
 ## 9. Infrastructure
 
@@ -211,3 +212,4 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 - **Free-tier credits:** Helius serves getProgramAccounts at 10 credits a call (gpa-probe run 37149567929); Alchemy answered 429 to back-to-back calls and is unmeasured. The RPC fill must run once per host (PERSIST-1): a 14-day create backfill on every boot projected 11.9M credits a month.
 - **Archive 429s:** each costs at least 1 h; run timings above include no allowance beyond that.
 - **Process:** base churn from docs pushes slows the merge queue (rule in §3).
+- **Model fallback:** the WORKER builder's turns were served on claude-opus-5 by a runtime fallback (configured Opus 5.5). Its work still goes through fresh Opus 5.5 reviews and fail-before tests; check `last_served_model` with get_session before trusting a session's tier.
