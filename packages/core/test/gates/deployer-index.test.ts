@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { AsOfStore, OFF_CHAIN, SimClock, leakTest, replayOnce, type FeedEvent, type MarketEvent, type Moment, type ProofRun, type Strategy } from '../../src/engine/index.ts';
 import {
-  DAY_MS, DeployerIndex, HOUR_MS, createKey, createsCoverage, deployerKey, evaluateHardRejects, type GateContext, type GateReason, type HardGate,
+  DAY_MS, DeployerIndex, HOUR_MS, createKey, createsCoverage, deployerKey, evaluateHardRejects, evaluateSoftFeatures, type GateContext, type GateReason, type HardGate,
 } from '../../src/gates/index.ts';
 import { CONFIG } from '../fixtures.ts';
 import { CREATED_AT, DEV, MINT, NOW, SLOT, T, W, deps, drop, passingFacts, request, type Facts } from './world.ts';
@@ -146,6 +146,36 @@ describe('deployer index', () => {
     rug.observe(marketOf('rug:Old', { mint: 'Old', creator: DEV }, at(T - DAY_MS, SLOT - 200_000n)));
     expect(h14(contextWith([], base, NOW, rug)).map((r) => r.code)).toEqual(['prior-rug']);
     expect(h14(contextWith([], base, NOW, new DeployerIndex()))).toEqual([]);
+  });
+});
+
+describe('rug labels unavailable', () => {
+  const noLabeller = drop(passingFacts(), 'coverage:rugs:start');
+
+  it('without a rug labeller, H14 notes "rug labels unavailable" and never reads that as zero rugs', () => {
+    const r = evaluateHardRejects(contextWith([], noLabeller), deps('live'), request(), { stopAtFirst: false });
+    expect(r.notes).toContainEqual(expect.objectContaining({ gate: 'H14', code: 'rug-labels-unavailable', detail: expect.stringContaining('rug labels unavailable') }));
+    const soft = evaluateSoftFeatures(contextWith([], noLabeller), deps('live'), MINT).features.find((f) => f.name === 'indexRugs');
+    expect(soft).toEqual({ name: 'indexRugs', value: null, note: expect.stringContaining('rug labels unavailable') });
+  });
+
+  it('the deployer-count half stays enforced without rug labels', () => {
+    const idx = new DeployerIndex();
+    for (const [m, t] of [[MINT, CREATED_AT], ['M2', T - HOUR_MS], ['M3', T - 2 * HOUR_MS]] as const) {
+      idx.observe(marketOf(`logs:pump:CreateEvent:${m}`, createEvent(m, DEV, t, SLOT - 5_000n), at(t, SLOT - 5_000n)));
+    }
+    const r = evaluateHardRejects(contextWith([], drop(noLabeller, deployerKey(DEV)), NOW, idx), deps('live'), request(), { stopAtFirst: false });
+    expect(r.reasons).toContainEqual(expect.objectContaining({ gate: 'H14', code: 'serial-deployer' }));
+    expect(r.notes).toContainEqual(expect.objectContaining({ code: 'rug-labels-unavailable' }));
+  });
+
+  it('a rug labeller with an open gap is unavailable too; with it, a label rejects', () => {
+    const gap: Row = ['coverage:rugs:gap', wrap({ fromSlot: SLOT - 100n, toSlot: null, reason: 'halted', via: 'rug-labeller' }), at(T - HOUR_MS, SLOT - 9_000n)];
+    const r = evaluateHardRejects(contextWith([gap]), deps('live'), request(), { stopAtFirst: false });
+    expect(r.notes).toContainEqual(expect.objectContaining({ code: 'rug-labels-unavailable' }));
+    expect(r.notes.filter((n) => n.code === 'rug-labels-unavailable')).toHaveLength(1);
+    const ok = evaluateHardRejects(contextWith([]), deps('live'), request(), { stopAtFirst: false });
+    expect(ok.notes.filter((n) => n.code === 'rug-labels-unavailable')).toEqual([]);
   });
 });
 

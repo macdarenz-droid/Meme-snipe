@@ -393,6 +393,12 @@ const h14 = (env: Env): Outcome => {
   if (recent.size > g.serialMaxMints24h) {
     reasons.push({ gate: 'H14', code: 'serial-deployer', input: 'deployer', detail: `${cr.fact.creator} created ${recent.size} mints in 24 h`, value: String(recent.size), limit: String(g.serialMaxMints24h) });
   }
+  // Rug labels count only from a reviewed labeller that covered the whole look-back (its own coverage:rugs:* facts).
+  // Without one the prior-rug half is not judged and says so: no labels is never read as zero rugs.
+  const rugCov = createsCoverage(env.history, env.ev.now, now - lookback, 'rugs');
+  if (!rugCov.covered) {
+    return { reasons, notes: [{ gate: 'H14', code: 'rug-labels-unavailable', detail: `rug labels unavailable: ${rugCov.detail}; prior-rug check not applied` }] };
+  }
   const rugs = d.fact.rugs.filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
   if (rugs.length > 0) reasons.push({ gate: 'H14', code: 'prior-rug', input: 'deployer', detail: `${cr.fact.creator} rugged ${rugs.join(', ')} within ${g.deployerRugLookbackDays} days`, value: String(rugs.length), limit: '0' });
   return { reasons };

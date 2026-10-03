@@ -123,6 +123,8 @@ export const passingFacts = (): Facts => {
   const m = mintFixture(MINT);
   // FEED-1's creates stream started 30 days ago and has had no gap (GATE-1b coverage).
   put('coverage:creates:start', { value: { fromSlot: SLOT - 6_000_000n, via: 'logs:creates' }, source: 'worker', backfilled: false, seq: 1 }, at(T - 30 * DAY_MS, SLOT - 6_000_000n));
+  // A reviewed rug labeller (RUG-1, not built yet) covering the same 30 days.
+  put('coverage:rugs:start', { value: { fromSlot: SLOT - 6_000_000n, via: 'rug-labeller' }, source: 'worker', backfilled: false, seq: 2 }, at(T - 30 * DAY_MS + 1, SLOT - 5_999_999n));
   put(streamKey('chain'), { obs: obs({ slot: SLOT - 1n }), gapFreeSince: SLOT - 10_000n }, head);
   put(mintKey(MINT), { obs: streamObs(), owner: m.owner, account: m.account }, at(T - 200_000, SLOT - 500n));
   put(poolKey(MINT), { obs: obs(), address: POOL_ADDRESS, owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', pool: POOL, baseVault: BASE_VAULT, quoteVault: QUOTE_VAULT }, head);
