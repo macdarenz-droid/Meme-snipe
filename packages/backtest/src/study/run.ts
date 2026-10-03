@@ -9,6 +9,7 @@ import { seriesReleases } from '../dataset/offchain.ts';
 import { type RunOptions, type RunResult, runBacktest } from '../run.ts';
 import { FactProjector, gapsOf } from '../sim/facts.ts';
 import type { StudyConfig } from '../strategy/config.ts';
+import { producerOptions } from '../../../core/src/facts/index.ts';
 import { READ_LATENCY, READ_LIMITS, type ReadLatency, type ReadLimits } from './reads.ts';
 import { StudyStrategy } from '../strategy/study.ts';
 
@@ -72,6 +73,8 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
       ...(o.poolAccounts === undefined ? {} : { poolAccounts: o.poolAccounts }),
       ...(o.delegatesComplete === undefined ? {} : { delegatesComplete: o.delegatesComplete }),
       readLatency: o.readLatency ?? READ_LATENCY,
+      // Graduate survival for the regime gate, from FACTS-1's producer sized by the locked policy.
+      survival: producerOptions(o.policy),
       ...(o.tradesFromMs === undefined ? {} : { tradesFromMs: o.tradesFromMs }),
     }),
     // A fresh locked session per run: the policy cannot change while it runs (R15).

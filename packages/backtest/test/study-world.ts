@@ -185,7 +185,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         rows.push({ kind: 'event', slot, blockTime, txIdx: tx, evIdx: 0, signature, program: 'pump', event: 'CompleteEvent', fields: { mint: pl.mint, bonding_curve: pl.curve, user: pl.creator, timestamp: String(blockTime) } });
         rows.push({
           kind: 'event', slot, blockTime, txIdx: tx, evIdx: 1, signature, program: 'amm', event: 'CreatePoolEvent',
-          fields: { index: '0', creator: pl.auth, base_mint: pl.mint, quote_mint: NATIVE_MINT, pool: pl.pool, lp_mint: pl.lpMint, lp_token_amount_out: '1000', is_mayhem_mode: 'false', timestamp: String(blockTime) },
+          fields: { index: '0', creator: pl.auth, base_mint: pl.mint, quote_mint: NATIVE_MINT, pool: pl.pool, lp_mint: pl.lpMint, lp_token_amount_out: '1000', is_mayhem_mode: 'false', pool_base_amount: String(left), pool_quote_amount: String(quote), timestamp: String(blockTime) },
         });
         rows.push({
           kind: 'event', slot, blockTime, txIdx: tx, evIdx: 2, signature, program: 'pump', event: 'CompletePumpAmmMigrationEvent',

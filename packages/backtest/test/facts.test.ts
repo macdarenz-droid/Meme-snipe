@@ -6,11 +6,12 @@ import { isCanonicalPool, type Pool, TOKEN_2022_PROGRAM, toAddress } from '../..
 import type { FeedEvent, MarketEvent } from '../../core/src/engine/index.ts';
 import {
   coverageKeys, createKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp,
-  parseMigration, parseMint, parsePool, parseSolUsd, poolKey, RUG_UNJUDGED_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey,
+  GRADUATES_KEY, parseGraduates, parseMigration, parseMint, parsePool, parseSolUsd, poolKey, RUG_UNJUDGED_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey,
 } from '../../core/src/gates/index.ts';
 import { seriesReleases } from '../src/dataset/offchain.ts';
 import { FactProjector, type FactOptions, LANDED_PREFIX, mintHashFraction, tieHash } from '../src/sim/facts.ts';
 import { landings, READ_LATENCY } from '../src/study/reads.ts';
+import { producerOptions } from '../../core/src/facts/index.ts';
 import { Market, rowMoment } from '../src/sim/market.ts';
 import { SOL_USD } from './synthetic.ts';
 import { SLOT_MS, studyWorld, SUPPLY, W0, type MintPlan } from './study-world.ts';
@@ -20,10 +21,10 @@ const U2 = { universe: 'U2', fromMs: 60 * 60_000, toMs: 70 * 60_000, everyMs: 5 
 
 const solUsd = { ...SOL_USD, bars: SOL_USD.bars.map((b, k) => ({ ...b, start: W0 - 6 * 3_600_000 + k * 3_600_000 })) };
 
-const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts'], delegatesComplete = true, readLatency?: FactOptions['readLatency']) => {
+const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts'], delegatesComplete = true, readLatency?: FactOptions['readLatency'], survival?: FactOptions['survival']) => {
   const { rows, mints } = studyWorld({ mints: plans, slots });
   const facts = new FactProjector({
-    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete, ...(readLatency === undefined ? {} : { readLatency }),
+    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete, ...(readLatency === undefined ? {} : { readLatency }), ...(survival === undefined ? {} : { survival }),
     ...(tradesFromMs === undefined ? {} : { tradesFromMs }), ...(poolAccounts === undefined ? {} : { poolAccounts }),
   });
   const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
@@ -169,6 +170,23 @@ describe('fact projector', () => {
     // The facts are released again with each landing, as of that moment.
     const holdersAt = (m: number) => r.events.some((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.receivedAt === m);
     expect(holdersAt(land[1]!.moment.receivedAt)).toBe(true);
+  });
+
+  it('releases graduate survival from FACTS-1\'s producer: the pool\'s reserve at migration + 30 min, once its trades are covered', () => {
+    const r = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, true, undefined, producerOptions(TRIAL_POLICY));
+    const grads = r.events.filter((e) => e.key === GRADUATES_KEY);
+    expect(grads.length).toBeGreaterThan(0);
+    const g = parseGraduates(grads.at(-1)!.value)!;
+    expect(g).not.toBeNull();
+    const m = r.mints[0]!;
+    expect(g.items.map((x) => x.mint)).toEqual([m.mint]);
+    const migratedAt = W0 + m.migrateSlot * SLOT_MS;
+    expect(Math.abs(g.items[0]!.migratedAtMs - migratedAt)).toBeLessThan(1_000);
+    expect(g.items[0]!.reserveAfter).toBeGreaterThan(0n);
+    // Released only once the mark (migration + 30 min) has passed.
+    expect(grads[0]!.moment.receivedAt).toBeGreaterThanOrEqual(g.items[0]!.migratedAtMs + TRIAL_POLICY.regime.survivalAfterMs);
+    // Without the producer nothing is released: the regime then reads graduates as unknown.
+    expect(replay([PLAN], SLOTS).events.some((e) => e.key === GRADUATES_KEY)).toBe(false);
   });
 
   it('flags holders and the mint partial after a missed token movement', () => {

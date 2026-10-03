@@ -13,7 +13,7 @@ import {
 } from '../../../core/src/chain/index.ts';
 import type { FeedEvent, MarketEvent, Moment } from '../../../core/src/engine/index.ts';
 import {
-  type Candle, type FactObs, type HolderAccount, type Price, RUG_UNJUDGED_PREFIX, RugLabeller, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey, coverageKeys,
+  type Candle, type FactObs, type HolderAccount, type Price, GRADUATES_KEY, parseGraduates, RUG_UNJUDGED_PREFIX, RugLabeller, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey, coverageKeys,
   createKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey,
 } from '../../../core/src/gates/index.ts';
 import type { RugConfig } from '../../../core/src/config/index.ts';
@@ -24,6 +24,7 @@ import type { RawRow } from '../dataset/raw.ts';
 import type { AmmSwapRow, CurveTradeRow, DatasetRow, EventRow } from '../dataset/rows.ts';
 import type { PoolView } from './market.ts';
 import { SignalTracker } from '../research/tracker.ts';
+import { FactProducer, type ProducerOptions } from '../../../core/src/facts/index.ts';
 import { landings, type ReadLatency } from '../study/reads.ts';
 
 export const ATA_PROGRAM = toAddress('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
@@ -108,6 +109,12 @@ export interface FactOptions {
    * Absent: both land at the check (tests only; study runs pass READ_LATENCY).
    */
   readonly readLatency?: ReadLatency;
+  /**
+   * Graduate survival for the regime gate (§6.4), produced by FACTS-1's own producer (supervisor ruling: one source,
+   * never a copy): it is fed the dataset's curve completions, migrations and pool creations, each pool's swaps up to
+   * its survival mark, and the slot notices; only its graduates fact is released. Off when absent.
+   */
+  readonly survival?: ProducerOptions;
   readonly poolAccounts?: (pool: string) => { readonly knownAtMs: number; readonly accountBytes: number; readonly isCashbackCoin: boolean; readonly coinCreator: string } | null;
   readonly insiders?: (mint: string) => { readonly knownAtMs: number; readonly funded: readonly string[]; readonly devCluster: readonly string[] } | null;
   /**
@@ -139,6 +146,13 @@ const decoded = (fields: Readonly<Record<string, string>>): Record<string, unkno
 };
 
 const seconds = (row: { readonly blockTime: number }, ts: unknown): bigint => (typeof ts === 'bigint' ? ts : BigInt(row.blockTime));
+
+interface SurvivalTrack {
+  readonly producer: FactProducer;
+  pool: string | null;
+  markMs: number | null;
+  done: boolean;
+}
 
 interface MintState {
   readonly mint: string;
@@ -189,6 +203,11 @@ export class FactProjector {
   #solAt = 0;
   readonly #solPoints: { tMs: number; price: bigint }[] = [];
   readonly #tracker: SignalTracker | null;
+  /** Graduating mints whose survival mark is not resolved yet, each with its own FACTS-1 producer. */
+  readonly #survivalTracks = new Map<string, SurvivalTrack>();
+  readonly #survivalPools = new Map<string, string>();
+  readonly #graduateItems: { mint: string; migratedAtMs: number; reserveAfter: bigint }[] = [];
+  #survivalSeq = 0;
   /** Stage-2/3 reads in flight, oldest landing first (one latency for all, so arrival order is ask order). */
   readonly #reads: { atMs: number; mint: string; universe: string; n: number; stage: 2 | 3 }[] = [];
   #readSeq = 0;
@@ -263,8 +282,91 @@ export class FactProjector {
         this.#block(row.slot, row.blockTime * 1000, m, out);
         break;
     }
+    if (this.#o.survival !== undefined) this.#feedSurvival(row, m, out);
     return out;
   }
+
+  /**
+   * Graduate survival, dated by FACTS-1's own producer (its rule, never a copy). One producer per graduating mint, fed
+   * that mint's completion, migration and pool creation, the pool's swaps up to its mark, and slot notices once the
+   * mark has passed; it is dropped when the mark resolves or its read window ends. One producer for the whole run would
+   * scan every pool's stream on every slot notice (about 94k pools over 16M slots in a 74-day run). The resolved items
+   * are kept for the producer's own window (`graduatesKeepMs`) and released as one graduates fact, as FACTS-1 does.
+   */
+  #feedSurvival(row: DatasetRow, m: Moment, out: FeedEvent[]): void {
+    const o = this.#o.survival!;
+    const ev = (key: string, value: unknown): MarketEvent => ({ kind: 'market', id: `sv:${this.#survivalSeq++}`, moment: m, key, value });
+    // As a fetched transaction (DEC-1's located event carries its signature): confirmed, as the dataset is.
+    const program = (programName: string, name: string, data: Record<string, unknown>): MarketEvent =>
+      ev('survival:event', { event: { program: programName, name, data, signature: (row as { signature?: string }).signature ?? '' }, txSlot: row.slot, source: PROVIDER });
+    const now = m.receivedAt;
+    let changed = false;
+    const run = (s: SurvivalTrack, e: MarketEvent): void => {
+      for (const w of s.producer.observe(e)) {
+        if (w.key !== GRADUATES_KEY) continue;
+        const g = parseGraduates(w.value);
+        for (const item of g?.items ?? []) {
+          this.#graduateItems.push(item);
+          changed = true;
+        }
+        s.done = true;
+      }
+    };
+    if (row.kind === 'event' && ['CompleteEvent', 'CompletePumpAmmMigrationEvent', 'CreatePoolEvent'].includes(row.event)) {
+      const d = decoded(row.fields);
+      const data = { ...d, timestamp: seconds(row, d['timestamp']) };
+      const mint = (row.event === 'CreatePoolEvent' ? d['baseMint'] : d['mint']) as string | undefined;
+      if (typeof mint !== 'string') return;
+      let s = this.#survivalTracks.get(mint);
+      if (s === undefined) {
+        if (row.event !== 'CompleteEvent') return;
+        s = { producer: new FactProducer(o), pool: null, markMs: null, done: false };
+        this.#survivalTracks.set(mint, s);
+      }
+      if (row.event === 'CreatePoolEvent' && typeof d['pool'] === 'string' && s.pool === null) {
+        s.pool = d['pool'];
+        s.markMs = row.blockTime * 1000 + o.survivalAfterMs;
+        this.#survivalPools.set(d['pool'], mint);
+        // The dataset keeps every trade of a canonical pool from its creation (retention canonical-all).
+        run(s, ev(`coverage:trades:${d['pool']}:start`, { via: PROVIDER, fromSlot: row.slot }));
+      }
+      run(s, program(row.program === 'amm' || row.program === 'pump_amm' ? 'pump_amm' : row.program, row.event, data));
+    } else if (row.kind === 'amm') {
+      const mint = this.#survivalPools.get(row.pool);
+      const s = mint === undefined ? undefined : this.#survivalTracks.get(mint);
+      if (s !== undefined && s.markMs !== null && row.blockTime * 1000 <= s.markMs) {
+        const base = { pool: row.pool, timestamp: BigInt(row.blockTime), poolBaseTokenReserves: row.pre.baseReserve, poolQuoteTokenReserves: row.pre.quoteVault, virtualQuoteReserves: row.pre.virtualQuoteReserves };
+        run(s, row.side === 'buy'
+          ? program('pump_amm', 'BuyEvent', { ...base, baseAmountOut: row.baseAmount, quoteAmountInWithLpFee: row.quoteLpAdjusted })
+          : program('pump_amm', 'SellEvent', { ...base, baseAmountIn: row.baseAmount, quoteAmountOutWithoutLpFee: row.quoteLpAdjusted }));
+      }
+    } else if (row.kind === 'block') {
+      for (const [mint, s] of this.#survivalTracks) {
+        if (s.markMs === null) {
+          // A completion with no pool creation within a day never graduates here.
+          if (now - (this.#mints.get(mint)?.graduatedAtMs ?? now) > 86_400_000) this.#survivalTracks.delete(mint);
+          continue;
+        }
+        if (now < s.markMs) continue;
+        // Past the mark: a slot notice moves the producer's head, a second one lets it judge the mark on that head.
+        run(s, ev('chain:slot', { slot: row.slot }));
+        if (!s.done) run(s, ev('chain:slot', { slot: row.slot }));
+        if (s.done || now > s.markMs + o.survivalReadWindowMs) {
+          this.#survivalTracks.delete(mint);
+          if (s.pool !== null) this.#survivalPools.delete(s.pool);
+        }
+      }
+    }
+    if (changed) {
+      const keepFrom = now - o.graduatesKeepMs;
+      for (let i = this.#graduateItems.length - 1; i >= 0; i--) if (this.#graduateItems[i]!.migratedAtMs < keepFrom) this.#graduateItems.splice(i, 1);
+      out.push(this.#fact(`gr:${row.slot}:${this.#survivalSeq++}`, m, GRADUATES_KEY, {
+        obs: { provider: 'facts', slot: null, receivedAt: now, quality: [] },
+        items: [...this.#graduateItems].sort((x, y) => x.migratedAtMs - y.migratedAtMs || (x.mint < y.mint ? -1 : x.mint > y.mint ? 1 : 0)),
+      }));
+    }
+  }
+
 
   #fact(id: string, m: Moment, key: string, value: unknown): MarketEvent {
     return { kind: 'market', id, moment: m, key, value };
