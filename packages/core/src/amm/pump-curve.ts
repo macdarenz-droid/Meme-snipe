@@ -187,8 +187,8 @@ export const curveSell = (state: CurveState, tokens: bigint, ctx: CurveFeeContex
 };
 
 /** Share of the curve's sellable tokens already sold, in parts per million (floored). */
-export const curveProgressPpm = (state: CurveState, global: CheckedGlobal): bigint => {
-  const { initialRealTokenReserves } = global;
+export const curveProgressPpm = (state: CurveState, pumpGlobal: CheckedGlobal): bigint => {
+  const { initialRealTokenReserves } = pumpGlobal;
   if (initialRealTokenReserves <= 0n) throw new RangeError('initial real token reserves must be > 0');
   if (state.complete) return PARTS_PER_MILLION;
   return ((initialRealTokenReserves - state.realTokenReserves) * PARTS_PER_MILLION) / initialRealTokenReserves;
