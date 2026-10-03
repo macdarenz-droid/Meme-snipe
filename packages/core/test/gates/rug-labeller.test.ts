@@ -102,8 +102,9 @@ describe('creator dump', () => {
   });
 
   it('cannot judge a dump without the total supply, and says so', () => {
-    const r = run([create({ supply: null }), trade({ user: DEV, isBuy: false, tokens: 900_000n, sol: 5n })]);
-    expect(r.labels).toHaveLength(0);
+    const c = create({ supply: null });
+    const r = run([c, trade({ user: DEV, isBuy: false, tokens: 900_000n, sol: 5n })]);
+    expect(r.labels).toEqual([{ kind: 'market', id: `rug-unjudged:${MINT}`, key: `rug-unjudged:${MINT}`, moment: c.moment, value: { mint: MINT, creator: DEV, reason: 'the create carries no total supply', version: 'rugs-test' } }]);
     expect(r.l.unjudged.get(MINT)).toBe('the create carries no total supply');
     expect(run([create({ supply: 0n })]).l.unjudged.has(MINT)).toBe(true);
   });
@@ -165,6 +166,8 @@ describe('collapse', () => {
     const other = 'Pool211111111111111111111111111111111111111';
     expect(run([create(), migration(), buy({ pool: other, vault: 10_000n }), buy({ pool: other, vault: 1n })]).labels).toHaveLength(0);
     expect(run([migration(), buy({ vault: 10_000n }), buy({ vault: 1n })]).labels).toHaveLength(0);
+    // The first migration names the canonical pool; a later one for the same mint does not move it.
+    expect(run([create(), migration(), migration(MINT, other), buy({ pool: other, vault: 10_000n }), buy({ pool: other, vault: 1n })]).labels).toHaveLength(0);
   });
 });
 
@@ -181,13 +184,28 @@ describe('scope', () => {
   it('drops a launch two windows after it, and no sooner', () => {
     // Windows of 10 s: a launch at T0 is kept while later launches are within 20 s of it.
     const r = run([create(), create({ mint: 'M2', ts: T0 + 20n }), create({ mint: 'M3', ts: T0 + 20n })]);
-    expect(r.l.tracked).toBe(3);
+    expect(r.l.tracked.launches).toBe(3);
     const later = run([create(), create({ mint: 'M2', ts: T0 + 21n }), trade({ sol: 10_000n, ts: T0 + 5n }), trade({ sol: 0n, ts: T0 + 5n })]);
-    expect(later.l.tracked).toBe(1);
+    expect(later.l.tracked.launches).toBe(1);
     expect(later.labels).toHaveLength(0);
     const wide = { ...CFG, collapse: { ...CFG.collapse, windowMs: 20_000 } };
-    expect(run([create(), create({ mint: 'M2', ts: T0 + 40n })], wide).l.tracked).toBe(2);
-    expect(run([create(), create({ mint: 'M2', ts: T0 + 41n })], wide).l.tracked).toBe(1);
+    expect(run([create(), create({ mint: 'M2', ts: T0 + 40n })], wide).l.tracked.launches).toBe(2);
+    expect(run([create(), create({ mint: 'M2', ts: T0 + 41n })], wide).l.tracked.launches).toBe(1);
+  });
+
+  it('drops a pruned launch from every table: pool, label and unjudged entry', () => {
+    const before = [create(), migration(), buy({ vault: 10_000n }), buy({ vault: 1n }), create({ mint: 'U', supply: null, ts: T0 + 1n })];
+    expect(run(before).l.tracked).toEqual({ launches: 2, pools: 1, labelled: 1, unjudged: 1 });
+    expect(run([...before, create({ mint: 'M2', ts: T0 + 22n })]).l.tracked).toEqual({ launches: 1, pools: 0, labelled: 0, unjudged: 0 });
+  });
+
+  it('two equal sales in different transactions count twice; one sale from its log and its transaction once', () => {
+    const sale = (id: string, value: Record<string, unknown> = {}) => {
+      const t = trade({ user: DEV, isBuy: false, tokens: 10_000n, sol: 5n });
+      return { ...t, id, value: { ...(t.value as object), ...value } };
+    };
+    expect(run([create(), sale('ev:SigA:00000:00001'), sale('log:SigB:00001', { signature: 'SigB' })]).labels).toHaveLength(1);
+    expect(run([create(), sale('ev:SigA:00000:00001'), sale('log:SigA:00001', { signature: 'SigA' })]).labels).toHaveLength(0);
   });
 
   it('keeps the first create of a mint', () => {

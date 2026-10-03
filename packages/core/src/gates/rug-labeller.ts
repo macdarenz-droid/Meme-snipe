@@ -11,7 +11,7 @@ import { NATIVE_MINT, NATIVE_MINT_2022, SYSTEM_PROGRAM } from '../chain/programs
 import type { RugConfig } from '../config/rugs.ts';
 import { SECOND_MS } from '../config/time.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
-import { RUG_PREFIX } from './deployer-index.ts';
+import { RUG_PREFIX, RUG_UNJUDGED_PREFIX } from './deployer-index.ts';
 
 export type RugRule = 'creator-dump' | 'collapse';
 
@@ -40,6 +40,8 @@ interface Launch {
   /** The creator and the signer of the create: both sell for the deployer. */
   readonly sellers: ReadonlySet<string>;
   readonly createdAtMs: number;
+  /** The canonical pool, once the migration names it. */
+  pool: string | null;
   /** Total supply from the create; null when the event did not carry it (the dump rule cannot be judged then). */
   readonly supply: bigint | null;
   sold: bigint;
@@ -55,12 +57,23 @@ const timeOf = (d: Obj): number | null => {
   return Number.isSafeInteger(ms) ? ms : null;
 };
 
+/**
+ * The transaction a FEED-1 event came from: logs carry `value.signature`, fetched transactions `ev:<signature>:…` ids.
+ * Both copies of one event give the same signature, so two equal sales in different transactions stay two.
+ */
+const signatureOf = (e: MarketEvent): string => {
+  const v = e.value;
+  if (isObj(v) && typeof v['signature'] === 'string') return v['signature'];
+  return e.id.startsWith('ev:') ? (e.id.split(':')[1] ?? '') : '';
+};
+
 export class RugLabeller {
   readonly #config: RugConfig;
   readonly #launches = new Map<string, Launch>();
   /** Canonical pool -> mint, from the migration event (other pools of a mint are not the deployer's). */
   readonly #pools = new Map<string, string>();
   readonly #labelled = new Set<string>();
+  /** Mints the dump rule cannot judge, kept while their launch is tracked. */
   readonly #unjudged = new Map<string, string>();
 
   constructor(config: RugConfig) {
@@ -77,7 +90,7 @@ export class RugLabeller {
     const program = ev['program'];
     const name = ev['name'];
     if (program === 'pump') {
-      if (name === 'CreateEvent') this.#create(d);
+      if (name === 'CreateEvent') return this.#create(e, d);
       else if (name === 'TradeEvent') return this.#curveTrade(e, d);
       else if (name === 'CompletePumpAmmMigrationEvent') this.#migration(d);
     } else if (program === 'pump_amm' && (name === 'SellEvent' || name === 'BuyEvent')) {
@@ -86,9 +99,9 @@ export class RugLabeller {
     return [];
   }
 
-  /** Launches held in memory. */
-  get tracked(): number {
-    return this.#launches.size;
+  /** Entries held in memory, per table. */
+  get tracked(): { readonly launches: number; readonly pools: number; readonly labelled: number; readonly unjudged: number } {
+    return { launches: this.#launches.size, pools: this.#pools.size, labelled: this.#labelled.size, unjudged: this.#unjudged.size };
   }
 
   /** Mints the dump rule could not judge, with the reason (logged with H14's evidence). */
@@ -96,35 +109,47 @@ export class RugLabeller {
     return this.#unjudged;
   }
 
-  #create(d: Obj): void {
+  #create(e: MarketEvent, d: Obj): MarketEvent[] {
     const mint = str(d['mint']);
     const creator = str(d['creator']);
     const createdAtMs = timeOf(d);
-    if (mint === null || creator === null || createdAtMs === null || this.#launches.has(mint)) return;
+    if (mint === null || creator === null || createdAtMs === null || this.#launches.has(mint)) return [];
     // Launches are kept in arrival order. One whose windows ended a full window before this launch can no longer be
     // labelled (chain times run in release order to within seconds), so it is dropped: memory stays bounded.
     const horizon = Math.max(this.#config.creatorDump.windowMs, this.#config.collapse.windowMs);
     for (const [old, l] of this.#launches) {
       if (l.createdAtMs + 2 * horizon >= createdAtMs) break;
       this.#launches.delete(old);
+      this.#labelled.delete(old);
+      this.#unjudged.delete(old);
+      if (l.pool !== null) this.#pools.delete(l.pool);
     }
     const user = str(d['user']);
     const supply = big(d['tokenTotalSupply']);
     const usable = supply !== null && supply > 0n ? supply : null;
-    if (usable === null) this.#unjudged.set(mint, 'the create carries no total supply');
     this.#launches.set(mint, {
-      mint, creator, sellers: new Set(user === null ? [creator] : [creator, user]), createdAtMs, supply: usable,
+      mint, creator, sellers: new Set(user === null ? [creator] : [creator, user]), createdAtMs, pool: null, supply: usable,
       sold: 0n, sales: new Set(), peak: 0n,
     });
+    if (usable !== null) return [];
+    // Not judged is not "not a rug": the fact makes H14 uncovered for this deployer (RUG-1 review).
+    const reason = 'the create carries no total supply';
+    this.#unjudged.set(mint, reason);
+    const key = `${RUG_UNJUDGED_PREFIX}${mint}`;
+    return [{ kind: 'market', id: key, moment: e.moment, key, value: { mint, creator, reason, version: this.#config.version } }];
   }
 
   #migration(d: Obj): void {
     const mint = str(d['mint']);
     const pool = str(d['pool']);
-    if (mint !== null && pool !== null) this.#pools.set(pool, mint);
+    const l = mint === null ? undefined : this.#launches.get(mint);
+    if (l === undefined || pool === null || l.pool !== null) return;
+    l.pool = pool;
+    this.#pools.set(pool, l.mint);
   }
 
   #curveTrade(e: MarketEvent, d: Obj): MarketEvent[] {
+    const sig = signatureOf(e);
     const l = this.#open(str(d['mint']));
     const at = timeOf(d);
     if (l === null || at === null) return [];
@@ -134,12 +159,13 @@ export class RugLabeller {
     const user = str(d['user']);
     const amount = big(d['tokenAmount']);
     const sale = d['isBuy'] === false && user !== null && amount !== null
-      ? { user, amount, id: `curve|${user}|${amount}|${String(d['solAmount'])}|${String(d['virtualSolReserves'])}|${String(d['virtualTokenReserves'])}|${at}` }
+      ? { user, amount, id: `curve|${sig}|${user}|${amount}|${String(d['solAmount'])}|${String(d['virtualSolReserves'])}|${String(d['virtualTokenReserves'])}|${at}` }
       : null;
     return this.#judge(e, l, at, liquidity === null ? [] : [liquidity], sale);
   }
 
   #poolTrade(e: MarketEvent, d: Obj, sell: boolean): MarketEvent[] {
+    const sig = signatureOf(e);
     const pool = str(d['pool']);
     const l = this.#open(pool === null ? null : (this.#pools.get(pool) ?? null));
     const at = timeOf(d);
@@ -158,7 +184,7 @@ export class RugLabeller {
     const user = str(d['user']);
     const amount = big(d['baseAmountIn']);
     const sale = sell && user !== null && amount !== null
-      ? { user, amount, id: `pool|${pool}|${user}|${amount}|${String(d['quoteAmountOut'])}|${String(vault)}|${String(d['poolBaseTokenReserves'])}|${at}` }
+      ? { user, amount, id: `pool|${sig}|${pool}|${user}|${amount}|${String(d['quoteAmountOut'])}|${String(vault)}|${String(d['poolBaseTokenReserves'])}|${at}` }
       : null;
     return this.#judge(e, l, at, levels, sale);
   }
