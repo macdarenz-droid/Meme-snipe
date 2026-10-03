@@ -19,6 +19,7 @@ import {
   parseCandles, parseCreate, parseCurve, parseDeployer, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
 } from './facts.ts';
+import { checkCurveTails, checkPoolTails } from './tails.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
 import type { AsOfEntry } from '../engine/asof.ts';
 import type { Commitment } from '../domain/index.ts';
@@ -198,7 +199,16 @@ const h5 = (env: Env): Outcome => {
   if (pool.isMayhemMode === undefined) return { reasons: [{ gate: 'H16', code: 'missing', input: 'pool', neededBy: 'H5', detail: 'pool has no is_mayhem_mode field' }] };
   if (pool.isMayhemMode) return reject('H5', 'mayhem', `pool ${address} is a mayhem-mode coin`, { input: 'pool' });
   const canonical = isCanonicalPool(pool as unknown as Pool, address as Address);
-  return canonical ? PASS : reject('H5', 'not-canonical', `pool ${address} (index ${pool.index}, creator ${pool.creator}) is not the canonical pool`, { input: 'pool' });
+  if (!canonical) return reject('H5', 'not-canonical', `pool ${address} (index ${pool.index}, creator ${pool.creator}) is not the canonical pool`, { input: 'pool' });
+  // GATE-1c: the pool's trade events since migration must carry the upgrade's tail as zeros, at the right length.
+  const m = readMigration(env, 'H5');
+  if (!m.ok) return fromRead(m);
+  const ctx = { history: env.history, now: env.ev.now };
+  const pt = checkPoolTails(ctx, address, { slot: m.fact.obs.slot, ms: m.fact.migratedAtMs });
+  const t = pt.ok ? checkCurveTails(ctx, env.req.mint) : pt;
+  if (t.ok) return PASS;
+  if (t.code === 'event-tail') return reject('H5', 'event-tail', `unpublished trade-event bytes are live on this SOL pool: ${t.detail}`, { input: 'trades', ...(t.signature ? { value: t.signature } : {}) });
+  return { reasons: [{ gate: 'H16', code: t.code, input: 'trades', neededBy: 'H5', detail: t.detail, ...(t.signature ? { value: t.signature } : {}) }] };
 };
 
 const h6 = (env: Env): Outcome => {
