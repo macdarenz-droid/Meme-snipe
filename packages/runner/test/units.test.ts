@@ -2,7 +2,7 @@ import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { checkStartHealth, segmentAllowed, type Health } from '../src/contract.ts';
 import { item4 } from '../src/item4.ts';
-import { OPS_OK } from './fixtures.ts';
+import { fullDrills, OPS_OK } from './fixtures.ts';
 import { checkJournal } from '../src/journal.ts';
 import { makePlan } from '../src/plan.ts';
 import { buildReport, reportMarkdown, uptime, type RunMeta, type Sample } from '../src/report.ts';
@@ -85,8 +85,7 @@ describe('report', () => {
   });
   const meta: RunMeta = { runId: 'r', label: 'rehearsal', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
   const journal = checkJournal(good.join('\n'));
-  const drills = [1, 2, 3].map((i) => ({ id: `restart-${i}`, kind: 'restart' as const, plannedAt: 0, at: 0, pass: true, midTrade: true, recoveredMs: 1, notes: [] }))
-    .concat([{ id: 'feed-f', kind: 'feed' as never, plannedAt: 0, at: 0, pass: true, midTrade: undefined as never, recoveredMs: 1, notes: [], feed: 'f' } as never]);
+  const drills = fullDrills(meta.plan);
   const samples = Array.from({ length: 11 }, (_, i) => sample(i * 10, true));
   it('passes every check on a clean run and labels the rehearsal', () => {
     const r = buildReport(meta, samples, 10, 100, journal, drills, [], item4([], 'rehearsal', false), OPS_OK);
@@ -100,7 +99,7 @@ describe('report', () => {
     ['stub worker', { samples: samples.map((s) => ({ ...s, stub: true })) }, 'real_worker'],
     ['recorder off', { samples: samples.map((s, i) => (i === 3 ? { ...s, recorder: false } : s)) }, 'recorder_and_simulation_from_start'],
     ['commit changed mid-run', { samples: samples.map((s, i) => (i > 5 ? { ...s, git_sha: 'beef' } : s)) }, 'one_commit'],
-    ['only 2 mid-trade restarts', { drills: drills.map((d, i) => (i === 0 ? { ...d, midTrade: false } : d)) }, 'restart_drills'],
+    ['only 2 mid-trade crash restarts', { drills: (() => { let n = 0; return drills.map((d) => (d.cause === 'crash' && n++ < 2 ? { ...d, midTrade: false } : d)); })() }, 'restart_drills'],
     ['uptime under 99%', { samples: samples.map((s, i) => (i === 4 ? { ...s, ready: false } : s)) }, 'uptime'],
     ['memory near the limit', { samples: samples.map((s) => ({ ...s, rss_bytes: 750 * 1024 * 1024 })) }, 'memory'],
     ['run cut short', { end: 50 }, 'duration'],
@@ -176,8 +175,8 @@ describe('feed drop length (rehearsal 37142749019)', () => {
 describe('the qualifying run\'s start lines (re-review of #48)', () => {
   const plan = makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 });
   const start = (fields: Record<string, unknown>) => JSON.stringify({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot: 'b1', kind: 'start', ...fields });
-  const check = (name: string | undefined, fields: Record<string, unknown>) =>
-    buildReport({ runId: 'r', ...(name === undefined ? {} : { name }), label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'systemd:zeroed-worker.service', plan },
+  const check = (name: string | undefined, fields: Record<string, unknown>, label: 'vps' | 'rehearsal' = 'vps') =>
+    buildReport({ runId: 'r', ...(name === undefined ? {} : { name }), label, commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'systemd:zeroed-worker.service', plan },
       [], 10, 100, checkJournal(start(fields)), [], [], item4([], 'vps', false), OPS_OK).checks['qualifying_start'];
   it('a named host run fails on S0, a paper edge, an unregistered entry rule or qualifying not true', () => {
     expect(check('qual-1', { entry_rule: 'S0', paper_edge_ppm: '400000', qualifying: false })).toBe(false);
@@ -188,7 +187,11 @@ describe('the qualifying run\'s start lines (re-review of #48)', () => {
     expect(buildReport({ runId: 'r', name: 'qual-1', label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan },
       [], 10, 100, checkJournal(''), [], [], item4([], 'vps', false), OPS_OK).checks['qualifying_start']).toBe(false);
   });
-  it('a run without a name (a rehearsal, the shakedown) is not judged by it', () => {
-    expect(check(undefined, { entry_rule: 'S0', paper_edge_ppm: '400000', qualifying: false })).toBe(true);
+  it('a rehearsal is not judged by it', () => {
+    expect(check(undefined, { entry_rule: 'S0', paper_edge_ppm: '400000', qualifying: false }, 'rehearsal')).toBe(true);
+  });
+  it('a VPS run without a name never passes it (review of #64)', () => {
+    expect(check(undefined, { entry_rule: 'S0', paper_edge_ppm: '400000', qualifying: false })).toBe(false);
+    expect(check(undefined, { entry_rule: 'none', paper_edge_ppm: null, qualifying: true })).toBe(false);
   });
 });
