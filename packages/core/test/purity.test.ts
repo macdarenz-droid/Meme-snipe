@@ -217,7 +217,8 @@ const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans
     const next = tokens[k + 1];
     if (t.type === 'id') {
       const property = prev?.value === '.' || prev?.value === '?.' || prev?.value === '#';
-      const key = next?.value === ':' && (prev?.value === '{' || prev?.value === ',');
+      // An object key, or a member declared in a type (`readonly global: X;`): a name, not a reference.
+      const key = (next?.value === ':' || (next?.value === '?' && tokens[k + 2]?.value === ':')) && (prev?.value === '{' || prev?.value === ',' || prev?.value === ';' || prev?.value === 'readonly');
       if (property ? BANNED_PROPERTIES.has(t.value) : !key && BANNED_IDENTIFIERS.has(t.value)) found.push(t.value);
       // No Date at all: times are integer milliseconds from data. This also rules out Date.parse and local-time reads.
       if (t.value === 'Date' && !property && !key) found.push('Date (times are integer ms)');
@@ -415,6 +416,7 @@ describe('purity guard', () => {
       'const where = db.location();',
       'const o = { self: 1, location: 2 };',
       'class C { #window = 1; }',
+      'interface Ctx { readonly global: G; window?: number; self: S }',
       "const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);",
       "const keys = ['constructor'];",
       "const v = obj['key']; const w = arr[0]; const x = map[id]; const y = [['a' + b]];",
