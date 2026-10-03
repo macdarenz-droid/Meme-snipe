@@ -398,8 +398,10 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   if (atMinimum && sized.range.minLamports > minSpend) {
     return refuse([reason('expected_net_not_positive', 'the minimum size does not clear its fixed costs')], check.trips, s);
   }
-  const spend = atMinimum ? minSpend : sized.range.maxLamports;
-  const notional = atMinimum ? qMin : sized.range.maxUsd;
+  // A size cap (R2, R15) admits exactly the minimum spend and nothing between it and the cap.
+  const shapeSpend = maxBig(microUsdToLamports(usd(shapeCap), price, 'floor'), minSpend);
+  const spend = atMinimum ? minSpend : minBig(sized.range.maxLamports, shapeSpend);
+  const notional = spend === minSpend ? qMin : lamportsToMicroUsd(lamports(spend), price, 'floor');
 
   // R14: the round trip at the chosen size, F included, within 5% and within a third of the median target.
   let roundTrip: RoundTrip;

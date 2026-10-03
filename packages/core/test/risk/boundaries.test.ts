@@ -2,9 +2,9 @@
 // own, so a changed comparison or a dropped term fails a test (RISK-1 review, mutation testing).
 import { describe, expect, test } from 'vitest';
 import { TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
-import { costAtSize, fixedCosts } from '../../src/costs/index.ts';
+import { costAtSize, feasibleSize, fixedCosts } from '../../src/costs/index.ts';
 import { type EntryAllowed, evaluateEntry, evaluateExit, maxTradeCosts, melbourneWeek, opsReserve } from '../../src/risk/index.ts';
-import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
+import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
 import {
   DAY_START, DEEP_POOL, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest,
   clockAt, codes, latches, quoterFor, trade,
@@ -391,6 +391,11 @@ describe('history and marks', () => {
       expect(d.snapshot).toMatchObject({ equity: usd('18'), openExposure: 0n });
     }
   });
+  test('a mark of zero is a known total loss, not an unknown one', () => {
+    const d = evaluateEntry(baseInput({ account: account({ openPositions: [pos(0n as MicroUsd, NOW - 100)] }) }), baseRequest());
+    expect(codes(d)).not.toContain('mark_unknown');
+    expect(d.snapshot).toMatchObject({ equity: usd('18'), openExposure: 0n });
+  });
   test('a fresh mark is not stale, and a one-micro-dollar mark is worth one micro-dollar', () => {
     const d = evaluateEntry(baseInput({ account: account({ openPositions: [pos(1n as MicroUsd, NOW - 100)] }) }), baseRequest());
     expect(codes(d)).not.toContain('mark_stale');
@@ -398,9 +403,9 @@ describe('history and marks', () => {
     expect(d.snapshot?.openExposure).toBe(1n);
   });
   test('equity of zero is refused, one micro-dollar is not; so is a week-start equity of zero', () => {
-    const zero = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK, '-20', { notional: usd('5') })] }) });
+    const zero = baseInput({ account: account({ closedTrades: [trade(THIS_WEEK, '-20', { notional: usd('5') })] }) });
     expect(codes(evaluateEntry(zero, baseRequest()))).toContain('bankroll_invalid');
-    const tiny = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK, '-19.999999', { notional: usd('5') })] }) });
+    const tiny = baseInput({ account: account({ closedTrades: [trade(THIS_WEEK, '-19.999999', { notional: usd('5') })] }) });
     expect(codes(evaluateEntry(tiny, baseRequest()))).not.toContain('bankroll_invalid');
     const emptyWeek = baseInput({ account: account({ openingEquity: usd('0'), flows: [{ atMs: THIS_WEEK, amount: usd('20') }] }) });
     expect(codes(evaluateEntry(emptyWeek, baseRequest()))).toContain('bankroll_invalid');
@@ -449,7 +454,9 @@ describe('price and costs', () => {
     const last = calls;
     let n = 0;
     const failsLast = (spend: bigint) => (++n === last ? { ok: false as const, reason: 'no-liquidity' as const, detail: 'gone' } : real(spend));
-    expect(codes(evaluateEntry(baseInput(), baseRequest({ quote: failsLast })))).toEqual(['quote_failed']);
+    const d = evaluateEntry(baseInput(), baseRequest({ quote: failsLast }));
+    expect(codes(d)).toEqual(['quote_failed']);
+    expect(d.allow ? '' : d.reasons[0]?.detail).toContain('no-liquidity');
   });
 });
 
@@ -463,8 +470,9 @@ describe('each reason is listed once', () => {
     const low = { ...i, market: { ...i.market, solBalance: { value: lamports(TRIAL_POLICY.reserve.opsFloor - 1n), atMs: NOW } } };
     expect(codes(evaluateEntry(low, baseRequest())).filter((x) => x === 'ops_reserve')).toHaveLength(1);
   });
-  test('six losses in twenty trades', () => {
-    const closed = [...'LWLWLWLWLWL'].map((ch, i) => trade(LAST_WEEK - (11 - i) * HOUR, ch === 'L' ? '-0.1' : '0.1'));
+  test('six losses found by several windows', () => {
+    const pattern = 'LWLWLWLWLWL' + 'W'.repeat(14); // 25 trades: windows 0, 1 and 2 each hold 5 or more losses
+    const closed = [...pattern].map((ch, i) => trade(LAST_WEEK - (pattern.length - i) * HOUR, ch === 'L' ? '-0.1' : '0.1'));
     expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: closed }) }), baseRequest())).filter((x) => x === 'loss_review')).toHaveLength(1);
   });
 });
@@ -514,11 +522,20 @@ describe('rounding edges', () => {
     expect(fits(hi)).toBe(false);
   });
   test("an open position's exit ladder is valued rounded up", () => {
+    // At $119.461 the ladder is not a whole number of micro-dollars, so the rounding shows.
+    const price = solPriceMicroUsd('119.461');
+    const ladder = lamportsToMicroUsd(lamports(costs.ladderWorst), price, 'ceil');
+    expect(ladder).not.toBe(lamportsToMicroUsd(lamports(costs.ladderWorst), price, 'floor'));
+    const c = lamportsToMicroUsd(costs.total, price, 'ceil');
     // full_loss_kill_line appears once 6,000,000 - x - ceil(ladder) - C < q_min.
-    const appears = (x: bigint) => codes(evaluateEntry(baseInput({ account: account({ openPositions: [
-      { mint: MINT_B, openedAtMs: NOW - HOUR, notional: x as MicroUsd, mark: x as MicroUsd, markAtMs: NOW - 100 },
-    ] }) }), baseRequest())).includes('full_loss_kill_line');
-    const first = usd('6') - LADDER_USD - C_USD - TRIAL_POLICY.capital.minNotional + 1n;
+    const appears = (x: bigint) => {
+      const i = baseInput({ account: account({ openPositions: [
+        { mint: MINT_B, openedAtMs: NOW - HOUR, notional: x as MicroUsd, mark: x as MicroUsd, markAtMs: NOW - 100 },
+      ] }) });
+      const input = { ...i, market: { ...i.market, solPrice: { value: price, atMs: NOW } } };
+      return codes(evaluateEntry(input, baseRequest())).includes('full_loss_kill_line');
+    };
+    const first = usd('6') - ladder - c - TRIAL_POLICY.capital.minNotional + 1n;
     expect(appears(first)).toBe(true);
     expect(appears(first - 1n)).toBe(false);
     expect(appears(usd('0.01'))).toBe(false);
@@ -564,6 +581,34 @@ describe('rounding edges', () => {
     expect(ceilEdge).toBeGreaterThan(floorEdge);
     expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: 1500, rent: { ...RENT, oneTime: floorEdge } })))).toContain('planned_risk');
     expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: 1500, rent: { ...RENT, oneTime: floorEdge - 1n } })))).not.toContain('planned_risk');
+  });
+  test('sizing adds no hidden cost: the break-even edge matches CORE-2 exactly', () => {
+    const minSpend = microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil');
+    const big = usd('100');
+    // The same top of the range as the evaluator: its tightest cap other than the minimum-size stage.
+    const ref = evaluateEntry(baseInput(), baseRequest()) as EntryAllowed;
+    const qCap = ref.caps.filter((c) => !c.name.startsWith('minimum')).reduce((m, c) => (c.notional < m ? c.notional : m), big);
+    const coreTrades = (edgePpm: bigint) => {
+      const r = feasibleSize({
+        quote: quoterFor(DEEP_POOL), solPrice: PRICE, edgePpm, network: NETWORK, rent: RENT, extraPpm: 0n,
+        policy: { minNotional: TRIAL_POLICY.capital.minNotional, maxNotional: qCap, maxImpactPpm: 10_000n },
+        caps: { lossAllowance: big, riskBudget: big, executableDepth: big, cash: big },
+      });
+      return r.trade && r.range.minLamports <= minSpend;
+    };
+    let lo = 0n;
+    let hi = 200_000n;
+    while (hi - lo > 1n) { const mid = (lo + hi) / 2n; if (coreTrades(mid)) hi = mid; else lo = mid; }
+    expect(evaluateEntry(baseInput(), baseRequest({ edgePpm: hi })).allow).toBe(true);
+    expect(codes(evaluateEntry(baseInput(), baseRequest({ edgePpm: lo })))).toEqual(['expected_net_not_positive']);
+  });
+  test('a policy with q_max = q_min still trades the minimum (its lamport rounding is not a raise)', () => {
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, maxNotional: TRIAL_POLICY.capital.minNotional } });
+    for (const stepUp of [false, true]) {
+      const d = evaluateEntry(baseInput({ session, latches: latches({ sizeStepUpApproved: stepUp }) }), baseRequest()) as EntryAllowed;
+      expect(d.allow).toBe(true);
+      expect(d.spendLamports).toBe(microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil'));
+    }
   });
   test('the caps list names the maximum notional', () => {
     const d = evaluateEntry(baseInput(), baseRequest()) as EntryAllowed;
