@@ -122,6 +122,10 @@ export interface HolderAccount {
   /** The program that owns `owner`'s account, when known (null: not read, or a system wallet). */
   readonly ownerProgram: string | null;
   readonly amount: bigint;
+  /** The account's delegate, which may move up to `delegatedAmount` without the owner (null: none). */
+  readonly delegate: string | null;
+  /** 0 when there is no delegate. */
+  readonly delegatedAmount: bigint;
 }
 
 /**
@@ -349,7 +353,8 @@ export const parseCandles = (v: unknown): CandlesFact | null =>
   withObs(v) && isMs(v['intervalMs']) && (v['intervalMs'] as number) > 0 && every(v['candles'], isCandle) ? (v as unknown as CandlesFact) : null;
 
 const isHolder = (v: unknown): v is HolderAccount =>
-  isObj(v) && isStr(v['address']) && isStr(v['mint']) && isStr(v['owner']) && strOrNull(v['ownerProgram']) && isNat(v['amount']);
+  isObj(v) && isStr(v['address']) && isStr(v['mint']) && isStr(v['owner']) && strOrNull(v['ownerProgram']) && isNat(v['amount'])
+  && strOrNull(v['delegate']) && isNat(v['delegatedAmount']) && (v['delegate'] !== null || v['delegatedAmount'] === 0n);
 
 export const parseHolders = (v: unknown): HoldersFact | null =>
   withObs(v) && isNat(v['supply']) && (v['coverage'] === 'all' || v['coverage'] === 'largest') && every(v['accounts'], isHolder)
