@@ -4,10 +4,16 @@ import { describe, expect, test } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import type { ManifestDay } from '../src/dataset/dataset.ts';
 import type { AmmSwapRow, DatasetRow } from '../src/dataset/rows.ts';
-import { evaluate, type Obs, passes, type Registry, ruleId, score, selectRule, univariate, walkForward } from '../src/research/analysis.ts';
-import { collectCandidates, type DriveOptions, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
-import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
-import { assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, type PracticeWindow, readableDays, regimeOf, wallDay } from '../src/research/practice.ts';
+import { evaluate, handoffs, type Obs, passes, type Registry, ruleId, score, selectRule, univariate, walkForward } from '../src/research/analysis.ts';
+import { type Candidate, collectCandidates, type DriveOptions, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
+import { PLAN_BARRIERS, scoreCandidates, type ScoreTarget } from '../src/research/outcome.ts';
+import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
+import { observedFeeContext, replaySwap } from '../../core/src/fills/index.ts';
+import { bps } from '../../core/src/units/index.ts';
+import {
+  addDays, assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, melbourneStart, type PracticeWindow, readableDays, regimeAt, resolveWindow, wallDay, wallMs,
+} from '../src/research/practice.ts';
+import { createHoldoutRegistry, registerHoldout } from '../../core/src/stats/index.ts';
 import { AsOfError, FEATURE_IDS, type Features, SignalTracker } from '../src/research/tracker.ts';
 import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
 
@@ -17,29 +23,53 @@ const SRC = join(import.meta.dirname, '..', 'src', 'research');
 // Synthetic data starts 2026-09-20 00:00 UTC; this test window keeps it on practice days.
 const WINDOW: PracticeWindow = { decisionFrom: '2026-09-19', decisionTo: '2026-10-01', holdoutFrom: '2026-09-25', embargoDays: 1, confirmedBy: 'test' };
 const rows = syntheticRows({ mints: 3, slots: 2.5 * 3600 * 6 });
+const targets = (cs: readonly Candidate[]): ScoreTarget[] => cs.map(({ id, pool, decisionSlot, decisionMs, solUsd }) => ({ id, pool, decisionSlot, decisionMs, solUsd }));
 const drive = (over: Partial<DriveOptions> = {}): DriveOptions => ({
   window: WINDOW, policy: TRIAL_POLICY, solUsd: solUsdAsOf(SOL_USD, 3 * 3_600_000), ...PLAN_DRIVE, ...over,
 });
 
 describe('holdout wall', () => {
-  test('the committed window keeps the wall at or before 2026-09-17 until BT-2 confirms it', () => {
+  test('the committed window keeps the wall on or before the B4 day until the registry confirms it', () => {
     const w = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
-    if (w.confirmedBy === null) expect(wallDay(w) <= '2026-09-17').toBe(true);
+    if (w.confirmedBy === null) expect(wallDay(w) <= '2026-09-12').toBe(true);
     expect(isPracticeDay(w, wallDay(w))).toBe(false);
     expect(isPracticeDay(w, w.holdoutFrom)).toBe(false);
-    expect(regimeOf(w, '2026-08-03')).toBe('B2-boost');
-    expect(regimeOf(w, '2026-09-11')).toBe('B3-fee-config');
-    expect(regimeOf(w, '2026-09-12')).toBe('B4-holder-rewards');
+    expect(regimeAt(w, Date.parse('2026-08-03T00:00:00Z'))).toBe('B2-boost');
+    expect(regimeAt(w, Date.parse('2026-09-12T15:23:59Z'))).toBe('B3-fee-config');
+    expect(regimeAt(w, Date.parse('2026-09-12T15:24:00Z'))).toBe('B4-holder-rewards');
+    expect(regimeAt(w, Date.parse('2026-07-20T00:00:00Z'))).toBe('pre');
+  });
+
+  test('days are Melbourne days: the wall starts at Melbourne midnight', () => {
+    expect(wallDay(WINDOW)).toBe('2026-09-24');
+    expect(new Date(wallMs(WINDOW)).toISOString()).toBe('2026-09-23T14:00:00.000Z');
+    // After daylight saving starts (4 Oct 2026) Melbourne is UTC+11.
+    expect(new Date(melbourneStart('2026-10-05')).toISOString()).toBe('2026-10-04T13:00:00.000Z');
   });
 
   test('holdout and embargo days are refused before any file is opened', () => {
-    expect(wallDay(WINDOW)).toBe('2026-09-24');
     expect(() => assertReadable(WINDOW, '2026-09-24')).toThrow(HoldoutWallError);
     expect(() => assertReadable(WINDOW, '2026-09-30')).toThrow(HoldoutWallError);
     expect(() => assertReadable(WINDOW, '2026-09-23')).not.toThrow();
     const day = (d: string): ManifestDay => ({ day: d, blocks_expected: 0, blocks_scanned: 0, complete: true, warm_up: false, rows: {}, files: [] });
-    const kept = readableDays(WINDOW, ['2026-09-26', '2026-09-23', '2026-09-24', '2026-09-05', '2026-09-25'].map(day)).map((d) => d.day);
-    expect(kept).toEqual(['2026-09-05', '2026-09-23']);
+    // UTC day files: 22 Sep ends before the wall (23 Sep 14:00 UTC); 23 Sep straddles it and stays unread.
+    const kept = readableDays(WINDOW, ['2026-09-26', '2026-09-23', '2026-09-22', '2026-09-05', '2026-09-24'].map(day)).map((d) => d.day);
+    expect(kept).toEqual(['2026-09-05', '2026-09-22']);
+  });
+
+  test('a window file cannot move the wall later than the committed one; a confirmed one must match the registry', () => {
+    const committed = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
+    const later = { ...committed, holdoutFrom: addDays(committed.holdoutFrom, 1) };
+    expect(() => resolveWindow(committed, later, null)).toThrow(/later than the committed wall/);
+    const earlier = { ...committed, holdoutFrom: addDays(committed.holdoutFrom, -3) };
+    expect(resolveWindow(committed, earlier, null)).toBe(earlier);
+    const confirmed = { ...earlier, confirmedBy: 'registry@abc' };
+    expect(() => resolveWindow(committed, confirmed, null)).toThrow(/no STATS-1 registry/);
+    let reg = createHoldoutRegistry(2);
+    reg = registerHoldout(reg, { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(earlier.holdoutFrom, -1), toDay: '2026-10-01' });
+    expect(() => resolveWindow(committed, confirmed, reg)).toThrow(/starts .* before the window's holdoutFrom/);
+    const ok = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: earlier.holdoutFrom, toDay: '2026-10-01' });
+    expect(resolveWindow(committed, confirmed, ok)).toBe(confirmed);
   });
 
   test('a planted holdout-day row stops both stages', () => {
@@ -118,12 +148,12 @@ describe('feature stage is blind to the future', () => {
 describe('outcome stage', () => {
   const { candidates } = collectCandidates(rows, drive());
   const opts = { window: WINDOW, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative' as const, barriers: PLAN_BARRIERS, seed: 'res3', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps };
-  const out = scoreCandidates(rows, candidates, opts);
+  const out = scoreCandidates(rows, targets(candidates), opts);
 
   test('every candidate gets one label per barrier; deterministic', () => {
     expect(out.length).toBe(candidates.length);
     for (const o of out) expect(o.labels.map((l) => l.cfgId)).toEqual(PLAN_BARRIERS.map((b) => b.cfgId));
-    expect(scoreCandidates(rows, candidates, opts)).toEqual(out);
+    expect(scoreCandidates(rows, targets(candidates), opts)).toEqual(out);
   });
 
   test('a filled entry is charged its spend, base and priority fee, tip and unreturned rent', () => {
@@ -138,21 +168,92 @@ describe('outcome stage', () => {
     }
   });
 
-  test('on a pool that stops trading, a round trip loses exactly fees, rent and network costs (about 11% at $2)', () => {
-    // No swap after 50 min: every decision sees a still pool, so the time stop sells at the entry price.
-    const still = rows.filter((r) => r.kind !== 'amm' || r.blockTime * 1000 < T0 + 50 * 60_000);
-    const cs = collectCandidates(still, drive()).candidates;
-    const o2 = scoreCandidates(still, cs, opts).filter((o) => o.labels[1]!.entryFilled);
-    expect(o2.length).toBeGreaterThan(0);
-    for (const o of o2) {
-      const b1 = o.labels[0]!;
+  // No swap after 50 min: every decision sees a still pool, so the time stop sells at the entry price.
+  const still = rows.filter((r) => r.kind !== 'amm' || r.blockTime * 1000 < T0 + 50 * 60_000);
+  const stillCands = collectCandidates(still, drive()).candidates;
+
+  test('on a still pool the round trip equals the computed cost to 1e-9: fees both ways, rent, network, failed exits', () => {
+    const net = FILL_CONFIG.network;
+    const steps = TRIAL_POLICY.exits.ladder.steps;
+    const base = net.signaturesPerTx * net.baseFeePerSignature;
+    const outs = scoreCandidates(still, targets(stillCands), opts);
+    let checked = 0;
+    for (const [i, o] of outs.entries()) {
       const b2 = o.labels[1]!;
-      // 2 x 1.2% venue fees + rent 1,513,840 of ~16.7M lamports + 2 x 30,000 lamports of fees and tips.
+      if (!b2.entryFilled) continue;
+      const c = stillCands[i]!;
+      const sw = still.filter((r): r is AmmSwapRow => r.kind === 'amm' && r.pool === c.pool).at(-1)!;
+      const s = replaySwap(sw.pre, sw);
+      if (!s.ok) throw new Error('fixture swap does not replay');
+      const ctx = observedFeeContext(sw.fees, sw.baseSupply, { mayhemMode: false, transferFee: false, transferHook: false });
+      const spend = BigInt(Math.floor((Number(TRIAL_POLICY.capital.minNotional) / 1e6 / c.solUsd) * 1e9));
+      const buy = poolBuyExactQuoteIn(s.trade.after, spend, ctx);
+      if (!buy.ok) throw new Error('no buy quote');
+      const cost = buy.trade.userQuote + base + net.entryPriorityFee + net.tip + net.tokenAccountRent;
+      expect(o.entryCost).toBe(cost);
+      const sell = poolSell(buy.trade.after, buy.trade.base, ctx);
+      if (!sell.ok) throw new Error('no sell quote');
+      const value = sell.trade.userQuote - (base + steps[0]!.priorityFeeLamports + net.tip);
+      const failed = BigInt(b2.blocked ? b2.nExitAttempts : b2.nExitAttempts - 1) * (base + steps[2]!.priorityFeeLamports);
+      const expected = Number(value - cost - failed) / Number(cost);
+      expect(Math.abs(b2.rNet! - expected)).toBeLessThan(1e-9);
       expect(b2.rNet!).toBeLessThan(-0.10);
-      expect(b2.rNet!).toBeGreaterThan(-0.13);
-      expect(b1.yTb).toBe(0);
-      expect(b1.rNet).toBeCloseTo(b2.rNet!, 9);
+      expect(b2.rNet!).toBeGreaterThan(-0.14);
+      // B1 never touches its barriers on a still pool, sees the same exit draws, and ends where B2 does.
+      expect(o.labels[0]!.yTb).toBe(0);
+      expect(o.labels[0]!.rNet).toBeCloseTo(b2.rNet!, 12);
+      checked++;
     }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  test('the exit pays the fees in force at the exit, not at the entry', () => {
+    // One small sell lands 100 min after T0 in every pool, on the still state; its creator fee is 0 or unchanged.
+    const at = T0 + 100 * 60_000;
+    const withSwap = (creator: number): DatasetRow[] => {
+      const out: DatasetRow[] = [];
+      let done = false;
+      for (const r of still) {
+        if (!done && r.kind === 'block' && r.blockTime * 1000 >= at) {
+          let tx = 0;
+          for (const p of new Set(stillCands.map((c) => c.pool))) {
+            const sw = still.filter((x): x is AmmSwapRow => x.kind === 'amm' && x.pool === p).at(-1)!;
+            const st = replaySwap(sw.pre, sw);
+            if (!st.ok) throw new Error('fixture swap does not replay');
+            out.push({ ...sw, slot: r.slot, blockTime: r.blockTime, txIdx: tx++, evIdx: 0, signature: `${sw.signature}x`, side: 'sell', mode: 'exact-base', amount: 1_000_000_000n, pre: st.trade.after,
+              fees: { ...sw.fees, split: { ...sw.fees.split, creator: bps(creator) } } });
+          }
+          done = true;
+        }
+        out.push(r);
+      }
+      return out;
+    };
+    const same = scoreCandidates(withSwap(95), targets(stillCands), opts);
+    const cut = scoreCandidates(withSwap(0), targets(stillCands), opts);
+    let checked = 0;
+    for (const [i, c] of stillCands.entries()) {
+      const a = same[i]!.labels[1]!;
+      const b = cut[i]!.labels[1]!;
+      if (!a.entryFilled || a.rNet === null || b.rNet === null) continue;
+      const after = c.decisionMs + 7_000 < at;
+      if (after) {
+        // Held across the change: 0.95% less creator fee on the sale, about 0.95% of the value per unit of cost.
+        expect(b.rNet - a.rNet).toBeGreaterThan(0.007);
+        expect(b.rNet - a.rNet).toBeLessThan(0.0105);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  test('a decision whose outcome window would reach the wall is purged, not scored', () => {
+    // Data moved to 11:00–14:00 UTC on 20 Sep and cut at the wall (Melbourne 21 Sep = 20 Sep 14:00 UTC).
+    const w: PracticeWindow = { ...WINDOW, holdoutFrom: '2026-09-22' };
+    const shifted = rows.map((r) => ({ ...r, blockTime: r.blockTime + 11 * 3600 })).filter((r) => r.blockTime * 1000 < wallMs(w));
+    const res = collectCandidates(shifted, drive({ window: w }));
+    expect(res.purged).toBeGreaterThan(0);
+    expect(res.candidates).toEqual([]);
   });
 
   test('an entry that does not land costs its fee and nothing else', () => {
@@ -176,7 +277,7 @@ const mkRng = (seed: number) => {
 };
 const gauss = (u: () => number) => Math.sqrt(-2 * Math.log(u() + 1e-12)) * Math.cos(2 * Math.PI * u());
 
-let regimeAt = (_d: number): string => 'R';
+let regimeOfDay = (_d: number): string => 'R';
 const synthObs = (days: number, perDay: number, signal: boolean, seed: number): Obs[] => {
   const u = mkRng(seed);
   const out: Obs[] = [];
@@ -187,7 +288,7 @@ const synthObs = (days: number, perDay: number, signal: boolean, seed: number): 
       // Planted: only the top fifth of f_net15 earns +30% on average; everything else loses 10%.
       const mu = signal && f['f_net15']! > 0.84 ? 0.3 : -0.1;
       const r = Math.max(-1, mu + 0.3 * gauss(u));
-      out.push({ id: `${day}:${i}`, day, decisionMs: Date.parse(day) + i * 60_000, features: f as Features, rNet: r, severe: r <= -0.5, blocked: false, regime: regimeAt(d) });
+      out.push({ id: `${day}:${i}`, day, decisionMs: Date.parse(day) + i * 60_000, features: f as Features, rNet: r, severe: r <= -0.5, blocked: false, regime: regimeOfDay(d) });
     }
   }
   return out;
@@ -212,18 +313,40 @@ describe('selection procedure', () => {
 
   test('a signal that flips sign in the latest regime fails the regime check', () => {
     // Days 0–19 one regime with the planted edge; days 20–39 a new regime where the same feature loses.
-    regimeAt = (d) => (d < 20 ? 'R2' : 'R4');
+    regimeOfDay = (d) => (d < 20 ? 'R2' : 'R4');
     const obs = synthObs(40, 40, true, 1).map((o) => (o.regime === 'R4' && o.features.f_net15! > 0.84 ? { ...o, rNet: o.rNet - 0.6 } : o));
-    regimeAt = () => 'R';
+    regimeOfDay = () => 'R';
     const v = evaluate(obs, { universe: 'U2', barrier: 'B1' }, { rows: [] }, ev);
     expect(v.regimes.map((r) => r.regime)).toEqual(['R2', 'R4']);
     expect(v.checks['regimes']).toBe(false);
     expect(v.pass).toBe(false);
     // The same data without the flip passes the regime check.
-    regimeAt = (d) => (d < 20 ? 'R2' : 'R4');
+    regimeOfDay = (d) => (d < 20 ? 'R2' : 'R4');
     const ok = evaluate(synthObs(40, 40, true, 1), { universe: 'U2', barrier: 'B1' }, { rows: [] }, ev);
-    regimeAt = () => 'R';
+    regimeOfDay = () => 'R';
     expect(ok.checks['regimes'], JSON.stringify(ok.regimes)).toBe(true);
+  });
+
+  test('one configuration per universe: barriers in the fixed order B1, B2, B3, first passing wins', () => {
+    // The order logic is tested on verdicts marked passed or failed; the checks themselves are tested above.
+    const v = evaluate(synthObs(40, 40, true, 1), { universe: 'U2', barrier: 'B1' }, { rows: [] }, ev);
+    const as = (universe: string, barrier: string, pass: boolean) => ({ ...v, universe, barrier, pass, checks: { ...v.checks, dsr: pass } });
+    const h = handoffs([as('U2', 'B3', true), as('U1', 'B1', false), as('U2', 'B2', true), as('U2', 'B1', false), { universe: 'U1', barrier: 'B2', skipped: 'only 2 practice days' }], ['B1', 'B2', 'B3']);
+    expect(h.map((x) => x.universe)).toEqual(['U1', 'U2']);
+    expect(h[0]).toMatchObject({ universe: 'U1', status: 'no reliable signal', barrier: null, rule: null });
+    expect(h[0]!.failed).toEqual([{ barrier: 'B1', checks: ['dsr'] }, { barrier: 'B2', checks: ['skipped: only 2 practice days'] }]);
+    // B1 failed, so B2 is handed over even though B3 passes too; exactly one configuration for U2.
+    expect(h[1]).toMatchObject({ universe: 'U2', status: 'candidate', barrier: 'B2', rule: v.finalRule });
+    expect(h[1]!.conds!.every((c) => Number.isFinite(c.t))).toBe(true);
+    expect(handoffs([as('U2', 'B2', true), as('U2', 'B3', true)], ['B3', 'B2'])[0]!.barrier).toBe('B3');
+  });
+
+  test('the deflated Sharpe check is strict: a strong planted edge still fails it when the family holds many variants of it', () => {
+    // The registry variance includes real skill spread between rules, so the benchmark is high (G1 keeps the rule).
+    const v = evaluate(synthObs(40, 40, true, 1), { universe: 'U2', barrier: 'B1' }, { rows: [] }, ev);
+    expect(v.checks['meanAboveZero']).toBe(true);
+    expect(v.checks['dsr']).toBe(false);
+    expect(v.pass).toBe(false);
   });
 
   test('on noise the verdict is "no reliable signal"', () => {
@@ -259,9 +382,12 @@ describe('selection procedure', () => {
   });
 
   test('univariate view flags the planted feature after Holm and nothing on noise', () => {
-    const planted = univariate(synthObs(30, 30, true, 5), { seed: 1, replicates: 400 });
+    const reg: Registry = { rows: [] };
+    const planted = univariate(synthObs(30, 30, true, 5), { seed: 1, replicates: 400 }, reg, { universe: 'U2', barrier: 'B1' });
+    // Both tails of every feature are logged as trials.
+    expect(reg.rows.length).toBe(2 * FEATURE_IDS.length);
     expect(planted.find((v) => v.feature === 'f_net15')!.holmPass).toBe(true);
-    const noise = univariate(synthObs(30, 30, false, 6), { seed: 1, replicates: 400 });
+    const noise = univariate(synthObs(30, 30, false, 6), { seed: 1, replicates: 400 }, { rows: [] }, { universe: 'U2', barrier: 'B1' });
     expect(noise.filter((v) => v.holmPass).length).toBeLessThanOrEqual(1);
   });
 });
@@ -271,27 +397,33 @@ test('T0 of the fixture is a practice day of the test window', () => {
 });
 
 describe('cli', () => {
-  test('runs on a dataset directory, writes results and the trial registry, and drops holdout days unread', async () => {
+  test('runs under the committed wall, writes results, handoff and trial registry; refuses a later wall', async () => {
     const { mkdtempSync, rmSync, writeFileSync, existsSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
-    const { execFileSync } = await import('node:child_process');
+    const { execFileSync, spawnSync } = await import('node:child_process');
     const { writeDataset } = await import('./dataset-writer.ts');
     const dir = mkdtempSync(join(tmpdir(), 'res3-'));
+    // The fixture moved 30 days back (21 Aug, before the committed wall) so the CLI runs on the committed window.
+    const back = 30 * 86_400;
     try {
-      writeDataset(join(dir, 'data'), rows);
-      writeFileSync(join(dir, 'sol.csv'), ['# name: SOL/USD', '# tag: fixed', '# bar_ms: 3600000', `# fetched_at: ${new Date(T0).toISOString()}`, 'start,close',
-        ...SOL_USD.bars.map((b) => `${new Date(b.start).toISOString()},${b.close}`)].join('\n'));
-      writeFileSync(join(dir, 'window.json'), JSON.stringify(WINDOW));
-      const run = (w: string) => execFileSync(process.execPath, ['--no-warnings', join(SRC, 'cli.ts'), '--dataset', join(dir, 'data'), '--sol-usd', join(dir, 'sol.csv'), '--window', w, '--out', join(dir, 'out'), '--replicates', '200'], { encoding: 'utf8' });
-      const summary = JSON.parse(run(join(dir, 'window.json'))) as { days: number; counts: Record<string, { decisions: number }> };
+      writeDataset(join(dir, 'data'), rows.map((r) => ({ ...r, blockTime: r.blockTime - back })));
+      writeFileSync(join(dir, 'sol.csv'), ['# name: SOL/USD', '# tag: fixed', '# bar_ms: 3600000', `# fetched_at: ${new Date(T0 - back * 1000).toISOString()}`, 'start,close',
+        ...SOL_USD.bars.map((b) => `${new Date(b.start - back * 1000).toISOString()},${b.close}`)].join('\n'));
+      const cmd = (extra: string[]) => [join(SRC, 'cli.ts'), '--dataset', join(dir, 'data'), '--sol-usd', join(dir, 'sol.csv'), '--out', join(dir, 'out'), '--replicates', '200', ...extra];
+      const summary = JSON.parse(execFileSync(process.execPath, ['--no-warnings', ...cmd([])], { encoding: 'utf8' })) as { days: number; counts: Record<string, { decisions: number }>; handoff: string[] };
       expect(summary.days).toBe(1);
       expect(summary.counts['U2']!.decisions).toBe(9);
-      expect(existsSync(join(dir, 'out', 'results.json'))).toBe(true);
-      expect(existsSync(join(dir, 'out', 'trials.jsonl'))).toBe(true);
-      // The same data behind a wall before its only day: the day is dropped unread and nothing is decided.
-      writeFileSync(join(dir, 'early.json'), JSON.stringify({ ...WINDOW, holdoutFrom: '2026-09-20', decisionFrom: '2026-09-10' }));
-      const none = JSON.parse(run(join(dir, 'early.json'))) as { days: number };
-      expect(none.days).toBe(0);
+      expect(summary.handoff).toEqual(['U1: no reliable signal', 'U2: no reliable signal']);
+      for (const f of ['results.json', 'trials.jsonl', 'handoff.json']) expect(existsSync(join(dir, 'out', f)), f).toBe(true);
+      const committed = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
+      writeFileSync(join(dir, 'late.json'), JSON.stringify({ ...committed, holdoutFrom: addDays(committed.holdoutFrom, 1) }));
+      const late = spawnSync(process.execPath, ['--no-warnings', ...cmd(['--window', join(dir, 'late.json')])], { encoding: 'utf8' });
+      expect(late.status).not.toBe(0);
+      expect(late.stderr).toMatch(/later than the committed wall/);
+      // An earlier wall, before the fixture's day: the day file is dropped unread.
+      writeFileSync(join(dir, 'early.json'), JSON.stringify({ ...committed, holdoutFrom: '2026-08-21' }));
+      const early = JSON.parse(execFileSync(process.execPath, ['--no-warnings', ...cmd(['--window', join(dir, 'early.json')])], { encoding: 'utf8' })) as { days: number };
+      expect(early.days).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

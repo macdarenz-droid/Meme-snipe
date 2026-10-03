@@ -97,6 +97,7 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   const failProbability = 1 - Number(scen.landPpm.pumpswap) / 1e6;
   const rent = net.tokenAccountRent;
   const maxHorizon = Math.max(...o.barriers.map((b) => b.horizonMs));
+  // Time after the horizon for the exit ladder, at 1 s per slot: conservative, since slots run ~0.27–0.4 s (more slots fit).
   const tail = (ladder.maxAttempts + 1) * latency * 1000;
 
   const byPool = new Map<string, Pending[]>();

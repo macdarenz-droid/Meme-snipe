@@ -1,92 +1,144 @@
 // The holdout wall for signal research (RES-3, docs/research/signals.md §1). Research reads practice days only: every
-// decision day on or after the wall (the embargo day before the holdout, and the holdout itself) is refused before a
-// file is opened, and any row at or after the wall that still reaches the analysis throws.
+// day on or after the wall (the embargo day before the holdout, and the holdout itself) is refused before a file is
+// opened, and any row at or after the wall that still reaches the analysis throws.
+//
+// Day convention: every day here is a Melbourne day (AEST/AEDT), as in the STATS-1 registry and the reports. Dataset
+// files are UTC days; a UTC day file is opened only when it ends at or before the wall's instant.
 import { readFileSync } from 'node:fs';
+import type { HoldoutRegistry } from '../../../core/src/stats/index.ts';
 import type { ManifestDay } from '../dataset/dataset.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
+import { melbourneDay } from '../report.ts';
+
+export interface Regime {
+  readonly label: string;
+  /** The boundary instant (UPG-1b, ARCHITECTURE.md §6.5), ISO UTC. */
+  readonly from: string;
+}
 
 export interface PracticeWindow {
-  /** First and last decision day of the whole window (UTC days, "YYYY-MM-DD"). */
+  /** First and last decision day of the whole window (Melbourne days, "YYYY-MM-DD"). */
   readonly decisionFrom: string;
   readonly decisionTo: string;
-  /** First holdout day (from BT-2 and the STATS-1 registry). */
+  /** First holdout day (Melbourne), from the STATS-1 registry once BT-2 registers it. */
   readonly holdoutFrom: string;
   /** Whole days left out between the practice days and the holdout. */
   readonly embargoDays: number;
-  /** Who confirmed the boundary (BT-2 session or registry commit), or null while the conservative default holds. */
+  /** The registry commit or BT-2 note that fixed holdoutFrom, or null while the conservative default holds. */
   readonly confirmedBy: string | null;
-  /** Platform regimes (UPG-1b): each starts on its UTC day and lasts until the next. Days before the first are 'pre'. */
-  readonly regimes?: readonly { readonly label: string; readonly from: string }[];
+  /** Platform regimes in force from each boundary instant. Before the first: 'pre'. */
+  readonly regimes?: readonly Regime[];
 }
 
-/** The regime a day belongs to: the last regime starting on or before it. */
-export const regimeOf = (w: PracticeWindow, day: string): string => {
-  let label = 'pre';
-  for (const r of [...(w.regimes ?? [])].sort((a, b) => (a.from < b.from ? -1 : 1))) if (r.from <= day) label = r.label;
-  return label;
-};
-
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const DAY_MS = 86_400_000;
+const HOUR = 3_600_000;
+const DAY_MS = 24 * HOUR;
 
-export const dayMs = (day: string): number => {
+const utcMidnight = (day: string): number => {
   if (!DAY.test(day)) throw new RangeError(`not a YYYY-MM-DD day: ${day}`);
   const ms = Date.parse(`${day}T00:00:00Z`);
   if (!Number.isFinite(ms)) throw new RangeError(`not a calendar day: ${day}`);
   return ms;
 };
-export const dayOf = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
-export const addDays = (day: string, n: number): string => dayOf(dayMs(day) + n * DAY_MS);
+
+/** The instant a Melbourne day starts (UTC+10 or UTC+11). */
+export const melbourneStart = (day: string): number => {
+  const utc = utcMidnight(day);
+  for (const off of [11, 10]) {
+    const ms = utc - off * HOUR;
+    if (melbourneDay(ms) === day && melbourneDay(ms - 1) !== day) return ms;
+  }
+  throw new RangeError(`no Melbourne midnight found for ${day}`);
+};
+export const addDays = (day: string, n: number): string => new Date(utcMidnight(day) + n * DAY_MS).toISOString().slice(0, 10);
+export { melbourneDay };
 
 export class HoldoutWallError extends Error {
   override readonly name = 'HoldoutWallError';
 }
 
+/** The first Melbourne day research may never read: the first embargo day. */
+export const wallDay = (w: PracticeWindow): string => addDays(w.holdoutFrom, -w.embargoDays);
+export const wallMs = (w: PracticeWindow): number => melbourneStart(wallDay(w));
+
 export const checkWindow = (w: PracticeWindow): PracticeWindow => {
-  for (const d of [w.decisionFrom, w.decisionTo, w.holdoutFrom]) dayMs(d);
+  for (const d of [w.decisionFrom, w.decisionTo, w.holdoutFrom]) utcMidnight(d);
   if (!Number.isInteger(w.embargoDays) || w.embargoDays < 1) throw new RangeError('embargoDays must be an integer >= 1');
   if (!(w.decisionFrom < w.holdoutFrom && w.holdoutFrom <= w.decisionTo)) throw new RangeError('holdoutFrom must fall inside the decision window, after its first day');
   if (wallDay(w) <= w.decisionFrom) throw new RangeError('the wall leaves no practice day');
+  for (const r of w.regimes ?? []) if (!Number.isFinite(Date.parse(r.from)) || typeof r.label !== 'string') throw new RangeError(`bad regime ${JSON.stringify(r)}`);
   return w;
 };
 
-export const loadWindow = (path: string): PracticeWindow => {
-  const j = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+export const parseWindow = (j: Record<string, unknown>, what: string): PracticeWindow => {
   const str = (k: string): string => {
     const v = j[k];
-    if (typeof v !== 'string') throw new RangeError(`${path}: ${k} must be a string`);
+    if (typeof v !== 'string') throw new RangeError(`${what}: ${k} must be a string`);
     return v;
   };
   const c = j['confirmedBy'];
+  const regimes = Array.isArray(j['regimes']) ? (j['regimes'] as Record<string, unknown>[]).map((r) => ({ label: String(r['label']), from: String(r['from']) })) : undefined;
   return checkWindow({
     decisionFrom: str('decisionFrom'), decisionTo: str('decisionTo'), holdoutFrom: str('holdoutFrom'),
-    embargoDays: j['embargoDays'] as number, confirmedBy: typeof c === 'string' ? c : null,
-    ...(Array.isArray(j['regimes']) ? { regimes: (j['regimes'] as { label: string; from: string }[]).map((r) => ({ label: String(r.label), from: (dayMs(String(r.from)), String(r.from)) })) } : {}),
+    embargoDays: j['embargoDays'] as number, confirmedBy: typeof c === 'string' ? c : null, ...(regimes === undefined ? {} : { regimes }),
   });
 };
 
-/** The first day research may never read: the first embargo day. */
-export const wallDay = (w: PracticeWindow): string => addDays(w.holdoutFrom, -w.embargoDays);
-export const wallMs = (w: PracticeWindow): number => dayMs(wallDay(w));
+export const loadWindow = (path: string): PracticeWindow => parseWindow(JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>, path);
 
-/** A decision day of the practice set. */
+/**
+ * The window a run may use: never a wall later than the committed one. A confirmed window must also match the STATS-1
+ * registry: every registered holdout starts on or after its holdoutFrom (the wall plus the embargo).
+ */
+export const resolveWindow = (committed: PracticeWindow, given: PracticeWindow, registry: HoldoutRegistry | null): PracticeWindow => {
+  if (wallMs(given) > wallMs(committed)) {
+    throw new HoldoutWallError(`the given wall ${wallDay(given)} is later than the committed wall ${wallDay(committed)} (research/signals/window.json)`);
+  }
+  for (const w of [committed, given]) {
+    if (w.confirmedBy === null) continue;
+    if (registry === null || registry.entries.length === 0) throw new HoldoutWallError(`the window says confirmed by ${w.confirmedBy}, but no STATS-1 registry with entries was given`);
+    for (const e of registry.entries) {
+      if (e.fromDay < w.holdoutFrom) throw new HoldoutWallError(`registered holdout ${e.holdoutId} starts ${e.fromDay}, before the window's holdoutFrom ${w.holdoutFrom}`);
+    }
+  }
+  return given;
+};
+
+/** A decision day (Melbourne) of the practice set. */
 export const isPracticeDay = (w: PracticeWindow, day: string): boolean => day >= w.decisionFrom && day < wallDay(w);
 
-/** Throws for any day at or after the wall. Lead-in days before the window are history and may be read. */
+/** Throws for any Melbourne day at or after the wall. Lead-in days before the window are history and may be read. */
 export const assertReadable = (w: PracticeWindow, day: string): void => {
-  dayMs(day);
+  utcMidnight(day);
   if (day >= wallDay(w)) throw new HoldoutWallError(`day ${day} is at or after the holdout wall ${wallDay(w)}: research never reads it`);
 };
 
-/** The manifest days research may load (lead-in and practice days), in order. Holdout and embargo days are dropped unread. */
+/**
+ * The dataset day files (UTC days) research may open, in order: only those that end at or before the wall's instant.
+ * Holdout and embargo hours are never in an opened file; a UTC day that straddles the wall is left unread.
+ */
 export const readableDays = (w: PracticeWindow, days: readonly ManifestDay[]): ManifestDay[] =>
-  days.filter((d) => d.day < wallDay(w)).sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+  days.filter((d) => utcMidnight(d.day) + DAY_MS <= wallMs(w)).sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 
 /** Passes rows through and throws on the first row whose block time is at or after the wall. */
 export function* guardRows(w: PracticeWindow, rows: Iterable<DatasetRow>): Generator<DatasetRow> {
   const wall = wallMs(w);
   for (const r of rows) {
-    if (r.blockTime * 1000 >= wall) throw new HoldoutWallError(`row at ${new Date(r.blockTime * 1000).toISOString()} (slot ${r.slot}) is at or after the holdout wall ${wallDay(w)}`);
+    if (r.blockTime * 1000 >= wall) throw new HoldoutWallError(`row at ${new Date(r.blockTime * 1000).toISOString()} (slot ${r.slot}) is at or after the holdout wall ${wallDay(w)} (Melbourne)`);
     yield r;
   }
 }
+
+/** The regime in force at an instant: the last boundary at or before it. */
+export const regimeAt = (w: PracticeWindow, ms: number): string => {
+  let label = 'pre';
+  let at = -Infinity;
+  for (const r of w.regimes ?? []) {
+    const t = Date.parse(r.from);
+    if (t <= ms && t >= at) {
+      label = r.label;
+      at = t;
+    }
+  }
+  return label;
+};

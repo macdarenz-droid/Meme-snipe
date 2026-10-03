@@ -115,6 +115,13 @@ export interface TrialRow {
   readonly sharpe: number;
 }
 
+/**
+ * Trials that count in the deflated Sharpe ratio: those the selection could have picked (≥ MIN_TRADES on ≥ MIN_DAYS).
+ * Rules below the minimums can never be chosen, and their Sharpe ratios from a handful of trades would inflate the
+ * variance (and the benchmark) without measuring selection. Every trial stays in the registry and its count is reported.
+ */
+export const selectable = (r: TrialRow): boolean => Number.isFinite(r.sharpe) && r.n >= MIN_TRADES && r.days >= MIN_DAYS;
+
 export interface Registry {
   readonly rows: TrialRow[];
 }
@@ -204,8 +211,9 @@ const safe = <T>(f: () => T): T | null => {
 export interface Verdict {
   readonly universe: string;
   readonly barrier: string;
-  /** The rule the procedure picks on all practice days (the candidate configuration). */
+  /** The rule the procedure picks on all practice days (the candidate configuration), and its exact thresholds. */
   readonly finalRule: string;
+  readonly finalConds: Rule;
   readonly folds: readonly { readonly fold: string; readonly rule: string; readonly group: string; readonly oosN: number; readonly oosMean: number | null }[];
   readonly oos: MeanInterval | null;
   readonly oosTwoSided: MeanInterval | null;
@@ -297,7 +305,7 @@ export const evaluate = (obs: readonly Obs[], tag: { universe: string; barrier: 
   const lower = oos.length > 0 ? safe(() => dayBlockMeanInterval(dayReturns(oos), 0.95, 'lower', { rng: rng(), replicates: o.replicates })) : null;
   const two = oos.length > 0 ? safe(() => dayBlockMeanInterval(dayReturns(oos), 0.95, 'two', { rng: rng(), replicates: o.replicates })) : null;
   const vsBase = oos.length > 0 && baseOos.length > 0 ? safe(() => dayBlockMeanDiffInterval(dayReturns(oos), dayReturns(baseOos), 0.95, 'lower', { rng: rng(), replicates: o.replicates })) : null;
-  const trials: TrialRecord[] = reg.rows.filter((r) => Number.isFinite(r.sharpe) && r.n >= 2).map((r) => ({ trialId: r.trialId, sharpe: r.sharpe, nTrades: r.n }));
+  const trials: TrialRecord[] = reg.rows.filter(selectable).map((r) => ({ trialId: r.trialId, sharpe: r.sharpe, nTrades: r.n }));
   const dsr = oos.length >= 3 && trials.length > 0 ? safe(() => deflatedSharpe(oos.map((x) => x.rNet), trials).dsr) : null;
   const famRules: Rule[] = [[], ...singleConds(obs).map((c) => [c] as Rule)];
   const days = new Set(obs.map((x) => x.day)).size;
@@ -326,7 +334,7 @@ export const evaluate = (obs: readonly Obs[], tag: { universe: string; barrier: 
       && latest !== undefined && latest.oosN >= REGIME_MIN_OOS && latest.oosMean !== null && latest.oosMean > 0,
   };
   return {
-    universe: tag.universe, barrier: tag.barrier, finalRule: ruleId(final.rule),
+    universe: tag.universe, barrier: tag.barrier, finalRule: ruleId(final.rule), finalConds: final.rule,
     folds: folds.map((f) => ({ fold: f.fold, rule: ruleId(f.rule), group: groupOf(f.rule), oosN: f.oos.length, oosMean: f.oos.length > 0 ? f.oos.reduce((a, x) => a + x.rNet, 0) / f.oos.length : null })),
     oos: lower, oosTwoSided: two, vsBase, dsr, pbo, oosTrades: oos.length, oosDays, oosReturns: oos.map((x) => x.rNet),
     top1Share: conc.top1, maxDayShare: conc.maxDay, severeRate, blockedRate, stableFolds, regimes, checks,
@@ -375,7 +383,7 @@ export const spearman = (x: readonly number[], y: readonly number[]): number | n
 };
 
 /** Descriptive per-feature view (signals.md §5), Holm-adjusted across the features on the top-minus-bottom test. */
-export const univariate = (obs: readonly Obs[], o: { seed: number; replicates: number }): FeatureView[] => {
+export const univariate = (obs: readonly Obs[], o: { seed: number; replicates: number }, reg: Registry, tag: { universe: string; barrier: string }): FeatureView[] => {
   const views = FEATURE_IDS.map((f) => {
     const known = obs.filter((x) => x.features[f] !== null && Number.isFinite(x.features[f]!));
     const vals = known.map((x) => x.features[f]!);
@@ -383,6 +391,12 @@ export const univariate = (obs: readonly Obs[], o: { seed: number; replicates: n
     const bucket = (v: number): number => edges.filter((e) => e !== null && v > e).length;
     const groups: Obs[][] = [[], [], [], [], []];
     for (const x of known) groups[bucket(x.features[f]!)]!.push(x);
+    // The top and bottom quintiles are looks at the data too: both go in the trial registry.
+    for (const [k, g] of [[4, groups[4]!], [0, groups[0]!]] as const) {
+      const sc = score(g);
+      const rule = `${f}${k === 4 ? '>q80' : '<=q20'}`;
+      reg.rows.push({ trialId: `${tag.universe}|${tag.barrier}|univariate|${rule}`, ...tag, fold: 'univariate', rule, n: sc.n, days: sc.days, mean: sc.mean, sharpe: sc.sharpe });
+    }
     const tmb = groups[4]!.length > 0 && groups[0]!.length > 0
       ? safe(() => dayBlockMeanDiffInterval(dayReturns(groups[4]!), dayReturns(groups[0]!), 0.95, 'two', { rng: createRng(o.seed), replicates: o.replicates }))
       : null;
@@ -398,8 +412,41 @@ export const univariate = (obs: readonly Obs[], o: { seed: number; replicates: n
 
 /** Recomputes the DSR check against the complete registry (every universe, barrier and fold), as §5 requires. */
 export const withRegistry = (v: Verdict, reg: Registry): Verdict => {
-  const trials: TrialRecord[] = reg.rows.filter((r) => Number.isFinite(r.sharpe) && r.n >= 2).map((r) => ({ trialId: r.trialId, sharpe: r.sharpe, nTrades: r.n }));
+  const trials: TrialRecord[] = reg.rows.filter(selectable).map((r) => ({ trialId: r.trialId, sharpe: r.sharpe, nTrades: r.n }));
   const dsr = v.oosReturns.length >= 3 && trials.length > 0 ? safe(() => deflatedSharpe(v.oosReturns, trials).dsr) : null;
   const checks = { ...v.checks, dsr: dsr !== null && dsr >= 0.95 };
   return { ...v, dsr, checks, pass: Object.values(checks).every(Boolean) };
+};
+
+export interface Handoff {
+  readonly universe: string;
+  readonly status: 'candidate' | 'no reliable signal';
+  /** The first barrier, in the fixed order B1 → B2 → B3, whose verdict passed every check. */
+  readonly barrier: string | null;
+  readonly rule: string | null;
+  readonly conds: Rule | null;
+  /** Each barrier's failed checks, in order (empty for the one handed over). */
+  readonly failed: readonly { readonly barrier: string; readonly checks: readonly string[] }[];
+}
+
+/**
+ * One configuration per universe (signals.md §6): barriers are tried in the order given (B1, B2, B3) and the first
+ * whose verdict passes wins; later ones are not looked at for the handoff. None passing: "no reliable signal".
+ */
+export const handoffs = (verdicts: readonly (Verdict | { readonly universe: string; readonly barrier: string; readonly skipped: string })[], barrierOrder: readonly string[]): Handoff[] => {
+  const universes = [...new Set(verdicts.map((v) => v.universe))].sort();
+  return universes.map((u) => {
+    const failed: { barrier: string; checks: string[] }[] = [];
+    for (const b of barrierOrder) {
+      const v = verdicts.find((x) => x.universe === u && x.barrier === b);
+      if (v === undefined) continue;
+      if ('skipped' in v) {
+        failed.push({ barrier: b, checks: [`skipped: ${v.skipped}`] });
+        continue;
+      }
+      if (v.pass) return { universe: u, status: 'candidate' as const, barrier: b, rule: v.finalRule, conds: v.finalConds, failed };
+      failed.push({ barrier: b, checks: Object.entries(v.checks).filter(([, ok]) => !ok).map(([k]) => k) });
+    }
+    return { universe: u, status: 'no reliable signal' as const, barrier: null, rule: null, conds: null, failed };
+  });
 };

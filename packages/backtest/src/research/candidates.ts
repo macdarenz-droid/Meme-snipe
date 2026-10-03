@@ -5,7 +5,7 @@
 import type { Policy } from '../../../core/src/config/index.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
 import { type OffchainSeries, seriesReleases } from '../dataset/offchain.ts';
-import { dayOf, guardRows, isPracticeDay, type PracticeWindow, wallMs } from './practice.ts';
+import { guardRows, isPracticeDay, melbourneDay, type PracticeWindow, regimeAt, wallMs } from './practice.ts';
 import { type Features, type PoolInfo, SignalTracker } from './tracker.ts';
 
 const MIN = 60_000;
@@ -20,8 +20,10 @@ export interface Candidate {
   readonly universe: Universe;
   readonly mint: string;
   readonly pool: string;
-  /** UTC day of the decision. */
+  /** Melbourne day of the decision. */
   readonly day: string;
+  /** Platform regime in force at the decision (ARCHITECTURE.md §6.5). */
+  readonly regime: string;
   readonly decisionMs: number;
   readonly decisionSlot: bigint;
   /** SOL/USD as of the decision (for the notional). */
@@ -133,7 +135,7 @@ export const collectCandidates = (rows: Iterable<DatasetRow>, o: DriveOptions): 
   let lastPrune = 0;
 
   const decide = (u: Universe, p: PoolInfo, nowMs: number, slot: bigint): void => {
-    const day = dayOf(nowMs);
+    const day = melbourneDay(nowMs);
     if (!isPracticeDay(o.window, day)) {
       if (day < o.window.decisionFrom) leadIn++;
       return;
@@ -145,7 +147,7 @@ export const collectCandidates = (rows: Iterable<DatasetRow>, o: DriveOptions): 
     const px = o.solUsd(nowMs);
     const rejects = px === null ? ['H16 SOL/USD unknown'] : baseRejects(t, p, u, nowMs, px, o);
     candidates.push({
-      id: `${u}:${p.mint}:${nowMs}`, universe: u, mint: p.mint, pool: p.pool, day, decisionMs: nowMs, decisionSlot: slot,
+      id: `${u}:${p.mint}:${nowMs}`, universe: u, mint: p.mint, pool: p.pool, day, regime: regimeAt(o.window, nowMs), decisionMs: nowMs, decisionSlot: slot,
       solUsd: px ?? 0, features: t.features(p.pool, nowMs, slot), eligible: rejects.length === 0, rejects,
     });
   };
