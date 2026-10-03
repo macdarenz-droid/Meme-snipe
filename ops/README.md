@@ -11,12 +11,12 @@ Vultr High Performance, Frankfurt, 1 vCPU / 1 GB AMD (`vhp-1c-1gb-amd`, about US
 Log in as root in the server's web console and paste this one line:
 
 ```sh
-curl -fsSLo install.sh https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/COMMIT/ops/install.sh && echo 'cc3cc4b08d44589ae24e0619aa9eff351309c106bfd3d9255c1abe44dfd01a5b  install.sh' | sha256sum -c - && bash install.sh
+curl -fsSLo install.sh https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/2521856cdbe4c762d7f92761f891b8c936a5ded8/ops/install.sh && echo 'cc3cc4b08d44589ae24e0619aa9eff351309c106bfd3d9255c1abe44dfd01a5b  install.sh' | sha256sum -c - && bash install.sh
 ```
 
 SHA-256 of `install.sh`: `cc3cc4b08d44589ae24e0619aa9eff351309c106bfd3d9255c1abe44dfd01a5b`
 
-The hash is checked before anything runs; a changed file stops at `sha256sum -c`. The installer:
+The hash is checked before anything runs; a changed file stops at `sha256sum -c`. After any change to `ops/install.sh`, the commit in the link must be moved to one that holds the new file (`ops/test/e2e.sh` fails otherwise). The installer:
 
 - installs `age`, `git`, `jq`, `nftables`, `sqlite3`, `unattended-upgrades` from Ubuntu, and Node 22.23.3 from nodejs.org (checked against its pinned SHA-256);
 - creates the `zeroed-worker` and `zeroed-signer` users and their systemd units with the §12.1 hardening (the signer has no network at all; the worker may only use HTTPS and DNS);

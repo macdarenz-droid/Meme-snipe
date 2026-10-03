@@ -101,7 +101,10 @@ fi
 docker cp "$ROOT/ops/install.sh" "$C:/root/install.sh"
 hash="$(sed -n 's/^SHA-256 of `install\.sh`: `\([0-9a-f]\{64\}\)`$/\1/p' "$ROOT/ops/README.md")"
 in_c "cd /root && echo '$hash  install.sh' | sha256sum -c -" >"$LOGS/hash-check.log" 2>&1 || fail "install.sh does not match the README hash"
-pass "install.sh matches the SHA-256 in ops/README.md"
+pin="$(sed -n 's#.*raw\.githubusercontent\.com/macdarenz-droid/Meme-snipe/\([0-9a-f]\{40\}\)/ops/install\.sh.*#\1#p' "$ROOT/ops/README.md")"
+[ -n "$pin" ] || fail "README install line has no pinned commit"
+[ "$(git -C "$ROOT" show "$pin:ops/install.sh" | sha256sum | cut -c1-64)" = "$hash" ] || fail "the pinned commit ${pin:0:12} does not hold this install.sh (re-pin the README)"
+pass "install.sh matches the SHA-256 in ops/README.md, and the pinned commit ${pin:0:12} holds the same file"
 docker exec -e ZEROED_GITHUB_URL="$BASE" -e ZEROED_API_URL="$BASE" -e ZEROED_TELEGRAM_URL="$BASE" "$C" bash /root/install.sh >"$LOGS/install.log" 2>&1 || { tail -20 "$LOGS/install.log"; fail "install.sh"; }
 HOST_KEY="$(sed -n 's/^  Host public key:  \(age1[a-z0-9]*\)$/\1/p' "$LOGS/install.log")"
 CODE="$(sed -n 's/^  Pairing code:     \([A-Z0-9-]*\)$/\1/p' "$LOGS/install.log")"
