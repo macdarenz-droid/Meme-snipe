@@ -40,8 +40,10 @@ export const fixtureWallet: WalletView = {
   botAddress: 'FAKEbotWa11et9kQmZr7Hc2VnX4pLdT8sYwB3uJeGfNq',
   savedWallet: 'FAKEsavedWa11etR5mKz2Qh8VcN6pXdL3sTwY9uBjEW',
   availableUsd: 23812.4,
-  reserveSol: 0.75,
-  lockedSol: 0.0123,
+  balanceSol: '138.456',
+  solAud: '171.58',
+  reserveSol: '0.75',
+  lockedSol: '0.0123',
   openExposureUsd: ENTRY,
   feesPaidUsd: 612.37,
 };

@@ -30,7 +30,7 @@ const WIDTHS = [
   { name: 'desktop', width: 1440, height: 900 },
   { name: 'mobile', width: 390, height: 844 },
   // Small phone: only the sheets, where long addresses must wrap.
-  { name: 'small', width: 360, height: 780, only: ['deposit', 'withdraw', 'fixtures-withdraw'] },
+  { name: 'small', width: 360, height: 780, only: ['deposit', 'withdraw', 'fixtures-deposit', 'fixtures-withdraw'] },
 ];
 const SHOTS = [
   { name: 'home', hash: '#/home' },
@@ -40,6 +40,7 @@ const SHOTS = [
   { name: 'withdraw', hash: '#/wallet', open: 'Withdraw' },
   { name: 'fixtures', hash: '#/dev/fixtures' },
   { name: 'trade-detail', hash: '#/dev/fixtures', openTrade: true },
+  { name: 'fixtures-deposit', hash: '#/dev/fixtures', open: 'Deposit' },
   { name: 'fixtures-withdraw', hash: '#/dev/fixtures', open: 'Withdraw' },
   { name: 'decision-detail', hash: '#/dev/fixtures', openDecision: true },
   { name: 'dashboard-backtest', hash: '#/dev/fixtures', mode: 'Backtest' },
