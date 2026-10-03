@@ -1,26 +1,26 @@
 import { describe, expect, test } from 'vitest';
 import * as costsModule from '../../src/costs/index.ts';
-import { type CurveState, type PoolState, PUMP_CURVE_PARAMS, curveBuyExactQuoteIn, curveSell, poolBuyExactQuoteIn, poolSell } from '../../src/amm/index.ts';
+import { type CurveState, type PoolState, curveBuyExactQuoteIn, curveSell, poolBuyExactQuoteIn, poolSell } from '../../src/amm/index.ts';
 import {
   type NetworkPolicy, type RentInputs, type SizeCaps, type SizeInput, type SizePolicy,
   BASE_FEE_PER_SIGNATURE, PPM, ROUND_TRIP_ROUNDING_LAMPORTS,
   costAtSize, expectedFailureCost, feasibleSize, fixedCosts, priorityFeeLamports, pumpCurveRoundTrip, pumpSwapRoundTrip,
 } from '../../src/costs/index.ts';
 import { type MicroUsd, bps, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
-import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, ok } from '../amm/helpers.ts';
+import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, PUMP_GLOBAL, ok } from '../amm/helpers.ts';
 
 const SOL = 1_000_000_000n;
 const price = solPriceMicroUsd('119.37');
 const curve: CurveState = {
-  virtualTokenReserves: PUMP_CURVE_PARAMS.initialVirtualTokenReserves,
-  virtualQuoteReserves: PUMP_CURVE_PARAMS.initialVirtualQuoteReserves,
-  realTokenReserves: PUMP_CURVE_PARAMS.initialRealTokenReserves,
+  virtualTokenReserves: PUMP_GLOBAL.initialVirtualTokenReserves,
+  virtualQuoteReserves: PUMP_GLOBAL.initialVirtualSolReserves,
+  realTokenReserves: PUMP_GLOBAL.initialRealTokenReserves,
   realQuoteReserves: 0n,
   complete: false,
 };
-const curveCtx = { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: PUMP_CURVE_PARAMS.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN };
+const curveCtx = { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN };
 const pool: PoolState = { baseReserve: 150_000_000_000_000n, quoteVault: 80n * SOL, virtualQuoteReserves: -2n * SOL };
-const poolCtx = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_CURVE_PARAMS.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1' as const, buybackFeeBps: bps(5_000) };
+const poolCtx = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1' as const, buybackFeeBps: bps(5_000) };
 
 // docs/research/execution.md section 8: base 5,000 + priority 20,000 + Sender tip 5,000 per transaction.
 const network: NetworkPolicy = {

@@ -29,3 +29,14 @@ export const ok = <T>(q: Quote<T>): T => {
 };
 /** Normal coin: no mayhem mode, no Token-2022 transfer fee or hook. */
 export const NORMAL_COIN = { mayhemMode: false, transferFee: false, transferHook: false } as const;
+
+const g = readFixture<Record<string, string>>('pump-global.json');
+/** pump Global launch parameters as read on chain (fixture, with its source slot). */
+export const PUMP_GLOBAL = {
+  initialVirtualTokenReserves: BigInt(g['initialVirtualTokenReserves']!),
+  initialVirtualSolReserves: BigInt(g['initialVirtualSolReserves']!),
+  initialRealTokenReserves: BigInt(g['initialRealTokenReserves']!),
+  tokenTotalSupply: BigInt(g['tokenTotalSupply']!),
+  poolMigrationFee: BigInt(g['poolMigrationFee']!),
+};
+export const PUMP_GLOBAL_SLOT = BigInt(g['readAtSlot']!);

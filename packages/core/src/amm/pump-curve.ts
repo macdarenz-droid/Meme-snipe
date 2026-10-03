@@ -14,22 +14,39 @@ export interface CurveState {
 }
 
 /**
- * Launch parameters read from the pump `Global` account on 2026-10-03 (slot 452,916,922; docs/research/venues.md 2.1).
- * They are inputs, not constants of the quote path: pass the live values when they differ.
+ * Launch and graduation parameters from the pump `Global` account. Pump has changed them before, so they are always
+ * read from chain (DEC-1's decoded Global satisfies this type), never assumed.
  */
-export const PUMP_CURVE_PARAMS = {
-  initialVirtualTokenReserves: 1_073_000_000_000_000n,
-  initialVirtualQuoteReserves: 30_000_000_000n,
-  initialRealTokenReserves: 793_100_000_000_000n,
-  tokenTotalSupply: 1_000_000_000_000_000n,
-  /** Charged by `migrate` when the curve graduates to PumpSwap (README; pump.fun fee page lists 0.015 SOL). */
-  poolMigrationFee: 15_000_001n,
-} as const;
+export interface PumpGlobalParams {
+  readonly initialVirtualTokenReserves: bigint;
+  readonly initialVirtualSolReserves: bigint;
+  readonly initialRealTokenReserves: bigint;
+  readonly tokenTotalSupply: bigint;
+  /** Charged by `migrate` when the curve graduates to PumpSwap. */
+  readonly poolMigrationFee: bigint;
+}
+
+/** A decoded Global account with the slot it was read at; `value` is null when it could not be read. */
+export interface PumpGlobalReading {
+  readonly value: PumpGlobalParams | null;
+  readonly readAtSlot: bigint;
+}
+
+/** The Global parameters, or a no-quote reason when they are missing or older than `maxAgeSlots`. */
+export const freshGlobal = (reading: PumpGlobalReading, currentSlot: bigint, maxAgeSlots: bigint): Quote<PumpGlobalParams> => {
+  if (maxAgeSlots < 0n) throw new RangeError('max age must be >= 0');
+  if (!reading.value) return noQuote('missing-params', 'pump Global account not read');
+  if (currentSlot - reading.readAtSlot > maxAgeSlots) return noQuote('stale-params', `pump Global read at slot ${reading.readAtSlot}, now ${currentSlot}`);
+  if (reading.value.initialRealTokenReserves <= 0n || reading.value.initialVirtualTokenReserves <= reading.value.initialRealTokenReserves) {
+    return noQuote('missing-params', 'pump Global parameters are not usable');
+  }
+  return { ok: true, trade: reading.value };
+};
 
 export interface CurveFeeContext {
   /** `fee_tiers` from the pump FeeConfig (`8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt`). */
   readonly feeTiers: readonly FeeTier[];
-  /** Supply used for the tier's market cap: 1e15 for normal coins (pump-sdk `ONE_BILLION_SUPPLY`). */
+  /** Supply used for the tier's market cap: `Global.token_total_supply` for normal coins (pump-sdk `ONE_BILLION_SUPPLY`). */
   readonly supply: bigint;
   /** False when `BondingCurve.creator` is the default key: no creator fee is charged then. */
   readonly creatorFeeCharged: boolean;
@@ -92,21 +109,24 @@ const buyTrade = (state: CurveState, tokens: bigint, quote: bigint, fees: FeeSpl
   };
 };
 
-/** `buy` / `buy_v2`: exactly `tokens` out (capped at the real reserves left), cost rounded up. */
+/**
+ * `buy` / `buy_v2`: exactly `tokens` out, cost rounded up. Buying exactly the real tokens left completes the curve
+ * (mainnet vectors). Asking for more is refused: what the program does past the cap is not verified.
+ */
 export const curveBuyExactTokens = (state: CurveState, tokens: bigint, ctx: CurveFeeContext): Quote<CurveTrade> => {
   if (tokens <= 0n) throw new RangeError('tokens must be > 0');
   const no = refuse(state, ctx);
   if (no) return no;
-  const out = tokens < state.realTokenReserves ? tokens : state.realTokenReserves;
-  const quote = (out * state.virtualQuoteReserves) / (state.virtualTokenReserves - out) + 1n;
-  return buyTrade(state, out, quote, curveFees(state, ctx));
+  if (tokens > state.realTokenReserves) return noQuote('exceeds-reserves', 'more tokens than the curve has left');
+  const quote = (tokens * state.virtualQuoteReserves) / (state.virtualTokenReserves - tokens) + 1n;
+  return buyTrade(state, tokens, quote, curveFees(state, ctx));
 };
 
 /**
  * `buy_exact_sol_in` / `buy_exact_quote_in_v2`: spend at most `spend` lamports, fees included.
  * The net amount is floor(spend * 10,000 / (10,000 + fee bps)); the ceil fees are computed on it, then the net is
  * lowered by any excess so net + fees fits in `spend` (fees are not recomputed). Tokens out are priced on net - 1.
- * Verified on mainnet events, which show this order.
+ * Verified on mainnet events, which show this order. A spend that would buy more than the real tokens left is refused.
  */
 export const curveBuyExactQuoteIn = (state: CurveState, spend: bigint, ctx: CurveFeeContext): Quote<CurveTrade> => {
   if (spend <= 1n) throw new RangeError('spend must be > 1 lamport');
@@ -120,8 +140,8 @@ export const curveBuyExactQuoteIn = (state: CurveState, spend: bigint, ctx: Curv
   const input = quote - 1n;
   const tokens = (input * state.virtualTokenReserves) / (state.virtualQuoteReserves + input);
   if (tokens <= 0n) return noQuote('zero-output', 'spend buys no tokens');
-  // CAPPED_EXACT_IN
-  if (tokens > state.realTokenReserves) return buyTrade(state, state.realTokenReserves, quote, fees, untrimmed);
+  // Past the cap the program's behaviour is not verified on mainnet, so the quote is refused.
+  if (tokens > state.realTokenReserves) return noQuote('exceeds-reserves', 'spend buys more tokens than the curve has left');
   return buyTrade(state, tokens, quote, fees, untrimmed);
 };
 
@@ -155,7 +175,8 @@ export const curveSell = (state: CurveState, tokens: bigint, ctx: CurveFeeContex
 };
 
 /** Share of the curve's sellable tokens already sold, in parts per million (floored). */
-export const curveProgressPpm = (state: CurveState, initialRealTokenReserves: bigint = PUMP_CURVE_PARAMS.initialRealTokenReserves): bigint => {
+export const curveProgressPpm = (state: CurveState, global: PumpGlobalParams): bigint => {
+  const { initialRealTokenReserves } = global;
   if (initialRealTokenReserves <= 0n) throw new RangeError('initial real token reserves must be > 0');
   if (state.complete) return 1_000_000n;
   return ((initialRealTokenReserves - state.realTokenReserves) * 1_000_000n) / initialRealTokenReserves;

@@ -143,6 +143,30 @@ describe('PumpSwap golden vectors', () => {
   });
 });
 
+describe('curve-completing buys', () => {
+  // Buys that took real_token_reserves to 0 on recently graduated coins. All asked for exactly the tokens left, so
+  // they reproduce above with complete = true; buys asking for more are refused (see amm.test.ts).
+  const completing = golden.curve.filter((v) => v.event.real_token_reserves === '0');
+  test('at least 3 completing buys reproduce and complete the curve', () => {
+    expect(completing.length).toBeGreaterThanOrEqual(3);
+    for (const v of completing) {
+      const e = v.event;
+      const sol = n(e.sol_amount);
+      const tok = n(e.token_amount);
+      expect(v.args[0]).toBe(e.token_amount);
+      const pre: CurveState = {
+        virtualQuoteReserves: n(e.virtual_sol_reserves) - sol, virtualTokenReserves: n(e.virtual_token_reserves) + tok,
+        realQuoteReserves: n(e.real_sol_reserves) - sol, realTokenReserves: tok, complete: false,
+      };
+      const t = ok(curveBuyExactTokens(pre, tok, { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: 1_000_000_000_000_000n, creatorFeeCharged: e.creator !== DEFAULT_KEY, coin: NORMAL_COIN }));
+      expect(t.quote).toBe(sol);
+      expect(t.protocolFee).toBe(n(e.fee));
+      expect(t.after.complete).toBe(true);
+      expect(t.after.realQuoteReserves).toBe(n(e.real_sol_reserves));
+    }
+  });
+});
+
 describe('exact-in fee order', () => {
   // In these trades the fees differ depending on whether they are computed before or after the net amount is trimmed
   // to fit the spend limit. Both reproduce above only with "before" (fees not recomputed).

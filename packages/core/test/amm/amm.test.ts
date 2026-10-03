@@ -1,24 +1,24 @@
 import { describe, expect, test } from 'vitest';
 import {
   type CurveFeeContext, type CurveState, type FeeConfig, type PoolFeeContext, type PoolState,
-  PUMP_CURVE_PARAMS, curveBuyExactQuoteIn, curveBuyExactTokens, curveProgressPpm, curveSell,
+  curveBuyExactQuoteIn, curveBuyExactTokens, curveProgressPpm, curveSell, freshGlobal,
   effectiveQuoteReserve, poolBuyExactBase, poolBuyExactQuoteIn, poolFees, poolSell, selectFeeTier,
 } from '../../src/amm/index.ts';
 import { bps } from '../../src/units/index.ts';
-import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, ok } from './helpers.ts';
+import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, PUMP_GLOBAL, PUMP_GLOBAL_SLOT, ok } from './helpers.ts';
 
 const SOL = 1_000_000_000n;
 const freshCurve: CurveState = {
-  virtualTokenReserves: PUMP_CURVE_PARAMS.initialVirtualTokenReserves,
-  virtualQuoteReserves: PUMP_CURVE_PARAMS.initialVirtualQuoteReserves,
-  realTokenReserves: PUMP_CURVE_PARAMS.initialRealTokenReserves,
+  virtualTokenReserves: PUMP_GLOBAL.initialVirtualTokenReserves,
+  virtualQuoteReserves: PUMP_GLOBAL.initialVirtualSolReserves,
+  realTokenReserves: PUMP_GLOBAL.initialRealTokenReserves,
   realQuoteReserves: 0n,
   complete: false,
 };
-const curveCtx: CurveFeeContext = { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: PUMP_CURVE_PARAMS.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN };
+const curveCtx: CurveFeeContext = { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN };
 // A fresh graduate: ~206.9M tokens against ~85 SOL.
 const pool: PoolState = { baseReserve: 206_900_000_000_000n, quoteVault: 84_990_000_000n, virtualQuoteReserves: 0n };
-const poolCtx: PoolFeeContext = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_CURVE_PARAMS.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1', buybackFeeBps: bps(5_000) };
+const poolCtx: PoolFeeContext = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1', buybackFeeBps: bps(5_000) };
 
 // Deterministic generator so failures reproduce.
 const rng = (seed: number) => () => {
@@ -105,8 +105,8 @@ describe('constant-product invariant never decreases', () => {
         ? ok(curveBuyExactTokens(s, 1n + (r() * 1_000_000_000n) % (s.realTokenReserves / 50n + 1n), curveCtx))
         : kind === 1n
           ? ok(curveBuyExactQuoteIn(s, 2n + (r() * 1_000n) % (2n * SOL), curveCtx))
-          : s.realTokenReserves < PUMP_CURVE_PARAMS.initialRealTokenReserves
-            ? ok(curveSell(s, 1n + (r() * 1_000_000n) % (PUMP_CURVE_PARAMS.initialRealTokenReserves - s.realTokenReserves), curveCtx))
+          : s.realTokenReserves < PUMP_GLOBAL.initialRealTokenReserves
+            ? ok(curveSell(s, 1n + (r() * 1_000_000n) % (PUMP_GLOBAL.initialRealTokenReserves - s.realTokenReserves), curveCtx))
             : ok(curveBuyExactQuoteIn(s, SOL, curveCtx));
       expect(t.after.virtualQuoteReserves * t.after.virtualTokenReserves).toBeGreaterThanOrEqual(k);
       expect(t.impact).toBeGreaterThanOrEqual(0n);
@@ -146,16 +146,30 @@ describe('quote shapes', () => {
 
   test('the curve completes on the buy that takes its real token reserves to zero', () => {
     const near: CurveState = { ...freshCurve, realTokenReserves: 1_000n };
-    const t = ok(curveBuyExactTokens(near, 5_000n, curveCtx));
+    const t = ok(curveBuyExactTokens(near, 1_000n, curveCtx));
     expect(t.tokens).toBe(1_000n);
     expect(t.after.complete).toBe(true);
-    expect(curveProgressPpm(t.after)).toBe(1_000_000n);
+    expect(curveProgressPpm(t.after, PUMP_GLOBAL)).toBe(1_000_000n);
     expect(curveSell(t.after, 1n, curveCtx)).toMatchObject({ ok: false, reason: 'curve-complete' });
-    expect(curveProgressPpm(freshCurve)).toBe(0n);
+    expect(curveProgressPpm(freshCurve, PUMP_GLOBAL)).toBe(0n);
+  });
+
+  test('buys past the tokens left are refused: the program behaviour there is not verified', () => {
+    const near: CurveState = { ...freshCurve, realTokenReserves: 1_000n };
+    expect(curveBuyExactTokens(near, 1_001n, curveCtx)).toMatchObject({ ok: false, reason: 'exceeds-reserves' });
+    expect(curveBuyExactQuoteIn(near, SOL, curveCtx)).toMatchObject({ ok: false, reason: 'exceeds-reserves' });
+  });
+
+  test('pump Global parameters must be read and fresh', () => {
+    const reading = { value: PUMP_GLOBAL, readAtSlot: PUMP_GLOBAL_SLOT };
+    expect(ok(freshGlobal(reading, PUMP_GLOBAL_SLOT + 100n, 150n))).toBe(PUMP_GLOBAL);
+    expect(freshGlobal(reading, PUMP_GLOBAL_SLOT + 151n, 150n)).toMatchObject({ ok: false, reason: 'stale-params' });
+    expect(freshGlobal({ value: null, readAtSlot: 0n }, PUMP_GLOBAL_SLOT, 150n)).toMatchObject({ ok: false, reason: 'missing-params' });
+    expect(freshGlobal({ value: { ...PUMP_GLOBAL, initialRealTokenReserves: 0n }, readAtSlot: PUMP_GLOBAL_SLOT }, PUMP_GLOBAL_SLOT, 150n)).toMatchObject({ ok: false, reason: 'missing-params' });
   });
 
   test('graduation point from the documented launch parameters: ~85.005 SOL raised', () => {
-    const all = ok(curveBuyExactTokens(freshCurve, PUMP_CURVE_PARAMS.initialRealTokenReserves, curveCtx));
+    const all = ok(curveBuyExactTokens(freshCurve, PUMP_GLOBAL.initialRealTokenReserves, curveCtx));
     expect(all.after.complete).toBe(true);
     // 30 * 1,073M / 279.9M = 115.005 virtual SOL, so 85.005 SOL real (docs/research/venues.md 2.2).
     expect(all.quote / 1_000_000n).toBe(85_005n);

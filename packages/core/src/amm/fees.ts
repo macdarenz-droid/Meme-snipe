@@ -61,7 +61,11 @@ export type NoQuoteReason =
   /** The trade would deliver nothing (fees take all proceeds, or the spend buys no tokens). */
   | 'zero-output'
   /** A coin this module does not price as normal: mayhem mode, or a Token-2022 transfer fee or transfer hook. */
-  | 'unsupported-coin';
+  | 'unsupported-coin'
+  /** Protocol parameters (pump Global) were not read. */
+  | 'missing-params'
+  /** Protocol parameters were read too long ago to trust. */
+  | 'stale-params';
 
 export type Quote<T> =
   | { readonly ok: true; readonly trade: T }
