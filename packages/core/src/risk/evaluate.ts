@@ -49,11 +49,14 @@ const realizedBefore = (a: AccountHistory, t: number): { readonly equity: bigint
 
 type AccountEvent = { readonly at: number; readonly kind: 'flow' | 'trade'; readonly amount: bigint };
 
-/** Flows and closed trades in time order; at the same instant trades come first, then flows. */
+/**
+ * Flows and closed trades in time order. At the same instant trades come first, then flows: trades are listed first
+ * and Array.prototype.sort is stable.
+ */
 const accountEvents = (a: AccountHistory): AccountEvent[] => [
   ...a.closedTrades.map((c): AccountEvent => ({ at: c.closedAtMs, kind: 'trade', amount: c.netPnl })),
   ...a.flows.map((f): AccountEvent => ({ at: f.atMs, kind: 'flow', amount: f.amount })),
-].sort((x, y) => x.at - y.at || (x.kind === y.kind ? 0 : x.kind === 'trade' ? -1 : 1));
+].sort((x, y) => x.at - y.at);
 
 /**
  * Time-weighted (unitized): a deposit or withdrawal scales a reference figure by the same proportion as equity

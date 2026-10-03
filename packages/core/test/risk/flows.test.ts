@@ -5,8 +5,9 @@
 import { describe, expect, test } from 'vitest';
 import { TRIAL_POLICY, usd } from '../../src/config/index.ts';
 import { type EntryAllowed, evaluateEntry, evaluateExit } from '../../src/risk/index.ts';
-import { type MicroUsd, lamportsToMicroUsd, mulDiv } from '../../src/units/index.ts';
-import { DAY_START, HOUR, NOW, PRICE, WEEK_START, account, baseInput, baseRequest, codes, trade } from './helpers.ts';
+import { type Lamports, type MicroUsd, lamportsToMicroUsd, mulDiv } from '../../src/units/index.ts';
+import { fixedCosts } from '../../src/costs/index.ts';
+import { DAY_START, HOUR, NETWORK, NOW, PRICE, RENT, WEEK_START, account, baseInput, baseRequest, codes, trade } from './helpers.ts';
 
 const ofBpsUsd = (amount: bigint, bps: number) => mulDiv(amount, BigInt(bps), 10_000n, 'floor');
 
@@ -108,5 +109,69 @@ describe('RISK-1b item 2: planned R, stressed executable loss and reserved loss'
       expect(d.loss.stressed, String(stopBps)).toBeLessThanOrEqual(d.loss.reserved);
       expect(d.loss.plannedRisk, String(stopBps)).toBeLessThanOrEqual(ofBpsUsd(TRIAL_POLICY.capital.bankroll, TRIAL_POLICY.loss.plannedRiskBps));
     }
+  });
+});
+
+describe('RISK-1b edges (mutation)', () => {
+  const kill = (input: ReturnType<typeof baseInput>) => codes(evaluateEntry(input, baseRequest())).includes('kill_switch');
+  test('a trade and a withdrawal at the same instant: the trade counts first', () => {
+    // Trade first: E $15 at HWM $20, then the withdrawal scales the mark to $14.67 (25% down). Flow first would give
+    // HWM $16 and E $11, a 31% drawdown and a false kill.
+    const input = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK, '-5', { notional: usd('5') })], flows: [flow(LAST_WEEK, neg(usd('4')))] }) });
+    expect(evaluateEntry(input, baseRequest()).snapshot?.highWaterMark).toBe(usd('14.666667'));
+    expect(kill(input)).toBe(false);
+  });
+  test('money added after equity reached zero does not erase the drawdown', () => {
+    const input = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK - HOUR, '-20', { notional: usd('5') })], flows: [flow(LAST_WEEK, usd('20'))] }) });
+    expect(evaluateEntry(input, baseRequest()).snapshot).toMatchObject({ equity: usd('20'), highWaterMark: usd('40') });
+    expect(kill(input)).toBe(true);
+  });
+  test('money added at one micro-dollar of equity scales the mark with it', () => {
+    const input = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK - HOUR, '-19.999999', { notional: usd('5') })], flows: [flow(LAST_WEEK, usd('1'))] }) });
+    // 20 x 1.000001 / 0.000001
+    expect(evaluateEntry(input, baseRequest()).snapshot?.highWaterMark).toBe(usd('20000020'));
+  });
+  test('a flow exactly at Monday 00:00 belongs to the new week and scales its base', () => {
+    const input = baseInput({ account: account({ closedTrades: [trade(WEEK_START - HOUR, '-1', { notional: usd('5') })], flows: [flow(WEEK_START, neg(usd('9')))] }) });
+    const d = evaluateEntry(input, baseRequest());
+    expect(d.snapshot).toMatchObject({ weekStartEquity: usd('19'), weekBase: usd('10'), weekBaseLoss: 0n });
+  });
+  test('the weekly base follows equity through the week: a loss before a withdrawal sets the ratio', () => {
+    const input = baseInput({ account: account({ closedTrades: [trade(THIS_WEEK, '-1', { notional: usd('5') })], flows: [flow(THIS_WEEK + HOUR, neg(usd('5')))] }) });
+    expect(evaluateEntry(input, baseRequest()).snapshot?.weekBase).toBe(usd('14.736843')); // 20 x 14/19, rounded up
+  });
+  test('the dollar count alone trips at its exact limit (rounded down) after a deposit', () => {
+    // $20.000001 at week start, +$10 deposit, then -$4: $4 = floor(20% of 20.000001) in dollars; the time-weighted
+    // count ($4 of a $30.000001 base) is far from its limit.
+    const closed = [trade(THIS_WEEK + 2 * HOUR, '-4', { notional: usd('5') })];
+    const input = baseInput({ account: account({ openingEquity: usd('20.000001'), closedTrades: closed, flows: [flow(THIS_WEEK + HOUR, usd('10'))] }) });
+    expect(evaluateExit(input).tripped.map((r) => r.code)).toContain('weekly_loss');
+  });
+  test('the time-weighted count alone trips at its exact limit (rounded down) after a withdrawal', () => {
+    // $20, withdraw $9.999999 → base $10.000001; then -$2 = floor(20% of the base); in dollars $2 is far from $4.
+    const closed = [trade(THIS_WEEK + 2 * HOUR, '-2', { notional: usd('5') })];
+    const input = baseInput({ account: account({ closedTrades: closed, flows: [flow(THIS_WEEK + HOUR, neg(usd('9.999999')))] }) });
+    const d = evaluateExit(input);
+    expect(d.tripped.map((r) => r.code)).toContain('weekly_loss');
+    expect(evaluateEntry(input, baseRequest()).snapshot?.weekBase).toBe(usd('10.000001'));
+  });
+  test('after a deposit the dollar count can be the tighter room', () => {
+    // -$1.30 then +$10: in dollars $2.70 remains (q + C, about $2.79, does not fit); time-weighted about $4.14 would.
+    const input = baseInput({ account: account({ closedTrades: [trade(THIS_WEEK, '-1.3', { notional: usd('5') })], flows: [flow(THIS_WEEK + HOUR, usd('10'))] }) });
+    expect(codes(evaluateEntry(input, baseRequest()))).toEqual(['full_loss_week']);
+  });
+  test('the loss figures are exact: planned R rounded up with F, stressed loss rounded up with C', () => {
+    const d = evaluateEntry(baseInput({ latches: { killTrippedAtMs: null, killRearmedAtMs: null, weeklyTrippedAtMs: null, weeklyReviewedAtMs: null, lossReviewedAtMs: null, sizeStepUpApproved: true } }), baseRequest({ stopBps: 1777 })) as EntryAllowed;
+    expect(d.allow).toBe(true);
+    const q = d.notional;
+    const f = lamportsToMicroUsd(fixedCosts(NETWORK, RENT).total as Lamports, PRICE, 'ceil');
+    const c = lamportsToMicroUsd(d.maxCostsLamports, PRICE, 'ceil');
+    const plannedNum = q * BigInt(1777 + TRIAL_POLICY.costGate.maxRoundTripBps);
+    expect(plannedNum % 10_000n).not.toBe(0n); // so rounding shows
+    expect(d.loss.plannedRisk).toBe(mulDiv(q, BigInt(1777 + TRIAL_POLICY.costGate.maxRoundTripBps), 10_000n, 'ceil') + f);
+    const e = 2500n;
+    const stressedNum = q * (1777n * 10_000n + e * 10_000n - 1777n * e);
+    expect(stressedNum % 100_000_000n).not.toBe(0n);
+    expect(d.loss.stressed).toBe(mulDiv(q, 1777n * 10_000n + e * 10_000n - 1777n * e, 100_000_000n, 'ceil') + c);
   });
 });
