@@ -34,7 +34,11 @@ case "$cmd" in
       case "$1" in --dir) out=$2; shift ;; --pattern) pats+=("$2"); shift ;; esac; shift
     done
     for p in "${pats[@]}"; do for f in "$dir"/$p; do [[ -e "$f" ]] && cp "$f" "$out/"; done; done ;;
-  create) mkdir "$dir"; echo "$tag" >> "$T/created.log" ;;
+  create)
+    mkdir "$dir"; echo "$tag" >> "$T/created.log"
+    while (( $# )) && [[ "$1" != -- ]]; do shift; done
+    (( $# )) && { shift; (( $# )) && cp -- "$@" "$dir/"; }
+    true ;;
   upload)
     while (( $# )) && [[ "$1" != -- ]]; do shift; done; shift
     cp -- "$@" "$dir/" ;;
@@ -234,26 +238,50 @@ out=$( ( build_release "$ds" "$T/bigrel" ) 2>&1 ) && no "990-asset guard passed"
 o="$T/scanrev"; mkdir -p "$o/units/1047/1-2" "$o/units/1047/3-4" "$o/units/1047/5-6"
 printf '{\n  "scanner_revision": "rOld"\n}\n' > "$o/units/1047/1-2/stats.json"
 printf '{\n  "scanner_revision": "rNew"\n}\n' > "$o/units/1047/3-4/stats.json"
+mkdir -p "$o/units/1047/7-8"; printf '{\n  "blocks": 3\n}\n' > "$o/units/1047/7-8/stats.json"
 : > "$T/calls.log"
 SCANNER_REVISION=rNew PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$o" 80 300 > "$T/out.txt" 2>&1
-[[ ! -d "$o/units/1047/1-2" && -d "$o/units/1047/3-4" && -d "$o/units/1047/5-6" ]] && grep -q "rescanning it" "$T/summary.md" &&
-  ok "scan-day: a cached unit of another scanner revision is dropped and rescanned, the rest kept" || no "scan-day revision drop"
+[[ ! -d "$o/units/1047/1-2" && ! -d "$o/units/1047/7-8" && -d "$o/units/1047/3-4" && -d "$o/units/1047/5-6" ]] && grep -q "rescanning it" "$T/summary.md" &&
+  ok "scan-day: cached units of another revision or with no scanner_revision are dropped and rescanned, the rest kept" || no "scan-day revision drop"
 
-# ---- publish-day.sh: one day, published at once, never replaced ----
+# ---- publish-day.sh: one day, one create call, existing releases checked, never edited ----
+export GH_BIN="$T/bin/gh"
 pd="$T/pd"; mkdir -p "$pd"; rm -rf "$T/rel/data-day-2026-09-30"; : > "$T/created.log"
-for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json; do echo "$f" > "$pd/$f"; done
-(cd "$pd" && sha256sum units-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
+mkpd() {
+  rm -f "$pd"/*
+  for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json; do echo "$f" > "$pd/$f"; done
+  (cd "$pd" && sha256sum units-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
+}
+mkpd
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 7 ]] &&
   ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity and sums" || no "publish-day create"
-echo changed > "$pd/qa-2026-09-30.md"; (cd "$pd" && sha256sum units-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
-  grep -qx qa-2026-09-30.md "$T/rel/data-day-2026-09-30/qa-2026-09-30.md" &&
-  ok "publish-day: an existing day release is left unchanged" || no "publish-day existing"
-rm -rf "$T/rel/data-day-2026-09-30"; echo corrupt >> "$pd/units-2026-09-30.tar.part00"
+  ok "publish-day: an existing release with the same files is accepted and left unchanged" || no "publish-day existing same"
+rm "$T/rel/data-day-2026-09-30/units-2026-09-30.tar.part01"; before=$(ls "$T/rel/data-day-2026-09-30" | sort | tr '\n' ' ')
+out=$(bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && no "publish-day accepted an incomplete release" ||
+  { [[ "$out" == *"incomplete release"* && $(ls "$T/rel/data-day-2026-09-30" | sort | tr '\n' ' ') == "$before" && $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
+    ok "publish-day: an existing release missing a part fails the step and is not touched" || no "publish-day incomplete: $out"; }
+rm -rf "$T/rel/data-day-2026-09-30"; mkpd; echo corrupt >> "$pd/units-2026-09-30.tar.part00"
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && no "publish-day published a corrupt part" ||
   { [[ ! -d "$T/rel/data-day-2026-09-30" ]] && ok "publish-day: a checksum mismatch publishes nothing" || no "publish-day corrupt"; }
-rm "$pd/parity-2026-09-30.json"; (cd "$pd" && echo x > units-2026-09-30.tar.part00 && sha256sum units-* qa-* manifest-* > SHA256SUMS-2026-09-30)
+mkpd; rm "$pd/parity-2026-09-30.json"; (cd "$pd" && sha256sum units-* qa-* manifest-* > SHA256SUMS-2026-09-30)
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && no "publish-day published without parity" || ok "publish-day: a missing parity report publishes nothing"
+mkpd; (cd "$pd" && sha256sum units-* qa-* manifest-* > SHA256SUMS-2026-09-30)
+out=$(bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && no "publish-day published a file missing from SHA256SUMS" ||
+  { [[ "$out" == *"not listed"* && ! -d "$T/rel/data-day-2026-09-30" ]] && ok "publish-day: a file not listed in SHA256SUMS publishes nothing" || no "publish-day unlisted: $out"; }
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/ghcalls.log"\n' "$T" > "$T/ghrec"; chmod +x "$T/ghrec"; : > "$T/ghcalls.log"
+out=$(GH_BIN="$T/ghrec" bash "$here/publish-day.sh" 2026-10-02 "$pd" 2>&1) && no "publish-day published the regime-boundary day" ||
+  { [[ "$out" == *"regime boundary"* && ! -s "$T/ghcalls.log" ]] && ok "publish-day: 2026-10-02 and later refused before any gh call" || no "publish-day boundary: $out"; }
+unset GH_BIN
+
+# ---- scanner-rev.sh: tree hash plus the Go version; another toolchain fails ----
+G="$T/gobin"; mkdir -p "$G"; printf '#!/usr/bin/env bash\necho "${FAKE_GOVERSION}"\n' > "$G/go"; chmod +x "$G/go"
+r1=$(cd "$here" && PATH="$G:$PATH" FAKE_GOVERSION=go1.24.7 GO_VERSION=1.24.7 bash "$here/scanner-rev.sh")
+r2=$(cd "$here" && PATH="$G:$PATH" FAKE_GOVERSION=go1.24.8 GO_VERSION=1.24.8 bash "$here/scanner-rev.sh")
+tree=$(cd "$here" && git rev-parse HEAD:research/historical/scanner)
+[[ "$r1" == "$tree-go1.24.7" && "$r2" == "$tree-go1.24.8" ]] && ok "scanner-rev: a toolchain-only change gives a new revision ($r1 vs ...-go1.24.8)" || no "scanner-rev: $r1 / $r2"
+(cd "$here" && PATH="$G:$PATH" FAKE_GOVERSION=go1.25.0 GO_VERSION=1.24.7 bash "$here/scanner-rev.sh" >/dev/null 2>&1) && no "scanner-rev accepted another toolchain" ||
+  ok "scanner-rev: a toolchain other than go\$GO_VERSION fails the build"
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
