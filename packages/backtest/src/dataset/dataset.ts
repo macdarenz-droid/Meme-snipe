@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { type DatasetRow, compareRows, readAmm, readBlocks, readCurve, readEvents } from './rows.ts';
+import { readRaw } from './raw.ts';
 
 export interface ManifestFile {
   readonly path: string;
@@ -34,11 +35,12 @@ export interface Manifest {
   readonly [key: string]: unknown;
 }
 
-export const SUPPORTED_SCHEMA = 1;
+/** Schema 2 adds raw transaction records, `outer_ix`/`inner_ix` and `jito_tip`; columns are read by name, so both read. */
+export const SUPPORTED_SCHEMAS: readonly number[] = [1, 2];
 
 export const loadManifest = (dir: string): Manifest => {
   const m = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as Manifest;
-  if (m.schema !== SUPPORTED_SCHEMA) throw new RangeError(`dataset schema ${String(m.schema)} is not supported (reader is schema ${SUPPORTED_SCHEMA})`);
+  if (!SUPPORTED_SCHEMAS.includes(m.schema)) throw new RangeError(`dataset schema ${String(m.schema)} is not supported (reader reads schemas ${SUPPORTED_SCHEMAS.join(', ')})`);
   if (!Array.isArray(m.days)) throw new RangeError('manifest has no days');
   return m;
 };
@@ -51,6 +53,7 @@ const TABLES: Readonly<Record<string, (text: string, out: DatasetRow[]) => void>
   curve_trades: readCurve,
   blocks: readBlocks,
   events: readEvents,
+  raw: readRaw,
 };
 
 /** Table name of a day file: `amm_trades-000.csv.zst` → `amm_trades`. Files of other tables are not read. */

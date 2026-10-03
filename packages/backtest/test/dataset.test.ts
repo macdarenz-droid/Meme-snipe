@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { loadDay, loadManifest, regimeBoundariesOf, tableOf, verifySums } from '../src/dataset/dataset.ts';
 import { readSeries, usableFrom } from '../src/dataset/offchain.ts';
 import { writeDataset } from './dataset-writer.ts';
+import { decodeBase58, toBase64 } from '../../core/src/chain/index.ts';
 import { SOL_USD, syntheticRows } from './synthetic.ts';
 
 vi.setConfig({ testTimeout: 300_000 });
@@ -43,6 +44,37 @@ describe('DATA-1 reader', () => {
       expect(() => loadDay(dir, d)).toThrow(/bytes|sha256/);
     } finally {
       writeFileSync(path, raw);
+    }
+  });
+
+  test('schema 2: raw records are read, reduced and placed after their transaction', () => {
+    const d2 = mkdtempSync(join(tmpdir(), 'ds2-'));
+    try {
+      const fx = JSON.parse(readFileSync(join(import.meta.dirname, '../../worker/test/fixtures/rug-replay.json'), 'utf8')) as {
+        cases: { mint: string; transactions: { signature: string; slot: number; blockTime: number; transaction: [string, string]; meta: { innerInstructions: { index: number; instructions: { data: string }[] }[]; loadedAddresses: unknown } }[] }[];
+      };
+      const x = fx.cases[0]!.transactions[0]!;
+      const inner = x.meta.innerInstructions.map((g) => ({ ...g, instructions: g.instructions.map((i) => ({ ...i, data: toBase64(decodeBase58(i.data)) })) }));
+      const line = JSON.stringify({ slot: x.slot, blockTime: x.blockTime, txIndex: 3, signature: x.signature, transaction: x.transaction[0], err: null, mints: [fx.cases[0]!.mint], meta: { loadedAddresses: x.meta.loadedAddresses, innerInstructions: inner } });
+      const block = { kind: 'block' as const, slot: BigInt(x.slot), blockTime: x.blockTime, parentSlot: BigInt(x.slot - 1) };
+      writeDataset(d2, [block], { schema: 2, raw: [line] });
+      const m = loadManifest(d2);
+      expect(m.schema).toBe(2);
+      const back = m.days.flatMap((d) => loadDay(d2, d));
+      expect(back.map((r) => r.kind)).toEqual(['raw', 'block']);
+      expect(back[0]!.kind === 'raw' && back[0]!.ops.some((o) => o.op === 'init-mint')).toBe(true);
+    } finally {
+      rmSync(d2, { recursive: true, force: true });
+    }
+  });
+
+  test('an unknown schema is refused', () => {
+    const d3 = mkdtempSync(join(tmpdir(), 'ds3-'));
+    try {
+      writeDataset(d3, rows.slice(0, 3), { schema: 3 as 2 });
+      expect(() => loadManifest(d3)).toThrow(/schema 3 is not supported/);
+    } finally {
+      rmSync(d3, { recursive: true, force: true });
     }
   });
 

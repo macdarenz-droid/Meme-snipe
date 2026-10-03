@@ -1,10 +1,13 @@
-// Typed rows of the DATA-1 dataset (research/historical/scanner, schema 1). Columns are read by name.
+// Typed rows of the DATA-1 dataset (research/historical/scanner, schemas 1 and 2). Columns are read by name.
 // Amounts are raw integers (lamports, token base units) written as decimal strings; reserves in BuyEvent/SellEvent
 // are pre-trade, in TradeEvent post-trade (DEC-1, CORE-2 golden tests).
 import type { PoolState } from '../../../core/src/amm/index.ts';
 import type { ObservedFees } from '../../../core/src/fills/index.ts';
 import { bps } from '../../../core/src/units/index.ts';
 import { csvObjects } from './csv.ts';
+import type { RawRow } from './raw.ts';
+
+export type { RawRow } from './raw.ts';
 
 /** Where a row sits on chain: the engine's order is (slot, txIdx, evIdx). */
 export interface ChainPos {
@@ -74,7 +77,7 @@ export interface EventRow extends ChainPos {
   readonly fields: Readonly<Record<string, string>>;
 }
 
-export type DatasetRow = AmmSwapRow | CurveTradeRow | BlockRow | EventRow;
+export type DatasetRow = AmmSwapRow | CurveTradeRow | BlockRow | EventRow | RawRow;
 
 const int = (s: string, what: string): bigint => {
   if (!/^-?\d+$/.test(s)) throw new RangeError(`${what} must be an integer, got "${s}"`);
@@ -157,7 +160,7 @@ export const readEvents = (text: string, out: DatasetRow[]): void => {
   }
 };
 
-const ORDER = { amm: 0, curve: 0, event: 0, block: 1 } as const;
+const ORDER = { amm: 0, curve: 0, event: 0, raw: 0, block: 1 } as const;
 
 /** The dataset's chain order: slot, transaction, event; a slot's block row after its transactions. */
 export const compareRows = (a: DatasetRow, b: DatasetRow): number => {

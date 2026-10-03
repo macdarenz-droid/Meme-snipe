@@ -144,6 +144,8 @@ export class Market {
       case 'curve':
         // Curve trades are recorded, not traded (§3.1); the engine does not need them yet.
         return [];
+      case 'raw':
+        return [];
     }
   }
 
