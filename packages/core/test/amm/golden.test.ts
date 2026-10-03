@@ -122,3 +122,12 @@ describe('PumpSwap golden vectors', () => {
     }
   });
 });
+
+describe('exact-in fee order', () => {
+  // In these trades the fees differ depending on whether they are computed before or after the net amount is trimmed
+  // to fit the spend limit. Both reproduce above only with "before" (fees not recomputed).
+  test('the fixture holds a deciding trade for each venue', () => {
+    expect(golden.curve.some((v) => v.signature.startsWith('5moxm83nLn3h'))).toBe(true);
+    expect(golden.pumpswap.some((v) => v.signature.startsWith('5MS8ouYc4iRf'))).toBe(true);
+  });
+});
