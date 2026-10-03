@@ -13,7 +13,14 @@ import { illegal, isIllegal, type Effect, type IllegalTransition, type Transitio
 
 export type PauseReason = 'daily_loss' | 'session_loss' | 'owner';
 
+/** Owner configuration. Code never raises it; only the owner does (CLAUDE.md, "Capital and trade size scale"). */
+export interface BookConfig {
+  /** Positions not yet closed, counting an unresolved entry's opening position. */
+  readonly maxOpenPositions: number;
+}
+
 export interface Book {
+  readonly config: BookConfig;
   readonly intents: Readonly<Record<string, IntentState>>;
   readonly positions: Readonly<Record<string, PositionState>>;
   /** SOL held by entry reservations. Equals the sum of held reservations. */
@@ -34,20 +41,21 @@ export type BookEvent =
   | { readonly type: 'pause_entries'; readonly reason: PauseReason }
   | { readonly type: 'resume_entries'; readonly reason: PauseReason };
 
-export const emptyBook = (): Book => ({ intents: {}, positions: {}, reserved: 0n as Lamports, paused: [], recovering: false });
+export const emptyBook = (config: BookConfig): Book => {
+  if (!Number.isSafeInteger(config.maxOpenPositions) || config.maxOpenPositions < 1) {
+    throw new RangeError(`maxOpenPositions must be an integer >= 1, got ${config.maxOpenPositions}`);
+  }
+  return { config, intents: {}, positions: {}, reserved: 0n as Lamports, paused: [], recovering: false };
+};
 
 export type EntryBlock = 'paused' | 'recovering' | 'unresolved_intent' | 'entry_in_progress' | 'position_limit';
 
 /**
  * May a new entry intent be created now? Blocked while paused, while recovering from a restart,
- * while any intent is unresolved, while another entry is live, or at the open-position limit
- * (architecture: one open position, counting unresolved entries).
+ * while any intent is unresolved, while another entry is live, or at the configured open-position limit.
  */
-export const canOpenNewEntry = (
-  book: Book,
-  options: { readonly maxOpenPositions?: number } = {},
-): { readonly ok: true } | { readonly ok: false; readonly reasons: readonly EntryBlock[] } => {
-  const max = options.maxOpenPositions ?? 1;
+export const canOpenNewEntry = (book: Book): { readonly ok: true } | { readonly ok: false; readonly reasons: readonly EntryBlock[] } => {
+  const max = book.config.maxOpenPositions;
   const intents = Object.values(book.intents);
   const reasons: EntryBlock[] = [];
   if (book.paused.length > 0) reasons.push('paused');

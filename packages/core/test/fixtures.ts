@@ -36,10 +36,22 @@ const bytesFrom = (seed: number, length: number): Uint8Array => {
   return out;
 };
 
-export const key32 = (seed: number): string => base58Encode(bytesFrom(seed, 32));
-export const sig = (seed: number) => signature(base58Encode(bytesFrom(seed + 1_000_000, 64)));
+const memo = <T>(make: (seed: number) => T) => {
+  const cache = new Map<number, T>();
+  return (seed: number): T => {
+    let v = cache.get(seed);
+    if (v === undefined) cache.set(seed, (v = make(seed)));
+    return v;
+  };
+};
+
+export const key32 = memo((seed) => base58Encode(bytesFrom(seed, 32)));
+export const sig = memo((seed) => signature(base58Encode(bytesFrom(seed + 1_000_000, 64))));
+const hash = memo((seed) => blockhash(key32(5_000 + seed)));
 
 export const MINT = mint(key32(1));
+/** The trial setting from docs/ARCHITECTURE.md: one open position. */
+export const CONFIG = { maxOpenPositions: 1 };
 export const SPEND = lamports(16_000_000);
 
 export const quote: QuoteContext = {
@@ -55,7 +67,7 @@ export const reservation = (id: IntentId, amount = SPEND) => ({ id: reservationI
 
 export const attempt = (id: IntentId, n: number, lastValidBlockHeight: bigint): TransactionAttempt => ({
   id: attemptId(`a${n}`), intentId: id, signedBytesRef: `bytes-${n}`, signature: sig(n),
-  blockhash: blockhash(key32(5_000 + n)), lastValidBlockHeight, quote,
+  blockhash: hash(n), lastValidBlockHeight, quote,
 });
 
 export const fill = (id: IntentId, n: number, tokens: bigint, sol: bigint = SPEND): Fill => ({

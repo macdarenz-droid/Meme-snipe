@@ -189,7 +189,7 @@ export const applyIntentEvent = (s: IntentState, e: IntentEvent): Transition<Int
     }
 
     case 'status': {
-      if (UNSENT.has(s.status)) return no('nothing was sent');
+      if (s.attempts.length === 0) return no('nothing was signed');
       if (!signatures.includes(e.signature)) return no('signature does not belong to this intent');
       switch (e.result) {
         case 'processed':
@@ -197,9 +197,10 @@ export const applyIntentEvent = (s: IntentState, e: IntentEvent): Transition<Int
         case 'confirmed':
         case 'finalized':
           if (IN_FLIGHT.has(s.status)) return to({ status: 'confirmed_fill', outcome: 'filled' }, reconcileBalances);
-          if (s.status === 'expired_unfilled') {
+          if (s.status === 'expired_unfilled' || s.status === 'signed' || isResolvedUnfilled(s)) {
+            // A signature believed dead has landed. The chain is the truth: record it and stop any replacement.
             return to(
-              { status: 'confirmed_fill', outcome: 'filled' },
+              { status: 'confirmed_fill', outcome: 'filled', rebroadcast: false },
               reconcileBalances,
               { type: 'alert', level: 'critical', code: 'late_landing', subject: id },
             );
@@ -207,7 +208,7 @@ export const applyIntentEvent = (s: IntentState, e: IntentEvent): Transition<Int
           return s.status === 'confirmed_fill' || s.status === 'reconciled' ? stay() : no('outcome already recorded');
         case 'failed':
           if (IN_FLIGHT.has(s.status)) return to({ status: 'failed', outcome: 'failed' }, reconcileBalances);
-          return s.status === 'failed' || s.status === 'reconciled' ? stay() : no('outcome already recorded');
+          return UNSENT.has(s.status) && s.status !== 'signed' ? no('nothing was sent') : stay();
         case 'not_found':
           // Expired only when a history search finds nothing after the current attempt's last valid height.
           if (IN_FLIGHT.has(s.status) && current !== undefined && e.searchedHistory && e.blockHeight > current.lastValidBlockHeight) {

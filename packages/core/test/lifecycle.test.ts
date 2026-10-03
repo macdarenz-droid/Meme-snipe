@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { raw } from '../src/units/index.ts';
 import { intentId, positionId, type IntentId } from '../src/domain/index.ts';
 import { applyBookEvent, canOpenNewEntry, emptyBook, isIllegal, liveIntents, type Book, type BookEvent, type Effect } from '../src/lifecycle/index.ts';
-import { attempt, entryIntent, entryToSubmitted, fill, on, quote, run, sig, SPEND } from './fixtures.ts';
+import { attempt, entryIntent, entryToSubmitted, fill, on, quote, run, sig, SPEND, CONFIG } from './fixtures.ts';
 
 const E1 = intentId('e1');
 const P1 = positionId('p1');
@@ -19,7 +19,7 @@ const broadcasts = (effects: readonly Effect[]) => effects.filter((f) => f.type 
 
 /** An open position p1 holding `tokens`, from a confirmed entry e1. */
 const openPosition = (tokens: bigint): Book =>
-  run(emptyBook(), [
+  run(emptyBook(CONFIG), [
     ...entryToSubmitted(1, 1_000n),
     on(E1, { type: 'send_accepted' }),
     on(E1, { type: 'status', signature: sig(1), result: 'confirmed', blockHeight: 900n, searchedHistory: false }),
@@ -29,7 +29,7 @@ const openPosition = (tokens: bigint): Book =>
 describe('entry lifecycle', () => {
   test('timeout after a buy landed: reconciliation finds the fill and no second buy is produced', () => {
     const log: Effect[] = [];
-    let { book } = run(emptyBook(), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_timeout' })], log);
+    let { book } = run(emptyBook(CONFIG), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_timeout' })], log);
     expect(book.intents[E1]!.status).toBe('unknown');
 
     // Nothing can start a second buy while the first is unknown.
@@ -54,7 +54,7 @@ describe('entry lifecycle', () => {
   });
 
   test('cancel after broadcast does not mark the trade cancelled; it stays unknown until reconciled', () => {
-    const base = run(emptyBook(), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_timeout' })]).book;
+    const base = run(emptyBook(CONFIG), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_timeout' })]).book;
     const r = applyBookEvent(base, on(E1, { type: 'cancel' }));
     if (isIllegal(r)) throw new Error(r.reason);
     expect(r.state.intents[E1]).toMatchObject({ status: 'unknown', cancelRequested: true });
@@ -81,7 +81,7 @@ describe('entry lifecycle', () => {
 
   test('cancel before broadcast stops the intent and releases the reservation', () => {
     const events = entryToSubmitted(1, 1_000n).slice(0, -1);
-    const { book, effects } = run(emptyBook(), [...events, on(E1, { type: 'cancel' })]);
+    const { book, effects } = run(emptyBook(CONFIG), [...events, on(E1, { type: 'cancel' })]);
     expect(book.intents[E1]!.status).toBe('cancelled');
     expect(book.reserved).toBe(0n);
     expect(broadcasts(effects)).toHaveLength(0);
@@ -89,7 +89,7 @@ describe('entry lifecycle', () => {
   });
 
   test('restart with a pending transaction: entries blocked until reconciled', () => {
-    const pending = run(emptyBook(), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_accepted' })]).book;
+    const pending = run(emptyBook(CONFIG), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_accepted' })]).book;
     const { book, effects } = run(pending, [{ type: 'restart' }]);
     expect(book.intents[E1]!.status).toBe('unknown');
     expect(book.recovering).toBe(true);
@@ -112,7 +112,7 @@ describe('entry lifecycle', () => {
   });
 
   test('restart while signed: the bytes are never sent, only waited out', () => {
-    const signed = run(emptyBook(), entryToSubmitted(1, 1_000n).slice(0, -1)).book;
+    const signed = run(emptyBook(CONFIG), entryToSubmitted(1, 1_000n).slice(0, -1)).book;
     const { book } = run(signed, [{ type: 'restart' }]);
     expect(book.intents[E1]).toMatchObject({ status: 'unknown', rebroadcast: false });
     expect(book.positions[P1]!.status).toBe('opening'); // supervised: it may have landed
@@ -124,7 +124,7 @@ describe('entry lifecycle', () => {
 
   test('expired blockhash: replacement only after expiry plus reconciliation', () => {
     const log: Effect[] = [];
-    let { book } = run(emptyBook(), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_accepted' })], log);
+    let { book } = run(emptyBook(CONFIG), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_accepted' })], log);
     const replace = on(E1, { type: 'sign_replacement', attempt: attempt(E1, 2, 2_000n) });
     expect(refused(book, replace)).toMatch(/reconciled/);
 
@@ -152,15 +152,32 @@ describe('entry lifecycle', () => {
     expect(broadcasts(log).map((b) => b.type === 'broadcast' && b.signature)).toEqual([sig(1), sig(2)]);
   });
 
+  test('a late landing after an unfilled reconciliation is booked as a fill, never replaced', () => {
+    const resolved = run(emptyBook(CONFIG), [
+      ...entryToSubmitted(1, 1_000n),
+      on(E1, { type: 'status', signature: sig(1), result: 'not_found', blockHeight: 1_001n, searchedHistory: true }),
+      on(E1, { type: 'reconcile', fill: null }),
+      on(E1, { type: 'sign_replacement', attempt: attempt(E1, 2, 2_000n) }),
+    ]).book;
+    const { book, effects } = run(resolved, [
+      on(E1, { type: 'status', signature: sig(1), result: 'confirmed', blockHeight: 1_002n, searchedHistory: true }),
+    ]);
+    expect(book.intents[E1]!.status).toBe('confirmed_fill');
+    expect(effects).toContainEqual({ type: 'alert', level: 'critical', code: 'late_landing', subject: E1 });
+    expect(refused(book, on(E1, { type: 'submit' }))).toMatch(/signed/);
+    const filled = run(book, [on(E1, { type: 'reconcile', fill: fill(E1, 1, 9n) })]).book;
+    expect(filled.positions[P1]).toMatchObject({ status: 'open', quantity: 9n });
+  });
+
   test('an RPC success is acceptance, not a fill', () => {
-    const { book } = run(emptyBook(), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_accepted' })]);
+    const { book } = run(emptyBook(CONFIG), [...entryToSubmitted(1, 1_000n), on(E1, { type: 'send_accepted' })]);
     expect(book.intents[E1]).toMatchObject({ status: 'pending', fill: null });
     expect(book.positions[P1]).toMatchObject({ status: 'opening', quantity: 0n });
     expect(refused(book, on(E1, { type: 'reconcile', fill: fill(E1, 1, 5n) }))).toMatch(/reconcile follows/);
   });
 
   test('a confirmed signature with no balance change is refused, not booked as empty', () => {
-    const { book } = run(emptyBook(), [
+    const { book } = run(emptyBook(CONFIG), [
       ...entryToSubmitted(1, 1_000n),
       on(E1, { type: 'status', signature: sig(1), result: 'confirmed', blockHeight: 10n, searchedHistory: false }),
     ]);
@@ -246,8 +263,18 @@ describe('exits', () => {
     expect(canOpenNewEntry(run(book, [{ type: 'resume_entries', reason: 'daily_loss' }]).book)).toEqual({ ok: true });
   });
 
+  test('the open-position limit is configuration; one live entry at a time regardless', () => {
+    expect(() => emptyBook({ maxOpenPositions: 0 })).toThrow(RangeError);
+    const two = { ...openPosition(1_000n), config: { maxOpenPositions: 2 } };
+    expect(canOpenNewEntry(two)).toEqual({ ok: true });
+    const second = run(two, [{ type: 'propose_entry', intent: entryIntent(2) }]).book;
+    expect(canOpenNewEntry(second)).toEqual({ ok: false, reasons: ['entry_in_progress'] });
+    expect(refused(second, { type: 'propose_entry', intent: entryIntent(3) })).toMatch(/entry_in_progress/);
+    expect(canOpenNewEntry(openPosition(1_000n))).toEqual({ ok: false, reasons: ['position_limit'] });
+  });
+
   test('a pause stops an entry that has not been sent', () => {
-    const signed = run(emptyBook(), [...entryToSubmitted(1, 1_000n).slice(0, -1), { type: 'pause_entries', reason: 'daily_loss' }]).book;
+    const signed = run(emptyBook(CONFIG), [...entryToSubmitted(1, 1_000n).slice(0, -1), { type: 'pause_entries', reason: 'daily_loss' }]).book;
     expect(refused(signed, on(E1, { type: 'submit' }))).toMatch(/paused/);
     const cancelled = run(signed, [on(E1, { type: 'cancel' })]).book;
     expect(cancelled.reserved).toBe(0n);

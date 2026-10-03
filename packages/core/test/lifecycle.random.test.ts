@@ -15,14 +15,14 @@ const INTENT_EDGES: Record<IntentStatus, readonly IntentStatus[]> = {
   risk_approved: ['exposure_reserved', 'rejected', 'cancelled'],
   exposure_reserved: ['prepared', 'cancelled'],
   prepared: ['signed', 'cancelled'],
-  signed: ['submitted', 'cancelled', 'unknown'], // unknown: restart, the bytes may have left
+  signed: ['submitted', 'cancelled', 'unknown', 'confirmed_fill'], // unknown: restart; confirmed_fill: an earlier attempt landed late
   submitted: ['pending', 'unknown', 'confirmed_fill', 'failed', 'expired_unfilled'],
   pending: ['unknown', 'confirmed_fill', 'failed', 'expired_unfilled'],
   unknown: ['confirmed_fill', 'failed', 'expired_unfilled'],
   confirmed_fill: ['reconciled'],
   failed: ['reconciled', 'cancelled'], // cancelled: cancel was requested and balances show no fill
   expired_unfilled: ['reconciled', 'cancelled', 'confirmed_fill'], // confirmed_fill: late landing seen
-  reconciled: ['signed', 'abandoned', 'cancelled'], // only when reconciled without a fill
+  reconciled: ['signed', 'abandoned', 'cancelled', 'confirmed_fill'], // only when reconciled without a fill
   rejected: [],
   cancelled: [],
   abandoned: [],
@@ -215,7 +215,7 @@ describe('randomised lifecycle sequences', () => {
     let accepted = 0;
     for (let seed = 1; seed <= SEQUENCES; seed++) {
       const next = generator(seed);
-      const w: World = { book: emptyBook(), height: 100n, n: 0 };
+      const w: World = { book: emptyBook({ maxOpenPositions: 1 + (seed % 3) }), height: 100n, n: 0 };
       for (let s = 0; s < STEPS; s++) {
         const e = next(w);
         const r = applyBookEvent(w.book, e);
