@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { VENUES } from '../../src/domain/index.ts';
 import { INTENT_STATUSES, POSITION_STATUSES } from '../../src/lifecycle/index.ts';
 import { openLedger, openLedgerReader } from '../../src/ledger/index.ts';
-import { V1_INTENT_STATUSES, V1_POSITION_STATUSES, V1_VENUES } from '../../src/ledger/migrations.ts';
-import { connectionOf } from '../../src/ledger/ledger.ts';
+import { LEDGER_MIGRATIONS, V1_INTENT_STATUSES, V1_POSITION_STATUSES, V1_VENUES } from '../../src/ledger/migrations.ts';
+import { connectionOf, Ledger } from '../../src/ledger/ledger.ts';
 import { openReader, openWriter, type Migration } from '../../src/ledger/sqlite.ts';
 import { lamports, raw } from '../../src/units/index.ts';
 import { attempt, entryIntent, fill, MINT, sig } from '../fixtures.ts';
@@ -346,6 +346,74 @@ describe('migrations', () => {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'c'").get()).toBeUndefined();
     expect(db.prepare('SELECT MAX(version) v FROM schema_migrations').get()?.['v']).toBe(1n);
     db.close();
+  });
+
+  it('a table rebuild that orphans a row is rolled back, and foreign keys are switched back on', () => {
+    const path = tempPath();
+    const parent: Migration = { version: 1, name: 'parent', sql: `CREATE TABLE p (id TEXT PRIMARY KEY) STRICT;
+      CREATE TABLE c (pid TEXT NOT NULL REFERENCES p (id)) STRICT; INSERT INTO p VALUES ('a'); INSERT INTO c VALUES ('a');` };
+    const first = openWriter(path, 'ledger', [parent]);
+    first.db.close();
+    first.release();
+    const lossy: Migration = { version: 2, name: 'lossy', sql: 'DROP TABLE p; CREATE TABLE p (id TEXT PRIMARY KEY) STRICT;', rebuildsTables: true };
+    expect(() => openWriter(path, 'ledger', [parent, lossy])).toThrow(/migration 2 leaves 1 rows without their parent row/);
+    const db = raw_(path);
+    expect(db.prepare('SELECT MAX(version) v FROM schema_migrations').get()?.['v']).toBe(1n);
+    expect(db.prepare('SELECT id FROM p').all()).toEqual([{ id: 'a' }]);
+    db.close();
+    const good: Migration = { version: 2, name: 'good', sql: 'CREATE TABLE p2 (id TEXT PRIMARY KEY) STRICT;', rebuildsTables: true };
+    const after = openWriter(path, 'ledger', [parent, good]);
+    expect(after.db.prepare('PRAGMA foreign_keys').get()?.['foreign_keys']).toBe(1n);
+    expect(() => after.db.exec("INSERT INTO c VALUES ('missing')")).toThrow(/FOREIGN KEY constraint failed/);
+    after.db.close();
+    after.release();
+  });
+
+  it('migration 2 (LEDGER-1b) keeps every v1 row and lets a late buy position share its entry intent', () => {
+    const path = tempPath();
+    // A v1 file with intents, positions and their events, written by the v1 schema.
+    const v1Store = openWriter(path, 'ledger', LEDGER_MIGRATIONS.slice(0, 1));
+    v1Store.db.prepare("INSERT INTO ledger_meta (key, value) VALUES ('purpose', 'paper')").run();
+    const v1Ledger = new Ledger(v1Store.db, v1Store.release);
+    const e1 = entryIntent(1);
+    v1Ledger.recordIntent(e1, { status: 'candidate', ts: 1 });
+    v1Ledger.recordIntent(entryIntent(2), { status: 'candidate', ts: 2 });
+    v1Ledger.openPosition({ positionId: 'p1', mint: MINT, venue: 'pump-curve', entryIntentId: 'e1', ts: 3 });
+    v1Ledger.openPosition({ positionId: 'p2', mint: MINT, venue: 'pumpswap', entryIntentId: 'e2', ts: 4 });
+    v1Ledger.appendPositionState({ positionId: 'p1', status: 'open', quantity: 7n, cost: lamports(9), event: 'entry_filled', ts: 5 });
+    expect(() => v1Ledger.openPosition({ positionId: 'p1.o1', mint: MINT, venue: 'pump-curve', entryIntentId: 'e1', ts: 6 }))
+      .toThrow(/UNIQUE constraint failed: position\.entry_intent_id/);
+    const dump = (db: DatabaseSync) => ['position', 'position_event', 'intent', 'intent_event']
+      .map((t) => db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all());
+    const before = dump(v1Store.db);
+    v1Ledger.close();
+
+    const ledger = openLedger(path, 'paper');
+    const db = connectionOf(ledger);
+    expect(db.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all())
+      .toEqual([{ version: 1n, name: 'ledger tables' }, { version: 2n, name: 'many positions per entry intent' }]);
+    expect(dump(db)).toEqual(before);
+    expect(db.prepare('PRAGMA foreign_keys').get()?.['foreign_keys']).toBe(1n);
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    const ddl = String(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'position'").get()?.['sql']);
+    expect(ddl).not.toMatch(/UNIQUE/i);
+    expect(ddl).toMatch(/entry_intent_id TEXT NOT NULL REFERENCES intent \(intent_id\)/);
+    expect(ddl).toMatch(/venue IN \('pump-curve', 'pumpswap'\)/);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'position' AND name = 'position_entry_intent'").get()).toBeDefined();
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'position_copy'").get()).toBeUndefined();
+    // Still append-only, still checked, still tied to real intents and positions.
+    expect(() => db.exec("UPDATE position SET mint = 'x'")).toThrow(/append-only: position/);
+    expect(() => db.exec("DELETE FROM position")).toThrow(/append-only: position/);
+    expect(() => db.exec("INSERT INTO position VALUES ('p9', 'm', 'raydium', 'e1', 1)")).toThrow(/CHECK constraint failed/);
+    expect(() => ledger.openPosition({ positionId: 'p9', mint: MINT, venue: 'pump-curve', entryIntentId: 'ghost', ts: 7 })).toThrow(/FOREIGN KEY constraint failed/);
+    expect(() => ledger.appendPositionState({ positionId: 'ghost', status: 'open', quantity: 1n, cost: lamports(1), event: 'x', ts: 7 })).toThrow(/FOREIGN KEY constraint failed/);
+    // The late buy position now stores beside the position it was meant for.
+    ledger.openPosition({ positionId: 'p1.o1', mint: MINT, venue: 'pump-curve', entryIntentId: 'e1', ts: 8 });
+    expect(ledger.positions().map((p) => [p.positionId, p.entryIntentId, p.status])).toEqual([['p1', 'e1', 'open'], ['p2', 'e2', 'opening'], ['p1.o1', 'e1', 'opening']]);
+    // A second position id is still refused.
+    expect(() => ledger.openPosition({ positionId: 'p1.o1', mint: MINT, venue: 'pump-curve', entryIntentId: 'e1', ts: 9 })).toThrow(/UNIQUE constraint failed: position\.position_id/);
+    ledger.close();
+    openLedgerReader(path).close();
   });
 
   it('schema 1 lists match the domain; a change there must ship as a new migration', () => {
