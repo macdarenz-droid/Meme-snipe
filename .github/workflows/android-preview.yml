@@ -158,7 +158,12 @@ jobs:
         if: steps.newest.outputs.current == 'true'
         run: |
           set -euo pipefail
-          old="$(gh api "repos/$GH_REPO/git/ref/tags/preview" --jq .object.sha 2>/dev/null || true)"
+          # gh prints the 404 body to stdout on a missing ref, so only trust the output when the call succeeds.
+          if out="$(gh api "repos/$GH_REPO/git/ref/tags/preview" --jq .object.sha 2>/dev/null)" && [[ "$out" =~ ^[0-9a-f]{40}$ ]]; then
+            old="$out"
+          else
+            old=""
+          fi
           subject="$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA" --jq '.commit.message | split("\n")[0]')"
           {
             echo "Preview build ${{ needs.build.outputs.version_name }}, commit \`${GITHUB_SHA}\`."
