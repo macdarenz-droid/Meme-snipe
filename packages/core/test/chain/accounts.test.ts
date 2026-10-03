@@ -180,7 +180,7 @@ describe('PumpSwap pools', () => {
 
   it('poolAddress refuses any index that is not a u16 instead of wrapping it', () => {
     const p = decodePool(data(accountsLabelled('canonical PumpSwap pool')[0]!)).value;
-    for (const bad of [65536, 2 ** 32, 2 ** 32 + 1, -1, 1.5, Number.NaN]) {
+    for (const bad of [65536, 2 ** 32, 2 ** 32 + 1, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => poolAddress(bad, p.creator, p.baseMint, p.quoteMint), String(bad)).toThrow(RangeError);
     }
     expect(poolAddress(65535, p.creator, p.baseMint, p.quoteMint)).not.toBe(poolAddress(0, p.creator, p.baseMint, p.quoteMint));
