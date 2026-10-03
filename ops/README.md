@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/810500b0979f2ea27dc3038db21207a46358f8c3/ops/install.sh -o i && echo 'bce6850394cbb71a19f7501c00621213289b719eaa5dd62563d3edea844faec5  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/810500b0979f2ea27dc3038db21207a46358f8c3/ops/install.sh -o i && echo '5337c0ed2b73e4696aaba5da0cef456acc188f7cee4c5508f66328fcf9107b4e  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/810500b0
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `bce6850394cbb71a19f7501c00621213289b719eaa5dd62563d3edea844faec5`
+SHA-256 of `install.sh`: `5337c0ed2b73e4696aaba5da0cef456acc188f7cee4c5508f66328fcf9107b4e`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -139,7 +139,7 @@ A failed webhook set is tried again after 1, 2, 4 and 8 minutes, then every 30 m
 
 ## Dry run
 
-The worker unit starts `/usr/local/lib/zeroed/worker-start`, for both the reconcile step and the run. The wrapper sets `ZEROED_MODE=paper`, `ZEROED_RECORDER=on`, `ZEROED_SIMULATE=on`, `ZEROED_DRILLS=on` and `ZEROED_HEALTH_ADDR=127.0.0.1:8788`. It runs `packages/worker/src/main.ts` from the deployed release once WORKER-1 lands, and the host's stand-in until then. Live is never set there or in any environment file.
+The worker unit starts `/usr/local/lib/zeroed/worker-start`, for both the reconcile step and the run. The wrapper sets `ZEROED_MODE=paper`, `ZEROED_RECORDER=on`, `ZEROED_SIMULATE=on` and `ZEROED_DRILLS=on`, the health route for the runner on `ZEROED_HEALTH_ADDR=127.0.0.1:8787` and the worker API on `ZEROED_API_ADDR=127.0.0.1:8788`. It runs the release's own worker (`packages/worker/src/main.ts`) only when the release's `ops/host-config.json` says `"worker": "release"`; it ships as `"stub"`, so the host keeps its stand-in until that switch is a reviewed commit, applied by the next code update. Live is never set there or in any environment file.
 
 Evidence stays on the host in `/var/lib/zeroed-dryrun/evidence/<run id>/` (root only), written by `zeroed-dryrun@<name>`. Nothing uploads it; the way into the repository waits for the owner's decision. `zeroed-check` writes its index (id, name, label, commit, start, finished, pass, aborted reason, path) to `/var/lib/zeroed-index/evidence.json`. The worker API's `GET /health` lists it as `evidence`, and `zeroed-status` counts the runs. The restore drill for host-loss drills is `zeroed-restore-drill /etc/zeroed/age/host.key`. The reboot drill unit `zeroed-dryrun-reboot.service` arrives with RUN-1's units.
 
@@ -159,7 +159,7 @@ A server installed from an earlier line (before this fix) has its webhook off af
 
 ## Worker contract (for WORKER-1)
 
-- Serve the API on `ZEROED_HEALTH_ADDR` (`127.0.0.1:8788` on the host, loopback only). `GET /health` includes `evidence`: the array in `/var/lib/zeroed-index/evidence.json`, or `[]` when that file is missing.
+- Serve the API on `ZEROED_API_ADDR` (`127.0.0.1:8788` on the host, loopback only; the health route for the runner stays on `ZEROED_HEALTH_ADDR`, `127.0.0.1:8787`). The API's `GET /health` includes `evidence`: the array in `/var/lib/zeroed-index/evidence.json`, or `[]` when that file is missing.
 - Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
 - Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
 - Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.

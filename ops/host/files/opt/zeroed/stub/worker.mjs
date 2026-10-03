@@ -114,9 +114,9 @@ async function beat() {
 
 const bootId = `${Date.now().toString(36)}-${process.pid}`;
 
-// The worker API's health route, loopback only (ARCHITECTURE.md 12.4). `tailscale serve` publishes it to the
-// owner's tailnet. `evidence` lists the dry-run evidence kept on the host (zeroed-check writes the index).
-const healthAddr = process.env.ZEROED_HEALTH_ADDR ?? '';
+// The worker API (ZEROED_API_ADDR), loopback only (ARCHITECTURE.md 12.4); `tailscale serve` publishes it to the
+// owner's tailnet. Its /health lists the dry-run evidence kept on the host (`evidence`; zeroed-check writes the index).
+const healthAddr = process.env.ZEROED_API_ADDR ?? '';
 let server = null;
 if (healthAddr) {
   const m = /^(127\.0\.0\.1|\[::1\]):(\d{1,5})$/.exec(healthAddr);

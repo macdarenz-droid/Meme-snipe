@@ -436,7 +436,7 @@ for u in $(ls "$ROOT/packages/runner/systemd"); do in_c "cmp -s /etc/systemd/sys
 in_c "systemctl is-enabled zeroed-dryrun-tick.timer && systemctl is-active zeroed-dryrun-tick.timer && systemctl is-enabled zeroed-check.timer" >/dev/null || fail "tick or check timer not enabled"
 in_c "! systemctl is-enabled zeroed-dryrun@.service 2>/dev/null | grep -q enabled" || fail "the dry-run template was enabled"
 in_c "apt-config dump" | has 'Unattended-Upgrade::Origins-Pattern:: "origin=Tailscale,label=Tailscale,codename=${distro_codename}";' || fail "Tailscale origin not in unattended-upgrades"
-in_c "systemctl cat zeroed-dryrun@x.service" | has -- '--health-addr 127.0.0.1:8788' || fail "runner unit not pointed at the worker API"
+in_c "systemctl cat zeroed-dryrun@x.service" | has -- '--evidence-root /var/lib/zeroed-dryrun/evidence' || fail "runner unit not installed from the release"
 in_c "! test -e /etc/zeroed/deploy-code" || fail "--update made a deploy code"
 in_c "nft list ruleset" | has 'dport 22' && fail "--update opened SSH"
 # SSH as the running firewall has it: kept open when it was open, kept closed when closed.
@@ -450,9 +450,14 @@ grep -q 'Deploy code' "$LOGS/console/update-ssh-open.txt" "$LOGS/console/update-
 in_c "nft list ruleset" | has 'iifname "tailscale0" tcp dport 443 accept' || fail "tailnet HTTPS rule"
 wait_for 30 "worker running after the update" "docker exec $C systemctl is-active zeroed-worker"
 in_c "systemctl show -p ExecStart --value zeroed-worker" | has /usr/local/lib/zeroed/worker-start || fail "worker not started by the wrapper"
+# The release carries WORKER-1's worker, but its host-config keeps the stand-in until a reviewed switch.
+if in_c "test -f /opt/zeroed/current/packages/worker/src/main.ts"; then
+  in_c "jq -r .worker /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo none" | has -vx release || fail "test release already switched to the real worker"
+  in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has /opt/zeroed/stub/worker.mjs || fail "the release's worker ran without the host-config switch"
+fi
 pid="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
 in_c "tr '\0' '\n' < /proc/$pid/environ" >"$LOGS/worker-env.txt"
-for want in ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on ZEROED_HEALTH_ADDR=127.0.0.1:8788; do grep -qx "$want" "$LOGS/worker-env.txt" || fail "worker environment: $want"; done
+for want in ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on ZEROED_HEALTH_ADDR=127.0.0.1:8787 ZEROED_API_ADDR=127.0.0.1:8788; do grep -qx "$want" "$LOGS/worker-env.txt" || fail "worker environment: $want"; done
 chk
 wait_for 20 "worker API up" "docker exec $C curl -fsS -m 3 http://127.0.0.1:8788/health"
 in_c "curl -fsS http://127.0.0.1:8788/health" >"$LOGS/health.json"
@@ -460,7 +465,7 @@ jq -e '.mode == "paper" and .signing_key == false and (.evidence | map(.id) | in
 CIP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$C")"
 curl -s -m 3 -o /dev/null "http://$CIP:8788/health" && fail "the worker API answered on the public interface"
 in_c "zeroed-status" | has 'Evidence:  /var/lib/zeroed-dryrun/evidence (1 runs)' || fail "status does not list the evidence"
-pass "install.sh --update through zeroed-update: failing host files keep the old release and the worker (one alert, cleared later); RUN-1 units from the release installed (tick timer on, template off, runner on 127.0.0.1:8788), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on; worker API on loopback only lists the evidence kept on the host"
+pass "install.sh --update through zeroed-update: failing host files keep the old release and the worker (one alert, cleared later); RUN-1 units from the release installed (tick timer on, template off), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on, health on 127.0.0.1:8787 and API on 127.0.0.1:8788, the stand-in until the release switches to its own worker; worker API on loopback only lists the evidence kept on the host"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on

@@ -33,7 +33,7 @@ import {
   type HoldersAllRead, unwrap,
 } from './raw.ts';
 
-/** Holder facts not formed, per UTC day and reason (the coverage report reads it; it never feeds a gate). */
+/** Holder facts not formed, and scans that fell back after a refused mint-only scan, per UTC day and reason (the coverage report reads it; it never feeds a gate). */
 export const HOLDER_ABSTENTIONS_KEY = 'facts/abstentions:holders';
 
 export interface FactWrite {
@@ -717,13 +717,15 @@ export class FactProducer {
       if (r === null || key !== RAW.holdersAll(r.mint) || !usable(r.commitment)) return;
       const c = checkHolders(r);
       if (c.ok) put(holdersKey(r.mint), { obs: { provider, slot: r.slot, receivedAt: at, quality: [], commitment: r.commitment }, ...c.set });
-      else {
-        // Abstentions per UTC day and reason, for the coverage report: a holder fact that never formed is visible.
+      // Abstentions and fallbacks per UTC day and reason, for the coverage report: what never formed, or formed only
+      // after a refused mint-only scan, is visible.
+      const reasons = [...(r.fallback === true ? ['mint-only-refused'] : []), ...(c.ok ? [] : [c.reason])];
+      if (reasons.length > 0) {
         const day = Math.floor(at / DAY_MS);
         if (this.#abstainDay !== day) this.#abstain = new Map();
         this.#abstainDay = day;
-        this.#abstain.set(c.reason, (this.#abstain.get(c.reason) ?? 0) + 1);
-        put(HOLDER_ABSTENTIONS_KEY, { obs: { provider: 'facts', slot: null, receivedAt: at, quality: [] }, day, counts: Object.fromEntries([...this.#abstain].sort()), last: { mint: r.mint, reason: c.reason } });
+        for (const x of reasons) this.#abstain.set(x, (this.#abstain.get(x) ?? 0) + 1);
+        put(HOLDER_ABSTENTIONS_KEY, { obs: { provider: 'facts', slot: null, receivedAt: at, quality: [] }, day, counts: Object.fromEntries([...this.#abstain].sort()), last: { mint: r.mint, reason: reasons.at(-1)! } });
       }
     } else if (key.startsWith('read:sim:')) {
       const r = parseSimRead(v);
