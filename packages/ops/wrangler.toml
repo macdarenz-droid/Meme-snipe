@@ -1,0 +1,30 @@
+# Zeroed watchdog: Cloudflare Worker on its free workers.dev address, cron every minute, one Durable Object
+# for the heartbeat, alerts, pause flag and lease (ARCHITECTURE.md 12, security.md 5.2).
+# Secrets (set by the Deploy workflow, never here): HEARTBEAT_HMAC_KEY, TELEGRAM_BOT_TOKEN,
+# TELEGRAM_WEBHOOK_SECRET. The owner's chat id arrives in the server's signed heartbeat.
+# Free plan only: Workers Free, cron triggers, SQLite-backed Durable Objects, workers.dev.
+name = "zeroed-watchdog"
+main = "src/watchdog/worker.ts"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[[durable_objects.bindings]]
+name = "WATCHDOG"
+class_name = "Watchdog"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Watchdog"]
+
+[vars]
+HEARTBEAT_MAX_AGE_S = "90"
+SLOT_LAG_MAX = "150"
+INTENT_MAX_AGE_S = "90"
+STOP_NO_EXIT_S = "60"
+SOL_RESERVE_FLOOR = "0.02"
+REPEAT_CRITICAL_S = "300"
+CHAIN_RPC_URL = "https://api.mainnet-beta.solana.com"
+TELEGRAM_API = "https://api.telegram.org"
