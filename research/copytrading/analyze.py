@@ -96,6 +96,10 @@ def load():
                     max_slot = max(max_slot, r[1])
                     buy = r[6] == 1
                     q_user, base_amt, qb, bb, lp, pr, cr, q_gross = int(r[7]), int(r[8]), int(r[9]), int(r[10]), int(r[11]), int(r[12]), int(r[13] or 0), int(r[15])
+                    if buy and q_gross > q_user:
+                        # 504-byte BuyEvents (exact-quote-in style) carry quote_amount_in and user_quote_amount_in in
+                        # swapped positions compared with 489-byte ones: the net into the curve is always the smaller
+                        q_user, q_gross = q_gross, q_user
                     lpfee = q_gross * lp // 10000
                     # PumpSwap prices on an effective quote reserve = vault + Pool.virtual_quote_reserves (signed i128,
                     # often negative since 2026-09-30; packages/core/src/amm/pump-swap.ts). The collector did not store
@@ -375,7 +379,17 @@ def summarize(rs):
     nb = 10000
     mci = boot(xs, lambda a: sum(a) / len(a), nb); dci = boot(xs, statistics.median, nb)
     gaps = [r['gap'] for r in rs if r and r['gap'] is not None]
-    return {'n': len(xs), 'mean': mean, 'mean_ci': mci, 'median': med, 'median_ci': dci, 'win': sum(x > 0 for x in xs) / len(xs),
+    # leader-clustered bootstrap: resample whole leaders (trades of one wallet are not independent)
+    by = collections.defaultdict(lambda: [0.0, 0])
+    for r in rs:
+        if r: by[r['user']][0] += r['net']; by[r['user']][1] += 1
+    cl = list(by.values()); rnd = random.Random(7); lv = []
+    for _ in range(nb):
+        smp = rnd.choices(cl, k=len(cl)); t = sum(c[0] for c in smp); k = sum(c[1] for c in smp)
+        lv.append(t / k)
+    lv.sort()
+    top = max(c[1] for c in cl)
+    return {'n': len(xs), 'n_leaders': len(cl), 'top_leader_share': top / len(xs), 'mean_ci_leader': (lv[int(0.025 * nb)], lv[int(0.975 * nb) - 1]), 'mean': mean, 'mean_ci': mci, 'median': med, 'median_ci': dci, 'win': sum(x > 0 for x in xs) / len(xs),
             'worst': min(xs), 'best': max(xs), 'gap_gt10': sum(g > 0.10 for g in gaps) / len(gaps) if gaps else None, 'gap_median': statistics.median(gaps) if gaps else None}
 
 
@@ -394,12 +408,12 @@ def run_cells(sig, series, events_by_wm, px):
 
 
 def print_cells(cells):
-    print('set delay usd exit opt | n mean [95% CI] median [95% CI] win worst gap>10%')
+    print('set delay usd exit opt | n mean [95% CI] median [95% CI] win worst gap>10% | leaders, top-leader share, mean CI by leader')
     for c in cells:
         if c['n'] == 0:
             print(c['set'], c['delay'], c['usd'], c['exit'], c['optimistic'], '| n=0'); continue
         g = c['gap_gt10'] * 100 if c['gap_gt10'] is not None else float('nan')
-        print(f"{c['set']} {c['delay']:>2} {c['usd']:>3} {c['exit']} {'opt' if c['optimistic'] else '   '} | {c['n']:>4} {c['mean']*100:+7.1f}% [{c['mean_ci'][0]*100:+.1f}, {c['mean_ci'][1]*100:+.1f}]  {c['median']*100:+7.1f}% [{c['median_ci'][0]*100:+.1f}, {c['median_ci'][1]*100:+.1f}]  {c['win']*100:4.0f}% {c['worst']*100:+6.0f}%  {g:4.0f}%")
+        print(f"{c['set']} {c['delay']:>2} {c['usd']:>3} {c['exit']} {'opt' if c['optimistic'] else '   '} | {c['n']:>4} {c['mean']*100:+7.1f}% [{c['mean_ci'][0]*100:+.1f}, {c['mean_ci'][1]*100:+.1f}]  {c['median']*100:+7.1f}% [{c['median_ci'][0]*100:+.1f}, {c['median_ci'][1]*100:+.1f}]  {c['win']*100:4.0f}% {c['worst']*100:+6.0f}%  {g:4.0f}% | {c['n_leaders']} {c['top_leader_share']*100:.0f}% [{c['mean_ci_leader'][0]*100:+.1f}, {c['mean_ci_leader'][1]*100:+.1f}]")
 
 
 def replay(path):

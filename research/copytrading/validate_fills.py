@@ -31,7 +31,7 @@ for f in sorted(glob.glob(os.path.join(A.RAW, 'trades_*.jsonl.gz'))):
             try: r = json.loads(line)
             except Exception: continue
             if r[0] != 'A' or r[6] != 1 or r[14] > A.X1 or pmap.get(r[4], [0, 0])[1] != A.WSOL: continue
-            q_user, base_out, qb, bb = int(r[7]), int(r[8]), int(r[9]), int(r[10])
+            q_user, base_out, qb, bb = max(int(r[7]), int(r[15])), int(r[8]), int(r[9]), int(r[10])  # user total (fields swap by event version)
             fee = (int(r[11]) + int(r[12]) + int(r[13] or 0)) / 1e4
             if base_out <= 0 or qb <= 0: continue
             errs['a'].append(A.buy_fill(('a', qb, bb, fee), q_user) / base_out - 1)
