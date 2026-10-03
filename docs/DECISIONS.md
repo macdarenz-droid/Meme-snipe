@@ -469,4 +469,38 @@ A third reviewer read 8370c2a. Its new findings were checked in code; these ruli
 - **2026-10-04 · Stored data (supervisor ruling, no personal data):** `exits.json`, `paper.json` (paper attempts), `account.json` (the paper wallet and the bot's own paper trades), `control.json` (pause and risk latches), `credits.json`, `deployers.jsonl` (the deployer index's creates, rug facts and creates/rugs coverage facts, kept for the look-back plus a day; supervisor ruling for SEED-1). Only public market data and the bot's own decisions and fills.
 - **2026-10-04 · The FactSource hook (`packages/worker/src/run/facts.ts`) is where live fact producers plug in (FACTS-1, RUG-1c).** A producer gets a `FactContext` once, after the start reconcile, the live feeds' start and SEED-1's seed: a sink that puts a fact on the feed as a `fact` frame (unwrapped, as of its receipt, recorded), the worker's provider schedulers (calls at P2 or P3 only, never P0/P1, so exits and open positions keep their capacity), and `watched()` (the candidates in their window and every position not closed). Values are GATE-1's fact shapes with their own `obs`, or the worker keys `worker:fees:<mint>` and `worker:sol-price`; a producer decides nothing, the gates judge freshness and quality.
 - **2026-10-04 · SEED-1 at start (supervisor rulings).** Order: reconcile, then the live sources start, then the seed, then fact producers and the loop. The start waits up to 30 s for the live creates watch's `coverage:creates:start` and builds the seed up to its first slot: on a first start an RPC backfill over the H14 look-back (Helius, capped at 150,000 credits; day releases are not downloaded on the host yet, so what the cap does not reach is a bounded gap and H14 stays not covered there); on every restart only the downtime, with `buildSeed`'s fill mode from the first slot after `deployers.jsonl`, closing the saved watch. The `worker:seed` event (saved and seeded creates, the fill, saved rug facts) and the saved and seeded coverage facts go to the engine ahead of every live event, in a slot the reconcile reserves while the feed is drained, keeping their receipt times (what H14 judges coverage by). A restart whose fill fails or never ran marks the downtime an open gap on the saved watch, which its new start settles as lossy: downtime never reads as covered. Restart drill test: covered from the first seed across a kill and a 10-minute downtime, and not covered without the fill (both fail if the saved coverage or the store are removed).
+- **2026-10-04 · Rehearsal 37142749019 fixes.**
+  - An RPC stream reports `up` on its first open. Before, Helius streamed all run while health said it was down, so entries stayed halted.
+  - A stop (a drill or a shutdown) is a disconnect: it opens the coverage gap, and the next start backfills it.
+  - The worker opens no Alchemy socket. On mainnet it refused every subscription (-32601) and idled out every 30 s, costing a backfill each time.
+  - Feed drills last at least two health samples.
+- **2026-10-04 · Halts fail closed (review of f679188).**
+  - Entries start halted (`starting`) and need a readable halt fact that says not halted.
+  - A ledger refusal of an event the engine applied adds a halt reason for the rest of the process: entries off, exits on, shown in health.
+- **2026-10-04 · No key in any output.** Every stdout, stderr, journal and recorder line is redacted for:
+  - the credential values read at start;
+  - key-shaped URL parts (Helius `api-key=`, Alchemy `/v2/<key>`, Telegram bot tokens).
+- **2026-10-04 · One-time rent is paid at the paper wallet's setup.** Risk's `rent.oneTime` comes from the wallet state.
+  - The venue's volume-accumulator rent (137 bytes at the configured rate) leaves the paper wallet once, when it is funded.
+  - If the first trade carried it instead, R14's cost gate would refuse that trade at the trial size forever, and the account would never be made.
+  - The live path needs the same setup step before its first trade (signer work, owner approval).
+- **2026-10-04 · S0 shakedown mode (supervisor ruling).**
+  - `ZEROED_STRATEGY=S0` draws each candidate's entry moment in its window from sha256(run id, mint), then applies the same gates, risk and exits.
+  - It is journaled as non-qualifying.
+  - `ZEROED_PAPER_EDGE_PPM` is refused in any mode other than paper, and without S0.
+- **2026-10-04 · Live market inputs.**
+  - SOL/USD comes from Coinbase Exchange's public SOL-USD ticker over WebSocket (no key, the exchange FACTS-1 reads bars from). Each price is dated at the trade's exchange time, so a stalled feed ages. This feed is critical.
+  - Every candidate's and open position's pool gets a logs watch named `trades:<pool>` (P1 for a held pool, P3 otherwise).
+  - The swaps from that watch give the pool's fee terms, a flat schedule at the observed rates as in BT-1. This applies when no fee-context fact exists.
+  - The same swaps feed EXIT-1's deployer-sell trigger: sales by the create's creator and signer since the entry, as a share of the create's total supply. Linked wallets are not known, so the "cluster" is those two.
+  - A position whose trigger cannot be judged says so once in the journal.
+- **2026-10-04 · Commands.** The API serves no command.
+  - Pause, close and session control are refused (403) and journaled with the auth level each needs.
+  - Pause stays with the watchdog's signed `/pause`.
+- **2026-10-04 · Measured delays (supervisor ruling).** Once a minute, the newest creates signature seen at processed is read at confirmed.
+  - Both arrival times go to the recorder's `delays` table, with any PumpPortal sighting of the same signature.
+  - The manifest lists each path's commitment.
+  - Cost: one Helius credit a minute.
+- **2026-10-04 · Restarts take partials from the book.** Each exit owner that sold is one partial, and the saved file is corrected when it disagrees.
+- **2026-10-04 · Heartbeat units.** The heartbeat's and health's entry, stop and mark are one price unit (executable price, PRICE_SCALE). Unknown is null, and a mark older than 30 s is null.
 - **2026-10-04 · The app's read API (`run/api.ts`) implements UI-2's contract exactly and is checked by the app's own strict schemas** (`checkEnvelope` with `schemaFor`, test against a worker that made paper trades). Paper only: other modes' paths answer 404, the backtest report is `null` (the app loads reports from the release). Loopback only, `ZEROED_API_ADDR` (default `127.0.0.1:8788`, refused unless loopback and not the health port); on the host OPS publishes it to the owner's tailnet with `tailscale serve`, so the worker never binds anything else (supervisor ruling). GET only: no command is served yet, because a command needs its own auth level and loopback (where tailscale's proxied reads arrive) is no proof of anything; pause stays with the watchdog's `/pause`. Paper costs: venue and creator fees, priority, tip, base fee and the scenario's extra slippage come from each paper fill; the paper fill does not model token-account rent, so rent shows 0. Planned and realized R, MFE and MAE are null until the exit plan is kept with the trade record.
