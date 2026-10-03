@@ -12,7 +12,7 @@ import type { DatasetRow } from '../dataset/rows.ts';
 import { evaluate, type Obs, type Registry, univariate, withRegistry } from './analysis.ts';
 import { type Candidate, collectCandidates, PLAN_DRIVE, solUsdAsOf, type Universe } from './candidates.ts';
 import { type Outcome, PLAN_BARRIERS, scoreCandidates } from './outcome.ts';
-import { assertReadable, loadWindow, readableDays, wallDay } from './practice.ts';
+import { assertReadable, loadWindow, readableDays, regimeOf, wallDay } from './practice.ts';
 
 const args = process.argv.slice(2);
 const flag = (name: string, fallback?: string): string => {
@@ -49,7 +49,7 @@ const obsOf = (u: Universe, barrier: number, scenario: 'conservative' | 'base'):
     const o = outcomes[scenario].get(c.id);
     const l = o?.labels[barrier];
     if (o === undefined || o.noQuote || l === undefined || l.censored || l.rNet === null) return [];
-    return [{ id: c.id, day: c.day, decisionMs: c.decisionMs, features: c.features, rNet: l.rNet, severe: l.ySevere === 1, blocked: l.blocked }];
+    return [{ id: c.id, day: c.day, decisionMs: c.decisionMs, features: c.features, rNet: l.rNet, severe: l.ySevere === 1, blocked: l.blocked, regime: regimeOf(window, c.day) }];
   });
 
 const reg: Registry = { rows: [] };

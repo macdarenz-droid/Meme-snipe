@@ -93,6 +93,12 @@ The outcome stage (`outcome.ts`) runs after the feature stage and is never impor
 
 Every rule evaluated in every fold, universe and barrier is written to the trial registry (`research/signals/trials.jsonl`: id, definition, fold, n, mean). The deflated Sharpe ratio uses the registry's count and the variance of its Sharpe ratios.
 
+## 5a. Regimes
+
+UPG-1b (PR #44, venues.md §2.7) found three platform changes before the holdout: **B2 2026-07-21** (BOOST), **B3 2026-09-09** (fee config), **B4 2026-09-12** (holder rewards, a fee and layout change). The sealed holdout lies after B4, so only post-B4 economics match today. Each decision is tagged with its regime by UTC day (`regimes` in `research/signals/window.json`; a boundary day counts as the new regime). Costs are as-of per swap: every fee comes from the swap row itself.
+
+Every result is reported per regime: base mean, the final rule's mean, and the walk-forward out-of-sample mean and count. A signal must hold in all of them (§6 check 7).
+
 ## 6. Stopping rule and what is handed to BT-2
 
 For each universe, the candidate is the rule the procedure picks on **all** practice days, with barrier B1 unless B2 or B3 passes and B1 does not. It is handed to BT-2 only if **all** of these hold on the pooled walk-forward out-of-sample trades (conservative scenario):
@@ -103,6 +109,7 @@ For each universe, the candidate is the rule the procedure picks on **all** prac
 4. ≥ 100 out-of-sample trades on ≥ 10 days.
 5. Top 1% of trades ≤ 50% of P&L; no day > 25% of P&L; `y_severe` ≤ 10%; blocked exits ≤ 5%.
 6. The rule chosen in each fold uses the same feature group as the final rule in at least 3 of 4 folds (stability).
+7. Regimes (§5a): in every regime with ≥ 3 practice days, the final rule's mean `r_net` is above base's; and in the latest regime (B4) the walk-forward out-of-sample trades number ≥ 30 with a mean above 0. Too few post-B4 trades fails this check: evidence from older economics alone is not enough.
 
 Otherwise the answer for that universe is **"no reliable signal"**, stated plainly, and no candidate is handed over (the bot keeps abstaining in that universe).
 
@@ -115,7 +122,8 @@ Stopping: one main run when the supervisor says the practice days are in. At mos
 - The 60-day window holds roughly 2.6% graduations of ~50k launches a day, sampled by mint hash (DATA-1); the U2 sample per day depends on that sample rate.
 - f_dep24 and f_grad24 count only mints in DATA-1's hash sample, so they scale with the sample rate (fine as a ranking within the data, not as absolute counts).
 - Only eligible candidates are scored; rejected ones keep their reject reasons and features but get no label in this study (§13.1's audit of rejects is BT-2's run).
-- - Practice-day results say nothing final: only BT-2's sealed holdout is proof (pre-funding item 6).
+- - With the default wall (2026-09-17), only 5 practice days (12–16 Sep) are post-B4. Most practice evidence is from the B2 regime, which no longer matches today's fees and layout; check 7 makes that thin post-B4 sample decisive.
+- Practice-day results say nothing final: only BT-2's sealed holdout is proof (pre-funding item 6).
 
 ## 7a. Code and how to run
 
@@ -129,6 +137,7 @@ Writes `research/signals/results.json` and `research/signals/trials.jsonl` (the 
 ## 8. Changes to the plan
 
 - 2026-10-04, before any data was read (the data had not landed): written while building the code. U1 liquidity and the H8/H11 proxies now follow GATE-1's exact reading (effective quote reserve; candle high ÷ open); the selection score is the deterministic CR1 t-bound instead of a seeded bootstrap; PBO uses STATS-1's CSCV; exit-cost details, common random numbers and no-quote handling are written out (§4); three features added from the literature pass (f_liqmig, f_turn60, f_early_sold). No result existed when these were made.
+- 2026-10-04, before any data was read: regimes added at the supervisor's request (§5a and check 7 in §6), after UPG-1b found boundaries B2, B3 and B4.
 
 ## 9. Literature and evidence
 

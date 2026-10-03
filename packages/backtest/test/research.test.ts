@@ -7,7 +7,7 @@ import type { AmmSwapRow, DatasetRow } from '../src/dataset/rows.ts';
 import { evaluate, type Obs, passes, type Registry, ruleId, score, selectRule, univariate, walkForward } from '../src/research/analysis.ts';
 import { collectCandidates, type DriveOptions, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
 import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
-import { assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, type PracticeWindow, readableDays, wallDay } from '../src/research/practice.ts';
+import { assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, type PracticeWindow, readableDays, regimeOf, wallDay } from '../src/research/practice.ts';
 import { AsOfError, FEATURE_IDS, type Features, SignalTracker } from '../src/research/tracker.ts';
 import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
 
@@ -27,6 +27,9 @@ describe('holdout wall', () => {
     if (w.confirmedBy === null) expect(wallDay(w) <= '2026-09-17').toBe(true);
     expect(isPracticeDay(w, wallDay(w))).toBe(false);
     expect(isPracticeDay(w, w.holdoutFrom)).toBe(false);
+    expect(regimeOf(w, '2026-08-03')).toBe('B2-boost');
+    expect(regimeOf(w, '2026-09-11')).toBe('B3-fee-config');
+    expect(regimeOf(w, '2026-09-12')).toBe('B4-holder-rewards');
   });
 
   test('holdout and embargo days are refused before any file is opened', () => {
@@ -173,6 +176,7 @@ const mkRng = (seed: number) => {
 };
 const gauss = (u: () => number) => Math.sqrt(-2 * Math.log(u() + 1e-12)) * Math.cos(2 * Math.PI * u());
 
+let regimeAt = (_d: number): string => 'R';
 const synthObs = (days: number, perDay: number, signal: boolean, seed: number): Obs[] => {
   const u = mkRng(seed);
   const out: Obs[] = [];
@@ -183,7 +187,7 @@ const synthObs = (days: number, perDay: number, signal: boolean, seed: number): 
       // Planted: only the top fifth of f_net15 earns +30% on average; everything else loses 10%.
       const mu = signal && f['f_net15']! > 0.84 ? 0.3 : -0.1;
       const r = Math.max(-1, mu + 0.3 * gauss(u));
-      out.push({ id: `${day}:${i}`, day, decisionMs: Date.parse(day) + i * 60_000, features: f as Features, rNet: r, severe: r <= -0.5, blocked: false });
+      out.push({ id: `${day}:${i}`, day, decisionMs: Date.parse(day) + i * 60_000, features: f as Features, rNet: r, severe: r <= -0.5, blocked: false, regime: regimeAt(d) });
     }
   }
   return out;
@@ -204,6 +208,22 @@ describe('selection procedure', () => {
     // Every rule tried is in the registry: base + 192 singles + up to 191 pairs, per fold and once on all days.
     expect(reg.rows.length).toBeGreaterThanOrEqual(5 * 193);
     expect(new Set(reg.rows.map((r) => r.trialId)).size).toBe(reg.rows.length);
+  });
+
+  test('a signal that flips sign in the latest regime fails the regime check', () => {
+    // Days 0–19 one regime with the planted edge; days 20–39 a new regime where the same feature loses.
+    regimeAt = (d) => (d < 20 ? 'R2' : 'R4');
+    const obs = synthObs(40, 40, true, 1).map((o) => (o.regime === 'R4' && o.features.f_net15! > 0.84 ? { ...o, rNet: o.rNet - 0.6 } : o));
+    regimeAt = () => 'R';
+    const v = evaluate(obs, { universe: 'U2', barrier: 'B1' }, { rows: [] }, ev);
+    expect(v.regimes.map((r) => r.regime)).toEqual(['R2', 'R4']);
+    expect(v.checks['regimes']).toBe(false);
+    expect(v.pass).toBe(false);
+    // The same data without the flip passes the regime check.
+    regimeAt = (d) => (d < 20 ? 'R2' : 'R4');
+    const ok = evaluate(synthObs(40, 40, true, 1), { universe: 'U2', barrier: 'B1' }, { rows: [] }, ev);
+    regimeAt = () => 'R';
+    expect(ok.checks['regimes'], JSON.stringify(ok.regimes)).toBe(true);
   });
 
   test('on noise the verdict is "no reliable signal"', () => {

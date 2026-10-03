@@ -15,7 +15,16 @@ export interface PracticeWindow {
   readonly embargoDays: number;
   /** Who confirmed the boundary (BT-2 session or registry commit), or null while the conservative default holds. */
   readonly confirmedBy: string | null;
+  /** Platform regimes (UPG-1b): each starts on its UTC day and lasts until the next. Days before the first are 'pre'. */
+  readonly regimes?: readonly { readonly label: string; readonly from: string }[];
 }
+
+/** The regime a day belongs to: the last regime starting on or before it. */
+export const regimeOf = (w: PracticeWindow, day: string): string => {
+  let label = 'pre';
+  for (const r of [...(w.regimes ?? [])].sort((a, b) => (a.from < b.from ? -1 : 1))) if (r.from <= day) label = r.label;
+  return label;
+};
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MS = 86_400_000;
@@ -52,6 +61,7 @@ export const loadWindow = (path: string): PracticeWindow => {
   return checkWindow({
     decisionFrom: str('decisionFrom'), decisionTo: str('decisionTo'), holdoutFrom: str('holdoutFrom'),
     embargoDays: j['embargoDays'] as number, confirmedBy: typeof c === 'string' ? c : null,
+    ...(Array.isArray(j['regimes']) ? { regimes: (j['regimes'] as { label: string; from: string }[]).map((r) => ({ label: String(r.label), from: (dayMs(String(r.from)), String(r.from)) })) } : {}),
   });
 };
 

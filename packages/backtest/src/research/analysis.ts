@@ -15,6 +15,8 @@ export interface Obs {
   readonly rNet: number;
   readonly severe: boolean;
   readonly blocked: boolean;
+  /** Platform regime of the decision day (signals.md §5a). */
+  readonly regime: string;
 }
 
 export const QUANTILES = [0.2, 0.4, 0.6, 0.8] as const;
@@ -219,6 +221,7 @@ export interface Verdict {
   readonly severeRate: number | null;
   readonly blockedRate: number | null;
   readonly stableFolds: number;
+  readonly regimes: readonly RegimeView[];
   readonly checks: Readonly<Record<string, boolean>>;
   readonly pass: boolean;
 }
@@ -243,6 +246,36 @@ const dailyMatrix = (obs: readonly Obs[], rules: readonly Rule[]): number[][] =>
     const col = Array<number>(days.length).fill(0);
     for (const o of obs) if (passes(r, o)) col[idx.get(o.day)!]! += o.rNet;
     return col;
+  });
+};
+
+export interface RegimeView {
+  readonly regime: string;
+  readonly days: number;
+  readonly baseN: number;
+  readonly baseMean: number | null;
+  /** The final rule on all practice days of the regime (in sample, descriptive). */
+  readonly ruleN: number;
+  readonly ruleMean: number | null;
+  /** The walk-forward out-of-sample trades that fall in the regime. */
+  readonly oosN: number;
+  readonly oosMean: number | null;
+}
+
+export const REGIME_MIN_DAYS = 3;
+export const REGIME_MIN_OOS = 30;
+
+const meanOf = (xs: readonly Obs[]): number | null => (xs.length > 0 ? xs.reduce((a, x) => a + x.rNet, 0) / xs.length : null);
+
+/** Per-regime view, regimes in order of their first day. */
+export const regimeViews = (obs: readonly Obs[], rule: Rule, oos: readonly Obs[]): RegimeView[] => {
+  const first = new Map<string, string>();
+  for (const o of obs) if (!first.has(o.regime) || o.day < first.get(o.regime)!) first.set(o.regime, o.day);
+  return [...first.entries()].sort((a, b) => (a[1] < b[1] ? -1 : 1)).map(([regime]) => {
+    const all = obs.filter((o) => o.regime === regime);
+    const sel = all.filter((o) => passes(rule, o));
+    const out = oos.filter((o) => o.regime === regime);
+    return { regime, days: new Set(all.map((o) => o.day)).size, baseN: all.length, baseMean: meanOf(all), ruleN: sel.length, ruleMean: meanOf(sel), oosN: out.length, oosMean: meanOf(out) };
   });
 };
 
@@ -276,6 +309,8 @@ export const evaluate = (obs: readonly Obs[], tag: { universe: string; barrier: 
   const groupOf = (r: Rule) => (r.length === 0 ? 'base' : GROUPS[r[0]!.f]);
   const stableFolds = folds.filter((f) => groupOf(f.rule) === finalGroup).length;
   const oosDays = new Set(oos.map((x) => x.day)).size;
+  const regimes = regimeViews(obs, final.rule, oos);
+  const latest = regimes[regimes.length - 1];
   const checks = {
     meanAboveZero: lower !== null && lower.lower > 0,
     beatsBase: vsBase !== null && vsBase.lower > 0,
@@ -286,12 +321,15 @@ export const evaluate = (obs: readonly Obs[], tag: { universe: string; barrier: 
     severe: severeRate !== null && severeRate <= 0.1,
     blocked: blockedRate !== null && blockedRate <= 0.05,
     stable: final.rule.length > 0 && stableFolds >= Math.min(3, folds.length),
+    // §5a: the rule beats base in every regime with enough days, and earns > 0 out of sample in the latest regime.
+    regimes: regimes.every((r) => r.days < REGIME_MIN_DAYS || (r.ruleMean !== null && r.baseMean !== null && r.ruleMean > r.baseMean))
+      && latest !== undefined && latest.oosN >= REGIME_MIN_OOS && latest.oosMean !== null && latest.oosMean > 0,
   };
   return {
     universe: tag.universe, barrier: tag.barrier, finalRule: ruleId(final.rule),
     folds: folds.map((f) => ({ fold: f.fold, rule: ruleId(f.rule), group: groupOf(f.rule), oosN: f.oos.length, oosMean: f.oos.length > 0 ? f.oos.reduce((a, x) => a + x.rNet, 0) / f.oos.length : null })),
     oos: lower, oosTwoSided: two, vsBase, dsr, pbo, oosTrades: oos.length, oosDays, oosReturns: oos.map((x) => x.rNet),
-    top1Share: conc.top1, maxDayShare: conc.maxDay, severeRate, blockedRate, stableFolds, checks,
+    top1Share: conc.top1, maxDayShare: conc.maxDay, severeRate, blockedRate, stableFolds, regimes, checks,
     pass: Object.values(checks).every(Boolean),
   };
 };

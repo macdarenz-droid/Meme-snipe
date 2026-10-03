@@ -4,5 +4,10 @@
   "decisionTo": "2026-10-01",
   "holdoutFrom": "2026-09-18",
   "embargoDays": 1,
-  "confirmedBy": null
+  "confirmedBy": null,
+  "regimes": [
+    { "label": "B2-boost", "from": "2026-07-21" },
+    { "label": "B3-fee-config", "from": "2026-09-09" },
+    { "label": "B4-holder-rewards", "from": "2026-09-12" }
+  ]
 }
