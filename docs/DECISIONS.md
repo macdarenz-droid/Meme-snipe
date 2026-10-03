@@ -646,4 +646,18 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - **Redactions in recorded files are listed.** Each redaction is named, with its count, in the manifest's `coverage_gaps`, so a replay difference there is explained.
   - **Simulation lines carry `finalExit`, `simulatedSlot` and `standIn`** in full, null when unknown.
   - **The rehearsal workflow runs S0 with a paper-only edge of 400,000 ppm.** The supervisor approved this as a `.github` change. It lets trades open, so the restart drills can run mid-trade.
+- **2026-10-04 · RUN-1d contract (WORKER-1b).**
+  - `pending_exits`: every trade whose position is exit-requested, pending or blocked, or that has an exit intent not yet final.
+  - `open_position.universe`: from the plan, else the entry key.
+  - `recovered` is journaled once per full start, after the reconcile. Its source is `chain` when the state dir began with no ledger (marked by `cold_start` until a full start journals it), else `state`. It lists `pending_exits` and each open position with its universe.
+  - `POST /drill/drop-rpc {ms}` (same token and codes as drop-feed) does three things:
+    - drops every feed;
+    - refuses every provider RPC through `RpcCut` (a network error, never a shed);
+    - makes `exit_capable` false until the cut ends.
+  - `--reconcile-only` does the following:
+    - reconciles on its own state dir and journals `recovered`;
+    - serves only `/health`: no API, drills, heartbeat, seed or fact producers;
+    - drains the live feeds unread, so `exit_capable` is real while nothing is decided;
+    - runs until SIGTERM.
+  - The contract types arrive with #64. Until then the two health fields ride on top of `Health`, and `recovered` widens the journal kind.
 - **2026-10-04 · The app's read API (`run/api.ts`) implements UI-2's contract exactly and is checked by the app's own strict schemas** (`checkEnvelope` with `schemaFor`, test against a worker that made paper trades). Paper only: other modes' paths answer 404, the backtest report is `null` (the app loads reports from the release). Loopback only, `ZEROED_API_ADDR` (default `127.0.0.1:8788`, refused unless loopback and not the health port); on the host OPS publishes it to the owner's tailnet with `tailscale serve`, so the worker never binds anything else (supervisor ruling). GET only: no command is served yet, because a command needs its own auth level and loopback (where tailscale's proxied reads arrive) is no proof of anything; pause stays with the watchdog's `/pause`. Paper costs: venue and creator fees, priority, tip, base fee and the scenario's extra slippage come from each paper fill; the paper fill does not model token-account rent, so rent shows 0. Planned and realized R, MFE and MAE are null until the exit plan is kept with the trade record.

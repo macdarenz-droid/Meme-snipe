@@ -7,7 +7,12 @@ import { jsonText } from './json.ts';
 export interface HealthDeps {
   readonly health: () => Health;
   /** Null when drills are off (the endpoint answers 404). */
-  readonly drill: { readonly token: string; readonly dropFeed: (feed: string, ms: number) => boolean } | null;
+  readonly drill: {
+    readonly token: string;
+    readonly dropFeed: (feed: string, ms: number) => boolean;
+    /** RUN-1d: every RPC and WebSocket provider cut for `ms`. */
+    readonly dropRpc?: (ms: number) => boolean;
+  } | null;
 }
 
 const MAX_BODY = 4_096;
@@ -18,7 +23,8 @@ export const startHealthServer = (host: string, port: number, d: HealthDeps): Pr
       res.writeHead(200, { 'content-type': 'application/json' }).end(jsonText(d.health()));
       return;
     }
-    if (d.drill !== null && req.method === 'POST' && req.url === '/drill/drop-feed') {
+    if (d.drill !== null && req.method === 'POST' && (req.url === '/drill/drop-feed' || (req.url === '/drill/drop-rpc' && d.drill.dropRpc !== undefined))) {
+      const rpc = req.url === '/drill/drop-rpc';
       if (req.headers['x-zeroed-drill-token'] !== d.drill.token) {
         res.writeHead(403).end();
         return;
@@ -37,7 +43,11 @@ export const startHealthServer = (host: string, port: number, d: HealthDeps): Pr
           return;
         }
         const { feed, ms } = parsed;
-        if (typeof feed !== 'string' || typeof ms !== 'number' || !Number.isSafeInteger(ms) || ms <= 0 || !d.drill!.dropFeed(feed, ms)) {
+        if (typeof ms !== 'number' || !Number.isSafeInteger(ms) || ms <= 0) {
+          res.writeHead(400).end();
+          return;
+        }
+        if (rpc ? !d.drill!.dropRpc!(ms) : typeof feed !== 'string' || !d.drill!.dropFeed(feed, ms)) {
           res.writeHead(400).end();
           return;
         }

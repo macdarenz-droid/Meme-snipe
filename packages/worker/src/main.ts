@@ -13,6 +13,7 @@ import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders, PUMP_CREATE_AUTHORITY } from './run/sources.ts';
 import { redact, setSecretValues } from './run/redact.ts';
+import { RpcCut } from './run/rpc-cut.ts';
 import { runSeed } from './run/seed-start.ts';
 import { Worker } from './run/worker.ts';
 
@@ -20,7 +21,8 @@ const environment = readEnvironment();
 setSecretValues(environment.secretValues());
 const log = (line: string): void => console.log(redact(line));
 const fail = (line: string): void => console.error(redact(line));
-const parsed = parseConfig(environment.env, environment.release, environment.qualifyingRun());
+const observeOnly = environment.argv.includes('--reconcile-only');
+const parsed = parseConfig(environment.env, environment.release, environment.qualifyingRun(), { reconcileOnly: observeOnly });
 if (!parsed.ok) {
   fail(parsed.message);
   process.exit(parsed.code);
@@ -33,9 +35,11 @@ const config = parsed.config;
 const timers = systemTimers();
 const session = startSession(TRIAL_POLICY);
 const credits = new CreditBook(config.stateDir, timers);
-const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: fetchHttp, factory: globalSocketFactory, credits });
+const rpcCut = new RpcCut(timers);
+const providerHttp = rpcCut.http(fetchHttp);
+const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits });
 const policy = session.policy;
-const rpc = new DryRunRpc({ url: () => heliusRpcUrl(environment.secrets), http: fetchHttp, scheduler: providers.helius, timeoutMs: 10_000 });
+const rpc = new DryRunRpc({ url: () => heliusRpcUrl(environment.secrets), http: providerHttp, scheduler: providers.helius, timeoutMs: 10_000 });
 let worker: Worker | null = null;
 const simulate = liveSimulator({
   rpc, wallet: config.wallet, standIns: config.standIns,
@@ -64,6 +68,7 @@ try {
     seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, lookbackDays: policy.gates.deployerRugLookbackDays }),
     seedWaitMs: 30_000,
     ops: () => providers.ops(),
+    cutRpc: (ms) => rpcCut.cut(ms),
     exposureRpc: providers.seedRpc(),
     delayProbe: { confirmed: (sig) => providers.confirmed(sig), via: `logs:${PUMP_CREATE_AUTHORITY}`, everyMs: 60_000 },
     commitments: FEED_COMMITMENTS,
@@ -99,7 +104,9 @@ if (environment.argv.includes('--reconcile')) {
   process.exit(EXIT.clean);
 }
 
-const started = await w.start();
+// `--reconcile-only` (RUN-1d's host-loss tabletop): reconcile, journal `recovered`, serve /health, send nothing; it
+// runs until SIGTERM. Otherwise the full start.
+const started = observeOnly ? await w.observeOnly() : await w.start();
 if (!started.ok && !stopping) {
   fail(started.message);
   await w.stop(started.code);
