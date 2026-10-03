@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CalendarMonth, StatsView } from '../src/api/contract.ts';
 import { DataError } from '../src/api/modes.ts';
 import { BacktestReportView, groupMonth } from '../src/dashboard/BacktestReport.tsx';
@@ -9,7 +9,7 @@ import { Boundary } from '../src/dashboard/Boundary.tsx';
 import { monthTotals, PnlCalendar } from '../src/dashboard/Calendar.tsx';
 import { Dashboard } from '../src/dashboard/Dashboard.tsx';
 import { headline, Journal, OpenPosition, Stats, StatusFlags } from '../src/dashboard/Sections.tsx';
-import { Load } from '../src/dashboard/State.tsx';
+import { Load, OfflineContext, STALE_TICK_MS, startStaleTicker } from '../src/dashboard/State.tsx';
 import { TradeDetail, TradeTable } from '../src/dashboard/Trades.tsx';
 import { fixtureApi, fixtureDays, fixtureDecisions, fixturePosition, fixtureReport, fixtureStats, fixtureTrades } from '../src/dev/dashboardFixtures.ts';
 import { addUsd } from '../src/lib/money.ts';
@@ -167,21 +167,49 @@ describe('section error boundary', () => {
   });
 });
 
+describe('stale note ticker', () => {
+  it('ticks every 30 s and stops on cleanup', () => {
+    vi.useFakeTimers();
+    try {
+      expect(STALE_TICK_MS).toBe(30_000);
+      let ticks = 0;
+      const stop = startStaleTicker(() => ticks++);
+      vi.advanceTimersByTime(29_999);
+      expect(ticks).toBe(0);
+      vi.advanceTimersByTime(1);
+      expect(ticks).toBe(1);
+      vi.advanceTimersByTime(30_000);
+      expect(ticks).toBe(2);
+      stop();
+      vi.advanceTimersByTime(120_000);
+      expect(ticks).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('section states', () => {
   const body = (d: string) => h('p', null, d);
   it('renders loading, error, stale and empty states', () => {
     expect(html(h(Load<string>, { loaded: { state: 'loading' }, children: body }))).toContain('aria-label="Loading"');
-    expect(text(html(h(Load<string>, { loaded: { state: 'error', reason: 'offline' }, children: body })))).toContain('Worker not connected');
+    expect(text(html(h(Load<string>, { loaded: { state: 'error', reason: 'offline' }, children: body })))).toContain('Offline');
     expect(text(html(h(Load<string>, { loaded: { state: 'error', reason: 'mixed-modes' }, children: body })))).toContain('Data from another mode');
     const stale = text(html(h(Load<string>, { loaded: { state: 'ready', data: 'x', asOf: new Date(Date.now() - 60_000).toISOString(), stale: true }, children: body })));
     expect(stale).toMatch(/Stale data · updated 1m ago x/);
     expect(text(html(h(Load<string>, { loaded: { state: 'ready', data: '', asOf: '', stale: false }, children: body, isEmpty: (d) => d === '', empty: 'Nothing' })))).toBe('Nothing');
   });
 
-  it('offline: a section shows its empty state; one without names the cause', () => {
+  it('offline: a section shows Offline with the last update, never its empty state', () => {
     const offline = { state: 'error' as const, reason: 'offline' as const };
-    expect(text(html(h(Load<string>, { loaded: offline, children: body, empty: 'No trades' })))).toBe('No trades');
-    expect(text(html(h(Load<string>, { loaded: offline, children: body })))).toContain('Worker not connected');
+    const noData = text(html(h(Load<string>, { loaded: offline, children: body, empty: 'No trades' })));
+    expect(noData).not.toContain('No trades');
+    expect(noData).toContain('Offline');
+    expect(text(html(h(Load<string>, { loaded: offline, children: body })))).toContain('Offline');
+    const known = h(OfflineContext.Provider, { value: { state: 'offline', lastOk: '2026-10-03T03:32:00.000Z' } }, h(Load<string>, { loaded: offline, children: body, empty: 'No open trade' }));
+    expect(text(html(known)).trim()).toBe('Offline Last update 3 Oct, 13:32');
+    const unset = h(OfflineContext.Provider, { value: { state: 'none', lastOk: null } }, h(Load<string>, { loaded: offline, children: body, empty: 'No open trade' }));
+    expect(text(html(unset)).trim()).toBe('No server');
     expect(text(html(h(Load<string>, { loaded: { state: 'error', reason: 'mixed-modes' }, children: body, empty: 'No trades' })))).toContain('Data from another mode');
   });
 
