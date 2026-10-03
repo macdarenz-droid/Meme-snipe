@@ -140,7 +140,8 @@ export const collectCandidates = (rows: Iterable<DatasetRow>, o: DriveOptions): 
       if (day < o.window.decisionFrom) leadIn++;
       return;
     }
-    if (nowMs + o.outcomeWindowMs >= wall) {
+    // Purged: an outcome window that would reach the wall, or a hold that would cross a regime boundary (BT-2's rule).
+    if (nowMs + o.outcomeWindowMs >= wall || regimeAt(o.window, nowMs) !== regimeAt(o.window, nowMs + o.outcomeWindowMs)) {
       purged++;
       return;
     }

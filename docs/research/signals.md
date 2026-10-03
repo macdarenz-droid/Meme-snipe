@@ -12,7 +12,8 @@ Sections 1–7 are the **pre-registered plan**. They were written and committed 
 - Practice days = decision days strictly before `holdoutFrom − embargo`. Embargo = 1 full day (longer than the 2 h horizon plus the exit ladder, ARCHITECTURE.md §13.2).
 - The wall is in code: `packages/backtest/src/research/practice.ts` loads the boundary from `research/signals/window.json`, refuses any holdout or embargo day before a file is opened, and throws if any row at or after the wall reaches the analysis. A guard test plants a holdout-day row and expects the refusal.
 - Until BT-2 registers the boundary, the wall is **the B4 day, 2026-09-12** (`holdoutFrom` 2026-09-13; supervisor, 2026-10-04). It may then move only to the registered boundary, never later. In code: a run can never use a wall later than the committed `window.json` (a later `--window` file is refused), and a window marked confirmed is refused unless the STATS-1 registry is given and every registered holdout's `fromDay` equals its `holdoutFrom` (both Melbourne days).
-- A candidate whose outcome window (decision + 120 min horizon + exit ladder) would reach the embargo day is dropped (purge at the wall).
+- A candidate whose outcome window (decision + 120 min horizon + exit ladder) would reach the wall is dropped (purge at the wall), and so is one whose hold would cross a regime boundary (BT-2's rule).
+- BT-2 (2026-10-04, `study-1`, PR #41): holdout UTC days 2026-09-22 to 2026-10-01; practice ends 2026-09-21 14:00 UTC (the start of Melbourne 22 Sep). The wall moves there only when the registry (`docs/evidence/bt2/registry.json`) holds the entries; until then it stays on the B4 day.
 
 ## 2. Universes and decision points
 
@@ -102,7 +103,7 @@ Every result is reported per regime: base mean, the final rule's mean, and the w
 
 ## 6. Stopping rule and what is handed to BT-2
 
-**One configuration per universe.** The barriers are tried in the fixed order **B1 → B2 → B3**; the first whose verdict passes every check below is handed over and later ones are not considered. The candidate is the rule the procedure picks on **all** practice days with that barrier, with its exact thresholds (`research/signals/handoff.json`, one entry per universe). A verdict passes only if **all** of these hold on the pooled walk-forward out-of-sample trades (conservative scenario):
+**One configuration per universe.** The barriers are tried in the fixed order **B1 → B2 → B3**; the first whose verdict passes every check below is handed over and later ones are not considered. The candidate is the rule the procedure picks on **all** practice days with that barrier, with its exact thresholds (`research/signals/handoff.json`, one entry per universe, with BT-2's `edgePpm`: the out-of-sample one-sided 95% lower bound in ppm, and `medianTargetBps`: the median out-of-sample winner). BT-2's `U1Rules`/`U2Rules` are fixed shapes; a feature-filter rule needs BT-2 to add a matching rule kind or map the conditions, which BT-2 decides. A verdict passes only if **all** of these hold on the pooled walk-forward out-of-sample trades (conservative scenario):
 
 1. Mean `r_net` > 0 at the one-sided 95% day-block lower bound.
 2. The paired difference against base on the same days > 0 at the one-sided 95% lower bound.
@@ -139,7 +140,7 @@ Writes `research/signals/results.json`, `research/signals/handoff.json` (one con
 
 - 2026-10-04, before any data was read (the data had not landed): written while building the code. U1 liquidity and the H8/H11 proxies now follow GATE-1's exact reading (effective quote reserve; candle high ÷ open); the selection score is the deterministic CR1 t-bound instead of a seeded bootstrap; PBO uses STATS-1's CSCV; exit-cost details, common random numbers and no-quote handling are written out (§4); three features added from the literature pass (f_liqmig, f_turn60, f_early_sold). No result existed when these were made.
 - 2026-10-04, before any data was read: regimes added at the supervisor's request (§5a and check 7 in §6), after UPG-1b found boundaries B2, B3 and B4.
-- 2026-10-04, before any data was read, after the PR #47 review: Melbourne days; default wall moved to the B4 day; the wall can never move later than the committed file, and a confirmed window must match the STATS-1 registry; regimes tagged by exact instant; one configuration per universe by the fixed barrier order; the DSR counts selectable trials and runs once on the full registry; the univariate quintiles are trials. Re-review: a confirmed holdoutFrom must equal the registry's fromDay; the latest regime comes from the window (B4), B5 stored.
+- 2026-10-04, before any data was read, after the PR #47 review: Melbourne days; default wall moved to the B4 day; the wall can never move later than the committed file, and a confirmed window must match the STATS-1 registry; regimes tagged by exact instant; one configuration per universe by the fixed barrier order; the DSR counts selectable trials and runs once on the full registry; the univariate quintiles are trials. Re-review: holds crossing a regime boundary are purged (BT-2's rule); a confirmed holdoutFrom must equal the registry's fromDay; the latest regime comes from the window (B4), B5 stored.
 
 ## 9. Literature and evidence
 

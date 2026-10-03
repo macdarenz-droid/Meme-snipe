@@ -261,6 +261,16 @@ describe('outcome stage', () => {
     expect(res.candidates).toEqual([]);
   });
 
+  test('a hold that would cross a regime boundary is purged', () => {
+    // A boundary 90 min after T0: the 60-min decisions (outcome window 150 min) cross it; the 180-min ones start after it.
+    const w: PracticeWindow = { ...WINDOW, regimes: [{ label: 'Bx', from: new Date(T0 + 90 * 60_000).toISOString() }] };
+    const res = collectCandidates(rows, drive({ window: w }));
+    const all = collectCandidates(rows, drive()).candidates.filter((c) => c.universe === 'U2');
+    expect(res.purged).toBeGreaterThan(0);
+    expect(res.candidates.filter((c) => c.universe === 'U2').length).toBe(all.length - res.purged);
+    for (const c of res.candidates) expect(c.regime === regimeAt(w, c.decisionMs + PLAN_DRIVE.outcomeWindowMs)).toBe(true);
+  });
+
   test('an entry that does not land costs its fee and nothing else', () => {
     const net = FILL_CONFIG.network;
     for (const o of out.filter((x) => !x.labels[0]!.entryFilled && !x.noQuote)) {
@@ -343,6 +353,10 @@ describe('selection procedure', () => {
     // B1 failed, so B2 is handed over even though B3 passes too; exactly one configuration for U2.
     expect(h[1]).toMatchObject({ universe: 'U2', status: 'candidate', barrier: 'B2', rule: v.finalRule });
     expect(h[1]!.conds!.every((c) => Number.isFinite(c.t))).toBe(true);
+    // BT-2's UniverseConfig fields: the edge is the out-of-sample lower bound in ppm; the target the median winner.
+    expect(h[1]!.edgePpm).toBe(BigInt(Math.floor(v.oos!.lower * 1e6)));
+    expect(h[1]!.medianTargetBps!).toBeGreaterThan(0);
+    expect(h[0]!.edgePpm).toBeNull();
     expect(handoffs([as('U2', 'B2', true), as('U2', 'B3', true)], ['B3', 'B2'])[0]!.barrier).toBe('B3');
   });
 

@@ -428,6 +428,12 @@ export interface Handoff {
   readonly barrier: string | null;
   readonly rule: string | null;
   readonly conds: Rule | null;
+  /**
+   * For BT-2's UniverseConfig: edgePpm is the one-sided 95% lower bound of the walk-forward out-of-sample mean, in ppm
+   * (never below its +5% floor is BT-2's call); medianTargetBps is the median out-of-sample r_net of the winning trades.
+   */
+  readonly edgePpm: bigint | null;
+  readonly medianTargetBps: number | null;
   /** Each barrier's failed checks, in order (empty for the one handed over). */
   readonly failed: readonly { readonly barrier: string; readonly checks: readonly string[] }[];
 }
@@ -447,9 +453,16 @@ export const handoffs = (verdicts: readonly (Verdict | { readonly universe: stri
         failed.push({ barrier: b, checks: [`skipped: ${v.skipped}`] });
         continue;
       }
-      if (v.pass) return { universe: u, status: 'candidate' as const, barrier: b, rule: v.finalRule, conds: v.finalConds, failed };
+      if (v.pass) {
+        const wins = v.oosReturns.filter((r) => r > 0).sort((x, y) => x - y);
+        const median = wins.length === 0 ? null : wins[Math.floor((wins.length - 1) / 2)]!;
+        return {
+          universe: u, status: 'candidate' as const, barrier: b, rule: v.finalRule, conds: v.finalConds, failed,
+          edgePpm: v.oos === null ? null : BigInt(Math.floor(v.oos.lower * 1e6)), medianTargetBps: median === null ? null : Math.round(median * 10_000),
+        };
+      }
       failed.push({ barrier: b, checks: Object.entries(v.checks).filter(([, ok]) => !ok).map(([k]) => k) });
     }
-    return { universe: u, status: 'no reliable signal' as const, barrier: null, rule: null, conds: null, failed };
+    return { universe: u, status: 'no reliable signal' as const, barrier: null, rule: null, conds: null, edgePpm: null, medianTargetBps: null, failed };
   });
 };

@@ -91,6 +91,6 @@ const result = {
   purged: drive.purged, unquotableSwaps: drive.unquotableSwaps, counts, trials: reg.rows.length, handoff, verdicts: final, baseScenario: context, univariate: views,
 };
 writeFileSync(join(out, 'results.json'), JSON.stringify(result, (_, v) => (typeof v === 'bigint' ? v.toString() : v), 2));
-writeFileSync(join(out, 'handoff.json'), JSON.stringify(handoff, null, 2));
+writeFileSync(join(out, 'handoff.json'), JSON.stringify(handoff, (_, v) => (typeof v === 'bigint' ? v.toString() : v), 2));
 writeFileSync(join(out, 'trials.jsonl'), reg.rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
 console.log(JSON.stringify({ wall: result.wall, days: days.length, counts, trials: reg.rows.length, handoff: handoff.map((h) => `${h.universe}: ${h.status}${h.barrier === null ? '' : ` (${h.barrier}, ${h.rule})`}`), pass: final.map((v) => ('skipped' in v ? `${v.universe}/${v.barrier}: skipped` : `${v.universe}/${v.barrier}: ${v.pass ? 'PASS' : 'no reliable signal'} (${v.finalRule})`)) }, null, 2));
