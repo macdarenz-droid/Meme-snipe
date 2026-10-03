@@ -128,9 +128,10 @@ export const fixtureSession: SessionView = {
   workerConnected: true,
 };
 
+/** Addresses are 44 characters, the longest a Solana address can be. */
 export const fixtureWallet: WalletView = {
-  botAddress: 'FAKEbotWa11et9kQmZr7Hc2VnX4pLdT8sYwB3uJeGfN',
-  savedWallet: 'FAKEsavedWa11etR5mKz2Qh8VcN6pXdL3sTwY9uBjE',
+  botAddress: 'FAKEbotWa11et9kQmZr7Hc2VnX4pLdT8sYwB3uJeGfNq',
+  savedWallet: 'FAKEsavedWa11etR5mKz2Qh8VcN6pXdL3sTwY9uBjEW',
   availableUsd: 23812.4,
   reserveSol: 0.75,
   lockedSol: 0.0123,

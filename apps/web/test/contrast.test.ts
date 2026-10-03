@@ -53,3 +53,10 @@ describe('theme contrast', () => {
     expect(checkTheme(bad).some((f) => f.fg === '--loss')).toBe(true);
   });
 });
+
+describe('calendar day colour rule', () => {
+  it('styles.css gives day numbers on tinted cells primary text', () => {
+    const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+    expect(styles).toMatch(/\.calendar-button \.calendar-day\s*\{\s*color:\s*var\(--text\);\s*\}/);
+  });
+});

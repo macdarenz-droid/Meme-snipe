@@ -29,6 +29,8 @@ const THEMES = ['paper', 'black'];
 const WIDTHS = [
   { name: 'desktop', width: 1440, height: 900 },
   { name: 'mobile', width: 390, height: 844 },
+  // Small phone: only the sheets, where long addresses must wrap.
+  { name: 'small', width: 360, height: 780, only: ['deposit', 'withdraw', 'fixtures-withdraw'] },
 ];
 const SHOTS = [
   { name: 'home', hash: '#/home' },
@@ -53,7 +55,7 @@ for (const theme of THEMES) {
     }, theme);
     const page = await context.newPage();
     page.on('pageerror', (e) => problems.push(`${theme} ${w.name}: ${e.message}`));
-    for (const s of SHOTS) {
+    for (const s of SHOTS.filter((x) => !w.only || w.only.includes(x.name))) {
       await page.goto('about:blank');
       await page.goto(base + s.hash);
       await page.waitForSelector('.page-head h1');
@@ -68,7 +70,18 @@ for (const theme of THEMES) {
         return Math.max(document.documentElement.scrollWidth - window.innerWidth, sheet ? sheet.scrollWidth - sheet.clientWidth : 0);
       });
       if (scroll > 0) problems.push(`${theme} ${w.name} ${s.name}: horizontal scroll ${scroll}px`);
-      if (w.name === 'mobile') {
+      // Every address must fit inside its sheet column (catches nowrap even before the sheet scrolls).
+      const overflowing = await page.evaluate(() =>
+        [...document.querySelectorAll('.sheet-body .address')].flatMap((a) => {
+          const body = a.closest('.sheet-body');
+          const pad = parseFloat(getComputedStyle(body).paddingRight);
+          const limit = body.getBoundingClientRect().right - pad;
+          const right = Math.max(...[...a.getClientRects()].map((r) => r.right));
+          return right > limit + 0.5 ? [`${a.textContent} ends at ${Math.round(right)}px, column ends at ${Math.round(limit)}px`] : [];
+        }),
+      );
+      for (const o of overflowing) problems.push(`${theme} ${w.name} ${s.name}: address overflows: ${o}`);
+      if (w.name !== 'desktop') {
         // Touch targets: every control at least 44px tall (skip link aside).
         const small = await page.evaluate(() =>
           [...document.querySelectorAll('button, a[href], input, [role="radio"]')]
