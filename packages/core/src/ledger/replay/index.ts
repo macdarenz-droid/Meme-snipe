@@ -5,13 +5,13 @@
 //
 // How book events are stored (no table or column of its own; docs/DECISIONS.md, LEDGER-REPLAY):
 // - `intent_event.seq` is the one global order. Each stored book event writes one intent row per intent it
-//   persists, in effect order. The first row carries `detail = {"book": <BookEvent>}`, except a `created` row
-//   (from `recordIntent`), which stands for `propose_entry` (entry) or `trigger_exit` (exit). Further rows of
+//   persists, in effect order. The first row carries `detail = {"v":1,"book":<BookEvent>}`, checked strictly by
+//   ./schema.ts on write and read, except a `created` row (from `recordIntent`), which stands for `propose_entry` (entry) or `trigger_exit` (exit). Further rows of
 //   the same event have `detail = null`. An event that persists no intent but changes the book or a position
 //   (a landing reported for an ended intent, `orphan_cleared`, a trigger merged into a running exit) writes
 //   one row, with the status unchanged, for the intent it concerns (`stepRows`).
 // - Each position the event persists gets one `position_event` row with its new state; a new position first
-//   gets its `created` row from `openPosition`. A `trigger_exit` row carries `detail = {"book": <event>}`, so
+//   gets its `created` row from `openPosition`. A `trigger_exit` row carries the same versioned detail, so
 //   an exit intent's `created` row can be replayed with its reasons. Every other position row has no detail.
 // - Not stored, so not checked here: pause and resume, a restart that changes no intent, and ticks. Leaving
 //   them out can only make the replay more permissive (they only refuse entries); it never changes a state.
@@ -22,6 +22,9 @@ import {
 } from '../../lifecycle/index.ts';
 import { openLedgerReader, type IntentRecord, type LedgerPurpose, type LedgerReader, type StoredPositionEvent } from '../ledger.ts';
 import { LedgerError } from '../errors.ts';
+import { decodeBookDetail, encodeBookDetail } from './schema.ts';
+
+export { BOOK_DETAIL_VERSION, decodeBookDetail, encodeBookDetail } from './schema.ts';
 
 export type ReplaySource = Pick<LedgerReader,
   'purpose' | 'decisionModes' | 'allIntents' | 'intentEvents' | 'allPositions' | 'positionEvents' | 'allReservations' |
@@ -44,8 +47,8 @@ export interface ReplayOptions {
 export type ReplayTable = 'ledger_meta' | 'decision' | 'intent' | 'intent_event' | 'position' | 'position_event' | 'attempt' | 'fill' | 'reservation';
 
 export interface ReplayFailure {
-  /** `illegal`: the reducer refused the event. `divergence`: stored and replayed differ. `stamp`: purpose stamps. */
-  readonly kind: 'illegal' | 'divergence' | 'stamp';
+  /** `illegal`: the reducer refused the event. `divergence`: stored and replayed differ. `stamp`: purpose stamps. `schema`: a stored event off the schema. */
+  readonly kind: 'illegal' | 'divergence' | 'stamp' | 'schema';
   readonly table: ReplayTable;
   /** The first differing row (its `seq` in an event table), or null for a whole-table check. */
   readonly seq: bigint | null;
@@ -123,12 +126,16 @@ export const stepRows = (before: Book, e: BookEvent, effects: readonly Effect[])
 /** The `event` column for a row written by this book event. */
 export const rowEventName = (e: BookEvent): string => (e.type === 'intent' ? e.event.type : e.type);
 
-const bookOf = (detail: unknown): BookEvent | null => {
-  if (detail === null || typeof detail !== 'object' || Array.isArray(detail)) return null;
-  const keys = Object.keys(detail);
-  const book = (detail as { book?: unknown }).book;
-  return keys.length === 1 && book !== null && typeof book === 'object' ? (book as BookEvent) : null;
+/** The book event in a stored detail, or the schema's reason for refusing it. */
+const bookOf = (detail: unknown): BookEvent | { readonly refused: string } => {
+  try {
+    return decodeBookDetail(detail);
+  } catch (err) {
+    if (err instanceof LedgerError) return { refused: err.message };
+    throw err;
+  }
 };
+const refused = (x: BookEvent | { readonly refused: string }): x is { readonly refused: string } => 'refused' in x;
 
 const same = (a: unknown, b: unknown): boolean => canonical(a) === canonical(b);
 
@@ -318,18 +325,29 @@ const replay = (src: ReplaySource, options: ReplayOptions, counts: { -readonly [
       if (record.intent.purpose === 'entry') {
         event = { type: 'propose_entry', intent: record.intent };
       } else {
-        const trigger = bookOf(peekPosition(record.intent.positionId)?.detail ?? null);
-        if (trigger?.type !== 'trigger_exit' || trigger.intentId !== row.intentId) {
+        const next = peekPosition(record.intent.positionId);
+        const trigger = bookOf(next?.detail ?? null);
+        if (next !== undefined && next.detail !== null && refused(trigger)) {
+          fail({ ...at, seq: next.seq, kind: 'schema', table: 'position_event', positionId: record.intent.positionId, event: next.event, reason: trigger.refused, actual: next.detail });
+        }
+        if (refused(trigger) || trigger.type !== 'trigger_exit' || trigger.intentId !== row.intentId) {
           fail({ ...at, kind: 'divergence', table: 'position_event', positionId: record.intent.positionId, event: 'trigger_exit', reason: 'exit intent created without its trigger_exit row', actual: trigger });
         }
         event = trigger;
       }
     } else {
-      const stored = bookOf(row.detail);
-      if (stored === null) {
-        fail({ ...at, kind: 'divergence', table: 'intent_event', event: row.event, reason: 'row does not start a stored book event (no detail.book)', actual: row.detail });
+      if (row.detail === null) {
+        fail({ ...at, kind: 'divergence', table: 'intent_event', event: row.event, reason: 'row does not start a stored book event (no detail)', actual: null });
       }
+      const stored = bookOf(row.detail);
+      if (refused(stored)) fail({ ...at, kind: 'schema', table: 'intent_event', event: row.event, reason: stored.refused, actual: row.detail });
       event = stored;
+    }
+    try {
+      encodeBookDetail(event); // an event rebuilt from the intent and position tables meets the same schema
+    } catch (err) {
+      if (!(err instanceof LedgerError)) throw err;
+      fail({ ...at, kind: 'schema', table: 'intent', event: event.type, reason: err.message, actual: event });
     }
     const name = rowEventName(event);
     if (archive !== null) {
@@ -381,7 +399,7 @@ const replay = (src: ReplaySource, options: ReplayOptions, counts: { -readonly [
         counts.positions++;
         if (p.status === 'opening' && p.quantity === 0n && p.cost === 0n) continue;
       }
-      takePosition(pid, { status: p.status, quantity: p.quantity, cost: p.cost, event: name, detail: event.type === 'trigger_exit' ? { book: event } : null }, { ...at, event: name });
+      takePosition(pid, { status: p.status, quantity: p.quantity, cost: p.cost, event: name, detail: event.type === 'trigger_exit' ? encodeBookDetail(event) : null }, { ...at, event: name });
     }
     book = step.state;
   }

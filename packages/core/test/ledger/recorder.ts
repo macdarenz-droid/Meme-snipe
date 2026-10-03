@@ -5,7 +5,7 @@ import { lamports } from '../../src/units/index.ts';
 import type { LogRecord } from '../../src/engine/index.ts';
 import { applyBookEvent, emptyBook, isIllegal, type Book, type BookConfig, type BookEvent } from '../../src/lifecycle/index.ts';
 import type { Ledger } from '../../src/ledger/index.ts';
-import { rowEventName, stepRows } from '../../src/ledger/replay/index.ts';
+import { encodeBookDetail, rowEventName, stepRows } from '../../src/ledger/replay/index.ts';
 
 export interface Timed {
   readonly event: BookEvent;
@@ -43,7 +43,7 @@ export const recordEvents = (ledger: Ledger, events: readonly Timed[], config: B
         } else {
           ledger.appendIntentTransition({
             intentId: s.intent.id, status: s.status, event: name, ts,
-            ...(k === 0 ? { detail: { book: event }, effects: step.effects } : {}),
+            ...(k === 0 ? { detail: encodeBookDetail(event), effects: step.effects } : {}),
           });
         }
         const known = new Set((was?.attempts ?? []).map((a) => a.signature));
@@ -66,7 +66,7 @@ export const recordEvents = (ledger: Ledger, events: readonly Timed[], config: B
         }
         ledger.appendPositionState({
           positionId: pid, status: p.status, quantity: p.quantity, cost: p.cost, event: name, ts,
-          ...(event.type === 'trigger_exit' ? { detail: { book: event } } : {}),
+          ...(event.type === 'trigger_exit' ? { detail: encodeBookDetail(event) } : {}),
         });
       }
     });

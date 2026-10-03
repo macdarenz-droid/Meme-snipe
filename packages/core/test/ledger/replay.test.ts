@@ -11,7 +11,7 @@ import { canonical, replayOnce } from '../../src/engine/index.ts';
 import type { BookEvent } from '../../src/lifecycle/index.ts';
 import { openLedger, openLedgerReader, type LedgerPurpose } from '../../src/ledger/index.ts';
 import { connectionOf } from '../../src/ledger/ledger.ts';
-import { replayLedger, replayLedgerFile, type ReplayReport, type ReplaySource } from '../../src/ledger/replay/index.ts';
+import { encodeBookDetail, replayLedger, replayLedgerFile, type ReplayReport, type ReplaySource } from '../../src/ledger/replay/index.ts';
 import { raw } from '../../src/units/index.ts';
 import { generateStream, stubRun } from '../engine-fixtures.ts';
 import { attempt, CONFIG, entryToSubmitted, fill, on, quote, sig } from '../fixtures.ts';
@@ -263,8 +263,8 @@ describe('ledger replay: tampering fails at the first differing row', () => {
           .run(forged === 'null' ? 'null' : JSON.stringify({ ...JSON.parse(String(row(db, 'SELECT json_extract(detail, \'$.book.proof\') AS p FROM intent_event WHERE seq = ?', s)['p'])), ...JSON.parse(forged) }), s);
       });
       const f = failure(replayLedgerFile(path));
-      expect(f).toMatchObject({ kind: 'illegal', event: 'orphan_cleared', intentId: E1, intentKey: expect.stringMatching(/^entry:/) });
-      expect(f.reason).toMatch(forged === 'null' ? /malformed event/ : /needs unchanged balances/);
+      expect(f).toMatchObject({ kind: forged === 'null' ? 'schema' : 'illegal', event: 'orphan_cleared', intentId: E1, intentKey: expect.stringMatching(/^entry:/) });
+      expect(f.reason).toMatch(forged === 'null' ? /detail\.book\.proof: must be a plain object/ : /needs unchanged balances/);
     }
   });
 
@@ -283,6 +283,47 @@ describe('ledger replay: tampering fails at the first differing row', () => {
       db.prepare("UPDATE intent_event SET detail = json_set(detail, '$.book.event.fills[0].sol.$bigint', ?) WHERE seq = ?").run(String(BigInt(cost) + 1n), s);
     });
     expect(failure(replayLedgerFile(event))).toMatchObject({ kind: 'divergence', table: 'position_event', reason: 'stored position state differs from the replay' });
+  });
+});
+
+describe('ledger replay: stored event schema', () => {
+  const edit = (path: string, sql: string) => tamper(path, (db) => {
+    const s = row(db, "SELECT MIN(seq) AS s FROM intent_event WHERE event = 'reserve_exposure'")['s'] as bigint;
+    db.prepare(`UPDATE intent_event SET detail = ${sql} WHERE seq = ?`).run(s);
+  });
+
+  it('every stored event carries version 1', () => {
+    const db = new DatabaseSync(engineLedger(), { readOnly: true });
+    const versions = db.prepare("SELECT DISTINCT json_extract(detail, '$.v') AS v FROM intent_event WHERE detail IS NOT NULL").all();
+    db.close();
+    expect(versions).toEqual([{ v: 1 }]);
+  });
+
+  for (const [label, sql, reason] of [
+    ['an unknown version', "json_set(detail, '$.v', 2)", /detail\.v: unknown version 2/],
+    ['no version', "json_remove(detail, '$.v')", /detail\.v: unknown version undefined/],
+    ['an extra top-level field', "json_set(detail, '$.note', 'x')", /detail\.note: unknown field/],
+    ['an extra field in the event', "json_set(detail, '$.book.event.reservation.extra', 1)", /detail\.book\.event\.reservation\.extra: unknown field/],
+    ['a missing field', "json_remove(detail, '$.book.event.reservation.amount')", /reservation\.amount: missing/],
+    ['an amount that is not a bigint', "json_set(detail, '$.book.event.reservation.amount', 16000000)", /reservation\.amount: must be a bigint >= 0/],
+    ['a negative amount', "json_set(detail, '$.book.event.reservation.amount', json('{\"$bigint\":\"-1\"}'))", /reservation\.amount: must be a bigint >= 0/],
+    ['a malformed id', "json_set(detail, '$.book.intentId', 'bad id!')", /detail\.book\.intentId: intent id must be/],
+    ['an unknown event type', "json_set(detail, '$.book.event.type', 'teleport')", /detail\.book\.event\.type: must be one of/],
+  ] as const) {
+    it(`refuses ${label}`, () => {
+      const path = engineLedger();
+      edit(path, sql);
+      const f = failure(replayLedgerFile(path));
+      expect(f).toMatchObject({ kind: 'schema', table: 'intent_event', event: 'reserve_exposure' });
+      expect(f.reason).toMatch(reason);
+    });
+  }
+
+  it('refuses to encode an event off the schema', () => {
+    const e = entryToSubmitted(1, 1_000n)[0]!;
+    expect(encodeBookDetail(e)).toEqual({ v: 1, book: e });
+    expect(() => encodeBookDetail({ ...e, extra: 1 } as unknown as BookEvent)).toThrow(/detail\.book\.extra: unknown field/);
+    expect(() => encodeBookDetail(on(E1, { type: 'reject', reason: '' }))).toThrow(/reason: must be a non-empty string/);
   });
 });
 
