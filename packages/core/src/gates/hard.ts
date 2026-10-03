@@ -331,10 +331,24 @@ const conc = (env: Env, gate: HardGate): Conc => {
   const pool: PoolFact = p.fact;
   const m = mintAccount(env, gate);
   if (!m.ok) return { ok: false, out: m.out };
+  const malformed = (detail: string): Conc => ({ ok: false, out: { reasons: [{ gate: 'H16', code: 'malformed', input: 'holders', neededBy: gate, detail }] } });
+  // GATE-1d review: a repeated account would count twice and hide unlisted supply; another mint's account is not a holder.
+  const seen = new Set<string>();
+  for (const a of h.fact.accounts) {
+    if (seen.has(a.address)) return malformed(`account ${a.address} is listed more than once`);
+    seen.add(a.address);
+    if (a.mint !== env.req.mint) return malformed(`account ${a.address} holds mint ${a.mint}, not ${env.req.mint}`);
+  }
   if (m.account.supply !== h.fact.supply) {
     return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `holder read has supply ${h.fact.supply}, the mint ${m.account.supply}` }] } };
   }
   const c = memo(env, 'concentration', () => concentration(h.fact, mintAccounts(env.req.mint, { address: pool.address, baseVault: pool.pool.poolBaseTokenAccount })));
+  if (c.unaccounted < 0n) {
+    return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `listed accounts hold ${-c.unaccounted} more than the supply ${c.supply}` }] } };
+  }
+  if (c.coverage === 'all' && c.unaccounted !== 0n) {
+    return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `a complete account set holds ${c.supply - c.unaccounted} of the supply ${c.supply}` }] } };
+  }
   if (c.circulating <= 0n) return { ok: false, out: reject(gate, 'no-circulating', `supply ${c.supply}, excluded ${c.excluded}`, { input: 'holders' }) };
   const notes: GateNote[] = c.classes.filter((x) => x.cls === 'unknown-program' || x.cls === 'locker')
     .map((x) => (x.cls === 'locker'
@@ -349,8 +363,10 @@ const h12 = (env: Env): Outcome => {
   const { c, create, notes } = r;
   const g = env.policy.gates;
   const reasons: GateReason[] = [];
-  const top1 = c.top1 === null ? 0n : shareBps(c.top1.amount, c.circulating);
-  const dev = shareBps(ownerBalance(c, create.creator).amount, c.circulating);
+  const top1Held = c.top1 === null ? 0n : c.top1.amount;
+  const devHeld = ownerBalance(c, create.creator);
+  const top1 = shareBps(top1Held, c.circulating);
+  const dev = shareBps(devHeld, c.circulating);
   const top10 = shareBps(c.top10, c.circulating);
   const of = `of circulating ${c.circulating} (supply ${c.supply}, excluded ${c.excluded})`;
   if (top1 >= BigInt(g.hardHolderBps)) reasons.push({ gate: 'H12', code: 'hard-holder', input: 'holders', detail: `${c.top1?.owner} holds ${top1} bps ${of}`, value: String(top1), limit: String(g.hardHolderBps) });
@@ -359,7 +375,22 @@ const h12 = (env: Env): Outcome => {
     reasons.push({ gate: 'H12', code: 'single-holder', input: 'holders', detail: `${c.top1?.owner} holds ${top1} bps ${of}`, value: String(top1), limit: String(g.singleHolderBps) });
   }
   if (top10 > BigInt(g.top10Bps)) reasons.push({ gate: 'H12', code: 'top10', input: 'holders', detail: `top 10 hold ${top10} bps ${of}`, value: String(top10), limit: String(g.top10Bps) });
-  return { reasons, notes };
+  if (reasons.length > 0 || c.unaccounted === 0n) return { reasons, notes };
+  // GATE-1d: tokens the view does not list could all belong to one owner, listed or not, in any number of accounts.
+  // Pass only if the listed holdings plus all of them stay inside every limit; otherwise the view cannot judge H12.
+  const u = c.unaccounted;
+  // The dev is one of the owners, so the top holder's bound covers the dev's.
+  const worst = { top1: shareBps(top1Held + u, c.circulating), top10: shareBps(c.top10 + u, c.circulating) };
+  const over = [
+    // Both limits: singleHolderBps may equal hardHolderBps (validate.ts), and the hard limit rejects at ">=".
+    worst.top1 > BigInt(g.singleHolderBps) || worst.top1 >= BigInt(g.hardHolderBps) ? `one holder up to ${worst.top1} bps (limits ${g.singleHolderBps}, hard ${g.hardHolderBps})` : null,
+    worst.top10 > BigInt(g.top10Bps) ? `top 10 up to ${worst.top10} bps (limit ${g.top10Bps})` : null,
+  ].filter((x): x is string => x !== null);
+  if (over.length === 0) return { reasons, notes };
+  return {
+    reasons: [{ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12', detail: `${u} tokens are in accounts the view does not list; they could put ${over.join(', ')}; a complete account set is needed`, value: String(u) }],
+    notes,
+  };
 };
 
 const h13 = (env: Env): Outcome => {
@@ -369,14 +400,9 @@ const h13 = (env: Env): Outcome => {
   if (!i.ok) return fromRead(i);
   if (!i.fact.complete) return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'insiders', neededBy: 'H13', detail: 'insider precompute is not complete' }] };
   const { c, create } = r;
-  const notes: GateNote[] = [];
   const held = (wallets: readonly string[]): bigint => {
     let sum = 0n;
-    for (const w of [...new Set([create.creator, ...wallets])].sort()) {
-      const b = ownerBalance(c, w);
-      if (!b.listed) notes.push({ gate: 'H13', code: 'missing-insider-bounded', detail: `${w} is not among the listed holders; counted at the bound ${b.amount}` });
-      sum += b.amount;
-    }
+    for (const w of [...new Set([create.creator, ...wallets])].sort()) sum += ownerBalance(c, w);
     return sum;
   };
   const g = env.policy.gates;
@@ -385,7 +411,17 @@ const h13 = (env: Env): Outcome => {
   if (insider > BigInt(g.insiderBps)) reasons.push({ gate: 'H13', code: 'insider-supply', input: 'insiders', detail: `dev, creation-slot buyers and deployer-funded wallets hold ${insider} bps of circulating`, value: String(insider), limit: String(g.insiderBps) });
   const cluster = shareBps(held(i.fact.devCluster), c.circulating);
   if (cluster > BigInt(g.devClusterBps)) reasons.push({ gate: 'H13', code: 'dev-cluster', input: 'insiders', detail: `the dev's linked cluster holds ${cluster} bps of circulating`, value: String(cluster), limit: String(g.devClusterBps) });
-  return { reasons, notes: [...new Map(notes.map((n) => [n.detail, n])).values()] };
+  if (reasons.length > 0 || c.unaccounted === 0n) return { reasons };
+  // GATE-1d: unlisted tokens could all belong to the insiders (or the cluster) in accounts the view does not show.
+  const u = c.unaccounted;
+  const worstInsider = shareBps(held(i.fact.insiders) + u, c.circulating);
+  const worstCluster = shareBps(held(i.fact.devCluster) + u, c.circulating);
+  const over = [
+    worstInsider > BigInt(g.insiderBps) ? `insiders up to ${worstInsider} bps (limit ${g.insiderBps})` : null,
+    worstCluster > BigInt(g.devClusterBps) ? `the dev's cluster up to ${worstCluster} bps (limit ${g.devClusterBps})` : null,
+  ].filter((x): x is string => x !== null);
+  if (over.length === 0) return { reasons };
+  return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H13', detail: `${u} tokens are in accounts the view does not list; they could put ${over.join(', ')}; a complete account set is needed`, value: String(u) }] };
 };
 
 const h14 = (env: Env): Outcome => {
