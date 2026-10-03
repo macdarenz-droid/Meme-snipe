@@ -39,10 +39,14 @@ export interface RugCheckConfig {
   readonly maxLagSlots: number;
 }
 
+// Measured on 32 deployers of live graduations (docs/DECISIONS.md "Rug labels"): 24 of 25 measured cost 0 (no prior
+// mint), one 146 credits for 6 prior mints. 500 is over 3x the largest measured; a check over it rejects (fail-safe).
+// At the P2 share of Helius Free (5 requests a second) a full-cap check takes 100 s, about 250 slots, so a check is
+// accepted up to 300 slots (about 2 minutes) behind the decision.
 const CHECK_VALUES: RugCheckConfig = {
   version: 'rug-check-1',
-  creditCapPerCandidate: 2_000,
-  maxLagSlots: 150,
+  creditCapPerCandidate: 500,
+  maxLagSlots: 300,
 };
 
 export const RUG_CHECK_CONFIG: RugCheckConfig = deepFreeze(CHECK_VALUES);

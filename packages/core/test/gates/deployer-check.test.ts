@@ -103,6 +103,8 @@ describe('check fact and config', () => {
 
   it('the shipped check config is valid; bad values are refused', () => {
     expect(rugCheckConfigIssues(RUG_CHECK_CONFIG)).toEqual([]);
+    // Changing a value needs a new version and a DECISIONS entry (docs/DECISIONS.md "Rug labels").
+    expect(RUG_CHECK_CONFIG).toEqual({ version: 'rug-check-1', creditCapPerCandidate: 500, maxLagSlots: 300 });
     expect(rugCheckConfigIssues({ version: '', creditCapPerCandidate: 0, maxLagSlots: -1 })).toHaveLength(3);
     expect(rugCheckConfigIssues({ version: 'v', creditCapPerCandidate: 1, maxLagSlots: 0 })).toEqual([]);
     expect(rugCheckConfigIssues({ version: 'v', creditCapPerCandidate: 1.5, maxLagSlots: 0.5 })).toHaveLength(2);
