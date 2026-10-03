@@ -19,6 +19,8 @@ blockNetwork();
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const ENTRY = join(REPO, 'packages/worker/src/dryrun/index.ts');
+/** SIM-1's round-trip simulation reads and simulates only too: the same proof covers it. */
+const SIM_ENTRY = join(REPO, 'packages/worker/src/sim/index.ts');
 
 /** Every module reachable from `entry` through static imports and re-exports (relative specifiers). */
 const reachable = (entry: string): Map<string, string> => {
@@ -55,7 +57,7 @@ const SENDING_MODULES = [
 const SEND_NAMES = /\b(sendTransaction|sendRawTransaction|sendBundle|sendEvent|planBroadcast|landingRunner|httpTransport|LANDING_EFFECTS)\b/;
 
 describe('no send path: static import graph', () => {
-  const graph = reachable(ENTRY);
+  const graph = new Map([...reachable(ENTRY), ...reachable(SIM_ENTRY)]);
   const files = [...graph.keys()].map((f) => relative(REPO, f));
 
   it('reaches the TX-1 builders and the signer policy, and none of the sending modules', () => {
