@@ -7,5 +7,6 @@ export * from './native.ts';
 export * from './policy.ts';
 export * from './programs.ts';
 export * from './rent.ts';
+export * from './shape.ts';
 export * from './trade.ts';
 export * from './venues.ts';

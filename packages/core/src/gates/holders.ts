@@ -79,8 +79,12 @@ export interface Concentration {
   readonly top1: OwnerShare | null;
   readonly top10: bigint;
   readonly classes: readonly { readonly address: string; readonly owner: string; readonly cls: HolderClass; readonly amount: bigint }[];
-  /** Balance of an owner not in the list is at most this (0 when every account is listed). */
-  readonly unlistedBound: bigint;
+  /**
+   * Supply that no listed account holds: supply - every listed balance (excluded ones included). On a largest-accounts
+   * view it is held by accounts not shown, any number of them, so all of it could belong to any one owner, listed or
+   * not (GATE-1d). A complete view must have none.
+   */
+  readonly unaccounted: bigint;
   readonly coverage: HoldersFact['coverage'];
 }
 
@@ -97,7 +101,7 @@ export const concentration = (h: HoldersFact, known: MintAccounts): Concentratio
   const owners = [...byOwner].map(([owner, amount]) => ({ owner, amount }))
     .sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.owner < b.owner ? -1 : a.owner > b.owner ? 1 : 0));
   const top10 = owners.slice(0, 10).reduce((s, o) => s + o.amount, 0n);
-  const smallest = h.accounts.reduce<bigint | null>((m, a) => (m === null || a.amount < m ? a.amount : m), null);
+  const listed = h.accounts.reduce((s, a) => s + a.amount, 0n);
   return {
     supply: h.supply,
     excluded,
@@ -106,7 +110,7 @@ export const concentration = (h: HoldersFact, known: MintAccounts): Concentratio
     top1: owners[0] ?? null,
     top10,
     classes,
-    unlistedBound: h.coverage === 'all' ? 0n : (smallest ?? h.supply),
+    unaccounted: h.supply - listed,
     coverage: h.coverage,
   };
 };
@@ -118,10 +122,8 @@ export const shareBps = (amount: bigint, circulating: bigint): bigint => {
   return n / circulating + (n % circulating === 0n ? 0n : 1n);
 };
 
-/** An owner's balance; for an owner missing from a 'largest' list, its upper bound. */
-export const ownerBalance = (c: Concentration, owner: string): { readonly amount: bigint; readonly listed: boolean } => {
-  const o = c.owners.find((x) => x.owner === owner);
-  if (o) return { amount: o.amount, listed: true };
-  if (c.classes.some((x) => x.owner === owner)) return { amount: 0n, listed: true }; // only excluded accounts
-  return { amount: c.unlistedBound, listed: c.coverage === 'all' };
-};
+/**
+ * What an owner holds in the listed, non-excluded accounts. On a largest-accounts view this is a lower bound only:
+ * the owner may also hold any part of `unaccounted` (callers bound that worst case).
+ */
+export const ownerBalance = (c: Concentration, owner: string): bigint => c.owners.find((x) => x.owner === owner)?.amount ?? 0n;

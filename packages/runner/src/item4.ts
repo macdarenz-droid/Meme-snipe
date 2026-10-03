@@ -45,9 +45,9 @@ export interface Item4 {
   readonly pass: boolean;
 }
 
-/** A bigint field: null when absent, the value when a decimal string, `bad` otherwise. */
+/** A bigint field: null when absent, the value when a non-negative decimal string, `bad` otherwise (amounts, slots and rent are never negative). */
 const BAD = Symbol('bad');
-const big = (x: unknown): bigint | null | typeof BAD => (x === undefined || x === null ? null : typeof x === 'string' && /^-?\d+$/.test(x) ? BigInt(x) : BAD);
+const big = (x: unknown): bigint | null | typeof BAD => (x === undefined || x === null ? null : typeof x === 'string' && /^\d+$/.test(x) ? BigInt(x) : BAD);
 
 /** Why a simulation line cannot be trusted as written, or null. Such a line is scored `malformed`, never dropped. */
 export const malformedReason = (l: JournalLine): string | null => {
