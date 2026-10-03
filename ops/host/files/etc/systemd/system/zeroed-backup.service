@@ -1,0 +1,15 @@
+[Unit]
+Description=Zeroed: encrypted backup of the SQLite files
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zeroed-backup
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/backups/zeroed /var/lib/zeroed
