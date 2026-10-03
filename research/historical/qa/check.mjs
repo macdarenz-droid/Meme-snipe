@@ -450,6 +450,7 @@ if (report.gecko) {
 const misses = strictMisses(man, report, { leadInDays: LEAD_IN });
 report.strict = { pass: misses.length === 0, misses };
 md.push('', '## Verdict', '', misses.length ? `FAIL: ${misses.join('; ')}` : 'PASS: no unexplained miss.');
+if (report.raw) md.push('', `Parity scope: raw records, and so the decoder parity check (qa/parity.json), cover only transactions of hash-sampled mints (h(mint) < ${man.sampling?.unit_sample_rate_min ?? 1}, retention ${man.sampling?.retention || 'sample only'}). Rows of other mints come from the same decoder but are not re-decoded one by one; this is sample parity, not full-row parity.`);
 if (report.raw) md.push('', `Raw records: ${report.raw.records}; signature mismatches ${report.raw.signature_mismatch}; ${report.raw.trade_txs_with_raw} of ${report.raw.trade_txs} trade and failed transactions of hash-sampled mints have their raw record.`);
 fs.writeFileSync(path.join(ds, 'qa', 'report.json'), JSON.stringify(report, null, 2));
 fs.writeFileSync(path.join(ds, 'qa', 'report.md'), md.join('\n') + '\n');

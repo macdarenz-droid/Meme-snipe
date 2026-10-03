@@ -20,6 +20,7 @@ cmd=$2 tag=$3; shift 3
 dir="$T/rel/$tag"
 case "$cmd" in
   view)
+    [[ -n "${FAKE_GH_ERROR:-}" ]] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
     [[ -d "$dir" ]] || { echo "release not found" >&2; exit 1; }
     jqx=""
     while (( $# )); do [[ "$1" == --jq ]] && jqx=$2; shift; done
@@ -278,6 +279,8 @@ out=$(bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && no "publish-day acce
   { [[ "$out" == *"differ"* && $(ls "$T/rel/data-day-2026-09-30" | sort | tr '\n' ' ') == "$before" && $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
     ok "publish-day: a release missing a part (count from its own SHA256SUMS) fails and is not touched" || no "publish-day incomplete: $out"; }
 GITHUB_OUTPUT="$T/ghout" bash "$here/publish-day.sh" --check 2026-09-30 >/dev/null 2>&1 && no "--check passed an incomplete release" || ok "publish-day --check: an incomplete release fails the job"
+: > "$T/ghout"; FAKE_GH_ERROR=1 GITHUB_OUTPUT="$T/ghout" bash "$here/publish-day.sh" --check 2026-09-28 >/dev/null 2>&1 && no "--check treated a gh error as absent" ||
+  { [[ ! -s "$T/ghout" ]] && ok "publish-day --check: a gh error other than 'release not found' fails, never reads as absent" || no "check gh error"; }
 rm -rf "$T/rel/data-day-2026-09-30"; mkpd; echo corrupt >> "$pd/units-2026-09-30.tar.part00"
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && no "publish-day published a corrupt part" ||
   { [[ ! -d "$T/rel/data-day-2026-09-30" ]] && ok "publish-day: a checksum mismatch publishes nothing" || no "publish-day corrupt"; }
@@ -316,6 +319,10 @@ assert [s.get("id") or s.get("name") for s in tok] == ["published", "Publish thi
 for s in tok:
     assert s["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc"), s
     assert s["env"]["BASH_ENV"] == "" and s["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), s
+    assert all(s["env"][k] == "" for k in ("LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH")), s
+for s in steps[i + 1:]:
+    if "always()" in s.get("if", ""):
+        assert "steps.published.outcome == 'success'" in s["if"], s
 PY
 
 echo "$pass passed, $fail failed"

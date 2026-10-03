@@ -452,6 +452,8 @@ export interface ParitySummary {
   mismatch_count: number;
   missing_row_count: number;
   unchecked_columns: readonly string[];
+  /** Raw records exist only for mints with h(mint) below this rate, so this is sample parity, not full-row parity. */
+  raw_sample_rate: number;
   mismatches: Mismatch[];
   missing_rows: MissingRow[];
 }
@@ -478,6 +480,7 @@ export class ParityChecker {
     mismatch_count: 0,
     missing_row_count: 0,
     unchecked_columns: UNCHECKED_COLUMNS,
+    raw_sample_rate: 1,
     mismatches: [],
     missing_rows: [],
   };
@@ -492,6 +495,7 @@ export class ParityChecker {
   constructor(mints: readonly MintInfo[], idl: ReadonlyMap<string, IdlEvent> = loadScannerIdl(), rawSampleRate = 1) {
     this.idl = idl;
     this.rawSampleRate = rawSampleRate;
+    this.s.raw_sample_rate = rawSampleRate;
     for (const m of mints) {
       this.mints.set(m.mint, m);
       if (m.pool) this.poolMint.set(m.pool, m.mint);

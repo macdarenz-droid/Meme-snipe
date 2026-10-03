@@ -19,8 +19,17 @@ REGIME_BOUNDARY_DAY=2026-10-02
 # the part count taken from the release's own SHA256SUMS-DAY.
 release_state() {
   local tag=$1 day=$2 info tmp want have
-  info=$("$GH" release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets \
-    --jq '"draft \(.isDraft)", (.assets[] | "asset \(.name) \(.state)")' 2>/dev/null) || { echo absent; return; }
+  local err
+  err=$(mktemp)
+  if ! info=$("$GH" release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets \
+    --jq '"draft \(.isDraft)", (.assets[] | "asset \(.name) \(.state)")' 2>"$err"); then
+    # Only a missing release is "absent"; any other gh error (auth, network, rate
+    # limit) is an error, never a reason to publish.
+    if grep -qi "release not found" "$err"; then echo absent; else echo "error: $(tr '\n' ' ' < "$err")"; fi
+    rm -f "$err"
+    return
+  fi
+  rm -f "$err"
   grep -qx "draft false" <<<"$info" || { echo "incomplete: draft release"; return; }
   if grep '^asset ' <<<"$info" | grep -vq ' uploaded$'; then echo "incomplete: an asset is not fully uploaded"; return; fi
   tmp=$(mktemp -d)
