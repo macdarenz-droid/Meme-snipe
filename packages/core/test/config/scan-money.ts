@@ -2,7 +2,7 @@
 // formatting, digit separators, hex, exponents and wrapper calls do not hide a literal.
 
 export interface Token {
-  readonly kind: 'num' | 'str' | 'id' | 'punct';
+  readonly kind: 'num' | 'str' | 'id' | 'punct' | 'regex';
   readonly text: string;
   readonly line: number;
   /** A template literal with `${}` in it: its text is not a constant. */
@@ -11,6 +11,18 @@ export interface Token {
 
 const NUMBER = /0[xX][0-9a-fA-F_]+n?|0[bB][01_]+n?|0[oO][0-7_]+n?|(?:\d[\d_]*\.?[\d_]*|\.\d[\d_]*)(?:[eE][+-]?\d[\d_]*)?n?/y;
 const IDENT = /[A-Za-z_$][\w$]*/y;
+
+/** Decodes \xNN, \uNNNN and \u{N} escapes, so an escaped digit cannot hide a number inside a string. */
+export const decodeEscapes = (raw: string): string =>
+  raw
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_m, h: string) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\u\{([0-9a-fA-F]+)\}/g, (_m, h: string) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_m, h: string) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\\n/g, '');
+
+/** A "/" starts a regular expression (not a division) after these. */
+const REGEX_AFTER_PUNCT = new Set(['(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '<', '>', '~', '^']);
+const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'in', 'of', 'delete', 'void', 'throw', 'new', 'else', 'do']);
 
 export const tokenize = (src: string): Token[] => {
   const tokens: Token[] = [];
@@ -30,10 +42,28 @@ export const tokenize = (src: string): Token[] => {
         i = stop;
         continue;
       }
+      if (c === '/') {
+        const last = tokens[tokens.length - 1];
+        if (!last || (last.kind === 'punct' && REGEX_AFTER_PUNCT.has(last.text)) || (last.kind === 'id' && REGEX_AFTER_WORD.has(last.text))) {
+          let j = i + 1;
+          let inClass = false;
+          while (j < src.length && src[j] !== '\n' && (inClass || src[j] !== '/')) {
+            if (src[j] === '\\') j++;
+            else if (src[j] === '[') inClass = true;
+            else if (src[j] === ']') inClass = false;
+            j++;
+          }
+          j++;
+          while (/[a-z]/i.test(src[j] ?? '')) j++;
+          tokens.push({ kind: 'regex', text: src.slice(i, j), line });
+          i = j;
+          continue;
+        }
+      }
       if (c === '"' || c === "'") {
         let j = i + 1;
         while (j < src.length && src[j] !== c) { if (src[j] === '\\') j++; j++; }
-        tokens.push({ kind: 'str', text: src.slice(i + 1, j), line });
+        tokens.push({ kind: 'str', text: decodeEscapes(src.slice(i + 1, j)), line });
         i = j + 1;
         continue;
       }
@@ -50,7 +80,7 @@ export const tokenize = (src: string): Token[] => {
           text += src[j];
           j++;
         }
-        tokens.splice(at, 0, { kind: 'str', text, line: startLine, ...(dynamic ? { dynamic: true as const } : {}) });
+        tokens.splice(at, 0, { kind: 'str', text: decodeEscapes(text), line: startLine, ...(dynamic ? { dynamic: true as const } : {}) });
         i = j + 1;
         continue;
       }
@@ -76,6 +106,7 @@ export const tokenize = (src: string): Token[] => {
 };
 
 const THRESHOLD = 1000n;
+const UNIT_CONSTANTS = new Set(['MICRO_PER_USD', 'LAMPORTS_PER_SOL']);
 const MONEY_CTORS = new Set(['usd', 'sol', 'microUsd', 'lamports']);
 const NUMBER_READERS = new Set(['BigInt', 'Number', 'parseInt', 'parseFloat']);
 
@@ -149,6 +180,44 @@ export const findMoneyLiterals = (source: string): Finding[] => {
     if (tok.kind === 'punct' && tok.text === '*' && tokens[i + 1]?.text === '*' && prev?.kind === 'num' && tokens[i + 2]?.kind === 'num') {
       const v = Number(literalValue(prev.text)) ** Number(literalValue((tokens[i + 2] as Token).text));
       if (v >= Number(THRESHOLD)) out.push({ line: tok.line, why: `power ${prev.text} ** ${(tokens[i + 2] as Token).text} is 1,000 or more`, text: prev.text });
+    }
+  });
+  return out.concat(smallLiteralsNextToUnits(tokens));
+};
+
+const isZero = (t: Token): boolean => literalValue(t.text) == 0;
+
+/**
+ * "2n * MICRO_PER_USD" is $2 and "lamports(5 + x)" builds money: any nonzero numeric literal in the same statement as a unit
+ * constant, or inside the brackets of a money constructor call, is a money amount written as a small number.
+ */
+const smallLiteralsNextToUnits = (tokens: readonly Token[]): Finding[] => {
+  const out: Finding[] = [];
+  const flagged = new Set<number>();
+  const flag = (k: number, why: string): void => {
+    const t = tokens[k] as Token;
+    if (t.kind !== 'num' || isZero(t) || flagged.has(k)) return;
+    flagged.add(k);
+    out.push({ line: t.line, why: `${why}: literal ${t.text}`, text: t.text });
+  };
+  let start = 0;
+  for (let k = 0; k <= tokens.length; k++) {
+    const t = tokens[k];
+    if (k < tokens.length && !(t?.kind === 'punct' && (t.text === ';' || t.text === '{' || t.text === '}'))) continue;
+    const span = tokens.slice(start, k);
+    const declares = (name: string): boolean => span.some((x, n) => x.text === name && ['const', 'let', 'var', 'readonly'].includes(span[n - 1]?.text ?? ''));
+    const unit = span.find((x) => x.kind === 'id' && UNIT_CONSTANTS.has(x.text) && !declares(x.text));
+    if (unit) for (let n = start; n < k; n++) flag(n, `number written next to ${unit.text}`);
+    start = k + 1;
+  }
+  tokens.forEach((t, k) => {
+    if (t.kind !== 'id' || !MONEY_CTORS.has(t.text) || tokens[k + 1]?.text !== '(') return;
+    let depth = 0;
+    for (let n = k + 1; n < tokens.length; n++) {
+      const x = tokens[n] as Token;
+      if (x.text === '(') depth++;
+      else if (x.text === ')' && --depth === 0) break;
+      else flag(n, `${t.text}() with a number inside`);
     }
   });
   return out;

@@ -39,7 +39,7 @@ const files = (dir: string): string[] =>
   readdirSync(dir).flatMap((entry) => {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) return TEST_FOLDERS.has(entry) || (dir === SRC && entry === 'config') ? [] : files(full);
-    return full.endsWith('.ts') ? [full] : [];
+    return /\.(?:[cm]?[jt]s|[jt]sx)$/.test(full) ? [full] : [];
   });
 const rel = (file: string): string => relative(SRC, file).split(sep).join('/');
 
@@ -65,6 +65,15 @@ const BYPASSES: readonly (readonly [string, string])[] = [
   ['a dollar amount in text', 'const s = "$2.50";'],
   ['an amount with a unit in text', "const s = '0.015 SOL';"],
   ['a rename of an allow-listed name in another file', 'const LAMPORTS_PER_SOL = 5_000_000n;'],
+  ['a small literal times a unit constant ($2)', 'const MIN = 2n * MICRO_PER_USD;'],
+  ['a fraction of a SOL', 'const q = 5n * LAMPORTS_PER_SOL / 100n;'],
+  ['a literal inside a money constructor call', 'const q = lamports(fee + 5n);'],
+  ['a quote inside a regex hides the next statement (single)', "const re = /'/; const MAX_TRADE = 5_000_000n; const r2 = /'/;"],
+  ['a quote inside a regex hides the next statement (double)', 'const re = /"/; const MAX_TRADE = 5_000_000n; const r2 = /"/;'],
+  ['a regex after return and a class', "const f = () => { return /[']/.test(s); }; const Q = 5_000_000n;"],
+  ['\\x escape in a number string', "const q = BigInt('\\x35000000');"],
+  ['\\u escape in a number string', "const q = Number('\\u0035000000');"],
+  ['\\u{} escape in a number string', "const q = parseInt('\\u{35}000000');"],
 ];
 
 describe('CFG-1 item 5: no money literals in code outside config/', () => {
@@ -78,7 +87,10 @@ describe('CFG-1 item 5: no money literals in code outside config/', () => {
       '// the trial uses $2 to $5 and 5_000_000 lamports',
       '/* $20 bankroll\n 5 SOL 5_000_000n */',
       'const zero = lamports(0n);',
-      'const x = lamports(fee + 1n);',
+      'const x = lamports(fee + extra);',
+      'const half = total / 2n / count;',
+      'const re = /[0-9]{5000}/; const ok = re.test(s) && a / b / c;',
+      "const re = /'/; const n = items.length;",
       'const price = solPriceMicroUsd(input);',
       'const t = `${a}$${b}`;',
       'const n = items.length + 999;',
@@ -96,6 +108,8 @@ describe('CFG-1 item 5: no money literals in code outside config/', () => {
     expect(literalValue('0b101')).toBe(5);
     expect(literalValue('.5e4')).toBe(5000);
     expect(tokenize('a /* x */ b // y\n`t${c}`').map((t) => t.text)).toEqual(['a', 'b', 't', 'c']);
+    expect(tokenize("x = /'/; y = a / b / c;").map((t) => t.kind)).toEqual(['id', 'punct', 'regex', 'punct', 'id', 'punct', 'id', 'punct', 'id', 'punct', 'id', 'punct']);
+    expect(tokenize(String.raw`'\x35' "\u{35}"`).map((t) => t.text)).toEqual(['5', '5']);
   });
 
   test('the allow-list is by file, name and value, never by line', () => {
