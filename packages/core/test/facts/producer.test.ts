@@ -11,7 +11,7 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, RAW, STREAMS, dailyChainVolume, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, RAW, STREAMS, dailyChainVolume, insiderLinks, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
 import { FIX, FactWorld, MINT, OPTIONS, POOL, RECORDS, atOf, chainTx, coverage, logEvents, offchain, slotNotice, txEvents } from './helpers.ts';
@@ -359,7 +359,7 @@ describe('holders', () => {
   const h = FIX.holdersRaw;
   const holdersRead = () => ({
     mint: MINT, slot: BigInt(Math.min(h.largest.context.slot, h.tokenAccountsSlot, h.ownersSlot)), commitment: 'confirmed',
-    supply: BigInt(supplyOf()), accounts: h.largest.value.map((a, i) => ({ address: a.address, owner: h.owners[i]!.owner, ownerProgram: h.owners[i]!.program === '11111111111111111111111111111111' ? null : h.owners[i]!.program, amount: BigInt(a.amount) })),
+    supply: BigInt(supplyOf()), accounts: h.largest.value.map((a, i) => ({ address: a.address, owner: h.owners[i]!.owner, ownerProgram: h.owners[i]!.program === '11111111111111111111111111111111' ? null : h.owners[i]!.program, amount: BigInt(a.amount), delegate: null, delegatedAmount: 0n })),
   });
   const supplyOf = (): bigint => {
     const w = new FactWorld().push(offchain(RAW.accounts(MINT), { ...FIX.accountsRead, slot: BigInt(FIX.accountsRead.slot) }, BigInt(FIX.accountsRead.slot), 1));
@@ -499,6 +499,28 @@ describe('funding as of the decision', () => {
   });
 });
 
+describe('insider links (funding.ts)', () => {
+  const read = (wallet: string, funder: string | null, complete = true) => ({ wallet, asOfSlot: 100n, complete, funder, signature: funder === null ? null : 'sig', slot: funder === null ? null : 10n, atMs: funder === null ? null : 1 });
+  const dev = 'Dev1111111111111111111111111111111111111111';
+  const b1 = 'Buy1111111111111111111111111111111111111111';
+  const b2 = 'Buy2111111111111111111111111111111111111111';
+  const links = (rs: ReturnType<typeof read>[]) => insiderLinks(dev, [b1, b2], (w) => rs.find((r) => r.wallet === w));
+
+  it('links buyers funded by the dev or by the dev\'s funder', () => {
+    expect(links([read(dev, 'Src1111111111111111111111111111111111111111'), read(b1, dev), read(b2, 'Src1111111111111111111111111111111111111111')])).toMatchObject({ funded: [b1], devCluster: [b1, b2] });
+  });
+
+  it('a complete read without a funder is unknown, not unlinked', () => {
+    expect(links([read(dev, 'Src1111111111111111111111111111111111111111'), read(b1, dev), read(b2, null)])).toBeNull();
+  });
+
+  it('an unknown dev funder makes the links unknown', () => {
+    expect(links([read(b1, dev), read(b2, dev)])).toBeNull();
+    expect(links([read(dev, null), read(b1, dev), read(b2, dev)])).toBeNull();
+    expect(links([read(dev, 'Src1111111111111111111111111111111111111111', false), read(b1, dev), read(b2, dev)])).toBeNull();
+  });
+});
+
 describe('complete holder set', () => {
   const hc = FIX.holdersComplete;
   const read = (over: Partial<Record<string, unknown>> = {}) => ({
@@ -517,6 +539,15 @@ describe('complete holder set', () => {
     expect(f.accounts.every((a) => (a as unknown as { mint: string }).mint === MINT)).toBe(true);
   });
 
+  it('the indexed Token-2022 filter (AccountType at 165) drops only extension-less accounts: here all four are empty', () => {
+    const typed = hc.gpa.accounts.filter((a) => { const b = Buffer.from(a.data, 'base64'); return b.length > 165 && b[165] === 2; });
+    expect(hc.gpa.accounts.length - typed.length).toBe(4);
+    const f = parseHolders(fact(read({ accounts: typed })))!;
+    expect(f.accounts.reduce((s, a) => s + a.amount, 0n)).toBe(f.supply);
+    // Delegates ride along for GATE-1e.
+    expect(f.accounts.every((a) => 'delegate' in a && 'delegatedAmount' in a)).toBe(true);
+  });
+
   it('a repeated address, a wrong program, a mint read after the scan or a wrong total proves nothing', () => {
     expect(fact(read({ accounts: [...hc.gpa.accounts, hc.gpa.accounts[0]!] }))).toBeUndefined();
     expect(fact(read({ accounts: hc.gpa.accounts.map((a, i) => (i === 0 ? { ...a, owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' } : a)) }))).toBeUndefined();
@@ -525,6 +556,15 @@ describe('complete holder set', () => {
     const holding = hc.gpa.accounts.findIndex((a) => Buffer.from(a.data, 'base64').readBigUInt64LE(64) > 0n);
     expect(fact(read({ accounts: hc.gpa.accounts.filter((_, i) => i !== holding) }))).toBeUndefined();
     expect(fact(read({ commitment: 'processed' }))).toBeUndefined();
+    // A mint that can still mint: the supply could grow, so no set is complete. Set the COption tag and an authority.
+    const mint = Buffer.from(hc.mint.data, 'base64');
+    mint.writeUInt32LE(1, 0);
+    mint.fill(7, 4, 36);
+    expect(fact(read({ mintData: mint.toString('base64') }))).toBeUndefined();
+    // A token account of another mint in the answer.
+    const other = Buffer.from(hc.gpa.accounts[0]!.data, 'base64');
+    other.fill(9, 0, 32);
+    expect(fact(read({ accounts: hc.gpa.accounts.map((a, i) => (i === 0 ? { ...a, data: other.toString('base64') } : a)) }))).toBeUndefined();
   });
 });
 
