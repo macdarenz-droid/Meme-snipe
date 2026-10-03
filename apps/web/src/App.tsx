@@ -1,5 +1,6 @@
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { lazy, Suspense, useEffect, type ReactNode } from 'react';
+import { useConnection } from './api/connection.ts';
 import { SampleMarker } from './components/Sample.tsx';
 import { DESKTOP, useMedia } from './lib/media.ts';
 import { page } from './lib/motion.ts';
@@ -40,6 +41,7 @@ function isTyping(e: KeyboardEvent): boolean {
 export function App() {
   const [screen, go] = useRoute();
   const desktop = useMedia(DESKTOP);
+  const conn = useConnection();
 
   useEffect(() => {
     document.title = `${TITLES[screen]} · Zeroed`;
@@ -82,7 +84,7 @@ export function App() {
               ))}
             </ul>
             <div className="rail-foot">
-              <StatusList session={EMPTY_SESSION} />
+              <StatusList session={EMPTY_SESSION} conn={conn} />
               <PauseButton />
               <ThemeSwitch />
             </div>
@@ -94,7 +96,7 @@ export function App() {
             {screen === 'fixtures' && <SampleMarker />}
             <PauseButton compact />
             <span className="mobile-status muted small">
-              {sessionLabel(EMPTY_SESSION)} · {dataLabel(EMPTY_SESSION)}
+              {sessionLabel(EMPTY_SESSION)} · {dataLabel(conn)}
             </span>
           </header>
         )}
