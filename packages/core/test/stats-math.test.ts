@@ -4,7 +4,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import {
-  bettingEProcess, betaQuantile, clusterTrials, nextNormal, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
+  bettingEProcess, betaQuantile, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
   dayBlockMeanDiffInterval, dayBlockMeanInterval, deflatedSharpe, designEffect, expectedMaxSharpe, incompleteBeta,
   incompleteGammaUpper, kurtosis, logGamma, mean, meanPredictiveInterval, median, normalCdf, normalQuantile, nPower,
   probabilisticSharpe, probabilityOfBacktestOverfitting, quantileSorted, ratesConsistent, requiredHoldoutTrades,
@@ -311,43 +311,5 @@ describe('purity and isolation', () => {
       const src = readFileSync(f, 'utf8');
       expect(src, rel).not.toMatch(/from\s+['"][^'"]*stats[^'"]*['"]/);
     }
-  });
-});
-
-describe('effective trials (trials.ts)', () => {
-  const noise = (seed: number, n: number, days: number) => {
-    const rng = createRng(seed);
-    return Object.fromEntries(Array.from({ length: n }, (_, i) => [`t${String(i).padStart(2, '0')}`, Array.from({ length: days }, () => nextNormal(rng))]));
-  };
-  test('independent trials: no cut is accepted and every trial counts', () => {
-    const c = clusterTrials(noise(1, 30, 40));
-    expect(c).toMatchObject({ meanSilhouette: null, effectiveTrials: 30 });
-    expect(c.clusters).toHaveLength(30);
-  });
-  test('three rules × four near-copies: three clusters, N = Σ ρ̄ + (1 − ρ̄)·m', () => {
-    const rng = createRng(2);
-    const series: Record<string, number[]> = {};
-    for (let f = 0; f < 3; f++) {
-      const base = Array.from({ length: 40 }, () => nextNormal(rng));
-      for (let v = 0; v < 4; v++) series[`r${f}v${v}`] = base.map((x) => x + 0.3 * nextNormal(rng));
-    }
-    const c = clusterTrials(series);
-    expect(c.clusters.map((g) => g.map((id) => id.slice(0, 2))).map((g) => new Set(g).size)).toEqual([1, 1, 1]);
-    expect(c.representatives.map((id) => id.slice(0, 2))).toEqual(['r0', 'r1', 'r2']);
-    // ρ ≈ 1/(1 + 0.09) ≈ 0.92 within a rule: each rule counts as about 0.92 + 0.08·4 ≈ 1.2 trials.
-    expect(c.effectiveTrials).toBeGreaterThanOrEqual(3);
-    expect(c.effectiveTrials).toBeLessThanOrEqual(5);
-    expect(clusterTrials(series)).toEqual(c);
-  });
-  test('refuses ragged or too-short series', () => {
-    expect(() => clusterTrials({ a: [1, 2, 3], b: [1, 2] })).toThrow(/expected 3/);
-    expect(() => clusterTrials({ a: [1, 2], b: [1, 2] })).toThrow(/three days/);
-    expect(() => clusterTrials({})).toThrow(/no trials/);
-  });
-  test('the DSR with daily P&L must cover exactly the registry', () => {
-    const xs = Array.from({ length: 50 }, (_, i) => Math.sin(i) * 0.3 + 0.05);
-    const reg = [{ trialId: 'a', sharpe: 0.1, nTrades: 50 }, { trialId: 'b', sharpe: 0.2, nTrades: 50 }];
-    expect(() => deflatedSharpe(xs, reg, { a: [1, 2, 3] })).toThrow(/exactly the registry's trials/);
-    expect(deflatedSharpe(xs, reg, { a: [1, 2, 3], b: [3, 1, 2] })).toMatchObject({ trials: 2, registeredTrials: 2, clusters: 2 });
   });
 });

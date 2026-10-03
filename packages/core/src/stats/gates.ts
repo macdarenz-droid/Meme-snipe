@@ -227,8 +227,7 @@ export interface G1Input {
   readonly registry: readonly TrialRecord[];
   /**
    * Per-trial returns per time row (e.g. per day) for PBO, keyed by trialId. Must hold exactly the registry's trials
-   * (a subset would lower PBO), every one with the same rows. The DSR clusters the trials by these series to count the
-   * effective number of independent trials.
+   * (a subset would lower PBO), every one with the same rows.
    */
   readonly pboMatrix: Readonly<Record<string, readonly number[]>>;
   readonly pboBlocks?: number;
@@ -262,11 +261,10 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
     c.add('registry', false, `selected trial "${input.selectedTrialId}" is not in the experiment registry`);
   } else {
     try {
-      const d = deflatedSharpe(returns, input.registry, input.pboMatrix);
+      const d = deflatedSharpe(returns, input.registry);
       metrics.dsr = d.dsr;
       metrics.trials = d.trials;
-      metrics.registeredTrials = d.registeredTrials;
-      c.add('DSR', d.dsr >= th.dsrMin, `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} effective trials (${d.registeredTrials} registered, ${d.clusters} clusters) (need >= ${th.dsrMin})`);
+      c.add('DSR', d.dsr >= th.dsrMin, `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} trials (need >= ${th.dsrMin})`);
     } catch (e) {
       c.add('DSR', false, (e as Error).message);
     }

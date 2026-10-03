@@ -5,7 +5,6 @@
 
 import { kurtosis, mean, sd, skewness, variance } from './descriptive.ts';
 import { normalCdf, normalQuantile } from './special.ts';
-import { clusterTrials } from './trials.ts';
 
 const EULER_GAMMA = 0.5772156649015329;
 
@@ -56,60 +55,29 @@ export interface DeflatedSharpe {
   readonly dsr: number;
   readonly sharpe: number;
   readonly benchmarkSharpe: number;
-  /** N used in SR₀: the effective number of independent trials when daily P&L was given, else the registry size. */
   readonly trials: number;
-  readonly registeredTrials: number;
-  /** Clusters found among the trials (the registry size when no daily P&L was given or no cut was accepted). */
-  readonly clusters: number;
   readonly sharpeVariance: number;
 }
 
 /**
- * Deflated Sharpe ratio of the selected trial's returns against the whole registry, with
- * SR₀ = √V·[(1 − γ)Φ⁻¹(1 − 1/N) + γΦ⁻¹(1 − 1/(N·e))] (Bailey & López de Prado 2014, Eq. 1) and DSR = PSR(SR₀).
- * With `dailyPnl` (trial id → daily P&L over the same days, exactly the registry's trials) the trials are clustered by
- * correlation (trials.ts): N is the effective number of independent trials and V the variance of the cluster
- * representatives' Sharpe ratios (López de Prado & Lewis 2019), so variants of one rule are not counted as independent
- * trials (RES-3). Without it, N is the registry size and V the variance of every trial's Sharpe ratio. V is floored at
- * 1/(T − 1) either way. Every registered trial counts; none may be left out.
+ * Deflated Sharpe ratio of the selected trial's returns against the whole registry: N is the registry size and V
+ * the variance of the registry's Sharpe ratios, floored at 1/(T − 1). Every registered trial counts; none may be left out.
  */
-export const deflatedSharpe = (
-  selectedReturns: readonly number[],
-  registry: readonly TrialRecord[],
-  dailyPnl?: Readonly<Record<string, readonly number[]>>,
-): DeflatedSharpe => {
+export const deflatedSharpe = (selectedReturns: readonly number[], registry: readonly TrialRecord[]): DeflatedSharpe => {
   if (registry.length === 0) throw new RangeError('the experiment registry is empty');
   const ids = new Set(registry.map((t) => t.trialId));
   if (ids.size !== registry.length) throw new RangeError('the experiment registry has duplicate trial ids');
   for (const t of registry) if (!Number.isFinite(t.sharpe)) throw new RangeError(`trial ${t.trialId} has no finite Sharpe`);
   // Floor V at the sampling variance of a Sharpe ratio under the null, 1/(T − 1): near-identical trials would otherwise
   // give V ≈ 0 and remove the deflation (review of PR #8). The floor only makes the DSR stricter.
-  let trials = registry.length;
-  let clusters = registry.length;
-  let sharpes = registry.map((t) => t.sharpe);
-  if (dailyPnl) {
-    const keys = Object.keys(dailyPnl);
-    const missing = registry.filter((t) => !Object.hasOwn(dailyPnl, t.trialId)).map((t) => t.trialId);
-    const extra = keys.filter((k) => !ids.has(k));
-    if (missing.length > 0 || extra.length > 0) {
-      throw new RangeError(`daily P&L must hold exactly the registry's trials (missing ${missing.length}, not in registry ${extra.length})`);
-    }
-    const cl = clusterTrials(dailyPnl);
-    const byId = new Map(registry.map((t) => [t.trialId, t.sharpe]));
-    trials = cl.effectiveTrials;
-    clusters = cl.clusters.length;
-    sharpes = cl.representatives.map((id) => byId.get(id)!);
-  }
-  const sampleVar = sharpes.length > 1 ? variance(sharpes) : 0;
+  const sampleVar = registry.length > 1 ? variance(registry.map((t) => t.sharpe)) : 0;
   const sharpeVariance = Math.max(sampleVar, 1 / (selectedReturns.length - 1));
-  const benchmarkSharpe = expectedMaxSharpe(trials, sharpeVariance);
+  const benchmarkSharpe = expectedMaxSharpe(registry.length, sharpeVariance);
   return {
     dsr: probabilisticSharpe(selectedReturns, benchmarkSharpe),
     sharpe: sharpeRatio(selectedReturns),
     benchmarkSharpe,
-    trials,
-    registeredTrials: registry.length,
-    clusters,
+    trials: registry.length,
     sharpeVariance,
   };
 };

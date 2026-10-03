@@ -2,10 +2,10 @@
 // the effect the sample was designed for. All seeded, so every run gives the same numbers.
 import { describe, expect, test } from 'vitest';
 import {
-  bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, deflatedSharpe, designEffect, expectedMaxSharpe, mean,
+  bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, designEffect, expectedMaxSharpe, mean,
   meanPredictiveInterval, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio,
 } from '../src/stats/index.ts';
-import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey, trialGrid, type GridTrial } from './stats-fixtures.ts';
+import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey } from './stats-fixtures.ts';
 
 const ALPHA = 0.05;
 const SLOW = 60_000;
@@ -203,42 +203,5 @@ describe('other interval checks', () => {
       expect(mean(maxes)).toBeCloseTo(expectedMaxSharpe(trials, 1 / 100), 1);
       expect(Math.abs(mean(maxes) - expectedMaxSharpe(trials, 1 / 100))).toBeLessThan(0.02);
     }
-  }, SLOW);
-});
-
-// Deflated Sharpe ratio over a realistic registry (STATS-1b item 5, RES-3). Variants of one rule are not independent
-// trials: the DSR counts effective trials (trials.ts) and takes V from cluster representatives. The gate must keep its
-// false-positive rate ≤ 5% at zero edge across registry shapes, and have power on a planted edge.
-describe('DSR with effective trials (STATS-1b)', () => {
-  const dsrOf = (ts: readonly GridTrial[], clustered: boolean) => {
-    const sel = ts.reduce((a, b) => (sharpeRatio(b.trades) > sharpeRatio(a.trades) ? b : a));
-    const registry = ts.map((t) => ({ trialId: t.id, sharpe: sharpeRatio(t.trades), nTrades: t.trades.length }));
-    return deflatedSharpe(sel.trades, registry, clustered ? Object.fromEntries(ts.map((t) => [t.id, t.daily])) : undefined);
-  };
-  const passRate = (seed: number, families: number, variants: number, edge: number, reps: number, clustered = true) => {
-    let pass = 0;
-    for (let r = 0; r < reps; r++) if (dsrOf(trialGrid(seed + r, families, variants, edge), clustered).dsr >= 0.95) pass++;
-    return pass / reps;
-  };
-  // Measured with these seeds (DSR ≥ 0.95 rate; clustered / registry-size): zero edge, 300 runs: 72×1 0.0067 / 0.0067,
-  // 8×9 0.040 / 0.0067, 24×3 0.023 / 0.010, 4×18 0.023 / 0.0033. Planted edge in one rule of 8×9, 150 runs: +5% 0.34 /
-  // 0.12, +10% 0.77 / 0.38. Rejected alternative: V without the selected trial's cluster reached 0.0425–0.05 at zero edge.
-  test('false positives ≤ 5% at zero edge: independent trials and three grids of correlated variants (300 runs each)', () => {
-    for (const [f, v] of [[72, 1], [8, 9], [24, 3], [4, 18]] as const) {
-      expect(passRate(100_000 + 1000 * f, f, v, 0, 300), `${f}×${v}`).toBeLessThanOrEqual(ALPHA);
-    }
-  }, 900_000);
-  test('a planted +10% edge in one rule of 8×9 variants passes most of the time; the registry-size DSR mostly does not', () => {
-    const clustered = passRate(300_000, 8, 9, 0.1, 150);
-    const raw = passRate(300_000, 8, 9, 0.1, 150, false);
-    expect(clustered).toBeGreaterThanOrEqual(0.65);
-    expect(raw).toBeLessThan(0.4);
-  }, 900_000);
-  test('the clustering finds the rules, counts effective trials between the cluster count and the registry size', () => {
-    const d = dsrOf(trialGrid(7, 8, 9, 0), true);
-    expect(d.registeredTrials).toBe(72);
-    expect(d.clusters).toBe(8);
-    expect(d.trials).toBeGreaterThan(8);
-    expect(d.trials).toBeLessThan(72);
   }, SLOW);
 });
