@@ -411,6 +411,11 @@ upd_run || fail "update after the dry run ended"
 in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "no deploy after the dry run ended"
 pass "update gate: no deploy while a named dry run has no report (after a reboot drill) or while a zeroed-dryrun@ unit is active; deploys once both end"
 
+# The deploy above applied the signed release's own host files (correct: release and host files go
+# together). Once that release carries an older ops/ (an earlier PR's), they are older than this branch's, so
+# put this branch's host files back, as the merge of this branch would, before testing its update path.
+in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-branch-files.txt" 2>&1 || { cat "$LOGS/console/update-branch-files.txt"; fail "install --update (this branch's host files)"; }
+docker exec -i "$C" cmp -s /usr/local/sbin/zeroed-update - <"$ROOT/ops/host/files/usr/local/sbin/zeroed-update" || fail "test setup: this branch's zeroed-update not in place"
 # A newer release whose host files fail to apply: nothing switches, the worker is not restarted, the owner
 # is told once, and the next run tries again under the same gates.
 in_c "echo 0000000000000000000000000000000000000000 > /var/lib/zeroed-host/deployed"
