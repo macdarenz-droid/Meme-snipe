@@ -48,6 +48,7 @@ const memo = <T>(make: (seed: number) => T) => {
 export const key32 = memo((seed) => base58Encode(bytesFrom(seed, 32)));
 export const sig = memo((seed) => signature(base58Encode(bytesFrom(seed + 1_000_000, 64))));
 const hash = memo((seed) => blockhash(key32(5_000 + seed)));
+export const blockhashOf = hash;
 
 export const MINT = mint(key32(1));
 /** The trial setting from docs/ARCHITECTURE.md: one open position. */

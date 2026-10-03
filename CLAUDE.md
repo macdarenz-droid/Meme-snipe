@@ -29,3 +29,4 @@ Copied from `macdarenz-droid/M-arc` CLAUDE.md (which imports AGENTS.md). Every a
 - Two themes only (owner, 2026-10-03): Paper and Silent Black (see `docs/ARCHITECTURE.md`).
 - Name and logo (owner, 2026-10-03): Zeroed, "Slot" mark (see `docs/BRAND.md`).
 - Funding (owner, 2026-10-03): Deposit and Withdraw offer two exchanges to choose from, Independent Reserve and Kraken; the bot only sends to the owner's saved wallet.
+- Free tiers only for hosting extras (owner, 2026-10-03): no custom domain and nothing paid on Cloudflare. The watchdog runs on the free Workers plan at its `workers.dev` address. Live dashboard access from the owner's phone uses a free private network (Tailscale Personal) instead of a public domain, so the server keeps no open inbound ports.
