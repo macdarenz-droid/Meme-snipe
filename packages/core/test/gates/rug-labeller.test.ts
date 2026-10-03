@@ -291,14 +291,14 @@ describe('observed event and materiality (fixed reference, never the bankroll)',
     expect(label(d!).materiality).toBeUndefined();
     const [c] = run([create(), trade({ sol: 10_000n }), trade({ sol: 0n })]).labels;
     // The peak's state: virtual SOL 30 + 10,000, virtual tokens 900, no fee fields (0 bps).
-    const cost = exitCostBps({ venue: 'curve', quote: 10_030n, base: 900n, feeBps: 0n }, 1_000n);
+    const cost = exitCostBps({ venue: 'curve', quote: 10_030n, base: 900n, feeBps: 0n, real: 10_000n }, 1_000n);
     expect(label(c!)).toMatchObject({ venue: 'curve', amounts: { peak: 10_000n, level: 0n }, materiality: { referenceLamports: 1_000n, exitCostBps: cost, material: cost! <= 1_000n } });
   });
 
   it('a pool collapse records the pool state at its peak, the sale after it included', () => {
     const [c] = run([create(), migration(), sell({ vault: 10_000n, out: 9_950n, lp: 50n })]).labels;
     expect(label(c!)).toMatchObject({ venue: 'pool', amounts: { peak: 10_000n, level: 100n } });
-    expect(label(c!).materiality!.exitCostBps).toBe(exitCostBps({ venue: 'pool', quote: 10_000n, base: 5n, feeBps: 0n }, 1_000n));
+    expect(label(c!).materiality!.exitCostBps).toBe(exitCostBps({ venue: 'pool', quote: 10_000n, base: 5n, feeBps: 0n, real: 10_000n }, 1_000n));
   });
 
   it('materiality is unknown when the peak had no pricing state', () => {
@@ -310,12 +310,15 @@ describe('observed event and materiality (fixed reference, never the bankroll)',
   });
 
   it('exit cost: price impact grows as the peak gets thinner, fees add, unusable states are refused', () => {
-    const deep = { venue: 'pool' as const, quote: 1_000_000_000n, base: 1_000_000_000n, feeBps: 0n };
+    const deep = { venue: 'pool' as const, quote: 1_000_000_000n, base: 1_000_000_000n, feeBps: 0n, real: 1_000_000_000n };
     expect(exitCostBps(deep, 1_000_000n)).toBe(10n);
     expect(exitCostBps({ ...deep, feeBps: 100n }, 1_000_000n)).toBe(109n);
     expect(exitCostBps({ ...deep, quote: 1_000n, base: 1_000n }, 1_000_000n)).toBe(9_990n);
     for (const bad of [{ ...deep, quote: 0n }, { ...deep, base: 0n }, { ...deep, feeBps: -1n }, { ...deep, feeBps: BPS_DENOMINATOR }]) expect(exitCostBps(bad, 1n)).toBeNull();
     expect(exitCostBps(deep, 0n)).toBeNull();
+    // Virtual reserves price the sale, but only the real quote pays out: deep virtual, 100 real, 1,000 to exit.
+    expect(exitCostBps({ ...deep, real: 100n }, 1_000n)).toBe(9_000n);
+    expect(exitCostBps({ ...deep, real: 0n }, 1_000n)).toBe(10_000n);
     expect(exitCostBps({ ...deep, base: 1n }, 1n)).toBeNull();
   });
 
@@ -328,7 +331,7 @@ describe('observed event and materiality (fixed reference, never the bankroll)',
     const t = trade({ sol: 10_000n });
     const d = { ...((t.value as { event: { data: Record<string, unknown> } }).event.data), feeBasisPoints: 95n, creatorFeeBasisPoints: 30n };
     const [c] = run([create(), ev('pump', 'TradeEvent', d), trade({ sol: 0n })]).labels;
-    const cost = exitCostBps({ venue: 'curve', quote: 10_030n, base: 900n, feeBps: 125n }, 1_000n)!;
+    const cost = exitCostBps({ venue: 'curve', quote: 10_030n, base: 900n, feeBps: 125n, real: 10_000n }, 1_000n)!;
     expect(label(c!).materiality).toEqual({ referenceLamports: 1_000n, exitCostBps: cost, material: false });
     const at = { ...CFG, materiality: { referenceLamports: 1_000, maxExitCostBps: Number(cost) } };
     expect(label(run([create(), ev('pump', 'TradeEvent', d), trade({ sol: 0n })], at).labels[0]!).materiality!.material).toBe(true);
@@ -337,9 +340,22 @@ describe('observed event and materiality (fixed reference, never the bankroll)',
     const p = sell({ vault: 10_000n, out: 9_950n, lp: 50n });
     const pd = { ...((p.value as { event: { data: Record<string, unknown> } }).event.data), poolBaseTokenReserves: 1_000_000n, lpFeeBasisPoints: 20n, protocolFeeBasisPoints: 5n, coinCreatorFeeBasisPoints: 5n };
     const [pc] = run([create(), migration(), ev('pump_amm', 'SellEvent', pd)]).labels;
-    const want = exitCostBps({ venue: 'pool', quote: 10_000n, base: 1_000_000n, feeBps: 30n }, 1_000n);
-    expect(want).not.toBe(exitCostBps({ venue: 'pool', quote: 10_000n, base: 1_000_000n, feeBps: 0n }, 1_000n));
+    const want = exitCostBps({ venue: 'pool', quote: 10_000n, base: 1_000_000n, feeBps: 30n, real: 10_000n }, 1_000n);
+    expect(want).not.toBe(exitCostBps({ venue: 'pool', quote: 10_000n, base: 1_000_000n, feeBps: 0n, real: 10_000n }, 1_000n));
     expect(label(pc!).materiality!.exitCostBps).toBe(want);
+  });
+
+  it('a thin curve or pool pays out at most its real quote, whatever its virtual reserves', () => {
+    // Curve: 100 real, 130 virtual. A 1,000 position would get 115 by the price alone, but only 100 is there.
+    const [c] = run([create(), trade({ sol: 100n }), trade({ sol: 0n })]).labels;
+    expect(label(c!).materiality!.exitCostBps).toBe(9_000n);
+    // Pool: vault 10,000 plus 5,000 virtual prices the sale; the vault caps the payout.
+    const big: RugConfig = { ...CFG, materiality: { referenceLamports: 10_000_000, maxExitCostBps: 1_000 } };
+    const p = sell({ vault: 10_000n, virtual: 5_000n, out: 14_900n, lp: 50n });
+    const pd = { ...((p.value as { event: { data: Record<string, unknown> } }).event.data), poolBaseTokenReserves: 1_000_000n };
+    const [pc] = run([create(), migration(), ev('pump_amm', 'SellEvent', pd)], big).labels;
+    expect(label(pc!).materiality!.exitCostBps).toBe(exitCostBps({ venue: 'pool', quote: 15_000n, base: 1_000_000n, feeBps: 0n, real: 10_000n }, 10_000_000n));
+    expect(label(pc!).materiality!.exitCostBps).toBe(9_990n);
   });
 
   it('materiality is unknown when the curve trade had no virtual quote reserve', () => {

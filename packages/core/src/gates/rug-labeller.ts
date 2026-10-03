@@ -23,6 +23,8 @@ export interface VenueState {
   readonly quote: bigint;
   readonly base: bigint;
   readonly feeBps: bigint;
+  /** The real quote a sale can take out (curve real reserves, pool vault): the price uses `quote`, payouts stop here. */
+  readonly real: bigint;
 }
 
 /**
@@ -38,12 +40,16 @@ export interface Materiality {
   readonly material: boolean | null;
 }
 
-/** Cost in bps of selling, into reserves `s`, the tokens worth `ref` quote at their spot price, fee `feeBps` charged. */
+/**
+ * Cost in bps of selling, into reserves `s`, the tokens worth `ref` quote at their spot price, fee `feeBps` charged,
+ * the payout capped at the real quote there (a curve's virtual reserves price trades but pay nothing out).
+ */
 export const exitCostBps = (s: VenueState, ref: bigint): bigint | null => {
   if (s.quote <= 0n || s.base <= 0n || ref <= 0n || s.feeBps < 0n || s.feeBps >= BPS_DENOMINATOR) return null;
   const tokens = (ref * s.base) / s.quote;
   if (tokens <= 0n) return null;
-  const out = (((s.quote * tokens) / (s.base + tokens)) * (BPS_DENOMINATOR - s.feeBps)) / BPS_DENOMINATOR;
+  const gross = (s.quote * tokens) / (s.base + tokens);
+  const out = ((gross < s.real ? gross : s.real) * (BPS_DENOMINATOR - s.feeBps)) / BPS_DENOMINATOR;
   return ((ref - out) * BPS_DENOMINATOR) / ref;
 };
 
@@ -222,7 +228,7 @@ export class RugLabeller {
     const vq = big(quoteMint === null || SOL_QUOTES.has(quoteMint) ? d['virtualSolReserves'] : d['virtualQuoteReserves']);
     const vt = big(d['virtualTokenReserves']);
     const fee = (big(d['feeBasisPoints']) ?? 0n) + (big(d['creatorFeeBasisPoints']) ?? 0n);
-    const state: VenueState | null = vq !== null && vt !== null ? { venue: 'curve', quote: vq, base: vt, feeBps: fee } : null;
+    const state: VenueState | null = vq !== null && vt !== null && liquidity !== null ? { venue: 'curve', quote: vq, base: vt, feeBps: fee, real: liquidity } : null;
     return this.#judge(e, l, at, 'curve', liquidity === null ? [] : [{ level: liquidity, state }], sale);
   }
 
@@ -241,7 +247,7 @@ export class RugLabeller {
     const fee = (big(d['lpFeeBasisPoints']) ?? 0n) + (big(d['protocolFeeBasisPoints']) ?? 0n) + (big(d['coinCreatorFeeBasisPoints']) ?? 0n);
     if (vault !== null) {
       const pre = vault + virtual;
-      levels.push({ level: pre, state: baseRes === null ? null : { venue: 'pool', quote: pre, base: baseRes, feeBps: fee } });
+      levels.push({ level: pre, state: baseRes === null ? null : { venue: 'pool', quote: pre, base: baseRes, feeBps: fee, real: vault } });
       const out = big(d['quoteAmountOut']);
       const lp = big(d['lpFee']);
       // The level after a sale is below the one before it, so it is never a peak and needs no pricing state.
