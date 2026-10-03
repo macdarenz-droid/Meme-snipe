@@ -141,7 +141,7 @@ Full signatures, buffers and hashes are in `packages/core/test/chain/fixtures/up
 - pump: 95 bps protocol and 30 bps creator, the same before and after.
 - PumpSwap: the same tier shape before and after (LP 20 or 25 bps, protocol 5 bps, creator by tier; the first tier is LP 2, protocol 93, creator 30).
 - Accounts created by swaps are the same size at the same rate before and after: volume accumulators 137 bytes (1,346,200 lamports) on both programs, SPL token accounts 165 bytes, Token-2022 ATAs 170 bytes, at 5,080 lamports per byte.
-- The CORE-2 quote goldens (313 curve and 353 PumpSwap swaps, slots 452,791,146–452,943,426) and the TX-1 compiled-message goldens (slots 452,954,462–452,954,827) were all recorded after the upgrade and reproduce exactly. A test now pins that.
+- The CORE-2 quote goldens (313 curve swaps, slots 452,932,434–452,943,426; 353 PumpSwap swaps, slots 452,791,146–452,936,637) and the TX-1 compiled-message goldens (slots 452,954,462–452,954,827) were all recorded after the upgrade and reproduce exactly. A test now pins that.
 
 ---
 

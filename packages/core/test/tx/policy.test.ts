@@ -215,7 +215,7 @@ describe('deny rules', () => {
       const lt: LookupTable = { deactivationSlot: U64_MAX, lastExtendedSlot: 1n, lastExtendedSlotStartIndex: 0, authority: null, addresses: venue };
       const v = checkSignerPolicy(decoded, resolveLookups(decoded.addressTableLookups, new Map([[table, lt]]), 10n), ctxFor(wallet));
       expect(v.ok).toBe(false);
-      expect(v.violations).toEqual(expect.arrayContaining([expect.stringMatching(new RegExp(`instruction ${at}: .*not allowed`))]));
+      expect(v.violations).toEqual(expect.arrayContaining([expect.stringMatching(new RegExp(`^instruction ${at}: .+ instruction ${disc} is not allowed$`))]));
     }
   });
 
