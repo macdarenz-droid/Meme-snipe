@@ -103,7 +103,9 @@ export class RpcStream {
       onOpen: () => {
         this.#epoch++;
         this.#meter(o.creditsPerConnection);
+        // A reconnect reports up once its backfill is done; the first open is up at once (nothing was missed yet).
         if (this.#wasDown) void this.#backfill();
+        else this.#status('up', { fromSlot: null, first: true });
       },
       onDown: (reason, wasOpen) => this.#down(reason, wasOpen),
       onBytes: (n) => this.#meter(n * o.creditsPerByte),
@@ -123,8 +125,11 @@ export class RpcStream {
     this.#rpc.start();
   }
 
+  /** A stop (shutdown or a drill) is a disconnect: the logs watches open a gap and the next start backfills it. */
   stop(): void {
+    const open = this.#rpc.socket.state === 'open';
     this.#rpc.stop();
+    if (open) this.#down('stopped', true);
   }
 
   /** The socket, for drills (TEST-3 drops it to prove the reconnect and backfill path). */

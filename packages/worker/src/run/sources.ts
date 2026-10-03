@@ -7,9 +7,9 @@
 // trades (RUG-1's wiring rule).
 import { PUMP_AMM_PROGRAM, PUMP_PROGRAM } from '../../../core/src/chain/index.ts';
 import type { SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
-import { alchemyRpcUrl, alchemyWsUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
+import { alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
 import {
-  ALCHEMY_FREE, ALCHEMY_WS_CU_PER_BYTE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P1, P2, P3,
+  ALCHEMY_FREE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P1, P2, P3,
   RUGCHECK_FREE, Scheduler, type SchedulerSpec,
 } from '../scheduler/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
@@ -117,10 +117,6 @@ export class LiveProviders {
       provider: 'helius', url: () => heliusWsUrl(o.secrets), factory: o.factory, timers, feed, scheduler: this.helius,
       creditsPerByte: HELIUS_WS_CREDITS_PER_BYTE, creditsPerConnection: HELIUS_WS_CREDITS_PER_CONNECTION, http: hRpc, fetcher, socket, backfillLimit: 100,
     });
-    const alchemy = new RpcStream({
-      provider: 'alchemy', url: () => alchemyWsUrl(o.secrets), factory: o.factory, timers, feed, scheduler: this.alchemy,
-      creditsPerByte: ALCHEMY_WS_CU_PER_BYTE, creditsPerConnection: 0, http: aRpc, fetcher, socket, backfillLimit: 100,
-    });
     helius.watchSlots(P1);
     helius.watchLogs(PUMP_CREATE_AUTHORITY, { priority: P3, decodeLogs: true, coverage: 'creates' });
     helius.watchLogs(PUMP_MIGRATION_AUTHORITY, { priority: P2, decodeLogs: true, fetch: P2 });
@@ -128,13 +124,11 @@ export class LiveProviders {
       helius.watchLogs(PUMP_PROGRAM, { priority: P3, decodeLogs: true, coverage: 'rugs' });
       helius.watchLogs(PUMP_AMM_PROGRAM, { priority: P3, decodeLogs: true, coverage: 'rugs' });
     }
-    alchemy.watchSlots(P1);
-    alchemy.watchLogs(PUMP_CREATE_AUTHORITY, { priority: P3, decodeLogs: true });
-    alchemy.watchLogs(PUMP_MIGRATION_AUTHORITY, { priority: P2, decodeLogs: true });
+    // No Alchemy socket: on mainnet (rehearsal 37142749019) it refused slotSubscribe and logsSubscribe (-32601) and only
+    // idled out every 30 s, each reconnect costing a 100-signature backfill. Alchemy stays the fetcher's second RPC.
     const pumpportal = new PumpPortalSource({ factory: o.factory, timers, feed, fetcher, migrationFetch: P3 });
     return [
       { name: 'helius-ws', critical: true, sources: ['helius'], start: () => helius.start(), stop: () => helius.stop() },
-      { name: 'alchemy-ws', critical: false, sources: ['alchemy'], start: () => alchemy.start(), stop: () => alchemy.stop() },
       { name: 'pumpportal', critical: false, sources: ['pumpportal'], start: () => pumpportal.start(), stop: () => pumpportal.stop() },
     ];
   }

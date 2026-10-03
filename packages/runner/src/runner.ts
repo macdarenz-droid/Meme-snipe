@@ -170,6 +170,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       ...(n.restarts === undefined ? {} : { restarts: n.restarts }),
       ...(n.restartWindowMs === undefined ? {} : { restartWindowMs: n.restartWindowMs }),
       ...(n.feedDropMs === undefined ? {} : { feedDropMs: n.feedDropMs }),
+      minFeedDropMs: 2 * sampleMs,
     });
     meta = { runId: n.runId, ...(n.name === undefined ? {} : { name: n.name }), label: o.identity.label, commit: o.identity.commit, startedAt: segStart, targetMs: n.targetMs, entry: n.entry, plan };
     writeFileSync(P.meta, JSON.stringify(meta, null, 2));

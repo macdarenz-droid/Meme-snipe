@@ -162,3 +162,12 @@ describe('secret scan', () => {
     expect(scanBuffer('c', clean, secrets)).toEqual([]);
   });
 });
+
+describe('feed drop length (rehearsal 37142749019)', () => {
+  it('a default drop lasts at least two health samples, so a short run cannot miss it', () => {
+    const drop = (o: Parameters<typeof makePlan>[0]) => makePlan(o).find((d) => d.kind === 'feed') as { dropMs: number };
+    expect(drop({ durationMs: 900_000, feeds: ['f'] }).dropMs).toBe(20_000);
+    expect(drop({ durationMs: 900_000, feeds: ['f'], minFeedDropMs: 30_000 }).dropMs).toBe(30_000);
+    expect(drop({ durationMs: 48 * 3_600_000, feeds: ['f'] }).dropMs).toBe(120_000);
+  });
+});
