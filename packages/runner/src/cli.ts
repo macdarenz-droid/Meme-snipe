@@ -48,6 +48,15 @@ const runs = (rootDir: string): { id: string; meta: { name?: string }; finished:
 
 const runByName = (rootDir: string, name: string): string | undefined => runs(rootDir).find((r) => r.meta.name === name)?.id;
 
+/** The host's off-site backup switch (ops/host-config.json in the deployed release); off unless it says true. */
+const offsiteBackupOn = (): boolean => {
+  try {
+    return (JSON.parse(readFileSync('/opt/zeroed/current/ops/host-config.json', 'utf8')) as { offsite_backup?: unknown }).offsite_backup === true;
+  } catch {
+    return false;
+  }
+};
+
 const output = (k: string, v: string): void => {
   const f = process.env['GITHUB_OUTPUT'];
   if (f) appendFileSync(f, `${k}=${v}\n`);
@@ -76,6 +85,9 @@ if (cmd === 'scan') {
       'recorded-artifact': { type: 'string' },
       commit: { type: 'string' },
       'sample-ms': { type: 'string' },
+      'backup-minutes': { type: 'string', default: '60' },
+      // The strategy id every boot must run; a named host run fails qualifying_start unless it is in REGISTERED_STRATEGIES (contract.ts; none yet, BT-2 registers one).
+      strategy: { type: 'string', default: 'none' },
       'run-name': { type: 'string' },
       segment: { type: 'string', default: '1' },
     },
@@ -123,6 +135,7 @@ if (cmd === 'scan') {
           entry: v.entry,
           cwd: process.cwd(),
           logPath: join(evidenceDir, 'logs', 'worker.log'),
+          stateDir,
           env: {
             ...process.env,
             ZEROED_STATE_DIR: stateDir,
@@ -142,10 +155,12 @@ if (cmd === 'scan') {
     stateDir,
     evidenceDir,
     identity: { label, commit },
-    newRun: { runId: id, ...(name === undefined ? {} : { name }), targetMs, entry: mode === 'systemd' ? `systemd:${WORKER_UNIT}` : v.entry },
+    newRun: { runId: id, strategy: v.strategy, ...(name === undefined ? {} : { name }), targetMs, entry: mode === 'systemd' ? `systemd:${WORKER_UNIT}` : v.entry },
     segmentEnd,
     keepRecorded: mode === 'systemd' ? 'host' : 'copy',
     handover: mode === 'local',
+    // Wipe drills and the runner's own backups exist only where losing the state loses nothing real.
+    ...(mode === 'local' ? { hostDrills: 'wipe' as const, backupEveryMs: Number(v['backup-minutes']) * 60_000 } : { hostDrills: 'tabletop' as const, offsiteBackup: offsiteBackupOn() }),
     ...(v['recorded-dir'] ? { recordedDir: resolve(v['recorded-dir']) } : {}),
     ...(v['recorded-artifact'] ? { recordedArtifact: v['recorded-artifact'] } : {}),
     sampleMs,
