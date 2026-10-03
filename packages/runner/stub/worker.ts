@@ -64,6 +64,10 @@ const saveState = (s: StubState): void => {
 // Test hook: a reconcile that cannot settle its intents exits 3, never serves `reconciled: false`.
 const reconcileFails = env['ZEROED_STUB_FAIL_RECONCILE'] === '1';
 
+// --reconcile-only (the host-loss tabletop): cold-start on this state dir, reconcile, report, and send nothing:
+// no entries, no exits, no heartbeat. It runs beside the live worker until it is stopped.
+const reconcileOnly = process.argv.includes('--reconcile-only');
+
 if (process.argv.includes('--reconcile')) {
   if (reconcileFails) fail(EXIT.reconcileFailed, 'Reconcile: intents left unresolved.');
   // ExecStartPre step: settle what a crash left behind, then report open intents for the host's update gate.
@@ -185,6 +189,7 @@ const tick = (): void => {
     halted = false;
     journal('resume', { reasons: ['all critical feeds fresh'] });
   }
+  if (reconcileOnly) return;
   // Paper trading: open for 60% of each cycle, flat for the rest. Exits run even while entries are halted.
   tradeTimer += tickMs;
   const phase = tradeTimer % cycleMs;

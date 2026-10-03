@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Health, JournalLine } from '../src/contract.ts';
-import { LocalControl, snapshotState } from '../src/control.ts';
+import { LocalControl, snapshotState, SystemdControl } from '../src/control.ts';
 import { checkJournal } from '../src/journal.ts';
 import { item4 } from '../src/item4.ts';
 import { DEFAULT_CAUSES, makePlan } from '../src/plan.ts';
@@ -88,11 +88,11 @@ describe('report by cause', () => {
     expect(r.checks[check]).toBe(false);
     expect(r.pass).toBe(false);
   });
-  it('off-run host loss and a skipped chain rebuild (VPS) count as drilled, and say so', () => {
-    const vps = swap(idOf('host-loss'), { off_run: true, state: undefined as never, recovery: undefined as never });
-    const r = report(vps.map((d) => (d.cause === 'chain-rebuild' ? ({ ...d, skipped: true, state: undefined } as unknown as DrillOutcome) : d)));
-    expect(r.checks).toMatchObject({ drills_by_cause: true, recovered_state: true, restored_universe_kept: true });
+  it('a tabletop host loss counts as drilled and is labelled; it must still recover its state', () => {
+    const vps = swap(idOf('host-loss'), { off_run: true });
+    expect(report(vps).checks).toMatchObject({ drills_by_cause: true, recovered_state: true, restored_universe_kept: true });
     expect(recoveryByCause(meta, vps)['host-loss']).toMatchObject({ off_run: 1 });
+    expect(report(swap(idOf('host-loss'), { off_run: true, state: undefined as never })).checks['recovered_state']).toBe(false);
   });
   it('a chain rebuild never asks for chain-rebuilt exposure of a lost paper position', () => {
     const ex = { status: 'measured' as const, duration_ms: 900, reconciled_ms: 100, trades: ['t'], trades_complete: true, chain_trades: [], mark_before: '1', mark_after: null, worst_move_bps: 0, move_source: 'marks' as const };
@@ -127,5 +127,23 @@ describe('helpers', () => {
     await c2.wipe({});
     await c2.stop();
     expect(readdirSync(state).sort()).toEqual(['journal.jsonl', 'recorder']);
+  });
+  it('on the host, the tabletop decrypts the newest backup into its own dir, starts the reconcile-only unit, and empties the dir after', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'run1d-table-'));
+    writeFileSync(join(dir, 'leftover'), 'x');
+    const calls: string[] = [];
+    const c = new SystemdControl('zeroed-worker.service', async (f, a) => void calls.push(`${f} ${a.join(' ')}`), dir);
+    expect(await c.tabletop({ restore: true })).toEqual({ healthAddr: '127.0.0.1:8788', stateDir: dir });
+    expect(readdirSync(dir)).toEqual([]);
+    expect(calls[0]).toMatch(/^\/bin\/sh -c .*age -d -i \/etc\/zeroed\/age\/host\.key .*tar -x -C "\$1"/);
+    expect(calls[0]!.endsWith(` sh ${dir}`)).toBe(true);
+    expect(calls[1]).toBe('systemctl start zeroed-worker-tabletop.service');
+    await c.tabletop({ restore: false });
+    expect(calls.slice(2)).toEqual(['systemctl start zeroed-worker-tabletop.service']);
+    writeFileSync(join(dir, 'journal.jsonl'), 'j');
+    await c.endTabletop();
+    expect(calls.at(-1)).toBe('systemctl stop zeroed-worker-tabletop.service');
+    expect(readdirSync(dir)).toEqual([]);
+    await expect(c.wipe()).rejects.toThrow(/never run on the qualifying host/);
   });
 });

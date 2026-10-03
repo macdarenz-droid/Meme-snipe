@@ -41,8 +41,13 @@ export interface SegmentOptions {
   readonly sampleMs?: number;
   /** Local only: take the runner's own backup of the bot state this often, for host-loss drills. */
   readonly backupEveryMs?: number;
-  /** Local only: wipe drills (host loss with a restore, chain rebuild) may delete the bot state. Never on the host. */
-  readonly wipeAllowed?: boolean;
+  /**
+   * How host loss and chain rebuild are drilled. `wipe` (rehearsal): the bot state is deleted (and the backup restored
+   * for host loss). `tabletop` (the qualifying host): a second worker in `--reconcile-only` mode cold-starts beside the
+   * live one, from the newest backup or an empty state dir; the live worker and the evidence are untouched. On the
+   * host a reboot drill also outlives this runner, so it is kept on disk and finished after boot.
+   */
+  readonly hostDrills?: 'wipe' | 'tabletop';
   /** The host's off-site backup switch (ops/host-config.json), reported with the restore drill. */
   readonly offsiteBackup?: boolean;
   readonly dropRpc?: (addr: string, token: string, ms: number) => Promise<boolean>;
@@ -165,6 +170,8 @@ interface RestartPending {
   /** What the health reply before the kill held, and what the new boot must recover (null: nothing, chain rebuild). */
   atKill?: Kept;
   expect?: Kept | null;
+  /** Host-loss or chain-rebuild tabletop on the qualifying host: the second worker's address and state dir. */
+  table?: { healthAddr: string; stateDir: string };
   reconciledAt?: number;
   ok?: boolean;
 }
@@ -324,18 +331,18 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
           p.markBefore = h ? freshMark(h) : null;
           p.atKill = kept(h);
           p.expect = cause === 'chain-rebuild' ? null : cause === 'host-loss' ? (backup?.expect ?? { pending_exits: [], positions: [] }) : p.atKill;
-          if (cause === 'host-loss' && o.control.restoreDrill) {
-            // On the qualifying host a real host loss would end the run: the restore drill runs off the run instead.
-            const r = await o.control.restoreDrill();
-            record({ ...base, at: t, pass: r.pass, off_run: true, recoveredMs: null, notes: [`restore drill off the qualifying run: ${r.output}`, offsiteNote(o.offsiteBackup)] });
-            pending = null;
-          } else if (cause === 'chain-rebuild' && !o.wipeAllowed) {
-            record({ ...base, at: t, pass: true, skipped: true, recoveredMs: null, notes: ['not run on the qualifying host: it would wipe the run\'s ledger; proven in the rehearsal'] });
-            pending = null;
+          if ((cause === 'host-loss' || cause === 'chain-rebuild') && o.hostDrills === 'tabletop') {
+            // The live worker keeps running: the tabletop worker is the one that "lost its host".
+            p.killedAt = Date.now();
+            p.killedMono = performance.now();
+            p.open = false;
+            p.prevBoot = null;
+            p.table = await o.control.tabletop({ restore: cause === 'host-loss', restoreFrom: backupDir });
+            log(`Drill ${p.drill.id} (${cause}): tabletop worker started beside the run.`);
           } else {
             p.killedAt = Date.now();
             p.killedMono = performance.now();
-            if (cause === 'reboot' && !o.wipeAllowed) {
+            if (cause === 'reboot' && o.hostDrills === 'tabletop') {
               // The host reboots and takes this runner with it: keep the drill on disk to finish it after boot.
               const onDisk: RestartPending = { ...p };
               delete onDisk.killedMono;
@@ -348,28 +355,41 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
             log(`Drill ${p.drill.id} (${cause}): down${p.midTrade ? ' mid-trade' : ' (no trade open in the window)'}.`);
           }
         }
-      } else if (p.reconciledAt === undefined && s.ready && s.boot !== p.prevBoot) {
+      }
+      // A tabletop drill watches the second worker; every other restart watches the live one.
+      const th = p.table && p.killedAt !== undefined ? await fetchHealth(p.table.healthAddr) : null;
+      const ws: { ready: boolean; boot: string | null; exit_capable: boolean; h: Health | null } = p.table
+        ? { ready: th?.reconciled === true, boot: th?.boot ?? null, exit_capable: th?.exit_capable === true, h: th }
+        : { ready: s.ready, boot: s.boot, exit_capable: s.exit_capable === true, h };
+      const wDir = p.table?.stateDir ?? o.stateDir;
+      if (p.killedAt !== undefined && p.reconciledAt === undefined && ws.ready && ws.boot !== p.prevBoot) {
         p.reconciledAt = since();
-        p.ok = reconciledFirst(o.stateDir, s.boot!);
+        p.ok = reconciledFirst(wDir, ws.boot!);
       }
       // Recovered means reconciled and able to exit (DECISIONS, Standby), timed for every restart, open position or not.
-      if (pending !== null && p.killedAt !== undefined && p.reconciledAt !== undefined && s.exit_capable && s.boot !== p.prevBoot) {
+      if (pending !== null && p.killedAt !== undefined && p.reconciledAt !== undefined && ws.exit_capable && ws.boot !== p.prevBoot) {
         const k = p.killedAt;
         const exitMs = since();
-        const state = recoveredState(journalLines(o.stateDir), s.boot!, cause, p.expect ?? null, p.atKill ?? { pending_exits: [], positions: [] });
+        let state = recoveredState(journalLines(wDir), ws.boot!, cause, p.table && cause === 'host-loss' && o.backupEveryMs === undefined ? { pending_exits: [], positions: [] } : (p.expect ?? null), p.atKill ?? { pending_exits: [], positions: [] });
+        if (p.table && cause === 'host-loss' && state.source !== 'state') state = { ...state, state_ok: false, notes: [...state.notes, `restored from the backup but reported source ${String(state.source)}`] };
         const notes = [p.ok ? 'reconciled before any entry' : 'no successful reconcile before entry', ...state.notes];
+        if (p.table) {
+          await o.control.endTabletop();
+          notes.push('tabletop beside the qualifying run: the live worker kept running', offsiteNote(o.offsiteBackup));
+        }
         if (clock === 'wall') notes.push('timed on the wall clock across the reboot');
         const exposure = p.open
           ? { status: 'measured' as const, duration_ms: exitMs, reconciled_ms: p.reconciledAt, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: h ? freshMark(h) : null, worst_move_bps: moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const }
           : undefined;
-        record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok, recoveredMs: p.reconciledAt, recovery: { reconciled_ms: p.reconciledAt, exit_capable_ms: exitMs, clock }, state, ...(exposure ? { exposure } : {}), notes });
+        record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok, ...(p.table ? { off_run: true } : {}), recoveredMs: p.reconciledAt, recovery: { reconciled_ms: p.reconciledAt, exit_capable_ms: exitMs, clock }, state, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (pending !== null && p.killedAt !== undefined && since() > recoverMs) {
+        if (p.table) await o.control.endTabletop();
         const stage = p.reconciledAt === undefined ? 'not ready' : 'not exit capable';
         // No reply at all at the window's end: the exposure is unknown, never assumed.
         const status = h === null ? ('unknown' as const) : ('unmeasured' as const);
         record({
-          ...base, at: p.killedAt, pass: false, recoveredMs: p.reconciledAt ?? null, recovery: { reconciled_ms: p.reconciledAt ?? null, exit_capable_ms: null, clock },
+          ...base, ...(p.table ? { off_run: true } : {}), at: p.killedAt, pass: false, recoveredMs: p.reconciledAt ?? null, recovery: { reconciled_ms: p.reconciledAt ?? null, exit_capable_ms: null, clock },
           ...(p.open ? { exposure: { status, duration_ms: null, reconciled_ms: p.reconciledAt ?? null, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: null, worst_move_bps: null, move_source: 'marks' as const } } : {}),
           notes: [`${stage} ${recoverMs / 1000} s after the kill${status === 'unknown' ? ' (no health reply)' : ''}`],
         });

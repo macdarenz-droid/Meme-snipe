@@ -128,7 +128,7 @@ describe('runner with the stub worker', () => {
     const t = await setup();
     const res = await runSegment({
       identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy',
-      sampleMs: 100, recoverMs: 6000, log: quiet, control: t.control(), segmentEnd: Number.POSITIVE_INFINITY, wipeAllowed: true, backupEveryMs: 1500,
+      sampleMs: 100, recoverMs: 6000, log: quiet, control: t.control(), segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'wipe', backupEveryMs: 1500,
       newRun: { runId: 'run', targetMs: 24_000, entry: STUB_ENTRY, restarts: 6, restartWindowMs: 2000, feedDropMs: 500, rpcDrops: 1, rpcDropMs: 700 },
     });
     const r = res.report as Report;
@@ -148,6 +148,29 @@ describe('runner with the stub worker', () => {
     }
     expect(reportMarkdown(r)).toContain("## Recovery by cause");
   }, 90_000);
+
+  it('on the qualifying host, host loss and chain rebuild run as a reconcile-only tabletop beside the live worker', async () => {
+    const t = await setup();
+    const control = t.control();
+    const res = await runSegment({
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy',
+      sampleMs: 100, recoverMs: 6000, log: quiet, control, segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'tabletop', offsiteBackup: false, backupEveryMs: 1000,
+      newRun: { runId: 'run', targetMs: 12_000, entry: STUB_ENTRY, restarts: 3, causes: ['host-loss', 'chain-rebuild', 'crash'], restartWindowMs: 1500, rpcDrops: 0 },
+    });
+    const r = res.report as Report;
+    const table = r.drills.filter((d) => d.cause === 'host-loss' || d.cause === 'chain-rebuild');
+    expect(table).toHaveLength(2);
+    for (const d of table) {
+      expect(d).toMatchObject({ off_run: true, pass: true, recovery: { clock: 'monotonic' } });
+      expect(d.notes).toContain('tabletop beside the qualifying run: the live worker kept running');
+      expect(d.notes.join(' ')).toMatch(/off-site backup is off/);
+    }
+    expect(table.find((d) => d.cause === 'chain-rebuild')!.state!.source).toBe('chain');
+    // The live worker was never stopped by either tabletop: one boot until the crash drill.
+    expect(r.journal.boots).toBe(2);
+    expect(r.checks).toMatchObject({ recovered_state: true, restored_universe_kept: true, journal_complete: true });
+    expect(reportMarkdown(r)).toContain('(tabletop beside the run)');
+  }, 60_000);
 
   it('finishes a host reboot drill after the runner itself comes back, timed on the wall clock', async () => {
     const t = await setup();

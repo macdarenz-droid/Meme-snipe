@@ -158,7 +158,7 @@ if (cmd === 'scan') {
     keepRecorded: mode === 'systemd' ? 'host' : 'copy',
     handover: mode === 'local',
     // Wipe drills and the runner's own backups exist only where losing the state loses nothing real.
-    ...(mode === 'local' ? { wipeAllowed: true, backupEveryMs: Number(v['backup-minutes']) * 60_000 } : { offsiteBackup: offsiteBackupOn() }),
+    ...(mode === 'local' ? { hostDrills: 'wipe' as const, backupEveryMs: Number(v['backup-minutes']) * 60_000 } : { hostDrills: 'tabletop' as const, offsiteBackup: offsiteBackupOn() }),
     ...(v['recorded-dir'] ? { recordedDir: resolve(v['recorded-dir']) } : {}),
     ...(v['recorded-artifact'] ? { recordedArtifact: v['recorded-artifact'] } : {}),
     sampleMs,

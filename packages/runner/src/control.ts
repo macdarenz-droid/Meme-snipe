@@ -2,14 +2,17 @@
 // zeroed-worker systemd unit of the OPS-1 host (VPS). Only the runner's drills kill; restarts come from the
 // supervisor (here, or systemd's Restart=always), and every start reconciles first.
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
-import { cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, type WriteStream } from 'node:fs';
+import { cpSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, type WriteStream } from 'node:fs';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { EVIDENCE_FILES, STATE_FILES } from './contract.ts';
 
-export interface RestoreDrillResult {
-  readonly pass: boolean;
-  readonly output: string;
+/** A second worker started beside the live one in `--reconcile-only` mode on its own state dir and loopback port. */
+export interface Tabletop {
+  readonly healthAddr: string;
+  readonly stateDir: string;
 }
 
 export interface WorkerControl {
@@ -25,8 +28,13 @@ export interface WorkerControl {
    * files (journal, recorder) are kept: they are the run's record. Not possible on the qualifying host.
    */
   wipe(o: { readonly restoreFrom?: string }): Promise<void>;
-  /** The host's restore drill (VPS): restore the newest backup into scratch and verify it; never touches live state. */
-  restoreDrill?(): Promise<RestoreDrillResult>;
+  /**
+   * Host loss on the qualifying host, as a tabletop: a second worker in `--reconcile-only` mode cold-starts beside
+   * the live one, from the newest backup (`restore`) or from an empty state dir (rebuild from chain). It sends
+   * nothing. The live worker and the run's evidence are untouched.
+   */
+  tabletop(o: { readonly restore: boolean; readonly restoreFrom?: string }): Promise<Tabletop>;
+  endTabletop(): Promise<void>;
   /** Graceful stop (SIGTERM) at the end of a fallback job. */
   stop(): Promise<void>;
 }
@@ -139,12 +147,45 @@ export class LocalControl implements WorkerControl {
     });
   }
 
+  private table: { child: ChildProcess; dir: string } | null = null;
+
+  async tabletop(o: { readonly restore: boolean; readonly restoreFrom?: string }): Promise<Tabletop> {
+    const dir = mkdtempSync(join(tmpdir(), 'zeroed-tabletop-'));
+    if (o.restore && o.restoreFrom && existsSync(o.restoreFrom)) cpSync(o.restoreFrom, dir, { recursive: true });
+    const healthAddr = `127.0.0.1:${await freePort()}`;
+    const child = spawn(process.execPath, ['--no-warnings', this.o.entry, '--reconcile-only'], {
+      cwd: this.o.cwd,
+      env: { ...this.o.env, ZEROED_STATE_DIR: dir, ZEROED_HEALTH_ADDR: healthAddr, ZEROED_DRILLS: 'off' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.pipe(this.log!, { end: false });
+    child.stderr?.pipe(this.log!, { end: false });
+    this.table = { child, dir };
+    this.line(`drill: tabletop ${o.restore ? 'from the backup' : 'from an empty state dir'} on ${healthAddr}`);
+    return { healthAddr, stateDir: dir };
+  }
+
+  async endTabletop(): Promise<void> {
+    const t = this.table;
+    this.table = null;
+    if (!t) return;
+    if (t.child.exitCode === null && t.child.signalCode === null) {
+      const exited = new Promise<void>((res) => t.child.once('exit', () => res()));
+      t.child.kill('SIGTERM');
+      const k = setTimeout(() => t.child.kill('SIGKILL'), 10_000);
+      await exited;
+      clearTimeout(k);
+    }
+    rmSync(t.dir, { recursive: true, force: true });
+  }
+
   private stateDir(): string {
     if (!this.o.stateDir) throw new Error('reboot and wipe drills need the state dir');
     return this.o.stateDir;
   }
 
   async stop(): Promise<void> {
+    await this.endTabletop();
     this.stopping = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     const c = this.child;
@@ -169,34 +210,67 @@ export const snapshotState = (stateDir: string, to: string): void => {
 
 const exec = promisify(execFile);
 
+const emptyDir = (dir: string): void => {
+  if (existsSync(dir)) for (const name of readdirSync(dir)) rmSync(join(dir, name), { recursive: true, force: true });
+};
+
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const srv = createServer().listen(0, '127.0.0.1', () => {
+      const port = (srv.address() as { port: number }).port;
+      srv.close(() => res(port));
+    });
+    srv.on('error', rej);
+  });
+
 /** VPS: the OPS-1 unit owns the process (Restart=always, ExecStartPre reconcile). The runner only drills. */
+type Exec = (file: string, args: readonly string[], opts?: { timeout?: number }) => Promise<unknown>;
+
 export class SystemdControl implements WorkerControl {
   private readonly unit: string;
-  constructor(unit = 'zeroed-worker.service') {
+  private readonly run: Exec;
+  private readonly tableDir: string;
+  constructor(unit = 'zeroed-worker.service', run: Exec = exec, tableDir = SystemdControl.TABLETOP_DIR) {
     this.unit = unit;
+    this.run = run;
+    this.tableDir = tableDir;
   }
   async start(): Promise<void> {
-    await exec('systemctl', ['start', this.unit]);
+    await this.run('systemctl', ['start', this.unit]);
   }
   async kill(): Promise<void> {
-    await exec('systemctl', ['kill', '--signal=SIGKILL', this.unit]);
+    await this.run('systemctl', ['kill', '--signal=SIGKILL', this.unit]);
   }
   async reboot(): Promise<void> {
     // zeroed-dryrun-reboot.service reboots the host; this runner dies with it and resumes by name after boot.
-    await exec('systemctl', ['start', '--no-block', 'zeroed-dryrun-reboot.service']);
+    await this.run('systemctl', ['start', '--no-block', 'zeroed-dryrun-reboot.service']);
   }
   async wipe(): Promise<void> {
-    throw new Error('wipe drills are never run on the qualifying host');
+    throw new Error('wipe drills are never run on the qualifying host: it runs the tabletop instead');
   }
-  async restoreDrill(): Promise<RestoreDrillResult> {
-    try {
-      const { stdout } = await exec('/usr/local/sbin/zeroed-restore-drill', ['/etc/zeroed/age/host.key'], { timeout: 300_000 });
-      return { pass: /^PASS:/m.test(stdout), output: stdout.trim().split('\n').slice(-1)[0] ?? '' };
-    } catch (e) {
-      const out = (e as { stdout?: string }).stdout ?? '';
-      return { pass: false, output: out.trim().split('\n').slice(-1)[0] || String((e as Error).message).slice(0, 200) };
+  /** The tabletop worker's unit (OPS-1d installs it): `--reconcile-only`, its own state dir and port, the worker's credentials. */
+  static readonly TABLETOP_UNIT = 'zeroed-worker-tabletop.service';
+  static readonly TABLETOP_DIR = '/var/lib/zeroed-tabletop';
+  static readonly TABLETOP_ADDR = '127.0.0.1:8788';
+
+  async tabletop(o: { readonly restore: boolean }): Promise<Tabletop> {
+    const dir = this.tableDir;
+    // The dir is a StateDirectory of both units: empty it, never remove it.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    emptyDir(dir);
+    if (o.restore) {
+      // The newest hourly backup, decrypted with the host key into the tabletop's own state dir (never the live one).
+      await this.run('/bin/sh', ['-c', 'set -e; b="$(ls -1 /var/backups/zeroed/zeroed-*.tar.age | LC_ALL=C sort -r | head -n 1)"; [ -n "$b" ]; age -d -i /etc/zeroed/age/host.key "$b" | tar -x -C "$1" --no-same-owner', 'sh', dir], { timeout: 120_000 });
     }
+    await this.run('systemctl', ['start', SystemdControl.TABLETOP_UNIT]);
+    return { healthAddr: SystemdControl.TABLETOP_ADDR, stateDir: dir };
   }
+
+  async endTabletop(): Promise<void> {
+    await this.run('systemctl', ['stop', SystemdControl.TABLETOP_UNIT]).catch(() => undefined);
+    emptyDir(this.tableDir);
+  }
+
   async stop(): Promise<void> {
     // The qualifying run ends with the worker still running: it is the bot, not a test process.
   }

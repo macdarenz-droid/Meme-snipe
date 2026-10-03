@@ -69,7 +69,7 @@ export interface DrillOutcome {
   /** Recovery as "reconciled and able to exit", ms after the kill (rpc: after the providers came back). */
   readonly recovery?: { readonly reconciled_ms: number | null; readonly exit_capable_ms: number | null; readonly clock: 'monotonic' | 'wall' };
   readonly state?: RecoveredState;
-  /** VPS host loss: the restore drill ran beside the qualifying run, not in it. */
+  /** Qualifying host: host loss or chain rebuild ran as a tabletop worker beside the run, not in it. */
   readonly off_run?: boolean;
   /** Not run here (VPS chain rebuild); proven in the rehearsal. */
   readonly skipped?: boolean;
@@ -238,8 +238,8 @@ export const buildReport = (
     // RUN-1d: every planned cause drilled and passed (a crash, a reboot, a host loss, a chain rebuild, RPC loss).
     drills_by_cause: [...RESTART_CAUSES, 'rpc'].every((c) => byCause[c]!.planned > 0 && byCause[c]!.passed > 0),
     // Nothing a restart had to keep was lost, and every restored position kept its universe (CFG-2).
-    recovered_state: restarts.every((d) => d.skipped === true || d.off_run === true || d.state?.state_ok === true),
-    restored_universe_kept: restarts.every((d) => d.skipped === true || d.off_run === true || d.state?.universe_ok === true),
+    recovered_state: restarts.every((d) => d.skipped === true || d.state?.state_ok === true),
+    restored_universe_kept: restarts.every((d) => d.skipped === true || d.state?.universe_ok === true),
   };
   const exposed = drills.flatMap((d) => (d.exposure ? [d.exposure] : []));
   const maxOf = (xs: readonly (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);
@@ -359,7 +359,7 @@ export const reportMarkdown = (r: Report): string => {
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...Object.entries(r.recovery_by_cause).map(
       ([c, v]) =>
-        `| ${c}${v.off_run ? ' (off the qualifying run)' : ''}${v.skipped ? ' (rehearsal only)' : ''} | ${v.planned} | ${v.drills} | ${v.passed} | ${v.mid_trade} | ${sec(v.exit_capable_ms.median)} | ${sec(v.exit_capable_ms.worst)} | ${v.exposure.drills} | ${sec(v.exposure.worst_duration_ms)} | ${v.exposure.worst_move_bps === null ? '-' : `${v.exposure.worst_move_bps} bps`} |`,
+        `| ${c}${v.off_run ? ' (tabletop beside the run)' : ''}${v.skipped ? ' (rehearsal only)' : ''} | ${v.planned} | ${v.drills} | ${v.passed} | ${v.mid_trade} | ${sec(v.exit_capable_ms.median)} | ${sec(v.exit_capable_ms.worst)} | ${v.exposure.drills} | ${sec(v.exposure.worst_duration_ms)} | ${v.exposure.worst_move_bps === null ? '-' : `${v.exposure.worst_move_bps} bps`} |`,
     ),
   );
   const q = r.ops.quota;

@@ -18,7 +18,8 @@ ExecStart=/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/runner/
 Restart=on-failure
 RestartPreventExitStatus=2 4
 RestartSec=30
-StateDirectory=zeroed-dryrun
+# zeroed-tabletop: the host-loss tabletop's state dir (the newest backup is decrypted there, never into the live one).
+StateDirectory=zeroed-dryrun zeroed-tabletop
 StateDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=yes
