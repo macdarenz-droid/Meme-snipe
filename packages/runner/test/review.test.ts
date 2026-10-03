@@ -11,7 +11,7 @@ import { item4 } from '../src/item4.ts';
 import { makePlan } from '../src/plan.ts';
 import { rejections } from '../src/quota.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Report, type RunMeta, type Sample } from '../src/report.ts';
-import { journalTimes, killReplyValid, runSegment } from '../src/runner.ts';
+import { journalTimes, killReplyValid, recoveredState, runSegment } from '../src/runner.ts';
 import { fullDrills, OPS_OK } from './fixtures.ts';
 
 const root = join(import.meta.dirname, '..', '..', '..');
@@ -58,8 +58,20 @@ describe('2. the reply at a kill is validated', () => {
     ['pending exits missing', h({ pending_exits: undefined }), false],
     ['a pending exit that is not an id', h({ pending_exits: [''] }), false],
     ['an open position without a universe', h({ open_position: { trade: 't', universe: '' } }), false],
+    // The real worker's fallback when it has no saved plan (review of #64): not a CFG-2 universe.
+    ["an open position on universe 'unknown'", h({ open_position: { trade: 't', universe: 'unknown' } }), false],
+    ['an open position on a universe with no exit parameters', h({ open_position: { trade: 't', universe: 'U3' } }), false],
+    ['a valid reply on U1', h({ pending_exits: [], open_position: { trade: 't', universe: 'U1' } }), true],
     ['a valid reply', h({ pending_exits: ['t'], open_position: { trade: 't', universe: 'U2' } }), true],
   ])('%s', (_, reply, ok) => expect(killReplyValid(reply as Health | null)).toBe(ok));
+  it.each(['unknown', 'U3', 'S0'])("a restored position on universe '%s' fails restored_universe_kept", (u) => {
+    const rec = { seq: 2, ts: '2026-10-04T00:00:01.000Z', boot: 'b', kind: 'recovered', source: 'state', pending_exits: [], positions: [{ trade: 't', universe: u }] } as JournalLine;
+    const s = recoveredState([rec], 'b', 'crash', { pending_exits: [], positions: [{ trade: 't', universe: u }] }, { pending_exits: [], positions: [] });
+    expect(s).toMatchObject({ universe_ok: false });
+    expect(s.notes).toContain('a restored position has no known universe');
+    const ok = recoveredState([{ ...rec, positions: [{ trade: 't', universe: 'U2' }] } as JournalLine], 'b', 'crash', { pending_exits: [], positions: [{ trade: 't', universe: 'U2' }] }, { pending_exits: [], positions: [] });
+    expect(ok).toMatchObject({ universe_ok: true, state_ok: true });
+  });
   it('an invalid reply at the kill fails the drill and makes its exposure unknown', async () => {
     const { r } = await stubRun({ ZEROED_STUB_BAD_PENDING: '1' }, {}, { runId: 'r', targetMs: 8000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'], restartWindowMs: 1500, rpcDrops: 0 });
     const restarts = r.drills.filter((d) => d.kind === 'restart');
@@ -157,10 +169,14 @@ describe('qualifying guard: one check, qualifying_start, on a named host run', (
     expect(r.checks['qualifying_start']).toBe(true);
     expect(r.counts).not.toMatch(/NOT qualifying/);
   });
-  it('a run without a name is not judged', () => {
-    const r = judge(starts({ entry_rule: 'S0', paper_edge_ppm: '5000', qualifying: false }), meta);
-    expect(r.qualifying).toBeNull();
-    expect(r.checks['qualifying_start']).toBe(true);
+  it('a rehearsal is not judged; a VPS run without a name never passes, even on a registered strategy', () => {
+    const bad = starts({ entry_rule: 'S0', paper_edge_ppm: '5000', qualifying: false });
+    const rehearsal = judge(bad, { ...meta, label: 'rehearsal' });
+    expect(rehearsal.qualifying).toBeNull();
+    expect(rehearsal.checks['qualifying_start']).toBe(true);
+    const unnamed = judge(starts({}), { ...meta, strategy: 'U2-v1' });
+    expect(unnamed.qualifying).toBeNull();
+    expect(unnamed.checks['qualifying_start']).toBe(false);
   });
 });
 

@@ -60,11 +60,13 @@ describe('plan', () => {
   });
 });
 
-const meta: RunMeta = { runId: 'r', label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
+// A named host run on a registered strategy (U2-v1 stands in for BT-2's), so every check can pass.
+const meta: RunMeta = { runId: 'r', name: 'qual-1', strategy: 'U2-v1', label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
 const samples: Sample[] = Array.from({ length: 11 }, (_, i) => ({
   t: i * 10, up: true, ready: true, boot: 'a', git_sha: 'c0ffee', rss_bytes: 1, in_trade: false, entries_halted: false, recorder: true, simulation: true, stub: false, feeds: 'f', feeds_down: [],
 }));
-const report = (drills: DrillOutcome[]) => buildReport(meta, samples, 10, 100, checkJournal(''), drills, [], item4([], 'vps', false), OPS_OK);
+const startLine = JSON.stringify({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot: 'a', kind: 'start', entry_rule: 'U2-v1', paper_edge_ppm: null, s0_salt: null, qualifying: true });
+const report = (drills: DrillOutcome[]) => buildReport(meta, samples, 10, 100, checkJournal(startLine), drills, [], item4([], 'vps', false), OPS_OK, ['U2-v1']);
 const all = fullDrills(meta.plan);
 const swap = (id: string, d: Partial<DrillOutcome>): DrillOutcome[] => all.map((x) => (x.id === id ? ({ ...x, ...d } as DrillOutcome) : x));
 const idOf = (cause: string): string => all.find((d) => d.cause === cause)!.id;

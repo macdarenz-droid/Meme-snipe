@@ -7,6 +7,7 @@ import { performance } from 'node:perf_hooks';
 import { dirname, join } from 'node:path';
 import { checkStartHealth, LOOKUP_BOUNDS_MS, type RestartCause, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
 import { snapshotState, type WorkerControl } from './control.ts';
+import { EXIT_UNIVERSES } from '../../core/src/config/index.ts';
 import { item4 } from './item4.ts';
 import { checkQuota, coverageGaps, lookupLatency, quotaReport, rejections, type BootTotals } from './quota.ts';
 import { checkJournal } from './journal.ts';
@@ -750,8 +751,8 @@ export const recoveredState = (journal: readonly JournalLine[], boot: string, ca
   const recoveredPos = new Map(positions.flatMap((x) => (typeof x?.trade === 'string' ? [[x.trade, x.universe] as const] : [])));
   const source = typeof line['source'] === 'string' ? line['source'] : null;
   const notes: string[] = [];
-  const universesNamed = [...recoveredPos.values()].every((u) => typeof u === 'string' && u !== '');
-  if (!universesNamed) notes.push('a restored position has no universe');
+  const universesNamed = [...recoveredPos.values()].every(knownUniverse);
+  if (!universesNamed) notes.push('a restored position has no known universe');
   if (expect === null) {
     const lost = atKill.positions.map((x) => x.trade).filter((t) => !recoveredPos.has(t));
     if (source !== 'chain') notes.push(`chain rebuild reported source ${String(source)}`);
@@ -770,11 +771,14 @@ export const recoveredState = (journal: readonly JournalLine[], boot: string, ca
 };
 
 /** The reply at a kill can be trusted: pending exits are ids, and an open position names its universe. */
+/** A CFG-2 universe with its own exit parameters (U1, U2). 'unknown', or anything else, counts as missing. */
+export const knownUniverse = (u: unknown): boolean => typeof u === 'string' && (EXIT_UNIVERSES as readonly string[]).includes(u);
+
 export const killReplyValid = (h: Health | null): boolean =>
   h !== null &&
   Array.isArray(h.pending_exits) &&
   h.pending_exits.every((x) => typeof x === 'string' && x !== '') &&
-  (h.open_position === null || (typeof h.open_position.universe === 'string' && h.open_position.universe !== ''));
+  (h.open_position === null || knownUniverse(h.open_position.universe));
 
 /** Across a host reboot: reconciled and exit capable from the new boot's own journal lines, ms after the kill. */
 export const journalTimes = (journal: readonly JournalLine[], boot: string, killedAt: number): { reconciled_ms: number; exit_capable_ms: number } | null => {

@@ -175,8 +175,8 @@ describe('feed drop length (rehearsal 37142749019)', () => {
 describe('the qualifying run\'s start lines (re-review of #48)', () => {
   const plan = makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 });
   const start = (fields: Record<string, unknown>) => JSON.stringify({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot: 'b1', kind: 'start', ...fields });
-  const check = (name: string | undefined, fields: Record<string, unknown>) =>
-    buildReport({ runId: 'r', ...(name === undefined ? {} : { name }), label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'systemd:zeroed-worker.service', plan },
+  const check = (name: string | undefined, fields: Record<string, unknown>, label: 'vps' | 'rehearsal' = 'vps') =>
+    buildReport({ runId: 'r', ...(name === undefined ? {} : { name }), label, commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'systemd:zeroed-worker.service', plan },
       [], 10, 100, checkJournal(start(fields)), [], [], item4([], 'vps', false), OPS_OK).checks['qualifying_start'];
   it('a named host run fails on S0, a paper edge, an unregistered entry rule or qualifying not true', () => {
     expect(check('qual-1', { entry_rule: 'S0', paper_edge_ppm: '400000', qualifying: false })).toBe(false);
@@ -187,7 +187,11 @@ describe('the qualifying run\'s start lines (re-review of #48)', () => {
     expect(buildReport({ runId: 'r', name: 'qual-1', label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan },
       [], 10, 100, checkJournal(''), [], [], item4([], 'vps', false), OPS_OK).checks['qualifying_start']).toBe(false);
   });
-  it('a run without a name (a rehearsal, the shakedown) is not judged by it', () => {
-    expect(check(undefined, { entry_rule: 'S0', paper_edge_ppm: '400000', qualifying: false })).toBe(true);
+  it('a rehearsal is not judged by it', () => {
+    expect(check(undefined, { entry_rule: 'S0', paper_edge_ppm: '400000', qualifying: false }, 'rehearsal')).toBe(true);
+  });
+  it('a VPS run without a name never passes it (review of #64)', () => {
+    expect(check(undefined, { entry_rule: 'S0', paper_edge_ppm: '400000', qualifying: false })).toBe(false);
+    expect(check(undefined, { entry_rule: 'none', paper_edge_ppm: null, qualifying: true })).toBe(false);
   });
 });
