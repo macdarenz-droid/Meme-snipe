@@ -64,15 +64,19 @@ describe('CSV', () => {
 });
 
 describe('regime boundaries', () => {
-  test('the engine sees a regime event at the first block at or after the boundary slot, never before', async () => {
+  test('the engine sees a regime event at the first block at or after the boundary slot plus the observation delay, never before', async () => {
     const { Market } = await import('../src/sim/market.ts');
-    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, regimeBoundaries: [{ slot: 12n, label: 'pump-2026-10-02' }] });
-    const at = (slot: number) => market.release({ kind: 'block', slot: BigInt(slot), blockTime: slot, parentSlot: BigInt(slot - 1) });
-    expect(at(10).length).toBe(0);
-    expect(at(11).length).toBe(0);
-    const e = at(13);
-    expect(e.map((x) => x.kind === 'market' && x.key)).toEqual(['regime']);
+    const scheduled: { key: string; slot: bigint }[] = [];
+    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observationSlots: 2, receiptMs: 0,
+      schedule: (x) => { if (x.kind === 'market') scheduled.push({ key: x.key, slot: x.moment.slot }); }, regimeBoundaries: [{ slot: 12n, label: 'pump-2026-10-02' }] });
+    const at = (slot: number) => {
+      expect(market.release({ kind: 'block', slot: BigInt(slot), blockTime: slot, parentSlot: BigInt(slot - 1) })).toEqual([]);
+      return scheduled.splice(0);
+    };
+    expect(at(10)).toEqual([]);
+    expect(at(11)).toEqual([]);
+    expect(at(13)).toEqual([{ key: 'regime', slot: 15n }]);
     expect(market.regime).toBe('pump-2026-10-02');
-    expect(at(14).length).toBe(0);
+    expect(at(14)).toEqual([]);
   });
 });

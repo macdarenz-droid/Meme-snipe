@@ -318,3 +318,25 @@ describe('signing heights and skipped slots', () => {
     for (const a of landed) expect(skipped.has(a.landedSlot!)).toBe(false);
   });
 });
+
+describe('observation delay (BT-1c item 3)', () => {
+  test('a swap or lifecycle event reaches the strategy only after the scenario receipt and commitment delay', () => {
+    const byId = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) if (r.kind !== 'block') byId.set(`${r.signature}:${r.evIdx}`, r);
+    for (const scenario of ['conservative', 'base', 'optimistic'] as const) {
+      const s = FILL_CONFIG.scenarios[scenario];
+      expect(s.observationSlots).toBeGreaterThanOrEqual(1);
+      const seen: { id: string; slot: bigint; receivedAt: number }[] = [];
+      runBacktest(opts({ scenario, strategy: () => ({ onMarket: (e) => {
+        if (e.kind === 'market' && (e.key.startsWith('pool:') || e.key.startsWith('life:'))) seen.push({ id: e.id, slot: e.moment.slot, receivedAt: e.moment.receivedAt });
+        return [];
+      } }) }));
+      expect(seen.length).toBeGreaterThan(0);
+      for (const x of seen) {
+        const row = byId.get(x.id.slice(2))!;
+        expect(x.slot - row.slot).toBe(BigInt(s.observationSlots));
+        expect(x.receivedAt).toBe(row.blockTime * 1000 + s.observationSlots * 400 + s.receiptMs);
+      }
+    }
+  });
+});

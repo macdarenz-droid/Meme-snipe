@@ -119,6 +119,8 @@ export const runBacktest = (o: RunOptions): RunResult => {
     heartbeatBlocks: o.research.heartbeatBlocks,
     discoveryLag: (mint) => Math.max(1, drawDiscoverySlots(createRng(`${o.seed}:discovery:${mint}`), scenario)),
     active: live,
+    observationSlots: scenario.observationSlots,
+    receiptMs: scenario.receiptMs,
     schedule: (e) => replay!.schedule(e),
     ...(o.regimeBoundaries === undefined ? {} : { regimeBoundaries: [...o.regimeBoundaries].sort((a, b) => (a.slot < b.slot ? -1 : 1)) }),
     series: o.series.map((s) => ({ key: s.name === 'SOL/USD' ? 'sol-usd' : s.name, releases: seriesReleases(s) })),
@@ -130,7 +132,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
       discoveries.set(d.mint, d);
       return { ...e, value: d } as MarketEvent;
     }
-    return e;
+    return e.kind === 'market' ? market.observed(e) : e;
   });
   for (const e of extra) replay.schedule(e);
 

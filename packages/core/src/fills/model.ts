@@ -20,6 +20,13 @@ export interface FillScenario {
    * block height and cost nothing. The rest land as failed transactions and pay the base and priority fees.
    */
   readonly dropPpm: bigint;
+  /**
+   * Commitment delay of every on-chain observation (a swap's pool state, a lifecycle event, a regime change): slots
+   * after the transaction's own slot before the bot's feed reports it at the commitment it trades on.
+   */
+  readonly observationSlots: number;
+  /** Receipt delay on top of that: network and decoding time, ms. */
+  readonly receiptMs: number;
   /** Feed lag before the engine learns of a token, in slots; one value is drawn uniformly per token. */
   readonly discoverySlots: readonly number[];
   /** Slots from broadcast to landing; one value is drawn uniformly per attempt. */

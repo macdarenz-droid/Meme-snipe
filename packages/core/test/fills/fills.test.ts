@@ -195,6 +195,8 @@ describe('scenario ordering', () => {
   const lower = (x: number, y: number) => x >= y; // lower is better: worse value is larger
   better('landing share per venue', c.landPpm, b.landPpm, o.landPpm, (x, y) => (Object.keys(b.landPpm) as (keyof typeof x)[]).every((v) => x[v] <= y[v]));
   better('dropped share (a dropped attempt costs nothing; a failed one pays fees)', c.dropPpm, b.dropPpm, o.dropPpm, (x, y) => x <= y);
+  better('observation delay, slots', c.observationSlots, b.observationSlots, o.observationSlots, lower);
+  better('observation delay, receipt ms', c.receiptMs, b.receiptMs, o.receiptMs, lower);
   better('discovery lag (mean and worst)', c.discoverySlots, b.discoverySlots, o.discoverySlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
   better('landing latency (mean and worst)', c.landingSlots, b.landingSlots, o.landingSlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
   better('confirmation lag', c.confirmSlots, b.confirmSlots, o.confirmSlots, lower);
@@ -203,6 +205,6 @@ describe('scenario ordering', () => {
   better('take-profit basis (close is worse than wick)', c.takeProfit, b.takeProfit, o.takeProfit, (x, y) => x === 'close' || y === 'wick');
   better('rent recovery', c.rentRecovery, b.rentRecovery, o.rentRecovery, (x, y) => !x || y);
   test('the test covers every scenario field', () => {
-    expect(Object.keys(b).sort()).toEqual(['confirmSlots', 'discoverySlots', 'dropPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'name', 'rentRecovery', 'slippagePpm', 'takeProfit']);
+    expect(Object.keys(b).sort()).toEqual(['confirmSlots', 'discoverySlots', 'dropPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'name', 'observationSlots', 'receiptMs', 'rentRecovery', 'slippagePpm', 'takeProfit']);
   });
 });

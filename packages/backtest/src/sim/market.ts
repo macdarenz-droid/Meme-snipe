@@ -2,6 +2,10 @@
 // in the pool state (docs/ARCHITECTURE.md §16.2). Only the replay driver holds this object; the engine sees events.
 //
 // Keys the engine can look up:
+// Every on-chain observation (pool, life, regime) reaches the engine after the scenario's observation delay: the
+// commitment slots after its own slot, plus the receipt time. It is built when its row is read (so a pool state is the
+// one right after that swap) and released later, stamped with the block height known when it arrives.
+//
 //   pool:<pool>   the PumpSwap pool after each real swap, as our trades left it (PoolView)
 //   life:<mint>   a lifecycle event of the mint (create, migration, pool creation, liquidity, boost, ...)
 //   disc:<mint>   the bot learns of a graduation, after the modelled discovery lag (Discovery)
@@ -92,7 +96,11 @@ export interface MarketOptions {
   readonly discoveryLag: (mint: string) => number;
   /** An intent in flight: slot events and ticks every block while true (a held position needs only the heartbeat). */
   readonly active: () => boolean;
-  /** Puts a derived event (a discovery) into the replay. */
+  /** Commitment delay of on-chain observations, slots (>= 1). */
+  readonly observationSlots: number;
+  /** Receipt delay on top, ms (>= 0). */
+  readonly receiptMs: number;
+  /** Puts a derived event (a discovery, a delayed observation) into the replay. */
   readonly schedule: (e: FeedEvent) => void;
   /** Slots where the chain's programs changed (DATA-1 manifest): a `regime` event at the first block at or after each. */
   readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
@@ -124,6 +132,8 @@ export class Market {
 
   constructor(opts: MarketOptions) {
     if (!Number.isSafeInteger(opts.heartbeatBlocks) || opts.heartbeatBlocks < 1) throw new RangeError('heartbeatBlocks must be >= 1');
+    if (!Number.isSafeInteger(opts.observationSlots) || opts.observationSlots < 1) throw new RangeError('observationSlots must be >= 1');
+    if (!Number.isSafeInteger(opts.receiptMs) || opts.receiptMs < 0) throw new RangeError('receiptMs must be >= 0');
     this.#opts = opts;
     this.#seriesAt = (opts.series ?? []).map(() => 0);
   }
@@ -132,7 +142,22 @@ export class Market {
     return this.pools.get(pool);
   }
 
-  /** The events a row releases, in id order, all at the row's moment. */
+  readonly #delayed = new Set<string>();
+
+  /** Schedules an observation for when the bot's feed would report it. */
+  #observe(e: MarketEvent): void {
+    const d = this.#opts.observationSlots;
+    this.#delayed.add(e.id);
+    this.#opts.schedule({ ...e, moment: { ...e.moment, slot: e.moment.slot + BigInt(d), receivedAt: e.moment.receivedAt + d * 400 + this.#opts.receiptMs } });
+  }
+
+  /** Completes a delayed observation when it is released: the block height known then (signing takes its hash). */
+  observed(e: MarketEvent): MarketEvent {
+    if (!this.#delayed.delete(e.id)) return e;
+    return { ...e, value: { ...(e.value as Readonly<Record<string, unknown>>), blockHeight: this.blockHeight } };
+  }
+
+  /** The events a row releases now, in id order, all at the row's moment (observations are scheduled for later). */
   release(row: DatasetRow): FeedEvent[] {
     switch (row.kind) {
       case 'block':
@@ -167,7 +192,7 @@ export class Market {
       const b = bounds[this.#regimeAt++]!;
       this.regime = b.label;
       this.regimesPassed.push({ slot: b.slot, label: b.label, at: row.blockTime * 1000 });
-      out.push(this.#market(`g:${b.slot}`, m, 'regime', { label: b.label, slot: b.slot }));
+      this.#observe(this.#market(`g:${b.slot}`, m, 'regime', { label: b.label, slot: b.slot }));
     }
     (this.#opts.series ?? []).forEach((s, k) => {
       // The latest value usable by this block; older ones it skips over are superseded.
@@ -206,7 +231,8 @@ export class Market {
       fees: row.fees, baseSupply: row.baseSupply, side: row.side, userQuote: r.trade.userQuote, baseAmount: row.side === 'buy' ? r.trade.base : row.baseAmount,
       blockHeight: this.blockHeight,
     };
-    return [this.#market(`s:${row.signature}:${row.evIdx}`, rowMoment(row), `pool:${row.pool}`, view as unknown as Readonly<Record<string, unknown>>)];
+    this.#observe(this.#market(`s:${row.signature}:${row.evIdx}`, rowMoment(row), `pool:${row.pool}`, view as unknown as Readonly<Record<string, unknown>>));
+    return [];
   }
 
   #event(row: EventRow): FeedEvent[] {
@@ -216,8 +242,7 @@ export class Market {
     }
     const mint = f['mint'] ?? f['base_mint'];
     if (row.event === 'CreateEvent' && f['mint'] && f['symbol']) this.symbols.set(f['mint'], f['symbol']);
-    const out: FeedEvent[] = [];
-    if (mint) out.push(this.#market(`e:${row.signature}:${row.evIdx}`, rowMoment(row), `life:${mint}`, { event: row.event, program: row.program, fields: f }));
+    if (mint) this.#observe(this.#market(`e:${row.signature}:${row.evIdx}`, rowMoment(row), `life:${mint}`, { event: row.event, program: row.program, fields: f }));
     if (row.event === 'CompletePumpAmmMigrationEvent' && f['mint'] && f['pool'] && !this.#discovered.has(f['mint'])) {
       this.#discovered.add(f['mint']);
       const lag = this.#opts.discoveryLag(f['mint']);
@@ -229,7 +254,7 @@ export class Market {
       const at: Moment = { slot: row.slot + BigInt(lag), txIndex: BLOCK_TX, ixIndex: 1, receivedAt: graduatedAt + lag * 400 };
       this.#opts.schedule(this.#market(`d:${gmint}`, at, `disc:${gmint}`, { mint: gmint, pool, graduatedAt, lazy: true }));
     }
-    return out;
+    return [];
   }
 
   /** Completes a discovery's value when it is released (pool facts known by then). */
