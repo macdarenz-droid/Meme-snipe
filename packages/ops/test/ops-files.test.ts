@@ -190,14 +190,13 @@ describe('deploy code', () => {
     expect(walk('ops').filter((p) => /scryptSync|hashlib\.scrypt|crypto\.scrypt/.test(read(p)) && !p.endsWith('.py')).sort()).toEqual(['ops/host/files/usr/local/lib/zeroed/derive-key.mjs', 'ops/install.sh']);
   });
 
-  it('derives the same age identity on both sides, ignoring case and extra spaces, and only from 6 words', () => {
-    const a = derive('abacus abdomen able about above absent');
-    const b = derive('  Abacus   ABDOMEN able about above absent\n');
-    expect(a.status).toBe(0);
-    expect(a.stdout).toMatch(/^AGE-SECRET-KEY-1[0-9A-Z]{58}\n$/);
-    expect(b.stdout).toBe(a.stdout);
-    expect(derive('abacus abdomen able about above absent zone').stdout).not.toBe(a.stdout);
-    expect(derive('abacus abdomen able about above').status).toBe(2);
+  it('ignores case and extra spaces, and takes exactly 6 words', () => {
+    // One scrypt run here (each is 256 MB and about a second): the normalised form must give the known answer.
+    const b = derive('  Correct   HORSE battery staple zebra apple\n');
+    expect(b.status).toBe(0);
+    expect(b.stdout.trim()).toBe(KAT_IDENTITY);
+    expect(derive('correct horse battery staple zebra apple extra').status).toBe(2);
+    expect(derive('correct horse battery staple zebra').status).toBe(2);
   }, 30_000);
 });
 
