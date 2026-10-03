@@ -101,7 +101,7 @@ describe('G1 walk-forward', () => {
 
 // Holdout fixture: 25 days × 20 = 500 trades at +10%, sealed. S0 at −20% on the same days over 200 seeds.
 const holdout = bracketTrades(31, 0.1, 25, 20);
-const counts = { candidates: 2000, entries: 500, exits: 500, days: 25 };
+const counts = { candidates: 2000, entries: 500, entryDays: 25 };
 const controlRuns = Array.from({ length: 200 }, (_, k) => bracketTrades(1000 + k, -0.2, 25, 2).map(({ day, rNet }) => ({ day, rNet })));
 const power = (nPower: number, familySize = 1): G2PowerResult => ({ nPower, powerAtN: 0.8, level: 0.05 / familySize, evaluations: [] });
 const sealed = (familySize: number, universes: readonly string[], c = counts): HoldoutRegistry => {
@@ -162,7 +162,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     const short = gateG2(g2Pass({ registry: sealed(1, ['U1'], { ...counts, entries: 299 }) }));
     expect(short.universes[0]).toMatchObject({ status: 'not-proven', requiredTrades: closedWf, entries: 299 });
     expect(short.registry.entries[0]!.burned).toBe(false);
-    const fewDays = gateG2(g2Pass({ registry: sealed(1, ['U1'], { ...counts, days: 9 }) }));
+    const fewDays = gateG2(g2Pass({ registry: sealed(1, ['U1'], { ...counts, entryDays: 9 }) }));
     expect(fewDays.status).toBe('not-proven');
   });
   test('the floor is 300 and the closed form is a lower bound on the simulated n_power', () => {

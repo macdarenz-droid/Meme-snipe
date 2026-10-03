@@ -2,7 +2,7 @@
 // flag, bootstrap p-values, and n_power found by simulating the exact G2 rule.
 import { describe, expect, test } from 'vitest';
 import {
-  burnHoldout, createHoldoutRegistry, createRng, dayBlockMeanInterval, holm, MIN_DAYS, nPower, openHoldout, registerHoldout,
+  burnHoldout, createHoldoutRegistry, HOLDOUT_COUNT_FIELDS, createRng, dayBlockMeanInterval, holm, MIN_DAYS, nPower, openHoldout, registerHoldout,
   sd, sealHoldout, simulateG2Power,
 } from '../src/stats/index.ts';
 import { bracketTrades } from './stats-fixtures.ts';
@@ -30,7 +30,7 @@ describe('Holm step-down', () => {
 });
 
 describe('sealed holdout registry', () => {
-  const counts = { candidates: 2000, entries: 400, exits: 400, days: 20 };
+  const counts = { candidates: 2000, entries: 400, entryDays: 20 };
   const reg0 = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h1', universe: 'U1', configId: 'c1', fromDay: '2026-09-01', toDay: '2026-09-20' });
   const sealed = sealHoldout(reg0, 'h1', { configId: 'c1', ledgerHash: 'H', counts }).registry;
   const open = (reg = sealed, over: Partial<Parameters<typeof openHoldout>[2]> = {}) =>
@@ -44,6 +44,18 @@ describe('sealed holdout registry', () => {
     expect(() => registerHoldout(two, { holdoutId: 'h3', universe: 'U3', configId: 'c', fromDay: '2026-09-01', toDay: '2026-09-02' }))
       .toThrow(/created for 2 universes/);
     expect(() => registerHoldout(reg0, { holdoutId: 'h1', universe: 'U3', configId: 'c', fromDay: '2026-09-01', toDay: '2026-09-02' })).toThrow(/already registered/);
+  });
+  test('before the seal opens, the registry exposes candidate and entry counts only: no exit, fill or P&L field', () => {
+    const banned = /exit|fill|pnl|p_l|profit|loss|return|rnet|blocked|open|position|price|value|amount/i;
+    expect(HOLDOUT_COUNT_FIELDS).toEqual(['candidates', 'entries', 'entryDays']);
+    const e = sealed.entries[0]!;
+    expect(Object.keys(e.counts!).sort()).toEqual(['candidates', 'entries', 'entryDays']);
+    for (const k of Object.keys(e.counts!)) expect(k).not.toMatch(banned);
+    // The entry's own fields: identity, window, seal bookkeeping and counts; nothing from outcomes.
+    expect(Object.keys(e).sort()).toEqual(['burnReason', 'burned', 'configId', 'counts', 'fromDay', 'holdoutId', 'ledgerHash', 'openedAtMs', 'seal', 'toDay', 'universe']);
+    // Sealing refuses extra fields, so exit counts or P&L cannot be smuggled in.
+    expect(() => sealHoldout(reg0, 'h1', { configId: 'c1', ledgerHash: 'H', counts: { ...counts, exits: 400 } as never })).toThrow(/may hold only candidates, entries, entryDays; got exits/);
+    expect(() => sealHoldout(reg0, 'h1', { configId: 'c1', ledgerHash: 'H', counts: { ...counts, pnl: 1 } as never })).toThrow(/got pnl/);
   });
   test('sealing stores hash and counts; an identical re-run is fine, a changed one burns', () => {
     expect(sealed.entries[0]).toMatchObject({ seal: 'sealed', ledgerHash: 'H', counts, burned: false });

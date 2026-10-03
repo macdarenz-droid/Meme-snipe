@@ -402,7 +402,7 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     const required = Math.max(th.minTradesFloor, u.power.nPower, closed);
     const ready = holdoutReady(e, required, MIN_DAYS);
     c.add(`sample ${u.universe}`, ready,
-      `${e.counts!.entries} sealed entries on ${e.counts!.days} days (need >= max(${th.minTradesFloor}, simulated n_power ${u.power.nPower}, closed form ${closed}) = ${required}, on >= ${MIN_DAYS} days)`);
+      `${e.counts!.entries} sealed entries on ${e.counts!.entryDays} days (need >= max(${th.minTradesFloor}, simulated n_power ${u.power.nPower}, closed form ${closed}) = ${required}, on >= ${MIN_DAYS} days)`);
     return { u, e, required, ready };
   });
   const entering = sized.filter((x) => x.ready);
