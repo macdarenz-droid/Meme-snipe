@@ -12,3 +12,4 @@ data/
 *.sqlite-wal
 *.sqlite-shm
 .DS_Store
+research/copytrading/data/raw/
