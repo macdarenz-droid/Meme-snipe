@@ -1,0 +1,13 @@
+[Unit]
+Description=Zeroed: receive keys from the Deploy workflow, then pair the owner's Telegram chat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zeroed-pair
+ExecStart=/usr/local/sbin/zeroed-telegram-pair
+UMask=0077
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes

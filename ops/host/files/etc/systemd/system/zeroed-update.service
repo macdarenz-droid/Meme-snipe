@@ -1,0 +1,12 @@
+[Unit]
+Description=Zeroed: deploy the commit the deploy tag points to, after checking GitHub's signature
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zeroed-update
+UMask=0022
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
