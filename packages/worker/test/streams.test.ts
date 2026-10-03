@@ -13,18 +13,18 @@ blockNetwork();
 const SOCKET = { initialMs: 1_000, maxMs: 8_000, idleMs: 30_000 };
 const MINT_AUTH = 'TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
 
-const setup = (results: (method: string, params: readonly unknown[]) => unknown, opts: { used?: number } = {}) => {
+const setup = (results: (method: string, params: readonly unknown[]) => unknown, opts: { used?: number; delayMs?: () => number; limit?: number } = {}) => {
   const timers = new ManualTimers(1_000_000);
   const hub = new FakeSocketHub();
   const frames: Frame[] = [];
   const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, onFrame: (f) => frames.push(f) });
   const scheduler = new Scheduler(HELIUS_FREE, { timers, creditsUsed: opts.used ?? 0 });
-  const http = scriptedHttp(rpcHandler(results));
+  const http = scriptedHttp(rpcHandler(results), opts.delayMs ? { timers, delayMs: opts.delayMs } : {});
   const rpc = new RpcHttp({ provider: 'helius', url: () => 'https://rpc.test/?api-key=k', http, scheduler, timeoutMs: 1_000 });
   const fetcher = new TxFetcher({ clients: [rpc], feed, timers, retries: 0, retryMs: 500, remember: 1_000 });
   const stream = new RpcStream({
     provider: 'helius', url: () => 'wss://ws.test/?api-key=k', factory: hub.factory, timers, feed, scheduler,
-    creditsPerByte: 0.00002, creditsPerConnection: 1, http: rpc, fetcher, socket: SOCKET, backfillLimit: 100,
+    creditsPerByte: 0.00002, creditsPerConnection: 1, http: rpc, fetcher, socket: SOCKET, backfillLimit: opts.limit ?? 100,
   });
   return { timers, hub, frames, feed, scheduler, http, stream };
 };
@@ -235,57 +235,88 @@ describe('RPC stream', () => {
       for (let e = feed.next(); e; e = feed.next()) if (e.kind === 'market' && e.key === key) out.push((e.value as { value: unknown }).value);
       return out;
     };
-    const run = (sigs: (n: number) => unknown, opts: { decodeLogs?: boolean; limit?: number } = {}) => {
-      const t = setup((m) => (m === 'getSignaturesForAddress' ? sigs(0) : undefined));
-      const s = new RpcStream({
-        provider: 'alchemy', url: () => 'wss://a.test', factory: t.hub.factory, timers: t.timers, feed: t.feed, scheduler: t.scheduler,
-        creditsPerByte: 0, creditsPerConnection: 0, http: new RpcHttp({ provider: 'alchemy', url: () => 'https://a.test', http: t.http, scheduler: t.scheduler, timeoutMs: 1 }),
-        socket: SOCKET, backfillLimit: opts.limit ?? 100,
-      });
-      s.watchSlots(P1);
-      s.watchLogs(MINT_AUTH, { priority: P3, coverage: 'creates', ...(opts.decodeLogs === false ? {} : { decodeLogs: true }) });
-      s.start();
+    const VIA = `logs:${MINT_AUTH}`;
+    /** One provider, a slot watch and a creates watch; slot notices run ahead of log notifications. */
+    const run = (sigs: (call: number) => unknown, opts: { decodeLogs?: boolean; limit?: number; delayMs?: () => number; used?: number } = {}) => {
+      let calls = 0;
+      const t = setup((m) => (m === 'getSignaturesForAddress' ? sigs(calls++) : undefined), { ...(opts.delayMs ? { delayMs: opts.delayMs } : {}), ...(opts.used !== undefined ? { used: opts.used } : {}), ...(opts.limit !== undefined ? { limit: opts.limit } : {}) });
+      t.stream.watchSlots(P1);
+      t.stream.watchLogs(MINT_AUTH, { priority: P3, coverage: 'creates', ...(opts.decodeLogs === false ? {} : { decodeLogs: true }) });
+      t.stream.start();
       t.hub.last.open();
-      const [slotSub] = ack(t.hub);
+      const [slotSub, logSub] = ack(t.hub);
       t.hub.last.push(slotNote(slotSub!, 600));
-      return { ...t, s, reconnect: async (tip: number) => {
-        t.hub.last.drop();
-        t.feed.ingest('helius', { type: 'slot', slot: BigInt(tip), parent: null, root: null }, { receivedAt: t.timers.now() });
-        t.timers.advance(1_000);
+      t.hub.last.push(logs(logSub!, 603, tx('pump CreateEvent', 2).signature));
+      t.hub.last.push(slotNote(slotSub!, 605)); // ahead of the logs: creates in 603–605 may still be in flight
+      const reopen = async () => {
+        t.timers.advance(8_000);
         t.hub.last.open();
-        ack(t.hub);
-        await settle(50);
-      } };
+        return ack(t.hub);
+      };
+      return { ...t, reopen, drop: () => t.hub.last.drop() };
     };
 
-    it('marks where coverage starts, and reports each reconnect range as a gap: backfill has no log lines', async () => {
-      const t = run(() => [{ signature: tx('pump CreateEvent').signature, slot: 605, err: null }]);
-      await t.reconnect(610);
-      const f = facts(t.feed, t.timers, 'coverage:creates:start');
-      // Subscribed before any slot was seen: coverage starts at the first slot that arrived.
-      expect(f).toEqual([{ fromSlot: 600n, via: `logs:${MINT_AUTH}` }]);
-      const g = run(() => [{ signature: tx('pump CreateEvent').signature, slot: 605, err: null }]);
-      await g.reconnect(610);
-      expect(facts(g.feed, g.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 601n, toSlot: 610n, reason: 'disconnect', via: `logs:${MINT_AUTH}` }]);
+    it('starts at the first slot; a reconnect gap runs from the watch\'s own last log slot to a slot seen live after the resubscribe', async () => {
+      const t = run(() => [{ signature: tx('pump CreateEvent').signature, slot: 604, err: null }]);
+      t.drop();
+      const [slotSub] = await t.reopen();
+      await settle(50); // resubscribed and backfilled, with no new slot yet: the gap stays open
+      t.feed.ingest('alchemy', { type: 'slot', slot: 640n, parent: null, root: null }, { receivedAt: t.timers.now() }); // another provider's tip does not end it
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
+      t.hub.last.push(slotNote(slotSub!, 612));
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: 612n, reason: 'disconnect', via: VIA }]);
+      const again = run(() => []);
+      expect(facts(again.feed, again.timers, 'coverage:creates:start')).toEqual([{ fromSlot: 600n, via: VIA }]);
     });
 
     it('a sightings-only stream reports a gap only when backfill was cut short or failed', async () => {
-      const full = run(() => [], { decodeLogs: false });
-      await full.reconnect(610);
-      expect(facts(full.feed, full.timers, 'coverage:creates:gap')).toEqual([]);
-      const page = run(() => [{ signature: tx('pump CreateEvent').signature, slot: 605, err: null }], { decodeLogs: false, limit: 1 });
-      await page.reconnect(610);
-      expect(facts(page.feed, page.timers, 'coverage:creates:gap')).toEqual([expect.objectContaining({ fromSlot: 601n, toSlot: 610n })]);
-      const broken = run(() => { throw new Error('rpc down'); }, { decodeLogs: false });
-      await broken.reconnect(610);
-      expect(facts(broken.feed, broken.timers, 'coverage:creates:gap')).toEqual([expect.objectContaining({ fromSlot: 601n, toSlot: 610n })]);
+      for (const [sigs, limit, expected] of [
+        [() => [], 100, 0],
+        [() => [{ signature: tx('pump CreateEvent').signature, slot: 604, err: null }], 1, 1],
+        [() => { throw new Error('rpc down'); }, 100, 1],
+      ] as const) {
+        const t = run(sigs, { decodeLogs: false, limit });
+        t.drop();
+        const [slotSub] = await t.reopen();
+        await settle(50);
+        t.hub.last.push(slotNote(slotSub!, 612));
+        const gaps = facts(t.feed, t.timers, 'coverage:creates:gap');
+        expect(gaps).toHaveLength(expected);
+        if (expected) expect(gaps[0]).toEqual({ fromSlot: 603n, toSlot: 612n, reason: 'disconnect', via: VIA });
+      }
     });
 
-    it('a watch dropped at the 70% halt leaves an open-ended gap', async () => {
-      const t = run(() => []);
-      t.scheduler.meter(700_000);
-      t.hub.last.push(slotNote(100, 601)); // any traffic runs the budget check
-      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 601n, toSlot: null, reason: 'halted', via: `logs:${MINT_AUTH}` }]);
+    it('a reconnect during a backfill: the stale backfill cannot close the newer gap', async () => {
+      for (const second of [() => { throw new Error('rpc down'); }, () => [{ signature: tx('pump CreateEvent').signature, slot: 604, err: null }]]) {
+        // The first backfill is slow and complete; the second fails or fills a whole page.
+        const t = run((call) => (call === 0 ? [] : second()), { decodeLogs: false, limit: 1, delayMs: () => 5_000 });
+        t.drop();
+        await t.reopen(); // first backfill starts, answer due in 5 s
+        t.drop(); // drops again before it answers
+        t.timers.advance(5_000); // the stale answer lands; the second connection is still waiting to reopen
+        await settle(50);
+        const [slotSub] = await t.reopen();
+        t.hub.last.push(slotNote(slotSub!, 620)); // live again, but the second backfill has not answered
+        expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
+        t.timers.advance(5_000);
+        await settle(50);
+        t.hub.last.push(slotNote(slotSub!, 621));
+        expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: 620n, reason: 'disconnect', via: VIA }]);
+      }
+    });
+
+    it('a watch dropped at the 70% halt leaves an open-ended gap; after resetBudget it can watch again and starts anew', async () => {
+      const t = run(() => [], { used: 699_000 });
+      t.scheduler.meter(1_000);
+      t.hub.last.push(slotNote(100, 606)); // any traffic runs the budget check
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: null, reason: 'halted', via: VIA }]);
+      expect(() => t.stream.watchLogs(MINT_AUTH, { priority: P3, coverage: 'creates' })).toThrow(/halted/);
+      t.scheduler.resetBudget(0);
+      const id = t.stream.watchLogs(MINT_AUTH, { priority: P3, coverage: 'creates' });
+      expect(id).toBeGreaterThan(0);
+      const req = t.hub.last.requests().at(-1)!;
+      t.hub.last.push({ jsonrpc: '2.0', id: req.id, result: 999 });
+      expect(facts(t.feed, t.timers, 'coverage:creates:start')).toEqual([{ fromSlot: 607n, via: VIA }]);
     });
   });
 
