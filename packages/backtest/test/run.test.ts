@@ -6,7 +6,7 @@ import { afterAll, describe, expect, test, vi } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
-import { attemptAlpha, authoriseHoldout, holdoutConfigId, type HoldoutPlan, openSealedHoldout, readHoldoutStore, recordHoldoutG1, type RegistryVcs, registerAttempt, researchDays, runAndSealHoldout, runHoldout, setHoldoutPlan, writeHoldoutStore } from '../src/holdout.ts';
+import { attemptAlpha, authoriseHoldout, endAttempt, holdoutConfigId, type HoldoutPlan, openSealedHoldout, readHoldoutStore, recordHoldoutG1, type RegistryVcs, registerAttempt, researchDays, runAndSealHoldout, runHoldout, setHoldoutPlan, writeHoldoutStore } from '../src/holdout.ts';
 import { gitRegistryVcs } from '../src/registry-git.ts';
 import { holdoutReady } from '../../core/src/stats/index.ts';
 import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
@@ -449,6 +449,34 @@ describe('holdout mode', () => {
     // The synthetic plan has no tail (cutoff = tail end), so neither has attempt 2.
     expect(st.attempts[1]).toMatchObject({ index: 2, alpha: 0.005, window: { fromDay: '2026-09-26', entryCutoffDay: '2026-10-24', tailEndDay: '2026-10-24' } });
     expect(st.registry.entries.find((e) => e.holdoutId === 'second')).toMatchObject({ fromDay: '2026-09-26', toDay: '2026-10-23' });
+  });
+
+  test('α is pinned to the ruled budget: attempt 1 at 0.04, attempt k ≥ 2 at 0.01 / 2^(k-1) (R4)', () => {
+    const a = authority('alpha');
+    const o = opts();
+    for (const alpha of [{ first: 0.05, laterBase: 0.01 }, { first: 0.04, laterBase: 0.02 }]) {
+      expect(() => setHoldoutPlan(a, { ...planOf(o, 1), alpha }, o.research)).toThrow(/ruled α budget/);
+    }
+    expect(existsSync(a.registryPath)).toBe(false);
+  });
+
+  test('an attempt that fails G1 or ends short is spent after its tail, so the next attempt can register (R3)', () => {
+    for (const why of ['g1-failed', 'short'] as const) {
+      const a = authority(`spent-${why}`);
+      register(a, 'one');
+      const o = opts();
+      const configId = holdoutConfigId(o, a);
+      runAndSealHoldout({ ...o, ledgerPath: join(dir, `spent-${why}.sqlite`) }, { ...a, byUniverse: { U2: 'one' }, window });
+      if (why === 'g1-failed') recordHoldoutG1(a, { holdoutId: 'one', configId, passed: false, evaluatedOn: 'practice' });
+      const two = () => registerAttempt(a, { index: 2, entries: [{ holdoutId: 'two', universe: 'U2', configId }] }, new Date('2026-09-25T10:00:00Z'));
+      expect(two).toThrow(/not scored yet/);
+      // Not before the attempt's tail has ended (the synthetic tail ends 2026-09-21).
+      expect(() => endAttempt(a, 1, why, new Date('2026-09-20T12:00:00Z'))).toThrow(/tail/);
+      const st = endAttempt(a, 1, why, new Date('2026-09-22T00:00:00Z'));
+      expect(st.registry.entries.find((e) => e.holdoutId === 'one')).toMatchObject({ burned: true, burnReason: 'spent' });
+      expect(st.attempts[0]!.ended).toMatchObject({ outcome: 'spent', why });
+      expect(two().attempts.map((x) => x.index)).toEqual([1, 2]);
+    }
   });
 
   test('a run must feed every holdout of its attempt', () => {

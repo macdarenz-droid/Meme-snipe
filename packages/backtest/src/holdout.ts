@@ -131,7 +131,8 @@ export interface HoldoutAttempt {
   readonly configIds: Readonly<Record<string, string>>;
   readonly registeredAt: string;
   readonly started: string | null;
-  readonly ended: { readonly at: string; readonly outcome: 'sealed' | 'failed' } | null;
+  /** `spent`: ended by endAttempt after its tail without an opening, `why` saying how (failed G1, short, never run). */
+  readonly ended: { readonly at: string; readonly outcome: 'sealed' | 'failed' | 'spent'; readonly why?: string } | null;
 }
 
 /** A G1 result for a registered holdout; appended, never replaced, so a fail stays on record. */
@@ -155,6 +156,13 @@ export interface HoldoutStore {
   /** Every run attempt: refused, started, failed, sealed. */
   readonly runs: readonly HoldoutRunRecord[];
 }
+
+/**
+ * The ruled error budget (DECISIONS "Follow-up rulings", holdout): attempt 1 at family α 0.04, attempt k ≥ 2 at
+ * 0.01 / 2^(k-1), so all attempts together stay under 0.05. Any other plan is refused. G2 uses the attempt's α as its
+ * family α (Holm across the attempt's universes).
+ */
+export const RULED_ALPHA = { first: 0.04, laterBase: 0.01 } as const;
 
 export const attemptAlpha = (plan: HoldoutPlan, index: number): number => {
   if (!Number.isSafeInteger(index) || index < 1) throw new RangeError(`attempt index must be >= 1, got ${index}`);
@@ -190,7 +198,9 @@ export const setHoldoutPlan = (a: HoldoutAuthority, plan: HoldoutPlan, research:
   if (plan.fromDay !== h.fromDay || plan.entryCutoffDay !== h.entryCutoffDay || plan.tailEndDay !== h.tailEndDay) {
     throw new RangeError(`the plan's window ${plan.fromDay}, cutoff ${plan.entryCutoffDay}, tail end ${plan.tailEndDay} is not the research config's (${h.fromDay}, ${h.entryCutoffDay}, ${h.tailEndDay})`);
   }
-  if (!(plan.alpha.first > 0 && plan.alpha.first < 1 && plan.alpha.laterBase > 0 && plan.alpha.laterBase < 1)) throw new RangeError('plan α must be in (0, 1)');
+  if (plan.alpha.first !== RULED_ALPHA.first || plan.alpha.laterBase !== RULED_ALPHA.laterBase) {
+    throw new RangeError(`the plan's α (${plan.alpha.first}, ${plan.alpha.laterBase}) is not the ruled α budget (attempt 1: ${RULED_ALPHA.first}; attempt k ≥ 2: ${RULED_ALPHA.laterBase} / 2^(k-1))`);
+  }
   return mutate(a, 'Holdout plan: set', (s) => {
     if (s !== null && s.plan !== null) {
       if (canonical(s.plan) === canonical(plan)) return { store: s, value: s };
@@ -202,6 +212,26 @@ export const setHoldoutPlan = (a: HoldoutAuthority, plan: HoldoutPlan, research:
     return { store, value: store };
   });
 };
+
+/**
+ * Ends attempt `index` once its tail has passed without an opening: every holdout of it not yet burned or opened is
+ * burned 'spent' (`why`: 'g1-failed', 'short', or another plain reason), and the attempt is marked ended. Then the next
+ * attempt may register. Refused before the tail end.
+ */
+export const endAttempt = (a: HoldoutAuthority, index: number, why: string, now: Date = new Date()): HoldoutStore =>
+  mutate(a, `Holdout attempt ${index}: spent (${why})`, (s) => {
+    const at = s?.attempts.find((x) => x.index === index);
+    if (s === null || at === undefined) throw new RangeError(`holdout attempt ${index} is not registered`);
+    if (now.getTime() < Date.parse(`${at.window.tailEndDay}T00:00:00Z`)) throw new RangeError(`holdout attempt ${index}: its tail runs until ${at.window.tailEndDay}`);
+    let registry = s.registry;
+    for (const id of at.holdoutIds) {
+      const e = registry.entries.find((x) => x.holdoutId === id);
+      if (e !== undefined && !e.burned && e.seal !== 'opened') registry = burnHoldout(registry, id, 'spent', why).registry;
+    }
+    const ended = at.ended?.outcome === 'spent' ? at.ended : { at: now.toISOString(), outcome: 'spent' as const, why };
+    const store = { ...s, registry, attempts: s.attempts.map((x) => (x.index === index ? { ...x, ended } : x)) };
+    return { store, value: store };
+  });
 
 /** Appends a G1 result for a registered holdout. */
 export const recordHoldoutG1 = (a: HoldoutAuthority, rec: Omit<G1Record, 'at'>, now: Date = new Date()): HoldoutStore =>
