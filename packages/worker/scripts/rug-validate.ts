@@ -51,13 +51,19 @@ const reports: LaunchReport[] = [];
 const excluded: { mint: string; reason: string }[] = [];
 for (const mint of readFileSync(mintsFile, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean)) {
   try {
-    const sigs: Sig[] = [];
-    for (let before: string | undefined; ;) {
-      const page = await rpc<Sig[]>('getSignaturesForAddress', [mint, { limit: 1000, commitment: 'finalized', ...(before ? { before } : {}) }]);
-      sigs.push(...page);
-      if (page.length < 1000) break;
-      before = page.at(-1)!.signature;
+    // A launch's signature list is cached once its window has closed (later signatures are outside it anyway).
+    const sigFile = join(cacheDir, `sigs-${mint}.json`);
+    let sigs: Sig[] = existsSync(sigFile) ? (JSON.parse(readFileSync(sigFile, 'utf8')) as Sig[]) : [];
+    if (sigs.length === 0) {
+      for (let before: string | undefined; ;) {
+        const page = await rpc<Sig[]>('getSignaturesForAddress', [mint, { limit: 1000, commitment: 'finalized', ...(before ? { before } : {}) }]);
+        sigs.push(...page);
+        if (page.length < 1000) break;
+        before = page.at(-1)!.signature;
+      }
+      if (Date.now() - (sigs.at(-1)?.blockTime ?? 0) * 1_000 > window) writeFileSync(sigFile, JSON.stringify(sigs));
     }
+    sigs = [...sigs];
     const ordered = sigs.reverse().filter((s) => s.err === null);
     const t0 = (ordered[0]?.blockTime ?? 0) * 1_000;
     if (Date.now() - t0 <= window) {

@@ -180,3 +180,18 @@ describe('launch analysis on decoded steps', () => {
     expect(analyzeSteps([step(11, 1, [trade(1, 'Out', true, 1, 1, 1)])], CFG)).toBeNull();
   });
 });
+
+describe('what rugs-1 misses, on real launches (fixtures/rug-misses.json)', () => {
+  const MISSES = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures', 'rug-misses.json'), 'utf8')) as { cases: { name: string; mint: string; transactions: Tx[] }[] };
+  const txsOf = (name: string) => MISSES.cases.find((c) => c.name === name)!.transactions.map((t) => ({ signature: t.signature, rpc: t }));
+
+  it('transfer-then-sell: the deployer moved 7.44% to other wallets that sold it all, and none of it is a deployer sale', () => {
+    const r = analyzeLaunch(txsOf('transfer-then-sell'), RUG_CONFIG)!;
+    expect(r).toMatchObject({ mint: '5wBy5RdjRzdKdkdcyZ3fhBUhrEd9HS8PREkomhdZX2s2', transferredBps: 744, transferSoldBps: 744, deployerSoldBps: 0, creatorDumpAtMs: null });
+  });
+
+  it('bundle dump: creation-slot buyers bought and sold 4.58% while the deployer sold nothing; no deployer-sale label', () => {
+    const r = analyzeLaunch(txsOf('bundle-dump'), RUG_CONFIG)!;
+    expect(r).toMatchObject({ mint: 'BH5poyjNJp2r9ktMC8XTLH3gcAteQKMjnQQmKKTapaid', bundleBoughtBps: 458, bundleSoldBps: 458, deployerSoldBps: 0, creatorDumpAtMs: null, firstSaleBps: null });
+  });
+});
