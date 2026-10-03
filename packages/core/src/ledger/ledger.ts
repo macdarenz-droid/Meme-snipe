@@ -121,6 +121,41 @@ export interface PositionRecord {
   readonly statusTs: Millis;
 }
 
+export interface StoredIntentEvent {
+  readonly seq: bigint;
+  readonly intentId: string;
+  readonly status: IntentStatus;
+  readonly event: string;
+  readonly detail: unknown;
+  readonly ts: Millis;
+}
+
+export interface StoredPosition {
+  readonly positionId: string;
+  readonly mint: string;
+  readonly venue: string;
+  readonly entryIntentId: string;
+  readonly createdTs: Millis;
+}
+
+export interface StoredPositionEvent {
+  readonly seq: bigint;
+  readonly positionId: string;
+  readonly status: PositionStatus;
+  readonly quantity: bigint;
+  readonly cost: Lamports;
+  readonly event: string;
+  readonly detail: unknown;
+  readonly ts: Millis;
+}
+
+export interface StoredReservation {
+  readonly reservationId: string;
+  readonly intentId: string;
+  readonly amount: Lamports;
+  readonly ended: 'released' | 'kept' | null;
+}
+
 export interface OperatorCommandInput {
   readonly commandId: string;
   readonly command: OperatorCommandName;
@@ -180,27 +215,11 @@ class LedgerReads {
   }
 
   attempts(intentId: string): TransactionAttempt[] {
-    return this.#db.prepare('SELECT * FROM attempt WHERE intent_id = ? ORDER BY created_ts, rowid').all(intentId).map((r) => ({
-      id: String(r['attempt_id']),
-      intentId: String(r['intent_id']),
-      signedBytesRef: String(r['signed_bytes_ref']),
-      signature: String(r['signature']),
-      blockhash: String(r['blockhash']),
-      lastValidBlockHeight: BigInt(r['last_valid_block_height'] as bigint),
-      quote: fromJson(r['quote']),
-    }) as TransactionAttempt);
+    return this.#db.prepare('SELECT * FROM attempt WHERE intent_id = ? ORDER BY created_ts, rowid').all(intentId).map(toAttempt);
   }
 
   fills(intentId: string): Fill[] {
-    return this.#db.prepare('SELECT * FROM fill WHERE intent_id = ? ORDER BY fill_id').all(intentId).map((r) => ({
-      intentId: String(r['intent_id']),
-      signature: String(r['signature']),
-      slot: BigInt(r['slot'] as bigint),
-      commitment: String(r['commitment']),
-      tokens: amountOf(r['tokens']),
-      sol: amountOf(r['sol']),
-      fees: amountOf(r['fees']),
-    }) as Fill);
+    return this.#db.prepare('SELECT * FROM fill WHERE intent_id = ? ORDER BY fill_id').all(intentId).map(toFill);
   }
 
   hasSnapshot(snapshotId: bigint): boolean {
@@ -266,11 +285,114 @@ class LedgerReads {
       .map((r) => ({ kind: String(r['kind']) as FeeKind, lamports: amountOf(r['lamports']) as Lamports }));
   }
 
+  // Full-history reads for the ledger replay check (./replay). Read-only, in stored order.
+
+  /** Every intent with its current status, in creation order. */
+  allIntents(): IntentRecord[] {
+    return this.#db.prepare(`${INTENT_SELECT} ORDER BY i.created_ts, i.intent_id`).all().map(toIntentRecord);
+  }
+
+  /** Every intent status row, in the order written (`seq` is global across intents). */
+  intentEvents(): StoredIntentEvent[] {
+    return this.#db.prepare('SELECT * FROM intent_event ORDER BY seq').all().map((r) => ({
+      seq: BigInt(r['seq'] as bigint),
+      intentId: String(r['intent_id']),
+      status: String(r['status']) as IntentStatus,
+      event: String(r['event']),
+      detail: r['detail'] === null ? null : fromJson(r['detail']),
+      ts: ms(r['ts']),
+    }));
+  }
+
+  /** Every attempt, in the order `attempts` returns them per intent. One read: the replay never scans per intent. */
+  allAttempts(): TransactionAttempt[] {
+    return this.#db.prepare('SELECT * FROM attempt ORDER BY created_ts, rowid').all().map(toAttempt);
+  }
+
+  /** Every fill, in the order `fills` returns them per intent (`fill` has no index on `intent_id`). */
+  allFills(): Fill[] {
+    return this.#db.prepare('SELECT * FROM fill ORDER BY fill_id').all().map(toFill);
+  }
+
+  /** Every position as created (not its current state), in creation order. */
+  allPositions(): StoredPosition[] {
+    return this.#db.prepare('SELECT * FROM position ORDER BY created_ts, position_id').all().map((r) => ({
+      positionId: String(r['position_id']),
+      mint: String(r['mint']),
+      venue: String(r['venue']),
+      entryIntentId: String(r['entry_intent_id']),
+      createdTs: ms(r['created_ts']),
+    }));
+  }
+
+  /** Every position state row, in the order written (`seq` is global across positions). */
+  positionEvents(): StoredPositionEvent[] {
+    return this.#db.prepare('SELECT * FROM position_event ORDER BY seq').all().map((r) => ({
+      seq: BigInt(r['seq'] as bigint),
+      positionId: String(r['position_id']),
+      status: String(r['status']) as PositionStatus,
+      quantity: amountOf(r['quantity']),
+      cost: amountOf(r['cost']) as Lamports,
+      event: String(r['event']),
+      detail: r['detail'] === null ? null : fromJson(r['detail']),
+      ts: ms(r['ts']),
+    }));
+  }
+
+  /** Every reservation with how it ended (null while held). */
+  allReservations(): StoredReservation[] {
+    return this.#db.prepare(`SELECT r.*, e.status AS ended FROM reservation r
+      LEFT JOIN reservation_event e ON e.reservation_id = r.reservation_id ORDER BY r.created_ts, r.reservation_id`).all().map((r) => ({
+      reservationId: String(r['reservation_id']),
+      intentId: String(r['intent_id']),
+      amount: amountOf(r['amount']) as Lamports,
+      ended: r['ended'] === null ? null : (String(r['ended']) as 'released' | 'kept'),
+    }));
+  }
+
+  /** Rows whose parent row is missing (`PRAGMA foreign_key_check`), in table and rowid order. Read-only. */
+  foreignKeyViolations(): { readonly table: string; readonly rowid: bigint | null; readonly parent: string }[] {
+    return this.#db.prepare('PRAGMA foreign_key_check').all()
+      .map((r) => ({ table: String(r['table']), rowid: r['rowid'] === null ? null : BigInt(r['rowid'] as bigint), parent: String(r['parent']) }))
+      .sort((a, b) => (a.table < b.table ? -1 : a.table > b.table ? 1 : Number((a.rowid ?? 0n) - (b.rowid ?? 0n))));
+  }
+
+  /** Row totals of the tables the replay checks whole. */
+  rowTotals(): Readonly<Record<'fill' | 'attempt' | 'reservation' | 'reservation_event', number>> {
+    const count = (table: string) => Number(this.#db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.['n']);
+    return { fill: count('fill'), attempt: count('attempt'), reservation: count('reservation'), reservation_event: count('reservation_event') };
+  }
+
+  /** The distinct decision modes stored, sorted. */
+  decisionModes(): DecisionMode[] {
+    return this.#db.prepare('SELECT DISTINCT mode FROM decision ORDER BY mode').all().map((r) => String(r['mode']) as DecisionMode);
+  }
+
   /** A consistent copy of the whole file (security.md §4.3: hourly VACUUM INTO, then encrypted off-host). */
   snapshotTo(destPath: string): void {
     this.#db.prepare('VACUUM INTO ?').run(destPath);
   }
 }
+
+const toAttempt = (r: Row): TransactionAttempt => ({
+  id: String(r['attempt_id']),
+  intentId: String(r['intent_id']),
+  signedBytesRef: String(r['signed_bytes_ref']),
+  signature: String(r['signature']),
+  blockhash: String(r['blockhash']),
+  lastValidBlockHeight: BigInt(r['last_valid_block_height'] as bigint),
+  quote: fromJson(r['quote']),
+}) as TransactionAttempt;
+
+const toFill = (r: Row): Fill => ({
+  intentId: String(r['intent_id']),
+  signature: String(r['signature']),
+  slot: BigInt(r['slot'] as bigint),
+  commitment: String(r['commitment']),
+  tokens: amountOf(r['tokens']),
+  sol: amountOf(r['sol']),
+  fees: amountOf(r['fees']),
+}) as Fill;
 
 const INTENT_SELECT = `SELECT i.*, e.status AS status, e.ts AS status_ts FROM intent i
   JOIN intent_event e ON e.seq = (SELECT MAX(seq) FROM intent_event x WHERE x.intent_id = i.intent_id)`;
