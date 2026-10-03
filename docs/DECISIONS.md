@@ -98,7 +98,7 @@ The owner relayed an outside review of commit addc685 (20 findings). Each findin
 - **Statistics.**
   - G3 scores the paper outcomes of candidates vetoed only live, and passes only when the conservative lower bound stays positive. Too little evidence means extend the run.
   - Cluster sensitivity (multi-day blocks, creator and funder clusters) is required.
-  - The deflated Sharpe ratio counts effective independent trials. Counting raw correlated trials over-penalises and leaves G2 with too little power. The fix (STATS-1c: effective N by clustering, proven by simulation for a false-positive rate of at most 5% and for power) lets more strategies pass, so it merges only after the owner signs off on that evidence (§14: only the owner loosens a threshold).
+  - Deflated Sharpe: superseded by "Deflated Sharpe" in the follow-up rulings below (day-level PSR now; a block-bootstrap SPA test replaces the DSR gate only with the owner's sign-off).
   - "Agrees" for the post-upgrade (B5) dry run is defined before the run. Inconclusive is not agreement. STATS-1b.
 - **Study design.**
   - A separate deployment replay runs at the real size: 1 position, 3 entries a day, cooldowns, signal priority.
@@ -114,6 +114,75 @@ The owner relayed an outside review of commit addc685 (20 findings). Each findin
 - **Execution shape.** One supported-transaction-shape check is shared by the gates, the backtest and the builders. TX-1b.
 - **Budget.** The dry run reports credits per provider and class, lookup latency, coverage gaps and rejection reasons. It fails if exits (P0/P1) were ever shed or the free tier is exceeded. RUN-1c.
 - **Worker failure.** It is an exposure the stop cannot control; it is measured, not assumed away (ARCHITECTURE §12.5).
+
+### Follow-up rulings (2026-10-04, second round)
+
+The same outside reviewer answered nine follow-up questions on 8370c2a. Each claim below was checked against the code before the ruling. These rulings are the supervisor's.
+
+- **Holder bound, live path.** With at most 20 observed owners the ten largest hold at least half of what is observed, so (top 10 + unlisted) / circulating ≥ 50%. Top-20 lists can therefore never pass H13's top-10 limit; they serve only for cheap, definite rejects.
+  - A pass needs a complete holder set:
+    - It comes from one getProgramAccounts response on the mint's own token program (Token-2022 for `create_v2` coins, whose accounts are 170 bytes or more, so there is no `dataSize: 165` filter).
+    - The mint is filtered at offset 0, and each account is decoded and checked.
+    - Balances are aggregated by owner, and the context slot and commitment are recorded.
+    - The response lies within `maxStateSlotLag`, with mint authority none.
+    - The balances sum exactly to supply.
+    - Duplicate addresses, a wrong mint or a truncated response mean H16 malformed or inconsistent.
+  - The same-slot wording is withdrawn: two calls rarely share a slot, and `minContextSlot` means "at least". With mint authority none, supply can only fall, so a burn between the reads breaks the exact sum, which is the safe direction.
+  - Known dev and insider owners are resolved with mint-filtered getTokenAccountsByOwner.
+  - The full snapshot runs only for candidates that pass every other gate, and the backtest uses the same evaluation order and charges the same lookup latency, so reject mixes stay comparable for G3.
+  - With no complete set, the gate abstains. Credits per scan are measured, not assumed. GATE-1d, FACTS-1, BT-2.
+- **Deflated Sharpe.** Two faults point in opposite directions:
+  - The trial count is the raw registry size, with the variance floored at the null sampling variance, which over-penalises correlated variants.
+  - PSR counts trades as independent observations, which is too lenient when trades on a day move together.
+  - Effective-N clustering is dropped. With a few dozen daily observations, the correlation matrix's rank caps any effective N, and too little data would then shrink the penalty.
+  - STATS-1c instead:
+    - (a) computes PSR and DSR on day-level returns now, which only tightens;
+    - (b) keeps DSR as a reported diagnostic with an effective-N sensitivity line;
+    - (c) builds a joint day-block bootstrap maximum-statistic test (Hansen's SPA, studentised) over the frozen registry. It resamples the same calendar blocks for every variant, keeps idle days and every cost, and fixes the block-length rule in advance;
+    - (d) calibrates (c) by simulation across duplicate, independent, heavy-tailed, common-shock and idle-day scenarios: the false-positive rate is at most α at zero edge, and power is reported next to DSR's.
+  - Replacing the DSR gate in G1 with (c) is a change of method that can pass more strategies, so it merges only with the owner's sign-off on that evidence. Until then G1 keeps DSR ≥ 0.95.
+- **Holdout.**
+  - The sealed window is UTC days 2026-09-22 to 2026-10-01 (data days are UTC), all after B4. It starts at 09-22T00:00Z, after the 2 h embargo, as BT-2's `study-1` registers it. RES-3 ends practice at the start of Melbourne day 09-22, 10 hours earlier; that is conservative, so no change. Trade days for the 10-day minimum are counted in Melbourne days, the stats day key.
+  - G1 runs on every practice day. Results are reported by regime and described as cross-regime evidence. Only 8 practice days fall wholly after B4, below G1's 10-day minimum, so post-B4 practice results are descriptive only.
+  - The holdout can come up short on trades (n < max(300, n_power)) or on trade days (fewer than 10). The size check counts candidates and entries only, before any outcome is scored. In that case the window extends by whole UTC days from 10-02, as the days are published, for at most 28 days, and stops on the first day both counts are met. Past 28 days the result is "not proven". This extension rule is fixed now, before any holdout count is known.
+  - The extension may cross B5 (10-02 15:47 UTC). UPG-1 found SOL-market fields, quotes, fees and rent unchanged there, and H5 refuses any non-zero tail, so B5 changes nothing we trade. Results are reported before and after B5. B2–B4 stay hard boundaries for every window.
+  - Repeated attempts share one error budget. Attempt 1 is tested at family α = 0.04 (Holm across universes, with n_power simulated at that level). Attempt k ≥ 2 is tested at 0.01 / 2^(k−1) on a new, later window. All attempts together have a false-pass rate of at most 0.05.
+  - The 48-hour dry run is operational evidence and G3 only. It is never part of the holdout. STATS-1b, BT-2.
+- **Rent.** Rent follows the transaction's real outcome:
+  - It is refunded once, when the atomic sell-and-close lands.
+  - It stays locked after a sell-only fallback, a partial exit, dust or an unsolicited token left in the account, a missing close authority, or withheld Token-2022 fees.
+  - A failed close rolls back the sell, and its fee is still charged.
+  - The backtest's refund is tied to the modelled account-close outcome, not to the position closing. Venue accounts and WSOL proceeds are never refunded or counted twice.
+  - A bounded sell-only recovery path starts once the original transaction is resolved. Selling comes before reclaiming rent.
+  - The "no rent recovery" line and full rent in worst-case reservations stay. BT-1c, EXIT-1b, TX-1b.
+- **Equity units.**
+  - Unitisation uses one executable valuation before and after each flow, and the high-water mark is kept per unit. A deposit never resets a latched trigger.
+  - A withdrawal triggers a fresh affordability check and can never take the SOL reserved for exits, fees, pending transactions or full-loss exposure.
+  - In the first release, withdrawals queue until there is no position or unresolved intent and the account is reconciled.
+  - The daily and weekly loss boundaries now use realised equity, so an open loss already counted yesterday is counted again today. That is stricter than "loss made today". The code keeps it until the owner signs off on the change, which is listed with the RISK-1 owner findings. RISK-1b adds the marked-boundary figure next to it, with a test that shows the double count. RISK-1b, WORKER-1.
+- **Observation delay and exit failures.**
+  - The fill model splits delay into event → processed availability, processed → confirmed (only when the decision path waits for confirmed), and provider → worker.
+  - Scenarios: measured; adverse 2 slots + 6 slots + 1 s; stress 4 + 12 + 2 s. These are stress budgets, not measured percentiles.
+  - Slots convert to time with the replay's real slot times. A delay already present in recorded receipt times is never charged twice.
+  - 30 s and 60 s blackouts with backlog recovery are stress cases. Stale state never becomes fresh through a new receipt time, and clocks and watchdogs keep running through feed stalls.
+  - Exit failures share one persistent network state over slot windows, with provider failures layered on top, plus deterministic 10, 30 and 60 s failure bursts. Results report how expectancy and survival change as bursts become more frequent.
+  - The worker's recorder logs processed and confirmed arrival for the same slots and signatures on the VPS from the first shakedown, so the "measured" scenario comes from the real host. BT-1c, WORKER-1.
+- **Simultaneous signals.**
+  - The deployment replay takes the earliest signal that was fully eligible and information-ready on the worker, and reserves capacity atomically.
+  - True ties break by a hash with a salt fixed and recorded before any replay. Trying salts counts as a strategy search.
+  - Any batch schedule is fixed, and its wait is charged.
+  - A highest-score rule is a later candidate, registered as a trial and frozen into the configuration before holdout. BT-2.
+- **Collapse materiality.** A rug label never depends on the current bankroll. Three separate fields:
+  - the observed event (collapse, creator sale, timing, venue);
+  - materiality at a fixed, versioned reference size and cost limit, with absolute SOL and USD liquidity recorded;
+  - current exposure at Zeroed's real size, used only for entry affordability.
+  One-transaction liquidity spikes are measured before any persistence rule. The strict rejection stays until the measured distribution supports a change. RUG-1c.
+- **Standby.** Deferred. A shorter holding time is not outage protection. The priorities are:
+  - automatic local restart;
+  - persisted exit state and pending signatures;
+  - recovery measured as "reconciled and able to exit";
+  - separate drills for process crash, reboot, RPC loss and host loss.
+  A later standby needs exclusive signing, fencing and reconciliation of already-signed transactions. It never relies on a second sell failing for lack of tokens. RUN-1d, OPS-1d.
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
