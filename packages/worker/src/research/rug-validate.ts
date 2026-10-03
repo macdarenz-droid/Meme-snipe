@@ -33,6 +33,13 @@ export interface LaunchReport {
   readonly peakExitCostBps: string | null;
   /** The level just after the highest peak, bps of it: a one-transaction spike drops at once (null: nothing after). */
   readonly afterPeakBps: number | null;
+  /** The highest peak is the first pool level after migration (a venue change, not trading). */
+  readonly peakAtMigration: boolean;
+  /** The deployer's first sale: its size (bps of supply) and time; null when the deployer never sold. */
+  readonly firstSaleBps: number | null;
+  readonly firstSaleAtMs: number | null;
+  /** First time the collapse rule held (no minimum peak), or null. */
+  readonly collapseAtMs: number | null;
   /** Non-deployer wallets' SOL into and out of the mint's venues in the window, and the quote liquidity left at its end. */
   readonly outsiderIn: string;
   readonly outsiderOut: string;
@@ -57,15 +64,22 @@ export const analyzeLaunch = (txs: readonly { readonly signature: string; readon
   let pool: string | null = null;
   const levels: { atMs: number; level: string; peak: string }[] = [];
   let top: { level: bigint; atMs: number; state: VenueState | null; index: number } | null = null;
+  let firstPool: number | null = null;
+  let firstSale: { bps: number; atMs: number } | null = null;
+  let collapseAt: number | null = null;
   let sold = 0n;
   let dumpAt: number | null = null;
   const labeller = new RugLabeller(rugs, {
     level: (_m, level, peak, atMs, state) => {
+      if (state?.venue === 'pool' && firstPool === null) firstPool = levels.length;
       if (top === null || level > top.level) top = { level, atMs, state, index: levels.length };
+      const age = create === null ? Infinity : atMs - Number(big(create['timestamp'])) * 1_000;
+      if (collapseAt === null && peak > 0n && age <= rugs.collapse.windowMs && level * BPS_DENOMINATOR <= peak * (BPS_DENOMINATOR - BigInt(rugs.collapse.dropBps))) collapseAt = atMs;
       levels.push({ atMs, level: String(level), peak: String(peak) });
     },
     sale: (_m, total, atMs) => {
       sold = total;
+      if (firstSale === null && create !== null) firstSale = { bps: bps(total, big(create['tokenTotalSupply'])), atMs };
       const supply = create === null ? 0n : big(create['tokenTotalSupply']);
       const age = create === null ? Infinity : atMs - Number(big(create['timestamp'])) * 1_000;
       if (dumpAt === null && supply > 0n && age <= rugs.creatorDump.windowMs && total * BPS_DENOMINATOR >= supply * BigInt(rugs.creatorDump.supplyBps)) dumpAt = atMs;
@@ -153,6 +167,9 @@ export const analyzeLaunch = (txs: readonly { readonly signature: string; readon
     transactions: count, creatorDumpAtMs: dumpAt, deployerSoldBps: bps(sold, supply), levels,
     peak: String(t?.level ?? 0n), peakAtMs: t?.atMs ?? null, peakVenue: t?.state?.venue ?? null, peakExitCostBps: exit === null ? null : String(exit),
     afterPeakBps: t === null || after === undefined || t.level === 0n ? null : bps(BigInt(after.level), t.level),
+    peakAtMigration: t !== null && t.index === (firstPool as number | null),
+    firstSaleBps: (firstSale as { bps: number } | null)?.bps ?? null, firstSaleAtMs: (firstSale as { atMs: number } | null)?.atMs ?? null,
+    collapseAtMs: collapseAt,
     outsiderIn: String(outsiderIn), outsiderOut: String(outsiderOut), finalQuote: String(finalQuote),
     executableLoss: String(outsiderIn - outsiderOut - finalQuote),
     transferredBps: bps(transferred, supply), transferSoldBps: bps(transferSold, supply),
@@ -221,6 +238,26 @@ export const sweep = (reports: readonly LaunchReport[], rugs: RugConfig, minPeak
       precision: tp + fp === 0 ? null : tp / (tp + fp), recall: tp + fn === 0 ? null : tp / (tp + fn),
     };
   });
+
+/**
+ * How strongly a small deployer sale predicts a later collapse or loss: launches grouped by the size of the deployer's
+ * first sale (bps of supply; bounds are lower-inclusive), with the share that collapsed after that sale and the median
+ * executable loss. `null` group: the deployer never sold.
+ */
+export const saleBuckets = (reports: readonly LaunchReport[], bounds: readonly number[] = [0, 50, 200, 500]) => {
+  const groups = new Map<string, LaunchReport[]>();
+  for (const r of reports) {
+    const b = r.firstSaleBps;
+    const key = b === null ? 'none' : `${[...bounds].reverse().find((x) => b >= x) ?? bounds[0]}+`;
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  }
+  const median = (xs: bigint[]) => (xs.length === 0 ? null : String([...xs].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))[Math.floor((xs.length - 1) / 2)]));
+  return [...groups].sort(([a], [b]) => (a < b ? -1 : 1)).map(([group, rs]) => ({
+    group, launches: rs.length,
+    collapsedAfterSale: rs.filter((r) => r.collapseAtMs !== null && (r.firstSaleAtMs === null || r.collapseAtMs >= r.firstSaleAtMs)).length,
+    medianLoss: median(rs.map((r) => BigInt(r.executableLoss))),
+  }));
+};
 
 /** Launches rugs-1 does not label where the deployer's moved tokens, or the creation-slot buyers, sold ≥ the dump share. */
 export const misses = (reports: readonly LaunchReport[], rugs: RugConfig) => {

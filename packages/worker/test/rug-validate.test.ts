@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RUG_CONFIG, type RugConfig } from '../../core/src/config/index.ts';
-import { analyzeLaunch, collapses, collapsesSustained, misses, sustainedPeak, sweep, type FullRpcTransaction, type LaunchReport } from '../src/research/rug-validate.ts';
+import { analyzeLaunch, collapses, collapsesSustained, misses, saleBuckets, sustainedPeak, sweep, type FullRpcTransaction, type LaunchReport } from '../src/research/rug-validate.ts';
 
 type Tx = FullRpcTransaction & { readonly signature: string };
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures', 'rug-replay.json'), 'utf8')) as { cases: { name: string; mint: string; transactions: Tx[] }[] };
@@ -11,7 +11,7 @@ const RUG = FIXTURE.cases.find((c) => c.name === 'rug')!;
 
 const report = (over: Partial<LaunchReport>): LaunchReport => ({
   mint: 'M', creator: 'D', createdAtMs: 0, supply: '1000000', transactions: 1, creatorDumpAtMs: null, deployerSoldBps: 0, levels: [],
-  peak: '0', peakAtMs: null, peakVenue: null, peakExitCostBps: null, afterPeakBps: null,
+  peak: '0', peakAtMs: null, peakVenue: null, peakExitCostBps: null, afterPeakBps: null, peakAtMigration: false, firstSaleBps: null, firstSaleAtMs: null, collapseAtMs: null,
   outsiderIn: '0', outsiderOut: '0', finalQuote: '0', executableLoss: '0', transferredBps: 0, transferSoldBps: 0, bundleBoughtBps: 0, bundleSoldBps: 0, ...over,
 });
 const lv = (atMs: number, level: number, peak: number) => ({ atMs, level: String(level), peak: String(peak) });
@@ -27,6 +27,9 @@ describe('launch analysis on the known rug', () => {
     const top = r.levels.reduce((a, l) => (BigInt(l.level) > BigInt(a.level) ? l : a));
     expect(r).toMatchObject({ peak: top.level, peakAtMs: top.atMs, peakVenue: 'curve' });
     expect(r.peakExitCostBps).not.toBeNull();
+    expect(r.firstSaleBps).toBe(505);
+    expect(r.firstSaleAtMs).toBe(r.creatorDumpAtMs);
+    expect(r.peakAtMigration).toBe(false);
     const i = r.levels.indexOf(top);
     expect(r.afterPeakBps).toBe(i + 1 < r.levels.length ? Number((BigInt(r.levels[i + 1]!.level) * 10_000n) / BigInt(top.level)) : null);
   });
@@ -73,6 +76,20 @@ describe('minimum peak, sweep and misses', () => {
       { minPeak: '100', labelled: 2, truePositive: 1, falsePositive: 1, falseNegative: 2, precision: 1 / 2, recall: 1 / 3 },
     ]);
     expect(sweep([], CFG, [0n], 1n)).toEqual([{ minPeak: '0', labelled: 0, truePositive: 0, falsePositive: 0, falseNegative: 0, precision: null, recall: null }]);
+  });
+
+  it('groups launches by the deployer\'s first sale and counts collapses after it', () => {
+    const rs = [
+      report({ mint: 'A', firstSaleBps: 10, firstSaleAtMs: 5, collapseAtMs: 9, executableLoss: '3' }),
+      report({ mint: 'B', firstSaleBps: 49, firstSaleAtMs: 5, collapseAtMs: 4, executableLoss: '1' }),
+      report({ mint: 'C', firstSaleBps: 50, firstSaleAtMs: 1, collapseAtMs: 2, executableLoss: '7' }),
+      report({ mint: 'D', executableLoss: '0' }),
+    ];
+    expect(saleBuckets(rs)).toEqual([
+      { group: '0+', launches: 2, collapsedAfterSale: 1, medianLoss: '1' },
+      { group: '50+', launches: 1, collapsedAfterSale: 1, medianLoss: '7' },
+      { group: 'none', launches: 1, collapsedAfterSale: 0, medianLoss: '0' },
+    ]);
   });
 
   it('counts transfer-then-sell and creation-slot dumps rugs-1 does not label, at the dump share', () => {
