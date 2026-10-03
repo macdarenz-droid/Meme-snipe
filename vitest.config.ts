@@ -8,6 +8,8 @@ const HEAVY = [
   'packages/core/test/stats-gates.test.ts',
   'packages/core/test/stats-simulation.test.ts',
   'packages/backtest/test/run.test.ts',
+  // RES-3: the CLI test writes a zstd fixture dataset (~25 s measured).
+  'packages/backtest/test/research.test.ts',
 ];
 
 export default defineConfig({

@@ -4,7 +4,7 @@
 // (loosening needs the owner and a change to the defaults here).
 
 import { dayBlockMeanDiffInterval, dayBlockMeanInterval, type DayReturn } from './bootstrap.ts';
-import { describeSummary, g2Rule, g2Sensitivity, MIN_DAYS, sameSummary, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
+import { describeSummary, G2_SENSITIVITY_VARIANTS, g2Rule, g2Sensitivity, MIN_DAYS, sameSummary, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
 import { attemptAlpha, burnHoldout, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
 import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
@@ -15,8 +15,8 @@ import { nPower } from './power.ts';
 import { meanPredictiveInterval, type SampleSummary } from './predictive.ts';
 import type { TripleBarrierLabel } from './labeller.ts';
 import type { Rng } from './rng.ts';
-import { studentTQuantile } from './special.ts';
-import { deflatedSharpeDaily, type TrialRecord } from './sharpe.ts';
+import { incompleteGammaUpper, studentTQuantile } from './special.ts';
+import { deflatedSharpe, deflatedSharpeDaily, type TrialRecord } from './sharpe.ts';
 import { spaTest } from './spa.ts';
 
 export type GateName = 'G0' | 'G1' | 'G2' | 'G3' | 'G4' | 'G5';
@@ -101,6 +101,9 @@ export const G3_DEFAULTS = {
   minHours: 48, fillDiffMedianMax: 0.005, fillDiffMax: 0.02, minPaperTradesForMean: 30, liveOnlyVetoRateMax: 0.1,
   minVetoedForGap: 10, minKeptForGap: 10, vetoBiasMax: 0.05, retainedLowerMin: 0,
   minCandidatesForRate: 50, minRejectsForMix: 50, minFills: 20, minSimulations: 20, simSuccessMin: 0.95,
+  // The mean must sit inside the holdout's predictive interval at this level. A narrower interval is the stricter
+  // direction for an "inside" agree test, so tightening lowers it.
+  meanPredictiveLevel: 0.9,
 };
 // Every minimum sample is a floor: below it a comparison is inconclusive (extend the run), never agreement, so raising
 // it is stricter. More scored vetoed or kept trades before the gap is measured means the worst-case gap is used more
@@ -109,6 +112,7 @@ const G3_DIR = {
   minHours: 'min', fillDiffMedianMax: 'max', fillDiffMax: 'max', minPaperTradesForMean: 'min', liveOnlyVetoRateMax: 'max',
   minVetoedForGap: 'min', minKeptForGap: 'min', vetoBiasMax: 'max', retainedLowerMin: 'min',
   minCandidatesForRate: 'min', minRejectsForMix: 'min', minFills: 'min', minSimulations: 'min', simSuccessMin: 'min',
+  meanPredictiveLevel: 'max',
 } as const;
 
 export const G4_DEFAULTS = { minTrades: 30, firstAttemptFailRateMax: 0.1, liveMinusPaperMedianMin: -0.01 };
@@ -367,12 +371,13 @@ export interface G2Universe {
   /**
    * Holdout trades from the sealed ledger, in decision-time order. Outcomes are read only after the size check passes;
    * the cluster labels are checked before (they are decision-time facts, not outcomes).
+   * A trade without a creator or funder cluster fails the gate (missing evidence is the stricter outcome).
    */
   readonly trades: readonly HoldoutTrade[];
   /** The random control S0 on the same eligible candidates and days, one run per seed. */
   readonly controlRuns: readonly (readonly DayReturn[])[];
   /** Walk-forward trades of the same configuration: σ̂ for the closed-form check and the reported predictive interval. */
-  readonly walkForward: readonly DayReturn[];
+  readonly walkForward: readonly ClusteredReturn[];
   /** n_power from `simulateG2Power` on the walk-forward data with the registry's family size. */
   readonly power: G2PowerResult;
 }
@@ -410,6 +415,8 @@ export interface G2UniverseResult {
 
 export interface G2SensitivityRow {
   readonly variant: G2SensitivityVariant;
+  /** Resampling units the interval was formed from: days, blocks of days, or clusters; null if none was formed. */
+  readonly blocks: number | null;
   readonly lower: number | null;
   readonly upper: number | null;
   readonly diffVsS0Lower: number | null;
@@ -462,11 +469,17 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     c.add(`S0 ${u.universe}`, u.controlRuns.length >= th.minControlSeeds, `${u.controlRuns.length} S0 seeds (need >= ${th.minControlSeeds})`);
     c.add(`n_power ${u.universe}`, Math.abs(u.power.level - level0) < 1e-12,
       `n_power was simulated at level ${fmt(u.power.level)}, attempt α ${fmt(alpha)} over the registry's family of ${registry.familySize} needs ${fmt(level0)}`);
+    const missingUnits = G2_SENSITIVITY_VARIANTS.filter((x) => !u.power.units.includes(x));
+    c.add(`n_power units ${u.universe}`, missingUnits.length === 0,
+      `n_power simulated without ${missingUnits.join(', ') || 'none'} (need every resampling unit of the rule)`);
     const wfNow = summarizeWalkForward(u.walkForward);
     c.add(`n_power inputs ${u.universe}`, sameSummary(wfNow, u.power.walkForward),
       `n_power was simulated on walk-forward ${describeSummary(u.power.walkForward)}, this universe's walk-forward is ${describeSummary(wfNow)}`);
+    // A missing cluster label is missing evidence: the stricter outcome, fail, before the seal opens.
     const unclustered = u.trades.filter((t) => !t.creatorCluster || !t.funderCluster).length;
     c.add(`clusters ${u.universe}`, unclustered === 0, `${unclustered} trades without a creator or funder cluster (need 0)`);
+    const wfUnclustered = u.walkForward.filter((t) => !t.creatorCluster || !t.funderCluster).length;
+    c.add(`walk-forward clusters ${u.universe}`, wfUnclustered === 0, `${wfUnclustered} walk-forward trades without a creator or funder cluster (need 0)`);
   }
   if (c.failed.length > 0) return failWith();
 
@@ -515,8 +528,8 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     const primary = g2Rule(u.trades, control, alpha, opts);
     const rest = primary.p < alpha ? g2Sensitivity(u.trades, control, alpha, opts, ['days-2', 'days-3', 'creator', 'funder']) : [];
     const rows: G2SensitivityRow[] = [
-      { variant: 'days-1', lower: primary.mean.lower, upper: primary.mean.upper, diffVsS0Lower: primary.vsControl.lower, p: primary.p },
-      ...rest.map((x) => ({ variant: x.variant, lower: x.mean?.lower ?? null, upper: x.mean?.upper ?? null, diffVsS0Lower: x.vsControl?.lower ?? null, p: x.p })),
+      { variant: 'days-1', blocks: primary.mean.days, lower: primary.mean.lower, upper: primary.mean.upper, diffVsS0Lower: primary.vsControl.lower, p: primary.p },
+      ...rest.map((x) => ({ variant: x.variant, blocks: x.mean?.days ?? null, lower: x.mean?.lower ?? null, upper: x.mean?.upper ?? null, diffVsS0Lower: x.vsControl?.lower ?? null, p: x.p })),
     ];
     const weakest = rows.reduce((w, x) => (x.p > w.p ? x : w));
     return { ...primary, p: weakest.p, rows, weakest };
@@ -537,7 +550,7 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     const passed = h.rejected[k]!;
     c.add(`proof ${u.universe}`, passed,
       `mean ${fmt(r.mean.mean)}, 95% CI [${fmt(r.mean.lower)}, ${fmt(r.mean.upper)}]; vs S0 ${fmt(r.vsControl.mean)}, 95% CI [${fmt(r.vsControl.lower)}, ${fmt(r.vsControl.upper)}]; `
-      + `weakest resampling ${r.weakest.variant}: 95% CI [${fmt(r.weakest.lower)}, ${fmt(r.weakest.upper)}], p ${fmt(r.p)} (need < Holm level ${fmt(level)} under every unit)`);
+      + `weakest resampling ${r.weakest.variant} (${r.weakest.blocks ?? 'no'} units): 95% CI [${fmt(r.weakest.lower)}, ${fmt(r.weakest.upper)}], p ${fmt(r.p)} (need < Holm level ${fmt(level)} under every unit)`);
     const wf = u.walkForward.map((t) => t.rNet);
     if (wf.length >= 2) {
       const pi = meanPredictiveInterval({ n: wf.length, mean: mean(wf), sd: sd(wf) }, u.trades.length, 0.9);
@@ -579,8 +592,12 @@ export interface G3Input {
    * successes, and the failures by error code.
    */
   readonly simulations: { readonly attempted: number; readonly succeeded: number; readonly errors: Readonly<Record<string, number>> };
-  /** Lower bound of the holdout's mean net return: G2's `lower` for this universe (two-sided CI at its Holm level). */
-  readonly holdoutLower: number;
+  /**
+   * One-sided lower bound of the holdout's mean net return at level 1 − α/3 (VETO_COMPOSITE_LEVEL), from the day-block
+   * bootstrap of the holdout (`dayBlockMeanInterval(trades, level, 'lower', …)`) in the scoring stage. The level is
+   * checked: a 95% bound would make the composite's simultaneous coverage fall below 95%.
+   */
+  readonly holdoutLower: { readonly value: number; readonly level: number };
   readonly candidates: { readonly dryRunCount: number; readonly dryRunHours: number; readonly backtestCount: number; readonly backtestHours: number };
   /** Rejected candidates per reason code. */
   readonly rejectMix: { readonly dryRun: Readonly<Record<string, number>>; readonly backtest: Readonly<Record<string, number>> };
@@ -629,6 +646,41 @@ export const scoreVetoCounterfactuals = (labels: readonly TripleBarrierLabel[]):
   return { returns, censored };
 };
 
+/**
+ * The veto-bias composite is a lower-bound safety claim built from three bounds: the holdout lower bound, the veto-rate
+ * upper bound and the gap bound. Each is taken at α/3 (Bonferroni), so all three hold together with probability at
+ * least 95% (supervisor ruling after three reviews). Wider bounds are the stricter direction here.
+ */
+export const VETO_COMPOSITE_ALPHA = 0.05 / 3;
+export const VETO_COMPOSITE_LEVEL = 1 - VETO_COMPOSITE_ALPHA;
+
+/** Level of the joint reject-mix test; an "agree" test, so it is not widened (supervisor ruling). */
+const REJECT_MIX_ALPHA = 0.05;
+
+/**
+ * G-test of goodness of fit (likelihood ratio, Sokal & Rohlf, Biometry, 4th ed., 2012, §17.2): the dry run's reject
+ * counts against the shares the backtest predicts. G = 2·Σ O·ln(O/E), df = reasons − 1, p from χ²(df). A reason the
+ * backtest never produced but the dry run did has E = 0: p = 0.
+ */
+export const rejectMixGTest = (
+  observed: Readonly<Record<string, number>>,
+  reference: Readonly<Record<string, number>>,
+): { g: number; df: number; p: number } => {
+  const reasons = [...new Set([...Object.keys(observed), ...Object.keys(reference)])].sort();
+  const n = reasons.reduce((t, r) => t + (observed[r] ?? 0), 0);
+  const refTotal = reasons.reduce((t, r) => t + (reference[r] ?? 0), 0);
+  if (n === 0 || refTotal === 0) throw new RangeError('the G-test needs counts on both sides');
+  let g = 0;
+  for (const r of reasons) {
+    const o = observed[r] ?? 0;
+    const e = (n * (reference[r] ?? 0)) / refTotal;
+    if (o > 0 && e === 0) return { g: Infinity, df: reasons.length - 1, p: 0 };
+    if (o > 0) g += 2 * o * Math.log(o / e);
+  }
+  const df = reasons.length - 1;
+  return { g, df, p: df === 0 ? 1 : incompleteGammaUpper(df / 2, Math.max(0, g) / 2) };
+};
+
 /** One-sided (1 − α) Welch bounds on mean(a) − mean(b). */
 const welchBounds = (a: readonly number[], b: readonly number[], alpha = 0.05): { diff: number; lower: number; upper: number } => {
   const diff = mean(a) - mean(b);
@@ -647,8 +699,10 @@ const welchBounds = (a: readonly number[], b: readonly number[], alpha = 0.05): 
  * ('not-proven': extend the run), never agreement. The notes say agrees, disagrees or inconclusive. It also bounds the live-only veto
  * bias (review STATS-1b): the backtest keeps trades live would veto, so the retained strategy's expectancy is the holdout
  * mean minus v·Δ, Δ the mean of vetoed candidates (scored as if entered) minus the mean of kept trades. The gate needs
- * holdoutLower − v₉₅·max(0, Δ₉₅) − execution allowance > 0, with v₉₅ the Clopper–Pearson and Δ₉₅ the Welch one-sided
- * 95% upper bounds, and v₉₅·|Δ|₉₅ ≤ 5 points. With fewer than 10 scored vetoed or kept trades Δ is the worst case the
+ * holdoutLower − v⁺·max(0, Δ⁺) − execution allowance > 0, and v⁺·|Δ|⁺ ≤ 5 points. Each of the three components is
+ * at α/3 (VETO_COMPOSITE_ALPHA): the holdout's one-sided lower bound, v⁺ the one-sided Clopper–Pearson upper bound,
+ * Δ⁺ the one-sided Welch upper bound for the selection allowance and |Δ|⁺ from the two-sided Welch bounds (α/6 a
+ * side) for the bias. With fewer than 10 scored vetoed or kept trades Δ is the worst case the
  * return range allows (cap − RETURN_FLOOR), never an assumed value. A failure that more run time can clear (missing,
  * censored or too few counterfactuals; a bound that fails while the point estimate passes) is "not proven": extend the
  * dry run. Kept trades within one run are treated as independent (48 h holds about two days, too few to estimate day
@@ -676,11 +730,12 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   // Paper outcomes against the holdout's expected distribution: the mean and the severe-outcome share.
   if (m >= th.minPaperTradesForMean) {
     const dm = mean(input.dryRunReturns);
-    const pi = meanPredictiveInterval(input.holdout, m, 0.9);
+    const pi = meanPredictiveInterval(input.holdout, m, th.meanPredictiveLevel);
     metrics.dryRunMean = dm;
     metrics.predictiveLower90 = pi.lower;
     metrics.predictiveUpper90 = pi.upper;
-    c.add('mean', dm >= pi.lower && dm <= pi.upper, `dry-run mean ${fmt(dm)} vs holdout 90% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}] for ${m} trades`);
+    c.add('mean', dm >= pi.lower && dm <= pi.upper,
+      `dry-run mean ${fmt(dm)} vs holdout ${fmt(100 * th.meanPredictiveLevel)}% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}] for ${m} trades`);
     const severe = input.dryRunReturns.filter((x) => x <= SEVERE_RETURN).length;
     const ci = clopperPearsonInterval(severe, m);
     metrics.dryRunSevereRate = severe / m;
@@ -716,6 +771,12 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
       c.add(`reject mix ${r}`, share >= ci.lower && share <= ci.upper,
         `dry run ${kDry}/${dryTotal}, 95% interval [${fmt(ci.lower)}, ${fmt(ci.upper)}] vs backtest share ${fmt(share)}`);
     }
+    // One joint test of the whole reason distribution beside the per-reason intervals; failing either disagrees.
+    const g = rejectMixGTest(input.rejectMix.dryRun, input.rejectMix.backtest);
+    metrics.rejectMixG = g.g;
+    metrics.rejectMixP = g.p;
+    c.add('reject mix joint', g.p >= REJECT_MIX_ALPHA,
+      `G-test over ${g.df + 1} reasons: G ${fmt(g.g)}, df ${g.df}, p ${fmt(g.p)} (need >= ${REJECT_MIX_ALPHA})`);
   }
 
   // Executable amounts (TEST-2's bounds: median <= 0.5 points, each <= 2 points).
@@ -764,6 +825,9 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   const vUpper = clopperPearsonUpper(v.vetoed, v.eligible);
   metrics.liveOnlyVetoRate = vRate;
   metrics.liveOnlyVetoUpper95 = vUpper;
+  // The composite's own veto-rate bound, at α/3.
+  const vComposite = clopperPearsonUpper(v.vetoed, v.eligible, VETO_COMPOSITE_ALPHA);
+  metrics.vetoRateUpperComposite = vComposite;
   c.add('live-only vetoes', vRate <= th.liveOnlyVetoRateMax,
     `${v.vetoed}/${v.eligible} = ${fmt(vRate)} vetoed by live-only checks, 95% upper bound ${fmt(vUpper)} (need rate <= ${th.liveOnlyVetoRateMax})`);
 
@@ -790,25 +854,30 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   let gapAbsUpper = worstGap;
   let gapPoint: number | null = null;
   if (measured) {
-    const w = welchBounds(cf.returns, input.dryRunReturns);
-    gapPoint = w.diff;
-    gapUpper = Math.min(w.upper, worstGap);
-    gapAbsUpper = Math.min(Math.max(Math.abs(w.upper), Math.abs(w.lower)), worstGap);
+    const one = welchBounds(cf.returns, input.dryRunReturns, VETO_COMPOSITE_ALPHA);
+    const two = welchBounds(cf.returns, input.dryRunReturns, VETO_COMPOSITE_ALPHA / 2);
+    gapPoint = one.diff;
+    gapUpper = Math.min(one.upper, worstGap);
+    gapAbsUpper = Math.min(Math.max(Math.abs(two.upper), Math.abs(two.lower)), worstGap);
   } else {
     notes.push(`veto gap not measured (${scored} vetoed scored, ${m} kept; need >= ${th.minVetoedForGap} and >= ${th.minKeptForGap}, all scored): the worst case ${fmt(worstGap)} is used`);
   }
   metrics.vetoGap = gapPoint;
-  metrics.vetoGapUpper95 = gapUpper;
-  const bias = vUpper * gapAbsUpper;
+  metrics.vetoGapUpper = gapUpper;
+  metrics.vetoGapAbsUpper = gapAbsUpper;
+  const bias = vComposite * gapAbsUpper;
   const biasPoint = gapPoint === null ? null : vRate * Math.abs(gapPoint);
-  metrics.vetoBiasUpper95 = bias;
+  metrics.vetoBiasUpper = bias;
   if (!c.add('veto bias', bias <= th.vetoBiasMax,
-    `v₉₅·|Δ|₉₅ = ${fmt(vUpper)} × ${fmt(gapAbsUpper)} = ${fmt(bias)}${measured ? '' : ' (worst-case gap)'} (need <= ${th.vetoBiasMax})`)
+    `v⁺·|Δ|⁺ at α/3 = ${fmt(vComposite)} × ${fmt(gapAbsUpper)} = ${fmt(bias)}${measured ? '' : ' (worst-case gap)'} (need <= ${th.vetoBiasMax})`)
     && !(biasPoint !== null && biasPoint > th.vetoBiasMax)) extend.add('veto bias');
 
-  const selection = vUpper * Math.max(0, gapUpper);
+  const levelOk = Math.abs(input.holdoutLower.level - VETO_COMPOSITE_LEVEL) < 1e-12;
+  c.add('holdout bound level', levelOk,
+    `holdout lower bound at one-sided ${fmt(input.holdoutLower.level)} (need ${fmt(VETO_COMPOSITE_LEVEL)}, α/3 of the veto-bias composite)`);
+  const selection = vComposite * Math.max(0, gapUpper);
   const execution = 2 * fillUpper; // an entry and an exit per trade
-  const retainedLower = input.holdoutLower - selection - execution;
+  const retainedLower = input.holdoutLower.value - selection - execution;
   const retainedPoint = input.holdout.mean - vRate * Math.max(0, gapPoint ?? 0) - 2 * fillMean;
   metrics.selectionAllowance = selection;
   metrics.executionAllowance = execution;
@@ -817,7 +886,7 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   // The point estimate already fails only when the gap was measured; otherwise more evidence may clear it.
   const retainedExtend = !retainedOk && retainedPoint > th.retainedLowerMin;
   c.add('retained expectancy', retainedOk,
-    `holdout lower ${fmt(input.holdoutLower)} − selection ${fmt(selection)} − execution ${fmt(execution)} = ${fmt(retainedLower)} (need > ${th.retainedLowerMin})`
+    `holdout lower ${fmt(input.holdoutLower.value)} − selection ${fmt(selection)} − execution ${fmt(execution)} = ${fmt(retainedLower)} (need > ${th.retainedLowerMin})`
     + (retainedExtend ? `; point estimate ${fmt(retainedPoint)}: extend the dry run` : ''));
   if (retainedExtend) extend.add('retained expectancy');
 
@@ -969,7 +1038,8 @@ export interface PlatformChange {
 }
 
 export interface RevalidationInput {
-  /** End of the holdout window the G2 proof rests on (exclusive). */
+  /** Start (inclusive) and end (exclusive) of the holdout window the G2 proof rests on. */
+  readonly holdoutStartMs: number;
   readonly holdoutEndMs: number;
   readonly platformChanges: readonly PlatformChange[];
   /** The qualifying dry run and its G3 result against the holdout; null when none has run. */
@@ -1002,12 +1072,17 @@ export const evaluateRevalidation = (input: RevalidationInput, overrides?: Parti
   const c = new Checks();
   const missing = new Set<string>();
   const pending = input.platformChanges.filter((x) => x.atMs >= input.holdoutEndMs).sort((a, b) => a.atMs - b.atMs);
+  // A change inside the window splits the holdout across two regimes: the proof is not valid for either (§14: the
+  // holdout lies entirely after the last regime boundary before it).
+  const inside = input.platformChanges.filter((x) => x.atMs > input.holdoutStartMs && x.atMs < input.holdoutEndMs);
+  c.add('holdout regime', inside.length === 0,
+    inside.length === 0 ? 'no platform change inside the holdout window' : `${inside.map((x) => x.id).join(', ')} inside the holdout window`);
   const done = (status: GateStatus): RevalidationResult => ({
     passed: status === 'pass', status, reasons: c.failed, checks: c.list, pendingChanges: pending.map((x) => x.id),
   });
   if (pending.length === 0) {
     c.add('changes', true, 'no platform change after the holdout');
-    return done('pass');
+    return done(inside.length === 0 ? 'pass' : 'fail');
   }
   const latest = pending[pending.length - 1]!;
   const d = input.dryRun;

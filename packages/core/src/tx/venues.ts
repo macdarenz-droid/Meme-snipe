@@ -19,7 +19,6 @@ import {
   PUMP_PROGRAM,
   type Pool,
   SYSTEM_PROGRAM,
-  TOKEN_2022_PROGRAM,
   TOKEN_PROGRAM,
   bondingCurveAddress,
 } from '../chain/index.ts';
@@ -35,6 +34,7 @@ import {
   sharingConfigAddress,
   userVolumeAccumulator,
 } from './programs.ts';
+import { type ShapeRefusalReason, type TradeShape, checkShape } from './shape.ts';
 
 /** Anchor discriminators (pinned IDLs; PumpSwap's v1 family). */
 export const DISC = {
@@ -46,17 +46,10 @@ export const DISC = {
 
 /** All-zero key: `Pubkey::default()`, the "unset" value of pump's optional pubkey fields. */
 const DEFAULT_KEY = SYSTEM_PROGRAM;
-/** pump-swap-sdk `POOL_ACCOUNT_NEW_SIZE`: shorter pools need `extend_account` first, which we do not send. */
-export const POOL_ACCOUNT_MIN_BYTES = 300;
 
 export type Refusal = { readonly ok: false; readonly reason: BuildRefusal; readonly detail: string };
 export type BuildRefusal =
-  | 'unsupported-coin'
-  | 'curve-complete'
-  | 'not-sol-quoted'
-  | 'missing-chain-field'
-  | 'pool-layout-outdated'
-  | 'unsupported-mint'
+  | ShapeRefusalReason
   | 'invalid-amount'
   | 'over-policy';
 export const refuse = (reason: BuildRefusal, detail: string): Refusal => ({ ok: false, reason, detail });
@@ -85,17 +78,29 @@ export interface CurveAccounts {
   readonly userBaseAta: Address;
 }
 
+/** The curve's part of the supported transaction shape (`checkShape`); the mint's part comes from the request. */
+export const curveShape = (m: CurveMarket): Omit<TradeShape, 'extensions'> => ({
+  venue: 'curve', mintProgram: m.baseTokenProgram, quoteMint: m.curve.quoteMint, mayhem: m.curve.isMayhemMode, cashback: m.curve.isCashbackCoin,
+  coinCreator: m.curve.creator, curveComplete: m.curve.complete,
+});
+
+/** The mint's part of the shape: its extensions (the program is the market's `baseTokenProgram`). */
+export type MintShape = { readonly extensions: readonly { readonly kind: string }[] };
+
+const guard = (shape: Omit<TradeShape, 'extensions'>, mint: MintShape): Refusal | null => {
+  const s = checkShape({ ...shape, extensions: mint.extensions.map((e) => e.kind) });
+  return s.ok ? null : refuse(s.reason, s.detail);
+};
+
 /**
- * Checks a curve can be traded by these builders and picks the fee recipients. `feeIndex` and `buybackIndex` come
- * from the engine's seeded randomness (pump asks integrators to spread write locks over the 8 recipients).
+ * Checks the curve trade's shape (`checkShape`, the same check H17 runs) and picks the fee recipients. `feeIndex` and
+ * `buybackIndex` come from the engine's seeded randomness (pump asks integrators to spread write locks over the 8
+ * recipients).
  */
-export const curveAccounts = (m: CurveMarket, user: Address, feeIndex: number, buybackIndex: number): { ok: true; accounts: CurveAccounts } | Refusal => {
-  if (m.curve.complete) return refuse('curve-complete', 'the curve has completed; trade on the pool');
-  if (m.curve.isMayhemMode !== false) return refuse('unsupported-coin', 'mayhem-mode coin (or the flag is unread)');
-  if (m.curve.isCashbackCoin === true) return refuse('unsupported-coin', 'cashback coin');
-  if (m.curve.quoteMint !== undefined && m.curve.quoteMint !== DEFAULT_KEY && m.curve.quoteMint !== NATIVE_MINT) return refuse('not-sol-quoted', 'curve quote mint is not SOL');
+export const curveAccounts = (m: CurveMarket, mint: MintShape, user: Address, feeIndex: number, buybackIndex: number): { ok: true; accounts: CurveAccounts } | Refusal => {
+  const refused = guard(curveShape(m), mint);
+  if (refused !== null) return refused;
   if (m.curve.creator === undefined) return refuse('missing-chain-field', 'curve creator is unread');
-  if (m.baseTokenProgram !== TOKEN_PROGRAM && m.baseTokenProgram !== TOKEN_2022_PROGRAM) return refuse('unsupported-mint', 'base token program is not a token program');
   if (m.pumpGlobal.buybackFeeRecipients === undefined) return refuse('missing-chain-field', 'Global has no buyback fee recipients');
   const fee = pick([m.pumpGlobal.feeRecipient, ...m.pumpGlobal.feeRecipients], feeIndex, 'fee recipient');
   const buyback = pick(m.pumpGlobal.buybackFeeRecipients, buybackIndex, 'buyback fee recipient');
@@ -158,7 +163,7 @@ export const curveSellIx = (m: CurveMarket, a: CurveAccounts, user: Address, tok
 export interface PoolMarket {
   readonly pool: Address;
   readonly state: Pool;
-  /** Account data length; pools shorter than `POOL_ACCOUNT_MIN_BYTES` need an `extend_account` we do not send. */
+  /** Account data length; pools shorter than `POOL_ACCOUNT_MIN_BYTES` (shape.ts) need an `extend_account` we do not send. */
   readonly accountBytes: number;
   readonly baseTokenProgram: Address;
   /** PumpSwap `GlobalConfig`, for its fee-recipient lists. */
@@ -173,14 +178,18 @@ export interface PoolAccounts {
   readonly userQuoteAta: Address;
 }
 
-export const poolAccounts = (m: PoolMarket, user: Address, feeIndex: number, buybackIndex: number): { ok: true; accounts: PoolAccounts } | Refusal => {
+/** The pool's part of the supported transaction shape (`checkShape`); the mint's part comes from the request. */
+export const poolShape = (m: PoolMarket): Omit<TradeShape, 'extensions'> => ({
+  venue: 'pool', mintProgram: m.baseTokenProgram, quoteMint: m.state.quoteMint, mayhem: m.state.isMayhemMode, cashback: m.state.isCashbackCoin,
+  coinCreator: m.state.coinCreator, poolAccountBytes: m.accountBytes,
+});
+
+/** Checks the pool trade's shape (`checkShape`, the same check H17 runs) and picks the fee recipients. */
+export const poolAccounts = (m: PoolMarket, mint: MintShape, user: Address, feeIndex: number, buybackIndex: number): { ok: true; accounts: PoolAccounts } | Refusal => {
+  const refused = guard(poolShape(m), mint);
+  if (refused !== null) return refused;
   const p = m.state;
-  if (p.quoteMint !== NATIVE_MINT) return refuse('not-sol-quoted', 'pool quote mint is not wrapped SOL');
-  if (m.accountBytes < POOL_ACCOUNT_MIN_BYTES) return refuse('pool-layout-outdated', `pool account is ${m.accountBytes} bytes; it needs extend_account first`);
-  if (p.isMayhemMode !== false) return refuse('unsupported-coin', 'mayhem-mode pool (or the flag is unread)');
-  if (p.isCashbackCoin !== false) return refuse('unsupported-coin', 'cashback pool (or the flag is unread)');
   if (p.coinCreator === undefined) return refuse('missing-chain-field', 'pool coin creator is unread');
-  if (m.baseTokenProgram !== TOKEN_PROGRAM && m.baseTokenProgram !== TOKEN_2022_PROGRAM) return refuse('unsupported-mint', 'base token program is not a token program');
   if (m.globalConfig.buybackFeeRecipients === undefined) return refuse('missing-chain-field', 'GlobalConfig has no buyback fee recipients');
   return {
     ok: true,

@@ -10,7 +10,7 @@ const base = () => ({
   decode_failures: 0, chain_breaks: [], coverage_gaps: [],
   units: [{ unknown_events: { 'pump:742b4dbd117a482b': 3 }, extra_bytes: { 'pump:TradeEvent:8': 5, 'pump:CreateEvent:0': 1 }, newer_layouts: { 'amm:BuyEvent': 2 }, older_layouts: {} }],
 });
-const report = { curve: { real_ok: 1, real_pairs: 1, virtual_ok: 1, virtual_pairs: 1, token_exact: 0, token_checks: 0, quote_balance_ge: 0, quote_balance_checks: 0 }, amm: { chain_ok: 0, chain_pairs: 0, chain_exact: 0, chain_checks: 0 }, live: [] };
+const report = { curve: { real_ok: 1, real_pairs: 1, virtual_ok: 1, virtual_pairs: 1, token_exact: 0, token_checks: 0, quote_balance_ge: 0, quote_balance_checks: 0 }, amm: { chain_ok: 0, chain_pairs: 0, chain_exact: 0, chain_checks: 0 }, swap_attribution: { missing_column: 0, owner_empty_unmarked: 0 }, live: [] };
 
 test('windowDays lists [from, to)', () => {
   assert.deepEqual(windowDays('2026-09-30', '2026-10-02'), ['2026-09-30', '2026-10-01']);
@@ -37,7 +37,7 @@ test('the configured lead-in is enforced', () => {
 
 test('only the documented upgrade may differ from the IDL', () => {
   const m = base();
-  m.units.push({ unknown_events: { 'amm:0102030405060708': 1 }, extra_bytes: { 'pump:TradeEvent:4': 1, 'amm:CreatePoolEvent:8': 2 }, newer_layouts: { 'pump:CreateEvent': 1 }, older_layouts: { 'pump:TradeEvent:4': 7 } });
+  m.units.push({ from_slot: 1, unknown_events: { 'amm:0102030405060708': 1 }, extra_bytes: { 'pump:TradeEvent:4': 1, 'amm:CreatePoolEvent:8': 2 }, newer_layouts: { 'pump:CreateEvent': 1 }, older_layouts: { 'pump:TradeEvent:4': 7 } });
   assert.deepEqual(strictMisses(m, report), [
     'unknown event amm:0102030405060708 x1',
     'extra bytes pump:TradeEvent:4 x1',
@@ -62,4 +62,58 @@ test('an assembled window may not reach the 2026-10-02 regime boundary', () => {
   assert.deepEqual(strictMisses(m, report), ['window reaches 2026-10-02, the program-upgrade regime boundary']);
   m.window.lead_in_days = 0;
   assert.deepEqual(strictMisses(m, report, { leadInDays: 0 }), []);
+});
+
+test('every create transaction must have its raw record', () => {
+  const r = structuredClone(report);
+  r.raw = { signature_mismatch: 0, trade_txs: 0, trade_txs_with_raw: 0, create_rows: 3, create_rows_with_raw: 2 };
+  assert.deepEqual(strictMisses(base(), r), ['create or migration transactions without raw record 1']);
+});
+
+test('the pre-B4 layout (two fields shorter) is allowed only in units that start before B4', () => {
+  const m = base();
+  m.units.push({ from_slot: 446460000, older_layouts: { 'pump:TradeEvent:32': 5, 'amm:BuyEvent:37': 2, 'amm:SellEvent:30': 1 } });
+  assert.deepEqual(strictMisses(m, report), []);
+  m.units.push({ from_slot: 446500000, older_layouts: { 'pump:TradeEvent:32': 1 } });
+  m.units.push({ from_slot: 446000000, older_layouts: { 'pump:TradeEvent:31': 1, 'amm:BuyEvent:36': 1 } });
+  assert.deepEqual(strictMisses(m, report), [
+    'older layout pump:TradeEvent:32 x1 in unit from slot 446500000, after B4 (446462760)',
+    'older layout pump:TradeEvent:31 x1',
+    'older layout amm:BuyEvent:36 x1',
+  ]);
+});
+
+test('token movement misses are counted', () => {
+  const ok = { files: 1, malformed: 0, outside_coverage: 0, coverage_bad_scope: 0, supply_negative: 0, balance_checks: 3, balance_exact: 3, zero_amount: 2 };
+  assert.deepEqual(strictMisses(base(), { ...report, movements: ok }), []);
+  assert.deepEqual(strictMisses(base(), { ...report, movements: { ...ok, files: 0 } }), ['token movement files absent']);
+  assert.deepEqual(strictMisses(base(), { ...report, movements: { ...ok, malformed: 1, outside_coverage: 2, coverage_bad_scope: 3, supply_negative: 4, balance_exact: 1 } }), [
+    'malformed movement rows 1',
+    'movement rows of non-pump mints outside movement_coverage 2',
+    'movement coverage rows with an unknown scope 3',
+    'token supply below zero for 4 mints',
+    'token balance changes unexplained by movement rows 2',
+  ]);
+});
+
+test('the manifest regimes win over the repository file', () => {
+  const m = base();
+  m.regime_boundaries = { pre_layouts: { 'pump:TradeEvent:30': 500 } };
+  m.units.push({ from_slot: 100, older_layouts: { 'pump:TradeEvent:30': 1, 'pump:TradeEvent:32': 1 } });
+  assert.deepEqual(strictMisses(m, report), ['older layout pump:TradeEvent:32 x1']);
+});
+
+test('empty-owner rows must match the coverage records', () => {
+  const r = structuredClone(report);
+  r.movements = { files: 1, rows: 3, malformed: 0, outside_coverage: 0, coverage_bad_scope: 0, supply_negative: 0, balance_bad: [], empty_owner_rows: 2, empty_owner_coverage: 1 };
+  assert.ok(strictMisses(base(), r).includes('movement rows with an empty owner 2, coverage records count 1'));
+});
+
+test('every swap row carries its attribution, and an empty owner its mark', () => {
+  const { swap_attribution: _, ...without } = report;
+  assert.deepEqual(strictMisses(base(), without), ['swap attribution not checked']);
+  assert.deepEqual(strictMisses(base(), { ...report, swap_attribution: { missing_column: 2, owner_empty_unmarked: 3 } }), [
+    'trade rows without user_token_account / user_token_owner 2',
+    'trade rows with an empty user_token_owner and no swap_owner_unknown mark 3',
+  ]);
 });

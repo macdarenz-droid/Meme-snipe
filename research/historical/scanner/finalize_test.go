@@ -30,6 +30,8 @@ type fxUnit struct {
 	rev             string
 	skipRows        bool // events-only unit (as shipped for lead-in days)
 	curveHeader     []string
+	retention       string // "" = older units (sample only); set by f.unit to retentionPolicy unless old
+	oldRetention    bool
 }
 
 func writeZst(t *testing.T, path string, data []byte) {
@@ -80,13 +82,16 @@ func (f *fixture) unit(u fxUnit) {
 		writeZst(t, filepath.Join(dir, "agg_hourly.csv.zst"), csvBytes(aggCols, nil))
 		writeZst(t, filepath.Join(dir, "raw.jsonl.zst"), nil)
 	}
+	if !u.oldRetention {
+		u.retention = retentionPolicy
+	}
 	rev := u.rev
 	if rev == "" {
 		rev = "r1"
 	}
 	st := UnitStats{Schema: schemaVersion, Epoch: u.epoch, FromSlot: u.from, ToSlot: u.to, Blocks: u.blocks,
 		FirstBlockSlot: u.from, LastBlockSlot: u.from + uint64(u.blocks) - 1, FirstBlockTime: u.t0, LastBlockTime: u.t0 + int64(u.blocks) - 1,
-		ScannerRevision: rev, SampleRate: 0.05}
+		ScannerRevision: rev, SampleRate: 0.05, Retention: u.retention}
 	b, _ := json.Marshal(&st)
 	if err := os.WriteFile(filepath.Join(dir, "stats.json"), b, 0o644); err != nil {
 		t.Fatal(err)
@@ -328,5 +333,104 @@ func TestFinalizeFirstSeenSlotIsMinimumOverUnits(t *testing.T) {
 	fs := man["first_seen_slot"].(map[string]any)
 	if fs["unknown:pump:a943276d6686b6e8"] != float64(1002) || fs["extra:pump:TradeEvent:8"] != float64(1005) {
 		t.Fatalf("first_seen_slot %v", fs)
+	}
+}
+
+func TestFinalizeRatesFollowRetention(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	u := spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-02")+1800)
+	u.oldRetention = true
+	f.spanUnit(u)
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err == nil || !strings.Contains(err.Error(), "rates exceed") {
+		t.Fatalf("100%% universes accepted on sample-only units: %v", err)
+	}
+	defer func(l, g float64) { launchRate, gradRate = l, g }(launchRate, gradRate)
+	launchRate, gradRate = 0.05, 0.05
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
+		t.Fatalf("sample rates refused on sample-only units: %v", err)
+	}
+	f2 := &fixture{t: t, out: t.TempDir()}
+	f2.spanUnit(spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-01")+3600))
+	old := spanUnit(1, 1003, day("2026-09-01")+7200, day("2026-09-02")+1800)
+	old.oldRetention = true
+	f2.spanUnit(old)
+	if err := Finalize(f2.out, t.TempDir(), "2026-09-01", "2026-09-02", finalizeOpts{}); err == nil || !strings.Contains(err.Error(), "retention") {
+		t.Fatalf("mixed retention accepted: %v", err)
+	}
+}
+
+func TestFinalizeCopiesRegimesIntoManifest(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	f.spanUnit(spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-02")+1800))
+	reg := filepath.Join(t.TempDir(), "regimes.json")
+	os.WriteFile(reg, []byte(`{"boundaries":[{"id":"B4","slots":{"pump":446462760}}]}`), 0o644)
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{Regimes: reg}); err != nil {
+		t.Fatal(err)
+	}
+	man, _ := readDataset(t, ds)
+	b := man["regime_boundaries"].(map[string]any)["boundaries"].([]any)[0].(map[string]any)
+	if b["id"] != "B4" {
+		t.Fatalf("regimes not in manifest: %v", man["regime_boundaries"])
+	}
+	os.WriteFile(reg, []byte(`{not json`), 0o644)
+	if err := Finalize(f.out, t.TempDir(), "2026-09-01", "2026-09-02", finalizeOpts{Regimes: reg}); err == nil {
+		t.Fatalf("invalid regimes file accepted")
+	}
+}
+
+func TestFinalizeRoutesMovementsAndCoverage(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	u := spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-02")+1800)
+	f.spanUnit(u)
+	dir := filepath.Join(f.out, "units", "1", strconv.FormatUint(u.from, 10)+"-"+strconv.FormatUint(u.to, 10))
+	mv := func(slot uint64, bt int64, tx, outer, inner, mint string) []string {
+		return []string{strconv.FormatUint(slot, 10), strconv.FormatInt(bt, 10), tx, outer, inner, mint, "transfer", "A", "B", "5", "a", "b"}
+	}
+	// any mint, any time in the window: no tape filter
+	writeZst(t, filepath.Join(dir, "movements.csv.zst"), csvBytes(movementCols, [][]string{
+		mv(1001, day("2026-09-01")+10, "0", "0", "", "XpumpMint"), mv(1001, day("2026-09-01")+10, "0", "1", "0", "Other")}))
+	writeZst(t, filepath.Join(dir, "movement_coverage.csv.zst"), csvBytes(movementCoverageCols, [][]string{{"Other", "pump_transactions", "", "", "", ""}}))
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	var rows, cov int
+	files, _ := filepath.Glob(filepath.Join(ds, "days", "2026-09-01", "movements-*.csv.zst"))
+	for _, p := range files {
+		readCSVZst(p, func([]string) error { rows++; return nil })
+	}
+	readCSVZst(filepath.Join(ds, "movement_coverage-000.csv.zst"), func(rec []string) error {
+		if rec[0] == "Other" && rec[1] == "pump_transactions" && rec[6] == "1000" {
+			cov++
+		}
+		return nil
+	})
+	if rows != 3 || cov != 1 { // header + 2 rows
+		t.Fatalf("movements rows %d (want header + 2), coverage rows %d", rows, cov)
+	}
+}
+
+func TestFinalizeCoverageSaysLeadInHasNoMovements(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	lead := spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-02")-1)
+	lead.skipRows = true
+	f.spanUnit(lead)
+	win := spanUnit(1, lead.to+1, day("2026-09-02"), day("2026-09-03")+1800)
+	f.spanUnit(win)
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-02", "2026-09-03", finalizeOpts{LeadInDays: 1}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	readCSVZst(filepath.Join(ds, "movement_coverage-000.csv.zst"), func(rec []string) error {
+		if rec[0] == "*" && rec[1] == "no_movements" && rec[3] == "lead_in" && rec[6] == "1000" && rec[7] == strconv.FormatUint(lead.to, 10) {
+			found = true
+		}
+		return nil
+	})
+	if !found {
+		t.Fatalf("lead-in without movements not recorded in movement_coverage")
 	}
 }
