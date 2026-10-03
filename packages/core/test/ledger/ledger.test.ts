@@ -39,7 +39,7 @@ describe('ledger storage settings', () => {
     const children = Array.from({ length: 6 }, () => runChild(['writer', path, String(startAt)]));
     const outcomes = await Promise.all(children.map((c) => c.line('writer ')));
     await Promise.all(children.map((c) => c.exit));
-    expect(outcomes.filter((o) => o === 'writer ok')).toHaveLength(1);
+    expect(outcomes.filter((o) => o === 'writer ok'), outcomes.join('\n')).toHaveLength(1);
     expect(outcomes.filter((o) => o.startsWith('writer refused') && o.includes('already has a writer'))).toHaveLength(5);
   }, 20_000);
 

@@ -50,25 +50,41 @@ export const amountOf = (text: unknown): bigint => {
 const checksum = (kind: StoreKind, m: Migration): string =>
   createHash('sha256').update(`${kind}\n${m.version}\n${m.name}\n${m.sql}`).digest('hex');
 
+/** Attempts at the writer lock before an opener is refused (about 1.5 s in all with the pauses between them). */
+const WRITER_LOCK_ATTEMPTS = 60;
+
+const pause = (ms: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
 /**
  * Holds an exclusive SQLite lock on a sidecar file for the writer's whole life. The lock is an OS
  * file lock: the kernel drops it when the process dies, so there is no pid file, no stale check
  * and no window where two openers can both win. A second opener, in this process or another, is refused.
+ *
+ * Openers racing for a fresh lock can deadlock inside SQLite (each holds a read lock while waiting for
+ * the others to drop theirs), so each attempt does not wait: on failure it closes, which drops its read
+ * lock, pauses for a time that differs per process, and tries again. One racer wins; a live writer
+ * makes every attempt fail, and the opener is refused.
  */
 const takeWriterLock = (dbPath: string): (() => void) => {
-  const lock = new DatabaseSync(`${dbPath}-writer.lock`, { timeout: 0 });
-  try {
-    lock.exec('PRAGMA locking_mode = EXCLUSIVE');
-    lock.exec('BEGIN EXCLUSIVE');
-  } catch (err) {
-    lock.close();
-    const message = (err as Error).message;
-    if (/locked|busy/i.test(message)) throw new LedgerError(`${dbPath} already has a writer`);
-    throw new LedgerError(`${dbPath}: cannot take the writer lock (${message})`);
+  let last = '';
+  for (let attempt = 0; attempt < WRITER_LOCK_ATTEMPTS; attempt++) {
+    const lock = new DatabaseSync(`${dbPath}-writer.lock`, { timeout: 0 });
+    try {
+      lock.exec('PRAGMA locking_mode = EXCLUSIVE');
+      lock.exec('BEGIN EXCLUSIVE');
+      return () => {
+        if (lock.isOpen) lock.close(); // closing ends the transaction and releases the lock
+      };
+    } catch (err) {
+      lock.close();
+      last = (err as Error).message;
+      if (!/locked|busy/i.test(last)) throw new LedgerError(`${dbPath}: cannot take the writer lock (${last})`);
+      pause(5 + ((process.pid * 7_919 + attempt * 104_729) % 41)); // 5-45 ms, different per process
+    }
   }
-  return () => {
-    if (lock.isOpen) lock.close(); // closing ends the transaction and releases the lock
-  };
+  throw new LedgerError(`${dbPath} already has a writer (${last})`);
 };
 
 export interface OpenedStore {

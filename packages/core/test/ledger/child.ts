@@ -57,7 +57,7 @@ if (mode === 'hang') {
   try {
     const ledger = openLedger(path, 'paper');
     console.log('writer ok');
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000); // hold the lock while the others try
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5_000); // hold the lock longer than the others retry (about 1.5 s)
     ledger.close();
   } catch (err) {
     console.log(`writer refused ${(err as Error).message}`);
