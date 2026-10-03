@@ -97,40 +97,64 @@ describe('bootstrap p-value', () => {
 });
 
 describe('n_power by simulating the G2 rule', () => {
-  const opts = { simulations: 300, replicates: 400, familySize: 1 } as const;
+  // Budgets sized for CI (15 min for every suite): the full rule runs five bootstraps a simulated holdout.
+  const opts = { simulations: 200, replicates: 200, familySize: 1 } as const;
+  // Properties of the 1-day comparison alone are studied on that unit (gateG2 refuses such an n_power).
+  const dayOnly = { ...opts, units: ['days-1'] } as const;
+  // Every trade its own creator and funder: clusters do not bind unless a test says otherwise.
+  const own = (ts: readonly { day: string; rNet: number }[]) => ts.map(({ day, rNet }, i) => ({ day, rNet, creatorCluster: `c${i}`, funderCluster: `f${i}` }));
   // S0 far below the strategy, so the paired comparison does not bind and the mean test decides.
   const control = (seed: number, days: number, perDay: number) => bracketTrades(seed, -0.3, days, perDay).map(({ day, rNet }) => ({ day, rNet }));
 
-  test('independent trades: close to the textbook n; power at n ≥ 80% and below it < 80%', () => {
-    const wf = bracketTrades(801, 0, 80, 5).map(({ day, rNet }) => ({ day, rNet }));
+  test('independent trades: the 1-day rule near the textbook n, the full rule at least that; power at n ≥ 80%', () => {
+    const wf = own(bracketTrades(801, 0, 80, 5));
     const r = simulateG2Power({ walkForward: wf, control: control(802, 80, 5), seed: 1, ...opts });
+    expect(r.units).toEqual(['days-1', 'days-2', 'days-3', 'creator', 'funder']);
     const textbook = nPower(sd(wf.map((t) => t.rNet)), 0.05);
-    expect(r.nPower).toBeGreaterThan(0.85 * textbook);
-    expect(r.nPower).toBeLessThan(1.35 * textbook);
+    const day = simulateG2Power({ walkForward: wf, control: control(802, 80, 5), seed: 1, ...dayOnly });
+    expect(day.nPower).toBeGreaterThan(0.85 * textbook);
+    expect(day.nPower).toBeLessThan(1.35 * textbook);
+    expect(r.nPower).toBeGreaterThanOrEqual(day.nPower);
     expect(r.powerAtN).toBeGreaterThanOrEqual(0.8);
     expect(r.evaluations.some((e) => e.n < r.nPower && e.power < 0.8)).toBe(true);
-    // Same seed, same answer.
-    expect(simulateG2Power({ walkForward: wf, control: control(802, 80, 5), seed: 1, ...opts }).nPower).toBe(r.nPower);
-  }, 120_000);
+  }, 600_000);
 
   test('intra-day correlation raises n by about the design effect; three universes raise it further', () => {
-    const iid = bracketTrades(811, 0, 40, 20).map(({ day, rNet }) => ({ day, rNet }));
-    const corr = bracketTrades(811, 0, 40, 20, 0.05).map(({ day, rNet }) => ({ day, rNet }));
+    const iid = own(bracketTrades(811, 0, 40, 20));
+    const corr = own(bracketTrades(811, 0, 40, 20, 0.05));
     const c = control(812, 40, 20);
-    const nIid = simulateG2Power({ walkForward: iid, control: c, seed: 2, ...opts }).nPower;
-    const nCorr = simulateG2Power({ walkForward: corr, control: c, seed: 2, ...opts }).nPower;
+    const nIid = simulateG2Power({ walkForward: iid, control: c, seed: 2, ...dayOnly }).nPower;
+    const nCorr = simulateG2Power({ walkForward: corr, control: c, seed: 2, ...dayOnly }).nPower;
     expect(nCorr).toBeGreaterThan(1.4 * nIid); // design effect 1 + 19·0.05 = 1.95
-    const three = simulateG2Power({ walkForward: iid, control: c, seed: 2, ...opts, familySize: 3 });
+    const three = simulateG2Power({ walkForward: iid, control: c, seed: 2, ...dayOnly, familySize: 3 });
     expect(three.level).toBeCloseTo(0.05 / 3, 15);
     expect(three.nPower).toBeGreaterThan(nIid);
-  }, 180_000);
+    // Same seed, same answer.
+    expect(simulateG2Power({ walkForward: iid, control: c, seed: 2, ...dayOnly }).nPower).toBe(nIid);
+  }, 600_000);
+
+  // Review of 437e60d: n_power simulates the exact G2 rule, cluster sensitivity included. 20 creators, each with its
+  // own lasting edge or loss (±20 points), need more trades than the same returns from a creator each: a creator's
+  // trades are not independent observations.
+  // Same returns either way; only the creator labels differ. With a creator per trade (single-day) the creator unit
+  // does not bind, so n is the day-block n. With 10 creators spanning every walk-forward day (multi-day: they keep
+  // their ids in the simulation, as a prolific deployer would), the creator-cluster CI is over 10 clusters and needs
+  // far more trades. Measured: nSpread 736, nFew 1,252.
+  test('n_power includes the creator cluster unit: concentrated creators raise it', () => {
+    const spread = own(bracketTrades(831, 0, 40, 30));
+    const few = spread.map((t, i) => ({ ...t, creatorCluster: `c${i % 10}` }));
+    const c = control(832, 40, 30);
+    const nSpread = simulateG2Power({ walkForward: spread, control: c, seed: 4, ...opts }).nPower;
+    const nFew = simulateG2Power({ walkForward: few, control: c, seed: 4, ...opts, maxTrades: 200_000 }).nPower;
+    expect(nFew).toBeGreaterThan(1.2 * nSpread);
+  }, 600_000);
 
   test('a control as good as the strategy makes the S0 comparison bind', () => {
-    const wf = bracketTrades(821, 0, 40, 10).map(({ day, rNet }) => ({ day, rNet }));
-    const weak = simulateG2Power({ walkForward: wf, control: control(822, 40, 10), seed: 3, ...opts }).nPower;
+    const wf = own(bracketTrades(821, 0, 40, 10));
+    const weak = simulateG2Power({ walkForward: wf, control: control(822, 40, 10), seed: 3, ...dayOnly }).nPower;
     // S0 at +3%: the strategy (shifted to +5%) must beat it by 2 points, which needs far more trades.
     const strong = bracketTrades(823, 0.03, 40, 10).map(({ day, rNet }) => ({ day, rNet }));
-    const strongN = simulateG2Power({ walkForward: wf, control: strong, seed: 3, ...opts, maxTrades: 200_000 }).nPower;
+    const strongN = simulateG2Power({ walkForward: wf, control: strong, seed: 3, ...dayOnly, maxTrades: 200_000 }).nPower;
     expect(strongN).toBeGreaterThan(2 * weak);
-  }, 240_000);
+  }, 600_000);
 });

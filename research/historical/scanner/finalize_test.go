@@ -434,3 +434,34 @@ func TestFinalizeCoverageSaysLeadInHasNoMovements(t *testing.T) {
 		t.Fatalf("lead-in without movements not recorded in movement_coverage")
 	}
 }
+
+func TestFinalizeRoutesDelegationsByDayWithoutTape(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	u := spanUnit(1, 1000, day("2026-09-01")-3600, day("2026-09-02")+1800)
+	f.spanUnit(u)
+	dir := filepath.Join(f.out, "units", "1", strconv.FormatUint(u.from, 10)+"-"+strconv.FormatUint(u.to, 10))
+	dg := func(slot uint64, bt int64, outer, inner, mint string) []string {
+		return []string{strconv.FormatUint(slot, 10), strconv.FormatInt(bt, 10), "0", outer, inner, mint, "approve", "acct", "A", "D", "5"}
+	}
+	writeZst(t, filepath.Join(dir, "delegations.csv.zst"), csvBytes(delegationCols, [][]string{
+		dg(999, day("2026-09-01")-10, "0", "", "XpumpMint"), // before the window: not routed
+		dg(1001, day("2026-09-01")+10, "0", "", "XpumpMint"), dg(1001, day("2026-09-01")+10, "1", "0", "Other")}))
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	var rows [][]string
+	files, _ := filepath.Glob(filepath.Join(ds, "days", "2026-09-01", "delegations-*.csv.zst"))
+	for _, p := range files {
+		readCSVZst(p, func(rec []string) error { rows = append(rows, append([]string{}, rec...)); return nil })
+	}
+	if len(rows) != 3 || strings.Join(rows[0], ",") != strings.Join(delegationCols, ",") || rows[2][5] != "Other" {
+		t.Fatalf("delegations: want header + 2 in-window rows of any mint, got %v", rows)
+	}
+	// out of order within a transaction fails like every other table
+	writeZst(t, filepath.Join(dir, "delegations.csv.zst"), csvBytes(delegationCols, [][]string{
+		dg(1001, day("2026-09-01")+10, "1", "0", "Other"), dg(1001, day("2026-09-01")+10, "0", "", "XpumpMint")}))
+	if err := Finalize(f.out, t.TempDir(), "2026-09-01", "2026-09-02", finalizeOpts{}); err == nil {
+		t.Fatalf("out-of-order delegation rows accepted")
+	}
+}

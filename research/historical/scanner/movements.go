@@ -71,12 +71,15 @@ func movementKind(data []byte) (kind string, src, dst, mintPos int, ok bool) {
 	return "", 0, 0, 0, false
 }
 
-// hasMovementOutsideSwaps reports whether any token movement instruction runs outside
-// pump and PumpSwap (a cheap check before parsing the full meta).
+// hasMovementOutsideSwaps reports whether any token movement or delegation instruction
+// runs outside pump and PumpSwap (a cheap check before parsing the full meta).
 func hasMovementOutsideSwaps(groups [][]ixRef) bool {
 	found := false
 	walkOutsideSwaps(groups, func(gi, k int, ix ixRef) {
 		if _, _, _, _, ok := movementKind(ix.data); ok {
+			found = true
+		}
+		if _, _, _, _, ok := delegationKind(ix.data); ok {
 			found = true
 		}
 	})

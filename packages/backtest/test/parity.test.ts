@@ -22,6 +22,7 @@ import {
   type RawLine,
   type RawTokenBalance,
   MOVEMENT_COLUMNS,
+  DELEGATION_COLUMNS,
   type Row,
   DROP_EVENTS,
   ParityChecker,
@@ -694,5 +695,86 @@ describe('decoder parity: swap attribution', () => {
     const s = checkMoves([row], [line]);
     expect(s.mismatches).toEqual([]);
     expect(s.movements_matched).toBe(1);
+  });
+});
+
+// ---- delegations (scanner delegations.go) ----
+
+const DELEGATE = key(70);
+const NEW_AUTH = key(71);
+/**
+ * Top level: 0 Approve of ACCT_A (PMINT, owner USER) to DELEGATE for 300; 1 Revoke of ACCT_A; 2 SetAuthority
+ * AccountOwner of ACCT_A to NEW_AUTH; 3 SetAuthority CloseAccount of ACCT_A cleared; 4 a pump instruction whose inner
+ * Approve is skipped; 5 an Approve on OTHER's account (no OTHER event: no row); 6 ApproveChecked of ACCT_A (mint PMINT).
+ */
+const delegRaw = (n: number, err: RawLine['err'] = null): RawLine => {
+  const keys = [...MOVE_KEYS, DELEGATE, NEW_AUTH];
+  return {
+    slot: 452700000, blockTime: BLOCK_TIME, txIndex: n, signature: encodeBase58(sig(n)),
+    transaction: toBase64(wireOf(n, keys, [
+      { p: 2, a: [4, 9, 0], d: amt(4, 300n) },
+      { p: 2, a: [4, 0], d: [5] },
+      { p: 2, a: [4, 0], d: [6, 2, 1, ...decodeBase58(NEW_AUTH)] },
+      { p: 2, a: [4, 0], d: [6, 3, 0] },
+      { p: 1, a: [6, 4], d: [0xaa] },
+      { p: 2, a: [8, 9, 0], d: amt(4, 1n) },
+      { p: 2, a: [4, 6, 9, 0], d: [...amt(13, 25n), 6] },
+    ])),
+    err,
+    meta: {
+      fee: 5000, computeUnitsConsumed: 1000, loadedAddresses: { writable: [], readonly: [] },
+      innerInstructions: [{ index: 4, instructions: [inner(2, [4, 9, 0], amt(4, 7n), 2)] }],
+      logMessages: null,
+      preTokenBalances: [tb(4, PMINT, USER), tb(8, OTHER, OWNER_C)],
+      postTokenBalances: [tb(4, PMINT, USER), tb(8, OTHER, OWNER_C)],
+    },
+  };
+};
+const dg = (n: number, outer: number, kind: string, authority: string, amount: string): Record<string, string> => ({
+  slot: '452700000', block_time: String(BLOCK_TIME), tx_idx: String(n), outer_ix: String(outer), inner_ix: '', mint: PMINT, kind,
+  account: ACCT_A, owner: USER, authority, amount,
+});
+const delegRows = (n: number) => [dg(n, 0, 'approve', DELEGATE, '300'), dg(n, 1, 'revoke', '', ''), dg(n, 2, 'set_owner', NEW_AUTH, ''), dg(n, 3, 'set_close_authority', '', ''), dg(n, 6, 'approve_checked', DELEGATE, '25')];
+const checkDelegs = (rows: Record<string, string>[], raws: RawLine[]) => {
+  const c = new ParityChecker(universe);
+  for (const r of rows) c.addDelegation(r);
+  for (const r of raws) c.checkRaw(r);
+  c.endBatch();
+  return c.s;
+};
+
+describe('decoder parity: delegations', () => {
+  it('re-derives approve, revoke and both authority changes, skipping one inside pump and another mint', () => {
+    const s = checkDelegs(delegRows(40), [delegRaw(40)]);
+    expect(s.mismatches).toEqual([]);
+    expect(s).toMatchObject({ delegations_checked: 5, delegations_matched: 5, delegations_without_raw: 0 });
+  });
+
+  it('fails a wrong owner, a missing row and a row for the skipped approve inside pump', () => {
+    const rows = delegRows(40);
+    rows[0] = { ...rows[0]!, owner: OWNER_B };
+    const missing = rows.splice(1, 1)[0]!;
+    const inside = { ...dg(40, 4, 'approve', DELEGATE, '7'), inner_ix: '0' };
+    const s = checkDelegs([...rows, inside], [delegRaw(40)]);
+    const text = (r: Record<string, string>) => DELEGATION_COLUMNS.map((c) => r[c]).join(',');
+    expect(s.mismatches.map((m) => [m.kind, m.row, m.decoded])).toEqual(expect.arrayContaining([
+      ['delegation', text(rows[0]!), text(delegRows(40)[0]!)],
+      ['delegation', text(inside), 'none'],
+      ['delegation', null, text(missing)],
+    ]));
+    expect(s.mismatch_count).toBe(3);
+    expect(s.delegations_matched).toBe(3);
+  });
+
+  it('fails any delegation row of a failed transaction and counts rows without a raw record', () => {
+    const s = checkDelegs([...delegRows(40).slice(0, 1), ...delegRows(41)], [delegRaw(40, { hex: '00' })]);
+    expect(s.mismatch_count).toBe(1);
+    expect(s.delegations_without_raw).toBe(5);
+  });
+
+  it('keeps the delegation columns equal to the scanner (delegations.go)', () => {
+    const go = readFileSync(join(REPO, 'research/historical/scanner/delegations.go'), 'utf8');
+    const cols = [...go.match(/var delegationCols = \[\]string\{([^}]*)\}/)![1]!.matchAll(/"(\w+)"/g)].map((m) => m[1]);
+    expect(cols).toEqual([...DELEGATION_COLUMNS]);
   });
 });
