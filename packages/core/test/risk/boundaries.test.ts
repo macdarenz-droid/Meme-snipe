@@ -130,10 +130,10 @@ describe('R6 terms', () => {
     expect(c).toEqual(expect.arrayContaining(['full_loss_kill_line', 'full_loss_week']));
   });
   test("an open position's exit ladder counts too", () => {
-    // $6 above the kill line: $3.40 of position + C leaves $2.11, the ladder takes it under $2.
-    const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('3.4'), mark: usd('3.4'), markAtMs: NOW - 100 };
-    expect(usd('6') - usd('3.4') - C_USD).toBeGreaterThanOrEqual(usd('2'));
-    expect(usd('6') - usd('3.4') - LADDER_USD - C_USD).toBeLessThan(usd('2'));
+    // $6 above the kill line: $3.00 of position + C leaves more than $2, the ladder takes it under $2.
+    const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('3'), mark: usd('3'), markAtMs: NOW - 100 };
+    expect(usd('6') - usd('3') - C_USD).toBeGreaterThanOrEqual(usd('2'));
+    expect(usd('6') - usd('3') - LADDER_USD - C_USD).toBeLessThan(usd('2'));
     expect(codes(evaluateEntry(baseInput({ account: account({ openPositions: [open] }) }), baseRequest()))).toContain('full_loss_kill_line');
   });
   test('held reservations count against both allowances', () => {
@@ -197,7 +197,8 @@ describe('R4 reserve and cash', () => {
   test('the reserve is computed live and never below the floor', () => {
     const per = costs.perExitAttempt;
     const big = { ...RENT, oneTime: 3_000_000n, transient: 20_000_000n };
-    expect(opsReserve(TRIAL_POLICY, { rent: big }, per)).toBe(big.tokenAccount + big.oneTime + big.transient + BigInt(TRIAL_POLICY.reserve.exitAttempts) * per);
+    const attempts = BigInt(TRIAL_POLICY.reserve.exitAttempts + TRIAL_POLICY.exits.blockedRetryAttempts);
+    expect(opsReserve(TRIAL_POLICY, { rent: big }, per)).toBe(big.tokenAccount + big.oneTime + big.transient + attempts * per);
     expect(opsReserve(TRIAL_POLICY, { rent: RENT }, per)).toBe(TRIAL_POLICY.reserve.opsFloor);
   });
   test('cash after the reserve must cover q_min, C and transient rent, to the lamport', () => {
@@ -433,7 +434,7 @@ describe('price and costs', () => {
     expect(codes(evaluateEntry(baseInput(), baseRequest({ network: { ...NETWORK, signaturesPerTx: 0n } })))).toContain('quote_failed');
   });
   test('C uses the modelled exit (with expected failures) when it is dearer than the ladder', () => {
-    const net = { ...NETWORK, exitPriorityFee: 2_000_000n, exitFailurePpm: 500_000n };
+    const net = { ...NETWORK, exitPriorityFee: 4_000_000n, exitFailurePpm: 500_000n };
     const fixed = fixedCosts(net, RENT);
     const ladder = maxTradeCosts(TRIAL_POLICY, { network: net, rent: RENT }).ladderWorst;
     expect(fixed.exit.landed + fixed.exit.expectedFailures).toBeGreaterThan(ladder);
@@ -631,5 +632,24 @@ describe('risk re-review of 0f7d142', () => {
     const liquidity = (minSpendUsd * 10_000n) as MicroUsd;
     expect(evaluateEntry(baseInput({ session }), baseRequest({ poolLiquidity: liquidity })).allow).toBe(true);
     expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ poolLiquidity: (liquidity - 1n) as MicroUsd })))).toEqual(['liquidity_floor']);
+  });
+});
+
+describe('maxOpen = 2 (a hand-built session: no approved baseline allows it today)', () => {
+  // Stands in for a future owner-approved baseline, so the parts of R3 and R15 that one position hides are tested.
+  const two = (): ReturnType<typeof startSession> => {
+    const base = startSession(TRIAL_POLICY);
+    return { ...base, running: true, policy: { ...TRIAL_POLICY, positions: { ...TRIAL_POLICY.positions, maxOpen: 2 } } };
+  };
+  const small = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('0.5'), mark: usd('0.5'), markAtMs: NOW - 100 };
+  test('with one position open, the reservation may hold only one more', () => {
+    const d = evaluateEntry(baseInput({ session: two(), account: account({ openPositions: [small] }) }), baseRequest()) as EntryAllowed;
+    expect(d.allow).toBe(true);
+    expect(d.reservation.limits.maxCount).toBe(1);
+  });
+  test('an unresolved entry in the same mint refuses; in another mint it does not', () => {
+    const input = baseInput({ session: two(), account: account({ unresolvedEntries: [{ mint: MINT_A }] }) });
+    expect(codes(evaluateEntry(input, baseRequest({ mint: MINT_A })))).toEqual(['add_to_position']);
+    expect(evaluateEntry(input, baseRequest({ mint: MINT_B })).allow).toBe(true);
   });
 });

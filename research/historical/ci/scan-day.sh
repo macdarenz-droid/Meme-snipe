@@ -46,6 +46,19 @@ backoff() {
   echo "$(date -u +%FT%TZ) archive back-off: waiting $(( (wait_s + 59) / 60 )) min, then resuming the same lane" | tee -a "$summary"
   sleep "$wait_s"
 }
+# Units restored from the cache that another scanner revision wrote are rescanned, so a
+# day never mixes revisions (finalize refuses that). SCANNER_REVISION is the revision
+# the workflow built into zeroed-scan; unset (local tests), nothing is dropped.
+if [ -n "${SCANNER_REVISION:-}" ]; then
+  for st in "$out"/units/*/*/stats.json; do
+    [ -f "$st" ] || continue
+    rev=$(sed -n 's/.*"scanner_revision": *"\([^"]*\)".*/\1/p' "$st" | head -1)
+    if [ "$rev" != "$SCANNER_REVISION" ]; then
+      echo "unit $(dirname "$st") was scanned by revision '$rev', not '$SCANNER_REVISION': rescanning it" | tee -a "$summary"
+      rm -rf "$(dirname "$st")"
+    fi
+  done
+fi
 # A back-off persisted by an earlier run (restored from the cache) is slept out first.
 backoff 0
 while true; do

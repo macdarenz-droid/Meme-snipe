@@ -30,7 +30,8 @@ describe('baseline', () => {
     const c = maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent: RENT });
     const ladder = TRIAL_POLICY.exits.ladder;
     expect(c.perExitAttempt).toBe(NETWORK.baseFeePerSignature + ladder.maxFeePerAttempt + NETWORK.tip);
-    expect(c.ladderWorst).toBe(BigInt(ladder.maxAttempts) * c.perExitAttempt);
+    // One ladder per position, then EXIT-1's blocked-exit retries, each at the fee cap.
+    expect(c.ladderWorst).toBe(BigInt(ladder.maxAttempts + TRIAL_POLICY.exits.blockedRetryAttempts) * c.perExitAttempt);
     // entry landed + token account rent (locked if the exit is blocked) + every ladder attempt
     expect(c.total).toBe(NETWORK.baseFeePerSignature + NETWORK.entryPriorityFee + NETWORK.tip + RENT.tokenAccount + c.ladderWorst);
   });
