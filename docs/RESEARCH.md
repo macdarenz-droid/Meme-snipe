@@ -47,7 +47,7 @@ Our own survivorship-free study: 518 graduations in a 12-hour window plus about 
 ## Quant methodology ([quant.md](research/quant.md))
 - Execution-aware triple-barrier labels on executable value replayed per slot; wick-versus-close fills alone flipped one rule from −20.5% to +0.5%.
 - Purged, embargoed, cluster-grouped walk-forward with one untouched holdout; experiment registry for deflated Sharpe and PBO.
-- Detecting +5% per trade at 80% power needs ~258 trades (σ 0.32); runner strategies need thousands. Promotion comes from shadow trades with an anytime-valid betting test.
+- Detecting +5% per trade at 80% power needs ~258 trades (σ 0.32); runner strategies need thousands. The live account cannot supply that many trades; the proof comes from the historical backtest holdout, checked with an anytime-valid betting test.
 - Predictors decay within weeks (AUROC 0.86 → 0.46) and do not transfer across venues. Gates G0–G4 and automatic demotion.
 
 ## Security and hosting ([security.md](research/security.md))

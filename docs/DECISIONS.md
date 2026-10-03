@@ -1,6 +1,6 @@
 # Decisions
 
-One row per decision. Newest decisions are added at the bottom. "Owner" means the owner made it; everything else was decided from the evidence linked.
+One row per decision in the table; detailed module decisions follow in sections below it. Newest last. "Owner" means the owner made it; everything else was decided from the evidence linked.
 
 | Date | Decision | Why | Evidence |
 | --- | --- | --- | --- |
@@ -34,6 +34,21 @@ One row per decision. Newest decisions are added at the bottom. "Owner" means th
 | 2026-10-03 | Local signer in an isolated process with a default-deny policy; no paid custody at this size; AWS KMS above ~$500 | Custody engines cannot check lookup-table addresses; per-signature fees exceed the edge | [security.md](research/security.md) §1–2 |
 | 2026-10-03 | Cloudflare cron watchdog with Durable Object heartbeat; Telegram limited to `/pause` and `/status` | Separate failure domain at $0; low-trust channels can only make things safer | [security.md](research/security.md) §5 |
 | 2026-10-03 | Labels: execution-aware triple barrier replayed per slot; validation: purged walk-forward, untouched holdout, experiment registry | Candle fills and multiple testing create false edges | [quant.md](research/quant.md) §1–2 |
-| 2026-10-03 | Promotion needs n ≥ max(300, n_power(σ̂)) shadow trades with the 95% CI above zero, plus e-process and the other gates | Owner's 300 floor; the audit showed the first estimate had 50% power | [empirical.md](research/empirical.md) Audit, [quant.md](research/quant.md) §5, §8 |
+| 2026-10-03 | Promotion needs n ≥ max(300, n_power(σ̂)) out-of-sample holdout trades with the 95% CI above zero, plus e-process and the other gates | Owner's 300 floor; the audit showed the first estimate had 50% power | [empirical.md](research/empirical.md) Audit, [quant.md](research/quant.md) §5, §8 |
 | 2026-10-03 | Dashboard is Vite + React (WEB-1), Android via Capacitor (APP-1) | Built that way; static app talking to the worker API | PR #1, `PROJECT_STATE.md` |
 | 2026-10-03 | Trade-size limits move from code constants in `costs` to configuration (CFG-1) | Owner rule: limits are never constants | `CLAUDE.md`, PR #2 |
+| 2026-10-03 | Historical backtest (≥ 30 days, target 60+, transaction by transaction) replaces the 7-day live wait; a 48-hour live dry run runs in parallel; the strategy is proven on the backtest holdout and the dry run must stay consistent with it (owner) | Faster proof on more data | `CLAUDE.md` pre-funding gate |
+| 2026-10-03 | Backtests are blind and reproduce live: simulated clock, as-of lookups, outcomes scored in a separate stage; same engine code live and backtest; leak test and parity test required (owner) | Owner rule | `CLAUDE.md` |
+| 2026-10-03 | One deterministic engine core reads only an injected Clock and Feed (ENG-1); the backtester (BT-1) is built in Wave B, before the worker, and runs the random control first | Makes leaks impossible by construction and puts the proof on the critical path | [ARCHITECTURE.md](ARCHITECTURE.md) §16, §20 |
+| 2026-10-03 | Our order is inserted into the real historical trade sequence after modelled latency, after all real trades in its slot, and later trades see its impact | Conservative fills; candles cannot order barrier touches | [quant.md](research/quant.md) §7 |
+
+## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
+
+- **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
+- **2026-10-03 · An attempt is dead only when it has failed at `finalized`, or when the confirmed block height has passed its `lastValidBlockHeight`.** A replacement may be signed, and the books closed, only when every other attempt is dead. Each of these events carries the block height it was read at: `sign_replacement` and `reconcile`.
+- **2026-10-03 · Balances are the truth.** A fill found after a failed or expired status is booked, and a critical alert is raised. If more than one attempt landed, all of them are booked (`double_fill` alert). A landing reported after the books closed raises `unbooked_landing` for a person to resolve, because that intent is final.
+- **2026-10-03 · A restart while `signed` never sends the bytes.** The intent becomes `unknown` and waits for expiry, because we cannot prove whether the bytes left before the restart.
+
+## Evidence (`packages/core/src/domain`)
+
+- **2026-10-03 · `checkFreshness` checks age and timestamps only.** It does not reject evidence flagged `fork-suspect`, `provider-degraded`, `partial` or `estimated`, nor evidence read at `processed` commitment. The evidence-gates task must reject these: unknown or degraded evidence is a failure, never a pass. Until that gate exists, `checkFreshness` alone does not prove evidence usable.
