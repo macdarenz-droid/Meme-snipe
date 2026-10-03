@@ -8,7 +8,7 @@
 - Easy deposit and withdraw in AUD (route under research).
 - Dashboard: P&L calendar, trade history with full details, profit charts and the other visuals needed to see what the bot is doing. Smooth UI: motion, transitions, blurred backdrops behind opened panels.
 - UI words read as written by a person: no AI wording anywhere (see `AGENTS.md`).
-- App name: not chosen yet (shortlist: Spotter, Holdfire).
+- App name: Zeroed (owner, 2026-10-03). Logo: concepts A–F shown, not chosen yet.
 
 ## Phase
 Research and architecture (in progress).
