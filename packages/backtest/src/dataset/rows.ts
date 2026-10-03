@@ -45,6 +45,10 @@ export interface AmmSwapRow extends ChainPos {
   readonly baseSupply: bigint;
   readonly ixName: string;
   readonly user: string;
+  /** The event's lp_fee (stays in the pool); 0 when the column is absent. */
+  readonly lpFee: bigint;
+  /** quote_amount_lp_adjusted: quote into the pool on a buy (LP fee included), out of it on a sell (LP fee excluded). */
+  readonly quoteLpAdjusted: bigint;
 }
 
 export interface CurveTradeRow extends ChainPos {
@@ -89,6 +93,16 @@ const num = (s: string, what: string): number => {
   if (!Number.isSafeInteger(v)) throw new RangeError(`${what} must be a safe integer, got "${s}"`);
   return v;
 };
+/** A column added in a later scanner revision: 0 when the file predates it. */
+const optCol = (get: (c: string) => string, column: string): bigint => {
+  let v: string;
+  try {
+    v = get(column);
+  } catch {
+    return 0n;
+  }
+  return opt(v);
+};
 const flag = (s: string): boolean => s === 'true' || s === '1';
 
 const pos = (get: (c: string) => string): ChainPos => ({
@@ -126,6 +140,8 @@ export const readAmm = (text: string, out: DatasetRow[]): void =>
       baseSupply: opt(get('base_supply')),
       ixName,
       user: get('user'),
+      lpFee: optCol(get, 'lp_fee'),
+      quoteLpAdjusted: optCol(get, 'quote_amount_lp_adjusted'),
     });
   });
 

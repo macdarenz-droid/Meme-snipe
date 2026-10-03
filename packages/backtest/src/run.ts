@@ -10,6 +10,7 @@ import { isTerminal, type Book } from '../../core/src/lifecycle/index.ts';
 import { type DatasetRow } from './dataset/rows.ts';
 import { type OffchainSeries, seriesReleases } from './dataset/offchain.ts';
 import { type Discovery, Market, rowMoment } from './sim/market.ts';
+import type { FactProjector } from './sim/facts.ts';
 import { type StreamSource, StreamReplay } from './sim/replay.ts';
 import { LedgerSink } from './sim/sink.ts';
 import { type AttemptRecord, World } from './sim/world.ts';
@@ -35,6 +36,8 @@ export interface RunOptions {
   readonly extraEvents?: readonly FeedEvent[];
   /** Program-change slots from the dataset manifest (regime boundaries). */
   readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
+  /** BT-2: a fresh fact projector for this run (gate facts, checks, creates and rug labels). */
+  readonly facts?: () => FactProjector;
 }
 
 export interface RunStats {
@@ -71,6 +74,8 @@ export interface RunResult {
   readonly regimes: readonly { readonly slot: bigint; readonly label: string; readonly at: number }[];
   /** Block time (ms) of the last block released. */
   readonly endedAt: number;
+  /** The run's fact projector, when it had one (its counts go in the report). */
+  readonly facts: FactProjector | null;
 }
 
 /** S0 settings from the policy (size, hold, ladder), the fill config and the research config; no code constants. */
@@ -115,6 +120,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
   // Activity as of the last drain: blocks are released in their own drain, so this is the state at the block.
   const live = (): boolean => sink?.inFlight ?? false;
   let replay: StreamReplay<DatasetRow> | null = null;
+  const facts = o.facts?.();
   const market: Market = new Market({
     heartbeatBlocks: o.research.heartbeatBlocks,
     discoveryLag: (mint) => Math.max(1, drawDiscoverySlots(createRng(`${o.seed}:discovery:${mint}`), scenario)),
@@ -122,6 +128,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     schedule: (e) => replay!.schedule(e),
     ...(o.regimeBoundaries === undefined ? {} : { regimeBoundaries: [...o.regimeBoundaries].sort((a, b) => (a.slot < b.slot ? -1 : 1)) }),
     series: o.series.map((s) => ({ key: s.name === 'SOL/USD' ? 'sol-usd' : s.name, releases: seriesReleases(s) })),
+    ...(facts === undefined ? {} : { facts }),
   });
   const discoveries = new Map<string, Discovery>();
   replay = new StreamReplay<DatasetRow>(source, (row) => market.release(row), (e) => {
@@ -180,6 +187,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     symbols: market.symbols,
     endedAt: market.blockTime * 1000,
     regimes: market.regimesPassed,
+    facts: facts ?? null,
     poolDelta: (pool) => market.track(pool)?.shifted.delta ?? { base: 0n, vault: 0n, virtual: 0n },
     endValue: (mint, tokens) => {
       const pool = discoveries.get(mint)?.pool;

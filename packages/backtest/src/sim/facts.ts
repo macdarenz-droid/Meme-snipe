@@ -1,0 +1,516 @@
+// Historical gate facts (BT-2, docs/ARCHITECTURE.md §16.3): the backtest feed's equivalent of FEED-1's live reads.
+// It sees dataset rows only as they are released, in chain order, so every fact it builds is as of that moment, and
+// it builds the gate facts of a mint only at a check moment: the values a live account read would return then.
+//
+// It also feeds the deployer index and RUG-1's labeller the way WORKER-1 does live (docs/DECISIONS.md "Rug labels",
+// wiring must-haves): every create goes to the engine as a confirmed create event, curve and pool trades go to the
+// labeller, and its labels go to the engine at the moment of the event that made them. Rug coverage follows the
+// trade stream: the dataset holds trades only for its hash sample, so every create outside the sample is marked
+// `rug-unjudged` and H14 is not covered for that deployer, never "no rugs".
+import { createHash } from 'node:crypto';
+import {
+  type Address, addressBytes, decodeBase58, findProgramAddress, NATIVE_MINT, PUMP_AMM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, toAddress,
+} from '../../../core/src/chain/index.ts';
+import type { FeedEvent, MarketEvent, Moment } from '../../../core/src/engine/index.ts';
+import {
+  type Candle, type FactObs, type HolderAccount, type Price, RUG_UNJUDGED_PREFIX, RugLabeller, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey, coverageKeys,
+  createKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey,
+} from '../../../core/src/gates/index.ts';
+import type { RugConfig } from '../../../core/src/config/index.ts';
+import { MINUTE_MS } from '../../../core/src/config/index.ts';
+import { solPriceMicroUsd } from '../../../core/src/units/index.ts';
+import type { SeriesBar } from '../dataset/offchain.ts';
+import type { RawRow } from '../dataset/raw.ts';
+import type { AmmSwapRow, CurveTradeRow, DatasetRow, EventRow } from '../dataset/rows.ts';
+import type { PoolView } from './market.ts';
+
+export const ATA_PROGRAM = toAddress('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+
+/** The associated token account of `owner` for `mint` under `tokenProgram`. PumpSwap pool vaults are these. */
+export const associatedTokenAddress = (owner: string, mint: string, tokenProgram: string): string =>
+  findProgramAddress([addressBytes(toAddress(owner)), addressBytes(toAddress(tokenProgram)), addressBytes(toAddress(mint))], ATA_PROGRAM).address;
+
+/** DATA-1's sampling hash: first 8 bytes of sha256(mint bytes), big-endian, over 2^64 (scanner sample.go). Null: not an address. */
+export const mintHashFraction = (mint: string): number | null => {
+  let b: Uint8Array;
+  try {
+    b = decodeBase58(mint);
+  } catch {
+    return null;
+  }
+  if (b.length !== 32) return null;
+  const h = createHash('sha256').update(b).digest();
+  return Number(h.readBigUInt64BE(0)) / 2 ** 64;
+};
+
+/** How the backtest checks a universe: from `fromMs` to `toMs` after migration, every `everyMs`. */
+export interface CheckWindow {
+  readonly universe: string;
+  readonly fromMs: number;
+  readonly toMs: number;
+  readonly everyMs: number;
+  /** Least effective quote reserve (lamports) for a check to be scheduled; a pool below it is skipped at that check. */
+  readonly minQuoteLamports: bigint;
+}
+
+export interface FactOptions {
+  /** The dataset's launch-sample rate (manifest `sampling.launch_rate`); null when the manifest does not say. */
+  readonly sampleRate: number | null;
+  readonly rugs: RugConfig;
+  readonly windows: readonly CheckWindow[];
+  /** Hourly SOL/USD releases (usable moment and bar), in order. */
+  readonly solUsd: readonly { readonly at: number; readonly bar: SeriesBar }[];
+  /** SOL/USD points carried in a fact (enough for a 24 h change). */
+  readonly solUsdPoints: number;
+  /** Candles kept per mint: the first `candlesHead` after migration and the latest `candlesTail`. */
+  readonly candlesHead: number;
+  readonly candlesTail: number;
+  /** Slot ranges the dataset did not scan (manifest `coverage_gaps`, "from-to"). */
+  readonly gaps?: readonly { readonly fromSlot: bigint; readonly toSlot: bigint }[];
+}
+
+const PROVIDER = 'dataset';
+const SYSTEM = '11111111111111111111111111111111';
+const NUM = /^-?\d+$/;
+/** Text fields that may look like numbers but are never amounts. */
+const TEXT = new Set(['name', 'symbol', 'uri']);
+const camel = (s: string) => s.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+
+/** A dataset event's fields as DEC-1 decodes them: camelCase keys, integers as bigint, flags as booleans. */
+const decoded = (fields: Readonly<Record<string, string>>): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    out[camel(k)] = TEXT.has(k) ? v : NUM.test(v) ? BigInt(v) : v === 'true' ? true : v === 'false' ? false : v;
+  }
+  return out;
+};
+
+const seconds = (row: { readonly blockTime: number }, ts: unknown): bigint => (typeof ts === 'bigint' ? ts : BigInt(row.blockTime));
+
+interface MintState {
+  readonly mint: string;
+  sampled: boolean;
+  create: { createdAtMs: number; creator: string; user: string | null; supply: bigint | null; tokenProgram: string | null; slot: bigint; receivedAt: number; signature: string } | null;
+  graduatedAtMs: number | null;
+  migration: { migratedAtMs: number; pool: string; sol: bigint; tokens: bigint; slot: bigint; receivedAt: number; signature: string } | null;
+  pool: { address: string; index: number; creator: string; quoteMint: string; lpMint: string; mayhem: boolean | undefined; signature: string } | null;
+  lp: { supply: bigint; known: boolean; minted: bigint; burned: bigint };
+  account: { owner: string; mintAuthority: string | null; freezeAuthority: string | null; extensions: { kind: string; type: number; state?: string }[] } | null;
+  /** Extensions set up before InitializeMint (fixed-size ones must be). */
+  pendingExt: { kind: string; type: number; state?: string }[];
+  /** Token accounts of the mint, tracked from the create on; null until the create's raw record is seen. */
+  holders: Map<string, { owner: string; amount: bigint }> | null;
+  supply: bigint;
+  /** Why the holder rebuild cannot be trusted any more (first problem seen). */
+  holderProblem: string | null;
+  candlesHead: Candle[];
+  candlesTail: Candle[];
+  creationBuyers: Set<string>;
+  view: PoolView | null;
+  checks: Map<string, number>;
+  checkSeq: number;
+}
+
+const priceOf = (v: PoolView): Price | null => {
+  const quote = v.quoteVault + v.virtualQuoteReserves;
+  return quote > 0n && v.baseReserve > 0n ? { quote, base: v.baseReserve } : null;
+};
+const above = (a: Price, b: Price) => a.quote * b.base > b.quote * a.base;
+
+export class FactProjector {
+  readonly #o: FactOptions;
+  readonly #mints = new Map<string, MintState>();
+  readonly #lpMints = new Map<string, string>();
+  readonly #poolMints = new Map<string, string>();
+  readonly #labeller: RugLabeller;
+  readonly #due = new Set<string>();
+  /** Sampled mints with a migration: the only ones a check can be scheduled for. */
+  readonly #graduates = new Set<string>();
+  #started = false;
+  #height = 0n;
+  #gapAt = 0;
+  #solAt = 0;
+  readonly #solPoints: { tMs: number; price: bigint }[] = [];
+  /** Counts for the report: rows seen by kind and problems by cause (no outcomes). */
+  readonly counts = { creates: 0, sampledCreates: 0, unjudged: 0, labels: 0, checks: 0, holderProblems: 0, undecodableRaw: 0 };
+
+  constructor(o: FactOptions) {
+    this.#o = o;
+    this.#labeller = new RugLabeller(o.rugs);
+  }
+
+  /** In the dataset's sample: its trades and raw records are recorded, so it can be judged and traded. */
+  sampled(mint: string): boolean {
+    const h = mintHashFraction(mint);
+    return h !== null && this.#o.sampleRate !== null && h < this.#o.sampleRate;
+  }
+
+  /** State of a sampled mint (created on first sight); null for a mint outside the sample, which keeps none. */
+  #state(mint: string): MintState | null {
+    let s = this.#mints.get(mint);
+    if (s === undefined) {
+      if (!this.sampled(mint)) return null;
+      s = {
+        mint, sampled: true, create: null, graduatedAtMs: null, migration: null, pool: null,
+        lp: { supply: 0n, known: false, minted: 0n, burned: 0n }, account: null, pendingExt: [], holders: null, supply: 0n, holderProblem: null,
+        candlesHead: [], candlesTail: [], creationBuyers: new Set(), view: null, checks: new Map(), checkSeq: 0,
+      };
+      this.#mints.set(mint, s);
+    }
+    return s;
+  }
+
+  /** Mints the projector tracks (for tests and the report). */
+  state(mint: string): Readonly<MintState> | undefined {
+    return this.#mints.get(mint);
+  }
+
+  /** Events this row releases besides the market's own, all at the row's moment. */
+  observe(row: DatasetRow, m: Moment, blockHeight: bigint): FeedEvent[] {
+    this.#height = blockHeight;
+    const out: FeedEvent[] = [];
+    if (!this.#started) {
+      this.#started = true;
+      for (const stream of ['creates', 'rugs']) {
+        const k = coverageKeys(stream).start;
+        out.push(this.#fact(`cov:${stream}:start`, m, k, { via: PROVIDER, fromSlot: row.slot }));
+      }
+    }
+    switch (row.kind) {
+      case 'event':
+        this.#event(row, m, out);
+        break;
+      case 'curve':
+        this.#curve(row, m, out);
+        break;
+      case 'amm':
+        this.#ammTrade(row, m, out);
+        break;
+      case 'raw':
+        this.#raw(row);
+        break;
+      case 'block':
+        this.#block(row.slot, row.blockTime * 1000, m, out);
+        break;
+    }
+    return out;
+  }
+
+  #fact(id: string, m: Moment, key: string, value: unknown): MarketEvent {
+    return { kind: 'market', id, moment: m, key, value };
+  }
+
+  #label(events: readonly MarketEvent[], m: Moment, out: FeedEvent[]): void {
+    for (const e of events) {
+      if (e.key.startsWith(RUG_UNJUDGED_PREFIX)) this.counts.unjudged++;
+      else this.counts.labels++;
+      out.push({ ...e, moment: m });
+    }
+  }
+
+  #event(row: EventRow, m: Moment, out: FeedEvent[]): void {
+    const f = row.fields;
+    const d = decoded(f);
+    const name = row.event;
+    const program = row.program === 'amm' || row.program === 'pump_amm' ? 'pump_amm' : row.program;
+    const wrap = { event: { program, name, data: { ...d, timestamp: seconds(row, d['timestamp']) } }, signature: row.signature, txSlot: row.slot, source: PROVIDER };
+    if (name === 'CreateEvent' && f['mint'] && f['creator']) {
+      this.counts.creates++;
+      // The deployer index reads every create; a dataset create is a finalized transaction.
+      out.push(this.#fact(`cr:${row.signature}:${row.evIdx}`, m, `${TX_CREATE_PREFIX}${f['mint']}`, wrap));
+      const quote = f['quote_mint'];
+      const solQuote = quote === undefined || quote === '' || quote === SYSTEM || quote === NATIVE_MINT;
+      const s = solQuote ? this.#state(f['mint']) : null;
+      if (s === null) {
+        // Not judged is not "not a rug" (RUG-1): outside the sample its trades are not recorded; a curve quoted in
+        // another mint carries its liquidity in fields the dataset's curve rows do not keep.
+        this.counts.unjudged++;
+        const key = `${RUG_UNJUDGED_PREFIX}${f['mint']}`;
+        const reason = !solQuote ? 'curve quoted in another mint: its liquidity is not in the curve rows'
+          : this.#o.sampleRate === null ? 'the dataset does not state its sample rate' : 'outside the dataset sample: its trades are not recorded';
+        out.push(this.#fact(key, m, key, { mint: f['mint'], creator: f['creator'], reason, version: this.#o.rugs.version }));
+        return;
+      }
+      const supply = typeof d['tokenTotalSupply'] === 'bigint' && d['tokenTotalSupply'] > 0n ? d['tokenTotalSupply'] : null;
+      s.create = {
+        createdAtMs: Number(seconds(row, d['timestamp'])) * 1000, creator: f['creator'], user: f['user'] ?? null, supply,
+        tokenProgram: f['token_program'] ?? null, slot: row.slot, receivedAt: m.receivedAt, signature: row.signature,
+      };
+      this.counts.sampledCreates++;
+      this.#label(this.#labeller.observe({ kind: 'market', id: `ev:${row.signature}:${row.evIdx}`, moment: m, key: 'pump', value: wrap }), m, out);
+      return;
+    }
+    if (name === 'CompleteEvent' && f['mint']) {
+      const s = this.#state(f['mint']);
+      if (s !== null) s.graduatedAtMs ??= Number(seconds(row, d['timestamp'])) * 1000;
+      return;
+    }
+    if (name === 'CompletePumpAmmMigrationEvent' && f['mint'] && f['pool']) {
+      const s = this.#state(f['mint']);
+      if (s === null) return;
+      if (s.migration === null && typeof d['solAmount'] === 'bigint' && typeof d['mintAmount'] === 'bigint') {
+        s.migration = { migratedAtMs: Number(seconds(row, d['timestamp'])) * 1000, pool: f['pool'], sol: d['solAmount'], tokens: d['mintAmount'], slot: row.slot, receivedAt: m.receivedAt, signature: row.signature };
+        this.#poolMints.set(f['pool'], f['mint']);
+        this.#graduates.add(f['mint']);
+      }
+      this.#label(this.#labeller.observe({ kind: 'market', id: `ev:${row.signature}:${row.evIdx}`, moment: m, key: 'pump', value: wrap }), m, out);
+      return;
+    }
+    if (name === 'CreatePoolEvent' && f['pool'] && f['base_mint'] && f['lp_mint']) {
+      const s = this.#state(f['base_mint']);
+      if (s !== null && s.pool === null) {
+        const mayhem = f['is_mayhem_mode'] === 'true' ? true : f['is_mayhem_mode'] === 'false' ? false : undefined;
+        s.pool = { address: f['pool'], index: Number(f['index'] ?? '-1'), creator: f['creator'] ?? '', quoteMint: f['quote_mint'] ?? '', lpMint: f['lp_mint'], mayhem, signature: row.signature };
+        this.#lpMints.set(f['lp_mint'], f['base_mint']);
+      }
+      return;
+    }
+    if ((name === 'DepositEvent' || name === 'WithdrawEvent') && f['pool'] && typeof d['lpMintSupply'] === 'bigint') {
+      const mint = this.#poolMints.get(f['pool']);
+      const s = mint === undefined ? undefined : this.#mints.get(mint);
+      if (s !== undefined && s.pool?.address === f['pool']) s.lp = { ...s.lp, supply: d['lpMintSupply'], known: true };
+    }
+  }
+
+  #curve(row: CurveTradeRow, m: Moment, out: FeedEvent[]): void {
+    const s = this.#mints.get(row.mint);
+    if (s === undefined) return;
+    if (s.create !== null && row.slot <= s.create.slot + 2n && row.isBuy) s.creationBuyers.add(row.user);
+    const data = {
+      mint: row.mint, solAmount: row.solAmount, tokenAmount: row.tokenAmount, isBuy: row.isBuy, user: row.user, timestamp: BigInt(row.blockTime),
+      virtualSolReserves: row.virtualSolReserves, virtualTokenReserves: row.virtualTokenReserves, realSolReserves: row.realSolReserves,
+      realTokenReserves: row.realTokenReserves, quoteMint: row.quoteMint === SYSTEM ? NATIVE_MINT : row.quoteMint, realQuoteReserves: row.realSolReserves,
+    };
+    this.#label(this.#labeller.observe({ kind: 'market', id: `ev:${row.signature}:${row.evIdx}`, moment: m, key: 'pump', value: { event: { program: 'pump', name: 'TradeEvent', data }, signature: row.signature } }), m, out);
+  }
+
+  #ammTrade(row: AmmSwapRow, m: Moment, out: FeedEvent[]): void {
+    const s = this.#mints.get(row.baseMint);
+    if (s === undefined || !s.sampled) return;
+    const sell = row.side === 'sell';
+    const data = {
+      pool: row.pool, user: row.user, timestamp: BigInt(row.blockTime), poolQuoteTokenReserves: row.pre.quoteVault, poolBaseTokenReserves: row.pre.baseReserve,
+      virtualQuoteReserves: row.pre.virtualQuoteReserves, lpFee: row.lpFee,
+      ...(sell ? { baseAmountIn: row.baseAmount, quoteAmountOut: row.quoteAmount } : { baseAmountOut: row.baseAmount }),
+    };
+    this.#label(this.#labeller.observe({ kind: 'market', id: `ev:${row.signature}:${row.evIdx}`, moment: m, key: 'pump_amm', value: { event: { program: 'pump_amm', name: sell ? 'SellEvent' : 'BuyEvent', data }, signature: row.signature } }), m, out);
+  }
+
+  /** The pool state after a real swap, as our trades left it (from the market): candles and the latest view. */
+  onPool(view: PoolView, atMs: number): void {
+    const mint = this.#poolMints.get(view.pool);
+    if (mint === undefined) return;
+    const s = this.#mints.get(mint);
+    if (s === undefined || s.migration === null || s.migration.pool !== view.pool) return;
+    s.view = view;
+    const p = priceOf(view);
+    if (p === null) return;
+    const start = Math.floor(atMs / MINUTE_MS) * MINUTE_MS;
+    const tail = s.candlesTail;
+    const last = tail[tail.length - 1];
+    if (last !== undefined && last.startMs === start) {
+      tail[tail.length - 1] = { ...last, high: above(p, last.high) ? p : last.high, close: p };
+    } else {
+      // The open of a minute is the first trade's price in it (no trade, no candle: gaps are not filled).
+      const c: Candle = { startMs: start, open: p, high: p, close: p };
+      tail.push(c);
+      if (tail.length > this.#o.candlesTail) tail.shift();
+    }
+    const cur = tail[tail.length - 1]!;
+    const head = s.candlesHead;
+    if (head.length < this.#o.candlesHead || head[head.length - 1]?.startMs === start) {
+      if (head[head.length - 1]?.startMs === start) head[head.length - 1] = cur;
+      else head.push(cur);
+    }
+  }
+
+  #raw(row: RawRow): void {
+    if (row.undecodable !== null) {
+      this.counts.undecodableRaw++;
+      for (const mint of row.mints) {
+        const s = this.#state(mint);
+        if (s !== null) this.#problem(s, `raw record ${row.signature} could not be decoded: ${row.undecodable}`);
+      }
+      return;
+    }
+    for (const op of row.ops) {
+      if (op.op === 'set-authority') {
+        const s = this.#mints.get(op.account);
+        if (s?.account) {
+          if (op.authorityType === 0) s.account.mintAuthority = op.newAuthority;
+          else if (op.authorityType === 1) s.account.freezeAuthority = op.newAuthority;
+        }
+        continue;
+      }
+      const lpOf = this.#lpMints.get(op.mint);
+      if (lpOf !== undefined) {
+        const s = this.#mints.get(lpOf)!;
+        if (op.op === 'mint-to') s.lp.minted += op.amount;
+        if (op.op === 'burn') s.lp.burned += op.amount;
+        // The pool's creation transaction mints (and for a migration, burns) all LP there is; from it on, the supply is known.
+        if (s.pool?.signature === row.signature) s.lp.known = true;
+        if (s.lp.known) s.lp.supply = s.lp.minted - s.lp.burned;
+        continue;
+      }
+      const s = this.#mints.get(op.mint);
+      if (s === undefined) continue;
+      if (op.op === 'init-mint') {
+        if (s.account === null) s.account = { owner: op.program, mintAuthority: op.mintAuthority, freezeAuthority: op.freezeAuthority, extensions: s.pendingExt };
+        else this.#problem(s, `mint initialised twice (${row.signature})`);
+      } else if (op.op === 'extension') {
+        // Fixed-size extensions come before InitializeMint, TokenMetadata and groups after it; H4 judges each kind.
+        (s.account?.extensions ?? s.pendingExt).push({ ...op.ext });
+      } else if (op.op === 'mint-to') {
+        s.supply += op.amount;
+      } else if (op.op === 'burn') {
+        s.supply -= op.amount;
+      }
+    }
+    for (const mint of row.mints) {
+      const s = this.#state(mint);
+      if (s !== null) this.#holders(s, row);
+    }
+  }
+
+  #problem(s: MintState, why: string): void {
+    if (s.holderProblem === null) {
+      s.holderProblem = why;
+      this.counts.holderProblems++;
+    }
+  }
+
+  /** Token accounts from the record's balances. A balance that does not match what we tracked means a missed flow. */
+  #holders(s: MintState, row: RawRow): void {
+    const mine = row.balances.filter((b) => b.mint === s.mint);
+    if (s.holders === null) {
+      // Tracking starts at the create's record: the whole supply is minted there.
+      if (s.create === null || s.create.signature !== row.signature) {
+        if (mine.length > 0) this.#problem(s, 'token movements seen before the create was recorded');
+        return;
+      }
+      s.holders = new Map();
+    }
+    for (const b of mine) {
+      const prev = s.holders.get(b.account);
+      const had = prev?.amount ?? 0n;
+      if ((b.pre ?? 0n) !== had) this.#problem(s, `${b.account} held ${b.pre ?? 0n} before ${row.signature}, the rebuild has ${had}`);
+      if (b.owner === null) this.#problem(s, `${b.account} has no owner in ${row.signature}`);
+      if (b.post === null || b.post === 0n) s.holders.delete(b.account);
+      else s.holders.set(b.account, { owner: b.owner ?? prev?.owner ?? b.account, amount: b.post });
+    }
+    let sum = 0n;
+    for (const h of s.holders.values()) sum += h.amount;
+    if (sum !== s.supply) this.#problem(s, `holder balances sum to ${sum}, the supply is ${s.supply} after ${row.signature}`);
+  }
+
+  #block(slot: bigint, atMs: number, m: Moment, out: FeedEvent[]): void {
+    const gaps = this.#o.gaps ?? [];
+    while (this.#gapAt < gaps.length && gaps[this.#gapAt]!.toSlot < slot) {
+      const g = gaps[this.#gapAt++]!;
+      for (const stream of ['creates', 'rugs']) out.push(this.#fact(`cov:${stream}:gap:${g.fromSlot}`, m, coverageKeys(stream).gap, { via: PROVIDER, fromSlot: g.fromSlot, toSlot: g.toSlot }));
+    }
+    const sol = this.#o.solUsd;
+    while (this.#solAt < sol.length && sol[this.#solAt]!.at <= atMs) {
+      const b = sol[this.#solAt++]!.bar;
+      this.#solPoints.push({ tMs: b.start + 3_600_000, price: solPriceMicroUsd(b.close) });
+      if (this.#solPoints.length > this.#o.solUsdPoints) this.#solPoints.shift();
+    }
+    this.#schedule(atMs);
+    for (const key of [...this.#due].sort()) {
+      const [mint, universe] = key.split('|') as [string, string];
+      this.#due.delete(key);
+      const s = this.#mints.get(mint);
+      if (s === undefined) continue;
+      this.counts.checks++;
+      const n = ++s.checkSeq;
+      out.push(...this.snapshot(mint, m, `k:${mint}:${n}`));
+      out.push(this.#fact(`k:${mint}:${n}:~check`, m, `check:${mint}`, { mint, universe, n, blockHeight: this.#height }));
+    }
+  }
+
+  /** Marks the checks that fall due at this block for every tracked graduate. */
+  #schedule(atMs: number): void {
+    const last = Math.max(0, ...this.#o.windows.map((w) => w.toMs));
+    for (const mint of this.#graduates) {
+      const s = this.#mints.get(mint)!;
+      if (s.migration === null) continue;
+      const since = atMs - s.migration.migratedAtMs;
+      if (since > last) {
+        this.#graduates.delete(mint);
+        continue;
+      }
+      if (s.view === null) continue;
+      for (const w of this.#o.windows) {
+        if (since < w.fromMs || since > w.toMs) continue;
+        const next = s.checks.get(w.universe) ?? s.migration.migratedAtMs + w.fromMs;
+        if (atMs < next) continue;
+        s.checks.set(w.universe, next + Math.ceil((atMs - next + 1) / w.everyMs) * w.everyMs);
+        if (s.view.quoteVault + s.view.virtualQuoteReserves < w.minQuoteLamports) continue;
+        this.#due.add(`${s.mint}|${w.universe}`);
+      }
+    }
+  }
+
+  /** Every gate fact of `mint` as of `m`: what a live read at that moment would return. Missing evidence is left out. */
+  snapshot(mint: string, m: Moment, idBase: string): MarketEvent[] {
+    const s = this.#mints.get(mint);
+    if (s === undefined) return [];
+    const out: MarketEvent[] = [];
+    const quality = s.holderProblem === null ? [] : ['partial' as const];
+    const obs = (q: readonly string[] = []): FactObs => ({ provider: PROVIDER, slot: m.slot, receivedAt: m.receivedAt, quality: q as FactObs['quality'], commitment: 'finalized' });
+    const put = (k: string, key: string, value: unknown) => out.push(this.#fact(`${idBase}:${k}`, m, key, value));
+    if (s.create !== null) {
+      put('create', createKey(mint), { obs: { provider: PROVIDER, slot: s.create.slot, receivedAt: s.create.receivedAt, quality: [], commitment: 'finalized' }, createdAtMs: s.create.createdAtMs, creator: s.create.creator });
+    }
+    if (s.migration !== null && s.graduatedAtMs !== null && s.migration.sol > 0n && s.migration.tokens > 0n) {
+      put('migration', migrationKey(mint), {
+        obs: { provider: PROVIDER, slot: s.migration.slot, receivedAt: s.migration.receivedAt, quality: [], commitment: 'finalized' },
+        graduatedAtMs: s.graduatedAtMs, migratedAtMs: s.migration.migratedAtMs, pool: s.migration.pool, quoteAtMigration: s.migration.sol,
+        price: { quote: s.migration.sol, base: s.migration.tokens },
+      });
+    }
+    if (s.account !== null) {
+      put('mint', mintKey(mint), {
+        obs: obs(quality), owner: s.account.owner,
+        account: { mintAuthority: s.account.mintAuthority, freezeAuthority: s.account.freezeAuthority, supply: s.supply, extensions: s.account.extensions.map((e) => ({ ...e, fields: e.state === undefined ? {} : { state: e.state }, data: '' })) },
+      });
+    }
+    const v = s.view;
+    if (s.pool !== null && v !== null && s.pool.address === v.pool) {
+      const tokenProgram = s.account?.owner ?? s.create?.tokenProgram ?? null;
+      if (tokenProgram === TOKEN_PROGRAM || tokenProgram === TOKEN_2022_PROGRAM) {
+        put('pool', poolKey(mint), {
+          obs: obs(), address: s.pool.address, owner: PUMP_AMM_PROGRAM,
+          pool: {
+            index: s.pool.index, creator: s.pool.creator, baseMint: mint, quoteMint: s.pool.quoteMint, lpMint: s.pool.lpMint,
+            poolBaseTokenAccount: associatedTokenAddress(s.pool.address, mint, tokenProgram),
+            poolQuoteTokenAccount: associatedTokenAddress(s.pool.address, s.pool.quoteMint, TOKEN_PROGRAM),
+            lpSupply: s.lp.supply, ...(s.pool.mayhem === undefined ? {} : { isMayhemMode: s.pool.mayhem }), virtualQuoteReserves: v.virtualQuoteReserves,
+          },
+          baseVault: v.baseReserve, quoteVault: v.quoteVault,
+        });
+      }
+      if (s.lp.known) put('lp', lpKey(mint), { obs: obs(), lpMint: s.pool.lpMint, supply: s.lp.supply });
+    }
+    const candles = [...s.candlesHead, ...s.candlesTail.filter((c) => !s.candlesHead.some((h) => h.startMs === c.startMs))].filter((c) => c.startMs <= m.receivedAt);
+    if (s.migration !== null) put('candles', candlesKey(mint), { obs: obs(), intervalMs: MINUTE_MS, candles });
+    if (s.holders !== null) {
+      const accounts: HolderAccount[] = [...s.holders].map(([address, h]) => ({ address, owner: h.owner, ownerProgram: null, amount: h.amount }))
+        .sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.address < b.address ? -1 : 1));
+      put('holders', holdersKey(mint), { obs: obs(quality), supply: s.supply, coverage: 'all', accounts });
+    }
+    // Deployer-funded wallets and the dev's cluster are not in the dataset (DATA-1 "Not covered"): never complete.
+    put('insiders', insidersKey(mint), { obs: { ...obs(), slot: s.create?.slot ?? m.slot }, complete: false, insiders: [...s.creationBuyers].sort(), devCluster: [] });
+    if (this.#solPoints.length > 0) put('sol-usd', SOL_USD_KEY, { obs: { provider: 'sol-usd', slot: null, receivedAt: m.receivedAt, quality: [] }, points: this.#solPoints.map((p) => ({ ...p })) });
+    return out;
+  }
+}
+
+/** Gaps from the manifest's `coverage_gaps` ("from-to" slot ranges). */
+export const gapsOf = (raw: readonly unknown[] | undefined): { fromSlot: bigint; toSlot: bigint }[] =>
+  (raw ?? []).flatMap((g) => {
+    const m = typeof g === 'string' ? /^(\d+)-(\d+)$/.exec(g) : null;
+    return m === null ? [] : [{ fromSlot: BigInt(m[1]!), toSlot: BigInt(m[2]!) }];
+  });
+
+export type { Address };

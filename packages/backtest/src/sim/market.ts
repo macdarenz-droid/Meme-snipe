@@ -13,6 +13,7 @@ import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { type ObservedFees, ShiftedPool } from '../../../core/src/fills/index.ts';
 import type { SeriesBar } from '../dataset/offchain.ts';
 import type { AmmSwapRow, BlockRow, DatasetRow, EventRow } from '../dataset/rows.ts';
+import type { FactProjector } from './facts.ts';
 
 /** A block's row sorts after the slot's transactions; our landing after it; world reports last. */
 export const BLOCK_TX = OFF_CHAIN - 2;
@@ -98,6 +99,8 @@ export interface MarketOptions {
   readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
   /** Off-chain series, each released at the first block at or after a value's usable moment. */
   readonly series?: readonly { readonly key: string; readonly releases: readonly { readonly at: number; readonly bar: SeriesBar }[] }[];
+  /** BT-2: gate facts, check events, creates for the deployer index and rug labels, released with the rows. */
+  readonly facts?: FactProjector;
 }
 
 export class Market {
@@ -134,6 +137,12 @@ export class Market {
 
   /** The events a row releases, in id order, all at the row's moment. */
   release(row: DatasetRow): FeedEvent[] {
+    const own = this.#release(row);
+    const facts = this.#opts.facts;
+    return facts === undefined ? own : [...own, ...facts.observe(row, rowMoment(row), this.blockHeight)];
+  }
+
+  #release(row: DatasetRow): FeedEvent[] {
     switch (row.kind) {
       case 'block':
         return this.#block(row);
@@ -208,6 +217,7 @@ export class Market {
       fees: row.fees, baseSupply: row.baseSupply, side: row.side, userQuote: r.trade.userQuote, baseAmount: row.side === 'buy' ? r.trade.base : row.baseAmount,
       blockHeight: this.blockHeight,
     };
+    this.#opts.facts?.onPool(view, row.blockTime * 1000);
     return [this.#market(`s:${row.signature}:${row.evIdx}`, rowMoment(row), `pool:${row.pool}`, view as unknown as Readonly<Record<string, unknown>>)];
   }
 
