@@ -5,19 +5,17 @@
 // counts as an illegal state.
 import { canonical, type LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger, ReservationLimits } from '../../../core/src/ledger/index.ts';
-import { applyBookEvent, type Book, type BookConfig, emptyBook, isIllegal, isTerminal, type BookEvent, type Effect } from '../../../core/src/lifecycle/index.ts';
+import { encodeBookDetail, rowEventName, stepRows } from '../../../core/src/ledger/replay/index.ts';
+import { applyBookEvent, type Book, type BookConfig, emptyBook, isIllegal, isTerminal, type BookEvent } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports } from '../../../core/src/units/index.ts';
 import type { AttemptRecord } from './world.ts';
-
-const effectIntent = (fx: Effect): string | null => ('intentId' in fx ? fx.intentId : null);
-
-const eventName = (e: BookEvent): string => (e.type === 'intent' ? e.event.type : e.type);
 
 export class LedgerSink {
   readonly #ledger: Ledger | null;
   readonly #limits: ReservationLimits;
   #book: Book;
   #cursor = 0;
+  readonly #opened = new Set<string>();
   /** Records the reducer refused on the mirror (should equal the engine's own illegal results: none). */
   divergences = 0;
 
@@ -71,41 +69,53 @@ export class LedgerSink {
       if (fx.entity === 'intent') intents.add(fx.id);
       else if (fx.entity === 'position') positions.add(fx.id);
     }
-    const L = this.#ledger;
-    const name = eventName(event);
     for (const id of intents) {
       const after = next.intents[id];
       if (after === undefined) continue;
       if (isTerminal(after)) this.liveIntents.delete(id);
       else this.liveIntents.add(id);
-      const before = prev.intents[id];
-      if (L === null || before === after) continue;
-      if (before === undefined) {
-        L.recordIntent(after.intent, { status: after.status, ts });
-      } else if (before.status !== after.status) {
-        L.appendIntentTransition({ intentId: after.intent.id, status: after.status, event: name, effects: step.effects.filter((fx) => effectIntent(fx) === id), ts });
-      }
-      for (const a of after.attempts.slice(before?.attempts.length ?? 0)) L.recordAttempt(a, ts);
-      for (const f of after.fills.slice(before?.fills.length ?? 0)) L.recordFill(f, ts);
-      const rb = before?.reservation ?? null;
-      const ra = after.reservation;
-      if (ra !== null && rb === null) {
-        const res = L.reserveExposure({ reservationId: ra.id, intentId: ra.intentId, amount: ra.amount, limits: this.#limits, ts });
-        if (!res.ok) throw new RangeError(`ledger refused reservation ${ra.id}: ${res.reason}`);
-      }
-      if (ra !== null && rb !== null && rb.status === 'held' && ra.status !== 'held') L.endReservation(ra.id, ra.status, ts);
     }
     for (const id of positions) {
       const after = next.positions[id];
       if (after === undefined) continue;
       if (after.status === 'closed') this.openPositions.delete(id);
       else this.openPositions.add(id);
-      const before = prev.positions[id];
-      if (L === null || before === after) continue;
-      if (before === undefined) L.openPosition({ positionId: id, mint: after.mint, venue: after.venue, entryIntentId: after.entryIntentId, ts });
-      if (before === undefined ? after.status !== 'opening' : before.status !== after.status || before.quantity !== after.quantity || before.cost !== after.cost) {
-        L.appendPositionState({ positionId: id, status: after.status, quantity: after.quantity, cost: after.cost, event: name, ts });
+    }
+    const L = this.#ledger;
+    if (L === null) return;
+    // The rows LEDGER-REPLAY's check expects (src/ledger/replay, stepRows): one intent row per persisted intent in
+    // effect order, the first carrying the versioned book event and the effects; positions after.
+    const rows = stepRows(prev, event, step.effects);
+    if (rows === null) return;
+    const name = rowEventName(event);
+    rows.intents.forEach((id, k) => {
+      const s = next.intents[id]!;
+      const was = prev.intents[id];
+      if (was === undefined) {
+        const r = L.recordIntent(s.intent, { status: s.status, ts });
+        if (!r.ok) throw new RangeError(`ledger refused intent ${id}: duplicate key`);
+      } else {
+        L.appendIntentTransition({ intentId: s.intent.id, status: s.status, event: name, ts, ...(k === 0 ? { detail: encodeBookDetail(event), effects: step.effects } : {}) });
       }
+      const known = new Set((was?.attempts ?? []).map((x) => x.signature));
+      for (const x of s.attempts) if (!known.has(x.signature)) L.recordAttempt(x, ts);
+      const booked = new Set((was?.fills ?? []).map((f) => f.signature));
+      for (const f of s.fills) if (!booked.has(f.signature)) L.recordFill(f, ts);
+      const r = s.reservation;
+      if (r !== null && was?.reservation == null) {
+        const res = L.reserveExposure({ reservationId: r.id, intentId: id, amount: r.amount, limits: this.#limits, ts });
+        if (!res.ok) throw new RangeError(`ledger refused reservation ${r.id}: ${res.reason}`);
+      }
+      if (r !== null && r.status !== 'held' && was?.reservation?.status !== r.status) L.endReservation(r.id, r.status, ts);
+    });
+    for (const pid of rows.positions) {
+      const p = next.positions[pid]!;
+      if (!this.#opened.has(pid)) {
+        L.openPosition({ positionId: pid, mint: p.mint, venue: p.venue, entryIntentId: p.entryIntentId, ts });
+        this.#opened.add(pid);
+        if (p.status === 'opening' && p.quantity === 0n && p.cost === 0n) continue;
+      }
+      L.appendPositionState({ positionId: pid, status: p.status, quantity: p.quantity, cost: p.cost, event: name, ts, ...(event.type === 'trigger_exit' ? { detail: encodeBookDetail(event) } : {}) });
     }
   }
 
