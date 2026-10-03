@@ -835,6 +835,16 @@ describe('EXIT-1b item 6: when an in-flight partial resolves, the rest is reasse
     // Once taken, the remembered trigger is cleared.
     expect(after.tracker.pendingFull).toBeNull();
   });
+  test('with a fresh quote, the remembered exit goes even when the price has recovered and nothing fires now', () => {
+    const stop = plan({ stopPrice: execPrice(V0, QTY) });
+    const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
+    const recovered = holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2, vault: VAULT * 2n, pnl: R });
+    const d = decideExit(S, stop, recovered, pending.tracker, obs(NOW + 1_000, VAULT * 2n));
+    expect(d.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, startRung: 0, maxAttempts: X.ladder.maxAttempts, fired: [] });
+    if (d.decision.kind !== 'exit') return;
+    expect(d.decision.reasons).toEqual(['stop']);
+    expect(d.tracker.pendingFull).toBeNull();
+  });
   test('with no quote, a trigger that fires without one still takes the remembered exit at once', () => {
     const stop = plan({ stopPrice: execPrice(V0, QTY) });
     const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
