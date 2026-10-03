@@ -22,7 +22,7 @@ describe('volume hours', () => {
     const bt = String(T0 + 5 * 3600 + 7);
     addTradeRows(sums, [
       { block_time: bt, quote_mint: '', sol_amount: '100' },
-      { block_time: bt, quote_mint: '11111111111111111111111111111111', sol_amount: '20', quote_amount: '999' }, // SOL curve: sol_amount, as the scanner census (scanner_test.go TestCensusSystemProgramQuoteIsSolCurve)
+      { block_time: bt, quote_mint: '11111111111111111111111111111111', sol_amount: '20' },
       { block_time: bt, quote_mint: WSOL, sol_amount: '3' },
       { block_time: bt, quote_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', sol_amount: '0', quote_amount: '999' },
     ], [
@@ -46,5 +46,14 @@ describe('volume hours', () => {
     expect(compareVolumeHours(DAY, bad, sums, false).problems).toEqual(['row 3: covered "yes"']);
     expect(compareVolumeHours(DAY, hourRows({ 5: '1123' }, '0'), sums, true).problems).toHaveLength(24);
     expect(volumeFailed(compareVolumeHours(DAY, hourRows({ 5: '1123' }, '0'), sums, false))).toBe(false);
+  });
+
+  it('a system-program curve whose quote_amount differs from sol_amount fails the day (the census counts quote_amount)', () => {
+    // scanner_test.go TestCensusSystemProgramQuoteDivergenceReachesVolumeHours: volume_hours then carries 999.
+    const sums = new Map<number, bigint>();
+    addTradeRows(sums, [{ block_time: String(T0 + 2 * 3600), quote_mint: '11111111111111111111111111111111', sol_amount: '100', quote_amount: '999' }], []);
+    const c = compareVolumeHours(DAY, hourRows({ 2: '999' }), sums, true);
+    expect(volumeFailed(c)).toBe(true);
+    expect(c.mismatches).toEqual([{ hour_start_ms: String((T0 + 2 * 3600) * 1000), volume_hours: '999', rederived: '100' }]);
   });
 });

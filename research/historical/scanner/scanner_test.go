@@ -266,9 +266,13 @@ func TestCensusQuoteCurveUsesQuoteReserves(t *testing.T) {
 	}
 }
 
-// A SOL curve whose quote_mint is the system program counts sol_amount, never
-// quote_amount: the census, volume_hours and qa/volume.ts agree by construction.
-func TestCensusSystemProgramQuoteIsSolCurve(t *testing.T) {
+// A SOL curve whose quote_mint is the system program: the census (unchanged, so units
+// stay byte-identical with earlier revisions) counts quote_amount, while qa/volume.ts
+// re-derives the regime volume from sol_amount. On real data the two are equal
+// (2026-10-01: 43,332 of 43,332 rows); if they ever differ, volume_hours carries the
+// census value and the exact cross-check fails the day (packages/backtest/test/
+// volume.test.ts "a system-program curve whose quote_amount differs ..."): loud, never silent.
+func TestCensusSystemProgramQuoteDivergenceReachesVolumeHours(t *testing.T) {
 	r := &blockResult{blockTime: 7200, agg: map[aggKey]*aggVal{}}
 	mint := solana.NewWallet().PublicKey().String()
 	x := make([]string, len(curveCols))
@@ -277,11 +281,11 @@ func TestCensusSystemProgramQuoteIsSolCurve(t *testing.T) {
 	x[curveQuoteMintCol], x[curveQuoteAmountCol], x[curveVirtualQuoteCol] = systemProgramID, "999", "9000"
 	r.emitRow("curve", x)
 	a := r.agg[aggKey{7200, "curve", mint, ""}]
-	if a == nil || a.quoteBuy != 100 || a.highPx != 2 {
-		t.Fatalf("system-program SOL curve must count sol_amount and price on virtual_sol_reserves: %+v", a)
+	if a == nil || a.quoteBuy != 999 {
+		t.Fatalf("census of a system-program curve counts quote_amount (unchanged): %+v", a)
 	}
 	rows := volumeHourRows(0, r.agg, func(int64) bool { return true })
-	if rows[2][1] != "100" {
-		t.Fatalf("volume_hours hour 2: %v, want 100 lamports (sol_amount)", rows[2])
+	if rows[2][1] != "999" {
+		t.Fatalf("volume_hours hour 2: %v, want the census value 999 (the cross-check then sees sol_amount 100)", rows[2])
 	}
 }
