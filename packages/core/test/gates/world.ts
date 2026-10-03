@@ -125,6 +125,8 @@ export const passingFacts = (): Facts => {
   put('coverage:creates:start', { value: { fromSlot: SLOT - 6_000_000n, via: 'logs:creates' }, source: 'worker', backfilled: false, seq: 1 }, at(T - 30 * DAY_MS, SLOT - 6_000_000n));
   // A reviewed rug labeller (RUG-1, not built yet) covering the same 30 days.
   put('coverage:rugs:start', { value: { fromSlot: SLOT - 6_000_000n, via: 'rug-labeller' }, source: 'worker', backfilled: false, seq: 2 }, at(T - 30 * DAY_MS + 1, SLOT - 5_999_999n));
+  // A PumpSwap trade on the pool after migration, carrying the 2026-10-02 upgrade's 8-byte tail as zeros (GATE-1c).
+  put(`pump_amm:BuyEvent:${POOL_ADDRESS}`, tradeEvent('BuyEvent', 8, '0000000000000000', SLOT - 1_500n, 'SigBuy1'), at(T - 10 * MINUTE_MS, SLOT - 1_500n));
   put(streamKey('chain'), { obs: obs({ slot: SLOT - 1n }), gapFreeSince: SLOT - 10_000n }, head);
   put(mintKey(MINT), { obs: streamObs(), owner: m.owner, account: m.account }, at(T - 200_000, SLOT - 500n));
   put(poolKey(MINT), { obs: obs(), address: POOL_ADDRESS, owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', pool: POOL, baseVault: BASE_VAULT, quoteVault: QUOTE_VAULT }, head);
@@ -160,6 +162,11 @@ export const passingFacts = (): Facts => {
   put(EXEC_HEALTH_KEY, { obs: obs({ slot: null, receivedAt: T - 400 }), green: true, detail: 'failure share 0, landing p50 2 slots' }, at(T - 400, SLOT - 2n));
   return f;
 };
+
+/** A PumpSwap trade event as FEED-1 emits it from a fetched transaction (`pump_amm:<name>:<pool>`). */
+export const tradeEvent = (name: 'BuyEvent' | 'SellEvent', trailing: number, extra: string, txSlot: bigint, signature: string) => ({
+  event: { name, program: 'pump_amm', data: {}, trailing, extra }, txSlot, signature, blockTime: null, source: 'helius', backfilled: false, seq: 1,
+});
 
 export const SPEND = lamports(13_000_000n); // 0.013 SOL, about $2 at $150
 export const NOTIONAL: MicroUsd = microUsd(2_000_000n);

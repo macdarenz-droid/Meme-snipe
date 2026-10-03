@@ -12,3 +12,4 @@ export {
 export { PolicyError, assertValidPolicy, policyIssues } from './validate.ts';
 export { FILL_CONFIG, type FillConfig } from './fills.ts';
 export { RESEARCH_CONFIG, type ResearchConfig } from './research.ts';
+export { EVENT_TAIL_BYTES, EVENT_TAIL_UPGRADE_SLOT } from './chain-upgrades.ts';
