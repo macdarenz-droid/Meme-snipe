@@ -485,7 +485,7 @@ export class Ledger extends LedgerReads {
    */
   recordBookEvent(before: Book, event: BookEvent, o: { readonly ts: Millis; readonly limits: ReservationLimits; readonly accountVersion?: bigint }): { readonly book: Book; readonly effects: readonly Effect[] } {
     const step = applyBookEvent(before, event);
-    if (isIllegal(step)) throw new LedgerError(`book event ${event.type} refused by the reducer: ${step.reason}`);
+    if (isIllegal(step)) throw new LedgerError(`book event ${event.type} refused by the reducer: ${step.reason}`, { code: 'reducer_refused' });
     const book = step.state;
     const rows = stepRows(before, event, step.effects);
     if (rows === null) return { book, effects: step.effects };

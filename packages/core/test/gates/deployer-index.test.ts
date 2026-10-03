@@ -217,36 +217,62 @@ describe('deployer index', () => {
   });
 });
 
-describe('rug labels unavailable (supervisor ruling: until RUG-1)', () => {
-  it.each(['live', 'backtest'] as const)('every evaluation reaching H14 carries the note, even with rug facts and labeller coverage (%s)', (mode) => {
+describe('rug labels unavailable (RUG-1 review: not covered, never zero rugs)', () => {
+  const notCovered = (r: { reasons: readonly GateReason[] }) => r.reasons.filter((x) => x.gate === 'H16' && x.neededBy === 'H14');
+
+  it.each(['live', 'backtest'] as const)('without the labeller wired, H14 rejects as not covered, even with rug facts (%s)', (mode) => {
     const idx = started();
     idx.observe(marketOf('rug:Old', { mint: 'Old', creator: DEV }, at(T - DAY_MS, SLOT - 200_000n)));
-    const r = evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps(mode), request(), { stopAtFirst: false });
-    expect(r.notes.filter((n) => n.code === 'rug-labels-unavailable')).toEqual([{ gate: 'H14', code: 'rug-labels-unavailable', detail: 'rug labels unavailable (no reviewed labeller; RUG-1)' }]);
+    const r = evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps(mode, session(), null), request(), { stopAtFirst: false });
+    expect(notCovered(r)).toEqual([{ gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: 'rug labels unavailable (no reviewed labeller; RUG-1)' }]);
     expect(r.reasons.filter((x) => x.code === 'prior-rug')).toEqual([]);
-    expect(r.passed).toContain('H14');
-    // BT-2 counts it from the result.
-    expect(r.notes.some((n) => n.code === 'rug-labels-unavailable')).toBe(true);
-    const soft = evaluateSoftFeatures(contextWith([]), deps(mode), MINT).features.find((f) => f.name === 'indexRugs');
+    expect(r.passed).not.toContain('H14');
+    const soft = evaluateSoftFeatures(contextWith([]), deps(mode, session(), null), MINT).features.find((f) => f.name === 'indexRugs');
     expect(soft).toEqual({ name: 'indexRugs', value: null, note: expect.stringContaining('rug labels unavailable') });
   });
 
-  it('the deployer-count half stays enforced without rug labels', () => {
+  it('the deployer-count half is still reported without rug labels', () => {
     const idx = started();
     for (const [m, t] of [[MINT, CREATED_AT], ['M2', T - HOUR_MS], ['M3', T - 2 * HOUR_MS]] as const) {
       idx.observe(marketOf(`logs:pump:CreateEvent:${m}`, createEvent(m, DEV, t, SLOT - 5_000n), at(t, SLOT - 5_000n)));
     }
-    const r = evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps('live'), request(), { stopAtFirst: false });
+    const r = evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps('live', session(), null), request(), { stopAtFirst: false });
     expect(r.reasons).toContainEqual(expect.objectContaining({ gate: 'H14', code: 'serial-deployer' }));
-    expect(r.notes).toContainEqual(expect.objectContaining({ code: 'rug-labels-unavailable' }));
+    expect(notCovered(r)).toHaveLength(1);
   });
 
-  it('with RUG-1 wired, a labeller with an open gap is still unavailable; covered, there is no note', () => {
+  it('with RUG-1 wired, a labeller with an open gap or no start is not covered; covered, H14 passes', () => {
     const gap: Row = ['coverage:rugs:gap', wrap({ fromSlot: SLOT - 100n, toSlot: null, reason: 'halted', via: 'rug-labeller' }), at(T - HOUR_MS, SLOT - 9_000n)];
-    const r = evaluateHardRejects(contextWith([gap]), deps('live', session(), 'RUG-1'), request(), { stopAtFirst: false });
-    expect(r.notes.filter((n) => n.code === 'rug-labels-unavailable')).toHaveLength(1);
-    const ok = evaluateHardRejects(contextWith([]), deps('live', session(), 'RUG-1'), request(), { stopAtFirst: false });
-    expect(ok.notes.filter((n) => n.code === 'rug-labels-unavailable')).toEqual([]);
+    const r = evaluateHardRejects(contextWith([gap]), deps('live'), request(), { stopAtFirst: false });
+    expect(notCovered(r)).toEqual([expect.objectContaining({ input: 'coverage', detail: expect.stringContaining('RUG-1 coverage: open gap') })]);
+    const noStart = evaluateHardRejects(contextWith([], drop(passingFacts(), 'coverage:rugs:start')), deps('live'), request(), { stopAtFirst: false });
+    expect(notCovered(noStart)).toEqual([expect.objectContaining({ input: 'coverage', detail: expect.stringContaining('no rugs coverage start') })]);
+    const ok = evaluateHardRejects(contextWith([]), deps('live'), request(), { stopAtFirst: false });
+    expect(notCovered(ok)).toEqual([]);
+    expect(ok.passed).toContain('H14');
+  });
+
+  it('an unjudged mint by the deployer in the look-back makes H14 not covered; outside it, or the candidate itself, does not', () => {
+    const run = (mint: string, days: number) => {
+      const idx = started();
+      idx.observe(marketOf(`rug-unjudged:${mint}`, { mint, creator: DEV, reason: 'the create carries no total supply' }, old(days)));
+      return notCovered(evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps('live'), request(), { stopAtFirst: false }));
+    };
+    expect(run('Old', 3)).toEqual([expect.objectContaining({ input: 'deployer', detail: expect.stringContaining('could not judge Old') })]);
+    expect(run('Old', 15)).toEqual([]);
+    expect(run(MINT, 3)).toEqual([]);
+  });
+
+  it('labels and unjudged mints are known from their full moment, not their receipt time alone', () => {
+    const idx = started();
+    const m: Moment = { slot: SLOT - 10n, txIndex: 5, ixIndex: 0, receivedAt: T - HOUR_MS };
+    idx.observe(marketOf('rug:Old', { mint: 'Old', creator: DEV }, m));
+    idx.observe(marketOf('rug-unjudged:U', { mint: 'U', creator: DEV }, m));
+    const f = (now: Moment) => idx.factFor(DEV, now, 0);
+    expect(f({ ...m, txIndex: 4 }).rugs).toEqual([]);
+    expect(f({ ...m, txIndex: 4 }).unjudged).toEqual([]);
+    expect(f(m).rugs).toEqual([{ mint: 'Old', knownAtMs: T - HOUR_MS }]);
+    expect(f(m).unjudged).toEqual([{ mint: 'U', knownAtMs: T - HOUR_MS }]);
   });
 });
 

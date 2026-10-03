@@ -204,8 +204,8 @@ export const contextOf = (facts: Facts, now: Moment = NOW): GateContext => {
 export const session = (over: Partial<PolicySession['policy']['gates']> = {}): PolicySession =>
   startSession({ ...TRIAL_POLICY, gates: { ...TRIAL_POLICY.gates, ...over } });
 
-/** Gate deps. `rug` wires a reviewed rug labeller (RUG-1); without it H14's prior-rug half is noted as unavailable. */
-export const deps = (mode: Mode = 'live', s: PolicySession = session(), rug?: 'RUG-1') => ({ session: s, mode, ...(rug ? { rugLabeller: rug } : {}) });
+/** Gate deps. `rug` wires the reviewed rug labeller (RUG-1, the default); null leaves it unwired, so H14 is not covered. */
+export const deps = (mode: Mode = 'live', s: PolicySession = session(), rug: 'RUG-1' | null = 'RUG-1') => ({ session: s, mode, ...(rug ? { rugLabeller: rug } : {}) });
 
 /** Replaces the value of one fact (shallow merge into the value), keeping its moment. */
 export const patch = (facts: Facts, key: string, change: Record<string, unknown>): Facts => {

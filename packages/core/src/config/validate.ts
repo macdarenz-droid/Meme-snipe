@@ -103,6 +103,9 @@ const crossIssues = (p: Policy, out: string[]): void => {
   need(exits.maxExitTxAtMinNotional >= 1 && exits.maxExitTxAtMinNotional <= exits.maxExitTxAboveDoubleMin, 'exits.maxExitTxAtMinNotional must be at least 1 and no larger than maxExitTxAboveDoubleMin');
   need(exits.stopAtrTenths >= 1 && exits.trailAtrTenths >= 1, 'exits.stopAtrTenths and exits.trailAtrTenths: must be at least 1');
   need(exits.partialMinShareBps > 0, 'exits.partialMinShareBps: must be above zero');
+  need(exits.partialAtRBps > 0 && exits.partialAtGainBps > 0, 'exits.partialAtRBps and exits.partialAtGainBps: must be above zero');
+  need(exits.atrPeriod >= 1 && exits.atrBarMs > 0, 'exits.atrPeriod and exits.atrBarMs: must be above zero');
+  need(exits.blockedRetryMs > 0, 'exits.blockedRetryMs: must be above zero');
 
   const { steps, maxAttempts, maxFeePerAttempt } = exits.ladder;
   need(steps.length >= 1, 'exits.ladder.steps: needs at least one step');
