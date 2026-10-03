@@ -12,7 +12,7 @@
 // not-covered while it is inside the look-back. Nothing dated after `asOf` is kept. Rug labels are not seeded (see
 // `RUGS_NOT_SEEDED`): no `coverage:rugs:*` fact is produced, so the rug half stays not-covered after a start.
 import type { MarketEvent, Moment } from '../../../core/src/engine/index.ts';
-import { OFF_CHAIN, compareEvents } from '../../../core/src/engine/index.ts';
+import { OFF_CHAIN, compareEvents, compareMoments } from '../../../core/src/engine/index.ts';
 import { DAY_MS, SECOND_MS } from '../../../core/src/config/time.ts';
 import { TX_CREATE_PREFIX } from '../../../core/src/gates/index.ts';
 import { eventIxIndex } from '../providers/canonical.ts';
@@ -57,7 +57,11 @@ export interface SeedOptions {
   readonly fill?: {
     readonly fromSlot: bigint;
     readonly fromMs: number;
-    readonly close?: { readonly via: string; readonly fromSlot: bigint | null };
+    /**
+     * The saved open gap: its `via`, `fromSlot` and, when known, `at`, the moment it was reported. A gap reported at or
+     * after the restarted watch's start is not settled by it, so the close then follows the gap instead.
+     */
+    readonly close?: { readonly via: string; readonly fromSlot: bigint | null; readonly at?: Moment };
     /** The restarted watch's `coverage:creates:start` moment, as the feed placed it: the close is dated just before it. */
     readonly liveStart?: Moment;
   };
@@ -175,7 +179,13 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
   let start: { slot: bigint; ms: number } | null = ranges[0] === undefined ? null : { slot: ranges[0].fromSlot, ms: firstDay?.fromMs ?? nowMs };
 
   // The RPC range: after the days' last slot, or from `rpcFrom` when there is no day.
-  const from = o.fill ?? (o.rpcFrom === undefined ? undefined : { fromSlot: o.rpcFrom.slot, fromMs: o.rpcFrom.ms });
+  // A fill reads from the older of its own start and the saved open gap's start: the close restores the gap from
+  // close.fromSlot, so every slot from there must have been read (FEED-1's gap starts at the old watch's last log
+  // slot, inclusive, which can be before fill.fromSlot). Reading more beats refusing (#45 re-review).
+  const closeFrom = o.fill?.close?.fromSlot ?? null;
+  const from = o.fill !== undefined
+    ? { fromSlot: closeFrom !== null && closeFrom < o.fill.fromSlot ? closeFrom : o.fill.fromSlot, fromMs: o.fill.fromMs }
+    : o.rpcFrom === undefined ? undefined : { fromSlot: o.rpcFrom.slot, fromMs: o.rpcFrom.ms };
   const afterSlot = lastDay !== undefined ? lastDay.toSlot : from !== undefined ? from.fromSlot - 1n : null;
   let rpcReport: SeedReport['rpc'] = null;
   let rpcCreates: readonly MarketEvent[] = [];
@@ -237,7 +247,10 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
     // cannot settle the saved open gap as lossy before it. The feed may place that start below untilSlot (a skipped
     // slot, a socket ahead of the feed tip, no tip yet), so no slot derived from untilSlot is safe (#45 re-review).
     const n = merged.length + 1;
-    const closeMoment: Moment = { slot: live.slot, txIndex: live.txIndex, ixIndex: live.ixIndex, receivedAt: Math.min(o.fill.fromMs, live.receivedAt - 1) };
+    let closeMoment: Moment = { slot: live.slot, txIndex: live.txIndex, ixIndex: live.ixIndex, receivedAt: Math.min(o.fill.fromMs, live.receivedAt - 1) };
+    // A saved gap reported at or after that point (a failover, a node behind the saved state) comes after the start,
+    // which therefore did not settle it: the close follows the gap by 1 ms instead, or it would be a no-op.
+    if (close.at !== undefined && compareMoments(close.at, closeMoment) >= 0) closeMoment = { ...close.at, receivedAt: close.at.receivedAt + 1 };
     const value = merged.length === 0
       ? { fromSlot: close.fromSlot, toSlot: o.untilSlot }
       : { fromSlot: close.fromSlot, toSlot: o.untilSlot, reason: `downtime fill incomplete (${merged.length} gaps)` };
