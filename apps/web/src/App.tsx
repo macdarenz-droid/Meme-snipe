@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, type ReactNode } from 'react';
 import { SampleMarker } from './components/Sample.tsx';
 import { DESKTOP, useMedia } from './lib/media.ts';
 import { page } from './lib/motion.ts';
+import { SAMPLES_TITLE } from './lib/preview.ts';
 import { hrefFor, SCREENS, useRoute, type Screen } from './lib/route.ts';
 import { Home } from './screens/Home.tsx';
 import { Snipe } from './screens/Snipe.tsx';
@@ -16,7 +17,7 @@ import { ThemeSwitch } from './shell/ThemeSwitch.tsx';
 // Dev and preview builds only: SAMPLES is a build-time constant, false in a normal production build, so the import is dropped.
 const Fixtures = import.meta.env.DEV || import.meta.env.VITE_PREVIEW === '1' ? lazy(() => import('./dev/Fixtures.tsx')) : null;
 
-const TITLES: Record<Screen, string> = { home: 'Home', snipe: 'Snipe', wallet: 'Wallet', fixtures: 'Samples' };
+const TITLES: Record<Screen, string> = { home: 'Home', snipe: 'Snipe', wallet: 'Wallet', fixtures: SAMPLES_TITLE };
 
 function screenFor(s: Screen): ReactNode {
   if (s === 'snipe') return <Snipe />;
