@@ -8,8 +8,8 @@ import { INCINERATOR, RAYDIUM_LOCKER_PROGRAM, evaluateHardRejects, holdersKey, i
 import { ACC, DEV, MINT, POOL, POOL_ADDRESS, SUPPLY, VAULT_AMOUNT, W, contextOf, deps, holderAccounts, obs, passingFacts, patch, request, session, SLOT, type Facts } from './world.ts';
 
 const CIRC = SUPPLY - VAULT_AMOUNT;
-const vault: HolderAccount = { address: POOL.poolBaseTokenAccount, mint: MINT, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT };
-const acct = (owner: string, amount: bigint, tag: string, ownerProgram: string | null = null): HolderAccount => ({ address: ACC(tag), mint: MINT, owner, ownerProgram, amount });
+const vault: HolderAccount = { address: POOL.poolBaseTokenAccount, mint: MINT, delegate: null, delegatedAmount: 0n, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT };
+const acct = (owner: string, amount: bigint, tag: string, ownerProgram: string | null = null): HolderAccount => ({ address: ACC(tag), mint: MINT, owner, ownerProgram, amount, delegate: null, delegatedAmount: 0n });
 /** `total` split over `n` accounts of one owner. */
 const split = (owner: string, total: bigint, n: number, tag: string): HolderAccount[] =>
   Array.from({ length: n }, (_, i) => acct(owner, i === 0 ? total - (total / BigInt(n)) * BigInt(n - 1) : total / BigInt(n), `${tag}${i}`));
@@ -251,5 +251,38 @@ describe('GATE-1e: the mint supply is read first, the complete holder set at or 
       const r = evaluate(patch(f, key, { obs: obs({ commitment: 'processed' }) })).reasons;
       expect(r).toContainEqual(expect.objectContaining({ gate: 'H16', neededBy: 'H12' }));
     }
+  });
+});
+
+describe('GATE-1e: a delegate controls what it may move', () => {
+  const base = holderAccounts();
+  const wallets = [5, 6, 7, 8, 9].map((i) => W(i));
+  /** Gives the dev a delegation of `amount` over each of W(5)..W(9) (8e12 each). */
+  const delegated = (amount: bigint, delegate: string | null = DEV) =>
+    base.map((a) => (wallets.includes(a.owner) ? { ...a, delegate, delegatedAmount: amount } : a));
+  const codes = (accounts: readonly HolderAccount[]) => concentrationReasons(view(accounts, 'all')).map((r) => r.code).sort();
+
+  it("accounts delegated to the dev raise the dev's share; the exact sum is unaffected", () => {
+    expect(codes(base)).toEqual([]);
+    // The dev controls 4e12 + 5 x 8e12 = 44e12 of 271.6e12 (16.2%); the five owners still count their own 8e12 too.
+    const all = delegated(8_000_000_000_000n);
+    expect(sum(all)).toBe(SUPPLY);
+    expect(codes(all)).toEqual(['dev-cluster', 'insider-supply', 'single-holder', 'top10']);
+    expect(evaluate(view(all, 'all')).reasons.filter((x) => x.code === 'inconsistent')).toEqual([]);
+  });
+
+  it('only min(delegated amount, balance) counts for the delegate', () => {
+    // One account: a delegation of far more than W(5)'s 8e12 balance counts as 8e12, so the dev is at 12e12 (4.4%):
+    // under the 5% cluster and 10% single limits; it does enter the top 10, which reaches 84e12 (30.9%).
+    const one = base.map((a) => (a.owner === W(5) ? { ...a, delegate: DEV, delegatedAmount: 10n ** 15n } : a));
+    expect(codes(one)).toEqual(['top10']);
+    // Delegated to the account's own owner, nothing is added.
+    const self = base.map((a) => ({ ...a, delegate: a.owner, delegatedAmount: a.amount }));
+    expect(codes(self)).toEqual([]);
+  });
+
+  it('a delegated amount without a delegate is malformed', () => {
+    const r = evaluate(view(delegated(1n, null), 'all')).reasons;
+    expect(r).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'holders' }));
   });
 });
