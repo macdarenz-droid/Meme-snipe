@@ -12,12 +12,13 @@ export interface Token {
 const NUMBER = /0[xX][0-9a-fA-F_]+n?|0[bB][01_]+n?|0[oO][0-7_]+n?|(?:\d[\d_]*\.?[\d_]*|\.\d[\d_]*)(?:[eE][+-]?\d[\d_]*)?n?/y;
 const IDENT = /[A-Za-z_$][\w$]*/y;
 
-/** Decodes \xNN, \uNNNN and \u{N} escapes, so an escaped digit cannot hide a number inside a string. */
+/** Decodes \xNN, \uNNNN, \u{N} and octal escapes, so an escaped digit cannot hide a number inside a string. */
 export const decodeEscapes = (raw: string): string =>
   raw
     .replace(/\\x([0-9a-fA-F]{2})/g, (_m, h: string) => String.fromCharCode(parseInt(h, 16)))
     .replace(/\\u\{([0-9a-fA-F]+)\}/g, (_m, h: string) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/\\u([0-9a-fA-F]{4})/g, (_m, h: string) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\([0-3][0-7]{0,2}|[4-7][0-7]?)/g, (_m, o: string) => String.fromCharCode(parseInt(o, 8)))
     .replace(/\\\n/g, '');
 
 /** A "/" starts a regular expression (not a division) after these. */

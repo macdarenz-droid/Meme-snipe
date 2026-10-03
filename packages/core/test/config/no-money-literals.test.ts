@@ -73,6 +73,7 @@ const BYPASSES: readonly (readonly [string, string])[] = [
   ['a regex after return and a class', "const f = () => { return /[']/.test(s); }; const Q = 5_000_000n;"],
   ['\\x escape in a number string', "const q = BigInt('\\x35000000');"],
   ['\\u escape in a number string', "const q = Number('\\u0035000000');"],
+  ['octal escape in a number string', "const q = BigInt('\\65000000');"],
   ['\\u{} escape in a number string', "const q = parseInt('\\u{35}000000');"],
 ];
 
