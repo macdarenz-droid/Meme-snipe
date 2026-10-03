@@ -781,7 +781,7 @@ describe('exit failures (BT-1c exit-failure ruling)', () => {
 describe('exit failure responds to congestion (BT-1d, reviewer test)', () => {
   test('blocked exits and failed exit attempts: always congested > real ≥ congestion without effect, in both scenarios', () => {
     // 30 mints, 8 h, swapEvery 60, seeds s0-s7, 3 modes x 2 scenarios = 48 replays, in their own process (see the script).
-    const out = JSON.parse(execFileSync('node', ['--no-warnings', join(import.meta.dirname, 'congestion-tally.ts')], { encoding: 'utf8' }).trim()) as
+    const out = JSON.parse(execFileSync('node', ['--no-warnings', join(import.meta.dirname, 'congestion-tally.ts')], { encoding: 'utf8', timeout: 240_000, maxBuffer: 1 << 20 }).trim()) as
       Record<'conservative' | 'base', Record<'always' | 'real' | 'none', { blocked: number; exits: number; failed: number }>>;
     for (const scenario of ['conservative', 'base'] as const) {
       const { always, real, none } = out[scenario];

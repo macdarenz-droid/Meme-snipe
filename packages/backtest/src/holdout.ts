@@ -124,6 +124,7 @@ export const LATER_ATTEMPT_ENTRY_DAYS = 28;
 /** One attempt of the shared error budget: registering it spends it, whatever happens later. */
 export interface HoldoutAttempt {
   readonly index: number;
+  /** The family α this attempt spends: G2 takes it as familyAlpha (Holm across the attempt's universes). */
   readonly alpha: number;
   /** Attempt 1: the plan's window. Attempt k ≥ 2: its own, written at registration. */
   readonly window: AttemptWindow;

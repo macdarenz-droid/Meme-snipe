@@ -28,7 +28,7 @@ import type { Bps } from '../../core/src/units/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
 import { readSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
-import { authoriseHoldout, type HoldoutPlan, holdoutWindow, readHoldoutStore, researchDays, runAndSealHoldout, setHoldoutPlan } from './holdout.ts';
+import { authoriseHoldout, type HoldoutPlan, readHoldoutStore, researchDays, runAndSealHoldout, setHoldoutPlan } from './holdout.ts';
 import { leakTest, shiftTest } from './proofs.ts';
 import { economics } from './economics.ts';
 import { buildReport } from './report.ts';
@@ -129,8 +129,11 @@ if (command === 'holdout-plan' || command === 'holdout-register' || command === 
     console.log(JSON.stringify({ plan: 'set' }));
   } else if (command === 'holdout-register') {
     const holdoutId = flag('holdout-id');
-    authoriseHoldout(authority, { attempt: Number(flag('attempt')), holdouts: [{ holdoutId, universe }] }, base);
-    console.log(JSON.stringify({ registered: holdoutId, ...holdoutWindow(base), entryCutoffDay: RESEARCH_CONFIG.holdout.entryCutoffDay, tailEndDay: RESEARCH_CONFIG.holdout.tailEndDay }));
+    const index = Number(flag('attempt'));
+    const st = authoriseHoldout(authority, { attempt: index, holdouts: [{ holdoutId, universe }] }, base);
+    const attempt = st.attempts.find((x) => x.index === index)!;
+    // The attempt's own window (attempt k >= 2 has its own), and the α G2 spends on it.
+    console.log(JSON.stringify({ registered: holdoutId, attempt: index, alpha: attempt.alpha, ...attempt.window }));
   } else {
     const sealed = runAndSealHoldout({ ...base, ledgerPath: flag('ledger') }, { ...authority, byUniverse: { [universe]: flag('holdout-id') }, window });
     console.log(JSON.stringify(sealed));
