@@ -600,3 +600,26 @@ describe('account costs (WORKER-1 setup rent): realized equity and day and week 
     expect(evaluateEntry({ ...i, market: { ...i.market, solBalance: { value: lamports(SOL), atMs: NOW - 50 } } }, baseRequest()).snapshot?.nav).not.toBeNull();
   });
 });
+
+describe('a withdrawal that leaves no positive valuation is refused (RISK-1b review)', () => {
+  const invalid = (d: ReturnType<typeof evaluateEntry>) => d.reasons.filter((r) => r.code === 'bankroll_invalid').map((r) => r.detail);
+  const out = (atMs: number, amount: string, navBefore: string) => ({ atMs, amount: neg(usd(amount)), navBefore: usd(navBefore) });
+  test('the ledger mark: $10 out at a valuation of $8 after a $5 loss', () => {
+    const d = evaluateEntry(baseInput({ account: account({ closedTrades: [trade(LAST_WEEK - 2 * HOUR, '-5')], flows: [out(LAST_WEEK, '10', '8')] }) }), baseRequest());
+    expect(invalid(d)).toContain('a withdrawal leaves no positive valuation');
+    expect(d.allow).toBe(false);
+  });
+  test('the week base: the same withdrawal this week', () => {
+    const d = evaluateEntry(baseInput({ account: account({ flows: [out(THIS_WEEK, '20', '20')] }) }), baseRequest());
+    expect(invalid(d)).toContain('a withdrawal leaves no positive valuation');
+  });
+  test('the NAV mark: a withdrawal of more than the NAV it was valued at', () => {
+    const i = baseInput({ account: account({ flows: [out(LAST_WEEK, '9', '8')], navMarks: [{ atMs: LAST_WEEK - HOUR, nav: usd('30') }] }) });
+    const d = evaluateEntry(i, baseRequest());
+    expect(invalid(d)).toContain('a withdrawal leaves no positive valuation');
+  });
+  test('one micro-dollar left is a valid valuation', () => {
+    const d = evaluateEntry(baseInput({ account: account({ flows: [{ atMs: LAST_WEEK, amount: neg(usd('19.999999')), navBefore: usd('20') }] }) }), baseRequest());
+    expect(invalid(d)).not.toContain('a withdrawal leaves no positive valuation');
+  });
+});

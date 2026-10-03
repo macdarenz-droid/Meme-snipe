@@ -136,6 +136,8 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
   if (times.some((t) => !isTime(t) || t > nowMs)) problems.push(reason('bankroll_invalid', 'account history or a latch has an invalid or future time'));
   if (a.heldReservations < 0n) problems.push(reason('bankroll_invalid', 'held reservations are negative'));
   if (a.flows.some((f) => f.navBefore <= 0n)) problems.push(reason('bankroll_invalid', 'a deposit or withdrawal has no positive valuation'));
+  // A withdrawal of everything or more would scale the marks to zero or below and silence the kill switch (RISK-1b review).
+  if (a.flows.some((f) => f.navBefore + f.amount <= 0n)) problems.push(reason('bankroll_invalid', 'a withdrawal leaves no positive valuation'));
   if (a.costs.some((c) => c.amount < 0n)) problems.push(reason('bankroll_invalid', 'an account cost is negative'));
   if (a.navMarks.some((m) => m.nav <= 0n)) problems.push(reason('bankroll_invalid', 'a recorded NAV is not positive'));
 
