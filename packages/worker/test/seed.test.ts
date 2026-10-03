@@ -421,8 +421,8 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
     clock.advanceTo(NOW);
     return createsCoverage((k, f, to) => store.history(k, f, to), NOW, NOW.receivedAt - 14 * DAY_MS);
   };
-  const fillOpts = (over: { creditCap?: number; rpc?: false } = {}): SeedOptions => ({
-    days: [], untilSlot: UNTIL, asOf: ASOF, fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM } },
+  const fillOpts = (over: { creditCap?: number; rpc?: false; liveStart?: Moment } = {}): SeedOptions => ({
+    days: [], untilSlot: UNTIL, asOf: ASOF, fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM }, liveStart: over.liveStart ?? { ...ASOF } },
     ...(over.rpc === false ? {} : { rpc: { rpc: fakeRpc(SIGS, byFixture), timers: instantTimers(), creditCap: over.creditCap ?? 100, provider: 'helius' } }),
   });
 
@@ -436,8 +436,6 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
     expect(seed.report.rpc?.result).toMatchObject({ stoppedBy: 'done', creates: CREATES.length, creditsUsed: 1 + CREATES.length });
     expect(seed.coverage.map((e) => [e.key, (e.value as { value: { via: string } }).value.via])).toEqual([['coverage:creates:resume', VIA]]);
     expect(coveredAfter(seed.coverage).covered).toBe(true);
-    // The tie case: the restarted watch's start in untilSlot itself, timed before asOf. The close must still come first.
-    expect(coveredAfter(seed.coverage, { slot: UNTIL, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt - 1_000 }).covered).toBe(true);
     // Fill creates reach the restored index, which has already seen live events, through fill(), and count.
     const idx = new DeployerIndex();
     for (const e of saved) idx.observe(e);
@@ -445,6 +443,28 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
     idx.fill(seed.creates, ASOF);
     const creator = createOf(seed.creates[0]!.value)!.creator;
     expect(idx.factFor(creator, NOW, 0).mints.length).toBeGreaterThan(0);
+  });
+
+  it('the close is dated from the live start fact wherever it lands: at, one and two slots below untilSlot, or at released+1 with no tip', async () => {
+    const off = (slot: bigint): Moment => ({ slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt - 1_000 });
+    // The last: a restart timed at the downtime's first block, so the close's time comes from liveStart - 1 ms.
+    for (const liveStart of [off(UNTIL), off(UNTIL - 1n), off(UNTIL - 2n), off(DOWN_FROM + 1n), { ...off(UNTIL), receivedAt: DOWN_MS }]) {
+      const seed = await buildSeed(fillOpts({ liveStart }));
+      const close = seed.coverage.at(-1)!;
+      expect(close.key).toBe('coverage:creates:resume');
+      expect(compareEvents(close, { moment: liveStart, id: 'restart-start' })).toBeLessThan(0);
+      expect(coveredAfter(seed.coverage, liveStart).covered).toBe(true);
+    }
+  });
+
+  it('a fill starting after untilSlot (failover, a node behind the saved state) is empty and complete: no RPC, a resume', async () => {
+    const rpc = fakeRpc(SIGS, byFixture);
+    const liveStart: Moment = { slot: UNTIL, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt - 1_000 };
+    const seed = await buildSeed({ ...fillOpts({ liveStart }), rpc: { rpc, timers: instantTimers(), creditCap: 100, provider: 'helius' }, fill: { fromSlot: UNTIL + 3n, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM }, liveStart } });
+    expect(rpc.pages).toEqual([]);
+    expect(seed.report).toMatchObject({ mode: 'fill', gaps: [], rpc: null, creates: 0 });
+    expect(seed.coverage.map((e) => e.key)).toEqual(['coverage:creates:resume']);
+    expect(coveredAfter(seed.coverage, liveStart).covered).toBe(true);
   });
 
   it('an incomplete fill leaves bounded gaps and closes the saved gap as lossy: not covered', async () => {
@@ -461,9 +481,9 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
     expect(coveredAfter(seed.coverage).covered).toBe(false);
   });
 
-  it('a fill takes no day releases and must start by untilSlot', async () => {
+  it('a fill takes no day releases, and a close needs the live start fact', async () => {
     await expect(buildSeed({ ...fillOpts(), days: [{ dir: dayRelease(DAY, UNITS), day: DAY }] })).rejects.toThrow(/neither day releases/);
-    await expect(buildSeed({ ...fillOpts(), fill: { fromSlot: UNTIL + 1n, fromMs: DOWN_MS } })).rejects.toThrow(/after untilSlot/);
+    await expect(buildSeed({ ...fillOpts(), fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM } } })).rejects.toThrow(/liveStart/);
   });
 });
 
