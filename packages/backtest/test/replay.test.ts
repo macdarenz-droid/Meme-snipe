@@ -64,19 +64,24 @@ describe('CSV', () => {
 });
 
 describe('regime boundaries', () => {
-  test('the engine sees a regime event at the first block at or after the boundary slot plus the observation delay, never before', async () => {
+  test('the engine sees a regime event at the first block at or after the boundary slot, never before (released after the observation delay)', async () => {
     const { Market } = await import('../src/sim/market.ts');
+    const hooks: { slot: bigint; run: () => void }[] = [];
     const scheduled: { key: string; slot: bigint }[] = [];
-    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observationSlots: 2, receiptMs: 0,
+    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: { slots: 2, providerMs: 0, blackouts: [], seed: 's' },
+      hook: (h) => hooks.push({ slot: h.moment.slot, run: h.run }), hasRows: () => true,
       schedule: (x) => { if (x.kind === 'market') scheduled.push({ key: x.key, slot: x.moment.slot }); }, regimeBoundaries: [{ slot: 12n, label: 'pump-2026-10-02' }] });
     const at = (slot: number) => {
       expect(market.release({ kind: 'block', slot: BigInt(slot), blockTime: slot, parentSlot: BigInt(slot - 1) })).toEqual([]);
+      // Driver work due at this block runs after it.
+      for (const h of hooks.splice(0)) if (h.slot === BigInt(slot)) h.run(); else hooks.push(h);
       return scheduled.splice(0);
     };
     expect(at(10)).toEqual([]);
     expect(at(11)).toEqual([]);
-    expect(at(13)).toEqual([{ key: 'regime', slot: 15n }]);
+    expect(at(13)).toEqual([]);
     expect(market.regime).toBe('pump-2026-10-02');
     expect(at(14)).toEqual([]);
+    expect(at(15)).toEqual([{ key: 'regime', slot: 15n }]);
   });
 });

@@ -5,7 +5,6 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { bps } from '../../core/src/units/index.ts';
-import type { FeedEvent } from '../../core/src/engine/index.ts';
 import type { AmmSwapRow } from '../src/dataset/rows.ts';
 import { Market, type PoolView } from '../src/sim/market.ts';
 
@@ -33,13 +32,10 @@ const rowOf = (v: V, k: number): AmmSwapRow => {
 };
 
 describe('both BuyEvent layouts', () => {
-  // Pool states are scheduled for after the observation delay; the test reads what was scheduled.
-  const scheduled: FeedEvent[] = [];
-  const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observationSlots: 1, receiptMs: 0, schedule: (e) => scheduled.push(e) });
+  // Recorded receipt times: each pool state is released with its row.
+  const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: null, hook: () => {}, hasRows: () => true, schedule: () => {} });
   const cases = golden.pumpswap.map((v, k) => {
-    const before = scheduled.length;
-    expect(market.release(rowOf(v, k))).toEqual([]);
-    const e = scheduled.length > before ? scheduled[scheduled.length - 1] : undefined;
+    const e = market.release(rowOf(v, k))[0];
     return { v, view: e?.kind === 'market' ? (e.value as PoolView) : null };
   });
 

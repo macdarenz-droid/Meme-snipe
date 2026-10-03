@@ -31,6 +31,26 @@ export interface LandingTail {
   readonly slots: readonly number[];
 }
 
+export type DelayProfileName = 'measured' | 'adverse' | 'stress';
+export const DELAY_PROFILE_NAMES: readonly DelayProfileName[] = ['measured', 'adverse', 'stress'];
+
+/**
+ * How late an on-chain observation (a swap's pool state, a lifecycle event, a regime change) reaches the worker, in
+ * three parts. Slots are converted to time with the replay's real slot times.
+ */
+export interface DelayProfile {
+  /** 'unmeasured' until the worker's recorder measures it; 'stress-budget' for a deliberate stress value; 'measured'. */
+  readonly status: 'unmeasured' | 'stress-budget' | 'measured';
+  /** Event slot to processed-commitment availability at the provider. */
+  readonly eventToProcessedSlots: number;
+  /** Processed to confirmed; charged only when the decision path waits for confirmed. */
+  readonly processedToConfirmedSlots: number;
+  /** Provider to worker: network and decoding, ms. */
+  readonly providerMs: number;
+  /** Feed blackouts per UTC day (deterministic times from the run seed); the backlog arrives when each ends. */
+  readonly blackouts: readonly { readonly durationMs: number }[];
+}
+
 export interface FillScenario {
   readonly name: ScenarioName;
   /** Share of attempts that land and execute, in ppm, per venue (§11 defaults until our own data exist). */
@@ -40,13 +60,8 @@ export interface FillScenario {
    * block height and cost nothing. The rest land as failed transactions and pay the base and priority fees.
    */
   readonly dropPpm: bigint;
-  /**
-   * Commitment delay of every on-chain observation (a swap's pool state, a lifecycle event, a regime change): slots
-   * after the transaction's own slot before the bot's feed reports it at the commitment it trades on.
-   */
-  readonly observationSlots: number;
-  /** Receipt delay on top of that: network and decoding time, ms. */
-  readonly receiptMs: number;
+  /** The observation delay profile this scenario uses (FillConfig.delays). */
+  readonly delay: DelayProfileName;
   /** Feed lag before the engine learns of a token, in slots; one value is drawn uniformly per token. */
   readonly discoverySlots: readonly number[];
   /** Slots from broadcast to landing; one value is drawn uniformly per attempt. */

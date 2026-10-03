@@ -258,8 +258,20 @@ describe('scenario ordering', () => {
   const lower = (x: number, y: number) => x >= y; // lower is better: worse value is larger
   better('landing share per venue', c.landPpm, b.landPpm, o.landPpm, (x, y) => (Object.keys(b.landPpm) as (keyof typeof x)[]).every((v) => x[v] <= y[v]));
   better('dropped share (a dropped attempt costs nothing; a failed one pays fees)', c.dropPpm, b.dropPpm, o.dropPpm, (x, y) => x <= y);
-  better('observation delay, slots', c.observationSlots, b.observationSlots, o.observationSlots, lower);
-  better('observation delay, receipt ms', c.receiptMs, b.receiptMs, o.receiptMs, lower);
+  const D = FILL_CONFIG.delays;
+  const slotsOf = (n: typeof c.delay) => D[n].eventToProcessedSlots + D[n].processedToConfirmedSlots;
+  better('observation delay, slots', slotsOf(c.delay), slotsOf(b.delay), slotsOf(o.delay), lower);
+  better('observation delay, provider ms', D[c.delay].providerMs, D[b.delay].providerMs, D[o.delay].providerMs, lower);
+  test('delay profiles: stress ≥ adverse ≥ measured in every part; conservative uses adverse', () => {
+    expect(c.delay).toBe('adverse');
+    for (const k of ['eventToProcessedSlots', 'processedToConfirmedSlots', 'providerMs'] as const) {
+      expect(D.stress[k]).toBeGreaterThanOrEqual(D.adverse[k]);
+      expect(D.adverse[k]).toBeGreaterThanOrEqual(D.measured[k]);
+    }
+    expect([D.adverse.eventToProcessedSlots, D.adverse.processedToConfirmedSlots, D.adverse.providerMs]).toEqual([2, 6, 1_000]);
+    expect([D.stress.eventToProcessedSlots, D.stress.processedToConfirmedSlots, D.stress.providerMs]).toEqual([4, 12, 2_000]);
+    expect(D.measured.status).toBe('unmeasured');
+  });
   better('congestion burst share', c.congestion.burstPpm, b.congestion.burstPpm, o.congestion.burstPpm, (x, y) => x >= y);
   better('landing share in a burst', c.congestion.landFactorPpm, b.congestion.landFactorPpm, o.congestion.landFactorPpm, (x, y) => x <= y);
   better('extra landing slots in a burst', c.congestion.extraLandingSlots, b.congestion.extraLandingSlots, o.congestion.extraLandingSlots, lower);
@@ -279,6 +291,6 @@ describe('scenario ordering', () => {
   better('account close success', c.closeSuccessPpm, b.closeSuccessPpm, o.closeSuccessPpm, (x, y) => x <= y);
   better('dust left in the account', c.dustPpm, b.dustPpm, o.dustPpm, (x, y) => x >= y);
   test('the test covers every scenario field', () => {
-    expect(Object.keys(b).sort()).toEqual(['closeSuccessPpm', 'confirmSlots', 'congestion', 'discoverySlots', 'dropPpm', 'dustPpm', 'exitRetryHaircutPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'landingTail', 'name', 'observationSlots', 'receiptMs', 'rentRecovery', 'slippagePpm', 'takeProfit']);
+    expect(Object.keys(b).sort()).toEqual(['closeSuccessPpm', 'confirmSlots', 'congestion', 'delay', 'discoverySlots', 'dropPpm', 'dustPpm', 'exitRetryHaircutPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'landingTail', 'name', 'rentRecovery', 'slippagePpm', 'takeProfit']);
   });
 });

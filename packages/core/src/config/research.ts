@@ -23,6 +23,11 @@ export interface ResearchConfig {
   };
   /** Blocks between heartbeat slot events while no intent is in flight. */
   readonly heartbeatBlocks: number;
+  /**
+   * The commitment the decision path waits for. 'confirmed' charges the processed → confirmed delay too (the harsher
+   * choice until WORKER-1 settles the live path).
+   */
+  readonly decisionCommitment: 'processed' | 'confirmed';
   /** Running costs charged against results, apart from the bankroll and per-trade costs. */
   readonly operating: {
     /** The Frankfurt VPS the owner approved (DECISIONS.md 2026-10-03, about US$6/month). */
@@ -39,6 +44,7 @@ const VALUES: ResearchConfig = {
   version: 'research-2',
   s0: { u2WindowFromMs: 60 * MINUTE, u2WindowToMs: 240 * MINUTE, entryMinOutBelowBps: 300, blockedRetryMs: 10 * MINUTE, blockedRetries: 3, endMarginMs: 30 * MINUTE },
   heartbeatBlocks: 150,
+  decisionCommitment: 'confirmed',
   operating: { hostingUsdPerMonth: usd('6'), projectionBankrolls: [usd('20'), usd('100'), usd('200')] },
 };
 

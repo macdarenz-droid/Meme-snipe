@@ -323,25 +323,79 @@ describe('signing heights and skipped slots', () => {
   });
 });
 
-describe('observation delay (BT-1c item 3)', () => {
-  test('a swap or lifecycle event reaches the strategy only after the scenario receipt and commitment delay', () => {
-    const byId = new Map<string, (typeof rows)[number]>();
-    for (const r of rows) if (r.kind !== 'block') byId.set(`${r.signature}:${r.evIdx}`, r);
+describe('observation delay (BT-1c item 3 and delay ruling)', () => {
+  const byId = new Map<string, (typeof rows)[number]>();
+  for (const r of rows) if (r.kind !== 'block') byId.set(`${r.signature}:${r.evIdx}`, r);
+  const blockAt = new Map<bigint, number>();
+  for (const r of rows) if (r.kind === 'block') blockAt.set(r.slot, r.blockTime * 1000);
+  type Seen = { id: string; key: string; slot: bigint; receivedAt: number; observed?: { slot: bigint; at: number } | undefined };
+  const watch = (o: RunOptions) => {
+    const seen: Seen[] = [];
+    const r = runBacktest({ ...o, strategy: () => ({ onMarket: (e) => {
+      if (e.kind === 'market') seen.push({ id: e.id, key: e.key, slot: e.moment.slot, receivedAt: e.moment.receivedAt, observed: (e.value as { observed?: Seen['observed'] }).observed });
+      return [];
+    } }) });
+    return { r, seen };
+  };
+  const firstBlockFrom = (slot: bigint): bigint => {
+    for (let s = slot; ; s++) if (blockAt.has(s)) return s;
+  };
+
+  test('each swap or lifecycle event arrives at the end of the first block after event→processed, processed→confirmed and provider→worker delays, at that block\'s real time', () => {
     for (const scenario of ['conservative', 'base', 'optimistic'] as const) {
-      const s = FILL_CONFIG.scenarios[scenario];
-      expect(s.observationSlots).toBeGreaterThanOrEqual(1);
-      const seen: { id: string; slot: bigint; receivedAt: number }[] = [];
-      runBacktest(opts({ scenario, strategy: () => ({ onMarket: (e) => {
-        if (e.kind === 'market' && (e.key.startsWith('pool:') || e.key.startsWith('life:'))) seen.push({ id: e.id, slot: e.moment.slot, receivedAt: e.moment.receivedAt });
-        return [];
-      } }) }));
-      expect(seen.length).toBeGreaterThan(0);
-      for (const x of seen) {
+      const profile = FILL_CONFIG.delays[FILL_CONFIG.scenarios[scenario].delay];
+      expect(RESEARCH_CONFIG.decisionCommitment).toBe('confirmed');
+      const slots = BigInt(profile.eventToProcessedSlots + profile.processedToConfirmedSlots);
+      const { seen } = watch(opts({ scenario }));
+      const obs = seen.filter((x) => x.key.startsWith('pool:') || x.key.startsWith('life:'));
+      expect(obs.length).toBeGreaterThan(0);
+      for (const x of obs) {
         const row = byId.get(x.id.slice(2))!;
-        expect(x.slot - row.slot).toBe(BigInt(s.observationSlots));
-        expect(x.receivedAt).toBe(row.blockTime * 1000 + s.observationSlots * 400 + s.receiptMs);
+        const at = firstBlockFrom(row.slot + slots);
+        expect(x.slot).toBe(at);
+        expect(x.receivedAt).toBe(blockAt.get(at)! + profile.providerMs);
+        // The chain moment travels with the value, so the observation's age is never reset by its arrival.
+        expect(x.observed).toEqual({ slot: row.slot, at: row.blockTime * 1000 });
       }
     }
+  });
+
+  test('recorded receipt times are never charged the delay again', () => {
+    const { seen } = watch(opts({ observation: 'recorded' }));
+    const obs = seen.filter((x) => x.key.startsWith('pool:'));
+    expect(obs.length).toBeGreaterThan(0);
+    for (const x of obs) {
+      const row = byId.get(x.id.slice(2))!;
+      expect([x.slot, x.receivedAt]).toEqual([row.slot, row.blockTime * 1000]);
+    }
+  });
+
+  test('stress blackouts of 30 s and 60 s: nothing arrives inside one, the backlog arrives in order after it, stale stays stale, the clock keeps running', () => {
+    const stress = FILL_CONFIG.delays.stress;
+    expect(stress.blackouts.map((b) => b.durationMs)).toEqual([30_000, 60_000]);
+    const { r, seen } = watch(opts({ delay: 'stress', research: { ...RESEARCH_CONFIG, heartbeatBlocks: 5 } }));
+    expect(r.stats.crash).toBeNull();
+    expect(r.blackouts.length).toBeGreaterThanOrEqual(2);
+    const inside = (t: number) => r.blackouts.some((b) => t >= b.from && t < b.to);
+    const obs = seen.filter((x) => x.key.startsWith('pool:') || x.key.startsWith('life:'));
+    for (const x of obs) expect(inside(x.receivedAt)).toBe(false);
+    // Clock events keep coming during a blackout.
+    expect(seen.some((x) => x.key === 'slot' && inside(x.receivedAt))).toBe(true);
+    // A backlog: observations from inside a blackout arrive after it, still dated at their chain time, in chain order.
+    let backlog = 0;
+    for (const b of r.blackouts) {
+      const held = obs.filter((x) => x.observed!.at >= b.from && x.observed!.at < b.to - 10_000);
+      if (held.length === 0) continue;
+      backlog++;
+      for (const x of held) expect(x.receivedAt).toBeGreaterThanOrEqual(b.to);
+      const order = held.map((x) => byId.get(x.id.slice(2))!).map((w) => (w.kind === 'block' ? [0n, 0, 0] as const : [w.slot, w.txIdx, w.evIdx] as const));
+      for (let k = 1; k < order.length; k++) {
+        const [s0, t0, e0] = order[k - 1]!;
+        const [s1, t1, e1] = order[k]!;
+        expect(s1 > s0 || (s1 === s0 && (t1 > t0 || (t1 === t0 && e1 > e0)))).toBe(true);
+      }
+    }
+    expect(backlog).toBeGreaterThan(0);
   });
 });
 

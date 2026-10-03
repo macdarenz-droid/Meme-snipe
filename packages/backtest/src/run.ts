@@ -4,7 +4,7 @@
 import type { Policy } from '../../core/src/config/index.ts';
 import type { FillConfig, ResearchConfig } from '../../core/src/config/index.ts';
 import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
-import { blockedExitValue, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
+import { blockedExitValue, type DelayProfileName, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
 import { openLedger, type Ledger } from '../../core/src/ledger/index.ts';
 import { isTerminal, type Book } from '../../core/src/lifecycle/index.ts';
 import { type DatasetRow } from './dataset/rows.ts';
@@ -33,6 +33,10 @@ export interface RunOptions {
   readonly s0?: Partial<S0Config>;
   /** Extra events (a planted leak marker), merged into the replay. */
   readonly extraEvents?: readonly FeedEvent[];
+  /** Observation delay profile instead of the scenario's (a stress run). */
+  readonly delay?: DelayProfileName;
+  /** 'recorded': the rows carry recorded receipt times (recorder data), so no delay is added. Default 'chain-time'. */
+  readonly observation?: 'chain-time' | 'recorded';
   /** Program-change slots from the dataset manifest (regime boundaries). */
   readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
 }
@@ -71,6 +75,8 @@ export interface RunResult {
   readonly regimes: readonly { readonly slot: bigint; readonly label: string; readonly at: number }[];
   /** Block time (ms) of the last block released. */
   readonly endedAt: number;
+  /** Feed blackouts of the run's delay profile, ms [from, to). */
+  readonly blackouts: readonly { readonly from: number; readonly to: number }[];
 }
 
 /** S0 settings from the policy (size, hold, ladder), the fill config and the research config; no code constants. */
@@ -98,6 +104,7 @@ const clockMs = (): number => performance.now();
 export const runBacktest = (o: RunOptions): RunResult => {
   const started = clockMs();
   const scenario = o.fills.scenarios[o.scenario];
+  const profile = o.fills.delays[o.delay ?? scenario.delay];
   const it = o.rows();
   let rows = 0;
   const extra = [...(o.extraEvents ?? [])];
@@ -119,8 +126,12 @@ export const runBacktest = (o: RunOptions): RunResult => {
     heartbeatBlocks: o.research.heartbeatBlocks,
     discoveryLag: (mint) => Math.max(1, drawDiscoverySlots(createRng(`${o.seed}:discovery:${mint}`), scenario)),
     active: live,
-    observationSlots: scenario.observationSlots,
-    receiptMs: scenario.receiptMs,
+    observe: o.observation === 'recorded' ? null : {
+      slots: profile.eventToProcessedSlots + (o.research.decisionCommitment === 'confirmed' ? profile.processedToConfirmedSlots : 0),
+      providerMs: profile.providerMs, blackouts: profile.blackouts.map((b) => b.durationMs), seed: `${o.seed}:feed`,
+    },
+    hook: (h) => replay!.hook(h),
+    hasRows: () => replay!.hasRows(),
     schedule: (e) => replay!.schedule(e),
     ...(o.regimeBoundaries === undefined ? {} : { regimeBoundaries: [...o.regimeBoundaries].sort((a, b) => (a.slot < b.slot ? -1 : 1)) }),
     series: o.series.map((s) => ({ key: s.name === 'SOL/USD' ? 'sol-usd' : s.name, releases: seriesReleases(s) })),
@@ -132,7 +143,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
       discoveries.set(d.mint, d);
       return { ...e, value: d } as MarketEvent;
     }
-    return e.kind === 'market' ? market.observed(e) : e;
+    return e;
   });
   for (const e of extra) replay.schedule(e);
 
@@ -182,6 +193,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     symbols: market.symbols,
     endedAt: market.blockTime * 1000,
     regimes: market.regimesPassed,
+    blackouts: market.blackouts,
     poolDelta: (pool) => market.track(pool)?.shifted.delta ?? { base: 0n, vault: 0n, virtual: 0n },
     endValue: (mint, tokens) => {
       const pool = discoveries.get(mint)?.pool;

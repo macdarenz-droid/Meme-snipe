@@ -3,6 +3,7 @@
 //
 //   node packages/backtest/src/cli.ts run --dataset <dir> --sol-usd <file> [--scenario conservative] [--seed s0-1]
 //        [--replays 10] [--days 2026-09-01,2026-09-02] [--out report.json] [--evidence evidence.json] [--ledger bt.sqlite]
+//        [--delay measured|adverse|stress]
 //   node packages/backtest/src/cli.ts holdout-register --dataset <dir> --sol-usd <file> --registry <file> --holdout-id <id>
 //        [--universe U2] [--family-size 1] [--days ...] [--scenario ...] [--seed ...]
 //   node packages/backtest/src/cli.ts holdout --dataset <dir> --sol-usd <file> --registry <file> --holdout-id <id>
@@ -17,7 +18,7 @@ import { writeFileSync } from 'node:fs';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { OFF_CHAIN } from '../../core/src/engine/index.ts';
 import { gateG0 } from '../../core/src/stats/index.ts';
-import { SCENARIO_NAMES, type ScenarioName } from '../../core/src/fills/index.ts';
+import { DELAY_PROFILE_NAMES, type DelayProfileName, SCENARIO_NAMES, type ScenarioName } from '../../core/src/fills/index.ts';
 import type { Bps } from '../../core/src/units/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
 import { readSeries } from './dataset/offchain.ts';
@@ -48,6 +49,8 @@ const solUsd = readSeries(flag('sol-usd'));
 const scenario = flag('scenario', 'conservative') as ScenarioName;
 if (!SCENARIO_NAMES.includes(scenario)) throw new Error(`scenario must be one of ${SCENARIO_NAMES.join(', ')}`);
 const seed = flag('seed', 's0-1');
+const delay = args.includes('--delay') ? flag('delay') as DelayProfileName : undefined;
+if (delay !== undefined && !DELAY_PROFILE_NAMES.includes(delay)) throw new Error(`delay must be one of ${DELAY_PROFILE_NAMES.join(', ')}`);
 const from = Date.parse(`${days[0]!.day}T00:00:00Z`);
 const lastDay = Date.parse(`${days[days.length - 1]!.day}T00:00:00Z`) + 86_400_000;
 // A partly covered last day ends where the data ends, so S0 plans nothing it could not finish.
@@ -68,7 +71,7 @@ const plantedSwap = (token: string, slot: bigint, blockTime: number): DatasetRow
   fees: { split: { lp: 20 as Bps, protocol: 5 as Bps, creator: 95 as Bps }, buybackFeeBps: 0 as Bps, instruction: 'v1' },
   baseSupply: 1_000_000_000_000_000n, ixName: 'buy_exact_quote_in', user: token,
 });
-const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, windowEnd: to, regimeBoundaries };
+const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, windowEnd: to, regimeBoundaries, ...(delay === undefined ? {} : { delay }) };
 
 const git = (...a: string[]) => execFileSync('git', a, { encoding: 'utf8', cwd: import.meta.dirname });
 /** The commit, plus a hash of any uncommitted change, so the id always names the code that ran. */
@@ -161,7 +164,8 @@ if (command === 'holdout-register' || command === 'holdout') {
   const evidence = {
     commit, dataset: { dir: dataset, manifestSha256: manifestHash(dataset), days: days.map((d) => d.day), complete: days.map((d) => d.complete) },
     sumsChecked,
-    fillsVersion: FILL_CONFIG.version, fillsProvisional: FILL_CONFIG.provisional, researchVersion: RESEARCH_CONFIG.version, policyName: TRIAL_POLICY.name,
+    fillsVersion: FILL_CONFIG.version, fillsProvisional: FILL_CONFIG.provisional,
+    delayProfile: { name: delay ?? FILL_CONFIG.scenarios[scenario].delay, ...FILL_CONFIG.delays[delay ?? FILL_CONFIG.scenarios[scenario].delay], decisionCommitment: RESEARCH_CONFIG.decisionCommitment }, blackouts: first.blackouts, researchVersion: RESEARCH_CONFIG.version, policyName: TRIAL_POLICY.name,
     scenario, seed, hashes, identicalReplays: identical, leak, shift, g0: { status: g0.status, checks: g0.checks }, stats: first.stats,
     throughput: { rows: first.stats.rows, elapsedMs: times, rowsPerSecond: Math.round(first.stats.rows / (first.stats.elapsedMs / 1000)), days: days.length,
       projected30DaysMinutes: Math.round(((first.stats.elapsedMs / days.length) * 30) / 60_000) },
