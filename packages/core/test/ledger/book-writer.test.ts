@@ -41,7 +41,14 @@ describe('Ledger.recordBookEvent', () => {
     const ledger = openLedger(path, 'backtest');
     const book = emptyBook(CONFIG);
     const before = rows(path);
-    expect(() => ledger.recordBookEvent(book, on(entryIntent(1).id, { type: 'mark_eligible' }), { ts: 1, limits })).toThrow(LedgerError);
+    let caught: unknown = null;
+    try {
+      ledger.recordBookEvent(book, on(entryIntent(1).id, { type: 'mark_eligible' }), { ts: 1, limits });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(LedgerError);
+    expect((caught as LedgerError).code).toBe('reducer_refused');
     ledger.close();
     expect(rows(path)).toEqual(before);
   });
@@ -56,7 +63,14 @@ describe('Ledger.recordBookEvent', () => {
     for (const e of rest.slice(0, reserve)) book = ledger.recordBookEvent(book, e, { ts: 1, limits }).book;
     const before = rows(path);
     // The reservation is refused by the limits after the intent row is written: the whole event rolls back.
-    expect(() => ledger.recordBookEvent(book, rest[reserve]!, { ts: 2, limits: { maxHeld: lamports(1n), maxCount: 1 } })).toThrow(/refused/);
+    let caught: unknown = null;
+    try {
+      ledger.recordBookEvent(book, rest[reserve]!, { ts: 2, limits: { maxHeld: lamports(1n), maxCount: 1 } });
+    } catch (err) {
+      caught = err;
+    }
+    // A write failure is not a reducer refusal: callers must not count it as one.
+    expect((caught as LedgerError).code).toBeNull();
     ledger.close();
     expect(rows(path)).toEqual(before);
   });

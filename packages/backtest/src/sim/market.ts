@@ -29,7 +29,8 @@ export interface PoolView {
   readonly virtualQuoteReserves: bigint;
   readonly fees: ObservedFees;
   readonly baseSupply: bigint;
-  /** The real swap that produced this state. */
+  /** The real swap that produced this state: its side, and what that trader paid in (buy) or received (sell), fees
+   * included, from the exact replay. Not the event's `user_quote_amount`, whose meaning differs by instruction. */
   readonly side: 'buy' | 'sell';
   readonly userQuote: bigint;
   readonly baseAmount: bigint;
@@ -202,7 +203,7 @@ export class Market {
     const view: PoolView = {
       pool: row.pool, mint: row.baseMint, quoteMint: row.quoteMint,
       baseReserve: r.shifted.baseReserve, quoteVault: r.shifted.quoteVault, virtualQuoteReserves: r.shifted.virtualQuoteReserves,
-      fees: row.fees, baseSupply: row.baseSupply, side: row.side, userQuote: row.userQuote, baseAmount: row.baseAmount,
+      fees: row.fees, baseSupply: row.baseSupply, side: row.side, userQuote: r.trade.userQuote, baseAmount: row.side === 'buy' ? r.trade.base : row.baseAmount,
       blockHeight: this.blockHeight,
     };
     return [this.#market(`s:${row.signature}:${row.evIdx}`, rowMoment(row), `pool:${row.pool}`, view as unknown as Readonly<Record<string, unknown>>)];
