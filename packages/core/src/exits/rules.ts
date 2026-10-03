@@ -4,6 +4,7 @@
 // pause or kill latch can block an exit (§8, §18).
 import { MINUTE_MS, type Policy } from '../config/index.ts';
 import type { ExitReason, PositionStatus } from '../lifecycle/index.ts';
+import type { FillNetwork } from '../fills/index.ts';
 import { BPS_DENOMINATOR, type MicroUsd, mulDiv } from '../units/index.ts';
 import { type ExitMarket, type Liquidation, type PriceBar, atOrBelow, atr, execPrice, liquidationValue, quoteReserve } from './value.ts';
 
@@ -52,6 +53,8 @@ export interface Holding {
   readonly realized: bigint;
   /** Fees one more exit transaction costs at the first rung (base, priority, tip). */
   readonly exitCost: bigint;
+  /** CORE-1 `exitSeq`: exit owners created so far. Sales under one owner are one partial. */
+  readonly exitSeq: number;
 }
 
 export interface Observed<T> {
@@ -86,11 +89,20 @@ export interface ExitSettings {
   readonly maxQuoteAgeMs: number;
   /** From the fill scenario: the conservative scenario judges take-profit on the slot's close only (§11). */
   readonly takeProfitOn: 'wick' | 'close';
+  /** What one blocked-exit retry costs: base fee, the last rung's capped priority fee, and the tip. */
+  readonly retryCost: bigint;
 }
 
-export const exitSettings = (policy: Policy, takeProfitOn: 'wick' | 'close'): ExitSettings => ({
-  exits: policy.exits, minNotional: policy.capital.minNotional, maxQuoteAgeMs: policy.gates.maxQuoteAgeMs, takeProfitOn,
-});
+export type AttemptNetwork = Pick<FillNetwork, 'signaturesPerTx' | 'baseFeePerSignature' | 'tip'>;
+
+export const exitSettings = (policy: Policy, takeProfitOn: 'wick' | 'close', network: AttemptNetwork): ExitSettings => {
+  const { steps, maxFeePerAttempt } = policy.exits.ladder;
+  const fee = steps[steps.length - 1]!.priorityFeeLamports;
+  return {
+    exits: policy.exits, minNotional: policy.capital.minNotional, maxQuoteAgeMs: policy.gates.maxQuoteAgeMs, takeProfitOn,
+    retryCost: network.signaturesPerTx * network.baseFeePerSignature + (fee < maxFeePerAttempt ? fee : maxFeePerAttempt) + network.tip,
+  };
+};
 
 export interface ExitTracker {
   /** Highest executable price since entry (PRICE_SCALE). */
@@ -99,6 +111,12 @@ export interface ExitTracker {
   readonly trail: bigint | null;
   readonly partials: number;
   readonly lastSold: bigint;
+  /** The exit owner (`exitSeq`) whose sale was last counted as a partial. */
+  readonly partialSeq: number | null;
+  /** Ladder attempts signed for this position, across every exit owner (`noteAttempt`). */
+  readonly attemptsUsed: number;
+  /** Highest rung attempted so far; escalation never goes below the next one. */
+  readonly lastRung: number | null;
   /** Consecutive market states whose reverse quote failed. */
   readonly quoteFailures: number;
   readonly lastQuoteAtMs: number | null;
@@ -110,15 +128,25 @@ export interface ExitTracker {
 }
 
 export const newTracker = (): ExitTracker => ({
-  peak: null, trail: null, partials: 0, lastSold: 0n, quoteFailures: 0, lastQuoteAtMs: null, flatMet: false, blockedAtMs: null, blockedRetries: 0,
+  peak: null, trail: null, partials: 0, lastSold: 0n, partialSeq: null, attemptsUsed: 0, lastRung: null,
+  quoteFailures: 0, lastQuoteAtMs: null, flatMet: false, blockedAtMs: null, blockedRetries: 0,
+});
+
+/**
+ * Records one signed ladder attempt of this position. The ladder budget is per position: an exit owner that ends
+ * unfilled does not give the next one a fresh ladder.
+ */
+export const noteAttempt = (t: ExitTracker, rung: number): ExitTracker => ({
+  ...t, attemptsUsed: t.attemptsUsed + 1, lastRung: t.lastRung !== null && t.lastRung > rung ? t.lastRung : rung,
 });
 
 export type ExitDecision =
   /** No exit; the triggers listed fired but cannot act now (for the log). */
   | { readonly kind: 'hold'; readonly fired: readonly Trigger[]; readonly detail: string }
   /**
-   * Request an exit of `quantity`. `value` is the liquidation quote it starts from; when it is not ok the caller books
-   * the exit blocked at once (never a fabricated fill). Attempts start at `startRung`, at most `maxAttempts`.
+   * Request an exit of `quantity`. `value` is the liquidation quote it starts from; when it is not ok, or `blocked`
+   * names why no attempt is left, the exit is booked blocked at once (never a fabricated fill). Attempts start at
+   * `startRung`, at most `maxAttempts` (what remains of the position's ladder).
    */
   | {
     readonly kind: 'exit';
@@ -130,6 +158,7 @@ export type ExitDecision =
     readonly value: Liquidation;
     readonly startRung: number;
     readonly maxAttempts: number;
+    readonly blocked: string | null;
   }
   /** An exit owner already holds the quantity: add the reasons to it, create nothing (one exit owner, CORE-1). */
   | { readonly kind: 'merge'; readonly reasons: readonly ExitReason[]; readonly fired: readonly Trigger[] };
@@ -197,8 +226,11 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
   let t = t0;
   if (h.status === 'opening' || h.status === 'closed' || h.quantity <= 0n) return hold(`nothing to manage (${h.status})`);
 
-  // Tokens are still held, so a new sale was a partial (an outside sale counts too: the runner rules are the tighter ones).
-  if (h.sold > t.lastSold) t = { ...t, partials: t.partials + 1, lastSold: h.sold };
+  // Tokens are still held, so a new sale was a partial (an outside sale counts too: the runner rules are the tighter
+  // ones). Fills of one exit owner in several steps are one partial.
+  if (h.sold > t.lastSold) {
+    t = { ...t, partials: h.exitSeq === t.partialSeq ? t.partials : t.partials + 1, partialSeq: h.exitSeq, lastSold: h.sold };
+  }
 
   const market = asOf('market', obs.market);
   const fresh = market !== null && now - market.atMs <= s.maxQuoteAgeMs ? market : null;
@@ -250,11 +282,16 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
     return fired.length === 0 ? hold('exit in progress') : { tracker: t, decision: { kind: 'merge', reasons: reasonsOf(fired), fired }, ignored };
   }
 
+  const last = x.ladder.steps.length - 1;
+  const left = x.ladder.maxAttempts - t.attemptsUsed;
   const exit = (quantity: bigint, partial: boolean, retry: boolean, reasons: readonly ExitReason[]): ExitStep => ({
     tracker: t,
     decision: {
       kind: 'exit', quantity, partial, retry, reasons, fired, value: liq,
-      startRung: retry ? x.ladder.steps.length - 1 : 0, maxAttempts: retry ? 1 : x.ladder.maxAttempts,
+      // Escalation never goes down: a new owner starts above the highest rung already tried.
+      startRung: retry ? last : t.lastRung === null ? 0 : Math.min(t.lastRung + 1, last),
+      maxAttempts: retry ? 1 : Math.max(left, 0),
+      blocked: retry || left > 0 ? null : `exit ladder used: ${t.attemptsUsed} attempts on this position`,
     },
     ignored,
   });
@@ -266,7 +303,7 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
     if (t.blockedRetries >= x.blockedRetryAttempts) return hold('exit blocked: retries used', fired);
     if (now < t.blockedAtMs! + x.blockedRetryMs) return hold('exit blocked: waiting to retry', fired);
     if (!liq.ok) return hold(`exit blocked: ${liq.detail}`, fired);
-    if (liq.value <= h.exitCost) return hold('exit blocked: the quote does not cover the attempt', fired);
+    if (liq.value <= s.retryCost) return hold('exit blocked: the quote does not cover the attempt', fired);
     t = { ...t, blockedAtMs: null, blockedRetries: t.blockedRetries + 1 };
     return exit(h.quantity, false, true, fired.length > 0 ? reasonsOf(fired) : ['emergency']);
   }

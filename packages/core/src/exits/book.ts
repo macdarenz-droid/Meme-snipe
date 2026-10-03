@@ -8,11 +8,12 @@ import type { ExitDecision } from './rules.ts';
 /**
  * Book events for one decision. `intentId` names the new exit owner; for a merge it is ignored by the book. When the
  * exit has no executable quote it is booked blocked in the same step: an exit with nothing to sell into never pretends
- * to be in flight.
+ * to be in flight; nor does one whose position has used its whole ladder.
  */
 export const exitBookEvents = (positionId: PositionId, decision: ExitDecision, intentId: IntentId): BookEvent[] => {
   if (decision.kind === 'hold') return [];
   if (decision.kind === 'merge') return [{ type: 'trigger_exit', positionId, reasons: decision.reasons, intentId }];
   const trigger: BookEvent = { type: 'trigger_exit', positionId, reasons: decision.reasons, intentId, quantity: raw(decision.quantity) };
+  if (decision.blocked !== null) return [trigger, { type: 'exit_blocked', positionId, reason: decision.blocked }];
   return decision.value.ok ? [trigger] : [trigger, { type: 'exit_blocked', positionId, reason: `no executable quote: ${decision.value.detail}` }];
 };

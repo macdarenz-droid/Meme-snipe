@@ -21,11 +21,13 @@ const minOutAt = (ladder: Ladder, rung: number, triggerValue: bigint): bigint =>
 
 /**
  * The plan for attempt `attempt` (1-based) of one exit. The scheduled rung is `startRung + attempt − 1`, held at the
- * last rung. A rung whose min-out is above the fresh quote would fail on chain and only burn its fee, so the plan
- * moves up to the first rung the quote can meet; when none can, the exit is blocked now. Every fee is capped at
- * `maxFeePerAttempt`.
+ * last rung, and never below `lastRung + 1` (the highest rung already tried, held at the last rung). A rung whose
+ * min-out is above the fresh quote would fail on chain and only burn its fee, so the plan moves up to the first rung
+ * the quote can meet; when none can, the exit is blocked now. Every fee is capped at `maxFeePerAttempt`.
  */
-export const planAttempt = (ladder: Ladder, attempt: number, triggerValue: bigint, freshQuote: bigint, startRung = 0, maxAttempts = ladder.maxAttempts): AttemptPlan => {
+export const planAttempt = (
+  ladder: Ladder, attempt: number, triggerValue: bigint, freshQuote: bigint, startRung = 0, maxAttempts = ladder.maxAttempts, lastRung: number | null = null,
+): AttemptPlan => {
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new RangeError('attempt must be a whole number >= 1');
   if (!Number.isSafeInteger(startRung) || startRung < 0) throw new RangeError('startRung must be a whole number >= 0');
   if (triggerValue <= 0n) throw new RangeError('trigger value must be > 0');
@@ -33,7 +35,9 @@ export const planAttempt = (ladder: Ladder, attempt: number, triggerValue: bigin
   const budget = Math.min(maxAttempts, ladder.maxAttempts);
   if (attempt > budget) return { ok: false, reason: 'ladder-exhausted', detail: `${budget} attempts used` };
   const last = ladder.steps.length - 1;
-  for (let rung = Math.min(startRung + attempt - 1, last); rung <= last; rung++) {
+  // Never below the rung after the highest one tried (a skip upward is not undone by the next attempt).
+  const floor = lastRung === null ? 0 : Math.min(lastRung + 1, last);
+  for (let rung = Math.max(Math.min(startRung + attempt - 1, last), floor); rung <= last; rung++) {
     const minOut = minOutAt(ladder, rung, triggerValue);
     if (minOut > freshQuote) continue;
     const fee = ladder.steps[rung]!.priorityFeeLamports;
