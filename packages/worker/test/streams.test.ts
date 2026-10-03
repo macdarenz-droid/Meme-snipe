@@ -64,9 +64,11 @@ describe('RPC stream', () => {
     hub.last.push(logs(logSub!, 500, t.signature));
     hub.last.push({ jsonrpc: '2.0', method: 'accountNotification', params: { subscription: acctSub, result: { context: { slot: 500 }, value: { owner: PUMP_GLOBAL, lamports: 5, data: ['AQID', 'base64'], executable: false } } } });
     await settle();
-    expect(frames.map((f) => f.body.type)).toEqual(['slot', 'seen', 'account']);
-    expect(frames[1]!.body).toEqual({ type: 'seen', signature: t.signature, slot: 500n, err: null, via: `logs:${MINT_AUTH}`, detail: null });
-    expect(frames[2]!.body).toMatchObject({ type: 'account', slot: 500n, lamports: 5n, data: Uint8Array.of(1, 2, 3) });
+    // The first open reports the stream up at once.
+    expect(frames.map((f) => f.body.type)).toEqual(['offchain', 'slot', 'seen', 'account']);
+    expect(frames[0]!.body).toEqual({ type: 'offchain', key: 'feed:status:helius', value: { state: 'up', fromSlot: null, first: true } });
+    expect(frames[2]!.body).toEqual({ type: 'seen', signature: t.signature, slot: 500n, err: null, via: `logs:${MINT_AUTH}`, detail: null });
+    expect(frames[3]!.body).toMatchObject({ type: 'account', slot: 500n, lamports: 5n, data: Uint8Array.of(1, 2, 3) });
   });
 
   it('reconnect with backfill: a drop holds the feed, the reopen resubscribes, missed signatures and states are read and marked', async () => {
@@ -118,7 +120,7 @@ describe('RPC stream', () => {
     const seen = released.filter((e) => e.id.startsWith('seen:') && e.moment.slot > 501n);
     expect(seen.map((e) => [e.moment.slot, (e.value as { backfilled: boolean }).backfilled])).toEqual([[502n, true], [503n, true]]);
     const status = released.filter((e) => e.key === 'feed:status:helius').map((e) => (e.value as { value: { state: string } }).value.state);
-    expect(status).toEqual(['down', 'up']);
+    expect(status).toEqual(['up', 'down', 'up']);
   });
 
   it('a stream silent for idleMs is stale: it reconnects and backfills', async () => {
@@ -366,6 +368,32 @@ describe('RPC stream', () => {
       const [sub] = ack(a.hub);
       a.hub.last.push(logs(sub!, 77, t.signature));
     }
-    expect(a.frames.map((f) => [f.source, f.duplicate])).toEqual([['helius', false], ['alchemy', true]]);
+    expect(a.frames.filter((f) => f.source !== 'worker').map((f) => [f.source, f.duplicate])).toEqual([['helius', false], ['alchemy', true]]);
+  });
+});
+
+describe('RPC stream stop and start (the feed drill, rehearsal 37142749019)', () => {
+  it('a stop opens the gap like a drop; the next start backfills it and reports up again', async () => {
+    const { hub, frames, stream, timers } = setup((method) => (method === 'getSignaturesForAddress' ? [] : undefined));
+    stream.watchSlots(P1);
+    stream.watchLogs(MINT_AUTH, { priority: P3, coverage: 'creates' });
+    stream.start();
+    hub.last.open();
+    const [slotSub, logSub] = ack(hub);
+    hub.last.push(slotNote(slotSub!, 500));
+    hub.last.push(logs(logSub!, 500, 'sig-a'));
+    await settle();
+    stream.stop();
+    const offchain = () => frames.filter((f) => f.body.type === 'offchain').map((f) => (f.body as { key: string; value: Record<string, unknown> }));
+    expect(offchain().map((b) => [b.key, b.value['state'] ?? b.value['toSlot']])).toEqual([
+      ['feed:status:helius', 'up'], ['coverage:creates:start', undefined], ['coverage:creates:gap', null], ['feed:status:helius', 'down'],
+    ]);
+    stream.start();
+    hub.last.open();
+    ack(hub);
+    timers.advance(10);
+    await settle();
+    const last = offchain().filter((b) => b.key === 'feed:status:helius').at(-1)!;
+    expect(last.value).toMatchObject({ state: 'up', fromSlot: 501n });
   });
 });
