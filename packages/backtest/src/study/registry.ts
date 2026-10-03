@@ -21,8 +21,23 @@ export interface HoldoutRun {
   readonly detail: string | null;
 }
 
+/** The holdout boundary as fixed before any data was read, with the assumptions its size was planned from. */
+export interface HoldoutPlan {
+  readonly study: string;
+  readonly decisionWindow: { readonly from: string; readonly to: string; readonly leadInFrom: string };
+  readonly holdout: { readonly fromDay: string; readonly toDay: string; readonly entriesFrom: string; readonly entriesTo: string };
+  readonly practice: { readonly fromDay: string; readonly toDay: string; readonly postB4From: string };
+  readonly after: { readonly label: string; readonly at: string };
+  readonly embargoMs: number;
+  readonly familySize: number;
+  readonly holdoutIds: readonly string[];
+  /** Pre-registered estimates only: nothing here was measured on data. */
+  readonly sizing: Readonly<Record<string, string | number>>;
+}
+
 export interface StudyRegistry {
   readonly version: 1;
+  readonly plan?: HoldoutPlan;
   readonly holdouts: HoldoutRegistry;
   readonly runs: readonly HoldoutRun[];
   readonly trials: readonly (TrialRecord & { readonly configId: string; readonly evaluatedOn: string })[];

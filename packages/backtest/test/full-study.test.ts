@@ -28,7 +28,7 @@ const plan = (label: string, day: number): MintPlan => ({
 const { rows } = studyWorld({ leadInDays: 15, blockEvery: 25, slots: 3 * DAY, mints: [plan('d0', 0), plan('d1', 1), plan('d2', 2)] });
 const dayOf = (r: DatasetRow) => new Date(r.blockTime * 1000).toISOString().slice(0, 10);
 const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ start: W0 - 16 * 86_400_000 + k * 3_600_000, close: '120.00' })) };
-const config = { ...STUDY_CONFIG, window: { decisionFrom: '2026-09-20', decisionTo: '2026-09-22', leadInDays: 14 }, folds: 2, holdoutDays: 1, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
+const config = { ...STUDY_CONFIG, frozen: true, window: { decisionFrom: '2026-09-20', decisionTo: '2026-09-22', leadInDays: 14 }, folds: 2, holdoutDays: 1, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
 const decisionDays = ['2026-09-20', '2026-09-21', '2026-09-22'];
 
 const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
@@ -97,6 +97,14 @@ describe('BT-2 study', () => {
     const third = runFullStudy(inputs({ runHoldout: true }));
     expect(readStudyRegistry(join(dir, 'registry.json')).runs).toHaveLength(1);
     expect(third.holdout.sealHash).toBeNull();
+  });
+
+  it('with configurations not frozen, nothing is registered and the holdout refuses to run', () => {
+    const other = join(dir, 'unfrozen.json');
+    const r = runFullStudy(inputs({ config: { ...config, frozen: false }, registryPath: other }));
+    expect(readStudyRegistry(other).holdouts.entries).toEqual([]);
+    expect(r.gates.G2.reasons.join(' ')).toMatch(/not frozen/);
+    expect(() => runFullStudy(inputs({ config: { ...config, frozen: false }, registryPath: other, runHoldout: true }))).toThrow(/not frozen/);
   });
 
   it('a second holdout run into a new file is refused and burns the holdout', () => {

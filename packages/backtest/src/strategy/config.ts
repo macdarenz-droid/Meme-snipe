@@ -62,6 +62,11 @@ export interface RegimeBoundary {
 export interface StudyConfig {
   readonly version: string;
   /**
+   * True once the configurations are frozen for the holdout (RES-3's proposals, recorded in DECISIONS). Until then the
+   * study runs the walk-forward only: no holdout is registered or run, so a placeholder can never enter it.
+   */
+  readonly frozen: boolean;
+  /**
    * The decision window, fixed in advance (§6.5): the holdout is its last `holdoutDays` days whatever data has been
    * downloaded, so a partial download can never move the holdout onto days already looked at.
    */
@@ -87,6 +92,8 @@ export interface StudyConfig {
 
 const VALUES: StudyConfig = {
   version: 'study-1',
+  // The U1/U2 rules below are placeholders written before any data; RES-3 proposes the configurations to freeze.
+  frozen: false,
   window: { decisionFrom: '2026-08-03', decisionTo: '2026-10-01', leadInDays: 14 },
   regimes: [
     { label: 'B2', atMs: Date.parse('2026-07-21T14:23:00Z'), what: 'BOOST on' },

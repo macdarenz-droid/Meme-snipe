@@ -129,7 +129,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   for (const u of universes) reg = recordTrial(reg, { ...trialOf(ids[u]!, tradesOf(u)), configId: ids[u]!, evaluatedOn: `walk-forward ${wfDays[0]}..${wfDays[wfDays.length - 1]}` });
   // 3. One configuration per universe registered for the holdout window before any holdout run.
   const holdoutIdOf = (u: string) => `${u}-${plan.holdout.fromDay}-${plan.holdout.toDay}`;
-  const missing = universes.filter((u) => !reg.holdouts.entries.some((e) => e.holdoutId === holdoutIdOf(u)));
+  const missing = c.frozen ? universes.filter((u) => !reg.holdouts.entries.some((e) => e.holdoutId === holdoutIdOf(u))) : [];
   reg = register(reg, missing.map((u) => ({ holdoutId: holdoutIdOf(u), universe: u, configId: ids[u]!, fromDay: plan.holdout.fromDay, toDay: plan.holdout.toDay })));
   writeStudyRegistry(i.registryPath, reg);
 
@@ -138,8 +138,8 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const regimes = [...new Set(scored.kept.map((t) => t.regime))].sort();
   const G1: Record<string, GateResult> = {};
   for (const u of universes) {
-    const e = reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u))!;
-    const before = e.seal !== 'opened' && e.configId === ids[u];
+    const e = reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u));
+    const before = e !== undefined && e.seal !== 'opened' && e.configId === ids[u];
     for (const g of [...regimes, 'pooled']) {
       const pick = <T extends { regime: string }>(xs: readonly T[]) => (g === 'pooled' ? xs : xs.filter((t) => t.regime === g));
       G1[`${u} ${g === 'pooled' ? 'all regimes (pooled)' : `regime ${g}`}`] = g1({ universe: u, configId: ids[u]!, trades: pick(tradesOf(u)), control: pick(controlOf(u)) }, reg.trials, matrix, seedNumber(`${i.seed}:g1:${u}:${g}`), before);
@@ -155,6 +155,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const holdLedger = `${i.outDir}/holdout-${plan.holdout.fromDay}-${plan.holdout.toDay}.db`;
   let sealed: ReturnType<typeof runSealedHoldout> | null = null;
   const alreadyRun = reg.runs.some((r) => r.holdoutIds.some((h) => universes.some((u) => holdoutIdOf(u) === h)));
+  if (i.runHoldout && !c.frozen) throw new Error('the configurations are not frozen: the holdout cannot be run');
   if (i.runHoldout && !alreadyRun) {
     const holdEnd = Date.parse(`${plan.holdout.toDay}T00:00:00Z`) + 86_400_000;
     const leadFrom = dayBefore(plan.holdout.fromDay, 14) < i.firstDay ? i.firstDay : dayBefore(plan.holdout.fromDay, 14);
@@ -166,12 +167,13 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   }
 
   // 5. G2: the scoring stage opens a seal only when the counts pass for that universe.
-  const entryOf = (u: string) => reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u))!;
+  const entryOf = (u: string) => reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u));
   const ready = universes.filter((u) => required[u] !== null && sealedReady(reg, holdoutIdOf(u), required[u]!));
   let G2: GateResult;
   if (ready.length === 0) {
     const shorts: G2Short[] = universes.map((u) => {
       const e = entryOf(u);
+      if (e === undefined) return { universe: u, holdoutId: holdoutIdOf(u), entries: 0, entryDays: 0, required: required[u] ?? null, why: 'configurations not frozen: no holdout registered' };
       const why = e.burned ? `holdout burned (${e.burnReason})` : e.seal === 'registered' ? 'holdout not run yet' : power[u]!.ok ? 'sample short' : (power[u] as { why: string }).why;
       return { universe: u, holdoutId: e.holdoutId, entries: e.counts?.entries ?? 0, entryDays: e.counts?.entryDays ?? 0, required: required[u] ?? null, why };
     });
@@ -226,7 +228,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       folds: Object.fromEntries(universes.map((u) => [u, foldSummary(tradesOf(u), plan.walkForward.folds)])), trades: scored.kept, s0Seeds: s0.length, ledgerReplay,
       byRegime: Object.fromEntries(universes.map((u) => [u, Object.fromEntries(regimes.map((g) => [g, tradesOf(u).filter((t) => t.regime === g).length]))])),
     },
-    holdout: { ran: sealed !== null || alreadyRun, counts: sealed?.counts ?? Object.fromEntries(universes.map((u) => [u, entryOf(u).counts])), sealHash: sealed?.sealHash ?? null, required },
+    holdout: { ran: sealed !== null || alreadyRun, counts: sealed?.counts ?? Object.fromEntries(universes.map((u) => [u, entryOf(u)?.counts ?? null])), sealHash: sealed?.sealHash ?? null, required },
     gates: { G0: G0full, G1, G2 },
     holdoutRegime: lastRegime,
     proofs: { replayHashes: hashes, leak, shift },
