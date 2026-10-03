@@ -24,6 +24,9 @@ pass() { printf 'PASS  %s\n' "$*" | tee -a "$LOGS/summary.txt"; }
 fail() { printf 'FAIL  %s\n' "$*" | tee -a "$LOGS/summary.txt"; exit 1; }
 in_c() { docker exec "$C" bash -c "$1"; }
 rnd() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+# A Telegram chat id: 15 digits, the most Telegram's ids allow (they stay below 2^53), so about 46 random
+# bits. A chance match in the scanned files (about 10^8 positions) is about 1 in a million.
+chat_id() { printf '%s%014d' "$1" "$(($(od -An -N6 -tu8 /dev/urandom | tr -d ' ') % 100000000000000))"; }
 wait_for() { # seconds description command
   local end=$(($(date +%s) + $1))
   while [ "$(date +%s)" -lt "$end" ]; do
@@ -43,14 +46,15 @@ trap cleanup EXIT
 
 # Test values: random each run, clearly marked TEST, never real.
 set_values() { # suffix
-  T_HELIUS="TESTHELIUS$1$(rnd 12)"
-  T_ALCHEMY="TESTALCHEMY$1$(rnd 12)"
-  T_JUPITER="TESTJUPITER$1$(rnd 12)"
-  T_TELEGRAM="99$(rnd 3 | tr -dc 0-9 | head -c 6)0:TESTtelegram$1$(rnd 10)"
+  # Every test secret carries 128 random bits (32 hex), so it can never occur by chance in a scanned file.
+  T_HELIUS="TESTHELIUS$1$(rnd 16)"
+  T_ALCHEMY="TESTALCHEMY$1$(rnd 16)"
+  T_JUPITER="TESTJUPITER$1$(rnd 16)"
+  T_TELEGRAM="99$(rnd 3 | tr -dc 0-9 | head -c 6)0:TESTtelegram$1$(rnd 16)"
 }
 set_values A
 VALUES_A=("$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM")
-T_CHAT="42$(od -An -N8 -tu8 /dev/urandom | tr -d " " | head -c 10)42" # 14 digits: a short id (as short as 424242) can occur by chance in vendored code and trip the scan
+T_CHAT="$(chat_id 4)" # was 4242<0-4 digits>42: as short as 424242, which occurs in miniflare's minified assets
 STRANGER="7$(rnd 2 | tr -dc 0-9)7"
 CODES=()
 echo "Working in $E2E"
@@ -152,7 +156,7 @@ pass "wrong code: the server downloaded the bundle, could not open it, stored no
 # ---------- 4. Deploy with the right code ----------
 start=$(date +%s)
 # A fresh server gets the watchdog in its very first Deploy run (the Cloudflare secrets already exist).
-T_CF="TESTcloudflare$(rnd 12)"
+T_CF="TESTcloudflare$(rnd 16)"
 printf '%s' "$T_CF" >"$STATE/cf-token"
 CF_ENV=(CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4")
 publish 1001 publish-right.log "$CODE1" "${CF_ENV[@]}" || { cat "$LOGS/publish-right.log"; fail "publish (right code)"; }
@@ -493,7 +497,7 @@ chk
 pass "webhook: a change by someone else alerts the owner (host only), the server sets its own back; failed sets retry after 1 min, then 2, 4, 8 (not sooner); one notice after 5 failed tries; set again and cleared once Telegram works"
 
 # ---------- 10d. Stored-key check ----------
-T_OTHER="TESTOTHER$(rnd 10)"
+T_OTHER="TESTOTHER$(rnd 16)"
 in_c "cp -p /etc/credstore.encrypted/jupiter_api_key /root/jup.bak"
 n0="$(wc -l <"$STATE/telegram.jsonl")"
 chk
@@ -507,7 +511,8 @@ in_c "zeroed-status" | has 'Key check: FAILED: jupiter_api_key' || fail "status 
 in_c "cp -p /root/jup.bak /etc/credstore.encrypted/jupiter_api_key"
 chk
 tail -1 "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: every stored key passes its check again' || fail "key alert not cleared"
-in_c "printf 'x' | dd of=/etc/credstore.encrypted/jupiter_api_key bs=1 seek=100 conv=notrunc 2>/dev/null"
+# Change byte 100 to a different character (writing a fixed one does nothing when it is already there).
+in_c "f=/etc/credstore.encrypted/jupiter_api_key; b=\$(dd if=\$f bs=1 skip=100 count=1 2>/dev/null); [ \"\$b\" = A ] && c=B || c=A; printf '%s' \$c | dd of=\$f bs=1 seek=100 conv=notrunc 2>/dev/null; ! cmp -s \$f /root/jup.bak"
 chk
 tail -1 "$STATE/telegram.jsonl" | has 'stored key check failed: jupiter_api_key (does not open)' || fail "no alert for a key that does not open"
 in_c "mv /root/jup.bak /etc/credstore.encrypted/jupiter_api_key"
@@ -516,7 +521,7 @@ tail -1 "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: every stored key' ||
 pass "key check: quiet on good keys; a key re-encrypted outside the handoff and a key that does not open each alert once (names only), shown in zeroed-status, cleared once restored"
 
 # ---------- 10e. Re-pairing a paired server ----------
-T_CHAT2="51$(od -An -N8 -tu8 /dev/urandom | tr -d " " | head -c 10)51" # 14 digits: long enough never to occur by chance in the repo (secret scan)
+T_CHAT2="$(chat_id 5)"
 chat_is() { [ "$(in_c "systemd-creds decrypt --name=telegram_chat_id /etc/credstore.encrypted/telegram_chat_id - | sha256sum | cut -c1-64")" = "$(printf '%s' "$1" | sha256sum | cut -c1-64)" ]; }
 repair_code() { in_c "echo yes | zeroed-pair-code" | tee -a "$LOGS/console/repair.txt" | sed -n 's/.*\/pair \([0-9]\{6\}\)$/\1/p'; }
 in_c "echo no | zeroed-pair-code" >"$LOGS/console/repair-no.txt" 2>&1 && fail "re-pair went ahead without yes"
@@ -603,18 +608,39 @@ in_c "tar -c --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run/creden
 mkdir -p "$E2E/fs" && tar -xf "$E2E/container-fs.tar" -C "$E2E/fs" 2>/dev/null || true
 node -e 'for (const l of require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) console.log(JSON.parse(l).text)' "$STATE/telegram.jsonl" >"$LOGS/telegram-texts.txt"
 KEYS=("${VALUES_A[@]}" "$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM" "$T_CHAT" "$T_CHAT2" "$T_OTHER" "$T_CF" "$(cat "$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY")" "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")")
-scan() { # label values-array-name paths...
-  local label="$1" hits=0 v
-  local -n vals="$2"
-  shift 2
+scan_hits() { # values-array-name paths... : prints each value found (by hash) and then the number found
+  local hits=0 v
+  local -n vals="$1"
+  shift
   for v in "${vals[@]}"; do
     if grep -rlaF -- "$v" "$@" 2>/dev/null | grep -q .; then
-      echo "  value #$(printf '%s' "$v" | sha256sum | cut -c1-8) found in: $(grep -rlaF -- "$v" "$@" | head -3 | tr '\n' ' ')"
+      echo "  value #$(printf '%s' "$v" | sha256sum | cut -c1-8) found in: $(grep -rlaF -- "$v" "$@" | head -3 | tr '\n' ' ')" >&2
       hits=$((hits + 1))
     fi
   done
+  echo "$hits"
+}
+scan() { # label values-array-name paths...
+  local label="$1" hits
+  shift
+  hits="$(scan_hits "$@")"
   [ "$hits" = 0 ] || fail "secret scan ($label): $hits value(s) found"
 }
+# The scan itself: real-format values planted in vendored code (node_modules, minified, no newline) and on
+# the container disk must be found.
+PROBE_TOKEN="7$(chat_id 1 | cut -c1-9):AA$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')" # Telegram bot token shape
+PROBE_UUID="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | sed 's/^\(.\{8\}\)\(.\{4\}\)\(.\{4\}\)\(.\{4\}\)\(.\{12\}\)$/\1-\2-\3-\4-\5/')" # Helius key shape
+PROBES=("$PROBE_TOKEN" "$PROBE_UUID")
+PROBE_FILE="$ROOT/ops/watchdog/deploy/node_modules/zeroed-scan-probe/index.min.js"
+mkdir -p "$(dirname "$PROBE_FILE")" "$E2E/fs/var/log"
+printf 'var a="%s",b={k:"%s"};' "$PROBE_TOKEN" "$PROBE_UUID" >"$PROBE_FILE"
+printf 'x %s\n' "$PROBE_UUID" >"$E2E/fs/var/log/zeroed-scan-probe.log"
+printf 'x %s\n' "$PROBE_TOKEN" >>"$E2E/fs/var/log/zeroed-scan-probe.log"
+probe_repo="$(scan_hits PROBES "$ROOT/ops" 2>/dev/null)"
+probe_fs="$(scan_hits PROBES "$E2E/fs" 2>/dev/null)"
+rm -rf "$(dirname "$PROBE_FILE")" "$E2E/fs/var/log/zeroed-scan-probe.log"
+[ "$probe_repo" = 2 ] && [ "$probe_fs" = 2 ] || fail "secret scan missed planted real-format values (repo incl. node_modules: $probe_repo of 2, disk: $probe_fs of 2)"
+[ "$(scan_hits PROBES "$ROOT/ops" "$E2E/fs" 2>/dev/null)" = 0 ] || fail "scan probe not removed"
 # Keys and the chat id: nowhere, console included.
 scan "keys in logs and console" KEYS "$LOGS" "$STATE/gh-calls.log"
 scan "keys on the container disk (not /run/credentials)" KEYS "$E2E/fs"
@@ -622,7 +648,7 @@ scan "keys in the repo" KEYS "$ROOT/ops" "$ROOT/packages/ops" "$ROOT/.github"
 # Deploy codes: shown on the console by design (the owner reads them there), nowhere else.
 NONCONSOLE=("$LOGS"/*.txt "$LOGS"/*.json "$LOGS"/*.log)
 scan "deploy codes outside the console" CODES "${NONCONSOLE[@]}" "$STATE/gh-calls.log" "$E2E/fs" "$ROOT/ops" "$ROOT/.github"
-pass "secret scan: none of ${#KEYS[@]} test values (4 pairing, 4 rotation, both chat ids, the replaced key, Cloudflare token, heartbeat and webhook keys) in any log, console output, Telegram text, journal, container disk or the repo; none of ${#CODES[@]} deploy and backup codes outside the console"
+pass "secret scan: catches planted Telegram-token and UUID-shaped values in node_modules and on disk; none of ${#KEYS[@]} test values (128-bit secrets, 15-digit chat ids) (4 pairing, 4 rotation, both chat ids, the replaced key, Cloudflare token, heartbeat and webhook keys) in any log, console output, Telegram text, journal, container disk or the repo; none of ${#CODES[@]} deploy and backup codes outside the console"
 
 echo
 echo "All checks passed. Logs: $LOGS"
