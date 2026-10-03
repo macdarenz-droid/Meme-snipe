@@ -78,10 +78,27 @@ report.decoding = { decode_failures: man.decode_failures, unknown_events: unknow
 
 // 3-4. curves
 const curveLast = new Map(); // mint -> last row
+const curveAddr = new Map(); // mint -> bonding curve account (from CreateEvent)
 {
-  const st = { trades: 0, chain_pairs: 0, chain_ok: 0, chain_bad: [], chain_checks: 0, chain_exact: 0, chain_bad_rows: [], offsets: {} };
-  const prev = new Map();
-  const tokOffset = new Map(), solOffset = new Map();
+  const created = new Map(); // mint -> tokens kept out of the curve's real reserves
+  const extendAt = new Map(); // account -> [order keys of ExtendAccountEvent]
+  const ordk = (s, t, v) => BigInt(s) * 1000000n + BigInt(t) * 1000n + BigInt(v);
+  for (const f of dayFiles('events')) {
+    for (const l of zlib.zstdDecompressSync(fs.readFileSync(path.join(ds, f))).toString().trim().split('\n').filter(Boolean)) {
+      const e = JSON.parse(l);
+      if (e.event === 'CreateEvent') {
+        curveAddr.set(e.fields.mint, e.fields.bonding_curve);
+        created.set(e.fields.mint, { reserved: B(e.fields.token_total_supply) - B(e.fields.real_token_reserves), mayhem: e.fields.is_mayhem_mode === '1' });
+      } else if (e.event === 'ExtendAccountEvent') {
+        const k = e.fields.account;
+        if (!extendAt.has(k)) extendAt.set(k, []);
+        extendAt.get(k).push(ordk(e.slot, e.tx_idx, e.ev_idx));
+      }
+    }
+  }
+  const st = { trades: 0, real_pairs: 0, real_ok: 0, virtual_pairs: 0, virtual_ok: 0, virtual_pairs_mayhem: 0, virtual_ok_mayhem: 0, chain_bad: [],
+    chain_checks: 0, token_checks: 0, token_exact: 0, sol_checks: 0, sol_exact: 0, sol_changed_at_extend: 0, chain_bad_rows: [], offsets: {} };
+  const prev = new Map(), prevSol = new Map();
   for (const f of dayFiles('curve_trades')) {
     for (const r of readTable(f)) {
       st.trades++;
@@ -89,25 +106,48 @@ const curveLast = new Map(); // mint -> last row
       const p = prev.get(m);
       const vs = B(r.virtual_sol_reserves), vt = B(r.virtual_token_reserves), rs = B(r.real_sol_reserves), rt = B(r.real_token_reserves);
       const sol = B(r.sol_amount), tok = B(r.token_amount), buy = r.is_buy === '1';
+      const mayhem = r.mayhem_mode === '1';
       if (p) {
-        st.chain_pairs++;
-        const evs = buy ? p.vs + sol : p.vs - sol, evt = buy ? p.vt - tok : p.vt + tok;
+        // real reserves move by exactly the trade amounts
+        st.real_pairs++;
         const ers = buy ? p.rs + sol : p.rs - sol, ert = buy ? p.rt - tok : p.rt + tok;
-        if (evs === vs && evt === vt && ers === rs && ert === rt) st.chain_ok++;
-        else if (st.chain_bad.length < 20) st.chain_bad.push({ mint: m, slot: r.slot, tx_idx: r.tx_idx, d_vsol: String(vs - evs), d_vtok: String(vt - evt), d_rsol: String(rs - ers), d_rtok: String(rt - ert) });
+        const realOk = ers === rs && ert === rt;
+        if (realOk) st.real_ok++;
+        // virtual reserves too, except where the program re-prices (mayhem mode)
+        const evs = buy ? p.vs + sol : p.vs - sol, evt = buy ? p.vt - tok : p.vt + tok;
+        const virtOk = evs === vs && evt === vt;
+        if (mayhem) { st.virtual_pairs_mayhem++; if (virtOk) st.virtual_ok_mayhem++; } else { st.virtual_pairs++; if (virtOk) st.virtual_ok++; }
+        if ((!realOk || (!virtOk && !mayhem)) && st.chain_bad.length < 20) st.chain_bad.push({ mint: m, mayhem, slot: r.slot, tx_idx: r.tx_idx, d_vsol: String(vs - evs), d_vtok: String(vt - evt), d_rsol: String(rs - ers), d_rtok: String(rt - ert) });
       }
       prev.set(m, { vs, vt, rs, rt });
       curveLast.set(m, r);
       if (r.last_in_tx === '1' && r.chain_curve_base !== '' && r.chain_curve_lamports !== '') {
         st.chain_checks++;
-        // token account holds real_token_reserves plus the tokens kept for migration;
-        // lamports hold real_sol_reserves plus rent. Both offsets are constant per curve.
         const to = B(r.chain_curve_base) - rt, so = B(r.chain_curve_lamports) - rs;
-        const key = `${to}|${so}`;
-        st.offsets[key] = (st.offsets[key] || 0) + 1;
-        if (!tokOffset.has(m)) { tokOffset.set(m, to); solOffset.set(m, so); }
-        if (tokOffset.get(m) === to && solOffset.get(m) === so) st.chain_exact++;
-        else if (st.chain_bad_rows.length < 20) st.chain_bad_rows.push({ mint: m, slot: r.slot, tx_idx: r.tx_idx, tok_offset: String(to), first_tok_offset: String(tokOffset.get(m)), sol_offset: String(so), first_sol_offset: String(solOffset.get(m)) });
+        st.offsets[`${to}|${so}`] = (st.offsets[`${to}|${so}`] || 0) + 1;
+        // tokens: the curve's token account holds real_token_reserves plus the tokens
+        // reserved for migration (token_total_supply - initial real_token_reserves)
+        const c = created.get(m);
+        if (c) {
+          st.token_checks++;
+          if (to === c.reserved) st.token_exact++;
+          else if (st.chain_bad_rows.length < 20) st.chain_bad_rows.push({ mint: m, slot: r.slot, tx_idx: r.tx_idx, kind: 'token', offset: String(to), expected: String(c.reserved) });
+        }
+        // lamports: real_sol_reserves plus the account's rent; the rent only changes
+        // when the account is extended
+        const k = ordk(r.slot, r.tx_idx, r.ev_idx);
+        const ps = prevSol.get(m);
+        if (ps) {
+          st.sol_checks++;
+          if (ps.so === so) st.sol_exact++;
+          else {
+            const acct = curveAddr.get(m);
+            const ext = acct && (extendAt.get(acct) || []).some((x) => x > ps.k && x <= k);
+            if (ext) { st.sol_exact++; st.sol_changed_at_extend++; }
+            else if (st.chain_bad_rows.length < 20) st.chain_bad_rows.push({ mint: m, slot: r.slot, tx_idx: r.tx_idx, kind: 'lamports', offset: String(so), previous: String(ps.so) });
+          }
+        }
+        prevSol.set(m, { so, k });
       }
     }
   }
@@ -119,14 +159,14 @@ const curveLast = new Map(); // mint -> last row
 // 3-4. PumpSwap pools: trades plus liquidity events and boosts, in order
 const poolLast = new Map(); // pool -> {row, post}
 {
-  const st = { trades: 0, chain_pairs: 0, chain_ok: 0, chain_bad: [], chain_checks: 0, chain_exact: 0, chain_bad_rows: [], liquidity_events: 0 };
+  const st = { trades: 0, chain_pairs: 0, chain_ok: 0, chain_bad: [], chain_checks: 0, chain_exact: 0, chain_bad_rows: [], liquidity_events: 0, by_event: {} };
   // liquidity / boost events by pool, keyed for ordering
   const liq = new Map();
   for (const f of dayFiles('events')) {
     const lines = zlib.zstdDecompressSync(fs.readFileSync(path.join(ds, f))).toString().trim().split('\n').filter(Boolean);
     for (const l of lines) {
       const e = JSON.parse(l);
-      if (!['DepositEvent', 'WithdrawEvent', 'BoostBuyAndBurnEvent', 'CreatePoolEvent'].includes(e.event)) continue;
+      if (!['DepositEvent', 'WithdrawEvent', 'InitBoostEvent', 'CreatePoolEvent'].includes(e.event)) continue;
       const pool = e.fields.pool;
       if (!liq.has(pool)) liq.set(pool, []);
       liq.get(pool).push(e);
@@ -141,10 +181,14 @@ const poolLast = new Map(); // pool -> {row, post}
     while (i < evs.length && ord(evs[i].slot, evs[i].tx_idx, evs[i].ev_idx) < upto) {
       const e = evs[i]; const f = e.fields; let s = state.get(pool);
       st.liquidity_events++;
+      st.by_event[e.event] = (st.by_event[e.event] || 0) + 1;
       if (e.event === 'CreatePoolEvent') s = { base: B(f.pool_base_amount), quote: B(f.pool_quote_amount) };
       else if (e.event === 'DepositEvent' && s) s = { base: B(f.pool_base_token_reserves) + B(f.base_amount_in), quote: B(f.pool_quote_token_reserves) + B(f.quote_amount_in) };
       else if (e.event === 'WithdrawEvent' && s) s = { base: B(f.pool_base_token_reserves) - B(f.base_amount_out), quote: B(f.pool_quote_token_reserves) - B(f.quote_amount_out) };
-      else if (e.event === 'BoostBuyAndBurnEvent') s = { base: B(f.base_reserves_after), quote: B(f.real_quote_reserves_after) };
+      // InitBoost moves quote from the vault into virtual_quote_reserves. A boost
+      // buy-and-burn is an ordinary BuyEvent (the bought tokens are burned outside
+      // the pool), so the trade row already accounts for it.
+      else if (e.event === 'InitBoostEvent' && s) s = { base: s.base, quote: B(f.real_quote_reserves_after) };
       if (s) state.set(pool, s);
       i++;
     }
@@ -195,14 +239,6 @@ const i128 = (b, o) => { const lo = b.readBigUInt64LE(o), hi = b.readBigInt64LE(
 
 if (LIVE > 0) {
   const lastSlot = man.coverage.last_slot;
-  // bonding curve addresses come from CreateEvent
-  const curveAddr = new Map();
-  for (const f of dayFiles('events')) {
-    for (const l of zlib.zstdDecompressSync(fs.readFileSync(path.join(ds, f))).toString().trim().split('\n').filter(Boolean)) {
-      const e = JSON.parse(l);
-      if (e.event === 'CreateEvent') curveAddr.set(e.fields.mint, e.fields.bonding_curve);
-    }
-  }
   // deterministic candidate order: by mint string
   const curves = [...curveLast.keys()].filter((m) => curveAddr.has(m)).sort();
   const pools = [...poolLast.keys()].sort();
@@ -296,8 +332,8 @@ md.push('## Coverage', '', '| Day | Blocks expected | Scanned | Missing | Warm-u
 for (const c of report.coverage) md.push(`| ${c.day} | ${c.blocks_expected} | ${c.blocks_scanned} | ${c.missing} | ${c.warm_up ? 'yes' : 'no'} | ${c.rows.curve_trades} | ${c.rows.amm_trades} |`);
 md.push('', '## Decoding', '', `Decode failures: ${report.decoding.decode_failures}. Unknown events: ${JSON.stringify(report.decoding.unknown_events)}. Newer layouts than the IDL: ${JSON.stringify(report.decoding.newer_layouts)}. Coverage gaps: ${JSON.stringify(report.decoding.coverage_gaps)}.`);
 const c = report.curve, a = report.amm;
-md.push('', '## Reserve chain', '', `Bonding curve: ${c.chain_ok} of ${c.chain_pairs} consecutive trade pairs rebuild exactly (${pct(c.chain_ok, c.chain_pairs)}).`, `PumpSwap: ${a.chain_ok} of ${a.chain_pairs} trades start from exactly the rebuilt reserves (${pct(a.chain_ok, a.chain_pairs)}); ${a.liquidity_events} liquidity, boost and pool-creation events applied.`);
-md.push('', '## Against recorded account balances', '', `Bonding curve: ${c.chain_exact} of ${c.chain_checks} checks match the curve's token balance and lamports with a constant offset per curve (${pct(c.chain_exact, c.chain_checks)}). Most common offsets (tokens kept for migration | rent): ${JSON.stringify(c.top_offsets)}.`, `PumpSwap: ${a.chain_exact} of ${a.chain_checks} checks match both vault balances exactly (${pct(a.chain_exact, a.chain_checks)}).`);
+md.push('', '## Reserve chain', '', `Bonding curve real reserves: ${c.real_ok} of ${c.real_pairs} consecutive trade pairs rebuild exactly (${pct(c.real_ok, c.real_pairs)}). Virtual reserves: ${c.virtual_ok} of ${c.virtual_pairs} (${pct(c.virtual_ok, c.virtual_pairs)}) on regular curves; on mayhem-mode curves, where the program re-prices virtual reserves, ${c.virtual_ok_mayhem} of ${c.virtual_pairs_mayhem}.`, `PumpSwap: ${a.chain_ok} of ${a.chain_pairs} trades start from exactly the rebuilt reserves (${pct(a.chain_ok, a.chain_pairs)}); ${a.liquidity_events} liquidity, boost and pool-creation events applied.`);
+md.push('', '## Against recorded account balances', '', `Bonding curve token account: ${c.token_exact} of ${c.token_checks} checks equal real_token_reserves plus the reserved migration tokens exactly (${pct(c.token_exact, c.token_checks)}). Lamports: ${c.sol_exact} of ${c.sol_checks} checks keep the same rent offset as the previous check (${c.sol_changed_at_extend} of them changed exactly at an account extension) (${pct(c.sol_exact, c.sol_checks)}). Most common offsets (reserved tokens | rent): ${JSON.stringify(c.top_offsets)}.`, `PumpSwap: ${a.chain_exact} of ${a.chain_checks} checks match both vault balances exactly (${pct(a.chain_exact, a.chain_checks)}).`);
 if (report.live.length) {
   const pass = report.live.filter((x) => x.pass).length;
   md.push('', '## Live on-chain checks', '', `${pass} of ${report.live.length} idle curves and pools match their current on-chain state within 1 raw unit.`, '', '| Kind | Account | Last event slot | Latest chain tx slot | Result |', '|---|---|---|---|---|');
