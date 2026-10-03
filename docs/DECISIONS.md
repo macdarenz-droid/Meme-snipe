@@ -184,6 +184,26 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
   - separate drills for process crash, reboot, RPC loss and host loss.
   A later standby needs exclusive signing, fencing and reconciliation of already-signed transactions. It never relies on a second sell failing for lack of tokens. RUN-1d, OPS-1d.
 
+### Third-opinion rulings (2026-10-04)
+
+A third reviewer read 8370c2a. Its new findings were checked in code; these rulings are the supervisor's.
+
+- **Funnel first.** The holdout may hold far fewer U2 trades than 300 (estimate 1–4 entries a day; uncertain by about 3×). Before any definition is frozen, BT-2 counts the funnel gate by gate on the published practice days. Counts are not outcomes, so this burns nothing. H9 and H11 ablations (offline scores of blocked candidates) also run before the U2 freeze, not after. The board's dates follow from those counts. "Not proven yet" for U2 is an expected, honest result. BT-2.
+- **A dead feed leaves no working stop** (confirmed: `exits/rules.ts:236` treats stale state as no quote, so only time stops fire, and `exits.test.ts:97` locks that in). For every open position whose market state is older than a few seconds, the worker reads the pool account directly over RPC and feeds that as the market. If the read also fails, it raises the critical alert. Acceptance case (§18): feed dead for 5 minutes with a position open and the pool falling 40%, and the exit still goes out within the set time through the fallback read. WATCH-1, after WORKER-1; TEST-3.
+- **Capital measured in SOL as well** (confirmed: equity is a USD ledger; wallet SOL only feeds R4's cash cap). Wherever a size or limit scales with equity, it uses the lower of ledger equity and wallet-marked equity. When wallet-marked capital falls below the kill line, new entries stop. SOL gains never loosen anything. This only tightens. RISK-1b.
+- **Exits per universe** (confirmed: one `policy.exits` block, which BT-2 reads for every universe). The policy gets per-universe exit parameters before any freeze: time stops, partials, ATR bars and multiples. The ladder and the cost reservation stay global. Today's values become U2's. U1 starts from research/risk.md S2 (T_flat 30 min, T_max 4 h, 5-minute ATR bars, partial at 2R), and the study sets the frozen values. These are strategy parameters; turning any universe live stays inside the owner's live switch. CFG-2.
+- **Smaller additions:**
+  - Test getProgramAccounts on both free providers and both token programs. Add a parity test on one real mint: live enumeration against balances rebuilt from movements, at the same slot (FACTS-1, DATA-1).
+  - Exact duplicates of a return series count once. Report DSR under raw and de-duplicated N (STATS-1c).
+  - Rent-recovery odds come from TEST-2's measured close-success rate once available. The congestion state follows the pool's own recent volume, and the blocked-exit rate is reported when the whole ladder falls inside it; this feeds `y_severe` (BT-1c).
+  - After a withdrawal, the weekly budget re-bases to at most 20% of what remains, and the R4 reserve check repeats before the send (RISK-1b).
+  - S0 runs under the same one-position rule in the deployment replay (BT-2).
+  - A candidate materiality rule to test: a collapse counts when the sustained quote reserve reached at least H8's 5 SOL dust line. Creator-sale labels stay size-free (RUG-1c).
+- **Owner, before live** (added to the RISK-1 findings):
+  - R8 ("5 losses in any 20") pauses 79–97% of simulated paths within about 8–11 trades, whether the strategy is bad or good. Choose one: keep the review every ~10 trades, use the holdout's 99th percentile of losses in 20, or use the reverse e-process.
+  - With C reserved at about 40% of a $2 trade, one loss of about $0.70 ends the day.
+- **Later, needs the owner:** a pre-signed full-balance emergency sell on a durable nonce, held by the watchdog and sent only when heartbeats stop with a position open. It changes signer policy and hands a signed transaction to a third party.
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
