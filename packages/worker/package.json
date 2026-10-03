@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     "./providers": "./src/providers/index.ts",
-    "./scheduler": "./src/scheduler/index.ts"
+    "./scheduler": "./src/scheduler/index.ts",
+    "./seed": "./src/seed/index.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
