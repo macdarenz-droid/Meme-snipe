@@ -12,6 +12,8 @@ export interface SubscriptionSpec {
   onNotify(result: unknown): void;
   /** The server refused the subscription (bad params, limit reached). */
   onRefused?(code: number | null): void;
+  /** The server confirmed the subscription; notifications flow from here (called on every reconnect). */
+  onSubscribed?(): void;
 }
 
 export interface RpcSocketEvents {
@@ -114,6 +116,7 @@ export class RpcSocket {
       if (typeof m.result === 'number') {
         this.#live.set(m.result, h);
         this.#serverOf.set(h, m.result);
+        spec.onSubscribed?.();
       } else {
         spec.onRefused?.(isObj(m.error) && typeof m.error.code === 'number' ? m.error.code : null);
       }

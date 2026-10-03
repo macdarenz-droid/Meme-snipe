@@ -199,6 +199,67 @@ describe('RPC stream', () => {
     expect(keys).toEqual(['logs:truncated:logs:x', 'logs:undecodable:logs:x', 'chain:slot']);
   });
 
+  describe('coverage of the creates stream', () => {
+    const facts = (feed: LiveFeed, timers: ManualTimers, key: string) => {
+      feed.advance(timers.now() + 60_000);
+      const out: unknown[] = [];
+      for (let e = feed.next(); e; e = feed.next()) if (e.kind === 'market' && e.key === key) out.push((e.value as { value: unknown }).value);
+      return out;
+    };
+    const run = (sigs: (n: number) => unknown, opts: { decodeLogs?: boolean; limit?: number } = {}) => {
+      const t = setup((m) => (m === 'getSignaturesForAddress' ? sigs(0) : undefined));
+      const s = new RpcStream({
+        provider: 'alchemy', url: () => 'wss://a.test', factory: t.hub.factory, timers: t.timers, feed: t.feed, scheduler: t.scheduler,
+        creditsPerByte: 0, creditsPerConnection: 0, http: new RpcHttp({ provider: 'alchemy', url: () => 'https://a.test', http: t.http, scheduler: t.scheduler, timeoutMs: 1 }),
+        socket: SOCKET, backfillLimit: opts.limit ?? 100,
+      });
+      s.watchSlots(P1);
+      s.watchLogs(MINT_AUTH, { priority: P3, coverage: 'creates', ...(opts.decodeLogs === false ? {} : { decodeLogs: true }) });
+      s.start();
+      t.hub.last.open();
+      const [slotSub] = ack(t.hub);
+      t.hub.last.push(slotNote(slotSub!, 600));
+      return { ...t, s, reconnect: async (tip: number) => {
+        t.hub.last.drop();
+        t.feed.ingest('helius', { type: 'slot', slot: BigInt(tip), parent: null, root: null }, { receivedAt: t.timers.now() });
+        t.timers.advance(1_000);
+        t.hub.last.open();
+        ack(t.hub);
+        await settle(50);
+      } };
+    };
+
+    it('marks where coverage starts, and reports each reconnect range as a gap: backfill has no log lines', async () => {
+      const t = run(() => [{ signature: tx('pump CreateEvent').signature, slot: 605, err: null }]);
+      await t.reconnect(610);
+      const f = facts(t.feed, t.timers, 'coverage:creates:start');
+      // Subscribed before any slot was seen: coverage starts at the first slot that arrived.
+      expect(f).toEqual([{ fromSlot: 600n, via: `logs:${MINT_AUTH}` }]);
+      const g = run(() => [{ signature: tx('pump CreateEvent').signature, slot: 605, err: null }]);
+      await g.reconnect(610);
+      expect(facts(g.feed, g.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 601n, toSlot: 610n, reason: 'disconnect', via: `logs:${MINT_AUTH}` }]);
+    });
+
+    it('a sightings-only stream reports a gap only when backfill was cut short or failed', async () => {
+      const full = run(() => [], { decodeLogs: false });
+      await full.reconnect(610);
+      expect(facts(full.feed, full.timers, 'coverage:creates:gap')).toEqual([]);
+      const page = run(() => [{ signature: tx('pump CreateEvent').signature, slot: 605, err: null }], { decodeLogs: false, limit: 1 });
+      await page.reconnect(610);
+      expect(facts(page.feed, page.timers, 'coverage:creates:gap')).toEqual([expect.objectContaining({ fromSlot: 601n, toSlot: 610n })]);
+      const broken = run(() => { throw new Error('rpc down'); }, { decodeLogs: false });
+      await broken.reconnect(610);
+      expect(facts(broken.feed, broken.timers, 'coverage:creates:gap')).toEqual([expect.objectContaining({ fromSlot: 601n, toSlot: 610n })]);
+    });
+
+    it('a watch dropped at the 70% halt leaves an open-ended gap', async () => {
+      const t = run(() => []);
+      t.scheduler.meter(700_000);
+      t.hub.last.push(slotNote(100, 601)); // any traffic runs the budget check
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 601n, toSlot: null, reason: 'halted', via: `logs:${MINT_AUTH}` }]);
+    });
+  });
+
   it('two providers carry the position: the first copy wins and the slower provider adds nothing', async () => {
     const t = tx('pump TradeEvent');
     const a = setup(() => undefined);

@@ -46,11 +46,30 @@ export interface WatchOptions {
    * stream, so the deployer index gets creator, mint and slot for every create. Backfilled sightings carry no logs.
    */
   readonly decodeLogs?: boolean;
+  /**
+   * Names a stream whose completeness matters (e.g. `creates` for the H14 deployer index). Its feed then carries
+   * `coverage:<name>:start` when first subscribed and `coverage:<name>:gap` {fromSlot, toSlot, reason} for every
+   * slot range it may have missed and backfill could not restore in full (with `decodeLogs`, any reconnect: backfill
+   * has no log lines). `toSlot` null means open-ended (unwatched, halted or refused). Readers mark those ranges
+   * uncovered instead of counting fewer events.
+   */
+  readonly coverage?: string;
+}
+
+interface CoverageGap {
+  readonly fromSlot: bigint | null;
+  readonly reason: string;
+  backfilled: boolean;
+  lossy: boolean;
 }
 
 type Watch =
   | { readonly kind: 'slot'; readonly priority: Priority; handle: number }
-  | { readonly kind: 'logs'; readonly address: string; readonly opts: WatchOptions; readonly priority: Priority; handle: number; lastSignature: string | null }
+  | {
+    readonly kind: 'logs'; readonly address: string; readonly opts: WatchOptions; readonly priority: Priority; handle: number; lastSignature: string | null;
+    /** Subscribed on the current connection. */
+    acked: boolean; started: boolean; startPending: boolean; gap: CoverageGap | null;
+  }
   | { readonly kind: 'account'; readonly address: string; readonly priority: Priority; handle: number };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -118,7 +137,7 @@ export class RpcStream {
 
   watchLogs(address: string, opts: WatchOptions): number {
     if (!isAddress(address)) throw new RangeError('logs watch needs a base58 address');
-    const w: Watch = { kind: 'logs', address, opts, priority: opts.priority, handle: 0, lastSignature: null };
+    const w: Watch = { kind: 'logs', address, opts, priority: opts.priority, handle: 0, lastSignature: null, acked: false, started: false, startPending: false, gap: null };
     return this.#add(w, {
       method: 'logsSubscribe', params: [{ mentions: [address] }, { commitment: 'processed' }], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification',
       onNotify: (r) => {
@@ -158,11 +177,12 @@ export class RpcStream {
     });
   }
 
-  unwatch(id: number): void {
+  unwatch(id: number, reason = 'unwatched'): void {
     const w = this.#watches.get(id);
     if (w === undefined) return;
     this.#watches.delete(id);
     this.#rpc.remove(w.handle);
+    if (w.kind === 'logs' && w.started) this.#coverageGap(w, w.gap?.fromSlot ?? this.#nextSlot(), null, reason);
   }
 
   #add(w: Watch, spec: Parameters<RpcSocket['add']>[0]): number {
@@ -171,7 +191,25 @@ export class RpcStream {
     const id = this.#nextId++;
     w.handle = this.#rpc.add({
       ...spec,
-      onRefused: (code) => this.#status('refused', { watch: id, code }),
+      onRefused: (code) => {
+        this.#status('refused', { watch: id, code });
+        if (w.kind === 'logs') {
+          this.#coverageGap(w, w.gap?.fromSlot ?? this.#nextSlot(), null, 'refused');
+          w.gap = null;
+        }
+      },
+      onSubscribed: () => {
+        if (w.kind !== 'logs') return;
+        w.acked = true;
+        if (!w.started && w.opts.coverage !== undefined) {
+          w.started = true;
+          const from = this.#nextSlot();
+          // No slot seen yet: coverage starts at the first slot that arrives.
+          if (from === null) w.startPending = true;
+          else this.#fact(`coverage:${w.opts.coverage}:start`, { fromSlot: from, via: `logs:${w.address}` });
+        }
+        this.#closeCoverage(w);
+      },
     });
     this.#watches.set(id, w);
     return id;
@@ -186,6 +224,11 @@ export class RpcStream {
 
   #saw(slot: bigint): void {
     if (this.#lastSlot === null || slot > this.#lastSlot) this.#lastSlot = slot;
+    for (const w of this.#watches.values()) {
+      if (w.kind !== 'logs' || !w.startPending) continue;
+      w.startPending = false;
+      this.#fact(`coverage:${w.opts.coverage}:start`, { fromSlot: slot, via: `logs:${w.address}` });
+    }
   }
 
   #meter(credits: number): void {
@@ -197,7 +240,7 @@ export class RpcStream {
   #checkBudget(): void {
     if (this.#halted || !this.#o.scheduler.halted) return;
     this.#halted = true;
-    for (const [id, w] of this.#watches) if (w.priority > P1) this.unwatch(id);
+    for (const [id, w] of this.#watches) if (w.priority > P1) this.unwatch(id, 'halted');
     this.#status('halted', { share: this.#o.scheduler.status().budgetShare });
   }
 
@@ -206,6 +249,14 @@ export class RpcStream {
     this.#wasDown = true;
     this.#gapFrom = this.#lastSlot === null ? null : this.#lastSlot + 1n;
     if (this.#gapFrom !== null) this.#o.feed.openGap(this.gapId, this.#gapFrom, this.#o.timers.now());
+    for (const w of this.#watches.values()) {
+      if (w.kind !== 'logs') continue;
+      w.acked = false;
+      // A gap still open from an earlier drop keeps its start.
+      if (!w.started) continue;
+      if (w.gap) w.gap.backfilled = false;
+      else w.gap = { fromSlot: this.#gapFrom, reason: 'disconnect', backfilled: false, lossy: w.opts.decodeLogs === true };
+    }
     this.#status('down', { reason, lastSlot: this.#lastSlot });
   }
 
@@ -222,6 +273,8 @@ export class RpcStream {
           const opts: { until?: string; limit: number } = { limit: o.backfillLimit };
           if (w.lastSignature !== null) opts.until = w.lastSignature;
           const sigs = await o.http.getSignaturesForAddress(w.address, opts, w.priority);
+          // A full page may have cut older missed signatures off.
+          if (w.gap && sigs.length >= o.backfillLimit) w.gap.lossy = true;
           // Newest first from the node; ingest oldest first, as they happened.
           for (const s of sigs.reverse()) {
             if (w.lastSignature === null && from !== null && s.slot < from) continue;
@@ -230,6 +283,8 @@ export class RpcStream {
           }
           const newest = sigs.at(-1);
           if (newest) w.lastSignature = newest.signature;
+          if (w.gap) w.gap.backfilled = true;
+          this.#closeCoverage(w);
         } else if (w.kind === 'account') {
           const info = await o.http.getAccountInfo(w.address, w.priority);
           if (info.value !== null) {
@@ -239,11 +294,42 @@ export class RpcStream {
         }
       } catch {
         failed++;
+        if (w.kind === 'logs' && w.gap) {
+          w.gap.lossy = true;
+          w.gap.backfilled = true;
+          this.#closeCoverage(w);
+        }
       }
     });
     await Promise.all(jobs);
     o.feed.closeGap(this.gapId);
     this.#status('up', { fromSlot: from, filled, failed });
+  }
+
+  /** The first slot not yet seen on this stream: where a coverage gap opened now would start. */
+  #nextSlot(): bigint | null {
+    const tip = this.#o.feed.tip;
+    const last = this.#lastSlot === null ? null : this.#lastSlot + 1n;
+    return tip === null ? last : last === null || tip > last ? tip : last;
+  }
+
+  /** Ends a reconnect gap once the watch is subscribed again and its backfill is done; reports it if anything may be missing. */
+  #closeCoverage(w: Extract<Watch, { kind: 'logs' }>): void {
+    const g = w.gap;
+    if (g === null || !w.acked || !g.backfilled) return;
+    w.gap = null;
+    // Live notifications flow from the subscription ack, so the tip now bounds what was missed.
+    if (g.lossy) this.#coverageGap(w, g.fromSlot, this.#o.feed.tip ?? this.#lastSlot, g.reason);
+  }
+
+  #coverageGap(w: Extract<Watch, { kind: 'logs' }>, fromSlot: bigint | null, toSlot: bigint | null, reason: string): void {
+    if (w.opts.coverage === undefined) return;
+    if (toSlot === null) w.started = false; // open-ended: a new start fact marks where coverage resumes
+    this.#fact(`coverage:${w.opts.coverage}:gap`, { fromSlot, toSlot, reason, via: `logs:${w.address}` });
+  }
+
+  #fact(key: string, value: Record<string, unknown>): void {
+    this.#o.feed.ingest('worker', { type: 'offchain', key, value }, { receivedAt: this.#o.timers.now() });
   }
 
   #status(state: string, detail: Record<string, unknown>): void {
