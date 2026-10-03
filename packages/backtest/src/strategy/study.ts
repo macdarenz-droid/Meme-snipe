@@ -29,7 +29,7 @@ import {
   migrationKey, parseMigration, concentration, mintAccounts, type HardResult, type HardGate,
 } from '../../../core/src/gates/index.ts';
 import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src/lifecycle/index.ts';
-import { evaluateEntry, NO_LATCHES, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
+import { economicNav, evaluateEntry, NO_LATCHES, type NavMark, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, LAMPORTS_PER_SOL, type MicroUsd, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
 import type { PoolView } from '../sim/market.ts';
 import type { FeatureRules, StudyConfig, U1Rules, U2Rules, UniverseConfig } from './config.ts';
@@ -127,6 +127,7 @@ export class StudyStrategy implements Strategy {
   // Deployment replay: the one running account.
   readonly #closed: ClosedTrade[] = [];
   readonly #entries: EntryRecord[] = [];
+  readonly #navMarks: NavMark[] = [];
   #latches: Latches = NO_LATCHES;
   readonly #stats: DeploymentStats = { trips: [], rejected: {}, peakEquityUsd: 0n, maxDrawdownUsd: 0n, closed: 0 };
   #prunedAt = Number.MIN_SAFE_INTEGER;
@@ -153,7 +154,7 @@ export class StudyStrategy implements Strategy {
   }
 
   /** The running account for RISK-1, marked at executable liquidation value; `cash` is what the wallet holds. */
-  #account(ctx: StrategyContext, px: MicroUsd, now: number): { history: AccountHistory; cash: MicroUsd } {
+  #account(ctx: StrategyContext, px: MicroUsd, now: number): { history: AccountHistory; cash: MicroUsd; wallet: Lamports } {
     const policy = this.#o.session.policy;
     const open: OpenPosition[] = [];
     let committed = 0n;
@@ -174,12 +175,21 @@ export class StudyStrategy implements Strategy {
     const equity = policy.capital.bankroll + realized + open.reduce((a, o) => a + ((o.mark ?? 0n) - o.notional), 0n);
     if (equity > this.#stats.peakEquityUsd) this.#stats.peakEquityUsd = equity;
     if (this.#stats.peakEquityUsd - equity > this.#stats.maxDrawdownUsd) this.#stats.maxDrawdownUsd = this.#stats.peakEquityUsd - equity;
+    const cash = (policy.capital.bankroll + realized - committed) as MicroUsd;
+    // The wallet holds the trading cash plus the operations floor, so economic NAV (RISK-1b) equals the trading equity.
+    const wallet = (microUsdToLamports(cash, px, 'floor') + policy.reserve.opsFloor) as Lamports;
+    // R10's high-water mark comes from recorded NAV observations, in the evaluator's own definition.
+    const nav = economicNav(policy, wallet, px, open);
+    if (nav !== null && nav > 0n && this.#navMarks.at(-1)?.nav !== nav) this.#navMarks.push({ atMs: now, nav });
     return {
       history: {
-        openingEquity: policy.capital.bankroll, openedAtMs: this.#o.entriesFrom - 1, flows: [], closedTrades: [...this.#closed], openPositions: open,
-        entries: [...this.#entries], unresolvedEntries: unresolved, heldReservations: ctx.book.reserved, version: BigInt(this.#entries.length + this.#closed.length),
+        openingEquity: policy.capital.bankroll, openedAtMs: this.#o.entriesFrom - 1, flows: [], costs: [], closedTrades: [...this.#closed], openPositions: open,
+        entries: [...this.#entries], unresolvedEntries: unresolved, heldReservations: ctx.book.reserved,
+        // Day and week start marks are reporting only in RISK-1; not recorded here.
+        markedAtDayStart: null, markedAtWeekStart: null, navMarks: [...this.#navMarks],
+        version: BigInt(this.#entries.length + this.#closed.length + this.#navMarks.length),
       },
-      cash: (policy.capital.bankroll + realized - committed) as MicroUsd,
+      cash, wallet,
     };
   }
 
@@ -342,10 +352,10 @@ export class StudyStrategy implements Strategy {
     const rent = { tokenAccount: net.tokenAccountRent, tokenAccountClosedOnExit: true, oneTime: 0n, transient: 0n };
     const deploy = this.#deploy;
     const account = deploy ? this.#account(ctx, px.price as MicroUsd, now) : null;
-    const bankrollLamports = microUsdToLamports(account === null ? policy.capital.bankroll : account.cash, px.price as MicroUsd, 'floor');
+    const bankrollLamports = account === null ? microUsdToLamports(policy.capital.bankroll, px.price as MicroUsd, 'floor') + policy.reserve.opsFloor : account.wallet;
     const risk = evaluateEntry({
       session: this.#o.session, mode: deploy ? 'live' : 'backtest', clock: { now: () => ({ receivedAt: now }) },
-      account: account?.history ?? { openingEquity: policy.capital.bankroll, openedAtMs: now - 1, flows: [], closedTrades: [], openPositions: [], entries: [], unresolvedEntries: [], heldReservations: 0n as Lamports, version: 0n },
+      account: account?.history ?? { openingEquity: policy.capital.bankroll, openedAtMs: now - 1, flows: [], costs: [], closedTrades: [], openPositions: [], entries: [], unresolvedEntries: [], heldReservations: 0n as Lamports, markedAtDayStart: null, markedAtWeekStart: null, navMarks: [], version: 0n },
       latches: deploy ? this.#latches : NO_LATCHES,
       // R16: the regime gate's inputs are not produced in the backtest yet (FACTS-1); the deployment replay reports it
       // as not applied rather than refusing every entry.
@@ -480,6 +490,9 @@ export class StudyStrategy implements Strategy {
         status: p.status, quantity: p.quantity, sold: p.sold, costBasis: p.cost + t.fixedCosts, realized,
         exitCost: net.signaturesPerTx * net.baseFeePerSignature + this.#o.session.policy.exits.ladder.steps[0]!.priorityFeeLamports + net.tip,
         exitSeq: p.exitSeq, exitAttempts: exitAttemptsOf(ctx.book.intents, p.id),
+        // The simulated token account holds exactly the position (nobody sends us tokens), and the fill model has no
+        // separate close failure: a sell-and-close lands or fails whole.
+        tokenAccountBalance: p.quantity, closeFailed: false,
       }, t.tracker, {
         nowMs: now, slotClose: e.key === 'slot',
         market: view === null ? null : { atMs: pv.ok ? pv.moment.receivedAt : now, value: market(view) },
