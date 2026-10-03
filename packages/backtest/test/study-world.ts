@@ -56,6 +56,8 @@ export interface WorldOptions {
   readonly mints: readonly MintPlan[];
   /** Slots of data. */
   readonly slots: number;
+  /** A block row every this many slots (default 1); slots holding a transaction always get theirs. */
+  readonly blockEvery?: number;
   /** Days of sparse lead-in blocks (one an hour) before slot 0, so coverage starts that long before the market. */
   readonly leadInDays?: number;
   readonly seed?: string;
@@ -216,7 +218,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         rows.push(raw(s, tx, signature, [pl.mint], drop ? [] : balances, []));
       }
     }
-    rows.push({ kind: 'block', slot, blockTime, parentSlot: slot - 1n });
+    if (s % (o.blockEvery ?? 1) === 0 || txAt.has(s)) rows.push({ kind: 'block', slot, blockTime, parentSlot: slot - 1n });
   }
   return { rows: rows.sort(compareRows), mints: out };
 };

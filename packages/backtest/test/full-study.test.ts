@@ -1,0 +1,107 @@
+// The whole BT-2 study on a synthetic multi-day market: walk-forward, S0, G1, registration, the sealed holdout run
+// once, G2 "not proven" with the seals closed, G0 proofs and the ledger replay check.
+import { statSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
+import type { DatasetRow } from '../src/dataset/rows.ts';
+import { STUDY_CONFIG, configId } from '../src/strategy/config.ts';
+import { readStudyRegistry } from '../src/study/registry.ts';
+import { runSealedHoldout } from '../src/study/sealed.ts';
+import { runFullStudy, type StudyInputs } from '../src/study/study.ts';
+import { type MintPlan, studyWorld, W0 } from './study-world.ts';
+import { SOL_USD } from './synthetic.ts';
+
+vi.setConfig({ testTimeout: 900_000 });
+const dir = mkdtempSync(join(tmpdir(), 'study-'));
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+const MIN = 150;
+const DAY = 24 * 60 * MIN;
+const reclaim = (since: number) => (since < 5 * MIN ? 0.5 : since < 50 * MIN ? 0.15 : 0.55);
+const plan = (label: string, day: number): MintPlan => ({
+  label, createSlot: day * DAY + 2 * 60 * MIN, graduateAfter: 20 * MIN, migrationQuote: 400_000_000_000n, buyBias: reclaim, swapEvery: 10,
+  buySize: 3e9, sellDivisor: 8, swapsFor: 300 * MIN,
+});
+const { rows } = studyWorld({ leadInDays: 15, blockEvery: 25, slots: 3 * DAY, mints: [plan('d0', 0), plan('d1', 1), plan('d2', 2)] });
+const dayOf = (r: DatasetRow) => new Date(r.blockTime * 1000).toISOString().slice(0, 10);
+const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ start: W0 - 16 * 86_400_000 + k * 3_600_000, close: '120.00' })) };
+const config = { ...STUDY_CONFIG, folds: 2, holdoutDays: 1, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
+const decisionDays = ['2026-09-20', '2026-09-21', '2026-09-22'];
+
+const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
+  config, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, decisionDays,
+  rows: (from, to) => () => rows.filter((r) => dayOf(r) >= from && dayOf(r) <= to)[Symbol.iterator](),
+  firstDay: '2026-09-05', series: [sol], sampleRate: 1, insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }),
+  registryPath: join(dir, 'registry.json'), outDir: dir, seed: 'study', replays: 2, runHoldout: false, startedAt: '2026-10-04T00:00:00Z', ...over,
+});
+
+describe('BT-2 study', () => {
+  const first = runFullStudy(inputs());
+
+  it('runs the walk-forward cleanly through the real engine and scores it outside', () => {
+    expect(first.walkForward.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0, mirrorMatches: true });
+    expect(first.walkForward.ledgerReplay).toMatchObject({ ok: true, purpose: 'backtest' });
+    expect(first.walkForward.s0Seeds).toBe(2);
+    expect(first.plan.walkForward.days).toEqual(['2026-09-20', '2026-09-21']);
+    expect(first.plan.holdout).toMatchObject({ fromDay: '2026-09-22', toDay: '2026-09-22' });
+    // Every walk-forward trade opened and closed inside the walk-forward days.
+    for (const t of first.walkForward.trades) expect(t.closedAt).toBeLessThan(Date.parse('2026-09-22T00:00:00Z'));
+    expect(first.walkForward.trades.length).toBeGreaterThan(0);
+  });
+
+  it('proves the engine blind and deterministic on the study data', () => {
+    expect(first.proofs.leak).toEqual({ ok: true, violations: [] });
+    expect(new Set(first.proofs.replayHashes).size).toBe(1);
+    expect(first.gates.G0.checks.find((c) => c.name === 'leak test')!.passed).toBe(true);
+    expect(first.gates.G0.checks.find((c) => c.name === 'ledger replay')!.passed).toBe(true);
+    // Parity (TEST-1) and second-source coverage are not BT-2's evidence: G0 fails on them until they exist.
+    expect(first.gates.G0.status).toBe('fail');
+  });
+
+  it('registers one configuration per universe before any holdout run, and G1 is not proven on 2 days', () => {
+    const reg = readStudyRegistry(join(dir, 'registry.json'));
+    expect(reg.holdouts.familySize).toBe(2);
+    expect(reg.holdouts.entries.map((e) => [e.universe, e.configId, e.seal])).toEqual([['U1', configId(config, 'U1'), 'registered'], ['U2', configId(config, 'U2'), 'registered']]);
+    expect(reg.trials.map((t) => t.trialId).sort()).toEqual([configId(config, 'U1'), configId(config, 'U2')].sort());
+    for (const u of ['U1', 'U2']) expect(first.gates.G1[u]!.status).toBe('not-proven');
+    expect(first.gates.G2.status).toBe('not-proven');
+    expect(first.holdout.ran).toBe(false);
+  });
+
+  it('runs the holdout once into read-only sealed files; G2 stays "not proven" and nothing is opened', () => {
+    const second = runFullStudy(inputs({ runHoldout: true }));
+    expect(second.holdout.ran).toBe(true);
+    const reg = readStudyRegistry(join(dir, 'registry.json'));
+    expect(reg.runs).toHaveLength(1);
+    expect(reg.runs[0]!.status).toBe('sealed');
+    for (const e of reg.holdouts.entries) {
+      expect(e.seal).toBe('sealed');
+      expect(Object.keys(e.counts!).sort()).toEqual(['candidates', 'entries', 'entryDays']);
+      expect(e.burned).toBe(false);
+    }
+    const ledger = join(dir, 'holdout-2026-09-22-2026-09-22.sqlite');
+    expect(statSync(ledger).mode & 0o777).toBe(0o400);
+    expect(statSync(`${ledger}.outcomes.json`).mode & 0o777).toBe(0o400);
+    expect(second.gates.G2.status).toBe('not-proven');
+    expect(second.gates.G2.reasons.join(' ')).toMatch(/sealed entries/);
+    // Asking again does not run it again.
+    const third = runFullStudy(inputs({ runHoldout: true }));
+    expect(readStudyRegistry(join(dir, 'registry.json')).runs).toHaveLength(1);
+    expect(third.holdout.sealHash).toBeNull();
+  });
+
+  it('a second holdout run into a new file is refused and burns the holdout', () => {
+    const regPath = join(dir, 'registry.json');
+    expect(() => runSealedHoldout(regPath, join(dir, 'again.sqlite'), {
+      rows: () => [][Symbol.iterator](), series: [sol], seed: 'x', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
+      windowEnd: 0, study: config, entriesFrom: 0, entriesTo: 0, sampleRate: 1,
+    }, { byUniverse: ['U1', 'U2'].map((u) => ({ universe: u, holdoutId: `${u}-2026-09-22-2026-09-22`, configId: configId(config, u) })), required: {} }, [], FILL_CONFIG, 't')).toThrow(/refused and burned/);
+    const reg = readStudyRegistry(regPath);
+    expect(reg.holdouts.entries.every((e) => e.burned && e.burnReason === 'reconfigured')).toBe(true);
+    const after = runFullStudy(inputs());
+    expect(after.gates.G2.status).toBe('not-proven');
+    expect(after.gates.G2.reasons.join(' ')).toMatch(/burned/);
+  });
+});
