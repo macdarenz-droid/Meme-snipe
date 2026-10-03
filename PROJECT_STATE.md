@@ -4,7 +4,7 @@
 - An intelligent, precise, fast sniper that is above all risk aware and trades like a disciplined professional.
 - Consistency. Risk aware, data aware. Research based on what actually matters in the market.
 - No guessing: the bot acts only when the data proves the setup. Unknown or stale evidence means no trade.
-- Bankroll $20, entries $2 default and $5 max, paper mode first.
+- Bankroll $20, entries $2 default and $5 max, paper mode first. This is the trial setting only: capital and trade size are configuration and will scale once the bot proves itself.
 - Easy deposit and withdraw in AUD. Stripe's onramp does not serve Australia (US and EU only). Deposit and Withdraw screens offer two exchanges to choose from, Independent Reserve and Kraken, with steps and costs; the bot only sends to the owner's saved wallet. Banxa in-app buying is possible later if a business (ABN) is registered.
 - Dashboard: P&L calendar, trade history with full details, profit charts and the other visuals needed to see what the bot is doing. Smooth UI: motion, transitions, blurred backdrops behind opened panels.
 - Two themes only: Paper (light) and Silent Black (dark); first open follows the device, then the owner's choice is remembered.
@@ -25,9 +25,9 @@ Builders run as separate sessions; the supervisor reviews and merges into `ccr-1
 
 | Task | What | Session | Model | State | Estimate |
 |---|---|---|---|---|---|
-| CORE-1 | Domain types, order and position lifecycle | session_0156X5xPKiDDMBM7yAhZwoz1 | Opus 5.5 | building | 1–1.5 h |
-| CORE-2 | AMM quotes (pump curve, PumpSwap), cost model, feasible size | session_01RasnmqVhMBTeGSsJxnSibs | Opus 5.5 | building | 1.5–2.5 h |
-| WEB-1 | Dashboard shell, two themes, motion, copy guard | session_01Xbf2u9qDT5EPajdZtM3SPG | Opus 5.5 | building | 1.5–2.5 h |
+| CORE-1 | Domain types, order and position lifecycle | session_01SWQzPEHWtr3oCxUuGCCWxX | Opus 5.5 ultracode | building | 1–1.5 h |
+| CORE-2 | AMM quotes (pump curve, PumpSwap), cost model, feasible size | session_0137WgVKuV7YThAEDRTjWsJ5 | Opus 5.5 ultracode | building | 1.5–2.5 h |
+| WEB-1 | Dashboard shell, two themes, motion, copy guard | session_01Ex3DnPXKguKRwSY7utcsPQ | Opus 5.5 ultracode | building | 1.5–2.5 h |
 | DOCS-1 | Architecture improved from research | — | Opus 5.5 | waiting on research | 1–1.5 h incl. review |
 | Queued | Risk policy and sizing; evidence gates; exits; paper fills; stats and promotion gates; provider adapters and quota scheduler; ledger; paper worker; dashboard data screens; Deposit/Withdraw | — | — | after DOCS-1 | 6–10 h in waves of 3–4 |
 

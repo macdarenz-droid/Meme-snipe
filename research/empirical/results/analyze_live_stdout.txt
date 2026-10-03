@@ -1,0 +1,204 @@
+{
+ "launches": {
+  "n": 1545,
+  "observed_hours": 0.9087041666772631,
+  "per_hour": 1700.2233033104656,
+  "mayhem_share": 0.29967637540453074,
+  "pump_suffix_share": 0.7055016181229773
+ },
+ "migrations": {
+  "n": 31,
+  "per_hour": 34.11451288195756
+ },
+ "graduation_share_rate_ratio": 0.02006472491909385,
+ "cohort_created_and_migrated_in_window": {
+  "n_migrated": 22,
+  "n_created": 1535,
+  "share_lower_bound": 0.014332247557003257,
+  "ttg_min_median": 0.0017416666666666665
+ },
+ "n_rows": 31,
+ "standard_liquidity_share": 0.6666666666666666,
+ "ret_15m": {
+  "n": 19,
+  "median": -0.04516870398806139,
+  "median_ci": [
+   -0.9624630644142799,
+   0.05436578581089413
+  ],
+  "p25": -0.9687274247264105,
+  "p75": 0.07372300777936813,
+  "mean": -0.08580228159229535,
+  "share_le_-50": 0.3684210526315789,
+  "share_ge_+50": 0.15789473684210525
+ },
+ "ret_30m": {
+  "n": 14,
+  "median": -0.9219013606521789,
+  "median_ci": [
+   -0.994661636979502,
+   -0.18389055662902143
+  ],
+  "p25": -0.9905826182204994,
+  "p75": -0.249278483114384,
+  "mean": -0.37474498249427035,
+  "share_le_-50": 0.6428571428571429,
+  "share_ge_+50": 0.07142857142857142
+ },
+ "ret_60m": {
+  "n": 0,
+  "median": null,
+  "median_ci": [
+   null,
+   null
+  ],
+  "p25": null,
+  "p75": null,
+  "mean": null,
+  "share_le_-50": null,
+  "share_ge_+50": null
+ },
+ "rule_live_S30_TP50_30m_entry_mig+6m": {
+  "n": 14,
+  "mean_net": -0.0761285523693675,
+  "ci95": [
+   -0.3693054361622434,
+   0.20666572447311132
+  ],
+  "win_rate": 0.5
+ },
+ "signals_30m": {
+  "top10_ex_pool_pct <= median (60.9)": {
+   "n_yes": 4,
+   "n_no": 3,
+   "median_yes": -0.5732537025951764,
+   "median_no": -0.9732334495488507,
+   "diff_median_ci": [
+    null,
+    null
+   ],
+   "mean_yes": 0.3751591904617565,
+   "mean_no": -0.6488972024724521
+  },
+  "jup topHolders% <= median (62.5)": {
+   "n_yes": 7,
+   "n_no": 7,
+   "median_yes": -0.8811858727430265,
+   "median_no": -0.9732334495488507,
+   "diff_median_ci": [
+    -0.5171745859908596,
+    1.048932475810046
+   ],
+   "mean_yes": -0.045984031597931074,
+   "mean_no": -0.7035059333906096
+  },
+  "jup dev% <= median (12.65)": {
+   "n_yes": 4,
+   "n_no": 5,
+   "median_yes": -0.9757895057461711,
+   "median_no": -0.994661636979502,
+   "diff_median_ci": [
+    null,
+    null
+   ],
+   "mean_yes": -0.7232295304454648,
+   "mean_no": -0.6819099940545982
+  },
+  "buy_ratio_5m >= median (0.54)": {
+   "n_yes": 7,
+   "n_no": 4,
+   "median_yes": -0.9626168485613313,
+   "median_no": -0.7114719933277265,
+   "diff_median_ci": [
+    null,
+    null
+   ],
+   "mean_yes": -0.10086330981397694,
+   "mean_no": -0.6507648907694795
+  },
+  "jup net buyers 5m >= median (96)": {
+   "n_yes": 7,
+   "n_no": 4,
+   "median_yes": -0.9732334495488507,
+   "median_no": -0.31466640959974657,
+   "diff_median_ci": [
+    null,
+    null
+   ],
+   "mean_yes": -0.3086826657983965,
+   "mean_no": -0.2870810177967453
+  },
+  "holders at +5m >= median (401)": {
+   "n_yes": 8,
+   "n_no": 3,
+   "median_yes": -0.9679251490550911,
+   "median_no": -0.4454422625704717,
+   "diff_median_ci": [
+    null,
+    null
+   ],
+   "mean_yes": -0.2672514748329796,
+   "mean_no": -0.3903636443706398
+  },
+  "rugcheck danger-level risk present": {
+   "n_yes": 7,
+   "n_no": 7,
+   "median_yes": -0.9732334495488507,
+   "median_no": -0.8811858727430265,
+   "diff_median_ci": [
+    -1.048932475810046,
+    0.5171745859908596
+   ],
+   "mean_yes": -0.7035059333906096,
+   "mean_no": -0.045984031597931074
+  },
+  "rugcheck insiders detected": {
+   "n_yes": 1,
+   "n_no": 6,
+   "median_yes": -0.18389055662902143,
+   "median_no": -0.9679251490550911,
+   "diff_median_ci": [
+    null,
+    null
+   ],
+   "mean_yes": -0.18389055662902143,
+   "mean_no": -0.04369404815688477
+  },
+  "socials present": {
+   "n_yes": 2,
+   "n_no": 12,
+   "median_yes": -0.532538214686024,
+   "median_no": -0.9679251490550911,
+   "diff_median_ci": [
+    null,
+    null
+   ],
+   "mean_yes": -0.532538214686024,
+   "mean_no": -0.34844611046231144
+  },
+  "dexscreener profile at +5m": {
+   "n_yes": 2,
+   "n_no": 9,
+   "median_yes": 1.7207995861759244,
+   "median_no": -0.9626168485613313,
+   "diff_median_ci": [
+    null,
+    null
+   ],
+   "mean_yes": 1.7207995861759244,
+   "mean_no": -0.7500779893475117
+  },
+  "ttg < 5 min": {
+   "n_yes": 11,
+   "n_no": 3,
+   "median_yes": -0.9732334495488507,
+   "median_no": -0.4454422625704717,
+   "diff_median_ci": [
+    null,
+    null
+   ],
+   "mean_yes": -0.33962827845247867,
+   "mean_no": -0.5035062306475065
+  }
+ }
+}
