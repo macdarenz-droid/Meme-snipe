@@ -1120,6 +1120,12 @@ export interface RevalidationInput {
   readonly platformChanges: readonly PlatformChange[];
   /** The qualifying dry run and its G3 result against the holdout; null when none has run. */
   readonly dryRun: { readonly qualifyingRun: boolean; readonly startMs: number; readonly g3: GateResult } | null;
+  /**
+   * The before/after economics report for a platform change that falls inside the holdout window but is marked
+   * `economicsUnchanged: true` (e.g. B5, UPG-1): it shows trade economics unchanged across the boundary within the
+   * window. Required only when such a change is inside; null otherwise.
+   */
+  readonly insideReport?: { readonly produced: boolean; readonly economicsUnchanged: boolean } | null;
   /** Backtest re-run on candidates after the change: G1 and G2 on that data passed or not; null when none has run. */
   readonly postChangeBacktest: { readonly firstCandidateMs: number; readonly candidates: number; readonly gatesPassed: boolean } | null;
 }
@@ -1148,17 +1154,36 @@ export const evaluateRevalidation = (input: RevalidationInput, overrides?: Parti
   const c = new Checks();
   const missing = new Set<string>();
   const pending = input.platformChanges.filter((x) => x.atMs >= input.holdoutEndMs).sort((a, b) => a.atMs - b.atMs);
-  // A change inside the window splits the holdout across two regimes: the proof is not valid for either (§14: the
-  // holdout lies entirely after the last regime boundary before it).
+  // A change inside the window that changed economics (or was not reviewed) splits the holdout across two regimes and
+  // fails it. A change marked economics-unchanged (B5/UPG-1) may lie inside, but then the before/after report across
+  // its boundary is required (supervisor ruling, review of #52).
   const inside = input.platformChanges.filter((x) => x.atMs > input.holdoutStartMs && x.atMs < input.holdoutEndMs);
-  c.add('holdout regime', inside.length === 0,
-    inside.length === 0 ? 'no platform change inside the holdout window' : `${inside.map((x) => x.id).join(', ')} inside the holdout window`);
+  const insideBreaking = inside.filter((x) => x.economicsUnchanged !== true);
+  const insideUnchanged = inside.filter((x) => x.economicsUnchanged === true);
+  c.add('holdout regime', insideBreaking.length === 0,
+    insideBreaking.length === 0 ? 'no economics-changing platform change inside the holdout window'
+      : `${insideBreaking.map((x) => `${x.id} (${x.economicsUnchanged === null ? 'not reviewed' : 'economics changed'})`).join(', ')} inside the holdout window`);
+  let insideReportMissing = false;
+  if (insideUnchanged.length > 0) {
+    const r = input.insideReport;
+    const ok = r !== null && r !== undefined && r.produced && r.economicsUnchanged;
+    c.add('inside-change report', ok,
+      ok ? `${insideUnchanged.map((x) => x.id).join(', ')} inside the window; before/after report shows economics unchanged`
+        : `${insideUnchanged.map((x) => x.id).join(', ')} inside the window needs a before/after report showing economics unchanged${r && r.produced && !r.economicsUnchanged ? ' (the report found a change)' : ''}`);
+    if (!ok && !(r && r.produced && !r.economicsUnchanged)) insideReportMissing = true;
+  }
   const done = (status: GateStatus): RevalidationResult => ({
     passed: status === 'pass', status, reasons: c.failed, checks: c.list, pendingChanges: pending.map((x) => x.id),
   });
+  const regimeStatus = (): GateStatus => {
+    const failed = c.list.filter((x) => !x.passed).map((x) => x.name);
+    if (failed.length === 0) return 'pass';
+    // A missing-but-promised inside report is "not proven" (produce it); a breaking change inside is a hard fail.
+    return failed.every((f) => f === 'inside-change report' && insideReportMissing) ? 'not-proven' : 'fail';
+  };
   if (pending.length === 0) {
     c.add('changes', true, 'no platform change after the holdout');
-    return done(inside.length === 0 ? 'pass' : 'fail');
+    return done(regimeStatus());
   }
   const latest = pending[pending.length - 1]!;
   const d = input.dryRun;
@@ -1195,6 +1220,7 @@ export const evaluateRevalidation = (input: RevalidationInput, overrides?: Parti
       c.add(tag, b.gatesPassed, `${b.candidates} post-change candidates; gates ${b.gatesPassed ? 'pass' : 'fail'}`);
     }
   }
+  if (insideReportMissing) missing.add('inside-change report');
   const failed = c.list.filter((x) => !x.passed).map((x) => x.name);
   return done(failed.length === 0 ? 'pass' : failed.every((f) => missing.has(f)) ? 'not-proven' : 'fail');
 };

@@ -189,16 +189,37 @@ const byDay = (a: readonly ClusteredReturn[], b: readonly DayReturn[]): Day[] =>
 const SIM_BLOCK_DAYS = 3;
 
 /**
- * One simulated holdout of exactly n strategy trades, built from runs of SIM_BLOCK_DAYS consecutive walk-forward days
- * drawn with replacement. Trades keep their creator and funder clusters; simulated days keep their drawn order.
+ * Clusters seen on more than one walk-forward day: a prolific creator or funder keeps its id across repeat draws (its
+ * trades are not independent new launches), so n_power is not understated. Built once from the walk-forward.
  */
-const simulateHoldout = (days: readonly Day[], n: number, shift: number, rng: Rng): { a: ClusteredReturn[]; b: DayReturn[]; days: number } => {
+const multiDay = (a: readonly ClusteredReturn[], key: 'creatorCluster' | 'funderCluster'): ReadonlySet<string> => {
+  const seen = new Map<string, string>();
+  const multi = new Set<string>();
+  for (const t of a) {
+    const prev = seen.get(t[key]);
+    if (prev === undefined) seen.set(t[key], t.day);
+    else if (prev !== t.day) multi.add(t[key]);
+  }
+  return multi;
+};
+
+/**
+ * One simulated holdout of exactly n strategy trades, built from runs of SIM_BLOCK_DAYS consecutive walk-forward days
+ * drawn with replacement. A day drawn again stands for new launches, so a single-day creator's (or funder's) repeat
+ * copies get a fresh id; a creator seen on several walk-forward days keeps its id, because a prolific deployer makes
+ * most coins and its trades are still its own. Simulated days keep their drawn order.
+ */
+const simulateHoldout = (
+  days: readonly Day[],
+  n: number,
+  shift: number,
+  rng: Rng,
+  multiCreator: ReadonlySet<string>,
+  multiFunder: ReadonlySet<string>,
+): { a: ClusteredReturn[]; b: DayReturn[]; days: number } => {
   const a: ClusteredReturn[] = [];
   const b: DayReturn[] = [];
   let withEntries = 0;
-  // A day drawn again stands for new launches: its repeat copies get fresh cluster ids, so the walk-forward's size
-  // does not cap the number of creators in a larger simulated holdout. First copies keep the real ids, so creators
-  // that span several walk-forward days stay one cluster.
   const drawn = new Array<number>(days.length).fill(0);
   for (let k = 0; a.length < n; ) {
     const start = nextInt(rng, days.length);
@@ -212,7 +233,11 @@ const simulateHoldout = (days: readonly Day[], n: number, shift: number, rng: Rn
       if (d.a.length > 0) withEntries++;
       for (const x of d.a) {
         if (a.length === n) break;
-        a.push({ day: key, rNet: x.rNet + shift, creatorCluster: x.creatorCluster + tag, funderCluster: x.funderCluster + tag });
+        a.push({
+          day: key, rNet: x.rNet + shift,
+          creatorCluster: multiCreator.has(x.creatorCluster) ? x.creatorCluster : x.creatorCluster + tag,
+          funderCluster: multiFunder.has(x.funderCluster) ? x.funderCluster : x.funderCluster + tag,
+        });
       }
       for (const x of d.b) b.push({ day: key, rNet: x });
     }
@@ -253,6 +278,8 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
   if (!Number.isInteger(sims) || sims < 100) throw new RangeError('simulations must be an integer >= 100');
   if (opts.walkForward.length < 2 || opts.control.length === 0) throw new RangeError('need walk-forward trades and S0 control trades');
   const days = byDay(opts.walkForward, opts.control);
+  const multiCreator = multiDay(opts.walkForward, 'creatorCluster');
+  const multiFunder = multiDay(opts.walkForward, 'funderCluster');
   if (days.filter((d) => d.a.length > 0).length < 2) throw new RangeError('walk-forward trades must cover at least two days');
   const wf = opts.walkForward.map((t) => t.rNet);
   const shift = target - mean(wf);
@@ -267,7 +294,7 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     const rng = createRng(opts.seed * SEED_STRIDE + n);
     let pass = 0;
     for (let s = 0; s < sims; s++) {
-      const h = simulateHoldout(days, n, shift, rng);
+      const h = simulateHoldout(days, n, shift, rng, multiCreator, multiFunder);
       // The gate needs MIN_DAYS days; a holdout on fewer days is "not proven", which counts as not passing.
       if (h.days >= MIN_DAYS && fullRulePasses(h.a, h.b, level, { rng, replicates }, units)) pass++;
     }

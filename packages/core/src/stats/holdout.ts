@@ -5,7 +5,8 @@
 // - The backtester runs the holdout into a sealed ledger file; the registry keeps only its hash and entry counts.
 //   The size check reads the counts alone.
 // - The seal opens once, and only when n ≥ max(300, n_power). Opening early, a hash mismatch, a second open, a re-run
-//   with a different configuration or any inspection outside the scoring stage burns the holdout. Scoring burns it too.
+//   with a different configuration, a run that fails or is interrupted ('run-failed') or any inspection outside the
+//   scoring stage burns the holdout. Scoring burns it too.
 // - New proof needs a new, later window that has never been run.
 // - Attempts share one error budget (supervisor rulings, DECISIONS "STATS-1c"): attempt 1 of a universe is tested at
 //   family α = 0.04, attempt k ≥ 2 at 0.01 / 2^(k − 1), each on a new, later window: at most 0.05 family error across
@@ -46,7 +47,9 @@ export type SealState = 'registered' | 'sealed' | 'opened';
 export type BurnReason =
   | 'scored' | 'early-open' | 'hash-mismatch' | 'count-mismatch' | 'second-open' | 'reconfigured' | 'inspected'
   // Failed attempts that spent their α without a score: short of the requirement at E, or halted / abandoned.
-  | 'short' | 'abandoned';
+  | 'short' | 'abandoned'
+  // A holdout run that failed or was interrupted (BT-1c).
+  | 'run-failed';
 
 /** The window rule every attempt follows, fixed when the registry is created. */
 export interface AttemptRule {
