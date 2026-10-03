@@ -95,6 +95,13 @@ describe('loaded addresses must match the lookups', () => {
     expect(accountKeys(tx, loaded).length).toBe(tx.staticAccountKeys.length + loaded.writable.length + loaded.readonly.length);
   });
 
+  it('refuses a key that appears twice across static and loaded keys (the runtime refuses AccountLoadedTwice)', () => {
+    const twice = { writable: [tx.staticAccountKeys[1]!, ...loaded.writable.slice(1)], readonly: loaded.readonly };
+    expect(() => accountKeys(tx, twice)).toThrow(/more than once/);
+    const repeated = { writable: loaded.writable, readonly: loaded.readonly.length > 0 ? [loaded.writable[0]!, ...loaded.readonly.slice(1)] : loaded.readonly };
+    if (loaded.readonly.length > 0) expect(() => accountKeys(tx, repeated)).toThrow(/more than once/);
+  });
+
   it('refuses a short list, swapped lists, missing lists, and keys for a transaction without lookups', () => {
     expect(() => accountKeys(tx, { writable: loaded.writable.slice(1), readonly: loaded.readonly })).toThrow(DecodeError);
     if (loaded.writable.length !== loaded.readonly.length) {
