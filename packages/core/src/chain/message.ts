@@ -175,6 +175,9 @@ const checkIndexes = (tx: DecodedTransaction): DecodedTransaction => {
   if (h.numReadonlySignedAccounts >= h.numRequiredSignatures) throw new DecodeError('the fee payer must be writable');
   if (h.numRequiredSignatures + h.numReadonlyUnsignedAccounts > nStatic) throw new DecodeError('header counts exceed the static account keys');
   if (total > 256) throw new DecodeError(`${total} account keys; at most 256 are addressable`);
+  for (const l of tx.addressTableLookups) {
+    if (l.writableIndexes.length + l.readonlyIndexes.length === 0) throw new DecodeError(`lookup of ${l.accountKey} loads no accounts`);
+  }
   for (const ix of tx.instructions) {
     if (ix.programIdIndex === 0) throw new DecodeError('the fee payer cannot be a program');
     if (ix.programIdIndex >= nStatic) throw new DecodeError(`program index ${ix.programIdIndex} is not a static key`);
@@ -195,7 +198,7 @@ export interface LookupTable {
 }
 
 const LOOKUP_TABLE_META_SIZE = 56;
-export const U64_MAX = 2n ** 64n - 1n;
+export const U64_MAX = BigInt.asUintN(64, -1n);
 
 export const decodeLookupTable = (data: Uint8Array): LookupTable => {
   if (data.length < LOOKUP_TABLE_META_SIZE) throw new DecodeError('lookup table shorter than its 56-byte header');

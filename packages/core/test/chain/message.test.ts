@@ -148,6 +148,29 @@ describe('message sanitize rules (agave)', () => {
     expect(() => decodeTransaction(legacyTx(opts))).toThrow(DecodeError);
   });
 
+  it('refuses a v0 lookup that loads nothing, and more than 256 account keys in total', () => {
+    // v0 message: prefix, header, 2 static keys, blockhash, one instruction, then the lookups.
+    const v0 = (lookups: [number, number][]) =>
+      Uint8Array.from([
+        1, ...new Array(64).fill(0),
+        0x80, 1, 0, 1,
+        2, ...new Array(32).fill(1), ...new Array(32).fill(2),
+        ...new Array(32).fill(9),
+        1, 1, 1, 0, 0,
+        lookups.length,
+        ...lookups.flatMap(([w, r]) => [
+          ...new Array(32).fill(7),
+          ...shortVec(w), ...Array.from({ length: w }, (_, i) => i & 0xff),
+          ...shortVec(r), ...Array.from({ length: r }, (_, i) => i & 0xff),
+        ]),
+      ]);
+    const shortVec = (n: number) => (n < 128 ? [n] : [(n & 0x7f) | 0x80, n >> 7]);
+    expect(decodeTransaction(v0([[1, 0]])).addressTableLookups).toHaveLength(1);
+    expect(() => decodeTransaction(v0([[0, 0]]))).toThrow(/loads no accounts/);
+    expect(decodeTransaction(v0([[200, 54]])).addressTableLookups).toHaveLength(1);
+    expect(() => decodeTransaction(v0([[200, 55]]))).toThrow(/at most 256/);
+  });
+
   it('reads a v1 requested heap size (mask bit 4) and every other config value', () => {
     const v1 = TRANSACTIONS.find((t) => t.version === 1)!;
     const b = fromBase64(v1.base64.transaction[0]);

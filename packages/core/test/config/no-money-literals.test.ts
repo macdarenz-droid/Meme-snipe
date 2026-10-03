@@ -30,6 +30,8 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'amm/pump-curve.ts', name: 'tokenTotalSupply', value: '1000000000000000', why: 'pump Global launch parameter' },
   { file: 'amm/pump-curve.ts', name: 'poolMigrationFee', value: '15000001', why: 'pump migrate fee, a protocol parameter read as an input' },
   { file: 'domain/index.ts', name: 'futureToleranceMs', value: '1000', why: 'clock skew allowance in milliseconds, not money' },
+  { file: 'chain/address.ts', name: 'ED25519_FIELD_PRIME', value: '57896044618658097711785492504343953926634992332820282019728792003956564819949', why: 'ed25519 field prime 2^255 - 19 (RFC 8032), for the PDA curve check' },
+  { file: 'chain/address.ts', name: 'ED25519_D', value: '37095705934669439343138083508754565189542113879843219016388785533085940283555', why: 'ed25519 curve constant d (RFC 8032), for the PDA curve check' },
 ];
 
 export const isAllowed = (file: string, finding: Finding, allowed: readonly Allowed[] = ALLOWED): boolean =>

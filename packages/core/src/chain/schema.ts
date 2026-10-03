@@ -1,7 +1,7 @@
 // A small hand-written Borsh schema: each codec reads one value and records the IDL type it stands for, so
 // a test can compare every layout here with the pinned pump IDLs field by field (test/chain/idl.test.ts).
 import { type Address, DecodeError, Reader } from './bytes.ts';
-import { type Bps, bps } from '../units/index.ts';
+import { BPS_DENOMINATOR, type Bps, bps } from '../units/index.ts';
 
 export type IdlType = string | { readonly array: readonly [IdlType, number] } | { readonly vec: IdlType } | { readonly defined: { readonly name: string } };
 
@@ -24,7 +24,7 @@ export const string = codec('string', (r) => r.string());
 /** A u64 basis-point rate, checked to be 0..10,000 (an out-of-range rate is corrupt data, not a fee). */
 export const bpsU64 = codec<Bps>('u64', (r) => {
   const v = r.u64();
-  if (v > 10_000n) throw new DecodeError(`basis points must be <= 10000, got ${v}`);
+  if (v > BPS_DENOMINATOR) throw new DecodeError(`basis points must be <= ${BPS_DENOMINATOR}, got ${v}`);
   return bps(Number(v));
 });
 

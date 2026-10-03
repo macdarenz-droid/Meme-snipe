@@ -53,12 +53,12 @@ export class Reader {
 
   i16(): number {
     const v = this.u16();
-    return v >= 0x8000 ? v - 0x10000 : v;
+    return (v << 16) >> 16; // sign-extend 16 bits
   }
 
   u32(): number {
     const s = this.take(4);
-    return (s[0]! | (s[1]! << 8) | (s[2]! << 16)) + s[3]! * 0x1000000;
+    return (s[0]! | (s[1]! << 8) | (s[2]! << 16) | (s[3]! << 24)) >>> 0;
   }
 
   u64(): bigint {
@@ -106,7 +106,7 @@ export class Reader {
       value |= (b & 0x7f) << (7 * i);
       if ((b & 0x80) === 0) {
         if (i > 0 && b === 0) throw new DecodeError('compact-u16 is not minimally encoded');
-        if (value > 0xffff) throw new DecodeError('compact-u16 overflows u16');
+        if (value >>> 16 !== 0) throw new DecodeError('compact-u16 overflows u16');
         return value;
       }
     }

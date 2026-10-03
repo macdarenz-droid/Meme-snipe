@@ -232,7 +232,16 @@ describe('token accounts from mainnet', () => {
   });
 
   it('refuses a 355-byte multisig and an uninitialized account', () => {
-    expect(() => decodeTokenAccount(new Uint8Array(355), TOKEN_PROGRAM)).toThrow(DecodeError);
+    // Token-2022 treats any 355-byte account as a multisig (`check_min_len_and_not_multisig`), even when the bytes
+    // would otherwise read as a valid extended account or mint. Build exactly such bytes so only that rule refuses them.
+    const asAccount = Uint8Array.from([...fromBase64(vaults[0]!.dataBase64).slice(0, 165), 2, ...new Array(355 - 166).fill(0)]);
+    expect(asAccount.length).toBe(355);
+    expect(() => decodeTokenAccount(asAccount, TOKEN_2022_PROGRAM)).toThrow(/multisig/);
+    expect(decodeTokenAccount(asAccount.slice(0, 354), TOKEN_2022_PROGRAM).amount).toBeGreaterThanOrEqual(0n);
+    const asMint = Uint8Array.from([...mintWith([]), ...new Array(355 - 166).fill(0)]);
+    expect(asMint.length).toBe(355);
+    expect(() => decodeMint(asMint, TOKEN_2022_PROGRAM)).toThrow(/multisig/);
+    expect(decodeMint(asMint.slice(0, 354), TOKEN_2022_PROGRAM).extensions).toEqual([]);
     const a = fromBase64(vaults[0]!.dataBase64).slice(0, 165);
     a[108] = 0;
     expect(() => decodeTokenAccount(a, TOKEN_PROGRAM)).toThrow(DecodeError);

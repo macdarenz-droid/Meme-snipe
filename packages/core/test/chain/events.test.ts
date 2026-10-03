@@ -126,6 +126,20 @@ describe('event safety', () => {
     expect(transactionEvents(forged)).toEqual([]);
   });
 
+  it('throws, never returns an empty list, when the loaded addresses do not match the lookups', () => {
+    const t = TRANSACTIONS.find((x) => x.version === 0 && x.label.includes('TradeEvent') && (x.base64.meta.loadedAddresses?.writable.length ?? 0) > 0)!;
+    const rec = record(t);
+    expect(transactionEvents(rec).some((e) => e.name === 'TradeEvent')).toBe(true);
+    const { writable, readonly } = rec.loadedAddresses;
+    expect(writable.length).not.toBe(readonly.length);
+    expect(() => transactionEvents({ ...rec, loadedAddresses: { writable: writable.slice(1), readonly } })).toThrow(DecodeError);
+    expect(() => transactionEvents({ ...rec, loadedAddresses: { writable: readonly, readonly: writable } })).toThrow(DecodeError);
+    const legacy = TRANSACTIONS.find((x) => x.version === 'legacy' && x.label.includes('Event'))!;
+    expect(() => transactionEvents({ ...record(legacy), loadedAddresses: { writable, readonly } })).toThrow(DecodeError);
+    // Keys reassigned with the same counts cannot be detected without the lookup tables' contents; resolveLookups
+    // checks those when the tables are at hand.
+  });
+
   it('refuses a record whose signature does not match its transaction', () => {
     const t = named('TradeEvent')[0]!.t;
     expect(() => transactionEvents({ ...record(t), signature: 'x' })).toThrow(DecodeError);

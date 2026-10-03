@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createProgramAddress, findProgramAddress, isOnCurve } from '../../src/chain/address.ts';
+import { ED25519_D, ED25519_FIELD_PRIME, createProgramAddress, findProgramAddress, isOnCurve } from '../../src/chain/address.ts';
 import { decodeAddressBytes } from '../../src/chain/base58.ts';
 import { fromBase64 } from '../../src/chain/bytes.ts';
 import { decodeTransaction } from '../../src/chain/message.ts';
@@ -39,6 +39,13 @@ describe('program-derived addresses', () => {
       }
     }
     expect(n).toBeGreaterThan(10);
+  });
+
+  it('uses the RFC 8032 curve constants: p = 2^255 - 19 and d = -121665 / 121666 mod p', () => {
+    const p = 2n ** 255n - 19n;
+    expect(ED25519_FIELD_PRIME).toBe(p);
+    // d * 121666 = -121665 (mod p)
+    expect((((ED25519_D * 121666n + 121665n) % p) + p) % p).toBe(0n);
   });
 
   it('rejects too many or too long seeds', () => {

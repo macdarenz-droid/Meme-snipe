@@ -4,7 +4,9 @@ import { createHash } from 'node:crypto';
 import { decodeAddressBytes, encodeBase58 } from './base58.ts';
 import type { Address } from './bytes.ts';
 
-const P = 2n ** 255n - 19n;
+/** The ed25519 field prime 2^255 - 19 (RFC 8032 5.1; test/chain/address.test.ts recomputes it). */
+export const ED25519_FIELD_PRIME = 57896044618658097711785492504343953926634992332820282019728792003956564819949n;
+const P = ED25519_FIELD_PRIME;
 
 const modPow = (base: bigint, exp: bigint): bigint => {
   let result = 1n;
@@ -18,8 +20,9 @@ const modPow = (base: bigint, exp: bigint): bigint => {
   return result;
 };
 
-// Edwards d = -121665 / 121666 mod p.
-const D = (((-121665n * modPow(121666n, P - 2n)) % P) + P) % P;
+/** The Edwards curve constant d = -121665 / 121666 mod p (RFC 8032 5.1; recomputed in test/chain/address.test.ts). */
+export const ED25519_D = 37095705934669439343138083508754565189542113879843219016388785533085940283555n;
+const D = ED25519_D;
 
 /**
  * True when 32 bytes decompress to an ed25519 point, matching curve25519-dalek `CompressedEdwardsY::decompress`
