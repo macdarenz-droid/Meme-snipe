@@ -21,7 +21,9 @@ describe('android-preview workflow', () => {
   });
 
   it('replaces the single asset in place', () => {
-    expect(releaseJob).toContain('gh release upload preview zeroed-preview.apk --clobber');
+    const script = readFileSync(fileURLToPath(new URL('../../../.github/scripts/publish-preview.sh', import.meta.url)), 'utf8');
+    expect(releaseJob).toContain('bash .github/scripts/publish-preview.sh');
+    expect(script).toContain('gh release upload preview zeroed-preview.apk --clobber');
   });
 
   it('commits no keystore', () => {

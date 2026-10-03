@@ -141,6 +141,11 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: zeroed-preview-apk
@@ -156,44 +161,8 @@ jobs:
             echo "::notice::$INTEGRATION_BRANCH moved to $head; a newer run publishes the release."
           fi
 
-      - name: Move the preview tag and write the notes
+      - name: Move the preview tag, write the notes, replace the single asset
         if: steps.newest.outputs.current == 'true'
-        run: |
-          set -euo pipefail
-          # gh prints the 404 body to stdout on a missing ref, so only trust the output when the call succeeds.
-          if out="$(gh api "repos/$GH_REPO/git/ref/tags/preview" --jq .object.sha 2>/dev/null)" && [[ "$out" =~ ^[0-9a-f]{40}$ ]]; then
-            old="$out"
-          else
-            old=""
-          fi
-          subject="$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA" --jq '.commit.message | split("\n")[0]')"
-          {
-            echo "Preview build ${{ needs.build.outputs.version_name }}, commit \`${GITHUB_SHA}\`."
-            echo
-            echo "Latest: $subject"
-            if [ -n "$old" ] && [ "$old" != "$GITHUB_SHA" ]; then
-              echo
-              echo "Changes since the previous preview:"
-              gh api "repos/$GH_REPO/compare/$old...$GITHUB_SHA" \
-                --jq '.commits[] | "- " + .sha[0:7] + " " + (.commit.message | split("\n")[0])' | head -40 || true
-            fi
-            echo
-            echo "Sample numbers in this build are made up and carry a \"Sample data\" marker."
-          } > notes.md
-          if [ -n "$old" ]; then
-            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/preview" -f sha="$GITHUB_SHA" -F force=true > /dev/null
-          else
-            gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/preview -f sha="$GITHUB_SHA" > /dev/null
-          fi
-
-      - name: Create or update the prerelease and replace its single asset
-        if: steps.newest.outputs.current == 'true'
-        run: |
-          set -euo pipefail
-          if gh release view preview > /dev/null 2>&1; then
-            gh release edit preview --prerelease --title "Zeroed preview" --notes-file notes.md
-          else
-            gh release create preview --prerelease --title "Zeroed preview" --notes-file notes.md --verify-tag
-          fi
-          gh release upload preview zeroed-preview.apk --clobber
-          gh release view preview --json assets --jq '.assets[] | .name + " " + (.size|tostring)'
+        env:
+          VERSION_NAME: ${{ needs.build.outputs.version_name }}
+        run: bash .github/scripts/publish-preview.sh
