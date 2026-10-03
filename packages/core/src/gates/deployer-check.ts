@@ -113,18 +113,26 @@ export class MintJudge {
   }
 }
 
+/**
+ * The earliest launch a deployer check must read: H14's look-back start less the longest rug window. A mint launched
+ * just before the look-back can still be labelled inside it (the stream dates a label when it is made), so the check
+ * covers the same mints the stream would.
+ */
+export const rugCheckFromMs = (lookbackStartMs: number, rugs: RugConfig): number =>
+  lookbackStartMs - Math.max(rugs.creatorDump.windowMs, rugs.collapse.windowMs);
+
 export type CheckCover = { readonly covered: true; readonly rugs: readonly { readonly mint: string; readonly kind?: string }[] } | { readonly covered: false; readonly detail: string };
 
 /**
- * Whether a deployer's check covers H14's rug half at `now`: made for this creator, from at or before the look-back
- * start, at most `maxLagSlots` behind now, and with every prior mint the index knows in the look-back (the candidate
+ * Whether a deployer's check covers H14's rug half at `now`: made for this creator, listing mints from at or before
+ * `fromMs` (`rugCheckFromMs`), at most `maxLagSlots` behind now, and with every prior mint the index knows from then (the candidate
  * excepted) judged as rug, clear or open. Returns the mints it found to be rugs.
  */
 export const deployerCheckCovers = (
-  fact: RugCheckFact, creator: string, priorMints: readonly string[], lookbackStartMs: number, now: Moment, cfg: RugCheckConfig,
+  fact: RugCheckFact, creator: string, priorMints: readonly string[], fromMs: number, now: Moment, cfg: RugCheckConfig,
 ): CheckCover => {
   if (fact.creator !== creator) return { covered: false, detail: `the check is for ${fact.creator}, not ${creator}` };
-  if (fact.fromMs > lookbackStartMs) return { covered: false, detail: `the check lists mints from ${fact.fromMs}, the look-back starts at ${lookbackStartMs}` };
+  if (fact.fromMs > fromMs) return { covered: false, detail: `the check lists mints from ${fact.fromMs}; it must list mints from ${fromMs}` };
   if (fact.obs.slot === null) return { covered: false, detail: 'the check has no as-of slot' };
   const behind = now.slot - fact.obs.slot;
   if (behind < 0n) return { covered: false, detail: `the check is dated after now (slot ${fact.obs.slot})` };

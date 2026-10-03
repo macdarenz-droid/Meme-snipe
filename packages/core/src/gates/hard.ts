@@ -9,7 +9,7 @@ import type { Extension } from '../chain/token.ts';
 import type { Quote } from '../amm/fees.ts';
 import type { PolicySession } from '../config/session.ts';
 import type { Policy } from '../config/policy.ts';
-import { RUG_CHECK_CONFIG, type RugCheckConfig } from '../config/rugs.ts';
+import { RUG_CHECK_CONFIG, RUG_CONFIG, type RugCheckConfig, type RugConfig } from '../config/rugs.ts';
 import { ROUND_TRIP_ROUNDING_LAMPORTS, type RoundTrip } from '../costs/index.ts';
 import { isMint } from '../domain/index.ts';
 import { checkShape } from '../tx/shape.ts';
@@ -23,7 +23,7 @@ import {
 } from './facts.ts';
 import { checkCurveTails, checkPoolTails } from './tails.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
-import { deployerCheckCovers, parseRugCheck, rugCheckKey } from './deployer-check.ts';
+import { deployerCheckCovers, parseRugCheck, rugCheckFromMs, rugCheckKey } from './deployer-check.ts';
 import type { AsOfEntry } from '../engine/asof.ts';
 import type { Commitment } from '../domain/index.ts';
 import { type Concentration, concentration, mintAccounts, ownerBalance, shareBps } from './holders.ts';
@@ -59,6 +59,8 @@ export interface GateDeps {
   readonly rugLabeller?: 'RUG-1';
   /** Limits for accepting an on-demand deployer check (RUG-1c); the shipped config when not given. */
   readonly rugCheck?: RugCheckConfig;
+  /** The rug definition whose windows set how far before the look-back a check must read; the shipped one when not given. */
+  readonly rugs?: RugConfig;
 }
 
 export const RUG_LABELS_UNAVAILABLE = 'rug labels unavailable (no reviewed labeller; RUG-1)';
@@ -86,6 +88,7 @@ interface Env {
   readonly deployers: GateContext['deployers'];
   readonly rugLabeller: GateDeps['rugLabeller'];
   readonly rugCheck: RugCheckConfig;
+  readonly rugs: RugConfig;
   readonly policy: Policy;
   readonly mode: Mode;
   readonly req: GateRequest;
@@ -507,8 +510,10 @@ const h14 = (env: Env): Outcome => {
   let checked: readonly { readonly mint: string; readonly kind?: string }[] = [];
   if (!rugCov.covered) {
     const chk = env.ev.read('rug-check', rugCheckKey(cr.fact.creator), parseRugCheck, 'event', 'H14');
-    const prior = d.fact.mints.filter((m) => m.mint !== env.req.mint && m.createdAtMs >= now - lookback).map((m) => m.mint);
-    const cover = chk.ok ? deployerCheckCovers(chk.fact, cr.fact.creator, prior, now - lookback, env.ev.now, env.rugCheck) : null;
+    // Mints launched up to one rug window before the look-back can be labelled inside it: the check reads them too.
+    const from = rugCheckFromMs(now - lookback, env.rugs);
+    const prior = d.fact.mints.filter((m) => m.mint !== env.req.mint && m.createdAtMs >= from).map((m) => m.mint);
+    const cover = chk.ok ? deployerCheckCovers(chk.fact, cr.fact.creator, prior, from, env.ev.now, env.rugCheck) : null;
     if (cover === null || !cover.covered) {
       const why = cover === null ? (chk.ok ? '' : chk.reason.detail) : cover.covered ? '' : cover.detail;
       return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}; deployer check: ${why}` }] };
@@ -619,7 +624,7 @@ export const evaluateHardRejects = (ctx: GateContext, deps: GateDeps, req: GateR
   if (!deps.session.running) return fail('policy-session-ended', 'the policy session has ended; start a new session');
   const problem = requestProblem(req);
   if (problem !== null) return fail('bad-request', problem);
-  const env: Env = { ev: new Evidence(ctx, deps.session.policy), history: (k, f, t) => ctx.history(k, f, t), deployers: ctx.deployers, rugLabeller: deps.rugLabeller, rugCheck: deps.rugCheck ?? RUG_CHECK_CONFIG, policy: deps.session.policy, mode: deps.mode, req, memo: new Map() };
+  const env: Env = { ev: new Evidence(ctx, deps.session.policy), history: (k, f, t) => ctx.history(k, f, t), deployers: ctx.deployers, rugLabeller: deps.rugLabeller, rugCheck: deps.rugCheck ?? RUG_CHECK_CONFIG, rugs: deps.rugs ?? RUG_CONFIG, policy: deps.session.policy, mode: deps.mode, req, memo: new Map() };
   const evaluated: HardGate[] = [];
   const passed: HardGate[] = [];
   const failed: HardGate[] = [];

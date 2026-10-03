@@ -164,6 +164,37 @@ describe('deployer check on real chain data', () => {
   });
 });
 
+describe('as-of proven by the node', () => {
+  it('a node behind the as-of slot fails the read, so the mint is unfetched, never judged on a short history', async () => {
+    const timers = new ManualTimers(1_000_000);
+    const scheduler = new Scheduler(HELIUS_FREE, { timers });
+    const nodeSlot = lastSlot(RUG) - 5n;
+    const sigs = [...RUG.transactions].reverse().filter((t) => BigInt(t.slot) <= nodeSlot).map((t) => ({ signature: t.signature, slot: t.slot, err: null, blockTime: t.blockTime }));
+    const http = scriptedHttp(rpcHandler((method, params) => {
+      // Like a real node: a minContextSlot above what it has seen is an error, not a shorter answer.
+      if (method === 'getSignaturesForAddress') return BigInt((params[1] as { minContextSlot: number }).minContextSlot) > nodeSlot ? undefined : sigs;
+      const t = RUG.transactions.find((x) => x.signature === params[0]);
+      return t === undefined ? null : { slot: t.slot, blockTime: t.blockTime, transaction: t.transaction, meta: t.meta };
+    }));
+    const rpc = new RpcHttp({ provider: 'helius', url: () => 'https://rpc.test/?api-key=k', http, scheduler, timeoutMs: 1_000 });
+    const req = { creator: DEV, mints: [launch(RUG)], fromMs: 0, asOf: at(lastSlot(RUG) + 1n), asOfMs: launch(RUG).createdAtMs + 200_000 };
+    const run = checkDeployer(rpcHistorySource(rpc, P2), RUG_CONFIG, CFG, req, 0);
+    for (let k = 0; k < 20; k++) {
+      await settle();
+      timers.advance(200);
+    }
+    const r = await run;
+    expect(r.fact.mints[0]).toMatchObject({ status: 'unfetched', detail: expect.stringContaining('getSignaturesForAddress') });
+    // The same node, asked as of a slot it has seen, answers.
+    const ok = checkDeployer(rpcHistorySource(rpc, P2), RUG_CONFIG, CFG, { ...req, asOf: at(nodeSlot + 1n) }, 0);
+    for (let k = 0; k < 20; k++) {
+      await settle();
+      timers.advance(200);
+    }
+    expect((await ok).fact.mints[0]!.status).not.toBe('unfetched');
+  });
+});
+
 describe('cached supplement (backtest)', () => {
   const record = async () => {
     const f = fixtureSource([RUG, CLEAN]);
@@ -183,9 +214,9 @@ describe('cached supplement (backtest)', () => {
     const { sup } = await record();
     const src = supplementSource(sup, sup.manifest.sha256);
     const all = sup.signatures[RUG.mint]!;
-    expect((await src.signatures(RUG.mint, undefined, 2)).map((x) => x.signature)).toEqual([all[0]!.signature, all[1]!.signature]);
-    expect((await src.signatures(RUG.mint, all[1]!.signature, 1)).map((x) => x.signature)).toEqual([all[2]!.signature]);
-    await expect(src.signatures(RUG.mint, 'nope', 1)).rejects.toThrow(/holds no signature nope/);
+    expect((await src.signatures(RUG.mint, undefined, 2, 0n)).map((x) => x.signature)).toEqual([all[0]!.signature, all[1]!.signature]);
+    expect((await src.signatures(RUG.mint, all[1]!.signature, 1, 0n)).map((x) => x.signature)).toEqual([all[2]!.signature]);
+    await expect(src.signatures(RUG.mint, 'nope', 1, 0n)).rejects.toThrow(/holds no signature nope/);
   });
 
   it('refuses a file whose content does not match its manifest, or that is not the expected one', async () => {
@@ -231,7 +262,8 @@ describe('live source', () => {
     const r = await run;
     expect(r.fact.mints[0]!.status).toBe('rug');
     expect(scheduler.status().creditsUsed).toBe(r.fact.credits);
-    expect(seen[0]).toEqual(['getSignaturesForAddress', { commitment: 'confirmed', limit: 1_000 }]);
+    // Every page is asked of a node that has seen the slot before the as-of slot.
+    expect(seen[0]).toEqual(['getSignaturesForAddress', { commitment: 'confirmed', limit: 1_000, minContextSlot: Number(lastSlot(RUG)) }]);
     expect(seen.slice(1).every((x) => (x as [string, { commitment: string }])[1].commitment === 'confirmed')).toBe(true);
   });
 });

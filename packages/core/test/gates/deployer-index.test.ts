@@ -286,7 +286,7 @@ describe('on-demand deployer check (RUG-1c)', () => {
     return idx;
   };
   const check = (over: Partial<RugCheckFact> = {}, mints: RugCheckFact['mints'] = [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'clear', detail: '' }]): Row =>
-    [rugCheckKey(DEV), wrap({ obs: { provider: 'rug-check', slot: SLOT - 10n, receivedAt: T - 1_000, quality: [], commitment: 'confirmed' }, creator: DEV, version: 'rug-check-1', fromMs: T - 14 * DAY_MS, asOfMs: T - 5_000, mints, credits: 7, ...over }), at(T - 1_000, SLOT - 10n)];
+    [rugCheckKey(DEV), wrap({ obs: { provider: 'rug-check', slot: SLOT - 10n, receivedAt: T - 1_000, quality: [], commitment: 'confirmed' }, creator: DEV, version: 'rug-check-1', fromMs: T - 15 * DAY_MS, asOfMs: T - 5_000, mints, credits: 7, ...over }), at(T - 1_000, SLOT - 10n)];
   const h = (rows: Row[], idx = withPrior()) => evaluateHardRejects(contextWith(rows, noStream, NOW, idx), deps('live'), request(), { stopAtFirst: false });
 
   it('without stream coverage or a check, H14 is not covered', () => {
@@ -313,8 +313,9 @@ describe('on-demand deployer check (RUG-1c)', () => {
 
   it('a check for another deployer, from after the look-back start, too old, or in the future is not coverage', () => {
     expect(notCovered(h([check({ creator: W(9) })]))).toHaveLength(1);
-    expect(notCovered(h([check({ fromMs: T - 14 * DAY_MS + 1 })]))).toHaveLength(1);
-    expect(notCovered(h([check({ fromMs: T - 14 * DAY_MS - 1 })]))).toEqual([]);
+    // The check must list mints from one rug window (1 day) before the 14-day look-back.
+    expect(notCovered(h([check({ fromMs: T - 15 * DAY_MS + 1 })]))).toHaveLength(1);
+    expect(notCovered(h([check({ fromMs: T - 15 * DAY_MS })]))).toEqual([]);
     const lag = RUG_CHECK_CONFIG.maxLagSlots;
     const at = (slot: bigint) => check({ obs: { provider: 'rug-check', slot, receivedAt: T - 1_000, quality: [], commitment: 'confirmed' } });
     expect(notCovered(h([at(SLOT - BigInt(lag))]))).toEqual([]);
@@ -330,7 +331,7 @@ describe('on-demand deployer check (RUG-1c)', () => {
   it('the check needs neither the candidate itself nor mints from before the look-back', () => {
     const idx = withPrior();
     idx.observe(marketOf(`logs:pump:CreateEvent:${MINT}`, createEvent(MINT, DEV, CREATED_AT, SLOT - 20_000n), at(CREATED_AT, SLOT - 20_000n)));
-    idx.observe(marketOf('logs:pump:CreateEvent:Old', createEvent('Old', DEV, T - 15 * DAY_MS, SLOT - 3_240_000n), old(15)));
+    idx.observe(marketOf('logs:pump:CreateEvent:Old', createEvent('Old', DEV, T - 15 * DAY_MS - 1_000, SLOT - 3_240_000n), old(15)));
     expect(notCovered(h([check()], idx))).toEqual([]);
   });
 
@@ -362,6 +363,26 @@ describe('on-demand deployer check (RUG-1c)', () => {
     expect(notCovered(run([restart, check({ creator: W(9) }), [rugCheckKey(W(9)), wrap({}), at(T - 1_000, SLOT - 10n)]]))).toHaveLength(1);
     // A check that could not read every prior mint leaves this deployer not covered.
     expect(notCovered(run([restart, check({}, [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'unfetched', detail: 'credit cap 500 reached' }])]))).toHaveLength(1);
+  });
+
+  it('a mint launched less than one rug window before the look-back must be in the check: it could be labelled inside the look-back', () => {
+    const idx = withPrior();
+    // Launched 1 h before the 14-day look-back starts; the stream path would count a dump of it an hour later.
+    idx.observe(marketOf('logs:pump:CreateEvent:Edge', createEvent('Edge', DEV, T - 14 * DAY_MS - HOUR_MS, SLOT - 3_030_000n), old(14, -1n)));
+    expect(notCovered(h([check({ fromMs: T - 14 * DAY_MS })], idx))).toEqual([expect.objectContaining({ detail: expect.stringContaining('must list mints from') })]);
+    // Listed from early enough but without the edge mint: not covered either.
+    expect(notCovered(h([check()], idx))).toEqual([expect.objectContaining({ detail: expect.stringContaining('did not list Edge') })]);
+    const listed = check({ fromMs: T - 15 * DAY_MS }, [
+      { mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'clear', detail: '' },
+      { mint: 'Edge', createdAtMs: T - 14 * DAY_MS - HOUR_MS, status: 'rug', detail: 'creator-dump' },
+    ]);
+    const r = h([listed], idx);
+    expect(notCovered(r)).toEqual([]);
+    expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'prior-rug', detail: expect.stringContaining('Edge') }));
+    // A mint launched more than a window before the look-back cannot be labelled inside it and is not required.
+    const far = withPrior();
+    far.observe(marketOf('logs:pump:CreateEvent:Far', createEvent('Far', DEV, T - 16 * DAY_MS, SLOT - 3_456_000n), old(16)));
+    expect(notCovered(h([check({ fromMs: T - 15 * DAY_MS })], far))).toEqual([]);
   });
 
   it('the stream coverage, when present, is used and a check is not needed', () => {

@@ -82,7 +82,6 @@ export class RpcHttp {
     if (opts.minContextSlot !== undefined) cfg.minContextSlot = Number(opts.minContextSlot);
     if (opts.before !== undefined) cfg.before = opts.before;
     if (opts.until !== undefined) cfg.until = opts.until;
-    if (opts.before !== undefined) cfg.before = opts.before;
     const r = await this.call('getSignaturesForAddress', [address, cfg], priority);
     if (!Array.isArray(r)) throw new ProviderError(this.provider, 'shape', 'getSignaturesForAddress result is not an array');
     return r.map((x: unknown) => {

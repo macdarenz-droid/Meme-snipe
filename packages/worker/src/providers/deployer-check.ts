@@ -17,8 +17,11 @@ import { callCost, type RpcHttp, type SignatureInfo } from './solana-http.ts';
 /** Where history comes from. Each call costs `cost` credits, metered by the check. */
 export interface RugHistorySource {
   readonly cost: { readonly signatures: number; readonly transaction: number };
-  /** Up to `limit` signatures of `address`, newest first, older than `before` when given. */
-  signatures(address: string, before: string | undefined, limit: number): Promise<readonly SignatureInfo[]>;
+  /**
+   * Up to `limit` signatures of `address`, newest first, older than `before` when given, from a node that has seen at
+   * least `minContextSlot` (a node behind it must fail, not answer with a shorter history).
+   */
+  signatures(address: string, before: string | undefined, limit: number, minContextSlot: bigint): Promise<readonly SignatureInfo[]>;
   /** The confirmed transaction, or null when the source does not have it. */
   transaction(signature: string): Promise<TransactionRecord | null>;
 }
@@ -30,9 +33,9 @@ export interface PriorMint {
 
 export interface RugCheckRequest {
   readonly creator: string;
-  /** The deployer index's mints by this creator in the look-back, the candidate excepted. */
+  /** The deployer index's mints by this creator created from `fromMs` on, the candidate excepted. */
   readonly mints: readonly PriorMint[];
-  /** Start of H14's look-back. */
+  /** `rugCheckFromMs`: H14's look-back start less the rug windows, so every mint a label could date inside it is read. */
   readonly fromMs: number;
   /** Judge only what happened up to this moment (the decision's as-of point), whose chain time is `asOfMs`. */
   readonly asOf: Moment;
@@ -97,7 +100,8 @@ const judgeOne = async (
   const sigs: SignatureInfo[] = [];
   for (let before: string | undefined; ;) {
     spend(source.cost.signatures);
-    const page = await source.signatures(p.mint, before, PAGE);
+    // The node must have seen the slot before the as-of slot, or the history read could miss its last transactions.
+    const page = await source.signatures(p.mint, before, PAGE, req.asOf.slot - 1n);
     sigs.push(...page);
     const last = page.at(-1);
     if (page.length < PAGE || last === undefined) break;
@@ -132,7 +136,8 @@ const judgeOne = async (
 /** Live: the provider's RPC through FEED-1's quota scheduler, at `priority`. Costs are the provider's per-call credits. */
 export const rpcHistorySource = (rpc: RpcHttp, priority: Priority): RugHistorySource => ({
   cost: { signatures: callCost(rpc.provider, 'getSignaturesForAddress'), transaction: callCost(rpc.provider, 'getTransaction') },
-  signatures: (address, before, limit) => rpc.getSignaturesForAddress(address, before === undefined ? { limit } : { before, limit }, priority),
+  signatures: (address, before, limit, minContextSlot) =>
+    rpc.getSignaturesForAddress(address, before === undefined ? { limit, minContextSlot } : { before, limit, minContextSlot }, priority),
   transaction: (signature) => rpc.getTransaction(signature, priority),
 });
 
@@ -192,8 +197,8 @@ export class SupplementRecorder {
   get source(): RugHistorySource {
     return {
       cost: this.#inner.cost,
-      signatures: async (address, before, limit) => {
-        const page = await this.#inner.signatures(address, before, limit);
+      signatures: async (address, before, limit, minContextSlot) => {
+        const page = await this.#inner.signatures(address, before, limit, minContextSlot);
         const list = this.#signatures.get(address) ?? [];
         for (const x of page) if (!list.some((y) => y.signature === x.signature)) list.push({ signature: x.signature, slot: String(x.slot), err: x.err, blockTime: x.blockTime ?? null });
         this.#signatures.set(address, list);
