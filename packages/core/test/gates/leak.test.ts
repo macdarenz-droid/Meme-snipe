@@ -28,7 +28,7 @@ const run = (planted: boolean): ProofRun => {
     const mint = facts.get(mintKey(MINT))!.value as { account: object };
     events.push(
       later(mintKey(MINT), { ...mint, obs: streamObs({ slot: MARKER_AT.slot, receivedAt: MARKER_AT.receivedAt }), account: { ...mint.account, mintAuthority: TOKEN } }, 0),
-      later(holdersKey(MINT), { obs: obs({ slot: MARKER_AT.slot, receivedAt: MARKER_AT.receivedAt }), supply: 1_000_000_000_000_000n, coverage: 'all', accounts: [...holderAccounts(), { address: ACC('w'), owner: TOKEN, ownerProgram: null, amount: 250_000_000_000_000n }] }, 1),
+      later(holdersKey(MINT), { obs: obs({ slot: MARKER_AT.slot, receivedAt: MARKER_AT.receivedAt }), supply: 1_000_000_000_000_000n, coverage: 'all', accounts: [...holderAccounts(), { mint: MINT, address: ACC('w'), owner: TOKEN, ownerProgram: null, amount: 250_000_000_000_000n }] }, 1),
       later(deployerKey(DEV), { obs: streamObs({ slot: MARKER_AT.slot, receivedAt: MARKER_AT.receivedAt }), coverageFromMs: T - 30 * DAY_MS, mints: [], rugs: [{ mint: TOKEN, knownAtMs: T }] }, 2),
       later(SOL_USD_KEY, { obs: obs({ slot: MARKER_AT.slot, receivedAt: MARKER_AT.receivedAt }), points: [...solPoints(T, 72, (k) => (k === 0 ? 1n : 150_000_000n)), { tMs: T + HOUR_MS, price: 1n, note: TOKEN }] }, 3),
     );
