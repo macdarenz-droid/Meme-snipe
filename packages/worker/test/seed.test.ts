@@ -410,11 +410,13 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
   ];
   const NOW: Moment = { ...ASOF, slot: ASOF.slot + 100n, receivedAt: ASOF.receivedAt + 1_000 };
   /** Saved facts, then the fill's facts, then the restarted watch's new start, through an as-of store. */
-  const coveredAfter = (fill: readonly MarketEvent[], restartAt: Moment = { ...ASOF }) => {
+  /** `savedGap` replaces the saved open gap (its fromSlot and the moment it was reported). */
+  const coveredAfter = (fill: readonly MarketEvent[], restartAt: Moment = { ...ASOF }, savedGap?: { fromSlot: bigint; at: Moment }) => {
     const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: Number.MIN_SAFE_INTEGER });
     const store = new AsOfStore(clock);
     const restart: MarketEvent = { kind: 'market', id: 'restart-start', moment: restartAt, key: 'coverage:creates:start', value: wrapped({ fromSlot: UNTIL, via: VIA }) };
-    for (const e of [...saved, ...fill, restart].sort(compareEvents)) {
+    const base = savedGap === undefined ? saved : [saved[0]!, { ...saved[1]!, id: 'zz-saved-gap' /* sorts after the fill's ids: order must come from the moment */, moment: savedGap.at, value: wrapped({ fromSlot: savedGap.fromSlot, toSlot: null, reason: 'shutdown', via: VIA }) }];
+    for (const e of [...base, ...fill, restart].sort(compareEvents)) {
       clock.advanceTo(e.moment);
       store.record(e.key, e.value, e.moment, e.id);
     }
@@ -457,14 +459,56 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
     }
   });
 
-  it('a fill starting after untilSlot (failover, a node behind the saved state) is empty and complete: no RPC, a resume', async () => {
+  it('a fill whose saved gap starts after untilSlot (failover, a node behind the saved state) is empty and complete: no RPC, a resume', async () => {
     const rpc = fakeRpc(SIGS, byFixture);
     const liveStart: Moment = { slot: UNTIL, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt - 1_000 };
-    const seed = await buildSeed({ ...fillOpts({ liveStart }), rpc: { rpc, timers: instantTimers(), creditCap: 100, provider: 'helius' }, fill: { fromSlot: UNTIL + 3n, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM }, liveStart } });
-    expect(rpc.pages).toEqual([]);
-    expect(seed.report).toMatchObject({ mode: 'fill', gaps: [], rpc: null, creates: 0 });
-    expect(seed.coverage.map((e) => e.key)).toEqual(['coverage:creates:resume']);
+    // The saved state reached UNTIL+3; its open gap was reported there, after the restarted watch's start in order.
+    const at: Moment = { slot: UNTIL + 3n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt - 5_000 };
+    for (const close of [{ via: VIA, fromSlot: UNTIL + 3n, at }, { via: VIA, fromSlot: null, at }]) {
+      const seed = await buildSeed({ ...fillOpts({ liveStart }), rpc: { rpc, timers: instantTimers(), creditCap: 100, provider: 'helius' }, fill: { fromSlot: UNTIL + 3n, fromMs: DOWN_MS, close, liveStart } });
+      expect(rpc.pages).toEqual([]);
+      expect(seed.report).toMatchObject({ mode: 'fill', gaps: [], rpc: null, creates: 0 });
+      expect(seed.coverage.map((e) => e.key)).toEqual(['coverage:creates:resume']);
+      expect(coveredAfter(seed.coverage, liveStart, { fromSlot: close.fromSlot ?? UNTIL + 3n, at }).covered).toBe(close.fromSlot !== null);
+    }
+  });
+
+  it('the fetch starts at the saved open gap\'s start when it is older than fill.fromSlot: no unfetched slot is restored', async () => {
+    const liveStart: Moment = { slot: UNTIL, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt - 1_000 };
+    const later = DOWN_FROM + 100n;
+    const seed = await buildSeed({ ...fillOpts({ liveStart }), fill: { fromSlot: later, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM }, liveStart } });
+    expect(seed.report.rpc?.fromSlot).toBe(DOWN_FROM);
     expect(coveredAfter(seed.coverage, liveStart).covered).toBe(true);
+    // Its history ends between the two: not covered.
+    const cut = await buildSeed({
+      ...fillOpts({ liveStart }), rpc: { rpc: fakeRpc(SIGS.filter((x) => x.slot > later || x.slot === UNTIL + 1n || x.slot === UNTIL), byFixture), timers: instantTimers(), creditCap: 100, provider: 'helius' },
+      fill: { fromSlot: later, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM }, liveStart },
+    });
+    expect(cut.report.rpc?.result.stoppedBy).toBe('history-end');
+    expect(coveredAfter(cut.coverage, liveStart).covered).toBe(false);
+  });
+
+  it('an "empty" fill whose saved gap starts by untilSlot still fetches that range', async () => {
+    const liveStart: Moment = { slot: UNTIL, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt - 1_000 };
+    const rpc = fakeRpc(SIGS, byFixture);
+    const seed = await buildSeed({ ...fillOpts({ liveStart }), rpc: { rpc, timers: instantTimers(), creditCap: 100, provider: 'helius' }, fill: { fromSlot: UNTIL + 3n, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM }, liveStart } });
+    expect(rpc.pages.length).toBeGreaterThan(0);
+    expect(seed.report.rpc?.fromSlot).toBe(DOWN_FROM);
+    expect(coveredAfter(seed.coverage, liveStart).covered).toBe(true);
+    // Without RPC it is a gap, not a resume.
+    const none = await buildSeed({ ...fillOpts({ rpc: false, liveStart }), fill: { fromSlot: UNTIL + 3n, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM }, liveStart } });
+    expect(none.coverage.at(-1)!.key).toBe('coverage:creates:gap');
+    expect(coveredAfter(none.coverage, liveStart).covered).toBe(false);
+  });
+
+  it('a live start placed below the saved gap\'s opening: without close.at the gap stays open (fail safe); with it the close follows the gap', async () => {
+    const liveStart: Moment = { slot: DOWN_FROM - 1n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS - 1 };
+    const seed = await buildSeed(fillOpts({ liveStart }));
+    expect(coveredAfter(seed.coverage, liveStart).covered).toBe(false);
+    const at: Moment = { slot: DOWN_FROM, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS };
+    const withAt = await buildSeed({ ...fillOpts({ liveStart }), fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM, at }, liveStart } });
+    expect(compareEvents(withAt.coverage.at(-1)!, { moment: at, id: 'saved-gap' })).toBeGreaterThan(0);
+    expect(coveredAfter(withAt.coverage, liveStart, { fromSlot: DOWN_FROM, at }).covered).toBe(true);
   });
 
   it('an incomplete fill leaves bounded gaps and closes the saved gap as lossy: not covered', async () => {
