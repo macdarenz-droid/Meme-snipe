@@ -1,12 +1,15 @@
 import { useMemo, useState } from 'react';
-import { defaultApi } from '../api/client.ts';
+import { apiFor } from '../api/client.ts';
+import { connection, useConnection } from '../api/connection.ts';
 import type { DashboardApi, Mode } from '../api/contract.ts';
 import { isMode } from '../api/modes.ts';
 import { Badge, Empty, Section } from '../components/ui.tsx';
 import { Dashboard } from '../dashboard/Dashboard.tsx';
+import { OfflineContext } from '../dashboard/State.tsx';
 import { ModeSwitch } from '../dashboard/Sections.tsx';
 import { formatUsd } from '../lib/format.ts';
 import { sessionLabel } from '../shell/Status.tsx';
+import { ServerCard } from './Server.tsx';
 import { EMPTY_SESSION, type SessionView } from './types.ts';
 
 const NOT_SET = 'Not set';
@@ -63,6 +66,7 @@ function saveMode(m: Mode): void {
 
 interface SnipeProps {
   session?: SessionView;
+  /** Sample data (Samples screen). Without it the screens read the saved server. */
   api?: DashboardApi;
   /** First calendar month per mode (Samples screen). */
   months?: Partial<Record<Mode, string>>;
@@ -70,7 +74,9 @@ interface SnipeProps {
 
 export function Snipe({ session = EMPTY_SESSION, api, months }: SnipeProps) {
   const [mode, setMode] = useState<Mode>(() => savedMode(session.mode));
-  const source = useMemo(() => api ?? defaultApi(), [api]);
+  const conn = useConnection();
+  const { origin } = conn;
+  const source = useMemo(() => api ?? apiFor(origin, connection()), [api, origin]);
   const change = (m: Mode) => {
     setMode(m);
     saveMode(m);
@@ -85,10 +91,13 @@ export function Snipe({ session = EMPTY_SESSION, api, months }: SnipeProps) {
     );
   return (
     <div className="screen-grid">
+      {!api && <ServerCard />}
       <div className="span-2 dash-toolbar">
         <ModeSwitch mode={mode} onChange={change} />
       </div>
-      <Dashboard key={mode} api={source} mode={mode} session={sessionCard} {...(months ? { months } : {})} />
+      <OfflineContext.Provider value={{ state: conn.state, lastOk: conn.lastOk }}>
+        <Dashboard key={`${api ? 'sample' : (origin ?? 'none')}|${mode}`} api={source} mode={mode} session={sessionCard} {...(months ? { months } : {})} />
+      </OfflineContext.Provider>
     </div>
   );
 }

@@ -58,6 +58,11 @@ export interface WatchOptions {
    * uncovered instead of counting fewer events.
    */
   readonly coverage?: string;
+  /**
+   * Subscribe at `confirmed` instead of `processed` (FACTS-1: a pool's trade stream for candles, which the gates refuse
+   * at processed). The log frames then say so, and their events carry `commitment: 'confirmed'`.
+   */
+  readonly commitment?: 'confirmed';
 }
 
 interface CoverageGap {
@@ -154,7 +159,7 @@ export class RpcStream {
     if (!isAddress(address)) throw new RangeError('logs watch needs a base58 address');
     const w: Watch = { kind: 'logs', address, opts, priority: opts.priority, handle: 0, lastSignature: null, acked: false, started: false, startPending: false, gap: null, lastLogSlot: null, startSlot: null };
     return this.#add(w, {
-      method: 'logsSubscribe', params: [{ mentions: [address] }, { commitment: 'processed' }], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification',
+      method: 'logsSubscribe', params: [{ mentions: [address] }, { commitment: opts.commitment ?? 'processed' }], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification',
       onNotify: (r) => {
         if (!isObj(r) || !isObj(r.context) || !isObj(r.value)) return;
         const slot = slotOf(r.context.slot);
@@ -167,7 +172,7 @@ export class RpcStream {
         this.#seen(address, signature, slot, err, opts, false);
         const lines = r.value.logs;
         if (opts.decodeLogs === true && Array.isArray(lines) && lines.every((l) => typeof l === 'string')) {
-          this.#o.feed.ingest(this.provider, { type: 'logs', signature, slot, err, via: `logs:${address}`, logs: lines as string[] }, { receivedAt: this.#o.timers.now() });
+          this.#o.feed.ingest(this.provider, { type: 'logs', signature, slot, err, via: `logs:${address}`, logs: lines as string[], ...(opts.commitment === undefined ? {} : { commitment: opts.commitment }) }, { receivedAt: this.#o.timers.now() });
         }
       },
     });

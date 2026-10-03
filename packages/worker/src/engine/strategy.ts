@@ -659,6 +659,9 @@ export class LiveStrategy implements Strategy {
         status: p.status, quantity: p.quantity, sold: p.sold, costBasis: p.cost + entryFees + exitFees, realized,
         exitCost: n.signaturesPerTx * n.baseFeePerSignature + this.#d.session.policy.exits.ladder.steps[0]!.priorityFeeLamports + n.tip,
         exitSeq: p.exitSeq, exitAttempts: exitAttemptsOf(ctx.book.intents, p.id),
+        // Paper: the paper wallet's token account holds exactly our tokens, and a paper sell-and-close never fails at
+        // the close (no dust or outside transfer exists in the paper world).
+        tokenAccountBalance: p.quantity, closeFailed: false,
       };
       const m = this.#market(ctx, p.mint);
       if (typeof m !== 'string' && p.quantity > 0n) {

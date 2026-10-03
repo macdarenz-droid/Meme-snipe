@@ -100,7 +100,7 @@ describe('regime gate', () => {
     const base = run(passingFacts());
     const withFuture = patch(passingFacts(), SOL_USD_KEY, { points: [...solPoints(T, 72), { tMs: T + HOUR_MS, price: 1n }] });
     expect(run(withFuture)).toEqual(base);
-    const futureVolume = patch(passingFacts(), CURVE_VOLUME_KEY, { days: [...volumeDays(Math.floor(T / DAY_MS) - 1, 400), { day: Math.floor(T / DAY_MS), volumeUsd: 1n }] });
+    const futureVolume = patch(passingFacts(), CURVE_VOLUME_KEY, { days: [...volumeDays(Math.floor(T / DAY_MS) - 1, 400), { day: Math.floor(T / DAY_MS), volumeLamports: 1n }] });
     expect(run(futureVolume)).toEqual(base);
     const g = passingFacts().get(GRADUATES_KEY)!.value as { items: unknown[] };
     const futureGrad = patch(passingFacts(), GRADUATES_KEY, { items: [...g.items, { mint: 'late', migratedAtMs: T, reserveAfter: 0n }] });

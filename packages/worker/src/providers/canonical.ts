@@ -16,7 +16,7 @@ import type { FeedEvent, Moment } from '../../../core/src/engine/index.ts';
 import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import type { BookEvent } from '../../../core/src/lifecycle/index.ts';
 
-export type Source = 'helius' | 'alchemy' | 'pumpportal' | 'helius-parsed' | 'jupiter' | 'rugcheck' | 'coinbase' | 'worker';
+export type Source = 'helius' | 'alchemy' | 'pumpportal' | 'helius-parsed' | 'jupiter' | 'rugcheck' | 'goplus' | 'coinbase' | 'worker';
 
 /** Above any real position in a block, below the indices reserved for accounts and off-chain facts. */
 export const LIVE_TX_BASE = 2 ** 32;
@@ -48,7 +48,7 @@ export type FrameBody =
    * The log lines of a `logsSubscribe` notification, kept for watches that read events from them (the creates
    * stream: creator, mint and slot at no RPC cost). Read only by DEC-1's `logEvents`.
    */
-  | { readonly type: 'logs'; readonly signature: string; readonly slot: bigint; readonly err: unknown; readonly via: string; readonly logs: readonly string[] }
+  | { readonly type: 'logs'; readonly signature: string; readonly slot: bigint; readonly err: unknown; readonly via: string; readonly logs: readonly string[]; readonly commitment?: 'confirmed' }
   /** A full transaction, decoded only by DEC-1's `transactionEvents`. */
   | { readonly type: 'tx'; readonly record: TransactionRecord }
   /** An account state (`accountSubscribe`, or `getAccountInfo` after a reconnect). */
@@ -97,7 +97,8 @@ export const dedupKey = (b: FrameBody): string | null => {
   switch (b.type) {
     case 'slot': return `slot:${b.slot}`;
     case 'seen': return `seen:${b.signature}`;
-    case 'logs': return `logs:${b.signature}`;
+    // A confirmed watch's copy is a different fact from a processed one: the stronger commitment is kept apart.
+    case 'logs': return b.commitment === undefined ? `logs:${b.signature}` : `logs:${b.signature}:${b.commitment}`;
     case 'tx': return `tx:${b.record.signature}`;
     case 'account': return `acct:${b.address}:${b.slot}:${b.lamports}:${toBase64(b.data)}`;
     default: return null;
@@ -162,24 +163,26 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
         key: `seen:${b.via}`, value: { signature: b.signature, slot: b.slot, err: b.err, via: b.via, detail: b.detail, ...meta(f) },
       }];
     case 'logs': {
+      // A confirmed watch's copy of a transaction already seen at processed is its own event: ids keep them apart.
+      const cs = b.commitment === undefined ? '' : `:${b.commitment}`;
       // DEC-1's log reader: a failed transaction yields none; a cut log is reported, never guessed past.
       let read: ReturnType<typeof logEvents>;
       try {
         read = logEvents(b.logs, b.err);
       } catch (e) {
-        return [{ kind: 'market', id: `log:${b.signature}:undecodable${sfx}`, moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: LOG_IX_BASE, receivedAt: f.receivedAt } : off, key: `logs:undecodable:${b.via}`, value: { signature: b.signature, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) } }];
+        return [{ kind: 'market', id: `log:${b.signature}${cs}:undecodable${sfx}`, moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: LOG_IX_BASE, receivedAt: f.receivedAt } : off, key: `logs:undecodable:${b.via}`, value: { signature: b.signature, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) } }];
       }
       const events: FeedEvent[] = read.events.map((e): FeedEvent => {
         const subject = e.name === 'other' ? e.program : ('mint' in e.data ? e.data.mint : 'pool' in e.data ? e.data.pool : e.program);
         return {
-          kind: 'market', id: `log:${b.signature}:${pad(e.logIndex)}${sfx}`,
+          kind: 'market', id: `log:${b.signature}${cs}:${pad(e.logIndex)}${sfx}`,
           moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: LOG_IX_BASE + e.logIndex, receivedAt: f.receivedAt } : off,
           key: `logs:${e.program}:${e.name}:${subject}`,
-          value: { event: e, signature: b.signature, txSlot: b.slot, truncated: read.truncated, via: b.via, ...meta(f) },
+          value: { event: e, signature: b.signature, txSlot: b.slot, truncated: read.truncated, via: b.via, ...(b.commitment === undefined ? {} : { commitment: b.commitment }), ...meta(f) },
         };
       });
       if (read.truncated && events.length === 0) {
-        events.push({ kind: 'market', id: `log:${b.signature}:truncated${sfx}`, moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: LOG_IX_BASE, receivedAt: f.receivedAt } : off, key: `logs:truncated:${b.via}`, value: { signature: b.signature, ...meta(f) } });
+        events.push({ kind: 'market', id: `log:${b.signature}${cs}:truncated${sfx}`, moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: LOG_IX_BASE, receivedAt: f.receivedAt } : off, key: `logs:truncated:${b.via}`, value: { signature: b.signature, ...meta(f) } });
       }
       return events;
     }
