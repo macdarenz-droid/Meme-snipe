@@ -2,10 +2,11 @@
 // every kind of tampering fails at the first differing row; the file is never written; the output is deterministic.
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { positionId, type IntentId } from '../../src/domain/index.ts';
 import { canonical, replayOnce } from '../../src/engine/index.ts';
 import type { BookEvent } from '../../src/lifecycle/index.ts';
@@ -22,13 +23,45 @@ const E1 = 'e1' as IntentId;
 const X1 = 'x1' as IntentId;
 const P1 = positionId('p1');
 
-/** A ledger written from an ENG-1 engine run: the stub strategy walks entries and exits through the stub world. */
-const engineLedger = (purpose: LedgerPurpose = 'backtest', slots = 600, seed = 'replay-ledger'): string => {
+/** Builds a ledger written from an ENG-1 engine run: the stub strategy walks entries and exits through the stub world. */
+const buildEngineLedger = (path: string, purpose: LedgerPurpose, slots: number, seed: string): void => {
   const { records } = replayOnce(stubRun(generateStream(seed, slots)));
-  const path = tempPath();
   const ledger = openLedger(path, purpose);
   recordEvents(ledger, appliedEvents(records), CONFIG);
   ledger.close();
+};
+
+// The engine run is the heavy part, and tests tamper with their file. Each distinct run is built once into a
+// template (the same seed gives the same bytes) and every call gets its own copy.
+// Budget: about 0.6 s per run locally; under a contended CI runner (stats-g2 running alongside) a test that
+// built its own ledger took up to 5.5 s. The setup hook gets 60 s, about 10 times that worst case.
+const SETUP_TIMEOUT_MS = 60_000;
+const templateDir = mkdtempSync(join(tmpdir(), 'zeroed-replay-templates-'));
+const templates = new Map<string, string>();
+const templateOf = (purpose: LedgerPurpose, slots: number, seed: string): string => {
+  const key = `${purpose}|${slots}|${seed}`;
+  let path = templates.get(key);
+  if (path === undefined) {
+    path = join(templateDir, `${templates.size}.db`);
+    buildEngineLedger(path, purpose, slots, seed);
+    templates.set(key, path);
+  }
+  return path;
+};
+beforeAll(() => {
+  templateOf('backtest', 600, 'replay-ledger');
+  templateOf('paper', 600, 'replay-ledger');
+}, SETUP_TIMEOUT_MS);
+afterAll(() => rmSync(templateDir, { recursive: true, force: true }));
+
+const engineLedger = (purpose: LedgerPurpose = 'backtest', slots = 600, seed = 'replay-ledger'): string => {
+  const path = tempPath();
+  const template = templateOf(purpose, slots, seed);
+  copyFileSync(template, path);
+  // The writer leaves sidecar files next to the database (-wal, -shm, -writer.lock); one test checks them.
+  for (const suffix of ['-wal', '-shm', '-writer.lock']) {
+    if (existsSync(template + suffix)) copyFileSync(template + suffix, path + suffix);
+  }
   return path;
 };
 
