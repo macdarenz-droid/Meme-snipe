@@ -435,7 +435,7 @@ describe('install.sh --update', () => {
       expect(r.calls).not.toContain('evil');
       const ok = (p: string) => sh(`MANAGED_ROOT=""; ${fns.slice(fns.indexOf('managed() {'), fns.indexOf('journal() {'))} managed "${p}" && echo y || echo n`).out;
       expect(['/usr/local/sbin/zeroed-update', '/usr/local/lib/zeroed/common.sh', '/usr/local/share/zeroed/eff_large_wordlist.txt', '/usr/local/bin/node', '/etc/systemd/system/zeroed-check.timer', '/etc/zeroed/host.env', '/etc/nftables.conf', '/etc/apt/apt.conf.d/52zeroed-unattended-upgrades', '/etc/ssh/sshd_config.d/10-zeroed.conf', '/var/lib/zeroed-host/release-units', '/opt/zeroed/stub/worker.mjs'].map(ok)).toEqual(Array(11).fill('y'));
-      expect(['/etc/passwd', '/usr/local/sbin/sshd', '/usr/local/bin/nodejs', '/etc/systemd/system/ssh.service', '/etc/zeroed/../shadow', '/opt/zeroed/./x', '/root/.ssh/authorized_keys', '/etc/nftables.conf.d/x'].map(ok)).toEqual(Array(8).fill('n'));
+      expect(['/etc/passwd', '/usr/local/sbin/sshd', '/usr/local/bin/nodejs', '/etc/systemd/system/ssh.service', '/etc/zeroed/../shadow', '/opt/zeroed/./x', '/root/.ssh/authorized_keys', '/etc/nftables.conf.d/x', '/etc/zeroed/age/host.key', '/etc/zeroed/age', '/etc/zeroed/gnupg/pubring.kbx'].map(ok)).toEqual(Array(11).fill('n'));
       // Every path the installer writes is one it manages.
       const targets = [...read('ops/install.sh').matchAll(/^install_file (\S+) /gm)].map((m) => m[1]!);
       expect(targets.length).toBeGreaterThan(30);

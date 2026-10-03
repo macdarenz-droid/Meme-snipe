@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/e9cdb0312b265590ea4411b879c5bc84a59865de/ops/install.sh -o i && echo '75b191769725e91228934a09c9ea0fe7c9786545c2044e9760ea8bc6d39ccfa9  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/e9cdb0312b265590ea4411b879c5bc84a59865de/ops/install.sh -o i && echo '7a93e88f2a4a113fc6b07825f4e65df97d628e822d79dcdb9c1c9b4ba4308caa  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/e9cdb031
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `75b191769725e91228934a09c9ea0fe7c9786545c2044e9760ea8bc6d39ccfa9`
+SHA-256 of `install.sh`: `7a93e88f2a4a113fc6b07825f4e65df97d628e822d79dcdb9c1c9b4ba4308caa`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
