@@ -44,7 +44,7 @@ export function Wallet() {
       <Section title="History" className="span-2">
         <Empty title="No transactions" />
       </Section>
-      <FundingSheet kind={funding} onClose={close} savedWallet={null} botWallet={null} />
+      <FundingSheet kind={funding} onClose={close} savedWallet={null} botWallet={null} gatePassed={false} />
     </div>
   );
 }

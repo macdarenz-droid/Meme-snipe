@@ -10,9 +10,11 @@ interface Props {
   /** The owner's saved wallet; Withdraw sends nowhere else. Null until set. */
   savedWallet: string | null;
   botWallet: string | null;
+  /** CLAUDE.md "No deposit before proof": no deposit address until the pre-funding gate passes. */
+  gatePassed: boolean;
 }
 
-export function FundingSheet({ kind, onClose, savedWallet, botWallet }: Props) {
+export function FundingSheet({ kind, onClose, savedWallet, botWallet, gatePassed }: Props) {
   const [exchange, setExchange] = useState<ExchangeId>('ir');
   const [shownKind, setShownKind] = useState<FundingKind>('deposit');
   if (kind && kind !== shownKind) setShownKind(kind);
@@ -29,10 +31,16 @@ export function FundingSheet({ kind, onClose, savedWallet, botWallet }: Props) {
       footer={<p className="muted small">Fees checked {FEES_CHECKED}</p>}
     >
       {shownKind === 'deposit' ? (
-        <div className="field-block">
-          <span className="field-label">Bot wallet</span>
-          <span className={botWallet ? 'mono' : 'muted'}>{botWallet ?? 'Not created'}</span>
-        </div>
+        <>
+          <div className="field-block">
+            <span className="field-label">Pre-funding gate</span>
+            <span className={gatePassed ? '' : 'muted'}>{gatePassed ? 'Passed' : 'Not passed'}</span>
+          </div>
+          <div className="field-block">
+            <span className="field-label">Bot wallet</span>
+            <span className={botWallet && gatePassed ? 'mono' : 'muted'}>{gatePassed ? (botWallet ?? 'Not created') : 'Shown after the gate passes'}</span>
+          </div>
+        </>
       ) : (
         <div className="withdraw-form">
           <div className="field-block">
