@@ -327,7 +327,8 @@ def simulate(sig, series, events_by_wm, delay, q, exit_rule, optimistic=False):
     tok = dT * (1 - ADVERSE)
 
     def with_us(state):
-        return (state[0], state[1] + dS, state[2] - dT, state[3]) if state[0] == v0 else state
+        # proportional footprint: stays valid if liquidity is later pulled (an additive offset can exceed a drained pool)
+        return (state[0], state[1] * (1 + dS / S0), state[2] * (1 - dT / T0_), state[3]) if state[0] == v0 else state
     entry_mid = mid(with_us(st))
     lead_px = lsol / ltok if ltok else 0
     our_px = q / tok if tok else 0
@@ -415,10 +416,11 @@ def replay(path):
 
 def sol_usd():
     try:
-        r = json.load(urllib.request.urlopen('https://lite-api.jup.ag/price/v3?ids=' + WSOL, timeout=30))
-        return r[WSOL]['usdPrice']
-    except Exception:
-        return 119.38  # RES-1 value; only used if Jupiter is unreachable
+        req = urllib.request.Request('https://lite-api.jup.ag/price/v3?ids=' + WSOL, headers={'user-agent': 'Mozilla/5.0'})  # urllib's default agent gets 403
+        return json.load(urllib.request.urlopen(req, timeout=30))[WSOL]['usdPrice']
+    except Exception as e:
+        print('SOL price fetch failed, using RES-1 value 119.38:', e)
+        return 119.38
 
 
 def main():
