@@ -26,6 +26,7 @@ import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, openIntents } from './desk.ts';
+import type { FactContext, FactSource } from './facts.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { jsonText } from './json.ts';
@@ -62,6 +63,10 @@ export interface WorkerDeps {
   readonly timers: Timers;
   /** Builds the live sources on the feed (tests pass scripted ones). Started only after the reconcile. */
   readonly sources: (ctx: SourcesContext) => readonly FeedSource[];
+  /** Live fact producers (FACTS-1, RUG-1c): started after the reconcile and the deployer seed, before the feeds. */
+  readonly facts?: readonly FactSource[];
+  /** The provider schedulers producers must use. */
+  readonly schedulers?: FactContext['schedulers'];
   /** TEST-2's dryRunTrade for one leg (used when simulation is on). */
   readonly simulate: (leg: SimLeg) => Promise<DryRunRecord>;
   /**
@@ -455,6 +460,14 @@ export class Worker {
     } catch (e) {
       d.log(`Deployer index seed failed (${e instanceof Error ? e.name : 'error'}); H14 stays uncovered until the look-back passes.`);
     }
+    if (d.facts !== undefined && d.facts.length > 0) {
+      if (d.schedulers === undefined) return { ok: false, code: EXIT.config, message: 'fact producers need the provider schedulers' };
+      const ctx: FactContext = {
+        sink: { fact: (key, value) => this.#fact(key, value), now: () => d.timers.now() },
+        timers: d.timers, schedulers: d.schedulers, watched: () => this.#strategy.watched(),
+      };
+      for (const f of d.facts) f.start(ctx);
+    }
     this.#sources = d.sources({ feed: this.#feed, timers: d.timers });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
     try {
@@ -570,6 +583,7 @@ export class Worker {
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
     for (const s of this.#sources) s.stop();
+    for (const f of d.facts ?? []) f.stop();
     const pending = [...this.#world.pending.values()];
     if (pending.length > 0) {
       await Promise.race([Promise.allSettled(pending), new Promise<void>((r) => d.timers.setTimeout(r, 10_000))]);

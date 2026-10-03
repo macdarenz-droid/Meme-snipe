@@ -21,6 +21,7 @@ import { DEFAULT_LIVE_FEED, LiveFeed } from '../src/providers/index.ts';
 import { HELIUS_FREE } from '../src/scheduler/index.ts';
 import { parseConfig } from '../src/run/config.ts';
 import { Desk } from '../src/run/desk.ts';
+import type { FactContext } from '../src/run/facts.ts';
 import { Journal } from '../src/run/journal.ts';
 import { CreditBook } from '../src/run/sources.ts';
 import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
@@ -339,6 +340,21 @@ describe('a cut trade log on a rug-covered stream (RUG-1 wiring rule)', () => {
     const off = await run(false, false);
     expect(off.fetched).toEqual([]);
     expect(off.gaps).toEqual([]);
+  });
+});
+
+describe('the FactSource hook (FACTS-1 plugs in here)', () => {
+  it('starts each producer after the reconcile and the seed, before the feeds; its facts reach the engine as of receipt', async () => {
+    let ctx: FactContext | null = null;
+    const h = makeWorker({ config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18796' }, facts: [{ name: 'test', start: (c) => void (ctx = c), stop: () => undefined }] });
+    expect(await h.worker.start()).toEqual({ ok: true });
+    expect(ctx).not.toBeNull();
+    const c = ctx as unknown as FactContext;
+    expect(c.schedulers.helius.spec.provider).toBe('helius');
+    c.sink.fact(migrationKey(MINT), { obs: { provider: 'test', slot: null, receivedAt: c.sink.now(), quality: [], commitment: 'confirmed' }, graduatedAtMs: T, migratedAtMs: T, pool: MINT, quoteAtMigration: 1n, price: { quote: 1n, base: 1n } });
+    await new Market(h).run(3_000);
+    expect(c.watched().has(MINT)).toBe(true);
+    await h.worker.stop();
   });
 });
 

@@ -163,6 +163,13 @@ export class LiveStrategy implements Strategy {
     return out;
   }
 
+  /** Mints that need live facts: candidates in their window and every position not closed. */
+  watched(): Set<string> {
+    const out = new Set(this.#cands.keys());
+    for (const pid of this.#exits.keys()) out.add(this.#mintOf(pid));
+    return out;
+  }
+
   get deployers(): DeployerIndex {
     return this.#deployers;
   }
