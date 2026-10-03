@@ -90,12 +90,11 @@ const FOLDER_BANS: Readonly<Record<string, ReadonlySet<string>>> = {
  */
 const EXEMPTIONS: readonly { readonly folder: string; readonly allow: ReadonlySet<string>; readonly why: string }[] = [
   { folder: 'ledger', allow: new Set(['node:sqlite']), why: 'LEDGER-1: append-only SQLite ledger and its scoring reader' },
-  { folder: 'config', allow: new Set(['constructor']), why: 'CFG-1: names prototype-polluting keys so a loaded policy can refuse them' },
 ];
 
 /** String literals that name a banned thing: computed access (`Math['random']`), `Reflect.get`, or a module import. */
 const BANNED_STRINGS = new Set([
-  ...BANNED_IDENTIFIERS, 'now', 'constructor', 'Date', 'Math', 'timeOrigin', 'nextTick', 'hrtime', 'env',
+  ...BANNED_IDENTIFIERS, 'now', 'Date', 'Math', 'timeOrigin', 'nextTick', 'hrtime', 'env',
   ...IO_MODULES, ...IO_MODULES.map((m) => `node:${m}`),
 ]);
 
@@ -232,6 +231,14 @@ const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans
       found.push('property descriptor of a global');
     }
     if (t.type === 'str' && BANNED_STRINGS.has(t.value) && !allow.has(t.value)) found.push(`string '${t.value}'`);
+    // `x['constructor']` reaches the Function constructor; a 'constructor' in a plain data list (a set of
+    // keys to refuse) is not an access and stays legal. Computed spellings are left to the runtime trap.
+    if ((t.type === 'str' || t.type === 'template') && t.value === 'constructor' && prev?.value === '[' && next?.value === ']') {
+      const before = tokens[k - 2];
+      if (before !== undefined && (before.type === 'id' || before.type === 'str' || before.type === 'template' || before.value === ')' || before.value === ']' || before.value === '?.')) {
+        found.push("['constructor'] access");
+      }
+    }
     if ((t.type === 'str' || t.type === 'template') && !OUTCOME_FOLDERS.has(context.folder) && OUTCOME_PATH.test(t.value)) found.push('reaches into the outcome side');
 
   });
@@ -344,6 +351,11 @@ describe('purity guard', () => {
       "const g = globalThis['Date'];",
       "(() => 0).constructor('return Date.n' + 'ow()')();",
       "eval('1');",
+      "((() => 0) as never)['constructor']('return Date.n' + 'ow()')();",
+      "const f = obj['constructor'];",
+      "const f = obj?.['constructor'];",
+      'const f = obj[`constructor`];',
+      "const F = Function; const g = new Function('return 1');",
       'const re = /a\\//; const t = Date.now();',
       'const re = /[/]/; const t = Date.now();',
       'const t = `${Date.now()}`;',
@@ -393,6 +405,8 @@ describe('purity guard', () => {
       'const where = db.location();',
       'const o = { self: 1, location: 2 };',
       'class C { #window = 1; }',
+      "const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);",
+      "const keys = ['constructor'];",
       'const q = arr[i]! / (z + i); const t = 1;',
       'const q = f(x)! / 2;',
     ];
@@ -463,6 +477,13 @@ describe('purity guard', () => {
     // The real tree, adapters included.
     const real = new Map(allSourceFiles(SRC).map((f) => [f, readFileSync(f, 'utf8')] as const));
     expect(outcomeReaches(real)).toEqual([]);
+  });
+
+  it('config/ has no exemption: the Function constructor escape is flagged there too', () => {
+    const cfg = join(SRC, 'config', 'zz_fn.ts');
+    const probe = "export const t = ((() => 0) as never)['constructor']('return Date.n' + 'ow()')();";
+    expect(scan(probe, allowedFor(cfg), folderBansFor(cfg), { folder: 'config' })).not.toEqual([]);
+    expect(EXEMPTIONS.some((e) => e.folder === 'config')).toBe(false);
   });
 
   it('the engine folder also bans asynchronous code', () => {
