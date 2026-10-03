@@ -400,3 +400,32 @@ describe('review round 1 blockers', () => {
     expect(reasonsOf(f)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: 'H12' }));
   });
 });
+
+describe('review round 2 blockers', () => {
+  it('a locker-owned 40% balance is a holder and rejects under H12, with a note', () => {
+    const locker = { address: ACC('locker40'), owner: ACC('locker-pda'), ownerProgram: 'LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE', amount: ((SUPPLY - 700_000_000_000_000n) * 2n) / 5n + 1n };
+    const r = run(patch(passingFacts(), holdersKey(MINT), { accounts: [...holderAccounts(), locker] }), 'live', request(), true);
+    expect(codesFor(r.reasons, 'H12')).toContain('hard-holder');
+    expect(r.notes).toContainEqual(expect.objectContaining({ gate: 'H12', code: 'locker-holder' }));
+  });
+
+  it('top 10 at exactly 30% of circulating passes; one unit more rejects', () => {
+    const vault = 700_000_000_000_000n + ((SUPPLY - 700_000_000_000_000n) % 10n);
+    const circulating = SUPPLY - vault;
+    const top = (circulating * 3n) / 10n;
+    const each = top / 10n;
+    const build = (extra: bigint) => {
+      let i = 0;
+      return holderAccounts().map((a) => {
+        if (a.owner === POOL_ADDRESS) return { ...a, amount: vault };
+        if (a.owner === DEV) return { ...a, amount: 1n };
+        const k = i++;
+        if (k >= 10) return { ...a, amount: 1_000_000n };
+        return { ...a, amount: k === 0 ? each + (top - each * 10n) + extra : each };
+      });
+    };
+    expect(codesFor(reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: build(0n) })), 'H12')).toEqual([]);
+    const over = reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: build(1n) }));
+    expect(over).toContainEqual(expect.objectContaining({ gate: 'H12', code: 'top10', value: '3001', limit: '3000' }));
+  });
+});

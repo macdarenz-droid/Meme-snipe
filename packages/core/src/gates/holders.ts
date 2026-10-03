@@ -14,23 +14,28 @@ export const MAYHEM_PROGRAM = 'MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e' as A
 export const MAYHEM_VAULT_OWNER = findProgramAddress(['sol-vault'], MAYHEM_PROGRAM).address;
 /** Tokens sent here are gone but still count in supply, so they are subtracted. */
 export const INCINERATOR = '1nc1nerator11111111111111111111111111111111' as Address;
-/** Raydium Burn & Earn locker: an escrow with no withdraw instruction (docs/research/safety.md §2.3). */
+/**
+ * Raydium Burn & Earn locker. It escrows LP tokens and position NFTs, not a coin's own tokens, and its immutability is
+ * unproven, so an account it owns stays a holder and is noted (review round 2).
+ */
 export const RAYDIUM_LOCKER_PROGRAM = 'LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE' as Address;
 
 /**
- * Only named accounts are excluded: this mint's curve, the canonical pool's vaults, the mayhem vault, burns and
- * lockers. An account owned by any other PDA, even one of pump's own programs, stays a holder: a non-canonical
- * PumpSwap pool is a PumpSwap PDA whose LP owner can withdraw its tokens at any time.
+ * Only named accounts are excluded: this mint's curve, the canonical pool's stored base vault, the mayhem vault and
+ * burns. An account owned by any other PDA, even one of pump's own programs, stays a holder: a non-canonical
+ * PumpSwap pool is a PumpSwap PDA whose LP owner can withdraw its tokens at any time. Lockers stay holders too.
  */
 const LOCKER_PROGRAMS: ReadonlySet<string> = new Set([RAYDIUM_LOCKER_PROGRAM]);
 
 export type HolderClass =
-  | 'curve' | 'pool-vault' | 'mayhem-vault' | 'locker' | 'burn'
+  | 'curve' | 'pool-vault' | 'mayhem-vault' | 'burn'
+  /** Owned by a locker program: kept as a holder and noted, until a decision with evidence proves the lock. */
+  | 'locker'
   /** Owned by a PDA of a program we do not know: kept as a holder (it may be the dev's), and noted. */
   | 'unknown-program'
   | 'wallet';
 
-export const EXCLUDED: ReadonlySet<HolderClass> = new Set<HolderClass>(['curve', 'pool-vault', 'mayhem-vault', 'locker', 'burn']);
+export const EXCLUDED: ReadonlySet<HolderClass> = new Set<HolderClass>(['curve', 'pool-vault', 'mayhem-vault', 'burn']);
 
 /** The protocol accounts of this mint that hold tokens. `pool` is the pool the entry trades on, when there is one. */
 export interface MintAccounts {
@@ -52,7 +57,7 @@ const offCurve = (address: string): boolean => {
 
 export const classifyHolder = (a: HolderAccount, known: MintAccounts): HolderClass => {
   if (a.owner === known.curve) return 'curve';
-  if (known.pool !== null && (a.address === known.pool.baseVault || a.owner === known.pool.address)) return 'pool-vault';
+  if (known.pool !== null && a.address === known.pool.baseVault) return 'pool-vault';
   if (a.owner === MAYHEM_VAULT_OWNER) return 'mayhem-vault';
   if (a.owner === INCINERATOR) return 'burn';
   if (a.ownerProgram !== null && LOCKER_PROGRAMS.has(a.ownerProgram)) return 'locker';

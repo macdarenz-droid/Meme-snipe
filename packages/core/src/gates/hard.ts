@@ -285,8 +285,10 @@ const conc = (env: Env, gate: HardGate): Conc => {
   }
   const c = memo(env, 'concentration', () => concentration(h.fact, mintAccounts(env.req.mint, { address: pool.address, baseVault: pool.pool.poolBaseTokenAccount })));
   if (c.circulating <= 0n) return { ok: false, out: reject(gate, 'no-circulating', `supply ${c.supply}, excluded ${c.excluded}`, { input: 'holders' }) };
-  const notes: GateNote[] = c.classes.filter((x) => x.cls === 'unknown-program')
-    .map((x) => ({ gate, code: 'unknown-program-holder' as const, detail: `${x.address} (owner ${x.owner}, a PDA of an unknown program) kept as a holder` }));
+  const notes: GateNote[] = c.classes.filter((x) => x.cls === 'unknown-program' || x.cls === 'locker')
+    .map((x) => (x.cls === 'locker'
+      ? { gate, code: 'locker-holder' as const, detail: `${x.address} (owner ${x.owner}, a locker account) kept as a holder` }
+      : { gate, code: 'unknown-program-holder' as const, detail: `${x.address} (owner ${x.owner}, a PDA of an unknown program) kept as a holder` }));
   return { ok: true, c, create: cr.fact, notes };
 };
 

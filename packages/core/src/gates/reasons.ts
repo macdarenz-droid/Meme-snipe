@@ -58,6 +58,6 @@ export interface GateReason {
 /** A note that does not reject but belongs in the journal (an unknown program account kept as a holder, a veto not applied). */
 export interface GateNote {
   readonly gate: HardGate;
-  readonly code: 'live-only-not-applied' | 'unknown-program-holder' | 'missing-insider-bounded';
+  readonly code: 'live-only-not-applied' | 'unknown-program-holder' | 'locker-holder' | 'missing-insider-bounded';
   readonly detail: string;
 }

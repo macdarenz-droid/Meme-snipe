@@ -40,10 +40,12 @@ describe('classification on mainnet accounts', () => {
     expect(classifyHolder(holderOf('mayhem coin: bonding-curve ATA'), mintAccounts(mint, null))).toBe('curve');
   });
 
-  it('the canonical pool base vault is a pool vault, by address and by owner', () => {
+  it('only the stored canonical base vault is a pool vault; another account the pool owns is not', () => {
     const v = holderOf('graduated coin: canonical pool base vault');
     expect(v.owner).toBe(POOL_ADDRESS);
-    expect(classifyHolder(v, mintAccounts(v.mint, { address: POOL_ADDRESS, baseVault: POOL.poolBaseTokenAccount }))).toBe('pool-vault');
+    const known = mintAccounts(v.mint, { address: POOL_ADDRESS, baseVault: POOL.poolBaseTokenAccount });
+    expect(classifyHolder(v, known)).toBe('pool-vault');
+    expect(classifyHolder({ ...v, address: ACC('other-pool-account') }, known)).toBe('unknown-program');
     // Only the canonical pool's vault is excluded. Any other PDA owner, even one of PumpSwap or pump, stays a holder.
     expect(classifyHolder(v, mintAccounts(v.mint, null))).toBe('unknown-program');
     expect(classifyHolder({ ...v, ownerProgram: PUMP_AMM_PROGRAM }, mintAccounts(v.mint, null))).toBe('unknown-program');
@@ -62,9 +64,12 @@ describe('classification on mainnet accounts', () => {
     expect(classifyHolder(b, mintAccounts(b.mint, null))).toBe('burn');
   });
 
-  it('an account owned by a Raydium locker PDA is a locker (built case)', () => {
+  it('an account owned by a Raydium locker PDA is classed as a locker and kept as a holder (built case)', () => {
     const locker = { address: ACC('locker'), owner: ACC('locker-pda'), ownerProgram: RAYDIUM_LOCKER_PROGRAM, amount: 5n };
     expect(classifyHolder(locker, mintAccounts(MINT, null))).toBe('locker');
+    const c = concentration({ obs: obs(), supply: 10n, coverage: 'all', accounts: [locker] }, mintAccounts(MINT, null));
+    expect(c.excluded).toBe(0n);
+    expect(c.owners).toEqual([{ owner: locker.owner, amount: 5n }]);
   });
 });
 
@@ -87,11 +92,11 @@ describe('concentration', () => {
     const supply = vault.amount + 1_400n;
     const c = concentration(fact(accounts, supply), known);
     expect(c.classes.map((x) => x.cls).sort()).toEqual(['burn', 'curve', 'locker', 'mayhem-vault', 'pool-vault', 'wallet', 'wallet', 'wallet']);
-    expect(c.excluded).toBe(vault.amount + 400n);
-    expect(c.circulating).toBe(1_000n);
-    expect(c.owners).toEqual([{ owner: W(2), amount: 600n }, { owner: W(1), amount: 400n }]);
-    expect(shareBps(c.top1!.amount, c.circulating)).toBe(6_000n);
-    expect(c.top10).toBe(1_000n);
+    expect(c.excluded).toBe(vault.amount + 300n);
+    expect(c.circulating).toBe(1_100n);
+    expect(c.owners).toEqual([{ owner: W(2), amount: 600n }, { owner: W(1), amount: 400n }, { owner: ACC('lp'), amount: 100n }]);
+    expect(shareBps(c.top1!.amount, c.circulating)).toBe(5_455n);
+    expect(c.top10).toBe(1_100n);
   });
 
   it('keeps a PDA of an unknown program as a holder (it may be the dev)', () => {
