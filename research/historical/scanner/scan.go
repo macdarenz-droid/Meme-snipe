@@ -27,7 +27,7 @@ import (
 )
 
 // Schema version of the output rows. Bump on any change of columns or meaning.
-const schemaVersion = 1
+const schemaVersion = 2
 
 var curveCols = []string{
 	"slot", "block_time", "tx_idx", "ev_idx", "signature", "signer", "tx_fee", "cu",
@@ -37,7 +37,7 @@ var curveCols = []string{
 	"track_volume", "ix_name", "mayhem_mode", "cashback_fee_basis_points", "cashback",
 	"buyback_fee_basis_points", "buyback_fee", "shareholders", "quote_mint", "quote_amount",
 	"virtual_quote_reserves", "real_quote_reserves", "holder_rewards_bps", "holder_rewards",
-	"extra_hex", "layout_fields", "last_in_tx", "chain_curve_lamports", "chain_curve_base", "chain_curve_quote",
+	"outer_ix", "inner_ix", "jito_tip", "extra_hex", "layout_fields", "last_in_tx", "chain_curve_lamports", "chain_curve_base", "chain_curve_quote",
 }
 
 var ammCols = []string{
@@ -49,7 +49,7 @@ var ammCols = []string{
 	"coin_creator_fee_basis_points", "coin_creator_fee", "track_volume", "min_base_amount_out", "ix_name",
 	"cashback_fee_basis_points", "cashback", "buyback_fee_basis_points", "buyback_fee",
 	"virtual_quote_reserves", "can_boost", "base_supply", "holder_rewards_bps", "holder_rewards",
-	"extra_hex", "layout_fields", "last_in_tx", "chain_pool_base", "chain_pool_quote",
+	"outer_ix", "inner_ix", "jito_tip", "extra_hex", "layout_fields", "last_in_tx", "chain_pool_base", "chain_pool_quote",
 }
 
 var blockCols = []string{"slot", "block_time", "parent_slot", "n_tx", "n_vote", "n_pump_tx", "n_pump_ok", "n_pump_failed", "n_events"}
@@ -82,6 +82,9 @@ type UnitStats struct {
 	DecodeErrors    []string       `json:"decode_errors"`
 	NewerLayouts    map[string]int `json:"newer_layouts"`
 	OlderLayouts    map[string]int `json:"older_layouts"`
+	ExtraBytes      map[string]int `json:"extra_bytes"`      // event:extra -> count (0 = exact IDL layout)
+	LengthAnomalies int64          `json:"length_anomalies"` // events longer than the IDL by other than 8 bytes
+	RawRecords      int64          `json:"raw_records"`
 	LegacyMeta      int64          `json:"legacy_meta"`
 	MissingMeta     int64          `json:"missing_meta"`
 	LogEventsSeen   int64          `json:"log_events_seen"`
@@ -186,13 +189,14 @@ type blockResult struct {
 	pumpTxs   int64
 	pumpFail  int64
 	agg       map[aggKey]*aggVal
+	raw       []string
 }
 
 // ScanUnit scans blocks in [from, to] of epoch e into dir/<from>-<to>/.
 func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlConc int, workers int) (*UnitStats, error) {
 	t0 := time.Now()
 	st := &UnitStats{Schema: schemaVersion, Epoch: e.N, RootCid: e.RootCid, FromSlot: from, ToSlot: to,
-		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ScannerRevision: scannerRevision, SampleRate: sampleRate}
+		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ExtraBytes: map[string]int{}, ScannerRevision: scannerRevision, SampleRate: sampleRate}
 	req0, ret0, r4290 := statHTTPRequests.Load(), statHTTPRetries.Load(), statHTTP429.Load()
 
 	start, end, firstBlock, err := e.ByteRange(ctx, from, to)
@@ -208,7 +212,7 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	}
 	outs := map[string]*csvOut{}
 	for name, cols := range map[string][]string{"curve_trades.csv.zst": curveCols, "amm_trades.csv.zst": ammCols,
-		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols} {
+		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols, "raw.jsonl.zst": nil} {
 		o, err := newCSV(filepath.Join(tmp, name), cols)
 		if err != nil {
 			return nil, err
@@ -385,6 +389,7 @@ func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map
 	st.CurveTrades += int64(len(r.curve))
 	st.AmmTrades += int64(len(r.amm))
 	st.OtherEvents += int64(len(r.other))
+	st.RawRecords += int64(len(r.raw))
 	st.mu.Unlock()
 	outs["blocks.csv.zst"].row(r.blockRow)
 	for _, row := range r.curve {
@@ -398,6 +403,9 @@ func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map
 	}
 	for _, row := range r.failed {
 		outs["failed.csv.zst"].row(row)
+	}
+	for _, l := range r.raw {
+		outs["raw.jsonl.zst"].line(l)
 	}
 }
 
@@ -736,6 +744,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 		if mintHint != "" && inSample(mintHint) {
 			r.failed = append(r.failed, []string{slot, bt, tidx, sig, signer, fee, cu, strings.Join(progs, "|"), mintHint, hexs(meta.Err.Err)})
 		}
+		r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, mintHint)
 		return
 	}
 
@@ -779,8 +788,17 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 	}
 	var rows []pendingRow
 	evIdx := 0
-	for _, g := range groups {
+	tip := strconv.FormatUint(jitoTip(keys, meta.PreBalances, meta.PostBalances), 10)
+	var eventMints []string
+	for gi, g := range groups {
 		for k, ix := range g {
+			// position for the (slot, tx, outer, inner) ordering key; events are
+			// self-CPI inner instructions, k = 0 is the top-level instruction itself
+			outer := strconv.Itoa(gi)
+			inner := ""
+			if k > 0 {
+				inner = strconv.Itoa(k - 1)
+			}
 			var prog string
 			if ix.program == pumpProgram {
 				prog = "pump"
@@ -800,7 +818,8 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 				st.mu.Unlock()
 				// kept raw for every mint: decodable once the layout is published
 				jb, _ := json.Marshal(map[string]any{"slot": b.slot, "block_time": b.blockTime, "tx_idx": txIdx, "ev_idx": evIdx,
-					"signature": sig, "signer": signer, "program": prog, "event": "Unknown", "discriminator": hexs(disc), "data_hex": hexs(body)})
+					"signature": sig, "signer": signer, "program": prog, "event": "Unknown", "discriminator": hexs(disc), "data_hex": hexs(body),
+					"outer_ix": gi, "inner_ix": k - 1})
 				r.other = append(r.other, string(jb))
 				evIdx++
 				continue
@@ -816,6 +835,10 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 			if ev.extra > 0 {
 				st.NewerLayouts[prog+":"+ev.def.name]++
 			}
+			st.ExtraBytes[prog+":"+ev.def.name+":"+strconv.Itoa(ev.extra)]++
+			if ev.extra != 0 && ev.extra != 8 {
+				st.LengthAnomalies++
+			}
 			if ev.n < len(ev.def.fields) {
 				st.OlderLayouts[prog+":"+ev.def.name+":"+strconv.Itoa(ev.n)]++
 			}
@@ -829,8 +852,9 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 					v := ev.get(c)
 					row = append(row, v)
 				}
-				row = append(row, hexs(ev.tail), strconv.Itoa(nFields), "0", "", "", "")
+				row = append(row, outer, inner, tip, hexs(ev.tail), strconv.Itoa(nFields), "0", "", "", "")
 				rows = append(rows, pendingRow{"curve", ev.get("mint"), row})
+				eventMints = append(eventMints, ev.get("mint"))
 			case prog == "amm" && (ev.def.name == "BuyEvent" || ev.def.name == "SellEvent"):
 				emitter := findEmitter(g, k, ammProgram)
 				baseMint, quoteMint, vb, vq := "", "", "", ""
@@ -857,11 +881,12 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 					ev.get("coin_creator_fee_basis_points"), ev.get("coin_creator_fee"), ev.get("track_volume"), ev.get("min_base_amount_out"), ev.get("ix_name"),
 					ev.get("cashback_fee_basis_points"), ev.get("cashback"), ev.get("buyback_fee_basis_points"), ev.get("buyback_fee"),
 					ev.get("virtual_quote_reserves"), ev.get("can_boost"), ev.get("base_supply"), ev.get("holder_rewards_bps"), ev.get("holder_rewards"),
-					hexs(ev.tail), strconv.Itoa(nFields), "0", vb, vq)
+					outer, inner, tip, hexs(ev.tail), strconv.Itoa(nFields), "0", vb, vq)
 				rows = append(rows, pendingRow{"amm", ev.get("pool"), row})
+				eventMints = append(eventMints, baseMint)
 			default:
 				m := map[string]any{"slot": b.slot, "block_time": b.blockTime, "tx_idx": txIdx, "ev_idx": evIdx, "signature": sig,
-					"signer": signer, "program": prog, "event": ev.def.name, "layout_fields": nFields}
+					"signer": signer, "program": prog, "event": ev.def.name, "layout_fields": nFields, "outer_ix": gi, "inner_ix": k - 1, "jito_tip": tip}
 				fields := map[string]string{}
 				for i, fd := range ev.def.fields {
 					if i < ev.n {
@@ -869,6 +894,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 					}
 				}
 				m["fields"] = fields
+				eventMints = append(eventMints, fields["mint"], fields["base_mint"])
 				if len(ev.tail) > 0 {
 					m["extra_hex"] = hexs(ev.tail)
 				}
@@ -934,6 +960,21 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 			r.emitRow("amm", row)
 		}
 	}
+	r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, eventMints...)
+}
+
+// addRaw writes the raw record of a transaction that touches a sampled mint.
+func (r *blockResult) addRaw(st *UnitStats, b *blockData, txIdx int, sig string, txBytes, metaRaw []byte, meta *TransactionStatusMeta, extra ...string) {
+	mints := sampledMints(meta, extra...)
+	if len(mints) == 0 {
+		return
+	}
+	full, err := fullMeta(metaRaw)
+	if err != nil {
+		st.decodeErr(fmt.Sprintf("slot %d idx %d: full meta: %v", b.slot, txIdx, err))
+		return
+	}
+	r.raw = append(r.raw, buildRawRecord(b.slot, b.blockTime, txIdx, sig, txBytes, full, mints))
 }
 
 const wsolMint = "So11111111111111111111111111111111111111112"

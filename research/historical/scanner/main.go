@@ -64,7 +64,9 @@ func main() {
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		prof := fs.String("cpuprofile", "", "write a CPU profile")
 		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s")
+		on429u := fs.String("on-429", "pause", "pause or stop (exit code 75)")
 		fs.Parse(os.Args[2:])
+		stopOn429 = *on429u == "stop"
 		if *prof != "" {
 			pf, err := os.Create(*prof)
 			if err != nil {
@@ -82,7 +84,10 @@ func main() {
 		st, err := ScanUnit(ctx, e, u.from, u.to, u.dir(*out), *dl, *workers)
 		if err != nil {
 			log.Print(err)
-			return
+			if stopped.Load() {
+				os.Exit(75)
+			}
+			os.Exit(1)
 		}
 		log.Printf("unit done: blocks=%d/%d curve=%d amm=%d other=%d pumpTx=%d failed=%d decodeFail=%d %.0fs",
 			st.Blocks, st.BlocksExpected, st.CurveTrades, st.AmmTrades, st.OtherEvents, st.PumpTxs, st.PumpTxsFailed, st.DecodeFailures, st.Seconds)
@@ -98,7 +103,10 @@ func main() {
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		slots := fs.String("slots", "", "only units inside this slot range, FROM-TO (for tests)")
 		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s")
+		on429 := fs.String("on-429", "pause", "pause: pause all requests and retry; stop: end the run (exit code 75) so a scheduler can back off")
 		fs.Parse(os.Args[2:])
+		stopOn429 = *on429 == "stop"
+		log429File = filepath.Join(*out, "429.log")
 		t0, err := time.Parse("2006-01-02", *fromDay)
 		if err != nil {
 			log.Fatal(err)
@@ -120,6 +128,10 @@ func main() {
 		runLock = lf // keep the file (and its lock) alive for the whole run
 		units, epochs, err := planUnits(*out, t0.Unix(), t1.Unix())
 		if err != nil {
+			if stopped.Load() {
+				log.Printf("planning stopped on 429: %v", err)
+				os.Exit(75)
+			}
 			log.Fatal(err)
 		}
 		byteLimiter = newLimiter(*maxMBps)
@@ -161,7 +173,7 @@ func main() {
 					var err error
 					for attempt := 0; attempt < 3; attempt++ {
 						st, err = ScanUnit(ctx, epochs[u.epoch], u.from, u.to, u.dir(*out), *dl, *workers)
-						if err == nil || ctx.Err() != nil {
+						if err == nil || ctx.Err() != nil || stopped.Load() {
 							break
 						}
 						log.Printf("unit %d %d-%d attempt %d failed: %v", u.epoch, u.from, u.to, attempt+1, err)
@@ -185,6 +197,9 @@ func main() {
 		}
 	feed:
 		for _, u := range todo {
+			if stopped.Load() {
+				break feed
+			}
 			select {
 			case q <- u:
 			case <-ctx.Done():
@@ -193,7 +208,10 @@ func main() {
 		}
 		close(q)
 		wg.Wait()
-		log.Printf("run finished: %d done, %d failed, interrupted=%v", done, failed, ctx.Err() != nil)
+		log.Printf("run finished: %d done, %d failed, interrupted=%v, stopped on 429=%v", done, failed, ctx.Err() != nil, stopped.Load())
+		if stopped.Load() {
+			os.Exit(75) // EX_TEMPFAIL: finished units are kept; back off, then rerun
+		}
 		if failed > 0 || ctx.Err() != nil {
 			os.Exit(1)
 		}

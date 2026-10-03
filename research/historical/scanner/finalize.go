@@ -9,7 +9,10 @@ package main
 //       curve_trades-NNN.csv.zst    bonding-curve trades of universe mints
 //       amm_trades-NNN.csv.zst      PumpSwap trades of universe mints
 //       events-NNN.jsonl.zst        universe events (creates, graduations, pools, liquidity, boosts, parameters)
-//       failed_hourly-NNN.csv.zst   failed trade transactions of universe mints, counted per hour
+//       failed-NNN.csv.zst          failed trade transactions of universe mints, one row each
+//       failed_hourly-NNN.csv.zst   the same, counted per hour
+//       raw-NNN.jsonl.zst           raw transaction records (wire bytes and meta) of every
+//                                   pump/PumpSwap transaction touching a universe mint
 //       agg_hourly-NNN.csv.zst      hourly census of every mint that traded (all mints)
 //       blocks-NNN.csv.zst          every scanned block with transaction counts
 //
@@ -240,7 +243,8 @@ var dayFileSpecs = []struct {
 	header    []string
 }{
 	{"curve_trades", "csv", curveCols}, {"amm_trades", "csv", ammCols}, {"events", "jsonl", nil},
-	{"failed_hourly", "csv", failedHourlyCols}, {"agg_hourly", "csv", aggCols}, {"blocks", "csv", blockCols},
+	{"failed", "csv", failedCols}, {"failed_hourly", "csv", failedHourlyCols}, {"agg_hourly", "csv", aggCols}, {"blocks", "csv", blockCols},
+	{"raw", "jsonl", nil},
 }
 
 func dayOf(t int64) string { return time.Unix(t, 0).UTC().Format("2006-01-02") }
@@ -260,6 +264,12 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 	}
 	if len(units) == 0 {
 		return fmt.Errorf("no finished units")
+	}
+	// One schema per dataset: columns differ between scanner schemas.
+	for _, u := range units {
+		if u.stats.Schema != units[0].stats.Schema {
+			return fmt.Errorf("units of schema %d and %d mixed (%s); rescan or finalize them separately", units[0].stats.Schema, u.stats.Schema, u.path)
+		}
 	}
 	// Every unit must hold at least the sample the universe rates need. Units written
 	// before the rate was recorded used the 0.25 default.
@@ -491,6 +501,13 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 					return err
 				}
 				if spec.base == "failed" {
+					fw, err := dayW(dayOf(bt), "failed")
+					if err != nil {
+						return err
+					}
+					if err := fw.writeCSV(rec); err != nil {
+						return err
+					}
 					fk := failedKey{bt - bt%3600, rec[8]}
 					fv := failedAll[fk]
 					if fv == nil {
@@ -550,6 +567,43 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		})
 		if err != nil {
 			return fmt.Errorf("%s events: %w", u.path, err)
+		}
+		if u.stats.Schema >= 2 {
+			err = readZstLines(filepath.Join(u.path, "raw.jsonl.zst"), func(l []byte) error {
+				var r struct {
+					Slot      int64    `json:"slot"`
+					BlockTime int64    `json:"blockTime"`
+					TxIndex   int64    `json:"txIndex"`
+					Mints     []string `json:"mints"`
+				}
+				if err := json.Unmarshal(l, &r); err != nil {
+					return err
+				}
+				if !inWindow(r.BlockTime) {
+					return nil
+				}
+				keep := false
+				for _, m := range r.Mints {
+					if inTape(m, r.BlockTime) {
+						keep = true
+						break
+					}
+				}
+				if !keep {
+					return nil
+				}
+				if err := checkOrder("raw", ordKey{r.Slot, r.TxIndex, 0}); err != nil {
+					return err
+				}
+				w, err := dayW(dayOf(r.BlockTime), "raw")
+				if err != nil {
+					return err
+				}
+				return w.writeLine(l)
+			})
+			if err != nil {
+				return fmt.Errorf("%s raw: %w", u.path, err)
+			}
 		}
 		first := true
 		err = readCSVZst(filepath.Join(u.path, "agg_hourly.csv.zst"), func(rec []string) error {
@@ -724,11 +778,12 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		decodeFail += u.stats.DecodeFailures
 		unitsInfo = append(unitsInfo, map[string]any{"epoch": u.stats.Epoch, "root_cid": u.stats.RootCid, "from_slot": u.stats.FromSlot,
 			"to_slot": u.stats.ToSlot, "blocks": u.stats.Blocks, "blocks_expected": u.stats.BlocksExpected, "decode_failures": u.stats.DecodeFailures,
-			"unknown_events": u.stats.UnknownEvents, "newer_layouts": u.stats.NewerLayouts, "missing_blocks": len(u.stats.MissingBlocks),
+			"unknown_events": u.stats.UnknownEvents, "newer_layouts": u.stats.NewerLayouts, "extra_bytes": u.stats.ExtraBytes,
+			"length_anomalies": u.stats.LengthAnomalies, "older_layouts": u.stats.OlderLayouts, "raw_records": u.stats.RawRecords, "schema": u.stats.Schema, "missing_blocks": len(u.stats.MissingBlocks),
 			"scanner_revision": u.stats.ScannerRevision})
 	}
 	man := map[string]any{
-		"schema":          schemaVersion,
+		"schema":          units[0].stats.Schema,
 		"generated_at":    time.Now().UTC().Format(time.RFC3339),
 		"source":          "Old Faithful public Solana archive, https://files.old-faithful.net (one CAR file per epoch, content-addressed)",
 		"programs":        map[string]string{"pump": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pump_amm": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"},

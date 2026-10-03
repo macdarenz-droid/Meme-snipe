@@ -20,6 +20,8 @@ type TransactionStatusMeta struct {
 	PostBalances            []uint64
 	InnerInstructions       []*InnerInstructions
 	PostTokenBalances       []*TokenBalance
+	PreTokenBalances        []*TokenBalance
+	LogMessages             []string
 	LoadedWritableAddresses [][]byte
 	LoadedReadonlyAddresses [][]byte
 	ComputeUnitsConsumed    *uint64
@@ -43,6 +45,7 @@ type TokenBalance struct {
 	AccountIndex  uint32
 	Mint          string
 	Owner         string
+	ProgramId     string
 	UiTokenAmount *UiTokenAmount
 }
 
@@ -51,7 +54,12 @@ type UiTokenAmount struct {
 	Decimals uint32
 }
 
-func leanMeta(b []byte) (*TransactionStatusMeta, error) {
+func leanMeta(b []byte) (*TransactionStatusMeta, error) { return parseMeta(b, false) }
+
+// fullMeta also keeps log messages and pre-transaction token balances (raw records).
+func fullMeta(b []byte) (*TransactionStatusMeta, error) { return parseMeta(b, true) }
+
+func parseMeta(b []byte, full bool) (*TransactionStatusMeta, error) {
 	m := &TransactionStatusMeta{}
 	for len(b) > 0 {
 		num, typ, n := protowire.ConsumeTag(b)
@@ -138,7 +146,7 @@ func leanMeta(b []byte) (*TransactionStatusMeta, error) {
 			}
 			m.InnerInstructions = append(m.InnerInstructions, ii)
 			b = b[n:]
-		case num == 8 && typ == protowire.BytesType:
+		case (num == 8 || (full && num == 7)) && typ == protowire.BytesType:
 			v, n := protowire.ConsumeBytes(b)
 			if n < 0 {
 				return nil, errProto
@@ -147,7 +155,18 @@ func leanMeta(b []byte) (*TransactionStatusMeta, error) {
 			if err != nil {
 				return nil, err
 			}
-			m.PostTokenBalances = append(m.PostTokenBalances, tb)
+			if num == 8 {
+				m.PostTokenBalances = append(m.PostTokenBalances, tb)
+			} else {
+				m.PreTokenBalances = append(m.PreTokenBalances, tb)
+			}
+			b = b[n:]
+		case full && num == 6 && typ == protowire.BytesType:
+			v, n := protowire.ConsumeBytes(b)
+			if n < 0 {
+				return nil, errProto
+			}
+			m.LogMessages = append(m.LogMessages, string(v))
 			b = b[n:]
 		case (num == 12 || num == 13) && typ == protowire.BytesType:
 			v, n := protowire.ConsumeBytes(b)
@@ -271,15 +290,18 @@ func leanTokenBalance(b []byte) (*TokenBalance, error) {
 			}
 			tb.AccountIndex = uint32(v)
 			b = b[n:]
-		case (num == 2 || num == 4) && typ == protowire.BytesType:
+		case (num == 2 || num == 4 || num == 5) && typ == protowire.BytesType:
 			v, n := protowire.ConsumeBytes(b)
 			if n < 0 {
 				return nil, errProto
 			}
-			if num == 2 {
+			switch num {
+			case 2:
 				tb.Mint = string(v)
-			} else {
+			case 4:
 				tb.Owner = string(v)
+			default:
+				tb.ProgramId = string(v)
 			}
 			b = b[n:]
 		case num == 3 && typ == protowire.BytesType:

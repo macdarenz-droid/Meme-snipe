@@ -27,6 +27,7 @@ const args = process.argv.slice(2);
 const ds = args[0];
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? Number(args[i + 1]) : d; };
 const LIVE = opt('--live', 0), GECKO = opt('--gecko', 0);
+const STRICT = args.includes('--strict'); // exit 1 on any miss (CI)
 const RPC = 'https://api.mainnet-beta.solana.com';
 const man = JSON.parse(fs.readFileSync(path.join(ds, 'manifest.json'), 'utf8'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -59,6 +60,14 @@ const B = (s) => (s === '' || s === undefined ? null : BigInt(s));
 const isQuoted = (r) => r.quote_mint !== '' && r.quote_mint !== '11111111111111111111111111111111' && r.quote_mint !== 'So11111111111111111111111111111111111111112';
 
 // ---- base58 ----
+function b58decode(str) {
+  let n = 0n;
+  for (const ch of str) n = n * 58n + BigInt(ALPH.indexOf(ch));
+  let hex = n.toString(16);
+  if (hex.length % 2) hex = '0' + hex;
+  const lead = str.match(/^1*/)[0].length;
+  return Buffer.concat([Buffer.alloc(lead), Buffer.from(n === 0n ? '' : hex, 'hex')]);
+}
 const ALPH = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 function b58encode(buf) {
   let n = BigInt('0x' + (Buffer.from(buf).toString('hex') || '0')); let s = '';
@@ -250,6 +259,46 @@ const poolLast = new Map(); // pool -> {row, post}
   report.amm = st;
 }
 
+// ---- raw records (schema 2): one per universe transaction, signature matches the wire bytes ----
+if (man.schema >= 2) {
+  const st = { records: 0, v1: 0, signature_mismatch: 0, trade_txs: 0, trade_txs_with_raw: 0, missing: [] };
+  const rawKeys = new Set();
+  for (const f of dayFiles('raw')) {
+    const lines = zlib.zstdDecompressSync(fs.readFileSync(path.join(ds, f))).toString().split('\n').filter(Boolean);
+    for (const l of lines) {
+      const r = JSON.parse(l);
+      st.records++;
+      const w = Buffer.from(r.transaction, 'base64');
+      if (w[0] === 0x81) {
+        // v1 (SIMD-0385): message first, then the signatures, with no count prefix;
+        // the first signature starts a 64-byte-aligned block counted from the end
+        const sig = b58decode(r.signature);
+        const at = w.lastIndexOf(sig);
+        if (at < 0 || (w.length - at) % 64 !== 0) st.signature_mismatch++;
+        st.v1++;
+      } else if (b58encode(w.subarray(1, 65)) !== r.signature) {
+        // legacy and v0: compact-u16 count (always < 128 here), then the signatures
+        st.signature_mismatch++;
+      }
+      rawKeys.add(`${r.slot}:${r.txIndex}`);
+    }
+  }
+  const seen = new Set();
+  for (const base of ['curve_trades', 'amm_trades', 'failed']) {
+    for (const f of dayFiles(base)) {
+      for (const r of readTable(f)) {
+        const k = `${r.slot}:${r.tx_idx}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        st.trade_txs++;
+        if (rawKeys.has(k)) st.trade_txs_with_raw++;
+        else if (st.missing.length < 10) st.missing.push(k);
+      }
+    }
+  }
+  report.raw = st;
+}
+
 // ---- live checks ----
 async function rpc(method, params) {
   for (let i = 0; i < 8; i++) {
@@ -372,5 +421,33 @@ if (report.gecko) {
   const g = report.gecko;
   md.push('', '## GeckoTerminal comparison', '', `${g.pools_compared} pools, ${g.minutes_compared} minutes: median absolute relative difference ${g.median_abs_rel_diff}, 90th percentile ${g.p90_abs_rel_diff}.`, '', g.note);
 }
+// ---- strict verdict ----
+// Misses: anything that is not explained in docs/research/historical-data.md (mayhem
+// virtual re-pricing, rent changes without an extension event and quote-token excess
+// are documented and not counted).
+const misses = [];
+const c2 = report.curve, a2 = report.amm;
+if (man.decode_failures > 0) misses.push(`decode failures ${man.decode_failures}`);
+if ((man.chain_breaks || []).length > 0) misses.push(`parent-link breaks ${(man.chain_breaks || []).length}`);
+if ((man.coverage_gaps || []).length > 0) misses.push(`coverage gaps ${(man.coverage_gaps || []).length}`);
+const anomalies = man.units.reduce((s, u) => s + (u.length_anomalies || 0), 0);
+if (anomalies > 0) misses.push(`event length anomalies ${anomalies}`);
+if (c2.real_ok !== c2.real_pairs) misses.push(`curve real reserves ${c2.real_ok}/${c2.real_pairs}`);
+if (c2.virtual_ok !== c2.virtual_pairs) misses.push(`curve virtual reserves ${c2.virtual_ok}/${c2.virtual_pairs}`);
+if (c2.token_exact !== c2.token_checks) misses.push(`curve token balances ${c2.token_exact}/${c2.token_checks}`);
+if (c2.quote_balance_ge !== c2.quote_balance_checks) misses.push(`quote balance below reserves ${c2.quote_balance_checks - c2.quote_balance_ge}`);
+if (a2.chain_ok !== a2.chain_pairs) misses.push(`pool reserve chain ${a2.chain_ok}/${a2.chain_pairs}`);
+if (a2.chain_exact !== a2.chain_checks) misses.push(`pool vault balances ${a2.chain_exact}/${a2.chain_checks}`);
+if (report.raw) {
+  if (report.raw.signature_mismatch > 0) misses.push(`raw signature mismatches ${report.raw.signature_mismatch}`);
+  if (report.raw.trade_txs_with_raw !== report.raw.trade_txs) misses.push(`trade transactions without raw record ${report.raw.trade_txs - report.raw.trade_txs_with_raw}`);
+}
+const liveFail = report.live.filter((x) => !x.pass).length;
+if (liveFail > 0) misses.push(`live on-chain mismatches ${liveFail}`);
+report.strict = { pass: misses.length === 0, misses };
+md.push('', '## Verdict', '', misses.length ? `FAIL: ${misses.join('; ')}` : 'PASS: no unexplained miss.');
+if (report.raw) md.push('', `Raw records: ${report.raw.records}; signature mismatches ${report.raw.signature_mismatch}; ${report.raw.trade_txs_with_raw} of ${report.raw.trade_txs} universe trade and failed transactions have their raw record.`);
+fs.writeFileSync(path.join(ds, 'qa', 'report.json'), JSON.stringify(report, null, 2));
 fs.writeFileSync(path.join(ds, 'qa', 'report.md'), md.join('\n') + '\n');
 console.log(md.join('\n'));
+if (STRICT && misses.length) process.exit(1);

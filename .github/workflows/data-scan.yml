@@ -1,0 +1,205 @@
+# DATA-1: historical pump.fun / PumpSwap data from the Old Faithful archive, on one
+# polite lane (supervisor ruling, 2026-10-03). See docs/research/historical-data.md.
+#
+# - Manual dispatch only. One concurrency group and max-parallel 1: days are scanned
+#   strictly one after another, newest first, at most 80 MB/s.
+# - The scanner names itself in its User-Agent, honours Retry-After and stops at once
+#   on any 429. The job keeps every finished unit, waits at least 1 h, then resumes on
+#   the same lane; if its time budget runs out it saves progress to the cache and
+#   fails, which stops the remaining days. Every 429 and back-off is in the summary.
+# - Each finished day passes the strict QA and a determinism rescan, then a single
+#   publish job (the only job with contents: write) attaches its units, QA report and
+#   SHA256SUMS to release `data-days`.
+# - mode=assemble builds the multi-day dataset from those day assets and publishes it
+#   as release `data-<first>-<last>`.
+name: data-scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: scan (days below) or assemble (dataset for from..to)
+        required: true
+        default: scan
+        type: choice
+        options: [scan, assemble]
+      days:
+        description: "scan: UTC days, newest first, comma-separated (YYYY-MM-DD,...)"
+        required: false
+        default: ""
+      from:
+        description: "assemble: first UTC day of the dataset window"
+        required: false
+        default: ""
+      to:
+        description: "assemble: end UTC day, exclusive"
+        required: false
+        default: ""
+      max_mbps:
+        description: archive download cap in MB/s (at most 80 unless the operators allow more)
+        required: true
+        default: "80"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-scan
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.24.7"
+  GO_SHA256: da18191ddb7db8a9339816f3e2b54bdded8047cdc2a5d67059478f8d1595c43f
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      days: ${{ steps.days.outputs.days }}
+    steps:
+      - id: days
+        env:
+          MODE: ${{ inputs.mode }}
+          DAYS: ${{ inputs.days }}
+          MAX_MBPS: ${{ inputs.max_mbps }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import datetime, json, os, re, sys
+          mbps = float(os.environ["MAX_MBPS"])
+          if not 0 < mbps <= 80:
+              sys.exit("max_mbps must be in (0, 80] unless the archive operators grant more")
+          days = []
+          if os.environ["MODE"] == "scan":
+              for d in [x.strip() for x in os.environ["DAYS"].split(",") if x.strip()]:
+                  if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+                      sys.exit(f"bad day {d!r}")
+                  datetime.date.fromisoformat(d)
+                  days.append(d)
+              if not days:
+                  sys.exit("scan mode needs at least one day")
+          else:
+              days = ["none"]  # the scan job is skipped; a matrix may not be empty
+          print("days=" + json.dumps(days))
+          EOF
+
+  scan:
+    needs: plan
+    if: inputs.mode == 'scan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        day: ${{ fromJSON(needs.plan.outputs.days) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install Go (pinned by version and checksum)
+        run: |
+          curl -fsSLo go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go.tgz && rm go.tgz
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - name: Build scanner
+        working-directory: research/historical/scanner
+        run: |
+          go version
+          go test ./...
+          go build -trimpath -ldflags "-X main.scannerRevision=${GITHUB_SHA}" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Restore progress for this day
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/data
+          key: data-scan-${{ matrix.day }}-${{ github.run_id }}
+          restore-keys: data-scan-${{ matrix.day }}-
+      - name: Scan (one lane, stops on 429)
+        run: research/historical/ci/scan-day.sh "${{ matrix.day }}" "$RUNNER_TEMP/data" "${{ inputs.max_mbps }}" 300
+      - name: Save progress
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/data
+          key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: QA, determinism and packaging
+        run: research/historical/ci/check-day.sh "${{ matrix.day }}" "$RUNNER_TEMP/data" "$RUNNER_TEMP/assets"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: day-${{ matrix.day }}
+          path: ${{ runner.temp }}/assets
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    needs: [plan, scan]
+    if: always() && (inputs.mode == 'assemble' || needs.scan.result == 'success' || needs.scan.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Download finished days
+        if: inputs.mode == 'scan'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: day-*
+          path: ${{ runner.temp }}/days
+          merge-multiple: true
+      - name: Publish day assets to release data-days
+        if: inputs.mode == 'scan'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP/days" 2>/dev/null || { echo "no finished day to publish"; exit 0; }
+          for s in SHA256SUMS-*; do sha256sum -c "$s"; done
+          gh release view data-days --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create data-days --repo "$GITHUB_REPOSITORY" --prerelease --title "Historical data: scanned days" \
+              --notes "Per-day scanner units, strict QA reports and SHA256SUMS from .github/workflows/data-scan.yml. Format: docs/research/historical-data.md."
+          gh release upload data-days ./* --repo "$GITHUB_REPOSITORY" --clobber
+          { echo "### Published days"; ls SHA256SUMS-* | sed 's/SHA256SUMS-/- /'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: inputs.mode == 'assemble'
+        with:
+          node-version: 22
+      - name: Assemble the dataset
+        if: inputs.mode == 'assemble'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+        run: |
+          set -euo pipefail
+          [[ "$FROM" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "$TO" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "from and to are required"; exit 1; }
+          curl -fsSLo go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go.tgz && rm go.tgz
+          export PATH=/usr/local/go/bin:$PATH
+          (cd research/historical/scanner && go build -trimpath -ldflags "-X main.scannerRevision=${GITHUB_SHA}" -o "$RUNNER_TEMP/zeroed-scan" .)
+          # about 2 GB per scanned day: work on the runner's larger /mnt volume
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work && W=/mnt/work
+          df -h / /mnt
+          mkdir -p "$W/dl" "$W/data"
+          gh release download data-days --repo "$GITHUB_REPOSITORY" --dir "$W/dl"
+          cd "$W/dl"
+          for s in SHA256SUMS-*; do sha256sum -c "$s"; done
+          for d in $(ls SHA256SUMS-* | sed 's/SHA256SUMS-//'); do
+            cat units-"$d".tar.part* | tar -xf - -C "$W/data" --skip-old-files
+            rm -f units-"$d".tar.part*
+          done
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/zeroed-scan" finalize -out "$W/data" -dataset "$W/dataset" -from "$FROM" -to "$TO"
+          node research/historical/qa/check.mjs "$W/dataset" --live 60 --strict
+          cd "$W/dataset"
+          mkdir ../out
+          find days -type f | while read -r f; do cp "$f" "../out/$(echo "$f" | cut -d/ -f2)__$(basename "$f")"; done
+          cp manifest.json mints-*.csv.zst ../out/ && cp qa/report.md ../out/qa-report.md && cp qa/report.json ../out/qa-report.json
+          cd ../out && sha256sum * > SHA256SUMS
+          tag="data-$FROM-$TO"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --prerelease --title "Historical dataset $FROM to $TO" \
+            --notes "Built by data-scan.yml at ${GITHUB_SHA} from release data-days. Strict QA passed (qa-report.md). Format: docs/research/historical-data.md."
+          gh release upload "$tag" ./* --repo "$GITHUB_REPOSITORY" --clobber
