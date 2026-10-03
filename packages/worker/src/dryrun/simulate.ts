@@ -153,7 +153,8 @@ interface Atomic {
 /**
  * The stand-in's wallet, wrapped-SOL and base-token balances (`own`, in that order) from the simulation's own
  * pre/post fields, or null when the provider does not return them all. All three are static keys of the message, so
- * their index is their position there. 'disagree' when the post lamports differ from the accounts read back.
+ * their index is their position there. 'disagree' when the post lamports or the post token balance differ from the
+ * accounts read back.
  */
 export const atomicBalances = (v: SimulationValue, staticKeys: readonly Address[], own: readonly Address[], mint: Address): Atomic | 'disagree' | null => {
   const { preBalances: pre, postBalances: post, preTokenBalances: preT, postTokenBalances: postT } = v;
@@ -169,6 +170,8 @@ export const atomicBalances = (v: SimulationValue, staticKeys: readonly Address[
   const tokensPre = tokens(preT);
   const tokensPost = tokens(postT);
   if (tokensPre === 'disagree' || tokensPost === 'disagree') return 'disagree';
+  // The token balance after must also match the base account read back (review of PR #28).
+  if (tokensPost !== tokenAmount(v.accounts[2] ?? null)) return 'disagree';
   return { lamPre: idx.map((i) => pre[i]!), lamPost: idx.map((i) => post[i]!), tokensPre, tokensPost };
 };
 

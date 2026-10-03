@@ -588,10 +588,12 @@ describe('dry run: balances taken inside the simulation', () => {
     expect(r).toMatchObject({ outcome: 'simulated', balancesFrom: 'read', simulatedOut: quoted(t.request) + 1_000_000n });
   });
 
-  it('post balances that disagree with the read-back, or a token balance for another mint, are malformed', async () => {
+  it('post lamports or a post token balance that disagree with the read-back, or a token balance for another mint, are malformed', async () => {
     let { r } = await run(true, (b) => ({ ...b, post: b.post.map((x, i) => (i === 0 ? x + 1n : x)) }));
     expect(r.outcome).toBe('malformed');
     ({ r } = await run(true, (b) => ({ ...b, preToken: b.preToken.map((x) => ({ ...x, mint: BOT })) })));
     expect(r.outcome).toBe('malformed');
+    ({ r } = await run(true, (b) => ({ ...b, postToken: b.postToken.map((x) => ({ ...x, amount: x.amount + 1n })) })));
+    expect(r).toMatchObject({ outcome: 'malformed', error: 'the simulation\'s post balances disagree with the accounts it read back' });
   });
 });
