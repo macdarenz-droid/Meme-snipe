@@ -279,6 +279,15 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - An attempt is spent only when a seal is opened and scored.
   - B5 (Melbourne 10-03 01:47 AEST) is read as a decoder boundary, not a market boundary, with a non-gating per-regime line.
   - Days 10-02 to 10-19 (plus a margin day) are holdout evaluation days. They go through the same download, QA, parity and publish path and are never practice days.
+- **Closing items (all three agree).**
+  - E is the registered UTC entry cutoff. The seal is opened and scored once, only after the observation-only tail has matured.
+  - G3 levels follow the direction of safety:
+    - The veto-bias composite (holdout lower bound, v₉₅, |Δ|₉₅) uses α/3 for each part, giving at least 95% simultaneous coverage. Wider bounds are stricter there.
+    - The consistency checks (candidate rate, mean, fills, reject mix) are "agree" tests. They keep their individual registered levels, because widening them would make "agree" easier. A joint reject-mix test (G-test or chi-square) is added beside the per-reason intervals, and failing either counts as disagree.
+    - Power at 48 h is reported against registered inconsistencies (candidate rate halved, mean shifted 5 points, severe-reject share doubled, fill gap above 0.5 points). If power is short, the run gets longer; the bound is never loosened.
+  - Daily and weekly losses: the conservative guard stays until the owner approves a change. Actual period trading P&L is reported beside it, and neither ever touches an exit.
+  - Lead-in ownership: coverage comes only from a complete seed or reconstruction, never from elapsed time. Exclusions are reported and labelled "not covered", never as rejects.
+  - Slot lag: the 2-slot limit stays unchanged while it is measured against a healthy confirmed head. Each gate read records scan duration, receipt delay and freshness at decision time, and the wall-clock outage checks stay.
 - **Dry-run overlap.**
   - Configurations are chosen from practice days only, and frozen and registered before any U1/U2 configuration runs live.
   - The sessions that choose configurations do not read live shakedown P&L before the freeze. Opening at E is mandatory, so later live P&L cannot change anything.
