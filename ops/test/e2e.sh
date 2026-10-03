@@ -390,7 +390,7 @@ pass "drills: restart and kill -9 both brought the worker back with reconcile fi
 # has PATTERN: grep -q that reads all its input first, so an early match never breaks the pipe (pipefail).
 has() { local all; all="$(cat)"; grep -q "$@" <<<"$all"; }
 in_c "systemctl stop zeroed-check.timer" # the stages below run the check by hand, one run at a time
-chk() { in_c "systemctl start zeroed-check.service"; }
+chk() { in_c "systemctl reset-failed zeroed-check.service 2>/dev/null; systemctl start zeroed-check.service"; } # reset-failed: many runs in seconds would hit the start limit
 jl() { in_c "journalctl -u $1 -o cat --no-pager"; }
 in_c "mkdir -p /var/lib/zeroed-dryrun/evidence/vps-e2e && printf '{\"name\":\"e2e-q\",\"label\":\"vps\",\"commit\":\"$signed\",\"startedAt\":1}' > /var/lib/zeroed-dryrun/evidence/vps-e2e/run.json"
 in_c "echo 0000000000000000000000000000000000000000 > /var/lib/zeroed-host/deployed"
