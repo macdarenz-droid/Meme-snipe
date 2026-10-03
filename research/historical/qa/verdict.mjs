@@ -67,6 +67,7 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
   }
   if (report.raw) {
     if (report.raw.signature_mismatch > 0) misses.push(`raw signature mismatches ${report.raw.signature_mismatch}`);
+    if ((report.raw.create_rows_with_raw ?? 0) !== (report.raw.create_rows ?? 0)) misses.push(`create transactions without raw record ${report.raw.create_rows - report.raw.create_rows_with_raw}`);
     if (report.raw.trade_txs_with_raw !== report.raw.trade_txs) misses.push(`trade transactions without raw record ${report.raw.trade_txs - report.raw.trade_txs_with_raw}`);
   }
   const liveFail = (report.live || []).filter((x) => !x.pass).length;

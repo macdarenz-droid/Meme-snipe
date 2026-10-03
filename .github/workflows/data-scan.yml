@@ -165,11 +165,26 @@ jobs:
           go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           echo "SCANNER_REVISION=$rev" >> "$GITHUB_ENV"
+      # Work volume: $RUNNER_TEMP/work points at /mnt/work when the runner has a second
+      # volume (a day's units are about 6.4-8.5 GB, up to about 13 GB), else it is a plain
+      # directory. The guard then checks the day's expected peak before any archive read:
+      # units at the high estimate (13 GB) + the one-day QA dataset (6 GB) + 5 GB.
+      - name: Prepare the work volume and check its free space
+        if: steps.published.outputs.complete != 'true'
+        run: |
+          if sudo mkdir -p /mnt/work 2>/dev/null && sudo chown "$USER" /mnt/work; then
+            ln -sfn /mnt/work "$RUNNER_TEMP/work"
+          else
+            mkdir -p "$RUNNER_TEMP/work"
+          fi
+          mkdir -p "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets" "$RUNNER_TEMP/work/qa"
+          df -h / "$RUNNER_TEMP/work/" | tee -a "$GITHUB_STEP_SUMMARY"
+          research/historical/ci/disk-guard.sh "$RUNNER_TEMP/work/" 24000000000 "the day's scan, QA dataset and headroom"
       - name: Restore progress for this day
         if: steps.published.outputs.complete != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/data
+          path: ${{ runner.temp }}/work/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}
           restore-keys: data-scan-${{ matrix.day }}-
       # One archive back-off shared by every day and run: the newest saved state wins.
@@ -182,18 +197,18 @@ jobs:
           restore-keys: data-scan-backoff-
       - name: Apply the shared back-off (the later end wins)
         if: steps.published.outputs.complete != 'true'
-        run: research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/backoff/archive-429.state" "$RUNNER_TEMP/data/archive-429.state"
+        run: research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/backoff/archive-429.state" "$RUNNER_TEMP/work/data/archive-429.state"
       - name: Scan (one lane, stops on 429)
         if: steps.published.outputs.complete != 'true'
         env:
           DAY: ${{ matrix.day }}
           MAX_MBPS: ${{ inputs.max_mbps }}
-        run: research/historical/ci/scan-day.sh "$DAY" "$RUNNER_TEMP/data" "$MAX_MBPS" 300
+        run: research/historical/ci/scan-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$MAX_MBPS" 300
       - name: Save progress
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/data
+          path: ${{ runner.temp }}/work/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: QA, determinism and packaging
         id: qa
@@ -202,11 +217,9 @@ jobs:
           DAY: ${{ matrix.day }}
           MAX_MBPS: ${{ inputs.max_mbps }}
         run: |
-          # The one-day dataset goes on the runner's second volume when there is one, so it
-          # does not share the disk with the day's units.
-          if sudo mkdir -p /mnt/qa 2>/dev/null && sudo chown "$USER" /mnt/qa; then export DATASET_PARENT=/mnt/qa; fi
-          research/historical/ci/check-day.sh "$DAY" "$RUNNER_TEMP/data" "$RUNNER_TEMP/assets"
-      # The determinism rescan uses -state "$RUNNER_TEMP/data" and can hit a 429, which
+          export DATASET_PARENT="$RUNNER_TEMP/work/qa"
+          research/historical/ci/check-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets"
+      # The determinism rescan uses -state "$RUNNER_TEMP/work/data" and can hit a 429, which
       # fails QA. Only then does the day's progress change after "Save progress" (the
       # rescan itself writes to a temp dir), so it is saved again only when QA failed,
       # instead of storing an identical ~4 GB copy of every passed day.
@@ -214,13 +227,13 @@ jobs:
         if: always() && steps.published.outcome == 'success' && steps.qa.outcome == 'failure' && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/data
+          path: ${{ runner.temp }}/work/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}-qa
       - name: Collect the back-off for the next day and run
         id: backoff
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
         run: |
-          research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/data/archive-429.state" "$RUNNER_TEMP/backoff/archive-429.state"
+          research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/work/data/archive-429.state" "$RUNNER_TEMP/backoff/archive-429.state"
           if [ -f "$RUNNER_TEMP/backoff/archive-429.state" ]; then
             echo "back-off state: $(cat "$RUNNER_TEMP/backoff/archive-429.state")"
             echo "has=true" >> "$GITHUB_OUTPUT"
@@ -235,7 +248,7 @@ jobs:
         if: steps.published.outputs.complete != 'true'
         with:
           name: day-${{ matrix.day }}
-          path: ${{ runner.temp }}/assets
+          path: ${{ runner.temp }}/work/assets
           compression-level: 0
           retention-days: 14
       - name: Publish this day
@@ -254,7 +267,7 @@ jobs:
         run: >-
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
           GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
-          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" "$DAY" "$RUNNER_TEMP/assets"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" "$DAY" "$RUNNER_TEMP/work/assets"
 
   assemble:
     needs: plan

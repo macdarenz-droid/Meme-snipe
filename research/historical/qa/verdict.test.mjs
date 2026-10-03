@@ -63,3 +63,9 @@ test('an assembled window may not reach the 2026-10-02 regime boundary', () => {
   m.window.lead_in_days = 0;
   assert.deepEqual(strictMisses(m, report, { leadInDays: 0 }), []);
 });
+
+test('every create transaction must have its raw record', () => {
+  const r = structuredClone(report);
+  r.raw = { signature_mismatch: 0, trade_txs: 0, trade_txs_with_raw: 0, create_rows: 3, create_rows_with_raw: 2 };
+  assert.deepEqual(strictMisses(base(), r), ['create transactions without raw record 1']);
+});

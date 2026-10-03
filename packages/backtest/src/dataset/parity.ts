@@ -452,8 +452,9 @@ export interface ParitySummary {
   mismatch_count: number;
   missing_row_count: number;
   unchecked_columns: readonly string[];
-  /** Raw records exist only for mints with h(mint) below this rate, so this is sample parity, not full-row parity. */
+  /** Raw records exist only for mints with h(mint) below this rate (and for every create), so this is sample parity, not full-row parity. */
   raw_sample_rate: number;
+  scope: string;
   mismatches: Mismatch[];
   missing_rows: MissingRow[];
 }
@@ -481,6 +482,7 @@ export class ParityChecker {
     missing_row_count: 0,
     unchecked_columns: UNCHECKED_COLUMNS,
     raw_sample_rate: 1,
+    scope: 'rows of mints with h < raw_sample_rate, and every CreateEvent row',
     mismatches: [],
     missing_rows: [],
   };
@@ -654,7 +656,10 @@ export class ParityChecker {
     for (const list of this.rows.values()) {
       for (const row of list) {
         const mint = row.kind === 'curve' ? (row.values.mint ?? '') : row.kind === 'amm' ? (row.values.base_mint ?? '') : row.kind === 'failed' ? (row.values.mint_hint ?? '') : row.fields?.mint || row.fields?.base_mint || '';
-        if (!(mint !== '' && mintHash(mint) < this.rawSampleRate) || (row.kind === 'event' && this.tape(mint, Number(row.values.block_time ?? 0)) !== 'in')) {
+        // Every CreateEvent row needs its raw record (the scanner keeps every create's);
+        // other rows only for hash-sampled mints, and events rows only inside a tape.
+        const isCreate = row.kind === 'event' && row.event === 'CreateEvent';
+        if (!isCreate && (!(mint !== '' && mintHash(mint) < this.rawSampleRate) || (row.kind === 'event' && this.tape(mint, Number(row.values.block_time ?? 0)) !== 'in'))) {
           this.s.rows_without_raw++;
           continue;
         }

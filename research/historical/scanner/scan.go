@@ -774,7 +774,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 		if mintHint != "" && inSample(mintHint) {
 			r.failed = append(r.failed, []string{slot, bt, tidx, sig, signer, fee, cu, strings.Join(progs, "|"), mintHint, hexs(meta.Err.Err)})
 		}
-		r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, mintHint)
+		r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, nil, mintHint)
 		return
 	}
 
@@ -820,6 +820,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 	evIdx := 0
 	tip := strconv.FormatUint(jitoTip(keys, meta.PreBalances, meta.PostBalances), 10)
 	var eventMints []string
+	var createdMints []string // every create keeps its raw record (DEC-1 parity of every CreateEvent row)
 	for gi, g := range groups {
 		for k, ix := range g {
 			// position for the (slot, tx, outer, inner) ordering key; events are
@@ -929,6 +930,9 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 				}
 				m["fields"] = fields
 				eventMints = append(eventMints, fields["mint"], fields["base_mint"])
+				if prog == "pump" && ev.def.name == "CreateEvent" && fields["mint"] != "" {
+					createdMints = append(createdMints, fields["mint"])
+				}
 				if len(ev.tail) > 0 {
 					m["extra_hex"] = hexs(ev.tail)
 				}
@@ -994,13 +998,15 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 			r.emitRow("amm", row)
 		}
 	}
-	r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, eventMints...)
+	r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, createdMints, eventMints...)
 }
 
-// addRaw writes the raw record of a transaction that touches a sampled mint.
-func (r *blockResult) addRaw(st *UnitStats, b *blockData, txIdx int, sig string, txBytes, metaRaw []byte, meta *TransactionStatusMeta, extra ...string) {
+// addRaw writes the raw record of a transaction that touches a sampled mint, or that
+// creates a mint (always, so every CreateEvent row has its raw record; the created
+// mints are listed in the record's mints).
+func (r *blockResult) addRaw(st *UnitStats, b *blockData, txIdx int, sig string, txBytes, metaRaw []byte, meta *TransactionStatusMeta, created []string, extra ...string) {
 	// Cheap check first: the token balances' mints (pre and post) and the event mints.
-	hit := false
+	hit := len(created) > 0
 	for _, m := range extra {
 		hit = hit || (m != "" && m != wsolMint && inSample(m))
 	}
@@ -1025,6 +1031,12 @@ func (r *blockResult) addRaw(st *UnitStats, b *blockData, txIdx int, sig string,
 		return
 	}
 	mints := sampledMints(full, extra...)
+	for _, m := range created {
+		if !containsString(mints, m) {
+			mints = append(mints, m)
+		}
+	}
+	sort.Strings(mints)
 	if len(mints) == 0 {
 		return
 	}
@@ -1032,6 +1044,15 @@ func (r *blockResult) addRaw(st *UnitStats, b *blockData, txIdx int, sig string,
 }
 
 const wsolMint = "So11111111111111111111111111111111111111112"
+
+func containsString(xs []string, x string) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
+		}
+	}
+	return false
+}
 
 func ownerBalances(post []*TokenBalance, owner string) map[string]string {
 	out := map[string]string{}

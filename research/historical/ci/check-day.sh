@@ -12,6 +12,9 @@ summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 # Disk: the units (about 6.4-8.5 GB a day) and the one-day dataset can live on different
 # volumes (DATASET_PARENT, e.g. /mnt on GitHub runners); free space is logged.
 { echo "### Disk before QA ($day)"; echo '```'; df -h "$out" "${DATASET_PARENT:-/tmp}" 2>/dev/null; echo '```'; } >> "$summary"
+# Before finalize: room for the one-day dataset (at most about the units' size) + 5 GB.
+units_bytes=$(du -sb "$out/units" | cut -f1)
+"$here/disk-guard.sh" "${DATASET_PARENT:-/tmp}" $(( units_bytes + 5000000000 )) "the one-day QA dataset"
 ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
 # A single-day dataset without lead-in: universes are tokens created or graduated in
 # that day's units. The multi-day dataset (assemble.sh) uses the 14-day lead-in.
@@ -39,9 +42,16 @@ done
 echo "determinism: unit $epoch/$range rescanned, every file identical" | tee -a "$summary"
 rm -rf "$ds" "$again"
 
+# The day's events-only asset (each unit's events, stats and block rows), all an
+# assembled window needs from its lead-in days; files in sorted order.
+(cd "$out" && find units -mindepth 3 -maxdepth 3 \( -name events.jsonl.zst -o -name stats.json -o -name blocks.csv.zst \) \
+  ! -path '*.tmp/*' | LC_ALL=C sort | tar --no-recursion -cf "$assets/events-$day.tar" -T -)
+# Before packaging: tar --remove-files frees each unit file as it goes, so one part
+# (1.9 GiB) + 5 GB of headroom is enough.
+"$here/disk-guard.sh" "$assets" 7000000000 "packaging"
 # Package: one tar of the day's finished units, split into 1900 MiB parts (under the
 # 2 GiB asset limit). --remove-files deletes each unit file once it is in the tar, so
 # the disk holds the units or their tar, not both (progress is already in the cache).
 (cd "$out" && tar --exclude='*.tmp' --remove-files -cf - units) | split -b 1900m -d -a 2 - "$assets/units-$day.tar.part"
 { echo "### Disk after packaging ($day)"; echo '```'; df -h "$assets" 2>/dev/null; ls -l "$assets"; echo '```'; } >> "$summary"
-(cd "$assets" && sha256sum units-"$day".tar.part* qa-"$day".* parity-"$day".json manifest-"$day".json > "SHA256SUMS-$day")
+(cd "$assets" && sha256sum units-"$day".tar.part* events-"$day".tar qa-"$day".* parity-"$day".json manifest-"$day".json > "SHA256SUMS-$day")

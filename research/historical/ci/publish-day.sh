@@ -36,7 +36,7 @@ release_state() {
   "$GH" release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "SHA256SUMS-$day" --dir "$tmp" >/dev/null 2>&1 ||
     { rm -rf "$tmp"; echo "incomplete: no SHA256SUMS-$day"; return; }
   want=$( { awk '{print $2}' "$tmp/SHA256SUMS-$day" | grep -E "^units-$day\.tar\.part[0-9]+\$" || true
-            printf '%s\n' "qa-$day.md" "qa-$day.json" "manifest-$day.json" "parity-$day.json" "SHA256SUMS-$day"; } | sort)
+            printf '%s\n' "events-$day.tar" "qa-$day.md" "qa-$day.json" "manifest-$day.json" "parity-$day.json" "SHA256SUMS-$day"; } | sort)
   rm -rf "$tmp"
   have=$(grep '^asset ' <<<"$info" | awk '{print $2}' | sort)
   grep -q "^units-$day\.tar\.part" <<<"$want" || { echo "incomplete: SHA256SUMS-$day lists no tar part"; return; }
@@ -64,7 +64,7 @@ d=$1 assets=$2
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 cd "$assets"
 sums="SHA256SUMS-$d"
-files=(units-"$d".tar.part* qa-"$d".md qa-"$d".json manifest-"$d".json parity-"$d".json)
+files=(units-"$d".tar.part* events-"$d".tar qa-"$d".md qa-"$d".json manifest-"$d".json parity-"$d".json)
 for f in "${files[@]}"; do
   [ -f "$f" ] || { echo "missing $f"; exit 1; }
   grep -q "  $f\$" "$sums" || { echo "$f is not listed in $sums"; exit 1; }

@@ -300,6 +300,17 @@ if (man.schema >= 2) {
       rawKeys.add(`${r.slot}:${r.txIndex}`);
     }
   }
+  // Every create transaction keeps its raw record, whatever the mint's hash.
+  st.create_rows = 0; st.create_rows_with_raw = 0;
+  for (const f of dayFiles('events')) {
+    for (const l of zlib.zstdDecompressSync(fs.readFileSync(path.join(ds, f))).toString().split('\n').filter(Boolean)) {
+      const e = JSON.parse(l);
+      if (e.event !== 'CreateEvent') continue;
+      st.create_rows++;
+      if (rawKeys.has(`${e.slot}:${e.tx_idx}`)) st.create_rows_with_raw++;
+      else if (st.missing.length < 10) st.missing.push(`create ${e.slot}:${e.tx_idx}`);
+    }
+  }
   const sampleRate = man.sampling?.unit_sample_rate_min ?? 1;
   const inRawSample = (m) => m !== '' && mintHash(m) < sampleRate;
   const seen = new Set();

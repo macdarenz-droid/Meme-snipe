@@ -14,7 +14,8 @@
 #   1. every lead-in day (FROM-14 .. FROM-1) and every window day must have a day
 #      release, or the script stops before downloading anything; no earlier day is read;
 #   2. per day: free-space guard (3x the day's tar + 10 GB), download parts and
-#      SHA256SUMS, verify, extract (lead-in days: events, stats and block rows only),
+#      SHA256SUMS, verify, extract (lead-in days: only the small events-DAY.tar asset,
+#      which holds each unit's events, stats and block rows),
 #      delete the parts, move each unit into OUT_DIR/data/units/EPOCH/RANGE. A unit that
 #      crosses midnight arrives twice: every *.zst present in both copies must have the
 #      same sha256, and its two stats.json must agree on epoch, slots, blocks, schema and
@@ -54,13 +55,14 @@ day_list() {
   done
 }
 
-# tar_bytes DAY: total size of the day's units-DAY.tar.part* assets (fails when none).
+# tar_bytes DAY PREFIX: total size of the day's assets whose names start with PREFIX
+# (units-DAY.tar.part for window days, events-DAY.tar for lead-in days); fails when none.
 tar_bytes() {
-  local day=$1 n
+  local day=$1 prefix=$2 n
   n=$(gh release view "data-day-$day" --repo "$GITHUB_REPOSITORY" --json assets \
-    --jq "[.assets[] | select(.name | startswith(\"units-$day.tar.part\")) | .size] | if length == 0 then -1 else add end") ||
+    --jq "[.assets[] | select(.name | startswith(\"$prefix\")) | .size] | if length == 0 then -1 else add end") ||
     die "release data-day-$day is missing (every lead-in and window day is required)"
-  [[ "$n" =~ ^[0-9]+$ ]] || die "release data-day-$day has no units-$day.tar.part* assets"
+  [[ "$n" =~ ^[0-9]+$ ]] || die "release data-day-$day has no $prefix* asset"
   echo "$n"
 }
 
@@ -131,9 +133,31 @@ merge_unit() {
 
 # fetch_day DAY LEADIN(0|1) WORK DATA: download, verify, extract, merge one day.
 fetch_day() {
-  local day=$1 leadin=$2 work=$3 data=$4 dl x parts listed u rel
+  local day=$1 leadin=$2 work=$3 data=$4 dl x u rel
   dl="$work/dl-$day"; x="$dl/x"
   rm -rf "$dl"; mkdir -p "$x"
+  if (( leadin )); then
+    # Lead-in days need only events, stats and block rows: the day's small events asset.
+    gh release download "data-day-$day" --repo "$GITHUB_REPOSITORY" --dir "$dl" \
+      --pattern "events-$day.tar" --pattern "SHA256SUMS-$day"
+    [[ -f "$dl/events-$day.tar" ]] || die "day $day: no events-$day.tar in its release"
+    (cd "$dl" && grep -E "  events-$day\.tar$" "SHA256SUMS-$day" | sha256sum -c --quiet -) || die "day $day: events asset checksum mismatch"
+    tar -xf "$dl/events-$day.tar" -C "$x"
+    rm -f "$dl/events-$day.tar"
+  else
+    fetch_parts "$day" "$dl" "$x"
+  fi
+  [[ -d "$x/units" ]] || die "day $day: no units/ in its tar"
+  while IFS= read -r u; do
+    rel=${u#"$x/units/"}
+    merge_unit "$u" "$data/units/$rel"
+  done < <(find "$x/units" -mindepth 2 -maxdepth 2 -type d | sort)
+  rm -rf "$dl"
+}
+
+# fetch_parts DAY DL X: download, verify and extract the day's full units tar parts.
+fetch_parts() {
+  local day=$1 dl=$2 x=$3 parts listed
   gh release download "data-day-$day" --repo "$GITHUB_REPOSITORY" --dir "$dl" \
     --pattern "units-$day.tar.part*" --pattern "SHA256SUMS-$day"
   parts=$(find "$dl" -maxdepth 1 -name "units-$day.tar.part*" | wc -l)
@@ -141,18 +165,8 @@ fetch_day() {
   (( parts > 0 && parts == listed )) || die "day $day: $parts parts downloaded, $listed listed in SHA256SUMS-$day"
   (cd "$dl" && grep -E "  units-$day\.tar\.part[0-9]+$" "SHA256SUMS-$day" | sha256sum -c --quiet -) ||
     die "day $day: checksum mismatch"
-  if (( leadin )); then
-    cat "$dl"/units-"$day".tar.part* | tar -xf - -C "$x" --wildcards '*/events.jsonl.zst' '*/stats.json' '*/blocks.csv.zst'
-  else
-    cat "$dl"/units-"$day".tar.part* | tar -xf - -C "$x"
-  fi
+  cat "$dl"/units-"$day".tar.part* | tar -xf - -C "$x"
   rm -f "$dl"/units-"$day".tar.part*
-  [[ -d "$x/units" ]] || die "day $day: no units/ in its tar"
-  while IFS= read -r u; do
-    rel=${u#"$x/units/"}
-    merge_unit "$u" "$data/units/$rel"
-  done < <(find "$x/units" -mindepth 2 -maxdepth 2 -type d | sort)
-  rm -rf "$dl"
 }
 
 # build_release DATASET REL: move the dataset files flat into REL and checksum them.
@@ -190,7 +204,9 @@ main() {
   mapfile -t days < <(day_list "$from" "$to")
   # Every required day must exist before any download.
   local -A size
-  for day in "${days[@]}"; do size[$day]=$(tar_bytes "$day"); done
+  for day in "${days[@]}"; do
+    if [[ "$day" < "$from" ]]; then size[$day]=$(tar_bytes "$day" "events-$day.tar"); else size[$day]=$(tar_bytes "$day" "units-$day.tar.part"); fi
+  done
   echo "assemble: $from..$to with lead-in from ${days[0]}: ${#days[@]} day releases found"
   for day in "${days[@]}"; do
     leadin=0; [[ "$day" < "$from" ]] && leadin=1

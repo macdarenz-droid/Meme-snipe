@@ -441,3 +441,14 @@ describe('decoder parity: raw records only for the hash sample', () => {
     expect(inside.mismatches.map((m) => m.field)).toEqual(['(raw record)']);
   });
 });
+
+describe('decoder parity: every create keeps its raw record', () => {
+  it('fails a CreateEvent row without its raw record even for a mint outside the hash sample', () => {
+    const c = new ParityChecker(universe, undefined, 0);
+    c.addRow(eventRow({ slot: 452700000, block_time: BLOCK_TIME, tx_idx: 9, ev_idx: 0, outer_ix: 0, inner_ix: 0, signature: encodeBase58(sig(9)), program: 'pump', event: 'CreateEvent', fields: { mint: MINT } }));
+    c.addRow(curveRow(curveValues(9)));
+    c.endBatch();
+    expect(c.s.mismatches.map((m) => [m.kind, m.field])).toEqual([['event', '(raw record)']]);
+    expect(c.s.rows_without_raw).toBe(1);
+  });
+});

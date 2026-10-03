@@ -93,7 +93,9 @@ make_day() {
       "${!rv:-r1}" "$((10#${day: -2}))" "$day" > "$src/units/900/$u/stats.json"
   done
   (cd "$src" && tar -cf - units) | split -b 4000 -d -a 2 - "$dir/units-$day.tar.part"
-  (cd "$dir" && sha256sum units-"$day".tar.part* > "SHA256SUMS-$day")
+  (cd "$src" && find units -mindepth 3 -maxdepth 3 \( -name events.jsonl.zst -o -name stats.json -o -name blocks.csv.zst \) | LC_ALL=C sort |
+    tar --no-recursion -cf "$dir/events-$day.tar" -T -)
+  (cd "$dir" && sha256sum units-"$day".tar.part* events-"$day".tar > "SHA256SUMS-$day")
   rm -rf "$src"
 }
 reset_store() {
@@ -145,8 +147,13 @@ run 2026-09-20 2026-09-22 "$T/work" && no "missing lead-in day skipped silently"
 reset_store
 FAKE_AVAIL=1000 run 2026-09-20 2026-09-22 "$T/work" && no "disk guard passed" || { grep -q "not enough disk" "$T/out.txt" && ok "free-space guard (3x tar + 10 GB)" || no "disk guard message"; }
 
-reset_store; echo junk >> "$T/rel/data-day-2026-09-08/units-2026-09-08.tar.part00"
-run 2026-09-20 2026-09-22 "$T/work" && no "corrupt part accepted" || { grep -q "checksum mismatch" "$T/out.txt" && ok "corrupt part fails the checksum" || no "checksum message: $(cat "$T/out.txt")"; }
+reset_store; echo junk >> "$T/rel/data-day-2026-09-21/units-2026-09-21.tar.part00"
+run 2026-09-20 2026-09-22 "$T/work" && no "corrupt part accepted" || { grep -q "checksum mismatch" "$T/out.txt" && ok "corrupt window part fails the checksum" || no "checksum message: $(cat "$T/out.txt")"; }
+reset_store; echo junk >> "$T/rel/data-day-2026-09-08/events-2026-09-08.tar"
+run 2026-09-20 2026-09-22 "$T/work" && no "corrupt events asset accepted" || { grep -q "events asset checksum mismatch" "$T/out.txt" && ok "corrupt lead-in events asset fails the checksum" || no "events checksum message: $(cat "$T/out.txt")"; }
+reset_store; rm "$T/rel/data-day-2026-09-10/units-2026-09-10.tar.part"*
+run 2026-09-20 2026-09-22 "$T/work"; grep -q "^data-day-2026-09-10$" "$T/downloads.log" && ! ls "$T/work"/dl-* >/dev/null 2>&1 && [[ -f "$T/rel/data-2026-09-20-2026-09-22/manifest.json" || -f "$T/finalize.args" ]] &&
+  ok "lead-in days download only the events asset (a lead-in day with no tar parts still assembles)" || no "lead-in events-only: $(tail -3 "$T/out.txt")"
 
 STATS_REV_2026_09_20=r2 reset_store
 run 2026-09-20 2026-09-22 "$T/work" && no "midnight unit with another scanner_revision accepted" ||
@@ -253,14 +260,14 @@ export GH_BIN="$T/bin/gh"
 pd="$T/pd"; mkdir -p "$pd"; rm -rf "$T/rel/data-day-2026-09-30"; : > "$T/created.log"
 mkpd() {
   rm -f "$pd"/*
-  for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json; do echo "$f" > "$pd/$f"; done
-  (cd "$pd" && sha256sum units-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
+  for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 events-2026-09-30.tar qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json; do echo "$f" > "$pd/$f"; done
+  (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 }
 mkpd
-bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 7 ]] &&
+bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 8 ]] &&
   ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity and sums" || no "publish-day create"
 echo "rerun QA report with different live results" > "$pd/qa-2026-09-30.md"; echo '{"rerun":1}' > "$pd/qa-2026-09-30.json"
-(cd "$pd" && sha256sum units-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
+(cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
   ! grep -q rerun "$T/rel/data-day-2026-09-30/qa-2026-09-30.md" &&
   ok "publish-day: a complete release is accepted unchanged although the rerun's QA files differ in size" || no "publish-day complete rerun"
@@ -284,9 +291,9 @@ GITHUB_OUTPUT="$T/ghout" bash "$here/publish-day.sh" --check 2026-09-30 >/dev/nu
 rm -rf "$T/rel/data-day-2026-09-30"; mkpd; echo corrupt >> "$pd/units-2026-09-30.tar.part00"
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && no "publish-day published a corrupt part" ||
   { [[ ! -d "$T/rel/data-day-2026-09-30" ]] && ok "publish-day: a checksum mismatch publishes nothing" || no "publish-day corrupt"; }
-mkpd; rm "$pd/parity-2026-09-30.json"; (cd "$pd" && sha256sum units-* qa-* manifest-* > SHA256SUMS-2026-09-30)
+mkpd; rm "$pd/parity-2026-09-30.json"; (cd "$pd" && sha256sum units-* events-* qa-* manifest-* > SHA256SUMS-2026-09-30)
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && no "publish-day published without parity" || ok "publish-day: a missing parity report publishes nothing"
-mkpd; (cd "$pd" && sha256sum units-* qa-* manifest-* > SHA256SUMS-2026-09-30)
+mkpd; (cd "$pd" && sha256sum units-* events-* qa-* manifest-* > SHA256SUMS-2026-09-30)
 out=$(bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && no "publish-day published a file missing from SHA256SUMS" ||
   { [[ "$out" == *"not listed"* && ! -d "$T/rel/data-day-2026-09-30" ]] && ok "publish-day: a file not listed in SHA256SUMS publishes nothing" || no "publish-day unlisted: $out"; }
 printf '#!/usr/bin/env bash\necho "$*" >> "%s/ghcalls.log"\n' "$T" > "$T/ghrec"; chmod +x "$T/ghrec"; : > "$T/ghcalls.log"
@@ -324,6 +331,12 @@ for s in steps[i + 1:]:
     if "always()" in s.get("if", ""):
         assert "steps.published.outcome == 'success'" in s["if"], s
 PY
+
+# ---- disk-guard.sh ----
+dg=$(FAKE_AVAIL=24000000000 bash "$here/disk-guard.sh" "$T" 24000000000 "the scan" 2>&1) && [[ "$dg" == *"24.0 GB free"* ]] &&
+  ok "disk-guard: passes at exactly the needed free space and logs it" || no "disk-guard pass: $dg"
+dg=$(FAKE_AVAIL=23999999999 bash "$here/disk-guard.sh" "$T" 24000000000 "the scan" 2>&1) && no "disk-guard passed one byte short" ||
+  { [[ "$dg" == *"not enough disk"*"the scan"* ]] && ok "disk-guard: fails one byte short with a clear message" || no "disk-guard message: $dg"; }
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
