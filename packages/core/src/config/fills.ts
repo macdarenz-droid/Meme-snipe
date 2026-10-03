@@ -21,6 +21,8 @@ const LAND_LOW = { pumpswap: 560_000n, 'pump-curve': 400_000n } as const;
 const LAND_HIGH = { pumpswap: 760_000n, 'pump-curve': 590_000n } as const;
 // Congestion windows of 150 slots (about one minute, one blockhash lifetime).
 const WINDOW = 150;
+// The network chain restarts from its stationary share every 4,096 windows (about a week of slots).
+const SEGMENT = 4_096;
 
 const VALUES: FillConfig = {
   version: 'fills-2',
@@ -46,7 +48,7 @@ const VALUES: FillConfig = {
     base: {
       name: 'base', landPpm: LAND, dropPpm: 300_000n,
       landingTail: { ppm: 30_000n, slots: [15, 30, 60] },
-      congestion: { windowSlots: WINDOW, burstPpm: 80_000n, landFactorPpm: 600_000n, extraLandingSlots: 8 },
+      congestion: { windowSlots: WINDOW, segmentWindows: SEGMENT, network: { enterPpm: 30_000n, stayPpm: 600_000n }, pool: { enterPpmPerSol: 5_000n, maxEnterPpm: 200_000n, stayPpm: 600_000n }, providerFailPpm: 5_000n, landFactorPpm: 600_000n, extraLandingSlots: 8 },
       exitRetryHaircutPpm: 25_000n,
       delay: 'measured',
       discoverySlots: [2, 3, 4, 5, 8], landingSlots: [1, 2, 2, 3, 4],
@@ -57,7 +59,7 @@ const VALUES: FillConfig = {
     conservative: {
       name: 'conservative', landPpm: LAND_LOW, dropPpm: 200_000n,
       landingTail: { ppm: 50_000n, slots: [30, 60, 120] },
-      congestion: { windowSlots: WINDOW, burstPpm: 150_000n, landFactorPpm: 400_000n, extraLandingSlots: 20 },
+      congestion: { windowSlots: WINDOW, segmentWindows: SEGMENT, network: { enterPpm: 60_000n, stayPpm: 750_000n }, pool: { enterPpmPerSol: 10_000n, maxEnterPpm: 400_000n, stayPpm: 750_000n }, providerFailPpm: 20_000n, landFactorPpm: 400_000n, extraLandingSlots: 20 },
       exitRetryHaircutPpm: 50_000n,
       delay: 'adverse',
       discoverySlots: [17], landingSlots: [6],
@@ -67,7 +69,7 @@ const VALUES: FillConfig = {
     optimistic: {
       name: 'optimistic', landPpm: LAND_HIGH, dropPpm: 400_000n,
       landingTail: { ppm: 10_000n, slots: [8, 15] },
-      congestion: { windowSlots: WINDOW, burstPpm: 30_000n, landFactorPpm: 800_000n, extraLandingSlots: 2 },
+      congestion: { windowSlots: WINDOW, segmentWindows: SEGMENT, network: { enterPpm: 10_000n, stayPpm: 500_000n }, pool: { enterPpmPerSol: 2_000n, maxEnterPpm: 100_000n, stayPpm: 500_000n }, providerFailPpm: 1_000n, landFactorPpm: 800_000n, extraLandingSlots: 2 },
       exitRetryHaircutPpm: 10_000n,
       delay: 'measured',
       discoverySlots: [1, 2], landingSlots: [1],

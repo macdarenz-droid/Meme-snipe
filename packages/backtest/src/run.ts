@@ -33,6 +33,8 @@ export interface RunOptions {
   readonly s0?: Partial<S0Config>;
   /** Extra events (a planted leak marker), merged into the replay. */
   readonly extraEvents?: readonly FeedEvent[];
+  /** Deterministic failure bursts (stress): every attempt sent inside one never reaches a block. */
+  readonly failureBursts?: { readonly perDay: number; readonly durationMs: number };
   /** Observation delay profile instead of the scenario's (a stress run). */
   readonly delay?: DelayProfileName;
   /** 'recorded': the rows carry recorded receipt times (recorder data), so no delay is added. Default 'chain-time'. */
@@ -130,6 +132,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
       slots: profile.eventToProcessedSlots + (o.research.decisionCommitment === 'confirmed' ? profile.processedToConfirmedSlots : 0),
       providerMs: profile.providerMs, blackouts: profile.blackouts.map((b) => b.durationMs), seed: `${o.seed}:feed`,
     },
+    volumeWindowSlots: scenario.congestion.windowSlots,
     hook: (h) => replay!.hook(h),
     hasRows: () => replay!.hasRows(),
     schedule: (e) => replay!.schedule(e),
@@ -153,7 +156,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
   sink = new LedgerSink(ledger, { maxOpenPositions: maxOpen }, { maxHeld: 2n ** 62n as never, maxCount: maxOpen });
   const net = o.fills.network;
   const world = new World({
-    replay: replay as StreamReplay<unknown>, market, book, rng: createRng(`${o.seed}:world`), congestionSeed: `${o.seed}:world`, scenario, network: net,
+    replay: replay as StreamReplay<unknown>, market, book, rng: createRng(`${o.seed}:world`), congestionSeed: `${o.seed}:world`, failureBursts: o.failureBursts, scenario, network: net,
     ladder: o.policy.exits.ladder.steps,
     poolOf: (mint) => discoveries.get(mint)?.pool,
     onSettled: (a) => sink!.fees(a, net.signaturesPerTx * net.baseFeePerSignature, net.tip, replay!.clock.now().receivedAt),

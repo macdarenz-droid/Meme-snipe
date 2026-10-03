@@ -32,7 +32,7 @@ export interface HoldoutAuthority {
 export const holdoutConfigId = (o: RunOptions, a: Pick<HoldoutAuthority, 'codeCommit' | 'datasetId'>): string =>
   createHash('sha256').update(canonical({
     s0: s0Config(o), policy: o.policy, fills: o.fills, scenario: o.scenario, seed: o.seed, research: o.research,
-    delay: o.delay ?? null, observation: o.observation ?? 'chain-time',
+    delay: o.delay ?? null, observation: o.observation ?? 'chain-time', failureBursts: o.failureBursts ?? null,
     regimeBoundaries: o.regimeBoundaries ?? [], codeCommit: a.codeCommit, datasetId: a.datasetId,
   })).digest('hex');
 

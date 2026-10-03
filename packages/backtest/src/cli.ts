@@ -3,7 +3,7 @@
 //
 //   node packages/backtest/src/cli.ts run --dataset <dir> --sol-usd <file> [--scenario conservative] [--seed s0-1]
 //        [--replays 10] [--days 2026-09-01,2026-09-02] [--out report.json] [--evidence evidence.json] [--ledger bt.sqlite]
-//        [--delay measured|adverse|stress]
+//        [--delay measured|adverse|stress] [--burst-sweep]
 //   node packages/backtest/src/cli.ts holdout-register --dataset <dir> --sol-usd <file> --registry <file> --holdout-id <id>
 //        [--universe U2] [--family-size 1] [--days ...] [--scenario ...] [--seed ...]
 //   node packages/backtest/src/cli.ts holdout --dataset <dir> --sol-usd <file> --registry <file> --holdout-id <id>
@@ -27,6 +27,7 @@ import { authoriseHoldout, runAndSealHoldout } from './holdout.ts';
 import { leakTest, shiftTest } from './proofs.ts';
 import { economics } from './economics.ts';
 import { buildReport } from './report.ts';
+import { burstSweep, ladderCongestion } from './stress.ts';
 import { runBacktest, type RunOptions } from './run.ts';
 import { tradesOf } from './trades.ts';
 
@@ -173,6 +174,11 @@ if (command === 'holdout-register' || command === 'holdout') {
     regimeBoundaries: first.regimes.map((b) => ({ slot: b.slot.toString(), label: b.label, at: new Date(b.at).toISOString() })),
     tradesAcrossRegimeBoundary: trades.filter((t) => first.regimes.some((b) => t.openedAt < b.at && t.closedAt >= b.at)).length,
     attemptsCongested: first.attempts.filter((a) => a.congested).length,
+    attemptsForcedDrop: { provider: first.attempts.filter((a) => a.forcedDrop === 'provider').length, burst: first.attempts.filter((a) => a.forcedDrop === 'burst').length },
+    // Blocked exits when the whole ladder fell inside congestion (feeds y_severe).
+    ladderCongestion: ladderCongestion(first),
+    // Expectancy and survival against burst frequency (opt-in: 12 more runs).
+    burstSweep: args.includes('--burst-sweep') ? burstSweep(base, { perDay: [0, 2, 8, 24], durationsMs: [10_000, 30_000, 60_000] }, { from, to }) : 'not run (--burst-sweep)',
     exitRetries: first.attempts.filter((a) => a.exitRetry > 0).length,
     attempts: Object.fromEntries(['filled', 'failed', 'dropped', 'expired', 'in_flight'].map((o) => [o, first.attempts.filter((a) => a.outcome === o).length])),
   };

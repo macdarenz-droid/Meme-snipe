@@ -3,7 +3,7 @@ import type { PoolState } from '../../src/amm/index.ts';
 import { FILL_CONFIG } from '../../src/config/index.ts';
 import { createRng } from '../../src/engine/index.ts';
 import {
-  type FillScenario, type ObservedFees, type RealSwap, ShiftedPool, attemptFee, blockedExitValue, congestedAt, drawAttempt, executeBuy, executeSell,
+  type FillScenario, type ObservedFees, type RealSwap, NetworkState, ShiftedPool, attemptFee, blockedExitValue, drawAttempt, poolContended, poolEnterPpm, providerDown, executeBuy, executeSell,
   replaySwap, withSlippage,
 } from '../../src/fills/index.ts';
 import { bps } from '../../src/units/index.ts';
@@ -196,25 +196,56 @@ describe('stress in the fill model (BT-1c item 4)', () => {
     }
     for (const s of [c, b, o]) {
       expect(s.dropPpm).toBeGreaterThan(0n);
-      expect(s.congestion.burstPpm).toBeGreaterThan(0n);
+      expect(s.congestion.network.enterPpm).toBeGreaterThan(0n);
+      expect(s.congestion.providerFailPpm).toBeGreaterThan(0n);
       expect(s.landingTail.ppm).toBeGreaterThan(0n);
       expect(s.exitRetryHaircutPpm).toBeGreaterThan(0n);
     }
   });
 
-  test('congestion is correlated: one state per window, bursts at the configured share, fewer and later landings in a burst', () => {
-    const win = BigInt(c.congestion.windowSlots);
-    let bursts = 0;
-    const windows = 20_000;
+  test('one persistent shared network state over slot windows: bursts last, at the stationary share, from the seed', () => {
+    const net = c.congestion.network;
+    const a = new NetworkState('seed', c);
+    const b2 = new NetworkState('seed', c);
+    const windows = 200_000;
+    let on = 0;
+    let runs = 0;
+    let prev = false;
     for (let w = 0n; w < BigInt(windows); w++) {
-      const first = congestedAt('seed', w * win, c);
-      // Every slot of a window shares its state.
-      expect(congestedAt('seed', w * win + win - 1n, c)).toBe(first);
-      if (first) bursts++;
+      const x = a.congested(w);
+      if (x) on++;
+      if (x && !prev) runs++;
+      prev = x;
     }
-    const share = bursts / windows;
-    const want = Number(c.congestion.burstPpm) / 1e6;
-    expect(Math.abs(share - want)).toBeLessThan(0.01);
+    // Deterministic, and the same answer when asked out of order.
+    for (const w of [5n, 199_999n, 17n]) expect(b2.congested(w)).toBe(a.congested(w));
+    const enter = Number(net.enterPpm) / 1e6;
+    const stay = Number(net.stayPpm) / 1e6;
+    expect(Math.abs(on / windows - enter / (enter + 1 - stay))).toBeLessThan(0.01);
+    // Mean burst length 1 / (1 - stay) windows: persistent, not one window at a time.
+    expect(Math.abs(on / runs - 1 / (1 - stay)) / (1 / (1 - stay))).toBeLessThan(0.1);
+    expect(1 / (1 - stay)).toBeGreaterThan(2);
+  });
+
+  test('pool contention follows the pool\'s own recent volume and persists; provider failures sit on top', () => {
+    const p = c.congestion.pool;
+    expect(poolEnterPpm(c, 0n)).toBe(0n);
+    expect(poolEnterPpm(c, 10n * 1_000_000_000n)).toBeGreaterThan(poolEnterPpm(c, 1_000_000_000n));
+    expect(poolEnterPpm(c, 10n ** 18n)).toBe(p.maxEnterPpm);
+    let entered = 0;
+    let stayed = 0;
+    for (let w = 0n; w < 20_000n; w++) {
+      if (poolContended('s', 'pool', w, false, 10n ** 18n, c)) entered++;
+      if (poolContended('s', 'pool', w, true, 0n, c)) stayed++;
+    }
+    expect(Math.abs(entered / 20_000 - Number(p.maxEnterPpm) / 1e6)).toBeLessThan(0.01);
+    expect(Math.abs(stayed / 20_000 - Number(p.stayPpm) / 1e6)).toBeLessThan(0.01);
+    let down = 0;
+    for (let w = 0n; w < 50_000n; w++) if (providerDown('s', w, c)) down++;
+    expect(Math.abs(down / 50_000 - Number(c.congestion.providerFailPpm) / 1e6)).toBeLessThan(0.005);
+  });
+
+  test('in a congested window every attempt lands less often and later', () => {
     const r1 = createRng('calm');
     const r2 = createRng('calm');
     const calm = Array.from({ length: 20_000 }, () => drawAttempt(r1, c, 'pumpswap', false));
@@ -272,7 +303,12 @@ describe('scenario ordering', () => {
     expect([D.stress.eventToProcessedSlots, D.stress.processedToConfirmedSlots, D.stress.providerMs]).toEqual([4, 12, 2_000]);
     expect(D.measured.status).toBe('unmeasured');
   });
-  better('congestion burst share', c.congestion.burstPpm, b.congestion.burstPpm, o.congestion.burstPpm, (x, y) => x >= y);
+  better('network congestion entry', c.congestion.network.enterPpm, b.congestion.network.enterPpm, o.congestion.network.enterPpm, (x, y) => x >= y);
+  better('network congestion persistence', c.congestion.network.stayPpm, b.congestion.network.stayPpm, o.congestion.network.stayPpm, (x, y) => x >= y);
+  better('pool contention per SOL of volume', c.congestion.pool.enterPpmPerSol, b.congestion.pool.enterPpmPerSol, o.congestion.pool.enterPpmPerSol, (x, y) => x >= y);
+  better('pool contention cap', c.congestion.pool.maxEnterPpm, b.congestion.pool.maxEnterPpm, o.congestion.pool.maxEnterPpm, (x, y) => x >= y);
+  better('pool contention persistence', c.congestion.pool.stayPpm, b.congestion.pool.stayPpm, o.congestion.pool.stayPpm, (x, y) => x >= y);
+  better('provider failures', c.congestion.providerFailPpm, b.congestion.providerFailPpm, o.congestion.providerFailPpm, (x, y) => x >= y);
   better('landing share in a burst', c.congestion.landFactorPpm, b.congestion.landFactorPpm, o.congestion.landFactorPpm, (x, y) => x <= y);
   better('extra landing slots in a burst', c.congestion.extraLandingSlots, b.congestion.extraLandingSlots, o.congestion.extraLandingSlots, lower);
   test('the congestion window is the same length in every scenario', () => {

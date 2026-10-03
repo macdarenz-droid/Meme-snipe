@@ -5,23 +5,36 @@ import { type CoinFlags, type NoQuoteReason, type PoolState, poolBuyExactQuoteIn
 import { PPM } from '../costs/index.ts';
 import type { Venue } from '../domain/index.ts';
 import { createRng, type Rng } from '../engine/index.ts';
-import { BPS_DENOMINATOR, mulDiv } from '../units/index.ts';
+import { BPS_DENOMINATOR, LAMPORTS_PER_SOL, mulDiv } from '../units/index.ts';
 import { type ObservedFees, observedFeeContext } from './pool.ts';
 
 export type ScenarioName = 'base' | 'conservative' | 'optimistic';
 export const SCENARIO_NAMES: readonly ScenarioName[] = ['base', 'conservative', 'optimistic'];
 
 /**
- * Correlated failures: the chain is congested in some windows of slots, and every attempt broadcast in such a window
- * lands less often and later. Whether a window is congested is one draw per window from the run's seed.
+ * Correlated failures over windows of slots (supervisor ruling after external review):
+ * - one persistent network state shared by every attempt: a two-state chain over windows (enter, stay);
+ * - per pool, contention whose entry probability follows the pool's own volume in the previous, complete window
+ *   (causal), and which persists while it holds;
+ * - provider failures on top: in a window where the send path is down, attempts never reach a block.
+ * An attempt broadcast while the network or its pool is congested lands less often and later.
  */
 export interface Congestion {
   readonly windowSlots: number;
-  /** Share of windows that are congested, ppm. */
-  readonly burstPpm: bigint;
-  /** Landing share in a burst, as a share of the scenario's landPpm (ppm). */
+  /** The network chain restarts from its stationary share every this many windows (order-independent answers). */
+  readonly segmentWindows: number;
+  readonly network: { readonly enterPpm: bigint; readonly stayPpm: bigint };
+  readonly pool: {
+    /** Entry probability per SOL of the pool's volume in the previous window, ppm, up to maxEnterPpm. */
+    readonly enterPpmPerSol: bigint;
+    readonly maxEnterPpm: bigint;
+    readonly stayPpm: bigint;
+  };
+  /** Share of windows in which the send path is down, ppm. */
+  readonly providerFailPpm: bigint;
+  /** Landing share in a congested window, as a share of the scenario's landPpm (ppm). */
   readonly landFactorPpm: bigint;
-  /** Slots added to the landing latency in a burst. */
+  /** Slots added to the landing latency in a congested window. */
   readonly extraLandingSlots: number;
 }
 
@@ -127,12 +140,66 @@ export interface AttemptDraw {
   readonly fate: AttemptFate;
 }
 
-/** True when the window holding `slot` is congested: one draw per window from `seed`, shared by every attempt in it. */
-export const congestedAt = (seed: string, slot: bigint, s: FillScenario): boolean => {
-  const c = s.congestion;
-  if (!Number.isSafeInteger(c.windowSlots) || c.windowSlots < 1) throw new RangeError('congestion windowSlots must be >= 1');
-  return ppmDraw(createRng(`${seed}:congestion:${slot / BigInt(c.windowSlots)}`)) < c.burstPpm;
+/** The congestion window holding `slot`. */
+export const windowOf = (slot: bigint, s: FillScenario): bigint => {
+  const n = s.congestion.windowSlots;
+  if (!Number.isSafeInteger(n) || n < 1) throw new RangeError('congestion windowSlots must be >= 1');
+  return slot / BigInt(n);
 };
+
+const draw = (seed: string): bigint => ppmDraw(createRng(seed));
+
+/**
+ * The shared network state, window by window: a two-state chain from the seed, so a burst lasts 1 / (1 - stay)
+ * windows on average. The chain restarts from its stationary share every `segmentWindows` windows (config),
+ * which makes each window's state independent of the order windows are asked in.
+ */
+export class NetworkState {
+  readonly #seed: string;
+  readonly #s: FillScenario;
+  readonly #segments = new Map<bigint, boolean[]>();
+
+  constructor(seed: string, s: FillScenario) {
+    this.#seed = seed;
+    this.#s = s;
+  }
+
+  congested(win: bigint): boolean {
+    const n = this.#s.congestion.segmentWindows;
+    if (!Number.isSafeInteger(n) || n < 1) throw new RangeError('congestion segmentWindows must be >= 1');
+    const SEGMENT = BigInt(n);
+    const seg = win / SEGMENT;
+    let states = this.#segments.get(seg);
+    if (states === undefined) {
+      states = [];
+      this.#segments.set(seg, states);
+    }
+    const { enterPpm, stayPpm } = this.#s.congestion.network;
+    const leave = PPM - stayPpm;
+    const stationary = enterPpm + leave === 0n ? 0n : mulDiv(enterPpm, PPM, enterPpm + leave, 'floor');
+    const k = Number(win - seg * SEGMENT);
+    while (states.length <= k) {
+      const w = seg * SEGMENT + BigInt(states.length);
+      const u = draw(`${this.#seed}:network:${w}`);
+      states.push(states.length === 0 ? u < stationary : u < (states[states.length - 1]! ? stayPpm : enterPpm));
+    }
+    return states[k]!;
+  }
+}
+
+/** Pool contention's entry probability from the pool's volume in the previous window (lamports), ppm. */
+export const poolEnterPpm = (s: FillScenario, volumeLamports: bigint): bigint => {
+  const p = s.congestion.pool;
+  const v = mulDiv(volumeLamports < 0n ? 0n : volumeLamports, p.enterPpmPerSol, LAMPORTS_PER_SOL, 'floor');
+  return v > p.maxEnterPpm ? p.maxEnterPpm : v;
+};
+
+/** Whether `pool` is contended in `window`: it stays with stayPpm when it was in the window before, else enters by volume. */
+export const poolContended = (seed: string, pool: string, win: bigint, before: boolean, volumeLamports: bigint, s: FillScenario): boolean =>
+  draw(`${seed}:pool:${pool}:${win}`) < (before ? s.congestion.pool.stayPpm : poolEnterPpm(s, volumeLamports));
+
+/** Whether the send path is down in `window`. */
+export const providerDown = (seed: string, win: bigint, s: FillScenario): boolean => draw(`${seed}:provider:${win}`) < s.congestion.providerFailPpm;
 
 /**
  * One attempt's latency and fate. Always four draws in the same order (regular latency, tail decision, tail latency,

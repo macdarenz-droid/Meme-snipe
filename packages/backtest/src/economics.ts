@@ -51,6 +51,8 @@ export interface Economics {
     /** The all-in result if no rent ever came back (the no-recovery line). */
     readonly allInNoRentRecoveryMicro: bigint;
   };
+  /** The bankroll plus the all-in result over time: its lowest point, and whether it stayed above the kill line. */
+  readonly survival: { readonly minEquityMicro: bigint; readonly killLineMicro: bigint; readonly survived: boolean };
   /** The bankroll (bought as SOL at the start price) and the ops reserve, revalued at the end price. */
   readonly markToMarket: {
     readonly startPriceMicro: bigint;
@@ -124,6 +126,13 @@ export const economics = (i: EconomicsInput): Economics => {
   }
 
   const breakEven = per(hostingMicro - strayMicro, n);
+  let equity = bankroll as bigint;
+  let minEquity = equity;
+  for (const e of [...tradeUsd, ...strayUsd].sort((a, b) => a.at - b.at)) {
+    equity += e.net;
+    if (equity < minEquity) minEquity = equity;
+  }
+  const killLine = ((bankroll as bigint) * BigInt(i.policy.loss.killSwitchFloorBps)) / 10_000n;
   const atBankrolls = i.research.operating.projectionBankrolls.map((bk) => {
     const b = bk as bigint;
     const sizes = sizesAtBankroll(i.policy, b);
@@ -149,6 +158,7 @@ export const economics = (i: EconomicsInput): Economics => {
       allInPerEntryDecisionMicro: per(allInMicro, i.entryDecisions),
       allInNoRentRecoveryMicro: allInMicro - i.trades.reduce((a, t) => a + toUsd(t.rentReturned, priceAt(i.solUsd, t.closedAt)), 0n),
     },
+    survival: { minEquityMicro: minEquity, killLineMicro: killLine, survived: minEquity > killLine },
     markToMarket: {
       startPriceMicro: startPx, endPriceMicro: endPx, bankrollLamports, opsReserveLamports: ops,
       idleRevaluationMicro: toUsd(held as Lamports, endPx) - toUsd(held as Lamports, startPx),

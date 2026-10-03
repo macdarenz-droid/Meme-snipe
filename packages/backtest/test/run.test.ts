@@ -10,6 +10,7 @@ import { holdoutReady } from '../../core/src/stats/index.ts';
 import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
 import { buildReport } from '../src/report.ts';
 import { runBacktest, type RunOptions } from '../src/run.ts';
+import { burstSweep, ladderCongestion } from '../src/stress.ts';
 import { tradesOf } from '../src/trades.ts';
 import { key, SOL_USD, syntheticRows, T0 } from './synthetic.ts';
 
@@ -289,7 +290,7 @@ describe('signing heights and skipped slots', () => {
     : [r]));
   // The premise of the next test: no drops and every landing well under the 150-block blockhash life.
   const calm = (f: typeof FILL_CONFIG): typeof FILL_CONFIG => ({ ...f, scenarios: Object.fromEntries(Object.entries(f.scenarios).map(([k, s]) => [k, {
-    ...s, dropPpm: 0n, landingTail: { ppm: 0n, slots: [1] }, congestion: { ...s.congestion, burstPpm: 0n },
+    ...s, dropPpm: 0n, landingTail: { ppm: 0n, slots: [1] }, congestion: { ...s.congestion, network: { ...s.congestion.network, enterPpm: 0n }, pool: { ...s.congestion.pool, maxEnterPpm: 0n }, providerFailPpm: 0n },
   }])) as unknown as typeof f.scenarios });
   test('with no dropped attempts and landing under 150 slots, nothing expires, whatever the seed and scenario', () => {
     let betweenHeartbeats = 0;
@@ -438,5 +439,56 @@ describe('rent follows the account-close outcome (BT-1c rent ruling)', () => {
     const d = runBacktest(opts({ fills: dusty }));
     expect(d.attempts.some((a) => a.closedAccount)).toBe(false);
     for (const t of tradesOf(d, dusty).trades) expect(t.rentReturned).toBe(0n);
+  });
+});
+
+describe('exit failures (BT-1c exit-failure ruling)', () => {
+  test('attempts sent inside a deterministic burst never reach a block, and a dropped attempt is replaced only after its last valid height', () => {
+    const r = runBacktest(opts({ seed: 'burst', failureBursts: { perDay: 720, durationMs: 60_000 } }));
+    expect(r.stats.crash).toBeNull();
+    expect(r.stats.illegalStates).toBe(0);
+    expect(r.stats.unreconciledIntents).toBe(0);
+    const burst = r.attempts.filter((a) => a.forcedDrop === 'burst');
+    expect(burst.length).toBeGreaterThan(0);
+    for (const a of burst) {
+      expect(a.outcome).toBe('dropped');
+      expect(a.fee).toBe(0n);
+      expect(a.landedSlot).toBeNull();
+    }
+    const valid = FILL_CONFIG.network.blockhashValidBlocks;
+    const byIntent = new Map<string, typeof r.attempts[number][]>();
+    for (const a of r.attempts) byIntent.set(a.intentId, [...(byIntent.get(a.intentId) ?? []), a]);
+    let checked = 0;
+    for (const list of byIntent.values()) {
+      for (let k = 1; k < list.length; k++) {
+        const prev = list[k - 1]!;
+        if (prev.outcome !== 'dropped' && prev.outcome !== 'expired') continue;
+        // The replacement was signed at a height past the dropped attempt's last valid height.
+        expect(list[k]!.lastValidBlockHeight - valid).toBeGreaterThan(prev.lastValidBlockHeight);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  test('the blocked-exit rate is reported for ladders that fall wholly inside congestion', () => {
+    const r = runBacktest(opts({ scenario: 'conservative', seed: 'ladder' }));
+    const l = ladderCongestion(r);
+    const exits = Object.values(r.book.intents).filter((i) => i.intent.purpose === 'exit').map((i) => i.intent.positionId);
+    expect(l.allCongested + l.rest).toBe(new Set(exits).size);
+    expect(l.allCongestedBlocked).toBeLessThanOrEqual(l.allCongested);
+    expect(l.restBlocked).toBeLessThanOrEqual(l.rest);
+  });
+
+  test('expectancy and survival against burst frequency, for 10, 30 and 60 s bursts', () => {
+    const rowsOut = burstSweep(opts(), { perDay: [0, 48], durationsMs: [10_000, 30_000, 60_000] }, { from: T0, to: T0 + 6 * 3_600_000 });
+    expect(rowsOut.map((x) => [x.perDay, x.durationMs])).toEqual([[0, 10_000], [48, 10_000], [0, 30_000], [48, 30_000], [0, 60_000], [48, 60_000]]);
+    for (const x of rowsOut) {
+      expect(typeof x.survived).toBe('boolean');
+      expect(x.blockedExitRate).toBeGreaterThanOrEqual(0);
+      expect(x.entryDecisions).toBeGreaterThan(0);
+    }
+    // No bursts: the same run whatever the duration.
+    expect(rowsOut[0]!.allInPerEntryDecisionMicro).toBe(rowsOut[2]!.allInPerEntryDecisionMicro);
   });
 });

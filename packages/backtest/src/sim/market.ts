@@ -108,6 +108,8 @@ export interface MarketOptions {
    * receipt times, so nothing is added.
    */
   readonly observe: { readonly slots: number; readonly providerMs: number; readonly blackouts: readonly number[]; readonly seed: string } | null;
+  /** Slots per window of the pool-volume tally (the fill model's congestion window). */
+  readonly volumeWindowSlots: number;
   /** Puts driver work into the replay (the observation release). */
   readonly hook: (h: Hook) => void;
   /** True while dataset rows remain. */
@@ -149,6 +151,25 @@ export class Market {
     if (o !== null && (!Number.isSafeInteger(o.providerMs) || o.providerMs < 0)) throw new RangeError('providerMs must be >= 0');
     this.#opts = opts;
     this.#seriesAt = (opts.series ?? []).map(() => 0);
+  }
+
+  /** Each pool's quote volume (lamports, real swaps) in its latest window and the window before. */
+  readonly #volume = new Map<string, { win: bigint; cur: bigint; prev: bigint }>();
+
+  /** The pool's real quote volume in window `win - 1` (complete when asked during `win`), lamports. */
+  volumeBefore(pool: string, win: bigint): bigint {
+    const v = this.#volume.get(pool);
+    if (v === undefined) return 0n;
+    if (v.win === win) return v.prev;
+    return v.win === win - 1n ? v.cur : 0n;
+  }
+
+  #tally(pool: string, slot: bigint, lamports: bigint): void {
+    const win = slot / BigInt(this.#opts.volumeWindowSlots);
+    const v = this.#volume.get(pool);
+    if (v === undefined) this.#volume.set(pool, { win, cur: lamports, prev: 0n });
+    else if (v.win === win) v.cur += lamports;
+    else this.#volume.set(pool, { win, cur: lamports, prev: v.win === win - 1n ? v.cur : 0n });
   }
 
   track(pool: string): PoolTrack | undefined {
@@ -303,6 +324,7 @@ export class Market {
       return [];
     }
     if (!r.replayed) this.skippedSwaps++;
+    this.#tally(row.pool, row.slot, r.trade.userQuote);
     const view: PoolView = {
       pool: row.pool, mint: row.baseMint, quoteMint: row.quoteMint,
       baseReserve: r.shifted.baseReserve, quoteVault: r.shifted.quoteVault, virtualQuoteReserves: r.shifted.virtualQuoteReserves,

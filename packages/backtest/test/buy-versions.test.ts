@@ -33,7 +33,7 @@ const rowOf = (v: V, k: number): AmmSwapRow => {
 
 describe('both BuyEvent layouts', () => {
   // Recorded receipt times: each pool state is released with its row.
-  const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: null, hook: () => {}, hasRows: () => true, schedule: () => {} });
+  const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {} });
   const cases = golden.pumpswap.map((v, k) => {
     const e = market.release(rowOf(v, k))[0];
     return { v, view: e?.kind === 'market' ? (e.value as PoolView) : null };

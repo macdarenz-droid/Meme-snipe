@@ -69,7 +69,7 @@ describe('regime boundaries', () => {
     const hooks: { slot: bigint; run: () => void }[] = [];
     const scheduled: { key: string; slot: bigint }[] = [];
     const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: { slots: 2, providerMs: 0, blackouts: [], seed: 's' },
-      hook: (h) => hooks.push({ slot: h.moment.slot, run: h.run }), hasRows: () => true,
+      volumeWindowSlots: 150, hook: (h) => hooks.push({ slot: h.moment.slot, run: h.run }), hasRows: () => true,
       schedule: (x) => { if (x.kind === 'market') scheduled.push({ key: x.key, slot: x.moment.slot }); }, regimeBoundaries: [{ slot: 12n, label: 'pump-2026-10-02' }] });
     const at = (slot: number) => {
       expect(market.release({ kind: 'block', slot: BigInt(slot), blockTime: slot, parentSlot: BigInt(slot - 1) })).toEqual([]);

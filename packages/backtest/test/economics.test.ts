@@ -64,6 +64,10 @@ describe('all-in expectancy (item 5)', () => {
     expect(e.usd.allInNoRentRecoveryMicro).toBe(e.usd.allInMicro);
     const refunded = economics({ trades: [{ ...t, rentPaid: 10_000_000n, rentReturned: 10_000_000n }], stray, entryDecisions: 3, solUsd: SERIES, window: { from: T, to: T + 48 * H }, policy: TRIAL_POLICY, research: RESEARCH_CONFIG });
     expect(refunded.usd.allInMicro - refunded.usd.allInNoRentRecoveryMicro).toBe(1_000_000n); // 0.01 SOL back at $100
+    // Survival: US$20 + 2 = 22 at best, 21 after the failed attempt; the kill line is the policy's floor.
+    expect(e.survival.minEquityMicro).toBe(20_000_000n);
+    expect(e.survival.killLineMicro).toBe(20_000_000n * BigInt(TRIAL_POLICY.loss.killSwitchFloorBps) / 10_000n);
+    expect(e.survival.survived).toBe(true);
     // Daily returns cover every Melbourne day of the window, failed attempts included, as a share of the bankroll.
     const days = new Map(e.dailyReturns.map((d) => [d.day, d.rNet]));
     expect(days.get('2026-09-20')).toBeCloseTo(2 / 20, 12);
