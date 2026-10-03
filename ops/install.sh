@@ -1046,8 +1046,8 @@ while IFS=$'\t' read -r id chat text; do
   printf '%s\n' "$((id + 1))" > "$STATE_DIR/tg_offset"
   [ -s "$PAIR_CODE_FILE" ] || continue
   [[ "$text" =~ ^/pair(@[A-Za-z0-9_]+)?([[:space:]]+(.*))?$ ]] || continue
+  got="$(printf '%s' "${BASH_REMATCH[3]:-}" | tr -d '[:space:]')"
   [[ "$chat" =~ ^-?[0-9]{1,20}$ ]] || continue
-  got="$(printf '%s' "${BASH_REMATCH[3]}" | tr -d '[:space:]')"
   if [ "$got" = "$want" ]; then
     printf '%s' "$chat" | store_cred telegram_chat_id
     rm -f "$PAIR_CODE_FILE"
