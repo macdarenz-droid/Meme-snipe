@@ -169,7 +169,8 @@ pass "replay: a second Deploy with the used code is never opened (server has no 
 upd=0
 send_tg() { # chat text
   upd=$((upd + 1))
-  printf '{"update_id":%s,"message":{"message_id":%s,"chat":{"id":%s,"type":"private"},"text":"%s"}}\n' "$((1000 + upd))" "$upd" "$1" "$2" >>"$STATE/updates.jsonl"
+  sleep 1 # Telegram dates are whole seconds; keep each message after the code it answers
+  printf '{"update_id":%s,"message":{"message_id":%s,"date":%s,"chat":{"id":%s,"type":"private"},"text":"%s"}}\n' "$((1000 + upd))" "$upd" "$(in_c 'date +%s')" "$1" "$2" >>"$STATE/updates.jsonl"
   in_c "systemctl start zeroed-pair.service"
 }
 send_tg "$STRANGER" "/pair 000000"
