@@ -206,8 +206,8 @@ def score_wallets(events, series, created, t_lo, t_hi):
             p['real'] += sol * sell_tok / tok - avg * sell_tok
             p['cost'] -= avg * sell_tok; p['tok'] -= sell_tok; p['sold_tok'] += sell_tok
             if p['first_sell'] is None: p['first_sell'] = bt
-    for m, (s, who) in created.items():
-        devs |= who
+    for (user, mint) in pos:  # PREREG (a): the wallet created a token it traded
+        if mint in created and user in created[mint][1]: devs.add(user)
     # mark remaining at last state before t_hi
     last_state = {}
     for mint, ser in series.items():
