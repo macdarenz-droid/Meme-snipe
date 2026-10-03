@@ -1,3 +1,4 @@
 {
-  "offsite_backup": false
+  "offsite_backup": false,
+  "worker": "stub"
 }
