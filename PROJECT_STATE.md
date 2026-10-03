@@ -27,11 +27,12 @@ Builders run as separate sessions; the supervisor reviews and merges into `ccr-1
 |---|---|---|---|---|---|
 | CORE-1 | Domain types, order and position lifecycle | session_01SWQzPEHWtr3oCxUuGCCWxX | Opus 5.5 ultracode | merged (PR #3); follow-up CORE-1b orphan_cleared | done in ~2 h |
 | CORE-2 | AMM quotes (pump curve, PumpSwap), cost model, feasible size | session_0137WgVKuV7YThAEDRTjWsJ5 | Opus 5.5 ultracode | building | 1.5–2.5 h |
-| WEB-1 | Dashboard shell, two themes, motion, copy guard | session_01Ex3DnPXKguKRwSY7utcsPQ | Opus 5.5 ultracode | in review: PR #1, reviewer session_01XnyTYevtLoRFMdiwmaqqbV | 20–40 m |
+| WEB-1 | Dashboard shell, two themes, motion, copy guard | session_01Ex3DnPXKguKRwSY7utcsPQ | Opus 5.5 ultracode | merged (PR #1) | done in ~1 h |
 | APP-1 | Android preview APK at a fixed link (Capacitor, CI build) | session_01BLFtAQaZGeQKqXMBYYdLpJ | Sonnet 5.5 | building | 1–1.5 h |
 | DATA-1 | Historical on-chain data (30–60 days, transaction-level) for backtesting | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 ultracode | collecting | first 7 days 2–3 h; 30 days 4–8 h |
 | RES-2 | Whale copy-trading study on real data (owner's idea) | session_01RXNoLW48c8Xj7FYScEujRg | Opus 5.5 ultracode | researching | 2–3 h |
 | DOCS-1 | Architecture improved from research, RESEARCH.md, DECISIONS.md, build plan | session_01F8fZH2zSWeP984nqQB1HyJ | Opus 5.5 ultracode | draft PR #6, waiting on fact-checks | 15–30 m |
+| CORE-1b | orphan_cleared with finalized proof | session_01SWQzPEHWtr3oCxUuGCCWxX | Opus 5.5 ultracode | PR #7 passed review; adding signature binding | 10 m |
 | ENG-1 | Engine core: clock, feed, as-of store, leak and shift tests | session_015eEk2vjphRpvRDPMhLAfQp | Opus 5.5 ultracode | building | 1.5–2 h |
 | LEDGER-1 | SQLite ledger, outbox, atomic reservations, label isolation | session_01HjeNL7DBQbW9j2xhUU8UST | Opus 5.5 ultracode | building | 2 h |
 | STATS-1 | Labels, statistics, promotion gates | session_011t7agWEjn8osZJ4eD9FisM | Opus 5.5 ultracode | building | 2 h |
