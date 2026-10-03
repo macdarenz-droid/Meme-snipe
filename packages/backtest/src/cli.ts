@@ -10,13 +10,14 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { OFF_CHAIN } from '../../core/src/engine/index.ts';
+import { gateG0 } from '../../core/src/stats/index.ts';
 import { SCENARIO_NAMES, type ScenarioName } from '../../core/src/fills/index.ts';
 import type { Bps } from '../../core/src/units/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
 import { readSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
 import { runHoldout } from './holdout.ts';
-import { leakTest } from './proofs.ts';
+import { leakTest, shiftTest } from './proofs.ts';
 import { buildReport } from './report.ts';
 import { runBacktest, type RunOptions } from './run.ts';
 import { tradesOf } from './trades.ts';
@@ -98,19 +99,27 @@ if (command === 'holdout') {
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', cwd: import.meta.dirname }).trim();
   const identical = new Set(hashes).size === 1;
   const engine = { replays, identicalReplays: identical, crashes: first.stats.crashes, illegalStates: first.stats.illegalStates, unreconciledIntents: first.stats.unreconciledIntents };
-  const g0 = [
-    { label: 'Replays with identical decision logs', value: `${replays} runs, ${new Set(hashes).size} hash`, limit: 'all identical', pass: identical },
-    { label: 'Leak test (planted future marker)', value: leak.ok ? 'passed' : leak.violations.join('; ').slice(0, 300), limit: 'passes', pass: leak.ok },
-    { label: 'Crashes', value: String(first.stats.crashes), limit: '0', pass: first.stats.crashes === 0 },
-    { label: 'Illegal states', value: String(first.stats.illegalStates), limit: '0', pass: first.stats.illegalStates === 0 },
-    { label: 'Unreconciled intents', value: String(first.stats.unreconciledIntents), limit: '0', pass: first.stats.unreconciledIntents === 0 },
-  ].map((c) => ({ mode: 'backtest' as const, ...c }));
+  // +1-slot shift test over the whole window.
+  const shift = shiftTest(base, rows);
+  // G0 is the canonical gate (stats/gates.ts). This run measures replays, the leak test and the shift test; every other
+  // input (survivorship and second-source audits, undecoded migrations, live parity, the label stage) is not measured
+  // here, enters the gate as not proven, and reads "not run".
+  const measured = new Set(['replays', 'leak test', 'shift test']);
+  const g0 = gateG0({
+    survivorshipFree: false, secondSourceCoverage: 0, undecodedMigrationsReported: false,
+    leakTestPassed: leak.ok, shiftTestPassed: shift.ok, replayLogHashes: hashes,
+    parityTestPassed: false, labelsScoredSeparately: false, labelCoverageAuditPassed: false,
+  });
+  const g0Checks = g0.checks.map((c) => ({
+    mode: 'backtest' as const, label: c.name, value: measured.has(c.name) ? c.detail.slice(0, 300) : 'not run', limit: 'passes', pass: c.passed,
+  }));
+  const g0State = g0.passed ? 'pass' as const : g0.checks.some((c) => measured.has(c.name) && !c.passed) ? 'fail' as const : 'not-run' as const;
   const report = buildReport({
     runId: `${manifestHash(dataset).slice(0, 12)}-${scenario}-${seed}`, generatedAt: new Date().toISOString(), codeCommit: commit,
     policy: TRIAL_POLICY, fills: FILL_CONFIG, dataset: { id: `sha256:${manifestHash(dataset)}`, from, to }, engine, solUsd,
     candidates, entries, groups: [{ group: 'S0', trades, stray }],
     gates: [
-      { mode: 'backtest', gate: 'G0', state: g0.every((c) => c.pass) ? 'pass' : 'fail', checks: g0 },
+      { mode: 'backtest', gate: 'G0', state: g0State, checks: g0Checks },
       { mode: 'backtest', gate: 'G1', state: 'not-run', checks: [{ mode: 'backtest', label: 'S0 exits', value: 'time stop only (until EXIT-1)', limit: 'research run', pass: true }] },
     ],
   });
@@ -118,7 +127,7 @@ if (command === 'holdout') {
     commit, dataset: { dir: dataset, manifestSha256: manifestHash(dataset), days: days.map((d) => d.day), complete: days.map((d) => d.complete) },
     sumsChecked,
     fillsVersion: FILL_CONFIG.version, researchVersion: RESEARCH_CONFIG.version, policyName: TRIAL_POLICY.name,
-    scenario, seed, hashes, identicalReplays: identical, leak, stats: first.stats,
+    scenario, seed, hashes, identicalReplays: identical, leak, shift, g0: { status: g0.status, checks: g0.checks }, stats: first.stats,
     throughput: { rows: first.stats.rows, elapsedMs: times, rowsPerSecond: Math.round(first.stats.rows / (first.stats.elapsedMs / 1000)), days: days.length,
       projected30DaysMinutes: Math.round(((first.stats.elapsedMs / days.length) * 30) / 60_000) },
     candidates, entries, trades: trades.length, alerts: first.stats.alerts,
@@ -128,7 +137,7 @@ if (command === 'holdout') {
   };
   writeFileSync(flag('out', 'report.json'), `${JSON.stringify(report, null, 1)}\n`);
   writeFileSync(flag('evidence', 'evidence.json'), `${JSON.stringify(evidence, (_, v: unknown) => (typeof v === 'bigint' ? v.toString() : v), 1)}\n`);
-  console.log(JSON.stringify({ identical, leak: leak.ok, ...first.stats, trades: trades.length, candidates, entries }));
+  console.log(JSON.stringify({ identical, leak: leak.ok, shift: shift.ok, g0: g0State, ...first.stats, trades: trades.length, candidates, entries }));
 } else {
   throw new Error('usage: cli.ts run|holdout --dataset <dir> --sol-usd <file> ...');
 }

@@ -85,7 +85,9 @@ describe('command line on an on-disk dataset', () => {
     expect(summary['unreconciledIntents']).toBe(0);
     const report = JSON.parse(readFileSync(out, 'utf8')) as { schemaVersion: number; gates: { gate: string; state: string }[]; trades: unknown[] };
     expect(report.schemaVersion).toBe(1);
-    expect(report.gates.find((g) => g.gate === 'G0')?.state).toBe('pass');
+    expect(summary['shift']).toBe(true);
+    // Three replays and the inputs this run does not measure keep G0 from passing (BT-1c item 1).
+    expect(report.gates.find((g) => g.gate === 'G0')?.state).toBe('fail');
     // One candidate whose single entry attempt may fail: the run is checked, not its luck.
     const evidence = JSON.parse(readFileSync(ev, 'utf8')) as { candidates: number; attempts: Record<string, number>; hashes: string[] };
     expect(evidence.candidates).toBeGreaterThan(0);
@@ -154,5 +156,19 @@ describe('PumpSwap reserves in the reader', () => {
     const r = out[0]!;
     expect(r.kind === 'amm' && r.pre).toEqual({ baseReserve: 5_000_000n, quoteVault: 900_000n, virtualQuoteReserves: -123_456n });
     expect(r.kind === 'amm' && r.fees.instruction).toBe('v2');
+  });
+});
+
+describe('G0 in the report (BT-1c item 1)', () => {
+  test('a single replay and missing checks never read as a G0 pass', () => {
+    const cli = join(import.meta.dirname, '..', 'src', 'cli.ts');
+    const out = join(dir, 'g0-report.json');
+    execFileSync('node', [cli, 'run', '--dataset', dir, '--sol-usd', join(dir, 'sol.csv'), '--scenario', 'base', '--replays', '1', '--out', out, '--evidence', join(dir, 'g0-ev.json')],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const report = JSON.parse(readFileSync(out, 'utf8')) as { gates: { gate: string; state: string; checks: { label: string; value: string; pass: boolean }[] }[] };
+    const g0 = report.gates.find((g) => g.gate === 'G0')!;
+    expect(g0.state).not.toBe('pass');
+    expect(g0.checks.find((c) => c.label === 'replays')?.pass).toBe(false);
+    expect(g0.checks.find((c) => c.label === 'parity')?.value).toBe('not run');
   });
 });
