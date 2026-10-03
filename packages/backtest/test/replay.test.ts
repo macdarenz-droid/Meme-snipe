@@ -101,3 +101,12 @@ describe('market volume per window (BT-1c A1)', () => {
     for (const [win, v] of atBoundary) expect(market.volumeBefore(win)).toBe(v);
   });
 });
+
+describe('registry remote pin (BT-1d)', () => {
+  test('only the project\'s GitHub repository, in https or ssh form', async () => {
+    const { isRepoUrl } = await import('../src/registry-git.ts');
+    const repo = 'macdarenz-droid/Meme-snipe';
+    for (const u of ['https://github.com/macdarenz-droid/Meme-snipe', 'https://github.com/macdarenz-droid/Meme-snipe.git', 'https://x@github.com/macdarenz-droid/meme-snipe/', 'git@github.com:macdarenz-droid/Meme-snipe.git', 'ssh://git@github.com/macdarenz-droid/Meme-snipe']) expect(isRepoUrl(u, repo)).toBe(true);
+    for (const u of ['', '/tmp/origin.git', 'https://github.com/other/Meme-snipe', 'https://github.com/macdarenz-droid/Meme-snipe-fork', 'https://evil.com/macdarenz-droid/Meme-snipe', 'https://github.com.evil.com/macdarenz-droid/Meme-snipe']) expect(isRepoUrl(u, repo)).toBe(false);
+  });
+});
