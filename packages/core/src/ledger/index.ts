@@ -5,6 +5,7 @@ export {
   type AuthLevel, type DecisionInput, type DecisionMode, type FeatureSnapshotInput, type FeeKind, type HeldReservation,
   type IntentRecord, type IntentTransition, type Issuer, type LedgerPurpose, type Millis, type ObservationInput, type OperatorCommandInput,
   type OperatorCommandName, type OutboxItem, type PendingCommand, type PositionRecord, type RecordIntentResult,
-  type ReservationLimits, type ReserveResult,
+  type ReservationLimits, type ReserveResult, type StoredIntentEvent, type StoredPosition, type StoredPositionEvent,
+  type StoredReservation,
 } from './ledger.ts';
 export { LedgerError } from './sqlite.ts';
