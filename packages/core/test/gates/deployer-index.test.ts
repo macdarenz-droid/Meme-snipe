@@ -315,3 +315,79 @@ describe('leak test with the deployer index in the engine', () => {
     expect(late.some((x) => x.startsWith('H16:not-covered:coverage'))).toBe(true);
   });
 });
+
+describe('SEED-1: seeding the index at start-up', () => {
+  // A restart one hour ago: the live creates watch started then, the seed covers the 20 days before it.
+  const LIVE = at(T - HOUR_MS, SLOT - 9_000n);
+  const ASOF = LIVE;
+  const liveStart: Row = [...START('logs:creates', SLOT - 9_000n), LIVE];
+  const seedStart = (days = 20): MarketEvent => marketOf('coverage:creates:start', wrap({ fromSlot: SLOT - BigInt(days) * 216_000n, via: 'seed' }), old(days), 'seed:coverage:start:0');
+  const seedGap = (fromDays: number, toDays: number): MarketEvent =>
+    marketOf('coverage:creates:gap', wrap({ fromSlot: SLOT - BigInt(fromDays) * 216_000n, toSlot: SLOT - BigInt(toDays) * 216_000n, reason: 'unit gap', via: 'seed' }), old(toDays), 'seed:coverage:gap:1');
+  const seedCreate = (mint: string, creator: string, t: number, slot: bigint): MarketEvent => marketOf(`pump:CreateEvent:${mint}`, createEvent(mint, creator, t, slot), at(t, slot, 7), `ev:seed-${mint}:00000:00000`);
+  const rows = (coverage: readonly MarketEvent[]): Row[] => [...coverage.map((e): Row => [e.key, e.value, e.moment]), liveStart];
+  const base = drop(drop(passingFacts(), deployerKey(DEV)), 'coverage:creates:start');
+  /** A restarted index: seeded, then fed the live stream's start. */
+  const restarted = (creates: readonly MarketEvent[], coverage: readonly MarketEvent[]): DeployerIndex => {
+    const idx = new DeployerIndex();
+    idx.seed(creates, coverage, ASOF);
+    idx.observe(marketOf('coverage:creates:start', liveStart[1], LIVE));
+    return idx;
+  };
+
+  it('without a seed a restart is not covered for the look-back; a gap-free seed covers it and its creates count', () => {
+    const unseeded = new DeployerIndex();
+    unseeded.observe(marketOf('coverage:creates:start', liveStart[1], LIVE));
+    expect(h14(contextWith([liveStart], base, NOW, unseeded))).toEqual([expect.objectContaining({ gate: 'H16', code: 'not-covered' })]);
+    const cov = [seedStart()];
+    expect(h14(contextWith(rows(cov), base, NOW, restarted([], cov)))).toEqual([]);
+    // Seeded creates are counted: two more mints by the dev inside 24 h make a serial deployer.
+    const creates = [seedCreate('S1', DEV, T - 5 * HOUR_MS, SLOT - 45_000n), seedCreate('S2', DEV, T - 4 * HOUR_MS, SLOT - 36_000n)];
+    expect(h14(contextWith(rows(cov), base, NOW, restarted(creates, cov))).map((r) => r.code)).toEqual(['serial-deployer']);
+  });
+
+  it('a gap in the seeded range stays a gap: H14 is not covered while it is inside the look-back', () => {
+    const cov = [seedStart(), seedGap(6, 5)];
+    expect(h14(contextWith(rows(cov), base, NOW, restarted([], cov)))).toEqual([expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'coverage' })]);
+    // Older than the look-back, it no longer matters.
+    const aged = [seedStart(), seedGap(17, 16)];
+    expect(h14(contextWith(rows(aged), base, NOW, restarted([], aged)))).toEqual([]);
+  });
+
+  it('a seed whose coverage never reaches the engine is not covered (H14 reads coverage only from history)', () => {
+    const cov = [seedStart()];
+    expect(h14(contextWith([liveStart], base, NOW, restarted([], cov)))).toEqual([expect.objectContaining({ gate: 'H16', code: 'not-covered' })]);
+  });
+
+  it('a seed without a coverage start leaves the index start at its first live event', () => {
+    const idx = restarted([seedCreate('S1', DEV, T - 5 * HOUR_MS, SLOT - 45_000n)], []);
+    expect(idx.factFor(DEV, NOW, 0).coverageFromMs).toBe(LIVE.receivedAt);
+  });
+
+  it('leak guard: nothing dated after the process start is seeded, and a refused seed changes nothing', () => {
+    // Released after ASOF (T - 1 h) though its chain time is before it: the moment alone refuses it.
+    const future = marketOf('pump:CreateEvent:FUTURE', createEvent('FUTURE', DEV, T - 2 * HOUR_MS, SLOT - 4_500n), at(T - 30 * 60_000, SLOT - 4_500n), 'ev:FUTURE:00000:00000');
+    const idx = new DeployerIndex();
+    expect(() => idx.seed([future], [seedStart()], ASOF)).toThrow(/dated after the process start/);
+    expect(() => idx.seed([], [marketOf('coverage:creates:gap', wrap({}), NOW)], ASOF)).toThrow(/dated after the process start/);
+    // A create placed before ASOF but whose chain time is after it is refused too.
+    const late = marketOf('pump:CreateEvent:L', createEvent('L', DEV, T, SLOT - 50_000n), at(T - 2 * HOUR_MS, SLOT - 50_000n), 'ev:L:00000:00000');
+    expect(() => idx.seed([late], [seedStart()], ASOF)).toThrow(/chain time after/);
+    expect(idx.factFor(DEV, NOW, 0)).toMatchObject({ mints: [], coverageFromMs: Number.MAX_SAFE_INTEGER });
+    expect(idx.last).toBeNull();
+  });
+
+  it('seeds once, only before any live event, in release order, creates only', () => {
+    const live = new DeployerIndex();
+    live.observe(marketOf('tick', 0, LIVE));
+    expect(() => live.seed([], [seedStart()], ASOF)).toThrow(/only be seeded once/);
+    const twice = new DeployerIndex();
+    twice.seed([], [], ASOF);
+    expect(() => twice.seed([], [seedStart()], ASOF)).toThrow(/only be seeded once/);
+    const a = seedCreate('A', DEV, T - 5 * HOUR_MS, SLOT - 45_000n);
+    const b = seedCreate('B', DEV, T - 6 * HOUR_MS, SLOT - 54_000n);
+    expect(() => new DeployerIndex().seed([a, b], [seedStart()], ASOF)).toThrow(/is not after/);
+    expect(() => new DeployerIndex().seed([marketOf('rug:X', { mint: 'X', creator: DEV }, old(3))], [seedStart()], ASOF)).toThrow(/not a create/);
+    expect(() => new DeployerIndex().seed([], [marketOf('coverage:rugs:start', wrap({ fromSlot: 1n, via: 'x' }), old(3))], ASOF)).toThrow(/not a creates coverage/);
+  });
+});
