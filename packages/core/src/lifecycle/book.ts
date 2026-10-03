@@ -54,6 +54,8 @@ export type BookEvent =
  * height matters: a landing just before expiry is not finalized yet, and a finalized read would miss it.
  */
 export interface OrphanClearProof {
+  /** The signature these reads were taken for; must match the landing being cleared. */
+  readonly signature: Signature;
   readonly balances: 'unchanged' | 'changed';
   readonly commitment: Commitment;
   readonly status: 'not_found' | 'failed' | 'succeeded';
@@ -263,6 +265,7 @@ const step = (book: Book, e: BookEvent): Transition<Book> => {
       if (o === undefined) return illegal('book', e.type, 'no unbooked landing for this signature');
       const a = book.intents[o.intentId]?.attempts.find((x) => x.signature === e.signature);
       if (a === undefined) return illegal('book', e.type, 'attempt missing');
+      if (e.proof.signature !== e.signature) return illegal('book', e.type, 'proof was read for another signature');
       if (!isOrphanClearProven(e.proof, a.lastValidBlockHeight)) {
         return illegal('book', e.type, 'needs unchanged balances and a failed or expired not-found status, all at finalized');
       }

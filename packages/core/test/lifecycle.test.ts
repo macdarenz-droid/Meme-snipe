@@ -469,7 +469,7 @@ describe('clearing a landing reported on a dropped fork', () => {
     on(E1, { type: 'abandon' }),
     on(E1, { type: 'status', signature: sig(1), result: 'succeeded', commitment: 'confirmed', blockHeight: 1_002n, searchedHistory: false }),
   ]).book;
-  const proof = { balances: 'unchanged', commitment: 'finalized', status: 'not_found', searchedHistory: true, finalizedBlockHeight: 1_050n } as const;
+  const proof = { signature: sig(1), balances: 'unchanged', commitment: 'finalized', status: 'not_found', searchedHistory: true, finalizedBlockHeight: 1_050n } as const;
   const clear = (p: Partial<typeof proof> | Record<string, unknown> = {}): BookEvent =>
     ({ type: 'orphan_cleared', signature: sig(1), proof: { ...proof, ...p } } as BookEvent);
 
@@ -486,6 +486,12 @@ describe('clearing a landing reported on a dropped fork', () => {
     expect(run(before, [clear({ status: 'failed', searchedHistory: false })]).book.orphans).toEqual({});
   });
 
+  test('a proof read for another signature is refused', () => {
+    const before = reported();
+    expect(refused(before, clear({ signature: sig(2) }))).toMatch(/another signature/);
+    expect(before.orphans[sig(1)]).toBeDefined();
+  });
+
   test('refused without proof: entries stay blocked', () => {
     const before = reported();
     for (const bad of [
@@ -497,7 +503,7 @@ describe('clearing a landing reported on a dropped fork', () => {
     ]) {
       expect(refused(before, clear(bad))).toMatch(/finalized/);
     }
-    expect(refused(before, { type: 'orphan_cleared', signature: sig(2), proof })).toMatch(/no unbooked landing/);
+    expect(refused(before, { type: 'orphan_cleared', signature: sig(2), proof: { ...proof, signature: sig(2) } })).toMatch(/no unbooked landing/);
     expect(canOpenNewEntry(before).ok).toBe(false);
   });
 
@@ -514,7 +520,7 @@ describe('clearing a landing reported on a dropped fork', () => {
     ]).book;
     expect(refused(ended, { type: 'propose_entry', intent: entryIntent(2) })).toMatch(/unbooked_landing/);
     expect(run(ended, [{ type: 'trigger_exit', positionId: P1, reasons: ['stop'], intentId: X2 }]).book.intents[X2]!.status).toBe('exposure_reserved');
-    const cleared = run(ended, [{ type: 'orphan_cleared', signature: sig(11), proof: { ...proof, finalizedBlockHeight: 2_050n } }]).book;
+    const cleared = run(ended, [{ type: 'orphan_cleared', signature: sig(11), proof: { ...proof, signature: sig(11), finalizedBlockHeight: 2_050n } }]).book;
     expect(cleared.positions[P1]).toMatchObject({ status: 'open', quantity: 1_000n, sold: 0n });
     expect(run(cleared, [{ type: 'propose_entry', intent: entryIntent(2) }]).book.intents['e2']!.status).toBe('candidate');
   });

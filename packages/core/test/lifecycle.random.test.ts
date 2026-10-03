@@ -190,6 +190,7 @@ const generator = (seed: number) => {
       type: 'orphan_cleared',
       signature: o.signature,
       proof: {
+        signature: chance(0.95) ? o.signature : sig(900_001),
         balances: landedFinal && t!.outcome === 'success' ? 'changed' : 'unchanged',
         commitment: chance(0.9) ? 'finalized' : 'confirmed',
         status: landedFinal ? (t!.outcome === 'success' ? 'succeeded' : 'failed') : 'not_found',
