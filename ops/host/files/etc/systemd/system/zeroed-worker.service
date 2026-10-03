@@ -3,8 +3,9 @@ Description=Zeroed worker
 Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
 After=network-online.target zeroed-signer.service
 Wants=network-online.target
-# Starts only after the Deploy workflow delivered the keys.
+# Starts only after the keys arrived and the owner's Telegram chat is paired.
 ConditionPathExists=/etc/credstore.encrypted/helius_api_key
+ConditionPathExists=/etc/credstore.encrypted/telegram_chat_id
 StartLimitIntervalSec=600
 StartLimitBurst=10
 
@@ -26,7 +27,6 @@ LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key
 LoadCredentialEncrypted=jupiter_api_key:/etc/credstore.encrypted/jupiter_api_key
 LoadCredentialEncrypted=telegram_bot_token:/etc/credstore.encrypted/telegram_bot_token
 LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_id
-LoadCredentialEncrypted=heartbeat_hmac_key:/etc/credstore.encrypted/heartbeat_hmac_key
 StateDirectory=zeroed
 StateDirectoryMode=0700
 UMask=0077

@@ -3,7 +3,7 @@
 // (so the hourly backup has real data), the signer socket, and the HMAC-signed heartbeat to the watchdog.
 // `--reconcile` is the ExecStartPre step: the real worker settles open intents against the chain there.
 import { createHmac } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -12,7 +12,7 @@ const credDir = process.env.CREDENTIALS_DIRECTORY ?? '';
 const stateDir = process.env.STATE_DIRECTORY ?? '/var/lib/zeroed';
 const watchdog = (process.env.WATCHDOG_URL ?? '').replace(/\/$/, '');
 const intervalMs = Number(process.env.ZEROED_HEARTBEAT_MS ?? 20_000);
-const NAMES = ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id', 'heartbeat_hmac_key'];
+const NAMES = ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id'];
 
 const loaded = credDir ? NAMES.filter((n) => existsSync(join(credDir, n))) : [];
 const db = new DatabaseSync(join(stateDir, 'ledger.sqlite'));
@@ -28,6 +28,8 @@ try {
 
 if (process.argv.includes('--reconcile')) {
   const ok = loaded.length === NAMES.length;
+  // Contract with the host's update check: the number of open intents after reconcile.
+  writeFileSync(join(stateDir, 'open_intents'), '0\n');
   event('reconcile', `stub: 0 open intents, ${ok ? 'ok' : 'credentials missing'}`);
   console.log(`Reconcile: 0 open intents, ${loaded.length} of ${NAMES.length} credentials present. ${ok ? 'OK' : 'Refusing to start.'}`);
   db.close();
@@ -60,7 +62,8 @@ function signerStatus() {
 
 let seq = 0;
 let paused = false;
-const key = loaded.includes('heartbeat_hmac_key') ? readFileSync(join(credDir, 'heartbeat_hmac_key'), 'utf8') : '';
+// The heartbeat key arrives with the watchdog (OPS-1b); until then no heartbeat is sent.
+const key = credDir && existsSync(join(credDir, 'heartbeat_hmac_key')) ? readFileSync(join(credDir, 'heartbeat_hmac_key'), 'utf8') : '';
 
 async function beat() {
   seq += 1;

@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,11 +52,15 @@ describe('secrets never leak', () => {
   });
 
   it('credentials are encrypted from stdin and the plaintext bundle is never a file', () => {
+    const common = read('ops/host/files/usr/local/lib/zeroed/common.sh');
+    expect(common).toContain('systemd-creds encrypt --with-key=host --name="$1" - "$CRED_DIR/$1.new"');
     const pair = read('ops/host/files/usr/local/sbin/zeroed-pair');
-    expect(pair).toMatch(/printf '%s' "\$\{v\[\$k\]\}" \| systemd-creds encrypt --with-key=host --name="\$n" - /);
-    expect(pair).toContain('done < <(age -d -i /etc/zeroed/age/host.key');
+    expect(pair).toContain(`for k in "\${API_NAMES[@]}"; do printf '%s' "\${v[$k]}" | store_cred "\${k,,}"; done`);
+    expect(pair).toContain('done < <(age -d -i <(/usr/local/bin/node /usr/local/lib/zeroed/derive-key.mjs < "$DEPLOY_CODE_FILE")');
+    expect(pair).toMatch(/shred -u "\$DEPLOY_CODE_FILE"/);
     const publish = read('ops/deploy/publish.sh');
-    expect(publish).toMatch(/\} \| age -r "\$HOST_PUBLIC_KEY" -o "\$bundle"/);
+    expect(publish).toMatch(/\} \| age -r "\$recipient" -o "\$bundle"/);
+    expect(publish).toContain('gh release create handoff "$bundle"');
   });
 
   it('the deploy workflow passes secrets and inputs only through env, uploads and caches nothing', () => {
@@ -76,30 +81,47 @@ describe('secrets never leak', () => {
     for (const line of wf.split('\n').filter((l) => /\buses:/.test(l))) expect(line).toMatch(/uses: [\w./-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
   });
 
+  const publish = (env: Record<string, string>) =>
+    spawnSync('bash', [join(root, 'ops/deploy/publish.sh')], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', GH_REPO: 'o/r', GITHUB_SHA: 'a'.repeat(40), ISSUED: '1', ...env } });
+
   it('a missing secret is reported by name only', () => {
-    const r = spawnSync('bash', [join(root, 'ops/deploy/publish.sh')], {
-      encoding: 'utf8',
-      env: {
-        PATH: process.env['PATH'] ?? '',
-        GH_REPO: 'o/r',
-        GITHUB_SHA: 'a'.repeat(40),
-        ISSUED: '1',
-        HOST_PUBLIC_KEY: 'age1' + 'q'.repeat(58),
-        PAIRING_CODE: 'ABCD-EFGH-JKLM',
-        HELIUS_API_KEY: 'TESTvalueHelius123',
-        ALCHEMY_API_KEY: 'TESTvalueAlchemy123',
-      },
-    });
+    const r = publish({ DEPLOY_CODE: 'abacus abdomen able about above absent', HELIUS_API_KEY: 'TESTvalueHelius123', ALCHEMY_API_KEY: 'TESTvalueAlchemy123' });
     expect(r.status).not.toBe(0);
-    expect(r.stderr).toContain('Missing repository secrets: JUPITER_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID');
-    expect(r.stdout + r.stderr).not.toMatch(/TESTvalue/);
+    expect(r.stderr).toContain('Missing repository secrets: JUPITER_API_KEY TELEGRAM_BOT_TOKEN');
+    expect(r.stdout + r.stderr).not.toMatch(/TESTvalue|abacus/);
   });
 
-  it('refuses malformed host keys and pairing codes before touching any secret', () => {
-    const run = (env: Record<string, string>) => spawnSync('bash', [join(root, 'ops/deploy/publish.sh')], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', GH_REPO: 'o/r', GITHUB_SHA: 'a', ISSUED: '1', ...env } });
-    expect(run({ HOST_PUBLIC_KEY: 'ssh-ed25519 AAAA', PAIRING_CODE: 'ABCD-EFGH-JKLM' }).stderr).toContain('Host public key');
-    expect(run({ HOST_PUBLIC_KEY: 'age1' + 'q'.repeat(58), PAIRING_CODE: 'abcd' }).stderr).toContain('Pairing code');
+  it('without DEPLOY_CODE it sends nothing; a malformed code is refused without echoing it', () => {
+    const none = publish({});
+    expect(none.status).toBe(0);
+    expect(none.stdout).toContain('No DEPLOY_CODE secret: code update only');
+    const keys = { HELIUS_API_KEY: 'TESTa', ALCHEMY_API_KEY: 'TESTb', JUPITER_API_KEY: 'TESTc', TELEGRAM_BOT_TOKEN: '1:TESTd' };
+    const bad = publish({ DEPLOY_CODE: 'only three words', ...keys });
+    expect(bad.status).not.toBe(0);
+    expect(bad.stderr).toContain('DEPLOY_CODE must be the 6 words');
+    expect(bad.stdout + bad.stderr).not.toMatch(/three words/);
   });
+});
+
+describe('deploy code', () => {
+  const derive = (code: string) => spawnSync('node', [join(root, 'ops/host/files/usr/local/lib/zeroed/derive-key.mjs')], { input: code, encoding: 'utf8' });
+
+  it('uses the EFF large wordlist, unchanged', () => {
+    const words = read('ops/host/files/usr/local/share/zeroed/eff_large_wordlist.txt').trim().split('\n');
+    expect(words).toHaveLength(7776);
+    expect(new Set(words).size).toBe(7776);
+    expect(createHash('sha256').update(read('ops/host/files/usr/local/share/zeroed/eff_large_wordlist.txt')).digest('hex')).toBe('6d557f0693958fb5e650b68b5bee585eb82cf4da32965505c789e924743bc522');
+  });
+
+  it('derives the same age identity on both sides, ignoring case and extra spaces, and only from 6 words', () => {
+    const a = derive('abacus abdomen able about above absent');
+    const b = derive('  Abacus   ABDOMEN able about above absent\n');
+    expect(a.status).toBe(0);
+    expect(a.stdout).toMatch(/^AGE-SECRET-KEY-1[0-9A-Z]{58}\n$/);
+    expect(b.stdout).toBe(a.stdout);
+    expect(derive('abacus abdomen able about above absent zone').stdout).not.toBe(a.stdout);
+    expect(derive('abacus abdomen able about above').status).toBe(2);
+  }, 30_000);
 });
 
 describe('systemd units (ARCHITECTURE.md 12.1)', () => {
@@ -116,7 +138,8 @@ describe('systemd units (ARCHITECTURE.md 12.1)', () => {
     const s = unit('zeroed-worker.service');
     for (const k of [...common, 'User=zeroed-worker', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6']) expect(s, k).toMatch(new RegExp(`^${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
     expect(s).not.toMatch(/^LoadCredential=|^SetCredential=|^Environment=.*KEY/m);
-    expect(s.match(/^LoadCredentialEncrypted=/gm)).toHaveLength(6);
+    expect(s.match(/^LoadCredentialEncrypted=/gm)).toHaveLength(5);
+    expect(s).toContain('ConditionPathExists=/etc/credstore.encrypted/telegram_chat_id');
     expect(s).toMatch(/^ExecStartPre=.* --reconcile$/m);
   });
 

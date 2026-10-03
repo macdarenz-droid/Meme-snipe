@@ -39,7 +39,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const readmePath = join(ops, 'README.md');
   const readme = readFileSync(readmePath, 'utf8');
   if (!HASH_LINE.test(readme)) throw new Error('README.md: hash line not found');
-  const nextReadme = readme.replace(HASH_LINE, `$1${hash}$2`).replaceAll(/(echo ')[0-9a-f]{64}(  install\.sh')/g, `$1${hash}$2`);
+  const nextReadme = readme.replace(HASH_LINE, `$1${hash}$2`).replaceAll(/(echo ')[0-9a-f]{64}(  i')/g, `$1${hash}$2`);
   if (process.argv.includes('--check')) {
     const current = readFileSync(join(ops, 'install.sh'), 'utf8');
     if (current !== script || readme !== nextReadme) {

@@ -78,22 +78,17 @@ install -d -m 0755 -o root -g root /etc/zeroed /opt/zeroed /opt/zeroed/releases
 install -d -m 0700 -o root -g root /etc/zeroed/age /etc/credstore.encrypted /var/lib/zeroed-host /var/backups/zeroed
 
 say "Host key"
+# The host's own age key: backups are encrypted to it (the owner's key can be added later).
 if [ ! -s /etc/zeroed/age/host.key ]; then
   age-keygen -o /etc/zeroed/age/host.key.new 2>/dev/null
   chmod 0400 /etc/zeroed/age/host.key.new
   mv /etc/zeroed/age/host.key.new /etc/zeroed/age/host.key
 fi
 chmod 0400 /etc/zeroed/age/host.key
-HOST_PUBLIC_KEY="$(age-keygen -y /etc/zeroed/age/host.key)"
+[ -s /etc/zeroed/backup-recipients ] || { age-keygen -y /etc/zeroed/age/host.key > /etc/zeroed/backup-recipients; chmod 0644 /etc/zeroed/backup-recipients; }
 # systemd's own host key for encrypted credentials (root-only, created once).
 [ -s /var/lib/systemd/credential.secret ] || systemd-creds setup >/dev/null
 
-if [ -s /etc/zeroed/host.env ] && grep -q '^PAIRING_CODE=' /etc/zeroed/host.env; then
-  PAIRING_CODE="$(sed -n 's/^PAIRING_CODE=//p' /etc/zeroed/host.env)"
-else
-  raw="$(LC_ALL=C tr -dc 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' </dev/urandom | head -c 12 || true)"
-  PAIRING_CODE="${raw:0:4}-${raw:4:4}-${raw:8:4}"
-fi
 cat > /etc/zeroed/host.env.new <<EOF
 ZEROED_REPO=$REPO
 ZEROED_BRANCH=$BRANCH
@@ -101,11 +96,13 @@ ZEROED_GITHUB_URL=$GITHUB_URL
 ZEROED_API_URL=$API_URL
 ZEROED_TELEGRAM_URL=$TELEGRAM_URL
 WEB_FLOW_FPR=$WEB_FLOW_FPR
-PAIRING_CODE=$PAIRING_CODE
 EOF
 chmod 0644 /etc/zeroed/host.env.new
 mv /etc/zeroed/host.env.new /etc/zeroed/host.env
 [ -f /etc/zeroed/worker.env ] || install -m 0644 /dev/null /etc/zeroed/worker.env
+. /usr/local/lib/zeroed/common.sh
+# A one-time deploy code, unless the keys are already here (re-running the installer keeps them).
+keys_stored || [ -s "$DEPLOY_CODE_FILE" ] || new_deploy_code
 
 say "GitHub merge-signing key"
 install -d -m 0700 /etc/zeroed/gnupg
@@ -144,14 +141,8 @@ systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer
 # Starts once credentials exist (skipped by its ConditionPathExists until then).
 systemctl start zeroed-worker.service || true
 
-cat <<EOF
-
-Zeroed host installed.
-
-  Host public key:  $HOST_PUBLIC_KEY
-  Pairing code:     $PAIRING_CODE
-
-Next: in GitHub, run the "Deploy" workflow and paste these two values into its form.
-Both are safe to share; neither is a secret. The host picks up its keys within a minute
-and confirms in Telegram.
-EOF
+printf '\nInstalled. Next: the deploy code below goes into GitHub as the secret DEPLOY_CODE.\n\n'
+if [ "${ZEROED_NO_WAIT:-}" != 1 ] && [ -t 1 ]; then
+  exec /usr/local/sbin/zeroed-setup
+fi
+/usr/local/sbin/zeroed-status

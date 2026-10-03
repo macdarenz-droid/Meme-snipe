@@ -1,74 +1,94 @@
-# Zeroed host
+# Zeroed server
 
-How the VPS is installed, gets its keys, updates, is watched and backed up (ARCHITECTURE.md §12, OPS-1). Nobody copies a key by hand: the host makes its own key pair, GitHub encrypts the repository secrets to it, and only the host can open them.
+How the server is installed, gets its keys, pairs with Telegram, updates and is backed up (ARCHITECTURE.md §12, OPS-1a). Nobody copies a key by hand. The only things typed by hand are a 6-word code and a 6-digit code.
 
-## Server
+Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 LTS x64**. Ubuntu 24.04 gets standard security updates until 2029; Debian 12 left regular security support in June 2026.
 
-Vultr High Performance, Frankfurt, 1 vCPU / 1 GB AMD (`vhp-1c-1gb-amd`, about US$6/month), image **Ubuntu 24.04 LTS x64**. Ubuntu 24.04 gets standard security updates until 2029; Debian 12 left regular security support in June 2026. Hetzner CX23 (Nuremberg) is the backup with the same image.
+## Setup (about 3 minutes)
 
-## Install (once, in the Vultr web console)
-
-Log in as root in the server's web console and paste this one line:
+1. **Log in.** In Vultr, open the server's Overview page and copy the root password. Open **View Console**. At `login:` type `root` and press Enter. At `Password:` use the console's control bar → Clipboard → Paste, then press Enter.
+2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSLo install.sh https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/2521856cdbe4c762d7f92761f891b8c936a5ded8/ops/install.sh && echo 'cc3cc4b08d44589ae24e0619aa9eff351309c106bfd3d9255c1abe44dfd01a5b  install.sh' | sha256sum -c - && bash install.sh
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/COMMIT/ops/install.sh -o i && echo 'eec89900ddc8459e91d65607f510b8a5966305b5b578bfadb2cb27a366c3637c  i' | sha256sum -c && bash i
 ```
 
-SHA-256 of `install.sh`: `cc3cc4b08d44589ae24e0619aa9eff351309c106bfd3d9255c1abe44dfd01a5b`
+   The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
+3. **Keys.** In GitHub: Settings → Secrets and variables → Actions → New repository secret. Name `DEPLOY_CODE`, value: the 6 words, with spaces between them. Then Actions → **Deploy** → Run workflow.
+4. **Telegram.** Within a minute the console shows a 6-digit pairing code. Send `/pair` and the code to the bot in Telegram, for example `/pair 123456`. The bot answers "Paired" and the console says "Setup finished".
 
-The hash is checked before anything runs; a changed file stops at `sha256sum -c`. After any change to `ops/install.sh`, the commit in the link must be moved to one that holds the new file (`ops/test/e2e.sh` fails otherwise). The installer:
+The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-- installs `age`, `git`, `jq`, `nftables`, `sqlite3`, `unattended-upgrades` from Ubuntu, and Node 22.23.3 from nodejs.org (checked against its pinned SHA-256);
-- creates the `zeroed-worker` and `zeroed-signer` users and their systemd units with the §12.1 hardening (the signer has no network at all; the worker may only use HTTPS and DNS);
-- turns on unattended security updates;
-- closes every inbound port and turns SSH off (`bash install.sh --ssh-key 'ssh-ed25519 AAAA…'` keeps SSH on, key-only, for that key);
-- makes the host's age key pair (private half `/etc/zeroed/age/host.key`, root-only) and prints only the **host public key** and a **pairing code**.
+SHA-256 of `install.sh`: `eec89900ddc8459e91d65607f510b8a5966305b5b578bfadb2cb27a366c3637c`
 
-Running it again is safe: the key, the pairing code and stored credentials are kept.
+After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
-## Keys (Deploy workflow)
+## What the installer does
 
-1. In Telegram, send any message to the bot (so it may write to you).
-2. In GitHub: Actions → **Deploy** → Run workflow, on the default branch. Paste the host public key and the pairing code from the console. Optionally paste your own backup public key (below).
-3. Within a minute the host confirms in Telegram: "keys stored (6 values) … Worker running".
+- Installs `age`, `git`, `jq`, `nftables`, `sqlite3` and `unattended-upgrades` from Ubuntu, and Node 22.23.3 from nodejs.org (checked against its pinned SHA-256).
+- Creates the `zeroed-worker` and `zeroed-signer` users and their systemd units with the §12.1 hardening. The signer has no network at all; the worker may only use HTTPS and DNS.
+- Turns on unattended security updates (no automatic reboot).
+- Closes every inbound port and turns SSH off. `bash i --ssh-key 'ssh-ed25519 AAAA…'` keeps SSH on, key-only, for that key; passwords are never allowed.
+- Makes the one-time deploy code (6 words from the EFF large wordlist, about 77 bits, stored root-only) and the host's own age key for backups.
 
-What happens: the workflow encrypts `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and a fresh heartbeat key to the host's public key (`ops/deploy/publish.sh`) and publishes the ciphertext as the only asset of a prerelease tagged `pair-<pairing code>`. The host (`zeroed-pair`, every minute) downloads it, accepts it only if the release was made by this repository's workflow, the pairing code inside matches and its issue number is newer than the last one applied, then stores each value as an encrypted systemd credential (`/etc/credstore.encrypted`, readable by the worker's unit only) and restarts the worker. The workflow deletes the release after the host downloaded it, or after 15 minutes.
+Running it again is safe: keys, codes and stored credentials are kept.
 
-Trade-off, recorded in DECISIONS.md: the ciphertext is public for up to 15 minutes; only the host's private key opens it.
+## Key handoff
 
-**Rotation:** change the secret in GitHub, run Deploy again with the same host key and pairing code. Every value is replaced (the heartbeat key too), and the worker restarts after reconciling.
+The Deploy workflow (`ops/deploy/publish.sh`) turns `DEPLOY_CODE` into an age key with scrypt (`derive-key.mjs`, age's own work factor), encrypts `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY` and `TELEGRAM_BOT_TOKEN` to it, and publishes the ciphertext as the only asset of the prerelease `handoff`. The name reveals nothing about the code.
+
+The server (`zeroed-pair`, every minute) downloads it and accepts it only if all of these hold:
+- the release was made by this repository's workflow;
+- it opens with the server's code;
+- its run number is newer than the last one applied.
+
+It then stores each value as an encrypted systemd credential (`/etc/credstore.encrypted`, readable only by the worker's unit) and **wipes the code**, so it cannot be used twice. The workflow deletes the release once the server downloaded it, or after 15 minutes.
+
+A wrong code changes nothing. The console says to check `DEPLOY_CODE`, and the code stays valid for another try.
+
+Age's own passphrase mode reads only from a terminal, so a workflow cannot use it. The key is derived the same way instead: scrypt, logN 18.
+
+## Telegram pairing
+
+After the keys arrive, the server shows a 6-digit pairing code (`zeroed-telegram-pair`, which reads the bot's messages). `/pair <code>` with the right code stores that chat's id, encrypted and root-only, and replies "Paired". From then on, alerts go only to that chat.
+
+Each code has one try: any wrong `/pair` cancels it. A new code comes only from the console: `zeroed-pair-code`.
+
+## Rotation
+
+Run `zeroed-new-deploy-code` on the console and put the new 6 words in `DEPLOY_CODE`. Change the API keys in GitHub if needed, then run Deploy. Every key is replaced, the worker restarts after reconciling, and Telegram confirms.
 
 ## Code updates
 
-Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987baf-i6lrsl` that GitHub signed, which is a pull-request merge (`ops/deploy/tag.sh`). Commits pushed straight to the branch are never deployed. The host (`zeroed-update`, every 5 minutes) fetches the tag, checks the commit's signature against GitHub's merge key pinned at install (fingerprint `968479A1AFF927E37D1A566BB5690EEEBB952194`) and that it is on the branch, switches `/opt/zeroed/current` to it and restarts the worker; the worker's first step on every start is reconcile.
+Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987baf-i6lrsl` that GitHub signed, which is a pull-request merge (`ops/deploy/tag.sh`). Every 5 minutes the server (`zeroed-update`) switches to it only when all of these hold:
+- the commit carries GitHub's merge signature (fingerprint `968479A1AFF927E37D1A566BB5690EEEBB952194`, pinned at install);
+- it is on the branch;
+- every check run on it finished green (public API);
+- the worker reports no open intent (`/var/lib/zeroed/open_intents`).
 
-## Watchdog
-
-`packages/ops` is a Cloudflare Worker on its free `workers.dev` address: a cron every minute and one Durable Object holding the last heartbeat, active alerts, the pause flag and the lease. The worker posts an HMAC-signed heartbeat (`x-zeroed-signature: t=…,v1=…`) every 20 s. Checks: heartbeat older than 90 s, slot lag against a different RPC, on-chain position versus reported, stop breached with no exit attempt in 60 s, unresolved intents past blockhash expiry, SOL reserve below the floor, signer unreachable. Alerts go to Telegram once, repeat every 5 minutes while active, and send a "cleared" line.
-
-Telegram commands: only `/pause` and `/status`, only from `TELEGRAM_CHAT_ID`. `/pause` stops new entries and never stops exits; it can only be cleared from the host (`zeroed-resume`, signed with the heartbeat key). Until WORKER-1 lands, a stub worker (`/opt/zeroed/stub/worker.mjs`) sends the heartbeats.
-
-The Deploy workflow deploys the watchdog and sets its secrets and the Telegram webhook when `CLOUDFLARE_API_TOKEN` exists; without it, it skips the watchdog with a warning.
+The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
 
 ## Backups
 
-Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup, checks it, writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once given, your backup key. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key (an owner key can be added in `/etc/zeroed/backup-recipients`). The newest 72 stay in `/var/backups/zeroed`.
 
-Restore drill (never touches the live files): `zeroed-restore-drill /etc/zeroed/age/host.key` or, with your own key on another machine, `zeroed-restore-drill your-key.txt zeroed-….tar.age`. It prints PASS after the manifest, the integrity check and the table list all match.
+`zeroed-restore-drill /etc/zeroed/age/host.key` restores the newest backup into a scratch directory and prints PASS once the manifest, the integrity check and the tables all match. It never touches the live files.
 
-To restore for real: `systemctl stop zeroed-worker`, decrypt and unpack the bundle into `/var/lib/zeroed`, `chown -R zeroed-worker: /var/lib/zeroed`, `systemctl start zeroed-worker` (it reconciles first).
+To restore for real:
+1. `systemctl stop zeroed-worker`
+2. Decrypt and unpack the bundle into `/var/lib/zeroed`.
+3. `chown -R zeroed-worker: /var/lib/zeroed`
+4. `systemctl start zeroed-worker` (it reconciles first).
 
-## Owner steps left
+## Later (OPS-1b)
 
-| Step | Where | Scope |
-| --- | --- | --- |
-| Create the server (above) and paste the install line | Vultr | Ubuntu 24.04 LTS x64, Frankfurt, High Performance 1 vCPU / 1 GB |
-| Add secret `TELEGRAM_CHAT_ID` | GitHub → Settings → Secrets and variables → Actions | Your Telegram user id: message @userinfobot in Telegram, it replies with it |
-| Add secret `CLOUDFLARE_API_TOKEN` | Cloudflare → My Profile → API Tokens → template "Edit Cloudflare Workers" | Account resources: only your account. Zone resources: none needed |
-| Add secret `CLOUDFLARE_ACCOUNT_ID` | Cloudflare dashboard → Workers & Pages (right column) | Not secret, but kept with the token |
-| Pick a workers.dev subdomain once | Cloudflare → Workers & Pages | Free |
-| Optional: backup key | On your own computer: `age-keygen -o zeroed-backup.txt`; keep that file offline; paste its `age1…` public key into Deploy | Without it, backups open only with the host key |
+The Cloudflare watchdog (heartbeat, alerts, `/pause` and `/status`), off-server backup copies, and the owner's own backup key.
 
 ## Test it
 
-`bash ops/test/e2e.sh` installs from scratch into a fresh Ubuntu 24.04 systemd container with test secrets only, runs Deploy's publish script against a local stand-in for GitHub and Telegram, rotates, checks hardening, backup and restore, and finally scans every log and output for the test values.
+`bash ops/test/e2e.sh` runs on a fresh Ubuntu 24.04 systemd container with test values only:
+- the README line, the install, and a wrong code;
+- the handoff, a replay, and Telegram pairing;
+- hardening, rotation, the code-update gates, backup and restore, and restart drills.
+
+It ends with a scan of every log and output for every test value and code. The `ops-e2e` workflow runs it on every change to `ops/`.

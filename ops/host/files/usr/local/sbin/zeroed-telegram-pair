@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Locks the server to the owner's Telegram chat. While a pairing code is pending, reads the bot's messages
+# (getUpdates). "/pair <code>" with the right code stores that chat id (encrypted, root-only) and replies
+# "Paired". A wrong code invalidates the pending code: a new one comes only from the console
+# (zeroed-pair-code). Every other message is ignored. Never prints a value; never set -x.
+set -euo pipefail
+umask 077
+. /usr/local/lib/zeroed/common.sh
+lock
+
+[ -s "$PAIR_CODE_FILE" ] && [ -s "$CRED_DIR/telegram_bot_token" ] || exit 0
+offset="$(cat "$STATE_DIR/tg_offset" 2>/dev/null || echo 0)"
+updates="$(tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]')" || {
+  log "Telegram getUpdates failed."
+  exit 0
+}
+want="$(cat "$PAIR_CODE_FILE")"
+while IFS=$'\t' read -r id chat text; do
+  [ -n "$id" ] || continue
+  printf '%s\n' "$((id + 1))" > "$STATE_DIR/tg_offset"
+  [ -s "$PAIR_CODE_FILE" ] || continue
+  [[ "$text" =~ ^/pair(@[A-Za-z0-9_]+)?([[:space:]]+(.*))?$ ]] || continue
+  [[ "$chat" =~ ^-?[0-9]{1,20}$ ]] || continue
+  got="$(printf '%s' "${BASH_REMATCH[3]}" | tr -d '[:space:]')"
+  if [ "$got" = "$want" ]; then
+    printf '%s' "$chat" | store_cred telegram_chat_id
+    rm -f "$PAIR_CODE_FILE"
+    log "Paired with the owner's Telegram chat."
+    notify "Paired. Zeroed alerts come to this chat only." || true
+    systemctl start zeroed-worker.service || true
+  else
+    rm -f "$PAIR_CODE_FILE"
+    log "Wrong pairing code sent in Telegram; that code no longer works. Run zeroed-pair-code for a new one."
+    tg sendMessage -o /dev/null --data-urlencode "chat_id=$chat" --data-urlencode "text=Code not accepted. Get a new one at the server console." || true
+  fi
+done < <(printf '%s' "$updates" | jq -r '.result[]? | [(.update_id | tostring), ((.message.chat.id // "") | tostring), ((.message.text // "") | gsub("[\t\n]"; " "))] | @tsv')

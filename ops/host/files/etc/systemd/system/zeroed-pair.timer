@@ -1,5 +1,5 @@
 [Unit]
-Description=Zeroed: check for keys from the Deploy workflow every minute
+Description=Zeroed: check for keys and Telegram pairing every minute
 
 [Timer]
 OnBootSec=30s

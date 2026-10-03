@@ -24,19 +24,36 @@ createServer(async (req, res) => {
   };
 
   let m;
-  if ((m = /^\/[^/]+\/[^/]+\/releases\/download\/([^/]+)\/secrets\.age$/.exec(p))) {
+  if ((m = /^\/[^/]+\/[^/]+\/releases\/download\/([^/]+)\/bundle\.age$/.exec(p))) {
     const dir = rel(m[1]);
-    if (!existsSync(join(dir, 'secrets.age'))) return send(404, 'Not Found', 'text/plain');
+    if (!existsSync(join(dir, 'bundle.age'))) return send(404, 'Not Found', 'text/plain');
     const meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'));
     meta.download_count += 1;
     writeFileSync(join(dir, 'meta.json'), JSON.stringify(meta));
-    return send(200, readFileSync(join(dir, 'secrets.age')), 'application/octet-stream');
+    return send(200, readFileSync(join(dir, 'bundle.age')), 'application/octet-stream');
   }
   if ((m = /^\/repos\/[^/]+\/[^/]+\/releases\/tags\/([^/]+)$/.exec(p))) {
     const dir = rel(m[1]);
     if (!existsSync(join(dir, 'meta.json'))) return send(404, '{"message":"Not Found"}');
     const meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'));
-    return send(200, JSON.stringify({ tag_name: m[1], author: { login: meta.author }, assets: [{ name: 'secrets.age', download_count: meta.download_count }] }));
+    return send(200, JSON.stringify({ tag_name: m[1], author: { login: meta.author }, assets: [{ name: 'bundle.age', download_count: meta.download_count }] }));
+  }
+  if ((m = /^\/repos\/[^/]+\/[^/]+\/commits\/([0-9a-f]{40})\/check-runs$/.exec(p))) {
+    // $STATE/checks/<sha> holds "success", "failure" or "pending"; no file means no check runs.
+    const f = join(STATE, 'checks', m[1]);
+    if (!existsSync(f)) return send(200, JSON.stringify({ total_count: 0, check_runs: [] }));
+    const c = readFileSync(f, 'utf8').trim();
+    const run = c === 'pending' ? { status: 'in_progress', conclusion: null } : { status: 'completed', conclusion: c };
+    return send(200, JSON.stringify({ total_count: 2, check_runs: [{ name: 'check', status: 'completed', conclusion: 'success' }, { name: 'e2e', ...run }] }));
+  }
+  if ((m = /^\/bot([^/]+)\/getUpdates$/.exec(p))) {
+    // Messages the test "sends to the bot": one JSON object per line in $STATE/updates.jsonl.
+    if (m[1] !== token()) return send(401, '{"ok":false}');
+    const offset = Number(new URLSearchParams(body).get('offset') ?? 0);
+    const file = join(STATE, 'updates.jsonl');
+    const all = existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+    appendFileSync(join(STATE, 'telegram.jsonl'), JSON.stringify({ method: 'getUpdates', token_ok: true, chat_id: '', text: '' }) + '\n');
+    return send(200, JSON.stringify({ ok: true, result: all.filter((u) => u.update_id >= offset) }));
   }
   if ((m = /^\/bot([^/]+)\/(sendMessage|setWebhook)$/.exec(p))) {
     const form = new URLSearchParams(body);

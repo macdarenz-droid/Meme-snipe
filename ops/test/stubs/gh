@@ -6,7 +6,7 @@ case "$1 $2" in
   "release create")
     tag="$3"; file="$4"
     mkdir -p "$STATE/releases/$tag"
-    cp "$file" "$STATE/releases/$tag/secrets.age"
+    cp "$file" "$STATE/releases/$tag/$(basename "$file")"
     printf '{"author":"%s","download_count":0}' "${FAKE_RELEASE_AUTHOR:-github-actions[bot]}" > "$STATE/releases/$tag/meta.json" ;;
   "release delete")
     [ -d "$STATE/releases/$3" ] || exit 1
