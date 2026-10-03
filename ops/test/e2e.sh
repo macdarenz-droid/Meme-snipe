@@ -260,7 +260,7 @@ in_c "rm -f /etc/zeroed/deploy-code"
 pass "rotation: a new console code and a re-run of Deploy replaced all 4 keys, registered a workers.dev subdomain (none existed), deployed the watchdog (secrets, webhook) and gave the server its address and the same new heartbeat key; worker reconciled and restarted, owner told; a bundle with an older run number is refused"
 
 # ---------- 8. Code update gates ----------
-upd_run() { in_c "systemctl start zeroed-update.service" 2>/dev/null; }
+upd_run() { in_c "systemctl reset-failed zeroed-update.service 2>/dev/null; systemctl start zeroed-update.service" 2>/dev/null; }
 current() { in_c "readlink /opt/zeroed/current 2>/dev/null || true"; }
 echo failure >"$STATE/checks/$signed"
 upd_run || true
