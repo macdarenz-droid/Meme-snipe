@@ -1,6 +1,22 @@
-// Paper fill model parameters (docs/ARCHITECTURE.md §11), one versioned object like the policy. These are model
-// defaults until our own landing and latency data exist ("Measured during paper mode", §21); the dry run replaces them.
-// Promotion uses the conservative scenario only.
+// Paper fill model parameters (docs/ARCHITECTURE.md §11), one versioned object like the policy. Promotion uses the
+// conservative scenario only.
+//
+// Assumptions are harsh and documented until measurements justify a change (supervisor ruling after external review,
+// DECISIONS "Backtest review fixes (BT-1c)"). Source and status of each:
+//
+// | Assumption                         | Source                                         | Status      | Refined from                            |
+// |------------------------------------|------------------------------------------------|-------------|-----------------------------------------|
+// | landPpm (base 0.66 / 0.49)         | §11 defaults (landing of pump trades)          | assumption  | observed-chain landing of comparable    |
+// |   conservative 0.1 lower           | supervisor margin                              | assumption  | transactions in DATA-1, then the        |
+// | landingSlots, landingTail          | §11 p50/p90 latency; tail is a stress margin   | assumption  | owner-authorised canary. The dry run    |
+// | congestion (network, pool,         | stress budget; no measured congestion data     | assumption  | sends nothing, so it cannot refine      |
+// |   provider failures)               |                                                | assumption  | landing: these stay as set through it   |
+// | dropPpm                            | stress margin                                  | assumption  |                                         |
+// | exitRetryHaircutPpm                | proxy for sellers ahead of us                  | assumption  | exit fills of the canary                |
+// | closeSuccessPpm, dustPpm           | none measured                                  | assumption  | TEST-2 mainnet simulations (close rate) |
+// | delays.measured                    | today's base values (2 slots + 200 ms)         | unmeasured  | the worker recorder on the VPS          |
+// | delays.adverse, delays.stress      | ruling values (2+6 slots + 1 s, 4+12 + 2 s)    | stress      | kept as stress budgets                  |
+// | slippagePpm, takeProfit, rent flag | §11                                            | §11 rule    |                                         |
 import type { DelayProfile, DelayProfileName, FillNetwork, FillScenario, ScenarioName } from '../fills/index.ts';
 import { lamports } from '../units/index.ts';
 import { deepFreeze } from './freeze.ts';
@@ -38,11 +54,13 @@ const VALUES: FillConfig = {
     // Token-2022 pump ATA, 170 bytes at 5,080 lamports/byte (§5.1); the larger of the two account kinds.
     tokenAccountRent: lamports(1_513_840n),
   },
-  // Every value below is provisional (BT-1c item 4) until the dry run measures landing, drops and latency:
+  // What each stress field does (sources and status in the table at the top):
   // - dropPpm: share of misses that never reach a block (cost nothing, resolve only at expiry).
   // - landingTail: a few attempts land much later (leader skips, forwarding loss); some then expire.
-  // - congestion: correlated bursts in which landing falls and latency rises for every attempt at once.
+  // - congestion: a persistent shared network state and per-pool contention driven by the pool's recent volume, in
+  //   which landing falls and latency rises for every attempt at once; provider failures drop attempts on top.
   // - exitRetryHaircutPpm: each repeated exit on a position gets that much less, as other sellers drain the pool.
+  // - closeSuccessPpm, dustPpm: the atomic sell-and-close outcome that decides whether rent comes back.
   scenarios: {
     // Slots are about 0.3 s. Discovery: two free feeds, p50 within a second or two (§6.1, data.md §7).
     base: {
