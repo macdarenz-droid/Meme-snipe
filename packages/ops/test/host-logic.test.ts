@@ -360,6 +360,38 @@ describe('install.sh --update', () => {
     expect(main).toContain('die "--update keeps SSH as it is; --ssh-key needs a full install"');
   });
 
+  it('is all or nothing: every changed host path is kept first, and any failure puts all of them back', () => {
+    // Every write path of an update keeps the old file (or notes a new one) before it changes it.
+    expect(main).toContain('cmp -s "$1.zeroed-new" "$1" 2>/dev/null || { CHANGED+=("$1"); keep_old "$1"; }');
+    for (const p of ['/etc/zeroed/host.env', '/etc/ssh/sshd_config.d/10-zeroed.conf', '/var/lib/zeroed-host/release-units', '"/etc/systemd/system/$n"']) {
+      const keep = main.indexOf(`keep_old ${p}`);
+      expect(keep, p).toBeGreaterThan(0);
+    }
+    expect(main.indexOf('keep_old /etc/zeroed/host.env')).toBeLessThan(main.indexOf('mv /etc/zeroed/host.env.new /etc/zeroed/host.env'));
+    expect(main.indexOf('keep_old "/etc/systemd/system/$n"')).toBeLessThan(main.indexOf('rm -f "/etc/systemd/system/$n"'));
+    // The trap is set before the first host file is written, and only an update rolls back.
+    expect(main.indexOf('trap on_exit EXIT')).toBeLessThan(main.indexOf('# @@FILES@@'));
+    const onExit = main.slice(main.indexOf('on_exit() {'), main.indexOf('trap on_exit EXIT'));
+    expect(onExit).toContain('[ "$UPDATE" = 1 ] || return 0');
+    expect(onExit).toMatch(/if \[ "\$rc" != 0 \]; then\n\s+roll_back\n\s+else\n\s+for p in "\$\{BACKED\[@\]\}"; do rm -f "\$p\.zeroed-old"; done/);
+    const back = main.slice(main.indexOf('roll_back() {'), main.indexOf('on_exit() {'));
+    expect(back).toContain('for p in "${BACKED[@]}"; do mv -f "$p.zeroed-old" "$p"; done');
+    expect(back).toContain('systemctl disable --now "$(basename "$p")"');
+    expect(back.indexOf('mv -f "$p.zeroed-old"')).toBeLessThan(back.indexOf('nft -f /etc/nftables.conf'));
+    expect(back).toContain('systemctl daemon-reload');
+    // The bash parts behave: keep_old backs up once, notes new paths, and roll_back restores and removes.
+    const dir = join(tmp, 'tx');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'a'), 'old a\n');
+    const fns = main.slice(main.indexOf('BACKED=()'), main.indexOf('trap on_exit EXIT'));
+    const r = spawnSync('bash', ['-c', `set -euo pipefail; UPDATE=1; systemctl() { :; }; nft() { :; }; ${fns}
+      keep_old "${dir}/a"; echo new > "${dir}/a"; keep_old "${dir}/a"; echo newer > "${dir}/a"
+      keep_old "${dir}/b"; echo b > "${dir}/b"
+      roll_back 2>/dev/null; cat "${dir}/a"; [ -e "${dir}/b" ] && echo b-left || echo b-gone; ls "${dir}"`], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout.trim().split('\n')).toEqual(['old a', 'b-gone', 'a']);
+  });
+
   it('keeps the addresses the host was installed with', () => {
     expect(upd('. /etc/zeroed/host.env')).toBeGreaterThan(0);
     expect(upd('. /etc/zeroed/host.env')).toBeLessThan(upd('REPO="${ZEROED_REPO:-'));

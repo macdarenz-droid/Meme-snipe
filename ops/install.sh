@@ -82,10 +82,49 @@ say "Files"
 SSH_WAS_OPEN=0
 [ "$UPDATE" = 0 ] || ! nft list ruleset 2>/dev/null | grep -Eq 'tcp dport 22 .*accept' || SSH_WAS_OPEN=1
 CHANGED=()
+# An update is all or nothing. Before it changes a host path it keeps the old file (*.zeroed-old) or notes
+# that the path is new; if any later step fails (the firewall, the signing key, a package, a unit), the
+# EXIT trap puts every file back, removes the new ones, reloads systemd and re-applies the old firewall, so
+# the release that keeps running also keeps its own host files. On success the old copies are deleted.
+BACKED=()
+CREATED=()
+keep_old() { # path
+  [ "$UPDATE" = 1 ] || return 0
+  local x
+  for x in "${BACKED[@]}" "${CREATED[@]}"; do [ "$x" != "$1" ] || return 0; done
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    cp -a "$1" "$1.zeroed-old"
+    BACKED+=("$1")
+  else
+    CREATED+=("$1")
+  fi
+}
+roll_back() {
+  local p
+  set +e
+  for p in "${CREATED[@]}"; do
+    case "$p" in /etc/systemd/system/*) systemctl disable --now "$(basename "$p")" >/dev/null 2>&1 ;; esac
+    rm -f "$p"
+  done
+  for p in "${BACKED[@]}"; do mv -f "$p.zeroed-old" "$p"; done
+  systemctl daemon-reload
+  nft -f /etc/nftables.conf
+  printf 'Update failed; every host file is back as it was (%s restored, %s removed).\n' "${#BACKED[@]}" "${#CREATED[@]}" >&2
+}
+on_exit() {
+  local rc=$? p
+  [ "$UPDATE" = 1 ] || return 0
+  if [ "$rc" != 0 ]; then
+    roll_back
+  else
+    for p in "${BACKED[@]}"; do rm -f "$p.zeroed-old"; done
+  fi
+}
+trap on_exit EXIT
 install_file() { # path mode, content on stdin
   mkdir -p "$(dirname "$1")"
   cat > "$1.zeroed-new"
-  cmp -s "$1.zeroed-new" "$1" 2>/dev/null || CHANGED+=("$1")
+  cmp -s "$1.zeroed-new" "$1" 2>/dev/null || { CHANGED+=("$1"); keep_old "$1"; }
   chmod "$2" "$1.zeroed-new"
   chown root:root "$1.zeroed-new"
   mv -f "$1.zeroed-new" "$1"
@@ -9714,6 +9753,7 @@ chmod 0400 /etc/zeroed/age/host.key
 # systemd's own host key for encrypted credentials (root-only, created once).
 [ -s /var/lib/systemd/credential.secret ] || systemd-creds setup >/dev/null
 
+keep_old /etc/zeroed/host.env
 cat > /etc/zeroed/host.env.new <<EOF
 ZEROED_REPO=$REPO
 ZEROED_BRANCH=$BRANCH
@@ -9724,7 +9764,7 @@ WEB_FLOW_FPR=$WEB_FLOW_FPR
 EOF
 chmod 0644 /etc/zeroed/host.env.new
 mv /etc/zeroed/host.env.new /etc/zeroed/host.env
-[ -f /etc/zeroed/worker.env ] || install -m 0644 /dev/null /etc/zeroed/worker.env
+[ -f /etc/zeroed/worker.env ] || { keep_old /etc/zeroed/worker.env; install -m 0644 /dev/null /etc/zeroed/worker.env; }
 . /usr/local/lib/zeroed/common.sh
 # A one-time deploy code, unless the keys are already here (re-running the installer keeps them).
 [ "$UPDATE" = 1 ] || keys_stored || [ -s "$DEPLOY_CODE_FILE" ] || new_deploy_code
@@ -9738,6 +9778,7 @@ got="$(GNUPGHOME=/etc/zeroed/gnupg gpg --batch --with-colons --fingerprint 2>/de
 say "Firewall: no inbound ports${SSH_KEY:+ except SSH (key-only)}"
 # Password login is off on both paths (the drop-in also covers SSH being turned on later by hand).
 install -d -m 0755 /etc/ssh/sshd_config.d
+keep_old /etc/ssh/sshd_config.d/10-zeroed.conf
 printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
 if [ "$UPDATE" = 1 ]; then
   # SSH stays exactly as it was: open (key-only) only if the running firewall already let it in.
@@ -9782,8 +9823,10 @@ fi
 for n in $(cat /var/lib/zeroed-host/release-units 2>/dev/null || true); do
   [[ " ${new_units[*]} " == *" $n "* ]] && continue
   systemctl disable --now "$n" >/dev/null 2>&1 || true
+  keep_old "/etc/systemd/system/$n"
   rm -f "/etc/systemd/system/$n"
 done
+keep_old /var/lib/zeroed-host/release-units
 printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
 
 say "Services"

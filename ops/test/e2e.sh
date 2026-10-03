@@ -423,6 +423,29 @@ in_c "cat /var/lib/zeroed-host/deployed" | has -x 000000000000000000000000000000
 [ "$(jl zeroed-worker | grep -c 'Stub worker up')" = "$w0" ] || fail "worker restarted on failed host files"
 [ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c 'failed to apply, so the server stays on the release it runs')" = 1 ] || fail "no single alert for failed host files"
 jl zeroed-update | has 'still on the old release, trying again next run' || fail "failed apply not logged"
+# All or nothing: a release whose installer changes host files (two scripts, a new unit, RUN-1's units) and
+# then fails on its firewall must leave every host-managed path, the unit states and the ruleset exactly as
+# they were.
+sed -e 's/^# Console: where setup stands/# Changed by the e2e. Console: where setup stands/' \
+    -e 's/^# Starts the worker for zeroed-worker.service/# Changed by the e2e. Starts the worker for zeroed-worker.service/' \
+    -e 's/^    ct state invalid drop$/    this is not nftables/' \
+    -e "s|^install -d -m 0755 -o root -g root /etc/zeroed /opt/zeroed /opt/zeroed/releases$|install_file /etc/systemd/system/zeroed-e2e-new.timer 0644 <<'__E2E__'@NL@[Timer]@NL@OnCalendar=daily@NL@__E2E__@NL@\\0|" \
+    "$ROOT/ops/install.sh" | sed 's/@NL@/\n/g' >"$E2E/broken-install.sh"
+grep -q 'this is not nftables' "$E2E/broken-install.sh" && grep -q 'zeroed-e2e-new.timer' "$E2E/broken-install.sh" && [ "$(grep -c 'Changed by the e2e' "$E2E/broken-install.sh")" = 2 ] || fail "test setup: broken installer"
+docker cp "$E2E/broken-install.sh" "$C:/opt/zeroed/releases/$signed/ops/install.sh"
+manifest() {
+  in_c "for p in \$(grep -o '^install_file [^ ]*' /opt/zeroed/releases/$signed/ops/install.sh | cut -d' ' -f2) /etc/zeroed/host.env /etc/zeroed/worker.env /etc/ssh/sshd_config.d/10-zeroed.conf /var/lib/zeroed-host/release-units \$(ls -d /etc/systemd/system/zeroed-* /etc/systemd/system/*.wants/zeroed-* 2>/dev/null); do if [ -e \$p ]; then printf '%s %s\n' \$p \$(sha256sum < \$p | cut -c1-64); else printf '%s absent\n' \$p; fi; done | sort -u; nft list ruleset | sha256sum; systemctl list-unit-files 'zeroed-*' --no-legend | sort"
+}
+manifest >"$LOGS/manifest-before.txt"
+grep -q '^/etc/systemd/system/zeroed-e2e-new.timer absent$' "$LOGS/manifest-before.txt" || fail "test setup: manifest"
+upd_run && fail "update reported success with a broken firewall"
+manifest >"$LOGS/manifest-after.txt"
+diff -u "$LOGS/manifest-before.txt" "$LOGS/manifest-after.txt" >"$LOGS/manifest-diff.txt" || { cat "$LOGS/manifest-diff.txt"; fail "a failed update left host files changed"; }
+in_c "find / -xdev -name '*.zeroed-old' 2>/dev/null" | has . && fail "backups left behind after a roll-back"
+in_c "cat /var/lib/zeroed-host/host_update.log" | has 'Update failed; every host file is back as it was' || fail "roll-back not reported"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x 0000000000000000000000000000000000000000 || fail "switched after a rolled-back update"
+[ "$(jl zeroed-worker | grep -c 'Stub worker up')" = "$w0" ] || fail "worker restarted after a rolled-back update"
+[ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c 'failed to apply')" = 1 ] || fail "the failure episode alerted more than once"
 # The release carries this branch's installer and RUN-1 units (a GitHub-signed merge of it would): the next
 # run applies them, then switches.
 in_c "rm -rf /opt/zeroed/releases/$signed/packages/runner/systemd && mkdir -p /opt/zeroed/releases/$signed/packages/runner"
@@ -465,7 +488,7 @@ jq -e '.mode == "paper" and .signing_key == false and (.evidence | map(.id) | in
 CIP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$C")"
 curl -s -m 3 -o /dev/null "http://$CIP:8788/health" && fail "the worker API answered on the public interface"
 in_c "zeroed-status" | has 'Evidence:  /var/lib/zeroed-dryrun/evidence (1 runs)' || fail "status does not list the evidence"
-pass "install.sh --update through zeroed-update: failing host files keep the old release and the worker (one alert, cleared later); RUN-1 units from the release installed (tick timer on, template off), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on, health on 127.0.0.1:8787 and API on 127.0.0.1:8788, the stand-in until the release switches to its own worker; worker API on loopback only lists the evidence kept on the host"
+pass "install.sh --update through zeroed-update: failing host files keep the old release and the worker (one alert, cleared later); an installer that fails after writing files (bad firewall) is rolled back to byte-identical host files, units and ruleset; RUN-1 units from the release installed (tick timer on, template off), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on, health on 127.0.0.1:8787 and API on 127.0.0.1:8788, the stand-in until the release switches to its own worker; worker API on loopback only lists the evidence kept on the host"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on
