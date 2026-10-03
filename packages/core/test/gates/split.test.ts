@@ -182,8 +182,8 @@ describe('GATE-1d review: the holder read must be one clean snapshot of this min
   it('N1: a complete set needs one fresh response and an exact sum, not the mint read\'s slot', () => {
     const f = passingFacts();
     const mint = f.get(mintKey(MINT))!.value as { account: { supply: bigint } };
-    // The mint read and the holder read land on different slots; the sum is exact, so the set is covered.
-    const apart = patch(patch(f, mintKey(MINT), { obs: obs({ slot: SLOT - 1n }) }), holdersKey(MINT), { obs: obs({ slot: SLOT - 2n }) });
+    // The mint read and the holder read land on different slots (mint first); the sum is exact, so the set is covered.
+    const apart = patch(patch(f, mintKey(MINT), { obs: obs({ slot: SLOT - 2n }) }), holdersKey(MINT), { obs: obs({ slot: SLOT - 1n }) });
     expect(concentrationReasons(apart)).toEqual([]);
     // A burn of b between the two reads, in each order, breaks the exact sum.
     const b = 5_000_000n;
@@ -218,5 +218,38 @@ describe('GATE-1d review: the holder read must be one clean snapshot of this min
     // A producer that leaves the mint out: the read is not in the expected shape.
     const missing = accounts.map((a, i) => (i === 3 ? (({ mint: _, ...rest }) => rest)(a) : a)) as unknown as HolderAccount[];
     expect(evaluate(view(missing, 'all')).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'holders', neededBy: 'H12' }));
+  });
+});
+
+describe('GATE-1e: the mint supply is read first, the complete holder set at or after it', () => {
+  const f = passingFacts();
+  const mint = f.get(mintKey(MINT))!.value as { account: { supply: bigint } };
+  const accounts = holderAccounts();
+  const devAcct = accounts.find((a) => a.owner === DEV)!;
+  const omitted = accounts.filter((a) => a !== devAcct); // the response leaves out the dev's account
+  const reads = (mintSlot: bigint, holderSlot: bigint, supply: bigint, list: readonly HolderAccount[]) =>
+    patch(patch(f, mintKey(MINT), { obs: obs({ slot: mintSlot }), account: { ...mint.account, supply } }), holdersKey(MINT), { obs: obs({ slot: holderSlot }), supply, accounts: list });
+
+  it("the reviewer's counterexample: holders scanned, a burn equal to the omitted balance, then the mint read; never a pass", () => {
+    // The scan omits the dev's balance; another holder then burns the same amount; the mint read after shows the lower supply.
+    const after = reads(SLOT - 1n, SLOT - 2n, SUPPLY - devAcct.amount, omitted);
+    expect(sum(omitted)).toBe(SUPPLY - devAcct.amount); // the sum is exact against the later supply
+    expect(evaluate(after).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12' }));
+    expect(evaluate(after).reasons.filter((r) => r.neededBy === 'H12' || r.gate === 'H12').map((r) => r.code)).toEqual(['not-covered']);
+  });
+
+  it('mint read first: the same omission fails the exact sum; nothing omitted passes, at the same slot or later', () => {
+    expect(evaluate(reads(SLOT - 2n, SLOT - 1n, SUPPLY, omitted)).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: 'H12' }));
+    expect(concentrationReasons(reads(SLOT - 2n, SLOT - 1n, SUPPLY, accounts))).toEqual([]);
+    expect(concentrationReasons(reads(SLOT - 1n, SLOT - 1n, SUPPLY, accounts))).toEqual([]);
+    // A partial view is bounded by the worst case and does not need the order.
+    expect(concentrationReasons(patch(reads(SLOT - 1n, SLOT - 2n, SUPPLY, accounts), holdersKey(MINT), { coverage: 'largest' }))).toEqual([]);
+  });
+
+  it('a mint or holder read at processed commitment is refused', () => {
+    for (const key of [mintKey(MINT), holdersKey(MINT)]) {
+      const r = evaluate(patch(f, key, { obs: obs({ commitment: 'processed' }) })).reasons;
+      expect(r).toContainEqual(expect.objectContaining({ gate: 'H16', neededBy: 'H12' }));
+    }
   });
 });
