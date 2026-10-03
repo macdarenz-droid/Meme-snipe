@@ -112,7 +112,10 @@ const journal = (kind: JournalKind, fields: Record<string, unknown> = {}): void 
   appendFileSync(journalPath, `${JSON.stringify({ seq, ts: new Date().toISOString(), boot, kind, ...fields })}\n`);
 };
 rmSync(join(stateDir, STATE_FILES.cleanStop), { force: true });
-journal('start', { git_sha: gitSha, run_id: env['ZEROED_RUN_ID'] ?? null, label: env['ZEROED_RUN_LABEL'] ?? null, recorder: recorderOn, simulation: simulationOn, stub: true });
+journal('start', {
+  git_sha: gitSha, run_id: env['ZEROED_RUN_ID'] ?? null, label: env['ZEROED_RUN_LABEL'] ?? null, recorder: recorderOn, simulation: simulationOn, stub: true,
+  entry_rule: env['ZEROED_STRATEGY'] ?? 'none', paper_edge_ppm: env['ZEROED_PAPER_EDGE_PPM'] ?? null, s0_salt: env['ZEROED_STUB_SALT'] ?? null,
+});
 if (repaired) journal('journal_repair', { detail: 'torn last line removed' });
 
 if (reconcileFails) {

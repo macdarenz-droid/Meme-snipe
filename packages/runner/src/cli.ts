@@ -86,6 +86,8 @@ if (cmd === 'scan') {
       commit: { type: 'string' },
       'sample-ms': { type: 'string' },
       'backup-minutes': { type: 'string', default: '60' },
+      // The registered strategy id the worker must run; none is registered yet (BT-2 registers one).
+      strategy: { type: 'string', default: 'none' },
       'run-name': { type: 'string' },
       segment: { type: 'string', default: '1' },
     },
@@ -153,7 +155,7 @@ if (cmd === 'scan') {
     stateDir,
     evidenceDir,
     identity: { label, commit },
-    newRun: { runId: id, ...(name === undefined ? {} : { name }), targetMs, entry: mode === 'systemd' ? `systemd:${WORKER_UNIT}` : v.entry },
+    newRun: { runId: id, strategy: v.strategy, ...(name === undefined ? {} : { name }), targetMs, entry: mode === 'systemd' ? `systemd:${WORKER_UNIT}` : v.entry },
     segmentEnd,
     keepRecorded: mode === 'systemd' ? 'host' : 'copy',
     handover: mode === 'local',

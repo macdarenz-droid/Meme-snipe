@@ -2,7 +2,7 @@
 import { RESTART_CAUSES, type RestartCause } from './contract.ts';
 import type { Item4 } from './item4.ts';
 import type { JournalReport } from './journal.ts';
-import type { CoverageReport, LookupLatency, QuotaReport, Rejections } from './quota.ts';
+import type { CoverageReport, EntryRule, LookupLatency, QuotaReport, Rejections } from './quota.ts';
 import type { Drill } from './plan.ts';
 
 export type Label = 'rehearsal' | 'vps';
@@ -97,6 +97,8 @@ export interface RunMeta {
   readonly runId: string;
   /** Host runs: the requested name (packages/runner/qualifying-run.json). */
   readonly name?: string;
+  /** The registered strategy id the worker must run (`none` until BT-2 registers one). */
+  readonly strategy?: string;
   readonly label: Label;
   readonly commit: string;
   readonly startedAt: number;
@@ -153,6 +155,7 @@ export interface CauseSummary {
 }
 
 export interface Ops {
+  readonly entry_rule?: EntryRule;
   readonly quota: QuotaReport;
   readonly lookups: LookupLatency;
   readonly coverage: CoverageReport;
@@ -239,6 +242,8 @@ export const buildReport = (
           (stub || d.cause === 'chain-rebuild' || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
     ),
     coverage_valid: ops.coverage.problems.length === 0,
+    // The registered entry rule on every boot, no paper edge, nothing changed between boots: otherwise NOT qualifying.
+    entry_rule_registered: ops.entry_rule?.ok === true,
     // RUN-1d: every planned cause drilled and passed (a crash, a reboot, a host loss, a chain rebuild, RPC loss).
     // A restart cause counts only when a passed drill of it had something to keep; a skipped drill never counts.
     drills_by_cause: [...RESTART_CAUSES, 'rpc'].every((c) => byCause[c]!.planned > 0 && (c === 'rpc' ? byCause[c]!.passed > 0 : byCause[c]!.exercised > 0)),
@@ -253,7 +258,9 @@ export const buildReport = (
     label: meta.label,
     // The fallback never counts (ARCHITECTURE.md §15): it is labelled so in the report itself.
     counts:
-      meta.label === 'rehearsal'
+      ops.entry_rule?.ok !== true
+        ? `NOT qualifying: ${ops.entry_rule?.problems.join('; ') ?? 'no entry rule reported'}.`
+        : meta.label === 'rehearsal'
         ? 'Rehearsal: counts for none of §15 items 3, 4 or G3. The gaps between GitHub jobs count as down time, so a 48 h rehearsal fails the 99% uptime check by design.'
         : 'VPS run: candidate for §15 item 3 and the drills of item 5 only if every check passes; items 4 and G3 are judged from the same run by TEST-2 and STATS-1.',
     commit: meta.commit,

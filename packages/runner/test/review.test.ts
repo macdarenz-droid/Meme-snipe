@@ -1,5 +1,5 @@
 // PR #64 review: drills that pass without proving anything, the qualifying guard, lifecycle decisions.
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import { LocalControl } from '../src/control.ts';
 import { checkJournal } from '../src/journal.ts';
 import { item4 } from '../src/item4.ts';
 import { makePlan } from '../src/plan.ts';
-import { rejections } from '../src/quota.ts';
+import { entryRule, rejections } from '../src/quota.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Report, type RunMeta, type Sample } from '../src/report.ts';
 import { journalTimes, killReplyValid, runSegment } from '../src/runner.ts';
 import { fullDrills, OPS_OK } from './fixtures.ts';
@@ -119,6 +119,29 @@ describe('5–7. reboot timing and units', () => {
   }, 40_000);
   it('the tick timer resumes soon after boot, so a reboot drill costs little uptime', () => {
     expect(readFileSync(join(root, 'packages/runner/systemd/zeroed-dryrun-tick.timer'), 'utf8')).toMatch(/^OnBootSec=20s$/m);
+  });
+});
+
+describe('qualifying guard: the registered entry rule, no paper edge, nothing changed between boots', () => {
+  const start = (boot: string, extra: Record<string, unknown>): JournalLine => ({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot, kind: 'start', entry_rule: 'none', paper_edge_ppm: null, s0_salt: null, ...extra }) as JournalLine;
+  it.each([
+    ['the S0 shakedown', [start('a', { entry_rule: 'S0' })], /entry rule "S0", the registered rule is none/],
+    ['a paper edge', [start('a', { paper_edge_ppm: '5000' })], /paper edge 5000 ppm/],
+    ['a rule change between boots', [start('a', {}), start('b', { entry_rule: 'S0' })], /entry rule changed between boots/],
+    ['a salt change between boots', [start('a', { s0_salt: 'x' }), start('b', { s0_salt: 'y' })], /salt changed between boots/],
+    ['no entry rule at all', [start('a', { entry_rule: undefined })], /entry rule null/],
+  ])('%s is NOT qualifying and fails the run', (_, lines, why) => {
+    const g = entryRule(lines, 'none');
+    expect(g.ok).toBe(false);
+    expect(g.problems.join('; ')).toMatch(why);
+    const r = report(all, { ...OPS_OK, entry_rule: g });
+    expect(r.checks['entry_rule_registered']).toBe(false);
+    expect(r.pass).toBe(false);
+    expect(r.counts).toMatch(/^NOT qualifying: /);
+  });
+  it('the registered rule on every boot passes', () => {
+    expect(entryRule([start('a', {}), start('b', {})], 'none')).toMatchObject({ ok: true, seen: ['none'] });
+    expect(entryRule([start('a', { entry_rule: 'U2-v1' })], 'U2-v1').ok).toBe(true);
   });
 });
 

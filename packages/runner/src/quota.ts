@@ -276,3 +276,30 @@ export const rejections = (journal: readonly JournalLine[]): Rejections => {
   };
 };
 
+export interface EntryRule {
+  /** The registered strategy id the run must use; `none` until one is registered (BT-2). */
+  readonly expected: string;
+  readonly seen: readonly string[];
+  readonly ok: boolean;
+  readonly problems: readonly string[];
+}
+
+/**
+ * Every boot's `start` line must run the registered entry rule with no paper edge, and neither the rule nor the
+ * random-entry salt may change between boots. A host unit or resumed state carrying the S0 shakedown or a paper edge
+ * into the qualifying run would otherwise pass on random entries.
+ */
+export const entryRule = (journal: readonly JournalLine[], expected: string): EntryRule => {
+  const starts = journal.filter((l) => l.kind === 'start');
+  const problems: string[] = [];
+  const seen = [...new Set(starts.map((l) => String(l['entry_rule'])))];
+  const salts = new Set(starts.map((l) => JSON.stringify(l['s0_salt'] ?? null)));
+  for (const l of starts) {
+    if (l['entry_rule'] !== expected) problems.push(`boot ${l.boot}: entry rule ${JSON.stringify(l['entry_rule'] ?? null)}, the registered rule is ${expected}`);
+    if (l['paper_edge_ppm'] !== null && l['paper_edge_ppm'] !== undefined) problems.push(`boot ${l.boot}: paper edge ${String(l['paper_edge_ppm'])} ppm`);
+  }
+  if (seen.length > 1) problems.push(`entry rule changed between boots: ${seen.join(', ')}`);
+  if (salts.size > 1) problems.push('random-entry salt changed between boots');
+  if (starts.length === 0) problems.push('no start line');
+  return { expected, seen, ok: problems.length === 0, problems };
+};

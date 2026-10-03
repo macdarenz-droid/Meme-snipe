@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { checkStartHealth, LOOKUP_BOUNDS_MS, type RestartCause, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
 import { snapshotState, type WorkerControl } from './control.ts';
 import { item4 } from './item4.ts';
-import { checkQuota, coverageGaps, lookupLatency, quotaReport, rejections, type BootTotals } from './quota.ts';
+import { checkQuota, coverageGaps, entryRule, lookupLatency, quotaReport, rejections, type BootTotals } from './quota.ts';
 import { checkJournal } from './journal.ts';
 import { makePlan, type Drill } from './plan.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Label, type RecordedFile, type RecoveredState, type Report, type RunMeta, type Sample } from './report.ts';
@@ -23,7 +23,7 @@ export interface SegmentOptions {
   readonly identity: { readonly label: Label; readonly commit: string };
   /** New runs only. `entry` is the worker entry (local) or `systemd:<unit>` (host). */
   readonly newRun?: {
-    readonly runId: string; readonly name?: string; readonly targetMs: number; readonly entry: string; readonly restarts?: number;
+    readonly runId: string; readonly name?: string; readonly strategy?: string; readonly targetMs: number; readonly entry: string; readonly restarts?: number;
     readonly causes?: readonly RestartCause[]; readonly restartWindowMs?: number; readonly feedDropMs?: number; readonly rpcDrops?: number; readonly rpcDropMs?: number;
   };
   /** Wall-clock end of this segment (ms epoch). The run itself ends at startedAt + targetMs. */
@@ -255,7 +255,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       ...(n.rpcDrops === undefined ? {} : { rpcDrops: n.rpcDrops }),
       ...(n.rpcDropMs === undefined ? {} : { rpcDropMs: n.rpcDropMs }),
     });
-    meta = { runId: n.runId, ...(n.name === undefined ? {} : { name: n.name }), label: o.identity.label, commit: o.identity.commit, startedAt: segStart, targetMs: n.targetMs, entry: n.entry, plan };
+    meta = { runId: n.runId, strategy: n.strategy ?? 'none', ...(n.name === undefined ? {} : { name: n.name }), label: o.identity.label, commit: o.identity.commit, startedAt: segStart, targetMs: n.targetMs, entry: n.entry, plan };
     writeFileSync(P.meta, JSON.stringify(meta, null, 2));
     log(`Run ${meta.runId}: ${meta.label}, commit ${meta.commit}, ${plan.length} drills planned.`);
   }
@@ -554,6 +554,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       const i4 = item4(readLines<JournalLine>(journalPath), m.label, samples.some((s) => s.up && s.stub));
       const journal = readLines<JournalLine>(journalPath);
       const ops = {
+        entry_rule: entryRule(journal, m.strategy ?? 'none'),
         quota: quotaReport(Object.values(boots), seg.end - m.startedAt),
         lookups: lookupLatency(Object.values(boots)),
         coverage: coverageGaps(journal, seg.end),
