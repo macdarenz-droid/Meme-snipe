@@ -27,6 +27,10 @@ Use what's necessary for high-quality output and a fast workflow, while saving t
 - Name risks and their mitigations when designing, while building, and after release.
 - One document per topic: update it instead of creating copies (no v2, final, copy or patch-1.2 names).
 
+## Owner rules for this repo
+
+- No AI wording in the UI (owner, 2026-10-03). Every word in the app reads as written by a person. Never mention AI, models, assistants or "smart"/"intelligent" features, and never use stock AI phrasing such as "at a glance", "seamless", "effortless", "unlock", "elevate", "empower", "leverage", "delve", "dive in", "robust", "cutting-edge", "harness", "supercharge", "streamline", "insights", "journey", "game-changer", "powered by", "Let's", "Here's", or decorative sparkles. Use short, specific labels a trader would write ("Today", "Open trade", "Daily loss"). A guard test in the web app fails the build on any flagged word; add to its list, never remove from it.
+
 ## How work is delivered
 
 Same delivery model as M-arc, applied to a trading app. Where M-arc says "APK", read "a deployed build or a paper-session report".
