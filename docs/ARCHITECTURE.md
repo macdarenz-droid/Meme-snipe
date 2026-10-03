@@ -319,7 +319,14 @@ Never serverless, a browser tab or a cron job as the owner of exits.
 - Paid custody (Turnkey $0.10/signature, Privy, KMS) is not used at this size: neither policy engine resolves lookup-table addresses, so our own checks are needed anyway. Upgrade to AWS KMS Ed25519 (~$1/month) when the bankroll passes ~$500 ([security.md](research/security.md) §1.2).
 - Rotate the key every 90 days or on any dependency compromise report.
 
-### 12.2 Supply chain
+### 12.2 Secrets entry
+
+No secret ever passes through chat, the repo, logs, analytics or a model prompt.
+- **Bot wallet:** generated on the host by the signer itself; only the public address leaves the host.
+- **API keys (Helius, Alchemy, Jupiter, Telegram bot token):** entered by the owner either in the dashboard's protected settings page (passkey step-up; write-only fields that show only the last 4 characters; the worker stores them in an encrypted credential readable only by its own user) or directly on the VPS console. For the GitHub Actions fallback (OPS-1), the owner enters them as repository secrets in GitHub's settings page.
+- Agents only ever see the names of the settings, never their values.
+
+### 12.3 Supply chain
 
 Exact pins and a frozen lockfile; pnpm `minimumReleaseAge: 10080` (7 days), `trustPolicy: no-downgrade`, no dependency build scripts, `blockExoticSubdeps`; per-uid egress allowlist for the worker; no keypair files at default paths ([security.md](research/security.md) §3.3). The Dec 2024 web3.js backdoor targeted bots holding keys; that is why the signer has no dependencies.
 
@@ -510,8 +517,8 @@ Critical path to the proof: ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) 
 - Accept: the engine reads time only from `Clock` and data only from `Feed`; a lint rule or test fails on any `Date.now`, `Math.random`, network or file access under `packages/core/src` outside adapters; events delivered in (slot, tx index, receipt time) order; as-of lookups refuse future keys; seeded randomness; the leak test harness (planted future marker) and the +1-slot shift test exist and pass on a stub strategy.
 
 **CFG-1 Configuration and policy versions** · low · 45 min · depends on CORE-1, CORE-2
-- Goal: every limit in §8 is configuration, versioned, locked during a session.
-- Files: `packages/core/src/config/**`; replace `MIN_TRADE_USD` and `MAX_TRADE_USD` constants in `packages/core/src/costs` with config inputs.
+- Goal: every limit in §8, the gate thresholds in §7 and the exit ladder in §9 are one versioned configuration, locked during a session. (CORE-2 removes its own `MIN_TRADE_USD`/`MAX_TRADE_USD` constants before merge; this card holds everything RISK-1, GATE-1 and EXIT-1 read.)
+- Files: `packages/core/src/config/**`.
 - Accept: no money limit is a code constant (a test greps `packages/core/src` for dollar literals outside config); a policy has a version hash; a change during a running session is refused; code can only load, never raise, limits.
 
 **DEC-1 Chain decoders** · high · 2–3 h · depends on CORE-2
@@ -581,9 +588,11 @@ Critical path to the proof: ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) 
 
 ### Wave E (start the 48-hour live dry run the moment WORKER-1 and OPS-1 run)
 
-**OPS-1 Host, watchdog and alerts** · high · 1.5 h · depends on WORKER-1 · **needs the owner's approval of ~$6/month and the accounts (VPS, Cloudflare, Telegram)**
-- Goal: §12 deployment for the live dry run.
-- Accept: provisioning script; systemd units; Cloudflare cron watchdog and Durable Object heartbeat; Telegram `/pause` and `/status` only; hourly encrypted backup; restore drill.
+**OPS-1 Host, watchdog and alerts** · high · 2–2.5 h · depends on WORKER-1 · the VPS (~$6/month) and its accounts (VPS, Cloudflare, Telegram) are the owner's to pay for and create
+- Goal: §12 deployment for the live dry run, plus a zero-cost fallback so the pre-funding work never waits on the VPS.
+- Accept (VPS): provisioning script; systemd units; Cloudflare cron watchdog and Durable Object heartbeat; Telegram `/pause` and `/status` only; hourly encrypted backup; restore drill; keys entered as in §12.2.
+- Accept (fallback, used until the VPS exists): the 48 h live dry run on chained GitHub Actions jobs (free minutes on a public repo; on a private repo GitHub Free's 2,000 minutes a month do not cover 48 h). Each job runs the worker for up to ~5 h 50 min, then saves state (SQLite ledger snapshot, recorder files, open paper positions and intents) as an encrypted artifact and triggers the next job, which restores and reconciles before any entry; **each job boundary counts as a restart drill**. Uses public or keyless endpoints where possible (PumpPortal free feed, Jupiter keyless 0.5 RPS, public RPC as a check), and free keys only as repository secrets entered by the owner. No signing key exists in this mode (dry-run simulation only).
+- The fallback is **lower fidelity** and its evidence is labelled as such: runner region is not Frankfurt (latency differs), shared runner IPs hit rate limits sooner, the public RPC is "not intended for production", gaps occur at each handover (measured and reported, counted against uptime), and GitHub may cancel or delay jobs. Pre-funding item 3 is fully met only by a run on the VPS; the fallback run counts toward items 1, 4 and 5 and the parity test, and lets item 3 be repeated quickly once the VPS exists.
 
 **TEST-1 Live recorder and parity test** · high · 2 h · depends on FEED-1, WORKER-1, BT-1
 - Goal: pre-funding item 1 on live data and the owner's parity proof.
@@ -602,12 +611,12 @@ Critical path to the proof: ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) 
 **SIGN-1 Isolated signer** · high · 3 h · owner approves (`packages/signer/**`) · depends on TX-1, OPS-1
 - §12.1 in full, with golden vectors from Kit in dev only and a policy test for every deny rule.
 
-Totals: Wave A 8–10 h, Wave B 10–13.5 h, Wave C 5–6.5 h, Wave D 4–6 h, Wave E 6.5–8 h, SIGN-1 3 h. About 37–47 h of build time; in waves of 3–5 parallel builders roughly 15–20 h of wall time plus reviews. Calendar time added on top: the backtest run itself (hours), the ≥ 48 h live dry run (runs in parallel with Wave E and later work), and DATA-1's collection of 30–60 days of history (its own estimate).
+Totals: Wave A 8–10 h, Wave B 10–13.5 h, Wave C 5–6.5 h, Wave D 4–6 h, Wave E 7–9 h, SIGN-1 3 h. About 37–48 h of build time; in waves of 3–5 parallel builders roughly 15–20 h of wall time plus reviews. Calendar time added on top: the backtest run itself (hours), the ≥ 48 h live dry run (runs in parallel with Wave E and later work), and DATA-1's collection of 30–60 days of history (its own estimate).
 
 ## 21. Open items
 
 Owner actions (no agent can do them):
-- Approve about $6/month hosting and create the accounts (VPS, Cloudflare, Telegram), and provide free API keys (Helius, Alchemy, Jupiter) when the paper worker is ready to run.
+- Approve about $6/month hosting and create the accounts (VPS, Cloudflare, Telegram), and enter free API keys (Helius, Alchemy, Jupiter) through the protected settings page, the VPS console or GitHub secrets (§12.2), never in chat. Until then the dry run uses the GitHub Actions fallback (OPS-1).
 - Check the chosen exchange on AUSTRAC's VASP register; check "Zeroed" on IP Australia before public launch.
 
 Measured during paper mode: our own latency and landing rates; PumpPortal's missing creates over 24 h; graduation rate and survival under BOOST; σ̂ and intra-day correlation of backtest returns; Sender SWQoS-only landing under congestion; Nuremberg versus Frankfurt latency; whether Jupiter's 50 bps young-token fee appears.

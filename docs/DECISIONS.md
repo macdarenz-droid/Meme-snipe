@@ -41,6 +41,9 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-03 | Backtests are blind and reproduce live: simulated clock, as-of lookups, outcomes scored in a separate stage; same engine code live and backtest; leak test and parity test required (owner) | Owner rule | `CLAUDE.md` |
 | 2026-10-03 | One deterministic engine core reads only an injected Clock and Feed (ENG-1); the backtester (BT-1) is built in Wave B, before the worker, and runs the random control first | Makes leaks impossible by construction and puts the proof on the critical path | [ARCHITECTURE.md](ARCHITECTURE.md) §16, §20 |
 | 2026-10-03 | Our order is inserted into the real historical trade sequence after modelled latency, after all real trades in its slot, and later trades see its impact | Conservative fills; candles cannot order barrier touches | [quant.md](research/quant.md) §7 |
+| 2026-10-03 | LEDGER-1 data shape approved by the supervisor: public market data, the bot's decisions, trades, fills and labels, no personal data (supervisor) | `CLAUDE.md` stored-data ruling | [quant.md](research/quant.md) §9, [ARCHITECTURE.md](ARCHITECTURE.md) §20 |
+| 2026-10-03 | Secrets never pass through chat: the bot wallet is generated on the host; API keys entered by the owner in the dashboard's protected settings, the VPS console or GitHub secrets | Keys must never reach chat, repo, logs or prompts | `AGENTS.md`, [ARCHITECTURE.md](ARCHITECTURE.md) §12.2 |
+| 2026-10-03 | Zero-cost fallback for the 48 h dry run: chained GitHub Actions jobs with state carried between them, each boundary a restart drill; marked lower fidelity; the VPS run is still needed for full item 3 (supervisor) | Pre-funding work never waits on the owner's signup | [ARCHITECTURE.md](ARCHITECTURE.md) §20 OPS-1 |
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
