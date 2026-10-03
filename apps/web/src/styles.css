@@ -1183,3 +1183,48 @@ input {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* Funding */
+
+.callout {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--raised);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.field-error {
+  color: var(--loss);
+  font-size: 13px;
+}
+
+.input-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.qr {
+  display: block;
+  flex: none;
+  width: 192px;
+  height: 192px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.text-button {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  justify-self: start;
+  padding: 0;
+}
+
+.input.mono {
+  font-size: 13px;
+}
