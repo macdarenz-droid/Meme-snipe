@@ -107,6 +107,8 @@ export class PaperWorld implements EffectRunner {
   #height: bigint | null = null;
   /** Simulations still running, by signature (a clean stop waits for them). */
   readonly pending = new Map<string, Promise<void>>();
+  /** The process is going: state files belong to its successor from here on, so nothing more is written. */
+  #stopped = false;
 
   constructor(d: PaperWorldDeps) {
     this.#d = d;
@@ -141,7 +143,16 @@ export class PaperWorld implements EffectRunner {
     return this.#height;
   }
 
+  /**
+   * Stops the state writes. A simulation can answer after the worker was killed or stopped, and its save would write
+   * `paper.json` and `open_intents` from a dead process, over what the next one (the host unit's `--reconcile`) wrote.
+   */
+  stop(): void {
+    this.#stopped = true;
+  }
+
   #save(): void {
+    if (this.#stopped) return;
     this.#d.file.write({ attempts: Object.fromEntries(this.#attempts) });
     this.#d.changed();
   }

@@ -1,7 +1,7 @@
 // WORKER-1 end to end on a scripted market: gates, risk, the ledger reservation, TEST-2's simulation, the paper fill,
 // the exit engine, the journal the runner checks and the ledger the replay check reads; then a restart drill mid-trade.
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
@@ -19,7 +19,8 @@ import { exitsFile } from '../src/run/state.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
 import type { SeedRpc } from '../src/seed/rpc.ts';
-import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, dueTimers, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import type { SimLeg } from '../src/run/paper-world.ts';
+import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, dueTimers, makeWorker, okSimulation, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const journalText = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
 const lines = (dir: string) => journalText(dir).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -438,6 +439,72 @@ describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
     expect(report.problems).toEqual([]);
     expect(lines(h.stateDir).filter((l) => l['kind'] === 'reconcile').at(-1)).toMatchObject({ ok: true });
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  }, 60_000);
+});
+
+describe('a restart rebuilds the stored book before it decides', () => {
+  it('an entry still in flight at the kill: no restored event is refused, so the ledger and the engine agree', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h);
+    await m.run(4_000, 100, () => m.pool());
+    // The entry reached the paper network and no fill has landed: the ledger carries it past what a fresh engine has.
+    expect(Object.values(h.worker.book.intents).map((i) => i.status)).toEqual(['pending']);
+    await h.worker.kill();
+
+    // Same clock instant as the stored events: before the fix the halt fact sorted first (ids: "work" < "worl"), so
+    // the strategy cancelled an intent the ledger had already carried further and the two books ended apart.
+    // Same clock instant as the stored book's frames, as on a host that reads the wall clock once a millisecond:
+    // before the fix the halt fact tied with them and won on id ("work" < "worl"), so the strategy saw the intent
+    // before the ledger's own events had rebuilt it and cancelled one the ledger had carried further.
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const dir = join(h.stateDir, 'recorder', h2.worker.boot);
+    const released = readdirSync(join(dir, 'days')).sort()
+      .flatMap((d) => readdirSync(join(dir, 'days', d)).filter((f) => /^releases-/.test(f)).sort().map((f) => join(dir, 'days', d, f)))
+      .flatMap((f) => readFileSync(f, 'utf8').split('\n').filter((l) => l !== '').map((l) => (JSON.parse(l) as { eventId: string }).eventId));
+    // Frames are numbered in arrival order, so the stored book's are every `world#` below the halt fact's own number.
+    const seqOf = (id: string) => Number(id.slice(id.indexOf('#') + 1));
+    const haltAt = released.findIndex((x) => x.startsWith(HALT_KEY));
+    expect(haltAt).toBeGreaterThanOrEqual(0);
+    const stored2 = released.map((x, k) => ({ x, k })).filter(({ x }) => x.startsWith('world#') && seqOf(x) < seqOf(released[haltAt]!));
+    expect(stored2.length).toBeGreaterThan(0);
+    expect(stored2.filter(({ k }) => k > haltAt)).toEqual([]);
+    const mine = lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot);
+    expect(mine.filter((l) => l['kind'] === 'halt')).toEqual([]);
+    expect(h2.worker.health().halt_reasons).not.toContain('ledger and book diverged');
+    // What the host unit's ExecStartPre reports: 0, from the ledger's book, which now matches the engine's.
+    expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('0\n');
+    await h2.worker.kill();
+  }, 60_000);
+});
+
+describe('a killed worker writes no state file afterwards', () => {
+  it('a simulation that answers after the kill does not overwrite what the next process wrote', async () => {
+    let answer = (): void => undefined;
+    const legs: SimLeg[] = [];
+    const held = async (leg: SimLeg) => {
+      await new Promise<void>((done) => {
+        answer = done;
+      });
+      return okSimulation(legs)(leg);
+    };
+    const h = makeWorker({ simulate: held });
+    await h.worker.reconcile();
+    const m = await passingMarket(h);
+    await m.run(4_000, 100, () => m.pool());
+    expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('1\n');
+    await h.worker.kill();
+    // The host unit's ExecStartPre settles the intent and writes 0 (here: what that next process would write).
+    writeFileSync(join(h.stateDir, 'open_intents'), '0\n');
+    const paper = readFileSync(join(h.stateDir, 'paper.json'), 'utf8');
+    // The killed process's simulation answers now: its save would write `paper.json` and `open_intents` from a
+    // process that is gone, over the successor's.
+    answer();
+    for (let k = 0; k < 20; k++) await new Promise<void>((r) => setImmediate(r));
+    expect(legs.length).toBe(1);
+    expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('0\n');
+    expect(readFileSync(join(h.stateDir, 'paper.json'), 'utf8')).toBe(paper);
   }, 60_000);
 });
 
