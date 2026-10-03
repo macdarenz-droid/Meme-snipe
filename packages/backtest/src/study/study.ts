@@ -7,7 +7,6 @@
 //   6. G0 from the engine proofs and the ledger replay check.
 import type { FillConfig, Policy, ResearchConfig } from '../../../core/src/config/index.ts';
 import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
-import { replayLedgerFile } from '../../../core/src/ledger/replay/index.ts';
 import { createRng, type DayReturn, type GateResult, MIN_DAYS } from '../../../core/src/stats/index.ts';
 import type { OffchainSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
@@ -46,6 +45,16 @@ export interface StudyInputs {
   readonly runHoldout: boolean;
   readonly startedAt: string;
   readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
+  /**
+   * The ledger replay check (§15 item 2) on a ledger file: `pnpm ledger:replay` in the CLI. Injected because the
+   * study code must not reach ledger internals (label isolation guard).
+   */
+  readonly ledgerReplay: (path: string) => LedgerReplayResult;
+}
+
+export interface LedgerReplayResult {
+  readonly ok: boolean;
+  readonly detail: string;
 }
 
 export interface StudyReport {
@@ -64,7 +73,7 @@ export interface StudyReport {
     readonly byRegime: Readonly<Record<string, Readonly<Record<string, number>>>>;
     readonly trades: readonly ScoredTrade[];
     readonly s0Seeds: number;
-    readonly ledgerReplay: ReturnType<typeof replayLedgerFile>;
+    readonly ledgerReplay: LedgerReplayResult;
   };
   readonly holdout: { readonly ran: boolean; readonly counts: Readonly<Record<string, unknown>> | null; readonly sealHash: string | null; readonly required: Readonly<Record<string, number | null>> };
   readonly gates: { readonly G0: GateResult; readonly G1: Readonly<Record<string, GateResult>>; readonly G2: GateResult };
@@ -103,7 +112,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
 
   // 1. Walk-forward: the lead-in and the walk-forward days; entries only inside them, every trade finished by their end.
   const wfOpts = base(i.firstDay, wfDays[wfDays.length - 1]!, wfEnd, plan.walkForward.entriesFrom, plan.walkForward.entriesTo);
-  const wfLedger = `${i.outDir}/walk-forward.sqlite`;
+  const wfLedger = `${i.outDir}/walk-forward.db`;
   const wf = runStudy({ ...wfOpts, mode: 'strategy', ledgerPath: wfLedger });
   const s0 = Array.from({ length: c.s0SeedsWalkForward }, (_, k) => runStudy({ ...wfOpts, mode: 's0', seed: `${i.seed}:s0:${k}` }));
 
@@ -140,7 +149,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // 4. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14).
   const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), reg.holdouts.familySize, seedNumber(`${i.seed}:power:${u}`))]));
   const required = Object.fromEntries(universes.map((u) => [u, power[u]!.ok ? power[u]!.required : null]));
-  const holdLedger = `${i.outDir}/holdout-${plan.holdout.fromDay}-${plan.holdout.toDay}.sqlite`;
+  const holdLedger = `${i.outDir}/holdout-${plan.holdout.fromDay}-${plan.holdout.toDay}.db`;
   let sealed: ReturnType<typeof runSealedHoldout> | null = null;
   const alreadyRun = reg.runs.some((r) => r.holdoutIds.some((h) => universes.some((u) => holdoutIdOf(u) === h)));
   if (i.runHoldout && !alreadyRun) {
@@ -186,7 +195,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const fd = i.rows(wfDays[0]!, wfDays[0]!)();
   for (let r = fd.next(); !r.done; r = fd.next()) firstDayRows.push(r.value);
   const shift = shiftTest(studyRunOptions({ ...wfOpts, mode: 'strategy' }), firstDayRows);
-  const ledgerReplay = replayLedgerFile(wfLedger);
+  const ledgerReplay = i.ledgerReplay(wfLedger);
   const censored = scored.kept.filter((t) => t.censored).length;
   const G0 = g0({
     survivorshipFree: true, secondSourceCoverage: 0, undecodedMigrationsReported: true, leakTestPassed: leak.ok, shiftTestPassed: shift.ok,
@@ -194,7 +203,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   });
   const g0Extra = [
     { name: 'engine validity', passed: wf.stats.crashes === 0 && wf.stats.illegalStates === 0 && wf.stats.unreconciledIntents === 0, detail: `${wf.stats.crashes} crashes, ${wf.stats.illegalStates} illegal states, ${wf.stats.unreconciledIntents} unreconciled intents` },
-    { name: 'ledger replay', passed: ledgerReplay.ok, detail: ledgerReplay.ok ? 'pnpm ledger:replay passes on the walk-forward ledger' : JSON.stringify(ledgerReplay).slice(0, 300) },
+    { name: 'ledger replay', passed: ledgerReplay.ok, detail: ledgerReplay.ok ? `pnpm ledger:replay passes on the walk-forward ledger: ${ledgerReplay.detail}` : ledgerReplay.detail.slice(0, 300) },
   ];
   const G0full: GateResult = {
     ...G0, checks: [...G0.checks, ...g0Extra], passed: G0.passed && g0Extra.every((x) => x.passed),
@@ -223,7 +232,20 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
  * and are never handed to the run.
  */
 export const studyLeak = (o: ReturnType<typeof studyRunOptions>, days: readonly string[], seed: string): ProofReport => {
-  const mid = Date.parse(`${days[0]}T00:00:00Z`) + Math.floor((days.length * 86_400_000) / 2);
+  // The middle of the blocks the days actually hold (a partly covered day ends where its data ends).
+  const from = Date.parse(`${days[0]}T00:00:00Z`);
+  const to = Date.parse(`${days[days.length - 1]}T00:00:00Z`) + 86_400_000;
+  let first: number | null = null;
+  let last: number | null = null;
+  const scan = o.rows();
+  for (let r = scan.next(); !r.done; r = scan.next()) {
+    const t = r.value.blockTime * 1000;
+    if (r.value.kind !== 'block' || t < from || t >= to) continue;
+    first ??= t;
+    last = t;
+  }
+  if (first === null || last === null) return { ok: false, violations: ['no block inside the days'] };
+  const mid = first + Math.floor((last - first) / 2);
   let at: DatasetRow | null = null;
   const it = o.rows();
   for (let r = it.next(); !r.done; r = it.next()) {

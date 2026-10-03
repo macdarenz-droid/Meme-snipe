@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import type { DatasetRow } from '../src/dataset/rows.ts';
 import { STUDY_CONFIG, configId } from '../src/strategy/config.ts';
+import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { readStudyRegistry } from '../src/study/registry.ts';
 import { runSealedHoldout } from '../src/study/sealed.ts';
 import { runFullStudy, type StudyInputs } from '../src/study/study.ts';
@@ -34,7 +35,8 @@ const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
   config, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: decisionDays,
   rows: (from, to) => () => rows.filter((r) => dayOf(r) >= from && dayOf(r) <= to)[Symbol.iterator](),
   firstDay: '2026-09-05', series: [sol], sampleRate: 1, insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }),
-  registryPath: join(dir, 'registry.json'), outDir: dir, seed: 'study', replays: 2, runHoldout: false, startedAt: '2026-10-04T00:00:00Z', ...over,
+  registryPath: join(dir, 'registry.json'), outDir: dir,
+  ledgerReplay: (p) => { const r = replayLedgerFile(p); return { ok: r.ok, detail: JSON.stringify(r) }; }, seed: 'study', replays: 2, runHoldout: false, startedAt: '2026-10-04T00:00:00Z', ...over,
 });
 
 describe('BT-2 study', () => {
@@ -42,7 +44,8 @@ describe('BT-2 study', () => {
 
   it('runs the walk-forward cleanly through the real engine and scores it outside', () => {
     expect(first.walkForward.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0, mirrorMatches: true });
-    expect(first.walkForward.ledgerReplay).toMatchObject({ ok: true, purpose: 'backtest' });
+    expect(first.walkForward.ledgerReplay.ok).toBe(true);
+    expect(first.walkForward.ledgerReplay.detail).toContain('"purpose":"backtest"');
     expect(first.walkForward.s0Seeds).toBe(2);
     expect(first.plan.walkForward.days).toEqual(['2026-09-20', '2026-09-21']);
     expect(first.plan.holdout).toMatchObject({ fromDay: '2026-09-22', toDay: '2026-09-22' });
@@ -85,7 +88,7 @@ describe('BT-2 study', () => {
       expect(Object.keys(e.counts!).sort()).toEqual(['candidates', 'entries', 'entryDays']);
       expect(e.burned).toBe(false);
     }
-    const ledger = join(dir, 'holdout-2026-09-22-2026-09-22.sqlite');
+    const ledger = join(dir, 'holdout-2026-09-22-2026-09-22.db');
     expect(statSync(ledger).mode & 0o777).toBe(0o400);
     expect(statSync(`${ledger}.outcomes.json`).mode & 0o777).toBe(0o400);
     expect(second.gates.G2.status).toBe('not-proven');
@@ -98,7 +101,7 @@ describe('BT-2 study', () => {
 
   it('a second holdout run into a new file is refused and burns the holdout', () => {
     const regPath = join(dir, 'registry.json');
-    expect(() => runSealedHoldout(regPath, join(dir, 'again.sqlite'), {
+    expect(() => runSealedHoldout(regPath, join(dir, 'again.db'), {
       rows: () => [][Symbol.iterator](), series: [sol], seed: 'x', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
       windowEnd: 0, study: config, entriesFrom: 0, entriesTo: 0, sampleRate: 1,
     }, { byUniverse: ['U1', 'U2'].map((u) => ({ universe: u, holdoutId: `${u}-2026-09-22-2026-09-22`, configId: configId(config, u) })), required: {} }, [], FILL_CONFIG, 't')).toThrow(/refused and burned/);

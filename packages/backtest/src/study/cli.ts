@@ -17,7 +17,6 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../../core/src/config/index.ts';
-import { replayLedgerFile } from '../../../core/src/ledger/replay/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from '../dataset/dataset.ts';
 import { readSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
@@ -61,6 +60,17 @@ const insiders = has('insiders')
 const byDay = new Map(manifest.days.map((d) => [d.day, d]));
 const rowsOf = (from: string, to: string) => function* (): Generator<DatasetRow> {
   for (const d of manifest.days) if (d.day >= from && d.day <= to) yield* loadDay(dataset, d as ManifestDay);
+};
+/** The named check of §15 item 2, as the owner runs it: `pnpm ledger:replay <file>` (exit 0 = every sequence replays). */
+const ledgerReplay = (path: string): { ok: boolean; detail: string } => {
+  const root = join(import.meta.dirname, '../../../..');
+  try {
+    const outText = execFileSync('pnpm', ['--silent', 'ledger:replay', path], { cwd: root, encoding: 'utf8' });
+    return { ok: true, detail: outText.trim().slice(0, 500) };
+  } catch (e) {
+    const x = e as { stdout?: string; stderr?: string; message: string };
+    return { ok: false, detail: `${x.stdout ?? ''}${x.stderr ?? ''}${x.message}`.trim().slice(0, 500) };
+  }
 };
 const json = (v: unknown) => `${JSON.stringify(v, (_, x: unknown) => (typeof x === 'bigint' ? x.toString() : x), 1)}\n`;
 const clock = () => performance.now();
@@ -110,7 +120,7 @@ if (command === 'day' || command === 'trial') {
   const last = Math.min(lastDay, manifest.coverage.last_block_time === undefined ? lastDay : manifest.coverage.last_block_time * 1000);
   const firstRow = [...byDay.keys()].sort().filter((d) => d <= days[0]!).filter((d) => day0(d) >= from - STUDY_CONFIG.window.leadInDays * dayMs)[0]!;
   const runId = `${command}-${days[0]}-${days[days.length - 1]}-${commit.slice(0, 8)}`;
-  const ledgerPath = join(out, `${runId}.sqlite`);
+  const ledgerPath = join(out, `${runId}.db`);
   const opts: Omit<StudyRunOptions, 'mode'> = {
     rows: rowsOf(firstRow, days[days.length - 1]!), series: [solUsd], seed: 'bt2-day', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG,
     research: RESEARCH_CONFIG, windowEnd: last, study: STUDY_CONFIG, entriesFrom: from,
@@ -127,10 +137,10 @@ if (command === 'day' || command === 'trial') {
   const replays = Number(flag('replays', '10'));
   const hashes = [r.logHash, ...replayHashes(studyRunOptions({ ...opts, mode: 'strategy' }), Math.max(0, replays - 1))];
   const leak = studyLeak(studyRunOptions({ ...opts, mode: 'strategy' }), days, 'bt2-day');
-  const ledgerReplay = replayLedgerFile(ledgerPath);
+  const replayCheck = ledgerReplay(ledgerPath);
   const engine = {
     stats: r.stats, runMs, rowsPerSecond: Math.round(r.stats.rows / (runMs / 1000)), replays: hashes.length, identicalReplays: new Set(hashes).size === 1,
-    leak, ledgerReplay,
+    leak, ledgerReplay: replayCheck,
   };
   const evidence = validityOnly
     ? {
@@ -148,14 +158,14 @@ if (command === 'day' || command === 'trial') {
       regimeBoundariesPassed: r.regimes.map((b) => ({ slot: b.slot.toString(), label: b.label, at: new Date(b.at).toISOString() })),
     };
   writeFileSync(join(out, `${runId}.json`), json(evidence));
-  console.log(json({ runId, validityOnly, stats: r.stats, identical: engine.identicalReplays, leak: leak.ok, ledgerReplay: ledgerReplay.ok, facts: r.facts?.counts ?? null }));
+  console.log(json({ runId, validityOnly, stats: r.stats, identical: engine.identicalReplays, leak: leak.ok, ledgerReplay: replayCheck.ok, facts: r.facts?.counts ?? null }));
 } else if (command === 'study') {
   const first = [...byDay.keys()].sort()[0]!;
   const report = runFullStudy({
     config: STUDY_CONFIG, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: complete, rows: rowsOf, firstDay: first,
     series: [solUsd], sampleRate, ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
     ...(insiders === undefined ? {} : { insiders }), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
-    runHoldout: has('run-holdout'), startedAt: new Date().toISOString(), regimeBoundaries: regimeBoundariesOf(manifest),
+    runHoldout: has('run-holdout'), startedAt: new Date().toISOString(), regimeBoundaries: regimeBoundariesOf(manifest), ledgerReplay,
   });
   const days = windowDays(STUDY_CONFIG);
   const runId = `study-${days[0]}-${days[days.length - 1]}-${commit.slice(0, 8)}`;

@@ -1,6 +1,7 @@
 // Holder concentration done correctly (docs/research/safety.md §4; docs/ARCHITECTURE.md H12, H13).
 // Before measuring, remove the accounts that are not traders: the bonding-curve ATA, pool vaults, the mayhem vault,
 // lockers, burns and accounts of known programs. Shares are of circulating supply = supply - excluded balances.
+import { MEMORY_LIMITS } from '../config/memory.ts';
 import { findProgramAddress, isOnCurve } from '../chain/address.ts';
 import type { Address } from '../chain/bytes.ts';
 import { bondingCurveAddress } from '../chain/pump.ts';
@@ -60,13 +61,12 @@ const offCurveUncached = (address: string): boolean => {
  * at every check (BT-2 measured 84% of a run here). The answer depends on the address alone, so it is remembered;
  * the memory is bounded and emptied whole when full, which changes no answer.
  */
-const OFF_CURVE_CACHE_MAX = 200_000;
 const offCurveCache = new Map<string, boolean>();
 const offCurve = (address: string): boolean => {
   const hit = offCurveCache.get(address);
   if (hit !== undefined) return hit;
   const v = offCurveUncached(address);
-  if (offCurveCache.size >= OFF_CURVE_CACHE_MAX) offCurveCache.clear();
+  if (offCurveCache.size >= MEMORY_LIMITS.offCurveCache) offCurveCache.clear();
   offCurveCache.set(address, v);
   return v;
 };
