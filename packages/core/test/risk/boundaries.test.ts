@@ -2,9 +2,9 @@
 // own, so a changed comparison or a dropped term fails a test (RISK-1 review, mutation testing).
 import { describe, expect, test } from 'vitest';
 import { TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
-import { costAtSize } from '../../src/costs/index.ts';
+import { costAtSize, fixedCosts } from '../../src/costs/index.ts';
 import { type EntryAllowed, evaluateEntry, evaluateExit, maxTradeCosts, melbourneWeek, opsReserve } from '../../src/risk/index.ts';
-import { type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
+import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
 import {
   DAY_START, DEEP_POOL, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest,
   clockAt, codes, latches, quoterFor, trade,
@@ -340,5 +340,233 @@ describe('freshness edges', () => {
   test('a price exactly at the age limit is fresh; one from the future is not', () => {
     expect(evaluateEntry(withPrice(NOW - TRIAL_POLICY.gates.maxQuoteAgeMs), baseRequest()).allow).toBe(true);
     expect(codes(evaluateEntry(withPrice(NOW + 1), baseRequest()))).toContain('sol_price_stale');
+  });
+});
+
+// ---------- Mutation survivors (second run): each test below kills a named mutant ----------
+
+describe('history and marks', () => {
+  test('a zero-P&L trade is not a loss', () => {
+    const closed = [trade(NOW - 3 * HOUR, '-0.1'), trade(NOW - HOUR, '0')];
+    const d = evaluateEntry(baseInput({ account: account({ closedTrades: closed }) }), baseRequest());
+    expect(d.snapshot?.lossStreak).toBe(0);
+  });
+  test('the high-water mark walks events in time order, whatever order the ledger lists them in', () => {
+    const closed = [trade(LAST_WEEK, '5'), trade(LAST_WEEK - HOUR, '-3')];
+    expect(evaluateEntry(baseInput({ account: account({ closedTrades: closed }) }), baseRequest()).snapshot?.highWaterMark).toBe(usd('22'));
+  });
+  test('a re-arm at this very moment restarts the mark; one in the future is refused and restarts nothing', () => {
+    const closed = [trade(LAST_WEEK, '-6', { notional: usd('5') })];
+    const now = baseInput({ account: account({ closedTrades: closed }), latches: latches({ killTrippedAtMs: LAST_WEEK + 1, killRearmedAtMs: NOW }) });
+    expect(evaluateEntry(now, baseRequest()).snapshot?.highWaterMark).toBe(usd('14'));
+    const future = baseInput({ account: account({ closedTrades: closed }), latches: latches({ killTrippedAtMs: LAST_WEEK + 1, killRearmedAtMs: NOW + 1 }) });
+    const d = evaluateEntry(future, baseRequest());
+    expect(d.snapshot?.highWaterMark).toBe(usd('20'));
+    expect(codes(d)).toContain('bankroll_invalid');
+  });
+  test('a gain before the re-arm does not survive it', () => {
+    const closed = [trade(LAST_WEEK - 2 * HOUR, '5'), trade(LAST_WEEK - HOUR, '-9.5', { notional: usd('5') })];
+    const l = latches({ killTrippedAtMs: LAST_WEEK - HOUR + 1, killRearmedAtMs: LAST_WEEK });
+    expect(evaluateEntry(baseInput({ account: account({ closedTrades: closed }), latches: l }), baseRequest()).snapshot?.highWaterMark).toBe(usd('15.5'));
+  });
+  test('any latch time in the future is refused', () => {
+    for (const k of ['killTrippedAtMs', 'killRearmedAtMs', 'weeklyTrippedAtMs', 'weeklyReviewedAtMs', 'lossReviewedAtMs'] as const) {
+      expect(codes(evaluateEntry(baseInput({ latches: latches({ [k]: NOW + 1 }) }), baseRequest())), k).toContain('bankroll_invalid');
+    }
+  });
+  test('a trade closed exactly now is valid; one a millisecond later is refused and left out of equity', () => {
+    expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: [trade(NOW, '0.1')] }) }), baseRequest()))).not.toContain('bankroll_invalid');
+    const d = evaluateEntry(baseInput({ account: account({ closedTrades: [trade(NOW + 1, '-1')] }) }), baseRequest());
+    expect(codes(d)).toContain('bankroll_invalid');
+    expect(d.snapshot?.equity).toBe(usd('20'));
+  });
+  test('negative held reservations are refused', () => {
+    expect(codes(evaluateEntry(baseInput({ account: account({ heldReservations: -1n as Lamports }) }), baseRequest()))).toContain('bankroll_invalid');
+  });
+  const pos = (mark: MicroUsd | null, markAtMs: number | null) => ({ mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('2'), mark, markAtMs });
+  test('a mark with no time, or a negative mark, is unknown and counts as a total loss', () => {
+    for (const p of [pos(usd('2'), null), pos(-1n as MicroUsd, NOW - 100), pos(null, NOW - 100)]) {
+      const d = evaluateEntry(baseInput({ account: account({ openPositions: [p] }) }), baseRequest());
+      expect(codes(d)).toContain('mark_unknown');
+      expect(d.snapshot).toMatchObject({ equity: usd('18'), openExposure: 0n });
+    }
+  });
+  test('a fresh mark is not stale, and a one-micro-dollar mark is worth one micro-dollar', () => {
+    const d = evaluateEntry(baseInput({ account: account({ openPositions: [pos(1n as MicroUsd, NOW - 100)] }) }), baseRequest());
+    expect(codes(d)).not.toContain('mark_stale');
+    expect(codes(d)).not.toContain('mark_unknown');
+    expect(d.snapshot?.openExposure).toBe(1n);
+  });
+  test('equity of zero is refused, one micro-dollar is not; so is a week-start equity of zero', () => {
+    const zero = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK, '-20', { notional: usd('5') })] }) });
+    expect(codes(evaluateEntry(zero, baseRequest()))).toContain('bankroll_invalid');
+    const tiny = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK, '-19.999999', { notional: usd('5') })] }) });
+    expect(codes(evaluateEntry(tiny, baseRequest()))).not.toContain('bankroll_invalid');
+    const emptyWeek = baseInput({ account: account({ openingEquity: usd('0'), flows: [{ atMs: THIS_WEEK, amount: usd('20') }] }) });
+    expect(codes(evaluateEntry(emptyWeek, baseRequest()))).toContain('bankroll_invalid');
+    const tinyWeek = baseInput({ account: account({ openingEquity: 1n as MicroUsd, flows: [{ atMs: THIS_WEEK, amount: usd('20') }] }) });
+    expect(codes(evaluateEntry(tinyWeek, baseRequest()))).not.toContain('bankroll_invalid');
+  });
+  test('a bad clock throws from an entry and never from an exit', () => {
+    expect(() => evaluateEntry(baseInput({ clock: clockAt(Number.NaN) }), baseRequest())).toThrow(RangeError);
+    expect(() => evaluateEntry(baseInput({ clock: clockAt(NOW + 0.5) }), baseRequest())).toThrow(RangeError);
+    expect(evaluateExit(baseInput({ clock: clockAt(NOW + 0.5) })).allow).toBe(true);
+  });
+});
+
+describe('price and costs', () => {
+  const withPrice = (value: bigint) => { const i = baseInput(); return { ...i, market: { ...i.market, solPrice: { value: value as MicroUsd, atMs: NOW } } }; };
+  test('a zero SOL price is refused without dividing by it', () => {
+    expect(codes(evaluateEntry(withPrice(0n), baseRequest()))).toEqual(['sol_price_stale']);
+  });
+  test('a one-micro-dollar SOL price is a price (the trade then fails on cash, not on the price)', () => {
+    const c = codes(evaluateEntry(withPrice(1n), baseRequest()));
+    expect(c).not.toContain('sol_price_stale');
+    expect(c).toContain('ops_reserve');
+  });
+  test('costs that cannot be computed refuse as quote_failed', () => {
+    expect(codes(evaluateEntry(baseInput(), baseRequest({ network: { ...NETWORK, signaturesPerTx: 0n } })))).toContain('quote_failed');
+  });
+  test('C uses the modelled exit (with expected failures) when it is dearer than the ladder', () => {
+    const net = { ...NETWORK, exitPriorityFee: 2_000_000n, exitFailurePpm: 500_000n };
+    const fixed = fixedCosts(net, RENT);
+    const ladder = maxTradeCosts(TRIAL_POLICY, { network: net, rent: RENT }).ladderWorst;
+    expect(fixed.exit.landed + fixed.exit.expectedFailures).toBeGreaterThan(ladder);
+    expect(fixed.exit.landed).toBeLessThan(ladder);
+    expect(maxTradeCosts(TRIAL_POLICY, { network: net, rent: RENT }).total).toBe(fixed.total + fixed.recoverableRent);
+  });
+  test('the reported round trip has no hidden extra cost', () => {
+    const d = evaluateEntry(baseInput(), baseRequest()) as EntryAllowed;
+    const c = costAtSize(quoterFor(DEEP_POOL), d.spendLamports, NETWORK, RENT, 0n);
+    if (!c.ok) throw new Error('unquotable');
+    expect(d.roundTripPpm).toBe(mulDiv(c.trade.totalLoss, 1_000_000n, c.trade.roundTrip.paid, 'ceil'));
+  });
+  test('a quote that fails at the chosen size refuses as quote_failed', () => {
+    const real = quoterFor(DEEP_POOL);
+    let calls = 0;
+    const counting = (spend: bigint) => { calls++; return real(spend); };
+    evaluateEntry(baseInput(), baseRequest({ quote: counting }));
+    const last = calls;
+    let n = 0;
+    const failsLast = (spend: bigint) => (++n === last ? { ok: false as const, reason: 'no-liquidity' as const, detail: 'gone' } : real(spend));
+    expect(codes(evaluateEntry(baseInput(), baseRequest({ quote: failsLast })))).toEqual(['quote_failed']);
+  });
+});
+
+describe('each reason is listed once', () => {
+  test('daily loss at the trigger', () => {
+    const c = codes(evaluateEntry(baseInput({ account: account({ closedTrades: [trade(DAY_START + HOUR, '-1.5', { notional: usd('5') })] }) }), baseRequest()));
+    expect(c.filter((x) => x === 'daily_loss')).toHaveLength(1);
+  });
+  test('a balance under the floor', () => {
+    const i = baseInput();
+    const low = { ...i, market: { ...i.market, solBalance: { value: lamports(TRIAL_POLICY.reserve.opsFloor - 1n), atMs: NOW } } };
+    expect(codes(evaluateEntry(low, baseRequest())).filter((x) => x === 'ops_reserve')).toHaveLength(1);
+  });
+  test('six losses in twenty trades', () => {
+    const closed = [...'LWLWLWLWLWL'].map((ch, i) => trade(LAST_WEEK - (11 - i) * HOUR, ch === 'L' ? '-0.1' : '0.1'));
+    expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: closed }) }), baseRequest())).filter((x) => x === 'loss_review')).toHaveLength(1);
+  });
+});
+
+describe('R8 review window', () => {
+  const series = (pattern: string, end: number) => [...pattern].map((ch, i) => trade(end - (pattern.length - i) * HOUR, ch === 'L' ? '-0.1' : '0.1'));
+  test('a review at the moment of the first loss leaves that loss before it', () => {
+    const closed = series('LWLWLWLWL', LAST_WEEK);
+    const l = latches({ lossReviewedAtMs: closed[0]!.closedAtMs });
+    expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: closed }), latches: l }), baseRequest()))).not.toContain('loss_review');
+  });
+  test('the last window is checked: 5 losses in the last 5 of 22 trades', () => {
+    const closed = series('W'.repeat(17) + 'LLLLL', LAST_WEEK);
+    expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: closed }) }), baseRequest()))).toContain('loss_review');
+  });
+});
+
+describe('rounding edges', () => {
+  test('the daily trigger rounds down: with B = $19.999999 a loss of $1.499999 trips it', () => {
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, bankroll: usd('19.999999') } });
+    const input = baseInput({ session, account: account({ closedTrades: [trade(DAY_START + HOUR, '-1.499999')] }) });
+    expect(evaluateExit(input).tripped.map((r) => r.code)).toContain('daily_loss');
+  });
+  test('the weekly trigger rounds down: with $20.000001 at week start a $4 loss trips it', () => {
+    const input = baseInput({ account: account({ openingEquity: usd('20.000001'), closedTrades: [trade(THIS_WEEK, '-4', { notional: usd('5') })] }) });
+    expect(evaluateExit(input).tripped.map((r) => r.code)).toContain('weekly_loss');
+  });
+  test('R4 cash: one lamport short of the minimum spend refuses', () => {
+    const rent = { ...RENT, transient: 20_000_000n };
+    const reserve = opsReserve(TRIAL_POLICY, { rent }, costs.perExitAttempt);
+    const c = maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent }).total;
+    const minSpendUsd = lamportsToMicroUsd(microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil'), PRICE, 'ceil');
+    const need = reserve + c + rent.transient + microUsdToLamports(minSpendUsd, PRICE, 'ceil');
+    const withBalance = (v: bigint) => { const i = baseInput(); return { ...i, market: { ...i.market, solBalance: { value: lamports(v), atMs: NOW } } }; };
+    expect(evaluateEntry(withBalance(need), baseRequest({ rent })).allow).toBe(true);
+    expect(codes(evaluateEntry(withBalance(need - 1n), baseRequest({ rent })))).toEqual(['ops_reserve']);
+  });
+  test('held reservations are valued rounded up: the first refused amount matches the exact rule', () => {
+    // Weekly allowance binds: 4,000,000 - ceil(usd(held)) - C >= minimum spend (micro-dollars) to trade.
+    const minSpendUsd = lamportsToMicroUsd(microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil'), PRICE, 'ceil');
+    const fits = (held: bigint) => usd('4') - lamportsToMicroUsd(lamports(held), PRICE, 'ceil') - C_USD >= minSpendUsd;
+    const allowed = (held: bigint) => evaluateEntry(baseInput({ account: account({ heldReservations: lamports(held) }) }), baseRequest()).allow;
+    let lo = 0n;
+    let hi = SOL;
+    while (hi - lo > 1n) { const mid = (lo + hi) / 2n; if (allowed(mid)) lo = mid; else hi = mid; }
+    expect(fits(lo)).toBe(true);
+    expect(fits(hi)).toBe(false);
+  });
+  test("an open position's exit ladder is valued rounded up", () => {
+    // full_loss_kill_line appears once 6,000,000 - x - ceil(ladder) - C < q_min.
+    const appears = (x: bigint) => codes(evaluateEntry(baseInput({ account: account({ openPositions: [
+      { mint: MINT_B, openedAtMs: NOW - HOUR, notional: x as MicroUsd, mark: x as MicroUsd, markAtMs: NOW - 100 },
+    ] }) }), baseRequest())).includes('full_loss_kill_line');
+    const first = usd('6') - LADDER_USD - C_USD - TRIAL_POLICY.capital.minNotional + 1n;
+    expect(appears(first)).toBe(true);
+    expect(appears(first - 1n)).toBe(false);
+    expect(appears(usd('0.01'))).toBe(false);
+  });
+  /**
+   * First one-time rent (lamports) at which R5's cap, with the given roundings, falls below what a trade needs: q_min as
+   * a whole number of lamports, valued rounded up.
+   */
+  const r5Edge = (bankroll: MicroUsd, qMinNotional: MicroUsd, stopBps: number, planned: 'floor' | 'ceil', division: 'floor' | 'ceil') => {
+    const qMin = lamportsToMicroUsd(microUsdToLamports(qMinNotional, PRICE, 'ceil'), PRICE, 'ceil');
+    const d = BigInt(stopBps + TRIAL_POLICY.costGate.maxRoundTripBps);
+    const budget = mulDiv(bankroll, BigInt(TRIAL_POLICY.loss.plannedRiskBps), 10_000n, planned);
+    const capAt = (oneTime: bigint) => {
+      const fUsd = lamportsToMicroUsd(lamports(fixedCosts(NETWORK, { ...RENT, oneTime }).total), PRICE, 'ceil');
+      return mulDiv(budget - fUsd, 10_000n, d, division);
+    };
+    let lo = 0n;
+    let hi = 3_000_000n;
+    while (hi - lo > 1n) { const mid = (lo + hi) / 2n; if (capAt(mid) >= qMin) lo = mid; else hi = mid; }
+    return hi;
+  };
+  test('R5 divides rounding down: at the exact edge planned_risk refuses', () => {
+    // Find a (q_min, stop) where rounding the division up would move the edge (it never can at q_min = $2).
+    let found: { qMin: MicroUsd; stop: number; edge: bigint } | null = null;
+    for (let q = 0; q < 60 && !found; q++) {
+      const qMin = (usd('1.99999') + BigInt(q)) as MicroUsd;
+      for (let stop = 1000; stop <= 2000 && !found; stop++) {
+        const floorEdge = r5Edge(TRIAL_POLICY.capital.bankroll, qMin, stop, 'floor', 'floor');
+        if (r5Edge(TRIAL_POLICY.capital.bankroll, qMin, stop, 'floor', 'ceil') > floorEdge) found = { qMin, stop, edge: floorEdge };
+      }
+    }
+    expect(found).not.toBeNull();
+    const { qMin, stop, edge } = found!;
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, minNotional: qMin } });
+    expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: stop, rent: { ...RENT, oneTime: edge } })))).toContain('planned_risk');
+    expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: stop, rent: { ...RENT, oneTime: edge - 1n } })))).not.toContain('planned_risk');
+  });
+  test('R5 takes 2.75% of the bankroll rounding down: at the exact edge planned_risk refuses', () => {
+    const bankroll = usd('19.999999');
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, bankroll } });
+    const floorEdge = r5Edge(bankroll, TRIAL_POLICY.capital.minNotional, 1500, 'floor', 'floor');
+    const ceilEdge = r5Edge(bankroll, TRIAL_POLICY.capital.minNotional, 1500, 'ceil', 'floor');
+    expect(ceilEdge).toBeGreaterThan(floorEdge);
+    expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: 1500, rent: { ...RENT, oneTime: floorEdge } })))).toContain('planned_risk');
+    expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: 1500, rent: { ...RENT, oneTime: floorEdge - 1n } })))).not.toContain('planned_risk');
+  });
+  test('the caps list names the maximum notional', () => {
+    const d = evaluateEntry(baseInput(), baseRequest()) as EntryAllowed;
+    expect(d.caps.find((c) => c.name === 'maximum notional')?.notional).toBe(TRIAL_POLICY.capital.maxNotional);
   });
 });

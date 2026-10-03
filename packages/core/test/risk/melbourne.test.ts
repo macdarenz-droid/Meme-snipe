@@ -108,3 +108,11 @@ describe('calendar arithmetic', () => {
     }
   }, 60_000);
 });
+
+describe('days before the epoch', () => {
+  test('count backwards from 1970', () => {
+    expect(daysFromCivil(1969, 12, 31)).toBe(-1);
+    expect(daysFromCivil(1968, 1, 1)).toBe(-731);
+    expect(civilFromDays(-731)).toEqual({ year: 1968, month: 1, day: 1 });
+  });
+});

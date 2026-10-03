@@ -52,35 +52,39 @@ const realizedBefore = (a: AccountHistory, t: number): { readonly equity: bigint
  * An owner re-arm of the kill switch restarts the mark at the equity of that moment.
  */
 const highWaterMark = (a: AccountHistory, rearmAtMs: number | null, nowMs: number): bigint => {
-  type Ev = { readonly at: number; readonly flow: bigint | null; readonly pnl: bigint | null };
+  // A flow and a trade at the same instant commute (max(h + f, e + f + p) = max(h, e + p) + f), so time order is enough.
+  type Ev = { readonly at: number; readonly kind: 'flow' | 'trade'; readonly amount: bigint };
   const events: Ev[] = [
-    ...a.flows.map((f) => ({ at: f.atMs, flow: f.amount as bigint, pnl: null })),
-    ...a.closedTrades.map((c) => ({ at: c.closedAtMs, flow: null, pnl: c.netPnl as bigint })),
-  ].sort((x, y) => x.at - y.at || (x.flow === null ? 1 : 0) - (y.flow === null ? 1 : 0));
+    ...a.flows.map((f): Ev => ({ at: f.atMs, kind: 'flow', amount: f.amount })),
+    ...a.closedTrades.map((c): Ev => ({ at: c.closedAtMs, kind: 'trade', amount: c.netPnl })),
+  ].sort((x, y) => x.at - y.at);
   let equity: bigint = a.openingEquity;
   let hwm = equity;
   let rearmPending = rearmAtMs !== null && rearmAtMs <= nowMs;
   for (const e of events) {
     if (rearmPending && rearmAtMs !== null && e.at >= rearmAtMs) { hwm = equity; rearmPending = false; }
-    if (e.flow !== null) { equity += e.flow; hwm += e.flow; } else if (e.pnl !== null) { equity += e.pnl; hwm = maxBig(hwm, equity); }
+    equity += e.amount;
+    hwm = e.kind === 'flow' ? hwm + e.amount : maxBig(hwm, equity);
   }
   return rearmPending ? equity : hwm;
 };
 
 const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: number): Figures => {
   const problems: RiskReason[] = [];
-  const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...a.entries.map((e) => e.atMs)];
-  if (times.some((t) => !isTime(t) || t > nowMs)) problems.push(reason('bankroll_invalid', 'account history has an invalid or future time'));
+  const latchTimes = [latches.killTrippedAtMs, latches.killRearmedAtMs, latches.weeklyTrippedAtMs, latches.weeklyReviewedAtMs, latches.lossReviewedAtMs]
+    .filter((t): t is number => t !== null);
+  const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...a.entries.map((e) => e.atMs), ...latchTimes];
+  if (times.some((t) => !isTime(t) || t > nowMs)) problems.push(reason('bankroll_invalid', 'account history or a latch has an invalid or future time'));
   if (a.heldReservations < 0n) problems.push(reason('bankroll_invalid', 'held reservations are negative'));
 
   // Marked loss of open positions. An unknown or stale mark counts as a total loss here, and refuses entries.
   let markedLoss = 0n;
   let openExposure = 0n;
   for (const p of a.openPositions) {
-    const known = p.mark !== null && p.markAtMs !== null;
-    if (!known) problems.push(reason('mark_unknown', `no executable value for the open position in ${p.mint}`));
+    const mark = p.mark !== null && p.markAtMs !== null && p.mark >= 0n ? p.mark : null;
+    if (mark === null) problems.push(reason('mark_unknown', `no valid executable value for the open position in ${p.mint}`));
     else if (!fresh(p.markAtMs ?? 0, nowMs, policy.gates.maxQuoteAgeMs)) problems.push(reason('mark_stale', `the value of the open position in ${p.mint} is stale`));
-    const value = known && p.mark !== null && p.mark > 0n ? p.mark : 0n;
+    const value = mark ?? 0n;
     const remaining = minBig(value, p.notional);
     markedLoss += remaining - p.notional; // <= 0: unrealized gains are not counted
     openExposure += remaining;
@@ -134,7 +138,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   const live = mode === 'live';
 
   // R1: the bankroll and the price that values it.
-  if (policy.capital.bankroll <= 0n) reasons.push(reason('bankroll_invalid', 'bankroll is not positive'));
+  // (A session policy always has a positive bankroll: CFG-1 validation.)
   if (market.solPrice === null) reasons.push(reason('sol_price_unknown', 'no SOL price'));
   else if (!fresh(market.solPrice.atMs, nowMs, policy.gates.maxQuoteAgeMs) || market.solPrice.value <= 0n) reasons.push(reason('sol_price_stale', 'SOL price is stale or invalid'));
 
@@ -193,7 +197,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
 
   // R11 (live only): entries per day.
   if (live) {
-    const today = account.entries.filter((e) => e.atMs >= s.dayStartMs && e.atMs <= nowMs).length;
+    const today = account.entries.filter((e) => e.atMs >= s.dayStartMs).length;
     if (today >= policy.positions.maxEntriesPerDay) reasons.push(reason('entries_per_day', `${today} entries today, limit ${policy.positions.maxEntriesPerDay}`));
   }
 
@@ -207,11 +211,8 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   return { figures: f, reasons, trips, killLine, weekLimit, dailyLimit };
 };
 
-const clockNow = (input: RiskInput): number => {
-  const now = input.clock.now().receivedAt;
-  if (!isTime(now)) throw new RangeError(`clock time must be integer milliseconds, got ${now}`);
-  return now;
-};
+/** The Melbourne rules refuse a non-integer or pre-2008 instant, so a bad clock throws before any figure is used. */
+const clockNow = (input: RiskInput): number => input.clock.now().receivedAt;
 
 // ---------- Exits ----------
 
@@ -273,7 +274,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
 
   // R11 (live only): per mint, and no re-entry after a stop.
   if (live) {
-    const day = account.entries.filter((e) => e.mint === request.mint && e.atMs >= s.dayStartMs && e.atMs <= nowMs).length;
+    const day = account.entries.filter((e) => e.mint === request.mint && e.atMs >= s.dayStartMs).length;
     if (day >= policy.positions.maxEntriesPerMintPerDay) reasons.push(reason('entries_per_mint', `${day} entries in this mint today`));
     if (account.closedTrades.some((t) => t.mint === request.mint && t.stoppedOut && nowMs < t.closedAtMs + policy.positions.reentryBlockMs)) {
       reasons.push(reason('reentry_after_stop', 'this mint was stopped out inside the re-entry window'));
@@ -294,7 +295,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   if (!targetOk) reasons.push(reason('median_target_invalid', 'the strategy median target is not valid'));
   // R12: liquidity floor.
   const u1 = request.universe === 'U1';
-  const floor = maxBig(policy.liquidity.floorUsd, u1 ? policy.liquidity.u1FloorUsd : 0n);
+  const floor = u1 ? maxBig(policy.liquidity.floorUsd, policy.liquidity.u1FloorUsd) : policy.liquidity.floorUsd;
   if (request.poolLiquidity === null) reasons.push(reason('liquidity_unknown', 'pool liquidity is unknown'));
   else if (request.poolLiquidity < floor) reasons.push(reason('liquidity_floor', 'pool liquidity is below the floor'));
 
@@ -329,8 +330,10 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   cap('R2', 'maximum notional', policy.capital.maxNotional);
   // Phase 1 and any 10% drawdown trade at the minimum. That is a choice of size inside the range, not a cap on it.
   const atMinimum = !latches.sizeStepUpApproved || drawdownReset;
-  if (atMinimum) cap('R2', drawdownReset ? 'drawdown returns size to the minimum' : 'minimum until the owner steps sizes up', qMin);
-  const stage = atMinimum ? caps.at(-1) : undefined;
+  const stage: SizeCapEntry | undefined = atMinimum
+    ? { control: 'R2', name: drawdownReset ? 'drawdown returns size to the minimum' : 'minimum until the owner steps sizes up', notional: qMin }
+    : undefined;
+  if (stage) caps.push(stage);
   const reserve = opsReserve(policy, request, costs.perExitAttempt);
   // Signed: a balance already short of the reserve gives a negative cap.
   cap('R4', 'cash after the operations reserve', mulDiv(balance - reserve - cMax - request.rent.transient, price, LAMPORTS_PER_SOL, 'floor'));
@@ -379,7 +382,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
       quote: request.quote, solPrice: price, edgePpm: request.edgePpm, network: request.network, rent: request.rent,
       policy: { minNotional: qMin, maxNotional: qCap, maxImpactPpm: BigInt(policy.liquidity.maxImpactBps) * PPM_PER_BPS },
       caps: { lossAllowance: usd(qCap + fixedUsd), riskBudget: usd(qCap + fixedUsd), executableDepth: qCap, cash: usd(qCap + cashNeedsUsd) },
-      ...(request.extraPpm === undefined ? {} : { extraPpm: request.extraPpm }),
+      extraPpm: request.extraPpm ?? 0n,
     });
   } catch (e) {
     return refuse([reason('quote_failed', `the pool could not be quoted: ${String(e)}`)], check.trips, s);
@@ -420,7 +423,8 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   // R6 as an atomic reservation: the full possible loss, against the allowance that excludes what is already held.
   const amount = lamports(spend + cMax);
   const allowance = minBig(killAllowance, weekAllowance);
-  const maxHeld = lamports(allowance > 0n ? microUsdToLamports(usd(allowance), price, 'floor') : 0n);
+  // Positive here: every R6 cap passed, so the allowance holds at least q_min + C.
+  const maxHeld = microUsdToLamports(usd(allowance), price, 'floor');
   if (account.heldReservations + amount > maxHeld) {
     const code: RiskCode = weekAllowance < killAllowance ? 'full_loss_week' : 'full_loss_kill_line';
     return refuse([reason(code, 'the full-loss reservation does not fit the remaining allowance')], check.trips, s);
