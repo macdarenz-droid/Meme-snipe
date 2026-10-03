@@ -27,10 +27,9 @@ import { countsOf, rejectMix, scoreRun, tagOf } from './score.ts';
 import { assertPractice, toPartTrade, type TrialPart } from './trial.ts';
 import { tradesOf } from '../trades.ts';
 import { runFullStudy, studyLeak } from './study.ts';
+import { type FunnelSummary } from './funnel.ts';
 import { holdoutDaysOf, windowDays } from './plan.ts';
 
-/** 2026-10-02 is a regime boundary (pump program upgrade, UPG-1): that day and later are never decision days. */
-export const REGIME_BOUNDARY_DAY = '2026-10-02';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -85,7 +84,7 @@ const common = {
     'Live-only vetoes (§16.3) are absent in the backtest: H15 simulateTransaction, H16 third-party cross-checks, Jupiter routes and fees, execution health. The bias in mean net is at most the veto share v times the gap between vetoed and kept trades; G3 caps v at 10%, which bounds it at 5 points.',
     'H13 needs the deployer-funded wallets and the dev cluster, which DATA-1 does not record: without a funding source every candidate is rejected (H16 not-covered).',
     'The dataset keeps trades for a hash sample of mints only; a deployer with a mint outside the sample in the look-back is not judged on prior rugs (H14 not covered).',
-    `${REGIME_BOUNDARY_DAY} and later are never decision days (program upgrade, regime boundary).`,
+    `Practice days end at ${STUDY_CONFIG.holdout.fromDay}; holdout days run to the entry cutoff ${STUDY_CONFIG.holdout.entryCutoff} plus ${STUDY_CONFIG.holdout.tailDays} observation day(s) and are never practice days.`,
   ],
 };
 
@@ -121,7 +120,8 @@ if (command === 'day' || command === 'trial') {
     days = runs.sort((a, b) => b.length - a.length || (a[0]! < b[0]! ? 1 : -1))[0] ?? [];
   }
   if (days.length === 0) throw new Error('no days selected');
-  if (days.some((d) => d >= REGIME_BOUNDARY_DAY)) throw new Error(`${REGIME_BOUNDARY_DAY} and later are never decision days`);
+  const known = new Set([...windowDays(STUDY_CONFIG), ...holdout]);
+  if (days.some((d) => !known.has(d))) throw new Error(`${days.find((d) => !known.has(d))} is neither a practice day nor a holdout day`);
   const validityOnly = days.some((d) => holdout.has(d));
   if (command === 'trial' && validityOnly) throw new Error('a trial never runs holdout days');
   const from = day0(days[0]!);
@@ -139,7 +139,10 @@ if (command === 'day' || command === 'trial') {
     ...(insiders === undefined ? {} : { insiders }), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
   };
   const t0 = clock();
-  const r = runStudy({ ...opts, mode: 'strategy', ledgerPath });
+  // The strategy object is made when the run starts; its funnel is read after the run.
+  let strategy: { funnel: { summary(): Record<string, FunnelSummary> } } | null = null;
+  const r = runStudy({ ...opts, mode: 'strategy', ledgerPath, onStrategy: (x) => { strategy = x; } });
+  const funnel = (strategy as { funnel: { summary(): Record<string, FunnelSummary> } } | null)?.funnel.summary() ?? {};
   const runMs = Math.round(clock() - t0);
   const seeds = Number(flag('seeds', '5'));
   const s0 = Array.from({ length: seeds }, (_, k) => runStudy({ ...opts, mode: 's0', seed: `bt2-day:s0:${k}` }));
@@ -160,7 +163,7 @@ if (command === 'day' || command === 'trial') {
     : {
       kind: command === 'trial' ? 'BT-2 trial (in progress, not a verdict)' : 'BT-2 day run', runId, ...common, days,
       entriesWindow: { from: new Date(opts.entriesFrom).toISOString(), to: new Date(opts.entriesTo).toISOString() }, engine,
-      facts: r.facts?.counts ?? null, counts: countsOf(r), rejectMix: rejectMix(r.records),
+      facts: r.facts?.counts ?? null, counts: countsOf(r), funnel, rejectMix: rejectMix(r.records),
       s0: s0.map((x) => ({ seed: x.seed, stats: { crashes: x.stats.crashes, illegalStates: x.stats.illegalStates, unreconciledIntents: x.stats.unreconciledIntents }, counts: countsOf(x), trades: scoreRun(x, FILL_CONFIG) })),
       // Practice-day trades are research output, never proof.
       trades: scoreRun(r, FILL_CONFIG),

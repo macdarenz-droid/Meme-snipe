@@ -7,7 +7,7 @@
  "runs": [],
  "trials": [],
  "plan": {
-  "study": "study-1 sha256:e5045f6105611bd84c197e26a9c82d02ca014ab8acda4ff9bc06cd357e1b37f2",
+  "study": "study-1 sha256:598712214817738747524850167f8257e56ae299c9c0048e272c85f8ddd6b18c",
   "decisionWindow": {
    "from": "2026-08-03",
    "to": "2026-10-01",
@@ -15,10 +15,22 @@
   },
   "holdout": {
    "fromDay": "2026-09-22",
-   "toDay": "2026-10-01",
+   "toDay": "2026-10-20",
    "entriesFrom": "2026-09-22T02:00:00.000Z",
-   "entriesTo": "2026-10-01T21:30:00.000Z"
+   "entriesTo": "2026-10-20T00:00:00.000Z",
+   "observationTailDays": 1
   },
+  "attempt": {
+   "index": 1,
+   "alpha": 0.04
+  },
+  "tieSalt": "study-1-ties-2026-10-04",
+  "decoderBoundaries": [
+   {
+    "label": "B5",
+    "at": "2026-10-02T15:47:00.000Z"
+   }
+  ],
   "practice": {
    "fromDay": "2026-08-03",
    "toDay": "2026-09-21",
@@ -31,20 +43,20 @@
   "embargoMs": 7200000,
   "familySize": 2,
   "holdoutIds": [
-   "U1-2026-09-22-2026-10-01",
-   "U2-2026-09-22-2026-10-01"
+   "U1-2026-09-22-2026-10-20",
+   "U2-2026-09-22-2026-10-20"
   ],
   "sizing": {
-   "note": "Pre-registered estimates (supervisor ruling 2026-10-04); no data was read. The holdout entries are registered when the configurations are frozen (RES-3 proposals).",
+   "note": "Pre-registered estimates (supervisor ruling 2026-10-04; end fixed at E by the consensus of the three reviews); no data was read. The holdout entries are registered when the configurations are frozen (RES-3 proposals).",
    "graduatesPerDay": 1270,
    "h9PassShare": 0.24,
    "otherHardRejectPassShareAssumed": 0.3,
    "setupAndRiskShareAssumed": 0.25,
    "expectedEntriesPerDayPerUniverse": 23,
-   "holdoutDays": 10,
-   "expectedHoldoutTradesPerUniverse": 230,
-   "plausibleRange": "100-500",
-   "required": "max(300, n_power), n_power simulated on the post-B4 walk-forward; if short, G2 = not proven yet and the next window is after 2026-10-02"
+   "holdoutEntryDays": 28,
+   "expectedHoldoutTradesPerUniverse": 644,
+   "plausibleRange": "280-1400",
+   "required": "max(300, n_power, closed form) at family alpha 0.04 / 2 universes, on >= 10 Melbourne trade days; n_power simulated on the post-B4 walk-forward. Opened once, only after a G1 pass, and mandatory once the counts are met; if short, G2 = not proven"
   }
  }
 }

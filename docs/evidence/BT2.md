@@ -19,21 +19,22 @@ All three accept `--insiders <file>`, a funding supplement (FACTS-1).
   - `ledger:replay` on the run's ledger;
   - counts and the reject mix.
 
-  On a holdout day (2026-09-22 to 2026-10-01) entries are off and only engine validity is reported.
+  On a holdout day (2026-09-22 to 2026-10-20: entries to the cutoff E = 2026-10-20T00:00Z, then one observation day) entries are off and only engine validity is reported.
+- Every run counts the funnel gate by gate, by universe: adverse rejects apart from missing evidence ("not covered").
 - **trial:** the practice days present that have their 14-day look-back. The output is a trial in progress, not a verdict.
-- **study:** the whole window (2026-08-03 to 2026-10-01, lead-in from 2026-07-20). It runs:
+- **study:** the practice days (2026-08-03 to 2026-09-21, lead-in from 2026-07-20), and the holdout days only with `--run-holdout`. It runs:
   - walk-forward with purge and embargo, reported per regime, and S0;
   - G1;
   - holdout registration;
-  - the sealed holdout, only with `--run-holdout`, and once ever;
-  - G2;
+  - the sealed holdout, only with `--run-holdout`, and once ever (attempt 1, family α 0.04);
+  - G2, opening a seal only after that universe's G1 passed;
   - G0.
 
 ## What a result can say today
 
 - **H13** rejects every candidate until FACTS-1's funding supplement exists, because DATA-1 does not record funding. A study without it reports "not proven".
 - **Raw-derived facts** (mint authorities and extensions, holders) exist for the 5% raw sample only. The other candidates are rejected as missing until the supervisor rules how state reads are treated in the backtest.
-- **The conservative scenario** recovers no token-account rent: about 9% of a $2 trade (raised with the supervisor).
+- **The conservative scenario** returns the token-account rent only when the final sell lands (fills-2); every G1 and G2 report carries a "no rent recovery" sensitivity line.
 - **Live-only vetoes** are absent in the backtest (§16.3): H15 simulation, H16 cross-checks, Jupiter routes and fees, execution health. G3 caps the live veto share at 10%, which bounds the bias at 5 points.
 
 ## Runs

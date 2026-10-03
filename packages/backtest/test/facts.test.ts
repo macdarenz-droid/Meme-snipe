@@ -9,7 +9,7 @@ import {
   parseMigration, parseMint, parsePool, parseSolUsd, poolKey, RUG_UNJUDGED_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey,
 } from '../../core/src/gates/index.ts';
 import { seriesReleases } from '../src/dataset/offchain.ts';
-import { FactProjector, mintHashFraction } from '../src/sim/facts.ts';
+import { FactProjector, mintHashFraction, tieHash } from '../src/sim/facts.ts';
 import { Market, rowMoment } from '../src/sim/market.ts';
 import { SOL_USD } from './synthetic.ts';
 import { SLOT_MS, studyWorld, SUPPLY, W0, type MintPlan } from './study-world.ts';
@@ -19,10 +19,10 @@ const U2 = { universe: 'U2', fromMs: 60 * 60_000, toMs: 70 * 60_000, everyMs: 5 
 
 const solUsd = { ...SOL_USD, bars: SOL_USD.bars.map((b, k) => ({ ...b, start: W0 - 6 * 3_600_000 + k * 3_600_000 })) };
 
-const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number) => {
+const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt') => {
   const { rows, mints } = studyWorld({ mints: plans, slots });
   const facts = new FactProjector({
-    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360,
+    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt,
     ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
   });
   const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
@@ -132,9 +132,25 @@ describe('fact projector', () => {
     expect(typeof (tails[1]!.value as { txSlot: unknown }).txSlot).toBe('bigint');
   });
 
+  it('releases checks due at one block in salted-hash order, so a fixed salt decides true ties', () => {
+    const plans: MintPlan[] = ['a', 'b', 'c', 'd'].map((label) => ({ ...PLAN, label }));
+    const firstBlock = (salt: string) => {
+      const checks = replay(plans, SLOTS, 1, undefined, salt).events.filter((e) => e.key.startsWith('check:'));
+      const at = checks[0]!.moment.slot;
+      return checks.filter((e) => e.moment.slot === at).map((e) => (e.value as { mint: string }).mint);
+    };
+    for (const salt of ['test-salt', 'other-salt']) {
+      const order = firstBlock(salt);
+      expect(order).toHaveLength(4);
+      expect(order).toEqual([...order].sort((x, y) => (tieHash(salt, 'U2', x) < tieHash(salt, 'U2', y) ? -1 : 1)));
+    }
+    // The same salt always gives the same order.
+    expect(firstBlock('test-salt')).toEqual(firstBlock('test-salt'));
+  });
+
   it('drops a launch that never graduates after a week, and a graduate past every window', () => {
     const { rows, mints } = studyWorld({ mints: [{ ...PLAN, graduateAfter: 10 ** 9 }, PLAN], slots: SLOTS });
-    const facts = new FactProjector({ sampleRate: 1, rugs: RUG_CONFIG, windows: [U2], solUsd: [], solUsdPoints: 30, candlesHead: 10, candlesTail: 360 });
+    const facts = new FactProjector({ sampleRate: 1, rugs: RUG_CONFIG, windows: [U2], solUsd: [], solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt: 'test-salt' });
     const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
     for (const r of rows) market.release(r);
     expect(facts.state(mints[0]!.mint)).toBeDefined();

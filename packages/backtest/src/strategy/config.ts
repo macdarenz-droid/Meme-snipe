@@ -57,6 +57,8 @@ export interface RegimeBoundary {
   readonly label: string;
   readonly atMs: number;
   readonly what: string;
+  /** A market boundary (B2–B4) splits regimes; a decoder boundary (B5) only adds a per-regime reporting line. */
+  readonly market: boolean;
 }
 
 export interface StudyConfig {
@@ -67,8 +69,8 @@ export interface StudyConfig {
    */
   readonly frozen: boolean;
   /**
-   * The decision window, fixed in advance (§6.5): the holdout is its last `holdoutDays` days whatever data has been
-   * downloaded, so a partial download can never move the holdout onto days already looked at.
+   * The decision window, fixed in advance (§6.5): practice days are its days before `holdout.fromDay`, whatever data
+   * has been downloaded, so a partial download can never move the holdout onto days already looked at.
    */
   readonly window: { readonly decisionFrom: string; readonly decisionTo: string; readonly leadInDays: number };
   readonly regimes: readonly RegimeBoundary[];
@@ -83,8 +85,16 @@ export interface StudyConfig {
   /** Walk-forward: folds and the embargo after each boundary (at least the longest hold, §13.2). */
   readonly folds: number;
   readonly embargoMs: number;
-  /** Holdout: the last this many decision days, after the embargo. */
-  readonly holdoutDays: number;
+  /**
+   * The sealed holdout (consensus of the three reviews, 2026-10-04): from `fromDay` (entries after the embargo) to the
+   * fixed UTC entry cutoff E, registered before any count is known, then `tailDays` of observation only so every hold
+   * finishes. One endpoint for every universe; opened once, after a G1 pass, and mandatory once the counts are met.
+   */
+  readonly holdout: { readonly fromDay: string; readonly entryCutoff: string; readonly tailDays: number };
+  /** Which holdout attempt this configuration registers (1 for the first window); its family α is `attemptAlpha`. */
+  readonly holdoutAttempt: number;
+  /** Salt of the hash that breaks true ties between simultaneous signals, fixed before any replay. */
+  readonly tieSalt: string;
   /** S0 seeds for G1 (walk-forward) and G2 (holdout, §14: >= 200). */
   readonly s0SeedsWalkForward: number;
   readonly s0SeedsHoldout: number;
@@ -96,10 +106,10 @@ const VALUES: StudyConfig = {
   frozen: false,
   window: { decisionFrom: '2026-08-03', decisionTo: '2026-10-01', leadInDays: 14 },
   regimes: [
-    { label: 'B2', atMs: Date.parse('2026-07-21T14:23:00Z'), what: 'BOOST on' },
-    { label: 'B3', atMs: Date.parse('2026-09-09T19:30:00Z'), what: 'fee and creator-fee configuration changed' },
-    { label: 'B4', atMs: Date.parse('2026-09-12T15:24:00Z'), what: 'holder rewards; trade events grew 16 bytes' },
-    { label: 'B5', atMs: Date.parse('2026-10-02T15:47:00Z'), what: 'unpublished upgrade with an 8-byte event tail' },
+    { label: 'B2', atMs: Date.parse('2026-07-21T14:23:00Z'), what: 'BOOST on', market: true },
+    { label: 'B3', atMs: Date.parse('2026-09-09T19:30:00Z'), what: 'fee and creator-fee configuration changed', market: true },
+    { label: 'B4', atMs: Date.parse('2026-09-12T15:24:00Z'), what: 'holder rewards; trade events grew 16 bytes', market: true },
+    { label: 'B5', atMs: Date.parse('2026-10-02T15:47:00Z'), what: 'unpublished upgrade with an 8-byte event tail (decoder boundary: SOL-market fields, quotes, fees and rent unchanged, UPG-1)', market: false },
   ],
   holdoutAfter: 'B4',
   universes: [
@@ -126,7 +136,9 @@ const VALUES: StudyConfig = {
   tailBars: 7 * 60,
   folds: 4,
   embargoMs: 2 * HOUR,
-  holdoutDays: 10,
+  holdout: { fromDay: '2026-09-22', entryCutoff: '2026-10-20T00:00:00Z', tailDays: 1 },
+  holdoutAttempt: 1,
+  tieSalt: 'study-1-ties-2026-10-04',
   s0SeedsWalkForward: 20,
   s0SeedsHoldout: 200,
 };
@@ -151,3 +163,12 @@ export const configId = (c: StudyConfig, universe: string): string => {
 
 /** The study's hash, recorded with every report. */
 export const studyHash = (c: StudyConfig): string => createHash('sha256').update(canonical(c)).digest('hex');
+
+/**
+ * The family α of holdout attempt k from one shared error budget (consensus of the three reviews, 2026-10-04): attempt
+ * 1 at 0.04, attempt k ≥ 2 at 0.01 / 2^(k−1) on a new later window, so all attempts together spend less than 0.05.
+ */
+export const attemptAlpha = (k: number): number => {
+  if (!Number.isInteger(k) || k < 1) throw new RangeError(`holdout attempt must be a positive integer, got ${k}`);
+  return k === 1 ? 0.04 : 0.01 / 2 ** (k - 1);
+};

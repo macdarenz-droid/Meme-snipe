@@ -5,6 +5,7 @@
 // same holdout, finished or not, burns the holdout and stops: a holdout cannot be run again into a new file, and a
 // run that crashed half-way counts as a look. New proof needs a new, later window.
 import { readFileSync, renameSync, writeFileSync, existsSync } from 'node:fs';
+import { attemptAlpha } from '../strategy/config.ts';
 import {
   burnHoldout, createHoldoutRegistry, type HoldoutCounts, type HoldoutRegistry, registerHoldout, type RegistryStep, sealHoldout, type TrialRecord,
 } from '../../../core/src/stats/index.ts';
@@ -16,6 +17,9 @@ export interface HoldoutRun {
   /** Wall-clock start, for the record only (the engine never reads it). */
   readonly startedAt: string;
   readonly status: 'started' | 'sealed' | 'failed';
+  /** The attempt index in the shared error budget and the family α it spends (attempt 1: 0.04). */
+  readonly attempt: number;
+  readonly alpha: number;
   /** sha256 of the sealed bundle (ledger and outcomes), once sealed. */
   readonly sealHash: string | null;
   readonly detail: string | null;
@@ -25,7 +29,14 @@ export interface HoldoutRun {
 export interface HoldoutPlan {
   readonly study: string;
   readonly decisionWindow: { readonly from: string; readonly to: string; readonly leadInFrom: string };
-  readonly holdout: { readonly fromDay: string; readonly toDay: string; readonly entriesFrom: string; readonly entriesTo: string };
+  /** Entries from `entriesFrom` to the registered cutoff E (`entriesTo`); `toDay` is the last observation-tail day. */
+  readonly holdout: { readonly fromDay: string; readonly toDay: string; readonly entriesFrom: string; readonly entriesTo: string; readonly observationTailDays: number };
+  /** The attempt in the shared error budget and its family α (attempt 1: 0.04). */
+  readonly attempt: { readonly index: number; readonly alpha: number };
+  /** Salt of the tie-break between simultaneous signals, fixed before any replay. */
+  readonly tieSalt: string;
+  /** Decoder boundaries inside the holdout: reported before and after, not gating (B5). */
+  readonly decoderBoundaries: readonly { readonly label: string; readonly at: string }[];
   readonly practice: { readonly fromDay: string; readonly toDay: string; readonly postB4From: string };
   readonly after: { readonly label: string; readonly at: string };
   readonly embargoMs: number;
@@ -72,8 +83,10 @@ export type BeginResult = { readonly ok: true; readonly registry: StudyRegistry 
  * Records the start of a holdout run. Refused, and every holdout it names burned, when any of them was run before
  * (whatever that run's status), is burned, or is not in the registered state.
  */
-export const beginHoldoutRun = (r: StudyRegistry, holdoutIds: readonly string[], ledgerPath: string, startedAt: string): BeginResult => {
+export const beginHoldoutRun = (r: StudyRegistry, holdoutIds: readonly string[], ledgerPath: string, startedAt: string, attempt: number): BeginResult => {
   const problems: string[] = [];
+  // Every run is one attempt of the shared budget: attempt k follows k − 1 recorded runs, never skipping or repeating one.
+  if (attempt !== r.runs.length + 1) problems.push(`attempt ${attempt} after ${r.runs.length} recorded holdout runs (next is ${r.runs.length + 1})`);
   for (const id of holdoutIds) {
     const e = r.holdouts.entries.find((x) => x.holdoutId === id);
     if (e === undefined) problems.push(`${id} is not registered`);
@@ -83,7 +96,7 @@ export const beginHoldoutRun = (r: StudyRegistry, holdoutIds: readonly string[],
     if (prior !== undefined) problems.push(`${id} was already run into ${prior.ledgerPath} (${prior.status}, started ${prior.startedAt})`);
   }
   if (problems.length === 0) {
-    return { ok: true, registry: { ...r, runs: [...r.runs, { holdoutIds: [...holdoutIds], ledgerPath, startedAt, status: 'started', sealHash: null, detail: null }] } };
+    return { ok: true, registry: { ...r, runs: [...r.runs, { holdoutIds: [...holdoutIds], ledgerPath, startedAt, status: 'started', attempt, alpha: attemptAlpha(attempt), sealHash: null, detail: null }] } };
   }
   let holdouts = r.holdouts;
   for (const id of holdoutIds) {

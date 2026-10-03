@@ -53,6 +53,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
       sampleRate: o.sampleRate,
       rugs: o.rugs ?? RUG_CONFIG,
       windows: o.study.universes.map((u) => u.window),
+      tieSalt: o.study.tieSalt,
       solUsd: sol === undefined ? [] : seriesReleases(sol),
       solUsdPoints: 30,
       candlesHead: 10,

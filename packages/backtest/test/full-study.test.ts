@@ -28,7 +28,7 @@ const plan = (label: string, day: number): MintPlan => ({
 const { rows } = studyWorld({ leadInDays: 15, blockEvery: 25, slots: 3 * DAY, mints: [plan('d0', 0), plan('d1', 1), plan('d2', 2)] });
 const dayOf = (r: DatasetRow) => new Date(r.blockTime * 1000).toISOString().slice(0, 10);
 const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ start: W0 - 16 * 86_400_000 + k * 3_600_000, close: '120.00' })) };
-const config = { ...STUDY_CONFIG, frozen: true, window: { decisionFrom: '2026-09-20', decisionTo: '2026-09-22', leadInDays: 14 }, folds: 2, holdoutDays: 1, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
+const config = { ...STUDY_CONFIG, frozen: true, window: { decisionFrom: '2026-09-20', decisionTo: '2026-09-22', leadInDays: 14 }, folds: 2, holdout: { fromDay: '2026-09-22', entryCutoff: '2026-09-22T21:00:00Z', tailDays: 0 }, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
 const decisionDays = ['2026-09-20', '2026-09-21', '2026-09-22'];
 
 const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
@@ -78,6 +78,14 @@ describe('BT-2 study', () => {
     expect(first.holdoutRegime).toBe('B4');
     expect(first.gates.G2.status).toBe('not-proven');
     expect(first.holdout.ran).toBe(false);
+    // Funnel first: every check in the entry window is counted once, research sample and deployment replay apart.
+    for (const side of [first.funnel.research, first.funnel.deployment]) {
+      expect(Object.keys(side).length).toBeGreaterThan(0);
+      for (const f of Object.values(side)) {
+        expect(Object.values(f.checksAt).reduce((t, c) => t + c.adverse + c.notCovered, 0)).toBe(f.checks);
+        expect(Object.values(f.mintsAt).reduce((t, c) => t + c.adverse + c.notCovered, 0)).toBe(f.mints);
+      }
+    }
   });
 
   it('runs the holdout once into read-only sealed files; G2 stays "not proven" and nothing is opened', () => {
@@ -96,6 +104,10 @@ describe('BT-2 study', () => {
     expect(statSync(`${ledger}.outcomes.json`).mode & 0o777).toBe(0o400);
     expect(second.gates.G2.status).toBe('not-proven');
     expect(second.gates.G2.reasons.join(' ')).toMatch(/sealed entries/);
+    // The seals open only after a G1 pass (review consensus); G1 is not proven on 2 days, so they stay closed.
+    expect(second.gates.G2.reasons.join(' ')).toMatch(/G1 did not pass: the seal stays closed/);
+    // The run is attempt 1 of the shared error budget, at family α 0.04.
+    expect(reg.runs[0]).toMatchObject({ attempt: 1, alpha: 0.04 });
     // Asking again does not run it again.
     const third = runFullStudy(inputs({ runHoldout: true }));
     expect(readStudyRegistry(join(dir, 'registry.json')).runs).toHaveLength(1);

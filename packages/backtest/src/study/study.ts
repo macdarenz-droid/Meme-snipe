@@ -13,16 +13,17 @@ import type { DatasetRow } from '../dataset/rows.ts';
 import { leakTest, type ProofReport, shiftTest } from '../proofs.ts';
 import type { RunResult } from '../run.ts';
 import { replayHashes } from '../proofs.ts';
-import { type StudyConfig, configId, studyHash } from '../strategy/config.ts';
+import { attemptAlpha, type StudyConfig, configId, studyHash } from '../strategy/config.ts';
 import { g0, g1, g2NotProven, gateG2, type G2Short, pboMatrix, powerOf, trialOf } from './gates.ts';
-import { foldSummary, purge, regimeOf, studyPlan, type StudyPlan, windowDays } from './plan.ts';
+import { foldSummary, purge, regimeOf, studyPlan, type StudyPlan } from './plan.ts';
 import { loadOrCreate, readStudyRegistry, recordTrial, register, type StudyRegistry, writeStudyRegistry } from './registry.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
+import { type FunnelSummary } from './funnel.ts';
 import { openSealed, runSealedHoldout, sealedReady } from './sealed.ts';
 import { countsOf, rejectMix, scoreRun, type ScoredTrade } from './score.ts';
 import { completenessManifest, type ManifestRow, missingEvidence } from './completeness.ts';
 import { tradesOf as tradesOfRun } from '../trades.ts';
-import type { DeploymentStats } from '../strategy/study.ts';
+import type { DeploymentStats, StudyStrategy } from '../strategy/study.ts';
 
 export interface StudyInputs {
   readonly config: StudyConfig;
@@ -98,6 +99,11 @@ export interface StudyReport {
    * out-of-sample evidence shows removing it improves net results without an unacceptable tail (pre-registered: the
    * 5th-percentile trade and the maximum drawdown no worse at the one-sided 95% level); until then it stays on.
    */
+  /**
+   * The funnel on the practice days, gate by gate, by universe: adverse rejects apart from missing evidence ("not
+   * covered"), for the research sample (each candidate on its own) and the deployment replay (one account, its limits).
+   */
+  readonly funnel: { readonly research: Readonly<Record<string, FunnelSummary>>; readonly deployment: Readonly<Record<string, FunnelSummary>> };
   /** Which gate inputs the dataset and supplements rebuild as of each decision, and how often each was missing. */
   readonly completeness: { readonly manifest: readonly ManifestRow[]; readonly missing: Readonly<Record<string, Readonly<Record<string, number>>>> };
   readonly ablations: readonly {
@@ -122,10 +128,11 @@ const dayBefore = (day: string, n: number) => new Date(Date.parse(`${day}T00:00:
 export const runFullStudy = (i: StudyInputs): StudyReport => {
   const c = i.config;
   const tail = i.policy.exits.tMaxMs + i.research.s0.endMarginMs;
-  const decisionDays = windowDays(c);
-  const absent = decisionDays.filter((d) => !i.availableDays.includes(d));
-  if (absent.length > 0) throw new RangeError(`the dataset lacks ${absent.length} decision days of the window (first ${absent[0]}); the study runs on the whole window only`);
-  const plan = studyPlan(c, decisionDays, tail);
+  const plan = studyPlan(c, tail);
+  // Practice days always; the holdout days (through the observation tail) only when the holdout is run.
+  const needed = [...plan.walkForward.days, ...(i.runHoldout ? plan.holdout.days : [])];
+  const absent = needed.filter((d) => !i.availableDays.includes(d));
+  if (absent.length > 0) throw new RangeError(`the dataset lacks ${absent.length} days the study needs (first ${absent[0]}); the study runs on whole windows only`);
   const regime = (ms: number) => regimeOf(c, ms);
   const universes = UNIVERSES(c);
   const ids = Object.fromEntries(universes.map((u) => [u, configId(c, u)]));
@@ -142,12 +149,17 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // 1. Walk-forward: the lead-in and the walk-forward days; entries only inside them, every trade finished by their end.
   const wfOpts = base(i.firstDay, wfDays[wfDays.length - 1]!, wfEnd, plan.walkForward.entriesFrom, plan.walkForward.entriesTo);
   const wfLedger = `${i.outDir}/walk-forward.db`;
-  const wf = runStudy({ ...wfOpts, mode: 'strategy', ledgerPath: wfLedger });
+  // The strategy object is made when the run starts; its funnel is read after the run.
+  let wfStrategy: StudyStrategy | null = null;
+  const wf = runStudy({ ...wfOpts, mode: 'strategy', ledgerPath: wfLedger, onStrategy: (x) => { wfStrategy = x; } });
+  const research: Record<string, FunnelSummary> = (wfStrategy as StudyStrategy | null)?.funnel.summary() ?? {};
   const s0 = Array.from({ length: c.s0SeedsWalkForward }, (_, k) => runStudy({ ...wfOpts, mode: 's0', seed: `${i.seed}:s0:${k}` }));
 
   // 1b. Deployment replay on the same days (never on the holdout): the setups at the real size against one account.
   let depStats: DeploymentStats | null = null;
-  const dep = runStudy({ ...wfOpts, mode: 'deployment', seed: `${i.seed}:deployment`, onStrategy: (x) => { depStats = x.deployment; } });
+  let depStrategy: StudyStrategy | null = null;
+  const dep = runStudy({ ...wfOpts, mode: 'deployment', seed: `${i.seed}:deployment`, onStrategy: (x) => { depStats = x.deployment; depStrategy = x; } });
+  const admitted: Record<string, FunnelSummary> = (depStrategy as StudyStrategy | null)?.funnel.summary() ?? {};
 
   // 1c. Ablations (paper only, walk-forward days): what H9, H11 and H14 block, scored like accepted trades.
   const ABLATIONS: readonly (readonly ('H9' | 'H11' | 'H14')[])[] = [['H9'], ['H11'], ['H14']];
@@ -187,7 +199,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   }
 
   // 4. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14).
-  const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), reg.holdouts.familySize, seedNumber(`${i.seed}:power:${u}`))]));
+  const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), reg.holdouts.familySize, seedNumber(`${i.seed}:power:${u}`), attemptAlpha(c.holdoutAttempt))]));
   const required = Object.fromEntries(universes.map((u) => [u, power[u]!.ok ? power[u]!.required : null]));
   const holdLedger = `${i.outDir}/holdout-${plan.holdout.fromDay}-${plan.holdout.toDay}.db`;
   let sealed: ReturnType<typeof runSealedHoldout> | null = null;
@@ -203,15 +215,17 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     reg = readStudyRegistry(i.registryPath);
   }
 
-  // 5. G2: the scoring stage opens a seal only when the counts pass for that universe.
+  // 5. G2: the scoring stage opens a seal only after that universe's G1 passed (pooled over the practice days, the
+  // cross-regime evidence) and then must open it once its counts are met (consensus of the three reviews).
   const entryOf = (u: string) => reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u));
-  const ready = universes.filter((u) => required[u] !== null && sealedReady(reg, holdoutIdOf(u), required[u]!));
+  const g1Passed = (u: string) => G1[`${u} all regimes (pooled)`]?.passed === true;
+  const ready = universes.filter((u) => g1Passed(u) && required[u] !== null && sealedReady(reg, holdoutIdOf(u), required[u]!));
   let G2: GateResult;
   if (ready.length === 0) {
     const shorts: G2Short[] = universes.map((u) => {
       const e = entryOf(u);
       if (e === undefined) return { universe: u, holdoutId: holdoutIdOf(u), entries: 0, entryDays: 0, required: required[u] ?? null, why: 'configurations not frozen: no holdout registered' };
-      const why = e.burned ? `holdout burned (${e.burnReason})` : e.seal === 'registered' ? 'holdout not run yet' : power[u]!.ok ? 'sample short' : (power[u] as { why: string }).why;
+      const why = e.burned ? `holdout burned (${e.burnReason})` : e.seal === 'registered' ? 'holdout not run yet' : !g1Passed(u) ? 'G1 did not pass: the seal stays closed' : power[u]!.ok ? 'sample short' : (power[u] as { why: string }).why;
       return { universe: u, holdoutId: e.holdoutId, entries: e.counts?.entries ?? 0, entryDays: e.counts?.entryDays ?? 0, required: required[u] ?? null, why };
     });
     G2 = g2NotProven(shorts);
@@ -223,7 +237,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
         universe: u, configId: ids[u]!, holdoutId: holdoutIdOf(u), ledgerHash: open.sealHash, trades: open.outcomes.strategy[u] ?? [],
         controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), walkForward: sameRegime(tradesOf(u)), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
       })),
-    });
+    }, { familyAlpha: attemptAlpha(c.holdoutAttempt) });
     reg = { ...reg, holdouts: r.registry };
     writeStudyRegistry(i.registryPath, reg);
     // Sensitivity on the opened holdout (already scored above, so no further look): the mean with rent never returned.
@@ -269,6 +283,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       manifest: completenessManifest({ funding: i.insiders !== undefined, rugs: false, rawForAll: i.rawForAll ?? false }),
       missing: missingEvidence(rejectMix(wf.records)),
     },
+    funnel: { research, deployment: admitted },
     ablations: ablationRuns.map(({ gates, run }) => {
       const blocked = purge(scoreRun(run, i.fills), plan, c.embargoMs, regime).kept;
       const byUniverse: Record<string, Record<string, { blocked: number; meanNet: number | null; lossesAvoided: number; profitsExcluded: number; p5: number | null }>> = {};

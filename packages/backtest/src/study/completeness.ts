@@ -3,6 +3,8 @@
 // rebuilt is rejected (H16), as live would reject it; this table says which inputs that is, and the run's reject mix
 // says how often it happened.
 
+import { NOT_COVERED_CODES } from './funnel.ts';
+
 export type Availability = 'rebuilt' | 'supplement' | 'missing' | 'live-only veto';
 
 export interface ManifestRow {
@@ -45,4 +47,4 @@ export const completenessManifest = (o: CompletenessOptions): ManifestRow[] => {
 
 /** How often each gate rejected for missing or uncovered evidence in a run's reject mix (by tag). */
 export const missingEvidence = (mix: Readonly<Record<string, Readonly<Record<string, number>>>>): Record<string, Record<string, number>> =>
-  Object.fromEntries(Object.entries(mix).map(([tag, m]) => [tag, Object.fromEntries(Object.entries(m).filter(([k]) => /:(missing|not-covered|malformed|stale|degraded)$/.test(k)))]));
+  Object.fromEntries(Object.entries(mix).map(([tag, m]) => [tag, Object.fromEntries(Object.entries(m).filter(([k]) => NOT_COVERED_CODES.has(k.slice(k.lastIndexOf(':') + 1))))]));

@@ -34,6 +34,7 @@ import { type Bps, BPS_DENOMINATOR, type Lamports, LAMPORTS_PER_SOL, type MicroU
 import type { PoolView } from '../sim/market.ts';
 import type { StudyConfig, U1Rules, U2Rules, UniverseConfig } from './config.ts';
 import { BAR_MS, PoolTape, spotPrice } from './tape.ts';
+import { Funnel, NOT_COVERED_CODES, type Stage, type StopClass } from '../study/funnel.ts';
 
 const NORMAL = { mayhemMode: false, transferFee: false, transferHook: false } as const;
 const BPS = BPS_DENOMINATOR;
@@ -125,6 +126,8 @@ export class StudyStrategy implements Strategy {
   #latches: Latches = NO_LATCHES;
   readonly #stats: DeploymentStats = { trips: [], rejected: {}, peakEquityUsd: 0n, maxDrawdownUsd: 0n, closed: 0 };
   #prunedAt = Number.MIN_SAFE_INTEGER;
+  /** Every check inside the entry window, counted at the stage where it stopped (funnel first, review consensus). */
+  readonly funnel = new Funnel();
 
   constructor(o: StudyOptions) {
     this.#o = o;
@@ -285,8 +288,9 @@ export class StudyStrategy implements Strategy {
     const view = pv !== null && pv.ok ? (pv.value as PoolView) : null;
     const sol = parseSolUsd(ctx.lookup(SOL_USD_KEY).ok ? (ctx.lookup(SOL_USD_KEY) as { value: unknown }).value : null);
     const px = sol === null ? null : solUsdAt(sol, now);
-    if (view === null || pool === null) return void say('no entry', 'pool state unknown');
-    if (px === null) return void say('no entry', 'SOL/USD unknown');
+    const stop = (stage: Stage, cls: StopClass, gates?: HardResult) => this.funnel.record(tag, mint, stage, cls, gates);
+    if (view === null || pool === null) return void (stop('market data', 'not covered'), say('no entry', 'pool state unknown'));
+    if (px === null) return void (stop('market data', 'not covered'), say('no entry', 'SOL/USD unknown'));
     const policy = this.#o.session.policy;
     const spend = microUsdToLamports(policy.capital.minNotional, px.price as MicroUsd, 'ceil');
     const quoter = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL));
@@ -297,24 +301,24 @@ export class StudyStrategy implements Strategy {
       { mint, universe: (this.#o.mode === 's0' ? 'S0' : u.universe) as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip: quoter(spend) },
       { stopAtFirst: false });
     const ablated = this.#o.ablate !== undefined && !gates.pass && gates.failed.every((g) => this.#o.ablate!.includes(g));
-    if (!gates.pass && !ablated) return void say('reject', ...gateCodes(gates));
+    if (!gates.pass && !ablated) return void (this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates)));
     // An ablation run enters only what the filter blocks: everything else is the main run's.
     if (this.#o.ablate !== undefined && gates.pass) return;
     if (ablated) say('ablation', ...gateCodes(gates));
 
     const tape = this.#tapes.get(pool);
-    if (tape === undefined || tape.last === null) return void say('no entry', 'no trades seen on the pool');
+    if (tape === undefined || tape.last === null) return void (stop('market data', 'not covered'), say('no entry', 'no trades seen on the pool'));
     const spot = spotPrice(view);
-    if (spot === null) return void say('no entry', 'pool has an empty side');
+    if (spot === null) return void (stop('market data', 'not covered'), say('no entry', 'pool has an empty side'));
     const setup = this.#o.mode === 's0' ? this.#s0Stop(u, tape, spot, now) : this.#setup(u, tape, spot, now, ctx, mint, mig!.price);
-    if (!setup.ok) return void say('no setup', setup.why);
+    if (!setup.ok) return void (stop('setup', 'adverse'), say('no setup', setup.why));
     const stopBps = Number(((spot - setup.stopSpot) * BPS) / spot);
     const range = atr(tape.bars(), policy.exits.atrPeriod, policy.exits.atrBarMs, now);
     const stopCheck = checkStopDistance(policy, spot, setup.stopSpot, range);
-    if (!stopCheck.ok) return void say('no entry', `stop ${stopCheck.reason}: ${stopCheck.detail}`);
+    if (!stopCheck.ok) return void (stop('stop distance', 'adverse'), say('no entry', `stop ${stopCheck.reason}: ${stopCheck.detail}`));
     if (!canOpenNewEntry(ctx.book).ok) {
       if (this.#o.mode === 'deployment') this.#stats.rejected['R3:book busy'] = (this.#stats.rejected['R3:book busy'] ?? 0) + 1;
-      return void say('no entry', 'book busy: another entry, an exit or the position limit');
+      return void (stop('book busy', 'adverse'), say('no entry', 'book busy: another entry, an exit or the position limit'));
     }
 
     const id = intentId(`en:${tag}:${mint}`);
@@ -341,6 +345,7 @@ export class StudyStrategy implements Strategy {
     if (deploy) this.#trip(risk.trips, now);
     if (!risk.allow) {
       if (deploy) for (const r of risk.reasons) this.#stats.rejected[`${r.control}:${r.code}`] = (this.#stats.rejected[`${r.control}:${r.code}`] ?? 0) + 1;
+      stop('risk', risk.reasons.length > 0 && risk.reasons.every((r) => NOT_COVERED_CODES.has(r.code)) ? 'not covered' : 'adverse');
       return void say('risk refused', ...risk.reasons.map((r) => `${r.control}:${r.code}`));
     }
     if (deploy) this.#entries.push({ mint: toMint(mint), atMs: now });
@@ -367,7 +372,11 @@ export class StudyStrategy implements Strategy {
 
   #enter(c: Candidate, u: UniverseConfig, view: PoolView, pool: string, risk: EntryAllowed, spot: bigint, stopSpot: bigint, stopBps: number, height: bigint, out: Decision[]): void {
     const q = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL))(risk.spendLamports);
-    if (!q.ok) return void out.push({ action: null, reasons: ['no entry', c.tag, c.mint, `no quote at the chosen size: ${q.reason}`] });
+    if (!q.ok) {
+      this.funnel.record(c.tag, c.mint, 'risk', 'adverse');
+      return void out.push({ action: null, reasons: ['no entry', c.tag, c.mint, `no quote at the chosen size: ${q.reason}`] });
+    }
+    this.funnel.record(c.tag, c.mint, 'entered', 'adverse');
     const spend = risk.spendLamports as Lamports;
     const tokensOut = q.trade.tokens;
     const slip = this.#o.config.entryMinOutBelowBps;

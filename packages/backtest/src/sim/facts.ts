@@ -31,6 +31,9 @@ export const associatedTokenAddress = (owner: string, mint: string, tokenProgram
   findProgramAddress([addressBytes(toAddress(owner)), addressBytes(toAddress(tokenProgram)), addressBytes(toAddress(mint))], ATA_PROGRAM).address;
 
 /** DATA-1's sampling hash: first 8 bytes of sha256(mint bytes), big-endian, over 2^64 (scanner sample.go). Null: not an address. */
+/** The tie-break key of a check: sha256 of the salt, universe and mint (hex, compared as text). */
+export const tieHash = (salt: string, universe: string, mint: string): string => createHash('sha256').update(`${salt}|${universe}|${mint}`).digest('hex');
+
 export const mintHashFraction = (mint: string): number | null => {
   let b: Uint8Array;
   try {
@@ -58,6 +61,11 @@ export interface FactOptions {
   readonly sampleRate: number | null;
   readonly rugs: RugConfig;
   readonly windows: readonly CheckWindow[];
+  /**
+   * Salt of the tie-break between checks due at the same block (consensus of the three reviews, 2026-10-04): fixed and
+   * recorded in the study configuration before any replay, so no ordering can be tuned on outcomes.
+   */
+  readonly tieSalt: string;
   /** Hourly SOL/USD releases (usable moment and bar), in order. */
   readonly solUsd: readonly { readonly at: number; readonly bar: SeriesBar }[];
   /** SOL/USD points carried in a fact (enough for a 24 h change). */
@@ -481,15 +489,13 @@ export class FactProjector {
       if (this.#solPoints.length > this.#o.solUsdPoints) this.#solPoints.shift();
     }
     this.#schedule(atMs);
-    // Signal priority when several checks fall due at one block (released in this order, so the first eligible one
-    // takes a single position slot): the universe's place in the windows, then the deeper pool (effective quote
-    // reserve), then the mint address.
-    const order = this.#o.windows.map((w) => w.universe);
+    // Simultaneous signals: an earlier block's check always comes first, so the earliest fully eligible signal wins.
+    // Checks due at the same block are true ties; they are released in the order of sha256(salt | universe | mint), so
+    // the first eligible one takes a single position slot and no market feature (depth, universe) tilts the choice.
     const due = [...this.#due].map((key) => {
       const [mint, universe] = key.split('|') as [string, string];
-      const v = this.#mints.get(mint)?.view;
-      return { key, mint, universe, depth: v === null || v === undefined ? 0n : v.quoteVault + v.virtualQuoteReserves };
-    }).sort((a, b) => order.indexOf(a.universe) - order.indexOf(b.universe) || (a.depth > b.depth ? -1 : a.depth < b.depth ? 1 : 0) || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0));
+      return { key, mint, universe, tie: tieHash(this.#o.tieSalt, universe, mint) };
+    }).sort((a, b) => (a.tie < b.tie ? -1 : a.tie > b.tie ? 1 : 0));
     due.forEach(({ key, mint, universe }, rank) => {
       this.#due.delete(key);
       const s = this.#mints.get(mint);

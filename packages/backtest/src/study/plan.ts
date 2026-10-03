@@ -28,28 +28,42 @@ export const windowDays = (c: StudyConfig): string[] => {
   return out;
 };
 
-/** The regime a moment falls in: the label of the last boundary at or before it ('B0' before the first). */
-export const regimeOf = (c: StudyConfig, ms: number): string => {
+/**
+ * The regime a moment falls in: the label of the last boundary at or before it ('B0' before the first). Market
+ * boundaries only by default (B2–B4: purging and G1 regimes); with `all`, decoder boundaries too (B5: reporting lines).
+ */
+export const regimeOf = (c: StudyConfig, ms: number, all = false): string => {
   let label = 'B0';
-  for (const b of c.regimes) if (b.atMs <= ms) label = b.label;
+  for (const b of c.regimes) if (b.atMs <= ms && (all || b.market)) label = b.label;
   return label;
 };
 
-/** The fixed holdout days of the configuration (the window's last `holdoutDays`). */
-export const holdoutDaysOf = (c: StudyConfig): string[] => windowDays(c).slice(-c.holdoutDays);
+const dayKey = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+/**
+ * Every day of the sealed holdout: from its first day through the day of the entry cutoff E and the tail days after
+ * it (all fixed by configuration, never by what was downloaded). These days are never practice days.
+ */
+export const holdoutDaysOf = (c: StudyConfig): string[] => {
+  const cutoff = Date.parse(c.holdout.entryCutoff);
+  const lastEntryDay = dayStart(dayKey(cutoff - 1));
+  const out: string[] = [];
+  for (let t = dayStart(c.holdout.fromDay); t <= lastEntryDay + c.holdout.tailDays * DAY_MS; t += DAY_MS) out.push(dayKey(t));
+  return out;
+};
+
+/** Practice days: decision days before the holdout. */
+export const practiceDays = (c: StudyConfig): string[] => windowDays(c).filter((d) => d < c.holdout.fromDay);
 
 /**
  * `holdTailMs`: how long before a window's end the last entry may start so every trade can finish inside it
  * (the policy's hard time stop plus a margin). Throws when the days cannot hold the folds and the holdout.
  */
-export const studyPlan = (c: StudyConfig, decisionDays: readonly string[], holdTailMs: number): StudyPlan => {
-  const days = [...decisionDays].sort();
-  for (let i = 1; i < days.length; i++) {
-    if (dayStart(days[i]!) - dayStart(days[i - 1]!) !== DAY_MS) throw new RangeError(`decision days must be consecutive: ${days[i - 1]} then ${days[i]}`);
-  }
-  if (days.length < c.holdoutDays + c.folds) throw new RangeError(`${days.length} decision days cannot hold ${c.folds} folds and a ${c.holdoutDays}-day holdout`);
-  const hold = days.slice(days.length - c.holdoutDays);
-  const wf = days.slice(0, days.length - c.holdoutDays);
+export const studyPlan = (c: StudyConfig, holdTailMs: number): StudyPlan => {
+  const days = windowDays(c);
+  const wf = practiceDays(c);
+  const hold = holdoutDaysOf(c);
+  if (wf.length < c.folds) throw new RangeError(`${wf.length} practice days cannot hold ${c.folds} folds`);
   const per = Math.floor(wf.length / c.folds);
   const folds: Fold[] = [];
   for (let k = 0; k < c.folds; k++) {
@@ -57,18 +71,23 @@ export const studyPlan = (c: StudyConfig, decisionDays: readonly string[], holdT
     folds.push({ index: k, fromMs: dayStart(fd[0]!), toMs: dayStart(fd[fd.length - 1]!) + DAY_MS, days: fd });
   }
   const wfEnd = dayStart(wf[wf.length - 1]!) + DAY_MS;
-  const holdStart = dayStart(hold[0]!);
+  const holdStart = dayStart(c.holdout.fromDay);
+  const cutoff = Date.parse(c.holdout.entryCutoff);
+  const dataEnd = dayStart(hold[hold.length - 1]!) + DAY_MS;
+  if (holdStart !== wfEnd) throw new RangeError('the holdout must start the day after the last practice day');
+  if (!(cutoff > holdStart + c.embargoMs) || cutoff + holdTailMs > dataEnd) throw new RangeError('the entry cutoff must leave the embargo before it and the hold time before the data ends');
   const after = c.regimes.find((b) => b.label === c.holdoutAfter);
   if (after === undefined) throw new RangeError(`no regime boundary ${c.holdoutAfter}`);
   if (holdStart + c.embargoMs < after.atMs) throw new RangeError(`the holdout must lie entirely after ${after.label} (${new Date(after.atMs).toISOString()})`);
-  const inside = c.regimes.find((b) => b.atMs > holdStart && b.atMs < dayStart(hold[hold.length - 1]!) + DAY_MS);
-  if (inside !== undefined) throw new RangeError(`regime boundary ${inside.label} falls inside the holdout`);
-  const holdEnd = dayStart(hold[hold.length - 1]!) + DAY_MS;
+  // A market boundary inside the holdout is refused; a decoder boundary (B5) is reported before and after, not purged.
+  const inside = c.regimes.find((b) => b.market && b.atMs > holdStart && b.atMs < dataEnd);
+  if (inside !== undefined) throw new RangeError(`market regime boundary ${inside.label} falls inside the holdout`);
   return {
     decisionDays: days,
     walkForward: { days: wf, entriesFrom: dayStart(wf[0]!), entriesTo: wfEnd - holdTailMs, folds },
-    // The holdout's first entry waits out the embargo, so no walk-forward trade's hold overlaps it.
-    holdout: { days: hold, fromDay: hold[0]!, toDay: hold[hold.length - 1]!, entriesFrom: holdStart + c.embargoMs, entriesTo: holdEnd - holdTailMs },
+    // The holdout's first entry waits out the embargo, so no walk-forward trade's hold overlaps it; entries stop at the
+    // registered cutoff E and the data runs on through the tail so every hold finishes (an observation-only tail).
+    holdout: { days: hold, fromDay: hold[0]!, toDay: hold[hold.length - 1]!, entriesFrom: holdStart + c.embargoMs, entriesTo: cutoff },
   };
 };
 

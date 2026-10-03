@@ -46,7 +46,7 @@ export const runSealedHoldout = (
   const outcomesPath = outcomesPathOf(ledgerPath);
   for (const p of [ledgerPath, outcomesPath]) if (existsSync(p)) throw new RangeError(`${p} exists: a holdout is run once, into new files`);
   let reg: StudyRegistry = readStudyRegistry(registryPath);
-  const begun = beginHoldoutRun(reg, ids, ledgerPath, startedAt);
+  const begun = beginHoldoutRun(reg, ids, ledgerPath, startedAt, run.study.holdoutAttempt);
   writeStudyRegistry(registryPath, begun.registry);
   if (!begun.ok) throw new Error(`holdout run refused and burned: ${begun.reason}`);
   reg = begun.registry;
