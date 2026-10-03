@@ -88,7 +88,7 @@ export const loadWindow = (path: string): PracticeWindow => parseWindow(JSON.par
 
 /**
  * The window a run may use: never a wall later than the committed one. A confirmed window must also match the STATS-1
- * registry: every registered holdout starts exactly on its holdoutFrom (the wall plus the embargo).
+ * registry: the wall is the Melbourne day with the date of every registered holdout's first UTC day.
  */
 export const resolveWindow = (committed: PracticeWindow, given: PracticeWindow, registry: HoldoutRegistry | null): PracticeWindow => {
   if (wallMs(given) > wallMs(committed)) {
@@ -97,9 +97,12 @@ export const resolveWindow = (committed: PracticeWindow, given: PracticeWindow, 
   for (const w of [committed, given]) {
     if (w.confirmedBy === null) continue;
     if (registry === null || registry.entries.length === 0) throw new HoldoutWallError(`the window says confirmed by ${w.confirmedBy}, but no STATS-1 registry with entries was given`);
-    // Registry days are Melbourne days, as are the window's: compared as they are.
+    // The registry's fromDay is a UTC data day (BT-2 study-1; ARCHITECTURE.md §14). The window's wall must be the
+    // Melbourne day of the same date, which starts 10–11 h before the registered holdout (conservative, supervisor).
     for (const e of registry.entries) {
-      if (e.fromDay !== w.holdoutFrom) throw new HoldoutWallError(`registered holdout ${e.holdoutId} starts ${e.fromDay}, but the window's holdoutFrom is ${w.holdoutFrom}: they must be equal`);
+      if (wallDay(w) !== e.fromDay || wallMs(w) > utcMidnight(e.fromDay)) {
+        throw new HoldoutWallError(`registered holdout ${e.holdoutId} starts on UTC day ${e.fromDay}; the window's wall must be Melbourne day ${e.fromDay} (holdoutFrom ${addDays(e.fromDay, w.embargoDays)}), it is ${wallDay(w)}: they must be equal`);
+      }
     }
   }
   return given;

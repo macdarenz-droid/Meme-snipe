@@ -23,6 +23,7 @@ const SRC = join(import.meta.dirname, '..', 'src', 'research');
 // Synthetic data starts 2026-09-20 00:00 UTC; this test window keeps it on practice days.
 const WINDOW: PracticeWindow = { decisionFrom: '2026-09-19', decisionTo: '2026-10-01', holdoutFrom: '2026-09-25', embargoDays: 1, confirmedBy: 'test' };
 const rows = syntheticRows({ mints: 3, slots: 2.5 * 3600 * 6 });
+const utcStart = (d: string): number => Date.parse(`${d}T00:00:00Z`);
 const targets = (cs: readonly Candidate[]): ScoreTarget[] => cs.map(({ id, pool, decisionSlot, decisionMs, solUsd }) => ({ id, pool, decisionSlot, decisionMs, solUsd }));
 const drive = (over: Partial<DriveOptions> = {}): DriveOptions => ({
   window: WINDOW, policy: TRIAL_POLICY, solUsd: solUsdAsOf(SOL_USD, 3 * 3_600_000), ...PLAN_DRIVE, ...over,
@@ -68,12 +69,15 @@ describe('holdout wall', () => {
     expect(resolveWindow(committed, earlier, null)).toBe(earlier);
     const confirmed = { ...earlier, confirmedBy: 'registry@abc' };
     expect(() => resolveWindow(committed, confirmed, null)).toThrow(/no STATS-1 registry/);
-    let reg = createHoldoutRegistry(2);
-    reg = registerHoldout(reg, { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(earlier.holdoutFrom, -1), toDay: '2026-10-01' });
+    // The registry's fromDay is a UTC day; the confirmed wall must be the Melbourne day of that date.
+    const fromDay = wallDay(earlier);
+    const reg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, -1), toDay: '2026-10-01' });
     expect(() => resolveWindow(committed, confirmed, reg)).toThrow(/must be equal/);
-    const laterReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(earlier.holdoutFrom, 1), toDay: '2026-10-01' });
+    const laterReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, 1), toDay: '2026-10-01' });
     expect(() => resolveWindow(committed, confirmed, laterReg)).toThrow(/must be equal/);
-    const ok = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: earlier.holdoutFrom, toDay: '2026-10-01' });
+    const ok = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay, toDay: '2026-10-01' });
+    // The wall (Melbourne midnight) comes 10 h before the registered UTC day starts.
+    expect(utcStart(fromDay) - wallMs(confirmed)).toBe(10 * 3_600_000);
     expect(resolveWindow(committed, confirmed, ok)).toBe(confirmed);
   });
 
