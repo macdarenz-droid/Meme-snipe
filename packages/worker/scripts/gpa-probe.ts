@@ -20,8 +20,11 @@ const fromEnv: Secrets = {
   },
 };
 const secrets = dir ? credentialsDirectorySecrets(dir) : fromEnv;
+/** At least a second between Alchemy calls, so one probe run can measure it. */
+const ALCHEMY_SPACING_MS = 1_500;
 const PRICE = { helius: '10 credits (published)', alchemy: 'not published; read the dashboard' } as const;
-/** A Token-2022 pump coin (create_v2) and a legacy SPL pump coin with few holders, recorded on 2026-10-03. */
+/** A Token-2022 pump coin (create_v2, about 60 token accounts) and a legacy SPL pump coin with a very large holder set
+ * (Fartcoin, about 569k token accounts), both recorded on 2026-10-03. */
 const CASES = [
   { program: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', mint: 'DRnMYnkK3dCwypBgZaH5jcVoQHQhoEr8NcMNLJ18pump' },
   { program: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', mint: '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump' },
@@ -34,6 +37,8 @@ const filterSets = (program: string, mint: string): readonly [string, unknown[]]
 for (const [name, url] of [['helius', heliusRpcUrl(secrets)], ['alchemy', alchemyRpcUrl(secrets)]] as const) {
   for (const c of CASES) {
     for (const [label, filters] of filterSets(c.program, c.mint)) {
+      // Alchemy answered 429 (compute units per second) to back-to-back calls in run 37149567929: space them out.
+      if (name === 'alchemy') await new Promise((r) => setTimeout(r, ALCHEMY_SPACING_MS));
       const t0 = Date.now();
       const tag = `${name} ${c.program.slice(0, 8)} ${label}`;
       try {
