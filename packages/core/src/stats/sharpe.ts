@@ -5,6 +5,7 @@
 
 import { kurtosis, mean, sd, skewness, variance } from './descriptive.ts';
 import { normalCdf, normalQuantile } from './special.ts';
+import { clusterTrials } from './trials.ts';
 
 const EULER_GAMMA = 0.5772156649015329;
 
@@ -80,4 +81,64 @@ export const deflatedSharpe = (selectedReturns: readonly number[], registry: rea
     trials: registry.length,
     sharpeVariance,
   };
+};
+
+/** One DSR line: N trials, V across the given Sharpe ratios floored at 1/(T − 1), T the number of days. */
+export interface DsrLine {
+  readonly dsr: number;
+  readonly benchmarkSharpe: number;
+  readonly trials: number;
+  readonly sharpeVariance: number;
+}
+
+export interface DailyDeflatedSharpe {
+  /** Day-level Sharpe of the selected trial (mean / SD of its daily P&L). */
+  readonly sharpe: number;
+  readonly days: number;
+  /** The gate's line: N = every registered trial. */
+  readonly raw: DsrLine;
+  /** Diagnostic: trials whose daily vectors are exactly equal count once (exact equality, never a similarity). */
+  readonly deduplicated: DsrLine;
+  /** Diagnostic: the effective-N sensitivity line (trials.ts); never the gate. */
+  readonly effective: DsrLine & { readonly clusters: number };
+}
+
+/** Day-level Sharpe; a constant series (a trial that never moved) has Sharpe 0. */
+const dailySharpe = (xs: readonly number[]): number => (sd(xs) > 0 ? sharpeRatio(xs) : 0);
+
+const line = (selected: readonly number[], trials: number, sharpes: readonly number[]): DsrLine => {
+  const sharpeVariance = Math.max(sharpes.length > 1 ? variance(sharpes) : 0, 1 / (selected.length - 1));
+  const benchmarkSharpe = expectedMaxSharpe(trials, sharpeVariance);
+  return { dsr: probabilisticSharpe(selected, benchmarkSharpe), benchmarkSharpe, trials, sharpeVariance };
+};
+
+/**
+ * DSR on day-level returns (supervisor ruling, STATS-1c (a)). Trades on one day move together, so counting trades as
+ * independent observations inflates PSR; here every series is the trial's daily P&L over one calendar (idle days as 0,
+ * with their costs), T is the number of days, and each trial's Sharpe is its day-level Sharpe. `series` holds every
+ * registered trial (trial id → daily P&L, same days in the same order).
+ */
+export const deflatedSharpeDaily = (series: Readonly<Record<string, readonly number[]>>, selectedId: string): DailyDeflatedSharpe => {
+  const ids = Object.keys(series).sort();
+  if (ids.length === 0) throw new RangeError('the experiment registry is empty');
+  const selected = series[selectedId];
+  if (!selected) throw new RangeError(`selected trial "${selectedId}" has no daily P&L`);
+  const days = selected.length;
+  for (const id of ids) {
+    const s = series[id]!;
+    if (s.length !== days) throw new RangeError(`trial ${id} has ${s.length} days, expected ${days}`);
+    for (const x of s) if (!Number.isFinite(x)) throw new RangeError(`trial ${id} has a non-finite daily P&L`);
+  }
+  if (days < 3) throw new RangeError('day-level DSR needs at least three days');
+  const sharpes = new Map(ids.map((id) => [id, dailySharpe(series[id]!)]));
+  const raw = line(selected, ids.length, ids.map((id) => sharpes.get(id)!));
+  const unique = new Map<string, string>();
+  for (const id of ids) {
+    const key = series[id]!.join(',');
+    if (!unique.has(key)) unique.set(key, id);
+  }
+  const deduplicated = line(selected, unique.size, [...unique.values()].map((id) => sharpes.get(id)!));
+  const cl = clusterTrials(series);
+  const effective = { ...line(selected, cl.effectiveTrials, cl.representatives.map((id) => sharpes.get(id)!)), clusters: cl.clusters.length };
+  return { sharpe: sharpeRatio(selected), days, raw, deduplicated, effective };
 };

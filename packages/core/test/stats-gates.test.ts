@@ -1,7 +1,7 @@
 // Every gate has a passing and a failing fixture; thresholds can be tightened but never loosened.
 import { describe, expect, test } from 'vitest';
 import {
-  createRng, evaluateDemotion, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
+  createRng, deflatedSharpe, deflatedSharpeDaily, evaluateDemotion, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
   burnHoldout, createHoldoutRegistry, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
@@ -38,11 +38,14 @@ describe('G0 data and engine validity', () => {
 const wf: DayTrade[] = bracketTrades(21, 0.1, 40, 15).map((t, i) => ({ ...t, blocked: i % 120 === 0 && t.rNet === -1 }));
 const control = bracketTrades(22, -0.2, 40, 15).map(({ day, rNet }) => ({ day, rNet }));
 const registry = Array.from({ length: 20 }, (_, i) => ({ trialId: `t${i}`, sharpe: 0.05 + 0.004 * i, nTrades: 600 }));
-const winnerDaily = [...new Set(wf.map((t) => t.day))].map((d) => mean(wf.filter((t) => t.day === d).map((t) => t.rNet)));
-// Keyed by trialId: the selected trial t19 wins every day; the other 19 registry trials trail it.
-const pboMatrix: Record<string, number[]> = Object.fromEntries(registry.map((t, k) => [
-  t.trialId, t.trialId === 't19' ? winnerDaily : winnerDaily.map((x, i) => x - 0.15 - 0.01 * k + 0.02 * Math.sin(i + k)),
-]));
+const dailyOf = (ts: readonly DayTrade[]): number[] => [...new Set(ts.map((t) => t.day))].map((d) => mean(ts.filter((t) => t.day === d).map((t) => t.rNet)));
+// Keyed by trialId: the selected trial t19 wins every day; the other 19 registry trials trail it by 10 points a day.
+const matrixFor = (ts: readonly DayTrade[]): Record<string, number[]> => {
+  const daily = dailyOf(ts);
+  return Object.fromEntries(registry.map((t, k) => [t.trialId, t.trialId === 't19' ? daily : daily.map((x, i) => x - 0.1 + 0.02 * Math.sin(i + k))]));
+};
+const winnerDaily = dailyOf(wf);
+const pboMatrix = matrixFor(wf);
 const g1Pass = (): G1Input => ({
   scenario: 'conservative', rulesRegisteredBeforeHoldout: true, trades: wf, control, selectedTrialId: 't19', registry,
   pboMatrix, pboBlocks: 8, modelUsed: false, calibrationSlope: null, rng: createRng(1), replicates: 1000,
@@ -58,7 +61,7 @@ describe('G1 walk-forward', () => {
   });
   test('fails a zero-edge strategy on the bound, DSR, concentration and S0', () => {
     const flat = bracketTrades(23, 0, 40, 15);
-    const r = gateG1({ ...g1Pass(), trades: flat, control: bracketTrades(24, 0, 40, 15) });
+    const r = gateG1({ ...g1Pass(), trades: flat, control: bracketTrades(24, 0, 40, 15), pboMatrix: matrixFor(flat) });
     expect(r.passed).toBe(false);
     const failed = r.reasons.map((x) => x.split(':')[0]);
     expect(failed).toContain('mean');
@@ -84,6 +87,24 @@ describe('G1 walk-forward', () => {
     expect(gateG1({ ...g1Pass(), pboMatrix: noSelected }).reasons.join()).toMatch(/missing 1: t19/);
     expect(gateG1({ ...g1Pass(), pboMatrix: { ...pboMatrix, stranger: winnerDaily } }).reasons.join()).toMatch(/not in registry 1: stranger/);
   });
+  // STATS-1c (a): PSR and DSR on day-level returns. Trades on one day share a shock (ρ = 0.4), so 600 trades are far
+  // fewer than 600 observations; the per-trade DSR passed this, the day-level one does not.
+  test('correlated same-day trades no longer inflate the DSR', () => {
+    const corr = bracketTrades(25, 0.06, 40, 15, 0.4);
+    const perTrade = deflatedSharpe(corr.map((t) => t.rNet), registry);
+    expect(perTrade.dsr).toBeGreaterThanOrEqual(0.95);
+    const r = gateG1({ ...g1Pass(), trades: corr, pboMatrix: matrixFor(corr) });
+    expect(r.metrics.dsrDays).toBe(40);
+    expect(r.metrics.dsr!).toBeLessThan(0.95);
+    expect(r.reasons.join(' | ')).toMatch(/DSR: day-level deflated Sharpe/);
+  });
+  test('the DSR reports raw, de-duplicated and effective-N lines; only raw N gates', () => {
+    const r = gateG1(g1Pass());
+    expect(r.metrics.trials).toBe(20);
+    expect(r.metrics.trialsDeduplicated).toBe(20);
+    expect(r.metrics.trialsEffective).toBeGreaterThanOrEqual(1);
+    expect(r.checks.find((c) => c.name === 'DSR')!.detail).toMatch(/reported only: .* distinct series, .* effective trials/);
+  });
   test('fewer than MIN_DAYS days is "not proven"', () => {
     const nine = wf.filter((t) => t.day < 'd0009');
     expect(new Set(nine.map((t) => t.day)).size).toBe(9);
@@ -93,6 +114,18 @@ describe('G1 walk-forward', () => {
     const r = gateG1({ ...g1Pass(), trades: wf.slice(0, 2) });
     expect(r.status).toBe('not-proven');
     expect(r.passed).toBe(false);
+  });
+  test('exact duplicates count once in the de-duplicated line: two identical variants give the same DSR as one', () => {
+    const one = { t19: winnerDaily, t0: pboMatrix.t0!, t1: pboMatrix.t1! };
+    const two = { ...one, copy: [...winnerDaily] };
+    const a = deflatedSharpeDaily(one, 't19');
+    const b = deflatedSharpeDaily(two, 't19');
+    expect(b.deduplicated).toEqual(a.deduplicated);
+    expect(b.raw.trials).toBe(4);
+    expect(b.deduplicated.trials).toBe(3);
+    // A near-copy is a different series: exact equality only.
+    const near = deflatedSharpeDaily({ ...one, copy: winnerDaily.map((x, i) => (i === 0 ? x + 1e-12 : x)) }, 't19');
+    expect(near.deduplicated.trials).toBe(4);
   });
   test('thresholds tighten but never loosen', () => {
     expect(gateG1(g1Pass(), { dsrMin: 0.999999 }).reasons.some((x) => x.startsWith('DSR'))).toBe(true);

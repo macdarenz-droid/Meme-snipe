@@ -16,7 +16,7 @@ import { meanPredictiveInterval, type SampleSummary } from './predictive.ts';
 import type { TripleBarrierLabel } from './labeller.ts';
 import type { Rng } from './rng.ts';
 import { studentTQuantile } from './special.ts';
-import { deflatedSharpe, type TrialRecord } from './sharpe.ts';
+import { deflatedSharpeDaily, type TrialRecord } from './sharpe.ts';
 
 export type GateName = 'G0' | 'G1' | 'G2' | 'G3' | 'G4' | 'G5';
 /** 'not-proven': too little data to decide (collect more, never lower n). */
@@ -226,8 +226,9 @@ export interface G1Input {
   /** Every trial ever evaluated (experiment registry). */
   readonly registry: readonly TrialRecord[];
   /**
-   * Per-trial returns per time row (e.g. per day) for PBO, keyed by trialId. Must hold exactly the registry's trials
-   * (a subset would lower PBO), every one with the same rows.
+   * Per-trial daily P&L for PBO and the day-level DSR, keyed by trialId: every trial on one calendar, idle days as 0
+   * with their costs. Must hold exactly the registry's trials (a subset would lower PBO and the DSR's N), every one with
+   * the same rows.
    */
   readonly pboMatrix: Readonly<Record<string, readonly number[]>>;
   readonly pboBlocks?: number;
@@ -257,24 +258,39 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
   metrics.lowerBound95 = ci.lower;
   c.add('mean', ci.lower > th.lowerBoundMin, `one-sided 95% lower bound ${fmt(ci.lower)} (need > ${th.lowerBoundMin})`);
 
-  if (!input.registry.some((t) => t.trialId === input.selectedTrialId)) {
-    c.add('registry', false, `selected trial "${input.selectedTrialId}" is not in the experiment registry`);
-  } else {
-    try {
-      const d = deflatedSharpe(returns, input.registry);
-      metrics.dsr = d.dsr;
-      metrics.trials = d.trials;
-      c.add('DSR', d.dsr >= th.dsrMin, `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} trials (need >= ${th.dsrMin})`);
-    } catch (e) {
-      c.add('DSR', false, (e as Error).message);
-    }
-  }
   const ids = input.registry.map((t) => t.trialId);
   const keys = Object.keys(input.pboMatrix);
   const missing = ids.filter((id) => !Object.hasOwn(input.pboMatrix, id));
   const extra = keys.filter((k) => !ids.includes(k));
-  if (missing.length > 0 || extra.length > 0) {
-    c.add('PBO', false, `PBO matrix must hold exactly the registry's ${ids.length} trials (missing ${missing.length}: ${missing.slice(0, 5).join(', ')}; not in registry ${extra.length}: ${extra.slice(0, 5).join(', ')})`);
+  const matrixOk = missing.length === 0 && extra.length === 0;
+  const matrixProblem = `the daily P&L matrix must hold exactly the registry's ${ids.length} trials (missing ${missing.length}: ${missing.slice(0, 5).join(', ')}; not in registry ${extra.length}: ${extra.slice(0, 5).join(', ')})`;
+
+  if (!input.registry.some((t) => t.trialId === input.selectedTrialId)) {
+    c.add('registry', false, `selected trial "${input.selectedTrialId}" is not in the experiment registry`);
+  } else if (!matrixOk) {
+    c.add('DSR', false, matrixProblem);
+  } else {
+    // Day-level DSR (STATS-1c (a)): the gate's line counts every registered trial; the de-duplicated and effective-N
+    // lines are reported only.
+    try {
+      const d = deflatedSharpeDaily(input.pboMatrix, input.selectedTrialId);
+      metrics.dsr = d.raw.dsr;
+      metrics.trials = d.raw.trials;
+      metrics.dailySharpe = d.sharpe;
+      metrics.dsrDays = d.days;
+      metrics.dsrDeduplicated = d.deduplicated.dsr;
+      metrics.trialsDeduplicated = d.deduplicated.trials;
+      metrics.dsrEffective = d.effective.dsr;
+      metrics.trialsEffective = d.effective.trials;
+      c.add('DSR', d.raw.dsr >= th.dsrMin,
+        `day-level deflated Sharpe ${fmt(d.raw.dsr)} over ${d.raw.trials} trials and ${d.days} days (need >= ${th.dsrMin}); `
+        + `reported only: ${fmt(d.deduplicated.dsr)} over ${d.deduplicated.trials} distinct series, ${fmt(d.effective.dsr)} over ${d.effective.trials} effective trials`);
+    } catch (e) {
+      c.add('DSR', false, (e as Error).message);
+    }
+  }
+  if (!matrixOk) {
+    c.add('PBO', false, `PBO ${matrixProblem.replace('the daily P&L matrix', 'matrix')}`);
   } else try {
     const p = probabilityOfBacktestOverfitting(ids.map((id) => input.pboMatrix[id]!), input.pboBlocks === undefined ? {} : { blocks: input.pboBlocks });
     metrics.pbo = p.pbo;
