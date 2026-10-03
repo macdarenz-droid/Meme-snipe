@@ -109,7 +109,7 @@ export const runEvidence = (input: EvidenceInput): Evidence => {
       rows, series: [input.solUsd], seed: input.seed, scenario: input.scenario, policy: input.policy, fills: input.fills, research: input.research,
       windowEnd: Math.min(lastDay, covered), regimeBoundaries: regimeBoundariesOf(manifest),
     };
-    const ledgerPath = join(input.workDir, `window-${k}.sqlite`);
+    const ledgerPath = join(input.workDir, `window-${k}.db`);
     if (existsSync(ledgerPath)) throw new RangeError(`${ledgerPath} exists: each evidence run writes a new ledger`);
     const first = runBacktest({ ...base, ledgerPath });
     const hashes = [first.logHash];
