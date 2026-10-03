@@ -22,7 +22,8 @@
 #   step alone); checkouts keep persist-credentials: false and no other step uses it.
 # - Limits: each scan job has a 300 min budget for scanning and back-off waits inside
 #   its 355 min timeout, and QA, packaging and publishing start only with 45 min left
-#   (ci/time-left.sh). A day that runs out of either saves its progress and stops
+#   (ci/time-left.sh); a 429 in the determinism rescan also stops resumably. Each
+#   phase's duration is in the summary. A day that runs out of either saves its progress and stops
 #   resumably (exit 75), and it chains only when that save succeeded: fail-fast
 #   cancels the days queued behind it, and the `continue` job dispatches the same days again (inputs.chain counts the chained runs, at most
 #   12). Published days are skipped before any archive read, so the next run resumes
@@ -253,27 +254,19 @@ jobs:
           research/historical/ci/time-left.sh "$JOB_START" 355 45 || rc=$?
           if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
           exit "$rc"
-      # Chained only when this run's progress was saved; a failed save stops for review.
-      - name: Mark the day resumable for the next chained run
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true')
-        env:
-          DAY: ${{ matrix.day }}
-        run: mkdir -p "$RUNNER_TEMP/resume" && echo "$DAY" > "$RUNNER_TEMP/resume/day"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true')
-        with:
-          name: resume-${{ matrix.day }}
-          path: ${{ runner.temp }}/resume
-          retention-days: 3
       - name: QA and determinism
         id: qa
         if: steps.published.outputs.complete != 'true'
         env:
           DAY: ${{ matrix.day }}
           MAX_MBPS: ${{ inputs.max_mbps }}
+        # rc 75: the determinism rescan met a 429 (back-off persisted): resumable.
         run: |
           export DATASET_PARENT="$RUNNER_TEMP/work/qa"
-          research/historical/ci/check-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets"
+          rc=0
+          research/historical/ci/check-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets" || rc=$?
+          if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
+          exit "$rc"
       # The determinism rescan uses -state "$RUNNER_TEMP/work/data" and can hit a 429, which
       # fails QA. Only then does the day's progress change after "Save progress" (the
       # rescan itself writes to a temp dir), so it is saved again only when QA failed,
@@ -284,6 +277,18 @@ jobs:
         with:
           path: ${{ runner.temp }}/work/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}-qa
+      # Chained only when this run's progress was saved; a failed save stops for review.
+      - name: Mark the day resumable for the next chained run
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
+        env:
+          DAY: ${{ matrix.day }}
+        run: mkdir -p "$RUNNER_TEMP/resume" && echo "$DAY" > "$RUNNER_TEMP/resume/day"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
+        with:
+          name: resume-${{ matrix.day }}
+          path: ${{ runner.temp }}/resume
+          retention-days: 3
       # Packaging is its own step: tar --remove-files deletes unit files as it goes, and
       # no progress save follows it, so a failed packaging can never become the newest
       # cache of finished-looking units with files missing.
@@ -307,6 +312,9 @@ jobs:
         with:
           path: ${{ runner.temp }}/backoff
           key: data-scan-backoff-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
+      - name: Note the upload start
+        if: steps.published.outputs.complete != 'true'
+        run: echo "T_UPLOAD=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: steps.published.outputs.complete != 'true'
         with:
@@ -314,6 +322,14 @@ jobs:
           path: ${{ runner.temp }}/work/assets
           compression-level: 0
           retention-days: 14
+      - name: Note the publish start
+        if: steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: |
+          now=$(date +%s)
+          echo "phase artifact upload ($DAY): $(( now - T_UPLOAD )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "T_PUBLISH=$now" >> "$GITHUB_ENV"
       - name: Publish this day
         if: steps.published.outputs.complete != 'true'
         # A clean environment: the shell starts without BASH_ENV/ENV and by absolute path,
@@ -331,6 +347,12 @@ jobs:
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
           GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" "$DAY" "$RUNNER_TEMP/work/assets"
+      - name: Log the publish duration
+        if: steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: |
+          echo "phase publish ($DAY): $(( $(date +%s) - T_PUBLISH )) s" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Unattended chaining: when a day stopped resumably (resume-* artifact: the time budget
   # ran out, or a back-off did not fit it), dispatch the same days again. Published days
