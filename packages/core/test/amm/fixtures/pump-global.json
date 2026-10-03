@@ -1,0 +1,9 @@
+{
+ "source": "pump Global account 4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf, read 2026-10-03 at slot 452916922 (docs/research/venues.md 2.1)",
+ "readAtSlot": "452916922",
+ "initialVirtualTokenReserves": "1073000000000000",
+ "initialVirtualSolReserves": "30000000000",
+ "initialRealTokenReserves": "793100000000000",
+ "tokenTotalSupply": "1000000000000000",
+ "poolMigrationFee": "15000001"
+}

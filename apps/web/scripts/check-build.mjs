@@ -8,10 +8,10 @@ const dist = new URL('../dist', import.meta.url).pathname;
 const files = (dir) => readdirSync(dir).flatMap((n) => (statSync(join(dir, n)).isDirectory() ? files(join(dir, n)) : [join(dir, n)]));
 const all = files(dist);
 const text = all.filter((f) => /\.(js|html|css)$/.test(f)).map((f) => [f, readFileSync(f, 'utf8')]);
-const FIXTURE_STRINGS = ['ZEROED_FIXTURES_DEV_ONLY', 'FAKEmint', 'Fixture data', 'Sample data'];
+const FIXTURE_STRINGS = ['ZEROED_FIXTURES_DEV_ONLY', 'FAKEmint', 'Fixture data', 'Sample data', 'dev/fixtures', 'Samples'];
 
 if (preview) {
-  const missing = ['ZEROED_FIXTURES_DEV_ONLY', 'Sample data'].filter((m) => !text.some(([, s]) => s.includes(m)));
+  const missing = ['ZEROED_FIXTURES_DEV_ONLY', 'Sample data', 'dev/fixtures', 'Samples'].filter((m) => !text.some(([, s]) => s.includes(m)));
   if (missing.length) {
     console.error(`Preview build is missing: ${missing.join(', ')}`);
     process.exit(1);

@@ -13,15 +13,18 @@ Download (always the newest build): https://github.com/macdarenz-droid/Meme-snip
 - `pnpm --filter @meme-snipe/web build:preview` builds the web app with `VITE_PREVIEW=1`. That flag adds the Samples tab and the "Sample data" marker, and is used only for the APK. A normal `pnpm build` leaves the fixtures out, and `scripts/check-build.mjs` fails it if any remain (the preview build is checked the other way round).
 - `cap sync android` copies `dist/` into `apps/web/android`. Gradle `assembleDebug` makes the APK.
 - Workflow: `.github/workflows/android-preview.yml`. Version code is the run number; version name is `preview-<short sha>`. The job verifies the APK with `apksigner` and `aapt` (package id, version) before uploading it.
-- Pull requests and other branches upload the APK as a workflow artifact only. A push or manual run on `ccr-14987baf-i6lrsl` also moves the `preview` tag, updates the prerelease notes and replaces its single asset `zeroed-preview.apk`. A release run skips itself if the branch has moved on.
+- Pull requests and other branches upload the APK as a workflow artifact only. A push or manual run on `ccr-14987baf-i6lrsl` also replaces the single asset `zeroed-preview.apk` of the `preview` prerelease (`.github/scripts/publish-preview.sh`): the new file is uploaded as `zeroed-preview.apk.new` first and checked (state uploaded, same size), the old asset is swapped out only after that succeeds (and put back if the swap fails), and the tag and notes change last, so a failed upload leaves the fixed link working. A release run skips itself if the branch has moved on.
 
 ## Keystore
-A debug keystore is created on a cache miss and kept in `actions/cache` under the key `zeroed-preview-debug-keystore-v1`. Nothing key-like is committed (`*.keystore` and `*.jks` are ignored). If GitHub evicts the cache (unused for 7 days, or storage pressure), the next build creates a new key and the phone needs one uninstall. Caches made by a pull request are not visible to the integration branch, so releases always use the integration branch's own key.
+A debug keystore is created on a cache miss and kept in `actions/cache` under the key `zeroed-preview-debug-keystore-v1`. Nothing key-like is committed (`*.keystore` and `*.jks` are ignored). If GitHub evicts the cache (unused for 7 days, or storage pressure), the next build creates a new key and the phone needs one uninstall. Caches made by a pull request are not visible to the integration branch, so releases always use the integration branch's own key. Pull requests from forks never restore or save the cache (a pull request can read its base branch's caches); they build with a throwaway key.
+
+Every third-party action in `.github/workflows` is pinned to a full commit SHA with its tag in a comment (`test/android-workflow.test.ts` fails on a tag-only pin).
 
 ## Native behaviour
 - Edge to edge. `viewport-fit=cover`, and `--inset-top/right/bottom/left` in `styles.css` take the larger of `env(safe-area-inset-*)` and the `--safe-area-inset-*` values the Capacitor SystemBars plugin sets. Header, tab bar, page padding and sheets use only those variables (`test/safe-area.test.ts`).
 - Status and gesture bar icons follow the theme (`src/lib/native.ts`): light icons on Silent Black, dark icons on Paper. Splash and window background follow the system light or dark setting (`res/values-night`).
 - Back button (`MainActivity.java`, `src/lib/backStack.ts`): every open sheet adds one history entry; the native callback goes back while the WebView has history and exits otherwise. Order: close the sheet, then earlier screens, then leave the app (`test/back-stack.test.ts` models this).
+- No backup: `allowBackup="false"`, `fullBackupContent="false"` and `data_extraction_rules.xml` exclude all app data from cloud backup and device transfer.
 - Controls have no text selection and no long-press callout.
 - Offline: the app is bundled in the APK and served from the device; fonts are bundled. The `INTERNET` permission is declared for later work only.
 
