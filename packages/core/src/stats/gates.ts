@@ -16,7 +16,7 @@ import { meanPredictiveInterval, type SampleSummary } from './predictive.ts';
 import type { TripleBarrierLabel } from './labeller.ts';
 import type { Rng } from './rng.ts';
 import { incompleteGammaUpper, studentTQuantile } from './special.ts';
-import { deflatedSharpe, deflatedSharpeDaily, type TrialRecord } from './sharpe.ts';
+import { deflatedSharpe, deflatedSharpeDaily, sharpeBootstrap, type TrialRecord } from './sharpe.ts';
 import { spaTest } from './spa.ts';
 
 export type GateName = 'G0' | 'G1' | 'G2' | 'G3' | 'G4' | 'G5';
@@ -283,29 +283,46 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
   } else if (!matrixOk) {
     c.add('DSR', false, matrixProblem);
   } else {
-    // Day-level DSR (STATS-1c (a)): the gate's line counts every registered trial; the de-duplicated and effective-N
-    // lines are reported only.
+    // Reported only (STATS-1c): the day-level DSR under raw, configuration-de-duplicated and effective N, the
+    // block-bootstrap Sharpe p-value of the selected trial's days, and the joint SPA test.
+    let diag = '';
+    let spaP: number | null = null;
+    let spaDetail = '';
     try {
-      const d = deflatedSharpeDaily(input.pboMatrix, input.selectedTrialId);
-      metrics.dsr = d.raw.dsr;
-      metrics.trials = d.raw.trials;
+      const configOf = Object.fromEntries(input.registry.map((t) => [t.trialId, t.configId ?? t.trialId]));
+      const d = deflatedSharpeDaily(input.pboMatrix, input.selectedTrialId, configOf);
       metrics.dailySharpe = d.sharpe;
       metrics.dsrDays = d.days;
-      metrics.dsrDeduplicated = d.deduplicated.dsr;
+      metrics.dsrDaily = d.raw.dsr;
+      metrics.dsrDailyDeduplicated = d.deduplicated.dsr;
       metrics.trialsDeduplicated = d.deduplicated.trials;
-      metrics.dsrEffective = d.effective.dsr;
+      metrics.dsrDailyEffective = d.effective.dsr;
       metrics.trialsEffective = d.effective.trials;
+      const sb = sharpeBootstrap(input.pboMatrix[input.selectedTrialId]!, { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) });
+      metrics.dailySharpeP = sb.pNull;
+      diag = `day-level DSR ${fmt(d.raw.dsr)} over ${d.raw.trials} trials and ${d.days} days, ${fmt(d.deduplicated.dsr)} over ${d.deduplicated.trials} configurations, `
+        + `${fmt(d.effective.dsr)} over ${d.effective.trials} effective trials; day-level Sharpe ${fmt(d.sharpe)}, bootstrap p ${fmt(sb.pNull)}`;
       const spa = spaTest(input.pboMatrix, { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) });
+      spaP = spa.pValue;
       metrics.spaP = spa.pValue;
       metrics.spaStatistic = spa.statistic;
-      const spaDetail = `SPA over ${spa.variants} variants and ${spa.days} days (block ${spa.blockLength}): p ${fmt(spa.pValue)}, best ${spa.best ?? 'none'}`;
-      if (input.edgeTest === 'spa') {
-        c.add('SPA', spa.pValue < SPA_ALPHA, `${spaDetail} (need < ${SPA_ALPHA}); reported only: day-level DSR ${fmt(d.raw.dsr)}`);
-      } else c.add('DSR', d.raw.dsr >= th.dsrMin,
-        `day-level deflated Sharpe ${fmt(d.raw.dsr)} over ${d.raw.trials} trials and ${d.days} days (need >= ${th.dsrMin}); `
-        + `reported only: ${fmt(d.deduplicated.dsr)} over ${d.deduplicated.trials} distinct series, ${fmt(d.effective.dsr)} over ${d.effective.trials} effective trials; ${spaDetail}`);
+      spaDetail = `SPA over ${spa.variants} variants and ${spa.days} days (block ${spa.blockLength}): p ${fmt(spa.pValue)}, best ${spa.best ?? 'none'}`;
     } catch (e) {
-      c.add('DSR', false, (e as Error).message);
+      diag = `diagnostics unavailable: ${(e as Error).message}`;
+    }
+    if (input.edgeTest === 'spa') {
+      c.add('SPA', spaP !== null && spaP < SPA_ALPHA, `${spaDetail || diag} (need < ${SPA_ALPHA})`);
+    } else {
+      // The gate until the owner signs off STATS-1c: the per-trade DSR over every registered trial, with the moments
+      // clamped (skewness ≤ 0, kurtosis ≥ the registered floor), which can only make a pass harder.
+      try {
+        const d = deflatedSharpe(returns, input.registry, { clamp: true });
+        metrics.dsr = d.dsr;
+        metrics.trials = d.trials;
+        c.add('DSR', d.dsr >= th.dsrMin, `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} trials, moments clamped (need >= ${th.dsrMin}); reported only: ${diag}; ${spaDetail}`);
+      } catch (e) {
+        c.add('DSR', false, (e as Error).message);
+      }
     }
   }
   if (!matrixOk) {

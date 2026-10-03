@@ -1,7 +1,7 @@
 // Every gate has a passing and a failing fixture; thresholds can be tightened but never loosened.
 import { describe, expect, test } from 'vitest';
 import {
-  createRng, deflatedSharpe, deflatedSharpeDaily, evaluateDemotion, G2_SENSITIVITY_VARIANTS, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
+  createRng, deflatedSharpe, deflatedSharpeDaily, spaTest, evaluateDemotion, G2_SENSITIVITY_VARIANTS, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
   burnHoldout, createHoldoutRegistry, freezeRequirement, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
@@ -87,23 +87,23 @@ describe('G1 walk-forward', () => {
     expect(gateG1({ ...g1Pass(), pboMatrix: noSelected }).reasons.join()).toMatch(/missing 1: t19/);
     expect(gateG1({ ...g1Pass(), pboMatrix: { ...pboMatrix, stranger: winnerDaily } }).reasons.join()).toMatch(/not in registry 1: stranger/);
   });
-  // STATS-1c (a): PSR and DSR on day-level returns. Trades on one day share a shock (ρ = 0.4), so 600 trades are far
-  // fewer than 600 observations; the per-trade DSR passed this, the day-level one does not.
-  test('correlated same-day trades no longer inflate the DSR', () => {
+  // STATS-1c (revised ruling 1): G1 keeps the per-trade DSR; moving to days can raise or lower PSR, so the day-level
+  // DSR is reported only. While the DSR gates, its moments are clamped (tighten-only, ruling C).
+  test('the gate is the per-trade DSR with clamped moments; the day-level DSR is reported only', () => {
     const corr = bracketTrades(25, 0.06, 40, 15, 0.4);
-    const perTrade = deflatedSharpe(corr.map((t) => t.rNet), registry);
-    expect(perTrade.dsr).toBeGreaterThanOrEqual(0.95);
     const r = gateG1({ ...g1Pass(), trades: corr, pboMatrix: matrixFor(corr) });
+    expect(r.metrics.dsr).toBeCloseTo(deflatedSharpe(corr.map((t) => t.rNet), registry, { clamp: true }).dsr, 12);
     expect(r.metrics.dsrDays).toBe(40);
-    expect(r.metrics.dsr!).toBeLessThan(0.95);
-    expect(r.reasons.join(' | ')).toMatch(/DSR: day-level deflated Sharpe/);
+    expect(r.metrics.dsrDaily!).not.toBeCloseTo(r.metrics.dsr!, 3);
+    expect(r.checks.find((c) => c.name === 'DSR')!.detail).toMatch(/moments clamped .*reported only: day-level DSR/);
   });
-  test('the DSR reports raw, de-duplicated and effective-N lines; only raw N gates', () => {
+  test('the DSR reports day-level lines under raw, configuration and effective N, and a bootstrap p; only per-trade raw N gates', () => {
     const r = gateG1(g1Pass());
     expect(r.metrics.trials).toBe(20);
     expect(r.metrics.trialsDeduplicated).toBe(20);
     expect(r.metrics.trialsEffective).toBeGreaterThanOrEqual(1);
-    expect(r.checks.find((c) => c.name === 'DSR')!.detail).toMatch(/reported only: .* distinct series, .* effective trials/);
+    expect(r.metrics.dailySharpeP).toBeGreaterThan(0);
+    expect(r.checks.find((c) => c.name === 'DSR')!.detail).toMatch(/over 20 configurations, .* effective trials; .*bootstrap p/);
   });
   test('fewer than MIN_DAYS days is "not proven"', () => {
     const nine = wf.filter((t) => t.day < 'd0009');
@@ -127,17 +127,23 @@ describe('G1 walk-forward', () => {
     const f = gateG1({ ...g1Pass(), trades: flat, pboMatrix: Object.fromEntries(registry.map((t, k) => [t.trialId, dailyOf(bracketTrades(900 + k, 0, 40, 15))])), edgeTest: 'spa' });
     expect(f.reasons.join(' | ')).toMatch(/SPA: SPA over 20 variants/);
   });
-  test('exact duplicates count once in the de-duplicated line: two identical variants give the same DSR as one', () => {
+  test('repeated runs of one configuration count once; different configurations with identical returns count twice', () => {
     const one = { t19: winnerDaily, t0: pboMatrix.t0!, t1: pboMatrix.t1! };
-    const two = { ...one, copy: [...winnerDaily] };
+    const rerun = { ...one, rerun: [...winnerDaily] };
     const a = deflatedSharpeDaily(one, 't19');
-    const b = deflatedSharpeDaily(two, 't19');
-    expect(b.deduplicated).toEqual(a.deduplicated);
+    // The same configuration run twice: one hypothesis.
+    const b = deflatedSharpeDaily(rerun, 't19', { rerun: 't19' });
     expect(b.raw.trials).toBe(4);
     expect(b.deduplicated.trials).toBe(3);
-    // A near-copy is a different series: exact equality only.
-    const near = deflatedSharpeDaily({ ...one, copy: winnerDaily.map((x, i) => (i === 0 ? x + 1e-12 : x)) }, 't19');
-    expect(near.deduplicated.trials).toBe(4);
+    expect(b.deduplicated).toEqual(a.deduplicated);
+    // A different configuration whose returns happen to be identical: still its own hypothesis.
+    expect(deflatedSharpeDaily(rerun, 't19').deduplicated.trials).toBe(4);
+    const scaled = deflatedSharpeDaily({ ...one, other: winnerDaily.map((x) => 2 * x + 0.01) }, 't19');
+    expect(scaled.deduplicated.trials).toBe(4);
+    // The joint test's maximum statistic does not move when an identical series is added.
+    const spa1 = spaTest(one, { rng: createRng(1), replicates: 200 });
+    const spa2 = spaTest(rerun, { rng: createRng(1), replicates: 200 });
+    expect(spa2.statistic).toBeCloseTo(spa1.statistic, 12);
   });
   test('thresholds tighten but never loosen', () => {
     expect(gateG1(g1Pass(), { dsrMin: 0.999999 }).reasons.some((x) => x.startsWith('DSR'))).toBe(true);

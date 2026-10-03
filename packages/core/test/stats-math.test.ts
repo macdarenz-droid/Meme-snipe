@@ -4,7 +4,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import {
-  bettingEProcess, betaQuantile, nextNormal, onCalendar, spaBlockLength, spaTest, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
+  bettingEProcess, betaQuantile, clampMoments, deflatedSharpeFromMoments, DSR_KURTOSIS_FLOOR, nextNormal, onCalendar, spaBlockLength, spaTest, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
   dayBlockMeanDiffInterval, dayBlockMeanInterval, deflatedSharpe, designEffect, expectedMaxSharpe, incompleteBeta,
   incompleteGammaUpper, kurtosis, logGamma, mean, meanPredictiveInterval, median, normalCdf, normalQuantile, nPower,
   probabilisticSharpe, probabilityOfBacktestOverfitting, quantileSorted, ratesConsistent, requiredHoldoutTrades,
@@ -341,5 +341,29 @@ describe('joint bootstrap SPA test (spa.ts)', () => {
   test('onCalendar puts idle days at 0 and refuses days off the calendar', () => {
     expect(onCalendar(['d1', 'd2', 'd3'], { a: [{ day: 'd2', pnl: 0.5 }, { day: 'd2', pnl: -0.1 }] })).toEqual({ a: [0, 0.4, 0] });
     expect(() => onCalendar(['d1'], { a: [{ day: 'd9', pnl: 1 }] })).toThrow(/outside the calendar/);
+  });
+});
+
+describe('DSR: the paper example and clamped moments (STATS-1c, ruling C)', () => {
+  // Bailey & López de Prado (2014), worked example: annualised SR 2.5 over T = 1,250 days, skewness −3, kurtosis 10,
+  // V = 1/2 (annualised), 250 days a year.
+  const m = (skew: number, kurt: number) => ({ sharpe: 2.5 / Math.sqrt(250), n: 1250, skewness: skew, kurtosis: kurt });
+  test('reproduces 0.9004 at N = 100, 0.9505 at N = 46, and 0.9505 at N = 88 with normal moments', () => {
+    expect(deflatedSharpeFromMoments(m(-3, 10), 100, 0.5 / 250)).toBeCloseTo(0.9004, 4);
+    expect(deflatedSharpeFromMoments(m(-3, 10), 46, 0.5 / 250)).toBeCloseTo(0.9505, 4);
+    expect(deflatedSharpeFromMoments(m(0, 3), 88, 0.5 / 250)).toBeCloseTo(0.9505, 4);
+  });
+  test('clamping takes skewness to min(sample, 0) and kurtosis to max(sample, the registered floor 3)', () => {
+    expect(DSR_KURTOSIS_FLOOR).toBe(3);
+    expect(clampMoments(m(1.2, 2))).toMatchObject({ skewness: 0, kurtosis: 3 });
+    expect(clampMoments(m(-3, 10))).toMatchObject({ skewness: -3, kurtosis: 10 });
+  });
+  test('clamping only makes a pass harder: never a higher PSR for a positive Sharpe above the benchmark', () => {
+    const rng = createRng(31);
+    for (let i = 0; i < 200; i++) {
+      const xs = Array.from({ length: 60 }, () => 0.05 + (rng.next() < 0.3 ? 0.6 * rng.next() : -0.1 * rng.next()));
+      if (sharpeRatio(xs) <= 0.1) continue;
+      expect(probabilisticSharpe(xs, 0.1, { clamp: true })).toBeLessThanOrEqual(probabilisticSharpe(xs, 0.1) + 1e-12);
+    }
   });
 });

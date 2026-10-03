@@ -2,8 +2,8 @@
 // the effect the sample was designed for. All seeded, so every run gives the same numbers.
 import { describe, expect, test } from 'vitest';
 import {
-  bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, deflatedSharpeDaily, designEffect, expectedMaxSharpe, mean,
-  gateG3, meanPredictiveInterval, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, spaTest, type G3Input, type Rng,
+  bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, deflatedSharpe, deflatedSharpeDaily, designEffect, expectedMaxSharpe, mean,
+  gateG3, meanPredictiveInterval, sharpeBootstrap, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, spaTest, type G3Input, type Rng,
 } from '../src/stats/index.ts';
 import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey, SPA_SCENARIOS } from './stats-fixtures.ts';
 
@@ -292,5 +292,42 @@ describe('G3 power at 48 h (STATS-1b)', () => {
     expect(meanShift).toBeGreaterThan(0.1);
     expect(meanShift).toBeLessThan(0.6);
     expect(fill).toBeGreaterThan(0.8);
+  }, SLOW);
+});
+
+// STATS-1c ruling C: the evidence the owner needs for the SPA sign-off. The gating DSR (per-trade, clamped moments,
+// raw N) at a true +5%-a-trade edge on 50 days: one trial with the edge among N, the rest at zero edge, the best
+// per-trade Sharpe selected. Measured (200 runs a cell; pass rate / pass on the edge trial): 3 a day N 10 0.005 / 0.005,
+// N 72 0.01 / 0.01, N 200 0.02 / 0.005; 10 a day N 10 0.14 / 0.14, N 72 0.095 / 0.095, N 200 0.11 / 0.11.
+describe('DSR pass rate at a true +5% edge on 50 days (STATS-1c)', () => {
+  test('the gating DSR rarely finds a +5% edge in 50 days', () => {
+    const rate = (perDay: number, N: number) => {
+      let pass = 0;
+      for (let r = 0; r < 200; r++) {
+        const rng = createRng(400_000 + r * 7 + N * 13 + perDay);
+        const trials = Array.from({ length: N }, (_, k) => Array.from({ length: 50 * perDay }, () => bracketDraw(rng, k === 0 ? 0.05 : 0)));
+        const reg = trials.map((t, k) => ({ trialId: `t${k}`, sharpe: sharpeRatio(t), nTrades: t.length }));
+        const best = trials.reduce((a, b) => (sharpeRatio(b) > sharpeRatio(a) ? b : a));
+        if (deflatedSharpe(best, reg, { clamp: true }).dsr >= 0.95) pass++;
+      }
+      return pass / 200;
+    };
+    expect(rate(3, 10)).toBeLessThan(0.05);
+    expect(rate(10, 72)).toBeLessThan(0.2);
+  }, SLOW);
+});
+
+// STATS-1c ruling 2: the block-bootstrap Sharpe of a daily series. Measured (400 runs, 1,000 replicates): the null
+// p-value rejects 5.0% at zero Sharpe (D = 50); the percentile interval covers 90–92% (D = 30–50), below its nominal
+// 95%, so only the p-value is reported as calibrated.
+describe('block-bootstrap Sharpe (STATS-1c)', () => {
+  test('the null p-value is calibrated at zero Sharpe', () => {
+    let rej = 0;
+    for (let r = 0; r < 400; r++) {
+      const rng = createRng(1000 + r);
+      const x = Array.from({ length: 50 }, () => nextNormal(rng));
+      if (sharpeBootstrap(x, { rng: createRng(9_000_000 + r), replicates: 1000 }).pNull < ALPHA) rej++;
+    }
+    expect(rej / 400).toBeLessThanOrEqual(ALPHA + 2 * Math.sqrt((ALPHA * (1 - ALPHA)) / 400));
   }, SLOW);
 });
