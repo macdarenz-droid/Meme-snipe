@@ -45,7 +45,9 @@ import {
   chainAccount,
   chainTransaction,
   curveMarket,
+  goldenAccount,
   hex,
+  mintOf,
   poolMarket,
   poolMarketFrom,
   realInstruction,
@@ -106,7 +108,7 @@ const rebuildSwap = (g: GoldenTx, real: Instruction): Instruction => {
     const user = real.accounts[13]!.address;
     const fee = index([GLOBAL.feeRecipient, ...GLOBAL.feeRecipients], real.accounts[6]!.address, 'fee recipient');
     const buyback = index(GLOBAL.buybackFeeRecipients!, real.accounts[8]!.address, 'buyback recipient');
-    const acc = curveAccounts(m, user, fee, buyback);
+    const acc = curveAccounts(m, mintOf(goldenAccount(g.mint)).mint, user, fee, buyback);
     if (!acc.ok) throw new Error(acc.detail);
     return g.kind === 'curve-buy' ? curveBuyIx(m, acc.accounts, user, a0, a1) : curveSellIx(m, acc.accounts, user, a0, a1);
   }
@@ -114,7 +116,7 @@ const rebuildSwap = (g: GoldenTx, real: Instruction): Instruction => {
   const user = real.accounts[1]!.address;
   const fee = index(GLOBAL_CONFIG.protocolFeeRecipients, real.accounts[9]!.address, 'protocol fee recipient');
   const buyback = index(GLOBAL_CONFIG.buybackFeeRecipients!, real.accounts[real.accounts.length - 2]!.address, 'buyback recipient');
-  const acc = poolAccounts(m, user, fee, buyback);
+  const acc = poolAccounts(m, mintOf(goldenAccount(g.mint)).mint, user, fee, buyback);
   if (!acc.ok) throw new Error(acc.detail);
   return g.kind === 'pool-buy' ? poolBuyIx(m, acc.accounts, user, a0, a1) : poolSellIx(m, acc.accounts, user, a0, a1);
 };
@@ -214,7 +216,8 @@ describe('golden: a PumpSwap sell rebuilt from the DEC-1 fixtures', () => {
     const user = real.accounts[1]!.address;
     const fee = index(globalConfig.protocolFeeRecipients, real.accounts[9]!.address, 'fee');
     const buyback = index(globalConfig.buybackFeeRecipients!, real.accounts[22]!.address, 'buyback');
-    const acc = poolAccounts(m, user, fee, buyback);
+    // The mint account is not in DEC-1's fixtures; the instruction does not depend on its extensions, so none are stated.
+    const acc = poolAccounts(m, { extensions: [] }, user, fee, buyback);
     if (!acc.ok) throw new Error(acc.detail);
     expectSame(poolSellIx(m, acc.accounts, user, u64le(real.data, 8), u64le(real.data, 16)), real, r, swapIndex);
     expect(compareNative(r)).toBeGreaterThanOrEqual(5);
