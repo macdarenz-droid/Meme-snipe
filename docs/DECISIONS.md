@@ -166,7 +166,7 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
   - Slots convert to time with the replay's real slot times. A delay already present in recorded receipt times is never charged twice.
   - 30 s and 60 s blackouts with backlog recovery are stress cases. Stale state never becomes fresh through a new receipt time, and clocks and watchdogs keep running through feed stalls.
   - Exit failures share one persistent network state over slot windows, with provider failures layered on top, plus deterministic 10, 30 and 60 s failure bursts. Results report how expectancy and survival change as bursts become more frequent.
-  - The worker's recorder logs processed and confirmed arrival for the same slots and signatures on the VPS from the first shakedown, so the "measured" scenario comes from the real host. BT-1c, WORKER-1.
+  - The worker's recorder logs processed and confirmed arrival for the same events on the VPS from the first shakedown, on a monotonic local clock, so the "measured" scenario comes from the real host. blockTime is whole seconds and estimated, so it is only a coarse check. Measured distributions sit beside the adverse, stress and blackout cases; they never replace them. BT-1c, WORKER-1.
 - **Simultaneous signals.**
   - The deployment replay takes the earliest signal that was fully eligible and information-ready on the worker, and reserves capacity atomically.
   - True ties break by a hash with a salt fixed and recorded before any replay. Trying salts counts as a strategy search.
@@ -183,6 +183,41 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
   - recovery measured as "reconciled and able to exit";
   - separate drills for process crash, reboot, RPC loss and host loss.
   A later standby needs exclusive signing, fencing and reconciliation of already-signed transactions. It never relies on a second sell failing for lack of tokens. RUN-1d, OPS-1d.
+
+### Third-opinion rulings (2026-10-04)
+
+A third reviewer read 8370c2a. Its new findings were checked in code, and the second reviewer's corrections to it were applied; these rulings are the supervisor's.
+
+- **Funnel first.** The holdout may hold fewer than 300 U2 trades. No numeric forecast is used: the cited rates come from different populations and are not sequential pass rates. Before any definition is frozen, BT-2 counts the funnel gate by gate on the published practice days with the shared evaluator. Counts are not outcomes, so this burns nothing. The count separates adverse evidence (a reject) from missing evidence (not covered), and research-sample counts from deployment-admitted entries. H9 and H11 ablations (offline scores of blocked candidates) also run before the U2 freeze, not after. The board's dates follow from those counts. "Not proven yet" for U2 is an expected, honest result. BT-2.
+- **A dead feed leaves no price-based stop** (confirmed: `exits/rules.ts:236` treats stale state as no quote, so only T_flat, T_max and non-market triggers such as deployer, route and flow can fire, and `exits.test.ts:97` locks that in). WATCH-1:
+  - An independent timer detects staleness even when no feed event arrives.
+  - For every open position, the worker then fetches a coherent quote snapshot (pool, vaults, mint and fee state) through an independently healthy path, keeping the real context slot and freshness time.
+  - If it cannot, it escalates with the critical alert.
+  - Acceptance case (§18): the feed is dead for 5 minutes with a position open and the pool falls 40%; while the fallback provider and the execution path are available, the exit goes out within the set time. A total outage cannot guarantee liquidation. WATCH-1, after WORKER-1; TEST-3.
+- **Capital measured in SOL as well** (confirmed: equity is a USD ledger; wallet SOL only feeds R4's cash cap). There are three purposes, with three measures:
+  - The kill switch and unitisation use economic marked NAV per unit: idle SOL and positions at executable marks, in both directions, with one definition for flow pricing and drawdown.
+  - Daily and weekly loss limits use trading P&L only.
+  - Sizes and limits that scale with equity use the lower of ledger equity and wallet-marked equity, so SOL gains never enlarge a trade.
+  Results are reported in both USD and SOL. RISK-1b.
+- **Exits per universe** (confirmed: one `policy.exits` block, which BT-2 reads for every universe). The policy gets per-universe exit parameters before any freeze: time stops, partials, ATR bars and multiples. The ladder and the cost reservation stay global. Today's values become U2's. U1 starts from research/risk.md S2 (T_flat 30 min, 5-minute ATR bars, partial at 2R), with T_max held at the phase-1 hard maximum of 120 min (§9). A longer hold is a separate policy variant that needs the owner. The study sets the frozen values, and turning any universe live stays inside the owner's live switch. CFG-2.
+- **Smaller additions:**
+  - Test getProgramAccounts on both free providers and both token programs. Add a parity test on one real mint: live enumeration against balances rebuilt from movements, at the same slot (FACTS-1, DATA-1).
+  - Only repeated runs of the same executable configuration (same config id) count once. Different configurations with identical or perfectly correlated returns stay distinct hypotheses; the joint bootstrap handles their dependence (STATS-1c).
+  - TEST-2's simulations are not a rent-recovery probability: they omit the close when the stand-in holder owns more tokens, and they test mechanics, not landing. TEST-2 reports final-exit simulations, simulations with the real close, successful complete sell-and-close simulations, and omitted closes with reasons, as diagnostics. The rent model stays the modelled close outcome.
+  - Congestion is a shared network state affecting every position and provider. Pool activity adds to it but never defines it alone. The blocked-exit rate is reported when the whole ladder falls inside congestion; this feeds `y_severe` (BT-1c).
+  - After a withdrawal, the weekly budget re-bases to at most 20% of what remains, and the R4 reserve check repeats before the send (RISK-1b).
+  - S0 runs under the same one-position rule in the deployment replay (BT-2).
+  - A candidate materiality rule to test, not adopt: a collapse counts when the sustained quote reserve reached at least 5 SOL. H8's dust line measures a different event, so the threshold must prove it separates dust round trips from meaningful collapses. Creator sales are recorded separately, and how much each should weigh is measured. The strict rule stays meanwhile (RUG-1c).
+- **Owner, before live** (added to the RISK-1 findings):
+  - R8 ("5 losses in any 20") pauses 79–97% of simulated paths within about 8–11 trades, whether the strategy is bad or good. Choose one: keep the review every ~10 trades, or use a threshold calibrated on practice data and validated separately, never on the holdout. An e-process can supplement the dollar limits but never replace them.
+  - With C reserved at about 40% of a $2 trade, one loss of about $0.70 ends the day.
+- **Rejected: a pre-signed emergency sell on a durable nonce.**
+  - Signed bytes carry a fixed quantity, so after a partial sale or a later entry they can fail or sell the wrong position.
+  - Replacing the cached copy does not revoke old bytes.
+  - A failed sale can still advance the nonce and charge fees.
+  - Anyone holding the bytes can send them.
+  - It contradicts the execution contract (no durable nonces; the signer allows no nonce-advance).
+  Recovery stays measured restart, reconciliation and small exposure.
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 

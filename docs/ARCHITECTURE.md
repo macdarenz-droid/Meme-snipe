@@ -582,6 +582,7 @@ Visible states: waiting for evidence, no eligible candidate, stale data, rate li
 
 The build is incomplete until each is handled and covered by a test (TEST-3 runs them as fault injections):
 
+- The feed dies for 5 minutes with a position open and the pool falls 40%: an independent timer sees the stale state, the worker fetches a coherent quote snapshot (pool, vaults, mint, fee state) through an independently healthy path, and while that path and the execution path are up the exit goes out within the set time; otherwise the critical alert fires (WATCH-1).
 - An API timeout after a buy landed: reconcile without buying twice.
 - Two workers resume one intent: the fenced signer accepts only the current owner.
 - A stop and a take-profit trigger together: one exit intent, quantity reconciled.
