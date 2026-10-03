@@ -109,7 +109,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
   const book = (): Book => engine!.book;
   let sink: LedgerSink | null = null;
   // Activity as of the last drain: blocks are released in their own drain, so this is the state at the block.
-  const live = (): boolean => sink?.active ?? false;
+  const live = (): boolean => sink?.inFlight ?? false;
   let replay: StreamReplay<DatasetRow> | null = null;
   const market: Market = new Market({
     heartbeatBlocks: o.heartbeatBlocks ?? DEFAULT_HEARTBEAT_BLOCKS,

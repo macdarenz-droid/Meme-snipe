@@ -85,7 +85,7 @@ export interface MarketOptions {
   readonly heartbeatBlocks: number;
   /** Draws the discovery lag (slots, >= 1) for a newly graduated mint. */
   readonly discoveryLag: (mint: string) => number;
-  /** Trading activity: slot events and ticks every block while true. */
+  /** An intent in flight: slot events and ticks every block while true (a held position needs only the heartbeat). */
   readonly active: () => boolean;
   /** Puts a derived event (a discovery) into the replay. */
   readonly schedule: (e: FeedEvent) => void;

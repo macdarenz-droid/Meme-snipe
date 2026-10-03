@@ -49,8 +49,9 @@ export class LedgerSink {
   readonly liveIntents = new Set<string>();
   readonly openPositions = new Set<string>();
 
-  get active(): boolean {
-    return this.liveIntents.size > 0 || this.openPositions.size > 0 || Object.keys(this.#book.orphans).length > 0;
+  /** An intent not finished or a landing waiting to be booked: the lifecycle needs every block's tick. */
+  get inFlight(): boolean {
+    return this.liveIntents.size > 0 || Object.keys(this.#book.orphans).length > 0;
   }
 
   #apply(event: BookEvent, ts: number): void {
