@@ -21,7 +21,7 @@ import { blockNetwork } from './helpers.ts';
 import { MINT, Market, T, makeWorker, passingMarket } from './worker-harness.ts';
 
 /** Each worker in this file binds its own health and API ports. */
-const ports = (n: number) => ({ ZEROED_HEALTH_ADDR: `127.0.0.1:${18860 + 2 * n}`, ZEROED_API_ADDR: `127.0.0.1:${18861 + 2 * n}` });
+const ports = (n: number) => ({ ZEROED_HEALTH_ADDR: `127.0.0.1:${18900 + 2 * n}`, ZEROED_API_ADDR: `127.0.0.1:${18901 + 2 * n}` });
 
 const MINT2 = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
 

@@ -79,8 +79,25 @@ export const dueTimers = (start: number): TestTimers => {
 
 export const tempState = (): string => mkdtempSync(join(tmpdir(), 'zeroed-worker-'));
 
+/**
+ * Default health and API ports, distinct per test worker process and per worker made in it: test files run in
+ * parallel processes, and a fixed default (the health port 18790, the API's live 8788) let two of them bind the same
+ * address, failing one start. 21000 and up, clear of the fixed 18xxx ports some tests name.
+ */
+let made = 0;
+const defaultPorts = (): { readonly health: number; readonly api: number } => {
+  const pool = Number(process.env['VITEST_POOL_ID'] ?? '1') % 40;
+  const k = made++ % 100;
+  const health = 21_000 + pool * 200 + k * 2;
+  return { health, api: health + 1 };
+};
+
 export const testConfig = (stateDir: string, over: Record<string, string> = {}): WorkerConfig => {
-  const p = parseConfig({ ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: '127.0.0.1:18790', ZEROED_GIT_SHA: 'testsha', ...over }, () => null);
+  const ports = defaultPorts();
+  const p = parseConfig({
+    ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on',
+    ZEROED_HEALTH_ADDR: `127.0.0.1:${ports.health}`, ZEROED_API_ADDR: `127.0.0.1:${ports.api}`, ZEROED_GIT_SHA: 'testsha', ...over,
+  }, () => null);
   if (!p.ok) throw new Error(p.message);
   return p.config;
 };
