@@ -30,7 +30,7 @@ export const FACT_KINDS: readonly FactKind[] = [
   { key: 'gates/mint:', gates: ['H1', 'H2', 'H3', 'H4', 'H12', 'H16'], source: 'live-read', from: 'read:accounts:<mint> at confirmed; the backtest needs DATA-1 mint state released in the same shape' },
   { key: 'gates/pool:', gates: ['H5', 'H6', 'H8', 'H12'], source: 'live-read', from: 'read:accounts:<mint> (pool and both vaults); the backtest needs pool state and vault balances released in the same shape' },
   { key: 'gates/lp:', gates: ['H6'], source: 'live-read', from: 'read:accounts:<mint> (the LP mint)' },
-  { key: 'gates/holders:', gates: ['H12', 'H13'], source: 'live-read', from: 'read:holders:<mint> (largest accounts, owners classified); the backtest rebuild from token balances is not built yet' },
+  { key: 'gates/holders:', gates: ['H12', 'H13'], source: 'live-read', from: 'read:holders-all:<mint> (one getProgramAccounts: complete, coverage all) or read:holders:<mint> (largest: bounded); the backtest rebuild from token balances is BT-2\'s' },
   { key: 'gates/sim:', gates: ['H15'], source: 'live-only-veto', from: 'read:sim:<mint> (simulateTransaction of a buy then a sell)' },
   { key: 'gates/xcheck:', gates: ['H16'], source: 'live-only-veto', from: 'read:rugcheck, read:goplus, read:jupiter-audit (reads under 2 s old)' },
   { key: EXEC_HEALTH_KEY, gates: ['regime'], source: 'live-only-veto', from: 'read:exec-health (the bot\'s own attempts); never green without owner-set limits' },

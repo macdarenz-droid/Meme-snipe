@@ -3,10 +3,14 @@
 // refused or malformed answer ingests nothing. Also the per-candidate budget against the free plans.
 import { describe, expect, it } from 'vitest';
 import { decodeBase58 as decode, firstFunder, recordFromRpc, SYSTEM_PROGRAM } from '../../core/src/chain/index.ts';
-import { RAW, parseAccountsRead, parseCurveVolumeSnapshot, parseFunderRead, parseHoldersRead, parseSolUsdBar } from '../../core/src/facts/index.ts';
+import { RAW, completeHolders, insiderLinks, parseAccountsRead, parseCurveVolumeSnapshot, parseFunderRead, parseHoldersAllRead, parseHoldersRead, parseSolUsdBar } from '../../core/src/facts/index.ts';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { FIX, MINT, POOL } from '../../core/test/facts/helpers.ts';
 import {
-  ASSUMPTIONS, FACT_RPC_METHODS, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, candidateCapacity, freePlanPerMinute, perCandidate, type Ingest,
+  ASSUMPTIONS, FACT_RPC_METHODS, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, SUPPLEMENT_FILE, candidateCapacity, freePlanPerMinute, perCandidate,
+  readSupplement, supplementRow, writeSupplement, type Ingest,
 } from '../src/facts/index.ts';
 import type { FrameBody, Source } from '../src/providers/index.ts';
 import type { HttpClient, HttpRequest, HttpResponse } from '../src/providers/http.ts';
@@ -124,25 +128,86 @@ describe('fact readers', () => {
     }
   });
 
-  it('a first funder from the wallet\'s oldest real transaction, by the shared decoder', async () => {
-    const f0 = FIX.funders.find((f) => f.complete && f.signature !== null);
-    if (f0 === undefined) return;
+  const asOf = BigInt(FIX.meta.asOfSlot);
+  const withSigs = (sigs: { signature: string; slot: number; err: null }[]) => async (req: HttpRequest) => {
+    const body = JSON.parse(req.body!) as { method: string; params: unknown[] };
+    if (body.method === 'getSignaturesForAddress') return rpcResult(sigs);
+    return chain(req);
+  };
+
+  it('a first funder from the wallet\'s oldest real transaction, by the shared decoder, as of the decision slot', async () => {
+    const f0 = FIX.funders.find((f) => f.complete && f.funder !== null)!;
     const t = FIX.transactions.find((x) => x.signature === f0.signature)!;
     expect(firstFunder(recordFromRpc(t.signature, t.base64), f0.wallet)?.from).toBe(f0.funder);
-    const { readers, raw, timers } = setup(async (req) => {
-      const body = JSON.parse(req.body!) as { method: string; params: unknown[] };
-      if (body.method === 'getSignaturesForAddress') return rpcResult([{ signature: t.signature, slot: Number(t.slot), err: null }]);
-      return chain(req);
+    const { readers, raw, timers } = setup(withSigs([{ signature: t.signature, slot: Number(t.slot), err: null }]));
+    expect(await pump(readers.readFunder(f0.wallet, 3, asOf), timers)).toBe(true);
+    expect(parseFunderRead(raw(RAW.funder(f0.wallet))[0])).toEqual({
+      wallet: f0.wallet, asOfSlot: asOf, complete: true, funder: f0.funder, signature: t.signature, slot: BigInt(t.slot), atMs: f0.atMs,
     });
-    expect(await pump(readers.readFunder(f0.wallet, 3), timers)).toBe(true);
-    expect(parseFunderRead(raw(RAW.funder(f0.wallet))[0])).toEqual({ wallet: f0.wallet, complete: true, funder: f0.funder, signature: t.signature, slot: BigInt(t.slot) });
+  });
+
+  it('history after the decision slot never counts: a wallet first funded later has no funder as of then', async () => {
+    const f0 = FIX.funders.find((f) => f.complete && f.funder !== null)!;
+    const t = FIX.transactions.find((x) => x.signature === f0.signature)!;
+    const { readers, raw, timers } = setup(withSigs([{ signature: t.signature, slot: Number(t.slot), err: null }]));
+    await pump(readers.readFunder(f0.wallet, 3, BigInt(t.slot) - 1n), timers);
+    expect(raw(RAW.funder(f0.wallet))).toEqual([{ wallet: f0.wallet, asOfSlot: BigInt(t.slot) - 1n, complete: true, funder: null, signature: null, slot: null, atMs: null }]);
   });
 
   it('a history longer than the page cap is reported incomplete, never guessed', async () => {
     const page = Array.from({ length: 1000 }, (_, i) => ({ signature: `s${i}`, slot: 1000 - i, err: null }));
     const { readers, raw, timers } = setup(async () => rpcResult(page));
-    await pump(readers.readFunder(MINT, 2), timers);
-    expect(raw(RAW.funder(MINT))).toEqual([{ wallet: MINT, complete: false, funder: null, signature: null, slot: null }]);
+    await pump(readers.readFunder(MINT, 2, 5000n), timers);
+    expect(raw(RAW.funder(MINT))).toEqual([{ wallet: MINT, asOfSlot: 5000n, complete: false, funder: null, signature: null, slot: null, atMs: null }]);
+  });
+
+  it('the supplement replays byte for byte and gives the same links as the live rule; a tampered file is refused', async () => {
+    const reads = new Map(FIX.funders.map((f) => [f.wallet, { ...f, asOfSlot: asOf, slot: f.slot === null ? null : BigInt(f.slot) }]));
+    const lookup = async (w: string) => reads.get(w)!;
+    const input = { mint: MINT, creator: FIX.meta.creator, firstBuyers: FIX.meta.firstBuyers, asOfSlot: asOf };
+    const row = await supplementRow(input, lookup);
+    expect(row.devCluster).toEqual(insiderLinks(FIX.meta.creator, FIX.meta.firstBuyers, (w) => reads.get(w))!.devCluster);
+    const dir = mkdtempSync(join(tmpdir(), 'facts-supplement-'));
+    const a = writeSupplement(dir, [row]);
+    const back = readSupplement(dir);
+    expect(back.get(MINT)).toEqual(row);
+    expect(writeSupplement(mkdtempSync(join(tmpdir(), 'facts-supplement-')), [...back.values()]).sha256).toBe(a.sha256);
+    writeFileSync(join(dir, SUPPLEMENT_FILE), readFileSync(join(dir, SUPPLEMENT_FILE), 'utf8').replace(MINT, POOL));
+    expect(() => readSupplement(dir)).toThrow(/sha256/);
+    // One incomplete read: no links, so BT-2's insiders stay not covered.
+    const short = await supplementRow(input, async (w) => (w === FIX.meta.creator ? { ...reads.get(w)!, complete: false } : reads.get(w)!));
+    expect([short.funded, short.devCluster, short.knownAtMs]).toEqual([null, null, null]);
+  });
+
+  it('the complete holder set is one program-account read at confirmed; the daily cap stops it', async () => {
+    const hc = FIX.holdersComplete;
+    let gpaCalls = 0;
+    const http = async (req: HttpRequest) => {
+      const body = JSON.parse(req.body!) as { method: string; params: unknown[] };
+      if (body.method === 'getAccountInfo') return rpcResult({ context: { slot: hc.mint.slot }, value: { owner: hc.mint.owner, data: [hc.mint.data, 'base64'], lamports: 1, executable: false } });
+      if (body.method === 'getProgramAccounts') {
+        gpaCalls++;
+        const cfg = body.params[1] as { filters: { memcmp: { offset: number; bytes: string } }[]; commitment: string };
+        expect(cfg.filters).toEqual([{ memcmp: { offset: 0, bytes: MINT } }]);
+        expect(cfg.commitment).toBe('confirmed');
+        return rpcResult({ context: { slot: hc.gpa.slot }, value: hc.gpa.accounts.map((a) => ({ pubkey: a.address, account: { owner: a.owner, data: [a.data, 'base64'], lamports: 1, executable: false } })) });
+      }
+      return rpcResult({ context: { slot: hc.gpa.slot }, value: (body.params[0] as string[]).map(() => ({ owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', data: ['', 'base64'], lamports: 1, executable: false })) });
+    };
+    const timers = new ManualTimers(1_791_100_000_000);
+    const ingested: { body: FrameBody }[] = [];
+    const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers, creditsUsed: 0 }), timeoutMs: 1000 });
+    const readers = new FactReaders({ feed: { ingest: (_s, body) => ingested.push({ body }) }, rpc, http, timers, timeoutMs: 1000, holderScansPerDay: 1 });
+    expect(await pump(readers.readHoldersAll(MINT), timers)).toBe(true);
+    expect(await pump(readers.readHoldersAll(MINT), timers)).toBe(false);
+    expect(gpaCalls).toBe(1);
+    expect(readers.outcomes.at(-1)).toMatchObject({ ok: false, detail: 'daily scan cap reached' });
+    const r = parseHoldersAllRead((ingested[0]!.body as { value: unknown }).value)!;
+    expect(r.accounts.length).toBe(hc.gpa.accounts.length);
+    expect(new Set(r.accounts.map((a) => a.address)).size).toBe(r.accounts.length);
+    expect(completeHolders(r)!.accounts.reduce((x, a) => x + a.amount, 0n)).toBe(completeHolders(r)!.supply);
+    // The pool's own vault is owned by a PDA: its program was read.
+    expect(r.ownerPrograms.length).toBeGreaterThan(0);
   });
 
   it('third-party reads are trimmed to the authorities; a report without them ingests nothing', async () => {
@@ -184,7 +249,7 @@ describe('fact readers', () => {
   });
 
   it('the read-only method list has no way to send', () => {
-    expect([...FACT_RPC_METHODS]).toEqual(['getMultipleAccounts', 'getTokenLargestAccounts', 'getSignaturesForAddress', 'getTransaction']);
+    expect([...FACT_RPC_METHODS]).toEqual(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getTokenLargestAccounts', 'getSignaturesForAddress', 'getTransaction']);
     expect(Object.isFrozen(FACT_RPC_METHODS)).toBe(true);
     const { helius } = setup(async () => resp(200, '{}'));
     const rpc = new FactRpc({ url: () => 'x', http: async () => resp(200, '{}'), scheduler: helius, timeoutMs: 1 });

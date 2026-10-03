@@ -26,6 +26,22 @@ export interface HoldersRead {
   readonly accounts: readonly { readonly address: string; readonly owner: string; readonly ownerProgram: string | null; readonly amount: bigint }[];
 }
 
+/**
+ * The complete token-account set of a mint: one `getProgramAccounts` on the mint's own token program, memcmp on the
+ * mint at offset 0, answered at `slot`, after the mint itself was read at `mintSlot` (its supply and authority). Account
+ * data is base64 and decoded by the producer; `ownerPrograms` names the program of each off-curve owner (PDAs).
+ */
+export interface HoldersAllRead {
+  readonly mint: string;
+  readonly slot: bigint;
+  readonly commitment: Commitment;
+  readonly program: string;
+  readonly mintSlot: bigint;
+  readonly mintData: string;
+  readonly accounts: readonly { readonly address: string; readonly owner: string; readonly data: string }[];
+  readonly ownerPrograms: readonly { readonly owner: string; readonly program: string | null }[];
+}
+
 /** One `simulateTransaction` of a buy then a sell (TEST-2 builds the transaction). */
 export interface SimRead {
   readonly mint: string;
@@ -55,14 +71,22 @@ export interface JupiterAuditRead {
   readonly freezeAuthorityDisabled: boolean | null;
 }
 
-/** A wallet's first funding transfer: the earliest SOL transfer into it (null when none was found). */
+/**
+ * A wallet's first funding transfer as of `asOfSlot`: the first SOL transfer into it in its oldest successful
+ * transaction at or before that slot (null when there is none). Later history never counts (H13 point in time).
+ */
 export interface FunderRead {
   readonly wallet: string;
+  /** The decision slot the lookup was filtered to. */
+  readonly asOfSlot: bigint;
   /** True only when the wallet's oldest transaction was reached. False: the history was too long to page to its start. */
   readonly complete: boolean;
   readonly funder: string | null;
+  /** The oldest successful transaction read (the evidence), null when the wallet had none as of `asOfSlot`. */
   readonly signature: string | null;
+  /** Slot and block time (ms) of the funding transaction, null without a funder. */
   readonly slot: bigint | null;
+  readonly atMs: number | null;
 }
 
 /** One closed SOL/USD bar (BT-1's series event shape): `start` ms, `close` an exact decimal string. Bars are hourly. */
@@ -90,6 +114,7 @@ export interface ExecStats {
 export const RAW = {
   accounts: (mint: string) => `read:accounts:${mint}`,
   holders: (mint: string) => `read:holders:${mint}`,
+  holdersAll: (mint: string) => `read:holders-all:${mint}`,
   sim: (mint: string) => `read:sim:${mint}`,
   rugcheck: (mint: string) => `read:rugcheck:${mint}`,
   goplus: (mint: string) => `read:goplus:${mint}`,
@@ -125,6 +150,12 @@ export const parseHoldersRead = (v: unknown): HoldersRead | null =>
   && every(v['accounts'], (a): a is HoldersRead['accounts'][number] => isObj(a) && isStr(a['address']) && isStr(a['owner']) && strOrNull(a['ownerProgram']) && isNat(a['amount']))
     ? (v as unknown as HoldersRead) : null;
 
+export const parseHoldersAllRead = (v: unknown): HoldersAllRead | null =>
+  isObj(v) && isStr(v['mint']) && isNat(v['slot']) && isCommitment(v['commitment']) && isStr(v['program']) && isNat(v['mintSlot']) && isStr(v['mintData'])
+  && every(v['accounts'], (a): a is HoldersAllRead['accounts'][number] => isObj(a) && isStr(a['address']) && isStr(a['owner']) && typeof a['data'] === 'string')
+  && every(v['ownerPrograms'], (o): o is HoldersAllRead['ownerPrograms'][number] => isObj(o) && isStr(o['owner']) && strOrNull(o['program']))
+    ? (v as unknown as HoldersAllRead) : null;
+
 export const parseSimRead = (v: unknown): SimRead | null =>
   isObj(v) && isStr(v['mint']) && isNat(v['slot']) && isNat(v['spend']) && typeof v['ok'] === 'boolean' && isNat(v['paid']) && isNat(v['proceeds']) && strOrNull(v['error'])
     ? (v as unknown as SimRead) : null;
@@ -140,8 +171,9 @@ export const parseJupiterAuditRead = (v: unknown): JupiterAuditRead | null =>
   isObj(v) && isStr(v['mint']) && boolOrNull(v['mintAuthorityDisabled']) && boolOrNull(v['freezeAuthorityDisabled']) ? (v as unknown as JupiterAuditRead) : null;
 
 export const parseFunderRead = (v: unknown): FunderRead | null =>
-  isObj(v) && isStr(v['wallet']) && typeof v['complete'] === 'boolean' && strOrNull(v['funder']) && strOrNull(v['signature'])
-  && (v['slot'] === null || isNat(v['slot'])) ? (v as unknown as FunderRead) : null;
+  isObj(v) && isStr(v['wallet']) && isNat(v['asOfSlot']) && typeof v['complete'] === 'boolean' && strOrNull(v['funder']) && strOrNull(v['signature'])
+  && (v['slot'] === null || (isNat(v['slot']) && v['slot'] <= v['asOfSlot'])) && (v['atMs'] === null || Number.isSafeInteger(v['atMs']))
+  && (v['funder'] === null) === (v['slot'] === null) ? (v as unknown as FunderRead) : null;
 
 export const parseSolUsdBar = (v: unknown): SolUsdBar | null =>
   isObj(v) && Number.isSafeInteger(v['start']) && typeof v['close'] === 'string' && /^\d+(\.\d+)?$/.test(v['close']) ? (v as unknown as SolUsdBar) : null;

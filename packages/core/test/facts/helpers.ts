@@ -10,9 +10,10 @@ import type { GateContext } from '../../src/gates/index.ts';
 
 interface TxFixture { label: string; signature: string; slot: string; base64: RpcTransactionBase64 }
 export interface FactsFixture {
-  meta: { fetchedAt: string; mint: string; pool: string; migrationSlot: number; creationSlot: number; firstBuyers: string[] };
+  meta: { fetchedAt: string; mint: string; pool: string; migrationSlot: number; creationSlot: number; creator: string; asOfSlot: string; firstBuyers: string[] };
+  holdersComplete: { mint: { slot: number; owner: string; data: string }; gpa: { slot: number; latencyMs: number; accounts: { address: string; owner: string; data: string }[] } };
   transactions: TxFixture[];
-  funders: { wallet: string; complete: boolean; funder: string | null; signature: string | null; slot: string | null }[];
+  funders: { wallet: string; asOfSlot: string; complete: boolean; funder: string | null; signature: string | null; slot: string | null; atMs: number | null }[];
   accountsRead: { mint: string; slot: string; commitment: string; accounts: { address: string; owner: string | null; data: string | null }[] };
   holdersRaw: {
     largest: { context: { slot: number }; value: { address: string; amount: string }[] };

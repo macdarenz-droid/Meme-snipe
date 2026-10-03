@@ -4,7 +4,7 @@
 // same answer replayed. A failed or malformed read ingests nothing, so the gate sees no fact and rejects (H16).
 // Chain reads go to Helius at `confirmed` (standard RPC, 1 credit each, data.md §1.2); the gates refuse `processed`.
 import {
-  type Address, NATIVE_MINT, SYSTEM_PROGRAM, decodeMint, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
+  type Address, NATIVE_MINT, SYSTEM_PROGRAM, decodeBase58, decodeMint, isOnCurve, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
   pumpPoolAuthority, recordFromRpc, transactionEvents, type RpcTransactionBase64, type TransactionRecord,
 } from '../../../core/src/chain/index.ts';
 import {
@@ -19,7 +19,7 @@ import { type HttpClient, type Secrets, parseJson, ProviderError, scrub, send } 
 import type { IngestOptions } from '../providers/live-feed.ts';
 
 /** Every JSON-RPC method the fact reads may call: reads only. Frozen; nothing that sends is or may be added. */
-export const FACT_RPC_METHODS = Object.freeze(['getMultipleAccounts', 'getTokenLargestAccounts', 'getSignaturesForAddress', 'getTransaction'] as const);
+export const FACT_RPC_METHODS = Object.freeze(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getTokenLargestAccounts', 'getSignaturesForAddress', 'getTransaction'] as const);
 export type FactRpcMethod = (typeof FACT_RPC_METHODS)[number];
 
 export interface Ingest {
@@ -87,6 +87,35 @@ export class FactRpc {
     };
   }
 
+  async getAccountInfo(address: string, priority: Priority): Promise<{ slot: bigint; account: { owner: string; data: string } | null }> {
+    const r = await this.call('getAccountInfo', [address, { encoding: 'base64', commitment: 'confirmed' }], priority);
+    const slot = contextSlot(r, 'getAccountInfo');
+    const v = (r as Obj)['value'];
+    if (v === null) return { slot, account: null };
+    const d = isObj(v) ? v['data'] : undefined;
+    if (!isObj(v) || typeof v['owner'] !== 'string' || !Array.isArray(d) || d[1] !== 'base64' || typeof d[0] !== 'string') throw new ProviderError('helius', 'shape', 'account is not base64-encoded');
+    return { slot, account: { owner: v['owner'], data: d[0] } };
+  }
+
+  /** Every account of `program` whose bytes at offset 0 are `mint` (token accounts of that mint), in one response. */
+  async getProgramAccounts(program: string, mint: string, priority: Priority): Promise<{ slot: bigint; accounts: { address: string; owner: string; data: string }[] }> {
+    const r = await this.call('getProgramAccounts', [program, { encoding: 'base64', commitment: 'confirmed', withContext: true, filters: [{ memcmp: { offset: 0, bytes: mint } }] }], priority);
+    const slot = contextSlot(r, 'getProgramAccounts');
+    const value = (r as Obj)['value'];
+    if (!Array.isArray(value)) throw new ProviderError('helius', 'shape', 'getProgramAccounts value is not an array');
+    return {
+      slot,
+      accounts: value.map((x: unknown) => {
+        const a = isObj(x) ? x['account'] : undefined;
+        const d = isObj(a) ? a['data'] : undefined;
+        if (!isObj(x) || typeof x['pubkey'] !== 'string' || !isObj(a) || typeof a['owner'] !== 'string' || !Array.isArray(d) || d[1] !== 'base64' || typeof d[0] !== 'string') {
+          throw new ProviderError('helius', 'shape', 'bad program account entry');
+        }
+        return { address: x['pubkey'], owner: a['owner'], data: d[0] };
+      }),
+    };
+  }
+
   async getTokenLargestAccounts(mint: string, priority: Priority): Promise<{ slot: bigint; accounts: { address: string; amount: bigint }[] }> {
     const r = await this.call('getTokenLargestAccounts', [mint, { commitment: 'confirmed' }], priority);
     const slot = contextSlot(r, 'getTokenLargestAccounts');
@@ -148,6 +177,8 @@ export interface FactReadersOptions {
   readonly jupiter?: ThirdParty & { readonly secrets: Secrets };
   readonly coinbase?: ThirdParty;
   readonly defillama?: ThirdParty;
+  /** Complete holder scans allowed per UTC day (getProgramAccounts is the costly read). Reached: no scan, H13 abstains. */
+  readonly holderScansPerDay?: number;
 }
 
 export const RUGCHECK_BASE = 'https://api.rugcheck.xyz';
@@ -257,34 +288,91 @@ export class FactReaders {
   }
 
   /**
+   * The complete holder set of a mint (`read:holders-all:<mint>`): the mint read at confirmed, then one
+   * getProgramAccounts on its own token program filtered by the mint at offset 0, then the programs of the off-curve
+   * owners (PDAs). Run only for candidates that pass every other gate. Each scan counts against the daily cap; at the
+   * cap nothing is read and H12/H13 stay not covered.
+   */
+  async readHoldersAll(mint: string, priority: Priority = P2): Promise<boolean> {
+    const day = Math.floor(this.#o.timers.now() / 86_400_000);
+    if (this.#scanDay !== day) {
+      this.#scanDay = day;
+      this.#scans = 0;
+    }
+    if (this.#scans >= (this.#o.holderScansPerDay ?? 0)) {
+      this.outcomes.push({ read: `holders-all:${mint}`, ok: false, detail: 'daily scan cap reached' });
+      return false;
+    }
+    this.#scans++;
+    return this.#guard(`holders-all:${mint}`, async () => {
+      const started = this.#o.timers.now();
+      const m = await this.#o.rpc.getAccountInfo(mint, priority);
+      if (m.account === null) throw new Error('mint account missing');
+      const gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, priority);
+      const owners = new Set<string>();
+      for (const a of gpa.accounts) {
+        try {
+          const o = decodeTokenAccount(fromBase64(a.data), a.owner as Address).owner;
+          if (!isOnCurve(decodeBase58(o))) owners.add(o);
+        } catch {
+          // The producer refuses the set; nothing to classify here.
+        }
+      }
+      const offCurve = [...owners].sort();
+      const ownerPrograms: { owner: string; program: string | null }[] = [];
+      for (let i = 0; i < offCurve.length; i += 100) {
+        const chunk = offCurve.slice(i, i + 100);
+        const r = await this.#o.rpc.getMultipleAccounts(chunk, priority, { offset: 0, length: 0 });
+        chunk.forEach((o, k) => ownerPrograms.push({ owner: o, program: r.accounts[k]?.owner ?? null }));
+      }
+      this.#ingest('helius', RAW.holdersAll(mint), {
+        mint, slot: gpa.slot, commitment: 'confirmed', program: m.account.owner, mintSlot: m.slot, mintData: m.account.data, accounts: gpa.accounts, ownerPrograms,
+      });
+      return `${gpa.accounts.length} accounts at slot ${gpa.slot}, ${this.#o.timers.now() - started} ms`;
+    });
+  }
+
+  #scanDay = -1;
+  #scans = 0;
+
+  /**
    * A wallet's first funder (`read:funder:<wallet>`): pages back through its signatures to the oldest successful one
    * and reads the first SOL transfer into it (core chain/system.ts). History longer than `maxPages` pages is
    * reported incomplete, never guessed.
    */
-  async readFunder(wallet: string, maxPages: number, priority: Priority = P2): Promise<boolean> {
+  async readFunder(wallet: string, maxPages: number, asOfSlot: bigint, priority: Priority = P2): Promise<boolean> {
     return this.#guard(`funder:${wallet}`, async () => {
-      let before: string | undefined;
-      let oldest: { signature: string; slot: bigint } | null = null;
-      let reached = false;
-      for (let p = 0; p < maxPages; p++) {
-        const page = await this.#o.rpc.getSignaturesForAddress(wallet, before === undefined ? { limit: 1000 } : { before, limit: 1000 }, priority);
-        for (const s of page) if (s.err === null) oldest = s;
-        if (page.length < 1000) {
-          reached = true;
-          break;
-        }
-        before = page.at(-1)!.signature;
-      }
-      let read: FunderRead = { wallet, complete: false, funder: null, signature: null, slot: null };
-      if (reached && oldest !== null) {
-        const rec = await this.#o.rpc.getTransaction(oldest.signature, priority);
-        if (rec === null) throw new Error(`oldest transaction ${oldest.signature} not found`);
-        const f = firstFunder(rec, wallet);
-        read = { wallet, complete: true, funder: f?.from ?? null, signature: f === null ? null : rec.signature, slot: rec.slot };
-      } else if (reached) read = { wallet, complete: true, funder: null, signature: null, slot: null };
-      this.#ingest('helius', RAW.funder(wallet), read);
-      return read.complete ? `funder ${read.funder ?? 'none'}` : 'history too long';
+      this.#ingest('helius', RAW.funder(wallet), await this.funderOf(wallet, maxPages, asOfSlot, priority));
+      return 'ok';
     });
+  }
+
+  /**
+   * The funder lookup itself, without ingesting (the backfill writes it to the supplement). Signatures after
+   * `asOfSlot` are skipped: RPC answers with today's history, and only what existed at the decision counts.
+   */
+  async funderOf(wallet: string, maxPages: number, asOfSlot: bigint, priority: Priority = P2): Promise<FunderRead> {
+    let before: string | undefined;
+    let oldest: { signature: string; slot: bigint } | null = null;
+    let reached = false;
+    for (let p = 0; p < maxPages; p++) {
+      const page = await this.#o.rpc.getSignaturesForAddress(wallet, before === undefined ? { limit: 1000 } : { before, limit: 1000 }, priority);
+      for (const s of page) if (s.err === null && s.slot <= asOfSlot) oldest = s;
+      if (page.length < 1000) {
+        reached = true;
+        break;
+      }
+      before = page.at(-1)!.signature;
+    }
+    const none: FunderRead = { wallet, asOfSlot, complete: false, funder: null, signature: null, slot: null, atMs: null };
+    if (!reached) return none;
+    if (oldest === null) return { ...none, complete: true };
+    const rec = await this.#o.rpc.getTransaction(oldest.signature, priority);
+    if (rec === null) throw new Error(`oldest transaction ${oldest.signature} not found`);
+    const f = firstFunder(rec, wallet);
+    return f === null
+      ? { ...none, complete: true, signature: rec.signature }
+      : { wallet, asOfSlot, complete: true, funder: f.from, signature: rec.signature, slot: rec.slot, atMs: rec.blockTime === null ? null : rec.blockTime * 1000 };
   }
 
   /**
@@ -294,7 +382,7 @@ export class FactReaders {
    * `mint-txs:<mint>` (from s0, open after the last fetched slot) and each first buyer's funder. A history longer
    * than `maxPages` pages, or one whose oldest transaction is not the create, ingests no coverage: H13 stays unknown.
    */
-  async readMintHistory(mint: string, o: { readonly maxPages: number; readonly funderPages: number; readonly insiderSlots: number; readonly firstBuyers: number }, priority: Priority = P2): Promise<boolean> {
+  async readMintHistory(mint: string, o: { readonly maxPages: number; readonly funderPages: number; readonly insiderSlots: number; readonly firstBuyers: number; readonly asOfSlot: bigint }, priority: Priority = P2): Promise<boolean> {
     const done = await this.#guard(`mint-history:${mint}`, async () => {
       const sigs: { signature: string; slot: bigint; err: unknown }[] = [];
       let before: string | undefined;
@@ -343,7 +431,7 @@ export class FactReaders {
       this.#ingest('worker', `coverage:${stream}:start`, { fromSlot: s0, via });
       this.#ingest('worker', `coverage:${stream}:gap`, { fromSlot: through + 1n, toSlot: null, reason: 'not fetched', via });
       const buyers = [...firstSlot].filter(([, at]) => at <= last).map(([w]) => w).sort();
-      for (const w of buyers) await this.readFunder(w, o.funderPages, priority);
+      for (const w of buyers) await this.readFunder(w, o.funderPages, o.asOfSlot, priority);
       return `${fetched} transactions from slot ${s0} through ${through}, ${buyers.length} first buyers`;
     });
     return done;

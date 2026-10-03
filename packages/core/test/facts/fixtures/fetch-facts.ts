@@ -103,19 +103,33 @@ for (const s of oldestFirst) {
   }
 }
 
-// 2. First funders of the first buyers.
+// 2. First funders of the dev and the first buyers, as of an hour after migration (9,000 slots): later history
+// never counts.
+const AS_OF = BigInt(MIGRATION_SLOT + 9_000);
+const creator = (() => {
+  for (const t of txs) for (const e of transactionEvents(recordFromRpc(t.signature, t.base64))) if (e.name === 'CreateEvent' && e.data.mint === MINT) return e.data.creator;
+  throw new Error('no create in the recorded history');
+})();
 const funders: unknown[] = [];
-for (const w of buyers) {
+for (const w of [creator, ...buyers.filter((b) => b !== creator)]) {
   const h = await signatures(w, FUNDER_PAGES);
-  const oldest = h.sigs.at(-1);
-  if (!h.complete || oldest === undefined) {
-    funders.push({ wallet: w, complete: false, funder: null, signature: null, slot: null });
+  const oldest = h.sigs.filter((x) => x.err === null && BigInt(x.slot) <= AS_OF).at(-1);
+  const none = { wallet: w, asOfSlot: String(AS_OF), complete: false, funder: null, signature: null, slot: null, atMs: null };
+  if (!h.complete) {
+    funders.push(none);
     continue;
   }
-  const t = await getTx(oldest.signature, 'oldest transaction of a first buyer');
-  const f = firstFunder(recordFromRpc(t.signature, t.base64), w);
+  if (oldest === undefined) {
+    funders.push({ ...none, complete: true });
+    continue;
+  }
+  const t = await getTx(oldest.signature, 'oldest transaction of a funded wallet');
+  const rec = recordFromRpc(t.signature, t.base64);
+  const f = firstFunder(rec, w);
   txs.push(t);
-  funders.push({ wallet: w, complete: true, funder: f?.from ?? null, signature: f === null ? null : t.signature, slot: t.slot });
+  funders.push(f === null
+    ? { ...none, complete: true, signature: t.signature }
+    : { wallet: w, asOfSlot: String(AS_OF), complete: true, funder: f.from, signature: t.signature, slot: t.slot, atMs: rec.blockTime === null ? null : rec.blockTime * 1000 });
 }
 
 // 3. The pool's first swaps after migration.
@@ -171,6 +185,16 @@ const holdersRaw = {
   owners: owners.map((o, i) => ({ owner: o, program: ownerAccts.value[i]?.owner ?? null })),
 };
 
+// 5b. The complete holder set: one getProgramAccounts on the mint's own token program, memcmp on the mint at offset
+// 0 (no dataSize filter: Token-2022 accounts are 170 bytes or more), after a read of the mint's supply.
+const mintRead = await rpc<{ context: { slot: number }; value: { owner: string; data: [string, string] } }>('getAccountInfo', [MINT, { encoding: 'base64', commitment: 'confirmed' }]);
+const gpaStarted = Date.now();
+const gpa = await rpc<{ context: { slot: number }; value: { pubkey: string; account: { owner: string; data: [string, string]; lamports: number } }[] }>('getProgramAccounts', [mintRead.value.owner, { encoding: 'base64', commitment: 'confirmed', withContext: true, filters: [{ memcmp: { offset: 0, bytes: MINT } }] }]);
+const holdersComplete = {
+  mint: { slot: mintRead.context.slot, owner: mintRead.value.owner, data: mintRead.value.data[0] },
+  gpa: { slot: gpa.context.slot, latencyMs: Date.now() - gpaStarted, accounts: gpa.value.map((a) => ({ address: a.pubkey, owner: a.account.owner, data: a.account.data[0] })) },
+};
+
 // 6. Third-party authority reads, trimmed to the fields H16 compares (the RugCheck report is large).
 const rc = (await getJson(`https://api.rugcheck.xyz/v1/tokens/${MINT}/report`)) as Record<string, unknown>;
 const gp = (await getJson(`https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=${MINT}`)) as { result: Record<string, Record<string, unknown>> };
@@ -188,7 +212,7 @@ const llama = (await getJson('https://api.llama.fi/summary/dexs/pump.fun?dataTyp
 
 save();
 writeFileSync(join(OUT, 'facts.json'), JSON.stringify({
-  meta: { rpc: RPC, fetchedAt: new Date(fetchedAt).toISOString(), calls, mint: MINT, pool: POOL, migrationSlot: MIGRATION_SLOT, creationSlot: s0, firstBuyers: buyers },
-  transactions: txs, funders, accountsRead, holdersRaw, thirdParty, coinbase, llama: llama.totalDataChart.slice(-400),
+  meta: { rpc: RPC, fetchedAt: new Date(fetchedAt).toISOString(), calls, mint: MINT, pool: POOL, migrationSlot: MIGRATION_SLOT, creationSlot: s0, creator, asOfSlot: String(AS_OF), firstBuyers: buyers },
+  transactions: txs, funders, accountsRead, holdersRaw, holdersComplete, thirdParty, coinbase, llama: llama.totalDataChart.slice(-400),
 }, null, 1) + '\n');
 console.log(`wrote facts.json: ${txs.length} transactions, ${funders.length} funders, ${calls} RPC calls`);
