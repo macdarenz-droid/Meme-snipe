@@ -8,7 +8,7 @@ import { RAW, VOLUME_HOURS_HEADER, dailyChainVolume, parseVolumeHoursCsv, produc
 import { CURVE_VOLUME_KEY, parseCurveVolume, volumeCondition } from '../../core/src/gates/index.ts';
 import { FactWorld, offchain } from '../../core/test/facts/helpers.ts';
 import {
-  FactReaders, FactRpc, VOLUME_RETRY_MS, dayName, dayNumber, volumeCheckPassed, type Ingest,
+  ACTIONS_BOT, FactReaders, FactRpc, VOLUME_RETRY_MS, dayName, dayNumber, volumeCheckPassed, volumeReleaseAssets, type Ingest,
 } from '../src/facts/index.ts';
 import type { FrameBody } from '../src/providers/index.ts';
 import type { HttpRequest, HttpResponse } from '../src/providers/http.ts';
@@ -23,30 +23,57 @@ const P = TRIAL_POLICY.regime;
 const resp = (status: number, text: string): HttpResponse => ({ status, text, header: () => null }) as unknown as HttpResponse;
 const csv = (day: number, lamports: (h: number) => bigint = (h) => BigInt(day % 13 + 1) * 1_000_000_000n + BigInt(h), uncovered: number[] = []) =>
   [VOLUME_HOURS_HEADER, ...Array.from({ length: 24 }, (_, h) => `${day * DAY + h * HOUR},${lamports(h)},${uncovered.includes(h) ? 0 : 1}`)].join('\n') + '\n';
-const PASSED = '{"day":"x","mismatches":[],"problems":[]}';
+const passed = (d: number) => JSON.stringify({ day: dayName(d), hours: 24, hours_covered: 24, hours_matched: 24, lamports_total: '1', mismatches: [], problems: [] });
+const BOT = { login: ACTIONS_BOT.login, id: ACTIONS_BOT.id, type: 'Bot' };
+type Release = Record<string, unknown> & { assets: Record<string, unknown>[] };
+/** The GitHub API's release answer for day `d`, as GitHub Actions publishes it (ids: day*10+1 the CSV, +2 the check). */
+const release = (d: number): Release => ({
+  tag_name: `data-volume-${dayName(d)}`, author: BOT, draft: false, prerelease: false,
+  assets: [
+    { id: d * 10 + 1, name: `volume-hours-${dayName(d)}.csv`, state: 'uploaded', uploader: BOT },
+    { id: d * 10 + 2, name: `volume-check-${dayName(d)}.json`, state: 'uploaded', uploader: BOT },
+  ],
+});
 
-/** A fake release host: `assets` maps a day number to its CSV (absent: not published). */
-const host = (assets: Map<number, string>, check: (day: number) => string = () => PASSED) => {
+/**
+ * A fake GitHub API: `assets` maps a day number to its CSV (absent: no release). `asked` names each request as
+ * `release|hours|check:DAY`; `edit` changes a release answer, `check` the check file.
+ */
+const host = (assets: Map<number, string>, o: { check?: (d: number) => string; edit?: (r: Release, d: number) => Release; limitAfter?: number } = {}) => {
   const asked: string[] = [];
+  const urls: string[] = [];
   const http = async (req: HttpRequest): Promise<HttpResponse> => {
-    asked.push(req.url);
-    const m = /\/releases\/download\/data-volume-(\d{4}-\d{2}-\d{2})\/(.+)$/.exec(req.url);
-    const day = m === null ? null : dayNumber(m[1]!);
-    const text = day === null ? undefined : assets.get(day);
-    if (m === null || day === null || text === undefined) return resp(404, 'Not Found');
-    if (m[2] === `volume-check-${m[1]}.json`) return resp(200, check(day));
-    if (m[2] === `volume-hours-${m[1]}.csv`) return resp(200, text);
-    return resp(404, 'Not Found');
+    urls.push(req.url);
+    if (o.limitAfter !== undefined && urls.length > o.limitAfter) return resp(403, '{"message":"API rate limit exceeded"}');
+    const t = /^https:\/\/gh\.test\/r\/releases\/tags\/data-volume-(\d{4}-\d{2}-\d{2})$/.exec(req.url);
+    if (t !== null) {
+      const d = dayNumber(t[1]!)!;
+      asked.push(`release:${t[1]}`);
+      expect(req.headers?.['accept']).toBe('application/vnd.github+json');
+      return assets.has(d) ? resp(200, JSON.stringify((o.edit ?? ((r) => r))(release(d), d))) : resp(404, '{"message":"Not Found"}');
+    }
+    const a = /^https:\/\/gh\.test\/r\/releases\/assets\/(\d+)$/.exec(req.url);
+    if (a === null) return resp(404, '');
+    expect(req.headers?.['accept']).toBe('application/octet-stream');
+    const id = Number(a[1]);
+    const d = Math.floor(id / 10);
+    asked.push(`${id % 10 === 1 ? 'hours' : 'check'}:${dayName(d)}`);
+    const text = assets.get(d);
+    if (text === undefined) return resp(404, '');
+    return resp(200, id % 10 === 1 ? text : (o.check ?? passed)(d));
   };
-  return { http, asked };
+  return { http, asked, urls };
 };
 
-const setup = (http: (req: HttpRequest) => Promise<HttpResponse>, start: number) => {
+/** A window wide enough that tests are not throttled; the real limit has its own test. */
+const UNTHROTTLED = { ...GITHUB_RELEASES, window: { limit: 10_000, windowMs: 3_600_000 } };
+
+const setup = (http: (req: HttpRequest) => Promise<HttpResponse>, start: number, spec = UNTHROTTLED) => {
   const timers = new ManualTimers(start);
   const ingested: { body: FrameBody; receivedAt: number }[] = [];
   const feed: Ingest = { ingest: (_s, body, o) => ingested.push({ body, receivedAt: o.receivedAt }) };
   const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers, creditsUsed: 0 }), timeoutMs: 1000 });
-  const readers = new FactReaders({ feed, rpc, http, timers, timeoutMs: 1000, releases: { scheduler: new Scheduler(GITHUB_RELEASES, { timers, creditsUsed: 0 }), base: 'https://gh.test/r' } });
+  const readers = new FactReaders({ feed, rpc, http, timers, timeoutMs: 1000, releases: { scheduler: new Scheduler(spec, { timers, creditsUsed: 0 }), base: 'https://gh.test/r' } });
   const rows = () => ingested.filter((x) => x.body.type === 'offchain' && x.body.key === RAW.volumeHour).map((x) => (x.body as { value: VolumeHour }).value);
   return { timers, readers, ingested, rows };
 };
@@ -70,15 +97,52 @@ describe('volume-hours release', () => {
     expect(dayNumber('2026-7-20')).toBeNull();
   });
 
-  it('the cross-check passes only with empty mismatches and problems', () => {
-    expect(volumeCheckPassed(PASSED)).toBe(true);
-    expect(volumeCheckPassed('{"mismatches":[{"hour":1}],"problems":[]}')).toBe(false);
-    expect(volumeCheckPassed('{"mismatches":[],"problems":["gap"]}')).toBe(false);
-    expect(volumeCheckPassed('{"mismatches":[]}')).toBe(false);
-    expect(volumeCheckPassed('{"problems":[]}')).toBe(false);
-    expect(volumeCheckPassed('[]')).toBe(false);
-    expect(volumeCheckPassed('null')).toBe(false);
-    expect(volumeCheckPassed('not json')).toBe(false);
+  it('the cross-check passes only for the day read, 24 hours, and empty mismatches and problems', () => {
+    const d = VOLUME_SERIES_START_DAY + 5;
+    const ok = JSON.parse(passed(d)) as Record<string, unknown>;
+    const with_ = (x: Record<string, unknown>) => JSON.stringify({ ...ok, ...x });
+    expect(volumeCheckPassed(passed(d), dayName(d))).toBe(true);
+    expect(volumeCheckPassed(passed(d), dayName(d + 1))).toBe(false);
+    expect(volumeCheckPassed(with_({ hours: 23 }), dayName(d))).toBe(false);
+    expect(volumeCheckPassed(with_({ hours: '24' }), dayName(d))).toBe(false);
+    expect(volumeCheckPassed(with_({ day: undefined }), dayName(d))).toBe(false);
+    expect(volumeCheckPassed(with_({ mismatches: [{ hour: 1 }] }), dayName(d))).toBe(false);
+    expect(volumeCheckPassed(with_({ problems: ['gap'] }), dayName(d))).toBe(false);
+    expect(volumeCheckPassed(with_({ mismatches: undefined }), dayName(d))).toBe(false);
+    expect(volumeCheckPassed(with_({ problems: undefined }), dayName(d))).toBe(false);
+    expect(volumeCheckPassed('[]', dayName(d))).toBe(false);
+    expect(volumeCheckPassed('null', dayName(d))).toBe(false);
+    expect(volumeCheckPassed('not json', dayName(d))).toBe(false);
+  });
+
+  it('release provenance: only GitHub Actions\' own published release with both assets uploaded by it', () => {
+    const d = VOLUME_SERIES_START_DAY + 5;
+    const name = dayName(d);
+    const json = (f: (r: Release) => Release = (r) => r) => JSON.stringify(f(release(d)));
+    const other = { login: 'someone', id: 1, type: 'User' };
+    expect(volumeReleaseAssets(json(), name)).toEqual({ hours: d * 10 + 1, check: d * 10 + 2 });
+    expect(volumeReleaseAssets(json(), dayName(d + 1))).toBeNull();
+    const refused: [string, (r: Release) => Release][] = [
+      ['another author', (r) => ({ ...r, author: other })],
+      ['an author with the bot\'s login but another id', (r) => ({ ...r, author: { ...BOT, id: 2 } })],
+      ['an author with the bot\'s id but another login', (r) => ({ ...r, author: { ...BOT, login: 'github-actions' } })],
+      ['no author', (r) => ({ ...r, author: null })],
+      ['a draft', (r) => ({ ...r, draft: true })],
+      ['a prerelease', (r) => ({ ...r, prerelease: true })],
+      ['another tag', (r) => ({ ...r, tag_name: `data-day-${name}` })],
+      ['the CSV uploaded by another account', (r) => ({ ...r, assets: [{ ...r.assets[0]!, uploader: other }, r.assets[1]!] })],
+      ['the check uploaded by another account', (r) => ({ ...r, assets: [r.assets[0]!, { ...r.assets[1]!, uploader: other }] })],
+      ['an asset not fully uploaded', (r) => ({ ...r, assets: [{ ...r.assets[0]!, state: 'starter' }, r.assets[1]!] })],
+      ['a second asset with the same name', (r) => ({ ...r, assets: [...r.assets, { ...r.assets[0]!, id: 9 }] })],
+      ['no CSV', (r) => ({ ...r, assets: [r.assets[1]!] })],
+      ['no check', (r) => ({ ...r, assets: [r.assets[0]!] })],
+      ['an asset without an id', (r) => ({ ...r, assets: [{ ...r.assets[0]!, id: '1' }, r.assets[1]!] })],
+      ['an asset id of zero', (r) => ({ ...r, assets: [{ ...r.assets[0]!, id: 0 }, r.assets[1]!] })],
+      ['no asset list', (r) => ({ ...r, assets: undefined as unknown as Release['assets'] })],
+    ];
+    for (const [why, f] of refused) expect(volumeReleaseAssets(json(f), name), why).toBeNull();
+    expect(volumeReleaseAssets('not json', name)).toBeNull();
+    expect(volumeReleaseAssets('[]', name)).toBeNull();
   });
 });
 
@@ -93,12 +157,12 @@ describe('chain volume reader', () => {
     expect(await pump(readers.readChainVolume(P), timers)).toBe(true);
     expect(rows().length).toBe(40 * 24);
     expect(dailyChainVolume(rows()).map((d) => d.day)).toEqual(Array.from({ length: 40 }, (_, k) => VOLUME_SERIES_START_DAY + k));
-    expect(h.asked.some((u) => u.includes(dayName(VOLUME_SERIES_START_DAY - 1)))).toBe(false);
-    expect(h.asked.some((u) => u.includes(dayName(today)))).toBe(false);
-    expect(h.asked.every((u) => u.startsWith('https://gh.test/r/releases/download/data-volume-'))).toBe(true);
+    expect(h.asked.some((u) => u.endsWith(dayName(VOLUME_SERIES_START_DAY - 1)))).toBe(false);
+    expect(h.asked.some((u) => u.endsWith(dayName(today)))).toBe(false);
+    expect(h.asked.slice(0, 3)).toEqual([`release:2026-07-20`, `check:2026-07-20`, `hours:2026-07-20`]);
     const n = h.asked.length;
-    expect(n).toBe(80);
-    expect(h.asked.filter((u) => u.endsWith('.json')).length).toBe(40);
+    expect(n).toBe(120);
+    expect(h.asked.filter((u) => u.startsWith('release:')).length).toBe(40);
     // A second read asks nothing for days already ingested.
     expect(await pump(readers.readChainVolume(P), timers)).toBe(true);
     expect(h.asked.length).toBe(n);
@@ -112,7 +176,7 @@ describe('chain volume reader', () => {
     const { readers, rows, timers } = setup(h.http, t * DAY + HOUR);
     expect(await pump(readers.readChainVolume(P), timers)).toBe(true);
     expect(Math.min(...rows().map((r) => r.hourStartMs))).toBe(first * DAY);
-    expect(h.asked.some((u) => u.includes(dayName(first - 1)))).toBe(false);
+    expect(h.asked.some((u) => u.endsWith(dayName(first - 1)))).toBe(false);
   });
 
   it('a missing asset ingests nothing for that day (unknown) and is asked again only after VOLUME_RETRY_MS', async () => {
@@ -134,19 +198,54 @@ describe('chain volume reader', () => {
     assets.set(gone, csv(gone));
     timers.advance(VOLUME_RETRY_MS);
     expect(await pump(readers.readChainVolume(P), timers)).toBe(true);
-    expect(h.asked.filter((u) => u.includes(dayName(gone))).length).toBe(3);
+    expect(h.asked.filter((u) => u.endsWith(dayName(gone)))).toEqual([`release:${dayName(gone)}`, `release:${dayName(gone)}`, `check:${dayName(gone)}`, `hours:${dayName(gone)}`]);
     expect(dailyChainVolume(rows()).some((d) => d.day === gone)).toBe(true);
   });
 
   it.each([
-    ['a failed cross-check', 'did not pass', () => '{"mismatches":[{"hour":3}],"problems":[]}'],
-    ['a malformed cross-check', 'did not pass', () => '<html>'],
-  ])('refuses every day with %s', async (_name, why, check) => {
-    const h = host(all(VOLUME_SERIES_START_DAY, today - 1), check);
+    ['a failed cross-check', 'did not pass', { check: (d: number) => passed(d).replace('"mismatches":[]', '"mismatches":[{"hour":3}]') }],
+    ['a malformed cross-check', 'did not pass', { check: () => '<html>' }],
+    ['a cross-check of another day', 'did not pass', { check: (d: number) => passed(d + 1) }],
+    ['a cross-check of fewer hours', 'did not pass', { check: (d: number) => passed(d).replace('"hours":24', '"hours":23') }],
+    ['a release by another author', 'provenance', { edit: (r: Release) => ({ ...r, author: { login: 'mallory', id: 7, type: 'User' } }) }],
+    ['an asset uploaded by another account', 'provenance', { edit: (r: Release) => ({ ...r, assets: [{ ...r.assets[0]!, uploader: { login: 'mallory', id: 7, type: 'User' } }, r.assets[1]!] }) }],
+    ['a draft or prerelease', 'provenance', { edit: (r: Release, d: number) => ({ ...r, prerelease: d % 2 === 0, draft: d % 2 === 1 }) }],
+  ])('refuses every day with %s: nothing ingested, unknown', async (_name, why, o) => {
+    const h = host(all(VOLUME_SERIES_START_DAY, today - 1), o);
     const { readers, rows, timers } = setup(h.http, start);
     expect(await pump(readers.readChainVolume(P), timers)).toBe(false);
     expect(rows()).toEqual([]);
     expect(readers.outcomes.at(-1)).toEqual(expect.objectContaining({ ok: false, detail: expect.stringContaining(why) }));
+    // A refused release is never downloaded from.
+    if (why === 'provenance') expect(h.asked.every((u) => u.startsWith('release:'))).toBe(true);
+  });
+
+  it('the real limit (50 an hour) ends a pass early; the next pass after an hour goes on where it stopped', async () => {
+    const h = host(all(VOLUME_SERIES_START_DAY, today - 1));
+    const { readers, rows, timers } = setup(h.http, start, GITHUB_RELEASES);
+    expect(await pump(readers.readChainVolume(P), timers)).toBe(false);
+    expect(h.urls.length).toBe(50);
+    const first = dailyChainVolume(rows()).length;
+    expect(first).toBe(16);
+    // The pass stopped at the refusal: one day failed, the rest were not tried.
+    expect(readers.outcomes.filter((x) => !x.ok).length).toBe(1);
+    timers.advance(VOLUME_RETRY_MS);
+    expect(await pump(readers.readChainVolume(P), timers)).toBe(false);
+    expect(dailyChainVolume(rows()).length).toBeGreaterThan(first);
+    for (let k = 0; k < 3; k++) {
+      timers.advance(VOLUME_RETRY_MS);
+      await pump(readers.readChainVolume(P), timers);
+    }
+    expect(dailyChainVolume(rows()).length).toBe(40);
+  });
+
+  it('a 403 rate limit from GitHub ends the pass at once', async () => {
+    const h = host(all(VOLUME_SERIES_START_DAY, today - 1), { limitAfter: 7 });
+    const { readers, rows, timers } = setup(h.http, start);
+    expect(await pump(readers.readChainVolume(P), timers)).toBe(false);
+    expect(h.urls.length).toBe(8);
+    expect(dailyChainVolume(rows()).length).toBe(2);
+    expect(readers.outcomes.filter((x) => !x.ok).length).toBe(1);
   });
 
   it('a malformed asset ingests nothing', async () => {

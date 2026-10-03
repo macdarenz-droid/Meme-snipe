@@ -402,7 +402,7 @@ describe('liveFacts: the production source', () => {
     expect(frames.every((f) => f.key === RAW.solUsd)).toBe(true);
   });
 
-  it('with a GitHub scheduler, reads DATA-1c\'s data-volume releases from the policy window\'s first day (lag plus cap) at start', async () => {
+  it('with a GitHub scheduler, reads DATA-1c\'s data-volume releases through the GitHub API from the policy window\'s first day (lag plus cap) at start', async () => {
     const timers = new ManualTimers(Date.UTC(2026, 6, 20) + 500 * 86_400_000 + 3_600_000);
     const urls: string[] = [];
     const http = async (req: HttpRequest): Promise<HttpResponse> => {
@@ -417,14 +417,15 @@ describe('liveFacts: the production source', () => {
     } as unknown as FactContext;
     const src = liveFacts({ policy: TRIAL_POLICY, secrets: { get: () => 'k' } as unknown as Secrets, http, goplus: sched(GOPLUS_FREE), coinbase: sched(COINBASE_PUBLIC), github: sched(GITHUB_RELEASES) });
     src.start(ctx);
-    for (let k = 0; k < 2_000 && urls.filter((u) => u.includes('github.com')).length < 40; k++) {
+    for (let k = 0; k < 2_000 && urls.filter((u) => u.includes('api.github.com')).length < 40; k++) {
       await new Promise<void>((r) => setImmediate(r));
       timers.advance(500);
     }
     src.stop();
-    const gh = urls.filter((u) => u.includes('github.com'));
-    expect(gh[0]).toBe('https://github.com/macdarenz-droid/Meme-snipe/releases/download/data-volume-2026-11-30/volume-check-2026-11-30.json');
-    expect(gh.length).toBe(40);
-    expect(gh.at(-1)).toContain('data-volume-2027-01-08/');
+    const gh = urls.filter((u) => u.includes('api.github.com'));
+    // A release that is not found costs one API call: the window's days, oldest first, up to the hourly limit.
+    expect(gh[0]).toBe('https://api.github.com/repos/macdarenz-droid/Meme-snipe/releases/tags/data-volume-2026-11-30');
+    expect(gh.length).toBe(50); // GITHUB_RELEASES: 50 an hour
+    expect(gh[39]).toBe('https://api.github.com/repos/macdarenz-droid/Meme-snipe/releases/tags/data-volume-2027-01-08');
   });
 });

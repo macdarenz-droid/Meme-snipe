@@ -13,8 +13,8 @@ import {
 import { VOLUME_SERIES_START_DAY } from '../../../core/src/config/time.ts';
 import type { Policy } from '../../../core/src/config/policy.ts';
 import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
-import { dayName, volumeCheckAsset, volumeCheckPassed, volumeHoursAsset, volumeRelease } from './volume-hours.ts';
-import { P2, type Priority, type Scheduler } from '../scheduler/scheduler.ts';
+import { dayName, volumeCheckPassed, volumeRelease, volumeReleaseAssets } from './volume-hours.ts';
+import { P2, type Priority, type Scheduler, ScheduleRefused } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import type { FrameBody, Source } from '../providers/canonical.ts';
 import { isAddress } from '../providers/canonical.ts';
@@ -210,7 +210,7 @@ export interface FactReadersOptions {
   /** Jupiter Tokens (the shared main bucket; the `tokens` lane is capped at 6 a minute for P3). */
   readonly jupiter?: ThirdParty & { readonly secrets: Secrets };
   readonly coinbase?: ThirdParty;
-  /** DATA-1's day releases on GitHub (`base` is the repository URL): the regime's chain volume. */
+  /** DATA-1c's volume releases through the GitHub API (`base` is the API's repository URL): the regime's chain volume. */
   readonly releases?: ThirdParty;
   /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
@@ -225,7 +225,7 @@ export const RUGCHECK_BASE = 'https://api.rugcheck.xyz';
 export const GOPLUS_BASE = 'https://api.gopluslabs.io';
 export const JUPITER_BASE = 'https://api.jup.ag';
 export const COINBASE_BASE = 'https://api.exchange.coinbase.com';
-export const RELEASES_BASE = 'https://github.com/macdarenz-droid/Meme-snipe';
+export const RELEASES_BASE = 'https://api.github.com/repos/macdarenz-droid/Meme-snipe';
 /** A day whose volume asset is not published yet is asked again at most once in this long. */
 export const VOLUME_RETRY_MS = 3_600_000;
 const HOUR_MS = 3_600_000;
@@ -609,16 +609,19 @@ export class FactReaders {
 
   /**
    * The regime's chain volume (§6.4): each UTC day the volume window can reach (series start or the 365-day cap, up to
-   * yesterday) is read once from its `data-volume-DAY` release: `volume-check-DAY.json` must show a passed cross-check,
-   * then `volume-hours-DAY.csv`'s 24 rows are ingested as `read:chain-volume-hour` (an uncovered hour as
-   * `covered: false`). A day not published yet, or refused, ingests nothing (unknown) and is asked
-   * again at most once per VOLUME_RETRY_MS; an ingested day is never asked again. Days are read one at a time.
+   * yesterday) is read once from its `data-volume-DAY` release. The release is read through the GitHub API and must
+   * pass `volumeReleaseAssets` (GitHub Actions' own, not a draft or prerelease); both assets are then downloaded by id,
+   * `volume-check-DAY.json` must be that day's passed cross-check, and `volume-hours-DAY.csv`'s 24 rows are ingested
+   * as `read:chain-volume-hour` (an uncovered hour as `covered: false`). A day not published yet, or refused, ingests
+   * nothing (unknown) and is asked again at most once per VOLUME_RETRY_MS; an ingested day is never asked again. Days
+   * are read one at a time, and a rate limit or a refused schedule ends the pass (the rest wait for the next one).
    */
   async readChainVolume(regime: Pick<Policy['regime'], 'volumeLagDays' | 'volumeWindowDays'>, priority: Priority = P2): Promise<boolean> {
     const s = this.#o.releases;
     if (s === undefined) return false;
-    const now = this.#o.timers.now();
-    const today = Math.floor(now / DAY_MS);
+    const base = s.base ?? RELEASES_BASE;
+    const json = { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' };
+    const today = Math.floor(this.#o.timers.now() / DAY_MS);
     let all = true;
     for (let day = Math.max(VOLUME_SERIES_START_DAY, today - regime.volumeLagDays - regime.volumeWindowDays + 1); day < today; day++) {
       if (this.#volumeDays.has(day)) continue;
@@ -627,20 +630,25 @@ export class FactReaders {
         all = false;
         continue;
       }
-      const ok = await this.#guard(`chain-volume:${dayName(day)}`, async () => {
-        const name = dayName(day);
-        const url = (asset: string) => `${s.base ?? RELEASES_BASE}/releases/download/${volumeRelease(name)}/${asset}`;
+      const name = dayName(day);
+      const read = `chain-volume:${name}`;
+      try {
         const unknown = (why: string) => new ProviderError('github', 'shape', `${name} volume unknown: ${why}`);
-        if (!volumeCheckPassed(await this.#getText(s, 'github', 'volume check', url(volumeCheckAsset(name)), priority))) throw unknown(`${volumeCheckAsset(name)} did not pass`);
-        const rows = parseVolumeHoursCsv(await this.#getText(s, 'github', 'volume hours', url(volumeHoursAsset(name)), priority), day);
+        const ids = volumeReleaseAssets(await this.#getText(s, 'github', 'volume release', `${base}/releases/tags/${volumeRelease(name)}`, priority, json), name);
+        if (ids === null) throw unknown('release provenance does not hold');
+        const asset = (id: number) => this.#getText(s, 'github', 'volume asset', `${base}/releases/assets/${id}`, priority, { accept: 'application/octet-stream' });
+        if (!volumeCheckPassed(await asset(ids.check), name)) throw unknown('the cross-check did not pass for this day');
+        const rows = parseVolumeHoursCsv(await asset(ids.hours), day);
         if (rows === null) throw unknown('malformed asset');
         for (const r of rows) this.#ingest('github', RAW.volumeHour, r);
         this.#volumeDays.add(day);
-        return `${rows.length} hours`;
-      });
-      if (!ok) {
+        this.outcomes.push({ read, ok: true, detail: `${rows.length} hours` });
+      } catch (e) {
+        this.outcomes.push({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
         this.#volumeTried.set(day, this.#o.timers.now());
         all = false;
+        const limited = e instanceof ScheduleRefused || (e instanceof ProviderError && (e.kind === 'rate_limited' || e.status === 403));
+        if (limited) return false;
       }
     }
     return all;
