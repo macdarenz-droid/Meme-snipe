@@ -85,9 +85,14 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
     const fillsOf = k === null ? (intent?.fills ?? []).filter((f) => !late.has(f.signature)) : [intent?.fills[k]].filter((f) => f !== undefined);
     const signatures = new Set<string>(fillsOf.map((f) => f.signature));
     const entryAttempts = (byIntent.get(p.entryIntentId) ?? []).filter((a) => (k === null ? !late.has(a.signature) : signatures.has(a.signature)));
+    const landings = fillsOf.map((f) => {
+      const a = entryAttempts.find((x) => x.signature === f.signature);
+      // Every fill comes from an attempt the fill model settled; one without is a broken run, never a guessed time.
+      if (a === undefined || a.landedAt === null) throw new RangeError(`position ${p.id}: fill ${f.signature} has no landed attempt record`);
+      return a.landedAt;
+    });
     const entryFill = fillsOf.length === 0 ? null : {
-      sol: fillsOf.reduce((t, f) => t + f.sol, 0n), tokens: fillsOf.reduce((t, f) => t + f.tokens, 0n),
-      at: Math.min(...entryAttempts.filter((a) => signatures.has(a.signature)).map((a) => a.landedAt ?? r.endedAt)),
+      sol: fillsOf.reduce((t, f) => t + f.sol, 0n), tokens: fillsOf.reduce((t, f) => t + f.tokens, 0n), at: Math.min(...landings),
     };
     if (entryFill === null) {
       for (const a of entryAttempts) if (a.fee > 0n) stray.push({ at: a.landedAt ?? r.endedAt, lamports: a.fee });

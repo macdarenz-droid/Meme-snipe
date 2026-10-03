@@ -19,6 +19,9 @@ import {
   parseCandles, parseCreate, parseCurve, parseDeployer, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
 } from './facts.ts';
+import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
+import type { AsOfEntry } from '../engine/asof.ts';
+import type { Commitment } from '../domain/index.ts';
 import { type Concentration, concentration, mintAccounts, ownerBalance, shareBps } from './holders.ts';
 import type { GateNote, GateReason, HardGate, RejectCode } from './reasons.ts';
 import { DAY_MS, HOURLY_MAX_AGE_MS, MINUTE_MS, solUsdAt } from './series.ts';
@@ -45,7 +48,14 @@ export interface GateDeps {
   /** The locked session policy: thresholds come only from here. */
   readonly session: PolicySession;
   readonly mode: Mode;
+  /**
+   * Set only once a reviewed rug labeller (RUG-1) is wired. Until then H14's prior-rug half is not applied and every
+   * evaluation that reaches H14 carries a `rug-labels-unavailable` note: no labels is never read as zero rugs.
+   */
+  readonly rugLabeller?: 'RUG-1';
 }
+
+export const RUG_LABELS_UNAVAILABLE = 'rug labels unavailable (no reviewed labeller; RUG-1)';
 
 export interface HardOptions {
   /** Stop at the first failing gate (default). False evaluates every gate, for calibration logs. */
@@ -66,6 +76,9 @@ export interface HardResult {
 
 interface Env {
   readonly ev: Evidence;
+  readonly history: GateContext['history'];
+  readonly deployers: GateContext['deployers'];
+  readonly rugLabeller: GateDeps['rugLabeller'];
   readonly policy: Policy;
   readonly mode: Mode;
   readonly req: GateRequest;
@@ -89,9 +102,37 @@ const memo = <T>(env: Env, key: string, f: () => T): T => {
 
 // ---------- Shared reads ----------
 
+const CREATE_ALIASES: readonly (readonly [string, Commitment])[] = [[TX_CREATE_PREFIX, 'confirmed'], [LOG_CREATE_PREFIX, 'processed']];
+
+/** FEED-1's create event as a create fact, or null when it is not this mint's create. */
+const aliasCreate = (v: unknown, at: AsOfEntry, mint: string, commitment: Commitment): CreateFact | null => {
+  const c = createOf(v);
+  const o = typeof v === 'object' && v !== null ? (v as Readonly<Record<string, unknown>>) : {};
+  const slot = o['txSlot'];
+  if (c === null || c.mint !== mint || typeof slot !== 'bigint') return null;
+  return {
+    obs: { provider: typeof o['source'] === 'string' ? o['source'] : 'feed', slot, receivedAt: at.moment.receivedAt, quality: o['backfilled'] === true ? ['backfilled'] : [], commitment },
+    createdAtMs: c.createdAtMs,
+    creator: c.creator,
+  };
+};
+
 const readMint = (env: Env, gate: HardGate) => env.ev.read('mint', mintKey(env.req.mint), parseMint, 'state', gate);
 const readPool = (env: Env, gate: HardGate) => env.ev.read('pool', poolKey(env.req.mint), parsePool, 'state', gate);
-const readCreate = (env: Env, gate: HardGate) => env.ev.read('create', createKey(env.req.mint), parseCreate, 'event', gate);
+/**
+ * The create fact: our own, else FEED-1's create event (GATE-1b alias). A create read from a fetched transaction is
+ * at confirmed commitment; one read from the logs stream is at processed, which H16 refuses.
+ */
+const readCreate = (env: Env, gate: HardGate): Read<CreateFact> => {
+  const own = createKey(env.req.mint);
+  if (env.ev.raw(own) !== undefined) return env.ev.read('create', own, parseCreate, 'event', gate);
+  for (const [prefix, commitment] of CREATE_ALIASES) {
+    const key = `${prefix}${env.req.mint}`;
+    const at = env.ev.entry(key);
+    if (at !== undefined) return env.ev.read('create', key, (v) => aliasCreate(v, at, env.req.mint, commitment), 'event', gate);
+  }
+  return env.ev.read('create', own, parseCreate, 'event', gate);
+};
 const readMigration = (env: Env, gate: HardGate) => env.ev.read('migration', migrationKey(env.req.mint), parseMigration, 'event', gate);
 
 /** The decoded mint, or the reason it cannot be used. A mint the token programs do not own fails H1 first. */
@@ -340,12 +381,21 @@ const h13 = (env: Env): Outcome => {
 const h14 = (env: Env): Outcome => {
   const cr = readCreate(env, 'H14');
   if (!cr.ok) return fromRead(cr);
-  const d = env.ev.read('deployer', deployerKey(cr.fact.creator), parseDeployer, 'state', 'H14');
-  if (!d.ok) return fromRead(d);
   const now = env.ev.now.receivedAt;
   const g = env.policy.gates;
   const lookback = g.deployerRugLookbackDays * DAY_MS;
   const need = now - Math.max(lookback, DAY_MS);
+  // Second guard, whatever built the index: the creates stream must have been complete over the whole look-back.
+  const cov = createsCoverage(env.history, env.ev.now, need);
+  if (!cov.covered) return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: cov.detail }] };
+  const d = env.deployers !== undefined
+    ? { ok: true as const, fact: env.deployers.factFor(cr.fact.creator, env.ev.now, cov.fromMs) }
+    : env.ev.read('deployer', deployerKey(cr.fact.creator), parseDeployer, 'state', 'H14');
+  if (!d.ok) return fromRead(d);
+  const lost = env.deployers?.lostCreate(need, env.ev.now) ?? null;
+  if (lost !== null) {
+    return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `creates log ${lost.signature} on ${lost.via} was cut or undecodable at ${lost.atMs} and its transaction is not fetched` }] };
+  }
   if (d.fact.coverageFromMs > need) {
     return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'deployer', neededBy: 'H14', detail: `deployer index covers from ${d.fact.coverageFromMs}, the rule needs ${need}` }] };
   }
@@ -354,6 +404,13 @@ const h14 = (env: Env): Outcome => {
   const reasons: GateReason[] = [];
   if (recent.size > g.serialMaxMints24h) {
     reasons.push({ gate: 'H14', code: 'serial-deployer', input: 'deployer', detail: `${cr.fact.creator} created ${recent.size} mints in 24 h`, value: String(recent.size), limit: String(g.serialMaxMints24h) });
+  }
+  // Rug labels count only from a reviewed labeller (an explicit flag) that covered the whole look-back (its own
+  // coverage:rugs:* facts). Otherwise the prior-rug half is not judged and says so: no labels is never zero rugs.
+  if (env.rugLabeller === undefined) return { reasons, notes: [{ gate: 'H14', code: 'rug-labels-unavailable', detail: RUG_LABELS_UNAVAILABLE }] };
+  const rugCov = createsCoverage(env.history, env.ev.now, now - lookback, 'rugs');
+  if (!rugCov.covered) {
+    return { reasons, notes: [{ gate: 'H14', code: 'rug-labels-unavailable', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}` }] };
   }
   const rugs = d.fact.rugs.filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
   if (rugs.length > 0) reasons.push({ gate: 'H14', code: 'prior-rug', input: 'deployer', detail: `${cr.fact.creator} rugged ${rugs.join(', ')} within ${g.deployerRugLookbackDays} days`, value: String(rugs.length), limit: '0' });
@@ -449,7 +506,7 @@ export const evaluateHardRejects = (ctx: GateContext, deps: GateDeps, req: GateR
   if (!deps.session.running) return fail('policy-session-ended', 'the policy session has ended; start a new session');
   const problem = requestProblem(req);
   if (problem !== null) return fail('bad-request', problem);
-  const env: Env = { ev: new Evidence(ctx, deps.session.policy), policy: deps.session.policy, mode: deps.mode, req, memo: new Map() };
+  const env: Env = { ev: new Evidence(ctx, deps.session.policy), history: (k, f, t) => ctx.history(k, f, t), deployers: ctx.deployers, rugLabeller: deps.rugLabeller, policy: deps.session.policy, mode: deps.mode, req, memo: new Map() };
   const evaluated: HardGate[] = [];
   const passed: HardGate[] = [];
   const failed: HardGate[] = [];
