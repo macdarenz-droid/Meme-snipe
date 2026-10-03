@@ -84,6 +84,104 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-04 | H13 funding and the H14 rug half are fetched on demand by RPC with an as-of filter, through one shared module each (FACTS-1, RUG-1c), and cached for the backtest as hashed supplements | The archive scan cannot find funding transactions, and no free feed sees every prior mint's trades | BT-2 and SEED-1 findings |
 | 2026-10-04 | Dry-run evidence reaches the repo through the watchdog's Durable Object and a collect-evidence workflow; the host holds no GitHub credential | A write key on the host could change workflows | OPS-1d |
 | 2026-10-04 | A missing gate input is never a pass: H16 not-covered whenever a producer, coverage fact or look-back is missing | Owner rule "missing evidence means no trade" | RUG-1 review, GATE-1c |
+| 2026-10-03 | 60-day window (UPG-1b): keep the lead-in from 2026-07-20 and the decision days 2026-08-03 to 10-01. Label regime boundaries B2 (07-21 14:23 UTC, BOOST on), B3 (09-09 19:30 UTC, creator-fee and quote-control config) and B4 (09-12 15:24 UTC, holder rewards, events +16 bytes). Only the span from B4 on matches today's fees and layouts, so the holdout lies after B4. DATA-1's strict QA must accept the two dated older layouts before their boundary slots. Old Faithful epochs 1004–1047 are all published and checked | ARCHITECTURE §13.2: a platform change is a regime break. The new window holds three of them, none before Aug 3 except BOOST, which only changes migrations | [venues.md](research/venues.md) §2.7 "Earlier boundaries" |
+
+## Supervisor rulings after the external review (2026-10-04)
+
+The owner relayed an outside review of commit addc685 (20 findings). Each finding goes to the code's owner, who must first reproduce it with a test that fails on the base; a finding that does not reproduce is closed, with the evidence recorded. These rulings are the supervisor's, not the owner's.
+
+- **Holders (H12, H13).** The smallest listed account does not bound an owner with several accounts. Aggregate by owner, and assume the worst case for the unknown remainder. The backtest rebuilds ownership from trades plus an owner-resolved token-movement table (DATA-1). GATE-1d, FACTS-1.
+- **Exits.** A partial sell is quoted at its own size. A blocked retry must recover more than its cost at the worst permitted price. The trail, peak and partial-exit state survive restarts. EXIT-1b, WORKER-1.
+- **Cash flows.** Drawdown is measured on unitized equity, so a withdrawal cannot trip the kill switch. RISK-1b also reports planned R, stressed executable loss and maximum reserved loss separately, and re-runs the risk simulation on the merged policy.
+- **Reports.** G0 is the canonical gate. Holdout runs are authorised and registered before they execute. All-in expectancy includes failed attempts. SOL returns are reported separately from USD/AUD cash flows, and operating costs are shown at bankrolls of $20, $100 and $200. BT-1c.
+- **Fills.** Delay and failure assumptions stay harsh and documented, including correlated failures and long delays during exits. The dry run sends nothing, so landing assumptions stay conservative until on-chain evidence and the owner-authorised canary. The conservative scenario recovers token-account rent only when the final sell lands, because the account is closed in that same transaction; a "no rent recovery" sensitivity line is also reported.
+- **Statistics.**
+  - G3 scores the paper outcomes of candidates vetoed only live, and passes only when the conservative lower bound stays positive. Too little evidence means extend the run.
+  - Cluster sensitivity (multi-day blocks, creator and funder clusters) is required.
+  - Deflated Sharpe: superseded by "Deflated Sharpe" in the follow-up rulings below (day-level PSR now; a block-bootstrap SPA test replaces the DSR gate only with the owner's sign-off).
+  - "Agrees" for the post-upgrade (B5) dry run is defined before the run. Inconclusive is not agreement. STATS-1b.
+- **Study design.**
+  - A separate deployment replay runs at the real size: 1 position, 3 entries a day, cooldowns, signal priority.
+  - Executable definitions per universe are frozen before testing, with improvement over a matched S0 required.
+  - H9 and H11 stay on. Blocked candidates are scored offline, and a filter is removed only on out-of-sample net improvement without worse tails.
+  - Every rejected candidate's later outcome is recorded.
+  - Each gate has a completeness manifest.
+  - Strategies abstain where the evidence is unaffordable live.
+  - BT-2, RES-3.
+- **Dry runs.** The first live run is an S0 shakedown with a paper-only edge setting: it proves the worker, the drills and the simulation, and does not count toward gate items 3 and 4. Live mode refuses that setting. The qualifying 48-hour run starts on the commit that carries BT-2's registered configurations. WORKER-1.
+- **Regime volume.** Our own on-chain volume, computed by the same code for history and live. A gap is unknown, never zero; unknown means the regime is off. FACTS-1.
+- **Rug labels.** The strict rules stay. Observed creator sales and collapses are separate label kinds. A minimum economic collapse size is measured before any relaxation. Transfer-then-sell and linked-wallet dumps are measured. RUG-1c.
+- **Execution shape.** One supported-transaction-shape check is shared by the gates, the backtest and the builders. TX-1b.
+- **Budget.** The dry run reports credits per provider and class, lookup latency, coverage gaps and rejection reasons. It fails if exits (P0/P1) were ever shed or the free tier is exceeded. RUN-1c.
+- **Worker failure.** It is an exposure the stop cannot control; it is measured, not assumed away (ARCHITECTURE §12.5).
+
+### Follow-up rulings (2026-10-04, second round)
+
+The same outside reviewer answered nine follow-up questions on 8370c2a. Each claim below was checked against the code before the ruling. These rulings are the supervisor's.
+
+- **Holder bound, live path.** With at most 20 observed owners the ten largest hold at least half of what is observed, so (top 10 + unlisted) / circulating ≥ 50%. Top-20 lists can therefore never pass H13's top-10 limit; they serve only for cheap, definite rejects.
+  - A pass needs a complete holder set:
+    - It comes from one getProgramAccounts response on the mint's own token program (Token-2022 for `create_v2` coins, whose accounts are 170 bytes or more, so there is no `dataSize: 165` filter).
+    - The mint is filtered at offset 0, and each account is decoded and checked.
+    - Balances are aggregated by owner, and the context slot and commitment are recorded.
+    - The response lies within `maxStateSlotLag`, with mint authority none.
+    - The balances sum exactly to supply.
+    - Duplicate addresses, a wrong mint or a truncated response mean H16 malformed or inconsistent.
+  - The same-slot wording is withdrawn: two calls rarely share a slot, and `minContextSlot` means "at least". With mint authority none, supply can only fall, so a burn between the reads breaks the exact sum, which is the safe direction.
+  - Known dev and insider owners are resolved with mint-filtered getTokenAccountsByOwner.
+  - The full snapshot runs only for candidates that pass every other gate, and the backtest uses the same evaluation order and charges the same lookup latency, so reject mixes stay comparable for G3.
+  - With no complete set, the gate abstains. Credits per scan are measured, not assumed. GATE-1d, FACTS-1, BT-2.
+- **Deflated Sharpe.** Two faults point in opposite directions:
+  - The trial count is the raw registry size, with the variance floored at the null sampling variance, which over-penalises correlated variants.
+  - PSR counts trades as independent observations, which is too lenient when trades on a day move together.
+  - Effective-N clustering is dropped. With a few dozen daily observations, the correlation matrix's rank caps any effective N, and too little data would then shrink the penalty.
+  - STATS-1c instead:
+    - (a) computes PSR and DSR on day-level returns now, which only tightens;
+    - (b) keeps DSR as a reported diagnostic with an effective-N sensitivity line;
+    - (c) builds a joint day-block bootstrap maximum-statistic test (Hansen's SPA, studentised) over the frozen registry. It resamples the same calendar blocks for every variant, keeps idle days and every cost, and fixes the block-length rule in advance;
+    - (d) calibrates (c) by simulation across duplicate, independent, heavy-tailed, common-shock and idle-day scenarios: the false-positive rate is at most α at zero edge, and power is reported next to DSR's.
+  - Replacing the DSR gate in G1 with (c) is a change of method that can pass more strategies, so it merges only with the owner's sign-off on that evidence. Until then G1 keeps DSR ≥ 0.95.
+- **Holdout.**
+  - The sealed window stays at Melbourne days 09-22 to 10-01, all after B4.
+  - G1 runs on every practice day. Results are reported by regime and described as cross-regime evidence. Only 8 practice days fall wholly after B4, below G1's 10-day minimum, so post-B4 practice results are descriptive only.
+  - The holdout can come up short on trades (n < max(300, n_power)) or on trade days (fewer than 10). The size check counts candidates and entries only, before any outcome is scored. In that case the window extends by whole Melbourne days from 10-02, as the days are published, for at most 28 days, and stops on the first day both counts are met. Past 28 days the result is "not proven". This extension rule is fixed now, before any holdout count is known.
+  - Repeated attempts share one error budget. Attempt 1 is tested at family α = 0.04 (Holm across universes, with n_power simulated at that level). Attempt k ≥ 2 is tested at 0.01 / 2^(k−1) on a new, later window. All attempts together have a false-pass rate of at most 0.05.
+  - The 48-hour dry run is operational evidence and G3 only. It is never part of the holdout. STATS-1b, BT-2.
+- **Rent.** Rent follows the transaction's real outcome:
+  - It is refunded once, when the atomic sell-and-close lands.
+  - It stays locked after a sell-only fallback, a partial exit, dust or an unsolicited token left in the account, a missing close authority, or withheld Token-2022 fees.
+  - A failed close rolls back the sell, and its fee is still charged.
+  - The backtest's refund is tied to the modelled account-close outcome, not to the position closing. Venue accounts and WSOL proceeds are never refunded or counted twice.
+  - A bounded sell-only recovery path starts once the original transaction is resolved. Selling comes before reclaiming rent.
+  - The "no rent recovery" line and full rent in worst-case reservations stay. BT-1c, EXIT-1b, TX-1b.
+- **Equity units.**
+  - Unitisation uses one executable valuation before and after each flow, and the high-water mark is kept per unit. A deposit never resets a latched trigger.
+  - A withdrawal triggers a fresh affordability check and can never take the SOL reserved for exits, fees, pending transactions or full-loss exposure.
+  - In the first release, withdrawals queue until there is no position or unresolved intent and the account is reconciled.
+  - The daily and weekly loss boundaries now use realised equity, so an open loss already counted yesterday is counted again today. That is stricter than "loss made today". The code keeps it until the owner signs off on the change, which is listed with the RISK-1 owner findings. RISK-1b adds the marked-boundary figure next to it, with a test that shows the double count. RISK-1b, WORKER-1.
+- **Observation delay and exit failures.**
+  - The fill model splits delay into event → processed availability, processed → confirmed (only when the decision path waits for confirmed), and provider → worker.
+  - Scenarios: measured; adverse 2 slots + 6 slots + 1 s; stress 4 + 12 + 2 s. These are stress budgets, not measured percentiles.
+  - Slots convert to time with the replay's real slot times. A delay already present in recorded receipt times is never charged twice.
+  - 30 s and 60 s blackouts with backlog recovery are stress cases. Stale state never becomes fresh through a new receipt time, and clocks and watchdogs keep running through feed stalls.
+  - Exit failures share one persistent network state over slot windows, with provider failures layered on top, plus deterministic 10, 30 and 60 s failure bursts. Results report how expectancy and survival change as bursts become more frequent.
+  - The worker's recorder logs processed and confirmed arrival for the same slots and signatures on the VPS from the first shakedown, so the "measured" scenario comes from the real host. BT-1c, WORKER-1.
+- **Simultaneous signals.**
+  - The deployment replay takes the earliest signal that was fully eligible and information-ready on the worker, and reserves capacity atomically.
+  - True ties break by a hash with a salt fixed and recorded before any replay. Trying salts counts as a strategy search.
+  - Any batch schedule is fixed, and its wait is charged.
+  - A highest-score rule is a later candidate, registered as a trial and frozen into the configuration before holdout. BT-2.
+- **Collapse materiality.** A rug label never depends on the current bankroll. Three separate fields:
+  - the observed event (collapse, creator sale, timing, venue);
+  - materiality at a fixed, versioned reference size and cost limit, with absolute SOL and USD liquidity recorded;
+  - current exposure at Zeroed's real size, used only for entry affordability.
+  One-transaction liquidity spikes are measured before any persistence rule. The strict rejection stays until the measured distribution supports a change. RUG-1c.
+- **Standby.** Deferred. A shorter holding time is not outage protection. The priorities are:
+  - automatic local restart;
+  - persisted exit state and pending signatures;
+  - recovery measured as "reconciled and able to exit";
+  - separate drills for process crash, reboot, RPC loss and host loss.
+  A later standby needs exclusive signing, fencing and reconciliation of already-signed transactions. It never relies on a second sell failing for lack of tokens. RUN-1d, OPS-1d.
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
@@ -173,6 +271,7 @@ One row per decision in the table; detailed module decisions follow in sections 
 - **2026-10-03 · The regime gate checks on the hour, with the policy's hysteresis.** The current check is the latest hour boundary that the SOL/USD series and the graduate snapshot have both reached, and it must be within 2 h of now. Each check evaluates graduate survival (share of graduates whose +30 min mark fell in the last 24 h with effective reserves above 30 SOL, against the exact median of the 14 daily shares before), curve volume (last full UTC day against the nearest-rank 25th percentile of the 365 days ending with it) and SOL's 24 h change in basis points (above −800). Inside a snapshot, points dated after the check are ignored. The gate is off at once when the current check cannot be computed. Otherwise it is off when the last `failedChecksToDisable` checks all failed (an unknown earlier check counts as failed). Live, a missing, stale or red execution-health fact turns it off; in the backtest that input is absent.
 - **2026-10-03 · Soft features are logged, never scored yet.** Values come from the feed's precomputed soft fact, the holder exclusions and our deployer index. Unknown values stay unknown with the reason. RugCheck's single-holder flag is logged as false when the largest account is a known vault. Third-party fields (RugCheck score and flag) are logged as live only in the backtest, whatever the feed supplies. A rule score needs thresholds that only calibration (§13) can give.
 - **2026-10-03 · Evaluation order is fixed and cheapest first.** Field checks first (H1–H4, H6–H11, H14, H16), then address derivation and holder classification (H5, H12, H13), then the quote and simulation (H15). By default evaluation stops at the first failing gate; calibration runs can evaluate all. Each fact is looked up once per evaluation. Holder order in the input does not change the result.
+- **2026-10-03 · GATE-1c: H5 refuses a pool whose trade events carry the upgrade's tail wrongly.** Every PumpSwap trade event of the pool released since migration (FEED-1 keys `pump_amm:BuyEvent|SellEvent:<pool>` and their `logs:` copies, read from the as-of history) must carry a tail of the length the upgrade boundary allows: 0 bytes before slot 452,654,882, 8 after it, either in that slot itself (UPG-1's upgrade transaction). The tail must also be all zeros. Otherwise H5 rejects as `event-tail`, naming the first offending signature in release order. No trade event since migration is H16 `not-covered` (input `trades`); an event without a readable tail is H16 `malformed`. The pool's tape starts at the migration event's slot (the migration fact's `obs.slot`), or at its time when it has no slot. The mint's own curve tape (`pump:TradeEvent:<mint>` and its `logs:` copy) is checked with the same rule against pump's boundary (452,654,932), over every curve event as of now; a curve tape that is not there is not a failure, because the pool tape is the required evidence (review of PR #42). Cost: H5 rescans every trade event since migration (and the curve tape) on each evaluation, so it grows with the token's age; watch it in the dry run, and cache per pool if it shows. The backtest feed must emit the same trade-event keys.
 - **2026-10-03 · Time units live in `config/time.ts`.** The money-literal guard bans numbers of 1,000 or more outside `config/`, so the gates import minute, hour and day lengths from there.
 - **2026-10-03 · GATE-1b: our own deployer index, fed only with released events.** `DeployerIndex` is held by the strategy and observes every market event the engine releases, so it is as of now by construction; each answer is also filtered to now. It counts each creator's mints from FEED-1's create events (`logs:pump:CreateEvent:<mint>` from the logs stream and `pump:CreateEvent:<mint>` from fetched transactions, one count per mint at its earliest block time) and rug labels from `rug:<mint>` facts `{ mint, creator }`, each dated when it was recorded. Processed-commitment creates are counted: a create that is later rolled back can only raise the count, never lower it. No rug labeller exists yet, and §7 gives no rug rule, so none is invented here. Rug labels count only once a reviewed labeller is wired by an explicit flag (`GateDeps.rugLabeller: 'RUG-1'`), never because some `rug:` fact exists, and only while its own `coverage:rugs:*` facts show it covered the whole look-back (same rules as creates). Until then every evaluation that reaches H14, live and backtest, rejects with H16 `not-covered` (neededBy H14, "rug labels unavailable (no reviewed labeller; RUG-1)"; changed by the RUG-1 review, 2026-10-04, from a note that let H14 pass), and the soft feature `indexRugs` is unknown: no labels is never read as zero rugs. The deployer-count half stays enforced (supervisor, 2026-10-03).
 - **2026-10-03 · H14 checks creates coverage itself, whatever built the index.** It reads the as-of history of FEED-1's `coverage:creates:start|gap|resume` facts (several watches share each key). Coverage begins at a start, which must be reported by the look-back start. An open gap (`toSlot` null) stays uncovered until a bounded gap or a resume with the same `via` and `fromSlot`, or a new start on the same `via`. A bounded (lossy) gap reported at or after the look-back start is uncovered. A resume restores the range. Unreadable coverage facts count as open gaps. Gaps from every watch count, even if another watch was up (the safe side). Any of these rejects as H16 `not-covered` (input `coverage`), so a gap can never make H14 count fewer mints. Ranges are judged by when they were reported, because the gate has no slot-to-time map: a gap cannot end after its report. The backtest feed must emit the same coverage facts (dataset gaps as bounded gaps).
@@ -310,3 +409,9 @@ One row per decision in the table; detailed module decisions follow in sections 
 - **2026-10-03 · A non-zero tail on a SOL market should block that market.** Every SOL-quoted event sampled has a zero tail. If one stops being zero, or a tail length other than 8 appears, the unpublished field is live where we price. Ruling: refuse that market until the field is identified (safest default). This belongs where per-market evidence is checked (GATE, or the worker's feed), so it is a follow-up task for the supervisor to assign; DEC-1 already exposes `trailing` and `extra`.
 - **2026-10-03 · The 3 new event discriminators stay `other`.** No published name matches them, and none appeared in 89 sampled blocks. DATA-1 has rows that carry them, so their signatures are the way to study them.
 - **2026-10-03 · Regime boundary.** Per ARCHITECTURE §13.2, the upgrade is a platform change. Backtest and validation use slot 452,654,883 as the boundary, which matches DATA-1's `program_upgrade_2026_10_02` label; pump's own change starts at 452,654,933. DATA-1's "about 20:00 UTC" should read 15:47 UTC.
+- **2026-10-03 · Earliest usable day (UPG-1b).**
+  - Decoding is usable from 2026-07-16 Melbourne, after B1. From there, PumpSwap events carry every field our layouts name except the two holder-reward fields, which are added at B4.
+  - Trade economics like today's hold only from 2026-09-13 Melbourne (after B4); 07-22 (after B2) to 09-10 (B3) is one earlier regime, and 09-10 to 09-13 a short one between B3 and B4.
+  - Ruling: download 2026-07-20 to 10-01 as planned. The lead-in features (deployer and creator history) do not depend on BOOST, so B2 inside the lead-in is harmless. Use B2, B3 and B4 as labelled regime boundaries, place the sealed holdout after B4, and report walk-forward results per regime.
+  - Options considered: (a) this ruling; (b) start the decision window at 09-13. (b) leaves about 19 days, below the owner's 30-day minimum. (a) is the safest that still meets it.
+- **2026-10-03 · QA change needed before the 60-day download.** DATA-1's `verdict.mjs` fails a day on any "older layout". Every day before B4 has TradeEvent, BuyEvent and SellEvent 16 bytes shorter, so every such day would fail. The rule should allow exactly that layout, and only before slot 446,462,733 (PumpSwap) or 446,462,760 (pump). It should also list B2, B3 and B4 beside 2026-10-02 as regime boundaries. This is DATA-1's change, not made here.
