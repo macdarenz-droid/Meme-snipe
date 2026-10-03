@@ -290,7 +290,7 @@ describe('signing heights and skipped slots', () => {
     : [r]));
   // The premise of the next test: no drops and every landing well under the 150-block blockhash life.
   const calm = (f: typeof FILL_CONFIG): typeof FILL_CONFIG => ({ ...f, scenarios: Object.fromEntries(Object.entries(f.scenarios).map(([k, s]) => [k, {
-    ...s, dropPpm: 0n, landingTail: { ppm: 0n, slots: [1] }, congestion: { ...s.congestion, network: { ...s.congestion.network, enterPpm: 0n }, pool: { ...s.congestion.pool, maxEnterPpm: 0n }, providerFailPpm: 0n },
+    ...s, dropPpm: 0n, landingTail: { ppm: 0n, slots: [1] }, congestion: { ...s.congestion, network: { ...s.congestion.network, enterPpm: 0n, maxEnterPpm: 0n }, providerFailPpm: 0n },
   }])) as unknown as typeof f.scenarios });
   test('with no dropped attempts and landing under 150 slots, nothing expires, whatever the seed and scenario', () => {
     let betweenHeartbeats = 0;

@@ -9,8 +9,8 @@
 // | landPpm (base 0.66 / 0.49)         | §11 defaults (landing of pump trades)          | assumption  | observed-chain landing of comparable    |
 // |   conservative 0.1 lower           | supervisor margin                              | assumption  | transactions in DATA-1, then the        |
 // | landingSlots, landingTail          | §11 p50/p90 latency; tail is a stress margin   | assumption  | owner-authorised canary. The dry run    |
-// | congestion (network, pool,         | stress budget; no measured congestion data     | assumption  | sends nothing, so it cannot refine      |
-// |   provider failures)               |                                                | assumption  | landing: these stay as set through it   |
+// | congestion (shared network state,  | stress budget; no measured congestion data     | assumption  | sends nothing, so it cannot refine      |
+// |   activity term, provider failures)|                                                | assumption  | landing: these stay as set through it   |
 // | dropPpm                            | stress margin                                  | assumption  |                                         |
 // | exitRetryHaircutPpm                | proxy for sellers ahead of us                  | assumption  | exit fills of the canary                |
 // | closeSuccessPpm, dustPpm           | none measured                                  | assumption  | observed-chain closes, then the canary  |
@@ -37,8 +37,6 @@ const LAND_LOW = { pumpswap: 560_000n, 'pump-curve': 400_000n } as const;
 const LAND_HIGH = { pumpswap: 760_000n, 'pump-curve': 590_000n } as const;
 // Congestion windows of 150 slots (about one minute, one blockhash lifetime).
 const WINDOW = 150;
-// The network chain restarts from its stationary share every 4,096 windows (about a week of slots).
-const SEGMENT = 4_096;
 
 const VALUES: FillConfig = {
   version: 'fills-2',
@@ -57,8 +55,9 @@ const VALUES: FillConfig = {
   // What each stress field does (sources and status in the table at the top):
   // - dropPpm: share of misses that never reach a block (cost nothing, resolve only at expiry).
   // - landingTail: a few attempts land much later (leader skips, forwarding loss); some then expire.
-  // - congestion: a persistent shared network state and per-pool contention driven by the pool's recent volume, in
-  //   which landing falls and latency rises for every attempt at once; provider failures drop attempts on top.
+  // - congestion: one persistent network state shared by every position and provider, whose entry probability rises
+  //   with the previous window's market volume (never congestion on its own); landing falls and latency rises for
+  //   every attempt at once; provider failures drop attempts on top.
   // - exitRetryHaircutPpm: each repeated exit on a position gets that much less, as other sellers drain the pool.
   // - closeSuccessPpm, dustPpm: the atomic sell-and-close outcome that decides whether rent comes back.
   scenarios: {
@@ -66,7 +65,7 @@ const VALUES: FillConfig = {
     base: {
       name: 'base', landPpm: LAND, dropPpm: 300_000n,
       landingTail: { ppm: 30_000n, slots: [15, 30, 60] },
-      congestion: { windowSlots: WINDOW, segmentWindows: SEGMENT, network: { enterPpm: 30_000n, stayPpm: 600_000n }, pool: { enterPpmPerSol: 5_000n, maxEnterPpm: 200_000n, stayPpm: 600_000n }, providerFailPpm: 5_000n, landFactorPpm: 600_000n, extraLandingSlots: 8 },
+      congestion: { windowSlots: WINDOW, network: { enterPpm: 30_000n, activityEnterPpmPerSol: 500n, maxEnterPpm: 200_000n, stayPpm: 600_000n }, providerFailPpm: 5_000n, landFactorPpm: 600_000n, extraLandingSlots: 8 },
       exitRetryHaircutPpm: 25_000n,
       delay: 'measured',
       discoverySlots: [2, 3, 4, 5, 8], landingSlots: [1, 2, 2, 3, 4],
@@ -77,7 +76,7 @@ const VALUES: FillConfig = {
     conservative: {
       name: 'conservative', landPpm: LAND_LOW, dropPpm: 200_000n,
       landingTail: { ppm: 50_000n, slots: [30, 60, 120] },
-      congestion: { windowSlots: WINDOW, segmentWindows: SEGMENT, network: { enterPpm: 60_000n, stayPpm: 750_000n }, pool: { enterPpmPerSol: 10_000n, maxEnterPpm: 400_000n, stayPpm: 750_000n }, providerFailPpm: 20_000n, landFactorPpm: 400_000n, extraLandingSlots: 20 },
+      congestion: { windowSlots: WINDOW, network: { enterPpm: 60_000n, activityEnterPpmPerSol: 1_000n, maxEnterPpm: 400_000n, stayPpm: 750_000n }, providerFailPpm: 20_000n, landFactorPpm: 400_000n, extraLandingSlots: 20 },
       exitRetryHaircutPpm: 50_000n,
       delay: 'adverse',
       discoverySlots: [17], landingSlots: [6],
@@ -87,7 +86,7 @@ const VALUES: FillConfig = {
     optimistic: {
       name: 'optimistic', landPpm: LAND_HIGH, dropPpm: 400_000n,
       landingTail: { ppm: 10_000n, slots: [8, 15] },
-      congestion: { windowSlots: WINDOW, segmentWindows: SEGMENT, network: { enterPpm: 10_000n, stayPpm: 500_000n }, pool: { enterPpmPerSol: 2_000n, maxEnterPpm: 100_000n, stayPpm: 500_000n }, providerFailPpm: 1_000n, landFactorPpm: 800_000n, extraLandingSlots: 2 },
+      congestion: { windowSlots: WINDOW, network: { enterPpm: 10_000n, activityEnterPpmPerSol: 200n, maxEnterPpm: 100_000n, stayPpm: 500_000n }, providerFailPpm: 1_000n, landFactorPpm: 800_000n, extraLandingSlots: 2 },
       exitRetryHaircutPpm: 10_000n,
       delay: 'measured',
       discoverySlots: [1, 2], landingSlots: [1],

@@ -12,21 +12,20 @@ export type ScenarioName = 'base' | 'conservative' | 'optimistic';
 export const SCENARIO_NAMES: readonly ScenarioName[] = ['base', 'conservative', 'optimistic'];
 
 /**
- * Correlated failures over windows of slots (supervisor ruling after external review):
- * - one persistent network state shared by every attempt: a two-state chain over windows (enter, stay);
- * - per pool, contention whose entry probability follows the pool's own volume in the previous, complete window
- *   (causal), and which persists while it holds;
+ * Correlated failures over windows of slots (supervisor rulings after external review):
+ * - congestion is one persistent network state shared by every open position and every provider at once: a
+ *   two-state chain over windows (enter, stay). Market activity in the previous, complete window (all pools' real
+ *   quote volume, causal) may raise the entry probability, up to a cap; it never defines congestion on its own;
  * - provider failures on top: in a window where the send path is down, attempts never reach a block.
- * An attempt broadcast while the network or its pool is congested lands less often and later.
+ * An attempt broadcast while the network is congested lands less often and later.
  */
 export interface Congestion {
   readonly windowSlots: number;
-  /** The network chain restarts from its stationary share every this many windows (order-independent answers). */
-  readonly segmentWindows: number;
-  readonly network: { readonly enterPpm: bigint; readonly stayPpm: bigint };
-  readonly pool: {
-    /** Entry probability per SOL of the pool's volume in the previous window, ppm, up to maxEnterPpm. */
-    readonly enterPpmPerSol: bigint;
+  readonly network: {
+    /** Entry probability with no market activity, ppm. */
+    readonly enterPpm: bigint;
+    /** Added entry probability per SOL of the previous window's market volume, ppm, up to maxEnterPpm in total. */
+    readonly activityEnterPpmPerSol: bigint;
     readonly maxEnterPpm: bigint;
     readonly stayPpm: bigint;
   };
@@ -149,54 +148,49 @@ export const windowOf = (slot: bigint, s: FillScenario): bigint => {
 
 const draw = (seed: string): bigint => ppmDraw(createRng(seed));
 
+/** The network state's entry probability given the previous window's market volume (lamports), ppm. */
+export const networkEnterPpm = (s: FillScenario, volumeLamports: bigint): bigint => {
+  const n = s.congestion.network;
+  const v = n.enterPpm + mulDiv(volumeLamports < 0n ? 0n : volumeLamports, n.activityEnterPpmPerSol, LAMPORTS_PER_SOL, 'floor');
+  return v > n.maxEnterPpm ? n.maxEnterPpm : v;
+};
+
 /**
  * The shared network state, window by window: a two-state chain from the seed, so a burst lasts 1 / (1 - stay)
- * windows on average. The chain restarts from its stationary share every `segmentWindows` windows (config),
- * which makes each window's state independent of the order windows are asked in.
+ * windows on average. It starts at the first window asked from the chain's stationary share at no activity, then
+ * steps forward one window at a time, each entry probability set by the window before's market volume (`volumeBefore`,
+ * already complete when asked). Windows are asked in time order; an earlier one than the first is refused.
  */
 export class NetworkState {
   readonly #seed: string;
   readonly #s: FillScenario;
-  readonly #segments = new Map<bigint, boolean[]>();
+  readonly #volumeBefore: (win: bigint) => bigint;
+  #first: bigint | null = null;
+  readonly #states: boolean[] = [];
 
-  constructor(seed: string, s: FillScenario) {
+  constructor(seed: string, s: FillScenario, volumeBefore: (win: bigint) => bigint = () => 0n) {
     this.#seed = seed;
     this.#s = s;
+    this.#volumeBefore = volumeBefore;
   }
 
   congested(win: bigint): boolean {
-    const n = this.#s.congestion.segmentWindows;
-    if (!Number.isSafeInteger(n) || n < 1) throw new RangeError('congestion segmentWindows must be >= 1');
-    const SEGMENT = BigInt(n);
-    const seg = win / SEGMENT;
-    let states = this.#segments.get(seg);
-    if (states === undefined) {
-      states = [];
-      this.#segments.set(seg, states);
-    }
     const { enterPpm, stayPpm } = this.#s.congestion.network;
-    const leave = PPM - stayPpm;
-    const stationary = enterPpm + leave === 0n ? 0n : mulDiv(enterPpm, PPM, enterPpm + leave, 'floor');
-    const k = Number(win - seg * SEGMENT);
-    while (states.length <= k) {
-      const w = seg * SEGMENT + BigInt(states.length);
-      const u = draw(`${this.#seed}:network:${w}`);
-      states.push(states.length === 0 ? u < stationary : u < (states[states.length - 1]! ? stayPpm : enterPpm));
+    if (this.#first === null) {
+      const leave = PPM - stayPpm;
+      const stationary = enterPpm + leave === 0n ? 0n : mulDiv(enterPpm, PPM, enterPpm + leave, 'floor');
+      this.#first = win;
+      this.#states.push(draw(`${this.#seed}:network:${win}`) < stationary);
     }
-    return states[k]!;
+    if (win < this.#first) throw new RangeError(`network state asked for window ${win} before its first, ${this.#first}`);
+    while (this.#first + BigInt(this.#states.length) <= win) {
+      const w = this.#first + BigInt(this.#states.length);
+      const before = this.#states[this.#states.length - 1]!;
+      this.#states.push(draw(`${this.#seed}:network:${w}`) < (before ? stayPpm : networkEnterPpm(this.#s, this.#volumeBefore(w))));
+    }
+    return this.#states[Number(win - this.#first)]!;
   }
 }
-
-/** Pool contention's entry probability from the pool's volume in the previous window (lamports), ppm. */
-export const poolEnterPpm = (s: FillScenario, volumeLamports: bigint): bigint => {
-  const p = s.congestion.pool;
-  const v = mulDiv(volumeLamports < 0n ? 0n : volumeLamports, p.enterPpmPerSol, LAMPORTS_PER_SOL, 'floor');
-  return v > p.maxEnterPpm ? p.maxEnterPpm : v;
-};
-
-/** Whether `pool` is contended in `window`: it stays with stayPpm when it was in the window before, else enters by volume. */
-export const poolContended = (seed: string, pool: string, win: bigint, before: boolean, volumeLamports: bigint, s: FillScenario): boolean =>
-  draw(`${seed}:pool:${pool}:${win}`) < (before ? s.congestion.pool.stayPpm : poolEnterPpm(s, volumeLamports));
 
 /** Whether the send path is down in `window`. */
 export const providerDown = (seed: string, win: bigint, s: FillScenario): boolean => draw(`${seed}:provider:${win}`) < s.congestion.providerFailPpm;

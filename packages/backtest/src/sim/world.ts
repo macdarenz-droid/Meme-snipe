@@ -4,7 +4,7 @@
 // swaps see its impact (market.ts). Results come back to the engine only as feed events, never as return values.
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { type EffectRunner, type Moment, OFF_CHAIN, type Rng } from '../../../core/src/engine/index.ts';
-import { accountGetsDust, attemptFee, drawAttempt, drawCloseSucceeds, NetworkState, poolContended, providerDown, windowOf, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
+import { accountGetsDust, attemptFee, drawAttempt, drawCloseSucceeds, NetworkState, providerDown, windowOf, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import type { LadderStep } from '../../../core/src/config/index.ts';
 import type { RawAmount, Lamports } from '../../../core/src/units/index.ts';
@@ -29,7 +29,7 @@ export interface AttemptRecord {
   fill: Fill | null;
   /** Venue fees, impact and extra slippage of a filled attempt. */
   costs: ExecutionCosts | null;
-  /** Broadcast while the shared network state or the attempt's pool was congested. */
+  /** Broadcast while the shared network state was congested. */
   readonly congested: boolean;
   /** Why the attempt never reached a block regardless of its draw: the send path was down, or a failure burst. */
   readonly forcedDrop: 'provider' | 'burst' | null;
@@ -44,7 +44,7 @@ export interface WorldDeps {
   readonly market: Market;
   readonly book: () => Book;
   readonly rng: Rng;
-  /** Seed of the network, pool and provider states (one draw per window, shared by every attempt in it). */
+  /** Seed of the network and provider states (one draw per window, shared by every attempt in it). */
   readonly congestionSeed: string;
   /** Deterministic failure bursts (stress): `perDay` evenly spaced from each UTC midnight, each `durationMs` long. */
   readonly failureBursts?: { readonly perDay: number; readonly durationMs: number } | undefined;
@@ -72,23 +72,12 @@ export class World implements EffectRunner {
   #seq = 0;
 
   readonly #network: NetworkState;
-  readonly #pools = new Map<string, { win: bigint; contended: boolean }>();
 
   constructor(deps: WorldDeps) {
     this.#d = deps;
-    this.#network = new NetworkState(`${deps.congestionSeed}:net`, deps.scenario);
+    this.#network = new NetworkState(`${deps.congestionSeed}:net`, deps.scenario, (win) => deps.market.volumeBefore(win));
     const b = deps.failureBursts;
     if (b !== undefined && (!Number.isSafeInteger(b.perDay) || b.perDay < 0 || !Number.isSafeInteger(b.durationMs) || b.durationMs < 0)) throw new RangeError('failure bursts need integers >= 0');
-  }
-
-  /** Pool contention in `win`: persists from the window before, else enters by the pool's volume in the window before. */
-  #contended(pool: string, win: bigint): boolean {
-    const st = this.#pools.get(pool);
-    if (st !== undefined && st.win === win) return st.contended;
-    const before = st !== undefined && st.win === win - 1n && st.contended;
-    const contended = poolContended(this.#d.congestionSeed, pool, win, before, this.#d.market.volumeBefore(pool, win), this.#d.scenario);
-    this.#pools.set(pool, { win, contended });
-    return contended;
   }
 
   /** True when `ms` falls inside a deterministic failure burst. */
@@ -157,8 +146,8 @@ export class World implements EffectRunner {
     const attempt = i.attempts.find((a) => a.signature === signature);
     if (attempt === undefined) throw new RangeError(`world: ${signature} is not an attempt of ${intentId}`);
     const win = windowOf(now.slot, this.#d.scenario);
-    const pool = this.#d.poolOf(i.intent.mint);
-    const congested = this.#network.congested(win) || (pool !== undefined && this.#contended(pool, win));
+    // One shared state: every open position and every provider sees the same congestion in a window.
+    const congested = this.#network.congested(win);
     const drawn = drawAttempt(this.#d.rng, this.#d.scenario, i.intent.venue, congested);
     // Provider failures and stress bursts sit on top: the attempt never reaches a block, so it can only expire. The
     // lifecycle then waits for its last valid height before any replacement (never an unsafe one).

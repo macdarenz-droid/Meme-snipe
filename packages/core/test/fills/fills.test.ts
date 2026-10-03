@@ -3,7 +3,7 @@ import type { PoolState } from '../../src/amm/index.ts';
 import { FILL_CONFIG } from '../../src/config/index.ts';
 import { createRng } from '../../src/engine/index.ts';
 import {
-  type FillScenario, type ObservedFees, type RealSwap, NetworkState, ShiftedPool, attemptFee, blockedExitValue, drawAttempt, poolContended, poolEnterPpm, providerDown, executeBuy, executeSell,
+  type FillScenario, type ObservedFees, type RealSwap, NetworkState, ShiftedPool, attemptFee, blockedExitValue, drawAttempt, networkEnterPpm, providerDown, executeBuy, executeSell,
   replaySwap, withSlippage,
 } from '../../src/fills/index.ts';
 import { bps } from '../../src/units/index.ts';
@@ -206,19 +206,22 @@ describe('stress in the fill model (BT-1c item 4)', () => {
   test('one persistent shared network state over slot windows: bursts last, at the stationary share, from the seed', () => {
     const net = c.congestion.network;
     const a = new NetworkState('seed', c);
-    const b2 = new NetworkState('seed', c);
+    const again = new NetworkState('seed', c);
     const windows = 200_000;
     let on = 0;
     let runs = 0;
     let prev = false;
+    const seq: boolean[] = [];
     for (let w = 0n; w < BigInt(windows); w++) {
       const x = a.congested(w);
+      seq.push(x);
       if (x) on++;
       if (x && !prev) runs++;
       prev = x;
     }
-    // Deterministic, and the same answer when asked out of order.
-    for (const w of [5n, 199_999n, 17n]) expect(b2.congested(w)).toBe(a.congested(w));
+    // Deterministic from the seed; asking again gives the same answer; an earlier window than the first is refused.
+    for (const w of [5n, 17n, 199_999n]) expect(again.congested(w)).toBe(seq[Number(w)]);
+    expect(() => again.congested(4n)).toThrow(RangeError);
     const enter = Number(net.enterPpm) / 1e6;
     const stay = Number(net.stayPpm) / 1e6;
     expect(Math.abs(on / windows - enter / (enter + 1 - stay))).toBeLessThan(0.01);
@@ -227,19 +230,20 @@ describe('stress in the fill model (BT-1c item 4)', () => {
     expect(1 / (1 - stay)).toBeGreaterThan(2);
   });
 
-  test('pool contention follows the pool\'s own recent volume and persists; provider failures sit on top', () => {
-    const p = c.congestion.pool;
-    expect(poolEnterPpm(c, 0n)).toBe(0n);
-    expect(poolEnterPpm(c, 10n * 1_000_000_000n)).toBeGreaterThan(poolEnterPpm(c, 1_000_000_000n));
-    expect(poolEnterPpm(c, 10n ** 18n)).toBe(p.maxEnterPpm);
-    let entered = 0;
-    let stayed = 0;
-    for (let w = 0n; w < 20_000n; w++) {
-      if (poolContended('s', 'pool', w, false, 10n ** 18n, c)) entered++;
-      if (poolContended('s', 'pool', w, true, 0n, c)) stayed++;
+  test('market activity raises the entry probability up to a cap, never below the base; provider failures sit on top', () => {
+    const n = c.congestion.network;
+    expect(networkEnterPpm(c, 0n)).toBe(n.enterPpm);
+    expect(networkEnterPpm(c, 100n * 1_000_000_000n)).toBeGreaterThan(networkEnterPpm(c, 1_000_000_000n));
+    expect(networkEnterPpm(c, 10n ** 18n)).toBe(n.maxEnterPpm);
+    const busy = new NetworkState('act', c, () => 10n ** 18n);
+    const calm = new NetworkState('act', c, () => 0n);
+    let b = 0;
+    let q = 0;
+    for (let w = 0n; w < 50_000n; w++) {
+      if (busy.congested(w)) b++;
+      if (calm.congested(w)) q++;
     }
-    expect(Math.abs(entered / 20_000 - Number(p.maxEnterPpm) / 1e6)).toBeLessThan(0.01);
-    expect(Math.abs(stayed / 20_000 - Number(p.stayPpm) / 1e6)).toBeLessThan(0.01);
+    expect(b).toBeGreaterThan(q);
     let down = 0;
     for (let w = 0n; w < 50_000n; w++) if (providerDown('s', w, c)) down++;
     expect(Math.abs(down / 50_000 - Number(c.congestion.providerFailPpm) / 1e6)).toBeLessThan(0.005);
@@ -305,9 +309,8 @@ describe('scenario ordering', () => {
   });
   better('network congestion entry', c.congestion.network.enterPpm, b.congestion.network.enterPpm, o.congestion.network.enterPpm, (x, y) => x >= y);
   better('network congestion persistence', c.congestion.network.stayPpm, b.congestion.network.stayPpm, o.congestion.network.stayPpm, (x, y) => x >= y);
-  better('pool contention per SOL of volume', c.congestion.pool.enterPpmPerSol, b.congestion.pool.enterPpmPerSol, o.congestion.pool.enterPpmPerSol, (x, y) => x >= y);
-  better('pool contention cap', c.congestion.pool.maxEnterPpm, b.congestion.pool.maxEnterPpm, o.congestion.pool.maxEnterPpm, (x, y) => x >= y);
-  better('pool contention persistence', c.congestion.pool.stayPpm, b.congestion.pool.stayPpm, o.congestion.pool.stayPpm, (x, y) => x >= y);
+  better('network entry per SOL of market activity', c.congestion.network.activityEnterPpmPerSol, b.congestion.network.activityEnterPpmPerSol, o.congestion.network.activityEnterPpmPerSol, (x, y) => x >= y);
+  better('network entry cap', c.congestion.network.maxEnterPpm, b.congestion.network.maxEnterPpm, o.congestion.network.maxEnterPpm, (x, y) => x >= y);
   better('provider failures', c.congestion.providerFailPpm, b.congestion.providerFailPpm, o.congestion.providerFailPpm, (x, y) => x >= y);
   better('landing share in a burst', c.congestion.landFactorPpm, b.congestion.landFactorPpm, o.congestion.landFactorPpm, (x, y) => x <= y);
   better('extra landing slots in a burst', c.congestion.extraLandingSlots, b.congestion.extraLandingSlots, o.congestion.extraLandingSlots, lower);

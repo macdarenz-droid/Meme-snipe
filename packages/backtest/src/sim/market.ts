@@ -108,7 +108,7 @@ export interface MarketOptions {
    * receipt times, so nothing is added.
    */
   readonly observe: { readonly slots: number; readonly providerMs: number; readonly blackouts: readonly number[]; readonly seed: string } | null;
-  /** Slots per window of the pool-volume tally (the fill model's congestion window). */
+  /** Slots per window of the market-volume tally (the fill model's congestion window). */
   readonly volumeWindowSlots: number;
   /** Puts driver work into the replay (the observation release). */
   readonly hook: (h: Hook) => void;
@@ -153,23 +153,18 @@ export class Market {
     this.#seriesAt = (opts.series ?? []).map(() => 0);
   }
 
-  /** Each pool's quote volume (lamports, real swaps) in its latest window and the window before. */
-  readonly #volume = new Map<string, { win: bigint; cur: bigint; prev: bigint }>();
+  /** All pools' real quote volume (lamports) per window: the market activity the network state's entry reads. */
+  readonly #volume = new Map<bigint, bigint>();
 
-  /** The pool's real quote volume in window `win - 1` (complete when asked during `win`), lamports. */
-  volumeBefore(pool: string, win: bigint): bigint {
-    const v = this.#volume.get(pool);
-    if (v === undefined) return 0n;
-    if (v.win === win) return v.prev;
-    return v.win === win - 1n ? v.cur : 0n;
+  /** Market volume in window `win - 1` (complete when asked during `win`), lamports. */
+  volumeBefore(win: bigint): bigint {
+    return this.#volume.get(win - 1n) ?? 0n;
   }
 
-  #tally(pool: string, slot: bigint, lamports: bigint): void {
+  #tally(slot: bigint, lamports: bigint): void {
     const win = slot / BigInt(this.#opts.volumeWindowSlots);
-    const v = this.#volume.get(pool);
-    if (v === undefined) this.#volume.set(pool, { win, cur: lamports, prev: 0n });
-    else if (v.win === win) v.cur += lamports;
-    else this.#volume.set(pool, { win, cur: lamports, prev: v.win === win - 1n ? v.cur : 0n });
+    this.#volume.set(win, (this.#volume.get(win) ?? 0n) + lamports);
+    this.#volume.delete(win - 2n);
   }
 
   track(pool: string): PoolTrack | undefined {
@@ -324,7 +319,7 @@ export class Market {
       return [];
     }
     if (!r.replayed) this.skippedSwaps++;
-    this.#tally(row.pool, row.slot, r.trade.userQuote);
+    this.#tally(row.slot, r.trade.userQuote);
     const view: PoolView = {
       pool: row.pool, mint: row.baseMint, quoteMint: row.quoteMint,
       baseReserve: r.shifted.baseReserve, quoteVault: r.shifted.quoteVault, virtualQuoteReserves: r.shifted.virtualQuoteReserves,
