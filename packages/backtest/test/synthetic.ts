@@ -62,6 +62,7 @@ export const syntheticRows = (o: SyntheticOptions = {}): DatasetRow[] => {
           baseAmount: 0n, quoteAmount: 0n, userQuote: 0n, pre: p.state,
           fees: { split: { lp: bps(20), protocol: bps(5), creator: bps(95) }, buybackFeeBps: bps(5000), instruction: 'v1' },
           baseSupply: 1_000_000_000_000_000n, ixName: buy ? 'buy_exact_quote_in' : 'sell', user: key(`u${s}`),
+          userTokenAccount: key(`ata:u${s}:${p.mint}`), userTokenOwner: key(`u${s}`),
         };
         const q = replaySwap(p.state, swap);
         if (q.ok) {

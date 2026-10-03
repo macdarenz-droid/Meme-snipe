@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { refuseSymlink } from './registry-git.ts';
 import { canonical } from '../../core/src/engine/index.ts';
-import { burnHoldout, createHoldoutRegistry, type HoldoutCounts, type HoldoutRegistry, registerHoldout, sealHoldout } from '../../core/src/stats/index.ts';
+import { burnHoldout, createHoldoutRegistry, type HoldoutCounts, holdoutReady, type HoldoutRegistry, openHoldout, registerHoldout, sealHoldout } from '../../core/src/stats/index.ts';
 import type { DatasetRow } from './dataset/rows.ts';
 import { melbourneDay } from './report.ts';
 import { type RunOptions, runBacktest, s0Config } from './run.ts';
@@ -90,15 +90,250 @@ export interface HoldoutRunRecord {
   readonly reason: string;
 }
 
+/**
+ * The registered procedure of a holdout (BT-2 writes it through setHoldoutPlan): its window and cutoff (they must equal
+ * the research config's), the tie salt, the α schedule of attempts, decoder boundaries and the procedure in words.
+ * Fixed once set.
+ */
+export interface HoldoutPlan {
+  readonly fromDay: string;
+  readonly entryCutoffDay: string;
+  readonly tailEndDay: string;
+  /** Universes in the Holm family, fixed before n_power is simulated. */
+  readonly familySize: number;
+  readonly tieSalt: string;
+  /** Family α of attempt 1, and of attempt k ≥ 2: laterBase / 2^(k-1). */
+  readonly alpha: { readonly first: number; readonly laterBase: number };
+  /** Decoder boundaries inside the window: reported before and after, not gating (B5). */
+  readonly decoderBoundaries: readonly { readonly label: string; readonly at: string }[];
+  readonly procedure: readonly string[];
+  /** Anything else the study fixes in advance (sizing estimates, study id); recorded, never read here. */
+  readonly details: Readonly<Record<string, unknown>>;
+}
+
+/** An attempt's window in UTC data days: entries from `fromDay` until `entryCutoffDay`, observed until `tailEndDay` (exclusive). */
+export interface AttemptWindow {
+  readonly fromDay: string;
+  readonly entryCutoffDay: string;
+  readonly tailEndDay: string;
+}
+
+/** Entry days of an attempt k ≥ 2 (from the first whole UTC day after its registration). */
+export const LATER_ATTEMPT_ENTRY_DAYS = 28;
+
+/** One attempt of the shared error budget: registering it spends it, whatever happens later. */
+export interface HoldoutAttempt {
+  readonly index: number;
+  /** The family α this attempt spends: G2 takes it as familyAlpha (Holm across the attempt's universes). */
+  readonly alpha: number;
+  /** Attempt 1: the plan's window. Attempt k ≥ 2: its own, written at registration. */
+  readonly window: AttemptWindow;
+  readonly holdoutIds: readonly string[];
+  readonly configIds: Readonly<Record<string, string>>;
+  readonly registeredAt: string;
+  readonly started: string | null;
+  /** `spent`: ended by endAttempt after its tail without an opening, `why` saying how (failed G1, short, never run). */
+  readonly ended: { readonly at: string; readonly outcome: 'sealed' | 'failed' | 'spent'; readonly why?: string } | null;
+}
+
+/** A G1 result for a registered holdout; appended, never replaced, so a fail stays on record. */
+export interface G1Record {
+  readonly holdoutId: string;
+  readonly configId: string;
+  readonly passed: boolean;
+  /** What G1 was evaluated on (days, dataset), for the record. */
+  readonly evaluatedOn: string;
+  readonly at: string;
+}
+
+/** The one holdout registry (supervisor ruling): typed sections, every write one pushed commit. */
 export interface HoldoutStore {
+  readonly version: 2;
+  readonly plan: HoldoutPlan | null;
+  /** The windows: STATS-1's registry of every holdout. */
   readonly registry: HoldoutRegistry;
+  readonly attempts: readonly HoldoutAttempt[];
+  readonly g1: readonly G1Record[];
+  /** Every run attempt: refused, started, failed, sealed. */
   readonly runs: readonly HoldoutRunRecord[];
 }
 
+/**
+ * The ruled error budget (DECISIONS "Follow-up rulings", holdout): attempt 1 at family α 0.04, attempt k ≥ 2 at
+ * 0.01 / 2^(k-1), so all attempts together stay under 0.05. Any other plan is refused. G2 uses the attempt's α as its
+ * family α (Holm across the attempt's universes).
+ */
+export const RULED_ALPHA = { first: 0.04, laterBase: 0.01 } as const;
+
+export const attemptAlpha = (plan: HoldoutPlan, index: number): number => {
+  if (!Number.isSafeInteger(index) || index < 1) throw new RangeError(`attempt index must be >= 1, got ${index}`);
+  return index === 1 ? plan.alpha.first : plan.alpha.laterBase / 2 ** (index - 1);
+};
+
 export const readHoldoutStore = (path: string): HoldoutStore => {
   refuseSymlink(path);
-  return JSON.parse(readFileSync(path, 'utf8')) as HoldoutStore;
+  const s = JSON.parse(readFileSync(path, 'utf8')) as HoldoutStore;
+  if (s.version !== 2 || s.registry === undefined || !Array.isArray(s.attempts) || !Array.isArray(s.g1) || !Array.isArray(s.runs)) {
+    throw new RangeError(`${path} is not a version-2 holdout registry`);
+  }
+  return s;
 };
+
+/**
+ * One write: checks the shared copy, reads the store, applies `fn` and publishes the result as one commit. `fn` may
+ * return an error to raise after the result is published (a refusal that burns must still be recorded).
+ */
+const mutate = <T>(a: HoldoutAuthority, message: string, fn: (s: HoldoutStore | null) => { readonly store: HoldoutStore; readonly value: T; readonly error?: Error }): T => {
+  a.vcs?.check();
+  const before = existsSync(a.registryPath) ? readHoldoutStore(a.registryPath) : null;
+  const out = fn(before);
+  // Nothing changed (the same plan set again): no write, no commit.
+  if (before === null || canonical(before) !== canonical(out.store)) saveStore(a.registryPath, out.store, a.vcs, message);
+  if (out.error !== undefined) throw out.error;
+  return out.value;
+};
+
+/** Sets the plan once, before any attempt; it must agree with the research config's holdout. Creates the registry. */
+export const setHoldoutPlan = (a: HoldoutAuthority, plan: HoldoutPlan, research: RunOptions['research']): HoldoutStore => {
+  const h = research.holdout;
+  if (plan.fromDay !== h.fromDay || plan.entryCutoffDay !== h.entryCutoffDay || plan.tailEndDay !== h.tailEndDay) {
+    throw new RangeError(`the plan's window ${plan.fromDay}, cutoff ${plan.entryCutoffDay}, tail end ${plan.tailEndDay} is not the research config's (${h.fromDay}, ${h.entryCutoffDay}, ${h.tailEndDay})`);
+  }
+  if (plan.alpha.first !== RULED_ALPHA.first || plan.alpha.laterBase !== RULED_ALPHA.laterBase) {
+    throw new RangeError(`the plan's α (${plan.alpha.first}, ${plan.alpha.laterBase}) is not the ruled α budget (attempt 1: ${RULED_ALPHA.first}; attempt k ≥ 2: ${RULED_ALPHA.laterBase} / 2^(k-1))`);
+  }
+  return mutate(a, 'Holdout plan: set', (s) => {
+    if (s !== null && s.plan !== null) {
+      if (canonical(s.plan) === canonical(plan)) return { store: s, value: s };
+      throw new RangeError('the holdout plan is fixed once set');
+    }
+    const store: HoldoutStore = s === null
+      ? { version: 2, plan, registry: createHoldoutRegistry(plan.familySize), attempts: [], g1: [], runs: [] }
+      : { ...s, plan };
+    return { store, value: store };
+  });
+};
+
+/** Why an attempt ends without an opening. */
+export type SpentReason = 'g1-failed' | 'short' | 'never-run';
+
+/**
+ * Ends attempt `index` once its tail has passed without an opening, and only for a reason the store proves for every
+ * holdout of it not yet burned or opened (so a mandatory opening is never skipped):
+ * - 'g1-failed': its latest G1 is not a pass for the registered configuration (g1Blocks);
+ * - 'short': it is not ready (holdoutReady with the required trades and days, passed in);
+ * - 'never-run': its seal is still 'registered'.
+ * Those holdouts are burned 'spent' and the attempt is marked ended; then the next attempt may register. Refused before
+ * the tail end and for any other reason. (When STATS-1c moves α into the core registry, this rule moves there too.)
+ */
+export const endAttempt = (a: HoldoutAuthority, index: number, why: SpentReason, now: Date = new Date(),
+  size?: { readonly requiredTrades: number; readonly minDays: number }): HoldoutStore =>
+  mutate(a, `Holdout attempt ${index}: spent (${why})`, (s) => {
+    if (why !== 'g1-failed' && why !== 'short' && why !== 'never-run') throw new RangeError(`holdout attempt ${index}: "${String(why)}" is not a reason an attempt may end without an opening`);
+    const at = s?.attempts.find((x) => x.index === index);
+    if (s === null || at === undefined) throw new RangeError(`holdout attempt ${index} is not registered`);
+    if (now.getTime() < Date.parse(`${at.window.tailEndDay}T00:00:00Z`)) throw new RangeError(`holdout attempt ${index}: its tail runs until ${at.window.tailEndDay}`);
+    if (why === 'short' && size === undefined) throw new RangeError(`holdout attempt ${index}: 'short' needs the required trades and days`);
+    const open = at.holdoutIds.map((id) => s.registry.entries.find((x) => x.holdoutId === id)!).filter((e) => e !== undefined && !e.burned && e.seal !== 'opened');
+    for (const e of open) {
+      if (why === 'g1-failed' && g1Blocks(s, e.holdoutId) === null) throw new RangeError(`holdout ${e.holdoutId}: its latest G1 passed, so it must be opened, not spent`);
+      if (why === 'short' && holdoutReady(e, size!.requiredTrades, size!.minDays)) throw new RangeError(`holdout ${e.holdoutId} is ready (${e.counts?.entries} entries on ${e.counts?.entryDays} days), so it is not short`);
+      if (why === 'never-run' && e.seal !== 'registered') throw new RangeError(`holdout ${e.holdoutId} was run (${e.seal}), so it is not never-run`);
+    }
+    let registry = s.registry;
+    for (const e of open) registry = burnHoldout(registry, e.holdoutId, 'spent', why).registry;
+    const ended = at.ended?.outcome === 'spent' ? at.ended : { at: now.toISOString(), outcome: 'spent' as const, why };
+    const store = { ...s, registry, attempts: s.attempts.map((x) => (x.index === index ? { ...x, ended } : x)) };
+    return { store, value: store };
+  });
+
+/** Appends a G1 result for a registered holdout. */
+export const recordHoldoutG1 = (a: HoldoutAuthority, rec: Omit<G1Record, 'at'>, now: Date = new Date()): HoldoutStore =>
+  mutate(a, `Holdout ${rec.holdoutId}: G1 ${rec.passed ? 'pass' : 'fail'} for ${rec.configId.slice(0, 12)}`, (s) => {
+    if (s === null || !s.registry.entries.some((e) => e.holdoutId === rec.holdoutId)) throw new RangeError(`holdout ${rec.holdoutId} is not registered`);
+    const store = { ...s, g1: [...s.g1, { ...rec, at: now.toISOString() }] };
+    return { store, value: store };
+  });
+
+/** Why `holdoutId` may not be opened (null when it may): its latest G1 must be a pass for its registered configuration. */
+export const g1Blocks = (s: HoldoutStore, holdoutId: string): string | null => {
+  const e = s.registry.entries.find((x) => x.holdoutId === holdoutId);
+  if (e === undefined) return `${holdoutId} is not registered`;
+  const last = s.g1.filter((g) => g.holdoutId === holdoutId).at(-1);
+  if (last === undefined) return `${holdoutId} has no G1 result on record`;
+  if (last.configId !== e.configId) return `${holdoutId}'s latest G1 is for ${last.configId}, registered ${e.configId}`;
+  return last.passed ? null : `${holdoutId}'s latest G1 did not pass`;
+};
+
+/**
+ * Opens a sealed holdout for scoring, once (STATS-1's openHoldout), only when its latest G1 passed for the registered
+ * configuration; otherwise refused. Misuse (early, mismatched, repeated) burns it, as STATS-1 rules.
+ */
+export const openSealedHoldout = (a: HoldoutAuthority, holdoutId: string,
+  open: { readonly configId: string; readonly ledgerHash: string; readonly requiredTrades: number; readonly minDays: number; readonly nowMs: number }): HoldoutStore =>
+  mutate(a, `Holdout ${holdoutId}: open`, (s) => {
+    if (s === null) throw new RangeError(`holdout ${holdoutId} is not registered`);
+    const blocked = g1Blocks(s, holdoutId);
+    if (blocked !== null) throw new RangeError(`holdout ${holdoutId} cannot be opened: ${blocked}`);
+    const step = openHoldout(s.registry, holdoutId, open);
+    const store = { ...s, registry: step.registry };
+    return { store, value: store, ...(step.ok ? {} : { error: new RangeError(step.reason) }) };
+  });
+
+/**
+ * Registers attempt `index` of the shared error budget: one holdout per universe, all on the plan's window, with their
+ * configuration ids. Registering commits the attempt. The index must be the next one: a skipped or repeated index is
+ * refused and burns the holdouts it names (and, if repeated, the earlier attempt's), recorded before the refusal.
+ */
+const addDays = (day: string, n: number): string => new Date(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+const daysBetween = (from: string, to: string): number => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+
+export const registerAttempt = (a: HoldoutAuthority,
+  req: { readonly index: number; readonly entries: readonly { readonly holdoutId: string; readonly universe: string; readonly configId: string }[]; readonly fromDay?: string },
+  now: Date = new Date()): HoldoutStore =>
+  mutate(a, `Holdout attempt ${req.index}: registered ${req.entries.map((e) => e.holdoutId).join(', ')}`, (s) => {
+    if (s === null || s.plan === null) throw new RangeError('no holdout plan: set the plan before registering an attempt');
+    if (req.entries.length === 0) throw new RangeError('an attempt needs at least one holdout');
+    const plan = s.plan;
+    const next = s.attempts.length + 1;
+    if (req.index !== next) {
+      let reg = s.registry;
+      const why = `attempt ${req.index} asked, next is ${next}`;
+      const repeated = s.attempts.find((x) => x.index === req.index);
+      const ids = [...req.entries.map((e) => e.holdoutId), ...(repeated?.holdoutIds ?? [])];
+      for (const id of ids) {
+        const e = reg.entries.find((x) => x.holdoutId === id);
+        if (e !== undefined && !e.burned) reg = burnHoldout(reg, id, 'reconfigured', why).registry;
+      }
+      return { store: { ...s, registry: reg }, value: s, error: new RangeError(`holdout attempt refused: ${why}`) };
+    }
+    // Attempt 1 takes the plan's window. Attempt k ≥ 2 is registered only after every earlier holdout is scored or
+    // burned, and starts on the first whole UTC day after its registration (a requested start may be later, never
+    // earlier), with 28 entry days and the plan's tail length.
+    let aw: AttemptWindow;
+    if (req.index === 1) aw = { fromDay: plan.fromDay, entryCutoffDay: plan.entryCutoffDay, tailEndDay: plan.tailEndDay };
+    else {
+      const open = s.attempts.flatMap((x) => x.holdoutIds).filter((id) => s.registry.entries.find((e) => e.holdoutId === id)?.burned !== true);
+      if (open.length > 0) throw new RangeError(`holdout attempt ${req.index}: earlier holdouts are not scored yet (${open.join(', ')})`);
+      const earliest = addDays(now.toISOString().slice(0, 10), 1);
+      const fromDay = req.fromDay ?? earliest;
+      if (fromDay < earliest) throw new RangeError(`holdout attempt ${req.index}: its window cannot start before ${earliest}, the first whole UTC day after registration`);
+      const cutoff = addDays(fromDay, LATER_ATTEMPT_ENTRY_DAYS);
+      aw = { fromDay, entryCutoffDay: cutoff, tailEndDay: addDays(cutoff, daysBetween(plan.entryCutoffDay, plan.tailEndDay)) };
+    }
+    const clashing = s.attempts.filter((x) => aw.fromDay < x.window.tailEndDay && x.window.fromDay < aw.tailEndDay).map((x) => x.index);
+    if (clashing.length > 0) throw new RangeError(`holdout attempt ${req.index}: its window overlaps attempt ${clashing.join(', ')}`);
+    const window = { fromDay: aw.fromDay, toDay: addDays(aw.tailEndDay, -1) };
+    const clash = startedOverlapping(s, window, null);
+    if (clash.length > 0) throw new RangeError(`holdout attempt ${req.index}: its window overlaps ${clash.join(', ')}, already run`);
+    const registry = req.entries.reduce((r, e) => registerHoldout(r, { holdoutId: e.holdoutId, universe: e.universe, configId: e.configId, ...window }), s.registry);
+    const attempt: HoldoutAttempt = {
+      index: req.index, alpha: attemptAlpha(plan, req.index), window: aw, holdoutIds: req.entries.map((e) => e.holdoutId),
+      configIds: Object.fromEntries(req.entries.map((e) => [e.holdoutId, e.configId])), registeredAt: now.toISOString(), started: null, ended: null,
+    };
+    const store = { ...s, registry, attempts: [...s.attempts, attempt] };
+    return { store, value: store };
+  });
 
 /** Writes and publishes the store; when publishing fails, the local file goes back to what it was and the error stands. */
 const saveStore = (path: string, store: HoldoutStore, vcs: RegistryVcs | undefined, message: string): void => {
@@ -123,22 +358,14 @@ export const writeHoldoutStore = (path: string, store: HoldoutStore): void => {
 };
 
 /**
- * Registers a holdout before anything runs: the research config's window (from the reserved start to the end of the
- * tail; entries stop at the cutoff) and the configuration id of exactly these options under this code and dataset.
- * Refuses a universe the strategy does not produce and a window overlapping one already started under any id or
- * universe. Creates the registry file (with the Holm family size) if it does not exist.
+ * Registers S0's holdout attempt: the configuration id of exactly these options under this code and dataset, for each
+ * universe S0 produces (another universe is refused), on the plan's window.
  */
-export const authoriseHoldout = (a: HoldoutAuthority, familySize: number, entry: { readonly holdoutId: string; readonly universe: string }, o: RunOptions): HoldoutStore => {
-  a.vcs?.check();
+export const authoriseHoldout = (a: HoldoutAuthority, req: { readonly attempt: number; readonly holdouts: readonly { readonly holdoutId: string; readonly universe: string }[] }, o: RunOptions): HoldoutStore => {
   const produced = s0Config(o).universe;
-  if (entry.universe !== produced) throw new RangeError(`holdout ${entry.holdoutId}: the strategy produces ${produced}, not ${entry.universe}`);
-  const window = holdoutWindow(o);
-  const store: HoldoutStore = existsSync(a.registryPath) ? readHoldoutStore(a.registryPath) : { registry: createHoldoutRegistry(familySize), runs: [] };
-  const clash = startedOverlapping(store, window, null);
-  if (clash.length > 0) throw new RangeError(`holdout ${entry.holdoutId}: its window overlaps ${clash.join(', ')}, already run`);
-  const next = { ...store, registry: registerHoldout(store.registry, { ...entry, ...window, configId: holdoutConfigId(o, a) }) };
-  saveStore(a.registryPath, next, a.vcs, `Holdout ${entry.holdoutId}: registered ${window.fromDay}..${window.toDay}, entries before ${o.research.holdout.entryCutoffDay}`);
-  return next;
+  for (const h of req.holdouts) if (h.universe !== produced) throw new RangeError(`holdout ${h.holdoutId}: the strategy produces ${produced}, not ${h.universe}`);
+  const configId = holdoutConfigId(o, a);
+  return registerAttempt(a, { index: req.attempt, entries: req.holdouts.map((h) => ({ ...h, configId })) });
 };
 
 export interface HoldoutTargets extends HoldoutAuthority {
@@ -190,11 +417,19 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
     else if (e.configId !== configId) refuse(id, `configuration ${configId} is not the authorised ${e.configId}`);
     else if (e.fromDay !== t.window.fromDay || e.toDay !== t.window.toDay) refuse(id, `window ${t.window.fromDay}..${t.window.toDay} is not the authorised ${e.fromDay}..${e.toDay}`);
   }
-  for (const id of Object.values(t.byUniverse)) log(id, 'started', '');
-  save(`Holdout ${Object.values(t.byUniverse).join(', ')}: started`);
+  // One sealed ledger and one endpoint for every holdout of the attempt: the run must feed all of them.
+  const ids = Object.values(t.byUniverse);
+  const attempt = store.attempts.find((x) => ids.every((id) => x.holdoutIds.includes(id)));
+  if (attempt === undefined || attempt.holdoutIds.length !== ids.length) refuse(ids[0] ?? '?', 'the run must feed every holdout of its registered attempt, and only those');
+  const markAttempt = (patch: Partial<HoldoutAttempt>) => {
+    store = { ...store, attempts: store.attempts.map((x) => (x.index === attempt!.index ? { ...x, ...patch } : x)) };
+  };
+  for (const id of ids) log(id, 'started', '');
+  markAttempt({ started: new Date().toISOString() });
+  save(`Holdout ${ids.join(', ')}: started`);
   t.vcs?.check();
-  // Entries stop at the cutoff; the run keeps observing to the end of the tail so every position can finish.
-  const cutoff = Date.parse(`${o.research.holdout.entryCutoffDay}T00:00:00Z`);
+  // Entries stop at the attempt's cutoff; the run keeps observing to the end of the tail so every position can finish.
+  const cutoff = Date.parse(`${attempt!.window.entryCutoffDay}T00:00:00Z`);
   // Rows outside the authorised window stop the run (and so burn the holdout).
   const inWindow = (): Iterator<DatasetRow> => {
     const it = o.rows();
@@ -214,6 +449,7 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
     const why = err instanceof Error ? err.message : String(err);
     burnAll(why);
     for (const id of Object.values(t.byUniverse)) log(id, 'failed', why);
+    markAttempt({ ended: { at: new Date().toISOString(), outcome: 'failed' } });
     save(`Holdout ${Object.values(t.byUniverse).join(', ')}: failed and burned`);
     throw err;
   }
@@ -223,6 +459,7 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
     store = { ...store, registry: step.registry };
     log(id, step.ok ? 'sealed' : 'failed', step.reason);
   }
+  markAttempt({ ended: { at: new Date().toISOString(), outcome: 'sealed' } });
   save(`Holdout ${Object.values(t.byUniverse).join(', ')}: sealed ${sealed.ledgerHash.slice(0, 12)}`);
   return sealed;
 };
