@@ -197,21 +197,38 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     // The other two stay sealed for a later call, which also runs Holm over the family of three.
     expect(r.registry.entries.filter((e) => e.seal === 'sealed').map((e) => e.universe)).toEqual(['U2', 'U3']);
   }, 120_000);
-  test('family-wise error stays ≤ α when universes of one family are scored in separate calls (simulated)', () => {
-    // Zero true edge in every universe, family of 3. Call 1 scores U1 alone, call 2 scores U2 alone (U3 never ready).
-    // Each call runs Holm over the whole family, so each look is at ≤ α/3; a family-wise error is any universe passing.
-    const reps = 300;
+  // Family-wise error across separate G2 calls (supervisor ruling and review of c20806d). All three universes have zero
+  // true edge; the registry family is 3; a family-wise error is any universe passing in any call. ≥ 2,000 runs per
+  // variant; the bound is α plus two Monte Carlo standard errors (0.05 + 2·√(0.05·0.95/2000) ≈ 0.0597).
+  const FWER_REPS = 2000;
+  const FWER_BOUND = 0.05 + 2 * Math.sqrt((0.05 * 0.95) / FWER_REPS);
+  const nullTrades = (seed: number) => bracketTrades(seed, 0, 25, 20);
+  const fwer = (plan: readonly (readonly string[])[], seedBase: number): number => {
     let anyPass = 0;
-    for (let r = 0; r < reps; r++) {
+    for (let r = 0; r < FWER_REPS; r++) {
       let reg = sealed(3, ['U1', 'U2', 'U3']);
-      const first = gateG2(g2Pass({ registry: reg, universes: [u('U1', { trades: bracketTrades(20_000 + 2 * r, 0, 25, 20) }, 3)], rng: createRng(r) }));
-      reg = first.registry;
-      const second = gateG2(g2Pass({ registry: reg, universes: [u('U2', { trades: bracketTrades(20_001 + 2 * r, 0, 25, 20) }, 3)], rng: createRng(r + 99_999) }));
-      expect(second.registry.entries.map((e) => e.seal)).toEqual(['opened', 'opened', 'sealed']);
-      if (first.passed || second.passed) anyPass++;
+      let rejected = false;
+      plan.forEach((call, k) => {
+        const res = gateG2(g2Pass({
+          registry: reg,
+          universes: call.map((name, j) => u(name, { trades: nullTrades(seedBase + 10 * r + 3 * k + j) }, 3)),
+          rng: createRng(seedBase + 7 * r + k),
+          replicates: 400,
+        }));
+        reg = res.registry;
+        if (res.passed) rejected = true;
+      });
+      expect(reg.entries.every((e) => e.seal === 'opened')).toBe(true);
+      if (rejected) anyPass++;
     }
-    expect(anyPass / reps).toBeLessThanOrEqual(0.05);
-  }, 300_000);
+    return anyPass / FWER_REPS;
+  };
+  test('family-wise error ≤ α: U1 and U2 in one call, U3 in a later call (2,000 null runs)', () => {
+    expect(fwer([['U1', 'U2'], ['U3']], 1_000_000)).toBeLessThanOrEqual(FWER_BOUND);
+  }, 600_000);
+  test('family-wise error ≤ α: one universe per call, three calls (2,000 null runs)', () => {
+    expect(fwer([['U1'], ['U2'], ['U3']], 2_000_000)).toBeLessThanOrEqual(FWER_BOUND);
+  }, 600_000);
   test('n_power must come from this universe\'s walk-forward', () => {
     const other = wf.map(({ day, rNet }) => ({ day, rNet: rNet + 0.01 }));
     const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), walkForward: summarizeWalkForward(other) } })] }));
