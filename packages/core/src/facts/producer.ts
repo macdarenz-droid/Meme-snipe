@@ -10,7 +10,7 @@
 //
 // Rule (owner): missing, stale or failed data produces no fact, or an explicit not-covered one (a flagged or
 // `complete: false` fact the gates reject). Nothing here ever fills a gap with a value that passes.
-import { HOUR_MS, MINUTE_MS, SECOND_MS } from '../config/time.ts';
+import { DAY_MS, HOUR_MS, MINUTE_MS, SECOND_MS } from '../config/time.ts';
 import type { Policy } from '../config/policy.ts';
 import {
   type Address, type PumpEventData, PUMP_AMM_PROGRAM, decodeMint, decodePool, decodeTokenAccount, fromBase64,
@@ -32,6 +32,9 @@ import {
   parseHoldersAllRead, parseJupiterAuditRead, parseRugCheckRead, parseSimRead, parseSolUsdBar, type AccountsRead, type FunderRead,
   type HoldersAllRead, unwrap,
 } from './raw.ts';
+
+/** Holder facts not formed, per UTC day and reason (the coverage report reads it; it never feeds a gate). */
+export const HOLDER_ABSTENTIONS_KEY = 'facts/abstentions:holders';
 
 export interface FactWrite {
   readonly key: string;
@@ -205,37 +208,48 @@ export const stampCompleteness = (value: unknown): unknown => {
  * still mint (supply could grow), a mint read after the account read, or balances that do not sum to the supply.
  */
 type CompleteHolder = { mint: string; address: string; owner: string; ownerProgram: string | null; amount: bigint; delegate: string | null; delegatedAmount: bigint };
-export const completeHolders = (r: HoldersAllRead): { supply: bigint; coverage: 'all'; completeness: 'complete'; accounts: CompleteHolder[] } | null => {
-  if (r.mintSlot > r.slot) return null;
+export type HolderRefusal = 'mint-read-after-scan' | 'mint-can-mint' | 'mint-undecodable' | 'repeated-address' | 'wrong-program' | 'undecodable-account' | 'other-mint' | 'sum-mismatch';
+type CompleteSet = { supply: bigint; coverage: 'all'; completeness: 'complete'; accounts: CompleteHolder[] };
+
+/** The complete set, or why the read cannot prove one (counted per day so a silent abstention shows up). */
+export const checkHolders = (r: HoldersAllRead): { readonly ok: true; readonly set: CompleteSet } | { readonly ok: false; readonly reason: HolderRefusal } => {
+  const no = (reason: HolderRefusal) => ({ ok: false as const, reason });
+  if (r.mintSlot > r.slot) return no('mint-read-after-scan');
   let supply: bigint;
   try {
     const m = decodeMint(fromBase64(r.mintData), r.program as Address);
-    if (m.mintAuthority !== null) return null;
+    if (m.mintAuthority !== null) return no('mint-can-mint');
     supply = m.supply;
   } catch {
-    return null;
+    return no('mint-undecodable');
   }
   const programs = new Map(r.ownerPrograms.map((o) => [o.owner, o.program]));
   const seen = new Set<string>();
   const accounts: CompleteHolder[] = [];
   let sum = 0n;
   for (const a of r.accounts) {
-    if (seen.has(a.address) || a.owner !== r.program) return null;
+    if (seen.has(a.address)) return no('repeated-address');
+    if (a.owner !== r.program) return no('wrong-program');
     seen.add(a.address);
     let t: ReturnType<typeof decodeTokenAccount>;
     try {
       t = decodeTokenAccount(fromBase64(a.data), a.owner as Address);
     } catch {
-      return null;
+      return no('undecodable-account');
     }
-    if (t.mint !== r.mint) return null;
+    if (t.mint !== r.mint) return no('other-mint');
     sum += t.amount;
     // Delegates ride along for GATE-1e (it attributes min(delegatedAmount, amount) to the delegate in the numerators).
     if (t.amount > 0n) accounts.push({ mint: r.mint, address: a.address, owner: t.owner, ownerProgram: programs.get(t.owner) ?? null, amount: t.amount, delegate: t.delegate, delegatedAmount: t.delegatedAmount });
   }
-  if (sum !== supply) return null;
+  if (sum !== supply) return no('sum-mismatch');
   accounts.sort((a, b) => (a.address < b.address ? -1 : 1));
-  return { supply, coverage: 'all', completeness: 'complete', accounts };
+  return { ok: true, set: { supply, coverage: 'all', completeness: 'complete', accounts } };
+};
+
+export const completeHolders = (r: HoldersAllRead): CompleteSet | null => {
+  const c = checkHolders(r);
+  return c.ok ? c.set : null;
 };
 
 // ---------- Per-mint state ----------
@@ -299,6 +313,8 @@ export class FactProducer {
   readonly #graduates: GraduatesFact['items'][number][] = [];
   readonly #sol = new Map<number, bigint>();
   readonly #volume = new Map<number, VolumeHour>();
+  #abstain = new Map<string, number>();
+  #abstainDay = -1;
   #head: bigint | null = null;
   #graduatesChanged = false;
   /** The last insiders value written per mint, without its receipt time: unchanged values are not written again. */
@@ -699,8 +715,16 @@ export class FactProducer {
     } else if (key.startsWith('read:holders-all:')) {
       const r = parseHoldersAllRead(v);
       if (r === null || key !== RAW.holdersAll(r.mint) || !usable(r.commitment)) return;
-      const f = completeHolders(r);
-      if (f !== null) put(holdersKey(r.mint), { obs: { provider, slot: r.slot, receivedAt: at, quality: [], commitment: r.commitment }, ...f });
+      const c = checkHolders(r);
+      if (c.ok) put(holdersKey(r.mint), { obs: { provider, slot: r.slot, receivedAt: at, quality: [], commitment: r.commitment }, ...c.set });
+      else {
+        // Abstentions per UTC day and reason, for the coverage report: a holder fact that never formed is visible.
+        const day = Math.floor(at / DAY_MS);
+        if (this.#abstainDay !== day) this.#abstain = new Map();
+        this.#abstainDay = day;
+        this.#abstain.set(c.reason, (this.#abstain.get(c.reason) ?? 0) + 1);
+        put(HOLDER_ABSTENTIONS_KEY, { obs: { provider: 'facts', slot: null, receivedAt: at, quality: [] }, day, counts: Object.fromEntries([...this.#abstain].sort()), last: { mint: r.mint, reason: c.reason } });
+      }
     } else if (key.startsWith('read:sim:')) {
       const r = parseSimRead(v);
       if (r === null || key !== RAW.sim(r.mint)) return;

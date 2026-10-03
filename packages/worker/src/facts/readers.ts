@@ -98,8 +98,8 @@ export class FactRpc {
   }
 
   /** Every account of `program` whose bytes at offset 0 are `mint` (token accounts of that mint), in one response. */
-  async getProgramAccounts(program: string, mint: string, minContextSlot: bigint, priority: Priority): Promise<{ slot: bigint; accounts: { address: string; owner: string; data: string }[] }> {
-    const r = await this.call('getProgramAccounts', [program, { encoding: 'base64', commitment: 'confirmed', withContext: true, minContextSlot: Number(minContextSlot), filters: holderFilters(program, mint) }], priority);
+  async getProgramAccounts(program: string, mint: string, minContextSlot: bigint, priority: Priority, token2022: Token2022Filter = 'indexed'): Promise<{ slot: bigint; accounts: { address: string; owner: string; data: string }[] }> {
+    const r = await this.call('getProgramAccounts', [program, { encoding: 'base64', commitment: 'confirmed', withContext: true, minContextSlot: Number(minContextSlot), filters: holderFilters(program, mint, token2022) }], priority);
     const slot = contextSlot(r, 'getProgramAccounts');
     const value = (r as Obj)['value'];
     if (!Array.isArray(value)) throw new ProviderError('helius', 'shape', 'getProgramAccounts value is not an array');
@@ -160,10 +160,16 @@ export class FactRpc {
  * call (never the cursor-paginated V2, which has no cross-page consistency). A Token-2022 account of exactly 165 bytes
  * (no extensions) would be missed; the exact sum to supply then fails and no holder fact is made, never a pass.
  */
-export const holderFilters = (program: string, mint: string): readonly Record<string, unknown>[] =>
+export const holderFilters = (program: string, mint: string, token2022: Token2022Filter = 'indexed'): readonly Record<string, unknown>[] =>
   program === TOKEN_2022_PROGRAM
-    ? [{ memcmp: { offset: 0, bytes: mint } }, { memcmp: { offset: 165, bytes: TOKEN_ACCOUNT_TYPE_B58 } }]
+    ? token2022 === 'mintOnly' ? [{ memcmp: { offset: 0, bytes: mint } }] : [{ memcmp: { offset: 0, bytes: mint } }, { memcmp: { offset: 165, bytes: TOKEN_ACCOUNT_TYPE_B58 } }]
     : [{ dataSize: 165 }, { memcmp: { offset: 0, bytes: mint } }];
+/**
+ * `indexed` (default until gpa-probe runs) or `mintOnly` (every Token-2022 account of the mint, including 165-byte ones
+ * without extensions). Supervisor ruling: switch the default to mintOnly once the probe shows it is served in budget.
+ */
+export type Token2022Filter = 'mintOnly' | 'indexed';
+
 /** Base58 of the single byte 2 (AccountType::Account). */
 export const TOKEN_ACCOUNT_TYPE_B58 = '3';
 
@@ -191,6 +197,7 @@ export interface FactReadersOptions {
   readonly coinbase?: ThirdParty;
   /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
+  readonly token2022Filter?: Token2022Filter;
 }
 
 /** Trial default (supervisor ruling): 100 complete holder scans a UTC day, about 1,200 Helius credits at the published
@@ -335,7 +342,7 @@ export class FactReaders {
       if (m.account === null) throw new Error('mint account missing');
       // Supply first (slot A), then the scan at a bank no older than A (slot B >= A): with no mint authority the supply
       // can only fall, so balances summing to the supply at A prove nothing was left out and nothing burned between.
-      const gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority);
+      const gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority, this.#o.token2022Filter ?? 'indexed');
       if (gpa.slot < m.slot) throw new Error(`scan at slot ${gpa.slot} is older than the supply read at ${m.slot}`);
       const owners = new Set<string>();
       for (const a of gpa.accounts) {
