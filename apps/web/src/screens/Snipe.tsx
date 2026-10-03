@@ -1,8 +1,11 @@
+import { useMemo, useState } from 'react';
+import { defaultApi } from '../api/client.ts';
+import type { DashboardApi, Mode } from '../api/contract.ts';
+import { isMode } from '../api/modes.ts';
 import { Badge, Empty, Section } from '../components/ui.tsx';
+import { Dashboard } from '../dashboard/Dashboard.tsx';
+import { ModeSwitch } from '../dashboard/Sections.tsx';
 import { formatUsd } from '../lib/format.ts';
-import { emptyResults, type ResultsView } from '../performance/types.ts';
-import { Results } from '../performance/Results.tsx';
-import { RiskMeters } from '../performance/RiskMeters.tsx';
 import { sessionLabel } from '../shell/Status.tsx';
 import { EMPTY_SESSION, type SessionView } from './types.ts';
 
@@ -39,42 +42,53 @@ export function SessionCard({ session }: { session: SessionView }) {
   );
 }
 
-const FUNNEL = ['Discovered', 'Data checks passed', 'Risk checks passed', 'Entered'];
+const MODE_KEY = 'zeroed.dashboardMode';
 
-export function Snipe({ session = EMPTY_SESSION, results = emptyResults(currentMonth()) }: { session?: SessionView; results?: ResultsView }) {
-  return (
-    <div className="screen-grid">
-      <SessionCard session={session} />
-
-      <Section title="Open trade">
-        <Empty title="No open trade" />
-      </Section>
-
-      <Section title="Candidates">
-        <ol className="funnel">
-          {FUNNEL.map((stage) => (
-            <li key={stage}>
-              <span>{stage}</span>
-              <span className="num muted">—</span>
-            </li>
-          ))}
-        </ol>
-      </Section>
-
-      <Section title="Risk">
-        <RiskMeters meters={results.risk} />
-      </Section>
-
-      <Section title="Decision journal" className="span-2">
-        <Empty title="No decisions recorded" />
-      </Section>
-
-      <Results view={results} />
-    </div>
-  );
+function savedMode(fallback: Mode): Mode {
+  try {
+    const m = localStorage.getItem(MODE_KEY);
+    return isMode(m) ? m : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
-export function currentMonth(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+function saveMode(m: Mode): void {
+  try {
+    localStorage.setItem(MODE_KEY, m);
+  } catch {
+    // Storage blocked: the choice lasts for this visit only.
+  }
+}
+
+interface SnipeProps {
+  session?: SessionView;
+  api?: DashboardApi;
+  /** First calendar month per mode (Samples screen). */
+  months?: Partial<Record<Mode, string>>;
+}
+
+export function Snipe({ session = EMPTY_SESSION, api, months }: SnipeProps) {
+  const [mode, setMode] = useState<Mode>(() => savedMode(session.mode));
+  const source = useMemo(() => api ?? defaultApi(), [api]);
+  const change = (m: Mode) => {
+    setMode(m);
+    saveMode(m);
+  };
+  const sessionCard =
+    mode === session.mode ? (
+      <SessionCard session={session} />
+    ) : (
+      <Section title="Session">
+        <Empty title={mode === 'live' ? 'Live trading off' : 'No session'} />
+      </Section>
+    );
+  return (
+    <div className="screen-grid">
+      <div className="span-2 dash-toolbar">
+        <ModeSwitch mode={mode} onChange={change} />
+      </div>
+      <Dashboard key={mode} api={source} mode={mode} session={sessionCard} {...(months ? { months } : {})} />
+    </div>
+  );
 }
