@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Console, once: makes the owner's 6-word backup code and shows it one time. Only its public half (an age
+# recipient) is kept here, in /etc/zeroed/backup-recipients; the words themselves are never stored, so
+# write them down and keep them safe. Backups (and the daily copy sent to Telegram) can then be opened
+# anywhere with the words: node derive-key.mjs --backup, then age -d.
+set -euo pipefail
+umask 022
+. /usr/local/lib/zeroed/common.sh
+lock
+code="$(/usr/local/bin/node -e '
+  const { randomInt } = require("node:crypto");
+  const words = require("node:fs").readFileSync("/usr/local/share/zeroed/eff_large_wordlist.txt", "utf8").trim().split("\n");
+  if (words.length !== 7776) process.exit(1);
+  console.log(Array.from({ length: 6 }, () => words[randomInt(words.length)]).join(" "));
+')"
+recipient="$(printf '%s' "$code" | /usr/local/bin/node /usr/local/lib/zeroed/derive-key.mjs --backup | age-keygen -y)"
+{
+  age-keygen -y /etc/zeroed/age/host.key
+  printf '%s\n' "$recipient"
+} > /etc/zeroed/backup-recipients.new
+chmod 0644 /etc/zeroed/backup-recipients.new
+mv -f /etc/zeroed/backup-recipients.new /etc/zeroed/backup-recipients
+printf '%s\n' "$recipient" > "$STATE_DIR/owner_backup_recipient"
+log "Backup code (shown once, not stored here; write it down):"
+log ""
+log "  $code"
+log ""
+log "From the next backup on, backups open with these words. Run this again to replace the code."

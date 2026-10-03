@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Restore drill: decrypts a backup with the given age identity into a scratch directory (never over the
+# live files), checks every file against the manifest, runs SQLite's integrity check, and compares the
+# tables with the live database. Prints PASS or FAIL; exits non-zero on FAIL.
+#   zeroed-restore-drill IDENTITY_FILE [BACKUP_FILE]    (default: the newest backup)
+set -euo pipefail
+umask 077
+
+SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
+OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
+identity="${1:?usage: zeroed-restore-drill IDENTITY_FILE [BACKUP_FILE]}"
+backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1)}"
+[ -n "$backup" ] && [ -f "$backup" ] || { echo "FAIL: no backup found"; exit 1; }
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+fail() { echo "FAIL: $*"; exit 1; }
+
+age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
+[ -f "$work/MANIFEST.sha256" ] || fail "manifest missing"
+(cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null 2>&1 || fail "a file does not match the manifest"
+
+files=0
+while read -r _ rel; do
+  files=$((files + 1))
+  [ "$(sqlite3 "$work/$rel" 'PRAGMA integrity_check;')" = ok ] || fail "$rel failed the integrity check"
+  tables="$(sqlite3 "$work/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;")"
+  for t in $tables; do
+    printf '  %s %s: %s rows\n' "$rel" "$t" "$(sqlite3 "$work/$rel" "SELECT count(*) FROM \"$t\";")"
+  done
+  if [ -f "$SRC/$rel" ]; then
+    live="$(sqlite3 -readonly "$SRC/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
+    [ "$live" = "$tables" ] || fail "$rel tables differ from the live database"
+  fi
+done < "$work/MANIFEST.sha256"
+[ "$files" -gt 0 ] || fail "backup holds no files"
+echo "PASS: $(basename "$backup"), $files file(s) restored to a scratch directory and verified."

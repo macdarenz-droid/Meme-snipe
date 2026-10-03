@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Console only: makes a new one-time deploy code, for rotating the keys. Put it in the DEPLOY_CODE secret
+# in GitHub, then run Deploy; every key is replaced and the worker restarts after reconciling.
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+lock
+new_deploy_code
+log "Deploy code:  $(cat "$DEPLOY_CODE_FILE")"

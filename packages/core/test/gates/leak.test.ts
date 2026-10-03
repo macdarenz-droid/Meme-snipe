@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { OFF_CHAIN, leakTest, replayHashes, replayOnce, type FeedEvent, type Moment, type ProofRun, type Strategy } from '../../src/engine/index.ts';
 import { DAY_MS, HOUR_MS, SOL_USD_KEY, deployerKey, evaluateHardRejects, evaluateRegime, holdersKey, mintKey } from '../../src/gates/index.ts';
 import { CONFIG } from '../fixtures.ts';
-import { ACC, DEV, MINT, NOW, SLOT, T, deps, holderAccounts, obs, passingFacts, request, solPoints, streamObs, type Facts } from './world.ts';
+import { ACC, DEV, MINT, NOW, SLOT, T, deps, session, holderAccounts, obs, passingFacts, request, solPoints, streamObs, type Facts } from './world.ts';
 
 const TOKEN = 'FutureOnlyMarker1111111111111111111111111111';
 const tickAt = (k: number): Moment => ({ slot: SLOT + BigInt(k), txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: T + k * 400 });
@@ -36,7 +36,7 @@ const run = (planted: boolean): ProofRun => {
   const strategy = (): Strategy => ({
     onMarket: (e, ctx) => {
       if (e.key !== 'tick') return [];
-      const hard = evaluateHardRejects(ctx, deps('backtest'), request(), { stopAtFirst: false });
+      const hard = evaluateHardRejects(ctx, deps('backtest', session(), 'RUG-1'), request(), { stopAtFirst: false });
       const regime = evaluateRegime(ctx, deps('backtest'));
       const reasons = [
         ...hard.reasons.map((r) => `${r.gate}:${r.code}:${r.input ?? ''}:${r.neededBy ?? ''}:${r.detail}`),

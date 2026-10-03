@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Receives the keys from the Deploy workflow. While a deploy code is pending (/etc/zeroed/deploy-code), it
+# looks for the release asset "handoff/bundle.age", opens it with the age identity derived from the code,
+# stores each value as an encrypted systemd credential and wipes the code: one use only. A wrong code
+# changes nothing and keeps the code, so the owner can fix the DEPLOY_CODE secret and run Deploy again.
+# Runs every minute from zeroed-pair.timer, and every few seconds from the setup screen. Never prints a
+# value; never set -x.
+set -euo pipefail
+umask 077
+. /usr/local/lib/zeroed/common.sh
+lock
+
+[ -s "$DEPLOY_CODE_FILE" ] || exit 0 # No code pending: nothing can be received (and a replay cannot open).
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+code="$(curl -sS -L -m 30 -o "$WORK/bundle.age" -w '%{http_code}' \
+  "$ZEROED_GITHUB_URL/$ZEROED_REPO/releases/download/handoff/bundle.age" || true)"
+[ "$code" = 200 ] || exit 0
+digest="$(sha256sum "$WORK/bundle.age" | cut -c1-64)"
+seen() { [ "$(cat "$STATE_DIR/last_bundle" 2>/dev/null || true)" = "$digest" ]; }
+note() { seen || log "$1"; printf '%s\n' "$digest" > "$STATE_DIR/last_bundle"; printf '%s\n' "$2" > "$STATE_DIR/handoff_status"; }
+
+# Only a release made by this repository's own workflow counts.
+author="$(curl -fsS -m 30 -H 'Accept: application/vnd.github+json' \
+  "$ZEROED_API_URL/repos/$ZEROED_REPO/releases/tags/handoff" | jq -r '.author.login // empty' || true)"
+if [ "$author" != "github-actions[bot]" ]; then
+  note "Ignored the handoff release: not published by the repository's workflow." "ignored"
+  exit 0
+fi
+
+# Decrypt straight into memory: the identity and the plaintext only ever pass through pipes.
+declare -A v=()
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  k="${line%%=*}"
+  val="${line#*=}"
+  [[ "$k" =~ ^[A-Z][A-Z0-9_]{0,40}$ ]] || { note "Rejected the handoff: bad line." "rejected"; exit 0; }
+  [[ "$val" =~ ^[A-Za-z0-9._:/+=@-]{0,512}$ ]] || { note "Rejected the handoff: bad value for $k." "rejected"; exit 0; }
+  v[$k]="$val"
+done < <(age -d -i <(/usr/local/bin/node /usr/local/lib/zeroed/derive-key.mjs < "$DEPLOY_CODE_FILE") "$WORK/bundle.age" 2>/dev/null || echo "DECRYPT_FAILED=1")
+rm -f "$WORK/bundle.age"
+
+if [ -n "${v[DECRYPT_FAILED]:-}" ] || [ "${v[ZEROED_BUNDLE]:-}" != 1 ]; then
+  note "The handoff does not open with this server's deploy code. Check the DEPLOY_CODE secret in GitHub matches the code on this screen, then run Deploy again." "wrong code"
+  exit 0
+fi
+issued="${v[ISSUED]:-}"
+[[ "$issued" =~ ^[0-9]{1,20}$ ]] || { note "Rejected the handoff: no issue number." "rejected"; exit 0; }
+if [ "$issued" -le "$(cat "$STATE_DIR/last_issued" 2>/dev/null || echo 0)" ]; then
+  note "Ignored an older handoff (issue $issued)." "replay refused"
+  exit 0
+fi
+for k in "${API_NAMES[@]}"; do
+  [ -n "${v[$k]:-}" ] || { note "Rejected the handoff: $k is missing." "rejected"; exit 0; }
+done
+
+for k in "${API_NAMES[@]}"; do printf '%s' "${v[$k]}" | store_cred "${k,,}"; done
+# Watchdog (when Deploy had the Cloudflare secrets): its address and the heartbeat key.
+watchdog="${v[WATCHDOG_URL]:-}"
+if [ -n "$watchdog" ] && [[ "$watchdog" =~ ^https://[A-Za-z0-9.-]+\.workers\.dev$ ]] && [ -n "${v[HEARTBEAT_HMAC_KEY]:-}" ]; then
+  printf '%s' "${v[HEARTBEAT_HMAC_KEY]}" | store_cred heartbeat_hmac_key
+  [ -z "${v[TELEGRAM_WEBHOOK_SECRET]:-}" ] || printf '%s' "${v[TELEGRAM_WEBHOOK_SECRET]}" | store_cred telegram_webhook_secret
+  printf 'WATCHDOG_URL=%s\n' "$watchdog" > /etc/zeroed/worker.env.new
+  chmod 0644 /etc/zeroed/worker.env.new
+  mv -f /etc/zeroed/worker.env.new /etc/zeroed/worker.env
+fi
+v=()
+printf '%s\n' "$issued" > "$STATE_DIR/last_issued"
+printf '%s\n' "$digest" > "$STATE_DIR/last_bundle"
+# Single use: the code is gone, so neither this bundle nor a copy of it can be opened here again.
+shred -u "$DEPLOY_CODE_FILE" 2>/dev/null || rm -f "$DEPLOY_CODE_FILE"
+printf 'keys stored\n' > "$STATE_DIR/handoff_status"
+log "Stored ${#API_NAMES[@]} keys from the handoff (issue $issued); deploy code used up."
+
+if paired; then
+  # Rotation: restart the worker (reconcile first) and tell the owner.
+  if systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
+  notify "Zeroed server: keys replaced (issue $issued). Worker $w." || true
+  set_webhook || log "Could not set the Telegram webhook for the watchdog."
+else
+  [ -s "$PAIR_CODE_FILE" ] || new_pair_code
+fi

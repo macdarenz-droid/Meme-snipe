@@ -23,3 +23,31 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm -r --if-present build
+
+  historical-data:
+    # DATA-1 scanner, QA verdict and CI script tests (offline; no archive access).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GO_VERSION: "1.24.7"
+      GO_SHA256: da18191ddb7db8a9339816f3e2b54bdded8047cdc2a5d67059478f8d1595c43f
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install Go (pinned by version and checksum)
+        run: |
+          curl -fsSLo go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go.tgz && rm go.tgz
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - name: Scanner tests
+        working-directory: research/historical/scanner
+        run: go vet ./... && go test ./...
+      - name: QA tests
+        run: node --test research/historical/qa/*.test.mjs
+      - name: CI script tests
+        run: bash research/historical/ci/test-ci.sh
