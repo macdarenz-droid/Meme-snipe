@@ -7,7 +7,7 @@ export type HardGate = (typeof HARD_GATES)[number];
 /** The facts the gates read, by name. Keys in the as-of store are built from these (facts.ts). */
 export type FactName =
   | 'mint' | 'pool' | 'lp' | 'curve' | 'create' | 'migration' | 'candles' | 'holders' | 'insiders' | 'deployer'
-  | 'stream' | 'sim' | 'xcheck' | 'soft' | 'sol-usd' | 'curve-volume' | 'graduates' | 'exec-health';
+  | 'stream' | 'coverage' | 'sim' | 'xcheck' | 'soft' | 'sol-usd' | 'curve-volume' | 'graduates' | 'exec-health';
 
 /** Why an input could not be used. Each one rejects (H16): unknown, stale or degraded evidence means no trade. */
 export type EvidenceCode =
