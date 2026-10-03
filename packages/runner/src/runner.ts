@@ -3,7 +3,7 @@
 // which resumes from the evidence folder and worker state the previous job saved.
 import { createHash } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { checkStartHealth, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
 import type { WorkerControl } from './control.ts';
 import { checkJournal } from './journal.ts';
@@ -300,16 +300,17 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   function collectRecorded(): void {
     const dir = join(o.stateDir, STATE_FILES.recorder);
     if (!existsSync(dir)) return;
-    for (const name of readdirSync(dir).sort()) {
+    // The real worker keeps one dataset folder per boot (DATA-1's layout: manifest.json and days/<day>/<table>-NNN files);
+    // the stub writes flat files. Every file is listed by its path under recorder/.
+    for (const name of recordedFiles(dir)) {
       const src = join(dir, name);
-      if (!statSync(src).isFile()) continue;
       const path = `recorder/${name}`;
       const data = readFileSync(src);
       const sha256 = createHash('sha256').update(data).digest('hex');
       if (o.keepRecorded === 'copy') {
-        const out = o.recordedDir ?? join(ev, 'recorded');
-        mkdirSync(out, { recursive: true });
-        copyFileSync(src, join(out, name));
+        const out = join(o.recordedDir ?? join(ev, 'recorded'), name);
+        mkdirSync(dirname(out), { recursive: true });
+        copyFileSync(src, out);
         // Shipped with this job's recorded-data artifact; not carried forward in the state artifact.
         rmSync(src);
       }
@@ -318,7 +319,33 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       if (i >= 0) manifest[i] = entry;
       else manifest.push(entry);
     }
+    if (o.keepRecorded === 'copy') removeEmptyDirs(dir);
     writeFileSync(P.manifest, JSON.stringify(manifest, null, 2));
+  }
+};
+
+/** Every file under `dir`, as paths relative to it, sorted. */
+export const recordedFiles = (dir: string): string[] => {
+  const out: string[] = [];
+  const walk = (rel: string): void => {
+    for (const name of readdirSync(join(dir, rel)).sort()) {
+      const r = rel === '' ? name : `${rel}/${name}`;
+      const st = statSync(join(dir, r));
+      if (st.isDirectory()) walk(r);
+      else if (st.isFile()) out.push(r);
+    }
+  };
+  walk('');
+  return out;
+};
+
+/** Removes the folders under `dir` that are left empty (`dir` itself stays). */
+const removeEmptyDirs = (dir: string): void => {
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (!statSync(p).isDirectory()) continue;
+    removeEmptyDirs(p);
+    if (readdirSync(p).length === 0) rmSync(p, { recursive: true });
   }
 };
 

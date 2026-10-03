@@ -159,3 +159,17 @@ describe('stub worker contract', () => {
     expect(run([], env).status).toBe(3);
   });
 });
+
+describe('recorded files', () => {
+  it('lists the real worker\'s per-boot dataset folders by their path, and flat stub files', async () => {
+    const { mkdtempSync, mkdirSync: mk, writeFileSync: wr } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { recordedFiles } = await import('../src/runner.ts');
+    const dir = mkdtempSync(join(tmpdir(), 'recorded-'));
+    mk(join(dir, 'b1', 'days', '2026-10-03'), { recursive: true });
+    wr(join(dir, 'b1', 'manifest.json'), '{}');
+    wr(join(dir, 'b1', 'days', '2026-10-03', 'frames-000.jsonl.zst'), 'x');
+    wr(join(dir, 'stub.jsonl'), 'y');
+    expect(recordedFiles(dir)).toEqual(['b1/days/2026-10-03/frames-000.jsonl.zst', 'b1/manifest.json', 'stub.jsonl']);
+  });
+});

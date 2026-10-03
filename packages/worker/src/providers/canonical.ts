@@ -55,6 +55,11 @@ export type FrameBody =
   | { readonly type: 'account'; readonly slot: bigint; readonly address: string; readonly owner: string; readonly lamports: bigint; readonly data: Uint8Array }
   /** Any other fact: a RugCheck report, a Jupiter Tokens row, a feed status change. */
   | { readonly type: 'offchain'; readonly key: string; readonly value: unknown }
+  /**
+   * A fact that carries its own provenance (a GATE-1 fact with its `obs`, the worker's account snapshot): released
+   * unwrapped, so its reader parses the value itself. Placed like an off-chain fact.
+   */
+  | { readonly type: 'fact'; readonly key: string; readonly value: unknown }
   /** A report that drives the lifecycle (send result, status read), placed like an off-chain fact. */
   | { readonly type: 'world'; readonly event: BookEvent };
 
@@ -197,6 +202,8 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
       }];
     case 'offchain':
       return [{ kind: 'market', id: `${b.key}#${f.seq}`, moment: off, key: b.key, value: { value: b.value, ...meta(f) } }];
+    case 'fact':
+      return [{ kind: 'market', id: `${b.key}#${f.seq}`, moment: off, key: b.key, value: b.value }];
     case 'world':
       return [{ kind: 'world', id: `world#${f.seq}`, moment: off, event: b.event }];
   }
