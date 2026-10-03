@@ -100,7 +100,10 @@ export class World implements EffectRunner {
     }
   }
 
-  #priorityFee(i: IntentState): bigint {
+  #priorityFee(i: IntentState, signedBytesRef?: string): bigint {
+    // The fee is part of the signed transaction: a strategy that chose its rung writes it into the bytes it signed.
+    const signed = signedBytesRef === undefined ? null : /;fee=(\d+)$/.exec(signedBytesRef);
+    if (signed !== null) return BigInt(signed[1]!);
     if (i.intent.purpose === 'entry') return this.#d.network.entryPriorityFee;
     const steps = this.#d.ladder;
     const rung = steps[Math.min(i.attempts.length - 1, steps.length - 1)];
@@ -116,7 +119,7 @@ export class World implements EffectRunner {
     if (attempt === undefined) throw new RangeError(`world: ${signature} is not an attempt of ${intentId}`);
     const draw = drawAttempt(this.#d.rng, this.#d.scenario, i.intent.venue);
     const rec: AttemptRecord = {
-      intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i),
+      intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i, attempt.signedBytesRef),
       lastValidBlockHeight: attempt.lastValidBlockHeight, outcome: 'in_flight', reason: draw.fate,
       landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null,
     };

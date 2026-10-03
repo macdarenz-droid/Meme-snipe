@@ -65,6 +65,12 @@ export interface FactOptions {
   /** Candles kept per mint: the first `candlesHead` after migration and the latest `candlesTail`. */
   readonly candlesHead: number;
   readonly candlesTail: number;
+  /**
+   * Deployer-funded wallets and the dev's linked cluster per mint, from a funding backfill (first funding transaction
+   * of the dev and first 20 buyers, §16.3). Each list is dated when it was complete; before that, or without a
+   * source, the insiders fact is incomplete and H13 rejects.
+   */
+  readonly insiders?: (mint: string) => { readonly knownAtMs: number; readonly funded: readonly string[]; readonly devCluster: readonly string[] } | null;
   /** Slot ranges the dataset did not scan (manifest `coverage_gaps`, "from-to"). */
   readonly gaps?: readonly { readonly fromSlot: bigint; readonly toSlot: bigint }[];
 }
@@ -499,8 +505,14 @@ export class FactProjector {
         .sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.address < b.address ? -1 : 1));
       put('holders', holdersKey(mint), { obs: obs(quality), supply: s.supply, coverage: 'all', accounts });
     }
-    // Deployer-funded wallets and the dev's cluster are not in the dataset (DATA-1 "Not covered"): never complete.
-    put('insiders', insidersKey(mint), { obs: { ...obs(), slot: s.create?.slot ?? m.slot }, complete: false, insiders: [...s.creationBuyers].sort(), devCluster: [] });
+    // Deployer-funded wallets and the dev's cluster are not in the dataset (DATA-1 "Not covered"): complete only with a
+    // funding source dated at or before now, and with the create (creation-slot buyers) recorded.
+    const src = this.#o.insiders?.(mint) ?? null;
+    const known = src !== null && src.knownAtMs <= m.receivedAt && s.create !== null;
+    put('insiders', insidersKey(mint), {
+      obs: { ...obs(), slot: s.create?.slot ?? m.slot }, complete: known,
+      insiders: [...new Set([...s.creationBuyers, ...(known ? src.funded : [])])].sort(), devCluster: known ? [...src.devCluster].sort() : [],
+    });
     if (this.#solPoints.length > 0) put('sol-usd', SOL_USD_KEY, { obs: { provider: 'sol-usd', slot: null, receivedAt: m.receivedAt, quality: [] }, points: this.#solPoints.map((p) => ({ ...p })) });
     return out;
   }

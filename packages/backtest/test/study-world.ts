@@ -45,6 +45,9 @@ export interface MintPlan {
   readonly devBuyBps?: number;
   /** Omit the balances of one swap's raw record past this many slots after migration (a missed flow). */
   readonly dropBalancesAfter?: number;
+  /** Largest random buy, lamports (default 2 SOL), and the share of a holder's tokens a sell takes (1/n, default 2). */
+  readonly buySize?: number;
+  readonly sellDivisor?: number;
   /** Stop the mint's swaps this many slots after migration (dead pool). */
   readonly swapsFor?: number;
 }
@@ -53,6 +56,8 @@ export interface WorldOptions {
   readonly mints: readonly MintPlan[];
   /** Slots of data. */
   readonly slots: number;
+  /** Days of sparse lead-in blocks (one an hour) before slot 0, so coverage starts that long before the market. */
+  readonly leadInDays?: number;
   readonly seed?: string;
 }
 
@@ -111,6 +116,11 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
       return { account: c.account, mint: pl.mint, owner: c.owner, pre, post };
     });
 
+  const lead = Math.floor((o.leadInDays ?? 0) * 24);
+  for (let k = lead; k > 0; k--) {
+    const s = -k * 9000;
+    rows.push({ kind: 'block', slot: WSLOT0 + BigInt(s), blockTime: slotTime(s), parentSlot: WSLOT0 + BigInt(s) - 1n });
+  }
   for (let s = 0; s < o.slots; s++) {
     const slot = WSLOT0 + BigInt(s);
     const blockTime = slotTime(s);
@@ -126,10 +136,11 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
             timestamp: String(blockTime), token_total_supply: String(SUPPLY), token_program: TOKEN_2022_PROGRAM, quote_mint: '11111111111111111111111111111111', is_mayhem_mode: 'false',
           },
         });
+        const dev = (SUPPLY * BigInt(p.devBuyBps ?? 0)) / 10_000n;
+        const devAta = key(`${seed}:ata:${p.label}:dev`);
+        // The chain state exists either way; only the record of it may be missing from the dataset.
+        const balances = move(pl, [{ account: pl.curveAta, owner: pl.curve, delta: SUPPLY - dev }, ...(dev > 0n ? [{ account: devAta, owner: pl.creator, delta: dev }] : [])]);
         if (!p.noCreateRaw) {
-          const dev = (SUPPLY * BigInt(p.devBuyBps ?? 0)) / 10_000n;
-          const devAta = key(`${seed}:ata:${p.label}:dev`);
-          const balances = move(pl, [{ account: pl.curveAta, owner: pl.curve, delta: SUPPLY - dev }, ...(dev > 0n ? [{ account: devAta, owner: pl.creator, delta: dev }] : [])]);
           const ops: TokenOp[] = [
             { op: 'extension', program: TOKEN_2022_PROGRAM, mint: pl.mint, ext: { kind: 'MetadataPointer', type: 18 } },
             ...(p.extraExtension ? [{ op: 'extension' as const, program: TOKEN_2022_PROGRAM, mint: pl.mint, ext: p.extraExtension }] : []),
@@ -141,18 +152,21 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
           rows.push(raw(s, tx, signature, [pl.mint], balances, ops));
         }
       }
-      // Curve buys between creation and graduation, a few small ones (the curve phase is not traded).
-      if (s > p.createSlot && s < pl.migrateSlot && (s - p.createSlot) % 300 === 1) {
+      // Curve buys between creation and graduation by 80 wallets, which sell most of the curve (the curve phase is not
+      // traded); the same wallets trade the pool later.
+      const step = Math.max(1, Math.floor(p.graduateAfter / 100));
+      if (s > p.createSlot && s < pl.migrateSlot && (s - p.createSlot) % step === 1 && (s - p.createSlot - 1) / step < 100) {
         const tx = nextTx(s);
         const signature = sig(`${seed}:cb:${p.label}:${s}`);
-        const user = key(`${seed}:u:${p.label}:${s}`);
-        const amount = 1_000_000_000_000n;
+        const k = (s - p.createSlot - 1) / step;
+        const user = key(`${seed}:t:${p.label}:${k % 80}`);
+        const amount = CURVE_SOLD / 100n;
         rows.push({
           kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 0, signature, mint: pl.mint, isBuy: true, solAmount: 30_000_000n, tokenAmount: amount,
           virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: 700_000_000_000_000n,
           mayhem: false, quoteMint: '11111111111111111111111111111111', user,
         });
-        rows.push(raw(s, tx, signature, [pl.mint], move(pl, [{ account: pl.curveAta, owner: pl.curve, delta: -amount }, { account: key(`${seed}:ata:${user}`), owner: user, delta: amount }]), []));
+        rows.push(raw(s, tx, signature, [pl.mint], move(pl, [{ account: pl.curveAta, owner: pl.curve, delta: -amount }, { account: key(`${seed}:ata:${user}:${p.label}`), owner: user, delta: amount }]), []));
       }
       if (s === pl.migrateSlot) {
         const tx = nextTx(s);
@@ -178,7 +192,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
       const every = p.swapEvery ?? 25;
       if (pl.state !== null && since > 0 && since % every === 0 && (p.swapsFor === undefined || since <= p.swapsFor)) {
         const buy = rnd() < (p.buyBias?.(since) ?? 0.5);
-        const user = key(`${seed}:t:${p.label}:${Math.floor(rnd() * 40)}`);
+        const user = key(`${seed}:t:${p.label}:${Math.floor(rnd() * 80)}`);
         const ata = key(`${seed}:ata:${user}:${p.label}`);
         const heldBy = pl.holders.get(ata)?.amount ?? 0n;
         if (!buy && heldBy === 0n) continue;
@@ -187,7 +201,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         const swap: AmmSwapRow = {
           kind: 'amm', slot, blockTime, txIdx: tx, evIdx: 0, signature, pool: pl.pool, baseMint: pl.mint, quoteMint: NATIVE_MINT,
           side: buy ? 'buy' : 'sell', mode: buy ? 'exact-quote-in' : 'exact-base',
-          amount: buy ? BigInt(Math.floor(rnd() * 2e9)) + 50_000_000n : heldBy / 2n + 1n,
+          amount: buy ? BigInt(Math.floor(rnd() * (p.buySize ?? 2e9))) + 50_000_000n : heldBy / BigInt(p.sellDivisor ?? 2) + 1n,
           baseAmount: 0n, quoteAmount: 0n, userQuote: 0n, pre: pl.state, fees: FEES, baseSupply: SUPPLY,
           ixName: buy ? 'buy_exact_quote_in' : 'sell', user, lpFee: 0n, quoteLpAdjusted: 0n,
         };

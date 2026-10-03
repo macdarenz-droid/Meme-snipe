@@ -8,6 +8,7 @@ const HEAVY = [
   'packages/core/test/stats-gates.test.ts',
   'packages/core/test/stats-simulation.test.ts',
   'packages/backtest/test/run.test.ts',
+  'packages/backtest/test/study.test.ts',
 ];
 
 export default defineConfig({

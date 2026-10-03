@@ -35,6 +35,8 @@ export interface PoolView {
   readonly side: 'buy' | 'sell';
   readonly userQuote: bigint;
   readonly baseAmount: bigint;
+  /** The trader's wallet. */
+  readonly user: string;
   /** Height of the latest block when this swap happened (a transaction signed now takes that block's hash). */
   readonly blockHeight: bigint;
 }
@@ -214,7 +216,7 @@ export class Market {
     const view: PoolView = {
       pool: row.pool, mint: row.baseMint, quoteMint: row.quoteMint,
       baseReserve: r.shifted.baseReserve, quoteVault: r.shifted.quoteVault, virtualQuoteReserves: r.shifted.virtualQuoteReserves,
-      fees: row.fees, baseSupply: row.baseSupply, side: row.side, userQuote: r.trade.userQuote, baseAmount: row.side === 'buy' ? r.trade.base : row.baseAmount,
+      fees: row.fees, baseSupply: row.baseSupply, side: row.side, userQuote: r.trade.userQuote, baseAmount: row.side === 'buy' ? r.trade.base : row.baseAmount, user: row.user,
       blockHeight: this.blockHeight,
     };
     this.#opts.facts?.onPool(view, row.blockTime * 1000);
