@@ -10,16 +10,19 @@ import type { Instruction } from './instruction.ts';
 import { closeAccount, createAssociatedTokenIdempotent, setComputeUnitLimit, setComputeUnitPrice, syncNative, transfer } from './native.ts';
 import { JITO_DONT_FRONT, associatedTokenAddress, poolCoinCreatorVaultAuthority, pumpCreatorVault, userVolumeAccumulator } from './programs.ts';
 import { type RentRate, USER_VOLUME_ACCUMULATOR_SIZE, associatedTokenAccountSize, rentExempt, TOKEN_ACCOUNT_SIZE } from './rent.ts';
+import { type TradeShape, checkShape } from './shape.ts';
 import {
   type CurveMarket,
   type PoolMarket,
   type Refusal,
   curveAccounts,
+  curveShape,
   curveBuyIx,
   curveSellIx,
   poolAccounts,
   poolBuyIx,
   poolSellIx,
+  poolShape,
   refuse,
 } from './venues.ts';
 
@@ -138,6 +141,12 @@ export const minOutFromQuote = (quotedOut: bigint, slippage: Bps): bigint => (qu
 
 const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b;
 
+/** The request's transaction shape, for `checkShape`: the venue's market plus the mint's extensions. */
+export const requestShape = (req: TradeRequest): TradeShape => ({
+  ...(req.venue === 'curve' ? curveShape(req.market) : poolShape(req.market)),
+  extensions: req.mint.extensions.map((e) => e.kind),
+});
+
 export const buildTrade = (req: TradeRequest, c: BuildCommon, policy: ExecutionPolicy): BuildResult => {
   // ---- policy and amounts ----
   if (!Number.isInteger(c.slippageBps) || c.slippageBps < 0 || c.slippageBps >= Number(BPS_DENOMINATOR)) return refuse('invalid-amount', 'slippage must be 0..9,999 bps');
@@ -156,8 +165,11 @@ export const buildTrade = (req: TradeRequest, c: BuildCommon, policy: ExecutionP
   const priorityFee = ceilDiv(price * BigInt(cuLimit), MICRO_LAMPORTS_PER_LAMPORT);
 
   const baseTokenProgram = req.market.baseTokenProgram;
+  // The mint must belong to the market's token program; then the one supported-shape check (shared with H17).
   const ataSize = associatedTokenAccountSize(req.mint, baseTokenProgram);
   if (!ataSize.ok) return refuse('unsupported-mint', ataSize.reason);
+  const supported = checkShape(requestShape(req));
+  if (!supported.ok) return refuse(supported.reason, supported.detail);
   const rent = (bytes: number) => rentExempt(bytes, c.rates.rent);
   const missing = (a: Address) => !c.existing.has(a);
 

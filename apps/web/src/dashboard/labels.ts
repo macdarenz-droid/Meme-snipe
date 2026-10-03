@@ -17,6 +17,7 @@ export const CHECK_LABEL: Record<Check, string> = {
   H14: 'Serial deployer',
   H15: 'Round trip',
   H16: 'Stale or unknown data',
+  H17: 'Unsupported trade',
   cost: 'Costs',
   size: 'Size',
   risk: 'Risk limits',
