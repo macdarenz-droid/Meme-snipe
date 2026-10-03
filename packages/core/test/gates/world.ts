@@ -121,6 +121,10 @@ export const passingFacts = (): Facts => {
   const put = (key: string, value: unknown, moment: Moment) => f.set(key, { value, moment });
   const head = at(T - 300, SLOT - 1n);
   const m = mintFixture(MINT);
+  // FEED-1's creates stream started 30 days ago and has had no gap (GATE-1b coverage).
+  put('coverage:creates:start', { value: { fromSlot: SLOT - 6_000_000n, via: 'logs:creates' }, source: 'worker', backfilled: false, seq: 1 }, at(T - 30 * DAY_MS, SLOT - 6_000_000n));
+  // A reviewed rug labeller (RUG-1, not built yet) covering the same 30 days.
+  put('coverage:rugs:start', { value: { fromSlot: SLOT - 6_000_000n, via: 'rug-labeller' }, source: 'worker', backfilled: false, seq: 2 }, at(T - 30 * DAY_MS + 1, SLOT - 5_999_999n));
   put(streamKey('chain'), { obs: obs({ slot: SLOT - 1n }), gapFreeSince: SLOT - 10_000n }, head);
   put(mintKey(MINT), { obs: streamObs(), owner: m.owner, account: m.account }, at(T - 200_000, SLOT - 500n));
   put(poolKey(MINT), { obs: obs(), address: POOL_ADDRESS, owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', pool: POOL, baseVault: BASE_VAULT, quoteVault: QUOTE_VAULT }, head);
@@ -194,13 +198,14 @@ export const contextOf = (facts: Facts, now: Moment = NOW): GateContext => {
     store.record(key, value, moment, key);
   }
   clock.advanceTo(now);
-  return { now: clock.now(), lookup: (key, asOf) => store.lookup(key, asOf) };
+  return { now: clock.now(), lookup: (key, asOf) => store.lookup(key, asOf), history: (key, from, to) => store.history(key, from, to) };
 };
 
 export const session = (over: Partial<PolicySession['policy']['gates']> = {}): PolicySession =>
   startSession({ ...TRIAL_POLICY, gates: { ...TRIAL_POLICY.gates, ...over } });
 
-export const deps = (mode: Mode = 'live', s: PolicySession = session()) => ({ session: s, mode });
+/** Gate deps. `rug` wires a reviewed rug labeller (RUG-1); without it H14's prior-rug half is noted as unavailable. */
+export const deps = (mode: Mode = 'live', s: PolicySession = session(), rug?: 'RUG-1') => ({ session: s, mode, ...(rug ? { rugLabeller: rug } : {}) });
 
 /** Replaces the value of one fact (shallow merge into the value), keeping its moment. */
 export const patch = (facts: Facts, key: string, change: Record<string, unknown>): Facts => {
