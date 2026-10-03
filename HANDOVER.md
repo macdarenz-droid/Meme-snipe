@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, 6:45 AM Melbourne (AEDT).
+**Last updated:** Sun 4 Oct 2026, 8:05 AM Melbourne (AEDT).
 
 ## 1. Read first, in this order
 
@@ -52,7 +52,7 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
   - One concurrency group; it stops on HTTP 429 and resumes with back-off.
   - Each finished UTC day is published as a release tagged `data-day-YYYY-MM-DD`.
 
-## 4. Current state (4 Oct, 6:45 AM)
+## 4. Current state (4 Oct, 8:05 AM)
 
 **Merged since 3:50 AM:**
 - RES-3 #47 (signal research plan and code)
@@ -63,6 +63,17 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 - CFG-2 #57 (exit parameters per universe, T_max cap 120 min)
 - GATE-1e #61 (mint read first, delegates count as control)
 - GATE-1f #65 (mint read before any holder view, min() for partial delegation)
+- TX-1c #63 (exported account pickers check the shape)
+- FACTS-1 #54 (gate fact producers, live readers, parity)
+- APP-2 #43 (live paper screens from the tailnet server)
+- EXIT-1b #55 (partial quotes, retry affordability, sell-only recovery)
+- RISK-1b #58 (flow-neutral limits, NAV kill switch, `AccountHistory.costs`, withdrawal leaving no valuation refused)
+- SIM-1 #59 (H15 round-trip simulation)
+- DATA-1 #46 (retention, schema 3 swap-leg owners, unattended run chaining)
+- SEED-1 #45 (deployer index seed at start-up)
+- APP-2b #67 (server card state per endpoint)
+- FACTS-1c #68 (mint-only Token-2022 holder scan, one indexed retry on -32600)
+- WORKER-1 #48 (always-on paper worker, recorder, API; exits never wait on the seed; rent as a cost)
 
 Earlier merges are listed in `PROJECT_STATE.md`.
 
@@ -70,23 +81,21 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 
 | Card | PR / branch | State | Next |
 |---|---|---|---|
-| DATA-1 data shape | #46 | fixing swap-leg owner columns (`user_token_account`, `user_token_owner`) | delta review by the DATA-1 reviewer; merge; then dispatch scan run 1: days 2026-10-01 back to 2026-09-16 |
-| FACTS-1 fact producers | #54 | delta check of head 836a386 (legacy dataSize filter test, extensionless Token-2022 test) | merge; then SIM-1 #59; then FACTS-1b adapters after WORKER-1 |
-| SIM-1 H15 simulation | #59 | review PASS | merge right after #54 |
-| SEED-1 start-up seed | #45 | as-of guard on close.at/liveStart | re-review; merge; then FILL-2 PR (branch `claude/fill-2`) |
-| EXIT-1b exits | #55 | one test missing (`!liq.ok`) | risk re-review; merge |
-| RISK-1b capital measures | #58 | mutation pass running | risk review |
-| TX-1c guards | #63 | in review | merge |
-| RUN-1d drills by cause | #64 | in review; runner qualifying-guard commit coming | merge |
-| WORKER-1 worker | #48 | merge base, RUN-1c Health fields, qualifying guard (S0/edge refused), setup rent booked in equity | re-review (WORKER-1 reviewer and risk reviewer for rent) |
-| BT-1c fills and holdout lock | #53 | P1 pool-chain persistence, H1–H3 holdout bypasses, E = 20 Oct cutoff | delta review |
-| STATS-1b G3 | #52 | blocking fixes + α/3 composite + joint reject-mix test + 48 h power | re-review |
+| DATA-1b delegations | #69 | code PASS at bc829fa; da3d7c2 adds the QA-phase 429 resume and phase timings | delta review with the 10-01 counts (after 08:16); merge; dispatch scan run 1 |
+| DATA-1b part 2 | after run 1 starts | pool and curve account at creation (data length, cashback flag, coin creator), back-filled from retained raw | review |
+| WORKER-1b | PR opening from `claude/worker-1b` | RUN-1d fields, sell-only flatten, PERSIST-1 wiring, NAV marks; a one-off `--reconcile` failure being root-caused | review (WORKER-1 reviewer) |
+| FACTS-1b live facts | `claude/facts-1b` | FACTS-1 readers into main.ts's FactSource hook | PR; review (FACTS-1 reviewer) |
+| FILL-2 trade-stream fills | #70 | PASS at 77fa5f9; conflicts with the base after #48 | builder merges base; CI; merge |
+| PERSIST-1 | #71 | FAIL: restart gap must cover every started watch; three more tests | fixes; delta review |
+| OPS-1e server extras | #66 | PASS at 4ad6103; e2e secret scan failed on the merged head (a test value found in a miniflare asset) | root cause; delta; merge; then the owner's install, Tailscale and branch-protection steps with the APK link |
+| BT-1c fills and holdout lock | #53 | PASS at ac8a1fa; conflicts with the base | builder merges base; CI; merge |
+| BT-1d | #73 (stacked on #53) | one holdout registry; next: attempt-2 window, schema-3 loader, congestion test, remote pin | review after #53 |
+| RUN-1d drills by cause | #64 | review FAIL items 1–7 plus qualifying guard | fixes; re-review |
+| STATS-1b G3 | #52 | FAIL at 7998c2c: B5 inside the holdout must not fail revalidation; R2 and U2 tests; keep creator ids across days | fixes; re-review |
 | STATS-1c SPA etc. | #62 | rework to the consensus spec | review; then owner sign-off on SPA |
-| BT-2 study | #41 (draft) | funnel count first; consuming CFG-2; registry (E fixed, attempt rules) | runs when practice days land |
-| RES-3b | #56 | waits for STATS-1c | daily DSR switch |
-| RUG-1c / RUG-1b | `claude/rug-1c` (no PR yet) | validation run on 2 Oct launches | PR about 8:30–9:30 AM; RUG-1b about 9:20 AM |
-| APP-2 phone live view | #43 | five review fixes in at 06cdb16; 30 s ticker test coming (plain function, fake timers, no DOM library) | delta review; merge; then send the owner the APK link |
-| OPS-1e server extras | `claude/ops-1e` | building (rebuild of OPS-1d) | review; then the owner pastes the install line once |
+| BT-2 study | #41 (draft) | delegations marked partial; H17 fails without the creation record; next: schema 3, FACTS-1 parity, deployment replay, RES-3 rule kind | runs when practice days land |
+| RES-3b | #56 | wall at 2026-09-21T14:00Z (ruling); purge test fast | waits for STATS-1c |
+| RUG-1c | #74 | on-demand deployer check (the rug restart-gap closer), label kinds, materiality | in review (RUG-1 reviewer); RUG-1b at about 9:20 AM |
 
 **Blocked or parked:**
 - The OPS-1d session was stopped by the auto-mode safety check while writing a server → GitHub evidence uploader. Its work was never pushed.
@@ -98,36 +107,28 @@ Earlier merges are listed in `PROJECT_STATE.md`.
 
 | Role | Card | Session |
 |---|---|---|
-| Builder | DATA-1 | session_01XHH3k24fjmkpmmt28xSaYv |
-| Builder | WORKER-1 | session_01F7UFCa8r4aee38kW7687Y3 |
-| Builder | FACTS-1 | session_01GDycboQzFrFWxVniy6B6Ps |
-| Builder | SEED-1, FILL-2 | session_013LeD4RMaJMybRnPVRn4LXM |
+| Builder | DATA-1, DATA-1b | session_01XHH3k24fjmkpmmt28xSaYv |
+| Builder | WORKER-1, WORKER-1b | session_01F7UFCa8r4aee38kW7687Y3 |
+| Builder | FACTS-1c, FACTS-1b | session_01GDycboQzFrFWxVniy6B6Ps |
+| Builder | FILL-2, PERSIST-1 | session_013LeD4RMaJMybRnPVRn4LXM |
 | Builder | RUG-1b/1c | session_01WGpxEWFacSgAuXL5KAzrKc |
-| Builder | RISK-1b, EXIT-1b | session_0135ruSv84BVjo7knvmTCPPK |
-| Builder | BT-1c | session_016KSN98NC2xQxetiZkpCVtT |
+| Builder | BT-1c, BT-1d | session_016KSN98NC2xQxetiZkpCVtT |
 | Builder | BT-2 | session_01VBTfAwrhgoCssEzST2J2q5 |
 | Builder | STATS-1b/1c | session_01J9yEWHRunNxvo5CaTbuYSe |
-| Builder | SIM-1, TEST-2 | session_012vSUH8KvV8wbiagSK8KbP8 |
-| Builder | TX-1c | session_011NPXb9ohcgyccEx2RLgZn1 |
 | Builder | RUN-1d | session_01VgCLpHWaM7FjpwofRcgrwM |
-| Builder | APP-2 | session_01HxjfFhpHEFghtBnZkTjnFB |
 | Builder | OPS-1e | session_01VM97q6A98GgtoPKCamoiT6 |
-| Builder | CFG-2 (done, on call) | session_01P6GFTVQc9JzPTa5DWDdw3b |
 | Builder | RES-3b | session_018esLCVLp9yCExK5cdnzCz8 |
 | Builder (blocked) | OPS-1d | session_01Euok5FXtBGZBrweohP3K93 |
 | Reviewer | DATA-1 | session_01DKMnUiqVLxVjHbaqdoBnJD |
 | Reviewer | WORKER-1 | session_012QdDAuRuYt57E9PCjHfuKT |
-| Reviewer | FACTS-1 | session_01UhbBj5bHiTC8AUMzp5db7L |
-| Reviewer | SEED-1 | session_01NZwyB8decLbgxKJoG2cAbP |
-| Reviewer | risk (RISK, EXIT, rent) | session_017PBUwcGJWG4DJpJKVBcAas |
+| Reviewer | FACTS-1c | session_01UhbBj5bHiTC8AUMzp5db7L |
+| Reviewer | SEED-1, FILL-2, PERSIST-1 | session_01NZwyB8decLbgxKJoG2cAbP |
+| Reviewer | risk (WORKER-1 rent, risk/**) | session_017PBUwcGJWG4DJpJKVBcAas |
+| Reviewer | OPS-1e | session_01Ty8Lvbxybv8cRixTifx6y3 |
 | Reviewer | BT-1c | session_012efQfLAwWStK3PT6ZW2PHz |
 | Reviewer | STATS-1b/1c | session_01FHfbJwz7sbf2eVDNRxMigZ |
-| Reviewer | TX-1c | session_017XphBCDSNUxoxUXrvWnTMo |
 | Reviewer | RUN-1d | session_01DdN4xy9WX2t7nLUq7ww4E5 |
-| Reviewer | SIM-1, TEST-2 | session_01U2zaYUSEke1QcdtBVs4QTh |
-| Reviewer | CFG-2, EXIT-1 | session_01RC2m6JM3U6UaT9vgPSw5Cw |
-| Reviewer | APP-2 | session_01PJ6UTbVhQrbEyFzW9mA3N2 |
-| Reviewer | RUG-1 (needed for RUG-1c) | session_01Kr3kePFCkJYuctQVaMuALW |
+| Reviewer | RUG-1c | session_01Kr3kePFCkJYuctQVaMuALW |
 
 Sessions belong to the current supervisor's account. A supervisor on another account cannot message them; it would start its own sessions from this file.
 
@@ -135,12 +136,14 @@ Sessions belong to the current supervisor's account. A supervisor on another acc
 
 | Milestone | When | Depends on |
 |---|---|---|
-| Scan run 1 starts (16 newest days) | Sun 4 Oct, about 7:30–8:30 AM | #46 merged |
-| Run 1 done | Mon 5 Oct, about 2–5 PM (±6 h) | archive speed (80 MB/s cap, one lane) |
-| Runs 2–3 (rest of the 60 decision days + lead-in) | done about Thu 8 – Fri 9 Oct (±1 day) | run 1 |
+| Scan run 1 starts: 21 Sep back to 29 Aug (practice days and their 14-day look-back), newest first | Sun 4 Oct, about 10 AM–noon | DATA-1b merged and its 10-01 counts |
+| First practice day testable (21 Sep, after 15 days) | Mon 5 Oct, about midday–evening (±8 h) | archive speed (80 MB/s cap, one lane, 1 h per 429) |
+| All practice days testable (24 days scanned) | Tue 6 Oct, about midday (±12 h) | run 1 |
+| Rest of the pre-holdout days (28 Aug back to 20 Jul) | about Fri 9 Oct (±1 day) | runs 2–3 |
+| Holdout days 1 Oct back to 22 Sep, then forward days as the archive publishes them | from about Sat 10 Oct | pre-holdout days done |
 | Worker ready for the server | Sun 4 Oct, about 6–10 PM (±4 h) | #48, #54, FACTS-1b, #45, FILL-2, #59, OPS-1e |
 | S0 shakedown on the VPS | Mon 5 Oct | owner pastes the install line; phone view needs Tailscale |
-| Practice-day funnel count, then study | Mon 5 – Fri 9 Oct | days 21 Sep and earlier published |
+| Practice-day funnel count, then study | Tue 6 – Fri 9 Oct | practice days and their look-back published |
 | Owner sign-off on SPA | about Mon 5 Oct | STATS-1c evidence |
 | Strategy registered (configs frozen, attempt committed) | Fri 9 – Sat 10 Oct | G1 pass on practice days |
 | Qualifying 48 h dry run | Sat 10 – Mon 12 Oct (±2 days) | registered strategy |
@@ -154,7 +157,8 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 
 - **Soon:**
   - one re-paste of the server install line (from OPS-1e) — exact steps will be sent;
-  - Tailscale setup for the phone view — steps will be sent.
+  - Tailscale setup for the phone view — steps will be sent;
+  - a GitHub ruleset protecting the `holdout-registry` branch from deletion and force-push (Settings → Rules → Rulesets).
 - **About Mon 5 Oct:** yes or no on replacing the DSR gate with the SPA test, with STATS-1c's simulation evidence.
 - **Before live:**
   - R8 "5 losses in 20" rule;
@@ -184,6 +188,9 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 - **Exits:** per-universe settings, with T_max ≤ 120 min in phase 1. The R9 stops (including the flow stop) stay global.
 - **Stale feed:** WATCH-1 (independent timer, a coherent snapshot through a second path, escalation).
 - **Rejected:** a standby server, and a pre-signed emergency sell on a durable nonce.
+- **Scan order:** pre-holdout days first (21 Sep back to 20 Jul, newest first), then the holdout days, then forward days. Research and G1 need only pre-holdout days; the holdout opens only after G1, and the live index fills from RPC.
+- **One holdout registry:** BT-1c's file on the remote `holdout-registry` branch, with sections plan, g1, attempts and windows.
+- **Exits never wait:** not on the seed, a figure or a missing universe (sell-only flatten).
 
 ## 9. Infrastructure
 
@@ -199,5 +206,6 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 - **Live data gaps:**
   - Live regime volume has no source, so the bot is paper only for regime.
   - Lead-in days have no token movements, so ownership is unresolved early in the window.
-- **Free-tier credits:** getProgramAccounts availability and cost are unmeasured; `gpa-probe.yml` runs once #54 merges.
+- **Free-tier credits:** Helius serves getProgramAccounts at 10 credits a call (gpa-probe run 37149567929); Alchemy answered 429 to back-to-back calls and is unmeasured. The RPC fill must run once per host (PERSIST-1): a 14-day create backfill on every boot projected 11.9M credits a month.
+- **Archive 429s:** each costs at least 1 h; run timings above include no allowance beyond that.
 - **Process:** base churn from docs pushes slows the merge queue (rule in §3).

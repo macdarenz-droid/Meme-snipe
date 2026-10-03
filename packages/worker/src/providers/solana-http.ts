@@ -22,6 +22,8 @@ export interface SignatureInfo {
   readonly signature: string;
   readonly slot: bigint;
   readonly err: unknown;
+  /** Block time in seconds, or null when the node does not give it. */
+  readonly blockTime: number | null;
 }
 
 export interface AccountInfo {
@@ -74,15 +76,17 @@ export class RpcHttp {
     }
   }
 
-  /** Signatures for `address`, newest first, newer than `until` when given. */
-  async getSignaturesForAddress(address: string, opts: { readonly until?: string; readonly limit: number }, priority: Priority): Promise<SignatureInfo[]> {
+  /** Signatures for `address`, newest first, older than `before` and newer than `until` when given. */
+  async getSignaturesForAddress(address: string, opts: { readonly before?: string; readonly until?: string; readonly limit: number; readonly minContextSlot?: bigint }, priority: Priority): Promise<SignatureInfo[]> {
     const cfg: Record<string, unknown> = { commitment: 'confirmed', limit: opts.limit };
+    if (opts.minContextSlot !== undefined) cfg.minContextSlot = Number(opts.minContextSlot);
+    if (opts.before !== undefined) cfg.before = opts.before;
     if (opts.until !== undefined) cfg.until = opts.until;
     const r = await this.call('getSignaturesForAddress', [address, cfg], priority);
     if (!Array.isArray(r)) throw new ProviderError(this.provider, 'shape', 'getSignaturesForAddress result is not an array');
     return r.map((x: unknown) => {
       if (!isObj(x) || typeof x.signature !== 'string' || !Number.isSafeInteger(x.slot)) throw new ProviderError(this.provider, 'shape', 'bad signature entry');
-      return { signature: x.signature, slot: BigInt(x.slot as number), err: x.err ?? null };
+      return { signature: x.signature, slot: BigInt(x.slot as number), err: x.err ?? null, blockTime: Number.isSafeInteger(x.blockTime) ? (x.blockTime as number) : null };
     });
   }
 

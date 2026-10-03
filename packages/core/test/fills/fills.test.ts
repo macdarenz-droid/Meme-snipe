@@ -3,7 +3,7 @@ import type { PoolState } from '../../src/amm/index.ts';
 import { FILL_CONFIG } from '../../src/config/index.ts';
 import { createRng } from '../../src/engine/index.ts';
 import {
-  type FillScenario, type ObservedFees, type RealSwap, ShiftedPool, attemptFee, blockedExitValue, drawAttempt, executeBuy, executeSell,
+  type FillScenario, type ObservedFees, type RealSwap, NetworkState, ShiftedPool, attemptFee, blockedExitValue, drawAttempt, networkEnterPpm, providerDown, executeBuy, executeSell,
   replaySwap, withSlippage,
 } from '../../src/fills/index.ts';
 import { bps } from '../../src/units/index.ts';
@@ -154,7 +154,9 @@ describe('landing draws', () => {
     const lands = a.filter((d) => d.fate === 'lands').length / a.length;
     expect(lands).toBeGreaterThan(0.64);
     expect(lands).toBeLessThan(0.68);
-    expect(new Set(a.map((d) => d.landingSlots))).toEqual(new Set(base.landingSlots));
+    // Regular latencies, and the long tail: a tail draw never lands sooner than the regular one it replaces.
+    const possible = new Set([...base.landingSlots, ...base.landingSlots.flatMap((x) => base.landingTail.slots.map((t) => Math.max(x, t)))]);
+    expect(new Set(a.map((d) => d.landingSlots))).toEqual(possible);
   });
 
   test('dropPpm splits the misses into dropped and failed', () => {
@@ -183,6 +185,116 @@ describe('landing draws', () => {
   });
 });
 
+describe('stress in the fill model (BT-1c item 4)', () => {
+  const { conservative: c, base: b, optimistic: o } = FILL_CONFIG.scenarios;
+
+  test('the values are marked provisional and differ by scenario', () => {
+    expect(FILL_CONFIG.provisional).toBe(true);
+    for (const v of ['pumpswap', 'pump-curve'] as const) {
+      expect(c.landPpm[v]).toBeLessThan(b.landPpm[v]);
+      expect(b.landPpm[v]).toBeLessThan(o.landPpm[v]);
+    }
+    for (const s of [c, b, o]) {
+      expect(s.dropPpm).toBeGreaterThan(0n);
+      expect(s.congestion.network.enterPpm).toBeGreaterThan(0n);
+      expect(s.congestion.providerFailPpm).toBeGreaterThan(0n);
+      expect(s.landingTail.ppm).toBeGreaterThan(0n);
+      expect(s.exitRetryHaircutPpm).toBeGreaterThan(0n);
+    }
+  });
+
+  test('one persistent shared network state over slot windows: bursts last, at the stationary share, from the seed', () => {
+    const net = c.congestion.network;
+    const a = new NetworkState('seed', c);
+    const again = new NetworkState('seed', c);
+    const windows = 200_000;
+    let on = 0;
+    let runs = 0;
+    let prev = false;
+    const seq: boolean[] = [];
+    for (let w = 0n; w < BigInt(windows); w++) {
+      const x = a.congested(w);
+      seq.push(x);
+      if (x) on++;
+      if (x && !prev) runs++;
+      prev = x;
+    }
+    // Deterministic from the seed; asking again gives the same answer; an earlier window than the first is refused.
+    for (const w of [5n, 17n, 199_999n]) expect(again.congested(w)).toBe(seq[Number(w)]);
+    expect(() => again.congested(4n)).toThrow(RangeError);
+    const enter = Number(net.enterPpm) / 1e6;
+    const stay = Number(net.stayPpm) / 1e6;
+    expect(Math.abs(on / windows - enter / (enter + 1 - stay))).toBeLessThan(0.01);
+    // Mean burst length 1 / (1 - stay) windows: persistent, not one window at a time.
+    expect(Math.abs(on / runs - 1 / (1 - stay)) / (1 / (1 - stay))).toBeLessThan(0.1);
+    expect(1 / (1 - stay)).toBeGreaterThan(2);
+  });
+
+  test('the base network state is congested at least 8% of the time with no market activity (the earlier burst share)', () => {
+    const n = FILL_CONFIG.scenarios.base.congestion.network;
+    const enter = Number(n.enterPpm) / 1e6;
+    expect(enter / (enter + 1 - Number(n.stayPpm) / 1e6)).toBeGreaterThanOrEqual(0.08);
+  });
+
+  test('market activity raises the entry probability up to a cap, never below the base; provider failures sit on top', () => {
+    const n = c.congestion.network;
+    expect(networkEnterPpm(c, 0n)).toBe(n.enterPpm);
+    expect(networkEnterPpm(c, 100n * 1_000_000_000n)).toBeGreaterThan(networkEnterPpm(c, 1_000_000_000n));
+    expect(networkEnterPpm(c, 10n ** 18n)).toBe(n.maxEnterPpm);
+    const busy = new NetworkState('act', c, () => 10n ** 18n);
+    const calm = new NetworkState('act', c, () => 0n);
+    let b = 0;
+    let q = 0;
+    for (let w = 0n; w < 50_000n; w++) {
+      if (busy.congested(w)) b++;
+      if (calm.congested(w)) q++;
+    }
+    expect(b).toBeGreaterThan(q);
+    // With varying activity, the state at w + k is the same whether or not the windows between were asked.
+    const vol = (w: bigint) => (w % 7n === 0n ? 10n ** 12n : 0n);
+    const every = new NetworkState('gap', c, vol);
+    const skip = new NetworkState('gap', c, vol);
+    every.congested(0n);
+    skip.congested(0n);
+    for (let w = 1n; w < 5_000n; w++) every.congested(w);
+    for (const w of [4_999n, 2_500n, 3n]) expect(skip.congested(w)).toBe(every.congested(w));
+    let down = 0;
+    for (let w = 0n; w < 50_000n; w++) if (providerDown('s', w, c)) down++;
+    expect(Math.abs(down / 50_000 - Number(c.congestion.providerFailPpm) / 1e6)).toBeLessThan(0.005);
+  });
+
+  test('in a congested window every attempt lands less often and later', () => {
+    const r1 = createRng('calm');
+    const r2 = createRng('calm');
+    const calm = Array.from({ length: 20_000 }, () => drawAttempt(r1, c, 'pumpswap', false));
+    const busy = Array.from({ length: 20_000 }, () => drawAttempt(r2, c, 'pumpswap', true));
+    const landed = (a: typeof calm) => a.filter((d) => d.fate === 'lands').length / a.length;
+    expect(landed(busy)).toBeLessThan(landed(calm) * (Number(c.congestion.landFactorPpm) / 1e6) + 0.02);
+    // Same draws, so each busy latency is the calm one plus the burst's extra slots.
+    busy.forEach((d, k) => expect(d.landingSlots).toBe(calm[k]!.landingSlots + c.congestion.extraLandingSlots));
+  });
+
+  test('a long tail of landing delays at the configured share', () => {
+    const r = createRng('tail');
+    const a = Array.from({ length: 50_000 }, () => drawAttempt(r, c, 'pumpswap', false));
+    const tailMin = Math.min(...c.landingTail.slots);
+    const share = a.filter((d) => d.landingSlots >= tailMin && tailMin > Math.max(...c.landingSlots)).length / a.length;
+    expect(Math.abs(share - Number(c.landingTail.ppm) / 1e6)).toBeLessThan(0.005);
+  });
+
+  test('liquidity worsens on each repeated exit attempt', () => {
+    const outs = [0, 1, 2, 3].map((k) => {
+      const x = executeSell(trade(POOL), 1_000_000_000n, BigInt(k) * c.exitRetryHaircutPpm);
+      if (!x.ok) throw new Error(x.detail);
+      return x;
+    });
+    for (let k = 1; k < outs.length; k++) expect(outs[k]!.out).toBeLessThan(outs[k - 1]!.out);
+    // The haircut is a cost of the attempt, in lamports, and the pool sees the same sell whatever it.
+    expect(outs[2]!.costs.extraSlippage - outs[0]!.costs.extraSlippage).toBe(outs[0]!.out - outs[2]!.out);
+    expect(outs[2]!.after).toEqual(outs[0]!.after);
+  });
+});
+
 describe('scenario ordering', () => {
   // Every field ordered conservative ≤ base ≤ optimistic in the direction that is better for us.
   const { conservative: c, base: b, optimistic: o } = FILL_CONFIG.scenarios;
@@ -195,6 +307,33 @@ describe('scenario ordering', () => {
   const lower = (x: number, y: number) => x >= y; // lower is better: worse value is larger
   better('landing share per venue', c.landPpm, b.landPpm, o.landPpm, (x, y) => (Object.keys(b.landPpm) as (keyof typeof x)[]).every((v) => x[v] <= y[v]));
   better('dropped share (a dropped attempt costs nothing; a failed one pays fees)', c.dropPpm, b.dropPpm, o.dropPpm, (x, y) => x <= y);
+  const D = FILL_CONFIG.delays;
+  const slotsOf = (n: typeof c.delay) => D[n].eventToProcessedSlots + D[n].processedToConfirmedSlots;
+  better('observation delay, slots', slotsOf(c.delay), slotsOf(b.delay), slotsOf(o.delay), lower);
+  better('observation delay, provider ms', D[c.delay].providerMs, D[b.delay].providerMs, D[o.delay].providerMs, lower);
+  test('delay profiles: stress ≥ adverse ≥ measured in every part; conservative uses adverse', () => {
+    expect(c.delay).toBe('adverse');
+    for (const k of ['eventToProcessedSlots', 'processedToConfirmedSlots', 'providerMs'] as const) {
+      expect(D.stress[k]).toBeGreaterThanOrEqual(D.adverse[k]);
+      expect(D.adverse[k]).toBeGreaterThanOrEqual(D.measured[k]);
+    }
+    expect([D.adverse.eventToProcessedSlots, D.adverse.processedToConfirmedSlots, D.adverse.providerMs]).toEqual([2, 6, 1_000]);
+    expect([D.stress.eventToProcessedSlots, D.stress.processedToConfirmedSlots, D.stress.providerMs]).toEqual([4, 12, 2_000]);
+    expect(D.measured.status).toBe('unmeasured');
+  });
+  better('network congestion entry', c.congestion.network.enterPpm, b.congestion.network.enterPpm, o.congestion.network.enterPpm, (x, y) => x >= y);
+  better('network congestion persistence', c.congestion.network.stayPpm, b.congestion.network.stayPpm, o.congestion.network.stayPpm, (x, y) => x >= y);
+  better('network entry per SOL of market activity', c.congestion.network.activityEnterPpmPerSol, b.congestion.network.activityEnterPpmPerSol, o.congestion.network.activityEnterPpmPerSol, (x, y) => x >= y);
+  better('network entry cap', c.congestion.network.maxEnterPpm, b.congestion.network.maxEnterPpm, o.congestion.network.maxEnterPpm, (x, y) => x >= y);
+  better('provider failures', c.congestion.providerFailPpm, b.congestion.providerFailPpm, o.congestion.providerFailPpm, (x, y) => x >= y);
+  better('landing share in a burst', c.congestion.landFactorPpm, b.congestion.landFactorPpm, o.congestion.landFactorPpm, (x, y) => x <= y);
+  better('extra landing slots in a burst', c.congestion.extraLandingSlots, b.congestion.extraLandingSlots, o.congestion.extraLandingSlots, lower);
+  test('the congestion window is the same length in every scenario', () => {
+    expect(new Set([c, b, o].map((s) => s.congestion.windowSlots)).size).toBe(1);
+  });
+  better('long-tail share', c.landingTail.ppm, b.landingTail.ppm, o.landingTail.ppm, (x, y) => x >= y);
+  better('long-tail latency (mean and worst)', c.landingTail.slots, b.landingTail.slots, o.landingTail.slots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
+  better('exit retry haircut', c.exitRetryHaircutPpm, b.exitRetryHaircutPpm, o.exitRetryHaircutPpm, (x, y) => x >= y);
   better('discovery lag (mean and worst)', c.discoverySlots, b.discoverySlots, o.discoverySlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
   better('landing latency (mean and worst)', c.landingSlots, b.landingSlots, o.landingSlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
   better('confirmation lag', c.confirmSlots, b.confirmSlots, o.confirmSlots, lower);
@@ -202,7 +341,9 @@ describe('scenario ordering', () => {
   better('extra slippage', c.slippagePpm, b.slippagePpm, o.slippagePpm, (x, y) => x >= y);
   better('take-profit basis (close is worse than wick)', c.takeProfit, b.takeProfit, o.takeProfit, (x, y) => x === 'close' || y === 'wick');
   better('rent recovery', c.rentRecovery, b.rentRecovery, o.rentRecovery, (x, y) => !x || y);
+  better('account close success', c.closeSuccessPpm, b.closeSuccessPpm, o.closeSuccessPpm, (x, y) => x <= y);
+  better('dust left in the account', c.dustPpm, b.dustPpm, o.dustPpm, (x, y) => x >= y);
   test('the test covers every scenario field', () => {
-    expect(Object.keys(b).sort()).toEqual(['confirmSlots', 'discoverySlots', 'dropPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'name', 'rentRecovery', 'slippagePpm', 'takeProfit']);
+    expect(Object.keys(b).sort()).toEqual(['closeSuccessPpm', 'confirmSlots', 'congestion', 'delay', 'discoverySlots', 'dropPpm', 'dustPpm', 'exitRetryHaircutPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'landingTail', 'name', 'rentRecovery', 'slippagePpm', 'takeProfit']);
   });
 });
