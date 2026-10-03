@@ -11,7 +11,7 @@ let key = "";
 for await (const c of process.stdin) key += c;
 const body = "{}";
 const t = Math.floor(Date.now() / 1000);
-const sig = createHmac("sha256", key).update(`${t}.${body}`).digest("hex");
+const sig = createHmac("sha256", key).update(`${t}\nPOST\n/resume\n${body}`).digest("hex");
 const res = await fetch(`${process.env.WATCHDOG_URL}/resume`, { method: "POST", headers: { "content-type": "application/json", "x-zeroed-signature": `t=${t},v1=${sig}` }, body });
 console.log(res.ok ? "Entries allowed again." : `Watchdog refused: HTTP ${res.status}`);
 process.exit(res.ok ? 0 : 1);

@@ -9,7 +9,7 @@
 # CLOUDFLARE_ACCOUNT_ID (and WRANGLER, the locked tool from ops/watchdog/deploy) it also deploys the
 # watchdog, sets its secrets and the Telegram webhook, and hands its address and a fresh heartbeat key to
 # the server in the same bundle.
-# Test knobs: PICKUP_TIMEOUT_S, PICKUP_POLL_S, PICKUP_GRACE_S, TELEGRAM_API.
+# Test knobs: PICKUP_TIMEOUT_S, PICKUP_POLL_S, PICKUP_GRACE_S, TELEGRAM_API, CLOUDFLARE_API_URL.
 #
 # Never prints or stores a value: no set -x; the code, the derived identity and the plaintext only pass
 # through pipes and the process environment; only the ciphertext is ever a file.
@@ -50,8 +50,32 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   HEARTBEAT_HMAC_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   hook_secret="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   if [ "${GITHUB_ACTIONS:-}" = true ]; then echo "::add-mask::$HEARTBEAT_HMAC_KEY"; echo "::add-mask::$hook_secret"; fi
-  WATCHDOG_URL="$($WRANGLER deploy 2>&1 | grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' | head -n 1 || true)"
-  [ -n "$WATCHDOG_URL" ] || die "Watchdog deploy failed (no workers.dev address in wrangler's output). Check CLOUDFLARE_API_TOKEN and that a workers.dev subdomain is chosen."
+  # The account needs a workers.dev subdomain once; register one if there is none. The API call needs
+  # "Workers Scripts Write", which the "Edit Cloudflare Workers" token template includes.
+  cf() { # METHOD PATH [JSON]; the token goes to curl on stdin (-K -), never in argv
+    printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN" |
+      curl -sS -m 30 -K - -X "$1" -H 'content-type: application/json' ${3:+--data "$3"} "${CLOUDFLARE_API_URL:-https://api.cloudflare.com/client/v4}$2"
+  }
+  sub="$(cf GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | jq -r 'select(.success == true) | .result.subdomain // empty' 2>/dev/null || true)"
+  if [ -z "$sub" ]; then
+    for _ in 1 2 3; do
+      try="zeroed-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+      reply="$(cf PUT "/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" "{\"subdomain\":\"$try\"}" || true)"
+      if [ "$(printf '%s' "$reply" | jq -r '.success // false' 2>/dev/null)" = true ]; then sub="$try"; break; fi
+      errs="$(printf '%s' "$reply" | jq -r '[.errors[]? | "\(.code) \(.message)"] | join("; ")' 2>/dev/null || true)"
+      echo "Registering a workers.dev subdomain failed: ${errs:-no reply}"
+      case "$errs" in *uthentication*|*ermission*|*10000*) die "The Cloudflare token cannot register a workers.dev subdomain: it needs Account > Workers Scripts > Edit." ;; esac
+    done
+    [ -n "$sub" ] || die "Could not register a workers.dev subdomain."
+    echo "Registered the workers.dev subdomain $sub."
+  fi
+  out="$($WRANGLER deploy 2>&1 || true)"
+  WATCHDOG_URL="$(printf '%s\n' "$out" | grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' | head -n 1 || true)"
+  if [ -z "$WATCHDOG_URL" ]; then
+    # Wrangler's output holds no secret (the token is only in its environment); its tail says what failed.
+    printf '%s\n' "$out" | tail -n 20 >&2
+    die "Watchdog deploy failed (no workers.dev address in wrangler's output; its last lines are above)."
+  fi
   printf '%s' "$HEARTBEAT_HMAC_KEY" | $WRANGLER secret put HEARTBEAT_HMAC_KEY >/dev/null
   printf '%s' "$TELEGRAM_BOT_TOKEN" | $WRANGLER secret put TELEGRAM_BOT_TOKEN >/dev/null
   printf '%s' "$hook_secret" | $WRANGLER secret put TELEGRAM_WEBHOOK_SECRET >/dev/null

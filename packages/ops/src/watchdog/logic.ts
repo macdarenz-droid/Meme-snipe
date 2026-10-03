@@ -61,29 +61,33 @@ function hex(buf: ArrayBuffer): string {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function sameText(a: string, b: string): boolean {
+export function sameText(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
 
-export async function sign(key: string, t: number, body: string): Promise<string> {
+/** The signed message: timestamp, method, path and body, so a signature is valid for one route only. */
+export const signedText = (t: number, method: string, path: string, body: string) => `${t}\n${method.toUpperCase()}\n${path}\n${body}`;
+
+export async function sign(key: string, t: number, method: string, path: string, body: string): Promise<string> {
   const k = await crypto.subtle.importKey('raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return hex(await crypto.subtle.sign('HMAC', k, enc.encode(`${t}.${body}`)));
+  return hex(await crypto.subtle.sign('HMAC', k, enc.encode(signedText(t, method, path, body))));
 }
 
 /**
- * Checks `x-zeroed-signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "t.body">`. Refuses a missing key, a
- * malformed header and a timestamp more than `maxSkewS` from now (replays of old heartbeats).
+ * Checks `x-zeroed-signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "t\nMETHOD\npath\nbody">`. Refuses a
+ * missing key, a malformed header and a timestamp more than `maxSkewS` from now. Returns the timestamp when
+ * valid (callers use it to refuse replays), otherwise null.
  */
-export async function verifySignature(header: string | null, body: string, key: string, nowS: number, maxSkewS = 300): Promise<boolean> {
-  if (!key || !header) return false;
+export async function verifySignature(header: string | null, method: string, path: string, body: string, key: string, nowS: number, maxSkewS = 300): Promise<number | null> {
+  if (!key || !header) return null;
   const m = /^t=(\d{1,12}),v1=([0-9a-f]{64})$/.exec(header);
-  if (!m) return false;
+  if (!m) return null;
   const t = Number(m[1]);
-  if (Math.abs(nowS - t) > maxSkewS) return false;
-  return sameText(await sign(key, t, body), m[2] ?? '');
+  if (Math.abs(nowS - t) > maxSkewS) return null;
+  return sameText(await sign(key, t, method, path, body), m[2] ?? '') ? t : null;
 }
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -105,9 +109,11 @@ export function parseHeartbeat(body: string): Heartbeat | null {
   return x as Heartbeat;
 }
 
-/** A heartbeat is new if it comes from a new boot or has a higher sequence number than the last one. */
+/** A heartbeat is new if it is later than the last one, and from a new boot or with a higher sequence number. */
 export function isNewer(prev: Stored | undefined, hb: Heartbeat): boolean {
-  return !prev || prev.hb.boot !== hb.boot || hb.seq > prev.hb.seq;
+  if (!prev) return true;
+  if (hb.ts <= prev.hb.ts) return false;
+  return prev.hb.boot !== hb.boot || hb.seq > prev.hb.seq;
 }
 
 export function limitsFrom(env: Record<string, unknown>): Limits {
@@ -158,9 +164,9 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
 }
 
 /**
- * Dedupe and escalate: a new alert is sent at once, repeated every `repeatCriticalS` while it lasts, and a
- * "cleared" line is sent when it goes away. All lines of one run go out as one message (Telegram allows about
- * one message per second per chat).
+ * Dedupe and escalate: a new alert is sent at once, repeated every `repeatCriticalS` during its first hour
+ * and hourly after that while it lasts, and a "cleared" line is always sent when it goes away. All lines of
+ * one run go out as one message (Telegram allows about one message per second per chat).
  */
 export function planAlerts(active: Record<string, ActiveAlert>, current: Alert[], now: number, l: Limits): { lines: string[]; next: Record<string, ActiveAlert> } {
   const next: Record<string, ActiveAlert> = {};
@@ -170,7 +176,10 @@ export function planAlerts(active: Record<string, ActiveAlert>, current: Alert[]
     if (!prev) {
       lines.push(`ALERT ${a.text}`);
       next[a.key] = { text: a.text, since: now, lastSent: now };
-    } else if (now - prev.lastSent >= l.repeatCriticalS * 1000) {
+      continue;
+    }
+    const every = now - prev.since < 3_600_000 ? l.repeatCriticalS * 1000 : 3_600_000;
+    if (now - prev.lastSent >= every) {
       lines.push(`STILL ${a.text} (since ${Math.round((now - prev.since) / 60000)} min)`);
       next[a.key] = { text: a.text, since: prev.since, lastSent: now };
     } else {

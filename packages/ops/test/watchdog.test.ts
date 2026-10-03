@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { evaluate, limitsFrom, parseCommand, parseHeartbeat, planAlerts, sign, statusText, takeLease, verifySignature, type Heartbeat, type Stored } from '../src/watchdog/logic.ts';
+import { evaluate, isNewer, limitsFrom, parseCommand, parseHeartbeat, planAlerts, sign, statusText, takeLease, verifySignature, type Heartbeat, type Stored } from '../src/watchdog/logic.ts';
 import worker, { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
 
 const KEY = 'test-hmac-key-0123456789abcdef';
@@ -27,23 +27,33 @@ const stored = (h: Heartbeat, receivedAt = T0): Stored => ({ hb: h, receivedAt }
 const noChain = { slot: null, heldMints: null };
 
 describe('heartbeat signature', () => {
-  it('matches the host side (node:crypto HMAC over "t.body")', async () => {
+  it('matches the host side (node:crypto HMAC over "t\\nMETHOD\\npath\\nbody")', async () => {
     const body = '{"seq":1}';
     const t = 1_800_000_000;
-    expect(await sign(KEY, t, body)).toBe(createHmac('sha256', KEY).update(`${t}.${body}`).digest('hex'));
+    expect(await sign(KEY, t, 'POST', '/heartbeat', body)).toBe(createHmac('sha256', KEY).update(`${t}\nPOST\n/heartbeat\n${body}`).digest('hex'));
   });
 
-  it('accepts a fresh signature and refuses tampering, a wrong key, skew and malformed headers', async () => {
+  it('accepts a fresh signature and refuses tampering, another route, a wrong key, skew and malformed headers', async () => {
     const body = '{"seq":1}';
     const t = 1_800_000_000;
-    const h = `t=${t},v1=${await sign(KEY, t, body)}`;
-    expect(await verifySignature(h, body, KEY, t)).toBe(true);
-    expect(await verifySignature(h, body + ' ', KEY, t)).toBe(false);
-    expect(await verifySignature(h, body, 'other-key', t)).toBe(false);
-    expect(await verifySignature(h, body, KEY, t + 301)).toBe(false);
-    expect(await verifySignature(h, body, '', t)).toBe(false);
-    expect(await verifySignature(null, body, KEY, t)).toBe(false);
-    expect(await verifySignature(`t=${t},v1=zz`, body, KEY, t)).toBe(false);
+    const h = `t=${t},v1=${await sign(KEY, t, 'POST', '/heartbeat', body)}`;
+    expect(await verifySignature(h, 'POST', '/heartbeat', body, KEY, t)).toBe(t);
+    expect(await verifySignature(h, 'POST', '/heartbeat', body + ' ', KEY, t)).toBeNull();
+    expect(await verifySignature(h, 'POST', '/resume', body, KEY, t)).toBeNull();
+    expect(await verifySignature(h, 'POST', '/heartbeat', body, 'other-key', t)).toBeNull();
+    expect(await verifySignature(h, 'POST', '/heartbeat', body, KEY, t + 301)).toBeNull();
+    expect(await verifySignature(h, 'POST', '/heartbeat', body, '', t)).toBeNull();
+    expect(await verifySignature(null, 'POST', '/heartbeat', body, KEY, t)).toBeNull();
+    expect(await verifySignature(`t=${t},v1=zz`, 'POST', '/heartbeat', body, KEY, t)).toBeNull();
+  });
+
+  it('a heartbeat is newer only if later in time, and from a new boot or a higher sequence', () => {
+    const prev = stored(hb({ seq: 5, ts: T0, boot: 'b1' }));
+    expect(isNewer(prev, hb({ seq: 6, ts: T0 + 1, boot: 'b1' }))).toBe(true);
+    expect(isNewer(prev, hb({ seq: 4, ts: T0 + 1, boot: 'b1' }))).toBe(false);
+    expect(isNewer(prev, hb({ seq: 1, ts: T0 + 1, boot: 'b2' }))).toBe(true);
+    expect(isNewer(prev, hb({ seq: 1, ts: T0, boot: 'b2' }))).toBe(false);
+    expect(isNewer(prev, hb({ seq: 9, ts: T0 - 1, boot: 'b0' }))).toBe(false);
   });
 
   it('rejects bodies that are not heartbeats', () => {
@@ -91,7 +101,7 @@ describe('checks', () => {
 });
 
 describe('alert dedupe and escalation', () => {
-  it('sends once, repeats every 5 min while active, and sends a cleared line', () => {
+  it('sends once, repeats every 5 min in the first hour, then hourly, and always sends a cleared line', () => {
     const a = [{ key: 'heartbeat', text: 'No heartbeat.' }];
     const r1 = planAlerts({}, a, T0, L);
     expect(r1.lines).toEqual(['ALERT No heartbeat.']);
@@ -99,9 +109,16 @@ describe('alert dedupe and escalation', () => {
     expect(r2.lines).toEqual([]);
     const r3 = planAlerts(r2.next, a, T0 + 300_000, L);
     expect(r3.lines).toEqual(['STILL No heartbeat. (since 5 min)']);
-    const r4 = planAlerts(r3.next, [], T0 + 360_000, L);
-    expect(r4.lines).toEqual(['CLEARED No heartbeat.']);
-    expect(r4.next).toEqual({});
+    let cur = r3.next;
+    let sent = 1;
+    for (let m = 6; m <= 60; m++) sent += planAlerts(cur, a, T0 + m * 60_000, L).lines.length > 0 ? ((cur = planAlerts(cur, a, T0 + m * 60_000, L).next), 1) : 0;
+    expect(sent).toBe(11); // minutes 5, 10, ..., 55; from the hour mark on, one an hour after the last
+    expect(planAlerts(cur, a, T0 + 65 * 60_000, L).lines).toEqual([]);
+    expect(planAlerts(cur, a, T0 + 114 * 60_000, L).lines).toEqual([]);
+    const r4 = planAlerts(cur, a, T0 + 115 * 60_000, L);
+    expect(r4.lines).toEqual(['STILL No heartbeat. (since 115 min)']);
+    expect(planAlerts(r4.next, a, T0 + 174 * 60_000, L).lines).toEqual([]);
+    expect(planAlerts(r4.next, [], T0 + 121 * 60_000, L).lines).toEqual(['CLEARED No heartbeat.']);
   });
 });
 
@@ -134,7 +151,7 @@ describe('lease', () => {
 });
 
 // The Durable Object with an in-memory storage and a recording fetch for Telegram and RPC.
-function harness(env: Partial<Env> = {}) {
+function harness(env: Partial<Env> = {}, hangRpc = false) {
   const mem = new Map<string, unknown>();
   const state: DurableState = {
     storage: { get: async <T>(k: string) => mem.get(k) as T | undefined, put: async (k, v) => void mem.set(k, structuredClone(v)) },
@@ -144,13 +161,14 @@ function harness(env: Partial<Env> = {}) {
   const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
     if (u.includes('/sendMessage')) sent.push(JSON.parse(String(init?.body)));
+    if (hangRpc && u.includes('rpc.test')) return new Promise<Response>(() => {});
     return new Response(JSON.stringify({ ok: true }));
   });
   vi.stubGlobal('fetch', fetchMock);
   const fullEnv = { HEARTBEAT_HMAC_KEY: KEY, TELEGRAM_BOT_TOKEN: 'TEST-token', TELEGRAM_WEBHOOK_SECRET: 'hook-secret', TELEGRAM_API: 'https://tg.test', ...env } as Env;
   const dob = new Watchdog(state, fullEnv);
   const post = async (path: string, body: string, headers: Record<string, string> = {}) => dob.fetch(new Request(`https://w.test${path}`, { method: 'POST', body, headers }));
-  const signed = async (path: string, body: string, t = Math.floor(Date.now() / 1000)) => post(path, body, { 'x-zeroed-signature': `t=${t},v1=${await sign(KEY, t, body)}` });
+  const signed = async (path: string, body: string, t = Math.floor(Date.now() / 1000), signPath = path) => post(path, body, { 'x-zeroed-signature': `t=${t},v1=${await sign(KEY, t, 'POST', signPath, body)}` });
   return { mem, sent, dob, post, signed };
 }
 
@@ -189,15 +207,22 @@ describe('Durable Object', () => {
     expect(h.sent).toEqual([]);
     await h.post('/telegram', upd(42, '/pause'), { 'x-telegram-bot-api-secret-token': 'hook-secret' });
     expect(h.mem.get('paused')).toMatchObject({ at: expect.any(Number) });
-    const r = await h.signed('/heartbeat', JSON.stringify(hb({ seq: 3 })));
+    const r = await h.signed('/heartbeat', JSON.stringify(hb({ seq: 3, ts: T0 + 3 })));
     expect(await r.json()).toEqual({ ok: true, paused: true });
     await h.post('/telegram', upd(42, '/status'), { 'x-telegram-bot-api-secret-token': 'hook-secret' });
     expect(h.sent.at(-1)?.text).toContain('Entries: paused');
     expect(h.sent.every((m) => m.chat_id === '42')).toBe(true);
-    // Only a signed request from the host clears it.
+    // Only a signed request from the host clears it, each signature once, and never a heartbeat's.
     expect((await h.post('/resume', '{}')).status).toBe(401);
-    expect((await h.signed('/resume', '{}')).status).toBe(200);
+    const hbBody = JSON.stringify(hb({ seq: 4, ts: T0 + 4 }));
+    expect((await h.signed('/resume', hbBody, undefined, '/heartbeat')).status).toBe(401);
+    expect(h.mem.get('paused')).toMatchObject({ at: expect.any(Number) });
+    const t = Math.floor(Date.now() / 1000);
+    expect((await h.signed('/resume', '{}', t)).status).toBe(200);
     expect(h.mem.get('paused')).toBeNull();
+    await h.post('/telegram', upd(42, '/pause'), { 'x-telegram-bot-api-secret-token': 'hook-secret' });
+    expect((await h.signed('/resume', '{}', t)).status).toBe(401);
+    expect(h.mem.get('paused')).toMatchObject({ at: expect.any(Number) });
     vi.unstubAllGlobals();
   });
 
@@ -208,8 +233,19 @@ describe('Durable Object', () => {
     h.mem.set('hb', { ...stale, receivedAt: Date.now() - 120_000 });
     expect((await h.dob.check(Date.now())).sent).toEqual([expect.stringMatching(/^ALERT No heartbeat for 12\d s/)]);
     expect((await h.dob.check(Date.now())).sent).toEqual([]);
-    await h.signed('/heartbeat', JSON.stringify(hb({ seq: 2 })));
+    await h.signed('/heartbeat', JSON.stringify(hb({ seq: 2, ts: T0 + 2 })));
     expect((await h.dob.check(Date.now())).sent).toEqual([expect.stringMatching(/^CLEARED /)]);
+    vi.unstubAllGlobals();
+  });
+
+  it('a hung RPC never silences the stale-heartbeat alert', async () => {
+    const h = harness({ CHAIN_RPC_URL: 'https://rpc.test', CHAIN_TIMEOUT_MS: '50' }, true);
+    await h.signed('/heartbeat', JSON.stringify(hb({ seq: 1, owner_chat_id: '42', wallet: 'So11111111111111111111111111111111111111112' })));
+    const st = h.mem.get('hb') as Stored;
+    h.mem.set('hb', { ...st, receivedAt: Date.now() - 120_000 });
+    const r = await h.dob.check(Date.now());
+    expect(r.sent).toEqual([expect.stringMatching(/^ALERT No heartbeat/)]);
+    expect(h.sent.at(-1)?.text).toMatch(/^ALERT No heartbeat/);
     vi.unstubAllGlobals();
   });
 

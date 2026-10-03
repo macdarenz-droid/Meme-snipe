@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Daily off-server copy of the newest backup: sent as a silent Telegram document to the paired chat (free;
+# Telegram takes files up to 50 MB). Only a backup that the owner's backup code opens is sent, so the copy
+# is useless to anyone without the words. Runs from zeroed-backup-offsite.timer.
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
+owner="$(cat "$STATE_DIR/owner_backup_recipient" 2>/dev/null || true)"
+[ -n "$owner" ] || { log "No backup code yet (zeroed-backup-code): no off-server copy."; exit 0; }
+paired || { log "Telegram not paired: no off-server copy."; exit 0; }
+newest="$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1 || true)"
+[ -n "$newest" ] || { log "No backup yet."; exit 0; }
+# Was it encrypted to the owner's current key? age lists no recipients, so check the bundle date against
+# the time the code was made: only later backups use it.
+[ "$(stat -c %Y "$newest")" -ge "$(stat -c %Y "$STATE_DIR/owner_backup_recipient")" ] || { log "Newest backup predates the backup code: waiting for the next one."; exit 0; }
+size="$(stat -c %s "$newest")"
+[ "$size" -le 49000000 ] || { log "Backup is $size bytes, over Telegram's 50 MB: not sent."; notify "Zeroed server: backup too large for the Telegram copy ($size bytes)." || true; exit 1; }
+chat="$(cred telegram_chat_id)"
+tg_chat="$chat" tg_field=form tg sendDocument -o /dev/null -F "document=@$newest" -F "disable_notification=true" \
+  -F "caption=Zeroed backup $(basename "$newest" .tar.age). Opens only with your backup code." 2>/dev/null ||
+  { log "Sending the off-server copy failed."; exit 1; }
+printf '%s\n' "$(basename "$newest")" > "$STATE_DIR/last_offsite"
+log "Sent $(basename "$newest") ($size bytes) to the paired Telegram chat."

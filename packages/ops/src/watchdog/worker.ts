@@ -9,6 +9,7 @@ import {
   planAlerts,
   statusText,
   takeLease,
+  sameText,
   verifySignature,
   type ActiveAlert,
   type ChainView,
@@ -42,6 +43,7 @@ export interface Env {
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_API?: string;
   CHAIN_RPC_URL?: string;
+  CHAIN_TIMEOUT_MS?: string;
   [k: string]: unknown;
 }
 
@@ -75,11 +77,12 @@ export class Watchdog {
     if (pathname === '/check') return json(await this.check(Date.now()));
     const body = await req.text();
     if (pathname === '/telegram') return this.telegram(req, body);
-    const ok = await verifySignature(req.headers.get('x-zeroed-signature'), body, this.env.HEARTBEAT_HMAC_KEY ?? '', Math.floor(Date.now() / 1000));
-    if (!ok) return json({ error: 'bad signature' }, 401);
+    // The signature covers method and path too, so a heartbeat's signature can never open /resume.
+    const t = await verifySignature(req.headers.get('x-zeroed-signature'), req.method, pathname, body, this.env.HEARTBEAT_HMAC_KEY ?? '', Math.floor(Date.now() / 1000));
+    if (t === null) return json({ error: 'bad signature' }, 401);
     if (pathname === '/heartbeat') return this.heartbeat(body);
     if (pathname === '/lease') return this.lease(body);
-    if (pathname === '/resume') return this.resume();
+    if (pathname === '/resume') return this.resume(t);
     return new Response('Not found', { status: 404 });
   }
 
@@ -109,7 +112,11 @@ export class Watchdog {
   }
 
   /** Clearing a pause comes only from the host (HMAC-signed, run by the owner at the host console). */
-  private async resume(): Promise<Response> {
+  private async resume(t: number): Promise<Response> {
+    // Single use: each resume carries a newer timestamp than the last accepted one.
+    const last = (await this.state.storage.get<number>('last_resume_t')) ?? 0;
+    if (t <= last) return json({ error: 'replayed resume' }, 401);
+    await this.state.storage.put('last_resume_t', t);
     await this.state.storage.put('paused', null);
     await this.say('Entries allowed again (cleared from the host).');
     return json({ ok: true, paused: false });
@@ -117,7 +124,7 @@ export class Watchdog {
 
   private async telegram(req: Request, body: string): Promise<Response> {
     const secret = this.env.TELEGRAM_WEBHOOK_SECRET ?? '';
-    if (!secret || req.headers.get('x-telegram-bot-api-secret-token') !== secret) return new Response('Unauthorized', { status: 401 });
+    if (!secret || !sameText(req.headers.get('x-telegram-bot-api-secret-token') ?? '', secret)) return new Response('Unauthorized', { status: 401 });
     let update: unknown;
     try {
       update = JSON.parse(body);
@@ -146,7 +153,10 @@ export class Watchdog {
     const s = this.state.storage;
     const stored = await s.get<Stored>('hb');
     const limits = limitsFrom(this.env);
-    const chain = stored ? await this.chain(stored.hb.wallet ?? null) : { slot: null, heldMints: null };
+    // The chain view is best effort and bounded: a slow or hung RPC never delays the heartbeat-age check.
+    const none: ChainView = { slot: null, heldMints: null };
+    const limitMs = Number(this.env.CHAIN_TIMEOUT_MS ?? 5000);
+    const chain = stored ? await Promise.race([this.chain(stored.hb.wallet ?? null, limitMs).catch(() => none), new Promise<ChainView>((r) => setTimeout(() => r(none), limitMs))]) : none;
     const current = evaluate(stored, now, limits, chain);
     const { lines, next } = planAlerts((await s.get<Record<string, ActiveAlert>>('alerts')) ?? {}, current, now, limits);
     await s.put('alerts', next);
@@ -155,11 +165,11 @@ export class Watchdog {
   }
 
   /** Slot and wallet holdings from a different RPC than the worker uses. Failures leave the check out. */
-  private async chain(wallet: string | null): Promise<ChainView> {
+  private async chain(wallet: string | null, limitMs: number): Promise<ChainView> {
     const url = this.env.CHAIN_RPC_URL;
     if (!url) return { slot: null, heldMints: null };
     const rpc = async (method: string, params: unknown[]) => {
-      const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+      const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(limitMs) });
       const j = (await res.json()) as { result?: unknown };
       return j.result;
     };
@@ -199,6 +209,7 @@ export class Watchdog {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ chat_id: chat, text, disable_web_page_preview: true }),
+        signal: AbortSignal.timeout(5000),
       });
     } catch {}
   }

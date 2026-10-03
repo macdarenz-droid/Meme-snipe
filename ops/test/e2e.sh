@@ -175,10 +175,10 @@ pass "replay: a second Deploy with the used code is never opened (server has no 
 
 # ---------- 5. Telegram /pair ----------
 upd=0
-send_tg() { # chat text
+send_tg() { # chat text [chat type]
   upd=$((upd + 1))
   sleep 1 # Telegram dates are whole seconds; keep each message after the code it answers
-  printf '{"update_id":%s,"message":{"message_id":%s,"date":%s,"chat":{"id":%s,"type":"private"},"text":"%s"}}\n' "$((1000 + upd))" "$upd" "$(in_c 'date +%s')" "$1" "$2" >>"$STATE/updates.jsonl"
+  printf '{"update_id":%s,"message":{"message_id":%s,"date":%s,"chat":{"id":%s,"type":"%s"},"text":"%s"}}\n' "$((1000 + upd))" "$upd" "$(in_c 'date +%s')" "$1" "${3:-private}" "$2" >>"$STATE/updates.jsonl"
   in_c "systemctl start zeroed-pair.service"
 }
 send_tg "$STRANGER" "/pair 000000"
@@ -188,6 +188,8 @@ send_tg "$T_CHAT" "/pair $PAIR1"
 in_c "! test -e /etc/credstore.encrypted/telegram_chat_id" || fail "an invalidated code still paired"
 PAIR2="$(in_c "zeroed-pair-code" | tee "$LOGS/console/pair-code.txt" | sed -n 's/.*\/pair \([0-9]\{6\}\)$/\1/p')"
 [[ "$PAIR2" =~ ^[0-9]{6}$ ]] || fail "zeroed-pair-code"
+send_tg "-100$STRANGER" "/pair 000000" group
+in_c "test -s /etc/zeroed/pair-code" || fail "a /pair from a group burned the code"
 send_tg "$T_CHAT" "/pair@Zeroed_alerts_bot $PAIR2"
 [ "$(in_c "systemd-creds decrypt --name=telegram_chat_id /etc/credstore.encrypted/telegram_chat_id - | sha256sum | cut -c1-64")" = "$(printf '%s' "$T_CHAT" | sha256sum | cut -c1-64)" ] || fail "owner chat not stored"
 grep -q "\"chat_id\":\"$T_CHAT\",\"text\":\"Paired." "$STATE/telegram.jsonl" || fail "no Paired reply"
@@ -197,7 +199,7 @@ send_tg "$STRANGER" "/pair $PAIR2"
 wait_for 30 "worker running after pairing" "docker exec $C systemctl is-active zeroed-worker"
 in_c "journalctl -u zeroed-worker -o cat --no-pager" | grep -q 'Reconcile: 0 open intents, 5 of 5 credentials present. OK' || fail "worker did not reconcile with 5 credentials"
 status paired | grep -q 'Telegram:  paired' || fail "status not paired"
-pass "pairing: a stranger's wrong /pair invalidated the code (one try), the old code then failed, a new console code paired the owner chat (stored encrypted), 'Paired' sent, later messages ignored, worker reconciled and runs"
+pass "pairing: a group's /pair is ignored (private chats only); a stranger's wrong /pair invalidated the code (one try), the old code then failed, a new console code paired the owner chat (stored encrypted), 'Paired' sent, later messages ignored, worker reconciled and runs"
 
 # ---------- 6. Hardening ----------
 in_c "systemd-analyze security --no-pager zeroed-signer.service zeroed-worker.service" >"$LOGS/systemd-analyze.txt" 2>&1 || true
@@ -226,7 +228,10 @@ CODE2="$(in_c "zeroed-new-deploy-code" | tee "$LOGS/console/new-code.txt" | sed 
 CODES+=("$CODE2")
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents, 5 of 5'")"
 T_CF="TESTcloudflare$(rnd 12)"
-publish 1002 publish-rotate.log "$CODE2" CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
+printf '%s' "$T_CF" >"$STATE/cf-token"
+publish 1002 publish-rotate.log "$CODE2" CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4" || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
+grep -q '"method":"PUT","auth_ok":true' "$STATE/cloudflare.jsonl" && [[ "$(cat "$STATE/cf-subdomain")" =~ ^zeroed-[0-9a-f]{8}$ ]] || fail "workers.dev subdomain not registered"
+grep -q "Registered the workers.dev subdomain $(cat "$STATE/cf-subdomain")" "$LOGS/publish-rotate.log" || fail "subdomain registration not reported"
 [ "$(in_c "systemd-creds decrypt --name=heartbeat_hmac_key /etc/credstore.encrypted/heartbeat_hmac_key - | sha256sum | cut -c1-64")" = "$(sha256sum <"$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY" | cut -c1-64)" ] || fail "server and watchdog got different heartbeat keys"
 in_c "grep -qx 'WATCHDOG_URL=https://zeroed-watchdog.e2e.workers.dev' /etc/zeroed/worker.env" || fail "watchdog address not delivered"
 [ "$(sort "$STATE/wrangler-calls.log" | tr '\n' ' ')" = "secret put HEARTBEAT_HMAC_KEY secret put TELEGRAM_BOT_TOKEN secret put TELEGRAM_WEBHOOK_SECRET " ] || fail "watchdog secrets"
@@ -245,7 +250,7 @@ publish 1001 publish-older.log "$CODE3" HELIUS_API_KEY="TESTOLDER$(rnd 8)" || tr
 [ "$(in_c "sha256sum /etc/credstore.encrypted/* | sha256sum")" = "$before" ] || fail "an older issue number replaced keys"
 in_c "cat /var/lib/zeroed-host/handoff_status" | grep -qx 'replay refused' || fail "older bundle not refused"
 in_c "rm -f /etc/zeroed/deploy-code"
-pass "rotation: a new console code and a re-run of Deploy replaced all 4 keys, deployed the watchdog (secrets, webhook) and gave the server its address and the same new heartbeat key; worker reconciled and restarted, owner told; a bundle with an older run number is refused"
+pass "rotation: a new console code and a re-run of Deploy replaced all 4 keys, registered a workers.dev subdomain (none existed), deployed the watchdog (secrets, webhook) and gave the server its address and the same new heartbeat key; worker reconciled and restarted, owner told; a bundle with an older run number is refused"
 
 # ---------- 8. Code update gates ----------
 upd_run() { in_c "systemctl start zeroed-update.service" 2>/dev/null; }
@@ -283,6 +288,20 @@ in_c "rm -f /root/tampered.age"
 grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
 in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalendar --value zeroed-backup.timer" | grep -q 'OnCalendar=\*-\*-\* \*:00:00' || fail "backup timer is not hourly"
 pass "backup: hourly timer, $bk encrypted; restore drill PASS into a scratch directory, FAIL on a tampered file"
+
+# Off-server copy: the owner's backup code (shown once, never stored), then a silent Telegram document.
+BCODE="$(in_c "zeroed-backup-code" | tee "$LOGS/console/backup-code.txt" | sed -n 's/^  \([a-z -]*\)$/\1/p')"
+[ "$(printf '%s' "$BCODE" | wc -w)" = 6 ] || fail "zeroed-backup-code"
+CODES+=("$BCODE")
+in_c "! grep -rqF '$BCODE' /etc /var/lib/zeroed-host 2>/dev/null" || fail "backup code stored on the server"
+sleep 1
+in_c "systemctl start zeroed-backup.service && systemctl start zeroed-backup-offsite.service" || fail "off-server copy failed"
+grep -q "\"method\":\"sendDocument\",\"token_ok\":true,\"chat_id\":\"$T_CHAT\"" "$STATE/telegram.jsonl" || fail "backup not sent to the owner chat"
+printf '%s' "$BCODE" | node "$ROOT/ops/host/files/usr/local/lib/zeroed/derive-key.mjs" --backup >"$E2E/owner-backup.id"
+age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | tar -t | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
+rm -f "$E2E/owner-backup.id"
+in_c "zeroed-status" | grep -q 'daily copy to Telegram (zeroed-' || fail "status does not show the off-server copy"
+pass "off-server backup: a 6-word backup code shown once (only its public half kept), daily copy sent as a silent Telegram document to the owner chat, opened elsewhere with the words alone"
 
 # ---------- 9b. Watchdog on local wrangler (miniflare, the locked version from ops/watchdog/deploy) with the stub worker's real heartbeats ----------
 WD="$E2E/watchdog"
@@ -334,9 +353,10 @@ sleep 6
 sched
 wait_for 10 "cleared line" "tail -3 '$STATE/telegram.jsonl' | grep -q 'CLEARED No heartbeat'"
 in_c "zeroed-resume" | grep -q 'Entries allowed again' || fail "zeroed-resume"
+wait_for 20 "worker applies the resume" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -q 'Entries allowed again (pause cleared from the host)'"
 wait_for 10 "resume notice" "tail -2 '$STATE/telegram.jsonl' | grep -q 'Entries allowed again'"
 tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -E '"method":"sendMessage"' | grep -v "\"chat_id\":\"$T_CHAT\"" | grep -q . && fail "the watchdog wrote to a chat other than the owner's"
-pass "watchdog (locked wrangler dev, miniflare): signed heartbeats from the host teach it the owner chat; quiet while fresh; /pause and /status only from the owner chat and the right webhook secret; worker applied pause; /resume refused over Telegram; stale alert once, cleared on return; resume only from the host"
+pass "watchdog (locked wrangler dev, miniflare): signed heartbeats from the host teach it the owner chat; quiet while fresh; /pause and /status only from the owner chat and the right webhook secret; worker applied pause and later the resume; /resume refused over Telegram; stale alert once, cleared on return; resume only from the host"
 
 # ---------- 10. Restart and crash drills ----------
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents'")"
