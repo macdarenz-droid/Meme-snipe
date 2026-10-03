@@ -1,6 +1,6 @@
 # Working rules for every agent in this repo
 
-The owner's rules, copied from `macdarenz-droid/M-arc` AGENTS.md (commit 56d6d6a) on 2026-10-03. Every agent reads and follows this file before each response. The owner's rules below are verbatim; "How work is delivered" is adapted to this repo, because M-arc's Escobar Worker, watch agent, keystore and APK gates do not exist here.
+The owner's rules, copied from `macdarenz-droid/M-arc` AGENTS.md (commit 56d6d6a, unchanged at 5bc4712) on 2026-10-03. Every agent reads and follows this file and `CLAUDE.md` before each response. The owner's rules below are verbatim; "How work is delivered" is adapted to this repo, because M-arc's Escobar Worker, watch agent, keystore and APK gates do not exist here.
 
 ## ULTIMATE RULE (owner, 2026-09-26): above every other rule, mode or permission
 Use what's necessary for high-quality output and a fast workflow, while saving tokens.
@@ -27,10 +27,6 @@ Use what's necessary for high-quality output and a fast workflow, while saving t
 - Name risks and their mitigations when designing, while building, and after release.
 - One document per topic: update it instead of creating copies (no v2, final, copy or patch-1.2 names).
 
-## Owner rules for this repo
-
-- No AI wording in the UI (owner, 2026-10-03). Every word in the app reads as written by a person. Never mention AI, models, assistants or "smart"/"intelligent" features, and never use stock AI phrasing such as "at a glance", "seamless", "effortless", "unlock", "elevate", "empower", "leverage", "delve", "dive in", "robust", "cutting-edge", "harness", "supercharge", "streamline", "insights", "journey", "game-changer", "powered by", "Let's", "Here's", or decorative sparkles. Use short, specific labels a trader would write ("Today", "Open trade", "Daily loss"). A guard test in the web app fails the build on any flagged word; add to its list, never remove from it.
-
 ## How work is delivered
 
 Same delivery model as M-arc, applied to a trading app. Where M-arc says "APK", read "a deployed build or a paper-session report".
@@ -45,7 +41,7 @@ Same delivery model as M-arc, applied to a trading app. Where M-arc says "APK", 
 **Agents may, without asking:** build, test and push on their own branch, and open draft PRs.
 
 - Run in auto mode. Auto mode's safety checks still apply, and a refusal is never worked around.
-- Models: a strong model for hard judgement, `claude-opus-5-5` (planning, judging, reviewing, research synthesis, risk and execution code); a lighter one for mechanical steps, `claude-sonnet-5` (every step spelled out). Never Haiku or Fable. The built-in Explore and claude-code-guide helpers run on Haiku, so they are blocked. For a search, use a general-purpose helper that names `sonnet`. Helpers that name no model use the session's model.
+- Models: follow the owner's model range in `CLAUDE.md`. Never Haiku or Fable. The built-in Explore and claude-code-guide helpers run on Haiku, so they are blocked. For a search, use a general-purpose helper that names `sonnet`.
 
 **Only the owner:**
 - funds the bot wallet, moves money, and switches any session from paper to live;
