@@ -20,7 +20,7 @@ export const runSeed = async (r: SeedRequest, o: { readonly rpc: SeedRpc; readon
     ? await buildSeed({ days: [], untilSlot: r.untilSlot, asOf: r.asOf })
     : await buildSeed({
       days: [], rpc, untilSlot: r.untilSlot, asOf: r.asOf,
-      fill: { fromSlot: last.slot + 1n > r.untilSlot + 1n ? r.untilSlot + 1n : last.slot + 1n, fromMs: last.ms, ...(r.close === null ? {} : { close: r.close }) },
+      fill: { fromSlot: last.slot + 1n > r.untilSlot + 1n ? r.untilSlot + 1n : last.slot + 1n, fromMs: last.ms, ...(r.close === null ? {} : { close: r.close }), ...(r.liveStart === null ? {} : { liveStart: r.liveStart }) },
     });
   const p = s.report;
   const rpcText = p.rpc === null ? 'no RPC' : `RPC ${p.rpc.result.creditsUsed} credits, stopped by ${p.rpc.result.stoppedBy}`;

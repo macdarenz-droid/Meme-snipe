@@ -119,6 +119,8 @@ export interface SeedRequest {
   /** The saved live watch to close (its open gap, or the watch), for a fill; null on a first start. */
   readonly close: { readonly via: string; readonly fromSlot: bigint | null } | null;
   readonly untilSlot: bigint | null;
+  /** The live watch's `coverage:creates:start` moment as the feed placed it; null when it did not start in time. */
+  readonly liveStart: Moment | null;
   readonly asOf: Moment;
   /** Aborted when the worker stops waiting for this seed (seedMaxMs, or a stop): no RPC page is fetched after it. */
   readonly signal: AbortSignal;
@@ -188,6 +190,8 @@ export class Worker {
   readonly #saved: SavedDeployers;
   /** The live creates watch's first slot (its `coverage:creates:start`), for the seed's `untilSlot`. */
   #liveStart: bigint | null = null;
+  /** The moment the feed placed that start at (SEED-1's fill dates its close from it). */
+  #liveStartAt: Moment | null = null;
   /** The empty slot the reconcile reserved for SEED-1's events (see `#seedIndex`). */
   #reserved: bigint | null = null;
   #beatSeq = 0;
@@ -356,7 +360,10 @@ export class Worker {
       }
     }
     if (b.type === 'offchain' && b.key === 'coverage:creates:start' && isObj(b.value) && typeof b.value['via'] === 'string' && b.value['via'].startsWith('logs:') && typeof b.value['fromSlot'] === 'bigint') {
-      this.#liveStart ??= b.value['fromSlot'];
+      if (this.#liveStart === null) {
+        this.#liveStart = b.value['fromSlot'];
+        this.#liveStartAt = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: f.receivedAt };
+      }
     }
     if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:.+:gap$/.test(b.key)) this.#recorder?.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt });
     if (b.type === 'offchain' || b.type === 'fact') this.#coverageJournal.fact(b.key, b.value, f.receivedAt);
@@ -706,7 +713,8 @@ export class Worker {
     const now = d.timers.now();
     const tip = this.#feed.tip;
     const untilSlot = this.#liveStart;
-    const top = [tip, untilSlot, this.#saved.last?.slot ?? null].reduce<bigint>((a, b) => (b !== null && b > a ? b : a), 0n);
+    const liveStart = this.#liveStartAt;
+    const top = [tip, untilSlot, liveStart?.slot ?? null, this.#saved.last?.slot ?? null].reduce<bigint>((a, b) => (b !== null && b > a ? b : a), 0n);
     const asOf: Moment = { slot: top, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now };
     const saved = this.#saved;
     const close = liveWatchToClose(saved.coverage);
@@ -716,7 +724,7 @@ export class Worker {
       // Bounded: entries wait for the seed, so a slow fill gives up, stops its RPC, and the downtime reads as a gap.
       const max = d.seedMaxMs;
       result = await Promise.race([
-        d.seed({ saved, close, untilSlot, asOf, signal: abort.signal }),
+        d.seed({ saved, close, untilSlot, liveStart, asOf, signal: abort.signal }),
         ...(max === undefined ? [] : [new Promise<never>((_, reject) => d.timers.setTimeout(() => reject(new Error(`no answer within ${max} ms`)), max))]),
       ]);
     } catch (e) {
