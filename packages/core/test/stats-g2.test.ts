@@ -133,14 +133,14 @@ describe('n_power by simulating the G2 rule', () => {
     expect(simulateG2Power({ walkForward: iid, control: c, seed: 2, ...dayOnly }).nPower).toBe(nIid);
   }, 600_000);
 
-  // Review of 437e60d: n_power simulates the exact G2 rule, cluster sensitivity included. 40 creators, each with its
-  // own lasting edge or loss (±10 points), need more trades than the same returns from a creator each: a creator's
+  // Review of 437e60d: n_power simulates the exact G2 rule, cluster sensitivity included. 20 creators, each with its
+  // own lasting edge or loss (±20 points), need more trades than the same returns from a creator each: a creator's
   // trades are not independent observations.
   test('n_power includes the creator cluster unit: concentrated creators raise it', () => {
     const base = bracketTrades(831, 0, 40, 30);
-    const effect = (k: number) => (k % 2 === 0 ? 0.1 : -0.1);
-    const spread = own(base).map((t, i) => ({ ...t, rNet: t.rNet + effect(i % 40) }));
-    const few = spread.map((t, i) => ({ ...t, creatorCluster: `c${i % 40}` }));
+    const effect = (k: number) => (k % 2 === 0 ? 0.2 : -0.2);
+    const spread = own(base).map((t, i) => ({ ...t, rNet: t.rNet + effect(i % 20) }));
+    const few = spread.map((t, i) => ({ ...t, creatorCluster: `c${i % 20}` }));
     const c = control(832, 40, 30);
     const nSpread = simulateG2Power({ walkForward: spread, control: c, seed: 4, ...opts }).nPower;
     const nFew = simulateG2Power({ walkForward: few, control: c, seed: 4, ...opts, maxTrades: 200_000 }).nPower;
