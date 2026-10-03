@@ -454,3 +454,87 @@ describe('R10 on economic NAV per unit', () => {
     expect(economicNav(TRIAL_POLICY, lamports(lamportsFor('10')), PRICE, [p(neg(1n))])).toBeNull();
   });
 });
+
+describe('RISK-1b edges (mutation): NAV, capital in SOL, withdrawals', () => {
+  const lamportsFor = (usdValue: string) => microUsdToLamports(usd(usdValue), PRICE, 'ceil') + TRIAL_POLICY.reserve.opsFloor;
+  const at = (wallet: string, patch: Parameters<typeof account>[0] = {}, extra: Partial<Parameters<typeof baseInput>[0]> = {}) => {
+    const i = baseInput({ account: account(patch), ...extra });
+    return { ...i, market: { ...i.market, solBalance: { value: lamports(lamportsFor(wallet)), atMs: NOW }, solPrice: { value: PRICE, atMs: NOW } } };
+  };
+  const mark = (atMs: number, nav: string) => ({ atMs, nav: usd(nav) });
+  const req = (amount: bigint, reconciled = true) => ({ amount: lamports(amount), network: NETWORK, rent: RENT, reconciled });
+  const reserve = () => opsReserve(TRIAL_POLICY, { rent: RENT }, maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent: RENT }).perExitAttempt);
+
+  test('NAV observations are taken in time order, whichever list they come from', () => {
+    // A $10 withdrawal at $20, then a $30 peak: the mark is $30. The other way round, the $30 peak is halved to $15.
+    const w = (atMs: number) => ({ atMs, amount: neg(usd('10')), navBefore: usd('20') });
+    expect(evaluateEntry(at('25', { flows: [w(LAST_WEEK)], navMarks: [mark(THIS_WEEK, '30')] }), baseRequest()).snapshot?.navHighWaterMark).toBe(usd('30'));
+    expect(evaluateEntry(at('12', { flows: [w(THIS_WEEK)], navMarks: [mark(LAST_WEEK, '30')] }), baseRequest()).snapshot?.navHighWaterMark).toBe(usd('15'));
+  });
+
+  test('a re-arm at this very instant restarts the NAV mark now; one in the future does not yet', () => {
+    const peak = [mark(LAST_WEEK, '30')];
+    const now = latches({ killTrippedAtMs: LAST_WEEK, killRearmedAtMs: NOW });
+    expect(evaluateEntry(at('15', { navMarks: peak }, { latches: now }), baseRequest()).snapshot?.navHighWaterMark).toBe(usd('15'));
+    const future = latches({ killTrippedAtMs: LAST_WEEK, killRearmedAtMs: NOW + 1 });
+    expect(evaluateEntry(at('15', { navMarks: peak }, { latches: future }), baseRequest()).snapshot?.navHighWaterMark).toBe(usd('30'));
+  });
+
+  test('the NAV kill line rounds up, to the micro-dollar', () => {
+    const peak = { navMarks: [mark(LAST_WEEK, '30.000001')] }; // 70% is 21.0000007
+    expect(evaluateEntry(at('21.000001', peak), baseRequest()).trips).toEqual(['kill_switch']);
+    expect(evaluateEntry(at('21.000002', peak), baseRequest()).trips).toEqual([]);
+  });
+
+  test('a zero mark is a valid mark, and a NAV of one micro-dollar is a valid record', () => {
+    const p = { mint: MINT_B, openedAtMs: NOW, notional: usd('5'), mark: usd('0'), markAtMs: NOW };
+    expect(economicNav(TRIAL_POLICY, lamports(lamportsFor('10')), PRICE, [p])).toBe(usd('10'));
+    expect(codes(evaluateEntry(at('20', { navMarks: [{ atMs: LAST_WEEK, nav: 1n as MicroUsd }] }), baseRequest()))).not.toContain('bankroll_invalid');
+  });
+
+  test('wallet-marked equity adds the open positions, and a zero capital is reported as zero SOL', () => {
+    const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('5'), mark: usd('3'), markAtMs: NOW - 100 };
+    expect(evaluateEntry(at('10', { openPositions: [open] }), baseRequest()).snapshot?.walletEquity).toBe(usd('13'));
+    const empty = evaluateEntry(at('0'), baseRequest()).snapshot;
+    expect(empty).toMatchObject({ walletEquity: 0n, capital: 0n, capitalSol: 0n, navSol: 0n });
+  });
+
+  test('a price of one micro-dollar is still a price', () => {
+    const i = baseInput();
+    const d = evaluateEntry({ ...i, market: { ...i.market, solPrice: { value: 1n as MicroUsd, atMs: NOW } } }, baseRequest());
+    expect(d.snapshot?.walletEquity).not.toBeNull();
+  });
+
+  test('the weekly room of 20% of capital rounds down, to the micro-dollar', () => {
+    // Capital $19.000003: 20% is $3.8000006, the tightest room (kill room $5.000003, weekly room $4).
+    const d = evaluateEntry(at('19.000003'), baseRequest()) as EntryAllowed;
+    expect(d.allow).toBe(true);
+    expect(d.reservation.limits.maxHeld).toBe(microUsdToLamports(usd('3.8'), PRICE, 'floor'));
+  });
+
+  test('the marked week change is net of this week\'s flows', () => {
+    const f = { atMs: THIS_WEEK, amount: neg(usd('5')), navBefore: usd('20') };
+    expect(evaluateEntry(baseInput({ account: account({ flows: [f], markedAtWeekStart: usd('20') }) }), baseRequest()).snapshot?.weekChangeMarked).toBe(0n);
+  });
+
+  test('a week that started at zero equity is refused even after a deposit', () => {
+    const input = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK, '-20', { notional: usd('20') })],
+      flows: [{ atMs: THIS_WEEK, amount: usd('20'), navBefore: usd('1') }] }) });
+    const d = evaluateEntry(input, baseRequest());
+    expect(d.snapshot?.equity).toBe(usd('20'));
+    expect(d.reasons.filter((r) => r.code === 'bankroll_invalid').map((r) => r.detail)).toEqual(['equity is not positive']);
+  });
+
+  test('withdrawals: one lamport is a valid amount; the most that may leave is exact in every case', () => {
+    const i = baseInput();
+    expect(evaluateWithdrawal(i, req(1n)).allow).toBe(true);
+    // Over the free cash only: the most is the free cash.
+    expect(evaluateWithdrawal(i, req(SOL)).maxAmount).toBe(SOL - reserve());
+    // Unknown balance, or a balance inside the reserve: nothing.
+    expect(evaluateWithdrawal({ ...i, market: { ...i.market, solBalance: null } }, req(1n)).maxAmount).toBe(0n);
+    expect(evaluateWithdrawal({ ...i, market: { ...i.market, solBalance: { value: lamports(reserve() - 1n), atMs: NOW } } }, req(1n)).maxAmount).toBe(0n);
+    // Not reconciled, or queued: nothing.
+    expect(evaluateWithdrawal(i, req(1n, false)).maxAmount).toBe(0n);
+    expect(evaluateWithdrawal(baseInput({ account: account({ heldReservations: lamports(1n) }) }), req(1n)).maxAmount).toBe(0n);
+  });
+});
