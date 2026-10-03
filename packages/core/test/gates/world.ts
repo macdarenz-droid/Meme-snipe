@@ -83,7 +83,7 @@ export const W = (n: number | string): string => {
 /** A deterministic token-account address. */
 export const ACC = (n: number | string): string => encodeBase58(new Uint8Array(createHash('sha256').update(`account:${n}`).digest()));
 
-const wallet = (owner: string, amount: bigint, address = ACC(owner)): HolderAccount => ({ address, owner, ownerProgram: null, amount });
+const wallet = (owner: string, amount: bigint, address = ACC(owner)): HolderAccount => ({ address, mint: MINT, owner, ownerProgram: null, amount });
 
 export type Facts = Map<string, { value: unknown; moment: Moment }>;
 
@@ -97,7 +97,7 @@ const FILLER = 1_000_000_000_000n;
 /** A complete account set: the balances add up to SUPPLY exactly (GATE-1d refuses a complete set that does not). */
 export const holderAccounts = (): HolderAccount[] => {
   const core = [
-    { address: POOL.poolBaseTokenAccount, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT },
+    { address: POOL.poolBaseTokenAccount, mint: MINT, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT },
     wallet(DEV, 4_000_000_000_000n),
     ...Array.from({ length: 30 }, (_, i) => wallet(W(i), 8_000_000_000_000n)),
   ];

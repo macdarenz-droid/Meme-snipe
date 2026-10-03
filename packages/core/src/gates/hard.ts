@@ -17,7 +17,7 @@ import {
   type CreateFact, type MintFact, type PoolFact, type Price,
   SOL_USD_KEY, candlesKey, createKey, curveKey, deployerKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey,
   parseCandles, parseCreate, parseCurve, parseDeployer, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
-  parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
+  parsePool, parseSim, parseStream, streamKey, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
 } from './facts.ts';
 import { checkCurveTails, checkPoolTails } from './tails.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
@@ -319,6 +319,21 @@ const h11 = (env: Env): Outcome => {
 
 // ---------- H12-H14: holders, insiders, deployer ----------
 
+/**
+ * A complete holder set is judged against the mint supply of its own slot: the mint was read at that slot, or a
+ * stream keeps it current from its read up to a head at or past that slot (GATE-1d review). Returns why not, or null.
+ */
+const sameSupplySlot = (env: Env, gate: HardGate, slot: bigint | null): string | null => {
+  const r = readMint(env, gate);
+  const ms = r.ok ? r.fact.obs.slot : null;
+  if (!r.ok || ms === null || slot === null) return 'a mint supply without a slot';
+  if (ms === slot) return null;
+  if (r.fact.obs.stream === undefined) return `the mint supply read at slot ${ms}`;
+  const head = parseStream(env.ev.raw(streamKey(r.fact.obs.stream)))?.obs.slot ?? null;
+  if (head === null) return `the mint supply at slot ${ms} with no stream head`;
+  return ms <= slot && slot <= head ? null : `the mint supply kept current from slot ${ms} to the stream head ${head}`;
+};
+
 type Conc = { ok: true; c: Concentration; create: CreateFact; notes: GateNote[] } | { ok: false; out: Outcome };
 
 const conc = (env: Env, gate: HardGate): Conc => {
@@ -331,6 +346,18 @@ const conc = (env: Env, gate: HardGate): Conc => {
   const pool: PoolFact = p.fact;
   const m = mintAccount(env, gate);
   if (!m.ok) return { ok: false, out: m.out };
+  const malformed = (detail: string): Conc => ({ ok: false, out: { reasons: [{ gate: 'H16', code: 'malformed', input: 'holders', neededBy: gate, detail }] } });
+  // GATE-1d review: a repeated account would count twice and hide unlisted supply; another mint's account is not a holder.
+  const seen = new Set<string>();
+  for (const a of h.fact.accounts) {
+    if (seen.has(a.address)) return malformed(`account ${a.address} is listed more than once`);
+    seen.add(a.address);
+    if (a.mint !== env.req.mint) return malformed(`account ${a.address} holds mint ${a.mint}, not ${env.req.mint}`);
+  }
+  if (h.fact.coverage === 'all') {
+    const why = sameSupplySlot(env, gate, h.fact.obs.slot);
+    if (why !== null) return { ok: false, out: { reasons: [{ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: gate, detail: `a complete holder set read at slot ${h.fact.obs.slot} is judged against ${why}` }] } };
+  }
   if (m.account.supply !== h.fact.supply) {
     return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `holder read has supply ${h.fact.supply}, the mint ${m.account.supply}` }] } };
   }
@@ -371,10 +398,11 @@ const h12 = (env: Env): Outcome => {
   // GATE-1d: tokens the view does not list could all belong to one owner, listed or not, in any number of accounts.
   // Pass only if the listed holdings plus all of them stay inside every limit; otherwise the view cannot judge H12.
   const u = c.unaccounted;
-  // The dev is one of the owners, so the top holder's bound covers the dev's (and singleHolderBps <= hardHolderBps).
+  // The dev is one of the owners, so the top holder's bound covers the dev's.
   const worst = { top1: shareBps(top1Held + u, c.circulating), top10: shareBps(c.top10 + u, c.circulating) };
   const over = [
-    worst.top1 > BigInt(g.singleHolderBps) ? `one holder up to ${worst.top1} bps (limit ${g.singleHolderBps})` : null,
+    // Both limits: singleHolderBps may equal hardHolderBps (validate.ts), and the hard limit rejects at ">=".
+    worst.top1 > BigInt(g.singleHolderBps) || worst.top1 >= BigInt(g.hardHolderBps) ? `one holder up to ${worst.top1} bps (limits ${g.singleHolderBps}, hard ${g.hardHolderBps})` : null,
     worst.top10 > BigInt(g.top10Bps) ? `top 10 up to ${worst.top10} bps (limit ${g.top10Bps})` : null,
   ].filter((x): x is string => x !== null);
   if (over.length === 0) return { reasons, notes };

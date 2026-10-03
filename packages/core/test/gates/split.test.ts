@@ -4,12 +4,12 @@
 // belong to any one owner, listed or not, so the gates pass a partial view only when that worst case stays inside
 // every limit; otherwise they need a complete account set.
 import { describe, expect, it } from 'vitest';
-import { INCINERATOR, RAYDIUM_LOCKER_PROGRAM, evaluateHardRejects, holdersKey, insidersKey, type GateReason, type HolderAccount } from '../../src/gates/index.ts';
-import { ACC, DEV, MINT, POOL, POOL_ADDRESS, SUPPLY, VAULT_AMOUNT, W, contextOf, deps, holderAccounts, passingFacts, patch, request, session, type Facts } from './world.ts';
+import { INCINERATOR, RAYDIUM_LOCKER_PROGRAM, evaluateHardRejects, holdersKey, insidersKey, mintKey, type GateReason, type HolderAccount } from '../../src/gates/index.ts';
+import { ACC, DEV, MINT, POOL, POOL_ADDRESS, SUPPLY, VAULT_AMOUNT, W, contextOf, deps, holderAccounts, obs, passingFacts, patch, request, session, streamObs, SLOT, T, type Facts } from './world.ts';
 
 const CIRC = SUPPLY - VAULT_AMOUNT;
-const vault: HolderAccount = { address: POOL.poolBaseTokenAccount, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT };
-const acct = (owner: string, amount: bigint, tag: string, ownerProgram: string | null = null): HolderAccount => ({ address: ACC(tag), owner, ownerProgram, amount });
+const vault: HolderAccount = { address: POOL.poolBaseTokenAccount, mint: MINT, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT };
+const acct = (owner: string, amount: bigint, tag: string, ownerProgram: string | null = null): HolderAccount => ({ address: ACC(tag), mint: MINT, owner, ownerProgram, amount });
 /** `total` split over `n` accounts of one owner. */
 const split = (owner: string, total: bigint, n: number, tag: string): HolderAccount[] =>
   Array.from({ length: n }, (_, i) => acct(owner, i === 0 ? total - (total / BigInt(n)) * BigInt(n - 1) : total / BigInt(n), `${tag}${i}`));
@@ -31,6 +31,11 @@ const view = (accounts: readonly HolderAccount[], coverage: 'all' | 'largest', f
 const concentrationReasons = (f: Facts): readonly GateReason[] =>
   evaluate(f).reasons.filter((r) => r.gate === 'H12' || r.gate === 'H13' || r.neededBy === 'H12' || r.neededBy === 'H13');
 const notCovered = (neededBy: 'H12' | 'H13', unlisted: bigint) => expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy, value: String(unlisted) });
+
+const bps = (n: bigint) => (CIRC * n) / 10_000n;
+/** Unlisted tokens that keep `held` + all of them at `limit` bps of circulating. */
+const room = (limit: bigint, held: bigint) => (limit * CIRC - 10_000n * held) / 10_000n;
+const withBig = (big: readonly HolderAccount[], unlisted: bigint) => [vault, ...big, ...spread(CIRC - sum(big) - unlisted, 200, 'small')];
 
 describe('split-account bypass (GATE-1d)', () => {
   it('the truth sums to the supply, and the complete account view rejects the dev at 50% (H12 dev-holder, H13)', () => {
@@ -101,10 +106,6 @@ describe('split-account bypass (GATE-1d)', () => {
   });
 
   // Each worst-case bound decides on its own: one test per bound where it is the tightest.
-  const bps = (n: bigint) => (CIRC * n) / 10_000n;
-  /** Unlisted tokens that keep `held` + all of them at `limit` bps of circulating. */
-  const room = (limit: bigint, held: bigint) => (limit * CIRC - 10_000n * held) / 10_000n;
-  const withBig = (big: readonly HolderAccount[], unlisted: bigint) => [vault, ...big, ...spread(CIRC - sum(big) - unlisted, 200, 'small')];
 
   it('the top-holder bound: one wallet at 8% leaves room for 2% unlisted; one unit more is not covered', () => {
     const big = [acct(W(0), bps(800n), 'big0'), ...Array.from({ length: 9 }, (_, i) => acct(W(i + 1), bps(100n), `big${i + 1}`))];
@@ -145,5 +146,64 @@ describe('split-account bypass (GATE-1d)', () => {
     for (const coverage of ['all', 'largest'] as const) {
       expect(evaluate(view(over, coverage)).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: 'H12' }));
     }
+  });
+});
+
+describe('GATE-1d review: the holder read must be one clean snapshot of this mint', () => {
+  const mk = (owner: string, amount: bigint, tag: string): HolderAccount => ({ ...acct(owner, amount, tag), mint: MINT });
+  // Vault, the dev at 1%, ten wallets at 2% and thirty-nine at 1%: 40% of circulating is not listed.
+  const big = Array.from({ length: 10 }, (_, i) => mk(W(`b${i}`), bps(200n), `b${i}`));
+  const small = [mk(DEV, bps(100n), 'dev1'), ...Array.from({ length: 39 }, (_, i) => mk(W(`s${i}`), bps(100n), `s${i}`))];
+  // The vault takes what is left after the small accounts are counted twice, so a doubled list sums to the supply.
+  const v = { ...vault, mint: MINT, amount: SUPPLY - sum(big) - 2n * sum(small) };
+
+  it('B1: a repeated account address is malformed, never a pass, on a partial or a complete view', () => {
+    expect(concentrationReasons(view([v, ...big, ...small], 'largest'))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'not-covered', neededBy: 'H12' }));
+    const doubled = [v, ...big, ...small, ...small];
+    expect(sum(doubled)).toBe(SUPPLY);
+    for (const coverage of ['largest', 'all'] as const) {
+      const r = evaluate(view(doubled, coverage)).reasons;
+      expect(r).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'holders', neededBy: 'H12' }));
+      expect(r.filter((x) => x.gate === 'H12' || x.neededBy === 'H12' || x.neededBy === 'H13').map((x) => x.code)).toEqual(['malformed', 'malformed']);
+    }
+  });
+
+  it('N1: a complete set read one slot away from the mint supply it is judged against is not covered', () => {
+    const f = passingFacts();
+    const at = (slot: bigint) => patch(f, holdersKey(MINT), { obs: obs({ slot }) });
+    // The mint is kept current by the chain stream (head SLOT - 1) since slot SLOT - 500: its supply holds for any
+    // holder read from then up to the head, and not past the head.
+    expect((f.get(mintKey(MINT))!.value as { obs: { slot: bigint; stream?: string } }).obs).toEqual(expect.objectContaining({ slot: SLOT - 500n, stream: 'chain' }));
+    expect(concentrationReasons(at(SLOT - 1n))).toEqual([]);
+    expect(concentrationReasons(at(SLOT - 2n))).toEqual([]);
+    expect(concentrationReasons(at(SLOT))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12' }));
+    // The mint changed at SLOT - 1 (seen by the stream): a holder set read at SLOT - 2 predates that supply.
+    const changed = patch(f, mintKey(MINT), { obs: streamObs({ slot: SLOT - 1n, receivedAt: T - 300 }) });
+    expect(concentrationReasons(patch(changed, holdersKey(MINT), { obs: obs({ slot: SLOT - 1n }) }))).toEqual([]);
+    expect(concentrationReasons(patch(changed, holdersKey(MINT), { obs: obs({ slot: SLOT - 2n }) }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12' }));
+    // A mint read without a stream must be read at the holders' own slot.
+    const read = patch(f, mintKey(MINT), { obs: obs({ slot: SLOT - 1n }) });
+    expect(concentrationReasons(patch(read, holdersKey(MINT), { obs: obs({ slot: SLOT - 1n }) }))).toEqual([]);
+    expect(concentrationReasons(patch(read, holdersKey(MINT), { obs: obs({ slot: SLOT - 2n }) }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12' }));
+  });
+
+  it('N2: with the single-holder limit equal to the hard limit, the worst case at the hard limit is not covered', () => {
+    const s = session({ hardHolderBps: 1_000 }); // tightened to the single-holder limit (validate.ts allows equal)
+    const one = [acct(W('one'), bps(500n), 'one')];
+    const u = room(1_000n, bps(500n));
+    const h12 = (unlisted: bigint) => evaluateHardRejects(contextOf(view(withBig(one, unlisted), 'largest')), deps('live', s, 'RUG-1'), request(), { stopAtFirst: false })
+      .reasons.filter((r) => r.gate === 'H12' || r.neededBy === 'H12');
+    expect(h12(u)).toEqual([notCovered('H12', u)]); // exactly 1000 bps: at the hard limit
+    const below = u - bps(1n) - 1n;
+    expect(h12(below)).toEqual([]);
+  });
+
+  it('N3: an account of another mint, or one without its mint, is malformed', () => {
+    const accounts = holderAccounts();
+    const other = accounts.map((a, i) => (i === 3 ? { ...a, mint: POOL.quoteMint } : a));
+    expect(evaluate(view(other, 'all')).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'holders', neededBy: 'H12' }));
+    // A producer that leaves the mint out: the read is not in the expected shape.
+    const missing = accounts.map((a, i) => (i === 3 ? (({ mint: _, ...rest }) => rest)(a) : a)) as unknown as HolderAccount[];
+    expect(evaluate(view(missing, 'all')).reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'holders', neededBy: 'H12' }));
   });
 });
