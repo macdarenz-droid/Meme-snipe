@@ -74,6 +74,8 @@ const minus = (a: PoolState, b: PoolState): PoolDelta => ({
 const isZero = (d: PoolDelta): boolean => d.base === 0n && d.vault === 0n && d.virtual === 0n;
 
 export interface SwapReplay {
+  /** The real swap replayed on its own pre-trade state: what that trader actually paid or received, exactly. */
+  readonly trade: PoolTrade;
   /** The pool after the swap without our trades. */
   readonly real: PoolState;
   /** The pool after the swap with our trades in the sequence. */
@@ -111,14 +113,14 @@ export class ShiftedPool {
     const real = own.trade.after;
     if (isZero(this.#delta)) {
       this.#real = real;
-      return { real, shifted: real, replayed: true };
+      return { trade: own.trade, real, shifted: real, replayed: true };
     }
     const shiftedPre = plus(swap.pre, this.#delta);
     const shifted = replaySwap(shiftedPre, swap);
     const shiftedPost = shifted.ok ? shifted.trade.after : shiftedPre;
     this.#real = real;
     this.#delta = minus(shiftedPost, real);
-    return { real, shifted: shiftedPost, replayed: shifted.ok };
+    return { trade: own.trade, real, shifted: shiftedPost, replayed: shifted.ok };
   }
 
   /** Our trade landed: the pool is now `after` (computed from `state` by the fill). */
