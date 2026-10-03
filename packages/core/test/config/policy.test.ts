@@ -281,4 +281,4 @@ describe('CFG-1: hidden limits in a saved policy file', () => {
   });
 });
 
-const PINNED_TRIAL_HASH = '7676833b412696d5e2b80e471b811e1110656e6cb8ac8ba25fb6ebe0811fded5';
+const PINNED_TRIAL_HASH = '3ba29a1dedc3168d648cc822861320c44dffa35a4d399ac259a3186778e07137';

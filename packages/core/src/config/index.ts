@@ -4,7 +4,9 @@ export { PRICE_SCALE } from './scale.ts';
 export { APPROVED_BASELINES, DEFAULT_BASELINE_HASH } from './baselines.ts';
 export { canonicalPolicy, policyHash } from './hash.ts';
 export { loadPolicy, savePolicy } from './load.ts';
-export { POLICY_SCHEMA_VERSION, TRIAL_POLICY, type LadderStep, type Policy } from './policy.ts';
+export {
+  EXIT_UNIVERSES, POLICY_SCHEMA_VERSION, TRIAL_POLICY, exitsFor, type ExitUniverse, type LadderStep, type Policy, type UniverseExits,
+} from './policy.ts';
 export { startSession, startSessionFromText, type ChangeAttempt, type PolicySession, type SessionOptions } from './session.ts';
 export {
   POLICY_RULES, applyOverride, ruleLeafPaths,
