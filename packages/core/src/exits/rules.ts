@@ -317,7 +317,8 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
       startRung: retry ? last : next,
       maxAttempts: retry ? 1 : Math.max(left, 0),
       blocked: retry || left > 0 ? null : `exit ladder used: ${used} attempts on this position`,
-      closeAccount: !partial && quantity === h.quantity && h.tokenAccountBalance === h.quantity && !h.closeFailed,
+      // A non-partial exit always sells the whole holding.
+      closeAccount: !partial && h.tokenAccountBalance === h.quantity && !h.closeFailed,
     },
     ignored,
   });
