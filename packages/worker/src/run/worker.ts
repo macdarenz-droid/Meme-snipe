@@ -181,6 +181,8 @@ export class Worker {
   #savedExits = '';
   #probe: DelayProbe | null = null;
   #rpcDownUntil = 0;
+  /** Halt reasons for the whole process: open positions whose universe the policy lacks. */
+  readonly #sellOnly: string[] = [];
   /** The reconcile-only process: the engine takes nothing after the reconcile. */
   #observing = false;
   #exposedFile: ReturnType<typeof exposedFile>;
@@ -215,12 +217,6 @@ export class Worker {
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
     const seed = `paper:${this.#boot}`;
-    this.#journal.write('start', {
-      git_sha: c.gitSha, run_id: c.runId, label: c.runLabel, recorder: c.recorder, simulation: c.simulate, mode: c.mode,
-      policy_version: d.session.versionHash, strategy: d.strategy.version, seed, pid: process.pid,
-      entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
-    });
-    if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
 
     const recRoot = join(c.stateDir, STATE_FILES.recorder);
     mkdirSync(recRoot, { recursive: true });
@@ -251,6 +247,27 @@ export class Worker {
       ...Object.values(stored.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id as string),
       ...Object.values(stored.book.intents).filter((i) => isUnresolved(i)).map((i) => i.intent.positionId as string),
     ])].sort();
+    // A restored position whose universe the loaded policy lacks: sell-only for this process (no new entries), and the
+    // strategy flattens it through the global exit ladder (supervisor ruling on the EXIT-1b review).
+    const savedPlans = exitsFile(c.stateDir).read({});
+    for (const p of Object.values(stored.book.positions)) {
+      if (p.status === 'closed') continue;
+      const entry = stored.book.intents[p.entryIntentId];
+      const u = savedPlans[p.id]?.plan.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key));
+      if (u !== null && !Object.hasOwn(d.session.policy.exits.universes, u)) this.#sellOnly.push(`sell-only: policy ${d.session.versionHash} lacks universe ${u} of ${p.id}`);
+    }
+    // The start line goes first in this boot's journal lines, with everything above known (nothing above writes one).
+    this.#journal.write('start', {
+      git_sha: c.gitSha, run_id: c.runId, label: c.runLabel, recorder: c.recorder, simulation: c.simulate, mode: c.mode,
+      policy_version: d.session.versionHash, strategy: d.strategy.version, seed, pid: process.pid,
+      entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
+      sell_only: [...this.#sellOnly],
+    });
+    if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
+    if (this.#sellOnly.length > 0) {
+      this.#journal.write('halt', { reasons: ['sell-only: no new entries; the positions below are flattened', ...this.#sellOnly] });
+      d.log(`ALERT ${this.#sellOnly.join('; ')}`);
+    }
     this.#exposedFile = exposedFile(c.stateDir);
     const before = this.#exposedFile.read(NO_EXPOSED);
     const since = this.#journal.previousMs;
@@ -571,7 +588,7 @@ export class Worker {
       else if (s.last === null || now - s.last > this.#d.staleFeedMs) reasons.push(`feed ${s.src.name} stale`);
     }
     if (this.#ctl.paused) reasons.push('owner pause (watchdog)');
-    reasons.push(...this.#diverged);
+    reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
     if (same) return;
     const was = this.#halted.length > 0;

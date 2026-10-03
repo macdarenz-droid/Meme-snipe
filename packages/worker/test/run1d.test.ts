@@ -4,6 +4,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { JournalLine } from '../../runner/src/contract.ts';
+import { exitsFile } from '../src/run/state.ts';
 import { LANDS, Market, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
 const lines = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as JournalLine);
@@ -106,5 +107,35 @@ describe('--reconcile-only (the host-loss tabletop)', () => {
     expect(h.worker.book.positions).toEqual({});
     expect(h.order.includes('seed')).toBe(false);
     expect(await h.worker.stop()).toBe(0);
+  });
+});
+
+describe('a restored position whose universe the loaded policy lacks (EXIT-1b review)', () => {
+  it('starts sell-only, says why on the start line, and flattens the position through the global exit ladder', async () => {
+    const h = makeWorker();
+    await entered(h);
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    await h.worker.kill();
+    // The position was entered under a universe this release's policy no longer has.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, universe: 'U9' as never } } });
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    const start = lines(h.stateDir).filter((l) => l.kind === 'start').at(-1)!;
+    expect(start['sell_only']).toEqual([expect.stringMatching(new RegExp(`lacks universe U9 of ${pid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))]);
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h2);
+    // The first decision may meet only the stale pre-kill quote and book the exit blocked; it retries within minutes.
+    await m.run(150_000, 1_000, () => {
+      m.slot();
+      m.pool();
+    });
+    // Exits are never blocked for good: the position is flattened at an unchanged price, its decision line names why.
+    expect(h2.worker.book.positions[pid]!.status).toBe('closed');
+    const decisions = lines(h.stateDir).filter((l) => l.kind === 'decision' && l.boot === h2.worker.boot);
+    expect(decisions.some((d) => (d.reasons ?? [])[0] === 'universe missing')).toBe(true);
+    expect(decisions.some((d) => (d.reasons ?? [])[0] === 'exit' && (d.reasons ?? []).includes('universe missing: flatten'))).toBe(true);
+    expect(h2.worker.health().halt_reasons).toEqual(expect.arrayContaining([expect.stringMatching(/^sell-only: /)]));
+    await h2.worker.stop();
   });
 });

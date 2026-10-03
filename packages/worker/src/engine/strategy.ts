@@ -234,6 +234,9 @@ export class LiveStrategy implements Strategy {
     return this.#marks.get(pid) ?? null;
   }
 
+  /** Positions whose universe the policy lacks, being flattened (said once each). */
+  readonly #flattening = new Set<string>();
+
   /** Positions whose partials were checked against the book in this process. */
   readonly #fromBook = new Set<string>();
 
@@ -663,7 +666,15 @@ export class LiveStrategy implements Strategy {
         const liq = liquidationValue({ venue: 'pumpswap', pool: m.pool, ctx: m.ctx }, p.quantity);
         if (liq.ok) this.#marks.set(p.id, { price: execPrice(liq.value, p.quantity), atMs: m.atMs, slot: ctx.now.slot });
       }
-      const step = decideExit(this.#settings, saved.plan, holding, saved.tracker, {
+      // A universe the loaded policy no longer has (a restart under a policy that dropped it): its own time stops and
+      // partials are unknown, so the position is flattened at once through the global exit ladder (supervisor ruling).
+      // Exits are never blocked: no throw, no missing decision.
+      const known = Object.hasOwn(this.#d.session.policy.exits.universes, saved.plan.universe);
+      if (!known && !this.#flattening.has(p.id)) {
+        this.#flattening.add(p.id);
+        out.push({ action: null, reasons: ['universe missing', p.id, `${String(saved.plan.universe)} is not in policy ${this.#d.session.versionHash}; flattened through the global exit ladder`] });
+      }
+      const step = decideExit(known ? this.#settings : this.#flatten(saved.plan.universe), saved.plan, holding, saved.tracker, {
         nowMs: ctx.now.receivedAt, slotClose: true,
         market: typeof m === 'string' ? null : { atMs: m.atMs, value: { venue: 'pumpswap', pool: m.pool, ctx: m.ctx } },
         deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: [], bars: this.#bars.get(p.id) ?? saved.bars,
@@ -671,17 +682,28 @@ export class LiveStrategy implements Strategy {
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
-      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out);
+      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : ['universe missing: flatten']);
     }
   }
 
-  #exitDecision(pid: PositionId, mint: string, exitSeq: number, d: ExitDecision, ctx: StrategyContext, out: Decision[]): void {
+  /**
+   * Exit settings for a universe the policy lacks: the global ladder and limits, with that universe's block set to
+   * flatten (time stops at 0, so the whole position goes at once; no partial or trail is ever taken).
+   */
+  #flatten(universe: string): ExitSettings {
+    const s = this.#settings;
+    const base = Object.values(s.exits.universes)[0]!;
+    const flat = { ...base, tFlatMs: 0, tMaxMs: 0, partialAtRBps: Number.MAX_SAFE_INTEGER, partialAtGainBps: Number.MAX_SAFE_INTEGER };
+    return { ...s, exits: { ...s.exits, universes: { ...s.exits.universes, [universe]: flat } } };
+  }
+
+  #exitDecision(pid: PositionId, mint: string, exitSeq: number, d: ExitDecision, ctx: StrategyContext, out: Decision[], note: readonly string[] = []): void {
     if (d.kind === 'hold') return;
     // A merge that adds no new reason to the exit owner changes nothing: not logged, not stored.
     const owner = ctx.book.positions[pid]?.exitOwner;
     if (d.kind === 'merge' && owner != null && d.reasons.every((x) => owner.reasons.includes(x))) return;
     const risk = this.#account(ctx);
-    const why = d.fired.map((t) => `${t.code}: ${t.detail}`);
+    const why = [...note, ...d.fired.map((t) => `${t.code}: ${t.detail}`)];
     if (risk !== null) {
       // Exits are never blocked; tripped controls are logged and latched.
       const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account: risk.history, latches: risk.latches, market: { solPrice: this.#spotSol(ctx), solBalance: this.#balance(risk, ctx), regime: 'unknown' } });

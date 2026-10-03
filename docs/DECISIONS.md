@@ -659,4 +659,10 @@ The second reviewer, the third opinion and the supervisor reached one position o
     - drains the live feeds unread, so `exit_capable` is real while nothing is decided;
     - runs until SIGTERM.
   - The contract types arrive with #64. Until then the two health fields ride on top of `Health`, and `recovered` widens the journal kind.
+- **2026-10-04 · A restored position whose universe the policy lacks (EXIT-1b review, supervisor ruling).** Exits are never blocked, so the worker still starts, as follows:
+  - it runs sell-only for the whole process: an entry halt reason per such position, journaled and logged as an alert;
+  - the reasons are listed in the start line's `sell_only`;
+  - the strategy flattens the position through the global exit ladder: that universe's exit block is replaced by one with zero time stops and no take-profit, so the whole position goes at once;
+  - the exit's decision line carries `universe missing: flatten`.
+  Before this, `exitsFor` threw and the position got no exit decision.
 - **2026-10-04 · The app's read API (`run/api.ts`) implements UI-2's contract exactly and is checked by the app's own strict schemas** (`checkEnvelope` with `schemaFor`, test against a worker that made paper trades). Paper only: other modes' paths answer 404, the backtest report is `null` (the app loads reports from the release). Loopback only, `ZEROED_API_ADDR` (default `127.0.0.1:8788`, refused unless loopback and not the health port); on the host OPS publishes it to the owner's tailnet with `tailscale serve`, so the worker never binds anything else (supervisor ruling). GET only: no command is served yet, because a command needs its own auth level and loopback (where tailscale's proxied reads arrive) is no proof of anything; pause stays with the watchdog's `/pause`. Paper costs: venue and creator fees, priority, tip, base fee and the scenario's extra slippage come from each paper fill; the paper fill does not model token-account rent, so rent shows 0. Planned and realized R, MFE and MAE are null until the exit plan is kept with the trade record.
