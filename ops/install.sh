@@ -893,6 +893,7 @@ install_file /usr/local/sbin/zeroed-backup-code 0755 <<'__ZEROED_FILE__'
 # write them down and keep them safe. Backups (and the daily copy sent to Telegram) can then be opened
 # anywhere with the words: node derive-key.mjs --backup, then age -d.
 set -euo pipefail
+umask 022
 . /usr/local/lib/zeroed/common.sh
 lock
 code="$(/usr/local/bin/node -e '

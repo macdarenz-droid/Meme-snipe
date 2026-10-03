@@ -300,7 +300,8 @@ grep -q "\"method\":\"sendDocument\",\"token_ok\":true,\"chat_id\":\"$T_CHAT\"" 
 printf '%s' "$BCODE" | node "$ROOT/ops/host/files/usr/local/lib/zeroed/derive-key.mjs" --backup >"$E2E/owner-backup.id"
 age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | tar -t | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
 rm -f "$E2E/owner-backup.id"
-in_c "zeroed-status" | grep -q 'daily copy to Telegram (zeroed-' || fail "status does not show the off-server copy"
+in_c "zeroed-status" | grep 'daily copy to Telegram (zeroed-' >/dev/null || fail "status does not show the off-server copy"
+in_c "stat -c %a /var/lib/zeroed-host/owner_backup_recipient" | grep -qx 644 || fail "owner recipient file mode"
 pass "off-server backup: a 6-word backup code shown once (only its public half kept), daily copy sent as a silent Telegram document to the owner chat, opened elsewhere with the words alone"
 
 # ---------- 9b. Watchdog on local wrangler (miniflare, the locked version from ops/watchdog/deploy) with the stub worker's real heartbeats ----------
