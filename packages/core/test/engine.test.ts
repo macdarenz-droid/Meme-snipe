@@ -388,9 +388,32 @@ describe('reconcile guard is fair under the cap', () => {
     }
     expect(sent.size).toBe(30);
     const counts = [...sent.values()];
-    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(2);
+    // Within a kind, rounds keep every key level (orphans go first, so they are sent more often).
+    const balances = keys.flatMap((fx, k) => (fx.type === 'reconcile_balances' ? [sent.get(k)!] : []));
+    expect(Math.max(...balances) - Math.min(...balances)).toBeLessThanOrEqual(2);
     // The cap still holds: 20 per 150 slots over 3000 slots.
     expect(counts.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(20 * (3000 / 150) + 20);
+  });
+
+  it('unbooked-landing reconciles go first: each is served within one window and at its repeat interval after', () => {
+    const g = new ReconcileGuard();
+    const balances = Array.from({ length: 30 }, (_, n): Effect => ({ type: 'reconcile_balances', intentId: `i${String(n).padStart(2, '0')}` as never }));
+    const orphans = Array.from({ length: 5 }, (_, n): Effect => ({ type: 'reconcile_orphan', intentId: `o${n}` as never, signature: `s${n}` as never }));
+    const lastOrphanSend = new Map<number, number>();
+    const balanceSent = new Set<number>();
+    let worstGap = 0;
+    for (let slot = 1; slot <= 3000; slot++) {
+      balances.forEach((fx, k) => { if (g.admit(fx, at(slot)) === 'sent') balanceSent.add(k); });
+      orphans.forEach((fx, k) => {
+        if (g.admit(fx, at(slot)) !== 'sent') return;
+        worstGap = Math.max(worstGap, slot - (lastOrphanSend.get(k) ?? 1));
+        lastOrphanSend.set(k, slot);
+      });
+    }
+    expect(lastOrphanSend.size).toBe(5);
+    // Asked last in tick order, an orphan still waits at most one window, then repeats every minSlotsBetween.
+    expect(worstGap).toBeLessThanOrEqual(150);
+    expect(balanceSent.size).toBe(30);
   });
 
   it('a waiter that is no longer asked for gives up its place', () => {

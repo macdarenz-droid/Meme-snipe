@@ -33,8 +33,9 @@ const reconcileKey = (fx: Effect): string | null => {
 /**
  * The runner rule from the CORE-1 review: every tick re-emits `reconcile_balances` for each intent with a
  * known outcome and `reconcile_orphan` for each unbooked landing, so repeats are de-duplicated and the
- * total is rate-limited. Under the cap, keys are served in rounds: a free place goes to the waiting key sent
- * the fewest times, then the one waiting longest. A new key joins the current round (it neither jumps ahead
+ * total is rate-limited. Under the cap, an unbooked landing (`reconcile_orphan`, which blocks every entry)
+ * goes before a balance read; within a kind, keys are served in rounds: a free place goes to the waiting key
+ * sent the fewest times, then the one waiting longest. A new key joins the current round (it neither jumps ahead
  * of keys still owed a send nor falls behind), so no key is starved however many keys there are.
  * Dropping a repeat is safe because the lifecycle asks again on a later tick and the queue keeps its place.
  * Every other effect passes straight through.
@@ -69,10 +70,12 @@ export class ReconcileGuard {
     const mine = this.#turnOf(key);
     const free = maxPerWindow - this.#recent.length;
     let ahead = 0;
+    const rank = (k: string) => (k.startsWith('reconcile_orphan|') ? 0 : 1);
     for (const k of this.#waiting.keys()) {
       if (k === key) continue;
       const theirs = this.#turnOf(k);
-      if (theirs.sends < mine.sends || (theirs.sends === mine.sends && theirs.seq < mine.seq)) ahead++;
+      const byKind = rank(k) - rank(key);
+      if (byKind < 0 || (byKind === 0 && (theirs.sends < mine.sends || (theirs.sends === mine.sends && theirs.seq < mine.seq)))) ahead++;
     }
     if (ahead >= free) {
       this.#waiting.set(key, now.slot);

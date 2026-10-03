@@ -25,6 +25,25 @@ const IO_MODULES = [
   'v8', 'async_hooks', 'diagnostics_channel', 'sqlite', 'undici', 'ws', 'axios', 'node-fetch',
 ];
 
+/**
+ * Property names that reach randomness, module loading or code generation from any object. Other
+ * banned names are only references to globals: after a dot (`db.location()`), as an object key
+ * (`{ self: 1 }`) or as a private field they cannot reach the global, which is unreachable anyway
+ * because `globalThis`, `window`, `self` and `global` are banned as references.
+ */
+const BANNED_PROPERTIES = new Set([
+  'random', 'randomBytes', 'randomUUID', 'randomInt', 'randomFill', 'randomFillSync', 'getRandomValues', 'generateKeyPair',
+  'generateKeyPairSync', 'getBuiltinModule', 'constructor', 'nextTick', 'hrtime', 'timeOrigin',
+]);
+
+/**
+ * Narrow, named exemptions: a folder may use exactly these banned strings, nothing else.
+ * ledger/ is the SQLite ledger (LEDGER-1); its scoring reader lives in ledger/scoring.
+ */
+const EXEMPTIONS: readonly { readonly folder: string; readonly allow: ReadonlySet<string>; readonly why: string }[] = [
+  { folder: 'ledger', allow: new Set(['node:sqlite']), why: 'LEDGER-1: append-only SQLite ledger and its scoring reader' },
+];
+
 /** String literals that name a banned thing: computed access (`Math['random']`), `Reflect.get`, or a module import. */
 const BANNED_STRINGS = new Set([
   ...BANNED_IDENTIFIERS, 'now', 'constructor', 'Date', 'Math', 'timeOrigin', 'nextTick', 'hrtime', 'env',
@@ -50,7 +69,12 @@ const tokenize = (source: string): { tokens: Token[]; problems: string[] } => {
     const prev = tokens[tokens.length - 1];
     if (prev === undefined) return true;
     if (prev.type === 'id') return REGEX_AFTER.has(prev.value);
-    if (prev.type === 'punct') return prev.value !== ')' && prev.value !== ']';
+    if (prev.type === 'punct') {
+      // `x! / y`: a TypeScript non-null assertion ends an expression, so this is a division.
+      const before = tokens[tokens.length - 2];
+      if (prev.value === '!' && before !== undefined && (before.type === 'id' || before.type === 'num' || before.value === ')' || before.value === ']')) return false;
+      return prev.value !== ')' && prev.value !== ']';
+    }
     return false;
   };
   const readTemplate = () => {
@@ -130,23 +154,29 @@ const tokenize = (source: string): { tokens: Token[]; problems: string[] } => {
   return { tokens, problems };
 };
 
-const scan = (source: string): string[] => {
+const scan = (source: string, allow: ReadonlySet<string> = new Set()): string[] => {
   const { tokens, problems } = tokenize(source);
   const found = [...problems];
   tokens.forEach((t, k) => {
     const prev = tokens[k - 1];
     const next = tokens[k + 1];
     if (t.type === 'id') {
-      if (BANNED_IDENTIFIERS.has(t.value)) found.push(t.value);
+      const property = prev?.value === '.' || prev?.value === '?.' || prev?.value === '#';
+      const key = next?.value === ':' && (prev?.value === '{' || prev?.value === ',');
+      if (property ? BANNED_PROPERTIES.has(t.value) : !key && BANNED_IDENTIFIERS.has(t.value)) found.push(t.value);
       // Date only as `new Date(<argument>)`: a date from data, never the current time.
-      if (t.value === 'Date' && !(prev?.value === 'new' && next?.value === '(' && tokens[k + 2]?.value !== ')')) found.push('Date without an argument');
+      if (t.value === 'Date' && !property && !key && !(prev?.value === 'new' && next?.value === '(' && tokens[k + 2]?.value !== ')')) found.push('Date without an argument');
       if (t.value === 'Math' && next?.value === '[') found.push('computed Math access');
-      if (t.value === 'constructor' && (prev?.value === '.' || prev?.value === '?.')) found.push('.constructor');
-      if (t.value === 'import' && (next?.value === '(' || next?.value === '.')) found.push('dynamic import or import.meta');
+      if (t.value === 'import' && !property && (next?.value === '(' || next?.value === '.')) found.push('dynamic import or import.meta');
     }
-    if (t.type === 'str' && BANNED_STRINGS.has(t.value)) found.push(`string '${t.value}'`);
+    if (t.type === 'str' && BANNED_STRINGS.has(t.value) && !allow.has(t.value)) found.push(`string '${t.value}'`);
   });
   return found;
+};
+
+const allowedFor = (file: string): ReadonlySet<string> => {
+  const top = relative(SRC, file).split(sep)[0];
+  return EXEMPTIONS.find((e) => e.folder === top)?.allow ?? new Set();
 };
 
 const sourceFiles = (dir: string): string[] =>
@@ -193,6 +223,11 @@ describe('purity guard', () => {
       'const t = `${Date.now()}`;',
       'const t = `a${`b${Math.random()}`}`;',
       'const x = \\u0044ate.now();',
+      'const x = foo.random();',
+      "const f = obj.getBuiltinModule('x');",
+      'const p = performance;',
+      'const k = { a: process };',
+      'const n = a ? performance : 0;',
     ];
     for (const snippet of bad) expect(scan(snippet), snippet).not.toEqual([]);
   });
@@ -210,15 +245,30 @@ describe('purity guard', () => {
       'class A { constructor(x: number) { this.x = x; } }',
       "const label = 'random draw';",
       'const r = /^[0-9a-f]{64}$/.test(hash);',
+      'const where = db.location();',
+      'const o = { self: 1, location: 2 };',
+      'class C { #window = 1; }',
+      'const q = arr[i]! / (z + i); const t = 1;',
+      'const q = f(x)! / 2;',
     ];
     for (const snippet of ok) expect(scan(snippet), snippet).toEqual([]);
+  });
+
+  it('exemptions are narrow: a folder gets exactly its named modules', () => {
+    const sqlite = "import { DatabaseSync } from 'node:sqlite';";
+    const ledger = join(SRC, 'ledger', 'sqlite.ts');
+    expect(scan(sqlite, allowedFor(ledger))).toEqual([]);
+    expect(scan(sqlite, allowedFor(join(SRC, 'engine', 'x.ts')))).not.toEqual([]);
+    expect(scan("import { readFileSync } from 'node:fs';", allowedFor(ledger))).not.toEqual([]);
+    expect(scan('const t = Date.now();', allowedFor(ledger))).not.toEqual([]);
+    for (const e of EXEMPTIONS) expect(e.why.length).toBeGreaterThan(0);
   });
 
   it('packages/core/src outside adapters folders has none of them', () => {
     const files = sourceFiles(SRC);
     expect(files.length).toBeGreaterThanOrEqual(15);
     expect(files.some((f) => f.includes(`${sep}engine${sep}`))).toBe(true);
-    const found = files.flatMap((f) => scan(readFileSync(f, 'utf8')).map((name) => `${relative(SRC, f)}: ${name}`));
+    const found = files.flatMap((f) => scan(readFileSync(f, 'utf8'), allowedFor(f)).map((name) => `${relative(SRC, f)}: ${name}`));
     expect(found).toEqual([]);
   });
 });
