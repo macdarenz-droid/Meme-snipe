@@ -80,7 +80,9 @@ export type IntentEvent =
   | { readonly type: 'sign_replacement'; readonly attempt: TransactionAttempt; readonly blockHeight: bigint }
   | { readonly type: 'abandon' }
   | { readonly type: 'cancel' }
-  | { readonly type: 'restart' };
+  | { readonly type: 'restart' }
+  /** A landing found after the intent ended, proven by balances. Applied by the book, which also books the tokens. */
+  | { readonly type: 'book_orphan'; readonly fill: Fill };
 
 const UNSENT: ReadonlySet<IntentStatus> = new Set(['candidate', 'eligible', 'risk_approved', 'exposure_reserved', 'prepared', 'signed']);
 const IN_FLIGHT: ReadonlySet<IntentStatus> = new Set(['submitted', 'pending', 'unknown']);
@@ -202,6 +204,8 @@ export const applyIntentEvent = (s: IntentState, e: IntentEvent): Transition<Int
       return s.status === 'unknown' ? stay() : no('nothing was sent');
 
     case 'tick': {
+      // A refused reconcile (an attempt could still land) is retried on every tick until it can succeed.
+      if (OUTCOME_KNOWN.has(s.status)) return stay(reconcileBalances);
       if (!IN_FLIGHT.has(s.status) || current === undefined) return stay();
       // Earlier attempts are already settled (expired or landed with an error); only the current one can land.
       if (e.blockHeight > current.lastValidBlockHeight) return stay(checkStatus(true));
@@ -229,11 +233,16 @@ export const applyIntentEvent = (s: IntentState, e: IntentEvent): Transition<Int
             // A signature believed dead has landed. The chain is the truth: record it and stop any replacement.
             return to({ status: 'confirmed_fill', outcome: 'filled', rebroadcast: false }, reconcileBalances, lateAlert);
           }
-          if (s.status === 'reconciled' && !s.fills.some((f) => f.signature === e.signature)) {
-            // Booked already, yet another signature landed: tokens nobody accounted for. A person must look.
-            return stay({ type: 'alert', level: 'critical', code: 'unbooked_landing', subject: id });
+          if (isTerminal(s) && !s.fills.some((f) => f.signature === e.signature)) {
+            // The intent ended, yet one of its signatures landed: never refused. Reconcile the wallet and book
+            // the tokens (the book blocks entries until then; exits stay open).
+            return stay(
+              { type: 'alert', level: 'critical', code: 'unbooked_landing', subject: id },
+              { type: 'reconcile_orphan', intentId: id, signature: e.signature },
+            );
           }
-          return s.status === 'confirmed_fill' || s.status === 'reconciled' ? stay() : no('outcome already recorded');
+          // Already booked (by reconcile or as a late landing): a repeated read changes nothing.
+          return s.status === 'confirmed_fill' || isTerminal(s) ? stay() : no('outcome already recorded');
         }
         case 'failed': {
           // Only a finalized failure is terminal; a processed or confirmed read can come from a dropped fork.
@@ -273,8 +282,9 @@ export const applyIntentEvent = (s: IntentState, e: IntentEvent): Transition<Int
         return to({ status: 'reconciled' });
       }
       const tokens = fills.reduce((t, f) => t + f.tokens, 0n);
-      if (s.intent.purpose === 'exit' && tokens > s.intent.quantity) return no('sold more than the exit quantity');
       const effects: Effect[] = [];
+      // Balances are the truth: book what was sold even beyond the exit quantity, and alert.
+      if (s.intent.purpose === 'exit' && tokens > s.intent.quantity) effects.push({ type: 'alert', level: 'critical', code: 'oversold', subject: id });
       let reservation = s.reservation;
       if (reservation !== null && reservation.status === 'held') {
         effects.push({ type: 'keep_reservation', intentId: id, amount: reservation.amount });
@@ -306,6 +316,16 @@ export const applyIntentEvent = (s: IntentState, e: IntentEvent): Transition<Int
         return to({ cancelRequested: true }, { type: 'alert', level: 'warn', code: 'cancel_after_broadcast', subject: id });
       }
       return no('intent already finished');
+
+    case 'book_orphan': {
+      const f = e.fill;
+      if (!isTerminal(s)) return no('only an ended intent books a late landing; a live one reconciles');
+      if (f.intentId !== id) return no('fill belongs to another intent');
+      if (!signatures.includes(f.signature)) return no('fill signature does not belong to this intent');
+      if (s.fills.some((x) => x.signature === f.signature)) return no('this landing is already booked');
+      if (f.tokens <= 0n) return no('a fill moves tokens');
+      return to({ fills: [...s.fills, f] });
+    }
 
     case 'restart':
       if (s.status === 'signed') {

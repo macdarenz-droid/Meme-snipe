@@ -26,6 +26,7 @@ export type AlertCode =
   | 'late_landing'
   | 'unbooked_landing'
   | 'double_fill'
+  | 'oversold'
   | 'exit_blocked'
   | 'restart_recovery';
 
@@ -39,6 +40,8 @@ export type Effect =
   | { readonly type: 'broadcast'; readonly intentId: IntentId; readonly attemptId: AttemptId; readonly signedBytesRef: string; readonly signature: Signature }
   | { readonly type: 'check_status'; readonly intentId: IntentId; readonly signatures: readonly Signature[]; readonly searchHistory: boolean }
   | { readonly type: 'reconcile_balances'; readonly intentId: IntentId }
+  /** Read the wallet for this signature's balance change and report it with the book's `orphan_fill`. */
+  | { readonly type: 'reconcile_orphan'; readonly intentId: IntentId; readonly signature: Signature }
   | { readonly type: 'release_reservation'; readonly intentId: IntentId; readonly amount: Lamports }
   | { readonly type: 'keep_reservation'; readonly intentId: IntentId; readonly amount: Lamports }
   | { readonly type: 'request_exit'; readonly positionId: PositionId; readonly intentId: IntentId; readonly quantity: RawAmount }

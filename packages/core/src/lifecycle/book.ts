@@ -3,7 +3,7 @@
 // protective exits never blocked by a pause.
 
 import type { Lamports, RawAmount } from '../units/index.ts';
-import { exitKey, type EntryIntent, type IntentId, type PositionId } from '../domain/index.ts';
+import { exitKey, positionId, type EntryIntent, type Fill, type IntentId, type PositionId, type Signature } from '../domain/index.ts';
 import {
   applyIntentEvent, filledSol, filledTokens, heldReservation, isTerminal, isUnresolved, newEntryIntent, newExitIntent,
   type IntentEvent, type IntentState,
@@ -29,11 +29,15 @@ export interface Book {
   readonly paused: readonly PauseReason[];
   /** Set by a restart; clears once no intent is unresolved. */
   readonly recovering: boolean;
+  /** Landings reported for ended intents, keyed by signature, waiting for a wallet reconciliation. Entries are blocked meanwhile. */
+  readonly orphans: Readonly<Record<string, { readonly intentId: IntentId; readonly signature: Signature }>>;
 }
 
 export type BookEvent =
   | { readonly type: 'propose_entry'; readonly intent: EntryIntent }
-  | { readonly type: 'intent'; readonly intentId: IntentId; readonly event: Exclude<IntentEvent, { type: 'restart' | 'tick' }> }
+  | { readonly type: 'intent'; readonly intentId: IntentId; readonly event: Exclude<IntentEvent, { type: 'restart' | 'tick' | 'book_orphan' }> }
+  /** The wallet reconciliation for a late landing of an ended intent: book the tokens it moved. */
+  | { readonly type: 'orphan_fill'; readonly fill: Fill }
   | { readonly type: 'trigger_exit'; readonly positionId: PositionId; readonly reasons: readonly ExitReason[]; readonly intentId: IntentId; readonly quantity?: RawAmount }
   | { readonly type: 'exit_blocked'; readonly positionId: PositionId; readonly reason: string }
   | { readonly type: 'tick'; readonly blockHeight: bigint }
@@ -45,14 +49,15 @@ export const emptyBook = (config: BookConfig): Book => {
   if (!Number.isSafeInteger(config.maxOpenPositions) || config.maxOpenPositions < 1) {
     throw new RangeError(`maxOpenPositions must be an integer >= 1, got ${config.maxOpenPositions}`);
   }
-  return { config, intents: {}, positions: {}, reserved: 0n as Lamports, paused: [], recovering: false };
+  return { config, intents: {}, positions: {}, reserved: 0n as Lamports, paused: [], recovering: false, orphans: {} };
 };
 
-export type EntryBlock = 'paused' | 'recovering' | 'unresolved_intent' | 'entry_in_progress' | 'position_limit';
+export type EntryBlock = 'paused' | 'recovering' | 'unresolved_intent' | 'unbooked_landing' | 'entry_in_progress' | 'position_limit';
 
 /**
  * May a new entry intent be created now? Blocked while paused, while recovering from a restart,
- * while any intent is unresolved, while another entry is live, or at the configured open-position limit.
+ * while any intent is unresolved, while a late landing waits to be booked, while another entry is live,
+ * or at the configured open-position limit.
  */
 export const canOpenNewEntry = (book: Book): { readonly ok: true } | { readonly ok: false; readonly reasons: readonly EntryBlock[] } => {
   const max = book.config.maxOpenPositions;
@@ -61,6 +66,7 @@ export const canOpenNewEntry = (book: Book): { readonly ok: true } | { readonly 
   if (book.paused.length > 0) reasons.push('paused');
   if (book.recovering) reasons.push('recovering');
   if (intents.some(isUnresolved)) reasons.push('unresolved_intent');
+  if (Object.keys(book.orphans).length > 0) reasons.push('unbooked_landing');
   if (intents.some((i) => i.intent.purpose === 'entry' && !isTerminal(i))) reasons.push('entry_in_progress');
   if (Object.values(book.positions).filter((p) => p.status !== 'closed').length >= max) reasons.push('position_limit');
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
@@ -82,6 +88,13 @@ const linkIntent = (book: Book, before: IntentState, after: IntentState, effects
   const reserved = book.reserved + delta;
   if (reserved < 0n) return fail('reserved exposure would go negative');
   let positions = book.positions;
+  let orphans = book.orphans;
+  for (const fx of [...effects]) {
+    if (fx.type === 'reconcile_orphan' && orphans[fx.signature] === undefined) {
+      orphans = { ...orphans, [fx.signature]: { intentId: fx.intentId, signature: fx.signature } };
+      effects.push({ type: 'persist', entity: 'book', id: 'book' });
+    }
+  }
   const pid = after.intent.positionId;
   const movePosition = (event: PositionEvent): IllegalTransition | null => {
     const p = positions[pid];
@@ -124,7 +137,7 @@ const linkIntent = (book: Book, before: IntentState, after: IntentState, effects
       if (err) return err;
     }
   }
-  return { ...book, reserved: reserved as Lamports, positions };
+  return { ...book, reserved: reserved as Lamports, positions, orphans };
 };
 
 const applyToIntent = (book: Book, id: IntentId, event: IntentEvent): Transition<Book> => {
@@ -220,7 +233,41 @@ const step = (book: Book, e: BookEvent): Transition<Book> => {
         const r = applyIntentEvent(i, e);
         if (!isIllegal(r)) effects.push(...r.effects);
       }
+      for (const o of Object.values(book.orphans)) effects.push({ type: 'reconcile_orphan', intentId: o.intentId, signature: o.signature });
       return { state: book, effects };
+    }
+
+    case 'orphan_fill': {
+      // Accepted whether or not a status read reported the landing first (a wallet sweep may find it).
+      const i = book.intents[e.fill.intentId];
+      if (i === undefined) return illegal('none', e.type, 'unknown intent');
+      const r = applyIntentEvent(i, { type: 'book_orphan', fill: e.fill });
+      if (isIllegal(r)) return r;
+      const effects: Effect[] = [...r.effects];
+      let positions = book.positions;
+      if (i.intent.purpose === 'entry') {
+        // Bought tokens get their own open position, so exits can protect them at once.
+        const id = positionId(`${i.intent.positionId}.o${r.state.fills.length}`);
+        if (positions[id] !== undefined) return illegal(i.status, e.type, 'late-landing position id already used');
+        const opened = applyPositionEvent(newPosition({ id, mint: i.intent.mint, venue: i.intent.venue, entryIntentId: i.intent.id }), {
+          type: 'entry_filled', quantity: e.fill.tokens, cost: e.fill.sol,
+        });
+        if (isIllegal(opened)) return opened;
+        positions = { ...positions, [id]: opened.state };
+        effects.push(...opened.effects);
+      } else {
+        const p = positions[i.intent.positionId];
+        if (p === undefined) return illegal(i.status, e.type, 'position missing');
+        const sold = applyPositionEvent(p, { type: 'external_sale', sold: e.fill.tokens });
+        if (isIllegal(sold)) return sold;
+        positions = { ...positions, [p.id]: sold.state };
+        effects.push(...sold.effects);
+      }
+      const { [e.fill.signature]: _booked, ...orphans } = book.orphans;
+      return {
+        state: { ...book, intents: { ...book.intents, [i.intent.id]: r.state }, positions, orphans },
+        effects: [...effects, persistBook],
+      };
     }
 
     case 'restart': {

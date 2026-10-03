@@ -224,10 +224,6 @@ describe('entry lifecycle', () => {
     expect(both.book.positions[P1]).toMatchObject({ status: 'open', quantity: 11n, cost: SPEND * 2n });
     expect(both.effects).toContainEqual({ type: 'alert', level: 'critical', code: 'double_fill', subject: E1 });
 
-    // A landing reported after the books closed is never silently ignored.
-    const closed = run(book, [on(E1, { type: 'reconcile', fills: [fill(E1, 1, 5n)], blockHeight: 2_001n })]).book;
-    const late = applyBookEvent(closed, on(E1, { type: 'status', signature: sig(2), result: 'succeeded', commitment: 'finalized', blockHeight: 2_002n, searchedHistory: true }));
-    expect(!isIllegal(late) && late.effects).toEqual([{ type: 'alert', level: 'critical', code: 'unbooked_landing', subject: E1 }]);
   });
 
   test('an RPC success is acceptance, not a fill', () => {
@@ -272,11 +268,21 @@ describe('exits', () => {
 
     ({ book } = run(book, exitToConfirmed(X1, 11)));
     expect(book.positions[P1]!.status).toBe('exit_pending');
-    expect(refused(book, on(X1, { type: 'reconcile', fills: [fill(X1, 11, 1_001n)], blockHeight: 1_001n }))).toMatch(/more than the exit quantity/);
 
     ({ book } = run(book, [on(X1, { type: 'reconcile', fills: [fill(X1, 11, 1_000n)], blockHeight: 1_001n })]));
     expect(book.positions[P1]).toMatchObject({ status: 'closed', quantity: 0n, sold: 1_000n, exitOwner: null });
     expect(refused(book, { type: 'trigger_exit', positionId: P1, reasons: ['stop'], intentId: X2 })).toMatch(/nothing to exit/);
+  });
+
+  test('balances showing more sold than the exit quantity are booked with an alert, never refused', () => {
+    const { book, effects } = run(openPosition(1_000n), [
+      { type: 'trigger_exit', positionId: P1, reasons: ['stop'], intentId: X1, quantity: raw(400n) },
+      ...exitToConfirmed(X1, 11),
+      on(X1, { type: 'reconcile', fills: [fill(X1, 11, 1_200n)], blockHeight: 1_001n }),
+    ]);
+    expect(book.positions[P1]).toMatchObject({ status: 'closed', quantity: 0n, sold: 1_200n });
+    expect(effects).toContainEqual({ type: 'alert', level: 'critical', code: 'oversold', subject: X1 });
+    expect(effects).toContainEqual({ type: 'alert', level: 'critical', code: 'oversold', subject: P1 });
   });
 
   test('a partial exit leaves the rest open for the next exit owner', () => {
@@ -339,5 +345,117 @@ describe('exits', () => {
     expect(refused(signed, on(E1, { type: 'submit' }))).toMatch(/paused/);
     const cancelled = run(signed, [on(E1, { type: 'cancel' })]).book;
     expect(cancelled.reserved).toBe(0n);
+  });
+});
+
+describe('late landings after an intent ended', () => {
+  const P1o = positionId('p1.o1');
+  const P1o2 = positionId('p1.o2');
+  const landed = (id: IntentId, n: number, h = 2_100n): BookEvent =>
+    on(id, { type: 'status', signature: sig(n), result: 'succeeded', commitment: 'finalized', blockHeight: h, searchedHistory: true });
+  const orphanEffects = (id: IntentId, n: number) => [
+    { type: 'alert', level: 'critical', code: 'unbooked_landing', subject: id },
+    { type: 'reconcile_orphan', intentId: id, signature: sig(n) },
+  ];
+
+  /** Report the landing, check entries block and exits do not, then book it from the wallet. */
+  const reportAndBook = (ended: Book, id: IntentId, n: number, tokens: bigint) => {
+    const reported = applyBookEvent(ended, landed(id, n));
+    if (isIllegal(reported)) throw new Error(`refused: ${reported.reason}`);
+    expect(reported.effects).toEqual(expect.arrayContaining(orphanEffects(id, n)));
+    expect(reported.state.orphans).toEqual({ [sig(n)]: { intentId: id, signature: sig(n) } });
+    const gate = canOpenNewEntry({ ...reported.state, config: { maxOpenPositions: 9 } });
+    expect(!gate.ok && gate.reasons).toContain('unbooked_landing');
+    // Every tick asks again until it is booked.
+    const tick = applyBookEvent(reported.state, { type: 'tick', blockHeight: 2_200n });
+    expect(!isIllegal(tick) && tick.effects).toContainEqual({ type: 'reconcile_orphan', intentId: id, signature: sig(n) });
+    const booked = run(reported.state, [{ type: 'orphan_fill', fill: fill(id, n, tokens) }]).book;
+    expect(booked.orphans).toEqual({});
+    expect(booked.intents[id]!.fills.map((f) => f.signature)).toContain(sig(n));
+    // Booked once only.
+    expect(refused(booked, { type: 'orphan_fill', fill: fill(id, n, tokens) })).toMatch(/already booked/);
+    return { reported: reported.state, booked };
+  };
+
+  test('abandoned entry: a finalized landing is accepted and booked into a protected position', () => {
+    const ended = run(emptyBook(CONFIG), [
+      ...entryToSubmitted(1, 1_000n),
+      on(E1, { type: 'status', signature: sig(1), result: 'not_found', commitment: null, blockHeight: 1_001n, searchedHistory: true }),
+      on(E1, { type: 'reconcile', fills: [], blockHeight: 1_001n }),
+      on(E1, { type: 'abandon' }),
+    ]).book;
+    expect(canOpenNewEntry(ended)).toEqual({ ok: true });
+    const { booked } = reportAndBook(ended, E1, 1, 5_000n);
+    expect(booked.intents[E1]!.status).toBe('abandoned');
+    expect(booked.positions[P1o]).toMatchObject({ status: 'open', quantity: 5_000n, bought: 5_000n, cost: SPEND });
+    // The new position can be exited at once.
+    const exit = run(booked, [{ type: 'trigger_exit', positionId: P1o, reasons: ['stop'], intentId: X1 }]).book;
+    expect(exit.intents[X1]!.intent).toMatchObject({ quantity: 5_000n, positionId: P1o });
+  });
+
+  test('cancelled after broadcast: a finalized landing is accepted and booked', () => {
+    const ended = run(emptyBook(CONFIG), [
+      ...entryToSubmitted(1, 1_000n),
+      on(E1, { type: 'cancel' }),
+      on(E1, { type: 'status', signature: sig(1), result: 'not_found', commitment: null, blockHeight: 1_001n, searchedHistory: true }),
+      on(E1, { type: 'reconcile', fills: [], blockHeight: 1_001n }),
+    ]).book;
+    expect(ended.intents[E1]!.status).toBe('cancelled');
+    const { booked } = reportAndBook(ended, E1, 1, 7n);
+    expect(booked.positions[P1o]).toMatchObject({ status: 'open', quantity: 7n });
+  });
+
+  test('reconciled with a fill: a second landing is booked into its own position, exits stay open meanwhile', () => {
+    const ended = run(emptyBook(CONFIG), [
+      ...entryToSubmitted(1, 1_000n),
+      on(E1, { type: 'status', signature: sig(1), result: 'not_found', commitment: null, blockHeight: 1_001n, searchedHistory: true }),
+      on(E1, { type: 'reconcile', fills: [], blockHeight: 1_001n }),
+      on(E1, { type: 'sign_replacement', attempt: attempt(E1, 2, 2_000n), blockHeight: 1_001n }),
+      on(E1, { type: 'submit' }),
+      on(E1, { type: 'status', signature: sig(2), result: 'succeeded', commitment: 'confirmed', blockHeight: 1_100n, searchedHistory: false }),
+      on(E1, { type: 'reconcile', fills: [fill(E1, 2, 100n)], blockHeight: 1_100n }),
+    ]).book;
+    const reported = applyBookEvent(ended, landed(E1, 1));
+    if (isIllegal(reported)) throw new Error(reported.reason);
+    // While the landing waits to be booked, the open position can still exit.
+    const exiting = run(reported.state, [{ type: 'trigger_exit', positionId: P1, reasons: ['stop'], intentId: X1 }]).book;
+    expect(exiting.intents[X1]!.status).toBe('exposure_reserved');
+    const { booked } = reportAndBook(ended, E1, 1, 60n);
+    expect(booked.positions[P1]).toMatchObject({ status: 'open', quantity: 100n });
+    expect(booked.positions[P1o2]).toMatchObject({ status: 'open', quantity: 60n });
+  });
+
+  test('ended exit: a late sale reduces the position it sold from', () => {
+    const ended = run(openPosition(1_000n), [
+      { type: 'trigger_exit', positionId: P1, reasons: ['stop'], intentId: X1, quantity: raw(400n) },
+      ...exitToConfirmed(X1, 11).slice(0, 4),
+      on(X1, { type: 'status', signature: sig(11), result: 'not_found', commitment: null, blockHeight: 2_001n, searchedHistory: true }),
+      on(X1, { type: 'reconcile', fills: [], blockHeight: 2_001n }),
+      on(X1, { type: 'abandon' }),
+    ]).book;
+    expect(ended.positions[P1]).toMatchObject({ status: 'open', quantity: 1_000n });
+    const { booked } = reportAndBook(ended, X1, 11, 400n);
+    expect(booked.positions[P1]).toMatchObject({ status: 'open', quantity: 600n, sold: 400n });
+  });
+
+  test('a wallet sweep can book a landing no status read reported', () => {
+    const ended = run(emptyBook(CONFIG), [
+      ...entryToSubmitted(1, 1_000n),
+      on(E1, { type: 'cancel' }),
+      on(E1, { type: 'status', signature: sig(1), result: 'not_found', commitment: null, blockHeight: 1_001n, searchedHistory: true }),
+      on(E1, { type: 'reconcile', fills: [], blockHeight: 1_001n }),
+    ]).book;
+    const booked = run(ended, [{ type: 'orphan_fill', fill: fill(E1, 1, 3n) }]).book;
+    expect(booked.positions[P1o]).toMatchObject({ status: 'open', quantity: 3n });
+    expect(refused(ended, { type: 'orphan_fill', fill: fill(E1, 99, 3n) })).toMatch(/does not belong/);
+  });
+
+  test('tick re-requests a refused reconcile until it can succeed', () => {
+    const { book } = run(emptyBook(CONFIG), [
+      ...entryToSubmitted(1, 1_000n),
+      on(E1, { type: 'status', signature: sig(1), result: 'succeeded', commitment: 'confirmed', blockHeight: 10n, searchedHistory: false }),
+    ]);
+    const tick = applyBookEvent(book, { type: 'tick', blockHeight: 11n });
+    expect(!isIllegal(tick) && tick.effects).toEqual([{ type: 'reconcile_balances', intentId: E1 }]);
   });
 });

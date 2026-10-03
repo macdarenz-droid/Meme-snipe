@@ -1,7 +1,9 @@
 // Seeded randomised sequences over the whole book, against a small chain model.
 // Each broadcast attempt is given a ground truth when it first leaves (lands and succeeds, lands and fails,
 // or never lands, always by its last valid block height). Status reads and balance reconciliations come
-// from that truth; only `processed` reads may be wrong (fork noise). The allowed-edge tables are written
+// from that truth; only `processed` reads may be wrong (fork noise). A few entry landings are hidden: an
+// unhealthy RPC reports nothing (even at confirmed) for RPC_LAG blocks, so an intent can end before
+// its landing shows up. Those must be booked as late landings, never lost. The allowed-edge tables are written
 // from docs/ARCHITECTURE.md ("Durable order state and recovery"), independently of the implementation.
 import { describe, expect, test } from 'vitest';
 import { lamports, raw } from '../src/units/index.ts';
@@ -33,10 +35,10 @@ const INTENT_EDGES: Record<IntentStatus, readonly IntentStatus[]> = {
 
 const POSITION_EDGES: Record<PositionStatus, readonly PositionStatus[]> = {
   opening: ['open', 'closed'],
-  open: ['exit_requested'],
+  open: ['exit_requested', 'closed'], // closed: a late sale took the rest
   exit_requested: ['exit_pending', 'open', 'closed', 'exit_blocked'],
   exit_pending: ['open', 'closed', 'exit_blocked'],
-  exit_blocked: ['exit_requested'],
+  exit_blocked: ['exit_requested', 'closed'],
   closed: [],
 };
 
@@ -56,12 +58,16 @@ const rng = (seed: number) => {
 
 const REASONS: readonly ExitReason[] = ['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency'];
 const FINALITY = 32n; // blocks from landing to finalized in this model
+const RPC_LAG = 200n; // blocks an unhealthy RPC hides a landing for
 
-interface Truth { readonly outcome: 'success' | 'fail' | 'none'; readonly landAt: bigint; readonly tokens: bigint }
-interface World { book: Book; height: bigint; n: number; truth: Map<Signature, Truth> }
+interface Truth { readonly outcome: 'success' | 'fail' | 'none'; readonly landAt: bigint; readonly tokens: bigint; readonly hidden: boolean }
+interface World { book: Book; height: bigint; n: number; truth: Map<Signature, Truth>; revealed: Set<Signature> }
 type IntentEvt = Extract<BookEvent, { type: 'intent' }>['event'];
 
 const landed = (t: Truth | undefined, h: bigint): boolean => t !== undefined && t.outcome !== 'none' && h >= t.landAt;
+/** What a (possibly unhealthy) RPC can see: hidden landings appear only once finalized. */
+const visible = (t: Truth | undefined, h: bigint): boolean => landed(t, h) && (!t!.hidden || h >= t!.landAt + RPC_LAG);
+const hasHidden = (w: World, i: IntentState): boolean => i.attempts.some((a) => w.truth.get(a.signature)?.hidden === true);
 
 /** Can this attempt still move tokens, according to the chain? */
 const canStillLand = (w: World, a: TransactionAttempt): boolean => {
@@ -82,11 +88,12 @@ const generator = (seed: number) => {
   const release = (w: World, i: IntentState, a: TransactionAttempt) => {
     if (w.truth.has(a.signature)) return;
     const window = a.lastValidBlockHeight - w.height;
-    if (window < 0n) return void w.truth.set(a.signature, { outcome: 'none', landAt: 0n, tokens: 0n });
+    if (window < 0n) return void w.truth.set(a.signature, { outcome: 'none', landAt: 0n, tokens: 0n, hidden: false });
     const landAt = w.height + BigInt(int(Number(window < 40n ? window : 40n) + 1));
     const tokens = i.intent.purpose === 'exit' ? i.intent.quantity : BigInt(1 + int(10_000));
     const roll = r();
-    w.truth.set(a.signature, { outcome: roll < 0.45 ? 'success' : roll < 0.65 ? 'fail' : 'none', landAt, tokens });
+    const hidden = i.intent.purpose === 'entry' && chance(0.15);
+    w.truth.set(a.signature, { outcome: hidden || roll < 0.45 ? 'success' : roll < 0.65 ? 'fail' : 'none', landAt, tokens, hidden });
   };
 
   const read = (w: World, i: IntentState): IntentEvt => {
@@ -99,7 +106,7 @@ const generator = (seed: number) => {
       // Fork noise: a processed read may say anything.
       return { type: 'status', signature: a.signature, result: pick(['succeeded', 'failed'] as const), commitment: 'processed', blockHeight: w.height, searchedHistory: false };
     }
-    if (t !== undefined && landed(t, w.height)) {
+    if (t !== undefined && visible(t, w.height)) {
       const commitment: Commitment = w.height >= t.landAt + FINALITY ? 'finalized' : w.height > t.landAt ? 'confirmed' : 'processed';
       return { type: 'status', signature: a.signature, result: t.outcome === 'success' ? 'succeeded' : 'failed', commitment, blockHeight: w.height, searchedHistory: chance(0.5) };
     }
@@ -110,7 +117,7 @@ const generator = (seed: number) => {
   const reconcile = (w: World, i: IntentState): IntentEvt => {
     const fills = i.attempts.flatMap((a) => {
       const t = w.truth.get(a.signature);
-      return t?.outcome === 'success' && w.height > t.landAt ? [fill(i.intent.id, Number(a.id.slice(1)), t.tokens)] : [];
+      return t?.outcome === 'success' && w.height > t.landAt && visible(t, w.height) ? [fill(i.intent.id, Number(a.id.slice(1)), t.tokens)] : [];
     });
     if (chance(0.03)) return { type: 'reconcile', fills: [fill(intentId('e999'), 1, 1n)], blockHeight: w.height };
     return { type: 'reconcile', fills, blockHeight: w.height };
@@ -138,7 +145,7 @@ const generator = (seed: number) => {
         case 'expired_unfilled': return chance(0.8) ? reconcile(w, i) : read(w, i);
         case 'reconciled':
           return chance(0.6) ? { type: 'sign_replacement', attempt: newAttempt(w, i), blockHeight: w.height } : { type: 'abandon' };
-        default: return { type: 'cancel' };
+        default: return i.attempts.length > 0 && chance(0.6) ? read(w, i) : { type: 'cancel' };
       }
     }
     return pick<() => IntentEvt>([
@@ -150,10 +157,31 @@ const generator = (seed: number) => {
     ])();
   };
 
+  /** The wallet reconciliation: book a visible landing of an ended intent that is not booked yet. */
+  const sweep = (w: World): BookEvent | null => {
+    const pending = Object.values(w.book.orphans);
+    const ended = Object.values(w.book.intents).filter(isTerminal);
+    const candidates = pending.length > 0 && chance(0.8)
+      ? pending.map((o) => ({ i: w.book.intents[o.intentId]!, s: o.signature }))
+      : ended.flatMap((i) => i.attempts.map((a) => ({ i, s: a.signature })));
+    const ok = candidates.filter(({ i, s }) => {
+      const t = w.truth.get(s);
+      return t?.outcome === 'success' && visible(t, w.height) && !i.fills.some((f) => f.signature === s);
+    });
+    if (ok.length === 0) return null;
+    const { i, s } = pick(ok);
+    const a = i.attempts.find((x) => x.signature === s)!;
+    return { type: 'orphan_fill', fill: fill(i.intent.id, Number(a.id.slice(1)), w.truth.get(s)!.tokens) };
+  };
+
   const next = (w: World): BookEvent => {
     const intents = Object.values(w.book.intents);
     const positions = Object.values(w.book.positions);
     const roll = r();
+    if (roll < 0.06) {
+      const swept = sweep(w);
+      if (swept) return swept;
+    }
     if (roll < 0.08) {
       const k = ++w.n;
       return { type: 'propose_entry', intent: entryIntent(k, chance(0.03) && intents.length > 0 ? 'd1' : `d${k}`) };
@@ -198,15 +226,25 @@ const check = (w: World, before: Book, e: BookEvent, after: Book, effects: reado
       const edge = `${b.status}>${a.status}`;
       if (a.intent.purpose === 'entry' && GATED_ENTRY_EDGES.has(edge) && (before.paused.length > 0 || before.recovering)) fail(`entry advanced ${edge} while paused or recovering`);
     }
-    // A new attempt may be signed only when the chain says every earlier attempt can no longer land.
+    // Once revealed, a landing is booked or waiting for its wallet reconciliation: never lost.
+    if (isTerminal(a)) {
+      for (const x of a.attempts) {
+        if (w.revealed.has(x.signature) && !a.fills.some((f) => f.signature === x.signature) && after.orphans[x.signature] === undefined) {
+          fail(`landing ${x.signature.slice(0, 8)} of ended ${id} is neither booked nor under reconciliation`);
+        }
+      }
+    }
+    // With a healthy RPC (no hidden landing) the rules hold exactly:
+    if (hasHidden(w, a)) continue;
+    // a new attempt may be signed only when the chain says every earlier attempt can no longer land;
     if (a.attempts.length > b.attempts.length && b.attempts.some((x) => canStillLand(w, x))) fail(`replacement signed while an earlier attempt of ${id} can still land`);
-
-    // Never two trades for one intent on chain.
+    // never two trades for one intent on chain;
     const successes = a.attempts.filter((x) => w.truth.get(x.signature)?.outcome === 'success');
     if (successes.length > 1) fail(`two attempts of ${id} land`);
-    // Booked equals landed once the books close.
+    // booked equals landed once the books close;
     const landedTokens = successes.reduce((t, x) => t + (landed(w.truth.get(x.signature), w.height) ? w.truth.get(x.signature)!.tokens : 0n), 0n);
     if (a.status === 'reconciled' && filledTokens(a) !== landedTokens) fail(`${id} booked ${filledTokens(a)} but ${landedTokens} landed`);
+    // and an intent that ended unfilled never trades.
     if ((a.status === 'abandoned' || a.status === 'cancelled') && successes.length > 0) fail(`${id} ended unfilled but an attempt succeeds on chain`);
   }
 
@@ -221,7 +259,8 @@ const check = (w: World, before: Book, e: BookEvent, after: Book, effects: reado
   for (const [id, p] of Object.entries(after.positions)) {
     if (!POSITION_STATUSES.includes(p.status)) fail(`invalid position status ${p.status}`);
     const b = before.positions[id];
-    if (b === undefined && p.status !== 'opening') fail(`position created in ${p.status}`);
+    // Positions open as `opening` when an entry may land, or as `open` when a late landing is booked.
+    if (b === undefined && p.status !== (e.type === 'orphan_fill' ? 'open' : 'opening')) fail(`position created in ${p.status}`);
     if (b !== undefined && b.status !== p.status && !POSITION_EDGES[b.status].includes(p.status)) fail(`illegal position edge ${b.status} -> ${p.status}`);
     const exits = live.filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === p.id);
     if (exits.length > 1) fail(`two live exit intents on ${id}`);
@@ -230,21 +269,27 @@ const check = (w: World, before: Book, e: BookEvent, after: Book, effects: reado
     if (p.exitOwner !== null) {
       const o = after.intents[p.exitOwner.intentId];
       if (o === undefined || isTerminal(o) || exits[0] !== o) fail('exit owner is not the single live exit intent');
-      if (p.exitOwner.quantity > p.quantity || p.exitOwner.quantity <= 0n) fail('exit owner quantity outside holdings');
+      if (p.exitOwner.quantity > p.bought || p.exitOwner.quantity <= 0n) fail('exit owner quantity outside holdings');
     } else if (exits.length > 0) fail('live exit intent without an owner');
     if (p.quantity < 0n || p.sold < 0n) fail('negative quantity');
-    const entry = after.intents[p.entryIntentId];
-    const bought = entry ? filledTokens(entry) : 0n;
-    if (p.status !== 'opening' && p.quantity + p.sold !== bought) fail(`quantity ${p.quantity} + sold ${p.sold} != bought ${bought}`);
-    // On chain, never more sold than bought.
+    const expected = p.bought > p.sold ? p.bought - p.sold : 0n;
+    if (p.quantity !== expected) fail(`quantity ${p.quantity} != max(0, bought ${p.bought} - sold ${p.sold})`);
+  }
+  // Booked bought tokens per entry equal its fills; on chain, never more sold than bought per entry.
+  for (const entry of Object.values(after.intents)) {
+    if (entry.intent.purpose !== 'entry') continue;
+    const mine = Object.values(after.positions).filter((p) => p.entryIntentId === entry.intent.id);
+    const booked = mine.reduce((t, p) => t + p.bought, 0n);
+    if (booked !== filledTokens(entry)) fail(`entry ${entry.intent.id} fills ${filledTokens(entry)} but positions bought ${booked}`);
+    const ids = new Set(mine.map((p) => p.id));
     let soldOnChain = 0n;
     for (const i of Object.values(after.intents)) {
-      if (i.intent.purpose !== 'exit' || i.intent.positionId !== p.id) continue;
+      if (i.intent.purpose !== 'exit' || !ids.has(i.intent.positionId)) continue;
       for (const x of i.attempts) if (w.truth.get(x.signature)?.outcome === 'success') soldOnChain += w.truth.get(x.signature)!.tokens;
     }
     let boughtOnChain = 0n;
-    for (const x of entry?.attempts ?? []) if (w.truth.get(x.signature)?.outcome === 'success') boughtOnChain += w.truth.get(x.signature)!.tokens;
-    if (soldOnChain > boughtOnChain) fail(`position ${id} sells ${soldOnChain} on chain but bought ${boughtOnChain}`);
+    for (const x of entry.attempts) if (w.truth.get(x.signature)?.outcome === 'success') boughtOnChain += w.truth.get(x.signature)!.tokens;
+    if (soldOnChain > boughtOnChain) fail(`entry ${entry.intent.id} sells ${soldOnChain} on chain but bought ${boughtOnChain}`);
   }
 
   for (const f of effects) {
@@ -254,12 +299,12 @@ const check = (w: World, before: Book, e: BookEvent, after: Book, effects: reado
     if (!i || !cur || cur.id !== f.attemptId || cur.signature !== f.signature || cur.signedBytesRef !== f.signedBytesRef) fail('broadcast of bytes other than the current attempt');
     if (e.type === 'tick' && cur!.lastValidBlockHeight < e.blockHeight) fail('rebroadcast after expiry');
     if (i!.intent.purpose === 'entry' && e.type !== 'tick' && before.paused.length > 0) fail('entry sent while paused');
-    if (i!.attempts.slice(0, -1).some((x) => canStillLand(w, x))) fail('broadcast while an earlier attempt can still land');
+    if (!hasHidden(w, i!) && i!.attempts.slice(0, -1).some((x) => canStillLand(w, x))) fail('broadcast while an earlier attempt can still land');
   }
 };
 
 describe('randomised lifecycle sequences', () => {
-  test('10,000 seeded sequences against a chain model: no illegal state, no double trade, booked equals landed', () => {
+  test('10,000 seeded sequences against a chain model: no illegal state, no double trade, landed tokens always booked or under reconciliation', () => {
     const SEQUENCES = 10_000;
     const STEPS = 80;
     const seenIntent = new Set<IntentStatus>();
@@ -267,13 +312,24 @@ describe('randomised lifecycle sequences', () => {
     let accepted = 0;
     let replacements = 0;
     let lateLandings = 0;
+    let orphansBooked = 0;
     for (let seed = 1; seed <= SEQUENCES; seed++) {
       const { next, release, chance } = generator(seed);
-      const w: World = { book: emptyBook({ maxOpenPositions: 1 + (seed % 3) }), height: 100n, n: 0, truth: new Map() };
+      const w: World = { book: emptyBook({ maxOpenPositions: 1 + (seed % 3) }), height: 100n, n: 0, truth: new Map(), revealed: new Set() };
       for (let s = 0; s < STEPS; s++) {
         const e = next(w);
         const r = applyBookEvent(w.book, e);
-        if (isIllegal(r)) continue;
+        // A truthful landing read for one of the intent's own signatures is never refused, whatever its state.
+        const landingRead = e.type === 'intent' && e.event.type === 'status' && e.event.result === 'succeeded'
+          && (e.event.commitment === 'confirmed' || e.event.commitment === 'finalized')
+          && w.book.intents[e.intentId]!.attempts.some((a) => e.event.type === 'status' && a.signature === e.event.signature);
+        if (isIllegal(r)) {
+          if (landingRead) throw new Error(`landing read refused: ${r.reason} (from ${r.from})`);
+          continue;
+        }
+        if (landingRead && e.event.type === 'status') w.revealed.add(e.event.signature);
+        if (e.type === 'orphan_fill') orphansBooked++;
+        if (e.type === 'propose_entry' && Object.keys(w.book.orphans).length > 0) throw new Error('entry accepted with an unbooked landing');
         if (e.type === 'propose_entry' && !canOpenNewEntry(w.book).ok) throw new Error('entry accepted while the guard said no');
         // Bytes leave the process on broadcast; a restart while signed may have leaked them too.
         for (const f of r.effects) {
@@ -301,6 +357,7 @@ describe('randomised lifecycle sequences', () => {
     expect([...seenPosition].sort()).toEqual([...POSITION_STATUSES].sort());
     expect(accepted).toBeGreaterThan(SEQUENCES * 10);
     expect(replacements).toBeGreaterThan(100);
-    expect(lateLandings).toBe(0); // with truthful confirmed reads, a dead attempt never lands
+    expect(lateLandings).toBeGreaterThan(0); // hidden landings exercise the late-landing paths
+    expect(orphansBooked).toBeGreaterThan(50);
   }, 120_000);
 });
