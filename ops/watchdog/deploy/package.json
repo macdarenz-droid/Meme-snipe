@@ -1,0 +1,8 @@
+{
+  "name": "zeroed-watchdog-deploy",
+  "private": true,
+  "description": "Tooling for the Deploy workflow only: wrangler, locked by package-lock.json and installed with npm ci --ignore-scripts. Outside the pnpm workspace on purpose.",
+  "devDependencies": {
+    "wrangler": "4.141.0"
+  }
+}

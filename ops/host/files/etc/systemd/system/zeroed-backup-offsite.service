@@ -1,0 +1,14 @@
+[Unit]
+Description=Zeroed: daily off-server copy of the newest backup (silent Telegram document)
+After=network-online.target zeroed-backup.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zeroed-backup-offsite
+UMask=0077
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/zeroed-host /run

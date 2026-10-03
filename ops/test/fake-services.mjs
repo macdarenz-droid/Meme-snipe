@@ -16,8 +16,9 @@ const rel = (tag) => join(STATE, 'releases', tag);
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = decodeURIComponent(url.pathname);
-  let body = '';
-  for await (const c of req) body += c;
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const body = Buffer.concat(chunks).toString('latin1');
   const send = (code, data, type = 'application/json') => {
     res.writeHead(code, { 'content-type': type });
     res.end(data);
@@ -55,6 +56,30 @@ createServer(async (req, res) => {
     const all = existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
     appendFileSync(join(STATE, 'telegram.jsonl'), JSON.stringify({ method: 'getUpdates', token_ok: true, chat_id: '', text: '' }) + '\n');
     return send(200, JSON.stringify({ ok: true, result: all.filter((u) => u.update_id >= offset) }));
+  }
+  if ((m = /^\/client\/v4\/accounts\/([^/]+)\/workers\/subdomain$/.exec(p))) {
+    // Cloudflare: the account starts without a workers.dev subdomain; PUT registers one.
+    const auth_ok = req.headers['authorization'] === `Bearer ${readFileSync(join(STATE, 'cf-token'), 'utf8')}`;
+    appendFileSync(join(STATE, 'cloudflare.jsonl'), JSON.stringify({ method: req.method, auth_ok, body }) + '\n');
+    if (!auth_ok) return send(403, JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }));
+    const f = join(STATE, 'cf-subdomain');
+    if (req.method === 'PUT') {
+      writeFileSync(f, JSON.parse(body).subdomain);
+      return send(200, JSON.stringify({ success: true, result: { subdomain: JSON.parse(body).subdomain } }));
+    }
+    if (!existsSync(f)) return send(404, JSON.stringify({ success: false, errors: [{ code: 10007, message: 'This account does not have a workers.dev subdomain' }] }));
+    return send(200, JSON.stringify({ success: true, result: { subdomain: readFileSync(f, 'utf8') } }));
+  }
+  if ((m = /^\/bot([^/]+)\/sendDocument$/.exec(p))) {
+    // Multipart: keep the uploaded file and the chat id, as Telegram would.
+    const raw = Buffer.from(body, 'latin1');
+    const text = raw.toString('latin1');
+    const chat = /name="chat_id"\r\n\r\n([^\r]*)/.exec(text)?.[1] ?? '';
+    const start = text.indexOf('\r\n\r\n', text.indexOf('name="document"')) + 4;
+    const end = text.indexOf('\r\n--', start);
+    writeFileSync(join(STATE, 'received-document'), raw.subarray(start, end));
+    appendFileSync(join(STATE, 'telegram.jsonl'), JSON.stringify({ method: 'sendDocument', token_ok: m[1] === token(), chat_id: chat, text: '', bytes: end - start }) + '\n');
+    return send(200, '{"ok":true}');
   }
   if ((m = /^\/bot([^/]+)\/(sendMessage|setWebhook)$/.exec(p))) {
     const form = new URLSearchParams(body);
