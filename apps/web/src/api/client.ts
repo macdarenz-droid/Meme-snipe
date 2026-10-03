@@ -1,7 +1,7 @@
 import { PATHS, type DashboardApi, type Envelope, type Mode } from './contract.ts';
 import { PREVIEW } from '../lib/preview.ts';
-import { checkEnvelope } from './modes.ts';
-import { loadReport } from './reportLoader.ts';
+import { checkEnvelope, DataError } from './modes.ts';
+import { defaultGetter, loadReport, type Got, type Getter } from './reportLoader.ts';
 import { reportData } from './reportSchema.ts';
 import type { Check } from './schema.ts';
 import { schemaFor } from './schemas.ts';
@@ -23,38 +23,56 @@ export const offlineApi: DashboardApi = {
   backtestReport: offline,
 };
 
-/** Reads the worker over HTTP; every response passes checkEnvelope before use. */
-export function httpApi(base: string, fetcher: typeof fetch = fetch): DashboardApi {
-  async function get<T>(path: string, mode: Mode, check: Check): Promise<Envelope<T>> {
-    let res: Response;
+/** What httpApi tells about each request: answered (any HTTP status) or not reachable. */
+export interface Reachability {
+  reportOk(origin: string, at: string): void;
+  reportOffline(origin: string): void;
+}
+
+/**
+ * Reads the worker at `origin` (a checked tailnet address, src/api/server.ts). Read-only: every
+ * call is a GET with no credentials. Every response passes checkEnvelope before use.
+ */
+export function httpApi(origin: string, get: Getter = defaultGetter, reach?: Reachability, now: () => number = Date.now): DashboardApi {
+  const base = origin.replace(/\/$/, '');
+  async function call<T>(path: string, mode: Mode, check: Check): Promise<Envelope<T>> {
+    let res: Got;
     try {
-      res = await fetcher(base.replace(/\/$/, '') + path, { headers: { accept: 'application/json' } });
+      res = await get(base + path);
     } catch {
+      reach?.reportOffline(origin);
       throw new OfflineError('worker not reachable');
     }
-    if (!res.ok) throw new Error(`worker answered ${res.status}`);
-    return checkEnvelope<T>(await res.json(), mode, check);
+    // An HTTP answer means the server is reachable, even when the answer is an error.
+    reach?.reportOk(origin, new Date(now()).toISOString());
+    if (res.status !== 200) throw new Error(`worker answered ${res.status}`);
+    let body: unknown;
+    try {
+      body = JSON.parse(res.body ?? '');
+    } catch {
+      throw new DataError('bad-shape', 'response is not JSON');
+    }
+    return checkEnvelope<T>(body, mode, check);
   }
   return {
-    status: (m) => get(PATHS.status(m), m, schemaFor('status', m)),
-    funnel: (m) => get(PATHS.funnel(m), m, schemaFor('funnel', m)),
-    decisions: (m) => get(PATHS.decisions(m), m, schemaFor('decisions', m)),
-    position: (m) => get(PATHS.position(m), m, schemaFor('position', m)),
-    calendar: (m, month) => get(PATHS.calendar(m, month), m, schemaFor('calendar', m)),
-    trades: (m) => get(PATHS.trades(m), m, schemaFor('trades', m)),
-    charts: (m) => get(PATHS.charts(m), m, schemaFor('charts', m)),
-    stats: (m) => get(PATHS.stats(m), m, schemaFor('stats', m)),
-    backtestReport: () => get(PATHS.backtestReport(), 'backtest', reportData),
+    status: (m) => call(PATHS.status(m), m, schemaFor('status', m)),
+    funnel: (m) => call(PATHS.funnel(m), m, schemaFor('funnel', m)),
+    decisions: (m) => call(PATHS.decisions(m), m, schemaFor('decisions', m)),
+    position: (m) => call(PATHS.position(m), m, schemaFor('position', m)),
+    calendar: (m, month) => call(PATHS.calendar(m, month), m, schemaFor('calendar', m)),
+    trades: (m) => call(PATHS.trades(m), m, schemaFor('trades', m)),
+    charts: (m) => call(PATHS.charts(m), m, schemaFor('charts', m)),
+    stats: (m) => call(PATHS.stats(m), m, schemaFor('stats', m)),
+    backtestReport: () => call(PATHS.backtestReport(), 'backtest', reportData),
   };
 }
 
 /**
- * VITE_WORKER_URL points the app at a worker; without it the app shows the offline state.
- * The preview build reads the newest backtest report file from its release URL, so real
- * backtest results show before the worker runs.
+ * The saved server address (Snipe screen) points the app at the worker; without one the app shows
+ * the offline state. The preview build reads the newest backtest report file from its release URL,
+ * so real backtest results show with or without a server.
  */
-export function defaultApi(): DashboardApi {
-  const url = import.meta.env['VITE_WORKER_URL'] as string | undefined;
-  const base = url ? httpApi(url) : offlineApi;
+export function apiFor(origin: string | null, reach?: Reachability): DashboardApi {
+  const base = origin ? httpApi(origin, defaultGetter, reach) : offlineApi;
   return PREVIEW ? { ...base, backtestReport: () => loadReport() } : base;
 }

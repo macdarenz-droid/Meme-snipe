@@ -155,11 +155,11 @@ describe('worker API contract', () => {
   it('HTTP API reads the contract paths and checks every response', async () => {
     const seen: string[] = [];
     const fixtures = fixtureApi();
-    const fake = (async (url: string) => {
+    const fake = async (url: string) => {
       seen.push(url);
       const body = url.endsWith('/paper/stats') ? await fixtures.stats('live') : await fixtures.trades('paper');
-      return new Response(JSON.stringify(body), { status: 200 });
-    }) as typeof fetch;
+      return { status: 200, body: JSON.stringify(body) };
+    };
     const api = httpApi('https://worker.example/', fake);
     expect((await api.trades('paper')).mode).toBe('paper');
     await expect(api.stats('paper')).rejects.toBeInstanceOf(DataError);
