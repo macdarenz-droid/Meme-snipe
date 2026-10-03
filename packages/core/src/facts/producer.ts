@@ -694,7 +694,7 @@ export class FactProducer {
       if (r === null || key !== RAW.holders(r.mint) || !usable(r.commitment)) return;
       put(holdersKey(r.mint), {
         obs: { provider, slot: r.slot, receivedAt: at, quality: [], commitment: r.commitment }, supply: r.supply, coverage: 'largest',
-        accounts: r.accounts.map((a) => ({ mint: r.mint, address: a.address, owner: a.owner, ownerProgram: a.ownerProgram, amount: a.amount })),
+        accounts: r.accounts.map((a) => ({ mint: r.mint, address: a.address, owner: a.owner, ownerProgram: a.ownerProgram, amount: a.amount, delegate: a.delegate, delegatedAmount: a.delegatedAmount })),
       });
     } else if (key.startsWith('read:holders-all:')) {
       const r = parseHoldersAllRead(v);

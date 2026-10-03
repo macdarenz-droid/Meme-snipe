@@ -293,8 +293,8 @@ export class FactReaders {
         if (v === null || v === undefined) return null;
         const t = decodeTokenAccount(fromBase64(v.data), v.owner as Address);
         if (t.mint !== mint) throw new Error(`token account ${a.address} is not of ${mint}`);
-        return { address: a.address, owner: t.owner as string, amount: t.amount };
-      }).filter((x): x is { address: string; owner: string; amount: bigint } => x !== null);
+        return { address: a.address, owner: t.owner as string, amount: t.amount, delegate: t.delegate as string | null, delegatedAmount: t.delegatedAmount };
+      }).filter((x): x is { address: string; owner: string; amount: bigint; delegate: string | null; delegatedAmount: bigint } => x !== null);
       const owners = [...new Set(tokens.map((t) => t.owner))];
       const programs = owners.length === 0 ? { slot: accts.slot, accounts: [] } : await this.#o.rpc.getMultipleAccounts(owners, priority, { offset: 0, length: 0 });
       const programOf = new Map(owners.map((o, i) => {
@@ -305,7 +305,7 @@ export class FactReaders {
       const slots = [largest.slot, accts.slot, programs.slot];
       const read: HoldersRead = {
         mint, slot: slots.reduce((a, b) => (b < a ? b : a)), commitment: 'confirmed', supply,
-        accounts: tokens.map((t) => ({ address: t.address, owner: t.owner, ownerProgram: programOf.get(t.owner) ?? null, amount: t.amount })),
+        accounts: tokens.map((t) => ({ address: t.address, owner: t.owner, ownerProgram: programOf.get(t.owner) ?? null, amount: t.amount, delegate: t.delegate, delegatedAmount: t.delegatedAmount })),
       };
       this.#ingest('helius', RAW.holders(mint), read);
       return `${tokens.length} accounts, slot ${read.slot}`;

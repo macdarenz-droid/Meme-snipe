@@ -24,7 +24,7 @@ export interface HoldersRead {
   readonly slot: bigint;
   readonly commitment: Commitment;
   readonly supply: bigint;
-  readonly accounts: readonly { readonly address: string; readonly owner: string; readonly ownerProgram: string | null; readonly amount: bigint }[];
+  readonly accounts: readonly { readonly address: string; readonly owner: string; readonly ownerProgram: string | null; readonly amount: bigint; readonly delegate: string | null; readonly delegatedAmount: bigint }[];
 }
 
 /**
@@ -153,7 +153,7 @@ export const parseAccountsRead = (v: unknown): AccountsRead | null =>
 
 export const parseHoldersRead = (v: unknown): HoldersRead | null =>
   isObj(v) && isStr(v['mint']) && isNat(v['slot']) && isCommitment(v['commitment']) && isNat(v['supply'])
-  && every(v['accounts'], (a): a is HoldersRead['accounts'][number] => isObj(a) && isStr(a['address']) && isStr(a['owner']) && strOrNull(a['ownerProgram']) && isNat(a['amount']))
+  && every(v['accounts'], (a): a is HoldersRead['accounts'][number] => isObj(a) && isStr(a['address']) && isStr(a['owner']) && strOrNull(a['ownerProgram']) && isNat(a['amount']) && strOrNull(a['delegate']) && isNat(a['delegatedAmount']))
     ? (v as unknown as HoldersRead) : null;
 
 export const parseHoldersAllRead = (v: unknown): HoldersAllRead | null =>
