@@ -57,7 +57,7 @@ export const recordEvents = (ledger: Ledger, events: readonly Timed[], config: B
         for (const f of s.fills) if (!booked.has(f.signature)) ledger.recordFill(f, ts);
         const r = s.reservation;
         if (r !== null && was?.reservation == null) {
-          const res = ledger.reserveExposure({ reservationId: r.id, intentId: id, amount: r.amount, limits: LIMITS, ts });
+          const res = ledger.reserveExposure({ reservationId: r.id, intentId: id, amount: r.amount, limits: LIMITS, ts, accountVersion: ledger.accountVersion() });
           if (!res.ok) throw new Error(`recorder: reservation refused: ${res.reason}`);
         }
         if (options.endReservations !== false && r !== null && r.status !== 'held' && was?.reservation?.status !== r.status) ledger.endReservation(r.id, r.status, ts);
