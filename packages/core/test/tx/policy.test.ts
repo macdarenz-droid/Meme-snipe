@@ -199,6 +199,26 @@ describe('deny rules', () => {
     expect(violations(tx.instructions.map((ix, i) => (i === swapAt ? unknown : ix)))).toEqual(expect.arrayContaining([expect.stringMatching(/instruction .* is not allowed/)]));
   });
 
+  test('UPG-1: the undocumented pump sell_v3 and buy_exact_quote_in_v3 (live since the 2026-10-02 upgrade) are refused', () => {
+    // sha256("global:sell_v3")[0..8] and sha256("global:buy_exact_quote_in_v3")[0..8]; seen on mainnet on token-quoted curves.
+    for (const [kind, disc] of [['curve-sell', '1c92de7726c469d5'], ['curve-buy', 'e1f7501ed5b38488']] as const) {
+      const tx = built(kind);
+      const wallet = common(goldenOf(kind)).wallet;
+      const at = tx.instructions.findIndex((ix) => ix.programId === '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+      const ix = tx.instructions[at]!;
+      const v3 = { ...ix, data: Uint8Array.of(...(disc.match(/../g) ?? []).map((h) => parseInt(h, 16)), ...ix.data.subarray(8)) };
+      const ixs = tx.instructions.map((x, i) => (i === at ? v3 : x));
+      // A curve swap only fits with accounts in a lookup table (wallet-owned ones then add their own refusals).
+      const venue = [...new Set(ixs.flatMap((x) => x.accounts.filter((m) => !m.signer && m.address !== wallet).map((m) => m.address)))];
+      const table = 'AddressLookupTab1e1111111111111111111111111' as Address;
+      const decoded = decodeTransaction(compileV0(wallet, ixs, BLOCKHASH, [{ address: table, addresses: venue }], () => true).wire);
+      const lt: LookupTable = { deactivationSlot: U64_MAX, lastExtendedSlot: 1n, lastExtendedSlotStartIndex: 0, authority: null, addresses: venue };
+      const v = checkSignerPolicy(decoded, resolveLookups(decoded.addressTableLookups, new Map([[table, lt]]), 10n), ctxFor(wallet));
+      expect(v.ok).toBe(false);
+      expect(v.violations).toEqual(expect.arrayContaining([expect.stringMatching(new RegExp(`instruction ${at}: .*not allowed`))]));
+    }
+  });
+
   test('a v1 transaction from mainnet is refused (DEC-1 fixture)', async () => {
     const { readFileSync } = await import('node:fs');
     const fx = JSON.parse(readFileSync(new URL('../chain/fixtures/transactions.json', import.meta.url), 'utf8')) as { transactions: { version: unknown; base64: { transaction: [string, string] } }[] };
