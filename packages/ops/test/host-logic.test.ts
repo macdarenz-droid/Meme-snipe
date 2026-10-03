@@ -266,6 +266,26 @@ describe('live view (tailscale serve)', () => {
     }
   });
 
+  it('checks the target before publishing, and takes serve down itself when the result is not exactly the worker API', () => {
+    const ts = read('ops/host/files/usr/local/sbin/zeroed-tailscale');
+    const pre = ts.indexOf('[[ "$WORKER_API_ADDR" =~ ^127\\.0\\.0\\.1:[0-9]{1,5}$ ]]');
+    expect(pre).toBeGreaterThan(0);
+    expect(pre).toBeLessThan(ts.indexOf('tailscale serve --bg'));
+    const fail = ts.slice(ts.indexOf('if ! tailscale serve status --json | serve_ok; then'));
+    expect(fail.indexOf('tailscale serve reset')).toBeGreaterThan(0);
+    expect(fail.indexOf('tailscale serve reset')).toBeLessThan(fail.indexOf('exit 1'));
+    expect(fail.slice(0, fail.indexOf('exit 1'))).toContain('tailscale funnel --https=443 off');
+    expect(fail.slice(0, fail.indexOf('exit 1'))).not.toContain('Run zeroed-tailscale --off');
+  });
+
+  it("Tailscale's own repository is in the unattended-upgrades origins", () => {
+    const conf = read('ops/host/files/etc/apt/apt.conf.d/52zeroed-unattended-upgrades');
+    expect(conf).toMatch(/Unattended-Upgrade::Origins-Pattern \{\n\s+"origin=Tailscale,label=Tailscale,codename=\$\{distro_codename\}";\n\};/);
+    expect(conf).toContain('Unattended-Upgrade::Automatic-Reboot "false";');
+    // The repository it matches is the one zeroed-tailscale adds, signed by the pinned key.
+    expect(read('ops/host/files/usr/local/sbin/zeroed-tailscale')).toContain("printf 'deb [signed-by=%s] https://pkgs.tailscale.com/stable/ubuntu noble main\\n'");
+  });
+
   it('is opt-in: the installer never installs or starts Tailscale, and the repository key is pinned', () => {
     const main = read('ops/host/install-main.sh');
     expect(main).not.toMatch(/apt-get[^\n]*tailscale|zeroed-tailscale|tailscale up/);
@@ -312,7 +332,7 @@ describe('install.sh --update', () => {
   });
 
   it("installs RUN-1's units from the release by name, removes dropped ones, and enables only the tick timer", () => {
-    expect(main).toContain('RELEASE_UNITS=/opt/zeroed/current/packages/runner/systemd');
+    expect(main).toContain('RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"');
     expect(main).toContain('[[ "$n" =~ $RELEASE_UNIT_RE ]] || continue');
     expect(main).toContain('if [ -e /etc/systemd/system/zeroed-dryrun-tick.timer ]; then systemctl enable --now zeroed-dryrun-tick.timer >/dev/null; fi');
     expect(main).not.toMatch(/enable[^\n]*zeroed-dryrun@|enable[^\n]*zeroed-dryrun-reboot|enable[^\n]*zeroed-worker-tabletop/);
@@ -325,18 +345,24 @@ describe('install.sh --update', () => {
   it('a running worker restarts for changed start files only when nothing is in flight', () => {
     expect(main).toMatch(/\/etc\/systemd\/system\/zeroed-worker\.service \| \/usr\/local\/lib\/zeroed\/worker-start \| \/opt\/zeroed\/stub\/worker\.mjs\)\n\s+worker_busy \|\| systemctl restart zeroed-worker\.service/);
     const s = read('ops/host/files/usr/local/sbin/zeroed-update');
-    expect(s).toContain('worker_busy || systemctl try-restart zeroed-worker.service || true');
     // A failing apply alerts once per episode, not every 5 minutes.
     expect(s).toContain('alert host-apply "ALERT');
     expect(s).toContain('alert_clear host-apply "CLEARED');
   });
 
-  it('zeroed-update applies it after the switch and before the worker restart, and tries again after a failure', () => {
+  it('zeroed-update applies the new release\'s host files before it switches or restarts anything; a failure keeps the old release', () => {
     const s = read('ops/host/files/usr/local/sbin/zeroed-update');
-    expect(s.indexOf('apply_host "$commit" || true')).toBeGreaterThan(s.indexOf('mv -Tf /opt/zeroed/current.new /opt/zeroed/current'));
-    expect(s.indexOf('apply_host "$commit" || true')).toBeLessThan(s.indexOf('systemctl restart zeroed-worker.service'));
-    expect(s).toContain(`if bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then`);
+    const apply = s.indexOf('apply_host "$commit" "$dest" || exit 1');
+    expect(apply).toBeGreaterThan(s.indexOf('mv "$dest.new" "$dest"'));
+    for (const later of ['ln -sfn "$dest" /opt/zeroed/current.new', 'mv -Tf /opt/zeroed/current.new /opt/zeroed/current', `printf '%s\\n' "$commit" > "$STATE_DIR/deployed"`, 'systemctl restart zeroed-worker.service', 'zeroed-backup-offsite.timer']) {
+      expect(s.indexOf(later), later).toBeGreaterThan(apply);
+    }
+    // After every gate: a retry next run goes through the same gates (deployed is not moved on failure).
+    for (const gate of ['run="$(active_run)"', 'open="$(cat /var/lib/zeroed/open_intents', 'if [ "$verdict" != green ]']) expect(s.indexOf(gate), gate).toBeLessThan(apply);
+    expect(s.match(/apply_host "\$commit"/g)).toHaveLength(1);
+    expect(s).toContain('if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then');
     expect(s).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
-    expect(s).toMatch(/if \[ "\$commit" = "\$current" \]; then\n[^\n]*\n[^\n]*host_applied[^\n]*\n\s+\[ -z "\$\(active_run\)" \] \|\| exit 0/);
+    // The new release's RUN-1 units, not the running one's.
+    expect(main).toContain('RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"');
   });
 });

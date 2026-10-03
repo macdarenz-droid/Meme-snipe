@@ -164,7 +164,8 @@ say "Dry-run units"
 # RUN-1's units come with the deployed release (packages/runner/systemd), so the runner's owner changes them
 # by merge alone. Only zeroed-dryrun* and zeroed-worker-tabletop are taken (none enabled but the tick timer);
 # units a newer release dropped are removed.
-RELEASE_UNITS=/opt/zeroed/current/packages/runner/systemd
+# zeroed-update points ZEROED_RELEASE_DIR at the release it is about to switch to.
+RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"
 new_units=()
 if [ -d "$RELEASE_UNITS" ]; then
   for f in "$RELEASE_UNITS"/*; do

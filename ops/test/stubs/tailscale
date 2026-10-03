@@ -14,6 +14,11 @@ case "$1 ${2:-}" in
     for _ in $(seq 1 120); do [ -e "$S/approve" ] && { touch "$S/logged-in"; echo Success.; exit 0; }; sleep 1; done
     echo 'timeout waiting for login'; exit 1 ;;
   "serve --bg")
+    # /var/lib/tailscale-stub/bad-serve: tailscaled ends up with Funnel on too (the check must take it down).
+    if [ -e "$S/bad-serve" ]; then
+      printf '{"TCP":{"443":{"HTTPS":true}},"Web":{"zeroed.tail-e2e.ts.net:443":{"Handlers":{"/":{"Proxy":"%s"}}}},"AllowFunnel":{"zeroed.tail-e2e.ts.net:443":true}}\n' "${@: -1}" > "$S/serve.json"
+      exit 0
+    fi
     printf '{"TCP":{"443":{"HTTPS":true}},"Web":{"zeroed.tail-e2e.ts.net:443":{"Handlers":{"/":{"Proxy":"%s"}}}}}\n' "${@: -1}" > "$S/serve.json" ;;
   "serve status")
     cat "$S/serve.json" 2>/dev/null || echo '{}' ;;

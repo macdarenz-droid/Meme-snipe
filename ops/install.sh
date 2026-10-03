@@ -99,10 +99,15 @@ APT::Periodic::AutocleanInterval "7";
 __ZEROED_FILE__
 install_file /etc/apt/apt.conf.d/52zeroed-unattended-upgrades 0644 <<'__ZEROED_FILE__'
 // Zeroed: security origin only (Ubuntu's default list), never reboot on its own.
+// Plus Tailscale's own repository (live view, opt-in; its key is pinned by zeroed-tailscale): it publishes
+// fixes there, not in Ubuntu's security pocket. Matches nothing until Tailscale is installed.
 Unattended-Upgrade::Allowed-Origins {
         "${distro_id}:${distro_codename}-security";
         "${distro_id}ESMApps:${distro_codename}-apps-security";
         "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Tailscale,label=Tailscale,codename=${distro_codename}";
 };
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
@@ -1681,10 +1686,16 @@ if [ "$(state)" != Running ]; then
   up_pid=""
 fi
 
+# The intended target is checked before anything is published: the worker API on loopback, nothing else.
+[[ "$WORKER_API_ADDR" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]] || { log "Stopped: the worker API address is not loopback."; exit 1; }
 tailscale funnel --https=443 off >/dev/null 2>&1 || true
 tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >/dev/null
 if ! tailscale serve status --json | serve_ok; then
-  log "Stopped: tailscale serve is not publishing only the worker API with Funnel off. Run zeroed-tailscale --off and check."
+  # Anything else than exactly that (another target, another port, Funnel on) is taken down at once.
+  tailscale serve reset >/dev/null 2>&1 || true
+  tailscale funnel --https=443 off >/dev/null 2>&1 || true
+  rm -f "$STATE_DIR/live_view"
+  log "Stopped: tailscale serve did not publish only the worker API with Funnel off, so it was turned off again. Nothing is published."
   exit 1
 fi
 name="$(tailscale status --json | jq -r '.Self.DNSName // empty' | sed 's/\.$//')"
@@ -1787,8 +1798,9 @@ install_file /usr/local/sbin/zeroed-update 0755 <<'__ZEROED_FILE__'
 #  3. every check run on it finished green (public GitHub API), and
 #  4. no qualifying dry run is active (its unit, or an unfinished named run in the evidence), and
 #  5. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
-# Then switch to it, apply the release's host files (install.sh --update: scripts, units, RUN-1's units) and
-# restart the worker, which reconciles before it trades. Runs every 5 minutes.
+# Then apply the new release's host files (install.sh --update: scripts, units, RUN-1's units), and only once
+# that succeeded switch to it and restart the worker, which reconciles before it trades. A failed apply keeps
+# the old release running and is tried again next run, under the same gates. Runs every 5 minutes.
 # Residual risk (DECISIONS.md): write access to the repository is the ability to deploy; the signer
 # (SIGN-1) is the separate guard on funds.
 set -euo pipefail
@@ -1800,36 +1812,26 @@ git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
 commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
 current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
 
-# apply_host: the deployed release's installer in update mode, so host changes arrive with the code and
-# nobody pastes the install line again. Releases from before --update existed are skipped.
+# apply_host COMMIT DIR: the new release's installer in update mode (its RUN-1 units read from DIR), so host
+# changes arrive with the code and nobody pastes the install line again. Releases from before --update
+# existed are skipped.
 apply_host() {
-  local c="$1" installer=/opt/zeroed/current/ops/install.sh
+  local c="$1" installer="$2/ops/install.sh"
   if ! grep -q -- '--update) UPDATE=1' "$installer" 2>/dev/null; then
-    printf '%s\n' "$c" > "$STATE_DIR/host_applied"
     return 0
   fi
-  if bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then
-    printf '%s\n' "$c" > "$STATE_DIR/host_applied"
+  if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then
     log "Host files from ${c:0:12} applied."
     alert_clear host-apply "CLEARED Zeroed host: the host files of ${c:0:12} applied."
   else
-    log "Host files from ${c:0:12} failed to apply (see $STATE_DIR/host_update.log); trying again next run."
-    alert host-apply "ALERT Zeroed host: the host files of ${c:0:12} failed to apply. The server tries again every 5 minutes."
+    log "Host files from ${c:0:12} failed to apply (see $STATE_DIR/host_update.log); still on the old release, trying again next run."
+    alert host-apply "ALERT Zeroed host: the host files of ${c:0:12} failed to apply, so the server stays on the release it runs. It tries again every 5 minutes."
     return 1
   fi
 }
 
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
-
-if [ "$commit" = "$current" ]; then
-  # Deployed, but its host files did not apply yet (a failure last time): try again, under the same gate.
-  [ -n "$current" ] && [ "$(cat "$STATE_DIR/host_applied" 2>/dev/null || true)" != "$current" ] || exit 0
-  [ -z "$(active_run)" ] || exit 0
-  apply_host "$current" || exit 1
-  # A changed worker unit or wrapper takes effect at the next start; restart now if nothing is in flight.
-  worker_busy || systemctl try-restart zeroed-worker.service || true
-  exit 0
-fi
+[ "$commit" != "$current" ] || exit 0
 
 # GitHub signs every merge it makes with its web-flow key; nothing else is accepted.
 status="$(GNUPGHOME=/etc/zeroed/gnupg git -C "$REPO_DIR" verify-commit --raw "$commit" 2>&1 || true)"
@@ -1880,6 +1882,8 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# Host files first: on failure nothing switches and the worker keeps running the release it has.
+apply_host "$commit" "$dest" || exit 1
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
@@ -1890,8 +1894,6 @@ if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json
 else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
-
-apply_host "$commit" || true
 
 # Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
 worker="not started (no keys yet)"
@@ -9752,7 +9754,8 @@ say "Dry-run units"
 # RUN-1's units come with the deployed release (packages/runner/systemd), so the runner's owner changes them
 # by merge alone. Only zeroed-dryrun* and zeroed-worker-tabletop are taken (none enabled but the tick timer);
 # units a newer release dropped are removed.
-RELEASE_UNITS=/opt/zeroed/current/packages/runner/systemd
+# zeroed-update points ZEROED_RELEASE_DIR at the release it is about to switch to.
+RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"
 new_units=()
 if [ -d "$RELEASE_UNITS" ]; then
   for f in "$RELEASE_UNITS"/*; do

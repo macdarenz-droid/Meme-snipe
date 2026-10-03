@@ -407,18 +407,31 @@ upd_run || fail "update after the dry run ended"
 in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "no deploy after the dry run ended"
 pass "update gate: no deploy while a named dry run has no report (after a reboot drill) or while a zeroed-dryrun@ unit is active; deploys once both end"
 
-# The release carries this branch's installer and RUN-1 units (a GitHub-signed merge of it would); its host
-# files did not apply yet, so the next update run applies them.
-in_c "rm -rf /opt/zeroed/releases/$signed/packages/runner/systemd && mkdir -p /opt/zeroed/releases/$signed/ops /opt/zeroed/releases/$signed/packages/runner"
+# A newer release whose host files fail to apply: nothing switches, the worker is not restarted, the owner
+# is told once, and the next run tries again under the same gates.
+in_c "echo 0000000000000000000000000000000000000000 > /var/lib/zeroed-host/deployed"
+in_c "mkdir -p /opt/zeroed/releases/$signed/ops && printf '#!/usr/bin/env bash\n# --update) UPDATE=1\nexit 1\n' > /opt/zeroed/releases/$signed/ops/install.sh"
+w0="$(jl zeroed-worker | grep -c 'Stub worker up')"
+n0="$(wc -l <"$STATE/telegram.jsonl")"
+upd_run && fail "update reported success with failing host files"
+upd_run && fail "update reported success with failing host files (second run)"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x 0000000000000000000000000000000000000000 || fail "switched to a release whose host files failed"
+[ "$(jl zeroed-worker | grep -c 'Stub worker up')" = "$w0" ] || fail "worker restarted on failed host files"
+[ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c 'failed to apply, so the server stays on the release it runs')" = 1 ] || fail "no single alert for failed host files"
+jl zeroed-update | has 'still on the old release, trying again next run' || fail "failed apply not logged"
+# The release carries this branch's installer and RUN-1 units (a GitHub-signed merge of it would): the next
+# run applies them, then switches.
+in_c "rm -rf /opt/zeroed/releases/$signed/packages/runner/systemd && mkdir -p /opt/zeroed/releases/$signed/packages/runner"
 docker cp "$ROOT/ops/install.sh" "$C:/opt/zeroed/releases/$signed/ops/install.sh"
 docker cp "$ROOT/packages/runner/systemd" "$C:/opt/zeroed/releases/$signed/packages/runner/systemd"
-in_c "rm -f /var/lib/zeroed-host/host_applied"
 upd_run || { in_c "cat /var/lib/zeroed-host/host_update.log"; fail "host apply"; }
-in_c "cat /var/lib/zeroed-host/host_applied" | has -x "$signed" || fail "host files not recorded as applied"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "not switched after the host files applied"
+tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: the host files of' || fail "failed-apply alert not cleared"
 jl zeroed-update | has "Host files from ${signed:0:12} applied." || fail "host apply not logged"
 for u in $(ls "$ROOT/packages/runner/systemd"); do in_c "cmp -s /etc/systemd/system/$u /opt/zeroed/current/packages/runner/systemd/$u" || fail "RUN-1 unit $u not installed"; done
 in_c "systemctl is-enabled zeroed-dryrun-tick.timer && systemctl is-active zeroed-dryrun-tick.timer && systemctl is-enabled zeroed-check.timer" >/dev/null || fail "tick or check timer not enabled"
 in_c "! systemctl is-enabled zeroed-dryrun@.service 2>/dev/null | grep -q enabled" || fail "the dry-run template was enabled"
+in_c "apt-config dump" | has 'Unattended-Upgrade::Origins-Pattern:: "origin=Tailscale,label=Tailscale,codename=${distro_codename}";' || fail "Tailscale origin not in unattended-upgrades"
 in_c "systemctl cat zeroed-dryrun@x.service" | has -- '--health-addr 127.0.0.1:8788' || fail "runner unit not pointed at the worker API"
 in_c "! test -e /etc/zeroed/deploy-code" || fail "--update made a deploy code"
 in_c "nft list ruleset" | has 'dport 22' && fail "--update opened SSH"
@@ -443,7 +456,7 @@ jq -e '.mode == "paper" and .signing_key == false and (.evidence | map(.id) | in
 CIP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$C")"
 curl -s -m 3 -o /dev/null "http://$CIP:8788/health" && fail "the worker API answered on the public interface"
 in_c "zeroed-status" | has 'Evidence:  /var/lib/zeroed-dryrun/evidence (1 runs)' || fail "status does not list the evidence"
-pass "install.sh --update through zeroed-update: RUN-1 units from the release installed (tick timer on, template off, runner on 127.0.0.1:8788), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on; worker API on loopback only lists the evidence kept on the host"
+pass "install.sh --update through zeroed-update: failing host files keep the old release and the worker (one alert, cleared later); RUN-1 units from the release installed (tick timer on, template off, runner on 127.0.0.1:8788), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on; worker API on loopback only lists the evidence kept on the host"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on
@@ -573,7 +586,14 @@ grep -q 'ALERT Zeroed host: Tailscale Funnel was on' <(tail -3 "$STATE/telegram.
 in_c "systemctl stop zeroed-check.timer"
 chk
 in_c "zeroed-tailscale --off" | has 'Live view off' && grep -qx 'serve reset' <(in_c "cat /var/lib/tailscale-stub/calls") || fail "zeroed-tailscale --off"
-pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
+# A serve result other than exactly the worker API (here: Funnel on as well) is taken down by the script.
+in_c "touch /var/lib/tailscale-stub/bad-serve"
+in_c "zeroed-tailscale" >"$LOGS/console/tailscale-bad.txt" 2>&1 && fail "zeroed-tailscale accepted a serve with Funnel on"
+grep -q 'so it was turned off again. Nothing is published.' "$LOGS/console/tailscale-bad.txt" || fail "bad serve not explained"
+in_c "! test -e /var/lib/tailscale-stub/serve.json" || fail "bad serve left published"
+in_c "rm -f /var/lib/tailscale-stub/bad-serve"
+in_c "zeroed-status" | has 'Live view: off' || fail "status after a refused serve"
+pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it, a serve that is not exactly the worker API is taken down by the script; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
 
 # ---------- 11. Secret scan ----------
 in_c "journalctl --no-pager -o cat" >"$LOGS/container-journal.txt"

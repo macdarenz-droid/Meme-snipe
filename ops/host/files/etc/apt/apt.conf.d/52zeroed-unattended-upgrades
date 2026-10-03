@@ -1,8 +1,13 @@
 // Zeroed: security origin only (Ubuntu's default list), never reboot on its own.
+// Plus Tailscale's own repository (live view, opt-in; its key is pinned by zeroed-tailscale): it publishes
+// fixes there, not in Ubuntu's security pocket. Matches nothing until Tailscale is installed.
 Unattended-Upgrade::Allowed-Origins {
         "${distro_id}:${distro_codename}-security";
         "${distro_id}ESMApps:${distro_codename}-apps-security";
         "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Tailscale,label=Tailscale,codename=${distro_codename}";
 };
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
