@@ -498,7 +498,8 @@ in_c "zeroed-status" | has 'Key check: FAILED: jupiter_api_key' || fail "status 
 in_c "cp -p /root/jup.bak /etc/credstore.encrypted/jupiter_api_key"
 chk
 tail -1 "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: every stored key passes its check again' || fail "key alert not cleared"
-in_c "printf 'x' | dd of=/etc/credstore.encrypted/jupiter_api_key bs=1 seek=100 conv=notrunc 2>/dev/null"
+# Change byte 100 to a different character (writing a fixed one does nothing when it is already there).
+in_c "f=/etc/credstore.encrypted/jupiter_api_key; b=\$(dd if=\$f bs=1 skip=100 count=1 2>/dev/null); [ \"\$b\" = A ] && c=B || c=A; printf '%s' \$c | dd of=\$f bs=1 seek=100 conv=notrunc 2>/dev/null; ! cmp -s \$f /root/jup.bak"
 chk
 tail -1 "$STATE/telegram.jsonl" | has 'stored key check failed: jupiter_api_key (does not open)' || fail "no alert for a key that does not open"
 in_c "mv /root/jup.bak /etc/credstore.encrypted/jupiter_api_key"
