@@ -20,6 +20,9 @@ import { ALCHEMY_FREE, COINBASE_PUBLIC, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, 
 import { blockNetwork } from './helpers.ts';
 import { MINT, Market, T, makeWorker, passingMarket } from './worker-harness.ts';
 
+/** Each worker in this file binds its own health and API ports. */
+const ports = (n: number) => ({ ZEROED_HEALTH_ADDR: `127.0.0.1:${18860 + 2 * n}`, ZEROED_API_ADDR: `127.0.0.1:${18861 + 2 * n}` });
+
 const MINT2 = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
 
 blockNetwork();
@@ -264,7 +267,7 @@ const rows = <T>(dir: string, re: RegExp, parse: (l: string) => T): T[] =>
 describe('the worker reads through core\'s FactFeed (FACTS-1b)', () => {
   it('a raw account read on the live Feed becomes the gate facts, and the recording replays to the same facts', async () => {
     let ctx: FactContext | null = null;
-    const h = makeWorker({ facts: [{ name: 'capture', start: (c) => void (ctx = c), stop: () => undefined }] });
+    const h = makeWorker({ config: ports(0), facts: [{ name: 'capture', start: (c) => void (ctx = c), stop: () => undefined }] });
     expect(await h.worker.start()).toEqual({ ok: true });
     const c = ctx as unknown as FactContext;
     const mint = FIX.accountsRead.mint;
@@ -295,7 +298,7 @@ describe('the worker reads through core\'s FactFeed (FACTS-1b)', () => {
 describe('the strategy keeps each candidate\'s last reasons with their inputs (what the source reads from)', () => {
   it('null before the first evaluation, then the typed reasons of the last one with the inputs evidence names', async () => {
     let ctx: FactContext | null = null;
-    const h = makeWorker({ facts: [{ name: 'capture', start: (c) => void (ctx = c), stop: () => undefined }] });
+    const h = makeWorker({ config: ports(1), facts: [{ name: 'capture', start: (c) => void (ctx = c), stop: () => undefined }] });
     expect(await h.worker.start()).toEqual({ ok: true });
     const c = ctx as unknown as FactContext;
     const obs = { provider: 'test', slot: null, receivedAt: c.sink.now(), quality: [], commitment: 'confirmed' };
