@@ -55,6 +55,11 @@ export type FrameBody =
   | { readonly type: 'account'; readonly slot: bigint; readonly address: string; readonly owner: string; readonly lamports: bigint; readonly data: Uint8Array }
   /** Any other fact: a RugCheck report, a Jupiter Tokens row, a feed status change. */
   | { readonly type: 'offchain'; readonly key: string; readonly value: unknown }
+  /**
+   * A fact that carries its own provenance (a GATE-1 fact with its `obs`, the worker's account snapshot): released
+   * unwrapped, so its reader parses the value itself. Placed like an off-chain fact.
+   */
+  | { readonly type: 'fact'; readonly key: string; readonly value: unknown }
   /** A report that drives the lifecycle (send result, status read), placed like an off-chain fact. */
   | { readonly type: 'world'; readonly event: BookEvent };
 
@@ -104,6 +109,8 @@ export const dedupKey = (b: FrameBody): string | null => {
 const signatureOf = (b: FrameBody): string | null => (b.type === 'seen' || b.type === 'logs' ? b.signature : b.type === 'tx' ? b.record.signature : null);
 
 const pad = (n: number): string => String(n).padStart(5, '0');
+/** A frame's seq in an event id: 12 digits, so string order is arrival order (seq stays below 10^12 in any run). */
+export const seqId = (seq: number): string => String(seq).padStart(12, '0');
 
 /** Chain slot of a frame body, when it has one. */
 export const chainSlot = (b: FrameBody): bigint | null => {
@@ -135,7 +142,8 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
   const chain = f.place.at === 'chain';
   // Off-chain placement can repeat a fact whose dedup key was already forgotten (older than keepSlots), so its
   // ids carry the frame's seq: event ids stay unique for the whole run, as the replay requires.
-  const sfx = chain ? '' : `#${f.seq}`;
+  // The seq is zero-padded so ids of one key sort in arrival order: events at the same moment are ordered by id.
+  const sfx = chain ? '' : `#${seqId(f.seq)}`;
   const b = f.body;
   const txIndexOf = (sig: string): number => {
     const r = ranks.get(sig);
@@ -199,9 +207,11 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
         key: `account:${b.address}`, value: { address: b.address, slot: b.slot, owner: b.owner, lamports: b.lamports, data: toBase64(b.data), ...meta(f) },
       }];
     case 'offchain':
-      return [{ kind: 'market', id: `${b.key}#${f.seq}`, moment: off, key: b.key, value: { value: b.value, ...meta(f) } }];
+      return [{ kind: 'market', id: `${b.key}${sfx}`, moment: off, key: b.key, value: { value: b.value, ...meta(f) } }];
+    case 'fact':
+      return [{ kind: 'market', id: `${b.key}${sfx}`, moment: off, key: b.key, value: b.value }];
     case 'world':
-      return [{ kind: 'world', id: `world#${f.seq}`, moment: off, event: b.event }];
+      return [{ kind: 'world', id: `world${sfx}`, moment: off, event: b.event }];
   }
 };
 
