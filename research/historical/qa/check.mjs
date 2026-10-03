@@ -481,6 +481,29 @@ if (man.schema >= 2) {
     }
   }
   report.movements = st;
+  // Delegations (scanner delegations.go): approve, revoke, set_owner and
+  // set_close_authority of token accounts, under the coverage rule of movements.
+  const dg = { files: 0, rows: 0, by_kind: {}, malformed: 0, malformed_rows: [], partial_rows: 0, outside_coverage: 0, outside_coverage_rows: [], empty_owner: 0 };
+  for (const f of dayFiles('delegations')) {
+    dg.files++;
+    for (const r of readTable(f)) {
+      dg.rows++;
+      dg.by_kind[r.kind] = (dg.by_kind[r.kind] || 0) + 1;
+      const id = `${r.slot}:${r.tx_idx}:${r.outer_ix}:${r.inner_ix}`;
+      const amountOk = /^\d+$/.test(r.amount ?? '') && BigInt(r.amount) <= U64_MAX;
+      const shapeOk = r.kind === 'approve' ? r.authority !== '' && amountOk
+        : r.kind === 'revoke' ? r.authority === '' && r.amount === ''
+        : r.kind === 'set_owner' || r.kind === 'set_close_authority' ? r.amount === '' : false;
+      if (!shapeOk || !r.mint || !r.account) { dg.malformed++; bad(dg.malformed_rows, `${id} ${r.kind}`); continue; }
+      if (r.owner === '') dg.empty_owner++;
+      if (!r.mint.endsWith('pump')) {
+        dg.partial_rows++;
+        const s = BigInt(r.slot);
+        if (!(cover.get(r.mint) || []).some(([lo, hi]) => s >= lo && s <= hi)) { dg.outside_coverage++; bad(dg.outside_coverage_rows, `${id} ${r.mint}`); }
+      }
+    }
+  }
+  report.delegations = dg;
   // An empty swap owner needs its swap_owner_unknown mark; without an account
   // (boost_buy_and_burn burns what it buys) the row credits nobody and needs none.
   for (const [mint, k, account] of swapEmpty) {
@@ -606,7 +629,9 @@ md.push('', '## Reserve chain', '', `Bonding curve real reserves: ${c.real_ok} o
 md.push('', '## Against recorded account balances', '', `Curves quoted in a token other than SOL: ${c.quote_curve_trades} trades; their quote token account equals real_quote_reserves in ${c.quote_balance_exact} of ${c.quote_balance_checks} checks and is never below it in ${c.quote_balance_ge} (the excess is quote tokens held by the curve outside its reserves, such as fees awaiting distribution; real reserves themselves rebuild exactly). Bonding curve token account: ${c.token_exact} of ${c.token_checks} checks equal real_token_reserves plus the reserved migration tokens exactly (${pct(c.token_exact, c.token_checks)}). Lamports: ${c.sol_exact} of ${c.sol_checks} checks keep the same rent offset as the previous check (${c.sol_changed_at_extend} of them changed exactly at an account extension) (${pct(c.sol_exact, c.sol_checks)}). Most common offsets (reserved tokens | rent): ${JSON.stringify(c.top_offsets)}.`, `PumpSwap: ${a.chain_exact} of ${a.chain_checks} checks match both vault balances exactly (${pct(a.chain_exact, a.chain_checks)}).`);
 {
   const m = report.movements;
-  const sa = report.swap_attribution;
+  const dgr = report.delegations;
+if (dgr) md.push('', '## Delegations', '', `${dgr.rows} rows in ${dgr.files} files (${JSON.stringify(dgr.by_kind)}): token-account delegates and authority changes outside pump and PumpSwap, same coverage as movements; ${dgr.malformed} malformed; ${dgr.partial_rows} rows of other mints, ${dgr.outside_coverage} of them outside movement_coverage; ${dgr.empty_owner} with an owner that could not be resolved.`);
+const sa = report.swap_attribution;
 if (sa) md.push('', '## Swap attribution', '', `A swap credits or debits user_token_owner (the owner of the token account the instruction used), never user or the signer. ${sa.curve_trades} curve and ${sa.amm_trades} PumpSwap trades; ${sa.owner_ne_user} with user_token_owner different from user; ${sa.owner_empty} with an empty owner, ${sa.owner_empty_marked} of them marked swap_owner_unknown, ${sa.no_account_unmarked} without a user account (boost buy-and-burn), ${sa.owner_empty_unmarked} unmarked; ${sa.missing_column} rows without the attribution columns.`);
 md.push('', '## Token movements', '', 'Coverage: mints ending in "pump" have every token movement of every successful transaction (complete); other mints have only the movements inside transactions that carry a pump or PumpSwap event of that mint, listed in movement_coverage (scope pump_transactions) for the units\' slot ranges, and their ownership outside those rows is unresolved.',
     '', `${m.rows} rows in ${m.files} files (${JSON.stringify(m.by_kind)}); ${m.malformed} malformed; ${m.zero_amount} with amount 0 (valid on chain, not a miss); ${m.partial_rows} rows of other mints, ${m.outside_coverage} of them outside movement_coverage (${m.coverage_rows} coverage rows, ${m.coverage_bad_scope} with an unknown scope). Ownership unresolved for ${m.unresolved_mints} mints from the slot of an undecoded token instruction (${JSON.stringify(m.unresolved_by_reason)}); ${m.empty_owner_rows} rows with an owner that could not be resolved (coverage records count ${m.empty_owner_coverage}). ${m.no_movements ? `Lead-in slots ${m.no_movements.from_slot} to ${m.no_movements.to_slot} carry no movements, so holder ownership at the window start is unresolved until movements begin.` : ''}`,
