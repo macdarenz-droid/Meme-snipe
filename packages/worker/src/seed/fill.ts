@@ -35,8 +35,11 @@ export interface TradeGap {
   readonly fromMs: number;
   /** The live watch's first slot after the gap: the fill reads up to the slot before it, which live covers. */
   readonly untilSlot: bigint;
-  /** The open gap to close, as FEED-1 reported it. */
-  readonly close: { readonly via: string; readonly fromSlot: bigint | null };
+  /**
+   * The open gap to close, as FEED-1 reported it: `via`, `fromSlot` and, when known, `at` (when it was reported). The
+   * fill reads from the older of `fromSlot` and `close.fromSlot`, so the close never restores a slot not read.
+   */
+  readonly close: { readonly via: string; readonly fromSlot: bigint | null; readonly at?: Moment };
   /** After a restart: the restarted watch's `coverage:<stream>:start` moment. Without it no close fact is made. */
   readonly liveStart?: Moment;
 }
@@ -74,17 +77,17 @@ export interface GapFill {
 }
 
 /** The close of the saved open gap, dated just before the restarted watch's start (SEED-1's liveStart rule). */
-const closeFact = (gap: TradeGap, live: Moment, complete: boolean, n: number): MarketEvent => ({
-  kind: 'market', id: `fill:${gap.stream}:close:${n}`,
-  moment: { slot: live.slot, txIndex: live.txIndex, ixIndex: live.ixIndex, receivedAt: Math.min(gap.fromMs, live.receivedAt - 1) },
-  key: `coverage:${gap.stream}:${complete ? 'resume' : 'gap'}`,
-  value: {
-    value: complete
-      ? { fromSlot: gap.close.fromSlot, toSlot: gap.untilSlot, via: gap.close.via }
-      : { fromSlot: gap.close.fromSlot, toSlot: gap.untilSlot, reason: 'trade fill incomplete', via: gap.close.via },
-    source: 'worker', backfilled: true, seq: n,
-  },
-});
+const closeFact = (gap: TradeGap, live: Moment, complete: boolean, n: number): MarketEvent => {
+  let moment: Moment = { slot: live.slot, txIndex: live.txIndex, ixIndex: live.ixIndex, receivedAt: Math.min(gap.fromMs, live.receivedAt - 1) };
+  // A saved gap reported at or after the restarted start was not settled by it: follow the gap instead (SEED-1).
+  if (gap.close.at !== undefined && compareMoments(gap.close.at, moment) >= 0) moment = { ...gap.close.at, receivedAt: gap.close.at.receivedAt + 1 };
+  const range = { fromSlot: gap.close.fromSlot, toSlot: gap.untilSlot, via: gap.close.via };
+  return {
+    kind: 'market', id: `fill:${gap.stream}:close:${n}`, moment,
+    key: `coverage:${gap.stream}:${complete ? 'resume' : 'gap'}`,
+    value: { value: complete ? range : { ...range, reason: 'trade fill incomplete' }, source: 'worker', backfilled: true, seq: n },
+  };
+};
 
 export const fillTradeGaps = async (o: FillOptions): Promise<{ readonly fills: readonly GapFill[]; readonly creditsUsed: number }> => {
   // Positions first, then candidates; oldest gap first within each.
@@ -94,14 +97,15 @@ export const fillTradeGaps = async (o: FillOptions): Promise<{ readonly fills: r
   for (const [i, gap] of order.entries()) {
     const started = o.timers.now();
     const last = gap.untilSlot - 1n;
+    const first = gap.close.fromSlot !== null && gap.close.fromSlot < gap.fromSlot ? gap.close.fromSlot : gap.fromSlot;
     let r: BackfillResult | null = null;
     let stoppedBy: GapFill['report']['stoppedBy'];
-    if (gap.fromSlot > last) stoppedBy = 'empty'; // nothing between the saved state and the live start
+    if (first > last) stoppedBy = 'empty'; // nothing between the saved state and the live start
     else if (spent >= o.creditCap) stoppedBy = 'skipped-no-budget';
     else {
       r = await backfillAddress({
         rpc: o.rpc, timers: o.timers, provider: o.provider, creditCap: o.creditCap - spent, ...(o.retry ? { retry: o.retry } : {}),
-        afterSlot: gap.fromSlot - 1n, untilSlot: last, address: gap.pool, priority: gap.kind === 'position' ? P1 : P3,
+        afterSlot: first - 1n, untilSlot: last, address: gap.pool, priority: gap.kind === 'position' ? P1 : P3,
         accept: (rec, rank, seq) => {
           const frame: Frame = {
             seq, receivedAt: (rec.blockTime ?? 0) * SECOND_MS, source: o.provider as Source, backfilled: true,

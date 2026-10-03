@@ -62,12 +62,12 @@ const gapOf = (pool: string, over: Partial<TradeGap> = {}): TradeGap => ({
 const QVC_HISTORY = [...newestFirst(QVC_TXS.map((t) => sig(t))), OLDER(DOWN_FROM - 5n)];
 
 /** The saved coverage of a pool stream, the fill's facts and the restarted watch's start, through an as-of store. */
-const covered = (stream: string, fill: readonly MarketEvent[], live: Moment = LIVE) => {
+const covered = (stream: string, fill: readonly MarketEvent[], live: Moment = LIVE, savedGap: { fromSlot: bigint; at: Moment } = { fromSlot: DOWN_FROM, at: { slot: DOWN_FROM, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS } }) => {
   const wrapped = (value: Record<string, unknown>) => ({ value, source: 'worker', backfilled: false, seq: 1 });
   const via = `logs:${stream.slice('trades:'.length)}`;
   const events: MarketEvent[] = [
     { kind: 'market', id: 'saved-start', moment: { slot: 452_000_000n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS - 2 * DAY_MS }, key: `coverage:${stream}:start`, value: wrapped({ fromSlot: 452_000_000n, via }) },
-    { kind: 'market', id: 'saved-gap', moment: { slot: DOWN_FROM, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS }, key: `coverage:${stream}:gap`, value: wrapped({ fromSlot: DOWN_FROM, toSlot: null, reason: 'shutdown', via }) },
+    { kind: 'market', id: 'zz-saved-gap', moment: savedGap.at, key: `coverage:${stream}:gap`, value: wrapped({ fromSlot: savedGap.fromSlot, toSlot: null, reason: 'shutdown', via }) },
     ...fill,
     { kind: 'market', id: 'restart-start', moment: live, key: `coverage:${stream}:start`, value: wrapped({ fromSlot: UNTIL, via }) },
   ];
@@ -173,12 +173,37 @@ describe('FILL-2 after a restart', () => {
     void P3;
   });
 
+  it('reads from the saved gap\'s start when it is older than fromSlot; never restores an unread slot', async () => {
+    const later = 452_941_180n; // after the older trade at 452941172
+    const rpc = fakeRpc(QVC_HISTORY);
+    const { fills } = await fillTradeGaps({ rpc, timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { fromSlot: later })], asOf: ASOF });
+    expect(fills[0]!.complete).toBe(true);
+    expect(fills[0]!.events.map((e) => e.moment.slot)).toContain(452_941_172n);
+    expect(covered(`trades:${QVC}`, fills[0]!.coverage).covered).toBe(true);
+    const short = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY.filter((x) => x.slot > later)), timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { fromSlot: later })], asOf: ASOF });
+    expect(short.fills[0]!.complete).toBe(false);
+    expect(covered(`trades:${QVC}`, short.fills[0]!.coverage).covered).toBe(false);
+    // An "empty" gap whose saved gap starts by untilSlot is read, not skipped.
+    const e = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { fromSlot: UNTIL + 3n })], asOf: ASOF });
+    expect(e.fills[0]!.report.stoppedBy).toBe('done');
+  });
+
+  it('a live start below the saved gap\'s report: fail safe without close.at, closed after the gap with it', async () => {
+    const live: Moment = { ...LIVE, slot: DOWN_FROM - 1n, receivedAt: DOWN_MS - 1 };
+    const without = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { liveStart: live })], asOf: ASOF });
+    expect(covered(`trades:${QVC}`, without.fills[0]!.coverage, live).covered).toBe(false);
+    const at: Moment = { slot: DOWN_FROM, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS };
+    const withAt = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { liveStart: live, close: { via: `logs:${QVC}`, fromSlot: DOWN_FROM, at } })], asOf: ASOF });
+    expect(compareEvents(withAt.fills[0]!.coverage[0]!, { moment: at, id: 'zz' })).toBeGreaterThan(0);
+    expect(covered(`trades:${QVC}`, withAt.fills[0]!.coverage, live).covered).toBe(true);
+  });
+
   it('a gap with nothing between the saved state and the live start is empty and complete, with no call', async () => {
     const rpc = fakeRpc(QVC_HISTORY);
-    const { fills } = await fillTradeGaps({ rpc, timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { fromSlot: UNTIL })], asOf: ASOF });
+    const { fills } = await fillTradeGaps({ rpc, timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { fromSlot: UNTIL, close: { via: `logs:${QVC}`, fromSlot: UNTIL } })], asOf: ASOF });
     expect(fills[0]).toMatchObject({ complete: true, events: [], report: { stoppedBy: 'empty' } });
     expect(rpc.priorities).toEqual([]);
-    expect(covered(`trades:${QVC}`, fills[0]!.coverage).covered).toBe(true);
+    expect(covered(`trades:${QVC}`, fills[0]!.coverage, LIVE, { fromSlot: UNTIL, at: { slot: UNTIL - 1n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS } }).covered).toBe(true);
   });
 });
 
