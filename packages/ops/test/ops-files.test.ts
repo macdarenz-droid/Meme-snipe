@@ -201,6 +201,13 @@ describe('deploy code', () => {
   }, 30_000);
 });
 
+describe('heartbeat signers', () => {
+  it('sign timestamp, method, path and body, like the watchdog verifies', () => {
+    expect(read('ops/host/files/opt/zeroed/stub/worker.mjs')).toContain('.update(`${t}\\nPOST\\n/heartbeat\\n${body}`)');
+    expect(read('ops/host/files/usr/local/sbin/zeroed-resume')).toContain('.update(`${t}\\nPOST\\n/resume\\n${body}`)');
+  });
+});
+
 describe('watchdog tooling', () => {
   it('pins wrangler exactly, locks every package with an integrity hash, and installs without scripts', () => {
     const pkg = JSON.parse(read('ops/watchdog/deploy/package.json')) as { devDependencies: Record<string, string> };

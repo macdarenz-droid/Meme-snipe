@@ -397,7 +397,7 @@ scan "keys in the repo" KEYS "$ROOT/ops" "$ROOT/packages/ops" "$ROOT/.github"
 # Deploy codes: shown on the console by design (the owner reads them there), nowhere else.
 NONCONSOLE=("$LOGS"/*.txt "$LOGS"/*.json "$LOGS"/*.log)
 scan "deploy codes outside the console" CODES "${NONCONSOLE[@]}" "$STATE/gh-calls.log" "$E2E/fs" "$ROOT/ops" "$ROOT/.github"
-pass "secret scan: none of ${#KEYS[@]} test values (4 pairing, 4 rotation, the chat id, Cloudflare token, heartbeat and webhook keys) in any log, console output, Telegram text, journal, container disk or the repo; none of ${#CODES[@]} deploy codes outside the console"
+pass "secret scan: none of ${#KEYS[@]} test values (4 pairing, 4 rotation, the chat id, Cloudflare token, heartbeat and webhook keys) in any log, console output, Telegram text, journal, container disk or the repo; none of ${#CODES[@]} deploy and backup codes outside the console"
 
 echo
 echo "All checks passed. Logs: $LOGS"

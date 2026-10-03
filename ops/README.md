@@ -70,9 +70,15 @@ The worker reconciles before every start. Residual risk: write access to the rep
 
 ## Backups
 
-Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key (an owner key can be added in `/etc/zeroed/backup-recipients`). The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
-`zeroed-restore-drill /etc/zeroed/age/host.key` restores the newest backup into a scratch directory and prints PASS once the manifest, the integrity check and the tables all match. It never touches the live files.
+**Off-server copy (free, no R2).** Once, at the console, run `zeroed-backup-code`. It shows a 6-word backup code one time; write it down. Only its public half (an age recipient, derived with the same scrypt step as the deploy code but a different salt) stays on the server.
+
+Every day at about 03:20 Melbourne time, `zeroed-backup-offsite` sends the newest backup as a silent Telegram document to the paired chat. Telegram accepts files up to 50 MB. The copy opens only with the words.
+
+To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.age | tar -x`.
+
+`zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It prints PASS once the manifest, the integrity check and the tables all match, and never touches the live files.
 
 To restore for real:
 1. `systemctl stop zeroed-worker`
@@ -88,7 +94,7 @@ To restore for real:
 - the pause flag;
 - the lease (with a fencing epoch).
 
-The worker posts an HMAC-signed heartbeat (`x-zeroed-signature: t=…,v1=…`, replays refused) every 20 s. That heartbeat also carries the paired Telegram chat, which is the only place the watchdog learns it.
+The worker posts an HMAC-signed heartbeat every 20 s. The header is `x-zeroed-signature: t=…,v1=…`, and the HMAC covers the timestamp, method, path and body, so a signature is valid for one route only. Heartbeats must be later in time than the last one; `/resume` is single use. That heartbeat also carries the paired Telegram chat, which is the only place the watchdog learns it.
 
 Checks:
 - heartbeat older than 90 s;
@@ -99,16 +105,16 @@ Checks:
 - SOL reserve below the floor;
 - signer unreachable.
 
-Alerts go to Telegram once, repeat every 5 minutes while active, and send a "cleared" line.
+Alerts go to Telegram once, repeat every 5 minutes during the first hour and hourly after that, and always send a "cleared" line. Chain lookups are bounded (5 s), so a hung RPC never delays the heartbeat check.
 
 Telegram commands: only `/pause` and `/status`, only from the paired chat, only with the webhook secret. `/pause` stops new entries and never stops exits. It is cleared only from the console (`zeroed-resume`, signed with the heartbeat key).
 
-The Deploy workflow deploys it only together with a key handoff, so the server and the watchdog always get the same fresh heartbeat key:
+The Deploy workflow deploys it only together with a key handoff, so the server and the watchdog always get the same fresh heartbeat key. If the account has no workers.dev subdomain yet, Deploy registers one (`zeroed-` plus random hex) through the Cloudflare API. That needs Account → Workers Scripts → Edit, which the "Edit Cloudflare Workers" template includes. The steps:
 - wrangler 4.141.0 from `ops/watchdog/deploy`, locked by its `package-lock.json`, installed with `npm ci --ignore-scripts`;
 - it discovers the Worker's address from wrangler's output and sends it to the server in the encrypted bundle;
 - it sets the Worker's secrets and the Telegram webhook.
 
-To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in GitHub:
+To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in GitHub (on a new server, the first setup already covers it):
 1. Paste the install line above again on the console. This updates the server's scripts and keeps everything.
 2. Run `zeroed-new-deploy-code`.
 3. Put the 6 words in `DEPLOY_CODE`.
@@ -116,7 +122,11 @@ To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in G
 
 If the chat is re-paired later (`zeroed-pair-code`), the server turns the webhook off to read `/pair`. Run Deploy again afterwards to turn it back on.
 
-Not yet: off-server backup copies (they need an R2 token) and the owner's own backup key.
+## Worker contract (for WORKER-1)
+
+- Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
+- Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
+- Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.
 
 ## Test it
 
