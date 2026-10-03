@@ -258,7 +258,8 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
     const value = merged.length === 0
       ? { fromSlot: close.fromSlot, toSlot: o.untilSlot }
       : { fromSlot: close.fromSlot, toSlot: o.untilSlot, reason: `downtime fill incomplete (${merged.length} gaps)` };
-    coverage.push({
+    // A close that would be dated after asOf (close.at exactly at asOf) is not made: the saved gap stays open (fail safe).
+    if (compareMoments(closeMoment, o.asOf) <= 0) coverage.push({
       kind: 'market', id: `${SEED_VIA}:coverage:close:${n}`, moment: closeMoment, key: `coverage:creates:${merged.length === 0 ? 'resume' : 'gap'}`,
       value: { value: { ...value, via: close.via }, source: 'worker', backfilled: true, seq: n },
     });
