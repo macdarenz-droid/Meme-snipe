@@ -2,7 +2,7 @@ import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { checkStartHealth, segmentAllowed, type Health } from '../src/contract.ts';
 import { item4 } from '../src/item4.ts';
-import { OPS_OK } from './fixtures.ts';
+import { fullDrills, OPS_OK } from './fixtures.ts';
 import { checkJournal } from '../src/journal.ts';
 import { makePlan } from '../src/plan.ts';
 import { buildReport, reportMarkdown, uptime, type RunMeta, type Sample } from '../src/report.ts';
@@ -85,8 +85,7 @@ describe('report', () => {
   });
   const meta: RunMeta = { runId: 'r', label: 'rehearsal', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
   const journal = checkJournal(good.join('\n'));
-  const drills = [1, 2, 3].map((i) => ({ id: `restart-${i}`, kind: 'restart' as const, plannedAt: 0, at: 0, pass: true, midTrade: true, recoveredMs: 1, notes: [] }))
-    .concat([{ id: 'feed-f', kind: 'feed' as never, plannedAt: 0, at: 0, pass: true, midTrade: undefined as never, recoveredMs: 1, notes: [], feed: 'f' } as never]);
+  const drills = fullDrills(meta.plan);
   const samples = Array.from({ length: 11 }, (_, i) => sample(i * 10, true));
   it('passes every check on a clean run and labels the rehearsal', () => {
     const r = buildReport(meta, samples, 10, 100, journal, drills, [], item4([], 'rehearsal', false), OPS_OK);
@@ -100,7 +99,7 @@ describe('report', () => {
     ['stub worker', { samples: samples.map((s) => ({ ...s, stub: true })) }, 'real_worker'],
     ['recorder off', { samples: samples.map((s, i) => (i === 3 ? { ...s, recorder: false } : s)) }, 'recorder_and_simulation_from_start'],
     ['commit changed mid-run', { samples: samples.map((s, i) => (i > 5 ? { ...s, git_sha: 'beef' } : s)) }, 'one_commit'],
-    ['only 2 mid-trade restarts', { drills: drills.map((d, i) => (i === 0 ? { ...d, midTrade: false } : d)) }, 'restart_drills'],
+    ['only 2 mid-trade crash restarts', { drills: (() => { let n = 0; return drills.map((d) => (d.cause === 'crash' && n++ < 2 ? { ...d, midTrade: false } : d)); })() }, 'restart_drills'],
     ['uptime under 99%', { samples: samples.map((s, i) => (i === 4 ? { ...s, ready: false } : s)) }, 'uptime'],
     ['memory near the limit', { samples: samples.map((s) => ({ ...s, rss_bytes: 750 * 1024 * 1024 })) }, 'memory'],
     ['run cut short', { end: 50 }, 'duration'],

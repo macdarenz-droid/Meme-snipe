@@ -1,4 +1,5 @@
 // The dry-run report: uptime, memory, journal, drills, recorded data. Pure; the runner feeds it.
+import { RESTART_CAUSES, type RestartCause } from './contract.ts';
 import type { Item4 } from './item4.ts';
 import type { JournalReport } from './journal.ts';
 import type { CoverageReport, LookupLatency, QuotaReport, Rejections } from './quota.ts';
@@ -31,6 +32,8 @@ export interface Sample {
 
 /** Unprotected exposure of a restart drill with an open position: the watchdog can alert but cannot sell. */
 export interface Exposure {
+  /** `unknown`: no health reply at the window's end, so nothing can be said; it fails like an unmeasured one. */
+  readonly status?: 'measured' | 'unmeasured' | 'unknown';
   /** Kill → the new boot is exit capable; null when it never got there within the recovery limit. */
   readonly duration_ms: number | null;
   readonly reconciled_ms: number | null;
@@ -46,9 +49,30 @@ export interface Exposure {
   readonly move_source: 'marks' | 'chain';
 }
 
+export interface RecoveredState {
+  readonly source: string | null;
+  readonly expected_pending_exits: readonly string[];
+  readonly recovered_pending_exits: readonly string[];
+  /** Expected but not recovered: pending exits and positions a restart lost. */
+  readonly missing: readonly string[];
+  /** Chain rebuild: positions open at the kill that the chain could not give back (paper positions are not on chain). */
+  readonly lost: readonly string[];
+  readonly state_ok: boolean;
+  readonly universe_ok: boolean;
+  readonly notes: readonly string[];
+}
+
 export interface DrillOutcome {
   readonly id: string;
-  readonly kind: 'restart' | 'feed' | 'handover';
+  readonly kind: 'restart' | 'feed' | 'handover' | 'rpc';
+  readonly cause?: RestartCause;
+  /** Recovery as "reconciled and able to exit", ms after the kill (rpc: after the providers came back). */
+  readonly recovery?: { readonly reconciled_ms: number | null; readonly exit_capable_ms: number | null; readonly clock: 'monotonic' | 'wall' };
+  readonly state?: RecoveredState;
+  /** VPS host loss: the restore drill ran beside the qualifying run, not in it. */
+  readonly off_run?: boolean;
+  /** Not run here (VPS chain rebuild); proven in the rehearsal. */
+  readonly skipped?: boolean;
   readonly plannedAt: number | null;
   readonly at: number;
   readonly pass: boolean;
@@ -96,6 +120,7 @@ export interface Report {
   readonly stub: boolean;
   readonly journal: JournalReport;
   readonly drills: readonly DrillOutcome[];
+  readonly recovery_by_cause: Readonly<Record<string, CauseSummary>>;
   readonly drills_summary: {
     readonly restarts_mid_trade_passed: number;
     readonly feeds_planned: readonly string[];
@@ -109,6 +134,17 @@ export interface Report {
   /** §15 item 4, judged separately from the same run. */
   readonly item4: Item4;
   readonly ops: Ops;
+  readonly exposure: { readonly drills: number; readonly worst_duration_ms: number | null; readonly worst_move_bps: number | null };
+}
+
+export interface CauseSummary {
+  readonly planned: number;
+  readonly drills: number;
+  readonly passed: number;
+  readonly mid_trade: number;
+  readonly off_run: number;
+  readonly skipped: number;
+  readonly exit_capable_ms: { readonly median: number | null; readonly worst: number | null };
   readonly exposure: { readonly drills: number; readonly worst_duration_ms: number | null; readonly worst_move_bps: number | null };
 }
 
@@ -161,7 +197,10 @@ export const buildReport = (
   const firstUp = samples.find((s) => s.up);
   const upSamples = samples.filter((s) => s.up);
   const stub = upSamples.some((s) => s.stub);
-  const restartsMidTrade = drills.filter((d) => d.kind === 'restart' && d.pass && d.midTrade === true).length;
+  // The accept's "kill mid-trade at least 3 times" counts process crashes; the other causes are counted per cause.
+  const restartsMidTrade = drills.filter((d) => d.kind === 'restart' && (d.cause ?? 'crash') === 'crash' && d.pass && d.midTrade === true).length;
+  const restarts = drills.filter((d) => d.kind === 'restart');
+  const byCause = recoveryByCause(meta, drills);
   const feedsPlanned = meta.plan.flatMap((d) => (d.kind === 'feed' ? [d.feed] : []));
   const feedsPassed = [...new Set(drills.flatMap((d) => (d.kind === 'feed' && d.pass && d.feed !== undefined ? [d.feed] : [])))].sort();
   const durationMs = endedAt - meta.startedAt;
@@ -186,14 +225,21 @@ export const buildReport = (
     exposure_measured: drills.every(
       (d) =>
         d.exposure === undefined ||
-        (d.exposure.duration_ms !== null &&
+        (d.exposure.status !== 'unknown' &&
+          d.exposure.duration_ms !== null &&
           d.exposure.worst_move_bps !== null &&
           // Exposed with no trade ids, or fewer ids than intents, cannot be checked: it fails, never passes vacuously.
           d.exposure.trades.length > 0 &&
           d.exposure.trades_complete &&
-          (stub || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
+          // A chain rebuild cannot rebuild a paper position's path: those trades are reported lost instead (state.lost).
+          (stub || d.cause === 'chain-rebuild' || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
     ),
     coverage_valid: ops.coverage.problems.length === 0,
+    // RUN-1d: every planned cause drilled and passed (a crash, a reboot, a host loss, a chain rebuild, RPC loss).
+    drills_by_cause: [...RESTART_CAUSES, 'rpc'].every((c) => byCause[c]!.planned > 0 && byCause[c]!.passed > 0),
+    // Nothing a restart had to keep was lost, and every restored position kept its universe (CFG-2).
+    recovered_state: restarts.every((d) => d.skipped === true || d.off_run === true || d.state?.state_ok === true),
+    restored_universe_kept: restarts.every((d) => d.skipped === true || d.off_run === true || d.state?.universe_ok === true),
   };
   const exposed = drills.flatMap((d) => (d.exposure ? [d.exposure] : []));
   const maxOf = (xs: readonly (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);
@@ -218,6 +264,7 @@ export const buildReport = (
     stub,
     journal,
     drills,
+    recovery_by_cause: byCause,
     drills_summary: {
       restarts_mid_trade_passed: restartsMidTrade,
       feeds_planned: feedsPlanned,
@@ -231,6 +278,36 @@ export const buildReport = (
     ops,
     exposure: { drills: exposed.length, worst_duration_ms: maxOf(exposed.map((e) => e.duration_ms)), worst_move_bps: maxOf(exposed.map((e) => e.worst_move_bps)) },
   };
+};
+
+const median = (xs: readonly number[]): number | null => {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m]! : Math.round((s[m - 1]! + s[m]!) / 2);
+};
+
+/** Per restart cause and for RPC loss: how often it was drilled, and how long it took to be able to exit again. */
+export const recoveryByCause = (meta: RunMeta, drills: readonly DrillOutcome[]): Record<string, CauseSummary> => {
+  const out: Record<string, CauseSummary> = {};
+  for (const c of [...RESTART_CAUSES, 'rpc'] as const) {
+    const planned = meta.plan.filter((d) => (c === 'rpc' ? d.kind === 'rpc' : d.kind === 'restart' && (d.cause ?? 'crash') === c)).length;
+    const ds = drills.filter((d) => (c === 'rpc' ? d.kind === 'rpc' : d.kind === 'restart' && (d.cause ?? 'crash') === c));
+    const exits = ds.flatMap((d) => (d.recovery?.exit_capable_ms != null ? [Math.round(d.recovery.exit_capable_ms)] : []));
+    const ex = ds.flatMap((d) => (d.exposure ? [d.exposure] : []));
+    const worst = (xs: (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);
+    out[c] = {
+      planned,
+      drills: ds.length,
+      passed: ds.filter((d) => d.pass).length,
+      mid_trade: ds.filter((d) => d.midTrade === true).length,
+      off_run: ds.filter((d) => d.off_run === true).length,
+      skipped: ds.filter((d) => d.skipped === true).length,
+      exit_capable_ms: { median: median(exits), worst: exits.length ? Math.max(...exits) : null },
+      exposure: { drills: ex.length, worst_duration_ms: worst(ex.map((e) => e.duration_ms)), worst_move_bps: worst(ex.map((e) => e.worst_move_bps)) },
+    };
+  }
+  return out;
 };
 
 const round = (x: number, d: number): number => Math.round(x * 10 ** d) / 10 ** d;
@@ -271,6 +348,20 @@ export const reportMarkdown = (r: Report): string => {
         } | ${yes(d.pass)} | ${d.notes.join('; ').replace(/\|/g, '/')} |`,
     ),
   ];
+  const sec = (ms: number | null): string => (ms === null ? '-' : `${(ms / 1000).toFixed(1)} s`);
+  lines.push(
+    '',
+    '## Recovery by cause',
+    '',
+    'Recovered means reconciled and able to exit, timed from the kill on the monotonic clock (a host reboot is timed on the wall clock).',
+    '',
+    '| Cause | Planned | Drilled | Passed | Mid-trade | Exit capable, median | Exit capable, worst | Exposed | Longest exposure | Worst move |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...Object.entries(r.recovery_by_cause).map(
+      ([c, v]) =>
+        `| ${c}${v.off_run ? ' (off the qualifying run)' : ''}${v.skipped ? ' (rehearsal only)' : ''} | ${v.planned} | ${v.drills} | ${v.passed} | ${v.mid_trade} | ${sec(v.exit_capable_ms.median)} | ${sec(v.exit_capable_ms.worst)} | ${v.exposure.drills} | ${sec(v.exposure.worst_duration_ms)} | ${v.exposure.worst_move_bps === null ? '-' : `${v.exposure.worst_move_bps} bps`} |`,
+    ),
+  );
   const q = r.ops.quota;
   lines.push(
     '',
