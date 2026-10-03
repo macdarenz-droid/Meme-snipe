@@ -50,6 +50,8 @@ export class CurveCompleteError extends Error {
 /** Fee rates for a trade on this curve, tiered by the pre-trade market cap (pump `compute_fees`). */
 export const curveFees = (state: CurveState, ctx: CurveFeeContext): CurveFees => {
   const tier = selectFeeTier(ctx.feeTiers, marketCap(state.virtualQuoteReserves, state.virtualTokenReserves, ctx.supply));
+  // The curve charges protocol and creator only; refuse a tier with an LP rate rather than understate cost.
+  if (tier.lp !== 0) throw new RangeError(`curve fee tier has an LP rate (${tier.lp} bps) this quote does not model`);
   return { protocol: tier.protocol, creator: ctx.creatorFeeCharged ? tier.creator : (0 as Bps) };
 };
 

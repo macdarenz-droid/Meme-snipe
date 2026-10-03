@@ -62,6 +62,11 @@ describe('fee tiers', () => {
     expect(poolFees(pool, { ...poolCtx, quote: 'exotic', feeConfig: unset })).toEqual({ lp: 25, protocol: 5, creator: 0 });
   });
 
+  test('a curve tier with an LP rate is refused, not ignored', () => {
+    const withLp = [{ marketCapThreshold: 0n, fees: { lp: bps(1), protocol: bps(95), creator: bps(30) } }];
+    expect(() => curveBuyExactTokens(freshCurve, 1_000n, { ...curveCtx, feeTiers: withLp })).toThrow(RangeError);
+  });
+
   test('selectFeeTier rejects empty or unsorted tiers', () => {
     expect(() => selectFeeTier([], 0n)).toThrow(RangeError);
     const f = { lp: bps(0), protocol: bps(1), creator: bps(0) };

@@ -1,6 +1,8 @@
 // Venue-aware round-trip cost model and feasible trade size (docs/ARCHITECTURE.md, "Economics of the 20 dollar trial"):
 // expected net P&L(q) = q * (g - v) - F. Amounts are lamports unless named Usd (micro-dollars).
 // Costs round up, amounts received and caps round down.
+// Contract: an unquotable state (completed curve, effective reserve <= 0, a spend that buys nothing, a sell larger
+// than the real reserves) throws RangeError or CurveCompleteError from the quote; callers treat any throw as no trade.
 import {
   type CurveFeeContext, type CurveState, type PoolFeeContext, type PoolState,
   curveBuyExactQuoteIn, curveSell, poolBuyExactQuoteIn, poolSell,
@@ -183,11 +185,6 @@ export const roundTripImpactPpm = (quote: RoundTripQuoter, spend: bigint): bigin
   return mulDiv(r.entryImpact + r.exitImpact, PPM, r.paid, 'ceil');
 };
 
-/**
- * Largest spend in [lo, hi] whose `measure` stays at or below `limit`, or null if `lo` already exceeds it.
- * `measure` grows with size (constant-product impact does); the result is re-checked, so rounding noise can only make
- * it smaller, never unsafe.
- */
 /** Argmax of a unimodal `f` over integers in [lo, hi] (ternary search, then the best of the last few points). */
 const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint): bigint => {
   let a = lo;
@@ -202,6 +199,11 @@ const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint): bigint => {
   return best;
 };
 
+/**
+ * Largest spend in [lo, hi] whose `measure` stays at or below `limit`, or null if `lo` already exceeds it.
+ * `measure` grows with size (constant-product impact does); the result is re-checked, so rounding noise can only make
+ * it smaller, never unsafe.
+ */
 const largestWithin = (lo: bigint, hi: bigint, limit: bigint, measure: (q: bigint) => bigint): bigint | null => {
   if (measure(lo) > limit) return null;
   if (measure(hi) <= limit) return hi;
@@ -216,6 +218,7 @@ const largestWithin = (lo: bigint, hi: bigint, limit: bigint, measure: (q: bigin
 
 export type NoTradeReason =
   | 'caps-below-minimum'
+  | 'impact-above-limit'
   | 'edge-not-above-cost'
   | 'break-even-above-maximum';
 
@@ -293,7 +296,7 @@ export const feasibleSize = (input: SizeInput): SizeDecision => {
 
   // Depth from the pool itself: the largest size whose round-trip impact stays within policy.
   const impactCap = largestWithin(lo, hi, policy.maxImpactPpm, (q) => roundTripImpactPpm(quote, q));
-  if (impactCap === null) { bindingCap = 'impactLimit'; return reject('caps-below-minimum', 0n); }
+  if (impactCap === null) { bindingCap = 'impactLimit'; return reject('impact-above-limit', 0n); }
   if (impactCap < hi) { hi = impactCap; bindingCap = 'impactLimit'; maxUsdRaw = lamportsToMicroUsd(lamports(hi), solPrice, 'floor'); }
 
   const allowance = mulDiv(ROUND_TRIP_ROUNDING_LAMPORTS, PPM, lo, 'ceil');

@@ -210,6 +210,13 @@ describe.each(cases)('feasible size: %s', (_, setting, quote) => {
 });
 
 describe('size scaling', () => {
+  test('impact over the limit at the minimum size has its own reason', () => {
+    const d = feasibleSize(base({ quote: pumpSwapRoundTrip(pool, poolCtx), edgePpm: 300_000n, policy: { ...scaled.policy, maxImpactPpm: 1_000n } }, scaled));
+    expect(d.trade).toBe(false);
+    if (!d.trade) expect(d.reason).toBe('impact-above-limit');
+    expect(d.bindingCap).toBe('impactLimit');
+  });
+
   // The same pool (~78 SOL effective quote) at both settings.
   const swap = pumpSwapRoundTrip(pool, poolCtx);
 

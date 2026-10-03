@@ -66,7 +66,11 @@ export interface PoolTrade {
   /** Quote units lost to price impact against the pre-trade spot price (effective quote / base), exact. */
   readonly impact: bigint;
   readonly fees: FeeSplit;
-  /** Pool after the trade: the LP fee stays in the vault; protocol and creator fees leave it. */
+  /**
+   * Pool after the trade. The effective reserve (and every later price) is exact. The vault/virtual split assumes the
+   * LP fee stays in the vault and the protocol and creator fees leave it; some pools keep more in the vault and offset
+   * it in `virtual_quote_reserves` (seen on exotic-quote pools), so re-read the pool rather than trust the split.
+   */
   readonly after: PoolState;
 }
 
