@@ -136,3 +136,22 @@ describe('report', () => {
     expect(md(many(20, () => sim(0)))).not.toContain('Item 4: **pass**');
   });
 });
+
+describe('item 4 mechanics diagnostics (TEST-2, supervisor ruling 90fac89)', () => {
+  it('journal lines carry finalExit and simulatedSlot through to the mechanics counts', async () => {
+    const { dryRunReport } = await import('../../worker/src/dryrun/report.ts');
+    const { toRecord } = await import('../src/item4.ts');
+    const standIn = (closeOmitted: boolean) => ({ address: 'x', role: 'holder', tokenAccount: 'y', closeOmitted, closeOmittedReason: closeOmitted ? 'the holder holds 3, the position is 1' : null });
+    const lines = [
+      sim(0, { leg: 'exit', finalExit: true, simulatedSlot: '9', standIn: standIn(false) }),
+      sim(null, { leg: 'exit', finalExit: true, simulatedSlot: '9', standIn: standIn(false), outcome: 'sim-error', success: false, simulatedOut: null }),
+      sim(0, { leg: 'exit', finalExit: true, simulatedSlot: '9', standIn: standIn(true) }),
+      sim(0, { leg: 'exit', finalExit: false, simulatedSlot: '9', standIn: standIn(false) }),
+      sim(0, { leg: 'entry', finalExit: true, simulatedSlot: '9' }),
+    ];
+    const m = dryRunReport(lines.map(toRecord)).mechanics;
+    expect(m).toMatchObject({ finalExitSimulations: 3, withRealClose: 2, completeSellAndClose: 1, closeOmitted: 1 });
+    expect(m.closeOmittedReasons[0]?.reason).toBe('the holder holds 3, the position is 1');
+    expect(malformedReason(sim(0, { simulatedSlot: 9 }))).toBe('simulatedSlot is not a decimal string');
+  });
+});
