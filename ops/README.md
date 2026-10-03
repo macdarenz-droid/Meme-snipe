@@ -1,6 +1,6 @@
 # Zeroed server
 
-How the server is installed, gets its keys, pairs with Telegram, updates and is backed up (ARCHITECTURE.md §12, OPS-1a). Nobody copies a key by hand. The only things typed by hand are a 6-word code and a 6-digit code.
+How the server is installed, gets its keys, pairs with Telegram, updates and is backed up (ARCHITECTURE.md §12, OPS-1a and OPS-1b). Nobody copies a key by hand. The only things typed by hand are a 6-word code and a 6-digit code.
 
 Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 LTS x64**. Ubuntu 24.04 gets standard security updates until 2029; Debian 12 left regular security support in June 2026.
 
@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/278189e73b0b98136b725ee818fb6f5c2188d2fe/ops/install.sh -o i && echo '2e9dcd58c9cc1dd49032189c8a683a92f487e1db2145c8257f753a31f3952e02  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/947adbd63f947edb7f2272cb82f8a5ac95595faf/ops/install.sh -o i && echo '78fa8520728906a4d2dd2162a3d519e5cf30cf496f55be6d9a3f2e6b345acb14  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/278189e7
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `2e9dcd58c9cc1dd49032189c8a683a92f487e1db2145c8257f753a31f3952e02`
+SHA-256 of `install.sh`: `78fa8520728906a4d2dd2162a3d519e5cf30cf496f55be6d9a3f2e6b345acb14`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -70,9 +70,15 @@ The worker reconciles before every start. Residual risk: write access to the rep
 
 ## Backups
 
-Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key (an owner key can be added in `/etc/zeroed/backup-recipients`). The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
-`zeroed-restore-drill /etc/zeroed/age/host.key` restores the newest backup into a scratch directory and prints PASS once the manifest, the integrity check and the tables all match. It never touches the live files.
+**Off-server copy (free, no R2): off until the owner approves.** Sending backups to Telegram is sending data to a third party, which needs the owner's approval (CLAUDE.md). The timer is installed but disabled, and `zeroed-backup-offsite` refuses to send while `ops/host-config.json` says `"offsite_backup": false` (the default). Switching it on is a reviewed commit that sets it to `true`; the next code update (`zeroed-update`) applies it.
+
+Once on: run `zeroed-backup-code` once at the console. It shows a 6-word backup code one time; write it down. Only its public half (an age recipient, derived with the same scrypt step as the deploy code but a different salt) stays on the server. Every day at about 03:20 Melbourne time the newest backup is re-encrypted to that recipient alone, so nothing on the server, the host key included, can open the copy. It is then sent as a silent Telegram document to the paired chat (bots may send up to 50 MB).
+
+To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.age | tar -x`.
+
+`zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It prints PASS once the manifest, the integrity check and the tables all match, and never touches the live files.
 
 To restore for real:
 1. `systemctl stop zeroed-worker`
@@ -80,9 +86,47 @@ To restore for real:
 3. `chown -R zeroed-worker: /var/lib/zeroed`
 4. `systemctl start zeroed-worker` (it reconciles first).
 
-## Later (OPS-1b)
+## Watchdog (OPS-1b)
 
-The Cloudflare watchdog (heartbeat, alerts, `/pause` and `/status`), off-server backup copies, and the owner's own backup key.
+`packages/ops` is a Cloudflare Worker on the free `workers.dev` address (Workers Free, cron triggers, SQLite-backed Durable Objects; no paid feature and no domain). It has a cron every minute and one Durable Object holding:
+- the last heartbeat;
+- the active alerts;
+- the pause flag;
+- the lease (with a fencing epoch).
+
+The worker posts an HMAC-signed heartbeat every 20 s. The header is `x-zeroed-signature: t=…,v1=…`, and the HMAC covers the timestamp, method, path and body, so a signature is valid for one route only. Heartbeats must be later in time than the last one; `/resume` is single use. If the server's clock steps back (for example after an NTP correction), its heartbeats get HTTP 409 until its time passes the last accepted one; that shows as a stale-heartbeat alert and clears on its own. That heartbeat also carries the paired Telegram chat, which is the only place the watchdog learns it.
+
+Checks:
+- heartbeat older than 90 s;
+- slot lag against a different RPC;
+- on-chain position versus reported;
+- stop breached with no exit attempt in 60 s;
+- unresolved intents past blockhash expiry;
+- SOL reserve below the floor;
+- signer unreachable.
+
+Alerts go to Telegram once, repeat every 5 minutes during the first hour and hourly after that, and always send a "cleared" line. Chain lookups are bounded (5 s), so a hung RPC never delays the heartbeat check.
+
+Telegram commands: only `/pause` and `/status`, only from the paired chat, only with the webhook secret. `/pause` stops new entries and never stops exits. It is cleared only from the console (`zeroed-resume`, signed with the heartbeat key).
+
+The Deploy workflow deploys it only together with a key handoff, so the server and the watchdog always get the same fresh heartbeat key. If the account has no workers.dev subdomain yet, Deploy registers one (`zeroed-` plus random hex) through the Cloudflare API. That needs Account → Workers Scripts → Edit, which the "Edit Cloudflare Workers" template includes. The steps:
+- wrangler 4.141.0 from `ops/watchdog/deploy`, locked by its `package-lock.json`, installed with `npm ci --ignore-scripts`;
+- it discovers the Worker's address from wrangler's output and sends it to the server in the encrypted bundle;
+- it sets the Worker's secrets and the Telegram webhook.
+
+To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in GitHub (on a new server, the first setup already covers it):
+1. Paste the install line above again on the console. This updates the server's scripts and keeps everything.
+2. Run `zeroed-new-deploy-code`.
+3. Put the 6 words in `DEPLOY_CODE`.
+4. Run Deploy.
+
+If the chat is re-paired later (`zeroed-pair-code`), the server turns the webhook off to read `/pair`. Run Deploy again afterwards to turn it back on.
+
+## Worker contract (for WORKER-1)
+
+- Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
+- Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
+- Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.
 
 ## Test it
 

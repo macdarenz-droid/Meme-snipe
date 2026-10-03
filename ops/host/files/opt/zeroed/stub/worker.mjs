@@ -61,6 +61,7 @@ function signerStatus() {
 }
 
 let seq = 0;
+const ownerChat = loaded.includes('telegram_chat_id') ? readFileSync(join(credDir, 'telegram_chat_id'), 'utf8').trim() : null;
 let paused = false;
 // The heartbeat key arrives with the watchdog (OPS-1b); until then no heartbeat is sent.
 const key = credDir && existsSync(join(credDir, 'heartbeat_hmac_key')) ? readFileSync(join(credDir, 'heartbeat_hmac_key'), 'utf8') : '';
@@ -85,9 +86,11 @@ async function beat() {
     lease_epoch: null,
     sol_reserve: null,
     paused,
+    owner_chat_id: ownerChat,
   });
   const t = Math.floor(Date.now() / 1000);
-  const sig = createHmac('sha256', key).update(`${t}.${body}`).digest('hex');
+  // Signed text: timestamp, method, path, body (the watchdog refuses a signature on any other route).
+  const sig = createHmac('sha256', key).update(`${t}\nPOST\n/heartbeat\n${body}`).digest('hex');
   try {
     const res = await fetch(`${watchdog}/heartbeat`, {
       method: 'POST',
@@ -96,10 +99,11 @@ async function beat() {
       signal: AbortSignal.timeout(10_000),
     });
     const reply = await res.json().catch(() => ({}));
-    if (res.ok && reply.paused === true && !paused) {
-      paused = true;
-      event('pause', 'owner /pause via watchdog');
-      console.log('Entries paused by the owner (watchdog). Exits keep running.');
+    // Worker contract (ops/README.md): apply the watchdog's flag both ways, so the state and the message agree.
+    if (res.ok && typeof reply.paused === 'boolean' && reply.paused !== paused) {
+      paused = reply.paused;
+      event(paused ? 'pause' : 'resume', paused ? 'owner /pause via watchdog' : 'cleared from the host');
+      console.log(paused ? 'Entries paused by the owner (watchdog). Exits keep running.' : 'Entries allowed again (pause cleared from the host).');
     }
     if (!res.ok) console.log(`Heartbeat refused: HTTP ${res.status}`);
   } catch (e) {
