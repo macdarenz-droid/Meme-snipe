@@ -304,6 +304,20 @@ describe('SEED-1 RPC backfill', () => {
     expect(seed.report.gaps.at(-1)!.atMs).toBe(ASOF.receivedAt); // nothing seen: dated at the process start
   });
 
+  it('an abort (the worker stopped waiting for the seed) stops the run before its next call: nothing is fetched after it', async () => {
+    const ctl = new AbortController();
+    const inner = fakeRpc(SIGS, byFixture);
+    // The worker's seed wait runs out while the first page is in flight.
+    const rpc: SeedRpc = { ...inner, getSignaturesForAddress: async (...a) => inner.getSignaturesForAddress(...a).finally(() => ctl.abort()) };
+    const seed = await buildSeed(seedOpts({ rpc: { rpc, timers: instantTimers(), creditCap: 1_000, provider: 'helius', signal: ctl.signal } }));
+    expect(inner.pages).toHaveLength(1);
+    expect(inner.fetched).toEqual([]);
+    expect(seed.report.rpc?.result).toMatchObject({ stoppedBy: 'aborted', creates: 0 });
+    // Everything from the signature whose transaction was not fetched down is a gap.
+    const newest = CREATES.map(sigOf).sort((x, y) => (x.slot > y.slot ? -1 : 1))[0]!;
+    expect(seed.report.gaps.at(-1)).toMatchObject({ fromSlot: 452_702_901n, toSlot: newest.slot });
+  });
+
   it('budget exhaustion: the credit cap stops the run newest first, and the unfetched old end is a gap', async () => {
     const seed = await buildSeed(seedOpts({ creditCap: 3 })); // 1 page + 2 transactions
     const sorted = CREATES.map(sigOf).sort((a, b) => (a.slot > b.slot ? -1 : 1));
@@ -414,7 +428,8 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
   const coveredAfter = (fill: readonly MarketEvent[], restartAt: Moment = { ...ASOF }, savedGap?: { fromSlot: bigint; at: Moment }) => {
     const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: Number.MIN_SAFE_INTEGER });
     const store = new AsOfStore(clock);
-    const restart: MarketEvent = { kind: 'market', id: 'restart-start', moment: restartAt, key: 'coverage:creates:start', value: wrapped({ fromSlot: UNTIL, via: VIA }) };
+    // The feed's own id for an off-chain fact (`<key>#<seq>`): order on a tie must come from the moment, not the id.
+    const restart: MarketEvent = { kind: 'market', id: 'coverage:creates:start#99', moment: restartAt, key: 'coverage:creates:start', value: wrapped({ fromSlot: UNTIL, via: VIA }) };
     const base = savedGap === undefined ? saved : [saved[0]!, { ...saved[1]!, id: 'zz-saved-gap' /* sorts after the fill's ids: order must come from the moment */, moment: savedGap.at, value: wrapped({ fromSlot: savedGap.fromSlot, toSlot: null, reason: 'shutdown', via: VIA }) }];
     for (const e of [...base, ...fill, restart].sort(compareEvents)) {
       clock.advanceTo(e.moment);
@@ -454,7 +469,7 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
       const seed = await buildSeed(fillOpts({ liveStart }));
       const close = seed.coverage.at(-1)!;
       expect(close.key).toBe('coverage:creates:resume');
-      expect(compareEvents(close, { moment: liveStart, id: 'restart-start' })).toBeLessThan(0);
+      expect(compareEvents(close, { moment: liveStart, id: 'coverage:creates:start#99' })).toBeLessThan(0);
       expect(coveredAfter(seed.coverage, liveStart).covered).toBe(true);
     }
   });

@@ -91,7 +91,7 @@ export interface SeedReport {
     readonly estimatedCredits: number | null;
     readonly creditCap: number;
     readonly fitsCap: boolean | null;
-    readonly result: Omit<BackfillResult, 'creates' | 'gaps'> & { readonly creates: number };
+    readonly result: Omit<BackfillResult, 'creates' | 'gaps' | 'records'> & { readonly creates: number };
   } | null;
   readonly creates: number;
   readonly gaps: readonly SeedGap[];
@@ -205,7 +205,7 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
       for (const g of r.gaps as readonly SlotGap[]) gaps.push({ fromSlot: g.fromSlot, toSlot: g.toSlot, atMs: clampMs(g.atMs), reason: g.reason });
       rpcCreates = r.creates;
       if (start === null && o.fill === undefined) start = { slot: afterSlot + 1n, ms: clampMs(r.firstMs ?? from?.fromMs ?? null) };
-      const { creates: _c, gaps: _g, ...rest } = r;
+      const { creates: _c, gaps: _g, records: _r, ...rest } = r;
       rpcReport = { fromSlot: afterSlot + 1n, estimatedCredits, creditCap: o.rpc.creditCap, fitsCap: estimatedCredits === null ? null : estimatedCredits <= o.rpc.creditCap, result: { ...rest, creates: r.creates.length } };
     }
   } else if (afterSlot === null && o.rpc !== undefined && o.days.length === 0) {
