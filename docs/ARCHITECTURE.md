@@ -512,6 +512,8 @@ Persistent shell: **Home, Snipe, Wallet**; a clear Paper/Live label; session sta
 
 Honest numbers: until a statistic has its sample (§14), show "Not enough trades" instead. Never show an uncalibrated confidence.
 
+Worker API contract (UI-2): `apps/web/src/api/contract.ts`. Money travels as decimal strings in US dollars (at most 6 places) and is summed as bigint micro-dollars; every response and record carries its mode (backtest, paper or live), and the app rejects any response that mixes modes. The Snipe screen has a Backtest / Paper / Live switch; statistics stay hidden below 300 backtest, 30 paper or 30 live trades, or the worker's larger requirement. Until the worker exists the screens run on fixtures (Samples screen); with no `VITE_WORKER_URL` the app shows the offline state. Backtest report file: schema version 1 in `packages/core/src/report` (types only, shared with BT-1). It covers walk-forward or research runs and has no field for the sealed holdout. The preview build reads the newest file from the `backtest` release (`latest-report.json`); the app validates it strictly and shows "No backtest yet" when it is missing or an error when it fails the check. GitHub release downloads send no CORS header, so the Android app fetches the file through Capacitor's native HTTP.
+
 Three separate actions: **Pause new entries** keeps exits running; **Close positions** requests bounded exits and reports any that do not fill; **Disable signing** blocks signatures and warns that exits can no longer run.
 
 Visible states: waiting for evidence, no eligible candidate, stale data, rate limited, unknown transaction result, exit pending, exit blocked, low fee reserve, paused, regime off.

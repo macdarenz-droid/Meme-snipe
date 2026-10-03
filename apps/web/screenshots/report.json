@@ -8,6 +8,10 @@
     "fixtures-paper-1440.png",
     "trade-detail-paper-1440.png",
     "fixtures-withdraw-paper-1440.png",
+    "decision-detail-paper-1440.png",
+    "dashboard-backtest-paper-1440.png",
+    "dashboard-live-paper-1440.png",
+    "dashboard-paper-paper-1440.png",
     "home-paper-390.png",
     "snipe-paper-390.png",
     "wallet-paper-390.png",
@@ -16,6 +20,10 @@
     "fixtures-paper-390.png",
     "trade-detail-paper-390.png",
     "fixtures-withdraw-paper-390.png",
+    "decision-detail-paper-390.png",
+    "dashboard-backtest-paper-390.png",
+    "dashboard-live-paper-390.png",
+    "dashboard-paper-paper-390.png",
     "deposit-paper-360.png",
     "withdraw-paper-360.png",
     "fixtures-withdraw-paper-360.png",
@@ -27,6 +35,10 @@
     "fixtures-black-1440.png",
     "trade-detail-black-1440.png",
     "fixtures-withdraw-black-1440.png",
+    "decision-detail-black-1440.png",
+    "dashboard-backtest-black-1440.png",
+    "dashboard-live-black-1440.png",
+    "dashboard-paper-black-1440.png",
     "home-black-390.png",
     "snipe-black-390.png",
     "wallet-black-390.png",
@@ -35,13 +47,17 @@
     "fixtures-black-390.png",
     "trade-detail-black-390.png",
     "fixtures-withdraw-black-390.png",
+    "decision-detail-black-390.png",
+    "dashboard-backtest-black-390.png",
+    "dashboard-live-black-390.png",
+    "dashboard-paper-black-390.png",
     "deposit-black-360.png",
     "withdraw-black-360.png",
     "fixtures-withdraw-black-360.png"
   ],
   "motion": {
     "reducedMotionSheetOffsetPx": 0,
-    "normalMotionSheetOffsetPx": 11.6264
+    "normalMotionSheetOffsetPx": 16.3066
   },
   "problems": []
 }
