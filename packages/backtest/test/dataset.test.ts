@@ -96,12 +96,18 @@ describe('command line on an on-disk dataset', () => {
     expect(report.trades.length).toBe(summary['trades']);
   });
 
-  test('holdout prints only the sealed hash and counts', () => {
+  test('holdout runs only when authorised, once, and prints only the sealed hash and counts', () => {
     const cli = join(import.meta.dirname, '..', 'src', 'cli.ts');
-    const stdout = execFileSync('node', [cli, 'holdout', '--dataset', dir, '--sol-usd', join(dir, 'sol.csv'), '--scenario', 'conservative', '--ledger', join(dir, 'h.sqlite')],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    const out = JSON.parse(stdout.trim()) as Record<string, unknown>;
+    const common = ['--dataset', dir, '--sol-usd', join(dir, 'sol.csv'), '--scenario', 'conservative', '--registry', join(dir, 'reg.json'), '--holdout-id', 'h1'];
+    const run = (cmd: string, ...more: string[]) => execFileSync('node', [cli, cmd, ...common, ...more], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    expect(() => run('holdout', '--ledger', join(dir, 'h0.sqlite'))).toThrow();
+    run('holdout-register');
+    const out = JSON.parse(run('holdout', '--ledger', join(dir, 'h.sqlite')).trim()) as Record<string, unknown>;
     expect(Object.keys(out).sort()).toEqual(['counts', 'ledgerHash']);
+    expect(() => run('holdout', '--ledger', join(dir, 'h2.sqlite'))).toThrow();
+    const store = JSON.parse(readFileSync(join(dir, 'reg.json'), 'utf8')) as { runs: { outcome: string }[]; registry: { entries: { seal: string }[] } };
+    expect(store.registry.entries[0]!.seal).toBe('sealed');
+    expect(store.runs.map((r) => r.outcome)).toEqual(['started', 'sealed', 'refused']);
   });
 });
 

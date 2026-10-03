@@ -3,11 +3,12 @@
 // only). Nothing else leaves this function: no exit count, fill, P&L or log line. The file is made read-only; only the
 // scoring stage opens it, once, after STATS-1's size check passes.
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, readFileSync } from 'node:fs';
-import type { RunOptions } from './run.ts';
-import { runBacktest } from './run.ts';
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { canonical } from '../../core/src/engine/index.ts';
+import { burnHoldout, createHoldoutRegistry, type HoldoutCounts, type HoldoutRegistry, registerHoldout, sealHoldout } from '../../core/src/stats/index.ts';
+import type { DatasetRow } from './dataset/rows.ts';
 import { melbourneDay } from './report.ts';
-import { type HoldoutCounts, type HoldoutRegistry, type RegistryStep, sealHoldout } from '../../core/src/stats/index.ts';
+import { type RunOptions, runBacktest, s0Config } from './run.ts';
 
 export interface SealedHoldout {
   /** sha256 of the sealed ledger file. */
@@ -15,27 +16,137 @@ export interface SealedHoldout {
   readonly counts: Readonly<Record<string, HoldoutCounts>>;
 }
 
-/** Each universe's registered holdout (STATS-1 registry) and the configuration it was registered with. */
-export interface HoldoutTargets {
-  readonly registry: HoldoutRegistry;
-  readonly byUniverse: Readonly<Record<string, { readonly holdoutId: string; readonly configId: string }>>;
+/** What a holdout run is bound to besides its options: the code it ran and the dataset it read. */
+export interface HoldoutAuthority {
+  /** The registry file (JSON): the STATS-1 registry and every run attempt, kept across processes. */
+  readonly registryPath: string;
+  readonly codeCommit: string;
+  readonly datasetId: string;
 }
 
 /**
- * Runs the holdout and seals it in the STATS-1 registry: one `sealHoldout` per universe with the file hash and that
- * universe's counts. Returns the new registry and each step's result, plus the hash and counts (nothing else).
+ * The configuration id a holdout is registered under: sha256 of the strategy's resolved configuration, the policy, the
+ * fill model (scenario and seed included), the research settings, the code commit and the dataset. Any change to one of
+ * them is a different configuration.
  */
-export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string }, targets: HoldoutTargets): SealedHoldout & { readonly registry: HoldoutRegistry; readonly steps: readonly RegistryStep[] } => {
-  const sealed = runHoldout(o);
-  let registry = targets.registry;
-  const steps: RegistryStep[] = [];
-  for (const [u, t] of Object.entries(targets.byUniverse)) {
-    const counts = sealed.counts[u] ?? { candidates: 0, entries: 0, entryDays: 0 };
-    const step = sealHoldout(registry, t.holdoutId, { configId: t.configId, ledgerHash: sealed.ledgerHash, counts });
-    registry = step.registry;
-    steps.push(step);
+export const holdoutConfigId = (o: RunOptions, a: Pick<HoldoutAuthority, 'codeCommit' | 'datasetId'>): string =>
+  createHash('sha256').update(canonical({
+    s0: s0Config(o), policy: o.policy, fills: o.fills, scenario: o.scenario, seed: o.seed, research: o.research,
+    regimeBoundaries: o.regimeBoundaries ?? [], codeCommit: a.codeCommit, datasetId: a.datasetId,
+  })).digest('hex');
+
+export interface HoldoutRunRecord {
+  readonly holdoutId: string;
+  readonly outcome: 'refused' | 'started' | 'failed' | 'sealed';
+  readonly configId: string;
+  readonly ledgerPath: string;
+  /** Wall-clock time of the record (ISO), outside the engine. */
+  readonly at: string;
+  readonly reason: string;
+}
+
+export interface HoldoutStore {
+  readonly registry: HoldoutRegistry;
+  readonly runs: readonly HoldoutRunRecord[];
+}
+
+export const readHoldoutStore = (path: string): HoldoutStore => JSON.parse(readFileSync(path, 'utf8')) as HoldoutStore;
+
+/** Written whole to a temporary file and renamed, so a crash leaves the old or the new store, never half of one. */
+export const writeHoldoutStore = (path: string, store: HoldoutStore): void => {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(store, null, 1)}\n`);
+  renameSync(tmp, path);
+};
+
+/**
+ * Registers a holdout window before anything runs: the window, and the configuration id of exactly these options under
+ * this code and dataset. Creates the registry file (with the Holm family size) if it does not exist.
+ */
+export const authoriseHoldout = (a: HoldoutAuthority, familySize: number,
+  entry: { readonly holdoutId: string; readonly universe: string; readonly fromDay: string; readonly toDay: string }, o: RunOptions): HoldoutStore => {
+  const store: HoldoutStore = existsSync(a.registryPath) ? readHoldoutStore(a.registryPath) : { registry: createHoldoutRegistry(familySize), runs: [] };
+  const next = { ...store, registry: registerHoldout(store.registry, { ...entry, configId: holdoutConfigId(o, a) }) };
+  writeHoldoutStore(a.registryPath, next);
+  return next;
+};
+
+export interface HoldoutTargets extends HoldoutAuthority {
+  /** The registered holdout id of each universe the run feeds. */
+  readonly byUniverse: Readonly<Record<string, string>>;
+  /** The run's window, UTC calendar days; it must equal the registered one, and every row must fall inside it. */
+  readonly window: { readonly fromDay: string; readonly toDay: string };
+}
+
+const utcDay = (blockTimeSeconds: number): string => new Date(blockTimeSeconds * 1000).toISOString().slice(0, 10);
+
+/**
+ * Runs an authorised holdout and seals it. Before anything runs, every universe's holdout must be registered with this
+ * exact configuration id and window, unburned and never run (no earlier start record); otherwise the attempt is
+ * refused and logged. A start record is written before the run, so a run killed mid-way spends the window. A run that
+ * fails burns its holdouts ('run-failed'). Returns only the hash and counts.
+ */
+export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string }, t: HoldoutTargets): SealedHoldout => {
+  const configId = holdoutConfigId(o, t);
+  if (!existsSync(t.registryPath)) throw new RangeError(`no holdout registry at ${t.registryPath}: holdout not registered`);
+  let store = readHoldoutStore(t.registryPath);
+  const log = (holdoutId: string, outcome: HoldoutRunRecord['outcome'], reason: string) => {
+    store = { ...store, runs: [...store.runs, { holdoutId, outcome, configId, ledgerPath: o.ledgerPath, at: new Date().toISOString(), reason }] };
+  };
+  const burnAll = (why: string) => {
+    let reg = store.registry;
+    for (const id of Object.values(t.byUniverse)) if (reg.entries.some((e) => e.holdoutId === id)) reg = burnHoldout(reg, id, 'run-failed', why).registry;
+    store = { ...store, registry: reg };
+  };
+  const refuse = (holdoutId: string, reason: string): never => {
+    log(holdoutId, 'refused', reason);
+    writeHoldoutStore(t.registryPath, store);
+    throw new RangeError(`holdout ${holdoutId}: ${reason}`);
+  };
+  for (const [u, id] of Object.entries(t.byUniverse)) {
+    const e = store.registry.entries.find((x) => x.holdoutId === id);
+    if (e === undefined) refuse(id, 'not registered');
+    else if (e.burned) refuse(id, `burned (${e.burnReason})`);
+    else if (store.runs.some((r) => r.holdoutId === id && r.outcome !== 'refused')) {
+      // A start without an end is a run that died: the window is spent.
+      if (e.seal === 'registered') burnAll(`holdout ${id} has a start record and no result`);
+      refuse(id, 'window already run');
+    } else if (e.universe !== u) refuse(id, `registered for ${e.universe}, run for ${u}`);
+    else if (e.configId !== configId) refuse(id, `configuration ${configId} is not the authorised ${e.configId}`);
+    else if (e.fromDay !== t.window.fromDay || e.toDay !== t.window.toDay) refuse(id, `window ${t.window.fromDay}..${t.window.toDay} is not the authorised ${e.fromDay}..${e.toDay}`);
   }
-  return { ...sealed, registry, steps };
+  for (const id of Object.values(t.byUniverse)) log(id, 'started', '');
+  writeHoldoutStore(t.registryPath, store);
+  // Rows outside the authorised window stop the run (and so burn the holdout).
+  const inWindow = (): Iterator<DatasetRow> => {
+    const it = o.rows();
+    return { next: () => {
+      const r = it.next();
+      if (!r.done) {
+        const d = utcDay(r.value.blockTime);
+        if (d < t.window.fromDay || d > t.window.toDay) throw new RangeError(`row at ${d} is outside the authorised window`);
+      }
+      return r;
+    } };
+  };
+  let sealed: SealedHoldout;
+  try {
+    sealed = runHoldout({ ...o, rows: inWindow });
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    burnAll(why);
+    for (const id of Object.values(t.byUniverse)) log(id, 'failed', why);
+    writeHoldoutStore(t.registryPath, store);
+    throw err;
+  }
+  for (const [u, id] of Object.entries(t.byUniverse)) {
+    const counts = sealed.counts[u] ?? { candidates: 0, entries: 0, entryDays: 0 };
+    const step = sealHoldout(store.registry, id, { configId, ledgerHash: sealed.ledgerHash, counts });
+    store = { ...store, registry: step.registry };
+    log(id, step.ok ? 'sealed' : 'failed', step.reason);
+  }
+  writeHoldoutStore(t.registryPath, store);
+  return sealed;
 };
 
 export const runHoldout = (o: RunOptions & { readonly ledgerPath: string }): SealedHoldout => {

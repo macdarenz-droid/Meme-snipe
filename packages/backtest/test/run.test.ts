@@ -5,8 +5,8 @@ import { afterAll, describe, expect, test, vi } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
-import { runAndSealHoldout, runHoldout } from '../src/holdout.ts';
-import { createHoldoutRegistry, holdoutReady, registerHoldout } from '../../core/src/stats/index.ts';
+import { authoriseHoldout, holdoutConfigId, readHoldoutStore, runAndSealHoldout, runHoldout, writeHoldoutStore } from '../src/holdout.ts';
+import { holdoutReady } from '../../core/src/stats/index.ts';
 import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
 import { buildReport } from '../src/report.ts';
 import { runBacktest, type RunOptions } from '../src/run.ts';
@@ -194,17 +194,56 @@ describe('holdout mode', () => {
     expect(statSync(path).mode & 0o777).toBe(0o400);
   });
 
+  const authority = (name: string) => ({ registryPath: join(dir, `${name}.registry.json`), codeCommit: 'test-commit', datasetId: 'sha256:test' });
+  const window = { fromDay: '2026-09-20', toDay: '2026-09-20' };
+
   test('seals in the STATS-1 registry; the size check reads the counts alone', () => {
-    let reg = createHoldoutRegistry(1);
-    reg = registerHoldout(reg, { holdoutId: 'h-u2', universe: 'U2', configId: 's0-u2', fromDay: '2026-09-20', toDay: '2026-09-20' });
-    const out = runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'holdout2.sqlite') }, { registry: reg, byUniverse: { U2: { holdoutId: 'h-u2', configId: 's0-u2' } } });
-    expect(out.steps.map((s) => s.ok)).toEqual([true]);
-    const entry = out.registry.entries[0]!;
+    const a = authority('seal');
+    authoriseHoldout(a, 1, { holdoutId: 'h-u2', universe: 'U2', ...window }, opts());
+    const out = runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'holdout2.sqlite') }, { ...a, byUniverse: { U2: 'h-u2' }, window });
+    const entry = readHoldoutStore(a.registryPath).registry.entries[0]!;
     expect(entry.seal).toBe('sealed');
+    expect(entry.configId).toBe(holdoutConfigId(opts(), a));
     expect(entry.ledgerHash).toBe(out.ledgerHash);
     expect(entry.counts).toEqual(out.counts['U2']);
     // A few synthetic trades are far from 300: not ready, so the seal stays closed.
     expect(holdoutReady(entry, 300, 20)).toBe(false);
+  });
+
+  test('a window runs once, only as authorised: re-runs, other configurations and unregistered windows are refused and logged', () => {
+    const a = authority('once');
+    const run = (file: string, o = opts()) => runAndSealHoldout({ ...o, ledgerPath: join(dir, file) }, { ...a, byUniverse: { U2: 'h-once' }, window });
+    expect(() => run('unregistered.sqlite')).toThrow(/not registered/);
+    expect(existsSync(join(dir, 'unregistered.sqlite'))).toBe(false);
+    authoriseHoldout(a, 1, { holdoutId: 'h-once', universe: 'U2', ...window }, opts());
+    expect(() => runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'other-id.sqlite') }, { ...a, byUniverse: { U2: 'h-other' }, window })).toThrow(/not registered/);
+    expect(() => run('other-config.sqlite', opts({ scenario: 'optimistic' }))).toThrow(/configuration/);
+    expect(() => runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'other-window.sqlite') }, { ...a, byUniverse: { U2: 'h-once' }, window: { fromDay: '2026-09-20', toDay: '2026-09-21' } })).toThrow(/window/);
+    run('first.sqlite');
+    // Same window, a new file name: refused before anything runs.
+    expect(() => run('second.sqlite')).toThrow(/already run/);
+    expect(existsSync(join(dir, 'second.sqlite'))).toBe(false);
+    const store = readHoldoutStore(a.registryPath);
+    expect(store.runs.map((r) => r.outcome)).toEqual(['refused', 'refused', 'refused', 'started', 'sealed', 'refused']);
+  });
+
+  test('a failed run is persisted and burns the window; an interrupted one cannot be rerun', () => {
+    const a = authority('fail');
+    authoriseHoldout(a, 1, { holdoutId: 'h-fail', universe: 'U2', ...window }, opts());
+    const crashing = opts({ strategy: () => ({ onMarket: () => { throw new Error('boom'); } }) });
+    expect(() => runAndSealHoldout({ ...crashing, ledgerPath: join(dir, 'fail.sqlite') }, { ...a, byUniverse: { U2: 'h-fail' }, window })).toThrow(/crashed/);
+    const store = readHoldoutStore(a.registryPath);
+    expect(store.registry.entries[0]).toMatchObject({ burned: true, burnReason: 'run-failed' });
+    expect(store.runs.map((r) => r.outcome)).toEqual(['started', 'failed']);
+    expect(() => runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'fail2.sqlite') }, { ...a, byUniverse: { U2: 'h-fail' }, window })).toThrow(/burned/);
+
+    // A run killed mid-way leaves only its start record: the window is spent.
+    const b = authority('killed');
+    authoriseHoldout(b, 1, { holdoutId: 'h-killed', universe: 'U2', ...window }, opts());
+    const killed = readHoldoutStore(b.registryPath);
+    writeHoldoutStore(b.registryPath, { ...killed, runs: [{ holdoutId: 'h-killed', outcome: 'started', configId: holdoutConfigId(opts(), b), ledgerPath: 'x', at: '2026-10-03T00:00:00Z', reason: '' }] });
+    expect(() => runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'killed.sqlite') }, { ...b, byUniverse: { U2: 'h-killed' }, window })).toThrow(/already run/);
+    expect(readHoldoutStore(b.registryPath).registry.entries[0]).toMatchObject({ burned: true, burnReason: 'run-failed' });
   });
 });
 
