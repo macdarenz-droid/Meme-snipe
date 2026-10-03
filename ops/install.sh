@@ -49,6 +49,75 @@ if [ -n "$SSH_KEY" ]; then
   [[ "$SSH_KEY" =~ ^(ssh-ed25519|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com)\ [A-Za-z0-9+/=]+(\ [^[:cntrl:]]*)?$ ]] || die "--ssh-key must be one public key line (ssh-ed25519 or ecdsa)"
 fi
 
+# An update is all or nothing. Before it changes a host path it keeps the old file (*.zeroed-old) or notes
+# that the path is new, and before it stops a unit it notes whether that unit was enabled and running, all in
+# a journal on disk. If any later step fails (Node, the firewall, the signing key, a package, a unit), the
+# EXIT trap puts every file back, removes the new ones, reloads systemd, restores each unit's state and
+# re-applies the old firewall, so the release that keeps running also keeps its own host files. An update
+# killed half-way leaves the journal behind, and the next update rolls it back first. On success the old
+# copies and the journal are deleted. Known limit: packages apt added for a missing package stay.
+JOURNAL=/var/lib/zeroed-host/update-journal
+keep_old() { # path
+  [ "$UPDATE" = 1 ] || return 0
+  if grep -qxF -e "backed $1" -e "created $1" "$JOURNAL" 2>/dev/null; then return 0; fi
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    cp -a "$1" "$1.zeroed-old"
+    printf 'backed %s\n' "$1" >> "$JOURNAL"
+  else
+    printf 'created %s\n' "$1" >> "$JOURNAL"
+  fi
+}
+keep_unit() { # unit: its enabled and running state, before it is stopped
+  [ "$UPDATE" = 1 ] || return 0
+  printf 'unit %s %s %s\n' "$1" "$(systemctl is-enabled --quiet "$1" 2>/dev/null && echo 1 || echo 0)" \
+    "$(systemctl is-active --quiet "$1" 2>/dev/null && echo 1 || echo 0)" >> "$JOURNAL"
+}
+roll_back() {
+  local kind p en act b=0 c=0
+  set +e
+  [ -s "$JOURNAL" ] || return 0
+  while read -r kind p _; do
+    [ "$kind" = created ] || continue
+    case "$p" in /etc/systemd/system/*) systemctl disable --now "$(basename "$p")" >/dev/null 2>&1 ;; esac
+    rm -f "$p"
+    c=$((c + 1))
+  done < "$JOURNAL"
+  while read -r kind p _; do
+    [ "$kind" = backed ] || continue
+    [ ! -e "$p.zeroed-old" ] && [ ! -L "$p.zeroed-old" ] || mv -f "$p.zeroed-old" "$p"
+    b=$((b + 1))
+  done < "$JOURNAL"
+  systemctl daemon-reload
+  while read -r kind p en act; do
+    [ "$kind" = unit ] || continue
+    [ "$en" != 1 ] || systemctl enable "$p" >/dev/null 2>&1
+    [ "$act" != 1 ] || systemctl start "$p" >/dev/null 2>&1
+  done < "$JOURNAL"
+  nft -f /etc/nftables.conf
+  rm -f "$JOURNAL"
+  printf 'Update failed; every host file is back as it was (%s restored, %s removed).\n' "$b" "$c" >&2
+}
+on_exit() {
+  local rc=$? kind p
+  [ "$UPDATE" = 1 ] || return 0
+  if [ "$rc" != 0 ]; then
+    roll_back
+  elif [ -e "$JOURNAL" ]; then
+    while read -r kind p _; do [ "$kind" != backed ] || rm -f "$p.zeroed-old"; done < "$JOURNAL"
+    rm -f "$JOURNAL"
+  fi
+}
+if [ "$UPDATE" = 1 ]; then
+  # An update killed half-way (power loss, OOM) left its journal: put that one back before starting.
+  if [ -s "$JOURNAL" ]; then
+    say "A previous update did not finish; putting its host files back first"
+    roll_back 2>&1 | sed 's/^Update failed; /Previous update: /'
+    set -e
+  fi
+  rm -f "$JOURNAL"
+  trap on_exit EXIT
+fi
+
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
 PACKAGES=(age ca-certificates curl git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
@@ -66,6 +135,7 @@ if [ "$(/usr/local/bin/node --version 2>/dev/null || true)" != "$NODE_VERSION" ]
   rm -rf "/opt/node-$NODE_VERSION"
   mkdir -p "/opt/node-$NODE_VERSION"
   tar -xJf "$tmp/node.tar.xz" -C "/opt/node-$NODE_VERSION" --strip-components=1 --no-same-owner
+  keep_old /usr/local/bin/node # the symlink itself; both /opt/node-* folders stay
   ln -sfn "/opt/node-$NODE_VERSION/bin/node" /usr/local/bin/node
   rm -rf "$tmp"
 fi
@@ -85,7 +155,7 @@ CHANGED=()
 install_file() { # path mode, content on stdin
   mkdir -p "$(dirname "$1")"
   cat > "$1.zeroed-new"
-  cmp -s "$1.zeroed-new" "$1" 2>/dev/null || CHANGED+=("$1")
+  cmp -s "$1.zeroed-new" "$1" 2>/dev/null || { CHANGED+=("$1"); keep_old "$1"; }
   chmod "$2" "$1.zeroed-new"
   chown root:root "$1.zeroed-new"
   mv -f "$1.zeroed-new" "$1"
@@ -99,10 +169,15 @@ APT::Periodic::AutocleanInterval "7";
 __ZEROED_FILE__
 install_file /etc/apt/apt.conf.d/52zeroed-unattended-upgrades 0644 <<'__ZEROED_FILE__'
 // Zeroed: security origin only (Ubuntu's default list), never reboot on its own.
+// Plus Tailscale's own repository (live view, opt-in; its key is pinned by zeroed-tailscale): it publishes
+// fixes there, not in Ubuntu's security pocket. Matches nothing until Tailscale is installed.
 Unattended-Upgrade::Allowed-Origins {
         "${distro_id}:${distro_codename}-security";
         "${distro_id}ESMApps:${distro_codename}-apps-security";
         "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Tailscale,label=Tailscale,codename=${distro_codename}";
 };
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
@@ -1695,10 +1770,16 @@ if [ "$(state)" != Running ]; then
   up_pid=""
 fi
 
+# The intended target is checked before anything is published: the worker API on loopback, nothing else.
+[[ "$WORKER_API_ADDR" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]] || { log "Stopped: the worker API address is not loopback."; exit 1; }
 tailscale funnel --https=443 off >/dev/null 2>&1 || true
 tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >/dev/null
 if ! tailscale serve status --json | serve_ok; then
-  log "Stopped: tailscale serve is not publishing only the worker API with Funnel off. Run zeroed-tailscale --off and check."
+  # Anything else than exactly that (another target, another port, Funnel on) is taken down at once.
+  tailscale serve reset >/dev/null 2>&1 || true
+  tailscale funnel --https=443 off >/dev/null 2>&1 || true
+  rm -f "$STATE_DIR/live_view"
+  log "Stopped: tailscale serve did not publish only the worker API with Funnel off, so it was turned off again. Nothing is published."
   exit 1
 fi
 name="$(tailscale status --json | jq -r '.Self.DNSName // empty' | sed 's/\.$//')"
@@ -1801,8 +1882,9 @@ install_file /usr/local/sbin/zeroed-update 0755 <<'__ZEROED_FILE__'
 #  3. every check run on it finished green (public GitHub API), and
 #  4. no qualifying dry run is active (its unit, or an unfinished named run in the evidence), and
 #  5. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
-# Then switch to it, apply the release's host files (install.sh --update: scripts, units, RUN-1's units) and
-# restart the worker, which reconciles before it trades. Runs every 5 minutes.
+# Then apply the new release's host files (install.sh --update: scripts, units, RUN-1's units), and only once
+# that succeeded switch to it and restart the worker, which reconciles before it trades. A failed apply keeps
+# the old release running and is tried again next run, under the same gates. Runs every 5 minutes.
 # Residual risk (DECISIONS.md): write access to the repository is the ability to deploy; the signer
 # (SIGN-1) is the separate guard on funds.
 set -euo pipefail
@@ -1814,36 +1896,26 @@ git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
 commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
 current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
 
-# apply_host: the deployed release's installer in update mode, so host changes arrive with the code and
-# nobody pastes the install line again. Releases from before --update existed are skipped.
+# apply_host COMMIT DIR: the new release's installer in update mode (its RUN-1 units read from DIR), so host
+# changes arrive with the code and nobody pastes the install line again. Releases from before --update
+# existed are skipped.
 apply_host() {
-  local c="$1" installer=/opt/zeroed/current/ops/install.sh
+  local c="$1" installer="$2/ops/install.sh"
   if ! grep -q -- '--update) UPDATE=1' "$installer" 2>/dev/null; then
-    printf '%s\n' "$c" > "$STATE_DIR/host_applied"
     return 0
   fi
-  if bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then
-    printf '%s\n' "$c" > "$STATE_DIR/host_applied"
+  if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then
     log "Host files from ${c:0:12} applied."
     alert_clear host-apply "CLEARED Zeroed host: the host files of ${c:0:12} applied."
   else
-    log "Host files from ${c:0:12} failed to apply (see $STATE_DIR/host_update.log); trying again next run."
-    alert host-apply "ALERT Zeroed host: the host files of ${c:0:12} failed to apply. The server tries again every 5 minutes."
+    log "Host files from ${c:0:12} failed to apply (see $STATE_DIR/host_update.log); still on the old release, trying again next run."
+    alert host-apply "ALERT Zeroed host: the host files of ${c:0:12} failed to apply, so the server stays on the release it runs. It tries again every 5 minutes."
     return 1
   fi
 }
 
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
-
-if [ "$commit" = "$current" ]; then
-  # Deployed, but its host files did not apply yet (a failure last time): try again, under the same gate.
-  [ -n "$current" ] && [ "$(cat "$STATE_DIR/host_applied" 2>/dev/null || true)" != "$current" ] || exit 0
-  [ -z "$(active_run)" ] || exit 0
-  apply_host "$current" || exit 1
-  # A changed worker unit or wrapper takes effect at the next start; restart now if nothing is in flight.
-  worker_busy || systemctl try-restart zeroed-worker.service || true
-  exit 0
-fi
+[ "$commit" != "$current" ] || exit 0
 
 # GitHub signs every merge it makes with its web-flow key; nothing else is accepted.
 status="$(GNUPGHOME=/etc/zeroed/gnupg git -C "$REPO_DIR" verify-commit --raw "$commit" 2>&1 || true)"
@@ -1894,6 +1966,8 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# Host files first: on failure nothing switches and the worker keeps running the release it has.
+apply_host "$commit" "$dest" || exit 1
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
@@ -1904,8 +1978,6 @@ if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json
 else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
-
-apply_host "$commit" || true
 
 # Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
 worker="not started (no keys yet)"
@@ -9712,6 +9784,7 @@ chmod 0400 /etc/zeroed/age/host.key
 # systemd's own host key for encrypted credentials (root-only, created once).
 [ -s /var/lib/systemd/credential.secret ] || systemd-creds setup >/dev/null
 
+keep_old /etc/zeroed/host.env
 cat > /etc/zeroed/host.env.new <<EOF
 ZEROED_REPO=$REPO
 ZEROED_BRANCH=$BRANCH
@@ -9722,7 +9795,7 @@ WEB_FLOW_FPR=$WEB_FLOW_FPR
 EOF
 chmod 0644 /etc/zeroed/host.env.new
 mv /etc/zeroed/host.env.new /etc/zeroed/host.env
-[ -f /etc/zeroed/worker.env ] || install -m 0644 /dev/null /etc/zeroed/worker.env
+[ -f /etc/zeroed/worker.env ] || { keep_old /etc/zeroed/worker.env; install -m 0644 /dev/null /etc/zeroed/worker.env; }
 . /usr/local/lib/zeroed/common.sh
 # A one-time deploy code, unless the keys are already here (re-running the installer keeps them).
 [ "$UPDATE" = 1 ] || keys_stored || [ -s "$DEPLOY_CODE_FILE" ] || new_deploy_code
@@ -9736,6 +9809,7 @@ got="$(GNUPGHOME=/etc/zeroed/gnupg gpg --batch --with-colons --fingerprint 2>/de
 say "Firewall: no inbound ports${SSH_KEY:+ except SSH (key-only)}"
 # Password login is off on both paths (the drop-in also covers SSH being turned on later by hand).
 install -d -m 0755 /etc/ssh/sshd_config.d
+keep_old /etc/ssh/sshd_config.d/10-zeroed.conf
 printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
 if [ "$UPDATE" = 1 ]; then
   # SSH stays exactly as it was: open (key-only) only if the running firewall already let it in.
@@ -9766,7 +9840,8 @@ say "Dry-run units"
 # RUN-1's units come with the deployed release (packages/runner/systemd), so the runner's owner changes them
 # by merge alone. Only zeroed-dryrun* and zeroed-worker-tabletop are taken (none enabled but the tick timer);
 # units a newer release dropped are removed.
-RELEASE_UNITS=/opt/zeroed/current/packages/runner/systemd
+# zeroed-update points ZEROED_RELEASE_DIR at the release it is about to switch to.
+RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"
 new_units=()
 if [ -d "$RELEASE_UNITS" ]; then
   for f in "$RELEASE_UNITS"/*; do
@@ -9778,9 +9853,12 @@ if [ -d "$RELEASE_UNITS" ]; then
 fi
 for n in $(cat /var/lib/zeroed-host/release-units 2>/dev/null || true); do
   [[ " ${new_units[*]} " == *" $n "* ]] && continue
+  keep_unit "$n"
+  keep_old "/etc/systemd/system/$n"
   systemctl disable --now "$n" >/dev/null 2>&1 || true
   rm -f "/etc/systemd/system/$n"
 done
+keep_old /var/lib/zeroed-host/release-units
 printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
 
 say "Services"
