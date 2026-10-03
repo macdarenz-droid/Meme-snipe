@@ -14,6 +14,12 @@ export interface Migration {
   readonly version: number;
   readonly name: string;
   readonly sql: string;
+  /**
+   * Rebuilds a table other tables reference (SQLite's 12-step ALTER: create, copy, drop, rename). Foreign keys are
+   * switched off around the transaction, every foreign key is checked before commit, and they are switched back on
+   * whatever happens. Not part of the checksum, so it can never change an applied migration.
+   */
+  readonly rebuildsTables?: boolean;
 }
 
 export { LedgerError } from './errors.ts';
@@ -132,10 +138,22 @@ const migrate = (db: DatabaseSync, kind: StoreKind, migrations: readonly Migrati
   const applied = appliedMigrations(db);
   verifyApplied(String(db.location() ?? ':memory:'), kind, applied, migrations);
   for (const m of migrations.slice(applied.length)) {
-    inTransaction(db, () => {
-      db.exec(m.sql);
-      db.prepare('INSERT INTO schema_migrations (version, name, checksum) VALUES (?, ?, ?)').run(m.version, m.name, checksum(kind, m));
-    });
+    if (m.rebuildsTables === true) {
+      if (db.isTransaction) throw new LedgerError(`migration ${m.version} rebuilds tables and cannot run inside a transaction`);
+      db.exec('PRAGMA foreign_keys = OFF'); // a no-op inside a transaction, so it is set before BEGIN
+    }
+    try {
+      inTransaction(db, () => {
+        db.exec(m.sql);
+        if (m.rebuildsTables === true) {
+          const broken = db.prepare('PRAGMA foreign_key_check').all();
+          if (broken.length > 0) throw new LedgerError(`migration ${m.version} leaves ${broken.length} rows without their parent row`);
+        }
+        db.prepare('INSERT INTO schema_migrations (version, name, checksum) VALUES (?, ?, ?)').run(m.version, m.name, checksum(kind, m));
+      });
+    } finally {
+      if (m.rebuildsTables === true) db.exec('PRAGMA foreign_keys = ON');
+    }
   }
 };
 

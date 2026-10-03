@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Console: the setup screen. Shows the deploy code, waits for the keys, then shows the Telegram pairing
+# code and waits for /pair. Ctrl+C at any time is safe: the timers keep going and zeroed-status shows
+# where things stand.
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+shown=""
+while :; do
+  /usr/local/sbin/zeroed-pair 2>/dev/null || true
+  /usr/local/sbin/zeroed-telegram-pair 2>/dev/null || true
+  state="$(/usr/local/sbin/zeroed-status 2>/dev/null || true)"
+  if [ "$state" != "$shown" ]; then
+    clear 2>/dev/null || true
+    printf '%s\n\n(Waiting. Ctrl+C is safe; zeroed-status shows this again.)\n' "$state"
+    shown="$state"
+  fi
+  if paired && keys_stored && [ ! -s "$DEPLOY_CODE_FILE" ]; then
+    printf '\nSetup finished. The server is running.\n'
+    exit 0
+  fi
+  sleep 5
+done

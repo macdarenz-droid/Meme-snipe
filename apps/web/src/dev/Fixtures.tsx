@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { SampleScope } from '../components/Sample.tsx';
 import { Section } from '../components/ui.tsx';
 import { FundingSheet, type FundingKind } from '../funding/FundingSheet.tsx';
+import { approvingStepUp } from '../funding/stepUp.ts';
 import { TokenTable } from '../screens/Home.tsx';
 import { Snipe } from '../screens/Snipe.tsx';
 import { WalletSummary } from '../screens/Wallet.tsx';
@@ -26,7 +27,7 @@ export default function Fixtures() {
         </div>
         <States />
         <WalletSummary wallet={fixtureWallet} onFund={setFunding} />
-        <FundingSheet kind={funding} onClose={close} savedWallet={fixtureWallet.savedWallet} botWallet={fixtureWallet.botAddress} gatePassed />
+        <FundingSheet kind={funding} onClose={close} wallet={fixtureWallet} stepUp={approvingStepUp} gatePassed />
       </div>
     </SampleScope>
   );

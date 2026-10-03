@@ -1,0 +1,36 @@
+name: Ops end-to-end
+
+# Installs the host from scratch into a fresh Ubuntu 24.04 systemd container and runs pairing, rotation,
+# updates, backup, restore and the watchdog with TEST values only (ops/test/e2e.sh). Reads no secrets.
+on:
+  pull_request:
+    paths: ['ops/**', 'packages/ops/**', '.github/workflows/deploy.yml', '.github/workflows/ops-e2e.yml']
+  push:
+    branches: [ccr-14987baf-i6lrsl]
+    paths: ['ops/**', 'packages/ops/**', '.github/workflows/deploy.yml', '.github/workflows/ops-e2e.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Tools
+        run: |
+          sudo apt-get update -q >/dev/null
+          sudo apt-get install -y -q age >/dev/null
+      - name: End-to-end
+        run: sudo -E env "PATH=$PATH" E2E_DIR="$RUNNER_TEMP/e2e" bash ops/test/e2e.sh
+      - name: Summary
+        if: always()
+        run: cat "$RUNNER_TEMP/e2e/logs/summary.txt" 2>/dev/null || true
