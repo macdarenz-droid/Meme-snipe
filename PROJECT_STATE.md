@@ -12,7 +12,7 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D, plus fixes from an outside review (4 Oct 2026, Melbourne). All 20 findings are assigned; each must reproduce before it is fixed. Follow-up rulings (holder live path, DSR method, holdout extension and error budget, rent, equity units, delays, ties, collapse size, standby) are in DECISIONS and sent to their builders.
+Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61).
 - **Server:** live and paired.
 - **History:** the download waits on DATA-1's final data-shape PR (#46: full curve and canonical-pool rows, raw records for every create and migration, owner-resolved token movements, regimes).
 - **Building:** the worker, gate-fact producers, start-up seed, rug check, backtest study, signal research, live app view, server extras, and the review fixes.
@@ -28,25 +28,24 @@ Wave D, plus fixes from an outside review (4 Oct 2026, Melbourne). All 20 findin
 ## Board
 Builders run as separate sessions; a fresh reviewer session checks each PR; the supervisor merges into `ccr-14987baf-i6lrsl` when review passed and CI is green on a head with the latest base.
 
-| Task | What | Session | Model | State | Estimate |
+| Task | What | Session | Model | State | Estimate (Melbourne, Sun 4 Oct) |
 |---|---|---|---|---|---|
-| DATA-1 | Final data shape (PR #46), then run 1 (1 Oct back to 16 Sep), run 2, run 3; 60 decision days | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | #46 adding migrations raw, token movements, regimes; then re-review (session_01DKMnUiqVLxVjHbaqdoBnJD) | scan restart after merge; newest 14 days about 30–35 h later |
-| WORKER-1 | Worker, recorder, API (loopback), persistence and downtime fill | session_01F7UFCa8r4aee38kW7687Y3 | Opus 5.5 | building | PR about 11 AM–1 PM |
-| FACTS-1 | Shared fact producers (live and backtest), funding lookup, holders by owner, on-chain regime volume | session_01GDycboQzFrFWxVniy6B6Ps | Opus 5.5 | building | 3–5 h |
-| SEED-1 | Start-up seed and downtime fill (PR #45) | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | tie-order fix 92cdd97 in re-review (session_01NZwyB8decLbgxKJoG2cAbP) | merge after review |
-| RUG-1b/1c | Traded non-rug fixture; on-demand per-deployer rug check; label kinds; collapse-size validation | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | building | 1c about 11 AM–1 PM |
-| GATE-1d | Holder check by owner with a worst-case bound (PR #50); refuse repeated addresses and other-mint accounts | session_01MeeF4VytwgP5sqyAkqM2NS | Opus 5.5 | fixing review B1 and N1–N3; reviewer session_01GgekqDZufKTy9TNeR5R7YJ | 1 h |
-| RISK-1b, EXIT-1b | Unitized drawdown; stressed-loss reporting; risk simulation; partial-sell quote; retry affordability | session_0135ruSv84BVjo7knvmTCPPK | Opus 5.5 | building; risk reviewer session_017PBUwcGJWG4DJpJKVBcAas | 2–3 h |
-| BT-1c | Canonical G0, holdout authorisation, observation delays, harsher fills, all-in expectancy, currency split, operating costs | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | building | 3–4 h |
-| BT-2 | Backtest study (PR #41): deployment replay, frozen definitions, ablations, completeness manifest, trial view | session_01VBTfAwrhgoCssEzST2J2q5 | Opus 5.5 | building on fixtures; holdout boundary pending | 4–6 h, then data |
-| RES-3 | Signal research (PR #47), practice days only | session_018esLCVLp9yCExK5cdnzCz8 | Opus 5.5 | re-review (session_01FHfbJwz7sbf2eVDNRxMigZ) | data from about Tue 6 Oct |
-| STATS-1b, STATS-1c | 1b (PR #52): G3 veto bias, "agrees" criteria, cluster sensitivity. 1c: day-level PSR/DSR; block-bootstrap SPA test behind an off flag (owner sign-off); holdout error budget and extension rule | session_01J9yEWHRunNxvo5CaTbuYSe | Opus 5.5 | 1b in review (session_01FHfbJwz7sbf2eVDNRxMigZ); 1c next | 1c 3–5 h |
-| TX-1b | One supported-transaction-shape check for gates, backtest and builders | session_011NPXb9ohcgyccEx2RLgZn1 | Opus 5.5 | building | 1–2 h |
-| RUN-1c | Quota, coverage and worker-down exposure in the dry-run report | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | building | 1–2 h |
-| APP-2 | Live screens in the app over Tailscale (PR #43) | session_01HxjfFhpHEFghtBnZkTjnFB | Opus 5.5 | building | 3–4 h |
-| OPS-1d | PR A: webhook retry, key-mismatch alerts, re-pair, `--update` hook. PR B: RUN-1 units, evidence relay, Tailscale serve | session_01Euok5FXtBGZBrweohP3K93 | Opus 5.5 | building | A about 1.5 h; B about 3 h |
-| CFG-2 | Exit parameters per universe in the policy (before any freeze) | session_01P6GFTVQc9JzPTa5DWDdw3b | Opus 5.5 | building | 2–3 h |
-| Next | WATCH-1 (direct pool read when an open position's feed goes stale) after WORKER-1; TEST-1 parity and TEST-3 fault injection after WORKER-1; RUN-1d drills by cause after RUN-1c; SIGN-1 later | — | — | by dependency | — |
+| DATA-1 | Final data shape (PR #46), then run 1 (1 Oct back to 16 Sep), runs 2–3, then holdout days 2–19 Oct | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | last fix: swap-leg owner columns; then one delta review (session_01DKMnUiqVLxVjHbaqdoBnJD) | run 1 starts about 7:30–8:30 AM |
+| WORKER-1 | Worker, recorder, API, persistence, downtime fill (PR #48) | session_01F7UFCa8r4aee38kW7687Y3 | Opus 5.5 | merging base + RUN-1c fields + qualifying guard + setup-rent booking; reviewer session_012QdDAuRuYt57E9PCjHfuKT | about 6–10 PM with FACTS-1b |
+| FACTS-1 | Shared fact producers, holders (mint-first snapshot), funding, chain volume (PR #54); FACTS-1b adapters after #48 | session_01GDycboQzFrFWxVniy6B6Ps | Opus 5.5 | delta review (session_01UhbBj5bHiTC8AUMzp5db7L) | merge about 7–8 AM |
+| SEED-1, FILL-2 | Start-up seed and downtime fill (PR #45); pool trade-gap fill (claude/fill-2) | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | as-of guard fix; reviewer session_01NZwyB8decLbgxKJoG2cAbP | about 7–8 AM; FILL-2 PR after |
+| RUG-1b/1c | Traded non-rug fixture; on-demand per-deployer rug check; label kinds; materiality measurement | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | validation run on 2 Oct launches | 1c PR about 8:30–9:30 AM |
+| GATE-1f | Mint-first on 'largest' view; delegate min() test | session_01MeeF4VytwgP5sqyAkqM2NS | Opus 5.5 | building | 30 min |
+| RISK-1b, EXIT-1b | Unitized NAV, three capital measures, withdrawal queue (PR #58); partial quotes, retry cost, rent sell-only (PR #55) | session_0135ruSv84BVjo7knvmTCPPK | Opus 5.5 | #55 one test missing; #58 mutation pass; risk reviewer session_017PBUwcGJWG4DJpJKVBcAas | #55 about 7 AM; #58 about 8–9 AM |
+| BT-1c | G0, holdout lock (E = 20 Oct), delays, fills, rent, exit failures, economics (PR #53) | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | fixing P1 pool chain + H1–H3; reviewer session_012efQfLAwWStK3PT6ZW2PHz | about 8–9 AM |
+| BT-2 | Backtest study (PR #41): funnel count first, deployment replay, registry (E fixed, attempt rules) | session_01VBTfAwrhgoCssEzST2J2q5 | Opus 5.5 | building on fixtures; consuming CFG-2 | data from Mon 5 Oct |
+| STATS-1b, 1c | G3 levels by safety direction (PR #52); SPA, daily DSR, registry attempt rules (PR #62, rework) | session_01J9yEWHRunNxvo5CaTbuYSe | Opus 5.5 | #52 fixes; #62 rework after | #52 about 8 AM; #62 about 1–3 PM |
+| SIM-1 | H15 round-trip simulation (PR #59) | session_012vSUH8KvV8wbiagSK8KbP8 | Opus 5.5 | review PASS; merges after #54 | after FACTS-1 |
+| TX-1c | Guarded account builders, pinned shape test (PR #63) | session_011NPXb9ohcgyccEx2RLgZn1 | Opus 5.5 | in review (session_017XphBCDSNUxoxUXrvWnTMo) | about 7 AM |
+| RUN-1d | Drills by cause, recovery to exit-capable, qualifying guard (PR #64) | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | in review (session_01DdN4xy9WX2t7nLUq7ww4E5) | about 8 AM |
+| APP-2 | Live screens in the app over Tailscale (PR #43) | session_01HxjfFhpHEFghtBnZkTjnFB | Opus 5.5 | in review (session_01PJ6UTbVhQrbEyFzW9mA3N2) | about 9 AM |
+| OPS-1e | Server extras: webhook retry, re-pair, alerts, `--update`, units, update gate, `tailscale serve`; no evidence upload | session_01VM97q6A98GgtoPKCamoiT6 | Opus 5.5 | building (OPS-1d session stopped by a safety check, work not pushed) | about 1–3 PM |
+| Next | WATCH-1 after WORKER-1; FACTS-1b after #48/#54; TEST-1 parity and TEST-3 fault injection after WORKER-1; SIGN-1 later; evidence upload from the server needs an owner decision | — | — | by dependency | — |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -58,7 +57,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - FUND-1 → SIGN-1: re-check the destination and balance after the step-up; persisting the 24 h saved-wallet change is a new saved-data shape (owner approval).
 - SEED-1 (WORKER-1 wave): seed the deployer index from history at start-up, or H14 rejects for 14 days after any restart and the dry run makes no entries.
 - WORKER-1: fetch confirmed transactions for shortlisted mints (live H9/H12–H14 need the confirmed create).
-- WORKER-1 restart drill: rebuild the exit attempt budget from the book, and restore trail, peak, flatMet and partials (save per step or replay as-of); a reset trail is a looser stop (EXIT-1 review).
+- WORKER-1 restart drill: rebuild the exit attempt budget from the book, and restore trail, peak, flatMet and partials (save per step or replay as-of); a reset trail is a looser stop (EXIT-1 review). Store the universe with the position at entry, so a restored position rebuilds its EntryPlan without a default (CFG-2 review).
 - OPS-1d: install RUN-1's zeroed-dryrun units and runner flags through code updates, hold deploys during a qualifying run, and give the VPS evidence a path into the repo.
 - Runbook (RUN-1/WORKER-1): a v1 ledger must be opened once by a writer (migrates to 2) before `ledger:replay` or `openReader`.
 - Data: the owner declined asking Triton for a faster download (4 Oct); the scan stays at 80 MB/s on one lane.
