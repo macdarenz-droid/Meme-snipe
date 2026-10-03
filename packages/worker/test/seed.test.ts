@@ -391,3 +391,69 @@ describe('SEED-1 end to end with the index and H14 coverage', () => {
     await expect(buildSeed({ days: [], rpc: { rpc: fakeRpc([], byFixture), timers: instantTimers(), creditCap: 1, cost: COST }, untilSlot: UNTIL, asOf: ASOF })).rejects.toThrow(/rpcFrom/);
   });
 });
+
+describe('SEED-1 downtime fill after a restart with saved state (supervisor ruling 2026-10-04)', () => {
+  const VIA = 'logs:creates';
+  const DOWN_FROM = 452_941_100n; // first slot after the saved state
+  const DOWN_MS = 1_791_032_500_000;
+  const wrapped = (value: Record<string, unknown>) => ({ value, source: 'worker', backfilled: false, seq: 1 });
+  /** The saved coverage: the watch started 20 days ago and its gap opened at shutdown. */
+  const saved: readonly MarketEvent[] = [
+    { kind: 'market', id: 'saved-start', moment: { slot: 445_000_000n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS - 20 * DAY_MS }, key: 'coverage:creates:start', value: wrapped({ fromSlot: 445_000_000n, via: VIA }) },
+    { kind: 'market', id: 'saved-gap', moment: { slot: DOWN_FROM, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS }, key: 'coverage:creates:gap', value: wrapped({ fromSlot: DOWN_FROM, toSlot: null, reason: 'shutdown', via: VIA }) },
+  ];
+  const NOW: Moment = { ...ASOF, slot: ASOF.slot + 100n, receivedAt: ASOF.receivedAt + 1_000 };
+  /** Saved facts, then the fill's facts, then the restarted watch's new start, through an as-of store. */
+  const coveredAfter = (fill: readonly MarketEvent[]) => {
+    const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: Number.MIN_SAFE_INTEGER });
+    const store = new AsOfStore(clock);
+    const restart: MarketEvent = { kind: 'market', id: 'restart-start', moment: { ...ASOF }, key: 'coverage:creates:start', value: wrapped({ fromSlot: UNTIL, via: VIA }) };
+    for (const e of [...saved, ...fill, restart].sort((a, b) => (a.moment.slot < b.moment.slot ? -1 : a.moment.slot > b.moment.slot ? 1 : a.moment.receivedAt - b.moment.receivedAt))) {
+      clock.advanceTo(e.moment);
+      store.record(e.key, e.value, e.moment, e.id);
+    }
+    clock.advanceTo(NOW);
+    return createsCoverage((k, f, to) => store.history(k, f, to), NOW, NOW.receivedAt - 14 * DAY_MS);
+  };
+  const fillOpts = (over: { creditCap?: number; rpc?: false } = {}): SeedOptions => ({
+    days: [], untilSlot: UNTIL, asOf: ASOF, fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM } },
+    ...(over.rpc === false ? {} : { rpc: { rpc: fakeRpc(SIGS, byFixture), timers: instantTimers(), creditCap: over.creditCap ?? 100, cost: COST } }),
+  });
+
+  it('a restart without a fill is not covered: the new start settles the open gap as lossy', () => {
+    expect(coveredAfter([]).covered).toBe(false);
+  });
+
+  it('a complete fill backfills only the downtime and closes the saved gap with a resume: coverage stays continuous', async () => {
+    const seed = await buildSeed(fillOpts());
+    expect(seed.report).toMatchObject({ mode: 'fill', start: null, gaps: [] });
+    expect(seed.report.rpc?.result).toMatchObject({ stoppedBy: 'done', creates: CREATES.length, creditsUsed: 1 + CREATES.length });
+    expect(seed.coverage.map((e) => [e.key, (e.value as { value: { via: string } }).value.via])).toEqual([['coverage:creates:resume', VIA]]);
+    expect(coveredAfter(seed.coverage).covered).toBe(true);
+    // Fill creates reach the restored index through observe, like live events, and count.
+    const idx = new DeployerIndex();
+    for (const e of saved) idx.observe(e);
+    for (const e of seed.creates) idx.observe(e);
+    const creator = createOf(seed.creates[0]!.value)!.creator;
+    expect(idx.factFor(creator, NOW, 0).mints.length).toBeGreaterThan(0);
+  });
+
+  it('an incomplete fill leaves bounded gaps and closes the saved gap as lossy: not covered', async () => {
+    const seed = await buildSeed(fillOpts({ creditCap: 2 }));
+    expect(seed.report.rpc?.result.stoppedBy).toBe('credit-cap');
+    expect(seed.coverage.map((e) => e.key)).toEqual(['coverage:creates:gap', 'coverage:creates:gap']);
+    expect(seed.coverage.at(-1)!.value).toMatchObject({ value: { fromSlot: DOWN_FROM, toSlot: UNTIL, via: VIA } });
+    expect(coveredAfter(seed.coverage).covered).toBe(false);
+  });
+
+  it('a fill with no RPC configured is one gap over the whole downtime', async () => {
+    const seed = await buildSeed(fillOpts({ rpc: false }));
+    expect(seed.report.gaps).toEqual([expect.objectContaining({ fromSlot: DOWN_FROM, toSlot: UNTIL, reason: 'no RPC backfill configured' })]);
+    expect(coveredAfter(seed.coverage).covered).toBe(false);
+  });
+
+  it('a fill takes no day releases and must start by untilSlot', async () => {
+    await expect(buildSeed({ ...fillOpts(), days: [{ dir: dayRelease(DAY, UNITS), day: DAY }] })).rejects.toThrow(/neither day releases/);
+    await expect(buildSeed({ ...fillOpts(), fill: { fromSlot: UNTIL + 2n, fromMs: DOWN_MS } })).rejects.toThrow(/after untilSlot/);
+  });
+});

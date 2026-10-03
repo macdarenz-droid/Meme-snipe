@@ -45,6 +45,15 @@ export interface SeedOptions {
   readonly rpc?: Omit<BackfillOptions, 'afterSlot' | 'untilSlot'>;
   /** With no day release: the first slot to backfill (the look-back start) and its block time (ms). */
   readonly rpcFrom?: { readonly slot: bigint; readonly ms: number };
+  /**
+   * Downtime fill after a restart whose index, labeller and coverage were saved (supervisor ruling 2026-10-04): RPC
+   * only, for slots `fromSlot` (the first slot after the saved state) to `untilSlot`. No start fact is made, because
+   * the saved coverage continues; every slot not fetched is a bounded gap. `close` names the saved watch's open gap
+   * (its `via` and `fromSlot`), or the watch itself when none was open: a complete fill closes it with a `resume` up to
+   * `untilSlot`, otherwise a bounded gap with the same `via` and `fromSlot` closes it as lossy. Fill creates go to
+   * the restored index through `observe`, like live events, and the coverage facts into the engine.
+   */
+  readonly fill?: { readonly fromSlot: bigint; readonly fromMs: number; readonly close?: { readonly via: string; readonly fromSlot: bigint | null } };
   /** The live creates watch's first slot: the seed covers up to and including it. */
   readonly untilSlot: bigint;
   /** The process start: nothing dated after it is seeded. */
@@ -59,6 +68,7 @@ export interface SeedGap {
 }
 
 export interface SeedReport {
+  readonly mode: 'seed' | 'fill';
   readonly asOf: Moment;
   readonly untilSlot: bigint;
   /** The seeded range's start, or null when nothing could be seeded (H14 then waits for a full live look-back). */
@@ -115,6 +125,8 @@ const mergeGaps = (gaps: readonly SeedGap[]): SeedGap[] => {
 
 export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
   if (o.untilSlot > o.asOf.slot) throw new RangeError(`untilSlot ${o.untilSlot} is after the process start slot ${o.asOf.slot}`);
+  if (o.fill !== undefined && (o.days.length > 0 || o.rpcFrom !== undefined)) throw new RangeError('a downtime fill takes neither day releases nor rpcFrom');
+  if (o.fill !== undefined && o.fill.fromSlot > o.untilSlot + 1n) throw new RangeError(`fill starts at ${o.fill.fromSlot}, after untilSlot ${o.untilSlot}`);
   const nowMs = o.asOf.receivedAt;
   const clampMs = (ms: number | null): number => (ms === null || !Number.isFinite(ms) || ms > nowMs ? nowMs : ms);
   const reads: DayRead[] = [...o.days].sort((a, b) => (a.day < b.day ? -1 : 1)).map((d) => readDayRelease(d.dir, d.day));
@@ -143,19 +155,20 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
   let start: { slot: bigint; ms: number } | null = ranges[0] === undefined ? null : { slot: ranges[0].fromSlot, ms: firstDay?.fromMs ?? nowMs };
 
   // The RPC range: after the days' last slot, or from `rpcFrom` when there is no day.
-  const afterSlot = lastDay !== undefined ? lastDay.toSlot : o.rpcFrom !== undefined ? o.rpcFrom.slot - 1n : null;
+  const from = o.fill ?? (o.rpcFrom === undefined ? undefined : { fromSlot: o.rpcFrom.slot, fromMs: o.rpcFrom.ms });
+  const afterSlot = lastDay !== undefined ? lastDay.toSlot : from !== undefined ? from.fromSlot - 1n : null;
   let rpcReport: SeedReport['rpc'] = null;
   let rpcCreates: readonly MarketEvent[] = [];
   if (afterSlot !== null && afterSlot < o.untilSlot) {
     if (o.rpc === undefined) {
       gaps.push({ fromSlot: afterSlot + 1n, toSlot: o.untilSlot, atMs: nowMs, reason: 'no RPC backfill configured' });
     } else {
-      const fromMs = lastDay !== undefined && Number.isFinite(lastDay.toMs) ? lastDay.toMs : o.rpcFrom?.ms ?? null;
+      const fromMs = lastDay !== undefined && Number.isFinite(lastDay.toMs) ? lastDay.toMs : from?.fromMs ?? null;
       const estimatedCredits = fromMs === null ? null : estimateBackfillCredits(nowMs - fromMs, o.rpc.cost);
       const r = await backfillCreates({ ...o.rpc, afterSlot, untilSlot: o.untilSlot });
       for (const g of r.gaps as readonly SlotGap[]) gaps.push({ fromSlot: g.fromSlot, toSlot: g.toSlot, atMs: clampMs(g.atMs), reason: g.reason });
       rpcCreates = r.creates;
-      if (start === null) start = { slot: afterSlot + 1n, ms: clampMs(r.firstMs ?? o.rpcFrom?.ms ?? null) };
+      if (start === null && o.fill === undefined) start = { slot: afterSlot + 1n, ms: clampMs(r.firstMs ?? from?.fromMs ?? null) };
       const { creates: _c, gaps: _g, ...rest } = r;
       rpcReport = { fromSlot: afterSlot + 1n, estimatedCredits, creditCap: o.rpc.creditCap, fitsCap: estimatedCredits === null ? null : estimatedCredits <= o.rpc.creditCap, result: { ...rest, creates: r.creates.length } };
     }
@@ -183,21 +196,30 @@ export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
 
   // Coverage facts: one start at the range start, then every bounded gap, dated at its end and never after asOf.
   const merged = mergeGaps(gaps);
-  const fact = (kind: 'start' | 'gap', slot: bigint, ms: number, value: Record<string, unknown>, n: number): MarketEvent => ({
+  const fact = (kind: 'start' | 'gap' | 'resume', slot: bigint, ms: number, value: Record<string, unknown>, n: number, via = SEED_VIA): MarketEvent => ({
     kind: 'market', id: `${SEED_VIA}:coverage:${kind}:${n}`,
     moment: { slot: slot > o.asOf.slot ? o.asOf.slot : slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: Math.min(ms, nowMs) },
-    key: `coverage:creates:${kind}`, value: { value: { ...value, via: SEED_VIA }, source: 'worker', backfilled: true, seq: n },
+    key: `coverage:creates:${kind}`, value: { value: { ...value, via }, source: 'worker', backfilled: true, seq: n },
   });
   const coverage: MarketEvent[] = [];
-  if (start !== null) {
-    coverage.push(fact('start', start.slot, start.ms, { fromSlot: start.slot }, 0));
-    merged.forEach((g, i) => coverage.push(fact('gap', g.toSlot, Math.max(g.atMs, start!.ms), { fromSlot: g.fromSlot, toSlot: g.toSlot, reason: g.reason }, i + 1)));
+  const floorMs = start?.ms ?? o.fill?.fromMs ?? null;
+  if (floorMs !== null) {
+    if (start !== null) coverage.push(fact('start', start.slot, start.ms, { fromSlot: start.slot }, 0));
+    merged.forEach((g, i) => coverage.push(fact('gap', g.toSlot, Math.max(g.atMs, floorMs), { fromSlot: g.fromSlot, toSlot: g.toSlot, reason: g.reason }, i + 1)));
+  }
+  const close = o.fill?.close;
+  if (close !== undefined) {
+    // Dated at the process start: the saved watch's range is settled only now.
+    const n = merged.length + 1;
+    coverage.push(merged.length === 0
+      ? fact('resume', o.untilSlot, nowMs, { fromSlot: close.fromSlot, toSlot: o.untilSlot }, n, close.via)
+      : fact('gap', o.untilSlot, nowMs, { fromSlot: close.fromSlot, toSlot: o.untilSlot, reason: `downtime fill incomplete (${merged.length} gaps)` }, n, close.via));
   }
   coverage.sort(compareEvents);
   return {
     creates, coverage,
     report: {
-      asOf: o.asOf, untilSlot: o.untilSlot, start,
+      mode: o.fill === undefined ? 'seed' : 'fill', asOf: o.asOf, untilSlot: o.untilSlot, start,
       days: reads.map((r) => ({ day: r.day, creates: r.creates.length, units: r.units.length, gapUnits: r.units.filter((u) => !u.covered).length, verified: r.verified })),
       rpc: rpcReport, creates: creates.length, gaps: merged, droppedFuture, rugs: RUGS_NOT_SEEDED,
     },
