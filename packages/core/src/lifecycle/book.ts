@@ -3,7 +3,7 @@
 // protective exits never blocked by a pause.
 
 import type { Lamports, RawAmount } from '../units/index.ts';
-import { exitKey, positionId, type EntryIntent, type Fill, type IntentId, type PositionId, type Signature } from '../domain/index.ts';
+import { exitKey, positionId, type Commitment, type EntryIntent, type Fill, type IntentId, type PositionId, type Signature } from '../domain/index.ts';
 import {
   applyIntentEvent, filledSol, filledTokens, heldReservation, isTerminal, isUnresolved, newEntryIntent, newExitIntent,
   type IntentEvent, type IntentState,
@@ -38,12 +38,35 @@ export type BookEvent =
   | { readonly type: 'intent'; readonly intentId: IntentId; readonly event: Exclude<IntentEvent, { type: 'restart' | 'tick' | 'book_orphan' }> }
   /** The wallet reconciliation for a late landing of an ended intent: book the tokens it moved. */
   | { readonly type: 'orphan_fill'; readonly fill: Fill }
+  /** The reported landing was on a dropped fork: clear it, only with proof (see OrphanClearProof). */
+  | { readonly type: 'orphan_cleared'; readonly signature: Signature; readonly proof: OrphanClearProof }
   | { readonly type: 'trigger_exit'; readonly positionId: PositionId; readonly reasons: readonly ExitReason[]; readonly intentId: IntentId; readonly quantity?: RawAmount }
   | { readonly type: 'exit_blocked'; readonly positionId: PositionId; readonly reason: string }
   | { readonly type: 'tick'; readonly blockHeight: bigint }
   | { readonly type: 'restart' }
   | { readonly type: 'pause_entries'; readonly reason: PauseReason }
   | { readonly type: 'resume_entries'; readonly reason: PauseReason };
+
+/**
+ * Proof that a reported landing never happened on the surviving chain. All must hold:
+ * balances unchanged at finalized, and a finalized status read that either failed or, with a history search,
+ * found nothing once the *finalized* block height is past the attempt's last valid height. The finalized
+ * height matters: a landing just before expiry is not finalized yet, and a finalized read would miss it.
+ */
+export interface OrphanClearProof {
+  /** The signature these reads were taken for; must match the landing being cleared. */
+  readonly signature: Signature;
+  readonly balances: 'unchanged' | 'changed';
+  readonly commitment: Commitment;
+  readonly status: 'not_found' | 'failed' | 'succeeded';
+  readonly searchedHistory: boolean;
+  /** The finalized block height when the reads were taken (not the confirmed height). */
+  readonly finalizedBlockHeight: bigint;
+}
+
+export const isOrphanClearProven = (proof: OrphanClearProof, lastValidBlockHeight: bigint): boolean =>
+  proof.commitment === 'finalized' && proof.balances === 'unchanged' &&
+  (proof.status === 'failed' || (proof.status === 'not_found' && proof.searchedHistory && proof.finalizedBlockHeight > lastValidBlockHeight));
 
 export const emptyBook = (config: BookConfig): Book => {
   if (!Number.isSafeInteger(config.maxOpenPositions) || config.maxOpenPositions < 1) {
@@ -235,6 +258,22 @@ const step = (book: Book, e: BookEvent): Transition<Book> => {
       }
       for (const o of Object.values(book.orphans)) effects.push({ type: 'reconcile_orphan', intentId: o.intentId, signature: o.signature });
       return { state: book, effects };
+    }
+
+    case 'orphan_cleared': {
+      const o = book.orphans[e.signature];
+      if (o === undefined) return illegal('book', e.type, 'no unbooked landing for this signature');
+      const a = book.intents[o.intentId]?.attempts.find((x) => x.signature === e.signature);
+      if (a === undefined) return illegal('book', e.type, 'attempt missing');
+      if (e.proof.signature !== e.signature) return illegal('book', e.type, 'proof was read for another signature');
+      if (!isOrphanClearProven(e.proof, a.lastValidBlockHeight)) {
+        return illegal('book', e.type, 'needs unchanged balances and a failed or expired not-found status, all at finalized');
+      }
+      const { [e.signature]: _cleared, ...orphans } = book.orphans;
+      return {
+        state: { ...book, orphans },
+        effects: [persistBook, { type: 'alert', level: 'warn', code: 'orphan_cleared', subject: o.intentId }],
+      };
     }
 
     case 'orphan_fill': {
