@@ -302,11 +302,11 @@ flowchart LR
 | --- | --- | --- |
 | Worker | One always-on TypeScript process (Node 22): adapters, scheduler, gates, risk, coordinator, exit supervisor, reconciliation, API | brief |
 | Ledger | **SQLite in WAL mode** via built-in `node:sqlite`, one writer, `synchronous=FULL`; hourly encrypted snapshot to Cloudflare R2. Same outbox and atomic reservations as Postgres (`BEGIN IMMEDIATE`, `UNIQUE`). Replaces Postgres: hosted free Postgres sleeps, pauses or expires, and one worker needs no second writer | [security.md](research/security.md) §4.3 |
-| Host | Vultr Frankfurt High Performance, 1 vCPU, 1 GB, **$6/month** (Frankfurt holds ~35% of leader slots); Hetzner CX23 Nuremberg as the RAM upgrade. Needs the owner's approval of the spend | [security.md](research/security.md) §4 |
-| Watchdog | Cloudflare Worker cron every minute + Durable Object heartbeat and lease (free); Healthchecks.io as a second dead-man switch; Telegram alerts. Checks heartbeat age, slot lag against a different RPC, on-chain position versus reported, stop breached with no exit attempt, unresolved intents past expiry, low reserve | [security.md](research/security.md) §5 |
+| Host | Vultr Frankfurt High Performance, 1 vCPU, 1 GB, **about US$6/month** (Frankfurt holds ~35% of leader slots); Hetzner CX23 Nuremberg as backup and RAM upgrade. **Approved by the owner 2026-10-03** | [security.md](research/security.md) §4 |
+| Watchdog | Cloudflare Worker (on its free `workers.dev` address, so no domain is needed) with a cron every minute + Durable Object heartbeat and lease (free); Healthchecks.io as a second dead-man switch; Telegram alerts. Checks heartbeat age, slot lag against a different RPC, on-chain position versus reported, stop breached with no exit attempt, unresolved intents past expiry, low reserve | [security.md](research/security.md) §5 |
 | Dry-run fallback | Until the VPS exists, the 48 h live dry run runs on chained GitHub Actions jobs with state carried between them; lower fidelity (OPS-1). Free because `macdarenz-droid/Meme-snipe` is public (verified 2026-10-03) | §20 OPS-1 |
 | Standby (phase 2) | Exit-only worker on a second provider; its signer may only sell to SOL. A split brain cannot double-buy | same §5.3 |
-| Dashboard access | No inbound ports; Cloudflare Tunnel + Access (email OTP + MFA); passkey step-up in the app before paper→live, raising a limit, changing the withdrawal address (then a 24 h delay with notice) or withdrawing. The web tier only writes commands to the database; the worker checks them | same §6 |
+| Dashboard access | No inbound ports; Cloudflare Tunnel + Access (email OTP + MFA) on a domain in the owner's Cloudflare account. Until a domain exists the dashboard is not published from the host: the dry run runs headless (Telegram `/status`, evidence reports in the repo) and the app shows those reports; passkey step-up in the app before paper→live, raising a limit, changing the withdrawal address (then a 24 h delay with notice) or withdrawing. The web tier only writes commands to the database; the worker checks them | same §6 |
 | Telegram commands | `/pause` and `/status` only. Never resume, raise limits, withdraw or disable the signer | same §5.2 |
 
 Never serverless, a browser tab or a cron job as the owner of exits.
@@ -322,10 +322,22 @@ Never serverless, a browser tab or a cron job as the owner of exits.
 
 ### 12.2 Secrets entry
 
-No secret ever passes through chat, the repo, logs, analytics or a model prompt.
+No secret ever passes through chat, the repo, logs, analytics or a model prompt, and the owner never copies a key into a console.
 - **Bot wallet:** generated on the host by the signer itself; only the public address leaves the host.
-- **API keys (Helius, Alchemy, Jupiter, Telegram bot token):** entered by the owner either in the dashboard's protected settings page (passkey step-up; write-only fields that show only the last 4 characters; the worker stores them in an encrypted credential readable only by its own user) or directly on the VPS console. For the GitHub Actions fallback (OPS-1), the owner enters them as repository secrets in GitHub's settings page.
-- Agents only ever see the names of the settings, never their values.
+- **API keys (decided 2026-10-03):** the owner stores them as **GitHub repository secrets** (write-only; only this repo's workflows can read them):
+
+| Secret | Used for |
+| --- | --- |
+| `HELIUS_API_KEY` | RPC, Sender, priority-fee estimates, position WebSocket |
+| `ALCHEMY_API_KEY` | Second WebSocket provider (shortlist, position) |
+| `JUPITER_API_KEY` | Quotes, `/execute`, Tokens |
+| `TELEGRAM_BOT_TOKEN` | Alerts and `/pause`, `/status` |
+
+- The GitHub Actions dry-run fallback reads them as environment secrets directly.
+- The VPS receives them through the deploy handoff in OPS-1: encrypted on GitHub to a key that exists only on the host, so the plain values exist only inside GitHub's secret store and on the host (in an encrypted systemd credential readable only by the worker's user).
+- Rotation: the owner updates the secret in GitHub and re-runs the deploy workflow; the host replaces its credential and restarts the worker after reconciling.
+- A later dashboard settings page may accept keys too (passkey step-up, write-only fields); GitHub secrets stay the default.
+- Agents only ever see the names of the secrets, never their values. Workflows never echo them; logs are masked.
 
 ### 12.3 Supply chain
 
@@ -589,35 +601,28 @@ Critical path to the proof: ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) 
 
 ### Wave E (start the 48-hour live dry run the moment WORKER-1 and OPS-1 run)
 
-**OPS-1 Host, watchdog and alerts** · high · 2–2.5 h · depends on WORKER-1 · the VPS (~$6/month) and its accounts (VPS, Cloudflare, Telegram) are the owner's to pay for and create
-- Goal: §12 deployment for the live dry run, plus a zero-cost fallback so the pre-funding work never waits on the VPS.
-- Accept (VPS): provisioning script; systemd units; Cloudflare cron watchdog and Durable Object heartbeat; Telegram `/pause` and `/status` only; hourly encrypted backup; restore drill; keys entered as in §12.2.
-- Accept (fallback, used until the VPS exists): the 48 h live dry run on chained GitHub Actions jobs (free standard-runner minutes: the repo is public, verified 2026-10-03; if it ever goes private, GitHub Free's 2,000 minutes a month do not cover 48 h). Each job runs the worker for up to ~5 h 50 min, then saves state (SQLite ledger snapshot, recorder files, open paper positions and intents) as an encrypted artifact and triggers the next job, which restores and reconciles before any entry; **each job boundary counts as a restart drill**. Uses public or keyless endpoints where possible (PumpPortal free feed, Jupiter keyless 0.5 RPS, public RPC as a check), and free keys only as repository secrets entered by the owner. No signing key exists in this mode (dry-run simulation only).
-- The fallback is **lower fidelity** and its evidence is labelled as such: runner region is not Frankfurt (latency differs), shared runner IPs hit rate limits sooner, the public RPC is "not intended for production", gaps occur at each handover (measured and reported, counted against uptime), and GitHub may cancel or delay jobs. Pre-funding item 3 is fully met only by a run on the VPS; the fallback run counts toward items 1, 4 and 5 and the parity test, and lets item 3 be repeated quickly once the VPS exists.
-
-**TEST-1 Live recorder and parity test** · high · 2 h · depends on FEED-1, WORKER-1, BT-1
-- Goal: pre-funding item 1 on live data and the owner's parity proof.
-- Accept: recorder writes every raw live input with receipt time and slot in the backtest dataset format; recorded dry-run data replayed through BT-1 reproduces the live decision log exactly; 10 replays identical.
-
-**TEST-2 Dry-run transaction simulation** · high · 1.5–2 h · depends on TX-1, WORKER-1
-- Goal: pre-funding item 4.
-- Accept: during the dry run every paper entry and exit is built and simulated on mainnet with `sigVerify: false`, never sent (a test proves no send path exists in dry-run mode); success rate and |simulated − local quote| recorded per trade; report shows ≥ 95% and the tolerance.
-
-**TEST-3 Fault injection and dry-run drills** · high · 1.5–2 h · depends on WORKER-1
-- Goal: pre-funding items 3 and 5; §18 cases; G3 consistency report.
-- Accept: each case in §18 is a scripted fault with an expected outcome; restart and disconnect drills during the 48 h run; uptime, memory and journal completeness written to the evidence file; dry-run trades compared with the backtest holdout (G3).
+**OPS-1 Host, deploy, watchdog and alerts** · high · 2.5–3 h · depends on WORKER-1 · hosting approved by the owner 2026-10-03 (Vultr Frankfurt, Hetzner backup); owner has Cloudflare and Telegram accounts; a domain is not assumed
+- Goal: §12 deployment for the live dry run, with no secret copied by hand and no domain required, plus a zero-cost fallback so the pre-funding work never waits on the VPS.
+- **Install (pull-based, started once by the owner):** the owner pastes one command into the Vultr web console. It downloads the install script from a pinned commit of this public repo, checks its SHA-256 against the value printed in the README, creates the worker and signer users and systemd units, enables unattended security updates, closes all inbound ports (SSH key-only or off), generates the host's **age** key pair (private half stays on the host, root-only) and prints only the host's **public** key and a pairing code.
+- **Secret handoff (deploy workflow):** the owner runs the "Deploy" workflow in GitHub and pastes the host's public key into its form (a public key is not a secret). The workflow reads the four repository secrets (§12.2), encrypts them to that public key with age, and publishes the ciphertext as a short-lived release asset tagged with the pairing code. The host polls for it, decrypts, stores the values in encrypted systemd credentials, confirms by Telegram, and the workflow deletes the asset after confirmation or after 15 minutes. Code updates use the same pull path: the host fetches a signed tag from the repo and verifies it before restarting (reconcile first). Trade-off, recorded: ciphertext is briefly public; only the host's private key can open it.
+- **No domain needed:** the watchdog runs on the free `workers.dev` address; the worker posts its HMAC-signed heartbeat there and alerts go to Telegram. Dashboard publishing via Tunnel + Access waits for a domain; until then the dry run is headless.
+- Accept (VPS): the install and deploy flows work end to end on a fresh host with test secrets; no secret appears in any log, artifact, commit or the console; systemd units with the §12.1 hardening; Cloudflare cron watchdog and Durable Object heartbeat; Telegram `/pause` and `/status` only; hourly encrypted backup; restore drill; rotation by re-running the deploy workflow.
+- Accept (fallback, used until the VPS runs): the 48 h live dry run on chained GitHub Actions jobs (free standard-runner minutes: the repo is public, verified 2026-10-03; if it ever goes private, GitHub Free's 2,000 minutes a month do not cover 48 h). Each job reads the four secrets as environment secrets, runs the worker for up to ~5 h 50 min, then saves state (SQLite ledger snapshot, recorder files, open paper positions and intents) as an encrypted artifact and triggers the next job, which restores and reconciles before any entry; **each job boundary counts as a restart drill**. Public or keyless endpoints where possible (PumpPortal free feed, Jupiter keyless, public RPC as a check). No signing key exists in this mode (dry-run simulation only).
+- The fallback is **lower fidelity** and its evidence is labelled as such: runner region is not Frankfurt (latency differs), shared runner IPs hit rate limits sooner, the public RPC is "not intended for production", gaps occur at each handover (measured and reported, counted against uptime), and GitHub may cancel or delay jobs. Pre-funding item 3 is fully met only by a run on the VPS; the fallback run counts toward items 1, 4 and 5 and the parity test.
 
 ### Later (after the pre-funding gate is close)
 
 **SIGN-1 Isolated signer** · high · 3 h · owner approves (`packages/signer/**`) · depends on TX-1, OPS-1
 - §12.1 in full, with golden vectors from Kit in dev only and a policy test for every deny rule.
 
-Totals: Wave A 8–10 h, Wave B 10–13.5 h, Wave C 5–6.5 h, Wave D 4–6 h, Wave E 7–9 h, SIGN-1 3 h. About 37–48 h of build time; in waves of 3–5 parallel builders roughly 15–20 h of wall time plus reviews. Calendar time added on top: the backtest run itself (hours), the ≥ 48 h live dry run (runs in parallel with Wave E and later work), and DATA-1's collection of 30–60 days of history (its own estimate).
+Totals: Wave A 8–10 h, Wave B 10–13.5 h, Wave C 5–6.5 h, Wave D 4–6 h, Wave E 7.5–9.5 h, SIGN-1 3 h. About 38–49 h of build time; in waves of 3–5 parallel builders roughly 15–20 h of wall time plus reviews. Calendar time added on top: the backtest run itself (hours), the ≥ 48 h live dry run (runs in parallel with Wave E and later work), and DATA-1's collection of 30–60 days of history (its own estimate).
 
 ## 21. Open items
 
 Owner actions (no agent can do them):
-- Approve about $6/month hosting and create the accounts (VPS, Cloudflare, Telegram), and enter free API keys (Helius, Alchemy, Jupiter) through the protected settings page, the VPS console or GitHub secrets (§12.2), never in chat. Until then the dry run uses the GitHub Actions fallback (OPS-1).
+- Done 2026-10-03: hosting approved (Vultr Frankfurt about US$6/month, Hetzner backup); Cloudflare and Telegram accounts exist.
+- Create the Vultr server and paste the one install command (OPS-1); store `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY` and `TELEGRAM_BOT_TOKEN` as GitHub repository secrets (§12.2), never in chat. Until the server runs, the dry run uses the GitHub Actions fallback.
+- Say whether a domain on Cloudflare is available; without one the dashboard is not published from the host (the dry run does not need it).
 - Check the chosen exchange on AUSTRAC's VASP register; check "Zeroed" on IP Australia before public launch.
 
 Measured during paper mode: our own latency and landing rates; PumpPortal's missing creates over 24 h; graduation rate and survival under BOOST; σ̂ and intra-day correlation of backtest returns; Sender SWQoS-only landing under congestion; Nuremberg versus Frankfurt latency; whether Jupiter's 50 bps young-token fee appears.

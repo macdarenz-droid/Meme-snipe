@@ -30,7 +30,7 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-03 | Read rent live; close the token account in the sell transaction | Rent fell with SIMD-0437 and will fall again | [execution.md](research/execution.md) §6 |
 | 2026-10-03 | `@solana/kit` + Codama builders; no `@solana/web3.js`; signer has zero npm dependencies | Supply-chain attacks on key-holding bots | [execution.md](research/execution.md) §7, [security.md](research/security.md) §3 |
 | 2026-10-03 | SQLite WAL (`node:sqlite`) instead of Postgres for the single worker | Free hosted Postgres sleeps or expires; no second writer | [security.md](research/security.md) §4.3 |
-| 2026-10-03 | Host on a Frankfurt VPS (~$6/month), pending owner approval of the spend | Leader slots concentrate in Frankfurt | [security.md](research/security.md) §4 |
+| 2026-10-03 | Host on a Frankfurt VPS (~$6/month) | Leader slots concentrate in Frankfurt | [security.md](research/security.md) §4 |
 | 2026-10-03 | Local signer in an isolated process with a default-deny policy; no paid custody at this size; AWS KMS above ~$500 | Custody engines cannot check lookup-table addresses; per-signature fees exceed the edge | [security.md](research/security.md) §1–2 |
 | 2026-10-03 | Cloudflare cron watchdog with Durable Object heartbeat; Telegram limited to `/pause` and `/status` | Separate failure domain at $0; low-trust channels can only make things safer | [security.md](research/security.md) §5 |
 | 2026-10-03 | Labels: execution-aware triple barrier replayed per slot; validation: purged walk-forward, untouched holdout, experiment registry | Candle fills and multiple testing create false edges | [quant.md](research/quant.md) §1–2 |
@@ -44,6 +44,9 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-03 | LEDGER-1 data shape approved by the supervisor: public market data, the bot's decisions, trades, fills and labels, no personal data (supervisor) | `CLAUDE.md` stored-data ruling | [quant.md](research/quant.md) §9, [ARCHITECTURE.md](ARCHITECTURE.md) §20 |
 | 2026-10-03 | Secrets never pass through chat: the bot wallet is generated on the host; API keys entered by the owner in the dashboard's protected settings, the VPS console or GitHub secrets | Keys must never reach chat, repo, logs or prompts | `AGENTS.md`, [ARCHITECTURE.md](ARCHITECTURE.md) §12.2 |
 | 2026-10-03 | Zero-cost fallback for the 48 h dry run: chained GitHub Actions jobs with state carried between them, each boundary a restart drill; marked lower fidelity; the VPS run is still needed for full item 3 (supervisor) | Pre-funding work never waits on the owner's signup | [ARCHITECTURE.md](ARCHITECTURE.md) §20 OPS-1 |
+| 2026-10-03 | Hosting approved: Vultr High Performance Frankfurt, about US$6/month; Hetzner as backup (owner) | Owner approval of the spend | [security.md](research/security.md) §4, [ARCHITECTURE.md](ARCHITECTURE.md) §12 |
+| 2026-10-03 | API keys live as GitHub repository secrets `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN`; the VPS gets them through a deploy workflow that encrypts them to the host's own age key (owner, supervisor) | No secret copied by hand or through chat | [ARCHITECTURE.md](ARCHITECTURE.md) §12.2, §20 OPS-1 |
+| 2026-10-03 | Pull-based install started once from the Vultr console; no domain assumed: watchdog on `workers.dev`, dashboard publishing waits for a domain | Owner may not own a domain; the dry run is headless | [ARCHITECTURE.md](ARCHITECTURE.md) §20 OPS-1 |
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
