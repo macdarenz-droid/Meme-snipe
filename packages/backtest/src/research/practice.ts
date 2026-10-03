@@ -8,7 +8,6 @@ import { readFileSync } from 'node:fs';
 import type { HoldoutRegistry } from '../../../core/src/stats/index.ts';
 import type { ManifestDay } from '../dataset/dataset.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
-import { melbourneDay } from '../report.ts';
 
 export interface Regime {
   readonly label: string;
@@ -41,6 +40,11 @@ const utcMidnight = (day: string): number => {
   return ms;
 };
 
+// One formatter for every call: building an Intl.DateTimeFormat costs about 1 ms (measured: 31,000 calls took 33 s).
+const MELBOURNE = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' });
+/** YYYY-MM-DD in Melbourne (AEST/AEDT); the same output as report.ts's melbourneDay. */
+export const melbourneDay = (ms: number): string => MELBOURNE.format(ms);
+
 /** The instant a Melbourne day starts (UTC+10 or UTC+11). */
 export const melbourneStart = (day: string): number => {
   const utc = utcMidnight(day);
@@ -51,7 +55,6 @@ export const melbourneStart = (day: string): number => {
   throw new RangeError(`no Melbourne midnight found for ${day}`);
 };
 export const addDays = (day: string, n: number): string => new Date(utcMidnight(day) + n * DAY_MS).toISOString().slice(0, 10);
-export { melbourneDay };
 
 export class HoldoutWallError extends Error {
   override readonly name = 'HoldoutWallError';

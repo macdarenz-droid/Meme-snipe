@@ -11,9 +11,10 @@ import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
 import { observedFeeContext, replaySwap } from '../../core/src/fills/index.ts';
 import { bps } from '../../core/src/units/index.ts';
 import {
-  addDays, assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, latestRegime, melbourneStart, type PracticeWindow, readableDays, regimeAt, resolveWindow, wallDay, wallMs,
+  addDays, assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, latestRegime, melbourneDay, melbourneStart, type PracticeWindow, readableDays, regimeAt, resolveWindow, wallDay, wallMs,
 } from '../src/research/practice.ts';
 import { createHoldoutRegistry, registerHoldout } from '../../core/src/stats/index.ts';
+import { melbourneDay as reportDay } from '../src/report.ts';
 import { AsOfError, FEATURE_IDS, type Features, SignalTracker } from '../src/research/tracker.ts';
 import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
 
@@ -49,6 +50,8 @@ describe('holdout wall', () => {
     expect(new Date(wallMs(WINDOW)).toISOString()).toBe('2026-09-23T14:00:00.000Z');
     // After daylight saving starts (4 Oct 2026) Melbourne is UTC+11.
     expect(new Date(melbourneStart('2026-10-05')).toISOString()).toBe('2026-10-04T13:00:00.000Z');
+    // The cached formatter agrees with the report's.
+    for (const ms of [T0, Date.parse('2026-10-03T13:59:59Z'), Date.parse('2026-10-03T14:00:00Z'), Date.parse('2026-10-04T12:59:59Z')]) expect(melbourneDay(ms)).toBe(reportDay(ms));
   });
 
   test('holdout and embargo days are refused before any file is opened', () => {
@@ -259,7 +262,8 @@ describe('outcome stage', () => {
   test('a decision whose outcome window would reach the wall is purged, not scored', () => {
     // Data moved to 11:00–14:00 UTC on 20 Sep and cut at the wall (Melbourne 21 Sep = 20 Sep 14:00 UTC).
     const w: PracticeWindow = { ...WINDOW, holdoutFrom: '2026-09-22' };
-    const shifted = rows.map((r) => ({ ...r, blockTime: r.blockTime + 11 * 3600 })).filter((r) => r.blockTime * 1000 < wallMs(w));
+    const wall = wallMs(w);
+    const shifted = rows.map((r) => ({ ...r, blockTime: r.blockTime + 11 * 3600 })).filter((r) => r.blockTime * 1000 < wall);
     const res = collectCandidates(shifted, drive({ window: w }));
     expect(res.purged).toBeGreaterThan(0);
     expect(res.candidates).toEqual([]);
