@@ -11,6 +11,7 @@ import type { ReservationRequest } from './reservation.ts';
 import {
   CODE_CONTROL, type AccountHistory, type ClosedTrade, type EntryDecision, type EntryRequest, type ExitDecision,
   type Latches, type RiskCode, type RiskInput, type RiskReason, type RiskSnapshot, type SizeCapEntry, type Trip,
+  type WithdrawalDecision, type WithdrawalRequest,
 } from './types.ts';
 
 const BPS = BPS_DENOMINATOR;
@@ -47,24 +48,24 @@ const realizedBefore = (a: AccountHistory, t: number): { readonly equity: bigint
   flowsSince: sumBig(a.flows.filter((f) => f.atMs >= t).map((f) => f.amount)),
 });
 
-type AccountEvent = { readonly at: number; readonly kind: 'flow' | 'trade'; readonly amount: bigint };
+type AccountEvent = { readonly at: number; readonly kind: 'flow' | 'trade'; readonly amount: bigint; readonly navBefore: bigint };
 
 /**
  * Flows and closed trades in time order. At the same instant trades come first, then flows: trades are listed first
  * and Array.prototype.sort is stable.
  */
 const accountEvents = (a: AccountHistory): AccountEvent[] => [
-  ...a.closedTrades.map((c): AccountEvent => ({ at: c.closedAtMs, kind: 'trade', amount: c.netPnl })),
-  ...a.flows.map((f): AccountEvent => ({ at: f.atMs, kind: 'flow', amount: f.amount })),
+  ...a.closedTrades.map((c): AccountEvent => ({ at: c.closedAtMs, kind: 'trade', amount: c.netPnl, navBefore: 0n })),
+  ...a.flows.map((f): AccountEvent => ({ at: f.atMs, kind: 'flow', amount: f.amount, navBefore: f.navBefore })),
 ].sort((x, y) => x.at - y.at);
 
 /**
- * Time-weighted (unitized): a deposit or withdrawal scales a reference figure by the same proportion as equity
- * (equity after / equity before, rounded up), so the drawdown measured against it is unchanged by the flow. Equity at
- * or below zero is refused elsewhere (R1); there the flow is simply added.
+ * Time-weighted (unitized): units are issued or redeemed at the flow's executable valuation, so a deposit or withdrawal
+ * scales a per-unit reference figure by (value after / value before), rounded up, and the drawdown measured against
+ * it is unchanged by the flow. A non-positive valuation is refused (R1); there the flow is simply added.
  */
-const scaleByFlow = (reference: bigint, equityBefore: bigint, amount: bigint): bigint =>
-  equityBefore > 0n ? mulDiv(reference, equityBefore + amount, equityBefore, 'ceil') : reference + amount;
+const scaleByFlow = (reference: bigint, navBefore: bigint, amount: bigint): bigint =>
+  navBefore > 0n ? mulDiv(reference, navBefore + amount, navBefore, 'ceil') : reference + amount;
 
 /**
  * High-water mark of realized equity, time-weighted: trades raise it to a new equity peak, flows scale it with equity
@@ -77,7 +78,7 @@ const highWaterMark = (a: AccountHistory, rearmAtMs: number | null, nowMs: numbe
   let rearmPending = rearmAtMs !== null && rearmAtMs <= nowMs;
   for (const e of accountEvents(a)) {
     if (rearmPending && rearmAtMs !== null && e.at >= rearmAtMs) { hwm = equity; rearmPending = false; }
-    if (e.kind === 'flow') hwm = scaleByFlow(hwm, equity, e.amount);
+    if (e.kind === 'flow') hwm = scaleByFlow(hwm, e.navBefore, e.amount);
     equity += e.amount;
     if (e.kind === 'trade') hwm = maxBig(hwm, equity);
   }
@@ -86,12 +87,8 @@ const highWaterMark = (a: AccountHistory, rearmAtMs: number | null, nowMs: numbe
 
 /** The week's base, time-weighted: realized equity at the week start, scaled by every flow since. */
 const weekBase = (a: AccountHistory, weekStartMs: number, equityAtStart: bigint): bigint => {
-  let equity = equityAtStart;
   let base = equityAtStart;
-  for (const e of accountEvents(a).filter((x) => x.at >= weekStartMs)) {
-    if (e.kind === 'flow') base = scaleByFlow(base, equity, e.amount);
-    equity += e.amount;
-  }
+  for (const e of accountEvents(a).filter((x) => x.at >= weekStartMs && x.kind === 'flow')) base = scaleByFlow(base, e.navBefore, e.amount);
   return base;
 };
 
@@ -102,6 +99,7 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
   const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...a.entries.map((e) => e.atMs), ...latchTimes];
   if (times.some((t) => !isTime(t) || t > nowMs)) problems.push(reason('bankroll_invalid', 'account history or a latch has an invalid or future time'));
   if (a.heldReservations < 0n) problems.push(reason('bankroll_invalid', 'held reservations are negative'));
+  if (a.flows.some((f) => f.navBefore <= 0n)) problems.push(reason('bankroll_invalid', 'a deposit or withdrawal has no positive valuation'));
 
   // Marked loss of open positions. An unknown or stale mark counts as a total loss here, and refuses entries.
   let markedLoss = 0n;
@@ -141,6 +139,8 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
       equity: usd(equity), highWaterMark: usd(highWaterMark_), dayLoss: usd(dayLoss), weekLoss: usd(weekLoss),
       weekStartEquity: usd(atWeek.equity), weekBase: usd(base), weekBaseLoss: usd(maxBig(0n, base - equity)),
       openExposure: usd(openExposure), lossStreak,
+      dayChangeMarked: a.markedAtDayStart === null ? null : usd(equity - a.markedAtDayStart - atDay.flowsSince),
+      weekChangeMarked: a.markedAtWeekStart === null ? null : usd(equity - a.markedAtWeekStart - atWeek.flowsSince),
     },
   };
 };
@@ -486,4 +486,34 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
     allow: true, reasons: [], trips: check.trips, snapshot: s, notional, spendLamports: spend, maxCostsLamports: cMax,
     caps, roundTripPpm, loss, reservation,
   };
+};
+
+// ---------- Withdrawals ----------
+
+/**
+ * A withdrawal (first release, RISK-1b): queued while any position, unresolved entry or reservation is open or the
+ * account is not reconciled, and never into the operations reserve, so the SOL kept for exits, fees, pending
+ * transactions and full-loss exposure cannot leave. With nothing open, that is the live R4 reserve.
+ */
+export const evaluateWithdrawal = (input: RiskInput, request: WithdrawalRequest): WithdrawalDecision => {
+  const nowMs = clockNow(input);
+  const policy = input.session.policy;
+  const { account, market } = input;
+  const reasons: RiskReason[] = [];
+  if (request.amount <= 0n) reasons.push(reason('withdrawal_invalid', 'the amount must be positive'));
+  const open = account.openPositions.length + account.unresolvedEntries.length;
+  if (open > 0 || account.heldReservations > 0n) {
+    reasons.push(reason('withdrawal_queued', 'queued until no position, unresolved entry or reservation is open'));
+  }
+  if (!request.reconciled) reasons.push(reason('withdrawal_unreconciled', 'queued until the wallet and the ledger are reconciled'));
+  let free = 0n;
+  if (market.solBalance === null) reasons.push(reason('balance_unknown', 'no SOL balance'));
+  else if (!fresh(market.solBalance.atMs, nowMs, policy.gates.maxQuoteAgeMs)) reasons.push(reason('balance_stale', 'SOL balance is stale'));
+  else {
+    const perExitAttempt = maxTradeCosts(policy, request).perExitAttempt;
+    free = maxBig(0n, market.solBalance.value - opsReserve(policy, request, perExitAttempt));
+    if (request.amount > free) reasons.push(reason('withdrawal_over_free_cash', `at most ${free} lamports may leave; the rest is the operations reserve`));
+  }
+  const maxAmount = reasons.some((r) => r.code === 'withdrawal_queued' || r.code === 'withdrawal_unreconciled') ? 0n : free;
+  return { allow: reasons.length === 0, reasons, maxAmount };
 };

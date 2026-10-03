@@ -5,7 +5,7 @@ import { TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
 import { BASE_FEE_PER_SIGNATURE, type NetworkPolicy, type RentInputs, pumpSwapRoundTrip } from '../../src/costs/index.ts';
 import { type Mint, intentId, mint, reservationId } from '../../src/domain/index.ts';
 import {
-  type AccountHistory, type ClosedTrade, type EntryDecision, type EntryRequest, type Latches, type ReservationRequest,
+  type AccountHistory, type CashFlow, type ClosedTrade, type EntryDecision, type EntryRequest, type Latches, type ReservationRequest,
   type ReservationStore, type ReserveResult, type RiskCode, type RiskInput, NO_LATCHES, evaluateEntry, evaluateExit,
 } from '../../src/risk/index.ts';
 import { type Lamports, type MicroUsd, bps, lamports, solPriceMicroUsd } from '../../src/units/index.ts';
@@ -39,10 +39,27 @@ export const RENT: RentInputs = { tokenAccount: 1_513_840n, tokenAccountClosedOn
 
 export const clockAt = (ms: number) => ({ now: () => ({ receivedAt: ms }) });
 
-export const account = (patch: Partial<AccountHistory> = {}): AccountHistory => ({
-  openingEquity: usd('20'), openedAtMs: Date.UTC(2026, 8, 1), flows: [], closedTrades: [], openPositions: [], entries: [],
-  unresolvedEntries: [], heldReservations: lamports(0n), version: 0n, ...patch,
-});
+type FlowInput = Omit<CashFlow, 'navBefore'> & { readonly navBefore?: MicroUsd };
+/**
+ * A test account. A flow given without `navBefore` gets the realized equity just before it (trades at the same instant
+ * first), which is the executable valuation the ledger records when no position is open.
+ */
+export const account = (patch: Omit<Partial<AccountHistory>, 'flows'> & { readonly flows?: readonly FlowInput[] } = {}): AccountHistory => {
+  const opening = patch.openingEquity ?? usd('20');
+  const trades = patch.closedTrades ?? [];
+  const flowsIn = patch.flows ?? [];
+  const flows: CashFlow[] = flowsIn.map((f) => ({
+    ...f,
+    navBefore: f.navBefore ?? ((opening
+      + trades.filter((t) => t.closedAtMs <= f.atMs).reduce((n, t) => n + t.netPnl, 0n)
+      + flowsIn.filter((g) => g.atMs < f.atMs).reduce((n, g) => n + g.amount, 0n)) as MicroUsd),
+  }));
+  return {
+    openingEquity: opening, openedAtMs: Date.UTC(2026, 8, 1), closedTrades: [], openPositions: [], entries: [],
+    unresolvedEntries: [], heldReservations: lamports(0n), version: 0n, markedAtDayStart: null, markedAtWeekStart: null,
+    ...patch, flows,
+  };
+};
 
 export const trade = (closedAtMs: number, netPnl: string, patch: Partial<ClosedTrade> = {}): ClosedTrade => ({
   mint: MINT_B, openedAtMs: closedAtMs - 10 * MINUTE, closedAtMs, notional: usd('2'),

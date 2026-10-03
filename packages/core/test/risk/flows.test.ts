@@ -4,10 +4,10 @@
 // in dollars, flow-neutral. Every test here uses a flow; the same figures without the flow are checked alongside.
 import { describe, expect, test } from 'vitest';
 import { TRIAL_POLICY, usd } from '../../src/config/index.ts';
-import { type EntryAllowed, evaluateEntry, evaluateExit } from '../../src/risk/index.ts';
-import { type Lamports, type MicroUsd, lamportsToMicroUsd, mulDiv } from '../../src/units/index.ts';
+import { type EntryAllowed, NO_LATCHES, evaluateEntry, evaluateExit, evaluateWithdrawal, maxTradeCosts, opsReserve } from '../../src/risk/index.ts';
+import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, mulDiv } from '../../src/units/index.ts';
 import { fixedCosts } from '../../src/costs/index.ts';
-import { DAY_START, HOUR, NETWORK, NOW, PRICE, RENT, WEEK_START, account, baseInput, baseRequest, codes, trade } from './helpers.ts';
+import { DAY_START, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest, codes, trade } from './helpers.ts';
 
 const ofBpsUsd = (amount: bigint, bps: number) => mulDiv(amount, BigInt(bps), 10_000n, 'floor');
 
@@ -173,5 +173,82 @@ describe('RISK-1b edges (mutation)', () => {
     const stressedNum = q * (1777n * 10_000n + e * 10_000n - 1777n * e);
     expect(stressedNum % 100_000_000n).not.toBe(0n);
     expect(d.loss.stressed).toBe(mulDiv(q, 1777n * 10_000n + e * 10_000n - 1777n * e, 100_000_000n, 'ceil') + c);
+  });
+});
+
+// ---------- Follow-up rulings (DECISIONS, second round): equity units, withdrawals, boundaries ----------
+describe('equity units use one executable valuation before and after each flow', () => {
+  test('a withdrawal while a position shows a marked loss scales the mark at the marked value', () => {
+    // Realized $20, an open position marked $5 below cost (executable equity $15), withdraw $4: the mark scales by
+    // 11/15 (not by realized 16/20), so the drawdown stays 25% and nothing trips.
+    const f = { atMs: LAST_WEEK, amount: neg(usd('4')), navBefore: usd('15') };
+    const input = baseInput({ account: account({ flows: [f] }) });
+    expect(evaluateEntry(input, baseRequest()).snapshot?.highWaterMark).toBe(usd('14.666667'));
+  });
+  test('a flow without a positive valuation is refused (unknown is never assumed)', () => {
+    for (const navBefore of [0n, -1n]) {
+      const input = baseInput({ account: account({ flows: [{ atMs: LAST_WEEK, amount: usd('1'), navBefore: navBefore as MicroUsd }] }) });
+      expect(codes(evaluateEntry(input, baseRequest())), String(navBefore)).toContain('bankroll_invalid');
+    }
+  });
+  test('a deposit never resets a latched trigger', () => {
+    const deposit = [{ atMs: NOW - HOUR, amount: usd('50'), navBefore: usd('20') }];
+    const kill = baseInput({ account: account({ flows: deposit }), latches: { ...NO_LATCHES, killTrippedAtMs: NOW - 2 * HOUR } });
+    expect(codes(evaluateEntry(kill, baseRequest()))).toContain('kill_switch');
+    const weekly = baseInput({ account: account({ flows: deposit }), latches: { ...NO_LATCHES, weeklyTrippedAtMs: NOW - 2 * HOUR } });
+    expect(codes(evaluateEntry(weekly, baseRequest()))).toContain('weekly_review');
+  });
+});
+
+describe('withdrawals: queued while anything is open, never into the reserve', () => {
+  const sol = (n: bigint) => lamports(n * SOL);
+  const req = (amount: bigint, reconciled = true) => ({ amount: lamports(amount), network: NETWORK, rent: RENT, reconciled });
+  test('allowed when flat and reconciled, up to the balance less the operations reserve', () => {
+    const input = baseInput();
+    const d = evaluateWithdrawal(input, req(SOL / 2n));
+    expect(d).toMatchObject({ allow: true, reasons: [] });
+    const reserve = opsReserve(TRIAL_POLICY, { rent: RENT }, maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent: RENT }).perExitAttempt);
+    expect(d.maxAmount).toBe(SOL - reserve);
+    expect(evaluateWithdrawal(input, req(SOL - reserve)).allow).toBe(true);
+    expect(evaluateWithdrawal(input, req(SOL - reserve + 1n)).reasons.map((r) => r.code)).toEqual(['withdrawal_over_free_cash']);
+  });
+  test('queued while a position, an unresolved entry or a reservation is open, or before reconciliation', () => {
+    const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('2'), mark: usd('2'), markAtMs: NOW - 100 };
+    const cases: [string, ReturnType<typeof baseInput>, boolean][] = [
+      ['position', baseInput({ account: account({ openPositions: [open] }) }), true],
+      ['unresolved entry', baseInput({ account: account({ unresolvedEntries: [{ mint: MINT_A }] }) }), true],
+      ['held reservation', baseInput({ account: account({ heldReservations: lamports(1n) }) }), true],
+      ['not reconciled', baseInput(), false],
+    ];
+    for (const [name, input, reconciled] of cases) {
+      const d = evaluateWithdrawal(input, req(1_000n, reconciled));
+      expect(d.allow, name).toBe(false);
+      expect(d.reasons.map((r) => r.code), name).toContain(name === 'not reconciled' ? 'withdrawal_unreconciled' : 'withdrawal_queued');
+    }
+  });
+  test('an unknown or stale balance, or a non-positive amount, refuses', () => {
+    const i = baseInput();
+    expect(evaluateWithdrawal({ ...i, market: { ...i.market, solBalance: null } }, req(1_000n)).reasons.map((r) => r.code)).toContain('balance_unknown');
+    expect(evaluateWithdrawal({ ...i, market: { ...i.market, solBalance: { value: sol(1n), atMs: NOW - 60_000 } } }, req(1_000n)).reasons.map((r) => r.code)).toContain('balance_stale');
+    expect(evaluateWithdrawal(i, req(0n)).reasons.map((r) => r.code)).toContain('withdrawal_invalid');
+  });
+});
+
+describe('daily and weekly boundaries: the realized-boundary loss (kept) and the marked-boundary change (reported)', () => {
+  test('an open loss already counted yesterday is counted again today by the realized boundary, not by the marked one', () => {
+    // The position was opened yesterday and was already $1 down at midnight (marked equity $19 then). It has not moved.
+    const open = { mint: MINT_B, openedAtMs: DAY_START - 5 * HOUR, notional: usd('5'), mark: usd('4'), markAtMs: NOW - 100 };
+    const input = baseInput({ account: account({ openPositions: [open], markedAtDayStart: usd('19'), markedAtWeekStart: usd('19') }) });
+    const d = evaluateEntry(input, baseRequest());
+    expect(d.snapshot?.dayLoss).toBe(usd('1')); // counted again today (stricter; kept until the owner changes it)
+    expect(d.snapshot?.dayChangeMarked).toBe(0n); // no change since midnight at the same valuation
+    expect(d.snapshot?.weekChangeMarked).toBe(0n);
+  });
+  test('the marked-boundary change is net of flows, and unknown when no boundary valuation was recorded', () => {
+    const f = { atMs: DAY_START + HOUR, amount: neg(usd('5')), navBefore: usd('20') };
+    const input = baseInput({ account: account({ flows: [f], closedTrades: [trade(DAY_START + 2 * HOUR, '-0.5')], markedAtDayStart: usd('20'), markedAtWeekStart: null }) });
+    const d = evaluateEntry(input, baseRequest());
+    expect(d.snapshot?.dayChangeMarked).toBe(neg(usd('0.5')));
+    expect(d.snapshot?.weekChangeMarked).toBeNull();
   });
 });

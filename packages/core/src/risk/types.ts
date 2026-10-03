@@ -45,7 +45,9 @@ export type RiskCode =
   // R15 no martingale, policy locked
   | 'session_not_running' | 'add_to_position' | 'size_after_loss'
   // R16 regime gate
-  | 'regime_off' | 'regime_unknown';
+  | 'regime_off' | 'regime_unknown'
+  // Withdrawals (R4: the reserve and free cash)
+  | 'withdrawal_queued' | 'withdrawal_unreconciled' | 'withdrawal_over_free_cash' | 'withdrawal_invalid';
 
 export const CODE_CONTROL: Readonly<Record<RiskCode, ControlId>> = {
   bankroll_invalid: 'R1', sol_price_unknown: 'R1', sol_price_stale: 'R1', mark_unknown: 'R1', mark_stale: 'R1',
@@ -64,6 +66,7 @@ export const CODE_CONTROL: Readonly<Record<RiskCode, ControlId>> = {
   cost_gate: 'R14', median_target_invalid: 'R14', expected_net_not_positive: 'R14',
   session_not_running: 'R15', add_to_position: 'R15', size_after_loss: 'R15',
   regime_off: 'R16', regime_unknown: 'R16',
+  withdrawal_queued: 'R4', withdrawal_unreconciled: 'R4', withdrawal_over_free_cash: 'R4', withdrawal_invalid: 'R4',
 };
 
 export interface RiskReason {
@@ -108,6 +111,12 @@ export interface OpenPosition {
 export interface CashFlow {
   readonly atMs: number;
   readonly amount: MicroUsd;
+  /**
+   * Executable equity (realized plus open positions at their executable value, the same valuation as `equity`) just
+   * before the flow. Units are issued or redeemed at it: the flow scales the high-water mark and the week's base by
+   * (navBefore + amount) / navBefore. Must be positive; otherwise the history is refused.
+   */
+  readonly navBefore: MicroUsd;
 }
 
 /** Every entry that reserved exposure, whatever became of it (filled, failed, still unresolved). */
@@ -129,6 +138,9 @@ export interface AccountHistory {
   readonly unresolvedEntries: readonly { readonly mint: Mint }[];
   /** Lamports held by those reservations right now (the reservation store's total). */
   readonly heldReservations: Lamports;
+  /** Marked equity recorded at the start of today and of this week (same valuation as `equity`); null if not recorded. */
+  readonly markedAtDayStart: MicroUsd | null;
+  readonly markedAtWeekStart: MicroUsd | null;
   /**
    * The ledger's account version for this snapshot. It advances with every change to the account (reservation, release,
    * fill, position, closed trade, flow); the reservation store refuses a request made from an older version.
@@ -220,6 +232,14 @@ export interface RiskSnapshot {
   /** Remaining full loss of open positions (mark or cost, whichever is lower). */
   readonly openExposure: MicroUsd;
   readonly lossStreak: number;
+  /**
+   * Change since the start of today and of this week at one valuation: equity now − marked equity at the boundary − net
+   * flows since. Reported next to `dayLoss` / `weekLoss`, which measure from realized equity at the boundary and so
+   * count an open loss carried over the boundary again (stricter; kept until the owner changes it). Null when the
+   * boundary valuation was not recorded.
+   */
+  readonly dayChangeMarked: MicroUsd | null;
+  readonly weekChangeMarked: MicroUsd | null;
 }
 
 export type Trip = 'kill_switch' | 'weekly_loss';
@@ -261,6 +281,23 @@ export interface EntryRefused {
 }
 
 export type EntryDecision = EntryAllowed | EntryRefused;
+
+/** A withdrawal of SOL from the bot wallet to the owner's saved wallet (RISK-1b; first release). */
+export interface WithdrawalRequest {
+  readonly amount: Lamports;
+  /** For the live operations reserve (R4): exit attempts and rent at current rates. */
+  readonly network: NetworkPolicy;
+  readonly rent: RentInputs;
+  /** The wallet's balances and the ledger agree (the last reconcile found no difference and nothing is pending). */
+  readonly reconciled: boolean;
+}
+
+export interface WithdrawalDecision {
+  readonly allow: boolean;
+  readonly reasons: readonly RiskReason[];
+  /** Most lamports that may leave now: the balance less the operations reserve (0 while anything is open). */
+  readonly maxAmount: bigint;
+}
 
 export interface ExitDecision {
   readonly allow: true;
