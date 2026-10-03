@@ -6,6 +6,7 @@ import { recordFromRpc, transactionEvents, type RpcTransactionBase64 } from '../
 import type { RugConfig } from '../../../core/src/config/rugs.ts';
 import { RugLabeller, exitCostBps, type VenueState } from '../../../core/src/gates/index.ts';
 import { BPS_DENOMINATOR } from '../../../core/src/units/index.ts';
+import type { MarketEvent } from '../../../core/src/engine/index.ts';
 import { eventsOfFrame, rankIn, type Frame } from '../providers/canonical.ts';
 
 type TokenBalance = { readonly mint: string; readonly owner?: string; readonly uiTokenAmount: { readonly amount: string } };
@@ -57,8 +58,39 @@ export interface LaunchReport {
 const bps = (part: bigint, whole: bigint): number => (whole > 0n ? Number((part * BPS_DENOMINATOR) / whole) : 0);
 const big = (v: unknown): bigint => (typeof v === 'bigint' ? v : 0n);
 
+/** One transaction of a launch's history, decoded: what the analysis reads. */
+export interface LaunchStep {
+  readonly slot: bigint;
+  readonly blockTime: number | null;
+  readonly err: unknown;
+  /** DEC-1's events of the transaction. */
+  readonly events: readonly { readonly program: string; readonly name: string; readonly data?: unknown }[];
+  /** The same events as FEED-1 market events, for the labeller. */
+  readonly market: readonly MarketEvent[];
+  readonly preTokenBalances: readonly TokenBalance[] | null | undefined;
+  readonly postTokenBalances: readonly TokenBalance[] | null | undefined;
+}
+
+/** Decodes `getTransaction` results (oldest first) into steps, through DEC-1 and FEED-1's canonical events. */
+export const stepsOf = (txs: readonly { readonly signature: string; readonly rpc: FullRpcTransaction }[]): LaunchStep[] => {
+  const ranks = new Map<bigint, Map<string, number>>();
+  let seq = 0;
+  return txs.map(({ signature, rpc }) => {
+    const rec = recordFromRpc(signature, rpc);
+    const f: Frame = { seq: ++seq, receivedAt: (rec.blockTime ?? 0) * 1_000, source: 'helius', backfilled: true, place: { at: 'chain', slot: rec.slot }, duplicate: false, body: { type: 'tx', record: rec } };
+    const r = ranks.get(rec.slot) ?? new Map<string, number>();
+    ranks.set(rec.slot, r);
+    rankIn(r, f);
+    const market = eventsOfFrame(f, r).flatMap((e) => (e.kind === 'market' ? [e] : []));
+    return { slot: rec.slot, blockTime: rec.blockTime, err: rec.err, events: transactionEvents(rec), market, preTokenBalances: rpc.meta.preTokenBalances, postTokenBalances: rpc.meta.postTokenBalances };
+  });
+};
+
 /** Analyses one launch from its successful transactions, oldest first, inside the rugs window from its create. */
-export const analyzeLaunch = (txs: readonly { readonly signature: string; readonly rpc: FullRpcTransaction }[], rugs: RugConfig): LaunchReport | null => {
+export const analyzeLaunch = (txs: readonly { readonly signature: string; readonly rpc: FullRpcTransaction }[], rugs: RugConfig): LaunchReport | null => analyzeSteps(stepsOf(txs), rugs);
+
+/** The analysis on decoded steps (oldest first). */
+export const analyzeSteps = (steps: readonly LaunchStep[], rugs: RugConfig): LaunchReport | null => {
   const window = Math.max(rugs.creatorDump.windowMs, rugs.collapse.windowMs);
   let create: Record<string, unknown> | null = null;
   let pool: string | null = null;
@@ -85,7 +117,6 @@ export const analyzeLaunch = (txs: readonly { readonly signature: string; readon
       if (dumpAt === null && supply > 0n && age <= rugs.creatorDump.windowMs && total * BPS_DENOMINATOR >= supply * BigInt(rugs.creatorDump.supplyBps)) dumpAt = atMs;
     },
   });
-  const ranks = new Map<bigint, Map<string, number>>();
   let outsiderIn = 0n;
   let outsiderOut = 0n;
   let transferred = 0n;
@@ -95,12 +126,10 @@ export const analyzeLaunch = (txs: readonly { readonly signature: string; readon
   const recipients = new Set<string>();
   const bundle = new Set<string>();
   let createSlot: bigint | null = null;
-  let seq = 0;
   let count = 0;
-  for (const { signature, rpc } of txs) {
-    const rec = recordFromRpc(signature, rpc);
+  for (const rec of steps) {
     if (rec.err !== null) continue;
-    const evs = transactionEvents(rec);
+    const evs = rec.events;
     const c = evs.find((e) => e.name === 'CreateEvent' && e.program === 'pump');
     if (create === null && c !== undefined) {
       create = c.data as unknown as Record<string, unknown>;
@@ -112,11 +141,7 @@ export const analyzeLaunch = (txs: readonly { readonly signature: string; readon
     if ((rec.blockTime ?? 0) * 1_000 > t0 + window) break;
     count++;
     const deployer = new Set([create['creator'] as string, create['user'] as string]);
-    const f: Frame = { seq: ++seq, receivedAt: (rec.blockTime ?? 0) * 1_000, source: 'helius', backfilled: true, place: { at: 'chain', slot: rec.slot }, duplicate: false, body: { type: 'tx', record: rec } };
-    const r = ranks.get(rec.slot) ?? new Map<string, number>();
-    ranks.set(rec.slot, r);
-    rankIn(r, f);
-    for (const e of eventsOfFrame(f, r)) if (e.kind === 'market') labeller.observe(e);
+    for (const e of rec.market) labeller.observe(e);
     let deployerSoldHere = 0n;
     for (const e of evs) {
       if (e.name === 'other') continue;
@@ -147,13 +172,13 @@ export const analyzeLaunch = (txs: readonly { readonly signature: string; readon
     const add = (list: readonly TokenBalance[] | null | undefined, sign: bigint) => {
       for (const b of list ?? []) if (b.mint === mint && b.owner !== undefined) delta.set(b.owner, (delta.get(b.owner) ?? 0n) + sign * BigInt(b.uiTokenAmount.amount));
     };
-    add(rpc.meta.preTokenBalances, -1n);
-    add(rpc.meta.postTokenBalances, 1n);
+    add(rec.preTokenBalances, -1n);
+    add(rec.postTokenBalances, 1n);
     const out = [...deployer].reduce((a, w) => a - (delta.get(w) ?? 0n), 0n) - deployerSoldHere;
     if (out > 0n) {
       transferred += out;
-      const venues = new Set([create['bondingCurve'] as string, ...(pool === null ? [] : [pool])]);
-      for (const [owner, d] of delta) if (d > 0n && !deployer.has(owner) && !venues.has(owner)) recipients.add(owner);
+      // Every wallet whose balance rose is a recipient; the deployer and the venues never appear as a trade's user.
+      for (const [owner, d] of delta) if (d > 0n) recipients.add(owner);
     }
   }
   if (create === null) return null;
