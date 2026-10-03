@@ -34,6 +34,7 @@ wait_for() { # seconds description command
 
 cleanup() {
   [ -n "${FAKE_PID:-}" ] && kill "$FAKE_PID" 2>/dev/null || true
+  [ -n "${WD_PID:-}" ] && kill -- "-$WD_PID" 2>/dev/null || true # wrangler, its node and workerd children
   [ "$KEEP" = --keep ] && { echo "Kept container $C and $E2E"; return; }
   docker rm -f "$C" >/dev/null 2>&1 || true
 }
@@ -217,7 +218,12 @@ CODE2="$(in_c "zeroed-new-deploy-code" | tee "$LOGS/console/new-code.txt" | sed 
 [ "$(printf '%s' "$CODE2" | wc -w)" = 6 ] || fail "zeroed-new-deploy-code"
 CODES+=("$CODE2")
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents, 5 of 5'")"
-publish 1002 publish-rotate.log "$CODE2" || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
+T_CF="TESTcloudflare$(rnd 12)"
+publish 1002 publish-rotate.log "$CODE2" CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
+[ "$(in_c "systemd-creds decrypt --name=heartbeat_hmac_key /etc/credstore.encrypted/heartbeat_hmac_key - | sha256sum | cut -c1-64")" = "$(sha256sum <"$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY" | cut -c1-64)" ] || fail "server and watchdog got different heartbeat keys"
+in_c "grep -qx 'WATCHDOG_URL=https://zeroed-watchdog.e2e.workers.dev' /etc/zeroed/worker.env" || fail "watchdog address not delivered"
+[ "$(sort "$STATE/wrangler-calls.log" | tr '\n' ' ')" = "secret put HEARTBEAT_HMAC_KEY secret put TELEGRAM_BOT_TOKEN secret put TELEGRAM_WEBHOOK_SECRET " ] || fail "watchdog secrets"
+grep -q '"method":"setWebhook","token_ok":true' "$STATE/telegram.jsonl" && grep -q '"has_secret_token":true' "$STATE/telegram.jsonl" || fail "webhook not set with a secret token"
 for pair in "helius_api_key:$T_HELIUS" "alchemy_api_key:$T_ALCHEMY" "jupiter_api_key:$T_JUPITER" "telegram_bot_token:$T_TELEGRAM"; do
   want="$(printf '%s' "${pair#*:}" | sha256sum | cut -c1-64)"
   got="$(in_c "systemd-creds decrypt --name=${pair%%:*} /etc/credstore.encrypted/${pair%%:*} - | sha256sum | cut -c1-64")"
@@ -232,7 +238,7 @@ publish 1001 publish-older.log "$CODE3" HELIUS_API_KEY="TESTOLDER$(rnd 8)" || tr
 [ "$(in_c "sha256sum /etc/credstore.encrypted/* | sha256sum")" = "$before" ] || fail "an older issue number replaced keys"
 in_c "cat /var/lib/zeroed-host/handoff_status" | grep -qx 'replay refused' || fail "older bundle not refused"
 in_c "rm -f /etc/zeroed/deploy-code"
-pass "rotation: a new console code and a re-run of Deploy replaced all 4 keys, worker reconciled and restarted, owner told; a bundle with an older run number is refused"
+pass "rotation: a new console code and a re-run of Deploy replaced all 4 keys, deployed the watchdog (secrets, webhook) and gave the server its address and the same new heartbeat key; worker reconciled and restarted, owner told; a bundle with an older run number is refused"
 
 # ---------- 8. Code update gates ----------
 upd_run() { in_c "systemctl start zeroed-update.service" 2>/dev/null; }
@@ -271,6 +277,60 @@ grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-hos
 in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalendar --value zeroed-backup.timer" | grep -q 'OnCalendar=\*-\*-\* \*:00:00' || fail "backup timer is not hourly"
 pass "backup: hourly timer, $bk encrypted; restore drill PASS into a scratch directory, FAIL on a tampered file"
 
+# ---------- 9b. Watchdog on local wrangler (miniflare, the locked version from ops/watchdog/deploy) with the stub worker's real heartbeats ----------
+WD="$E2E/watchdog"
+mkdir -p "$WD"
+cp -r "$ROOT/packages/ops/src" "$ROOT/packages/ops/wrangler.toml" "$WD/"
+{
+  printf 'HEARTBEAT_HMAC_KEY=%s\n' "$(cat "$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY")"
+  printf 'TELEGRAM_BOT_TOKEN=%s\n' "$(cat "$STATE/wrangler-secrets/TELEGRAM_BOT_TOKEN")"
+  printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")"
+  printf 'TELEGRAM_API=http://127.0.0.1:%s\nCHAIN_RPC_URL=\nHEARTBEAT_MAX_AGE_S=10\n' "$PORT"
+} >"$WD/.dev.vars"
+curl -s -m 2 -o /dev/null http://127.0.0.1:443/ && fail "port 443 is already in use"
+(cd "$ROOT/ops/watchdog/deploy" && npm ci --ignore-scripts --no-audit --no-fund >/dev/null 2>&1) || fail "npm ci of the locked watchdog tooling"
+(cd "$WD" && exec setsid "$ROOT/ops/watchdog/deploy/node_modules/.bin/wrangler" dev --local --ip 0.0.0.0 --port 443 --test-scheduled) >"$LOGS/wrangler-dev.log" 2>&1 &
+WD_PID=$!
+wait_for 120 "wrangler dev up" "curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:443/heartbeat | grep -q 401"
+in_c "printf 'WATCHDOG_URL=http://$GW:443\nZEROED_HEARTBEAT_MS=3000\n' > /etc/zeroed/worker.env && systemctl restart zeroed-worker"
+sched() { curl -s "http://127.0.0.1:443/__scheduled?cron=*+*+*+*+*" >/dev/null; }
+hook() { # chat text [secret]
+  curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:443/telegram -H 'content-type: application/json' \
+    -H "x-telegram-bot-api-secret-token: ${3:-$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")}" \
+    -d "{\"message\":{\"chat\":{\"id\":$1},\"text\":\"$2\"}}"
+}
+sleep 8
+n0="$(wc -l <"$STATE/telegram.jsonl")"
+sched
+sleep 1
+[ "$(wc -l <"$STATE/telegram.jsonl")" = "$n0" ] || fail "watchdog alerted while heartbeats are fresh"
+[ "$(hook 777 /pause)" = 200 ] && [ "$(wc -l <"$STATE/telegram.jsonl")" = "$n0" ] || fail "stranger's /pause got an answer"
+[ "$(hook "$T_CHAT" /pause wrong-secret)" = 401 ] || fail "webhook accepted a wrong secret"
+hook "$T_CHAT" /pause >/dev/null
+wait_for 20 "worker applies /pause" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -q 'Entries paused by the owner'"
+hook "$T_CHAT" /status >/dev/null
+sleep 1
+tail -1 "$STATE/telegram.jsonl" | grep -q 'Entries: paused' || fail "/status reply"
+tail -1 "$STATE/telegram.jsonl" | grep -q '(stub worker)' || fail "/status shows the heartbeat"
+hook "$T_CHAT" /resume >/dev/null
+sleep 1
+tail -1 "$STATE/telegram.jsonl" | grep -q 'Commands: /pause, /status' || fail "/resume over Telegram was not refused"
+in_c "systemctl stop zeroed-worker"
+sleep 13
+sched
+wait_for 10 "stale-heartbeat alert" "tail -3 '$STATE/telegram.jsonl' | grep -q 'ALERT No heartbeat'"
+sched
+sleep 1
+[ "$(grep -c 'ALERT No heartbeat' "$STATE/telegram.jsonl")" = 1 ] || fail "alert repeated within 5 minutes"
+in_c "systemctl start zeroed-worker"
+sleep 6
+sched
+wait_for 10 "cleared line" "tail -3 '$STATE/telegram.jsonl' | grep -q 'CLEARED No heartbeat'"
+in_c "zeroed-resume" | grep -q 'Entries allowed again' || fail "zeroed-resume"
+wait_for 10 "resume notice" "tail -2 '$STATE/telegram.jsonl' | grep -q 'Entries allowed again'"
+tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -E '"method":"sendMessage"' | grep -v "\"chat_id\":\"$T_CHAT\"" | grep -q . && fail "the watchdog wrote to a chat other than the owner's"
+pass "watchdog (locked wrangler dev, miniflare): signed heartbeats from the host teach it the owner chat; quiet while fresh; /pause and /status only from the owner chat and the right webhook secret; worker applied pause; /resume refused over Telegram; stale alert once, cleared on return; resume only from the host"
+
 # ---------- 10. Restart and crash drills ----------
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents'")"
 in_c "systemctl restart zeroed-worker"
@@ -289,7 +349,7 @@ docker logs "$C" >"$LOGS/container-console.txt" 2>&1
 in_c "tar -c --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run/credentials --exclude=/opt/node-v22.23.3 --exclude=/usr --exclude=/opt/zeroed/repo --exclude=/opt/zeroed/releases / 2>/dev/null" >"$E2E/container-fs.tar" || true
 mkdir -p "$E2E/fs" && tar -xf "$E2E/container-fs.tar" -C "$E2E/fs" 2>/dev/null || true
 node -e 'for (const l of require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) console.log(JSON.parse(l).text)' "$STATE/telegram.jsonl" >"$LOGS/telegram-texts.txt"
-KEYS=("${VALUES_A[@]}" "$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM" "$T_CHAT")
+KEYS=("${VALUES_A[@]}" "$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM" "$T_CHAT" "$T_CF" "$(cat "$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY")" "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")")
 scan() { # label values-array-name paths...
   local label="$1" hits=0 v
   local -n vals="$2"
@@ -309,7 +369,7 @@ scan "keys in the repo" KEYS "$ROOT/ops" "$ROOT/packages/ops" "$ROOT/.github"
 # Deploy codes: shown on the console by design (the owner reads them there), nowhere else.
 NONCONSOLE=("$LOGS"/*.txt "$LOGS"/*.json "$LOGS"/*.log)
 scan "deploy codes outside the console" CODES "${NONCONSOLE[@]}" "$STATE/gh-calls.log" "$E2E/fs" "$ROOT/ops" "$ROOT/.github"
-pass "secret scan: none of ${#KEYS[@]} test values (4 pairing, 4 rotation, the chat id) in any log, console output, Telegram text, journal, container disk or the repo; none of ${#CODES[@]} deploy codes outside the console"
+pass "secret scan: none of ${#KEYS[@]} test values (4 pairing, 4 rotation, the chat id, Cloudflare token, heartbeat and webhook keys) in any log, console output, Telegram text, journal, container disk or the repo; none of ${#CODES[@]} deploy codes outside the console"
 
 echo
 echo "All checks passed. Logs: $LOGS"

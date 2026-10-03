@@ -61,6 +61,7 @@ function signerStatus() {
 }
 
 let seq = 0;
+const ownerChat = loaded.includes('telegram_chat_id') ? readFileSync(join(credDir, 'telegram_chat_id'), 'utf8').trim() : null;
 let paused = false;
 // The heartbeat key arrives with the watchdog (OPS-1b); until then no heartbeat is sent.
 const key = credDir && existsSync(join(credDir, 'heartbeat_hmac_key')) ? readFileSync(join(credDir, 'heartbeat_hmac_key'), 'utf8') : '';
@@ -85,6 +86,7 @@ async function beat() {
     lease_epoch: null,
     sol_reserve: null,
     paused,
+    owner_chat_id: ownerChat,
   });
   const t = Math.floor(Date.now() / 1000);
   const sig = createHmac('sha256', key).update(`${t}.${body}`).digest('hex');

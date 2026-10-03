@@ -11,10 +11,13 @@ lock
 # Until paired, read every message, so one sent while no code was pending never counts against a later code.
 [ -s "$CRED_DIR/telegram_bot_token" ] && ! paired || exit 0
 offset="$(cat "$STATE_DIR/tg_offset" 2>/dev/null || echo 0)"
-updates="$(tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]')" || {
-  log "Telegram getUpdates failed."
-  exit 0
-}
+get_updates() { tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]'; }
+if ! updates="$(get_updates 2>/dev/null)"; then
+  # Re-pairing after the watchdog set its webhook: Telegram refuses getUpdates while one is set. Turn the
+  # webhook off (the watchdog's /pause and /status stop until the next Deploy run sets it again).
+  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the watchdog's Telegram webhook for pairing; run Deploy afterwards to turn it back on." || true
+  updates="$(get_updates)" || { log "Telegram getUpdates failed."; exit 0; }
+fi
 want="$(cat "$PAIR_CODE_FILE" 2>/dev/null || true)"
 issued_at="$(stat -c %Y "$PAIR_CODE_FILE" 2>/dev/null || echo 0)"
 while IFS=$'\t' read -r id date chat text; do

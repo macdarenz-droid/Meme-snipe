@@ -56,6 +56,14 @@ for k in "${API_NAMES[@]}"; do
 done
 
 for k in "${API_NAMES[@]}"; do printf '%s' "${v[$k]}" | store_cred "${k,,}"; done
+# Watchdog (when Deploy had the Cloudflare secrets): its address and the heartbeat key.
+watchdog="${v[WATCHDOG_URL]:-}"
+if [ -n "$watchdog" ] && [[ "$watchdog" =~ ^https://[A-Za-z0-9.-]+\.workers\.dev$ ]] && [ -n "${v[HEARTBEAT_HMAC_KEY]:-}" ]; then
+  printf '%s' "${v[HEARTBEAT_HMAC_KEY]}" | store_cred heartbeat_hmac_key
+  printf 'WATCHDOG_URL=%s\n' "$watchdog" > /etc/zeroed/worker.env.new
+  chmod 0644 /etc/zeroed/worker.env.new
+  mv -f /etc/zeroed/worker.env.new /etc/zeroed/worker.env
+fi
 v=()
 printf '%s\n' "$issued" > "$STATE_DIR/last_issued"
 printf '%s\n' "$digest" > "$STATE_DIR/last_bundle"

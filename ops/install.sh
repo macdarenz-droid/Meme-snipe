@@ -288,6 +288,8 @@ LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key
 LoadCredentialEncrypted=jupiter_api_key:/etc/credstore.encrypted/jupiter_api_key
 LoadCredentialEncrypted=telegram_bot_token:/etc/credstore.encrypted/telegram_bot_token
 LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_id
+# Optional: present once Deploy delivered the watchdog (ImportCredential does not fail when it is missing).
+ImportCredential=heartbeat_hmac_key
 StateDirectory=zeroed
 StateDirectoryMode=0700
 UMask=0077
@@ -624,6 +626,7 @@ function signerStatus() {
 }
 
 let seq = 0;
+const ownerChat = loaded.includes('telegram_chat_id') ? readFileSync(join(credDir, 'telegram_chat_id'), 'utf8').trim() : null;
 let paused = false;
 // The heartbeat key arrives with the watchdog (OPS-1b); until then no heartbeat is sent.
 const key = credDir && existsSync(join(credDir, 'heartbeat_hmac_key')) ? readFileSync(join(credDir, 'heartbeat_hmac_key'), 'utf8') : '';
@@ -648,6 +651,7 @@ async function beat() {
     lease_epoch: null,
     sol_reserve: null,
     paused,
+    owner_chat_id: ownerChat,
   });
   const t = Math.floor(Date.now() / 1000);
   const sig = createHmac('sha256', key).update(`${t}.${body}`).digest('hex');
@@ -901,6 +905,14 @@ for k in "${API_NAMES[@]}"; do
 done
 
 for k in "${API_NAMES[@]}"; do printf '%s' "${v[$k]}" | store_cred "${k,,}"; done
+# Watchdog (when Deploy had the Cloudflare secrets): its address and the heartbeat key.
+watchdog="${v[WATCHDOG_URL]:-}"
+if [ -n "$watchdog" ] && [[ "$watchdog" =~ ^https://[A-Za-z0-9.-]+\.workers\.dev$ ]] && [ -n "${v[HEARTBEAT_HMAC_KEY]:-}" ]; then
+  printf '%s' "${v[HEARTBEAT_HMAC_KEY]}" | store_cred heartbeat_hmac_key
+  printf 'WATCHDOG_URL=%s\n' "$watchdog" > /etc/zeroed/worker.env.new
+  chmod 0644 /etc/zeroed/worker.env.new
+  mv -f /etc/zeroed/worker.env.new /etc/zeroed/worker.env
+fi
 v=()
 printf '%s\n' "$issued" > "$STATE_DIR/last_issued"
 printf '%s\n' "$digest" > "$STATE_DIR/last_bundle"
@@ -966,6 +978,26 @@ while read -r _ rel; do
 done < "$work/MANIFEST.sha256"
 [ "$files" -gt 0 ] || fail "backup holds no files"
 echo "PASS: $(basename "$backup"), $files file(s) restored to a scratch directory and verified."
+__ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-resume 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# Clears an owner /pause at the watchdog. Run as root at the host console; the request is signed with the
+# heartbeat key (read from its credential and passed on stdin, never as an argument).
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+. /etc/zeroed/worker.env
+[ -n "${WATCHDOG_URL:-}" ] || { log "No watchdog configured."; exit 1; }
+cred heartbeat_hmac_key | WATCHDOG_URL="$WATCHDOG_URL" /usr/local/bin/node --input-type=module -e '
+import { createHmac } from "node:crypto";
+let key = "";
+for await (const c of process.stdin) key += c;
+const body = "{}";
+const t = Math.floor(Date.now() / 1000);
+const sig = createHmac("sha256", key).update(`${t}.${body}`).digest("hex");
+const res = await fetch(`${process.env.WATCHDOG_URL}/resume`, { method: "POST", headers: { "content-type": "application/json", "x-zeroed-signature": `t=${t},v1=${sig}` }, body });
+console.log(res.ok ? "Entries allowed again." : `Watchdog refused: HTTP ${res.status}`);
+process.exit(res.ok ? 0 : 1);
+'
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-setup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1038,10 +1070,13 @@ lock
 # Until paired, read every message, so one sent while no code was pending never counts against a later code.
 [ -s "$CRED_DIR/telegram_bot_token" ] && ! paired || exit 0
 offset="$(cat "$STATE_DIR/tg_offset" 2>/dev/null || echo 0)"
-updates="$(tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]')" || {
-  log "Telegram getUpdates failed."
-  exit 0
-}
+get_updates() { tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]'; }
+if ! updates="$(get_updates 2>/dev/null)"; then
+  # Re-pairing after the watchdog set its webhook: Telegram refuses getUpdates while one is set. Turn the
+  # webhook off (the watchdog's /pause and /status stop until the next Deploy run sets it again).
+  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the watchdog's Telegram webhook for pairing; run Deploy afterwards to turn it back on." || true
+  updates="$(get_updates)" || { log "Telegram getUpdates failed."; exit 0; }
+fi
 want="$(cat "$PAIR_CODE_FILE" 2>/dev/null || true)"
 issued_at="$(stat -c %Y "$PAIR_CODE_FILE" 2>/dev/null || echo 0)"
 while IFS=$'\t' read -r id date chat text; do
