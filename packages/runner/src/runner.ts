@@ -770,10 +770,10 @@ export const recoveredState = (journal: readonly JournalLine[], boot: string, ca
   return { source, expected_pending_exits: expect.pending_exits, recovered_pending_exits: recoveredExits, missing, lost: [], state_ok: missing.length === 0, universe_ok: universesNamed && changed.length === 0, notes };
 };
 
-/** The reply at a kill can be trusted: pending exits are ids, and an open position names its universe. */
 /** A CFG-2 universe with its own exit parameters (U1, U2). 'unknown', or anything else, counts as missing. */
 export const knownUniverse = (u: unknown): boolean => typeof u === 'string' && (EXIT_UNIVERSES as readonly string[]).includes(u);
 
+/** The reply at a kill can be trusted: pending exits are ids, and an open position names a known universe. */
 export const killReplyValid = (h: Health | null): boolean =>
   h !== null &&
   Array.isArray(h.pending_exits) &&
