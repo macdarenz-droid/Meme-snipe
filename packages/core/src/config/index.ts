@@ -1,5 +1,6 @@
 export { sol, usd } from './amounts.ts';
 export { DAY_MS, HOUR_MS, MINUTE_MS, SECOND_MS } from './time.ts';
+export { PRICE_SCALE } from './scale.ts';
 export { APPROVED_BASELINES, DEFAULT_BASELINE_HASH } from './baselines.ts';
 export { canonicalPolicy, policyHash } from './hash.ts';
 export { loadPolicy, savePolicy } from './load.ts';
