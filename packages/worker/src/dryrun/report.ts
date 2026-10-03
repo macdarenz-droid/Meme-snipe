@@ -13,6 +13,19 @@ export const DRYRUN_GATE = {
   maxEachE4: 2 * E4_PER_POINT,
 } as const;
 
+export interface MechanicsDiagnostics {
+  readonly label: 'mechanics diagnostics; not a landing or rent-recovery probability';
+  /** Sells that close the position's token account in the real build. */
+  readonly finalExitSimulations: number;
+  /** Final exits that reached the simulation with the real close instruction in it. */
+  readonly withRealClose: number;
+  /** Of those, the ones that simulated successfully: a complete sell and close. */
+  readonly completeSellAndClose: number;
+  /** Final exits whose close was left out, by reason. */
+  readonly closeOmitted: number;
+  readonly closeOmittedReasons: readonly { readonly id: string; readonly reason: string }[];
+}
+
 export interface DryRunReport {
   readonly trades: number;
   readonly successes: number;
@@ -21,6 +34,11 @@ export interface DryRunReport {
   readonly outcomes: Readonly<Partial<Record<DryRunOutcome, number>>>;
   /** Trades whose stand-in build left out the base-account close. */
   readonly closeOmitted: number;
+  /**
+   * Mechanics diagnostics of the final exits (docs/DECISIONS.md, 90fac89): whether the sell and its close run, on a
+   * stand-in. Not a landing probability and not a rent-recovery probability: the rent model stays the modelled close.
+   */
+  readonly mechanics: MechanicsDiagnostics;
   /** Amount errors of the successful trades, in percentage points. */
   readonly medianErrorPoints: number | null;
   readonly maxErrorPoints: number | null;
@@ -33,6 +51,20 @@ export interface DryRunReport {
   /** All three pass, on at least one trade. */
   readonly pass: boolean;
 }
+
+export const mechanics = (records: readonly DryRunRecord[]): MechanicsDiagnostics => {
+  const finals = records.filter((r) => r.finalExit);
+  const withClose = finals.filter((r) => r.simulatedSlot !== null && r.standIn !== null && !r.standIn.closeOmitted);
+  const omitted = finals.filter((r) => r.standIn?.closeOmitted === true);
+  return {
+    label: 'mechanics diagnostics; not a landing or rent-recovery probability',
+    finalExitSimulations: finals.length,
+    withRealClose: withClose.length,
+    completeSellAndClose: withClose.filter((r) => r.success).length,
+    closeOmitted: omitted.length,
+    closeOmittedReasons: omitted.map((r) => ({ id: r.id, reason: r.standIn!.closeOmittedReason ?? 'no reason recorded' })),
+  };
+};
 
 export const dryRunReport = (records: readonly DryRunRecord[]): DryRunReport => {
   const trades = records.length;
@@ -59,6 +91,7 @@ export const dryRunReport = (records: readonly DryRunRecord[]): DryRunReport => 
     successPercent: trades === 0 ? 0 : (ok.length * 100) / trades,
     outcomes,
     closeOmitted: records.filter((r) => r.standIn?.closeOmitted).length,
+    mechanics: mechanics(records),
     medianErrorPoints: median2 === null ? null : median2 / 2 / E4_PER_POINT,
     maxErrorPoints: max === null ? null : max / E4_PER_POINT,
     worst: worstRec === null ? null : { id: worstRec.id, errorPoints: (worstRec.amountErrorE4 ?? Number.POSITIVE_INFINITY) / E4_PER_POINT },
