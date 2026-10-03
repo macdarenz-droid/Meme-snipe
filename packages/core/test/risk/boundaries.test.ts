@@ -202,7 +202,7 @@ describe('R4 reserve and cash', () => {
     expect(opsReserve(TRIAL_POLICY, { rent: RENT }, per)).toBe(TRIAL_POLICY.reserve.opsFloor);
   });
   test('cash after the reserve must cover q_min, C and transient rent, to the lamport', () => {
-    const rent = { ...RENT, transient: 20_000_000n };
+    const rent = { ...RENT, transient: 500_000_000n }; // a large transient need: cash binds while the wallet's value stays high
     const reserve = opsReserve(TRIAL_POLICY, { rent }, costs.perExitAttempt);
     const c = maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent }).total;
     const minSpend = microUsdToLamports(usd('2.000001'), PRICE, 'ceil');
@@ -502,7 +502,7 @@ describe('rounding edges', () => {
     expect(evaluateExit(input).tripped.map((r) => r.code)).toContain('weekly_loss');
   });
   test('R4 cash: one lamport short of the minimum spend refuses', () => {
-    const rent = { ...RENT, transient: 20_000_000n };
+    const rent = { ...RENT, transient: 500_000_000n }; // a large transient need: cash binds while the wallet's value stays high
     const reserve = opsReserve(TRIAL_POLICY, { rent }, costs.perExitAttempt);
     const c = maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent }).total;
     const minSpendUsd = lamportsToMicroUsd(microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil'), PRICE, 'ceil');

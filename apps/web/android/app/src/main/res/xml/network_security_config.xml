@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HTTPS only, with no exception for any host. The worker is reached as https://<machine>.<tailnet>.ts.net
+     through Tailscale's VPN; tailscale serve gives it a publicly trusted certificate, so the system store is enough. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

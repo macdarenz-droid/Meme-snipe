@@ -50,6 +50,7 @@ const holding = (o: Partial<Holding> & { pnl?: bigint; vault?: bigint } = {}): H
   const realized = rest.realized ?? 0n;
   return {
     status: 'open', quantity, sold: 0n, realized, exitCost: EXIT_COST, exitSeq: 1, exitAttempts: 0,
+    tokenAccountBalance: rest.tokenAccountBalance ?? quantity, closeFailed: false,
     costBasis: realized + valueAt(vault, quantity) - EXIT_COST - pnl, ...rest,
   };
 };
@@ -523,11 +524,12 @@ describe('a pool drained inside one update', () => {
   });
 });
 
+const blockedBook = (): Book => {
+  const step = decide(holding(), obs(NOW, 0n)).decision;
+  return apply(openBook(), exitBookEvents(PID, step, intentId('ex1'))).book;
+};
+
 describe('blocked exits: retried on the ladder, bounded, alerting', () => {
-  const blockedBook = (): Book => {
-    const step = decide(holding(), obs(NOW, 0n)).decision;
-    return apply(openBook(), exitBookEvents(PID, step, intentId('ex1'))).book;
-  };
 
   test('first seen blocked: wait; retry after blockedRetryMs at the last rung with one attempt', () => {
     const p = blockedBook().positions[PID]!;
@@ -560,8 +562,10 @@ describe('blocked exits: retried on the ladder, bounded, alerting', () => {
     expect(decide(h, obs(at, 0n), plan({ entryReserve: 1n }), t).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: pool has no usable reserves' });
     const v = valueAt(VAULT);
     const at0 = (retryCost: bigint) => ({ ...S, retryCost });
-    expect(decide(h, obs(at), plan(), t, at0(v)).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: the quote does not cover the attempt' });
-    expect(decide(h, obs(at), plan(), t, at0(v - 1n)).decision).toMatchObject({ kind: 'exit', retry: true });
+    // The least proceeds the last rung accepts must cover the attempt (EXIT-1b; the quote alone was not enough).
+    const least = (v * (10_000n - BigInt(G.ladder.steps[G.ladder.steps.length - 1]!.minOutBelowTriggerBps))) / 10_000n;
+    expect(decide(h, obs(at), plan(), t, at0(least)).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: the least accepted proceeds do not cover the attempt' });
+    expect(decide(h, obs(at), plan(), t, at0(least - 1n)).decision).toMatchObject({ kind: 'exit', retry: true });
     // The retry cost is base + the last rung's capped fee + tip, not the first-rung exit cost.
     const n = FILL_CONFIG.network;
     expect(S.retryCost).toBe(n.signaturesPerTx * n.baseFeePerSignature + G.ladder.maxFeePerAttempt + n.tip);
@@ -815,5 +819,158 @@ describe('policy validation of the new exit fields', () => {
     expect(policyIssues(withU2({ atrPeriod: 1 }))).toEqual([]);
     expect(policyIssues(withU2({ atrPeriod: 0 })).length).toBeGreaterThan(0);
     expect(policyIssues(withU2({ atrPeriod: 2.5 })).length).toBeGreaterThan(0);
+  });
+});
+
+// ---------- EXIT-1b (external review): each case first failed on the merged EXIT-1 ----------
+describe('EXIT-1b item 4: an exit quotes the quantity it sells', () => {
+  const tp = (R * BigInt(X.partialAtRBps)) / 10_000n;
+  test('a partial carries the quote for its own quantity, and the ladder, min-out and fill agree in an unchanged pool', () => {
+    const d = decide(holding({ pnl: tp }), obs(NOW)).decision;
+    if (d.kind !== 'exit') throw new Error('expected an exit');
+    expect(d.partial).toBe(true);
+    const half = valueAt(VAULT, d.quantity);
+    expect(d.value).toEqual({ ok: true, value: half });
+    expect(half).toBeLessThan(V0); // the whole holding's value is not what this order sells
+    if (!d.value.ok) throw new Error('unquotable');
+    // Every rung, the last included, accepts the fresh quote of the same quantity in the same pool.
+    for (let rung = 0; rung < G.ladder.steps.length; rung++) {
+      const p = planAttempt(G.ladder, 1, d.value.value, half, rung, 1);
+      expect(p, `rung ${rung}`).toMatchObject({ ok: true, rung });
+      if (!p.ok) continue;
+      const fill = poolSell(pool(VAULT), d.quantity, CTX);
+      expect(fill.ok && fill.trade.userQuote >= p.minOut, `rung ${rung}`).toBe(true);
+    }
+  });
+  test('a full exit still carries the whole holding\'s quote', () => {
+    const d = decide(holding(), obs(NOW), plan({ stopPrice: execPrice(V0, QTY) })).decision;
+    expect(d).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, value: { ok: true, value: V0 } });
+  });
+});
+
+describe('EXIT-1b item 5: a blocked retry must pay for itself after the worst slippage', () => {
+  test('the least proceeds the last rung accepts, not the quote, must exceed the attempt cost', () => {
+    const h = holdingOf(blockedBook().positions[PID]!);
+    const t = { ...newTracker(), blockedAtMs: 0 };
+    const at = G.blockedRetryMs;
+    const v = valueAt(VAULT);
+    const lastSlip = BigInt(G.ladder.steps[G.ladder.steps.length - 1]!.minOutBelowTriggerBps);
+    const leastProceeds = (v * (10_000n - lastSlip)) / 10_000n;
+    const withCost = (retryCost: bigint) => ({ ...S, retryCost });
+    // The quote is above the cost, but the least the last rung accepts is not: no retry.
+    expect(v).toBeGreaterThan(leastProceeds);
+    expect(decide(h, obs(at), plan(), t, withCost(leastProceeds)).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: the least accepted proceeds do not cover the attempt' });
+    expect(decide(h, obs(at), plan(), t, withCost(v - 1n)).decision.kind).toBe('hold');
+    expect(decide(h, obs(at), plan(), t, withCost(leastProceeds - 1n)).decision).toMatchObject({ kind: 'exit', retry: true });
+  });
+});
+
+describe('EXIT-1b item 6: when an in-flight partial resolves, the rest is reassessed at once', () => {
+  const tp = (R * BigInt(X.partialAtRBps)) / 10_000n;
+  test('a stop that fired during the partial exits the rest on the first step with a fresh quote, on the normal ladder', () => {
+    const stop = plan({ stopPrice: execPrice(V0, QTY) });
+    // The partial is in flight; the price stop fires on the whole holding and is merged into the partial's owner.
+    const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
+    expect(pending.decision.kind).toBe('merge');
+    const rest = holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2, exitAttempts: 1 });
+    // The partial fills while the market state is stale: a timing artefact, so it waits and keeps the stop.
+    const atFill = decideExit(S, stop, rest, pending.tracker, obs(NOW + 60_000, null));
+    expect(atFill.decision).toMatchObject({ kind: 'hold', detail: 'full exit remembered: waiting for a fresh quote' });
+    expect(atFill.tracker.pendingFull).toEqual(pending.tracker.pendingFull);
+    // 2 s later with a fresh quote the rest goes at once: no blocked retry, the next rung, the attempts left.
+    const after = decideExit(S, stop, rest, atFill.tracker, obs(NOW + 62_000));
+    expect(after.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, quantity: QTY / 2n, maxAttempts: G.ladder.maxAttempts - 1 });
+    if (after.decision.kind !== 'exit') return;
+    expect(after.decision.startRung).toBe(Math.min(Math.max(atFill.tracker.lastRung === null ? 0 : atFill.tracker.lastRung + 1, 1), G.ladder.steps.length - 1));
+    expect(after.decision.reasons).toContain('stop');
+    expect(after.decision.value.ok).toBe(true);
+    expect(after.decision.blocked).toBeNull();
+    // Once taken, the remembered trigger is cleared.
+    expect(after.tracker.pendingFull).toBeNull();
+  });
+  test('with a fresh quote, the remembered exit goes even when the price has recovered and nothing fires now', () => {
+    const stop = plan({ stopPrice: execPrice(V0, QTY) });
+    const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
+    const recovered = holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2, vault: VAULT * 2n, pnl: R });
+    const d = decideExit(S, stop, recovered, pending.tracker, obs(NOW + 1_000, VAULT * 2n));
+    expect(d.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, startRung: 0, maxAttempts: G.ladder.maxAttempts, fired: [] });
+    if (d.decision.kind !== 'exit') return;
+    expect(d.decision.reasons).toEqual(['stop']);
+    expect(d.tracker.pendingFull).toBeNull();
+  });
+  test('with no quote, a trigger that fires without one still takes the remembered exit at once', () => {
+    const stop = plan({ stopPrice: execPrice(V0, QTY) });
+    const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
+    const rest = holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 });
+    const late = decideExit(S, stop, rest, pending.tracker, obs(NOW + X.tMaxMs, null));
+    expect(late.decision).toMatchObject({ kind: 'exit', partial: false, retry: false });
+    if (late.decision.kind !== 'exit') return;
+    expect(late.decision.reasons).toEqual(expect.arrayContaining(['stop', 'max_hold']));
+    expect(late.decision.value.ok).toBe(false); // booked blocked by exitBookEvents through the quote-failure path
+    expect(late.tracker.pendingFull).toBeNull();
+  });
+  test('a take-profit merged into an in-flight exit is not remembered as a full exit', () => {
+    const pending = decide(holding({ status: 'exit_pending', pnl: tp }), obs(NOW));
+    expect(pending.tracker.pendingFull).toBeNull();
+  });
+});
+
+describe('EXIT-1b edges (mutation)', () => {
+  const L = G.ladder;
+  test('min-out rounds down, to the lamport', () => {
+    const trig = 1_000_003n; // trig x 9,200 is not a multiple of 10,000
+    const p = planAttempt(L, 1, trig, trig);
+    expect(p).toMatchObject({ ok: true, rung: 0, minOut: (trig * BigInt(10_000 - L.steps[0]!.minOutBelowTriggerBps)) / 10_000n });
+    expect((trig * BigInt(10_000 - L.steps[0]!.minOutBelowTriggerBps)) % 10_000n).not.toBe(0n);
+  });
+  test('the attempt number and start rung must be whole numbers', () => {
+    expect(() => planAttempt(L, 1.5, 1_000n, 1_000n)).toThrow(RangeError);
+    expect(() => planAttempt(L, Number.NaN, 1_000n, 1_000n)).toThrow(RangeError);
+    expect(() => planAttempt(L, 1, 1_000n, 1_000n, 0.5)).toThrow(RangeError);
+    expect(() => planAttempt(L, 1, 1_000n, 1_000n, Number.NaN)).toThrow(RangeError);
+  });
+  const afterPartial = { ...newTracker(), partials: 1, lastSold: QTY, flatMet: true };
+  const bars = flatBars(20, 1_000n, 0);
+  test('a runner with no quote yet: no trail, no break-even, no trailing stop, and nothing throws', () => {
+    const runner = holding({ sold: QTY });
+    const later = 21 * MINUTE_MS; // enough finished bars for an ATR
+    expect(atr(bars, X.atrPeriod, X.atrBarMs, later)).not.toBeNull();
+    const step = decide(runner, obs(later, null, { bars }), plan(), afterPartial);
+    expect(step.tracker.trail).toBeNull();
+    expect(codes(step.decision)).not.toContain('break_even');
+    const withTrail = decide(runner, obs(NOW, null, { bars }), plan(), { ...afterPartial, peak: 10n ** 30n, trail: 10n ** 30n });
+    expect(codes(withTrail.decision)).not.toContain('trailing_stop');
+  });
+  test('the exit taken after a partial resolves is an ordinary exit on the ladder, not a blocked retry', () => {
+    const stop = plan({ stopPrice: execPrice(V0, QTY) });
+    const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
+    const after = decideExit(S, stop, holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 }), pending.tracker, obs(NOW + 60_000));
+    expect(after.decision).toMatchObject({ kind: 'exit', retry: false, startRung: 0, maxAttempts: G.ladder.maxAttempts });
+  });
+});
+
+describe('EXIT-1b follow-up ruling: sell before reclaiming rent; a bounded sell-only recovery path', () => {
+  const stop = plan({ stopPrice: execPrice(V0, QTY) });
+  test('a full exit of a clean account sells and closes in one transaction (rent comes back only if it lands)', () => {
+    expect(decide(holding(), obs(NOW), stop).decision).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, closeAccount: true });
+  });
+  test('a partial never closes the account', () => {
+    const tp = (R * BigInt(X.partialAtRBps)) / 10_000n;
+    expect(decide(holding({ pnl: tp }), obs(NOW)).decision).toMatchObject({ kind: 'exit', partial: true, closeAccount: false });
+  });
+  test('dust or unsolicited tokens in the account do not block the sale: our quantity is sold and the account stays open', () => {
+    const extra = holding({ tokenAccountBalance: QTY + 1_000n });
+    expect(decide(extra, obs(NOW), stop).decision).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, closeAccount: false, value: { ok: true, value: V0 } });
+  });
+  test('after a sell-and-close failed at the close, later exits sell only, within the same ladder and retries', () => {
+    const failed = holding({ closeFailed: true, exitAttempts: 1 });
+    const d = decide(failed, obs(NOW), stop).decision;
+    expect(d).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, closeAccount: false, maxAttempts: G.ladder.maxAttempts - 1 });
+    // A blocked position retries sell-only too.
+    const blocked = { ...holdingOf(blockedBook().positions[PID]!), closeFailed: true };
+    const retry = decide(blocked, obs(G.blockedRetryMs), plan(), { ...newTracker(), blockedAtMs: 0 }).decision;
+    expect(retry).toMatchObject({ kind: 'exit', retry: true, closeAccount: false });
+    // Bounded: once the ladder is used, the exit is booked blocked like any other.
+    expect(decide({ ...failed, exitAttempts: G.ladder.maxAttempts }, obs(NOW), stop).decision).toMatchObject({ kind: 'exit', closeAccount: false, blocked: `exit ladder used: ${G.ladder.maxAttempts} attempts on this position` });
   });
 });

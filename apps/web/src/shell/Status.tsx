@@ -1,16 +1,19 @@
 import { useId } from 'react';
 import { Dot } from '../components/ui.tsx';
+import type { Connection } from '../api/connection.ts';
+import { connectionDot, connectionLabel } from '../screens/Server.tsx';
 import type { SessionView } from '../screens/types.ts';
 
 const SESSION_STATE: Record<SessionView['state'], string> = { 'not-started': 'Not started', running: 'Running', paused: 'Paused', ended: 'Ended' };
 
 export const sessionLabel = (s: SessionView) => SESSION_STATE[s.state];
-export const dataLabel = (s: SessionView) => (s.workerConnected ? 'Connected' : 'No feed');
+/** The server connection: "Not set", "Connecting", "Online" or "Offline · last update …". */
+export const dataLabel = (c: Connection) => connectionLabel(c);
 
 export const modeLabel = (s: SessionView) => (s.mode === 'live' ? 'Live' : 'Paper');
 
-/** Until the worker API exists there is no session and no data. */
-export function StatusList({ session }: { session: SessionView }) {
+/** Mode, session and the server connection, in the desktop rail. */
+export function StatusList({ session, conn }: { session: SessionView; conn: Connection }) {
   return (
     <dl className="status-list">
       <div>
@@ -28,7 +31,7 @@ export function StatusList({ session }: { session: SessionView }) {
       <div>
         <dt>Data</dt>
         <dd>
-          <Dot state={session.workerConnected ? 'on' : 'off'} /> {dataLabel(session)}
+          <Dot state={connectionDot(conn)} /> {dataLabel(conn)}
         </dd>
       </div>
     </dl>
