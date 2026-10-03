@@ -387,22 +387,24 @@ in_c "systemctl restart zeroed-signer && systemctl is-active zeroed-signer" >/de
 pass "drills: restart and kill -9 both brought the worker back with reconcile first ($r0 -> $r1 reconciles)"
 
 # ---------- 10b. Update gate during a qualifying dry run, install.sh --update, worker API ----------
+# has PATTERN: grep -q that reads all its input first, so an early match never breaks the pipe (pipefail).
+has() { local all; all="$(cat)"; grep -q "$@" <<<"$all"; }
 in_c "systemctl stop zeroed-check.timer" # the stages below run the check by hand, one run at a time
 chk() { in_c "systemctl start zeroed-check.service"; }
 jl() { in_c "journalctl -u $1 -o cat --no-pager"; }
 in_c "mkdir -p /var/lib/zeroed-dryrun/evidence/vps-e2e && printf '{\"name\":\"e2e-q\",\"label\":\"vps\",\"commit\":\"$signed\",\"startedAt\":1}' > /var/lib/zeroed-dryrun/evidence/vps-e2e/run.json"
 in_c "echo 0000000000000000000000000000000000000000 > /var/lib/zeroed-host/deployed"
 upd_run || true
-in_c "cat /var/lib/zeroed-host/deployed" | grep -qx 0000000000000000000000000000000000000000 || fail "deployed during an unfinished qualifying run"
-jl zeroed-update | grep -q "the qualifying dry run e2e-q is active" || fail "update gate reason (unfinished run) not logged"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x 0000000000000000000000000000000000000000 || fail "deployed during an unfinished qualifying run"
+jl zeroed-update | has "the qualifying dry run e2e-q is active" || fail "update gate reason (unfinished run) not logged"
 in_c "printf '{\"pass\":false}' > /var/lib/zeroed-dryrun/evidence/vps-e2e/report.json"
 in_c "systemd-run --quiet --unit=zeroed-dryrun@e2e-unit.service sleep 300"
 upd_run || true
-in_c "cat /var/lib/zeroed-host/deployed" | grep -qx 0000000000000000000000000000000000000000 || fail "deployed while a zeroed-dryrun@ unit is active"
-jl zeroed-update | grep -q "the qualifying dry run e2e-unit is active" || fail "update gate reason (active unit) not logged"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x 0000000000000000000000000000000000000000 || fail "deployed while a zeroed-dryrun@ unit is active"
+jl zeroed-update | has "the qualifying dry run e2e-unit is active" || fail "update gate reason (active unit) not logged"
 in_c "systemctl stop zeroed-dryrun@e2e-unit.service"
 upd_run || fail "update after the dry run ended"
-in_c "cat /var/lib/zeroed-host/deployed" | grep -qx "$signed" || fail "no deploy after the dry run ended"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "no deploy after the dry run ended"
 pass "update gate: no deploy while a named dry run has no report (after a reboot drill) or while a zeroed-dryrun@ unit is active; deploys once both end"
 
 # The release carries this branch's installer and RUN-1 units (a GitHub-signed merge of it would); its host
@@ -412,25 +414,25 @@ docker cp "$ROOT/ops/install.sh" "$C:/opt/zeroed/releases/$signed/ops/install.sh
 docker cp "$ROOT/packages/runner/systemd" "$C:/opt/zeroed/releases/$signed/packages/runner/systemd"
 in_c "rm -f /var/lib/zeroed-host/host_applied"
 upd_run || { in_c "cat /var/lib/zeroed-host/host_update.log"; fail "host apply"; }
-in_c "cat /var/lib/zeroed-host/host_applied" | grep -qx "$signed" || fail "host files not recorded as applied"
-jl zeroed-update | grep -q "Host files from ${signed:0:12} applied." || fail "host apply not logged"
+in_c "cat /var/lib/zeroed-host/host_applied" | has -x "$signed" || fail "host files not recorded as applied"
+jl zeroed-update | has "Host files from ${signed:0:12} applied." || fail "host apply not logged"
 for u in $(ls "$ROOT/packages/runner/systemd"); do in_c "cmp -s /etc/systemd/system/$u /opt/zeroed/current/packages/runner/systemd/$u" || fail "RUN-1 unit $u not installed"; done
 in_c "systemctl is-enabled zeroed-dryrun-tick.timer && systemctl is-active zeroed-dryrun-tick.timer && systemctl is-enabled zeroed-check.timer" >/dev/null || fail "tick or check timer not enabled"
 in_c "! systemctl is-enabled zeroed-dryrun@.service 2>/dev/null | grep -q enabled" || fail "the dry-run template was enabled"
-in_c "systemctl cat zeroed-dryrun@x.service" | grep -q -- '--health-addr 127.0.0.1:8788' || fail "runner unit not pointed at the worker API"
+in_c "systemctl cat zeroed-dryrun@x.service" | has -- '--health-addr 127.0.0.1:8788' || fail "runner unit not pointed at the worker API"
 in_c "! test -e /etc/zeroed/deploy-code" || fail "--update made a deploy code"
-in_c "nft list ruleset" | grep -q 'dport 22' && fail "--update opened SSH"
+in_c "nft list ruleset" | has 'dport 22' && fail "--update opened SSH"
 # SSH as the running firewall has it: kept open when it was open, kept closed when closed.
 in_c "sed -i 's/^#SSH_RULE#//' /etc/nftables.conf && nft -f /etc/nftables.conf"
 in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-ssh-open.txt" 2>&1 || fail "install --update (SSH open)"
-in_c "nft list ruleset" | grep -q 'tcp dport 22 .*accept' || fail "--update closed SSH that was open"
+in_c "nft list ruleset" | has 'tcp dport 22 .*accept' || fail "--update closed SSH that was open"
 in_c "sed -i 's/^\(    tcp dport 22\)/#SSH_RULE#\1/' /etc/nftables.conf && nft -f /etc/nftables.conf"
 in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-ssh-closed.txt" 2>&1 || fail "install --update (SSH closed)"
-in_c "nft list ruleset" | grep -q 'dport 22' && fail "--update opened SSH that was closed"
+in_c "nft list ruleset" | has 'dport 22' && fail "--update opened SSH that was closed"
 grep -q 'Deploy code' "$LOGS/console/update-ssh-open.txt" "$LOGS/console/update-ssh-closed.txt" && fail "--update showed a code"
-in_c "nft list ruleset" | grep -q 'iifname "tailscale0" tcp dport 443 accept' || fail "tailnet HTTPS rule"
+in_c "nft list ruleset" | has 'iifname "tailscale0" tcp dport 443 accept' || fail "tailnet HTTPS rule"
 wait_for 30 "worker running after the update" "docker exec $C systemctl is-active zeroed-worker"
-in_c "systemctl show -p ExecStart --value zeroed-worker" | grep -q /usr/local/lib/zeroed/worker-start || fail "worker not started by the wrapper"
+in_c "systemctl show -p ExecStart --value zeroed-worker" | has /usr/local/lib/zeroed/worker-start || fail "worker not started by the wrapper"
 pid="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
 in_c "tr '\0' '\n' < /proc/$pid/environ" >"$LOGS/worker-env.txt"
 for want in ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on ZEROED_HEALTH_ADDR=127.0.0.1:8788; do grep -qx "$want" "$LOGS/worker-env.txt" || fail "worker environment: $want"; done
@@ -440,7 +442,7 @@ in_c "curl -fsS http://127.0.0.1:8788/health" >"$LOGS/health.json"
 jq -e '.mode == "paper" and .signing_key == false and (.evidence | map(.id) | index("vps-e2e") != null) and (.evidence[] | select(.id == "vps-e2e") | .finished == true and .pass == false and .name == "e2e-q")' "$LOGS/health.json" >/dev/null || fail "health API does not list the evidence on the host"
 CIP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$C")"
 curl -s -m 3 -o /dev/null "http://$CIP:8788/health" && fail "the worker API answered on the public interface"
-in_c "zeroed-status" | grep -q 'Evidence:  /var/lib/zeroed-dryrun/evidence (1 runs)' || fail "status does not list the evidence"
+in_c "zeroed-status" | has 'Evidence:  /var/lib/zeroed-dryrun/evidence (1 runs)' || fail "status does not list the evidence"
 pass "install.sh --update through zeroed-update: RUN-1 units from the release installed (tick timer on, template off, runner on 127.0.0.1:8788), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on; worker API on loopback only lists the evidence kept on the host"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
@@ -450,28 +452,28 @@ n0="$(wc -l <"$STATE/telegram.jsonl")"
 printf '{"url":"https://evil.example/hook"}' >"$STATE/webhook.json"
 touch "$STATE/fail-setWebhook"
 chk
-tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT\",\"text\":\"ALERT Zeroed host: the Telegram webhook changed (now: evil.example)" || fail "no alert on a changed webhook"
-in_c "cat /var/lib/zeroed-host/webhook_tries" | grep -qx 1 || fail "first retry not counted"
+tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | has "\"chat_id\":\"$T_CHAT\",\"text\":\"ALERT Zeroed host: the Telegram webhook changed (now: evil.example)" || fail "no alert on a changed webhook"
+in_c "cat /var/lib/zeroed-host/webhook_tries" | has -x 1 || fail "first retry not counted"
 due="$(in_c "echo \$((\$(cat /var/lib/zeroed-host/webhook_next) - \$(date +%s)))")"
 [ "$due" -ge 50 ] && [ "$due" -le 60 ] || fail "back-off after the first failure is $due s, not 1 minute"
 chk
-in_c "cat /var/lib/zeroed-host/webhook_tries" | grep -qx 1 || fail "retried before the back-off ran out"
+in_c "cat /var/lib/zeroed-host/webhook_tries" | has -x 1 || fail "retried before the back-off ran out"
 for i in 2 3 4 5; do
   in_c "echo 0 > /var/lib/zeroed-host/webhook_next"
   chk
-  in_c "cat /var/lib/zeroed-host/webhook_tries" | grep -qx "$i" || fail "try $i not counted"
-  if [ "$i" -lt 5 ]; then tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q 'could not set the Telegram webhook' && fail "owner told before 5 failed tries"; fi
+  in_c "cat /var/lib/zeroed-host/webhook_tries" | has -x "$i" || fail "try $i not counted"
+  if [ "$i" -lt 5 ]; then tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | has 'could not set the Telegram webhook' && fail "owner told before 5 failed tries"; fi
 done
 [ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c "\"chat_id\":\"$T_CHAT\",\"text\":\"Zeroed host: could not set the Telegram webhook after 5 tries")" = 1 ] || fail "no single notice after 5 failed tries"
 [ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c '"method":"setWebhook".*"failed":true')" = 5 ] || fail "not 5 failed setWebhook calls"
-in_c "zeroed-status" | grep -q 'Webhook:   not set (5 failed tries; retrying)' || fail "status does not show the failing webhook"
+in_c "zeroed-status" | has 'Webhook:   not set (5 failed tries; retrying)' || fail "status does not show the failing webhook"
 rm -f "$STATE/fail-setWebhook"
 in_c "echo 0 > /var/lib/zeroed-host/webhook_next"
 chk
 jq -e --arg u "$WD_URL" '.url == $u' "$STATE/webhook.json" >/dev/null || fail "webhook not set back to the watchdog"
-tail -2 "$STATE/telegram.jsonl" | grep -q 'the Telegram webhook is set again' || fail "no line when the webhook is set again"
+tail -2 "$STATE/telegram.jsonl" | has 'the Telegram webhook is set again' || fail "no line when the webhook is set again"
 chk
-tail -1 "$STATE/telegram.jsonl" | grep -q 'CLEARED Zeroed host: the Telegram webhook is back' || fail "changed-webhook alert not cleared"
+tail -1 "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: the Telegram webhook is back' || fail "changed-webhook alert not cleared"
 n1="$(wc -l <"$STATE/telegram.jsonl")"
 chk
 [ "$(wc -l <"$STATE/telegram.jsonl")" = "$n1" ] || fail "the check spoke while the webhook is right"
@@ -485,19 +487,19 @@ chk
 [ "$(wc -l <"$STATE/telegram.jsonl")" = "$n0" ] || fail "key check alerted on good keys"
 printf '%s' "$T_OTHER" | docker exec -i "$C" systemd-creds encrypt --with-key=host --name=jupiter_api_key - /etc/credstore.encrypted/jupiter_api_key
 chk
-tail -1 "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT\",\"text\":\"ALERT Zeroed host: stored key check failed: jupiter_api_key (changed outside a key handoff)" || fail "no alert for a replaced key"
+tail -1 "$STATE/telegram.jsonl" | has "\"chat_id\":\"$T_CHAT\",\"text\":\"ALERT Zeroed host: stored key check failed: jupiter_api_key (changed outside a key handoff)" || fail "no alert for a replaced key"
 chk
 [ "$(grep -c 'stored key check failed' "$STATE/telegram.jsonl")" = 1 ] || fail "key alert repeated"
-in_c "zeroed-status" | grep -q 'Key check: FAILED: jupiter_api_key' || fail "status does not show the failed key"
+in_c "zeroed-status" | has 'Key check: FAILED: jupiter_api_key' || fail "status does not show the failed key"
 in_c "cp -p /root/jup.bak /etc/credstore.encrypted/jupiter_api_key"
 chk
-tail -1 "$STATE/telegram.jsonl" | grep -q 'CLEARED Zeroed host: every stored key passes its check again' || fail "key alert not cleared"
+tail -1 "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: every stored key passes its check again' || fail "key alert not cleared"
 in_c "printf 'x' | dd of=/etc/credstore.encrypted/jupiter_api_key bs=1 seek=100 conv=notrunc 2>/dev/null"
 chk
-tail -1 "$STATE/telegram.jsonl" | grep -q 'stored key check failed: jupiter_api_key (does not open)' || fail "no alert for a key that does not open"
+tail -1 "$STATE/telegram.jsonl" | has 'stored key check failed: jupiter_api_key (does not open)' || fail "no alert for a key that does not open"
 in_c "mv /root/jup.bak /etc/credstore.encrypted/jupiter_api_key"
 chk
-tail -1 "$STATE/telegram.jsonl" | grep -q 'CLEARED Zeroed host: every stored key' || fail "key alert not cleared after restore"
+tail -1 "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: every stored key' || fail "key alert not cleared after restore"
 pass "key check: quiet on good keys; a key re-encrypted outside the handoff and a key that does not open each alert once (names only), shown in zeroed-status, cleared once restored"
 
 # ---------- 10e. Re-pairing a paired server ----------
@@ -509,8 +511,8 @@ grep -q 'Cancelled. Nothing changed.' "$LOGS/console/repair-no.txt" && in_c "! t
 # A wrong code: the re-pair is cancelled, the old chat stays and gets its webhook back.
 RP="$(repair_code)"
 [[ "$RP" =~ ^[0-9]{6}$ ]] || fail "no re-pair code"
-tail -1 "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT\",\"text\":\"Zeroed host: a new Telegram pairing was started" || fail "current chat not told about the re-pair"
-in_c "zeroed-status" | grep -q "new pairing pending: /pair $RP within 30 minutes" || fail "status does not show the pending re-pair"
+tail -1 "$STATE/telegram.jsonl" | has "\"chat_id\":\"$T_CHAT\",\"text\":\"Zeroed host: a new Telegram pairing was started" || fail "current chat not told about the re-pair"
+in_c "zeroed-status" | has "new pairing pending: /pair $RP within 30 minutes" || fail "status does not show the pending re-pair"
 send_tg "$T_CHAT2" "/pair 000000"
 grep -q '"method":"deleteWebhook"' "$STATE/telegram.jsonl" || fail "webhook not turned off to read /pair"
 chat_is "$T_CHAT" || fail "a wrong re-pair code moved the chat"
@@ -521,7 +523,7 @@ RP="$(repair_code)"
 in_c "touch -d '31 minutes ago' /etc/zeroed/pair-code && systemctl start zeroed-pair.service"
 in_c "! test -e /etc/zeroed/pair-code" || fail "an expired code was kept"
 chat_is "$T_CHAT" || fail "expiry moved the chat"
-tail -3 "$STATE/telegram.jsonl" | grep -q 'the new pairing code expired. This chat stays paired.' || fail "expiry not told"
+tail -3 "$STATE/telegram.jsonl" | has 'the new pairing code expired. This chat stays paired.' || fail "expiry not told"
 jq -e --arg u "$WD_URL" '.url == $u' "$STATE/webhook.json" >/dev/null || fail "webhook not back after expiry"
 # Success while a dry run is active: the chat moves at once, the worker restart waits for the run.
 in_c "rm -f /var/lib/zeroed-dryrun/evidence/vps-e2e/report.json"
@@ -545,7 +547,7 @@ pass "re-pair: asks first (no = nothing changes); the current chat is told and s
 # ---------- 10f. Live view (Tailscale stand-in: no network in the test) ----------
 docker cp "$STUBS/tailscale" "$C:/usr/local/bin/tailscale"
 in_c "printf '[Service]\nExecStart=/bin/sleep infinity\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/tailscaled.service && systemctl daemon-reload"
-in_c "zeroed-status" | grep -q 'Live view: off' || fail "status before the live view"
+in_c "zeroed-status" | has 'Live view: off' || fail "status before the live view"
 in_c "zeroed-tailscale" >"$LOGS/console/tailscale.txt" 2>&1 &
 TS_PID=$!
 wait_for 30 "login link shown" "grep -q 'https://login.tailscale.com/a/e2e0a1b2c3d4' '$LOGS/console/tailscale.txt'"
@@ -555,22 +557,22 @@ wait "$TS_PID" || { cat "$LOGS/console/tailscale.txt"; fail "zeroed-tailscale"; 
 grep -q 'Live view: https://zeroed.tail-e2e.ts.net (your tailnet only, HTTPS, Funnel off).' "$LOGS/console/tailscale.txt" || fail "live view address"
 in_c "cat /var/lib/tailscale-stub/calls" >"$LOGS/tailscale-calls.txt"
 grep -qx 'up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m' "$LOGS/tailscale-calls.txt" && grep -qx 'funnel --https=443 off' "$LOGS/tailscale-calls.txt" && grep -qx 'serve --bg --https=443 http://127.0.0.1:8788' "$LOGS/tailscale-calls.txt" || fail "tailscale calls"
-in_c "zeroed-status" | grep -q 'Live view: https://zeroed.tail-e2e.ts.net' || fail "status after the live view"
-in_c "zeroed-tailscale" | grep -q 'Live view: https://zeroed' || fail "zeroed-tailscale is not safe to repeat"
+in_c "zeroed-status" | has 'Live view: https://zeroed.tail-e2e.ts.net' || fail "status after the live view"
+in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale is not safe to repeat"
 # Funnel switched on by someone: alert, turned off, then cleared; installs run the same check.
 in_c "jq '.AllowFunnel = {\"zeroed.tail-e2e.ts.net:443\": true}' /var/lib/tailscale-stub/serve.json > /tmp/s && mv /tmp/s /var/lib/tailscale-stub/serve.json"
 chk
-tail -1 "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT2\",\"text\":\"ALERT Zeroed host: Tailscale Funnel was on (zeroed.tail-e2e.ts.net:443 )" || fail "no alert for Funnel on"
+tail -1 "$STATE/telegram.jsonl" | has "\"chat_id\":\"$T_CHAT2\",\"text\":\"ALERT Zeroed host: Tailscale Funnel was on (zeroed.tail-e2e.ts.net:443 )" || fail "no alert for Funnel on"
 in_c "jq -e '(.AllowFunnel // {}) | length == 0' /var/lib/tailscale-stub/serve.json" >/dev/null || fail "Funnel not turned off"
 chk
-tail -1 "$STATE/telegram.jsonl" | grep -q 'CLEARED Zeroed host: Tailscale Funnel is off.' || fail "Funnel alert not cleared"
+tail -1 "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: Tailscale Funnel is off.' || fail "Funnel alert not cleared"
 in_c "jq '.AllowFunnel = {\"zeroed.tail-e2e.ts.net:443\": true}' /var/lib/tailscale-stub/serve.json > /tmp/s && mv /tmp/s /var/lib/tailscale-stub/serve.json"
 in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-funnel.txt" 2>&1 || fail "install --update (Funnel on)"
 in_c "jq -e '(.AllowFunnel // {}) | length == 0' /var/lib/tailscale-stub/serve.json" >/dev/null || fail "the installer's check left Funnel on"
 grep -q 'ALERT Zeroed host: Tailscale Funnel was on' <(tail -3 "$STATE/telegram.jsonl") || fail "the installer's check raised no Funnel alert"
 in_c "systemctl stop zeroed-check.timer"
 chk
-in_c "zeroed-tailscale --off" | grep -q 'Live view off' && grep -qx 'serve reset' <(in_c "cat /var/lib/tailscale-stub/calls") || fail "zeroed-tailscale --off"
+in_c "zeroed-tailscale --off" | has 'Live view off' && grep -qx 'serve reset' <(in_c "cat /var/lib/tailscale-stub/calls") || fail "zeroed-tailscale --off"
 pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
 
 # ---------- 11. Secret scan ----------
