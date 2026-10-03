@@ -250,12 +250,33 @@ class LedgerReads {
     return this.heldReservations().reduce((t, r) => t + r.amount, 0n) as Lamports;
   }
 
-  /**
-   * The account version a risk snapshot is taken at (RISK-1 `AccountHistory.version`). Read it in the same read as
-   * the snapshot; `reserveExposure` refuses a reservation made from an older version.
-   */
+  /** The account version now, on its own. To pair it with the reads a risk snapshot is built from, use `withSnapshot`. */
   accountVersion(): bigint {
     return accountVersionIn(this.#db);
+  }
+
+  /**
+   * Builds a risk snapshot in one read transaction: the account version is read first, then `read` runs, and every
+   * read inside it (through this object) sees the same database state as that version, whatever another connection
+   * writes meanwhile. The reservation made from the snapshot passes `version` (RISK-1 `AccountHistory.version`), so it
+   * is refused if anything changed since. Inside a transaction already open on this connection, it joins it.
+   */
+  withSnapshot<T>(read: (version: bigint) => T): { readonly version: bigint; readonly value: T } {
+    const db = this.#db;
+    if (db.isTransaction) {
+      const version = accountVersionIn(db);
+      return { version, value: read(version) };
+    }
+    db.exec('BEGIN');
+    try {
+      const version = accountVersionIn(db);
+      const value = read(version);
+      db.exec('COMMIT');
+      return { version, value };
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   /** Effects written but not yet marked done, in the order they were written. */
@@ -481,7 +502,10 @@ export class Ledger extends LedgerReads {
     if (rows === null) return { book, effects: step.effects };
     const name = rowEventName(event);
     const ts = o.ts;
+    const reserves = rows.intents.some((id) => book.intents[id]?.reservation != null && before.intents[id]?.reservation == null);
     this.atomically(() => {
+      // Checked once, before this event writes anything: a multi-intent event may itself add fills or positions.
+      if (reserves) checkSnapshotVersion(this.#db, o.accountVersion);
       rows.intents.forEach((id, k) => {
         const s = book.intents[id]!;
         const was = before.intents[id];
@@ -497,7 +521,7 @@ export class Ledger extends LedgerReads {
         for (const f of s.fills) if (!booked.has(f.signature)) this.recordFill(f, ts);
         const r = s.reservation;
         if (r !== null && was?.reservation == null) {
-          const res = this.reserveExposure({ reservationId: r.id, intentId: id, amount: r.amount, limits: o.limits, ts, ...(o.accountVersion === undefined ? {} : { accountVersion: o.accountVersion }) });
+          const res = this.atomically(() => reserveIn(this.#db, { reservationId: r.id, intentId: id, amount: r.amount, limits: o.limits, ts }, true));
           if (!res.ok) throw new LedgerError(`reservation ${r.id} refused: ${res.reason}`);
         }
         if (r !== null && r.status !== 'held' && was?.reservation?.status !== r.status) this.endReservation(r.id, r.status, ts);
@@ -586,8 +610,8 @@ export class Ledger extends LedgerReads {
     readonly ts: Millis;
     /**
      * The account version of the risk snapshot this reservation was decided on (RISK-1 `ReservationRequest`). Refused
-     * as `stale_snapshot` if the account changed since. Every risk-gated entry passes it; only a mirror of decisions
-     * already made (the backtest sink) may leave it out.
+     * as `stale_snapshot` if the account changed since. Required in a live or paper ledger (a reservation without it
+     * throws); only a backtest ledger, which mirrors decisions already made, may leave it out.
      */
     readonly accountVersion?: bigint;
     readonly transition?: Omit<IntentTransition, 'intentId' | 'ts'>;
@@ -679,16 +703,50 @@ const ACCOUNT_VERSION_SQL = `SELECT ${ACCOUNT_VERSION_TABLES.map((t) => `(SELECT
 
 export const accountVersionIn = (db: DatabaseSync): bigint => BigInt(db.prepare(ACCOUNT_VERSION_SQL).get()?.['v'] as number);
 
+/** Ledger tables left out of the account version, each with the reason. A new table must join one list or the other. */
+export const ACCOUNT_VERSION_EXCLUDED: Readonly<Record<string, string>> = {
+  ledger_meta: 'the file stamp (purpose); written once at creation',
+  schema_migrations: 'the applied schema versions; changes only with a migration, never with trading',
+  observation: 'market data, not the account (marks: see docs/DECISIONS.md, LEDGER-1c)',
+  feature_snapshot: 'market features of a candidate, not the account',
+  decision: 'the decision log; written by the deciding entry itself before it reserves',
+  intent: 'written by an entry between its decision and its reservation; an unresolved entry is counted by its reservation',
+  intent_event: 'as intent; outcomes that change the account are counted by fills, reservation ends and positions',
+  attempt: 'a signed transaction; it changes the account only when it lands, as a fill',
+  outbox: 'queued effects; their account changes are counted when booked',
+  outbox_done: 'effect completions; their account changes are counted when booked',
+};
+
+/** A live or paper reservation needs the version of its snapshot; a stale one is refused. Backtest ledgers may omit it. */
+const snapshotVersionProblem = (db: DatabaseSync, accountVersion: bigint | undefined): 'stale_snapshot' | null => {
+  if (accountVersion === undefined) {
+    const purpose = db.prepare("SELECT value FROM ledger_meta WHERE key = 'purpose'").get()?.['value'];
+    if (purpose !== 'backtest') throw new LedgerError(`a ${String(purpose)} ledger reserves only with the account version of the risk snapshot`);
+    return null;
+  }
+  return accountVersionIn(db) === accountVersion ? null : 'stale_snapshot';
+};
+
+/** recordBookEvent's form: a stale snapshot throws, like any other refused reservation inside a book event. */
+const checkSnapshotVersion = (db: DatabaseSync, accountVersion: bigint | undefined): void => {
+  if (snapshotVersionProblem(db, accountVersion) !== null) throw new LedgerError('reservation refused: stale_snapshot');
+};
+
 /**
  * The reservation check and insert. Must run inside BEGIN IMMEDIATE (the caller's transaction): the
  * write lock is taken before the version and the held total are read, so no other connection can change the
  * account or reserve in between.
  */
-export const reserveIn = (db: DatabaseSync, r: { readonly reservationId: string; readonly intentId: string; readonly amount: Lamports; readonly limits: ReservationLimits; readonly ts: Millis; readonly accountVersion?: bigint }): ReserveResult => {
+export const reserveIn = (
+  db: DatabaseSync,
+  r: { readonly reservationId: string; readonly intentId: string; readonly amount: Lamports; readonly limits: ReservationLimits; readonly ts: Millis; readonly accountVersion?: bigint },
+  /** Only recordBookEvent, which checked the version once at the start of its transaction. */
+  versionChecked = false,
+): ReserveResult => {
   if (!db.isTransaction) throw new LedgerError('reserveIn must run inside a transaction');
   checkLimits(r.limits);
   if (r.amount <= 0n) throw new LedgerError('a reservation must be positive');
-  if (r.accountVersion !== undefined && accountVersionIn(db) !== r.accountVersion) return { ok: false, reason: 'stale_snapshot' };
+  if (!versionChecked && snapshotVersionProblem(db, r.accountVersion) !== null) return { ok: false, reason: 'stale_snapshot' };
   const intent = db.prepare('SELECT purpose FROM intent WHERE intent_id = ?').get(r.intentId);
   if (intent === undefined) return { ok: false, reason: 'unknown_intent' };
   if (intent['purpose'] !== 'entry') return { ok: false, reason: 'not_an_entry' };

@@ -6,6 +6,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readF
 import { dirname, join } from 'node:path';
 import { checkStartHealth, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
 import type { WorkerControl } from './control.ts';
+import { item4 } from './item4.ts';
 import { checkJournal } from './journal.ts';
 import { makePlan, type Drill } from './plan.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Label, type RecordedFile, type Report, type RunMeta, type Sample } from './report.ts';
@@ -288,7 +289,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     if (m && (runDone || aborted)) {
       const journalPath = join(o.stateDir, STATE_FILES.journal);
       const jr = checkJournal(existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : '', { allowTornTail: true });
-      report = buildReport(m, readLines<Sample>(P.samples), sampleMs, seg.end, jr, outcomes, manifest);
+      const samples = readLines<Sample>(P.samples);
+      const i4 = item4(readLines<JournalLine>(journalPath), m.label, samples.some((s) => s.up && s.stub));
+      report = buildReport(m, samples, sampleMs, seg.end, jr, outcomes, manifest, i4);
       if (aborted) report = { ...report, pass: false, checks: { ...report.checks, not_aborted: false } };
       writeFileSync(join(ev, 'report.json'), JSON.stringify(report, null, 2));
       writeFileSync(join(ev, 'REPORT.md'), reportMarkdown(report));

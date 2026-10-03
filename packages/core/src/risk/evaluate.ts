@@ -239,7 +239,8 @@ export const maxTradeCosts = (policy: Policy, request: Pick<EntryRequest, 'netwo
   const ladder = policy.exits.ladder;
   const fee = ladder.steps.reduce((m, s) => maxBig(m, s.priorityFeeLamports), ladder.maxFeePerAttempt as bigint);
   const perExitAttempt = network.signaturesPerTx * network.baseFeePerSignature + fee + network.tip;
-  const ladderWorst = BigInt(ladder.maxAttempts) * perExitAttempt;
+  // EXIT-1: one ladder per position across all its exits, then up to blockedRetryAttempts single-attempt retries.
+  const ladderWorst = BigInt(ladder.maxAttempts + policy.exits.blockedRetryAttempts) * perExitAttempt;
   const modelledExit = fixed.exit.landed + fixed.exit.expectedFailures;
   // Rent of the token account counts even when the exit closes it: a blocked exit keeps it locked.
   const total = fixed.total + fixed.recoverableRent + maxBig(0n, ladderWorst - modelledExit);
@@ -249,7 +250,9 @@ export const maxTradeCosts = (policy: Policy, request: Pick<EntryRequest, 'netwo
 /** R4: the SOL operations reserve, computed live, never below the policy floor. */
 export const opsReserve = (policy: Policy, request: Pick<EntryRequest, 'rent'>, perExitAttempt: bigint): Lamports => {
   const { rent } = request;
-  const live = rent.tokenAccount + rent.oneTime + rent.transient + BigInt(policy.reserve.exitAttempts) * perExitAttempt;
+  // The reserve's exit attempts plus EXIT-1's blocked-exit retries, each at the fee cap.
+  const attempts = BigInt(policy.reserve.exitAttempts + policy.exits.blockedRetryAttempts);
+  const live = rent.tokenAccount + rent.oneTime + rent.transient + attempts * perExitAttempt;
   return lamports(maxBig(policy.reserve.opsFloor, live));
 };
 

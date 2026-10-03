@@ -50,7 +50,7 @@ Each universe is selected survivorship-free at a fixed age (never from a trendin
 | --- | --- | --- | --- |
 | U1 | **Survivors**: canonical PumpSwap SOL pools aged 24 h–14 days, liquidity ≥ $50k, market cap ≥ 1,470 SOL | Selected after the dump window; Jupiter's young-token fee no longer applies; pool fee ≤ 1.15% per side, so the round trip is cheaper; the study recommends this universe next ([empirical.md](research/empirical.md) "Implications" 5, [risk.md](research/risk.md) S2) | Range breakout with volume and holder growth (risk S2) |
 | U2 | **Post-graduation reclaim**: graduates aged 60–240 min that still pass every hard reject | Most graduates are dead by 60 min, so the survivors are a different population; this tests whether any of them carry real demand ([risk.md](research/risk.md) S1, [venues.md](research/venues.md) §6 phase 4) | Flush, higher low, reclaim of VWAP since migration, positive SOL-weighted net flow from independent wallets |
-| U3 | **Smart-money confluence** | Studied in RES-2; results pending. Prior evidence: copiers got ~3% per trade where leaders got 14% ([risk.md](research/risk.md) §5.3) | Defined after RES-2 reports |
+| U3 | **Smart-money confluence** | **Excluded** (2026-10-04): RES-2 lost about 11% a trade over 178 buys, and 0 of 120 variants had a positive mean ([copytrading.md](research/copytrading.md)) | Not tested further |
 
 U1 needs history that starts at least 14 days before the first decision day, so its tokens' full lives are in the dataset (DATA-1 must cover that lead-in).
 
@@ -164,6 +164,28 @@ Off after two consecutive failed checks. Each condition is logged as a feature s
 
 The backtest applies the same gate with the same code, from historical series read as of the simulated moment (§16.3): graduate survival from the DATA-1 dataset (its 14-day lead-in supplies the first median); curve volume from DefiLlama's daily pump.fun series, using the last full UTC day only (DefiLlama revises past values, so every fetch is stored with its fetch date and the backtest uses the stored snapshot, never a fresh download); SOL's 24 h change from an hourly SOL/USD series. Live reads the same sources (not a different provider), so the two agree. Execution health has no history: it is a live-only veto (§16.3).
 
+### 6.5 Historical dataset, window and regimes (supervisor, 2026-10-04)
+
+- **Window:** 60 decision days, 2026-08-03 to 2026-10-01, plus a 14-day lead-in from 2026-07-20 (`CLAUDE.md` target ≥ 60). 2026-10-02 and later are never decision days.
+- **Regime boundaries** (UPG-1b, [venues.md](research/venues.md) §2.7). The dataset, the backtest and every report label these:
+  - **B2**, 2026-07-21 14:23 UTC: BOOST on. About 20% of migration liquidity is held back and bought-and-burned in the first 5 minutes.
+  - **B3**, 2026-09-09 19:30 UTC: fee and creator-fee configuration changed.
+  - **B4**, 2026-09-12 15:24 UTC: holder rewards. Trade events grew 16 bytes; fees and layouts match today's only after this point.
+  - **B5**, 2026-10-02 15:47 UTC: unpublished upgrade with an 8-byte event tail.
+- **What is kept:**
+  - every curve trade and every canonical PumpSwap pool trade, as rows;
+  - raw transaction records for the 5% hash sample only;
+  - every create, migration and pool event;
+  - the hourly census.
+  
+  This gives 100% of the U1/U2 universes and of every deployer's prior mints for H14, and no row's existence depends on the future (DECISIONS 2026-10-04).
+- **Download:** one polite lane, at most 80 MB/s, newest day first, because the live worker's seed needs the latest 14 days. Each day is published as `data-day-YYYY-MM-DD` as soon as its QA, decoder parity and determinism checks pass. A backtest window is assembled 3 days at a time (runner disk).
+- **Inputs the archive cannot give, fetched by RPC with a strict as-of filter, and cached as hashed supplements so backtest reruns are identical:**
+  - H13 funding (dev and first 20 buyers: FACTS-1);
+  - the H14 rug half for a candidate's deployer (RUG-1c on-demand check).
+  
+  Live uses the same code, so live and backtest agree.
+
 ## 7. Evidence gates
 
 ### 7.1 Hard rejects (any one fails → no entry), cheapest first
@@ -231,7 +253,7 @@ Equity E, the high-water mark HWM and all loss figures are measured **net of dep
 
 Sizing: `maximum q = min(q_max, stop-stress size, full-loss allowance after costs, executable-depth cap, cash after reserve, remaining risk budget)`. Trade only if that maximum is at least q_min and the expected net (§5.2) is positive. A tight stop never overrides the full-loss allowance. Sizes step up only by the owner after G5 (§14); any 10% drawdown from the high-water mark returns to q_min.
 
-Why these numbers: at $2 the professional 2%-of-capital rule ($0.40) cannot be met, so the policy compensates at portfolio level. Monte Carlo over 100 trades: with a near-zero edge, P(bankroll ≤ $10) is 9.5% at $2 and 35.5% at $5 without limits, and 0.04% and 5.2% with a $3 (15%) daily stop and a −30% kill switch ([risk.md](research/risk.md) §1.6). RISK-1 re-ran the simulation with R6 to R10 as coded ([risk.md](research/risk.md) §1.6): no path reaches $10 or the kill switch; R6(a) stops entries at about 82% of the high-water mark, R6(b) blocks $5 entries until week-start equity is at least $27.50, and R8's 5-in-20 review pauses most paths within about 10 trades. Kelly gives no usable size before hundreds of trades (§1.3 there).
+Why these numbers: at $2 the professional 2%-of-capital rule ($0.40) cannot be met, so the policy compensates at portfolio level. Monte Carlo over 100 trades: with a near-zero edge, P(bankroll ≤ $10) is 9.5% at $2 and 35.5% at $5 without limits, and 0.04% and 5.2% with a $3 (15%) daily stop and a −30% kill switch ([risk.md](research/risk.md) §1.6). RISK-1 re-ran the simulation with R6 to R10 as coded ([risk.md](research/risk.md) §1.6): no path reaches $10 or the kill switch; R6(a) stops entries at about 84% of the high-water mark, R6(b) blocks $5 entries until week-start equity is at least $29, and R8's 5-in-20 review pauses most paths within about 10 trades. Kelly gives no usable size before hundreds of trades (§1.3 there).
 
 The trading day for limits and the P&L calendar is the owner's day, Melbourne time.
 
@@ -361,11 +383,15 @@ Defined by RUN-1 (2026-10-03); WORKER-1 implements it, and `packages/runner/stub
 | Credentials | Files `helius_api_key`, `alchemy_api_key`, `jupiter_api_key`, `telegram_bot_token` under `CREDENTIALS_DIRECTORY` (host), or the upper-case environment variables (GitHub Actions). Never printed, recorded, journaled or put in a URL that is logged. Stdout limit: the worker's stdout and stderr hold no secret and no URL with a key; in the fallback they go only to `logs/worker.log`, which is scanned before upload, while the job log shows the runner's own lines (copied to `logs/runner-<n>.log`, scanned after the fact: a hit there means the value was already public, so that key is rotated). Public or keyless endpoints where they serve. No signing key: the runner refuses to start when an environment name looks like key material, and the health reply carries `signing_key: false`. |
 | Health | `GET /health` → JSON: the heartbeat fields of [security.md](research/security.md) §5.2 (`seq`, `ts`, `git_sha`, `policy_version`, `last_processed_slot`, `feed_ages_ms`, `open_position`, `unresolved_intents`, `signer`, `lease_epoch`, `sol_reserve`, `paused`) plus `boot`, `pid`, `uptime_s`, `rss_bytes`, `mode`, `recorder`, `simulation`, `reconciled`, `entries_halted`, `halt_reasons`, `feeds` (per feed: `connected`, `age_ms`, `critical`, `dropped_by_drill`), `journal_seq`, `signing_key`. The feed names are fixed for the whole run (the runner fails `feeds_fixed`, or refuses a resume, when they change). `reconciled` is true once the start reconcile succeeded; a reconcile that cannot settle every intent exits 3 instead of serving `reconciled: false`. The same payload, HMAC-signed, is the heartbeat POSTed to the watchdog. |
 | Drills | `POST /drill/drop-feed` with `{feed, ms}` and header `x-zeroed-drill-token` (the `drill.token` file): close that feed and keep it closed for `ms`, then reconnect; 202 on accept, 404 when drills are off. Losing a `critical` feed halts entries (§18) while exits and monitoring continue. |
-| Journal | `journal.jsonl`, one JSON line per event, appended synchronously so a kill can tear only the last line (repaired at start with a `journal_repair` line). `seq` runs 1, 2, 3 … across restarts; each boot opens with `start`; `decision`, `entry`, `exit`, `halt` and `resume` carry `reasons`; each paper entry and exit is preceded by its `simulation` line (`trade`, `leg`). |
+| Journal | `journal.jsonl`, one JSON line per event, appended synchronously so a kill can tear only the last line (repaired at start with a `journal_repair` line). `seq` runs 1, 2, 3 … across restarts; each boot opens with `start`; `decision`, `entry`, `exit`, `halt` and `resume` carry `reasons`; each paper entry and exit is preceded by its `simulation` line (`trade`, `leg`, then TEST-2's `DryRunRecord` fields with bigints as decimal strings: `outcome`, `success`, `error`, `standIn`, `quotedOut`, `simulatedOut`, `amountErrorE4`, `quoteAgeSlots`, `rentDeclared`, `rentPaid`, `balancesFrom`); a line without a known `outcome` fails journal completeness. The run report scores these lines with TEST-2's `dryRunReport` into an item 4 block (each bound, outcomes, closes omitted, stand-in legs, median quote age), which counts only for a VPS run with the real worker. |
 | Signals | SIGTERM or SIGINT: stop entries, finish the journal and recorder, checkpoint the ledger, write `clean_stop`, exit 0 within 25 s (the unit's `TimeoutStopSec=30`). SIGKILL is the restart drill. |
 | Exit codes | 0 clean stop; 1 crash; 2 config refused (mode not paper, non-loopback health, missing state dir); 3 reconcile failed (intents left unresolved). The runner's own: 0 done, 1 crash, 2 refused, 4 aborted; the host unit never restarts 2 or 4. |
 
 The runner (`packages/runner`) checks the first health reply (paper, recorder on, simulation on, no signing key, feeds listed) and refuses the run otherwise. It fixes the drill plan before any drill: at least 6 restarts at evenly spaced times (each kills at the first open trade or unresolved intent within its window) and one drop per reported feed, halfway between restarts. Evidence goes to `evidence/dryrun/<label>-<UTC start>-<commit12>/`: `run.json` (commit, plan), `samples.jsonl`, `drills.json`, `recorded.json` (sha256 of every recorded file and where it is kept), `journal.jsonl`, `report.json` and `REPORT.md`. On the host, a merged `packages/runner/qualifying-run.json` (`{"run": "<name>"}`) starts `zeroed-dryrun@<name>` once (pull-based, `zeroed-dryrun-tick.timer`), and the same name resumes it after a reboot or a runner crash; the runner never creates a run on its own, and `run.json` records the unit (`systemd:zeroed-worker.service`) instead of an entry. In the fallback, the "Dry-run rehearsal" workflow chains the jobs: at most 72 h and the jobs the run needs plus 2; only a commit on the integration branch (or the run's own ref head) and only the worker or stub entry run with the keys; restored state that names another label or commit is refused before the worker starts; a 48 h rehearsal fails the 99% uptime check by design, because the gaps between jobs count as down time.
+
+### 12.5 Worker failure is an exposure the stop cannot control (2026-10-04)
+
+There is one trading VPS. The external watchdog detects a dead worker and alerts the owner, but it cannot sell. While the worker is down, an open position has no working stop. RUN-1c measures this window in every restart drill that has a position open: kill → reconciled → able to exit, plus the worst price move seen during it. TEST-3 and RISK-1b's loss scenarios include it. An exit-only standby comes later, and only with exclusive execution ownership and reconciliation before takeover, so a recovery can never sell twice.
 
 ## 13. Labels and validation
 
@@ -396,6 +422,7 @@ The evidence comes from the **transaction-level historical backtest** (§16.2), 
 - **The holdout is sealed.** The backtester runs the holdout into a separate sealed ledger file: fills, exits and P&L are written there but never displayed, logged or read; the registry records only the file's hash and, per universe, the candidate and entry counts. **Before the seal opens nothing else is visible: never exit counts, fills or P&L** (an exit count hints at outcomes). The size check reads those two counts alone. The seal is opened (by the scoring stage, once) only after the counts show n ≥ max(300, n_power) for every universe that enters. If n is short, the sealed file stays closed and the answer is "not proven yet" (collect more history); n is never lowered.
 - One look only: a holdout that was opened, unsealed early, inspected in any way (a hash mismatch, a read of the sealed file outside the scoring stage, a log line with a P&L value) or re-run with a different configuration counts as **burned** in the registry. New proof needs a new, later window that has never been run. There is no interim or futility look.
 - The e-process is not part of G2 (it is built for repeated looks); it runs where looks really are repeated: G5 and demotion.
+- **The holdout lies entirely after the last regime boundary before it (B4, 2026-09-12 15:24 UTC; supervisor, 2026-10-04).** Walk-forward results are reported per regime (B2–B3, B3–B4, after B4), never pooled silently; S0 runs per regime; costs are charged as of each trade's slot, from the fees in force then.
 
 | Gate | Passes when (all) |
 | --- | --- |
@@ -535,6 +562,16 @@ Worker API contract (UI-2): `apps/web/src/api/contract.ts`. Money travels as dec
 Three separate actions: **Pause new entries** keeps exits running; **Close positions** requests bounded exits and reports any that do not fill; **Disable signing** blocks signatures and warns that exits can no longer run.
 
 Visible states: waiting for evidence, no eligible candidate, stale data, rate limited, unknown transaction result, exit pending, exit blocked, low fee reserve, paused, regime off.
+
+**Live and trial views (owner request, 2026-10-04):**
+- **Live view.** The app reads the worker API on the VPS through Tailscale.
+  - The worker binds its API to loopback only.
+  - `tailscale serve` publishes it to the owner's tailnet over HTTPS at `zeroed.<tailnet>.ts.net`. Funnel stays off, no inbound port opens, and the app accepts only that HTTPS host.
+  - Every record shows its mode (paper).
+- **Trial backtest view.** BT-2 publishes a cumulative trial report to the `backtest` release as each practice day is tested, labelled as a trial in progress and not a verdict.
+  - Holdout days are never run or shown before the one sealed holdout run.
+  - A day is tested only once its 14-day look-back exists.
+- The two views never mix, and the history is never replayed on the VPS, so the qualifying dry run stays clean.
 
 ## 18. Acceptance cases
 
@@ -683,6 +720,22 @@ Critical paths: the proof, ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) �
 - Goal: pre-funding item 5 and the G3 consistency report from the qualifying run.
 - Accept: each case in §18 is a scripted fault in CI with an expected outcome; the G3 report compares the qualifying dry run with the backtest holdout (mean net when the dry run has enough trades, otherwise candidate rates per hour and the reject mix, see §14) and reports the live-only veto rate; it measures Δ on the dry-run data and checks v·|Δ|₉₅ ≤ 5 points (95% upper bound of |Δ|), failing G3 if it does not hold; with fewer than 10 vetoed candidates Δ = 50 points, with fewer than 10 kept trades the kept mean is the backtest holdout mean. **Counterfactual trades are computed after the run, offline**: in the scoring stage, outside the worker process, the recorded data is replayed from each veto moment through BT-1's fill model and the exit rules. They hold no R3 position slot, R6 reservation, R11 entry count or provider quota, and are written only to a separate counterfactual file, never to the live ledger or decision log. A test proves the live decision log is byte-identical with counterfactual scoring on and off.
 
+### Added 2026-10-04 (from build findings and owner requests)
+
+| Card | What | Why |
+| --- | --- | --- |
+| FACTS-1 | Producers for every gate fact (mint, pool, LP, curve, migration, candles, holders, insiders, xcheck, sim, soft, SOL/USD, regime inputs, execution health) through the quota scheduler. Event-derived facts are pure, so live and backtest share them; state-read facts are live-only vetoes. Owns the H13 funding lookup | Nothing produced GATE-1's facts live, so every candidate failed H16 |
+| SEED-1 | Seeds DeployerIndex at start-up from published days, then from RPC (newest first, under a credit cap), with a gap mode for downtime backfill | Without it H14 is not-covered for 14 days after any start |
+| RUG-1c | On-demand per-deployer rug check by RPC under a credit cap, live and backtest (cached supplement) | Neither the free live feed nor the day releases see every prior mint's trades |
+| LEDGER-1c | Account version (derived from append-only row counts) checked inside the reservation transaction; one-transaction snapshot read; paper and live refuse unversioned writes | Closes the stale-snapshot double entry |
+| GATE-1c | H5 refuses unexplained event tails on the pool and curve tapes | B5 left an unpublished 8-byte field |
+| UPG-1 / UPG-1b | B5 identified; regime boundaries B2–B4 found; decoders, quotes and signer checked against them | Trade economics changed inside the window |
+| RUN-1b | Item-4 block in the runner report; bad lines can't leave the denominator | Pre-funding item 4 is scored, not trusted |
+| OPS-1c, OPS-1d | Server sets the Telegram webhook after pairing; webhook retry, key-mismatch alerts, re-pair; `install.sh --update`; RUN-1 units; evidence relay through the watchdog; Tailscale serve | Setup fixes and the live view |
+| APP-2 | App server setting and live screens over the tailnet | Owner wants to watch the paper trades |
+| RES-3 | Signal research on practice days only; at most one configuration per universe for BT-2 to register | Owner wants decisions built on measured data |
+| DATA-1 follow-ups | Retention (100% curve and canonical pool rows); QA allows the pre-B4 layout; the 60-day window | Pre-funding item 6 needs ≥ 300 holdout trades |
+
 ### Later (after the pre-funding gate is close)
 
 **SIGN-1 Isolated signer** · high · 3 h · owner approves (`packages/signer/**`) · depends on TX-1, OPS-1
@@ -694,8 +747,8 @@ Totals: Wave A 9–11 h, Wave B 10.5–14.5 h, Wave C 8.5–11 h, Wave D 6–8.5
 
 Owner actions (no agent can do them):
 - Done 2026-10-03: hosting approved (Vultr Frankfurt about US$6/month, Hetzner backup); Cloudflare and Telegram accounts exist.
-- Create the Vultr server and paste the one install command (OPS-1); store `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY` and `TELEGRAM_BOT_TOKEN` as GitHub repository secrets (§12.2), never in chat. Until the server runs, the dry run can be rehearsed on GitHub Actions (RUN-1), but only a VPS run qualifies (§15).
-- Say whether a domain on Cloudflare is available; without one the dashboard is not published from the host (the dry run does not need it).
+- Done 2026-10-04: the Vultr server is installed from the PR #36 line, keys handed off, Telegram paired, `/status` answered. Still to come: one re-paste of OPS-1d's install line (after that, host changes arrive by update), and Tailscale on the phone plus a one-time approval of the server for the live view.
+- No domain (owner rule, `CLAUDE.md`): the watchdog is on `workers.dev`, and the live view uses Tailscale serve.
 - Check the chosen exchange on AUSTRAC's VASP register; check "Zeroed" on IP Australia before public launch.
 
 Measured during paper mode: our own latency and landing rates; PumpPortal's missing creates over 24 h; graduation rate and survival under BOOST; σ̂ and intra-day correlation of backtest returns; Sender SWQoS-only landing under congestion; Nuremberg versus Frankfurt latency; whether Jupiter's 50 bps young-token fee appears.

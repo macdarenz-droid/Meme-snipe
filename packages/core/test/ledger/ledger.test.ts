@@ -210,7 +210,7 @@ describe('intents, outbox and reservations', () => {
     const ledger = openLedger(tempPath(), 'paper');
     for (const n of [1, 2, 3]) ledger.recordIntent(entryIntent(n), { status: 'risk_approved', ts: n });
     const reserve = (n: number, amount: number) => ledger.reserveExposure({
-      reservationId: `r${n}`, intentId: `e${n}`, amount: lamports(amount), limits: LIMITS, ts: 10 + n,
+      reservationId: `r${n}`, intentId: `e${n}`, amount: lamports(amount), limits: LIMITS, ts: 10 + n, accountVersion: ledger.accountVersion(),
       transition: { status: 'exposure_reserved', event: 'reserve' },
     });
     expect(reserve(1, 30_000_000)).toEqual({ ok: true, heldAfter: 30_000_000n });
@@ -253,7 +253,7 @@ describe('intents, outbox and reservations', () => {
     const ledger = openLedger(tempPath(), 'paper');
     const exit = { id: 'x1', key: 'exit:p1:1', purpose: 'exit', side: 'sell', mint: MINT, venue: 'pumpswap', positionId: 'p1', quantity: raw(5) } as const;
     ledger.recordIntent(exit as never, { status: 'exposure_reserved', ts: 1 });
-    const r = (intentId: string) => ledger.reserveExposure({ reservationId: `r-${intentId}`, intentId, amount: lamports(1), limits: LIMITS, ts: 2 });
+    const r = (intentId: string) => ledger.reserveExposure({ reservationId: `r-${intentId}`, intentId, amount: lamports(1), limits: LIMITS, ts: 2, accountVersion: ledger.accountVersion() });
     expect(r('x1')).toEqual({ ok: false, reason: 'not_an_entry' });
     expect(r('nope')).toEqual({ ok: false, reason: 'unknown_intent' });
     ledger.close();
