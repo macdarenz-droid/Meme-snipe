@@ -2,7 +2,7 @@
 // threshold fails a test (mutation testing on triggers and the ladder).
 import { describe, expect, test } from 'vitest';
 import { type PoolState, poolSell } from '../../src/amm/index.ts';
-import { FILL_CONFIG, MINUTE_MS, TRIAL_POLICY, type Policy, policyIssues } from '../../src/config/index.ts';
+import { FILL_CONFIG, MINUTE_MS, TRIAL_POLICY, type Policy, type UniverseExits, policyIssues } from '../../src/config/index.ts';
 import { intentId, mint, positionId } from '../../src/domain/index.ts';
 import {
   type EntryPlan, type ExitDecision, type ExitMarket, type ExitObservation, type ExitTracker, type FlowMinute, type Holding,
@@ -15,7 +15,12 @@ import { bps, lamports, microUsd, raw } from '../../src/units/index.ts';
 import { usd } from '../../src/config/index.ts';
 import { CHECKED_GLOBAL, NORMAL_COIN, PUMP_FEE_CONFIG } from '../amm/helpers.ts';
 
-const X = TRIAL_POLICY.exits;
+const G = TRIAL_POLICY.exits;
+const X = G.universes.U2;
+/** The trial policy with U1's exits patched. */
+const withU1 = (patch: Partial<UniverseExits>): Policy => ({ ...TRIAL_POLICY, exits: { ...G, universes: { ...G.universes, U1: { ...G.universes.U1, ...patch } } } });
+/** The trial policy with U2's exits patched. */
+const withU2 = (patch: Partial<UniverseExits>): Policy => ({ ...TRIAL_POLICY, exits: { ...G, universes: { ...G.universes, U2: { ...X, ...patch } } } });
 const S = exitSettings(TRIAL_POLICY, 'wick', FILL_CONFIG.network);
 const FEES: ObservedFees = { split: { lp: bps(20), protocol: bps(5), creator: bps(95) }, buybackFeeBps: bps(5000), instruction: 'v1' };
 const SUPPLY = 1_000_000_000_000_000n;
@@ -36,7 +41,7 @@ const EXIT_COST = 30_000n;
 const R = 2_000_000n;
 
 const plan = (o: Partial<EntryPlan> = {}): EntryPlan => ({
-  openedAtMs: 0, notional: TRIAL_POLICY.capital.minNotional, riskUnit: R, stopPrice: 1n, entryReserve: VAULT, ...o,
+  universe: 'U2', openedAtMs: 0, notional: TRIAL_POLICY.capital.minNotional, riskUnit: R, stopPrice: 1n, entryReserve: VAULT, ...o,
 });
 /** costBasis chosen so the P&L at `vault` is exactly `pnl`. */
 const holding = (o: Partial<Holding> & { pnl?: bigint; vault?: bigint } = {}): Holding => {
@@ -149,22 +154,22 @@ describe('ATR (Wilder) and the stop distance at entry', () => {
     const entry = 1_000_000n;
     const sMax = (entry * BigInt(TRIAL_POLICY.loss.stopMaxBps)) / 10_000n; // 200,000
     const wide = 10n ** 9n;
-    expect(checkStopDistance(TRIAL_POLICY, entry, entry, wide)).toMatchObject({ ok: false, reason: 'stop-not-below-entry' });
-    expect(checkStopDistance(TRIAL_POLICY, entry, 0n, wide)).toMatchObject({ ok: false, reason: 'stop-not-below-entry' });
-    expect(checkStopDistance(TRIAL_POLICY, entry, entry - sMax, wide)).toEqual({ ok: true });
-    expect(checkStopDistance(TRIAL_POLICY, entry, entry - sMax - 1n, wide)).toMatchObject({ ok: false, reason: 'too-wide' });
-    expect(checkStopDistance(TRIAL_POLICY, entry, entry - 1n, null)).toMatchObject({ ok: false, reason: 'no-atr' });
+    expect(checkStopDistance(TRIAL_POLICY, 'U2', entry, entry, wide)).toMatchObject({ ok: false, reason: 'stop-not-below-entry' });
+    expect(checkStopDistance(TRIAL_POLICY, 'U2', entry, 0n, wide)).toMatchObject({ ok: false, reason: 'stop-not-below-entry' });
+    expect(checkStopDistance(TRIAL_POLICY, 'U2', entry, entry - sMax, wide)).toEqual({ ok: true });
+    expect(checkStopDistance(TRIAL_POLICY, 'U2', entry, entry - sMax - 1n, wide)).toMatchObject({ ok: false, reason: 'too-wide' });
+    expect(checkStopDistance(TRIAL_POLICY, 'U2', entry, entry - 1n, null)).toMatchObject({ ok: false, reason: 'no-atr' });
     // 3.0 × ATR 10,000 = 30,000.
-    expect(checkStopDistance(TRIAL_POLICY, entry, entry - 30_000n, 10_000n)).toEqual({ ok: true });
-    expect(checkStopDistance(TRIAL_POLICY, entry, entry - 30_001n, 10_000n)).toMatchObject({ ok: false, reason: 'beyond-atr' });
+    expect(checkStopDistance(TRIAL_POLICY, 'U2', entry, entry - 30_000n, 10_000n)).toEqual({ ok: true });
+    expect(checkStopDistance(TRIAL_POLICY, 'U2', entry, entry - 30_001n, 10_000n)).toMatchObject({ ok: false, reason: 'beyond-atr' });
   });
 });
 
 describe('flow and thesis stops', () => {
   test('deployer cluster selling more than 2% of supply, not at 2%', () => {
     const at = (bps: number) => codes(decide(holding(), obs(NOW, VAULT, { deployerSoldBps: { atMs: NOW, value: bps } })).decision);
-    expect(at(X.deployerSellSupplyBps)).toEqual([]);
-    expect(at(X.deployerSellSupplyBps + 1)).toEqual(['deployer_sell']);
+    expect(at(G.deployerSellSupplyBps)).toEqual([]);
+    expect(at(G.deployerSellSupplyBps + 1)).toEqual(['deployer_sell']);
   });
 
   test('pool liquidity down 30% from entry fires at exactly 30%', () => {
@@ -244,26 +249,73 @@ describe('time stop', () => {
   });
 });
 
+describe('exits by the position\'s universe (CFG-2)', () => {
+  const U1 = G.universes.U1;
+  const t = { ...newTracker(), flatMet: true };
+
+  test("a U1 position uses U1's T_max and a U2 position U2's", () => {
+    // Both are at the 120-min hard maximum in the trial policy, so U1's is tightened to 60 min to tell them apart.
+    const s = exitSettings(withU1({ tFlatMs: 30 * MINUTE_MS, tMaxMs: 60 * MINUTE_MS }), 'wick', FILL_CONFIG.network);
+    const at = (ms: number, universe: 'U1' | 'U2') => codes(decide(holding(), obs(ms), plan({ universe }), t, s).decision);
+    expect(at(60 * MINUTE_MS - 1, 'U1')).toEqual([]);
+    expect(at(60 * MINUTE_MS, 'U1')).toEqual(['time_max']);
+    expect(at(60 * MINUTE_MS, 'U2')).toEqual([]);
+    expect(at(X.tMaxMs - 1, 'U2')).toEqual([]);
+    expect(at(X.tMaxMs, 'U2')).toEqual(['time_max']);
+  });
+
+  test("T_flat and the partial follow the position's universe", () => {
+    expect(codes(decide(holding(), obs(X.tFlatMs), plan({ universe: 'U2' })).decision)).toEqual(['time_flat']);
+    expect(codes(decide(holding(), obs(X.tFlatMs), plan({ universe: 'U1' })).decision)).toEqual([]);
+    expect(codes(decide(holding(), obs(U1.tFlatMs), plan({ universe: 'U1' })).decision)).toEqual(['time_flat']);
+    // +1.5R takes U2's partial; U1 waits for +2R.
+    const u2tp = (R * BigInt(X.partialAtRBps)) / 10_000n;
+    const u1tp = (R * BigInt(U1.partialAtRBps)) / 10_000n;
+    expect(decide(holding({ pnl: u2tp }), obs(NOW), plan({ universe: 'U2' })).decision.kind).toBe('exit');
+    expect(decide(holding({ pnl: u2tp }), obs(NOW), plan({ universe: 'U1' })).decision.kind).toBe('hold');
+    expect(decide(holding({ pnl: u1tp - 1n }), obs(NOW), plan({ universe: 'U1' })).decision.kind).toBe('hold');
+    expect(decide(holding({ pnl: u1tp }), obs(NOW), plan({ universe: 'U1' })).decision).toMatchObject({ kind: 'exit', partial: true });
+  });
+
+  test("the ATR uses the universe's bar length", () => {
+    // 14 one-minute bars give U2 an ATR, and none on U1's 5-minute bars, so a U1 entry has no ATR stop yet.
+    const entry = 1_000_000n;
+    const bars = flatBars(14, 10_000n, 0);
+    expect(atr(bars, X.atrPeriod, X.atrBarMs, 14 * MINUTE_MS)).not.toBeNull();
+    expect(atr(bars, U1.atrPeriod, U1.atrBarMs, 14 * MINUTE_MS)).toBeNull();
+    const stopU1 = withU1({ stopAtrTenths: 10 });
+    expect(checkStopDistance(stopU1, 'U2', entry, entry - 30_000n, 10_000n)).toEqual({ ok: true });
+    expect(checkStopDistance(stopU1, 'U1', entry, entry - 30_000n, 10_000n)).toMatchObject({ ok: false, reason: 'beyond-atr' });
+  });
+
+  test('a universe without a block is never given another universe\'s exits', () => {
+    for (const u of ['S0', 'U3']) {
+      expect(() => decide(holding(), obs(NOW), plan({ universe: u as never }))).toThrow(`no exit parameters for universe ${u}`);
+      expect(() => checkStopDistance(TRIAL_POLICY, u as never, 1_000n, 900n, 10n ** 9n)).toThrow(/no exit parameters/);
+    }
+  });
+});
+
 describe('profit taking: partial and runner, by size', () => {
   const tp = (R * BigInt(X.partialAtRBps)) / 10_000n; // 1.5R = 3,000,000
 
   test('size rule: two exit transactions at q_min, three from 2 × q_min', () => {
     const min = TRIAL_POLICY.capital.minNotional;
-    expect(maxExitTransactions(S, min)).toBe(X.maxExitTxAtMinNotional);
-    expect(maxExitTransactions(S, microUsd(2n * min - 1n))).toBe(X.maxExitTxAtMinNotional);
-    expect(maxExitTransactions(S, microUsd(2n * min))).toBe(X.maxExitTxAboveDoubleMin);
+    expect(maxExitTransactions(S, min)).toBe(G.maxExitTxAtMinNotional);
+    expect(maxExitTransactions(S, microUsd(2n * min - 1n))).toBe(G.maxExitTxAtMinNotional);
+    expect(maxExitTransactions(S, microUsd(2n * min))).toBe(G.maxExitTxAboveDoubleMin);
   });
 
   test('a partial of at least half at +1.5R, and not one lamport below', () => {
     const d = decide(holding({ pnl: tp }), obs(NOW)).decision;
-    expect(d).toMatchObject({ kind: 'exit', partial: true, retry: false, quantity: QTY / 2n, reasons: ['take_profit'], startRung: 0, maxAttempts: X.ladder.maxAttempts });
+    expect(d).toMatchObject({ kind: 'exit', partial: true, retry: false, quantity: QTY / 2n, reasons: ['take_profit'], startRung: 0, maxAttempts: G.ladder.maxAttempts });
     expect(decide(holding({ pnl: tp - 1n }), obs(NOW)).decision.kind).toBe('hold');
   });
 
   test('the partial share rounds up, and a share that is the whole holding is a full exit', () => {
     const odd = holding({ pnl: tp, quantity: QTY + 1n });
     expect(decide(odd, obs(NOW)).decision).toMatchObject({ kind: 'exit', partial: true, quantity: QTY / 2n + 1n });
-    const all = exitSettings({ ...TRIAL_POLICY, exits: { ...X, partialMinShareBps: 10_000 } }, 'wick', FILL_CONFIG.network);
+    const all = exitSettings(withU2({ partialMinShareBps: 10_000 }), 'wick', FILL_CONFIG.network);
     expect(decide(holding({ pnl: tp }), obs(NOW), plan(), newTracker(), all).decision).toMatchObject({ kind: 'exit', partial: false, quantity: QTY, reasons: ['take_profit'] });
   });
 
@@ -342,7 +394,7 @@ describe('profit taking: partial and runner, by size', () => {
 });
 
 describe('escalation ladder with caps', () => {
-  const L = X.ladder;
+  const L = G.ladder;
   const trig = 10_000_000n;
   const minOut = (bp: number) => (trig * BigInt(10_000 - bp)) / 10_000n;
 
@@ -485,10 +537,10 @@ describe('blocked exits: retried on the ladder, bounded, alerting', () => {
     const seen = decide(h, obs(NOW));
     expect(seen.decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: waiting to retry' });
     expect(seen.tracker.blockedAtMs).toBe(NOW);
-    expect(decide(h, obs(NOW + X.blockedRetryMs - 1), plan(), seen.tracker).decision.kind).toBe('hold');
-    const retry = decide(h, obs(NOW + X.blockedRetryMs), plan(), seen.tracker);
+    expect(decide(h, obs(NOW + G.blockedRetryMs - 1), plan(), seen.tracker).decision.kind).toBe('hold');
+    const retry = decide(h, obs(NOW + G.blockedRetryMs), plan(), seen.tracker);
     expect(retry.decision).toMatchObject({
-      kind: 'exit', retry: true, partial: false, quantity: QTY, reasons: ['emergency'], startRung: X.ladder.steps.length - 1, maxAttempts: 1,
+      kind: 'exit', retry: true, partial: false, quantity: QTY, reasons: ['emergency'], startRung: G.ladder.steps.length - 1, maxAttempts: 1,
     });
     expect(retry.tracker).toMatchObject({ blockedAtMs: null, blockedRetries: 1 });
     // The retry is a new exit owner on the blocked position.
@@ -499,14 +551,14 @@ describe('blocked exits: retried on the ladder, bounded, alerting', () => {
   test('a retry carries the reasons that still hold', () => {
     const h = holdingOf(blockedBook().positions[PID]!);
     const t = { ...newTracker(), blockedAtMs: 0 };
-    const d = decide(h, obs(X.blockedRetryMs, VAULT, { sellRoute: { atMs: X.blockedRetryMs, value: 'missing' } }), plan(), t).decision;
+    const d = decide(h, obs(G.blockedRetryMs, VAULT, { sellRoute: { atMs: G.blockedRetryMs, value: 'missing' } }), plan(), t).decision;
     expect(d).toMatchObject({ kind: 'exit', retry: true, reasons: ['liquidity'] });
   });
 
   test('no retry without a quote, when the quote does not cover the attempt, or once the retries are used', () => {
     const h = holdingOf(blockedBook().positions[PID]!);
     const t = { ...newTracker(), blockedAtMs: 0 };
-    const at = X.blockedRetryMs;
+    const at = G.blockedRetryMs;
     expect(decide(h, obs(at, 0n), plan({ entryReserve: 1n }), t).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: pool has no usable reserves' });
     const v = valueAt(VAULT);
     const at0 = (retryCost: bigint) => ({ ...S, retryCost });
@@ -516,15 +568,15 @@ describe('blocked exits: retried on the ladder, bounded, alerting', () => {
     expect(decide(h, obs(at), plan(), t, at0(least - 1n)).decision).toMatchObject({ kind: 'exit', retry: true });
     // The retry cost is base + the last rung's capped fee + tip, not the first-rung exit cost.
     const n = FILL_CONFIG.network;
-    expect(S.retryCost).toBe(n.signaturesPerTx * n.baseFeePerSignature + X.ladder.maxFeePerAttempt + n.tip);
-    const lowCap = exitSettings({ ...TRIAL_POLICY, exits: { ...X, ladder: { ...X.ladder, maxFeePerAttempt: lamports(400_000n) } } }, 'wick', n);
+    expect(S.retryCost).toBe(n.signaturesPerTx * n.baseFeePerSignature + G.ladder.maxFeePerAttempt + n.tip);
+    const lowCap = exitSettings({ ...TRIAL_POLICY, exits: { ...G, ladder: { ...G.ladder, maxFeePerAttempt: lamports(400_000n) } } }, 'wick', n);
     expect(lowCap.retryCost).toBe(n.signaturesPerTx * n.baseFeePerSignature + 400_000n + n.tip);
-    const highCap = exitSettings({ ...TRIAL_POLICY, exits: { ...X, ladder: { ...X.ladder, maxFeePerAttempt: lamports(600_000n) } } }, 'wick', n);
+    const highCap = exitSettings({ ...TRIAL_POLICY, exits: { ...G, ladder: { ...G.ladder, maxFeePerAttempt: lamports(600_000n) } } }, 'wick', n);
     expect(highCap.retryCost).toBe(n.signaturesPerTx * n.baseFeePerSignature + 500_000n + n.tip);
     expect(decide({ ...h, exitCost: v }, obs(at), plan(), t).decision).toMatchObject({ kind: 'exit', retry: true });
-    const used = { ...t, blockedRetries: X.blockedRetryAttempts };
+    const used = { ...t, blockedRetries: G.blockedRetryAttempts };
     expect(decide(h, obs(at), plan(), used).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: retries used' });
-    expect(decide(h, obs(at), plan(), { ...used, blockedRetries: X.blockedRetryAttempts - 1 }).decision).toMatchObject({ kind: 'exit', retry: true });
+    expect(decide(h, obs(at), plan(), { ...used, blockedRetries: G.blockedRetryAttempts - 1 }).decision).toMatchObject({ kind: 'exit', retry: true });
   });
 
   test('exits are never blocked by risk: paused entries still take an exit, and the module reads no risk state', async () => {
@@ -539,14 +591,15 @@ describe('blocked exits: retried on the ladder, bounded, alerting', () => {
 });
 
 describe('thresholds come from the policy', () => {
-  const tightened = (patch: Partial<Policy['exits']>) => exitSettings({ ...TRIAL_POLICY, exits: { ...X, ...patch } }, 'wick', FILL_CONFIG.network);
+  const tightened = (patch: Partial<Policy['exits']>) => exitSettings({ ...TRIAL_POLICY, exits: { ...G, ...patch } }, 'wick', FILL_CONFIG.network);
+  const tightenedU2 = (patch: Partial<UniverseExits>) => exitSettings(withU2(patch), 'wick', FILL_CONFIG.network);
 
   test('each trigger moves with its policy value', () => {
     const dev = obs(NOW, VAULT, { deployerSoldBps: { atMs: NOW, value: 101 } });
     expect(codes(decide(holding(), dev).decision)).toEqual([]);
     expect(codes(decide(holding(), dev, plan(), newTracker(), tightened({ deployerSellSupplyBps: 100 })).decision)).toEqual(['deployer_sell']);
-    expect(codes(decide(holding(), obs(60 * MINUTE_MS), plan(), { ...newTracker(), flatMet: true }, tightened({ tMaxMs: 60 * MINUTE_MS })).decision)).toEqual(['time_max']);
-    expect(decide(holding({ pnl: R }), obs(NOW), plan(), newTracker(), tightened({ partialAtRBps: 10_000, partialMinShareBps: 7_500 })).decision)
+    expect(codes(decide(holding(), obs(60 * MINUTE_MS), plan(), { ...newTracker(), flatMet: true }, tightenedU2({ tMaxMs: 60 * MINUTE_MS })).decision)).toEqual(['time_max']);
+    expect(decide(holding({ pnl: R }), obs(NOW), plan(), newTracker(), tightenedU2({ partialAtRBps: 10_000, partialMinShareBps: 7_500 })).decision)
       .toMatchObject({ kind: 'exit', partial: true, quantity: (QTY * 3n) / 4n });
     expect(codes(decide(holding(), obs(NOW, 90_000_000_000n), plan({ entryReserve: 100_000_000_000n }), newTracker(), tightened({ liquidityDropBps: 1000 })).decision)).toEqual(['liquidity_drop']);
     expect(exitSettings(TRIAL_POLICY, 'close', FILL_CONFIG.network)).toMatchObject({ minNotional: usd('2'), maxQuoteAgeMs: TRIAL_POLICY.gates.maxQuoteAgeMs, takeProfitOn: 'close' });
@@ -577,11 +630,11 @@ describe('boundaries found by mutation testing', () => {
 
   test('a stop at one unit is a stop when s_max allows it', () => {
     const anyWidth = { ...TRIAL_POLICY, loss: { ...TRIAL_POLICY.loss, stopMaxBps: 10_000 } };
-    expect(checkStopDistance(anyWidth, 1_000n, 1n, 10n ** 9n)).toEqual({ ok: true });
+    expect(checkStopDistance(anyWidth, 'U2', 1_000n, 1n, 10n ** 9n)).toEqual({ ok: true });
   });
 
   test('ladder: a trigger value of one lamport is valid', () => {
-    expect(planAttempt(X.ladder, 1, 1n, 1n)).toMatchObject({ ok: true, rung: 0 });
+    expect(planAttempt(G.ladder, 1, 1n, 1n)).toMatchObject({ ok: true, rung: 0 });
   });
 
   test('a sale of one raw unit counts as the partial', () => {
@@ -620,7 +673,7 @@ describe('boundaries found by mutation testing', () => {
 
   test('a full exit is neither a partial nor a retry', () => {
     expect(decide(holding(), obs(NOW), plan({ stopPrice: execPrice(V0, QTY) })).decision).toMatchObject({ kind: 'exit', partial: false, retry: false, startRung: 0 });
-    const all = exitSettings({ ...TRIAL_POLICY, exits: { ...X, partialMinShareBps: 10_000 } }, 'wick', FILL_CONFIG.network);
+    const all = exitSettings(withU2({ partialMinShareBps: 10_000 }), 'wick', FILL_CONFIG.network);
     const tp = (R * BigInt(X.partialAtRBps)) / 10_000n;
     expect(decide(holding({ pnl: tp }), obs(NOW), plan(), newTracker(), all).decision).toMatchObject({ kind: 'exit', partial: false, retry: false });
   });
@@ -660,7 +713,7 @@ describe('ladder budget per position', () => {
 
   test('a new owner gets only the attempts that remain, starting above the highest rung tried', () => {
     const at = (exitAttempts: number, t = tried(null)) => decide(holding({ exitAttempts }), obs(NOW), stop, t).decision;
-    expect(at(0)).toMatchObject({ kind: 'exit', startRung: 0, maxAttempts: X.ladder.maxAttempts, blocked: null });
+    expect(at(0)).toMatchObject({ kind: 'exit', startRung: 0, maxAttempts: G.ladder.maxAttempts, blocked: null });
     expect(at(3, tried(2))).toMatchObject({ kind: 'exit', startRung: 3, maxAttempts: 2, blocked: null });
     expect(at(1, tried(0))).toMatchObject({ kind: 'exit', startRung: 1, maxAttempts: 4 });
     expect(at(1, tried(2))).toMatchObject({ kind: 'exit', startRung: 3, maxAttempts: 4 });
@@ -671,12 +724,12 @@ describe('ladder budget per position', () => {
   });
 
   test('with the ladder used up, a trigger books the exit blocked at once with a critical alert', () => {
-    const d = decide(holding({ exitAttempts: X.ladder.maxAttempts }), obs(NOW), stop).decision;
-    expect(d).toMatchObject({ kind: 'exit', maxAttempts: 0, blocked: `exit ladder used: ${X.ladder.maxAttempts} attempts on this position` });
+    const d = decide(holding({ exitAttempts: G.ladder.maxAttempts }), obs(NOW), stop).decision;
+    expect(d).toMatchObject({ kind: 'exit', maxAttempts: 0, blocked: `exit ladder used: ${G.ladder.maxAttempts} attempts on this position` });
     const events = exitBookEvents(PID, d, intentId('ex9'));
     expect(events.map((e) => e.type)).toEqual(['trigger_exit', 'exit_blocked']);
     const { book, effects } = apply(openBook(), events);
-    expect(book.positions[PID]).toMatchObject({ status: 'exit_blocked', quantity: QTY, blockedReason: `exit ladder used: ${X.ladder.maxAttempts} attempts on this position` });
+    expect(book.positions[PID]).toMatchObject({ status: 'exit_blocked', quantity: QTY, blockedReason: `exit ladder used: ${G.ladder.maxAttempts} attempts on this position` });
     expect(effects).toContainEqual({ type: 'alert', level: 'critical', code: 'exit_blocked', subject: PID });
   });
 
@@ -689,7 +742,7 @@ describe('ladder budget per position', () => {
     for (let round = 0; round < 60; round++) {
       if (restartEvery !== null && round % restartEvery === 0) t = newTracker();
       const p = book.positions[PID]!;
-      now += X.blockedRetryMs;
+      now += G.blockedRetryMs;
       const step = decide(holdingOf(p, 0n, book), obs(now), stop, t);
       t = step.tracker;
       const d = step.decision;
@@ -698,7 +751,7 @@ describe('ladder budget per position', () => {
       book = apply(book, exitBookEvents(PID, d, intentId(id))).book;
       if (d.blocked !== null) continue;
       for (let n = 1; n <= Math.min(2, d.maxAttempts); n++) {
-        const a = planAttempt(X.ladder, n, V0, V0, d.startRung, d.maxAttempts, t.lastRung);
+        const a = planAttempt(G.ladder, n, V0, V0, d.startRung, d.maxAttempts, t.lastRung);
         if (!a.ok) break;
         t = noteAttempt(t, a.rung);
         book = signOn(book, id);
@@ -712,7 +765,7 @@ describe('ladder budget per position', () => {
 
   test('owners that end unfilled never restart the ladder: maxAttempts plus the bounded retries, then blocked', () => {
     const { attempts, book } = drive(null);
-    expect(attempts).toBe(X.ladder.maxAttempts + X.blockedRetryAttempts);
+    expect(attempts).toBe(G.ladder.maxAttempts + G.blockedRetryAttempts);
     expect(exitAttemptsOf(book.intents, PID)).toBe(attempts);
     expect(book.positions[PID]!.status).toBe('exit_blocked');
   });
@@ -721,30 +774,30 @@ describe('ladder budget per position', () => {
     for (const every of [1, 2, 3]) {
       const { attempts, book } = drive(every);
       // Never more than the bound; a restart also restarts the retry wait, so it can only be fewer.
-      expect(attempts).toBeGreaterThanOrEqual(X.ladder.maxAttempts);
-      expect(attempts).toBeLessThanOrEqual(X.ladder.maxAttempts + X.blockedRetryAttempts);
+      expect(attempts).toBeGreaterThanOrEqual(G.ladder.maxAttempts);
+      expect(attempts).toBeLessThanOrEqual(G.ladder.maxAttempts + G.blockedRetryAttempts);
       expect(book.positions[PID]!.status).toBe('exit_blocked');
     }
     // Directly: budget used, then a fresh tracker.
-    const spent = holding({ exitAttempts: X.ladder.maxAttempts });
+    const spent = holding({ exitAttempts: G.ladder.maxAttempts });
     expect(decide(spent, obs(NOW), stop, newTracker()).decision).toMatchObject({ kind: 'exit', maxAttempts: 0, blocked: expect.any(String) });
-    const blocked = { ...spent, status: 'exit_blocked' as const, exitAttempts: X.ladder.maxAttempts + X.blockedRetryAttempts };
-    expect(decide(blocked, obs(NOW + X.blockedRetryMs), stop, { ...newTracker(), blockedAtMs: NOW }).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: retries used' });
-    const oneLeft = { ...blocked, exitAttempts: X.ladder.maxAttempts + X.blockedRetryAttempts - 1 };
-    const retry = decide(oneLeft, obs(NOW + X.blockedRetryMs), stop, { ...newTracker(), blockedAtMs: NOW });
+    const blocked = { ...spent, status: 'exit_blocked' as const, exitAttempts: G.ladder.maxAttempts + G.blockedRetryAttempts };
+    expect(decide(blocked, obs(NOW + G.blockedRetryMs), stop, { ...newTracker(), blockedAtMs: NOW }).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: retries used' });
+    const oneLeft = { ...blocked, exitAttempts: G.ladder.maxAttempts + G.blockedRetryAttempts - 1 };
+    const retry = decide(oneLeft, obs(NOW + G.blockedRetryMs), stop, { ...newTracker(), blockedAtMs: NOW });
     expect(retry.decision).toMatchObject({ kind: 'exit', retry: true });
-    expect(retry.tracker.blockedRetries).toBe(X.blockedRetryAttempts);
+    expect(retry.tracker.blockedRetries).toBe(G.blockedRetryAttempts);
   });
 
   test('escalation never goes down after a skip upward or across owners', () => {
     const trig = 10_000_000n;
-    expect(planAttempt(X.ladder, 1, trig, trig, 0, 5, 1)).toMatchObject({ ok: true, rung: 2 });
-    expect(planAttempt(X.ladder, 1, trig, trig, 0, 5, 0)).toMatchObject({ ok: true, rung: 1 });
+    expect(planAttempt(G.ladder, 1, trig, trig, 0, 5, 1)).toMatchObject({ ok: true, rung: 2 });
+    expect(planAttempt(G.ladder, 1, trig, trig, 0, 5, 0)).toMatchObject({ ok: true, rung: 1 });
     // Attempt 2 is scheduled at rung 1, but rung 2 was already tried.
-    expect(planAttempt(X.ladder, 2, trig, trig, 0, 5, 2)).toMatchObject({ ok: true, rung: 3 });
+    expect(planAttempt(G.ladder, 2, trig, trig, 0, 5, 2)).toMatchObject({ ok: true, rung: 3 });
     // At the last rung it stays there.
-    expect(planAttempt(X.ladder, 1, trig, trig, 0, 5, 3)).toMatchObject({ ok: true, rung: 3 });
-    expect(planAttempt(X.ladder, 1, trig, trig, 0, 5, null)).toMatchObject({ ok: true, rung: 0 });
+    expect(planAttempt(G.ladder, 1, trig, trig, 0, 5, 3)).toMatchObject({ ok: true, rung: 3 });
+    expect(planAttempt(G.ladder, 1, trig, trig, 0, 5, null)).toMatchObject({ ok: true, rung: 0 });
   });
 
   test('a partial filled in two steps under one owner is one partial', () => {
@@ -758,14 +811,14 @@ describe('ladder budget per position', () => {
 });
 
 describe('policy validation of the new exit fields', () => {
-  const withExits = (patch: Partial<Policy['exits']>) => ({ ...TRIAL_POLICY, exits: { ...X, ...patch } });
+  const withExits = (patch: Partial<Policy['exits']>) => ({ ...TRIAL_POLICY, exits: { ...G, ...patch } });
   test('blockedRetryAttempts is a whole number >= 0; atrPeriod a whole number >= 1', () => {
     expect(policyIssues(withExits({ blockedRetryAttempts: 0 }))).toEqual([]);
     expect(policyIssues(withExits({ blockedRetryAttempts: -1 })).length).toBeGreaterThan(0);
     expect(policyIssues(withExits({ blockedRetryAttempts: 1.5 })).length).toBeGreaterThan(0);
-    expect(policyIssues(withExits({ atrPeriod: 1 }))).toEqual([]);
-    expect(policyIssues(withExits({ atrPeriod: 0 })).length).toBeGreaterThan(0);
-    expect(policyIssues(withExits({ atrPeriod: 2.5 })).length).toBeGreaterThan(0);
+    expect(policyIssues(withU2({ atrPeriod: 1 }))).toEqual([]);
+    expect(policyIssues(withU2({ atrPeriod: 0 })).length).toBeGreaterThan(0);
+    expect(policyIssues(withU2({ atrPeriod: 2.5 })).length).toBeGreaterThan(0);
   });
 });
 

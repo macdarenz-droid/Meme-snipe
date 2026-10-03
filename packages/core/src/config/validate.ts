@@ -1,5 +1,9 @@
 // Rejects inconsistent policies. Returns every problem found, so a bad file is fixed in one pass.
-import { TRIAL_POLICY, type Policy } from './policy.ts';
+import { EXIT_UNIVERSES, TRIAL_POLICY, type Policy } from './policy.ts';
+import { MINUTE_MS } from './time.ts';
+
+/** Phase 1 (§9): no position is held past 120 min. A hard check, so the cap never rests on the baselines alone. */
+export const PHASE1_T_MAX_MS = 120 * MINUTE_MS;
 
 /** Structural check against the trial policy: same keys, same value types, lists of the same kind. */
 const shapeIssues = (template: unknown, value: unknown, path: string, out: string[]): void => {
@@ -55,7 +59,8 @@ const BPS_FIELDS: readonly (readonly [string, (p: Policy) => number])[] = [
   ['gates.devClusterBps', (p) => p.gates.devClusterBps],
   ['exits.deployerSellSupplyBps', (p) => p.exits.deployerSellSupplyBps],
   ['exits.liquidityDropBps', (p) => p.exits.liquidityDropBps],
-  ['exits.partialMinShareBps', (p) => p.exits.partialMinShareBps],
+  ['exits.universes.U1.partialMinShareBps', (p) => p.exits.universes.U1.partialMinShareBps],
+  ['exits.universes.U2.partialMinShareBps', (p) => p.exits.universes.U2.partialMinShareBps],
   ['exits.ladder.steps[].minOutBelowTriggerBps (max)', (p) => Math.max(...p.exits.ladder.steps.map((s) => s.minOutBelowTriggerBps))],
 ];
 
@@ -99,12 +104,20 @@ const crossIssues = (p: Policy, out: string[]): void => {
   need(gates.deployerRugLookbackDays >= 1, 'gates.deployerRugLookbackDays: must be at least 1');
   need(gates.maxQuoteAgeMs > 0, 'gates.maxQuoteAgeMs: must be above zero');
 
-  need(exits.tFlatMs > 0 && exits.tFlatMs <= exits.tMaxMs, 'exits.tFlatMs must be above zero and no later than exits.tMaxMs');
   need(exits.maxExitTxAtMinNotional >= 1 && exits.maxExitTxAtMinNotional <= exits.maxExitTxAboveDoubleMin, 'exits.maxExitTxAtMinNotional must be at least 1 and no larger than maxExitTxAboveDoubleMin');
-  need(exits.stopAtrTenths >= 1 && exits.trailAtrTenths >= 1, 'exits.stopAtrTenths and exits.trailAtrTenths: must be at least 1');
-  need(exits.partialMinShareBps > 0, 'exits.partialMinShareBps: must be above zero');
-  need(exits.partialAtRBps > 0 && exits.partialAtGainBps > 0, 'exits.partialAtRBps and exits.partialAtGainBps: must be above zero');
-  need(exits.atrPeriod >= 1 && exits.atrBarMs > 0, 'exits.atrPeriod and exits.atrBarMs: must be above zero');
+  need(exits.negativeFlowMinutes >= 1, 'exits.negativeFlowMinutes: must be at least 1');
+  need(exits.tMaxCapMs <= PHASE1_T_MAX_MS, `exits.tMaxCapMs is above the phase-1 hard maximum of ${PHASE1_T_MAX_MS} ms`);
+  for (const u of EXIT_UNIVERSES) {
+    need(exits.universes[u].tMaxMs <= PHASE1_T_MAX_MS, `exits.universes.${u}.tMaxMs is above the phase-1 hard maximum of ${PHASE1_T_MAX_MS} ms`);
+    const x = exits.universes[u];
+    const at = `exits.universes.${u}`;
+    need(x.tMaxMs <= exits.tMaxCapMs, `${at}.tMaxMs is above exits.tMaxCapMs, the phase-1 hard maximum`);
+    need(x.tFlatMs > 0 && x.tFlatMs <= x.tMaxMs, `${at}.tFlatMs must be above zero and no later than ${at}.tMaxMs`);
+    need(x.stopAtrTenths >= 1 && x.trailAtrTenths >= 1, `${at}.stopAtrTenths and ${at}.trailAtrTenths: must be at least 1`);
+    need(x.partialMinShareBps > 0, `${at}.partialMinShareBps: must be above zero`);
+    need(x.partialAtRBps > 0 && x.partialAtGainBps > 0, `${at}.partialAtRBps and ${at}.partialAtGainBps: must be above zero`);
+    need(x.atrPeriod >= 1 && x.atrBarMs > 0, `${at}.atrPeriod and ${at}.atrBarMs: must be above zero`);
+  }
   need(exits.blockedRetryMs > 0, 'exits.blockedRetryMs: must be above zero');
 
   const { steps, maxAttempts, maxFeePerAttempt } = exits.ladder;
