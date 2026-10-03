@@ -4,7 +4,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import {
-  bettingEProcess, betaQuantile, clampMoments, deflatedSharpeFromMoments, DSR_KURTOSIS_FLOOR, nextNormal, onCalendar, spaBlockLength, spaTest, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
+  bettingEProcess, betaQuantile, clampMoments, deflatedSharpeFromMoments, DSR_KURTOSIS_FLOOR, nextNormal, onCalendar, SPA_BLOCK_LENGTHS, SPA_STUDENTISATION, spaResampleIndices, spaTest, type SpaRegistration, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
   dayBlockMeanDiffInterval, dayBlockMeanInterval, deflatedSharpe, designEffect, expectedMaxSharpe, incompleteBeta,
   incompleteGammaUpper, kurtosis, logGamma, mean, meanPredictiveInterval, median, normalCdf, normalQuantile, nPower,
   probabilisticSharpe, probabilityOfBacktestOverfitting, quantileSorted, ratesConsistent, requiredHoldoutTrades,
@@ -315,28 +315,58 @@ describe('purity and isolation', () => {
 });
 
 describe('joint bootstrap SPA test (spa.ts)', () => {
-  const noise = (seed: number, k: number, days: number, shift = 0) => {
+  const T = 50;
+  const noise = (seed: number, k: number, shift = 0) => {
     const rng = createRng(seed);
-    return Object.fromEntries(Array.from({ length: k }, (_, i) => [`v${i}`, Array.from({ length: days }, () => nextNormal(rng) + (i === 0 ? shift : 0))]));
+    return Object.fromEntries(Array.from({ length: k }, (_, i) => [`v${i}`, Array.from({ length: T }, () => nextNormal(rng) + (i === 0 ? shift : 0))]));
   };
-  test('the block length is fixed by rule: ⌈D^(1/3)⌉', () => {
-    expect([10, 27, 40, 64, 65].map(spaBlockLength)).toEqual([3, 3, 4, 4, 5]);
+  const zeros = Array<number>(T).fill(0);
+  const active = (v: Record<string, number[]>) => Object.fromEntries(Object.entries(v).map(([k, s]) => [k, s.filter((x) => x !== 0).length]));
+  const run = (v: Record<string, number[]>, s0: readonly number[] = zeros, over: Partial<SpaRegistration> = {}, seed = 2) =>
+    spaTest({ variants: v, s0, activeDays: active(v), registration: { seFloor: 1e-6, studentisation: SPA_STUDENTISATION, ...over } }, { rng: createRng(seed), replicates: 400, alpha: 0.05 });
+  test('the frozen studentisation re-studentises every replicate; block lengths 3, 5 and 7, the largest p promotes', () => {
+    expect(SPA_STUDENTISATION).toBe('replicate');
+    expect(SPA_BLOCK_LENGTHS).toEqual([3, 5, 7]);
+    const r = run(noise(1, 8, 1.2));
+    expect(r.pValue).toBe(Math.max(r.pByBlockLength[3]!, r.pByBlockLength[5]!, r.pByBlockLength[7]!));
+    expect(r.effectiveBlocks[5]).toBeCloseTo(10, 12);
   });
-  test('a strong edge rejects; no positive mean gives p = 1; seeded runs repeat exactly', () => {
-    const strong = spaTest(noise(1, 10, 40, 1.5), { rng: createRng(2), replicates: 500 });
-    expect(strong.pValue).toBeLessThan(0.01);
-    expect(strong.best).toBe('v0');
-    const neg = Object.fromEntries(Object.entries(noise(3, 5, 40)).map(([k, s]) => [k, s.map((x) => x - 3)]));
-    expect(spaTest(neg, { rng: createRng(4), replicates: 200 })).toMatchObject({ pValue: 1, best: null, statistic: 0 });
-    expect(spaTest(noise(5, 8, 30), { rng: createRng(6), replicates: 300 })).toEqual(spaTest(noise(5, 8, 30), { rng: createRng(6), replicates: 300 }));
+  test('a strong edge passes against both benchmarks; the step-down names it; p is never 0', () => {
+    const r = run(noise(1, 8, 1.2));
+    expect(r.passing).toEqual(['v0']);
+    expect(r.pValue).toBeGreaterThanOrEqual(1 / 401);
   });
-  test('a constant series is left out and reported; ragged, short or non-finite input is refused', () => {
-    const r = spaTest({ ...noise(7, 3, 20), flat: Array(20).fill(0) }, { rng: createRng(8), replicates: 200 });
-    expect(r.excluded).toEqual(['flat']);
-    expect(r.variants).toBe(3);
-    expect(() => spaTest({ a: [1, 2, 3], b: [1, 2] } as never, { rng: createRng(1) })).toThrow(/one calendar/);
-    expect(() => spaTest(noise(1, 2, 9), { rng: createRng(1) })).toThrow(/at least 10 days/);
-    expect(() => spaTest({ a: [...Array(11).fill(0), Number.NaN] }, { rng: createRng(1) })).toThrow(/non-finite/);
+  test('beating zero is not enough: a variant that does not beat S0 does not pass', () => {
+    const v = noise(1, 8, 1.2);
+    // S0 earns what v0 earns, give or take day-to-day noise: v0 is not better than S0.
+    const rng = createRng(9);
+    const s0 = v.v0!.map((x) => x + 0.3 * nextNormal(rng));
+    const r = run(v, s0);
+    expect(r.variants.find((x) => x.id === 'v0')!.zVsZero).toBeGreaterThan(3);
+    expect(r.passing).not.toContain('v0');
+  });
+  test('variants with fewer than 10 active days or an all-zero series are left out before outcomes are read', () => {
+    const v = { ...noise(3, 4), quiet: zeros.map((_, i) => (i < 9 ? 5 : 0)), dead: [...zeros] };
+    const r = run(v);
+    expect(r.excluded).toEqual(['dead', 'quiet']);
+    expect(r.variants.map((x) => x.id)).toEqual(['v0', 'v1', 'v2', 'v3']);
+  });
+  test('a resampled block never crosses a registered regime boundary', () => {
+    const regimes = [{ from: 0, to: 20 }, { from: 20, to: 35 }, { from: 35, to: 50 }];
+    const rng = createRng(4);
+    for (let k = 0; k < 200; k++) {
+      const idx = spaResampleIndices(regimes, 5, rng, T);
+      for (const r of regimes) for (let i = r.from; i < r.to; i++) expect(idx[i]! >= r.from && idx[i]! < r.to).toBe(true);
+    }
+    expect(() => run(noise(1, 2), zeros, { regimes: [{ from: 0, to: 20 }, { from: 21, to: 50 }] })).toThrow(/cover the calendar in order/);
+  });
+  test('replicates must resolve the level (>= 20 / α); the SE floor is registered and positive; one calendar', () => {
+    const v = noise(1, 2);
+    expect(() => spaTest({ variants: v, s0: zeros, activeDays: active(v), registration: { seFloor: 1e-6, studentisation: 'replicate' } }, { rng: createRng(1), replicates: 399, alpha: 0.05 }))
+      .toThrow(/>= 20 \/ α = 400/);
+    expect(() => run(v, zeros, { seFloor: 0 })).toThrow(/SE floor/);
+    expect(() => run({ a: [1, 2, 3] }, zeros)).toThrow(/one calendar/);
+    expect(run(noise(5, 4), zeros)).toEqual(run(noise(5, 4), zeros));
   });
   test('onCalendar puts idle days at 0 and refuses days off the calendar', () => {
     expect(onCalendar(['d1', 'd2', 'd3'], { a: [{ day: 'd2', pnl: 0.5 }, { day: 'd2', pnl: -0.1 }] })).toEqual({ a: [0, 0.4, 0] });

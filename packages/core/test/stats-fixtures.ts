@@ -148,6 +148,15 @@ export const SPA_SCENARIOS: Readonly<Record<string, (rng: Rng, edge: number, day
     let p = 0;
     return [`t${k}`, Array.from({ length: D }, () => (p = 0.3 * p + Math.sqrt(0.91) * nextNormal(rng)) + (k === 0 ? e : 0))];
   })),
+  // 30 variants active on about 30% of days.
+  sparse: (rng, e, D) => Object.fromEntries(Array.from({ length: 30 }, (_, k) => [`t${k}`, Array.from({ length: D }, () => (rng.next() < 0.3 ? nextNormal(rng) + (k === 0 ? e / 0.3 : 0) : 0))])),
+  // Volatility shifts at days 20 and 35 (×0.5, ×2, ×1); the test registers those regimes.
+  regimeShift: (rng, e, D) => Object.fromEntries(Array.from({ length: 30 }, (_, k) => [`t${k}`, Array.from({ length: D }, (_, d) => (d < 20 ? 0.5 : d < 35 ? 2 : 1) * nextNormal(rng) + (k === 0 ? e : 0))])),
+  // Variants with daily SDs from 0.3 to 3.3; the edge is in SD units of its own variant.
+  unequalVol: (rng, e, D) => Object.fromEntries(Array.from({ length: 30 }, (_, k) => {
+    const s = 0.3 + (3 * (k % 7)) / 6;
+    return [`t${k}`, Array.from({ length: D }, () => s * nextNormal(rng) + (k === 0 ? e * s : 0))];
+  })),
   // The bracket-model rule grid (8 rules × 9 variants, trialGrid); edge e means a +10e% per-trade edge in rule 0.
   ruleGrid: (rng, e, D) => Object.fromEntries(trialGrid(Math.floor(rng.next() * 1e9), 8, 9, e * 0.1, D).map((t) => [t.id, t.daily])),
 };

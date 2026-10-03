@@ -115,17 +115,21 @@ describe('G1 walk-forward', () => {
     expect(r.status).toBe('not-proven');
     expect(r.passed).toBe(false);
   });
+  // S0 at −20% a day on the walk-forward calendar; every variant traded on all 40 days.
+  const spaInputs = { s0Daily: dailyOf(control.map((t) => ({ ...t, ySevere: false, blocked: false }))), activeDays: Object.fromEntries(registry.map((t) => [t.trialId, 40])), seFloor: 1e-9 };
   test('SPA is always reported; it gates G1 only when edgeTest is "spa", and the config keeps "dsr"', () => {
     expect(RESEARCH_CONFIG.g1EdgeTest).toBe('dsr');
-    const r = gateG1(g1Pass());
+    const r = gateG1({ ...g1Pass(), spa: spaInputs });
     expect(r.metrics.spaP).not.toBeNull();
     expect(r.checks.some((c) => c.name === 'SPA')).toBe(false);
-    const s = gateG1({ ...g1Pass(), edgeTest: 'spa' });
+    expect(gateG1(g1Pass()).checks.find((c) => c.name === 'DSR')!.detail).toMatch(/SPA not run/);
+    const s = gateG1({ ...g1Pass(), spa: spaInputs, edgeTest: 'spa' });
     expect(s.checks.some((c) => c.name === 'DSR')).toBe(false);
     expect(s.checks.find((c) => c.name === 'SPA')!.passed).toBe(true);
     const flat = bracketTrades(23, 0, 40, 15);
-    const f = gateG1({ ...g1Pass(), trades: flat, pboMatrix: Object.fromEntries(registry.map((t, k) => [t.trialId, dailyOf(bracketTrades(900 + k, 0, 40, 15))])), edgeTest: 'spa' });
-    expect(f.reasons.join(' | ')).toMatch(/SPA: SPA over 20 variants/);
+    const f = gateG1({ ...g1Pass(), trades: flat, pboMatrix: Object.fromEntries(registry.map((t, k) => [t.trialId, dailyOf(bracketTrades(900 + k, 0, 40, 15))])), spa: spaInputs, edgeTest: 'spa' });
+    expect(f.reasons.join(' | ')).toMatch(/SPA: SPA over 20 variants .*t19 does not pass/);
+    expect(gateG1({ ...g1Pass(), edgeTest: 'spa' }).checks.find((c) => c.name === 'SPA')!.passed).toBe(false);
   });
   test('repeated runs of one configuration count once; different configurations with identical returns count twice', () => {
     const one = { t19: winnerDaily, t0: pboMatrix.t0!, t1: pboMatrix.t1! };
@@ -141,9 +145,11 @@ describe('G1 walk-forward', () => {
     const scaled = deflatedSharpeDaily({ ...one, other: winnerDaily.map((x) => 2 * x + 0.01) }, 't19');
     expect(scaled.deduplicated.trials).toBe(4);
     // The joint test's maximum statistic does not move when an identical series is added.
-    const spa1 = spaTest(one, { rng: createRng(1), replicates: 200 });
-    const spa2 = spaTest(rerun, { rng: createRng(1), replicates: 200 });
-    expect(spa2.statistic).toBeCloseTo(spa1.statistic, 12);
+    const spaOf = (v: Record<string, number[]>) => spaTest(
+      { variants: v, s0: Array<number>(40).fill(0), activeDays: Object.fromEntries(Object.keys(v).map((k) => [k, 40])), registration: { seFloor: 1e-9, studentisation: 'replicate' } },
+      { rng: createRng(1), replicates: 400, alpha: 0.05 },
+    );
+    expect(spaOf(rerun).statistic).toBeCloseTo(spaOf(one).statistic, 12);
   });
   test('thresholds tighten but never loosen', () => {
     expect(gateG1(g1Pass(), { dsrMin: 0.999999 }).reasons.some((x) => x.startsWith('DSR'))).toBe(true);

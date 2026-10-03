@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, deflatedSharpe, deflatedSharpeDaily, designEffect, expectedMaxSharpe, mean,
-  gateG3, meanPredictiveInterval, sharpeBootstrap, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, spaTest, type G3Input, type Rng,
+  gateG3, meanPredictiveInterval, sharpeBootstrap, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, SPA_STUDENTISATION, spaTest, type G3Input, type Rng,
 } from '../src/stats/index.ts';
 import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey, SPA_SCENARIOS } from './stats-fixtures.ts';
 
@@ -206,36 +206,48 @@ describe('other interval checks', () => {
   }, SLOW);
 });
 
-// STATS-1c (d): calibration of the joint day-block bootstrap SPA test against the day-level DSR. 40 days, every
-// scenario of SPA_SCENARIOS, 400 runs at zero edge, 500 bootstrap replicates; the SPA rejects at p < α, the DSR passes
-// at ≥ 0.95 on the best day-level Sharpe. Measured with these seeds (SPA / DSR): independent 0.0475 / 0, duplicates
-// 0.035 / 0, mixture 0.0325 / 0.0025, heavy tails 0.015 / 0.0075, common shock 0.0325 / 0.0075, idle days 0.0225 /
-// 0.0025, unequal lengths 0.005 / 0, autocorrelated 0.045 / 0.0025, rule grid 0.01 / 0.0025.
-describe('joint bootstrap SPA test calibration (STATS-1c)', () => {
+// STATS-1c: calibration of the joint SPA test (both benchmarks, step-down, stationary blocks 3/5/7, the largest p),
+// T = 50 days as the registry's walk-forward (08-03..09-21), S0 at zero edge (least favourable), α = 0.05, 400
+// replicates. "Global" is the max-statistic test over all 2K statistics; "a variant passes" is the promotion rule.
+// Measured, 300 runs a scenario at zero edge, as fixed ω̂ (global, a variant passes) | re-studentised (global, a variant
+// passes): independent 0.177, 0.017 | 0.007, 0 · duplicates 0.13, 0.037 | 0.03, 0.003 · mixture 0.173, 0.033 | 0.01, 0
+// · heavy tails 0.16, 0.02 | 0.003, 0 · common shock 0.123, 0.013 | 0.02, 0 · idle days 0.223, 0.017 | 0.007, 0 ·
+// unequal lengths 0.133, 0.01 | 0.01, 0 · autocorrelated 0.417, 0.093 | 0.013, 0 · rule grid 0.177, 0.03 | 0.007, 0.003
+// · sparse 0.123, 0.007 | 0.003, 0 · regime shift 0.337, 0.08 | 0.013, 0 · unequal volatility 0.143, 0.043 | 0.013, 0.003;
+// so the re-studentised form is frozen (SPA_STUDENTISATION). Power, re-studentised, 200 runs (global; a variant passes;
+// day-level DSR passes): independent 0.5 SD 0.135; 0.02; 0.185 · 0.8 SD 0.565; 0.15; 0.795 · duplicates 0.475; 0.135; 0
+// · mixture 0.485; 0.06; 0.015 · heavy tails 0.195; 0.015; 0.325 · common shock 0.225; 0.04; 0.265 · idle days 0.24;
+// 0.03; 0.535 · sparse 0.235; 0.045; 0.69 · regime shift 0.275; 0.075; 0.1 · unequal volatility 0.24; 0.005; 0.23 ·
+// autocorrelated 0.065; 0; 0.1 · rule grid +5% a trade 0.285; 0.055; 0.095 · +10% a trade 0.915; 0.6; 0.295.
+// CI runs the first 40 seeded runs of each scenario; SPA_FULL_CALIBRATION=1 runs all 300.
+describe('joint SPA test calibration (STATS-1c)', () => {
+  const T = 50;
+  const runs = process.env.SPA_FULL_CALIBRATION ? 300 : 40;
   const run = (name: string, edge: number, reps: number) => {
-    let spa = 0;
-    let dsr = 0;
+    let global = 0;
+    let pass = 0;
     for (let r = 0; r < reps; r++) {
       const rng = createRng(77_000 + r * 13 + name.length);
-      const s = SPA_SCENARIOS[name]!(rng, edge, 40);
-      if (spaTest(s, { rng: createRng(5_000_000 + r), replicates: 500 }).pValue < ALPHA) spa++;
-      const ids = Object.keys(s);
-      const best = ids.reduce((a, b) => (sharpeRatio(s[b]!) > sharpeRatio(s[a]!) ? b : a));
-      if (deflatedSharpeDaily(s, best).raw.dsr >= 0.95) dsr++;
+      const v = SPA_SCENARIOS[name]!(rng, edge, T);
+      const s0 = Array.from({ length: T }, () => nextNormal(rng));
+      const activeDays = Object.fromEntries(Object.entries(v).map(([k, s]) => [k, s.filter((x) => x !== 0).length]));
+      const regimes = name === 'regimeShift' ? [{ from: 0, to: 20 }, { from: 20, to: 35 }, { from: 35, to: 50 }] : [];
+      const res = spaTest({ variants: v, s0, activeDays, registration: { seFloor: 1e-6, studentisation: SPA_STUDENTISATION, regimes } },
+        { rng: createRng(5_000_000 + r), replicates: 400, alpha: ALPHA });
+      if (res.pValue < ALPHA) global++;
+      if (res.passing.length > 0) pass++;
     }
-    return { spa: spa / reps, dsr: dsr / reps };
+    return { global: global / reps, pass: pass / reps };
   };
-  test('false-positive rate ≤ α at zero edge in every scenario (400 runs each)', () => {
-    for (const name of Object.keys(SPA_SCENARIOS)) expect(run(name, 0, 400).spa, name).toBeLessThanOrEqual(ALPHA);
+  test('at zero edge neither the global test nor the promotion rule exceeds α, in any scenario', () => {
+    for (const name of Object.keys(SPA_SCENARIOS)) {
+      const r = run(name, 0, runs);
+      expect(r.global, name).toBeLessThanOrEqual(ALPHA);
+      expect(r.pass, name).toBeLessThanOrEqual(ALPHA);
+    }
   }, 900_000);
-  // Power (200 runs, daily edge 0.5 SD unless stated; SPA / DSR): independent 0.22 / 0.135 (0.8 SD: 0.64 / 0.62),
-  // duplicates 0.435 / 0.005, mixture 0.51 / 0.02, heavy tails 0.2 / 0.255, common shock 0.24 / 0.19, idle days 0.275 /
-  // 0.365, unequal lengths 0.015 / 0.075, autocorrelated 0.1 / 0.065, rule grid +5% a trade 0.3 / 0.055, +10% a trade
-  // 0.925 / 0.28.
-  test('power on a planted edge: a +10%-a-trade rule among 8 × 9 variants', () => {
-    const p = run('ruleGrid', 1, 200);
-    expect(p.spa).toBeGreaterThanOrEqual(0.85);
-    expect(p.dsr).toBeLessThan(0.4);
+  test('power: a +10%-a-trade rule among 8 × 9 variants passes the promotion rule in most runs', () => {
+    expect(run('ruleGrid', 1, 60).pass).toBeGreaterThanOrEqual(0.4);
   }, 900_000);
 });
 

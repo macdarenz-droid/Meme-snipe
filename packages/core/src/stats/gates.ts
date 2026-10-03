@@ -17,7 +17,7 @@ import type { TripleBarrierLabel } from './labeller.ts';
 import type { Rng } from './rng.ts';
 import { incompleteGammaUpper, studentTQuantile } from './special.ts';
 import { deflatedSharpe, deflatedSharpeDaily, sharpeBootstrap, type TrialRecord } from './sharpe.ts';
-import { spaTest } from './spa.ts';
+import { SPA_STUDENTISATION, spaTest } from './spa.ts';
 
 export type GateName = 'G0' | 'G1' | 'G2' | 'G3' | 'G4' | 'G5';
 /** 'not-proven': too little data to decide (collect more, never lower n). */
@@ -245,6 +245,12 @@ export interface G1Input {
    * stays off until the owner signs off on the calibration evidence; the setting lives in RESEARCH_CONFIG.g1EdgeTest.
    */
   readonly edgeTest?: 'dsr' | 'spa';
+  /**
+   * The joint SPA test's other inputs, on the calendar of `pboMatrix` (whose rows are the variants' daily net P&L over a
+   * fixed capital base): S0's daily P&L, each variant's active days (counted before outcomes) and the registered SE
+   * floor and regimes. Without them SPA is not run (and cannot gate).
+   */
+  readonly spa?: { readonly s0Daily: readonly number[]; readonly activeDays: Readonly<Record<string, number>>; readonly seFloor: number; readonly regimes?: readonly { readonly from: number; readonly to: number }[] };
   readonly modelUsed: boolean;
   readonly calibrationSlope: number | null;
   readonly rng: Rng;
@@ -302,11 +308,21 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
       metrics.dailySharpeP = sb.pNull;
       diag = `day-level DSR ${fmt(d.raw.dsr)} over ${d.raw.trials} trials and ${d.days} days, ${fmt(d.deduplicated.dsr)} over ${d.deduplicated.trials} configurations, `
         + `${fmt(d.effective.dsr)} over ${d.effective.trials} effective trials; day-level Sharpe ${fmt(d.sharpe)}, bootstrap p ${fmt(sb.pNull)}`;
-      const spa = spaTest(input.pboMatrix, { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) });
-      spaP = spa.pValue;
-      metrics.spaP = spa.pValue;
-      metrics.spaStatistic = spa.statistic;
-      spaDetail = `SPA over ${spa.variants} variants and ${spa.days} days (block ${spa.blockLength}): p ${fmt(spa.pValue)}, best ${spa.best ?? 'none'}`;
+      if (input.spa) {
+        const spa = spaTest(
+          { variants: input.pboMatrix, s0: input.spa.s0Daily, activeDays: input.spa.activeDays,
+            registration: { seFloor: input.spa.seFloor, studentisation: SPA_STUDENTISATION, ...(input.spa.regimes ? { regimes: input.spa.regimes } : {}) } },
+          { rng: input.rng, replicates: Math.max(input.replicates ?? DEFAULT_REPLICATES, Math.ceil(20 / SPA_ALPHA)), alpha: SPA_ALPHA },
+        );
+        // The selected configuration needs its own simultaneous evidence (step-down), not only a global rejection.
+        spaP = spa.passing.includes(input.selectedTrialId) ? spa.pValue : 1;
+        metrics.spaP = spa.pValue;
+        metrics.spaStatistic = spa.statistic;
+        spaDetail = `SPA over ${spa.variants.length} variants (${spa.excluded.length} left out for activity) and ${spa.days} days: p ${fmt(spa.pValue)} (max over blocks 3, 5, 7); `
+          + `${input.selectedTrialId} ${spa.passing.includes(input.selectedTrialId) ? 'passes' : 'does not pass'} against zero and S0`;
+      } else {
+        spaDetail = 'SPA not run (no S0 calendar or activity counts)';
+      }
     } catch (e) {
       diag = `diagnostics unavailable: ${(e as Error).message}`;
     }

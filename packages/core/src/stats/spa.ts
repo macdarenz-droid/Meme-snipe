@@ -1,52 +1,276 @@
 // Joint day-block bootstrap maximum-statistic test over the whole frozen registry: Hansen's test for superior predictive
-// ability, studentised, with consistent recentring (SPA_c). Hansen, "A Test for Superior Predictive Ability", Journal
-// of Business & Economic Statistics 23(4):365–380, 2005; White, "A Reality Check for Data Snooping", Econometrica
-// 68(5):1097–1126, 2000. Supervisor ruling STATS-1c (c), DECISIONS "Follow-up rulings".
+// ability, studentised, with consistent recentring (SPA_c), against two benchmarks at once, with a step-down for the
+// selected configuration. Hansen, "A Test for Superior Predictive Ability", JBES 23(4):365–380, 2005; White, "A Reality
+// Check for Data Snooping", Econometrica 68(5), 2000; Romano & Wolf, "Stepwise multiple testing as formalized data
+// snooping", Econometrica 73(4), 2005; Hsu, Hsu & Kuan, "Testing the predictive ability of technical analysis using a
+// new stepwise test without data snooping bias", J. Empirical Finance 17(3), 2010. Supervisor rulings STATS-1c.
 //
-// H0: no variant has a positive mean daily net return (the benchmark is zero mean net; S0 is compared elsewhere).
-// - Every variant's daily net P&L is on one calendar; idle days are 0 with their costs (onCalendar).
-// - Each replicate draws ONE circular-block index sequence (Politis & Romano, "A circular block-resampling procedure
-//   for stationary data", 1992) and applies it to every variant, so the dependence between variants (duplicates,
-//   shared days, common shocks) is kept.
-// - Block length is fixed in advance by spaBlockLength: ⌈D^(1/3)⌉ days for D days, at least 1 (the n^(1/3) rate for
-//   block bootstraps of a mean, Hall, Horowitz & Jing, Biometrika 82(3), 1995). Blocks fill positions 0..L−1, L..2L−1,
-//   …, the same blocks the batch-means estimator below uses.
-// - ω̂ₖ² is the batch-means long-run variance over consecutive blocks of the same length (unbiased for independent
-//   days). T = max(0, maxₖ √D·d̄ₖ/ω̂ₖ). Recentring g_c(x) = x·1{x ≥ −Aₖ}, Aₖ = ω̂ₖ·√(2·ln ln D / D) (Hansen 2005,
-//   §2.4): variants far below zero do not inflate the null distribution.
-// - Bootstrap-t: every replicate is studentised by the same estimator on the resampled series,
-//   T*_b = max(0, maxₖ √D·(d̄*ₖ,b − g_c(d̄ₖ))/ω*ₖ,b); p = (1 + #{T*_b ≥ T}) / (1 + B). Studentising with one fixed
-//   ω̂ (Hansen's form) ran at 7% for one variant and 13% for five at D = 40 in simulation, because ω̂ is noisy and
-//   biased low with few days; re-studentising each replicate carries that noise into the null distribution (Hall,
-//   The Bootstrap and Edgeworth Expansion, 1992, §3.5).
-// A variant whose series never moves (ω̂ₖ = 0) has no studentised statistic and is left out, and reported.
+// Inputs and units:
+// - Every variant's daily net P&L over a fixed capital base from the capacity-constrained deployment replay, summed
+//   per day (never per-trade fractions summed or averaged), on ONE calendar of T days for every variant and S0.
+// - Idle days are 0 before costs. The only costs that fall on an idle day are fees of entry attempts that never filled
+//   and rent locked in an account that was not recovered; both are negative entries. Fixed operating costs are not
+//   charged per variant.
+//
+// Statistics: for each variant j and benchmark b ∈ {zero, S0}, d_jb[t] = x_j[t] − b[t]; 2K statistics
+// z_jb = √T·mean(d_jb)/ω_jb. One critical value comes from the bootstrap maximum over all 2K statistics, and a variant
+// passes only when BOTH of its statistics exceed it. Recentring (Hansen 2005): μc_jb = mean(d_jb) when
+// z_jb < −√(2·ln ln T), else 0; T_boot = max(0, max √T·(mean(d*) − mean(d) + μc)/ω).
+// Bootstrap: one stationary-bootstrap index sequence per replicate (Politis & Romano, JASA 89(428), 1994) applied to
+// every variant and S0 alike, drawn within each registered regime (a block never crosses a regime boundary; each regime
+// keeps its registered number of days, so its weight). Expected block lengths 3, 5 and 7 days; promotion uses the
+// largest p of the three, and a variant passes only if it passes at all three.
+// Support: variants active on fewer than SPA_MIN_ACTIVE_DAYS days (from activity counts, decided before outcomes) are
+// left out of selection; an all-zero series is never active. Every ω is floored at the registered SE floor, applied
+// identically to observed and bootstrap statistics. p-values are (1 + k)/(1 + B), never 0.
 
-import { DEFAULT_REPLICATES } from './bootstrap.ts';
 import { nextInt, type Rng } from './rng.ts';
 
-/** Fewest days the test accepts (ln ln D must be positive and the block bootstrap needs room). */
-export const SPA_MIN_DAYS = 10;
+/** Expected block lengths in days; promotion takes the largest p across them. */
+export const SPA_BLOCK_LENGTHS = [3, 5, 7] as const;
+/** Fewest active days for a variant to be selectable (the stats MIN_DAYS). */
+export const SPA_MIN_ACTIVE_DAYS = 10;
 
-/** The block-length rule, fixed before any data is seen: mean block length ⌈D^(1/3)⌉ days. */
-export const spaBlockLength = (days: number): number => Math.max(1, Math.ceil(days ** (1 / 3) - 1e-9));
+/** How each statistic is studentised; both are calibrated in stats-simulation.test.ts and one is frozen. */
+export type SpaStudentisation = 'fixed' | 'replicate';
+
+/**
+ * The studentisation frozen before any data (STATS-1c calibration, T = 50, 12 scenarios, 300 runs each at zero edge):
+ * Hansen's fixed ω̂ rejected globally in 12–42% of runs and passed a variant in up to 9.3%; re-studentising every
+ * replicate (batch means over the same blocks) rejected globally in at most 3.0% and passed a variant in at most 0.33%.
+ */
+export const SPA_STUDENTISATION: SpaStudentisation = 'replicate';
+
+/** Regime index ranges a resample may draw from; exported so tests can check a block never crosses a boundary. */
+export const spaResampleIndices = (regimes: readonly { from: number; to: number }[], L: number, rng: Rng, T: number): Int32Array => {
+  const out = new Int32Array(T);
+  stationaryIndices(regimes, L, rng, out);
+  return out;
+};
+
+/** The registered settings of a run: fixed before any data is seen. */
+export interface SpaRegistration {
+  /** Floor on every ω, in the daily P&L's units. */
+  readonly seFloor: number;
+  readonly studentisation: SpaStudentisation;
+  /** Regimes as [from, to) day indices covering 0..T in order; empty or omitted for one regime. */
+  readonly regimes?: readonly { readonly from: number; readonly to: number }[];
+}
+
+export interface SpaInput {
+  /** Variant id → daily net P&L on the common calendar. */
+  readonly variants: Readonly<Record<string, readonly number[]>>;
+  /** S0's daily net P&L on the same calendar. */
+  readonly s0: readonly number[];
+  /** Variant id → days with any trading activity (counted before outcomes are read). */
+  readonly activeDays: Readonly<Record<string, number>>;
+  readonly registration: SpaRegistration;
+}
 
 export interface SpaOptions {
   readonly rng: Rng;
-  /** Bootstrap replicates (default DEFAULT_REPLICATES, 2,000). */
-  readonly replicates?: number;
+  readonly replicates: number;
+  /** Test level. */
+  readonly alpha: number;
+}
+
+export interface SpaVariantResult {
+  readonly id: string;
+  readonly zVsZero: number;
+  readonly zVsS0: number;
+  /** Passed against both benchmarks at every block length, by the step-down. */
+  readonly passed: boolean;
 }
 
 export interface SpaResult {
-  readonly statistic: number;
+  /** Global p: the largest over the block lengths of (1 + #{T* ≥ T}) / (1 + B). */
   readonly pValue: number;
-  /** Variant with the largest studentised mean, or null when none has a positive mean. */
-  readonly best: string | null;
+  readonly pByBlockLength: Readonly<Record<number, number>>;
+  readonly statistic: number;
   readonly days: number;
-  readonly blockLength: number;
-  readonly variants: number;
-  /** Variants left out because their series never moves. */
+  /** Mean number of blocks a replicate draws, per block length (T / L, summed over regimes). */
+  readonly effectiveBlocks: Readonly<Record<number, number>>;
+  readonly variants: readonly SpaVariantResult[];
+  /** Variants left out of selection for too little activity (all-zero series included). */
   readonly excluded: readonly string[];
+  readonly passing: readonly string[];
 }
+
+interface Stat {
+  readonly series: Float64Array;
+  readonly mean: number;
+  omega: number;
+  centre: number;
+}
+
+const stationaryIndices = (regimes: readonly { from: number; to: number }[], L: number, rng: Rng, out: Int32Array): void => {
+  const q = 1 / L;
+  for (const r of regimes) {
+    const len = r.to - r.from;
+    let t = nextInt(rng, len);
+    for (let i = 0; i < len; i++) {
+      if (i > 0) t = rng.next() < q ? nextInt(rng, len) : (t + 1) % len;
+      out[r.from + i] = r.from + t;
+    }
+  }
+};
+
+const meanOf = (s: Float64Array, idx: Int32Array | null): number => {
+  let sum = 0;
+  if (idx) for (let i = 0; i < s.length; i++) sum += s[idx[i]!]!;
+  else for (let i = 0; i < s.length; i++) sum += s[i]!;
+  return sum / s.length;
+};
+
+/** Batch-means long-run SD over consecutive blocks of L positions (for per-replicate studentisation). */
+const batchSd = (s: Float64Array, idx: Int32Array | null, mean: number, L: number): number => {
+  const T = s.length;
+  const m = Math.ceil(T / L);
+  if (m < 2) return 0;
+  let ss = 0;
+  for (let j = 0; j < m; j++) {
+    let sum = 0;
+    let n = 0;
+    for (let i = j * L; i < Math.min(T, (j + 1) * L); i++) {
+      sum += idx ? s[idx[i]!]! : s[i]!;
+      n++;
+    }
+    ss += (sum - n * mean) ** 2;
+  }
+  return Math.sqrt((ss * m) / (m - 1) / T);
+};
+
+/** One block length: observed statistics, the bootstrap max distribution, the global p and the step-down. */
+const runAtBlockLength = (
+  stats: Stat[],
+  T: number,
+  regimes: readonly { from: number; to: number }[],
+  L: number,
+  reg: SpaRegistration,
+  opts: SpaOptions,
+): { p: number; tObs: number; rejected: Set<number> } => {
+  const B = opts.replicates;
+  const rootT = Math.sqrt(T);
+  const idx = new Int32Array(T);
+  const boot = stats.map(() => new Float64Array(B));
+  const bootSd = reg.studentisation === 'replicate' ? stats.map(() => new Float64Array(B)) : null;
+  for (let b = 0; b < B; b++) {
+    stationaryIndices(regimes, L, opts.rng, idx);
+    stats.forEach((st, k) => {
+      const mb = meanOf(st.series, idx);
+      boot[k]![b] = mb;
+      if (bootSd) bootSd[k]![b] = Math.max(batchSd(st.series, idx, mb, L), reg.seFloor);
+    });
+  }
+  const lil = Math.sqrt(2 * Math.log(Math.log(T)));
+  for (const [k, st] of stats.entries()) {
+    if (reg.studentisation === 'fixed') {
+      let v = 0;
+      for (let b = 0; b < B; b++) v += (boot[k]![b]! - st.mean) ** 2;
+      st.omega = Math.max(Math.sqrt((T * v) / B), reg.seFloor);
+    } else {
+      st.omega = Math.max(batchSd(st.series, null, st.mean, L), reg.seFloor);
+    }
+    st.centre = (rootT * st.mean) / st.omega < -lil ? st.mean : 0;
+  }
+  const zOf = (st: Stat) => (rootT * st.mean) / st.omega;
+  const tObs = Math.max(0, ...stats.map(zOf));
+  const maxOver = (active: readonly number[]): Float64Array => {
+    const out = new Float64Array(B);
+    for (let b = 0; b < B; b++) {
+      let m = 0;
+      for (const k of active) {
+        const st = stats[k]!;
+        const w = bootSd ? bootSd[k]![b]! : st.omega;
+        const z = (rootT * (boot[k]![b]! - st.mean + st.centre)) / w;
+        if (z > m) m = z;
+      }
+      out[b] = m;
+    }
+    return out;
+  };
+  const all = stats.map((_, k) => k);
+  const first = maxOver(all);
+  let exceed = 0;
+  for (let b = 0; b < B; b++) if (first[b]! >= tObs) exceed++;
+  const p = (1 + exceed) / (1 + B);
+  // Step-down: reject every statistic above the (1 − α) critical value of the max over those not yet rejected; repeat.
+  const rejected = new Set<number>();
+  let dist = first;
+  for (;;) {
+    const sorted = Array.from(dist).sort((a, c) => a - c);
+    const crit = sorted[Math.min(B - 1, Math.ceil((1 - opts.alpha) * (B + 1)) - 1)]!;
+    const fresh = all.filter((k) => !rejected.has(k) && zOf(stats[k]!) > crit);
+    if (fresh.length === 0) break;
+    for (const k of fresh) rejected.add(k);
+    const left = all.filter((k) => !rejected.has(k));
+    if (left.length === 0) break;
+    dist = maxOver(left);
+  }
+  return { p, tObs, rejected };
+};
+
+/** Run the SPA test over the whole registry (see the header). */
+export const spaTest = (input: SpaInput, opts: SpaOptions): SpaResult => {
+  const ids = Object.keys(input.variants).sort();
+  if (ids.length === 0) throw new RangeError('no variants');
+  const T = input.s0.length;
+  for (const id of ids) {
+    const s = input.variants[id]!;
+    if (s.length !== T) throw new RangeError(`variant ${id} has ${s.length} days, expected ${T}: put every variant on one calendar`);
+    for (const x of s) if (!Number.isFinite(x)) throw new RangeError(`variant ${id} has a non-finite daily P&L`);
+  }
+  for (const x of input.s0) if (!Number.isFinite(x)) throw new RangeError('S0 has a non-finite daily P&L');
+  if (T < SPA_MIN_ACTIVE_DAYS) throw new RangeError(`the SPA test needs at least ${SPA_MIN_ACTIVE_DAYS} days, got ${T}`);
+  const reg = input.registration;
+  if (!(reg.seFloor > 0) || !Number.isFinite(reg.seFloor)) throw new RangeError('the registered SE floor must be a positive number');
+  if (!(opts.alpha > 0 && opts.alpha < 1)) throw new RangeError(`alpha must be in (0, 1), got ${opts.alpha}`);
+  if (!Number.isInteger(opts.replicates) || opts.replicates < Math.ceil(20 / opts.alpha)) {
+    throw new RangeError(`replicates must be an integer >= 20 / α = ${Math.ceil(20 / opts.alpha)}, got ${opts.replicates}`);
+  }
+  const regimes = reg.regimes && reg.regimes.length > 0 ? reg.regimes : [{ from: 0, to: T }];
+  let at = 0;
+  for (const r of regimes) {
+    if (r.from !== at || !(r.to > r.from)) throw new RangeError('regimes must cover the calendar in order, each at least one day');
+    at = r.to;
+  }
+  if (at !== T) throw new RangeError(`regimes cover ${at} days, the calendar has ${T}`);
+
+  const excluded: string[] = [];
+  const kept: string[] = [];
+  for (const id of ids) {
+    const allZero = input.variants[id]!.every((x) => x === 0);
+    if (allZero || (input.activeDays[id] ?? 0) < SPA_MIN_ACTIVE_DAYS) excluded.push(id);
+    else kept.push(id);
+  }
+  const s0 = Float64Array.from(input.s0);
+  const build = (): Stat[] => kept.flatMap((id) => {
+    const x = input.variants[id]!;
+    return [Float64Array.from(x), Float64Array.from(x, (v, t) => v - s0[t]!)].map((series) => ({ series, mean: meanOf(series, null), omega: 0, centre: 0 }));
+  });
+  const pBy: Record<number, number> = {};
+  const blocks: Record<number, number> = {};
+  const passAll = new Set(kept.map((_, j) => j));
+  let statistic = 0;
+  let zs: { zVsZero: number; zVsS0: number }[] = [];
+  const rootT = Math.sqrt(T);
+  for (const L of SPA_BLOCK_LENGTHS) {
+    blocks[L] = regimes.reduce((s, r) => s + (r.to - r.from) / L, 0);
+    if (kept.length === 0) {
+      pBy[L] = 1;
+      continue;
+    }
+    const stats = build();
+    const r = runAtBlockLength(stats, T, regimes, L, reg, opts);
+    pBy[L] = r.p;
+    statistic = Math.max(statistic, r.tObs);
+    zs = kept.map((_, j) => ({ zVsZero: (rootT * stats[2 * j]!.mean) / stats[2 * j]!.omega, zVsS0: (rootT * stats[2 * j + 1]!.mean) / stats[2 * j + 1]!.omega }));
+    for (const j of [...passAll]) if (!(r.rejected.has(2 * j) && r.rejected.has(2 * j + 1))) passAll.delete(j);
+  }
+  const pValue = Math.max(...SPA_BLOCK_LENGTHS.map((L) => pBy[L]!));
+  const variants = kept.map((id, j) => ({ id, zVsZero: zs[j]?.zVsZero ?? 0, zVsS0: zs[j]?.zVsS0 ?? 0, passed: passAll.has(j) }));
+  return { pValue, pByBlockLength: pBy, statistic, days: T, effectiveBlocks: blocks, variants, excluded, passing: variants.filter((v) => v.passed).map((v) => v.id) };
+};
 
 /**
  * Put each variant's dated daily P&L on one calendar: days without an entry are idle days, 0 (their costs, if any,
@@ -70,81 +294,4 @@ export const onCalendar = (
     out[id] = s;
   }
   return out;
-};
-
-/** Hansen's SPA_c test over every variant at once. `series`: variant id → daily net P&L, one calendar for all. */
-export const spaTest = (series: Readonly<Record<string, readonly number[]>>, opts: SpaOptions): SpaResult => {
-  const ids = Object.keys(series).sort();
-  if (ids.length === 0) throw new RangeError('no variants');
-  const D = series[ids[0]!]!.length;
-  for (const id of ids) {
-    const s = series[id]!;
-    if (s.length !== D) throw new RangeError(`variant ${id} has ${s.length} days, expected ${D}: put every variant on one calendar`);
-    for (const x of s) if (!Number.isFinite(x)) throw new RangeError(`variant ${id} has a non-finite daily P&L`);
-  }
-  if (D < SPA_MIN_DAYS) throw new RangeError(`the SPA test needs at least ${SPA_MIN_DAYS} days, got ${D}`);
-  const B = opts.replicates ?? DEFAULT_REPLICATES;
-  if (!Number.isInteger(B) || B < 100) throw new RangeError(`replicates must be an integer >= 100, got ${B}`);
-  const L = spaBlockLength(D);
-  const K = ids.length;
-  const X = ids.map((id) => series[id]!);
-  const means = X.map((s) => s.reduce((a, b) => a + b, 0) / D);
-  // Batch means: blocks of L consecutive positions; Σⱼ (Sⱼ − nⱼ·mean)² · m/(m − 1) / D.
-  const m = Math.ceil(D / L);
-  const longRunSd = (get: (i: number) => number, mean: number): number => {
-    let ss = 0;
-    for (let j = 0; j < m; j++) {
-      let sum = 0;
-      let n = 0;
-      for (let i = j * L; i < Math.min(D, (j + 1) * L); i++) {
-        sum += get(i);
-        n++;
-      }
-      ss += (sum - n * mean) ** 2;
-    }
-    return Math.sqrt((ss * m) / (m - 1) / D);
-  };
-  const omega = X.map((s, k) => longRunSd((i) => s[i]!, means[k]!));
-
-  const live: number[] = [];
-  const excluded: string[] = [];
-  ids.forEach((id, k) => {
-    // Spread below rounding noise counts as none.
-    if (omega[k]! > 1e-12 * Math.max(1, Math.abs(means[k]!))) live.push(k);
-    else excluded.push(id);
-  });
-  const rootD = Math.sqrt(D);
-  let statistic = 0;
-  let best: string | null = null;
-  for (const k of live) {
-    const t = (rootD * means[k]!) / omega[k]!;
-    if (t > statistic) {
-      statistic = t;
-      best = ids[k]!;
-    }
-  }
-  const lil = Math.sqrt((2 * Math.log(Math.log(D))) / D);
-  const centre = live.map((k) => (means[k]! >= -omega[k]! * lil ? means[k]! : 0));
-  // Every replicate draws one index sequence and applies it to every variant.
-  const idx = new Array<number>(D);
-  let exceed = 0;
-  for (let b = 0; b < B; b++) {
-    for (let j = 0; j < m; j++) {
-      const start = nextInt(opts.rng, D);
-      for (let i = j * L; i < Math.min(D, (j + 1) * L); i++) idx[i] = (start + i - j * L) % D;
-    }
-    let tb = 0;
-    live.forEach((k, j) => {
-      const s = X[k]!;
-      let sum = 0;
-      for (let i = 0; i < D; i++) sum += s[idx[i]!]!;
-      const mb = sum / D;
-      const w = longRunSd((i) => s[idx[i]!]!, mb);
-      if (!(w > 0)) return;
-      const z = (rootD * (mb - centre[j]!)) / w;
-      if (z > tb) tb = z;
-    });
-    if (tb >= statistic) exceed++;
-  }
-  return { statistic, pValue: (1 + exceed) / (1 + B), best, days: D, blockLength: L, variants: live.length, excluded };
 };
