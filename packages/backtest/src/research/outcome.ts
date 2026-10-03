@@ -25,6 +25,8 @@ export interface Barrier {
   readonly takeProfitBps: number;
   readonly stopLossBps: number;
   readonly horizonMs: number;
+  /** Universes the barrier applies to (all when absent). */
+  readonly universes?: readonly ('U1' | 'U2')[];
 }
 
 /** The plan's barriers (signals.md §4). B2 has no take-profit in reach and a stop at −100%. */
@@ -32,7 +34,12 @@ export const PLAN_BARRIERS: readonly Barrier[] = [
   { cfgId: 'B1_tp50_sl20_h120m', takeProfitBps: 5000, stopLossBps: 2000, horizonMs: 120 * MIN },
   { cfgId: 'B2_time_h120m', takeProfitBps: 1_000_000_000, stopLossBps: 10_000, horizonMs: 120 * MIN },
   { cfgId: 'B3_tp30_sl15_h60m', takeProfitBps: 3000, stopLossBps: 1500, horizonMs: 60 * MIN },
+  // Added before any data (signals.md §8, supervisor 2026-10-04): U1's own exit, risk.md S2's T_max of 4 h (CFG-2).
+  { cfgId: 'B4_u1_time_h240m', takeProfitBps: 1_000_000_000, stopLossBps: 10_000, horizonMs: 240 * MIN, universes: ['U1'] },
 ];
+
+/** Whether a barrier applies to a universe. */
+export const appliesTo = (b: Barrier, u: 'U1' | 'U2'): boolean => b.universes === undefined || b.universes.includes(u);
 
 export interface ScoreTarget {
   readonly id: string;

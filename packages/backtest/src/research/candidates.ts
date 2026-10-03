@@ -48,6 +48,8 @@ export interface DriveOptions {
   readonly u1MinMcapSol: number;
   /** Outcome window after a decision (horizon plus the exit ladder): a decision whose window reaches the wall is purged. */
   readonly outcomeWindowMs: number;
+  /** U1's outcome window: its 4 h barrier (B4) plus the exit ladder. */
+  readonly u1OutcomeWindowMs: number;
 }
 
 export const PLAN_DRIVE = {
@@ -57,6 +59,7 @@ export const PLAN_DRIVE = {
   u1MaxAgeMs: 14 * DAY,
   u1MinMcapSol: 1470,
   outcomeWindowMs: 120 * MIN + 30 * MIN,
+  u1OutcomeWindowMs: 240 * MIN + 30 * MIN,
 } as const;
 
 export interface DriveResult {
@@ -141,7 +144,8 @@ export const collectCandidates = (rows: Iterable<DatasetRow>, o: DriveOptions): 
       return;
     }
     // Purged: an outcome window that would reach the wall, or a hold that would cross a regime boundary (BT-2's rule).
-    if (nowMs + o.outcomeWindowMs >= wall || regimeAt(o.window, nowMs) !== regimeAt(o.window, nowMs + o.outcomeWindowMs)) {
+    const span = u === 'U1' ? o.u1OutcomeWindowMs : o.outcomeWindowMs;
+    if (nowMs + span >= wall || regimeAt(o.window, nowMs) !== regimeAt(o.window, nowMs + span)) {
       purged++;
       return;
     }

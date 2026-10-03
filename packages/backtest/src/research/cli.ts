@@ -14,7 +14,7 @@ import type { DatasetRow } from '../dataset/rows.ts';
 import type { HoldoutRegistry } from '../../../core/src/stats/index.ts';
 import { evaluate, handoffs, type Obs, type Registry, univariate, withRegistry } from './analysis.ts';
 import { type Candidate, collectCandidates, PLAN_DRIVE, solUsdAsOf, type Universe } from './candidates.ts';
-import { type Outcome, PLAN_BARRIERS, scoreCandidates } from './outcome.ts';
+import { appliesTo, type Outcome, PLAN_BARRIERS, scoreCandidates } from './outcome.ts';
 import { assertReadable, latestRegime, loadWindow, readableDays, resolveWindow, wallDay } from './practice.ts';
 
 const args = process.argv.slice(2);
@@ -63,6 +63,7 @@ const verdicts = [];
 const context = [];
 for (const u of ['U1', 'U2'] as const) {
   for (let b = 0; b < PLAN_BARRIERS.length; b++) {
+    if (!appliesTo(PLAN_BARRIERS[b]!, u)) continue;
     const obs = obsOf(u, b, 'conservative');
     const tag = { universe: u, barrier: PLAN_BARRIERS[b]!.cfgId };
     const n = new Set(obs.map((x) => x.day)).size;
