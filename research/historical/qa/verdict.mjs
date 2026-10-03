@@ -58,11 +58,14 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
     if (n !== 0 && !(n === 8 && EXTRA8_EVENTS.has(ev))) misses.push(`extra bytes ${k} x${v}`);
   }
   for (const [k, v] of Object.entries(sum('newer_layouts'))) if (!EXTRA8_EVENTS.has(k)) misses.push(`newer layout ${k} x${v}`);
+  // The dataset's own regimes (manifest.regime_boundaries, copied by finalize -regimes)
+  // win over the repository file.
+  const preLayouts = man.regime_boundaries?.pre_layouts ? new Map(Object.entries(man.regime_boundaries.pre_layouts)) : PRE_B4_LAYOUTS;
   // Older layouts: only the pre-B4 layout, and only in units that start before B4 on
   // that program (the unit holding the boundary may carry both).
   for (const u of man.units || []) {
     for (const [k, v] of Object.entries(u.older_layouts || {})) {
-      const b4 = PRE_B4_LAYOUTS.get(k);
+      const b4 = preLayouts.get(k);
       if (b4 === undefined || !(u.from_slot < b4)) misses.push(`older layout ${k} x${v}${b4 === undefined ? '' : ` in unit from slot ${u.from_slot}, after B4 (${b4})`}`);
     }
   }
@@ -91,6 +94,7 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
     if (mv.files === 0) misses.push('token movement files absent');
     if (mv.malformed > 0) misses.push(`malformed movement rows ${mv.malformed}`);
     if (mv.outside_coverage > 0) misses.push(`movement rows of non-pump mints outside movement_coverage ${mv.outside_coverage}`);
+    if ((mv.empty_owner_rows ?? 0) !== (mv.empty_owner_coverage ?? 0)) misses.push(`movement rows with an empty owner ${mv.empty_owner_rows}, coverage records count ${mv.empty_owner_coverage}`);
     if (mv.coverage_bad_scope > 0) misses.push(`movement coverage rows with an unknown scope ${mv.coverage_bad_scope}`);
     if (mv.supply_negative > 0) misses.push(`token supply below zero for ${mv.supply_negative} mints`);
     if (mv.balance_exact !== mv.balance_checks) misses.push(`token balance changes unexplained by movement rows ${mv.balance_checks - mv.balance_exact}`);

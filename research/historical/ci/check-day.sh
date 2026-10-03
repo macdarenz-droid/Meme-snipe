@@ -41,17 +41,3 @@ for f in "$first"/*.zst; do
 done
 echo "determinism: unit $epoch/$range rescanned, every file identical" | tee -a "$summary"
 rm -rf "$ds" "$again"
-
-# The day's events-only asset (each unit's events, stats and block rows), all an
-# assembled window needs from its lead-in days; files in sorted order.
-(cd "$out" && find units -mindepth 3 -maxdepth 3 \( -name events.jsonl.zst -o -name stats.json -o -name blocks.csv.zst \) \
-  ! -path '*.tmp/*' | LC_ALL=C sort | tar --no-recursion -cf "$assets/events-$day.tar" -T -)
-# Before packaging: tar --remove-files frees each unit file as it goes, so one part
-# (1.9 GiB) + 5 GB of headroom is enough.
-"$here/disk-guard.sh" "$assets" 7000000000 "packaging"
-# Package: one tar of the day's finished units, split into 1900 MiB parts (under the
-# 2 GiB asset limit). --remove-files deletes each unit file once it is in the tar, so
-# the disk holds the units or their tar, not both (progress is already in the cache).
-(cd "$out" && tar --exclude='*.tmp' --remove-files -cf - units) | split -b 1900m -d -a 2 - "$assets/units-$day.tar.part"
-{ echo "### Disk after packaging ($day)"; echo '```'; df -h "$assets" 2>/dev/null; ls -l "$assets"; echo '```'; } >> "$summary"
-(cd "$assets" && sha256sum units-"$day".tar.part* events-"$day".tar qa-"$day".* parity-"$day".json manifest-"$day".json > "SHA256SUMS-$day")

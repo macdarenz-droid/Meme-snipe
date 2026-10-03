@@ -375,11 +375,23 @@ if (man.schema >= 2) {
 // unresolved.
 {
   const st = { files: 0, rows: 0, by_kind: {}, zero_amount: 0, malformed: 0, malformed_rows: [], partial_rows: 0, outside_coverage: 0, outside_coverage_rows: [],
-    coverage_rows: 0, coverage_bad_scope: 0, supply_mints: 0, supply_negative: 0, supply_bad: [], balance_checks: 0, balance_exact: 0, balance_bad: [], balance_skipped_pump_txs: movementBalanceSkipped };
+    coverage_rows: 0, coverage_bad_scope: 0, unresolved_mints: 0, unresolved_by_reason: {}, empty_owner_rows: 0, empty_owner_coverage: 0, balance_skipped_unresolved: 0, supply_mints: 0, supply_negative: 0, supply_bad: [], balance_checks: 0, balance_exact: 0, balance_bad: [], balance_skipped_pump_txs: movementBalanceSkipped };
   const cover = new Map(); // mint -> [[from, to]]
+  const unresolvedFrom = new Map(); // mint -> first slot with ownership unresolved
   for (const f of fs.readdirSync(ds).filter((x) => x.startsWith('movement_coverage-')).sort()) {
     for (const c of readTable(f)) {
       st.coverage_rows++;
+      // Scopes (scanner movements.go): pump_transactions (searched only in pump
+      // transactions), unresolved (an undecoded token instruction: ownership unresolved
+      // from slot), empty_owner (rows with an unresolvable owner, counted), no_movements
+      // (lead-in units carry none).
+      if (c.scope === 'unresolved') {
+        if (!unresolvedFrom.has(c.mint) || BigInt(c.slot) < unresolvedFrom.get(c.mint)) unresolvedFrom.set(c.mint, BigInt(c.slot));
+        st.unresolved_by_reason[c.reason] = (st.unresolved_by_reason[c.reason] || 0) + Number(c.count || 0);
+        continue;
+      }
+      if (c.scope === 'empty_owner') { st.empty_owner_coverage += Number(c.count || 0); continue; }
+      if (c.scope === 'no_movements') { st.no_movements = { from_slot: c.from_slot, to_slot: c.to_slot }; continue; }
       if (c.scope !== 'pump_transactions') { st.coverage_bad_scope++; continue; }
       if (!cover.has(c.mint)) cover.set(c.mint, []);
       cover.get(c.mint).push([BigInt(c.from_slot), BigInt(c.to_slot)]);
@@ -412,6 +424,7 @@ if (man.schema >= 2) {
         : r.kind === 'mint' ? r.to_account !== '' && r.from_account === '' && r.from_owner === '' : false;
       if (!amountOk || !shapeOk || !r.mint) { st.malformed++; bad(st.malformed_rows, `${id} ${r.kind} ${r.amount}`); continue; }
       const a = BigInt(r.amount);
+      if ((r.from_account !== '' && r.from_owner === '') || (r.to_account !== '' && r.to_owner === '')) st.empty_owner_rows++;
       if (a === 0n) st.zero_amount++; // zero-amount transfers are valid on chain (address poisoning); reported, not a miss
       if (!r.mint.endsWith('pump')) {
         st.partial_rows++;
@@ -436,8 +449,11 @@ if (man.schema >= 2) {
     const left = sp.total + sp.minted - sp.burned - (eventBurn.get(mint) || 0n);
     if (left < 0n) { st.supply_negative++; bad(st.supply_bad, { mint, total: String(sp.total), minted: String(sp.minted), burned: String(sp.burned), event_burned: String(eventBurn.get(mint) || 0n) }); }
   }
+  st.unresolved_mints = unresolvedFrom.size;
   for (const [k, tx] of movementBalance) {
     for (const [mint, bal] of tx.balances) {
+      const uf = unresolvedFrom.get(mint);
+      if (uf !== undefined && BigInt(k.split(':')[0]) >= uf) { st.balance_skipped_unresolved++; continue; }
       st.balance_checks++;
       const mv = tx.moves.get(mint) || new Map();
       const diff = [...new Set([...bal.keys(), ...mv.keys()])].filter((o) => (bal.get(o) || 0n) !== (mv.get(o) || 0n));
@@ -564,7 +580,7 @@ md.push('', '## Against recorded account balances', '', `Curves quoted in a toke
 {
   const m = report.movements;
   md.push('', '## Token movements', '', 'Coverage: mints ending in "pump" have every token movement of every successful transaction (complete); other mints have only the movements inside transactions that carry a pump or PumpSwap event of that mint, listed in movement_coverage (scope pump_transactions) for the units\' slot ranges, and their ownership outside those rows is unresolved.',
-    '', `${m.rows} rows in ${m.files} files (${JSON.stringify(m.by_kind)}); ${m.malformed} malformed; ${m.zero_amount} with amount 0 (valid on chain, not a miss); ${m.partial_rows} rows of other mints, ${m.outside_coverage} of them outside movement_coverage (${m.coverage_rows} coverage rows, ${m.coverage_bad_scope} with an unknown scope).`,
+    '', `${m.rows} rows in ${m.files} files (${JSON.stringify(m.by_kind)}); ${m.malformed} malformed; ${m.zero_amount} with amount 0 (valid on chain, not a miss); ${m.partial_rows} rows of other mints, ${m.outside_coverage} of them outside movement_coverage (${m.coverage_rows} coverage rows, ${m.coverage_bad_scope} with an unknown scope). Ownership unresolved for ${m.unresolved_mints} mints from the slot of an undecoded token instruction (${JSON.stringify(m.unresolved_by_reason)}); ${m.empty_owner_rows} rows with an owner that could not be resolved (coverage records count ${m.empty_owner_coverage}). ${m.no_movements ? `Lead-in slots ${m.no_movements.from_slot} to ${m.no_movements.to_slot} carry no movements, so holder ownership at the window start is unresolved until movements begin.` : ''}`,
     '', `Supply: ${m.supply_mints} "pump" mints with their CreateEvent in the dataset; token_total_supply + mints - burns (movement rows) - BoostBuyAndBurnEvent burns is below zero for ${m.supply_negative}. Ownership per holder is not rebuilt here.`,
     '', `Balances: ${m.balance_exact} of ${m.balance_checks} (transaction, "pump" mint) pairs match exactly: per owner, the token balance change in the raw record equals the sum of that transaction's movement rows. Scope: successful raw records of transactions that reference neither pump nor PumpSwap (plain token transactions of hash-sampled mints); ${m.balance_skipped_pump_txs} raw records that touch pump or PumpSwap are not balance-checked here (their movement rows are checked against the instructions by the parity check).`);
 }

@@ -210,7 +210,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/work/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: QA, determinism and packaging
+      - name: QA and determinism
         id: qa
         if: steps.published.outputs.complete != 'true'
         env:
@@ -229,6 +229,14 @@ jobs:
         with:
           path: ${{ runner.temp }}/work/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}-qa
+      # Packaging is its own step: tar --remove-files deletes unit files as it goes, and
+      # no progress save follows it, so a failed packaging can never become the newest
+      # cache of finished-looking units with files missing.
+      - name: Package the day
+        if: steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: research/historical/ci/package-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets"
       - name: Collect the back-off for the next day and run
         id: backoff
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'

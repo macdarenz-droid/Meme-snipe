@@ -95,3 +95,16 @@ test('token movement misses are counted', () => {
     'token balance changes unexplained by movement rows 2',
   ]);
 });
+
+test('the manifest regimes win over the repository file', () => {
+  const m = base();
+  m.regime_boundaries = { pre_layouts: { 'pump:TradeEvent:30': 500 } };
+  m.units.push({ from_slot: 100, older_layouts: { 'pump:TradeEvent:30': 1, 'pump:TradeEvent:32': 1 } });
+  assert.deepEqual(strictMisses(m, report), ['older layout pump:TradeEvent:32 x1']);
+});
+
+test('empty-owner rows must match the coverage records', () => {
+  const r = structuredClone(report);
+  r.movements = { files: 1, rows: 3, malformed: 0, outside_coverage: 0, coverage_bad_scope: 0, supply_negative: 0, balance_bad: [], empty_owner_rows: 2, empty_owner_coverage: 1 };
+  assert.ok(strictMisses(base(), r).includes('movement rows with an empty owner 2, coverage records count 1'));
+});

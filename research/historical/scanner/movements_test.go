@@ -48,7 +48,10 @@ func TestMovementRowsOutsideSwapsOnly(t *testing.T) {
 	if !hasMovementOutsideSwaps(groups) {
 		t.Fatalf("movements outside swaps not seen")
 	}
-	rows := movementRows("100", "1700", 3, keys, groups, m, pumpSuffix)
+	rows, marks := movementRows("100", "1700", 3, keys, groups, m, pumpSuffix)
+	if len(marks) != 0 {
+		t.Fatalf("unexpected coverage marks %v", marks)
+	}
 	type mv struct{ outer, inner, kind, from, to, amount string }
 	var got []mv
 	for _, r := range rows {
@@ -63,7 +66,49 @@ func TestMovementRowsOutsideSwapsOnly(t *testing.T) {
 			t.Fatalf("row %d: got %v, want %v", i, got[i], want[i])
 		}
 	}
-	if rows := movementRows("100", "1700", 3, keys, groups, m, func(string) bool { return false }); len(rows) != 0 {
+	if rows, _ := movementRows("100", "1700", 3, keys, groups, m, func(string) bool { return false }); len(rows) != 0 {
 		t.Fatalf("mint filter ignored")
+	}
+}
+
+func TestUndecodedTokenClassesMarkOwnershipUnresolved(t *testing.T) {
+	mint := "8rjKP44zZewzNGx6DyF3Ck1Ub6y45pXbures2Dx3pump"
+	keys := make([][32]byte, 6)
+	keys[1], keys[2], keys[5] = token2022Program, tokenProgram, mustPK(mint)
+	for i := 3; i < 5; i++ {
+		w := solana.NewWallet().PublicKey()
+		copy(keys[i][:], w[:])
+	}
+	fee := append([]byte{26, 1}, amountData(0, 5)[1:]...)
+	groups := [][]ixRef{
+		{{program: token2022Program, accts: []int{3, 5, 4, 0}, data: fee, height: 1}},       // TransferCheckedWithFee
+		{{program: tokenProgram, accts: []int{3, 0}, data: []byte{6, 2, 1}, height: 1}},     // SetAuthority(AccountOwner)
+		{{program: tokenProgram, accts: []int{9, 4, 0}, data: amountData(3, 1), height: 1}}, // owner of account 9 unknown
+	}
+	m := &TransactionStatusMeta{
+		PreTokenBalances:  []*TokenBalance{{AccountIndex: 3, Mint: mint, Owner: "A"}, {AccountIndex: 4, Mint: "OtherMint", Owner: "B"}},
+		PostTokenBalances: []*TokenBalance{{AccountIndex: 3, Mint: mint, Owner: "A"}, {AccountIndex: 4, Mint: mint, Owner: "B"}},
+	}
+	rows, marks := movementRows("100", "1700", 1, keys, groups, m, pumpSuffix)
+	got := map[string]bool{}
+	for _, mk := range marks {
+		got[mk.scope+"/"+mk.reason] = true
+	}
+	for _, want := range []string{"unresolved/transfer_fee", "unresolved/owner_change", "unresolved/account_reused", "empty_owner/"} {
+		if !got[want] {
+			t.Errorf("missing coverage mark %s (got %v)", want, marks)
+		}
+	}
+	if len(rows) != 1 || rows[0][7] != "" {
+		t.Fatalf("the transfer from an unknown account must still be a row with an empty owner: %v", rows)
+	}
+	cov := coverageRows(map[string]bool{"Other": true}, append(marks, marks...))
+	if len(cov) != 5 || cov[4][0] != "Other" || cov[4][1] != "pump_transactions" {
+		t.Fatalf("coverage rows %v", cov)
+	}
+	for _, r := range cov[:4] {
+		if r[2] != "100" || r[4] != "2" {
+			t.Fatalf("first slot and count not folded: %v", r)
+		}
 	}
 }

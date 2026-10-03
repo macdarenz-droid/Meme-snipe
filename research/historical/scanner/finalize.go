@@ -907,8 +907,22 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 	// PumpSwap transactions were searched for their movements (scope pump_transactions);
 	// outside those rows their ownership is unresolved. "pump" mints are complete in
 	// every unit and are not listed.
-	cw := &partWriter{dir: dsDir, base: "movement_coverage", ext: "csv", header: []string{"mint", "scope", "from_slot", "to_slot"}}
+	cw := &partWriter{dir: dsDir, base: "movement_coverage", ext: "csv", header: []string{"mint", "scope", "slot", "reason", "count", "from_slot", "to_slot"}}
 	var covRows [][]string
+	// Lead-in units carry no movements (assembly reads only their events, stats and
+	// blocks), so ownership of every mint is unresolved before the first window unit:
+	// one row with mint "*" says so, with the slots it covers.
+	if len(units) > 0 && units[0].stats.FirstBlockTime < t0.Unix() {
+		var leadTo uint64
+		for _, u := range units {
+			if u.stats.LastBlockTime < t0.Unix() {
+				leadTo = u.stats.ToSlot
+			}
+		}
+		if leadTo > 0 {
+			covRows = append(covRows, []string{"*", "no_movements", "", "lead_in", "", strconv.FormatUint(units[0].stats.FromSlot, 10), strconv.FormatUint(leadTo, 10)})
+		}
+	}
 	for _, u := range units {
 		p := filepath.Join(u.path, "movement_coverage.csv.zst")
 		if !fileExists(p) || u.stats.LastBlockTime < t0.Unix() || u.stats.FirstBlockTime >= t1.Unix() {
@@ -920,7 +934,11 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 				first = false
 				return nil
 			}
-			covRows = append(covRows, []string{rec[0], rec[1], strconv.FormatUint(u.stats.FromSlot, 10), strconv.FormatUint(u.stats.ToSlot, 10)})
+			row := append([]string(nil), rec...)
+			for len(row) < 5 {
+				row = append(row, "") // units written before slot, reason and count
+			}
+			covRows = append(covRows, append(row[:5], strconv.FormatUint(u.stats.FromSlot, 10), strconv.FormatUint(u.stats.ToSlot, 10)))
 			return nil
 		}); err != nil {
 			return fmt.Errorf("%s movement coverage: %w", u.path, err)

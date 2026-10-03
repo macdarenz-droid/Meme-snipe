@@ -217,6 +217,7 @@ type blockResult struct {
 	mintOnly  int64
 	moves     [][]string
 	partial   []string // non-"pump" mints with pump or PumpSwap events (movement coverage: pump transactions only)
+	marks     []coverageMark
 }
 
 // ScanUnit scans blocks in [from, to] of epoch e into dir/<from>-<to>/.
@@ -285,6 +286,7 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 		pending := map[int]*blockResult{}
 		agg := map[aggKey]*aggVal{}
 		partial := map[string]bool{}
+		var marks []coverageMark
 		next := 0
 		for r := range results {
 			pending[r.seq] = r.res
@@ -299,18 +301,14 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 				for _, m := range res.partial {
 					partial[m] = true
 				}
+				marks = append(marks, res.marks...)
 			}
 		}
 		for _, row := range aggRows(agg) {
 			outs["agg_hourly.csv.zst"].row(row)
 		}
-		pm := make([]string, 0, len(partial))
-		for m := range partial {
-			pm = append(pm, m)
-		}
-		sort.Strings(pm)
-		for _, m := range pm {
-			outs["movement_coverage.csv.zst"].row([]string{m, "pump_transactions"})
+		for _, row := range coverageRows(partial, marks) {
+			outs["movement_coverage.csv.zst"].row(row)
 		}
 		writeErr <- nil
 	}()
@@ -766,6 +764,10 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 		}
 	}
 	if !touches {
+		// Reached here only because a lookup table loads a pump program: no pump
+		// instruction ran, so it is plain token activity or another venue, handled like
+		// every other non-pump transaction (movements of "pump" mints, sampled raw).
+		mintOnlyTxRaw(r, st, b, txIdx, txBytes, metaRaw)
 		return
 	}
 	r.pumpTxs++
@@ -1040,7 +1042,8 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 		if err != nil {
 			st.decodeErr(fmt.Sprintf("slot %d idx %d: full meta for movements: %v", b.slot, txIdx, err))
 		} else {
-			r.moves = append(r.moves, movementRows(slot, bt, txIdx, keys, groups, full, func(m string) bool { return pumpSuffix(m) || active[m] })...)
+			rows, marks := movementRows(slot, bt, txIdx, keys, groups, full, func(m string) bool { return pumpSuffix(m) || active[m] })
+			r.moves, r.marks = append(r.moves, rows...), append(r.marks, marks...)
 		}
 	}
 	r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, createdMints, eventMints...)
@@ -1239,7 +1242,8 @@ func mintOnlyTxRaw(r *blockResult, st *UnitStats, b *blockData, txIdx int, txByt
 			copy(kk[:], k)
 			mk = append(mk, kk)
 		}
-		r.moves = append(r.moves, movementRows(strconv.FormatUint(b.slot, 10), strconv.FormatInt(b.blockTime, 10), txIdx, mk, ixGroups(tx, full, mk), full, pumpSuffix)...)
+		rows, marks := movementRows(strconv.FormatUint(b.slot, 10), strconv.FormatInt(b.blockTime, 10), txIdx, mk, ixGroups(tx, full, mk), full, pumpSuffix)
+		r.moves, r.marks = append(r.moves, rows...), append(r.marks, marks...)
 	}
 	if !hit {
 		return

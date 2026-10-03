@@ -15,6 +15,7 @@ package main
 
 import (
 	"encoding/binary"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -29,7 +30,23 @@ var (
 var movementCols = []string{"slot", "block_time", "tx_idx", "outer_ix", "inner_ix", "mint", "kind",
 	"from_owner", "to_owner", "amount", "from_account", "to_account"}
 
-var movementCoverageCols = []string{"mint", "scope"}
+// movementCoverageCols: one row per mint and kind of coverage note in a unit.
+//
+//	scope pump_transactions: a mint not ending in "pump", searched only in its pump
+//	  transactions;
+//	scope unresolved: a token instruction this table does not decode for the mint
+//	  (reason transfer_fee: Token-2022 TransferCheckedWithFee; owner_change:
+//	  SetAuthority of an account owner; account_reused: one account index holding two
+//	  mints in a transaction), so its ownership is unresolved from slot on;
+//	scope empty_owner: movements whose owner could not be resolved (an account opened
+//	  and closed inside one transaction), with their count.
+var movementCoverageCols = []string{"mint", "scope", "slot", "reason", "count"}
+
+// coverageMark is one unresolved-ownership note found in a transaction.
+type coverageMark struct {
+	mint, scope, reason string
+	slot                uint64
+}
 
 // movementKind returns the movement kind and the source, destination and mint account
 // positions of a token instruction (-1 when absent), or ok=false for other instructions.
@@ -94,13 +111,25 @@ func walkOutsideSwaps(groups [][]ixRef, fn func(gi, k int, ix ixRef)) {
 
 // movementRows returns the movement rows of a successful transaction for the mints
 // want accepts. k = 0 is the top-level instruction (inner_ix empty).
-func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef, m *TransactionStatusMeta, want func(string) bool) [][]string {
+func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef, m *TransactionStatusMeta, want func(string) bool) ([][]string, []coverageMark) {
 	type bal struct{ mint, owner string }
 	acct := map[int]bal{}
+	var marks []coverageMark
+	slotN, _ := strconv.ParseUint(slot, 10, 64)
+	mark := func(mint, scope, reason string) {
+		if mint != "" && want(mint) {
+			marks = append(marks, coverageMark{mint: mint, scope: scope, reason: reason, slot: slotN})
+		}
+	}
 	for _, tb := range m.PreTokenBalances {
 		acct[int(tb.AccountIndex)] = bal{tb.Mint, tb.Owner}
 	}
 	for _, tb := range m.PostTokenBalances {
+		if pre, ok := acct[int(tb.AccountIndex)]; ok && pre.mint != tb.Mint {
+			// one account index, two mints in one transaction: closed and reopened
+			mark(pre.mint, "unresolved", "account_reused")
+			mark(tb.Mint, "unresolved", "account_reused")
+		}
 		acct[int(tb.AccountIndex)] = bal{tb.Mint, tb.Owner}
 	}
 	key := func(i int) string {
@@ -118,6 +147,16 @@ func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef,
 	var rows [][]string
 	tidx := strconv.Itoa(txIdx)
 	walkOutsideSwaps(groups, func(gi, k int, ix ixRef) {
+		// Known instructions this table does not decode: the mint's ownership becomes
+		// unresolved from this slot (counted in movement_coverage, not a failure).
+		if len(ix.data) >= 2 && ix.data[0] == 26 && ix.data[1] == 1 && ix.program == token2022Program {
+			mark(key(at(ix, 1)), "unresolved", "transfer_fee")
+			return
+		}
+		if len(ix.data) >= 2 && ix.data[0] == 6 && ix.data[1] == 2 {
+			mark(acct[at(ix, 0)].mint, "unresolved", "owner_change")
+			return
+		}
 		kind, sp, dp, mp, ok := movementKind(ix.data)
 		if !ok {
 			return
@@ -154,9 +193,37 @@ func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef,
 			inner = strconv.Itoa(k - 1)
 		}
 		amount := strconv.FormatUint(binary.LittleEndian.Uint64(ix.data[1:9]), 10)
+		fo, to := owner(src, sp), owner(dst, dp)
+		if (sp >= 0 && fo == "") || (dp >= 0 && to == "") {
+			mark(mint, "empty_owner", "")
+		}
 		rows = append(rows, []string{slot, bt, tidx, strconv.Itoa(gi), inner, mint, kind,
-			owner(src, sp), owner(dst, dp), amount, account(src, sp), account(dst, dp)})
+			fo, to, amount, account(src, sp), account(dst, dp)})
 	})
+	return rows, marks
+}
+
+// coverageRows folds a unit's marks into movement_coverage rows: per mint and
+// (scope, reason), the first slot and the count, in mint order.
+func coverageRows(partial map[string]bool, marks []coverageMark) [][]string {
+	type k struct{ mint, scope, reason string }
+	first := map[k]uint64{}
+	count := map[k]int{}
+	for _, m := range marks {
+		kk := k{m.mint, m.scope, m.reason}
+		if s, ok := first[kk]; !ok || m.slot < s {
+			first[kk] = m.slot
+		}
+		count[kk]++
+	}
+	var rows [][]string
+	for m := range partial {
+		rows = append(rows, []string{m, "pump_transactions", "", "", ""})
+	}
+	for kk, s := range first {
+		rows = append(rows, []string{kk.mint, kk.scope, strconv.FormatUint(s, 10), kk.reason, strconv.Itoa(count[kk])})
+	}
+	sort.Slice(rows, func(i, j int) bool { return strings.Join(rows[i], ",") < strings.Join(rows[j], ",") })
 	return rows
 }
 
