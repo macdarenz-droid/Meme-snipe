@@ -1,6 +1,6 @@
 // A stub Solana RPC for the dry-run tests: accounts, largest holders and a scripted `simulateTransaction`, served
 // as an HttpClient. Every request is recorded so the tests can check methods, parameters and that no key leaks.
-import { type Address, TOKEN_2022_PROGRAM, addressBytes, decodeTransaction, encodeBase58, fromBase64, toBase64, toAddress } from '../../core/src/chain/index.ts';
+import { type Address, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, addressBytes, decodeTransaction, encodeBase58, fromBase64, toBase64, toAddress } from '../../core/src/chain/index.ts';
 import type { HttpClient, HttpRequest } from '../src/providers/index.ts';
 
 export const SYSTEM = '11111111111111111111111111111111';
@@ -24,10 +24,11 @@ export const tokenAccountData = (mint: Address, owner: Address, amount: bigint, 
   return d;
 };
 
-export const tokenAccount = (mint: Address, owner: Address, amount: bigint, lamports = 2_039_280n): StubAccount => ({
-  owner: TOKEN_2022_PROGRAM,
+/** A Token-2022 account (170 bytes, ImmutableOwner) by default; an SPL Token account is the 165-byte base. */
+export const tokenAccount = (mint: Address, owner: Address, amount: bigint, lamports = 2_039_280n, program: Address = TOKEN_2022_PROGRAM): StubAccount => ({
+  owner: program,
   lamports,
-  data: tokenAccountData(mint, owner, amount),
+  data: program === TOKEN_PROGRAM ? tokenAccountData(mint, owner, amount).slice(0, 165) : tokenAccountData(mint, owner, amount),
 });
 export const wallet = (lamports: bigint): StubAccount => ({ owner: SYSTEM, lamports, data: new Uint8Array() });
 
@@ -39,7 +40,7 @@ export interface SimRequest {
 
 /** What a scripted simulation returns: post accounts (null = closed or absent), or an error with logs. */
 export type SimScript = (req: SimRequest, accounts: ReadonlyMap<string, StubAccount>) =>
-  | { readonly post: readonly (StubAccount | null)[]; readonly units?: number; readonly extra?: ReadonlyMap<string, StubAccount | null> | undefined; readonly balances?: SimBalances }
+  | { readonly post: readonly (StubAccount | null)[]; readonly units?: number; readonly extra?: ReadonlyMap<string, StubAccount | null> | undefined; readonly balances?: SimBalances; readonly logs?: readonly string[] }
   | { readonly err: unknown; readonly logs: readonly string[] }
   | { readonly raw: unknown };
 
@@ -99,7 +100,7 @@ export const stubChain = (): { chain: StubChain; http: HttpClient } => {
         const post = addresses.map((a, i) => (i < r.post.length ? r.post[i] : (r.extra?.get(a) !== undefined ? r.extra.get(a) : chain.accounts.get(a) ?? null)));
         const tb = (l: SimBalances['preToken']) => l.map((x) => ({ accountIndex: x.accountIndex, mint: x.mint, uiTokenAmount: { amount: x.amount.toString(), decimals: 6 } }));
         const b = r.balances === undefined ? {} : { fee: 10_000, preBalances: r.balances.pre, postBalances: r.balances.post, preTokenBalances: tb(r.balances.preToken), postTokenBalances: tb(r.balances.postToken) };
-        return reply({ context, value: { err: null, logs: ['Program log: ok'], accounts: post.map(accountJson), unitsConsumed: r.units ?? 50_000, innerInstructions: [], ...b } });
+        return reply({ context, value: { err: null, logs: r.logs ?? ['Program log: ok'], accounts: post.map(accountJson), unitsConsumed: r.units ?? 50_000, innerInstructions: [], ...b } });
       }
       default:
         return { status: 200, header: () => null, text: json({ jsonrpc: '2.0', id: body.id, error: { code: -32601, message: 'Method not found' } }) };
