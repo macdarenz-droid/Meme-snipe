@@ -53,6 +53,8 @@ export interface BackfillOptions {
   /** The provider `rpc` calls: each call is charged its `callCost`. */
   readonly provider: 'helius' | 'alchemy';
   readonly retry?: RetryPolicy;
+  /** Aborted when the caller gave up on the run (the worker's seed wait ran out): no call is made after it. */
+  readonly signal?: AbortSignal;
 }
 
 export interface SlotGap {
@@ -63,11 +65,13 @@ export interface SlotGap {
   readonly reason: string;
 }
 
-export type StopReason = 'done' | 'credit-cap' | 'halted' | 'page-failed' | 'failures' | 'history-end' | 'not-confirmed';
+export type StopReason = 'done' | 'credit-cap' | 'halted' | 'page-failed' | 'failures' | 'history-end' | 'not-confirmed' | 'page-cap' | 'aborted';
 
 export interface BackfillResult {
   /** Create events in FEED-1's shape, oldest first. */
   readonly creates: readonly MarketEvent[];
+  /** The transactions read, oldest first (an in-run fill ingests them into the live feed as `tx` frames). */
+  readonly records: readonly TransactionRecord[];
   /** Earliest block time (ms) seen in the range, for the coverage start; null when nothing was seen. */
   readonly firstMs: number | null;
   readonly gaps: readonly SlotGap[];
@@ -109,18 +113,46 @@ export const createEventsOf = (r: TransactionRecord, rank: number, seq: number):
     }];
   });
 
-export const backfillCreates = async (o: BackfillOptions): Promise<BackfillResult> => {
+/**
+ * How a fetched transaction becomes events: its events (an empty list is fine), or why it cannot be used (a
+ * one-slot gap). `rank` is its position among this run's transactions of its slot, newest first; the events'
+ * `txIndex` is `LIVE_TX_BASE + rank` and is renumbered oldest first at the end.
+ */
+export type Accept = (r: TransactionRecord, rank: number, seq: number) => MarketEvent[] | string;
+
+export const backfillCreates = (o: BackfillOptions): Promise<BackfillResult> =>
+  backfillAddress({
+    ...o, address: PUMP_CREATE_AUTHORITY, priority: P3,
+    accept: (r, rank, seq) => {
+      const events = createEventsOf(r, rank, seq);
+      return events.length === 0 ? 'no decodable CreateEvent' : events;
+    },
+  });
+
+/**
+ * Every successful transaction of `address` in slots afterSlot+1..untilSlot, newest first, as `accept` reads it.
+ * The same paging, retry, budget, as-of and gap rules as the creates seed (above).
+ */
+export const backfillAddress = async (o: BackfillOptions & {
+  readonly address: string;
+  readonly priority: Priority;
+  readonly accept: Accept;
+  /** Signature pages this run may read; past it the run stops as `page-cap` and the rest stays a gap. */
+  readonly maxPages?: number;
+}): Promise<BackfillResult> => {
   const retry = o.retry ?? DEFAULT_RETRY;
   const calls = { getSignaturesForAddress: 0, getTransaction: 0 };
   let credits = 0;
   let retries = 0;
   let droppedFuture = 0;
   const creates: MarketEvent[] = [];
+  const records: TransactionRecord[] = [];
   const gaps: SlotGap[] = [];
   let firstMs: number | null = null;
 
   const call = async <T>(method: keyof typeof calls, run: () => Promise<T>): Promise<T> => {
     for (let attempt = 1; ; attempt++) {
+      if (o.signal?.aborted === true) throw new Stop('aborted', 'the caller gave up on the backfill');
       const cost = callCost(o.provider, method);
       if (credits + cost > o.creditCap) throw new Stop('credit-cap', `credit cap ${o.creditCap} reached after ${credits}`);
       credits += cost; // counted per attempt: a failed call may still be billed
@@ -147,11 +179,12 @@ export const backfillCreates = async (o: BackfillOptions): Promise<BackfillResul
   try {
     paging: for (;;) {
       let page: SignatureInfo[];
+      if (o.maxPages !== undefined && calls.getSignaturesForAddress >= o.maxPages) throw new Stop('page-cap', `page cap ${o.maxPages} reached`);
       // The first page waits until the node's confirmed bank has reached untilSlot (minContextSlot), so the slots
       // just before the live watch's start are not missed while they are only processed.
       const first = before === undefined;
       try {
-        page = await call('getSignaturesForAddress', () => o.rpc.getSignaturesForAddress(PUMP_CREATE_AUTHORITY, before === undefined ? { limit: SIGNATURE_PAGE, minContextSlot: o.untilSlot } : { before, limit: SIGNATURE_PAGE }, P3));
+        page = await call('getSignaturesForAddress', () => o.rpc.getSignaturesForAddress(o.address, before === undefined ? { limit: SIGNATURE_PAGE, minContextSlot: o.untilSlot } : { before, limit: SIGNATURE_PAGE }, o.priority));
       } catch (e) {
         if (e instanceof Stop) throw e;
         if (first && notConfirmedYet(e)) throw new Stop('not-confirmed', `confirmed never reached slot ${o.untilSlot}`);
@@ -170,18 +203,18 @@ export const backfillCreates = async (o: BackfillOptions): Promise<BackfillResul
           owedTo = s.slot;
           owedAtMs = ms;
         }
-        if (s.err !== null) continue; // a failed create made no mint
+        if (s.err !== null) continue; // a failed transaction moved nothing
         let read: MarketEvent[] | string;
         try {
-          const r = await call('getTransaction', () => o.rpc.getTransaction(s.signature, P3));
+          const r = await call('getTransaction', () => o.rpc.getTransaction(s.signature, o.priority));
           if (r === null) read = 'not available at confirmed';
           else if (r.slot !== s.slot) read = `transaction slot ${r.slot} differs from its signature's ${s.slot}`;
           else if (r.blockTime === null) read = 'no block time';
           else {
             const rank = ranks.get(s.slot) ?? 0;
             ranks.set(s.slot, rank + 1);
-            read = createEventsOf(r, rank, seq++);
-            if (read.length === 0) read = 'no decodable CreateEvent';
+            read = o.accept(r, rank, seq++);
+            if (typeof read !== 'string') records.push(r);
           }
         } catch (e) {
           if (e instanceof Stop) throw e;
@@ -210,5 +243,7 @@ export const backfillCreates = async (o: BackfillOptions): Promise<BackfillResul
   for (const e of creates) bySlot.set(e.moment.slot, Math.max(bySlot.get(e.moment.slot) ?? 0, e.moment.txIndex - LIVE_TX_BASE));
   const ordered = creates.map((e) => ({ ...e, moment: { ...e.moment, txIndex: LIVE_TX_BASE + (bySlot.get(e.moment.slot)! - (e.moment.txIndex - LIVE_TX_BASE)) } }))
     .sort((a, b) => (a.moment.slot < b.moment.slot ? -1 : a.moment.slot > b.moment.slot ? 1 : 0) || a.moment.txIndex - b.moment.txIndex || a.moment.ixIndex - b.moment.ixIndex || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return { creates: ordered, firstMs, gaps, calls, creditsUsed: credits, retries, droppedFuture, stoppedBy };
+  records.reverse(); // fetched newest first
+  records.sort((a, b) => (a.slot < b.slot ? -1 : a.slot > b.slot ? 1 : 0)); // stable: within a slot, oldest first
+  return { creates: ordered, records, firstMs, gaps, calls, creditsUsed: credits, retries, droppedFuture, stoppedBy };
 };

@@ -16,12 +16,15 @@ else
 fi
 if paired; then
   log "Telegram:  paired"
+  if [ -s "$PAIR_CODE_FILE" ]; then
+    log "           new pairing pending: /pair $(cat "$PAIR_CODE_FILE") within 30 minutes (this chat stays paired until then)"
+  fi
 elif [ -s "$PAIR_CODE_FILE" ]; then
   log "Telegram:  waiting for /pair"
   log ""
   log "  Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
   log ""
-  [ -n "$step" ] || step="One try only. A wrong code needs a new one: zeroed-pair-code"
+  [ -n "$step" ] || step="One try only, within 30 minutes. A wrong or late code needs a new one: zeroed-pair-code"
 elif keys_stored; then
   log "Telegram:  not paired; run zeroed-pair-code"
 fi
@@ -32,7 +35,19 @@ elif [ -s "$STATE_DIR/owner_backup_recipient" ]; then
 else
   log "Backups:   hourly here; run zeroed-backup-code once for the off-server copy"
 fi
+if [ -s "$STATE_DIR/key_check" ]; then
+  log "Key check: FAILED: $(tr '\n' ' ' < "$STATE_DIR/key_check")"
+elif keys_stored; then
+  log "Key check: passed"
+fi
+if [ -e "$STATE_DIR/webhook_tries" ]; then
+  log "Webhook:   not set ($(cat "$STATE_DIR/webhook_tries") failed tries; retrying)"
+fi
 log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
+run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"
+log "Dry run:   ${run:+$run active (updates wait)}${run:-none active}"
+log "Evidence:  $EVIDENCE_ROOT ($(jq 'length' "$EVIDENCE_INDEX" 2>/dev/null || echo 0) runs)"
+log "Live view: $(if [ -s "$STATE_DIR/live_view" ]; then echo "https://$(cat "$STATE_DIR/live_view")"; else echo 'off (zeroed-tailscale turns it on)'; fi)"
 [ -z "$step" ] || { log ""; log "$step"; }

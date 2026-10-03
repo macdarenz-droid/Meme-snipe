@@ -41,6 +41,9 @@ export interface HoldersAllRead {
   readonly mintData: string;
   readonly accounts: readonly { readonly address: string; readonly owner: string; readonly data: string }[];
   readonly ownerPrograms: readonly { readonly owner: string; readonly program: string | null }[];
+  /** The filter the scan used, and whether a refused mint-only scan fell back to the indexed one (counted). */
+  readonly filter?: 'mintOnly' | 'indexed' | 'legacy';
+  readonly fallback?: boolean;
 }
 
 /** One `simulateTransaction` of a buy then a sell (TEST-2 builds the transaction). */
@@ -160,6 +163,7 @@ export const parseHoldersAllRead = (v: unknown): HoldersAllRead | null =>
   isObj(v) && isStr(v['mint']) && isNat(v['slot']) && isCommitment(v['commitment']) && isStr(v['program']) && isNat(v['mintSlot']) && isStr(v['mintData'])
   && every(v['accounts'], (a): a is HoldersAllRead['accounts'][number] => isObj(a) && isStr(a['address']) && isStr(a['owner']) && typeof a['data'] === 'string')
   && every(v['ownerPrograms'], (o): o is HoldersAllRead['ownerPrograms'][number] => isObj(o) && isStr(o['owner']) && strOrNull(o['program']))
+  && (v['fallback'] === undefined || typeof v['fallback'] === 'boolean') && (v['filter'] === undefined || v['filter'] === 'mintOnly' || v['filter'] === 'indexed' || v['filter'] === 'legacy')
     ? (v as unknown as HoldersAllRead) : null;
 
 export const parseSimRead = (v: unknown): SimRead | null =>

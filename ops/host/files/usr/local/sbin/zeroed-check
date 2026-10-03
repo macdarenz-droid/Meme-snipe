@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Every minute (zeroed-check.timer), once the keys are here:
+#  1. Stored keys: each credential must decrypt and match the ciphertext the handoff or pairing stored.
+#     A key that fails (missing, does not open, changed outside those paths) is an alert.
+#  2. Webhook: a failed set is tried again with back-off (1, 2, 4, 8 min, then every 30); after 5 failed
+#     tries the owner is told. While paired, the webhook Telegram reports must match the one this server
+#     set; a change (another URL, or none) is an alert, and the server sets its own again.
+#  3. A worker restart that waits for the dry run to end (re-pairing) runs once nothing is in flight.
+#  4. The index of the dry-run evidence kept on the host, for the worker API.
+#  0. Tailscale Funnel must be off (the live view is tailnet only); on is an alert and it is turned off.
+# Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
+set -euo pipefail
+umask 077
+. /usr/local/lib/zeroed/common.sh
+lock
+
+# 4 first: it needs no keys.
+install -d -m 0755 "$(dirname "$EVIDENCE_INDEX")"
+(umask 022; evidence_index "$EVIDENCE_ROOT" > "$EVIDENCE_INDEX.new" 2>/dev/null && mv -f "$EVIDENCE_INDEX.new" "$EVIDENCE_INDEX") || rm -f "$EVIDENCE_INDEX.new"
+
+# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off.
+if command -v tailscale >/dev/null 2>&1; then
+  public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"
+  if [ -n "$public" ]; then
+    alert funnel-on "ALERT Zeroed host: Tailscale Funnel was on ($(printf '%s' "$public" | tr '\n' ' ')), which makes the worker API public. Turning it off."
+    for hp in $public; do tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
+  else
+    alert_clear funnel-on "CLEARED Zeroed host: Tailscale Funnel is off."
+  fi
+fi
+
+keys_stored || exit 0
+
+# 1. Stored keys.
+names=(helius_api_key alchemy_api_key jupiter_api_key telegram_bot_token)
+paired && names+=(telegram_chat_id)
+for n in heartbeat_hmac_key telegram_webhook_secret; do [ ! -e "$CRED_DIR/$n" ] && [ ! -e "$STATE_DIR/cred_sha/$n" ] || names+=("$n"); done
+bad=()
+for n in "${names[@]}"; do
+  why=""
+  if [ ! -s "$CRED_DIR/$n" ]; then
+    why=missing
+  elif ! systemd-creds decrypt --name="$n" "$CRED_DIR/$n" - >/dev/null 2>&1; then
+    why="does not open"
+  elif [ ! -s "$STATE_DIR/cred_sha/$n" ]; then
+    record_cred "$n" # stored before this check existed: its current ciphertext is the reference
+  elif [ "$(sha256sum "$CRED_DIR/$n" | cut -c1-64)" != "$(cat "$STATE_DIR/cred_sha/$n")" ]; then
+    why="changed outside a key handoff"
+  fi
+  [ -z "$why" ] || bad+=("$n ($why)")
+done
+if [ "${#bad[@]}" -gt 0 ]; then
+  printf '%s\n' "${bad[@]}" > "$STATE_DIR/key_check"
+  alert key-mismatch "ALERT Zeroed host: stored key check failed: ${bad[*]}. Replace the keys: zeroed-new-deploy-code at the console, then Deploy."
+else
+  rm -f "$STATE_DIR/key_check"
+  alert_clear key-mismatch "CLEARED Zeroed host: every stored key passes its check again."
+fi
+
+paired || exit 0
+
+# 2. Webhook: a pending set, when due.
+if [ -e "$STATE_DIR/webhook_tries" ]; then
+  if [ "$(date +%s)" -ge "$(cat "$STATE_DIR/webhook_next" 2>/dev/null || echo 0)" ]; then webhook_try || true; fi
+  webhook_pending=true
+else
+  webhook_pending=false
+fi
+
+# 2. Webhook: what Telegram reports must be what this server set. Skipped while a set is pending (the
+# failed-tries notice covers that) and while re-pairing (the webhook is off on purpose then).
+if [ "$webhook_pending" = false ] && [ ! -s "$PAIR_CODE_FILE" ] && [ ! -s "$STATE_DIR/webhook_expected" ]; then
+  # Paired before this check existed: set it once, which also records what to expect.
+  webhook_try || true
+elif [ "$webhook_pending" = false ] && [ ! -s "$PAIR_CODE_FILE" ]; then
+  info="$(webhook_info)"
+  now_fp="$(printf '%s' "$info" | webhook_fp)"
+  if [ "$now_fp" != error ]; then
+    if [ "$now_fp" != "$(cat "$STATE_DIR/webhook_expected")" ]; then
+      alert webhook-changed "ALERT Zeroed host: the Telegram webhook changed (now: $(printf '%s' "$info" | webhook_host)). Only this server sets it. If you did not change it, rotate the bot token at BotFather and run Deploy. Setting it back now."
+      webhook_try || true
+    else
+      alert_clear webhook-changed "CLEARED Zeroed host: the Telegram webhook is back to the one this server set."
+    fi
+  fi
+fi
+
+# 3. A worker restart that waited for a safe moment.
+if [ -e "$STATE_DIR/worker_restart_pending" ] && ! worker_busy; then
+  rm -f "$STATE_DIR/worker_restart_pending"
+  systemctl try-restart zeroed-worker.service || true
+  log "Restarted the worker for the new Telegram chat."
+fi
