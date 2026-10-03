@@ -11,7 +11,7 @@ describe('soft features', () => {
     expect(feature(r, 'solPerTrade')).toEqual({ name: 'solPerTrade', value: '400000000' });
     expect(feature(r, 'creationSlotBuyers')).toEqual({ name: 'creationSlotBuyers', value: '3' });
     expect(feature(r, 'twoSidedWalletBps')).toEqual({ name: 'twoSidedWalletBps', value: null, note: 'not reported' });
-    expect(feature(r, 'independentHolders')?.value).toBe('31');
+    expect(feature(r, 'independentHolders')?.value).toBe('59');
     expect(feature(r, 'indexMints')?.value).toBe('1');
     expect(feature(r, 'indexRugs')?.value).toBe('0');
   });

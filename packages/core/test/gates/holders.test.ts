@@ -4,10 +4,10 @@
 import { describe, expect, it } from 'vitest';
 import { decodeTokenAccount, fromBase64, PUMP_AMM_PROGRAM, PUMP_PROGRAM, type Address } from '../../src/chain/index.ts';
 import {
-  INCINERATOR, MAYHEM_VAULT_OWNER, RAYDIUM_LOCKER_PROGRAM, classifyHolder, concentration, evaluateHardRejects, holdersKey, insidersKey, mintAccounts,
+  INCINERATOR, MAYHEM_VAULT_OWNER, RAYDIUM_LOCKER_PROGRAM, classifyHolder, concentration, evaluateHardRejects, holdersKey, mintAccounts,
   ownerBalance, shareBps, type HolderAccount, type HoldersFact,
 } from '../../src/gates/index.ts';
-import { ACC, HOLDER_ACCOUNTS, POOL, POOL_ADDRESS, W, byLabel, contextOf, deps, obs, passingFacts, patch, request, MINT } from './world.ts';
+import { ACC, HOLDER_ACCOUNTS, POOL, POOL_ADDRESS, W, byLabel, contextOf, deps, holderAccounts, obs, passingFacts, patch, request, MINT } from './world.ts';
 
 const holderOf = (label: string, ownerProgram: string | null = null): HolderAccount & { mint: string; slot: string } => {
   const a = byLabel(label);
@@ -105,11 +105,14 @@ describe('concentration', () => {
     expect(c.circulating).toBe(10n);
   });
 
-  it('bounds an unlisted owner of a largest-accounts list by the smallest listed account', () => {
-    const c = concentration(fact([{ address: ACC('a'), owner: W(1), ownerProgram: null, amount: 50n }, { address: ACC('b'), owner: W(2), ownerProgram: null, amount: 7n }], 1_000n, 'largest'), known);
-    expect(ownerBalance(c, W(3))).toEqual({ amount: 7n, listed: false });
-    const all = concentration(fact([{ address: ACC('a'), owner: W(1), ownerProgram: null, amount: 50n }], 1_000n), known);
-    expect(ownerBalance(all, W(3))).toEqual({ amount: 0n, listed: true });
+  it('counts what no listed account holds as unaccounted, and an owner only by its listed accounts', () => {
+    const two = [{ address: ACC('a'), owner: W(1), ownerProgram: null, amount: 50n }, { address: ACC('b'), owner: W(2), ownerProgram: null, amount: 7n }];
+    const c = concentration(fact(two, 1_000n, 'largest'), known);
+    expect(c.unaccounted).toBe(943n);
+    expect(ownerBalance(c, W(1))).toBe(50n);
+    expect(ownerBalance(c, W(3))).toBe(0n);
+    const all = concentration(fact(two, 57n), known);
+    expect(all.unaccounted).toBe(0n);
   });
 
   it('rounds shares up, so a share at a limit is not under it', () => {
@@ -117,10 +120,12 @@ describe('concentration', () => {
     expect(shareBps(1n, 4n)).toBe(2_500n);
   });
 
-  it('H13 counts a missing insider at the bound and notes it', () => {
+  it('a largest-accounts view whose unlisted tokens could breach a limit is not covered (GATE-1d)', () => {
     const world = passingFacts();
     const largest = patch(world, holdersKey(MINT), { coverage: 'largest' });
-    const r = evaluateHardRejects(contextOf(patch(largest, insidersKey(MINT), { insiders: [W('absent')] })), deps(), request(), { stopAtFirst: false });
-    expect(r.notes).toContainEqual(expect.objectContaining({ gate: 'H13', code: 'missing-insider-bounded' }));
+    expect(evaluateHardRejects(contextOf(largest), deps(), request(), { stopAtFirst: false }).reasons).toEqual([]); // nothing unlisted
+    const accounts = holderAccounts().filter((a) => a.amount !== 1_000_000_000_000n); // drop the full small wallets
+    const r = evaluateHardRejects(contextOf(patch(largest, holdersKey(MINT), { accounts })), deps(), request(), { stopAtFirst: false });
+    expect(r.reasons).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'holders', neededBy: 'H12' }));
   });
 });

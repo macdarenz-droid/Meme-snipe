@@ -89,14 +89,33 @@ export type Facts = Map<string, { value: unknown; moment: Moment }>;
 
 const at = (receivedAt: number, slot: bigint): Moment => ({ slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt });
 
-/** Supply split: pool vault holds most; ten small wallets; the dev holds a little. */
+/** Supply split: pool vault holds most; thirty wallets; the dev holds a little; small wallets hold the rest. */
 export const SUPPLY = mintFixture(MINT).account.supply;
+export const VAULT_AMOUNT = 700_000_000_000_000n;
+const FILLER = 1_000_000_000_000n;
 
-export const holderAccounts = (): HolderAccount[] => [
-  { address: POOL.poolBaseTokenAccount, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: 700_000_000_000_000n },
-  wallet(DEV, 4_000_000_000_000n),
-  ...Array.from({ length: 30 }, (_, i) => wallet(W(i), 8_000_000_000_000n)),
-];
+/** A complete account set: the balances add up to SUPPLY exactly (GATE-1d refuses a complete set that does not). */
+export const holderAccounts = (): HolderAccount[] => {
+  const core = [
+    { address: POOL.poolBaseTokenAccount, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: VAULT_AMOUNT },
+    wallet(DEV, 4_000_000_000_000n),
+    ...Array.from({ length: 30 }, (_, i) => wallet(W(i), 8_000_000_000_000n)),
+  ];
+  let rest = SUPPLY - core.reduce((s, a) => s + a.amount, 0n);
+  const fillers: HolderAccount[] = [];
+  for (let i = 0; rest > 0n; i++) {
+    const amount = rest < FILLER ? rest : FILLER;
+    fillers.push(wallet(W(`filler${i}`), amount));
+    rest -= amount;
+  }
+  return [...core, ...fillers];
+};
+
+/** Sets the pool vault so the accounts add up to SUPPLY again (a test that adds a holder takes the tokens from it). */
+export const balanced = (accounts: readonly HolderAccount[]): HolderAccount[] => {
+  const others = accounts.filter((a) => a.owner !== POOL_ADDRESS).reduce((s, a) => s + a.amount, 0n);
+  return accounts.map((a) => (a.owner === POOL_ADDRESS ? { ...a, amount: SUPPLY - others } : a));
+};
 
 const GRAD_ITEMS = (() => {
   const items: { mint: string; migratedAtMs: number; reserveAfter: bigint }[] = [];
