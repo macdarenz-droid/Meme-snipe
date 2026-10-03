@@ -105,7 +105,7 @@ if (command === 'holdout') {
     candidates, entries, groups: [{ group: 'S0', trades, stray }],
     gates: [
       { mode: 'backtest', gate: 'G0', state: g0.every((c) => c.pass) ? 'pass' : 'fail', checks: g0 },
-      { mode: 'backtest', gate: 'G1', state: 'not-run', checks: [] },
+      { mode: 'backtest', gate: 'G1', state: 'not-run', checks: [{ mode: 'backtest', label: 'S0 exits', value: 'time stop only (until EXIT-1)', limit: 'research run', pass: true }] },
     ],
   });
   const evidence = {

@@ -80,7 +80,9 @@ export class S0 implements Strategy {
     if (e.key.startsWith('disc:')) this.#discover(e.value as Discovery, ctx, out);
     this.#lifecycle(ctx, out);
     this.#exits(ctx, out);
-    this.#entries(ctx, out);
+    // ctx.book is the book before this call's decisions: an entry is judged on it only while nothing else acted,
+    // and at most one entry is proposed per call (CORE-1 allows one entry in flight).
+    if (!out.some((d) => d.action !== null)) this.#entries(ctx, out);
     return out;
   }
 
@@ -168,6 +170,7 @@ export class S0 implements Strategy {
       act({ type: 'intent', intentId: id, event: { type: 'prepare', quote } }, 'prepare');
       act({ type: 'intent', intentId: id, event: { type: 'sign', attempt: this.#attempt(id, 1, quote, height) } }, 'sign');
       act({ type: 'intent', intentId: id, event: { type: 'submit' } }, 'submit');
+      return;
     }
   }
 

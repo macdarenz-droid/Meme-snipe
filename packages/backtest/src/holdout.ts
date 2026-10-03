@@ -7,19 +7,36 @@ import { chmodSync, existsSync, readFileSync } from 'node:fs';
 import type { RunOptions } from './run.ts';
 import { runBacktest } from './run.ts';
 import { melbourneDay } from './report.ts';
-
-/** The STATS-1 registry's HoldoutCounts shape (stats/holdout.ts, PR #8): exactly these three fields. */
-export interface HoldoutCounts {
-  readonly candidates: number;
-  readonly entries: number;
-  readonly entryDays: number;
-}
+import { type HoldoutCounts, type HoldoutRegistry, type RegistryStep, sealHoldout } from '../../core/src/stats/index.ts';
 
 export interface SealedHoldout {
   /** sha256 of the sealed ledger file. */
   readonly ledgerHash: string;
   readonly counts: Readonly<Record<string, HoldoutCounts>>;
 }
+
+/** Each universe's registered holdout (STATS-1 registry) and the configuration it was registered with. */
+export interface HoldoutTargets {
+  readonly registry: HoldoutRegistry;
+  readonly byUniverse: Readonly<Record<string, { readonly holdoutId: string; readonly configId: string }>>;
+}
+
+/**
+ * Runs the holdout and seals it in the STATS-1 registry: one `sealHoldout` per universe with the file hash and that
+ * universe's counts. Returns the new registry and each step's result, plus the hash and counts (nothing else).
+ */
+export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string }, targets: HoldoutTargets): SealedHoldout & { readonly registry: HoldoutRegistry; readonly steps: readonly RegistryStep[] } => {
+  const sealed = runHoldout(o);
+  let registry = targets.registry;
+  const steps: RegistryStep[] = [];
+  for (const [u, t] of Object.entries(targets.byUniverse)) {
+    const counts = sealed.counts[u] ?? { candidates: 0, entries: 0, entryDays: 0 };
+    const step = sealHoldout(registry, t.holdoutId, { configId: t.configId, ledgerHash: sealed.ledgerHash, counts });
+    registry = step.registry;
+    steps.push(step);
+  }
+  return { ...sealed, registry, steps };
+};
 
 export const runHoldout = (o: RunOptions & { readonly ledgerPath: string }): SealedHoldout => {
   if (existsSync(o.ledgerPath)) throw new RangeError(`${o.ledgerPath} exists: a holdout is run once, into a new file`);
@@ -47,6 +64,6 @@ export const runHoldout = (o: RunOptions & { readonly ledgerPath: string }): Sea
   const ledgerHash = createHash('sha256').update(readFileSync(o.ledgerPath)).digest('hex');
   return {
     ledgerHash,
-    counts: Object.fromEntries(Object.entries(counts).map(([u, c]) => [u, { candidates: c.candidates, entries: c.entries, entryDays: c.days.size }])),
+    counts: Object.fromEntries(Object.entries(counts).map(([u, c]): [string, HoldoutCounts] => [u, { candidates: c.candidates, entries: c.entries, entryDays: c.days.size }])),
   };
 };

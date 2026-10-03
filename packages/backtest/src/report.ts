@@ -4,7 +4,7 @@ import type { FillConfig, Policy } from '../../core/src/config/index.ts';
 import { policyHash } from '../../core/src/config/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd, solPriceMicroUsd, toDecimalString } from '../../core/src/units/index.ts';
 import { type OffchainSeries, usableFrom } from './dataset/offchain.ts';
-import type { BacktestReportV1, ReportDay, ReportGate, ReportGroup, ReportResult, ReportTrade } from './report-types.ts';
+import type { BacktestReportV1, ReportDay, ReportGate, ReportGroup, ReportResult, ReportTrade } from '../../core/src/report/index.ts';
 import type { StrayCost, TradeRecord } from './trades.ts';
 
 export interface EngineEvidence {

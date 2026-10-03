@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { openLedgerReader } from '../../core/src/ledger/index.ts';
-import { runHoldout } from '../src/holdout.ts';
+import { runAndSealHoldout, runHoldout } from '../src/holdout.ts';
+import { createHoldoutRegistry, holdoutReady, registerHoldout } from '../../core/src/stats/index.ts';
 import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
 import { buildReport } from '../src/report.ts';
 import { runBacktest, type RunOptions } from '../src/run.ts';
@@ -178,6 +179,19 @@ describe('holdout mode', () => {
     // Sealed: read-only.
     expect(() => readFileSync(path)).not.toThrow();
   });
+
+  test('seals in the STATS-1 registry; the size check reads the counts alone', () => {
+    let reg = createHoldoutRegistry(1);
+    reg = registerHoldout(reg, { holdoutId: 'h-u2', universe: 'U2', configId: 's0-u2', fromDay: '2026-09-20', toDay: '2026-09-20' });
+    const out = runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'holdout2.sqlite') }, { registry: reg, byUniverse: { U2: { holdoutId: 'h-u2', configId: 's0-u2' } } });
+    expect(out.steps.map((s) => s.ok)).toEqual([true]);
+    const entry = out.registry.entries[0]!;
+    expect(entry.seal).toBe('sealed');
+    expect(entry.ledgerHash).toBe(out.ledgerHash);
+    expect(entry.counts).toEqual(out.counts['U2']);
+    // A few synthetic trades are far from 300: not ready, so the seal stays closed.
+    expect(holdoutReady(entry, 300, 20)).toBe(false);
+  });
 });
 
 describe('report', () => {
@@ -199,5 +213,16 @@ describe('report', () => {
     }
     expect(rep.results[0]!.trades).toBe(trades.length);
     expect(JSON.stringify(rep)).not.toMatch(/holdout/i);
+  });
+});
+
+describe('many candidates at once', () => {
+  test('two entries due at the same moment never produce an illegal second proposal', () => {
+    const crowd = syntheticRows({ mints: 30, slots: 2.5 * 3600 * 8, swapEvery: 60, seed: 'crowd' });
+    const r = runBacktest(opts({ rows: () => crowd[Symbol.iterator](), windowEnd: T0 + 8 * 3_600_000 }));
+    expect(r.stats.crash).toBeNull();
+    expect(r.stats.illegalStates).toBe(0);
+    expect(r.stats.unreconciledIntents).toBe(0);
+    expect(r.attempts.filter((a) => a.purpose === 'entry').length).toBeGreaterThan(1);
   });
 });
