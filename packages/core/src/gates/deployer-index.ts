@@ -14,6 +14,8 @@ export const LOG_CREATE_PREFIX = 'logs:pump:CreateEvent:';
 export const TX_CREATE_PREFIX = 'pump:CreateEvent:';
 /** A rug label for a mint: `{ mint, creator }`, recorded at the moment it became known. */
 export const RUG_PREFIX = 'rug:';
+/** A mint the labeller could not judge: `{ mint, creator, reason }`, at its create's moment. H14 is not covered while one is in the look-back. */
+export const RUG_UNJUDGED_PREFIX = 'rug-unjudged:';
 export const coverageKeys = (stream: string) =>
   ({ start: `coverage:${stream}:start`, gap: `coverage:${stream}:gap`, resume: `coverage:${stream}:resume` }) as const;
 
@@ -37,7 +39,9 @@ export const createOf = (v: unknown): { readonly mint: string; readonly creator:
 /** The deployer index: mints and rug labels per creator, from released events only. */
 export class DeployerIndex {
   readonly #mints = new Map<string, Map<string, number>>();
-  readonly #rugs = new Map<string, Map<string, number>>();
+  /** Rug labels and unjudged mints per creator, each at the moment it became known (compared in full with now). */
+  readonly #rugs = new Map<string, Map<string, Moment>>();
+  readonly #unjudged = new Map<string, Map<string, Moment>>();
   /** Watches that carry the creates stream (the `via` of every `coverage:creates:start`). */
   readonly #createVias = new Set<string>();
   /** Log reads that may have lost a create, by signature: when seen and on which watch. Cleared by the fetched transaction. */
@@ -56,12 +60,13 @@ export class DeployerIndex {
       if (c !== null) this.#addMint(this.#mints, c);
       return;
     }
-    if (e.key.startsWith(RUG_PREFIX)) {
+    const into = e.key.startsWith(RUG_PREFIX) ? this.#rugs : e.key.startsWith(RUG_UNJUDGED_PREFIX) ? this.#unjudged : null;
+    if (into !== null) {
       const r = payload(e.value);
       if (r === null || typeof r['creator'] !== 'string' || typeof r['mint'] !== 'string') return;
-      const m = this.#rugs.get(r['creator']) ?? new Map<string, number>();
-      if (!m.has(r['mint'])) m.set(r['mint'], e.moment.receivedAt);
-      this.#rugs.set(r['creator'], m);
+      const m = into.get(r['creator']) ?? new Map<string, Moment>();
+      if (!m.has(r['mint'])) m.set(r['mint'], e.moment);
+      into.set(r['creator'], m);
     }
   }
 
@@ -150,12 +155,15 @@ export class DeployerIndex {
   factFor(creator: string, now: Moment, coverageFromMs: number): DeployerFact {
     const own = this.#first === null || this.#first.receivedAt > now.receivedAt ? Number.MAX_SAFE_INTEGER : this.#first.receivedAt;
     coverageFromMs = Math.max(coverageFromMs, own);
-    const sorted = (m: Map<string, number> | undefined) => [...(m ?? new Map<string, number>())].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const sorted = <V>(m: Map<string, V> | undefined) => [...(m ?? new Map<string, V>())].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const known = (m: Map<string, Moment> | undefined) =>
+      sorted(m).filter(([, at]) => compareMoments(at, now) <= 0).map(([mint, at]) => ({ mint, knownAtMs: at.receivedAt }));
     return {
       obs: { provider: 'deployer-index', slot: now.slot, receivedAt: now.receivedAt, quality: [], commitment: 'confirmed' },
       coverageFromMs,
       mints: sorted(this.#mints.get(creator)).filter(([, t]) => t <= now.receivedAt).map(([mint, createdAtMs]) => ({ mint, createdAtMs })),
-      rugs: sorted(this.#rugs.get(creator)).filter(([, t]) => t <= now.receivedAt).map(([mint, knownAtMs]) => ({ mint, knownAtMs })),
+      rugs: known(this.#rugs.get(creator)),
+      unjudged: known(this.#unjudged.get(creator)),
     };
   }
 

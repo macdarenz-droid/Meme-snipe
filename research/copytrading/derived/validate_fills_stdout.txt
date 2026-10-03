@@ -1,0 +1,7 @@
+c n 141489 median err 0.0000% p5 0.000% p95 0.000%
+a n 330782 median err 5.4676% p5 0.132% p95 31.492%
+curve chain consistent 238748 inconsistent 37298 share 13.5%
+vault+virtual AMM (state from the previous trade) sell n 132562 median err 0.000% p10 0.00% p90 0.00% share within 1%: 99.1%
+vault+virtual AMM (state from the previous trade) buy n 184857 median err 0.000% p10 -0.00% p90 0.00% share within 1%: 98.6%
+vault+virtual AMM (state from the previous trade) sell, previous trade in an earlier slot n 69343 median err 0.000% p10 0.00% p90 0.00% share within 1%: 99.0%
+vault+virtual AMM (state from the previous trade) buy, previous trade in an earlier slot n 128028 median err 0.000% p10 -0.00% p90 0.00% share within 1%: 98.8%

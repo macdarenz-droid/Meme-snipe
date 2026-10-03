@@ -1,0 +1,40 @@
+// The rug definition H14 reads through our deployer index (RUG-1, docs/DECISIONS.md "Rug labels"). Versioned like the
+// policy; every label carries the version that made it. Lower thresholds and longer windows label more mints, which
+// is the safe side for H14. Nothing here is a constant of the labeller.
+import { DAY_MS } from './time.ts';
+import { deepFreeze } from './freeze.ts';
+
+export interface RugConfig {
+  readonly version: string;
+  /** The creator (or the launch signer) sold at least this share of total supply, in bps, within the window. */
+  readonly creatorDump: { readonly supplyBps: number; readonly windowMs: number };
+  /** Quote liquidity fell at least this far below its peak since launch, in bps of the peak, within the window. */
+  readonly collapse: { readonly dropBps: number; readonly windowMs: number };
+}
+
+const VALUES: RugConfig = {
+  version: 'rugs-1',
+  // R9's deployer-sale exit (risk.md, ARCHITECTURE §9, policy exits.deployerSellSupplyBps).
+  creatorDump: { supplyBps: 200, windowMs: DAY_MS },
+  // The TVL −99% label of Li et al., arXiv 2608.20271.
+  collapse: { dropBps: 9_900, windowMs: DAY_MS },
+};
+
+export const RUG_CONFIG: RugConfig = deepFreeze(VALUES);
+
+/** Problems with a rug config; empty when it is usable. */
+export const rugConfigIssues = (c: RugConfig): string[] => {
+  const issues: string[] = [];
+  if (typeof c.version !== 'string' || c.version.length === 0) issues.push('version must be a non-empty string');
+  const bps = (name: string, v: number) => {
+    if (!Number.isInteger(v) || v < 1 || v > 10_000) issues.push(`${name} must be an integer 1..10000`);
+  };
+  const duration = (name: string, v: number) => {
+    if (!Number.isSafeInteger(v) || v < 1) issues.push(`${name} must be a positive integer of milliseconds`);
+  };
+  bps('creatorDump.supplyBps', c.creatorDump.supplyBps);
+  duration('creatorDump.windowMs', c.creatorDump.windowMs);
+  bps('collapse.dropBps', c.collapse.dropBps);
+  duration('collapse.windowMs', c.collapse.windowMs);
+  return issues;
+};
