@@ -1,0 +1,14 @@
+{
+  "note": "Regime boundaries in the historical window (UPG-1b, PR #44, and the 2026-10-02 upgrade). One source of truth: finalize -regimes copies this file into manifest.json, and qa/verdict.mjs reads it. pre_layouts: event layouts (program:Event:fields) allowed only in units whose from_slot is below the given slot.",
+  "boundaries": [
+    { "id": "B2", "utc": "2026-07-21T14:23Z", "slots": { "admin": 434319990 }, "change": "admin BOOST on, migration economics" },
+    { "id": "B3", "utc": "2026-09-09T19:30Z", "slots": { "pump": 445690911, "pump_amm": 445691021, "other": 445691085, "admin": 445691266 }, "change": "fee and creator-fee config changes" },
+    { "id": "B4", "utc": "2026-09-12T15:24Z", "slots": { "pump_amm": 446462733, "pump": 446462760, "admin": 446462883 }, "change": "TradeEvent, BuyEvent and SellEvent grew 16 bytes (holder_rewards_bps, holder_rewards)" },
+    { "id": "B5", "utc": "2026-10-02T20:00Z", "slots": {}, "change": "undocumented upgrade: +8 bytes on trade events, new event discriminators; 2026-10-02 is the regime-boundary day, never a decision day" }
+  ],
+  "pre_layouts": {
+    "pump:TradeEvent:32": 446462760,
+    "amm:BuyEvent:37": 446462733,
+    "amm:SellEvent:30": 446462733
+  }
+}
