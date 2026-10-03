@@ -12,13 +12,18 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave 2 nearly merged. Historical data is downloading (run 37137067925, 16 days, from 3:30 AM AEDT 4 Oct; all 44 days by about 8 Oct). Owner server setup waits on OPS-1c (PR #36). In fix rounds: risk (RISK-1), exits (EXIT-1). Building: rug labeller (RUG-1), pump upgrade check (UPG-1), per-day data publish (PR #35). Whale copy-trading is ruled out (RES-2: about −11% a trade, 0 of 120 variants positive).
+Wave D under way (4 Oct 2026, Melbourne).
+- **Server:** set up, paired, answering `/status`.
+- **History:** the dataset change (100% curve and canonical-pool rows) is in progress. The download restarts when it merges.
+- **Window:** 60 decision days, with regime boundaries B2–B5 labelled.
+- **Building:** the worker, gate-fact producers, start-up seed, on-demand rug check, backtest study, signal research, live app view and server extras.
+- **In review or fixing:** risk delta, ledger account version, upgrade gate.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
 - TypeScript workspace (pnpm, TypeScript 7, Vitest 5); CI on every PR.
 - Brand files and guide (`brand/`, `docs/BRAND.md`).
-- Merged: WEB-1 (PR #1), CORE-2 (PR #2), CORE-1 (PR #3), APP-1 (PR #5), DOCS-1 (PR #6: architecture, RESEARCH.md, DECISIONS.md, build plan), CORE-1b (PR #7), APP-1b (PR #12: pinned actions, no backup, safe APK swap, verified on the live release), CFG-1 (PR #13: versioned policy, session lock, tighten-only, baselines), DOCS-1b (PR #15), DEC-1 (PR #11: chain decoders with mainnet golden vectors), CORE-2b (PR #14: typed no-quote reasons, coin guard, v2 vault accounting, Global as a checked input), ENG-1 (PR #10: engine core, blind-to-future proofs, purity guard and runtime trap), LEDGER-1 (PR #9: append-only SQLite ledger, atomic reservations, separate scoring store), STATS-1 (PR #8: labels, day-block bootstrap, e-process, sealed holdout, Holm), UI-2 (PR #17: dashboard data screens, strict report schema), FEED-1 (PR #21: live feed, provider adapters, quota scheduler, recorded release order for parity, coverage gap facts), LEDGER-REPLAY (PR #23: `pnpm ledger:replay` checks a ledger against the reducer; versioned strict book detail; orphan rows refused), TX-1 (PR #20: unsigned builders, signer policy, landing client with node-skew guard), FUND-1 (PR #25: Deposit and Withdraw screens; QR via qrcode-generator), LEDGER-1b (PR #27: several positions per entry intent, so a late BUY landing is stored), GATE-1 (PR #22: hard rejects H1–H16, regime gate, lockers count as holders), BT-1 (PR #24: transaction-level backtester, paper fill model, `Ledger.recordBookEvent`), OPS-1a (PR #19: one-line installer, 6-word key handoff, update gate deploys only signed all-green commits), CI-1 (PR #31: heavy test suites isolated, timeouts sized from measurement), OPS-1b (PR #26: Cloudflare watchdog on workers.dev, route-bound HMAC heartbeat, off-site backup off), DATA-1 (PR #16: historical dataset schema 2, one-lane scan workflow, strict QA, DEC-1 parity), RUN-1 (PR #32: dry-run runner for the VPS and an Actions rehearsal, worker process contract).
+- Merged: WEB-1 (PR #1), CORE-2 (PR #2), CORE-1 (PR #3), APP-1 (PR #5), DOCS-1 (PR #6: architecture, RESEARCH.md, DECISIONS.md, build plan), CORE-1b (PR #7), APP-1b (PR #12: pinned actions, no backup, safe APK swap, verified on the live release), CFG-1 (PR #13: versioned policy, session lock, tighten-only, baselines), DOCS-1b (PR #15), DEC-1 (PR #11: chain decoders with mainnet golden vectors), CORE-2b (PR #14: typed no-quote reasons, coin guard, v2 vault accounting, Global as a checked input), ENG-1 (PR #10: engine core, blind-to-future proofs, purity guard and runtime trap), LEDGER-1 (PR #9: append-only SQLite ledger, atomic reservations, separate scoring store), STATS-1 (PR #8: labels, day-block bootstrap, e-process, sealed holdout, Holm), UI-2 (PR #17: dashboard data screens, strict report schema), FEED-1 (PR #21: live feed, provider adapters, quota scheduler, recorded release order for parity, coverage gap facts), LEDGER-REPLAY (PR #23: `pnpm ledger:replay` checks a ledger against the reducer; versioned strict book detail; orphan rows refused), TX-1 (PR #20: unsigned builders, signer policy, landing client with node-skew guard), FUND-1 (PR #25: Deposit and Withdraw screens; QR via qrcode-generator), LEDGER-1b (PR #27: several positions per entry intent, so a late BUY landing is stored), GATE-1 (PR #22: hard rejects H1–H16, regime gate, lockers count as holders), BT-1 (PR #24: transaction-level backtester, paper fill model, `Ledger.recordBookEvent`), OPS-1a (PR #19: one-line installer, 6-word key handoff, update gate deploys only signed all-green commits), CI-1 (PR #31: heavy test suites isolated, timeouts sized from measurement), OPS-1b (PR #26: Cloudflare watchdog on workers.dev, route-bound HMAC heartbeat, off-site backup off), DATA-1 (PR #16: historical dataset schema 2, one-lane scan workflow, strict QA, DEC-1 parity), RUN-1 (PR #32: dry-run runner for the VPS and an Actions rehearsal, worker process contract), OPS-1c (PR #36: the server sets the Telegram webhook after pairing), GATE-1b (PR #29), TEST-2 (PR #28: dry-run simulation; Helius smoke run recorded in PR #38), BT-1b (PR #30), EXIT-1 (PR #33: exit engine; attempt budget from the book), RES-2 (PR #4: copy-trading not usable), RUG-1 (PR #34: as-of rug labeller; H14 fails safe), DATA-1 per-day publish (PR #35), RUN-1b (PR #37: item-4 block).
 - Android preview APK at a fixed link: https://github.com/macdarenz-droid/Meme-snipe/releases/download/preview/zeroed-preview.apk (sample data only). Real backtest results will show in its Backtest view once BT-1 publishes its first report (UI-2 loads it from the `backtest` release).
 - All four API keys checked from CI: they work.
 
@@ -27,17 +32,20 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 
 | Task | What | Session | Model | State | Estimate |
 |---|---|---|---|---|---|
-| DATA-1 | Historical on-chain data (14-day lead-in + 30 days); per-day publish; parity follow-ups | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | Run 37137067925 scanning 1 Oct back to 16 Sep; PR #35 (publish each day as it passes) in review (session_01DKMnUiqVLxVjHbaqdoBnJD); then parity items 1–6; run 2 (15 Sep back to 19 Aug) after run 1 | run 1 ends Mon 5 Oct 11:30 AM–7:30 PM; all days Wed 7 Oct 7:30 PM–Thu 8 Oct 5:30 PM |
-| RES-2 | Whale copy-trading study (owner's idea) | session_01RXNoLW48c8Xj7FYScEujRg | Opus 5.5 | Done: not usable as an entry signal. PR #4 review passed; in the merge queue | merge today |
-| OPS-1 | OPS-1c webhook fix (PR #36): the server sets the Telegram webhook after pairing | session_01Euok5FXtBGZBrweohP3K93 | Opus 5.5 | PR #36 in review (session_014sAJeKrjaBBodUyrSeGuGN); owner runs setup with its install line once it merges | 30–60 m |
-| RISK-1 | Risk policy and sizing (§8, R1–R16), Melbourne-day limits, exits never blocked | session_0135ruSv84BVjo7knvmTCPPK | Opus 5.5 | PR #18 fixing 3 blocking items (stale-snapshot double entry, exit trips dropped, 108 surviving mutants); risk reviewer session_017PBUwcGJWG4DJpJKVBcAas | 1–2 h |
-| GATE-1b | Gates on live coverage facts, deployer index, create alias | session_01MeeF4VytwgP5sqyAkqM2NS | Opus 5.5 | PR #29 review passed; merging | 15 m |
-| TEST-2 | Dry-run transaction simulation (pre-funding item 4) | session_012vSUH8KvV8wbiagSK8KbP8 | Opus 5.5 | PR #28 review passed; builder resolving a DECISIONS.md conflict; then smoke run (dryrun-smoke.yml) | 30 m |
-| EXIT-1 | Exit engine (§9): liquidation-value triggers, ladder, blocked state | session_01REGxwpuVYYH5DWqxHtrcxn | Opus 5.5 | PR #33 fix round: attempt budget must come from the book so a restart can't reset it; reviewer session_01RC2m6JM3U6UaT9vgPSw5Cw | 45–90 m |
-| RUG-1 | As-of rug labeller for H14 (definition from evidence first) | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | PR #34 draft, building | 1–2 h |
-| UPG-1 | Identify the 2 Oct pump upgrade; check decoders and quotes against it | session_01LaDhos7umAesZ6z6afSe7Z | Opus 5.5 | investigating | 1–2 h |
-| BT-1b | Nits (PR #30, review passed) and the real-data evidence run when the first data day lands | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | PR #30 in the merge queue; real-data run after PR #35 publishes a day | real-data run ~30–60 m after data |
-| Queued | Build plan in docs/ARCHITECTURE.md §20 (PR #6): Wave D BT-2, WORKER-1 (with SEED-1); Wave E TEST-1, TEST-3; later SIGN-1 | — | — | by dependency | about 37–47 h of build, 15–20 h wall time |
+| DATA-1 | Historical data: retention change (100% curve and canonical pool rows), then QA for the pre-B4 layout; 60-day window in three runs, newest first | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | Retention PR in progress; scan restarts on merge | newest 14 days about 30–35 h after restart; all 60 days about 6–7 days |
+| RISK-1 + LEDGER-1c | Risk policy (PR #18, delta after EXIT-1 in re-review) and the ledger account version (PR #40, fixing 3 items) | session_0135ruSv84BVjo7knvmTCPPK | Opus 5.5 | risk reviewer session_017PBUwcGJWG4DJpJKVBcAas | 1–2 h |
+| WORKER-1 | Always-on worker, recorder, API (UI-2 contract, loopback), persistence across restarts | session_01F7UFCa8r4aee38kW7687Y3 | Opus 5.5 | building on claude/worker-1 | PR about 11 AM–1 PM |
+| FACTS-1 | Gate-fact producers, live and backtest; H13 funding lookup | session_01GDycboQzFrFWxVniy6B6Ps | Opus 5.5 | building | 3–5 h |
+| SEED-1 | Start-up seed of the deployer index; downtime gap backfill | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | building | 2–3 h |
+| RUG-1b/1c | Traded non-rug fixture (09:20), then the on-demand per-deployer rug check | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | building | 1c about 9:30–11:30 AM |
+| GATE-1c | H5 event-tail gate (PR #42, passed review; pushes after #39) | session_01MeeF4VytwgP5sqyAkqM2NS | Opus 5.5 | waiting on #39 | 30 m |
+| UPG-1 | 2 Oct upgrade (PR #39 passed review; base merge pending); regime boundaries (PR #44) | session_01LaDhos7umAesZ6z6afSe7Z | Opus 5.5 | base merge | 15 m |
+| BT-2 | Backtest study: U1, U2 vs S0; walk-forward per regime; sealed holdout after B4; trial view | session_01VBTfAwrhgoCssEzST2J2q5 | Opus 5.5 | building on fixtures | 6–10 h build; results after the data |
+| RES-3 | Signal research on practice days only; proposes one configuration per universe | session_018esLCVLp9yCExK5cdnzCz8 | Opus 5.5 | plan and literature now; data from about Tue 6 Oct | — |
+| APP-2 | Live server connection in the app over the tailnet | session_01HxjfFhpHEFghtBnZkTjnFB | Opus 5.5 | building | 3–4 h |
+| OPS-1d | Webhook retry, key-mismatch alerts, re-pair, `--update` hook (PR A); RUN-1 units, evidence relay, Tailscale serve (PR B) | session_01Euok5FXtBGZBrweohP3K93 | Opus 5.5 | building | A about 1.5 h; B about 3 h |
+| TEST-2 | Done; merged with smoke evidence | session_012vSUH8KvV8wbiagSK8KbP8 | Opus 5.5 | idle | — |
+| Next | TEST-1 parity and TEST-3 fault injection after WORKER-1; SIGN-1 later | — | — | by dependency | — |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -53,6 +61,9 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - OPS-1d: install RUN-1's zeroed-dryrun units and runner flags through code updates, hold deploys during a qualifying run, and give the VPS evidence a path into the repo.
 - Runbook (RUN-1/WORKER-1): a v1 ledger must be opened once by a writer (migrates to 2) before `ledger:replay` or `openReader`.
 - Data: the owner declined asking Triton for a faster download (4 Oct); the scan stays at 80 MB/s on one lane.
+- Owner, before live (RISK-1): worst-case cost per trade C ≈ $0.79 after EXIT-1's retry budget; $5 entries stay blocked until week-start equity reaches $29; new entries stop at about 84% of the peak.
+- Workflows: pinned actions target Node 20 and run forced on Node 24; re-pin when workflows are next touched (supervisor, `.github`).
+- RUN-1b: a negative quoteAgeSlots passes the decimal check (display only).
 - TX-1 → SIGN-1: maxSolOut needs about 1.5M lamports of PumpSwap headroom; the policy charges Token-2022 ATAs at 170 bytes.
 - Repo tidy-up: branch `claude/ledger-replay-schema-v1` duplicates PR #23's 611a4bb; the safety check refused its deletion, so the owner may delete it.
 
