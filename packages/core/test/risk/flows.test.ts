@@ -538,3 +538,17 @@ describe('RISK-1b edges (mutation): NAV, capital in SOL, withdrawals', () => {
     expect(evaluateWithdrawal(baseInput({ account: account({ heldReservations: lamports(1n) }) }), req(1n)).maxAmount).toBe(0n);
   });
 });
+
+describe('RISK-1b edges (mutation, left operands)', () => {
+  test('after a re-arm the ledger mark restarts once, and later losses add up against it', () => {
+    // Re-armed at $20; two $3 losses since: $14 is the kill line of the $20 restart.
+    const l = latches({ killTrippedAtMs: LAST_WEEK - 2 * HOUR, killRearmedAtMs: LAST_WEEK });
+    const closed = [trade(LAST_WEEK + HOUR, '-3'), trade(THIS_WEEK, '-3')];
+    const d = evaluateEntry(baseInput({ account: account({ closedTrades: closed }), latches: l }), baseRequest());
+    expect(d.snapshot?.highWaterMark).toBe(usd('20'));
+    expect(d.trips).toContain('kill_switch');
+  });
+  test('a fractional stop distance is refused, never thrown on', () => {
+    expect(codes(evaluateEntry(baseInput(), baseRequest({ stopBps: 1500.5 })))).toContain('stop_invalid');
+  });
+});
