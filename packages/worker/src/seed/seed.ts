@@ -138,6 +138,10 @@ const mergeGaps = (gaps: readonly SeedGap[]): SeedGap[] => {
 export const buildSeed = async (o: SeedOptions): Promise<Seed> => {
   if (o.untilSlot > o.asOf.slot) throw new RangeError(`untilSlot ${o.untilSlot} is after the process start slot ${o.asOf.slot}`);
   if (o.fill !== undefined && (o.days.length > 0 || o.rpcFrom !== undefined)) throw new RangeError('a downtime fill takes neither day releases nor rpcFrom');
+  // As-of, as seed() checks its facts: the close is dated from these moments, so neither may be after the process start.
+  for (const [what, m] of [['liveStart', o.fill?.liveStart], ['close.at', o.fill?.close?.at]] as const) {
+    if (m !== undefined && compareMoments(m, o.asOf) > 0) throw new RangeError(`fill ${what} is dated after the process start`);
+  }
   if (o.fill?.close !== undefined && o.fill.liveStart === undefined) throw new RangeError('a fill that closes the saved gap needs liveStart, the restarted watch\'s start moment');
 
   const nowMs = o.asOf.receivedAt;

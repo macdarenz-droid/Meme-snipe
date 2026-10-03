@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { TransactionRecord } from '../../core/src/chain/index.ts';
-import { AsOfStore, OFF_CHAIN, SimClock, compareEvents, type MarketEvent, type Moment } from '../../core/src/engine/index.ts';
+import { AsOfStore, OFF_CHAIN, SimClock, compareEvents, compareMoments, type MarketEvent, type Moment } from '../../core/src/engine/index.ts';
 import { DAY_MS } from '../../core/src/config/time.ts';
 import { DeployerIndex, createOf, createsCoverage } from '../../core/src/gates/index.ts';
 import { eventsOfFrame, type Frame } from '../src/providers/canonical.ts';
@@ -523,6 +523,15 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
     const seed = await buildSeed(fillOpts({ rpc: false }));
     expect(seed.report.gaps).toEqual([expect.objectContaining({ fromSlot: DOWN_FROM, toSlot: UNTIL, reason: 'no RPC backfill configured' })]);
     expect(coveredAfter(seed.coverage).covered).toBe(false);
+  });
+
+  it('as-of: a close.at or liveStart after the process start is refused, so no coverage fact is dated after it', async () => {
+    const after: Moment = { slot: ASOF.slot + 1_000n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ASOF.receivedAt + 60_000 };
+    await expect(buildSeed({ ...fillOpts(), fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM, at: after }, liveStart: { ...ASOF } } })).rejects.toThrow(/after the process start/);
+    await expect(buildSeed({ ...fillOpts(), fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM }, liveStart: after } })).rejects.toThrow(/after the process start/);
+    // Exactly at asOf is allowed.
+    const ok = await buildSeed({ ...fillOpts(), fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM, at: { ...ASOF, receivedAt: ASOF.receivedAt - 1 } }, liveStart: { ...ASOF } } });
+    for (const e of ok.coverage) expect(compareMoments(e.moment, ASOF) <= 0).toBe(true);
   });
 
   it('a fill takes no day releases, and a close needs the live start fact', async () => {
