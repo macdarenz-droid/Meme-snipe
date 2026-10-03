@@ -532,6 +532,11 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
     // Exactly at asOf is allowed.
     const ok = await buildSeed({ ...fillOpts(), fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM, at: { ...ASOF, receivedAt: ASOF.receivedAt - 1 } }, liveStart: { ...ASOF } } });
     for (const e of ok.coverage) expect(compareMoments(e.moment, ASOF) <= 0).toBe(true);
+    // close.at exactly at asOf: following it by 1 ms would date the close after asOf, so no close is made (the saved
+    // gap stays open: fail safe).
+    const equal = await buildSeed({ ...fillOpts(), fill: { fromSlot: DOWN_FROM, fromMs: DOWN_MS, close: { via: VIA, fromSlot: DOWN_FROM, at: { ...ASOF } }, liveStart: { ...ASOF } } });
+    for (const e of equal.coverage) expect(compareMoments(e.moment, ASOF) <= 0).toBe(true);
+    expect(equal.coverage.some((e) => e.key === 'coverage:creates:resume')).toBe(false);
   });
 
   it('a fill takes no day releases, and a close needs the live start fact', async () => {

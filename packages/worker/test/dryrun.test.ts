@@ -268,8 +268,8 @@ describe('stand-in build is structurally identical to the bot-wallet build', () 
 
 describe('dry-run report thresholds', () => {
   const rec = (i: number, success: boolean, e4: number | null = 0, closeOmitted = false): DryRunRecord => ({
-    id: `t${i}`, side: 'buy', venue: 'curve', mint: BOT, outcome: success ? 'simulated' : 'not-simulable', success, error: success ? null : 'x',
-    standIn: { address: BUYER, role: 'funded-wallet', tokenAccount: null, closeOmitted }, policy: null, quotedOut: 1n, simulatedOut: success ? 1n : null,
+    id: `t${i}`, side: 'buy', finalExit: false, venue: 'curve', mint: BOT, outcome: success ? 'simulated' : 'not-simulable', success, error: success ? null : 'x',
+    standIn: { address: BUYER, role: 'funded-wallet', tokenAccount: null, closeOmitted, closeOmittedReason: null }, policy: null, quotedOut: 1n, simulatedOut: success ? 1n : null,
     amountErrorE4: success ? e4 : null, readSlot: null, quoteAgeSlots: null, rentDeclared: null, rentPaid: null, balancesFrom: null, simulatedSlot: null, unitsConsumed: null, logsTail: [],
   });
   const many = (ok: number, fail: number, e4 = 0) => [...Array.from({ length: ok }, (_, i) => rec(i, true, e4)), ...Array.from({ length: fail }, (_, i) => rec(ok + i, false))];
@@ -497,5 +497,55 @@ describe('dry run: balances taken inside the simulation', () => {
     expect(r.outcome).toBe('malformed');
     ({ r } = await run(true, (b) => ({ ...b, postToken: b.postToken.map((x) => ({ ...x, amount: x.amount + 1n })) })));
     expect(r).toMatchObject({ outcome: 'malformed', error: 'the simulation\'s post balances disagree with the accounts it read back' });
+  });
+});
+
+describe('dry-run mechanics diagnostics (supervisor ruling, 90fac89)', () => {
+  it('counts final exits, real closes, complete sell-and-close and omitted closes with their reasons', async () => {
+    const records: DryRunRecord[] = [];
+    // A final exit by a holder with exactly the position: simulated with the real close.
+    let { chain, deps } = setup();
+    let t = tradeOf('curve-sell');
+    fund(chain, t);
+    records.push(await dryRunTrade(t, deps));
+    // A final exit whose close fails in the simulation: real close, not complete.
+    ({ chain, deps } = setup());
+    t = tradeOf('pool-sell', { id: 'close-fails' });
+    fund(chain, t);
+    chain.simulate = () => ({ err: { InstructionError: [5, { Custom: 11 }] }, logs: [] });
+    records.push(await dryRunTrade(t, deps));
+    // A final exit by a holder with more tokens: the close is left out, with the reason.
+    ({ chain, deps } = setup());
+    t = tradeOf('curve-sell', { id: 'omitted' });
+    fund(chain, t, { holderTokens: need(t.request) * 3n });
+    records.push(await dryRunTrade(t, deps));
+    // A partial sell and a buy: not final exits.
+    ({ chain, deps } = setup());
+    t = tradeOf('pool-sell', { id: 'partial' }, false);
+    fund(chain, t);
+    records.push(await dryRunTrade(t, deps));
+    ({ chain, deps } = setup());
+    t = tradeOf('curve-buy', { id: 'buy' });
+    fund(chain, t);
+    records.push(await dryRunTrade(t, deps));
+
+    expect(records.map((r) => r.finalExit)).toEqual([true, true, true, false, false]);
+    const position = need(tradeOf('curve-sell').request);
+    const m = dryRunReport(records).mechanics;
+    expect(m).toEqual({
+      label: 'mechanics diagnostics; not a landing or rent-recovery probability',
+      finalExitSimulations: 3,
+      withRealClose: 2,
+      completeSellAndClose: 1,
+      closeOmitted: 1,
+      closeOmittedReasons: [{ id: 'omitted', reason: `the holder holds ${position * 3n}, the position is ${position}` }],
+    });
+  });
+
+  it('a final exit that never reached the simulation is not counted as run with the real close', () => {
+    const base = { id: 'x', side: 'sell' as const, finalExit: true, venue: 'curve' as const, mint: BOT, error: 'no holder', standIn: null, policy: null, quotedOut: 1n, simulatedOut: null,
+      amountErrorE4: null, readSlot: null, quoteAgeSlots: null, rentDeclared: null, rentPaid: null, balancesFrom: null, simulatedSlot: null, unitsConsumed: null, logsTail: [] };
+    const m = dryRunReport([{ ...base, outcome: 'not-simulable', success: false }]).mechanics;
+    expect(m).toMatchObject({ finalExitSimulations: 1, withRealClose: 0, completeSellAndClose: 0, closeOmitted: 0 });
   });
 });
