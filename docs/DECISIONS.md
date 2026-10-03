@@ -60,6 +60,10 @@ One row per decision in the table; detailed module decisions follow in sections 
   - A late buy gets its own open position, so exits can protect it at once. A late sell reduces the position it sold from.
   - New entries stay blocked until it is booked; exits are never blocked.
 - **2026-10-03 · A refused reconcile is retried.** While an outcome is known but not reconciled, every tick asks for `reconcile_balances` again, so a reconcile refused because another attempt could still land is retried until it succeeds.
+- **2026-10-03 · A late landing reported on a dropped fork is cleared only with finalized proof.** The book's `orphan_cleared` event lifts the entry hold, with an alert, only when all of these hold:
+  - balances are unchanged at `finalized`;
+  - a `finalized` status read for the signature either failed, or, with a history search, found nothing once the *finalized* block height is past the attempt's last valid height.
+  The finalized height matters, because a landing just before expiry is not finalized yet. Without this proof the hold stays, which fails safe. Without the event at all, a fork-dropped report would block entries forever and stop unattended paper runs.
 - **2026-10-03 · A restart while `signed` never sends the bytes.** The intent becomes `unknown` and waits for expiry, because we cannot prove whether the bytes left before the restart.
 
 ## Evidence (`packages/core/src/domain`)
