@@ -1,13 +1,18 @@
 // BT-2 command line. Reads a DATA-1 dataset (schema 1 or 2), checks its sums, and runs the study or a day run.
 //
 //   node packages/backtest/src/study/cli.ts day   --dataset <dir> --sol-usd <file> [--days d1,d2] [--seeds 5] [--replays 10] [--out <dir>]
+//   node packages/backtest/src/study/cli.ts trial --dataset <dir> --sol-usd <file> [--seeds 5] [--out <dir>]
 //   node packages/backtest/src/study/cli.ts study --dataset <dir> --sol-usd <file> --registry <file> [--run-holdout] [--replays 10] [--out <dir>]
-//        [--insiders <file>]
+//   (each takes [--insiders <file>], a funding supplement: { mint: { knownAtMs, funded, devCluster } })
 //
-// `day` runs the strategies and S0 through the whole engine on the selected days (entries everywhere, no holdout) and
-// writes the engine evidence: validity, replays, the leak test, the ledger replay check, counts and the reject mix.
-// `study` runs the full protocol (walk-forward, G1, the holdout once when asked, G2, G0). Both write a JSON evidence
-// file with the commit and the dataset hash; the report holds no outcome of a sealed holdout.
+// `day` runs the strategies and S0 through the whole engine on the selected days and writes the engine evidence:
+// validity, replays, the leak test, the ledger replay check, counts and the reject mix. On a day of the fixed holdout
+// window it runs with entries off and reports engine validity only (no candidates, rejects or trades): a holdout day
+// is never run or shown before its one sealed run (§14, §17 trial view).
+// `trial` tests the practice days present (window days before the holdout, each with its 14-day look-back) and writes
+// a cumulative trial report, labelled as a trial in progress and not a verdict.
+// `study` runs the full protocol (walk-forward, G1, the holdout once when asked, G2, G0) on the whole window.
+// Every file carries the commit and the dataset hash; no report holds an outcome of a sealed holdout.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -21,6 +26,7 @@ import { STUDY_CONFIG, configId, studyHash } from '../strategy/config.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { countsOf, rejectMix, scoreRun } from './score.ts';
 import { runFullStudy, studyLeak } from './study.ts';
+import { holdoutDaysOf, windowDays } from './plan.ts';
 
 /** 2026-10-02 is a regime boundary (pump program upgrade, UPG-1): that day and later are never decision days. */
 export const REGIME_BOUNDARY_DAY = '2026-10-02';
@@ -71,18 +77,45 @@ const common = {
   ],
 };
 
-if (command === 'day') {
-  const only = has('days') ? new Set(flag('days').split(',')) : null;
-  const days = manifest.days.filter((d) => only === null || only.has(d.day)).map((d) => d.day).sort();
+const holdout = new Set(holdoutDaysOf(STUDY_CONFIG));
+const complete = manifest.days.filter((d) => d.complete).map((d) => d.day).sort();
+const dayMs = 86_400_000;
+const day0 = (d: string) => Date.parse(`${d}T00:00:00Z`);
+
+if (command === 'day' || command === 'trial') {
+  let days: string[];
+  if (command === 'day') {
+    const only = has('days') ? new Set(flag('days').split(',')) : null;
+    days = manifest.days.filter((d) => only === null || only.has(d.day)).map((d) => d.day).sort();
+  } else {
+    // Practice days: window days before the holdout, present and complete, each with its 14-day look-back present.
+    const practice = windowDays(STUDY_CONFIG).filter((d) => !holdout.has(d));
+    const lookBack = (d: string) => Array.from({ length: STUDY_CONFIG.window.leadInDays }, (_, k) => new Date(day0(d) - (k + 1) * dayMs).toISOString().slice(0, 10)).every((x) => byDay.has(x));
+    days = practice.filter((d) => complete.includes(d) && lookBack(d));
+    // One contiguous run: the longest run of consecutive practice days present.
+    const runs: string[][] = [];
+    for (const d of days) {
+      const last = runs.at(-1);
+      if (last !== undefined && day0(d) - day0(last.at(-1)!) === dayMs) last.push(d);
+      else runs.push([d]);
+    }
+    days = runs.sort((a, b) => b.length - a.length || (a[0]! < b[0]! ? 1 : -1))[0] ?? [];
+  }
   if (days.length === 0) throw new Error('no days selected');
   if (days.some((d) => d >= REGIME_BOUNDARY_DAY)) throw new Error(`${REGIME_BOUNDARY_DAY} and later are never decision days`);
-  const from = Date.parse(`${days[0]}T00:00:00Z`);
-  const last = manifest.coverage.last_block_time === undefined ? Date.parse(`${days[days.length - 1]}T00:00:00Z`) + 86_400_000 : manifest.coverage.last_block_time * 1000;
-  const runId = `day-${days[0]}-${days[days.length - 1]}-${commit.slice(0, 8)}`;
+  const validityOnly = days.some((d) => holdout.has(d));
+  if (command === 'trial' && validityOnly) throw new Error('a trial never runs holdout days');
+  const from = day0(days[0]!);
+  const lastDay = day0(days[days.length - 1]!) + dayMs;
+  const last = Math.min(lastDay, manifest.coverage.last_block_time === undefined ? lastDay : manifest.coverage.last_block_time * 1000);
+  const firstRow = [...byDay.keys()].sort().filter((d) => d <= days[0]!).filter((d) => day0(d) >= from - STUDY_CONFIG.window.leadInDays * dayMs)[0]!;
+  const runId = `${command}-${days[0]}-${days[days.length - 1]}-${commit.slice(0, 8)}`;
   const ledgerPath = join(out, `${runId}.sqlite`);
   const opts: Omit<StudyRunOptions, 'mode'> = {
-    rows: rowsOf(days[0]!, days[days.length - 1]!), series: [solUsd], seed: 'bt2-day', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG,
-    research: RESEARCH_CONFIG, windowEnd: last, study: STUDY_CONFIG, entriesFrom: from, entriesTo: last - TRIAL_POLICY.exits.tMaxMs - RESEARCH_CONFIG.s0.endMarginMs,
+    rows: rowsOf(firstRow, days[days.length - 1]!), series: [solUsd], seed: 'bt2-day', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG,
+    research: RESEARCH_CONFIG, windowEnd: last, study: STUDY_CONFIG, entriesFrom: from,
+    // Entries off on a holdout day: the run proves the engine on real data without trading the holdout.
+    entriesTo: validityOnly ? from : last - TRIAL_POLICY.exits.tMaxMs - RESEARCH_CONFIG.s0.endMarginMs,
     sampleRate, regimeBoundaries: regimeBoundariesOf(manifest), ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
     ...(insiders === undefined ? {} : { insiders }),
   };
@@ -95,35 +128,38 @@ if (command === 'day') {
   const hashes = [r.logHash, ...replayHashes(studyRunOptions({ ...opts, mode: 'strategy' }), Math.max(0, replays - 1))];
   const leak = studyLeak(studyRunOptions({ ...opts, mode: 'strategy' }), days, 'bt2-day');
   const ledgerReplay = replayLedgerFile(ledgerPath);
-  const evidence = {
-    kind: 'BT-2 day run', runId, ...common, days, entriesWindow: { from: new Date(opts.entriesFrom).toISOString(), to: new Date(opts.entriesTo).toISOString() },
-    engine: {
-      stats: r.stats, runMs, rowsPerSecond: Math.round(r.stats.rows / (runMs / 1000)), replays: hashes.length, identicalReplays: new Set(hashes).size === 1,
-      leak, ledgerReplay,
-    },
-    facts: r.facts?.counts ?? null,
-    counts: countsOf(r), rejectMix: rejectMix(r.records),
-    s0: s0.map((x) => ({ seed: x.seed, stats: { crashes: x.stats.crashes, illegalStates: x.stats.illegalStates, unreconciledIntents: x.stats.unreconciledIntents }, counts: countsOf(x) })),
-    // A day run has no holdout; its trades are research output, reported as such.
-    trades: scoreRun(r, FILL_CONFIG),
-    regimeBoundariesPassed: r.regimes.map((b) => ({ slot: b.slot.toString(), label: b.label, at: new Date(b.at).toISOString() })),
+  const engine = {
+    stats: r.stats, runMs, rowsPerSecond: Math.round(r.stats.rows / (runMs / 1000)), replays: hashes.length, identicalReplays: new Set(hashes).size === 1,
+    leak, ledgerReplay,
   };
+  const evidence = validityOnly
+    ? {
+      kind: 'BT-2 day run, holdout day: engine validity only', runId, ...common, days, entries: 'off (holdout window)', engine,
+      facts: r.facts?.counts ?? null,
+      s0: s0.map((x) => ({ seed: x.seed, crashes: x.stats.crashes, illegalStates: x.stats.illegalStates, unreconciledIntents: x.stats.unreconciledIntents })),
+    }
+    : {
+      kind: command === 'trial' ? 'BT-2 trial (in progress, not a verdict)' : 'BT-2 day run', runId, ...common, days,
+      entriesWindow: { from: new Date(opts.entriesFrom).toISOString(), to: new Date(opts.entriesTo).toISOString() }, engine,
+      facts: r.facts?.counts ?? null, counts: countsOf(r), rejectMix: rejectMix(r.records),
+      s0: s0.map((x) => ({ seed: x.seed, stats: { crashes: x.stats.crashes, illegalStates: x.stats.illegalStates, unreconciledIntents: x.stats.unreconciledIntents }, counts: countsOf(x), trades: scoreRun(x, FILL_CONFIG) })),
+      // Practice-day trades are research output, never proof.
+      trades: scoreRun(r, FILL_CONFIG),
+      regimeBoundariesPassed: r.regimes.map((b) => ({ slot: b.slot.toString(), label: b.label, at: new Date(b.at).toISOString() })),
+    };
   writeFileSync(join(out, `${runId}.json`), json(evidence));
-  console.log(json({ runId, stats: r.stats, identical: evidence.engine.identicalReplays, leak: leak.ok, ledgerReplay: ledgerReplay.ok, counts: evidence.counts, facts: evidence.facts }));
+  console.log(json({ runId, validityOnly, stats: r.stats, identical: engine.identicalReplays, leak: leak.ok, ledgerReplay: ledgerReplay.ok, facts: r.facts?.counts ?? null }));
 } else if (command === 'study') {
-  const decisionDays = manifest.days.filter((d) => d.complete && !d.warm_up && d.day < REGIME_BOUNDARY_DAY).map((d) => d.day).sort();
-  const lead = manifest.window as { lead_in_days?: number };
-  const leadIn = Number(lead.lead_in_days ?? 14);
   const first = [...byDay.keys()].sort()[0]!;
-  // A dataset assembled with its lead-in lists the lead-in days as warm-up days; decision days are the rest.
   const report = runFullStudy({
-    config: STUDY_CONFIG, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, decisionDays, rows: rowsOf, firstDay: first,
+    config: STUDY_CONFIG, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: complete, rows: rowsOf, firstDay: first,
     series: [solUsd], sampleRate, ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
     ...(insiders === undefined ? {} : { insiders }), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
     runHoldout: has('run-holdout'), startedAt: new Date().toISOString(), regimeBoundaries: regimeBoundariesOf(manifest),
   });
-  const runId = `study-${decisionDays[0]}-${decisionDays[decisionDays.length - 1]}-${commit.slice(0, 8)}`;
-  writeFileSync(join(out, `${runId}.json`), json({ kind: 'BT-2 study', runId, ...common, leadInDays: leadIn, ...report }));
+  const days = windowDays(STUDY_CONFIG);
+  const runId = `study-${days[0]}-${days[days.length - 1]}-${commit.slice(0, 8)}`;
+  writeFileSync(join(out, `${runId}.json`), json({ kind: 'BT-2 study', runId, ...common, ...report }));
   console.log(json({ runId, G0: report.gates.G0.status, G1: Object.fromEntries(Object.entries(report.gates.G1).map(([u, g]) => [u, g.status])), G2: report.gates.G2.status }));
 } else {
   throw new Error('usage: cli.ts day|study --dataset <dir> --sol-usd <file> ...');

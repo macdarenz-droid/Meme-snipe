@@ -3,6 +3,8 @@
 // are BT-2's.
 import { RUG_CONFIG, startSession } from '../../../core/src/config/index.ts';
 import type { RugConfig } from '../../../core/src/config/index.ts';
+import type { Retention } from '../../../core/src/engine/index.ts';
+import { TX_CREATE_PREFIX } from '../../../core/src/gates/index.ts';
 import { seriesReleases } from '../dataset/offchain.ts';
 import { type RunOptions, type RunResult, runBacktest } from '../run.ts';
 import { FactProjector, gapsOf } from '../sim/facts.ts';
@@ -22,10 +24,20 @@ export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' |
   readonly insiders?: ConstructorParameters<typeof FactProjector>[0]['insiders'];
 }
 
+/**
+ * What the study reads from the past (and so keeps): every coverage fact (H14 reads their whole history), every
+ * create and rug label (one per mint), and 7 h of holder facts (U1's 6 h holder growth). Every other key is read
+ * as of now only, so its latest value is enough. Bounds the store over a 74-day run.
+ */
+export const STUDY_RETENTION: Retention = (key) =>
+  key.startsWith('coverage:') || key.startsWith('rug:') || key.startsWith('rug-unjudged:') || key.startsWith(TX_CREATE_PREFIX) ? null
+    : key.startsWith('gates/holders:') ? 7 * 3_600_000 : 0;
+
 export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
   const sol = o.series.find((s) => s.name === 'SOL/USD');
   return {
     ...o,
+    retention: STUDY_RETENTION,
     facts: () => new FactProjector({
       sampleRate: o.sampleRate,
       rugs: o.rugs ?? RUG_CONFIG,

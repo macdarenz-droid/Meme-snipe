@@ -3,7 +3,7 @@
 // feed, clock and effect runner here are backtest parts (docs/ARCHITECTURE.md §16.1, §16.2).
 import type { Policy } from '../../core/src/config/index.ts';
 import type { FillConfig, ResearchConfig } from '../../core/src/config/index.ts';
-import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
+import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Retention, type Strategy } from '../../core/src/engine/index.ts';
 import { blockedExitValue, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
 import { openLedger, type Ledger } from '../../core/src/ledger/index.ts';
 import { isTerminal, type Book } from '../../core/src/lifecycle/index.ts';
@@ -36,6 +36,8 @@ export interface RunOptions {
   readonly extraEvents?: readonly FeedEvent[];
   /** Program-change slots from the dataset manifest (regime boundaries). */
   readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
+  /** How long each key's past stays in the engine's as-of store (default: everything). */
+  readonly retention?: Retention;
   /** BT-2: a fresh fact projector for this run (gate facts, checks, creates and rug labels). */
   readonly facts?: () => FactProjector;
 }
@@ -155,7 +157,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
   const config = s0Config(o);
   const strategy = o.strategy?.(config) ?? new S0(config);
   // The backtest takes every eligible candidate: no open-position cap beyond one entry in flight at a time (§14).
-  engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: world, seed: o.seed, book: { maxOpenPositions: maxOpen } });
+  engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: world, seed: o.seed, book: { maxOpenPositions: maxOpen }, ...(o.retention === undefined ? {} : { retention: o.retention }) });
 
   let crash: string | null = null;
   try {

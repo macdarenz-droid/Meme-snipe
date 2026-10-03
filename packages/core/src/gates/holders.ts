@@ -46,13 +46,29 @@ export interface MintAccounts {
 export const mintAccounts = (mint: string, pool: MintAccounts['pool']): MintAccounts => ({ curve: bondingCurveAddress(mint as Address), pool });
 
 /** True for a PDA. An owner that is not a 32-byte address counts as one too: it is kept as a holder and noted. */
-const offCurve = (address: string): boolean => {
+const offCurveUncached = (address: string): boolean => {
   try {
     const bytes = decodeBase58(address);
     return bytes.length !== 32 || !isOnCurve(bytes);
   } catch {
     return true;
   }
+};
+
+/**
+ * The curve check decompresses a point with big-integer powers (about 1 ms); the backtest asks it for every holder
+ * at every check (BT-2 measured 84% of a run here). The answer depends on the address alone, so it is remembered;
+ * the memory is bounded and emptied whole when full, which changes no answer.
+ */
+const OFF_CURVE_CACHE_MAX = 200_000;
+const offCurveCache = new Map<string, boolean>();
+const offCurve = (address: string): boolean => {
+  const hit = offCurveCache.get(address);
+  if (hit !== undefined) return hit;
+  const v = offCurveUncached(address);
+  if (offCurveCache.size >= OFF_CURVE_CACHE_MAX) offCurveCache.clear();
+  offCurveCache.set(address, v);
+  return v;
 };
 
 export const classifyHolder = (a: HolderAccount, known: MintAccounts): HolderClass => {

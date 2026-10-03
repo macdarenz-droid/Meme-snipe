@@ -52,8 +52,23 @@ export interface UniverseConfig {
   readonly medianTargetBps: number;
 }
 
+/** A regime boundary (docs/ARCHITECTURE.md §6.5): results are reported per regime, never pooled silently. */
+export interface RegimeBoundary {
+  readonly label: string;
+  readonly atMs: number;
+  readonly what: string;
+}
+
 export interface StudyConfig {
   readonly version: string;
+  /**
+   * The decision window, fixed in advance (§6.5): the holdout is its last `holdoutDays` days whatever data has been
+   * downloaded, so a partial download can never move the holdout onto days already looked at.
+   */
+  readonly window: { readonly decisionFrom: string; readonly decisionTo: string; readonly leadInDays: number };
+  readonly regimes: readonly RegimeBoundary[];
+  /** The holdout lies entirely after this boundary (supervisor, 2026-10-04: B4). */
+  readonly holdoutAfter: string;
   readonly universes: readonly UniverseConfig[];
   /** Least accepted entry output below the local quote (§10). */
   readonly entryMinOutBelowBps: number;
@@ -72,6 +87,14 @@ export interface StudyConfig {
 
 const VALUES: StudyConfig = {
   version: 'study-1',
+  window: { decisionFrom: '2026-08-03', decisionTo: '2026-10-01', leadInDays: 14 },
+  regimes: [
+    { label: 'B2', atMs: Date.parse('2026-07-21T14:23:00Z'), what: 'BOOST on' },
+    { label: 'B3', atMs: Date.parse('2026-09-09T19:30:00Z'), what: 'fee and creator-fee configuration changed' },
+    { label: 'B4', atMs: Date.parse('2026-09-12T15:24:00Z'), what: 'holder rewards; trade events grew 16 bytes' },
+    { label: 'B5', atMs: Date.parse('2026-10-02T15:47:00Z'), what: 'unpublished upgrade with an 8-byte event tail' },
+  ],
+  holdoutAfter: 'B4',
   universes: [
     {
       universe: 'U1',

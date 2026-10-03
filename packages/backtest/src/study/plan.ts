@@ -21,6 +21,23 @@ export interface StudyPlan {
 
 export const dayStart = (day: string): number => Date.parse(`${day}T00:00:00Z`);
 
+/** Every day of the configured decision window, in order. */
+export const windowDays = (c: StudyConfig): string[] => {
+  const out: string[] = [];
+  for (let t = dayStart(c.window.decisionFrom); t <= dayStart(c.window.decisionTo); t += DAY_MS) out.push(new Date(t).toISOString().slice(0, 10));
+  return out;
+};
+
+/** The regime a moment falls in: the label of the last boundary at or before it ('B0' before the first). */
+export const regimeOf = (c: StudyConfig, ms: number): string => {
+  let label = 'B0';
+  for (const b of c.regimes) if (b.atMs <= ms) label = b.label;
+  return label;
+};
+
+/** The fixed holdout days of the configuration (the window's last `holdoutDays`). */
+export const holdoutDaysOf = (c: StudyConfig): string[] => windowDays(c).slice(-c.holdoutDays);
+
 /**
  * `holdTailMs`: how long before a window's end the last entry may start so every trade can finish inside it
  * (the policy's hard time stop plus a margin). Throws when the days cannot hold the folds and the holdout.
@@ -41,6 +58,11 @@ export const studyPlan = (c: StudyConfig, decisionDays: readonly string[], holdT
   }
   const wfEnd = dayStart(wf[wf.length - 1]!) + DAY_MS;
   const holdStart = dayStart(hold[0]!);
+  const after = c.regimes.find((b) => b.label === c.holdoutAfter);
+  if (after === undefined) throw new RangeError(`no regime boundary ${c.holdoutAfter}`);
+  if (holdStart + c.embargoMs < after.atMs) throw new RangeError(`the holdout must lie entirely after ${after.label} (${new Date(after.atMs).toISOString()})`);
+  const inside = c.regimes.find((b) => b.atMs > holdStart && b.atMs < dayStart(hold[hold.length - 1]!) + DAY_MS);
+  if (inside !== undefined) throw new RangeError(`regime boundary ${inside.label} falls inside the holdout`);
   const holdEnd = dayStart(hold[hold.length - 1]!) + DAY_MS;
   return {
     decisionDays: days,
@@ -56,11 +78,12 @@ export interface Timed {
 }
 
 /**
- * Walk-forward trades kept for scoring, each with its fold: a trade whose hold crosses its fold's end is purged, and
- * one opened inside the embargo after a boundary (every fold but the first) is dropped.
+ * Walk-forward trades kept for scoring, each with its fold and regime: a trade whose hold crosses its fold's end or
+ * a regime boundary is purged, and one opened inside the embargo after a fold boundary (every fold but the first) is
+ * dropped.
  */
-export const purge = <T extends Timed>(trades: readonly T[], plan: StudyPlan, embargoMs: number): { kept: (T & { fold: number })[]; purged: number; embargoed: number } => {
-  const kept: (T & { fold: number })[] = [];
+export const purge = <T extends Timed>(trades: readonly T[], plan: StudyPlan, embargoMs: number, regime: (ms: number) => string = () => ''): { kept: (T & { fold: number; regime: string })[]; purged: number; embargoed: number } => {
+  const kept: (T & { fold: number; regime: string })[] = [];
   let purged = 0;
   let embargoed = 0;
   for (const t of trades) {
@@ -69,9 +92,10 @@ export const purge = <T extends Timed>(trades: readonly T[], plan: StudyPlan, em
       purged++;
       continue;
     }
-    if (t.closedAt >= f.toMs) purged++;
+    // A hold that crosses its fold's end, or a regime boundary, belongs to neither side.
+    if (t.closedAt >= f.toMs || regime(t.openedAt) !== regime(t.closedAt)) purged++;
     else if (f.index > 0 && t.openedAt < f.fromMs + embargoMs) embargoed++;
-    else kept.push({ ...t, fold: f.index });
+    else kept.push({ ...t, fold: f.index, regime: regime(t.openedAt) });
   }
   return { kept, purged, embargoed };
 };

@@ -27,11 +27,11 @@ const plan = (label: string, day: number): MintPlan => ({
 const { rows } = studyWorld({ leadInDays: 15, blockEvery: 25, slots: 3 * DAY, mints: [plan('d0', 0), plan('d1', 1), plan('d2', 2)] });
 const dayOf = (r: DatasetRow) => new Date(r.blockTime * 1000).toISOString().slice(0, 10);
 const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ start: W0 - 16 * 86_400_000 + k * 3_600_000, close: '120.00' })) };
-const config = { ...STUDY_CONFIG, folds: 2, holdoutDays: 1, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
+const config = { ...STUDY_CONFIG, window: { decisionFrom: '2026-09-20', decisionTo: '2026-09-22', leadInDays: 14 }, folds: 2, holdoutDays: 1, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
 const decisionDays = ['2026-09-20', '2026-09-21', '2026-09-22'];
 
 const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
-  config, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, decisionDays,
+  config, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: decisionDays,
   rows: (from, to) => () => rows.filter((r) => dayOf(r) >= from && dayOf(r) <= to)[Symbol.iterator](),
   firstDay: '2026-09-05', series: [sol], sampleRate: 1, insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }),
   registryPath: join(dir, 'registry.json'), outDir: dir, seed: 'study', replays: 2, runHoldout: false, startedAt: '2026-10-04T00:00:00Z', ...over,
@@ -65,7 +65,11 @@ describe('BT-2 study', () => {
     expect(reg.holdouts.familySize).toBe(2);
     expect(reg.holdouts.entries.map((e) => [e.universe, e.configId, e.seal])).toEqual([['U1', configId(config, 'U1'), 'registered'], ['U2', configId(config, 'U2'), 'registered']]);
     expect(reg.trials.map((t) => t.trialId).sort()).toEqual([configId(config, 'U1'), configId(config, 'U2')].sort());
-    for (const u of ['U1', 'U2']) expect(first.gates.G1[u]!.status).toBe('not-proven');
+    // Reported per regime (here every trade is after B4) and pooled under its own label; 2 days are too few.
+    expect(Object.keys(first.gates.G1)).toEqual(expect.arrayContaining(['U1 all regimes (pooled)', 'U2 all regimes (pooled)', 'U2 regime B4']));
+    for (const k of Object.keys(first.gates.G1)) expect(k).toMatch(/^U[12] (regime B\d|all regimes \(pooled\))$/);
+    for (const g of Object.values(first.gates.G1)) expect(g.status).toBe('not-proven');
+    expect(first.holdoutRegime).toBe('B4');
     expect(first.gates.G2.status).toBe('not-proven');
     expect(first.holdout.ran).toBe(false);
   });

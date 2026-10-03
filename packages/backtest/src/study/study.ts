@@ -16,7 +16,7 @@ import type { RunResult } from '../run.ts';
 import { replayHashes } from '../proofs.ts';
 import { type StudyConfig, configId, studyHash } from '../strategy/config.ts';
 import { g0, g1, g2NotProven, gateG2, type G2Short, pboMatrix, powerOf, trialOf } from './gates.ts';
-import { foldSummary, purge, studyPlan, type StudyPlan } from './plan.ts';
+import { foldSummary, purge, regimeOf, studyPlan, type StudyPlan, windowDays } from './plan.ts';
 import { loadOrCreate, readStudyRegistry, recordTrial, register, type StudyRegistry, writeStudyRegistry } from './registry.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { openSealed, runSealedHoldout, sealedReady } from './sealed.ts';
@@ -27,7 +27,8 @@ export interface StudyInputs {
   readonly policy: Policy;
   readonly fills: FillConfig;
   readonly research: ResearchConfig;
-  readonly decisionDays: readonly string[];
+  /** Days the dataset holds complete (the study refuses to run unless every window day is among them). */
+  readonly availableDays: readonly string[];
   /** Rows from `fromDay` (inclusive, lead-in included by the caller) through `toDay` (inclusive), in chain order. */
   readonly rows: (fromDay: string, toDay: string) => () => Iterator<DatasetRow>;
   /** First day with data (the lead-in's first day). */
@@ -59,12 +60,15 @@ export interface StudyReport {
     readonly purged: number;
     readonly embargoed: number;
     readonly folds: Readonly<Record<string, ReturnType<typeof foldSummary>>>;
+    /** Kept trades per universe and regime. */
+    readonly byRegime: Readonly<Record<string, Readonly<Record<string, number>>>>;
     readonly trades: readonly ScoredTrade[];
     readonly s0Seeds: number;
     readonly ledgerReplay: ReturnType<typeof replayLedgerFile>;
   };
   readonly holdout: { readonly ran: boolean; readonly counts: Readonly<Record<string, unknown>> | null; readonly sealHash: string | null; readonly required: Readonly<Record<string, number | null>> };
   readonly gates: { readonly G0: GateResult; readonly G1: Readonly<Record<string, GateResult>>; readonly G2: GateResult };
+  readonly holdoutRegime: string;
   readonly proofs: { readonly replayHashes: readonly string[]; readonly leak: ProofReport; readonly shift: ProofReport };
   readonly registry: StudyRegistry;
 }
@@ -80,7 +84,11 @@ const dayBefore = (day: string, n: number) => new Date(Date.parse(`${day}T00:00:
 export const runFullStudy = (i: StudyInputs): StudyReport => {
   const c = i.config;
   const tail = i.policy.exits.tMaxMs + i.research.s0.endMarginMs;
-  const plan = studyPlan(c, i.decisionDays, tail);
+  const decisionDays = windowDays(c);
+  const absent = decisionDays.filter((d) => !i.availableDays.includes(d));
+  if (absent.length > 0) throw new RangeError(`the dataset lacks ${absent.length} decision days of the window (first ${absent[0]}); the study runs on the whole window only`);
+  const plan = studyPlan(c, decisionDays, tail);
+  const regime = (ms: number) => regimeOf(c, ms);
   const universes = UNIVERSES(c);
   const ids = Object.fromEntries(universes.map((u) => [u, configId(c, u)]));
   const wfDays = plan.walkForward.days;
@@ -100,10 +108,13 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const s0 = Array.from({ length: c.s0SeedsWalkForward }, (_, k) => runStudy({ ...wfOpts, mode: 's0', seed: `${i.seed}:s0:${k}` }));
 
   // 2. Scoring stage.
-  const scored = purge(scoreRun(wf, i.fills), plan, c.embargoMs);
-  const s0Scored = s0.map((r) => purge(scoreRun(r, i.fills), plan, c.embargoMs).kept);
+  const scored = purge(scoreRun(wf, i.fills), plan, c.embargoMs, regime);
+  const s0Scored = s0.map((r) => purge(scoreRun(r, i.fills), plan, c.embargoMs, regime).kept);
   const tradesOf = (tag: string) => scored.kept.filter((t) => t.tag === tag);
-  const controlOf = (tag: string): DayReturn[] => s0Scored.flatMap((xs) => xs.filter((t) => t.tag === `S0-${tag}`));
+  const controlOf = (tag: string) => s0Scored.flatMap((xs) => xs.filter((t) => t.tag === `S0-${tag}`));
+  // n_power sizes a holdout that lies after the last boundary: σ̂ comes from the walk-forward of that same regime.
+  const lastRegime = regimeOf(c, Date.parse(`${plan.holdout.fromDay}T00:00:00Z`));
+  const sameRegime = <T extends DayReturn & { regime: string }>(xs: readonly T[]): DayReturn[] => xs.filter((t) => t.regime === lastRegime);
 
   let reg = loadOrCreate(i.registryPath, universes.length);
   for (const u of universes) reg = recordTrial(reg, { ...trialOf(ids[u]!, tradesOf(u)), configId: ids[u]!, evaluatedOn: `walk-forward ${wfDays[0]}..${wfDays[wfDays.length - 1]}` });
@@ -114,13 +125,20 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   writeStudyRegistry(i.registryPath, reg);
 
   const matrix = pboMatrix(Object.fromEntries(reg.trials.map((t) => [t.trialId, scored.kept.filter((x) => ids[x.tag] === t.trialId)])), wfDays.map((d) => d));
-  const G1 = Object.fromEntries(universes.map((u) => {
+  // G1 per universe and regime (§6.5: never pooled silently); the pooled figure is reported under its own label.
+  const regimes = [...new Set(scored.kept.map((t) => t.regime))].sort();
+  const G1: Record<string, GateResult> = {};
+  for (const u of universes) {
     const e = reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u))!;
-    return [u, g1({ universe: u, configId: ids[u]!, trades: tradesOf(u), control: controlOf(u) }, reg.trials, matrix, seedNumber(`${i.seed}:g1:${u}`), e.seal !== 'opened' && e.configId === ids[u])];
-  }));
+    const before = e.seal !== 'opened' && e.configId === ids[u];
+    for (const g of [...regimes, 'pooled']) {
+      const pick = <T extends { regime: string }>(xs: readonly T[]) => (g === 'pooled' ? xs : xs.filter((t) => t.regime === g));
+      G1[`${u} ${g === 'pooled' ? 'all regimes (pooled)' : `regime ${g}`}`] = g1({ universe: u, configId: ids[u]!, trades: pick(tradesOf(u)), control: pick(controlOf(u)) }, reg.trials, matrix, seedNumber(`${i.seed}:g1:${u}:${g}`), before);
+    }
+  }
 
   // 4. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14).
-  const power = Object.fromEntries(universes.map((u) => [u, powerOf(tradesOf(u), controlOf(u), reg.holdouts.familySize, seedNumber(`${i.seed}:power:${u}`))]));
+  const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), reg.holdouts.familySize, seedNumber(`${i.seed}:power:${u}`))]));
   const required = Object.fromEntries(universes.map((u) => [u, power[u]!.ok ? power[u]!.required : null]));
   const holdLedger = `${i.outDir}/holdout-${plan.holdout.fromDay}-${plan.holdout.toDay}.sqlite`;
   let sealed: ReturnType<typeof runSealedHoldout> | null = null;
@@ -152,7 +170,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       scenario: 'conservative', registry: reg.holdouts, nowMs: Date.parse(i.startedAt), rng: createRng(seedNumber(`${i.seed}:g2`)),
       universes: ready.map((u) => ({
         universe: u, configId: ids[u]!, holdoutId: holdoutIdOf(u), ledgerHash: open.sealHash, trades: open.outcomes.strategy[u] ?? [],
-        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), walkForward: tradesOf(u), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
+        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), walkForward: sameRegime(tradesOf(u)), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
       })),
     });
     reg = { ...reg, holdouts: r.registry };
@@ -189,9 +207,11 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     walkForward: {
       stats: wf.stats, counts: countsOf(wf), rejectMix: rejectMix(wf.records), facts: (wf.facts?.counts ?? null) as never, purged: scored.purged, embargoed: scored.embargoed,
       folds: Object.fromEntries(universes.map((u) => [u, foldSummary(tradesOf(u), plan.walkForward.folds)])), trades: scored.kept, s0Seeds: s0.length, ledgerReplay,
+      byRegime: Object.fromEntries(universes.map((u) => [u, Object.fromEntries(regimes.map((g) => [g, tradesOf(u).filter((t) => t.regime === g).length]))])),
     },
     holdout: { ran: sealed !== null || alreadyRun, counts: sealed?.counts ?? Object.fromEntries(universes.map((u) => [u, entryOf(u).counts])), sealHash: sealed?.sealHash ?? null, required },
     gates: { G0: G0full, G1, G2 },
+    holdoutRegime: lastRegime,
     proofs: { replayHashes: hashes, leak, shift },
     registry: reg,
   };

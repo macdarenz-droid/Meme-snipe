@@ -76,6 +76,8 @@ export interface FactOptions {
 }
 
 const PROVIDER = 'dataset';
+/** A launch that has not graduated after this long is dropped (H9 needs its create only if it graduates). */
+export const UNGRADUATED_KEEP_MS = 7 * 24 * 3_600_000;
 const SYSTEM = '11111111111111111111111111111111';
 const NUM = /^-?\d+$/;
 /** Text fields that may look like numbers but are never amounts. */
@@ -133,6 +135,7 @@ export class FactProjector {
   /** Sampled mints with a migration: the only ones a check can be scheduled for. */
   readonly #graduates = new Set<string>();
   #started = false;
+  #prunedAt = Number.MIN_SAFE_INTEGER;
   #height = 0n;
   #gapAt = 0;
   #solAt = 0;
@@ -409,7 +412,33 @@ export class FactProjector {
     if (sum !== s.supply) this.#problem(s, `holder balances sum to ${sum}, the supply is ${s.supply} after ${row.signature}`);
   }
 
+  /**
+   * Drops state no check can need any more, once an hour of chain time: launches that did not graduate within
+   * `ungraduatedKeepMs`, and graduates past every check window. Bounded memory over a 74-day run; no answer changes,
+   * because a dropped mint is never checked again.
+   */
+  #prune(atMs: number): void {
+    if (atMs < this.#prunedAt + 3_600_000) return;
+    this.#prunedAt = atMs;
+    const last = Math.max(0, ...this.#o.windows.map((w) => w.toMs));
+    for (const [mint, s] of this.#mints) {
+      const created = s.create?.createdAtMs ?? null;
+      const stale = s.migration === null ? created !== null && atMs - created > UNGRADUATED_KEEP_MS : atMs - s.migration.migratedAtMs > last + 3_600_000;
+      if (!stale) continue;
+      this.#mints.delete(mint);
+      this.#graduates.delete(mint);
+      if (s.pool !== null) this.#lpMints.delete(s.pool.lpMint);
+      if (s.migration !== null) this.#poolMints.delete(s.migration.pool);
+    }
+  }
+
+  /** Mints tracked right now (memory check). */
+  get tracked(): number {
+    return this.#mints.size;
+  }
+
   #block(slot: bigint, atMs: number, m: Moment, out: FeedEvent[]): void {
+    this.#prune(atMs);
     const gaps = this.#o.gaps ?? [];
     while (this.#gapAt < gaps.length && gaps[this.#gapAt]!.toSlot < slot) {
       const g = gaps[this.#gapAt++]!;

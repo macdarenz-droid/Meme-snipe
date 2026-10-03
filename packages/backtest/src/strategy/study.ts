@@ -65,6 +65,8 @@ interface Candidate {
   target: number | null;
   checks: number;
   entered: boolean;
+  /** The reasons of the last abstention logged: the same abstention at the next check is not logged again. */
+  said: string;
 }
 
 /** An entry waiting for its fill, then the open trade with its exit state. */
@@ -95,6 +97,8 @@ export class StudyStrategy implements Strategy {
   readonly #live = new Set<IntentId>();
   readonly #settings;
   readonly #universes: ReadonlyMap<string, UniverseConfig>;
+  readonly #poolOf = new Map<string, string>();
+  #prunedAt = Number.MIN_SAFE_INTEGER;
 
   constructor(o: StudyOptions) {
     this.#o = o;
@@ -110,6 +114,7 @@ export class StudyStrategy implements Strategy {
 
   onMarket(e: MarketEvent, ctx: StrategyContext): readonly Decision[] {
     this.#deployers.observe(e);
+    if (e.key === 'slot') this.#prune(ctx.now.receivedAt);
     const out: Decision[] = [];
     if (e.key.startsWith('pool:')) this.#tape(e, ctx);
     this.#lifecycle(e, ctx, out);
@@ -117,6 +122,15 @@ export class StudyStrategy implements Strategy {
     // At most one entry per call, and only while nothing else acted on the book in this call (CORE-1).
     if (e.key.startsWith('check:') && !out.some((d) => d.action !== null)) this.#check(e, ctx, out);
     return out;
+  }
+
+  /** Tapes and candidates past every check window (and not traded) are dropped once an hour: memory stays bounded. */
+  #prune(now: number): void {
+    if (now < this.#prunedAt + 3_600_000) return;
+    this.#prunedAt = now;
+    const horizon = Math.max(0, ...this.#o.config.universes.map((u) => u.window.toMs)) + 3_600_000;
+    for (const [pool, t] of this.#tapes) if (now - t.startedAtMs > horizon && !this.#byPool.get(pool)?.size) this.#tapes.delete(pool);
+    for (const [k, c] of this.#candidates) if (!c.entered && !this.#tapes.has(this.#poolOf.get(c.mint) ?? '')) this.#candidates.delete(k);
   }
 
   // ---------- tape ----------
@@ -127,6 +141,7 @@ export class StudyStrategy implements Strategy {
     if (t === undefined) {
       t = new PoolTape(e.moment.receivedAt, this.#o.config.headBars, this.#o.config.tailBars);
       this.#tapes.set(v.pool, t);
+      this.#poolOf.set(v.mint, v.pool);
     }
     t.add(v, e.moment.receivedAt, this.#creator(ctx, v.mint));
   }
@@ -150,7 +165,7 @@ export class StudyStrategy implements Strategy {
     const key = `${tag}|${mint}`;
     let c = this.#candidates.get(key);
     if (c === undefined) {
-      c = { tag, universe: u.universe, mint, target: null, checks: 0, entered: false };
+      c = { tag, universe: u.universe, mint, target: null, checks: 0, entered: false, said: '' };
       this.#candidates.set(key, c);
       if (this.#o.mode === 's0') {
         const slots = Math.max(1, Math.floor((u.window.toMs - u.window.fromMs) / u.window.everyMs));
@@ -159,7 +174,14 @@ export class StudyStrategy implements Strategy {
     }
     c.checks++;
     if (c.entered) return;
-    const say = (...why: string[]) => out.push({ action: null, reasons: [why[0]!, tag, mint, ...why.slice(1)] });
+    // One log line per change: an abstention repeated at every check with the same reasons is one decision.
+    const cand = c;
+    const say = (...why: string[]) => {
+      const k = why.map((w) => w.replace(/-?\d+/g, '#')).join('|');
+      if (k === cand.said) return;
+      cand.said = k;
+      out.push({ action: null, reasons: [why[0]!, tag, mint, ...why.slice(1)] });
+    };
     if (now < this.#o.entriesFrom || now >= this.#o.entriesTo) return;
     if (c.target !== null && c.checks < c.target) return;
     if (c.checks === 1 || c.target === c.checks) say('candidate', `check ${c.checks}`);

@@ -111,6 +111,22 @@ describe('fact projector', () => {
     expect(r.facts.state(r.mints[0]!.mint)!.holderProblem).toMatch(/held .* before/);
   });
 
+  it('drops a launch that never graduates after a week, and a graduate past every window', () => {
+    const { rows, mints } = studyWorld({ mints: [{ ...PLAN, graduateAfter: 10 ** 9 }, PLAN], slots: SLOTS });
+    const facts = new FactProjector({ sampleRate: 1, rugs: RUG_CONFIG, windows: [U2], solUsd: [], solUsdPoints: 30, candlesHead: 10, candlesTail: 360 });
+    const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
+    for (const r of rows) market.release(r);
+    expect(facts.state(mints[0]!.mint)).toBeDefined();
+    const last = rows[rows.length - 1]!;
+    for (let h = 1; h <= 8 * 24; h++) {
+      const slot = last.slot + BigInt(h * 9000);
+      market.release({ kind: 'block', slot, blockTime: last.blockTime + h * 3600, parentSlot: slot - 1n });
+    }
+    expect(facts.state(mints[0]!.mint)).toBeUndefined();
+    expect(facts.state(mints[1]!.mint)).toBeUndefined();
+    expect(facts.tracked).toBe(0);
+  });
+
   it('leaves out the mint fact when the create was not recorded', () => {
     const r = replay([{ ...PLAN, noCreateRaw: true }], SLOTS);
     const mint = r.mints[0]!.mint;
