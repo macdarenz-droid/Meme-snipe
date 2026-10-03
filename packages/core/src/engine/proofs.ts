@@ -12,7 +12,7 @@ import type { EffectRunner } from './runner.ts';
 
 export interface ProofRun {
   readonly events: readonly FeedEvent[];
-  /** A fresh strategy for each run. */
+  /** A fresh strategy for each run. Called inside the event loop on first use, so it must be pure like the strategy. */
   readonly strategy: () => Strategy;
   /** The outside world for one run: performs effects, schedules their results into the replay. Default: does nothing. */
   readonly world?: (replay: Replay) => EffectRunner;
@@ -31,11 +31,15 @@ const NO_WORLD: EffectRunner = { run: () => {} };
 
 export const replayOnce = (run: ProofRun, wrap: (s: Strategy) => Strategy = (s) => s, wrapRunner: (r: EffectRunner) => EffectRunner = (r) => r): RunResult => {
   const replay = createReplay(run.events, run.start);
+  // The strategy and world are built on first use, inside the engine's event loop, so their factories run
+  // under the same rules as their calls (and under the test suite's runtime trap). Engine construction is pure.
+  let strategy: Strategy | null = null;
+  let runner: EffectRunner | null = null;
   const engine = new Engine({
     clock: replay.clock,
     feed: replay.feed,
-    strategy: wrap(run.strategy()),
-    runner: wrapRunner(run.world?.(replay) ?? NO_WORLD),
+    strategy: { onMarket: (e, ctx) => (strategy ??= wrap(run.strategy())).onMarket(e, ctx) },
+    runner: { run: (fx, now) => (runner ??= wrapRunner(run.world?.(replay) ?? NO_WORLD)).run(fx, now) },
     seed: run.seed,
     book: run.book,
   });

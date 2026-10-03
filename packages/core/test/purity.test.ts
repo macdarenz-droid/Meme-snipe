@@ -64,8 +64,13 @@ const sqlReadsTheWorld = (text: string): boolean => {
   return NONDETERMINISTIC_SQL.some((re) => re.test(merged));
 };
 
-/** A module path that reaches into the ledger. Only ledger/ itself may; others go through the EffectRunner or an adapter. */
-const LEDGER_PATH = /(^|\/)ledger(\/|\.ts$|$)/;
+/**
+ * A module path into the outcome side: the ledger, the scoring stage and labels. Only ledger/ and stats/ may
+ * name one; the engine, strategies and everything else reach the ledger through the EffectRunner or an adapter,
+ * and never read scored outcomes (docs/ARCHITECTURE.md §16.1).
+ */
+const OUTCOME_PATH = /(^|\/)(ledger|stats|labels|scoring)(\/|\.ts$|$)/;
+const OUTCOME_FOLDERS = new Set(['ledger', 'stats']);
 
 /** The only `Math` members core may use, always as `Math.<name>`: pure functions and constants. */
 const MATH_ALLOWED = new Set([
@@ -226,7 +231,7 @@ const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans
       found.push('property descriptor of a global');
     }
     if (t.type === 'str' && BANNED_STRINGS.has(t.value) && !allow.has(t.value)) found.push(`string '${t.value}'`);
-    if ((t.type === 'str' || t.type === 'template') && context.folder !== 'ledger' && LEDGER_PATH.test(t.value)) found.push('reaches into ledger/');
+    if ((t.type === 'str' || t.type === 'template') && !OUTCOME_FOLDERS.has(context.folder) && OUTCOME_PATH.test(t.value)) found.push('reaches into the outcome side');
 
   });
   if (context.folder === 'ledger') {
@@ -269,16 +274,13 @@ const resolveModule = (from: string, spec: string, files: ReadonlySet<string>): 
   return base;
 };
 
-/** Folders the engine may never reach, directly or through any chain of imports and re-exports. */
-const ENGINE_UNREACHABLE = new Set(['ledger', 'stats']);
-
-/** Every import chain from an engine file into a forbidden folder. `sources` maps absolute paths under src to file text. */
-const engineReaches = (sources: ReadonlyMap<string, string>): string[] => {
+/** Every import chain from a file outside ledger/ and stats/ (engine, strategies, adapters, anything) into one of them. `sources` maps absolute paths under src to file text. */
+const outcomeReaches = (sources: ReadonlyMap<string, string>): string[] => {
   const files = new Set(sources.keys());
   const edges = new Map([...sources].map(([f, text]) => [f, specifiers(text).map((sp) => resolveModule(f, sp, files)).filter((x): x is string => x !== null)]));
   const found: string[] = [];
   for (const start of files) {
-    if (topFolder(start) !== 'engine') continue;
+    if (OUTCOME_FOLDERS.has(topFolder(start))) continue;
     const seen = new Set<string>([start]);
     const stack: string[][] = [[start]];
     while (stack.length > 0) {
@@ -287,7 +289,7 @@ const engineReaches = (sources: ReadonlyMap<string, string>): string[] => {
         if (seen.has(next)) continue;
         seen.add(next);
         const path = [...chain, next];
-        if (ENGINE_UNREACHABLE.has(topFolder(next))) found.push(path.map((f) => relative(SRC, f)).join(' -> '));
+        if (OUTCOME_FOLDERS.has(topFolder(next))) found.push(path.map((f) => relative(SRC, f)).join(' -> '));
         else stack.push(path);
       }
     }
@@ -409,9 +411,15 @@ describe('purity guard', () => {
   it('the ledger is reached only through the effect runner, and its SQL is deterministic', () => {
     // The reviewer's probes: an engine file importing a ledger helper that runs julianday('now') and random().
     const use = "import { now } from '../ledger/zz_db.ts'; export const t = now();";
-    expect(scan(use, new Set(), new Set(), { folder: 'engine' })).toContain('reaches into ledger/');
-    expect(scan("import { labels } from '../ledger/scoring/index.ts';", new Set(), new Set(), { folder: 'engine' })).toContain('reaches into ledger/');
-    expect(scan("import { x } from '@meme-snipe/core/ledger';", new Set(), new Set(), { folder: 'engine' })).toContain('reaches into ledger/');
+    expect(scan(use, new Set(), new Set(), { folder: 'engine' })).toContain('reaches into the outcome side');
+    expect(scan("import { labels } from '../ledger/scoring/index.ts';", new Set(), new Set(), { folder: 'engine' })).toContain('reaches into the outcome side');
+    expect(scan("import { x } from '@meme-snipe/core/ledger';", new Set(), new Set(), { folder: 'engine' })).toContain('reaches into the outcome side');
+    for (const path of ['../stats/labels.ts', '@meme-snipe/core/stats', '../labels/index.ts', './scoring/x.ts', '../x/labels.ts']) {
+      for (const folder of ['engine', 'strategy', 'domain']) {
+        expect(scan(`import { y } from '${path}';`, new Set(), new Set(), { folder }), `${folder}: ${path}`).toContain('reaches into the outcome side');
+      }
+    }
+    expect(scan("import { y } from '../ledger/scoring/index.ts';", new Set(), new Set(), { folder: 'stats' })).toEqual([]);
     const db = "import { DatabaseSync } from 'node:sqlite'; export { DatabaseSync }; export const now = (db: DatabaseSync) => db.prepare(`select julianday('now'), random()`).get();";
     const ledger = join(SRC, 'ledger', 'zz_db.ts');
     expect(scan(db, allowedFor(ledger), folderBansFor(ledger), { folder: 'ledger' })).toContain('SQL reading the clock or randomness');
@@ -430,7 +438,7 @@ describe('purity guard', () => {
     expect(scan("const s = 'the ledger file';", new Set(), new Set(), { folder: 'engine' })).toEqual([]);
   });
 
-  it('the engine cannot reach ledger/ or stats/ through any chain of imports or re-exports', () => {
+  it('nothing outside ledger/ and stats/ (engine, strategies, adapters) reaches them through any chain of imports or re-exports', () => {
     // The reviewer's re-export case, routed through an adapter so the import text names no ledger path.
     const probe = new Map([
       [join(SRC, 'engine', 'zz_use.ts'), "import { now } from '../adapters/zz_bridge.ts'; export const t = now();"],
@@ -439,15 +447,21 @@ describe('purity guard', () => {
       [join(SRC, 'engine', 'zz_stats.ts'), "import { gate } from '@meme-snipe/core/stats';"],
       [join(SRC, 'stats', 'index.ts'), 'export const gate = 1;'],
       [join(SRC, 'engine', 'ok.ts'), "import { x } from '../units/index.ts';"],
+      // Strategies are injected, never imported by the engine; they are walked too.
+      [join(SRC, 'strategy', 'zz_s.ts'), "import { labels } from '../stats/labels.ts';"],
+      [join(SRC, 'stats', 'labels.ts'), 'export const labels = 1;'],
+      [join(SRC, 'domain', 'zz_re.ts'), "export * from '../ledger/zz_db.ts';"],
       [join(SRC, 'units', 'index.ts'), 'export const x = 1;'],
     ]);
-    const chains = engineReaches(probe);
+    const chains = outcomeReaches(probe);
     expect(chains).toContain(['engine/zz_use.ts', 'adapters/zz_bridge.ts', 'ledger/zz_db.ts'].join(' -> ').replaceAll('/', sep));
     expect(chains).toContain(['engine/zz_stats.ts', 'stats/index.ts'].join(' -> ').replaceAll('/', sep));
+    expect(chains).toContain(['strategy/zz_s.ts', 'stats/labels.ts'].join(' -> ').replaceAll('/', sep));
+    expect(chains).toContain(['domain/zz_re.ts', 'ledger/zz_db.ts'].join(' -> ').replaceAll('/', sep));
     expect(chains.some((c) => c.startsWith(join('engine', 'ok.ts')))).toBe(false);
     // The real tree, adapters included.
     const real = new Map(allSourceFiles(SRC).map((f) => [f, readFileSync(f, 'utf8')] as const));
-    expect(engineReaches(real)).toEqual([]);
+    expect(outcomeReaches(real)).toEqual([]);
   });
 
   it('the engine folder also bans asynchronous code', () => {

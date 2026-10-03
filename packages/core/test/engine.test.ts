@@ -496,15 +496,33 @@ describe('runtime trap', () => {
     expect(hashes[0]).toBe(replayOnce(run).hash);
   });
 
-  it('the setup file traps every engine test: a strategy reading the clock fails the run', () => {
-    for (const cheat of [() => Date.now(), () => new Date(), () => Math.random(), () => performance.now(), () => setTimeout(() => {}, 0), () => new Intl.DateTimeFormat().format(), () => crypto.randomUUID()]) {
+  it('the setup file traps every engine test: a strategy reading the clock, randomness or the locale fails the run', () => {
+    const n = 1234.5 as unknown as Record<string, () => string>;
+    const d = new Date(0) as unknown as Record<string, () => unknown>;
+    const cheats = [
+      () => Date.now(), () => new Date(), () => Math.random(), () => performance.now(), () => setTimeout(() => {}, 0),
+      () => new Intl.DateTimeFormat().format(), () => crypto.randomUUID(),
+      // Computed keys the static scanner cannot see.
+      () => n['toLocale' + 'String']!(), () => (Math as unknown as Record<string, () => number>)['ran' + 'dom']!(),
+      () => new (Object.getPrototypeOf(new Date(0)).constructor)(), () => d['getTimezone' + 'Offset']!(), () => d['get' + 'Hours']!(),
+      () => 'a'.localeCompare('b'), () => 'a'.toLocaleUpperCase(), () => [1].toLocaleString(), () => (1n).toLocaleString(), () => String(new Date(0)),
+    ];
+    for (const cheat of cheats) {
       const replay = createReplay([market('a', 1)]);
       const strategy: Strategy = { onMarket: () => { cheat(); return []; } };
       const engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: { run: () => {} }, seed: 's', book: CONFIG });
-      expect(() => runToEnd(replay, engine)).toThrow(/trap/);
+      expect(() => runToEnd(replay, engine), String(cheat)).toThrow(/trap/);
     }
-    // Outside engine code the globals are back.
+    // Outside engine code the globals and prototype methods are back.
     expect(typeof Date.now()).toBe('number');
+    expect(typeof (1234.5).toLocaleString()).toBe('string');
+    expect(typeof new Date(0).getTimezoneOffset()).toBe('number');
+  });
+
+  it('a strategy factory that reads the clock is trapped too', () => {
+    const run = { ...stubRun(generateStream('factory', 50)), strategy: () => { Date.now(); return stubStrategy(); } };
+    expect(() => replayOnce(run)).toThrow(/trap/);
+    expect(() => leakTest(run, marker, labels)).toThrow(/trap/);
   });
 
   it('the trap fires on a forbidden call (positive control)', () => {

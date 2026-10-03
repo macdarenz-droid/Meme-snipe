@@ -3,6 +3,19 @@
 // misses on every code path the tests run.
 const TIMERS = ['setTimeout', 'setInterval', 'setImmediate', 'queueMicrotask'] as const;
 
+/** Prototype methods whose result depends on the machine's locale or time zone; computed keys reach them past the scanner. */
+const LOCALE_METHODS: readonly (readonly [object, string, readonly string[]])[] = [
+  [Number.prototype, 'Number', ['toLocaleString']],
+  [BigInt.prototype, 'BigInt', ['toLocaleString']],
+  [Array.prototype, 'Array', ['toLocaleString']],
+  [String.prototype, 'String', ['localeCompare', 'toLocaleUpperCase', 'toLocaleLowerCase']],
+  [Date.prototype, 'Date', [
+    'toLocaleString', 'toLocaleDateString', 'toLocaleTimeString', 'toString', 'toDateString', 'toTimeString', 'getTimezoneOffset',
+    'getFullYear', 'getMonth', 'getDate', 'getDay', 'getHours', 'getMinutes', 'getSeconds', 'getMilliseconds',
+    'setFullYear', 'setMonth', 'setDate', 'setHours', 'setMinutes', 'setSeconds', 'setMilliseconds',
+  ]],
+];
+
 const fail = (name: string) => () => { throw new Error(`trap: ${name} called while engine code runs`); };
 
 let depth = 0;
@@ -36,7 +49,16 @@ const install = (): (() => void) => {
   webCrypto.getRandomValues = fail('crypto.getRandomValues');
   webCrypto.randomUUID = fail('crypto.randomUUID');
   for (const t of TIMERS) g[t] = fail(t);
+  const savedMethods: (readonly [Record<string, unknown>, string, unknown])[] = [];
+  for (const [proto, owner, names] of LOCALE_METHODS) {
+    const target = proto as Record<string, unknown>;
+    for (const name of names) {
+      savedMethods.push([target, name, target[name]]);
+      target[name] = fail(`${owner}.prototype.${name}`);
+    }
+  }
   return () => {
+    for (const [target, name, original] of savedMethods) target[name] = original;
     g.Date = saved.Date;
     g.Intl = saved.Intl;
     Math.random = saved.random;
