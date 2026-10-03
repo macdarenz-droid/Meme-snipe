@@ -1,13 +1,15 @@
 // WORKER-1 end to end on a scripted market: gates, risk, the ledger reservation, TEST-2's simulation, the paper fill,
 // the exit engine, the journal the runner checks and the ledger the replay check reads; then a restart drill mid-trade.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
+import { runSeed } from '../src/run/seed-start.ts';
 import { exitsFile } from '../src/run/state.ts';
-import { LANDS, MINT, makeWorker, passingMarket } from './worker-harness.ts';
+import type { SeedRequest } from '../src/run/worker.ts';
+import { LANDS, MINT, Market, T, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const journalText = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
 const lines = (dir: string) => journalText(dir).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -180,5 +182,53 @@ describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
     expect(report.problems).toEqual([]);
     expect(lines(h.stateDir).filter((l) => l['kind'] === 'reconcile').at(-1)).toMatchObject({ ok: true });
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
-  });
+  }, 60_000);
+});
+
+describe('restart drill: H14 creates coverage across a restart (SEED-1 ruling 2026-10-04)', () => {
+  // An RPC whose history reaches past the range with no create in it: the seed and the downtime fill complete.
+  const emptyRpc = { getSignaturesForAddress: async () => [{ signature: 'before-the-range', slot: 0n, err: null, blockTime: 0 }], getTransaction: async () => null };
+  const VIA = 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
+  const ports = (n: number) => ({ ZEROED_HEALTH_ADDR: `127.0.0.1:${18820 + 2 * n}`, ZEROED_API_ADDR: `127.0.0.1:${18821 + 2 * n}` });
+
+  /** Starts the worker with the live creates watch reporting its first slot once its sources start, as on the host. */
+  const boot = async (h: ReturnType<typeof makeWorker>) => {
+    const m = new Market(h);
+    const started = h.worker.start();
+    while (!h.order.includes('start helius-ws')) await new Promise<void>((r) => setImmediate(r));
+    m.slot();
+    m.offchain('coverage:creates:start', { fromSlot: slotAt(m.now), via: VIA });
+    expect(await started).toEqual({ ok: true });
+    await m.run(3_000, 400, () => m.slot());
+    return m;
+  };
+
+  it('a restart reloads the saved coverage and fills the downtime: covered from the first seed, with no gap', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers, lookbackDays: 14 });
+    const h = makeWorker({ stateDir, timers, seed, config: ports(0) });
+    await boot(h);
+    const first = h.worker.strategy.coverage;
+    expect(first).toMatchObject({ covered: true });
+    await h.worker.kill();
+    const killed = `${stateDir}-killed`;
+    cpSync(stateDir, killed, { recursive: true });
+
+    // Ten minutes down, then the restart: the saved watch is closed by the fill, the new start continues it.
+    timers.set(timers.now() + 10 * 60_000);
+    const requests: SeedRequest[] = [];
+    const h2 = makeWorker({ stateDir, timers, seed: (r) => (requests.push(r), seed(r)), config: ports(1) });
+    await boot(h2);
+    expect(requests[0]!.saved.last).not.toBeNull();
+    expect(requests[0]!.close).toEqual({ via: VIA, fromSlot: null });
+    expect(h2.worker.strategy.coverage).toEqual(first);
+    await h2.worker.stop();
+
+    // Control: the same restart without a fill marks the downtime a gap, so H14 is not covered.
+    const h3 = makeWorker({ stateDir: killed, timers, seed: async () => { throw new Error('RPC down'); }, config: ports(2) });
+    await boot(h3);
+    expect(h3.worker.strategy.coverage).toMatchObject({ covered: false });
+    await h3.worker.stop();
+  }, 60_000);
 });

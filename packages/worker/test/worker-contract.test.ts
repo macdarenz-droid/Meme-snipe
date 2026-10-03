@@ -144,8 +144,8 @@ describe('health and drills on the loopback port (§12.4)', () => {
   it('serves the health the runner accepts as a real worker, drops a feed on the drill and brings it back', async () => {
     const h = makeWorker({ config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18797' } });
     expect(await h.worker.start()).toEqual({ ok: true });
-    // SEED-1's hook runs before any live source is built or started.
-    expect(h.order.slice(0, 2)).toEqual(['seed', 'sources']);
+    // SEED-1 (ruling 2026-10-04): the live creates watch starts first, the seed is built up to its first slot after.
+    expect(h.order).toEqual(['sources', 'start helius-ws', 'start pumpportal', 'seed']);
     const health = (await (await fetch('http://127.0.0.1:18797/health')).json()) as Health;
     expect(checkStartHealth(health)).toEqual({ ok: true, problems: [] });
     expect(health).toMatchObject({ mode: 'paper', recorder: 'on', simulation: 'on', signing_key: false, reconciled: true, git_sha: 'testsha' });

@@ -17,7 +17,7 @@ import type { Frame, Release } from '../providers/index.ts';
 import { typedText } from './json.ts';
 
 export const RECORDER_SCHEMA = 2;
-const TABLES = ['frames', 'raw', 'releases'] as const;
+const TABLES = ['frames', 'raw', 'releases', 'pre'] as const;
 type Table = (typeof TABLES)[number];
 
 export interface RecorderOptions {
@@ -78,7 +78,7 @@ export class Recorder {
   #raw = 0;
   #releases = 0;
   /** Rows in sealed files: what the manifest lists. */
-  readonly #sealed = { frames: 0, raw: 0, releases: 0 };
+  readonly #sealed = { frames: 0, raw: 0, releases: 0, pre: 0 };
 
   constructor(o: RecorderOptions) {
     this.#o = o;
@@ -122,6 +122,14 @@ export class Recorder {
   release(r: Release, receivedAt: number): void {
     this.#releases++;
     this.#push('releases', receivedAt, JSON.stringify(r));
+  }
+
+  /**
+   * Events put ahead of the live Feed at start (SEED-1's seed and the saved coverage history), in the order the engine
+   * took them: a replay releases them first, then the frames in release order.
+   */
+  pre(events: readonly unknown[], atMs: number): void {
+    for (const e of events) this.#push('pre', atMs, typedText(e));
   }
 
   /** A stream gap (`coverage:*:gap`), listed in the manifest's `coverage_gaps`. */
@@ -204,7 +212,7 @@ interface ManifestState {
   readonly git_sha: string | null;
   readonly coverage: Coverage;
   readonly coverage_gaps: readonly unknown[];
-  readonly counts: { readonly frames: number; readonly raw: number; readonly releases: number };
+  readonly counts: { readonly frames: number; readonly raw: number; readonly releases: number; readonly pre?: number };
 }
 
 /** The manifest of one recorder folder, from the sealed files on disk. */
@@ -252,10 +260,10 @@ export const sealLeftovers = (root: string, current: string): string[] => {
     const daysDir = join(dir, 'days');
     if (!existsSync(daysDir)) continue;
     let open = 0;
-    const counts = { frames: 0, raw: 0, releases: 0 };
+    const counts = { frames: 0, raw: 0, releases: 0, pre: 0 };
     for (const day of readdirSync(daysDir)) {
       for (const f of readdirSync(join(daysDir, day))) {
-        const m = /^(frames|raw|releases)-\d{3}\.jsonl$/.exec(f);
+        const m = /^(frames|raw|releases|pre)-\d{3}\.jsonl$/.exec(f);
         if (m === null) continue;
         // A torn last line (the kill) is cut; every whole line is kept.
         const p = join(daysDir, day, f);

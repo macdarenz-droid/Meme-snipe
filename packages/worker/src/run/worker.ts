@@ -11,8 +11,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
-import { Engine, type LogRecord, type MarketEvent } from '../../../core/src/engine/index.ts';
-import type { DeployerIndex } from '../../../core/src/gates/index.ts';
+import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
@@ -20,12 +19,14 @@ import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, STATE_FILES, type FeedHealth, type Health, type JournalKind } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SHORTLIST, SOL_PRICE_KEY, type StrategyConfig, TRIP_PREFIX } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SHORTLIST, SOL_PRICE_KEY, type StrategyConfig, TRIP_PREFIX } from '../engine/strategy.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, openIntents } from './desk.ts';
+import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
+import { StartFeed } from './start-feed.ts';
 import { type ApiInputs, type DecisionRow, checkOf, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { startHealthServer } from './health.ts';
@@ -75,8 +76,14 @@ export interface WorkerDeps {
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
   readonly fetchTx: (signature: string, why: 'create' | 'cut-log') => Promise<boolean>;
-  /** SEED-1's start-up hook: seeds the deployer index before the live streams are trusted. */
-  readonly seedDeployers: (index: DeployerIndex) => Promise<string>;
+  /**
+   * SEED-1: the deployer index's seed (first start: days and RPC up to the live creates watch's first slot) or the
+   * downtime fill (restart from saved state), built by `buildSeed`. `untilSlot` is null when the live watch did not
+   * start in time; the worker then marks the downtime as a gap itself.
+   */
+  readonly seed: (o: SeedRequest) => Promise<SeedResult>;
+  /** How long the start waits for the live creates watch's first slot before seeding without it. */
+  readonly seedWaitMs: number;
   readonly heartbeat: { readonly http: HttpClient; readonly key: string | null; readonly ownerChatId: string | null };
   /** How long the start reconcile may take before it exits 3. */
   readonly reconcileTimeoutMs: number;
@@ -86,6 +93,21 @@ export interface WorkerDeps {
   readonly staleFeedMs: number;
   /** Plain status lines for the process log (never a key or a URL). */
   readonly log: (line: string) => void;
+}
+
+export interface SeedRequest {
+  readonly saved: SavedDeployers;
+  /** The saved live watch to close (its open gap, or the watch), for a fill; null on a first start. */
+  readonly close: { readonly via: string; readonly fromSlot: bigint | null } | null;
+  readonly untilSlot: bigint | null;
+  readonly asOf: Moment;
+}
+
+export interface SeedResult {
+  readonly mode: 'seed' | 'fill' | 'none';
+  readonly creates: readonly MarketEvent[];
+  readonly coverage: readonly MarketEvent[];
+  readonly report: string;
 }
 
 export type StartResult = { readonly ok: true } | { readonly ok: false; readonly code: number; readonly message: string };
@@ -129,6 +151,13 @@ export class Worker {
   #intentAt = new Map<string, number>();
   #halted: readonly string[] = [];
   #savedExits = '';
+  readonly #start: StartFeed;
+  readonly #deployerStore: DeployerStore;
+  readonly #saved: SavedDeployers;
+  /** The live creates watch's first slot (its `coverage:creates:start`), for the seed's `untilSlot`. */
+  #liveStart: bigint | null = null;
+  /** The empty slot the reconcile reserved for SEED-1's events (see `#seedIndex`). */
+  #reserved: bigint | null = null;
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
@@ -196,7 +225,10 @@ export class Worker {
       file: new StateFile<PaperState>(c.stateDir, 'paper.json', (v) => (isObj(v) && isObj(v['attempts']) ? (v as unknown as PaperState) : null)),
       changed: () => this.#writeOpenIntents(),
     });
-    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
+    this.#start = new StartFeed(this.#feed);
+    this.#engine = new Engine({ clock: this.#start.clock, feed: this.#start, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
+    this.#deployerStore = new DeployerStore(c.stateDir);
+    this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
     this.#desk = new Desk({
       ledger: this.#ledger, config: bookConfig, restored: stored.book,
       journal: (kind, fields) => this.#journal.write(kind, fields),
@@ -270,6 +302,9 @@ export class Worker {
         feed.connected = state === 'up';
       }
     }
+    if (b.type === 'offchain' && b.key === 'coverage:creates:start' && isObj(b.value) && typeof b.value['via'] === 'string' && b.value['via'].startsWith('logs:') && typeof b.value['fromSlot'] === 'bigint') {
+      this.#liveStart ??= b.value['fromSlot'];
+    }
     if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:[a-z]+:gap$/.test(b.key)) this.#recorder?.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt });
   }
 
@@ -277,6 +312,8 @@ export class Worker {
     this.#recorder?.release(r, e.moment.receivedAt);
     if (e.kind !== 'market') return;
     const m = e as unknown as MarketEvent;
+    // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
+    if (!r.late) this.#deployerStore.keep(m);
     // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
     if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) this.#lastSlot = m.value['slot'];
     else if (m.key.startsWith(POOL_PREFIX)) this.#pools.set(m.key.slice(POOL_PREFIX.length), m.value);
@@ -512,6 +549,8 @@ export class Worker {
       await new Promise<void>((r) => d.timers.setTimeout(r, Math.min(d.loopMs, 200)));
     }
     this.#reconciled = true;
+    // The feed is drained here: the slot for SEED-1's events, ahead of the account fact below and every live event.
+    this.#reserved = this.#feed.reserveSlot();
     this.#writeOpenIntents();
     this.#publishAccount();
     const positions = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
@@ -523,24 +562,15 @@ export class Worker {
     return this.#ledger.intentEvents().length;
   }
 
-  /** Seeds the deployer index, starts the sources, the health server, the heartbeat and the loop. */
+  /**
+   * Starts the live sources, seeds the deployer index (SEED-1: once the live creates watch reports its first slot), then
+   * the fact producers, the health and API servers, the heartbeat and the loop. Nothing is decided before the seed:
+   * the engine takes no live event until the seed and the coverage history are queued ahead of them.
+   */
   async start(): Promise<StartResult> {
     const d = this.#d;
     const r = await this.reconcile();
     if (!r.ok) return r;
-    try {
-      d.log(`Deployer index: ${await d.seedDeployers(this.#strategy.deployers)}`);
-    } catch (e) {
-      d.log(`Deployer index seed failed (${e instanceof Error ? e.name : 'error'}); H14 stays uncovered until the look-back passes.`);
-    }
-    if (d.facts !== undefined && d.facts.length > 0) {
-      if (d.schedulers === undefined) return { ok: false, code: EXIT.config, message: 'fact producers need the provider schedulers' };
-      const ctx: FactContext = {
-        sink: { fact: (key, value) => this.#fact(key, value), now: () => d.timers.now() },
-        timers: d.timers, schedulers: d.schedulers, watched: () => this.#strategy.watched(),
-      };
-      for (const f of d.facts) f.start(ctx);
-    }
     this.#sources = d.sources({ feed: this.#feed, timers: d.timers });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
     try {
@@ -557,6 +587,16 @@ export class Worker {
       return { ok: false, code: EXIT.crash, message: `API server: ${e instanceof Error ? e.message : 'error'}` };
     }
     for (const s of this.#sources) s.start();
+    await this.#seedIndex(this.#reserved);
+    if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
+    if (d.facts !== undefined && d.facts.length > 0) {
+      if (d.schedulers === undefined) return { ok: false, code: EXIT.config, message: 'fact producers need the provider schedulers' };
+      const ctx: FactContext = {
+        sink: { fact: (key, value) => this.#fact(key, value), now: () => d.timers.now() },
+        timers: d.timers, schedulers: d.schedulers, watched: () => this.#strategy.watched(),
+      };
+      for (const f of d.facts) f.start(ctx);
+    }
     const loop = (): void => {
       if (this.#stopping) return;
       try {
@@ -579,6 +619,64 @@ export class Worker {
     beat();
     d.log(`Worker up: boot ${this.#boot}, release ${d.config.gitSha.slice(0, 12)}, recorder ${d.config.recorder ? 'on' : 'off'}, simulation ${d.config.simulate ? 'on' : 'off'}, ${this.#sources.length} feeds.`);
     return { ok: true };
+  }
+
+  /**
+   * SEED-1 at start. Waits (bounded) for the live creates watch's first slot, builds the seed or the downtime fill, and
+   * queues ahead of every live event: the `worker:seed` event (saved and seeded creates, the fill, saved rug facts)
+   * and the creates and rugs coverage history (saved, then seeded), so H14 reads it from the engine's history. Queued
+   * events keep their receipt time (what coverage is judged by) and sit in a slot reserved before the sources started,
+   * above everything released and below every live event. Without a fill on a restart, the downtime is marked an open gap on the
+   * saved watch, which the watch's new start settles as lossy: the downtime never reads as covered.
+   */
+  async #seedIndex(reserved: bigint | null): Promise<void> {
+    const d = this.#d;
+    const until = d.timers.now() + d.seedWaitMs;
+    while (this.#liveStart === null && d.timers.now() < until && !this.#stopping) await new Promise<void>((r) => d.timers.setTimeout(r, 100));
+    const now = d.timers.now();
+    const tip = this.#feed.tip;
+    const untilSlot = this.#liveStart;
+    const top = [tip, untilSlot, this.#saved.last?.slot ?? null].reduce<bigint>((a, b) => (b !== null && b > a ? b : a), 0n);
+    const asOf: Moment = { slot: top, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now };
+    const saved = this.#saved;
+    const close = liveWatchToClose(saved.coverage);
+    let result: SeedResult = { mode: 'none', creates: [], coverage: [], report: 'not run' };
+    try {
+      result = await d.seed({ saved, close, untilSlot, asOf });
+    } catch (e) {
+      result = { mode: 'none', creates: [], coverage: [], report: `seed failed: ${e instanceof Error ? e.message : 'error'}` };
+    }
+    const extra: MarketEvent[] = [];
+    if (result.mode !== 'fill' && saved.last !== null && close !== null) {
+      // A restart without a fill: the downtime is an open gap on the saved watch, settled by its new start as lossy.
+      extra.push({ kind: 'market', id: 'worker:downtime-gap', moment: { ...asOf }, key: 'coverage:creates:gap', value: { value: { fromSlot: saved.last.slot + 1n, toSlot: null, reason: 'worker down; no downtime fill', via: close.via }, source: 'worker', backfilled: false, seq: 0 } });
+    }
+    const order = (xs: readonly MarketEvent[]) => {
+      const byId = new Map(xs.map((e) => [e.id, e]));
+      return [...byId.values()].sort(compareEvents);
+    };
+    const coverage = [...saved.coverage, ...result.coverage, ...extra];
+    if (reserved === null) {
+      // Cannot happen after a successful reconcile (the feed is drained); refused rather than misordered.
+      d.log('Deployer index: not seeded (no free slot ahead of the live events); H14 not covered until the look-back passes.');
+      return;
+    }
+    const pos = (k: number): Moment => ({ slot: reserved, txIndex: 0, ixIndex: k, receivedAt: now });
+    const seedEvent: MarketEvent = {
+      kind: 'market', id: 'worker:seed', moment: pos(0), key: SEED_KEY,
+      value: {
+        creates: order(result.mode === 'fill' ? saved.creates : [...saved.creates, ...result.creates]),
+        coverage: order(coverage.filter((e) => e.key.startsWith('coverage:creates:') && compareMoments(e.moment, asOf) <= 0)),
+        fill: order(result.mode === 'fill' ? result.creates : []),
+        rugs: order(saved.rugs), asOf,
+      },
+    };
+    const history: MarketEvent[] = coverage.map((e, k) => ({ ...e, id: `${e.id}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } }));
+    const ahead = [seedEvent, ...history];
+    this.#start.ahead(ahead);
+    this.#recorder?.pre(ahead, now);
+    for (const e of [...result.creates, ...result.coverage, ...extra]) this.#deployerStore.keep(e);
+    d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
   }
 
   /** The drill: close one feed for `ms`, then reconnect. False for an unknown feed. */

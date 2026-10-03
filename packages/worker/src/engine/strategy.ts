@@ -27,7 +27,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type GateContext, DeployerIndex, RugLabeller, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
+  type Coverage, type GateContext, DeployerIndex, RugLabeller, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
@@ -40,6 +40,11 @@ export const MIGRATION_PREFIX = migrationKey('');
 export const RESTORE_KEY = 'worker:restore';
 /** `{ value, atMs }`: the live SOL/USD price in micro-dollars (risk needs one younger than maxQuoteAgeMs). */
 export const SOL_PRICE_KEY = 'worker:sol-price';
+/**
+ * `{ creates, coverage, fill, rugs, asOf }`: SEED-1's seed of the deployer index (the saved state and the day or RPC
+ * seed), released first; the index is seeded from it before it observes any live event.
+ */
+export const SEED_KEY = 'worker:seed';
 /** `{ halted, reasons }`: entries stop while a critical feed is down or stale (§18); exits and monitoring go on. */
 export const HALT_KEY = 'worker:halt';
 export const feesKey = (mint: string): string => `worker:fees:${mint}`;
@@ -170,6 +175,13 @@ export class LiveStrategy implements Strategy {
     return out;
   }
 
+  #coverage: Coverage | null = null;
+
+  /** H14's creates coverage as of the last slot, coverage fact or seed released; null before any. */
+  get coverage(): Coverage | null {
+    return this.#coverage;
+  }
+
   get deployers(): DeployerIndex {
     return this.#deployers;
   }
@@ -178,11 +190,16 @@ export class LiveStrategy implements Strategy {
     const out: Decision[] = [];
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
+    if (e.key === SEED_KEY) this.#seed(e.value, out);
     if (e.key === 'chain:slot') {
       const s = unwrap(e.value);
       if (isObj(s) && typeof s['slot'] === 'bigint' && (this.#height === null || s['slot'] > this.#height)) this.#height = s['slot'];
     }
     this.#discover(e, ctx, out);
+    if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
+      // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
+      this.#coverage = createsCoverage((k, f, t) => ctx.history(k, f, t), ctx.now, ctx.now.receivedAt - this.#d.session.policy.gates.deployerRugLookbackDays * 86_400_000);
+    }
     const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers };
     this.#track(e, ctx);
     this.#lifecycle(ctx, out);
@@ -194,6 +211,8 @@ export class LiveStrategy implements Strategy {
 
   /** Every released event feeds the deployer index and the rug labeller; labels go to the index as they are made. */
   #observe(e: MarketEvent): void {
+    // The worker's own facts are not chain events: the index's start is the first chain event it sees (or the seed's).
+    if (e.key.startsWith('worker:')) return;
     this.#deployers.observe(e);
     for (const label of this.#labeller.observe(e)) this.#deployers.observe(label);
   }
@@ -212,6 +231,24 @@ export class LiveStrategy implements Strategy {
       n++;
     }
     out.push({ action: null, reasons: ['restore', `${n} exit plans and trackers restored`] });
+  }
+
+  /** Seeds the index (SEED-1): saved and seeded creates and coverage, then the downtime fill, then saved rug labels. */
+  #seed(v: unknown, out: Decision[]): void {
+    if (!isObj(v) || !Array.isArray(v['creates']) || !Array.isArray(v['coverage']) || !Array.isArray(v['fill']) || !Array.isArray(v['rugs']) || !isObj(v['asOf'])) {
+      out.push({ action: null, reasons: ['seed refused', 'malformed seed'] });
+      return;
+    }
+    const asOf = v['asOf'] as unknown as MarketEvent['moment'];
+    try {
+      const s = this.#deployers.seed(v['creates'] as MarketEvent[], v['coverage'] as MarketEvent[], asOf);
+      const f = this.#deployers.fill(v['fill'] as MarketEvent[], asOf);
+      for (const r of v['rugs'] as MarketEvent[]) this.#deployers.observe(r);
+      out.push({ action: null, reasons: ['seed', `${s.creates} creates seeded, ${f.creates} filled, ${(v['rugs'] as unknown[]).length} rug facts`, s.fromMs === null ? 'no seeded coverage start' : `index watched from ${s.fromMs}`] });
+    } catch (err) {
+      // Refused in full: the index starts at its first live event, so H14 stays not covered for a look-back.
+      out.push({ action: null, reasons: ['seed refused', err instanceof Error ? err.message : 'error'] });
+    }
   }
 
   /** Position ids are `p:<mint>:<n>`. */

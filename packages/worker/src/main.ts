@@ -12,6 +12,7 @@ import { parseConfig } from './run/config.ts';
 import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, LiveProviders } from './run/sources.ts';
+import { runSeed } from './run/seed-start.ts';
 import { Worker } from './run/worker.ts';
 
 const log = (line: string): void => console.log(line);
@@ -57,8 +58,8 @@ try {
     sources: (ctx) => providers.feeds(ctx),
     simulate,
     fetchTx: (sig) => providers.fetchTx(sig),
-    // SEED-1 supplies the seed (DeployerIndex.seed); until it lands the index starts empty and H14 stays not covered.
-    seedDeployers: async () => 'not seeded (SEED-1 not wired yet); H14 not covered until the look-back passes',
+    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, lookbackDays: policy.gates.deployerRugLookbackDays }),
+    seedWaitMs: 30_000,
     heartbeat: { http: fetchHttp, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },
     reconcileTimeoutMs: 60_000, loopMs: 100, staleFeedMs: 10_000, log,
   });

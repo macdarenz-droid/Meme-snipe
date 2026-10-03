@@ -10,7 +10,7 @@ import type { Timers } from '../src/scheduler/timers.ts';
 import { parseConfig, type WorkerConfig } from '../src/run/config.ts';
 import type { SimLeg } from '../src/run/paper-world.ts';
 import { PAPER_SCENARIO, strategyConfig } from '../src/run/settings.ts';
-import { type FeedSource, Worker } from '../src/run/worker.ts';
+import { type FeedSource, type SeedRequest, type SeedResult, Worker } from '../src/run/worker.ts';
 import type { FactSource } from '../src/run/facts.ts';
 import { ALCHEMY_FREE, HELIUS_FREE, JUPITER_FREE, RUGCHECK_FREE, Scheduler } from '../src/scheduler/index.ts';
 import {
@@ -86,7 +86,7 @@ export interface Harness {
 /** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -117,10 +117,11 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       o.fetched?.push(sig);
       return o.found ?? false;
     },
-    seedDeployers: async () => {
+    seed: async (r) => {
       order.push('seed');
-      return 'test: not seeded';
+      return o.seed === undefined ? { mode: 'none', creates: [], coverage: [], report: 'test: not seeded' } : o.seed(r);
     },
+    seedWaitMs: o.seedWaitMs ?? 1_000,
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },
     ...(o.facts === undefined ? {} : { facts: o.facts, schedulers: { helius: new Scheduler(HELIUS_FREE, { timers }), alchemy: new Scheduler(ALCHEMY_FREE, { timers }), jupiter: new Scheduler(JUPITER_FREE, { timers }), rugcheck: new Scheduler(RUGCHECK_FREE, { timers }) } }),
     reconcileTimeoutMs: o.reconcileTimeoutMs ?? 120_000, loopMs: 100, staleFeedMs: 10_000, log: (l) => void logs.push(l),

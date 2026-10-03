@@ -140,6 +140,11 @@ export class LiveProviders {
   }
 
   /** A transaction at confirmed (P2), put on the feed; true when found. */
+  /** SEED-1's backfill RPC: Helius, charged to its scheduler like every other call. */
+  seedRpc(): RpcHttp {
+    return new RpcHttp({ provider: 'helius', url: () => heliusRpcUrl(this.#o.secrets), http: this.#o.http, scheduler: this.helius, timeoutMs: 10_000 });
+  }
+
   async fetchTx(signature: string): Promise<boolean> {
     if (this.#fetcher === null) return false;
     try {
