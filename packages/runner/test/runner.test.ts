@@ -86,9 +86,11 @@ describe('runner with the stub worker', () => {
     expect(r.item4.outcomes).toEqual({ simulated: r.journal.simulations });
     expect(r.item4.trades).toBe(r.journal.simulations);
     // RUN-1c: quota, coverage, rejections and exposure come through from the worker's health and journal.
-    expect(r.ops.quota).toMatchObject({ reported: true, within_free_tier: true, exit_capacity_shed: 0 });
-    expect(r.ops.quota.providers.map((p) => p.provider)).toEqual(['helius', 'jupiter']);
-    expect(Object.keys(r.ops.coverage)).toEqual(['creates', 'rugs', 'trades']);
+    expect(r.ops.quota).toMatchObject({ reported: true, problems: [], within_free_tier: true, exit_capacity_shed: 0 });
+    expect(r.ops.quota.providers.map((p) => p.provider)).toEqual(['alchemy', 'helius', 'jupiter']);
+    expect(r.ops.coverage.problems).toEqual([]);
+    // Every stream has at least its feed drop plus the kills' down windows.
+    for (const s of ['creates', 'rugs', 'trades']) expect(r.ops.coverage.streams[s]!.gaps).toBeGreaterThan(1);
     expect(r.ops.lookups.count).toBeGreaterThan(0);
     expect(r.ops.rejections.decisions).toBeGreaterThan(0);
     const exposed = r.drills.filter((d) => d.exposure);
@@ -97,6 +99,7 @@ describe('runner with the stub worker', () => {
       expect(d.exposure!.duration_ms).toBeGreaterThanOrEqual(300);
       expect(d.exposure!.duration_ms!).toBeGreaterThanOrEqual(d.exposure!.reconciled_ms!);
       expect(d.exposure!.worst_move_bps).toBe(0);
+      expect(d.exposure!.chain_trades).toEqual([...d.exposure!.trades].sort());
     }
     expect(r.pass).toBe(false);
     expect(readFileSync(join(t.evidenceDir, 'REPORT.md'), 'utf8')).toContain('Rehearsal: counts for none of §15 items 3, 4 or G3');

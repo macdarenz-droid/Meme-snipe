@@ -43,6 +43,8 @@ interface StubState {
   position: { trade: string; openedAt: number } | null;
   /** An intent that was being worked on when the process died: settled by reconcile. */
   intent: { trade: string; leg: 'entry' | 'exit' } | null;
+  /** Set by --reconcile (ExecStartPre) when it settled an intent, so the start that follows journals its exposure. */
+  settledIntent?: { trade: string; leg: 'entry' | 'exit' } | null;
 }
 const loadState = (): StubState => {
   try {
@@ -63,6 +65,7 @@ if (process.argv.includes('--reconcile')) {
   if (reconcileFails) fail(EXIT.reconcileFailed, 'Reconcile: intents left unresolved.');
   // ExecStartPre step: settle what a crash left behind, then report open intents for the host's update gate.
   const s = loadState();
+  s.settledIntent = s.intent;
   s.intent = null;
   saveState(s);
   writeFileSync(join(stateDir, STATE_FILES.openIntents), '0\n');
@@ -107,13 +110,19 @@ if (reconcileFails) {
   fail(EXIT.reconcileFailed, 'Reconcile failed: exiting before any entry.');
 }
 const state = loadState();
-const settled = state.intent;
+const settled = state.intent ?? state.settledIntent ?? null;
 state.intent = null;
+state.settledIntent = null;
 saveState(state);
 writeFileSync(join(stateDir, STATE_FILES.openIntents), '0\n');
 journal('reconcile', { ok: true, settled: settled ? `${settled.leg} of ${settled.trade}` : null, open_position: state.position?.trade ?? null });
 // Back with a position open: the down window's worst move, as WORKER-1 rebuilds it from chain history (stub: flat).
-if (state.position && lastTs !== null) journal('exposure', { trade: state.position.trade, from_ts: lastTs, to_ts: new Date().toISOString(), worst_move_bps: 0 });
+// One line per trade that was open or in flight at the kill (the stub's market is flat: 0 bps).
+if (lastTs !== null) {
+  for (const trade of new Set([...(state.position ? [state.position.trade] : []), ...(settled ? [settled.trade] : [])])) {
+    journal('exposure', { trade, from_ts: lastTs, to_ts: new Date().toISOString(), worst_move_bps: 0 });
+  }
+}
 const bootAt = Date.now();
 // Exit capable a little after reconcile (test hook), so the runner's exposure measure has a window to see.
 const exitDelayMs = Number(env['ZEROED_STUB_EXIT_DELAY_MS'] ?? 0);
@@ -123,7 +132,7 @@ const STREAM: Record<string, string> = { pumpportal: 'creates', 'helius-ws': 'tr
 
 // Feeds.
 const FEEDS: Record<string, { critical: boolean }> = { pumpportal: { critical: true }, 'helius-ws': { critical: true }, 'alchemy-ws': { critical: false } };
-const feeds = new Map(Object.keys(FEEDS).map((n) => [n, { last: null as number | null, downUntil: 0, downFrom: 0 }]));
+const feeds = new Map(Object.keys(FEEDS).map((n) => [n, { last: null as number | null, downUntil: 0, downFrom: 0, gapId: '' }]));
 const recorderPath = join(stateDir, STATE_FILES.recorder, `${boot}.jsonl`);
 let slot = 0;
 let halted = false;
@@ -143,7 +152,7 @@ const tick = (): void => {
   for (const [name, f] of feeds) {
     if (f.downUntil > now) continue;
     if (f.downUntil !== 0) {
-      journal('coverage_gap', { stream: STREAM[name], from_ts: new Date(f.downFrom).toISOString(), to_ts: new Date(now).toISOString(), reason: 'disconnect' });
+      journal('coverage_gap', { stream: STREAM[name], gap_id: f.gapId, from_ts: new Date(f.downFrom).toISOString(), to_ts: new Date(now).toISOString(), reason: 'disconnect' });
       f.downUntil = 0;
       journal('feed', { feed: name, connected: true });
     }
@@ -197,10 +206,17 @@ const drillToken = randomBytes(16).toString('hex');
 if (drillsOn) writeFileSync(join(stateDir, STATE_FILES.drillToken), drillToken, { mode: 0o600 });
 
 const quota = (now: number): QuotaStatus[] => {
-  const used = ((now - bootAt) / 1000) * creditsPerS;
+  // Whole credits (the contract), split across classes with the remainder on P1.
+  const used = Math.floor(((now - bootAt) / 1000) * creditsPerS);
+  const p0 = Math.floor(used / 10);
+  const p2 = Math.floor((used * 3) / 10);
+  const p3 = Math.floor(used / 5);
+  const cls: [number, number, number, number] = [p0, used - p0 - p2 - p3, p2, p3];
+  const zero: [number, number, number, number] = [0, 0, 0, 0];
   return [
-    { provider: 'helius', credits_used: used, credits_by_class: [used * 0.1, used * 0.4, used * 0.3, used * 0.2], monthly_credits: 1_000_000, granted: [1, 1, 1, 1], shed: [0, 0, 0, 0], halted: false },
-    { provider: 'jupiter', credits_used: 0, credits_by_class: [0, 0, 0, 0], monthly_credits: null, granted: [0, 0, 0, 0], shed: [0, 0, 0, 0], halted: false },
+    { provider: 'helius', credits_used: used, credits_by_class: cls, monthly_credits: 1_000_000, granted: [1, 1, 1, 1], shed: zero, halted: false },
+    { provider: 'alchemy', credits_used: 0, credits_by_class: zero, monthly_credits: 30_000_000, granted: zero, shed: zero, halted: false },
+    { provider: 'jupiter', credits_used: 0, credits_by_class: zero, monthly_credits: null, granted: zero, shed: zero, halted: false },
   ];
 };
 
@@ -220,8 +236,8 @@ const health = (): Health => {
     policy_version: 'stub',
     last_processed_slot: slot,
     feed_ages_ms: ages,
-    open_position: state.position ? { mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1' } : null,
-    unresolved_intents: { count: state.intent ? 1 : 0, oldest_age_s: state.intent ? 0 : null },
+    open_position: state.position ? { trade: state.position.trade, mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1', mark_slot: slot, mark_ts: now } : null,
+    unresolved_intents: { count: state.intent ? 1 : 0, oldest_age_s: state.intent ? 0 : null, trades: state.intent ? [state.intent.trade] : [] },
     signer: 'none',
     lease_epoch: null,
     sol_reserve: null,
@@ -267,6 +283,8 @@ const server = createServer((req, res) => {
       }
       f.downUntil = Date.now() + ms;
       f.downFrom = Date.now();
+      f.gapId = `${boot}-${feed}-${f.downFrom}`;
+      journal('coverage_gap', { stream: STREAM[feed!], gap_id: f.gapId, from_ts: new Date(f.downFrom).toISOString(), to_ts: null, reason: 'disconnect' });
       journal('feed', { feed, connected: false, cause: 'drill' });
       res.writeHead(202).end();
     });

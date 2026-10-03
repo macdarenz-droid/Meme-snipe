@@ -34,6 +34,9 @@ export interface Exposure {
   /** Kill → the new boot is exit capable; null when it never got there within the recovery limit. */
   readonly duration_ms: number | null;
   readonly reconciled_ms: number | null;
+  /** Trades open or in flight at the kill, and those the worker's chain rebuild (`exposure` lines) covered. */
+  readonly trades: readonly string[];
+  readonly chain_trades: readonly string[];
   readonly mark_before: string | null;
   readonly mark_after: string | null;
   /** Worst price move over the window, basis points: from the two marks, or the worker's chain rebuild if worse. */
@@ -177,7 +180,13 @@ export const buildReport = (
     quota_reported: ops.quota.reported,
     quota_within_free_tier: ops.quota.within_free_tier,
     exit_capacity_never_shed: ops.quota.reported && ops.quota.exit_capacity_shed === 0,
-    exposure_measured: drills.every((d) => d.exposure === undefined || d.exposure.duration_ms !== null),
+    // Every exposed drill reaches exit capable with a measured move; the real worker also rebuilds every exposed trade from chain.
+    exposure_measured: drills.every(
+      (d) =>
+        d.exposure === undefined ||
+        (d.exposure.duration_ms !== null && d.exposure.worst_move_bps !== null && (stub || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
+    ),
+    coverage_valid: ops.coverage.problems.length === 0,
   };
   const exposed = drills.flatMap((d) => (d.exposure ? [d.exposure] : []));
   const maxOf = (xs: readonly (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);
@@ -269,7 +278,12 @@ export const reportMarkdown = (r: Report): string => {
     '',
     `Historical lookups: ${r.ops.lookups.count}, median ≤ ${r.ops.lookups.p50_ms_at_most ?? '-'} ms, p95 ≤ ${r.ops.lookups.p95_ms_at_most ?? '-'} ms, ${r.ops.lookups.slower_than_last_bound} slower than the last bucket.`,
     '',
-    `Coverage gaps: ${Object.entries(r.ops.coverage).map(([k, v]) => `${k} ${v.gaps} (${v.open} open, ${v.total_s} s total, longest ${v.longest_s} s)`).join('; ') || 'none'}.`,
+    'Projections are linear: credits used so far, scaled from the run\'s wall time to 30 days.',
+    ...q.problems.map((p) => `- Quota problem: ${p}`),
+    '',
+    `Coverage gaps (worker gaps and down windows): ${Object.entries(r.ops.coverage.streams).map(([k, v]) => `${k} ${v.gaps} (${v.open} open, ${v.total_s} s total, longest ${v.longest_s} s)`).join('; ') || 'none'}.`,
+    '',
+    ...r.ops.coverage.problems.map((p) => `- Coverage problem: ${p}`),
     '',
     `Rejections: ${r.ops.rejections.rejected} of ${r.ops.rejections.decisions} decisions; H16 not-covered ${r.ops.rejections.h16_not_covered.count} (${(r.ops.rejections.h16_not_covered.rate * 100).toFixed(2)}%).`,
     ...Object.entries(r.ops.rejections.by_reason).map(([k, v]) => `- ${k}: ${v.count} (${(v.rate * 100).toFixed(2)}%)`),
@@ -281,7 +295,7 @@ export const reportMarkdown = (r: Report): string => {
       : `${r.exposure.drills} restart drills with an open position. Longest time from kill to exit capable: ${r.exposure.worst_duration_ms === null ? 'not reached' : `${(r.exposure.worst_duration_ms / 1000).toFixed(1)} s`}. Worst price move in that window: ${r.exposure.worst_move_bps === null ? 'not measured' : `${r.exposure.worst_move_bps} bps`}.`,
     ...r.drills.flatMap((d) =>
       d.exposure
-        ? [`- ${d.id}: ${d.exposure.duration_ms === null ? 'not exit capable in time' : `${(d.exposure.duration_ms / 1000).toFixed(1)} s`} unprotected, reconciled after ${d.exposure.reconciled_ms === null ? '-' : `${(d.exposure.reconciled_ms / 1000).toFixed(1)} s`}, worst move ${d.exposure.worst_move_bps ?? '-'} bps (${d.exposure.move_source})`]
+        ? [`- ${d.id}: ${d.exposure.duration_ms === null ? 'not exit capable in time' : `${(d.exposure.duration_ms / 1000).toFixed(1)} s`} unprotected, reconciled after ${d.exposure.reconciled_ms === null ? '-' : `${(d.exposure.reconciled_ms / 1000).toFixed(1)} s`}, worst move ${d.exposure.worst_move_bps ?? 'not measured'} bps (${d.exposure.move_source}), chain rebuild for ${d.exposure.chain_trades.length} of ${d.exposure.trades.length} trades`]
         : [],
     ),
   );

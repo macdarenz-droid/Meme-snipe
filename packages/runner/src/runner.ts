@@ -4,10 +4,10 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkStartHealth, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
+import { checkStartHealth, LOOKUP_BOUNDS_MS, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
 import type { WorkerControl } from './control.ts';
 import { item4 } from './item4.ts';
-import { coverageGaps, lookupLatency, quotaReport, rejections, type BootTotals } from './quota.ts';
+import { checkQuota, coverageGaps, lookupLatency, quotaReport, rejections, type BootTotals } from './quota.ts';
 import { checkJournal } from './journal.ts';
 import { makePlan, type Drill } from './plan.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Label, type RecordedFile, type Report, type RunMeta, type Sample } from './report.ts';
@@ -113,7 +113,7 @@ type Pending =
   | {
       kind: 'restart'; drill: Extract<Drill, { kind: 'restart' }>; since: number; killedAt?: number; prevBoot?: string | null; midTrade?: boolean;
       /** A position was open at the kill: measure the unprotected exposure until the new boot is exit capable. */
-      open?: boolean; markBefore?: string | null; reconciledAt?: number; ok?: boolean;
+      open?: boolean; trades?: readonly string[]; markBefore?: string | null; reconciledAt?: number; ok?: boolean;
     }
   | { kind: 'feed'; drill: Extract<Drill, { kind: 'feed' }>; since: number; sawDown: boolean; sawHalt: boolean; critical: boolean; boot: string | null; stayedUp: boolean; requested: boolean }
   | { kind: 'handover'; since: number; prevBoot: string | null; midTrade: boolean; plannedAt: number };
@@ -199,7 +199,16 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     const s = toSample(t, h);
     if (h) {
       // Last quota and lookup counters per boot: they restart at 0 each boot, so the run's totals sum the boots.
-      boots[h.boot] = { quota: h.quota ?? [], lookups: h.lookups ?? { counts: [] } };
+      // A sample with a missing or invalid quota never overwrites the boot's last valid counters; it marks the boot.
+      const prev = boots[h.boot] ?? { quota: [], lookups: { counts: [] }, problems: [] };
+      const c = checkQuota(h.quota);
+      const lk = lookupsOk(h.lookups);
+      const problems = [...(prev.problems ?? []), ...(c.ok ? [] : c.problems), ...(lk ? [] : ['lookups.counts is not a list of non-negative integers'])];
+      boots[h.boot] = {
+        quota: c.ok ? c.quota : prev.quota,
+        lookups: lk ? h.lookups : prev.lookups,
+        problems: [...new Set(problems)].map((p) => (p.startsWith('boot ') ? p : `boot ${h.boot}: ${p}`)),
+      };
       writeFileSync(P.boots, JSON.stringify(boots));
     }
     appendFileSync(P.samples, `${JSON.stringify(s)}\n`);
@@ -228,8 +237,10 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         if (s.in_trade || t - p.since >= p.drill.windowMs) {
           p.prevBoot = s.boot;
           p.midTrade = s.in_trade;
-          p.open = h?.open_position != null;
-          p.markBefore = h?.open_position?.mark ?? null;
+          // An entry in flight (an intent, no position yet) is exposed too.
+          p.open = h !== null && (h.open_position != null || h.unresolved_intents.count > 0);
+          p.trades = h ? exposedTrades(h) : [];
+          p.markBefore = h ? freshMark(h) : null;
           p.killedAt = Date.now();
           await o.control.kill();
           log(`Drill ${p.drill.id}: killed${p.midTrade ? ' mid-trade' : ' (no trade open in the window)'}.`);
@@ -242,14 +253,14 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         const k = p.killedAt;
         const notes = [p.ok ? 'reconciled before any entry' : 'no successful reconcile before entry'];
         const exposure = p.open
-          ? { duration_ms: t - k, reconciled_ms: p.reconciledAt - k, mark_before: p.markBefore ?? null, mark_after: s.mark ?? null, worst_move_bps: moveBps(p.markBefore ?? null, s.mark ?? null), move_source: 'marks' as const }
+          ? { duration_ms: t - k, reconciled_ms: p.reconciledAt - k, trades: p.trades ?? [], chain_trades: [], mark_before: p.markBefore ?? null, mark_after: h ? freshMark(h) : null, worst_move_bps: moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const }
           : undefined;
         if (exposure) notes.push(`exit capable ${(exposure.duration_ms / 1000).toFixed(1)} s after the kill`);
         record({ ...base, at: k, pass: p.ok === true, recoveredMs: p.reconciledAt - k, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (p.killedAt !== undefined && t - p.killedAt > recoverMs) {
         const stage = p.reconciledAt === undefined ? 'not ready' : 'not exit capable';
-        record({ ...base, at: p.killedAt, pass: false, recoveredMs: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, ...(p.open ? { exposure: { duration_ms: null, reconciled_ms: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, mark_before: p.markBefore ?? null, mark_after: null, worst_move_bps: null, move_source: 'marks' as const } } : {}), notes: [`${stage} ${recoverMs / 1000} s after the kill`] });
+        record({ ...base, at: p.killedAt, pass: false, recoveredMs: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, ...(p.open ? { exposure: { duration_ms: null, reconciled_ms: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, trades: p.trades ?? [], chain_trades: [], mark_before: p.markBefore ?? null, mark_after: null, worst_move_bps: null, move_source: 'marks' as const } } : {}), notes: [`${stage} ${recoverMs / 1000} s after the kill`] });
         pending = null;
       }
     } else if (pending?.kind === 'feed') {
@@ -413,20 +424,44 @@ export const moveBps = (before: string | null, after: string | null): number | n
   return Number((diff * 10_000n + bn - 1n) / bn);
 };
 
+const lookupsOk = (x: unknown): x is { counts: number[] } => {
+  const c = (x as { counts?: unknown } | null)?.counts;
+  return Array.isArray(c) && c.length === LOOKUP_BOUNDS_MS.length + 1 && c.every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0);
+};
+
+/** The trade ids exposed when the worker dies: the open position's and every unresolved intent's. */
+export const exposedTrades = (h: Health): string[] =>
+  [...new Set([...(h.open_position ? [h.open_position.trade] : []), ...(Array.isArray(h.unresolved_intents.trades) ? h.unresolved_intents.trades : [])])].filter(
+    (t) => typeof t === 'string' && t !== '',
+  );
+
+/** The open position's mark when it is fresh (seen at most MARK_MAX_AGE_MS before the reply); otherwise unmeasured. */
+export const freshMark = (h: Health): string | null => {
+  const p = h.open_position;
+  if (!p || typeof p.mark !== 'string' || typeof p.mark_ts !== 'number' || typeof h.ts !== 'number') return null;
+  const age = h.ts - p.mark_ts;
+  return age >= 0 && age <= MARK_MAX_AGE_MS ? p.mark : null;
+};
+
 /**
  * The marks only see the two ends of the down window. The worker rebuilds the path inside it from chain history and
- * journals an `exposure` line; the worse of the two moves is reported.
+ * journals one `exposure` line per exposed trade; the worse of the moves is reported, and the trades found are kept
+ * so a missing rebuild fails the run (for the real worker).
  */
 export const withChainMoves = (outcomes: readonly DrillOutcome[], journal: readonly JournalLine[]): DrillOutcome[] =>
   outcomes.map((d) => {
     const e = d.exposure;
     if (!e || e.duration_ms === null) return d;
-    const lines = journal.filter((l) => l.kind === 'exposure' && typeof l['worst_move_bps'] === 'number' && Number.isSafeInteger(l['worst_move_bps']) && (l['worst_move_bps'] as number) >= 0)
-      .filter((l) => {
-        const from = Date.parse(String(l['from_ts']));
-        return from >= d.at - 60_000 && from <= d.at + e.duration_ms! + 60_000;
-      });
+    const lines = journal.filter((l) => {
+      const from = Date.parse(String(l['from_ts']));
+      return (
+        l.kind === 'exposure' && typeof l.trade === 'string' && e.trades.includes(l.trade) &&
+        typeof l['worst_move_bps'] === 'number' && Number.isSafeInteger(l['worst_move_bps']) && (l['worst_move_bps'] as number) >= 0 &&
+        from >= d.at - 60_000 && from <= d.at + e.duration_ms! + 60_000
+      );
+    });
     const chain = lines.reduce<number | null>((m, l) => Math.max(m ?? 0, l['worst_move_bps'] as number), null);
-    if (chain === null || (e.worst_move_bps !== null && e.worst_move_bps >= chain)) return d;
-    return { ...d, exposure: { ...e, worst_move_bps: chain, move_source: 'chain' } };
+    const chain_trades = [...new Set(lines.map((l) => l.trade as string))].sort();
+    const worse = chain !== null && (e.worst_move_bps === null || chain > e.worst_move_bps);
+    return { ...d, exposure: { ...e, chain_trades, ...(worse ? { worst_move_bps: chain, move_source: 'chain' as const } : {}) } };
   });

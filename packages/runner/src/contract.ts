@@ -64,6 +64,9 @@ export interface QuotaStatus {
 /** Bucket upper bounds (ms) of the historical-lookup latency histogram; the last bucket is everything slower. */
 export const LOOKUP_BOUNDS_MS = [25, 50, 100, 200, 400, 800, 1600, 3200, 6400] as const;
 
+/** A mark older than this when read is not a price: the exposure move it would give is unmeasured. */
+export const MARK_MAX_AGE_MS = 30_000;
+
 /** GET /health. The heartbeat fields of docs/research/security.md §5.2 plus what the runner measures. */
 export interface Health {
   readonly seq: number;
@@ -72,9 +75,16 @@ export interface Health {
   readonly policy_version: string;
   readonly last_processed_slot: number | null;
   readonly feed_ages_ms: Readonly<Record<string, number | null>>;
-  /** `mark`: the latest price the worker values the position at, decimal string in the same unit as entry. */
-  readonly open_position: { readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string; readonly mark: string } | null;
-  readonly unresolved_intents: { readonly count: number; readonly oldest_age_s: number | null };
+  /**
+   * `mark`: the latest price the position is valued at, a plain decimal string in the unit of `entry`; `mark_slot` and
+   * `mark_ts` (ms) say when it was seen. `trade`: the trade id used in the journal.
+   */
+  readonly open_position: {
+    readonly trade: string; readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string;
+    readonly mark: string; readonly mark_slot: number; readonly mark_ts: number;
+  } | null;
+  /** `trades`: the trade ids of the unresolved intents (an entry in flight has an intent and no position yet). */
+  readonly unresolved_intents: { readonly count: number; readonly oldest_age_s: number | null; readonly trades: readonly string[] };
   readonly signer: string;
   readonly lease_epoch: number | null;
   readonly sol_reserve: string | null;
@@ -103,7 +113,7 @@ export interface Health {
 
 export type JournalKind =
   | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair'
-  /** A closed (or, at stop, still open) coverage gap of a discovery stream: stream, from_ts, to_ts (null if open), reason. */
+  /** A coverage gap of a discovery stream: journaled when it opens (to_ts null) and again when it closes, same gap_id. */
   | 'coverage_gap'
   /** After a restart with an open position: the worst price move over the down window, rebuilt from chain history. */
   | 'exposure';
