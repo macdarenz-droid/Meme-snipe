@@ -184,7 +184,7 @@ export const buildTrade = (req: TradeRequest, c: BuildCommon, policy: ExecutionP
   const mustBeStatic = new Set<Address>([user]);
 
   if (req.venue === 'curve') {
-    const acc = curveAccounts(req.market, user, c.choice.feeRecipient, c.choice.buybackRecipient);
+    const acc = curveAccounts(req.market, req.mint, user, c.choice.feeRecipient, c.choice.buybackRecipient);
     if (!acc.ok) return acc;
     const a = acc.accounts;
     const uva = userVolumeAccumulator(PUMP_PROGRAM, user);
@@ -216,7 +216,7 @@ export const buildTrade = (req: TradeRequest, c: BuildCommon, policy: ExecutionP
       rentOut += (missing(uva) ? rent(USER_VOLUME_ACCUMULATOR_SIZE) : 0n) + curveTopUp + vaultTopUp;
     }
   } else {
-    const acc = poolAccounts(req.market, user, c.choice.feeRecipient, c.choice.buybackRecipient);
+    const acc = poolAccounts(req.market, req.mint, user, c.choice.feeRecipient, c.choice.buybackRecipient);
     if (!acc.ok) return acc;
     const a = acc.accounts;
     if (req.mint.program !== (baseTokenProgram === TOKEN_PROGRAM ? 'spl-token' : 'token-2022')) return refuse('unsupported-mint', 'mint does not match the base token program');
