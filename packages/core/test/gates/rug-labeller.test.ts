@@ -206,6 +206,9 @@ describe('scope', () => {
     };
     expect(run([create(), sale('ev:SigA:00000:00001'), sale('log:SigB:00001', { signature: 'SigB' })]).labels).toHaveLength(1);
     expect(run([create(), sale('ev:SigA:00000:00001'), sale('log:SigA:00001', { signature: 'SigA' })]).labels).toHaveLength(0);
+    const poolSale = (id: string) => ({ ...sell({ user: DEV, base: 10_000n, vault: 10_000n, out: 10n }), id });
+    expect(run([create(), migration(), poolSale('ev:SigA:00000:00001'), poolSale('ev:SigB:00000:00001')]).labels).toHaveLength(1);
+    expect(run([create(), migration(), poolSale('ev:SigA:00000:00001'), poolSale('ev:SigA:00000:00001')]).labels).toHaveLength(0);
   });
 
   it('keeps the first create of a mint', () => {
