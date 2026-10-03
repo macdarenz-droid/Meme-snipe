@@ -615,3 +615,21 @@ describe('rounding edges', () => {
     expect(d.caps.find((c) => c.name === 'maximum notional')?.notional).toBe(TRIAL_POLICY.capital.maxNotional);
   });
 });
+
+describe('risk re-review of 0f7d142', () => {
+  test("today's profit does not offset the costs of the next trade: L_day is floored at zero", () => {
+    // B = $6: the daily trigger is $0.45, below C (about $0.49). A +$0.20 day must not make room for C.
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, bankroll: usd('6'), minNotional: usd('0.5'), maxNotional: usd('1') } });
+    const input = baseInput({ session, account: account({ openingEquity: usd('6'), closedTrades: [trade(NOW - HOUR, '0.2')] }) });
+    const d = evaluateEntry(input, baseRequest());
+    expect(d.snapshot?.dayLoss).toBe(0n);
+    expect(codes(d)).toContain('daily_loss');
+  });
+  test('the notional multiple cap is liquidity / multiple, to the micro-dollar', () => {
+    const session = startSession({ ...TRIAL_POLICY, liquidity: { ...TRIAL_POLICY.liquidity, floorNotionalMultiple: 10_000 } });
+    const minSpendUsd = lamportsToMicroUsd(microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil'), PRICE, 'ceil');
+    const liquidity = (minSpendUsd * 10_000n) as MicroUsd;
+    expect(evaluateEntry(baseInput({ session }), baseRequest({ poolLiquidity: liquidity })).allow).toBe(true);
+    expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ poolLiquidity: (liquidity - 1n) as MicroUsd })))).toEqual(['liquidity_floor']);
+  });
+});
