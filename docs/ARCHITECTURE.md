@@ -164,6 +164,28 @@ Off after two consecutive failed checks. Each condition is logged as a feature s
 
 The backtest applies the same gate with the same code, from historical series read as of the simulated moment (§16.3): graduate survival from the DATA-1 dataset (its 14-day lead-in supplies the first median); curve volume from DefiLlama's daily pump.fun series, using the last full UTC day only (DefiLlama revises past values, so every fetch is stored with its fetch date and the backtest uses the stored snapshot, never a fresh download); SOL's 24 h change from an hourly SOL/USD series. Live reads the same sources (not a different provider), so the two agree. Execution health has no history: it is a live-only veto (§16.3).
 
+### 6.5 Historical dataset, window and regimes (supervisor, 2026-10-04)
+
+- **Window:** 60 decision days, 2026-08-03 to 2026-10-01, plus a 14-day lead-in from 2026-07-20 (`CLAUDE.md` target ≥ 60). 2026-10-02 and later are never decision days.
+- **Regime boundaries** (UPG-1b, [venues.md](research/venues.md) §2.7). The dataset, the backtest and every report label these:
+  - **B2**, 2026-07-21 14:23 UTC: BOOST on. About 20% of migration liquidity is held back and bought-and-burned in the first 5 minutes.
+  - **B3**, 2026-09-09 19:30 UTC: fee and creator-fee configuration changed.
+  - **B4**, 2026-09-12 15:24 UTC: holder rewards. Trade events grew 16 bytes; fees and layouts match today's only after this point.
+  - **B5**, 2026-10-02 15:47 UTC: unpublished upgrade with an 8-byte event tail.
+- **What is kept:**
+  - every curve trade and every canonical PumpSwap pool trade, as rows;
+  - raw transaction records for the 5% hash sample only;
+  - every create, migration and pool event;
+  - the hourly census.
+  
+  This gives 100% of the U1/U2 universes and of every deployer's prior mints for H14, and no row's existence depends on the future (DECISIONS 2026-10-04).
+- **Download:** one polite lane, at most 80 MB/s, newest day first, because the live worker's seed needs the latest 14 days. Each day is published as `data-day-YYYY-MM-DD` as soon as its QA, decoder parity and determinism checks pass. A backtest window is assembled 3 days at a time (runner disk).
+- **Inputs the archive cannot give, fetched by RPC with a strict as-of filter, and cached as hashed supplements so backtest reruns are identical:**
+  - H13 funding (dev and first 20 buyers: FACTS-1);
+  - the H14 rug half for a candidate's deployer (RUG-1c on-demand check).
+  
+  Live uses the same code, so live and backtest agree.
+
 ## 7. Evidence gates
 
 ### 7.1 Hard rejects (any one fails → no entry), cheapest first
@@ -396,6 +418,7 @@ The evidence comes from the **transaction-level historical backtest** (§16.2), 
 - **The holdout is sealed.** The backtester runs the holdout into a separate sealed ledger file: fills, exits and P&L are written there but never displayed, logged or read; the registry records only the file's hash and, per universe, the candidate and entry counts. **Before the seal opens nothing else is visible: never exit counts, fills or P&L** (an exit count hints at outcomes). The size check reads those two counts alone. The seal is opened (by the scoring stage, once) only after the counts show n ≥ max(300, n_power) for every universe that enters. If n is short, the sealed file stays closed and the answer is "not proven yet" (collect more history); n is never lowered.
 - One look only: a holdout that was opened, unsealed early, inspected in any way (a hash mismatch, a read of the sealed file outside the scoring stage, a log line with a P&L value) or re-run with a different configuration counts as **burned** in the registry. New proof needs a new, later window that has never been run. There is no interim or futility look.
 - The e-process is not part of G2 (it is built for repeated looks); it runs where looks really are repeated: G5 and demotion.
+- **The holdout lies entirely after the last regime boundary before it (B4, 2026-09-12 15:24 UTC; supervisor, 2026-10-04).** Walk-forward results are reported per regime (B2–B3, B3–B4, after B4), never pooled silently; S0 runs per regime; costs are charged as of each trade's slot, from the fees in force then.
 
 | Gate | Passes when (all) |
 | --- | --- |
@@ -535,6 +558,16 @@ Worker API contract (UI-2): `apps/web/src/api/contract.ts`. Money travels as dec
 Three separate actions: **Pause new entries** keeps exits running; **Close positions** requests bounded exits and reports any that do not fill; **Disable signing** blocks signatures and warns that exits can no longer run.
 
 Visible states: waiting for evidence, no eligible candidate, stale data, rate limited, unknown transaction result, exit pending, exit blocked, low fee reserve, paused, regime off.
+
+**Live and trial views (owner request, 2026-10-04):**
+- **Live view.** The app reads the worker API on the VPS through Tailscale.
+  - The worker binds its API to loopback only.
+  - `tailscale serve` publishes it to the owner's tailnet over HTTPS at `zeroed.<tailnet>.ts.net`. Funnel stays off, no inbound port opens, and the app accepts only that HTTPS host.
+  - Every record shows its mode (paper).
+- **Trial backtest view.** BT-2 publishes a cumulative trial report to the `backtest` release as each practice day is tested, labelled as a trial in progress and not a verdict.
+  - Holdout days are never run or shown before the one sealed holdout run.
+  - A day is tested only once its 14-day look-back exists.
+- The two views never mix, and the history is never replayed on the VPS, so the qualifying dry run stays clean.
 
 ## 18. Acceptance cases
 
@@ -683,6 +716,22 @@ Critical paths: the proof, ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) �
 - Goal: pre-funding item 5 and the G3 consistency report from the qualifying run.
 - Accept: each case in §18 is a scripted fault in CI with an expected outcome; the G3 report compares the qualifying dry run with the backtest holdout (mean net when the dry run has enough trades, otherwise candidate rates per hour and the reject mix, see §14) and reports the live-only veto rate; it measures Δ on the dry-run data and checks v·|Δ|₉₅ ≤ 5 points (95% upper bound of |Δ|), failing G3 if it does not hold; with fewer than 10 vetoed candidates Δ = 50 points, with fewer than 10 kept trades the kept mean is the backtest holdout mean. **Counterfactual trades are computed after the run, offline**: in the scoring stage, outside the worker process, the recorded data is replayed from each veto moment through BT-1's fill model and the exit rules. They hold no R3 position slot, R6 reservation, R11 entry count or provider quota, and are written only to a separate counterfactual file, never to the live ledger or decision log. A test proves the live decision log is byte-identical with counterfactual scoring on and off.
 
+### Added 2026-10-04 (from build findings and owner requests)
+
+| Card | What | Why |
+| --- | --- | --- |
+| FACTS-1 | Producers for every gate fact (mint, pool, LP, curve, migration, candles, holders, insiders, xcheck, sim, soft, SOL/USD, regime inputs, execution health) through the quota scheduler. Event-derived facts are pure, so live and backtest share them; state-read facts are live-only vetoes. Owns the H13 funding lookup | Nothing produced GATE-1's facts live, so every candidate failed H16 |
+| SEED-1 | Seeds DeployerIndex at start-up from published days, then from RPC (newest first, under a credit cap), with a gap mode for downtime backfill | Without it H14 is not-covered for 14 days after any start |
+| RUG-1c | On-demand per-deployer rug check by RPC under a credit cap, live and backtest (cached supplement) | Neither the free live feed nor the day releases see every prior mint's trades |
+| LEDGER-1c | Account version (derived from append-only row counts) checked inside the reservation transaction; one-transaction snapshot read; paper and live refuse unversioned writes | Closes the stale-snapshot double entry |
+| GATE-1c | H5 refuses unexplained event tails on the pool and curve tapes | B5 left an unpublished 8-byte field |
+| UPG-1 / UPG-1b | B5 identified; regime boundaries B2–B4 found; decoders, quotes and signer checked against them | Trade economics changed inside the window |
+| RUN-1b | Item-4 block in the runner report; bad lines can't leave the denominator | Pre-funding item 4 is scored, not trusted |
+| OPS-1c, OPS-1d | Server sets the Telegram webhook after pairing; webhook retry, key-mismatch alerts, re-pair; `install.sh --update`; RUN-1 units; evidence relay through the watchdog; Tailscale serve | Setup fixes and the live view |
+| APP-2 | App server setting and live screens over the tailnet | Owner wants to watch the paper trades |
+| RES-3 | Signal research on practice days only; at most one configuration per universe for BT-2 to register | Owner wants decisions built on measured data |
+| DATA-1 follow-ups | Retention (100% curve and canonical pool rows); QA allows the pre-B4 layout; the 60-day window | Pre-funding item 6 needs ≥ 300 holdout trades |
+
 ### Later (after the pre-funding gate is close)
 
 **SIGN-1 Isolated signer** · high · 3 h · owner approves (`packages/signer/**`) · depends on TX-1, OPS-1
@@ -694,8 +743,8 @@ Totals: Wave A 9–11 h, Wave B 10.5–14.5 h, Wave C 8.5–11 h, Wave D 6–8.5
 
 Owner actions (no agent can do them):
 - Done 2026-10-03: hosting approved (Vultr Frankfurt about US$6/month, Hetzner backup); Cloudflare and Telegram accounts exist.
-- Create the Vultr server and paste the one install command (OPS-1); store `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY` and `TELEGRAM_BOT_TOKEN` as GitHub repository secrets (§12.2), never in chat. Until the server runs, the dry run can be rehearsed on GitHub Actions (RUN-1), but only a VPS run qualifies (§15).
-- Say whether a domain on Cloudflare is available; without one the dashboard is not published from the host (the dry run does not need it).
+- Done 2026-10-04: the Vultr server is installed from the PR #36 line, keys handed off, Telegram paired, `/status` answered. Still to come: one re-paste of OPS-1d's install line (after that, host changes arrive by update), and Tailscale on the phone plus a one-time approval of the server for the live view.
+- No domain (owner rule, `CLAUDE.md`): the watchdog is on `workers.dev`, and the live view uses Tailscale serve.
 - Check the chosen exchange on AUSTRAC's VASP register; check "Zeroed" on IP Australia before public launch.
 
 Measured during paper mode: our own latency and landing rates; PumpPortal's missing creates over 24 h; graduation rate and survival under BOOST; σ̂ and intra-day correlation of backtest returns; Sender SWQoS-only landing under congestion; Nuremberg versus Frankfurt latency; whether Jupiter's 50 bps young-token fee appears.
