@@ -63,7 +63,7 @@ func TestDelegationRowsEveryKind(t *testing.T) {
 	temp := solana.PublicKeyFromBytes(keys[8][:]).String()
 	want := [][]string{
 		{"100", "1700", "2", "0", "", mint, "approve", acct, "A", delegate, "500"},
-		{"100", "1700", "2", "1", "", mint, "approve", acct, "A", delegate, "77"},
+		{"100", "1700", "2", "1", "", mint, "approve_checked", acct, "A", delegate, "77"},
 		{"100", "1700", "2", "2", "", mint, "revoke", acct, "A", "", ""},
 		{"100", "1700", "2", "3", "", mint, "set_owner", acct, "A", newAuth, ""},
 		{"100", "1700", "2", "4", "", mint, "set_close_authority", acct, "A", "", ""},

@@ -165,11 +165,11 @@ test('swap attribution: owner differing from user is counted; an empty owner nee
 test('delegation rows: every kind passes, malformed and uncovered rows fail', () => {
   const PM = `z${'A'.repeat(38)}pump`;
   const dg = (o) => { const r = { slot: 10, block_time: 1788307300, tx_idx: 5, outer_ix: 0, inner_ix: '', mint: PM, kind: 'approve', account: 'acct', owner: 'A', authority: 'D', amount: 5, ...o }; return DELEG.map((c) => r[c]); };
-  const good = [dg({}), dg({ outer_ix: 1, kind: 'revoke', authority: '', amount: '' }), dg({ outer_ix: 2, kind: 'set_owner', authority: 'N', amount: '' }), dg({ outer_ix: 3, kind: 'set_close_authority', authority: '', amount: '' })];
+  const good = [dg({}), dg({ outer_ix: 5, kind: 'approve_checked' }), dg({ outer_ix: 1, kind: 'revoke', authority: '', amount: '' }), dg({ outer_ix: 2, kind: 'set_owner', authority: 'N', amount: '' }), dg({ outer_ix: 3, kind: 'set_close_authority', authority: '', amount: '' })];
   const ok = strict({ delegations: good });
   assert.equal(ok.status, 0, ok.stdout);
   assert.match(ok.stdout, /## Delegations/);
-  assert.match(ok.stdout, /4 rows in 1 files/);
+  assert.match(ok.stdout, /5 rows in 1 files/);
   const bad = strict({ delegations: [dg({ amount: '' }), dg({ outer_ix: 1, kind: 'revoke', amount: '3' }), dg({ outer_ix: 2, kind: 'freeze' }), dg({ outer_ix: 3, account: '' }), dg({ outer_ix: 4, kind: 'approve', authority: '' })] });
   assert.equal(bad.status, 1);
   assert.match(bad.stdout, /malformed delegation rows 5/);

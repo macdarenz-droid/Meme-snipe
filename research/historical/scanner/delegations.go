@@ -12,8 +12,8 @@ import (
 // instruction outside pump and PumpSwap, under the coverage rule of movements: every
 // mint ending in "pump", other mints only in their pump transactions.
 //
-//	approve: Approve (4: account 0, delegate 1) and ApproveChecked (13: account 0, mint 1,
-//	  delegate 2); authority = the delegate, amount = the approved amount;
+//	approve / approve_checked: Approve (4: account 0, delegate 1) and ApproveChecked (13:
+//	  account 0, mint 1, delegate 2); authority = the delegate, amount = the approved amount;
 //	revoke: Revoke (5: account 0); authority and amount empty;
 //	set_owner / set_close_authority: SetAuthority (6) of type AccountOwner (2) or
 //	  CloseAccount (3) on account 0; authority = the new one (empty when cleared).
@@ -37,7 +37,7 @@ func delegationKind(data []byte) (kind string, acct, mintPos, delegate int, ok b
 		}
 	case 13:
 		if len(data) >= 10 {
-			return "approve", 0, 1, 2, true
+			return "approve_checked", 0, 1, 2, true
 		}
 	case 5:
 		return "revoke", 0, -1, -1, true
@@ -100,7 +100,7 @@ func delegationRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRe
 		}
 		authority, amount := "", ""
 		switch {
-		case kind == "approve":
+		case kind == "approve" || kind == "approve_checked":
 			authority = key(ix.accts[dp])
 			amount = strconv.FormatUint(binary.LittleEndian.Uint64(ix.data[1:9]), 10)
 		case kind == "set_owner" || kind == "set_close_authority":

@@ -705,7 +705,7 @@ const NEW_AUTH = key(71);
 /**
  * Top level: 0 Approve of ACCT_A (PMINT, owner USER) to DELEGATE for 300; 1 Revoke of ACCT_A; 2 SetAuthority
  * AccountOwner of ACCT_A to NEW_AUTH; 3 SetAuthority CloseAccount of ACCT_A cleared; 4 a pump instruction whose inner
- * Approve is skipped; 5 an Approve on OTHER's account (no OTHER event: no row).
+ * Approve is skipped; 5 an Approve on OTHER's account (no OTHER event: no row); 6 ApproveChecked of ACCT_A (mint PMINT).
  */
 const delegRaw = (n: number, err: RawLine['err'] = null): RawLine => {
   const keys = [...MOVE_KEYS, DELEGATE, NEW_AUTH];
@@ -718,6 +718,7 @@ const delegRaw = (n: number, err: RawLine['err'] = null): RawLine => {
       { p: 2, a: [4, 0], d: [6, 3, 0] },
       { p: 1, a: [6, 4], d: [0xaa] },
       { p: 2, a: [8, 9, 0], d: amt(4, 1n) },
+      { p: 2, a: [4, 6, 9, 0], d: [...amt(13, 25n), 6] },
     ])),
     err,
     meta: {
@@ -733,7 +734,7 @@ const dg = (n: number, outer: number, kind: string, authority: string, amount: s
   slot: '452700000', block_time: String(BLOCK_TIME), tx_idx: String(n), outer_ix: String(outer), inner_ix: '', mint: PMINT, kind,
   account: ACCT_A, owner: USER, authority, amount,
 });
-const delegRows = (n: number) => [dg(n, 0, 'approve', DELEGATE, '300'), dg(n, 1, 'revoke', '', ''), dg(n, 2, 'set_owner', NEW_AUTH, ''), dg(n, 3, 'set_close_authority', '', '')];
+const delegRows = (n: number) => [dg(n, 0, 'approve', DELEGATE, '300'), dg(n, 1, 'revoke', '', ''), dg(n, 2, 'set_owner', NEW_AUTH, ''), dg(n, 3, 'set_close_authority', '', ''), dg(n, 6, 'approve_checked', DELEGATE, '25')];
 const checkDelegs = (rows: Record<string, string>[], raws: RawLine[]) => {
   const c = new ParityChecker(universe);
   for (const r of rows) c.addDelegation(r);
@@ -746,7 +747,7 @@ describe('decoder parity: delegations', () => {
   it('re-derives approve, revoke and both authority changes, skipping one inside pump and another mint', () => {
     const s = checkDelegs(delegRows(40), [delegRaw(40)]);
     expect(s.mismatches).toEqual([]);
-    expect(s).toMatchObject({ delegations_checked: 4, delegations_matched: 4, delegations_without_raw: 0 });
+    expect(s).toMatchObject({ delegations_checked: 5, delegations_matched: 5, delegations_without_raw: 0 });
   });
 
   it('fails a wrong owner, a missing row and a row for the skipped approve inside pump', () => {
@@ -762,13 +763,13 @@ describe('decoder parity: delegations', () => {
       ['delegation', null, text(missing)],
     ]));
     expect(s.mismatch_count).toBe(3);
-    expect(s.delegations_matched).toBe(2);
+    expect(s.delegations_matched).toBe(3);
   });
 
   it('fails any delegation row of a failed transaction and counts rows without a raw record', () => {
     const s = checkDelegs([...delegRows(40).slice(0, 1), ...delegRows(41)], [delegRaw(40, { hex: '00' })]);
     expect(s.mismatch_count).toBe(1);
-    expect(s.delegations_without_raw).toBe(4);
+    expect(s.delegations_without_raw).toBe(5);
   });
 
   it('keeps the delegation columns equal to the scanner (delegations.go)', () => {

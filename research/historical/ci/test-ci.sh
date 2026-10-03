@@ -321,7 +321,7 @@ tree=$(cd "$here" && git rev-parse HEAD:research/historical/scanner)
   ok "scanner-rev: a toolchain other than go\$GO_VERSION fails the build"
 
 # ---- data-scan.yml: a published day is skipped before any archive read; the token only in two clean steps ----
-python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check and publish steps, both in a clean shell; a resumable stop chains the next run, bounded" || no "workflow skip/token structure"
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check and publish steps, both in a clean shell; a resumable stop chains the next run, bounded, only after a saved progress; QA starts only with 45 min left" || no "workflow skip/token structure"
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
 i = next(k for k, s in enumerate(steps) if s.get("id") == "published")
@@ -355,7 +355,32 @@ r = c["steps"][0]["run"]
 assert r.index('select(startswith("resume-"))') < r.index('-ge "$MAX_CHAIN"') < r.index("gh workflow run"), r
 assert '-f chain="$next"' in r and "-f days=\"$DAYS\"" in r, r
 assert wf[True]["workflow_dispatch"]["inputs"]["chain"]["default"] == "0"
+# QA-phase budget: checked after the progress save and before QA, against this job's own
+# timeout; QA, packaging and publishing never run on always(), so a stop skips them
+names = [s.get("id") or s.get("name") or s.get("uses") for s in steps]
+assert names[0] == "Record the job start (time budget of the QA phase)" and "JOB_START=" in steps[0]["run"]
+qt = next(s for s in steps if s.get("id") == "qatime")
+assert f'time-left.sh "$JOB_START" {wf["jobs"]["scan"]["timeout-minutes"]} ' in qt["run"] and '-eq 75 ]; then echo "resumable=true"' in qt["run"], qt
+order = lambda key: names.index(key)
+assert order("save") < order("qatime") < order("qa") < order("Package the day") < order("Publish this day")
+for k in ("qa", "Package the day", "Publish this day"):
+    st = steps[order(k)]
+    assert "always()" not in st.get("if", ""), st
+# chained only after a successful save, for either resumable stop
+marks = [s for s in steps if "resumable" in s.get("if", "")]
+assert len(marks) == 2, marks
+for st in marks:
+    assert "steps.save.outcome == 'success'" in st["if"] and "steps.qatime.outputs.resumable == 'true'" in st["if"] and "steps.scan.outputs.resumable == 'true'" in st["if"], st
+assert order("Log the progress entry size") == order("save") - 1 and "du -sb" in steps[order("Log the progress entry size")]["run"]
 PY
+
+# ---- time-left.sh: a phase starts only when it fits before the job timeout ----
+now=$(date +%s); : > "$T/summary.md"
+GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/time-left.sh" $((now - 300 * 60)) 355 45 >/dev/null && ok "time-left: 55 min left, 45 needed: the phase runs" || no "time-left enough"
+rc=0; GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/time-left.sh" $((now - 320 * 60)) 355 45 >/dev/null || rc=$?
+[[ $rc == 75 ]] && grep -q "45 needed: stopping before this phase" "$T/summary.md" && ok "time-left: 35 min left, 45 needed: exit 75 (resumable) and a summary line" || no "time-left short: rc=$rc"
+rc=0; bash "$here/time-left.sh" x 355 45 >/dev/null 2>&1 || rc=$?
+[[ $rc == 2 ]] && ok "time-left: a bad argument is refused (exit 2), never read as time left" || no "time-left bad arg: rc=$rc"
 
 # ---- disk-guard.sh ----
 dg=$(FAKE_AVAIL=24000000000 bash "$here/disk-guard.sh" "$T" 24000000000 "the scan" 2>&1) && [[ "$dg" == *"24.0 GB free"* ]] &&

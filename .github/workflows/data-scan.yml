@@ -21,9 +21,10 @@
 #   contents: write for this, but the token reaches only the publish step (env on that
 #   step alone); checkouts keep persist-credentials: false and no other step uses it.
 # - Limits: each scan job has a 300 min budget for scanning and back-off waits inside
-#   its 355 min timeout. A day that runs out of budget saves its progress and stops
-#   resumably (exit 75); fail-fast cancels the days queued behind it, and the `continue`
-#   job dispatches the same days again (inputs.chain counts the chained runs, at most
+#   its 355 min timeout, and QA, packaging and publishing start only with 45 min left
+#   (ci/time-left.sh). A day that runs out of either saves its progress and stops
+#   resumably (exit 75), and it chains only when that save succeeded: fail-fast
+#   cancels the days queued behind it, and the `continue` job dispatches the same days again (inputs.chain counts the chained runs, at most
 #   12). Published days are skipped before any archive read, so the next run resumes
 #   that day from its cache, with no manual step. Any other failure stops the chain.
 # - Cache: one progress entry per scan job (key data-scan-DAY-RUN-ATTEMPT, a day's units:
@@ -136,6 +137,8 @@ jobs:
       matrix:
         day: ${{ fromJSON(needs.plan.outputs.days) }}
     steps:
+      - name: Record the job start (time budget of the QA phase)
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
@@ -225,19 +228,39 @@ jobs:
           research/historical/ci/scan-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$MAX_MBPS" 300 || rc=$?
           if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
           exit "$rc"
+      - name: Log the progress entry size
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: |
+          echo "progress cache entry for $DAY: $(du -sb "$RUNNER_TEMP/work/data" | cut -f1) bytes (repository cap 10 GB)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Save progress
+        id: save
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/work/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # QA, determinism, packaging and publishing take up to about 45 min (finalize, QA and
+      # parity of a day, one unit rescanned, about 4 GB uploaded twice). If they would not
+      # fit before the 355 min job timeout, stop resumably now instead of being cancelled:
+      # progress is saved, and the next chained run redoes this phase.
+      - name: Check the time left for QA, packaging and publishing
+        id: qatime
+        if: steps.published.outputs.complete != 'true'
+        run: |
+          rc=0
+          research/historical/ci/time-left.sh "$JOB_START" 355 45 || rc=$?
+          if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
+          exit "$rc"
+      # Chained only when this run's progress was saved; a failed save stops for review.
       - name: Mark the day resumable for the next chained run
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.scan.outputs.resumable == 'true'
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true')
         env:
           DAY: ${{ matrix.day }}
         run: mkdir -p "$RUNNER_TEMP/resume" && echo "$DAY" > "$RUNNER_TEMP/resume/day"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.scan.outputs.resumable == 'true'
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true')
         with:
           name: resume-${{ matrix.day }}
           path: ${{ runner.temp }}/resume

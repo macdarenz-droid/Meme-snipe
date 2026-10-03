@@ -1078,7 +1078,7 @@ export const deriveDelegations = (ctx: Ctx, events: readonly LocatedEvent[], idl
       let mintPos = -1;
       let delegatePos = -1;
       if (d[0] === 4 && d.length >= 9) [kind, delegatePos] = ['approve', 1];
-      else if (d[0] === 13 && d.length >= 10) [kind, mintPos, delegatePos] = ['approve', 1, 2];
+      else if (d[0] === 13 && d.length >= 10) [kind, mintPos, delegatePos] = ['approve_checked', 1, 2];
       else if (d[0] === 5) kind = 'revoke';
       else if (d[0] === 6 && d.length >= 3 && (d[1] === 2 || d[1] === 3) && (d[2] === 0 || d.length >= 35)) kind = d[1] === 2 ? 'set_owner' : 'set_close_authority';
       if (kind === '' || ix.accounts.length === 0 || Math.max(mintPos, delegatePos) >= ix.accounts.length) return;
@@ -1087,7 +1087,7 @@ export const deriveDelegations = (ctx: Ctx, events: readonly LocatedEvent[], idl
       if (mint === '' || !want(mint)) return;
       let authority = '';
       let amount = '';
-      if (kind === 'approve') {
+      if (kind === 'approve' || kind === 'approve_checked') {
         authority = keys[ix.accounts[delegatePos]!] ?? '';
         let v = 0n;
         for (let i = 8; i >= 1; i--) v = (v << 8n) | BigInt(d[i]!);

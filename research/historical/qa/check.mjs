@@ -491,7 +491,7 @@ if (man.schema >= 2) {
       dg.by_kind[r.kind] = (dg.by_kind[r.kind] || 0) + 1;
       const id = `${r.slot}:${r.tx_idx}:${r.outer_ix}:${r.inner_ix}`;
       const amountOk = /^\d+$/.test(r.amount ?? '') && BigInt(r.amount) <= U64_MAX;
-      const shapeOk = r.kind === 'approve' ? r.authority !== '' && amountOk
+      const shapeOk = r.kind === 'approve' || r.kind === 'approve_checked' ? r.authority !== '' && amountOk
         : r.kind === 'revoke' ? r.authority === '' && r.amount === ''
         : r.kind === 'set_owner' || r.kind === 'set_close_authority' ? r.amount === '' : false;
       if (!shapeOk || !r.mint || !r.account) { dg.malformed++; bad(dg.malformed_rows, `${id} ${r.kind}`); continue; }
