@@ -40,6 +40,8 @@ describe('config and exit codes (§12.4)', () => {
       [{ ...base, ZEROED_HEARTBEAT_MS: '10' }, /HEARTBEAT/],
       [{ ...base, WATCHDOG_URL: 'http://plain.example' }, /https/],
       [{ ...base, ZEROED_WALLET: 'not-an-address' }, /ZEROED_WALLET/],
+      [{ ...base, ZEROED_API_ADDR: '100.64.0.1:8788' }, /API address must be loopback/],
+      [{ ...base, ZEROED_API_ADDR: '0.0.0.0:8788' }, /API address must be loopback/],
     ] as const) {
       const p = parseConfig(env, () => null);
       expect(p.ok, JSON.stringify(env)).toBe(false);

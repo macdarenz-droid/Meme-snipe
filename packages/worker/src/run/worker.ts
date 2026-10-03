@@ -26,6 +26,7 @@ import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, openIntents } from './desk.ts';
+import { type ApiInputs, type DecisionRow, checkOf, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
@@ -35,7 +36,7 @@ import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './pa
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile } from './state.ts';
 import { parsePool } from '../../../core/src/gates/index.ts';
-import type { PoolFeeContext } from '../../../core/src/amm/index.ts';
+import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
 
 /** One live source the worker runs (a provider stream). Its name is a health feed name, fixed for the whole run. */
 export interface FeedSource {
@@ -132,6 +133,11 @@ export class Worker {
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
   #server: Server | null = null;
+  #api: Server | null = null;
+  /** The app's views: recent candidate decisions, the funnel, token symbols seen on creates. */
+  readonly #rows: DecisionRow[] = [];
+  readonly #funnel = { fromMs: 0, stage: new Map<string, { day: string; stage: number; check: string | null }>(), enteredByDay: new Map<string, number>() };
+  readonly #symbols = new Map<string, string>();
   #stopping = false;
   #sources: readonly FeedSource[] = [];
 
@@ -140,6 +146,7 @@ export class Worker {
     const c = d.config;
     const now = d.timers.now();
     this.#started = now;
+    this.#funnel.fromMs = now;
     this.#boot = `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
@@ -185,6 +192,7 @@ export class Worker {
       },
       simulate: c.simulate ? d.simulate : null,
       journal: (fields) => this.#journal.write('simulation', fields),
+      now: () => d.timers.now(),
       file: new StateFile<PaperState>(c.stateDir, 'paper.json', (v) => (isObj(v) && isObj(v['attempts']) ? (v as unknown as PaperState) : null)),
       changed: () => this.#writeOpenIntents(),
     });
@@ -196,7 +204,10 @@ export class Worker {
       accountChanged: () => this.#publishAccount(),
       intentsChanged: () => this.#writeOpenIntents(),
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
-      filled: (r) => this.#account.filled(r, this.#solPrice),
+      filled: (r) => {
+        this.#account.filled(r, this.#solPrice);
+        if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
+      },
     });
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
     for (const e of stored.events) this.#desk.written(this.#report(e));
@@ -284,6 +295,13 @@ export class Worker {
       if (isObj(v) && typeof v['via'] === 'string') this.#rugVias.add(v['via']);
     }
     this.#cutTradeLog(m);
+    if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && isObj(m.value['event']) && isObj(m.value['event']['data'])) {
+      const sym = m.value['event']['data']['symbol'];
+      if (typeof sym === 'string' && sym.trim() !== '') {
+        this.#symbols.set(m.key.slice('logs:pump:CreateEvent:'.length), sym.trim().slice(0, 32));
+        if (this.#symbols.size > 200_000) this.#symbols.delete(this.#symbols.keys().next().value!);
+      }
+    }
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') {
       this.#createSig.set(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
       if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
@@ -388,6 +406,61 @@ export class Worker {
       this.#publishAccount();
     }
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);
+    this.#view(r);
+  }
+
+  /** Candidate decisions for the app: the decisions list (latest 500) and each candidate's furthest funnel stage. */
+  #view(r: Extract<LogRecord, { type: 'decision' }>): void {
+    const [kind, , mint, why] = r.reasons;
+    const kinds: readonly string[] = [SHORTLIST, 'reject', 'enter', 'no entry', 'risk approved'];
+    if (kind === undefined || mint === undefined || !kinds.includes(kind)) return;
+    const at = r.at.receivedAt;
+    const st = this.#funnel.stage.get(mint) ?? { day: melbourneDate(at), stage: 0, check: null };
+    this.#funnel.stage.set(mint, st);
+    let row: DecisionRow | null = null;
+    if (kind === 'reject' && why !== undefined) {
+      const check = checkOf(why);
+      st.check = check;
+      st.stage = Math.max(st.stage, stageOf(check));
+      row = { id: `${r.eventId}/${r.seq}`, atMs: at, mint, outcome: 'rejected', check, reasons: r.reasons.slice(3), tradeId: null };
+    } else if (kind === 'risk approved') {
+      st.stage = Math.max(st.stage, 3);
+      st.check = null;
+    } else if (kind === 'no entry') {
+      row = { id: `${r.eventId}/${r.seq}`, atMs: at, mint, outcome: 'no-trade', check: st.check, reasons: r.reasons.slice(3), tradeId: null };
+    }
+    if (row !== null) {
+      this.#rows.push(row);
+      if (this.#rows.length > 500) this.#rows.splice(0, this.#rows.length - 500);
+    }
+  }
+
+  /** An entry filled: the candidate reached the last funnel stage. */
+  #entered(mint: string, positionId: string, atMs: number): void {
+    const st = this.#funnel.stage.get(mint) ?? { day: melbourneDate(atMs), stage: 0, check: null };
+    st.stage = 4;
+    this.#funnel.stage.set(mint, st);
+    const day = melbourneDate(atMs);
+    this.#funnel.enteredByDay.set(day, (this.#funnel.enteredByDay.get(day) ?? 0) + 1);
+    this.#rows.push({ id: `entry/${positionId}`, atMs, mint, outcome: 'entered', check: null, reasons: ['entry filled (paper)'], tradeId: positionId });
+    if (this.#rows.length > 500) this.#rows.splice(0, this.#rows.length - 500);
+  }
+
+  /** What the app's read API shows, as of now. */
+  apiInputs(): ApiInputs {
+    const d = this.#d;
+    return {
+      nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
+      connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
+      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
+      solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`,
+      open: (p) => {
+        const saved = this.#strategy.saved()[p.id];
+        const m = this.poolOf(p.mint);
+        const q = m === null ? null : poolSell(m.state, p.quantity, m.ctx);
+        return saved === undefined ? null : { stopPrice: saved.plan.stopPrice, trail: saved.tracker.trail, liquidation: q !== null && q.ok ? q.trade.userQuote : null, openedAtMs: saved.plan.openedAtMs };
+      },
+    };
   }
 
   /** Entries halt while a critical feed is down, stale or dropped by a drill; the state goes to the engine as a fact. */
@@ -477,6 +550,11 @@ export class Worker {
       });
     } catch (e) {
       return { ok: false, code: EXIT.crash, message: `health server: ${e instanceof Error ? e.message : 'error'}` };
+    }
+    try {
+      this.#api = await startApiServer(d.config.api.host, d.config.api.port, () => this.apiInputs());
+    } catch (e) {
+      return { ok: false, code: EXIT.crash, message: `API server: ${e instanceof Error ? e.message : 'error'}` };
     }
     for (const s of this.#sources) s.start();
     const loop = (): void => {
@@ -597,6 +675,7 @@ export class Worker {
     this.#ledger.close();
     if (code === EXIT.clean) writeFileSync(join(d.config.stateDir, STATE_FILES.cleanStop), new Date(d.timers.now()).toISOString());
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
+    await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));
     return code;
   }
 
@@ -612,6 +691,7 @@ export class Worker {
     for (const s of this.#sources) s.stop();
     this.#ledger.close();
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
+    await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));
   }
 
   /** For the `--reconcile` entry: settle, report, close without starting anything. */

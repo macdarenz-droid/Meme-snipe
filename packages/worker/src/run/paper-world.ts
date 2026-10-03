@@ -35,6 +35,10 @@ export interface PaperAttempt {
   fill: Fill | null;
   /** True once its simulation line is journaled (or simulation is off). */
   simulated: boolean;
+  /** Lamport costs of a filled attempt, for the trade report: venue (LP + protocol), creator, extra slippage. */
+  costs?: { readonly venueFee: bigint; readonly creatorFee: bigint; readonly slippage: bigint; readonly base: bigint; readonly priority: bigint; readonly tip: bigint };
+  /** When it was broadcast and when it landed (ms). */
+  sentAtMs?: number;
 }
 
 export interface PaperState {
@@ -80,6 +84,8 @@ export interface PaperWorldDeps {
   /** TEST-2's dryRunTrade for one leg; null when simulation is off. Never throws (failures are records). */
   readonly simulate: ((leg: SimLeg) => Promise<DryRunRecord>) | null;
   readonly journal: (fields: Readonly<Record<string, unknown>>) => void;
+  /** Wall time (ms), for the trade report's fill times. */
+  readonly now: () => number;
   readonly file: StateFile<PaperState>;
   /** Called when an attempt changed (the worker refreshes open_intents). */
   readonly changed: () => void;
@@ -178,7 +184,7 @@ export class PaperWorld implements EffectRunner {
       inAmount: attempt.quote.inAmount, quotedOut: attempt.quote.quotedOut, minOut: attempt.quote.minOut,
       priorityFee: exit ? (this.#d.ladderFees[rung] ?? 0n) : this.#d.network.entryPriorityFee,
       lastValidBlockHeight: attempt.lastValidBlockHeight, fate: draw.fate, landSlot: height + BigInt(Math.max(1, draw.landingSlots)),
-      outcome: 'in_flight', reason: draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null,
+      outcome: 'in_flight', reason: draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null, sentAtMs: this.#d.now(),
     };
     this.#attempts.set(sig, a);
     this.#save();
@@ -232,6 +238,14 @@ export class PaperWorld implements EffectRunner {
     const out = withSlippage(executed, a.quotedOut, this.#d.scenario.slippagePpm);
     if (out < a.minOut) return failed(`slippage: ${out} below min-out ${a.minOut}`);
     const fee = attemptFee(this.#d.network, a.priorityFee, 'filled');
+    const net = this.#d.network;
+    // Extra slippage in lamports: on a sell the shortfall itself; on a buy the tokens lost, valued at the fill's price.
+    const lost = executed - out;
+    const slipLamports = a.purpose === 'entry' ? (out > 0n ? (lost * q.trade.userQuote) / executed : 0n) : lost;
+    a.costs = {
+      venueFee: q.trade.lpFee + q.trade.protocolFee, creatorFee: q.trade.creatorFee, slippage: slipLamports,
+      base: net.signaturesPerTx * net.baseFeePerSignature, priority: a.priorityFee, tip: net.tip,
+    };
     a.fill = {
       intentId: a.intentId as IntentId, signature: a.signature as Signature, slot, commitment: 'confirmed',
       tokens: (a.purpose === 'entry' ? out : a.inAmount) as RawAmount,

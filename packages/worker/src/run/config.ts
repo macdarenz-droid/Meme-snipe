@@ -9,6 +9,8 @@ export interface WorkerConfig {
   readonly simulate: boolean;
   readonly drills: boolean;
   readonly health: { readonly host: string; readonly port: number; readonly addr: string };
+  /** The app's read API: loopback only (OPS publishes it to the tailnet with `tailscale serve`). */
+  readonly api: { readonly host: string; readonly port: number; readonly addr: string };
   readonly runId: string | null;
   readonly runLabel: string | null;
   /** The release commit: ZEROED_GIT_SHA when set, else the release folder's name, else "unknown". */
@@ -33,9 +35,17 @@ export const parseConfig = (env: Readonly<Record<string, string | undefined>>, r
   if (env['ZEROED_MODE'] !== 'paper') return refuse('refused: ZEROED_MODE must be paper');
   const addr = env['ZEROED_HEALTH_ADDR'] ?? DEFAULT_HEALTH_ADDR;
   if (!isLoopback(addr)) return refuse('refused: the health address must be loopback');
-  const cut = addr.lastIndexOf(':');
-  const port = Number(addr.slice(cut + 1));
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) return refuse('refused: the health port is out of range');
+  const hostPort = (a: string) => {
+    const cut = a.lastIndexOf(':');
+    const port = Number(a.slice(cut + 1));
+    return Number.isSafeInteger(port) && port >= 1 && port <= 65_535 ? { host: a.slice(0, cut).replace(/^\[|\]$/g, ''), port, addr: a } : null;
+  };
+  const health = hostPort(addr);
+  if (health === null) return refuse('refused: the health port is out of range');
+  const apiAddr = env['ZEROED_API_ADDR'] ?? '127.0.0.1:8788';
+  if (!isLoopback(apiAddr)) return refuse('refused: the API address must be loopback (OPS publishes it to the tailnet)');
+  const api = hostPort(apiAddr);
+  if (api === null || apiAddr === addr) return refuse('refused: the API port is out of range or the same as the health port');
   const beat = env['ZEROED_HEARTBEAT_MS'] === undefined ? 20_000 : Number(env['ZEROED_HEARTBEAT_MS']);
   if (!Number.isSafeInteger(beat) || beat < 1_000) return refuse('refused: ZEROED_HEARTBEAT_MS must be a whole number of at least 1000');
   const wallet = env['ZEROED_WALLET'] ?? null;
@@ -49,7 +59,7 @@ export const parseConfig = (env: Readonly<Record<string, string | undefined>>, r
     config: {
       stateDir, mode: 'paper',
       recorder: env['ZEROED_RECORDER'] === 'on', simulate: env['ZEROED_SIMULATE'] === 'on', drills: env['ZEROED_DRILLS'] === 'on',
-      health: { host: addr.slice(0, cut).replace(/^\[|\]$/g, ''), port, addr },
+      health, api,
       runId: env['ZEROED_RUN_ID'] ?? null, runLabel: env['ZEROED_RUN_LABEL'] ?? null,
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),

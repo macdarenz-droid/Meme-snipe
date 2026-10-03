@@ -20,6 +20,11 @@ export interface PaperTrade {
   stoppedOut: boolean;
   /** Net lamports of this trade already applied to the paper wallet. */
   booked: bigint;
+  /** SOL/USD (micro-dollars) when it opened and closed: the report values lamports at these. */
+  openSolPrice?: MicroUsd | null;
+  closeSolPrice?: MicroUsd | null;
+  /** The book's exit reasons of the closing exit. */
+  exitReasons?: readonly string[];
 }
 
 export interface AccountState {
@@ -37,6 +42,7 @@ export const accountFile = (dir: string) =>
   new StateFile<AccountState>(dir, 'account.json', (v) => (isObj(v) && typeof v['openedAtMs'] === 'number' && typeof v['openingEquity'] === 'bigint' && Array.isArray(v['trades']) && Array.isArray(v['entries']) ? (v as unknown as AccountState) : null));
 
 const STOPS = new Set(['stop', 'trailing_stop', 'thesis_lost', 'liquidity']);
+const EXIT_REASONS = new Set(['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency']);
 
 export class PaperAccount {
   readonly #file: StateFile<AccountState>;
@@ -73,7 +79,7 @@ export class PaperAccount {
       const notionalReason = r.reasons.find((x) => /^notional \d+$/.test(x));
       const notional = (notionalReason === undefined ? 0n : BigInt(notionalReason.slice('notional '.length))) as MicroUsd;
       if (!this.#s.trades.some((t) => t.positionId === r.positionId)) {
-        this.#s.trades.push({ positionId: r.positionId, mint: r.mint, openedAtMs: r.atMs, notional, closedAtMs: null, netLamports: null, netPnl: null, stoppedOut: false, booked: 0n });
+        this.#s.trades.push({ positionId: r.positionId, mint: r.mint, openedAtMs: r.atMs, notional, closedAtMs: null, netLamports: null, netPnl: null, stoppedOut: false, booked: 0n, openSolPrice: solPrice });
       }
     }
     // The wallet follows every booked fill: entries pay SOL and fees, exits receive SOL and pay fees.
@@ -89,6 +95,8 @@ export class PaperAccount {
       // Valued at the close's SOL price; unknown price: valued as a total loss of the notional (the safe side).
       t.netPnl = solPrice === null ? (-t.notional as MicroUsd) : (net >= 0n ? lamportsToMicroUsd(net as Lamports, solPrice, 'floor') : (-lamportsToMicroUsd((-net) as Lamports, solPrice, 'ceil') as MicroUsd));
       t.stoppedOut = r.reasons.some((x) => STOPS.has(x));
+      t.closeSolPrice = solPrice;
+      t.exitReasons = r.reasons.filter((x) => EXIT_REASONS.has(x));
     }
     this.#file.write(this.#s);
   }
