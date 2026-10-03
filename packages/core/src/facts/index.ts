@@ -3,3 +3,5 @@ export * from './raw.ts';
 export * from './producer.ts';
 export * from './feed.ts';
 export * from './kinds.ts';
+export * from './funding.ts';
+export * from './volume.ts';

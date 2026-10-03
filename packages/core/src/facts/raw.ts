@@ -5,6 +5,7 @@
 // it produces no fact, never a default.
 import type { Commitment } from '../domain/index.ts';
 import { solPriceMicroUsd } from '../units/index.ts';
+import { HOUR_MS } from '../config/time.ts';
 
 /** `getMultipleAccounts` at `commitment`, answered at `slot`. Data is base64; a missing account has owner and data null. */
 export interface AccountsRead {
@@ -24,6 +25,22 @@ export interface HoldersRead {
   readonly commitment: Commitment;
   readonly supply: bigint;
   readonly accounts: readonly { readonly address: string; readonly owner: string; readonly ownerProgram: string | null; readonly amount: bigint }[];
+}
+
+/**
+ * The complete token-account set of a mint: one `getProgramAccounts` on the mint's own token program, memcmp on the
+ * mint at offset 0, answered at `slot`, after the mint itself was read at `mintSlot` (its supply and authority). Account
+ * data is base64 and decoded by the producer; `ownerPrograms` names the program of each off-curve owner (PDAs).
+ */
+export interface HoldersAllRead {
+  readonly mint: string;
+  readonly slot: bigint;
+  readonly commitment: Commitment;
+  readonly program: string;
+  readonly mintSlot: bigint;
+  readonly mintData: string;
+  readonly accounts: readonly { readonly address: string; readonly owner: string; readonly data: string }[];
+  readonly ownerPrograms: readonly { readonly owner: string; readonly program: string | null }[];
 }
 
 /** One `simulateTransaction` of a buy then a sell (TEST-2 builds the transaction). */
@@ -55,14 +72,22 @@ export interface JupiterAuditRead {
   readonly freezeAuthorityDisabled: boolean | null;
 }
 
-/** A wallet's first funding transfer: the earliest SOL transfer into it (null when none was found). */
+/**
+ * A wallet's first funding transfer as of `asOfSlot`: the first SOL transfer into it in its oldest successful
+ * transaction at or before that slot (null when there is none). Later history never counts (H13 point in time).
+ */
 export interface FunderRead {
   readonly wallet: string;
+  /** The decision slot the lookup was filtered to. */
+  readonly asOfSlot: bigint;
   /** True only when the wallet's oldest transaction was reached. False: the history was too long to page to its start. */
   readonly complete: boolean;
   readonly funder: string | null;
+  /** The oldest successful transaction read (the evidence), null when the wallet had none as of `asOfSlot`. */
   readonly signature: string | null;
+  /** Slot and block time (ms) of the funding transaction, null without a funder. */
   readonly slot: bigint | null;
+  readonly atMs: number | null;
 }
 
 /** One closed SOL/USD bar (BT-1's series event shape): `start` ms, `close` an exact decimal string. Bars are hourly. */
@@ -71,10 +96,15 @@ export interface SolUsdBar {
   readonly close: string;
 }
 
-/** A stored DefiLlama snapshot of daily pump.fun curve volume, whole USD per UTC day number, as fetched. */
-export interface CurveVolumeSnapshot {
-  readonly fetchedAt: number;
-  readonly days: readonly { readonly day: number; readonly volumeUsd: bigint }[];
+/**
+ * One completed UTC hour of on-chain trade volume: every buy and sell on the pump curve and on canonical PumpSwap pools,
+ * quote side in lamports (curve sol_amount, pool quote amount). `covered` is false when any slot of the hour was not
+ * scanned (a dataset gap, a live stream gap): that hour, and its day, are unknown. Released only after the hour ends.
+ */
+export interface VolumeHour {
+  readonly hourStartMs: number;
+  readonly lamports: bigint;
+  readonly covered: boolean;
 }
 
 /** The bot's own execution health as measured by the worker (live only, §6.4). */
@@ -90,6 +120,7 @@ export interface ExecStats {
 export const RAW = {
   accounts: (mint: string) => `read:accounts:${mint}`,
   holders: (mint: string) => `read:holders:${mint}`,
+  holdersAll: (mint: string) => `read:holders-all:${mint}`,
   sim: (mint: string) => `read:sim:${mint}`,
   rugcheck: (mint: string) => `read:rugcheck:${mint}`,
   goplus: (mint: string) => `read:goplus:${mint}`,
@@ -97,7 +128,7 @@ export const RAW = {
   funder: (wallet: string) => `read:funder:${wallet}`,
   /** BT-1's key for the SOL/USD series; the live fetcher releases the same bar shape under it. */
   solUsd: 'sol-usd',
-  curveVolume: 'read:defillama:pump-curve-volume',
+  volumeHour: 'read:chain-volume-hour',
   exec: 'read:exec-health',
 } as const;
 
@@ -125,6 +156,12 @@ export const parseHoldersRead = (v: unknown): HoldersRead | null =>
   && every(v['accounts'], (a): a is HoldersRead['accounts'][number] => isObj(a) && isStr(a['address']) && isStr(a['owner']) && strOrNull(a['ownerProgram']) && isNat(a['amount']))
     ? (v as unknown as HoldersRead) : null;
 
+export const parseHoldersAllRead = (v: unknown): HoldersAllRead | null =>
+  isObj(v) && isStr(v['mint']) && isNat(v['slot']) && isCommitment(v['commitment']) && isStr(v['program']) && isNat(v['mintSlot']) && isStr(v['mintData'])
+  && every(v['accounts'], (a): a is HoldersAllRead['accounts'][number] => isObj(a) && isStr(a['address']) && isStr(a['owner']) && typeof a['data'] === 'string')
+  && every(v['ownerPrograms'], (o): o is HoldersAllRead['ownerPrograms'][number] => isObj(o) && isStr(o['owner']) && strOrNull(o['program']))
+    ? (v as unknown as HoldersAllRead) : null;
+
 export const parseSimRead = (v: unknown): SimRead | null =>
   isObj(v) && isStr(v['mint']) && isNat(v['slot']) && isNat(v['spend']) && typeof v['ok'] === 'boolean' && isNat(v['paid']) && isNat(v['proceeds']) && strOrNull(v['error'])
     ? (v as unknown as SimRead) : null;
@@ -140,16 +177,16 @@ export const parseJupiterAuditRead = (v: unknown): JupiterAuditRead | null =>
   isObj(v) && isStr(v['mint']) && boolOrNull(v['mintAuthorityDisabled']) && boolOrNull(v['freezeAuthorityDisabled']) ? (v as unknown as JupiterAuditRead) : null;
 
 export const parseFunderRead = (v: unknown): FunderRead | null =>
-  isObj(v) && isStr(v['wallet']) && typeof v['complete'] === 'boolean' && strOrNull(v['funder']) && strOrNull(v['signature'])
-  && (v['slot'] === null || isNat(v['slot'])) ? (v as unknown as FunderRead) : null;
+  isObj(v) && isStr(v['wallet']) && isNat(v['asOfSlot']) && typeof v['complete'] === 'boolean' && strOrNull(v['funder']) && strOrNull(v['signature'])
+  && (v['slot'] === null || (isNat(v['slot']) && v['slot'] <= v['asOfSlot'])) && (v['atMs'] === null || Number.isSafeInteger(v['atMs']))
+  && (v['funder'] === null) === (v['slot'] === null) ? (v as unknown as FunderRead) : null;
 
 export const parseSolUsdBar = (v: unknown): SolUsdBar | null =>
   isObj(v) && Number.isSafeInteger(v['start']) && typeof v['close'] === 'string' && /^\d+(\.\d+)?$/.test(v['close']) ? (v as unknown as SolUsdBar) : null;
 
-export const parseCurveVolumeSnapshot = (v: unknown): CurveVolumeSnapshot | null =>
-  isObj(v) && Number.isSafeInteger(v['fetchedAt'])
-  && every(v['days'], (d): d is CurveVolumeSnapshot['days'][number] => isObj(d) && Number.isSafeInteger(d['day']) && isNat(d['volumeUsd']))
-    ? (v as unknown as CurveVolumeSnapshot) : null;
+export const parseVolumeHour = (v: unknown): VolumeHour | null =>
+  isObj(v) && Number.isSafeInteger(v['hourStartMs']) && (v['hourStartMs'] as number) % HOUR_MS === 0 && isNat(v['lamports']) && typeof v['covered'] === 'boolean'
+    ? (v as unknown as VolumeHour) : null;
 
 export const parseExecStats = (v: unknown): ExecStats | null =>
   isObj(v) && isCount(v['attempts']) && isCount(v['failed']) && (v['failed'] as number) <= (v['attempts'] as number)

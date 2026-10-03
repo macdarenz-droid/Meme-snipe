@@ -23,10 +23,14 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey, simKey, softKey, streamKey, xcheckKey,
 } from '../gates/facts.ts';
 import { HOURLY_MAX_AGE_MS } from '../gates/series.ts';
+import { insiderLinks } from './funding.ts';
+import { dailyChainVolume } from './volume.ts';
+import type { VolumeHour } from './raw.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
 import {
-  RAW, decimalToMicro, parseAccountsRead, parseCurveVolumeSnapshot, parseExecStats, parseFunderRead, parseGoPlusRead, parseHoldersRead,
-  parseJupiterAuditRead, parseRugCheckRead, parseSimRead, parseSolUsdBar, type AccountsRead, type FunderRead, unwrap,
+  RAW, decimalToMicro, parseAccountsRead, parseVolumeHour, parseExecStats, parseFunderRead, parseGoPlusRead, parseHoldersRead,
+  parseHoldersAllRead, parseJupiterAuditRead, parseRugCheckRead, parseSimRead, parseSolUsdBar, type AccountsRead, type FunderRead,
+  type HoldersAllRead, unwrap,
 } from './raw.ts';
 
 export interface FactWrite {
@@ -63,6 +67,8 @@ export interface ProducerOptions {
   readonly survivalReadWindowMs: number;
   readonly graduatesKeepMs: number;
   readonly solUsdKeepMs: number;
+  /** Hours of chain volume kept: the regime's percentile window plus the last day. */
+  readonly volumeKeepMs: number;
   /** Creation-slot buyers: buys in slots s0 to s0 + this (§16.3: s0 to s0+2). */
   readonly insiderSlots: number;
   /** Funder lookups cover the first this many distinct buyers (§16.3: 20). */
@@ -79,6 +85,7 @@ export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): Produ
   survivalReadWindowMs: MINUTE_MS,
   graduatesKeepMs: (p.regime.survivalMedianDays + 2) * 24 * HOUR_MS + p.regime.survivalAfterMs,
   solUsdKeepMs: 24 * HOUR_MS + (p.regime.failedChecksToDisable + 1) * HOUR_MS + HOURLY_MAX_AGE_MS,
+  volumeKeepMs: (p.regime.volumeWindowDays + 2) * 24 * HOUR_MS,
   insiderSlots: 2,
   firstBuyers: 20,
   ...(execHealth === undefined ? {} : { execHealth }),
@@ -173,6 +180,62 @@ const coverageOf = (key: string): { stream: string; part: 'start' | 'gap' | 'res
 
 const slotOrNull = (v: unknown): bigint | null | undefined => (v === null ? null : typeof v === 'bigint' && v >= 0n ? v : undefined);
 
+// ---------- Completeness ----------
+
+export type Completeness = 'complete' | 'bounded' | 'unresolved';
+
+/**
+ * Every fact says how complete its evidence is, for the gates and BT-2's completeness manifest: `bounded` for a
+ * largest-accounts holder list (the remainder is only bounded), `unresolved` for a flagged fact or an incomplete insider
+ * list, `complete` otherwise. A producer may set it itself; this fills it in from the fact when it did not.
+ */
+export const stampCompleteness = (value: unknown): unknown => {
+  if (!isObj(value) || !isObj(value['obs']) || typeof value['completeness'] === 'string') return value;
+  const q = value['obs']['quality'];
+  const flagged = Array.isArray(q) && q.some((x) => x !== 'backfilled' && x !== 'deduplicated');
+  const c: Completeness = flagged || value['complete'] === false ? 'unresolved' : value['coverage'] === 'largest' ? 'bounded' : 'complete';
+  return { ...value, completeness: c };
+};
+
+// ---------- Complete holder sets ----------
+
+/**
+ * The complete holder set from one program-account read, or null when it cannot be proven complete: an account the
+ * mint's program does not own, one that does not decode or is of another mint, an address twice, a mint that can
+ * still mint (supply could grow), a mint read after the account read, or balances that do not sum to the supply.
+ */
+export const completeHolders = (r: HoldersAllRead): { supply: bigint; coverage: 'all'; completeness: 'complete'; accounts: { mint: string; address: string; owner: string; ownerProgram: string | null; amount: bigint }[] } | null => {
+  if (r.mintSlot > r.slot) return null;
+  let supply: bigint;
+  try {
+    const m = decodeMint(fromBase64(r.mintData), r.program as Address);
+    if (m.mintAuthority !== null) return null;
+    supply = m.supply;
+  } catch {
+    return null;
+  }
+  const programs = new Map(r.ownerPrograms.map((o) => [o.owner, o.program]));
+  const seen = new Set<string>();
+  const accounts: { mint: string; address: string; owner: string; ownerProgram: string | null; amount: bigint }[] = [];
+  let sum = 0n;
+  for (const a of r.accounts) {
+    if (seen.has(a.address) || a.owner !== r.program) return null;
+    seen.add(a.address);
+    let t: ReturnType<typeof decodeTokenAccount>;
+    try {
+      t = decodeTokenAccount(fromBase64(a.data), a.owner as Address);
+    } catch {
+      return null;
+    }
+    if (t.mint !== r.mint) return null;
+    sum += t.amount;
+    if (t.amount > 0n) accounts.push({ mint: r.mint, address: a.address, owner: t.owner, ownerProgram: programs.get(t.owner) ?? null, amount: t.amount });
+  }
+  if (sum !== supply) return null;
+  accounts.sort((a, b) => (a.address < b.address ? -1 : 1));
+  return { supply, coverage: 'all', completeness: 'complete', accounts };
+};
+
 // ---------- Per-mint state ----------
 
 interface PoolCreated {
@@ -233,6 +296,7 @@ export class FactProducer {
   readonly #pending = new Map<string, Pending>();
   readonly #graduates: GraduatesFact['items'][number][] = [];
   readonly #sol = new Map<number, bigint>();
+  readonly #volume = new Map<number, VolumeHour>();
   #head: bigint | null = null;
   #graduatesChanged = false;
   /** The last insiders value written per mint, without its receipt time: unchanged values are not written again. */
@@ -249,7 +313,7 @@ export class FactProducer {
   observe(e: MarketEvent): FactWrite[] {
     const out = new Map<string, unknown>();
     const put = (key: string, value: unknown): void => {
-      out.set(key, value);
+      out.set(key, stampCompleteness(value));
     };
     // Survival marks are judged on the state before this event: a trade after the mark must not date it.
     this.#survival(e, put);
@@ -286,6 +350,7 @@ export class FactProducer {
         const t = this.#track(d.mint);
         if (atMs === null || t.create !== undefined) return;
         t.create = { creator: d.creator, atMs, slot: seen.slot, signature: seen.signature };
+        this.#walletMints.set(d.creator, (this.#walletMints.get(d.creator) ?? new Set<string>()).add(d.mint));
         put(createKey(d.mint), { obs: obs(seen.slot), createdAtMs: atMs, creator: d.creator });
         this.#prune(t);
         this.#insiders(t, e, put);
@@ -481,11 +546,23 @@ export class FactProducer {
     const first = this.#firstBuyers(t);
     const buyersCovered = first !== null && this.#covered(STREAMS.mintTxs(t.mint), c.slot, first.through > windowEnd ? first.through : windowEnd);
     const wallets = first?.wallets ?? [];
-    const funders = wallets.map((w) => this.#funders.get(w));
-    const fundersKnown = first !== null && funders.every((f) => f !== undefined && f.complete);
-    // The dev's linked cluster: first buyers the dev funded directly. A shared upstream funder (often an exchange) is
-    // not a link: it would tie unrelated wallets together.
-    const devCluster = wallets.filter((w, i) => w !== c.creator && funders[i]?.funder === c.creator).sort();
+    // A funder read counts as of now only when it reached the wallet's oldest transaction and is point in time: a
+    // funding after now is not known yet, and "no funding" read as of an earlier slot says nothing about now.
+    const nowSlot = e.moment.slot;
+    const fundedBy = (w: string): FunderRead | undefined => {
+      const f = this.#funders.get(w);
+      if (f === undefined || !f.complete) return undefined;
+      // A found funding is fixed once it happened. No funder found is unknown, never "not funded by the dev": the
+      // first transaction may have been a third party's (a spam token account, a close refund).
+      const known = f.funder !== null && f.slot !== null && f.slot <= nowSlot;
+      return known ? f : undefined;
+    };
+    const funders = wallets.map(fundedBy);
+    const devFunder = fundedBy(c.creator)?.funder ?? null;
+    // The dev's linked cluster (core facts/funding.ts, shared with the backtest supplement): only from complete reads.
+    const links = first === null ? null : insiderLinks(c.creator, wallets, fundedBy);
+    const fundersKnown = links !== null;
+    const devCluster = [...(links?.devCluster ?? [])];
     const creationBuyers = [...t.buyers].filter(([, at]) => at >= c.slot && at <= windowEnd).map(([w]) => w);
     const insiders = [...new Set([...creationBuyers, ...devCluster])].filter((w) => w !== c.creator).sort();
     const fact: InsidersFact = {
@@ -494,14 +571,33 @@ export class FactProducer {
       insiders,
       devCluster,
     };
-    const sig = JSON.stringify([fact.complete, insiders, devCluster, creationBuyers.length, t.devBuySameTx]);
+    const sig = JSON.stringify([fact.complete, insiders, devCluster, creationBuyers.length, t.devBuySameTx, devFunder, funders.map((f) => f?.funder ?? null)]);
     if (this.#insidersSeen.get(t.mint) === sig) return;
     this.#insidersSeen.set(t.mint, sig);
     put(insidersKey(t.mint), fact);
-    const soft: Record<string, unknown> = { obs: fact.obs };
+    const soft: Record<string, unknown> = { obs: fact.obs, completeness: fact.complete ? 'complete' : 'unresolved' };
     if (windowCovered) {
       soft['creationSlotBuyers'] = creationBuyers.length;
       soft['devBuySameTx'] = t.devBuySameTx;
+    }
+    if (buyersCovered) {
+      // First buyers by funding evidence: linked (funded by the dev, or sharing a first funder with another first
+      // buyer), supported independent (a known funder no other first buyer shares), unresolved (no point-in-time read).
+      const byFunder = new Map<string, number>();
+      for (const f of funders) if (f?.funder) byFunder.set(f.funder, (byFunder.get(f.funder) ?? 0) + 1);
+      let linked = 0;
+      let independent = 0;
+      let unresolved = 0;
+      wallets.forEach((w, i) => {
+        if (w === c.creator) return;
+        const f = funders[i];
+        if (f === undefined || f.funder === null) unresolved++;
+        else if (f.funder === c.creator || f.funder === devFunder || (byFunder.get(f.funder) ?? 0) > 1) linked++;
+        else independent++;
+      });
+      soft['knownLinkedOwners'] = linked;
+      soft['supportedIndependentOwners'] = independent;
+      soft['unresolvedOwners'] = unresolved;
     }
     put(softKey(t.mint), soft as unknown as SoftFact);
   }
@@ -596,8 +692,13 @@ export class FactProducer {
       if (r === null || key !== RAW.holders(r.mint) || !usable(r.commitment)) return;
       put(holdersKey(r.mint), {
         obs: { provider, slot: r.slot, receivedAt: at, quality: [], commitment: r.commitment }, supply: r.supply, coverage: 'largest',
-        accounts: r.accounts.map((a) => ({ address: a.address, owner: a.owner, ownerProgram: a.ownerProgram, amount: a.amount })),
+        accounts: r.accounts.map((a) => ({ mint: r.mint, address: a.address, owner: a.owner, ownerProgram: a.ownerProgram, amount: a.amount })),
       });
+    } else if (key.startsWith('read:holders-all:')) {
+      const r = parseHoldersAllRead(v);
+      if (r === null || key !== RAW.holdersAll(r.mint) || !usable(r.commitment)) return;
+      const f = completeHolders(r);
+      if (f !== null) put(holdersKey(r.mint), { obs: { provider, slot: r.slot, receivedAt: at, quality: [], commitment: r.commitment }, ...f });
     } else if (key.startsWith('read:sim:')) {
       const r = parseSimRead(v);
       if (r === null || key !== RAW.sim(r.mint)) return;
@@ -623,10 +724,13 @@ export class FactProducer {
         obs: { provider, slot: null, receivedAt: at, quality: [] },
         points: [...this.#sol].sort((a, b) => a[0] - b[0]).map(([tMs, price]) => ({ tMs, price })),
       });
-    } else if (key === RAW.curveVolume) {
-      const r = parseCurveVolumeSnapshot(v);
-      if (r === null) return;
-      put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: [...r.days].sort((a, b) => a.day - b.day) });
+    } else if (key === RAW.volumeHour) {
+      const r = parseVolumeHour(v);
+      // An hour row is usable only once its hour has ended: earlier it would be a look into the future.
+      if (r === null || at < r.hourStartMs + HOUR_MS) return;
+      this.#volume.set(r.hourStartMs, this.#volume.has(r.hourStartMs) && (this.#volume.get(r.hourStartMs)!.lamports !== r.lamports || this.#volume.get(r.hourStartMs)!.covered !== r.covered) ? { ...r, covered: false } : r);
+      for (const t of [...this.#volume.keys()]) if (t < r.hourStartMs - this.#o.volumeKeepMs) this.#volume.delete(t);
+      put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: dailyChainVolume([...this.#volume.values()]) });
     } else if (key === RAW.exec) {
       const r = parseExecStats(v);
       if (r === null) return;
@@ -725,7 +829,8 @@ export class FactProducer {
       const base = vault(pool.poolBaseTokenAccount, pool.baseMint);
       const quote = vault(pool.poolQuoteTokenAccount, pool.quoteMint);
       if (base !== null && quote !== null) {
-        const fact: PoolFact = {
+        // accountBytes and the pool's cashback and creator fields mirror TX-1b's PoolFact (#51) until it merges.
+        const fact: PoolFact & { readonly accountBytes: number } = {
           obs: obsOf([acc, base.acc, quote.acc]),
           address,
           owner: acc.owner,
@@ -734,7 +839,11 @@ export class FactProducer {
             poolBaseTokenAccount: pool.poolBaseTokenAccount, poolQuoteTokenAccount: pool.poolQuoteTokenAccount, lpSupply: pool.lpSupply,
             ...(pool.isMayhemMode === undefined ? {} : { isMayhemMode: pool.isMayhemMode }),
             ...(pool.virtualQuoteReserves === undefined ? {} : { virtualQuoteReserves: pool.virtualQuoteReserves }),
+            // TX-1b (H17) reads these; absent on pools written before the fields existed.
+            ...(pool.isCashbackCoin === undefined ? {} : { isCashbackCoin: pool.isCashbackCoin }),
+            ...(pool.coinCreator === undefined ? {} : { coinCreator: pool.coinCreator }),
           },
+          accountBytes: fromBase64(acc.data).length,
           baseVault: base.amount,
           quoteVault: quote.amount,
         };
@@ -756,12 +865,14 @@ export class FactProducer {
 
   // ---------- Graduate survival (§6.4) ----------
 
-  /** An account read of a pending graduate's pool, within the window after its mark, dates its survival. */
+  /**
+   * An account read of a pending graduate's pool at or after its mark dates its survival. The window's end needs no
+   * check here: `#survival` runs first on every event and drops a graduate once the window has passed.
+   */
   #readReserve(pool: string, effective: bigint, at: number): void {
     const p = this.#pending.get(pool);
     if (p === undefined) return;
-    const mark = p.migratedAtMs + this.#o.survivalAfterMs;
-    if (at >= mark && at <= mark + this.#o.survivalReadWindowMs) this.#resolve(p, effective);
+    if (at >= p.migratedAtMs + this.#o.survivalAfterMs) this.#resolve(p, effective);
   }
 
   #resolve(p: Pending, reserveAfter: bigint): void {

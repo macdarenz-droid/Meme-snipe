@@ -10,9 +10,10 @@ import type { GateContext } from '../../src/gates/index.ts';
 
 interface TxFixture { label: string; signature: string; slot: string; base64: RpcTransactionBase64 }
 export interface FactsFixture {
-  meta: { fetchedAt: string; mint: string; pool: string; migrationSlot: number; creationSlot: number; firstBuyers: string[] };
+  meta: { fetchedAt: string; mint: string; pool: string; migrationSlot: number; creationSlot: number; creator: string; asOfSlot: string; firstBuyers: string[] };
+  holdersComplete: { mint: { slot: number; owner: string; data: string }; gpa: { slot: number; latencyMs: number; accounts: { address: string; owner: string; data: string }[] } };
   transactions: TxFixture[];
-  funders: { wallet: string; complete: boolean; funder: string | null; signature: string | null; slot: string | null }[];
+  funders: { wallet: string; asOfSlot: string; complete: boolean; funder: string | null; signature: string | null; slot: string | null; atMs: number | null }[];
   accountsRead: { mint: string; slot: string; commitment: string; accounts: { address: string; owner: string | null; data: string | null }[] };
   holdersRaw: {
     largest: { context: { slot: number }; value: { address: string; amount: string }[] };
@@ -26,7 +27,6 @@ export interface FactsFixture {
     jupiter: { mintAuthorityDisabled?: boolean; freezeAuthorityDisabled?: boolean } | null;
   };
   coinbase: string;
-  llama: [number, number][];
 }
 
 export const FIX = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures', 'facts.json'), 'utf8')) as FactsFixture;
@@ -110,7 +110,7 @@ export const coverage = (stream: string, part: 'start' | 'gap' | 'resume', v: Re
 
 export const OPTIONS: ProducerOptions = {
   candleFirstMs: 6 * 60_000, candleLastMs: 4 * 60_000, maxQuoteAgeMs: 2_000, survivalAfterMs: 30 * 60_000, survivalReadWindowMs: 60_000,
-  graduatesKeepMs: 16 * 86_400_000 + 30 * 60_000, solUsdKeepMs: 30 * 3_600_000, insiderSlots: 2, firstBuyers: 20,
+  graduatesKeepMs: 16 * 86_400_000 + 30 * 60_000, solUsdKeepMs: 30 * 3_600_000, volumeKeepMs: 367 * 86_400_000, insiderSlots: 2, firstBuyers: 20,
 };
 
 /**

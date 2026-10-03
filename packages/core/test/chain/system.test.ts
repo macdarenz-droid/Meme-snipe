@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeBase58, firstFunder, recordFromRpc, systemTransfers, type TransactionRecord } from '../../src/chain/index.ts';
 import { FIX } from '../facts/helpers.ts';
 
-const oldest = FIX.transactions.filter((t) => t.label === 'oldest transaction of a first buyer');
+const oldest = FIX.transactions.filter((t) => t.label === 'oldest transaction of a funded wallet');
 
 describe('system transfers', () => {
   it('reads the first funding transfer of real first buyers, and agrees with the recorded funder', () => {

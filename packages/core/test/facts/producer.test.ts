@@ -7,11 +7,11 @@ import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { pumpSwapRoundTrip } from '../../src/costs/index.ts';
 import { OFF_CHAIN, createReplay, type MarketEvent, type Moment } from '../../src/engine/index.ts';
 import {
-  CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, SOL_USD_KEY, Evidence, candlesKey, createKey, curveKey, evaluateHardRejects, evaluateRegime,
+  CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, SOL_USD_KEY, Evidence, evaluateSoftFeatures, candlesKey, createKey, curveKey, evaluateHardRejects, evaluateRegime,
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, RAW, STREAMS, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, RAW, STREAMS, dailyChainVolume, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
 import { FIX, FactWorld, MINT, OPTIONS, POOL, RECORDS, atOf, chainTx, coverage, logEvents, offchain, slotNotice, txEvents } from './helpers.ts';
@@ -86,8 +86,11 @@ describe('migration and curve', () => {
     expect(m).toEqual({
       obs: { provider: 'helius', slot: 452_941_614n, receivedAt: atOf(migrate), quality: [], commitment: 'confirmed' },
       graduatedAtMs: 1_791_032_673_000, migratedAtMs: 1_791_032_673_000, pool: POOL,
-      quoteAtMigration: 84_990_359_062n, price: { quote: 84_990_359_062n, base: 206_900_000_000_000n },
+      quoteAtMigration: 84_990_359_062n, price: { quote: 84_990_359_062n, base: 206_900_000_000_000n }, completeness: 'complete',
     });
+    // H5's tail check filters the pool's trades from this slot: it must be the migration event's own slot.
+    const migSlot = transactionEvents(migrate).find((e) => e.name === 'CompletePumpAmmMigrationEvent')!.slot;
+    expect(m.obs.slot).toBe(migSlot);
     expect(w.last(curveKey(MINT))).toMatchObject({ complete: true, obs: { slot: 452_941_614n, commitment: 'confirmed' } });
   });
 
@@ -316,6 +319,11 @@ describe('mint, pool and LP from a confirmed account read', () => {
     expect(p.address).toBe(POOL);
     expect(p.pool.baseMint).toBe(MINT);
     expect(p.quoteVault).toBeGreaterThan(0n);
+    // H17 inputs (TX-1b): the pool account's size and its cashback and creator fields, from the same read.
+    const extra = p as unknown as { accountBytes: number; pool: { isCashbackCoin?: boolean; coinCreator?: string } };
+    expect(extra.accountBytes).toBe(Buffer.from(FIX.accountsRead.accounts[1]!.data!, 'base64').length);
+    expect(typeof extra.pool.isCashbackCoin).toBe('boolean');
+    expect(typeof extra.pool.coinCreator).toBe('string');
     const lp = parseLp(w.last(lpKey(MINT)))!;
     expect(lp.lpMint).toBe(p.pool.lpMint);
     // GATE-1 on the real accounts, two slots later: H1-H7 judged, no evidence failure among them.
@@ -378,7 +386,7 @@ describe('insiders', () => {
   const s0 = create.slot;
   const stream = STREAMS.mintTxs(MINT);
   const window = RECORDS.filter((r) => r.label === 'creation window' || r.label === 'first buyers').map((r) => r.rec);
-  const funders = () => FIX.funders.map((f) => ({ ...f, slot: f.slot === null ? null : BigInt(f.slot) }));
+  const funders = () => FIX.funders.map((f) => ({ ...f, asOfSlot: BigInt(f.asOfSlot), slot: f.slot === null ? null : BigInt(f.slot) }));
   const run = (opts: { cover?: boolean; funders?: ReturnType<typeof funders>; head?: boolean } = {}): FactWorld => {
     const w = new FactWorld();
     if (opts.cover ?? true) w.push(coverage(stream, 'start', { fromSlot: s0, via: `sigs:${MINT}` }, s0 - 1n, atOf(create) - 1000));
@@ -403,14 +411,16 @@ describe('insiders', () => {
     const through = slots.length >= 20 ? slots[19]! : curveDone!;
     const expected = [...firstSlot].filter(([, at]) => at <= through).map(([x]) => x);
     const found = new Map(FIX.funders.map((x) => [x.wallet, x.complete]));
-    expect(f.complete).toBe(expected.every((x) => found.get(x) === true));
+    expect(f.complete).toBe([FIX.meta.creator, ...expected].every((x) => found.get(x) === true));
     // Every creation-slot buyer from the real transactions is listed (the dev aside: the gate adds the dev).
     const creator = parseCreate(w.last(createKey(MINT)))!.creator;
     const buyers = new Set<string>();
     for (const r of window) for (const e of transactionEvents(r)) if (e.name === 'TradeEvent' && e.data.isBuy && e.data.mint === MINT && e.slot <= s0 + 2n && e.data.user !== creator) buyers.add(e.data.user);
     for (const b of buyers) expect(f.insiders).toContain(b);
-    // Cluster = first buyers whose first funder is the dev.
-    const funded = FIX.funders.filter((x) => x.funder === creator).map((x) => x.wallet).filter((x) => x !== creator).sort();
+    // Cluster = first buyers funded by the dev or by the dev's own first funder (on this coin: a real bundle).
+    const devFunder = FIX.funders.find((x) => x.wallet === creator)?.funder ?? null;
+    const funded = FIX.funders.filter((x) => x.wallet !== creator && (x.funder === creator || (devFunder !== null && x.funder === devFunder))).map((x) => x.wallet).sort();
+    expect(funded.length).toBeGreaterThan(0);
     expect(f.devCluster).toEqual(funded);
     expect(w.last('gates/soft:' + MINT)).toMatchObject({ creationSlotBuyers: expect.any(Number) });
   });
@@ -440,6 +450,165 @@ describe('insiders', () => {
     expect(parseInsiders(run().last(insidersKey(MINT)))!.complete).toBe(true);
     const gap = run({ head: false }).push(coverage(stream, 'gap', { fromSlot: s0 + 1n, toSlot: s0 + 1n, reason: 'x', via: `sigs:${MINT}` }, window.at(-1)!.slot + 4n, atOf(window.at(-1)!) + 3000));
     expect(parseInsiders(gap.last(insidersKey(MINT)))!.complete).toBe(false);
+  });
+});
+
+describe('funding as of the decision', () => {
+  const s0 = create.slot;
+  const stream = STREAMS.mintTxs(MINT);
+  const window = RECORDS.filter((r) => r.label === 'creation window').map((r) => r.rec);
+  const base = () => FIX.funders.map((f) => ({ ...f, asOfSlot: BigInt(f.asOfSlot), slot: f.slot === null ? null : BigInt(f.slot) }));
+  const world = (fs: ReturnType<typeof base>, at: bigint) => {
+    const w = new FactWorld().push(coverage(stream, 'start', { fromSlot: s0, via: `sigs:${MINT}` }, s0 - 1n, atOf(create) - 1000));
+    w.push(...window.flatMap((r) => txEvents(r)));
+    const last = window.at(-1)!;
+    for (const f of fs) w.push(offchain(RAW.funder(f.wallet), f, last.slot, atOf(last) + 100));
+    w.push(slotNotice(at, atOf(last) + 2000));
+    return w;
+  };
+
+  it('a funding dated after now does not count, and "no transaction yet" holds only up to its own slot', () => {
+    const at = window.at(-1)!.slot + 3n;
+    expect(parseInsiders(world(base(), at).last(insidersKey(MINT)))!.complete).toBe(true);
+    const future = base().map((f, i) => (i === 1 && f.slot !== null ? { ...f, slot: at + 1_000n, asOfSlot: at + 1_000n } : f));
+    expect(parseInsiders(world(future, at).last(insidersKey(MINT)))!.complete).toBe(false);
+    const stale = base().map((f, i) => (i === 1 ? { ...f, funder: null, signature: null, slot: null, atMs: null, asOfSlot: s0 - 1n } : f));
+    expect(parseInsiders(world(stale, at).last(insidersKey(MINT)))!.complete).toBe(false);
+  });
+
+  it('soft values are read at a real decision, an hour after migration', () => {
+    const at = window.at(-1)!.slot + 3n;
+    const w = world(base(), at);
+    const later: Moment = { slot: migrate.slot + 9_000n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: 1_791_032_673_000 + 3_600_000 };
+    w.push(slotNotice(later.slot, later.receivedAt));
+    const r = evaluateSoftFeatures(w.ctx(later), { session, mode: 'backtest' }, MINT);
+    const v = (n: string) => r.features.find((f) => f.name === n)?.value;
+    expect(v('creationSlotBuyers')).not.toBeNull();
+    expect(v('devBuySameTx')).not.toBeNull();
+  });
+
+  it('the dev\'s own funder is required, and soft counts linked, independent and unresolved first buyers', () => {
+    const at = window.at(-1)!.slot + 3n;
+    const noDev = base().filter((f) => f.wallet !== FIX.meta.creator);
+    expect(parseInsiders(world(noDev, at).last(insidersKey(MINT)))!.complete).toBe(false);
+    const soft = world(base(), at).last('gates/soft:' + MINT) as Record<string, unknown>;
+    const n = (soft['knownLinkedOwners'] as number) + (soft['supportedIndependentOwners'] as number) + (soft['unresolvedOwners'] as number);
+    expect(n).toBe(FIX.meta.firstBuyers.filter((b) => b !== FIX.meta.creator).length);
+    expect(soft['knownLinkedOwners']).toBeGreaterThan(0);
+    expect(soft['completeness']).toBe('complete');
+  });
+});
+
+describe('complete holder set', () => {
+  const hc = FIX.holdersComplete;
+  const read = (over: Partial<Record<string, unknown>> = {}) => ({
+    mint: MINT, slot: BigInt(hc.gpa.slot), commitment: 'confirmed', program: hc.mint.owner, mintSlot: BigInt(hc.mint.slot), mintData: hc.mint.data,
+    accounts: hc.gpa.accounts, ownerPrograms: [], ...over,
+  });
+  const fact = (r: unknown) => new FactWorld().push(offchain(RAW.holdersAll(MINT), r, BigInt(hc.gpa.slot), 1_791_100_000_000, 'helius')).last(holdersKey(MINT));
+
+  it('one real program-account read gives every holder, summing to the supply exactly (coverage all)', () => {
+    const f = parseHolders(fact(read()))!;
+    expect(f.coverage).toBe('all');
+    expect((f as unknown as { completeness: string }).completeness).toBe('complete');
+    expect(f.accounts.reduce((s, a) => s + a.amount, 0n)).toBe(f.supply);
+    // Token-2022 accounts carry extensions: 170 bytes or more, and they are in.
+    expect(hc.gpa.accounts.some((a) => Buffer.from(a.data, 'base64').length >= 170)).toBe(true);
+    expect(f.accounts.every((a) => (a as unknown as { mint: string }).mint === MINT)).toBe(true);
+  });
+
+  it('a repeated address, a wrong program, a mint read after the scan or a wrong total proves nothing', () => {
+    expect(fact(read({ accounts: [...hc.gpa.accounts, hc.gpa.accounts[0]!] }))).toBeUndefined();
+    expect(fact(read({ accounts: hc.gpa.accounts.map((a, i) => (i === 0 ? { ...a, owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' } : a)) }))).toBeUndefined();
+    expect(fact(read({ mintSlot: BigInt(hc.gpa.slot) + 1n }))).toBeUndefined();
+    // One holding account missing: the balances no longer sum to the supply.
+    const holding = hc.gpa.accounts.findIndex((a) => Buffer.from(a.data, 'base64').readBigUInt64LE(64) > 0n);
+    expect(fact(read({ accounts: hc.gpa.accounts.filter((_, i) => i !== holding) }))).toBeUndefined();
+    expect(fact(read({ commitment: 'processed' }))).toBeUndefined();
+  });
+});
+
+describe('coverage and window bounds (review mutants)', () => {
+  const s0 = create.slot;
+  const stream = STREAMS.mintTxs(MINT);
+  const window = RECORDS.filter((r) => r.label === 'creation window').map((r) => r.rec);
+  const reads = () => FIX.funders.map((f) => ({ ...f, asOfSlot: BigInt(f.asOfSlot), slot: f.slot === null ? null : BigInt(f.slot) }));
+  const last = window.at(-1)!;
+  const insidersWith = (cover: MarketEvent[], extra: MarketEvent[] = []) => {
+    const w = new FactWorld().push(...cover);
+    w.push(...window.flatMap((r) => txEvents(r)));
+    for (const f of reads()) w.push(offchain(RAW.funder(f.wallet), f, last.slot, atOf(last) + 100));
+    w.push(...extra, slotNotice(last.slot + 3n, atOf(last) + 2000));
+    return w;
+  };
+  const start = (from: bigint, n = 0) => coverage(stream, 'start', { fromSlot: from, via: `sigs:${MINT}` }, s0 - 1n, atOf(create) - 1000 + n);
+
+  it('a bounded gap inside the window leaves the insiders incomplete, with the head past it', () => {
+    expect(parseInsiders(insidersWith([start(s0)]).last(insidersKey(MINT)))!.complete).toBe(true);
+    const gap = coverage(stream, 'gap', { fromSlot: s0 + 1n, toSlot: s0 + 1n, reason: 'x', via: `sigs:${MINT}` }, s0 - 1n, atOf(create) - 900);
+    expect(parseInsiders(insidersWith([start(s0), gap]).last(insidersKey(MINT)))!.complete).toBe(false);
+  });
+
+  it('a restart after an open gap keeps the missed range as a gap', () => {
+    const open = coverage(stream, 'gap', { fromSlot: s0 + 1n, toSlot: null, reason: 'disconnect', via: `sigs:${MINT}` }, s0 - 1n, atOf(create) - 900);
+    expect(parseInsiders(insidersWith([start(s0), open, start(s0 + 3n, 200)]).last(insidersKey(MINT)))!.complete).toBe(false);
+  });
+
+  it('the creation window is s0..s0+2: a buy at s0+3 is not a creation-slot buyer', () => {
+    const base = parseInsiders(insidersWith([start(s0)]).last(insidersKey(MINT)))!;
+    const buy = window.flatMap((r) => txEvents(r)).find((e) => e.key.startsWith('pump:TradeEvent:') && ((e.value as { event: { data: { isBuy: boolean } } }).event.data.isBuy))!;
+    const v = buy.value as { event: { data: Record<string, unknown> } };
+    const late: MarketEvent = { ...buy, id: 'ev:late-buyer:00000:00000', moment: { ...buy.moment, slot: s0 + 3n, txIndex: 2 ** 33 }, value: { ...v, txSlot: s0 + 3n, event: { ...v.event, signature: 'late-buyer', data: { ...v.event.data, user: 'LateBuyer1111111111111111111111111111111111' } } } };
+    const f = parseInsiders(insidersWith([start(s0)], [late]).last(insidersKey(MINT)))!;
+    expect(f.insiders).toEqual(base.insiders);
+    // Once the curve completed, a later buyer is not a first buyer either: the set and its completeness stand.
+    expect(f.complete).toBe(base.complete);
+    // Without the completion (so every buyer is kept), the window alone keeps it out of the creation-slot buyers.
+    const noComplete = (e: MarketEvent) => !e.key.startsWith('pump:CompleteEvent:');
+    const w2 = new FactWorld().push(start(s0));
+    w2.push(...window.flatMap((r) => txEvents(r)).filter(noComplete), late, slotNotice(last.slot + 3n, atOf(last) + 2000));
+    expect(parseInsiders(w2.last(insidersKey(MINT)))!.insiders).not.toContain('LateBuyer1111111111111111111111111111111111');
+  });
+
+  it('a cut log carrying events opens a hole in its stream', () => {
+    const tradesStream = STREAMS.trades(POOL);
+    const head = swaps.at(-1)!.slot + 1n;
+    const at = atOf(swaps.at(-1)!) + 1000;
+    const w = new FactWorld().push(coverage(tradesStream, 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500));
+    w.push(...txEvents(complete), ...txEvents(migrate));
+    for (const x of swaps.slice(0, -1)) w.push(...txEvents(x));
+    // The last swap arrives only as confirmed log lines, cut after its events.
+    w.push(...logEvents(swaps.at(-1)!, 'confirmed').map((e) => ({ ...e, value: { ...(e.value as object), truncated: true } })));
+    w.push(slotNotice(head, at));
+    const r = ev(w, after(head, at + 1)).read('candles', candlesKey(MINT), parseCandles, 'state', 'H11');
+    expect(!r.ok && r.reason.code).toBe('gap');
+  });
+
+  it('survival takes only a reserve from before the mark', () => {
+    const mark = 1_791_032_673_000 + 30 * 60_000;
+    const w = new FactWorld();
+    w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete), ...txEvents(migrate));
+    w.push(slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
+    // A swap stamped after the mark (on-chain clock) arrives before the first event at the mark.
+    const sw = swaps.flatMap((x) => txEvents(x)).find((e) => e.key.startsWith('pump_amm:BuyEvent:'))!;
+    const v = sw.value as { event: { data: Record<string, unknown> } };
+    w.push({ ...sw, id: 'ev:after-mark:00000:00000', moment: { ...sw.moment, slot: migrate.slot + 10n, receivedAt: mark - 1000 }, value: { ...v, txSlot: migrate.slot + 10n, event: { ...v.event, signature: 'after-mark', data: { ...v.event.data, timestamp: BigInt((mark + 10_000) / 1000) } } } });
+    w.push(slotNotice(migrate.slot + 4600n, mark + 5));
+    expect(w.facts(GRADUATES_KEY)).toEqual([]);
+  });
+
+  it('an older account read never overwrites newer state', () => {
+    const r = { ...FIX.accountsRead, slot: BigInt(FIX.accountsRead.slot) };
+    const quoteVault = (w: FactWorld) => parsePool(w.last(poolKey(MINT)))!.quoteVault;
+    const w = new FactWorld().push(...lifecycle(), offchain(RAW.accounts(MINT), r, r.slot, 1_791_100_000_000));
+    const before = quoteVault(w);
+    // The same accounts read at an older slot with an emptied quote vault (bytes 64..72 are the amount).
+    const data = Buffer.from(r.accounts[3]!.data!, 'base64');
+    data.writeBigUInt64LE(1n, 64);
+    const older = { ...r, slot: r.slot - 5n, accounts: r.accounts.map((a, i) => (i === 3 ? { ...a, data: data.toString('base64') } : a)) };
+    w.push(offchain(RAW.accounts(MINT), older, r.slot, 1_791_100_000_100));
+    expect(quoteVault(w)).toBe(before);
+    expect(parsePool(w.last(poolKey(MINT)))!.obs.slot).toBe(r.slot);
   });
 });
 
@@ -487,7 +656,7 @@ describe('cross-checks, simulation and execution health (live-only vetoes)', () 
   });
 });
 
-describe('series: SOL/USD and curve volume', () => {
+describe('series: SOL/USD and chain volume', () => {
   const bars = (): { start: number; close: string }[] => {
     const NUM = '(-?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?)';
     const re = new RegExp(`\\[\\s*(\\d+)\\s*,\\s*${NUM}\\s*,\\s*${NUM}\\s*,\\s*${NUM}\\s*,\\s*${NUM}\\s*,\\s*${NUM}\\s*\\]`, 'g');
@@ -521,12 +690,27 @@ describe('series: SOL/USD and curve volume', () => {
     expect(parseSolUsd(new FactWorld().push(bare).last(SOL_USD_KEY))!.points).toEqual([{ tMs: 1_791_000_000_000, price: 150_500_000n }]);
   });
 
-  it('a real DefiLlama snapshot is the curve-volume fact, dated at its fetch', () => {
-    const days = FIX.llama.map(([t, v]) => ({ day: t / 86_400, volumeUsd: BigInt(Math.floor(v)) }));
-    const fetchedAt = Date.parse(FIX.meta.fetchedAt);
-    const w = new FactWorld().push(offchain(RAW.curveVolume, { fetchedAt, days }, 5n, fetchedAt, 'defillama'));
-    expect(w.last(CURVE_VOLUME_KEY)).toMatchObject({ obs: { receivedAt: fetchedAt }, days });
-    expect(new FactWorld().push(offchain(RAW.curveVolume, { fetchedAt, days: [{ day: 1, volumeUsd: -5n }] }, 5n, 1)).facts(CURVE_VOLUME_KEY)).toEqual([]);
+  const hours = (day: number, lamports: (h: number) => bigint, uncovered: number[] = []) =>
+    Array.from({ length: 24 }, (_, h) => ({ hourStartMs: day * 86_400_000 + h * 3_600_000, lamports: lamports(h), covered: !uncovered.includes(h) }));
+
+  it('chain volume: complete UTC days summed in lamports, the same through the producer as through the shared function', () => {
+    const day = 20_729; // 2026-10-02
+    const rows = [...hours(day - 1, (h) => BigInt(h + 1) * 1_000_000_000n), ...hours(day, () => 2_000_000_000n)];
+    const w = new FactWorld();
+    rows.forEach((r, i) => w.push(offchain(RAW.volumeHour, r, BigInt(1000 + i), r.hourStartMs + 3_600_000 + 1)));
+    const f = w.last(CURVE_VOLUME_KEY) as { days: { day: number; volumeLamports: bigint }[] };
+    expect(f.days).toEqual(dailyChainVolume(rows));
+    expect(f.days).toEqual([{ day: day - 1, volumeLamports: 300_000_000_000n }, { day, volumeLamports: 48_000_000_000n }]);
+  });
+
+  it('a day with an uncovered, missing or contradicting hour is unknown, never a smaller volume; an hour is used only after it ends', () => {
+    const day = 20_729;
+    expect(dailyChainVolume(hours(day, () => 1n, [5]))).toEqual([]);
+    expect(dailyChainVolume(hours(day, () => 1n).slice(1))).toEqual([]);
+    const twice = [...hours(day, () => 1n), { hourStartMs: day * 86_400_000, lamports: 2n, covered: true }];
+    expect(dailyChainVolume(twice)).toEqual([]);
+    const r = hours(day, () => 1n)[0]!;
+    expect(new FactWorld().push(offchain(RAW.volumeHour, r, 1n, r.hourStartMs + 3_599_999)).facts(CURVE_VOLUME_KEY)).toEqual([]);
   });
 });
 
