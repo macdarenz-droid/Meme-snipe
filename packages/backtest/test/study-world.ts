@@ -48,6 +48,8 @@ export interface MintPlan {
   /** Largest random buy, lamports (default 2 SOL), and the share of a holder's tokens a sell takes (1/n, default 2). */
   readonly buySize?: number;
   readonly sellDivisor?: number;
+  /** From this many slots after migration the pool charges these fees (a fee-config change such as B3). */
+  readonly feesFrom?: { readonly since: number; readonly lp: number; readonly protocol: number; readonly creator: number };
   /** The first swap at or after this many slots since migration carries this tail (hex) in its event (H5). */
   readonly tail?: { readonly after: number; readonly hex: string };
   /** Stop the mint's swaps this many slots after migration (dead pool). */
@@ -206,7 +208,9 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
           kind: 'amm', slot, blockTime, txIdx: tx, evIdx: 0, signature, pool: pl.pool, baseMint: pl.mint, quoteMint: NATIVE_MINT,
           side: buy ? 'buy' : 'sell', mode: buy ? 'exact-quote-in' : 'exact-base',
           amount: buy ? BigInt(Math.floor(rnd() * (p.buySize ?? 2e9))) + 50_000_000n : heldBy / BigInt(p.sellDivisor ?? 2) + 1n,
-          baseAmount: 0n, quoteAmount: 0n, userQuote: 0n, pre: pl.state, fees: FEES, baseSupply: SUPPLY,
+          baseAmount: 0n, quoteAmount: 0n, userQuote: 0n, pre: pl.state, baseSupply: SUPPLY,
+          fees: p.feesFrom !== undefined && since >= p.feesFrom.since
+            ? { ...FEES, split: { lp: bps(p.feesFrom.lp), protocol: bps(p.feesFrom.protocol), creator: bps(p.feesFrom.creator) } } : FEES,
           ixName: buy ? 'buy_exact_quote_in' : 'sell', user, lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '',
         };
         const q = replaySwap(pl.state, swap);

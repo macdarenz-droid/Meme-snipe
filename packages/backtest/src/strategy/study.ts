@@ -26,7 +26,7 @@ import {
 import { observedFeeContext, type ScenarioName } from '../../../core/src/fills/index.ts';
 import {
   DeployerIndex, evaluateHardRejects, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
-  migrationKey, parseMigration, concentration, mintAccounts, type HardResult,
+  migrationKey, parseMigration, concentration, mintAccounts, type HardResult, type HardGate,
 } from '../../../core/src/gates/index.ts';
 import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src/lifecycle/index.ts';
 import { evaluateEntry, NO_LATCHES, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
@@ -52,6 +52,12 @@ export interface StudyOptions {
   /** Entries are planned only inside [from, to) (a walk-forward fold or the holdout, embargo applied). */
   readonly entriesFrom: number;
   readonly entriesTo: number;
+  /**
+   * A paper-only ablation (supervisor ruling after external review): a candidate whose only failing gates are these
+   * is entered anyway, tagged `<universe>-no<gates>`, so the outcomes of what the filter blocks are scored with the
+   * same size, costs, delays and exits. Never used for a decision: the filters stay on.
+   */
+  readonly ablate?: readonly HardGate[];
 }
 
 const paperSignature = (id: string) =>
@@ -248,7 +254,7 @@ export class StudyStrategy implements Strategy {
     const u = this.#universes.get(universe);
     if (u === undefined) return;
     const now = ctx.now.receivedAt;
-    const tag = this.#o.mode === 's0' ? `S0-${u.universe}` : u.universe;
+    const tag = this.#o.mode === 's0' ? `S0-${u.universe}` : this.#o.ablate !== undefined ? `${u.universe}-no${this.#o.ablate.join('')}` : u.universe;
     const key = `${tag}|${mint}`;
     let c = this.#candidates.get(key);
     if (c === undefined) {
@@ -290,7 +296,11 @@ export class StudyStrategy implements Strategy {
     const gates = evaluateHardRejects(gctx, { session: this.#o.session, mode: 'backtest', rugLabeller: 'RUG-1' },
       { mint, universe: (this.#o.mode === 's0' ? 'S0' : u.universe) as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip: quoter(spend) },
       { stopAtFirst: false });
-    if (!gates.pass) return void say('reject', ...gateCodes(gates));
+    const ablated = this.#o.ablate !== undefined && !gates.pass && gates.failed.every((g) => this.#o.ablate!.includes(g));
+    if (!gates.pass && !ablated) return void say('reject', ...gateCodes(gates));
+    // An ablation run enters only what the filter blocks: everything else is the main run's.
+    if (this.#o.ablate !== undefined && gates.pass) return;
+    if (ablated) say('ablation', ...gateCodes(gates));
 
     const tape = this.#tapes.get(pool);
     if (tape === undefined || tape.last === null) return void say('no entry', 'no trades seen on the pool');

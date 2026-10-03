@@ -20,6 +20,7 @@ import { loadOrCreate, readStudyRegistry, recordTrial, register, type StudyRegis
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { openSealed, runSealedHoldout, sealedReady } from './sealed.ts';
 import { countsOf, rejectMix, scoreRun, type ScoredTrade } from './score.ts';
+import { completenessManifest, type ManifestRow, missingEvidence } from './completeness.ts';
 import { tradesOf as tradesOfRun } from '../trades.ts';
 import type { DeploymentStats } from '../strategy/study.ts';
 
@@ -52,6 +53,8 @@ export interface StudyInputs {
    * study code must not reach ledger internals (label isolation guard).
    */
   readonly ledgerReplay: (path: string) => LedgerReplayResult;
+  /** Raw records exist for every create and pool creation (DATA-1 #46), not only the hash sample. */
+  readonly rawForAll?: boolean;
 }
 
 export interface LedgerReplayResult {
@@ -90,6 +93,17 @@ export interface StudyReport {
     readonly rejectedOpportunities: Readonly<Record<string, number>>;
     readonly notes: readonly string[];
   };
+  /**
+   * Blocked candidates' outcomes per ablated gate, universe and regime (paper only). A filter is removed only when
+   * out-of-sample evidence shows removing it improves net results without an unacceptable tail (pre-registered: the
+   * 5th-percentile trade and the maximum drawdown no worse at the one-sided 95% level); until then it stays on.
+   */
+  /** Which gate inputs the dataset and supplements rebuild as of each decision, and how often each was missing. */
+  readonly completeness: { readonly manifest: readonly ManifestRow[]; readonly missing: Readonly<Record<string, Readonly<Record<string, number>>>> };
+  readonly ablations: readonly {
+    readonly gates: readonly string[];
+    readonly byUniverse: Readonly<Record<string, Readonly<Record<string, { readonly blocked: number; readonly meanNet: number | null; readonly lossesAvoided: number; readonly profitsExcluded: number; readonly p5: number | null }>>>>;
+  }[];
   readonly holdout: { readonly ran: boolean; readonly counts: Readonly<Record<string, unknown>> | null; readonly sealHash: string | null; readonly required: Readonly<Record<string, number | null>> };
   readonly gates: { readonly G0: GateResult; readonly G1: Readonly<Record<string, GateResult>>; readonly G2: GateResult };
   readonly holdoutRegime: string;
@@ -134,6 +148,10 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // 1b. Deployment replay on the same days (never on the holdout): the setups at the real size against one account.
   let depStats: DeploymentStats | null = null;
   const dep = runStudy({ ...wfOpts, mode: 'deployment', seed: `${i.seed}:deployment`, onStrategy: (x) => { depStats = x.deployment; } });
+
+  // 1c. Ablations (paper only, walk-forward days): what H9, H11 and H14 block, scored like accepted trades.
+  const ABLATIONS: readonly (readonly ('H9' | 'H11' | 'H14')[])[] = [['H9'], ['H11'], ['H14']];
+  const ablationRuns = ABLATIONS.map((g) => ({ gates: g, run: runStudy({ ...wfOpts, mode: 'strategy', ablate: g, seed: `${i.seed}:ablate:${g.join('')}` }) }));
 
   // 2. Scoring stage.
   const scored = purge(scoreRun(wf, i.fills), plan, c.embargoMs, regime);
@@ -247,6 +265,27 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       folds: Object.fromEntries(universes.map((u) => [u, foldSummary(tradesOf(u), plan.walkForward.folds)])), trades: scored.kept, s0Seeds: s0.length, ledgerReplay,
       byRegime: Object.fromEntries(universes.map((u) => [u, Object.fromEntries(regimes.map((g) => [g, tradesOf(u).filter((t) => t.regime === g).length]))])),
     },
+    completeness: {
+      manifest: completenessManifest({ funding: i.insiders !== undefined, rugs: false, rawForAll: i.rawForAll ?? false }),
+      missing: missingEvidence(rejectMix(wf.records)),
+    },
+    ablations: ablationRuns.map(({ gates, run }) => {
+      const blocked = purge(scoreRun(run, i.fills), plan, c.embargoMs, regime).kept;
+      const byUniverse: Record<string, Record<string, { blocked: number; meanNet: number | null; lossesAvoided: number; profitsExcluded: number; p5: number | null }>> = {};
+      for (const u of universes) {
+        const mine = blocked.filter((t) => t.tag === `${u}-no${gates.join('')}`);
+        byUniverse[u] = {};
+        for (const g of [...new Set(mine.map((t) => t.regime))].sort()) {
+          const xs = mine.filter((t) => t.regime === g).map((t) => t.rNet).sort((a, b) => a - b);
+          byUniverse[u]![g] = {
+            blocked: xs.length, meanNet: xs.length === 0 ? null : xs.reduce((a, b) => a + b, 0) / xs.length,
+            lossesAvoided: -xs.filter((x) => x < 0).reduce((a, b) => a + b, 0), profitsExcluded: xs.filter((x) => x > 0).reduce((a, b) => a + b, 0),
+            p5: xs.length === 0 ? null : xs[Math.floor(0.05 * (xs.length - 1))]!,
+          };
+        }
+      }
+      return { gates, byUniverse };
+    }),
     deployment: (() => {
       const ds = depStats as DeploymentStats | null;
       const tr = scoreRun(dep, i.fills);

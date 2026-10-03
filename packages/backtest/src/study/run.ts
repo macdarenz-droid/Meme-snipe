@@ -14,6 +14,8 @@ import { StudyStrategy } from '../strategy/study.ts';
 export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' | 's0'> {
   readonly study: StudyConfig;
   readonly mode: 'strategy' | 's0' | 'deployment';
+  /** A paper-only ablation of these gates (StudyOptions.ablate). */
+  readonly ablate?: readonly import('../../../core/src/gates/index.ts').HardGate[];
   /** Receives the run's strategy (to read the deployment replay's figures after the run). */
   readonly onStrategy?: (s: StudyStrategy) => void;
   /** Entries are planned only inside [entriesFrom, entriesTo). */
@@ -65,6 +67,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
     strategy: () => {
       const s = new StudyStrategy({
         config: o.study, session: startSession(o.policy), fills: o.fills, scenario: o.scenario, mode: o.mode, entriesFrom: o.entriesFrom, entriesTo: o.entriesTo,
+        ...(o.ablate === undefined ? {} : { ablate: o.ablate }),
       });
       o.onStrategy?.(s);
       return s;

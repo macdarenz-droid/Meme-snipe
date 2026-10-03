@@ -116,6 +116,32 @@ describe('BT-2 study runs', () => {
     expect(s.peakEquityUsd).toBeGreaterThan(0n);
   });
 
+  it('ablation: a candidate blocked only by H9 is entered on paper under its own tag; one passing every gate is not', () => {
+    const blocked = run([{ ...SETUP, graduateAfter: 4 * MIN }], { ablate: ['H9'] });
+    const enters = decisions(blocked.r.records).filter((d) => d.reasons[0] === 'enter');
+    expect(enters.length).toBe(1);
+    expect(enters[0]!.reasons[1]).toBe('U2-noH9');
+    expect(decisions(blocked.r.records).some((d) => d.reasons[0] === 'ablation' && d.reasons.includes('H9:instant-graduation'))).toBe(true);
+    const passing = run([SETUP], { ablate: ['H9'] });
+    expect(decisions(passing.r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
+    // Another failing gate keeps it out.
+    const two = run([{ ...SETUP, graduateAfter: 4 * MIN, keepMintAuthority: true }], { ablate: ['H9'] });
+    expect(decisions(two.r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
+  });
+
+  it('charges the fees in force at each trade\'s slot (a fee change before the entry is paid, never today\'s fees)', () => {
+    const before = tradesOf(base.r, FILL_CONFIG).trades[0]!;
+    // The pool's fees change 30 min after migration, well before the U2 window opens at 60 min.
+    const changed = run([{ ...SETUP, feesFrom: { since: 30 * MIN, lp: 50, protocol: 20, creator: 95 } }]);
+    const after = tradesOf(changed.r, FILL_CONFIG).trades[0]!;
+    // Venue fees are LP + protocol on both legs: 25 bps before the change, 70 bps after it.
+    const rate = (t: typeof before) => Number(t.venueFee) / Number(t.entrySol + t.exitSol);
+    expect(rate(before)).toBeGreaterThan(0.002);
+    expect(rate(before)).toBeLessThan(0.003);
+    expect(rate(after)).toBeGreaterThan(0.006);
+    expect(rate(after)).toBeLessThan(0.008);
+  });
+
   it('identifies each pre-registered configuration by its content', () => {
     expect(configId(STUDY_CONFIG, 'U2')).toMatch(/^U2-[0-9a-f]{16}$/);
     expect(configId(STUDY_CONFIG, 'U1')).not.toBe(configId(STUDY_CONFIG, 'U2'));
