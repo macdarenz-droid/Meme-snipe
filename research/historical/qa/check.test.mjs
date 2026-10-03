@@ -16,11 +16,12 @@ const CURVE = ['slot', 'block_time', 'tx_idx', 'ev_idx', 'signature', 'mint', 'i
 const csv = (head, rows) => zlib.zstdCompressSync(Buffer.from([head, ...rows].map((r) => r.join(',')).join('\n') + '\n'));
 
 const MOVE = ['slot', 'block_time', 'tx_idx', 'outer_ix', 'inner_ix', 'mint', 'kind', 'from_owner', 'to_owner', 'amount', 'from_account', 'to_account'];
+const DELEG = ['slot', 'block_time', 'tx_idx', 'outer_ix', 'inner_ix', 'mint', 'kind', 'account', 'owner', 'authority', 'amount'];
 const jsonl = (xs) => zlib.zstdCompressSync(Buffer.from(xs.map((x) => JSON.stringify(x) + '\n').join('')));
 
 // A one-day dataset with two curve trades; `bad` breaks the second trade's reserves.
 // opts: movements and coverage rows, events and raw lines, manifest additions.
-function dataset(bad, { movements = [], coverage = null, events = [], raw = [], man: more = {}, attr = [['U', 'A', 'U'], ['U', 'A', 'U']] } = {}) {
+function dataset(bad, { movements = [], delegations = [], coverage = null, events = [], raw = [], man: more = {}, attr = [['U', 'A', 'U'], ['U', 'A', 'U']] } = {}) {
   const ds = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-'));
   const dir = path.join(ds, 'days', '2026-09-02');
   fs.mkdirSync(dir, { recursive: true });
@@ -34,6 +35,7 @@ function dataset(bad, { movements = [], coverage = null, events = [], raw = [], 
   put('events-000.jsonl.zst', jsonl(events));
   put('raw-000.jsonl.zst', jsonl(raw));
   put('movements-000.csv.zst', csv(MOVE, movements));
+  put('delegations-000.csv.zst', csv(DELEG, delegations));
   if (coverage) fs.writeFileSync(path.join(ds, 'movement_coverage-000.csv.zst'), csv(coverage[0]?.length === 8 ? ['mint', 'scope', 'slot', 'reason', 'count', 'tx_idx', 'from_slot', 'to_slot'] : ['mint', 'scope', 'from_slot', 'to_slot'], coverage));
   const man = {
     window: { from: '2026-09-02', to_exclusive: '2026-09-03', lead_in_days: 0 },
@@ -158,4 +160,20 @@ test('swap attribution: owner differing from user is counted; an empty owner nee
   const old = strict({ attr: [] });
   assert.equal(old.status, 1);
   assert.match(old.stdout, /trade rows without user_token_account \/ user_token_owner 2/);
+});
+
+test('delegation rows: every kind passes, malformed and uncovered rows fail', () => {
+  const PM = `z${'A'.repeat(38)}pump`;
+  const dg = (o) => { const r = { slot: 10, block_time: 1788307300, tx_idx: 5, outer_ix: 0, inner_ix: '', mint: PM, kind: 'approve', account: 'acct', owner: 'A', authority: 'D', amount: 5, ...o }; return DELEG.map((c) => r[c]); };
+  const good = [dg({}), dg({ outer_ix: 5, kind: 'approve_checked' }), dg({ outer_ix: 1, kind: 'revoke', authority: '', amount: '' }), dg({ outer_ix: 2, kind: 'set_owner', authority: 'N', amount: '' }), dg({ outer_ix: 3, kind: 'set_close_authority', authority: '', amount: '' })];
+  const ok = strict({ delegations: good });
+  assert.equal(ok.status, 0, ok.stdout);
+  assert.match(ok.stdout, /## Delegations/);
+  assert.match(ok.stdout, /5 rows in 1 files/);
+  const bad = strict({ delegations: [dg({ amount: '' }), dg({ outer_ix: 1, kind: 'revoke', amount: '3' }), dg({ outer_ix: 2, kind: 'freeze' }), dg({ outer_ix: 3, account: '' }), dg({ outer_ix: 4, kind: 'approve', authority: '' })] });
+  assert.equal(bad.status, 1);
+  assert.match(bad.stdout, /malformed delegation rows 5/);
+  const other = [dg({ mint: 'OTHER' })];
+  assert.match(strict({ delegations: other }).stdout, /delegation rows of non-pump mints outside movement_coverage 1/);
+  assert.equal(strict({ delegations: other, coverage: [['OTHER', 'pump_transactions', 1, 10]] }).status, 0);
 });
