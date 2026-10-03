@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/947adbd63f947edb7f2272cb82f8a5ac95595faf/ops/install.sh -o i && echo '78fa8520728906a4d2dd2162a3d519e5cf30cf496f55be6d9a3f2e6b345acb14  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/15f4d6af5a635b8586c9bab14156d567483bd695/ops/install.sh -o i && echo '328c53f347feb0ce4a80adfd4c27142234a9fca72f6818ef76f38ddc430ceca7  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/947adbd6
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `78fa8520728906a4d2dd2162a3d519e5cf30cf496f55be6d9a3f2e6b345acb14`
+SHA-256 of `install.sh`: `328c53f347feb0ce4a80adfd4c27142234a9fca72f6818ef76f38ddc430ceca7`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -112,7 +112,7 @@ Telegram commands: only `/pause` and `/status`, only from the paired chat, only 
 The Deploy workflow deploys it only together with a key handoff, so the server and the watchdog always get the same fresh heartbeat key. If the account has no workers.dev subdomain yet, Deploy registers one (`zeroed-` plus random hex) through the Cloudflare API. That needs Account → Workers Scripts → Edit, which the "Edit Cloudflare Workers" template includes. The steps:
 - wrangler 4.141.0 from `ops/watchdog/deploy`, locked by its `package-lock.json`, installed with `npm ci --ignore-scripts`;
 - it discovers the Worker's address from wrangler's output and sends it to the server in the encrypted bundle;
-- it sets the Worker's secrets and the Telegram webhook.
+- it sets the Worker's secrets, and sends the webhook secret to the server in the bundle. The server sets the Telegram webhook itself once paired, because Telegram refuses the `getUpdates` that `/pair` relies on while a webhook is set.
 
 To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in GitHub (on a new server, the first setup already covers it):
 1. Paste the install line above again on the console. This updates the server's scripts and keeps everything.
@@ -120,7 +120,9 @@ To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in G
 3. Put the 6 words in `DEPLOY_CODE`.
 4. Run Deploy.
 
-If the chat is re-paired later (`zeroed-pair-code`), the server turns the webhook off to read `/pair`. Run Deploy again afterwards to turn it back on.
+If the chat is re-paired later (`zeroed-pair-code`), the server turns the webhook off to read `/pair` and sets it again as soon as the pairing succeeds.
+
+A server installed from an earlier line (before this fix) has its webhook off after pairing. To turn it on: paste the current install line (keys and pairing are kept), run `zeroed-new-deploy-code`, put the code in `DEPLOY_CODE`, and run Deploy; the server sets the webhook after that handoff.
 
 ## Worker contract (for WORKER-1)
 
