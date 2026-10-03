@@ -276,7 +276,7 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - Opening is mandatory once the counts are met.
   - The registry records the attempt index and the α spent, fixes the family size per attempt, and gives G2 its level.
   - Replicates are about 20/α. G2's one-sided false-pass rate is α/2.
-  - An attempt is spent only when a seal is opened and scored.
+  - An attempt is spent once its configuration is registered (see "Closing items").
   - B5 (Melbourne 10-03 01:47 AEST) is read as a decoder boundary, not a market boundary, with a non-gating per-regime line.
   - Days 10-02 to 10-19 (plus a margin day) are holdout evaluation days. They go through the same download, QA, parity and publish path and are never practice days.
 - **Closing items (all three agree).**
@@ -288,7 +288,8 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - Daily and weekly losses: the conservative guard stays until the owner approves a change. Actual period trading P&L is reported beside it, and neither ever touches an exit.
   - Lead-in ownership: coverage comes only from a complete seed or reconstruction, never from elapsed time. Exclusions are reported and labelled "not covered", never as rejects.
   - Attempt 2 is registered now as a rule, not as dates. Its configuration may be registered only after attempt 1 is scored. Its window starts on the first whole UTC day after that registration and runs 28 days, with a fixed entry cutoff and tail, at family α 0.005, under the same procedure, opened once.
-  - Live paper P&L is never part of the sealed holdout, and nothing can act on it. Configurations come from practice days only and are frozen before any U1/U2 configuration runs live; opening is mandatory once the counts are met, and a G1 pass is required first; attempt 2's data is always fresh. The sessions that choose configurations do not read live P&L before the freeze, while the owner's live view shows it. If a reviewer objects, the stricter rule applies instead: U1/U2 paper P&L is withheld until G2 is scored.
+  - Live paper P&L is never part of the sealed holdout, and nothing can act on it. Configurations come from practice days only and are frozen before any U1/U2 configuration runs live; opening is mandatory once the counts are met, and a G1 pass is required first; attempt 2's data is always fresh. The sessions that choose configurations do not read live P&L before the freeze, while the owner's live view shows it.
+  - Registration commits the attempt, which closes optional stopping. At E the attempt is spent whatever happens: a window that is halted, abandoned or short counts as a failed attempt, and the next configuration takes the next level. This replaces "spent only when a seal is opened", so seeing live P&L can buy nothing.
   - Slot lag: the 2-slot limit stays unchanged while it is measured against a healthy confirmed head. Each gate read records scan duration, receipt delay and freshness at decision time, and the wall-clock outage checks stay.
 - **Dry-run overlap.**
   - Configurations are chosen from practice days only, and frozen and registered before any U1/U2 configuration runs live.
