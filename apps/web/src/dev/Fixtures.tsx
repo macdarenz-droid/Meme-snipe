@@ -1,4 +1,6 @@
+import { useCallback, useState } from 'react';
 import { Section } from '../components/ui.tsx';
+import { FundingSheet, type FundingKind } from '../funding/FundingSheet.tsx';
 import { ResultsStats } from '../performance/ResultsStats.tsx';
 import { RiskMeters } from '../performance/RiskMeters.tsx';
 import { Results } from '../performance/Results.tsx';
@@ -9,6 +11,8 @@ import { FIXTURE_MARKER, fixtureResults, fixtureResultsSmall, fixtureSession, fi
 
 /** Dev-only review page. Every value here is fake. */
 export default function Fixtures() {
+  const [funding, setFunding] = useState<FundingKind | null>(null);
+  const close = useCallback(() => setFunding(null), []);
   return (
     <div className="screen-grid" data-marker={FIXTURE_MARKER}>
       <div className="fixture-banner span-2" role="note">
@@ -25,7 +29,8 @@ export default function Fixtures() {
         <ResultsStats stats={fixtureResultsSmall.stats} />
       </Section>
       <Results view={fixtureResults} />
-      <WalletSummary wallet={fixtureWallet} />
+      <WalletSummary wallet={fixtureWallet} onFund={setFunding} />
+      <FundingSheet kind={funding} onClose={close} savedWallet={fixtureWallet.savedWallet} botWallet={fixtureWallet.botAddress} gatePassed />
     </div>
   );
 }

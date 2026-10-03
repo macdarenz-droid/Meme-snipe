@@ -38,6 +38,7 @@ const SHOTS = [
   { name: 'withdraw', hash: '#/wallet', open: 'Withdraw' },
   { name: 'fixtures', hash: '#/dev/fixtures' },
   { name: 'trade-detail', hash: '#/dev/fixtures', openTrade: true },
+  { name: 'fixtures-withdraw', hash: '#/dev/fixtures', open: 'Withdraw' },
 ];
 
 const files = [];
@@ -57,13 +58,27 @@ for (const theme of THEMES) {
       await page.goto(base + s.hash);
       await page.waitForSelector('.page-head h1');
       await page.evaluate(() => document.fonts.ready);
-      if (s.open) await page.getByRole('button', { name: s.open, exact: true }).click();
+      if (s.open) await page.getByRole('button', { name: s.open, exact: true }).first().click();
       if (s.openTrade) await page.locator('.row-button').first().click();
       if (s.open || s.openTrade) await page.waitForSelector('[role="dialog"]');
       await page.waitForLoadState('networkidle');
       await page.waitForTimeout(400);
-      const scroll = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-      if (scroll > 0) problems.push(`${theme} ${w.name} ${s.name}: horizontal page scroll ${scroll}px`);
+      const scroll = await page.evaluate(() => {
+        const sheet = document.querySelector('.sheet-body');
+        return Math.max(document.documentElement.scrollWidth - window.innerWidth, sheet ? sheet.scrollWidth - sheet.clientWidth : 0);
+      });
+      if (scroll > 0) problems.push(`${theme} ${w.name} ${s.name}: horizontal scroll ${scroll}px`);
+      if (w.name === 'mobile') {
+        // Touch targets: every control at least 44px tall (skip link aside).
+        const small = await page.evaluate(() =>
+          [...document.querySelectorAll('button, a[href], input, [role="radio"]')]
+            .filter((e) => !e.classList.contains('skip-link') && !e.closest('.table-wrap tbody td:not(:first-child)'))
+            .map((e) => ({ e, r: e.getBoundingClientRect() }))
+            .filter(({ r }) => r.width > 0 && r.height > 0 && r.height < 44)
+            .map(({ e, r }) => `${e.tagName.toLowerCase()}.${e.className} "${(e.textContent ?? '').trim().slice(0, 24)}" ${Math.round(r.height)}px`),
+        );
+        for (const m of [...new Set(small)]) problems.push(`${theme} ${w.name} ${s.name}: small target ${m}`);
+      }
       const file = `${s.name}-${theme}-${w.width}.png`;
       await page.screenshot({ path: join(out, file), fullPage: !(s.open || s.openTrade) });
       files.push(file);

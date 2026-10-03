@@ -9,7 +9,7 @@ import { Wallet } from './screens/Wallet.tsx';
 import { NavIcon } from './shell/icons.tsx';
 import { Lockup, Mark } from './shell/Logo.tsx';
 import { EMPTY_SESSION } from './screens/types.ts';
-import { modeLabel, PauseButton, StatusList } from './shell/Status.tsx';
+import { dataLabel, modeLabel, PauseButton, sessionLabel, StatusList } from './shell/Status.tsx';
 import { ThemeSwitch } from './shell/ThemeSwitch.tsx';
 
 // Dev-only: import.meta.env.DEV is false in production, so this import is dropped from the build.
@@ -89,7 +89,10 @@ export function App() {
           <header className="mobile-head">
             <Mark size={22} />
             <span className="badge badge-neutral">{modeLabel(EMPTY_SESSION)}</span>
-            <span className="mobile-status muted small">Not started · No feed</span>
+            <PauseButton compact />
+            <span className="mobile-status muted small">
+              {sessionLabel(EMPTY_SESSION)} · {dataLabel(EMPTY_SESSION)}
+            </span>
           </header>
         )}
 
@@ -110,7 +113,6 @@ export function App() {
           </AnimatePresence>
           {!desktop && (
             <div className="mobile-controls">
-              <PauseButton />
               <ThemeSwitch />
             </div>
           )}

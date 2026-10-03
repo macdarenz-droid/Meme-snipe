@@ -38,14 +38,14 @@ export function FundingSheet({ kind, onClose, savedWallet, botWallet, gatePassed
           </div>
           <div className="field-block">
             <span className="field-label">Bot wallet</span>
-            <span className={botWallet && gatePassed ? 'mono' : 'muted'}>{gatePassed ? (botWallet ?? 'Not created') : 'Shown after the gate passes'}</span>
+            <span className={botWallet && gatePassed ? 'address' : 'muted'}>{gatePassed ? (botWallet ?? 'Not created') : 'Shown after the gate passes'}</span>
           </div>
         </>
       ) : (
         <div className="withdraw-form">
           <div className="field-block">
             <span className="field-label">Sends to</span>
-            <span className={savedWallet ? 'mono' : 'muted'}>{savedWallet ?? 'No saved wallet'}</span>
+            <span className={savedWallet ? 'address' : 'muted'}>{savedWallet ?? 'No saved wallet'}</span>
           </div>
           <label className="field-block" htmlFor={amountId}>
             <span className="field-label">Amount (SOL)</span>

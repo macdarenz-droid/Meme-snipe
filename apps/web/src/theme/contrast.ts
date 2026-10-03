@@ -13,6 +13,28 @@ export function luminance(hex: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+/** Strongest P&L calendar tint, in percent of gain/loss mixed into the surface. */
+export const CALENDAR_TINT_MAX = 32;
+
+/** CSS color-mix(in srgb, a p%, b): straight interpolation of the encoded channels. */
+export function mix(a: string, b: string, percentA: number): string {
+  const ch = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [x, y] = [ch(a), ch(b)];
+  const p = percentA / 100;
+  return `#${x.map((v, i) => Math.round(v * p + (y[i] ?? 0) * (1 - p)).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+
+/** Adds the surfaces the app derives from tokens, so their text pairs are checked too. */
+export function withDerived(tokens: Tokens): Tokens {
+  const out = { ...tokens };
+  const surface = tokens['--surface'];
+  for (const tone of ['gain', 'loss']) {
+    const c = tokens[`--${tone}`];
+    if (c && surface) out[`--tint-${tone}-max`] = mix(c, surface, CALENDAR_TINT_MAX);
+  }
+  return out;
+}
+
 export function contrastRatio(a: string, b: string): number {
   const la = luminance(a);
   const lb = luminance(b);
@@ -39,6 +61,7 @@ export function pairs(): Pair[] {
     for (const fg of MARKS) out.push({ fg, bg, min: 3, use: 'chart mark' });
   }
   out.push({ fg: '--accent-fg', bg: '--accent', min: 4.5, use: 'button text' });
+  for (const bg of ['--tint-gain-max', '--tint-loss-max']) out.push({ fg: '--text', bg, min: 4.5, use: 'calendar text' });
   return out;
 }
 
@@ -46,7 +69,8 @@ export interface Failure extends Pair {
   ratio: number;
 }
 
-export function checkTheme(tokens: Tokens): Failure[] {
+export function checkTheme(base: Tokens): Failure[] {
+  const tokens = withDerived(base);
   const failures: Failure[] = [];
   for (const p of pairs()) {
     const fg = tokens[p.fg];

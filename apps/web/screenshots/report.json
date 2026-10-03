@@ -7,6 +7,7 @@
     "withdraw-paper-1440.png",
     "fixtures-paper-1440.png",
     "trade-detail-paper-1440.png",
+    "fixtures-withdraw-paper-1440.png",
     "home-paper-390.png",
     "snipe-paper-390.png",
     "wallet-paper-390.png",
@@ -14,6 +15,7 @@
     "withdraw-paper-390.png",
     "fixtures-paper-390.png",
     "trade-detail-paper-390.png",
+    "fixtures-withdraw-paper-390.png",
     "home-black-1440.png",
     "snipe-black-1440.png",
     "wallet-black-1440.png",
@@ -21,17 +23,19 @@
     "withdraw-black-1440.png",
     "fixtures-black-1440.png",
     "trade-detail-black-1440.png",
+    "fixtures-withdraw-black-1440.png",
     "home-black-390.png",
     "snipe-black-390.png",
     "wallet-black-390.png",
     "deposit-black-390.png",
     "withdraw-black-390.png",
     "fixtures-black-390.png",
-    "trade-detail-black-390.png"
+    "trade-detail-black-390.png",
+    "fixtures-withdraw-black-390.png"
   ],
   "motion": {
     "reducedMotionSheetOffsetPx": 0,
-    "normalMotionSheetOffsetPx": 21.8528
+    "normalMotionSheetOffsetPx": 8.97593
   },
   "problems": []
 }
