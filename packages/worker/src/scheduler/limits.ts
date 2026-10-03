@@ -91,3 +91,15 @@ export const COINBASE_PUBLIC: SchedulerSpec = {
   maxWaitMs: [NO_LIMIT, 30_000, 30_000, 30_000],
   maxQueue: 8,
 };
+
+/**
+ * GitHub release downloads (DATA-1's day releases, public, keyless): a few files a day once the window is loaded, about
+ * 150 on a first start. One request per 2 s keeps a first start near 5 minutes and far under any abuse limit.
+ */
+export const GITHUB_RELEASES: SchedulerSpec = {
+  provider: 'github',
+  window: { limit: 1, windowMs: 2_000 },
+  floors: [0, 0, 0, 0],
+  maxWaitMs: [NO_LIMIT, 30_000, 30_000, 30_000],
+  maxQueue: 8,
+};

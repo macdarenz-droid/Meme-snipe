@@ -88,7 +88,7 @@ export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): Produ
   survivalReadWindowMs: MINUTE_MS,
   graduatesKeepMs: (p.regime.survivalMedianDays + 2) * 24 * HOUR_MS + p.regime.survivalAfterMs,
   solUsdKeepMs: 24 * HOUR_MS + (p.regime.failedChecksToDisable + 1) * HOUR_MS + HOURLY_MAX_AGE_MS,
-  volumeKeepMs: (p.regime.volumeWindowDays + 2) * 24 * HOUR_MS,
+  volumeKeepMs: (p.regime.volumeWindowDays + p.regime.volumeLagDays + 2) * 24 * HOUR_MS,
   insiderSlots: 2,
   firstBuyers: 20,
   ...(execHealth === undefined ? {} : { execHealth }),

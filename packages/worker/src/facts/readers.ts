@@ -10,7 +10,10 @@ import {
 import {
   type AccountsRead, type ExecStats, type FunderRead, type HoldersRead, type SimRead, RAW, parseExecStats, parseSimRead,
 } from '../../../core/src/facts/index.ts';
+import { VOLUME_SERIES_START_DAY } from '../../../core/src/config/time.ts';
+import type { Policy } from '../../../core/src/config/policy.ts';
 import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
+import { dayName, listedSha256, parseVolumeHoursCsv, sha256Hex, volumeHoursAsset, volumeSumsAsset } from './volume-hours.ts';
 import { P2, type Priority, type Scheduler } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import type { FrameBody, Source } from '../providers/canonical.ts';
@@ -207,6 +210,8 @@ export interface FactReadersOptions {
   /** Jupiter Tokens (the shared main bucket; the `tokens` lane is capped at 6 a minute for P3). */
   readonly jupiter?: ThirdParty & { readonly secrets: Secrets };
   readonly coinbase?: ThirdParty;
+  /** DATA-1's day releases on GitHub (`base` is the repository URL): the regime's chain volume. */
+  readonly releases?: ThirdParty;
   /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
   readonly token2022Filter?: Token2022Filter;
@@ -220,7 +225,11 @@ export const RUGCHECK_BASE = 'https://api.rugcheck.xyz';
 export const GOPLUS_BASE = 'https://api.gopluslabs.io';
 export const JUPITER_BASE = 'https://api.jup.ag';
 export const COINBASE_BASE = 'https://api.exchange.coinbase.com';
+export const RELEASES_BASE = 'https://github.com/macdarenz-droid/Meme-snipe';
+/** A day whose volume asset is not published yet is asked again at most once in this long. */
+export const VOLUME_RETRY_MS = 3_600_000;
 const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
 
 export interface FunderOptions {
   /** The decision slot: later history never counts. */
@@ -245,6 +254,9 @@ export class FactReaders {
   readonly #layout = new Map<string, readonly string[]>();
   /** SOL/USD bars already ingested, by start. */
   readonly #bars = new Set<number>();
+  /** Chain-volume days ingested (never read again) and the last failed attempt of the others. */
+  readonly #volumeDays = new Set<number>();
+  readonly #volumeTried = new Map<number, number>();
   readonly outcomes: ReadOutcome[] = [];
 
   constructor(o: FactReadersOptions) {
@@ -593,6 +605,47 @@ export class FactReaders {
       }
       return `${bars.length} bars`;
     });
+  }
+
+  /**
+   * The regime's chain volume (§6.4): each UTC day the volume window can reach (series start or the 365-day cap, up to
+   * yesterday) is read once from its release, `volume-hours-DAY.csv` checked against `SHA256SUMS-DAY`, and its rows
+   * ingested as `read:chain-volume-hour`. A day not published yet, or refused, ingests nothing (unknown) and is asked
+   * again at most once per VOLUME_RETRY_MS; an ingested day is never asked again. Days are read one at a time.
+   */
+  async readChainVolume(regime: Pick<Policy['regime'], 'volumeLagDays' | 'volumeWindowDays'>, priority: Priority = P2): Promise<boolean> {
+    const s = this.#o.releases;
+    if (s === undefined) return false;
+    const now = this.#o.timers.now();
+    const today = Math.floor(now / DAY_MS);
+    let all = true;
+    for (let day = Math.max(VOLUME_SERIES_START_DAY, today - regime.volumeLagDays - regime.volumeWindowDays + 1); day < today; day++) {
+      if (this.#volumeDays.has(day)) continue;
+      const tried = this.#volumeTried.get(day);
+      if (tried !== undefined && this.#o.timers.now() - tried < VOLUME_RETRY_MS) {
+        all = false;
+        continue;
+      }
+      const ok = await this.#guard(`chain-volume:${dayName(day)}`, async () => {
+        const name = dayName(day);
+        const url = (asset: string) => `${s.base ?? RELEASES_BASE}/releases/download/data-day-${name}/${asset}`;
+        const unknown = (why: string) => new ProviderError('github', 'shape', `${name} volume unknown: ${why}`);
+        const want = listedSha256(await this.#getText(s, 'github', 'release sums', url(volumeSumsAsset(name)), priority), volumeHoursAsset(name));
+        if (want === null) throw unknown(`${volumeSumsAsset(name)} does not list ${volumeHoursAsset(name)}`);
+        const text = await this.#getText(s, 'github', 'volume hours', url(volumeHoursAsset(name)), priority);
+        if (sha256Hex(text) !== want) throw unknown('checksum does not match');
+        const rows = parseVolumeHoursCsv(text, name);
+        if (rows === null) throw unknown('malformed asset');
+        for (const r of rows) this.#ingest('github', RAW.volumeHour, r);
+        this.#volumeDays.add(day);
+        return `${rows.length} hours`;
+      });
+      if (!ok) {
+        this.#volumeTried.set(day, this.#o.timers.now());
+        all = false;
+      }
+    }
+    return all;
   }
 
   /** A round-trip simulation answer (H15), from the simulation builder. Refused unless well formed. */
