@@ -30,6 +30,9 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'amm/pump-curve.ts', name: 'tokenTotalSupply', value: '1000000000000000', why: 'pump Global launch parameter' },
   { file: 'amm/pump-curve.ts', name: 'poolMigrationFee', value: '15000001', why: 'pump migrate fee, a protocol parameter read as an input' },
   { file: 'domain/index.ts', name: 'futureToleranceMs', value: '1000', why: 'clock skew allowance in milliseconds, not money' },
+  { file: 'risk/melbourne.ts', name: 'MS_PER_MINUTE', value: '60000', why: 'time unit for the Melbourne day boundary, not money' },
+  { file: 'risk/melbourne.ts', name: 'EPOCH_YEAR', value: '1970', why: 'calendar year of the Unix epoch, not money' },
+  { file: 'risk/melbourne.ts', name: 'RULE_FROM_YEAR', value: '2008', why: 'first year of the Victorian daylight-saving rule, not money' },
 ];
 
 export const isAllowed = (file: string, finding: Finding, allowed: readonly Allowed[] = ALLOWED): boolean =>
