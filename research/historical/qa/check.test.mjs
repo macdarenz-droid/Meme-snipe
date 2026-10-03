@@ -15,8 +15,12 @@ const CURVE = ['slot', 'block_time', 'tx_idx', 'ev_idx', 'signature', 'mint', 'i
   'chain_curve_base', 'chain_curve_lamports', 'mayhem_mode'];
 const csv = (head, rows) => zlib.zstdCompressSync(Buffer.from([head, ...rows].map((r) => r.join(',')).join('\n') + '\n'));
 
+const MOVE = ['slot', 'block_time', 'tx_idx', 'outer_ix', 'inner_ix', 'mint', 'kind', 'from_owner', 'to_owner', 'amount', 'from_account', 'to_account'];
+const jsonl = (xs) => zlib.zstdCompressSync(Buffer.from(xs.map((x) => JSON.stringify(x) + '\n').join('')));
+
 // A one-day dataset with two curve trades; `bad` breaks the second trade's reserves.
-function dataset(bad) {
+// opts: movements and coverage rows, events and raw lines, manifest additions.
+function dataset(bad, { movements = [], coverage = null, events = [], raw = [], man: more = {} } = {}) {
   const ds = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-'));
   const dir = path.join(ds, 'days', '2026-09-02');
   fs.mkdirSync(dir, { recursive: true });
@@ -26,13 +30,15 @@ function dataset(bad) {
   const put = (name, buf) => { fs.writeFileSync(path.join(dir, name), buf); files.push({ path: `days/2026-09-02/${name}` }); };
   put('curve_trades-000.csv.zst', csv(CURVE, rows));
   put('amm_trades-000.csv.zst', csv(['slot'], []));
-  put('events-000.jsonl.zst', zlib.zstdCompressSync(Buffer.from('')));
-  put('raw-000.jsonl.zst', zlib.zstdCompressSync(Buffer.from('')));
+  put('events-000.jsonl.zst', jsonl(events));
+  put('raw-000.jsonl.zst', jsonl(raw));
+  put('movements-000.csv.zst', csv(MOVE, movements));
+  if (coverage) fs.writeFileSync(path.join(ds, 'movement_coverage-000.csv.zst'), csv(['mint', 'scope', 'from_slot', 'to_slot'], coverage));
   const man = {
     window: { from: '2026-09-02', to_exclusive: '2026-09-03', lead_in_days: 0 },
     coverage: { first_slot: 1, last_slot: 99, first_block_time: 1788220800, last_block_time: 1788393600 },
     days: [{ day: '2026-09-02', complete: true, warm_up: false, blocks_scanned: 5, rows: { curve_trades: 2, amm_trades: 0 }, files }],
-    decode_failures: 0, chain_breaks: [], coverage_gaps: [], units: [], mints_files: [],
+    decode_failures: 0, chain_breaks: [], coverage_gaps: [], units: [], mints_files: [], ...more,
   };
   fs.writeFileSync(path.join(ds, 'manifest.json'), JSON.stringify(man));
   return ds;
@@ -60,4 +66,62 @@ test('strict fails a window without its lead-in', () => {
   const r = run(dataset(false), '--strict');
   assert.equal(r.status, 1);
   assert.match(r.stdout, /lead-in 0 days, 14 required/);
+});
+
+// ---- token movements ----
+const PMINT = 'zAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAApump';
+const mv = (o) => { const r = { slot: 10, block_time: 1788307300, tx_idx: 5, outer_ix: 0, inner_ix: '', mint: PMINT, kind: 'transfer', from_owner: 'A', to_owner: 'B', amount: 100, from_account: 'a', to_account: 'b', ...o }; return MOVE.map((c) => r[c]); };
+const strict = (opts) => run(dataset(false, opts), '--strict', '--lead-in-days', '0');
+
+test('strict passes well-formed movement rows, a zero amount included', () => {
+  const r = strict({ movements: [mv({}), mv({ inner_ix: 0, kind: 'burn', to_owner: '', to_account: '' }), mv({ inner_ix: 1, kind: 'mint', from_owner: '', from_account: '', amount: 0 })] });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /## Token movements/);
+  assert.match(r.stdout, /1 with amount 0/);
+});
+
+test('strict fails malformed movement rows', () => {
+  const r = strict({ movements: [mv({ amount: -1 }), mv({ amount: '18446744073709551616' }), mv({ kind: 'burn' }), mv({ to_account: '' }), mv({ kind: 'swap' }), mv({ kind: 'mint', from_owner: '' })] });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /malformed movement rows 6/);
+});
+
+test('rows of mints not ending in "pump" need movement_coverage of their slot', () => {
+  const rows = [mv({ mint: 'OTHER', slot: 10 })];
+  assert.match(strict({ movements: rows }).stdout, /movement rows of non-pump mints outside movement_coverage 1/);
+  assert.match(strict({ movements: rows, coverage: [['OTHER', 'pump_transactions', 11, 20]] }).stdout, /outside movement_coverage 1/);
+  assert.equal(strict({ movements: rows, coverage: [['OTHER', 'pump_transactions', 1, 10]] }).status, 0);
+  assert.match(strict({ movements: rows, coverage: [['OTHER', 'pump_transactions', 1, 10], ['X', 'all', 1, 2]] }).stdout, /movement coverage rows with an unknown scope 1/);
+});
+
+test('the supply of a "pump" mint with its create may not go below zero', () => {
+  const ev = (event, fields) => ({ slot: 9, tx_idx: 0, ev_idx: 0, event, fields });
+  const opts = (boost) => ({
+    events: [ev('CreateEvent', { mint: PMINT, token_total_supply: '1000', real_token_reserves: '800', bonding_curve: 'C' }), ev('BoostBuyAndBurnEvent', { mint: PMINT, base_amount_burned: String(boost) })],
+    movements: [mv({ kind: 'burn', to_owner: '', to_account: '', amount: 600 }), mv({ kind: 'mint', inner_ix: 0, from_owner: '', from_account: '', amount: 50 })],
+  });
+  assert.equal(strict(opts(450)).status, 0, strict(opts(450)).stdout);
+  const r = strict(opts(451));
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /token supply below zero for 1 mints/);
+});
+
+test('per-owner balance changes of a plain token transaction equal its movement rows', () => {
+  const tb = (accountIndex, owner, amount) => ({ accountIndex, mint: PMINT, owner, uiTokenAmount: { amount: String(amount) } });
+  const record = (extra = []) => ({
+    slot: 10, txIndex: 5, signature: '1'.repeat(64), transaction: Buffer.from([1, ...new Array(64).fill(0), 7, ...extra]).toString('base64'), err: null,
+    meta: { loadedAddresses: { writable: [], readonly: [] }, preTokenBalances: [tb(1, 'A', 500), tb(2, 'B', 0)], postTokenBalances: [tb(1, 'A', 300), tb(2, 'B', 200)] },
+  });
+  const opts = (rows, rec = record()) => ({ raw: [rec], movements: rows, man: { schema: 2, sampling: { unit_sample_rate_min: 0 } } });
+  const ok = strict(opts([mv({ amount: 150 }), mv({ inner_ix: 0, amount: 50 })]));
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.match(ok.stdout, /Balances: 1 of 1/);
+  const bad = strict(opts([mv({ amount: 150 })]));
+  assert.equal(bad.status, 1);
+  assert.match(bad.stdout, /token balance changes unexplained by movement rows 1/);
+  // A transaction that references pump is outside this check.
+  const pump = [...Buffer.from('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'.split('').reduce((n, ch) => n * 58n + BigInt('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'.indexOf(ch)), 0n).toString(16).padStart(64, '0'), 'hex')];
+  const skipped = strict(opts([mv({ amount: 150 })], record(pump)));
+  assert.equal(skipped.status, 0, skipped.stdout);
+  assert.match(skipped.stdout, /Balances: 0 of 0 .* 1 raw records that touch pump/s);
 });

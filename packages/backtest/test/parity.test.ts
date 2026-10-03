@@ -11,6 +11,7 @@ import {
   EVENT_IX_TAG,
   PUMP_AMM_PROGRAM,
   PUMP_PROGRAM,
+  TOKEN_PROGRAM,
   TradeEventLayout,
   decodeBase58,
   encodeBase58,
@@ -19,6 +20,8 @@ import {
 import {
   type MintInfo,
   type RawLine,
+  type RawTokenBalance,
+  MOVEMENT_COLUMNS,
   type Row,
   DROP_EVENTS,
   ParityChecker,
@@ -450,5 +453,167 @@ describe('decoder parity: every create keeps its raw record', () => {
     c.endBatch();
     expect(c.s.mismatches.map((m) => [m.kind, m.field])).toEqual([['event', '(raw record)']]);
     expect(c.s.rows_without_raw).toBe(1);
+  });
+});
+
+// ---- token movements (scanner movements.go) ----
+
+const PMINT = `z${'A'.repeat(38)}pump`; // a mint ending in "pump"
+const OTHER = key(53); // a mint not ending in "pump"
+const ROUTER = key(50);
+const ACCT_A = key(51);
+const ACCT_B = key(52);
+const ACCT_C = key(54);
+const OWNER_B_PRE = key(55);
+const OWNER_B = key(56);
+const OWNER_C = key(57);
+// payer, pump, token program, an aggregator, three token accounts and two mints.
+const MOVE_KEYS = [PAYER, PUMP_PROGRAM, TOKEN_PROGRAM, ROUTER, ACCT_A, ACCT_B, PMINT, OTHER, ACCT_C];
+
+/** A legacy transaction with the given keys and top-level instructions. */
+const wireOf = (n: number, keys: string[], ixs: { p: number; a: number[]; d: number[] }[]) =>
+  Uint8Array.from([
+    1, ...sig(n),
+    1, 0, 0,
+    keys.length, ...keys.flatMap((k) => [...decodeBase58(k)]),
+    ...new Array(32).fill(9),
+    ixs.length,
+    ...ixs.flatMap((ix) => [ix.p, ix.a.length, ...ix.a, ix.d.length, ...ix.d]),
+  ]);
+const amt = (code: number, v: bigint) => [code, ...le(v, 8)];
+const inner = (p: number, a: number[], d: number[], stackHeight: number | null) => ({ programIdIndex: p, accounts: a, data: toBase64(Uint8Array.from(d)), stackHeight });
+const tb = (accountIndex: number, mint: string, owner: string, amount = '0'): RawTokenBalance => ({ accountIndex, mint, owner, uiTokenAmount: { amount } });
+
+/**
+ * Top level: 0 a plain transfer of PMINT (kept); 1 a pump instruction whose inner transfer runs inside pump (skipped),
+ * with an inner transfer lacking a stack height (taken as height 2, inside pump: skipped) and, when `otherEvent`, a
+ * TradeEvent of OTHER; 2 an aggregator whose own TransferChecked (kept) calls pump, whose transfer is skipped, then
+ * burns (kept); 3 a transfer of OTHER (kept only with OTHER's event in the transaction).
+ */
+const moveRaw = (n: number, { otherEvent = true, err = null as RawLine['err'] } = {}): RawLine => ({
+  slot: 452700000,
+  blockTime: BLOCK_TIME,
+  txIndex: n,
+  signature: encodeBase58(sig(n)),
+  transaction: toBase64(
+    wireOf(n, MOVE_KEYS, [
+      { p: 2, a: [4, 5, 0], d: amt(3, 1000n) },
+      { p: 1, a: [6, 4], d: [0xaa] },
+      { p: 3, a: [4, 5, 6], d: [0xcc] },
+      { p: 2, a: [8, 4, 0], d: amt(3, 9n) },
+    ]),
+  ),
+  err,
+  meta: {
+    fee: 5000,
+    computeUnitsConsumed: 1000,
+    loadedAddresses: { writable: [], readonly: [] },
+    innerInstructions: [
+      {
+        index: 1,
+        instructions: [
+          inner(2, [4, 5, 0], amt(3, 7n), 2),
+          inner(2, [4, 5, 0], amt(3, 8n), null),
+          ...(otherEvent ? [eventIx(1, TradeEventLayout.discriminator, encode(tradeFields, { ...trade, mint: OTHER }))] : []),
+        ],
+      },
+      {
+        index: 2,
+        instructions: [
+          inner(2, [5, 6, 4, 0], amt(12, 500n), 2),
+          inner(1, [6, 5], [0xaa], 2),
+          inner(2, [4, 5, 0], amt(3, 11n), 3),
+          inner(2, [4, 6, 0], amt(8, 50n), 2),
+        ],
+      },
+    ],
+    logMessages: null,
+    preTokenBalances: [tb(4, PMINT, USER, '2000'), tb(5, PMINT, OWNER_B_PRE, '0'), tb(8, OTHER, OWNER_C, '9')],
+    // The owner of account 5 changed in the transaction: post wins.
+    postTokenBalances: [tb(4, PMINT, USER, '1450'), tb(5, PMINT, OWNER_B, '500'), tb(8, OTHER, OWNER_C, '0')],
+  },
+});
+
+const mv = (n: number, outer: number, innerIx: string, mint: string, kind: string, from: string, to: string, amount: string, fromAcct: string, toAcct: string): Record<string, string> => ({
+  slot: '452700000', block_time: String(BLOCK_TIME), tx_idx: String(n), outer_ix: String(outer), inner_ix: innerIx, mint, kind,
+  from_owner: from, to_owner: to, amount, from_account: fromAcct, to_account: toAcct,
+});
+const moveRows = (n: number) => [
+  mv(n, 0, '', PMINT, 'transfer', USER, OWNER_B, '1000', ACCT_A, ACCT_B),
+  mv(n, 2, '0', PMINT, 'transfer', OWNER_B, USER, '500', ACCT_B, ACCT_A),
+  mv(n, 2, '3', PMINT, 'burn', USER, '', '50', ACCT_A, ''),
+  mv(n, 3, '', OTHER, 'transfer', OWNER_C, USER, '9', ACCT_C, ACCT_A),
+];
+const checkMoves = (moves: Record<string, string>[], raws: RawLine[]) => {
+  const c = new ParityChecker(universe);
+  for (const m of moves) c.addMovement(m);
+  for (const r of raws) c.checkRaw(r);
+  c.endBatch();
+  return c.s;
+};
+const moveFails = (s: ReturnType<typeof checkMoves>) => s.mismatches.map((m) => [m.kind, m.key.tx_idx, 'outer_ix' in m.key ? `${m.key.outer_ix}:${m.key.inner_ix}` : '', m.field, m.row, m.decoded]);
+
+describe('decoder parity: token movements', () => {
+  it('matches a top-level transfer, an aggregator\'s own transfer and a burn, and skips transfers inside pump', () => {
+    const s = checkMoves(moveRows(20), [moveRaw(20)]);
+    expect(s.mismatches).toEqual([]);
+    expect(s).toMatchObject({ movements_checked: 4, movements_matched: 4, movements_without_raw: 0 });
+    expect(failed(s)).toBe(false);
+  });
+
+  it('keeps a mint not ending in "pump" only in a transaction with a pump event of that mint', () => {
+    const s = checkMoves(moveRows(20), [moveRaw(20, { otherEvent: false })]);
+    expect(moveFails(s)).toEqual([['movement', 20, '3:-1', '(movement row)', Object.values(moveRows(20)[3]!).join(','), 'none']]);
+    expect(checkMoves(moveRows(20).slice(0, 3), [moveRaw(20, { otherEvent: false })]).mismatches).toEqual([]);
+  });
+
+  it('fails a row with a wrong owner or amount, column by column', () => {
+    const rows = moveRows(20);
+    rows[0] = { ...rows[0]!, to_owner: OWNER_B_PRE };
+    rows[2] = { ...rows[2]!, amount: '51' };
+    const s = checkMoves(rows, [moveRaw(20)]);
+    expect(moveFails(s)).toEqual([
+      ['movement', 20, '0:-1', 'to_owner', OWNER_B_PRE, OWNER_B],
+      ['movement', 20, '2:3', 'amount', '51', '50'],
+    ]);
+    expect(s).toMatchObject({ movements_checked: 4, movements_matched: 2 });
+  });
+
+  it('fails a missing row and a row for a transfer the scanner skips', () => {
+    const rows = moveRows(20);
+    const missing = rows.splice(1, 1)[0]!;
+    const insidePump = mv(20, 1, '0', PMINT, 'transfer', USER, OWNER_B, '7', ACCT_A, ACCT_B);
+    const s = checkMoves([...rows, insidePump], [moveRaw(20)]);
+    expect(moveFails(s)).toEqual([
+      ['movement', 20, '1:0', '(movement row)', Object.values(insidePump).join(','), 'none'],
+      ['movement', 20, '2:0', '(movement row)', null, Object.values(missing).join(',')],
+    ]);
+    expect(s).toMatchObject({ movements_checked: 4, movements_matched: 3 });
+  });
+
+  it('fails any movement row of a failed transaction, and counts rows without a raw record', () => {
+    const s = checkMoves([...moveRows(20).slice(0, 1), ...moveRows(21)], [moveRaw(20, { err: { hex: '00' } })]);
+    expect(moveFails(s)).toEqual([['movement', 20, '0:-1', '(movement row)', Object.values(moveRows(20)[0]!).join(','), 'none']]);
+    expect(s.movements_without_raw).toBe(4);
+  });
+
+  it('keeps the movement columns equal to the scanner (movements.go)', () => {
+    const go = readFileSync(join(REPO, 'research/historical/scanner/movements.go'), 'utf8');
+    const cols = [...go.match(/var movementCols = \[\]string\{([^}]*)\}/)![1]!.matchAll(/"(\w+)"/g)].map((m) => m[1]);
+    expect(cols).toEqual([...MOVEMENT_COLUMNS]);
+  });
+
+  it('reads the movements files of every day', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parity-mv-'));
+    const day = join(dir, 'days', '2026-10-02');
+    mkdirSync(day, { recursive: true });
+    const z = (path: string, text: string) => writeFileSync(path, zstdCompressSync(Buffer.from(text)));
+    const rows = moveRows(20);
+    z(join(dir, 'mints-000.csv.zst'), 'mint,pool,tape_from,tape_to\n');
+    z(join(day, 'movements-000.csv.zst'), `${MOVEMENT_COLUMNS.join(',')}\n${[...rows, ...moveRows(21)].map((r) => MOVEMENT_COLUMNS.map((c) => r[c]).join(',')).join('\n')}\n`);
+    z(join(day, 'raw-000.jsonl.zst'), `${JSON.stringify(moveRaw(20))}\n`);
+    const s = await runParity(dir);
+    rmSync(dir, { recursive: true, force: true });
+    expect(s).toMatchObject({ movements_checked: 4, movements_matched: 4, movements_without_raw: 4, mismatch_count: 0 });
   });
 });

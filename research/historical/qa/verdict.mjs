@@ -85,6 +85,16 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
     if ((report.raw.create_rows_with_raw ?? 0) !== (report.raw.create_rows ?? 0)) misses.push(`create or migration transactions without raw record ${report.raw.create_rows - report.raw.create_rows_with_raw}`);
     if (report.raw.trade_txs_with_raw !== report.raw.trade_txs) misses.push(`trade transactions without raw record ${report.raw.trade_txs - report.raw.trade_txs_with_raw}`);
   }
+  // Token movements (check.mjs "Token movements").
+  const mv = report.movements;
+  if (mv) {
+    if (mv.files === 0) misses.push('token movement files absent');
+    if (mv.malformed > 0) misses.push(`malformed movement rows ${mv.malformed}`);
+    if (mv.outside_coverage > 0) misses.push(`movement rows of non-pump mints outside movement_coverage ${mv.outside_coverage}`);
+    if (mv.coverage_bad_scope > 0) misses.push(`movement coverage rows with an unknown scope ${mv.coverage_bad_scope}`);
+    if (mv.supply_negative > 0) misses.push(`token supply below zero for ${mv.supply_negative} mints`);
+    if (mv.balance_exact !== mv.balance_checks) misses.push(`token balance changes unexplained by movement rows ${mv.balance_checks - mv.balance_exact}`);
+  }
   const liveFail = (report.live || []).filter((x) => !x.pass).length;
   if (liveFail > 0) misses.push(`live on-chain mismatches ${liveFail}`);
   return misses;

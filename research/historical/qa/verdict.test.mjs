@@ -82,3 +82,16 @@ test('the pre-B4 layout (two fields shorter) is allowed only in units that start
     'older layout amm:BuyEvent:36 x1',
   ]);
 });
+
+test('token movement misses are counted', () => {
+  const ok = { files: 1, malformed: 0, outside_coverage: 0, coverage_bad_scope: 0, supply_negative: 0, balance_checks: 3, balance_exact: 3, zero_amount: 2 };
+  assert.deepEqual(strictMisses(base(), { ...report, movements: ok }), []);
+  assert.deepEqual(strictMisses(base(), { ...report, movements: { ...ok, files: 0 } }), ['token movement files absent']);
+  assert.deepEqual(strictMisses(base(), { ...report, movements: { ...ok, malformed: 1, outside_coverage: 2, coverage_bad_scope: 3, supply_negative: 4, balance_exact: 1 } }), [
+    'malformed movement rows 1',
+    'movement rows of non-pump mints outside movement_coverage 2',
+    'movement coverage rows with an unknown scope 3',
+    'token supply below zero for 4 mints',
+    'token balance changes unexplained by movement rows 2',
+  ]);
+});
