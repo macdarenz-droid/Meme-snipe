@@ -11,6 +11,8 @@ export interface JournalReport {
   readonly repairs: number;
   readonly complete: boolean;
   readonly problems: readonly string[];
+  /** Each boot's entry rule as its `start` line states it (WORKER-1: entry_rule, paper_edge_ppm, qualifying). */
+  readonly starts: readonly { readonly boot: string; readonly entry_rule: unknown; readonly paper_edge_ppm: unknown; readonly qualifying: unknown }[];
 }
 
 const MAX_PROBLEMS = 50;
@@ -46,7 +48,9 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
   let exits = 0;
   let simulations = 0;
   let repairs = 0;
+  const starts: { boot: string; entry_rule: unknown; paper_edge_ppm: unknown; qualifying: unknown }[] = [];
   for (const l of lines) {
+    if (l.kind === 'start') starts.push({ boot: l.boot, entry_rule: l['entry_rule'], paper_edge_ppm: l['paper_edge_ppm'], qualifying: l['qualifying'] });
     if (l.seq !== expect) add(`seq ${l.seq} where ${expect} expected`);
     expect = l.seq + 1;
     if (typeof l.ts !== 'string' || Number.isNaN(Date.parse(l.ts))) add(`seq ${l.seq}: bad ts`);
@@ -86,5 +90,5 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
         break;
     }
   }
-  return { lines: lines.length, boots: bootsSeen.size, entries, exits, simulations, repairs, complete: problems.length === 0, problems };
+  return { lines: lines.length, boots: bootsSeen.size, entries, exits, simulations, repairs, complete: problems.length === 0, problems, starts };
 };

@@ -212,7 +212,7 @@ describe('live Feed', () => {
     expect(feed.advance(2_700)).toBe(0); // the tip moved 1.9 s ago: not stale yet
     expect(feed.advance(2_800)).toBe(2); // stale: everything up to the tip goes
     expect(feed.status().stale).toBe(true);
-    expect([feed.next()?.id, feed.next()?.id, feed.next()?.id, feed.next()?.id]).toEqual(['slot:100', 'rugcheck:x#1', 'slot:102', 'rugcheck:y#3']);
+    expect([feed.next()?.id, feed.next()?.id, feed.next()?.id, feed.next()?.id]).toEqual(['slot:100', 'rugcheck:x#000000000001', 'slot:102', 'rugcheck:y#000000000003']);
     expect(feed.next()).toBeNull();
   });
 
@@ -272,7 +272,7 @@ describe('live Feed', () => {
     feed.advance(5);
     const ids: string[] = [];
     for (let e = feed.next(); e; e = feed.next()) ids.push(e.id);
-    expect(ids.filter((id) => id.startsWith('seen:'))).toEqual([`seen:${sig}#1`, `seen:${sig}#3`]);
+    expect(ids.filter((id) => id.startsWith('seen:'))).toEqual([`seen:${sig}#000000000001`, `seen:${sig}#000000000003`]);
     expect(() => createReplay(frameEvents(frames))).not.toThrow();
   });
 

@@ -53,6 +53,8 @@ export interface BackfillOptions {
   /** The provider `rpc` calls: each call is charged its `callCost`. */
   readonly provider: 'helius' | 'alchemy';
   readonly retry?: RetryPolicy;
+  /** Aborted when the caller gave up on the run (the worker's seed wait ran out): no call is made after it. */
+  readonly signal?: AbortSignal;
 }
 
 export interface SlotGap {
@@ -63,7 +65,7 @@ export interface SlotGap {
   readonly reason: string;
 }
 
-export type StopReason = 'done' | 'credit-cap' | 'halted' | 'page-failed' | 'failures' | 'history-end' | 'not-confirmed' | 'page-cap';
+export type StopReason = 'done' | 'credit-cap' | 'halted' | 'page-failed' | 'failures' | 'history-end' | 'not-confirmed' | 'page-cap' | 'aborted';
 
 export interface BackfillResult {
   /** Create events in FEED-1's shape, oldest first. */
@@ -150,6 +152,7 @@ export const backfillAddress = async (o: BackfillOptions & {
 
   const call = async <T>(method: keyof typeof calls, run: () => Promise<T>): Promise<T> => {
     for (let attempt = 1; ; attempt++) {
+      if (o.signal?.aborted === true) throw new Stop('aborted', 'the caller gave up on the backfill');
       const cost = callCost(o.provider, method);
       if (credits + cost > o.creditCap) throw new Stop('credit-cap', `credit cap ${o.creditCap} reached after ${credits}`);
       credits += cost; // counted per attempt: a failed call may still be billed
