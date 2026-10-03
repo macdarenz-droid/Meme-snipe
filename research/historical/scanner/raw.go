@@ -56,6 +56,11 @@ type rawInner struct {
 	StackHeight    *uint32 `json:"stackHeight"`
 }
 
+type rawInnerGroup struct {
+	Index        uint32     `json:"index"`
+	Instructions []rawInner `json:"instructions"`
+}
+
 type rawRecord struct {
 	Slot        uint64   `json:"slot"`
 	BlockTime   int64    `json:"blockTime"`
@@ -82,11 +87,8 @@ type rawMeta struct {
 		Writable []string `json:"writable"`
 		Readonly []string `json:"readonly"`
 	} `json:"loadedAddresses"`
-	InnerInstructions []struct {
-		Index        uint32     `json:"index"`
-		Instructions []rawInner `json:"instructions"`
-	} `json:"innerInstructions"`
-	LogMessages       []string          `json:"logMessages"`
+	InnerInstructions []rawInnerGroup `json:"innerInstructions"` // null: not recorded
+	LogMessages       []string          `json:"logMessages"` // null: not recorded
 	PreTokenBalances  []rawTokenBalance `json:"preTokenBalances"`
 	PostTokenBalances []rawTokenBalance `json:"postTokenBalances"`
 }
@@ -122,11 +124,13 @@ func buildRawRecord(slot uint64, blockTime int64, txIdx int, sig string, txBytes
 	for _, k := range m.LoadedReadonlyAddresses {
 		r.Meta.LoadedAddresses.Readonly = append(r.Meta.LoadedAddresses.Readonly, base58.Encode(k))
 	}
+	// DEC-1's contract: [] when the transaction recorded no inner instructions, null
+	// only when the archive says they were not recorded; the same for log messages.
+	if !m.InnerInstructionsNone {
+		r.Meta.InnerInstructions = make([]rawInnerGroup, 0, len(m.InnerInstructions))
+	}
 	for _, ii := range m.InnerInstructions {
-		g := struct {
-			Index        uint32     `json:"index"`
-			Instructions []rawInner `json:"instructions"`
-		}{Index: ii.Index}
+		g := rawInnerGroup{Index: ii.Index, Instructions: make([]rawInner, 0, len(ii.Instructions))}
 		for _, ix := range ii.Instructions {
 			acc := make([]int, len(ix.Accounts))
 			for j, a := range ix.Accounts {
@@ -138,7 +142,9 @@ func buildRawRecord(slot uint64, blockTime int64, txIdx int, sig string, txBytes
 		r.Meta.InnerInstructions = append(r.Meta.InnerInstructions, g)
 	}
 	r.Meta.LogMessages = m.LogMessages
-	if r.Meta.LogMessages == nil {
+	if m.LogMessagesNone {
+		r.Meta.LogMessages = nil
+	} else if r.Meta.LogMessages == nil {
 		r.Meta.LogMessages = []string{}
 	}
 	r.Meta.PreTokenBalances = rawBalances(m.PreTokenBalances)

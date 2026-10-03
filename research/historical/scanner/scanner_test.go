@@ -230,3 +230,28 @@ func TestEmitRowAggregatesAllKeepsSample(t *testing.T) {
 		t.Fatalf("bad aggregate %+v", a)
 	}
 }
+
+func TestCensusQuoteCurveUsesQuoteReserves(t *testing.T) {
+	r := &blockResult{blockTime: 3600, agg: map[aggKey]*aggVal{}}
+	mint := solana.NewWallet().PublicKey().String()
+	quoteMint := solana.NewWallet().PublicKey().String()
+	row := make([]string, len(curveCols))
+	r0 := func(vq, tokRes string) []string {
+		x := append([]string(nil), row...)
+		x[0], x[1], x[2], x[3], x[8], x[9], x[10], x[11] = "100", "3600", "1", "0", mint, "1", "0", "5000"
+		x[14], x[15] = "0", tokRes
+		x[curveQuoteMintCol], x[curveQuoteAmountCol], x[curveVirtualQuoteCol] = quoteMint, "700", vq
+		return x
+	}
+	r.emitRow("curve", r0("2000", "1000"))
+	r.emitRow("curve", r0("3000", "1000"))
+	a := r.agg[aggKey{3600, "curve", mint, ""}]
+	if a == nil || a.lowPx != 2 || a.highPx != 3 || a.quoteBuy != 1400 || a.closeQuote != "3000" {
+		t.Fatalf("quote curve census wrong: %+v", a)
+	}
+	dst := map[aggKey]*aggVal{aggKey{3600, "curve", mint, ""}: {lowPx: 0, highPx: 0}}
+	mergeAgg(dst, r.agg)
+	if dst[aggKey{3600, "curve", mint, ""}].lowPx != 2 {
+		t.Fatalf("mergeAgg kept a zero low price")
+	}
+}

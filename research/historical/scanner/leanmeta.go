@@ -25,6 +25,10 @@ type TransactionStatusMeta struct {
 	LoadedWritableAddresses [][]byte
 	LoadedReadonlyAddresses [][]byte
 	ComputeUnitsConsumed    *uint64
+	// The archive's flags for "not recorded" (proto fields 10 and 11), as opposed to
+	// recorded and empty.
+	InnerInstructionsNone bool
+	LogMessagesNone       bool
 }
 
 type TransactionError struct{ Err []byte }
@@ -178,6 +182,17 @@ func parseMeta(b []byte, full bool) (*TransactionStatusMeta, error) {
 				m.LoadedWritableAddresses = append(m.LoadedWritableAddresses, k)
 			} else {
 				m.LoadedReadonlyAddresses = append(m.LoadedReadonlyAddresses, k)
+			}
+			b = b[n:]
+		case (num == 10 || num == 11) && typ == protowire.VarintType:
+			v, n := protowire.ConsumeVarint(b)
+			if n < 0 {
+				return nil, errProto
+			}
+			if num == 10 {
+				m.InnerInstructionsNone = v != 0
+			} else {
+				m.LogMessagesNone = v != 0
 			}
 			b = b[n:]
 		case num == 16 && typ == protowire.VarintType:

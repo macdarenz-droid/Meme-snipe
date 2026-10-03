@@ -98,6 +98,21 @@ type aggVal struct {
 var aggCols = []string{"hour", "venue", "mint", "pool", "quote_mint", "n_buy", "n_sell", "quote_buy", "quote_sell", "base_buy", "base_sell",
 	"first_slot", "last_slot", "open_base", "open_quote", "close_base", "close_quote", "close_virtual_quote", "high_px", "low_px"}
 
+var (
+	curveQuoteMintCol    = colIndex(curveCols, "quote_mint")
+	curveQuoteAmountCol  = colIndex(curveCols, "quote_amount")
+	curveVirtualQuoteCol = colIndex(curveCols, "virtual_quote_reserves")
+)
+
+func colIndex(cols []string, name string) int {
+	for i, c := range cols {
+		if c == name {
+			return i
+		}
+	}
+	panic("no column " + name)
+}
+
 func atou(s string) uint64 { v, _ := strconv.ParseUint(s, 10, 64); return v }
 
 // emitRow adds a finished trade row to the hourly census and keeps it if sampled.
@@ -124,7 +139,12 @@ func (r *blockResult) emitRow(kind string, row []string) {
 		isBuy = row[9] == "1"
 		quote, base = atou(row[10]), atou(row[11])
 		rq, rb = row[14], row[15]
-		qm = row[32]
+		qm = row[curveQuoteMintCol]
+		if qm != "" && qm != wsolMint {
+			// Quote-token curve: sol_amount and virtual_sol_reserves are 0; the trade
+			// and the price are in the quote token.
+			quote, rq = atou(row[curveQuoteAmountCol]), row[curveVirtualQuoteCol]
+		}
 		if b := atou(rb); b > 0 {
 			px = float64(atou(rq)) / float64(b)
 		}
@@ -159,7 +179,7 @@ func (r *blockResult) emitRow(kind string, row []string) {
 	if px > a.highPx {
 		a.highPx = px
 	}
-	if px < a.lowPx || a.lowPx == 0 {
+	if px > 0 && (px < a.lowPx || a.lowPx == 0) {
 		a.lowPx = px
 	}
 	mint := k.mint
@@ -192,7 +212,7 @@ func mergeAgg(dst map[aggKey]*aggVal, src map[aggKey]*aggVal) {
 		if v.highPx > d.highPx {
 			d.highPx = v.highPx
 		}
-		if v.lowPx < d.lowPx {
+		if v.lowPx > 0 && (v.lowPx < d.lowPx || d.lowPx == 0) {
 			d.lowPx = v.lowPx
 		}
 	}

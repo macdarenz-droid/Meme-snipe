@@ -20,12 +20,18 @@ package main
 //   launch: mint created (CreateEvent) inside the scanned coverage and hash < launchRate;
 //           tape from creation to creation + 72 h.
 //   grad:   mint graduated (CompletePumpAmmMigrationEvent) inside the coverage and
-//           hash < gradRate; tape from creation (or coverage start) to graduation + 15 days.
+//           hash < gradRate; tape from graduation to graduation + 15 days.
 //   pool:   PumpSwap pool created directly (CreatePoolEvent outside a migration)
-//           inside the coverage and hash(base mint) < poolRate; tape to pool creation + 15 days.
+//           inside the coverage and hash(base mint) < poolRate; tape from pool creation
+//           to pool creation + 15 days.
+// A mint's tape is the union of these intervals, never the span between them: rows
+// before a graduation exist only when the mint's launch tape covers them, the same as
+// for every launch-sampled mint, so the presence of a row never reveals a later
+// graduation (no look-ahead).
 // Default rates are 5% each (nested: the same hash, so every launch-sampled mint that
-// graduates is also grad-sampled). The scanner keeps a 25% superset, so the dataset
-// can be re-cut at up to 25% without rescanning.
+// graduates is also grad-sampled). The units hold the scanner's -sample superset (5%
+// in CI, so the rates cannot be raised without a rescan; a local -sample 0.25 scan
+// allows re-cuts up to 25%).
 // hash = first 8 bytes of sha256(mint) as a fraction of 2^64 (see sample.go).
 
 import (
@@ -61,10 +67,18 @@ var (
 var (
 	tapeHorizon     int64 = 72 * 3600
 	poolTapeHorizon int64 = 15 * 86400
-	// files rotate at this size: 45 MB keeps git-friendly files; release builds use
-	// up to 1900 MB to stay under 1000 assets per release.
-	partMaxBytes int64 = 45 << 20
+	// Files rotate once this many uncompressed bytes are written (counted before
+	// compression, so rotation is deterministic); a part's compressed size is at most
+	// about this, under the 2 GiB release asset limit.
+	partMaxBytes int64 = 1900 << 20
 )
+
+// finalizeOpts are the dataset build options.
+type finalizeOpts struct {
+	AllowGaps      bool     // testing only: holes in the scanned slot ranges
+	LeadInDays     int      // days of gap-free coverage required before the window (14 for the dataset)
+	AllowRevisions []string // scanner revisions accepted together; empty: all units must share one
+}
 
 type unitDir struct {
 	path  string
@@ -114,6 +128,31 @@ type mintInfo struct {
 	TapeTo      int64   `json:"tape_to"`
 	Censored    bool    `json:"censored"`
 	observedAny bool
+	tapes       []tape
+}
+
+// tape is one interval [from, to] (block times) of a mint's tape.
+type tape struct {
+	kind     string
+	from, to int64
+}
+
+func (mi *mintInfo) inTape(t int64) bool {
+	for _, tp := range mi.tapes {
+		if t >= tp.from && t <= tp.to {
+			return true
+		}
+	}
+	return false
+}
+
+// tapeList: "kind:from-to" intervals joined by "|", in launch, grad, pool order.
+func (mi *mintInfo) tapeList() string {
+	s := make([]string, len(mi.tapes))
+	for i, tp := range mi.tapes {
+		s[i] = fmt.Sprintf("%s:%d-%d", tp.kind, tp.from, tp.to)
+	}
+	return strings.Join(s, "|")
 }
 
 type evLine struct {
@@ -174,9 +213,9 @@ func (p *partWriter) open() error {
 		return err
 	}
 	p.f = f
-	p.cnt = &countW{w: f}
-	p.zw, _ = zstd.NewWriter(p.cnt, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
-	p.bw = bufio.NewWriterSize(p.zw, 1<<20)
+	p.zw, _ = zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
+	p.cnt = &countW{w: p.zw} // uncompressed bytes: independent of encoder timing
+	p.bw = bufio.NewWriterSize(p.cnt, 1<<20)
 	p.cw = csv.NewWriter(p.bw)
 	p.files = append(p.files, name)
 	if p.header != nil {
@@ -207,7 +246,6 @@ func (p *partWriter) maybeRotate() error {
 	if p.f != nil && p.rows%2000 == 0 {
 		p.cw.Flush()
 		p.bw.Flush()
-		// compressed size so far is at least cnt.n; the encoder buffers up to a block
 		if p.cnt.n > partMaxBytes {
 			if err := p.closePart(); err != nil {
 				return err
@@ -255,7 +293,8 @@ var dayFileSpecs = []struct {
 
 func dayOf(t int64) string { return time.Unix(t, 0).UTC().Format("2006-01-02") }
 
-func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
+func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error {
+	allowGaps := opt.AllowGaps
 	t0, err := time.Parse("2006-01-02", fromDay)
 	if err != nil {
 		return err
@@ -276,6 +315,29 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		if u.stats.Schema != units[0].stats.Schema {
 			return fmt.Errorf("units of schema %d and %d mixed (%s); rescan or finalize them separately", units[0].stats.Schema, u.stats.Schema, u.path)
 		}
+	}
+	// One scanner revision per dataset, unless the caller lists the accepted ones.
+	revs := map[string]bool{}
+	for _, u := range units {
+		revs[u.stats.ScannerRevision] = true
+	}
+	if len(opt.AllowRevisions) > 0 {
+		ok := map[string]bool{}
+		for _, r := range opt.AllowRevisions {
+			ok[r] = true
+		}
+		for r := range revs {
+			if !ok[r] {
+				return fmt.Errorf("unit scanner revision %q is not in -allow-revisions", r)
+			}
+		}
+	} else if len(revs) > 1 {
+		list := make([]string, 0, len(revs))
+		for r := range revs {
+			list = append(list, r)
+		}
+		sort.Strings(list)
+		return fmt.Errorf("units come from scanner revisions %v; rescan, or list the accepted ones with -allow-revisions", list)
 	}
 	// Every unit must hold at least the sample the universe rates need. Units written
 	// before the rate was recorded used the 0.25 default.
@@ -302,6 +364,12 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 	}
 	if len(gaps) > 0 && !allowGaps {
 		return fmt.Errorf("scanned units are not contiguous; missing slot ranges %v (finish the scan first)", gaps)
+	}
+	// Lead-in: the universe rules (U1: tokens aged 24 h to 14 days) need this much
+	// gap-free history before the first decision day.
+	if need := t0.Unix() - int64(opt.LeadInDays)*86400; opt.LeadInDays > 0 && covStart > need {
+		return fmt.Errorf("lead-in not covered: coverage starts %s, the %d-day lead-in needs %s",
+			time.Unix(covStart, 0).UTC().Format(time.RFC3339), opt.LeadInDays, time.Unix(need, 0).UTC().Format(time.RFC3339))
 	}
 	log.Printf("finalize: %d units, coverage %s .. %s", len(units), time.Unix(covStart, 0).UTC(), time.Unix(covEnd, 0).UTC())
 
@@ -371,36 +439,32 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		mi.Launch = mi.CreateSlot != 0 && mi.Hash < launchRate
 		mi.Grad = mi.GradSlot != 0 && mi.Hash < gradRate
 		mi.DirectPool = mi.PoolSlot != 0 && mi.Hash < poolRate
-		from, to := int64(0), int64(0)
-		upd := func(a, b int64) {
-			if from == 0 || a < from {
-				from = a
-			}
-			if b > to {
-				to = b
-			}
-		}
+		mi.tapes = mi.tapes[:0]
 		if mi.Launch {
-			upd(mi.CreateTime, mi.CreateTime+tapeHorizon)
+			mi.tapes = append(mi.tapes, tape{"launch", mi.CreateTime, mi.CreateTime + tapeHorizon})
 		}
 		if mi.Grad {
-			start := mi.CreateTime
-			if start == 0 {
-				start = covStart
-			}
-			upd(start, mi.GradTime+poolTapeHorizon)
+			mi.tapes = append(mi.tapes, tape{"grad", mi.GradTime, mi.GradTime + poolTapeHorizon})
 		}
 		if mi.DirectPool {
-			upd(mi.PoolTime, mi.PoolTime+poolTapeHorizon)
+			mi.tapes = append(mi.tapes, tape{"pool", mi.PoolTime, mi.PoolTime + poolTapeHorizon})
+		}
+		from, to := int64(0), int64(0)
+		for _, tp := range mi.tapes {
+			if from == 0 || tp.from < from {
+				from = tp.from
+			}
+			if tp.to > to {
+				to = tp.to
+			}
 		}
 		mi.TapeFrom, mi.TapeTo = from, to
 		mi.Censored = to > covEnd
 	}
 	inTape := func(mint string, t int64) bool {
 		mi := mints[mint]
-		return mi != nil && mi.TapeFrom != 0 && t >= mi.TapeFrom && t <= mi.TapeTo
+		return mi != nil && mi.inTape(t)
 	}
-	isUniverse := func(mint string) bool { mi := mints[mint]; return mi != nil && mi.TapeFrom != 0 }
 
 	// Pass 2: route rows to days.
 	if err := os.MkdirAll(filepath.Join(dsDir, "days"), 0o755); err != nil {
@@ -485,13 +549,8 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 			mintCol int
 			ev      bool
 		}{{"curve_trades", 8, true}, {"amm_trades", 9, true}, {"failed", 8, false}, {"blocks", -1, false}} {
-			userCol, tsCol := -1, -1
-			switch spec.base {
-			case "curve_trades":
-				userCol, tsCol = 12, 13
-			case "amm_trades":
-				userCol, tsCol = 15, 16
-			}
+			// Column positions come from the unit's own header (older schemas differ).
+			userCol, tsCol, signerCol := -1, -1, -1
 			first := true
 			fp := filepath.Join(u.path, spec.base+".csv.zst")
 			if spec.base != "blocks" && beforeWindow(u) && !fileExists(fp) {
@@ -500,6 +559,9 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 			err := readCSVZst(fp, func(rec []string) error {
 				if first {
 					first = false
+					if spec.base == "curve_trades" || spec.base == "amm_trades" {
+						userCol, tsCol, signerCol = indexOf(rec, "user"), indexOf(rec, "timestamp"), indexOf(rec, "signer")
+					}
 					return noteHeader(spec.base, rec)
 				}
 				slot, _ := strconv.ParseInt(rec[0], 10, 64)
@@ -556,10 +618,10 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 				}
 				// Redundant values are written empty: signer equal to user, event
 				// timestamp equal to block_time.
-				if userCol >= 0 && rec[5] == rec[userCol] {
-					rec[5] = ""
+				if signerCol >= 0 && userCol >= 0 && userCol < len(rec) && rec[signerCol] == rec[userCol] {
+					rec[signerCol] = ""
 				}
-				if tsCol >= 0 && rec[tsCol] == rec[1] {
+				if tsCol >= 0 && tsCol < len(rec) && rec[tsCol] == rec[1] {
 					rec[tsCol] = ""
 				}
 				w, err := dayW(dayOf(bt), spec.base)
@@ -590,8 +652,8 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 				if m == "" {
 					m = e.Fields["base_mint"]
 				}
-				if !isUniverse(m) {
-					return nil
+				if !inTape(m, e.BlockTime) {
+					return nil // outside the mint's tape, like its trades (no look-ahead)
 				}
 			}
 			w, err := dayW(dayOf(e.BlockTime), "events")
@@ -716,13 +778,18 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		Rows   int64  `json:"rows,omitempty"`
 	}
 	type dayInfo struct {
-		Day            string         `json:"day"`
-		BlocksExpected int            `json:"blocks_expected"` // equals blocks_scanned when complete; 0 when the day is only partly covered
-		BlocksScanned  int            `json:"blocks_scanned"`
-		Complete       bool           `json:"complete"`
-		WarmUp         bool           `json:"warm_up"`
-		Rows           map[string]int `json:"rows"`
-		Files          []fileInfo     `json:"files"`
+		Day           string         `json:"day"`
+		BlocksScanned int            `json:"blocks_scanned"`
+		Complete      bool           `json:"complete"` // the whole day lies inside the gap-free, parent-linked coverage
+		WarmUp        bool           `json:"warm_up"`  // the day lacks its lead-in of gap-free history
+		Rows          map[string]int `json:"rows"`
+		Files         []fileInfo     `json:"files"`
+	}
+	// Every day of the window is listed, with or without data, so a missing day shows.
+	for d := t0; d.Before(t1); d = d.AddDate(0, 0, 1) {
+		if _, err := dayW(d.Format("2006-01-02"), "blocks"); err != nil {
+			return err
+		}
 	}
 	var dayList []string
 	for d := range days {
@@ -736,10 +803,8 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		di := dayInfo{Day: d, BlocksScanned: scanned[d], Rows: map[string]int{}}
 		// complete: the whole day lies inside the parent-linked coverage
 		di.Complete = len(gaps) == 0 && len(chainBreaks) == 0 && covStart <= dayStart.Unix() && covEnd >= dayStart.Unix()+86400-1
-		if di.Complete {
-			di.BlocksExpected = di.BlocksScanned
-		}
-		di.WarmUp = dayStart.Unix() < covStart+14*86400 // U1 needs 14 days of history before a decision day
+		di.Complete = di.Complete && di.BlocksScanned > 0
+		di.WarmUp = dayStart.Unix()-int64(opt.LeadInDays)*86400 < covStart || len(gaps) > 0 || len(chainBreaks) > 0
 		for _, s := range dayFileSpecs {
 			w := df.w[s.base]
 			if w.f == nil && len(w.files) == 0 {
@@ -766,7 +831,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 	// mints table
 	mp := filepath.Join(dsDir, "mints.csv.zst")
 	mw := &partWriter{dir: dsDir, base: "mints", ext: "csv", header: []string{"mint", "hash", "create_slot", "create_time", "creator", "name", "symbol",
-		"quote_mint", "mayhem", "grad_slot", "grad_time", "pool", "direct_pool_slot", "direct_pool_time", "launch", "grad", "direct_pool", "tape_from", "tape_to", "censored"}}
+		"quote_mint", "mayhem", "grad_slot", "grad_time", "pool", "direct_pool_slot", "direct_pool_time", "launch", "grad", "direct_pool", "tape_from", "tape_to", "censored", "tapes"}}
 	var ml []*mintInfo
 	for _, mi := range mints {
 		if mi.CreateSlot != 0 || mi.GradSlot != 0 || mi.PoolSlot != 0 {
@@ -795,7 +860,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 		}
 		mw.writeCSV([]string{mi.Mint, strconv.FormatFloat(mi.Hash, 'f', 8, 64), u64(mi.CreateSlot), i64(mi.CreateTime), mi.Creator, mi.Name, mi.Symbol,
 			mi.QuoteMint, mi.Mayhem, u64(mi.GradSlot), i64(mi.GradTime), mi.Pool, u64(mi.PoolSlot), i64(mi.PoolTime),
-			b(mi.Launch), b(mi.Grad), b(mi.DirectPool), i64(mi.TapeFrom), i64(mi.TapeTo), b(mi.Censored)})
+			b(mi.Launch), b(mi.Grad), b(mi.DirectPool), i64(mi.TapeFrom), i64(mi.TapeTo), b(mi.Censored), mi.tapeList()})
 	}
 	if err := mw.closePart(); err != nil {
 		return err
@@ -815,17 +880,16 @@ func Finalize(out, dsDir string, fromDay, toDay string, allowGaps bool) error {
 	for _, u := range units {
 		decodeFail += u.stats.DecodeFailures
 		unitsInfo = append(unitsInfo, map[string]any{"epoch": u.stats.Epoch, "root_cid": u.stats.RootCid, "from_slot": u.stats.FromSlot,
-			"to_slot": u.stats.ToSlot, "blocks": u.stats.Blocks, "blocks_expected": u.stats.BlocksExpected, "decode_failures": u.stats.DecodeFailures,
+			"to_slot": u.stats.ToSlot, "blocks": u.stats.Blocks, "decode_failures": u.stats.DecodeFailures,
 			"unknown_events": u.stats.UnknownEvents, "newer_layouts": u.stats.NewerLayouts, "extra_bytes": u.stats.ExtraBytes,
-			"length_anomalies": u.stats.LengthAnomalies, "older_layouts": u.stats.OlderLayouts, "raw_records": u.stats.RawRecords, "schema": u.stats.Schema, "missing_blocks": len(u.stats.MissingBlocks),
+			"length_anomalies": u.stats.LengthAnomalies, "older_layouts": u.stats.OlderLayouts, "raw_records": u.stats.RawRecords, "schema": u.stats.Schema, "legacy_meta": u.stats.LegacyMeta, "missing_meta": u.stats.MissingMeta,
 			"scanner_revision": u.stats.ScannerRevision})
 	}
 	man := map[string]any{
 		"schema":          units[0].stats.Schema,
-		"generated_at":    time.Now().UTC().Format(time.RFC3339),
 		"source":          "Old Faithful public Solana archive, https://files.old-faithful.net (one CAR file per epoch, content-addressed)",
 		"programs":        map[string]string{"pump": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pump_amm": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"},
-		"window":          map[string]string{"from": fromDay, "to_exclusive": toDay},
+		"window":          map[string]any{"from": fromDay, "to_exclusive": toDay, "lead_in_days": opt.LeadInDays},
 		"coverage":        map[string]any{"first_block_time": covStart, "last_block_time": covEnd, "first_slot": units[0].stats.FromSlot, "last_slot": units[len(units)-1].stats.ToSlot},
 		"sampling":        map[string]any{"hash": "first 8 bytes of sha256(mint pubkey bytes), big-endian, divided by 2^64", "launch_rate": launchRate, "grad_rate": gradRate, "direct_pool_rate": poolRate, "launch_tape_seconds": tapeHorizon, "grad_and_pool_tape_seconds": poolTapeHorizon, "unit_sample_rate_min": minRate},
 		"universe_counts": map[string]int{"launch": nLaunch, "grad": nGrad, "direct_pool": nPool, "mints_registered": len(ml)},

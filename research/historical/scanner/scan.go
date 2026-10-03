@@ -93,8 +93,6 @@ type UnitStats struct {
 	MetaOnlyChecks  int64          `json:"meta_only_checks"`
 	FullMetaParses  int64          `json:"full_meta_parses"`
 	MetaOnlyHits    int64          `json:"meta_only_hits"`
-	BlocksExpected  int            `json:"blocks_expected"`
-	MissingBlocks   []uint64       `json:"missing_blocks"`
 	FirstParentSlot uint64         `json:"first_parent_slot"`
 	ChainBreaks     []string       `json:"chain_breaks"`
 	Seconds         float64        `json:"seconds"`
@@ -114,6 +112,15 @@ func (s *UnitStats) decodeErr(msg string) {
 		s.DecodeErrors = append(s.DecodeErrors, msg)
 	}
 	s.mu.Unlock()
+}
+
+// missingMeta counts a transaction stored without its meta: what it touched cannot be
+// known, so it is a decode failure, never a silent skip.
+func (s *UnitStats) missingMeta(slot uint64, txIdx int) {
+	s.mu.Lock()
+	s.MissingMeta++
+	s.mu.Unlock()
+	s.decodeErr(fmt.Sprintf("slot %d idx %d: transaction has no meta", slot, txIdx))
 }
 
 // csvOut writes RFC 4180 rows to a zstd-compressed file.
@@ -354,7 +361,6 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	case len(st.ChainBreaks) > 0:
 		return nil, fmt.Errorf("%d parent-link breaks (first %s)", len(st.ChainBreaks), st.ChainBreaks[0])
 	}
-	st.BlocksExpected = st.Blocks
 	st.Seconds = time.Since(t0).Seconds()
 	st.HTTPRequests = statHTTPRequests.Load() - req0
 	st.HTTPRetries = statHTTPRetries.Load() - ret0
@@ -491,17 +497,15 @@ func processBlock(b *blockData, st *UnitStats) *blockResult {
 	var nEvents int
 	for _, raw := range b.txNodes {
 		r.txs++
-		// Vote transactions carry the vote program id in their (uncompressed) message.
-		if bytes.Contains(raw, voteProgram[:]) {
-			r.vote++
-			continue
-		}
 		txBytes, metaBuf, txIdx, err := txNode(raw, get)
 		if err != nil {
 			st.decodeErr(fmt.Sprintf("slot %d: tx node: %v", b.slot, err))
 			continue
 		}
-		if bytes.Contains(txBytes, voteProgram[:]) {
+		// A vote transaction: every top-level instruction calls the vote program (or
+		// the compute budget program) and nothing is loaded from lookup tables. The
+		// byte search is only a fast pre-filter; the instructions decide.
+		if bytes.Contains(txBytes, voteProgram[:]) && isVoteTx(txBytes) {
 			r.vote++
 			continue
 		}
@@ -521,6 +525,10 @@ func processBlock(b *blockData, st *UnitStats) *blockResult {
 				st.decodeErr(fmt.Sprintf("slot %d: meta zstd: %v", b.slot, err))
 				continue
 			}
+		}
+		if !staticHit && len(metaRaw) == 0 {
+			st.missingMeta(b.slot, txIdx) // programs reached through a lookup table are unknowable
+			continue
 		}
 		if !staticHit {
 			st.mu.Lock()
@@ -638,9 +646,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 		return
 	}
 	if len(metaRaw) == 0 {
-		st.mu.Lock()
-		st.MissingMeta++
-		st.mu.Unlock()
+		st.missingMeta(b.slot, txIdx)
 		return
 	}
 	nKeys := len(tx.Message.AccountKeys)
@@ -975,13 +981,15 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 
 // addRaw writes the raw record of a transaction that touches a sampled mint.
 func (r *blockResult) addRaw(st *UnitStats, b *blockData, txIdx int, sig string, txBytes, metaRaw []byte, meta *TransactionStatusMeta, extra ...string) {
-	mints := sampledMints(meta, extra...)
-	if len(mints) == 0 {
-		return
-	}
+	// The full meta: the lean one has no pre-token balances, and a mint seen only
+	// there (an account closed by a full sell) must still get its record.
 	full, err := fullMeta(metaRaw)
 	if err != nil {
 		st.decodeErr(fmt.Sprintf("slot %d idx %d: full meta: %v", b.slot, txIdx, err))
+		return
+	}
+	mints := sampledMints(full, extra...)
+	if len(mints) == 0 {
 		return
 	}
 	r.raw = append(r.raw, buildRawRecord(b.slot, b.blockTime, txIdx, sig, txBytes, full, mints))
@@ -1074,6 +1082,7 @@ var mintScan = true
 
 func mintOnlyTx(r *blockResult, st *UnitStats, b *blockData, txIdx int, txBytes, metaBuf []byte) {
 	if len(metaBuf) == 0 {
+		st.missingMeta(b.slot, txIdx)
 		return
 	}
 	metaRaw, err := zstdDec.DecodeAll(metaBuf, nil)
@@ -1087,7 +1096,13 @@ func mintOnlyTx(r *blockResult, st *UnitStats, b *blockData, txIdx int, txBytes,
 func mintOnlyTxRaw(r *blockResult, st *UnitStats, b *blockData, txIdx int, txBytes, metaRaw []byte) {
 	mints, err := metaMints(metaRaw)
 	if err != nil {
-		return // not a protobuf meta; pump transactions report these, others are out of scope
+		// Not the expected protobuf meta: its token balances cannot be read, so plain
+		// activity of a sampled mint could hide here. Counted, never dropped silently.
+		st.mu.Lock()
+		st.LegacyMeta++
+		st.mu.Unlock()
+		st.decodeErr(fmt.Sprintf("slot %d idx %d: meta is not the expected protobuf (token balances unreadable)", b.slot, txIdx))
+		return
 	}
 	hit := false
 	for _, m := range mints {

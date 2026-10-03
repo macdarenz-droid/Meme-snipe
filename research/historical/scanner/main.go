@@ -22,6 +22,7 @@ import (
 	"runtime/debug"
 	"runtime/pprof"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -98,8 +99,8 @@ func main() {
 			}
 			os.Exit(1)
 		}
-		log.Printf("unit done: blocks=%d/%d curve=%d amm=%d other=%d pumpTx=%d failed=%d decodeFail=%d %.0fs",
-			st.Blocks, st.BlocksExpected, st.CurveTrades, st.AmmTrades, st.OtherEvents, st.PumpTxs, st.PumpTxsFailed, st.DecodeFailures, st.Seconds)
+		log.Printf("unit done: blocks=%d curve=%d amm=%d other=%d pumpTx=%d failed=%d decodeFail=%d %.0fs",
+			st.Blocks, st.CurveTrades, st.AmmTrades, st.OtherEvents, st.PumpTxs, st.PumpTxsFailed, st.DecodeFailures, st.Seconds)
 	case "run":
 		fs := flag.NewFlagSet("run", flag.ExitOnError)
 		out := fs.String("out", "data", "output dir")
@@ -204,8 +205,8 @@ func main() {
 						done++
 						el := time.Since(start)
 						eta := time.Duration(float64(el) / float64(done) * float64(len(todo)-done-failed))
-						log.Printf("unit %d %d-%d ok: blocks=%d/%d curve=%d amm=%d other=%d decodeFail=%d %.0fs | %d/%d done, eta %s",
-							u.epoch, u.from, u.to, st.Blocks, st.BlocksExpected, st.CurveTrades, st.AmmTrades, st.OtherEvents, st.DecodeFailures, st.Seconds,
+						log.Printf("unit %d %d-%d ok: blocks=%d curve=%d amm=%d other=%d decodeFail=%d %.0fs | %d/%d done, eta %s",
+							u.epoch, u.from, u.to, st.Blocks, st.CurveTrades, st.AmmTrades, st.OtherEvents, st.DecodeFailures, st.Seconds,
 							done, len(todo), eta.Round(time.Minute))
 					}
 					mu.Unlock()
@@ -242,13 +243,22 @@ func main() {
 		fs.Float64Var(&launchRate, "launch-rate", launchRate, "launch universe hash threshold (<= 0.25)")
 		fs.Float64Var(&gradRate, "grad-rate", gradRate, "graduation universe hash threshold (<= 0.25)")
 		fs.Float64Var(&poolRate, "pool-rate", poolRate, "direct-pool universe hash threshold (<= 0.25)")
-		partMB := fs.Int64("part-mb", 45, "rotate output files at this many MB (release builds: up to 1900)")
+		partMB := fs.Int64("part-mb", 1900, "rotate output files after this many MiB of uncompressed data (at most 1900)")
+		leadIn := fs.Int("lead-in-days", 14, "days of gap-free coverage required before -from (0 for a single-day check)")
+		allowRevs := fs.String("allow-revisions", "", "comma-separated scanner revisions accepted together (default: one revision)")
 		fs.Parse(os.Args[2:])
 		if *partMB < 1 || *partMB > 1900 {
 			log.Fatal("-part-mb must be between 1 and 1900")
 		}
 		partMaxBytes = *partMB << 20
-		if err := Finalize(*out, *ds, *fromDay, *toDay, *allowGaps); err != nil {
+		opt := finalizeOpts{AllowGaps: *allowGaps, LeadInDays: *leadIn}
+		if *allowRevs != "" {
+			opt.AllowRevisions = strings.Split(*allowRevs, ",")
+		}
+		if *leadIn < 0 {
+			log.Fatal("-lead-in-days must be 0 or more")
+		}
+		if err := Finalize(*out, *ds, *fromDay, *toDay, opt); err != nil {
 			log.Fatal(err)
 		}
 	default:
