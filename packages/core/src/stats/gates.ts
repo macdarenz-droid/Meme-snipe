@@ -131,6 +131,7 @@ export const RETURN_FLOOR = -1.1;
 const SEVERE_RETURN = -0.5;
 
 const MS_PER_DAY = 86_400_000;
+const MS_PER_HOUR = MS_PER_DAY / 24;
 /** Level of the SPA test when it gates G1 (one test over the whole registry). */
 const SPA_ALPHA = 0.05;
 const COVERAGE_WINDOW = 100;
@@ -683,6 +684,11 @@ export interface G3Input {
  */
 export interface G3Registration {
   readonly registeredAtMs: number;
+  /**
+   * When the run is judged, fixed when the strategy is registered: the end of the holdout tail or 48 h after the start
+   * if that is later (supervisor ruling, "Qualifying-run length"); never a stop chosen from results.
+   */
+  readonly evaluateAtMs: number;
   readonly thresholds: Partial<typeof G3_DEFAULTS>;
   readonly expectedSimulationErrors: readonly string[];
 }
@@ -790,6 +796,11 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   c.add('registration', input.registration.registeredAtMs <= input.dryRunStartMs,
     `agreement plan registered at ${input.registration.registeredAtMs}, run started at ${input.dryRunStartMs} (need registered before the run)`);
   c.add('duration', input.dryRunHours >= th.minHours, `${fmt(input.dryRunHours)} h (need >= ${th.minHours})`);
+  // G3 is not evaluated before its registered end: a run judged early could stop on a good stretch.
+  const runEndMs = input.dryRunStartMs + input.dryRunHours * MS_PER_HOUR;
+  c.add('registered end', input.registration.evaluateAtMs >= input.dryRunStartMs + th.minHours * MS_PER_HOUR && runEndMs >= input.registration.evaluateAtMs,
+    `run ends ${runEndMs}, registered end ${input.registration.evaluateAtMs} (need the run to reach it, and it at least ${th.minHours} h after the start)`);
+  if (runEndMs < input.registration.evaluateAtMs) extend.add('registered end');
   c.add('parity', input.parityTestPassed, input.parityTestPassed ? 'parity passed on the recorded dry-run data' : 'parity failed on the recorded dry-run data');
 
   // Paper outcomes against the holdout's expected distribution: the mean and the severe-outcome share.

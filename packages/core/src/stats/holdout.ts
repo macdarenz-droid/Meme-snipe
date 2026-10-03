@@ -155,10 +155,13 @@ export const addDays = (day: string, n: number): string => {
   return d;
 };
 
+/** Day 0 of dayFromNumber. */
+const EPOCH_DAY = '1970-01-01';
+
 /** The UTC day of a day number counted from 1970-01-01 (day 0). */
 export const dayFromNumber = (n: number): string => {
   if (!Number.isInteger(n) || n < 0) throw new RangeError(`day number must be an integer >= 0, got ${n}`);
-  let y = 1970;
+  let y = Number(EPOCH_DAY.slice(0, 4));
   let rest = n;
   for (;;) {
     const len = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 366 : 365;

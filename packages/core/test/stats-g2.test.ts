@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   abandonHoldout, attemptAlpha, burnHoldout, createHoldoutRegistry, dayFromNumber, daysBetween, extendHoldout, freezeRequirement, nextDay, HOLDOUT_COUNT_FIELDS, createRng, dayBlockMeanInterval, holm, MIN_DAYS, nPower, openHoldout, registerHoldout,
-  sd, sealHoldout, simulateG2Power,
+  holdoutPlan, sd, sealHoldout, simulateG2Power,
 } from '../src/stats/index.ts';
 import { bracketTrades } from './stats-fixtures.ts';
 
@@ -234,5 +234,23 @@ describe('holdout attempts', () => {
     expect(daysBetween('2026-09-22', '2026-10-20')).toBe(28);
     expect(dayFromNumber(0)).toBe('1970-01-01');
     expect(dayFromNumber(20_718)).toBe('2026-09-22');
+  });
+});
+
+// Supervisor ruling STATS-1c item 5: n_power per attempt is reported with the chance of reaching n by E and the overall
+// pass probability.
+describe('holdout plan', () => {
+  const plan = (dailyEntries: number[], powerGivenN = 0.8) =>
+    holdoutPlan({ dailyEntries, windowDays: 28, requiredTrades: 300, minDays: 10, powerGivenN, rng: createRng(1), simulations: 2000 });
+  test('certain, impossible and in-between windows; overall = P(reach n by E) × power given n', () => {
+    expect(plan(Array(20).fill(15))).toEqual({ powerGivenN: 0.8, pReach: 1, overall: 0.8 });
+    expect(plan(Array(20).fill(10)).pReach).toBe(0); // 280 < 300
+    const mixed = plan(Array.from({ length: 20 }, (_, i) => (i % 2 === 0 ? 18 : 4)));
+    expect(mixed.pReach).toBeGreaterThan(0);
+    expect(mixed.pReach).toBeLessThan(1);
+    expect(mixed.overall).toBeCloseTo(mixed.pReach * 0.8, 12);
+    // Enough entries on too few days is not enough.
+    expect(plan(Array.from({ length: 20 }, (_, i) => (i % 4 === 0 ? 60 : 0))).pReach).toBeLessThan(0.5);
+    expect(() => plan([1, 2])).toThrow(RangeError);
   });
 });

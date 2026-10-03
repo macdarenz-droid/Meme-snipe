@@ -4,7 +4,7 @@
 // Both must hold (intersection–union test), so the universe's p-value is the larger of the two; Holm then compares it
 // with the universe's adjusted level.
 
-import { dayBlockMeanDiffInterval, dayBlockMeanInterval, type DayReturn, type MeanInterval } from './bootstrap.ts';
+import { dayBlockMeanDiffInterval, dayBlockMeanInterval, DEFAULT_REPLICATES, type DayReturn, type MeanInterval } from './bootstrap.ts';
 import { mean, sd } from './descriptive.ts';
 import { nPower } from './power.ts';
 import { createRng, nextInt, type Rng } from './rng.ts';
@@ -308,4 +308,50 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     else lo = mid;
   }
   return { nPower: hi, powerAtN: powerAt(hi), level, evaluations, walkForward: summarizeWalkForward(opts.walkForward), units, seed: opts.seed };
+};
+
+export interface HoldoutPlan {
+  /** Power of the full G2 rule once n trades are in (n_power's simulated power at n). */
+  readonly powerGivenN: number;
+  /** Probability the window reaches n entries on at least minDays trade days by its cutoff E. */
+  readonly pReach: number;
+  /** pReach × powerGivenN: the chance this attempt passes when the edge is the target. */
+  readonly overall: number;
+}
+
+/**
+ * What one holdout attempt can deliver, reported with n_power (supervisor ruling STATS-1c, item 5). The window's entry
+ * counts are simulated from practice-day entry counts (post-B4, from the funnel, counts only) drawn in runs of
+ * SIM_BLOCK_DAYS consecutive days, so busy and quiet stretches stay together.
+ */
+export const holdoutPlan = (opts: {
+  readonly dailyEntries: readonly number[];
+  readonly windowDays: number;
+  readonly requiredTrades: number;
+  readonly minDays: number;
+  readonly powerGivenN: number;
+  readonly rng: Rng;
+  readonly simulations?: number;
+}): HoldoutPlan => {
+  const d = opts.dailyEntries;
+  if (d.length < SIM_BLOCK_DAYS) throw new RangeError(`need at least ${SIM_BLOCK_DAYS} practice days of entry counts`);
+  for (const x of d) if (!Number.isInteger(x) || x < 0) throw new RangeError('daily entry counts are integers >= 0');
+  if (!(opts.powerGivenN >= 0 && opts.powerGivenN <= 1)) throw new RangeError('powerGivenN must be in [0, 1]');
+  const sims = opts.simulations ?? 5 * DEFAULT_REPLICATES;
+  let reached = 0;
+  for (let s = 0; s < sims; s++) {
+    let n = 0;
+    let days = 0;
+    for (let k = 0; k < opts.windowDays; ) {
+      const start = nextInt(opts.rng, d.length);
+      for (let j = 0; j < SIM_BLOCK_DAYS && k < opts.windowDays; j++, k++) {
+        const x = d[(start + j) % d.length]!;
+        n += x;
+        if (x > 0) days++;
+      }
+    }
+    if (n >= opts.requiredTrades && days >= opts.minDays) reached++;
+  }
+  const pReach = reached / sims;
+  return { powerGivenN: opts.powerGivenN, pReach, overall: pReach * opts.powerGivenN };
 };

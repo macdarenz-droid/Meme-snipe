@@ -251,11 +251,13 @@ describe('joint SPA test calibration (STATS-1c)', () => {
   }, 900_000);
 });
 
-// G3 power at 48 h for the inconsistencies it must catch (supervisor ruling after three reviews). The setting is the
-// G3 fixture's: 20 candidates an hour in the backtest, about 60 paper trades, about 980 rejects, 2 fills a trade. If
-// power is short, the remedy is a longer qualifying run, never a looser bound. Measured (500 runs): candidate rate
-// halved 1.0; reject mix with H8 doubled 1.0; mean shifted −5 points 0.276; median fill gap 0.75 points 1.0.
-describe('G3 power at 48 h (STATS-1b)', () => {
+// G3 power for the inconsistencies it must catch (supervisor rulings after three reviews and on the qualifying-run
+// length). The setting is the G3 fixture's, scaled to the run's length: 20 candidates an hour in the backtest, 60 paper
+// trades and 980 rejects per 48 h, 2 fills a trade. If power is short, the remedy is a longer qualifying run, never a
+// looser bound. Measured (500 runs): candidate rate halved, one reason's share doubled and a 0.75-point median fill gap
+// are caught in every run at 48 h, 7 days and 10 days; a 5-point mean shift in 27.6% at 48 h, 60% at 7 days and 74.2%
+// at 10 days.
+describe('G3 power at 48 h, 7 days and 10 days (STATS-1b, STATS-1c)', () => {
   const poisson = (rng: Rng, lambda: number) => Math.max(0, Math.round(lambda + Math.sqrt(lambda) * nextNormal(rng)));
   const multinomial = (rng: Rng, n: number, p: Record<string, number>) => {
     const keys = Object.keys(p);
@@ -272,38 +274,55 @@ describe('G3 power at 48 h (STATS-1b)', () => {
     }
     return out;
   };
-  const caught = (reps: number, seed: number, make: (rng: Rng) => Partial<G3Input>, check: RegExp) => {
-    const rng = createRng(seed);
-    let n = 0;
-    for (let r = 0; r < reps; r++) if (gateG3({ ...G3_BASE, ...make(rng) }).reasons.some((x) => check.test(x.split(':')[0]!))) n++;
-    return n / reps;
-  };
   const bt = { H8: 4300, H9: 14_200, H11: 1500 };
   const btShare = { H8: 4300 / 20_000, H9: 14_200 / 20_000, H11: 1500 / 20_000 };
   const holdoutMean = 0.1;
-  const G3_BASE: G3Input = {
-    qualifyingRun: true, liveOnlyVetoes: { vetoed: 20, eligible: 1000 }, dryRunHours: 48,
-    dryRunReturns: bracketTrades(41, holdoutMean, 2, 30).map((t) => t.rNet),
-    holdout: { n: 500, mean: holdoutMean, sd: bracketSd(holdoutMean) }, holdoutSevereRate: 0.075,
-    holdoutLower: { value: 0.06, level: 1 - 0.05 / 3 },
-    candidates: { dryRunCount: 960, dryRunHours: 48, backtestCount: 20_000, backtestHours: 1000 },
-    rejectMix: { dryRun: { H8: 210, H9: 700, H11: 70 }, backtest: bt },
-    fillDifferences: Array.from({ length: 120 }, (_, i) => 0.003 + 0.001 * Math.sin(i)), parityTestPassed: true,
-    registration: { registeredAtMs: 0, thresholds: {}, expectedSimulationErrors: [] }, dryRunStartMs: 1,
-    simulations: { attempted: 120, succeeded: 120, errors: {} },
-    vetoCounterfactuals: { returns: bracketTrades(42, holdoutMean, 1, 20).map((t) => t.rNet), censored: 0 }, returnCap: 0.3,
+  const HOUR = 3_600_000;
+  // The run at `hours`: every count scales with its length (20 candidates an hour, 60 paper trades and 980 rejects per 48 h).
+  const at = (hours: number): G3Input => {
+    const f = hours / 48;
+    return {
+      qualifyingRun: true, liveOnlyVetoes: { vetoed: Math.round(20 * f), eligible: Math.round(1000 * f) }, dryRunHours: hours,
+      dryRunReturns: bracketTrades(41, holdoutMean, Math.round(2 * f), 30).map((t) => t.rNet),
+      holdout: { n: 500, mean: holdoutMean, sd: bracketSd(holdoutMean) }, holdoutSevereRate: 0.075,
+      holdoutLower: { value: 0.06, level: 1 - 0.05 / 3 },
+      candidates: { dryRunCount: Math.round(960 * f), dryRunHours: hours, backtestCount: 20_000, backtestHours: 1000 },
+      rejectMix: { dryRun: { H8: Math.round(210 * f), H9: Math.round(700 * f), H11: Math.round(70 * f) }, backtest: bt },
+      fillDifferences: Array.from({ length: Math.round(120 * f) }, (_, i) => 0.003 + 0.001 * Math.sin(i)), parityTestPassed: true,
+      registration: { registeredAtMs: 0, evaluateAtMs: 1 + hours * HOUR, thresholds: {}, expectedSimulationErrors: [] }, dryRunStartMs: 1,
+      simulations: { attempted: Math.round(120 * f), succeeded: Math.round(120 * f), errors: {} },
+      vetoCounterfactuals: { returns: bracketTrades(42, holdoutMean, 1, Math.round(20 * f)).map((t) => t.rNet), censored: 0 }, returnCap: 0.3,
+    };
   };
-  test('power for each registered inconsistency is reported; rate and reject mix are caught almost surely', () => {
-    const rate = caught(500, 1, (rng) => ({ candidates: { ...G3_BASE.candidates, dryRunCount: poisson(rng, 480) } }), /^candidate rate$/);
-    const mix = caught(500, 2, (rng) => ({ rejectMix: { dryRun: multinomial(rng, 980, { H8: 2 * btShare.H8, H9: btShare.H9 - btShare.H8 / 2, H11: btShare.H11 - btShare.H8 / 2 }), backtest: bt } }), /^reject mix/);
-    const meanShift = caught(500, 3, (rng) => ({ dryRunReturns: Array.from({ length: 60 }, () => bracketDraw(rng, holdoutMean - 0.05)) }), /^mean$/);
-    const fill = caught(500, 4, (rng) => ({ fillDifferences: Array.from({ length: 120 }, () => Math.abs(0.0075 / 0.6745 * nextNormal(rng))) }), /^fills$/);
-    expect(rate).toBeGreaterThanOrEqual(0.99);
-    expect(mix).toBeGreaterThanOrEqual(0.99);
-    // A 5-point mean shift is hard to see in about 60 trades: reported, and the remedy is a longer run.
-    expect(meanShift).toBeGreaterThan(0.1);
-    expect(meanShift).toBeLessThan(0.6);
-    expect(fill).toBeGreaterThan(0.8);
+  const powerAt = (hours: number) => {
+    const base = at(hours);
+    const f = hours / 48;
+    const caughtAt = (seed: number, make: (rng: Rng) => Partial<G3Input>, check: RegExp) => {
+      const rng = createRng(seed);
+      let n = 0;
+      for (let r = 0; r < 500; r++) if (gateG3({ ...base, ...make(rng) }).reasons.some((x) => check.test(x.split(':')[0]!))) n++;
+      return n / 500;
+    };
+    return {
+      rate: caughtAt(1, (rng) => ({ candidates: { ...base.candidates, dryRunCount: poisson(rng, 480 * f) } }), /^candidate rate$/),
+      mix: caughtAt(2, (rng) => ({ rejectMix: { dryRun: multinomial(rng, Math.round(980 * f), { H8: 2 * btShare.H8, H9: btShare.H9 - btShare.H8 / 2, H11: btShare.H11 - btShare.H8 / 2 }), backtest: bt } }), /^reject mix/),
+      meanShift: caughtAt(3, (rng) => ({ dryRunReturns: Array.from({ length: Math.round(60 * f) }, () => bracketDraw(rng, holdoutMean - 0.05)) }), /^mean$/),
+      fill: caughtAt(4, (rng) => ({ fillDifferences: Array.from({ length: Math.round(120 * f) }, () => Math.abs(0.0075 / 0.6745 * nextNormal(rng))) }), /^fills$/),
+    };
+  };
+  test('power for each registered inconsistency at 48 h, 7 days and 10 days', () => {
+    const p48 = powerAt(48);
+    const p7 = powerAt(168);
+    const p10 = powerAt(240);
+    for (const p of [p48, p7, p10]) {
+      expect(p.rate).toBeGreaterThanOrEqual(0.99);
+      expect(p.mix).toBeGreaterThanOrEqual(0.99);
+      expect(p.fill).toBeGreaterThan(0.8);
+    }
+    // The mean shift needs time: 0.276 at 48 h, 0.6 at 7 days, 0.742 at 10 days.
+    expect(p48.meanShift).toBeCloseTo(0.276, 3);
+    expect(p7.meanShift).toBeCloseTo(0.6, 3);
+    expect(p10.meanShift).toBeCloseTo(0.742, 3);
   }, SLOW);
 });
 

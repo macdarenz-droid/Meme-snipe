@@ -7,7 +7,7 @@ import {
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
   type RevalidationInput,
 } from '../src/stats/index.ts';
-import { KNOWN_PLATFORM_CHANGES, RESEARCH_CONFIG, TRIAL_POLICY } from '../src/config/index.ts';
+import { EXIT_UNIVERSES, KNOWN_PLATFORM_CHANGES, RESEARCH_CONFIG, TRIAL_POLICY } from '../src/config/index.ts';
 import { bracketTrades, type DayTrade } from './stats-fixtures.ts';
 
 const DAY = 86_400_000;
@@ -453,7 +453,7 @@ const g3Pass: G3Input = {
   rejectMix: { dryRun: { H8: 210, H9: 700, H11: 70 }, backtest: { H8: 4300, H9: 14_200, H11: 1500 } },
   fillDifferences: Array.from({ length: 24 }, (_, i) => [0.001, 0.002, 0.004, 0.003, 0.012, -0.002][i % 6]!), parityTestPassed: true,
   holdoutSevereRate: holdout.filter((t) => t.ySevere).length / holdout.length,
-  registration: { registeredAtMs: NOW - 2 * DAY, thresholds: {}, expectedSimulationErrors: ['BlockhashNotFound'] },
+  registration: { registeredAtMs: NOW - 2 * DAY, evaluateAtMs: NOW - DAY + 2 * DAY, thresholds: {}, expectedSimulationErrors: ['BlockhashNotFound'] },
   dryRunStartMs: NOW - DAY,
   simulations: { attempted: 120, succeeded: 118, errors: { BlockhashNotFound: 2 } },
   // The 20 vetoed candidates scored as if entered, like the kept trades; the holdout's lower bound from G2.
@@ -666,6 +666,15 @@ describe('G3 live dry-run consistency', () => {
     expect(() => gateG3(g3Pass, { meanPredictiveLevel: 0.95 })).toThrow(/only be tightened/);
     expect(gateG3(g3Pass, { meanPredictiveLevel: 0.5 }).checks.find((c) => c.name === 'mean')!.detail).toMatch(/50% predictive/);
   });
+  test('G3 is judged at the end registered with the strategy, never earlier; the end is at least 48 h after the start', () => {
+    const reg = (endMs: number) => ({ ...g3Pass.registration, evaluateAtMs: endMs });
+    const early = gateG3({ ...g3Pass, registration: reg(g3Pass.dryRunStartMs + 10 * DAY) });
+    expect(early.status).toBe('not-proven');
+    expect(early.reasons.join()).toMatch(/registered end: /);
+    const tooShort = gateG3({ ...g3Pass, registration: reg(g3Pass.dryRunStartMs + DAY) });
+    expect(tooShort.status).toBe('fail');
+    expect(gateG3({ ...g3Pass, dryRunHours: 24 * 10 + 1, registration: reg(g3Pass.dryRunStartMs + 10 * DAY) }).checks.find((c) => c.name === 'registered end')!.passed).toBe(true);
+  });
   test('the new G3 thresholds tighten but never loosen', () => {
     expect(() => gateG3(g3Pass, { minVetoedForGap: 5 })).toThrow(/only be tightened/);
     expect(() => gateG3(g3Pass, { vetoBiasMax: 0.1 })).toThrow(/only be tightened/);
@@ -809,22 +818,39 @@ describe('demotion', () => {
     expect(evaluateDemotion({ ...demotionQuiet, coverage: { targetMiscoverage: 0.1, covered: missed } }).reasons[0]).toMatch(/^miscoverage/);
   });
   // The trial policy has no fixed take-profit: its first profit exit is the partial at partialAtR × R, with R at most
-  // the maximum stop distance (ARCHITECTURE.md §9: 1.5R at R ≤ 20%, i.e. +30%). Returns above it (the runner) are capped,
-  // which can only make demotion fire sooner.
-  // U2's partial (CFG-2). U1's 2R partial (+40%) reaches 0.71 at ρ 0 here, below 0.8: reported to the supervisor.
-  const trialCap = (TRIAL_POLICY.exits.universes.U2.partialAtRBps / 10_000) * (TRIAL_POLICY.loss.stopMaxBps / 10_000);
-  test('at the trial take-profit cap and 20 trades a day, demotion catches a −10% decay within 30 trading days in ≥ 80% of runs', () => {
-    expect(trialCap).toBeCloseTo(0.3, 12);
-    for (const rho of [0, 0.05, 0.1]) {
-      let caught = 0;
-      for (let r = 0; r < 300; r++) {
-        const decay = bracketTrades(9000 + r + Math.round(rho * 1e6), -0.1, 30, 20, rho).map(({ day, rNet }) => ({ day, rNet }));
-        if (evaluateDemotion({ ...demotionQuiet, returns: decay, returnCap: trialCap }).demote) caught++;
-      }
-      // Measured (1,000 runs): 0.991 at ρ 0, 0.964 at ρ 0.05, 0.921 at ρ 0.1; median 22 days.
-      expect(caught / 300, `ρ = ${rho}`).toBeGreaterThanOrEqual(0.8);
+  // the maximum stop distance (ARCHITECTURE.md §9), so each universe's cap is its own partial: U2 1.5R (+30%), U1 2R
+  // (+40%). Returns above it (the runner) are capped, which can only make demotion fire sooner. STATS-1c: the check
+  // runs for every universe at its own cap. Measured (300 runs, 20 trades a day, a −10% decay): U2 at 30 days 0.987 /
+  // 0.983 / 0.927 at ρ 0 / 0.05 / 0.1; U1 at 30 days 0.713 / 0.613 / 0.523, below 80%; U1 would need 40 days (1.0 / 0.99
+  // / 0.93) or a −12.5% decay at 30 days (0.997 / 0.987 / 0.91). Nothing is changed: the choice is the supervisor's.
+  const capOf = (u: (typeof EXIT_UNIVERSES)[number]) => (TRIAL_POLICY.exits.universes[u].partialAtRBps / 10_000) * (TRIAL_POLICY.loss.stopMaxBps / 10_000);
+  const caught = (cap: number, days: number, decay: number, rho: number) => {
+    let n = 0;
+    for (let r = 0; r < 300; r++) {
+      const d = bracketTrades(9000 + r + Math.round(rho * 1e6), decay, days, 20, rho).map(({ day, rNet }) => ({ day, rNet }));
+      if (evaluateDemotion({ ...demotionQuiet, returns: d, returnCap: cap }).demote) n++;
     }
-  });
+    return n / 300;
+  };
+  test('demotion power is checked for every universe at its own cap; U2 catches a −10% decay within 30 days in ≥ 80% of runs', () => {
+    expect(EXIT_UNIVERSES).toEqual(['U1', 'U2']);
+    expect(capOf('U2')).toBeCloseTo(0.3, 12);
+    expect(capOf('U1')).toBeCloseTo(0.4, 12);
+    const checked: string[] = [];
+    for (const u of EXIT_UNIVERSES) {
+      for (const rho of [0, 0.05, 0.1]) {
+        const p30 = caught(capOf(u), 30, -0.1, rho);
+        if (u === 'U2') expect(p30, `${u} ρ ${rho}`).toBeGreaterThanOrEqual(0.8);
+        else {
+          // Reported shortfall: below 80% at 30 days, at or above it with 40 days.
+          expect(p30, `${u} ρ ${rho}`).toBeLessThan(0.8);
+          expect(caught(capOf(u), 40, -0.1, rho), `${u} ρ ${rho} at 40 days`).toBeGreaterThanOrEqual(0.8);
+        }
+      }
+      checked.push(u);
+    }
+    expect(checked).toEqual([...EXIT_UNIVERSES]);
+  }, 600_000);
   test('the return cap is limited to (0, 3]: an out-of-range cap demotes instead of blinding the detector', () => {
     const decay = bracketTrades(53, -0.1, 100, 10).map(({ day, rNet }) => ({ day, rNet }));
     expect(evaluateDemotion({ ...demotionQuiet, returns: decay, returnCap: 0.27 }).reasons[0]).toMatch(/^reverse e-process/);
