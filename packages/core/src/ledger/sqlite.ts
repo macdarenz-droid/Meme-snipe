@@ -50,6 +50,9 @@ export const amountOf = (text: unknown): bigint => {
 const checksum = (kind: StoreKind, m: Migration): string =>
   createHash('sha256').update(`${kind}\n${m.version}\n${m.name}\n${m.sql}`).digest('hex');
 
+/** How long a statement waits for another connection's lock before failing (milliseconds, not money). */
+const BUSY_TIMEOUT_MS = 5_000;
+
 export interface OpenedStore {
   readonly db: DatabaseSync;
   readonly release: () => void;
@@ -65,7 +68,7 @@ export const openWriter = (path: string, kind: StoreKind, migrations: readonly M
   const release = path === ':memory:' ? () => {} : takeWriterLock(path);
   let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(path, { readBigInts: true, timeout: 5000, enableForeignKeyConstraints: true });
+    db = new DatabaseSync(path, { readBigInts: true, timeout: BUSY_TIMEOUT_MS, enableForeignKeyConstraints: true });
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = FULL');
     db.exec('PRAGMA trusted_schema = OFF');
@@ -81,7 +84,7 @@ export const openWriter = (path: string, kind: StoreKind, migrations: readonly M
 
 /** A read-only connection (API, backups). Never migrates; refuses an unmigrated or foreign file. */
 export const openReader = (path: string, kind: StoreKind, migrations: readonly Migration[]): DatabaseSync => {
-  const db = new DatabaseSync(path, { readOnly: true, readBigInts: true, timeout: 5000 });
+  const db = new DatabaseSync(path, { readOnly: true, readBigInts: true, timeout: BUSY_TIMEOUT_MS });
   try {
     db.exec('PRAGMA recursive_triggers = ON');
     const applied = appliedMigrations(db);
