@@ -98,13 +98,14 @@ export class ShiftedPool {
 
   /**
    * Applies a real swap. Its pre-trade reserves resync the real state (liquidity events between swaps are carried by
-   * them). Returns null when the swap cannot be replayed even on its own pre-trade state (the state is then unknown).
+   * them). Returns null when the swap cannot be replayed even on its own pre-trade state: the state is then unknown
+   * until the next swap, and our delta is kept.
    */
   applyReal(swap: RealSwap): SwapReplay | null {
     const own = replaySwap(swap.pre, swap);
     if (!own.ok) {
+      // The state is unknown until the next swap resyncs it; our own effect on the pool is not undone by that.
       this.#real = null;
-      this.#delta = NO_DELTA;
       return null;
     }
     const real = own.trade.after;

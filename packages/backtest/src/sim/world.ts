@@ -128,8 +128,28 @@ export class World implements EffectRunner {
       return;
     }
     const slots = Math.max(1, draw.landingSlots);
-    const at: Moment = { slot: now.slot + BigInt(slots), txIndex: LANDING_TX, ixIndex: 0, receivedAt: now.receivedAt + slots * SLOT_MS };
-    this.#d.replay.hook({ id: `land:${signature}`, moment: at, run: () => this.#land(rec, draw.fate === 'lands', attempt.quote) });
+    this.#landAt(rec, draw.fate === 'lands', attempt.quote, now.slot + BigInt(slots), now.receivedAt + slots * SLOT_MS);
+  }
+
+  /**
+   * A landing at `slot`, after every transaction and the block row of that slot. A skipped slot has no block, so the
+   * landing moves to the next slot until one has a block; past the last block of the data it never lands.
+   */
+  #landAt(rec: AttemptRecord, executes: boolean, quote: { readonly inAmount: bigint; readonly quotedOut: bigint; readonly minOut: bigint }, slot: bigint, receivedAt: number): void {
+    this.#d.replay.hook({
+      id: `land:${rec.signature}:${slot}`,
+      moment: { slot, txIndex: LANDING_TX, ixIndex: 0, receivedAt },
+      run: () => {
+        if (this.#d.market.slot === slot) return this.#land(rec, executes, quote);
+        if (!this.#d.replay.hasRows()) {
+          rec.outcome = 'dropped';
+          rec.reason = 'no block after the landing slot in the data';
+          this.#d.onSettled?.(rec);
+          return;
+        }
+        this.#landAt(rec, executes, quote, slot + 1n, receivedAt + SLOT_MS);
+      },
+    });
   }
 
   #land(rec: AttemptRecord, executes: boolean, quote: { readonly inAmount: bigint; readonly quotedOut: bigint; readonly minOut: bigint }): void {

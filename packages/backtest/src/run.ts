@@ -2,7 +2,7 @@
 // control as its strategy and the §11 fill model as its outside world. Live and backtest share the engine; only the
 // feed, clock and effect runner here are backtest parts (docs/ARCHITECTURE.md §16.1, §16.2).
 import type { Policy } from '../../core/src/config/index.ts';
-import type { FillConfig } from '../../core/src/config/index.ts';
+import type { FillConfig, ResearchConfig } from '../../core/src/config/index.ts';
 import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
 import { blockedExitValue, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
 import { openLedger, type Ledger } from '../../core/src/ledger/index.ts';
@@ -23,11 +23,11 @@ export interface RunOptions {
   readonly scenario: ScenarioName;
   readonly policy: Policy;
   readonly fills: FillConfig;
+  readonly research: ResearchConfig;
   /** End of the data window (ms): S0 plans no entry that could not finish inside it. */
   readonly windowEnd: number;
   /** Open a ledger file with purpose 'backtest' at this path. */
   readonly ledgerPath?: string;
-  readonly heartbeatBlocks?: number;
   /** A replacement strategy (the leak test wraps S0). Default: S0 with `s0` overrides. */
   readonly strategy?: (config: S0Config) => Strategy;
   readonly s0?: Partial<S0Config>;
@@ -67,28 +67,30 @@ export interface RunResult {
   readonly endValue: (mint: string, tokens: bigint) => bigint;
   /** Our trades' remaining effect on a pool's reserves when the data ended. */
   readonly poolDelta: (pool: string) => PoolDelta;
+  /** Regime boundaries the data passed, each with the block time of the first block at or after it. */
+  readonly regimes: readonly { readonly slot: bigint; readonly label: string; readonly at: number }[];
   /** Block time (ms) of the last block released. */
   readonly endedAt: number;
 }
 
-export const DEFAULT_HEARTBEAT_BLOCKS = 150;
-const MINUTE = 60_000;
-
-/** S0 settings from the policy (sizes, hold, ladder) and the fill config; nothing is a code constant. */
-export const s0Config = (o: RunOptions): S0Config => ({
-  universe: 'U2',
-  windowFromMs: 60 * MINUTE,
-  windowToMs: 240 * MINUTE,
-  holdMs: o.policy.exits.tMaxMs,
-  notional: o.policy.capital.minNotional,
-  entryMinOutBelowBps: 300,
-  ladder: { steps: o.policy.exits.ladder.steps, maxAttempts: o.policy.exits.ladder.maxAttempts },
-  blockhashValidBlocks: o.fills.network.blockhashValidBlocks,
-  stopEntriesAt: o.windowEnd - o.policy.exits.tMaxMs - 30 * MINUTE,
-  blockedRetryMs: 10 * MINUTE,
-  blockedRetries: 3,
-  ...o.s0,
-});
+/** S0 settings from the policy (size, hold, ladder), the fill config and the research config; no code constants. */
+export const s0Config = (o: RunOptions): S0Config => {
+  const r = o.research.s0;
+  return {
+    universe: 'U2',
+    windowFromMs: r.u2WindowFromMs,
+    windowToMs: r.u2WindowToMs,
+    holdMs: o.policy.exits.tMaxMs,
+    notional: o.policy.capital.minNotional,
+    entryMinOutBelowBps: r.entryMinOutBelowBps,
+    ladder: { steps: o.policy.exits.ladder.steps, maxAttempts: o.policy.exits.ladder.maxAttempts },
+    blockhashValidBlocks: o.fills.network.blockhashValidBlocks,
+    stopEntriesAt: o.windowEnd - o.policy.exits.tMaxMs - r.endMarginMs,
+    blockedRetryMs: r.blockedRetryMs,
+    blockedRetries: r.blockedRetries,
+    ...o.s0,
+  };
+};
 
 /** Process-wide: performance.now is read only here, outside the engine, for the throughput figure. */
 const clockMs = (): number => performance.now();
@@ -114,7 +116,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
   const live = (): boolean => sink?.inFlight ?? false;
   let replay: StreamReplay<DatasetRow> | null = null;
   const market: Market = new Market({
-    heartbeatBlocks: o.heartbeatBlocks ?? DEFAULT_HEARTBEAT_BLOCKS,
+    heartbeatBlocks: o.research.heartbeatBlocks,
     discoveryLag: (mint) => Math.max(1, drawDiscoverySlots(createRng(`${o.seed}:discovery:${mint}`), scenario)),
     active: live,
     schedule: (e) => replay!.schedule(e),
@@ -177,6 +179,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     scenario: o.scenario,
     symbols: market.symbols,
     endedAt: market.blockTime * 1000,
+    regimes: market.regimesPassed,
     poolDelta: (pool) => market.track(pool)?.shifted.delta ?? { base: 0n, vault: 0n, virtual: 0n },
     endValue: (mint, tokens) => {
       const pool = discoveries.get(mint)?.pool;

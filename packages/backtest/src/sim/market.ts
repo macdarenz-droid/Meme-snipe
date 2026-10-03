@@ -33,6 +33,8 @@ export interface PoolView {
   readonly side: 'buy' | 'sell';
   readonly userQuote: bigint;
   readonly baseAmount: bigint;
+  /** Height of the latest block when this swap happened (a transaction signed now takes that block's hash). */
+  readonly blockHeight: bigint;
 }
 
 export interface Discovery {
@@ -45,6 +47,8 @@ export interface Discovery {
   readonly canonical: boolean | null;
   /** null: no event stated it. */
   readonly mayhem: boolean | null;
+  /** Height of the latest block when the discovery arrived. */
+  readonly blockHeight: bigint;
 }
 
 export interface PoolTrack {
@@ -104,6 +108,8 @@ export class Market {
   #regimeAt = 0;
   /** The regime boundary the data is past, or null before the first. */
   regime: string | null = null;
+  /** Each boundary passed, with the block time (ms) of the first block at or after it. */
+  readonly regimesPassed: { readonly slot: bigint; readonly label: string; readonly at: number }[] = [];
   /** Symbols from CreateEvents, for the report only. */
   readonly symbols = new Map<string, string>();
   /** Blocks seen so far: the backtest's block height. */
@@ -155,6 +161,7 @@ export class Market {
     while (this.#regimeAt < bounds.length && bounds[this.#regimeAt]!.slot <= row.slot) {
       const b = bounds[this.#regimeAt++]!;
       this.regime = b.label;
+      this.regimesPassed.push({ slot: b.slot, label: b.label, at: row.blockTime * 1000 });
       out.push(this.#market(`g:${b.slot}`, m, 'regime', { label: b.label, slot: b.slot }));
     }
     (this.#opts.series ?? []).forEach((s, k) => {
@@ -192,6 +199,7 @@ export class Market {
       pool: row.pool, mint: row.baseMint, quoteMint: row.quoteMint,
       baseReserve: r.shifted.baseReserve, quoteVault: r.shifted.quoteVault, virtualQuoteReserves: r.shifted.virtualQuoteReserves,
       fees: row.fees, baseSupply: row.baseSupply, side: row.side, userQuote: row.userQuote, baseAmount: row.baseAmount,
+      blockHeight: this.blockHeight,
     };
     return [this.#market(`s:${row.signature}:${row.evIdx}`, rowMoment(row), `pool:${row.pool}`, view)];
   }
@@ -225,6 +233,7 @@ export class Market {
     return {
       mint: raw.mint, pool: raw.pool, graduatedAt: raw.graduatedAt,
       quoteMint: info?.quoteMint ?? '', canonical: info === undefined ? null : info.canonical && info.mint === raw.mint, mayhem: info?.mayhem ?? null,
+      blockHeight: this.blockHeight,
     };
   }
 }

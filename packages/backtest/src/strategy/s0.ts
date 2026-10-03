@@ -78,11 +78,11 @@ export class S0 implements Strategy {
   onMarket(e: MarketEvent, ctx: StrategyContext): readonly Decision[] {
     const out: Decision[] = [];
     if (e.key.startsWith('disc:')) this.#discover(e.value as Discovery, ctx, out);
-    this.#lifecycle(ctx, out);
-    this.#exits(ctx, out);
+    this.#lifecycle(e, ctx, out);
+    this.#exits(e, ctx, out);
     // ctx.book is the book before this call's decisions: an entry is judged on it only while nothing else acted,
     // and at most one entry is proposed per call (CORE-1 allows one entry in flight).
-    if (!out.some((d) => d.action !== null)) this.#entries(ctx, out);
+    if (!out.some((d) => d.action !== null)) this.#entries(e, ctx, out);
     return out;
   }
 
@@ -101,7 +101,13 @@ export class S0 implements Strategy {
     out.push({ action: null, reasons: ['candidate', u, d.mint, `enter ${enterAt - d.graduatedAt} ms after migration`] });
   }
 
-  #blockHeight(ctx: StrategyContext): bigint | null {
+  /**
+   * The block height a transaction signed while handling `e` would take its blockhash from: carried on the event itself
+   * (pool swaps, discoveries and slot events all carry it), so a heartbeat's older height is never used.
+   */
+  #blockHeight(e: MarketEvent, ctx: StrategyContext): bigint | null {
+    const v = e.value as { blockHeight?: unknown } | null;
+    if (v !== null && typeof v === 'object' && typeof v.blockHeight === 'bigint') return v.blockHeight;
     const s = ctx.lookup('slot');
     return s.ok ? (s.value as { blockHeight: bigint }).blockHeight : null;
   }
@@ -114,7 +120,7 @@ export class S0 implements Strategy {
     };
   }
 
-  #entries(ctx: StrategyContext, out: Decision[]): void {
+  #entries(e: MarketEvent, ctx: StrategyContext, out: Decision[]): void {
     const now = ctx.now.receivedAt;
     for (const [mint, p] of this.#plans) {
       if (p.enterAt > now) continue;
@@ -127,7 +133,7 @@ export class S0 implements Strategy {
         continue;
       }
       if (!canOpenNewEntry(ctx.book).ok) continue;
-      const height = this.#blockHeight(ctx);
+      const height = this.#blockHeight(e, ctx);
       if (height === null) continue;
       const px = ctx.lookup('sol-usd');
       if (!px.ok) {
@@ -188,7 +194,7 @@ export class S0 implements Strategy {
     };
   }
 
-  #exits(ctx: StrategyContext, out: Decision[]): void {
+  #exits(e: MarketEvent, ctx: StrategyContext, out: Decision[]): void {
     const now = ctx.now.receivedAt;
     for (const h of this.#held.values()) {
       const p = ctx.book.positions[`p:${h.mint}`];
@@ -201,7 +207,7 @@ export class S0 implements Strategy {
       const due = p.status === 'open' && h.openedAt !== null && now >= h.openedAt + this.#c.holdMs;
       const retry = p.status === 'exit_blocked' && h.blockedAt !== null && h.blocked <= this.#c.blockedRetries && now >= h.blockedAt + this.#c.blockedRetryMs;
       if (!due && !retry) continue;
-      const height = this.#blockHeight(ctx);
+      const height = this.#blockHeight(e, ctx);
       if (height === null) continue;
       const rung = this.#c.ladder.steps[0]!;
       const id = intentId(`ex:${h.mint}:${++h.exits}`);
@@ -222,7 +228,7 @@ export class S0 implements Strategy {
   }
 
   /** Ends or replaces intents whose attempt resolved without a fill. */
-  #lifecycle(ctx: StrategyContext, out: Decision[]): void {
+  #lifecycle(e: MarketEvent, ctx: StrategyContext, out: Decision[]): void {
     for (const id of this.#live) {
       const i: IntentState | undefined = ctx.book.intents[id];
       if (i === undefined) {
@@ -240,7 +246,7 @@ export class S0 implements Strategy {
         continue;
       }
       const h = this.#held.get(mint);
-      const height = this.#blockHeight(ctx);
+      const height = this.#blockHeight(e, ctx);
       if (h === undefined || height === null) continue;
       const n = i.attempts.length + 1;
       const steps = this.#c.ladder.steps;

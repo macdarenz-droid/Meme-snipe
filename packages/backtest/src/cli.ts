@@ -8,9 +8,10 @@
 // The holdout command prints only the sealed ledger's hash and the per-universe candidate and entry counts.
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { OFF_CHAIN } from '../../core/src/engine/index.ts';
 import { SCENARIO_NAMES, type ScenarioName } from '../../core/src/fills/index.ts';
+import type { Bps } from '../../core/src/units/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay } from './dataset/dataset.ts';
 import { readSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
@@ -50,12 +51,15 @@ function* rows(): Generator<DatasetRow> {
 }
 
 const regimeBoundaries = (manifest.regime_boundaries ?? []).map((b) => ({ slot: BigInt(b.slot), label: b.label }));
-/** Block time (ms) of the first block at or after `slot`, from the data. */
-const rowsTimeOfSlot = (slot: bigint): number | null => {
-  for (const r of rows()) if (r.kind === 'block' && r.slot >= slot) return r.blockTime * 1000;
-  return null;
-};
-const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, windowEnd: to, regimeBoundaries };
+/** A future-only PumpSwap swap carrying the marker, planted as a dataset row so it travels through the reader's stream. */
+const plantedSwap = (token: string, slot: bigint, blockTime: number): DatasetRow => ({
+  kind: 'amm', slot, blockTime, txIdx: OFF_CHAIN - 4, evIdx: 0, signature: `plant-${token}`, pool: token, baseMint: token,
+  quoteMint: 'So11111111111111111111111111111111111111112', side: 'buy', mode: 'exact-quote-in', amount: 1_000_000_000n, baseAmount: 0n, quoteAmount: 0n, userQuote: 0n,
+  pre: { baseReserve: 200_000_000_000_000n, quoteVault: 80_000_000_000n, virtualQuoteReserves: 0n },
+  fees: { split: { lp: 20 as Bps, protocol: 5 as Bps, creator: 95 as Bps }, buybackFeeBps: 0 as Bps, instruction: 'v1' },
+  baseSupply: 1_000_000_000_000_000n, ixName: 'buy_exact_quote_in', user: token,
+});
+const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, windowEnd: to, regimeBoundaries };
 
 if (command === 'holdout') {
   const sealed = runHoldout({ ...base, ledgerPath: flag('ledger') });
@@ -80,7 +84,8 @@ if (command === 'holdout') {
   const token = `FUTURE-ONLY-${seed}-${mid}`;
   const leak = midRow === null ? { ok: false, violations: ['no block at the middle of the window'] } : leakTest(base, {
     token,
-    at: { slot: midRow.slot, txIndex: OFF_CHAIN - 3, ixIndex: 0, receivedAt: midRow.blockTime * 1000 },
+    at: { slot: midRow.slot, txIndex: OFF_CHAIN - 4, ixIndex: 0, receivedAt: midRow.blockTime * 1000 },
+    rows: [plantedSwap(token, midRow.slot, midRow.blockTime)],
     events: [
       { kind: 'market', id: 'plant:event', moment: { slot: midRow.slot, txIndex: OFF_CHAIN - 3, ixIndex: 0, receivedAt: midRow.blockTime * 1000 }, key: `life:${token}`, value: { event: 'Planted', fields: { marker: token } } },
       { kind: 'market', id: 'plant:account', moment: { slot: midRow.slot, txIndex: OFF_CHAIN - 3, ixIndex: 1, receivedAt: midRow.blockTime * 1000 }, key: `acct:${token}`, value: { owner: token } },
@@ -113,11 +118,9 @@ if (command === 'holdout') {
     scenario, seed, hashes, identicalReplays: identical, leak, stats: first.stats,
     throughput: { rows: first.stats.rows, elapsedMs: times, rowsPerSecond: Math.round(first.stats.rows / (first.stats.elapsedMs / 1000)), days: days.length,
       projected30DaysMinutes: Math.round(((first.stats.elapsedMs / days.length) * 30) / 60_000) },
-    candidates, entries, trades: trades.length, alerts: first.stats.alerts, regimeBoundaries: regimeBoundaries.map((b) => ({ slot: b.slot.toString(), label: b.label })),
-    tradesAcrossRegimeBoundary: trades.filter((t) => regimeBoundaries.some((b) => {
-      const at = rowsTimeOfSlot(b.slot);
-      return at !== null && t.openedAt < at && t.closedAt >= at;
-    })).length,
+    candidates, entries, trades: trades.length, alerts: first.stats.alerts,
+    regimeBoundaries: first.regimes.map((b) => ({ slot: b.slot.toString(), label: b.label, at: new Date(b.at).toISOString() })),
+    tradesAcrossRegimeBoundary: trades.filter((t) => first.regimes.some((b) => t.openedAt < b.at && t.closedAt >= b.at)).length,
     attempts: Object.fromEntries(['filled', 'failed', 'dropped', 'expired', 'in_flight'].map((o) => [o, first.attempts.filter((a) => a.outcome === o).length])),
   };
   writeFileSync(flag('out', 'report.json'), `${JSON.stringify(report, null, 1)}\n`);

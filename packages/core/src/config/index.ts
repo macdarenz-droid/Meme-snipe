@@ -10,3 +10,4 @@ export {
 } from './tighten.ts';
 export { PolicyError, assertValidPolicy, policyIssues } from './validate.ts';
 export { FILL_CONFIG, type FillConfig } from './fills.ts';
+export { RESEARCH_CONFIG, type ResearchConfig } from './research.ts';

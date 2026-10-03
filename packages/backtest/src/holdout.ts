@@ -40,7 +40,13 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
 
 export const runHoldout = (o: RunOptions & { readonly ledgerPath: string }): SealedHoldout => {
   if (existsSync(o.ledgerPath)) throw new RangeError(`${o.ledgerPath} exists: a holdout is run once, into a new file`);
-  const r = runBacktest(o);
+  let r: ReturnType<typeof runBacktest>;
+  try {
+    r = runBacktest(o);
+  } finally {
+    // Read-only whatever happened, so a failed holdout file cannot be edited and rerun as if new.
+    if (existsSync(o.ledgerPath)) chmodSync(o.ledgerPath, 0o400);
+  }
   // Validity failures carry no outcome, so they may be reported; a crashed or illegal run cannot be sealed.
   if (r.stats.crash !== null) throw new Error(`holdout run crashed: ${r.stats.crash}`);
   if (r.stats.illegalStates !== 0 || r.stats.unreconciledIntents !== 0) throw new Error('holdout run has illegal states or unreconciled intents; not sealed');
@@ -60,7 +66,6 @@ export const runHoldout = (o: RunOptions & { readonly ledgerPath: string }): Sea
     counts[u]!.entries++;
     counts[u]!.days.add(melbourneDay(a.landedAt));
   }
-  chmodSync(o.ledgerPath, 0o400);
   const ledgerHash = createHash('sha256').update(readFileSync(o.ledgerPath)).digest('hex');
   return {
     ledgerHash,

@@ -15,11 +15,18 @@ for (let t = start; t < end; t += 300 * HOUR) {
   const url = `https://api.exchange.coinbase.com/products/SOL-USD/candles?granularity=3600&start=${new Date(t).toISOString()}&end=${new Date(stop - 1).toISOString()}`;
   const res = await fetch(url, { headers: { 'user-agent': 'zeroed-backtest' } });
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  // [time, low, high, open, close, volume], newest first.
-  for (const [time, , , , close] of (await res.json()) as [number, number, number, number, number, number][]) {
+  // [time, low, high, open, close, volume], newest first. Read from the raw text so the close keeps its exact digits
+  // (a JS number could round it).
+  const text = await res.text();
+  const NUM = '(-?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?)';
+  const candle = new RegExp(`\\[\\s*(\\d+)\\s*,\\s*${NUM}\\s*,\\s*${NUM}\\s*,\\s*${NUM}\\s*,\\s*${NUM}\\s*,\\s*${NUM}\\s*\\]`, 'g');
+  for (const m of text.matchAll(candle)) {
+    const time = Number(m[1]);
+    const close = m[5]!;
+    if (!/^\d+(\.\d+)?$/.test(close)) throw new Error(`close "${close}" is not a plain decimal`);
     const ms = time * 1000;
     // Only closed candles: a candle still open at fetch time would change, so it is not a fixed value.
-    if (ms >= start && ms < end && ms + HOUR <= fetchedAt) bars.set(ms, String(close));
+    if (ms >= start && ms < end && ms + HOUR <= fetchedAt) bars.set(ms, close);
   }
   await new Promise((r) => setTimeout(r, 400));
 }

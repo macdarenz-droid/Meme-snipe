@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
-import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { runAndSealHoldout, runHoldout } from '../src/holdout.ts';
 import { createHoldoutRegistry, holdoutReady, registerHoldout } from '../../core/src/stats/index.ts';
@@ -14,7 +14,7 @@ import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
 
 const rows = syntheticRows({ mints: 4, slots: 2.5 * 3600 * 6 });
 const opts = (over: Partial<RunOptions> = {}): RunOptions => ({
-  rows: () => rows[Symbol.iterator](), series: [SOL_USD], seed: 'test-seed', scenario: 'base', policy: TRIAL_POLICY, fills: FILL_CONFIG,
+  rows: () => rows[Symbol.iterator](), series: [SOL_USD], seed: 'test-seed', scenario: 'base', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
   windowEnd: T0 + 6 * 3_600_000, ...over,
 });
 // Whole runs through the engine take seconds each.
@@ -142,6 +142,7 @@ describe('proofs on a dataset run', () => {
       fees: { split: { lp: 20, protocol: 5, creator: 95 }, buybackFeeBps: 0, instruction: 'v1' }, baseSupply: 1n, side: 'buy', userQuote: 1n, baseAmount: 1n };
     const report = leakTest(opts(), {
       token, at,
+      rows: [{ ...(rows.find((x) => x.kind === 'amm' && x.slot > slot) as Extract<typeof rows[number], { kind: 'amm' }>), signature: `plant-${token}`, pool: token, txIdx: 9_000, slot }],
       events: [
         { kind: 'market', id: `plant:pool`, moment: at, key: `pool:${pool}`, value: view },
         { kind: 'market', id: `plant:acct`, moment: { ...at, ixIndex: 1 }, key: `life:${fill.mint}`, value: { event: 'AccountState', fields: { marker: token } } },
@@ -177,7 +178,7 @@ describe('holdout mode', () => {
     expect(existsSync(`${path}-wal`)).toBe(false);
     expect(() => runHoldout({ ...opts(), ledgerPath: path })).toThrow(/run once/);
     // Sealed: read-only.
-    expect(() => readFileSync(path)).not.toThrow();
+    expect(statSync(path).mode & 0o777).toBe(0o400);
   });
 
   test('seals in the STATS-1 registry; the size check reads the counts alone', () => {
@@ -224,5 +225,34 @@ describe('many candidates at once', () => {
     expect(r.stats.illegalStates).toBe(0);
     expect(r.stats.unreconciledIntents).toBe(0);
     expect(r.attempts.filter((a) => a.purpose === 'entry').length).toBeGreaterThan(1);
+  });
+});
+
+describe('signing heights and skipped slots', () => {
+  const crowd = syntheticRows({ mints: 12, slots: 2.5 * 3600 * 7, swapEvery: 37, seed: 'heights' });
+  test('with no dropped attempts and landing under 150 slots, nothing expires, whatever the seed and scenario', () => {
+    let betweenHeartbeats = 0;
+    for (const scenario of ['base', 'conservative', 'optimistic'] as const) {
+      for (const seed of ['h1', 'h2', 'h3']) {
+        const r = runBacktest(opts({ rows: () => crowd[Symbol.iterator](), seed, scenario, windowEnd: T0 + 7 * 3_600_000 }));
+        expect(r.stats.illegalStates).toBe(0);
+        expect(r.attempts.filter((a) => a.outcome === 'expired' || a.outcome === 'dropped')).toEqual([]);
+        // Entries and time stops decided on a pool swap, between heartbeats, are covered.
+        betweenHeartbeats += r.records.filter((x) => x.type === 'decision' && x.eventId.startsWith('s:') && (x.reasons[0] === 'time stop' || x.reasons[0] === 'enter')).length;
+      }
+    }
+    expect(betweenHeartbeats).toBeGreaterThan(5);
+  });
+
+  test('a landing drawn for a skipped slot lands at the next block', () => {
+    // Every 3rd slot has no block (skipped by its leader); swaps only happen in slots with blocks.
+    const skipped = new Set(crowd.filter((x) => x.kind === 'block' && x.slot % 3n === 0n).map((x) => x.slot));
+    const holes = crowd.filter((x) => !skipped.has(x.slot));
+    const r = runBacktest(opts({ rows: () => holes[Symbol.iterator](), seed: 'holes', windowEnd: T0 + 7 * 3_600_000 }));
+    expect(r.stats.illegalStates).toBe(0);
+    expect(r.stats.unreconciledIntents).toBe(0);
+    const landed = r.attempts.filter((a) => a.landedSlot !== null);
+    expect(landed.length).toBeGreaterThan(0);
+    for (const a of landed) expect(skipped.has(a.landedSlot!)).toBe(false);
   });
 });

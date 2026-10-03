@@ -2,7 +2,8 @@
 // test with a planted future-only marker, and the +1-slot shift test. Same checks as ENG-1's proofs, driven through
 // the backtest's streaming replay, fill model and S0 instead of a stub.
 import { canonical, compareMoments, type FeedEvent, type LogRecord, type Moment, reaches, type Strategy, type StrategyContext } from '../../core/src/engine/index.ts';
-import type { DatasetRow } from './dataset/rows.ts';
+import { compareRows, type DatasetRow } from './dataset/rows.ts';
+import { rowMoment } from './sim/market.ts';
 import { type RunOptions, runBacktest } from './run.ts';
 import { S0 } from './strategy/s0.ts';
 
@@ -22,6 +23,19 @@ export interface PlantedMarker {
   readonly at: Moment;
   /** The planted future data: a market event (e.g. a pool state) and an account state, all at `at` or later. */
   readonly events: readonly FeedEvent[];
+  /** Planted dataset rows (at `at` or later), merged into the stream the reader produces. */
+  readonly rows?: readonly DatasetRow[];
+}
+
+/** Two row streams in chain order. */
+function* mergeRows(a: Iterator<DatasetRow>, b: readonly DatasetRow[]): Generator<DatasetRow> {
+  const extra = [...b].sort(compareRows);
+  let k = 0;
+  for (let r = a.next(); !r.done; r = a.next()) {
+    while (k < extra.length && compareRows(extra[k]!, r.value) < 0) yield extra[k++]!;
+    yield r.value;
+  }
+  while (k < extra.length) yield extra[k++]!;
 }
 
 /**
@@ -35,8 +49,10 @@ export const leakTest = (o: RunOptions, marker: PlantedMarker, labels: unknown):
   const early = (m: Moment) => compareMoments(m, marker.at) < 0;
   const flag = (what: string, m: Moment) => violations.push(`${what} saw the marker at ${describe(m)}, before ${describe(marker.at)}`);
   if (!reaches(labels, marker.token)) violations.push('the labels do not carry the marker token');
-  if (!marker.events.some((e) => !early(e.moment) && reaches(e, marker.token))) violations.push('no planted event at or after the marker carries the token');
+  const plantedRows = marker.rows ?? [];
+  if (!marker.events.some((e) => !early(e.moment) && reaches(e, marker.token)) && !plantedRows.some((r) => reaches(r, marker.token))) violations.push('no planted data carries the token');
   if (marker.events.some((e) => early(e.moment))) violations.push('a planted event is dated before the marker');
+  if (plantedRows.some((r) => early(rowMoment(r)))) violations.push('a planted row is dated before the marker');
   if (reaches(o, marker.token)) violations.push('the run options already carry the marker');
 
   let seenAfter = false;
@@ -64,7 +80,7 @@ export const leakTest = (o: RunOptions, marker: PlantedMarker, labels: unknown):
       return s.onMarket(event, watched);
     },
   });
-  const planted = runBacktest({ ...o, extraEvents: [...(o.extraEvents ?? []), ...marker.events], strategy: (c) => watch(o.strategy?.(c) ?? new S0(c)) });
+  const planted = runBacktest({ ...o, rows: () => mergeRows(o.rows(), plantedRows), extraEvents: [...(o.extraEvents ?? []), ...marker.events], strategy: (c) => watch(o.strategy?.(c) ?? new S0(c)) });
   const clean = runBacktest(o);
   for (const r of [planted, clean]) if (r.stats.crash !== null) violations.push(`a run crashed: ${r.stats.crash}`);
   const before = (records: readonly LogRecord[]) => records.filter((r) => r.type === 'start' || early(r.at)).map(canonical);

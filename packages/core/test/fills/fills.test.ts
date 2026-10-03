@@ -95,12 +95,21 @@ describe('ShiftedPool: later trades see our impact', () => {
     expect(sold.out).toBeLessThan(2_000_000_000n);
   });
 
-  test('a swap that cannot be quoted on its own state makes the pool unknown', () => {
+  test('a swap that cannot be quoted on its own state makes the pool unknown, and keeps our delta', () => {
     const p = new ShiftedPool();
-    p.applyReal(buyOf(POOL, 1_000_000_000n));
+    const first = p.applyReal(buyOf(POOL, 1_000_000_000n))!;
+    const ours = executeBuy(trade(p.state!), 2_000_000_000n);
+    if (!ours.ok) throw new Error(ours.detail);
+    p.applyOurs(ours.after);
+    const delta = p.delta;
+    expect(delta.base).toBeLessThan(0n);
     expect(p.applyReal(sellOf({ baseReserve: 0n, quoteVault: 0n, virtualQuoteReserves: 0n }, 5n))).toBeNull();
     expect(p.state).toBeNull();
+    expect(p.delta).toEqual(delta);
     expect(() => p.applyOurs(POOL)).toThrow(RangeError);
+    // The next swap resyncs the real state; our tokens are still out of the shifted pool.
+    const r = p.applyReal(buyOf(first.real, 1_000_000_000n))!;
+    expect(r.real.baseReserve - r.shifted.baseReserve).toBeGreaterThan(0n);
   });
 });
 
@@ -171,5 +180,29 @@ describe('landing draws', () => {
     expect(c.takeProfit).toBe('close');
     expect(c.rentRecovery).toBe(false);
     expect(Math.min(...c.landingSlots)).toBeGreaterThanOrEqual(Math.max(...base.landingSlots));
+  });
+});
+
+describe('scenario ordering', () => {
+  // Every field ordered conservative ≤ base ≤ optimistic in the direction that is better for us.
+  const { conservative: c, base: b, optimistic: o } = FILL_CONFIG.scenarios;
+  const mean = (xs: readonly number[]) => xs.reduce((a, x) => a + x, 0) / xs.length;
+  const better = <T>(name: string, worse: T, mid: T, best: T, le: (x: T, y: T) => boolean) =>
+    test(name, () => {
+      expect(le(worse, mid)).toBe(true);
+      expect(le(mid, best)).toBe(true);
+    });
+  const lower = (x: number, y: number) => x >= y; // lower is better: worse value is larger
+  better('landing share per venue', c.landPpm, b.landPpm, o.landPpm, (x, y) => x.pumpswap <= y.pumpswap && x['pump-curve'] <= y['pump-curve']);
+  better('dropped share (a dropped attempt costs nothing; a failed one pays fees)', c.dropPpm, b.dropPpm, o.dropPpm, (x, y) => x <= y);
+  better('discovery lag (mean and worst)', c.discoverySlots, b.discoverySlots, o.discoverySlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
+  better('landing latency (mean and worst)', c.landingSlots, b.landingSlots, o.landingSlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
+  better('confirmation lag', c.confirmSlots, b.confirmSlots, o.confirmSlots, lower);
+  better('finalization lag', c.finalizeSlots, b.finalizeSlots, o.finalizeSlots, lower);
+  better('extra slippage', c.slippagePpm, b.slippagePpm, o.slippagePpm, (x, y) => x >= y);
+  better('take-profit basis (close is worse than wick)', c.takeProfit, b.takeProfit, o.takeProfit, (x, y) => x === 'close' || y === 'wick');
+  better('rent recovery', c.rentRecovery, b.rentRecovery, o.rentRecovery, (x, y) => !x || y);
+  test('the test covers every scenario field', () => {
+    expect(Object.keys(b).sort()).toEqual(['confirmSlots', 'discoverySlots', 'dropPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'name', 'rentRecovery', 'slippagePpm', 'takeProfit']);
   });
 });
