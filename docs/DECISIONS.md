@@ -86,6 +86,34 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-04 | A missing gate input is never a pass: H16 not-covered whenever a producer, coverage fact or look-back is missing | Owner rule "missing evidence means no trade" | RUG-1 review, GATE-1c |
 | 2026-10-03 | 60-day window (UPG-1b): keep the lead-in from 2026-07-20 and the decision days 2026-08-03 to 10-01. Label regime boundaries B2 (07-21 14:23 UTC, BOOST on), B3 (09-09 19:30 UTC, creator-fee and quote-control config) and B4 (09-12 15:24 UTC, holder rewards, events +16 bytes). Only the span from B4 on matches today's fees and layouts, so the holdout lies after B4. DATA-1's strict QA must accept the two dated older layouts before their boundary slots. Old Faithful epochs 1004–1047 are all published and checked | ARCHITECTURE §13.2: a platform change is a regime break. The new window holds three of them, none before Aug 3 except BOOST, which only changes migrations | [venues.md](research/venues.md) §2.7 "Earlier boundaries" |
 
+## Supervisor rulings after the external review (2026-10-04)
+
+The owner relayed an outside review of commit addc685 (20 findings). Each finding goes to the code's owner, who must first reproduce it with a test that fails on the base; a finding that does not reproduce is closed, with the evidence recorded. These rulings are the supervisor's, not the owner's.
+
+- **Holders (H12, H13).** The smallest listed account does not bound an owner with several accounts. Aggregate by owner, and assume the worst case for the unknown remainder. The backtest rebuilds ownership from trades plus an owner-resolved token-movement table (DATA-1). GATE-1d, FACTS-1.
+- **Exits.** A partial sell is quoted at its own size. A blocked retry must recover more than its cost at the worst permitted price. The trail, peak and partial-exit state survive restarts. EXIT-1b, WORKER-1.
+- **Cash flows.** Drawdown is measured on unitized equity, so a withdrawal cannot trip the kill switch. RISK-1b also reports planned R, stressed executable loss and maximum reserved loss separately, and re-runs the risk simulation on the merged policy.
+- **Reports.** G0 is the canonical gate. Holdout runs are authorised and registered before they execute. All-in expectancy includes failed attempts. SOL returns are reported separately from USD/AUD cash flows, and operating costs are shown at bankrolls of $20, $100 and $200. BT-1c.
+- **Fills.** Delay and failure assumptions stay harsh and documented, including correlated failures and long delays during exits. The dry run sends nothing, so landing assumptions stay conservative until on-chain evidence and the owner-authorised canary. The conservative scenario recovers token-account rent only when the final sell lands, because the account is closed in that same transaction; a "no rent recovery" sensitivity line is also reported.
+- **Statistics.**
+  - G3 scores the paper outcomes of candidates vetoed only live, and passes only when the conservative lower bound stays positive. Too little evidence means extend the run.
+  - Cluster sensitivity (multi-day blocks, creator and funder clusters) is required.
+  - The deflated Sharpe ratio counts effective independent trials.
+  - "Agrees" for the post-upgrade (B5) dry run is defined before the run. Inconclusive is not agreement. STATS-1b.
+- **Study design.**
+  - A separate deployment replay runs at the real size: 1 position, 3 entries a day, cooldowns, signal priority.
+  - Executable definitions per universe are frozen before testing, with improvement over a matched S0 required.
+  - H9 and H11 stay on. Blocked candidates are scored offline, and a filter is removed only on out-of-sample net improvement without worse tails.
+  - Every rejected candidate's later outcome is recorded.
+  - Each gate has a completeness manifest.
+  - Strategies abstain where the evidence is unaffordable live.
+  - BT-2, RES-3.
+- **Regime volume.** Our own on-chain volume, computed by the same code for history and live. A gap is unknown, never zero; unknown means the regime is off. FACTS-1.
+- **Rug labels.** The strict rules stay. Observed creator sales and collapses are separate label kinds. A minimum economic collapse size is measured before any relaxation. Transfer-then-sell and linked-wallet dumps are measured. RUG-1c.
+- **Execution shape.** One supported-transaction-shape check is shared by the gates, the backtest and the builders. TX-1b.
+- **Budget.** The dry run reports credits per provider and class, lookup latency, coverage gaps and rejection reasons. It fails if exits (P0/P1) were ever shed or the free tier is exceeded. RUN-1c.
+- **Worker failure.** It is an exposure the stop cannot control; it is measured, not assumed away (ARCHITECTURE §12.5).
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
