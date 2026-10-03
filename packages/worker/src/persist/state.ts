@@ -124,10 +124,12 @@ const openAtEnd = (coverage: readonly MarketEvent[]) => {
 
 /**
  * Reads a saved state. Any defect discards the whole file (`ok: false` with the reason), so the caller starts as a
- * fresh process would. `continuing(stream, via)` names the watches a live stream carries on after the restart (by
- * default every via but the seed's): each that was covered at the save gets an open `restart` gap at the saved moment.
+ * fresh process would. Every started via but the seed's backfill that was covered at the save gets an open `restart`
+ * gap at the saved moment. `continuing(stream, via)` names the watches a live stream carries on after the restart (by
+ * default all; the seed's backfill via never has an open or restart gap, so it never gets one); only those get a fill in
+ * the plan. A stream nothing restarts stays not covered.
  */
-export const loadState = (path: string, rugs: RugConfig, continuing: (stream: string, via: string) => boolean = (_s, via) => via !== SEED_VIA): Restored => {
+export const loadState = (path: string, rugs: RugConfig, continuing: (stream: string, via: string) => boolean = () => true): Restored => {
   if (!existsSync(path)) return { ok: false, reason: 'no saved state' };
   let s: SavedState;
   try {
@@ -151,17 +153,19 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
     }
     if (!isObj(s.index) || !isMoment(s.index.asOf) || compareMoments(s.index.asOf, asOf) !== 0) throw new RangeError('the index was saved at another moment');
     const index = DeployerIndex.restore(s.index);
-    const labeller = RugLabeller.restore(rugs, s.labeller);
+    const labeller = RugLabeller.restore(rugs, s.labeller, asOf);
     const coverage = [...s.coverage].sort(compareEvents);
     const { open, started } = openAtEnd(coverage);
     const fills: RestartFill[] = [...open.values()].filter((g) => continuing(g.stream, g.via)).map((g) => ({ ...g, synthesized: false }));
     const restart: MarketEvent[] = [];
     for (const [sv, w] of started) {
-      if (!continuing(w.stream, w.via) || [...open.keys()].some((k) => k.startsWith(`${sv}|`))) continue;
+      // Every started via but the seed's backfill gets the gap, continued or not: a stream nothing restarts must stay
+      // not covered, never read as covered across the downtime (#71 review). `continuing` only filters the fill plan.
+      if (w.via === SEED_VIA || [...open.keys()].some((k) => k.startsWith(`${sv}|`))) continue;
       // Dated at the saved moment: after every saved fact, and before anything the new process sees.
       const id = `persist:restart:${w.stream}:${w.via}`;
       restart.push({ kind: 'market', id, moment: asOf, key: `coverage:${w.stream}:gap`, value: { value: { fromSlot: asOf.slot, toSlot: null, reason: 'restart', via: w.via }, source: 'worker', backfilled: true, seq: 0 } });
-      fills.push({ stream: w.stream, via: w.via, fromSlot: asOf.slot, at: asOf, synthesized: true });
+      if (continuing(w.stream, w.via)) fills.push({ stream: w.stream, via: w.via, fromSlot: asOf.slot, at: asOf, synthesized: true });
     }
     fills.sort((a, b) => (a.stream < b.stream ? -1 : a.stream > b.stream ? 1 : a.via < b.via ? -1 : a.via > b.via ? 1 : 0));
     return { ok: true, asOf, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills };

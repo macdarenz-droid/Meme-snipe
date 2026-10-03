@@ -256,7 +256,10 @@ export class DeployerIndex {
     }
     idx.#first = moment(s.first);
     idx.#last = moment(s.last);
-    for (const m of [idx.#first, idx.#last]) if (m !== null && compareMoments(m, asOf) > 0) throw new RangeError('the snapshot claims a moment after its as-of moment');
+    // After the as-of moment by event order or by receipt time: either way not something the snapshot could know.
+    for (const m of [idx.#first, idx.#last]) {
+      if (m !== null && (compareMoments(m, asOf) > 0 || m.receivedAt > asOf.receivedAt)) throw new RangeError('the snapshot claims a moment after its as-of moment');
+    }
     if (typeof s.seeded !== 'boolean') throw new RangeError('bad seeded flag');
     idx.#seeded = s.seeded;
     return idx;

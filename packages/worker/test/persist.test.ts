@@ -159,6 +159,45 @@ describe('PERSIST-1 save and restore', () => {
   });
 });
 
+describe('PERSIST-1 review: a restore never claims coverage it did not have', () => {
+  it('a watch the restart does not continue still gets its restart gap: not covered, and no fill planned for it', () => {
+    const path = join(tmp(), 'state.json');
+    const pool = fact('pool-start', 'coverage:trades:POOL1:start', off(452_000_000n, START_MS + 5), { fromSlot: 452_000_000n, via: 'logs:POOL1' });
+    saveState(path, savedState({ coverage: [...COVERAGE, pool] }));
+    const r = loadState(path, RUG_CONFIG, (stream) => stream !== 'trades:POOL1');
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.coverage.some((e) => e.key === 'coverage:trades:POOL1:gap')).toBe(true);
+    expect(r.fills.some((f) => f.stream === 'trades:POOL1')).toBe(false);
+    // Read at NOW with no restart of that watch: not covered (before the fix this said covered).
+    const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: Number.MIN_SAFE_INTEGER });
+    const store = new AsOfStore(clock);
+    for (const e of r.coverage) { clock.advanceTo(e.moment); store.record(e.key, e.value, e.moment, e.id); }
+    clock.advanceTo(NOW);
+    expect(createsCoverage((k, a, b) => store.history(k, a, b), NOW, NOW.receivedAt - 14 * DAY_MS, 'trades:POOL1').covered).toBe(false);
+    // The seed's backfill via is the only one never given a restart gap.
+    expect(r.coverage.some((e) => e.id === 'persist:restart:creates:seed')).toBe(false);
+  });
+
+  it('the index restore refuses a first or last moment after its as-of moment, by event order or by receipt time', () => {
+    const { index } = liveProcess();
+    const s = index.snapshot(SAVED_AT);
+    expect(() => DeployerIndex.restore({ ...s, last: off(SAVED_AT.slot + 1n, SAVED_AT.receivedAt) })).toThrow(/after its as-of moment/);
+    expect(() => DeployerIndex.restore({ ...s, first: off(SAVED_AT.slot + 1n, SAVED_AT.receivedAt) })).toThrow(/after its as-of moment/);
+    expect(() => DeployerIndex.restore({ ...s, last: off(SAVED_AT.slot - 10n, SAVED_AT.receivedAt + 1) })).toThrow(/after its as-of moment/);
+    expect(() => DeployerIndex.restore({ ...s, first: off(1n, SAVED_AT.receivedAt + 1) })).toThrow(/after its as-of moment/);
+  });
+
+  it('a labeller launch created after the saved moment is refused, so the file is discarded', () => {
+    const { labeller } = liveProcess();
+    const st = labeller.snapshot();
+    const late = { ...st, launches: st.launches.map((l, k) => (k === 0 ? { ...l, createdAtMs: SAVED_AT.receivedAt + 1 } : l)) };
+    expect(() => RugLabeller.restore(RUG_CONFIG, late, SAVED_AT)).toThrow(/after the saved moment/);
+    const path = join(tmp(), 'state.json');
+    saveState(path, savedState({ labeller: late }));
+    expect(loadState(path, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('after the saved moment') });
+  });
+});
+
 describe('PERSIST-1 discards a bad file whole', () => {
   const rewrite = (path: string, edit: (payload: Record<string, unknown>) => void) => {
     const outer = JSON.parse(readFileSync(path, 'utf8')) as { version: number; sha256: string; payload: string };

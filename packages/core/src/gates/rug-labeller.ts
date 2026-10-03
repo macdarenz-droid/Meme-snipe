@@ -240,7 +240,7 @@ export class RugLabeller {
    * PERSIST-1: a labeller restored from `snapshot`. A state written under another rug config version is refused (its
    * running sums were judged by other rules), as is a malformed one; the caller then discards the file.
    */
-  static restore(config: RugConfig, s: RugLabellerState): RugLabeller {
+  static restore(config: RugConfig, s: RugLabellerState, asOf?: { readonly receivedAt: number }): RugLabeller {
     if (s.version !== config.version) throw new RangeError(`saved labeller state is ${String(s.version)}, the config is ${config.version}`);
     const r = new RugLabeller(config);
     const nat = (v: unknown, what: string): bigint => {
@@ -255,6 +255,7 @@ export class RugLabeller {
     for (const l of s.launches as unknown[]) {
       if (!isObj(l) || typeof l['mint'] !== 'string' || typeof l['creator'] !== 'string' || !Number.isSafeInteger(l['createdAtMs'])) throw new RangeError('bad launch');
       if (l['pool'] !== null && typeof l['pool'] !== 'string') throw new RangeError('bad launch pool');
+      if (asOf !== undefined && (l['createdAtMs'] as number) > asOf.receivedAt) throw new RangeError(`launch ${l['mint']} is created after the saved moment`);
       r.#launches.set(l['mint'], {
         mint: l['mint'], creator: l['creator'], sellers: new Set(strs(l['sellers'], 'sellers')), createdAtMs: l['createdAtMs'] as number,
         pool: l['pool'] as string | null, supply: l['supply'] === null ? null : nat(l['supply'], 'supply'), sold: nat(l['sold'], 'sold'),
