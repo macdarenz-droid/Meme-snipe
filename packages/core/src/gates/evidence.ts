@@ -1,6 +1,7 @@
 // Reads facts as of the decision moment and judges whether they can be used (docs/ARCHITECTURE.md §6.3, H16).
 // Unknown, stale or degraded evidence is never passed on: the read fails with a typed reason and the gate rejects.
-import type { Lookup } from '../engine/asof.ts';
+import type { AsOfEntry, Lookup } from '../engine/asof.ts';
+import type { DeployerIndex } from './deployer-index.ts';
 import type { Moment } from '../engine/moment.ts';
 import type { Policy } from '../config/policy.ts';
 import type { QualityFlag } from '../domain/index.ts';
@@ -11,6 +12,10 @@ import type { EvidenceCode, FactName, GateReason, HardGate } from './reasons.ts'
 export interface GateContext {
   readonly now: Moment;
   lookup(key: string, asOf?: Moment): Lookup;
+  /** Every value of a key in a range of moments, refused past now (the engine's `StrategyContext.history`). */
+  history(key: string, from: Moment, to?: Moment): readonly AsOfEntry[] | { readonly ok: false; readonly reason: 'future' };
+  /** Our own deployer index, fed with every released event (GATE-1b). Without it H14 reads a stored deployer fact. */
+  readonly deployers?: DeployerIndex;
 }
 
 /**
@@ -60,11 +65,16 @@ export class Evidence {
 
   /** The raw value of `key` as of now, or undefined when there is none. Lookups never ask past now. */
   raw(key: string): unknown {
-    if (this.#cache.has(key)) return this.#cache.get(key);
+    return this.entry(key)?.value;
+  }
+
+  /** The as-of entry of `key` (value, moment and source event), or undefined when there is none. */
+  entry(key: string): AsOfEntry | undefined {
+    if (this.#cache.has(key)) return this.#cache.get(key) as AsOfEntry | undefined;
     const r = this.#ctx.lookup(key);
-    const v = r.ok ? r.value : undefined;
-    this.#cache.set(key, v);
-    return v;
+    const e: AsOfEntry | undefined = r.ok ? { moment: r.moment, value: r.value, source: r.source } : undefined;
+    this.#cache.set(key, e);
+    return e;
   }
 
   read<T extends { readonly obs: FactObs }>(name: FactName, key: string, parse: (v: unknown) => T | null, freshness: Freshness, neededBy: HardGate): Read<T> {

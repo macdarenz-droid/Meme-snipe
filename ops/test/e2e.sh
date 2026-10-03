@@ -150,11 +150,16 @@ pass "wrong code: the server downloaded the bundle, could not open it, stored no
 
 # ---------- 4. Deploy with the right code ----------
 start=$(date +%s)
-publish 1001 publish-right.log "$CODE1" || { cat "$LOGS/publish-right.log"; fail "publish (right code)"; }
+# A fresh server gets the watchdog in its very first Deploy run (the Cloudflare secrets already exist).
+T_CF="TESTcloudflare$(rnd 12)"
+printf '%s' "$T_CF" >"$STATE/cf-token"
+CF_ENV=(CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4")
+publish 1001 publish-right.log "$CODE1" "${CF_ENV[@]}" || { cat "$LOGS/publish-right.log"; fail "publish (right code)"; }
+grep -q '"method":"setWebhook"' "$STATE/telegram.jsonl" 2>/dev/null && fail "a webhook was set before pairing (it would block /pair)"
 echo "handoff picked up in $(($(date +%s) - start)) s" >>"$LOGS/summary-times.txt"
 [ ! -d "$STATE/releases/handoff" ] || fail "release not deleted after pickup"
 grep -q 'handoff' "$STATE/gh-calls.log" && ! grep -q -- "$(printf '%s' "$CODE1" | cut -d' ' -f1)" "$STATE/gh-calls.log" || fail "release name reveals the code"
-in_c "ls /etc/credstore.encrypted | sort | tr '\n' ' '" | grep -qx 'alchemy_api_key helius_api_key jupiter_api_key telegram_bot_token ' || fail "credential set"
+in_c "ls /etc/credstore.encrypted | sort | tr '\n' ' '" | grep -qx 'alchemy_api_key heartbeat_hmac_key helius_api_key jupiter_api_key telegram_bot_token telegram_webhook_secret ' || fail "credential set"
 in_c "stat -c '%a %U' /etc/credstore.encrypted/* | sort -u" | grep -qx '600 root' || fail "credentials not 0600 root"
 in_c "! test -e /etc/zeroed/deploy-code" || fail "deploy code not wiped"
 for pair in "helius_api_key:$T_HELIUS" "telegram_bot_token:$T_TELEGRAM"; do
@@ -165,7 +170,7 @@ done
 PAIR1="$(status keys | sed -n 's/.*\/pair \([0-9]\{6\}\)$/\1/p')"
 [[ "$PAIR1" =~ ^[0-9]{6}$ ]] || fail "no Telegram pairing code shown after the keys arrived"
 in_c "! systemctl is-active zeroed-worker" >/dev/null || fail "worker started before pairing"
-pass "handoff: 4 keys stored encrypted (0600 root), deploy code wiped (single use), release 'handoff' deleted, pairing code shown, worker waits for pairing"
+pass "handoff (with the watchdog, as on a fresh server): 4 keys plus the heartbeat key and webhook secret stored encrypted (0600 root), no webhook set before pairing, deploy code wiped (single use), release 'handoff' deleted, pairing code shown, worker waits for pairing"
 
 # Replay: the same code again opens nothing, because the server no longer has it.
 before="$(in_c "sha256sum /etc/credstore.encrypted/* | sha256sum")"
@@ -193,13 +198,14 @@ in_c "test -s /etc/zeroed/pair-code" || fail "a /pair from a group burned the co
 send_tg "$T_CHAT" "/pair@Zeroed_alerts_bot $PAIR2"
 [ "$(in_c "systemd-creds decrypt --name=telegram_chat_id /etc/credstore.encrypted/telegram_chat_id - | sha256sum | cut -c1-64")" = "$(printf '%s' "$T_CHAT" | sha256sum | cut -c1-64)" ] || fail "owner chat not stored"
 grep -q "\"chat_id\":\"$T_CHAT\",\"text\":\"Paired." "$STATE/telegram.jsonl" || fail "no Paired reply"
+grep -q '"method":"setWebhook","token_ok":true,"chat_id":"","text":"","url":"https://zeroed-watchdog.e2e.workers.dev/telegram","has_secret_token":true' "$STATE/telegram.jsonl" || fail "the server did not set the watchdog webhook after pairing"
 n0="$(wc -l <"$STATE/telegram.jsonl")"
 send_tg "$STRANGER" "/pair $PAIR2"
 [ "$(grep -vc getUpdates <(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl"))" = 0 ] || fail "server answered after pairing"
 wait_for 30 "worker running after pairing" "docker exec $C systemctl is-active zeroed-worker"
 in_c "journalctl -u zeroed-worker -o cat --no-pager" | grep -q 'Reconcile: 0 open intents, 5 of 5 credentials present. OK' || fail "worker did not reconcile with 5 credentials"
 status paired | grep -q 'Telegram:  paired' || fail "status not paired"
-pass "pairing: a group's /pair is ignored (private chats only); a stranger's wrong /pair invalidated the code (one try), the old code then failed, a new console code paired the owner chat (stored encrypted), 'Paired' sent, later messages ignored, worker reconciled and runs"
+pass "pairing: a group's /pair is ignored (private chats only); a stranger's wrong /pair invalidated the code (one try), the old code then failed, a new console code paired the owner chat (stored encrypted), 'Paired' sent, the server then set the watchdog webhook itself, later messages ignored, worker reconciled and runs"
 
 # ---------- 6. Hardening ----------
 in_c "systemd-analyze security --no-pager zeroed-signer.service zeroed-worker.service" >"$LOGS/systemd-analyze.txt" 2>&1 || true
@@ -227,15 +233,15 @@ CODE2="$(in_c "zeroed-new-deploy-code" | tee "$LOGS/console/new-code.txt" | sed 
 [ "$(printf '%s' "$CODE2" | wc -w)" = 6 ] || fail "zeroed-new-deploy-code"
 CODES+=("$CODE2")
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents, 5 of 5'")"
-T_CF="TESTcloudflare$(rnd 12)"
-printf '%s' "$T_CF" >"$STATE/cf-token"
+rm -f "$STATE/cf-subdomain" # the account lost its subdomain: Deploy registers a new one
+n_hook="$(grep -c '"method":"setWebhook"' "$STATE/telegram.jsonl")"
 publish 1002 publish-rotate.log "$CODE2" CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4" || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
 grep -q '"method":"PUT","auth_ok":true' "$STATE/cloudflare.jsonl" && [[ "$(cat "$STATE/cf-subdomain")" =~ ^zeroed-[0-9a-f]{8}$ ]] || fail "workers.dev subdomain not registered"
 grep -q "Registered the workers.dev subdomain $(cat "$STATE/cf-subdomain")" "$LOGS/publish-rotate.log" || fail "subdomain registration not reported"
 [ "$(in_c "systemd-creds decrypt --name=heartbeat_hmac_key /etc/credstore.encrypted/heartbeat_hmac_key - | sha256sum | cut -c1-64")" = "$(sha256sum <"$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY" | cut -c1-64)" ] || fail "server and watchdog got different heartbeat keys"
 in_c "grep -qx 'WATCHDOG_URL=https://zeroed-watchdog.e2e.workers.dev' /etc/zeroed/worker.env" || fail "watchdog address not delivered"
-[ "$(sort "$STATE/wrangler-calls.log" | tr '\n' ' ')" = "secret put HEARTBEAT_HMAC_KEY secret put TELEGRAM_BOT_TOKEN secret put TELEGRAM_WEBHOOK_SECRET " ] || fail "watchdog secrets"
-grep -q '"method":"setWebhook","token_ok":true' "$STATE/telegram.jsonl" && grep -q '"has_secret_token":true' "$STATE/telegram.jsonl" || fail "webhook not set with a secret token"
+[ "$(sort -u "$STATE/wrangler-calls.log" | tr '\n' ' ')" = "secret put HEARTBEAT_HMAC_KEY secret put TELEGRAM_BOT_TOKEN secret put TELEGRAM_WEBHOOK_SECRET " ] || fail "watchdog secrets"
+[ "$(grep -c '"method":"setWebhook","token_ok":true' "$STATE/telegram.jsonl")" -gt "$n_hook" ] || fail "the server did not set the webhook again with the new token"
 for pair in "helius_api_key:$T_HELIUS" "alchemy_api_key:$T_ALCHEMY" "jupiter_api_key:$T_JUPITER" "telegram_bot_token:$T_TELEGRAM"; do
   want="$(printf '%s' "${pair#*:}" | sha256sum | cut -c1-64)"
   got="$(in_c "systemd-creds decrypt --name=${pair%%:*} /etc/credstore.encrypted/${pair%%:*} - | sha256sum | cut -c1-64")"

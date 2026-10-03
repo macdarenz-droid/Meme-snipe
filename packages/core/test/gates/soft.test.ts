@@ -1,13 +1,13 @@
 // Soft features (docs/ARCHITECTURE.md §7.2): logged, never a reject; unknown is logged as unknown, never filled in.
 import { describe, expect, it } from 'vitest';
 import { evaluateSoftFeatures, holdersKey, softKey } from '../../src/gates/index.ts';
-import { MINT, contextOf, deps, drop, obs, passingFacts, patch } from './world.ts';
+import { MINT, contextOf, deps, drop, obs, passingFacts, patch, session } from './world.ts';
 
 const feature = (r: ReturnType<typeof evaluateSoftFeatures>, name: string) => r.features.find((f) => f.name === name);
 
 describe('soft features', () => {
   it('passes reported values through and marks the rest unknown', () => {
-    const r = evaluateSoftFeatures(contextOf(passingFacts()), deps(), MINT);
+    const r = evaluateSoftFeatures(contextOf(passingFacts()), deps('live', session(), 'RUG-1'), MINT);
     expect(feature(r, 'solPerTrade')).toEqual({ name: 'solPerTrade', value: '400000000' });
     expect(feature(r, 'creationSlotBuyers')).toEqual({ name: 'creationSlotBuyers', value: '3' });
     expect(feature(r, 'twoSidedWalletBps')).toEqual({ name: 'twoSidedWalletBps', value: null, note: 'not reported' });
