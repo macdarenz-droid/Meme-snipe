@@ -111,10 +111,22 @@ export interface HoldoutPlan {
   readonly details: Readonly<Record<string, unknown>>;
 }
 
+/** An attempt's window in UTC data days: entries from `fromDay` until `entryCutoffDay`, observed until `tailEndDay` (exclusive). */
+export interface AttemptWindow {
+  readonly fromDay: string;
+  readonly entryCutoffDay: string;
+  readonly tailEndDay: string;
+}
+
+/** Entry days of an attempt k ≥ 2 (from the first whole UTC day after its registration). */
+export const LATER_ATTEMPT_ENTRY_DAYS = 28;
+
 /** One attempt of the shared error budget: registering it spends it, whatever happens later. */
 export interface HoldoutAttempt {
   readonly index: number;
   readonly alpha: number;
+  /** Attempt 1: the plan's window. Attempt k ≥ 2: its own, written at registration. */
+  readonly window: AttemptWindow;
   readonly holdoutIds: readonly string[];
   readonly configIds: Readonly<Record<string, string>>;
   readonly registeredAt: string;
@@ -229,8 +241,11 @@ export const openSealedHoldout = (a: HoldoutAuthority, holdoutId: string,
  * configuration ids. Registering commits the attempt. The index must be the next one: a skipped or repeated index is
  * refused and burns the holdouts it names (and, if repeated, the earlier attempt's), recorded before the refusal.
  */
+const addDays = (day: string, n: number): string => new Date(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+const daysBetween = (from: string, to: string): number => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+
 export const registerAttempt = (a: HoldoutAuthority,
-  req: { readonly index: number; readonly entries: readonly { readonly holdoutId: string; readonly universe: string; readonly configId: string }[] },
+  req: { readonly index: number; readonly entries: readonly { readonly holdoutId: string; readonly universe: string; readonly configId: string }[]; readonly fromDay?: string },
   now: Date = new Date()): HoldoutStore =>
   mutate(a, `Holdout attempt ${req.index}: registered ${req.entries.map((e) => e.holdoutId).join(', ')}`, (s) => {
     if (s === null || s.plan === null) throw new RangeError('no holdout plan: set the plan before registering an attempt');
@@ -248,12 +263,28 @@ export const registerAttempt = (a: HoldoutAuthority,
       }
       return { store: { ...s, registry: reg }, value: s, error: new RangeError(`holdout attempt refused: ${why}`) };
     }
-    const window = { fromDay: plan.fromDay, toDay: new Date(Date.parse(`${plan.tailEndDay}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) };
+    // Attempt 1 takes the plan's window. Attempt k ≥ 2 is registered only after every earlier holdout is scored or
+    // burned, and starts on the first whole UTC day after its registration (a requested start may be later, never
+    // earlier), with 28 entry days and the plan's tail length.
+    let aw: AttemptWindow;
+    if (req.index === 1) aw = { fromDay: plan.fromDay, entryCutoffDay: plan.entryCutoffDay, tailEndDay: plan.tailEndDay };
+    else {
+      const open = s.attempts.flatMap((x) => x.holdoutIds).filter((id) => s.registry.entries.find((e) => e.holdoutId === id)?.burned !== true);
+      if (open.length > 0) throw new RangeError(`holdout attempt ${req.index}: earlier holdouts are not scored yet (${open.join(', ')})`);
+      const earliest = addDays(now.toISOString().slice(0, 10), 1);
+      const fromDay = req.fromDay ?? earliest;
+      if (fromDay < earliest) throw new RangeError(`holdout attempt ${req.index}: its window cannot start before ${earliest}, the first whole UTC day after registration`);
+      const cutoff = addDays(fromDay, LATER_ATTEMPT_ENTRY_DAYS);
+      aw = { fromDay, entryCutoffDay: cutoff, tailEndDay: addDays(cutoff, daysBetween(plan.entryCutoffDay, plan.tailEndDay)) };
+    }
+    const clashing = s.attempts.filter((x) => aw.fromDay < x.window.tailEndDay && x.window.fromDay < aw.tailEndDay).map((x) => x.index);
+    if (clashing.length > 0) throw new RangeError(`holdout attempt ${req.index}: its window overlaps attempt ${clashing.join(', ')}`);
+    const window = { fromDay: aw.fromDay, toDay: addDays(aw.tailEndDay, -1) };
     const clash = startedOverlapping(s, window, null);
     if (clash.length > 0) throw new RangeError(`holdout attempt ${req.index}: its window overlaps ${clash.join(', ')}, already run`);
     const registry = req.entries.reduce((r, e) => registerHoldout(r, { holdoutId: e.holdoutId, universe: e.universe, configId: e.configId, ...window }), s.registry);
     const attempt: HoldoutAttempt = {
-      index: req.index, alpha: attemptAlpha(plan, req.index), holdoutIds: req.entries.map((e) => e.holdoutId),
+      index: req.index, alpha: attemptAlpha(plan, req.index), window: aw, holdoutIds: req.entries.map((e) => e.holdoutId),
       configIds: Object.fromEntries(req.entries.map((e) => [e.holdoutId, e.configId])), registeredAt: now.toISOString(), started: null, ended: null,
     };
     const store = { ...s, registry, attempts: [...s.attempts, attempt] };
@@ -353,8 +384,8 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
   markAttempt({ started: new Date().toISOString() });
   save(`Holdout ${ids.join(', ')}: started`);
   t.vcs?.check();
-  // Entries stop at the cutoff; the run keeps observing to the end of the tail so every position can finish.
-  const cutoff = Date.parse(`${o.research.holdout.entryCutoffDay}T00:00:00Z`);
+  // Entries stop at the attempt's cutoff; the run keeps observing to the end of the tail so every position can finish.
+  const cutoff = Date.parse(`${attempt!.window.entryCutoffDay}T00:00:00Z`);
   // Rows outside the authorised window stop the run (and so burn the holdout).
   const inWindow = (): Iterator<DatasetRow> => {
     const it = o.rows();

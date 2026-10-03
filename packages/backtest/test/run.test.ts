@@ -266,7 +266,9 @@ describe('holdout mode', () => {
     register(a, 'h-first', opts(), 1, 2);
     expect(() => authoriseHoldout(a, { attempt: 2, holdouts: [{ holdoutId: 'h-u1', universe: 'U1' }] }, opts())).toThrow(/produces U2/);
     runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'overlap1.sqlite') }, { ...a, byUniverse: { U2: 'h-first' }, window });
-    expect(() => register(a, 'h-second', opts(), 2, 2)).toThrow(/overlaps h-first/);
+    // Another id on the same window: refused (attempt 2 waits for attempt 1 to be scored, then may not overlap it; see the
+    // attempt k ≥ 2 test).
+    expect(() => register(a, 'h-second', opts(), 2, 2)).toThrow(/not scored yet/);
   });
 
   test('entries stop at the cutoff while the run keeps observing (final holdout form)', () => {
@@ -382,10 +384,8 @@ describe('holdout mode', () => {
     // A repeated index is refused and burns the earlier attempt's holdouts.
     expect(() => registerAttempt(a, { index: 1, entries: [{ holdoutId: 'h-b', universe: 'U1', configId: 'c' }] })).toThrow(/next is 2/);
     expect(readHoldoutStore(a.registryPath).registry.entries.find((e) => e.holdoutId === 'h-a')).toMatchObject({ burned: true, burnReason: 'reconfigured' });
-    // Attempt k ≥ 2 spends 0.01 / 2^(k-1); its window must come after the last one run (STATS-1), so the plan's window
-    // cannot be reused for it.
+    // Attempt k ≥ 2 spends 0.01 / 2^(k-1).
     expect([1, 2, 3].map((k) => attemptAlpha(planOf(o, 2), k))).toEqual([0.04, 0.005, 0.0025]);
-    expect(() => authoriseHoldout(a, { attempt: 2, holdouts: [{ holdoutId: 'h-c', universe: 'U2' }] }, o)).toThrow(/must start after/);
     // Each change was one commit (the plan, attempt 1, the burn of the repeat); a refusal that changed nothing and
     // setting the same plan again wrote nothing.
     expect(commits.map((m) => m.split(':')[0])).toEqual(['Holdout plan', 'Holdout attempt 1', 'Holdout attempt 1']);
@@ -410,6 +410,26 @@ describe('holdout mode', () => {
     expect(opened.registry.entries[0]).toMatchObject({ seal: 'opened', burned: true, burnReason: 'scored' });
     expect(opened.g1.map((g) => g.passed)).toEqual([false, true, true]);
     expect(open).toThrow(/burned/);
+  });
+
+  test('attempt k ≥ 2: after every earlier holdout is scored, from the first whole UTC day after registration, 28 entry days and the plan\'s tail', () => {
+    const a = authority('second');
+    register(a, 'first');
+    const o = opts();
+    const configId = holdoutConfigId(o, a);
+    const second = (now: string, fromDay?: string) => registerAttempt(a, { index: 2, entries: [{ holdoutId: 'second', universe: 'U2', configId }], ...(fromDay === undefined ? {} : { fromDay }) }, new Date(now));
+    expect(() => second('2026-09-25T10:00:00Z')).toThrow(/not scored yet \(first\)/);
+    const sealed = runAndSealHoldout({ ...o, ledgerPath: join(dir, 'second-1.sqlite') }, { ...a, byUniverse: { U2: 'first' }, window });
+    recordHoldoutG1(a, { holdoutId: 'first', configId, passed: true, evaluatedOn: 'practice' });
+    openSealedHoldout(a, 'first', { configId, ledgerHash: sealed.ledgerHash, requiredTrades: 1, minDays: 1, nowMs: 0 });
+    // Registered the day before attempt 1's window: the next whole day overlaps it.
+    expect(() => second('2026-09-19T12:00:00Z')).toThrow(/overlaps attempt 1/);
+    // A requested start before the first whole day after registration.
+    expect(() => second('2026-09-25T10:00:00Z', '2026-09-25')).toThrow(/cannot start before 2026-09-26/);
+    const st = second('2026-09-25T10:00:00Z');
+    // The synthetic plan has no tail (cutoff = tail end), so neither has attempt 2.
+    expect(st.attempts[1]).toMatchObject({ index: 2, alpha: 0.005, window: { fromDay: '2026-09-26', entryCutoffDay: '2026-10-24', tailEndDay: '2026-10-24' } });
+    expect(st.registry.entries.find((e) => e.holdoutId === 'second')).toMatchObject({ fromDay: '2026-09-26', toDay: '2026-10-23' });
   });
 
   test('a run must feed every holdout of its attempt', () => {
