@@ -448,16 +448,18 @@ export class Ledger extends LedgerReads {
   /**
    * Applies one book event with the CORE-1 reducer and writes the rows it changed, in the format the ledger replay
    * check reads (./replay: stepRows decides the rows; the first intent row carries `encodeBookDetail(event)` and the
-   * effects; a trigger_exit's position rows carry it too). One transaction: all rows or none. An event the reducer
-   * refuses throws and writes nothing. Returns the book after the event; the caller keeps it for the next call.
+   * effects; a trigger_exit's position rows carry it too). Atomic: one transaction per call, or, when called inside
+   * the caller's transaction (`atomically`), it joins that one, so a refusal or a failed write rolls back the
+   * caller's whole batch. An event the reducer refuses throws a LedgerError and writes nothing. Returns the reducer's
+   * step (the book after the event and its effects); the caller keeps the book for the next call.
    * The one writer the backtester and the worker share, so their ledgers cannot drift from the replay.
    */
-  recordBookEvent(before: Book, event: BookEvent, o: { readonly ts: Millis; readonly limits: ReservationLimits }): Book {
+  recordBookEvent(before: Book, event: BookEvent, o: { readonly ts: Millis; readonly limits: ReservationLimits }): { readonly book: Book; readonly effects: readonly Effect[] } {
     const step = applyBookEvent(before, event);
     if (isIllegal(step)) throw new LedgerError(`book event ${event.type} refused by the reducer: ${step.reason}`);
     const book = step.state;
     const rows = stepRows(before, event, step.effects);
-    if (rows === null) return book;
+    if (rows === null) return { book, effects: step.effects };
     const name = rowEventName(event);
     const ts = o.ts;
     this.atomically(() => {
@@ -490,7 +492,7 @@ export class Ledger extends LedgerReads {
         this.appendPositionState({ positionId: pid, status: p.status, quantity: p.quantity, cost: p.cost, event: name, ts, ...(event.type === 'trigger_exit' ? { detail: encodeBookDetail(event) } : {}) });
       }
     });
-    return book;
+    return { book, effects: step.effects };
   }
 
   /** Runs fn as one transaction: either every write inside it lands or none does. */

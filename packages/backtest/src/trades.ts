@@ -73,7 +73,12 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
     const f = k === null ? undefined : r.book.intents[p.entryIntentId]?.fills[k];
     if (f !== undefined) claimed.set(p.entryIntentId, (claimed.get(p.entryIntentId) ?? new Set<string>()).add(f.signature));
   }
-  for (const p of Object.values(r.book.positions)) {
+  // One token account per entry: its rent is charged to the first trade of the entry intent only, and comes back only
+  // when every position of that intent is closed (the account is emptied and closed with the last sell).
+  const rentCharged = new Set<string>();
+  const allClosed = (entryIntentId: string) => Object.values(r.book.positions).every((q) => q.entryIntentId !== entryIntentId || q.status === 'closed');
+  const ordered = Object.values(r.book.positions).sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+  for (const p of ordered) {
     const intent = r.book.intents[p.entryIntentId];
     const k = lateFill(p.id);
     const late = claimed.get(p.entryIntentId) ?? new Set<string>();
@@ -109,8 +114,10 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
     const venue = all.reduce((t, a) => t + (a.costs === null ? 0n : a.costs.lpFee + a.costs.protocolFee), 0n);
     const creator = all.reduce((t, a) => t + (a.costs?.creatorFee ?? 0n), 0n);
     const slippage = all.reduce((t, a) => t + slippageLamports(a), 0n);
-    const rentPaid = net.tokenAccountRent;
-    const rentReturned = scenario.rentRecovery && !blocked ? rentPaid : 0n;
+    const firstOfEntry = !rentCharged.has(p.entryIntentId);
+    rentCharged.add(p.entryIntentId);
+    const rentPaid = firstOfEntry ? net.tokenAccountRent : 0n;
+    const rentReturned = firstOfEntry && scenario.rentRecovery && allClosed(p.entryIntentId) ? rentPaid : 0n;
     const closedAt = blocked ? r.endedAt : Math.max(...sold.map((a) => a.landedAt ?? 0));
     trades.push({
       id: p.id, mint: p.mint, symbol: r.symbols.get(p.mint) ?? p.mint.slice(0, 6),

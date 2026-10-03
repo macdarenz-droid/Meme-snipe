@@ -30,7 +30,7 @@ describe('Ledger.recordBookEvent', () => {
       on(id, { type: 'status', signature: attempt(id, 1, 500n).signature, result: 'succeeded', commitment: 'confirmed', blockHeight: 10n, searchedHistory: false }),
       on(id, { type: 'reconcile', fills: [fill(id, 1, 1_000n)], blockHeight: 11n }),
     ];
-    events.forEach((e, k) => { book = ledger.recordBookEvent(book, e, { ts: k, limits }); });
+    events.forEach((e, k) => { book = ledger.recordBookEvent(book, e, { ts: k, limits }).book; });
     ledger.close();
     expect(replayLedgerFile(path)).toMatchObject({ ok: true, purpose: 'backtest' });
     expect(rows(path)).toMatchObject({ intents: 1, attempts: 1, reservations: 1, positions: 1 });
@@ -51,9 +51,9 @@ describe('Ledger.recordBookEvent', () => {
     const ledger = openLedger(path, 'backtest');
     let book: Book = emptyBook(CONFIG);
     const [propose, ...rest] = entryToSubmitted(1, 500n);
-    book = ledger.recordBookEvent(book, propose!, { ts: 0, limits });
+    book = ledger.recordBookEvent(book, propose!, { ts: 0, limits }).book;
     const reserve = rest.findIndex((e) => e.type === 'intent' && e.event.type === 'reserve_exposure');
-    for (const e of rest.slice(0, reserve)) book = ledger.recordBookEvent(book, e, { ts: 1, limits });
+    for (const e of rest.slice(0, reserve)) book = ledger.recordBookEvent(book, e, { ts: 1, limits }).book;
     const before = rows(path);
     // The reservation is refused by the limits after the intent row is written: the whole event rolls back.
     expect(() => ledger.recordBookEvent(book, rest[reserve]!, { ts: 2, limits: { maxHeld: lamports(1n), maxCount: 1 } })).toThrow(/refused/);

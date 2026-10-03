@@ -10,9 +10,9 @@ if (path === undefined) throw new Error('usage: book-child <db>');
 const limits = { maxHeld: lamports(10n ** 15n), maxCount: 1_000 };
 const ledger = openLedger(path, 'backtest');
 const [first, ...rest] = entryToSubmitted(1, 500n);
-let book = ledger.recordBookEvent(emptyBook(CONFIG), first!, { ts: 1, limits });
+let book = ledger.recordBookEvent(emptyBook(CONFIG), first!, { ts: 1, limits }).book;
 ledger.atomically(() => {
-  for (const e of rest) book = ledger.recordBookEvent(book, e, { ts: 2, limits });
+  for (const e of rest) book = ledger.recordBookEvent(book, e, { ts: 2, limits }).book;
   console.log('ready');
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 });

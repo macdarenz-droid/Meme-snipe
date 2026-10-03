@@ -4,8 +4,8 @@
 // included, come from the fill model. A record the reducer refuses, or a mirror that ends unlike the engine's book,
 // counts as an illegal state.
 import { canonical, type LogRecord } from '../../../core/src/engine/index.ts';
-import type { Ledger, ReservationLimits } from '../../../core/src/ledger/index.ts';
-import { applyBookEvent, type Book, type BookConfig, emptyBook, isIllegal, isTerminal, type BookEvent } from '../../../core/src/lifecycle/index.ts';
+import { type Ledger, LedgerError, type ReservationLimits } from '../../../core/src/ledger/index.ts';
+import { applyBookEvent, type Book, type BookConfig, emptyBook, isIllegal, isTerminal, type BookEvent, type Effect } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports } from '../../../core/src/units/index.ts';
 import type { AttemptRecord } from './world.ts';
 
@@ -52,12 +52,28 @@ export class LedgerSink {
 
   #apply(event: BookEvent, ts: number): void {
     const prev = this.#book;
-    const step = applyBookEvent(prev, event);
-    if (isIllegal(step)) {
-      this.divergences++;
-      return;
+    // One reduction per event: the ledger's writer applies the reducer and returns its step (Ledger.recordBookEvent);
+    // without a ledger the sink applies it itself. A refused event counts as a divergence and changes nothing.
+    let step: { readonly book: Book; readonly effects: readonly Effect[] };
+    if (this.#ledger === null) {
+      const r = applyBookEvent(prev, event);
+      if (isIllegal(r)) {
+        this.divergences++;
+        return;
+      }
+      step = { book: r.state, effects: r.effects };
+    } else {
+      try {
+        step = this.#ledger.recordBookEvent(prev, event, { ts, limits: this.#limits });
+      } catch (err) {
+        if (err instanceof LedgerError && err.message.includes('refused by the reducer')) {
+          this.divergences++;
+          return;
+        }
+        throw err;
+      }
     }
-    const next = step.state;
+    const next = step.book;
     this.#book = next;
     // Every state change persists the entity it changed, so the persist effects name everything to diff.
     const intents = new Set<string>();
@@ -79,8 +95,6 @@ export class LedgerSink {
       if (after.status === 'closed') this.openPositions.delete(id);
       else this.openPositions.add(id);
     }
-    // The ledger's own writer (Ledger.recordBookEvent): the rows the ledger replay check reads, in one transaction.
-    this.#ledger?.recordBookEvent(prev, event, { ts, limits: this.#limits });
   }
 
   /** Network fees of a settled attempt, by kind. A dropped or expired attempt cost nothing. */
