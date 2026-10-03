@@ -3,11 +3,11 @@
 // labels, trials and gate results live in the scoring store (./scoring), which this module never imports.
 
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
-import type { Fill, TradeIntent, TransactionAttempt } from '../domain/index.ts';
-import type { Effect, IntentStatus, PositionStatus } from '../lifecycle/index.ts';
-import type { Lamports } from '../units/index.ts';
-import { fromJson, toJson } from './codec.ts';
-import { FEE_KINDS, INTENT_END_STATUSES, LEDGER_MIGRATIONS, OPERATOR_COMMANDS, type AUTH_LEVELS, type DECISION_MODES, type ISSUERS } from './migrations.ts';
+import type { Fill, TradeIntent, TransactionAttempt } from '../../domain/index.ts';
+import type { Effect, IntentStatus, PositionStatus } from '../../lifecycle/index.ts';
+import type { Lamports } from '../../units/index.ts';
+import { fromJson, toJson } from '../codec.ts';
+import { FEE_KINDS, INTENT_END_STATUSES, LEDGER_MIGRATIONS, OPERATOR_COMMANDS, type AUTH_LEVELS, type DECISION_MODES, type ISSUERS } from '../migrations.ts';
 import { amountOf, amountText, inTransaction, LedgerError, openReader, openWriter } from './sqlite.ts';
 
 /** What the file is for. A backtest writes the same schema to its own file and can never open a live one. */
