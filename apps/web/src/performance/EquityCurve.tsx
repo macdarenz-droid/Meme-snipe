@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
 import { Empty } from '../components/ui.tsx';
-import { formatDateTime, formatUsd } from '../lib/format.ts';
+import { formatDateTime, formatUsd, formatUsdCompact } from '../lib/format.ts';
 import type { EquityPointView } from './types.ts';
 
 const EQ_H = 168;
@@ -74,7 +74,7 @@ export function EquityCurve({ points }: { points: EquityPointView[] }) {
           <g key={t}>
             <line x1={PAD.left} x2={width - PAD.right} y1={yEq(t)} y2={yEq(t)} className="grid" />
             <text x={PAD.left - 8} y={yEq(t) + 4} className="axis" textAnchor="end">
-              {formatUsd(t)}
+              {formatUsdCompact(t)}
             </text>
           </g>
         ))}
@@ -90,10 +90,10 @@ export function EquityCurve({ points }: { points: EquityPointView[] }) {
       <svg width={width} height={DD_H} role="img" aria-label={`Largest drawdown ${formatUsd(ddMin)}`} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
         <line x1={PAD.left} x2={width - PAD.right} y1={4} y2={4} className="grid" />
         <text x={PAD.left - 8} y={8} className="axis" textAnchor="end">
-          $0
+          {formatUsdCompact(0)}
         </text>
         <text x={PAD.left - 8} y={DD_H - 6} className="axis" textAnchor="end">
-          {formatUsd(ddMin)}
+          {formatUsdCompact(ddMin)}
         </text>
         <path d={ddArea} className="drawdown-area" />
         {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={4} y2={DD_H - 4} className="crosshair" />}

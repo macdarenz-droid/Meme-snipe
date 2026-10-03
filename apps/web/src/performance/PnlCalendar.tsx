@@ -1,4 +1,4 @@
-import { formatUsd } from '../lib/format.ts';
+import { formatUsd, formatUsdCompact } from '../lib/format.ts';
 import type { DayResultView } from './types.ts';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -65,7 +65,7 @@ export function PnlCalendar({ month, days, onSelectDay }: Props) {
                     aria-label={`${label}: ${formatUsd(result.netUsd, true)}, ${count} ${count === 1 ? 'trade' : 'trades'}`}
                   >
                     <span className="calendar-day">{day}</span>
-                    <span className="calendar-net num">{formatUsd(result.netUsd, true)}</span>
+                    <span className="calendar-net num">{formatUsdCompact(result.netUsd, true)}</span>
                   </button>
                 </div>
               );
