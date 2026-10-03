@@ -116,8 +116,8 @@ describe('S0 through the real engine', () => {
   });
 
   test('blocked exits: an unquotable pool blocks the exit and the position is valued at the end', () => {
-    // A tiny ladder so a single failing rung blocks.
-    const s = runBacktest(opts({ seed: 'block-seed', policy: { ...TRIAL_POLICY, exits: { ...TRIAL_POLICY.exits, ladder: { ...TRIAL_POLICY.exits.ladder, maxAttempts: 1 } } },
+    // A tiny ladder so a single failing rung blocks. The seed gives failed exits under the fills-2 draws.
+    const s = runBacktest(opts({ seed: 'b3', policy: { ...TRIAL_POLICY, exits: { ...TRIAL_POLICY.exits, ladder: { ...TRIAL_POLICY.exits.ladder, maxAttempts: 1 } } },
       fills: { ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, base: { ...FILL_CONFIG.scenarios.base, landPpm: { pumpswap: 600_000n, 'pump-curve': 0n } } } }, s0: { blockedRetries: 0 } }));
     expect(s.stats.illegalStates).toBe(0);
     expect(s.stats.unreconciledIntents).toBe(0);
@@ -287,12 +287,16 @@ describe('signing heights and skipped slots', () => {
     ? [{ kind: 'event' as const, slot: r.slot, blockTime: r.blockTime, txIdx: 900, evIdx: 0, signature: `create-${r.slot}`, program: 'pump', event: 'CreateEvent',
       fields: { mint: key(`other-${r.slot}`), symbol: 'OTHER' } }, r]
     : [r]));
+  // The premise of the next test: no drops and every landing well under the 150-block blockhash life.
+  const calm = (f: typeof FILL_CONFIG): typeof FILL_CONFIG => ({ ...f, scenarios: Object.fromEntries(Object.entries(f.scenarios).map(([k, s]) => [k, {
+    ...s, dropPpm: 0n, landingTail: { ppm: 0n, slots: [1] }, congestion: { ...s.congestion, burstPpm: 0n },
+  }])) as unknown as typeof f.scenarios });
   test('with no dropped attempts and landing under 150 slots, nothing expires, whatever the seed and scenario', () => {
     let betweenHeartbeats = 0;
     let onLifecycle = 0;
     for (const scenario of ['base', 'conservative', 'optimistic'] as const) {
       for (const seed of ['h1', 'h2', 'h3']) {
-        const r = runBacktest(opts({ rows: () => crowd[Symbol.iterator](), seed, scenario, windowEnd: T0 + 7 * 3_600_000 }));
+        const r = runBacktest(opts({ rows: () => crowd[Symbol.iterator](), seed, scenario, fills: calm(FILL_CONFIG), windowEnd: T0 + 7 * 3_600_000 }));
         expect(r.stats.illegalStates).toBe(0);
         expect(r.attempts.filter((a) => a.outcome === 'expired' || a.outcome === 'dropped')).toEqual([]);
         // Entries and time stops decided between heartbeats, on pool swaps and on other mints' lifecycle events.

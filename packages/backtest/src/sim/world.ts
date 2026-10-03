@@ -4,7 +4,7 @@
 // swaps see its impact (market.ts). Results come back to the engine only as feed events, never as return values.
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { type EffectRunner, type Moment, OFF_CHAIN, type Rng } from '../../../core/src/engine/index.ts';
-import { attemptFee, drawAttempt, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
+import { attemptFee, congestedAt, drawAttempt, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import type { LadderStep } from '../../../core/src/config/index.ts';
 import type { RawAmount, Lamports } from '../../../core/src/units/index.ts';
@@ -29,6 +29,10 @@ export interface AttemptRecord {
   fill: Fill | null;
   /** Venue fees, impact and extra slippage of a filled attempt. */
   costs: ExecutionCosts | null;
+  /** Broadcast in a congested window. */
+  readonly congested: boolean;
+  /** Earlier exit attempts on the same position (0 for entries and first exits): the liquidity haircut's multiple. */
+  readonly exitRetry: number;
 }
 
 export interface WorldDeps {
@@ -36,6 +40,8 @@ export interface WorldDeps {
   readonly market: Market;
   readonly book: () => Book;
   readonly rng: Rng;
+  /** Seed of the congestion windows (one draw per window, shared by every attempt in it). */
+  readonly congestionSeed: string;
   readonly scenario: FillScenario;
   readonly network: FillNetwork;
   readonly ladder: readonly LadderStep[];
@@ -52,6 +58,7 @@ export class World implements EffectRunner {
   readonly #d: WorldDeps;
   readonly attempts = new Map<string, AttemptRecord>();
   readonly alerts = new Map<string, number>();
+  readonly #exitAttempts = new Map<string, number>();
   #seq = 0;
 
   constructor(deps: WorldDeps) {
@@ -114,11 +121,18 @@ export class World implements EffectRunner {
     const i = this.#intent(intentId);
     const attempt = i.attempts.find((a) => a.signature === signature);
     if (attempt === undefined) throw new RangeError(`world: ${signature} is not an attempt of ${intentId}`);
-    const draw = drawAttempt(this.#d.rng, this.#d.scenario, i.intent.venue);
+    const congested = congestedAt(this.#d.congestionSeed, now.slot, this.#d.scenario);
+    const draw = drawAttempt(this.#d.rng, this.#d.scenario, i.intent.venue, congested);
+    let exitRetry = 0;
+    if (i.intent.purpose === 'exit') {
+      const position = i.intent.positionId;
+      exitRetry = this.#exitAttempts.get(position) ?? 0;
+      this.#exitAttempts.set(position, exitRetry + 1);
+    }
     const rec: AttemptRecord = {
       intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i),
       lastValidBlockHeight: attempt.lastValidBlockHeight, outcome: 'in_flight', reason: draw.fate,
-      landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null,
+      landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null, congested, exitRetry,
     };
     this.attempts.set(signature, rec);
     this.#report(this.#after(now), { type: 'intent', intentId, event: { type: 'send_accepted' } });
@@ -179,7 +193,7 @@ export class World implements EffectRunner {
     const state = track?.shifted.state ?? null;
     if (track === undefined || state === null || track.fees === null) return fail('pool state unknown');
     const t = { pool: state, fees: track.fees, baseSupply: track.baseSupply, coin: NORMAL, quotedOut: quote.quotedOut, minOut: quote.minOut, slippagePpm: scenario.slippagePpm };
-    const x = rec.purpose === 'entry' ? executeBuy(t, quote.inAmount) : executeSell(t, quote.inAmount);
+    const x = rec.purpose === 'entry' ? executeBuy(t, quote.inAmount) : executeSell(t, quote.inAmount, BigInt(rec.exitRetry) * scenario.exitRetryHaircutPpm);
     if (!x.ok) return fail(x.reason);
     track.shifted.applyOurs(x.after);
     rec.outcome = 'filled';

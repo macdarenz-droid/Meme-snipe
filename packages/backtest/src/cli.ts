@@ -143,19 +143,24 @@ if (command === 'holdout-register' || command === 'holdout') {
     candidates, entries, groups: [{ group: 'S0', trades, stray }],
     gates: [
       { mode: 'backtest', gate: 'G0', state: g0State, checks: g0Checks },
-      { mode: 'backtest', gate: 'G1', state: 'not-run', checks: [{ mode: 'backtest', label: 'S0 exits', value: 'time stop only (until EXIT-1)', limit: 'research run', pass: true }] },
+      { mode: 'backtest', gate: 'G1', state: 'not-run', checks: [
+        { mode: 'backtest', label: 'S0 exits', value: 'time stop only (until EXIT-1)', limit: 'research run', pass: true },
+        { mode: 'backtest', label: 'Fill model', value: `${FILL_CONFIG.version}, ${scenario}${FILL_CONFIG.provisional ? ', provisional values' : ''}`, limit: 'measured values', pass: !FILL_CONFIG.provisional },
+      ] },
     ],
   });
   const evidence = {
     commit, dataset: { dir: dataset, manifestSha256: manifestHash(dataset), days: days.map((d) => d.day), complete: days.map((d) => d.complete) },
     sumsChecked,
-    fillsVersion: FILL_CONFIG.version, researchVersion: RESEARCH_CONFIG.version, policyName: TRIAL_POLICY.name,
+    fillsVersion: FILL_CONFIG.version, fillsProvisional: FILL_CONFIG.provisional, researchVersion: RESEARCH_CONFIG.version, policyName: TRIAL_POLICY.name,
     scenario, seed, hashes, identicalReplays: identical, leak, shift, g0: { status: g0.status, checks: g0.checks }, stats: first.stats,
     throughput: { rows: first.stats.rows, elapsedMs: times, rowsPerSecond: Math.round(first.stats.rows / (first.stats.elapsedMs / 1000)), days: days.length,
       projected30DaysMinutes: Math.round(((first.stats.elapsedMs / days.length) * 30) / 60_000) },
     candidates, entries, trades: trades.length, alerts: first.stats.alerts,
     regimeBoundaries: first.regimes.map((b) => ({ slot: b.slot.toString(), label: b.label, at: new Date(b.at).toISOString() })),
     tradesAcrossRegimeBoundary: trades.filter((t) => first.regimes.some((b) => t.openedAt < b.at && t.closedAt >= b.at)).length,
+    attemptsCongested: first.attempts.filter((a) => a.congested).length,
+    exitRetries: first.attempts.filter((a) => a.exitRetry > 0).length,
     attempts: Object.fromEntries(['filled', 'failed', 'dropped', 'expired', 'in_flight'].map((o) => [o, first.attempts.filter((a) => a.outcome === o).length])),
   };
   writeFileSync(flag('out', 'report.json'), `${JSON.stringify(report, null, 1)}\n`);

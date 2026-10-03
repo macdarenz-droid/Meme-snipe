@@ -4,12 +4,32 @@
 import { type CoinFlags, type NoQuoteReason, type PoolState, poolBuyExactQuoteIn, poolSell } from '../amm/index.ts';
 import { PPM } from '../costs/index.ts';
 import type { Venue } from '../domain/index.ts';
-import type { Rng } from '../engine/index.ts';
+import { createRng, type Rng } from '../engine/index.ts';
 import { BPS_DENOMINATOR, mulDiv } from '../units/index.ts';
 import { type ObservedFees, observedFeeContext } from './pool.ts';
 
 export type ScenarioName = 'base' | 'conservative' | 'optimistic';
 export const SCENARIO_NAMES: readonly ScenarioName[] = ['base', 'conservative', 'optimistic'];
+
+/**
+ * Correlated failures: the chain is congested in some windows of slots, and every attempt broadcast in such a window
+ * lands less often and later. Whether a window is congested is one draw per window from the run's seed.
+ */
+export interface Congestion {
+  readonly windowSlots: number;
+  /** Share of windows that are congested, ppm. */
+  readonly burstPpm: bigint;
+  /** Landing share in a burst, as a share of the scenario's landPpm (ppm). */
+  readonly landFactorPpm: bigint;
+  /** Slots added to the landing latency in a burst. */
+  readonly extraLandingSlots: number;
+}
+
+/** Long-tail landing delays: with probability `ppm` the latency is drawn from `slots` (never sooner than the regular draw). */
+export interface LandingTail {
+  readonly ppm: bigint;
+  readonly slots: readonly number[];
+}
 
 export interface FillScenario {
   readonly name: ScenarioName;
@@ -31,6 +51,13 @@ export interface FillScenario {
   readonly discoverySlots: readonly number[];
   /** Slots from broadcast to landing; one value is drawn uniformly per attempt. */
   readonly landingSlots: readonly number[];
+  readonly landingTail: LandingTail;
+  readonly congestion: Congestion;
+  /**
+   * Liquidity worsening during repeated exits: each earlier exit attempt on the same position takes this share (ppm)
+   * off what the next one receives, as other sellers reach the pool first.
+   */
+  readonly exitRetryHaircutPpm: bigint;
   /** Slots from landing until the status reads `confirmed`. */
   readonly confirmSlots: number;
   /** Slots from landing until the status reads `finalized` (a failure is terminal only then). */
@@ -76,11 +103,26 @@ export interface AttemptDraw {
   readonly fate: AttemptFate;
 }
 
-/** One attempt's latency and fate. Always two draws in the same order, so later draws never depend on the outcome. */
-export const drawAttempt = (rng: Rng, s: FillScenario, venue: Venue): AttemptDraw => {
-  const landingSlots = pick(rng, s.landingSlots, 'landingSlots');
+/** True when the window holding `slot` is congested: one draw per window from `seed`, shared by every attempt in it. */
+export const congestedAt = (seed: string, slot: bigint, s: FillScenario): boolean => {
+  const c = s.congestion;
+  if (!Number.isSafeInteger(c.windowSlots) || c.windowSlots < 1) throw new RangeError('congestion windowSlots must be >= 1');
+  return ppmDraw(createRng(`${seed}:congestion:${slot / BigInt(c.windowSlots)}`)) < c.burstPpm;
+};
+
+/**
+ * One attempt's latency and fate. Always four draws in the same order (regular latency, tail decision, tail latency,
+ * fate), so later draws never depend on an outcome or on congestion.
+ */
+export const drawAttempt = (rng: Rng, s: FillScenario, venue: Venue, congested = false): AttemptDraw => {
+  const regular = pick(rng, s.landingSlots, 'landingSlots');
+  const inTail = ppmDraw(rng) < s.landingTail.ppm;
+  const tail = pick(rng, s.landingTail.slots, 'landingTail.slots');
   const u = ppmDraw(rng);
-  const land = s.landPpm[venue];
+  const extra = congested ? s.congestion.extraLandingSlots : 0;
+  if (!Number.isSafeInteger(extra) || extra < 0) throw new RangeError('extraLandingSlots must be an integer >= 0');
+  const landingSlots = (inTail ? Math.max(regular, tail) : regular) + extra;
+  const land = congested ? mulDiv(s.landPpm[venue], s.congestion.landFactorPpm, PPM, 'floor') : s.landPpm[venue];
   if (u < land) return { landingSlots, fate: 'lands' };
   // The remaining range [land, 1e6) splits by dropPpm into dropped then failed.
   const dropped = mulDiv(PPM - land, s.dropPpm, PPM, 'floor');
@@ -128,8 +170,10 @@ export interface OurTrade {
   readonly slippagePpm: bigint;
 }
 
-const finish = (out: bigint, paid: bigint, after: PoolState, t: OurTrade, fees: Omit<ExecutionCosts, 'extraSlippage'>): Execution => {
-  const final = withSlippage(out, t.quotedOut, t.slippagePpm);
+const finish = (out: bigint, paid: bigint, after: PoolState, t: OurTrade, fees: Omit<ExecutionCosts, 'extraSlippage'>, haircutPpm = 0n): Execution => {
+  if (haircutPpm < 0n) throw new RangeError('haircut must be >= 0');
+  const slipped = withSlippage(out, t.quotedOut, t.slippagePpm);
+  const final = slipped - (haircutPpm >= PPM ? slipped : mulDiv(slipped, haircutPpm, PPM, 'ceil'));
   return final < t.minOut || final <= 0n
     ? { ok: false, reason: 'slippage', detail: `out ${final} below min ${t.minOut}` }
     : { ok: true, out: final, paid, after, costs: { ...fees, extraSlippage: out - final } };
@@ -145,10 +189,14 @@ export const executeBuy = (t: OurTrade, spend: bigint): Execution => {
   return q.ok ? finish(q.trade.base, q.trade.userQuote, q.trade.after, t, costsOf(q.trade)) : q;
 };
 
-/** Our sell of `tokens`. `paid` is the tokens sold; `out` the lamports received. */
-export const executeSell = (t: OurTrade, tokens: bigint): Execution => {
+/**
+ * Our sell of `tokens`. `paid` is the tokens sold; `out` the lamports received. `haircutPpm` takes a share off the
+ * proceeds for liquidity lost to earlier sellers (repeated exits); it is counted in extraSlippage, and the pool sees
+ * the same sell.
+ */
+export const executeSell = (t: OurTrade, tokens: bigint, haircutPpm = 0n): Execution => {
   const q = poolSell(t.pool, tokens, observedFeeContext(t.fees, t.baseSupply, t.coin));
-  return q.ok ? finish(q.trade.userQuote, tokens, q.trade.after, t, costsOf(q.trade)) : q;
+  return q.ok ? finish(q.trade.userQuote, tokens, q.trade.after, t, costsOf(q.trade), haircutPpm) : q;
 };
 
 /**
