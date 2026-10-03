@@ -53,6 +53,7 @@ const VALUES: FillConfig = {
       observationSlots: 2, receiptMs: 200,
       discoverySlots: [2, 3, 4, 5, 8], landingSlots: [1, 2, 2, 3, 4],
       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick', rentRecovery: true,
+      closeSuccessPpm: 950_000n, dustPpm: 20_000n,
     },
     // p90 latency (a Jupiter-recent fallback is about 5 s), slippage x1.5, close-based take-profit, no rent recovery.
     conservative: {
@@ -63,6 +64,7 @@ const VALUES: FillConfig = {
       observationSlots: 3, receiptMs: 500,
       discoverySlots: [17], landingSlots: [6],
       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_500_000n, takeProfit: 'close', rentRecovery: false,
+      closeSuccessPpm: 900_000n, dustPpm: 50_000n,
     },
     optimistic: {
       name: 'optimistic', landPpm: LAND_HIGH, dropPpm: 400_000n,
@@ -72,6 +74,7 @@ const VALUES: FillConfig = {
       observationSlots: 1, receiptMs: 50,
       discoverySlots: [1, 2], landingSlots: [1],
       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick', rentRecovery: true,
+      closeSuccessPpm: 990_000n, dustPpm: 5_000n,
     },
   },
 };

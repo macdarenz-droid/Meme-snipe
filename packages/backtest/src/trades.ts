@@ -85,10 +85,19 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
     const f = k === null ? undefined : r.book.intents[p.entryIntentId]?.fills[k];
     if (f !== undefined) claimed.set(p.entryIntentId, (claimed.get(p.entryIntentId) ?? new Set<string>()).add(f.signature));
   }
-  // One token account per entry: its rent is charged to the first trade of the entry intent only, and comes back only
-  // when every position of that intent is closed (the account is emptied and closed with the last sell).
+  // One token account per entry: its rent is charged to the first trade of the entry intent only, and comes back once,
+  // only when a sell of one of its positions landed as an atomic sell-and-close (world.ts). A sell-only fallback, a
+  // partial exit, dust or an unsolicited token leaves it locked.
   const rentCharged = new Set<string>();
-  const allClosed = (entryIntentId: string) => Object.values(r.book.positions).every((q) => q.entryIntentId !== entryIntentId || q.status === 'closed');
+  const positionOfIntent = new Map<string, string>();
+  for (const i of Object.values(r.book.intents)) if (i.intent.purpose === 'exit') positionOfIntent.set(i.intent.id, i.intent.positionId);
+  const closedEntries = new Set<string>();
+  for (const a of r.attempts) {
+    if (!a.closedAccount) continue;
+    const pid = positionOfIntent.get(a.intentId);
+    const p = pid === undefined ? undefined : r.book.positions[pid];
+    if (p !== undefined) closedEntries.add(p.entryIntentId);
+  }
   const ordered = Object.values(r.book.positions).sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
   for (const p of ordered) {
     const intent = r.book.intents[p.entryIntentId];
@@ -146,7 +155,7 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
     const firstOfEntry = !rentCharged.has(p.entryIntentId);
     rentCharged.add(p.entryIntentId);
     const rentPaid = firstOfEntry ? net.tokenAccountRent : 0n;
-    const rentReturned = firstOfEntry && scenario.rentRecovery && allClosed(p.entryIntentId) ? rentPaid : 0n;
+    const rentReturned = firstOfEntry && scenario.rentRecovery && closedEntries.has(p.entryIntentId) ? rentPaid : 0n;
     const closedAt = blocked ? r.endedAt : Math.max(...sold.map((a) => a.landedAt ?? 0));
     trades.push({
       id: p.id, mint: p.mint, symbol: r.symbols.get(p.mint) ?? p.mint.slice(0, 6),

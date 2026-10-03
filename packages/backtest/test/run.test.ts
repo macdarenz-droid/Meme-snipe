@@ -344,3 +344,45 @@ describe('observation delay (BT-1c item 3)', () => {
     }
   });
 });
+
+describe('rent follows the account-close outcome (BT-1c rent ruling)', () => {
+  const withClose = (closeSuccessPpm: bigint, dustPpm = 0n): typeof FILL_CONFIG => ({
+    ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, base: { ...FILL_CONFIG.scenarios.base, rentRecovery: true, closeSuccessPpm, dustPpm } },
+  });
+
+  test('a failed close rolls back the sell and charges the fee; the sell-only fallback leaves the rent locked', () => {
+    const f = withClose(0n);
+    const r = runBacktest(opts({ fills: f }));
+    expect(r.stats.illegalStates).toBe(0);
+    const closeFails = r.attempts.filter((a) => a.purpose === 'exit' && a.reason === 'close failed');
+    expect(closeFails.length).toBeGreaterThan(0);
+    for (const a of closeFails) {
+      expect(a.outcome).toBe('failed');
+      expect(a.fill).toBeNull();
+      expect(a.fee).toBeGreaterThan(0n);
+    }
+    const { trades } = tradesOf(r, f);
+    expect(trades.filter((t) => t.exitReason === 'time-stop').length).toBeGreaterThan(0);
+    for (const t of trades) expect(t.rentReturned).toBe(0n);
+  });
+
+  test('the rent comes back once, only with a landed sell-and-close; dust in the account keeps it locked', () => {
+    const f = withClose(1_000_000n);
+    const r = runBacktest(opts({ fills: f }));
+    const { trades } = tradesOf(r, f);
+    const closed = trades.filter((t) => t.exitReason === 'time-stop');
+    expect(closed.length).toBeGreaterThan(0);
+    const closers = new Set(r.attempts.filter((a) => a.closedAccount).map((a) => a.intentId));
+    for (const t of closed) {
+      const refunded = t.rentReturned > 0n;
+      expect(t.rentReturned).toBe(refunded ? t.rentPaid : 0n);
+      if (refunded) expect(t.rentPaid).toBe(FILL_CONFIG.network.tokenAccountRent);
+    }
+    expect(closed.some((t) => t.rentReturned > 0n)).toBe(true);
+    expect(closers.size).toBe(closed.filter((t) => t.rentReturned > 0n).length);
+    const dusty = withClose(1_000_000n, 1_000_000n);
+    const d = runBacktest(opts({ fills: dusty }));
+    expect(d.attempts.some((a) => a.closedAccount)).toBe(false);
+    for (const t of tradesOf(d, dusty).trades) expect(t.rentReturned).toBe(0n);
+  });
+});

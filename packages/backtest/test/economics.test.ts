@@ -61,6 +61,9 @@ describe('all-in expectancy (item 5)', () => {
     expect(e.usd.allInMicro).toBe(1_000_000n);
     expect(e.usd.allInPerFilledTradeMicro).toBe(1_000_000n);
     expect(e.usd.allInPerEntryDecisionMicro).toBe(333_333n);
+    expect(e.usd.allInNoRentRecoveryMicro).toBe(e.usd.allInMicro);
+    const refunded = economics({ trades: [{ ...t, rentPaid: 10_000_000n, rentReturned: 10_000_000n }], stray, entryDecisions: 3, solUsd: SERIES, window: { from: T, to: T + 48 * H }, policy: TRIAL_POLICY, research: RESEARCH_CONFIG });
+    expect(refunded.usd.allInMicro - refunded.usd.allInNoRentRecoveryMicro).toBe(1_000_000n); // 0.01 SOL back at $100
     // Daily returns cover every Melbourne day of the window, failed attempts included, as a share of the bankroll.
     const days = new Map(e.dailyReturns.map((d) => [d.day, d.rNet]));
     expect(days.get('2026-09-20')).toBeCloseTo(2 / 20, 12);

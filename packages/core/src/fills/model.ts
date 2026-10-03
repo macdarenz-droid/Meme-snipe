@@ -68,6 +68,15 @@ export interface FillScenario {
   readonly takeProfit: 'wick' | 'close';
   /** False: token-account rent counts as never returned (conservative). */
   readonly rentRecovery: boolean;
+  /**
+   * The final sell of a token account closes it in the same transaction (atomic sell-and-close). Share of such
+   * transactions whose close succeeds, ppm; a failed close fails the whole transaction (the sell rolls back, the fee is
+   * charged) and the account falls back to sell-only, so its rent stays locked. TEST-2's measured close-success rate
+   * replaces this once it exists.
+   */
+  readonly closeSuccessPpm: bigint;
+  /** Share of token accounts left with dust or an unsolicited token, ppm: they cannot be closed, the rent stays locked. */
+  readonly dustPpm: bigint;
 }
 
 /** Network terms of one attempt. Rent and the escalation ladder are separate (config, policy). */
@@ -128,6 +137,12 @@ export const drawAttempt = (rng: Rng, s: FillScenario, venue: Venue, congested =
   const dropped = mulDiv(PPM - land, s.dropPpm, PPM, 'floor');
   return { landingSlots, fate: u - land < dropped ? 'dropped' : 'fails' };
 };
+
+/** One account-close draw (always taken for a landed final sell, so later draws never depend on the outcome). */
+export const drawCloseSucceeds = (rng: Rng, s: FillScenario): boolean => ppmDraw(rng) < s.closeSuccessPpm;
+
+/** Whether a new token account ends up with dust or an unsolicited token, from a seed per account. */
+export const accountGetsDust = (seed: string, s: FillScenario): boolean => ppmDraw(createRng(`${seed}:dust`)) < s.dustPpm;
 
 /** Lamports an attempt costs: a landed success pays base, priority and tip; a landed failure base and priority; a dropped one nothing. */
 export const attemptFee = (net: FillNetwork, priorityFee: bigint, fate: 'filled' | 'failed' | 'dropped'): bigint => {

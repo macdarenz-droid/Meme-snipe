@@ -48,6 +48,8 @@ export interface Economics {
     readonly conditionalMeanPerTradeMicro: bigint | null;
     readonly allInPerFilledTradeMicro: bigint | null;
     readonly allInPerEntryDecisionMicro: bigint | null;
+    /** The all-in result if no rent ever came back (the no-recovery line). */
+    readonly allInNoRentRecoveryMicro: bigint;
   };
   /** The bankroll (bought as SOL at the start price) and the ops reserve, revalued at the end price. */
   readonly markToMarket: {
@@ -145,6 +147,7 @@ export const economics = (i: EconomicsInput): Economics => {
       conditionalMeanPerTradeMicro: per(tradeNetMicro, n),
       allInPerFilledTradeMicro: per(allInMicro, n),
       allInPerEntryDecisionMicro: per(allInMicro, i.entryDecisions),
+      allInNoRentRecoveryMicro: allInMicro - i.trades.reduce((a, t) => a + toUsd(t.rentReturned, priceAt(i.solUsd, t.closedAt)), 0n),
     },
     markToMarket: {
       startPriceMicro: startPx, endPriceMicro: endPx, bankrollLamports, opsReserveLamports: ops,

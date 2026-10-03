@@ -32,7 +32,7 @@ describe('trades with several positions per entry intent (LEDGER-1b)', () => {
     expect(ids).toEqual([i.positionId, `${i.positionId}.o1`]);
     const rec: AttemptRecord = {
       intentId: i.id, signature: a.signature, purpose: 'entry', mint: i.mint, priorityFee: 20_000n, lastValidBlockHeight: 100n, outcome: 'filled',
-      reason: 'filled', landedSlot: 1n, landedAt: 1_000, fee: 30_000n, fill: late, costs: null, congested: false, exitRetry: 0,
+      reason: 'filled', landedSlot: 1n, landedAt: 1_000, fee: 30_000n, fill: late, costs: null, congested: false, exitRetry: 0, closedAccount: false,
     };
     const run = { attempts: [rec], book, scenario: 'base', symbols: new Map(), endValue: () => 7_000_000n, endedAt: 9_000 } as unknown as RunResult;
     const { trades, stray } = tradesOf(run, FILL_CONFIG);
@@ -68,7 +68,7 @@ describe('one entry, a filled position and a late one', () => {
     expect(Object.keys(book.positions).sort()).toEqual([i.positionId, `${i.positionId}.o2`]);
     const rec = (sig: typeof a1.signature, f: typeof f1, fee: bigint, at: number): AttemptRecord => ({
       intentId: i.id, signature: sig, purpose: 'entry', mint: i.mint, priorityFee: 20_000n, lastValidBlockHeight: 100n, outcome: 'filled',
-      reason: 'filled', landedSlot: 1n, landedAt: at, fee, fill: f, costs: null, congested: false, exitRetry: 0,
+      reason: 'filled', landedSlot: 1n, landedAt: at, fee, fill: f, costs: null, congested: false, exitRetry: 0, closedAccount: false,
     });
     const run = { attempts: [rec(a1.signature, f1, 30_000n, 2_000), rec(a2.signature, f2, 30_000n, 1_000)], book, scenario: 'base', symbols: new Map(), endValue: () => 0n, endedAt: 9_000 } as unknown as RunResult;
     const { trades } = tradesOf(run, FILL_CONFIG);

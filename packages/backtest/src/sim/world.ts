@@ -4,7 +4,7 @@
 // swaps see its impact (market.ts). Results come back to the engine only as feed events, never as return values.
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { type EffectRunner, type Moment, OFF_CHAIN, type Rng } from '../../../core/src/engine/index.ts';
-import { attemptFee, congestedAt, drawAttempt, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
+import { accountGetsDust, attemptFee, congestedAt, drawAttempt, drawCloseSucceeds, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import type { LadderStep } from '../../../core/src/config/index.ts';
 import type { RawAmount, Lamports } from '../../../core/src/units/index.ts';
@@ -33,6 +33,8 @@ export interface AttemptRecord {
   readonly congested: boolean;
   /** Earlier exit attempts on the same position (0 for entries and first exits): the liquidity haircut's multiple. */
   readonly exitRetry: number;
+  /** This filled sell emptied and closed the token account (atomic sell-and-close): its rent came back. */
+  closedAccount: boolean;
 }
 
 export interface WorldDeps {
@@ -59,6 +61,10 @@ export class World implements EffectRunner {
   readonly attempts = new Map<string, AttemptRecord>();
   readonly alerts = new Map<string, number>();
   readonly #exitAttempts = new Map<string, number>();
+  /** Our token balance per mint (one account per mint), from our own fills. */
+  readonly #account = new Map<string, bigint>();
+  /** Accounts that can no longer be closed in a sell (dust, an unsolicited token, a failed close): sell-only. */
+  readonly #sellOnly = new Set<string>();
   #seq = 0;
 
   constructor(deps: WorldDeps) {
@@ -132,7 +138,7 @@ export class World implements EffectRunner {
     const rec: AttemptRecord = {
       intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i),
       lastValidBlockHeight: attempt.lastValidBlockHeight, outcome: 'in_flight', reason: draw.fate,
-      landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null, congested, exitRetry,
+      landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null, congested, exitRetry, closedAccount: false,
     };
     this.attempts.set(signature, rec);
     this.#report(this.#after(now), { type: 'intent', intentId, event: { type: 'send_accepted' } });
@@ -195,7 +201,26 @@ export class World implements EffectRunner {
     const t = { pool: state, fees: track.fees, baseSupply: track.baseSupply, coin: NORMAL, quotedOut: quote.quotedOut, minOut: quote.minOut, slippagePpm: scenario.slippagePpm };
     const x = rec.purpose === 'entry' ? executeBuy(t, quote.inAmount) : executeSell(t, quote.inAmount, BigInt(rec.exitRetry) * scenario.exitRetryHaircutPpm);
     if (!x.ok) return fail(x.reason);
+    const held = this.#account.get(rec.mint) ?? 0n;
+    // A sell of the whole balance closes the account in the same transaction, unless the account is sell-only. Tokens
+    // only: venue accounts and the SOL proceeds are never part of the refund.
+    const closes = rec.purpose === 'exit' && x.paid === held && !this.#sellOnly.has(rec.mint);
+    if (closes && !drawCloseSucceeds(this.#d.rng, scenario)) {
+      // The close fails the transaction: the sell rolls back and the fee is still paid. Later sells are sell-only.
+      this.#sellOnly.add(rec.mint);
+      return fail('close failed');
+    }
     track.shifted.applyOurs(x.after);
+    if (rec.purpose === 'entry') {
+      // A new account may pick up dust or an unsolicited token: it can then never be closed by a sell.
+      if (held === 0n && accountGetsDust(`${this.#d.congestionSeed}:${rec.mint}:${rec.signature}`, scenario)) this.#sellOnly.add(rec.mint);
+      this.#account.set(rec.mint, held + x.out);
+    } else {
+      this.#account.set(rec.mint, held - x.paid);
+      rec.closedAccount = closes;
+      // Emptied without a close: the account stays open (its rent locked) until a later sell-and-close, never here.
+      if (closes) this.#sellOnly.delete(rec.mint);
+    }
     rec.outcome = 'filled';
     rec.reason = 'filled';
     rec.costs = x.costs;
