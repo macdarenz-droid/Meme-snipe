@@ -9,7 +9,8 @@ import { Snipe } from './screens/Snipe.tsx';
 import { Wallet } from './screens/Wallet.tsx';
 import { NavIcon } from './shell/icons.tsx';
 import { Lockup, Mark } from './shell/Logo.tsx';
-import { PauseButton, StatusList } from './shell/Status.tsx';
+import { EMPTY_SESSION } from './screens/types.ts';
+import { modeLabel, PauseButton, StatusList } from './shell/Status.tsx';
 import { ThemeSwitch } from './shell/ThemeSwitch.tsx';
 
 // Dev and preview builds only: SAMPLES is a build-time constant, false in a normal production build, so the import is dropped.
@@ -80,7 +81,7 @@ export function App() {
               ))}
             </ul>
             <div className="rail-foot">
-              <StatusList />
+              <StatusList session={EMPTY_SESSION} />
               <PauseButton />
               <ThemeSwitch />
             </div>
@@ -88,7 +89,7 @@ export function App() {
         ) : (
           <header className="mobile-head">
             <Mark size={22} />
-            <span className="badge badge-neutral">Paper</span>
+            <span className="badge badge-neutral">{modeLabel(EMPTY_SESSION)}</span>
             {screen === 'fixtures' && <SampleMarker />}
             <span className="mobile-status muted small">Not started · No feed</span>
           </header>

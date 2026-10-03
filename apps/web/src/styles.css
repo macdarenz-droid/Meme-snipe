@@ -814,8 +814,11 @@ input {
 }
 
 .calendar-net {
+  max-width: 100%;
+  overflow: hidden;
   font-weight: 600;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 @media (max-width: 599px) {

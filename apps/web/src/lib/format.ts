@@ -1,6 +1,6 @@
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-/** "$1.24", or with sign "+$1.24" / "−$1.24" (true minus sign). */
+/** US dollars with cents; signed adds + or − (true minus sign). */
 export function formatUsd(value: number, signed = false): string {
   const abs = usd.format(Math.abs(value));
   if (!signed) return value < 0 ? `−${abs}` : abs;
@@ -9,12 +9,28 @@ export function formatUsd(value: number, signed = false): string {
   return abs;
 }
 
+const usdWhole = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+const usdCompact = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 });
+
+/** Short form for tight cells: cents below 10, whole dollars below 1,000, then 1.2K, 25K, 1.3M. */
+export function formatUsdCompact(value: number, signed = false): string {
+  const a = Math.abs(value);
+  if (a < 9.995) return formatUsd(value, signed);
+  const abs = a < 999.5 ? usdWhole.format(a) : usdCompact.format(Math.max(a, 1000)).replace(/\.0(?=[KMBT])/, '');
+  if (value < 0) return `\u2212${abs}`;
+  return signed ? `+${abs}` : abs;
+}
+
+export function formatSol(value: number): string {
+  return `${value.toLocaleString('en-US', { maximumFractionDigits: 6 })} SOL`;
+}
+
 export function formatPercent(value: number, digits = 1): string {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
 export function formatPrice(value: number): string {
-  if (value === 0) return '$0';
+  if (value === 0) return formatUsd(0);
   if (value >= 0.01) return `$${value.toFixed(4)}`;
   return `$${value.toPrecision(3)}`;
 }

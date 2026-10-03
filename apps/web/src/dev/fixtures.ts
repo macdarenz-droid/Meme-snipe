@@ -1,10 +1,14 @@
 import type { ResultsView, TradeView } from '../performance/types.ts';
-import type { TokenRowView } from '../screens/types.ts';
+import type { SessionView, TokenRowView, WalletView } from '../screens/types.ts';
 
 /** Build check marker: scripts/check-build.mjs fails if this string reaches dist/. */
 export const FIXTURE_MARKER = 'ZEROED_FIXTURES_DEV_ONLY';
 
 const MONTH = '2026-09';
+// Large on purpose: layouts must hold a scaled-up bankroll and trade size.
+const BANKROLL = 25000;
+const ENTRY = 500;
+const MAX_ENTRY = 1250;
 const FAKE_MINT = (n: number) => `FAKEmint${String(n).padStart(4, '0')}xxxxxxxxxxxxxxxxxxxxxxxxxxxx`;
 
 // Deterministic pseudo-random numbers so screenshots are stable.
@@ -21,8 +25,8 @@ const trades: TradeView[] = Array.from({ length: 34 }, (_, i) => {
   const day = 1 + Math.floor(i * 0.85);
   const opened = new Date(Date.UTC(2026, 8, day, 1 + (i % 9), (i * 7) % 60));
   const hold = 40 + Math.floor(rand() * 1500);
-  const size = i % 5 === 0 ? 5 : 2;
-  const fees = Number((0.04 + rand() * 0.08).toFixed(2));
+  const size = i % 5 === 0 ? MAX_ENTRY : ENTRY;
+  const fees = Number(((0.04 + rand() * 0.08) * (ENTRY / 2)).toFixed(2));
   const gross = Number(((rand() - 0.47) * size * 0.5).toFixed(2));
   const entry = 0.00001 + rand() * 0.0001;
   return {
@@ -55,15 +59,15 @@ for (const t of trades) {
   days.set(date, d);
 }
 
-let equity = 20;
-const equityPoints = [{ at: '2026-09-01T00:00:00.000Z', equityUsd: 20 }].concat(
+let equity = BANKROLL;
+const equityPoints = [{ at: '2026-09-01T00:00:00.000Z', equityUsd: BANKROLL }].concat(
   trades.map((t) => {
     equity = Number((equity + t.netUsd).toFixed(2));
     return { at: t.closedAt, equityUsd: equity };
   }),
 );
 
-let peak = 20;
+let peak = BANKROLL;
 let maxDd = 0;
 for (const p of equityPoints) {
   peak = Math.max(peak, p.equityUsd);
@@ -86,9 +90,9 @@ export const fixtureResults: ResultsView = {
     { label: 'Account rent', usd: Number((fees * 0.06).toFixed(2)) },
   ],
   risk: [
-    { label: 'Open exposure', usedUsd: 2, limitUsd: 5 },
-    { label: 'Daily loss', usedUsd: 1.7, limitUsd: 2 },
-    { label: 'Session loss', usedUsd: 0.6, limitUsd: 4 },
+    { label: 'Open exposure', usedUsd: ENTRY, limitUsd: MAX_ENTRY },
+    { label: 'Daily loss', usedUsd: 425, limitUsd: 500 },
+    { label: 'Session loss', usedUsd: 150, limitUsd: 1000 },
   ],
   stats: { sample: trades.length, minSample: 30, netUsd: net, winRate: wins / trades.length, expectancyUsd: net / trades.length, maxDrawdownUsd: maxDd },
 };
@@ -111,3 +115,25 @@ export const fixtureTokens: TokenRowView[] = Array.from({ length: 8 }, (_, i) =>
   promoted: i === 2,
   dataAgeSeconds: 2 + i * 3,
 }));
+
+export const fixtureSession: SessionView = {
+  mode: 'paper',
+  state: 'running',
+  bankrollUsd: BANKROLL,
+  entryUsd: ENTRY,
+  maxEntryUsd: MAX_ENTRY,
+  maxOpenPositions: 3,
+  dailyLossLimitUsd: 500,
+  sessionLossLimitUsd: 1000,
+  workerConnected: true,
+};
+
+export const fixtureWallet: WalletView = {
+  botAddress: 'FAKEbotWa11etxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+  savedWallet: 'FAKEsavedWa11etxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+  availableUsd: 23812.4,
+  reserveSol: 0.75,
+  lockedSol: 0.0123,
+  openExposureUsd: ENTRY,
+  feesPaidUsd: 612.37,
+};

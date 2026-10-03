@@ -1,13 +1,16 @@
 import { Dot } from '../components/ui.tsx';
+import type { SessionView } from '../screens/types.ts';
+
+export const modeLabel = (s: SessionView) => (s.mode === 'live' ? 'Live' : 'Paper');
 
 /** Until the worker API exists there is no session and no data. */
-export function StatusList() {
+export function StatusList({ session }: { session: SessionView }) {
   return (
     <dl className="status-list">
       <div>
         <dt>Mode</dt>
         <dd>
-          <span className="badge badge-neutral">Paper</span>
+          <span className="badge badge-neutral">{modeLabel(session)}</span>
         </dd>
       </div>
       <div>
