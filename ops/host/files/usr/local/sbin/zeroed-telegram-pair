@@ -13,9 +13,9 @@ lock
 offset="$(cat "$STATE_DIR/tg_offset" 2>/dev/null || echo 0)"
 get_updates() { tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]'; }
 if ! updates="$(get_updates 2>/dev/null)"; then
-  # Re-pairing after the watchdog set its webhook: Telegram refuses getUpdates while one is set. Turn the
-  # webhook off (the watchdog's /pause and /status stop until the next Deploy run sets it again).
-  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the watchdog's Telegram webhook for pairing; run Deploy afterwards to turn it back on." || true
+  # Re-pairing while the watchdog's webhook is set: Telegram refuses getUpdates then. Turn it off for
+  # pairing; it is set again as soon as the pairing succeeds.
+  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the Telegram webhook while pairing; it comes back once paired." || true
   updates="$(get_updates)" || { log "Telegram getUpdates failed."; exit 0; }
 fi
 want="$(cat "$PAIR_CODE_FILE" 2>/dev/null || true)"
@@ -35,6 +35,7 @@ while IFS=$'\t' read -r id date chat kind text; do
     rm -f "$PAIR_CODE_FILE"
     log "Paired with the owner's Telegram chat."
     notify "Paired. Zeroed alerts come to this chat only." || true
+    set_webhook || log "Could not set the Telegram webhook for the watchdog."
     systemctl start zeroed-worker.service || true
   else
     rm -f "$PAIR_CODE_FILE"

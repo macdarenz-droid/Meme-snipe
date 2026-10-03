@@ -791,6 +791,19 @@ new_deploy_code() {
   rm -f "$STATE_DIR/handoff_status"
 }
 
+# set_webhook: points the bot's webhook at the watchdog (its /pause and /status), once paired. Needs the
+# watchdog address and the webhook secret from the last handoff; the secret goes to curl on stdin.
+set_webhook() {
+  paired && [ -s "$CRED_DIR/telegram_webhook_secret" ] || return 0
+  local url
+  url="$(sed -n 's/^WATCHDOG_URL=//p' /etc/zeroed/worker.env 2>/dev/null || true)"
+  [ -n "$url" ] || return 0
+  cred telegram_webhook_secret | {
+    IFS= read -r secret || true
+    cred telegram_bot_token | { IFS= read -r token || true; printf 'url = "%s/bot%s/setWebhook"\ndata-urlencode = "secret_token=%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$secret"; }
+  } | curl -fsS -m 30 -o /dev/null -K - --data-urlencode "url=$url/telegram" --data-urlencode 'allowed_updates=["message"]'
+}
+
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }
 paired() { [ -s "$CRED_DIR/telegram_chat_id" ]; }
 __ZEROED_FILE__
@@ -1022,6 +1035,7 @@ for k in "${API_NAMES[@]}"; do printf '%s' "${v[$k]}" | store_cred "${k,,}"; don
 watchdog="${v[WATCHDOG_URL]:-}"
 if [ -n "$watchdog" ] && [[ "$watchdog" =~ ^https://[A-Za-z0-9.-]+\.workers\.dev$ ]] && [ -n "${v[HEARTBEAT_HMAC_KEY]:-}" ]; then
   printf '%s' "${v[HEARTBEAT_HMAC_KEY]}" | store_cred heartbeat_hmac_key
+  [ -z "${v[TELEGRAM_WEBHOOK_SECRET]:-}" ] || printf '%s' "${v[TELEGRAM_WEBHOOK_SECRET]}" | store_cred telegram_webhook_secret
   printf 'WATCHDOG_URL=%s\n' "$watchdog" > /etc/zeroed/worker.env.new
   chmod 0644 /etc/zeroed/worker.env.new
   mv -f /etc/zeroed/worker.env.new /etc/zeroed/worker.env
@@ -1038,6 +1052,7 @@ if paired; then
   # Rotation: restart the worker (reconcile first) and tell the owner.
   if systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
   notify "Zeroed server: keys replaced (issue $issued). Worker $w." || true
+  set_webhook || log "Could not set the Telegram webhook for the watchdog."
 else
   [ -s "$PAIR_CODE_FILE" ] || new_pair_code
 fi
@@ -1192,9 +1207,9 @@ lock
 offset="$(cat "$STATE_DIR/tg_offset" 2>/dev/null || echo 0)"
 get_updates() { tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]'; }
 if ! updates="$(get_updates 2>/dev/null)"; then
-  # Re-pairing after the watchdog set its webhook: Telegram refuses getUpdates while one is set. Turn the
-  # webhook off (the watchdog's /pause and /status stop until the next Deploy run sets it again).
-  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the watchdog's Telegram webhook for pairing; run Deploy afterwards to turn it back on." || true
+  # Re-pairing while the watchdog's webhook is set: Telegram refuses getUpdates then. Turn it off for
+  # pairing; it is set again as soon as the pairing succeeds.
+  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the Telegram webhook while pairing; it comes back once paired." || true
   updates="$(get_updates)" || { log "Telegram getUpdates failed."; exit 0; }
 fi
 want="$(cat "$PAIR_CODE_FILE" 2>/dev/null || true)"
@@ -1214,6 +1229,7 @@ while IFS=$'\t' read -r id date chat kind text; do
     rm -f "$PAIR_CODE_FILE"
     log "Paired with the owner's Telegram chat."
     notify "Paired. Zeroed alerts come to this chat only." || true
+    set_webhook || log "Could not set the Telegram webhook for the watchdog."
     systemctl start zeroed-worker.service || true
   else
     rm -f "$PAIR_CODE_FILE"
