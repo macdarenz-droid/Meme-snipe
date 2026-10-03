@@ -135,11 +135,19 @@ describe('day-block bootstrap', () => {
     expect(a.days).toBe(3);
     expect(a.lower).toBeLessThanOrEqual(a.upper);
   });
-  test('replicates are rescaled by √(D/(D − 1)) around the estimate (few-days correction)', () => {
-    // Two one-trade days, 0 and 1: raw replicate means are 0, 0.5 or 1; rescaled 0.5 ∓ √2·0.5.
-    const ci = dayBlockMeanInterval([{ day: 'a', rNet: 0 }, { day: 'b', rNet: 1 }], 0.99, 'two', { rng: createRng(1), replicates: 1000 });
-    expect(ci.lower).toBeCloseTo(0.5 - Math.SQRT2 * 0.5, 12);
-    expect(ci.upper).toBeCloseTo(0.5 + Math.SQRT2 * 0.5, 12);
+  test('standard error is the cluster-robust (CR1) one over days', () => {
+    // Days a: [-0.1, 0.3] (sum 0.2, n 2), b: [0.2] (0.2, 1), c: [0, 0.1] (0.1, 2); θ = 0.5/5 = 0.1.
+    // u_d = (S_d − θ·n_d)/N: a 0, b 0.02, c −0.02. SE² = 3/2 · (0 + 0.0004 + 0.0004) = 0.0012.
+    const ci = dayBlockMeanInterval(trades, 0.95, 'two', { rng: createRng(2), replicates: 500 });
+    expect(ci.se).toBeCloseTo(Math.sqrt(0.0012), 14);
+    expect(ci.lower).toBeLessThan(0.1);
+    expect(ci.upper).toBeGreaterThan(0.1);
+  });
+  test('studentized interval is wider than a normal one with few days (t-like tails)', () => {
+    const rng = createRng(9);
+    const few = Array.from({ length: 6 }, (_, d) => Array.from({ length: 10 }, () => ({ day: `d${d}`, rNet: rng.next() - 0.45 }))).flat();
+    const ci = dayBlockMeanInterval(few, 0.95, 'two', { rng: createRng(1), replicates: 4000 });
+    expect((ci.upper - ci.lower) / 2).toBeGreaterThan(1.96 * ci.se);
   });
   test('a constant difference gives a zero-width paired interval', () => {
     const control = trades.map((t) => ({ day: t.day, rNet: t.rNet - 0.04 }));
@@ -153,9 +161,9 @@ describe('day-block bootstrap', () => {
 });
 
 describe('e-process', () => {
-  test('wealth follows Π(1 + λ_t·x_t) with a predictable plug-in bet', () => {
-    const xs = [0.2, 0.1, -0.1, 0.3];
-    const r = bettingEProcess(xs);
+  const perDay = (xs: readonly number[]) => xs.map((rNet, i) => ({ day: `d${String(i).padStart(4, '0')}`, rNet }));
+  test('wealth follows Π(1 + λ_t·x_t) with a predictable plug-in bet, one bet per day', () => {
+    const r = bettingEProcess(perDay([0.2, 0.1, -0.1, 0.3]));
     // t = 1, 2: no history → λ = 0. t = 3: μ̂ = 0.15, mean(x²) = 0.025 → λ = 6 → clipped to 0.5.
     // t = 4: μ̂ = 0.0667, mean(x²) = 0.02 → 3.33 → 0.5.
     expect(r.wealth[0]).toBe(1);
@@ -164,17 +172,30 @@ describe('e-process', () => {
     expect(r.wealth[3]).toBeCloseTo(0.95 * 1.15, 14);
     expect(r.crossedAt).toBeNull();
   });
-  test('never bets on a negative mean and rejects returns below the floor', () => {
-    const r = bettingEProcess([-0.1, -0.2, -0.1, -0.3, 0.5]);
-    expect(r.finalWealth).toBe(1);
-    expect(() => bettingEProcess([-1.2])).toThrow(RangeError);
-    expect(bettingEProcess([-1.2], { lowerBound: -1.5 }).finalWealth).toBe(1);
+  test('bets on the day mean: several trades on a day are one observation', () => {
+    const r = bettingEProcess([
+      { day: 'a', rNet: 0.4 }, { day: 'a', rNet: 0 }, { day: 'b', rNet: 0.1 }, { day: 'c', rNet: -0.3 }, { day: 'c', rNet: 0.1 },
+    ]);
+    expect(r.wealth).toHaveLength(3); // day means 0.2, 0.1, −0.1
+    expect(r.wealth[2]).toBeCloseTo(0.95, 15);
+    expect(() => bettingEProcess([{ day: 'b', rNet: 0 }, { day: 'a', rNet: 0 }])).toThrow(/day order/);
   });
-  test('reverse process crosses on persistent losses', () => {
-    const r = reverseEProcess(Array.from({ length: 60 }, () => -0.2), { cap: 0.3 });
+  test('never bets on a negative mean and rejects returns below the floor', () => {
+    const r = bettingEProcess(perDay([-0.1, -0.2, -0.1, -0.3, 0.5]));
+    expect(r.finalWealth).toBe(1);
+    expect(() => bettingEProcess(perDay([-1.2]))).toThrow(RangeError);
+    expect(() => bettingEProcess([{ day: 'a', rNet: -1.2 }, { day: 'a', rNet: 0.5 }])).toThrow(RangeError); // checked per trade
+    expect(bettingEProcess(perDay([-1.2]), { lowerBound: -1.5 }).finalWealth).toBe(1);
+  });
+  test('reverse process crosses on persistent losses; its cap is limited to (0, 3]', () => {
+    const losses = perDay(Array.from({ length: 60 }, () => -0.2));
+    const r = reverseEProcess(losses, { cap: 0.3 });
     expect(r.crossedAt).not.toBeNull();
     expect(r.maxWealth).toBeGreaterThanOrEqual(20);
-    expect(bettingEProcess(Array.from({ length: 60 }, () => -0.2)).maxWealth).toBe(1);
+    expect(bettingEProcess(losses).maxWealth).toBe(1);
+    expect(() => reverseEProcess(losses, { cap: 30 })).toThrow(/cap must be in \(0, 3\]/);
+    expect(() => reverseEProcess(losses, { cap: 0 })).toThrow(RangeError);
+    expect(reverseEProcess(losses, { cap: 3 }).maxWealth).toBeGreaterThan(1);
   });
 });
 
@@ -207,6 +228,14 @@ describe('Sharpe, PSR, DSR', () => {
     expect(big.dsr).toBeLessThan(small.dsr);
     expect(() => deflatedSharpe(xs, [])).toThrow(RangeError);
     expect(() => deflatedSharpe(xs, [{ trialId: 'a', sharpe: 1, nTrades: 1 }, { trialId: 'a', sharpe: 1, nTrades: 1 }])).toThrow(RangeError);
+  });
+  test('DSR floors V at 1/(T − 1) so near-identical trials still deflate', () => {
+    const rng = createRng(12);
+    const xs = Array.from({ length: 101 }, () => 0.03 + 0.3 * (rng.next() - 0.5) * Math.sqrt(12));
+    const clones = Array.from({ length: 50 }, (_, i) => ({ trialId: `c${i}`, sharpe: 0.1, nTrades: 101 }));
+    const d = deflatedSharpe(xs, clones);
+    expect(d.sharpeVariance).toBeCloseTo(1 / 100, 15);
+    expect(d.benchmarkSharpe).toBeCloseTo(expectedMaxSharpe(50, 1 / 100), 15);
   });
 });
 
@@ -264,9 +293,10 @@ describe('purity and isolation', () => {
     const files = walk(statsDir).filter((f) => f.endsWith('.ts'));
     expect(files.length).toBeGreaterThan(5);
     for (const f of files) {
-      const src = readFileSync(f, 'utf8').replace(/\/\/.*$/gm, '');
-      expect(src, f).not.toMatch(/Date\.now|new Date|Math\.random|performance\.now|\bprocess\.|globalThis|fetch\(|require\(/);
-      for (const m of src.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)) expect(m[1], `${f} imports ${m[1]}`).toMatch(/^\.\/[\w-]+\.ts$/);
+      const src = readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+      expect(src, f).not.toMatch(/Date\.now|new Date|Math\.random|\bperformance\b|\bprocess\.|globalThis|fetch\(|require\(/);
+      // Local files, plus the pure exact-units module (basis-point scale).
+      for (const m of src.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)) expect(m[1], `${f} imports ${m[1]}`).toMatch(/^(?:\.\/[\w-]+\.ts|\.\.\/units\/index\.ts)$/);
       expect(src, f).not.toMatch(/\bimport\s*\(/);
     }
   });

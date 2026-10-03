@@ -6,7 +6,10 @@
 // sell-side fees and price impact at the real size (computed by the fill model, not here). `null` means it cannot be
 // sold at that slot (pool drained, transfer blocked), which is an executable value of 0.
 // Barriers are on that value relative to the entry cost (all buy-side costs included), so they are net of costs.
+// The path lists the slots where the value changed: a slot with no point carries the last recorded value. Before the
+// first point after the entry the value is unknown, so an exit that would fill there is censored, not unsellable.
 
+import { BPS_DENOMINATOR } from '../units/index.ts';
 import type { Rng } from './rng.ts';
 
 export interface ValuePoint {
@@ -18,10 +21,10 @@ export interface ValuePoint {
 export interface BarrierConfig {
   /** Identifier stored with the label, e.g. "tp30_sl15_h15m". Every configuration counts as a trial. */
   readonly cfgId: string;
-  /** Upper barrier as a fraction of entry cost, e.g. 0.30 for +30%. */
-  readonly takeProfit: number;
-  /** Lower barrier as a fraction of entry cost, e.g. 0.15 for −15%. */
-  readonly stopLoss: number;
+  /** Upper barrier in basis points of entry cost, e.g. 3000 for +30%. Compared exactly in bigint. */
+  readonly takeProfitBps: number;
+  /** Lower barrier in basis points of entry cost, e.g. 1500 for −15% (1..10,000). Compared exactly in bigint. */
+  readonly stopLossBps: number;
   /** Vertical barrier: slots after the entry fill. */
   readonly horizonSlots: number;
 }
@@ -84,8 +87,9 @@ export interface TripleBarrierLabel {
 
 const validate = (input: LabelInput): void => {
   const { barrier, exit, entry, path } = input;
-  if (!(barrier.takeProfit > 0) || !(barrier.stopLoss > 0 && barrier.stopLoss <= 1)) {
-    throw new RangeError('takeProfit must be > 0 and stopLoss in (0, 1]');
+  if (!Number.isSafeInteger(barrier.takeProfitBps) || barrier.takeProfitBps < 1
+    || !Number.isInteger(barrier.stopLossBps) || barrier.stopLossBps < 1 || barrier.stopLossBps > Number(BPS)) {
+    throw new RangeError('takeProfitBps must be an integer >= 1 and stopLossBps an integer in 1..10000');
   }
   if (!Number.isInteger(barrier.horizonSlots) || barrier.horizonSlots < 1) throw new RangeError('horizonSlots must be an integer >= 1');
   if (!Number.isInteger(exit.latencySlots) || exit.latencySlots < 0) throw new RangeError('latencySlots must be an integer >= 0');
@@ -114,6 +118,7 @@ const asOf = (path: readonly ValuePoint[], slot: number): ValuePoint | undefined
 };
 
 const ratio = (num: bigint, den: bigint): number => Number(num) / Number(den);
+const BPS = BPS_DENOMINATOR;
 
 export const labelTripleBarrier = (input: LabelInput): TripleBarrierLabel => {
   validate(input);
@@ -134,18 +139,22 @@ export const labelTripleBarrier = (input: LabelInput): TripleBarrierLabel => {
     nExitAttempts: 0, yMeta: null, ySevere: null, censored: true,
   });
 
-  // First touch. Upper: value ≥ cost·(1 + tp). Lower: value ≤ cost·(1 − sl); an unsellable slot counts as value 0.
+  // First touch, decided exactly in bigint (no floats on the barrier path; review of PR #8 found 52 of 670
+  // exact-boundary hits missed by a float ratio). Upper: value·10⁴ ≥ cost·(10⁴ + tp). Lower: value·10⁴ ≤ cost·(10⁴ − sl).
+  // An unsellable slot counts as value 0, which is always at or below the lower barrier.
+  const upper = cost * (BPS + BigInt(barrier.takeProfitBps));
+  const lower = cost * (BPS - BigInt(barrier.stopLossBps));
   let yTb: 1 | -1 | 0 | null = null;
   let touchSlot: number | null = null;
   for (const p of path) {
     if (p.slot > vertical) break;
-    const v = p.value === null ? -1 : ratio(p.value, cost) - 1;
-    if (v >= barrier.takeProfit) {
+    const scaled = (p.value ?? 0n) * BPS;
+    if (scaled >= upper) {
       yTb = 1;
       touchSlot = p.slot;
       break;
     }
-    if (v <= -barrier.stopLoss) {
+    if (scaled <= lower) {
       yTb = -1;
       touchSlot = p.slot;
       break;
@@ -168,7 +177,9 @@ export const labelTripleBarrier = (input: LabelInput): TripleBarrierLabel => {
     attempts++;
     exitSlot = slot;
     const point = asOf(path, slot);
-    const sellable = point !== undefined && point.value !== null;
+    // No value recorded since the entry: the state at this slot is unknown, not unsellable.
+    if (point === undefined) return censored();
+    const sellable = point.value !== null;
     if (sellable && rng.next() >= exit.failProbability) {
       exitValue = point.value;
       break;

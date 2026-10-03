@@ -61,14 +61,17 @@ export interface DeflatedSharpe {
 
 /**
  * Deflated Sharpe ratio of the selected trial's returns against the whole registry: N is the registry size and V
- * the variance of the registry's Sharpe ratios. Every registered trial counts; none may be left out.
+ * the variance of the registry's Sharpe ratios, floored at 1/(T − 1). Every registered trial counts; none may be left out.
  */
 export const deflatedSharpe = (selectedReturns: readonly number[], registry: readonly TrialRecord[]): DeflatedSharpe => {
   if (registry.length === 0) throw new RangeError('the experiment registry is empty');
   const ids = new Set(registry.map((t) => t.trialId));
   if (ids.size !== registry.length) throw new RangeError('the experiment registry has duplicate trial ids');
   for (const t of registry) if (!Number.isFinite(t.sharpe)) throw new RangeError(`trial ${t.trialId} has no finite Sharpe`);
-  const sharpeVariance = registry.length > 1 ? variance(registry.map((t) => t.sharpe)) : 0;
+  // Floor V at the sampling variance of a Sharpe ratio under the null, 1/(T − 1): near-identical trials would otherwise
+  // give V ≈ 0 and remove the deflation (review of PR #8). The floor only makes the DSR stricter.
+  const sampleVar = registry.length > 1 ? variance(registry.map((t) => t.sharpe)) : 0;
+  const sharpeVariance = Math.max(sampleVar, 1 / (selectedReturns.length - 1));
   const benchmarkSharpe = expectedMaxSharpe(registry.length, sharpeVariance);
   return {
     dsr: probabilisticSharpe(selectedReturns, benchmarkSharpe),

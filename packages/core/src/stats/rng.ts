@@ -7,13 +7,22 @@ export interface Rng {
   next(): number;
 }
 
+// splitmix32 constants (golden-ratio increment and the murmur3 finalizer multipliers) and powers of two for the
+// 53-bit double. Mathematical constants of the generator, not amounts.
+const GOLDEN_GAMMA = 0x9e3779b9;
+const MIX_1 = 0x85ebca6b;
+const MIX_2 = 0xc2b2ae35;
+const TWO_POW_26 = 67108864;
+const TWO_POW_32 = 4294967296;
+const TWO_POW_53 = 9007199254740992;
+
 const splitmix32 = (seed: number): (() => number) => {
   let s = seed >>> 0;
   return () => {
-    s = (s + 0x9e3779b9) >>> 0;
+    s = (s + GOLDEN_GAMMA) >>> 0;
     let z = s;
-    z = Math.imul(z ^ (z >>> 16), 0x85ebca6b) >>> 0;
-    z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35) >>> 0;
+    z = Math.imul(z ^ (z >>> 16), MIX_1) >>> 0;
+    z = Math.imul(z ^ (z >>> 13), MIX_2) >>> 0;
     return (z ^ (z >>> 16)) >>> 0;
   };
 };
@@ -22,7 +31,7 @@ const rotl = (x: number, k: number): number => ((x << k) | (x >>> (32 - k))) >>>
 
 export const createRng = (seed: number): Rng => {
   if (!Number.isSafeInteger(seed)) throw new RangeError(`seed must be a safe integer, got ${seed}`);
-  const init = splitmix32((seed ^ Math.floor(seed / 2 ** 32)) >>> 0);
+  const init = splitmix32((seed ^ Math.floor(seed / TWO_POW_32)) >>> 0);
   let a = init();
   let b = init();
   let c = init();
@@ -43,7 +52,7 @@ export const createRng = (seed: number): Rng => {
     return result;
   };
   return {
-    next: () => ((nextU32() >>> 5) * 67108864 + (nextU32() >>> 6)) / 9007199254740992,
+    next: () => ((nextU32() >>> 5) * TWO_POW_26 + (nextU32() >>> 6)) / TWO_POW_53,
   };
 };
 

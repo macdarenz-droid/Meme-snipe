@@ -9,7 +9,7 @@ const make = (path: ValuePoint[], over: Partial<LabelInput> = {}): LabelInput =>
   entry: { filled: true, slot: 100, cost, failedCost: 0n },
   path,
   observedThroughSlot: 1000,
-  barrier: { cfgId: 'tp30_sl15_h50', takeProfit: 0.3, stopLoss: 0.15, horizonSlots: 50 },
+  barrier: { cfgId: 'tp30_sl15_h50', takeProfitBps: 3000, stopLossBps: 1500, horizonSlots: 50 },
   exit: { latencySlots: 2, retrySlots: 3, maxAttempts: 4, failProbability: 0, failedAttemptCost: fee },
   rng: createRng(1),
   ...over,
@@ -95,10 +95,53 @@ describe('triple-barrier labeller', () => {
     expect(miss.rNet).toBeCloseTo(-0.006, 15);
   });
 
+  test('exact barrier hits touch; one lamport short does not (bigint, no float rounding)', () => {
+    // Every (cost, bps) pair whose barrier value is a whole number of lamports, plus the review's case.
+    const costs = [700n, 10_000n, 20_000n, 70_000n, 1_230_000n, 999_990_000n, 1_000_000_000n];
+    const bpsList = [1, 7, 15, 150, 1500, 2500, 3000, 4999, 7000, 10_000, 25_000];
+    let cases = 0;
+    let floatMisses = 0;
+    for (const c of costs) {
+      for (const bps of bpsList) {
+        for (const side of ['up', 'down'] as const) {
+          if (side === 'down' && bps > 10_000) continue;
+          const num = c * (10_000n + (side === 'up' ? BigInt(bps) : -BigInt(bps)));
+          if (num % 10_000n !== 0n) continue;
+          const exact = num / 10_000n;
+          const barrier = side === 'up'
+            ? { cfgId: 'b', takeProfitBps: bps, stopLossBps: 10_000, horizonSlots: 50 }
+            : { cfgId: 'b', takeProfitBps: 1_000_000, stopLossBps: bps, horizonSlots: 50 };
+          const entry = { filled: true, slot: 100, cost: c, failedCost: 0n };
+          const hit = labelTripleBarrier(make([{ slot: 101, value: exact }], { entry, barrier }));
+          expect(hit.yTb, `${side} cost ${c} bps ${bps}`).toBe(side === 'up' ? 1 : -1);
+          const nearValue = side === 'up' ? exact - 1n : exact + 1n;
+          if (side === 'down' && exact === 0n) continue;
+          const near = labelTripleBarrier(make([{ slot: 101, value: nearValue }], { entry, barrier }));
+          expect(near.yTb, `${side} cost ${c} bps ${bps} one lamport short`).toBe(0);
+          // What a float ratio would have said for the exact hit.
+          const r = Number(exact) / Number(c) - 1;
+          if (side === 'up' ? !(r >= bps / 10_000) : !(r <= -bps / 10_000)) floatMisses++;
+          cases++;
+        }
+      }
+    }
+    expect(cases).toBeGreaterThanOrEqual(52);
+    expect(floatMisses).toBeGreaterThan(0); // the float comparison this replaces got some of these wrong
+    // The review's example: cost 700, value 805, +15% → 805/700 − 1 = 0.1499999999999999 in floats.
+    expect(labelTripleBarrier(make([{ slot: 101, value: 805n }], { entry: { filled: true, slot: 100, cost: 700n, failedCost: 0n }, barrier: { cfgId: 'r', takeProfitBps: 1500, stopLossBps: 1500, horizonSlots: 50 } })).yTb).toBe(1);
+  });
+
+  test('an exit before any recorded value is censored, not unsellable', () => {
+    const l = labelTripleBarrier(make([v(160, 1.0)], { barrier: { cfgId: 'v', takeProfitBps: 3000, stopLossBps: 1500, horizonSlots: 20 } }));
+    // Vertical barrier at 120 with no point yet: exit at 122 has no known value.
+    expect(l).toMatchObject({ censored: true, rNet: null, blocked: false });
+  });
+
   test('invalid input is rejected', () => {
+    expect(() => labelTripleBarrier(make([], { barrier: { cfgId: 'x', takeProfitBps: 0.5, stopLossBps: 1500, horizonSlots: 10 } }))).toThrow(RangeError);
     expect(() => labelTripleBarrier(make([v(100, 1)]))).toThrow(RangeError); // not after the entry
     expect(() => labelTripleBarrier(make([v(105, 1), v(104, 1)]))).toThrow(RangeError);
     expect(() => labelTripleBarrier(make([v(1001, 1)]))).toThrow(RangeError); // after observedThroughSlot
-    expect(() => labelTripleBarrier(make([], { barrier: { cfgId: 'x', takeProfit: 0.3, stopLoss: 1.5, horizonSlots: 10 } }))).toThrow(RangeError);
+    expect(() => labelTripleBarrier(make([], { barrier: { cfgId: 'x', takeProfitBps: 3000, stopLossBps: 15000, horizonSlots: 10 } }))).toThrow(RangeError);
   });
 });

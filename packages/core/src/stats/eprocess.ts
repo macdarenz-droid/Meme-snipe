@@ -4,6 +4,14 @@
 // P(sup_t K_t ≥ 1/α) ≤ α: the wealth can be checked after every trade without inflating the false-positive rate
 // (Waudby-Smith & Ramdas, JRSS-B 86(1), 2024; Ramdas, Grünwald, Vovk & Shafer, Statistical Science 38(4), 2023).
 // Bet: the plug-in λ_t = clip(μ̂/(σ̂² + μ̂²), 0, maxBet) = clip(μ̂ / mean(Y²), 0, maxBet) from past data (quant.md §5.4).
+//
+// One bet per calendar day, on the day's mean return (review of PR #8). Trades on the same day share a market shock,
+// so an earlier trade predicts a later one that day and E[Y_t | past trades] ≤ 0 fails for per-trade bets: at zero edge
+// with intra-day ρ = 0.05 and 20 trades a day the per-trade process crossed 20 in 16% of runs. With one bet per day the
+// condition needed is E[day mean | previous days] ≤ 0, which holds under H₀ when days are independent of each other.
+// A day mean of returns ≥ −1 is itself ≥ −1, so the bound carries over.
+
+import type { DayReturn } from './bootstrap.ts';
 
 export interface EProcessOptions {
   /** Wealth that counts as evidence (default 20, i.e. α = 0.05). */
@@ -15,11 +23,11 @@ export interface EProcessOptions {
 }
 
 export interface EProcessResult {
-  /** Wealth after each observation. */
+  /** Wealth after each day. */
   readonly wealth: readonly number[];
   readonly finalWealth: number;
   readonly maxWealth: number;
-  /** 1-based count of observations at which wealth first reached the threshold, or null. */
+  /** 1-based count of days at which wealth first reached the threshold, or null. */
   readonly crossedAt: number | null;
   readonly threshold: number;
 }
@@ -53,35 +61,60 @@ const run = (ys: readonly number[], opts: EProcessOptions): EProcessResult => {
   return { wealth, finalWealth: Math.exp(logW), maxWealth: Math.exp(maxLogW), crossedAt, threshold };
 };
 
+/** Day means in order. Days must arrive grouped and in non-decreasing key order (the order trades happened). */
+const dayMeans = (trades: readonly DayReturn[], map: (x: number) => number): number[] => {
+  const out: number[] = [];
+  let day: string | null = null;
+  let s = 0;
+  let n = 0;
+  for (const t of trades) {
+    if (!Number.isFinite(t.rNet)) throw new RangeError(`return must be finite, got ${t.rNet}`);
+    if (day !== null && t.day < day) throw new RangeError(`trades must be in day order: ${t.day} after ${day}`);
+    if (t.day !== day) {
+      if (n > 0) out.push(s / n);
+      day = t.day;
+      s = 0;
+      n = 0;
+    }
+    s += map(t.rNet);
+    n++;
+  }
+  if (n > 0) out.push(s / n);
+  return out;
+};
+
 /**
  * Evidence that the mean net return is above zero. Returns must be ≥ `lowerBound` (default −1: a net return
- * cannot lose more than the notional); they are scaled by 1/|lowerBound| so Y ≥ −1.
+ * cannot lose more than the notional); they are scaled by 1/|lowerBound| so Y ≥ −1. One bet per day.
  */
 export const bettingEProcess = (
-  returns: readonly number[],
+  trades: readonly DayReturn[],
   opts: EProcessOptions & { readonly lowerBound?: number } = {},
 ): EProcessResult => {
   const lowerBound = opts.lowerBound ?? -1;
   if (!(lowerBound < 0)) throw new RangeError(`lowerBound must be < 0, got ${lowerBound}`);
-  return run(returns.map((x) => x / -lowerBound), opts);
-};
-
-/**
- * Evidence that the mean net return has fallen below zero (decay detector for demotion; quant.md §5.4).
- * Bets on −X, which needs an upper bound: returns are capped at `cap` (default +3, the +300% cap of quant.md §5.3).
- * Capping can only lower the returns, so it makes demotion more likely, never less.
- */
-export const reverseEProcess = (
-  returns: readonly number[],
-  opts: EProcessOptions & { readonly cap?: number } = {},
-): EProcessResult => {
-  const cap = opts.cap ?? 3;
-  if (!(cap > 0) || !Number.isFinite(cap)) throw new RangeError(`cap must be a finite number > 0, got ${cap}`);
   return run(
-    returns.map((x) => {
-      if (!Number.isFinite(x)) throw new RangeError(`return must be finite, got ${x}`);
-      return -Math.min(x, cap) / cap;
+    dayMeans(trades, (x) => {
+      if (x < lowerBound) throw new RangeError(`a return of ${x} is below the bound ${lowerBound}`);
+      return x / -lowerBound;
     }),
     opts,
   );
+};
+
+/** Largest cap the reverse e-process accepts (+300%, quant.md §5.3). A larger cap would make demotion almost blind. */
+export const MAX_RETURN_CAP = 3;
+
+/**
+ * Evidence that the mean net return has fallen below zero (decay detector for demotion; quant.md §5.4).
+ * Bets on −X, which needs an upper bound: returns are capped at `cap` (0 < cap ≤ 3, default 3). Capping can only lower
+ * the returns, so it makes demotion more likely, never less. One bet per day.
+ */
+export const reverseEProcess = (
+  trades: readonly DayReturn[],
+  opts: EProcessOptions & { readonly cap?: number } = {},
+): EProcessResult => {
+  const cap = opts.cap ?? MAX_RETURN_CAP;
+  if (!(cap > 0 && cap <= MAX_RETURN_CAP)) throw new RangeError(`cap must be in (0, ${MAX_RETURN_CAP}], got ${cap}`);
+  return run(dayMeans(trades, (x) => -Math.min(x, cap) / cap), opts);
 };

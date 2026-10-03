@@ -20,7 +20,7 @@ export interface PboResult {
   readonly logits: readonly number[];
 }
 
-const performance = (col: readonly number[], rows: readonly number[], metric: 'sharpe' | 'mean'): number => {
+const score = (col: readonly number[], rows: readonly number[], metric: 'sharpe' | 'mean'): number => {
   let s = 0;
   for (const r of rows) s += col[r]!;
   const m = s / rows.length;
@@ -84,13 +84,13 @@ export const probabilityOfBacktestOverfitting = (trials: readonly (readonly numb
     let best = 0;
     let bestPerf = -Infinity;
     for (let j = 0; j < n; j++) {
-      const p = performance(trials[j]!, isRows, metric);
+      const p = score(trials[j]!, isRows, metric);
       if (p > bestPerf) {
         bestPerf = p;
         best = j;
       }
     }
-    const oos = trials.map((col) => performance(col, oosRows, metric));
+    const oos = trials.map((col) => score(col, oosRows, metric));
     const target = oos[best]!;
     // Rank 1 = worst. Ties rank the winner at the bottom of its tie group (counts against it).
     let rank = 1;

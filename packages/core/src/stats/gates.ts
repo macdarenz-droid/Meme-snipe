@@ -4,13 +4,14 @@
 // (loosening needs the owner and a change to the defaults here).
 
 import { dayBlockMeanDiffInterval, dayBlockMeanInterval, type DayReturn } from './bootstrap.ts';
-import { g2Rule, type G2PowerResult } from './g2rule.ts';
-import { burnHoldouts, type HoldoutRegistry } from './holdout.ts';
+import { g2Rule, MIN_DAYS, type G2PowerResult } from './g2rule.ts';
+import { burnHoldout, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
 import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
 import { mean, median, sd } from './descriptive.ts';
-import { bettingEProcess, reverseEProcess } from './eprocess.ts';
+import { bettingEProcess, MAX_RETURN_CAP, reverseEProcess } from './eprocess.ts';
 import { probabilityOfBacktestOverfitting } from './pbo.ts';
+import { nPower } from './power.ts';
 import { meanPredictiveInterval, type SampleSummary } from './predictive.ts';
 import type { Rng } from './rng.ts';
 import { deflatedSharpe, type TrialRecord } from './sharpe.ts';
@@ -65,7 +66,7 @@ const tighten = <T extends Record<string, number>>(
   for (const key of Object.keys(overrides ?? {}) as (keyof T & string)[]) {
     const v = overrides![key];
     if (v === undefined) continue;
-    if (!(key in defaults)) throw new RangeError(`${gate}: unknown threshold "${key}"`);
+    if (!Object.hasOwn(defaults, key)) throw new RangeError(`${gate}: unknown threshold "${key}"`);
     if (!Number.isFinite(v)) throw new RangeError(`${gate}: threshold "${key}" must be finite`);
     const d = defaults[key] as number;
     const looser = directions[key] === 'min' ? v < d : v > d;
@@ -90,9 +91,9 @@ const G1_DIR = {
 export const G2_DEFAULTS = { minTradesFloor: 300, familyAlpha: 0.05, minControlSeeds: 200 };
 const G2_DIR = { minTradesFloor: 'min', familyAlpha: 'max', minControlSeeds: 'min' } as const;
 
-export const G3_DEFAULTS = { minHours: 48, fillDiffMedianMax: 0.005, minPaperTradesForMean: 30 };
+export const G3_DEFAULTS = { minHours: 48, fillDiffMedianMax: 0.005, minPaperTradesForMean: 30, liveOnlyVetoRateMax: 0.1 };
 // Fewer paper trades needed before the mean is checked means the check applies more often: stricter.
-const G3_DIR = { minHours: 'min', fillDiffMedianMax: 'max', minPaperTradesForMean: 'max' } as const;
+const G3_DIR = { minHours: 'min', fillDiffMedianMax: 'max', minPaperTradesForMean: 'max', liveOnlyVetoRateMax: 'max' } as const;
 
 export const G4_DEFAULTS = { minTrades: 30, firstAttemptFailRateMax: 0.1, liveMinusPaperMedianMin: -0.01 };
 const G4_DIR = { minTrades: 'min', firstAttemptFailRateMax: 'max', liveMinusPaperMedianMin: 'min' } as const;
@@ -100,12 +101,13 @@ const G4_DIR = { minTrades: 'min', firstAttemptFailRateMax: 'max', liveMinusPape
 export const G5_DEFAULTS = { minTrades: 100, eWealthMin: 10, impactMax: 0.005, quietDays: 7 };
 const G5_DIR = { minTrades: 'min', eWealthMin: 'min', impactMax: 'max', quietDays: 'min' } as const;
 
-export const DEMOTION_DEFAULTS = { reverseWealth: 20, miscoverageFactor: 2, blockedExitsMax: 2, blockedWindowDays: 30 };
+export const DEMOTION_DEFAULTS = { reverseWealth: 20, miscoverageFactor: 2, blockedExitsMax: 2, blockedWindowDays: 30, returnCapMax: MAX_RETURN_CAP };
 // Demotion triggers are tightened by firing sooner: lower wealth, lower factor, fewer blocked exits, a longer window.
-const DEMOTION_DIR = { reverseWealth: 'max', miscoverageFactor: 'max', blockedExitsMax: 'max', blockedWindowDays: 'min' } as const;
+const DEMOTION_DIR = { reverseWealth: 'max', miscoverageFactor: 'max', blockedExitsMax: 'max', blockedWindowDays: 'min', returnCapMax: 'max' } as const;
 
 /** Net returns can fall slightly below −100% (failed-attempt fees on a blocked exit); the e-process needs a fixed floor. */
 export const RETURN_FLOOR = -1.1;
+
 const MS_PER_DAY = 86_400_000;
 const COVERAGE_WINDOW = 100;
 
@@ -206,8 +208,11 @@ export interface G1Input {
   readonly selectedTrialId: string;
   /** Every trial ever evaluated (experiment registry). */
   readonly registry: readonly TrialRecord[];
-  /** Per-trial returns per time row (e.g. per day), same rows for every trial, for PBO. */
-  readonly pboMatrix: readonly (readonly number[])[];
+  /**
+   * Per-trial returns per time row (e.g. per day) for PBO, keyed by trialId. Must hold exactly the registry's trials
+   * (a subset would lower PBO), every one with the same rows.
+   */
+  readonly pboMatrix: Readonly<Record<string, readonly number[]>>;
   readonly pboBlocks?: number;
   readonly modelUsed: boolean;
   readonly calibrationSlope: number | null;
@@ -225,7 +230,7 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
     input.rulesRegisteredBeforeHoldout ? 'rules registered before the holdout' : 'rules not registered before the holdout was opened');
   const returns = input.trades.map((t) => t.rNet);
   const days = new Set(input.trades.map((t) => t.day)).size;
-  if (!c.add('sample', input.trades.length >= 3 && days >= 2, `${input.trades.length} trades on ${days} days (need >= 3 trades on >= 2 days)`)) {
+  if (!c.add('sample', input.trades.length >= 3 && days >= MIN_DAYS, `${input.trades.length} trades on ${days} days (need >= ${MIN_DAYS} days)`)) {
     return result('G1', c, statusWithSample(c, 'sample'), metrics);
   }
   const opts = { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) };
@@ -247,8 +252,14 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
       c.add('DSR', false, (e as Error).message);
     }
   }
-  try {
-    const p = probabilityOfBacktestOverfitting(input.pboMatrix, input.pboBlocks === undefined ? {} : { blocks: input.pboBlocks });
+  const ids = input.registry.map((t) => t.trialId);
+  const keys = Object.keys(input.pboMatrix);
+  const missing = ids.filter((id) => !Object.hasOwn(input.pboMatrix, id));
+  const extra = keys.filter((k) => !ids.includes(k));
+  if (missing.length > 0 || extra.length > 0) {
+    c.add('PBO', false, `PBO matrix must hold exactly the registry's ${ids.length} trials (missing ${missing.length}: ${missing.slice(0, 5).join(', ')}; not in registry ${extra.length}: ${extra.slice(0, 5).join(', ')})`);
+  } else try {
+    const p = probabilityOfBacktestOverfitting(ids.map((id) => input.pboMatrix[id]!), input.pboBlocks === undefined ? {} : { blocks: input.pboBlocks });
     metrics.pbo = p.pbo;
     c.add('PBO', p.pbo <= th.pboMax, `PBO ${fmt(p.pbo)} over ${p.combinations} splits (need <= ${th.pboMax})`);
   } catch (e) {
@@ -303,13 +314,15 @@ export interface G2Universe {
   /** The single pre-registered configuration; must match the holdout registry entry. */
   readonly configId: string;
   readonly holdoutId: string;
-  /** Holdout trades of that configuration, in decision-time order. */
+  /** Hash of the sealed ledger file the trades below were read from (the caller hashes the file it scores). */
+  readonly ledgerHash: string;
+  /** Holdout trades from the sealed ledger, in decision-time order. Read only after the size check passes. */
   readonly trades: readonly TradeOutcome[];
   /** The random control S0 on the same eligible candidates and days, one run per seed. */
   readonly controlRuns: readonly (readonly DayReturn[])[];
-  /** Walk-forward trades of the same configuration (for the reported predictive interval). */
+  /** Walk-forward trades of the same configuration: σ̂ for the closed-form check and the reported predictive interval. */
   readonly walkForward: readonly DayReturn[];
-  /** n_power from `simulateG2Power` on the walk-forward data (never from the holdout). */
+  /** n_power from `simulateG2Power` on the walk-forward data with the registry's family size. */
   readonly power: G2PowerResult;
 }
 
@@ -318,6 +331,8 @@ export interface G2Input {
   readonly scenario: string;
   readonly registry: HoldoutRegistry;
   readonly universes: readonly G2Universe[];
+  /** The injected clock's time, recorded as the seal's opening time. */
+  readonly nowMs: number;
   readonly rng: Rng;
   readonly replicates?: number;
 }
@@ -326,8 +341,9 @@ export interface G2UniverseResult {
   readonly universe: string;
   readonly status: GateStatus;
   readonly requiredTrades: number;
-  readonly trades: number;
-  /** Holm-adjusted level the universe was tested at; null when it did not enter (too few trades). */
+  /** Entries from the registry's sealed counts. */
+  readonly entries: number;
+  /** Holm-adjusted level the universe was tested at; null when it did not enter. */
   readonly level: number | null;
   readonly p: number | null;
   readonly mean: number | null;
@@ -338,61 +354,90 @@ export interface G2UniverseResult {
 
 export interface G2Result extends GateResult {
   readonly universes: readonly G2UniverseResult[];
-  /** The registry after this run: every holdout that was scored is burned. Store it before using the result. */
+  /** The registry after this run (opened and burned holdouts). Store it whatever the result. */
   readonly registry: HoldoutRegistry;
 }
 
 /**
- * G2 Holdout (proof, owner rule 6). Per universe at its Holm-adjusted level: n ≥ max(300, n_power), the
- * day-block-bootstrap CI of mean net return above zero, and the paired CI against S0 above zero. Size is checked from
- * trade counts before any outcome is read; a short universe is "not proven", is not scored and is not burned.
- * Every universe that is scored is burned; a second look is refused. Passes when at least one universe passes.
+ * G2 Holdout (proof, owner rule 6), ARCHITECTURE.md §14. Per universe at its Holm-adjusted level: n ≥ max(300, n_power)
+ * (n_power simulated; the closed form is a lower-bound check), the day-block CI of mean net return above 0 and the paired
+ * CI against S0 above 0. Size comes from the sealed counts; a short universe stays sealed and is "not proven". Every
+ * entering seal is verified first (hash, configuration, entry count) and only then opened; any mismatch burns that
+ * holdout and fails the gate without opening the others. A burned holdout fails on integrity. Passes when at least one
+ * universe passes; the predictive interval is a note, not a check.
  */
 export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>): G2Result => {
   const th = tighten('G2', G2_DEFAULTS, G2_DIR, overrides);
   const c = new Checks();
   const notes: string[] = [];
-  const refuse = (): G2Result => ({ ...result('G2', c, 'fail', {}), universes: [], registry: input.registry });
+  let registry = input.registry;
+  const failWith = (): G2Result => ({ ...result('G2', c, 'fail', {}), universes: [], registry });
+  const level0 = th.familyAlpha / registry.familySize;
 
-  // Integrity: nothing is scored unless every universe is pre-registered, unscored and unique.
+  // Integrity that needs no outcome and changes nothing.
   c.add('scenario', input.scenario === 'conservative', `scenario "${input.scenario}" (need "conservative")`);
-  c.add('universes', input.universes.length > 0, `${input.universes.length} universes`);
+  c.add('universes', input.universes.length > 0 && input.universes.length <= registry.familySize,
+    `${input.universes.length} universes (need 1..${registry.familySize}, the family size fixed in the registry)`);
   const seen = new Set<string>();
   for (const u of input.universes) {
-    const entry = input.registry.find((e) => e.holdoutId === u.holdoutId);
     const tag = `holdout ${u.universe}`;
     if (seen.has(u.universe)) c.add(tag, false, `universe ${u.universe} appears twice: one configuration per universe`);
     seen.add(u.universe);
-    if (!entry) c.add(tag, false, `holdout ${u.holdoutId} is not registered`);
-    else if (entry.burned) c.add(tag, false, `holdout ${u.holdoutId} is burned: it was already scored, a second look is refused`);
-    else if (entry.universe !== u.universe || entry.configId !== u.configId) {
-      c.add(tag, false, `holdout ${u.holdoutId} is registered for ${entry.universe}/${entry.configId}, not ${u.universe}/${u.configId}`);
-    }
+    const e = registry.entries.find((x) => x.holdoutId === u.holdoutId);
+    if (!e) c.add(tag, false, `holdout ${u.holdoutId} is not registered`);
+    else if (e.burned) c.add(tag, false, `holdout ${u.holdoutId} is burned (${e.burnReason}): integrity`);
+    else if (e.universe !== u.universe) c.add(tag, false, `holdout ${u.holdoutId} belongs to ${e.universe}`);
+    else if (e.seal !== 'sealed') c.add(tag, false, `holdout ${u.holdoutId} is ${e.seal}, not sealed`);
     c.add(`S0 ${u.universe}`, u.controlRuns.length >= th.minControlSeeds, `${u.controlRuns.length} S0 seeds (need >= ${th.minControlSeeds})`);
+    c.add(`n_power ${u.universe}`, Math.abs(u.power.level - level0) < 1e-12,
+      `n_power was simulated at level ${fmt(u.power.level)}, the registry's family of ${registry.familySize} needs ${fmt(level0)}`);
   }
-  if (c.failed.length > 0) return refuse();
+  if (c.failed.length > 0) return failWith();
 
-  // Size from counts alone, before any outcome is read.
+  // Size from the sealed counts alone.
   const sized = input.universes.map((u) => {
-    const required = Math.max(th.minTradesFloor, u.power.nPower);
-    const days = new Set(u.trades.map((t) => t.day)).size;
-    const enough = u.trades.length >= required && days >= 2;
-    c.add(`sample ${u.universe}`, enough, `${u.trades.length} holdout trades on ${days} days (need >= max(${th.minTradesFloor}, n_power ${u.power.nPower}) = ${required}, on >= 2 days)`);
-    return { u, required, enough };
+    const e = registry.entries.find((x) => x.holdoutId === u.holdoutId)!;
+    const wf = u.walkForward.map((t) => t.rNet);
+    const closed = wf.length >= 2 && sd(wf) > 0 ? nPower(sd(wf), 0.05, { alpha: level0 }) : 0;
+    const required = Math.max(th.minTradesFloor, u.power.nPower, closed);
+    const ready = holdoutReady(e, required, MIN_DAYS);
+    c.add(`sample ${u.universe}`, ready,
+      `${e.counts!.entries} sealed entries on ${e.counts!.days} days (need >= max(${th.minTradesFloor}, simulated n_power ${u.power.nPower}, closed form ${closed}) = ${required}, on >= ${MIN_DAYS} days)`);
+    return { u, e, required, ready };
   });
-  const entering = sized.filter((x) => x.enough);
-  const opts = { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) };
+  const entering = sized.filter((x) => x.ready);
 
-  // Score the universes that entered: the G2 rule, then Holm across them.
-  const scored = entering.map(({ u }) => {
-    const control = u.controlRuns.flat();
-    return g2Rule(u.trades, control, th.familyAlpha, opts);
-  });
+  // Verify every entering seal before opening any: configuration, hash and the entry count of the file to score.
+  for (const { u, e } of entering) {
+    let bad: { reason: 'reconfigured' | 'hash-mismatch' | 'count-mismatch'; why: string } | null = null;
+    if (u.configId !== e.configId) bad = { reason: 'reconfigured', why: `scored as ${u.configId}, registered ${e.configId}` };
+    else if (u.ledgerHash !== e.ledgerHash) bad = { reason: 'hash-mismatch', why: 'the file to score is not the sealed ledger' };
+    else if (u.trades.length !== e.counts!.entries) bad = { reason: 'count-mismatch', why: `${u.trades.length} trades given, ${e.counts!.entries} sealed` };
+    if (bad) {
+      const step = burnHoldout(registry, e.holdoutId, bad.reason, bad.why);
+      registry = step.registry;
+      c.add(`seal ${u.universe}`, false, step.reason);
+    }
+  }
+  if (c.list.some((x) => !x.passed && x.name.startsWith('seal '))) return failWith();
+
+  for (const { u, e, required } of entering) {
+    const step = openHoldout(registry, e.holdoutId, { configId: u.configId, ledgerHash: u.ledgerHash, requiredTrades: required, minDays: MIN_DAYS, nowMs: input.nowMs });
+    registry = step.registry;
+    if (!step.ok) {
+      c.add(`seal ${u.universe}`, false, step.reason);
+      return failWith();
+    }
+  }
+
+  // Score: the G2 rule per universe, then Holm across the universes that entered.
+  const opts = { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) };
+  const scored = entering.map(({ u }) => g2Rule(u.trades, u.controlRuns.flat(), th.familyAlpha, opts));
   const h = holm(scored.map((r) => r.p), th.familyAlpha);
-  const perUniverse: G2UniverseResult[] = sized.map(({ u, required, enough }) => {
+  const perUniverse: G2UniverseResult[] = sized.map(({ u, e, required, ready }) => {
     const k = entering.findIndex((x) => x.u === u);
-    if (!enough || k < 0) {
-      return { universe: u.universe, status: 'not-proven', requiredTrades: required, trades: u.trades.length, level: null, p: null, mean: null, lower: null, diffVsS0: null, diffVsS0Lower: null };
+    if (!ready || k < 0) {
+      return { universe: u.universe, status: 'not-proven', requiredTrades: required, entries: e.counts!.entries, level: null, p: null, mean: null, lower: null, diffVsS0: null, diffVsS0Lower: null };
     }
     const level = h.levels[k]!;
     const r = scored[k]!;
@@ -409,19 +454,17 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
       }
     }
     return {
-      universe: u.universe, status: passed ? 'pass' : 'fail', requiredTrades: required, trades: u.trades.length, level, p: r.p,
+      universe: u.universe, status: passed ? 'pass' : 'fail', requiredTrades: required, entries: e.counts!.entries, level, p: r.p,
       mean: r.mean.mean, lower: r.mean.lower, diffVsS0: r.vsControl.mean, diffVsS0Lower: r.vsControl.lower,
     };
   });
 
-  const registry = entering.length > 0 ? burnHoldouts(input.registry, entering.map((x) => x.u.holdoutId)) : input.registry;
   const anyPass = perUniverse.some((x) => x.status === 'pass');
   const status: GateStatus = anyPass ? 'pass' : entering.length === 0 ? 'not-proven' : 'fail';
   const metrics: Record<string, number | null> = { universesEntered: entering.length, universesPassed: perUniverse.filter((x) => x.status === 'pass').length };
   // Per-universe failures stay in `checks` and `universes`; the gate's reasons list them only when it does not pass.
   return { ...result('G2', c, status, metrics), reasons: anyPass ? [] : c.failed, notes, universes: perUniverse, registry };
 };
-
 
 // ---- G3 ---------------------------------------------------------------------------------------------------------
 
@@ -436,8 +479,8 @@ export interface G3Input {
   readonly candidates: { readonly dryRunCount: number; readonly dryRunHours: number; readonly backtestCount: number; readonly backtestHours: number };
   /** Rejected candidates per reason code. */
   readonly rejectMix: { readonly dryRun: Readonly<Record<string, number>>; readonly backtest: Readonly<Record<string, number>> };
-  /** Share of dry-run candidates vetoed by checks that only exist live (reported, not gating). */
-  readonly liveOnlyVetoRate: number | null;
+  /** Eligible candidates vetoed by checks that exist only live, out of all eligible candidates in the run. */
+  readonly liveOnlyVetoes: { readonly vetoed: number; readonly eligible: number };
   /** |paper fill − simulated transaction amount| per simulated entry or exit, as a fraction of notional. */
   readonly fillDifferences: readonly number[];
   readonly parityTestPassed: boolean;
@@ -449,7 +492,7 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   const c = new Checks();
   const notes: string[] = [];
   const m = input.dryRunReturns.length;
-  const metrics: Record<string, number | null> = { dryRunTrades: m, dryRunHours: input.dryRunHours, liveOnlyVetoRate: input.liveOnlyVetoRate };
+  const metrics: Record<string, number | null> = { dryRunTrades: m, dryRunHours: input.dryRunHours };
   c.add('qualifying run', input.qualifyingRun, input.qualifyingRun ? 'the qualifying dry run' : 'a rehearsal run counts for no gate');
   c.add('duration', input.dryRunHours >= th.minHours, `${fmt(input.dryRunHours)} h (need >= ${th.minHours})`);
   c.add('parity', input.parityTestPassed, input.parityTestPassed ? 'parity passed on the recorded dry-run data' : 'parity failed on the recorded dry-run data');
@@ -485,6 +528,17 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
       c.add(`reject mix ${r}`, share >= ci.lower && share <= ci.upper,
         `dry run ${kDry}/${dryTotal}, 95% interval [${fmt(ci.lower)}, ${fmt(ci.upper)}] vs backtest share ${fmt(share)}`);
     }
+  }
+
+  const v = input.liveOnlyVetoes;
+  if (v.eligible === 0) {
+    c.add('live-only vetoes', false, 'no eligible candidates in the run');
+  } else {
+    const rate = v.vetoed / v.eligible;
+    metrics.liveOnlyVetoRate = rate;
+    metrics.liveOnlyVetoUpper95 = clopperPearsonUpper(v.vetoed, v.eligible);
+    c.add('live-only vetoes', rate <= th.liveOnlyVetoRateMax,
+      `${v.vetoed}/${v.eligible} = ${fmt(rate)} vetoed by live-only checks, 95% upper bound ${fmt(metrics.liveOnlyVetoUpper95)} (need rate <= ${th.liveOnlyVetoRateMax})`);
   }
 
   if (input.fillDifferences.length === 0) {
@@ -535,8 +589,8 @@ export const gateG4 = (input: G4Input, overrides?: Partial<typeof G4_DEFAULTS>):
 // ---- G5 ---------------------------------------------------------------------------------------------------------
 
 export interface G5Input {
-  /** Live net returns in order. */
-  readonly liveReturns: readonly number[];
+  /** Live net returns in order, with their day (the e-process bets once per day). */
+  readonly liveReturns: readonly DayReturn[];
   /** G1 and G2 re-run on the newest data still pass. */
   readonly backtestGatesPassingOnNewestData: boolean;
   /** Modelled price impact at the proposed size, as a fraction. */
@@ -553,7 +607,7 @@ export const gateG5 = (input: G5Input, overrides?: Partial<typeof G5_DEFAULTS>):
   const n = input.liveReturns.length;
   const metrics: Record<string, number | null> = { liveTrades: n };
   c.add('trades', n >= th.minTrades, `${n} live trades (need >= ${th.minTrades})`);
-  const lowest = minReturn(input.liveReturns);
+  const lowest = minReturn(input.liveReturns.map((t) => t.rNet));
   if (n > 0 && lowest < RETURN_FLOOR) {
     c.add('e-process', false, `a return of ${fmt(lowest)} is below the floor ${RETURN_FLOOR}`);
   } else {
@@ -573,9 +627,9 @@ export const gateG5 = (input: G5Input, overrides?: Partial<typeof G5_DEFAULTS>):
 // ---- demotion ---------------------------------------------------------------------------------------------------
 
 export interface DemotionInput {
-  /** Live (or paper, when demoting a paper version) net returns in order. */
-  readonly returns: readonly number[];
-  /** Cap for the reverse e-process (quant.md §5.3), e.g. the take-profit of a bracketed exit or +3. */
+  /** Live (or paper, when demoting a paper version) net returns in order, with their day. */
+  readonly returns: readonly DayReturn[];
+  /** Cap for the reverse e-process (quant.md §5.3): 0 < cap ≤ 3, e.g. the take-profit of a bracketed exit. */
   readonly returnCap: number;
   readonly driftAlarm: boolean;
   /** Prediction-set coverage of the most recent decisions, oldest first, with the target miscoverage rate. */
@@ -591,9 +645,14 @@ export const evaluateDemotion = (input: DemotionInput, overrides?: Partial<typeo
   const th = tighten('demotion', DEMOTION_DEFAULTS, DEMOTION_DIR, overrides);
   const c = new Checks();
   const metrics: Record<string, number | null> = {};
-  const rev = reverseEProcess(input.returns, { cap: input.returnCap, threshold: th.reverseWealth });
-  metrics.reverseWealthMax = rev.maxWealth;
-  c.add('reverse e-process', rev.maxWealth < th.reverseWealth, `max reverse wealth ${fmt(rev.maxWealth)} (demote at >= ${th.reverseWealth})`);
+  // An invalid cap demotes: a cap above the limit would make the decay detector nearly blind.
+  if (!(input.returnCap > 0 && input.returnCap <= th.returnCapMax)) {
+    c.add('return cap', false, `return cap ${fmt(input.returnCap)} is outside (0, ${th.returnCapMax}]`);
+  } else {
+    const rev = reverseEProcess(input.returns, { cap: input.returnCap, threshold: th.reverseWealth });
+    metrics.reverseWealthMax = rev.maxWealth;
+    c.add('reverse e-process', rev.maxWealth < th.reverseWealth, `max reverse wealth ${fmt(rev.maxWealth)} (demote at >= ${th.reverseWealth})`);
+  }
   c.add('drift', !input.driftAlarm, input.driftAlarm ? 'drift alarm on calibration or log loss' : 'no drift alarm');
   if (input.coverage && input.coverage.covered.length >= COVERAGE_WINDOW) {
     const recent = input.coverage.covered.slice(-COVERAGE_WINDOW);

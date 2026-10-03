@@ -3,19 +3,22 @@
 import { describe, expect, test } from 'vitest';
 import {
   bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, designEffect, expectedMaxSharpe, mean,
-  meanPredictiveInterval, median, nextNormal, nPower, reverseEProcess, sd, sharpeRatio,
+  meanPredictiveInterval, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio,
 } from '../src/stats/index.ts';
 import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey } from './stats-fixtures.ts';
 
 const ALPHA = 0.05;
 const SLOW = 60_000;
 
+/** Independent trades, one per day (the quant.md §5.4 setting). */
+const oneADay = (xs: readonly number[]) => xs.map((rNet, i) => ({ day: dayKey(i), rNet }));
+
 const eProcessRun = (seed: number, trueMean: number, reps: number, cap: number) => {
   const rng = createRng(seed);
   const crossings: number[] = [];
   for (let r = 0; r < reps; r++) {
     const xs = Array.from({ length: cap }, () => bracketDraw(rng, trueMean));
-    const e = bettingEProcess(xs);
+    const e = bettingEProcess(oneADay(xs));
     if (e.crossedAt !== null) crossings.push(e.crossedAt);
   }
   return { rejectRate: crossings.length / reps, medianTrades: crossings.length ? median(crossings) : null };
@@ -56,14 +59,67 @@ describe('betting e-process (quant.md §5.4: 1,000 reps, cap 3,000 trades)', () 
     let falseDemotions = 0;
     let caught = 0;
     for (let r = 0; r < 1000; r++) {
-      if (reverseEProcess(Array.from({ length: 3000 }, () => bracketDraw(rng, 0)), { cap: 0.27 }).crossedAt !== null) falseDemotions++;
+      if (reverseEProcess(oneADay(Array.from({ length: 3000 }, () => bracketDraw(rng, 0))), { cap: 0.27 }).crossedAt !== null) falseDemotions++;
     }
     for (let r = 0; r < 300; r++) {
-      if (reverseEProcess(Array.from({ length: 3000 }, () => bracketDraw(rng, -0.05)), { cap: 0.27 }).crossedAt !== null) caught++;
+      if (reverseEProcess(oneADay(Array.from({ length: 3000 }, () => bracketDraw(rng, -0.05))), { cap: 0.27 }).crossedAt !== null) caught++;
     }
     expect(falseDemotions / 1000).toBeLessThanOrEqual(ALPHA);
     expect(caught / 300).toBeGreaterThanOrEqual(0.99);
   }, SLOW);
+});
+
+describe('e-process with intra-day correlation (review of PR #8): one bet per day', () => {
+  // Zero edge, 20 trades a day, 150 days (3,000 trades), 1,000 runs per cell. Per-trade betting gave 0.16–0.30 here.
+  for (const rho of [0.05, 0.1]) {
+    test(`ρ = ${rho}: false promotion and false demotion are at most α`, () => {
+      let promote = 0;
+      let demote = 0;
+      for (let r = 0; r < 1000; r++) {
+        const t = bracketTrades(40_000 + r + Math.round(rho * 1e6), 0, 150, 20, rho);
+        // A day shock can push a rug below −100%, so the floor is widened to −2 (the bet scales with it).
+        if (bettingEProcess(t, { lowerBound: -2 }).crossedAt !== null) promote++;
+        // The day shock lifts some returns above the +27% take-profit; a cap below them would bias toward demotion (the
+        // intended safe side), so the false-demotion check uses a cap above every return the fixture can produce.
+        if (reverseEProcess(t, { cap: 1 }).crossedAt !== null) demote++;
+      }
+      expect(promote / 1000).toBeLessThanOrEqual(ALPHA);
+      expect(demote / 1000).toBeLessThanOrEqual(ALPHA);
+    }, SLOW);
+  }
+  test('still detects +10% and −10% within 150 days at ρ = 0.05', () => {
+    let up = 0;
+    let down = 0;
+    for (let r = 0; r < 200; r++) {
+      if (bettingEProcess(bracketTrades(50_000 + r, 0.1, 150, 20, 0.05), { lowerBound: -2 }).crossedAt !== null) up++;
+      if (reverseEProcess(bracketTrades(60_000 + r, -0.1, 150, 20, 0.05), { cap: 0.27 }).crossedAt !== null) down++;
+    }
+    expect(up / 200).toBeGreaterThanOrEqual(0.95);
+    expect(down / 200).toBeGreaterThanOrEqual(0.95);
+  }, SLOW);
+});
+
+describe('day-block bootstrap: minimum days (review of PR #8)', () => {
+  // Zero edge, 20 trades a day; per-tail false-positive rates of the studentized interval at MIN_DAYS.
+  for (const rho of [0.05, 0.1]) {
+    test(`ρ = ${rho}, D = ${MIN_DAYS}: one-sided and per-tail two-sided rates within Monte Carlo error of nominal`, () => {
+      const reps = 2000;
+      let one = 0;
+      let low = 0;
+      let high = 0;
+      for (let r = 0; r < reps; r++) {
+        const t = bracketTrades(80_000 + r + Math.round(rho * 1e6), 0, MIN_DAYS, 20, rho);
+        if (dayBlockMeanInterval(t, 0.95, 'lower', { rng: createRng(r), replicates: 500 }).lower > 0) one++;
+        const two = dayBlockMeanInterval(t, 0.95, 'two', { rng: createRng(r + 1), replicates: 500 });
+        if (two.lower > 0) low++;
+        if (two.upper < 0) high++;
+      }
+      // Two Monte Carlo standard errors above nominal: 0.05 + 2·0.0049, 0.025 + 2·0.0035.
+      expect(one / reps).toBeLessThanOrEqual(0.0598);
+      expect(low / reps).toBeLessThanOrEqual(0.032);
+      expect(high / reps).toBeLessThanOrEqual(0.032);
+    }, SLOW);
+  }
 });
 
 describe('day-block bootstrap CI and n_power (quant.md §5.2)', () => {
@@ -92,10 +148,12 @@ describe('day-block bootstrap CI and n_power (quant.md §5.2)', () => {
     expect(iid).toBeGreaterThan(dayBlock);
   }, SLOW);
 
-  test('power is about 80% at n_power for the design effect (+5%, independent trades)', () => {
+  test('the closed-form n gives under 80% power with the conservative G2 interval (why G2 simulates n_power)', () => {
+    // At the textbook n (+5%, independent trades) the studentized/t interval reaches ~72%, not 80%;
+    // simulateG2Power (stats-g2.test.ts) finds the n that does reach 80%.
     const power = rejectRate((s) => bracketTrades(s, 0.05, n, 1), 400, 4_000);
-    expect(power).toBeGreaterThan(0.72);
-    expect(power).toBeLessThan(0.88);
+    expect(power).toBeGreaterThan(0.6);
+    expect(power).toBeLessThan(0.8);
   }, SLOW);
 
   test('power is about 80% at n_power × design effect with intra-day correlation', () => {

@@ -30,6 +30,19 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'amm/pump-curve.ts', name: 'tokenTotalSupply', value: '1000000000000000', why: 'pump Global launch parameter' },
   { file: 'amm/pump-curve.ts', name: 'poolMigrationFee', value: '15000001', why: 'pump migrate fee, a protocol parameter read as an input' },
   { file: 'domain/index.ts', name: 'futureToleranceMs', value: '1000', why: 'clock skew allowance in milliseconds, not money' },
+  // STATS-1: statistical and generator constants, not money (pending the supervisor's OK on PR #8).
+  { file: 'stats/bootstrap.ts', name: 'DEFAULT_REPLICATES', value: '2000', why: 'bootstrap replicate count' },
+  { file: 'stats/g2rule.ts', name: 'DEFAULT_MAX_TRADES', value: '50000', why: 'upper end of the n_power search (a trade count)' },
+  { file: 'stats/g2rule.ts', name: 'SEED_STRIDE', value: '1000003', why: 'prime stride between random streams' },
+  { file: 'stats/gates.ts', name: 'MS_PER_DAY', value: '86400000', why: 'milliseconds in a day' },
+  { file: 'stats/rng.ts', name: 'GOLDEN_GAMMA', value: '2654435769', why: 'splitmix32 increment' },
+  { file: 'stats/rng.ts', name: 'MIX_1', value: '2246822507', why: 'murmur3 finalizer multiplier' },
+  { file: 'stats/rng.ts', name: 'MIX_2', value: '3266489909', why: 'murmur3 finalizer multiplier' },
+  { file: 'stats/rng.ts', name: 'TWO_POW_26', value: '67108864', why: '2^26, for a 53-bit double' },
+  { file: 'stats/rng.ts', name: 'TWO_POW_32', value: '4294967296', why: '2^32' },
+  { file: 'stats/rng.ts', name: 'TWO_POW_53', value: '9007199254740992', why: '2^53, for a 53-bit double' },
+  { file: 'stats/special.ts', name: 'MAXIT', value: '1000', why: 'iteration limit of the continued fractions' },
+  { file: 'stats/special.ts', name: 'LANCZOS_C2', value: '1259.1392167224028', why: 'Lanczos log-gamma coefficient' },
 ];
 
 export const isAllowed = (file: string, finding: Finding, allowed: readonly Allowed[] = ALLOWED): boolean =>

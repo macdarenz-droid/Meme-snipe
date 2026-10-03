@@ -32,6 +32,19 @@ export const g2Rule = (
 /** The gate's pass condition for one universe tested at `level` (the same comparison gateG2 makes after Holm). */
 export const g2RulePasses = (r: G2RuleResult, level: number): boolean => r.p < level;
 
+/**
+ * Fewest days for a day-block interval in G1 and G2 (below it: "not proven"). Chosen per the review ruling: of the
+ * candidates D = 10, 15, 20, 30, the smallest whose per-tail false-positive rate at zero edge (20 trades a day,
+ * ρ = 0.05 and 0.1, 8,000 runs) was at or below nominal within Monte Carlo error. With the interval of bootstrap.ts all
+ * of them were (largest: 0.0503 one-sided, 0.0238 per tail); the table is in the PR.
+ */
+export const MIN_DAYS = 10;
+
+/** Largest n the power search tries before giving up. */
+const DEFAULT_MAX_TRADES = 50_000;
+/** Prime stride that gives each candidate n its own random stream from one seed. */
+const SEED_STRIDE = 1_000_003;
+
 export interface G2PowerOptions {
   /** Walk-forward trades of the pre-registered configuration (σ̂ and the day structure come from here). */
   readonly walkForward: readonly DayReturn[];
@@ -41,8 +54,8 @@ export interface G2PowerOptions {
   readonly seed: number;
   /** True mean the strategy is shifted to (default +0.05, the smallest edge worth trading). */
   readonly targetMean?: number;
-  /** Universes entering the holdout; power is computed at the strictest Holm level α/m (default 1). */
-  readonly universes?: number;
+  /** The Holm family size fixed in the holdout registry; power is computed at the strictest Holm level α/m. */
+  readonly familySize: number;
   readonly alpha?: number;
   readonly power?: number;
   /** Simulated holdouts per candidate n (default 400). */
@@ -80,31 +93,33 @@ const byDay = (a: readonly DayReturn[], b: readonly DayReturn[]): Day[] => {
 };
 
 /** One simulated holdout of exactly n strategy trades, built from whole walk-forward days drawn with replacement. */
-const simulateHoldout = (days: readonly Day[], n: number, shift: number, rng: Rng): { a: DayReturn[]; b: DayReturn[] } => {
+const simulateHoldout = (days: readonly Day[], n: number, shift: number, rng: Rng): { a: DayReturn[]; b: DayReturn[]; days: number } => {
   const a: DayReturn[] = [];
   const b: DayReturn[] = [];
+  let withEntries = 0;
   for (let k = 0; a.length < n; k++) {
     const d = days[nextInt(rng, days.length)]!;
     const key = `s${k}`;
+    if (d.a.length > 0) withEntries++;
     for (const x of d.a) {
       if (a.length === n) break;
       a.push({ day: key, rNet: x + shift });
     }
     for (const x of d.b) b.push({ day: key, rNet: x });
   }
-  return { a, b };
+  return { a, b, days: withEntries };
 };
 
 /** n_power by simulation of the exact G2 rule; the holdout must hold max(300, nPower) trades. */
 export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
   const target = opts.targetMean ?? 0.05;
-  const universes = opts.universes ?? 1;
+  const universes = opts.familySize;
   const alpha = opts.alpha ?? 0.05;
   const goal = opts.power ?? 0.8;
   const sims = opts.simulations ?? 400;
   const replicates = opts.replicates ?? 500;
-  const maxTrades = opts.maxTrades ?? 50_000;
-  if (!Number.isInteger(universes) || universes < 1) throw new RangeError('universes must be an integer >= 1');
+  const maxTrades = opts.maxTrades ?? DEFAULT_MAX_TRADES;
+  if (!Number.isInteger(universes) || universes < 1 || universes > 3) throw new RangeError('familySize must be 1, 2 or 3');
   if (!Number.isInteger(sims) || sims < 100) throw new RangeError('simulations must be an integer >= 100');
   if (opts.walkForward.length < 2 || opts.control.length === 0) throw new RangeError('need walk-forward trades and S0 control trades');
   const days = byDay(opts.walkForward, opts.control);
@@ -119,11 +134,12 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     const hit = cache.get(n);
     if (hit !== undefined) return hit;
     // Each n gets its own stream derived from the seed, so the result does not depend on search order.
-    const rng = createRng(opts.seed * 1_000_003 + n);
+    const rng = createRng(opts.seed * SEED_STRIDE + n);
     let pass = 0;
     for (let s = 0; s < sims; s++) {
       const h = simulateHoldout(days, n, shift, rng);
-      if (g2RulePasses(g2Rule(h.a, h.b, level, { rng, replicates }), level)) pass++;
+      // The gate needs MIN_DAYS days; a holdout on fewer days is "not proven", which counts as not passing.
+      if (h.days >= MIN_DAYS && g2RulePasses(g2Rule(h.a, h.b, level, { rng, replicates }), level)) pass++;
     }
     const pw = pass / sims;
     cache.set(n, pw);
