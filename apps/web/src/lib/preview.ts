@@ -12,3 +12,7 @@ export const SAMPLE_LABEL = import.meta.env.DEV || import.meta.env.VITE_PREVIEW 
 
 /** The preview build adds the Samples tab; dev reaches the screen by URL only. */
 export const PREVIEW = import.meta.env.VITE_PREVIEW === '1';
+
+/** Hash route and title of the sample screen. Empty in a normal production build, so neither string ships. */
+export const SAMPLES_PATH = import.meta.env.DEV || import.meta.env.VITE_PREVIEW === '1' ? 'dev/fixtures' : '';
+export const SAMPLES_TITLE = import.meta.env.DEV || import.meta.env.VITE_PREVIEW === '1' ? 'Samples' : '';
