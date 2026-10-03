@@ -8,15 +8,18 @@
 // evidence reasons name are read, each at most once per `minReadGapMs` (the budget's evaluations a minute), and the
 // complete holder scan only when the holder set is the last input missing. A refused or failed read makes no fact, so
 // the gate keeps rejecting (H16); the source counts it per UTC day under `worker:fact-reads` for the coverage report.
-// Two reads do not follow a candidate's reasons: hourly SOL/USD bars (H8, regime) and one pool read just after each
-// graduate's survival mark (regime), for every migration the strategy shortlisted.
+// Three reads do not follow a candidate's reasons: hourly SOL/USD bars (H8, regime), hourly chain volume from DATA-1c's
+// day releases (regime, FACTS-1d), and one pool read just after each graduate's survival mark (regime), for every
+// migration the strategy shortlisted.
 import type { EvidenceCode } from '../../../core/src/gates/index.ts';
 import type { Policy } from '../../../core/src/config/index.ts';
 import { producerOptions } from '../../../core/src/facts/index.ts';
 import { heliusRpcUrl, type HttpClient, type Secrets } from '../providers/index.ts';
 import type { Scheduler } from '../scheduler/index.ts';
 import { ASSUMPTIONS } from './budget.ts';
+import { join } from 'node:path';
 import { FactReaders, FactRpc } from './readers.ts';
+import { CHAIN_VOLUME_DIR, fileChainVolumeStore } from './volume-store.ts';
 import type { CandidateReason } from '../engine/strategy.ts';
 import type { FactContext, FactSource } from '../run/facts.ts';
 import type { TimerHandle } from '../scheduler/timers.ts';
@@ -29,7 +32,12 @@ export interface LiveReaders {
   readCrossChecks(mint: string): Promise<boolean[]>;
   readMintHistory(mint: string, o: MintHistoryOptions): Promise<boolean>;
   readSolUsd(hoursBack: number): Promise<boolean>;
+  /** The regime's chain volume (FACTS-1d); absent when no release source is wired. */
+  readChainVolume?(regime: ChainVolumeWindow): Promise<boolean>;
 }
+
+/** The policy's volume window, for the chain-volume read. */
+export type ChainVolumeWindow = Pick<Policy['regime'], 'volumeLagDays' | 'volumeWindowDays'>;
 
 /** `FactReaders.readMintHistory`'s options: page caps, the insider window and the decision slot. */
 export interface MintHistoryOptions {
@@ -54,10 +62,15 @@ export interface LiveFactsOptions {
   /** Hours of SOL/USD bars read at start (the producer's kept window); each later hourly read takes 3. */
   readonly solUsdStartHours: number;
   readonly mintHistory: Omit<MintHistoryOptions, 'asOfSlot'>;
+  /** The volume window: with it (and a reader that has a release source), chain volume is read each hour. */
+  readonly chainVolume?: ChainVolumeWindow;
 }
 
 /** The counter fact: reads per UTC day by kind and outcome. Never read by a gate. */
 export const FACT_READS_KEY = 'worker:fact-reads';
+
+/** `{ detail, atMs }`: a verified chain-volume day whose release later changed (tamper signal; that day is unknown). */
+export const CHAIN_VOLUME_ALERT_KEY = 'worker:chain-volume-alert';
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -65,7 +78,7 @@ const EVIDENCE: ReadonlySet<string> = new Set<EvidenceCode>(['missing', 'malform
 /** The inputs a read can supply, by read kind. Every other input is stream-built or has no free live source. */
 const ACCOUNTS: ReadonlySet<string> = new Set(['mint', 'pool', 'lp']);
 
-type Kind = 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'survival' | 'sol-usd';
+type Kind = 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'survival' | 'sol-usd' | 'chain-volume';
 
 /** What one candidate's last reasons ask the source to read; empty when it must not read. */
 export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
@@ -141,6 +154,9 @@ export class LiveFacts implements FactSource {
       const first = this.#solHour < 0;
       this.#solHour = hour;
       this.#run('sol-usd', '', (r) => r.readSolUsd(first ? this.#o.solUsdStartHours : 3), true);
+      // Each day is read once by the reader; an hourly call only picks up newly published days.
+      const w = this.#o.chainVolume;
+      if (w !== undefined && this.#readers?.readChainVolume !== undefined) this.#run('chain-volume', '', (r) => r.readChainVolume!(w), true);
     }
     for (const [mint, c] of ctx.candidates()) {
       if (!this.#survivalDone.has(mint)) this.#survival.set(mint, c.migratedAtMs);
@@ -216,6 +232,11 @@ export interface LiveFactsWiring {
   /** Keyless APIs the worker has no scheduler for yet. */
   readonly goplus: Scheduler;
   readonly coinbase: Scheduler;
+  /**
+   * Chain volume from DATA-1c's releases: the REST API (GITHUB_RELEASES), github.com downloads (GITHUB_DOWNLOADS) and
+   * the worker's state dir for verified days. Without it, live chain volume is unknown.
+   */
+  readonly github?: { readonly api: Scheduler; readonly downloads: Scheduler; readonly stateDir?: string };
 }
 
 /** Mint-history page caps (trial values, configuration): 20 signature pages, then 3 pages and 10 transactions a funder. */
@@ -230,7 +251,15 @@ export const liveFacts = (w: LiveFactsWiring): LiveFacts => {
       rpc: new FactRpc({ url: () => heliusRpcUrl(w.secrets), http: w.http, scheduler: ctx.schedulers.helius, timeoutMs: 10_000 }),
       rugcheck: { scheduler: ctx.schedulers.rugcheck }, goplus: { scheduler: w.goplus },
       jupiter: { scheduler: ctx.schedulers.jupiter, secrets: w.secrets }, coinbase: { scheduler: w.coinbase },
+      ...(w.github === undefined ? {} : {
+        releases: {
+          api: { scheduler: w.github.api }, downloads: { scheduler: w.github.downloads },
+          ...(w.github.stateDir === undefined ? {} : { store: fileChainVolumeStore(join(w.github.stateDir, CHAIN_VOLUME_DIR)) }),
+          alert: (detail: string) => ctx.sink.fact(CHAIN_VOLUME_ALERT_KEY, { detail, atMs: ctx.timers.now() }),
+        },
+      }),
     }),
+    ...(w.github === undefined ? {} : { chainVolume: { volumeLagDays: w.policy.regime.volumeLagDays, volumeWindowDays: w.policy.regime.volumeWindowDays } }),
     tickMs: 1_000,
     minReadGapMs: 60_000 / ASSUMPTIONS.evaluationsPerMinute,
     survivalAfterMs: p.survivalAfterMs,
