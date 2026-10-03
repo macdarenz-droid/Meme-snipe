@@ -49,6 +49,75 @@ if [ -n "$SSH_KEY" ]; then
   [[ "$SSH_KEY" =~ ^(ssh-ed25519|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com)\ [A-Za-z0-9+/=]+(\ [^[:cntrl:]]*)?$ ]] || die "--ssh-key must be one public key line (ssh-ed25519 or ecdsa)"
 fi
 
+# An update is all or nothing. Before it changes a host path it keeps the old file (*.zeroed-old) or notes
+# that the path is new, and before it stops a unit it notes whether that unit was enabled and running, all in
+# a journal on disk. If any later step fails (Node, the firewall, the signing key, a package, a unit), the
+# EXIT trap puts every file back, removes the new ones, reloads systemd, restores each unit's state and
+# re-applies the old firewall, so the release that keeps running also keeps its own host files. An update
+# killed half-way leaves the journal behind, and the next update rolls it back first. On success the old
+# copies and the journal are deleted. Known limit: packages apt added for a missing package stay.
+JOURNAL=/var/lib/zeroed-host/update-journal
+keep_old() { # path
+  [ "$UPDATE" = 1 ] || return 0
+  if grep -qxF -e "backed $1" -e "created $1" "$JOURNAL" 2>/dev/null; then return 0; fi
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    cp -a "$1" "$1.zeroed-old"
+    printf 'backed %s\n' "$1" >> "$JOURNAL"
+  else
+    printf 'created %s\n' "$1" >> "$JOURNAL"
+  fi
+}
+keep_unit() { # unit: its enabled and running state, before it is stopped
+  [ "$UPDATE" = 1 ] || return 0
+  printf 'unit %s %s %s\n' "$1" "$(systemctl is-enabled --quiet "$1" 2>/dev/null && echo 1 || echo 0)" \
+    "$(systemctl is-active --quiet "$1" 2>/dev/null && echo 1 || echo 0)" >> "$JOURNAL"
+}
+roll_back() {
+  local kind p en act b=0 c=0
+  set +e
+  [ -s "$JOURNAL" ] || return 0
+  while read -r kind p _; do
+    [ "$kind" = created ] || continue
+    case "$p" in /etc/systemd/system/*) systemctl disable --now "$(basename "$p")" >/dev/null 2>&1 ;; esac
+    rm -f "$p"
+    c=$((c + 1))
+  done < "$JOURNAL"
+  while read -r kind p _; do
+    [ "$kind" = backed ] || continue
+    [ ! -e "$p.zeroed-old" ] && [ ! -L "$p.zeroed-old" ] || mv -f "$p.zeroed-old" "$p"
+    b=$((b + 1))
+  done < "$JOURNAL"
+  systemctl daemon-reload
+  while read -r kind p en act; do
+    [ "$kind" = unit ] || continue
+    [ "$en" != 1 ] || systemctl enable "$p" >/dev/null 2>&1
+    [ "$act" != 1 ] || systemctl start "$p" >/dev/null 2>&1
+  done < "$JOURNAL"
+  nft -f /etc/nftables.conf
+  rm -f "$JOURNAL"
+  printf 'Update failed; every host file is back as it was (%s restored, %s removed).\n' "$b" "$c" >&2
+}
+on_exit() {
+  local rc=$? kind p
+  [ "$UPDATE" = 1 ] || return 0
+  if [ "$rc" != 0 ]; then
+    roll_back
+  elif [ -e "$JOURNAL" ]; then
+    while read -r kind p _; do [ "$kind" != backed ] || rm -f "$p.zeroed-old"; done < "$JOURNAL"
+    rm -f "$JOURNAL"
+  fi
+}
+if [ "$UPDATE" = 1 ]; then
+  # An update killed half-way (power loss, OOM) left its journal: put that one back before starting.
+  if [ -s "$JOURNAL" ]; then
+    say "A previous update did not finish; putting its host files back first"
+    roll_back 2>&1 | sed 's/^Update failed; /Previous update: /'
+    set -e
+  fi
+  rm -f "$JOURNAL"
+  trap on_exit EXIT
+fi
+
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
 PACKAGES=(age ca-certificates curl git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
@@ -66,6 +135,7 @@ if [ "$(/usr/local/bin/node --version 2>/dev/null || true)" != "$NODE_VERSION" ]
   rm -rf "/opt/node-$NODE_VERSION"
   mkdir -p "/opt/node-$NODE_VERSION"
   tar -xJf "$tmp/node.tar.xz" -C "/opt/node-$NODE_VERSION" --strip-components=1 --no-same-owner
+  keep_old /usr/local/bin/node # the symlink itself; both /opt/node-* folders stay
   ln -sfn "/opt/node-$NODE_VERSION/bin/node" /usr/local/bin/node
   rm -rf "$tmp"
 fi
@@ -82,45 +152,6 @@ say "Files"
 SSH_WAS_OPEN=0
 [ "$UPDATE" = 0 ] || ! nft list ruleset 2>/dev/null | grep -Eq 'tcp dport 22 .*accept' || SSH_WAS_OPEN=1
 CHANGED=()
-# An update is all or nothing. Before it changes a host path it keeps the old file (*.zeroed-old) or notes
-# that the path is new; if any later step fails (the firewall, the signing key, a package, a unit), the
-# EXIT trap puts every file back, removes the new ones, reloads systemd and re-applies the old firewall, so
-# the release that keeps running also keeps its own host files. On success the old copies are deleted.
-BACKED=()
-CREATED=()
-keep_old() { # path
-  [ "$UPDATE" = 1 ] || return 0
-  local x
-  for x in "${BACKED[@]}" "${CREATED[@]}"; do [ "$x" != "$1" ] || return 0; done
-  if [ -e "$1" ] || [ -L "$1" ]; then
-    cp -a "$1" "$1.zeroed-old"
-    BACKED+=("$1")
-  else
-    CREATED+=("$1")
-  fi
-}
-roll_back() {
-  local p
-  set +e
-  for p in "${CREATED[@]}"; do
-    case "$p" in /etc/systemd/system/*) systemctl disable --now "$(basename "$p")" >/dev/null 2>&1 ;; esac
-    rm -f "$p"
-  done
-  for p in "${BACKED[@]}"; do mv -f "$p.zeroed-old" "$p"; done
-  systemctl daemon-reload
-  nft -f /etc/nftables.conf
-  printf 'Update failed; every host file is back as it was (%s restored, %s removed).\n' "${#BACKED[@]}" "${#CREATED[@]}" >&2
-}
-on_exit() {
-  local rc=$? p
-  [ "$UPDATE" = 1 ] || return 0
-  if [ "$rc" != 0 ]; then
-    roll_back
-  else
-    for p in "${BACKED[@]}"; do rm -f "$p.zeroed-old"; done
-  fi
-}
-trap on_exit EXIT
 install_file() { # path mode, content on stdin
   mkdir -p "$(dirname "$1")"
   cat > "$1.zeroed-new"
@@ -9822,8 +9853,9 @@ if [ -d "$RELEASE_UNITS" ]; then
 fi
 for n in $(cat /var/lib/zeroed-host/release-units 2>/dev/null || true); do
   [[ " ${new_units[*]} " == *" $n "* ]] && continue
-  systemctl disable --now "$n" >/dev/null 2>&1 || true
+  keep_unit "$n"
   keep_old "/etc/systemd/system/$n"
+  systemctl disable --now "$n" >/dev/null 2>&1 || true
   rm -f "/etc/systemd/system/$n"
 done
 keep_old /var/lib/zeroed-host/release-units

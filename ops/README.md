@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/bd36c89a8a53eb6473de5980835b000a926da8e8/ops/install.sh -o i && echo '99bc4fd4d42871cb2cb07ae501379d5281889605704935cb7558dba96eb4f593  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/bd36c89a8a53eb6473de5980835b000a926da8e8/ops/install.sh -o i && echo '553ff3c4f2e717fb896eedfd8625d18da87dae3ccd6966f97b6d967e8e3fe77c  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/bd36c89a
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `99bc4fd4d42871cb2cb07ae501379d5281889605704935cb7558dba96eb4f593`
+SHA-256 of `install.sh`: `553ff3c4f2e717fb896eedfd8625d18da87dae3ccd6966f97b6d967e8e3fe77c`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -69,7 +69,7 @@ Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987b
 - no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
 - the worker reports no open intent (`/var/lib/zeroed/open_intents`).
 
-Before switching, it runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. Only when that succeeds does it switch and restart the worker. The update is all or nothing: it keeps each host file it changes, and if any step fails (the firewall, the signing key, a package, a unit) it puts every file back, removes new ones, reloads systemd and re-applies the old firewall. A failure keeps the running release and worker as they are, alerts once, and is tried again every 5 minutes under the same gates. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*` and `zeroed-worker-tabletop.service`, the host-loss tabletop worker on 127.0.0.1:8789, which is never published), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
+Before switching, it runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. Only when that succeeds does it switch and restart the worker. The update is all or nothing: it keeps each host file it changes (the Node link included) and notes each unit it stops. If any step fails, it puts every file back, removes new ones, reloads systemd, restarts what was running and re-applies the old firewall. An update cut off half-way is rolled back by the next one first. Packages apt added stay installed. A failure keeps the running release and worker as they are, alerts once, and is tried again every 5 minutes under the same gates. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*` and `zeroed-worker-tabletop.service`, the host-loss tabletop worker on 127.0.0.1:8789, which is never published), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
 
 ## Backups
 

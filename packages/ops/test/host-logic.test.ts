@@ -363,33 +363,93 @@ describe('install.sh --update', () => {
   it('is all or nothing: every changed host path is kept first, and any failure puts all of them back', () => {
     // Every write path of an update keeps the old file (or notes a new one) before it changes it.
     expect(main).toContain('cmp -s "$1.zeroed-new" "$1" 2>/dev/null || { CHANGED+=("$1"); keep_old "$1"; }');
-    for (const p of ['/etc/zeroed/host.env', '/etc/ssh/sshd_config.d/10-zeroed.conf', '/var/lib/zeroed-host/release-units', '"/etc/systemd/system/$n"']) {
-      const keep = main.indexOf(`keep_old ${p}`);
-      expect(keep, p).toBeGreaterThan(0);
+    for (const p of ['/etc/zeroed/host.env', '/etc/ssh/sshd_config.d/10-zeroed.conf', '/var/lib/zeroed-host/release-units', '"/etc/systemd/system/$n"', '/usr/local/bin/node']) {
+      expect(main.indexOf(`keep_old ${p}`), p).toBeGreaterThan(0);
     }
     expect(main.indexOf('keep_old /etc/zeroed/host.env')).toBeLessThan(main.indexOf('mv /etc/zeroed/host.env.new /etc/zeroed/host.env'));
-    expect(main.indexOf('keep_old "/etc/systemd/system/$n"')).toBeLessThan(main.indexOf('rm -f "/etc/systemd/system/$n"'));
-    // The trap is set before the first host file is written, and only an update rolls back.
-    expect(main.indexOf('trap on_exit EXIT')).toBeLessThan(main.indexOf('# @@FILES@@'));
-    const onExit = main.slice(main.indexOf('on_exit() {'), main.indexOf('trap on_exit EXIT'));
+    expect(main.indexOf('keep_old /usr/local/bin/node')).toBeLessThan(main.indexOf('ln -sfn "/opt/node-$NODE_VERSION/bin/node" /usr/local/bin/node'));
+    // A dropped unit: its state is noted and its file kept before it is stopped and removed.
+    const drop = main.slice(main.indexOf('for n in $(cat /var/lib/zeroed-host/release-units'));
+    expect(drop.indexOf('keep_unit "$n"')).toBeLessThan(drop.indexOf('systemctl disable --now "$n"'));
+    expect(drop.indexOf('keep_old "/etc/systemd/system/$n"')).toBeLessThan(drop.indexOf('rm -f "/etc/systemd/system/$n"'));
+    // The trap is armed before anything an update changes: packages, Node, files.
+    const trap = main.indexOf('  trap on_exit EXIT');
+    for (const later of ['say "Packages"', 'say "Node $NODE_VERSION"', '# @@FILES@@']) expect(trap, later).toBeLessThan(main.indexOf(later));
+    const onExit = main.slice(main.indexOf('on_exit() {'), main.indexOf('if [ "$UPDATE" = 1 ]; then\n  # An update killed'));
     expect(onExit).toContain('[ "$UPDATE" = 1 ] || return 0');
-    expect(onExit).toMatch(/if \[ "\$rc" != 0 \]; then\n\s+roll_back\n\s+else\n\s+for p in "\$\{BACKED\[@\]\}"; do rm -f "\$p\.zeroed-old"; done/);
-    const back = main.slice(main.indexOf('roll_back() {'), main.indexOf('on_exit() {'));
-    expect(back).toContain('for p in "${BACKED[@]}"; do mv -f "$p.zeroed-old" "$p"; done');
-    expect(back).toContain('systemctl disable --now "$(basename "$p")"');
-    expect(back.indexOf('mv -f "$p.zeroed-old"')).toBeLessThan(back.indexOf('nft -f /etc/nftables.conf'));
-    expect(back).toContain('systemctl daemon-reload');
-    // The bash parts behave: keep_old backs up once, notes new paths, and roll_back restores and removes.
-    const dir = join(tmp, 'tx');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'a'), 'old a\n');
-    const fns = main.slice(main.indexOf('BACKED=()'), main.indexOf('trap on_exit EXIT'));
-    const r = spawnSync('bash', ['-c', `set -euo pipefail; UPDATE=1; systemctl() { :; }; nft() { :; }; ${fns}
-      keep_old "${dir}/a"; echo new > "${dir}/a"; keep_old "${dir}/a"; echo newer > "${dir}/a"
-      keep_old "${dir}/b"; echo b > "${dir}/b"
-      roll_back 2>/dev/null; cat "${dir}/a"; [ -e "${dir}/b" ] && echo b-left || echo b-gone; ls "${dir}"`], { encoding: 'utf8' });
-    expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout.trim().split('\n')).toEqual(['old a', 'b-gone', 'a']);
+    expect(onExit).toMatch(/if \[ "\$rc" != 0 \]; then\n\s+roll_back\n/);
+  });
+
+  describe('roll-back, run in bash', () => {
+    const fns = main.slice(main.indexOf('JOURNAL=/var/lib/zeroed-host/update-journal'), main.indexOf('if [ "$UPDATE" = 1 ]; then\n  # An update killed'));
+    const start = main.slice(main.indexOf('if [ "$UPDATE" = 1 ]; then\n  # An update killed'), main.indexOf('say "Packages"'));
+    const run = (dir: string, body: string) => {
+      const r = spawnSync('bash', ['-c', `set -euo pipefail; UPDATE=1; say() { echo "$*"; }
+        systemctl() { echo "systemctl $*" >> "${dir}/calls"; case "\${1:-} \${2:-}" in "is-enabled --quiet") [ -e "${dir}/enabled-\${3:-}" ];; "is-active --quiet") [ -e "${dir}/active-\${3:-}" ];; *) true;; esac; }
+        nft() { echo "nft $*" >> "${dir}/calls"; }
+        ${fns}
+        JOURNAL="${dir}/journal"
+        ${body}`], { encoding: 'utf8' });
+      return { ...r, calls: (() => { try { return readFileSync(join(dir, 'calls'), 'utf8'); } catch { return ''; } })() };
+    };
+    const fresh = (name: string) => {
+      const dir = join(tmp, name);
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+
+    it('puts a changed file back, keeps the first copy only, and removes a new file', () => {
+      const dir = fresh('tx1');
+      writeFileSync(join(dir, 'a'), 'old a\n');
+      const r = run(dir, `keep_old "${dir}/a"; echo new > "${dir}/a"; keep_old "${dir}/a"; echo newer > "${dir}/a"
+        keep_old "${dir}/b"; echo b > "${dir}/b"
+        roll_back 2>/dev/null; cat "${dir}/a"; [ -e "${dir}/b" ] && echo b-left || echo b-gone; [ -e "${dir}/journal" ] && echo journal-left || echo journal-gone; ls "${dir}" | grep -c zeroed-old || true`);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout.trim().split('\n')).toEqual(['old a', 'b-gone', 'journal-gone', '0']);
+      expect(r.calls).toContain('systemctl daemon-reload');
+      expect(r.calls).toContain('nft -f /etc/nftables.conf');
+    });
+
+    it('puts a repointed symlink back (the Node link), not the file it points to', () => {
+      const dir = fresh('tx2');
+      mkdirSync(join(dir, 'node-old'));
+      mkdirSync(join(dir, 'node-new'));
+      writeFileSync(join(dir, 'node-old/node'), 'old');
+      writeFileSync(join(dir, 'node-new/node'), 'new');
+      const r = run(dir, `ln -sfn "${dir}/node-old/node" "${dir}/node"
+        keep_old "${dir}/node"; ln -sfn "${dir}/node-new/node" "${dir}/node"
+        roll_back 2>/dev/null; readlink "${dir}/node"; cat "${dir}/node-new/node"`);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout.trim().split('\n')).toEqual([join(dir, 'node-old/node'), 'new']);
+    });
+
+    it("gives a dropped unit back its enabled and running state, and leaves a stopped one stopped", () => {
+      const dir = fresh('tx3');
+      writeFileSync(join(dir, 'enabled-zeroed-dryrun-tick.timer'), '');
+      writeFileSync(join(dir, 'active-zeroed-dryrun-tick.timer'), '');
+      const r = run(dir, `keep_unit zeroed-dryrun-tick.timer; keep_unit zeroed-dryrun-reboot.service; cat "$JOURNAL"; : > "${dir}/calls"; roll_back 2>/dev/null`);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout.trim().split('\n')).toEqual(['unit zeroed-dryrun-tick.timer 1 1', 'unit zeroed-dryrun-reboot.service 0 0']);
+      const calls = r.calls.trim().split('\n');
+      expect(calls.indexOf('systemctl daemon-reload')).toBeLessThan(calls.indexOf('systemctl enable zeroed-dryrun-tick.timer'));
+      expect(calls).toContain('systemctl start zeroed-dryrun-tick.timer');
+      expect(calls.filter((c) => c.includes('zeroed-dryrun-reboot'))).toEqual([]);
+    });
+
+    it('an update killed half-way is rolled back by the next one before it starts', () => {
+      const dir = fresh('tx4');
+      writeFileSync(join(dir, 'a'), 'new a\n');
+      writeFileSync(join(dir, 'a.zeroed-old'), 'old a\n');
+      writeFileSync(join(dir, 'b'), 'half-written\n');
+      writeFileSync(join(dir, 'journal'), `backed ${dir}/a\ncreated ${dir}/b\n`);
+      const r = run(dir, `${start.replace('trap on_exit EXIT', ': no trap in the test')}
+        cat "${dir}/a"; [ -e "${dir}/b" ] && echo b-left || echo b-gone; [ -e "${dir}/a.zeroed-old" ] && echo old-left || echo old-gone; [ -e "$JOURNAL" ] && echo journal-left || echo journal-gone`);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain('A previous update did not finish; putting its host files back first');
+      expect(r.stdout).toContain('Previous update: every host file is back as it was (1 restored, 1 removed).');
+      expect(r.stdout.trim().split('\n').slice(-4)).toEqual(['old a', 'b-gone', 'old-gone', 'journal-gone']);
+    });
   });
 
   it('keeps the addresses the host was installed with', () => {
