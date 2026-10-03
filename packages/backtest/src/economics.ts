@@ -69,7 +69,26 @@ export interface Economics {
   };
   /** Every Melbourne day of the window, failed attempts included, as a share of the bankroll. */
   readonly dailyReturns: readonly DayReturn[];
+  /**
+   * The operating-cost line at each projection bankroll (research config), with the policy's trade sizes kept at their
+   * share of the bankroll, and this run's trade count. A projection: per-trade nets at a larger size need a run at it.
+   */
+  readonly atBankrolls: readonly {
+    readonly bankrollMicro: bigint;
+    readonly minNotionalMicro: bigint;
+    readonly maxNotionalMicro: bigint;
+    readonly hostingShareOfBankrollPerMonthBps: number;
+    readonly breakEvenNetPerTradeMicro: bigint | null;
+    /** Break-even net per trade as a return on the minimum trade size, bps (null without trades). */
+    readonly breakEvenBpsOfMinTrade: number | null;
+  }[];
 }
+
+/** The policy's capital sizes at another bankroll, each kept at its share of the configured bankroll. */
+export const sizesAtBankroll = (policy: Policy, bankroll: bigint): { readonly minNotional: bigint; readonly maxNotional: bigint } => {
+  const b = policy.capital.bankroll as bigint;
+  return { minNotional: ((policy.capital.minNotional as bigint) * bankroll) / b, maxNotional: ((policy.capital.maxNotional as bigint) * bankroll) / b };
+};
 
 const per = (total: bigint, n: number): bigint | null => (n === 0 ? null : total / BigInt(n));
 
@@ -102,6 +121,18 @@ export const economics = (i: EconomicsInput): Economics => {
     byDay.set(d, (byDay.get(d) ?? 0n) + e.net);
   }
 
+  const breakEven = per(hostingMicro - strayMicro, n);
+  const atBankrolls = i.research.operating.projectionBankrolls.map((bk) => {
+    const b = bk as bigint;
+    const sizes = sizesAtBankroll(i.policy, b);
+    return {
+      bankrollMicro: b, minNotionalMicro: sizes.minNotional, maxNotionalMicro: sizes.maxNotional,
+      hostingShareOfBankrollPerMonthBps: Number((perMonth * 10_000n) / b),
+      breakEvenNetPerTradeMicro: breakEven,
+      breakEvenBpsOfMinTrade: breakEven === null || sizes.minNotional === 0n ? null : Number((breakEven * 10_000n) / sizes.minNotional),
+    };
+  });
+
   return {
     filledTrades: n,
     entryDecisions: i.entryDecisions,
@@ -124,10 +155,11 @@ export const economics = (i: EconomicsInput): Economics => {
       windowDays: windowMs / 86_400_000,
       hostingMicro,
       hostingPerTradeMicro: per(hostingMicro, n),
-      breakEvenNetPerTradeMicro: per(hostingMicro - strayMicro, n),
+      breakEvenNetPerTradeMicro: breakEven,
       hostingShareOfBankrollPerMonthBps: Number((perMonth * 10_000n) / (bankroll as bigint)),
       netAfterHostingMicro: allInMicro - hostingMicro,
     },
+    atBankrolls,
     dailyReturns: [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([day, v]) => ({ day, rNet: Number(v) / Number(bankroll) })),
   };
 };

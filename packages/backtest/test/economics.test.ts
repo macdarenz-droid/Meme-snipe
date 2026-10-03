@@ -81,3 +81,22 @@ describe('operating costs (item 7)', () => {
     expect(e.operating.netAfterHostingMicro).toBe(e.usd.allInMicro - 6_000_000n);
   });
 });
+
+describe('operating costs at other bankrolls (item 7, supervisor addition)', () => {
+  test('hosting share and break-even at US$20, 100 and 200, with sizes from the policy scaled to each bankroll', () => {
+    const trades = [trade(), trade({ id: 'p2' })];
+    const e = economics({ trades, stray: [], entryDecisions: 2, solUsd: SERIES, window: { from: T, to: T + 30.4375 * 24 * H }, policy: TRIAL_POLICY, research: RESEARCH_CONFIG });
+    expect(RESEARCH_CONFIG.operating.projectionBankrolls).toEqual([20_000_000n, 100_000_000n, 200_000_000n]);
+    expect(e.atBankrolls.map((b) => b.bankrollMicro)).toEqual([20_000_000n, 100_000_000n, 200_000_000n]);
+    const minShare = (TRIAL_POLICY.capital.minNotional as bigint) * 1_000_000n / (TRIAL_POLICY.capital.bankroll as bigint);
+    for (const b of e.atBankrolls) {
+      // The policy's sizes keep their share of the bankroll.
+      expect(b.minNotionalMicro * 1_000_000n / b.bankrollMicro).toBe(minShare);
+      expect(b.hostingShareOfBankrollPerMonthBps).toBe(Number(6_000_000n * 10_000n / b.bankrollMicro));
+      expect(b.breakEvenNetPerTradeMicro).toBe(3_000_000n);
+      expect(b.breakEvenBpsOfMinTrade).toBe(Number(3_000_000n * 10_000n / b.minNotionalMicro));
+    }
+    expect(e.atBankrolls[2]!.hostingShareOfBankrollPerMonthBps).toBe(300);
+  });
+});
+

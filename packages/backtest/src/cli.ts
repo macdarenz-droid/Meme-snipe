@@ -153,6 +153,7 @@ if (command === 'holdout-register' || command === 'holdout') {
         { mode: 'backtest', label: 'All-in net per entry decision', value: dollars(money.usd.allInPerEntryDecisionMicro), limit: 'above zero', pass: (money.usd.allInPerEntryDecisionMicro ?? 0n) > 0n },
         { mode: 'backtest', label: 'Hosting', value: `${dollars(money.operating.hostingMicro)} over ${money.operating.windowDays.toFixed(2)} days, ${money.operating.hostingShareOfBankrollPerMonthBps / 100}% of the bankroll a month`, limit: 'covered by net', pass: money.operating.netAfterHostingMicro > 0n },
         { mode: 'backtest', label: 'Break-even net per trade', value: dollars(money.operating.breakEvenNetPerTradeMicro), limit: 'below the mean net per trade', pass: money.operating.breakEvenNetPerTradeMicro !== null && (money.usd.conditionalMeanPerTradeMicro ?? 0n) > money.operating.breakEvenNetPerTradeMicro },
+        { mode: 'backtest', label: 'Hosting at other bankrolls', value: money.atBankrolls.map((b) => `US$${Number(b.bankrollMicro) / 1e6}: ${b.hostingShareOfBankrollPerMonthBps / 100}%/month, break-even ${b.breakEvenBpsOfMinTrade === null ? 'no trades' : `${b.breakEvenBpsOfMinTrade / 100}% of a US$${Number(b.minNotionalMicro) / 1e6} trade`}`).join('; '), limit: 'projection', pass: true },
         { mode: 'backtest', label: 'Fill model', value: `${FILL_CONFIG.version}, ${scenario}${FILL_CONFIG.provisional ? ', provisional values' : ''}`, limit: 'measured values', pass: !FILL_CONFIG.provisional },
       ] },
     ],

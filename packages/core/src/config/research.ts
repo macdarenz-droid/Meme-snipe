@@ -27,6 +27,11 @@ export interface ResearchConfig {
   readonly operating: {
     /** The Frankfurt VPS the owner approved (DECISIONS.md 2026-10-03, about US$6/month). */
     readonly hostingUsdPerMonth: MicroUsd;
+    /**
+     * Bankrolls the operating-cost line is also shown at (the owner intends US$100-200 after the proof). A projection
+     * only: the policy's limits stay what the owner set.
+     */
+    readonly projectionBankrolls: readonly MicroUsd[];
   };
 }
 
@@ -34,7 +39,7 @@ const VALUES: ResearchConfig = {
   version: 'research-2',
   s0: { u2WindowFromMs: 60 * MINUTE, u2WindowToMs: 240 * MINUTE, entryMinOutBelowBps: 300, blockedRetryMs: 10 * MINUTE, blockedRetries: 3, endMarginMs: 30 * MINUTE },
   heartbeatBlocks: 150,
-  operating: { hostingUsdPerMonth: usd('6') },
+  operating: { hostingUsdPerMonth: usd('6'), projectionBankrolls: [usd('20'), usd('100'), usd('200')] },
 };
 
 export const RESEARCH_CONFIG: ResearchConfig = deepFreeze(VALUES);
