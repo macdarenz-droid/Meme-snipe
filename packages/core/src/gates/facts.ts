@@ -155,8 +155,11 @@ export interface DeployerFact {
   readonly obs: FactObs;
   readonly coverageFromMs: number;
   readonly mints: readonly { readonly mint: string; readonly createdAtMs: number }[];
-  /** Prior rugs, each dated when the index learned of it. */
-  readonly rugs: readonly { readonly mint: string; readonly knownAtMs: number }[];
+  /**
+   * Prior rugs, each dated when the index learned of it. `kind` is what was observed (the rugs rule that met:
+   * `creator-dump`, a deployer sale; `collapse`, a liquidity collapse), kept apart so H14 can weigh kinds separately.
+   */
+  readonly rugs: readonly { readonly mint: string; readonly knownAtMs: number; readonly kind?: string }[];
   /** Mints the rug labeller could not judge (RUG-1), each dated when the index learned of it. */
   readonly unjudged?: readonly { readonly mint: string; readonly knownAtMs: number }[];
 }
@@ -369,7 +372,7 @@ export const parseInsiders = (v: unknown): InsidersFact | null =>
 export const parseDeployer = (v: unknown): DeployerFact | null =>
   withObs(v) && isMs(v['coverageFromMs'])
   && every(v['mints'], (m): m is DeployerFact['mints'][number] => isObj(m) && isStr(m['mint']) && isMs(m['createdAtMs']))
-  && every(v['rugs'], (r): r is DeployerFact['rugs'][number] => isObj(r) && isStr(r['mint']) && isMs(r['knownAtMs']))
+  && every(v['rugs'], (r): r is DeployerFact['rugs'][number] => isObj(r) && isStr(r['mint']) && isMs(r['knownAtMs']) && (r['kind'] === undefined || isStr(r['kind'])))
   && (v['unjudged'] === undefined || every(v['unjudged'], (r): r is DeployerFact['rugs'][number] => isObj(r) && isStr(r['mint']) && isMs(r['knownAtMs'])))
     ? (v as unknown as DeployerFact) : null;
 

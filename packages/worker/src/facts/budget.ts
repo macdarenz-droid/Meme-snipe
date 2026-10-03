@@ -2,6 +2,7 @@
 // providers' published prices (scheduler/limits.ts, docs/research/data.md §1.2, §7.3). An estimate with its
 // assumptions written out, checked by test/facts-readers.test.ts so a change to a reader or a limit shows here.
 import { ALCHEMY_FREE, HELIUS_FREE, HELIUS_RPC_CREDITS, RUGCHECK_FREE, GOPLUS_FREE } from '../scheduler/limits.ts';
+import { HOLDER_SCANS_PER_DAY } from './readers.ts';
 
 /** Minutes in a 30-day month: the plans' budgets are monthly. */
 export const MONTH_MINUTES = 30 * 24 * 60;
@@ -18,7 +19,28 @@ export const ASSUMPTIONS = {
    * transactions, and per first buyer up to 3 signature pages plus its oldest transaction. Measured on the recorded
    * coin (fixtures/facts.json meta.calls) and bounded by the readers' page caps. */
   insiderCallsOnce: 125,
+  /** Owner-program batches (100 owners each) per complete holder scan: one for a young coin's off-curve owners. */
+  ownerBatchesPerScan: 1,
 } as const;
+
+/** Helius credits for one getProgramAccounts (published price; gpa-probe run 37149567929 used it). */
+export const HELIUS_GPA_CREDITS = 10;
+
+/**
+ * Helius credits of one complete holder scan (`readHoldersAll`): the mint read, one getProgramAccounts and the owner
+ * programs. A refused mint-only scan's indexed fallback is one more getProgramAccounts, and takes a scan of its own
+ * from the daily cap.
+ */
+export const holderScanCredits = (a: typeof ASSUMPTIONS = ASSUMPTIONS): { readonly scan: number; readonly fallback: number } => ({
+  scan: HELIUS_RPC_CREDITS + HELIUS_GPA_CREDITS + a.ownerBatchesPerScan * HELIUS_RPC_CREDITS,
+  fallback: HELIUS_GPA_CREDITS,
+});
+
+/** The most the complete holder scans can spend in a UTC day: every scan of the cap at the dearer of the two kinds. */
+export const holderScanCreditsPerDay = (scansPerDay: number = HOLDER_SCANS_PER_DAY, a: typeof ASSUMPTIONS = ASSUMPTIONS): number => {
+  const c = holderScanCredits(a);
+  return scansPerDay * Math.max(c.scan, c.fallback);
+};
 
 /** Helius credits each evaluation spends: accounts (1), holders (largest, accounts, owners: 3), simulation (1). */
 export const HELIUS_CALLS_PER_EVALUATION = { accounts: 1, holders: 3, sim: 1 } as const;
@@ -61,8 +83,10 @@ export const freePlanPerMinute = () => ({
 export const candidateCapacity = (a: typeof ASSUMPTIONS = ASSUMPTIONS): { readonly helius: number; readonly alchemy: number; readonly rugcheck: number; readonly goplus: number } => {
   const c = perCandidate(a);
   const f = freePlanPerMinute();
+  // The complete holder scans come off the top: the daily cap's worst case, spread over the day.
+  const helius = f.heliusCredits - holderScanCreditsPerDay(HOLDER_SCANS_PER_DAY, a) / (24 * 60);
   return {
-    helius: Math.floor(f.heliusCredits / c.heliusCreditsPerMinute),
+    helius: Math.floor(helius / c.heliusCreditsPerMinute),
     alchemy: Math.floor(f.alchemyCu / c.alchemyCuPerMinute),
     rugcheck: Math.floor(f.rugcheck / c.rugcheckPerMinute),
     goplus: Math.floor(f.goplus / c.goplusPerMinute),

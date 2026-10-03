@@ -21,6 +21,8 @@ done
 # Package: one tar of the day's finished units, split into 1900 MiB parts (under the
 # 2 GiB asset limit). --remove-files deletes each unit file once it is in the tar, so
 # the disk holds the units or their tar, not both (progress is already in the cache).
+t0=$(date +%s)
 (cd "$out" && tar --exclude='*.tmp' --remove-files -cf - units) | split -b 1900m -d -a 2 - "$assets/units-$day.tar.part"
+echo "phase package ($day): $(( $(date +%s) - t0 )) s" | tee -a "$summary"
 { echo "### Disk after packaging ($day)"; echo '```'; df -h "$assets" 2>/dev/null; ls -l "$assets"; echo '```'; } >> "$summary"
 (cd "$assets" && sha256sum units-"$day".tar.part* events-"$day".tar qa-"$day".* parity-"$day".json manifest-"$day".json > "SHA256SUMS-$day")

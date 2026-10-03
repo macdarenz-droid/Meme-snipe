@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Console, opt-in: the live view (ARCHITECTURE.md 17). Installs Tailscale from its signed apt repository
+# (key pinned by fingerprint), joins this server to the owner's tailnet as "zeroed", and publishes the worker
+# API (loopback 127.0.0.1:8788) to the tailnet only, over HTTPS, with Funnel off. No public port opens.
+#   zeroed-tailscale         set up (again): safe to repeat
+#   zeroed-tailscale --off   stop publishing the worker API (Tailscale stays installed)
+# The login link is shown here and sent to the paired Telegram chat, so it can be opened on the phone.
+set -euo pipefail
+umask 022
+. /usr/local/lib/zeroed/common.sh
+TS_FPR=2596A99EAAB33821893C0A79458CA832957F5868
+KEYRING=/usr/share/keyrings/tailscale-archive-keyring.gpg
+
+if [ "${1:-}" = --off ]; then
+  command -v tailscale >/dev/null || { log "Tailscale is not installed; nothing to turn off."; exit 0; }
+  tailscale serve reset
+  rm -f "$STATE_DIR/live_view"
+  log "Live view off: the worker API is no longer published to the tailnet."
+  exit 0
+fi
+[ $# = 0 ] || { log "Usage: zeroed-tailscale [--off]"; exit 2; }
+
+if ! command -v tailscale >/dev/null; then
+  log "Installing Tailscale from pkgs.tailscale.com"
+  got="$(gpg --show-keys --with-colons /etc/zeroed/tailscale-archive.asc 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')"
+  [ "$got" = "$TS_FPR" ] || { log "Stopped: the Tailscale signing key does not match its pinned fingerprint."; exit 1; }
+  gpg --batch --yes --dearmor -o "$KEYRING.new" /etc/zeroed/tailscale-archive.asc
+  chmod 0644 "$KEYRING.new"
+  mv -f "$KEYRING.new" "$KEYRING"
+  printf 'deb [signed-by=%s] https://pkgs.tailscale.com/stable/ubuntu noble main\n' "$KEYRING" > /etc/apt/sources.list.d/tailscale.list
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null
+  apt-get -o DPkg::Lock::Timeout=600 install -y -q --no-install-recommends tailscale >/dev/null
+fi
+systemctl enable --now tailscaled >/dev/null
+
+state() { tailscale status --json 2>/dev/null | jq -r '.BackendState // "NoState"'; }
+if [ "$(state)" != Running ]; then
+  out="$(mktemp)"
+  trap 'rm -f "$out"; [ -z "${up_pid:-}" ] || kill "$up_pid" 2>/dev/null || true' EXIT
+  # No Tailscale SSH, no routes or DNS taken from the tailnet: the server only offers the one HTTPS page.
+  tailscale up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m >"$out" 2>&1 &
+  up_pid=$!
+  url=""
+  for _ in $(seq 1 60); do
+    url="$(grep -Eo 'https://login\.tailscale\.com/[A-Za-z0-9/._-]+' "$out" | head -1 || true)"
+    [ -z "$url" ] && [ "$(state)" != Running ] || break
+    sleep 1
+  done
+  if [ -n "$url" ]; then
+    log ""
+    log "  Open this link and log in to Tailscale:  $url"
+    log ""
+    notify "Zeroed host: open this link and log in to Tailscale to add the server to your tailnet: $url" && log "(The link was also sent to your Telegram chat.)" || true
+  fi
+  wait "$up_pid" || { log "Stopped: Tailscale login did not finish ($(tail -1 "$out"))."; exit 1; }
+  up_pid=""
+fi
+
+tailscale funnel --https=443 off >/dev/null 2>&1 || true
+tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >/dev/null
+if ! tailscale serve status --json | serve_ok; then
+  log "Stopped: tailscale serve is not publishing only the worker API with Funnel off. Run zeroed-tailscale --off and check."
+  exit 1
+fi
+name="$(tailscale status --json | jq -r '.Self.DNSName // empty' | sed 's/\.$//')"
+printf '%s\n' "${name:-unknown}" > "$STATE_DIR/live_view"
+log "Live view: https://$name (your tailnet only, HTTPS, Funnel off)."
