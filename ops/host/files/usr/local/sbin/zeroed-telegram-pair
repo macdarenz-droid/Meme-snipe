@@ -2,24 +2,50 @@
 # Locks the server to the owner's Telegram chat. While a pairing code is pending, reads the bot's messages
 # (getUpdates). "/pair <code>" with the right code stores that chat id (encrypted, root-only) and replies
 # "Paired". A wrong code invalidates the pending code: a new one comes only from the console
-# (zeroed-pair-code). Every other message is ignored. Never prints a value; never set -x.
+# (zeroed-pair-code). A code expires after 30 minutes. Every other message is ignored.
+# Re-pairing (a code made on an already-paired server): the current chat stays paired, and keeps getting
+# alerts, until the new /pair succeeds; a wrong code or an expired one leaves it paired. Never prints a value;
+# never set -x.
 set -euo pipefail
 umask 077
 . /usr/local/lib/zeroed/common.sh
 lock
 
+[ -s "$CRED_DIR/telegram_bot_token" ] || exit 0
+was_paired=false
+if paired; then
+  was_paired=true
+  # Paired and no code pending: nothing to read (the watchdog's webhook gets the messages).
+  [ -s "$PAIR_CODE_FILE" ] || exit 0
+fi
+
+# A re-pair ends (success, wrong code or expiry): the webhook comes back.
+repair_done() {
+  [ "$was_paired" = true ] || return 0
+  webhook_try || true
+}
+
+issued_at="$(stat -c %Y "$PAIR_CODE_FILE" 2>/dev/null || echo 0)"
+if [ -s "$PAIR_CODE_FILE" ] && pair_code_expired "$issued_at" "$(date +%s)"; then
+  rm -f "$PAIR_CODE_FILE"
+  log "The Telegram pairing code expired (30 minutes). Run zeroed-pair-code for a new one."
+  if [ "$was_paired" = true ]; then
+    notify "Zeroed host: the new pairing code expired. This chat stays paired." || true
+    repair_done
+  fi
+  exit 0
+fi
+
 # Until paired, read every message, so one sent while no code was pending never counts against a later code.
-[ -s "$CRED_DIR/telegram_bot_token" ] && ! paired || exit 0
 offset="$(cat "$STATE_DIR/tg_offset" 2>/dev/null || echo 0)"
 get_updates() { tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]'; }
 if ! updates="$(get_updates 2>/dev/null)"; then
   # Re-pairing while the watchdog's webhook is set: Telegram refuses getUpdates then. Turn it off for
-  # pairing; it is set again as soon as the pairing succeeds.
-  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the Telegram webhook while pairing; it comes back once paired." || true
+  # pairing; it is set again as soon as the pairing ends.
+  webhook_off && log "Turned off the Telegram webhook while pairing; it comes back once pairing ends." || true
   updates="$(get_updates)" || { log "Telegram getUpdates failed."; exit 0; }
 fi
 want="$(cat "$PAIR_CODE_FILE" 2>/dev/null || true)"
-issued_at="$(stat -c %Y "$PAIR_CODE_FILE" 2>/dev/null || echo 0)"
 while IFS=$'\t' read -r id date chat kind text; do
   [ -n "$id" ] || continue
   printf '%s\n' "$((id + 1))" > "$STATE_DIR/tg_offset"
@@ -31,15 +57,30 @@ while IFS=$'\t' read -r id date chat kind text; do
   # Private chats only: a group or channel can never become the owner's chat.
   [ "$kind" = private ] && [[ "$chat" =~ ^[0-9]{1,20}$ ]] || continue
   if [ "$got" = "$want" ]; then
+    if [ "$was_paired" = true ]; then
+      notify "Zeroed host: a new chat was paired at the console. Alerts go there from now on." || true
+    fi
     printf '%s' "$chat" | store_cred telegram_chat_id
     rm -f "$PAIR_CODE_FILE"
     log "Paired with the owner's Telegram chat."
     notify "Paired. Zeroed alerts come to this chat only." || true
-    set_webhook || log "Could not set the Telegram webhook for the watchdog."
-    systemctl start zeroed-worker.service || true
+    webhook_try || true
+    if [ "$was_paired" = false ]; then
+      systemctl start zeroed-worker.service || true
+    elif worker_busy; then
+      # The worker reads the chat at start; it moves at the next safe moment (zeroed-check).
+      : > "$STATE_DIR/worker_restart_pending"
+      log "Worker restart for the new chat waits for the dry run to end and open intents to settle."
+    else
+      systemctl try-restart zeroed-worker.service || true
+    fi
   else
     rm -f "$PAIR_CODE_FILE"
     log "Wrong pairing code sent in Telegram; that code no longer works. Run zeroed-pair-code for a new one."
     send_to "$chat" "Code not accepted. Get a new one at the server console." || true
+    if [ "$was_paired" = true ]; then
+      notify "Zeroed host: a wrong pairing code was sent, so the new pairing was cancelled. This chat stays paired." || true
+      repair_done
+    fi
   fi
 done < <(printf '%s' "$updates" | jq -r '.result[]? | [(.update_id | tostring), ((.message.date // 0) | tostring), ((.message.chat.id // "-") | tostring), ((.message.chat.type // "-") | tostring), ((.message.text // "-") | gsub("[\t\n]"; " "))] | @tsv')
