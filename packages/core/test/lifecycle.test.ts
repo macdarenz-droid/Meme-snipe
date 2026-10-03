@@ -459,3 +459,63 @@ describe('late landings after an intent ended', () => {
     expect(!isIllegal(tick) && tick.effects).toEqual([{ type: 'reconcile_balances', intentId: E1 }]);
   });
 });
+
+describe('clearing a landing reported on a dropped fork', () => {
+  /** An abandoned entry (last valid height 1,000) whose signature was then reported as landed at confirmed. */
+  const reported = (): Book => run(emptyBook(CONFIG), [
+    ...entryToSubmitted(1, 1_000n),
+    on(E1, { type: 'status', signature: sig(1), result: 'not_found', commitment: null, blockHeight: 1_001n, searchedHistory: true }),
+    on(E1, { type: 'reconcile', fills: [], blockHeight: 1_001n }),
+    on(E1, { type: 'abandon' }),
+    on(E1, { type: 'status', signature: sig(1), result: 'succeeded', commitment: 'confirmed', blockHeight: 1_002n, searchedHistory: false }),
+  ]).book;
+  const proof = { balances: 'unchanged', commitment: 'finalized', status: 'not_found', searchedHistory: true, finalizedBlockHeight: 1_050n } as const;
+  const clear = (p: Partial<typeof proof> | Record<string, unknown> = {}): BookEvent =>
+    ({ type: 'orphan_cleared', signature: sig(1), proof: { ...proof, ...p } } as BookEvent);
+
+  test('cleared with finalized proof: the hold lifts, with an alert, and nothing is booked', () => {
+    const before = reported();
+    expect(canOpenNewEntry(before)).toEqual({ ok: false, reasons: ['unbooked_landing'] });
+    const { book, effects } = run(before, [clear()]);
+    expect(book.orphans).toEqual({});
+    expect(effects).toContainEqual({ type: 'alert', level: 'warn', code: 'orphan_cleared', subject: E1 });
+    expect(book.intents[E1]).toMatchObject({ status: 'abandoned', fills: [] });
+    expect(Object.values(book.positions).every((p) => p.status === 'closed')).toBe(true);
+    expect(canOpenNewEntry(book)).toEqual({ ok: true });
+    // A finalized failure is proof too.
+    expect(run(before, [clear({ status: 'failed', searchedHistory: false })]).book.orphans).toEqual({});
+  });
+
+  test('refused without proof: entries stay blocked', () => {
+    const before = reported();
+    for (const bad of [
+      { commitment: 'confirmed' }, // not final
+      { balances: 'changed' }, // tokens moved: book it with orphan_fill instead
+      { status: 'succeeded' }, // it did land
+      { searchedHistory: false }, // a not-found without history proves nothing
+      { finalizedBlockHeight: 1_000n }, // finalized view not past its last valid height: a landing may not show yet
+    ]) {
+      expect(refused(before, clear(bad))).toMatch(/finalized/);
+    }
+    expect(refused(before, { type: 'orphan_cleared', signature: sig(2), proof })).toMatch(/no unbooked landing/);
+    expect(canOpenNewEntry(before).ok).toBe(false);
+  });
+
+  test('entries unblock only after clearing; exits are never blocked meanwhile', () => {
+    const open = run(openPosition(1_000n), [{ type: 'trigger_exit', positionId: P1, reasons: ['stop'], intentId: X1, quantity: raw(400n) }]).book;
+    const ended = run({ ...open, config: { maxOpenPositions: 9 } }, [
+      on(X1, { type: 'prepare', quote: sellQuote }),
+      on(X1, { type: 'sign', attempt: attempt(X1, 11, 2_000n) }),
+      on(X1, { type: 'submit' }),
+      on(X1, { type: 'status', signature: sig(11), result: 'not_found', commitment: null, blockHeight: 2_001n, searchedHistory: true }),
+      on(X1, { type: 'reconcile', fills: [], blockHeight: 2_001n }),
+      on(X1, { type: 'abandon' }),
+      on(X1, { type: 'status', signature: sig(11), result: 'succeeded', commitment: 'confirmed', blockHeight: 2_002n, searchedHistory: false }),
+    ]).book;
+    expect(refused(ended, { type: 'propose_entry', intent: entryIntent(2) })).toMatch(/unbooked_landing/);
+    expect(run(ended, [{ type: 'trigger_exit', positionId: P1, reasons: ['stop'], intentId: X2 }]).book.intents[X2]!.status).toBe('exposure_reserved');
+    const cleared = run(ended, [{ type: 'orphan_cleared', signature: sig(11), proof: { ...proof, finalizedBlockHeight: 2_050n } }]).book;
+    expect(cleared.positions[P1]).toMatchObject({ status: 'open', quantity: 1_000n, sold: 0n });
+    expect(run(cleared, [{ type: 'propose_entry', intent: entryIntent(2) }]).book.intents['e2']!.status).toBe('candidate');
+  });
+});

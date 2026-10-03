@@ -102,6 +102,10 @@ const generator = (seed: number) => {
     }
     const a = chance(0.7) ? i.attempts[i.attempts.length - 1]! : pick(i.attempts);
     const t = w.truth.get(a.signature);
+    if (isTerminal(i) && t?.outcome !== 'success' && chance(0.1)) {
+      // A confirmed landing on a fork that is later dropped.
+      return { type: 'status', signature: a.signature, result: 'succeeded', commitment: 'confirmed', blockHeight: w.height, searchedHistory: false };
+    }
     if (chance(0.15)) {
       // Fork noise: a processed read may say anything.
       return { type: 'status', signature: a.signature, result: pick(['succeeded', 'failed'] as const), commitment: 'processed', blockHeight: w.height, searchedHistory: false };
@@ -174,12 +178,33 @@ const generator = (seed: number) => {
     return { type: 'orphan_fill', fill: fill(i.intent.id, Number(a.id.slice(1)), w.truth.get(s)!.tokens) };
   };
 
+  /** Clear a pending landing with what the finalized chain shows (finalized height = confirmed - FINALITY). */
+  const clearOrphan = (w: World): BookEvent | null => {
+    const pending = Object.values(w.book.orphans);
+    if (pending.length === 0) return null;
+    const o = pick(pending);
+    const t = w.truth.get(o.signature);
+    const fin = w.height - FINALITY;
+    const landedFinal = t !== undefined && t.outcome !== 'none' && fin >= t.landAt;
+    return {
+      type: 'orphan_cleared',
+      signature: o.signature,
+      proof: {
+        balances: landedFinal && t!.outcome === 'success' ? 'changed' : 'unchanged',
+        commitment: chance(0.9) ? 'finalized' : 'confirmed',
+        status: landedFinal ? (t!.outcome === 'success' ? 'succeeded' : 'failed') : 'not_found',
+        searchedHistory: chance(0.85),
+        finalizedBlockHeight: fin,
+      },
+    };
+  };
+
   const next = (w: World): BookEvent => {
     const intents = Object.values(w.book.intents);
     const positions = Object.values(w.book.positions);
     const roll = r();
     if (roll < 0.06) {
-      const swept = sweep(w);
+      const swept = chance(0.5) ? sweep(w) : clearOrphan(w);
       if (swept) return swept;
     }
     if (roll < 0.08) {
@@ -313,6 +338,7 @@ describe('randomised lifecycle sequences', () => {
     let replacements = 0;
     let lateLandings = 0;
     let orphansBooked = 0;
+    let orphansCleared = 0;
     for (let seed = 1; seed <= SEQUENCES; seed++) {
       const { next, release, chance } = generator(seed);
       const w: World = { book: emptyBook({ maxOpenPositions: 1 + (seed % 3) }), height: 100n, n: 0, truth: new Map(), revealed: new Set() };
@@ -327,7 +353,12 @@ describe('randomised lifecycle sequences', () => {
           if (landingRead) throw new Error(`landing read refused: ${r.reason} (from ${r.from})`);
           continue;
         }
-        if (landingRead && e.event.type === 'status') w.revealed.add(e.event.signature);
+        if (landingRead && e.event.type === 'status' && w.truth.get(e.event.signature)?.outcome === 'success') w.revealed.add(e.event.signature);
+        // A landing is cleared only when the chain says it never succeeded.
+        if (e.type === 'orphan_cleared') {
+          if (w.truth.get(e.signature)?.outcome === 'success') throw new Error('cleared a landing that succeeded on chain');
+          orphansCleared++;
+        }
         if (e.type === 'orphan_fill') orphansBooked++;
         // After any late landing, new entries stay blocked until it is booked.
         if (r.effects.some((f) => f.type === 'reconcile_orphan') && canOpenNewEntry(r.state).ok) throw new Error('entries open with an unbooked landing');
@@ -361,5 +392,6 @@ describe('randomised lifecycle sequences', () => {
     expect(replacements).toBeGreaterThan(100);
     expect(lateLandings).toBeGreaterThan(0); // hidden landings exercise the late-landing paths
     expect(orphansBooked).toBeGreaterThan(50);
+    expect(orphansCleared).toBeGreaterThan(50);
   }, 120_000);
 });
