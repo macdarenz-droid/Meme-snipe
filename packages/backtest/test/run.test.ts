@@ -451,6 +451,31 @@ describe('observation delay (BT-1c item 3 and delay ruling)', () => {
     }
     expect(backlog).toBeGreaterThan(0);
   });
+
+  test('discoveries are held by blackouts too: none arrives inside one, and each keeps at least its drawn lag', () => {
+    const grads = new Map<string, bigint>();
+    for (const r of rows) if (r.kind === 'event' && r.event === 'CompletePumpAmmMigrationEvent') grads.set(r.fields['mint']!, r.slot);
+    // A blackout placed over the synthetic graduations (seconds after midnight UTC).
+    const dark = (blackouts: { durationMs: number; atMsOfDay?: number }[]) => ({ ...FILL_CONFIG, delays: { ...FILL_CONFIG.delays, stress: { ...FILL_CONFIG.delays.stress, blackouts } } });
+    const { r, seen } = watch(opts({ delay: 'stress', fills: dark([{ durationMs: 60_000, atMsOfDay: 5_000 }]) }));
+    const lit = watch(opts({ delay: 'stress', fills: dark([]) })).seen.filter((x) => x.key.startsWith('disc:'));
+    const inside = (t: number) => r.blackouts.some((b) => t >= b.from && t < b.to);
+    const disc = seen.filter((x) => x.key.startsWith('disc:'));
+    expect(disc.length).toBe(grads.size);
+    for (const x of disc) {
+      expect(inside(x.receivedAt)).toBe(false);
+      expect(x.slot).toBeGreaterThan(grads.get(x.key.slice(5))!);
+    }
+    // A discovery that would arrive inside a blackout comes after it ends.
+    let held = 0;
+    for (const x of lit) {
+      const b = r.blackouts.find((w) => x.receivedAt >= w.from && x.receivedAt < w.to);
+      if (b === undefined) continue;
+      held++;
+      expect(disc.find((y) => y.key === x.key)!.receivedAt).toBeGreaterThanOrEqual(b.to);
+    }
+    expect(held).toBeGreaterThan(0);
+  });
 });
 
 describe('rent follows the account-close outcome (BT-1c rent ruling)', () => {

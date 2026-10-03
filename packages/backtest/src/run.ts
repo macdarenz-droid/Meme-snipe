@@ -135,7 +135,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     active: live,
     observe: o.observation === 'recorded' ? null : {
       slots: profile.eventToProcessedSlots + (o.research.decisionCommitment === 'confirmed' ? profile.processedToConfirmedSlots : 0),
-      providerMs: profile.providerMs, blackouts: profile.blackouts.map((b) => b.durationMs), seed: `${o.seed}:feed`,
+      providerMs: profile.providerMs, blackouts: profile.blackouts, seed: `${o.seed}:feed`,
     },
     volumeWindowSlots: scenario.congestion.windowSlots,
     hook: (h) => replay!.hook(h),

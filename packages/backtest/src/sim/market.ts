@@ -16,7 +16,7 @@
 //   sol-usd       the SOL/USD close once it is usable (offchain.ts)
 import { poolAddress, pumpPoolAuthority, toAddress } from '../../../core/src/chain/index.ts';
 import type { FeedEvent, MarketEvent, Moment } from '../../../core/src/engine/index.ts';
-import { createRng, OFF_CHAIN } from '../../../core/src/engine/index.ts';
+import { compareMoments, createRng, OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { type ObservedFees, ShiftedPool } from '../../../core/src/fills/index.ts';
 import type { SeriesBar } from '../dataset/offchain.ts';
 import type { AmmSwapRow, BlockRow, DatasetRow, EventRow } from '../dataset/rows.ts';
@@ -107,7 +107,7 @@ export interface MarketOptions {
    * it), provider-to-worker ms, and blackout durations per UTC day placed from `seed`. Null: the rows carry recorded
    * receipt times, so nothing is added.
    */
-  readonly observe: { readonly slots: number; readonly providerMs: number; readonly blackouts: readonly number[]; readonly seed: string } | null;
+  readonly observe: { readonly slots: number; readonly providerMs: number; readonly blackouts: readonly { readonly durationMs: number; readonly atMsOfDay?: number }[]; readonly seed: string } | null;
   /** Slots per window of the market-volume tally (the fill model's congestion window). */
   readonly volumeWindowSlots: number;
   /** Puts driver work into the replay (the observation release). */
@@ -191,12 +191,24 @@ export class Market {
       this.#now.push(ev);
       return;
     }
-    this.#queue.push({ due: e.moment.slot + BigInt(o.slots), e: ev });
-    if (!this.#armed) this.#arm(e.moment.slot + BigInt(o.slots), e.moment.receivedAt);
+    this.#enqueue(e.moment.slot + BigInt(o.slots), ev);
   }
+
+  /** Queues an observation for its due slot, keeping the queue ordered by due slot (stable). */
+  #enqueue(due: bigint, e: MarketEvent): void {
+    let k = this.#queue.length;
+    while (k > this.#queueAt && this.#queue[k - 1]!.due > due) k--;
+    this.#queue.splice(k, 0, { due, e });
+    if (!this.#armed) this.#arm(this.#queue[this.#queueAt]!.due, e.moment.receivedAt);
+    else if (due < this.#armedAt) this.#arm(due, e.moment.receivedAt);
+  }
+
+  #armedAt = 0n;
 
   #arm(slot: bigint, receivedAt: number): void {
     this.#armed = true;
+    this.#armedAt = slot;
+    // A superseded hook finds the queue head not yet due and re-arms nothing (see #release).
     this.#opts.hook({ id: `obs:${this.#hooks++}`, moment: { slot, txIndex: BLOCK_TX, ixIndex: 1, receivedAt }, run: () => this.#release(slot) });
   }
 
@@ -212,22 +224,28 @@ export class Market {
     if (this.#blackoutDays.has(day)) return;
     this.#blackoutDays.add(day);
     const start = Date.parse(`${day}T00:00:00Z`);
-    o.blackouts.forEach((d, k) => {
-      const at = start + Math.floor((createRng(`${o.seed}:blackout:${day}:${k}`).nextU32() / 2 ** 32) * (86_400_000 - d));
+    o.blackouts.forEach((b, k) => {
+      const d = b.durationMs;
+      const at = start + (b.atMsOfDay ?? Math.floor((createRng(`${o.seed}:blackout:${day}:${k}`).nextU32() / 2 ** 32) * (86_400_000 - d)));
       this.blackouts.push({ from: at, to: at + d });
     });
   }
 
   /** At the end of block `slot` (if it has one): releases every due observation, unless the feed is blacked out. */
   #release(slot: bigint): void {
+    // Only the latest armed hook acts; an earlier one superseded by a sooner due slot does nothing.
+    if (!this.#armed || slot !== this.#armedAt) return;
     this.#armed = false;
     const o = this.#opts.observe!;
     const next = () => (this.#opts.hasRows() ? this.#arm(slot + 1n, this.blockTime * 1000) : this.#drop());
     if (this.slot !== slot) return next();
     const t = this.blockTime * 1000 + o.providerMs;
     if (this.#inBlackout(t)) return next();
-    while (this.#queueAt < this.#queue.length && this.#queue[this.#queueAt]!.due <= slot) {
-      const { e } = this.#queue[this.#queueAt++]!;
+    // Everything due is released in chain order (its own moment), whatever its delay.
+    const batch: MarketEvent[] = [];
+    while (this.#queueAt < this.#queue.length && this.#queue[this.#queueAt]!.due <= slot) batch.push(this.#queue[this.#queueAt++]!.e);
+    batch.sort((a, b) => compareMoments(a.moment, b.moment) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const e of batch) {
       this.#opts.schedule({ ...e, moment: { slot, txIndex: BLOCK_TX, ixIndex: 2 + this.#seq++, receivedAt: t }, value: { ...(e.value as Readonly<Record<string, unknown>>), blockHeight: this.blockHeight } });
     }
     if (this.#queueAt > 4096) {
@@ -345,9 +363,14 @@ export class Market {
       const graduatedAt = row.blockTime * 1000;
       const pool = f['pool'];
       const gmint = f['mint'];
-      // Built when released, so the pool's creation event of the same transaction is known by then.
-      const at: Moment = { slot: row.slot + BigInt(lag), txIndex: BLOCK_TX, ixIndex: 1, receivedAt: graduatedAt + lag * 400 };
-      this.#opts.schedule(this.#market(`d:${gmint}`, at, `disc:${gmint}`, { mint: gmint, pool, graduatedAt, lazy: true }));
+      // Built when released, so the pool's creation event of the same transaction is known by then. With a modelled
+      // feed it goes through the observation queue at its own lag, so a blackout holds it like any other observation.
+      const ev = this.#market(`d:${gmint}`, rowMoment(row), `disc:${gmint}`, { mint: gmint, pool, graduatedAt, lazy: true });
+      if (this.#opts.observe === null) {
+        this.#opts.schedule({ ...ev, moment: { slot: row.slot + BigInt(lag), txIndex: BLOCK_TX, ixIndex: 1, receivedAt: graduatedAt + lag * 400 } });
+      } else {
+        this.#enqueue(row.slot + BigInt(lag), ev);
+      }
     }
     return [];
   }

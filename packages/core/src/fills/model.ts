@@ -59,8 +59,11 @@ export interface DelayProfile {
   readonly processedToConfirmedSlots: number;
   /** Provider to worker: network and decoding, ms. */
   readonly providerMs: number;
-  /** Feed blackouts per UTC day (deterministic times from the run seed); the backlog arrives when each ends. */
-  readonly blackouts: readonly { readonly durationMs: number }[];
+  /**
+   * Feed blackouts per UTC day, each at `atMsOfDay` after midnight or, without it, at a time drawn from the run seed;
+   * the backlog arrives when each ends.
+   */
+  readonly blackouts: readonly { readonly durationMs: number; readonly atMsOfDay?: number }[];
 }
 
 export interface FillScenario {
