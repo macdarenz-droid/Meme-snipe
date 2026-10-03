@@ -10,7 +10,10 @@ import { melDateTime, melTime } from './time.ts';
 const PAGE = 25;
 const SOLSCAN = 'https://solscan.io/tx/';
 
-export function TradeTable({ trades, onSelect }: { trades: TradeRecord[]; onSelect: (t: TradeRecord) => void }) {
+/** The fields the table shows; full trade records and backtest report trades both have them. */
+export type TradeRow = Pick<TradeRecord, 'id' | 'symbol' | 'mint' | 'netUsd' | 'realizedR' | 'sizeUsd' | 'holdSeconds' | 'closedAt' | 'exitReason'> & { costs: { totalUsd: string } };
+
+export function TradeTable<T extends TradeRow>({ trades, onSelect }: { trades: T[]; onSelect?: (t: T) => void }) {
   const [shown, setShown] = useState(PAGE);
   if (trades.length === 0) return <Empty title="No trades" />;
   return (
@@ -33,10 +36,17 @@ export function TradeTable({ trades, onSelect }: { trades: TradeRecord[]; onSele
             {trades.slice(0, shown).map((t) => (
               <tr key={t.id} className="row-link">
                 <td>
-                  <button type="button" className="row-button" onClick={() => onSelect(t)} aria-label={`${t.symbol}, ${formatUsdExact(t.netUsd, true)}, details`}>
-                    <span className="token-symbol">{t.symbol}</span>
-                    <span className="mono muted">{shortAddress(t.mint)}</span>
-                  </button>
+                  {onSelect ? (
+                    <button type="button" className="row-button" onClick={() => onSelect(t)} aria-label={`${t.symbol}, ${formatUsdExact(t.netUsd, true)}, details`}>
+                      <span className="token-symbol">{t.symbol}</span>
+                      <span className="mono muted">{shortAddress(t.mint)}</span>
+                    </button>
+                  ) : (
+                    <span className="token-cell">
+                      <span className="token-symbol">{t.symbol}</span>
+                      <span className="mono muted">{shortAddress(t.mint)}</span>
+                    </span>
+                  )}
                 </td>
                 <td className={`num ${toneOf(t.netUsd)}`}>{formatUsdExact(t.netUsd, true)}</td>
                 <td className="num">{t.realizedR ? formatR(t.realizedR) : '—'}</td>

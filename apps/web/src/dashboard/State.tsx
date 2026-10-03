@@ -7,7 +7,7 @@ const ERROR_TEXT: Record<Extract<Loaded<unknown>, { state: 'error' }>['reason'],
   offline: { title: 'Worker not connected' },
   'mixed-modes': { title: 'Data from another mode', detail: 'Not shown.' },
   'bad-data': { title: 'Data failed checks', detail: 'Not shown.' },
-  failed: { title: 'Could not load', detail: 'Retrying.' },
+  failed: { title: 'Could not load' },
 };
 
 export function Loading({ rows = 3 }: { rows?: number }) {

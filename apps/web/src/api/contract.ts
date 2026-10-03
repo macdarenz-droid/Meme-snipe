@@ -14,16 +14,14 @@
  * - Times are ISO 8601 UTC strings.
  */
 
+import type { BacktestReport, Day, Dec, ExitReason, ExitRule, Iso, ReportGroup, ReportResult, ReportTrade, TradeCosts, Universe, Usd, Venue } from '../../../../packages/core/src/report/index.ts';
+
+// Shared with the backtester; types only, erased from the bundle.
+export type { BacktestReport, Day, Dec, ExitReason, ExitRule, Iso, ReportGroup, ReportResult, ReportTrade, TradeCosts, Universe, Usd, Venue };
+
 export const MODES = ['backtest', 'paper', 'live'] as const;
 export type Mode = (typeof MODES)[number];
 
-/** US dollars, decimal string, at most 6 places: "-12.5", "0.000125". */
-export type Usd = string;
-/** Any exact decimal string: prices, R multiples, ratios. */
-export type Dec = string;
-export type Iso = string;
-/** YYYY-MM-DD, Melbourne day. */
-export type Day = string;
 
 export const TIME_ZONE = 'Australia/Melbourne';
 
@@ -49,8 +47,6 @@ export const STALE_AFTER_SECONDS = 15;
  */
 export const MIN_TRADES: Record<Mode, number> = { backtest: 300, paper: 30, live: 30 };
 
-export type Venue = 'pump-curve' | 'pumpswap';
-export type Universe = 'U1' | 'U2' | 'U3';
 
 /** Hard rejects H1–H16 (§7.1). */
 export type Gate = 'H1' | 'H2' | 'H3' | 'H4' | 'H5' | 'H6' | 'H7' | 'H8' | 'H9' | 'H10' | 'H11' | 'H12' | 'H13' | 'H14' | 'H15' | 'H16';
@@ -133,7 +129,6 @@ export interface DecisionRecord extends Moded {
 
 // Open position ---------------------------------------------------------
 
-export type ExitRule = 'price-stop' | 'thesis-stop' | 'time-stop' | 'take-profit' | 'trail';
 
 export interface PositionRecord extends Moded {
   id: string;
@@ -187,22 +182,9 @@ export interface Fill extends Moded {
   attempts: number;
 }
 
-export interface TradeCosts {
-  venueFeeUsd: Usd;
-  creatorFeeUsd: Usd;
-  priorityFeeUsd: Usd;
-  tipUsd: Usd;
-  networkFeeUsd: Usd;
-  slippageUsd: Usd;
-  /** Token-account rent paid at entry and returned when the account closed. */
-  rentPaidUsd: Usd;
-  rentReturnedUsd: Usd;
-  totalUsd: Usd;
-}
 
 export type CostKind = Exclude<keyof TradeCosts, 'totalUsd' | 'rentPaidUsd' | 'rentReturnedUsd'> | 'rentKeptUsd';
 
-export type ExitReason = ExitRule | 'liquidity-drop' | 'flow-stop' | 'owner-close' | 'blocked';
 
 export interface TradeRecord extends Moded {
   id: string;
@@ -260,43 +242,6 @@ export interface StatsView extends Moded {
   ci95: { lowUsd: Usd; highUsd: Usd } | null;
 }
 
-// Backtest report ------------------------------------------------------
-
-export interface GateCheck {
-  label: string;
-  value: string;
-  limit: string;
-  pass: boolean;
-}
-
-export interface BacktestReport extends Moded {
-  runId: string;
-  engineVersion: string;
-  policyVersion: string;
-  datasetHash: string;
-  window: { from: Iso; to: Iso };
-  holdoutWindow: { from: Iso; to: Iso };
-  replays: { runs: number; identical: boolean };
-  crashes: number;
-  illegalStates: number;
-  unreconciledIntents: number;
-  candidates: number;
-  entries: number;
-  folds: { id: string; from: Iso; to: Iso; trades: number; meanNetUsd: Usd; lowUsd: Usd }[];
-  gates: { gate: 'G0' | 'G1' | 'G2'; state: 'pass' | 'fail' | 'not-run'; checks: GateCheck[] }[];
-  /**
-   * The holdout is sealed until its counts are met (§14). While it is not
-   * `opened`, the app shows counts only and ignores any result fields.
-   */
-  holdout: {
-    state: 'sealed' | 'opened' | 'burned' | 'not-run';
-    entries: Partial<Record<Universe, number>>;
-    required: number | null;
-    meanNetUsd: Usd | null;
-    ci95: { lowUsd: Usd; highUsd: Usd } | null;
-  };
-}
-
 // Endpoints ------------------------------------------------------------
 
 export interface DashboardApi {
@@ -308,7 +253,7 @@ export interface DashboardApi {
   trades(mode: Mode): Promise<Envelope<TradeRecord[]>>;
   charts(mode: Mode): Promise<Envelope<ChartsView>>;
   stats(mode: Mode): Promise<Envelope<StatsView>>;
-  /** The latest finished run; null before the first one. */
+  /** The newest backtest report file; null before the first one. */
   backtestReport(): Promise<Envelope<BacktestReport | null>>;
 }
 

@@ -3,12 +3,16 @@ import { TIME_ZONE } from '../api/contract.ts';
 const dateTime = new Intl.DateTimeFormat('en-AU', { timeZone: TIME_ZONE, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
 const date = new Intl.DateTimeFormat('en-AU', { timeZone: TIME_ZONE, day: 'numeric', month: 'short', year: 'numeric' });
 const time = new Intl.DateTimeFormat('en-AU', { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+const dayKey = new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
 const monthKey = new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit' });
 
 /** All dashboard times are Melbourne time. */
 export const melDateTime = (iso: string) => dateTime.format(new Date(iso));
 export const melDate = (iso: string) => date.format(new Date(iso));
 export const melTime = (iso: string) => time.format(new Date(iso));
+
+/** Melbourne day of a time, YYYY-MM-DD. */
+export const melDay = (iso: string) => dayKey.format(new Date(iso));
 
 /** Current month in Melbourne, YYYY-MM. */
 export const melMonth = (now = new Date()) => monthKey.format(now).slice(0, 7);

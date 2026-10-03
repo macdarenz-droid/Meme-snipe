@@ -6,6 +6,9 @@
 import {
   TIME_ZONE,
   type BacktestReport,
+  type ReportGroup,
+  type ReportResult,
+  type ReportTrade,
   type CalendarMonth,
   type ChartsView,
   type Check,
@@ -28,6 +31,8 @@ import { addUsd, cmpUsd, fromMicro, subUsd, toMicro } from '../lib/money.ts';
 const ENTRY = 500_000_000n; // $500 in micro-dollars
 const MAX_ENTRY = 1_250_000_000n;
 const FAKE_MINT = (n: number) => `FAKEmint${String(n).padStart(4, '0')}xxxxxxxxxxxxxxxxxxxxxxxxxxxx`.slice(0, 44);
+/** A valid base58 string of 44 characters (no 0, O, I or l), for the strictly checked report file. */
+const FAKE_MINT_B58 = (n: number) => `FAKEmint${String(n).padStart(4, '1').replace(/0/g, '9')}${'x'.repeat(32)}`;
 const FAKE_SIG = (n: number) => `FAKEsig${String(n).padStart(5, '0')}${'x'.repeat(76)}`;
 
 function rng(seed: number) {
@@ -314,21 +319,75 @@ const POSITION: PositionRecord = {
   worker: 'watching',
 };
 
-const REPORT: BacktestReport = {
+/** One result block per group, from that group's trades in close order. */
+function reportResult(group: ReportGroup, ts: { closedAt: string; netUsd: string }[]): ReportResult {
+  const sorted = [...ts].sort((x, y) => x.closedAt.localeCompare(y.closedAt));
+  let cum = 0n;
+  let peak = 0n;
+  let dd = 0n;
+  const equity = sorted.map((t) => {
+    cum += toMicro(t.netUsd);
+    peak = cum > peak ? cum : peak;
+    dd = cum - peak < dd ? cum - peak : dd;
+    return { mode: 'backtest' as const, at: t.closedAt, cumNetUsd: fromMicro(cum) };
+  });
+  const by = new Map<string, { net: bigint; n: number }>();
+  for (const t of sorted) {
+    const d = by.get(dayOf(t.closedAt)) ?? { net: 0n, n: 0 };
+    by.set(dayOf(t.closedAt), { net: d.net + toMicro(t.netUsd), n: d.n + 1 });
+  }
+  const n = sorted.length;
+  const mean = n ? fromMicro(cum / BigInt(n)) : null;
+  return {
+    mode: 'backtest',
+    group,
+    trades: n,
+    wins: sorted.filter((t) => cmpUsd(t.netUsd, '0') > 0).length,
+    netUsd: fromMicro(cum),
+    maxDrawdownUsd: fromMicro(dd),
+    meanNetUsd: mean,
+    ci95: mean ? { lowUsd: subUsd(mean, '4.1'), highUsd: addUsd(mean, '4.1') } : null,
+    equity,
+    days: [...by].map(([date, d]) => ({ mode: 'backtest' as const, date, netUsd: fromMicro(d.net), trades: d.n })),
+  };
+}
+
+const S0_TRADES = makeTrades('backtest', 320, BACKTEST_START, 61, 23).map((t) => ({ ...t, id: `s0-${t.id}`, universe: 'U1' as const }));
+
+const reportTrade = (t: TradeRecord, group: ReportGroup): ReportTrade => ({
   mode: 'backtest',
+  id: t.id,
+  group,
+  mint: FAKE_MINT_B58(Number(t.id.split('-').pop())),
+  symbol: t.symbol,
+  venue: t.venue,
+  openedAt: t.openedAt,
+  closedAt: t.closedAt,
+  holdSeconds: t.holdSeconds,
+  entryPriceUsd: t.entryPriceUsd,
+  exitPriceUsd: t.exitPriceUsd,
+  sizeUsd: t.sizeUsd,
+  grossUsd: t.grossUsd,
+  costs: t.costs,
+  netUsd: t.netUsd,
+  realizedR: t.realizedR,
+  exitReason: t.exitReason,
+});
+
+const REPORT: BacktestReport = {
+  schemaVersion: 1,
+  mode: 'backtest',
+  part: 'walk-forward',
+  generatedAt: new Date(BACKTEST_START + 62 * 86_400_000).toISOString(),
   runId: 'bt-2026-10-02-a',
-  engineVersion: 'engine 0.4.1',
-  policyVersion: 'policy-7',
-  datasetHash: 'sha256:9f2c41d0b7e3a85c6e1f4d2a9b0c7e3f5a1d8c6b4e2f0a9d7c5b3e1f8a6d4c2b',
-  window: { from: new Date(BACKTEST_START).toISOString(), to: new Date(BACKTEST_START + 61 * 86_400_000).toISOString() },
-  holdoutWindow: { from: new Date(BACKTEST_START + 61 * 86_400_000).toISOString(), to: new Date(BACKTEST_START + 92 * 86_400_000).toISOString() },
-  replays: { runs: 10, identical: true },
-  crashes: 0,
-  illegalStates: 0,
-  unreconciledIntents: 0,
+  codeCommit: '9f2c41d0b7e3a85c6e1f4d2a9b0c7e3f5a1d8c6b',
+  policyHash: 'sha256:9f2c41d0b7e3a85c6e1f4d2a9b0c7e3f5a1d8c6b4e2f0a9d7c5b3e1f8a6d4c2b',
+  dataset: { id: 'pump-migrations-2026-07', from: new Date(BACKTEST_START).toISOString(), to: new Date(BACKTEST_START + 61 * 86_400_000).toISOString() },
+  engine: { replays: 10, identicalReplays: true, crashes: 0, illegalStates: 0, unreconciledIntents: 0 },
   candidates: 14_800,
   entries: 420,
   folds: [1, 2, 3, 4].map((k) => ({
+    mode: 'backtest' as const,
     id: `F${k}`,
     from: new Date(BACKTEST_START + (k - 1) * 15 * 86_400_000).toISOString(),
     to: new Date(BACKTEST_START + k * 15 * 86_400_000).toISOString(),
@@ -338,28 +397,37 @@ const REPORT: BacktestReport = {
   })),
   gates: [
     {
+      mode: 'backtest',
       gate: 'G0',
       state: 'pass',
       checks: [
-        { label: 'Second-source coverage', value: '97.1%', limit: '≥ 95%', pass: true },
-        { label: 'Identical replays', value: '10 of 10', limit: '10 of 10', pass: true },
-        { label: 'Leak and +1-slot tests', value: 'passed', limit: 'pass', pass: true },
+        { mode: 'backtest', label: 'Second-source coverage', value: '97.1%', limit: '≥ 95%', pass: true },
+        { mode: 'backtest', label: 'Identical replays', value: '10 of 10', limit: '10 of 10', pass: true },
+        { mode: 'backtest', label: 'Leak and +1-slot tests', value: 'passed', limit: 'pass', pass: true },
       ],
     },
     {
+      mode: 'backtest',
       gate: 'G1',
       state: 'fail',
       checks: [
-        { label: 'Walk-forward lower bound', value: '−$1.12', limit: '> $0', pass: false },
-        { label: 'DSR', value: '0.81', limit: '≥ 0.95', pass: false },
-        { label: 'PBO', value: '0.19', limit: '≤ 0.25', pass: true },
-        { label: 'Top 1% of trades', value: '38% of P&L', limit: '≤ 50%', pass: true },
-        { label: 'Largest day', value: '17% of P&L', limit: '≤ 25%', pass: true },
+        { mode: 'backtest', label: 'Walk-forward lower bound', value: '−$1.12', limit: '> $0', pass: false },
+        { mode: 'backtest', label: 'DSR', value: '0.81', limit: '≥ 0.95', pass: false },
+        { mode: 'backtest', label: 'PBO', value: '0.19', limit: '≤ 0.25', pass: true },
+        { mode: 'backtest', label: 'Top 1% of trades', value: '38% of P&L', limit: '≤ 50%', pass: true },
+        { mode: 'backtest', label: 'Largest day', value: '17% of P&L', limit: '≤ 25%', pass: true },
       ],
     },
-    { gate: 'G2', state: 'not-run', checks: [] },
   ],
-  holdout: { state: 'sealed', entries: { U1: 88, U2: 126 }, required: 321, meanNetUsd: null, ci95: null },
+  results: [
+    reportResult('U1', TRADES.backtest.filter((t) => t.universe === 'U1')),
+    reportResult('U2', TRADES.backtest.filter((t) => t.universe === 'U2')),
+    reportResult('S0', S0_TRADES),
+  ],
+  trades: [
+    ...TRADES.backtest.map((t) => reportTrade(t, t.universe)),
+    ...S0_TRADES.map((t) => reportTrade(t, 'S0')),
+  ],
 };
 
 const STATUS: Record<Mode, WorkerStatus> = {

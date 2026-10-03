@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { CalendarMonth, StatsView } from '../src/api/contract.ts';
 import { DataError } from '../src/api/modes.ts';
-import { BacktestReportView } from '../src/dashboard/BacktestReport.tsx';
+import { BacktestReportView, groupMonth } from '../src/dashboard/BacktestReport.tsx';
 import { monthTotals, PnlCalendar } from '../src/dashboard/Calendar.tsx';
 import { Dashboard } from '../src/dashboard/Dashboard.tsx';
 import { headline, Journal, OpenPosition, Stats, StatusFlags } from '../src/dashboard/Sections.tsx';
@@ -15,6 +15,8 @@ import { addUsd } from '../src/lib/money.ts';
 const html = (el: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticMarkup(el);
 const text = (s: string) => s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 const noop = () => {};
+// Server rendering has no window; sheets read one media query on first render.
+Object.assign(globalThis, { window: { matchMedia: () => ({ matches: false, addEventListener: noop, removeEventListener: noop }) } });
 
 describe('results statistics', () => {
   it('shows "Not enough trades" instead of a win rate or average on a small sample', () => {
@@ -113,22 +115,31 @@ describe('decisions, position and status', () => {
 });
 
 describe('backtest report', () => {
-  it('never shows a result from a sealed holdout, even if the worker sends one', () => {
-    const leaked = { ...fixtureReport, holdout: { ...fixtureReport.holdout, meanNetUsd: '9.99', ci95: { lowUsd: '1.11', highUsd: '2.22' } } };
-    const out = text(html(h(BacktestReportView, { report: leaked })));
-    expect(out).not.toContain('9.99');
-    expect(out).not.toContain('1.11');
-    expect(out).toContain('Not proven yet');
-    expect(out).toContain('U1 trades 88 of 321');
+  it('labels the report as Backtest with its part, and shows per-group results', () => {
+    const out = text(html(h(BacktestReportView, { report: fixtureReport })));
+    expect(out).toContain('Backtest Walk-forward');
+    expect(out).toContain('S0 random');
+    expect(out).toContain(fixtureReport.codeCommit.slice(0, 12));
+    expect(out).toContain(fixtureReport.dataset.id);
+    expect(out).not.toMatch(/holdout|G2/i);
   });
 
-  it('says proven only when G2 passed on an opened holdout', () => {
-    const opened = { ...fixtureReport, holdout: { ...fixtureReport.holdout, state: 'opened' as const, meanNetUsd: '2.5', ci95: { lowUsd: '0.4', highUsd: '4.6' } } };
-    expect(text(html(h(BacktestReportView, { report: opened })))).toContain('Not proven yet');
-    const passed = { ...opened, gates: opened.gates.map((g) => (g.gate === 'G2' ? { ...g, state: 'pass' as const } : g)) };
-    const out = text(html(h(BacktestReportView, { report: passed })));
-    expect(out).toContain('Proven');
-    expect(out).toContain('+$0.40 to +$4.60');
+  it('holds back win rate, average and interval for a group below 300 trades', () => {
+    const counts = fixtureReport.results.map((r) => r.trades);
+    expect(counts.some((n) => n >= 300) || counts.every((n) => n < 300)).toBe(true);
+    const small = { ...fixtureReport, results: fixtureReport.results.map((r) => ({ ...r, trades: 299 })) };
+    const out = text(html(h(BacktestReportView, { report: small })));
+    expect(out.match(/Not enough trades/g)).toHaveLength(3 * small.results.length);
+    const big = { ...fixtureReport, results: fixtureReport.results.map((r) => ({ ...r, trades: 300, wins: 150 })) };
+    expect(text(html(h(BacktestReportView, { report: big })))).toContain('50.0%');
+  });
+
+  it('builds the calendar month for one group from the report', () => {
+    const month = fixtureReport.results[0]?.days[0]?.date.slice(0, 7) ?? '';
+    const cal = groupMonth(fixtureReport, 'U1', month);
+    expect(cal.mode).toBe('backtest');
+    expect(cal.days.length).toBeGreaterThan(0);
+    expect(cal.days.reduce((s, d) => s + d.tradeIds.length, 0)).toBe(cal.days.reduce((s, d) => s + d.trades, 0));
   });
 });
 
@@ -151,9 +162,6 @@ describe('section states', () => {
   });
 
   it('the dashboard starts every section in its loading state', () => {
-    // Server rendering has no window; the sheet reads one media query on first render.
-    const media = { matches: false, addEventListener: noop, removeEventListener: noop };
-    Object.assign(globalThis, { window: { matchMedia: () => media } });
     const out = html(h(Dashboard, { api: fixtureApi(), mode: 'paper' }));
     expect(out.match(/aria-label="Loading"/g)?.length).toBeGreaterThan(8);
     expect(out).not.toContain('Backtest report');

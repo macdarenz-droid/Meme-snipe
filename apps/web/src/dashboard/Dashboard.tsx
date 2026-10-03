@@ -91,7 +91,7 @@ export function Dashboard({ api, mode, months, session }: DashboardProps) {
 
       {backtest ? (
         <Section title="Backtest report" className="span-2">
-          <Load loaded={report} isEmpty={(r) => r === null} empty={<Empty title="No backtest run" />} rows={6}>
+          <Load loaded={report} isEmpty={(r) => r === null} empty={<Empty title="No backtest yet" />} rows={6}>
             {(r) => r && <BacktestReportView report={r} />}
           </Load>
         </Section>
