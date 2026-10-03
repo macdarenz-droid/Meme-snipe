@@ -63,6 +63,13 @@ ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
 
+# Repository switches, applied with each reviewed release (ops/host-config.json).
+if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
+  systemctl enable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
+else
+  systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
+fi
+
 # Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
 worker="not started (no keys yet)"
 if [ -s "$CRED_DIR/helius_api_key" ]; then

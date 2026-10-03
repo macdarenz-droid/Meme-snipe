@@ -4,6 +4,7 @@
 import { Evidence, type GateContext } from './evidence.ts';
 import { SOFT_BIGINTS, SOFT_FLAGS, SOFT_NUMBERS, createKey, deployerKey, holdersKey, parseCreate, parseDeployer, parseHolders, parsePool, parseSoft, poolKey, softKey } from './facts.ts';
 import type { GateDeps } from './hard.ts';
+import { createsCoverage } from './deployer-index.ts';
 import { EXCLUDED, concentration, mintAccounts } from './holders.ts';
 import { DAY_MS } from './series.ts';
 
@@ -66,7 +67,12 @@ export const evaluateSoftFeatures = (ctx: GateContext, deps: GateDeps, mint: str
     const now = ctx.now.receivedAt;
     const from = now - policy.gates.deployerRugLookbackDays * DAY_MS;
     features.push({ name: 'indexMints', value: String(dep.fact.mints.filter((m) => m.createdAtMs <= now && m.createdAtMs >= from).length) });
-    features.push({ name: 'indexRugs', value: String(dep.fact.rugs.filter((r) => r.knownAtMs <= now && r.knownAtMs >= from).length) });
+    const rugCov = deps.rugLabeller === undefined
+      ? { covered: false as const, detail: 'no reviewed labeller; RUG-1' }
+      : createsCoverage((k, f, t) => ctx.history(k, f, t), ctx.now, from, 'rugs');
+    features.push(rugCov.covered
+      ? { name: 'indexRugs', value: String(dep.fact.rugs.filter((r) => r.knownAtMs <= now && r.knownAtMs >= from).length) }
+      : { name: 'indexRugs', value: null, note: `rug labels unavailable: ${rugCov.detail}` });
   }
   return { mint, features };
 };

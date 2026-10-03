@@ -52,6 +52,11 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install the locked watchdog tooling (no install scripts run)
+        if: ${{ !cancelled() }}
+        working-directory: ops/watchdog/deploy
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Hand the keys to the server
         if: ${{ !cancelled() }}
         env:
@@ -61,6 +66,9 @@ jobs:
           ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
           JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER: ops/watchdog/deploy/node_modules/.bin/wrangler --config packages/ops/wrangler.toml
         run: bash ops/deploy/publish.sh
 
       - name: Remove the handoff release

@@ -56,6 +56,15 @@ for k in "${API_NAMES[@]}"; do
 done
 
 for k in "${API_NAMES[@]}"; do printf '%s' "${v[$k]}" | store_cred "${k,,}"; done
+# Watchdog (when Deploy had the Cloudflare secrets): its address and the heartbeat key.
+watchdog="${v[WATCHDOG_URL]:-}"
+if [ -n "$watchdog" ] && [[ "$watchdog" =~ ^https://[A-Za-z0-9.-]+\.workers\.dev$ ]] && [ -n "${v[HEARTBEAT_HMAC_KEY]:-}" ]; then
+  printf '%s' "${v[HEARTBEAT_HMAC_KEY]}" | store_cred heartbeat_hmac_key
+  [ -z "${v[TELEGRAM_WEBHOOK_SECRET]:-}" ] || printf '%s' "${v[TELEGRAM_WEBHOOK_SECRET]}" | store_cred telegram_webhook_secret
+  printf 'WATCHDOG_URL=%s\n' "$watchdog" > /etc/zeroed/worker.env.new
+  chmod 0644 /etc/zeroed/worker.env.new
+  mv -f /etc/zeroed/worker.env.new /etc/zeroed/worker.env
+fi
 v=()
 printf '%s\n' "$issued" > "$STATE_DIR/last_issued"
 printf '%s\n' "$digest" > "$STATE_DIR/last_bundle"
@@ -68,6 +77,7 @@ if paired; then
   # Rotation: restart the worker (reconcile first) and tell the owner.
   if systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
   notify "Zeroed server: keys replaced (issue $issued). Worker $w." || true
+  set_webhook || log "Could not set the Telegram webhook for the watchdog."
 else
   [ -s "$PAIR_CODE_FILE" ] || new_pair_code
 fi

@@ -1,0 +1,5 @@
+# scan output and caches live outside git (see docs/research/historical-data.md)
+data/
+dataset/
+*.zst
+scanner/zeroed-scan

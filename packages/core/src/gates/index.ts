@@ -8,3 +8,4 @@ export * from './holders.ts';
 export * from './hard.ts';
 export * from './regime.ts';
 export * from './soft.ts';
+export * from './deployer-index.ts';
