@@ -247,3 +247,22 @@ describe('redactions in recorded files are listed (re-review of #48)', () => {
     expect(manifest.coverage_gaps).toEqual([{ reason: 'values redacted as credentials; a replay of this file differs there', file: expect.stringMatching(/delays-000\.jsonl\.zst$/), redactions: 2 }]);
   });
 });
+
+describe('the delay probe after FACTS-1 (log frames name their commitment)', () => {
+  it('samples a processed log frame, never a confirmed watch\'s copy of the same signature', async () => {
+    const t = tx('pump CreateEvent');
+    const record = recordOf(t);
+    const timers = new ManualTimers(1_000_000);
+    const rows: Readonly<Record<string, unknown>>[] = [];
+    const via = 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
+    const probe = new DelayProbe({ timers, via, everyMs: 60_000, record: (row) => void rows.push(row), confirmed: async () => record, mono: () => 0 });
+    const logs = (at: number, commitment?: 'confirmed'): Frame => ({ seq: 0, receivedAt: at, source: 'helius', backfilled: false, place: { at: 'chain', slot: record.slot }, duplicate: false, body: { type: 'logs', signature: t.signature, slot: record.slot, err: null, via, logs: [], ...(commitment === undefined ? {} : { commitment }) } });
+    probe.frame(logs(1_000_100));
+    probe.frame(logs(1_000_900, 'confirmed'));
+    probe.start();
+    timers.advance(60_000);
+    await settle();
+    expect(rows[0]).toMatchObject({ signature: t.signature, processed_at_ms: 1_000_100, processed_commitment: 'processed' });
+    probe.stop();
+  });
+});

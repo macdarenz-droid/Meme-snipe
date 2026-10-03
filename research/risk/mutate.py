@@ -1,6 +1,6 @@
 """Single-edit mutation testing for packages/core/src/risk (RISK-1 review evidence). Standard library only.
 
-python3 research/risk/mutate.py [--only FILE:LINE,...] [--workers N] [--out DIR]
+python3 research/risk/mutate.py [--only FILE:LINE,...] [--ops NAME,...] [--workers N] [--out DIR] [--files A,B] [--test DIR]
 Each mutant changes one line of evaluate.ts, melbourne.ts or reservation.ts; it is killed when
 `vitest run packages/core/test/risk` fails. Survivors go to DIR/survivors.txt (file:line | operator | line).
 Workers run in copies of the repo under DIR (default: a temporary folder).
@@ -47,6 +47,9 @@ op('drop-minus-term', r'\s-\s[A-Za-z_][\w.]*(\([^()]*\))?', '')
 op('drop-plus-term', r'\s\+\s[A-Za-z_][\w.]*(\([^()]*\))?', '')
 op('drop-or-term', r'\s\|\|\s[^|&)]+?(?=\)|\s\|\||\s&&|;|$)', '')
 op('drop-and-term', r'\s&&\s[^|&)]+?(?=\)|\s\|\||\s&&|;|$)', '')
+# The left operand of a condition that starts an expression (EXIT-1b review: `if (!liq.ok && …)` lost its left term).
+op('drop-and-left', r'(?:(?<=\()|(?<=[=?:]\s))!?[A-Za-z_][\w.]*(\([^()]*\))?\s&&\s', '')
+op('drop-or-left', r'(?:(?<=\()|(?<=[=?:]\s))!?[A-Za-z_][\w.]*(\([^()]*\))?\s\|\|\s', '')
 op('not-drop', r'!(?=[A-Za-z(])', '')
 op('if-false', r'\bif \(', 'if (false && ')
 op('if-true', r'\bif \(', 'if (true || ')
@@ -116,11 +119,17 @@ if __name__ == '__main__':
     a = sys.argv[1:]
     if '--workers' in a: workers = int(a[a.index('--workers') + 1])
     if '--only' in a: only = set(a[a.index('--only') + 1].split(','))
+    ops = set(a[a.index('--ops') + 1].split(',')) if '--ops' in a else None
     if '--out' in a: HERE = a[a.index('--out') + 1]
+    # Other sources and their tests, e.g. --files packages/core/src/exits/rules.ts --test packages/core/test/exits
+    if '--files' in a: FILES = a[a.index('--files') + 1].split(',')
+    if '--test' in a: TEST = a[a.index('--test') + 1]
     os.makedirs(HERE, exist_ok=True)
     ms = mutants()
     if only:
         ms = [m for m in ms if f"{m[0].split('/')[-1]}:{m[1]}" in only]
+    if ops:
+        ms = [m for m in ms if m[2] in ops]
     print(f'{len(ms)} mutants', flush=True)
     for k in range(workers):
         worker_dir(k)

@@ -38,9 +38,15 @@ export class DelayProbe {
   /** Every frame (the worker's onFrame): processed sightings on the sampled watch. */
   frame(f: Frame): void {
     const b = f.body;
+    // The sampled watch's own log frames name their commitment (FACTS-1): only a processed one is a processed arrival.
+    if (b.type === 'logs') {
+      if (b.via === this.#o.via && b.err === null && b.commitment === undefined && !f.backfilled) this.#latest = { signature: b.signature, slot: b.slot, at: f.receivedAt, mono: this.#mono() };
+      return;
+    }
     if (b.type !== 'seen' || b.err !== null) return;
     if (b.via === this.#o.via) {
-      if (!f.backfilled) this.#latest = { signature: b.signature, slot: b.slot, at: f.receivedAt, mono: this.#mono() };
+      // A sighting without log lines (the watch decodes none, or a backfill): processed too, unless its log frame came.
+      if (!f.backfilled && this.#latest?.signature !== b.signature) this.#latest = { signature: b.signature, slot: b.slot, at: f.receivedAt, mono: this.#mono() };
       return;
     }
     const list = this.#others.get(b.signature);
