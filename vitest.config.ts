@@ -10,6 +10,8 @@ const HEAVY = [
   'packages/backtest/test/run.test.ts',
   'packages/backtest/test/study.test.ts',
   'packages/backtest/test/full-study.test.ts',
+  // RES-3: the CLI test writes a zstd fixture dataset (~25 s measured).
+  'packages/backtest/test/research.test.ts',
 ];
 
 export default defineConfig({

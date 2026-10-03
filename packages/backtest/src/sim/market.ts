@@ -77,7 +77,7 @@ export const rowMoment = (row: DatasetRow): Moment =>
 
 const flagOf = (s: string | undefined): boolean | null => (s === 'true' || s === '1' ? true : s === 'false' || s === '0' ? false : null);
 
-const canonicalOf = (f: Readonly<Record<string, string>>): boolean => {
+export const canonicalOf = (f: Readonly<Record<string, string>>): boolean => {
   try {
     if (f['index'] !== '0' || !f['creator'] || !f['base_mint'] || !f['quote_mint'] || !f['pool']) return false;
     const mint = toAddress(f['base_mint']);
