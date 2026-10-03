@@ -4,7 +4,7 @@
 // same answer replayed. A failed or malformed read ingests nothing, so the gate sees no fact and rejects (H16).
 // Chain reads go to Helius at `confirmed` (standard RPC, 1 credit each, data.md §1.2); the gates refuse `processed`.
 import {
-  type Address, NATIVE_MINT, SYSTEM_PROGRAM, decodeBase58, decodeMint, isOnCurve, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
+  type Address, NATIVE_MINT, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, decodeBase58, decodeMint, isOnCurve, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
   pumpPoolAuthority, recordFromRpc, transactionEvents, type RpcTransactionBase64, type TransactionRecord,
 } from '../../../core/src/chain/index.ts';
 import {
@@ -99,7 +99,7 @@ export class FactRpc {
 
   /** Every account of `program` whose bytes at offset 0 are `mint` (token accounts of that mint), in one response. */
   async getProgramAccounts(program: string, mint: string, minContextSlot: bigint, priority: Priority): Promise<{ slot: bigint; accounts: { address: string; owner: string; data: string }[] }> {
-    const r = await this.call('getProgramAccounts', [program, { encoding: 'base64', commitment: 'confirmed', withContext: true, minContextSlot: Number(minContextSlot), filters: [{ memcmp: { offset: 0, bytes: mint } }] }], priority);
+    const r = await this.call('getProgramAccounts', [program, { encoding: 'base64', commitment: 'confirmed', withContext: true, minContextSlot: Number(minContextSlot), filters: holderFilters(program, mint) }], priority);
     const slot = contextSlot(r, 'getProgramAccounts');
     const value = (r as Obj)['value'];
     if (!Array.isArray(value)) throw new ProviderError('helius', 'shape', 'getProgramAccounts value is not an array');
@@ -154,6 +154,19 @@ export class FactRpc {
   }
 }
 
+/**
+ * getProgramAccounts filters that let the node use its mint index rather than scan the program (supervisor ruling):
+ * legacy SPL accounts are exactly 165 bytes; Token-2022 accounts carry AccountType = Account (2) at offset 165. The one-shot
+ * call (never the cursor-paginated V2, which has no cross-page consistency). A Token-2022 account of exactly 165 bytes
+ * (no extensions) would be missed; the exact sum to supply then fails and no holder fact is made, never a pass.
+ */
+export const holderFilters = (program: string, mint: string): readonly Record<string, unknown>[] =>
+  program === TOKEN_2022_PROGRAM
+    ? [{ memcmp: { offset: 0, bytes: mint } }, { memcmp: { offset: 165, bytes: TOKEN_ACCOUNT_TYPE_B58 } }]
+    : [{ dataSize: 165 }, { memcmp: { offset: 0, bytes: mint } }];
+/** Base58 of the single byte 2 (AccountType::Account). */
+export const TOKEN_ACCOUNT_TYPE_B58 = '3';
+
 const contextSlot = (r: unknown, method: string): bigint => {
   if (!isObj(r) || !isObj(r['context']) || !Number.isSafeInteger(r['context']['slot'])) throw new ProviderError('helius', 'shape', `${method} result has no context slot`);
   return BigInt(r['context']['slot'] as number);
@@ -176,9 +189,13 @@ export interface FactReadersOptions {
   /** Jupiter Tokens (the shared main bucket; the `tokens` lane is capped at 6 a minute for P3). */
   readonly jupiter?: ThirdParty & { readonly secrets: Secrets };
   readonly coinbase?: ThirdParty;
-  /** Complete holder scans allowed per UTC day (getProgramAccounts is the costly read). Reached: no scan, H13 abstains. */
+  /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
 }
+
+/** Trial default (supervisor ruling): 100 complete holder scans a UTC day, about 1,200 Helius credits at the published
+ * price; revisit once gpa-probe measures the real cost. */
+export const HOLDER_SCANS_PER_DAY = 100;
 
 export const RUGCHECK_BASE = 'https://api.rugcheck.xyz';
 export const GOPLUS_BASE = 'https://api.gopluslabs.io';
@@ -307,7 +324,7 @@ export class FactReaders {
       this.#scanDay = day;
       this.#scans = 0;
     }
-    if (this.#scans >= (this.#o.holderScansPerDay ?? 0)) {
+    if (this.#scans >= (this.#o.holderScansPerDay ?? HOLDER_SCANS_PER_DAY)) {
       this.outcomes.push({ read: `holders-all:${mint}`, ok: false, detail: 'daily scan cap reached' });
       return false;
     }

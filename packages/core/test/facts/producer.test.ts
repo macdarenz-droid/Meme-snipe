@@ -517,6 +517,15 @@ describe('complete holder set', () => {
     expect(f.accounts.every((a) => (a as unknown as { mint: string }).mint === MINT)).toBe(true);
   });
 
+  it('the indexed Token-2022 filter (AccountType at 165) drops only extension-less accounts: here all four are empty', () => {
+    const typed = hc.gpa.accounts.filter((a) => { const b = Buffer.from(a.data, 'base64'); return b.length > 165 && b[165] === 2; });
+    expect(hc.gpa.accounts.length - typed.length).toBe(4);
+    const f = parseHolders(fact(read({ accounts: typed })))!;
+    expect(f.accounts.reduce((s, a) => s + a.amount, 0n)).toBe(f.supply);
+    // Delegates ride along for GATE-1e.
+    expect(f.accounts.every((a) => 'delegate' in a && 'delegatedAmount' in a)).toBe(true);
+  });
+
   it('a repeated address, a wrong program, a mint read after the scan or a wrong total proves nothing', () => {
     expect(fact(read({ accounts: [...hc.gpa.accounts, hc.gpa.accounts[0]!] }))).toBeUndefined();
     expect(fact(read({ accounts: hc.gpa.accounts.map((a, i) => (i === 0 ? { ...a, owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' } : a)) }))).toBeUndefined();

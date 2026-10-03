@@ -215,8 +215,8 @@ describe('fact readers', () => {
       if (body.method === 'getAccountInfo') return rpcResult({ context: { slot: hc.mint.slot }, value: { owner: hc.mint.owner, data: [hc.mint.data, 'base64'], lamports: 1, executable: false } });
       if (body.method === 'getProgramAccounts') {
         gpaCalls++;
-        const cfg = body.params[1] as { filters: { memcmp: { offset: number; bytes: string } }[]; commitment: string; minContextSlot: number };
-        expect(cfg.filters).toEqual([{ memcmp: { offset: 0, bytes: MINT } }]);
+        const cfg = body.params[1] as { filters: unknown[]; commitment: string; minContextSlot: number };
+        expect(cfg.filters).toEqual([{ memcmp: { offset: 0, bytes: MINT } }, { memcmp: { offset: 165, bytes: '3' } }]);
         expect(cfg.minContextSlot).toBe(hc.mint.slot);
         expect(cfg.commitment).toBe('confirmed');
         return rpcResult({ context: { slot: hc.gpa.slot }, value: hc.gpa.accounts.map((a) => ({ pubkey: a.address, account: { owner: a.owner, data: [a.data, 'base64'], lamports: 1, executable: false } })) });

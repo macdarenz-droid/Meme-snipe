@@ -204,7 +204,8 @@ export const stampCompleteness = (value: unknown): unknown => {
  * mint's program does not own, one that does not decode or is of another mint, an address twice, a mint that can
  * still mint (supply could grow), a mint read after the account read, or balances that do not sum to the supply.
  */
-export const completeHolders = (r: HoldersAllRead): { supply: bigint; coverage: 'all'; completeness: 'complete'; accounts: { mint: string; address: string; owner: string; ownerProgram: string | null; amount: bigint }[] } | null => {
+type CompleteHolder = { mint: string; address: string; owner: string; ownerProgram: string | null; amount: bigint; delegate: string | null; delegatedAmount: bigint };
+export const completeHolders = (r: HoldersAllRead): { supply: bigint; coverage: 'all'; completeness: 'complete'; accounts: CompleteHolder[] } | null => {
   if (r.mintSlot > r.slot) return null;
   let supply: bigint;
   try {
@@ -216,7 +217,7 @@ export const completeHolders = (r: HoldersAllRead): { supply: bigint; coverage: 
   }
   const programs = new Map(r.ownerPrograms.map((o) => [o.owner, o.program]));
   const seen = new Set<string>();
-  const accounts: { mint: string; address: string; owner: string; ownerProgram: string | null; amount: bigint }[] = [];
+  const accounts: CompleteHolder[] = [];
   let sum = 0n;
   for (const a of r.accounts) {
     if (seen.has(a.address) || a.owner !== r.program) return null;
@@ -229,7 +230,8 @@ export const completeHolders = (r: HoldersAllRead): { supply: bigint; coverage: 
     }
     if (t.mint !== r.mint) return null;
     sum += t.amount;
-    if (t.amount > 0n) accounts.push({ mint: r.mint, address: a.address, owner: t.owner, ownerProgram: programs.get(t.owner) ?? null, amount: t.amount });
+    // Delegates ride along for GATE-1e (it attributes min(delegatedAmount, amount) to the delegate in the numerators).
+    if (t.amount > 0n) accounts.push({ mint: r.mint, address: a.address, owner: t.owner, ownerProgram: programs.get(t.owner) ?? null, amount: t.amount, delegate: t.delegate, delegatedAmount: t.delegatedAmount });
   }
   if (sum !== supply) return null;
   accounts.sort((a, b) => (a.address < b.address ? -1 : 1));
