@@ -98,7 +98,7 @@ The owner relayed an outside review of commit addc685 (20 findings). Each findin
 - **Statistics.**
   - G3 scores the paper outcomes of candidates vetoed only live, and passes only when the conservative lower bound stays positive. Too little evidence means extend the run.
   - Cluster sensitivity (multi-day blocks, creator and funder clusters) is required.
-  - The deflated Sharpe ratio counts effective independent trials.
+  - The deflated Sharpe ratio counts effective independent trials. Counting raw correlated trials over-penalises and leaves G2 with too little power. The fix (STATS-1c: effective N by clustering, proven by simulation for a false-positive rate of at most 5% and for power) lets more strategies pass, so it merges only after the owner signs off on that evidence (§14: only the owner loosens a threshold).
   - "Agrees" for the post-upgrade (B5) dry run is defined before the run. Inconclusive is not agreement. STATS-1b.
 - **Study design.**
   - A separate deployment replay runs at the real size: 1 position, 3 entries a day, cooldowns, signal priority.
@@ -108,6 +108,7 @@ The owner relayed an outside review of commit addc685 (20 findings). Each findin
   - Each gate has a completeness manifest.
   - Strategies abstain where the evidence is unaffordable live.
   - BT-2, RES-3.
+- **Dry runs.** The first live run is an S0 shakedown with a paper-only edge setting: it proves the worker, the drills and the simulation, and does not count toward gate items 3 and 4. Live mode refuses that setting. The qualifying 48-hour run starts on the commit that carries BT-2's registered configurations. WORKER-1.
 - **Regime volume.** Our own on-chain volume, computed by the same code for history and live. A gap is unknown, never zero; unknown means the regime is off. FACTS-1.
 - **Rug labels.** The strict rules stay. Observed creator sales and collapses are separate label kinds. A minimum economic collapse size is measured before any relaxation. Transfer-then-sell and linked-wallet dumps are measured. RUG-1c.
 - **Execution shape.** One supported-transaction-shape check is shared by the gates, the backtest and the builders. TX-1b.
