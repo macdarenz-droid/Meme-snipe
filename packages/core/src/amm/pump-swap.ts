@@ -17,6 +17,11 @@ export interface PoolFeeContext {
   readonly feeConfig: FeeConfig;
   /** True when `Pool.creator` is the pump "pool-authority" PDA of the base mint (a graduated pump coin). */
   readonly canonical: boolean;
+  /**
+   * The pool's quote mint class: 'sol' (WSOL, the zero key or the Token-2022 native mint) or 'exotic' (any mint other
+   * than SOL and the listed stables). USDC-quoted pools use stable tiers, which this module does not model: reject them.
+   */
+  readonly quote: 'sol' | 'exotic';
   /** Base mint supply for the tier's market cap (pump-amm `Pool::market_cap` uses the live mint supply). */
   readonly baseSupply: bigint;
   /** False when `Pool.coin_creator` is the default key: no creator fee is charged then. */
@@ -32,11 +37,19 @@ export const effectiveQuoteReserve = (pool: PoolState): bigint => {
   return q;
 };
 
-/** Fee rates for a trade on this pool: canonical pools by pre-trade market-cap tier, others the flat schedule. */
+const isZero = (f: FeeSplit) => f.lp === 0 && f.protocol === 0 && f.creator === 0;
+
+/**
+ * Fee rates for a trade on this pool, as pump-fees `fees_for_quote_mint`: non-canonical pools pay the flat schedule;
+ * canonical SOL pools the tier for the pre-trade market cap; canonical exotic pools the exotic schedule (flat if unset).
+ */
 export const poolFees = (pool: PoolState, ctx: PoolFeeContext): FeeSplit => {
-  const schedule = ctx.canonical
-    ? selectFeeTier(ctx.feeConfig.feeTiers, marketCap(effectiveQuoteReserve(pool), pool.baseReserve, ctx.baseSupply))
-    : ctx.feeConfig.flatFees;
+  const { feeConfig } = ctx;
+  const schedule = !ctx.canonical
+    ? feeConfig.flatFees
+    : ctx.quote === 'sol'
+      ? selectFeeTier(feeConfig.feeTiers, marketCap(effectiveQuoteReserve(pool), pool.baseReserve, ctx.baseSupply))
+      : isZero(feeConfig.exoticFlatFees) ? feeConfig.flatFees : feeConfig.exoticFlatFees;
   const creator = !ctx.creatorFeeCharged ? (0 as Bps) : ctx.creatorFeeOverride !== undefined && ctx.creatorFeeOverride > 0 ? ctx.creatorFeeOverride : schedule.creator;
   return { lp: schedule.lp, protocol: schedule.protocol, creator };
 };
@@ -63,10 +76,11 @@ const assertPool = (pool: PoolState) => {
   if (pool.baseReserve <= 0n || pool.quoteVault <= 0n) throw new RangeError('pool reserves must be > 0');
 };
 
-const buyResult = (pool: PoolState, base: bigint, quote: bigint, fees: FeeSplit): PoolTrade => {
-  const lpFee = feeOf(quote, fees.lp);
-  const protocolFee = feeOf(quote, fees.protocol);
-  const creatorFee = feeOf(quote, fees.creator);
+// Fees default to ceil(quote * bps); exact-quote-in passes the fees it computed before trimming the quote.
+const buyResult = (pool: PoolState, base: bigint, quote: bigint, fees: FeeSplit, feeBase = quote): PoolTrade => {
+  const lpFee = feeOf(feeBase, fees.lp);
+  const protocolFee = feeOf(feeBase, fees.protocol);
+  const creatorFee = feeOf(feeBase, fees.creator);
   return {
     base, quote, lpFee, protocolFee, creatorFee, fees,
     userQuote: quote + lpFee + protocolFee + creatorFee,
@@ -87,21 +101,22 @@ export const poolBuyExactBase = (pool: PoolState, base: bigint, ctx: PoolFeeCont
 };
 
 /**
- * `buy_exact_quote_in`: spend at most `spend`, fees included. Net quote = floor(spend * 10,000 / (10,000 + fee bps)),
- * lowered until net + ceil fees fits in `spend`; base out is priced on net - 1 (pump-swap-sdk `buyQuoteInput`).
+ * `buy_exact_quote_in`: spend at most `spend`, fees included. Net quote = floor(spend * 10,000 / (10,000 + fee bps));
+ * the ceil fees are computed on it, then the net is lowered by any excess so net + fees fits in `spend` (fees are not
+ * recomputed). Base out is priced on net - 1 (pump-swap-sdk `buyQuoteInput`; mainnet events confirm the order).
  */
 export const poolBuyExactQuoteIn = (pool: PoolState, spend: bigint, ctx: PoolFeeContext): PoolTrade => {
   assertPool(pool);
   if (spend <= 1n) throw new RangeError('spend must be > 1');
   const fees = poolFees(pool, ctx);
   const totalBps = BigInt(fees.lp) + BigInt(fees.protocol) + BigInt(fees.creator);
-  let quote = (spend * 10_000n) / (10_000n + totalBps);
-  const over = quote + feeOf(quote, fees.lp) + feeOf(quote, fees.protocol) + feeOf(quote, fees.creator) - spend;
-  if (over > 0n) quote -= over;
+  const untrimmed = (spend * 10_000n) / (10_000n + totalBps);
+  const over = untrimmed + feeOf(untrimmed, fees.lp) + feeOf(untrimmed, fees.protocol) + feeOf(untrimmed, fees.creator) - spend;
+  const quote = over > 0n ? untrimmed - over : untrimmed;
   const input = quote - 1n;
   const eq = effectiveQuoteReserve(pool);
   const base = (pool.baseReserve * input) / (eq + input);
-  return buyResult(pool, base, quote, fees);
+  return buyResult(pool, base, quote, fees, untrimmed);
 };
 
 /** `sell`: exactly `base` in; quote out = floor(effQuote * base / (baseReserve + base)), fees taken from it. */

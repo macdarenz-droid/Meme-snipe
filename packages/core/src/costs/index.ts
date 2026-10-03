@@ -21,8 +21,9 @@ export const BASE_FEE_PER_SIGNATURE = 5_000n;
 export const ROUND_TRIP_ROUNDING_LAMPORTS = 16n;
 
 /**
- * Buy for `spend` lamports (fees included), then sell every token back into the same pre-entry state:
- * the round trip with zero price move. `paid - proceeds === venueFees + impact` exactly.
+ * Buy for `spend` lamports (fees included), then sell every token back at the pre-entry price: the round trip with
+ * zero price move. `paid - proceeds === venueFees + impact` exactly. The exit is priced on the pre-entry reserves,
+ * while the real-reserve checks see the quote our own entry added (otherwise a fresh curve could never be exited).
  */
 export interface RoundTrip {
   readonly spend: bigint;
@@ -41,7 +42,7 @@ export type RoundTripQuoter = (spend: bigint) => RoundTrip;
 export const pumpCurveRoundTrip = (state: CurveState, ctx: CurveFeeContext): RoundTripQuoter => (spend) => {
   const buy = curveBuyExactQuoteIn(state, spend, ctx);
   if (buy.tokens <= 0n) throw new RangeError('spend buys no tokens');
-  const sell = curveSell(state, buy.tokens, ctx);
+  const sell = curveSell({ ...state, realQuoteReserves: state.realQuoteReserves + buy.quote, realTokenReserves: buy.after.realTokenReserves }, buy.tokens, ctx);
   return {
     spend, paid: buy.userQuote, tokens: buy.tokens, proceeds: sell.userQuote,
     entryFees: buy.protocolFee + buy.creatorFee, exitFees: sell.protocolFee + sell.creatorFee,
@@ -52,7 +53,9 @@ export const pumpCurveRoundTrip = (state: CurveState, ctx: CurveFeeContext): Rou
 export const pumpSwapRoundTrip = (pool: PoolState, ctx: PoolFeeContext): RoundTripQuoter => (spend) => {
   const buy = poolBuyExactQuoteIn(pool, spend, ctx);
   if (buy.base <= 0n) throw new RangeError('spend buys no tokens');
-  const sell = poolSell(pool, buy.base, ctx);
+  // Same effective reserve as before entry; the vault holds what the entry added.
+  const added = buy.quote + buy.lpFee;
+  const sell = poolSell({ ...pool, quoteVault: pool.quoteVault + added, virtualQuoteReserves: pool.virtualQuoteReserves - added }, buy.base, ctx);
   return {
     spend, paid: buy.userQuote, tokens: buy.base, proceeds: sell.userQuote,
     entryFees: buy.lpFee + buy.protocolFee + buy.creatorFee, exitFees: sell.lpFee + sell.protocolFee + sell.creatorFee,

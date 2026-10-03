@@ -46,4 +46,6 @@ export interface FeeConfig {
   readonly flatFees: FeeSplit;
   /** Market-cap tiers for SOL-quoted canonical pools and curves. */
   readonly feeTiers: readonly FeeTier[];
+  /** Canonical pools quoted in a mint that is neither SOL nor a listed stable; all-zero means "use flatFees". */
+  readonly exoticFlatFees: FeeSplit;
 }

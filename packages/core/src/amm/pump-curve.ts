@@ -101,8 +101,9 @@ export const curveBuyExactTokens = (state: CurveState, tokens: bigint, ctx: Curv
 
 /**
  * `buy_exact_sol_in` / `buy_exact_quote_in_v2`: spend at most `spend` lamports, fees included.
- * The net amount is floor(spend * 10,000 / (10,000 + fee bps)), lowered until net + ceil fees fits in `spend`;
- * tokens out are priced on net - 1, as the program does (verified on mainnet events).
+ * The net amount is floor(spend * 10,000 / (10,000 + fee bps)); the ceil fees are computed on it, then the net is
+ * lowered by any excess so net + fees fits in `spend` (fees are not recomputed). Tokens out are priced on net - 1.
+ * Verified on mainnet events, which show this order.
  */
 export const curveBuyExactQuoteIn = (state: CurveState, spend: bigint, ctx: CurveFeeContext): CurveTrade => {
   assertTradable(state);
@@ -110,13 +111,13 @@ export const curveBuyExactQuoteIn = (state: CurveState, spend: bigint, ctx: Curv
   const fees = curveFees(state, ctx);
   const totalBps = BigInt(fees.protocol) + BigInt(fees.creator);
   let quote = (spend * 10_000n) / (10_000n + totalBps);
-  const over = quote + feeOf(quote, fees.protocol) + feeOf(quote, fees.creator) - spend;
+  const protocolFee = feeOf(quote, fees.protocol);
+  const creatorFee = feeOf(quote, fees.creator);
+  const over = quote + protocolFee + creatorFee - spend;
   if (over > 0n) quote -= over;
   const input = quote - 1n;
   let tokens = (input * state.virtualTokenReserves) / (state.virtualQuoteReserves + input);
   if (tokens > state.realTokenReserves) tokens = state.realTokenReserves;
-  const protocolFee = feeOf(quote, fees.protocol);
-  const creatorFee = feeOf(quote, fees.creator);
   return {
     tokens, quote, protocolFee, creatorFee,
     userQuote: quote + protocolFee + creatorFee,

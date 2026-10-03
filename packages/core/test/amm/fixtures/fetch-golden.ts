@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 const RPC = process.env['SOLANA_RPC'] ?? 'https://api.mainnet-beta.solana.com';
 const PUMP = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const PUMP_AMM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
+const DEFAULT_KEY = '11111111111111111111111111111111';
 const FEE_CONFIG = { pump: '8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt', amm: '5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx' };
 // Anchor emit_cpi tag, then the event discriminator (pump IDL / pump_amm IDL, pump-public-docs cb188ce).
 const EVENT_IX_TAG = 'e445a52e51cb9a1d';
@@ -163,11 +164,11 @@ const rpc = async (method: string, params: unknown[]): Promise<any> => {
 
 type Captured = { venue: 'pump' | 'pumpswap'; kind: 'trade' | 'buy' | 'sell'; signature: string; slot: number; blockTime: number | null; eventIndex: number; ixData: string | null; event: Fields };
 
-const capture = async (program: string, pages: number): Promise<Captured[]> => {
+const capture = async (program: string, pages: number, source = program): Promise<Captured[]> => {
   const out: Captured[] = [];
   let before: string | undefined;
   for (let p = 0; p < pages; p++) {
-    const sigs = (await rpc('getSignaturesForAddress', [program, { limit: 100, ...(before ? { before } : {}) }])) as { signature: string; err: unknown }[];
+    const sigs = (await rpc('getSignaturesForAddress', [source, { limit: 100, ...(before ? { before } : {}) }])) as { signature: string; err: unknown }[];
     if (sigs.length === 0) break;
     before = sigs[sigs.length - 1]!.signature;
     for (const s of sigs.filter((x) => x.err === null)) {
@@ -217,8 +218,50 @@ const enrichPools = async (file: string) => {
   console.error(`pools: ${Object.keys(pools).length}`);
 };
 
+// Builds golden.json from raw-capture.json: every SOL-quoted, non-mayhem trade with its instruction arguments
+// (the first two u64 after the 8-byte instruction discriminator) and the event fields the tests compare.
+const WSOL = 'So11111111111111111111111111111111111111112';
+const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const CURVE_KEEP = ['mint', 'sol_amount', 'token_amount', 'is_buy', 'virtual_sol_reserves', 'virtual_token_reserves', 'real_sol_reserves', 'real_token_reserves', 'fee_basis_points', 'fee', 'creator', 'creator_fee_basis_points', 'creator_fee', 'ix_name', 'mayhem_mode', 'buyback_fee_basis_points', 'buyback_fee', 'quote_mint'];
+const POOL_DROP = ['user', 'user_base_token_account', 'user_quote_token_account', 'protocol_fee_recipient', 'protocol_fee_recipient_token_account', 'total_unclaimed_tokens', 'total_claimed_tokens', 'current_sol_volume', 'last_update_timestamp', 'track_volume'];
+const ixArgs = (h: string | null): [string, string] | null => {
+  if (!h || h.length < 48) return null;
+  const b = Buffer.from(h, 'hex');
+  return [b.readBigUInt64LE(8).toString(), b.readBigUInt64LE(16).toString()];
+};
+const curate = (dir: string) => {
+  const cap = JSON.parse(readFileSync(join(dir, 'raw-capture.json'), 'utf8')) as { rpc: string; fetchedAt: string; pools: Record<string, Fields>; events: Captured[] };
+  const curve = cap.events.filter((e) => e.venue === 'pump' && e.event['mayhem_mode'] === false && [DEFAULT_KEY, WSOL].includes(e.event['quote_mint'] as string))
+    .flatMap((e) => { const args = ixArgs(e.ixData); return args ? [{ signature: e.signature, slot: e.slot, ixName: e.event['ix_name'], args, event: Object.fromEntries(CURVE_KEEP.map((k) => [k, e.event[k]])) }] : []; });
+  const pumpswap = cap.events.filter((e) => e.venue === 'pumpswap')
+    .flatMap((e) => {
+      const pool = cap.pools[e.event['pool'] as string];
+      const args = ixArgs(e.ixData);
+      // USDC pools pay stable tiers, which the quote module does not model; other quote mints pay the exotic schedule.
+      if (!pool || !args || pool['is_mayhem_mode'] || pool['quote_mint'] === USDC) return [];
+      return [{ signature: e.signature, slot: e.slot, kind: e.kind, ixName: e.kind === 'sell' ? 'sell' : e.event['ix_name'], args,
+        event: Object.fromEntries(Object.entries(e.event).filter(([k]) => !POOL_DROP.includes(k))),
+        pool: { address: e.event['pool'], canonical: pool['canonical'], quote: pool['quote_mint'] === WSOL ? 'sol' : 'exotic', quote_mint: pool['quote_mint'], creator_fee_bps: pool['creator_fee_bps'], base_mint: pool['base_mint'], account_slot: pool['slot'] } }];
+    });
+  const out = { source: cap.rpc, fetchedAt: cap.fetchedAt, selection: 'every successful non-mayhem trade in the captured pages: SOL-quoted curves; PumpSwap pools quoted in SOL or an exotic mint (USDC excluded)', curve, pumpswap };
+  writeFileSync(join(dir, 'golden.json'), JSON.stringify(out, null, 1));
+  console.error(`golden: ${curve.length} curve, ${pumpswap.length} pumpswap`);
+};
+
 const main = async () => {
   const dir = dirname(fileURLToPath(import.meta.url));
+  if (process.argv[2] === 'curate') return curate(dir);
+  if (process.argv[2] === 'add-pool' || process.argv[2] === 'more-curve') {
+    // Appends one pool's recent trades (e.g. a pool found with negative virtual_quote_reserves), or N more pages of curve trades.
+    const file = join(dir, 'raw-capture.json');
+    const cap = JSON.parse(readFileSync(file, 'utf8')) as { events: Captured[] };
+    const seen = new Set(cap.events.map((e) => `${e.signature}:${e.eventIndex}:${e.venue}`));
+    const fresh = process.argv[2] === 'add-pool' ? await capture(PUMP_AMM, 1, process.argv[3]!) : await capture(PUMP, Number(process.argv[3] ?? '1'));
+    const added = fresh.filter((e) => !seen.has(`${e.signature}:${e.eventIndex}:${e.venue}`));
+    writeFileSync(file, JSON.stringify({ ...cap, events: [...cap.events, ...added] }, null, 1));
+    console.error(`added ${added.length} events`);
+    return enrichPools(file);
+  }
   if (process.argv[2] === 'pda-selftest') {
     // Known addresses from the research notes: pump Global and the PumpSwap FeeConfig.
     console.log(findPda([new TextEncoder().encode('global')], PUMP) === '4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf',
