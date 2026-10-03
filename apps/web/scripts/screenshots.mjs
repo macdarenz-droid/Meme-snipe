@@ -1,0 +1,104 @@
+// Screenshots of every screen and the open Deposit sheet, in both themes, at
+// 1440px and 390px, plus a reduced-motion check. Uses the machine's Playwright
+// and Chromium (PLAYWRIGHT_BROWSERS_PATH); it is not a project dependency.
+import { execSync } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { createServer } from 'vite';
+
+const root = new URL('..', import.meta.url).pathname;
+const out = join(root, 'screenshots');
+mkdirSync(out, { recursive: true });
+
+const require = createRequire(import.meta.url);
+let playwright;
+try {
+  playwright = require('playwright');
+} catch {
+  playwright = require(join(execSync('npm root -g').toString().trim(), 'playwright'));
+}
+const executablePath = process.env.CHROMIUM_PATH ?? undefined;
+
+const server = await createServer({ root, server: { port: 5199, strictPort: true }, logLevel: 'error' });
+await server.listen();
+const base = 'http://localhost:5199/';
+
+const browser = await playwright.chromium.launch(executablePath ? { executablePath } : {});
+const THEMES = ['paper', 'black'];
+const WIDTHS = [
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: 'mobile', width: 390, height: 844 },
+];
+const SHOTS = [
+  { name: 'home', hash: '#/home' },
+  { name: 'snipe', hash: '#/snipe' },
+  { name: 'wallet', hash: '#/wallet' },
+  { name: 'deposit', hash: '#/wallet', open: 'Deposit' },
+  { name: 'withdraw', hash: '#/wallet', open: 'Withdraw' },
+  { name: 'fixtures', hash: '#/dev/fixtures' },
+  { name: 'trade-detail', hash: '#/dev/fixtures', openTrade: true },
+];
+
+const files = [];
+const problems = [];
+for (const theme of THEMES) {
+  for (const w of WIDTHS) {
+    const context = await browser.newContext({ viewport: { width: w.width, height: w.height }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
+    await context.addInitScript((t) => {
+      try {
+        localStorage.setItem('zeroed.theme', t);
+      } catch {}
+    }, theme);
+    const page = await context.newPage();
+    page.on('pageerror', (e) => problems.push(`${theme} ${w.name}: ${e.message}`));
+    for (const s of SHOTS) {
+      await page.goto('about:blank');
+      await page.goto(base + s.hash);
+      await page.waitForSelector('.page-head h1');
+      await page.evaluate(() => document.fonts.ready);
+      if (s.open) await page.getByRole('button', { name: s.open, exact: true }).click();
+      if (s.openTrade) await page.locator('.row-button').first().click();
+      if (s.open || s.openTrade) await page.waitForSelector('[role="dialog"]');
+      await page.waitForLoadState('networkidle');
+      await page.waitForTimeout(400);
+      const scroll = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (scroll > 0) problems.push(`${theme} ${w.name} ${s.name}: horizontal page scroll ${scroll}px`);
+      const file = `${s.name}-${theme}-${w.width}.png`;
+      await page.screenshot({ path: join(out, file), fullPage: !(s.open || s.openTrade) });
+      files.push(file);
+    }
+    await context.close();
+  }
+}
+
+// Reduced motion: with the OS setting on, the sheet is in place on the first
+// frame after opening (no slide); with it off, it is still moving.
+async function sheetOffsetAfterOpen(reducedMotion) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion });
+  const page = await context.newPage();
+  await page.goto(base + '#/wallet');
+  await page.waitForSelector('.page-head h1');
+  await page.getByRole('button', { name: 'Deposit', exact: true }).click();
+  await page.waitForSelector('[role="dialog"]');
+  const offset = await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(new DOMMatrix(getComputedStyle(document.querySelector('[role="dialog"]')).transform).m41))),
+      ),
+  );
+  if (reducedMotion === 'reduce') await page.screenshot({ path: join(out, 'reduced-motion-deposit-first-frame.png') });
+  await context.close();
+  return offset;
+}
+const reduced = await sheetOffsetAfterOpen('reduce');
+const full = await sheetOffsetAfterOpen('no-preference');
+const motion = { reducedMotionSheetOffsetPx: reduced, normalMotionSheetOffsetPx: full };
+if (reduced !== 0) problems.push(`reduced motion: sheet offset ${reduced}px on the first frames, expected 0`);
+if (!(full > 0)) problems.push(`normal motion: sheet offset ${full}px, expected it to be sliding in`);
+
+writeFileSync(join(out, 'report.json'), JSON.stringify({ files, motion, problems }, null, 2) + '\n');
+await browser.close();
+await server.close();
+console.log(JSON.stringify({ count: files.length, motion, problems }, null, 2));
+if (problems.length) process.exit(1);

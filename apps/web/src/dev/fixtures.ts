@@ -14,7 +14,8 @@ const rand = () => {
   return (seed - 1) / 2147483646;
 };
 
-const EXITS = ['Target hit', 'Stop hit', 'Time limit', 'Liquidity dropped', 'Stop hit'];
+const WIN_EXITS = ['Target hit', 'Time limit'];
+const LOSS_EXITS = ['Stop hit', 'Liquidity dropped', 'Time limit'];
 
 const trades: TradeView[] = Array.from({ length: 34 }, (_, i) => {
   const day = 1 + Math.floor(i * 0.85);
@@ -37,7 +38,7 @@ const trades: TradeView[] = Array.from({ length: 34 }, (_, i) => {
     feesUsd: fees,
     netUsd: Number((gross - fees).toFixed(2)),
     reasonIn: 'Fixture: liquidity, holder spread and costs inside limits.',
-    reasonOut: EXITS[i % EXITS.length] ?? 'Stop hit',
+    reasonOut: (gross - fees > 0 ? WIN_EXITS[i % 2] : LOSS_EXITS[i % 3]) ?? 'Stop hit',
     holdSeconds: hold,
     entryTx: null,
     exitTx: null,

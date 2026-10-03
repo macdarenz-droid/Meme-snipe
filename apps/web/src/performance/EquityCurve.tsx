@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
 import { Empty } from '../components/ui.tsx';
 import { formatDateTime, formatUsd } from '../lib/format.ts';
 import type { EquityPointView } from './types.ts';
@@ -17,9 +17,10 @@ export function drawdowns(points: EquityPointView[]): number[] {
 
 function useWidth<T extends HTMLElement>() {
   const ref = useRef<T>(null);
-  const [width, setWidth] = useState(600);
-  useEffect(() => {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
     if (!ref.current) return;
+    setWidth(Math.max(240, Math.floor(ref.current.getBoundingClientRect().width)));
     const ro = new ResizeObserver(([e]) => e && setWidth(Math.max(240, Math.floor(e.contentRect.width))));
     ro.observe(ref.current);
     return () => ro.disconnect();
@@ -31,6 +32,8 @@ function useWidth<T extends HTMLElement>() {
 export function EquityCurve({ points }: { points: EquityPointView[] }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
+
+  if (points.length >= 2 && width === 0) return <div ref={ref} className="equity" style={{ minHeight: EQ_H + DD_H + 48 }} />;
 
   if (points.length < 2) {
     return (
