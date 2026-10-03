@@ -90,6 +90,13 @@ const closeFact = (gap: TradeGap, live: Moment, complete: boolean, n: number): M
 };
 
 export const fillTradeGaps = async (o: FillOptions): Promise<{ readonly fills: readonly GapFill[]; readonly creditsUsed: number }> => {
+  // As-of: the close is dated from these moments, so neither may be after the process start (SEED-1). Checked for
+  // every gap before any call, so a refused fill spends nothing.
+  for (const g of o.gaps) {
+    for (const [what, m] of [['liveStart', g.liveStart], ['close.at', g.close.at]] as const) {
+      if (m !== undefined && compareMoments(m, o.asOf) > 0) throw new RangeError(`fill of ${g.pool}: ${what} is dated after the process start`);
+    }
+  }
   // Positions first, then candidates; oldest gap first within each.
   const order = [...o.gaps].sort((a, b) => (a.kind === b.kind ? (a.fromSlot < b.fromSlot ? -1 : a.fromSlot > b.fromSlot ? 1 : 0) : a.kind === 'position' ? -1 : 1));
   let spent = 0;
