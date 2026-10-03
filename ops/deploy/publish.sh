@@ -50,25 +50,8 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   HEARTBEAT_HMAC_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   hook_secret="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   if [ "${GITHUB_ACTIONS:-}" = true ]; then echo "::add-mask::$HEARTBEAT_HMAC_KEY"; echo "::add-mask::$hook_secret"; fi
-  # The account needs a workers.dev subdomain once; register one if there is none. The API call needs
-  # "Workers Scripts Write", which the "Edit Cloudflare Workers" token template includes.
-  cf() { # METHOD PATH [JSON]; the token goes to curl on stdin (-K -), never in argv
-    printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN" |
-      curl -sS -m 30 -K - -X "$1" -H 'content-type: application/json' ${3:+--data "$3"} "${CLOUDFLARE_API_URL:-https://api.cloudflare.com/client/v4}$2"
-  }
-  sub="$(cf GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | jq -r 'select(.success == true) | .result.subdomain // empty' 2>/dev/null || true)"
-  if [ -z "$sub" ]; then
-    for _ in 1 2 3; do
-      try="zeroed-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-      reply="$(cf PUT "/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" "{\"subdomain\":\"$try\"}" || true)"
-      if [ "$(printf '%s' "$reply" | jq -r '.success // false' 2>/dev/null)" = true ]; then sub="$try"; break; fi
-      errs="$(printf '%s' "$reply" | jq -r '[.errors[]? | "\(.code) \(.message)"] | join("; ")' 2>/dev/null || true)"
-      echo "Registering a workers.dev subdomain failed: ${errs:-no reply}"
-      case "$errs" in *uthentication*|*ermission*|*10000*) die "The Cloudflare token cannot register a workers.dev subdomain: it needs Account > Workers Scripts > Edit." ;; esac
-    done
-    [ -n "$sub" ] || die "Could not register a workers.dev subdomain."
-    echo "Registered the workers.dev subdomain $sub."
-  fi
+  # The account needs a workers.dev subdomain once (registered only if Cloudflare clearly has none).
+  "$here/cf-subdomain.sh" >/dev/null
   out="$($WRANGLER deploy 2>&1 || true)"
   WATCHDOG_URL="$(printf '%s\n' "$out" | grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' | head -n 1 || true)"
   if [ -z "$WATCHDOG_URL" ]; then

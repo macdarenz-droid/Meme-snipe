@@ -1,6 +1,8 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -200,6 +202,17 @@ describe('deploy code', () => {
   }, 30_000);
 });
 
+describe('off-server backup gate', () => {
+  it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
+    expect(JSON.parse(read('ops/host-config.json'))).toEqual({ offsite_backup: false });
+    expect(read('ops/host/install-main.sh')).not.toMatch(/enable[^\n]*zeroed-backup-offsite/);
+    const send = read('ops/host/files/usr/local/sbin/zeroed-backup-offsite');
+    expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeGreaterThan(0);
+    expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeLessThan(send.indexOf('sendDocument'));
+    expect(send).toContain('age -d -i /etc/zeroed/age/host.key "$newest" | age -r "$owner" -o "$copy"');
+  });
+});
+
 describe('heartbeat signers', () => {
   it('sign timestamp, method, path and body, like the watchdog verifies', () => {
     expect(read('ops/host/files/opt/zeroed/stub/worker.mjs')).toContain('.update(`${t}\\nPOST\\n/heartbeat\\n${body}`)');
@@ -320,4 +333,66 @@ exit 0
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+describe('workers.dev subdomain (ops/deploy/cf-subdomain.sh) against a fake Cloudflare API', () => {
+  type Reply = { status: number; body: unknown };
+  async function run(getReply: Reply) {
+    const calls: { method: string; auth: string }[] = [];
+    const server = createServer((req, res) => {
+      calls.push({ method: req.method ?? '', auth: req.headers['authorization'] ?? '' });
+      const r: Reply = req.method === 'GET' ? getReply : { status: 200, body: { success: true, result: { subdomain: 'x' } } };
+      res.writeHead(r.status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(r.body));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const child = spawn('bash', [join(root, 'ops/deploy/cf-subdomain.sh')], {
+      env: { PATH: process.env['PATH'] ?? '', CLOUDFLARE_API_TOKEN: 'TESTcf', CLOUDFLARE_ACCOUNT_ID: 'acc', CLOUDFLARE_API_URL: `http://127.0.0.1:${port}/client/v4` },
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    const status = await new Promise<number | null>((r) => child.on('close', r));
+    server.close();
+    return { status, out, err, calls };
+  }
+
+  it('keeps an existing subdomain and never sends a PUT', async () => {
+    const r = await run({ status: 200, body: { success: true, result: { subdomain: 'owners-pick' } } });
+    expect(r.status).toBe(0);
+    expect(r.out.trim()).toBe('owners-pick');
+    expect(r.calls.map((c) => c.method)).toEqual(['GET']);
+    expect(r.calls[0]?.auth).toBe('Bearer TESTcf');
+  });
+
+  it('stops on a server error, a rate limit or a refused token, without a PUT', async () => {
+    for (const [status, msg] of [
+      [500, 'Could not read the workers.dev subdomain (HTTP 500'],
+      [429, 'Could not read the workers.dev subdomain (HTTP 429'],
+      [403, 'needs Account > Workers Scripts > Edit'],
+    ] as const) {
+      const r = await run({ status, body: { success: false, errors: [{ code: 1, message: 'nope' }] } });
+      expect(r.status, String(status)).not.toBe(0);
+      expect(r.err).toContain(msg);
+      expect(r.calls.map((c) => c.method)).toEqual(['GET']);
+    }
+  });
+
+  it('registers one only when Cloudflare says there is none (error 10007, or an empty result)', async () => {
+    for (const reply of [
+      { status: 404, body: { success: false, errors: [{ code: 10007, message: 'This account does not have a workers.dev subdomain' }] } },
+      { status: 200, body: { success: true, result: { subdomain: null } } },
+    ]) {
+      const r = await run(reply);
+      expect(r.status).toBe(0);
+      expect(r.out.trim()).toMatch(/^zeroed-[0-9a-f]{8}$/);
+      expect(r.calls.map((c) => c.method)).toEqual(['GET', 'PUT']);
+    }
+    // A 404 for another reason is not "none".
+    const other = await run({ status: 404, body: { success: false, errors: [{ code: 7003, message: 'Could not route' }] } });
+    expect(other.status).not.toBe(0);
+    expect(other.calls.map((c) => c.method)).toEqual(['GET']);
+  });
 });

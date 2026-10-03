@@ -25,10 +25,12 @@ elif [ -s "$PAIR_CODE_FILE" ]; then
 elif keys_stored; then
   log "Telegram:  not paired; run zeroed-pair-code"
 fi
-if [ -s "$STATE_DIR/owner_backup_recipient" ]; then
+if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" != true ]; then
+  log "Backups:   hourly here; off-server copy off (waits for the owner's approval)"
+elif [ -s "$STATE_DIR/owner_backup_recipient" ]; then
   log "Backups:   hourly here; daily copy to Telegram ($(cat "$STATE_DIR/last_offsite" 2>/dev/null || echo 'none sent yet'))"
 else
-  log "Backups:   hourly here only; run zeroed-backup-code once for the off-server copy"
+  log "Backups:   hourly here; run zeroed-backup-code once for the off-server copy"
 fi
 log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"

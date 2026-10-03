@@ -918,28 +918,36 @@ log "From the next backup on, backups open with these words. Run this again to r
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup-offsite 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
-# Daily off-server copy of the newest backup: sent as a silent Telegram document to the paired chat (free;
-# Telegram takes files up to 50 MB). Only a backup that the owner's backup code opens is sent, so the copy
-# is useless to anyone without the words. Runs from zeroed-backup-offsite.timer.
+# Daily off-server copy of the newest backup, sent as a silent Telegram document to the paired chat (free;
+# Telegram takes files up to 50 MB). Off unless ops/host-config.json in the deployed release says
+# "offsite_backup": true: sending data to a third party needs the owner's approval (CLAUDE.md), and
+# switching it on is a reviewed commit. The copy is re-encrypted to the owner's backup code only, so
+# nothing on this server (the host key included) can open it. Runs from zeroed-backup-offsite.timer.
 set -euo pipefail
+umask 077
 . /usr/local/lib/zeroed/common.sh
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
+enabled="$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)"
+[ "$enabled" = true ] || { log "Off-server copy is off (ops/host-config.json; needs the owner's approval)."; exit 0; }
 owner="$(cat "$STATE_DIR/owner_backup_recipient" 2>/dev/null || true)"
-[ -n "$owner" ] || { log "No backup code yet (zeroed-backup-code): no off-server copy."; exit 0; }
+[[ "$owner" =~ ^age1[a-z0-9]{58}$ ]] || { log "No backup code yet (zeroed-backup-code): no off-server copy."; exit 0; }
 paired || { log "Telegram not paired: no off-server copy."; exit 0; }
 newest="$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1 || true)"
 [ -n "$newest" ] || { log "No backup yet."; exit 0; }
-# Was it encrypted to the owner's current key? age lists no recipients, so check the bundle date against
-# the time the code was made: only later backups use it.
-[ "$(stat -c %Y "$newest")" -ge "$(stat -c %Y "$STATE_DIR/owner_backup_recipient")" ] || { log "Newest backup predates the backup code: waiting for the next one."; exit 0; }
-size="$(stat -c %s "$newest")"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+copy="$work/$(basename "$newest")"
+# Owner only: open with the host key, encrypt again to the owner's recipient alone (plaintext only in a pipe).
+age -d -i /etc/zeroed/age/host.key "$newest" | age -r "$owner" -o "$copy"
+size="$(stat -c %s "$copy")"
 [ "$size" -le 49000000 ] || { log "Backup is $size bytes, over Telegram's 50 MB: not sent."; notify "Zeroed server: backup too large for the Telegram copy ($size bytes)." || true; exit 1; }
 chat="$(cred telegram_chat_id)"
-tg_chat="$chat" tg_field=form tg sendDocument -o /dev/null -F "document=@$newest" -F "disable_notification=true" \
+tg_chat="$chat" tg_field=form tg sendDocument -o /dev/null -F "document=@$copy" -F "disable_notification=true" \
   -F "caption=Zeroed backup $(basename "$newest" .tar.age). Opens only with your backup code." 2>/dev/null ||
   { log "Sending the off-server copy failed."; exit 1; }
 printf '%s\n' "$(basename "$newest")" > "$STATE_DIR/last_offsite"
-log "Sent $(basename "$newest") ($size bytes) to the paired Telegram chat."
+log "Sent $(basename "$newest") ($size bytes, owner key only) to the paired Telegram chat."
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-new-deploy-code 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1156,10 +1164,12 @@ elif [ -s "$PAIR_CODE_FILE" ]; then
 elif keys_stored; then
   log "Telegram:  not paired; run zeroed-pair-code"
 fi
-if [ -s "$STATE_DIR/owner_backup_recipient" ]; then
+if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" != true ]; then
+  log "Backups:   hourly here; off-server copy off (waits for the owner's approval)"
+elif [ -s "$STATE_DIR/owner_backup_recipient" ]; then
   log "Backups:   hourly here; daily copy to Telegram ($(cat "$STATE_DIR/last_offsite" 2>/dev/null || echo 'none sent yet'))"
 else
-  log "Backups:   hourly here only; run zeroed-backup-code once for the off-server copy"
+  log "Backups:   hourly here; run zeroed-backup-code once for the off-server copy"
 fi
 log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
@@ -1277,6 +1287,13 @@ fi
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
+
+# Repository switches, applied with each reviewed release (ops/host-config.json).
+if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
+  systemctl enable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
+else
+  systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
+fi
 
 # Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
 worker="not started (no keys yet)"
@@ -9129,7 +9146,9 @@ say "Services"
 systemctl daemon-reload
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
-systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-backup-offsite.timer >/dev/null
+systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer >/dev/null
+# Installed but off: the off-server copy goes to a third party (Telegram) and waits for the owner's
+# approval, switched on by a reviewed commit to ops/host-config.json (applied by zeroed-update).
 # Starts once credentials exist (skipped by its ConditionPathExists until then).
 systemctl start zeroed-worker.service || true
 

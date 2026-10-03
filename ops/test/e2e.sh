@@ -295,14 +295,23 @@ BCODE="$(in_c "zeroed-backup-code" | tee "$LOGS/console/backup-code.txt" | sed -
 CODES+=("$BCODE")
 in_c "! grep -rqF '$BCODE' /etc /var/lib/zeroed-host 2>/dev/null" || fail "backup code stored on the server"
 sleep 1
-in_c "systemctl start zeroed-backup.service && systemctl start zeroed-backup-offsite.service" || fail "off-server copy failed"
+# Off by default: nothing goes to Telegram until the owner approves (ops/host-config.json).
+in_c "! systemctl is-enabled zeroed-backup-offsite.timer" >/dev/null 2>&1 || fail "off-server timer enabled without approval"
+in_c "systemctl start zeroed-backup.service && systemctl start zeroed-backup-offsite.service" || fail "off-server copy (off) errored"
+grep -q '"method":"sendDocument"' "$STATE/telegram.jsonl" && fail "a backup was sent before approval"
+in_c "zeroed-status" | grep "off-server copy off (waits for the owner's approval)" >/dev/null || fail "status does not show the copy as off"
+# Stand-in for the reviewed commit that switches it on after the owner says yes.
+in_c "printf '{\"offsite_backup\": true}\n' > /opt/zeroed/current/ops/host-config.json && systemctl start zeroed-backup-offsite.service" || fail "off-server copy failed"
 grep -q "\"method\":\"sendDocument\",\"token_ok\":true,\"chat_id\":\"$T_CHAT\"" "$STATE/telegram.jsonl" || fail "backup not sent to the owner chat"
 printf '%s' "$BCODE" | node "$ROOT/ops/host/files/usr/local/lib/zeroed/derive-key.mjs" --backup >"$E2E/owner-backup.id"
 age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | tar -t | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
+docker cp "$STATE/received-document" "$C:/root/received.age" >/dev/null
+in_c "age -d -i /etc/zeroed/age/host.key /root/received.age >/dev/null 2>&1" && fail "the Telegram copy opens with the host key"
+in_c "rm -f /root/received.age"
 rm -f "$E2E/owner-backup.id"
 in_c "zeroed-status" | grep 'daily copy to Telegram (zeroed-' >/dev/null || fail "status does not show the off-server copy"
 in_c "stat -c %a /var/lib/zeroed-host/owner_backup_recipient" | grep -qx 644 || fail "owner recipient file mode"
-pass "off-server backup: a 6-word backup code shown once (only its public half kept), daily copy sent as a silent Telegram document to the owner chat, opened elsewhere with the words alone"
+pass "off-server backup: off and nothing sent until approved (ops/host-config.json); 6-word backup code shown once (only its public half kept); once on, a silent Telegram document to the owner chat that opens with the words alone and not with the host key"
 
 # ---------- 9b. Watchdog on local wrangler (miniflare, the locked version from ops/watchdog/deploy) with the stub worker's real heartbeats ----------
 WD="$E2E/watchdog"
