@@ -87,7 +87,7 @@ export interface Harness {
 /** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -123,6 +123,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       return o.seed === undefined ? { mode: 'none', creates: [], coverage: [], report: 'test: not seeded' } : o.seed(r);
     },
     seedWaitMs: o.seedWaitMs ?? 1_000,
+    ...(o.seedMaxMs === undefined ? {} : { seedMaxMs: o.seedMaxMs }),
     ...(o.exposureRpc === undefined ? {} : { exposureRpc: o.exposureRpc }),
     ...(o.ops === undefined ? {} : { ops: o.ops }),
     ...(o.cutRpc === undefined ? {} : { cutRpc: o.cutRpc }),

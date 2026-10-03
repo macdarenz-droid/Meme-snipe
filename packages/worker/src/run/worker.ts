@@ -92,6 +92,11 @@ export interface WorkerDeps {
   readonly seed: (o: SeedRequest) => Promise<SeedResult>;
   /** How long the start waits for the live creates watch's first slot before seeding without it. */
   readonly seedWaitMs: number;
+  /**
+   * The longest the start waits for the seed or the downtime fill; past it the downtime reads as a gap. The loop, and
+   * every exit, waits for the seed (rehearsal 37148935094: a slow seed held the start for minutes).
+   */
+  readonly seedMaxMs?: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
   readonly delayProbe?: { readonly confirmed: DelayProbeOptions['confirmed']; readonly via: string; readonly everyMs: number };
   /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
@@ -759,7 +764,12 @@ export class Worker {
     const close = liveWatchToClose(saved.coverage);
     let result: SeedResult = { mode: 'none', creates: [], coverage: [], report: 'not run' };
     try {
-      result = await d.seed({ saved, close, untilSlot, asOf });
+      // Bounded: the loop (and every exit) waits for the seed, so a slow fill gives up and the downtime reads as a gap.
+      const max = d.seedMaxMs;
+      result = await Promise.race([
+        d.seed({ saved, close, untilSlot, asOf }),
+        ...(max === undefined ? [] : [new Promise<never>((_, reject) => d.timers.setTimeout(() => reject(new Error(`no answer within ${max} ms`)), max))]),
+      ]);
     } catch (e) {
       result = { mode: 'none', creates: [], coverage: [], report: `seed failed: ${e instanceof Error ? e.message : 'error'}` };
     }
