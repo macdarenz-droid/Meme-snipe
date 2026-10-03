@@ -336,6 +336,8 @@ No secret ever passes through chat, the repo, logs, analytics or a model prompt,
 | `ALCHEMY_API_KEY` | Second WebSocket provider (shortlist, position) |
 | `JUPITER_API_KEY` | Quotes, `/execute`, Tokens |
 | `TELEGRAM_BOT_TOKEN` | Alerts and `/pause`, `/status` |
+| `DEPLOY_CODE` | One-time 6-word code the server shows at install; the key handoff is encrypted for it, and the server wipes its copy after use (OPS-1a) |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | Deploying the watchdog (OPS-1b) |
 
 - The GitHub Actions dry-run rehearsal (RUN-1) reads them as environment secrets directly; its logs and artifacts never contain them (checked by a test).
 - The VPS receives them through the deploy handoff in OPS-1: encrypted on GitHub to a key that exists only on the host, so the plain values exist only inside GitHub's secret store and on the host (in an encrypted systemd credential readable only by the worker's user).
