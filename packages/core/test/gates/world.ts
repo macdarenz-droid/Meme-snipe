@@ -121,6 +121,8 @@ export const passingFacts = (): Facts => {
   const put = (key: string, value: unknown, moment: Moment) => f.set(key, { value, moment });
   const head = at(T - 300, SLOT - 1n);
   const m = mintFixture(MINT);
+  // FEED-1's creates stream started 30 days ago and has had no gap (GATE-1b coverage).
+  put('coverage:creates:start', { value: { fromSlot: SLOT - 6_000_000n, via: 'logs:creates' }, source: 'worker', backfilled: false, seq: 1 }, at(T - 30 * DAY_MS, SLOT - 6_000_000n));
   put(streamKey('chain'), { obs: obs({ slot: SLOT - 1n }), gapFreeSince: SLOT - 10_000n }, head);
   put(mintKey(MINT), { obs: streamObs(), owner: m.owner, account: m.account }, at(T - 200_000, SLOT - 500n));
   put(poolKey(MINT), { obs: obs(), address: POOL_ADDRESS, owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', pool: POOL, baseVault: BASE_VAULT, quoteVault: QUOTE_VAULT }, head);
@@ -194,7 +196,7 @@ export const contextOf = (facts: Facts, now: Moment = NOW): GateContext => {
     store.record(key, value, moment, key);
   }
   clock.advanceTo(now);
-  return { now: clock.now(), lookup: (key, asOf) => store.lookup(key, asOf) };
+  return { now: clock.now(), lookup: (key, asOf) => store.lookup(key, asOf), history: (key, from, to) => store.history(key, from, to) };
 };
 
 export const session = (over: Partial<PolicySession['policy']['gates']> = {}): PolicySession =>
