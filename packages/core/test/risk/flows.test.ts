@@ -4,10 +4,10 @@
 // in dollars, flow-neutral. Every test here uses a flow; the same figures without the flow are checked alongside.
 import { describe, expect, test } from 'vitest';
 import { TRIAL_POLICY, usd } from '../../src/config/index.ts';
-import { type EntryAllowed, NO_LATCHES, evaluateEntry, evaluateExit, evaluateWithdrawal, maxTradeCosts, opsReserve } from '../../src/risk/index.ts';
+import { type EntryAllowed, NO_LATCHES, economicNav, evaluateEntry, evaluateExit, evaluateWithdrawal, maxTradeCosts, opsReserve } from '../../src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
 import { fixedCosts } from '../../src/costs/index.ts';
-import { DAY_START, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest, codes, trade } from './helpers.ts';
+import { DAY_START, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest, codes, latches, trade } from './helpers.ts';
 
 const ofBpsUsd = (amount: bigint, bps: number) => mulDiv(amount, BigInt(bps), 10_000n, 'floor');
 
@@ -262,11 +262,12 @@ describe('capital is the lower of ledger equity and wallet-marked equity', () =>
     const i = baseInput();
     return { ...i, market: { ...i.market, solBalance: { value: lamports(lamportsFor), atMs: NOW }, solPrice: { value: price, atMs: NOW } } };
   };
-  test('a 30% fall in SOL reaches the kill line: new entries stop', () => {
+  test('a 30% fall in SOL reaches the kill line: the kill switch trips on economic NAV and latches', () => {
     const d = evaluateEntry(walletAt('14'), baseRequest());
-    expect(codes(d)).toContain('wallet_below_kill_line');
+    expect(codes(d)).toEqual(expect.arrayContaining(['kill_switch', 'wallet_below_kill_line']));
     expect(d.snapshot?.walletEquity).toBe(usd('14'));
-    expect(d.trips).toEqual([]); // a price-driven stop is not latched; it lifts when the wallet's value comes back
+    expect(d.snapshot?.nav).toBe(usd('14'));
+    expect(d.trips).toEqual(['kill_switch']); // supervisor, 2026-10-03: economic NAV in both directions, latched
   });
   test('a smaller fall tightens planned risk (R5) and the weekly room before anything trips', () => {
     // $17 of wallet capital: 2.75% is $0.4675, so 1R at a 20% stop (plus the 5% cost ceiling) no longer fits $2;
@@ -293,5 +294,149 @@ describe('capital is the lower of ledger equity and wallet-marked equity', () =>
     // No loss this week; $15 withdrawn leaves $5 of capital: the room is $1, so q + C cannot fit.
     const input = baseInput({ account: account({ flows: [flow(THIS_WEEK, neg(usd('15')))] }) });
     expect(codes(evaluateEntry(input, baseRequest()))).toContain('full_loss_week');
+  });
+});
+
+// ---------- Supervisor refinement (DECISIONS 90fac89): three purposes, three measures ----------
+describe('R10 on economic NAV per unit', () => {
+  // Economic NAV: wallet SOL above the operations floor at the fresh price, plus positions at their executable marks,
+  // gains included. Ledger equity stays $20 in these tests unless a trade says otherwise.
+  const lamportsFor = (usdValue: string) => microUsdToLamports(usd(usdValue), PRICE, 'ceil') + TRIAL_POLICY.reserve.opsFloor;
+  const at = (wallet: string, patch: Parameters<typeof account>[0] = {}, extra: Partial<Parameters<typeof baseInput>[0]> = {}) => {
+    const i = baseInput({ account: account(patch), ...extra });
+    return { ...i, market: { ...i.market, solBalance: { value: lamports(lamportsFor(wallet)), atMs: NOW }, solPrice: { value: PRICE, atMs: NOW } } };
+  };
+  const mark = (atMs: number, nav: string) => ({ atMs, nav: usd(nav) });
+
+  test('a 30% fall from a recorded NAV peak trips and latches, with the ledger flat; one cent less does not', () => {
+    const peak = { navMarks: [mark(LAST_WEEK, '30')] };
+    const d = evaluateEntry(at('21', peak), baseRequest());
+    expect(d.snapshot).toMatchObject({ nav: usd('21'), navHighWaterMark: usd('30'), equity: usd('20') });
+    expect(codes(d)).toContain('kill_switch');
+    expect(d.trips).toEqual(['kill_switch']);
+    expect(evaluateExit(at('21', peak)).trips).toEqual(['kill_switch']);
+    const above = evaluateEntry(at('21.01', peak), baseRequest());
+    expect(codes(above)).not.toContain('kill_switch');
+    expect(above.trips).toEqual([]);
+  });
+
+  test('a withdrawal is priced at NAV: it neither deepens the drawdown nor, as a deposit, hides it', () => {
+    // Peak $30, then $10 withdrawn at a NAV of $25: the mark scales to 30 x 15/25 = $18 and NAV is $15 (16.7% down).
+    const w = { navMarks: [mark(LAST_WEEK - HOUR, '30')], flows: [{ atMs: LAST_WEEK, amount: neg(usd('10')), navBefore: usd('25') }] };
+    const dw = evaluateEntry(at('15', w), baseRequest());
+    expect(dw.snapshot?.navHighWaterMark).toBe(usd('18'));
+    expect(codes(dw)).not.toContain('kill_switch');
+    // Peak $30, NAV $22 when $22 is deposited: the mark scales to 30 x 44/22 = $60, so $42 now is exactly 30% down.
+    const dep = { navMarks: [mark(LAST_WEEK - HOUR, '30')], flows: [{ atMs: LAST_WEEK, amount: usd('22'), navBefore: usd('22') }] };
+    const dd = evaluateEntry(at('42', dep), baseRequest());
+    expect(dd.snapshot?.navHighWaterMark).toBe(usd('60'));
+    expect(dd.trips).toEqual(['kill_switch']);
+    expect(evaluateEntry(at('42.01', dep), baseRequest()).trips).toEqual([]);
+  });
+
+  test('a flow\'s own valuation is an observation: it can set the peak', () => {
+    const f = { flows: [{ atMs: LAST_WEEK, amount: usd('5'), navBefore: usd('30') }] };
+    expect(evaluateEntry(at('24.5', f), baseRequest()).snapshot?.navHighWaterMark).toBe(usd('35'));
+  });
+
+  test('positions count at their executable mark in both directions', () => {
+    const up = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('5'), mark: usd('7'), markAtMs: NOW - 100 };
+    const d = evaluateEntry(at('15', { openPositions: [up], entries: [{ mint: MINT_B, atMs: NOW - HOUR }] }), baseRequest());
+    expect(d.snapshot?.nav).toBe(usd('22'));
+    expect(d.snapshot?.openExposure).toBe(usd('5')); // ledger figures still count no unrealized gain
+  });
+
+  test('no NAV, and so no NAV trip, unless the valuation is consistent', () => {
+    // Each case would trip at $15 against the $30 peak if the NAV were taken; the ledger kill line ($14) is not reached.
+    const peak = [mark(LAST_WEEK, '30')];
+    const stale = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('2'), mark: usd('2'), markAtMs: NOW - 60_000 };
+    const cases: [string, ReturnType<typeof at>][] = [
+      ['an entry still unresolved', at('15', { navMarks: peak, unresolvedEntries: [{ mint: MINT_B }] })],
+      ['a stale position mark', at('15', { navMarks: peak, openPositions: [stale] })],
+      ['a balance read before the latest close', (() => {
+        const i = at('15', { navMarks: peak, closedTrades: [trade(NOW - 100, '0')] });
+        return { ...i, market: { ...i.market, solBalance: { value: i.market.solBalance?.value ?? lamports(0n), atMs: NOW - 200 } } };
+      })()],
+      ['a stale SOL price', (() => {
+        const i = at('15', { navMarks: peak });
+        return { ...i, market: { ...i.market, solPrice: { value: PRICE, atMs: NOW - 60_000 } } };
+      })()],
+    ];
+    for (const [name, input] of cases) {
+      const d = evaluateEntry(input, baseRequest());
+      expect(d.snapshot?.nav, name).toBeNull();
+      expect(d.snapshot?.navHighWaterMark, name).toBeNull();
+      expect(d.trips, name).toEqual([]);
+      expect(evaluateExit(input).trips, name).toEqual([]);
+    }
+    // The same balance read at the close is consistent.
+    expect(evaluateEntry(at('15', { navMarks: peak, closedTrades: [trade(NOW, '0')] }), baseRequest()).trips).toEqual(['kill_switch']);
+  });
+
+  test('an owner re-arm restarts the NAV mark at the first NAV seen at or after it; a deposit never clears the latch', () => {
+    const tripped = { killTrippedAtMs: LAST_WEEK, killRearmedAtMs: THIS_WEEK };
+    const before = [mark(LAST_WEEK - HOUR, '30')];
+    expect(evaluateEntry(at('15', { navMarks: before }, { latches: latches(tripped) }), baseRequest()).snapshot?.navHighWaterMark).toBe(usd('15'));
+    const after = [...before, mark(THIS_WEEK, '18'), mark(THIS_WEEK + HOUR, '16')];
+    const d = evaluateEntry(at('12.6', { navMarks: after }, { latches: latches(tripped) }), baseRequest());
+    expect(d.snapshot?.navHighWaterMark).toBe(usd('18'));
+    expect(d.trips).toEqual(['kill_switch']);
+    // Latched and not re-armed: a deposit that lifts NAV back above the line changes nothing.
+    const latched = latches({ killTrippedAtMs: THIS_WEEK });
+    const dep = { navMarks: before, flows: [{ atMs: THIS_WEEK + HOUR, amount: usd('30'), navBefore: usd('20') }] };
+    expect(codes(evaluateEntry(at('50', dep, { latches: latched }), baseRequest()))).toContain('kill_switch');
+  });
+
+  test('a 10% NAV drawdown returns size to the minimum; 9.99% does not', () => {
+    const peak = { navMarks: [mark(LAST_WEEK, '30')] };
+    const step = { latches: latches({ sizeStepUpApproved: true }) };
+    const reset = evaluateEntry(at('27', peak, step), baseRequest()) as EntryAllowed;
+    expect(reset.caps.map((c) => c.name)).toContain('drawdown returns size to the minimum');
+    const not = evaluateEntry(at('27.01', peak, step), baseRequest()) as EntryAllowed;
+    expect(not.caps.map((c) => c.name)).not.toContain('drawdown returns size to the minimum');
+  });
+
+  test('the room above the NAV kill line caps the full loss when it is the tighter', () => {
+    // NAV kill line $21; NAV $23 leaves $2, less than q + C. The ledger line ($14) would leave $6.
+    const peak = { navMarks: [mark(LAST_WEEK, '30')] };
+    expect(codes(evaluateEntry(at('23', peak), baseRequest()))).toEqual(['full_loss_kill_line']);
+    const roomy = evaluateEntry(at('30', peak), baseRequest()) as EntryAllowed;
+    expect(roomy.allow).toBe(true);
+    // Equal room on both measures gives the same reservation limit as the ledger alone.
+    const ledgerOnly = evaluateEntry(at('30'), baseRequest()) as EntryAllowed;
+    expect(roomy.reservation.limits.maxHeld).toBeLessThanOrEqual(ledgerOnly.reservation.limits.maxHeld);
+  });
+
+  test('the ledger kill line still applies when a rise in SOL lifts NAV', () => {
+    // A $6 trading loss: ledger equity $14, its kill line $14. NAV is $40 at a higher SOL price.
+    const d = evaluateEntry(at('40', { closedTrades: [trade(LAST_WEEK, '-6', { notional: usd('5') })] }), baseRequest());
+    expect(d.snapshot?.nav).toBe(usd('40'));
+    expect(d.trips).toEqual(['kill_switch']);
+  });
+
+  test('daily and weekly loss count trading only: a fall in SOL is not a loss there', () => {
+    const d = evaluateEntry(at('17'), baseRequest());
+    expect(d.snapshot).toMatchObject({ dayLoss: 0n, weekLoss: 0n, weekBaseLoss: 0n, nav: usd('17') });
+  });
+
+  test('figures are reported in SOL as well, and not without a price', () => {
+    const d = evaluateEntry(at('21', { navMarks: [mark(LAST_WEEK, '30')] }), baseRequest());
+    const inSol = (v: string) => microUsdToLamports(usd(v), PRICE, 'floor');
+    expect(d.snapshot).toMatchObject({ equitySol: inSol('20'), capitalSol: inSol('20'), navSol: inSol('21'), navHighWaterMarkSol: inSol('30') });
+    const i = at('21');
+    const none = evaluateEntry({ ...i, market: { ...i.market, solPrice: null } }, baseRequest());
+    expect(none.snapshot).toMatchObject({ equitySol: null, capitalSol: null, navSol: null, navHighWaterMarkSol: null });
+  });
+
+  test('a recorded NAV that is not positive or from the future is refused', () => {
+    expect(codes(evaluateEntry(at('20', { navMarks: [mark(LAST_WEEK, '0')] }), baseRequest()))).toContain('bankroll_invalid');
+    expect(codes(evaluateEntry(at('20', { navMarks: [mark(NOW + 1, '20')] }), baseRequest()))).toContain('bankroll_invalid');
+  });
+
+  test('economicNav is the one definition: SOL above the floor plus every mark; no valid mark, no value', () => {
+    const p = (m: MicroUsd | null) => ({ mint: MINT_B, openedAtMs: NOW, notional: usd('5'), mark: m, markAtMs: NOW });
+    expect(economicNav(TRIAL_POLICY, lamports(lamportsFor('10')), PRICE, [p(usd('3')), p(usd('7'))])).toBe(usd('20'));
+    expect(economicNav(TRIAL_POLICY, lamports(lamportsFor('10')), PRICE, [p(null)])).toBeNull();
+    expect(economicNav(TRIAL_POLICY, lamports(lamportsFor('10')), PRICE, [p(neg(1n))])).toBeNull();
   });
 });

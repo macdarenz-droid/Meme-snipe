@@ -112,11 +112,17 @@ export interface CashFlow {
   readonly atMs: number;
   readonly amount: MicroUsd;
   /**
-   * Executable equity (realized plus open positions at their executable value, the same valuation as `equity`) just
-   * before the flow. Units are issued or redeemed at it: the flow scales the high-water mark and the week's base by
-   * (navBefore + amount) / navBefore. Must be positive; otherwise the history is refused.
+   * Economic NAV (`economicNav`) just before the flow. Units are issued or redeemed at it: the flow scales the
+   * high-water marks and the week's base by (navBefore + amount) / navBefore. Must be positive; otherwise the history is
+   * refused.
    */
   readonly navBefore: MicroUsd;
+}
+
+/** An economic NAV (`economicNav`) the worker observed and recorded; the NAV high-water mark is the peak of these. */
+export interface NavMark {
+  readonly atMs: number;
+  readonly nav: MicroUsd;
 }
 
 /** Every entry that reserved exposure, whatever became of it (filled, failed, still unresolved). */
@@ -141,6 +147,11 @@ export interface AccountHistory {
   /** Marked equity recorded at the start of today and of this week (same valuation as `equity`); null if not recorded. */
   readonly markedAtDayStart: MicroUsd | null;
   readonly markedAtWeekStart: MicroUsd | null;
+  /**
+   * Economic NAV observations (R10). The worker records one at least at every evaluation that sees a fresh NAV and at
+   * every close; peaks between observations are not seen.
+   */
+  readonly navMarks: readonly NavMark[];
   /**
    * The ledger's account version for this snapshot. It advances with every change to the account (reservation, release,
    * fill, position, closed trade, flow); the reservation store refuses a request made from an older version.
@@ -247,6 +258,18 @@ export interface RiskSnapshot {
   readonly walletEquity: MicroUsd | null;
   /** Capital every size and limit that scales with equity uses: the lower of `equity` and `walletEquity`. */
   readonly capital: MicroUsd;
+  /**
+   * Economic NAV now (`economicNav`), and its time-weighted high-water mark (R10). Null when it cannot be valued
+   * consistently: no fresh price or balance, a position without a fresh mark, an entry still unresolved, or a balance
+   * read before the account's latest change.
+   */
+  readonly nav: MicroUsd | null;
+  readonly navHighWaterMark: MicroUsd | null;
+  /** The same figures in SOL at the fresh price; null without one. */
+  readonly equitySol: Lamports | null;
+  readonly capitalSol: Lamports | null;
+  readonly navSol: Lamports | null;
+  readonly navHighWaterMarkSol: Lamports | null;
 }
 
 export type Trip = 'kill_switch' | 'weekly_loss';

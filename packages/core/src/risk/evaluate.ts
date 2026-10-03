@@ -10,7 +10,7 @@ import { melbourneDay, melbourneWeek } from './melbourne.ts';
 import type { ReservationRequest } from './reservation.ts';
 import {
   CODE_CONTROL, type AccountHistory, type ClosedTrade, type EntryDecision, type EntryRequest, type ExitDecision,
-  type Latches, type RiskCode, type RiskInput, type RiskReason, type RiskSnapshot, type SizeCapEntry, type Trip,
+  type Latches, type NavMark, type OpenPosition, type RiskCode, type RiskInput, type RiskReason, type RiskSnapshot, type SizeCapEntry, type Trip,
   type WithdrawalDecision, type WithdrawalRequest,
 } from './types.ts';
 
@@ -92,14 +92,49 @@ const weekBase = (a: AccountHistory, weekStartMs: number, equityAtStart: bigint)
   return base;
 };
 
+/**
+ * Economic NAV (RISK-1b, one definition for flow pricing and for the kill switch): the wallet's SOL above the
+ * operations floor at the SOL/USD price, plus every open position at its executable mark, gains included. Null if a
+ * position has no valid mark. The worker prices each deposit and withdrawal (`navBefore`) and each `NavMark` with it.
+ */
+export const economicNav = (policy: Policy, balance: Lamports, price: MicroUsd, positions: readonly OpenPosition[]): MicroUsd | null => {
+  let marks = 0n;
+  for (const p of positions) {
+    if (p.mark === null || p.mark < 0n) return null;
+    marks += p.mark;
+  }
+  return usd(mulDiv(balance - policy.reserve.opsFloor, price, LAMPORTS_PER_SOL, 'floor') + marks);
+};
+
+/**
+ * High-water mark of economic NAV per unit, in dollars: every observation (NAV marks, each flow's `navBefore`, NAV now)
+ * raises it, and flows scale it. An owner re-arm restarts it at the first NAV seen at or after the re-arm.
+ */
+const navHighWaterMark = (a: AccountHistory, rearmAtMs: number | null, nowMs: number, navNow: bigint): bigint => {
+  type Obs = { readonly at: number; readonly nav: bigint; readonly flow: bigint | null };
+  const obs: Obs[] = [
+    ...a.navMarks.map((m: NavMark): Obs => ({ at: m.atMs, nav: m.nav, flow: null })),
+    ...a.flows.map((f): Obs => ({ at: f.atMs, nav: f.navBefore, flow: f.amount })),
+  ].sort((x, y) => x.at - y.at);
+  let hwm: bigint = a.openingEquity;
+  let rearmPending = rearmAtMs !== null && rearmAtMs <= nowMs;
+  for (const o of obs) {
+    if (rearmPending && rearmAtMs !== null && o.at >= rearmAtMs) { hwm = o.nav; rearmPending = false; }
+    hwm = maxBig(hwm, o.nav);
+    if (o.flow !== null) hwm = scaleByFlow(hwm, o.nav, o.flow);
+  }
+  return rearmPending ? navNow : maxBig(hwm, navNow);
+};
+
 const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: number): Figures => {
   const problems: RiskReason[] = [];
   const latchTimes = [latches.killTrippedAtMs, latches.killRearmedAtMs, latches.weeklyTrippedAtMs, latches.weeklyReviewedAtMs, latches.lossReviewedAtMs]
     .filter((t): t is number => t !== null);
-  const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...a.entries.map((e) => e.atMs), ...latchTimes];
+  const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.navMarks.map((m) => m.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...a.entries.map((e) => e.atMs), ...latchTimes];
   if (times.some((t) => !isTime(t) || t > nowMs)) problems.push(reason('bankroll_invalid', 'account history or a latch has an invalid or future time'));
   if (a.heldReservations < 0n) problems.push(reason('bankroll_invalid', 'held reservations are negative'));
   if (a.flows.some((f) => f.navBefore <= 0n)) problems.push(reason('bankroll_invalid', 'a deposit or withdrawal has no positive valuation'));
+  if (a.navMarks.some((m) => m.nav <= 0n)) problems.push(reason('bankroll_invalid', 'a recorded NAV is not positive'));
 
   // Marked loss of open positions. An unknown or stale mark counts as a total loss here, and refuses entries.
   let markedLoss = 0n;
@@ -142,7 +177,8 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
       dayChangeMarked: a.markedAtDayStart === null ? null : usd(equity - a.markedAtDayStart - atDay.flowsSince),
       weekChangeMarked: a.markedAtWeekStart === null ? null : usd(equity - a.markedAtWeekStart - atWeek.flowsSince),
       // Filled in by accountCheck, which has the market.
-      walletEquity: null, capital: usd(equity),
+      walletEquity: null, capital: usd(equity), nav: null, navHighWaterMark: null,
+      equitySol: null, capitalSol: null, navSol: null, navHighWaterMarkSol: null,
     },
   };
 };
@@ -153,7 +189,7 @@ interface AccountCheck {
   readonly figures: Figures;
   readonly reasons: readonly RiskReason[];
   readonly trips: readonly Trip[];
-  readonly killLine: bigint;
+  readonly killRoom: bigint;
   readonly weekRoom: bigint;
   readonly dailyLimit: bigint;
 }
@@ -169,10 +205,24 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   const balance = market.solBalance !== null && fresh(market.solBalance.atMs, nowMs, policy.gates.maxQuoteAgeMs) ? market.solBalance.value : null;
   const walletEquity = price === null || balance === null ? null
     : mulDiv(balance - policy.reserve.opsFloor, price, LAMPORTS_PER_SOL, 'floor') + f.snapshot.openExposure;
+  // Economic NAV, only when it can be valued consistently: marks fresh, no entry in flight, and a balance read at or
+  // after the account's latest change (a close or flow the balance has not seen yet would read as a loss and latch).
+  const lastChange = Math.max(account.openedAtMs, ...account.flows.map((x) => x.atMs), ...account.closedTrades.map((c) => c.closedAtMs),
+    ...account.entries.map((e) => e.atMs), ...account.openPositions.map((p) => p.openedAtMs));
+  const consistent = price !== null && balance !== null && market.solBalance !== null && market.solBalance.atMs >= lastChange
+    && account.unresolvedEntries.length === 0
+    && account.openPositions.every((p) => p.markAtMs !== null && fresh(p.markAtMs, nowMs, policy.gates.maxQuoteAgeMs));
+  const nav = consistent ? economicNav(policy, balance, price, account.openPositions) : null;
+  const navHwm = nav === null ? null : navHighWaterMark(account, latches.killRearmedAtMs, nowMs, nav);
+  const capital = walletEquity === null ? f.snapshot.equity : minBig(f.snapshot.equity, walletEquity);
+  const sol = (v: bigint | null): Lamports | null => (v === null || price === null || v < 0n ? null : microUsdToLamports(usd(v), price, 'floor'));
   const s: RiskSnapshot = {
     ...f.snapshot,
     walletEquity: walletEquity === null ? null : usd(walletEquity),
-    capital: usd(walletEquity === null ? f.snapshot.equity : minBig(f.snapshot.equity, walletEquity)),
+    capital: usd(capital),
+    nav: nav === null ? null : usd(nav),
+    navHighWaterMark: navHwm === null ? null : usd(navHwm),
+    equitySol: sol(f.snapshot.equity), capitalSol: sol(capital), navSol: sol(nav), navHighWaterMarkSol: sol(navHwm),
   };
   const reasons: RiskReason[] = [...f.problems];
   const trips: Trip[] = [];
@@ -230,11 +280,14 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   }
   if (weeklyLatched) reasons.push(reason('weekly_review', 'weekly loss trigger tripped; paused until the week ends and the owner reviews'));
 
-  // R10: kill switch at 70% of the high-water mark, latched until the owner re-arms (strictly after the trip).
+  // R10: kill switch at 70% of the high-water mark, latched until the owner re-arms (strictly after the trip). Measured
+  // on economic NAV per unit (RISK-1b) and, kept so a rise in SOL never hides a trading loss, on the trading ledger.
   const killLine = ofBps(s.highWaterMark, policy.loss.killSwitchFloorBps, 'ceil');
+  const navKillLine = s.navHighWaterMark === null ? null : ofBps(s.navHighWaterMark, policy.loss.killSwitchFloorBps, 'ceil');
   const killTripped = latches.killTrippedAtMs;
   const killLatched = killTripped !== null && (latches.killRearmedAtMs === null || latches.killRearmedAtMs <= killTripped);
-  if (s.equity <= killLine || killLatched) {
+  const navBelow = s.nav !== null && navKillLine !== null && s.nav <= navKillLine;
+  if (s.equity <= killLine || navBelow || killLatched) {
     reasons.push(reason('kill_switch', 'equity at or below the kill line; only the owner re-arms'));
     if (!killLatched) trips.push('kill_switch');
   }
@@ -257,7 +310,9 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   // What the week still allows (before what is open or reserved): the tighter of the two counts.
   // ... and never more than 20% of the capital that remains now (after a withdrawal or a fall in SOL).
   const weekRoom = minBig(minBig(weekLimit - s.weekLoss, weekBaseLimit - s.weekBaseLoss), ofBps(s.capital, policy.loss.weeklyBps, 'floor'));
-  return { figures: { ...f, snapshot: s }, reasons, trips, killLine, weekRoom, dailyLimit };
+  // What the kill switch still allows (before what is open or reserved): the tighter of the two measures.
+  const killRoom = s.nav === null || navKillLine === null ? s.capital - killLine : minBig(s.capital - killLine, s.nav - navKillLine);
+  return { figures: { ...f, snapshot: s }, reasons, trips, killRoom, weekRoom, dailyLimit };
 };
 
 /** The Melbourne rules refuse a non-integer or pre-2008 instant, so a bad clock throws before any figure is used. */
@@ -378,7 +433,9 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   // Size caps on the notional, each net of the costs C where the control counts them.
   const caps: SizeCapEntry[] = [];
   const cap = (control: SizeCapEntry['control'], name: string, notional: bigint) => caps.push({ control, name, notional: usd(notional) });
-  const drawdownReset = s.capital * BPS <= s.highWaterMark * (BPS - BigInt(policy.capital.drawdownResetBps));
+  const resetShare = BPS - BigInt(policy.capital.drawdownResetBps);
+  const drawdownReset = s.capital * BPS <= s.highWaterMark * resetShare
+    || (s.nav !== null && s.navHighWaterMark !== null && s.nav * BPS <= s.navHighWaterMark * resetShare);
   cap('R2', 'maximum notional', policy.capital.maxNotional);
   // Phase 1 and any 10% drawdown trade at the minimum. That is a choice of size inside the range, not a cap on it.
   const atMinimum = !latches.sizeStepUpApproved || drawdownReset;
@@ -397,7 +454,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
     cap('R5', 'planned risk per trade', mulDiv(ofBps(minBig(policy.capital.bankroll, s.capital), policy.loss.plannedRiskBps, 'floor') - fixedUsd, BPS,
       BigInt(request.stopBps + policy.costGate.maxRoundTripBps), 'floor'));
   }
-  const killAllowance = s.capital - check.killLine - committed;
+  const killAllowance = check.killRoom - committed;
   const weekAllowance = check.weekRoom - committed;
   cap('R6', 'full loss above the kill line', killAllowance - heldUsd - cMaxUsd);
   cap('R6', 'full loss inside the weekly limit', weekAllowance - heldUsd - cMaxUsd);
