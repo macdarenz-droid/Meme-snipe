@@ -617,3 +617,82 @@ describe('decoder parity: token movements', () => {
     expect(s).toMatchObject({ movements_checked: 4, movements_matched: 4, movements_without_raw: 4, mismatch_count: 0 });
   });
 });
+
+// ---- swap attribution: user_token_account / user_token_owner (scanner movements.go swapUserAccountPos) ----
+
+const ACCT_U = key(60); // the swap's user token account
+const OWNER_U = key(61);
+const instrDisc = (file: string, name: string) => (idlDoc(file) as unknown as { instructions: { name: string; discriminator: number[] }[] }).instructions.find((i) => i.name === name)!.discriminator;
+// payer, pump, PumpSwap, token program, the user token account, the curve mint, PumpSwap base and quote, fillers.
+const SWAP_KEYS = [PAYER, PUMP_PROGRAM, PUMP_AMM_PROGRAM, TOKEN_PROGRAM, ACCT_U, MINT, BASE, QUOTE, key(62), POOL, USER];
+
+/**
+ * One swap instruction (program index p, discriminator of IDL instruction `name`, the user token account at
+ * `userPos`), preceded by an InitializeAccount3 of the user account when `initOwner` is given.
+ */
+const swapRaw = (n: number, o: { file: string; name: string; userPos: number; nAccts: number; initOwner?: string; pre?: RawTokenBalance[]; post?: RawTokenBalance[] }): RawLine => {
+  const amm = o.file === 'pump_amm.json';
+  const accts = Array.from({ length: o.nAccts }, (_, i) => (i === o.userPos ? 4 : amm && i === 3 ? 6 : amm && i === 4 ? 7 : !amm && i === 2 ? 5 : 8));
+  const ixs = [
+    ...(o.initOwner ? [{ p: 3, a: [4, 5], d: [18, ...decodeBase58(o.initOwner)] }] : []),
+    { p: amm ? 2 : 1, a: accts, d: [...instrDisc(o.file, o.name), ...new Array(16).fill(0)] },
+  ];
+  const ev = amm ? eventIx(2, BuyEventLayout.discriminator, encode(buyFields, buy)) : eventIx(1, TradeEventLayout.discriminator, encode(tradeFields, trade));
+  return {
+    slot: 452700000, blockTime: BLOCK_TIME, txIndex: n, signature: encodeBase58(sig(n)),
+    transaction: toBase64(wireOf(n, SWAP_KEYS, ixs)), err: null, mints: [MINT],
+    meta: {
+      fee: 105000, computeUnitsConsumed: 72082, loadedAddresses: { writable: [], readonly: [] },
+      innerInstructions: [{ index: ixs.length - 1, instructions: [ev] }], logMessages: null,
+      preTokenBalances: o.pre ?? [], postTokenBalances: o.post ?? [],
+    },
+  };
+};
+const swapRow = (n: number, amm: boolean, outer: number, owner: string, account = ACCT_U) =>
+  amm ? { ...ammValues(n), ev_idx: '0', outer_ix: String(outer), user_token_account: account, user_token_owner: owner }
+    : { ...curveValues(n), outer_ix: String(outer), user_token_account: account, user_token_owner: owner };
+const swapFails = (row: Record<string, string>, amm: boolean, r: RawLine) =>
+  check(amm ? [[], [row]] : [[row], []], [r]).mismatches.map((m) => [m.field, m.row, m.decoded]);
+
+describe('decoder parity: swap attribution', () => {
+  it('re-derives the account at position 5 of a pump buy and its owner from the post balances', () => {
+    const r = swapRaw(30, { file: 'pump.json', name: 'buy', userPos: 5, nAccts: 16, post: [tb(4, MINT, OWNER_U)] });
+    expect(swapFails(swapRow(30, false, 0, OWNER_U), false, r)).toEqual([]);
+    expect(swapFails(swapRow(30, false, 0, USER), false, r)).toEqual([['user_token_owner', USER, OWNER_U]]);
+    expect(swapFails(swapRow(30, false, 0, OWNER_U, key(62)), false, r)).toEqual([['user_token_account', key(62), ACCT_U]]);
+  });
+
+  it('takes the owner of an account the sell closes from the pre balances', () => {
+    const r = swapRaw(31, { file: 'pump.json', name: 'sell', userPos: 5, nAccts: 14, pre: [tb(4, MINT, OWNER_U)] });
+    expect(swapFails(swapRow(31, false, 0, OWNER_U), false, r)).toEqual([]);
+    expect(swapFails(swapRow(31, false, 0, ''), false, r)).toEqual([['user_token_owner', '', OWNER_U]]);
+  });
+
+  it('reads associated_base_user at position 14 of a v2 instruction', () => {
+    const r = swapRaw(32, { file: 'pump.json', name: 'buy_v2', userPos: 14, nAccts: 16, post: [tb(4, MINT, OWNER_U)] });
+    expect(swapFails(swapRow(32, false, 0, OWNER_U), false, r)).toEqual([]);
+    expect(swapFails(swapRow(32, false, 0, OWNER_U, key(62)), false, r)).toEqual([['user_token_account', key(62), ACCT_U]]);
+  });
+
+  it('resolves a PumpSwap temp account through InitializeAccount3', () => {
+    const r = swapRaw(33, { file: 'pump_amm.json', name: 'buy', userPos: 5, nAccts: 9, initOwner: OWNER_U });
+    expect(swapFails(swapRow(33, true, 1, OWNER_U), true, r)).toEqual([]);
+    expect(swapFails(swapRow(33, true, 1, ''), true, r)).toEqual([['user_token_owner', '', OWNER_U]]);
+  });
+
+  it('leaves an unknown owner empty', () => {
+    const r = swapRaw(34, { file: 'pump.json', name: 'buy', userPos: 5, nAccts: 16 });
+    expect(swapFails(swapRow(34, false, 0, ''), false, r)).toEqual([]);
+    expect(swapFails(swapRow(34, false, 0, PAYER), false, r)).toEqual([['user_token_owner', PAYER, '']]);
+  });
+
+  it('takes a movement owner from InitializeAccount3 when the account is not in the balances', () => {
+    const r = swapRaw(35, { file: 'pump.json', name: 'buy', userPos: 5, nAccts: 16, initOwner: OWNER_U, post: [tb(8, PMINT, OWNER_B)] });
+    const tx = wireOf(35, SWAP_KEYS, [{ p: 3, a: [4, 5], d: [18, ...decodeBase58(OWNER_U)] }, { p: 3, a: [4, 8, 0], d: amt(3, 5n) }]);
+    const line: RawLine = { ...r, transaction: toBase64(tx), meta: { ...r.meta, innerInstructions: [] } };
+    const row = mv(35, 1, '', PMINT, 'transfer', OWNER_U, OWNER_B, '5', ACCT_U, key(62));
+    const s = checkMoves([row], [line]);
+    expect(s.mismatches).toEqual([]);
+    expect(s.movements_matched).toBe(1);
+  });
+});

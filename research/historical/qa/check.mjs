@@ -113,6 +113,19 @@ for (const u of man.units) {
 }
 report.decoding = { decode_failures: man.decode_failures, unknown_events: unknown, newer_layouts: newer, units: man.units.length, coverage_gaps: man.coverage_gaps || [] };
 
+// Swap attribution (scanner user_token_account / user_token_owner): a swap credits or
+// debits user_token_owner, the owner of the token account the instruction used, never
+// the event's user or the signer. Rows with an empty owner are checked against the
+// swap_owner_unknown coverage marks in "Token movements".
+const swapAttr = { curve_trades: 0, amm_trades: 0, missing_column: 0, owner_ne_user: 0, owner_empty: 0, owner_empty_marked: 0, owner_empty_unmarked: 0, no_account_unmarked: 0, unmarked_rows: [] };
+const swapEmpty = []; // [mint, slot:tx_idx, account]
+const attribute = (r, mint, kind) => {
+  swapAttr[kind]++;
+  if (r.user_token_owner === undefined || r.user_token_account === undefined) { swapAttr.missing_column++; return; }
+  if (r.user_token_owner === '') { swapAttr.owner_empty++; swapEmpty.push([mint, `${r.slot}:${r.tx_idx}`, r.user_token_account]); }
+  else if (r.user_token_owner !== r.user) swapAttr.owner_ne_user++;
+};
+
 // 3-4. curves
 const curveLast = new Map(); // mint -> last row
 const curveAddr = new Map(); // mint -> bonding curve account (from CreateEvent)
@@ -139,6 +152,7 @@ const curveAddr = new Map(); // mint -> bonding curve account (from CreateEvent)
   for (const f of dayFiles('curve_trades')) {
     for (const r of readTable(f)) {
       st.trades++;
+      attribute(r, r.mint, 'curve_trades');
       const m = r.mint;
       const p = prev.get(m);
       // Curves quoted in another token keep their quote side in the *_quote_* fields
@@ -247,6 +261,7 @@ const poolLast = new Map(); // pool -> {row, post}
   for (const f of dayFiles('amm_trades')) {
     for (const r of readTable(f)) {
       st.trades++;
+      attribute(r, r.base_mint, 'amm_trades');
       const pool = r.pool;
       applyLiq(pool, ord(r.slot, r.tx_idx, r.ev_idx));
       const preB = B(r.pool_base_token_reserves), preQ = B(r.pool_quote_token_reserves);
@@ -379,6 +394,7 @@ if (man.schema >= 2) {
   const cover = new Map(); // mint -> [[from, to]]
   const unresolvedFrom = new Map(); // mint -> first slot with ownership unresolved
   const unresolvedTx = new Set(); // mint|slot:tx_idx of the marked transactions
+  const swapUnknownTx = new Set(); // mint|slot:tx_idx marked swap_owner_unknown
   for (const f of fs.readdirSync(ds).filter((x) => x.startsWith('movement_coverage-')).sort()) {
     for (const c of readTable(f)) {
       st.coverage_rows++;
@@ -389,6 +405,7 @@ if (man.schema >= 2) {
       if (c.scope === 'unresolved') {
         if (!unresolvedFrom.has(c.mint) || BigInt(c.slot) < unresolvedFrom.get(c.mint)) unresolvedFrom.set(c.mint, BigInt(c.slot));
         unresolvedTx.add(`${c.mint}|${c.slot}:${c.tx_idx}`);
+        if (c.reason === 'swap_owner_unknown') swapUnknownTx.add(`${c.mint}|${c.slot}:${c.tx_idx}`);
         st.unresolved_by_reason[c.reason] = (st.unresolved_by_reason[c.reason] || 0) + Number(c.count || 0);
         continue;
       }
@@ -464,6 +481,14 @@ if (man.schema >= 2) {
     }
   }
   report.movements = st;
+  // An empty swap owner needs its swap_owner_unknown mark; without an account
+  // (boost_buy_and_burn burns what it buys) the row credits nobody and needs none.
+  for (const [mint, k, account] of swapEmpty) {
+    if (swapUnknownTx.has(`${mint}|${k}`)) swapAttr.owner_empty_marked++;
+    else if (account === '') swapAttr.no_account_unmarked++;
+    else { swapAttr.owner_empty_unmarked++; if (swapAttr.unmarked_rows.length < 10) swapAttr.unmarked_rows.push(`${k} ${mint} ${account}`); }
+  }
+  report.swap_attribution = swapAttr;
 }
 
 // ---- live checks ----
@@ -581,7 +606,9 @@ md.push('', '## Reserve chain', '', `Bonding curve real reserves: ${c.real_ok} o
 md.push('', '## Against recorded account balances', '', `Curves quoted in a token other than SOL: ${c.quote_curve_trades} trades; their quote token account equals real_quote_reserves in ${c.quote_balance_exact} of ${c.quote_balance_checks} checks and is never below it in ${c.quote_balance_ge} (the excess is quote tokens held by the curve outside its reserves, such as fees awaiting distribution; real reserves themselves rebuild exactly). Bonding curve token account: ${c.token_exact} of ${c.token_checks} checks equal real_token_reserves plus the reserved migration tokens exactly (${pct(c.token_exact, c.token_checks)}). Lamports: ${c.sol_exact} of ${c.sol_checks} checks keep the same rent offset as the previous check (${c.sol_changed_at_extend} of them changed exactly at an account extension) (${pct(c.sol_exact, c.sol_checks)}). Most common offsets (reserved tokens | rent): ${JSON.stringify(c.top_offsets)}.`, `PumpSwap: ${a.chain_exact} of ${a.chain_checks} checks match both vault balances exactly (${pct(a.chain_exact, a.chain_checks)}).`);
 {
   const m = report.movements;
-  md.push('', '## Token movements', '', 'Coverage: mints ending in "pump" have every token movement of every successful transaction (complete); other mints have only the movements inside transactions that carry a pump or PumpSwap event of that mint, listed in movement_coverage (scope pump_transactions) for the units\' slot ranges, and their ownership outside those rows is unresolved.',
+  const sa = report.swap_attribution;
+if (sa) md.push('', '## Swap attribution', '', `A swap credits or debits user_token_owner (the owner of the token account the instruction used), never user or the signer. ${sa.curve_trades} curve and ${sa.amm_trades} PumpSwap trades; ${sa.owner_ne_user} with user_token_owner different from user; ${sa.owner_empty} with an empty owner, ${sa.owner_empty_marked} of them marked swap_owner_unknown, ${sa.no_account_unmarked} without a user account (boost buy-and-burn), ${sa.owner_empty_unmarked} unmarked; ${sa.missing_column} rows without the attribution columns.`);
+md.push('', '## Token movements', '', 'Coverage: mints ending in "pump" have every token movement of every successful transaction (complete); other mints have only the movements inside transactions that carry a pump or PumpSwap event of that mint, listed in movement_coverage (scope pump_transactions) for the units\' slot ranges, and their ownership outside those rows is unresolved.',
     '', `${m.rows} rows in ${m.files} files (${JSON.stringify(m.by_kind)}); ${m.malformed} malformed; ${m.zero_amount} with amount 0 (valid on chain, not a miss); ${m.partial_rows} rows of other mints, ${m.outside_coverage} of them outside movement_coverage (${m.coverage_rows} coverage rows, ${m.coverage_bad_scope} with an unknown scope). Ownership unresolved for ${m.unresolved_mints} mints from the slot of an undecoded token instruction (${JSON.stringify(m.unresolved_by_reason)}); ${m.empty_owner_rows} rows with an owner that could not be resolved (coverage records count ${m.empty_owner_coverage}). ${m.no_movements ? `Lead-in slots ${m.no_movements.from_slot} to ${m.no_movements.to_slot} carry no movements, so holder ownership at the window start is unresolved until movements begin.` : ''}`,
     '', `Supply: ${m.supply_mints} "pump" mints with their CreateEvent in the dataset; token_total_supply + mints - burns (movement rows) - BoostBuyAndBurnEvent burns is below zero for ${m.supply_negative}. Ownership per holder is not rebuilt here.`,
     '', `Balances: ${m.balance_exact} of ${m.balance_checks} (transaction, "pump" mint) pairs match exactly: per owner, the token balance change in the raw record equals the sum of that transaction's movement rows. Scope: successful raw records of transactions that reference neither pump nor PumpSwap (plain token transactions of hash-sampled mints); ${m.balance_skipped_pump_txs} raw records that touch pump or PumpSwap are not balance-checked here (their movement rows are checked against the instructions by the parity check).`);

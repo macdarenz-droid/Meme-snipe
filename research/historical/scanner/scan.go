@@ -27,7 +27,7 @@ import (
 )
 
 // Schema version of the output rows. Bump on any change of columns or meaning.
-const schemaVersion = 2
+const schemaVersion = 3
 
 var curveCols = []string{
 	"slot", "block_time", "tx_idx", "ev_idx", "signature", "signer", "tx_fee", "cu",
@@ -38,6 +38,7 @@ var curveCols = []string{
 	"buyback_fee_basis_points", "buyback_fee", "shareholders", "quote_mint", "quote_amount",
 	"virtual_quote_reserves", "real_quote_reserves", "holder_rewards_bps", "holder_rewards",
 	"outer_ix", "inner_ix", "jito_tip", "extra_hex", "layout_fields", "last_in_tx", "chain_curve_lamports", "chain_curve_base", "chain_curve_quote",
+	"user_token_account", "user_token_owner",
 }
 
 var ammCols = []string{
@@ -50,6 +51,7 @@ var ammCols = []string{
 	"cashback_fee_basis_points", "cashback", "buyback_fee_basis_points", "buyback_fee",
 	"virtual_quote_reserves", "can_boost", "base_supply", "holder_rewards_bps", "holder_rewards",
 	"outer_ix", "inner_ix", "jito_tip", "extra_hex", "layout_fields", "last_in_tx", "chain_pool_base", "chain_pool_quote",
+	"user_token_account", "user_token_owner",
 }
 
 var blockCols = []string{"slot", "block_time", "parent_slot", "n_tx", "n_vote", "n_pump_tx", "n_pump_ok", "n_pump_failed", "n_events"}
@@ -833,6 +835,60 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 		return ""
 	}
 
+	// The token account a swap credits or debits and its owner: the post-transaction
+	// token balances, else the pre-transaction ones (an account the swap closes), else
+	// the owner given when the account was initialised in this transaction.
+	var full *TransactionStatusMeta
+	var fullErr error
+	fullMetaOnce := func() *TransactionStatusMeta {
+		if full == nil {
+			if full, fullErr = fullMeta(metaRaw); fullErr != nil {
+				st.decodeErr(fmt.Sprintf("slot %d idx %d: full meta: %v", b.slot, txIdx, fullErr))
+				full = &TransactionStatusMeta{}
+			}
+		}
+		return full
+	}
+	var temps map[int]string
+	swapUser := func(emitter *ixRef) (account, owner string) {
+		pos := swapUserAccountPos(emitter)
+		if pos < 0 || pos >= len(emitter.accts) {
+			return "", ""
+		}
+		i := emitter.accts[pos]
+		account = solana.PublicKey(key(i)).String()
+		for _, tb := range post {
+			if int(tb.AccountIndex) == i {
+				return account, tb.Owner
+			}
+		}
+		for _, tb := range fullMetaOnce().PreTokenBalances {
+			if int(tb.AccountIndex) == i {
+				return account, tb.Owner
+			}
+		}
+		if temps == nil {
+			temps = tempOwners(groups, func(j int) string {
+				if j >= 0 && j < len(keys) {
+					return solana.PublicKey(keys[j]).String()
+				}
+				return ""
+			})
+		}
+		return account, temps[i]
+	}
+	var swapMarks []coverageMark
+	slotN := b.slot
+	attribute := func(mint string, emitter *ixRef) []string {
+		account, owner := swapUser(emitter)
+		// boost_buy_and_burn burns what it buys: no holder is credited, nothing unresolved
+		boost := emitter != nil && len(emitter.data) >= 8 && bytes.Equal(emitter.data[:8], boostBuyIx)
+		if owner == "" && !boost && mint != "" {
+			swapMarks = append(swapMarks, coverageMark{mint: mint, scope: "unresolved", reason: "swap_owner_unknown", slot: slotN, txIdx: txIdx})
+		}
+		return []string{account, owner}
+	}
+
 	type pendingRow struct {
 		kind string
 		key  string
@@ -910,6 +966,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 					row = append(row, v)
 				}
 				row = append(row, outer, inner, tip, hexs(ev.tail), strconv.Itoa(nFields), "0", "", "", "")
+				row = append(row, attribute(ev.get("mint"), findEmitter(g, k, pumpProgram))...)
 				rows = append(rows, pendingRow{"curve", ev.get("mint"), row})
 				eventMints = append(eventMints, ev.get("mint"))
 			case prog == "amm" && (ev.def.name == "BuyEvent" || ev.def.name == "SellEvent"):
@@ -939,6 +996,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 					ev.get("cashback_fee_basis_points"), ev.get("cashback"), ev.get("buyback_fee_basis_points"), ev.get("buyback_fee"),
 					ev.get("virtual_quote_reserves"), ev.get("can_boost"), ev.get("base_supply"), ev.get("holder_rewards_bps"), ev.get("holder_rewards"),
 					outer, inner, tip, hexs(ev.tail), strconv.Itoa(nFields), "0", vb, vq)
+				row = append(row, attribute(baseMint, emitter)...)
 				rows = append(rows, pendingRow{"amm", ev.get("pool"), row})
 				eventMints = append(eventMints, baseMint)
 			default:
@@ -992,14 +1050,14 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 	for i, pr := range rows {
 		if lastSeen[pr.kind+pr.key] != i {
 			if pr.kind == "amm" {
-				pr.row[len(pr.row)-2], pr.row[len(pr.row)-1] = "", ""
+				pr.row[len(pr.row)-4], pr.row[len(pr.row)-3] = "", ""
 			}
 			r.emitRow(pr.kind, pr.row)
 			continue
 		}
 		if pr.kind == "curve" {
 			row := pr.row
-			n := len(row)
+			n := len(row) - 2 // the two attribution columns follow the chain columns
 			row[n-4] = "1"
 			mint := row[8]
 			quoteMint := row[8+24] // quote_mint column
@@ -1015,7 +1073,7 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 			r.emitRow("curve", row)
 		} else {
 			row := pr.row
-			n := len(row)
+			n := len(row) - 2 // the two attribution columns follow the chain columns
 			row[n-3] = "1"
 			if vb, err := strconv.Atoi(row[n-2]); err == nil {
 				row[n-2] = tokBalByIndex(vb)
@@ -1037,11 +1095,9 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 			}
 		}
 	}
+	r.marks = append(r.marks, swapMarks...)
 	if hasMovementOutsideSwaps(groups) {
-		full, err := fullMeta(metaRaw)
-		if err != nil {
-			st.decodeErr(fmt.Sprintf("slot %d idx %d: full meta for movements: %v", b.slot, txIdx, err))
-		} else {
+		if full := fullMetaOnce(); fullErr == nil {
 			rows, marks := movementRows(slot, bt, txIdx, keys, groups, full, func(m string) bool { return pumpSuffix(m) || active[m] })
 			r.moves, r.marks = append(r.moves, rows...), append(r.marks, marks...)
 		}

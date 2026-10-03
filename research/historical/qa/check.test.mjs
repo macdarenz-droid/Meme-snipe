@@ -12,7 +12,7 @@ const run = (...a) => spawnSync(process.execPath, [CHECK, ...a], { encoding: 'ut
 
 const CURVE = ['slot', 'block_time', 'tx_idx', 'ev_idx', 'signature', 'mint', 'is_buy', 'sol_amount', 'token_amount',
   'virtual_sol_reserves', 'virtual_token_reserves', 'real_sol_reserves', 'real_token_reserves', 'quote_mint', 'last_in_tx',
-  'chain_curve_base', 'chain_curve_lamports', 'mayhem_mode'];
+  'chain_curve_base', 'chain_curve_lamports', 'mayhem_mode', 'user', 'user_token_account', 'user_token_owner'];
 const csv = (head, rows) => zlib.zstdCompressSync(Buffer.from([head, ...rows].map((r) => r.join(',')).join('\n') + '\n'));
 
 const MOVE = ['slot', 'block_time', 'tx_idx', 'outer_ix', 'inner_ix', 'mint', 'kind', 'from_owner', 'to_owner', 'amount', 'from_account', 'to_account'];
@@ -20,12 +20,13 @@ const jsonl = (xs) => zlib.zstdCompressSync(Buffer.from(xs.map((x) => JSON.strin
 
 // A one-day dataset with two curve trades; `bad` breaks the second trade's reserves.
 // opts: movements and coverage rows, events and raw lines, manifest additions.
-function dataset(bad, { movements = [], coverage = null, events = [], raw = [], man: more = {} } = {}) {
+function dataset(bad, { movements = [], coverage = null, events = [], raw = [], man: more = {}, attr = [['U', 'A', 'U'], ['U', 'A', 'U']] } = {}) {
   const ds = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-'));
   const dir = path.join(ds, 'days', '2026-09-02');
   fs.mkdirSync(dir, { recursive: true });
   const t = (s, tx, sol, tok, vs, vt, rs, rt) => [s, 1788307300, tx, 0, 'sig', 'M', 1, sol, tok, vs, vt, rs, rt, '', 0, '', '', 0];
-  const rows = [t(10, 0, 100, 1000, 30000000100, 1072999999000, 100, 792999999000), t(11, 0, 50, 400, 30000000150, 1072999998600, bad ? 151 : 150, 792999998600)];
+  const rows = [t(10, 0, 100, 1000, 30000000100, 1072999999000, 100, 792999999000), t(11, 0, 50, 400, 30000000150, 1072999998600, bad ? 151 : 150, 792999998600)]
+    .map((r, i) => (attr[i] ? [...r, ...attr[i]] : r));
   const files = [];
   const put = (name, buf) => { fs.writeFileSync(path.join(dir, name), buf); files.push({ path: `days/2026-09-02/${name}` }); };
   put('curve_trades-000.csv.zst', csv(CURVE, rows));
@@ -137,4 +138,24 @@ test('an unresolved mark skips only its own transaction; later transactions stay
   const later = strict(opts([[PMINT, 'unresolved', 9, 'owner_change', 1, 1, 1, 20]]));
   assert.equal(later.status, 1, later.stdout);
   assert.match(later.stdout, /token balance changes unexplained by movement rows 1/);
+});
+
+test('swap attribution: owner differing from user is counted; an empty owner needs its mark', () => {
+  const cov = (tx) => [['M', 'unresolved', 11, 'swap_owner_unknown', 1, tx, '', '']];
+  const other = strict({ attr: [['U', 'A', 'U'], ['U', 'B', 'O']] });
+  assert.equal(other.status, 0, other.stdout);
+  assert.match(other.stdout, /1 with user_token_owner different from user/);
+  const unmarked = strict({ attr: [['U', 'A', 'U'], ['U', 'B', '']] });
+  assert.equal(unmarked.status, 1);
+  assert.match(unmarked.stdout, /trade rows with an empty user_token_owner and no swap_owner_unknown mark 1/);
+  // the mark must name this transaction
+  assert.match(strict({ attr: [['U', 'A', 'U'], ['U', 'B', '']], coverage: cov(1) }).stdout, /no swap_owner_unknown mark 1/);
+  const marked = strict({ attr: [['U', 'A', 'U'], ['U', 'B', '']], coverage: cov(0) });
+  assert.equal(marked.status, 0, marked.stdout);
+  assert.match(marked.stdout, /1 with an empty owner, 1 of them marked swap_owner_unknown/);
+  // no user account (boost buy-and-burn): credits nobody, needs no mark
+  assert.equal(strict({ attr: [['U', 'A', 'U'], ['U', '', '']] }).status, 0);
+  const old = strict({ attr: [] });
+  assert.equal(old.status, 1);
+  assert.match(old.stdout, /trade rows without user_token_account \/ user_token_owner 2/);
 });

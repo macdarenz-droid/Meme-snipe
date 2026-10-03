@@ -38,7 +38,9 @@ var movementCols = []string{"slot", "block_time", "tx_idx", "outer_ix", "inner_i
 //	scope unresolved: a token instruction this table does not decode for the mint
 //	  (reason transfer_fee: Token-2022 TransferCheckedWithFee; owner_change:
 //	  SetAuthority of an account owner; account_reused: one account index holding two
-//	  mints in a transaction), so its ownership is unresolved from slot on;
+//	  mints in a transaction; confidential_transfer: Token-2022 27/*; empty_owner_net:
+//	  empty owners that do not net to zero; swap_owner_unknown: a swap whose user token
+//	  account has no resolvable owner), so its ownership is unresolved from slot on;
 //	scope empty_owner: movements whose owner could not be resolved (an account opened
 //	  and closed inside one transaction), with their count.
 var movementCoverageCols = []string{"mint", "scope", "slot", "reason", "count", "tx_idx"}
@@ -150,20 +152,7 @@ func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef,
 	// closed again, so absent from the token balances): InitializeAccount (owner =
 	// account 2), InitializeAccount2 and InitializeAccount3 (owner in data[1:33]), at any
 	// depth (for example inside an associated-token-account create).
-	tempOwner := map[int]string{}
-	for _, g := range groups {
-		for _, ix := range g {
-			if (ix.program != tokenProgram && ix.program != token2022Program) || len(ix.data) == 0 {
-				continue
-			}
-			switch {
-			case ix.data[0] == 1 && len(ix.accts) > 2:
-				tempOwner[ix.accts[0]] = key(ix.accts[2])
-			case (ix.data[0] == 16 || ix.data[0] == 18) && len(ix.data) >= 33 && len(ix.accts) > 0:
-				tempOwner[ix.accts[0]] = base58.Encode(ix.data[1:33])
-			}
-		}
-	}
+	tempOwner := tempOwners(groups, key)
 	mintSet := map[string]bool{}
 	for _, b := range acct {
 		mintSet[b.mint] = true
@@ -270,6 +259,48 @@ func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef,
 		}
 	}
 	return rows, marks
+}
+
+// tempOwners maps each token account initialised in the transaction to its owner:
+// InitializeAccount (owner = account 2), InitializeAccount2 and InitializeAccount3
+// (owner in data[1:33]), at any depth.
+func tempOwners(groups [][]ixRef, key func(int) string) map[int]string {
+	out := map[int]string{}
+	for _, g := range groups {
+		for _, ix := range g {
+			if (ix.program != tokenProgram && ix.program != token2022Program) || len(ix.data) == 0 {
+				continue
+			}
+			switch {
+			case ix.data[0] == 1 && len(ix.accts) > 2:
+				out[ix.accts[0]] = key(ix.accts[2])
+			case (ix.data[0] == 16 || ix.data[0] == 18) && len(ix.data) >= 33 && len(ix.accts) > 0:
+				out[ix.accts[0]] = base58.Encode(ix.data[1:33])
+			}
+		}
+	}
+	return out
+}
+
+// swapUserAccountPos is the position of the user's base-token account in a swap
+// instruction: pump buy / sell / buy_exact_sol_in associated_user (5), pump v2
+// associated_base_user (14), PumpSwap buy / sell / buy_exact_quote_in
+// user_base_token_account (5). -1 for any other instruction (boost_buy_and_burn has no
+// user account: the bought tokens are burned).
+func swapUserAccountPos(ix *ixRef) int {
+	if ix == nil || len(ix.data) < 8 {
+		return -1
+	}
+	d := ix.data[:8]
+	switch {
+	case ix.program == pumpProgram && isCurveTradeIx(d):
+		return 5
+	case ix.program == pumpProgram && isCurveTradeV2Ix(d):
+		return 14
+	case ix.program == ammProgram && isAmmTradeIx(d):
+		return 5
+	}
+	return -1
 }
 
 // coverageRows builds a unit's movement_coverage rows, in sorted order:

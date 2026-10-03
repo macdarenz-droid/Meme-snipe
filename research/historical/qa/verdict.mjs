@@ -99,6 +99,13 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
     if (mv.supply_negative > 0) misses.push(`token supply below zero for ${mv.supply_negative} mints`);
     if (mv.balance_exact !== mv.balance_checks) misses.push(`token balance changes unexplained by movement rows ${mv.balance_checks - mv.balance_exact}`);
   }
+  // Swap attribution (check.mjs "Swap attribution").
+  const sa = report.swap_attribution;
+  if (!sa) misses.push('swap attribution not checked');
+  else {
+    if (sa.missing_column > 0) misses.push(`trade rows without user_token_account / user_token_owner ${sa.missing_column}`);
+    if (sa.owner_empty_unmarked > 0) misses.push(`trade rows with an empty user_token_owner and no swap_owner_unknown mark ${sa.owner_empty_unmarked}`);
+  }
   const liveFail = (report.live || []).filter((x) => !x.pass).length;
   if (liveFail > 0) misses.push(`live on-chain mismatches ${liveFail}`);
   return misses;
