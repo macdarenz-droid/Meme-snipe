@@ -13,20 +13,24 @@ export interface Got {
 
 export type Getter = (url: string) => Promise<Got>;
 
+/** Longest wait for an answer before a request counts as failed (an unreachable tailnet address can hang). */
+export const REQUEST_TIMEOUT_MS = 8_000;
+
 /**
- * GitHub answers a release download with a 302 to release-assets.githubusercontent.com
+ * Used for the report file and for the worker. GitHub answers a release download with a 302 to release-assets.githubusercontent.com
  * and neither response carries Access-Control-Allow-Origin, so a WebView fetch is
  * blocked by CORS. Inside the Android app the request goes through Capacitor's native
- * HTTP (part of @capacitor/core, loaded only there); in a browser it uses fetch.
+ * HTTP (part of @capacitor/core, loaded only there); in a browser it uses fetch. The same
+ * path reaches the worker on the tailnet without the worker having to send CORS headers.
  */
 export async function defaultGetter(url: string): Promise<Got> {
   const cap = (window as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
   if (cap?.isNativePlatform?.()) {
     const { CapacitorHttp } = await import('@capacitor/core');
-    const res = await CapacitorHttp.get({ url, responseType: 'text', headers: { accept: 'application/json' } });
+    const res = await CapacitorHttp.get({ url, responseType: 'text', headers: { accept: 'application/json' }, connectTimeout: REQUEST_TIMEOUT_MS, readTimeout: REQUEST_TIMEOUT_MS });
     return { status: res.status, body: typeof res.data === 'string' ? res.data : JSON.stringify(res.data) };
   }
-  const res = await fetch(url, { headers: { accept: 'application/json' } });
+  const res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   return res.ok ? { status: res.status, body: await res.text() } : { status: res.status };
 }
 
