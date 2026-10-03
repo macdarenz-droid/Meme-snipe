@@ -8,10 +8,17 @@ day=$1 out=$2 assets=$3
 next=$(date -u -d "$day + 1 day" +%F)
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$assets"
-ds=$(mktemp -d)
+summary=${GITHUB_STEP_SUMMARY:-/dev/null}
+# Disk: the units (about 6.4-8.5 GB a day) and the one-day dataset can live on different
+# volumes (DATASET_PARENT, e.g. /mnt on GitHub runners); free space is logged.
+{ echo "### Disk before QA ($day)"; echo '```'; df -h "$out" "${DATASET_PARENT:-/tmp}" 2>/dev/null; echo '```'; } >> "$summary"
+# Before finalize: room for the one-day dataset (at most about the units' size) + 5 GB.
+units_bytes=$(du -sb "$out/units" | cut -f1)
+"$here/disk-guard.sh" "${DATASET_PARENT:-/tmp}" $(( units_bytes + 5000000000 )) "the one-day QA dataset"
+ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
 # A single-day dataset without lead-in: universes are tokens created or graduated in
 # that day's units. The multi-day dataset (assemble.sh) uses the 14-day lead-in.
-zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0
+zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json"
 node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0
 node --no-warnings "$here/../qa/parity.ts" "$ds"
 cp "$ds/qa/report.md" "$assets/qa-$day.md"
@@ -32,8 +39,5 @@ for f in "$first"/*.zst; do
   b=$(sha256sum "$again/units/$epoch/$range/$(basename "$f")" | cut -d' ' -f1)
   if [ "$a" != "$b" ]; then echo "determinism check failed for $range/$(basename "$f")"; exit 1; fi
 done
-echo "determinism: unit $epoch/$range rescanned, every file identical" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
-
-# Package: one tar of the day's finished units, split under the 2 GiB asset limit.
-(cd "$out" && tar --exclude='*.tmp' -cf - units) | split -b 1900m -d -a 2 - "$assets/units-$day.tar.part"
-(cd "$assets" && sha256sum units-"$day".tar.part* qa-"$day".* parity-"$day".json manifest-"$day".json > "SHA256SUMS-$day")
+echo "determinism: unit $epoch/$range rescanned, every file identical" | tee -a "$summary"
+rm -rf "$ds" "$again"
