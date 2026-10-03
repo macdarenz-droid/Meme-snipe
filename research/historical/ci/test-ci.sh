@@ -172,6 +172,8 @@ cat > "$S/zeroed-scan" <<'STUB'
 # first call exits FIRST_RC (75: a 429 with a 10 s back-off in the state), later calls 0
 echo scan >> "$T/calls.log"
 while (( $# )); do [[ "$1" == -out ]] && out=$2; shift; done
+# SLOW: a scan that outlasts the budget; interrupted (SIGINT) it exits 1 like the scanner
+if [[ -n "${SLOW:-}" ]]; then trap 'echo interrupted >> "$T/calls.log"; exit 1' INT; /bin/sleep 30 & wait; exit 0; fi
 if [[ $(grep -c scan "$T/calls.log") == 1 && "${FIRST_RC:-0}" == 75 ]]; then
   now=$(date +%s); echo "$now 10 $((now + 10))" > "$out/archive-429.state"
   echo "429 from archive" > "$out/429.log"; exit 75
@@ -204,7 +206,15 @@ if FIRST_RC=75 scan "$o"; then
 else no "scan-day after a 429: $(cat "$T/out.txt")"; fi
 o="$T/scan3"; mkdir -p "$o"; now=$(date +%s); echo "$now 7200 $((now + 7200))" > "$o/archive-429.state"
 rc=0; scan "$o" 60 || rc=$?
-[[ $rc == 75 && ! -s "$T/calls.log" ]] && ok "a back-off that does not fit the budget exits 75 without scanning" || no "budget exit: rc=$rc $(calls)"
+mapfile -t c < "$T/calls.log"; w=${c[0]#sleep }
+[[ $rc == 75 && ${#c[@]} == 1 && "${c[0]}" == sleep* ]] && (( w >= 3290 && w <= 3300 )) &&
+  ok "a back-off that does not fit the budget sleeps what the budget allows (${w} s of 3600 left), then exits 75 without scanning" || no "budget exit: rc=$rc $(calls)"
+o="$T/scan4"; mkdir -p "$o"; : > "$T/summary.md"
+t0=$(date +%s); rc=0; SLOW=1 scan "$o" 2s || rc=$?; t1=$(date +%s)
+[[ $rc == 75 && $(calls) == "scan interrupted " ]] && (( t1 - t0 < 15 )) && grep -q "time budget reached while scanning" "$T/summary.md" &&
+  ok "the scan is interrupted at the budget's end and exits 75 (resumable) in $((t1 - t0)) s" || no "scan budget: rc=$rc $(calls) $(cat "$T/out.txt")"
+o="$T/scan5"; mkdir -p "$o"; rc=0; scan "$o" 0s || rc=$?
+[[ $rc == 75 && ! -s "$T/calls.log" ]] && ok "a spent budget exits 75 before scanning" || no "spent budget: rc=$rc $(calls)"
 ms="$T/ms"; mkdir -p "$ms"
 echo "1 10 2000" > "$ms/late"; echo "1 10 1000" > "$ms/early"; cp "$ms/early" "$ms/dst"
 bash "$here/scan-day.sh" --merge-state "$ms/late" "$ms/dst"
@@ -311,7 +321,7 @@ tree=$(cd "$here" && git rev-parse HEAD:research/historical/scanner)
   ok "scanner-rev: a toolchain other than go\$GO_VERSION fails the build"
 
 # ---- data-scan.yml: a published day is skipped before any archive read; the token only in two clean steps ----
-python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check and publish steps, both in a clean shell" || no "workflow skip/token structure"
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check and publish steps, both in a clean shell; a resumable stop chains the next run, bounded" || no "workflow skip/token structure"
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
 i = next(k for k, s in enumerate(steps) if s.get("id") == "published")
@@ -330,6 +340,21 @@ for s in tok:
 for s in steps[i + 1:]:
     if "always()" in s.get("if", ""):
         assert "steps.published.outcome == 'success'" in s["if"], s
+# chaining: the scan step reports exit 75 as resumable and a resume-DAY artifact follows;
+# the continue job is one gh step with actions: write only, no checkout, a bounded chain,
+# dispatched only when this run holds a resume-* artifact
+wf = yaml.safe_load(open(sys.argv[1]))
+scan = next(s for s in steps if s.get("id") == "scan")
+assert '-eq 75 ]; then echo "resumable=true"' in scan["run"] and 'exit "$rc"' in scan["run"], scan
+assert any(s.get("with", {}).get("name") == "resume-${{ matrix.day }}" for s in steps)
+c = wf["jobs"]["continue"]
+assert c["needs"] == ["plan", "scan"] and "needs.scan.result == 'failure'" in c["if"], c
+assert c["permissions"] == {"actions": "write"} and int(c["env"]["MAX_CHAIN"]) <= 12, c
+assert len(c["steps"]) == 1 and "uses" not in c["steps"][0], c
+r = c["steps"][0]["run"]
+assert r.index('select(startswith("resume-"))') < r.index('-ge "$MAX_CHAIN"') < r.index("gh workflow run"), r
+assert '-f chain="$next"' in r and "-f days=\"$DAYS\"" in r, r
+assert wf[True]["workflow_dispatch"]["inputs"]["chain"]["default"] == "0"
 PY
 
 # ---- disk-guard.sh ----

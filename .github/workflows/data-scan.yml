@@ -20,10 +20,20 @@
 #   report and SHA256SUMS. A published day release is never replaced. The scan job has
 #   contents: write for this, but the token reaches only the publish step (env on that
 #   step alone); checkouts keep persist-credentials: false and no other step uses it.
-# - Limits: a scan job that hits its timeout (rather than its scan budget) is cancelled;
-#   days published before it stay published.
-#   Progress lives in the Actions cache (10 GB per repo, least recently used evicted),
-#   so a day's progress may be evicted and the day then needs a full rescan.
+# - Limits: each scan job has a 300 min budget for scanning and back-off waits inside
+#   its 355 min timeout. A day that runs out of budget saves its progress and stops
+#   resumably (exit 75); fail-fast cancels the days queued behind it, and the `continue`
+#   job dispatches the same days again (inputs.chain counts the chained runs, at most
+#   12). Published days are skipped before any archive read, so the next run resumes
+#   that day from its cache, with no manual step. Any other failure stops the chain.
+# - Cache: one progress entry per scan job (key data-scan-DAY-RUN-ATTEMPT, a day's units:
+#   about 3.7 GB at the 2026-10-01 unit's measured rate of 52 MB per 20 min, 6.4-8.5 GB on
+#   the earlier estimate), plus a second one only when QA fails, and a few-byte back-off
+#   entry. The repository cap is 10 GB and the least recently used entry is evicted first,
+#   so one to two days' entries coexist and the entry evicted is always an older day's. A day is skipped once published, so its entry is never read
+#   again; the only entry that matters, the day in progress, is the most recently saved
+#   or restored and is never the one evicted. Days run one at a time, so no two days save
+#   at once.
 # - mode=assemble runs research/historical/ci/assemble.sh: windows of up to 3 days,
 #   with the 14 lead-in days required, one day at a time, published as release
 #   `data-<from>-<to>`.
@@ -56,6 +66,10 @@ on:
         description: archive download cap in MB/s (at most 80 unless the operators allow more)
         required: true
         default: "80"
+      chain:
+        description: "scan: how many runs before this one were chained automatically (set by the workflow; leave 0)"
+        required: false
+        default: "0"
       allow_revisions:
         description: "assemble: scanner revisions allowed to mix, comma-separated (empty: units must share one)"
         required: false
@@ -198,18 +212,36 @@ jobs:
       - name: Apply the shared back-off (the later end wins)
         if: steps.published.outputs.complete != 'true'
         run: research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/backoff/archive-429.state" "$RUNNER_TEMP/work/data/archive-429.state"
+      # Exit 75 (the 300 min budget ran out, or a back-off did not fit it) is resumable:
+      # progress is saved below and the `continue` job dispatches the next chained run.
       - name: Scan (one lane, stops on 429)
+        id: scan
         if: steps.published.outputs.complete != 'true'
         env:
           DAY: ${{ matrix.day }}
           MAX_MBPS: ${{ inputs.max_mbps }}
-        run: research/historical/ci/scan-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$MAX_MBPS" 300
+        run: |
+          rc=0
+          research/historical/ci/scan-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$MAX_MBPS" 300 || rc=$?
+          if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
+          exit "$rc"
       - name: Save progress
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/work/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Mark the day resumable for the next chained run
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.scan.outputs.resumable == 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: mkdir -p "$RUNNER_TEMP/resume" && echo "$DAY" > "$RUNNER_TEMP/resume/day"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.scan.outputs.resumable == 'true'
+        with:
+          name: resume-${{ matrix.day }}
+          path: ${{ runner.temp }}/resume
+          retention-days: 3
       - name: QA and determinism
         id: qa
         if: steps.published.outputs.complete != 'true'
@@ -276,6 +308,47 @@ jobs:
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
           GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" "$DAY" "$RUNNER_TEMP/work/assets"
+
+  # Unattended chaining: when a day stopped resumably (resume-* artifact: the time budget
+  # ran out, or a back-off did not fit it), dispatch the same days again. Published days
+  # are skipped before any archive read, so the next run resumes that day from its cache.
+  # It waits in the data-scan concurrency group until this run ends, so the lane stays
+  # single. Any other failure (QA, parity, determinism, scanner error, publish) stops the
+  # chain for review. At most MAX_CHAIN chained runs.
+  continue:
+    needs: [plan, scan]
+    if: always() && inputs.mode == 'scan' && needs.scan.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # read this run's artifacts, dispatch the next run
+    env:
+      MAX_CHAIN: "12"
+    steps:
+      - name: Dispatch the next run if a day stopped resumably
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          REF: ${{ github.ref_name }}
+          DAYS: ${{ inputs.days }}
+          MAX_MBPS: ${{ inputs.max_mbps }}
+          CHAIN: ${{ inputs.chain }}
+        run: |
+          set -euo pipefail
+          [[ "$CHAIN" =~ ^[0-9]+$ ]] || { echo "bad chain '$CHAIN'"; exit 1; }
+          resume=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq '[.artifacts[].name | select(startswith("resume-"))] | join(",")')
+          if [ -z "$resume" ]; then
+            echo "a day failed for a reason other than time or back-off: chain stopped for review" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$CHAIN" -ge "$MAX_CHAIN" ]; then
+            echo "resumable stop ($resume) but $CHAIN chained runs already: chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          next=$((CHAIN + 1))
+          gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next"
+          echo "resumable stop ($resume): dispatched chained run $next of at most $MAX_CHAIN" | tee -a "$GITHUB_STEP_SUMMARY"
 
   assemble:
     needs: plan
