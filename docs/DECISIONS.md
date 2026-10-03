@@ -74,6 +74,20 @@ One row per decision in the table; detailed module decisions follow in sections 
   The finalized height matters, because a landing just before expiry is not finalized yet. Without this proof the hold stays, which fails safe. Without the event at all, a fork-dropped report would block entries forever and stop unattended paper runs.
 - **2026-10-03 · A restart while `signed` never sends the bytes.** The intent becomes `unknown` and waits for expiry, because we cannot prove whether the bytes left before the restart.
 
+## Engine (ENG-1, `packages/core/src/engine`)
+
+- **2026-10-03 · The engine refuses events outside the total order; a live Feed must release in that order.** Events are ordered by (slot, transaction index, instruction index, receipt time, id). An event that is not after the previous one is logged `out_of_order` and refused, and one dated after now is logged `future_event`. Live, facts can arrive late (a slot-99 transaction after a slot-100 one, or after an off-chain status read in its own slot). So the live Feed holds facts behind a slot horizon and releases them in total order. The parity test replays the *recorded release sequence*, refused events included, rather than re-sorting the raw facts. Re-sorting would deliver facts that live dropped, and the decision logs would differ.
+- **2026-10-03 · Repeated reconciles are de-duplicated and rate-limited, and no key waits without bound.** The same `reconcile_balances` or `reconcile_orphan` is sent at most once per `minSlotsBetween`, and at most `maxPerWindow` reconciles go out per `windowSlots`. Under that cap:
+  - Orphans (unbooked landings, which block every entry) go before balance reads.
+  - Each window reserves max(1, ⌊cap/4⌋) places for waiting balance reads, never more than cap − 1, so exits still reconcile while orphan reads keep failing. With a cap of 1, the two kinds alternate window by window.
+  - Within a kind, the key served least recently goes first. A key never served counts as served at its first ask, so a key asked continuously waits at most ⌈K / share⌉ + 1 windows.
+  - A waiter that was not asked for in the last slot leaves the line but keeps its turn.
+
+  Earlier versions served first come, first served (which starved orphans), then in rounds by send count (which let returning keys starve a persistent one). This version changes which key is sent compared with those, by design: it is a fairness fix, not a refactor.
+- **2026-10-03 · Everything a strategy can reach is frozen.** The book, each decision before it is applied, the effects and the log records are all deep-frozen. A strategy cannot change engine state, or a decision after making it, outside the lifecycle. The log cannot drift from its hash. The replay freezes a copy of its input, never the caller's objects.
+- **2026-10-03 · Only the replay driver and its fill model hold a `Replay`.** `momentOf` and `pending` reveal whether future events exist, so neither the engine nor a strategy is given one. The engine gets only the `Clock` and the `Feed`.
+- **2026-10-03 · Effect runners are synchronous.** Results come back as feed events. A runner that returns a promise is refused, because results it scheduled after an `await` would arrive after the replay ended and be lost.
+
 ## Evidence (`packages/core/src/domain`)
 
 - **2026-10-03 · `checkFreshness` checks age and timestamps only.** It does not reject evidence flagged `fork-suspect`, `provider-degraded`, `partial` or `estimated`, nor evidence read at `processed` commitment. The evidence-gates task must reject these: unknown or degraded evidence is a failure, never a pass. Until that gate exists, `checkFreshness` alone does not prove evidence usable.
