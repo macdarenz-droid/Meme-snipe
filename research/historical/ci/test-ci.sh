@@ -230,5 +230,21 @@ for i in $(seq 1 995); do : > "$ds/days/2026-09-20/f$i"; done
 echo '{}' > "$ds/manifest.json"; : > "$ds/qa/report.md"; : > "$ds/qa/report.json"; : > "$ds/qa/parity.json"
 out=$( ( build_release "$ds" "$T/bigrel" ) 2>&1 ) && no "990-asset guard passed" || { [[ "$out" == *"990"* ]] && ok "more than 990 assets refused" || no "asset guard: $out"; }
 
+# ---- publish-day.sh: one day, published at once, never replaced ----
+pd="$T/pd"; mkdir -p "$pd"; rm -rf "$T/rel/data-day-2026-09-30"; : > "$T/created.log"
+for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json; do echo "$f" > "$pd/$f"; done
+(cd "$pd" && sha256sum units-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
+bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 7 ]] &&
+  ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity and sums" || no "publish-day create"
+echo changed > "$pd/qa-2026-09-30.md"; (cd "$pd" && sha256sum units-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
+bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
+  grep -qx qa-2026-09-30.md "$T/rel/data-day-2026-09-30/qa-2026-09-30.md" &&
+  ok "publish-day: an existing day release is left unchanged" || no "publish-day existing"
+rm -rf "$T/rel/data-day-2026-09-30"; echo corrupt >> "$pd/units-2026-09-30.tar.part00"
+bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && no "publish-day published a corrupt part" ||
+  { [[ ! -d "$T/rel/data-day-2026-09-30" ]] && ok "publish-day: a checksum mismatch publishes nothing" || no "publish-day corrupt"; }
+rm "$pd/parity-2026-09-30.json"; (cd "$pd" && echo x > units-2026-09-30.tar.part00 && sha256sum units-* qa-* manifest-* > SHA256SUMS-2026-09-30)
+bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && no "publish-day published without parity" || ok "publish-day: a missing parity report publishes nothing"
+
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
