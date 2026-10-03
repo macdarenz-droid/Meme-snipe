@@ -93,6 +93,7 @@ func main() {
 		workers := fs.Int("workers", 2, "block workers per unit")
 		newestFirst := fs.Bool("newest-first", true, "scan the most recent units first")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
+		slots := fs.String("slots", "", "only units inside this slot range, FROM-TO (for tests)")
 		fs.Parse(os.Args[2:])
 		t0, err := time.Parse("2006-01-02", *fromDay)
 		if err != nil {
@@ -116,6 +117,19 @@ func main() {
 		units, epochs, err := planUnits(*out, t0.Unix(), t1.Unix())
 		if err != nil {
 			log.Fatal(err)
+		}
+		if *slots != "" {
+			var a, b uint64
+			if _, err := fmt.Sscanf(*slots, "%d-%d", &a, &b); err != nil {
+				log.Fatalf("bad -slots: %v", err)
+			}
+			kept := units[:0]
+			for _, u := range units {
+				if u.from >= a && u.to <= b {
+					kept = append(kept, u)
+				}
+			}
+			units = kept
 		}
 		if *newestFirst {
 			sort.Slice(units, func(i, j int) bool { return units[i].from > units[j].from })
