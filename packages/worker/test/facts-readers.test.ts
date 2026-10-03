@@ -216,7 +216,8 @@ describe('fact readers', () => {
       if (body.method === 'getProgramAccounts') {
         gpaCalls++;
         const cfg = body.params[1] as { filters: unknown[]; commitment: string; minContextSlot: number };
-        expect(cfg.filters).toEqual([{ memcmp: { offset: 0, bytes: MINT } }, { memcmp: { offset: 165, bytes: '3' } }]);
+        // The default for Token-2022 is the mint memcmp alone (every account, extension-less ones included).
+        expect(cfg.filters).toEqual([{ memcmp: { offset: 0, bytes: MINT } }]);
         expect(cfg.minContextSlot).toBe(hc.mint.slot);
         expect(cfg.commitment).toBe('confirmed');
         return rpcResult({ context: { slot: hc.gpa.slot }, value: hc.gpa.accounts.map((a) => ({ pubkey: a.address, account: { owner: a.owner, data: [a.data, 'base64'], lamports: 1, executable: false } })) });
@@ -274,13 +275,13 @@ describe('fact readers', () => {
     }
   });
 
-  it('holder scan filters: legacy SPL by size and mint; Token-2022 indexed by default, or by mint only', () => {
+  it('holder scan filters: legacy SPL by size and mint; Token-2022 by mint only by default, or indexed', () => {
     const spl = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
     const t22 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
     expect(holderFilters(spl, MINT)).toEqual([{ dataSize: 165 }, { memcmp: { offset: 0, bytes: MINT } }]);
     expect(holderFilters(spl, MINT, 'mintOnly')).toEqual([{ dataSize: 165 }, { memcmp: { offset: 0, bytes: MINT } }]);
-    expect(holderFilters(t22, MINT)).toEqual([{ memcmp: { offset: 0, bytes: MINT } }, { memcmp: { offset: 165, bytes: '3' } }]);
-    expect(holderFilters(t22, MINT, 'mintOnly')).toEqual([{ memcmp: { offset: 0, bytes: MINT } }]);
+    expect(holderFilters(t22, MINT)).toEqual([{ memcmp: { offset: 0, bytes: MINT } }]);
+    expect(holderFilters(t22, MINT, 'indexed')).toEqual([{ memcmp: { offset: 0, bytes: MINT } }, { memcmp: { offset: 165, bytes: '3' } }]);
   });
 
   it('the trial default is 100 holder scans a day', async () => {
@@ -298,9 +299,57 @@ describe('fact readers', () => {
     };
     const timers = new ManualTimers(1_791_100_000_000);
     const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers, creditsUsed: 0 }), timeoutMs: 1000 });
-    const readers = new FactReaders({ feed: { ingest: () => undefined }, rpc, http, timers, timeoutMs: 1000, token2022Filter: 'mintOnly' });
+    const readers = new FactReaders({ feed: { ingest: () => undefined }, rpc, http, timers, timeoutMs: 1000, token2022Filter: 'indexed' });
     for (let k = 0; k < 3; k++) expect(await pump(readers.readHoldersAll(MINT), timers)).toBe(true);
-    expect(seenFilters.at(-1)).toEqual([{ memcmp: { offset: 0, bytes: MINT } }]);
+    expect(seenFilters.at(-1)).toEqual([{ memcmp: { offset: 0, bytes: MINT } }, { memcmp: { offset: 165, bytes: '3' } }]);
+  });
+
+  describe('a refused mint-only scan', () => {
+    const hc = FIX.holdersComplete;
+    const server = (refuse: boolean) => {
+      const filters: unknown[][] = [];
+      const http = async (req: HttpRequest) => {
+        const body = JSON.parse(req.body!) as { method: string; params: unknown[] };
+        if (body.method === 'getAccountInfo') return rpcResult({ context: { slot: hc.mint.slot }, value: { owner: hc.mint.owner, data: [hc.mint.data, 'base64'], lamports: 1, executable: false } });
+        if (body.method === 'getProgramAccounts') {
+          const f = (body.params[1] as { filters: unknown[] }).filters;
+          filters.push(f);
+          // Helius answered "-32600 too many accounts" to a mint-only scan of a big legacy coin (gpa-probe run 37149567929).
+          if (refuse && f.length === 1) return ok({ jsonrpc: '2.0', id: 1, error: { code: -32600, message: 'too many accounts' } });
+          const typed = hc.gpa.accounts.filter((a) => { const b = Buffer.from(a.data, 'base64'); return f.length === 1 || (b.length > 165 && b[165] === 2); });
+          return rpcResult({ context: { slot: hc.gpa.slot }, value: typed.map((a) => ({ pubkey: a.address, account: { owner: a.owner, data: [a.data, 'base64'], lamports: 1, executable: false } })) });
+        }
+        return rpcResult({ context: { slot: hc.gpa.slot }, value: (body.params[0] as string[]).map(() => null) });
+      };
+      return { http, filters };
+    };
+    const make = (http: HttpClient, cap: number) => {
+      const timers = new ManualTimers(1_791_100_000_000);
+      const ingested: unknown[] = [];
+      const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers, creditsUsed: 0 }), timeoutMs: 1000 });
+      const readers = new FactReaders({ feed: { ingest: (_s, body) => ingested.push((body as { value: unknown }).value) }, rpc, http, timers, timeoutMs: 1000, holderScansPerDay: cap });
+      return { readers, timers, ingested };
+    };
+
+    it('gets one indexed retry, marked as a fallback, and both scans count against the cap', async () => {
+      const s = server(true);
+      const r = make(s.http, 3);
+      expect(await pump(r.readers.readHoldersAll(MINT), r.timers)).toBe(true);
+      expect(s.filters).toEqual([[{ memcmp: { offset: 0, bytes: MINT } }], [{ memcmp: { offset: 0, bytes: MINT } }, { memcmp: { offset: 165, bytes: '3' } }]]);
+      expect(parseHoldersAllRead(r.ingested[0])).toMatchObject({ filter: 'indexed', fallback: true });
+      // Two scans used, one left: the next refused mint-only scan cannot retry and ingests nothing.
+      expect(await pump(r.readers.readHoldersAll(MINT), r.timers)).toBe(false);
+      expect(r.ingested).toHaveLength(1);
+      expect(r.readers.outcomes.at(-1)).toMatchObject({ ok: false, detail: expect.stringContaining('daily scan cap') });
+    });
+
+    it('a served mint-only scan needs no retry and is not a fallback', async () => {
+      const s = server(false);
+      const r = make(s.http, 3);
+      expect(await pump(r.readers.readHoldersAll(MINT), r.timers)).toBe(true);
+      expect(s.filters).toHaveLength(1);
+      expect(parseHoldersAllRead(r.ingested[0])).toMatchObject({ filter: 'mintOnly', fallback: false });
+    });
   });
 
   it('the read-only method list has no way to send', () => {
