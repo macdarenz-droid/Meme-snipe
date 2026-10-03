@@ -20,6 +20,8 @@ import { loadOrCreate, readStudyRegistry, recordTrial, register, type StudyRegis
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { openSealed, runSealedHoldout, sealedReady } from './sealed.ts';
 import { countsOf, rejectMix, scoreRun, type ScoredTrade } from './score.ts';
+import { tradesOf as tradesOfRun } from '../trades.ts';
+import type { DeploymentStats } from '../strategy/study.ts';
 
 export interface StudyInputs {
   readonly config: StudyConfig;
@@ -75,6 +77,19 @@ export interface StudyReport {
     readonly s0Seeds: number;
     readonly ledgerReplay: LedgerReplayResult;
   };
+  /** The deployment replay (walk-forward days): real size, one account, R3–R11 and the kill switch on. */
+  readonly deployment: {
+    readonly stats: RunResult['stats'];
+    readonly trades: number;
+    readonly netLamports: string;
+    /** Value still held when the data ended (blocked or never exited), lamports at the last rung's quote. */
+    readonly strandedLamports: string;
+    readonly maxDrawdownUsd: string;
+    readonly killSwitchTrips: number;
+    readonly weeklyTrips: number;
+    readonly rejectedOpportunities: Readonly<Record<string, number>>;
+    readonly notes: readonly string[];
+  };
   readonly holdout: { readonly ran: boolean; readonly counts: Readonly<Record<string, unknown>> | null; readonly sealHash: string | null; readonly required: Readonly<Record<string, number | null>> };
   readonly gates: { readonly G0: GateResult; readonly G1: Readonly<Record<string, GateResult>>; readonly G2: GateResult };
   readonly holdoutRegime: string;
@@ -115,6 +130,10 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const wfLedger = `${i.outDir}/walk-forward.db`;
   const wf = runStudy({ ...wfOpts, mode: 'strategy', ledgerPath: wfLedger });
   const s0 = Array.from({ length: c.s0SeedsWalkForward }, (_, k) => runStudy({ ...wfOpts, mode: 's0', seed: `${i.seed}:s0:${k}` }));
+
+  // 1b. Deployment replay on the same days (never on the holdout): the setups at the real size against one account.
+  let depStats: DeploymentStats | null = null;
+  const dep = runStudy({ ...wfOpts, mode: 'deployment', seed: `${i.seed}:deployment`, onStrategy: (x) => { depStats = x.deployment; } });
 
   // 2. Scoring stage.
   const scored = purge(scoreRun(wf, i.fills), plan, c.embargoMs, regime);
@@ -228,6 +247,17 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       folds: Object.fromEntries(universes.map((u) => [u, foldSummary(tradesOf(u), plan.walkForward.folds)])), trades: scored.kept, s0Seeds: s0.length, ledgerReplay,
       byRegime: Object.fromEntries(universes.map((u) => [u, Object.fromEntries(regimes.map((g) => [g, tradesOf(u).filter((t) => t.regime === g).length]))])),
     },
+    deployment: (() => {
+      const ds = depStats as DeploymentStats | null;
+      const tr = scoreRun(dep, i.fills);
+      return {
+        stats: dep.stats, trades: tr.length, netLamports: tr.reduce((a, t) => a + BigInt(t.net), 0n).toString(),
+        strandedLamports: tradesOfRun(dep, i.fills).trades.filter((t) => t.exitReason === 'blocked').reduce((a, t) => a + t.exitSol, 0n).toString(),
+        maxDrawdownUsd: (ds?.maxDrawdownUsd ?? 0n).toString(), killSwitchTrips: ds?.trips.filter((x) => x.trip === 'kill_switch').length ?? 0,
+        weeklyTrips: ds?.trips.filter((x) => x.trip === 'weekly_loss').length ?? 0, rejectedOpportunities: ds?.rejected ?? {},
+        notes: ['The regime gate (R16) is not applied: its inputs are not produced in the backtest yet (FACTS-1).', 'Signal priority at one block: U1 before U2, then the deeper pool, then the mint address.'],
+      };
+    })(),
     holdout: { ran: sealed !== null || alreadyRun, counts: sealed?.counts ?? Object.fromEntries(universes.map((u) => [u, entryOf(u)?.counts ?? null])), sealHash: sealed?.sealHash ?? null, required },
     gates: { G0: G0full, G1, G2 },
     holdoutRegime: lastRegime,

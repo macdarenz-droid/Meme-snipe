@@ -36,6 +36,8 @@ export interface RunOptions {
   readonly extraEvents?: readonly FeedEvent[];
   /** Program-change slots from the dataset manifest (regime boundaries). */
   readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
+  /** Open positions the book allows (default: no limit; the deployment replay sets the policy's). */
+  readonly maxOpenPositions?: number;
   /** How long each key's past stays in the engine's as-of store (default: everything). */
   readonly retention?: Retention;
   /** BT-2: a fresh fact projector for this run (gate facts, checks, creates and rug labels). */
@@ -143,7 +145,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
   });
   for (const e of extra) replay.schedule(e);
 
-  const maxOpen = Number.MAX_SAFE_INTEGER;
+  const maxOpen = o.maxOpenPositions ?? Number.MAX_SAFE_INTEGER;
   let ledger: Ledger | null = null;
   if (o.ledgerPath !== undefined) ledger = openLedger(o.ledgerPath, 'backtest');
   sink = new LedgerSink(ledger, { maxOpenPositions: maxOpen }, { maxHeld: 2n ** 62n as never, maxCount: maxOpen });

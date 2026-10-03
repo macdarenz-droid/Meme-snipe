@@ -29,7 +29,7 @@ import {
   migrationKey, parseMigration, concentration, mintAccounts, type HardResult,
 } from '../../../core/src/gates/index.ts';
 import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src/lifecycle/index.ts';
-import { evaluateEntry, NO_LATCHES, type EntryAllowed } from '../../../core/src/risk/index.ts';
+import { evaluateEntry, NO_LATCHES, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, LAMPORTS_PER_SOL, type MicroUsd, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
 import type { PoolView } from '../sim/market.ts';
 import type { StudyConfig, U1Rules, U2Rules, UniverseConfig } from './config.ts';
@@ -43,8 +43,12 @@ export interface StudyOptions {
   readonly session: PolicySession;
   readonly fills: FillConfig;
   readonly scenario: ScenarioName;
-  /** 'strategy': the universes' setups; 's0': the random control for each universe. */
-  readonly mode: 'strategy' | 's0';
+  /**
+   * 'strategy': the universes' setups, each entry judged on a fresh trial account (§14 takes every candidate);
+   * 's0': the random control for each universe; 'deployment': the setups at the real size against one running
+   * account (positions, daily entries, cooldowns, loss triggers and the kill switch), marked at liquidation value.
+   */
+  readonly mode: 'strategy' | 's0' | 'deployment';
   /** Entries are planned only inside [from, to) (a walk-forward fold or the holdout, embargo applied). */
   readonly entriesFrom: number;
   readonly entriesTo: number;
@@ -55,6 +59,17 @@ const paperSignature = (id: string) =>
 const paperBlockhash = (id: string) => blockhash(encodeBase58(createHash('sha256').update(`bh:${id}`).digest()));
 const poolState = (v: PoolView): PoolState => ({ baseReserve: v.baseReserve, quoteVault: v.quoteVault, virtualQuoteReserves: v.virtualQuoteReserves });
 const market = (v: PoolView): ExitMarket => ({ venue: 'pumpswap', pool: poolState(v), ctx: observedFeeContext(v.fees, v.baseSupply, NORMAL) });
+
+/** What the deployment replay reports beyond the trades (§ deployment replay, external review). */
+export interface DeploymentStats {
+  readonly trips: { readonly trip: Trip; readonly atMs: number }[];
+  /** Eligible setups refused by a portfolio control or a busy book, by control and code. */
+  readonly rejected: Record<string, number>;
+  /** Equity marked at executable liquidation value, micro-dollars, at every entry decision. */
+  peakEquityUsd: bigint;
+  maxDrawdownUsd: bigint;
+  closed: number;
+}
 
 /** Plans and state of one candidate in one universe. */
 interface Candidate {
@@ -98,6 +113,11 @@ export class StudyStrategy implements Strategy {
   readonly #settings;
   readonly #universes: ReadonlyMap<string, UniverseConfig>;
   readonly #poolOf = new Map<string, string>();
+  // Deployment replay: the one running account.
+  readonly #closed: ClosedTrade[] = [];
+  readonly #entries: EntryRecord[] = [];
+  #latches: Latches = NO_LATCHES;
+  readonly #stats: DeploymentStats = { trips: [], rejected: {}, peakEquityUsd: 0n, maxDrawdownUsd: 0n, closed: 0 };
   #prunedAt = Number.MIN_SAFE_INTEGER;
 
   constructor(o: StudyOptions) {
@@ -105,6 +125,73 @@ export class StudyStrategy implements Strategy {
     const net = o.fills.network;
     this.#settings = exitSettings(o.session.policy, o.fills.scenarios[o.scenario].takeProfit === 'close' ? 'close' : 'wick', net);
     this.#universes = new Map(o.config.universes.map((u) => [u.universe, u]));
+  }
+
+  /** The deployment replay's figures (empty in the other modes). */
+  get deployment(): DeploymentStats {
+    return this.#stats;
+  }
+
+  /** The running account for RISK-1, marked at executable liquidation value; `cash` is what the wallet holds. */
+  #account(ctx: StrategyContext, px: MicroUsd, now: number): { history: AccountHistory; cash: MicroUsd } {
+    const policy = this.#o.session.policy;
+    const open: OpenPosition[] = [];
+    let committed = 0n;
+    for (const t of this.#trades.values()) {
+      const p = ctx.book.positions[t.positionId];
+      if (p === undefined || p.status === 'closed') continue;
+      const pv = ctx.lookup(`pool:${t.pool}`);
+      const liq = pv.ok && p.quantity > 0n ? liquidationValue(market(pv.value as PoolView), p.quantity) : null;
+      const costUsd = lamportsToMicroUsd((p.cost + t.fixedCosts) as Lamports, px, 'ceil');
+      committed += costUsd;
+      open.push({
+        mint: p.mint, openedAtMs: t.plan?.openedAtMs ?? now, notional: costUsd as MicroUsd,
+        mark: liq !== null && liq.ok ? lamportsToMicroUsd(liq.value as Lamports, px, 'floor') : null, markAtMs: liq !== null && liq.ok ? now : null,
+      });
+    }
+    const unresolved = Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && !isTerminal(i)).map((i) => ({ mint: i.intent.mint }));
+    const realized = this.#closed.reduce((a, c) => a + c.netPnl, 0n);
+    const equity = policy.capital.bankroll + realized + open.reduce((a, o) => a + ((o.mark ?? 0n) - o.notional), 0n);
+    if (equity > this.#stats.peakEquityUsd) this.#stats.peakEquityUsd = equity;
+    if (this.#stats.peakEquityUsd - equity > this.#stats.maxDrawdownUsd) this.#stats.maxDrawdownUsd = this.#stats.peakEquityUsd - equity;
+    return {
+      history: {
+        openingEquity: policy.capital.bankroll, openedAtMs: this.#o.entriesFrom - 1, flows: [], closedTrades: [...this.#closed], openPositions: open,
+        entries: [...this.#entries], unresolvedEntries: unresolved, heldReservations: ctx.book.reserved, version: BigInt(this.#entries.length + this.#closed.length),
+      },
+      cash: (policy.capital.bankroll + realized - committed) as MicroUsd,
+    };
+  }
+
+  /** Latches a trip the first time it fires; the replay has no owner to re-arm, so it holds to the end. */
+  #trip(trips: readonly Trip[], now: number): void {
+    for (const trip of trips) {
+      if (trip === 'kill_switch' && this.#latches.killTrippedAtMs === null) this.#latches = { ...this.#latches, killTrippedAtMs: now };
+      else if (trip === 'weekly_loss' && this.#latches.weeklyTrippedAtMs === null) this.#latches = { ...this.#latches, weeklyTrippedAtMs: now };
+      else continue;
+      this.#stats.trips.push({ trip, atMs: now });
+    }
+  }
+
+  /** A deployment position just closed: its net P&L in dollars, fees from its fills plus failed attempts' fees. */
+  #close(ctx: StrategyContext, t: Trade, pid: string, now: number): void {
+    const p = ctx.book.positions[pid]!;
+    const net = this.#o.fills.network;
+    const intents = Object.values(ctx.book.intents).filter((i) => i.intent.id === p.entryIntentId || (i.intent.purpose === 'exit' && i.intent.positionId === pid));
+    let lamports = 0n;
+    for (const i of intents) {
+      for (const f of i.fills) lamports += (i.intent.purpose === 'exit' ? f.sol : -f.sol) - f.fees;
+      lamports -= BigInt(Math.max(0, i.attempts.length - i.fills.length)) * net.signaturesPerTx * net.baseFeePerSignature;
+    }
+    // The account is closed by the final sell (fills-2): the rent paid at entry comes back with it.
+    const sol = ctx.lookup(SOL_USD_KEY);
+    const s = sol.ok ? parseSolUsd(sol.value) : null;
+    const pt = s === null ? null : solUsdAt(s, now);
+    if (pt === null) return;
+    const netPnl = lamports < 0n ? -lamportsToMicroUsd((-lamports) as Lamports, pt.price as MicroUsd, 'ceil') : lamportsToMicroUsd(lamports as Lamports, pt.price as MicroUsd, 'floor');
+    const stopped = Object.values(ctx.book.intents).some((i) => i.intent.purpose === 'exit' && i.intent.positionId === pid) && (p.exitOwner?.reasons ?? []).some((r) => r === 'stop' || r === 'thesis_lost' || r === 'liquidity');
+    this.#closed.push({ mint: p.mint, openedAtMs: t.plan?.openedAtMs ?? now, closedAtMs: now, notional: t.notional, netPnl: netPnl as MicroUsd, stoppedOut: stopped });
+    this.#stats.closed++;
   }
 
   /** The deployer index the gates read (for tests). */
@@ -215,26 +302,38 @@ export class StudyStrategy implements Strategy {
     const range = atr(tape.bars(), policy.exits.atrPeriod, policy.exits.atrBarMs, now);
     const stopCheck = checkStopDistance(policy, spot, setup.stopSpot, range);
     if (!stopCheck.ok) return void say('no entry', `stop ${stopCheck.reason}: ${stopCheck.detail}`);
-    if (!canOpenNewEntry(ctx.book).ok) return void say('no entry', 'book busy: another entry or an exit is in flight');
+    if (!canOpenNewEntry(ctx.book).ok) {
+      if (this.#o.mode === 'deployment') this.#stats.rejected['R3:book busy'] = (this.#stats.rejected['R3:book busy'] ?? 0) + 1;
+      return void say('no entry', 'book busy: another entry, an exit or the position limit');
+    }
 
     const id = intentId(`en:${tag}:${mint}`);
     const quoteUsd = lamportsToMicroUsd(effectiveQuoteReserve(poolState(view)) as Lamports, px.price as MicroUsd, 'floor');
     const net = this.#o.fills.network;
     const network = { signaturesPerTx: net.signaturesPerTx, baseFeePerSignature: net.baseFeePerSignature, entryPriorityFee: net.entryPriorityFee, exitPriorityFee: policy.exits.ladder.steps[0]!.priorityFeeLamports, tip: net.tip, entryFailurePpm: 0n, exitFailurePpm: 0n };
-    // The bot closes the token account with its full exit (§9), so sizing counts the rent as recoverable; the conservative
-    // scenario still scores it as lost (BT-1 fill model), so trade P&L carries it.
+    // The bot closes the token account with its full exit (§9), so sizing counts the rent as recoverable (RISK-1's C
+    // still carries it as a worst-case cost); the fill model returns it only when the final sell lands (fills-2).
     const rent = { tokenAccount: net.tokenAccountRent, tokenAccountClosedOnExit: true, oneTime: 0n, transient: 0n };
-    const bankrollLamports = microUsdToLamports(policy.capital.bankroll, px.price as MicroUsd, 'floor');
+    const deploy = this.#o.mode === 'deployment';
+    const account = deploy ? this.#account(ctx, px.price as MicroUsd, now) : null;
+    const bankrollLamports = microUsdToLamports(account === null ? policy.capital.bankroll : account.cash, px.price as MicroUsd, 'floor');
     const risk = evaluateEntry({
-      session: this.#o.session, mode: 'backtest', clock: { now: () => ({ receivedAt: now }) },
-      account: { openingEquity: policy.capital.bankroll, openedAtMs: now - 1, flows: [], closedTrades: [], openPositions: [], entries: [], unresolvedEntries: [], heldReservations: 0n as Lamports, version: 0n },
-      latches: NO_LATCHES,
-      market: { solPrice: { value: px.price as MicroUsd, atMs: now }, solBalance: { value: bankrollLamports as Lamports, atMs: now }, regime: 'unknown' },
+      session: this.#o.session, mode: deploy ? 'live' : 'backtest', clock: { now: () => ({ receivedAt: now }) },
+      account: account?.history ?? { openingEquity: policy.capital.bankroll, openedAtMs: now - 1, flows: [], closedTrades: [], openPositions: [], entries: [], unresolvedEntries: [], heldReservations: 0n as Lamports, version: 0n },
+      latches: deploy ? this.#latches : NO_LATCHES,
+      // R16: the regime gate's inputs are not produced in the backtest yet (FACTS-1); the deployment replay reports it
+      // as not applied rather than refusing every entry.
+      market: { solPrice: { value: px.price as MicroUsd, atMs: now }, solBalance: { value: bankrollLamports as Lamports, atMs: now }, regime: deploy ? 'on' : 'unknown' },
     }, {
       intentId: id, reservationId: reservationId(`r:${tag}:${mint}`), mint: toMint(mint), universe: u.universe, stopBps, edgePpm: u.edgePpm,
       medianTargetBps: u.medianTargetBps, quote: quoter, quoteAtMs: now, poolLiquidity: quoteUsd as MicroUsd, network, rent,
     });
-    if (!risk.allow) return void say('risk refused', ...risk.reasons.map((r) => `${r.control}:${r.code}`));
+    if (deploy) this.#trip(risk.trips, now);
+    if (!risk.allow) {
+      if (deploy) for (const r of risk.reasons) this.#stats.rejected[`${r.control}:${r.code}`] = (this.#stats.rejected[`${r.control}:${r.code}`] ?? 0) + 1;
+      return void say('risk refused', ...risk.reasons.map((r) => `${r.control}:${r.code}`));
+    }
+    if (deploy) this.#entries.push({ mint: toMint(mint), atMs: now });
     this.#enter(c, u, view, pool, risk, spot, setup.stopSpot, stopBps, blockHeight, out);
   }
 
@@ -314,6 +413,7 @@ export class StudyStrategy implements Strategy {
       const p = ctx.book.positions[pid];
       if (p === undefined) continue;
       if (p.status === 'closed') {
+        if (this.#o.mode === 'deployment') this.#close(ctx, t, pid, now);
         this.#trades.delete(pid);
         this.#byPool.get(t.pool)?.delete(pid);
         continue;
@@ -350,6 +450,13 @@ export class StudyStrategy implements Strategy {
         sellRoute: null, flow, bars,
       });
       t.tracker = step.tracker;
+      if (this.#o.mode === 'deployment') {
+        // Equity marked at executable liquidation value on every update of the open position (drawdown).
+        const sl = ctx.lookup(SOL_USD_KEY);
+        const sp = sl.ok ? parseSolUsd(sl.value) : null;
+        const pt = sp === null ? null : solUsdAt(sp, now);
+        if (pt !== null) this.#account(ctx, pt.price as MicroUsd, now);
+      }
       // A merge that adds no new reason to the exit owner changes nothing; it is not logged.
       const d = step.decision;
       if (d.kind === 'merge' && d.reasons.every((r) => p.exitOwner?.reasons.includes(r))) continue;

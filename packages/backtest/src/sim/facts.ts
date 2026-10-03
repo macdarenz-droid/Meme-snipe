@@ -481,16 +481,25 @@ export class FactProjector {
       if (this.#solPoints.length > this.#o.solUsdPoints) this.#solPoints.shift();
     }
     this.#schedule(atMs);
-    for (const key of [...this.#due].sort()) {
+    // Signal priority when several checks fall due at one block (released in this order, so the first eligible one
+    // takes a single position slot): the universe's place in the windows, then the deeper pool (effective quote
+    // reserve), then the mint address.
+    const order = this.#o.windows.map((w) => w.universe);
+    const due = [...this.#due].map((key) => {
       const [mint, universe] = key.split('|') as [string, string];
+      const v = this.#mints.get(mint)?.view;
+      return { key, mint, universe, depth: v === null || v === undefined ? 0n : v.quoteVault + v.virtualQuoteReserves };
+    }).sort((a, b) => order.indexOf(a.universe) - order.indexOf(b.universe) || (a.depth > b.depth ? -1 : a.depth < b.depth ? 1 : 0) || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0));
+    due.forEach(({ key, mint, universe }, rank) => {
       this.#due.delete(key);
       const s = this.#mints.get(mint);
-      if (s === undefined) continue;
+      if (s === undefined) return;
       this.counts.checks++;
       const n = ++s.checkSeq;
-      out.push(...this.snapshot(mint, m, `k:${mint}:${n}`));
-      out.push(this.#fact(`k:${mint}:${n}:~check`, m, `check:${mint}`, { mint, universe, n, blockHeight: this.#height }));
-    }
+      const base = `k:${String(rank).padStart(5, '0')}:${mint}:${n}`;
+      out.push(...this.snapshot(mint, m, base));
+      out.push(this.#fact(`${base}:~check`, m, `check:${mint}`, { mint, universe, n, rank, blockHeight: this.#height }));
+    });
   }
 
   /** Marks the checks that fall due at this block for every tracked graduate. */

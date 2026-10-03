@@ -52,6 +52,9 @@ describe('BT-2 study', () => {
     // Every walk-forward trade opened and closed inside the walk-forward days.
     for (const t of first.walkForward.trades) expect(t.closedAt).toBeLessThan(Date.parse('2026-09-22T00:00:00Z'));
     expect(first.walkForward.trades.length).toBeGreaterThan(0);
+    // The deployment replay ran on the same days, at the real size, cleanly.
+    expect(first.deployment.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
+    expect(first.deployment.trades).toBeLessThanOrEqual(first.walkForward.trades.length + first.walkForward.purged + first.walkForward.embargoed);
   });
 
   it('proves the engine blind and deterministic on the study data', () => {

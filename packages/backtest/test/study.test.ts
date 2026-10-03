@@ -99,6 +99,23 @@ describe('BT-2 study runs', () => {
     expect(decisions(none.r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(0);
   });
 
+  it('deployment replay: one position at a time; a simultaneous second setup is a rejected opportunity', () => {
+    const two = [SETUP, { ...SETUP, label: 'b', creator: 'b' }];
+    const broad = run(two);
+    expect(decisions(broad.r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(2);
+    let stats: import('../src/strategy/study.ts').DeploymentStats | null = null;
+    const dep = run(two, { mode: 'deployment', onStrategy: (x) => { stats = x.deployment; } });
+    expect(dep.r.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
+    const enters = decisions(dep.r.records).filter((d) => d.reasons[0] === 'enter');
+    expect(enters.length).toBeGreaterThanOrEqual(1);
+    // Never two open at once.
+    const { trades } = tradesOf(dep.r, FILL_CONFIG);
+    for (let i = 1; i < trades.length; i++) expect(trades[i]!.openedAt).toBeGreaterThanOrEqual(trades[i - 1]!.closedAt);
+    const s = stats as unknown as import('../src/strategy/study.ts').DeploymentStats;
+    expect(Object.values(s.rejected).reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+    expect(s.peakEquityUsd).toBeGreaterThan(0n);
+  });
+
   it('identifies each pre-registered configuration by its content', () => {
     expect(configId(STUDY_CONFIG, 'U2')).toMatch(/^U2-[0-9a-f]{16}$/);
     expect(configId(STUDY_CONFIG, 'U1')).not.toBe(configId(STUDY_CONFIG, 'U2'));
