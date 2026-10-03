@@ -19,6 +19,8 @@ export interface Sample {
   readonly recorder: boolean;
   readonly simulation: boolean;
   readonly stub: boolean;
+  /** Feed names the worker reported, sorted and comma-joined; fixed for the whole run. */
+  readonly feeds: string | null;
   readonly feeds_down: readonly string[];
 }
 
@@ -44,6 +46,8 @@ export interface RecordedFile {
 
 export interface RunMeta {
   readonly runId: string;
+  /** Host runs: the requested name (packages/runner/qualifying-run.json). */
+  readonly name?: string;
   readonly label: Label;
   readonly commit: string;
   readonly startedAt: number;
@@ -135,6 +139,7 @@ export const buildReport = (
     feed_drills: feedsPlanned.length > 0 && feedsPlanned.every((f) => feedsPassed.includes(f)),
     every_drill_passed: drills.every((d) => d.pass),
     one_commit: commits.length === 1 && commits[0] === meta.commit,
+    feeds_fixed: upSamples.every((s) => s.feeds === feedsPlanned.slice().sort().join(',')),
     real_worker: !stub,
   };
   return {
@@ -143,7 +148,7 @@ export const buildReport = (
     // The fallback never counts (ARCHITECTURE.md §15): it is labelled so in the report itself.
     counts:
       meta.label === 'rehearsal'
-        ? 'Rehearsal: counts for none of §15 items 3, 4 or G3.'
+        ? 'Rehearsal: counts for none of §15 items 3, 4 or G3. The gaps between GitHub jobs count as down time, so a 48 h rehearsal fails the 99% uptime check by design.'
         : 'VPS run: candidate for §15 item 3 and the drills of item 5 only if every check passes; items 4 and G3 are judged from the same run by TEST-2 and STATS-1.',
     commit: meta.commit,
     commits_seen: commits,

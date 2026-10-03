@@ -1,6 +1,6 @@
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { checkStartHealth, type Health } from '../src/contract.ts';
+import { checkStartHealth, segmentAllowed, type Health } from '../src/contract.ts';
 import { checkJournal } from '../src/journal.ts';
 import { makePlan } from '../src/plan.ts';
 import { buildReport, reportMarkdown, uptime, type RunMeta, type Sample } from '../src/report.ts';
@@ -69,7 +69,7 @@ describe('drill plan', () => {
 
 const sample = (t: number, ready: boolean, extra: Partial<Sample> = {}): Sample => ({
   t, up: ready, ready, boot: 'a', git_sha: 'c0ffee', rss_bytes: 100 * 1024 * 1024, in_trade: false, entries_halted: false,
-  recorder: true, simulation: true, stub: false, feeds_down: [], ...extra,
+  recorder: true, simulation: true, stub: false, feeds: 'f', feeds_down: [], ...extra,
 });
 
 describe('report', () => {
@@ -89,6 +89,7 @@ describe('report', () => {
     expect(r.checks).toEqual(Object.fromEntries(Object.keys(r.checks).map((k) => [k, true])));
     expect(r.pass).toBe(true);
     expect(r.counts).toMatch(/Rehearsal: counts for none of §15 items 3, 4 or G3/);
+    expect(r.counts).toMatch(/fails the 99% uptime check by design/);
     expect(reportMarkdown(r)).toContain('`c0ffee`');
   });
   it.each([
@@ -99,10 +100,24 @@ describe('report', () => {
     ['uptime under 99%', { samples: samples.map((s, i) => (i === 4 ? { ...s, ready: false } : s)) }, 'uptime'],
     ['memory near the limit', { samples: samples.map((s) => ({ ...s, rss_bytes: 750 * 1024 * 1024 })) }, 'memory'],
     ['run cut short', { end: 50 }, 'duration'],
+    ['feed names changed', { samples: samples.map((s, i) => (i === 7 ? { ...s, feeds: 'f,g' } : s)) }, 'feeds_fixed'],
   ])('fails on %s', (_, over: { samples?: Sample[]; drills?: typeof drills; end?: number }, check) => {
     const r = buildReport(meta, over.samples ?? samples, 10, over.end ?? 100, journal, over.drills ?? drills, []);
     expect(r.checks[check]).toBe(false);
     expect(r.pass).toBe(false);
+  });
+});
+
+describe('fallback chain limits', () => {
+  it('caps a run at 72 h and a chain at the jobs it needs plus 2', () => {
+    expect(segmentAllowed(1, 48)).toBe(true);
+    expect(segmentAllowed(11, 48)).toBe(true); // ceil(2880 / 335) = 9, plus 2
+    expect(segmentAllowed(12, 48)).toBe(false);
+    expect(segmentAllowed(1, 72)).toBe(true);
+    expect(segmentAllowed(1, 73)).toBe(false);
+    expect(segmentAllowed(0, 48)).toBe(false);
+    expect(segmentAllowed(1.5, 48)).toBe(false);
+    expect(segmentAllowed(1, Number.NaN)).toBe(false);
   });
 });
 

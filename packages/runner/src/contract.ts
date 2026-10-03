@@ -7,6 +7,22 @@ export const STUB_ENTRY = 'packages/runner/stub/worker.ts';
 
 export const EXIT = { clean: 0, crash: 1, config: 2, reconcileFailed: 3 } as const;
 
+/** Runner exit codes. `refused` and `aborted` are in the host unit's RestartPreventExitStatus: never retried. */
+export const RUNNER_EXIT = { ok: 0, crash: 1, refused: 2, aborted: 4 } as const;
+
+/** The only worker entries the runner starts (it runs with the API keys in its environment). */
+export const ENTRIES: readonly string[] = ['packages/worker/src/main.ts', 'packages/runner/stub/worker.ts'];
+
+export const WORKER_UNIT = 'zeroed-worker.service';
+/** Host run names (qualifying-run.json, the zeroed-dryrun@<name> instance). */
+export const RUN_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/** Fallback chain limits: a run is at most 72 h, and a chain stops 2 jobs past what the run needs. */
+export const MAX_HOURS = 72;
+export const SEGMENT_MINUTES = 335;
+export const segmentAllowed = (segment: number, hours: number): boolean =>
+  Number.isInteger(segment) && segment >= 1 && hours > 0 && hours <= MAX_HOURS && segment <= Math.ceil((hours * 60) / SEGMENT_MINUTES) + 2;
+
 /** Credential names: files under CREDENTIALS_DIRECTORY (VPS) or the upper-case env variables (GitHub Actions). */
 export const SECRET_NAMES = ['HELIUS_API_KEY', 'ALCHEMY_API_KEY', 'JUPITER_API_KEY', 'TELEGRAM_BOT_TOKEN'] as const;
 

@@ -1,5 +1,6 @@
 // End to end against the stub worker: the real runner, real child processes, real SIGKILLs, short timings.
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,8 +56,8 @@ const quiet = (): void => {};
 describe('runner with the stub worker', () => {
   it('runs restart and feed drills, survives a job handover, and writes complete evidence', async () => {
     const t = await setup();
-    const newRun = { runId: 'run', label: 'rehearsal' as const, commit: 'c0ffee', targetMs: 16_000, entry: STUB_ENTRY, restarts: 3, restartWindowMs: 2500, feedDropMs: 600 };
-    const common = { healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy' as const, sampleMs: 100, recoverMs: 5000, log: quiet };
+    const newRun = { runId: 'run', targetMs: 16_000, entry: STUB_ENTRY, restarts: 3, restartWindowMs: 2500, feedDropMs: 600 };
+    const common = { identity: { label: 'rehearsal' as const, commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy' as const, sampleMs: 100, recoverMs: 5000, log: quiet };
     // Job 1 stops part-way, like a GitHub job at its time limit; job 2 restores and finishes.
     const first = await runSegment({ ...common, control: t.control(), newRun, segmentEnd: Date.now() + 8000, recordedDir: join(t.dir, 'rec1'), recordedArtifact: 'rec1' });
     expect(first).toMatchObject({ done: false, aborted: null, report: null });
@@ -102,9 +103,41 @@ describe('runner with the stub worker', () => {
     const t = await setup(env);
     const res = await runSegment({
       control: t.control(), healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy', sampleMs: 100, log: quiet,
-      newRun: { runId: 'run', label: 'rehearsal', commit: 'c0ffee', targetMs: 5000, entry: STUB_ENTRY }, segmentEnd: Number.POSITIVE_INFINITY,
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, newRun: { runId: 'run', targetMs: 5000, entry: STUB_ENTRY }, segmentEnd: Number.POSITIVE_INFINITY,
     });
     expect(res.aborted).toBe(`refused to run: ${problem}`);
     expect(existsSync(join(t.evidenceDir, 'run.json'))).toBe(false);
   }, 30_000);
+
+  it.each([
+    ['a "vps" label', { label: 'vps' }],
+    ['another commit', { commit: 'beef' }],
+  ])('refuses to resume restored state that claims %s, before starting the worker', async (_, forged) => {
+    const t = await setup();
+    mkdirSync(t.evidenceDir, { recursive: true });
+    writeFileSync(join(t.evidenceDir, 'run.json'), JSON.stringify({ runId: 'run', label: 'rehearsal', commit: 'c0ffee', startedAt: Date.now(), targetMs: 60_000, entry: STUB_ENTRY, plan: [], ...forged }));
+    const control = t.control();
+    const res = await runSegment({
+      control, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy', sampleMs: 100, log: quiet,
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, segmentEnd: Number.POSITIVE_INFINITY,
+    });
+    expect(res.aborted).toMatch(/^refused to resume/);
+    expect(control.starts).toBe(0);
+    expect(existsSync(join(t.stateDir, 'journal.jsonl'))).toBe(false);
+  }, 30_000);
+});
+
+describe('stub worker contract', () => {
+  const run = (args: string[], env: Record<string, string>) =>
+    spawnSync(process.execPath, ['--no-warnings', STUB_ENTRY, ...args], { cwd: root, encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: mkdtempSync(join(tmpdir(), 'run1-stub-')), ...env }, timeout: 10_000 });
+  it('exits 2 when ZEROED_MODE is unset or not paper', () => {
+    expect(run(['--reconcile'], {}).status).toBe(2);
+    expect(run(['--reconcile'], { ZEROED_MODE: 'live' }).status).toBe(2);
+    expect(run(['--reconcile'], { ZEROED_MODE: 'paper' }).status).toBe(0);
+  });
+  it('exits 3 when reconcile fails, in --reconcile and at start, instead of serving reconciled: false', () => {
+    const env = { ZEROED_MODE: 'paper', ZEROED_STUB_FAIL_RECONCILE: '1', ZEROED_HEALTH_ADDR: '127.0.0.1:18799' };
+    expect(run(['--reconcile'], env).status).toBe(3);
+    expect(run([], env).status).toBe(3);
+  });
 });

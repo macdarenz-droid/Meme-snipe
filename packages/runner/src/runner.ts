@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkStartHealth, STATE_FILES, type Health, type JournalLine } from './contract.ts';
+import { checkStartHealth, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
 import type { WorkerControl } from './control.ts';
 import { checkJournal } from './journal.ts';
 import { makePlan, type Drill } from './plan.ts';
@@ -16,8 +16,10 @@ export interface SegmentOptions {
   readonly stateDir: string;
   /** The run's evidence folder: evidence/dryrun/<runId>. */
   readonly evidenceDir: string;
-  /** New runs only. */
-  readonly newRun?: { readonly runId: string; readonly label: Label; readonly commit: string; readonly targetMs: number; readonly entry: string; readonly restarts?: number; readonly restartWindowMs?: number; readonly feedDropMs?: number };
+  /** Who this runner is: computed from where it runs, never read from restored state. A resumed run must match. */
+  readonly identity: { readonly label: Label; readonly commit: string };
+  /** New runs only. `entry` is the worker entry (local) or `systemd:<unit>` (host). */
+  readonly newRun?: { readonly runId: string; readonly name?: string; readonly targetMs: number; readonly entry: string; readonly restarts?: number; readonly restartWindowMs?: number; readonly feedDropMs?: number };
   /** Wall-clock end of this segment (ms epoch). The run itself ends at startedAt + targetMs. */
   readonly segmentEnd: number;
   /** Where recorded data is kept: `copy` into evidenceDir/recorded (fallback artifacts), or `host` (left in place on the VPS). */
@@ -82,8 +84,12 @@ const toSample = (t: number, h: Health | null): Sample => ({
   recorder: h?.recorder === 'on',
   simulation: h?.simulation === 'on',
   stub: h?.stub === true,
+  feeds: h ? Object.keys(h.feeds).sort().join(',') : null,
   feeds_down: h ? Object.entries(h.feeds).flatMap(([n, f]) => (f.connected ? [] : [n])) : [],
 });
+
+const feedSet = (h: Health): string => Object.keys(h.feeds).sort().join(',');
+const planFeeds = (m: RunMeta): string => m.plan.flatMap((d) => (d.kind === 'feed' ? [d.feed] : [])).sort().join(',');
 
 const readJson = <T>(p: string, fallback: T): T => (existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as T) : fallback);
 const readLines = <T>(p: string): T[] =>
@@ -124,6 +130,14 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   segments.push({ start: segStart, end: null, lastInTrade: false, lastBoot: null });
   const saveDrills = (): void => writeFileSync(P.drills, JSON.stringify(outcomes, null, 2));
 
+  // Restored state is data from a previous job (an artifact): it cannot choose the label or the commit.
+  if (resumed) {
+    const m = readJson<RunMeta | null>(P.meta, null);
+    if (!m || m.label !== o.identity.label || m.commit !== o.identity.commit) {
+      return finish(`refused to resume: restored run is ${m?.label ?? '?'} at ${m?.commit ?? '?'}, this runner is ${o.identity.label} at ${o.identity.commit}`);
+    }
+  }
+
   await o.control.start();
 
   // First ready health: needed to fix the plan (feed names) and to refuse a run with recorder or simulation off.
@@ -144,6 +158,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   let meta: RunMeta;
   if (resumed) {
     meta = readJson<RunMeta>(P.meta, null as unknown as RunMeta);
+    if (feedSet(first) !== planFeeds(meta)) return finish(`feed names changed: plan has ${planFeeds(meta)}, worker reports ${feedSet(first)}`);
   } else {
     const n = o.newRun!;
     const plan = makePlan({
@@ -153,7 +168,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       ...(n.restartWindowMs === undefined ? {} : { restartWindowMs: n.restartWindowMs }),
       ...(n.feedDropMs === undefined ? {} : { feedDropMs: n.feedDropMs }),
     });
-    meta = { runId: n.runId, label: n.label, commit: n.commit, startedAt: segStart, targetMs: n.targetMs, entry: n.entry, plan };
+    meta = { runId: n.runId, ...(n.name === undefined ? {} : { name: n.name }), label: o.identity.label, commit: o.identity.commit, startedAt: segStart, targetMs: n.targetMs, entry: n.entry, plan };
     writeFileSync(P.meta, JSON.stringify(meta, null, 2));
     log(`Run ${meta.runId}: ${meta.label}, commit ${meta.commit}, ${plan.length} drills planned.`);
   }
@@ -327,11 +342,16 @@ export const reconciledFirst = (stateDir: string, boot: string): boolean => {
 const entriesBetween = (stateDir: string, from: number, to: number): number =>
   journalLines(stateDir).filter((l) => l.kind === 'entry' && Date.parse(l.ts) >= from && Date.parse(l.ts) <= to).length;
 
-/** The host's start decision (cli vps-tick). Pure. */
-export const tickAction = (o: { readonly request: unknown; readonly started: readonly string[]; readonly unfinished: boolean; readonly active: boolean }): { readonly start: boolean; readonly mark: string | null; readonly why: string } => {
-  if (o.active) return { start: false, mark: null, why: 'dry run already running' };
-  if (o.unfinished) return { start: true, mark: null, why: 'resuming the unfinished run' };
-  if (typeof o.request !== 'string' || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(o.request)) return { start: false, mark: null, why: 'no run requested' };
-  if (o.started.includes(o.request)) return { start: false, mark: null, why: `run ${o.request} already started once` };
-  return { start: true, mark: o.request, why: `starting run ${o.request}` };
+/** The host's start decision (cli vps-tick). Pure. `start` is the run name to start, or null. */
+export const tickAction = (o: {
+  readonly request: unknown;
+  readonly started: readonly string[];
+  readonly unfinished: string | null;
+  readonly active: readonly string[];
+}): { readonly start: string | null; readonly mark: boolean; readonly why: string } => {
+  if (o.active.length) return { start: null, mark: false, why: `dry run ${o.active.join(', ')} already running` };
+  if (o.unfinished !== null) return { start: o.unfinished, mark: false, why: `resuming run ${o.unfinished}` };
+  if (typeof o.request !== 'string' || !RUN_NAME.test(o.request)) return { start: null, mark: false, why: 'no run requested' };
+  if (o.started.includes(o.request)) return { start: null, mark: false, why: `run ${o.request} already started once` };
+  return { start: o.request, mark: true, why: `starting run ${o.request}` };
 };

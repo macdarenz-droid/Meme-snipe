@@ -14,7 +14,8 @@ const fail = (code: number, msg: string): never => {
 };
 
 const stateDir = env['STATE_DIRECTORY'] ?? env['ZEROED_STATE_DIR'] ?? fail(EXIT.config, 'no state directory (STATE_DIRECTORY or ZEROED_STATE_DIR)');
-if ((env['ZEROED_MODE'] ?? 'paper') !== 'paper') fail(EXIT.config, 'refused: only paper mode exists');
+// Unset is refused too: the mode is always stated, never assumed.
+if (env['ZEROED_MODE'] !== 'paper') fail(EXIT.config, 'refused: ZEROED_MODE must be paper');
 const healthAddr = env['ZEROED_HEALTH_ADDR'] ?? DEFAULT_HEALTH_ADDR;
 if (!isLoopback(healthAddr)) fail(EXIT.config, 'refused: the health address must be loopback');
 const recorderOn = env['ZEROED_RECORDER'] === 'on';
@@ -55,7 +56,11 @@ const saveState = (s: StubState): void => {
   renameSync(`${statePath}.tmp`, statePath);
 };
 
+// Test hook: a reconcile that cannot settle its intents exits 3, never serves `reconciled: false`.
+const reconcileFails = env['ZEROED_STUB_FAIL_RECONCILE'] === '1';
+
 if (process.argv.includes('--reconcile')) {
+  if (reconcileFails) fail(EXIT.reconcileFailed, 'Reconcile: intents left unresolved.');
   // ExecStartPre step: settle what a crash left behind, then report open intents for the host's update gate.
   const s = loadState();
   s.intent = null;
@@ -96,6 +101,10 @@ rmSync(join(stateDir, STATE_FILES.cleanStop), { force: true });
 journal('start', { git_sha: gitSha, run_id: env['ZEROED_RUN_ID'] ?? null, label: env['ZEROED_RUN_LABEL'] ?? null, recorder: recorderOn, simulation: simulationOn, stub: true });
 if (repaired) journal('journal_repair', { detail: 'torn last line removed' });
 
+if (reconcileFails) {
+  journal('reconcile', { ok: false, reasons: ['stub: intents left unresolved'] });
+  fail(EXIT.reconcileFailed, 'Reconcile failed: exiting before any entry.');
+}
 const state = loadState();
 const settled = state.intent;
 state.intent = null;
