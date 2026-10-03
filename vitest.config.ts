@@ -18,13 +18,22 @@ export default defineConfig({
         test: {
           name: 'light',
           maxWorkers: 2,
+          // Slowest light test measured: 6.0 s with the machine busy (ledger six-process test, which sets 20 s itself).
+          // The default 5 s sat 0.8 s above the 1 to 2.5 s tests, so a busy runner failed them. 30 s is 5x the slowest.
+          testTimeout: 30_000,
           include: ['packages/*/test/**/*.test.ts', 'apps/*/test/**/*.test.ts'],
           exclude: HEAVY,
         },
       },
       {
         extends: true,
-        test: { name: 'heavy', include: HEAVY, maxWorkers: 2 },
+        test: {
+          name: 'heavy',
+          include: HEAVY,
+          maxWorkers: 2,
+          // Slowest heavy test measured: 60 s (stats-g2) with both projects running; 300 s is 5x that.
+          testTimeout: 300_000,
+        },
       },
     ],
     // Runtime trap around engine code: clock, randomness, timers, Intl and module loading throw (ENG-1).
