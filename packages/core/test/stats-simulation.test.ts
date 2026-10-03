@@ -2,10 +2,10 @@
 // the effect the sample was designed for. All seeded, so every run gives the same numbers.
 import { describe, expect, test } from 'vitest';
 import {
-  bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, designEffect, expectedMaxSharpe, mean,
-  meanPredictiveInterval, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio,
+  bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, deflatedSharpeDaily, designEffect, expectedMaxSharpe, mean,
+  meanPredictiveInterval, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, spaTest,
 } from '../src/stats/index.ts';
-import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey } from './stats-fixtures.ts';
+import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey, SPA_SCENARIOS } from './stats-fixtures.ts';
 
 const ALPHA = 0.05;
 const SLOW = 60_000;
@@ -204,4 +204,37 @@ describe('other interval checks', () => {
       expect(Math.abs(mean(maxes) - expectedMaxSharpe(trials, 1 / 100))).toBeLessThan(0.02);
     }
   }, SLOW);
+});
+
+// STATS-1c (d): calibration of the joint day-block bootstrap SPA test against the day-level DSR. 40 days, every
+// scenario of SPA_SCENARIOS, 400 runs at zero edge, 500 bootstrap replicates; the SPA rejects at p < α, the DSR passes
+// at ≥ 0.95 on the best day-level Sharpe. Measured with these seeds (SPA / DSR): independent 0.0475 / 0, duplicates
+// 0.035 / 0, mixture 0.0325 / 0.0025, heavy tails 0.015 / 0.0075, common shock 0.0325 / 0.0075, idle days 0.0225 /
+// 0.0025, unequal lengths 0.005 / 0, autocorrelated 0.045 / 0.0025, rule grid 0.01 / 0.0025.
+describe('joint bootstrap SPA test calibration (STATS-1c)', () => {
+  const run = (name: string, edge: number, reps: number) => {
+    let spa = 0;
+    let dsr = 0;
+    for (let r = 0; r < reps; r++) {
+      const rng = createRng(77_000 + r * 13 + name.length);
+      const s = SPA_SCENARIOS[name]!(rng, edge, 40);
+      if (spaTest(s, { rng: createRng(5_000_000 + r), replicates: 500 }).pValue < ALPHA) spa++;
+      const ids = Object.keys(s);
+      const best = ids.reduce((a, b) => (sharpeRatio(s[b]!) > sharpeRatio(s[a]!) ? b : a));
+      if (deflatedSharpeDaily(s, best).raw.dsr >= 0.95) dsr++;
+    }
+    return { spa: spa / reps, dsr: dsr / reps };
+  };
+  test('false-positive rate ≤ α at zero edge in every scenario (400 runs each)', () => {
+    for (const name of Object.keys(SPA_SCENARIOS)) expect(run(name, 0, 400).spa, name).toBeLessThanOrEqual(ALPHA);
+  }, 900_000);
+  // Power (200 runs, daily edge 0.5 SD unless stated; SPA / DSR): independent 0.22 / 0.135 (0.8 SD: 0.64 / 0.62),
+  // duplicates 0.435 / 0.005, mixture 0.51 / 0.02, heavy tails 0.2 / 0.255, common shock 0.24 / 0.19, idle days 0.275 /
+  // 0.365, unequal lengths 0.015 / 0.075, autocorrelated 0.1 / 0.065, rule grid +5% a trade 0.3 / 0.055, +10% a trade
+  // 0.925 / 0.28.
+  test('power on a planted edge: a +10%-a-trade rule among 8 × 9 variants', () => {
+    const p = run('ruleGrid', 1, 200);
+    expect(p.spa).toBeGreaterThanOrEqual(0.85);
+    expect(p.dsr).toBeLessThan(0.4);
+  }, 900_000);
 });

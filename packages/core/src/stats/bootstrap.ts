@@ -60,7 +60,7 @@ const blocks = (a: readonly DayReturn[], b: readonly DayReturn[] = []): DayBlock
 };
 
 /** Bootstrap replicates when the caller gives none. */
-const DEFAULT_REPLICATES = 2000;
+export const DEFAULT_REPLICATES = 2000;
 
 export interface BootstrapOptions {
   readonly rng: Rng;

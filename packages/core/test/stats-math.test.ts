@@ -4,7 +4,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import {
-  bettingEProcess, betaQuantile, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
+  bettingEProcess, betaQuantile, nextNormal, onCalendar, spaBlockLength, spaTest, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
   dayBlockMeanDiffInterval, dayBlockMeanInterval, deflatedSharpe, designEffect, expectedMaxSharpe, incompleteBeta,
   incompleteGammaUpper, kurtosis, logGamma, mean, meanPredictiveInterval, median, normalCdf, normalQuantile, nPower,
   probabilisticSharpe, probabilityOfBacktestOverfitting, quantileSorted, ratesConsistent, requiredHoldoutTrades,
@@ -311,5 +311,35 @@ describe('purity and isolation', () => {
       const src = readFileSync(f, 'utf8');
       expect(src, rel).not.toMatch(/from\s+['"][^'"]*stats[^'"]*['"]/);
     }
+  });
+});
+
+describe('joint bootstrap SPA test (spa.ts)', () => {
+  const noise = (seed: number, k: number, days: number, shift = 0) => {
+    const rng = createRng(seed);
+    return Object.fromEntries(Array.from({ length: k }, (_, i) => [`v${i}`, Array.from({ length: days }, () => nextNormal(rng) + (i === 0 ? shift : 0))]));
+  };
+  test('the block length is fixed by rule: ⌈D^(1/3)⌉', () => {
+    expect([10, 27, 40, 64, 65].map(spaBlockLength)).toEqual([3, 3, 4, 4, 5]);
+  });
+  test('a strong edge rejects; no positive mean gives p = 1; seeded runs repeat exactly', () => {
+    const strong = spaTest(noise(1, 10, 40, 1.5), { rng: createRng(2), replicates: 500 });
+    expect(strong.pValue).toBeLessThan(0.01);
+    expect(strong.best).toBe('v0');
+    const neg = Object.fromEntries(Object.entries(noise(3, 5, 40)).map(([k, s]) => [k, s.map((x) => x - 3)]));
+    expect(spaTest(neg, { rng: createRng(4), replicates: 200 })).toMatchObject({ pValue: 1, best: null, statistic: 0 });
+    expect(spaTest(noise(5, 8, 30), { rng: createRng(6), replicates: 300 })).toEqual(spaTest(noise(5, 8, 30), { rng: createRng(6), replicates: 300 }));
+  });
+  test('a constant series is left out and reported; ragged, short or non-finite input is refused', () => {
+    const r = spaTest({ ...noise(7, 3, 20), flat: Array(20).fill(0) }, { rng: createRng(8), replicates: 200 });
+    expect(r.excluded).toEqual(['flat']);
+    expect(r.variants).toBe(3);
+    expect(() => spaTest({ a: [1, 2, 3], b: [1, 2] } as never, { rng: createRng(1) })).toThrow(/one calendar/);
+    expect(() => spaTest(noise(1, 2, 9), { rng: createRng(1) })).toThrow(/at least 10 days/);
+    expect(() => spaTest({ a: [...Array(11).fill(0), Number.NaN] }, { rng: createRng(1) })).toThrow(/non-finite/);
+  });
+  test('onCalendar puts idle days at 0 and refuses days off the calendar', () => {
+    expect(onCalendar(['d1', 'd2', 'd3'], { a: [{ day: 'd2', pnl: 0.5 }, { day: 'd2', pnl: -0.1 }] })).toEqual({ a: [0, 0.4, 0] });
+    expect(() => onCalendar(['d1'], { a: [{ day: 'd9', pnl: 1 }] })).toThrow(/outside the calendar/);
   });
 });

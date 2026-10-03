@@ -7,7 +7,7 @@ import {
   clopperPearsonUpper, evaluateRevalidation, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
   type RevalidationInput,
 } from '../src/stats/index.ts';
-import { KNOWN_PLATFORM_CHANGES, TRIAL_POLICY } from '../src/config/index.ts';
+import { KNOWN_PLATFORM_CHANGES, RESEARCH_CONFIG, TRIAL_POLICY } from '../src/config/index.ts';
 import { bracketTrades, type DayTrade } from './stats-fixtures.ts';
 
 const DAY = 86_400_000;
@@ -114,6 +114,18 @@ describe('G1 walk-forward', () => {
     const r = gateG1({ ...g1Pass(), trades: wf.slice(0, 2) });
     expect(r.status).toBe('not-proven');
     expect(r.passed).toBe(false);
+  });
+  test('SPA is always reported; it gates G1 only when edgeTest is "spa", and the config keeps "dsr"', () => {
+    expect(RESEARCH_CONFIG.g1EdgeTest).toBe('dsr');
+    const r = gateG1(g1Pass());
+    expect(r.metrics.spaP).not.toBeNull();
+    expect(r.checks.some((c) => c.name === 'SPA')).toBe(false);
+    const s = gateG1({ ...g1Pass(), edgeTest: 'spa' });
+    expect(s.checks.some((c) => c.name === 'DSR')).toBe(false);
+    expect(s.checks.find((c) => c.name === 'SPA')!.passed).toBe(true);
+    const flat = bracketTrades(23, 0, 40, 15);
+    const f = gateG1({ ...g1Pass(), trades: flat, pboMatrix: Object.fromEntries(registry.map((t, k) => [t.trialId, dailyOf(bracketTrades(900 + k, 0, 40, 15))])), edgeTest: 'spa' });
+    expect(f.reasons.join(' | ')).toMatch(/SPA: SPA over 20 variants/);
   });
   test('exact duplicates count once in the de-duplicated line: two identical variants give the same DSR as one', () => {
     const one = { t19: winnerDaily, t0: pboMatrix.t0!, t1: pboMatrix.t1! };

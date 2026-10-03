@@ -21,12 +21,18 @@ export interface ResearchConfig {
   };
   /** Blocks between heartbeat slot events while no intent is in flight. */
   readonly heartbeatBlocks: number;
+  /**
+   * Which check gates G1 for multiple testing: 'dsr' (day-level deflated Sharpe) or 'spa' (joint bootstrap SPA test).
+   * Stays 'dsr' until the owner signs off on the SPA calibration (STATS-1c); both are always reported.
+   */
+  readonly g1EdgeTest: 'dsr' | 'spa';
 }
 
 const VALUES: ResearchConfig = {
   version: 'research-1',
   s0: { u2WindowFromMs: 60 * MINUTE, u2WindowToMs: 240 * MINUTE, entryMinOutBelowBps: 300, blockedRetryMs: 10 * MINUTE, blockedRetries: 3, endMarginMs: 30 * MINUTE },
   heartbeatBlocks: 150,
+  g1EdgeTest: 'dsr',
 };
 
 export const RESEARCH_CONFIG: ResearchConfig = deepFreeze(VALUES);

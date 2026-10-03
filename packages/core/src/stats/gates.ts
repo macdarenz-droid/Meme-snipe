@@ -17,6 +17,7 @@ import type { TripleBarrierLabel } from './labeller.ts';
 import type { Rng } from './rng.ts';
 import { studentTQuantile } from './special.ts';
 import { deflatedSharpeDaily, type TrialRecord } from './sharpe.ts';
+import { spaTest } from './spa.ts';
 
 export type GateName = 'G0' | 'G1' | 'G2' | 'G3' | 'G4' | 'G5';
 /** 'not-proven': too little data to decide (collect more, never lower n). */
@@ -126,6 +127,8 @@ export const RETURN_FLOOR = -1.1;
 const SEVERE_RETURN = -0.5;
 
 const MS_PER_DAY = 86_400_000;
+/** Level of the SPA test when it gates G1 (one test over the whole registry). */
+const SPA_ALPHA = 0.05;
 const COVERAGE_WINDOW = 100;
 
 // ---- helpers ----------------------------------------------------------------------------------------------------
@@ -232,6 +235,12 @@ export interface G1Input {
    */
   readonly pboMatrix: Readonly<Record<string, readonly number[]>>;
   readonly pboBlocks?: number;
+  /**
+   * Which multiple-testing check gates G1 (STATS-1c (e)): 'dsr' (default, day-level DSR ≥ 0.95 over every registered
+   * trial) or 'spa' (the joint day-block bootstrap SPA test at familyAlpha). The other one is always reported. 'spa'
+   * stays off until the owner signs off on the calibration evidence; the setting lives in RESEARCH_CONFIG.g1EdgeTest.
+   */
+  readonly edgeTest?: 'dsr' | 'spa';
   readonly modelUsed: boolean;
   readonly calibrationSlope: number | null;
   readonly rng: Rng;
@@ -282,9 +291,15 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
       metrics.trialsDeduplicated = d.deduplicated.trials;
       metrics.dsrEffective = d.effective.dsr;
       metrics.trialsEffective = d.effective.trials;
-      c.add('DSR', d.raw.dsr >= th.dsrMin,
+      const spa = spaTest(input.pboMatrix, { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) });
+      metrics.spaP = spa.pValue;
+      metrics.spaStatistic = spa.statistic;
+      const spaDetail = `SPA over ${spa.variants} variants and ${spa.days} days (block ${spa.blockLength}): p ${fmt(spa.pValue)}, best ${spa.best ?? 'none'}`;
+      if (input.edgeTest === 'spa') {
+        c.add('SPA', spa.pValue < SPA_ALPHA, `${spaDetail} (need < ${SPA_ALPHA}); reported only: day-level DSR ${fmt(d.raw.dsr)}`);
+      } else c.add('DSR', d.raw.dsr >= th.dsrMin,
         `day-level deflated Sharpe ${fmt(d.raw.dsr)} over ${d.raw.trials} trials and ${d.days} days (need >= ${th.dsrMin}); `
-        + `reported only: ${fmt(d.deduplicated.dsr)} over ${d.deduplicated.trials} distinct series, ${fmt(d.effective.dsr)} over ${d.effective.trials} effective trials`);
+        + `reported only: ${fmt(d.deduplicated.dsr)} over ${d.deduplicated.trials} distinct series, ${fmt(d.effective.dsr)} over ${d.effective.trials} effective trials; ${spaDetail}`);
     } catch (e) {
       c.add('DSR', false, (e as Error).message);
     }
