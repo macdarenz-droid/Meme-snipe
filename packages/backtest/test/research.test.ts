@@ -11,7 +11,7 @@ import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
 import { observedFeeContext, replaySwap } from '../../core/src/fills/index.ts';
 import { bps } from '../../core/src/units/index.ts';
 import {
-  addDays, assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, melbourneStart, type PracticeWindow, readableDays, regimeAt, resolveWindow, wallDay, wallMs,
+  addDays, assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, latestRegime, melbourneStart, type PracticeWindow, readableDays, regimeAt, resolveWindow, wallDay, wallMs,
 } from '../src/research/practice.ts';
 import { createHoldoutRegistry, registerHoldout } from '../../core/src/stats/index.ts';
 import { AsOfError, FEATURE_IDS, type Features, SignalTracker } from '../src/research/tracker.ts';
@@ -38,6 +38,9 @@ describe('holdout wall', () => {
     expect(regimeAt(w, Date.parse('2026-09-12T15:23:59Z'))).toBe('B3-fee-config');
     expect(regimeAt(w, Date.parse('2026-09-12T15:24:00Z'))).toBe('B4-holder-rewards');
     expect(regimeAt(w, Date.parse('2026-07-20T00:00:00Z'))).toBe('pre');
+    expect(regimeAt(w, Date.parse('2026-10-02T15:47:00Z'))).toBe('B5-oct2-upgrade');
+    // B5 falls after the last decision day, so the latest regime of the window is B4.
+    expect(latestRegime(w)).toBe('B4-holder-rewards');
   });
 
   test('days are Melbourne days: the wall starts at Melbourne midnight', () => {
@@ -67,7 +70,9 @@ describe('holdout wall', () => {
     expect(() => resolveWindow(committed, confirmed, null)).toThrow(/no STATS-1 registry/);
     let reg = createHoldoutRegistry(2);
     reg = registerHoldout(reg, { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(earlier.holdoutFrom, -1), toDay: '2026-10-01' });
-    expect(() => resolveWindow(committed, confirmed, reg)).toThrow(/starts .* before the window's holdoutFrom/);
+    expect(() => resolveWindow(committed, confirmed, reg)).toThrow(/must be equal/);
+    const laterReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(earlier.holdoutFrom, 1), toDay: '2026-10-01' });
+    expect(() => resolveWindow(committed, confirmed, laterReg)).toThrow(/must be equal/);
     const ok = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: earlier.holdoutFrom, toDay: '2026-10-01' });
     expect(resolveWindow(committed, confirmed, ok)).toBe(confirmed);
   });
@@ -295,7 +300,7 @@ const synthObs = (days: number, perDay: number, signal: boolean, seed: number): 
 };
 
 describe('selection procedure', () => {
-  const ev = { k: 5, embargoDays: 1, seed: 7, replicates: 400 };
+  const ev = { k: 5, embargoDays: 1, seed: 7, replicates: 400, latestRegime: 'R' };
 
   test('finds a planted signal out of sample and passes the edge checks', () => {
     const obs = synthObs(40, 40, true, 1);
@@ -316,13 +321,13 @@ describe('selection procedure', () => {
     regimeOfDay = (d) => (d < 20 ? 'R2' : 'R4');
     const obs = synthObs(40, 40, true, 1).map((o) => (o.regime === 'R4' && o.features.f_net15! > 0.84 ? { ...o, rNet: o.rNet - 0.6 } : o));
     regimeOfDay = () => 'R';
-    const v = evaluate(obs, { universe: 'U2', barrier: 'B1' }, { rows: [] }, ev);
+    const v = evaluate(obs, { universe: 'U2', barrier: 'B1' }, { rows: [] }, { ...ev, latestRegime: 'R4' });
     expect(v.regimes.map((r) => r.regime)).toEqual(['R2', 'R4']);
     expect(v.checks['regimes']).toBe(false);
     expect(v.pass).toBe(false);
     // The same data without the flip passes the regime check.
     regimeOfDay = (d) => (d < 20 ? 'R2' : 'R4');
-    const ok = evaluate(synthObs(40, 40, true, 1), { universe: 'U2', barrier: 'B1' }, { rows: [] }, ev);
+    const ok = evaluate(synthObs(40, 40, true, 1), { universe: 'U2', barrier: 'B1' }, { rows: [] }, { ...ev, latestRegime: 'R4' });
     regimeOfDay = () => 'R';
     expect(ok.checks['regimes'], JSON.stringify(ok.regimes)).toBe(true);
   });
@@ -347,6 +352,28 @@ describe('selection procedure', () => {
     expect(v.checks['meanAboveZero']).toBe(true);
     expect(v.checks['dsr']).toBe(false);
     expect(v.pass).toBe(false);
+  });
+
+  test('the latest regime comes from the window: with no observation in it the check fails', () => {
+    const v = evaluate(synthObs(40, 40, true, 1), { universe: 'U2', barrier: 'B1' }, { rows: [] }, { ...ev, latestRegime: 'B4' });
+    expect(v.regimes.find((r) => r.regime === 'B4')).toBeUndefined();
+    expect(v.checks['regimes']).toBe(false);
+  });
+
+  test('a rule that loses to base in an older regime fails even when it earns in the latest one (R2)', () => {
+    regimeOfDay = (d) => (d < 10 ? 'R2' : 'R4');
+    // In R2 (10 days) the planted rule earns 0.8 less, below base; in R4 (30 days) it keeps its edge.
+    const obs = synthObs(40, 40, true, 1).map((o) => (o.regime === 'R2' && o.features.f_net15! > 0.84 ? { ...o, rNet: o.rNet - 0.8 } : o));
+    regimeOfDay = () => 'R';
+    const v = evaluate(obs, { universe: 'U2', barrier: 'B1' }, { rows: [] }, { ...ev, latestRegime: 'R4' });
+    expect(v.finalConds[0]!.f).toBe('f_net15');
+    const r2 = v.regimes.find((r) => r.regime === 'R2')!;
+    const r4 = v.regimes.find((r) => r.regime === 'R4')!;
+    expect(r2.ruleMean!).toBeLessThan(r2.baseMean!);
+    // The latest regime alone would pass: the failure comes from the older regime.
+    expect(r4.oosN).toBeGreaterThanOrEqual(30);
+    expect(r4.oosMean!).toBeGreaterThan(0);
+    expect(v.checks['regimes']).toBe(false);
   });
 
   test('on noise the verdict is "no reliable signal"', () => {

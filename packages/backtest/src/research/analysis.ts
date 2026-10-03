@@ -292,6 +292,8 @@ export interface EvaluateOptions {
   readonly embargoDays: number;
   readonly seed: number;
   readonly replicates: number;
+  /** The window's latest regime label (practice.ts `latestRegime`). */
+  readonly latestRegime: string;
 }
 
 /** The whole §5–6 procedure for one universe and barrier. Trials are appended to `reg`. */
@@ -318,7 +320,8 @@ export const evaluate = (obs: readonly Obs[], tag: { universe: string; barrier: 
   const stableFolds = folds.filter((f) => groupOf(f.rule) === finalGroup).length;
   const oosDays = new Set(oos.map((x) => x.day)).size;
   const regimes = regimeViews(obs, final.rule, oos);
-  const latest = regimes[regimes.length - 1];
+  // The latest regime is the window's last boundary (B4), whether or not any decision fell in it; none means failure.
+  const latest = regimes.find((r) => r.regime === o.latestRegime);
   const checks = {
     meanAboveZero: lower !== null && lower.lower > 0,
     beatsBase: vsBase !== null && vsBase.lower > 0,

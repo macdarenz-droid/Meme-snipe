@@ -15,7 +15,7 @@ import type { HoldoutRegistry } from '../../../core/src/stats/index.ts';
 import { evaluate, handoffs, type Obs, type Registry, univariate, withRegistry } from './analysis.ts';
 import { type Candidate, collectCandidates, PLAN_DRIVE, solUsdAsOf, type Universe } from './candidates.ts';
 import { type Outcome, PLAN_BARRIERS, scoreCandidates } from './outcome.ts';
-import { assertReadable, loadWindow, readableDays, resolveWindow, wallDay } from './practice.ts';
+import { assertReadable, latestRegime, loadWindow, readableDays, resolveWindow, wallDay } from './practice.ts';
 
 const args = process.argv.slice(2);
 const flag = (name: string, fallback?: string): string => {
@@ -58,7 +58,7 @@ const obsOf = (u: Universe, barrier: number, scenario: 'conservative' | 'base'):
   });
 
 const reg: Registry = { rows: [] };
-const ev = { k: 5, embargoDays: window.embargoDays, seed: 1, replicates };
+const ev = { k: 5, embargoDays: window.embargoDays, seed: 1, replicates, latestRegime: latestRegime(window) };
 const verdicts = [];
 const context = [];
 for (const u of ['U1', 'U2'] as const) {

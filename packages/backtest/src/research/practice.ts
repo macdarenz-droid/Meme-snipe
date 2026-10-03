@@ -88,7 +88,7 @@ export const loadWindow = (path: string): PracticeWindow => parseWindow(JSON.par
 
 /**
  * The window a run may use: never a wall later than the committed one. A confirmed window must also match the STATS-1
- * registry: every registered holdout starts on or after its holdoutFrom (the wall plus the embargo).
+ * registry: every registered holdout starts exactly on its holdoutFrom (the wall plus the embargo).
  */
 export const resolveWindow = (committed: PracticeWindow, given: PracticeWindow, registry: HoldoutRegistry | null): PracticeWindow => {
   if (wallMs(given) > wallMs(committed)) {
@@ -97,8 +97,9 @@ export const resolveWindow = (committed: PracticeWindow, given: PracticeWindow, 
   for (const w of [committed, given]) {
     if (w.confirmedBy === null) continue;
     if (registry === null || registry.entries.length === 0) throw new HoldoutWallError(`the window says confirmed by ${w.confirmedBy}, but no STATS-1 registry with entries was given`);
+    // Registry days are Melbourne days, as are the window's: compared as they are.
     for (const e of registry.entries) {
-      if (e.fromDay < w.holdoutFrom) throw new HoldoutWallError(`registered holdout ${e.holdoutId} starts ${e.fromDay}, before the window's holdoutFrom ${w.holdoutFrom}`);
+      if (e.fromDay !== w.holdoutFrom) throw new HoldoutWallError(`registered holdout ${e.holdoutId} starts ${e.fromDay}, but the window's holdoutFrom is ${w.holdoutFrom}: they must be equal`);
     }
   }
   return given;
@@ -142,3 +143,9 @@ export const regimeAt = (w: PracticeWindow, ms: number): string => {
   }
   return label;
 };
+
+/**
+ * The latest regime of the decision window: the last boundary before the window's last day ends (B4; B5 falls after
+ * 2026-10-01 and governs no decision day). Its economics match the holdout's.
+ */
+export const latestRegime = (w: PracticeWindow): string => regimeAt(w, melbourneStart(addDays(w.decisionTo, 1)) - 1);

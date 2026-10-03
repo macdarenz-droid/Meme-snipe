@@ -11,7 +11,7 @@ Sections 1–7 are the **pre-registered plan**. They were written and committed 
 - The holdout is the latest days of the window, set by BT-2 in the STATS-1 registry. **RES-3 never reads, loads or computes anything on a holdout day**, and never on the embargo day before it.
 - Practice days = decision days strictly before `holdoutFrom − embargo`. Embargo = 1 full day (longer than the 2 h horizon plus the exit ladder, ARCHITECTURE.md §13.2).
 - The wall is in code: `packages/backtest/src/research/practice.ts` loads the boundary from `research/signals/window.json`, refuses any holdout or embargo day before a file is opened, and throws if any row at or after the wall reaches the analysis. A guard test plants a holdout-day row and expects the refusal.
-- Until BT-2 registers the boundary, the wall is **the B4 day, 2026-09-12** (`holdoutFrom` 2026-09-13; supervisor, 2026-10-04). It may then move only to the registered boundary, never later. In code: a run can never use a wall later than the committed `window.json` (a later `--window` file is refused), and a window marked confirmed is refused unless the STATS-1 registry is given and every registered holdout starts on or after its `holdoutFrom`.
+- Until BT-2 registers the boundary, the wall is **the B4 day, 2026-09-12** (`holdoutFrom` 2026-09-13; supervisor, 2026-10-04). It may then move only to the registered boundary, never later. In code: a run can never use a wall later than the committed `window.json` (a later `--window` file is refused), and a window marked confirmed is refused unless the STATS-1 registry is given and every registered holdout's `fromDay` equals its `holdoutFrom` (both Melbourne days).
 - A candidate whose outcome window (decision + 120 min horizon + exit ladder) would reach the embargo day is dropped (purge at the wall).
 
 ## 2. Universes and decision points
@@ -96,7 +96,7 @@ Every rule evaluated in every fold, universe and barrier is written to the trial
 
 ## 5a. Regimes
 
-UPG-1b (PR #44, venues.md §2.7) found three platform changes before the holdout: **B2 2026-07-21** (BOOST), **B3 2026-09-09** (fee config), **B4 2026-09-12** (holder rewards, a fee and layout change). The sealed holdout lies after B4, so only post-B4 economics match today. Each decision is tagged with the regime in force at its instant, from the exact boundary times in ARCHITECTURE.md §6.5 (B2 2026-07-21 14:23 UTC, B3 2026-09-09 19:30 UTC, B4 2026-09-12 15:24 UTC; `regimes` in `research/signals/window.json`). Costs are as-of per swap: every fee comes from the swap row itself.
+UPG-1b (PR #44, venues.md §2.7) found three platform changes before the holdout: **B2 2026-07-21** (BOOST), **B3 2026-09-09** (fee config), **B4 2026-09-12** (holder rewards, a fee and layout change). The sealed holdout lies after B4, so only post-B4 economics match today. Each decision is tagged with the regime in force at its instant, from the exact boundary times in ARCHITECTURE.md §6.5 (B2 2026-07-21 14:23 UTC, B3 2026-09-09 19:30 UTC, B4 2026-09-12 15:24 UTC, B5 2026-10-02 15:47 UTC; `regimes` in `research/signals/window.json`). The **latest regime** is taken from the window, not from the data: the last boundary before the last decision day ends, which is B4 (B5 governs no decision day). Costs are as-of per swap: every fee comes from the swap row itself.
 
 Every result is reported per regime: base mean, the final rule's mean, and the walk-forward out-of-sample mean and count. A signal must hold in all of them (§6 check 7).
 
@@ -110,7 +110,7 @@ Every result is reported per regime: base mean, the final rule's mean, and the w
 4. ≥ 100 out-of-sample trades on ≥ 10 days.
 5. Top 1% of trades ≤ 50% of P&L; no day > 25% of P&L; `y_severe` ≤ 10%; blocked exits ≤ 5%.
 6. The rule chosen in each fold uses the same feature group as the final rule in at least 3 of 4 folds (stability).
-7. Regimes (§5a): in every regime with ≥ 3 practice days, the final rule's mean `r_net` is above base's (the improvement has the same sign in every regime with data); and in the latest regime (B4) the walk-forward out-of-sample trades number ≥ 30 with a mean above 0. Too few post-B4 trades fails this check: evidence from older economics alone is not enough.
+7. Regimes (§5a): in every regime with ≥ 3 practice days, the final rule's mean `r_net` is above base's (the improvement has the same sign in every regime with data); and in the latest regime (B4, from the window) the walk-forward out-of-sample trades number ≥ 30 with a mean above 0. Too few post-B4 trades, zero included, fails this check: evidence from older economics alone is not enough.
 
 Otherwise the answer for that universe is **"no reliable signal"**, stated plainly, and no candidate is handed over (the bot keeps abstaining in that universe).
 
@@ -139,7 +139,7 @@ Writes `research/signals/results.json`, `research/signals/handoff.json` (one con
 
 - 2026-10-04, before any data was read (the data had not landed): written while building the code. U1 liquidity and the H8/H11 proxies now follow GATE-1's exact reading (effective quote reserve; candle high ÷ open); the selection score is the deterministic CR1 t-bound instead of a seeded bootstrap; PBO uses STATS-1's CSCV; exit-cost details, common random numbers and no-quote handling are written out (§4); three features added from the literature pass (f_liqmig, f_turn60, f_early_sold). No result existed when these were made.
 - 2026-10-04, before any data was read: regimes added at the supervisor's request (§5a and check 7 in §6), after UPG-1b found boundaries B2, B3 and B4.
-- 2026-10-04, before any data was read, after the PR #47 review: Melbourne days; default wall moved to the B4 day; the wall can never move later than the committed file, and a confirmed window must match the STATS-1 registry; regimes tagged by exact instant; one configuration per universe by the fixed barrier order; the DSR counts selectable trials and runs once on the full registry; the univariate quintiles are trials.
+- 2026-10-04, before any data was read, after the PR #47 review: Melbourne days; default wall moved to the B4 day; the wall can never move later than the committed file, and a confirmed window must match the STATS-1 registry; regimes tagged by exact instant; one configuration per universe by the fixed barrier order; the DSR counts selectable trials and runs once on the full registry; the univariate quintiles are trials. Re-review: a confirmed holdoutFrom must equal the registry's fromDay; the latest regime comes from the window (B4), B5 stored.
 
 ## 9. Literature and evidence
 
