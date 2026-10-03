@@ -2,10 +2,10 @@
 import { describe, expect, it } from 'vitest';
 import { AsOfStore, OFF_CHAIN, SimClock, leakTest, replayOnce, type FeedEvent, type MarketEvent, type Moment, type ProofRun, type Strategy } from '../../src/engine/index.ts';
 import {
-  DAY_MS, DeployerIndex, HOUR_MS, createKey, createsCoverage, deployerKey, evaluateHardRejects, type GateContext, type GateReason, type HardGate,
+  DAY_MS, DeployerIndex, HOUR_MS, createKey, createsCoverage, deployerKey, evaluateHardRejects, evaluateSoftFeatures, type GateContext, type GateReason, type HardGate,
 } from '../../src/gates/index.ts';
 import { CONFIG } from '../fixtures.ts';
-import { CREATED_AT, DEV, MINT, NOW, SLOT, T, W, deps, drop, passingFacts, request, type Facts } from './world.ts';
+import { CREATED_AT, DEV, MINT, NOW, SLOT, T, W, deps, drop, passingFacts, request, session, type Facts } from './world.ts';
 
 const at = (receivedAt: number, slot: bigint, ix = OFF_CHAIN): Moment => ({ slot, txIndex: ix, ixIndex: ix, receivedAt });
 const wrap = (value: unknown, seq = 1) => ({ value, source: 'worker', backfilled: false, seq });
@@ -30,8 +30,8 @@ const contextWith = (rows: readonly Row[], base: Facts = passingFacts(), now: Mo
   clock.advanceTo(now);
   return { now, lookup: (k, a) => store.lookup(k, a), history: (k, f, t) => store.history(k, f, t), ...(deployers ? { deployers } : {}) };
 };
-const h14 = (ctx: GateContext): readonly GateReason[] =>
-  evaluateHardRejects(ctx, deps('live'), request(), { stopAtFirst: false }).reasons.filter((r) => r.gate === 'H14' || r.neededBy === ('H14' as HardGate));
+const h14 = (ctx: GateContext, rug?: 'RUG-1'): readonly GateReason[] =>
+  evaluateHardRejects(ctx, deps('live', session(), rug), request(), { stopAtFirst: false }).reasons.filter((r) => r.gate === 'H14' || r.neededBy === ('H14' as HardGate));
 
 const WINDOW = T - 14 * DAY_MS;
 const old = (days: number, k = 0n) => at(T - days * DAY_MS, SLOT - BigInt(days) * 216_000n + k);
@@ -91,6 +91,12 @@ describe('creates coverage (FEED-1 contract)', () => {
     expect(cov([[...START(A, 1n), old(30)], ['coverage:creates:gap', wrap({ toSlot: 5n }), old(1)]]).covered).toBe(false);
   });
 
+  it("a start on another watch does not settle this watch's open gap", () => {
+    expect(cov([[...START(A, 1n), old(30)], [...GAP(A, 100n, null), old(2)], [...START(B, 200n), old(1)]]).covered).toBe(false);
+    // Even long before the window: B's start must not turn A's open gap into an old, settled one.
+    expect(cov([[...START(A, 1n), old(30)], [...GAP(A, 100n, null), old(20)], [...START(B, 200n), old(19)]]).covered).toBe(false);
+  });
+
   it('a gap reported after now is not seen (as of now)', () => {
     expect(cov([[...START(A, 1n), old(30)], [...GAP(A, 100n, null), at(T + 1, SLOT + 1n)]]).covered).toBe(true);
   });
@@ -100,6 +106,11 @@ describe('H14 reads coverage before trusting any deployer index', () => {
   it('an open gap at decision time rejects H14 as not covered, with the stored index too', () => {
     const r = h14(contextWith([[...GAP(A, 100n, null), old(1)]]));
     expect(r).toEqual([expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14' })]);
+  });
+
+  it('H14 judges coverage over the 14-day look-back, not just 24 h: a lossy gap 3 days back rejects', () => {
+    const r = h14(contextWith([[...GAP('logs:creates', 100n, null), old(3)], [...GAP('logs:creates', 100n, 150n), old(3, 10n)]]));
+    expect(r).toEqual([expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'coverage', detail: expect.stringContaining('gap 100..150') })]);
   });
 
   it('the passing world (a 30-day start, no gaps) passes H14', () => {
@@ -118,6 +129,12 @@ const createEvent = (mint: string, creator: string, createdAtMs: number, slot: b
   signature: `sig-${mint}`, txSlot: slot, truncated: false, via: 'logs:pump', source: 'helius', backfilled: false, seq: 1,
 });
 const marketOf = (key: string, value: unknown, moment: Moment, id = key): MarketEvent => ({ kind: 'market', id, moment, key, value });
+/** An index that has watched since the creates stream started (30 days ago): it sees the start fact first. */
+const started = (): DeployerIndex => {
+  const idx = new DeployerIndex();
+  idx.observe(marketOf('coverage:creates:start', wrap({ fromSlot: SLOT - 6_000_000n, via: 'logs:creates' }), at(T - 30 * DAY_MS, SLOT - 6_000_000n)));
+  return idx;
+};
 
 describe('deployer index', () => {
   it('counts each create once across logs and fetched transactions, per creator, as of now', () => {
@@ -135,17 +152,101 @@ describe('deployer index', () => {
     expect(idx.factFor(DEV, at(T - 2 * HOUR_MS, SLOT - 18_000n), 0).mints).toEqual([{ mint: MINT, createdAtMs: CREATED_AT }]);
   });
 
-  it('feeds H14 when the context carries it: a third mint in 24 h rejects, a rug label rejects', () => {
-    const idx = new DeployerIndex();
+  it('feeds H14 when the context carries it: a third mint in 24 h rejects, a rug label rejects (with RUG-1)', () => {
+    const idx = started();
     for (const [m, t] of [[MINT, CREATED_AT], ['M2', T - HOUR_MS], ['M3', T - 2 * HOUR_MS]] as const) {
       idx.observe(marketOf(`logs:pump:CreateEvent:${m}`, createEvent(m, DEV, t, SLOT - 5_000n), at(t, SLOT - 5_000n)));
     }
     const base = drop(passingFacts(), deployerKey(DEV));
     expect(h14(contextWith([], base, NOW, idx)).map((r) => r.code)).toEqual(['serial-deployer']);
-    const rug = new DeployerIndex();
+    const rug = started();
     rug.observe(marketOf('rug:Old', { mint: 'Old', creator: DEV }, at(T - DAY_MS, SLOT - 200_000n)));
-    expect(h14(contextWith([], base, NOW, rug)).map((r) => r.code)).toEqual(['prior-rug']);
-    expect(h14(contextWith([], base, NOW, new DeployerIndex()))).toEqual([]);
+    expect(h14(contextWith([], base, NOW, rug), 'RUG-1').map((r) => r.code)).toEqual(['prior-rug']);
+    expect(h14(contextWith([], base, NOW, started()), 'RUG-1')).toEqual([]);
+  });
+
+  it('keeps the earliest create time per mint (a later copy cannot move it inside 24 h)', () => {
+    const idx = started();
+    const early = T - DAY_MS - 60_000;
+    idx.observe(marketOf('pump:CreateEvent:E', createEvent('E', DEV, early, SLOT - 220_000n), at(early, SLOT - 220_000n)));
+    idx.observe(marketOf('logs:pump:CreateEvent:E', createEvent('E', DEV, T - HOUR_MS, SLOT - 9_000n), at(T - HOUR_MS, SLOT - 9_000n)));
+    expect(idx.factFor(DEV, NOW, 0).mints).toEqual([{ mint: 'E', createdAtMs: early }]);
+    // And the reverse order: the earlier copy arriving second wins.
+    const rev = started();
+    rev.observe(marketOf('logs:pump:CreateEvent:E', createEvent('E', DEV, T - HOUR_MS, SLOT - 9_000n), at(T - HOUR_MS, SLOT - 9_000n)));
+    rev.observe(marketOf('pump:CreateEvent:E', createEvent('E', DEV, early, SLOT - 9_000n), at(T - HOUR_MS + 1, SLOT - 9_000n)));
+    expect(rev.factFor(DEV, NOW, 0).mints).toEqual([{ mint: 'E', createdAtMs: early }]);
+  });
+
+  it("keeps a rug's first-known time", () => {
+    const idx = started();
+    idx.observe(marketOf('rug:Old', { mint: 'Old', creator: DEV }, at(T - 20 * DAY_MS, SLOT - 4_000_000n)));
+    idx.observe(marketOf('rug:Old', { mint: 'Old', creator: DEV }, at(T - DAY_MS, SLOT - 200_000n), 'rug-again'));
+    expect(idx.factFor(DEV, NOW, 0).rugs).toEqual([{ mint: 'Old', knownAtMs: T - 20 * DAY_MS }]);
+    const base = drop(passingFacts(), deployerKey(DEV));
+    expect(h14(contextWith([], base, NOW, idx), 'RUG-1')).toEqual([]); // known 20 days ago: outside the 14-day look-back
+  });
+
+  it("an index fed only from after the window start (a restart) is not covered, even when the stream's facts are", () => {
+    const late = new DeployerIndex();
+    late.observe(marketOf('tick', 0, at(T - 3 * DAY_MS, SLOT - 600_000n)));
+    const base = drop(passingFacts(), deployerKey(DEV));
+    expect(h14(contextWith([], base, NOW, late))).toEqual([expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'deployer' })]);
+    expect(h14(contextWith([], base, NOW, new DeployerIndex()))).toEqual([expect.objectContaining({ code: 'not-covered', input: 'deployer' })]);
+  });
+
+  it('a cut or undecodable creates log inside the window is uncovered until its transaction is fetched', () => {
+    const base = drop(passingFacts(), deployerKey(DEV));
+    const via = 'logs:creates';
+    for (const [key, value] of [
+      [`logs:truncated:${via}`, { signature: 'SigCut', source: 'helius', backfilled: false, seq: 3 }],
+      [`logs:undecodable:${via}`, { signature: 'SigCut', error: 'bad', source: 'helius', backfilled: false, seq: 3 }],
+      ['logs:pump:TradeEvent:X', { event: { name: 'TradeEvent', data: {} }, signature: 'SigCut', txSlot: SLOT - 9_000n, truncated: true, via, source: 'helius', backfilled: false, seq: 3 }],
+    ] as const) {
+      const idx = started();
+      idx.observe(marketOf(key, value, at(T - HOUR_MS, SLOT - 9_000n)));
+      expect(h14(contextWith([], base, NOW, idx))).toEqual([expect.objectContaining({ gate: 'H16', code: 'not-covered', input: 'coverage', detail: expect.stringContaining('SigCut') })]);
+      idx.observe(marketOf('pump:CreateEvent:Z', createEvent('Z', W(5), T - HOUR_MS, SLOT - 9_000n), at(T - HOUR_MS + 5, SLOT - 9_000n), 'ev:SigCut:000:000'));
+      expect(h14(contextWith([], base, NOW, idx))).toEqual([]);
+    }
+    // Another watch's cut log, or one before the window, does not count.
+    const other = started();
+    other.observe(marketOf('logs:truncated:logs:trades', { signature: 'S2' }, at(T - HOUR_MS, SLOT - 9_000n)));
+    other.observe(marketOf(`logs:truncated:${via}`, { signature: 'S3' }, at(T - 15 * DAY_MS, SLOT - 3_000_000n)));
+    expect(h14(contextWith([], base, NOW, other))).toEqual([]);
+  });
+});
+
+describe('rug labels unavailable (supervisor ruling: until RUG-1)', () => {
+  it.each(['live', 'backtest'] as const)('every evaluation reaching H14 carries the note, even with rug facts and labeller coverage (%s)', (mode) => {
+    const idx = started();
+    idx.observe(marketOf('rug:Old', { mint: 'Old', creator: DEV }, at(T - DAY_MS, SLOT - 200_000n)));
+    const r = evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps(mode), request(), { stopAtFirst: false });
+    expect(r.notes.filter((n) => n.code === 'rug-labels-unavailable')).toEqual([{ gate: 'H14', code: 'rug-labels-unavailable', detail: 'rug labels unavailable (no reviewed labeller; RUG-1)' }]);
+    expect(r.reasons.filter((x) => x.code === 'prior-rug')).toEqual([]);
+    expect(r.passed).toContain('H14');
+    // BT-2 counts it from the result.
+    expect(r.notes.some((n) => n.code === 'rug-labels-unavailable')).toBe(true);
+    const soft = evaluateSoftFeatures(contextWith([]), deps(mode), MINT).features.find((f) => f.name === 'indexRugs');
+    expect(soft).toEqual({ name: 'indexRugs', value: null, note: expect.stringContaining('rug labels unavailable') });
+  });
+
+  it('the deployer-count half stays enforced without rug labels', () => {
+    const idx = started();
+    for (const [m, t] of [[MINT, CREATED_AT], ['M2', T - HOUR_MS], ['M3', T - 2 * HOUR_MS]] as const) {
+      idx.observe(marketOf(`logs:pump:CreateEvent:${m}`, createEvent(m, DEV, t, SLOT - 5_000n), at(t, SLOT - 5_000n)));
+    }
+    const r = evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps('live'), request(), { stopAtFirst: false });
+    expect(r.reasons).toContainEqual(expect.objectContaining({ gate: 'H14', code: 'serial-deployer' }));
+    expect(r.notes).toContainEqual(expect.objectContaining({ code: 'rug-labels-unavailable' }));
+  });
+
+  it('with RUG-1 wired, a labeller with an open gap is still unavailable; covered, there is no note', () => {
+    const gap: Row = ['coverage:rugs:gap', wrap({ fromSlot: SLOT - 100n, toSlot: null, reason: 'halted', via: 'rug-labeller' }), at(T - HOUR_MS, SLOT - 9_000n)];
+    const r = evaluateHardRejects(contextWith([gap]), deps('live', session(), 'RUG-1'), request(), { stopAtFirst: false });
+    expect(r.notes.filter((n) => n.code === 'rug-labels-unavailable')).toHaveLength(1);
+    const ok = evaluateHardRejects(contextWith([]), deps('live', session(), 'RUG-1'), request(), { stopAtFirst: false });
+    expect(ok.notes.filter((n) => n.code === 'rug-labels-unavailable')).toEqual([]);
   });
 });
 
