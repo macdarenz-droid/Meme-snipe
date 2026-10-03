@@ -5,7 +5,7 @@
 
 import { dayBlockMeanDiffInterval, dayBlockMeanInterval, type DayReturn } from './bootstrap.ts';
 import { describeSummary, g2Rule, g2Sensitivity, MIN_DAYS, sameSummary, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
-import { burnHoldout, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
+import { attemptAlpha, burnHoldout, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
 import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
 import { mean, median, sd, variance } from './descriptive.ts';
@@ -405,7 +405,14 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   const notes: string[] = [];
   let registry = input.registry;
   const failWith = (): G2Result => ({ ...result('G2', c, 'fail', {}), universes: [], registry });
-  const level0 = th.familyAlpha / registry.familySize;
+  // Each universe's holdout attempt sets its family α (0.04 first, then 0.01 / 2^(k − 1)); a call tests every universe
+  // at the smallest α among them, never above the familyAlpha threshold.
+  const alphaOf = (holdoutId: string): number => {
+    const e = registry.entries.find((x) => x.holdoutId === holdoutId);
+    return Math.min(th.familyAlpha, e ? attemptAlpha(e.attempt) : th.familyAlpha);
+  };
+  const alpha = Math.min(...input.universes.map((u) => alphaOf(u.holdoutId)), th.familyAlpha);
+  const level0 = alpha / registry.familySize;
 
   // Integrity that needs no outcome and changes nothing.
   c.add('scenario', input.scenario === 'conservative', `scenario "${input.scenario}" (need "conservative")`);
@@ -423,7 +430,7 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     else if (e.seal !== 'sealed') c.add(tag, false, `holdout ${u.holdoutId} is ${e.seal}, not sealed`);
     c.add(`S0 ${u.universe}`, u.controlRuns.length >= th.minControlSeeds, `${u.controlRuns.length} S0 seeds (need >= ${th.minControlSeeds})`);
     c.add(`n_power ${u.universe}`, Math.abs(u.power.level - level0) < 1e-12,
-      `n_power was simulated at level ${fmt(u.power.level)}, the registry's family of ${registry.familySize} needs ${fmt(level0)}`);
+      `n_power was simulated at level ${fmt(u.power.level)}, attempt α ${fmt(alpha)} over the registry's family of ${registry.familySize} needs ${fmt(level0)}`);
     const wfNow = summarizeWalkForward(u.walkForward);
     c.add(`n_power inputs ${u.universe}`, sameSummary(wfNow, u.power.walkForward),
       `n_power was simulated on walk-forward ${describeSummary(u.power.walkForward)}, this universe's walk-forward is ${describeSummary(wfNow)}`);
@@ -474,8 +481,8 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   // largest, so it passes only if every CI excludes zero. The intervals are reported at the family level (95%).
   const scored = entering.map(({ u }) => {
     const control = u.controlRuns.flat();
-    const primary = g2Rule(u.trades, control, th.familyAlpha, opts);
-    const rest = primary.p < th.familyAlpha ? g2Sensitivity(u.trades, control, th.familyAlpha, opts, ['days-2', 'days-3', 'creator', 'funder']) : [];
+    const primary = g2Rule(u.trades, control, alpha, opts);
+    const rest = primary.p < alpha ? g2Sensitivity(u.trades, control, alpha, opts, ['days-2', 'days-3', 'creator', 'funder']) : [];
     const rows: G2SensitivityRow[] = [
       { variant: 'days-1', lower: primary.mean.lower, upper: primary.mean.upper, diffVsS0Lower: primary.vsControl.lower, p: primary.p },
       ...rest.map((x) => ({ variant: x.variant, lower: x.mean?.lower ?? null, upper: x.mean?.upper ?? null, diffVsS0Lower: x.vsControl?.lower ?? null, p: x.p })),
@@ -486,7 +493,7 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   // Holm over the whole family fixed in the registry: universes that did not enter count as p = 1, so a universe scored
   // now, or one scored in a later call, is never tested at a looser level than its place in the full family allows.
   const familyP = [...scored.map((r) => r.p), ...Array<number>(registry.familySize - scored.length).fill(1)];
-  const h = holm(familyP, th.familyAlpha);
+  const h = holm(familyP, alpha);
   const perUniverse: G2UniverseResult[] = sized.map(({ u, e, required, ready }) => {
     const k = entering.findIndex((x) => x.u === u);
     if (!ready || k < 0) {

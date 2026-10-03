@@ -2,7 +2,7 @@
 // flag, bootstrap p-values, and n_power found by simulating the exact G2 rule.
 import { describe, expect, test } from 'vitest';
 import {
-  burnHoldout, createHoldoutRegistry, HOLDOUT_COUNT_FIELDS, createRng, dayBlockMeanInterval, holm, MIN_DAYS, nPower, openHoldout, registerHoldout,
+  attemptAlpha, burnHoldout, createHoldoutRegistry, extendHoldout, nextDay, HOLDOUT_COUNT_FIELDS, createRng, dayBlockMeanInterval, holm, MIN_DAYS, nPower, openHoldout, registerHoldout,
   sd, sealHoldout, simulateG2Power,
 } from '../src/stats/index.ts';
 import { bracketTrades } from './stats-fixtures.ts';
@@ -52,7 +52,7 @@ describe('sealed holdout registry', () => {
     expect(Object.keys(e.counts!).sort()).toEqual(['candidates', 'entries', 'entryDays']);
     for (const k of Object.keys(e.counts!)) expect(k).not.toMatch(banned);
     // The entry's own fields: identity, window, seal bookkeeping and counts; nothing from outcomes.
-    expect(Object.keys(e).sort()).toEqual(['burnReason', 'burned', 'configId', 'counts', 'fromDay', 'holdoutId', 'ledgerHash', 'openedAtMs', 'seal', 'toDay', 'universe']);
+    expect(Object.keys(e).sort()).toEqual(['attempt', 'burnReason', 'burned', 'configId', 'counts', 'extension', 'fromDay', 'holdoutId', 'ledgerHash', 'openedAtMs', 'seal', 'toDay', 'universe']);
     // Sealing refuses extra fields, so exit counts or P&L cannot be smuggled in.
     expect(() => sealHoldout(reg0, 'h1', { configId: 'c1', ledgerHash: 'H', counts: { ...counts, exits: 400 } as never })).toThrow(/may hold only candidates, entries, entryDays; got exits/);
     expect(() => sealHoldout(reg0, 'h1', { configId: 'c1', ledgerHash: 'H', counts: { ...counts, pnl: 1 } as never })).toThrow(/got pnl/);
@@ -133,4 +133,69 @@ describe('n_power by simulating the G2 rule', () => {
     const strongN = simulateG2Power({ walkForward: wf, control: strong, seed: 3, ...opts, maxTrades: 200_000 }).nPower;
     expect(strongN).toBeGreaterThan(2 * weak);
   }, 240_000);
+});
+
+// Supervisor ruling (DECISIONS "Follow-up rulings", STATS-1c): repeated holdout attempts share one error budget, and a
+// short holdout extends by a rule fixed at registration, from counts only.
+describe('holdout attempt budget and extension', () => {
+  test('attempt 1 is tested at 0.04, attempt k >= 2 at 0.01 / 2^(k − 1); all attempts sum to at most 0.05', () => {
+    expect(attemptAlpha(1)).toBe(0.04);
+    expect(attemptAlpha(2)).toBe(0.005);
+    expect(attemptAlpha(3)).toBe(0.0025);
+    let total = 0;
+    for (let k = 1; k <= 60; k++) total += attemptAlpha(k);
+    expect(total).toBeLessThanOrEqual(0.05);
+    expect(() => attemptAlpha(0)).toThrow(RangeError);
+  });
+  test('the registry numbers each universe\'s attempts; a later attempt needs n_power at its own level', () => {
+    let reg = registerHoldout(createHoldoutRegistry(1), { holdoutId: 'a1', universe: 'U1', configId: 'c1', fromDay: '2026-09-01', toDay: '2026-09-10' });
+    expect(reg.entries[0]!.attempt).toBe(1);
+    reg = burnHoldout(reg, 'a1', 'inspected', 'test').registry;
+    reg = registerHoldout(reg, { holdoutId: 'a2', universe: 'U1', configId: 'c2', fromDay: '2026-09-11', toDay: '2026-09-20' });
+    expect(reg.entries[1]!.attempt).toBe(2);
+  });
+  test('the extension rule is fixed at registration and starts the day after the window', () => {
+    expect(nextDay('2026-09-30')).toBe('2026-10-01');
+    expect(nextDay('2026-12-31')).toBe('2027-01-01');
+    expect(nextDay('2028-02-28')).toBe('2028-02-29');
+    expect(() => registerHoldout(createHoldoutRegistry(1), { holdoutId: 'x', universe: 'U1', configId: 'c', fromDay: '2026-09-22', toDay: '2026-10-01', extension: { firstDay: '2026-10-03', maxDays: 28 } })).toThrow(/starts the day after/);
+  });
+  const extReg = () => {
+    let reg = registerHoldout(createHoldoutRegistry(1), {
+      holdoutId: 'h', universe: 'U2', configId: 'c', fromDay: '2026-09-22', toDay: '2026-10-01', extension: { firstDay: '2026-10-02', maxDays: 28 },
+    });
+    reg = sealHoldout(reg, 'h', { configId: 'c', ledgerHash: 'H0', counts: { candidates: 900, entries: 180, entryDays: 8 } }).registry;
+    return reg;
+  };
+  const days = (n: number, perDay: number, base = 180, baseDays = 8) => {
+    const out: { day: string; entries: number; entryDays: number }[] = [];
+    let d = '2026-10-02';
+    for (let i = 0; i < n; i++) {
+      out.push({ day: d, entries: base + perDay * (i + 1), entryDays: baseDays + i + 1 });
+      d = nextDay(d);
+    }
+    return out;
+  };
+  test('stops on the first day both n and trade days are met, resets the seal for the re-run', () => {
+    const step = extendHoldout(extReg(), 'h', days(10, 20), 300, 10);
+    expect(step).toMatchObject({ ok: true, outcome: 'extended' });
+    // Day 6 is the first with 180 + 120 = 300 entries (and 14 trade days).
+    expect(step.registry.entries[0]).toMatchObject({ toDay: '2026-10-07', seal: 'registered', ledgerHash: null, counts: null, burned: false });
+  });
+  test('not met yet with days left: wait; past 28 days: not proven; never past the rule', () => {
+    expect(extendHoldout(extReg(), 'h', days(5, 1), 300, 10).outcome).toBe('wait');
+    expect(extendHoldout(extReg(), 'h', days(28, 1), 300, 10)).toMatchObject({ ok: false, outcome: 'not-proven' });
+    // Day 29 would meet the size check, but the rule stops at 28 days.
+    const late = [...days(28, 1), { day: '2026-10-30', entries: 400, entryDays: 37 }];
+    expect(extendHoldout(extReg(), 'h', late, 300, 10).outcome).toBe('not-proven');
+  });
+  test('refuses gaps, a missing rule or an opened holdout', () => {
+    const gap = days(3, 50);
+    expect(extendHoldout(extReg(), 'h', [gap[0]!, gap[2]!], 300, 10).outcome).toBe('refused');
+    const noRule = sealHoldout(registerHoldout(createHoldoutRegistry(1), { holdoutId: 'h', universe: 'U2', configId: 'c', fromDay: '2026-09-22', toDay: '2026-10-01' }), 'h',
+      { configId: 'c', ledgerHash: 'H', counts: { candidates: 1, entries: 1, entryDays: 1 } }).registry;
+    expect(extendHoldout(noRule, 'h', days(3, 50), 300, 10).reason).toMatch(/no extension rule/);
+    const burned = burnHoldout(extReg(), 'h', 'inspected', 'x').registry;
+    expect(extendHoldout(burned, 'h', days(3, 50), 300, 10).outcome).toBe('refused');
+  });
 });

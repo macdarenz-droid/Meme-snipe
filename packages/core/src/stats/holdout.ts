@@ -7,6 +7,11 @@
 // - The seal opens once, and only when n ≥ max(300, n_power). Opening early, a hash mismatch, a second open, a re-run
 //   with a different configuration or any inspection outside the scoring stage burns the holdout. Scoring burns it too.
 // - New proof needs a new, later window that has never been run.
+// - Attempts share one error budget (supervisor ruling, DECISIONS "Follow-up rulings"): attempt 1 of a universe is
+//   tested at family α = 0.04, attempt k ≥ 2 at 0.01 / 2^(k − 1), each on a new, later window. The levels sum to at most
+//   0.04 + 0.01 = 0.05, so all attempts together have a false-pass rate of at most 0.05.
+// - A short holdout may extend by a rule recorded at registration, before any count is known: whole days from a fixed
+//   first day, at most a fixed number of days, stopping on the first day the counts meet the size check.
 
 /**
  * What the registry exposes about a sealed holdout: candidate and entry counts only (review of PR #6). Never exit counts
@@ -26,9 +31,20 @@ export const HOLDOUT_COUNT_FIELDS = ['candidates', 'entries', 'entryDays'] as co
 export type SealState = 'registered' | 'sealed' | 'opened';
 export type BurnReason = 'scored' | 'early-open' | 'hash-mismatch' | 'count-mismatch' | 'second-open' | 'reconfigured' | 'inspected';
 
+/** The size-check-driven extension, fixed at registration. */
+export interface ExtensionRule {
+  /** First day the window may extend into, "YYYY-MM-DD" (the day after the registered window ends). */
+  readonly firstDay: string;
+  /** Whole days the window may extend by, at most. */
+  readonly maxDays: number;
+}
+
 export interface HoldoutEntry {
   readonly holdoutId: string;
   readonly universe: string;
+  /** 1 for the universe's first holdout, k for its k-th; sets the level it is tested at (attemptAlpha). */
+  readonly attempt: number;
+  readonly extension: ExtensionRule | null;
   /** The single pre-registered configuration (rules, thresholds, barriers, exits) for this universe. */
   readonly configId: string;
   /** First and last calendar day of the window, "YYYY-MM-DD" (compared as strings). */
@@ -58,6 +74,33 @@ export interface RegistryStep {
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Family α for a universe's k-th holdout attempt: 0.04, then 0.01 / 2^(k − 1). */
+export const attemptAlpha = (attempt: number): number => {
+  if (!Number.isInteger(attempt) || attempt < 1) throw new RangeError(`attempt must be an integer >= 1, got ${attempt}`);
+  return attempt === 1 ? 0.04 : 0.01 / 2 ** (attempt - 1);
+};
+
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/** The calendar day after a "YYYY-MM-DD" day (proleptic Gregorian; no clock or Date object). */
+export const nextDay = (day: string): string => {
+  if (!DAY.test(day)) throw new RangeError(`not a YYYY-MM-DD day: ${day}`);
+  let y = Number(day.slice(0, 4));
+  let m = Number(day.slice(5, 7));
+  let d = Number(day.slice(8, 10)) + 1;
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const len = m === 2 && leap ? 29 : MONTH_DAYS[m - 1]!;
+  if (d > len) {
+    d = 1;
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+};
+
 export const createHoldoutRegistry = (familySize: number): HoldoutRegistry => {
   if (!Number.isInteger(familySize) || familySize < 1 || familySize > 3) throw new RangeError(`familySize must be 1, 2 or 3, got ${familySize}`);
   return { familySize, entries: [] };
@@ -83,10 +126,14 @@ const burn = (registry: HoldoutRegistry, holdoutId: string, reason: BurnReason, 
 /** Register a holdout window for one universe. Throws on anything that would break single-look discipline. */
 export const registerHoldout = (
   registry: HoldoutRegistry,
-  entry: Pick<HoldoutEntry, 'holdoutId' | 'universe' | 'configId' | 'fromDay' | 'toDay'>,
+  entry: Pick<HoldoutEntry, 'holdoutId' | 'universe' | 'configId' | 'fromDay' | 'toDay'> & { readonly extension?: ExtensionRule },
 ): HoldoutRegistry => {
   if (!DAY.test(entry.fromDay) || !DAY.test(entry.toDay) || entry.fromDay > entry.toDay) {
     throw new RangeError(`holdout ${entry.holdoutId}: window must be two YYYY-MM-DD days in order`);
+  }
+  const ext = entry.extension ?? null;
+  if (ext && (ext.firstDay !== nextDay(entry.toDay) || !Number.isInteger(ext.maxDays) || ext.maxDays < 1)) {
+    throw new RangeError(`holdout ${entry.holdoutId}: an extension starts the day after the window (${nextDay(entry.toDay)}) and has at least 1 day`);
   }
   if (registry.entries.some((e) => e.holdoutId === entry.holdoutId)) throw new RangeError(`holdout ${entry.holdoutId} is already registered`);
   const same = registry.entries.filter((e) => e.universe === entry.universe);
@@ -100,7 +147,11 @@ export const registerHoldout = (
   }
   return {
     ...registry,
-    entries: [...registry.entries, { ...entry, seal: 'registered', ledgerHash: null, counts: null, openedAtMs: null, burned: false, burnReason: null }],
+    entries: [...registry.entries, {
+      holdoutId: entry.holdoutId, universe: entry.universe, configId: entry.configId, fromDay: entry.fromDay, toDay: entry.toDay,
+      attempt: same.length + 1, extension: ext,
+      seal: 'registered', ledgerHash: null, counts: null, openedAtMs: null, burned: false, burnReason: null,
+    }],
   };
 };
 
@@ -171,4 +222,53 @@ export const openHoldout = (
 export const burnHoldout = (registry: HoldoutRegistry, holdoutId: string, reason: Exclude<BurnReason, 'scored'>, why: string): RegistryStep => {
   const e = find(registry, holdoutId);
   return e.burned ? { registry, ok: false, reason: `holdout ${holdoutId} was already burned (${e.burnReason})` } : burn(registry, holdoutId, reason, why);
+};
+
+/** Cumulative counts of an extended window up to and including `day` (candidates and entries only, never outcomes). */
+export interface ExtensionDay {
+  readonly day: string;
+  readonly entries: number;
+  readonly entryDays: number;
+}
+
+export interface ExtensionStep extends RegistryStep {
+  /** 'extended': the window now ends on a day that meets the size check (re-run and re-seal it); 'wait': no day meets
+   * it yet and days remain; 'not-proven': the rule's last day passed without meeting it. */
+  readonly outcome: 'extended' | 'wait' | 'not-proven' | 'refused';
+}
+
+/**
+ * Apply the registered extension rule to a holdout that came up short, from counts alone. `days` are the published
+ * extension days in order from the rule's first day, with cumulative counts over the whole extended window. Stops on
+ * the first day both n ≥ requiredTrades and entry days ≥ minDays hold; that day becomes the window's end and the seal
+ * resets to 'registered' (the backtester re-runs and re-seals the new window). Past maxDays: not proven.
+ */
+export const extendHoldout = (
+  registry: HoldoutRegistry,
+  holdoutId: string,
+  days: readonly ExtensionDay[],
+  requiredTrades: number,
+  minDays: number,
+): ExtensionStep => {
+  const e = find(registry, holdoutId);
+  const refuse = (reason: string): ExtensionStep => ({ registry, ok: false, reason, outcome: 'refused' });
+  if (e.burned || e.seal === 'opened') return refuse(`holdout ${holdoutId} is ${e.burned ? `burned (${e.burnReason})` : 'opened'}`);
+  if (!e.extension) return refuse(`holdout ${holdoutId} has no extension rule registered`);
+  let expect = e.extension.firstDay;
+  for (const d of days) {
+    if (d.day !== expect) return refuse(`extension days must be whole consecutive days from ${e.extension.firstDay}; got ${d.day}, expected ${expect}`);
+    expect = nextDay(expect);
+  }
+  const usable = days.slice(0, e.extension.maxDays);
+  const hit = usable.find((d) => d.entries >= requiredTrades && d.entryDays >= minDays);
+  if (hit) {
+    return {
+      registry: update(registry, holdoutId, { toDay: hit.day, seal: 'registered', ledgerHash: null, counts: null }),
+      ok: true, outcome: 'extended', reason: `window extended to ${hit.day}: ${hit.entries} entries on ${hit.entryDays} days`,
+    };
+  }
+  if (days.length >= e.extension.maxDays) {
+    return { registry, ok: false, outcome: 'not-proven', reason: `${e.extension.maxDays} extension days passed without ${requiredTrades} entries on ${minDays} days: not proven` };
+  }
+  return { registry, ok: false, outcome: 'wait', reason: `${days.length} of ${e.extension.maxDays} extension days published; the size check is not met yet` };
 };

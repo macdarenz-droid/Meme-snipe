@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   createRng, evaluateDemotion, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
-  createHoldoutRegistry, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
+  burnHoldout, createHoldoutRegistry, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
   type RevalidationInput,
@@ -109,7 +109,7 @@ const holdout = withClusters(bracketTrades(31, 0.1, 25, 20));
 const counts = { candidates: 2000, entries: 500, entryDays: 25 };
 const controlRuns = Array.from({ length: 200 }, (_, k) => bracketTrades(1000 + k, -0.2, 25, 2).map(({ day, rNet }) => ({ day, rNet })));
 type PowerSpec = Omit<G2PowerResult, 'walkForward'> & { readonly walkForward?: WalkForwardSummary };
-const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN: 0.8, level: 0.05 / familySize, evaluations: [] });
+const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN: 0.8, level: 0.04 / familySize, evaluations: [] });
 const sealed = (familySize: number, universes: readonly string[], c = counts): HoldoutRegistry => {
   let reg = createHoldoutRegistry(familySize);
   for (const u of universes) {
@@ -132,7 +132,9 @@ const g2Pass = (over: Partial<G2Input> = {}): G2Input => ({
 });
 
 // The closed-form n for the walk-forward σ̂ (≈ 0.33) is a lower bound on what the gate requires.
-const closedWf = nPower(sd(wf.map((t) => t.rNet)), 0.05);
+const closedWf = nPower(sd(wf.map((t) => t.rNet)), 0.05, { alpha: 0.04 });
+// A family of 3 tests at 0.04/3, where the closed form needs about 514 trades: those fixtures hold 520 on 26 days.
+const counts520 = { candidates: 2000, entries: 520, entryDays: 26 };
 
 describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
   test('passes with enough trades and both CIs (mean, vs S0) above zero; the seal is opened once and burned', () => {
@@ -140,7 +142,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     expect(r.reasons).toEqual([]);
     expect(r.status).toBe('pass');
     expect(closedWf).toBeGreaterThan(330);
-    expect(r.universes[0]).toMatchObject({ universe: 'U1', status: 'pass', requiredTrades: closedWf, entries: 500, level: 0.05 });
+    expect(r.universes[0]).toMatchObject({ universe: 'U1', status: 'pass', requiredTrades: closedWf, entries: 500, level: 0.04 });
     expect(r.registry.entries[0]).toMatchObject({ seal: 'opened', openedAtMs: NOW, burned: true, burnReason: 'scored' });
   });
   test('the e-process, futility and predictive interval do not gate G2', () => {
@@ -190,13 +192,13 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     // Find a holdout with p ≈ 0.03: it would pass at α = 0.05 but must fail at α/3 = 0.0167.
     let found: HoldoutTrade[] | null = null;
     for (let seed = 0; seed < 400 && !found; seed++) {
-      const t = withClusters(bracketTrades(7000 + seed, 0.035, 25, 20));
-      const p = gateG2(g2Pass({ universes: [u('U1', { trades: t })] })).universes[0]!.p!;
-      if (p > 0.02 && p < 0.045) found = t;
+      const t = withClusters(bracketTrades(7000 + seed, 0.035, 26, 20));
+      const p = gateG2(g2Pass({ registry: sealed(1, ['U1'], counts520), universes: [u('U1', { trades: t })] })).universes[0]!.p!;
+      if (p > 0.02 && p < 0.035) found = t;
     }
     expect(found).not.toBeNull();
-    const r = gateG2(g2Pass({ registry: sealed(3, ['U1', 'U2', 'U3']), universes: [u('U1', { trades: found! }, 3)] }));
-    expect(r.universes[0]).toMatchObject({ status: 'fail', level: 0.05 / 3 });
+    const r = gateG2(g2Pass({ registry: sealed(3, ['U1', 'U2', 'U3'], counts520), universes: [u('U1', { trades: found! }, 3)] }));
+    expect(r.universes[0]).toMatchObject({ status: 'fail', level: 0.04 / 3 });
     expect(r.status).toBe('fail');
     // The other two stay sealed for a later call, which also runs Holm over the family of three.
     expect(r.registry.entries.filter((e) => e.seal === 'sealed').map((e) => e.universe)).toEqual(['U2', 'U3']);
@@ -206,11 +208,11 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
   // variant; the bound is α plus two Monte Carlo standard errors (0.05 + 2·√(0.05·0.95/2000) ≈ 0.0597).
   const FWER_REPS = 2000;
   const FWER_BOUND = 0.05 + 2 * Math.sqrt((0.05 * 0.95) / FWER_REPS);
-  const nullTrades = (seed: number) => withClusters(bracketTrades(seed, 0, 25, 20));
+  const nullTrades = (seed: number) => withClusters(bracketTrades(seed, 0, 26, 20));
   const fwer = (plan: readonly (readonly string[])[], seedBase: number): number => {
     let anyPass = 0;
     for (let r = 0; r < FWER_REPS; r++) {
-      let reg = sealed(3, ['U1', 'U2', 'U3']);
+      let reg = sealed(3, ['U1', 'U2', 'U3'], counts520);
       let rejected = false;
       plan.forEach((call, k) => {
         const res = gateG2(g2Pass({
@@ -242,7 +244,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
   });
   test('n_power must be simulated for the family size fixed in the registry', () => {
     const r = gateG2(g2Pass({ universes: [u('U1', { power: power(330, 3) })] }));
-    expect(r.reasons.join()).toMatch(/n_power U1: n_power was simulated at level 0.016667/);
+    expect(r.reasons.join()).toMatch(/n_power U1: n_power was simulated at level 0.013333/);
     expect(r.registry.entries[0]!.seal).toBe('sealed');
   });
   test('an unregistered holdout, a duplicate universe, too many universes or too few S0 seeds is refused unopened', () => {
@@ -263,22 +265,34 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
   test('Holm across universes: a marginal universe passes alone but not as the weakest of three', () => {
     let found: HoldoutTrade[] | null = null;
     for (let seed = 0; seed < 400 && !found; seed++) {
-      const t = withClusters(bracketTrades(5000 + seed, 0.035, 25, 20));
-      const p = gateG2(g2Pass({ universes: [u('U1', { trades: t })] })).universes[0]!.p!;
-      if (p > 0.02 && p < 0.045) found = t;
+      const t = withClusters(bracketTrades(5000 + seed, 0.035, 26, 20));
+      const p = gateG2(g2Pass({ registry: sealed(1, ['U1'], counts520), universes: [u('U1', { trades: t })] })).universes[0]!.p!;
+      if (p > 0.02 && p < 0.035) found = t;
     }
     expect(found).not.toBeNull();
-    expect(gateG2(g2Pass({ universes: [u('U1', { trades: found! })] })).universes[0]!.status).toBe('pass');
-    const weak = withClusters(bracketTrades(6000, -0.1, 25, 20));
+    expect(gateG2(g2Pass({ registry: sealed(1, ['U1'], counts520), universes: [u('U1', { trades: found! })] })).universes[0]!.status).toBe('pass');
+    const weak = withClusters(bracketTrades(6000, -0.1, 26, 20));
     const r = gateG2(g2Pass({
-      registry: sealed(3, ['U1', 'U2', 'U3']),
+      registry: sealed(3, ['U1', 'U2', 'U3'], counts520),
       universes: [u('U1', { trades: found! }, 3), u('U2', { trades: weak }, 3), u('U3', { trades: weak }, 3)],
     }));
-    expect(r.universes[0]!.level).toBeCloseTo(0.05 / 3, 12);
+    expect(r.universes[0]!.level).toBeCloseTo(0.04 / 3, 12);
     expect(r.universes[0]!.status).toBe('fail');
     expect(r.status).toBe('fail');
     expect(r.registry.entries.every((e) => e.burned && e.seal === 'opened')).toBe(true);
   }, 120_000);
+  test('a second attempt is tested at 0.005: n_power simulated at 0.04 is refused, at 0.005 it is accepted', () => {
+    let reg = registerHoldout(createHoldoutRegistry(1), { holdoutId: 'h-old', universe: 'U1', configId: 'U1-v0', fromDay: '2026-08-01', toDay: '2026-08-25' });
+    reg = burnHoldout(reg, 'h-old', 'inspected', 'test').registry;
+    reg = registerHoldout(reg, { holdoutId: 'h-U1', universe: 'U1', configId: 'U1-v1', fromDay: '2026-09-01', toDay: '2026-09-25' });
+    reg = sealHoldout(reg, 'h-U1', { configId: 'U1-v1', ledgerHash: 'hash-U1', counts }).registry;
+    const refused = gateG2(g2Pass({ registry: reg }));
+    expect(refused.reasons.join()).toMatch(/n_power U1: n_power was simulated at level 0.04, attempt α 0.005/);
+    expect(refused.registry.entries[1]!.seal).toBe('sealed');
+    const p2 = { ...power(330), level: 0.005 };
+    const r = gateG2(g2Pass({ registry: reg, universes: [u('U1', { power: p2 })] }));
+    expect(r.checks.some((c) => c.name === 'n_power U1' && c.passed)).toBe(true);
+  });
   test('G2 thresholds tighten but never loosen', () => {
     expect(() => gateG2(g2Pass(), { minTradesFloor: 200 })).toThrow(/only be tightened/);
     expect(() => gateG2(g2Pass(), { familyAlpha: 0.1 })).toThrow(/only be tightened/);
