@@ -57,7 +57,7 @@ export interface LiveSimOptions {
 }
 
 const failed = (leg: SimLeg, error: string): DryRunRecord => ({
-  id: `${leg.trade}|${leg.leg}`, side: leg.side, venue: 'pool', mint: leg.mint as Address, outcome: 'build-refused', success: false, error, standIn: null, policy: null,
+  id: `${leg.trade}|${leg.leg}`, side: leg.side, finalExit: leg.side === 'sell' && leg.closes, venue: 'pool', mint: leg.mint as Address, outcome: 'build-refused', success: false, error, standIn: null, policy: null,
   quotedOut: null, simulatedOut: null, amountErrorE4: null, readSlot: null, quoteAgeSlots: null, rentDeclared: null, rentPaid: null, balancesFrom: null,
   simulatedSlot: null, unitsConsumed: null, logsTail: [],
 });

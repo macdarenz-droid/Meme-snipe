@@ -12,14 +12,16 @@ import { GENESIS, OFF_CHAIN, type LogRecord } from '../../core/src/engine/index.
 import { migrationKey } from '../../core/src/gates/index.ts';
 import { openLedger } from '../../core/src/ledger/index.ts';
 import { emptyBook, type BookEvent } from '../../core/src/lifecycle/index.ts';
-import type { Lamports } from '../../core/src/units/index.ts';
+import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
+import { NO_LATCHES } from '../../core/src/risk/index.ts';
+import { PaperAccount, SETUP_MINT, accountFile } from '../src/run/account.ts';
 import { verifySignature, parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
 import { checkStartHealth, type Health } from '../../runner/src/contract.ts';
 import { RESERVE_PREFIX } from '../src/engine/strategy.ts';
 import type { HttpRequest } from '../src/providers/index.ts';
 import { DEFAULT_LIVE_FEED, LiveFeed } from '../src/providers/index.ts';
 import { HELIUS_FREE } from '../src/scheduler/index.ts';
-import { parseConfig } from '../src/run/config.ts';
+import { REGISTERED_STRATEGIES, UNREADABLE, parseConfig } from '../src/run/config.ts';
 import { Desk } from '../src/run/desk.ts';
 import type { FactContext } from '../src/run/facts.ts';
 import { Journal } from '../src/run/journal.ts';
@@ -84,8 +86,22 @@ describe('S0 shakedown settings (supervisor ruling 2026-10-04)', () => {
     expect(refused({ ...base, ZEROED_MODE: 'live', ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' })).toBe('refused: ZEROED_PAPER_EDGE_PPM is a paper-only setting');
     expect(refused({ ...base, ZEROED_PAPER_EDGE_PPM: '250000' })).toBe('refused: ZEROED_PAPER_EDGE_PPM is only for the S0 shakedown');
     for (const v of ['0', '-5', '1.5', '1000001', 'x']) expect(refused({ ...base, ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: v }), v).toMatch(/whole number from 1 to 1000000/);
-    expect(refused({ ...base, ZEROED_STRATEGY: 'S1' })).toMatch(/none or S0/);
+    expect(refused({ ...base, ZEROED_STRATEGY: 'S1' })).toMatch(/none, S0 or a registered strategy/);
   });
+  it('S0 and the paper edge never reach the qualifying run; only a registered strategy could qualify (none is yet)', () => {
+    const q = (env: Record<string, string>, run: string | null | typeof UNREADABLE) => {
+      const p = parseConfig({ ...base, ...env }, () => null, run);
+      return p.ok ? p.config.strategy : p.message;
+    };
+    expect(q({ ZEROED_RUN_ID: 'qual-1', ZEROED_STRATEGY: 'S0' }, 'qual-1')).toBe('refused: S0 and ZEROED_PAPER_EDGE_PPM are never used in the qualifying run');
+    expect(q({ ZEROED_RUN_ID: 'qual-1', ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' }, 'qual-1')).toBe('refused: S0 and ZEROED_PAPER_EDGE_PPM are never used in the qualifying run');
+    expect(q({ ZEROED_RUN_ID: 'qual-1' }, 'qual-1')).toBe('refused: the qualifying run needs a registered strategy in ZEROED_STRATEGY');
+    expect(q({ ZEROED_RUN_ID: 'qual-1' }, UNREADABLE)).toBe('refused: packages/runner/qualifying-run.json is unreadable');
+    // Any other run (a rehearsal, the shakedown) is never qualifying.
+    expect(q({ ZEROED_RUN_ID: 'shakedown-1', ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' }, 'qual-1')).toEqual({ name: 'S0', paperEdgePpm: 250_000n, qualifying: false });
+    expect(REGISTERED_STRATEGIES).toEqual([]);
+  });
+
   it('S0 is selectable and always non-qualifying; unset is none with no edge', () => {
     const p = parseConfig({ ...base, ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' }, () => null);
     expect(p.ok && p.config.strategy).toEqual({ name: 'S0', paperEdgePpm: 250_000n, qualifying: false });
@@ -433,5 +449,30 @@ describe('no key in any output (review of f679188, item 8)', () => {
     expect(src.match(/console\.(log|error|warn|info)\(/g)).toEqual(['console.log(', 'console.error(']);
     expect(src).toContain('console.log(redact(line))');
     expect(src).toContain('console.error(redact(line))');
+  });
+});
+
+describe('the paper wallet\'s setup rent is a realised cost (risk review of #48, item 7)', () => {
+  it('right after setup, equity is the bankroll less the rent valued at the setup SOL price, rounded up', () => {
+    const dir = tempState();
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const bankroll = 20_000_000n as MicroUsd;
+    const rent = (128n + 137n) * 5_080n;
+    const account = new PaperAccount(accountFile(dir), bankroll, T - 60_000, rent, 5_000_000n as MicroUsd);
+    const price = 150_250_000n as MicroUsd;
+    account.price(price, T - 1_000);
+    const opening = microUsdToLamports(bankroll, price, 'floor');
+    expect(account.state.walletLamports).toBe(opening - rent);
+    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T);
+    const cost = lamportsToMicroUsd(rent as Lamports, price, 'ceil');
+    expect(fact.history.closedTrades).toEqual([{ mint: SETUP_MINT, openedAtMs: T - 1_000, closedAtMs: T - 1_000, notional: 5_000_000n, netPnl: -cost, stoppedOut: false }]);
+    const equity = fact.history.openingEquity + fact.history.closedTrades.reduce((s, t) => s + t.netPnl, 0n);
+    expect(equity).toBe(bankroll - cost);
+    expect(fact.oneTimeRent).toBe(0n);
+    // Paid once: a later price does not charge it again.
+    account.price(160_000_000n as MicroUsd, T);
+    expect(account.state.walletLamports).toBe(opening - rent);
+    expect(account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T).history.closedTrades).toHaveLength(1);
+    ledger.close();
   });
 });

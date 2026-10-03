@@ -627,4 +627,23 @@ The second reviewer, the third opinion and the supervisor reached one position o
     - the worst move is the largest move of the pool price against the last spot saved with the exit plan, before and after every swap on the pool read from chain history (at most 200 transactions);
     - when the reading cannot be done, it is null with the reason.
 - **2026-10-04 · Delay stamps use a monotonic clock.** `delay_ms` is measured on `performance.now()`; wall times are kept for display only (supervisor refinement).
+- **2026-10-04 · Re-review of #48 (supervisor rulings).**
+  - **FACTS-1 merges before the qualifying run.** FACTS-1 is #54 plus FACTS-1b. Until it merges, no live producer makes GATE-1's facts, so every candidate is rejected (H16 not covered, regime unknown) and nothing trades, S0 included.
+  - **The seed runs after the live sources start.** The order is reconcile, sources start, the seed up to the live creates watch's first slot, then the fact producers and the loop. Recorded in the SEED-1 entry above, and repeated here because the original order was seed first.
+  - **A divergence halt is cleared by a restart.** A ledger/book divergence halts entries for the rest of the process. A restart rebuilds the book from the ledger, so the halt clears then. This is paper only, and both the halt and the new boot are journaled.
+  - **Qualifying is real.** A run whose `ZEROED_RUN_ID` is the name in `packages/runner/qualifying-run.json` refuses to start in each of these cases:
+    - with S0;
+    - with a paper edge;
+    - without a registered strategy (`REGISTERED_STRATEGIES`, empty until BT-2 registers one);
+    - with an unreadable file.
+    `qualifying` is true only for that run. Every other run journals `qualifying: false`.
+  - **Exits per universe (CFG-2).** The entry intent key starts with the universe (`entry:<mint>:<universe>.<version>.<n>`). The exit plan stores it, and a restored plan keeps it. A plan saved before this takes it from its intent key, never from the worker's own universe.
+  - **Setup rent is booked as a realised cost (risk review).** It is valued at the setup SOL price, rounded up, as a closed record (`wallet-setup`), so equity, the high-water mark and the day and week losses include it.
+    - AccountHistory has no cost record, so it rides with the closed trades.
+    - It carries the policy's largest notional, so R15 never caps a size by it.
+    - It may count once toward R8 (the safe side).
+    - A cost field in RISK-1b would be the cleaner shape.
+  - **Redactions in recorded files are listed.** Each redaction is named, with its count, in the manifest's `coverage_gaps`, so a replay difference there is explained.
+  - **Simulation lines carry `finalExit`, `simulatedSlot` and `standIn`** in full, null when unknown.
+  - **The rehearsal workflow runs S0 with a paper-only edge of 400,000 ppm.** The supervisor approved this as a `.github` change. It lets trades open, so the restart drills can run mid-trade.
 - **2026-10-04 · The app's read API (`run/api.ts`) implements UI-2's contract exactly and is checked by the app's own strict schemas** (`checkEnvelope` with `schemaFor`, test against a worker that made paper trades). Paper only: other modes' paths answer 404, the backtest report is `null` (the app loads reports from the release). Loopback only, `ZEROED_API_ADDR` (default `127.0.0.1:8788`, refused unless loopback and not the health port); on the host OPS publishes it to the owner's tailnet with `tailscale serve`, so the worker never binds anything else (supervisor ruling). GET only: no command is served yet, because a command needs its own auth level and loopback (where tailscale's proxied reads arrive) is no proof of anything; pause stays with the watchdog's `/pause`. Paper costs: venue and creator fees, priority, tip, base fee and the scenario's extra slippage come from each paper fill; the paper fill does not model token-account rent, so rent shows 0. Planned and realized R, MFE and MAE are null until the exit plan is kept with the trade record.

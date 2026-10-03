@@ -1,7 +1,7 @@
 // WORKER-1 end to end on a scripted market: gates, risk, the ledger reservation, TEST-2's simulation, the paper fill,
 // the exit engine, the journal the runner checks and the ledger the replay check reads; then a restart drill mid-trade.
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
@@ -10,7 +10,7 @@ import type { LogRecord } from '../../core/src/engine/index.ts';
 import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
-import { HALT_KEY, s0EntryAt } from '../src/engine/strategy.ts';
+import { HALT_KEY, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
@@ -357,6 +357,36 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
     expect(t).toMatchObject({ partials: 1, lastSold: sold, partialSeq: 1 });
     expect(kinds(h.stateDir, 'decision').some((d) => (d['reasons'] as string[])[0] === 'partials from the book')).toBe(true);
     await h2.worker.stop();
+  });
+
+  it('a restored position keeps the universe it was entered under (saved plan, else its intent key), never the worker\'s (CFG-2)', async () => {
+    const h = makeWorker();
+    await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    expect(h.worker.strategy.saved()[pid]!.plan.universe).toBe('U2');
+    expect(String(h.worker.book.intents[h.worker.book.positions[pid]!.entryIntentId]!.intent.key)).toMatch(/^entry:[^:]+:U2\./);
+    await h.worker.kill();
+    // A U1 position on disk (U1's exits differ: T_flat, ATR bars), restored by a worker whose own universe is U2.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, universe: 'U1' } } });
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    await new Market(h2).run(1_000, 400, () => undefined);
+    expect(h2.worker.strategy.saved()[pid]!.plan.universe).toBe('U1');
+    await h2.worker.kill();
+    // A plan saved before universes were stored: the universe comes from the entry's intent key.
+    const old = file.read({});
+    const { universe: _u, ...plan } = old[pid]!.plan;
+    file.write({ ...old, [pid]: { ...old[pid]!, plan: plan as typeof old[string]['plan'] } });
+    const h3 = makeWorker({ stateDir: h.stateDir, timers: h.timers, universe: 'U1' });
+    expect(await h3.worker.reconcile()).toEqual({ ok: true });
+    await new Market(h3).run(1_000, 400, () => undefined);
+    expect(h3.worker.strategy.saved()[pid]!.plan.universe).toBe('U2');
+    expect(kinds(h.stateDir, 'decision').some((d) => (d['reasons'] as string[])[0] === 'plan universe restored')).toBe(true);
+    await h3.worker.stop();
+    expect(universeOfKey(`entry:${MINT}:U1.paper-u2-0.x.y.1`)).toBe('U1');
+    expect(universeOfKey(`entry:${MINT}:paper-u2-0.x.y.1`)).toBeNull();
   });
 
   it('an attempt in flight at the kill never lands: the restart settles it before any entry', async () => {

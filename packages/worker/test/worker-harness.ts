@@ -56,7 +56,7 @@ export const testConfig = (stateDir: string, over: Record<string, string> = {}):
 export const okSimulation = (legs: SimLeg[]) => async (leg: SimLeg): Promise<DryRunRecord> => {
   legs.push(leg);
   return {
-    id: `${leg.trade}|${leg.leg}`, side: leg.side, venue: 'pool', mint: leg.mint as DryRunRecord['mint'], outcome: 'simulated', success: true, error: null,
+    id: `${leg.trade}|${leg.leg}`, side: leg.side, finalExit: leg.side === 'sell' && leg.closes, venue: 'pool', mint: leg.mint as DryRunRecord['mint'], outcome: 'simulated', success: true, error: null,
     standIn: null, policy: null, quotedOut: leg.quotedOut, simulatedOut: leg.quotedOut, amountErrorE4: 0, readSlot: leg.minContextSlot, quoteAgeSlots: 0n,
     rentDeclared: 0n, rentPaid: 0n, balancesFrom: 'simulation', simulatedSlot: leg.minContextSlot, unitsConsumed: 100_000n, logsTail: [],
   };
@@ -87,7 +87,7 @@ export interface Harness {
 /** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops'] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2' } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -98,7 +98,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
   const worker = new Worker({
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
-    strategy: strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry),
+    strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }) },
     scenario: o.scenario ?? LANDS, network: FILL_CONFIG.network, timers,
     sources: o.sources ?? (() => {
       order.push('sources');

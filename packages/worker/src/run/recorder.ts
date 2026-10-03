@@ -9,7 +9,7 @@
 // files as they come and flushed before the engine acts on them; a file is compressed and listed in the manifest when
 // it is rotated, at a clean stop, or at the next start after a crash, so a kill loses no flushed line.
 import { createHash } from 'node:crypto';
-import { redact } from './redact.ts';
+import { redactCounted } from './redact.ts';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -38,6 +38,8 @@ interface Open {
   readonly path: string;
   bytes: number;
   rows: number;
+  /** Values redacted from this file: each is data a replay cannot see, so it is listed as a coverage gap at sealing. */
+  redactions: number;
 }
 
 interface Coverage {
@@ -159,7 +161,7 @@ export class Recorder {
       const n = this.#nextNumber(t, day);
       const dir = join(this.#dir, 'days', day);
       mkdirSync(dir, { recursive: true });
-      this.#open.set(t, { day, n, path: join(dir, `${t}-${pad(n)}.jsonl`), bytes: 0, rows: 0 });
+      this.#open.set(t, { day, n, path: join(dir, `${t}-${pad(n)}.jsonl`), bytes: 0, rows: 0, redactions: 0 });
     }
     const o = this.#open.get(t)!;
     o.bytes += Buffer.byteLength(line) + 1;
@@ -180,7 +182,9 @@ export class Recorder {
     const buf = this.#buffer.get(t);
     const o = this.#open.get(t);
     if (buf === undefined || buf.length === 0 || o === undefined) return;
-    appendFileSync(o.path, `${redact(buf.join('\n'))}\n`);
+    const r = redactCounted(buf.join('\n'));
+    o.redactions += r.count;
+    appendFileSync(o.path, `${r.text}\n`);
     buf.length = 0;
   }
 
@@ -195,6 +199,7 @@ export class Recorder {
     if (o === undefined || !existsSync(o.path)) return;
     sealFile(o.path);
     this.#sealed[t] += o.rows;
+    if (o.redactions > 0) this.#gaps.push({ reason: 'values redacted as credentials; a replay of this file differs there', file: relative(this.#dir, `${o.path}.zst`), redactions: o.redactions });
     this.#writeManifest();
   }
 

@@ -36,12 +36,17 @@ export interface AccountState {
   readonly entries: { readonly mint: string; readonly atMs: number }[];
   /** The paper wallet's one-time accounts were paid at its setup; absent in files from before (paid at the next start). */
   oneTimePaid?: boolean;
+  /** That setup as a realised cost: when, in lamports, and in micro-dollars at the setup SOL price (rounded up). */
+  setup?: { readonly atMs: number; readonly lamports: bigint; readonly cost: MicroUsd };
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 export const accountFile = (dir: string) =>
   new StateFile<AccountState>(dir, 'account.json', (v) => (isObj(v) && typeof v['openedAtMs'] === 'number' && typeof v['openingEquity'] === 'bigint' && Array.isArray(v['trades']) && Array.isArray(v['entries']) ? (v as unknown as AccountState) : null));
+
+/** The setup cost's entry among closed trades: no real mint (never blocks a re-entry). */
+export const SETUP_MINT = 'wallet-setup' as Mint;
 
 const STOPS = new Set(['stop', 'trailing_stop', 'thesis_lost', 'liquidity']);
 const EXIT_REASONS = new Set(['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency']);
@@ -51,13 +56,21 @@ export class PaperAccount {
   readonly #s: AccountState;
 
   readonly #oneTimeRent: bigint;
+  #now: number;
 
-  /** `oneTimeRent`: what a fresh wallet's first buy pays once for accounts it never closes (settings `oneTimeRent`). */
-  constructor(file: StateFile<AccountState>, bankroll: MicroUsd, nowMs: number, oneTimeRent: bigint) {
+  readonly #maxNotional: MicroUsd;
+
+  /**
+   * `oneTimeRent`: what a fresh wallet pays once for accounts it never closes (settings `oneTimeRent`). `maxNotional`:
+   * the policy's largest trade, given to the setup cost's record so R15 (no larger size after a loss) does not read
+   * the setup as a small losing trade.
+   */
+  constructor(file: StateFile<AccountState>, bankroll: MicroUsd, nowMs: number, oneTimeRent: bigint, maxNotional: MicroUsd) {
+    this.#maxNotional = maxNotional;
     this.#file = file;
     this.#oneTimeRent = oneTimeRent;
     this.#s = file.read({ openedAtMs: nowMs, openingEquity: bankroll, walletLamports: null, trades: [], entries: [] });
-    this.#setUp();
+    this.#now = nowMs;
     file.write(this.#s);
   }
 
@@ -66,10 +79,11 @@ export class PaperAccount {
   }
 
   /** Converts the bankroll into the paper wallet at the first known SOL price. */
-  price(solPrice: MicroUsd | null): void {
-    if (this.#s.walletLamports !== null || solPrice === null || solPrice <= 0n) return;
-    this.#s.walletLamports = microUsdToLamports(this.#s.openingEquity, solPrice, 'floor');
-    this.#setUp();
+  price(solPrice: MicroUsd | null, nowMs: number = this.#now): void {
+    if (solPrice === null || solPrice <= 0n) return;
+    if (this.#s.walletLamports !== null && this.#s.oneTimePaid === true) return;
+    if (this.#s.walletLamports === null) this.#s.walletLamports = microUsdToLamports(this.#s.openingEquity, solPrice, 'floor');
+    this.#setUp(solPrice, nowMs);
     this.#file.write(this.#s);
   }
 
@@ -78,10 +92,12 @@ export class PaperAccount {
    * and their rent leaves the wallet for good. Paid at setup rather than by the first buy, so no trade's cost carries
    * it: at the trial size the first trade would fail R14's cost gate for good and the accounts would never be made.
    */
-  #setUp(): void {
+  #setUp(solPrice: MicroUsd, nowMs: number): void {
     if (this.#s.walletLamports === null || this.#s.oneTimePaid === true) return;
     this.#s.walletLamports -= this.#oneTimeRent;
     this.#s.oneTimePaid = true;
+    // A realised cost, so equity, the high-water mark and the day and week losses all include it (risk review of #48).
+    this.#s.setup = { atMs: nowMs, lamports: this.#oneTimeRent, cost: lamportsToMicroUsd(this.#oneTimeRent as Lamports, solPrice, 'ceil') };
   }
 
   reserved(mint: string, atMs: number): void {
@@ -126,6 +142,11 @@ export class PaperAccount {
     const closedTrades: ClosedTrade[] = this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).map((t) => ({
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
     }));
+    // The wallet's setup rent, booked as a realised cost at setup, so equity, the high-water mark and the day and week
+    // losses include it. AccountHistory has no cost record, so it rides as a closed "trade": it may count once toward
+    // R8's losses (the safe side), and it carries the largest notional so R15 never caps the next size by it.
+    const su = this.#s.setup;
+    if (su !== undefined) closedTrades.unshift({ mint: SETUP_MINT, openedAtMs: su.atMs, closedAtMs: su.atMs, notional: this.#maxNotional, netPnl: -su.cost as MicroUsd, stoppedOut: false });
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id).reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);

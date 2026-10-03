@@ -4,6 +4,7 @@
 // to the owner's tailnet with `tailscale serve`, so the worker never binds anything else. Reads only: no command is
 // served here (pause stays with the watchdog's /pause; commands need their own auth level, never "it came from
 // loopback").
+import { exitsFor } from '../../../core/src/config/index.ts';
 import { createServer, type Server } from 'node:http';
 import type { Policy } from '../../../core/src/config/index.ts';
 import type { Book, ExitReason as BookExitReason, PositionState } from '../../../core/src/lifecycle/index.ts';
@@ -98,7 +99,7 @@ export interface ApiInputs {
   readonly solPrice: MicroUsd | null;
   readonly symbol: (mint: string) => string;
   /** The open position's plan and our size's liquidation value now (lamports, null when it cannot be quoted). */
-  readonly open: (p: PositionState) => { readonly stopPrice: bigint; readonly trail: bigint | null; readonly liquidation: bigint | null; readonly openedAtMs: number } | null;
+  readonly open: (p: PositionState) => { readonly stopPrice: bigint; readonly trail: bigint | null; readonly liquidation: bigint | null; readonly openedAtMs: number; readonly universe: string } | null;
 }
 
 const fillsOf = (i: ApiInputs, pid: string): PaperAttempt[] =>
@@ -163,6 +164,8 @@ export const views = {
     const fees = fillsOf(i, p.id).reduce((s, a) => s + (a.fill?.fees ?? 0n), 0n);
     const liq = o?.liquidation ?? null;
     const exit = p.status === 'exit_blocked' ? 'blocked' : p.status === 'open' ? 'none' : 'pending';
+    // The exits of the universe the position was entered under (CFG-2); unknown plan: the strategy's universe.
+    const ux = exitsFor(i.policy.exits, o?.universe ?? 'U2');
     return {
       mode: MODE, id: p.id, mint: p.mint, symbol: i.symbol(p.mint), venue: 'pumpswap', openedAt: iso(o?.openedAtMs ?? i.nowMs),
       entryPriceUsd: priceText(p.cost, p.bought, i.solPrice), sizeUsd: usdText(lamportsUsd(p.cost, i.solPrice)),
@@ -170,8 +173,8 @@ export const views = {
       costsSoFarUsd: usdText(lamportsUsd(fees, i.solPrice)),
       exitRules: [
         { mode: MODE, rule: 'price-stop', trigger: o === null ? 'unknown' : `executable price at or below ${o.stopPrice}`, state: p.exitOwner?.reasons.includes('stop') ? 'triggered' : 'armed' },
-        { mode: MODE, rule: 'time-stop', trigger: `held ${Math.round(i.policy.exits.tMaxMs / 60_000)} min`, state: p.exitOwner?.reasons.includes('max_hold') ? 'triggered' : 'armed' },
-        { mode: MODE, rule: 'take-profit', trigger: `+${i.policy.exits.partialAtRBps / 100}% of R or +${i.policy.exits.partialAtGainBps / 100}%`, state: p.exitOwner?.reasons.includes('take_profit') ? 'triggered' : 'armed' },
+        { mode: MODE, rule: 'time-stop', trigger: `held ${Math.round(ux.tMaxMs / 60_000)} min`, state: p.exitOwner?.reasons.includes('max_hold') ? 'triggered' : 'armed' },
+        { mode: MODE, rule: 'take-profit', trigger: `+${ux.partialAtRBps / 100}% of R or +${ux.partialAtGainBps / 100}%`, state: p.exitOwner?.reasons.includes('take_profit') ? 'triggered' : 'armed' },
         ...(o?.trail == null ? [] : [{ mode: MODE, rule: 'trail', trigger: `executable price at or below ${o.trail}`, state: p.exitOwner?.reasons.includes('trailing_stop') ? 'triggered' : 'armed' }]),
       ],
       exit, worker: p.status === 'open' ? 'watching' : p.status === 'exit_blocked' ? 'watching' : 'exiting',

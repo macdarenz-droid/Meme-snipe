@@ -91,12 +91,13 @@ export interface PaperWorldDeps {
   readonly changed: () => void;
 }
 
-const SIMULATION_FIELDS = ['outcome', 'success', 'error', 'standIn', 'quotedOut', 'simulatedOut', 'amountErrorE4', 'quoteAgeSlots', 'rentDeclared', 'rentPaid', 'balancesFrom'] as const;
+/** Every line carries these in full (null when unknown): finalExit, simulatedSlot and standIn too (#60 review). */
+const SIMULATION_FIELDS = ['outcome', 'success', 'error', 'standIn', 'finalExit', 'simulatedSlot', 'quotedOut', 'simulatedOut', 'amountErrorE4', 'quoteAgeSlots', 'rentDeclared', 'rentPaid', 'balancesFrom'] as const;
 
 /** The journal fields of a simulation record (bigints stay bigints here; the journal writes them as strings). */
 export const simulationFields = (leg: SimLeg, r: DryRunRecord): Record<string, unknown> => {
   const out: Record<string, unknown> = { trade: leg.trade, leg: leg.leg, intent: leg.intentId, mint: leg.mint, venue: r.venue };
-  for (const k of SIMULATION_FIELDS) out[k] = r[k];
+  for (const k of SIMULATION_FIELDS) out[k] = r[k] ?? null;
   return out;
 };
 

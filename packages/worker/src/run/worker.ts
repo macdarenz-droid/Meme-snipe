@@ -224,7 +224,7 @@ export class Worker {
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
     this.#exitsFile = exitsFile(c.stateDir);
-    this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
+    this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime, d.session.policy.capital.maxNotional);
 
     this.#feed = new LiveFeed({
       ...DEFAULT_LIVE_FEED,
@@ -369,9 +369,9 @@ export class Worker {
     else if (m.key === SOL_PRICE_KEY) {
       const p = isObj(m.value) && typeof m.value['value'] === 'bigint' && m.value['value'] > 0n ? { price: m.value['value'] } : null;
       if (p !== null) {
-        const first = this.#account.state.walletLamports === null;
+        const first = this.#account.state.walletLamports === null || this.#account.state.oneTimePaid !== true;
         this.#solPrice = p.price as MicroUsd;
-        this.#account.price(this.#solPrice);
+        this.#account.price(this.#solPrice, m.moment.receivedAt);
         // The paper wallet exists from the first price on: risk needs its balance (R4).
         if (first && this.#account.state.walletLamports !== null && this.#reconciled) this.#publishAccount();
       }
@@ -543,7 +543,7 @@ export class Worker {
         const saved = this.#strategy.saved()[p.id];
         const m = this.poolOf(p.mint);
         const q = m === null ? null : poolSell(m.state, p.quantity, m.ctx);
-        return saved === undefined ? null : { stopPrice: saved.plan.stopPrice, trail: saved.tracker.trail, liquidation: q !== null && q.ok ? q.trade.userQuote : null, openedAtMs: saved.plan.openedAtMs };
+        return saved === undefined ? null : { stopPrice: saved.plan.stopPrice, trail: saved.tracker.trail, liquidation: q !== null && q.ok ? q.trade.userQuote : null, openedAtMs: saved.plan.openedAtMs, universe: saved.plan.universe };
       },
     };
   }

@@ -6,6 +6,7 @@ import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { KEY_ENV } from '../../runner/src/contract.ts';
 import type { Secrets } from '../src/providers/index.ts';
+import { UNREADABLE } from '../src/run/config.ts';
 
 export const ENV_NAMES = [
   'STATE_DIRECTORY', 'ZEROED_STATE_DIR', 'ZEROED_MODE', 'ZEROED_RECORDER', 'ZEROED_SIMULATE', 'ZEROED_HEALTH_ADDR', 'ZEROED_DRILLS',
@@ -27,6 +28,11 @@ export interface Environment {
   /** Environment names that look like key material (the worker refuses to start with any). */
   readonly keyMaterial: readonly string[];
   readonly argv: readonly string[];
+  /**
+   * The qualifying run's name from the release's `packages/runner/qualifying-run.json` (`{"run": "<name>"}`), null when
+   * the file is absent; UNREADABLE when it is there but cannot be read (the worker then refuses to start).
+   */
+  readonly qualifyingRun: () => string | null | typeof UNREADABLE;
   /** Every credential value present, for the output redaction (never printed). */
   readonly secretValues: () => readonly string[];
 }
@@ -59,6 +65,16 @@ export const readEnvironment = (): Environment => {
     host: { telegram_chat_id: fromFile('telegram_chat_id'), heartbeat_hmac_key: fromFile('heartbeat_hmac_key') },
     keyMaterial: Object.keys(all).filter((n) => KEY_ENV.test(n)),
     argv: process.argv.slice(2),
+    qualifyingRun: () => {
+      const p = join(import.meta.dirname, '..', '..', 'runner', 'qualifying-run.json');
+      if (!existsSync(p)) return null;
+      try {
+        const run = (JSON.parse(readFileSync(p, 'utf8')) as { run?: unknown }).run;
+        return typeof run === 'string' && run !== '' ? run : UNREADABLE;
+      } catch {
+        return UNREADABLE;
+      }
+    },
     secretValues: () => [...KEYS.map(value), ...HOST.map(fromFile)].filter((v): v is string => v !== null),
     release: () => {
       try {

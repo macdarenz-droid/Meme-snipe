@@ -11,6 +11,7 @@ import { rpcHandler, scriptedHttp } from '../src/providers/index.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders } from '../src/run/sources.ts';
 import { DelayProbe } from '../src/run/delay-probe.ts';
 import { Recorder } from '../src/run/recorder.ts';
+import { setSecretValues } from '../src/run/redact.ts';
 import { checkQuota } from '../../runner/src/quota.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx } from './helpers.ts';
 import { makeWorker, tempState } from './worker-harness.ts';
@@ -229,5 +230,20 @@ describe('processed and confirmed arrival of the same signature (supervisor ruli
     expect(manifest.commitments['helius getTransaction']).toBe('confirmed');
     const file = manifest.days.flatMap((d) => d.files).find((f) => f.path.includes('delays-'))!;
     expect(zstdDecompressSync(readFileSync(join(root, 'b1', file.path))).toString('utf8')).toBe('{"signature":"s","slot":"5","processed_at_ms":1,"confirmed_at_ms":2}\n');
+  });
+});
+
+describe('redactions in recorded files are listed (re-review of #48)', () => {
+  it('a file with redacted values is named in the manifest\'s coverage gaps with its count, so a replay difference is explained', () => {
+    setSecretValues(['secret-value-123456']);
+    const root = tempState();
+    const rec = new Recorder({ root, boot: 'b1', gitSha: 'abc', rotateBytes: 1 << 20 });
+    const at = Date.parse('2026-10-04T00:00:00Z');
+    rec.delay({ note: 'carries secret-value-123456 twice: secret-value-123456' }, at);
+    rec.delay({ note: 'clean' }, at);
+    rec.close();
+    setSecretValues([]);
+    const manifest = JSON.parse(readFileSync(join(root, 'b1', 'manifest.json'), 'utf8')) as { coverage_gaps: { reason: string; file?: string; redactions?: number }[] };
+    expect(manifest.coverage_gaps).toEqual([{ reason: 'values redacted as credentials; a replay of this file differs there', file: expect.stringMatching(/delays-000\.jsonl\.zst$/), redactions: 2 }]);
   });
 });

@@ -1,6 +1,6 @@
 // The worker's trading settings, all from versioned configuration: the locked policy (owner limits), the fill config
 // (network terms, paper scenarios) and the research config (U2's window). Nothing here is a limit of its own.
-import type { FillConfig, Policy, ResearchConfig } from '../../../core/src/config/index.ts';
+import { type FillConfig, type Policy, type ResearchConfig, exitsFor } from '../../../core/src/config/index.ts';
 import type { FillScenario } from '../../../core/src/fills/index.ts';
 import { PPM } from '../../../core/src/costs/index.ts';
 import { MAX_CREATED_ACCOUNT_BYTES, USER_VOLUME_ACCUMULATOR_SIZE, rentExempt } from '../../../core/src/tx/rent.ts';
@@ -33,7 +33,7 @@ export const strategyConfig = (
     // No edge is proven yet: risk refuses every entry until research registers one (CLAUDE.md, "zeroed trades only
     // when the data proves the setup").
     edgePpm,
-    medianTargetBps: policy.exits.partialAtGainBps,
+    medianTargetBps: exitsFor(policy.exits, 'U2').partialAtGainBps,
     takeProfitOn: s.takeProfit,
     network: {
       signaturesPerTx: net.signaturesPerTx, baseFeePerSignature: net.baseFeePerSignature, entryPriorityFee: net.entryPriorityFee,
@@ -45,8 +45,8 @@ export const strategyConfig = (
     rent: { tokenAccount: net.tokenAccountRent, tokenAccountClosedOnExit: true, oneTime: oneTimeRent(fills), transient: net.tokenAccountRent },
     blockhashValidBlocks: net.blockhashValidBlocks,
     evaluateEveryMs: policy.gates.maxQuoteAgeMs,
-    barMs: policy.exits.atrBarMs,
-    keepBars: policy.exits.atrPeriod * 4,
+    barMs: exitsFor(policy.exits, 'U2').atrBarMs,
+    keepBars: exitsFor(policy.exits, 'U2').atrPeriod * 4,
   };
 };
 

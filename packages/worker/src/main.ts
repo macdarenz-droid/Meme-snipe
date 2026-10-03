@@ -20,7 +20,7 @@ const environment = readEnvironment();
 setSecretValues(environment.secretValues());
 const log = (line: string): void => console.log(redact(line));
 const fail = (line: string): void => console.error(redact(line));
-const parsed = parseConfig(environment.env, environment.release);
+const parsed = parseConfig(environment.env, environment.release, environment.qualifyingRun());
 if (!parsed.ok) {
   fail(parsed.message);
   process.exit(parsed.code);

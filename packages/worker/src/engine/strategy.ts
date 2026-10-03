@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import { type PoolFeeContext, type PoolState, effectiveQuoteReserve, poolBuyExactQuoteIn, poolSell } from '../../../core/src/amm/index.ts';
 import { encodeBase58 } from '../../../core/src/chain/index.ts';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
-import { PRICE_SCALE } from '../../../core/src/config/index.ts';
+import { EXIT_UNIVERSES, type ExitUniverse, PRICE_SCALE, exitsFor } from '../../../core/src/config/index.ts';
 import { type NetworkPolicy, type RentInputs, pumpSwapRoundTrip } from '../../../core/src/costs/index.ts';
 import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
@@ -95,7 +95,7 @@ export interface RestoreFact {
 /** Strategy settings that are not owner limits. The trading rules stay provisional until BT-2 registers U2's. */
 export interface StrategyConfig {
   readonly version: string;
-  readonly universe: 'U2';
+  readonly universe: ExitUniverse;
   /** `random`: S0's entry moment, drawn per candidate from `entrySalt` and the mint (see `strategyConfig`). */
   readonly entryTiming: 'gates' | 'random';
   readonly entrySalt: string;
@@ -154,6 +154,7 @@ interface Candidate {
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
 interface EntrySeed {
   readonly mint: string;
+  readonly universe: ExitUniverse;
   readonly notional: MicroUsd;
   readonly stopPrice: bigint;
   readonly entryReserve: bigint;
@@ -166,6 +167,13 @@ interface EntrySeed {
 export const s0EntryAt = (salt: string, mint: string, from: number, to: number): number => {
   const u = Number.parseInt(createHash('sha256').update(`s0|${salt}|${mint}`).digest('hex').slice(0, 12), 16) / 2 ** 48;
   return from + Math.floor(u * (to - from));
+};
+
+/** The universe in an entry intent key's decision id (`entry:<mint>:<universe>.<rest>`), or null for an older key. */
+export const universeOfKey = (key: string): ExitUniverse | null => {
+  const local = key.split(':')[2] ?? '';
+  const u = local.split('.')[0] ?? '';
+  return (EXIT_UNIVERSES as readonly string[]).includes(u) ? (u as ExitUniverse) : null;
 };
 
 export class LiveStrategy implements Strategy {
@@ -618,6 +626,14 @@ export class LiveStrategy implements Strategy {
       let saved = this.#exits.get(p.id) ?? this.#planFromFill(p.id, p.entryIntentId, ctx, out);
       if (saved === null) continue;
       const exitIntents = Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === p.id);
+      if (saved.plan.universe === undefined) {
+        // A plan saved before universes were stored: its universe from the entry's intent key, never a default.
+        const entry = ctx.book.intents[p.entryIntentId];
+        const u = entry === undefined ? null : universeOfKey(entry.intent.key);
+        saved = { ...saved, plan: { ...saved.plan, universe: u ?? this.#d.config.universe } };
+        this.#exits.set(p.id, saved);
+        out.push({ action: null, reasons: ['plan universe restored', p.id, u === null ? `no universe on record; ${this.#d.config.universe}, the only universe this worker trades` : u] });
+      }
       if (!this.#fromBook.has(p.id)) {
         // Once per position per process (after a restart): partials come from the book, not the saved file. Each exit
         // owner that sold is one partial; the last of them is the owner whose further fills stay the same partial.
@@ -697,7 +713,10 @@ export class LiveStrategy implements Strategy {
     const stopPrice = seed?.stopPrice ?? entryPx - (entryPx * BigInt(this.#d.session.policy.loss.stopMaxBps)) / BPS;
     const stopValue = (p.quantity * stopPrice) / PRICE_SCALE;
     const riskUnit = cost - stopValue > 0n ? cost - stopValue : 1n;
-    const plan: EntryPlan = { openedAtMs: fillAt, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
+    // The universe the entry was made under: its plan, else its intent key (`entry:<mint>:<universe>.<version>.<n>`).
+    const universe = seed?.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key));
+    if (universe === null) out.push({ action: null, reasons: ['no entry universe', p.mint, `managed with ${this.#d.config.universe}'s exits, the only universe this worker trades`] });
+    const plan: EntryPlan = { openedAtMs: fillAt, universe: universe ?? this.#d.config.universe, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
     const saved: SavedExit = { plan, tracker: newTracker(), bars: this.#bars.get(p.mint) ?? [] };
     this.#bars.set(pid, [...saved.bars]);
     this.#exits.set(pid, saved);
@@ -767,13 +786,14 @@ export class LiveStrategy implements Strategy {
     const rt = quoter(spend);
     if (!rt.ok) return this.#fail(`no round trip: ${rt.reason}`, [{ gate: 'worker', code: 'no-round-trip', detail: rt.reason }]);
     const entryPx = execPrice(rt.trade.proceeds, rt.trade.tokens);
-    const range = atr(this.#bars.get(cand.mint) ?? [], policy.exits.atrPeriod, policy.exits.atrBarMs, ctx.now.receivedAt);
+    const ux = exitsFor(policy.exits, c.universe);
+    const range = atr(this.#bars.get(cand.mint) ?? [], ux.atrPeriod, ux.atrBarMs, ctx.now.receivedAt);
     if (range === null) return this.#fail('stop: not enough price bars for the ATR', [{ gate: 'stop', code: 'no-atr', detail: 'not enough price bars for the ATR' }]);
-    const byAtr = (BigInt(policy.exits.stopAtrTenths) * range) / 10n;
+    const byAtr = (BigInt(ux.stopAtrTenths) * range) / 10n;
     const byMax = (entryPx * BigInt(policy.loss.stopMaxBps)) / BPS;
     const distance = byAtr < byMax ? byAtr : byMax;
     const stopPrice = entryPx - distance;
-    const stop = checkStopDistance(policy, entryPx, stopPrice, range);
+    const stop = checkStopDistance(policy, c.universe, entryPx, stopPrice, range);
     if (!stop.ok) return this.#fail(`stop: ${stop.reason} ${stop.detail}`, [{ gate: 'stop', code: stop.reason, detail: stop.detail }]);
     const stopBps = Number(mulDiv(distance, BPS, entryPx, 'ceil'));
     // Numbered from the book (restored at start), so a restart never reuses an intent id or key.
@@ -797,11 +817,11 @@ export class LiveStrategy implements Strategy {
     }
     const pid = positionId(`p:${cand.mint}:${cand.tries}`);
     const tm = toMint(cand.mint);
-    this.#seeds.set(id, { mint: cand.mint, notional: r.notional, stopPrice, entryReserve: reserveLiq });
+    this.#seeds.set(id, { mint: cand.mint, universe: c.universe, notional: r.notional, stopPrice, entryReserve: reserveLiq });
     const q = r.reservation;
     const request = { reservationId: q.reservationId, intentId: q.intentId, amount: String(q.amount), maxHeld: String(q.limits.maxHeld), maxCount: q.limits.maxCount, accountVersion: String(q.accountVersion) };
     const base = [c.universe, cand.mint];
-    out.push({ action: { type: 'propose_entry', intent: { id, key: entryKey(tm, `${c.version}.${cand.tries}`), purpose: 'entry', side: 'buy', mint: tm, venue: 'pumpswap', positionId: pid, spend: spend as Lamports } }, reasons: ['enter', ...base, `notional ${r.notional}`, `stop ${stopBps} bps`] });
+    out.push({ action: { type: 'propose_entry', intent: { id, key: entryKey(tm, `${c.universe}.${c.version}.${cand.tries}`), purpose: 'entry', side: 'buy', mint: tm, venue: 'pumpswap', positionId: pid, spend: spend as Lamports } }, reasons: ['enter', ...base, `notional ${r.notional}`, `stop ${stopBps} bps`] });
     out.push({ action: { type: 'intent', intentId: id, event: { type: 'mark_eligible' } }, reasons: ['gates passed', ...base, `H1-H16 pass (${hard.passed.length} gates)`] });
     out.push({ action: { type: 'intent', intentId: id, event: { type: 'approve_risk' } }, reasons: ['risk approved', ...base, `${RESERVE_PREFIX}${JSON.stringify(request)}`, ...trips] });
     return null;

@@ -15,9 +15,23 @@ export const setSecretValues = (vs: readonly (string | null)[]): void => {
   values = [...new Set(vs.filter((v): v is string => v !== null && v.length >= 8))].sort((a, b) => b.length - a.length);
 };
 
-export const redact = (text: string): string => {
+/** The text with every credential replaced, and how many replacements were made. */
+export const redactCounted = (text: string): { readonly text: string; readonly count: number } => {
   let out = text;
-  for (const v of values) if (out.includes(v)) out = out.split(v).join(MARK);
-  for (const p of PATTERNS) out = out.replace(p, `$1${MARK}`);
-  return out;
+  let count = 0;
+  for (const v of values) {
+    if (!out.includes(v)) continue;
+    const parts = out.split(v);
+    count += parts.length - 1;
+    out = parts.join(MARK);
+  }
+  for (const p of PATTERNS) {
+    out = out.replace(p, (_m, prefix: string) => {
+      count++;
+      return `${prefix}${MARK}`;
+    });
+  }
+  return { text: out, count };
 };
+
+export const redact = (text: string): string => redactCounted(text).text;

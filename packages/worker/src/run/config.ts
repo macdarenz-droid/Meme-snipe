@@ -26,14 +26,27 @@ export interface WorkerConfig {
    * random-entry control (same gates, risk and exits, entry moment drawn in the window) for the non-qualifying
    * shakedown (supervisor ruling 2026-10-04). A qualifying run takes a strategy BT-2 registers.
    */
-  readonly strategy: { readonly name: 'none' | 'S0'; readonly paperEdgePpm: bigint | null; readonly qualifying: false };
+  readonly strategy: { readonly name: string; readonly paperEdgePpm: bigint | null; readonly qualifying: boolean };
 }
 
 export type Parsed = { readonly ok: true; readonly config: WorkerConfig } | { readonly ok: false; readonly code: number; readonly message: string };
 
 const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-export const parseConfig = (env: Readonly<Record<string, string | undefined>>, release: () => string | null): Parsed => {
+/**
+ * Strategies BT-2 has registered (their configurations fixed before the holdout): the only entry rules a qualifying
+ * run may use. None yet, so no run qualifies.
+ */
+export const REGISTERED_STRATEGIES: readonly string[] = [];
+
+/** A qualifying-run file that is present but cannot be read. */
+export const UNREADABLE = Symbol('unreadable');
+
+export const parseConfig = (
+  env: Readonly<Record<string, string | undefined>>, release: () => string | null,
+  /** The qualifying run's name (packages/runner/qualifying-run.json): null when none is asked for. */
+  qualifyingRun: string | null | typeof UNREADABLE = null,
+): Parsed => {
   const refuse = (message: string): Parsed => ({ ok: false, code: EXIT.config, message });
   const stateDir = env['STATE_DIRECTORY'] ?? env['ZEROED_STATE_DIR'];
   if (stateDir === undefined || stateDir === '') return refuse('no state directory (STATE_DIRECTORY or ZEROED_STATE_DIR)');
@@ -62,7 +75,12 @@ export const parseConfig = (env: Readonly<Record<string, string | undefined>>, r
   const standIns = (env['ZEROED_STANDINS'] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
   if (standIns.some((s) => !ADDRESS.test(s))) return refuse('refused: ZEROED_STANDINS holds something that is not an address');
   const name = env['ZEROED_STRATEGY'] ?? 'none';
-  if (name !== 'none' && name !== 'S0') return refuse('refused: ZEROED_STRATEGY must be none or S0 (no strategy is registered yet)');
+  if (name !== 'none' && name !== 'S0' && !REGISTERED_STRATEGIES.includes(name)) return refuse(`refused: ZEROED_STRATEGY must be none, S0 or a registered strategy (${REGISTERED_STRATEGIES.join(', ') || 'none is registered yet'})`);
+  // S0 and the paper-only edge never reach the qualifying run (supervisor ruling on the #48 re-review).
+  if (qualifyingRun === UNREADABLE) return refuse('refused: packages/runner/qualifying-run.json is unreadable');
+  const qualifying = qualifyingRun !== null && env['ZEROED_RUN_ID'] === qualifyingRun;
+  if (qualifying && (name === 'S0' || edgeText !== undefined)) return refuse('refused: S0 and ZEROED_PAPER_EDGE_PPM are never used in the qualifying run');
+  if (qualifying && !REGISTERED_STRATEGIES.includes(name)) return refuse('refused: the qualifying run needs a registered strategy in ZEROED_STRATEGY');
   let paperEdgePpm: bigint | null = null;
   if (edgeText !== undefined) {
     if (name !== 'S0') return refuse('refused: ZEROED_PAPER_EDGE_PPM is only for the S0 shakedown');
@@ -81,7 +99,7 @@ export const parseConfig = (env: Readonly<Record<string, string | undefined>>, r
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
       heartbeatMs: beat, wallet, standIns,
-      strategy: { name, paperEdgePpm, qualifying: false },
+      strategy: { name, paperEdgePpm, qualifying },
     },
   };
 };
