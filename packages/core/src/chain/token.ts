@@ -285,6 +285,7 @@ export const decodeMint = (data: Uint8Array, owner: Address): Mint => {
   const decimals = r.u8();
   const isInitialized = r.bool();
   const freezeAuthority = cOptionPubkey(r);
+  if (!isInitialized) throw new DecodeError('mint is not initialized (Mint::unpack refuses it)');
   const start = tlvStart(data, ACCOUNT_TYPE_MINT, MINT_SIZE);
   const extensions = start === null ? [] : readExtensions(data.subarray(start));
   return { program, mintAuthority, supply, decimals, isInitialized, freezeAuthority, extensions };
@@ -309,6 +310,7 @@ export const decodeTokenAccount = (data: Uint8Array, owner: Address): TokenAccou
   const program = owner === TOKEN_PROGRAM ? 'spl-token' : owner === TOKEN_2022_PROGRAM ? 'token-2022' : null;
   if (!program) throw new DecodeError(`token account owner ${owner} is neither SPL Token nor Token-2022`);
   if (data.length < ACCOUNT_SIZE) throw new DecodeError(`token account must be at least ${ACCOUNT_SIZE} bytes, got ${data.length}`);
+  if (data.length === MULTISIG_SIZE) throw new DecodeError('account is a multisig, not a token account');
   if (program === 'spl-token' && data.length !== ACCOUNT_SIZE) throw new DecodeError(`SPL Token account must be ${ACCOUNT_SIZE} bytes`);
   const r = new Reader(data);
   const mint = r.pubkey();
@@ -316,6 +318,7 @@ export const decodeTokenAccount = (data: Uint8Array, owner: Address): TokenAccou
   const amount = r.u64();
   const delegate = cOptionPubkey(r);
   const state = accountState(r.u8());
+  if (state === 'uninitialized') throw new DecodeError('token account is not initialized (Account::unpack refuses it)');
   const nativeTag = r.u32();
   const nativeValue = r.u64();
   if (nativeTag > 1) throw new DecodeError(`invalid COption tag ${nativeTag}`);

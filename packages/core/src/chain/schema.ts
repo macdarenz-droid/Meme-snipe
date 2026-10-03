@@ -86,6 +86,8 @@ export interface Decoded<T> {
   readonly value: T;
   /** Bytes left after the last field this decoder knows. Accounts are often zero-padded; for events, non-zero means a newer layout. */
   readonly trailing: number;
+  /** True when any trailing byte is non-zero: the program wrote data this layout does not describe (a newer layout). */
+  readonly trailingNonZero: boolean;
 }
 
 export const readLayout = <B extends readonly Field[], A extends readonly Field[]>(
@@ -98,7 +100,8 @@ export const readLayout = <B extends readonly Field[], A extends readonly Field[
     if (r.remaining === 0) break;
     out[name] = c.read(r);
   }
-  return { value: out as Fields<B> & OptionalFields<A>, trailing: r.remaining };
+  const rest = r.take(r.remaining);
+  return { value: out as Fields<B> & OptionalFields<A>, trailing: rest.length, trailingNonZero: rest.some((b) => b !== 0) };
 };
 
 export const hasDiscriminator = (data: Uint8Array, disc: Uint8Array, offset = 0): boolean => {

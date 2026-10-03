@@ -5,7 +5,7 @@ import { createPublicKey, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { decodeBase58, encodeBase58 } from '../../src/chain/base58.ts';
 import { DecodeError, fromBase64 } from '../../src/chain/bytes.ts';
-import { type LookupTable, U64_MAX, accountKeys, decodeLookupTable, decodeTransaction, isWritable, resolveLookups } from '../../src/chain/message.ts';
+import { type LoadedAddresses, type LookupTable, U64_MAX, accountKeys, decodeLookupTable, decodeTransaction, isSigner, isWritable, resolveLookups } from '../../src/chain/message.ts';
 import type { Address } from '../../src/chain/bytes.ts';
 import { ACCOUNTS, TRANSACTIONS } from './helpers.ts';
 
@@ -83,6 +83,83 @@ describe('address lookup tables', () => {
     expect(resolveLookups(lookup, new Map([['T', t]]), 101n).writable).toEqual(['B']);
     expect(() => resolveLookups(lookup, new Map([['T', { ...t, deactivationSlot: 5n }]]), 101n)).toThrow(DecodeError);
     expect(() => resolveLookups(lookup, new Map(), 101n)).toThrow(DecodeError);
+  });
+});
+
+describe('loaded addresses must match the lookups', () => {
+  const pumpV0 = TRANSACTIONS.find((t) => t.version === 0 && t.label.includes('TradeEvent') && (t.base64.meta.loadedAddresses?.writable.length ?? 0) > 0)!;
+  const tx = decodeTransaction(fromBase64(pumpV0.base64.transaction[0]));
+  const loaded = pumpV0.base64.meta.loadedAddresses! as unknown as LoadedAddresses;
+
+  it('accepts the node-reported lists', () => {
+    expect(accountKeys(tx, loaded).length).toBe(tx.staticAccountKeys.length + loaded.writable.length + loaded.readonly.length);
+  });
+
+  it('refuses a short list, swapped lists, missing lists, and keys for a transaction without lookups', () => {
+    expect(() => accountKeys(tx, { writable: loaded.writable.slice(1), readonly: loaded.readonly })).toThrow(DecodeError);
+    if (loaded.writable.length !== loaded.readonly.length) {
+      expect(() => accountKeys(tx, { writable: loaded.readonly, readonly: loaded.writable })).toThrow(DecodeError);
+    }
+    expect(() => accountKeys(tx)).toThrow(DecodeError);
+    const legacy = decodeTransaction(fromBase64(TRANSACTIONS.find((t) => t.version === 'legacy')!.base64.transaction[0]));
+    expect(() => accountKeys(legacy, loaded)).toThrow(DecodeError);
+    expect(accountKeys(legacy, { writable: [], readonly: [] })).toEqual(legacy.staticAccountKeys);
+  });
+
+  it('isWritable and isSigner refuse out-of-range indexes', () => {
+    expect(() => isWritable(tx, -1, loaded)).toThrow(RangeError);
+    expect(() => isWritable(tx, accountKeys(tx, loaded).length, loaded)).toThrow(RangeError);
+    expect(() => isSigner(tx, -1)).toThrow(RangeError);
+    expect(isWritable(tx, 0, loaded)).toBe(true);
+    expect(isSigner(tx, 0)).toBe(true);
+  });
+});
+
+/** A minimal legacy transaction: one signature (zeros), the given header, keys and one instruction. */
+const legacyTx = (opts: { nSig?: number; header?: [number, number, number]; keys?: number; program?: number; accounts?: number[] }) => {
+  const nSig = opts.nSig ?? 1;
+  const [req, ros, rou] = opts.header ?? [1, 0, 1];
+  const keys = opts.keys ?? 2;
+  const program = opts.program ?? 1;
+  const accounts = opts.accounts ?? [0];
+  return Uint8Array.from([
+    nSig, ...new Array(64 * nSig).fill(0),
+    req, ros, rou,
+    keys, ...Array.from({ length: keys }, (_, i) => new Array(32).fill(i + 1)).flat(),
+    ...new Array(32).fill(9),
+    1, program, accounts.length, ...accounts, 0,
+  ]);
+};
+
+describe('message sanitize rules (agave)', () => {
+  it('accepts a well-formed minimal transaction', () => {
+    expect(decodeTransaction(legacyTx({})).staticAccountKeys).toHaveLength(2);
+  });
+
+  it.each([
+    ['no signatures', { nSig: 0, header: [0, 0, 1] as [number, number, number] }],
+    ['a read-only fee payer', { header: [1, 1, 1] as [number, number, number] }],
+    ['header counts above the keys', { header: [1, 0, 2] as [number, number, number] }],
+    ['the fee payer as the program', { program: 0 }],
+    ['a program index past the keys', { program: 2 }],
+    ['an account index past the keys', { accounts: [2] }],
+    ['a signature count that differs from the header', { nSig: 2 }],
+  ])('refuses %s', (_n, opts) => {
+    expect(() => decodeTransaction(legacyTx(opts))).toThrow(DecodeError);
+  });
+
+  it('reads a v1 requested heap size (mask bit 4) and every other config value', () => {
+    const v1 = TRANSACTIONS.find((t) => t.version === 1)!;
+    const b = fromBase64(v1.base64.transaction[0]);
+    const tx = decodeTransaction(b);
+    // Rebuild the same message with bit 4 set and a heap size of 65536 inserted after the existing values.
+    const mask = b[4]! | (b[5]! << 8);
+    const configStart = 1 + 3 + 4 + 32 + 1 + 1 + 32 * tx.staticAccountKeys.length;
+    const configLen = ((mask & 3) === 3 ? 8 : 0) + (mask & 4 ? 4 : 0) + (mask & 8 ? 4 : 0);
+    const withHeap = Uint8Array.from([...b.subarray(0, configStart + configLen), 0, 0, 1, 0, ...b.subarray(configStart + configLen)]);
+    withHeap[4] = mask | 0x10;
+    const d = decodeTransaction(withHeap);
+    expect(d.config).toEqual({ ...tx.config, requestedHeapSize: 65536 });
   });
 });
 

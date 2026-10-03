@@ -166,13 +166,20 @@ export const decodeTransaction = (bytes: Uint8Array): DecodedTransaction => {
   return checkIndexes({ version, signatures, ...body, message: bytes.slice(messageStart) });
 };
 
+/** Agave's message sanitize rules (`legacy::Message::sanitize`, `v0::Message::sanitize`), applied to all formats. */
 const checkIndexes = (tx: DecodedTransaction): DecodedTransaction => {
-  const total = tx.staticAccountKeys.length + tx.addressTableLookups.reduce((n, l) => n + l.writableIndexes.length + l.readonlyIndexes.length, 0);
+  const h = tx.header;
+  const nStatic = tx.staticAccountKeys.length;
+  const total = nStatic + tx.addressTableLookups.reduce((n, l) => n + l.writableIndexes.length + l.readonlyIndexes.length, 0);
+  if (h.numRequiredSignatures === 0) throw new DecodeError('a transaction needs at least one signature (the fee payer)');
+  if (h.numReadonlySignedAccounts >= h.numRequiredSignatures) throw new DecodeError('the fee payer must be writable');
+  if (h.numRequiredSignatures + h.numReadonlyUnsignedAccounts > nStatic) throw new DecodeError('header counts exceed the static account keys');
+  if (total > 256) throw new DecodeError(`${total} account keys; at most 256 are addressable`);
   for (const ix of tx.instructions) {
-    if (ix.programIdIndex >= tx.staticAccountKeys.length) throw new DecodeError(`program index ${ix.programIdIndex} is not a static key`);
+    if (ix.programIdIndex === 0) throw new DecodeError('the fee payer cannot be a program');
+    if (ix.programIdIndex >= nStatic) throw new DecodeError(`program index ${ix.programIdIndex} is not a static key`);
     for (const a of ix.accounts) if (a >= total) throw new DecodeError(`account index ${a} is out of range (${total} keys)`);
   }
-  if (tx.header.numRequiredSignatures > tx.staticAccountKeys.length) throw new DecodeError('more signers than account keys');
   return tx;
 };
 
@@ -238,15 +245,26 @@ export const resolveLookups = (
   };
 };
 
-/** Every account key in instruction-index order: static keys, then loaded writable, then loaded read-only. */
+/**
+ * Every account key in instruction-index order: static keys, then loaded writable, then loaded read-only. The loaded
+ * lists must have exactly as many keys as the lookups ask for (a stored record that disagrees is corrupt), and a
+ * transaction without lookups takes none.
+ */
 export const accountKeys = (tx: DecodedTransaction, loaded?: LoadedAddresses): Address[] => {
-  const needs = tx.addressTableLookups.length > 0;
-  if (needs && !loaded) throw new DecodeError('v0 transaction with lookups needs its loaded addresses');
+  const w = tx.addressTableLookups.reduce((n, l) => n + l.writableIndexes.length, 0);
+  const ro = tx.addressTableLookups.reduce((n, l) => n + l.readonlyIndexes.length, 0);
+  const lw = loaded?.writable.length ?? 0;
+  const lr = loaded?.readonly.length ?? 0;
+  if (lw !== w || lr !== ro) {
+    throw new DecodeError(`lookups ask for ${w} writable and ${ro} read-only keys; ${lw} and ${lr} were given`);
+  }
   return [...tx.staticAccountKeys, ...(loaded?.writable ?? []), ...(loaded?.readonly ?? [])];
 };
 
 /** Whether the key at `index` is writable, per the header rules (and lookup position for loaded keys). */
 export const isWritable = (tx: DecodedTransaction, index: number, loaded?: LoadedAddresses): boolean => {
+  const keys = accountKeys(tx, loaded);
+  if (!Number.isInteger(index) || index < 0 || index >= keys.length) throw new RangeError(`account index ${index} is out of range (${keys.length} keys)`);
   const h = tx.header;
   const nStatic = tx.staticAccountKeys.length;
   if (index < h.numRequiredSignatures) return index < h.numRequiredSignatures - h.numReadonlySignedAccounts;
@@ -255,7 +273,10 @@ export const isWritable = (tx: DecodedTransaction, index: number, loaded?: Loade
   return index < nStatic + w;
 };
 
-export const isSigner = (tx: DecodedTransaction, index: number): boolean => index < tx.header.numRequiredSignatures;
+export const isSigner = (tx: DecodedTransaction, index: number): boolean => {
+  if (!Number.isInteger(index) || index < 0) throw new RangeError(`account index ${index} is out of range`);
+  return index < tx.header.numRequiredSignatures;
+};
 
 /** Base64 of instruction data, for logs and JSON. */
 export const instructionDataBase64 = (ix: CompiledInstruction): string => toBase64(ix.data);

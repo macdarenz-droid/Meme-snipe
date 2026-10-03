@@ -6,7 +6,7 @@ import { type Address, DecodeError, Reader, toHex } from './bytes.ts';
 import { PUMP_AMM_PROGRAM, PUMP_PROGRAM } from './programs.ts';
 import { type Decoded, type LayoutValue, bool, hasDiscriminator, i128, i64, layout, pubkey, readLayout, string, struct, u16, u64, u8, vec } from './schema.ts';
 
-/** sha256("anchor:event")[0..8]: the first 8 bytes of every `emit_cpi!` instruction. */
+/** Anchor's EVENT_IX_TAG, the u64 0x1d9acb512ea545e4 (= sha256("anchor:event")[0..8] read big-endian) written little-endian: the first 8 bytes of every `emit_cpi!` instruction. */
 export const EVENT_IX_TAG = Uint8Array.of(0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d);
 
 export const Shareholder = struct('Shareholder', [

@@ -16,6 +16,7 @@ import {
   NATIVE_MINT,
   NATIVE_MINT_2022,
   bondingCurveAddress,
+  decodeBase58,
   decodeGlobalConfig,
   decodePool,
   decodeTransaction,
@@ -122,13 +123,38 @@ async function addAccount(label: string, address: string, withParsed = false): P
   return fixture;
 }
 
-const eventsOf = (signature: string, b: { slot: number; blockTime: number | null; transaction: unknown; meta: unknown }) => {
-  try {
-    return transactionEvents(recordFromRpc(signature, b as never));
-  } catch (e) {
-    console.error(`decode failed for ${signature}: ${(e as Error).message}`);
-    return [];
+// Fixture selection must not lean on the event decoder under test: a transaction qualifies by raw criteria (a pump or
+// PumpSwap inner instruction that starts with the emit_cpi tag and an event discriminator from the pinned IDL).
+// Field predicates (mayhem, negative reserves, pool address) then read the decoded event, and a decode error stops
+// the fetch instead of silently dropping the transaction; the tests re-check those fields with an independent oracle.
+const PINNED = JSON.parse(readFileSync(join(OUT, 'idl-pinned.json'), 'utf8')) as { programs: Record<string, { address: string; events: Record<string, number[]> }> };
+const TAG = 'e445a52e51cb9a1d';
+const DISCS = new Map<string, string>();
+for (const p of Object.values(PINNED.programs)) for (const [name, d] of Object.entries(p.events)) DISCS.set(`${p.address}:${Buffer.from(d).toString('hex')}`, name);
+
+const rawEventNames = (b: { transaction: unknown; meta: unknown }): string[] => {
+  const meta = b.meta as { err: unknown; loadedAddresses?: { writable: string[]; readonly: string[] } | null; innerInstructions?: { instructions: { programIdIndex: number; data: string }[] }[] | null } | null;
+  if (!meta || meta.err) return [];
+  const tx = decodeTransaction(fromBase64((b.transaction as [string, string])[0]));
+  const keys = [...tx.staticAccountKeys, ...(meta.loadedAddresses?.writable ?? []), ...(meta.loadedAddresses?.readonly ?? [])];
+  const names: string[] = [];
+  for (const g of meta.innerInstructions ?? []) {
+    for (const ix of g.instructions) {
+      const hex = Buffer.from(decodeBase58(ix.data)).toString('hex');
+      if (!hex.startsWith(TAG)) continue;
+      const name = DISCS.get(`${keys[ix.programIdIndex]}:${hex.slice(16, 32)}`);
+      if (name) names.push(name);
+    }
   }
+  return names;
+};
+
+const eventsOf = (signature: string, b: { slot: number; blockTime: number | null; transaction: unknown; meta: unknown }) => {
+  if (rawEventNames(b).length === 0) return [];
+  const evs = transactionEvents(recordFromRpc(signature, b as never));
+  const names = evs.filter((e) => e.name !== 'other').map((e) => e.name);
+  if (names.join() !== rawEventNames(b).join()) throw new Error(`${signature}: decoded events ${names} differ from raw ${rawEventNames(b)}`);
+  return evs;
 };
 
 
@@ -191,8 +217,13 @@ async function blockTx(slot: number, signature: string) {
   };
 }
 
+/** Every run that wrote these files, oldest first (append modes add a run instead of replacing the record). */
+let runs: { mode: string; finishedAt: string; calls: number; note?: string }[] = [];
+let mode = 'full';
+
 function write() {
-  const meta = { fetchedAt: new Date().toISOString(), rpc: RPC.replace(/api-key=[^&]+/, 'api-key=…'), calls };
+  runs.push({ mode, finishedAt: new Date().toISOString(), calls });
+  const meta = { rpc: RPC.replace(/api-key=[^&]+/, 'api-key=…'), runs };
   writeFileSync(join(OUT, 'accounts.json'), JSON.stringify({ meta, accounts }, null, 1) + '\n');
   writeFileSync(join(OUT, 'transactions.json'), JSON.stringify({ meta, transactions: txs }, null, 1) + '\n');
   console.log(`wrote ${accounts.length} accounts and ${txs.length} transactions with ${calls} RPC calls`);
@@ -238,15 +269,31 @@ async function addComplete() {
   console.error(`no CompleteEvent among the recent transactions of curve ${ev.data.bondingCurve}`);
 }
 
+/** Re-reads the pool vaults with the RPC's jsonParsed view, and adds the bonding curve of the mayhem coin. */
+async function addReview() {
+  for (const v of accounts.filter((a) => a.label.includes('vault'))) {
+    accounts.splice(accounts.indexOf(v), 1);
+    haveAccount.delete(v.address);
+    await addAccount(v.label, v.address, true);
+  }
+  const mayhem = txs.find((t) => t.label.includes('(mayhem)'));
+  const create = mayhem && eventsOf(mayhem.signature, mayhem.base64 as never).find((e) => e.name === 'CreateEvent');
+  if (!create || create.name !== 'CreateEvent') throw new Error('no mayhem create fixture');
+  await addAccount('pump bonding curve (mayhem coin)', create.data.bondingCurve);
+}
+
 async function main() {
-  const extra = { boost: addBoost, complete: addComplete } as Record<string, () => Promise<void>>;
+  const extra = { boost: addBoost, complete: addComplete, review: addReview } as Record<string, () => Promise<void>>;
   const only = process.argv[2] === undefined ? undefined : extra[process.argv[2]];
-  if (process.argv[2] !== undefined && !only) throw new Error(`unknown mode ${process.argv[2]}; use boost or complete`);
+  if (process.argv[2] !== undefined && !only) throw new Error(`unknown mode ${process.argv[2]}; use boost, complete or review`);
   if (only) {
     // Adds one transaction kind to the existing fixtures without refetching the rest.
-    const a = JSON.parse(readFileSync(join(OUT, 'accounts.json'), 'utf8')) as { accounts: AccountFixture[] };
+    mode = process.argv[2]!;
+    const a = JSON.parse(readFileSync(join(OUT, 'accounts.json'), 'utf8')) as { meta: { runs?: typeof runs }; accounts: AccountFixture[] };
+    runs = a.meta.runs ?? [];
     const t = JSON.parse(readFileSync(join(OUT, 'transactions.json'), 'utf8')) as { transactions: TxFixture[] };
     accounts.push(...a.accounts);
+    for (const x of accounts) haveAccount.add(x.address);
     txs.push(...t.transactions);
     for (const x of txs) haveTx.add(x.signature);
     await only();

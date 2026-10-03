@@ -1,8 +1,31 @@
 {
  "meta": {
-  "fetchedAt": "2026-10-03T13:08:48.366Z",
   "rpc": "https://api.mainnet-beta.solana.com",
-  "calls": 4
+  "runs": [
+   {
+    "mode": "full",
+    "finishedAt": "2026-10-03T13:05Z",
+    "calls": 124,
+    "note": "time from the session log; this run did not record it"
+   },
+   {
+    "mode": "boost",
+    "finishedAt": "2026-10-03T13:07Z",
+    "calls": 4,
+    "note": "time from the session log"
+   },
+   {
+    "mode": "complete",
+    "finishedAt": "2026-10-03T13:09Z",
+    "calls": 4,
+    "note": "time from the session log"
+   },
+   {
+    "mode": "review",
+    "finishedAt": "2026-10-03T13:27:39.711Z",
+    "calls": 10
+   }
+  ]
  },
  "transactions": [
   {

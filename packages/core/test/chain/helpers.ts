@@ -1,9 +1,9 @@
 // Test oracles for the chain decoders. `idlDecode` is a second, independent decoder that interprets the pinned
-// IDL JSON at run time; the hand-written decoders must agree with it on every real account and event.
+// IDL JSON at run time with its own byte reader (Node Buffer, no code shared with src/chain); the hand-written
+// decoders must agree with it on every real account and event.
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Reader } from '../../src/chain/bytes.ts';
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 export const readFixture = <T>(name: string): T => JSON.parse(readFileSync(join(DIR, name), 'utf8')) as T;
@@ -29,7 +29,61 @@ export const IDL = readFixture<PinnedIdl>('idl-pinned.json');
 
 export const camel = (s: string) => s.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 
-const readType = (t: IdlType, r: Reader, types: Record<string, IdlStruct>): unknown => {
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+/** Base58 by repeated bigint division: a different algorithm from src/chain/base58.ts. */
+const base58 = (b: Buffer): string => {
+  let n = BigInt('0x' + (b.toString('hex') || '0'));
+  let out = '';
+  while (n > 0n) {
+    out = B58[Number(n % 58n)] + out;
+    n /= 58n;
+  }
+  for (const x of b) {
+    if (x !== 0) break;
+    out = '1' + out;
+  }
+  return out;
+};
+
+/** The oracle's own little-endian reader over a Node Buffer. */
+class OracleReader {
+  private o = 0;
+  private readonly b: Buffer;
+  constructor(bytes: Uint8Array) {
+    this.b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  }
+  get remaining() {
+    return this.b.length - this.o;
+  }
+  private take(n: number) {
+    if (this.o + n > this.b.length) throw new RangeError('oracle: read past end');
+    const s = this.b.subarray(this.o, this.o + n);
+    this.o += n;
+    return s;
+  }
+  u8 = () => this.take(1).readUInt8(0);
+  u16 = () => this.take(2).readUInt16LE(0);
+  u32 = () => this.take(4).readUInt32LE(0);
+  u64 = () => this.take(8).readBigUInt64LE(0);
+  i64 = () => this.take(8).readBigInt64LE(0);
+  u128 = () => {
+    const s = this.take(16);
+    return s.readBigUInt64LE(0) + (s.readBigUInt64LE(8) << 64n);
+  };
+  i128 = () => {
+    const s = this.take(16);
+    return s.readBigUInt64LE(0) + (s.readBigInt64LE(8) << 64n);
+  };
+  bool = () => {
+    const v = this.u8();
+    if (v > 1) throw new RangeError('oracle: bool byte above 1');
+    return v === 1;
+  };
+  pubkey = () => base58(this.take(32));
+  string = () => this.take(this.u32()).toString('utf8');
+}
+
+const readType = (t: IdlType, r: OracleReader, types: Record<string, IdlStruct>): unknown => {
   if (typeof t === 'string') {
     switch (t) {
       case 'u8':
@@ -66,7 +120,7 @@ const readType = (t: IdlType, r: Reader, types: Record<string, IdlStruct>): unkn
   return readStruct(def, r, types, false);
 };
 
-const readStruct = (def: IdlStruct, r: Reader, types: Record<string, IdlStruct>, prefixAllowed: boolean) => {
+const readStruct = (def: IdlStruct, r: OracleReader, types: Record<string, IdlStruct>, prefixAllowed: boolean) => {
   const out: Record<string, unknown> = {};
   for (const f of def.fields) {
     if (prefixAllowed && r.remaining === 0) break;
@@ -80,7 +134,7 @@ export const idlDecode = (program: keyof PinnedIdl['programs'], name: string, by
   const p = IDL.programs[program];
   const def = p.types[name];
   if (!def) throw new Error(`oracle: ${name} not pinned for ${program}`);
-  const r = new Reader(bytes);
+  const r = new OracleReader(bytes);
   const value = readStruct(def, r, p.types, true);
   return { value, trailing: r.remaining };
 };

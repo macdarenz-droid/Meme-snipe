@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { BondingCurveLayout, GlobalLayout } from '../../src/chain/pump.ts';
 import { GlobalConfigLayout, PoolLayout } from '../../src/chain/pump-amm.ts';
-import { FeeConfigLayout, FeeTier, Fees } from '../../src/chain/fees.ts';
+import { FeeConfigLayout, FeeTierStruct, Fees } from '../../src/chain/fees.ts';
 import {
   BoostBuyAndBurnEventLayout,
   BuyEventLayout,
@@ -58,7 +58,7 @@ describe('layouts match the pinned IDL', () => {
 
   it.each([
     ['Fees', Fees.fields],
-    ['FeeTier', FeeTier.fields],
+    ['FeeTier', FeeTierStruct.fields],
   ] as const)('nested %s', (name, fields) => {
     for (const program of ['pump', 'pump_amm', 'pump_fees'] as const) {
       expect(asIdl(fields)).toEqual(fromIdl(IDL.programs[program].types[name]!.fields));

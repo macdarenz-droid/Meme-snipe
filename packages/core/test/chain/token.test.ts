@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { decodeBase58 } from '../../src/chain/base58.ts';
-import { DecodeError, fromBase64, toHex } from '../../src/chain/bytes.ts';
+import { encodeBase58 } from '../../src/chain/base58.ts';
+import { DecodeError, fromBase64 } from '../../src/chain/bytes.ts';
 import { TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../../src/chain/programs.ts';
 import { EXTENSION_TYPES, type Extension, decodeMint, decodeTokenAccount } from '../../src/chain/token.ts';
 import { ACCOUNTS, type AccountFixture, accountsLabelled } from './helpers.ts';
@@ -71,9 +71,48 @@ describe('Token-2022 extensions', () => {
   ];
 
   it('knows all 29 extension types of token-2022 bb4c841, in enum order', () => {
-    expect(EXTENSION_TYPES).toHaveLength(29);
-    expect(EXTENSION_TYPES[25]).toBe('ScaledUiAmount');
-    expect(EXTENSION_TYPES[28]).toBe('PermissionedBurn');
+    // Copied from interface/src/extension/mod.rs `enum ExtensionType` at bb4c841.
+    expect([...EXTENSION_TYPES]).toEqual([
+      'Uninitialized', 'TransferFeeConfig', 'TransferFeeAmount', 'MintCloseAuthority', 'ConfidentialTransferMint',
+      'ConfidentialTransferAccount', 'DefaultAccountState', 'ImmutableOwner', 'MemoTransfer', 'NonTransferable',
+      'InterestBearingConfig', 'CpiGuard', 'PermanentDelegate', 'NonTransferableAccount', 'TransferHook',
+      'TransferHookAccount', 'ConfidentialTransferFeeConfig', 'ConfidentialTransferFeeAmount', 'MetadataPointer',
+      'TokenMetadata', 'GroupPointer', 'TokenGroup', 'GroupMemberPointer', 'TokenGroupMember', 'ConfidentialMintBurn',
+      'ScaledUiAmount', 'Pausable', 'PausableAccount', 'PermissionedBurn',
+    ]);
+  });
+
+  it('decodes every TransferFeeConfig field in place (gate H4 reads fees and authorities)', () => {
+    const u64 = (v: bigint) => Array.from({ length: 8 }, (_, i) => Number((v >> BigInt(8 * i)) & 0xffn));
+    const value = [
+      ...key(3), // transfer_fee_config_authority
+      ...key(4), // withdraw_withheld_authority
+      ...u64(77n), // withheld_amount
+      ...u64(500n), ...u64(1_000_000n), ...u16(25), // older: epoch, maximum_fee, bps
+      ...u64(501n), ...u64(2_000_000n), ...u16(150), // newer
+    ];
+    const e = decodeMint(mintWith([entry(1, value)]), TOKEN_2022_PROGRAM).extensions[0]!;
+    const k3 = encodeBase58(Uint8Array.from(key(3)));
+    const k4 = encodeBase58(Uint8Array.from(key(4)));
+    expect(e).toMatchObject({
+      kind: 'TransferFeeConfig',
+      fields: {
+        transferFeeConfigAuthority: k3,
+        withdrawWithheldAuthority: k4,
+        withheldAmount: 77n,
+        olderTransferFee: { epoch: 500n, maximumFee: 1_000_000n, transferFeeBasisPoints: 25 },
+        newerTransferFee: { epoch: 501n, maximumFee: 2_000_000n, transferFeeBasisPoints: 150 },
+      },
+    });
+    // All-zero authorities mean none.
+    const none = decodeMint(mintWith([entry(1, [...key(0), ...key(0), ...value.slice(64)])]), TOKEN_2022_PROGRAM).extensions[0]!;
+    expect(none.kind === 'TransferFeeConfig' && [none.fields.transferFeeConfigAuthority, none.fields.withdrawWithheldAuthority]).toEqual([null, null]);
+  });
+
+  it('refuses an uninitialized mint, as Mint::unpack does', () => {
+    const m = mintWith([]);
+    m[45] = 0;
+    expect(() => decodeMint(m, TOKEN_2022_PROGRAM)).toThrow(DecodeError);
   });
 
   it.each(SIZES)('%s reads exactly %i bytes', (name, size) => {
@@ -179,9 +218,23 @@ describe('mints from mainnet', () => {
 });
 
 describe('token accounts from mainnet', () => {
-  it.each(accountsLabelled('canonical pool').filter((a) => a.label.includes('vault')).map((a) => [a.label, a] as const))('%s decodes', (_l, a) => {
+  const vaults = accountsLabelled('canonical pool').filter((a) => a.label.includes('vault'));
+
+  it.each(vaults.map((a) => [`${a.label} ${a.address}`, a] as const))('%s matches the RPC parse', (_l, a) => {
     const t = decodeTokenAccount(fromBase64(a.dataBase64), a.owner as Address);
-    expect(t.state).toBe('initialized');
-    expect(toHex(decodeBase58(t.mint))).toHaveLength(64);
+    const info = a.parsed!.parsed.info as { mint: string; owner: string; state: string; tokenAmount: { amount: string }; extensions?: { extension: string }[] };
+    expect(a.parsed!.parsed.type).toBe('account');
+    expect(t.mint).toBe(info.mint);
+    expect(t.owner).toBe(info.owner);
+    expect(t.state).toBe(info.state);
+    expect(t.amount.toString()).toBe(info.tokenAmount.amount);
+    expect(t.extensions.map(rpcName)).toEqual((info.extensions ?? []).map((e) => e.extension));
+  });
+
+  it('refuses a 355-byte multisig and an uninitialized account', () => {
+    expect(() => decodeTokenAccount(new Uint8Array(355), TOKEN_PROGRAM)).toThrow(DecodeError);
+    const a = fromBase64(vaults[0]!.dataBase64).slice(0, 165);
+    a[108] = 0;
+    expect(() => decodeTokenAccount(a, TOKEN_PROGRAM)).toThrow(DecodeError);
   });
 });

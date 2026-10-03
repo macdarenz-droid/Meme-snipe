@@ -4,10 +4,15 @@ import { describe, expect, it } from 'vitest';
 import { type Address, DecodeError, fromBase64 } from '../../src/chain/bytes.ts';
 import { decodeFeeConfig, feeSchedules } from '../../src/chain/fees.ts';
 import { bondingCurveAddress, decodeBondingCurve, decodeGlobal, pumpPoolAuthority } from '../../src/chain/pump.ts';
-import { decodeGlobalConfig, decodePool, isCanonicalPool, poolAddress, poolVirtualQuoteReserves } from '../../src/chain/pump-amm.ts';
+import { PoolLayout, decodeGlobalConfig, decodePool, isCanonicalPool, poolAddress, poolVirtualQuoteReserves } from '../../src/chain/pump-amm.ts';
+import { BondingCurveLayout } from '../../src/chain/pump.ts';
+import { isOnCurve } from '../../src/chain/address.ts';
+import { decodeAddressBytes } from '../../src/chain/base58.ts';
+import { recordFromRpc, transactionEvents } from '../../src/chain/transaction.ts';
+import type { FeeConfig } from '../../src/amm/fees.ts';
 import { decodeMint, decodeTokenAccount } from '../../src/chain/token.ts';
 import { PUMP_AMM_PROGRAM, PUMP_FEES_PROGRAM, PUMP_PROGRAM, NATIVE_MINT } from '../../src/chain/programs.ts';
-import { ACCOUNTS, type AccountFixture, account, accountsLabelled, idlDecode, normalize } from './helpers.ts';
+import { ACCOUNTS, TRANSACTIONS, type AccountFixture, account, accountsLabelled, idlDecode, normalize } from './helpers.ts';
 
 const data = (a: AccountFixture) => fromBase64(a.dataBase64);
 const oracle = (program: 'pump' | 'pump_amm' | 'pump_fees', name: string, a: AccountFixture) => idlDecode(program, name, data(a).subarray(8));
@@ -40,6 +45,7 @@ describe('pump accounts', () => {
     expect(c.value.complete).toBe(true);
     expect(c.value.isHolderReward).toBe(false);
     expect(c.trailing).toBe(150 - 8 - 117);
+    expect(c.trailingNonZero).toBe(false);
   });
 
   it('reads a curve shorter than the current layout with the missing fields absent, never defaulted', () => {
@@ -70,9 +76,21 @@ describe('pump accounts', () => {
     }
   });
 
-  it('refuses data with the wrong discriminator', () => {
-    expect(() => decodeBondingCurve(data(account('pump Global')))).toThrow(DecodeError);
-    expect(() => decodePool(data(account('pump Global')))).toThrow(DecodeError);
+  it('refuses data with the wrong discriminator (the check itself, not a later field)', () => {
+    const curve = data(account('pump bonding curve (mayhem coin)')).slice();
+    curve.set(PoolLayout.discriminator, 0);
+    expect(() => decodeBondingCurve(curve)).toThrow(/discriminator/);
+    const pool = data(accountsLabelled('canonical PumpSwap pool')[0]!).slice();
+    pool.set(BondingCurveLayout.discriminator, 0);
+    expect(() => decodePool(pool)).toThrow(/discriminator/);
+  });
+
+  it('reads the mayhem flag from the curve of a mayhem coin', () => {
+    const c = decodeBondingCurve(data(account('pump bonding curve (mayhem coin)'))).value;
+    expect(c.isMayhemMode).toBe(true);
+    const normal = ACCOUNTS.filter((a) => a.label === 'pump bonding curve (current layout)').map((a) => decodeBondingCurve(data(a)).value.isMayhemMode);
+    expect(normal.length).toBeGreaterThan(0);
+    expect(normal.every((m) => m === false)).toBe(true);
   });
 });
 
@@ -99,6 +117,14 @@ describe('fee configs', () => {
     expect(s.exoticFlatFees).toBeDefined();
   });
 
+  it('feeSchedules returns core/amm FeeConfig and refuses a config that predates exotic fees', () => {
+    const c = decodeFeeConfig(data(account('PumpSwap FeeConfig'))).value;
+    const forAmm: FeeConfig = feeSchedules(c);
+    expect(forAmm.exoticFlatFees).toBeDefined();
+    const { exoticFlatFees: _gone, ...old } = c;
+    expect(() => feeSchedules(old)).toThrow(DecodeError);
+  });
+
   it('PumpSwap tiers match docs/ARCHITECTURE.md section 4: 1.25% under 420 SOL, 0.30% from 98,240 SOL, 0.30% flat for non-canonical', () => {
     const s = feeSchedules(decodeFeeConfig(data(account('PumpSwap FeeConfig'))).value);
     const total = (f: { lp: number; protocol: number; creator: number }) => f.lp + f.protocol + f.creator;
@@ -120,6 +146,26 @@ describe('PumpSwap pools', () => {
     expect(poolAddress(p.index, p.creator, p.baseMint, p.quoteMint)).toBe(a.address);
   });
 
+  it('classifies pools the same way independent evidence does', () => {
+    // Canonical: the migration fixture's own events say pump's migrate created this pool with this creator.
+    const migration = TRANSACTIONS.find((t) => t.label.startsWith('migration'))!;
+    const evs = transactionEvents(recordFromRpc(migration.signature, migration.base64 as never));
+    const mig = evs.find((e) => e.name === 'CompletePumpAmmMigrationEvent');
+    const created = evs.find((e) => e.name === 'CreatePoolEvent');
+    if (mig?.name !== 'CompletePumpAmmMigrationEvent' || created?.name !== 'CreatePoolEvent') throw new Error('migration events missing');
+    const migrated = account('canonical PumpSwap pool (recent migration)');
+    expect(mig.data.pool).toBe(migrated.address);
+    const mp = decodePool(data(migrated)).value;
+    expect([mp.creator, mp.index]).toEqual([created.data.creator, created.data.index]);
+    expect(isCanonicalPool(mp, migrated.address as Address)).toBe(true);
+    // Non-canonical: its creator is a wallet key (on the curve), and a pool-authority PDA never is.
+    for (const a of accountsLabelled('non-canonical PumpSwap pool')) {
+      const p = decodePool(data(a)).value;
+      expect(isOnCurve(decodeAddressBytes(p.creator))).toBe(true);
+      expect(isCanonicalPool(p, a.address as Address)).toBe(false);
+    }
+  });
+
   it('classifies canonical and non-canonical pools', () => {
     const canon = accountsLabelled('canonical PumpSwap pool');
     expect(canon.length).toBeGreaterThan(0);
@@ -136,8 +182,8 @@ describe('PumpSwap pools', () => {
     const a = accountsLabelled('canonical PumpSwap pool')[0]!;
     const p = decodePool(data(a)).value;
     expect(isCanonicalPool(p, account('pump Global').address as Address)).toBe(false);
-    expect(isCanonicalPool({ ...p, index: 1 })).toBe(false);
-    expect(isCanonicalPool({ ...p, creator: NATIVE_MINT })).toBe(false);
+    expect(isCanonicalPool({ ...p, index: 1 }, a.address as Address)).toBe(false);
+    expect(isCanonicalPool({ ...p, creator: NATIVE_MINT }, a.address as Address)).toBe(false);
   });
 
   it('decodes a negative virtual_quote_reserves as a signed i128', () => {
@@ -147,6 +193,14 @@ describe('PumpSwap pools', () => {
     // The pool was negative at the fixture trade; it is still checked to decode exactly as the oracle says.
     for (const [i, a] of negatives.entries()) expect(values[i]).toBe((oracle('pump_amm', 'Pool', a).value as { virtualQuoteReserves: bigint }).virtualQuoteReserves);
     expect(values.some((v) => v < 0n)).toBe(true);
+  });
+
+  it('flags non-zero bytes after the documented Pool layout (pump wrote fields no IDL describes)', () => {
+    const d = decodePool(data(account('PumpSwap pool with negative virtual_quote_reserves at trade')));
+    expect(d.trailing).toBeGreaterThan(0);
+    expect(d.trailingNonZero).toBe(true);
+    const old = decodeBondingCurve(data(account('Fartcoin bonding curve (2024 layout)')));
+    expect([old.trailing, old.trailingNonZero]).toEqual([25, false]);
   });
 
   it('reads a pool without virtual_quote_reserves as 0 (pump NEGATIVE_VIRTUAL_QUOTE_RESERVES.md)', () => {

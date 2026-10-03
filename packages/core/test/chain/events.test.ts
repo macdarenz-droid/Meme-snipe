@@ -85,7 +85,7 @@ describe('events from mainnet', () => {
     expect(neg.length).toBeGreaterThan(0);
     for (const { e } of neg) {
       if (e.name !== 'BuyEvent' && e.name !== 'SellEvent') continue;
-      // Effective reserves stay positive (pump's guarantee) and reproduce the event's own pre-trade reserves.
+      // Effective reserves stay positive (pump's guarantee); the signed value itself is checked against the oracle above.
       expect(e.data.poolQuoteTokenReserves + e.data.virtualQuoteReserves!).toBeGreaterThan(0n);
     }
   });
@@ -179,6 +179,20 @@ describe('older and newer event layouts', () => {
     if (e.name !== 'TradeEvent') throw new Error('expected a TradeEvent');
     expect(e.trailing).toBe(trade.e.name === 'TradeEvent' ? trade.e.trailing + 3 : -1);
     expect(e.extra.endsWith('010203')).toBe(true);
+  });
+
+  it('decodes a non-empty shareholders list (no mainnet fixture has one) the same as the oracle', () => {
+    // Splice two shareholders into the real event where its empty vec sits (field 28, after buybackFee).
+    const fields = IDL.programs.pump.types['TradeEvent']!.fields;
+    const at = fields.findIndex((f) => f.name === 'shareholders');
+    const before = prefixLength(at);
+    expect([...full.subarray(before, before + 4)]).toEqual([0, 0, 0, 0]);
+    const holder = (b: number, bps: number) => [...new Array(32).fill(b), bps & 0xff, bps >> 8];
+    const spliced = Uint8Array.from([...full.subarray(0, before), 2, 0, 0, 0, ...holder(5, 7000), ...holder(6, 3000), ...full.subarray(before + 4)]);
+    const e = decodeEventBytes('pump', spliced);
+    if (e.name !== 'TradeEvent') throw new Error('expected a TradeEvent');
+    expect(e.data.shareholders?.map((h) => h.shareBps)).toEqual([7000, 3000]);
+    expect(normalize(e.data)).toEqual(normalize(idlDecode('pump', 'TradeEvent', spliced.subarray(8)).value));
   });
 
   it('returns "other" for an unknown discriminator and requires the self-CPI tag', () => {

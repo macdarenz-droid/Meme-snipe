@@ -86,10 +86,11 @@ export const poolAddress = (index: number, creator: Address, baseMint: Address, 
 /**
  * A canonical pool is the one pump's `migrate` created for a graduated curve: `index == 0` and
  * `creator == PDA(["pool-authority", base_mint], pump)` (docs/research/safety.md 2.1; pump FEE_PROGRAM_README).
- * Only canonical pools have burned LP. Pass the account's own address to also prove the account sits at its PDA.
+ * Only canonical pools have burned LP. The account's own address is required: the fields alone can be copied into
+ * any account, so the pool must also sit at the PDA its fields imply (the caller still checks the owner program).
  */
-export const isCanonicalPool = (pool: Pool, poolAccount?: Address): boolean => {
+export const isCanonicalPool = (pool: Pool, poolAccount: Address): boolean => {
   if (pool.index !== 0) return false;
   if (pool.creator !== pumpPoolAuthority(pool.baseMint)) return false;
-  return poolAccount === undefined || poolAddress(pool.index, pool.creator, pool.baseMint, pool.quoteMint) === poolAccount;
+  return poolAddress(pool.index, pool.creator, pool.baseMint, pool.quoteMint) === poolAccount;
 };
