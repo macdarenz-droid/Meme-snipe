@@ -1,11 +1,21 @@
 // Import guard for label isolation. From every source file outside the ledger and the stats stage,
 // follows imports transitively (static, side-effect, dynamic, require, export-from, package subpaths)
-// and reports any path that reaches the scoring store, a ledger internal, or node:sqlite.
+// and reports any path that reaches the scoring store, a ledger internal, or node:sqlite. Loads it cannot
+// follow (computed import or require, createRequire, getBuiltinModule, native bindings, a string naming sqlite)
+// are violations in themselves.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 
 const SPEC = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*(['"])([^'"]+)\1/g;
-const DYNAMIC = /\bimport\s*\(\s*(?!['"])/g;
+/** Ways to load a module that a specifier scan cannot follow. Any of them outside the allowed dirs is a violation. */
+const UNTRACEABLE: readonly [RegExp, string][] = [
+  [/\bimport\s*\(\s*(?!['"])/, 'dynamic import with a computed path'],
+  [/\brequire\s*\(\s*(?!['"])/, 'require with a computed name'],
+  [/\bcreateRequire\b/, 'createRequire'],
+  [/\bgetBuiltinModule\b/, 'process.getBuiltinModule'],
+  [/\bprocess\s*\.\s*(?:binding|_linkedBinding|dlopen)\b/, 'native binding'],
+  [/(['"`])[^'"`\n]*sqlite[^'"`\n]*\1/i, 'a string naming sqlite'],
+];
 const SOURCE = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
 
 const sources = (root: string): string[] => {
@@ -54,8 +64,7 @@ export const importViolations = (root: string): string[] => {
       if (forbidden(file)) { violations.push(`${chain} (outcome store or ledger internal)`); continue; }
       if (file === ledgerEntry) continue; // the engine-facing entry is checked by its own tests
       const text = readFileSync(file, 'utf8');
-      if (DYNAMIC.test(text)) violations.push(`${chain} (dynamic import with a computed path)`);
-      DYNAMIC.lastIndex = 0;
+      for (const [pattern, what] of UNTRACEABLE) if (pattern.test(text)) violations.push(`${chain} (${what})`);
       for (const m of text.matchAll(SPEC)) {
         const spec = m[2]!;
         if (spec === 'node:sqlite' || spec === 'sqlite') { violations.push(`${chain} (imports node:sqlite)`); continue; }

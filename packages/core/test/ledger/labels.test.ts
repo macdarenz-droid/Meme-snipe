@@ -133,6 +133,12 @@ describe('labels are out of the engine\'s reach', () => {
       'subpath.ts': "import { s } from '@meme-snipe/core/ledger/scoring';",
       'via-stats.ts': "import { z } from '../stats/index.ts';",
       'via-two.ts': "import '../units/two.ts';",
+      'builtin.ts': "const S = process.getBuiltinModule('node:sqlite');",
+      'builtin-computed.ts': "const S = process.getBuiltinModule(['node', 'sql' + 'ite'].join(':'));",
+      'create-require.ts': "import { createRequire } from 'node:module';\nconst r = createRequire(import.meta.url);",
+      'require-computed.ts': "const s = require(['node', 'x'].join(':'));",
+      'sqlite-string.ts': "const name = `node:${'sqlite'}`;",
+      'binding.ts': "const b = process.binding('fs');",
     };
     put('packages/core/src/units/two.ts', "import '../stats/index.ts';\n");
     for (const [name, text] of Object.entries(probes)) put(`packages/core/src/engine/${name}`, `${text}\n`);
