@@ -38,6 +38,9 @@ describe('funnel', () => {
     expect(u2.mintsAt).toEqual({ H8: { adverse: 0, notCovered: 1 }, setup: { adverse: 1, notCovered: 0 }, entered: { adverse: 1, notCovered: 0 } });
     expect(u2.gateFailures).toEqual({ H8: { adverse: 0, notCovered: 1 }, H12: { adverse: 1, notCovered: 0 }, H13: { adverse: 0, notCovered: 2 } });
     expect(u2.evidenceOnly).toBe(2);
+    // b is excluded for coverage (1 of 3 mints); a and c are not.
+    expect(u2.coverageExclusions).toEqual({ mints: 1, share: 1 / 3 });
+    expect(funnelLines(u2)[1]).toBe('coverage exclusions: 1 mints (33.3%), not rejects');
     expect(s['U1']!.checksAt).toEqual({ H14: { adverse: 1, notCovered: 0 } });
     expect(funnelLines(u2)[0]).toBe('5 checks on 3 mints; 2 checks stopped by missing evidence alone');
     expect(funnelLines(u2)).toContain('entered: checks 1; mints 1');

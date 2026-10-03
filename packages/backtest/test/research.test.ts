@@ -202,12 +202,16 @@ describe('outcome stage', () => {
       expect(o.entryCost).toBe(cost);
       const sell = poolSell(buy.trade.after, buy.trade.base, ctx);
       if (!sell.ok) throw new Error('no sell quote');
-      const value = sell.trade.userQuote - (base + steps[0]!.priorityFeeLamports + net.tip);
+      // fills-2: the conservative scenario returns the token-account rent when the final sell lands.
+      const rentBack = FILL_CONFIG.scenarios.conservative.rentRecovery && !b2.blocked ? net.tokenAccountRent : 0n;
+      const value = sell.trade.userQuote - (base + steps[0]!.priorityFeeLamports + net.tip) + rentBack;
       const failed = BigInt(b2.blocked ? b2.nExitAttempts : b2.nExitAttempts - 1) * (base + steps[2]!.priorityFeeLamports);
       const expected = Number(value - cost - failed) / Number(cost);
       expect(Math.abs(b2.rNet! - expected)).toBeLessThan(1e-9);
-      expect(b2.rNet!).toBeLessThan(-0.10);
-      expect(b2.rNet!).toBeGreaterThan(-0.14);
+      // The same bounds as before on the result without the returned rent.
+      const noRent = b2.rNet! - Number(rentBack) / Number(cost);
+      expect(noRent).toBeLessThan(-0.10);
+      expect(noRent).toBeGreaterThan(-0.14);
       // B1 never touches its barriers on a still pool, sees the same exit draws, and ends where B2 does.
       expect(o.labels[0]!.yTb).toBe(0);
       expect(o.labels[0]!.rNet).toBeCloseTo(b2.rNet!, 12);

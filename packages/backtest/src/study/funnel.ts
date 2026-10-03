@@ -34,6 +34,11 @@ export interface FunnelSummary {
   readonly gateFailures: Readonly<Record<string, StageCount>>;
   /** Checks whose every failed gate was "not covered": the evidence alone stopped them. */
   readonly evidenceOnly: number;
+  /**
+   * Coverage exclusions: mints whose furthest stage was a "not covered" stop (lead-in holders, unjudged deployers, no
+   * funding source, gaps), with their share of all mints. Never counted as rejects; reported in the funnel and G1/G2.
+   */
+  readonly coverageExclusions: { readonly mints: number; readonly share: number | null };
 }
 
 /** The first failed gate in H1…H16 order and its class; a reason that names the gate it serves is counted there. */
@@ -105,7 +110,11 @@ export class Funnel {
       const f = this.#tags.get(tag)!;
       const mintsAt: Record<string, { adverse: number; notCovered: number }> = {};
       for (const b of f.best.values()) add(mintsAt, STAGES[b.index]!, b.cls);
-      return [tag, { checks: f.checks, mints: f.best.size, checksAt: order(f.checksAt), mintsAt: order(mintsAt), gateFailures: order(f.gateFailures), evidenceOnly: f.evidenceOnly }];
+      const excluded = [...f.best.values()].filter((b) => b.cls === 'not covered').length;
+      return [tag, {
+        checks: f.checks, mints: f.best.size, checksAt: order(f.checksAt), mintsAt: order(mintsAt), gateFailures: order(f.gateFailures), evidenceOnly: f.evidenceOnly,
+        coverageExclusions: { mints: excluded, share: f.best.size === 0 ? null : excluded / f.best.size },
+      }];
     }));
   }
 }
@@ -115,6 +124,7 @@ export const funnelLines = (f: FunnelSummary): string[] => {
   const n = (c: StageCount | undefined, s: Stage) => (c === undefined ? '0' : s === 'entered' ? String(c.adverse + c.notCovered) : `${c.adverse + c.notCovered} (${c.adverse} adverse, ${c.notCovered} not covered)`);
   return [
     `${f.checks} checks on ${f.mints} mints; ${f.evidenceOnly} checks stopped by missing evidence alone`,
+    `coverage exclusions: ${f.coverageExclusions.mints} mints${f.coverageExclusions.share === null ? '' : ` (${(f.coverageExclusions.share * 100).toFixed(1)}%)`}, not rejects`,
     ...STAGES.filter((s) => f.checksAt[s] !== undefined || f.mintsAt[s] !== undefined).map((s) => `${s}: checks ${n(f.checksAt[s], s)}; mints ${n(f.mintsAt[s], s)}`),
   ];
 };

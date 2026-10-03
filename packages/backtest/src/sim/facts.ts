@@ -78,6 +78,12 @@ export interface FactOptions {
    * of the dev and first 20 buyers, §16.3). Each list is dated when it was complete; before that, or without a
    * source, the insiders fact is incomplete and H13 rejects.
    */
+  /**
+   * The pool account as allocated at creation (ARCHITECTURE §16 table: H17's backtest source is DATA-1's record of
+   * it): data length, cashback flag and coin creator, known from `knownAtMs`. Without it those fields stay absent and
+   * H17 rejects through H16 (missing), the safe failure. A coin creator in the CreatePoolEvent is used when present.
+   */
+  readonly poolAccounts?: (pool: string) => { readonly knownAtMs: number; readonly accountBytes: number; readonly isCashbackCoin: boolean; readonly coinCreator: string } | null;
   readonly insiders?: (mint: string) => { readonly knownAtMs: number; readonly funded: readonly string[]; readonly devCluster: readonly string[] } | null;
   /**
    * When trade rows begin (ms): an assembled window's lead-in days carry events, stats and blocks only (DATA-1). Rug
@@ -115,13 +121,13 @@ interface MintState {
   create: { createdAtMs: number; creator: string; user: string | null; supply: bigint | null; tokenProgram: string | null; slot: bigint; receivedAt: number; signature: string } | null;
   graduatedAtMs: number | null;
   migration: { migratedAtMs: number; pool: string; sol: bigint; tokens: bigint; slot: bigint; receivedAt: number; signature: string } | null;
-  pool: { address: string; index: number; creator: string; quoteMint: string; lpMint: string; mayhem: boolean | undefined; signature: string } | null;
+  pool: { address: string; index: number; creator: string; quoteMint: string; lpMint: string; mayhem: boolean | undefined; coinCreator: string | undefined; signature: string } | null;
   lp: { supply: bigint; known: boolean; minted: bigint; burned: bigint };
   account: { owner: string; mintAuthority: string | null; freezeAuthority: string | null; extensions: { kind: string; type: number; state?: string }[] } | null;
   /** Extensions set up before InitializeMint (fixed-size ones must be). */
   pendingExt: { kind: string; type: number; state?: string }[];
   /** Token accounts of the mint, tracked from the create on; null until the create's raw record is seen. */
-  holders: Map<string, { owner: string; amount: bigint }> | null;
+  holders: Map<string, { owner: string; amount: bigint; delegate: string | null; delegated: bigint }> | null;
   supply: bigint;
   /** Why the holder rebuild cannot be trusted any more (first problem seen). */
   holderProblem: string | null;
@@ -291,7 +297,7 @@ export class FactProjector {
       const s = this.#state(f['base_mint']);
       if (s !== null && s.pool === null) {
         const mayhem = f['is_mayhem_mode'] === 'true' ? true : f['is_mayhem_mode'] === 'false' ? false : undefined;
-        s.pool = { address: f['pool'], index: Number(f['index'] ?? '-1'), creator: f['creator'] ?? '', quoteMint: f['quote_mint'] ?? '', lpMint: f['lp_mint'], mayhem, signature: row.signature };
+        s.pool = { address: f['pool'], index: Number(f['index'] ?? '-1'), creator: f['creator'] ?? '', quoteMint: f['quote_mint'] ?? '', lpMint: f['lp_mint'], mayhem, coinCreator: f['coin_creator'] || undefined, signature: row.signature };
         this.#lpMints.set(f['lp_mint'], f['base_mint']);
       }
       return;
@@ -380,8 +386,14 @@ export class FactProjector {
       }
       return;
     }
+    const accountOps: (Extract<RawRow['ops'][number], { op: 'approve' | 'revoke' | 'set-authority' }>)[] = [];
     for (const op of row.ops) {
+      if (op.op === 'approve' || op.op === 'revoke') {
+        accountOps.push(op);
+        continue;
+      }
       if (op.op === 'set-authority') {
+        accountOps.push(op);
         const s = this.#mints.get(op.account);
         if (s?.account) {
           if (op.authorityType === 0) s.account.mintAuthority = op.newAuthority;
@@ -415,7 +427,7 @@ export class FactProjector {
     }
     for (const mint of row.mints) {
       const s = this.#state(mint);
-      if (s !== null) this.#holders(s, row);
+      if (s !== null) this.#holders(s, row, accountOps);
     }
   }
 
@@ -427,7 +439,7 @@ export class FactProjector {
   }
 
   /** Token accounts from the record's balances. A balance that does not match what we tracked means a missed flow. */
-  #holders(s: MintState, row: RawRow): void {
+  #holders(s: MintState, row: RawRow, accountOps: readonly Extract<RawRow['ops'][number], { op: 'approve' | 'revoke' | 'set-authority' }>[]): void {
     const mine = row.balances.filter((b) => b.mint === s.mint);
     if (s.holders === null) {
       // Tracking starts at the create's record: the whole supply is minted there.
@@ -443,7 +455,17 @@ export class FactProjector {
       if ((b.pre ?? 0n) !== had) this.#problem(s, `${b.account} held ${b.pre ?? 0n} before ${row.signature}, the rebuild has ${had}`);
       if (b.owner === null) this.#problem(s, `${b.account} has no owner in ${row.signature}`);
       if (b.post === null || b.post === 0n) s.holders.delete(b.account);
-      else s.holders.set(b.account, { owner: b.owner ?? prev?.owner ?? b.account, amount: b.post });
+      else s.holders.set(b.account, { owner: b.owner ?? prev?.owner ?? b.account, amount: b.post, delegate: prev?.delegate ?? null, delegated: prev?.delegated ?? 0n });
+    }
+    // Delegates (GATE-1e), in instruction order, applied to the balances after the transaction. A delegate's own
+    // transfers are not tracked down from the approved amount: the delegated amount only overstates its control
+    // (the conservative side). An owner change (SetAuthority AccountOwner) moves the account and clears its delegate.
+    for (const op of accountOps) {
+      const h = s.holders.get(op.account);
+      if (h === undefined) continue;
+      if (op.op === 'approve') s.holders.set(op.account, { ...h, delegate: op.delegate, delegated: op.amount });
+      else if (op.op === 'revoke') s.holders.set(op.account, { ...h, delegate: null, delegated: 0n });
+      else if (op.authorityType === 2 && op.newAuthority !== null) s.holders.set(op.account, { ...h, owner: op.newAuthority, delegate: null, delegated: 0n });
     }
     let sum = 0n;
     for (const h of s.holders.values()) sum += h.amount;
@@ -559,13 +581,17 @@ export class FactProjector {
     if (s.pool !== null && v !== null && s.pool.address === v.pool) {
       const tokenProgram = s.account?.owner ?? s.create?.tokenProgram ?? null;
       if (tokenProgram === TOKEN_PROGRAM || tokenProgram === TOKEN_2022_PROGRAM) {
+        const acct = this.#o.poolAccounts?.(s.pool.address) ?? null;
+        const known = acct !== null && acct.knownAtMs <= m.receivedAt ? acct : null;
+        const coinCreator = known?.coinCreator ?? s.pool.coinCreator;
         put('pool', poolKey(mint), {
-          obs: obs(), address: s.pool.address, owner: PUMP_AMM_PROGRAM,
+          obs: obs(), address: s.pool.address, owner: PUMP_AMM_PROGRAM, ...(known === null ? {} : { accountBytes: known.accountBytes }),
           pool: {
             index: s.pool.index, creator: s.pool.creator, baseMint: mint, quoteMint: s.pool.quoteMint, lpMint: s.pool.lpMint,
             poolBaseTokenAccount: associatedTokenAddress(s.pool.address, mint, tokenProgram),
             poolQuoteTokenAccount: associatedTokenAddress(s.pool.address, s.pool.quoteMint, TOKEN_PROGRAM),
             lpSupply: s.lp.supply, ...(s.pool.mayhem === undefined ? {} : { isMayhemMode: s.pool.mayhem }), virtualQuoteReserves: v.virtualQuoteReserves,
+            ...(known === null ? {} : { isCashbackCoin: known.isCashbackCoin }), ...(coinCreator === undefined ? {} : { coinCreator }),
           },
           baseVault: v.baseReserve, quoteVault: v.quoteVault,
         });
@@ -575,7 +601,7 @@ export class FactProjector {
     const candles = [...s.candlesHead, ...s.candlesTail.filter((c) => !s.candlesHead.some((h) => h.startMs === c.startMs))].filter((c) => c.startMs <= m.receivedAt);
     if (s.migration !== null) put('candles', candlesKey(mint), { obs: obs(), intervalMs: MINUTE_MS, candles });
     if (s.holders !== null) {
-      const accounts: HolderAccount[] = [...s.holders].map(([address, h]) => ({ address, owner: h.owner, ownerProgram: null, amount: h.amount }))
+      const accounts: HolderAccount[] = [...s.holders].map(([address, h]) => ({ address, mint, owner: h.owner, ownerProgram: null, amount: h.amount, delegate: h.delegate, delegatedAmount: h.delegate === null ? 0n : h.delegated }))
         .sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.address < b.address ? -1 : 1));
       put('holders', holdersKey(mint), { obs: obs(quality), supply: s.supply, coverage: 'all', accounts });
     }

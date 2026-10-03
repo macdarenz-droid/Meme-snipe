@@ -35,7 +35,10 @@ export type TokenOp =
   | { readonly op: 'set-authority'; readonly program: string; readonly account: string; readonly authorityType: number; readonly newAuthority: string | null }
   | { readonly op: 'mint-to'; readonly program: string; readonly mint: string; readonly amount: bigint }
   | { readonly op: 'burn'; readonly program: string; readonly mint: string; readonly amount: bigint }
-  | { readonly op: 'extension'; readonly program: string; readonly mint: string; readonly ext: ExtensionInit };
+  | { readonly op: 'extension'; readonly program: string; readonly mint: string; readonly ext: ExtensionInit }
+  /** Approve / ApproveChecked on a token account; Revoke and CloseAccount clear it (GATE-1e delegates). */
+  | { readonly op: 'approve'; readonly program: string; readonly account: string; readonly delegate: string; readonly amount: bigint }
+  | { readonly op: 'revoke'; readonly program: string; readonly account: string };
 
 export interface RawRow extends ChainPos {
   readonly kind: 'raw';
@@ -102,7 +105,7 @@ const startsWith = (d: Uint8Array, p: readonly number[]) => d.length >= p.length
 
 /**
  * One token-program instruction as a TokenOp, or null when it changes nothing the gates read (transfers, account
- * set-up, closes). Unknown Token-2022 tags that name a mint as their first account are not guessed: `tokenOps`
+ * set-up). Unknown Token-2022 tags that name a mint as their first account are not guessed: `tokenOps`
  * reports them as unknown extensions when they come before that mint's initialisation.
  */
 const tokenOp = (program: string, d: Uint8Array, acct: (i: number) => string | undefined): TokenOp | 'unknown-tag' | null => {
@@ -132,6 +135,20 @@ const tokenOp = (program: string, d: Uint8Array, acct: (i: number) => string | u
       const next = optKey(d, 2);
       if (account === undefined || d.length < 2 || next === null) return 'unknown-tag';
       return { op: 'set-authority', program, account, authorityType: d[1]!, newAuthority: next.value };
+    }
+    case 4:
+    case 13: {
+      // Approve: [source, delegate, owner]; ApproveChecked: [source, mint, delegate, owner]. Data: tag, u64 amount.
+      const account = acct(0);
+      const delegate = acct(tag === 4 ? 1 : 2);
+      const amount = u64(d, 1);
+      return account === undefined || delegate === undefined || amount === null ? null : { op: 'approve', program, account, delegate, amount };
+    }
+    case 5:
+    case 9: {
+      // Revoke: [source, owner]; CloseAccount: [account, destination, owner]. Either leaves the account with no delegate.
+      const account = acct(0);
+      return account === undefined ? null : { op: 'revoke', program, account };
     }
     case 7:
     case 14: {

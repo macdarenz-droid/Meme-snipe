@@ -8,6 +8,7 @@ import { tradesOf } from '../src/trades.ts';
 import { mintHashFraction } from '../src/sim/facts.ts';
 import { key, type MintPlan, studyWorld, W0 } from './study-world.ts';
 import { SOL_USD } from './synthetic.ts';
+import { POOL_ACCOUNTS } from './study-world.ts';
 
 vi.setConfig({ testTimeout: 300_000 });
 
@@ -23,7 +24,7 @@ const run = (plans: readonly MintPlan[], over: Partial<StudyRunOptions> = {}) =>
   const r = runStudy({
     rows: () => rows[Symbol.iterator](), series: [sol], seed: 'e', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
     windowEnd: W0 + 12 * 3_600_000, study: STUDY_CONFIG, mode: 'strategy', entriesFrom: W0, entriesTo: W0 + 10 * 3_600_000, sampleRate: 1,
-    insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), ...over,
+    insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, ...over,
   });
   return { r, mints };
 };

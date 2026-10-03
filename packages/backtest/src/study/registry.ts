@@ -42,6 +42,8 @@ export interface HoldoutPlan {
   readonly embargoMs: number;
   readonly familySize: number;
   readonly holdoutIds: readonly string[];
+  /** The registered procedure, in words, fixed before any holdout count is known. */
+  readonly procedure: readonly string[];
   /** Pre-registered estimates only: nothing here was measured on data. */
   readonly sizing: Readonly<Record<string, string | number>>;
 }
@@ -52,7 +54,32 @@ export interface StudyRegistry {
   readonly holdouts: HoldoutRegistry;
   readonly runs: readonly HoldoutRun[];
   readonly trials: readonly (TrialRecord & { readonly configId: string; readonly evaluatedOn: string })[];
+  /** Every G1 result recorded for a registered holdout, oldest first: a seal opens only on a latest pass (review consensus). */
+  readonly g1?: readonly G1Record[];
 }
+
+export interface G1Record {
+  readonly holdoutId: string;
+  readonly configId: string;
+  readonly passed: boolean;
+  readonly evaluatedOn: string;
+}
+
+/** Appends a G1 result; nothing earlier is replaced, so a fail stays on record. */
+export const recordG1 = (r: StudyRegistry, g: G1Record): StudyRegistry => ({ ...r, g1: [...(r.g1 ?? []), g] });
+
+/**
+ * Why a holdout may not be opened, or null when it may: its latest recorded G1 must be a pass for the configuration
+ * registered with it. The registry, not the caller, enforces it.
+ */
+export const g1Blocks = (r: StudyRegistry, holdoutId: string): string | null => {
+  const e = r.holdouts.entries.find((x) => x.holdoutId === holdoutId);
+  if (e === undefined) return `${holdoutId} is not registered`;
+  const last = (r.g1 ?? []).filter((g) => g.holdoutId === holdoutId).at(-1);
+  if (last === undefined) return `${holdoutId} has no G1 result on record`;
+  if (last.configId !== e.configId) return `${holdoutId}'s latest G1 is for ${last.configId}, registered ${e.configId}`;
+  return last.passed ? null : `${holdoutId}'s latest G1 did not pass`;
+};
 
 export const newStudyRegistry = (familySize: number): StudyRegistry => ({ version: 1, holdouts: createHoldoutRegistry(familySize), runs: [], trials: [] });
 

@@ -6,9 +6,10 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { openHoldout } from '../../core/src/stats/index.ts';
 import {
-  beginHoldoutRun, failHoldoutRun, newStudyRegistry, readStudyRegistry, recordTrial, register, sealHoldoutRun, writeStudyRegistry,
+  beginHoldoutRun, failHoldoutRun, g1Blocks, newStudyRegistry, recordG1, readStudyRegistry, recordTrial, register, sealHoldoutRun, writeStudyRegistry,
 } from '../src/study/registry.ts';
 import { attemptAlpha } from '../src/strategy/config.ts';
+import { openSealed } from '../src/study/sealed.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'reg-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -81,6 +82,21 @@ describe('holdout run log', () => {
     const second = beginHoldoutRun(later, ['U1-h2'], '/x/h4.db', 't4', 2);
     expect(second.ok).toBe(true);
     expect(second.registry.runs[1]).toMatchObject({ attempt: 2, alpha: 0.005 });
+  });
+
+  it('refuses to open a holdout without a latest G1 pass for its registered configuration', () => {
+    const r = fresh();
+    expect(g1Blocks(r, 'U1-h')).toMatch(/no G1 result/);
+    const failed = recordG1(r, { holdoutId: 'U1-h', configId: 'U1-c', passed: false, evaluatedOn: 'wf' });
+    expect(g1Blocks(failed, 'U1-h')).toMatch(/did not pass/);
+    const other = recordG1(failed, { holdoutId: 'U1-h', configId: 'U1-other', passed: true, evaluatedOn: 'wf' });
+    expect(g1Blocks(other, 'U1-h')).toMatch(/registered U1-c/);
+    const passed = recordG1(other, { holdoutId: 'U1-h', configId: 'U1-c', passed: true, evaluatedOn: 'wf' });
+    expect(g1Blocks(passed, 'U1-h')).toBeNull();
+    // Nothing earlier is replaced: the fail stays on record.
+    expect(passed.g1!.map((g) => g.passed)).toEqual([false, true, true]);
+    expect(g1Blocks(passed, 'U3-h')).toMatch(/not registered/);
+    expect(() => openSealed('/nonexistent/h.db', failed, ['U1-h'])).toThrow(/stays closed: U1-h's latest G1 did not pass/);
   });
 
   it('survives a write and read', () => {

@@ -3,7 +3,8 @@
 //   node packages/backtest/src/study/cli.ts day   --dataset <dir> --sol-usd <file> [--days d1,d2] [--seeds 5] [--replays 10] [--out <dir>]
 //   node packages/backtest/src/study/cli.ts trial --dataset <dir> --sol-usd <file> [--seeds 5] [--out <dir>]
 //   node packages/backtest/src/study/cli.ts study --dataset <dir> --sol-usd <file> --registry <file> [--run-holdout] [--replays 10] [--out <dir>]
-//   (each takes [--insiders <file>], a funding supplement: { mint: { knownAtMs, funded, devCluster } })
+//   (each takes [--insiders <file>], a funding supplement: { mint: { knownAtMs, funded, devCluster } }, and
+//   [--pool-accounts <file>], H17's pool record: { pool: { knownAtMs, accountBytes, isCashbackCoin, coinCreator } })
 //
 // `day` runs the strategies and S0 through the whole engine on the selected days and writes the engine evidence:
 // validity, replays, the leak test, the ledger replay check, counts and the reject mix. On a day of the fixed holdout
@@ -16,7 +17,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../../core/src/config/index.ts';
+import { exitsFor, FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../../core/src/config/index.ts';
 import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from '../dataset/dataset.ts';
 import { readSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
@@ -56,6 +57,13 @@ const insiders = has('insiders')
   ? (() => {
     const m = JSON.parse(readFileSync(flag('insiders'), 'utf8')) as Record<string, { knownAtMs: number; funded: string[]; devCluster: string[] }>;
     return (mint: string) => m[mint] ?? null;
+  })()
+  : undefined;
+// H17's pool-account record (DATA-1, ARCHITECTURE §16): { pool: { knownAtMs, accountBytes, isCashbackCoin, coinCreator } }.
+const poolAccounts = has('pool-accounts')
+  ? (() => {
+    const m = JSON.parse(readFileSync(flag('pool-accounts'), 'utf8')) as Record<string, { knownAtMs: number; accountBytes: number; isCashbackCoin: boolean; coinCreator: string }>;
+    return (pool: string) => m[pool] ?? null;
   })()
   : undefined;
 const byDay = new Map(manifest.days.map((d) => [d.day, d]));
@@ -134,9 +142,9 @@ if (command === 'day' || command === 'trial') {
     rows: rowsOf(firstRow, days[days.length - 1]!), series: [solUsd], seed: 'bt2-day', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG,
     research: RESEARCH_CONFIG, windowEnd: last, study: STUDY_CONFIG, entriesFrom: from,
     // Entries off on a holdout day: the run proves the engine on real data without trading the holdout.
-    entriesTo: validityOnly ? from : last - TRIAL_POLICY.exits.tMaxMs - RESEARCH_CONFIG.s0.endMarginMs,
+    entriesTo: validityOnly ? from : last - Math.max(...STUDY_CONFIG.universes.map((u) => exitsFor(TRIAL_POLICY.exits, u.universe).tMaxMs)) - RESEARCH_CONFIG.s0.endMarginMs,
     sampleRate, regimeBoundaries: regimeBoundariesOf(manifest), ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
+    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
   };
   const t0 = clock();
   // The strategy object is made when the run starts; its funnel is read after the run.
@@ -188,7 +196,7 @@ if (command === 'day' || command === 'trial') {
   const report = runFullStudy({
     config: STUDY_CONFIG, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: complete, rows: rowsOf, firstDay: first,
     series: [solUsd], sampleRate, ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
+    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
     runHoldout: has('run-holdout'), startedAt: new Date().toISOString(), regimeBoundaries: regimeBoundariesOf(manifest), ledgerReplay,
   });
   const days = windowDays(STUDY_CONFIG);

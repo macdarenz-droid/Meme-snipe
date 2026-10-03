@@ -43,6 +43,8 @@ export interface MintPlan {
   readonly migrationQuote?: bigint;
   /** The dev keeps this share of supply (bps) from a buy in the create transaction (H12). */
   readonly devBuyBps?: number;
+  /** The dev approves a delegate for this many tokens of its account in the create transaction (GATE-1e). */
+  readonly devDelegate?: bigint;
   /** Omit the balances of one swap's raw record past this many slots after migration (a missed flow). */
   readonly dropBalancesAfter?: number;
   /** Largest random buy, lamports (default 2 SOL), and the share of a holder's tokens a sell takes (1/n, default 2). */
@@ -154,6 +156,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
             { op: 'extension', program: TOKEN_2022_PROGRAM, mint: pl.mint, ext: { kind: 'TokenMetadata', type: 19 } },
             { op: 'mint-to', program: TOKEN_2022_PROGRAM, mint: pl.mint, amount: SUPPLY },
             ...(p.keepMintAuthority ? [] : [{ op: 'set-authority' as const, program: TOKEN_2022_PROGRAM, account: pl.mint, authorityType: 0, newAuthority: null }]),
+            ...(p.devDelegate === undefined ? [] : [{ op: 'approve' as const, program: TOKEN_2022_PROGRAM, account: devAta, delegate: key(`${seed}:delegate:${p.label}`), amount: p.devDelegate }]),
           ];
           rows.push(raw(s, tx, signature, [pl.mint], balances, ops));
         }
@@ -230,3 +233,6 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
   }
   return { rows: rows.sort(compareRows), mints: out };
 };
+
+/** H17's pool-account record for the synthetic pools: a current layout, no cashback, the creator as coin creator. */
+export const POOL_ACCOUNTS = () => ({ knownAtMs: 0, accountBytes: 300, isCashbackCoin: false, coinCreator: key('coin-creator') });

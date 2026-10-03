@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type { FillConfig } from '../../../core/src/config/index.ts';
 import { holdoutReady, type HoldoutCounts, MIN_DAYS } from '../../../core/src/stats/index.ts';
-import { beginHoldoutRun, failHoldoutRun, readStudyRegistry, sealHoldoutRun, type StudyRegistry, writeStudyRegistry } from './registry.ts';
+import { beginHoldoutRun, failHoldoutRun, g1Blocks, readStudyRegistry, sealHoldoutRun, type StudyRegistry, writeStudyRegistry } from './registry.ts';
 import { runStudy, type StudyRunOptions } from './run.ts';
 import { countsOf, scoreRun, type ScoredTrade } from './score.ts';
 
@@ -98,7 +98,10 @@ export const sealedReady = (reg: StudyRegistry, holdoutId: string, required: num
  * The scoring stage's one read of the sealed outcomes. The caller must have passed the size check; the hash of the
  * files is returned with them so G2 verifies it against the registry before opening (a mismatch burns the holdout).
  */
-export const openSealed = (ledgerPath: string): { readonly sealHash: string; readonly outcomes: Outcomes } => {
+export const openSealed = (ledgerPath: string, reg: StudyRegistry, holdoutIds: readonly string[]): { readonly sealHash: string; readonly outcomes: Outcomes } => {
+  // Never opened on a G1 fail: the registry refuses unless every holdout to score has a latest G1 pass on record.
+  const blocks = holdoutIds.map((id) => g1Blocks(reg, id)).filter((x): x is string => x !== null);
+  if (blocks.length > 0) throw new Error(`the sealed holdout stays closed: ${blocks.join('; ')}`);
   const outcomesPath = outcomesPathOf(ledgerPath);
   return { sealHash: sealHashOf(ledgerPath, outcomesPath), outcomes: JSON.parse(readFileSync(outcomesPath, 'utf8')) as Outcomes };
 };

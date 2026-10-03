@@ -46,6 +46,16 @@
    "U1-2026-09-22-2026-10-20",
    "U2-2026-09-22-2026-10-20"
   ],
+  "procedure": [
+   "Configurations are chosen from practice days only, then frozen and registered before any U1/U2 configuration runs live; whoever selects them reads no live shakedown P&L before the freeze.",
+   "Registering a configuration commits its attempt: at E the attempt is spent whatever happens. Halted, abandoned or short counts as a failed attempt, and the next configuration takes the next level.",
+   "Entries stop at the cutoff E = 2026-10-20T00:00Z (UTC); the observation-only tail (the last entries' full outcome window, plus the margin day 2026-10-20) matures before anything is scored.",
+   "One sealed ledger with one endpoint for U1 and U2: run once, opened once after the tail, never for one universe while another is pending.",
+   "A universe's seal opens only if its latest recorded G1 (practice days, all regimes pooled) passed; the registry refuses otherwise. Once G1 passed and the counts are met, opening is mandatory.",
+   "Required: n >= max(300, n_power, closed form) at family alpha 0.04 (Holm across the 2 universes) on >= 10 Melbourne trade days; short means \"not proven\".",
+   "B5 (2026-10-02T15:47Z) is a decoder boundary, not a market boundary: allowed inside the window, reported before and after as a non-gating line. B2-B4 stay hard.",
+   "Attempt 2 (used only if attempt 1 is opened and fails, or is \"not proven\"): its configuration is registered after attempt 1 is scored; its window starts on the first whole UTC day after that registration and runs 28 days with a fixed entry cutoff and tail relative to that start, at family alpha 0.005 (attempt k: 0.01 / 2^(k-1)), same procedure, opened once."
+  ],
   "sizing": {
    "note": "Pre-registered estimates (supervisor ruling 2026-10-04; end fixed at E by the consensus of the three reviews); no data was read. The holdout entries are registered when the configurations are frozen (RES-3 proposals).",
    "graduatesPerDay": 1270,

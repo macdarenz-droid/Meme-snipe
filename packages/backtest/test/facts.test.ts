@@ -9,7 +9,7 @@ import {
   parseMigration, parseMint, parsePool, parseSolUsd, poolKey, RUG_UNJUDGED_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey,
 } from '../../core/src/gates/index.ts';
 import { seriesReleases } from '../src/dataset/offchain.ts';
-import { FactProjector, mintHashFraction, tieHash } from '../src/sim/facts.ts';
+import { FactProjector, type FactOptions, mintHashFraction, tieHash } from '../src/sim/facts.ts';
 import { Market, rowMoment } from '../src/sim/market.ts';
 import { SOL_USD } from './synthetic.ts';
 import { SLOT_MS, studyWorld, SUPPLY, W0, type MintPlan } from './study-world.ts';
@@ -19,11 +19,11 @@ const U2 = { universe: 'U2', fromMs: 60 * 60_000, toMs: 70 * 60_000, everyMs: 5 
 
 const solUsd = { ...SOL_USD, bars: SOL_USD.bars.map((b, k) => ({ ...b, start: W0 - 6 * 3_600_000 + k * 3_600_000 })) };
 
-const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt') => {
+const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts']) => {
   const { rows, mints } = studyWorld({ mints: plans, slots });
   const facts = new FactProjector({
     sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt,
-    ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
+    ...(tradesFromMs === undefined ? {} : { tradesFromMs }), ...(poolAccounts === undefined ? {} : { poolAccounts }),
   });
   const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
   const events: FeedEvent[] = [];
@@ -113,6 +113,33 @@ describe('fact projector', () => {
     expect(h).toBeGreaterThanOrEqual(0);
     expect(h).toBeLessThan(1);
     expect(mintHashFraction('not-an-address')).toBeNull();
+  });
+
+  it('carries a delegate approved on a token account into the holder read (GATE-1e)', () => {
+    const r = replay([{ ...PLAN, devBuyBps: 300, devDelegate: 1_000n }], SLOTS);
+    const c = r.events.find((e) => e.key.startsWith('check:'))!;
+    const holders = parseHolders(r.events.filter((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
+    const delegated = holders.accounts.filter((a) => a.delegate !== null);
+    expect(delegated).toHaveLength(1);
+    expect(delegated[0]!.delegatedAmount).toBe(1_000n);
+    expect(delegated[0]!.owner).toBe(r.mints[0]!.creator);
+    expect(holders.accounts.filter((a) => a.delegate === null).every((a) => a.delegatedAmount === 0n)).toBe(true);
+  });
+
+  it('adds the pool account record (H17) only as of the moment it is known; without it the fields stay absent', () => {
+    const poolOf = (r: ReturnType<typeof replay>) => {
+      const c = r.events.find((e) => e.key.startsWith('check:'))!;
+      return parsePool(r.events.filter((e) => e.key === poolKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
+    };
+    const none = poolOf(replay([PLAN], SLOTS));
+    expect(none.accountBytes).toBeUndefined();
+    expect(none.pool.isCashbackCoin).toBeUndefined();
+    const rec = { knownAtMs: 0, accountBytes: 300, isCashbackCoin: false, coinCreator: 'C' };
+    const known = poolOf(replay([PLAN], SLOTS, 1, undefined, 'test-salt', () => rec));
+    expect(known).toMatchObject({ accountBytes: 300, pool: { isCashbackCoin: false, coinCreator: 'C' } });
+    const late = poolOf(replay([PLAN], SLOTS, 1, undefined, 'test-salt', () => ({ ...rec, knownAtMs: Number.MAX_SAFE_INTEGER })));
+    expect(late.accountBytes).toBeUndefined();
+    expect(late.pool.isCashbackCoin).toBeUndefined();
   });
 
   it('flags holders and the mint partial after a missed token movement', () => {

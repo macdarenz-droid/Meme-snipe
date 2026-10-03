@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { type PoolState, effectiveQuoteReserve } from '../../../core/src/amm/index.ts';
 import { encodeBase58 } from '../../../core/src/chain/index.ts';
 import type { FillConfig, PolicySession } from '../../../core/src/config/index.ts';
-import { PRICE_SCALE } from '../../../core/src/config/index.ts';
+import { exitsFor, PRICE_SCALE } from '../../../core/src/config/index.ts';
 import { pumpSwapRoundTrip } from '../../../core/src/costs/index.ts';
 import {
   attemptId, blockhash, entryKey, type IntentId, intentId, mint as toMint, positionId, type QuoteContext, reservationId, signature, type TransactionAttempt,
@@ -96,6 +96,8 @@ interface Trade {
   readonly tag: string;
   readonly mint: string;
   readonly pool: string;
+  /** The universe whose exits the position uses (S0 uses the universe it controls for). */
+  readonly universe: 'U1' | 'U2';
   readonly positionId: string;
   readonly notional: MicroUsd;
   readonly stopSpot: bigint;
@@ -313,8 +315,9 @@ export class StudyStrategy implements Strategy {
     const setup = this.#o.mode === 's0' ? this.#s0Stop(u, tape, spot, now) : this.#setup(u, tape, spot, now, ctx, mint, mig!.price);
     if (!setup.ok) return void (stop('setup', 'adverse'), say('no setup', setup.why));
     const stopBps = Number(((spot - setup.stopSpot) * BPS) / spot);
-    const range = atr(tape.bars(), policy.exits.atrPeriod, policy.exits.atrBarMs, now);
-    const stopCheck = checkStopDistance(policy, spot, setup.stopSpot, range);
+    const ux = exitsFor(policy.exits, u.universe);
+    const range = atr(tape.bars(), ux.atrPeriod, ux.atrBarMs, now);
+    const stopCheck = checkStopDistance(policy, u.universe, spot, setup.stopSpot, range);
     if (!stopCheck.ok) return void (stop('stop distance', 'adverse'), say('no entry', `stop ${stopCheck.reason}: ${stopCheck.detail}`));
     if (!canOpenNewEntry(ctx.book).ok) {
       if (this.#o.mode === 'deployment') this.#stats.rejected['R3:book busy'] = (this.#stats.rejected['R3:book busy'] ?? 0) + 1;
@@ -391,7 +394,7 @@ export class StudyStrategy implements Strategy {
     c.entered = true;
     this.#live.add(id);
     this.#trades.set(pid, {
-      tag: c.tag, mint: c.mint, pool, positionId: pid, notional: risk.notional, stopSpot, entrySpot: spot, stopBps,
+      tag: c.tag, mint: c.mint, pool, universe: u.universe, positionId: pid, notional: risk.notional, stopSpot, entrySpot: spot, stopBps,
       fixedCosts: net.signaturesPerTx * net.baseFeePerSignature + net.entryPriorityFee + net.tip + net.tokenAccountRent,
       plan: null, tracker: newTracker(), exits: 0, ladders: new Map(),
     });
@@ -446,7 +449,7 @@ export class StudyStrategy implements Strategy {
         if (!liq.ok) continue;
         const entryExec = execPrice(liq.value, p.quantity);
         t.plan = {
-          openedAtMs: now, notional: t.notional, riskUnit: (p.cost * BigInt(t.stopBps)) / BPS + t.fixedCosts,
+          universe: t.universe, openedAtMs: now, notional: t.notional, riskUnit: (p.cost * BigInt(t.stopBps)) / BPS + t.fixedCosts,
           stopPrice: (entryExec * t.stopSpot) / t.entrySpot, entryReserve: effectiveQuoteReserve(poolState(view)),
         };
       }

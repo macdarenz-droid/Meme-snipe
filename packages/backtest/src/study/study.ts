@@ -5,7 +5,7 @@
 //   4. the sealed holdout, run once (recorded first; a second run burns it), size-checked from its counts;
 //   5. G2: opened only when every check on the counts passes, else "not proven yet" with the seals closed;
 //   6. G0 from the engine proofs and the ledger replay check.
-import type { FillConfig, Policy, ResearchConfig } from '../../../core/src/config/index.ts';
+import { exitsFor, type FillConfig, type Policy, type ResearchConfig } from '../../../core/src/config/index.ts';
 import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { createRng, type DayReturn, type GateResult, MIN_DAYS } from '../../../core/src/stats/index.ts';
 import type { OffchainSeries } from '../dataset/offchain.ts';
@@ -16,7 +16,7 @@ import { replayHashes } from '../proofs.ts';
 import { attemptAlpha, type StudyConfig, configId, studyHash } from '../strategy/config.ts';
 import { g0, g1, g2NotProven, gateG2, type G2Short, pboMatrix, powerOf, trialOf } from './gates.ts';
 import { foldSummary, purge, regimeOf, studyPlan, type StudyPlan } from './plan.ts';
-import { loadOrCreate, readStudyRegistry, recordTrial, register, type StudyRegistry, writeStudyRegistry } from './registry.ts';
+import { g1Blocks, loadOrCreate, readStudyRegistry, recordG1, recordTrial, register, type StudyRegistry, writeStudyRegistry } from './registry.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { type FunnelSummary } from './funnel.ts';
 import { openSealed, runSealedHoldout, sealedReady } from './sealed.ts';
@@ -40,6 +40,7 @@ export interface StudyInputs {
   readonly sampleRate: number | null;
   readonly coverageGaps?: readonly unknown[];
   readonly insiders?: StudyRunOptions['insiders'];
+  readonly poolAccounts?: StudyRunOptions['poolAccounts'];
   readonly registryPath: string;
   /** Where the walk-forward and holdout ledgers go (new files). */
   readonly outDir: string;
@@ -127,7 +128,8 @@ const dayBefore = (day: string, n: number) => new Date(Date.parse(`${day}T00:00:
 
 export const runFullStudy = (i: StudyInputs): StudyReport => {
   const c = i.config;
-  const tail = i.policy.exits.tMaxMs + i.research.s0.endMarginMs;
+  // The longest hold any universe allows (CFG-2: exits per universe), plus S0's end margin.
+  const tail = Math.max(...i.config.universes.map((u) => exitsFor(i.policy.exits, u.universe).tMaxMs)) + i.research.s0.endMarginMs;
   const plan = studyPlan(c, tail);
   // Practice days always; the holdout days (through the observation tail) only when the holdout is run.
   const needed = [...plan.walkForward.days, ...(i.runHoldout ? plan.holdout.days : [])];
@@ -143,6 +145,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     windowEnd: end, study: c, entriesFrom, entriesTo, sampleRate: i.sampleRate,
     ...(i.coverageGaps === undefined ? {} : { coverageGaps: i.coverageGaps }),
     ...(i.insiders === undefined ? {} : { insiders: i.insiders }),
+    ...(i.poolAccounts === undefined ? {} : { poolAccounts: i.poolAccounts }),
     ...(i.regimeBoundaries === undefined ? {} : { regimeBoundaries: i.regimeBoundaries }),
   });
 
@@ -196,6 +199,10 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     // Sensitivity, reported and never gating: the same trades with the token-account rent never returned (fills-2 note).
     const noRent = <T extends { rNetNoRent: number }>(xs: readonly T[]) => xs.map((t) => ({ ...t, rNet: t.rNetNoRent }));
     G1[`${u} all regimes (pooled), sensitivity: no rent recovery`] = g1({ universe: u, configId: ids[u]!, trades: noRent(tradesOf(u)), control: noRent(controlOf(u)) }, reg.trials, matrix, seedNumber(`${i.seed}:g1:${u}:norent`), before);
+    // Coverage exclusions on the pooled line: candidates abstained for missing evidence, count and share (not rejects).
+    const ex = research[u]?.coverageExclusions;
+    const pooled = G1[`${u} all regimes (pooled)`]!;
+    G1[`${u} all regimes (pooled)`] = { ...pooled, notes: [...pooled.notes, `coverage exclusions: ${ex?.mints ?? 0} of ${research[u]?.mints ?? 0} mints${ex?.share == null ? '' : ` (${(ex.share * 100).toFixed(1)}%)`}, abstained for missing evidence, not rejects`] };
   }
 
   // 4. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14).
@@ -218,7 +225,14 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // 5. G2: the scoring stage opens a seal only after that universe's G1 passed (pooled over the practice days, the
   // cross-regime evidence) and then must open it once its counts are met (consensus of the three reviews).
   const entryOf = (u: string) => reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u));
-  const g1Passed = (u: string) => G1[`${u} all regimes (pooled)`]?.passed === true;
+  for (const u of universes) {
+    const e = entryOf(u);
+    if (e !== undefined && !e.burned && e.seal !== 'opened') {
+      reg = recordG1(reg, { holdoutId: e.holdoutId, configId: ids[u]!, passed: G1[`${u} all regimes (pooled)`]?.passed === true, evaluatedOn: `practice ${wfDays[0]}..${wfDays[wfDays.length - 1]} at ${i.startedAt}` });
+    }
+  }
+  writeStudyRegistry(i.registryPath, reg);
+  const g1Passed = (u: string) => g1Blocks(reg, holdoutIdOf(u)) === null;
   const ready = universes.filter((u) => g1Passed(u) && required[u] !== null && sealedReady(reg, holdoutIdOf(u), required[u]!));
   let G2: GateResult;
   if (ready.length === 0) {
@@ -230,7 +244,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     });
     G2 = g2NotProven(shorts);
   } else {
-    const open = openSealed(holdLedger);
+    const open = openSealed(holdLedger, reg, ready.map(holdoutIdOf));
     const r = gateG2({
       scenario: 'conservative', registry: reg.holdouts, nowMs: Date.parse(i.startedAt), rng: createRng(seedNumber(`${i.seed}:g2`)),
       universes: ready.map((u) => ({
@@ -280,7 +294,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       byRegime: Object.fromEntries(universes.map((u) => [u, Object.fromEntries(regimes.map((g) => [g, tradesOf(u).filter((t) => t.regime === g).length]))])),
     },
     completeness: {
-      manifest: completenessManifest({ funding: i.insiders !== undefined, rugs: false, rawForAll: i.rawForAll ?? false }),
+      manifest: completenessManifest({ funding: i.insiders !== undefined, poolAccounts: i.poolAccounts !== undefined, rugs: false, rawForAll: i.rawForAll ?? false }),
       missing: missingEvidence(rejectMix(wf.records)),
     },
     funnel: { research, deployment: admitted },

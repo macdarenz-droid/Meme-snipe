@@ -17,6 +17,8 @@ export interface ManifestRow {
 export interface CompletenessOptions {
   /** A funding supplement (FACTS-1) was given: H13 can be complete. */
   readonly funding: boolean;
+  /** H17's pool-account record (size, cashback flag, coin creator at creation) was given (DATA-1). */
+  readonly poolAccounts: boolean;
   /** A per-deployer rug supplement (RUG-1c) was given: H14's rug half is covered for deployers whose prior mints' trades are outside the dataset. */
   readonly rugs: boolean;
   /** Raw records exist for every create and pool creation (DATA-1 #46), not only the 5% hash sample. */
@@ -35,10 +37,12 @@ export const completenessManifest = (o: CompletenessOptions): ManifestRow[] => {
     { gate: 'H8', input: 'quote at migration, effective quote reserve, SOL/USD', availability: 'rebuilt', source: 'migration event, pool trades replayed with our own trades in, hourly SOL/USD (fixed candles)' },
     { gate: 'H9–H11', input: 'creation, graduation and migration times; 1-minute candles', availability: 'rebuilt', source: 'create, complete and migration events; pool trades' },
     { gate: 'H12', input: 'holders', availability: raw, source: `token balances of every recorded transaction, checked for supply conservation (${rawNote})` },
+    { gate: 'H12', input: 'delegates (GATE-1e)', availability: raw, source: `Approve/ApproveChecked/Revoke/CloseAccount in recorded transactions; an approval in an unrecorded transaction or before the account held the mint is not seen (${rawNote})` },
     { gate: 'H13', input: 'creation-slot buyers', availability: 'rebuilt', source: 'curve trades in the creation slot and the next two' },
     { gate: 'H13', input: 'deployer-funded wallets, dev cluster', availability: o.funding ? 'supplement' : 'missing', source: o.funding ? 'funding supplement (FACTS-1), dated as of the decision' : 'not in the dataset: every candidate is rejected (H16 not-covered)' },
     { gate: 'H14', input: 'mints per deployer in 24 h', availability: 'rebuilt', source: 'every create event (kept for every mint)' },
     { gate: 'H14', input: 'prior rugs within 14 days', availability: o.rugs ? 'supplement' : 'rebuilt', source: o.rugs ? 'RUG-1 labels from the dataset plus the rug supplement (RUG-1c)' : 'RUG-1 labels from recorded trades; a prior mint without its trades (lead-in day, outside the sample, other quote) is unjudged and H14 is not covered for that deployer' },
+    { gate: 'H17', input: 'pool account size, cashback flag, coin creator', availability: o.poolAccounts ? 'supplement' : 'missing', source: o.poolAccounts ? 'pool account at creation, recorded by DATA-1 (coin creator also from CreatePoolEvent)' : 'not in the dataset: every candidate is rejected (H16 missing, needed by H17) until DATA-1 records the pool account at creation' },
     { gate: 'H15', input: 'round-trip simulation', availability: 'live-only veto', source: 'the exact local round-trip quote stands in (§16.3)' },
     { gate: 'H16', input: 'third-party cross-checks', availability: 'live-only veto', source: 'absent in the backtest (§16.3); staleness still applies' },
     { gate: 'R16', input: 'regime gate (survival, on-chain volume, SOL change)', availability: 'missing', source: 'producers pending (FACTS-1); logged, not applied' },

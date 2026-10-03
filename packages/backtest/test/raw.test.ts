@@ -62,6 +62,27 @@ describe('raw records', () => {
     expect(kinds).toContainEqual({ kind: 'unknown', type: 99 });
   });
 
+  it('reads Approve, ApproveChecked, Revoke and CloseAccount on token accounts (delegates, GATE-1e)', () => {
+    const tok = create.meta.innerInstructions[0]!.instructions[1]!.programIdIndex;
+    const amt = (n: number) => [...new Uint8Array(new BigUint64Array([BigInt(n)]).buffer)];
+    const r = compactRaw(rawLine(create, RUG.mint, (meta) => {
+      const g = (meta['innerInstructions'] as { instructions: unknown[] }[])[0]!;
+      g.instructions.push(
+        { programIdIndex: tok, accounts: [2, 3, 4], data: toBase64(new Uint8Array([4, ...amt(500)])), stackHeight: 2 },
+        { programIdIndex: tok, accounts: [2, 1, 5, 4], data: toBase64(new Uint8Array([13, ...amt(70), 6])), stackHeight: 2 },
+        { programIdIndex: tok, accounts: [2, 4], data: toBase64(new Uint8Array([5])), stackHeight: 2 },
+        { programIdIndex: tok, accounts: [6, 4, 4], data: toBase64(new Uint8Array([9])), stackHeight: 2 },
+      );
+    }))!;
+    const ops = r.ops.filter((o) => o.op === 'approve' || o.op === 'revoke');
+    expect(ops.map((o) => o.op)).toEqual(['approve', 'approve', 'revoke', 'revoke']);
+    expect(ops[0]).toMatchObject({ amount: 500n });
+    expect(ops[1]).toMatchObject({ amount: 70n });
+    // ApproveChecked names the delegate third, after the mint; Approve second.
+    expect((ops[0] as { delegate: string }).delegate).not.toBe((ops[1] as { delegate: string }).delegate);
+    expect((ops[0] as { account: string }).account).toBe((ops[2] as { account: string }).account);
+  });
+
   it('keeps token balances of the sampled mints only, with owners', () => {
     const r = compactRaw(rawLine(create, RUG.mint, (meta) => {
       meta['preTokenBalances'] = [{ accountIndex: 3, mint: 'OtherMint1111111111111111111111111111111111', owner: 'o', uiTokenAmount: { amount: '5' } }];
