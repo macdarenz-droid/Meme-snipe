@@ -106,7 +106,7 @@ Itemised $2 round trip on a fresh curve: venue fees $0.050, impact $0.002, netwo
 
 ### 5.3 Cost gate
 
-Reject when the modelled round trip (venue fees both sides + router fee both sides + quoted impact both sides + F/q) exceeds **5%** or **one third of the strategy's median target** ([risk.md](research/risk.md) R12). Close the token account in the same transaction as the full sell, so rent is never a cost ([execution.md](research/execution.md) §6).
+Reject when the modelled round trip (venue fees both sides + router fee both sides + quoted impact both sides + F/q) exceeds **5%** or **one third of the strategy's median target** ([risk.md](research/risk.md)'s R12). Close the token account in the same transaction as the full sell, so rent is never a cost ([execution.md](research/execution.md) §6).
 
 ## 6. Data and evidence
 
@@ -162,6 +162,8 @@ Live entries only when all hold; otherwise paper only, exits keep running ([venu
 
 Off after two consecutive failed checks. Each condition is logged as a feature so its value can be measured.
 
+The backtest applies the same gate with the same code, from historical series read as of the simulated moment (§16.3): graduate survival from the DATA-1 dataset (its 14-day lead-in supplies the first median); curve volume from DefiLlama's daily pump.fun series, using the last full UTC day only; SOL's 24 h change from an hourly SOL/USD series. Live reads the same sources (not a different provider), so the two agree. Execution health has no history: it is a live-only veto (§16.3).
+
 ## 7. Evidence gates
 
 ### 7.1 Hard rejects (any one fails → no entry), cheapest first
@@ -181,11 +183,11 @@ Ranked by evidence strength, then cost. All read from our own chain reads first;
 | H9 | **Instant graduation**: creation to graduation under 5 minutes | 0 (cached) | 76% of graduations; median −97% at +1 h vs −66% ([empirical.md](research/empirical.md) Q2) |
 | H10 | Inside the excluded window: before migration + 60 min | 0 | §3.1 |
 | H11 | **Post-migration pump chase**: price above migration price at +5 min (for U2) or a 1-minute candle above +25% in the last 3 minutes | 0 | Most negative signal measured: median −97% at +1 h |
-| H12 | Concentration after excluding curve ATA, pool vaults, mayhem vault (`BwWK17cb…`), lockers, burns and program accounts: any single holder or the dev ≥ **40%** always rejects; defaults reject above 10% single holder or 35% top-10 (calibrate in paper) | 1–2 | Instant graduations held 47–79% with the dev ([empirical.md](research/empirical.md) Q2 live); [safety.md](research/safety.md) H11, §4 |
-| H13 | Insider supply (dev + creation-slot buyers + deployer-funded wallets) above 15% of circulating (hypothesis, calibrate) | 0 at decision (precomputed) | Bundled accounts held 36.5% on average ([safety.md](research/safety.md) H10) |
-| H14 | Serial deployer: > 2 mints in 24 h or any prior rug | 0–0.4 s | Syndicates average 48.5 tokens ([safety.md](research/safety.md) H9) |
-| H15 | Round-trip simulation (buy then sell in one transaction) fails, or loses more than modelled fees + impact + tolerance; no reverse route at size | 1 call | "Sellable now at expected cost". It cannot prove later sellability; H2–H4 cover that |
-| H16 | Evidence stale or unknown (§6.3), or a cross-check disagrees with our own read of authorities | 0 | Brief rule |
+| H12 | Concentration after excluding curve ATA, pool vaults, mayhem vault (`BwWK17cb…`), lockers, burns and program accounts: any single holder or the dev ≥ **40%** always rejects; defaults reject above 10% single holder or 30% top-10 (the tighter of [risk.md](research/risk.md) R21's 30% and [safety.md](research/safety.md) H11's 35%; calibrate in the backtest) | 1–2 | Instant graduations held 47–79% with the dev ([empirical.md](research/empirical.md) Q2 live); [safety.md](research/safety.md) H11, §4 |
+| H13 | Insider supply (dev + creation-slot buyers + deployer-funded wallets) above 15% of circulating, or the dev's linked cluster above 5% (the tighter value from [risk.md](research/risk.md) R21; hypotheses, calibrate) | 0 at decision (precomputed) | Bundled accounts held 36.5% on average ([safety.md](research/safety.md) H10) |
+| H14 | Serial deployer: > 2 mints in 24 h, or a prior rug within the fixed 14-day lookback of our own index (the same window live and in the backtest; Jupiter `devMints` is a cross-check only) | 0 (own index) | Syndicates have a median of 48.5 tokens ([safety.md](research/safety.md) H9) |
+| H15 | Round-trip simulation (buy then sell in one transaction) fails, or loses more than modelled fees + impact + tolerance; no reverse route at size | 1 call | "Sellable now at expected cost". It cannot prove later sellability; H2–H4 cover that. **Live-only veto** (§16.3): the backtest applies the exact local round-trip quote instead |
+| H16 | Evidence stale or unknown (§6.3), or a third-party cross-check (RugCheck, GoPlus, Jupiter `audit`) disagrees with our own read of authorities | 0 | Brief rule. Staleness applies in both modes (dataset gaps are flagged, never filled); the cross-check part is a **live-only veto** (§16.3) |
 
 ### 7.2 Soft features (scored, logged for calibration)
 
@@ -213,11 +215,11 @@ Limits are written as a fraction of the bankroll B with a dollar value for the t
 | R3 | Open positions | 1, counting an unresolved entry | 1 |
 | R4 | SOL operations reserve | Computed live: token-account rent + missing one-time accounts + WSOL float + 5 exit attempts at the exit fee cap; floor 0.015 SOL. Entries blocked below it | ≥ 0.015 SOL |
 | R5 | Planned risk per trade (1R) | q × s + costs ≤ 2.75% of B; stop distance s ≤ 20% | ≤ $0.55 |
-| R6 | Full-loss reservation | q + maximum costs reserved against the daily and kill budgets before entry | — |
-| R7 | Daily loss trigger | 7.5% of B, realized + marked; pause entries until midnight Melbourne time; exits keep running. Worst case for the day = trigger + one position's principal | −$1.50 |
+| R6 | Full-loss reservation | Before entry, with C = maximum costs of the trade: (a) `q + C ≤ E − 0.7·HWM` (a full loss cannot take equity below the kill line); (b) `L_week + q + C ≤ 0.20·E_week_start` | — |
+| R7 | Daily loss trigger | Entry allowed only while `L_day + C < 0.075·B` (L_day = today's realized + marked loss); otherwise entries pause until midnight Melbourne time; exits keep running. Worst case for the day = trigger + one position's principal and costs | −$1.50 |
 | R8 | Consecutive losses | 2 → 2 h cooldown; 3 → paused for the day; 5 in any 20 → paused until reviewed | — |
-| R9 | Weekly loss trigger | 20% of week-start equity → paused for the week, review required | −$4 |
-| R10 | Kill switch | Equity ≤ 70% of the high-water mark → entries disabled; only the owner re-arms, after a written review | ≤ $14 |
+| R9 | Weekly loss trigger | 20% of week-start equity → paused for the week, review required. The week starts Monday 00:00 Melbourne time | −$4 |
+| R10 | Kill switch | E ≤ 0.7·HWM → entries disabled; only the owner re-arms, after a written review | ≤ $14 |
 | R11 | Entries | 3 live entries per day; 1 per mint per day; no re-entry on a stopped mint for 24 h. The backtest and paper evaluation have no cap | — |
 | R12 | Liquidity floor | Pool liquidity ≥ max($15k, 1,000 × q); U1 also ≥ $50k | ≥ $15k |
 | R13 | Executable-depth cap | Largest q whose quoted entry + exit impact ≤ 1% at current reserves; caps scale with the pool | — |
@@ -225,9 +227,11 @@ Limits are written as a fraction of the bankroll B with a dollar value for the t
 | R15 | No martingale | Never add to a loser, never raise q after a loss, never edit policy mid-session | — |
 | R16 | Regime gate | §6.4 | — |
 
-Sizing: `maximum q = min(q_max, stop-stress size, full-loss allowance after costs, executable-depth cap, cash after reserve, remaining risk budget)`. Trade only if that maximum is at least q_min and the expected net (§5.2) is positive. A tight stop never overrides the full-loss allowance. Sizes step up only by the owner after Gate 4 (§14); any 10% drawdown from the high-water mark returns to q_min.
+Equity E, the high-water mark HWM and all loss figures are measured **net of deposits and withdrawals**: a deposit raises E and HWM by its amount, a withdrawal lowers both, so neither trips a trigger nor moves the kill line relative to trading results.
 
-Why these numbers: at $2 the professional 2%-of-capital rule ($0.40) cannot be met, so the policy compensates at portfolio level. Monte Carlo over 100 trades: with a near-zero edge, P(bankroll ≤ $10) is 9.5% at $2 and 35.5% at $5 without limits, and 0.04% and 5.2% with the daily stop and kill switch ([risk.md](research/risk.md) §1.6). Kelly gives no usable size before hundreds of trades (§1.3 there).
+Sizing: `maximum q = min(q_max, stop-stress size, full-loss allowance after costs, executable-depth cap, cash after reserve, remaining risk budget)`. Trade only if that maximum is at least q_min and the expected net (§5.2) is positive. A tight stop never overrides the full-loss allowance. Sizes step up only by the owner after G5 (§14); any 10% drawdown from the high-water mark returns to q_min.
+
+Why these numbers: at $2 the professional 2%-of-capital rule ($0.40) cannot be met, so the policy compensates at portfolio level. Monte Carlo over 100 trades: with a near-zero edge, P(bankroll ≤ $10) is 9.5% at $2 and 35.5% at $5 without limits, and 0.04% and 5.2% with a $3 (15%) daily stop and a −30% kill switch ([risk.md](research/risk.md) §1.6). Our daily trigger is tighter (7.5%), so those figures are an upper bound for this policy; RISK-1 re-runs the simulation with R7. Kelly gives no usable size before hundreds of trades (§1.3 there).
 
 The trading day for limits and the P&L calendar is the owner's day, Melbourne time.
 
@@ -238,11 +242,11 @@ A stop means **attempt an exit under a defined policy**; it cannot guarantee a p
 | Exit | Rule (paper defaults) | Source |
 | --- | --- | --- |
 | Trigger value | Always the **executable liquidation value** of the position: our size sold into current pool state, net of fees. Never a last-trade print or a candle | brief; [risk.md](research/risk.md) §2.2 |
-| Price stop | Structure-based, distance ≤ s_max (20%) and ≤ 3 × ATR(14, 1-minute); skip the trade if the structure needs more. Never widen a stop | R7 in [risk.md](research/risk.md) |
-| Thesis and flow stops | Exit if the deployer or a linked cluster sells > 2% of supply, pool liquidity falls 30% from entry, the reverse quote fails twice, a sell route disappears (`NO_ROUTES_FOUND`), or net SOL flow is negative for 5 consecutive minutes. These usually fire before the price stop | [risk.md](research/risk.md) R9, [data.md](research/data.md) §2.3 |
-| Time stop | Exit if not ≥ +0.5R by T_flat (15–30 min by strategy); hard T_max 120 min in phase 1 | [risk.md](research/risk.md) R10 |
+| Price stop | Structure-based, distance ≤ s_max (20%) and ≤ 3 × ATR(14, 1-minute); skip the trade if the structure needs more. Never widen a stop | [risk.md](research/risk.md)'s R7 |
+| Thesis and flow stops | Exit if the deployer or a linked cluster sells > 2% of supply, pool liquidity falls 30% from entry, the reverse quote fails twice, a sell route disappears (`NO_ROUTES_FOUND`), or net SOL flow is negative for 5 consecutive minutes. These usually fire before the price stop | [risk.md](research/risk.md)'s R9, [data.md](research/data.md) §2.3 |
+| Time stop | Exit if not ≥ +0.5R by T_flat (15–30 min by strategy); hard T_max 120 min in phase 1 | [risk.md](research/risk.md)'s R10 |
 | Profit taking at q_min | At most two exit transactions: a partial ≥ 50% at ≥ +1.5R (or +100%), then the runner on break-even + costs and a chandelier trail (3 × ATR14 on 1-minute bars). Up to three exits from 2 × q_min | [risk.md](research/risk.md) §3 |
-| Escalation ladder | Normal: priority fee 20k lamports, min-out ≤ 8% below trigger value. Then 60k, then 150k lamports with min-out ≤ 25%, then the owner's emergency cap. At most 5 attempts per exit at ≤ 0.0005 SOL each. Then show "Exit blocked" and keep watching | [execution.md](research/execution.md) §10, [risk.md](research/risk.md) R8 |
+| Escalation ladder | Normal: priority fee 20k lamports, min-out ≤ 8% below trigger value. Then 60k, then 150k lamports with min-out ≤ 25%, then the owner's emergency cap. At most 5 attempts per exit at ≤ 0.0005 SOL each. Then show "Exit blocked" and keep watching | [execution.md](research/execution.md) §10, [risk.md](research/risk.md)'s R8 |
 
 One exit owner holds the quantity being sold, so a stop and a take-profit cannot oversell (CORE-1). A daily cutoff or pause never blocks a protective exit. Every exit sells the full balance and closes the token account in the same transaction unless it is a partial.
 
@@ -304,7 +308,7 @@ flowchart LR
 | Ledger | **SQLite in WAL mode** via built-in `node:sqlite`, one writer, `synchronous=FULL`; hourly encrypted snapshot to Cloudflare R2. Same outbox and atomic reservations as Postgres (`BEGIN IMMEDIATE`, `UNIQUE`). Replaces Postgres: hosted free Postgres sleeps, pauses or expires, and one worker needs no second writer | [security.md](research/security.md) §4.3 |
 | Host | Vultr Frankfurt High Performance, 1 vCPU, 1 GB, **about US$6/month** (Frankfurt holds ~35% of leader slots); Hetzner CX23 Nuremberg as backup and RAM upgrade. **Approved by the owner 2026-10-03** | [security.md](research/security.md) §4 |
 | Watchdog | Cloudflare Worker (on its free `workers.dev` address, so no domain is needed) with a cron every minute + Durable Object heartbeat and lease (free); Healthchecks.io as a second dead-man switch; Telegram alerts. Checks heartbeat age, slot lag against a different RPC, on-chain position versus reported, stop breached with no exit attempt, unresolved intents past expiry, low reserve | [security.md](research/security.md) §5 |
-| Dry-run fallback | Until the VPS exists, the 48 h live dry run runs on chained GitHub Actions jobs with state carried between them; lower fidelity (OPS-1). Free because `macdarenz-droid/Meme-snipe` is public (verified 2026-10-03) | §20 OPS-1 |
+| Dry-run rehearsal | Until the VPS runs, the 48 h dry run can be rehearsed on chained GitHub Actions jobs with state carried between them (RUN-1). Lower fidelity; it counts for no pre-funding item, only a VPS run qualifies (§15). Free because `macdarenz-droid/Meme-snipe` is public (verified 2026-10-03) | §20 RUN-1 |
 | Standby (phase 2) | Exit-only worker on a second provider; its signer may only sell to SOL. A split brain cannot double-buy | same §5.3 |
 | Dashboard access | No inbound ports; Cloudflare Tunnel + Access (email OTP + MFA) on a domain in the owner's Cloudflare account. Until a domain exists the dashboard is not published from the host: the dry run runs headless (Telegram `/status`, evidence reports in the repo) and the app shows those reports; passkey step-up in the app before paper→live, raising a limit, changing the withdrawal address (then a 24 h delay with notice) or withdrawing. The web tier only writes commands to the database; the worker checks them | same §6 |
 | Telegram commands | `/pause` and `/status` only. Never resume, raise limits, withdraw or disable the signer | same §5.2 |
@@ -333,10 +337,10 @@ No secret ever passes through chat, the repo, logs, analytics or a model prompt,
 | `JUPITER_API_KEY` | Quotes, `/execute`, Tokens |
 | `TELEGRAM_BOT_TOKEN` | Alerts and `/pause`, `/status` |
 
-- The GitHub Actions dry-run fallback reads them as environment secrets directly.
+- The GitHub Actions dry-run rehearsal (RUN-1) reads them as environment secrets directly; its logs and artifacts never contain them (checked by a test).
 - The VPS receives them through the deploy handoff in OPS-1: encrypted on GitHub to a key that exists only on the host, so the plain values exist only inside GitHub's secret store and on the host (in an encrypted systemd credential readable only by the worker's user).
 - Rotation: the owner updates the secret in GitHub and re-runs the deploy workflow; the host replaces its credential and restarts the worker after reconciling.
-- A later dashboard settings page may accept keys too (passkey step-up, write-only fields); GitHub secrets stay the default.
+- No dashboard page accepts keys: that would route them through the browser. Adding one later needs the owner's approval and working dashboard auth first.
 - Agents only ever see the names of the secrets, never their values. Workflows never echo them; logs are masked.
 
 ### 12.3 Supply chain
@@ -347,7 +351,7 @@ Exact pins and a frozen lockfile; pnpm `minimumReleaseAge: 10080` (7 days), `tru
 
 ### 13.1 Labels
 
-Execution-aware triple barrier per candidate and barrier configuration, evaluated on executable liquidation value replayed slot by slot, never on candles ([quant.md](research/quant.md) §1.2). Fields: `y_tb`, `r_net` (all costs), touch and exit slots, MFE, MAE, `blocked`, attempts, `entry_filled`, `y_meta` (net > 0), `y_severe` (net ≤ −50% or blocked), `censored` when the window was not fully observed. Store several configurations; each counts as a trial.
+Execution-aware triple barrier per candidate and barrier configuration, evaluated on executable liquidation value replayed slot by slot, never on candles ([quant.md](research/quant.md) §1.2). Fields: `y_tb`, `r_net` (all costs), touch and exit slots, MFE, MAE, `blocked`, attempts, `entry_filled`, `y_meta` (net > 0), `y_severe` (net ≤ −50% or blocked), `censored` when the window was not fully observed. Store several configurations during research; each counts as a trial in the registry. **Exactly one pre-registered configuration per universe** (rules, thresholds, barriers, exits) may enter the holdout.
 
 Rejected candidates are labelled too, so the rules can be audited for what they miss. The schema proposal is in [quant.md](research/quant.md) §9 (approved by the supervisor after review, see LEDGER-1).
 
@@ -365,14 +369,20 @@ Order: historical backtest (walk-forward, then one untouched holdout) → 48-hou
 
 The evidence comes from the **transaction-level historical backtest** (§16.2), not from waiting on live trades: at 3 live entries a day, 300 trades would take over three months. The backtest runs the same engine code as live, blind to the future, on survivorship-free on-chain data (DATA-1 dataset), and takes every eligible candidate (no daily entry cap).
 
-**Sample size, with the power correction from the audit.** The study's first estimate (60–140 trades) sized a confidence interval at 50% power. At 80% power the counts roughly double ([empirical.md](research/empirical.md) Audit #8). For a 95% CI that must exclude zero, the trades needed are `n_power = ⌈((1.96 + 0.84) · σ̂ / 0.05)²⌉`, where σ̂ is the measured per-trade SD of net return and 0.05 is the smallest edge worth trading. That is about **321 trades at σ̂ = 0.32** and about **1,500 at σ̂ = 0.69**. So the holdout must hold **n ≥ max(300, n_power(σ̂))** out-of-sample trades: the owner's 300 is a floor, not a target. σ̂ is estimated on the walk-forward folds, never on the holdout. If the dataset is too short to reach n in the holdout, the answer is "not proven yet" (collect more history), never a smaller n.
+**Sample size, with the power correction from the audit.** The study's first estimate (60–140 trades) sized a confidence interval at 50% power; at 80% power the counts roughly double ([empirical.md](research/empirical.md) Audit #8). The textbook figure for independent trades and one z-test, `⌈((1.96 + 0.84)·σ̂/0.05)²⌉`, is about 321 trades at σ̂ = 0.32 and about 1,500 at σ̂ = 0.69. G2 does not run that test: it uses a day-block bootstrap (trades on one day are correlated, which widens the interval), a comparison with S0 and a Holm correction. So **n_power is found by simulation of the exact G2 rule**: STATS-1 resamples walk-forward returns in day blocks, shifts their mean to +5% net (the smallest edge worth trading), applies the full G2 decision, and takes the smallest n that passes in ≥ 80% of simulations. The holdout must hold **n ≥ max(300, n_power)**: the owner's 300 is a floor, not a target. σ̂ and the day structure come from the walk-forward folds, never from the holdout.
+
+**Holdout discipline** ([quant.md](research/quant.md) §2, review of 2026-10-03):
+- Exactly one pre-registered configuration per universe enters the holdout; with up to three universes (U1–U3), G2 uses a Holm correction across those that enter (family-wise α = 0.05).
+- The holdout is checked for size from trade counts alone, before the separate scoring stage scores any outcome. If n is short, outcomes stay unscored and the answer is "not proven yet" (collect more history); n is never lowered.
+- One look only: once scored, the holdout is **burned** in the registry. New proof needs a new, later window that has never been scored. There is no interim or futility look.
+- The e-process is not part of G2 (it is built for repeated looks); it runs where looks really are repeated: G5 and demotion.
 
 | Gate | Passes when (all) |
 | --- | --- |
-| G0 Data and engine validity (always on) | Dataset is survivorship-free and its coverage audit passes (≥ 95% of migrations seen by a second source); the leak test and the +1-slot shift test pass; 10 replays give identical decision logs; the live/backtest parity test passes; labels are scored in the separate stage and pass the coverage audit (unobserved windows are `censored`, never 0) |
+| G0 Data and engine validity (always on) | Dataset is survivorship-free and its coverage audit passes (≥ 95% of migrations seen by a second source, and every migration that was seen but not decoded is counted and reported: the study's audit found 28 dropped silently, possibly 5–9%); the leak test and the +1-slot shift test pass; 10 replays give identical decision logs; the live/backtest parity test passes; labels are scored in the separate stage and pass the coverage audit (unobserved windows are `censored`, never 0) |
 | G1 Walk-forward (research) | Rules, thresholds and barriers fixed and written down before the holdout is opened; walk-forward mean net > 0 at the one-sided 95% lower bound (day-block bootstrap, conservative scenario); DSR ≥ 0.95 and PBO ≤ 0.25 from the experiment registry; top 1% of trades ≤ 50% of P&L; no day > 25% of P&L; `y_severe` ≤ 10% (upper bound ≤ 15%); blocked-exit upper bound ≤ 5%; calibration checks if a model is used; beats the random control S0 |
-| G2 Holdout (proof, owner rule 6) | Untouched later holdout, evaluated once: **n ≥ max(300, n_power(σ̂)) out-of-sample trades with the 95% CI of mean net return above zero** (conservative scenario); betting e-process wealth ≥ 20 over the holdout sequence; the holdout mean inside the walk-forward's 90% predictive interval. Futility: if n ≥ 400 and the 95% upper bound is below +2%, reject the version |
-| G3 Live dry-run consistency | Over the ≥ 48 h live dry run (§15 item 3): the dry-run paper trades' mean net lies inside the backtest holdout's 90% predictive interval for that number of trades; candidate rates per hour and the reject mix match the backtest within their 95% intervals; median |paper fill − simulated transaction amount| ≤ 0.5 points; the parity test passes on the recorded dry-run data |
+| G2 Holdout (proof, owner rule 6) | Untouched later holdout, scored once, conservative scenario, per universe at its Holm-adjusted level: **n ≥ max(300, n_power) out-of-sample trades with the day-block-bootstrap 95% CI of mean net return above zero**, and the CI of the paired difference against S0 above zero (S0 run on the same eligible candidates and days, averaged over ≥ 200 seeds). Reported but not gating: whether the holdout mean sits inside the walk-forward's 90% predictive interval (a miss triggers a written review) |
+| G3 Live dry-run consistency | From the **qualifying** dry run (§15): candidate rates per hour and the reject mix by reason match the backtest within their 95% intervals; the live-only veto rate is reported; median |paper fill − simulated transaction amount| ≤ 0.5 points; the parity test passes on the recorded data. If the run has ≥ 30 paper trades, their mean net must also lie inside the holdout's 90% predictive interval for that count; with fewer trades (expected: 48 h holds few eligible setups) consistency rests on the rates and reject mix, and the run says so |
 | G4 Canary mechanics (≥ 30 live trades at q_min) | 0 double buys, 0 unreconciled balances, 0 signer policy bypasses; ≤ 3 of 30 first-attempt landing failures and every exit eventually lands; 0 blocked exits; live-minus-paper median ≥ −1 point on the same candidates. Live P&L is reported, not used as proof of edge |
 | G5 Proposal to the owner for larger sizes | ≥ 100 live trades; live e-process ≥ 10 and the backtest gates still passing on the newest data; impact < 0.5% at the proposed size; no platform change in 7 days. **The owner decides** |
 | Demotion (any one) | Reverse e-process ≥ 20; drift alarm on calibration or log loss; miscoverage > 2× target over 100 decisions; a platform change (then re-run the backtest on ≥ 200 post-change candidates); two blocked exits in 30 days; any owner loss limit. Demotion means paper only; exits continue |
@@ -389,10 +399,12 @@ No deposit is asked for until all six pass on the same commit, with evidence kep
 | --- | --- | --- |
 | 1 | Deterministic replay: the same market data replayed 10 times gives identical decision logs | BT-1 (historical), TEST-1 (recorded live) |
 | 2 | Historical backtest: ≥ 30 days (target 60+) of survivorship-free on-chain data, replayed transaction by transaction through the same engine code as live, with zero crashes, illegal states or unreconciled intents | DATA-1 dataset + BT-1 + BT-2 |
-| 3 | Live dry run: the full worker on live feeds for ≥ 48 h, started as soon as the worker exists and run in parallel with other work, with restart and disconnect drills; ≥ 99% uptime; every decision logged with its reasons | WORKER-1 + OPS-1 + TEST-3 |
-| 4 | Dry-run execution: during the live dry run, every paper entry and exit built as a real transaction and simulated on mainnet (never sent); ≥ 95% simulate successfully and amounts match the local quote within tolerance | TEST-2 |
-| 5 | Fault injection: timeouts, stale feeds, rate limits and restarts mid-trade pass the acceptance cases (§18) | TEST-3 |
-| 6 | A proven strategy: in the historical backtest, rules fixed in advance, walk-forward, and a later untouched holdout with ≥ 300 out-of-sample trades whose 95% CI of mean net return is above zero (sample designed for 80% power: n ≥ max(300, n_power)); and the live dry-run paper trades stay consistent with the backtest | BT-2 + STATS-1 (G1, G2) and G3 |
+| 3 | Live dry run: the full worker on live feeds for ≥ 48 h, started as soon as the worker exists and run in parallel with other work, with restart and disconnect drills; ≥ 99% uptime; every decision logged with its reasons | WORKER-1 + RUN-1 on the VPS (OPS-1) |
+| 4 | Dry-run execution: during the live dry run, every paper entry and exit built as a real transaction and simulated on mainnet (never sent); ≥ 95% simulate successfully and amounts match the local quote within tolerance (median ≤ 0.5 points, each ≤ 2 points) | TEST-2, inside the same qualifying run |
+| 5 | Fault injection: timeouts, stale feeds, rate limits and restarts mid-trade pass the acceptance cases (§18) | TEST-3 (CI) plus the drills inside the qualifying run |
+| 6 | A proven strategy: in the historical backtest, rules fixed in advance, walk-forward, and a later untouched holdout with ≥ 300 out-of-sample trades whose 95% CI of mean net return is above zero (sample designed for 80% power: n ≥ max(300, n_power)); and the live dry-run paper trades stay consistent with the backtest | BT-2 + STATS-1 (G1, G2) and G3 from the qualifying run |
+
+**One qualifying dry run.** Items 3 and 4, the drills of item 5, G3 and the parity data must all come from the same run on the same commit, on the **VPS** (Frankfurt), started with the recorder and simulation on from its first minute. The GitHub Actions run (RUN-1 fallback) is a rehearsal: it finds bugs early and its evidence is kept, labelled "rehearsal", but it counts for none of the six items.
 
 Also required by the owner's "blind backtest" rule, and part of the evidence for items 1, 2 and 6: the **leak test** and the **live/backtest parity test** (§16.1).
 
@@ -425,7 +437,29 @@ Proofs (both required, in CI):
 - Discovery delay is modelled too (our measured feed lag), so the engine learns of a token when the live bot would have.
 - Output: the decision log, simulated fills and the ledger, then labels from the separate scoring stage, then the gate report from STATS-1.
 
-### 16.3 Test layers
+### 16.3 Inputs: live and historical
+
+Every input a decision reads, with its historical source. Rule: a live-only input is never *required* in the backtest (otherwise every historical candidate would fail "unknown"). It is a **live-only veto**: in live it may only remove a trade, never add one; in the backtest it is absent, which makes the backtest slightly optimistic. That bias is written into every backtest report, and G3 measures the live veto rate.
+
+| Input (where used) | Live source | Historical source (as of the simulated moment) |
+| --- | --- | --- |
+| Mint program, authorities, extensions (H1–H4) | Mint account read | Mint state at creation plus every later authority or extension change, from DATA-1 |
+| Venue, canonical pool, mayhem, quote mint, LP state (H5–H7) | Pool and curve accounts | Migrate transaction, pool account at creation, LP events, from DATA-1 |
+| Reserves, price, impact, fees (H8, H15 quote, §5) | Account updates and FeeConfig reads | Post-trade reserves in swap events; FeeConfig history (both programs); Global history |
+| Creation time, graduation time, migration price (H9–H11) | Events | Create and migrate events |
+| Holder balances and concentration (H12) | `getTokenLargestAccounts` + owner classification | Rebuilt from every token movement of the mint (trades, plain transfers, burns) |
+| Insider supply, bundles, funders (H13, soft 2–3) | Own stream + background funder lookups | Creation-slot transactions (slots s0 to s0+2, incl. Jito tip transfers) and the first funding transaction of the dev and first 20 buyers, from DATA-1 |
+| Deployer history (H14, soft 4) | Own index, fixed 14-day lookback | Same index built from the dataset's lead-in |
+| Flow, wash and bot metrics (soft 1, 3, 5) | Own stream | Trade events |
+| Metadata and socials (soft 6) | Create event + URI fetch | Create event; URIs are content-addressed (IPFS) so fetching them later returns the same content; non-IPFS URIs marked "unverifiable as of" and excluded |
+| Freshness (H16 staleness) | Receipt times and slot lag | Dataset gaps flagged by DATA-1's coverage audit; candidates inside a gap are rejected the same way |
+| Regime: graduate survival, curve volume, SOL change (§6.4) | Same series as the backtest | Dataset; DefiLlama daily pump.fun volume history; hourly SOL/USD history |
+| Discovery latency, landing, failures (§11) | Measured | Modelled from the measured live distributions |
+| **Live-only vetoes** | H15 `simulateTransaction`; H16 third-party cross-checks (RugCheck, GoPlus, Jupiter `audit`); Jupiter quotes and `feeBps` (the backtest prices direct venue routes only); execution health (§6.4) | None (absent; bias noted) |
+
+**DATA-1 must include** (sent to the DATA-1 session): every transaction touching each mint in the universe (not only swaps: plain transfers, burns, authority and extension changes); mint state at creation; pool accounts at creation with the canonical flag; LP deposit and withdraw events; BOOST events; FeeConfig and pump `Global` history with change slots; the full transactions of slots s0 to s0+2 for each creation; the first funding transaction of the dev and the first 20 buyers; a lead-in of at least 14 days before the first decision day; a coverage report listing gaps by slot range and migrations seen but not decoded; DefiLlama daily volume history for pump.fun and PumpSwap (at least 365 days back from the first decision day); hourly SOL/USD for the whole window; metadata URIs of each mint.
+
+### 16.4 Test layers
 
 | Layer | What it proves | Card |
 | --- | --- | --- |
@@ -434,10 +468,10 @@ Proofs (both required, in CI):
 | Leak and +1-slot shift tests | The engine cannot see the future | ENG-1, BT-1 |
 | Deterministic replay | 10 runs on the same data give identical decision-log hashes | BT-1, TEST-1 |
 | Historical backtest | Pre-funding items 2 and 6 | BT-1, BT-2 |
-| Market recorder and parity | Live inputs recorded with receipt time; replay reproduces live decisions exactly | TEST-1 |
-| Dry-run simulation | Each paper entry and exit built with the real builders and passed to `simulateTransaction` on mainnet; success rate and amount error recorded | TEST-2 |
+| Market recorder and parity | Live inputs recorded with receipt time from the dry run's first minute; replay reproduces live decisions exactly | WORKER-1 (recorder), TEST-1 (parity) |
+| Dry-run simulation | Each paper entry and exit built with the real builders and passed to `simulateTransaction` on mainnet; success rate and amount error recorded | TEST-2 (called by WORKER-1) |
 | Fault injection | Scripted faults in the Feed, adapters and clock: timeouts after a send, a stale feed, 429s, a worker kill mid-trade, a restart with a signed but unsent transaction, a feed gap | TEST-3 |
-| Live dry run | ≥ 48 h on the host with restart and disconnect drills, uptime, memory and journal checks | OPS-1, TEST-3 |
+| Live dry run | ≥ 48 h on the VPS with restart and disconnect drills, uptime, memory and journal checks (rehearsal on GitHub Actions first) | RUN-1, OPS-1, TEST-3 |
 | Copy guard | The web build fails on any flagged AI word (owner rule) | WEB-1 |
 
 ## 17. Dashboard and Android app
@@ -518,9 +552,9 @@ Rules: no exchange API keys in the bot; no card or bank SDK near the signer; the
 
 Done or in progress: units (exact bigint money), CORE-1 lifecycle (PR #3), CORE-2 AMM quotes and costs (PR #2), WEB-1 dashboard shell (PR #1), APP-1 Android preview build, **DATA-1 historical dataset** (pump curve and PumpSwap, transaction-level, survivorship-free; branch `claude/data-historical`).
 
-Cards are ordered by dependency in waves; cards in one wave can run in parallel. The backtester is placed as early as its dependencies allow: the harness (BT-1) lands in Wave B and can run the random control S0 on DATA-1 data immediately; the full strategy backtest (BT-2) runs as soon as gates, risk and exits exist. Estimates are build time including tests, with ±50% uncertainty. Complexity "high" runs on Opus with ultracode, "low" on Sonnet (`CLAUDE.md`). Every card: tests fail before and pass after, `pnpm check` green, merges the base branch before review, and no new dependency without the supervisor's OK.
+Cards are ordered by dependency in waves; cards in one wave can run in parallel. The backtester is placed as early as its dependencies allow: the harness (BT-1) lands in Wave B and can run the random control S0 on DATA-1 data immediately; the full strategy backtest (BT-2) runs as soon as gates, risk and exits exist. Estimates are build time including tests, with ±50% uncertainty. Complexity "high" runs on Opus 5.5 with ultracode, "low" on Sonnet 5.5 at medium effort, each confirmed from the session record (`CLAUDE.md`). Every card: tests fail before and pass after, `pnpm check` green, merges the base branch before review, and no new dependency without the supervisor's OK.
 
-Critical path to the proof: ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) → BT-2.
+Critical paths: the proof, ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) → BT-2; the dry run, (FEED-1, TX-1) → TEST-2 → WORKER-1 + RUN-1 on the OPS-1 host.
 
 ### Wave A (start now)
 
@@ -544,14 +578,14 @@ Critical path to the proof: ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) 
 - Files: `packages/core/src/ledger/**`, migrations.
 - Accept: `node:sqlite`, WAL, one writer, `synchronous=FULL`; outbox and unique intent keys; atomic reservation in one `BEGIN IMMEDIATE`; crash mid-transaction leaves no partial state (test kills the process); schema matches [quant.md](research/quant.md) §9 adapted to SQLite; labels live in tables the engine has no read access to.
 
-**STATS-1 Labels, statistics and promotion gates** · high · 2 h · depends on nothing (pure)
+**STATS-1 Labels, statistics and promotion gates** · high · 2.5–3.5 h · depends on nothing (pure)
 - Goal: the separate scoring stage and the numbers behind §13–§15.
 - Files: `packages/core/src/stats/**`.
-- Accept: triple-barrier labeller on executable value, run after the engine and outside it; day-block bootstrap CI; `n_power`; betting e-process and its reverse; deflated Sharpe and PBO from a trial registry; Clopper–Pearson bounds; predictive intervals for G2 and G3; each gate G0–G5 and demotion as a pure function returning pass and reasons. Checked against the simulations in [quant.md](research/quant.md) §5 (e.g. false-positive rate ≤ α at zero edge).
+- Accept: triple-barrier labeller on executable value, run after the engine and outside it; day-block bootstrap CI; `n_power` by simulating the full G2 rule (§14); Holm correction; paired comparison against S0 over seeds; holdout registry with the burned flag; betting e-process and its reverse (for G5 and demotion); deflated Sharpe and PBO from a trial registry; Clopper–Pearson bounds; predictive intervals for G2 and G3; each gate G0–G5 and demotion as a pure function returning pass and reasons. Checked against the simulations in [quant.md](research/quant.md) §5 (e.g. false-positive rate ≤ α at zero edge).
 
 ### Wave B
 
-**BT-1 Transaction-level backtester and paper fill model** · high · 2.5–3.5 h · depends on ENG-1, DEC-1, CORE-2, DATA-1 dataset format
+**BT-1 Transaction-level backtester and paper fill model** · high · 3–4.5 h · depends on ENG-1, DEC-1, CORE-2, LEDGER-1, DATA-1 dataset format
 - Goal: §16.2 and the §11 paper fill model; the same fill model serves live paper mode.
 - Files: `packages/backtest/**` (harness), `packages/core/src/fills/**` (fill model).
 - Accept: reads the DATA-1 dataset and drives the real engine through a simulated clock; per-slot pool state from events; our order inserted into the real trade sequence after modelled discovery and landing latency, after all real trades in its slot, with later trades seeing our impact; landing, failed-attempt fees, expiry and blocked exits from a recorded seed; base, conservative and optimistic scenarios; 10 runs give identical decision-log hashes; the leak test passes on real data; runs S0 (random control) end to end on ≥ 30 days and reports crashes, illegal states and unreconciled intents (must be 0); throughput reported (target: 30 days in under an hour on one core).
@@ -580,6 +614,18 @@ Critical path to the proof: ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) 
 - Goal: §9.
 - Accept: triggers on executable liquidation value only; flow and thesis stops; time stop; partial plus runner rules by size; escalation ladder with caps; "exit blocked" state; one exit owner; tests for simultaneous triggers and a pool drained inside one update.
 
+**TEST-2 Dry-run transaction simulation** · high · 1.5–2 h · depends on TX-1, FEED-1 (RPC client), ENG-1
+- Goal: pre-funding item 4, as a module the worker calls on every paper entry and exit from the first minute of the dry run.
+- Files: `packages/worker/src/dryrun/**`.
+- Accept: each paper entry and exit is built with the TX-1 builders and passed to `simulateTransaction` (`sigVerify: false`, `replaceRecentBlockhash: true`, current `minContextSlot`); it is never sent (the dry-run build has no send path at all, proven by a test that fails if any send function is reachable); per trade it records success, error, and |simulated amount − local quote| in percentage points; the report computes the success share (pass ≥ 95%) and the amount error (pass: median ≤ 0.5 points and every trade ≤ 2 points; the same 0.5-point bound as G3).
+
+**OPS-1 Host, deploy, watchdog and alerts (VPS)** · high · 2–2.5 h · depends on nothing hard (built against a stub service; the real worker drops in) · hosting approved by the owner 2026-10-03 (Vultr Frankfurt, Hetzner backup); owner has Cloudflare and Telegram accounts; a domain is not assumed
+- Goal: the §12 host ready before the worker exists, so the qualifying dry run (§15) can start on the VPS the moment WORKER-1 and RUN-1 merge; no secret copied by hand, no domain required.
+- **Install (pull-based, started once by the owner):** the owner pastes one command into the Vultr web console. It downloads the install script from a pinned commit of this public repo, checks its SHA-256 against the value printed in the README, creates the worker and signer users and systemd units, enables unattended security updates, closes all inbound ports (SSH key-only or off), generates the host's **age** key pair (private half stays on the host, root-only) and prints only the host's **public** key and a pairing code.
+- **Secret handoff (deploy workflow):** the owner runs the "Deploy" workflow in GitHub and pastes the host's public key into its form (a public key is not a secret). The workflow reads the four repository secrets (§12.2), encrypts them to that public key with age, and publishes the ciphertext as a short-lived release asset tagged with the pairing code. The host polls for it, decrypts, stores the values in encrypted systemd credentials, confirms by Telegram, and the workflow deletes the asset after confirmation or after 15 minutes. Code updates use the same pull path: the host fetches a signed tag from the repo and verifies it before restarting (reconcile first). Trade-off, recorded: ciphertext is briefly public; only the host's private key can open it.
+- **No domain needed:** the watchdog runs on the free `workers.dev` address; the worker posts its HMAC-signed heartbeat there and alerts go to Telegram. Dashboard publishing via Tunnel + Access waits for a domain; until then the dry run is headless.
+- Accept: the install and deploy flows work end to end on a fresh host with test secrets; no secret appears in any log, artifact, commit or the console; systemd units with the §12.1 hardening; Cloudflare cron watchdog and Durable Object heartbeat; Telegram `/pause` and `/status` only; hourly encrypted backup; restore drill; rotation by re-running the deploy workflow.
+
 **UI-2 Dashboard data screens** · high · 2–3 h · depends on WEB-1; worker API contract (starts on fixtures)
 - Goal: §17 screens with real data: funnel, journal, open position, P&L calendar, trade history, profit charts, states, and a backtest report view.
 - Accept: both themes; mobile and desktop; "Not enough trades" until samples exist; copy guard passes; backtest, paper and live never mixed.
@@ -588,40 +634,45 @@ Critical path to the proof: ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) 
 - Goal: §19 screens. Withdraw builds a transfer only to the saved owner address; signing arrives with SIGN-1.
 - Accept: address, QR and copy; two exchanges with steps and costs; withdraw form refuses any other address; passkey step-up hook.
 
-### Wave D
+### Wave D (the dry run starts the moment WORKER-1 and RUN-1 merge)
 
-**BT-2 Historical backtest and strategy study** · high · 2–3 h build, then run time · depends on BT-1, GATE-1, RISK-1, EXIT-1, STATS-1, DATA-1 dataset (≥ 30 days)
+**BT-2 Historical backtest and strategy study** · high · 2–3 h build, then run time · depends on BT-1, GATE-1, RISK-1, EXIT-1, STATS-1, DATA-1 dataset (≥ 30 days plus the 14-day lead-in)
 - Goal: pre-funding items 2 and 6. Run U1, U2 (and U3 after RES-2) against S0 through the real engine.
-- Accept: rules, thresholds and barriers registered before the holdout is opened (experiment registry); walk-forward folds with purge and embargo; one untouched later holdout evaluated once; conservative scenario; G0, G1 and G2 reports written to the repo with the exact commit and dataset hash; a "not proven" result is reported as such, never tuned on the holdout.
+- Accept: exactly one configuration per universe registered before the holdout is opened (experiment registry); walk-forward folds with purge and embargo; one untouched later holdout, scored once and then marked burned in the registry; conservative scenario; Holm correction across the universes that enter; G0, G1 and G2 reports written to the repo with the exact commit and dataset hash; the live-only-veto bias note (§16.3) in the report; a "not proven" result is reported as such, never tuned on the holdout.
 
-**WORKER-1 Always-on worker and API** · high · 2–3 h · depends on FEED-1, GATE-1, RISK-1, EXIT-1, BT-1, LEDGER-1
-- Goal: the engine on the live Feed, unattended, plus a read API and a command endpoint for the dashboard.
+**WORKER-1 Always-on worker, recorder and API** · high · 2.5–3.5 h · depends on FEED-1, GATE-1, RISK-1, EXIT-1, BT-1, LEDGER-1, TX-1, TEST-2
+- Goal: the engine on the live Feed, unattended, with everything the qualifying dry run needs from its first minute: the market recorder and the dry-run simulation hook.
 - Files: `packages/worker/**`.
-- Accept: paper sessions on live data; every decision journaled with reasons; restart recovery before entries; heartbeat payload of [security.md](research/security.md) §5.2; API for funnel, journal, positions, P&L by day, charts, states and backtest reports; commands limited to pause, close and session control, each recorded with its auth level.
+- Accept: paper sessions on live data; every decision journaled with reasons; **the recorder writes every raw live input (feed messages, account updates, slots, receipt times) in the backtest dataset format from process start**; every paper entry and exit goes through TEST-2's simulation; live-only vetoes (§16.3) logged with their rate; restart recovery before entries; heartbeat payload of [security.md](research/security.md) §5.2; API for funnel, journal, positions, P&L by day, charts, states and backtest reports; commands limited to pause, close and session control, each recorded with its auth level.
 
-### Wave E (start the 48-hour live dry run the moment WORKER-1 and OPS-1 run)
+**RUN-1 Dry-run runner (VPS and zero-cost fallback)** · low · 1.5–2 h · depends on WORKER-1's process contract (built in parallel against a stub), OPS-1
+- Goal: start and supervise the 48 h dry run with its drills, on the VPS (qualifying) or on GitHub Actions (rehearsal), and collect the evidence.
+- Accept (both modes): the run starts with recorder and simulation on; scripted restart drills (kill and restart mid-trade at least 3 times) and disconnect drills (drop each feed at least once) at pre-set times; uptime, memory, journal completeness, drill outcomes and the recorded data written to the evidence folder with the commit hash.
+- Accept (fallback mode, used until the VPS runs): chained GitHub Actions jobs (free standard-runner minutes: the repo is public, verified 2026-10-03; if it ever goes private, GitHub Free's 2,000 minutes a month do not cover 48 h). Each job reads the four secrets as environment secrets, runs the worker for up to ~5 h 50 min, saves state (ledger snapshot, recorder files, open paper positions and intents) as an artifact, and triggers the next job, which restores and reconciles before any entry; each job boundary is an extra restart drill. Public repo, so artifacts and logs are world-readable: they hold only public market data, the bot's paper decisions and the ledger, never a secret (a test scans every artifact and log for the secret values and fails the job). Public or keyless endpoints where possible. No signing key exists.
+- The fallback is **lower fidelity** and labelled as rehearsal: runner region is not Frankfurt, shared runner IPs hit rate limits sooner, the public RPC is "not intended for production", handover gaps count against uptime, and GitHub may cancel or delay jobs. **It does not count for §15 items 3, 4 or G3**; it shakes out bugs early and its recorded data can feed TEST-1.
 
-**OPS-1 Host, deploy, watchdog and alerts** · high · 2.5–3 h · depends on WORKER-1 · hosting approved by the owner 2026-10-03 (Vultr Frankfurt, Hetzner backup); owner has Cloudflare and Telegram accounts; a domain is not assumed
-- Goal: §12 deployment for the live dry run, with no secret copied by hand and no domain required, plus a zero-cost fallback so the pre-funding work never waits on the VPS.
-- **Install (pull-based, started once by the owner):** the owner pastes one command into the Vultr web console. It downloads the install script from a pinned commit of this public repo, checks its SHA-256 against the value printed in the README, creates the worker and signer users and systemd units, enables unattended security updates, closes all inbound ports (SSH key-only or off), generates the host's **age** key pair (private half stays on the host, root-only) and prints only the host's **public** key and a pairing code.
-- **Secret handoff (deploy workflow):** the owner runs the "Deploy" workflow in GitHub and pastes the host's public key into its form (a public key is not a secret). The workflow reads the four repository secrets (§12.2), encrypts them to that public key with age, and publishes the ciphertext as a short-lived release asset tagged with the pairing code. The host polls for it, decrypts, stores the values in encrypted systemd credentials, confirms by Telegram, and the workflow deletes the asset after confirmation or after 15 minutes. Code updates use the same pull path: the host fetches a signed tag from the repo and verifies it before restarting (reconcile first). Trade-off, recorded: ciphertext is briefly public; only the host's private key can open it.
-- **No domain needed:** the watchdog runs on the free `workers.dev` address; the worker posts its HMAC-signed heartbeat there and alerts go to Telegram. Dashboard publishing via Tunnel + Access waits for a domain; until then the dry run is headless.
-- Accept (VPS): the install and deploy flows work end to end on a fresh host with test secrets; no secret appears in any log, artifact, commit or the console; systemd units with the §12.1 hardening; Cloudflare cron watchdog and Durable Object heartbeat; Telegram `/pause` and `/status` only; hourly encrypted backup; restore drill; rotation by re-running the deploy workflow.
-- Accept (fallback, used until the VPS runs): the 48 h live dry run on chained GitHub Actions jobs (free standard-runner minutes: the repo is public, verified 2026-10-03; if it ever goes private, GitHub Free's 2,000 minutes a month do not cover 48 h). Each job reads the four secrets as environment secrets, runs the worker for up to ~5 h 50 min, then saves state (SQLite ledger snapshot, recorder files, open paper positions and intents) as an encrypted artifact and triggers the next job, which restores and reconciles before any entry; **each job boundary counts as a restart drill**. Public or keyless endpoints where possible (PumpPortal free feed, Jupiter keyless, public RPC as a check). No signing key exists in this mode (dry-run simulation only).
-- The fallback is **lower fidelity** and its evidence is labelled as such: runner region is not Frankfurt (latency differs), shared runner IPs hit rate limits sooner, the public RPC is "not intended for production", gaps occur at each handover (measured and reported, counted against uptime), and GitHub may cancel or delay jobs. Pre-funding item 3 is fully met only by a run on the VPS; the fallback run counts toward items 1, 4 and 5 and the parity test.
+### Wave E
+
+**TEST-1 Replay and live/backtest parity** · high · 1.5–2 h · depends on WORKER-1 (recorder), BT-1
+- Goal: pre-funding item 1 on live data and the owner's parity proof.
+- Accept: data recorded by the qualifying dry run, replayed through BT-1, reproduces the live decision log exactly (byte-identical after normalising wall-clock fields); 10 replays identical; any divergence reported with the first differing event.
+
+**TEST-3 Fault injection and the G3 report** · high · 1.5–2 h · depends on WORKER-1, RUN-1, STATS-1
+- Goal: pre-funding item 5 and the G3 consistency report from the qualifying run.
+- Accept: each case in §18 is a scripted fault in CI with an expected outcome; the G3 report compares the qualifying dry run with the backtest holdout (mean net when the dry run has enough trades, otherwise candidate rates per hour and the reject mix, see §14) and reports the live-only veto rate.
 
 ### Later (after the pre-funding gate is close)
 
 **SIGN-1 Isolated signer** · high · 3 h · owner approves (`packages/signer/**`) · depends on TX-1, OPS-1
 - §12.1 in full, with golden vectors from Kit in dev only and a policy test for every deny rule.
 
-Totals: Wave A 8–10 h, Wave B 10–13.5 h, Wave C 5–6.5 h, Wave D 4–6 h, Wave E 7.5–9.5 h, SIGN-1 3 h. About 38–49 h of build time; in waves of 3–5 parallel builders roughly 15–20 h of wall time plus reviews. Calendar time added on top: the backtest run itself (hours), the ≥ 48 h live dry run (runs in parallel with Wave E and later work), and DATA-1's collection of 30–60 days of history (its own estimate).
+Totals: Wave A 9–11 h, Wave B 10.5–14.5 h, Wave C 8.5–11 h, Wave D 6–8.5 h, Wave E 3–4 h, SIGN-1 3 h. About 40–52 h of build time; in waves of 3–5 parallel builders roughly 16–21 h of wall time plus reviews (±50%). Calendar time added on top: the backtest run itself (hours), the ≥ 48 h qualifying dry run (starts when WORKER-1 and RUN-1 merge, runs in parallel with Wave E), and DATA-1's collection of history (its own estimate).
 
 ## 21. Open items
 
 Owner actions (no agent can do them):
 - Done 2026-10-03: hosting approved (Vultr Frankfurt about US$6/month, Hetzner backup); Cloudflare and Telegram accounts exist.
-- Create the Vultr server and paste the one install command (OPS-1); store `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY` and `TELEGRAM_BOT_TOKEN` as GitHub repository secrets (§12.2), never in chat. Until the server runs, the dry run uses the GitHub Actions fallback.
+- Create the Vultr server and paste the one install command (OPS-1); store `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY` and `TELEGRAM_BOT_TOKEN` as GitHub repository secrets (§12.2), never in chat. Until the server runs, the dry run can be rehearsed on GitHub Actions (RUN-1), but only a VPS run qualifies (§15).
 - Say whether a domain on Cloudflare is available; without one the dashboard is not published from the host (the dry run does not need it).
 - Check the chosen exchange on AUSTRAC's VASP register; check "Zeroed" on IP Australia before public launch.
 
