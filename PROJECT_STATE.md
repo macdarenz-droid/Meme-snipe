@@ -12,7 +12,7 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61).
+Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61), GATE-1f (#65).
 - **Server:** live and paired.
 - **History:** the download waits on DATA-1's final data-shape PR (#46: full curve and canonical-pool rows, raw records for every create and migration, owner-resolved token movements, regimes).
 - **Building:** the worker, gate-fact producers, start-up seed, rug check, backtest study, signal research, live app view, server extras, and the review fixes.
@@ -35,7 +35,6 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 | FACTS-1 | Shared fact producers, holders (mint-first snapshot), funding, chain volume (PR #54); FACTS-1b adapters after #48 | session_01GDycboQzFrFWxVniy6B6Ps | Opus 5.5 | delta review (session_01UhbBj5bHiTC8AUMzp5db7L) | merge about 7–8 AM |
 | SEED-1, FILL-2 | Start-up seed and downtime fill (PR #45); pool trade-gap fill (claude/fill-2) | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | as-of guard fix; reviewer session_01NZwyB8decLbgxKJoG2cAbP | about 7–8 AM; FILL-2 PR after |
 | RUG-1b/1c | Traded non-rug fixture; on-demand per-deployer rug check; label kinds; materiality measurement | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | validation run on 2 Oct launches | 1c PR about 8:30–9:30 AM |
-| GATE-1f | Mint-first on 'largest' view; delegate min() test | session_01MeeF4VytwgP5sqyAkqM2NS | Opus 5.5 | building | 30 min |
 | RISK-1b, EXIT-1b | Unitized NAV, three capital measures, withdrawal queue (PR #58); partial quotes, retry cost, rent sell-only (PR #55) | session_0135ruSv84BVjo7knvmTCPPK | Opus 5.5 | #55 one test missing; #58 mutation pass; risk reviewer session_017PBUwcGJWG4DJpJKVBcAas | #55 about 7 AM; #58 about 8–9 AM |
 | BT-1c | G0, holdout lock (E = 20 Oct), delays, fills, rent, exit failures, economics (PR #53) | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | fixing P1 pool chain + H1–H3; reviewer session_012efQfLAwWStK3PT6ZW2PHz | about 8–9 AM |
 | BT-2 | Backtest study (PR #41): funnel count first, deployment replay, registry (E fixed, attempt rules) | session_01VBTfAwrhgoCssEzST2J2q5 | Opus 5.5 | building on fixtures; consuming CFG-2 | data from Mon 5 Oct |
