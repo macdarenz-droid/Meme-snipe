@@ -2,13 +2,14 @@ import { useCallback, useState } from 'react';
 import { SampleScope } from '../components/Sample.tsx';
 import { Section } from '../components/ui.tsx';
 import { FundingSheet, type FundingKind } from '../funding/FundingSheet.tsx';
-import { ResultsStats } from '../performance/ResultsStats.tsx';
-import { RiskMeters } from '../performance/RiskMeters.tsx';
-import { Results } from '../performance/Results.tsx';
 import { TokenTable } from '../screens/Home.tsx';
-import { SessionCard } from '../screens/Snipe.tsx';
+import { Snipe } from '../screens/Snipe.tsx';
 import { WalletSummary } from '../screens/Wallet.tsx';
-import { FIXTURE_MARKER, fixtureResults, fixtureResultsSmall, fixtureSession, fixtureTokens, fixtureWallet } from './fixtures.ts';
+import { FIXTURE_MONTH, fixtureApi } from './dashboardFixtures.ts';
+import { States } from './States.tsx';
+import { FIXTURE_MARKER, fixtureSession, fixtureTokens, fixtureWallet } from './fixtures.ts';
+
+const api = fixtureApi();
 
 /** Dev and preview review page. Every value here is made up; the shell shows the "Sample data" marker. */
 export default function Fixtures() {
@@ -20,14 +21,10 @@ export default function Fixtures() {
         <Section title="Discovered" className="span-2">
           <TokenTable rows={fixtureTokens} />
         </Section>
-        <SessionCard session={fixtureSession} />
-        <Section title="Risk">
-          <RiskMeters meters={fixtureResults.risk} />
-        </Section>
-        <Section title="Small sample">
-          <ResultsStats stats={fixtureResultsSmall.stats} />
-        </Section>
-        <Results view={fixtureResults} />
+        <div className="span-2">
+          <Snipe session={fixtureSession} api={api} months={FIXTURE_MONTH} />
+        </div>
+        <States />
         <WalletSummary wallet={fixtureWallet} onFund={setFunding} />
         <FundingSheet kind={funding} onClose={close} savedWallet={fixtureWallet.savedWallet} botWallet={fixtureWallet.botAddress} gatePassed />
       </div>

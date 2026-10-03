@@ -1,0 +1,403 @@
+/*
+ * Dashboard data screens (UI-2). Colours come only from the theme tokens that
+ * test/contrast.test.ts checks; test/dashboard-static.test.ts fails on any raw
+ * colour in this file.
+ */
+
+.dash-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dash-modes {
+  min-width: 270px;
+}
+
+@media (max-width: 599px) {
+  .dash-modes {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+.dash-status .card-head {
+  margin-bottom: 8px;
+}
+
+/* States */
+
+.dash-loading {
+  display: grid;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.dash-skeleton {
+  display: block;
+  height: 12px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--raised) 0%, var(--border) 50%, var(--raised) 100%);
+  background-size: 200% 100%;
+  animation: dash-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes dash-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-skeleton {
+    animation: none;
+  }
+}
+
+.dash-error .empty {
+  border-color: var(--loss);
+}
+
+.dash-error .empty-title {
+  color: var(--loss);
+}
+
+.dash-stale {
+  margin: -4px 0 10px;
+  font-size: 13px;
+  color: var(--loss);
+}
+
+.dash-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dash-flag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--raised);
+  font-size: 13px;
+}
+
+.dash-flag-alert {
+  border-color: var(--loss);
+  color: var(--loss);
+}
+
+.dash-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Funnel */
+
+.dash-stages {
+  display: grid;
+  gap: 8px;
+}
+
+.dash-stage-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+}
+
+.dash-stage-bar {
+  display: block;
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 3px;
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+}
+
+.dash-stage-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--text-2);
+  transition: width 0.4s ease;
+}
+
+.dash-stages li:last-child .dash-stage-bar > span {
+  background: var(--accent);
+}
+
+.dash-rejects > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.dash-rejects > div:last-child {
+  border-bottom: 0;
+}
+
+/* Journal */
+
+.dash-journal {
+  display: grid;
+}
+
+.dash-journal li {
+  border-bottom: 1px solid var(--border);
+}
+
+.dash-journal li:last-child {
+  border-bottom: 0;
+}
+
+.dash-journal-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.dash-journal-row:hover {
+  background: var(--raised);
+}
+
+.dash-journal-main {
+  display: grid;
+  min-width: 0;
+}
+
+.dash-journal-why {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-outcome {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dash-outcome-entered {
+  color: var(--accent);
+}
+
+.dash-outcome-rejected,
+.dash-outcome-no-trade {
+  color: var(--text-2);
+}
+
+@media (max-width: 599px) {
+  .dash-journal-row {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+  .dash-journal-row > .mono {
+    grid-column: 2;
+  }
+}
+
+.dash-reasons {
+  display: grid;
+  gap: 6px;
+  padding-left: 18px;
+  list-style: disc;
+}
+
+/* Open position */
+
+.dash-rules li {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.dash-rules li:last-child {
+  border-bottom: 0;
+}
+
+/* Calendar */
+
+.dash-month {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -8px 0 4px;
+}
+
+.dash-month-step {
+  margin: 0;
+  font-size: 20px;
+}
+
+.dash-month-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.dash-pause {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--text);
+  vertical-align: middle;
+}
+
+.dash-day-count {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 11px;
+  color: var(--text);
+}
+
+@media (max-width: 599px) {
+  .dash-day-count {
+    display: none;
+  }
+}
+
+.dash-month-total {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.dash-month-total dt {
+  color: var(--text-2);
+}
+
+.dash-month-total dd {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* Charts */
+
+.dash-chart svg {
+  display: block;
+  overflow: visible;
+  touch-action: pan-y;
+}
+
+.zero {
+  stroke: var(--text-2);
+  stroke-width: 1;
+}
+
+.bar-gain {
+  fill: var(--gain);
+}
+
+.bar-loss {
+  fill: var(--loss);
+}
+
+.bar-neutral {
+  fill: var(--text-2);
+}
+
+.bar-accent {
+  fill: var(--accent);
+}
+
+.bar-hover {
+  fill: var(--text);
+}
+
+.dash-cost-table {
+  margin-top: 12px;
+}
+
+/* Trades */
+
+.dash-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.dash-total {
+  font-weight: 600;
+}
+
+/* Backtest report */
+
+.dash-verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.dash-verdict-text {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.dash-hash {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.dash-gates {
+  display: grid;
+  gap: 12px;
+}
+
+.dash-gate-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.dash-gate-checks,
+.dash-checks {
+  white-space: normal;
+}
+
+.dash-gate-checks td {
+  height: 36px;
+}
+
+/* Break an interval between its two amounts, never inside one. */
+.stat dd.dash-range {
+  overflow-wrap: normal;
+}

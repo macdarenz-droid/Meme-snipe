@@ -41,6 +41,9 @@ const SHOTS = [
   { name: 'fixtures', hash: '#/dev/fixtures' },
   { name: 'trade-detail', hash: '#/dev/fixtures', openTrade: true },
   { name: 'fixtures-withdraw', hash: '#/dev/fixtures', open: 'Withdraw' },
+  { name: 'decision-detail', hash: '#/dev/fixtures', openDecision: true },
+  { name: 'dashboard-backtest', hash: '#/dev/fixtures', mode: 'Backtest' },
+  { name: 'dashboard-live', hash: '#/dev/fixtures', mode: 'Live' },
 ];
 
 const files = [];
@@ -61,8 +64,10 @@ for (const theme of THEMES) {
       await page.waitForSelector('.page-head h1');
       await page.evaluate(() => document.fonts.ready);
       if (s.open) await page.getByRole('button', { name: s.open, exact: true }).first().click();
+      if (s.mode) await page.getByRole('radio', { name: s.mode, exact: true }).click();
       if (s.openTrade) await page.locator('.row-button').first().click();
-      if (s.open || s.openTrade) await page.waitForSelector('[role="dialog"]');
+      if (s.openDecision) await page.locator('.dash-journal-row').first().click();
+      if (s.open || s.openTrade || s.openDecision) await page.waitForSelector('[role="dialog"]');
       await page.waitForLoadState('networkidle');
       await page.waitForTimeout(400);
       const scroll = await page.evaluate(() => {
@@ -93,7 +98,7 @@ for (const theme of THEMES) {
         for (const m of [...new Set(small)]) problems.push(`${theme} ${w.name} ${s.name}: small target ${m}`);
       }
       const file = `${s.name}-${theme}-${w.width}.png`;
-      await page.screenshot({ path: join(out, file), fullPage: !(s.open || s.openTrade) });
+      await page.screenshot({ path: join(out, file), fullPage: !(s.open || s.openTrade || s.openDecision) });
       files.push(file);
     }
     await context.close();
