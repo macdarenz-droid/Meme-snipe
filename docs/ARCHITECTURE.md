@@ -329,7 +329,7 @@ Exact pins and a frozen lockfile; pnpm `minimumReleaseAge: 10080` (7 days), `tru
 
 Execution-aware triple barrier per candidate and barrier configuration, evaluated on executable liquidation value replayed slot by slot, never on candles ([quant.md](research/quant.md) §1.2). Fields: `y_tb`, `r_net` (all costs), touch and exit slots, MFE, MAE, `blocked`, attempts, `entry_filled`, `y_meta` (net > 0), `y_severe` (net ≤ −50% or blocked), `censored` when the window was not fully observed. Store several configurations; each counts as a trial.
 
-Rejected candidates are labelled too, so the rules can be audited for what they miss. The schema proposal is in [quant.md](research/quant.md) §9 (needs the owner's approval, see LEDGER-1).
+Rejected candidates are labelled too, so the rules can be audited for what they miss. The schema proposal is in [quant.md](research/quant.md) §9 (approved by the supervisor after review, see LEDGER-1).
 
 ### 13.2 Validation protocol
 
@@ -519,7 +519,7 @@ Critical path to the proof: ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) 
 - Files: `packages/core/src/chain/**` (pump `Global`, `BondingCurve`, PumpSwap `Pool`, FeeConfig, Token-2022 mint and every extension type, `TradeEvent`, `BuyEvent`, `SellEvent`, `CreateEvent`, `CompletePumpAmmMigrationEvent`, BOOST events; v0 and v1 message parsing with lookup tables); generated builders from the pinned IDL with Codama (needs the supervisor's OK for the dev dependency).
 - Accept: golden vectors from mainnet accounts and events for each type; signed i128 `virtual_quote_reserves` including negative values; unknown Token-2022 extension types decode as "unknown" (never skipped); canonical-pool PDA check; mayhem flag.
 
-**LEDGER-1 Ledger and storage** · high · 2 h · depends on CORE-1 · **owner approval of the data shape first**
+**LEDGER-1 Ledger and storage** · high · 2 h · depends on CORE-1 · supervisor approves the data shape after review (no personal data; `CLAUDE.md` ruling)
 - Goal: append-only SQLite ledger: observations, feature snapshots, decisions, intents, attempts, fills, positions, reservations, fees and rent, labels, experiment registry, gate results, operator commands. The backtester writes the same ledger to a separate file.
 - Files: `packages/core/src/ledger/**`, migrations.
 - Accept: `node:sqlite`, WAL, one writer, `synchronous=FULL`; outbox and unique intent keys; atomic reservation in one `BEGIN IMMEDIATE`; crash mid-transaction leaves no partial state (test kills the process); schema matches [quant.md](research/quant.md) §9 adapted to SQLite; labels live in tables the engine has no read access to.
@@ -607,7 +607,6 @@ Totals: Wave A 8–10 h, Wave B 10–13.5 h, Wave C 5–6.5 h, Wave D 4–6 h, W
 ## 21. Open items
 
 Owner actions (no agent can do them):
-- Approve the data shape for LEDGER-1 (new kinds of stored data).
 - Approve about $6/month hosting and create the accounts (VPS, Cloudflare, Telegram), and provide free API keys (Helius, Alchemy, Jupiter) when the paper worker is ready to run.
 - Check the chosen exchange on AUSTRAC's VASP register; check "Zeroed" on IP Australia before public launch.
 
