@@ -2,9 +2,10 @@
 // item 1). The version is derived inside the same BEGIN IMMEDIATE as the limit check and the insert.
 import { describe, expect, it } from 'vitest';
 import { openLedger, openLedgerReader } from '../../src/ledger/index.ts';
-import { ACCOUNT_VERSION_TABLES, type Ledger } from '../../src/ledger/ledger.ts';
+import { ACCOUNT_VERSION_EXCLUDED, ACCOUNT_VERSION_TABLES, connectionOf, type Ledger } from '../../src/ledger/ledger.ts';
+import { emptyBook, type Book } from '../../src/lifecycle/index.ts';
 import { lamports } from '../../src/units/index.ts';
-import { attempt, entryIntent, fill } from '../fixtures.ts';
+import { CONFIG, attempt, entryIntent, entryToSubmitted, fill } from '../fixtures.ts';
 import { tempPath } from './helpers.ts';
 
 const LIMITS = { maxHeld: lamports(50_000_000), maxCount: 1 };
@@ -93,10 +94,68 @@ describe('LEDGER-1c: account version', () => {
     again.close();
   });
 
-  it('a reservation without a version (a mirror of decisions already made) keeps the old behaviour', () => {
+  it('a live or paper ledger refuses a reservation without a version; only a backtest ledger may omit it', () => {
+    for (const purpose of ['paper', 'live'] as const) {
+      const ledger = openLedger(tempPath(), purpose);
+      ledger.recordIntent(entryIntent(1), { status: 'risk_approved', ts: 1 });
+      expect(() => reserve(ledger, 1), purpose).toThrow(/account version/);
+      expect(ledger.heldReservations()).toEqual([]);
+      ledger.close();
+    }
+    const mirror = openLedger(tempPath(), 'backtest');
+    mirror.recordIntent(entryIntent(1), { status: 'risk_approved', ts: 1 });
+    expect(reserve(mirror, 1)).toEqual({ ok: true, heldAfter: 20_000_000n });
+    mirror.close();
+  });
+
+  it('a book event that reserves needs the version in a paper ledger, and a stale one throws, checked before any write', () => {
     const ledger = openLedger(tempPath(), 'paper');
-    ledger.recordIntent(entryIntent(1), { status: 'risk_approved', ts: 1 });
-    expect(reserve(ledger, 1)).toEqual({ ok: true, heldAfter: 20_000_000n });
+    const LIMITS = { maxHeld: lamports(10n ** 15n), maxCount: 1_000 };
+    const events = entryToSubmitted(1, 500n);
+    let book: Book = emptyBook(CONFIG);
+    const reserveAt = events.findIndex((e) => e.type === 'intent' && e.event.type === 'reserve_exposure');
+    for (const e of events.slice(0, reserveAt)) book = ledger.recordBookEvent(book, e, { ts: 1, limits: LIMITS, accountVersion: ledger.accountVersion() }).book;
+    const rows = ledger.accountVersion();
+    expect(() => ledger.recordBookEvent(book, events[reserveAt]!, { ts: 2, limits: LIMITS })).toThrow(/account version/);
+    expect(() => ledger.recordBookEvent(book, events[reserveAt]!, { ts: 2, limits: LIMITS, accountVersion: rows - 1n })).toThrow(/stale_snapshot/);
+    expect(ledger.heldReservations()).toEqual([]);
+    expect(ledger.intent('e1')?.status).toBe(book.intents[entryIntent(1).id]?.status); // nothing of the refused event was written
+    book = ledger.recordBookEvent(book, events[reserveAt]!, { ts: 2, limits: LIMITS, accountVersion: rows }).book;
+    expect(ledger.heldExposure()).toBeGreaterThan(0n);
+    ledger.close();
+  });
+
+  it('withSnapshot reads the version and every inner read in one transaction, whatever another connection writes', () => {
+    const path = tempPath();
+    const ledger = openLedger(path, 'paper');
+    for (const n of [1, 2]) ledger.recordIntent(entryIntent(n), { status: 'risk_approved', ts: n });
+    const reader = openLedgerReader(path);
+    const { version, value } = reader.withSnapshot((v) => {
+      const heldBefore = reader.heldExposure();
+      expect(reserve(ledger, 1, ledger.accountVersion()).ok).toBe(true); // a write lands between the inner reads
+      return { v, heldBefore, heldAfter: reader.heldExposure(), versionAfter: reader.accountVersion() };
+    });
+    expect(value.versionAfter).toBe(version); // the snapshot did not move
+    expect(value.heldAfter).toBe(value.heldBefore);
+    expect(reader.accountVersion()).toBeGreaterThan(version); // outside it, the write is visible
+    // A reservation decided from that snapshot is now refused.
+    expect(reserve(ledger, 2, version)).toEqual({ ok: false, reason: 'stale_snapshot' });
+    // The writer has the same API, and an error inside rolls the read transaction back.
+    expect(() => ledger.withSnapshot(() => { throw new Error('boom'); })).toThrow('boom');
+    expect(ledger.withSnapshot((v) => v).version).toBe(ledger.accountVersion());
+    reader.close();
+    ledger.close();
+  });
+
+  it('every ledger table is either counted in the version or excluded with a reason', () => {
+    const ledger = openLedger(tempPath(), 'paper');
+    const tables = connectionOf(ledger).prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
+      .map((r) => String(r['name']));
+    const counted = new Set<string>(ACCOUNT_VERSION_TABLES);
+    const unclassified = tables.filter((t) => !counted.has(t) && ACCOUNT_VERSION_EXCLUDED[t] === undefined);
+    expect(unclassified, 'classify each new table: ACCOUNT_VERSION_TABLES or ACCOUNT_VERSION_EXCLUDED with a reason').toEqual([]);
+    for (const t of Object.keys(ACCOUNT_VERSION_EXCLUDED)) expect(counted.has(t), `${t} is in both lists`).toBe(false);
+    for (const t of [...counted, ...Object.keys(ACCOUNT_VERSION_EXCLUDED)]) expect(tables, `${t} is listed but is not a table`).toContain(t);
     ledger.close();
   });
 
