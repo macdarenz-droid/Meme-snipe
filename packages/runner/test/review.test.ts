@@ -4,12 +4,12 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { STUB_ENTRY, type Health, type JournalLine } from '../src/contract.ts';
+import { REGISTERED_STRATEGIES, STUB_ENTRY, type Health, type JournalLine } from '../src/contract.ts';
 import { LocalControl } from '../src/control.ts';
 import { checkJournal } from '../src/journal.ts';
 import { item4 } from '../src/item4.ts';
 import { makePlan } from '../src/plan.ts';
-import { entryRule, rejections } from '../src/quota.ts';
+import { rejections } from '../src/quota.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Report, type RunMeta, type Sample } from '../src/report.ts';
 import { journalTimes, killReplyValid, runSegment } from '../src/runner.ts';
 import { fullDrills, OPS_OK } from './fixtures.ts';
@@ -122,26 +122,45 @@ describe('5–7. reboot timing and units', () => {
   });
 });
 
-describe('qualifying guard: the registered entry rule, no paper edge, nothing changed between boots', () => {
-  const start = (boot: string, extra: Record<string, unknown>): JournalLine => ({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot, kind: 'start', entry_rule: 'none', paper_edge_ppm: null, s0_salt: null, ...extra }) as JournalLine;
+describe('qualifying guard: one check, qualifying_start, on a named host run', () => {
+  // Start lines as the journal holds them (gapless seq), through checkJournal, so the report sees what a run would.
+  const starts = (...fields: Record<string, unknown>[]) => checkJournal(fields.map((f, i) =>
+    JSON.stringify({ seq: i + 1, ts: '2026-10-04T00:00:00.000Z', boot: `b${i + 1}`, kind: 'start', entry_rule: 'U2-v1', paper_edge_ppm: null, s0_salt: null, qualifying: true, ...f })).join('\n'));
+  const named: RunMeta = { ...meta, name: 'qual-1', strategy: 'U2-v1' };
+  const judge = (j: ReturnType<typeof checkJournal>, m: RunMeta = named, registered: readonly string[] = ['U2-v1']) =>
+    buildReport(m, samples, 10, 100, j, all, [], item4([], 'vps', false), OPS_OK, registered);
   it.each([
-    ['the S0 shakedown', [start('a', { entry_rule: 'S0' })], /entry rule "S0", the registered rule is none/],
-    ['a paper edge', [start('a', { paper_edge_ppm: '5000' })], /paper edge 5000 ppm/],
-    ['a rule change between boots', [start('a', {}), start('b', { entry_rule: 'S0' })], /entry rule changed between boots/],
-    ['a salt change between boots', [start('a', { s0_salt: 'x' }), start('b', { s0_salt: 'y' })], /salt changed between boots/],
-    ['no entry rule at all', [start('a', { entry_rule: undefined })], /entry rule null/],
-  ])('%s is NOT qualifying and fails the run', (_, lines, why) => {
-    const g = entryRule(lines, 'none');
-    expect(g.ok).toBe(false);
-    expect(g.problems.join('; ')).toMatch(why);
-    const r = report(all, { ...OPS_OK, entry_rule: g });
-    expect(r.checks['entry_rule_registered']).toBe(false);
+    ['the S0 shakedown', starts({ entry_rule: 'S0' }), /entry rule "S0", the run's strategy is U2-v1/],
+    ['a paper edge', starts({ paper_edge_ppm: '5000' }), /paper edge 5000 ppm/],
+    ['qualifying not true', starts({ qualifying: false }), /qualifying false/],
+    ['a rule change between boots', starts({}, { entry_rule: 'S0' }), /entry rule changed between boots/],
+    ['a salt change between boots', starts({ s0_salt: 'x' }, { s0_salt: 'y' }), /salt changed between boots/],
+    ['no entry rule at all', starts({ entry_rule: undefined }), /entry rule null/],
+    ['no start line', checkJournal(''), /no start line/],
+  ])('%s is NOT qualifying and fails the run', (_, j, why) => {
+    const r = judge(j);
+    expect(r.checks['qualifying_start']).toBe(false);
+    expect(r.qualifying?.problems.join('; ')).toMatch(why);
     expect(r.pass).toBe(false);
     expect(r.counts).toMatch(/^NOT qualifying: /);
   });
-  it('the registered rule on every boot passes', () => {
-    expect(entryRule([start('a', {}), start('b', {})], 'none')).toMatchObject({ ok: true, seen: ['none'] });
-    expect(entryRule([start('a', { entry_rule: 'U2-v1' })], 'U2-v1').ok).toBe(true);
+  it('a --strategy that is not registered fails, even when every boot runs it', () => {
+    const r = judge(starts({}), named, []);
+    expect(r.checks['qualifying_start']).toBe(false);
+    expect(r.counts).toMatch(/^NOT qualifying: strategy U2-v1 is not registered/);
+    // The shared list: nothing is registered yet, so no named run can qualify today.
+    expect(judge(starts({}), named, REGISTERED_STRATEGIES).checks['qualifying_start']).toBe(false);
+  });
+  it('the registered strategy on every boot, unchanged, passes', () => {
+    const r = judge(starts({}, {}));
+    expect(r.qualifying).toMatchObject({ ok: true, seen: ['U2-v1'] });
+    expect(r.checks['qualifying_start']).toBe(true);
+    expect(r.counts).not.toMatch(/NOT qualifying/);
+  });
+  it('a run without a name is not judged', () => {
+    const r = judge(starts({ entry_rule: 'S0', paper_edge_ppm: '5000', qualifying: false }), meta);
+    expect(r.qualifying).toBeNull();
+    expect(r.checks['qualifying_start']).toBe(true);
   });
 });
 

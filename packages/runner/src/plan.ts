@@ -24,6 +24,8 @@ export interface PlanOptions {
   /** After a restart drill's time, wait this long for an open trade before killing anyway. */
   readonly restartWindowMs?: number;
   readonly feedDropMs?: number;
+  /** The shortest default drop: two health samples. */
+  readonly minFeedDropMs?: number;
   /** RPC-loss drills (all providers at once). */
   readonly rpcDrops?: number;
   readonly rpcDropMs?: number;
@@ -39,7 +41,9 @@ export const makePlan = (o: PlanOptions): readonly Drill[] => {
   const causes = o.causes ?? DEFAULT_CAUSES;
   const restarts = o.restarts ?? (o.causes ? o.causes.length : DEFAULT_CAUSES.length);
   const windowMs = o.restartWindowMs ?? Math.min(H, o.durationMs / (4 * (restarts + 1)));
-  const dropMs = o.feedDropMs ?? Math.min(120_000, o.durationMs / 200);
+  // At least two health samples long (10 s each by default): a shorter drop can fall between samples and read as never
+  // reported (rehearsal 37142749019, a 4.5 s drop).
+  const dropMs = o.feedDropMs ?? Math.min(120_000, Math.max(o.minFeedDropMs ?? 20_000, o.durationMs / 200));
   const rpcDrops = o.rpcDrops ?? 2;
   const rpcDropMs = o.rpcDropMs ?? dropMs;
   if (!(o.durationMs > 0) || restarts < 3) throw new Error('plan needs a positive duration and at least 3 restarts');

@@ -86,7 +86,7 @@ if (cmd === 'scan') {
       commit: { type: 'string' },
       'sample-ms': { type: 'string' },
       'backup-minutes': { type: 'string', default: '60' },
-      // The registered strategy id the worker must run; none is registered yet (BT-2 registers one).
+      // The strategy id every boot must run; a named host run fails qualifying_start unless it is in REGISTERED_STRATEGIES (contract.ts; none yet, BT-2 registers one).
       strategy: { type: 'string', default: 'none' },
       'run-name': { type: 'string' },
       segment: { type: 'string', default: '1' },

@@ -2,7 +2,7 @@
 import { RESTART_CAUSES, type RestartCause } from './contract.ts';
 import type { Item4 } from './item4.ts';
 import type { JournalReport } from './journal.ts';
-import type { CoverageReport, EntryRule, LookupLatency, QuotaReport, Rejections } from './quota.ts';
+import { entryRule, type CoverageReport, type EntryRule, type LookupLatency, type QuotaReport, type Rejections } from './quota.ts';
 import type { Drill } from './plan.ts';
 
 export type Label = 'rehearsal' | 'vps';
@@ -111,6 +111,8 @@ export interface Report {
   readonly runId: string;
   readonly label: Label;
   readonly counts: string;
+  /** The qualifying guard on a named host run's start lines; null for a run without a name. */
+  readonly qualifying: EntryRule | null;
   readonly commit: string;
   readonly commits_seen: readonly string[];
   readonly started: string;
@@ -155,7 +157,6 @@ export interface CauseSummary {
 }
 
 export interface Ops {
-  readonly entry_rule?: EntryRule;
   readonly quota: QuotaReport;
   readonly lookups: LookupLatency;
   readonly coverage: CoverageReport;
@@ -197,7 +198,10 @@ export const buildReport = (
   recorded: readonly RecordedFile[],
   item4: Item4,
   ops: Ops,
+  /** The registered strategies (contract.ts REGISTERED_STRATEGIES); tests pass their own. */
+  registered?: readonly string[],
 ): Report => {
+  const guard = meta.name === undefined ? null : entryRule(journal.starts, meta.strategy ?? 'none', registered);
   const up = uptime(samples, sampleMs, meta.startedAt, endedAt);
   const rss = samples.flatMap((s) => (s.rss_bytes === null ? [] : [s.rss_bytes / MB])).sort((a, b) => a - b);
   const commits = [...new Set(samples.flatMap((s) => (s.git_sha === null ? [] : [s.git_sha])))];
@@ -242,8 +246,10 @@ export const buildReport = (
           (stub || d.cause === 'chain-rebuild' || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
     ),
     coverage_valid: ops.coverage.problems.length === 0,
-    // The registered entry rule on every boot, no paper edge, nothing changed between boots: otherwise NOT qualifying.
-    entry_rule_registered: ops.entry_rule?.ok === true,
+    // A named host run is the qualifying run (a run without a name, a rehearsal or the shakedown, is not judged here):
+    // a start line, every boot on the run's registered --strategy with no paper edge and qualifying true, and neither
+    // the rule nor the salt changed between boots (RUN-1d guard and the re-review of #48, one check).
+    qualifying_start: guard === null || guard.ok,
     // RUN-1d: every planned cause drilled and passed (a crash, a reboot, a host loss, a chain rebuild, RPC loss).
     // A restart cause counts only when a passed drill of it had something to keep; a skipped drill never counts.
     drills_by_cause: [...RESTART_CAUSES, 'rpc'].every((c) => byCause[c]!.planned > 0 && (c === 'rpc' ? byCause[c]!.passed > 0 : byCause[c]!.exercised > 0)),
@@ -258,11 +264,12 @@ export const buildReport = (
     label: meta.label,
     // The fallback never counts (ARCHITECTURE.md §15): it is labelled so in the report itself.
     counts:
-      ops.entry_rule?.ok !== true
-        ? `NOT qualifying: ${ops.entry_rule?.problems.join('; ') ?? 'no entry rule reported'}.`
+      guard !== null && !guard.ok
+        ? `NOT qualifying: ${guard.problems.join('; ')}.`
         : meta.label === 'rehearsal'
         ? 'Rehearsal: counts for none of §15 items 3, 4 or G3. The gaps between GitHub jobs count as down time, so a 48 h rehearsal fails the 99% uptime check by design.'
         : 'VPS run: candidate for §15 item 3 and the drills of item 5 only if every check passes; items 4 and G3 are judged from the same run by TEST-2 and STATS-1.',
+    qualifying: guard,
     commit: meta.commit,
     commits_seen: commits,
     started: new Date(meta.startedAt).toISOString(),

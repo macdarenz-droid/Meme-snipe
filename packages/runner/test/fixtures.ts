@@ -20,7 +20,6 @@ export const OPS_OK: Ops = {
   lookups: lookupLatency([]),
   coverage: coverageGaps([], 0),
   rejections: rejections([]),
-  entry_rule: { expected: 'none', seen: ['none'], ok: true, problems: [] },
 };
 
 /** A passing outcome for every drill of a plan: each restart cause recovered its state, mid-trade. */
