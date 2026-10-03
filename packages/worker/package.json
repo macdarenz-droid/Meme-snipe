@@ -6,6 +6,7 @@
   "exports": {
     "./providers": "./src/providers/index.ts",
     "./scheduler": "./src/scheduler/index.ts",
+    "./facts": "./src/facts/index.ts",
     "./seed": "./src/seed/index.ts"
   },
   "scripts": {
