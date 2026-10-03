@@ -1,0 +1,175 @@
+// Tighten-only overrides. The engine may ask for a stricter policy, never a looser one (CLAUDE.md: code can only
+// load or tighten limits). Raising a cap or lowering a floor needs a new policy version made outside the engine.
+import { policyHash } from './hash.ts';
+import type { Policy } from './policy.ts';
+import { policyIssues } from './validate.ts';
+
+/**
+ * How a field may move in an override:
+ * - max: a cap or trigger. It may fall, never rise (a lower number is stricter).
+ * - min: a floor. It may rise, never fall.
+ * - locked: not a risk limit (a window, a share, an attempt count). Any change needs a new version.
+ * - free: a label.
+ */
+export type Rule = 'max' | 'min' | 'locked' | 'free';
+
+export type RuleTree<T> = T extends bigint | number | string
+  ? Rule
+  : T extends readonly (infer U)[] ? RuleTree<U> : { readonly [K in keyof T]-?: RuleTree<T[K]> };
+
+/** One rule for every field. A new Policy field without a rule here fails to compile. */
+export const POLICY_RULES: RuleTree<Policy> = {
+  schemaVersion: 'locked',
+  name: 'free',
+  capital: { bankroll: 'max', minNotional: 'max', maxNotional: 'max', drawdownResetBps: 'max' },
+  positions: { maxOpen: 'max', maxEntriesPerDay: 'max', maxEntriesPerMintPerDay: 'max', reentryBlockMs: 'min' },
+  reserve: { opsFloor: 'min', exitAttempts: 'min' },
+  loss: {
+    plannedRiskBps: 'max',
+    stopMaxBps: 'max',
+    dailyBps: 'max',
+    weeklyBps: 'max',
+    killSwitchFloorBps: 'min',
+    cooldownAfterLosses: 'max',
+    cooldownMs: 'min',
+    pauseDayAfterLosses: 'max',
+    reviewWindowTrades: 'min',
+    reviewLosses: 'max',
+  },
+  liquidity: { floorUsd: 'min', floorNotionalMultiple: 'min', u1FloorUsd: 'min', maxImpactBps: 'max' },
+  costGate: { maxRoundTripBps: 'max', maxShareOfMedianTargetBps: 'max' },
+  regime: {
+    survivalReserveFloor: 'min',
+    survivalAfterMs: 'locked',
+    survivalMedianDays: 'locked',
+    volumePercentile: 'min',
+    volumeWindowDays: 'locked',
+    solChange24hFloorBps: 'min',
+    failedChecksToDisable: 'max',
+  },
+  gates: {
+    dustPoolMinAtMigration: 'min',
+    instantGraduationMinMs: 'min',
+    excludedWindowMs: 'min',
+    chaseCheckAfterMs: 'locked',
+    chaseMaxAboveMigrationBps: 'max',
+    candleSpikeBps: 'max',
+    candleWindowMs: 'locked',
+    hardHolderBps: 'max',
+    singleHolderBps: 'max',
+    top10Bps: 'max',
+    insiderBps: 'max',
+    serialMaxMints24h: 'max',
+    maxStateSlotLag: 'max',
+    maxQuoteAgeMs: 'max',
+  },
+  exits: {
+    stopAtrMultiple: 'max',
+    deployerSellSupplyBps: 'max',
+    liquidityDropBps: 'max',
+    reverseQuoteFailures: 'max',
+    negativeFlowMinutes: 'max',
+    tFlatMs: 'max',
+    flatMinRBps: 'min',
+    tMaxMs: 'max',
+    partialMinShareBps: 'locked',
+    partialAtRBps: 'locked',
+    trailAtrMultiple: 'max',
+    maxExitTxAtMinNotional: 'locked',
+    maxExitTxAboveDoubleMin: 'locked',
+    ladder: {
+      steps: { priorityFeeLamports: 'max', minOutBelowTriggerBps: 'max' },
+      maxAttempts: 'locked',
+      maxFeePerAttempt: 'max',
+    },
+  },
+};
+
+export type PolicyOverride = DeepPartial<Policy>;
+type DeepPartial<T> = T extends bigint | number | string | boolean | readonly unknown[]
+  ? T
+  : { readonly [K in keyof T]?: DeepPartial<T[K]> };
+
+export interface Refusal {
+  /** loosens: raises a cap or lowers a floor. locked: not changeable by override. invalid: not a consistent policy. */
+  readonly kind: 'loosens' | 'locked' | 'unknown-field' | 'wrong-type' | 'invalid';
+  readonly path: string;
+  readonly reason: string;
+}
+
+export interface Change {
+  readonly path: string;
+  readonly from: bigint | number | string;
+  readonly to: bigint | number | string;
+}
+
+export type OverrideResult =
+  | { readonly ok: true; readonly policy: Policy; readonly versionHash: string; readonly changes: readonly Change[] }
+  | { readonly ok: false; readonly refusals: readonly Refusal[] };
+
+type Json = Record<string, unknown>;
+const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+const merge = (base: unknown, patch: unknown): unknown => {
+  if (isObject(base) && isObject(patch)) {
+    const out: Json = { ...base };
+    for (const [k, v] of Object.entries(patch)) out[k] = k in base ? merge(base[k], v) : v;
+    return out;
+  }
+  return patch === undefined ? base : patch;
+};
+
+const walk = (rule: unknown, cur: unknown, next: unknown, path: string, refusals: Refusal[], changes: Change[]): void => {
+  if (typeof rule === 'string') {
+    if (typeof cur !== typeof next) { refusals.push({ kind: 'wrong-type', path, reason: `${path}: expected ${typeof cur}, got ${typeof next}` }); return; }
+    if (next === cur || rule === 'free') {
+      if (next !== cur) changes.push({ path, from: cur as string, to: next as string });
+      return;
+    }
+    const a = cur as bigint | number;
+    const b = next as bigint | number;
+    if (rule === 'locked') refusals.push({ kind: 'locked', path, reason: `${path}: cannot change by override (${a} to ${b}); needs a new policy version` });
+    else if (rule === 'max' && b > a) refusals.push({ kind: 'loosens', path, reason: `${path}: raises a cap from ${a} to ${b}` });
+    else if (rule === 'min' && b < a) refusals.push({ kind: 'loosens', path, reason: `${path}: lowers a floor from ${a} to ${b}` });
+    else changes.push({ path, from: a, to: b });
+    return;
+  }
+  if (Array.isArray(cur)) {
+    if (!Array.isArray(next) || next.length !== cur.length) { refusals.push({ kind: 'locked', path, reason: `${path}: the number of entries cannot change by override` }); return; }
+    cur.forEach((c, i) => walk(rule, c, next[i], `${path}[${i}]`, refusals, changes));
+    return;
+  }
+  const r = rule as Json;
+  const c = cur as Json;
+  if (!isObject(next)) { refusals.push({ kind: 'wrong-type', path, reason: `${path}: expected an object` }); return; }
+  for (const k of Object.keys(next)) if (!(k in r)) refusals.push({ kind: 'unknown-field', path: `${path}.${k}`, reason: `${path}.${k}: no such policy field` });
+  for (const k of Object.keys(r)) walk(r[k], c[k], next[k], `${path}.${k}`, refusals, changes);
+};
+
+/**
+ * Apply an override to a policy. Refused as a whole if any field loosens a limit, touches a locked field, is unknown or
+ * mistyped, or leaves the policy inconsistent. Never mutates `current`.
+ */
+export const applyOverride = (current: Policy, override: PolicyOverride): OverrideResult => {
+  const next = merge(current, override);
+  const refusals: Refusal[] = [];
+  const changes: Change[] = [];
+  walk(POLICY_RULES, current, next, 'policy', refusals, changes);
+  if (refusals.length > 0) return { ok: false, refusals };
+  const issues = policyIssues(next);
+  if (issues.length > 0) return { ok: false, refusals: issues.map((reason) => ({ kind: 'invalid' as const, path: 'policy', reason })) };
+  const policy = next as Policy;
+  return { ok: true, policy, versionHash: policyHash(policy), changes };
+};
+
+/** Paths of every field that has a rule, for tests that must cover them all. */
+export const ruleLeafPaths = (): string[] => {
+  const out: string[] = [];
+  const visit = (rule: unknown, path: string): void => {
+    if (typeof rule === 'string') { out.push(path); return; }
+    for (const [k, v] of Object.entries(rule as Json)) visit(v, `${path}.${k}`);
+  };
+  visit(POLICY_RULES, 'policy');
+  return out;
+};
+
