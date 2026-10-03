@@ -2,7 +2,7 @@
 // remember (peak price, trail level, partials taken, quote failures, blocked retries), the observation carries the
 // market as of now. Every threshold comes from the session policy. Risk limits are not an input: no daily cutoff,
 // pause or kill latch can block an exit (§8, §18).
-import { MINUTE_MS, type Policy } from '../config/index.ts';
+import { type ExitUniverse, MINUTE_MS, type Policy, exitsFor } from '../config/index.ts';
 import type { ExitReason, PositionStatus } from '../lifecycle/index.ts';
 import type { FillNetwork } from '../fills/index.ts';
 import { BPS_DENOMINATOR, type MicroUsd, mulDiv } from '../units/index.ts';
@@ -30,6 +30,8 @@ export interface Trigger {
 
 /** Fixed at the entry fill. */
 export interface EntryPlan {
+  /** The position's universe; it selects the strategy exits (S0 carries the universe it controls for). */
+  readonly universe: ExitUniverse;
   readonly openedAtMs: number;
   /** Entry notional, for the size rule on how many exits a position may use. */
   readonly notional: MicroUsd;
@@ -176,15 +178,16 @@ export type StopCheck =
 
 /**
  * The price stop an entry may use (§9, R7): below the entry price, at most `loss.stopMaxBps` away and at most
- * `exits.stopAtrTenths` / 10 × ATR away. A structure that needs more skips the trade; a stop is never widened to fit.
+ * the universe's `stopAtrTenths` / 10 × ATR away. A structure that needs more skips the trade; a stop is never widened to fit.
  * Prices are executable prices (PRICE_SCALE); `range` is the ATR as of the entry, null when not enough bars exist.
  */
-export const checkStopDistance = (policy: Policy, entryPrice: bigint, stopPrice: bigint, range: bigint | null): StopCheck => {
+export const checkStopDistance = (policy: Policy, universe: ExitUniverse, entryPrice: bigint, stopPrice: bigint, range: bigint | null): StopCheck => {
+  const { stopAtrTenths } = exitsFor(policy.exits, universe);
   if (stopPrice <= 0n || stopPrice >= entryPrice) return { ok: false, reason: 'stop-not-below-entry', detail: `stop ${stopPrice}, entry ${entryPrice}` };
   const d = entryPrice - stopPrice;
   if (d * BPS > BigInt(policy.loss.stopMaxBps) * entryPrice) return { ok: false, reason: 'too-wide', detail: `distance ${d} above ${policy.loss.stopMaxBps} bps` };
   if (range === null) return { ok: false, reason: 'no-atr', detail: 'not enough bars for the ATR' };
-  if (d * 10n > BigInt(policy.exits.stopAtrTenths) * range) return { ok: false, reason: 'beyond-atr', detail: `distance ${d} above ${policy.exits.stopAtrTenths} tenths of ATR ${range}` };
+  if (d * 10n > BigInt(stopAtrTenths) * range) return { ok: false, reason: 'beyond-atr', detail: `distance ${d} above ${stopAtrTenths} tenths of ATR ${range}` };
   return { ok: true };
 };
 
@@ -210,7 +213,9 @@ const maxOf = (a: bigint | null, b: bigint): bigint => (a !== null && a > b ? a 
 
 /** One update of one position. Pure: the same inputs always give the same step. */
 export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: ExitTracker, obs: ExitObservation): ExitStep => {
-  const x = s.exits;
+  const g = s.exits;
+  // Never a default: a universe without its own block throws.
+  const x = exitsFor(g, plan.universe);
   const now = obs.nowMs;
   const ignored: string[] = [];
   const asOf = <T>(name: string, o: Observed<T> | null): Observed<T> | null => {
@@ -261,14 +266,14 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
   if (elapsed >= x.tMaxMs) fire('time_max', `held ${elapsed} ms`);
   else if (elapsed >= x.tFlatMs && !t.flatMet) fire('time_flat', `target not reached by ${x.tFlatMs} ms`);
   const dev = asOf('deployerSoldBps', obs.deployerSoldBps);
-  if (dev !== null && dev.value > x.deployerSellSupplyBps) fire('deployer_sell', `deployer cluster sold ${dev.value} bps of supply`);
-  if (fresh !== null && quoteReserve(fresh.value) * BPS <= plan.entryReserve * (BPS - BigInt(x.liquidityDropBps))) {
+  if (dev !== null && dev.value > g.deployerSellSupplyBps) fire('deployer_sell', `deployer cluster sold ${dev.value} bps of supply`);
+  if (fresh !== null && quoteReserve(fresh.value) * BPS <= plan.entryReserve * (BPS - BigInt(g.liquidityDropBps))) {
     fire('liquidity_drop', `reserve ${quoteReserve(fresh.value)} vs ${plan.entryReserve} at entry`);
   }
-  if (t.quoteFailures >= x.reverseQuoteFailures) fire('quote_failures', `${t.quoteFailures} reverse quotes failed in a row`);
+  if (t.quoteFailures >= g.reverseQuoteFailures) fire('quote_failures', `${t.quoteFailures} reverse quotes failed in a row`);
   const route = asOf('sellRoute', obs.sellRoute);
   if (route !== null && route.value === 'missing') fire('no_route', 'no sell route');
-  if (negativeRun(obs.flow, x.negativeFlowMinutes, plan.openedAtMs, now)) fire('negative_flow', `net SOL flow negative for ${x.negativeFlowMinutes} minutes`);
+  if (negativeRun(obs.flow, g.negativeFlowMinutes, plan.openedAtMs, now)) fire('negative_flow', `net SOL flow negative for ${g.negativeFlowMinutes} minutes`);
   const full = fired.slice();
 
   const k = BigInt(t.partials + 1);
@@ -282,9 +287,9 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
     return fired.length === 0 ? hold('exit in progress') : { tracker: t, decision: { kind: 'merge', reasons: reasonsOf(fired), fired }, ignored };
   }
 
-  const last = x.ladder.steps.length - 1;
+  const last = g.ladder.steps.length - 1;
   const used = h.exitAttempts;
-  const left = x.ladder.maxAttempts - used;
+  const left = g.ladder.maxAttempts - used;
   // Without a remembered rung (a restart), every attempt went at least one rung up from the first, so `used` is a floor.
   const next = Math.min(Math.max(t.lastRung === null ? 0 : t.lastRung + 1, used), last);
   const exit = (quantity: bigint, partial: boolean, retry: boolean, reasons: readonly ExitReason[]): ExitStep => ({
@@ -304,9 +309,9 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
     // quote pays more than the attempt costs.
     if (t.blockedAtMs === null) t = { ...t, blockedAtMs: now };
     // Retries are single attempts past the ladder, so the book bounds them too when the tracker was lost.
-    const retries = Math.max(t.blockedRetries, used - x.ladder.maxAttempts);
-    if (retries >= x.blockedRetryAttempts) return hold('exit blocked: retries used', fired);
-    if (now < t.blockedAtMs! + x.blockedRetryMs) return hold('exit blocked: waiting to retry', fired);
+    const retries = Math.max(t.blockedRetries, used - g.ladder.maxAttempts);
+    if (retries >= g.blockedRetryAttempts) return hold('exit blocked: retries used', fired);
+    if (now < t.blockedAtMs! + g.blockedRetryMs) return hold('exit blocked: waiting to retry', fired);
     if (!liq.ok) return hold(`exit blocked: ${liq.detail}`, fired);
     if (liq.value <= s.retryCost) return hold('exit blocked: the quote does not cover the attempt', fired);
     t = { ...t, blockedAtMs: null, blockedRetries: retries + 1 };

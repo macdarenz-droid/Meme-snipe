@@ -44,7 +44,7 @@ describe('S0 through the real engine', () => {
     expect(trades.length).toBeGreaterThan(0);
     for (const t of trades) {
       expect(t.exitReason).toBe('time-stop');
-      expect(t.closedAt - t.openedAt).toBeGreaterThanOrEqual(TRIAL_POLICY.exits.tMaxMs);
+      expect(t.closedAt - t.openedAt).toBeGreaterThanOrEqual(TRIAL_POLICY.exits.universes.U2.tMaxMs);
       // A round trip on an unmoving-ish pool loses at least the fees.
       expect(t.net).toBe(t.exitSol - t.entrySol - t.networkBase - t.priority - t.tip - t.rentPaid + t.rentReturned);
     }
