@@ -4,6 +4,7 @@
 // `--reconcile` is the ExecStartPre step: the real worker settles open intents against the chain there.
 import { createHmac } from 'node:crypto';
 import { existsSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -112,12 +113,42 @@ async function beat() {
 }
 
 const bootId = `${Date.now().toString(36)}-${process.pid}`;
+
+// The worker API's health route, loopback only (ARCHITECTURE.md 12.4). `tailscale serve` publishes it to the
+// owner's tailnet. `evidence` lists the dry-run evidence kept on the host (zeroed-check writes the index).
+const healthAddr = process.env.ZEROED_HEALTH_ADDR ?? '';
+let server = null;
+if (healthAddr) {
+  const m = /^(127\.0\.0\.1|\[::1\]):(\d{1,5})$/.exec(healthAddr);
+  if (!m) {
+    console.log('Refused: the worker API must bind loopback only.');
+    process.exit(2);
+  }
+  const evidence = () => {
+    try {
+      const list = JSON.parse(readFileSync('/var/lib/zeroed-index/evidence.json', 'utf8'));
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  };
+  server = createServer((req, res) => {
+    if (req.method !== 'GET' || req.url !== '/health') {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      return res.end('{"error":"not found"}');
+    }
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ stub: true, mode: 'paper', boot: bootId, seq, git_sha: gitSha, paused, signing_key: false, evidence: evidence() }));
+  });
+  server.listen(Number(m[2]), m[1].replace(/[[\]]/g, ''));
+}
 console.log(`Stub worker up: ${loaded.length} of ${NAMES.length} credentials, release ${gitSha.slice(0, 12)}, watchdog ${watchdog ? 'set' : 'not set'}.`);
 event('start', gitSha);
 await beat();
 const timer = setInterval(() => void beat(), intervalMs);
 const stop = () => {
   clearInterval(timer);
+  server?.close();
   event('stop');
   db.close();
   process.exit(0);

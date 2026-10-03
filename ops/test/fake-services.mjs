@@ -1,5 +1,5 @@
 // Local stand-in for github.com (release downloads, dumb-HTTP git), api.github.com (release metadata) and
-// api.telegram.org (sendMessage, setWebhook), for ops/test/e2e.sh. State lives in files under STATE so the
+// api.telegram.org (getUpdates, sendMessage, sendDocument, setWebhook, deleteWebhook, getWebhookInfo), for ops/test/e2e.sh. State lives in files under STATE so the
 // gh and wrangler stubs can share it. Never logs a request URL (a bot token would be in it): the token is
 // only compared with the token Telegram knows and the result recorded as true or false.
 //   STATE=dir GIT_ROOT=dir PORT=8787 node fake-services.mjs
@@ -12,6 +12,14 @@ const GIT_ROOT = process.env.GIT_ROOT;
 // The bot token Telegram knows: $STATE/telegram-token (the test rotates it), read on every request.
 const token = () => readFileSync(join(STATE, 'telegram-token'), 'utf8');
 const rel = (tag) => join(STATE, 'releases', tag);
+// The bot's webhook as Telegram holds it: $STATE/webhook.json ({} when none). The test may overwrite it.
+const webhook = () => {
+  try {
+    return JSON.parse(readFileSync(join(STATE, 'webhook.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+};
 
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -51,6 +59,8 @@ createServer(async (req, res) => {
   if ((m = /^\/bot([^/]+)\/getUpdates$/.exec(p))) {
     // Messages the test "sends to the bot": one JSON object per line in $STATE/updates.jsonl.
     if (m[1] !== token()) return send(401, '{"ok":false}');
+    // Like Telegram: no getUpdates while a webhook is set.
+    if (webhook().url) return send(409, '{"ok":false,"error_code":409,"description":"Conflict: can\'t use getUpdates method while webhook is active"}');
     const offset = Number(new URLSearchParams(body).get('offset') ?? 0);
     const file = join(STATE, 'updates.jsonl');
     const all = existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
@@ -81,12 +91,28 @@ createServer(async (req, res) => {
     appendFileSync(join(STATE, 'telegram.jsonl'), JSON.stringify({ method: 'sendDocument', token_ok: m[1] === token(), chat_id: chat, text: '', bytes: end - start }) + '\n');
     return send(200, '{"ok":true}');
   }
+  if ((m = /^\/bot([^/]+)\/(getWebhookInfo|deleteWebhook)$/.exec(p))) {
+    if (m[1] !== token()) return send(401, '{"ok":false}');
+    if (m[2] === 'deleteWebhook') {
+      writeFileSync(join(STATE, 'webhook.json'), '{}');
+      appendFileSync(join(STATE, 'telegram.jsonl'), JSON.stringify({ method: 'deleteWebhook', token_ok: true, chat_id: '', text: '' }) + '\n');
+      return send(200, '{"ok":true,"result":true}');
+    }
+    const w = webhook();
+    return send(200, JSON.stringify({ ok: true, result: { url: w.url ?? '', has_custom_certificate: false, pending_update_count: 0, ...(w.url ? { max_connections: 40, ip_address: '203.0.113.7', allowed_updates: w.allowed_updates ?? ['message'] } : {}) } }));
+  }
   if ((m = /^\/bot([^/]+)\/(sendMessage|setWebhook)$/.exec(p))) {
     const form = new URLSearchParams(body);
     let fields = Object.fromEntries(form);
     if ((req.headers['content-type'] ?? '').includes('json')) fields = JSON.parse(body);
     const entry = { method: m[2], token_ok: m[1] === token(), chat_id: String(fields.chat_id ?? ''), text: fields.text ?? '', url: fields.url ?? '', has_secret_token: Boolean(fields.secret_token) };
+    // $STATE/fail-setWebhook makes setWebhook fail (Telegram down for that call), for the retry test.
+    if (m[2] === 'setWebhook' && existsSync(join(STATE, 'fail-setWebhook'))) {
+      appendFileSync(join(STATE, 'telegram.jsonl'), JSON.stringify({ ...entry, failed: true }) + '\n');
+      return send(502, '{"ok":false}');
+    }
     appendFileSync(join(STATE, 'telegram.jsonl'), JSON.stringify(entry) + '\n');
+    if (m[2] === 'setWebhook' && entry.token_ok) writeFileSync(join(STATE, 'webhook.json'), JSON.stringify({ url: entry.url, allowed_updates: JSON.parse(fields.allowed_updates ?? '["message"]') }));
     return send(entry.token_ok ? 200 : 401, JSON.stringify({ ok: entry.token_ok }));
   }
   if (GIT_ROOT && p.includes('.git/')) {

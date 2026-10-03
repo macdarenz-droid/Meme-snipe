@@ -13,7 +13,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=/opt/zeroed/current
-ExecStart=/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/runner/src/cli.ts run --mode systemd --run-name %i --state-dir /var/lib/zeroed --evidence-root /var/lib/zeroed-dryrun/evidence --hours 48
+ExecStart=/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/runner/src/cli.ts run --mode systemd --run-name %i --state-dir /var/lib/zeroed --evidence-root /var/lib/zeroed-dryrun/evidence --health-addr 127.0.0.1:8788 --hours 48
 # A crash (exit 1) restarts and resumes by name. Refused (2) or aborted (4) never restarts: the run is over.
 Restart=on-failure
 RestartPreventExitStatus=2 4

@@ -3,8 +3,10 @@
 #  1. GitHub signed it (the merge-commit key pinned at install, i.e. a pull-request merge),
 #  2. it is on the integration branch,
 #  3. every check run on it finished green (public GitHub API), and
-#  4. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
-# Then switch to it and restart the worker, which reconciles before it trades. Runs every 5 minutes.
+#  4. no qualifying dry run is active (its unit, or an unfinished named run in the evidence), and
+#  5. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
+# Then switch to it, apply the release's host files (install.sh --update: scripts, units, RUN-1's units) and
+# restart the worker, which reconciles before it trades. Runs every 5 minutes.
 # Residual risk (DECISIONS.md): write access to the repository is the ability to deploy; the signer
 # (SIGN-1) is the separate guard on funds.
 set -euo pipefail
@@ -15,7 +17,34 @@ git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
   "+refs/tags/deploy:refs/tags/deploy" "+refs/heads/$ZEROED_BRANCH:refs/remotes/origin/$ZEROED_BRANCH" 2>/dev/null || exit 0
 commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
 current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
-[ "$commit" != "$current" ] || exit 0
+
+# apply_host: the deployed release's installer in update mode, so host changes arrive with the code and
+# nobody pastes the install line again. Releases from before --update existed are skipped.
+apply_host() {
+  local c="$1" installer=/opt/zeroed/current/ops/install.sh
+  if ! grep -q -- '--update) UPDATE=1' "$installer" 2>/dev/null; then
+    printf '%s\n' "$c" > "$STATE_DIR/host_applied"
+    return 0
+  fi
+  if bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then
+    printf '%s\n' "$c" > "$STATE_DIR/host_applied"
+    log "Host files from ${c:0:12} applied."
+  else
+    log "Host files from ${c:0:12} failed to apply (see $STATE_DIR/host_update.log); trying again next run."
+    notify "Zeroed host: the host files of ${c:0:12} failed to apply. The server tries again every 5 minutes." || true
+    return 1
+  fi
+}
+
+active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
+
+if [ "$commit" = "$current" ]; then
+  # Deployed, but its host files did not apply yet (a failure last time): try again, under the same gate.
+  [ -n "$current" ] && [ "$(cat "$STATE_DIR/host_applied" 2>/dev/null || true)" != "$current" ] || exit 0
+  [ -z "$(active_run)" ] || exit 0
+  apply_host "$current" || exit 1
+  exit 0
+fi
 
 # GitHub signs every merge it makes with its web-flow key; nothing else is accepted.
 status="$(GNUPGHOME=/etc/zeroed/gnupg git -C "$REPO_DIR" verify-commit --raw "$commit" 2>&1 || true)"
@@ -45,6 +74,13 @@ if [ "$verdict" != green ]; then
   exit 0
 fi
 
+# No deploy while a qualifying dry run is active: one run, one commit (RUN-1's one_commit check).
+run="$(active_run)"
+if [ -n "$run" ]; then
+  log "Waiting on ${commit:0:12}: the qualifying dry run $run is active."
+  exit 0
+fi
+
 if systemctl is-active --quiet zeroed-worker.service; then
   open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
   if [ "$open" != 0 ]; then
@@ -69,6 +105,8 @@ if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json
 else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
+
+apply_host "$commit" || true
 
 # Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
 worker="not started (no keys yet)"

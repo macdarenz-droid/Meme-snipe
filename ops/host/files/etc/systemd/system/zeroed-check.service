@@ -1,0 +1,12 @@
+[Unit]
+Description=Zeroed: stored-key check, Telegram webhook retry and change check, evidence index
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zeroed-check
+UMask=0077
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes

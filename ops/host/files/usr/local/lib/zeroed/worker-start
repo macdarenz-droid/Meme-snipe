@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Starts the worker for zeroed-worker.service (ExecStartPre with --reconcile, then ExecStart) with the RUN-1
+# environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
+# endpoint on, and the worker API on loopback only (tailscale serve publishes it to the tailnet, 17). The
+# deployed release's worker runs once it exists (WORKER-1); until then the host's stand-in. Live is never set
+# here or in any environment file: the worker refuses any mode but paper.
+set -euo pipefail
+. /usr/local/lib/zeroed/logic.sh
+export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on ZEROED_HEALTH_ADDR="$WORKER_API_ADDR"
+entry=/opt/zeroed/current/packages/worker/src/main.ts
+if [ -f "$entry" ]; then
+  cd /opt/zeroed/current
+  exec /usr/local/bin/node --no-warnings "$entry" "$@"
+fi
+exec /usr/local/bin/node /opt/zeroed/stub/worker.mjs "$@"
