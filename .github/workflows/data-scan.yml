@@ -134,8 +134,12 @@ jobs:
         run: |
           go version
           go test ./...
-          go build -trimpath -ldflags "-X main.scannerRevision=${GITHUB_SHA}" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          # The revision is the git tree of the scanner folder: it changes only when the
+          # scanner code does, so workflow-only commits keep cached units valid.
+          rev=$(git rev-parse HEAD:research/historical/scanner)
+          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "SCANNER_REVISION=$rev" >> "$GITHUB_ENV"
       - name: Restore progress for this day
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -231,7 +235,7 @@ jobs:
         if: inputs.mode == 'assemble'
         working-directory: research/historical/scanner
         run: |
-          go build -trimpath -ldflags "-X main.scannerRevision=${GITHUB_SHA}" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          go build -trimpath -ldflags "-X main.scannerRevision=$(git rev-parse HEAD:research/historical/scanner)" -o "$RUNNER_TEMP/bin/zeroed-scan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Assemble the dataset
         if: inputs.mode == 'assemble'

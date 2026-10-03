@@ -230,6 +230,15 @@ for i in $(seq 1 995); do : > "$ds/days/2026-09-20/f$i"; done
 echo '{}' > "$ds/manifest.json"; : > "$ds/qa/report.md"; : > "$ds/qa/report.json"; : > "$ds/qa/parity.json"
 out=$( ( build_release "$ds" "$T/bigrel" ) 2>&1 ) && no "990-asset guard passed" || { [[ "$out" == *"990"* ]] && ok "more than 990 assets refused" || no "asset guard: $out"; }
 
+# ---- scan-day.sh: cached units of another scanner revision are rescanned ----
+o="$T/scanrev"; mkdir -p "$o/units/1047/1-2" "$o/units/1047/3-4" "$o/units/1047/5-6"
+printf '{\n  "scanner_revision": "rOld"\n}\n' > "$o/units/1047/1-2/stats.json"
+printf '{\n  "scanner_revision": "rNew"\n}\n' > "$o/units/1047/3-4/stats.json"
+: > "$T/calls.log"
+SCANNER_REVISION=rNew PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$o" 80 300 > "$T/out.txt" 2>&1
+[[ ! -d "$o/units/1047/1-2" && -d "$o/units/1047/3-4" && -d "$o/units/1047/5-6" ]] && grep -q "rescanning it" "$T/summary.md" &&
+  ok "scan-day: a cached unit of another scanner revision is dropped and rescanned, the rest kept" || no "scan-day revision drop"
+
 # ---- publish-day.sh: one day, published at once, never replaced ----
 pd="$T/pd"; mkdir -p "$pd"; rm -rf "$T/rel/data-day-2026-09-30"; : > "$T/created.log"
 for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json; do echo "$f" > "$pd/$f"; done
