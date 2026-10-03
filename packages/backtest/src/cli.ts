@@ -49,7 +49,13 @@ function* rows(): Generator<DatasetRow> {
   for (const d of days) yield* loadDay(dataset, d);
 }
 
-const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, windowEnd: to };
+const regimeBoundaries = (manifest.regime_boundaries ?? []).map((b) => ({ slot: BigInt(b.slot), label: b.label }));
+/** Block time (ms) of the first block at or after `slot`, from the data. */
+const rowsTimeOfSlot = (slot: bigint): number | null => {
+  for (const r of rows()) if (r.kind === 'block' && r.slot >= slot) return r.blockTime * 1000;
+  return null;
+};
+const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, windowEnd: to, regimeBoundaries };
 
 if (command === 'holdout') {
   const sealed = runHoldout({ ...base, ledgerPath: flag('ledger') });
@@ -107,7 +113,11 @@ if (command === 'holdout') {
     scenario, seed, hashes, identicalReplays: identical, leak, stats: first.stats,
     throughput: { rows: first.stats.rows, elapsedMs: times, rowsPerSecond: Math.round(first.stats.rows / (first.stats.elapsedMs / 1000)), days: days.length,
       projected30DaysMinutes: Math.round(((first.stats.elapsedMs / days.length) * 30) / 60_000) },
-    candidates, entries, trades: trades.length, alerts: first.stats.alerts,
+    candidates, entries, trades: trades.length, alerts: first.stats.alerts, regimeBoundaries: regimeBoundaries.map((b) => ({ slot: b.slot.toString(), label: b.label })),
+    tradesAcrossRegimeBoundary: trades.filter((t) => regimeBoundaries.some((b) => {
+      const at = rowsTimeOfSlot(b.slot);
+      return at !== null && t.openedAt < at && t.closedAt >= at;
+    })).length,
     attempts: Object.fromEntries(['filled', 'failed', 'dropped', 'expired', 'in_flight'].map((o) => [o, first.attempts.filter((a) => a.outcome === o).length])),
   };
   writeFileSync(flag('out', 'report.json'), `${JSON.stringify(report, null, 1)}\n`);

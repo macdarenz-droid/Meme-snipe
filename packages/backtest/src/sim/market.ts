@@ -89,6 +89,8 @@ export interface MarketOptions {
   readonly active: () => boolean;
   /** Puts a derived event (a discovery) into the replay. */
   readonly schedule: (e: FeedEvent) => void;
+  /** Slots where the chain's programs changed (DATA-1 manifest): a `regime` event at the first block at or after each. */
+  readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
   /** Off-chain series, each released at the first block at or after a value's usable moment. */
   readonly series?: readonly { readonly key: string; readonly releases: readonly { readonly at: number; readonly bar: SeriesBar }[] }[];
 }
@@ -99,6 +101,9 @@ export class Market {
   readonly #opts: MarketOptions;
   readonly #seriesAt: number[];
   readonly #discovered = new Set<string>();
+  #regimeAt = 0;
+  /** The regime boundary the data is past, or null before the first. */
+  regime: string | null = null;
   /** Symbols from CreateEvents, for the report only. */
   readonly symbols = new Map<string, string>();
   /** Blocks seen so far: the backtest's block height. */
@@ -146,6 +151,12 @@ export class Market {
     const m = rowMoment(row);
     const value = { blockHeight: this.blockHeight, blockTime: row.blockTime };
     const out: FeedEvent[] = [];
+    const bounds = this.#opts.regimeBoundaries ?? [];
+    while (this.#regimeAt < bounds.length && bounds[this.#regimeAt]!.slot <= row.slot) {
+      const b = bounds[this.#regimeAt++]!;
+      this.regime = b.label;
+      out.push(this.#market(`g:${b.slot}`, m, 'regime', { label: b.label, slot: b.slot }));
+    }
     (this.#opts.series ?? []).forEach((s, k) => {
       // The latest value usable by this block; older ones it skips over are superseded.
       let last: SeriesBar | null = null;

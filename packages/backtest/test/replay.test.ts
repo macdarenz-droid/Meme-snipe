@@ -62,3 +62,17 @@ describe('CSV', () => {
     expect(out).toEqual([['a', 'b', 'c'], ['1', 'x, "y"\nz', '3'], ['4', '', '6']]);
   });
 });
+
+describe('regime boundaries', () => {
+  test('the engine sees a regime event at the first block at or after the boundary slot, never before', async () => {
+    const { Market } = await import('../src/sim/market.ts');
+    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, regimeBoundaries: [{ slot: 12n, label: 'pump-2026-10-02' }] });
+    const at = (slot: number) => market.release({ kind: 'block', slot: BigInt(slot), blockTime: slot, parentSlot: BigInt(slot - 1) });
+    expect(at(10).length).toBe(0);
+    expect(at(11).length).toBe(0);
+    const e = at(13);
+    expect(e.map((x) => x.kind === 'market' && x.key)).toEqual(['regime']);
+    expect(market.regime).toBe('pump-2026-10-02');
+    expect(at(14).length).toBe(0);
+  });
+});

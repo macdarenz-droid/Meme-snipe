@@ -33,6 +33,8 @@ export interface RunOptions {
   readonly s0?: Partial<S0Config>;
   /** Extra events (a planted leak marker), merged into the replay. */
   readonly extraEvents?: readonly FeedEvent[];
+  /** Program-change slots from the dataset manifest (regime boundaries). */
+  readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
 }
 
 export interface RunStats {
@@ -116,6 +118,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     discoveryLag: (mint) => Math.max(1, drawDiscoverySlots(createRng(`${o.seed}:discovery:${mint}`), scenario)),
     active: live,
     schedule: (e) => replay!.schedule(e),
+    ...(o.regimeBoundaries === undefined ? {} : { regimeBoundaries: [...o.regimeBoundaries].sort((a, b) => (a.slot < b.slot ? -1 : 1)) }),
     series: o.series.map((s) => ({ key: s.name === 'SOL/USD' ? 'sol-usd' : s.name, releases: seriesReleases(s) })),
   });
   const discoveries = new Map<string, Discovery>();
