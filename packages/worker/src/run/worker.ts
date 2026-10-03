@@ -113,6 +113,11 @@ export interface WorkerDeps {
   readonly staleFeedMs: number;
   /** Plain status lines for the process log (never a key or a URL). */
   readonly log: (line: string) => void;
+  /**
+   * TEST-3's fault seam: every paper-world answer (send result, status, balance read) passes through it on its way to
+   * the feed. Null loses it (an API call that timed out after the send); another event replaces it. Tests only.
+   */
+  readonly worldFault?: (event: BookEvent) => BookEvent | null;
 }
 
 export interface SeedRequest {
@@ -259,7 +264,10 @@ export class Worker {
       this.#exposedFile.write({ trades: [...new Set([...before.trades, ...killed])].sort(), fromMs: before.trades.length === 0 ? since : Math.min(before.fromMs, since) });
     }
     this.#world = new PaperWorld({
-      report: (event) => void this.#report(event),
+      report: (event) => {
+        const e = d.worldFault === undefined ? event : d.worldFault(event);
+        if (e !== null) this.#report(e);
+      },
       book: () => this.#engine.book,
       seed, scenario: d.scenario, network: d.network,
       ladderFees: d.session.policy.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint),
