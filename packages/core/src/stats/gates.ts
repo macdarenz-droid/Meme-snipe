@@ -3,9 +3,9 @@
 // a file or the network. Thresholds default to the documented values; overrides may only tighten them
 // (loosening needs the owner and a change to the defaults here).
 
-import { dayBlockMeanDiffInterval, dayBlockMeanInterval, type DayReturn } from './bootstrap.ts';
+import { dayBlockMeanDiffInterval, dayBlockMeanInterval, DEFAULT_REPLICATES, type DayReturn } from './bootstrap.ts';
 import { describeSummary, G2_SENSITIVITY_VARIANTS, g2Rule, g2Sensitivity, MIN_DAYS, sameSummary, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
-import { attemptAlpha, burnHoldout, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
+import { burnHoldout, dayFromNumber, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
 import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
 import { mean, median, sd, variance } from './descriptive.ts';
@@ -380,6 +380,8 @@ export interface G2Universe {
   readonly walkForward: readonly ClusteredReturn[];
   /** n_power from `simulateG2Power` on the walk-forward data with the registry's family size. */
   readonly power: G2PowerResult;
+  /** G1 passed for this configuration: a precondition for opening the seal (a G1 fail keeps it sealed). */
+  readonly g1Passed: boolean;
 }
 
 export interface G2Input {
@@ -432,7 +434,10 @@ export interface G2Result extends GateResult {
 /**
  * G2 Holdout (proof, owner rule 6), ARCHITECTURE.md §14. Per universe at its Holm-adjusted level: n ≥ max(300, n_power)
  * (n_power simulated; the closed form is a lower-bound check), the day-block CI of mean net return above 0 and the paired
- * CI against S0 above 0. Size comes from the sealed counts; a short universe stays sealed and is "not proven". Every
+ * CI against S0 above 0. The test is two-sided at each level, so the false-pass rate for a positive-edge claim is α/2
+ * (one-sided 0.025 at 0.05). The level comes from the registry's attempt; the requirement is the number frozen before
+ * any count; the seal opens only after the tail and a G1 pass. Size comes from the sealed counts; a universe short at
+ * its cutoff is a spent attempt ('short') and "not proven". Every
  * entering seal is verified first (hash, configuration, entry count) and only then opened; any mismatch burns that
  * holdout and fails the gate without opening the others. A burned holdout fails on integrity. Passes when at least one
  * universe passes; the predictive interval is a note, not a check.
@@ -443,16 +448,21 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   const notes: string[] = [];
   let registry = input.registry;
   const failWith = (): G2Result => ({ ...result('G2', c, 'fail', {}), universes: [], registry });
-  // Each universe's holdout attempt sets its family α (0.04 first, then 0.01 / 2^(k − 1)); a call tests every universe
-  // at the smallest α among them, never above the familyAlpha threshold.
+  // Each universe's holdout attempt sets its family α in the registry (0.04 first, then 0.01 / 2^(k − 1)); a call tests
+  // every universe at the smallest α among them, never above the familyAlpha threshold.
   const alphaOf = (holdoutId: string): number => {
     const e = registry.entries.find((x) => x.holdoutId === holdoutId);
-    return Math.min(th.familyAlpha, e ? attemptAlpha(e.attempt) : th.familyAlpha);
+    return Math.min(th.familyAlpha, e ? e.alpha : th.familyAlpha);
   };
   const alpha = Math.min(...input.universes.map((u) => alphaOf(u.holdoutId)), th.familyAlpha);
   const level0 = alpha / registry.familySize;
+  const nowDay = dayFromNumber(Math.floor(input.nowMs / MS_PER_DAY));
+  // p-values resolve the smallest Holm level: about 20 / level replicates.
+  const replicates = input.replicates ?? DEFAULT_REPLICATES;
+  const minReplicates = Math.ceil(20 / level0);
 
   // Integrity that needs no outcome and changes nothing.
+  c.add('replicates', replicates >= minReplicates, `${replicates} bootstrap replicates (need >= 20 / ${fmt(level0)} = ${minReplicates})`);
   c.add('scenario', input.scenario === 'conservative', `scenario "${input.scenario}" (need "conservative")`);
   c.add('universes', input.universes.length > 0 && input.universes.length <= registry.familySize,
     `${input.universes.length} universes (need 1..${registry.familySize}, the family size fixed in the registry)`);
@@ -466,6 +476,11 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     else if (e.burned) c.add(tag, false, `holdout ${u.holdoutId} is burned (${e.burnReason}): integrity`);
     else if (e.universe !== u.universe) c.add(tag, false, `holdout ${u.holdoutId} belongs to ${e.universe}`);
     else if (e.seal !== 'sealed') c.add(tag, false, `holdout ${u.holdoutId} is ${e.seal}, not sealed`);
+    if (e && !e.burned) {
+      c.add(`n_power seed ${u.universe}`, e.requirement !== null && u.power.seed === e.requirement.nPowerSeed,
+        `n_power seed ${u.power.seed}, frozen ${e.requirement?.nPowerSeed ?? 'none'}`);
+      c.add(`G1 ${u.universe}`, u.g1Passed, u.g1Passed ? 'G1 passed' : `G1 did not pass for ${u.configId}: the holdout stays sealed`);
+    }
     c.add(`S0 ${u.universe}`, u.controlRuns.length >= th.minControlSeeds, `${u.controlRuns.length} S0 seeds (need >= ${th.minControlSeeds})`);
     c.add(`n_power ${u.universe}`, Math.abs(u.power.level - level0) < 1e-12,
       `n_power was simulated at level ${fmt(u.power.level)}, attempt α ${fmt(alpha)} over the registry's family of ${registry.familySize} needs ${fmt(level0)}`);
@@ -482,18 +497,33 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     c.add(`walk-forward clusters ${u.universe}`, wfUnclustered === 0, `${wfUnclustered} walk-forward trades without a creator or funder cluster (need 0)`);
   }
   if (c.failed.length > 0) return failWith();
+  // The seal opens only after the observation tail has matured; before that nothing changes and nothing is proven.
+  for (const u of input.universes) {
+    const e = registry.entries.find((x) => x.holdoutId === u.holdoutId)!;
+    c.add(`tail ${u.universe}`, nowDay >= e.tailEnd, `today ${nowDay}; the seal stays closed until ${e.tailEnd}`);
+  }
+  if (c.failed.length > 0) return { ...result('G2', c, 'not-proven', {}), universes: [], registry };
 
-  // Size from the sealed counts alone.
+  // Size from the sealed counts alone, against the requirement frozen before any count was read. The frozen number is
+  // the requirement; it may not sit below max(300, n_power, closed form) recomputed now.
   const sized = input.universes.map((u) => {
     const e = registry.entries.find((x) => x.holdoutId === u.holdoutId)!;
     const wf = u.walkForward.map((t) => t.rNet);
     const closed = wf.length >= 2 && sd(wf) > 0 ? nPower(sd(wf), 0.05, { alpha: level0 }) : 0;
-    const required = Math.max(th.minTradesFloor, u.power.nPower, closed);
+    const computed = Math.max(th.minTradesFloor, u.power.nPower, closed);
+    const required = e.requirement!.requiredTrades;
+    c.add(`requirement ${u.universe}`, required >= computed,
+      `frozen ${required} trades (need >= max(${th.minTradesFloor}, simulated n_power ${u.power.nPower}, closed form ${closed}) = ${computed})`);
     const ready = holdoutReady(e, required, MIN_DAYS);
     c.add(`sample ${u.universe}`, ready,
-      `${e.counts!.entries} sealed entries on ${e.counts!.entryDays} days (need >= max(${th.minTradesFloor}, simulated n_power ${u.power.nPower}, closed form ${closed}) = ${required}, on >= ${MIN_DAYS} days)`);
-    return { u, e, required, ready };
+      `${e.counts!.entries} sealed entries on ${e.counts!.entryDays} days at the cutoff (need >= ${required}, on >= ${MIN_DAYS} days)`);
+    return { u, e, required, ready, fits: required >= computed };
   });
+  if (sized.some((x) => !x.fits)) return failWith();
+  // A window short at its cutoff is a failed attempt: it is recorded as spent ('short') and is "not proven".
+  for (const { e, ready } of sized) {
+    if (!ready) registry = burnHoldout(registry, e.holdoutId, 'short', `${e.counts!.entries} entries on ${e.counts!.entryDays} days at the cutoff`).registry;
+  }
   const entering = sized.filter((x) => x.ready);
 
   // Verify every entering seal before opening any: configuration, hash and the entry count of the file to score.
@@ -511,7 +541,9 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   if (c.list.some((x) => !x.passed && x.name.startsWith('seal '))) return failWith();
 
   for (const { u, e, required } of entering) {
-    const step = openHoldout(registry, e.holdoutId, { configId: u.configId, ledgerHash: u.ledgerHash, requiredTrades: required, minDays: MIN_DAYS, nowMs: input.nowMs });
+    const step = openHoldout(registry, e.holdoutId, {
+      configId: u.configId, ledgerHash: u.ledgerHash, requiredTrades: required, minDays: MIN_DAYS, nowMs: input.nowMs, nowDay, g1Passed: u.g1Passed,
+    });
     registry = step.registry;
     if (!step.ok) {
       c.add(`seal ${u.universe}`, false, step.reason);
@@ -520,7 +552,7 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   }
 
   // Score: the G2 rule per universe, then Holm across the universes that entered.
-  const opts = { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) };
+  const opts = { rng: input.rng, replicates };
   // The primary rule (1-day blocks), then every other resampling unit (review STATS-1b): the universe's p is the
   // largest, so it passes only if every CI excludes zero. The intervals are reported at the family level (95%).
   const scored = entering.map(({ u }) => {

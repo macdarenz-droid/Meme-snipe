@@ -6,7 +6,7 @@ import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/confi
 import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { runAndSealHoldout, runHoldout } from '../src/holdout.ts';
-import { createHoldoutRegistry, holdoutReady, registerHoldout } from '../../core/src/stats/index.ts';
+import { createHoldoutRegistry, freezeRequirement, holdoutReady, registerHoldout } from '../../core/src/stats/index.ts';
 import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
 import { buildReport } from '../src/report.ts';
 import { runBacktest, type RunOptions } from '../src/run.ts';
@@ -196,7 +196,9 @@ describe('holdout mode', () => {
 
   test('seals in the STATS-1 registry; the size check reads the counts alone', () => {
     let reg = createHoldoutRegistry(1);
-    reg = registerHoldout(reg, { holdoutId: 'h-u2', universe: 'U2', configId: 's0-u2', fromDay: '2026-09-20', toDay: '2026-09-20' });
+    reg = registerHoldout(reg, { holdoutId: 'h-u2', universe: 'U2', configId: 's0-u2', fromDay: '2026-09-20', toDay: '2026-09-20', registeredOnDay: '2026-09-01' });
+    // STATS-1c: the requirement and n_power seed are frozen before any count is read.
+    reg = freezeRequirement(reg, 'h-u2', { requiredTrades: 300, nPowerSeed: 1 }).registry;
     const out = runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'holdout2.sqlite') }, { registry: reg, byUniverse: { U2: { holdoutId: 'h-u2', configId: 's0-u2' } } });
     expect(out.steps.map((s) => s.ok)).toEqual([true]);
     const entry = out.registry.entries[0]!;

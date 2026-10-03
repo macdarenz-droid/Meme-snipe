@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   createRng, deflatedSharpe, deflatedSharpeDaily, evaluateDemotion, G2_SENSITIVITY_VARIANTS, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
-  burnHoldout, createHoldoutRegistry, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
+  burnHoldout, createHoldoutRegistry, freezeRequirement, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
   type RevalidationInput,
@@ -154,11 +154,16 @@ const holdout = withClusters(bracketTrades(31, 0.1, 25, 20));
 const counts = { candidates: 2000, entries: 500, entryDays: 25 };
 const controlRuns = Array.from({ length: 200 }, (_, k) => bracketTrades(1000 + k, -0.2, 25, 2).map(({ day, rNet }) => ({ day, rNet })));
 type PowerSpec = Omit<G2PowerResult, 'walkForward'> & { readonly walkForward?: WalkForwardSummary };
-const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN: 0.8, level: 0.04 / familySize, evaluations: [], units: G2_SENSITIVITY_VARIANTS });
-const sealed = (familySize: number, universes: readonly string[], c = counts): HoldoutRegistry => {
+const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN: 0.8, level: 0.04 / familySize, evaluations: [], units: G2_SENSITIVITY_VARIANTS, seed: 7 });
+// The closed-form n for the walk-forward σ̂ (≈ 0.33) at a family's level; the frozen requirement is at least it.
+const closedFor = (familySize: number) => nPower(sd(wf.map((t) => t.rNet)), 0.05, { alpha: 0.04 / familySize });
+// Attempt 1 window: entries 08-01..08-25, one tail day: opens from 08-27 (NOW is 2026-09-21).
+const window1 = { fromDay: '2026-08-01', toDay: '2026-08-25', registeredOnDay: '2026-07-20' };
+const sealed = (familySize: number, universes: readonly string[], c = counts, required = Math.max(300, 330, closedFor(familySize))): HoldoutRegistry => {
   let reg = createHoldoutRegistry(familySize);
   for (const u of universes) {
-    reg = registerHoldout(reg, { holdoutId: `h-${u}`, universe: u, configId: `${u}-v1`, fromDay: '2026-09-01', toDay: '2026-09-25' });
+    reg = registerHoldout(reg, { holdoutId: `h-${u}`, universe: u, configId: `${u}-v1`, ...window1 });
+    reg = freezeRequirement(reg, `h-${u}`, { requiredTrades: required, nPowerSeed: 7 }).registry;
     reg = sealHoldout(reg, `h-${u}`, { configId: `${u}-v1`, ledgerHash: `hash-${u}`, counts: c }).registry;
   }
   return reg;
@@ -168,7 +173,7 @@ const u = (name: string, over: Partial<Omit<G2Universe, 'power'>> & { readonly p
   const walkForward = over.walkForward ?? wfClustered;
   const p = over.power ?? power(330, familySize);
   return {
-    universe: name, configId: `${name}-v1`, holdoutId: `h-${name}`, ledgerHash: `hash-${name}`, trades: holdout, controlRuns, ...over,
+    universe: name, configId: `${name}-v1`, holdoutId: `h-${name}`, ledgerHash: `hash-${name}`, trades: holdout, controlRuns, g1Passed: true, ...over,
     walkForward, power: { ...p, walkForward: p.walkForward ?? summarizeWalkForward(walkForward) },
   };
 };
@@ -178,7 +183,7 @@ const g2Pass = (over: Partial<G2Input> = {}): G2Input => ({
 });
 
 // The closed-form n for the walk-forward σ̂ (≈ 0.33) is a lower bound on what the gate requires.
-const closedWf = nPower(sd(wf.map((t) => t.rNet)), 0.05, { alpha: 0.04 });
+const closedWf = closedFor(1);
 // A family of 3 tests at 0.04/3, where the closed form needs about 514 trades: those fixtures hold 520 on 26 days.
 const counts520 = { candidates: 2000, entries: 520, entryDays: 26 };
 
@@ -212,27 +217,49 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     expect(gateG2(g2Pass({ universes: [u('U1', { configId: 'U1-v2' })] })).registry.entries[0]!.burnReason).toBe('reconfigured');
     expect(gateG2(g2Pass({ universes: [u('U1', { trades: holdout.slice(1) })] })).registry.entries[0]!.burnReason).toBe('count-mismatch');
   });
-  test('size comes from the sealed counts; short means "not proven", still sealed, not burned', () => {
-    const r = gateG2(g2Pass({ universes: [u('U1', { power: power(600) })] }));
+  test('size comes from the sealed counts against the frozen requirement; short at the cutoff is "not proven" and spends the attempt', () => {
+    const r = gateG2(g2Pass({ registry: sealed(1, ['U1'], counts, 600), universes: [u('U1', { power: power(600) })] }));
     expect(r.status).toBe('not-proven');
     expect(r.universes[0]).toMatchObject({ status: 'not-proven', requiredTrades: 600, p: null });
-    expect(r.registry.entries[0]).toMatchObject({ seal: 'sealed', burned: false });
-    // Counts decide, not the trades handed in: a short sealed count stays sealed even with 500 trades passed.
+    // Never opened (nothing seen), but recorded as a failed attempt.
+    expect(r.registry.entries[0]).toMatchObject({ seal: 'sealed', burned: true, burnReason: 'short' });
+    // Counts decide, not the trades handed in.
     const short = gateG2(g2Pass({ registry: sealed(1, ['U1'], { ...counts, entries: 299 }) }));
     expect(short.universes[0]).toMatchObject({ status: 'not-proven', requiredTrades: closedWf, entries: 299 });
-    expect(short.registry.entries[0]!.burned).toBe(false);
+    expect(short.registry.entries[0]!.burnReason).toBe('short');
     const fewDays = gateG2(g2Pass({ registry: sealed(1, ['U1'], { ...counts, entryDays: 9 }) }));
     expect(fewDays.status).toBe('not-proven');
   });
+  test('the frozen requirement may not sit below max(300, n_power, closed form); the seal stays closed', () => {
+    const r = gateG2(g2Pass({ universes: [u('U1', { power: power(600) })] }));
+    expect(r.status).toBe('fail');
+    expect(r.reasons.join()).toMatch(new RegExp(`requirement U1: frozen ${closedWf} trades \\(need >= .* = 600\\)`));
+    expect(r.registry.entries[0]).toMatchObject({ seal: 'sealed', burned: false });
+  });
+  test('the seal opens only after the observation tail and a G1 pass; the seed must match the frozen one', () => {
+    const early = gateG2(g2Pass({ nowMs: Date.UTC(2026, 7, 26) }));
+    expect(early.status).toBe('not-proven');
+    expect(early.reasons.join()).toMatch(/tail U1: today 2026-08-26; the seal stays closed until 2026-08-27/);
+    expect(early.registry.entries[0]).toMatchObject({ seal: 'sealed', burned: false });
+    const g1 = gateG2(g2Pass({ universes: [u('U1', { g1Passed: false })] }));
+    expect(g1.status).toBe('fail');
+    expect(g1.registry.entries[0]).toMatchObject({ seal: 'sealed', burned: false });
+    const seed = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), seed: 8 } })] }));
+    expect(seed.reasons.join()).toMatch(/n_power seed U1: n_power seed 8, frozen 7/);
+  });
+  test('p-values resolve the smallest Holm level: at least 20 / level bootstrap replicates', () => {
+    expect(gateG2(g2Pass({ replicates: 499 })).reasons.join()).toMatch(/replicates: 499 bootstrap replicates \(need >= 20 \/ 0.04 = 500\)/);
+    expect(gateG2(g2Pass({ replicates: 500 })).status).toBe('pass');
+  });
   test('the floor is 300 and the closed form is a lower bound on the simulated n_power', () => {
     const calm = wfClustered.map((t) => ({ ...t, rNet: t.rNet * 0.5 })); // σ̂ ≈ 0.16: closed form ≈ 90
-    expect(gateG2(g2Pass({ universes: [u('U1', { power: power(100), walkForward: calm })] })).universes[0]!.requiredTrades).toBe(300);
-    expect(gateG2(g2Pass({ universes: [u('U1', { power: power(450) })] })).universes[0]!.requiredTrades).toBe(450);
+    expect(gateG2(g2Pass({ registry: sealed(1, ['U1'], counts, 300), universes: [u('U1', { power: power(100), walkForward: calm })] })).universes[0]!.requiredTrades).toBe(300);
+    expect(gateG2(g2Pass({ registry: sealed(1, ['U1'], counts, 450), universes: [u('U1', { power: power(450) })] })).universes[0]!.requiredTrades).toBe(450);
     // A walk-forward with σ̂ ≈ 0.65 needs ~1,300 by the closed form; a low simulated n_power cannot lower that.
     const wide = wfClustered.map((t, i) => ({ ...t, rNet: i % 2 === 0 ? t.rNet * 2 : t.rNet * 2 - 0.1 }));
     const r = gateG2(g2Pass({ universes: [u('U1', { walkForward: wide })] }));
-    expect(r.universes[0]!.requiredTrades).toBeGreaterThan(1000);
-    expect(r.status).toBe('not-proven');
+    expect(r.status).toBe('fail');
+    expect(r.reasons.join()).toMatch(/requirement U1: .*closed form 1[0-9]{3}/);
   });
   test('Holm runs over the registry family: one ready universe of three is tested at α/3, absent ones count as p = 1', () => {
     // Find a holdout with p ≈ 0.03: it would pass at α = 0.05 but must fail at α/3 = 0.0167.
@@ -243,7 +270,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
       if (p > 0.02 && p < 0.035) found = t;
     }
     expect(found).not.toBeNull();
-    const r = gateG2(g2Pass({ registry: sealed(3, ['U1', 'U2', 'U3'], counts520), universes: [u('U1', { trades: found! }, 3)] }));
+    const r = gateG2(g2Pass({ registry: sealed(3, ['U1', 'U2', 'U3'], counts520), universes: [u('U1', { trades: found! }, 3)], replicates: 1500 }));
     expect(r.universes[0]).toMatchObject({ status: 'fail', level: 0.04 / 3 });
     expect(r.status).toBe('fail');
     // The other two stay sealed for a later call, which also runs Holm over the family of three.
@@ -265,7 +292,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
           registry: reg,
           universes: call.map((name, j) => u(name, { trades: nullTrades(seedBase + 10 * r + 3 * k + j) }, 3)),
           rng: createRng(seedBase + 7 * r + k),
-          replicates: 400,
+          replicates: 1500,
         }));
         reg = res.registry;
         if (res.passed) rejected = true;
@@ -325,7 +352,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     expect(gateG2(g2Pass({ registry: sealed(1, ['U1'], counts520), universes: [u('U1', { trades: found! })] })).universes[0]!.status).toBe('pass');
     const weak = withClusters(bracketTrades(6000, -0.1, 26, 20));
     const r = gateG2(g2Pass({
-      registry: sealed(3, ['U1', 'U2', 'U3'], counts520),
+      registry: sealed(3, ['U1', 'U2', 'U3'], counts520), replicates: 1500,
       universes: [u('U1', { trades: found! }, 3), u('U2', { trades: weak }, 3), u('U3', { trades: weak }, 3)],
     }));
     expect(r.universes[0]!.level).toBeCloseTo(0.04 / 3, 12);
@@ -334,9 +361,11 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     expect(r.registry.entries.every((e) => e.burned && e.seal === 'opened')).toBe(true);
   }, 120_000);
   test('a second attempt is tested at 0.005: n_power simulated at 0.04 is refused, at 0.005 it is accepted', () => {
-    let reg = registerHoldout(createHoldoutRegistry(1), { holdoutId: 'h-old', universe: 'U1', configId: 'U1-v0', fromDay: '2026-08-01', toDay: '2026-08-25' });
+    // Attempt 1 in July, spent; attempt 2 registered 08-02 runs 08-03..08-30 and opens from 09-01 (NOW is 09-21).
+    let reg = registerHoldout(createHoldoutRegistry(1), { holdoutId: 'h-old', universe: 'U1', configId: 'U1-v0', fromDay: '2026-07-01', toDay: '2026-07-25', registeredOnDay: '2026-06-20' });
     reg = burnHoldout(reg, 'h-old', 'inspected', 'test').registry;
-    reg = registerHoldout(reg, { holdoutId: 'h-U1', universe: 'U1', configId: 'U1-v1', fromDay: '2026-09-01', toDay: '2026-09-25' });
+    reg = registerHoldout(reg, { holdoutId: 'h-U1', universe: 'U1', configId: 'U1-v1', fromDay: '2026-08-03', toDay: '2026-08-30', registeredOnDay: '2026-08-02' });
+    reg = freezeRequirement(reg, 'h-U1', { requiredTrades: 600, nPowerSeed: 7 }).registry;
     reg = sealHoldout(reg, 'h-U1', { configId: 'U1-v1', ledgerHash: 'hash-U1', counts }).registry;
     const refused = gateG2(g2Pass({ registry: reg }));
     expect(refused.reasons.join()).toMatch(/n_power U1: n_power was simulated at level 0.04, attempt α 0.005/);
@@ -349,7 +378,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     expect(() => gateG2(g2Pass(), { minTradesFloor: 200 })).toThrow(/only be tightened/);
     expect(() => gateG2(g2Pass(), { familyAlpha: 0.1 })).toThrow(/only be tightened/);
     expect(() => gateG2(g2Pass(), { constructor: 1 } as never)).toThrow(/unknown threshold/);
-    expect(gateG2(g2Pass(), { minTradesFloor: 600 }).status).toBe('not-proven');
+    expect(gateG2(g2Pass(), { minTradesFloor: 600 }).reasons.join()).toMatch(/requirement U1: .*max\(600,/);
   });
 });
 

@@ -161,6 +161,8 @@ export interface G2PowerResult {
   readonly evaluations: readonly { readonly n: number; readonly power: number }[];
   /** The resampling units simulated. */
   readonly units: readonly G2SensitivityVariant[];
+  /** The seed every draw came from (frozen in the holdout registry before the first count). */
+  readonly seed: number;
 }
 
 interface Day {
@@ -305,5 +307,5 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     if (powerAt(mid) >= goal) hi = mid;
     else lo = mid;
   }
-  return { nPower: hi, powerAtN: powerAt(hi), level, evaluations, walkForward: summarizeWalkForward(opts.walkForward), units };
+  return { nPower: hi, powerAtN: powerAt(hi), level, evaluations, walkForward: summarizeWalkForward(opts.walkForward), units, seed: opts.seed };
 };
