@@ -13,6 +13,26 @@ next=$(date -u -d "$day + 1 day" +%F)
 start=$(date +%s)
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 mkdir -p "$out"
+# backoff MIN_S: wait until the back-off end in archive-429.state (format
+# "<unix last 429> <retry-after s> <unix until>"), and at least MIN_S seconds. The wait
+# counts against the budget: when it would not fit, exit 75 and keep progress.
+backoff() {
+  local min_s=$1 end wait_s elapsed
+  end=$(awk 'NF >= 3 {print $3}' "$out/archive-429.state" 2>/dev/null || true)
+  [[ "$end" =~ ^[0-9]+$ ]] || end=0
+  wait_s=$(( end - $(date +%s) ))
+  [ "$wait_s" -lt "$min_s" ] && wait_s=$min_s
+  [ "$wait_s" -le 0 ] && return 0
+  elapsed=$(( ($(date +%s) - start) / 60 ))
+  if [ $(( elapsed + (wait_s + 59) / 60 + 30 )) -ge "$budget" ]; then
+    echo "archive back-off of $(( (wait_s + 59) / 60 )) min does not fit the time budget ($elapsed of $budget min used); progress kept for the next run" | tee -a "$summary"
+    exit 75
+  fi
+  echo "$(date -u +%FT%TZ) archive back-off: waiting $(( (wait_s + 59) / 60 )) min, then resuming the same lane" | tee -a "$summary"
+  sleep "$wait_s"
+}
+# A back-off persisted by an earlier run (restored from the cache) is slept out first.
+backoff 0
 while true; do
   zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel 2 -dl 6 -workers 2 \
     -sample 0.05 -max-mbps "$mbps" -on-429 stop
@@ -29,14 +49,6 @@ while true; do
     echo "scanner failed with exit $rc" | tee -a "$summary"
     exit $rc
   fi
-  until=$(awk '{print $3}' "$out/archive-429.state" 2>/dev/null || echo 0)
-  wait_s=$(( ${until:-0} - $(date +%s) ))
-  [ "$wait_s" -lt 3600 ] && wait_s=3600
-  elapsed=$(( ($(date +%s) - start) / 60 ))
-  if [ $(( elapsed + wait_s / 60 + 30 )) -ge "$budget" ]; then
-    echo "archive answered 429; time budget used ($elapsed of $budget min); progress kept for the next run" | tee -a "$summary"
-    exit 75
-  fi
-  echo "$(date -u +%FT%TZ) archive answered 429: backing off $((wait_s / 60)) min, then resuming the same lane" | tee -a "$summary"
-  sleep "$wait_s"
+  echo "$(date -u +%FT%TZ) archive answered 429" | tee -a "$summary"
+  backoff 3600
 done

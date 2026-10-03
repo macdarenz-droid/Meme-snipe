@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-# Finalizes one scanned day on its own, runs the strict QA and the determinism check,
-# and packages the day's units as release assets.
+# Finalizes one scanned day on its own, runs the strict QA, the decoder parity check and
+# the determinism check, and packages the day as release assets for `data-day-DAY`.
 #   check-day.sh DAY OUT_DIR ASSET_DIR
+# MAX_MBPS (default 80) caps the determinism rescan, like the scan itself.
 set -euo pipefail
 day=$1 out=$2 assets=$3
 next=$(date -u -d "$day + 1 day" +%F)
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$assets"
 ds=$(mktemp -d)
-# a single-day dataset: universes are tokens created or graduated in that day's units
-zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -allow-gaps
-node "$here/../qa/check.mjs" "$ds" --live 30 --strict
+# A single-day dataset without lead-in: universes are tokens created or graduated in
+# that day's units. The multi-day dataset (assemble.sh) uses the 14-day lead-in.
+zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0
+node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0
+node --no-warnings "$here/../qa/parity.ts" "$ds"
 cp "$ds/qa/report.md" "$assets/qa-$day.md"
 cp "$ds/qa/report.json" "$assets/qa-$day.json"
+cp "$ds/qa/parity.json" "$assets/parity-$day.json"
 cp "$ds/manifest.json" "$assets/manifest-$day.json"
 
 # Determinism: rescan the day's first unit into a fresh directory; every data file
@@ -32,4 +36,4 @@ echo "determinism: unit $epoch/$range rescanned, every file identical" | tee -a 
 
 # Package: one tar of the day's finished units, split under the 2 GiB asset limit.
 (cd "$out" && tar --exclude='*.tmp' -cf - units) | split -b 1900m -d -a 2 - "$assets/units-$day.tar.part"
-(cd "$assets" && sha256sum units-"$day".tar.part* qa-"$day".* manifest-"$day".json > "SHA256SUMS-$day")
+(cd "$assets" && sha256sum units-"$day".tar.part* qa-"$day".* parity-"$day".json manifest-"$day".json > "SHA256SUMS-$day")

@@ -87,8 +87,8 @@ type rawMeta struct {
 		Writable []string `json:"writable"`
 		Readonly []string `json:"readonly"`
 	} `json:"loadedAddresses"`
-	InnerInstructions []rawInnerGroup `json:"innerInstructions"` // null: not recorded
-	LogMessages       []string          `json:"logMessages"` // null: not recorded
+	InnerInstructions []rawInnerGroup   `json:"innerInstructions"` // null: not recorded
+	LogMessages       []string          `json:"logMessages"`       // null: not recorded
 	PreTokenBalances  []rawTokenBalance `json:"preTokenBalances"`
 	PostTokenBalances []rawTokenBalance `json:"postTokenBalances"`
 }
