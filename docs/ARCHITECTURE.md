@@ -210,6 +210,7 @@ Ranked by evidence strength, then cost. All read from our own chain reads first;
 | H14 | Serial deployer: > 2 mints in 24 h, or a prior rug within the fixed 14-day lookback of our own index (the same window live and in the backtest; Jupiter `devMints` is a cross-check only). The live index is backfilled for 14 days before the worker trusts it; until then, and for any deployer outside its coverage, the input is unknown and H16 rejects | 0 (own index) | Syndicates have a median of 48.5 tokens ([safety.md](research/safety.md) H9) |
 | H15 | Round-trip simulation (buy then sell in one transaction) fails, or loses more than modelled fees + impact + tolerance; no reverse route at size | 1 call | "Sellable now at expected cost". It cannot prove later sellability; H2–H4 cover that. **Live-only veto** (§16.3): the backtest applies the exact local round-trip quote instead |
 | H16 | Evidence stale or unknown (§6.3), or a third-party cross-check (RugCheck, GoPlus, Jupiter `audit`) disagrees with our own read of authorities | 0 | Brief rule. Staleness applies in both modes (dataset gaps are flagged, never filled); the cross-check part is a **live-only veto** (§16.3) |
+| H17 | **Trade shape the builders cannot build** (TX-1b): the one `checkShape` the TX-1 builders use, on the mint and pool as read. Rejects a mint program other than SPL Token or Token-2022, any Token-2022 extension other than MetadataPointer and TokenMetadata (so the group extensions and DefaultAccountState that H4 allows), mayhem or cashback coins, a non-SOL quote, a PumpSwap pool under 300 bytes (needs `extend_account`) and an unread coin creator. An unread pool size, mayhem, cashback or creator field rejects under H16 | 1 (runs after H5) | A coin that passes eligibility but cannot be traded wastes attempts and inflates backtest candidate counts. If the builders and a gate differ, the gate tightens; the builders and signer policy are never loosened to fit |
 
 ### 7.2 Soft features (scored, logged for calibration)
 
@@ -488,6 +489,7 @@ Every input a decision reads, with its historical source. Rule: a live-only inpu
 | --- | --- | --- |
 | Mint program, authorities, extensions (H1–H4) | Mint account read | Mint state at creation plus every later authority or extension change, from DATA-1 |
 | Venue, canonical pool, mayhem, quote mint, LP state (H5–H7) | Pool and curve accounts | Migrate transaction, pool account at creation, LP events, from DATA-1 |
+| Trade shape: pool account size, cashback flag, coin creator, plus the mint inputs above (H17) | Pool account read (data length and fields) | Pool account at creation (its allocated size and fields), from DATA-1; until recorded, H16 rejects the candidate |
 | Reserves, price, impact, fees (H8, H15 quote, §5) | Account updates and FeeConfig reads | Post-trade reserves in swap events; FeeConfig history (both programs); Global history |
 | Creation time, graduation time, migration price (H9–H11) | Events | Create and migrate events |
 | Holder balances and concentration (H12) | `getTokenLargestAccounts` + owner classification | Rebuilt from every token movement of the mint (trades, plain transfers, burns) |

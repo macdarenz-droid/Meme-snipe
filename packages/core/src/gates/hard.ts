@@ -1,4 +1,4 @@
-// Hard rejects H1-H16 (docs/ARCHITECTURE.md §7.1). Any one fails, no entry. Every threshold comes from the locked
+// Hard rejects H1-H17 (docs/ARCHITECTURE.md §7.1). Any one fails, no entry. Every threshold comes from the locked
 // session policy; every input is read as of the decision moment through `Evidence`, so unknown, stale or degraded
 // input rejects under H16 with the gate that needed it. Evaluation order is fixed and cheapest first.
 import type { Address } from '../chain/bytes.ts';
@@ -11,6 +11,7 @@ import type { PolicySession } from '../config/session.ts';
 import type { Policy } from '../config/policy.ts';
 import { ROUND_TRIP_ROUNDING_LAMPORTS, type RoundTrip } from '../costs/index.ts';
 import { isMint } from '../domain/index.ts';
+import { checkShape } from '../tx/shape.ts';
 import { BPS_DENOMINATOR, type Lamports, type MicroUsd, lamportsToMicroUsd } from '../units/index.ts';
 import { Evidence, type GateContext, type Read } from './evidence.ts';
 import {
@@ -199,6 +200,35 @@ const h5 = (env: Env): Outcome => {
   if (pool.isMayhemMode) return reject('H5', 'mayhem', `pool ${address} is a mayhem-mode coin`, { input: 'pool' });
   const canonical = isCanonicalPool(pool as unknown as Pool, address as Address);
   return canonical ? PASS : reject('H5', 'not-canonical', `pool ${address} (index ${pool.index}, creator ${pool.creator}) is not the canonical pool`, { input: 'pool' });
+};
+
+/**
+ * H17 (TX-1b): the entry and its protective exit must be buildable. The one supported-shape check the builders use
+ * (`checkShape`), on the mint and the pool as read: mint program, extension set, mayhem and cashback flags, quote mint
+ * and the PumpSwap account layout. Runs after H5, so the shape is judged on a proven PumpSwap pool of this mint. A
+ * field the shape needs that was not read is unknown evidence (H16).
+ */
+const h17 = (env: Env): Outcome => {
+  const mint = readMint(env, 'H17');
+  if (!mint.ok) return fromRead(mint);
+  const m = mintAccount(env, 'H17');
+  if (!m.ok) return m.out;
+  const p = readPool(env, 'H17');
+  if (!p.ok) return fromRead(p);
+  const { pool, accountBytes } = p.fact;
+  const unread = [
+    ...(accountBytes === undefined ? ['account size'] : []),
+    ...(pool.isMayhemMode === undefined ? ['is_mayhem_mode'] : []),
+    ...(pool.isCashbackCoin === undefined ? ['is_cashback_coin'] : []),
+    ...(pool.coinCreator === undefined ? ['coin_creator'] : []),
+  ];
+  if (unread.length > 0) return { reasons: [{ gate: 'H16', code: 'missing', input: 'pool', neededBy: 'H17', detail: `pool ${unread.join(', ')} not read` }] };
+  const s = checkShape({
+    venue: 'pool', mintProgram: mint.fact.owner, extensions: m.account.extensions.map((e) => e.kind), quoteMint: pool.quoteMint,
+    mayhem: pool.isMayhemMode, cashback: pool.isCashbackCoin, coinCreator: pool.coinCreator, poolAccountBytes: accountBytes,
+  });
+  if (s.ok) return PASS;
+  return reject('H17', 'unsupported-shape', `the builders refuse this trade: ${s.detail}`, { input: s.reason === 'unsupported-mint' ? 'mint' : 'pool', value: s.reason });
 };
 
 const h6 = (env: Env): Outcome => {
@@ -473,7 +503,7 @@ const h16 = (env: Env): Outcome => {
 
 /**
  * Cheapest first: 0 compares fields of facts already read; 1 derives addresses (PDAs) or classifies holders;
- * 2 checks a quote and a simulation. Within a cost, table order (§7.1). Fixed, so the same input gives the same result.
+ * 2 checks a quote and a simulation. Within a cost, table order (§7.1); H17 follows H5, whose pool it judges. Fixed, so the same input gives the same result.
  */
 const STEPS: readonly { readonly gate: HardGate; readonly cost: 0 | 1 | 2; readonly run: (env: Env) => Outcome }[] = [
   { gate: 'H1', cost: 0, run: h1 },
@@ -489,6 +519,7 @@ const STEPS: readonly { readonly gate: HardGate; readonly cost: 0 | 1 | 2; reado
   { gate: 'H14', cost: 0, run: h14 },
   { gate: 'H16', cost: 0, run: h16 },
   { gate: 'H5', cost: 1, run: h5 },
+  { gate: 'H17', cost: 1, run: h17 },
   { gate: 'H12', cost: 1, run: h12 },
   { gate: 'H13', cost: 1, run: h13 },
   { gate: 'H15', cost: 2, run: h15 },
@@ -504,7 +535,7 @@ const requestProblem = (req: GateRequest): string | null => {
   return null;
 };
 
-/** Evaluates H1-H16 as of `ctx.now`. Pure: the same context, policy and request always give the same result. */
+/** Evaluates H1-H17 as of `ctx.now`. Pure: the same context, policy and request always give the same result. */
 export const evaluateHardRejects = (ctx: GateContext, deps: GateDeps, req: GateRequest, options: HardOptions = {}): HardResult => {
   const stopAtFirst = options.stopAtFirst ?? true;
   const base = { mode: deps.mode, mint: String(req.mint) };
