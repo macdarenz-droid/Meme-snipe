@@ -21,8 +21,11 @@ import { OFF_CHAIN, compareEvents, compareMoments } from '../../../core/src/engi
 import { SECOND_MS } from '../../../core/src/config/time.ts';
 import { eventsOfFrame, type Frame, type FrameBody, type Source } from '../providers/canonical.ts';
 import type { IngestOptions } from '../providers/live-feed.ts';
-import { P1, P3 } from '../scheduler/scheduler.ts';
+import { P2, P3 } from '../scheduler/scheduler.ts';
 import { backfillAddress, type BackfillOptions, type BackfillResult } from './rpc.ts';
+
+/** Signature pages one gap may read by default (10,000 signatures). */
+export const DEFAULT_MAX_PAGES = 10;
 
 export interface TradeGap {
   readonly pool: string;
@@ -54,12 +57,21 @@ export interface FillOptions {
   /** Nothing dated after this moment is released. */
   readonly asOf: Moment;
   readonly retry?: BackfillOptions['retry'];
+  /**
+   * Signature pages (1,000 each) one gap may read (default 10). A busier gap stops there as partial and stays a gap,
+   * so no single fill holds the provider for long.
+   */
+  readonly maxPagesPerFill?: number;
 }
 
 export interface GapFill {
   readonly gap: TradeGap;
   readonly complete: boolean;
-  /** The pool's events in the gap, with chain moments, in compareEvents order; none after `asOf` or before `fromSlot`. */
+  /**
+   * The pool's events in the gap, with chain moments, in compareEvents order: from min(`fromSlot`, `close.fromSlot`)
+   * to `untilSlot − 1`, none after `asOf`. Events of other pools in the same transactions come too, as the stream
+   * gives them; they arrive without coverage facts of their own, which is harmless under the gap rules (see DECISIONS).
+   */
   readonly events: readonly MarketEvent[];
   /** The transactions read, oldest first (for `ingestingFill`). */
   readonly records: readonly TransactionRecord[];
@@ -112,7 +124,9 @@ export const fillTradeGaps = async (o: FillOptions): Promise<{ readonly fills: r
     else {
       r = await backfillAddress({
         rpc: o.rpc, timers: o.timers, provider: o.provider, creditCap: o.creditCap - spent, ...(o.retry ? { retry: o.retry } : {}),
-        afterSlot: first - 1n, untilSlot: last, address: gap.pool, priority: gap.kind === 'position' ? P1 : P3,
+        afterSlot: first - 1n, untilSlot: last, address: gap.pool,
+        // Open positions at P2, below live open-position monitoring at P1 (exits never wait: #70 review); candidates P3.
+        priority: gap.kind === 'position' ? P2 : P3, maxPages: o.maxPagesPerFill ?? DEFAULT_MAX_PAGES,
         accept: (rec, rank, seq) => {
           const frame: Frame = {
             seq, receivedAt: (rec.blockTime ?? 0) * SECOND_MS, source: o.provider as Source, backfilled: true,

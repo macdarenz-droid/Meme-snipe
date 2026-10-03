@@ -414,7 +414,8 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
   const coveredAfter = (fill: readonly MarketEvent[], restartAt: Moment = { ...ASOF }, savedGap?: { fromSlot: bigint; at: Moment }) => {
     const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: Number.MIN_SAFE_INTEGER });
     const store = new AsOfStore(clock);
-    const restart: MarketEvent = { kind: 'market', id: 'restart-start', moment: restartAt, key: 'coverage:creates:start', value: wrapped({ fromSlot: UNTIL, via: VIA }) };
+    // The feed's own id for an off-chain fact (`<key>#<seq>`): order on a tie must come from the moment, not the id.
+    const restart: MarketEvent = { kind: 'market', id: 'coverage:creates:start#99', moment: restartAt, key: 'coverage:creates:start', value: wrapped({ fromSlot: UNTIL, via: VIA }) };
     const base = savedGap === undefined ? saved : [saved[0]!, { ...saved[1]!, id: 'zz-saved-gap' /* sorts after the fill's ids: order must come from the moment */, moment: savedGap.at, value: wrapped({ fromSlot: savedGap.fromSlot, toSlot: null, reason: 'shutdown', via: VIA }) }];
     for (const e of [...base, ...fill, restart].sort(compareEvents)) {
       clock.advanceTo(e.moment);
@@ -454,7 +455,7 @@ describe('SEED-1 downtime fill after a restart with saved state (supervisor ruli
       const seed = await buildSeed(fillOpts({ liveStart }));
       const close = seed.coverage.at(-1)!;
       expect(close.key).toBe('coverage:creates:resume');
-      expect(compareEvents(close, { moment: liveStart, id: 'restart-start' })).toBeLessThan(0);
+      expect(compareEvents(close, { moment: liveStart, id: 'coverage:creates:start#99' })).toBeLessThan(0);
       expect(coveredAfter(seed.coverage, liveStart).covered).toBe(true);
     }
   });

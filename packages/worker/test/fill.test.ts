@@ -11,7 +11,7 @@ import {
 } from '../src/providers/index.ts';
 import { ProviderError } from '../src/providers/http.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
-import { HELIUS_FREE, ManualTimers, P1, P3, Scheduler, type Timers } from '../src/scheduler/index.ts';
+import { HELIUS_FREE, ManualTimers, P1, P2, P3, Scheduler, type Timers } from '../src/scheduler/index.ts';
 import { fillTradeGaps, ingestingFill, type SeedRpc, type TradeGap } from '../src/seed/index.ts';
 import { blockNetwork, recordOf, settle, TXS } from './helpers.ts';
 
@@ -69,7 +69,8 @@ const covered = (stream: string, fill: readonly MarketEvent[], live: Moment = LI
     { kind: 'market', id: 'saved-start', moment: { slot: 452_000_000n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: DOWN_MS - 2 * DAY_MS }, key: `coverage:${stream}:start`, value: wrapped({ fromSlot: 452_000_000n, via }) },
     { kind: 'market', id: 'zz-saved-gap', moment: savedGap.at, key: `coverage:${stream}:gap`, value: wrapped({ fromSlot: savedGap.fromSlot, toSlot: null, reason: 'shutdown', via }) },
     ...fill,
-    { kind: 'market', id: 'restart-start', moment: live, key: `coverage:${stream}:start`, value: wrapped({ fromSlot: UNTIL, via }) },
+    // The feed's own id for an off-chain fact (`<key>#<seq>`), which sorts before the fill's `fill:…` ids on a tie.
+    { kind: 'market', id: `coverage:${stream}:start#99`, moment: live, key: `coverage:${stream}:start`, value: wrapped({ fromSlot: UNTIL, via }) },
   ];
   const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: Number.MIN_SAFE_INTEGER });
   const store = new AsOfStore(clock);
@@ -91,7 +92,7 @@ describe('FILL-2 after a restart', () => {
     expect(f.events.map((e) => e.moment.slot)).toEqual([452_941_172n, 452_941_197n]);
     expect([...f.events].sort(compareEvents)).toEqual(f.events);
     expect(f.coverage.map((e) => e.key)).toEqual([`coverage:trades:${QVC}:resume`]);
-    expect(compareEvents(f.coverage[0]!, { moment: LIVE, id: 'restart-start' })).toBeLessThan(0);
+    expect(compareEvents(f.coverage[0]!, { moment: LIVE, id: `coverage:trades:${QVC}:start#99` })).toBeLessThan(0);
     expect(covered(`trades:${QVC}`, f.coverage).covered).toBe(true);
     // Without the fill the restart settles the saved gap as lossy.
     expect(covered(`trades:${QVC}`, []).covered).toBe(false);
@@ -165,7 +166,7 @@ describe('FILL-2 after a restart', () => {
     expect(fills[1]!.coverage[0]!.key).toBe(`coverage:trades:${HYG}:gap`);
     expect(covered(`trades:${HYG}`, fills[1]!.coverage).covered).toBe(false);
     expect(creditsUsed).toBe(1 + QVC_TXS.length);
-    expect(rpc.priorities.every((p) => p === P1)).toBe(true);
+    expect(rpc.priorities.every((p) => p === P2)).toBe(true);
     // A cap that runs out inside a gap stops it there: partial, lossy.
     const cut = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 2, gaps: [gapOf(QVC)], asOf: ASOF });
     expect(cut.fills[0]).toMatchObject({ complete: false, report: { stoppedBy: 'credit-cap', creditsUsed: 2 } });
@@ -205,6 +206,44 @@ describe('FILL-2 after a restart', () => {
     // close.at exactly at asOf: the close would follow it by 1 ms, after asOf, so none is made (the gap stays open).
     const equal = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 100, gaps: [gapOf(QVC, { liveStart: { ...ASOF }, close: { via: `logs:${QVC}`, fromSlot: DOWN_FROM, at: { ...ASOF } } })], asOf: ASOF });
     expect(equal.fills[0]!.coverage).toEqual([]);
+  });
+
+  it('a per-fill page cap stops a busy gap as partial: it stays a gap', async () => {
+    // 1,000 failed signatures above the gap (no transaction to fetch), then the pool's real ones: two pages needed.
+    const busy: SignatureInfo[] = Array.from({ length: 1_000 }, (_, k) => ({ signature: `Busy${k}`.padEnd(44, '1'), slot: UNTIL - 1n - BigInt(k % 50), err: { x: 1 }, blockTime: 1_791_032_690 }));
+    const rpc = fakeRpc([...busy, ...QVC_HISTORY]);
+    const { fills } = await fillTradeGaps({ rpc, timers: instant(), provider: 'helius', creditCap: 10_000, maxPagesPerFill: 1, gaps: [gapOf(QVC)], asOf: ASOF });
+    expect(fills[0]).toMatchObject({ complete: false, report: { stoppedBy: 'page-cap', calls: { getSignaturesForAddress: 1 } } });
+    expect(covered(`trades:${QVC}`, fills[0]!.coverage).covered).toBe(false);
+    const two = await fillTradeGaps({ rpc: fakeRpc([...busy, ...QVC_HISTORY]), timers: instant(), provider: 'helius', creditCap: 10_000, maxPagesPerFill: 2, gaps: [gapOf(QVC)], asOf: ASOF });
+    expect(two.fills[0]!.complete).toBe(true);
+  });
+
+  it('exits never wait: a long position fill at P2 leaves room for a P1 monitoring call on the same provider', async () => {
+    const timers = new ManualTimers(1_791_032_700_000);
+    const scheduler = new Scheduler(HELIUS_FREE, { timers });
+    const many: SignatureInfo[] = Array.from({ length: 60 }, (_, k) => ({ signature: `Pos${k}`.padEnd(44, '1'), slot: UNTIL - 1n - BigInt(k), err: null, blockTime: 1_791_032_690 }));
+    const http = scriptedHttp(rpcHandler((method) => {
+      if (method === 'getSignaturesForAddress') return [...many, ...QVC_HISTORY].map((x) => ({ signature: x.signature, slot: Number(x.slot), err: x.err, blockTime: x.blockTime }));
+      if (method === 'getAccountInfo') return { context: { slot: 1 }, value: null };
+      return null; // getTransaction: not available, a one-slot gap each
+    }));
+    const rpc = new RpcHttp({ provider: 'helius', url: () => 'https://rpc.test/', http, scheduler, timeoutMs: 1_000 });
+    let done = false;
+    const fill = fillTradeGaps({ rpc, timers, provider: 'helius', creditCap: 1_000, gaps: [gapOf(QVC, { kind: 'position' })], asOf: ASOF }).then((r) => { done = true; return r; });
+    await settle(500);
+    // The fill has taken all this second lets it (P2 keeps P1's floor free) and waits for the clock.
+    expect(scheduler.status().granted[2]).toBe(HELIUS_FREE.window.limit - HELIUS_FREE.floors[2]);
+    expect(scheduler.status().queued[2]).toBe(1);
+    // A P1 call is admitted at once, without the clock moving.
+    let monitored = false;
+    void rpc.getAccountInfo(QVC, P1).then(() => { monitored = true; });
+    await settle(50);
+    expect(monitored).toBe(true);
+    expect(done).toBe(false);
+    for (let k = 0; k < 200 && !done; k++) { timers.advance(1_000); await settle(20); }
+    expect(done).toBe(true);
+    expect((await fill).fills[0]!.complete).toBe(false); // the unavailable transactions are gaps
   });
 
   it('a gap with nothing between the saved state and the live start is empty and complete, with no call', async () => {

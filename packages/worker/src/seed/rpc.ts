@@ -63,7 +63,7 @@ export interface SlotGap {
   readonly reason: string;
 }
 
-export type StopReason = 'done' | 'credit-cap' | 'halted' | 'page-failed' | 'failures' | 'history-end' | 'not-confirmed';
+export type StopReason = 'done' | 'credit-cap' | 'halted' | 'page-failed' | 'failures' | 'history-end' | 'not-confirmed' | 'page-cap';
 
 export interface BackfillResult {
   /** Create events in FEED-1's shape, oldest first. */
@@ -131,7 +131,13 @@ export const backfillCreates = (o: BackfillOptions): Promise<BackfillResult> =>
  * Every successful transaction of `address` in slots afterSlot+1..untilSlot, newest first, as `accept` reads it.
  * The same paging, retry, budget, as-of and gap rules as the creates seed (above).
  */
-export const backfillAddress = async (o: BackfillOptions & { readonly address: string; readonly priority: Priority; readonly accept: Accept }): Promise<BackfillResult> => {
+export const backfillAddress = async (o: BackfillOptions & {
+  readonly address: string;
+  readonly priority: Priority;
+  readonly accept: Accept;
+  /** Signature pages this run may read; past it the run stops as `page-cap` and the rest stays a gap. */
+  readonly maxPages?: number;
+}): Promise<BackfillResult> => {
   const retry = o.retry ?? DEFAULT_RETRY;
   const calls = { getSignaturesForAddress: 0, getTransaction: 0 };
   let credits = 0;
@@ -170,6 +176,7 @@ export const backfillAddress = async (o: BackfillOptions & { readonly address: s
   try {
     paging: for (;;) {
       let page: SignatureInfo[];
+      if (o.maxPages !== undefined && calls.getSignaturesForAddress >= o.maxPages) throw new Stop('page-cap', `page cap ${o.maxPages} reached`);
       // The first page waits until the node's confirmed bank has reached untilSlot (minContextSlot), so the slots
       // just before the live watch's start are not missed while they are only processed.
       const first = before === undefined;
