@@ -2,7 +2,7 @@
 # polite lane (supervisor ruling, 2026-10-03). See docs/research/historical-data.md.
 #
 # - Manual dispatch only. One concurrency group and max-parallel 1: days are scanned
-#   strictly one after another, newest first, at most max_mbps (80 MB/s by default).
+#   strictly one after another, in the order given, at most max_mbps (80 MB/s by default).
 # - Connections: -parallel 2 x -dl 6 means up to 12 connections to the archive at once,
 #   all under one process-wide byte limit (max_mbps) and one request limit.
 # - The scanner names itself in its User-Agent, honours Retry-After and stops at once
@@ -52,7 +52,7 @@ on:
         type: choice
         options: [scan, assemble]
       days:
-        description: "scan: UTC days, newest first, comma-separated (YYYY-MM-DD,...)"
+        description: "scan: UTC days in scan order, comma-separated (YYYY-MM-DD,...)"
         required: false
         default: ""
       from:
