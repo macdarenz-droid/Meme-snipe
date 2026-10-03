@@ -104,8 +104,11 @@ const DEFAULT_MAX_TRADES = 50_000;
 const SEED_STRIDE = 1_000_003;
 
 export interface G2PowerOptions {
-  /** Walk-forward trades of the pre-registered configuration (σ̂ and the day structure come from here). */
-  readonly walkForward: readonly DayReturn[];
+  /**
+   * Walk-forward trades of the pre-registered configuration with their creator and funder clusters: σ̂, the day
+   * structure and the cluster structure come from here.
+   */
+  readonly walkForward: readonly ClusteredReturn[];
   /** S0 on the same walk-forward days, pooled over its seeds. */
   readonly control: readonly DayReturn[];
   /** Seed for every random draw of the simulation. */
@@ -154,41 +157,63 @@ export interface G2PowerResult {
 }
 
 interface Day {
-  readonly a: readonly number[];
+  readonly a: readonly ClusteredReturn[];
   readonly b: readonly number[];
 }
 
-const byDay = (a: readonly DayReturn[], b: readonly DayReturn[]): Day[] => {
-  const map = new Map<string, { a: number[]; b: number[] }>();
+const byDay = (a: readonly ClusteredReturn[], b: readonly DayReturn[]): Day[] => {
+  const map = new Map<string, { a: ClusteredReturn[]; b: number[] }>();
   const get = (d: string) => {
     let v = map.get(d);
     if (!v) map.set(d, (v = { a: [], b: [] }));
     return v;
   };
-  for (const t of a) get(t.day).a.push(t.rNet);
+  for (const t of a) get(t.day).a.push(t);
   for (const t of b) get(t.day).b.push(t.rNet);
   return [...map.entries()].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)).map(([, v]) => v);
 };
 
-/** One simulated holdout of exactly n strategy trades, built from whole walk-forward days drawn with replacement. */
-const simulateHoldout = (days: readonly Day[], n: number, shift: number, rng: Rng): { a: DayReturn[]; b: DayReturn[]; days: number } => {
-  const a: DayReturn[] = [];
+/**
+ * Days a simulated holdout draws together: runs of 3 consecutive walk-forward days (circular), so dependence across
+ * nearby days survives into the simulation that the 2- and 3-day block units of the rule then measure.
+ */
+const SIM_BLOCK_DAYS = 3;
+
+/**
+ * One simulated holdout of exactly n strategy trades, built from runs of SIM_BLOCK_DAYS consecutive walk-forward days
+ * drawn with replacement. Trades keep their creator and funder clusters; simulated days keep their drawn order.
+ */
+const simulateHoldout = (days: readonly Day[], n: number, shift: number, rng: Rng): { a: ClusteredReturn[]; b: DayReturn[]; days: number } => {
+  const a: ClusteredReturn[] = [];
   const b: DayReturn[] = [];
   let withEntries = 0;
-  for (let k = 0; a.length < n; k++) {
-    const d = days[nextInt(rng, days.length)]!;
-    const key = `s${k}`;
-    if (d.a.length > 0) withEntries++;
-    for (const x of d.a) {
-      if (a.length === n) break;
-      a.push({ day: key, rNet: x + shift });
+  for (let k = 0; a.length < n; ) {
+    const start = nextInt(rng, days.length);
+    for (let j = 0; j < SIM_BLOCK_DAYS && a.length < n; j++, k++) {
+      const d = days[(start + j) % days.length]!;
+      // Zero-padded so the 2- and 3-day units, which sort day keys, see the drawn order.
+      const key = `s${String(k).padStart(7, '0')}`;
+      if (d.a.length > 0) withEntries++;
+      for (const x of d.a) {
+        if (a.length === n) break;
+        a.push({ day: key, rNet: x.rNet + shift, creatorCluster: x.creatorCluster, funderCluster: x.funderCluster });
+      }
+      for (const x of d.b) b.push({ day: key, rNet: x });
     }
-    for (const x of d.b) b.push({ day: key, rNet: x });
   }
   return { a, b, days: withEntries };
 };
 
-/** n_power by simulation of the exact G2 rule; the holdout must hold max(300, nPower) trades. */
+/** The full G2 rule at `level`: the 1-day rule and then every other resampling unit, all below the level. */
+const fullRulePasses = (a: readonly ClusteredReturn[], b: readonly DayReturn[], level: number, opts: { readonly rng: Rng; readonly replicates?: number }): boolean => {
+  if (!g2RulePasses(g2Rule(a, b, level, opts), level)) return false;
+  return g2Sensitivity(a, b, level, opts, ['days-2', 'days-3', 'creator', 'funder']).every((x) => x.p < level);
+};
+
+/**
+ * n_power by simulation of the exact G2 rule, cluster sensitivity included (review of STATS-1b: the largest p over
+ * 1-, 2- and 3-day blocks and creator and funder clusters). The holdout must hold max(300, nPower) trades.
+ */
 export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
   const target = opts.targetMean ?? 0.05;
   const universes = opts.familySize;
@@ -217,7 +242,7 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     for (let s = 0; s < sims; s++) {
       const h = simulateHoldout(days, n, shift, rng);
       // The gate needs MIN_DAYS days; a holdout on fewer days is "not proven", which counts as not passing.
-      if (h.days >= MIN_DAYS && g2RulePasses(g2Rule(h.a, h.b, level, { rng, replicates }), level)) pass++;
+      if (h.days >= MIN_DAYS && fullRulePasses(h.a, h.b, level, { rng, replicates })) pass++;
     }
     const pw = pass / sims;
     cache.set(n, pw);
