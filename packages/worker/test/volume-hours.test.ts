@@ -28,7 +28,7 @@ const BOT = { login: ACTIONS_BOT.login, id: ACTIONS_BOT.id, type: 'Bot' };
 type Release = Record<string, unknown> & { assets: Record<string, unknown>[] };
 /** The GitHub API's release answer for day `d`, as GitHub Actions publishes it (ids: day*10+1 the CSV, +2 the check). */
 const release = (d: number): Release => ({
-  tag_name: `data-volume-${dayName(d)}`, author: BOT, draft: false, prerelease: false,
+  tag_name: `data-volume-${dayName(d)}`, author: BOT, draft: false, prerelease: true,
   assets: [
     { id: d * 10 + 1, name: `volume-hours-${dayName(d)}.csv`, state: 'uploaded', uploader: BOT },
     { id: d * 10 + 2, name: `volume-check-${dayName(d)}.json`, state: 'uploaded', uploader: BOT },
@@ -128,7 +128,8 @@ describe('volume-hours release', () => {
       ['an author with the bot\'s id but another login', (r) => ({ ...r, author: { ...BOT, login: 'github-actions' } })],
       ['no author', (r) => ({ ...r, author: null })],
       ['a draft', (r) => ({ ...r, draft: true })],
-      ['a prerelease', (r) => ({ ...r, prerelease: true })],
+      ['a full release (publish-volume.sh makes a prerelease)', (r) => ({ ...r, prerelease: false })],
+      ['no prerelease flag', (r) => ({ ...r, prerelease: undefined })],
       ['another tag', (r) => ({ ...r, tag_name: `data-day-${name}` })],
       ['the CSV uploaded by another account', (r) => ({ ...r, assets: [{ ...r.assets[0]!, uploader: other }, r.assets[1]!] })],
       ['the check uploaded by another account', (r) => ({ ...r, assets: [r.assets[0]!, { ...r.assets[1]!, uploader: other }] })],
@@ -209,7 +210,7 @@ describe('chain volume reader', () => {
     ['a cross-check of fewer hours', 'did not pass', { check: (d: number) => passed(d).replace('"hours":24', '"hours":23') }],
     ['a release by another author', 'provenance', { edit: (r: Release) => ({ ...r, author: { login: 'mallory', id: 7, type: 'User' } }) }],
     ['an asset uploaded by another account', 'provenance', { edit: (r: Release) => ({ ...r, assets: [{ ...r.assets[0]!, uploader: { login: 'mallory', id: 7, type: 'User' } }, r.assets[1]!] }) }],
-    ['a draft or prerelease', 'provenance', { edit: (r: Release, d: number) => ({ ...r, prerelease: d % 2 === 0, draft: d % 2 === 1 }) }],
+    ['a draft, or a full release', 'provenance', { edit: (r: Release, d: number) => (d % 2 === 0 ? { ...r, draft: true } : { ...r, prerelease: false }) }],
   ])('refuses every day with %s: nothing ingested, unknown', async (_name, why, o) => {
     const h = host(all(VOLUME_SERIES_START_DAY, today - 1), o);
     const { readers, rows, timers } = setup(h.http, start);

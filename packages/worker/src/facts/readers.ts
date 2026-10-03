@@ -610,7 +610,7 @@ export class FactReaders {
   /**
    * The regime's chain volume (§6.4): each UTC day the volume window can reach (series start or the 365-day cap, up to
    * yesterday) is read once from its `data-volume-DAY` release. The release is read through the GitHub API and must
-   * pass `volumeReleaseAssets` (GitHub Actions' own, not a draft or prerelease); both assets are then downloaded by id,
+   * pass `volumeReleaseAssets` (GitHub Actions' own prerelease, not a draft); both assets are then downloaded by id,
    * `volume-check-DAY.json` must be that day's passed cross-check, and `volume-hours-DAY.csv`'s 24 rows are ingested
    * as `read:chain-volume-hour` (an uncovered hour as `covered: false`). A day not published yet, or refused, ingests
    * nothing (unknown) and is asked again at most once per VOLUME_RETRY_MS; an ingested day is never asked again. Days

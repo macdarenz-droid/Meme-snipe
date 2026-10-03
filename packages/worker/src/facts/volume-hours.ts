@@ -28,7 +28,8 @@ const byActions = (u: unknown): boolean => isObj(u) && u['login'] === ACTIONS_BO
 
 /**
  * The asset ids of day `day`'s release, from the GitHub API's `releases/tags/data-volume-DAY` answer, or null unless
- * its provenance holds: the exact tag, published by GitHub Actions, not a draft and not a prerelease, and exactly one
+ * its provenance holds: the exact tag, published by GitHub Actions, not a draft and a prerelease (as publish-volume.sh
+ * makes it), and exactly one
  * `volume-hours-DAY.csv` and one `volume-check-DAY.json`, each fully uploaded by GitHub Actions. Anyone else's release
  * or asset could forge a series that turns the regime on, so anything else leaves the day unknown.
  */
@@ -39,7 +40,7 @@ export const volumeReleaseAssets = (json: string, day: string): { readonly hours
   } catch {
     return null;
   }
-  if (!isObj(v) || v['tag_name'] !== volumeRelease(day) || !byActions(v['author']) || v['draft'] !== false || v['prerelease'] !== false || !Array.isArray(v['assets'])) return null;
+  if (!isObj(v) || v['tag_name'] !== volumeRelease(day) || !byActions(v['author']) || v['draft'] !== false || v['prerelease'] !== true || !Array.isArray(v['assets'])) return null;
   const id = (name: string): number | null => {
     const found = (v as Obj)['assets'] as unknown[];
     const named = found.filter((x) => isObj(x) && x['name'] === name);
