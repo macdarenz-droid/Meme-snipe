@@ -11,7 +11,7 @@ export const SEED_CREDIT_CAP = 150_000;
 
 export const runSeed = async (r: SeedRequest, o: { readonly rpc: SeedRpc; readonly timers: Timers }): Promise<SeedResult> => {
   if (r.untilSlot === null) return { mode: 'none', creates: [], coverage: [], report: 'the live creates watch did not start in time' };
-  const rpc = { rpc: o.rpc, timers: o.timers, creditCap: SEED_CREDIT_CAP, provider: 'helius' as const };
+  const rpc = { rpc: o.rpc, timers: o.timers, creditCap: SEED_CREDIT_CAP, provider: 'helius' as const, signal: r.signal };
   const last = r.saved.last;
   // A first start reads no RPC history: about 64,000 creates a day means a 14-day look-back costs far more than the
   // free month (rehearsal 37148935094 spent 4,000 credits in its first minutes and blocked the start meanwhile), and

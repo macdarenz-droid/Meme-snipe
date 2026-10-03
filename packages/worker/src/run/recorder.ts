@@ -18,6 +18,7 @@ import type { Frame, Release } from '../providers/index.ts';
 import { typedText } from './json.ts';
 
 export const RECORDER_SCHEMA = 2;
+// `pre` held SEED-1's seed before it became a recorded frame; kept so an older boot's leftover files still seal.
 const TABLES = ['frames', 'raw', 'releases', 'pre', 'delays'] as const;
 type Table = (typeof TABLES)[number];
 
@@ -127,14 +128,6 @@ export class Recorder {
   release(r: Release, receivedAt: number): void {
     this.#releases++;
     this.#push('releases', receivedAt, JSON.stringify(r));
-  }
-
-  /**
-   * Events put ahead of the live Feed at start (SEED-1's seed and the saved coverage history), in the order the engine
-   * took them: a replay releases them first, then the frames in release order.
-   */
-  pre(events: readonly unknown[], atMs: number): void {
-    for (const e of events) this.#push('pre', atMs, typedText(e));
   }
 
   /**

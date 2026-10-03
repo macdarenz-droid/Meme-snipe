@@ -44,6 +44,36 @@ export const virtualTimers = (start: number): Timers & { set(ms: number): void }
   };
 };
 
+/**
+ * Timers that fire only once the virtual clock reaches them (the test moves it with `set`): for a wait, such as the
+ * seed's cap, that must not elapse at its first turn as `virtualTimers` lets it.
+ */
+export const dueTimers = (start: number): Timers & { set(ms: number): void } => {
+  let now = start;
+  let next = 1;
+  const due = new Map<number, { readonly at: number; readonly fn: () => void }>();
+  const poll = (): void => {
+    for (const [id, t] of [...due].sort((x, y) => x[1].at - y[1].at || x[0] - y[0])) {
+      if (t.at > now || !due.delete(id)) continue;
+      t.fn();
+    }
+  };
+  return {
+    now: () => now,
+    set: (ms) => {
+      if (ms > now) now = ms;
+      setImmediate(poll);
+    },
+    setTimeout: (fn, ms) => {
+      const id = next++;
+      due.set(id, { at: now + Math.max(0, ms), fn });
+      setImmediate(poll);
+      return { id };
+    },
+    clearTimeout: (h) => void due.delete(h.id),
+  };
+};
+
 export const tempState = (): string => mkdtempSync(join(tmpdir(), 'zeroed-worker-'));
 
 export const testConfig = (stateDir: string, over: Record<string, string> = {}): WorkerConfig => {
