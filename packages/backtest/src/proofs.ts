@@ -104,10 +104,15 @@ export const leakTest = (o: RunOptions, marker: PlantedMarker, labels: unknown):
  * moves). The delayed run's log, moved back, must equal the original: any decision that changes means a module read
  * a slot it should not have.
  */
-export const shiftTest = (o: RunOptions, rows: readonly DatasetRow[], slots = 1n): ProofReport => {
-  const a = runBacktest({ ...o, rows: () => rows[Symbol.iterator]() });
-  const shifted = rows.map((r) => ({ ...r, slot: r.slot + slots, ...(r.kind === 'block' ? { parentSlot: r.parentSlot + slots } : {}) }) as DatasetRow);
-  const b = runBacktest({ ...o, rows: () => shifted[Symbol.iterator]() });
+export const shiftTest = (o: RunOptions, rows: readonly DatasetRow[] | (() => Iterator<DatasetRow>), slots = 1n): ProofReport => {
+  const stream = typeof rows === 'function' ? rows : () => rows[Symbol.iterator]();
+  const a = runBacktest({ ...o, rows: stream });
+  const shift = (r: DatasetRow) => ({ ...r, slot: r.slot + slots, ...(r.kind === 'block' ? { parentSlot: r.parentSlot + slots } : {}) }) as DatasetRow;
+  function* shifted(): Generator<DatasetRow> {
+    const it = stream();
+    for (let r = it.next(); !r.done; r = it.next()) yield shift(r.value);
+  }
+  const b = runBacktest({ ...o, rows: shifted });
   const violations: string[] = [];
   for (const r of [a, b]) if (r.stats.crash !== null) violations.push(`a run crashed: ${r.stats.crash}`);
   // Slots appear in each record's `at`, in fills (the landing slot) and in ids (b:<slot>, t:<slot>); all move back.

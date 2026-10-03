@@ -99,6 +99,13 @@ export function strictMisses(man, report, { leadInDays = 14 } = {}) {
     if (mv.supply_negative > 0) misses.push(`token supply below zero for ${mv.supply_negative} mints`);
     if (mv.balance_exact !== mv.balance_checks) misses.push(`token balance changes unexplained by movement rows ${mv.balance_checks - mv.balance_exact}`);
   }
+  // Delegations (check.mjs "Delegations").
+  const dg = report.delegations;
+  if (!dg || dg.files === 0) misses.push('delegation files absent');
+  else {
+    if (dg.malformed > 0) misses.push(`malformed delegation rows ${dg.malformed}`);
+    if (dg.outside_coverage > 0) misses.push(`delegation rows of non-pump mints outside movement_coverage ${dg.outside_coverage}`);
+  }
   // Swap attribution (check.mjs "Swap attribution").
   const sa = report.swap_attribution;
   if (!sa) misses.push('swap attribution not checked');
