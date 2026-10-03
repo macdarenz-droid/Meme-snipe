@@ -187,16 +187,23 @@ const simulateHoldout = (days: readonly Day[], n: number, shift: number, rng: Rn
   const a: ClusteredReturn[] = [];
   const b: DayReturn[] = [];
   let withEntries = 0;
+  // A day drawn again stands for new launches: its repeat copies get fresh cluster ids, so the walk-forward's size
+  // does not cap the number of creators in a larger simulated holdout. First copies keep the real ids, so creators
+  // that span several walk-forward days stay one cluster.
+  const drawn = new Array<number>(days.length).fill(0);
   for (let k = 0; a.length < n; ) {
     const start = nextInt(rng, days.length);
     for (let j = 0; j < SIM_BLOCK_DAYS && a.length < n; j++, k++) {
-      const d = days[(start + j) % days.length]!;
+      const di = (start + j) % days.length;
+      const d = days[di]!;
+      const copy = drawn[di]!++;
+      const tag = copy === 0 ? '' : `~${copy}`;
       // Zero-padded so the 2- and 3-day units, which sort day keys, see the drawn order.
       const key = `s${String(k).padStart(7, '0')}`;
       if (d.a.length > 0) withEntries++;
       for (const x of d.a) {
         if (a.length === n) break;
-        a.push({ day: key, rNet: x.rNet + shift, creatorCluster: x.creatorCluster, funderCluster: x.funderCluster });
+        a.push({ day: key, rNet: x.rNet + shift, creatorCluster: x.creatorCluster + tag, funderCluster: x.funderCluster + tag });
       }
       for (const x of d.b) b.push({ day: key, rNet: x });
     }
@@ -207,7 +214,11 @@ const simulateHoldout = (days: readonly Day[], n: number, shift: number, rng: Rn
 /** The full G2 rule at `level`: the 1-day rule and then every other resampling unit, all below the level. */
 const fullRulePasses = (a: readonly ClusteredReturn[], b: readonly DayReturn[], level: number, opts: { readonly rng: Rng; readonly replicates?: number }): boolean => {
   if (!g2RulePasses(g2Rule(a, b, level, opts), level)) return false;
-  return g2Sensitivity(a, b, level, opts, ['days-2', 'days-3', 'creator', 'funder']).every((x) => x.p < level);
+  // One unit at a time, stopping at the first that fails (same answer, less work).
+  for (const v of ['creator', 'days-3', 'days-2', 'funder'] as const) {
+    if (!(g2Sensitivity(a, b, level, opts, [v])[0]!.p < level)) return false;
+  }
+  return true;
 };
 
 /**
