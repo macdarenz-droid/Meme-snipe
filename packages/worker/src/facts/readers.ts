@@ -39,6 +39,18 @@ export interface FactRpcOptions {
   readonly timeoutMs: number;
 }
 
+/** A JSON-RPC error answer, with its code (null when the provider gave none). */
+export class FactRpcError extends ProviderError {
+  readonly rpcCode: number | null;
+  constructor(method: string, code: number | null) {
+    super('helius', 'rpc', `${method} error ${code ?? 'unknown'}`);
+    this.rpcCode = code;
+  }
+}
+
+/** The code Helius answered a mint-only getProgramAccounts with when the set is too large (gpa-probe run 37149567929). */
+export const GPA_TOO_MANY_ACCOUNTS = -32600;
+
 /** Helius JSON-RPC reads at `confirmed`, each one standard call through the scheduler. */
 export class FactRpc {
   readonly #o: FactRpcOptions;
@@ -63,7 +75,7 @@ export class FactRpc {
       if (!isObj(json)) throw new ProviderError('helius', 'shape', `${method} returned no object`);
       if (json['error'] !== undefined) {
         const e = json['error'];
-        throw new ProviderError('helius', 'rpc', `${method} error ${isObj(e) && typeof e['code'] === 'number' ? e['code'] : 'unknown'}`);
+        throw new FactRpcError(method, isObj(e) && typeof e['code'] === 'number' ? e['code'] : null);
       }
       return json['result'];
     });
@@ -342,9 +354,10 @@ export class FactReaders {
       try {
         gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority, filter);
       } catch (e) {
-        // A provider may refuse the mint-only scan ("too many accounts"): one indexed retry, counted as its own scan.
-        // Its result stays fail-safe: an extension-less account holding tokens breaks the sum and no fact forms.
-        if (!(e instanceof ProviderError && e.kind === 'rpc' && m.account.owner === TOKEN_2022_PROGRAM && filter === 'mintOnly')) throw e;
+        // Only the refusal of a too-large mint-only scan (-32600) earns one indexed retry, counted as its own scan. Every
+        // other failure (a 429, a timeout, "minimum context slot not reached", a legacy program) propagates: no retry.
+        // The retry's result stays fail-safe: an extension-less account holding tokens breaks the sum and no fact forms.
+        if (!(e instanceof FactRpcError && e.rpcCode === GPA_TOO_MANY_ACCOUNTS && m.account.owner === TOKEN_2022_PROGRAM && filter === 'mintOnly')) throw e;
         if (!this.#takeScan()) throw new Error('mint-only scan refused and the daily scan cap is reached');
         filter = 'indexed';
         fallback = true;

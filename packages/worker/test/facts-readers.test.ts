@@ -306,16 +306,21 @@ describe('fact readers', () => {
 
   describe('a refused mint-only scan', () => {
     const hc = FIX.holdersComplete;
-    const server = (refuse: boolean) => {
+    type Refusal = false | true | 'all' | 'http429' | 'timeout' | 'minContext';
+    const server = (refuse: Refusal, mintOwner = hc.mint.owner) => {
       const filters: unknown[][] = [];
       const http = async (req: HttpRequest) => {
         const body = JSON.parse(req.body!) as { method: string; params: unknown[] };
-        if (body.method === 'getAccountInfo') return rpcResult({ context: { slot: hc.mint.slot }, value: { owner: hc.mint.owner, data: [hc.mint.data, 'base64'], lamports: 1, executable: false } });
+        if (body.method === 'getAccountInfo') return rpcResult({ context: { slot: hc.mint.slot }, value: { owner: mintOwner, data: [hc.mint.data, 'base64'], lamports: 1, executable: false } });
         if (body.method === 'getProgramAccounts') {
           const f = (body.params[1] as { filters: unknown[] }).filters;
           filters.push(f);
+          const first = filters.length === 1;
           // Helius answered "-32600 too many accounts" to a mint-only scan of a big legacy coin (gpa-probe run 37149567929).
-          if (refuse && f.length === 1) return ok({ jsonrpc: '2.0', id: 1, error: { code: -32600, message: 'too many accounts' } });
+          if ((refuse === true && f.length === 1) || refuse === 'all') return ok({ jsonrpc: '2.0', id: 1, error: { code: -32600, message: 'too many accounts' } });
+          if (refuse === 'http429' && first) return resp(429, '');
+          if (refuse === 'timeout' && first) throw Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+          if (refuse === 'minContext' && first) return ok({ jsonrpc: '2.0', id: 1, error: { code: -32016, message: 'Minimum context slot has not been reached' } });
           const typed = hc.gpa.accounts.filter((a) => { const b = Buffer.from(a.data, 'base64'); return f.length === 1 || (b.length > 165 && b[165] === 2); });
           return rpcResult({ context: { slot: hc.gpa.slot }, value: typed.map((a) => ({ pubkey: a.address, account: { owner: a.owner, data: [a.data, 'base64'], lamports: 1, executable: false } })) });
         }
@@ -323,11 +328,11 @@ describe('fact readers', () => {
       };
       return { http, filters };
     };
-    const make = (http: HttpClient, cap: number) => {
+    const make = (http: HttpClient, cap: number, token2022Filter?: 'indexed') => {
       const timers = new ManualTimers(1_791_100_000_000);
       const ingested: unknown[] = [];
       const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers, creditsUsed: 0 }), timeoutMs: 1000 });
-      const readers = new FactReaders({ feed: { ingest: (_s, body) => ingested.push((body as { value: unknown }).value) }, rpc, http, timers, timeoutMs: 1000, holderScansPerDay: cap });
+      const readers = new FactReaders({ feed: { ingest: (_s, body) => ingested.push((body as { value: unknown }).value) }, rpc, http, timers, timeoutMs: 1000, holderScansPerDay: cap, ...(token2022Filter ? { token2022Filter } : {}) });
       return { readers, timers, ingested };
     };
 
@@ -341,6 +346,37 @@ describe('fact readers', () => {
       expect(await pump(r.readers.readHoldersAll(MINT), r.timers)).toBe(false);
       expect(r.ingested).toHaveLength(1);
       expect(r.readers.outcomes.at(-1)).toMatchObject({ ok: false, detail: expect.stringContaining('daily scan cap') });
+    });
+
+    it('a 429, a timeout or a min-context-slot error makes no indexed retry and takes one scan', async () => {
+      for (const refusal of ['http429', 'timeout', 'minContext'] as const) {
+        const s = server(refusal);
+        const r = make(s.http, 2);
+        expect(await pump(r.readers.readHoldersAll(MINT), r.timers)).toBe(false);
+        expect(s.filters).toEqual([[{ memcmp: { offset: 0, bytes: MINT } }]]);
+        expect(r.ingested).toEqual([]);
+        // One scan used of two: the next scan runs and is served, the one after hits the cap.
+        expect(await pump(r.readers.readHoldersAll(MINT), r.timers)).toBe(true);
+        expect(s.filters).toHaveLength(2);
+        expect(await pump(r.readers.readHoldersAll(MINT), r.timers)).toBe(false);
+        expect(s.filters).toHaveLength(2);
+      }
+    });
+
+    it('a refused scan already on the indexed filter makes no retry', async () => {
+      const s = server('all');
+      const r = make(s.http, 3, 'indexed');
+      expect(await pump(r.readers.readHoldersAll(MINT), r.timers)).toBe(false);
+      expect(s.filters).toEqual([[{ memcmp: { offset: 0, bytes: MINT } }, { memcmp: { offset: 165, bytes: '3' } }]]);
+      expect(r.ingested).toEqual([]);
+    });
+
+    it('a refused legacy SPL scan makes no retry', async () => {
+      const s = server('all', 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+      const r = make(s.http, 3);
+      expect(await pump(r.readers.readHoldersAll(MINT), r.timers)).toBe(false);
+      expect(s.filters).toEqual([[{ dataSize: 165 }, { memcmp: { offset: 0, bytes: MINT } }]]);
+      expect(r.ingested).toEqual([]);
     });
 
     it('a served mint-only scan needs no retry and is not a fallback', async () => {
