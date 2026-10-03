@@ -11,7 +11,7 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, RAW, STREAMS, dailyChainVolume, insiderLinks, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, insiderLinks, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
 import { FIX, FactWorld, MINT, OPTIONS, POOL, RECORDS, atOf, chainTx, coverage, logEvents, offchain, slotNotice, txEvents } from './helpers.ts';
@@ -546,6 +546,24 @@ describe('complete holder set', () => {
     expect(f.accounts.reduce((s, a) => s + a.amount, 0n)).toBe(f.supply);
     // Delegates ride along for GATE-1e.
     expect(f.accounts.every((a) => 'delegate' in a && 'delegatedAmount' in a)).toBe(true);
+  });
+
+  it('an extension-less Token-2022 account that holds tokens, dropped by the indexed filter: no holder fact, H12 rejects, abstention counted', () => {
+    // Move half of one holder's balance into a 165-byte account: the full set still sums to the supply.
+    const bufs = hc.gpa.accounts.map((a) => Buffer.from(a.data, 'base64'));
+    const holder = bufs.findIndex((b) => b.length > 165 && b.readBigUInt64LE(64) > 1n);
+    const plain = bufs.findIndex((b) => b.length === 165);
+    const v = bufs[holder]!.readBigUInt64LE(64);
+    bufs[holder]!.writeBigUInt64LE(v - v / 2n, 64);
+    bufs[plain]!.writeBigUInt64LE(v / 2n, 64);
+    const all = hc.gpa.accounts.map((a, i) => ({ ...a, data: bufs[i]!.toString('base64') }));
+    expect(parseHolders(fact(read({ accounts: all })))!.coverage).toBe('all');
+    const indexed = all.filter((_, i) => bufs[i]!.length > 165 && bufs[i]![165] === 2);
+    const w = new FactWorld().push(...lifecycle(), offchain(RAW.holdersAll(MINT), read({ accounts: indexed }), BigInt(hc.gpa.slot), 1_791_100_000_000, 'helius'));
+    expect(w.facts(holdersKey(MINT))).toEqual([]);
+    expect(w.last(HOLDER_ABSTENTIONS_KEY)).toMatchObject({ day: Math.floor(1_791_100_000_000 / 86_400_000), counts: { 'sum-mismatch': 1 }, last: { mint: MINT, reason: 'sum-mismatch' } });
+    const r = evaluateHardRejects(w.ctx(after(BigInt(hc.gpa.slot) + 1n, 1_791_100_000_500)), { session, mode: 'backtest' }, request(), { stopAtFirst: false });
+    expect(r.reasons.some((x) => x.gate === 'H16' && x.neededBy === 'H12' && x.input === 'holders')).toBe(true);
   });
 
   it('a repeated address, a wrong program, a mint read after the scan or a wrong total proves nothing', () => {

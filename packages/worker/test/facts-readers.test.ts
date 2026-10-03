@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { FIX, MINT, POOL } from '../../core/test/facts/helpers.ts';
 import {
   ASSUMPTIONS, FACT_RPC_METHODS, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, SUPPLEMENT_FILE, candidateCapacity, freePlanPerMinute, perCandidate,
-  readSupplement, supplementRow, writeSupplement, type Ingest,
+  HOLDER_SCANS_PER_DAY, holderFilters, readSupplement, supplementRow, writeSupplement, type Ingest,
 } from '../src/facts/index.ts';
 import type { FrameBody, Source } from '../src/providers/index.ts';
 import type { HttpClient, HttpRequest, HttpResponse } from '../src/providers/http.ts';
@@ -272,6 +272,35 @@ describe('fact readers', () => {
       expect(await pump(s.readers.readHolders(MINT), s.timers)).toBe(false);
       expect(s.ingested).toEqual([]);
     }
+  });
+
+  it('holder scan filters: legacy SPL by size and mint; Token-2022 indexed by default, or by mint only', () => {
+    const spl = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    const t22 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+    expect(holderFilters(spl, MINT)).toEqual([{ dataSize: 165 }, { memcmp: { offset: 0, bytes: MINT } }]);
+    expect(holderFilters(spl, MINT, 'mintOnly')).toEqual([{ dataSize: 165 }, { memcmp: { offset: 0, bytes: MINT } }]);
+    expect(holderFilters(t22, MINT)).toEqual([{ memcmp: { offset: 0, bytes: MINT } }, { memcmp: { offset: 165, bytes: '3' } }]);
+    expect(holderFilters(t22, MINT, 'mintOnly')).toEqual([{ memcmp: { offset: 0, bytes: MINT } }]);
+  });
+
+  it('the trial default is 100 holder scans a day', async () => {
+    expect(HOLDER_SCANS_PER_DAY).toBe(100);
+    const hc = FIX.holdersComplete;
+    const seenFilters: unknown[] = [];
+    const http = async (req: HttpRequest) => {
+      const body = JSON.parse(req.body!) as { method: string; params: unknown[] };
+      if (body.method === 'getAccountInfo') return rpcResult({ context: { slot: hc.mint.slot }, value: { owner: hc.mint.owner, data: [hc.mint.data, 'base64'], lamports: 1, executable: false } });
+      if (body.method === 'getProgramAccounts') {
+        seenFilters.push((body.params[1] as { filters: unknown }).filters);
+        return rpcResult({ context: { slot: hc.gpa.slot }, value: [] });
+      }
+      return rpcResult({ context: { slot: hc.gpa.slot }, value: [] });
+    };
+    const timers = new ManualTimers(1_791_100_000_000);
+    const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers, creditsUsed: 0 }), timeoutMs: 1000 });
+    const readers = new FactReaders({ feed: { ingest: () => undefined }, rpc, http, timers, timeoutMs: 1000, token2022Filter: 'mintOnly' });
+    for (let k = 0; k < 3; k++) expect(await pump(readers.readHoldersAll(MINT), timers)).toBe(true);
+    expect(seenFilters.at(-1)).toEqual([{ memcmp: { offset: 0, bytes: MINT } }]);
   });
 
   it('the read-only method list has no way to send', () => {
