@@ -18,9 +18,10 @@ const counts = (path: string) => {
 };
 
 describe('crash safety', () => {
-  it('a process killed inside a transaction leaves none of that transaction, and keeps what committed', async () => {
+  // Stage 1: after the intent; 2: after the padding; 3: after the reservation; 4: every row written, before COMMIT.
+  it.each([1, 2, 3, 4])('a process killed inside a transaction (stage %i) leaves none of it, and keeps what committed', async (stage) => {
     const path = tempPath();
-    const child = runChild(['hang', path]);
+    const child = runChild(['hang', path, String(stage)]);
     await child.line('ready'); // trade 1 committed; trade 2 has intent, events, reservation and an outbox row written but not committed
     child.kill();
     await child.exit;
@@ -35,7 +36,7 @@ describe('crash safety', () => {
     expect(counts(path)).toEqual({ integrity: 'ok', intents: 1, events: 3, reservations: 1, outbox: 2, observations: PADDING });
   }, 20_000);
 
-  it('killed at random moments while writing, every trade is all there or not there at all', async () => {
+  it('stress: killed at random moments while writing, every trade is all there or not there at all', async () => {
     const path = tempPath();
     openLedger(path, 'paper').close();
     let offset = 1;
