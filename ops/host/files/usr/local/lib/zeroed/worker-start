@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Starts the worker for zeroed-worker.service (ExecStartPre with --reconcile, then ExecStart) with the RUN-1
 # environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
-# endpoint on, and the worker API on loopback only (tailscale serve publishes it to the tailnet, 17). The
-# deployed release's worker runs once it exists (WORKER-1); until then the host's stand-in. Live is never set
-# here or in any environment file: the worker refuses any mode but paper.
+# endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
+# publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
+# ops/host-config.json says "worker": "release"; until then the host's stand-in. Live is never set here or in
+# any environment file: the worker refuses any mode but paper.
 set -euo pipefail
 . /usr/local/lib/zeroed/logic.sh
-export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on ZEROED_HEALTH_ADDR="$WORKER_API_ADDR"
-entry=/opt/zeroed/current/packages/worker/src/main.ts
-if [ -f "$entry" ]; then
+export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
+export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
+entry="$(worker_entry /opt/zeroed/current)"
+if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current
   exec /usr/local/bin/node --no-warnings "$entry" "$@"
 fi
-exec /usr/local/bin/node /opt/zeroed/stub/worker.mjs "$@"
+exec /usr/local/bin/node "$entry" "$@"

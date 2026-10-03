@@ -809,9 +809,9 @@ async function beat() {
 
 const bootId = `${Date.now().toString(36)}-${process.pid}`;
 
-// The worker API's health route, loopback only (ARCHITECTURE.md 12.4). `tailscale serve` publishes it to the
-// owner's tailnet. `evidence` lists the dry-run evidence kept on the host (zeroed-check writes the index).
-const healthAddr = process.env.ZEROED_HEALTH_ADDR ?? '';
+// The worker API (ZEROED_API_ADDR), loopback only (ARCHITECTURE.md 12.4); `tailscale serve` publishes it to the
+// owner's tailnet. Its /health lists the dry-run evidence kept on the host (`evidence`; zeroed-check writes the index).
+const healthAddr = process.env.ZEROED_API_ADDR ?? '';
 let server = null;
 if (healthAddr) {
   const m = /^(127\.0\.0\.1|\[::1\]):(\d{1,5})$/.exec(healthAddr);
@@ -1074,6 +1074,7 @@ install_file /usr/local/lib/zeroed/logic.sh 0644 <<'__ZEROED_FILE__'
 PAIR_CODE_TTL_S=1800       # a pairing code works for 30 minutes
 WEBHOOK_MAX_TRIES=5        # the owner is told after this many failed tries in a row
 WORKER_API_ADDR=127.0.0.1:8788 # the worker API, loopback only; tailscale serve publishes it to the tailnet
+WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RUN-1's default), never published
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
 RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
@@ -1152,6 +1153,17 @@ serve_ok() {
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
 
+# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when
+# the release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the
+# host's stand-in otherwise. Switching the host to the real worker is a decision, not a side effect of a merge.
+worker_entry() {
+  if [ "$(jq -r '.worker // "stub"' "$1/ops/host-config.json" 2>/dev/null || echo stub)" = release ] && [ -f "$1/packages/worker/src/main.ts" ]; then
+    printf '%s\n' "$1/packages/worker/src/main.ts"
+  else
+    printf '%s\n' /opt/zeroed/stub/worker.mjs
+  fi
+}
+
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
 __ZEROED_FILE__
@@ -1159,18 +1171,20 @@ install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Starts the worker for zeroed-worker.service (ExecStartPre with --reconcile, then ExecStart) with the RUN-1
 # environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
-# endpoint on, and the worker API on loopback only (tailscale serve publishes it to the tailnet, 17). The
-# deployed release's worker runs once it exists (WORKER-1); until then the host's stand-in. Live is never set
-# here or in any environment file: the worker refuses any mode but paper.
+# endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
+# publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
+# ops/host-config.json says "worker": "release"; until then the host's stand-in. Live is never set here or in
+# any environment file: the worker refuses any mode but paper.
 set -euo pipefail
 . /usr/local/lib/zeroed/logic.sh
-export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on ZEROED_HEALTH_ADDR="$WORKER_API_ADDR"
-entry=/opt/zeroed/current/packages/worker/src/main.ts
-if [ -f "$entry" ]; then
+export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
+export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
+entry="$(worker_entry /opt/zeroed/current)"
+if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current
   exec /usr/local/bin/node --no-warnings "$entry" "$@"
 fi
-exec /usr/local/bin/node /opt/zeroed/stub/worker.mjs "$@"
+exec /usr/local/bin/node "$entry" "$@"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash

@@ -195,6 +195,7 @@ describe('evidence on the host', () => {
     const stub = read('ops/host/files/opt/zeroed/stub/worker.mjs');
     expect(stub).toContain("readFileSync('/var/lib/zeroed-index/evidence.json', 'utf8')");
     expect(stub).toContain('evidence: evidence()');
+    expect(stub).toContain("const healthAddr = process.env.ZEROED_API_ADDR ?? '';");
     // No path from the host to the repository or GitHub: no token, no push, no upload.
     for (const p of ['ops/host/install-main.sh', ...['zeroed-check', 'zeroed-update', 'zeroed-status', 'zeroed-tailscale'].map((n) => `ops/host/files/usr/local/sbin/${n}`)]) {
       expect(read(p), p).not.toMatch(/git push|gh (api|release)|GITHUB_TOKEN|-X (POST|PUT|PATCH)[^\n]*api\.github|ZEROED_API_URL[^\n]*-X/);
@@ -208,15 +209,48 @@ describe('worker start and API address', () => {
     expect(unit).toContain('ExecStartPre=/usr/local/lib/zeroed/worker-start --reconcile');
     expect(unit).toMatch(/^ExecStart=\/usr\/local\/lib\/zeroed\/worker-start$/m);
     const w = read('ops/host/files/usr/local/lib/zeroed/worker-start');
-    expect(w).toContain('export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on ZEROED_HEALTH_ADDR="$WORKER_API_ADDR"');
-    expect(w).toContain('entry=/opt/zeroed/current/packages/worker/src/main.ts');
-    expect(w).toContain('exec /usr/local/bin/node /opt/zeroed/stub/worker.mjs "$@"');
+    expect(w).toContain('export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on');
+    expect(w).toContain('export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"');
+    expect(w).toContain('entry="$(worker_entry /opt/zeroed/current)"');
     expect(w).not.toMatch(/ZEROED_MODE=(?!paper )/);
   });
 
-  it('the worker API is loopback 127.0.0.1:8788 for the wrapper, the runner unit and tailscale serve alike', () => {
+  it("runs the release's worker only when the release's host-config says so; the stand-in otherwise", () => {
+    const rel = join(tmp, 'release');
+    const cfg = (o: unknown) => {
+      mkdirSync(join(rel, 'ops'), { recursive: true });
+      writeFileSync(join(rel, 'ops/host-config.json'), JSON.stringify(o));
+    };
+    const entry = () => sh(`worker_entry "${rel}"`).out;
+    const STUB = '/opt/zeroed/stub/worker.mjs';
+    const MAIN = join(rel, 'packages/worker/src/main.ts');
+    expect(entry()).toBe(STUB); // no release files at all
+    mkdirSync(join(rel, 'packages/worker/src'), { recursive: true });
+    writeFileSync(MAIN, '');
+    expect(entry()).toBe(STUB); // main.ts but no host-config
+    cfg({ offsite_backup: false });
+    expect(entry()).toBe(STUB);
+    cfg({ worker: 'stub' });
+    expect(entry()).toBe(STUB);
+    cfg({ worker: 'Release' });
+    expect(entry()).toBe(STUB);
+    cfg({ worker: 'release' });
+    expect(entry()).toBe(MAIN);
+    rmSync(MAIN);
+    expect(entry()).toBe(STUB); // asked for, but the release has no worker
+    writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
+    expect(entry()).toBe(STUB);
+    // The repository ships with the stand-in: the switch is its own reviewed commit.
+    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('stub');
+  });
+
+  it('health for the runner on 127.0.0.1:8787 and the worker API on 127.0.0.1:8788, as WORKER-1 and RUN-1 expect', () => {
     expect(sh('echo "$WORKER_API_ADDR"').out).toBe('127.0.0.1:8788');
-    expect(read('packages/runner/systemd/zeroed-dryrun@.service')).toContain('--health-addr 127.0.0.1:8788');
+    expect(sh('echo "$WORKER_HEALTH_ADDR"').out).toBe('127.0.0.1:8787');
+    // The runner's default health address (its unit sets none), and WORKER-1's default API address.
+    expect(read('packages/runner/src/contract.ts')).toContain("export const DEFAULT_HEALTH_ADDR = '127.0.0.1:8787';");
+    expect(read('packages/runner/systemd/zeroed-dryrun@.service')).not.toContain('--health-addr');
+    expect(read('packages/worker/src/run/config.ts')).toContain("const apiAddr = env['ZEROED_API_ADDR'] ?? '127.0.0.1:8788';");
     expect(read('ops/host/files/usr/local/sbin/zeroed-tailscale')).toContain('tailscale serve --bg --https=443 "http://$WORKER_API_ADDR"');
     // 127.0.0.1:8789 is RUN-1d's tabletop worker: reserved, never the worker API, never published.
     expect(sh('echo "$TABLETOP_API_ADDR"').out).toBe('127.0.0.1:8789');
@@ -225,7 +259,7 @@ describe('worker start and API address', () => {
 
   it('the stand-in serves /health on loopback only', () => {
     const r = spawnSync('node', [join(root, 'ops/host/files/opt/zeroed/stub/worker.mjs')], {
-      env: { PATH: process.env['PATH'] ?? '', STATE_DIRECTORY: tmp, ZEROED_HEALTH_ADDR: '0.0.0.0:18788' },
+      env: { PATH: process.env['PATH'] ?? '', STATE_DIRECTORY: tmp, ZEROED_API_ADDR: '0.0.0.0:18788' },
       encoding: 'utf8',
       timeout: 10_000,
     });
