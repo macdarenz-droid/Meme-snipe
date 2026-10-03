@@ -185,7 +185,7 @@ send_tg() { # chat text [chat type]
   upd=$((upd + 1))
   sleep 1 # Telegram dates are whole seconds; keep each message after the code it answers
   printf '{"update_id":%s,"message":{"message_id":%s,"date":%s,"chat":{"id":%s,"type":"%s"},"text":"%s"}}\n' "$((1000 + upd))" "$upd" "$(in_c 'date +%s')" "$1" "${3:-private}" "$2" >>"$STATE/updates.jsonl"
-  in_c "systemctl start zeroed-pair.service"
+  in_c "systemctl reset-failed zeroed-pair.service 2>/dev/null; systemctl start zeroed-pair.service"
 }
 send_tg "$STRANGER" "/pair 000000"
 in_c "! test -e /etc/zeroed/pair-code && ! test -e /etc/credstore.encrypted/telegram_chat_id" || fail "a wrong /pair did not invalidate the code"
@@ -520,7 +520,7 @@ grep -q "\"chat_id\":\"$T_CHAT\",\"text\":\"Zeroed host: a wrong pairing code wa
 jq -e --arg u "$WD_URL" '.url == $u' "$STATE/webhook.json" >/dev/null || fail "webhook not back after a wrong re-pair code"
 # Expiry after 30 minutes.
 RP="$(repair_code)"
-in_c "touch -d '31 minutes ago' /etc/zeroed/pair-code && systemctl start zeroed-pair.service"
+in_c "touch -d '31 minutes ago' /etc/zeroed/pair-code && systemctl reset-failed zeroed-pair.service 2>/dev/null; systemctl start zeroed-pair.service"
 in_c "! test -e /etc/zeroed/pair-code" || fail "an expired code was kept"
 chat_is "$T_CHAT" || fail "expiry moved the chat"
 tail -3 "$STATE/telegram.jsonl" | has 'the new pairing code expired. This chat stays paired.' || fail "expiry not told"
