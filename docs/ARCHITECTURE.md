@@ -398,7 +398,7 @@ No deposit is asked for until all six pass on the same commit, with evidence kep
 | # | Requirement (`CLAUDE.md`) | Produced by |
 | --- | --- | --- |
 | 1 | Deterministic replay: the same market data replayed 10 times gives identical decision logs | BT-1 (historical), TEST-1 (recorded live) |
-| 2 | Historical backtest: ≥ 30 days (target 60+) of survivorship-free on-chain data, replayed transaction by transaction through the same engine code as live, with zero crashes, illegal states or unreconciled intents | DATA-1 dataset + BT-1 + BT-2 |
+| 2 | Historical backtest: ≥ 30 days (target 60+) of survivorship-free on-chain data, replayed transaction by transaction through the same engine code as live, with zero crashes, illegal states or unreconciled intents. Named check: **ledger replay check**: every stored intent, position and book event sequence is replayed through the CORE-1 reducer and must reproduce the stored states exactly; any illegal or diverging sequence fails the gate | DATA-1 dataset + BT-1 + BT-2; the check itself is built in LEDGER-1 |
 | 3 | Live dry run: the full worker on live feeds for ≥ 48 h, started as soon as the worker exists and run in parallel with other work, with restart and disconnect drills; ≥ 99% uptime; every decision logged with its reasons | WORKER-1 + RUN-1 on the VPS (OPS-1) |
 | 4 | Dry-run execution: during the live dry run, every paper entry and exit built as a real transaction and simulated on mainnet (never sent); ≥ 95% simulate successfully and amounts match the local quote within tolerance (median ≤ 0.5 points, each ≤ 2 points) | TEST-2, inside the same qualifying run |
 | 5 | Fault injection: timeouts, stale feeds, rate limits and restarts mid-trade pass the acceptance cases (§18) | TEST-3 (CI) plus the drills inside the qualifying run |
@@ -576,7 +576,7 @@ Critical paths: the proof, ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) �
 **LEDGER-1 Ledger and storage** · high · 2 h · depends on CORE-1 · supervisor approves the data shape after review (no personal data; `CLAUDE.md` ruling)
 - Goal: append-only SQLite ledger: observations, feature snapshots, decisions, intents, attempts, fills, positions, reservations, fees and rent, labels, experiment registry, gate results, operator commands. The backtester writes the same ledger to a separate file.
 - Files: `packages/core/src/ledger/**`, migrations.
-- Accept: `node:sqlite`, WAL, one writer, `synchronous=FULL`; outbox and unique intent keys; atomic reservation in one `BEGIN IMMEDIATE`; crash mid-transaction leaves no partial state (test kills the process); schema matches [quant.md](research/quant.md) §9 adapted to SQLite; labels live in tables the engine has no read access to.
+- Accept: `node:sqlite`, WAL, one writer, `synchronous=FULL`; outbox and unique intent keys; atomic reservation in one `BEGIN IMMEDIATE`; crash mid-transaction leaves no partial state (test kills the process); schema matches [quant.md](research/quant.md) §9 adapted to SQLite; labels live in tables the engine has no read access to; **ledger replay check** (`ledger:replay` command): every stored intent, position and book event sequence is replayed through the CORE-1 reducer and must reproduce the stored states exactly, failing on any illegal or diverging sequence (tests include a tampered event and a reordered sequence that must fail).
 
 **STATS-1 Labels, statistics and promotion gates** · high · 2.5–3.5 h · depends on nothing (pure)
 - Goal: the separate scoring stage and the numbers behind §13–§15.
@@ -638,7 +638,7 @@ Critical paths: the proof, ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) �
 
 **BT-2 Historical backtest and strategy study** · high · 2–3 h build, then run time · depends on BT-1, GATE-1, RISK-1, EXIT-1, STATS-1, DATA-1 dataset (≥ 30 days plus the 14-day lead-in)
 - Goal: pre-funding items 2 and 6. Run U1, U2 (and U3 after RES-2) against S0 through the real engine.
-- Accept: exactly one configuration per universe registered before the holdout is opened (experiment registry); walk-forward folds with purge and embargo; one untouched later holdout, scored once and then marked burned in the registry; conservative scenario; Holm correction across the universes that enter; G0, G1 and G2 reports written to the repo with the exact commit and dataset hash; the live-only-veto bias note (§16.3) in the report; a "not proven" result is reported as such, never tuned on the holdout.
+- Accept: exactly one configuration per universe registered before the holdout is opened (experiment registry); walk-forward folds with purge and embargo; one untouched later holdout, scored once and then marked burned in the registry; conservative scenario; Holm correction across the universes that enter; G0, G1 and G2 reports written to the repo with the exact commit and dataset hash; the live-only-veto bias note (§16.3) in the report; the ledger replay check passes on the backtest ledger (§15 item 2); a "not proven" result is reported as such, never tuned on the holdout.
 
 **WORKER-1 Always-on worker, recorder and API** · high · 2.5–3.5 h · depends on FEED-1, GATE-1, RISK-1, EXIT-1, BT-1, LEDGER-1, TX-1, TEST-2
 - Goal: the engine on the live Feed, unattended, with everything the qualifying dry run needs from its first minute: the market recorder and the dry-run simulation hook.
@@ -655,7 +655,7 @@ Critical paths: the proof, ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) �
 
 **TEST-1 Replay and live/backtest parity** · high · 1.5–2 h · depends on WORKER-1 (recorder), BT-1
 - Goal: pre-funding item 1 on live data and the owner's parity proof.
-- Accept: data recorded by the qualifying dry run, replayed through BT-1, reproduces the live decision log exactly (byte-identical after normalising wall-clock fields); 10 replays identical; any divergence reported with the first differing event.
+- Accept: the ledger replay check passes on the qualifying dry run's ledger; data recorded by the qualifying dry run, replayed through BT-1, reproduces the live decision log exactly (byte-identical after normalising wall-clock fields); 10 replays identical; any divergence reported with the first differing event.
 
 **TEST-3 Fault injection and the G3 report** · high · 1.5–2 h · depends on WORKER-1, RUN-1, STATS-1
 - Goal: pre-funding item 5 and the G3 consistency report from the qualifying run.

@@ -53,6 +53,7 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-03 | Live-only inputs (simulation, third-party cross-checks, Jupiter quotes, execution health) are vetoes: they only remove trades live and are absent in the backtest, with the bias noted; the regime gate uses the same historical series live and in the backtest | Same engine code; no historical candidate may fail "unknown" by design | [ARCHITECTURE.md](ARCHITECTURE.md) §16.3 |
 | 2026-10-03 | Qualifying dry run on the VPS only; recorder and simulation built into WORKER-1 so they run from the first minute; host (OPS-1) built before the worker | Items 3, 4 and G3 must come from the same run | [ARCHITECTURE.md](ARCHITECTURE.md) §15, §20 |
 | 2026-10-03 | Equity and the high-water mark are net of deposits and withdrawals; the week starts Monday 00:00 Melbourne; tighter concentration defaults (top-10 30%, dev cluster 5%) | Flows must not trip limits; safest option between two research defaults | [ARCHITECTURE.md](ARCHITECTURE.md) §7.1, §8 |
+| 2026-10-03 | Ledger replay check under pre-funding item 2: every stored intent, position and book event sequence replayed through the CORE-1 reducer must reproduce the stored states exactly (supervisor, from the LEDGER-1 review) | Stored state must be provably what the lifecycle rules produce | [ARCHITECTURE.md](ARCHITECTURE.md) §15, §20 LEDGER-1 |
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
