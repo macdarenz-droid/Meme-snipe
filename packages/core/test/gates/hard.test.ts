@@ -12,8 +12,10 @@ import {
 } from '../../src/gates/index.ts';
 import {
   BASE_VAULT, CREATED_AT, DEV, MIGRATED_AT, MIGRATION_PRICE, MINT, NON_CANONICAL_POOL, NOW, POOL, POOL_ADDRESS, QUOTE_VAULT, SLOT, SPEND, SUPPLY, T,
-  ACC, W, account, contextOf, decodedPool, deps, drop, holderAccounts, obs, passingFacts, patch, request, session, streamObs, type Facts,
+  ACC, SOL_PRICE, W, account, contextOf, decodedPool, deps, drop, holderAccounts, obs, passingFacts, patch, request, roundTrip, session, streamObs, type Facts,
 } from './world.ts';
+import { microUsd } from '../../src/units/index.ts';
+import { NATIVE_MINT, PUMP_AMM_PROGRAM } from '../../src/chain/index.ts';
 
 const run = (facts: Facts, mode: Mode = 'live', req = request(), all = false): HardResult =>
   evaluateHardRejects(contextOf(facts), deps(mode), req, { stopAtFirst: !all });
@@ -297,5 +299,104 @@ describe('evaluation', () => {
     expect(SUPPLY).toBeGreaterThan(0n);
     expect(POOL_ADDRESS).toBe('9KBF3KqYErfs1NXRK35gb4J8wnAD2i9ePZAzcwn7yhFT');
     expect(SPEND).toBe(13_000_000n);
+  });
+});
+
+// Review round 1 (PR #22): every trigger and boundary the mutation run found untested.
+describe('boundaries found by mutation testing', () => {
+  const codes = (f: Facts, gate: HardGate, req = request()) => codesFor(reasonsOf(f, 'live', req), gate);
+  const effective = QUOTE_VAULT + (POOL.virtualQuoteReserves ?? 0n);
+  const usd = (effective * SOL_PRICE) / 1_000_000_000n;
+
+  it('a: the R12 floor rises with trade size (1,000 x notional)', () => {
+    const fail = usd / 1_000n + 1n; // floor = notional x 1,000 > usd
+    const pass = usd / 1_000n;
+    expect(codes(passingFacts(), 'H8', request({ notional: microUsd(fail) }))).toEqual(['below-liquidity-floor']);
+    expect(codes(passingFacts(), 'H8', request({ notional: microUsd(pass) }))).toEqual([]);
+  });
+
+  it('b: a SOL/USD point more than 2 h old is stale for H8; exactly 2 h is not', () => {
+    const at = (tMs: number) => patch(passingFacts(), SOL_USD_KEY, { points: [{ tMs, price: SOL_PRICE }] });
+    expect(reasonsOf(at(T - 2 * 60 * MINUTE_MS - 1))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'stale', input: 'sol-usd', neededBy: 'H8' }));
+    expect(codes(at(T - 2 * 60 * MINUTE_MS), 'H8')).toEqual([]);
+  });
+
+  it('c: a negative virtual quote reserve lowers the effective reserve', () => {
+    const f = patch(passingFacts(), poolKey(MINT), { pool: { ...POOL, virtualQuoteReserves: -(QUOTE_VAULT - 1_000_000_000n) } });
+    expect(codes(f, 'H8')).toEqual(['below-liquidity-floor']);
+  });
+
+  it('d: a holder at exactly 40% of circulating is a hard reject', () => {
+    const vault = 700_000_000_000_000n + ((SUPPLY - 700_000_000_000_000n) % 5n);
+    const circulating = SUPPLY - vault;
+    const accounts = holderAccounts().map((a) => (a.owner === POOL_ADDRESS ? { ...a, amount: vault } : a));
+    const whale = { address: ACC('w40'), owner: W('w40'), ownerProgram: null, amount: (circulating * 2n) / 5n };
+    expect(codes(patch(passingFacts(), holdersKey(MINT), { accounts: [...accounts, whale] }), 'H12')).toEqual(['hard-holder', 'top10']);
+  });
+
+  it('e: the H15 tolerance is the rounding bound exactly; a simulated spend that differs is inconsistent', () => {
+    const q = roundTrip();
+    if (!q.ok) throw new Error('quote');
+    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.proceeds - 16n }), 'H15')).toEqual([]);
+    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.proceeds - 17n }), 'H15')).toEqual(['sim-loss']);
+    expect(reasonsOf(patch(passingFacts(), simKey(MINT), { spend: SPEND + 1n }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'sim', neededBy: 'H15' }));
+  });
+
+  it('f: a pool for another mint and an LP read for another LP mint are inconsistent', () => {
+    expect(reasonsOf(patch(passingFacts(), poolKey(MINT), { pool: { ...POOL, baseMint: NATIVE_MINT } }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'pool', neededBy: 'H5' }));
+    expect(reasonsOf(patch(passingFacts(), lpKey(MINT), { lpMint: NATIVE_MINT }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'lp', neededBy: 'H6' }));
+  });
+
+  it('g: the dev counts in the insider total; this mint counts in the serial total', () => {
+    const circulating = SUPPLY - 700_000_000_000_000n;
+    const devBag = holderAccounts().map((a) => (a.owner === DEV ? { ...a, amount: (circulating * 16n) / 100n } : a));
+    const f = patch(patch(passingFacts(), holdersKey(MINT), { accounts: devBag }), insidersKey(MINT), { insiders: [], devCluster: [] });
+    expect(codes(f, 'H13')).toEqual(['insider-supply', 'dev-cluster']);
+    const two = patch(passingFacts(), deployerKey(DEV), { mints: [{ mint: 'A', createdAtMs: T - 1_000 }, { mint: 'B', createdAtMs: T - 2_000 }] });
+    expect(codes(two, 'H14')).toEqual(['serial-deployer']);
+  });
+
+  it('h: a value received after now is future even with a valid slot; a missing stream head rejects', () => {
+    expect(reasonsOf(patch(passingFacts(), poolKey(MINT), { obs: obs({ receivedAt: T + 1 }) }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'future', input: 'pool' }));
+    expect(reasonsOf(drop(passingFacts(), streamKey('chain')))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'missing', input: 'stream', neededBy: 'H1' }));
+  });
+
+  it('i: a SOL/USD point dated after now inside a snapshot received before now is never used', () => {
+    const f = patch(passingFacts(), SOL_USD_KEY, { points: [{ tMs: T - 3 * 60 * MINUTE_MS, price: SOL_PRICE }, { tMs: T + 1_000, price: SOL_PRICE }] });
+    expect(reasonsOf(f)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'stale', input: 'sol-usd', neededBy: 'H8' }));
+  });
+
+  it('j: the 3-minute candle window and the +5 min candle have exact edges', () => {
+    const spike = (startMs: number) => ({ startMs, open: { quote: 100n, base: 1n }, high: { quote: 200n, base: 1n }, close: { quote: 100n, base: 1n } });
+    const chase = { startMs: MIGRATED_AT + 4 * MINUTE_MS, open: MIGRATION_PRICE, high: MIGRATION_PRICE, close: MIGRATION_PRICE };
+    const withCandles = (candles: unknown[]) => patch(passingFacts(), candlesKey(MINT), { candles });
+    // A candle that ended exactly 3 minutes ago is outside the window; one that ended 1 ms later is inside.
+    expect(codes(withCandles([chase, spike(T - 4 * MINUTE_MS)]), 'H11')).toEqual([]);
+    expect(codes(withCandles([chase, spike(T - 4 * MINUTE_MS + 1)]), 'H11')).toEqual(['candle-spike']);
+    // The +5 min price is a candle that ended by migration + 5 min and after migration.
+    expect(codes(withCandles([{ ...chase, startMs: MIGRATED_AT + 4 * MINUTE_MS + 1 }]), 'H11')).toEqual(['not-covered']);
+    expect(codes(withCandles([{ ...chase, startMs: MIGRATED_AT - MINUTE_MS }]), 'H11')).toEqual(['not-covered']);
+  });
+});
+
+describe('review round 1 blockers', () => {
+  it('a whale in a non-canonical PumpSwap pool or a pump PDA is still a holder', () => {
+    const extra = 20_000_000_000_000n;
+    const plain = holderAccounts().concat({ address: ACC('x'), owner: W('x'), ownerProgram: null, amount: extra });
+    expect(codesFor(reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: plain })), 'H12')).toContain('top10');
+    for (const ownerProgram of [PUMP_AMM_PROGRAM, '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P']) {
+      const hidden = holderAccounts().concat({ address: ACC('x'), owner: NON_CANONICAL_POOL, ownerProgram, amount: extra });
+      expect(codesFor(reasonsOf(patch(passingFacts(), holdersKey(MINT), { accounts: hidden })), 'H12')).toContain('top10');
+    }
+  });
+
+  it('candles that are not 1 minute long are malformed (a 1 s series could split a spike)', () => {
+    const f = patch(passingFacts(), candlesKey(MINT), { intervalMs: 1_000 });
+    expect(reasonsOf(f)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'candles', neededBy: 'H11' }));
+  });
+
+  it('a holder read whose supply differs from the mint is inconsistent', () => {
+    const f = patch(passingFacts(), holdersKey(MINT), { supply: SUPPLY + 1n });
+    expect(reasonsOf(f)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: 'H12' }));
   });
 });

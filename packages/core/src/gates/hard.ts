@@ -21,7 +21,7 @@ import {
 } from './facts.ts';
 import { type Concentration, concentration, mintAccounts, ownerBalance, shareBps } from './holders.ts';
 import type { GateNote, GateReason, HardGate, RejectCode } from './reasons.ts';
-import { DAY_MS, HOURLY_MAX_AGE_MS, solUsdAt } from './series.ts';
+import { DAY_MS, HOURLY_MAX_AGE_MS, MINUTE_MS, solUsdAt } from './series.ts';
 
 export type Mode = 'live' | 'backtest';
 /** Universes of §3.2, and S0, the random-entry control. */
@@ -241,6 +241,10 @@ const h11 = (env: Env): Outcome => {
   const now = env.ev.now.receivedAt;
   const { candleWindowMs, candleSpikeBps, chaseCheckAfterMs, chaseMaxAboveMigrationBps } = env.policy.gates;
   const { intervalMs } = c.fact;
+  // §7.1 names 1-minute candles: shorter ones split a spike into small steps, longer ones blur its timing.
+  if (intervalMs !== MINUTE_MS) {
+    return { reasons: [{ gate: 'H16', code: 'malformed', input: 'candles', neededBy: 'H11', detail: `candles are ${intervalMs} ms, not 1 minute`, value: String(intervalMs), limit: String(MINUTE_MS) }] };
+  }
   const known = c.fact.candles.filter((k) => k.startMs <= now);
   for (const k of known) {
     if (k.startMs + intervalMs > now - candleWindowMs && priceAbove(k.high, k.open, candleSpikeBps)) {
@@ -274,6 +278,11 @@ const conc = (env: Env, gate: HardGate): Conc => {
   const cr = readCreate(env, gate);
   if (!cr.ok) return { ok: false, out: fromRead(cr) };
   const pool: PoolFact = p.fact;
+  const m = mintAccount(env, gate);
+  if (!m.ok) return { ok: false, out: m.out };
+  if (m.account.supply !== h.fact.supply) {
+    return { ok: false, out: { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'holders', neededBy: gate, detail: `holder read has supply ${h.fact.supply}, the mint ${m.account.supply}` }] } };
+  }
   const c = memo(env, 'concentration', () => concentration(h.fact, mintAccounts(env.req.mint, { address: pool.address, baseVault: pool.pool.poolBaseTokenAccount })));
   if (c.circulating <= 0n) return { ok: false, out: reject(gate, 'no-circulating', `supply ${c.supply}, excluded ${c.excluded}`, { input: 'holders' }) };
   const notes: GateNote[] = c.classes.filter((x) => x.cls === 'unknown-program')

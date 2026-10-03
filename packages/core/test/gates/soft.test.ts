@@ -19,8 +19,10 @@ describe('soft features', () => {
   it("ignores RugCheck's single-holder flag when the largest holder is a known vault (live)", () => {
     const r = evaluateSoftFeatures(contextOf(passingFacts()), deps('live'), MINT);
     expect(feature(r, 'rugcheckSingleHolderFlag')).toEqual({ name: 'rugcheckSingleHolderFlag', value: 'false', note: 'ignored: the largest holder is a known vault' });
-    const bt = evaluateSoftFeatures(contextOf(passingFacts()), deps('backtest'), MINT);
+    const bt = evaluateSoftFeatures(contextOf(patch(passingFacts(), softKey(MINT), { rugcheckScore: 4633 })), deps('backtest'), MINT);
     expect(feature(bt, 'rugcheckSingleHolderFlag')).toEqual({ name: 'rugcheckSingleHolderFlag', value: null, note: 'live only (§16.3)' });
+    expect(feature(bt, 'rugcheckScore')).toEqual({ name: 'rugcheckScore', value: null, note: 'live only (§16.3)' });
+    expect(bt.features.filter((f) => f.name === 'rugcheckScore')).toHaveLength(1);
   });
 
   it('logs unknown inputs with the reason and never throws', () => {

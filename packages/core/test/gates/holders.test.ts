@@ -44,9 +44,10 @@ describe('classification on mainnet accounts', () => {
     const v = holderOf('graduated coin: canonical pool base vault');
     expect(v.owner).toBe(POOL_ADDRESS);
     expect(classifyHolder(v, mintAccounts(v.mint, { address: POOL_ADDRESS, baseVault: POOL.poolBaseTokenAccount }))).toBe('pool-vault');
-    // Without knowing the pool, the PDA owner of a known program is still excluded; unknown owner program is kept.
+    // Only the canonical pool's vault is excluded. Any other PDA owner, even one of PumpSwap or pump, stays a holder.
     expect(classifyHolder(v, mintAccounts(v.mint, null))).toBe('unknown-program');
-    expect(classifyHolder({ ...v, ownerProgram: PUMP_AMM_PROGRAM }, mintAccounts(v.mint, null))).toBe('program');
+    expect(classifyHolder({ ...v, ownerProgram: PUMP_AMM_PROGRAM }, mintAccounts(v.mint, null))).toBe('unknown-program');
+    expect(classifyHolder({ ...v, ownerProgram: PUMP_PROGRAM }, mintAccounts(v.mint, null))).toBe('unknown-program');
   });
 
   it('a buyer from a mainnet BuyEvent is a wallet', () => {

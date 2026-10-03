@@ -27,7 +27,9 @@ export const evaluateSoftFeatures = (ctx: GateContext, deps: GateDeps, mint: str
   const unknownAll = (names: readonly string[], note: string) => { for (const name of names) features.push({ name, value: null, note }); };
 
   const soft = ev.read('soft', softKey(mint), parseSoft, 'state', 'H16');
-  const names = [...SOFT_BIGINTS, ...SOFT_NUMBERS, ...SOFT_FLAGS].filter((n) => n !== 'rugcheckSingleHolderFlag');
+  const third = deps.mode === 'live';
+  // Third-party scores are live only (§16.3): never logged in the backtest, even if a feed supplied one.
+  const names = [...SOFT_BIGINTS, ...SOFT_NUMBERS, ...SOFT_FLAGS].filter((n) => n !== 'rugcheckSingleHolderFlag' && (third || n !== 'rugcheckScore'));
   if (!soft.ok) unknownAll(names, soft.reason.detail);
   else {
     for (const name of names) {
@@ -35,7 +37,7 @@ export const evaluateSoftFeatures = (ctx: GateContext, deps: GateDeps, mint: str
       features.push(v === undefined ? { name, value: null, note: 'not reported' } : { name, value: String(v) });
     }
   }
-  const third = deps.mode === 'live';
+  if (!third) features.push({ name: 'rugcheckScore', value: null, note: 'live only (§16.3)' });
 
   // 5. Holders, after the same exclusions as H12.
   const holders = ev.read('holders', holdersKey(mint), parseHolders, 'state', 'H12');

@@ -3,7 +3,6 @@
 // lockers, burns and accounts of known programs. Shares are of circulating supply = supply - excluded balances.
 import { findProgramAddress, isOnCurve } from '../chain/address.ts';
 import type { Address } from '../chain/bytes.ts';
-import { PUMP_AMM_PROGRAM, PUMP_PROGRAM } from '../chain/programs.ts';
 import { bondingCurveAddress } from '../chain/pump.ts';
 import { decodeBase58 } from '../chain/base58.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
@@ -18,17 +17,20 @@ export const INCINERATOR = '1nc1nerator11111111111111111111111111111111' as Addr
 /** Raydium Burn & Earn locker: an escrow with no withdraw instruction (docs/research/safety.md §2.3). */
 export const RAYDIUM_LOCKER_PROGRAM = 'LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE' as Address;
 
-/** Programs whose accounts hold tokens for the protocol, not for a trader. */
-const KNOWN_PROGRAMS: ReadonlySet<string> = new Set([PUMP_PROGRAM, PUMP_AMM_PROGRAM, MAYHEM_PROGRAM]);
+/**
+ * Only named accounts are excluded: this mint's curve, the canonical pool's vaults, the mayhem vault, burns and
+ * lockers. An account owned by any other PDA, even one of pump's own programs, stays a holder: a non-canonical
+ * PumpSwap pool is a PumpSwap PDA whose LP owner can withdraw its tokens at any time.
+ */
 const LOCKER_PROGRAMS: ReadonlySet<string> = new Set([RAYDIUM_LOCKER_PROGRAM]);
 
 export type HolderClass =
-  | 'curve' | 'pool-vault' | 'mayhem-vault' | 'locker' | 'burn' | 'program'
+  | 'curve' | 'pool-vault' | 'mayhem-vault' | 'locker' | 'burn'
   /** Owned by a PDA of a program we do not know: kept as a holder (it may be the dev's), and noted. */
   | 'unknown-program'
   | 'wallet';
 
-export const EXCLUDED: ReadonlySet<HolderClass> = new Set<HolderClass>(['curve', 'pool-vault', 'mayhem-vault', 'locker', 'burn', 'program']);
+export const EXCLUDED: ReadonlySet<HolderClass> = new Set<HolderClass>(['curve', 'pool-vault', 'mayhem-vault', 'locker', 'burn']);
 
 /** The protocol accounts of this mint that hold tokens. `pool` is the pool the entry trades on, when there is one. */
 export interface MintAccounts {
@@ -54,7 +56,6 @@ export const classifyHolder = (a: HolderAccount, known: MintAccounts): HolderCla
   if (a.owner === MAYHEM_VAULT_OWNER) return 'mayhem-vault';
   if (a.owner === INCINERATOR) return 'burn';
   if (a.ownerProgram !== null && LOCKER_PROGRAMS.has(a.ownerProgram)) return 'locker';
-  if (a.ownerProgram !== null && KNOWN_PROGRAMS.has(a.ownerProgram)) return 'program';
   if (offCurve(a.owner)) return 'unknown-program';
   return 'wallet';
 };

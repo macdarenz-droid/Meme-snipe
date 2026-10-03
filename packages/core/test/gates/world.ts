@@ -90,7 +90,7 @@ export type Facts = Map<string, { value: unknown; moment: Moment }>;
 const at = (receivedAt: number, slot: bigint): Moment => ({ slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt });
 
 /** Supply split: pool vault holds most; ten small wallets; the dev holds a little. */
-export const SUPPLY = 1_000_000_000_000_000n;
+export const SUPPLY = mintFixture(MINT).account.supply;
 
 export const holderAccounts = (): HolderAccount[] => [
   { address: POOL.poolBaseTokenAccount, owner: POOL_ADDRESS, ownerProgram: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', amount: 700_000_000_000_000n },
