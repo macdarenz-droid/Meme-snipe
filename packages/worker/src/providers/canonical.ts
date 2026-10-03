@@ -16,7 +16,7 @@ import type { FeedEvent, Moment } from '../../../core/src/engine/index.ts';
 import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import type { BookEvent } from '../../../core/src/lifecycle/index.ts';
 
-export type Source = 'helius' | 'alchemy' | 'pumpportal' | 'helius-parsed' | 'jupiter' | 'rugcheck' | 'goplus' | 'coinbase' | 'worker';
+export type Source = 'helius' | 'alchemy' | 'pumpportal' | 'helius-parsed' | 'jupiter' | 'rugcheck' | 'goplus' | 'coinbase' | 'github' | 'worker';
 
 /** Above any real position in a block, below the indices reserved for accounts and off-chain facts. */
 export const LIVE_TX_BASE = 2 ** 32;

@@ -4,6 +4,7 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { casesHash } from './fixture-hash.ts';
 
 const RPC = process.env['SOLANA_RPC'] ?? 'https://api.mainnet-beta.solana.com';
 const OUT = join(dirname(fileURLToPath(import.meta.url)), 'rug-replay.json');
@@ -57,5 +58,5 @@ for (const c of CASES) {
   }
   cases.push({ name: c.name, mint: c.mint, until: c.until, transactions });
 }
-writeFileSync(OUT, `${JSON.stringify({ meta: { rpc: RPC.replace(/api-key=[^&]+/, 'api-key=…'), fetchedAt: new Date().toISOString(), calls }, cases }, null, 1)}\n`);
+writeFileSync(OUT, `${JSON.stringify({ meta: { rpc: RPC.replace(/api-key=[^&]+/, 'api-key=…'), fetchedAt: new Date().toISOString(), calls, sha256: casesHash(cases) }, cases }, null, 1)}\n`);
 console.log(`wrote ${cases.map((c) => `${c.name}: ${c.transactions.length} transactions`).join(', ')} with ${calls} calls`);
