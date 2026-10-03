@@ -19,6 +19,7 @@ import {
   parseCandles, parseCreate, parseCurve, parseDeployer, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
 } from './facts.ts';
+import { checkCurveTails, checkPoolTails } from './tails.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
 import type { AsOfEntry } from '../engine/asof.ts';
 import type { Commitment } from '../domain/index.ts';
@@ -49,8 +50,8 @@ export interface GateDeps {
   readonly session: PolicySession;
   readonly mode: Mode;
   /**
-   * Set only once a reviewed rug labeller (RUG-1) is wired. Until then H14's prior-rug half is not applied and every
-   * evaluation that reaches H14 carries a `rug-labels-unavailable` note: no labels is never read as zero rugs.
+   * Set only once a reviewed rug labeller (RUG-1) is wired. Until then every evaluation that reaches H14 rejects with
+   * H16 `not-covered` (neededBy H14): no labels is never read as zero rugs.
    */
   readonly rugLabeller?: 'RUG-1';
 }
@@ -198,7 +199,16 @@ const h5 = (env: Env): Outcome => {
   if (pool.isMayhemMode === undefined) return { reasons: [{ gate: 'H16', code: 'missing', input: 'pool', neededBy: 'H5', detail: 'pool has no is_mayhem_mode field' }] };
   if (pool.isMayhemMode) return reject('H5', 'mayhem', `pool ${address} is a mayhem-mode coin`, { input: 'pool' });
   const canonical = isCanonicalPool(pool as unknown as Pool, address as Address);
-  return canonical ? PASS : reject('H5', 'not-canonical', `pool ${address} (index ${pool.index}, creator ${pool.creator}) is not the canonical pool`, { input: 'pool' });
+  if (!canonical) return reject('H5', 'not-canonical', `pool ${address} (index ${pool.index}, creator ${pool.creator}) is not the canonical pool`, { input: 'pool' });
+  // GATE-1c: the pool's trade events since migration must carry the upgrade's tail as zeros, at the right length.
+  const m = readMigration(env, 'H5');
+  if (!m.ok) return fromRead(m);
+  const ctx = { history: env.history, now: env.ev.now };
+  const pt = checkPoolTails(ctx, address, { slot: m.fact.obs.slot, ms: m.fact.migratedAtMs });
+  const t = pt.ok ? checkCurveTails(ctx, env.req.mint) : pt;
+  if (t.ok) return PASS;
+  if (t.code === 'event-tail') return reject('H5', 'event-tail', `unpublished trade-event bytes are live on this SOL pool: ${t.detail}`, { input: 'trades', ...(t.signature ? { value: t.signature } : {}) });
+  return { reasons: [{ gate: 'H16', code: t.code, input: 'trades', neededBy: 'H5', detail: t.detail, ...(t.signature ? { value: t.signature } : {}) }] };
 };
 
 const h6 = (env: Env): Outcome => {
@@ -406,11 +416,18 @@ const h14 = (env: Env): Outcome => {
     reasons.push({ gate: 'H14', code: 'serial-deployer', input: 'deployer', detail: `${cr.fact.creator} created ${recent.size} mints in 24 h`, value: String(recent.size), limit: String(g.serialMaxMints24h) });
   }
   // Rug labels count only from a reviewed labeller (an explicit flag) that covered the whole look-back (its own
-  // coverage:rugs:* facts). Otherwise the prior-rug half is not judged and says so: no labels is never zero rugs.
-  if (env.rugLabeller === undefined) return { reasons, notes: [{ gate: 'H14', code: 'rug-labels-unavailable', detail: RUG_LABELS_UNAVAILABLE }] };
+  // coverage:rugs:* facts) and judged every mint in it. Otherwise H14 is not covered and rejects: no labels is never
+  // zero rugs (RUG-1 review).
+  if (env.rugLabeller === undefined) {
+    return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: RUG_LABELS_UNAVAILABLE }] };
+  }
   const rugCov = createsCoverage(env.history, env.ev.now, now - lookback, 'rugs');
   if (!rugCov.covered) {
-    return { reasons, notes: [{ gate: 'H14', code: 'rug-labels-unavailable', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}` }] };
+    return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}` }] };
+  }
+  const unjudged = (d.fact.unjudged ?? []).filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
+  if (unjudged.length > 0) {
+    return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'deployer', neededBy: 'H14', detail: `${env.rugLabeller} could not judge ${unjudged.join(', ')} by ${cr.fact.creator}` }] };
   }
   const rugs = d.fact.rugs.filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
   if (rugs.length > 0) reasons.push({ gate: 'H14', code: 'prior-rug', input: 'deployer', detail: `${cr.fact.creator} rugged ${rugs.join(', ')} within ${g.deployerRugLookbackDays} days`, value: String(rugs.length), limit: '0' });

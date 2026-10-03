@@ -15,11 +15,13 @@
 #   determinism rescan can also hit a 429) saves it again, so the next day and the next
 #   run sleep it out too.
 # - Each finished day passes the strict QA, the decoder parity check and a determinism
-#   rescan, then a single publish job (the only job with contents: write) creates
-#   release `data-day-YYYY-MM-DD` holding that day's units tar parts, QA report,
-#   manifest, parity report and SHA256SUMS. A published day release is never replaced.
-# - Limits: a scan job that hits its timeout (rather than its scan budget) is cancelled,
-#   and the publish job then skips the days finished earlier in the run; rerun them.
+#   rescan; its own scan job then publishes release `data-day-YYYY-MM-DD` at once
+#   (ci/publish-day.sh) with that day's units tar parts, QA report, manifest, parity
+#   report and SHA256SUMS. A published day release is never replaced. The scan job has
+#   contents: write for this, but the token reaches only the publish step (env on that
+#   step alone); checkouts keep persist-credentials: false and no other step uses it.
+# - Limits: a scan job that hits its timeout (rather than its scan budget) is cancelled;
+#   days published before it stay published.
 #   Progress lives in the Actions cache (10 GB per repo, least recently used evicted),
 #   so a day's progress may be evicted and the day then needs a full rescan.
 # - mode=assemble runs research/historical/ci/assemble.sh: windows of up to 10 days,
@@ -69,6 +71,9 @@ concurrency:
 env:
   GO_VERSION: "1.24.7"
   GO_SHA256: da18191ddb7db8a9339816f3e2b54bdded8047cdc2a5d67059478f8d1595c43f
+  # The 2026-10-02 program upgrade is a regime boundary (supervisor ruling): days on or
+  # after it are refused here and in ci/publish-day.sh.
+  REGIME_BOUNDARY_DAY: "2026-10-02"
 
 jobs:
   plan:
@@ -94,6 +99,8 @@ jobs:
                   if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
                       sys.exit(f"bad day {d!r}")
                   datetime.date.fromisoformat(d)
+                  if d >= os.environ["REGIME_BOUNDARY_DAY"]:
+                      sys.exit(f"{d} is on or after the regime boundary {os.environ['REGIME_BOUNDARY_DAY']}: never scanned for publication")
                   days.append(d)
               if not days:
                   sys.exit("scan mode needs at least one day")
@@ -107,6 +114,8 @@ jobs:
     if: inputs.mode == 'scan'
     runs-on: ubuntu-latest
     timeout-minutes: 355
+    permissions:
+      contents: write # used only by the "Publish this day" step
     strategy:
       max-parallel: 1
       fail-fast: true
@@ -116,23 +125,45 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # A day already published and complete is skipped before any archive read. Same
+      # clean environment as the publish step (the token reaches only these two steps).
+      - name: Skip a day that is already published
+        id: published
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_OUTPUT="$GITHUB_OUTPUT"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" --check "$DAY"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: Install Go (pinned by version and checksum)
+        if: steps.published.outputs.complete != 'true'
         run: |
           curl -fsSLo go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
           echo "${GO_SHA256}  go.tgz" | sha256sum -c -
           sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go.tgz && rm go.tgz
           echo "/usr/local/go/bin" >> "$GITHUB_PATH"
       - name: Build scanner
+        if: steps.published.outputs.complete != 'true'
         working-directory: research/historical/scanner
         run: |
           go version
           go test ./...
-          go build -trimpath -ldflags "-X main.scannerRevision=${GITHUB_SHA}" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          # The revision is the git tree of the scanner folder plus the Go version
+          # (ci/scanner-rev.sh, which also fails on any other toolchain): it changes only
+          # when the scanner or the toolchain does, so workflow-only commits keep cached
+          # units valid.
+          rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
+          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "SCANNER_REVISION=$rev" >> "$GITHUB_ENV"
       - name: Restore progress for this day
+        if: steps.published.outputs.complete != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/data
@@ -140,26 +171,30 @@ jobs:
           restore-keys: data-scan-${{ matrix.day }}-
       # One archive back-off shared by every day and run: the newest saved state wins.
       - name: Restore the shared archive back-off
+        if: steps.published.outputs.complete != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/backoff
           key: data-scan-backoff-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
           restore-keys: data-scan-backoff-
       - name: Apply the shared back-off (the later end wins)
+        if: steps.published.outputs.complete != 'true'
         run: research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/backoff/archive-429.state" "$RUNNER_TEMP/data/archive-429.state"
       - name: Scan (one lane, stops on 429)
+        if: steps.published.outputs.complete != 'true'
         env:
           DAY: ${{ matrix.day }}
           MAX_MBPS: ${{ inputs.max_mbps }}
         run: research/historical/ci/scan-day.sh "$DAY" "$RUNNER_TEMP/data" "$MAX_MBPS" 300
       - name: Save progress
-        if: always()
+        if: (always()) && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: QA, determinism and packaging
         id: qa
+        if: steps.published.outputs.complete != 'true'
         env:
           DAY: ${{ matrix.day }}
           MAX_MBPS: ${{ inputs.max_mbps }}
@@ -169,14 +204,14 @@ jobs:
       # rescan itself writes to a temp dir), so it is saved again only when QA failed,
       # instead of storing an identical ~4 GB copy of every passed day.
       - name: Save progress after QA
-        if: always() && steps.qa.outcome == 'failure'
+        if: (always() && steps.qa.outcome == 'failure') && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/data
           key: data-scan-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}-qa
       - name: Collect the back-off for the next day and run
         id: backoff
-        if: always()
+        if: (always()) && steps.published.outputs.complete != 'true'
         run: |
           research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/data/archive-429.state" "$RUNNER_TEMP/backoff/archive-429.state"
           if [ -f "$RUNNER_TEMP/backoff/archive-429.state" ]; then
@@ -184,21 +219,36 @@ jobs:
             echo "has=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Save the shared archive back-off
-        if: always() && steps.backoff.outputs.has == 'true'
+        if: (always() && steps.backoff.outputs.has == 'true') && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/backoff
           key: data-scan-backoff-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.published.outputs.complete != 'true'
         with:
           name: day-${{ matrix.day }}
           path: ${{ runner.temp }}/assets
           compression-level: 0
           retention-days: 14
+      - name: Publish this day
+        if: steps.published.outputs.complete != 'true'
+        # A clean environment: the shell starts without BASH_ENV/ENV and by absolute path,
+        # the script runs under env -i with a fixed PATH, so nothing an earlier step put
+        # in GITHUB_ENV, GITHUB_PATH or BASH_ENV reaches it, and no PATH lookup is used.
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" "$DAY" "$RUNNER_TEMP/assets"
 
-  publish:
-    needs: [plan, scan]
-    if: always() && (inputs.mode == 'assemble' || needs.scan.result == 'success' || needs.scan.result == 'failure')
+  assemble:
+    needs: plan
+    if: inputs.mode == 'assemble'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     permissions:
@@ -207,39 +257,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: Download finished days
-        if: inputs.mode == 'scan'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: day-*
-          path: ${{ runner.temp }}/days
-          merge-multiple: true
-      - name: Publish each day as release data-day-YYYY-MM-DD
-        if: inputs.mode == 'scan'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/days" 2>/dev/null || { echo "no finished day to publish"; exit 0; }
-          failed=0
-          echo "### Published days" >> "$GITHUB_STEP_SUMMARY"
-          for s in SHA256SUMS-*; do
-            d=${s#SHA256SUMS-}
-            [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "unexpected file $s"; exit 1; }
-            sha256sum -c "$s"
-            files=(units-"$d".tar.part* qa-"$d".md qa-"$d".json manifest-"$d".json parity-"$d".json "$s")
-            tag="data-day-$d"
-            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "release $tag already exists; a published day is never replaced (delete it first to republish)" | tee -a "$GITHUB_STEP_SUMMARY"
-              failed=1
-              continue
-            fi
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --prerelease --title "Historical data: $d" \
-              --notes "Scanner units, strict QA report, decoder parity report and SHA256SUMS for UTC day $d, from .github/workflows/data-scan.yml at ${GITHUB_SHA}. Format: docs/research/historical-data.md."
-            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" -- "${files[@]}"
-            echo "- $d" >> "$GITHUB_STEP_SUMMARY"
-          done
-          exit "$failed"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: inputs.mode == 'assemble'
         with:
@@ -255,7 +272,8 @@ jobs:
         if: inputs.mode == 'assemble'
         working-directory: research/historical/scanner
         run: |
-          go build -trimpath -ldflags "-X main.scannerRevision=${GITHUB_SHA}" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
+          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Assemble the dataset
         if: inputs.mode == 'assemble'
