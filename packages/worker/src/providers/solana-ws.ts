@@ -63,6 +63,13 @@ export interface WatchOptions {
    * at processed). The log frames then say so, and their events carry `commitment: 'confirmed'`.
    */
   readonly commitment?: 'confirmed';
+  /**
+   * FILL-2: fills a reconnect gap on this watch before it is closed. Called once the gap is ready to close (the watch
+   * is subscribed again, its page backfill is done and a live slot was seen), with the gap's range; the gap is then
+   * closed with a resume when it answers true, and as a bounded lossy gap when it answers false or throws. A new
+   * drop while it runs discards its answer. Without it, the single page backfill decides, as before.
+   */
+  readonly fill?: (gap: { readonly address: string; readonly fromSlot: bigint | null; readonly toSlot: bigint }) => Promise<boolean>;
 }
 
 interface CoverageGap {
@@ -72,6 +79,8 @@ interface CoverageGap {
   lossy: boolean;
   /** First slot seen live on this stream after the watch was subscribed again: where the gap ends. */
   liveAfter: bigint | null;
+  /** FILL-2: the watch's `fill` for this connection: not asked, running, or answered. */
+  fill: 'no' | 'running' | 'done';
 }
 
 type Watch =
@@ -301,9 +310,10 @@ export class RpcStream {
       if (!w.started) continue;
       if (w.gap) {
         w.gap.backfilled = false;
+        w.gap.fill = 'no'; // a fill running for the lost connection is discarded (see #closeCoverage)
         w.gap.liveAfter = null;
       } else {
-        w.gap = { fromSlot: this.#openFrom(w), reason: 'disconnect', backfilled: false, lossy: w.opts.decodeLogs === true, liveAfter: null };
+        w.gap = { fromSlot: this.#openFrom(w), reason: 'disconnect', backfilled: false, lossy: w.opts.decodeLogs === true, liveAfter: null, fill: 'no' };
         // Visible at once: decisions made during the outage must see the range as uncovered (the engine cannot wait for the end).
         this.#fact(`coverage:${w.opts.coverage}:gap`, { fromSlot: w.gap.fromSlot, toSlot: null, reason: 'disconnect', via: `logs:${w.address}` });
       }
@@ -384,6 +394,21 @@ export class RpcStream {
   #closeCoverage(w: Extract<Watch, { kind: 'logs' }>): void {
     const g = w.gap;
     if (g === null || !w.acked || !g.backfilled || g.liveAfter === null) return;
+    const fill = w.opts.fill;
+    if (fill !== undefined && g.fill !== 'done') {
+      if (g.fill === 'running') return;
+      g.fill = 'running';
+      const epoch = this.#epoch;
+      const toSlot = g.fromSlot !== null && g.liveAfter < g.fromSlot ? g.fromSlot : g.liveAfter;
+      void fill({ address: w.address, fromSlot: g.fromSlot, toSlot }).catch(() => false).then((complete) => {
+        // A drop while the fill ran started a new connection: this answer is for the old one.
+        if (epoch !== this.#epoch || w.gap !== g || g.fill !== 'running') return;
+        g.lossy = !complete;
+        g.fill = 'done';
+        this.#closeCoverage(w);
+      });
+      return;
+    }
     w.gap = null;
     // Never an empty or inverted range: the end is at least the start.
     const to = g.fromSlot !== null && g.liveAfter < g.fromSlot ? g.fromSlot : g.liveAfter;
