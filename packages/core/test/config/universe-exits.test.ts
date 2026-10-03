@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   EXIT_UNIVERSES, HOUR_MS, MINUTE_MS, POLICY_SCHEMA_VERSION, PolicyError, TRIAL_POLICY, applyOverride, exitsFor, loadPolicy, policyHash,
-  RUG_CONFIG, policyIssues, savePolicy, startSession, type Policy,
+  PHASE1_T_MAX_MS, RUG_CONFIG, policyIssues, savePolicy, startSession, type Policy,
 } from '../../src/config/index.ts';
 
 const edit = (fn: (p: any) => void): Policy => {
@@ -21,18 +21,24 @@ describe('CFG-2: per-universe exit parameters', () => {
 
   test("U2 keeps the values the single block had; U1 starts from risk.md S2, U2's values where S2 is silent, and T_max at the 120-min hard maximum", () => {
     expect(TRIAL_POLICY.exits.universes.U2).toEqual({
-      stopAtrTenths: 30, negativeFlowMinutes: 5, tFlatMs: 15 * MINUTE_MS, flatMinRBps: 5000, tMaxMs: 120 * MINUTE_MS,
+      stopAtrTenths: 30, tFlatMs: 15 * MINUTE_MS, flatMinRBps: 5000, tMaxMs: 120 * MINUTE_MS,
       partialMinShareBps: 5000, partialAtRBps: 15_000, partialAtGainBps: 10_000, atrPeriod: 14, atrBarMs: MINUTE_MS, trailAtrTenths: 30,
     });
     expect(TRIAL_POLICY.exits.universes.U1).toEqual({
-      stopAtrTenths: 30, negativeFlowMinutes: 5, tFlatMs: 30 * MINUTE_MS, flatMinRBps: 5000, tMaxMs: 120 * MINUTE_MS,
+      stopAtrTenths: 30, tFlatMs: 30 * MINUTE_MS, flatMinRBps: 5000, tMaxMs: 120 * MINUTE_MS,
       partialMinShareBps: 5000, partialAtRBps: 20_000, partialAtGainBps: 10_000, atrPeriod: 14, atrBarMs: 5 * MINUTE_MS, trailAtrTenths: 30,
     });
   });
 
-  test("the deployer-sale exit stays global and equal to the rug label's creator-dump share", () => {
+  test("R9's stops stay global, and the deployer-sale exit equals the rug label's creator-dump share", () => {
     expect(TRIAL_POLICY.exits.deployerSellSupplyBps).toBe(RUG_CONFIG.creatorDump.supplyBps);
-    for (const u of EXIT_UNIVERSES) expect(Object.hasOwn(TRIAL_POLICY.exits.universes[u], 'deployerSellSupplyBps')).toBe(false);
+    expect(TRIAL_POLICY.exits.negativeFlowMinutes).toBe(5);
+    for (const u of EXIT_UNIVERSES) {
+      for (const k of ['deployerSellSupplyBps', 'negativeFlowMinutes', 'liquidityDropBps', 'reverseQuoteFailures']) {
+        expect(Object.hasOwn(TRIAL_POLICY.exits.universes[u], k)).toBe(false);
+      }
+    }
+    expect(applyOverride(TRIAL_POLICY, { exits: { negativeFlowMinutes: 6 } })).toMatchObject({ ok: false, refusals: [{ kind: 'loosens', path: 'policy.exits.negativeFlowMinutes' }] });
   });
 
   test('exitsFor selects the named universe and never falls back to another', () => {
@@ -53,10 +59,18 @@ describe('CFG-2: per-universe exit parameters', () => {
 
   test("validation refuses any universe's T_max above the phase-1 cap of 120 min, which is in the policy", () => {
     expect(TRIAL_POLICY.exits.tMaxCapMs).toBe(120 * MINUTE_MS);
+    expect(PHASE1_T_MAX_MS).toBe(120 * MINUTE_MS);
     for (const u of EXIT_UNIVERSES) {
       expect(policyIssues(edit((p) => { p.exits.universes[u].tMaxMs = 120 * MINUTE_MS; }))).toEqual([]);
-      expect(policyIssues(edit((p) => { p.exits.universes[u].tMaxMs = 120 * MINUTE_MS + 1; })))
-        .toEqual([`exits.universes.${u}.tMaxMs is above exits.tMaxCapMs, the phase-1 hard maximum`]);
+      expect(policyIssues(edit((p) => { p.exits.universes[u].tMaxMs = 120 * MINUTE_MS + 1; }))).toEqual([
+        `exits.universes.${u}.tMaxMs is above the phase-1 hard maximum of 7200000 ms`,
+        `exits.universes.${u}.tMaxMs is above exits.tMaxCapMs, the phase-1 hard maximum`,
+      ]);
+      // A policy file that raises the cap with the hold is refused by validation itself, not only by the baselines.
+      expect(policyIssues(edit((p) => { p.exits.tMaxCapMs = 4 * HOUR_MS; p.exits.universes[u].tMaxMs = 4 * HOUR_MS; }))).toEqual([
+        'exits.tMaxCapMs is above the phase-1 hard maximum of 7200000 ms',
+        `exits.universes.${u}.tMaxMs is above the phase-1 hard maximum of 7200000 ms`,
+      ]);
     }
     // A saved file is held to the cap too.
     expect(() => loadPolicy(savePolicy(TRIAL_POLICY).replace('"tMaxCapMs":7200000', '"tMaxCapMs":7199999'))).toThrow(/above exits.tMaxCapMs/);
@@ -70,8 +84,7 @@ describe('CFG-2: per-universe exit parameters', () => {
       .toContain('exits.universes.U1.tFlatMs must be above zero and no later than exits.universes.U1.tMaxMs');
     expect(policyIssues(edit((p) => { p.exits.universes.U2.partialMinShareBps = 10_001; })))
       .toContain('exits.universes.U2.partialMinShareBps: basis points cannot exceed 10,000');
-    expect(policyIssues(edit((p) => { p.exits.universes.U1.negativeFlowMinutes = 0; })))
-      .toContain('exits.universes.U1.negativeFlowMinutes: must be at least 1');
+    expect(policyIssues(edit((p) => { p.exits.negativeFlowMinutes = 0; }))).toContain('exits.negativeFlowMinutes: must be at least 1');
     expect(policyIssues(edit((p) => { p.exits.universes.U1.atrBarMs = 0; }))).toContain('exits.universes.U1.atrPeriod and exits.universes.U1.atrBarMs: must be above zero');
   });
 

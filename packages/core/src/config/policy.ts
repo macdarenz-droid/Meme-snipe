@@ -27,8 +27,6 @@ export type ExitUniverse = (typeof EXIT_UNIVERSES)[number];
 export interface UniverseExits {
   /** ATR multiple for the price stop, in tenths (30 = 3.0). */
   readonly stopAtrTenths: number;
-  /** Exit when net SOL flow has been negative this many minutes in a row. */
-  readonly negativeFlowMinutes: number;
   /** Time stop: exit if not at flatMinRBps of R by this time. */
   readonly tFlatMs: number;
   readonly flatMinRBps: number;
@@ -145,18 +143,23 @@ export interface Policy {
   };
 
   /**
-   * Section 9. The ladder, the exit-transaction counts, blocked retries and the rug and quote triggers are global: they feed
+   * Section 9. The ladder, the exit-transaction counts, blocked retries and R9's thesis, flow, liquidity and quote stops are global: they feed
    * the cost reservation (risk/evaluate.ts) and the fee reserve, so a reservation never depends on the universe. Time
    * stops, partials, the ATR and its multiples are strategy parameters, one block per universe (CFG-2).
    */
   readonly exits: {
     /** Strategy exits per universe. Every universe in use has a block; S0 uses the block of the universe it controls for. */
     readonly universes: { readonly [U in ExitUniverse]: UniverseExits };
-    /** Phase-1 hard maximum hold (§9): no universe's tMaxMs may exceed it. A longer hold is a new version the owner approves. */
+    /**
+     * Phase-1 hard maximum hold (§9): no universe's tMaxMs may exceed it, and validation keeps it at or below 120 min
+     * (PHASE1_T_MAX_MS). A longer hold is a new version the owner approves.
+     */
     readonly tMaxCapMs: number;
     readonly deployerSellSupplyBps: number;
     readonly liquidityDropBps: number;
     readonly reverseQuoteFailures: number;
+    /** R9 flow stop: exit when net SOL flow has been negative this many minutes in a row. */
+    readonly negativeFlowMinutes: number;
     readonly maxExitTxAtMinNotional: number;
     readonly maxExitTxAboveDoubleMin: number;
     readonly ladder: {
@@ -230,7 +233,6 @@ const TRIAL_VALUES: Policy = {
       // The study sets the frozen values.
       U1: {
         stopAtrTenths: 30,
-        negativeFlowMinutes: 5,
         tFlatMs: 30 * MINUTE,
         flatMinRBps: 5000,
         tMaxMs: 120 * MINUTE,
@@ -243,7 +245,6 @@ const TRIAL_VALUES: Policy = {
       },
       U2: {
         stopAtrTenths: 30,
-        negativeFlowMinutes: 5,
         tFlatMs: 15 * MINUTE,
         flatMinRBps: 5000,
         tMaxMs: 120 * MINUTE,
@@ -259,6 +260,7 @@ const TRIAL_VALUES: Policy = {
     deployerSellSupplyBps: 200,
     liquidityDropBps: 3000,
     reverseQuoteFailures: 2,
+    negativeFlowMinutes: 5,
     maxExitTxAtMinNotional: 2,
     maxExitTxAboveDoubleMin: 3,
     ladder: {

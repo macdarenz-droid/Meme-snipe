@@ -1,5 +1,9 @@
 // Rejects inconsistent policies. Returns every problem found, so a bad file is fixed in one pass.
 import { EXIT_UNIVERSES, TRIAL_POLICY, type Policy } from './policy.ts';
+import { MINUTE_MS } from './time.ts';
+
+/** Phase 1 (§9): no position is held past 120 min. A hard check, so the cap never rests on the baselines alone. */
+export const PHASE1_T_MAX_MS = 120 * MINUTE_MS;
 
 /** Structural check against the trial policy: same keys, same value types, lists of the same kind. */
 const shapeIssues = (template: unknown, value: unknown, path: string, out: string[]): void => {
@@ -101,13 +105,15 @@ const crossIssues = (p: Policy, out: string[]): void => {
   need(gates.maxQuoteAgeMs > 0, 'gates.maxQuoteAgeMs: must be above zero');
 
   need(exits.maxExitTxAtMinNotional >= 1 && exits.maxExitTxAtMinNotional <= exits.maxExitTxAboveDoubleMin, 'exits.maxExitTxAtMinNotional must be at least 1 and no larger than maxExitTxAboveDoubleMin');
+  need(exits.negativeFlowMinutes >= 1, 'exits.negativeFlowMinutes: must be at least 1');
+  need(exits.tMaxCapMs <= PHASE1_T_MAX_MS, `exits.tMaxCapMs is above the phase-1 hard maximum of ${PHASE1_T_MAX_MS} ms`);
   for (const u of EXIT_UNIVERSES) {
+    need(exits.universes[u].tMaxMs <= PHASE1_T_MAX_MS, `exits.universes.${u}.tMaxMs is above the phase-1 hard maximum of ${PHASE1_T_MAX_MS} ms`);
     const x = exits.universes[u];
     const at = `exits.universes.${u}`;
     need(x.tMaxMs <= exits.tMaxCapMs, `${at}.tMaxMs is above exits.tMaxCapMs, the phase-1 hard maximum`);
     need(x.tFlatMs > 0 && x.tFlatMs <= x.tMaxMs, `${at}.tFlatMs must be above zero and no later than ${at}.tMaxMs`);
     need(x.stopAtrTenths >= 1 && x.trailAtrTenths >= 1, `${at}.stopAtrTenths and ${at}.trailAtrTenths: must be at least 1`);
-    need(x.negativeFlowMinutes >= 1, `${at}.negativeFlowMinutes: must be at least 1`);
     need(x.partialMinShareBps > 0, `${at}.partialMinShareBps: must be above zero`);
     need(x.partialAtRBps > 0 && x.partialAtGainBps > 0, `${at}.partialAtRBps and ${at}.partialAtGainBps: must be above zero`);
     need(x.atrPeriod >= 1 && x.atrBarMs > 0, `${at}.atrPeriod and ${at}.atrBarMs: must be above zero`);

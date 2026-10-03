@@ -21,7 +21,6 @@ export type RuleTree<T> = T extends bigint | number | string
 
 const UNIVERSE_EXIT_RULES: RuleTree<UniverseExits> = {
   stopAtrTenths: 'max',
-  negativeFlowMinutes: 'max',
   tFlatMs: 'max',
   flatMinRBps: 'min',
   tMaxMs: 'max',
@@ -88,6 +87,7 @@ export const POLICY_RULES: RuleTree<Policy> = {
     deployerSellSupplyBps: 'max',
     liquidityDropBps: 'max',
     reverseQuoteFailures: 'max',
+    negativeFlowMinutes: 'max',
     maxExitTxAtMinNotional: 'locked',
     maxExitTxAboveDoubleMin: 'locked',
     ladder: {

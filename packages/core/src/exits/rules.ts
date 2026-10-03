@@ -273,7 +273,7 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
   if (t.quoteFailures >= g.reverseQuoteFailures) fire('quote_failures', `${t.quoteFailures} reverse quotes failed in a row`);
   const route = asOf('sellRoute', obs.sellRoute);
   if (route !== null && route.value === 'missing') fire('no_route', 'no sell route');
-  if (negativeRun(obs.flow, x.negativeFlowMinutes, plan.openedAtMs, now)) fire('negative_flow', `net SOL flow negative for ${x.negativeFlowMinutes} minutes`);
+  if (negativeRun(obs.flow, g.negativeFlowMinutes, plan.openedAtMs, now)) fire('negative_flow', `net SOL flow negative for ${g.negativeFlowMinutes} minutes`);
   const full = fired.slice();
 
   const k = BigInt(t.partials + 1);
