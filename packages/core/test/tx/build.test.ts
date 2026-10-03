@@ -35,7 +35,9 @@ import {
   associatedTokenAddress,
   buildTrade,
   compileV0,
+  curveAccounts,
   minOutFromQuote,
+  poolAccounts,
   rentExempt,
   transfer,
   userVolumeAccumulator,
@@ -317,6 +319,22 @@ describe('refusals (no trade, with a reason)', () => {
     const feeMint: Mint = { ...p.mint, extensions: [...p.mint.extensions, { kind: 'TransferFeeConfig', type: 1, fields: {} as never, data: '' }] };
     expect(refused({ ...p, mint: feeMint })).toBe('unsupported-mint');
     expect(refused({ ...p, market: { ...p.market, baseTokenProgram: TOKEN_PROGRAM } })).toBe('unsupported-mint');
+  });
+
+  test('the exported account pickers check the shape themselves, so nothing can call them unguarded (TX-1c)', () => {
+    const c = request('curve-buy');
+    const p = request('pool-buy');
+    if (c.venue !== 'curve' || p.venue !== 'pool') throw new Error('kinds');
+    const user = common(goldenOf('pool-buy')).wallet;
+    const reasonOf = (r: { ok: true } | { ok: false; reason: string }) => (r.ok ? null : r.reason);
+    const group = { extensions: [...p.mint.extensions, { kind: 'GroupPointer' }] };
+    expect(reasonOf(poolAccounts(p.market, p.mint, user, 0, 0))).toBeNull();
+    expect(reasonOf(poolAccounts(p.market, group, user, 0, 0))).toBe('unsupported-mint');
+    expect(reasonOf(poolAccounts({ ...p.market, state: { ...p.market.state, isCashbackCoin: true } }, p.mint, user, 0, 0))).toBe('unsupported-coin');
+    expect(reasonOf(poolAccounts({ ...p.market, accountBytes: 287 }, p.mint, user, 0, 0))).toBe('pool-layout-outdated');
+    expect(reasonOf(curveAccounts(c.market, c.mint, user, 0, 0))).toBeNull();
+    expect(reasonOf(curveAccounts({ ...c.market, curve: { ...c.market.curve, isMayhemMode: true } }, c.mint, user, 0, 0))).toBe('unsupported-coin');
+    expect(reasonOf(curveAccounts(c.market, group, user, 0, 0))).toBe('unsupported-mint');
   });
 });
 
