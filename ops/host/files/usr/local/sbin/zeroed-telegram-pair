@@ -35,6 +35,6 @@ while IFS=$'\t' read -r id date chat text; do
   else
     rm -f "$PAIR_CODE_FILE"
     log "Wrong pairing code sent in Telegram; that code no longer works. Run zeroed-pair-code for a new one."
-    tg sendMessage -o /dev/null --data-urlencode "chat_id=$chat" --data-urlencode "text=Code not accepted. Get a new one at the server console." || true
+    send_to "$chat" "Code not accepted. Get a new one at the server console." || true
   fi
 done < <(printf '%s' "$updates" | jq -r '.result[]? | [(.update_id | tostring), ((.message.date // 0) | tostring), ((.message.chat.id // "") | tostring), ((.message.text // "") | gsub("[\t\n]"; " "))] | @tsv')

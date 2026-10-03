@@ -111,12 +111,13 @@ got="$(GNUPGHOME=/etc/zeroed/gnupg gpg --batch --with-colons --fingerprint 2>/de
 [ "$got" = "$WEB_FLOW_FPR" ] || die "GitHub signing key fingerprint mismatch"
 
 say "Firewall: no inbound ports${SSH_KEY:+ except SSH (key-only)}"
+# Password login is off on both paths (the drop-in also covers SSH being turned on later by hand).
+install -d -m 0755 /etc/ssh/sshd_config.d
+printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
 if [ -n "$SSH_KEY" ]; then
   install -d -m 0700 /root/.ssh
   printf '%s\n' "$SSH_KEY" > /root/.ssh/authorized_keys
   chmod 0600 /root/.ssh/authorized_keys
-  install -d -m 0755 /etc/ssh/sshd_config.d
-  printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
   sed -i 's/^#SSH_RULE#//' /etc/nftables.conf
   systemctl reload ssh 2>/dev/null || true
 else

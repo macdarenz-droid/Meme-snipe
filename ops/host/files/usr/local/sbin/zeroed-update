@@ -33,10 +33,13 @@ fi
 
 runs="$(curl -fsS -m 30 -H 'Accept: application/vnd.github+json' \
   "$ZEROED_API_URL/repos/$ZEROED_REPO/commits/$commit/check-runs?per_page=100" || true)"
-verdict="$(printf '%s' "$runs" | jq -r 'if (.total_count // 0) == 0 or ((.check_runs // []) | length) < .total_count then "none"
-  elif any(.check_runs[]; .status != "completed") then "pending"
-  elif all(.check_runs[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
-  else "red" end' 2>/dev/null || echo none)"
+# The Deploy job's own check run (job name zeroed-deploy) is left out: it says nothing about the code.
+verdict="$(printf '%s' "$runs" | jq -r '[(.check_runs // [])[] | select(.name != "zeroed-deploy")] as $r
+  | if (.total_count // 0) > ((.check_runs // []) | length) then "none"
+    elif ($r | length) == 0 then "none"
+    elif any($r[]; .status != "completed") then "pending"
+    elif all($r[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
+    else "red" end' 2>/dev/null || echo none)"
 if [ "$verdict" != green ]; then
   log "Waiting on ${commit:0:12}: its checks are ${verdict/none/not reported yet}."
   exit 0

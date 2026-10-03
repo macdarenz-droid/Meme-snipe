@@ -21,6 +21,8 @@ concurrency:
 
 jobs:
   deploy:
+    # The job name is how tag.sh and the server leave this job's own check run out of the verdict.
+    name: zeroed-deploy
     if: github.ref == 'refs/heads/ccr-14987baf-i6lrsl'
     runs-on: ubuntu-24.04
     timeout-minutes: 25

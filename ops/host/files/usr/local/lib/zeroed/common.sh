@@ -22,13 +22,22 @@ store_cred() {
   mv -f "$CRED_DIR/$1.new" "$CRED_DIR/$1"
 }
 
-# tg METHOD [curl args...]: calls the Telegram Bot API. The token goes to curl on stdin (-K -), never in
-# argv, so it does not show in the process list.
+# tg METHOD [curl args...]: calls the Telegram Bot API. The token (and the chat id, from $tg_chat when
+# set) go to curl on stdin (-K -), never in argv, so they do not show in the process list.
 tg() {
   local method="$1"
   shift
-  cred telegram_bot_token | { IFS= read -r token || true; printf 'url = "%s/bot%s/%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$method"; } |
-    curl -fsS -m 30 -K - "$@"
+  cred telegram_bot_token | {
+    IFS= read -r token || true
+    printf 'url = "%s/bot%s/%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$method"
+    [ -z "${tg_chat:-}" ] || printf 'data-urlencode = "chat_id=%s"\n' "$tg_chat"
+  } | curl -fsS -m 30 -K - "$@"
+}
+
+# send_to CHAT TEXT: one message to one chat.
+send_to() {
+  local tg_chat="$1"
+  tg sendMessage -o /dev/null --data-urlencode "text=$2"
 }
 
 # notify TEXT: sends TEXT to the paired owner chat. Returns non-zero if not paired or on failure.
@@ -36,7 +45,7 @@ notify() {
   [ -s "$CRED_DIR/telegram_chat_id" ] || return 1
   local chat
   chat="$(cred telegram_chat_id)" || return 1
-  tg sendMessage -o /dev/null --data-urlencode "chat_id=$chat" --data-urlencode "text=$1"
+  send_to "$chat" "$1"
 }
 
 new_pair_code() {

@@ -44,7 +44,8 @@ createServer(async (req, res) => {
     if (!existsSync(f)) return send(200, JSON.stringify({ total_count: 0, check_runs: [] }));
     const c = readFileSync(f, 'utf8').trim();
     const run = c === 'pending' ? { status: 'in_progress', conclusion: null } : { status: 'completed', conclusion: c };
-    return send(200, JSON.stringify({ total_count: 2, check_runs: [{ name: 'check', status: 'completed', conclusion: 'success' }, { name: 'e2e', ...run }] }));
+    // A running Deploy job (zeroed-deploy) is always listed: the server must leave it out.
+    return send(200, JSON.stringify({ total_count: 3, check_runs: [{ name: 'check', status: 'completed', conclusion: 'success' }, { name: 'e2e', ...run }, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null }] }));
   }
   if ((m = /^\/bot([^/]+)\/getUpdates$/.exec(p))) {
     // Messages the test "sends to the bot": one JSON object per line in $STATE/updates.jsonl.

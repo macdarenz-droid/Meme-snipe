@@ -86,6 +86,13 @@ kill -0 "$FAKE_PID" 2>/dev/null || fail "fake services did not start (port $PORT
 wait_for 15 "fake services up" "curl -s -o /dev/null http://127.0.0.1:$PORT/"
 pass "fake GitHub and Telegram up at $BASE"
 
+# Known-answer vector (ops/test/derive-key-kat.py) through the real age binary: encrypt to the pinned
+# recipient, decrypt with the identity derive-key.mjs makes from the code.
+KAT_RECIPIENT=age1pdc533pjcgkux8lah569p90yxvmx8djw42pycdt6k943e467tqcs4c4hf0
+[ "$(echo kat-ok | age -r "$KAT_RECIPIENT" | age -d -i <(echo 'correct horse battery staple zebra apple' | node "$ROOT/ops/host/files/usr/local/lib/zeroed/derive-key.mjs"))" = kat-ok ] || fail "known-answer age round trip"
+[ "$(echo 'correct horse battery staple zebra apple' | node "$ROOT/ops/host/files/usr/local/lib/zeroed/derive-key.mjs" | age-keygen -y)" = "$KAT_RECIPIENT" ] || fail "known-answer recipient"
+pass "derive-key known answer: the pinned recipient opens with the derived identity in real age"
+
 # ---------- 2. Fresh server, owner's install line ----------
 docker image inspect zeroed-e2e-host >/dev/null 2>&1 || docker build -q -t zeroed-e2e-host -f "$ROOT/ops/test/host.Dockerfile" "$ROOT/ops/test" >/dev/null
 docker rm -f "$C" >/dev/null 2>&1 || true

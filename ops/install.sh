@@ -709,13 +709,22 @@ store_cred() {
   mv -f "$CRED_DIR/$1.new" "$CRED_DIR/$1"
 }
 
-# tg METHOD [curl args...]: calls the Telegram Bot API. The token goes to curl on stdin (-K -), never in
-# argv, so it does not show in the process list.
+# tg METHOD [curl args...]: calls the Telegram Bot API. The token (and the chat id, from $tg_chat when
+# set) go to curl on stdin (-K -), never in argv, so they do not show in the process list.
 tg() {
   local method="$1"
   shift
-  cred telegram_bot_token | { IFS= read -r token || true; printf 'url = "%s/bot%s/%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$method"; } |
-    curl -fsS -m 30 -K - "$@"
+  cred telegram_bot_token | {
+    IFS= read -r token || true
+    printf 'url = "%s/bot%s/%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$method"
+    [ -z "${tg_chat:-}" ] || printf 'data-urlencode = "chat_id=%s"\n' "$tg_chat"
+  } | curl -fsS -m 30 -K - "$@"
+}
+
+# send_to CHAT TEXT: one message to one chat.
+send_to() {
+  local tg_chat="$1"
+  tg sendMessage -o /dev/null --data-urlencode "text=$2"
 }
 
 # notify TEXT: sends TEXT to the paired owner chat. Returns non-zero if not paired or on failure.
@@ -723,7 +732,7 @@ notify() {
   [ -s "$CRED_DIR/telegram_chat_id" ] || return 1
   local chat
   chat="$(cred telegram_chat_id)" || return 1
-  tg sendMessage -o /dev/null --data-urlencode "chat_id=$chat" --data-urlencode "text=$1"
+  send_to "$chat" "$1"
 }
 
 new_pair_code() {
@@ -765,6 +774,11 @@ if (!/^[a-z-]+( [a-z-]+){5}$/.test(code)) {
   process.exit(2);
 }
 const key = scryptSync(code, 'zeroed-deploy-handoff-v1', 32, { N: 2 ** 18, r: 8, p: 1, maxmem: 320 * 1024 * 1024 });
+// RFC 7748 clamp, so the stored scalar is exactly the one X25519 uses (X25519 clamps on use anyway, so this
+// changes the encoded identity, never the key pair it stands for).
+key[0] &= 248;
+key[31] &= 127;
+key[31] |= 64;
 
 // Bech32 (BIP 173), as age uses for identities.
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -1062,7 +1076,7 @@ while IFS=$'\t' read -r id date chat text; do
   else
     rm -f "$PAIR_CODE_FILE"
     log "Wrong pairing code sent in Telegram; that code no longer works. Run zeroed-pair-code for a new one."
-    tg sendMessage -o /dev/null --data-urlencode "chat_id=$chat" --data-urlencode "text=Code not accepted. Get a new one at the server console." || true
+    send_to "$chat" "Code not accepted. Get a new one at the server console." || true
   fi
 done < <(printf '%s' "$updates" | jq -r '.result[]? | [(.update_id | tostring), ((.message.date // 0) | tostring), ((.message.chat.id // "") | tostring), ((.message.text // "") | gsub("[\t\n]"; " "))] | @tsv')
 __ZEROED_FILE__
@@ -1102,10 +1116,13 @@ fi
 
 runs="$(curl -fsS -m 30 -H 'Accept: application/vnd.github+json' \
   "$ZEROED_API_URL/repos/$ZEROED_REPO/commits/$commit/check-runs?per_page=100" || true)"
-verdict="$(printf '%s' "$runs" | jq -r 'if (.total_count // 0) == 0 or ((.check_runs // []) | length) < .total_count then "none"
-  elif any(.check_runs[]; .status != "completed") then "pending"
-  elif all(.check_runs[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
-  else "red" end' 2>/dev/null || echo none)"
+# The Deploy job's own check run (job name zeroed-deploy) is left out: it says nothing about the code.
+verdict="$(printf '%s' "$runs" | jq -r '[(.check_runs // [])[] | select(.name != "zeroed-deploy")] as $r
+  | if (.total_count // 0) > ((.check_runs // []) | length) then "none"
+    elif ($r | length) == 0 then "none"
+    elif any($r[]; .status != "completed") then "pending"
+    elif all($r[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
+    else "red" end' 2>/dev/null || echo none)"
 if [ "$verdict" != green ]; then
   log "Waiting on ${commit:0:12}: its checks are ${verdict/none/not reported yet}."
   exit 0
@@ -8953,12 +8970,13 @@ got="$(GNUPGHOME=/etc/zeroed/gnupg gpg --batch --with-colons --fingerprint 2>/de
 [ "$got" = "$WEB_FLOW_FPR" ] || die "GitHub signing key fingerprint mismatch"
 
 say "Firewall: no inbound ports${SSH_KEY:+ except SSH (key-only)}"
+# Password login is off on both paths (the drop-in also covers SSH being turned on later by hand).
+install -d -m 0755 /etc/ssh/sshd_config.d
+printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
 if [ -n "$SSH_KEY" ]; then
   install -d -m 0700 /root/.ssh
   printf '%s\n' "$SSH_KEY" > /root/.ssh/authorized_keys
   chmod 0600 /root/.ssh/authorized_keys
-  install -d -m 0755 /etc/ssh/sshd_config.d
-  printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
   sed -i 's/^#SSH_RULE#//' /etc/nftables.conf
   systemctl reload ssh 2>/dev/null || true
 else
