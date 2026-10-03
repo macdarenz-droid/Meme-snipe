@@ -16,7 +16,7 @@ import { replayRecorded, type Frame, type HttpRequest, type HttpResponse, type R
 import { engineFeed } from '../src/run/engine-feed.ts';
 import { parseTyped } from '../src/run/json.ts';
 import type { FactContext } from '../src/run/facts.ts';
-import { ALCHEMY_FREE, COINBASE_PUBLIC, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, ManualTimers, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
+import { ALCHEMY_FREE, COINBASE_PUBLIC, GITHUB_RELEASES, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, ManualTimers, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
 import { blockNetwork } from './helpers.ts';
 import { MINT, Market, T, makeWorker, passingMarket } from './worker-harness.ts';
 
@@ -124,6 +124,39 @@ describe('LiveFacts', () => {
     await s.flush();
     expect(of(s.f.calls, 'sol-usd')).toEqual([['sol-usd', 27], ['sol-usd', 3]]);
     s.src.stop();
+  });
+
+  it('reads chain volume at start and each new hour with the policy window, only when wired', async () => {
+    const s = setup();
+    const w = { volumeLagDays: TRIAL_POLICY.regime.volumeLagDays, volumeWindowDays: TRIAL_POLICY.regime.volumeWindowDays };
+    const calls: unknown[] = [];
+    const readers: LiveReaders = { ...s.f.readers, readChainVolume: async (r) => (calls.push(r), true) };
+    const src = new LiveFacts({
+      readers: () => readers, tickMs: 1_000, minReadGapMs: MIN, survivalAfterMs: 30 * MIN, survivalReadDelayMs: 5_000, solUsdStartHours: 27,
+      mintHistory: { maxPages: 20, funderPages: 3, funderTransactions: 10, insiderSlots: 2, firstBuyers: 20 }, chainVolume: w,
+    });
+    src.start(s.ctx);
+    await s.flush();
+    expect(calls).toEqual([w]);
+    s.timers.advance(29 * MIN);
+    await s.flush();
+    expect(calls).toEqual([w]);
+    s.timers.advance(MIN);
+    await s.flush();
+    expect(calls).toEqual([w, w]);
+    expect(s.facts.at(-1)?.value).toMatchObject({ counts: { 'chain-volume': { ok: 2, failed: 0 } } });
+    src.stop();
+    // The reader alone, without the window: no read.
+    const t = setup();
+    const quiet: unknown[] = [];
+    const src2 = new LiveFacts({
+      readers: () => ({ ...t.f.readers, readChainVolume: async (r) => (quiet.push(r), true) }), tickMs: 1_000, minReadGapMs: MIN, survivalAfterMs: 30 * MIN,
+      survivalReadDelayMs: 5_000, solUsdStartHours: 27, mintHistory: { maxPages: 20, funderPages: 3, funderTransactions: 10, insiderSlots: 2, firstBuyers: 20 },
+    });
+    src2.start(t.ctx);
+    await t.flush();
+    expect(quiet).toEqual([]);
+    src2.stop();
   });
 
   it('reads what the evidence reasons name, at most once a gap per kind and mint', async () => {
@@ -367,5 +400,31 @@ describe('liveFacts: the production source', () => {
     expect(Date.parse(u.searchParams.get('end')!) - Date.parse(u.searchParams.get('start')!)).toBe(hours * 3_600_000);
     expect(frames.length).toBeGreaterThan(0);
     expect(frames.every((f) => f.key === RAW.solUsd)).toBe(true);
+  });
+
+  it('with a GitHub scheduler, reads DATA-1c\'s data-volume releases from the policy window\'s first day (lag plus cap) at start', async () => {
+    const timers = new ManualTimers(Date.UTC(2026, 6, 20) + 500 * 86_400_000 + 3_600_000);
+    const urls: string[] = [];
+    const http = async (req: HttpRequest): Promise<HttpResponse> => {
+      urls.push(req.url);
+      return { status: 404, text: 'Not Found', header: () => null } as unknown as HttpResponse;
+    };
+    const sched = (spec: SchedulerSpec) => new Scheduler(spec, { timers });
+    const ctx = {
+      sink: { fact: () => undefined, now: () => timers.now() }, timers, watched: () => new Set<string>(), candidates: () => new Map(), tip: () => null,
+      schedulers: { helius: sched(HELIUS_FREE), alchemy: sched(ALCHEMY_FREE), jupiter: sched(JUPITER_FREE), rugcheck: sched(RUGCHECK_FREE) },
+      ingest: { ingest: () => undefined },
+    } as unknown as FactContext;
+    const src = liveFacts({ policy: TRIAL_POLICY, secrets: { get: () => 'k' } as unknown as Secrets, http, goplus: sched(GOPLUS_FREE), coinbase: sched(COINBASE_PUBLIC), github: sched(GITHUB_RELEASES) });
+    src.start(ctx);
+    for (let k = 0; k < 2_000 && urls.filter((u) => u.includes('github.com')).length < 40; k++) {
+      await new Promise<void>((r) => setImmediate(r));
+      timers.advance(500);
+    }
+    src.stop();
+    const gh = urls.filter((u) => u.includes('github.com'));
+    expect(gh[0]).toBe('https://github.com/macdarenz-droid/Meme-snipe/releases/download/data-volume-2026-11-30/volume-check-2026-11-30.json');
+    expect(gh.length).toBe(40);
+    expect(gh.at(-1)).toContain('data-volume-2027-01-08/');
   });
 });

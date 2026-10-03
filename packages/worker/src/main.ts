@@ -7,7 +7,7 @@ import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession } 
 import { EXIT } from '../../runner/src/contract.ts';
 import { DryRunRpc } from './dryrun/index.ts';
 import { liveFacts } from './facts/index.ts';
-import { COINBASE_PUBLIC, GOPLUS_FREE } from './scheduler/index.ts';
+import { COINBASE_PUBLIC, GITHUB_RELEASES, GOPLUS_FREE } from './scheduler/index.ts';
 import { fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
 import { systemTimers } from './scheduler/index.ts';
 import { parseConfig } from './run/config.ts';
@@ -68,7 +68,7 @@ try {
     seedMaxMs: 90_000,
     ops: () => providers.ops(),
     // FACTS-1b: FACTS-1's readers on the worker's Feed; core's producer makes the gate facts from what they read.
-    facts: [liveFacts({ policy, secrets: environment.secrets, http: fetchHttp, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC) })],
+    facts: [liveFacts({ policy, secrets: environment.secrets, http: fetchHttp, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: credits.scheduler(GITHUB_RELEASES) })],
     schedulers: { helius: providers.helius, alchemy: providers.alchemy, jupiter: providers.jupiter, rugcheck: providers.rugcheck },
     exposureRpc: providers.seedRpc(),
     delayProbe: { confirmed: (sig) => providers.confirmed(sig), via: `logs:${PUMP_CREATE_AUTHORITY}`, everyMs: 60_000 },
