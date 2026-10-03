@@ -205,7 +205,15 @@ export class LocalControl implements WorkerControl {
 export const snapshotState = (stateDir: string, to: string): void => {
   rmSync(to, { recursive: true, force: true });
   mkdirSync(to, { recursive: true });
-  for (const name of readdirSync(stateDir)) if (!EVIDENCE_FILES.includes(name)) cpSync(join(stateDir, name), join(to, name), { recursive: true });
+  for (const name of readdirSync(stateDir)) {
+    if (EVIDENCE_FILES.includes(name)) continue;
+    try {
+      cpSync(join(stateDir, name), join(to, name), { recursive: true });
+    } catch (e) {
+      // The worker runs while we copy: a temporary file renamed away mid-copy is simply not in the backup.
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+  }
 };
 
 const exec = promisify(execFile);

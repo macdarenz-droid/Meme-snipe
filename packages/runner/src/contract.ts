@@ -137,7 +137,10 @@ export type JournalKind =
    * `pending_exits` (trade ids); `positions` ([{trade, universe}]).
    */
   | 'recovered'
-  /** The first moment in a boot the worker is able to exit: times a host reboot from the worker's own journal. */
+  /**
+   * The first moment in a boot the worker is able to exit: times a host reboot from the worker's own journal. Written
+   * before /health first reports `exit_capable: true` in that boot.
+   */
   | 'exit_capable';
 
 /** One line of journal.jsonl. Written with a synchronous append per line, so a crash can tear only the last line. */

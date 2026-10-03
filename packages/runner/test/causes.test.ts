@@ -1,5 +1,5 @@
 // RUN-1d: drills split by cause, recovery to "reconciled and able to exit", nothing a restart must keep is lost.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -106,6 +106,16 @@ describe('helpers', () => {
     expect(exitShed({ quota: [{ shed: [1, 2, 3, 4] }, { shed: [0, 1, 9, 9] }] } as unknown as Health)).toBe(4);
     expect(offsiteNote(false)).toMatch(/^off-site backup is off: a real host loss would lose the local snapshots too/);
     expect(offsiteNote(undefined)).toMatch(/fresh seed/);
+  });
+  it('a snapshot skips a file the worker renames away mid-copy instead of failing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'run1d-snap-'));
+    const state = join(dir, 'state');
+    mkdirSync(state);
+    writeFileSync(join(state, 'stub-state.json'), 's');
+    // A dangling symlink stands in for a file that vanishes between the listing and the copy.
+    symlinkSync(join(state, 'gone.tmp'), join(state, 'stub-state.json.tmp'));
+    expect(() => snapshotState(state, join(dir, 'backup'))).not.toThrow();
+    expect(readdirSync(join(dir, 'backup'))).toContain('stub-state.json');
   });
   it('a wipe keeps the evidence (journal, recorder) and restores the backup', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'run1d-'));

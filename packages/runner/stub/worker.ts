@@ -293,7 +293,8 @@ const health = (): Health => {
     recorder: recorderOn ? 'on' : 'off',
     simulation: simulationOn ? 'on' : 'off',
     reconciled: true,
-    exit_capable: now - bootAt >= exitDelayMs && rpcDownUntil <= now,
+    // Never before its journal line: the runner times a reboot from that line.
+    exit_capable: exitCapableJournaled && now - bootAt >= exitDelayMs && rpcDownUntil <= now,
     // Test hook: a reply whose pending exits are not ids (the runner must not trust it at a kill).
     pending_exits: env['ZEROED_STUB_BAD_PENDING'] === '1' ? [''] : pendingExits(),
     quota: quota(now),
