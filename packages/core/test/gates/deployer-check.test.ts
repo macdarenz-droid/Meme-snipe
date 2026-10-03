@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MarketEvent, Moment } from '../../src/engine/index.ts';
 import { RUG_CHECK_CONFIG, rugCheckConfigIssues, type RugConfig } from '../../src/config/index.ts';
-import { MintJudge, deployerCheckCovers, parseRugCheck, type MintStatus, type RugCheckFact } from '../../src/gates/index.ts';
+import { MintJudge, deployerCheckCovers, parseRugCheck, rugCheckFromMs, type MintStatus, type RugCheckFact } from '../../src/gates/index.ts';
 
 const DEV = 'Dev1111111111111111111111111111111111111111';
 const MINT = 'Mint111111111111111111111111111111111111111';
@@ -66,6 +66,13 @@ describe('MintJudge', () => {
     const other = ev('CreateEvent', { mint: 'Other', creator: DEV, user: DEV, timestamp: T0, tokenTotalSupply: 1_000_000n }, 100n);
     const otherDump = ev('TradeEvent', { mint: 'Other', user: DEV, isBuy: false, tokenAmount: 900_000n, solAmount: 1n, realSolReserves: 5n, virtualSolReserves: 1n, virtualTokenReserves: 1n, timestamp: T0 + 1n }, 101n);
     expect(judge([create(), other, otherDump], asOf(200n), T0MS + 3_000).status).toBe('open');
+  });
+});
+
+describe('rugCheckFromMs', () => {
+  it('reaches back by the longer of the two rug windows', () => {
+    expect(rugCheckFromMs(100_000, { ...CFG, creatorDump: { supplyBps: 200, windowMs: 30_000 }, collapse: { ...CFG.collapse, windowMs: 20_000 } })).toBe(70_000);
+    expect(rugCheckFromMs(100_000, { ...CFG, creatorDump: { supplyBps: 200, windowMs: 20_000 }, collapse: { ...CFG.collapse, windowMs: 30_000 } })).toBe(70_000);
   });
 });
 

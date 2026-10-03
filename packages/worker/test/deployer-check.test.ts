@@ -195,6 +195,33 @@ describe('as-of proven by the node', () => {
   });
 });
 
+describe('live paging', () => {
+  it('asks the next page with `before` and the same minContextSlot', async () => {
+    const timers = new ManualTimers(1_000_000);
+    const scheduler = new Scheduler(HELIUS_FREE, { timers });
+    const real = [...RUG.transactions].reverse().map((t) => ({ signature: t.signature, slot: t.slot, err: null, blockTime: t.blockTime }));
+    const pad = Array.from({ length: 1_000 }, (_, k) => ({ signature: `pad${k}`, slot: RUG.transactions.at(-1)!.slot, err: { failed: true }, blockTime: RUG.transactions.at(-1)!.blockTime }));
+    const asked: unknown[] = [];
+    const http = scriptedHttp(rpcHandler((method, params) => {
+      if (method === 'getSignaturesForAddress') {
+        asked.push(params[1]);
+        return (params[1] as { before?: string }).before === 'pad999' ? real : pad;
+      }
+      const t = RUG.transactions.find((x) => x.signature === params[0]);
+      return t === undefined ? null : { slot: t.slot, blockTime: t.blockTime, transaction: t.transaction, meta: t.meta };
+    }));
+    const rpc = new RpcHttp({ provider: 'helius', url: () => 'https://rpc.test/?api-key=k', http, scheduler, timeoutMs: 1_000 });
+    const run = checkDeployer(rpcHistorySource(rpc, P2), RUG_CONFIG, CFG, { creator: DEV, mints: [launch(RUG)], fromMs: 0, asOf: at(lastSlot(RUG) + 1n), asOfMs: launch(RUG).createdAtMs + 200_000 }, 0);
+    for (let k = 0; k < 30; k++) {
+      await settle();
+      timers.advance(200);
+    }
+    expect((await run).fact.mints[0]!.status).toBe('rug');
+    const min = Number(lastSlot(RUG));
+    expect(asked).toEqual([{ commitment: 'confirmed', limit: 1_000, minContextSlot: min }, { commitment: 'confirmed', limit: 1_000, minContextSlot: min, before: 'pad999' }]);
+  });
+});
+
 describe('cached supplement (backtest)', () => {
   const record = async () => {
     const f = fixtureSource([RUG, CLEAN]);

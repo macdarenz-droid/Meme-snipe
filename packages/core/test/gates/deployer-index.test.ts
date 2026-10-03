@@ -379,6 +379,10 @@ describe('on-demand deployer check (RUG-1c)', () => {
     const r = h([listed], idx);
     expect(notCovered(r)).toEqual([]);
     expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'prior-rug', detail: expect.stringContaining('Edge') }));
+    // Exactly one window before the look-back start is still required.
+    const exact = withPrior();
+    exact.observe(marketOf('logs:pump:CreateEvent:Exact', createEvent('Exact', DEV, T - 15 * DAY_MS, SLOT - 3_240_000n), old(15)));
+    expect(notCovered(h([check({ fromMs: T - 15 * DAY_MS })], exact))).toEqual([expect.objectContaining({ detail: expect.stringContaining('did not list Exact') })]);
     // A mint launched more than a window before the look-back cannot be labelled inside it and is not required.
     const far = withPrior();
     far.observe(marketOf('logs:pump:CreateEvent:Far', createEvent('Far', DEV, T - 16 * DAY_MS, SLOT - 3_456_000n), old(16)));
