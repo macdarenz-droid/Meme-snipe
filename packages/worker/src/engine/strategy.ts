@@ -25,7 +25,7 @@ import type { Decision, MarketEvent, Strategy, StrategyContext } from '../../../
 import { observedFeeContext } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
-  atr, checkStopDistance, decideExit, execPrice, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
+  atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
   type Coverage, type GateContext, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
@@ -202,6 +202,15 @@ export class LiveStrategy implements Strategy {
   readonly #deployerSales = new Map<string, { readonly ids: Set<string>; readonly list: { readonly atMs: number; readonly amount: bigint }[] }>();
   /** Positions whose deployer-sell trigger could not be judged, reported once each. */
   readonly #unjudgedDeployer = new Set<string>();
+  /** Each held position's latest mark (executable price, PRICE_SCALE) with when it was read. */
+  readonly #marks = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
+
+  markOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
+    return this.#marks.get(pid) ?? null;
+  }
+
+  /** Positions whose partials were checked against the book in this process. */
+  readonly #fromBook = new Set<string>();
 
   /** The fee terms of the latest swap seen on a mint's pool (for the paper fill when no fee-context fact exists). */
   observedFees(mint: string): PoolFeeContext | undefined {
@@ -577,6 +586,7 @@ export class LiveStrategy implements Strategy {
     for (const p of Object.values(ctx.book.positions)) {
       if (p.status === 'closed') {
         if (this.#exits.delete(p.id)) this.#forget(p.mint);
+        this.#marks.delete(p.id);
         this.#bars.delete(p.id);
         this.#unjudgedDeployer.delete(p.id);
         continue;
@@ -585,6 +595,19 @@ export class LiveStrategy implements Strategy {
       let saved = this.#exits.get(p.id) ?? this.#planFromFill(p.id, p.entryIntentId, ctx, out);
       if (saved === null) continue;
       const exitIntents = Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === p.id);
+      if (!this.#fromBook.has(p.id)) {
+        // Once per position per process (after a restart): partials come from the book, not the saved file. Each exit
+        // owner that sold is one partial; the last of them is the owner whose further fills stay the same partial.
+        this.#fromBook.add(p.id);
+        const sold = exitIntents.filter((i) => i.fills.length > 0).map((i) => Number(String(i.intent.key).split(':').at(-1))).filter((n) => Number.isSafeInteger(n));
+        const partialSeq = sold.length === 0 ? null : Math.max(...sold);
+        const t = saved.tracker;
+        if (t.partials !== sold.length || t.lastSold !== p.sold || t.partialSeq !== partialSeq) {
+          saved = { ...saved, tracker: { ...t, partials: sold.length, partialSeq, lastSold: p.sold } };
+          this.#exits.set(p.id, saved);
+          out.push({ action: null, reasons: ['partials from the book', p.id, `${sold.length} partials, ${p.sold} sold (saved: ${t.partials}, ${t.lastSold})`] });
+        }
+      }
       const realized = exitIntents.reduce((t, i) => t + i.fills.reduce((s, f) => s + f.sol, 0n), 0n);
       const entry = ctx.book.intents[p.entryIntentId];
       const entryFees = entry === undefined ? 0n : entry.fills.reduce((t, f) => t + f.fees, 0n);
@@ -596,6 +619,11 @@ export class LiveStrategy implements Strategy {
         exitSeq: p.exitSeq, exitAttempts: exitAttemptsOf(ctx.book.intents, p.id),
       };
       const m = this.#market(ctx, p.mint);
+      if (typeof m !== 'string' && p.quantity > 0n) {
+        // The mark: the executable sale value of the whole holding as a price (the stop's unit), at the market's read.
+        const liq = liquidationValue({ venue: 'pumpswap', pool: m.pool, ctx: m.ctx }, p.quantity);
+        if (liq.ok) this.#marks.set(p.id, { price: execPrice(liq.value, p.quantity), atMs: m.atMs, slot: ctx.now.slot });
+      }
       const step = decideExit(this.#settings, saved.plan, holding, saved.tracker, {
         nowMs: ctx.now.receivedAt, slotClose: true,
         market: typeof m === 'string' ? null : { atMs: m.atMs, value: { venue: 'pumpswap', pool: m.pool, ctx: m.ctx } },

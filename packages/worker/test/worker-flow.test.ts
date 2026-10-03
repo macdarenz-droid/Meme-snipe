@@ -9,6 +9,7 @@ import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
+import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
 import { HALT_KEY, s0EntryAt } from '../src/engine/strategy.ts';
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
@@ -217,6 +218,33 @@ describe('a stalled feed (supervisor ruling 2026-10-04: stale state never become
   });
 });
 
+describe('the heartbeat\'s open position (review of f679188: unknown is null, never 0)', () => {
+  it('sends entry, stop and a fresh mark in one price unit, and no mark once it is older than 30 s', async () => {
+    const sent: { body?: string }[] = [];
+    const h = makeWorker({ key: 'k', http: async (req) => {
+      sent.push(req);
+      return { status: 200, header: () => null, text: JSON.stringify({ ok: true, paused: false }) };
+    } });
+    const m = await entered(h);
+    await h.worker.heartbeat();
+    const hb = parseHeartbeat(sent.at(-1)!.body!)!;
+    const p = hb.open_position!;
+    expect(p.mint).toBe(MINT);
+    expect(p.stop).toBeGreaterThan(0);
+    expect(p.stop).toBeLessThan(p.entry);
+    expect(p.mark).not.toBeNull();
+    // The mark sits near the entry (the same pool, after costs) and above the stop.
+    expect(p.mark!).toBeGreaterThan(p.stop);
+    expect(Math.abs(p.mark! - p.entry) / p.entry).toBeLessThan(0.05);
+    expect(h.worker.health().open_position).toMatchObject({ entry: String(p.entry), stop: String(p.stop) });
+    // No pool read for 31 s: the mark is no longer a price.
+    await m.run(31_000, 1_000, () => m.slot());
+    await h.worker.heartbeat();
+    expect(parseHeartbeat(sent.at(-1)!.body!)!.open_position!.mark).toBeNull();
+    await h.worker.stop();
+  });
+});
+
 describe('one-time rent from the paper wallet (review of f679188, item 7)', () => {
   it('the paper wallet pays the volume accumulator rent once, at its setup, so no trade carries it', async () => {
     const h = makeWorker();
@@ -306,6 +334,29 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
     expect(second.find((l) => l['kind'] === 'reconcile')).toMatchObject({ ok: true, open_positions: [pid] });
     await h2.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+
+  it('partials come from the book after a restart, whatever the saved file says', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    await m.run(8_000, 400, () => {
+      m.slot();
+      m.pool(1_150_000n);
+    });
+    const sold = h.worker.book.positions[pid]!.sold;
+    expect(sold > 0n).toBe(true);
+    await h.worker.kill();
+    // A saved file that lost the partial (written before it, or damaged): the book still holds the sale.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, tracker: { ...saved[pid]!.tracker, partials: 0, lastSold: 0n, partialSeq: null } } });
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const t = h2.worker.strategy.saved()[pid]!.tracker;
+    expect(t).toMatchObject({ partials: 1, lastSold: sold, partialSeq: 1 });
+    expect(kinds(h.stateDir, 'decision').some((d) => (d['reasons'] as string[])[0] === 'partials from the book')).toBe(true);
+    await h2.worker.stop();
   });
 
   it('an attempt in flight at the kill never lands: the restart settles it before any entry', async () => {

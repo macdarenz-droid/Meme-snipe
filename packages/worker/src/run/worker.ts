@@ -11,6 +11,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
+import { execPrice } from '../../../core/src/exits/index.ts';
 import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
@@ -127,6 +128,10 @@ interface FeedState {
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** A position's entry as a price per token (PRICE_SCALE), the unit of its stop and mark: entry spend over tokens bought. */
+const entryPrice = (p: { readonly cost: bigint; readonly quantity: bigint; readonly sold: bigint }): bigint =>
+  p.quantity + p.sold > 0n ? execPrice(p.cost, p.quantity + p.sold) : 0n;
 
 export class Worker {
   readonly #d: WorkerDeps;
@@ -705,6 +710,12 @@ export class Worker {
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
   }
 
+  /** A position's mark when read within the last 30 s (RUN-1c's MARK_MAX_AGE_MS); an older one is no price. */
+  #freshMark(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
+    const m = this.#strategy.markOf(pid);
+    return m === null || this.#d.timers.now() - m.atMs > 30_000 ? null : m;
+  }
+
   /** The drill: close one feed for `ms`, then reconnect. False for an unknown feed. */
   dropFeed(name: string, ms: number): boolean {
     const s = this.#feeds.get(name);
@@ -736,7 +747,7 @@ export class Worker {
     return {
       seq: this.#beatSeq, ts: now, git_sha: this.#d.config.gitSha, policy_version: this.#d.session.versionHash,
       last_processed_slot: this.#lastSlot === null ? null : Number(this.#lastSlot), feed_ages_ms: ages,
-      open_position: p === undefined ? null : { mint: p.mint, qty: String(p.quantity), entry: String(p.cost), stop: saved === undefined ? 'unknown' : String(saved.plan.stopPrice) },
+      open_position: p === undefined ? null : { mint: p.mint, qty: String(p.quantity), entry: String(entryPrice(p)), stop: saved === undefined ? 'unknown' : String(saved.plan.stopPrice) },
       unresolved_intents: this.#desk.unresolved(now, (id) => this.#intentAt.get(id) ?? null),
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
@@ -755,9 +766,13 @@ export class Worker {
     const h = this.health();
     const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
     const saved = p === undefined ? undefined : this.#strategy.saved()[p.id];
+    const mark = p === undefined ? null : this.#freshMark(p.id);
     const lastExit = p === undefined ? null : Math.max(...Object.values(this.#engine.book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'exit').map((i) => this.#intentAt.get(i.intent.id) ?? 0), 0);
     const position: HeartbeatPosition | null = p === undefined ? null : {
-      mint: p.mint, qty: Number(p.quantity), entry: Number(p.cost), stop: saved === undefined ? 0 : Number(saved.plan.stopPrice), mark: null,
+      // Unknown is null, never 0 (a 0 stop or mark reads as a price to the watchdog). Entry, stop and mark share one unit:
+      // an executable price (PRICE_SCALE lamports per token).
+      mint: p.mint, qty: Number(p.quantity), entry: Number(entryPrice(p)), stop: saved === undefined ? (null as unknown as number) : Number(saved.plan.stopPrice),
+      mark: mark === null ? null : Number(mark.price),
       last_exit_attempt_ts: lastExit === 0 ? null : lastExit,
     };
     const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, position, hb.ownerChatId), this.#d.timers.now());

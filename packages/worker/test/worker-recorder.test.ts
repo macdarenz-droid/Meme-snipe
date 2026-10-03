@@ -12,7 +12,7 @@ import { Engine, type LogRecord } from '../../core/src/engine/index.ts';
 import { LiveStrategy } from '../src/engine/strategy.ts';
 import { replayRecorded, type Frame, type Release } from '../src/providers/index.ts';
 import { parseTyped } from '../src/run/json.ts';
-import { makeWorker, passingMarket } from './worker-harness.ts';
+import { Market, makeWorker, passingMarket } from './worker-harness.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..');
 const files = (dir: string, re: RegExp): string[] =>
@@ -106,5 +106,43 @@ describe('the market recorder', () => {
     const replayed = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' ? [{ event: r.eventId, reasons: [...r.reasons], result: r.result }] : []));
     expect(replayed).toEqual(live);
     expect(existsSync(join(dir, 'manifest.json'))).toBe(true);
+  });
+
+  it('across a restart: boot 2\'s recorded frames (the restored book and exit plans among them) replay to its own decisions', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    expect(Object.values(h.worker.book.positions).some((p) => p.status === 'open')).toBe(true);
+    await h.worker.kill();
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2);
+    await m2.run(8_000, 400, () => {
+      m2.slot();
+      m2.pool(700_000n);
+    });
+    await h2.worker.stop();
+    const live = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision' && typeof l['result'] === 'string')
+      .map((l) => ({ event: l['event'], reasons: l['reasons'], result: l['result'] }));
+    expect(live.some((d) => (d.reasons as string[])[0] === 'restore')).toBe(true);
+    expect(live.some((d) => (d.reasons as string[])[0] === 'exit')).toBe(true);
+
+    const dir = join(h.stateDir, 'recorder', h2.worker.boot);
+    const frames = rows(files(dir, /^frames-/), (l) => parseTyped(l) as Frame);
+    const releases = rows(files(dir, /^releases-/), (l) => JSON.parse(l) as Release);
+    const start = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; boot: string; seed: string })
+      .find((l) => l.kind === 'start' && l.boot === h2.worker.boot)!;
+    const { clock, feed } = replayRecorded(frames, releases);
+    const strategy = new LiveStrategy({ session: h2.session, rugs: RUG_CONFIG, config: h2.worker.strategyConfig });
+    const engine = new Engine({ clock, feed, strategy, runner: { run: () => undefined }, seed: start.seed, book: { maxOpenPositions: h2.session.policy.positions.maxOpen } });
+    engine.drain();
+    const replayed = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' ? [{ event: r.eventId, reasons: [...r.reasons], result: r.result }] : []));
+    expect(replayed).toEqual(live);
   });
 });
