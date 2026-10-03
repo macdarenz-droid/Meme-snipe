@@ -6,7 +6,7 @@ import os, sys, statistics
 os.environ.setdefault('ADVERSE', '0')
 sys.argv = [sys.argv[0], 'dev']
 import analyze as A
-trades, created, pool_new = A.load()
+trades, created, pool_new, completed = A.load()
 errs = {'c': [], 'a': []}; prev = {}; chain_ok = chain_bad = 0
 for t in trades:
     slot, seq, bt, key, venue, user, buy, us, tok, S, T, fee, creator = t

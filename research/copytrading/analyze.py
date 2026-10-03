@@ -67,7 +67,9 @@ def load():
     trades = []  # (slot, seq, bt, mint_or_pool, venue, user, is_buy, user_sol, tok, sA, tA, fee, creator)
     created = {}  # mint -> (slot, creator)
     pool_new = {}  # pool -> (base, quote)
-    calib = {}  # pool -> effective/event base reserve
+    calib = {}  # pool -> last 5 effective/event base reserve ratios
+    completed = {}  # mint -> curve completion slot
+    max_slot = 0
     seq = 0
     for f in sorted(glob.glob(os.path.join(RAW, 'trades_*.jsonl.gz'))):
         try:
@@ -81,7 +83,8 @@ def load():
                 k = r[0]
                 if k == 'P':
                     bt = r[13]
-                    if bt > X1: continue
+                    if bt >= X1: continue
+                    max_slot = max(max_slot, r[1])
                     sol, tok, vs, vt = int(r[7]), int(r[8]), int(r[9]), int(r[10])
                     buy = r[6] == 1
                     us = sol * (1 + CURVE_FEE) if buy else sol * (1 - CURVE_FEE)
@@ -89,7 +92,8 @@ def load():
                     trades.append((r[1], seq, bt, r[4], 'c', r[5], buy, us, tok, vs, vt, CURVE_FEE, r[12]))
                 elif k == 'A':
                     bt = r[14]
-                    if bt > X1: continue
+                    if bt >= X1: continue
+                    max_slot = max(max_slot, r[1])
                     buy = r[6] == 1
                     q_user, base_amt, qb, bb, lp, pr, cr, q_gross = int(r[7]), int(r[8]), int(r[9]), int(r[10]), int(r[11]), int(r[12]), int(r[13] or 0), int(r[15])
                     lpfee = q_gross * lp // 10000
@@ -97,27 +101,32 @@ def load():
                     # the effective base reserve from this trade's own amounts, c = B_eff / B, kept per pool.
                     if q_gross >= 1_000_000 and base_amt > 0 and qb > 0:
                         b_eff = base_amt * (qb + q_gross) / q_gross if buy else qb * base_amt / q_gross - base_amt
-                        if b_eff > 0: calib[r[4]] = b_eff / bb
-                    c = calib.get(r[4], 1.0)
+                        if b_eff > 0: calib.setdefault(r[4], []).append(b_eff / bb); calib[r[4]] = calib[r[4]][-5:]
+                    c = statistics.median(calib[r[4]]) if r[4] in calib else 1.0
                     if buy:
                         qa, ba = qb + q_gross + lpfee, c * bb - base_amt
                     else:
                         qa, ba = qb - (q_gross - lpfee), c * bb + base_amt
                     fee = (lp + pr + cr) / 1e4
                     trades.append((r[1], seq, bt, r[4], 'a', r[5], buy, q_user, base_amt, qa, ba, fee, None))
+                elif r[1] > max_slot:
+                    continue  # creation/migration records after the last kept trade (keeps dev runs blind to T)
                 elif k == 'C':
                     b = base64.b64decode(r[4]); o = 8
                     for _ in range(3):
                         n = int.from_bytes(b[o:o + 4], 'little'); o += 4 + n
                     mint = b58(b[o:o + 32]); user = b58(b[o + 64:o + 96]); creator = b58(b[o + 96:o + 128])
                     created[mint] = (r[1], {user, creator})
+                elif k == 'M':
+                    b = base64.b64decode(r[4])
+                    completed[b58(b[40:72])] = r[1]
                 elif k == 'N':
                     b = base64.b64decode(r[4])
                     pool_new[b58(b[173:205])] = (b58(b[50:82]), b58(b[82:114]))
         except (EOFError, OSError, gzip.BadGzipFile):
             pass  # the file being written may end mid-block
     trades.sort(key=lambda t: (t[0], t[1]))
-    return trades, created, pool_new
+    return trades, created, pool_new, completed
 
 
 def map_pools(pools, known):
@@ -142,7 +151,7 @@ def map_pools(pools, known):
 def buy_fill(state, q):
     """state=(venue, solRes, tokRes, fee). q = SOL spent including fees. Returns tokens received."""
     v, S, T, fee = state
-    qn = q * (1 - fee) if v == 'c' else q / (1 + fee)
+    qn = q / (1 + fee)
     return T * qn / (S + qn) * (1 - ADVERSE)
 
 
@@ -222,7 +231,7 @@ def score_wallets(events, series, created, t_lo, t_hi):
         w = W[user]
         w['tokens'] += 1; w['buy_sol'] += p['buy_sol']; w['pnl'] += pnl; w['wins'] += pnl > 0
         if p['sold_tok'] >= 0.9 * p['bought_tok']: w['closed'] += 1
-        if p['first_sell'] is not None: w['holds'].append(p['first_sell'] - p['first_buy'])
+        w['holds'].append((p['first_sell'] if p['first_sell'] is not None else t_hi) - p['first_buy'])
         w['first_buys'].append((mint, p['first_buy_slot']))
         if mint in created:
             w['known_create'] += 1
@@ -235,7 +244,7 @@ def select(W, devs):
     for u, w in W.items():
         if w['tokens'] >= 5 and w['closed'] >= 3 and w['buy_sol'] >= 0.5 and w['pnl'] > 0 and w['wins'] / w['tokens'] >= 0.55:
             if u in devs: continue
-            if w['known_create'] and w['bundle'] / w['known_create'] >= 0.20: continue
+            if w['bundle'] / w['tokens'] >= 0.20: continue  # PREREG: share of all first buys
             elig[u] = w
     # co-buy clusters
     by_ms = collections.defaultdict(list)
@@ -254,15 +263,17 @@ def select(W, devs):
         return x
     for (a, b), c in pair.items():
         if c >= 3: parent[find(a)] = find(b)
-    best = {}
-    for u in elig:
-        r = find(u)
-        if r not in best or elig[u]['pnl'] > elig[best[r]]['pnl']: best[r] = u
-    kept = sorted(best.values(), key=lambda u: -elig[u]['pnl'])
+    def reduce(pool):  # best-PnL wallet per linked group
+        best = {}
+        for u in pool:
+            r = find(u)
+            if r not in best or elig[u]['pnl'] > elig[best[r]]['pnl']: best[r] = u
+        return sorted(best.values(), key=lambda u: -elig[u]['pnl'])
+    kept = reduce(list(elig))
     s1 = kept[:50]
-    s2 = [u for u in kept if elig[u]['holds'] and statistics.median(elig[u]['holds']) >= 60][:50]
+    s2 = reduce([u for u in elig if statistics.median(elig[u]['holds']) >= 60])[:50]
     c0 = [u for u, w in W.items() if w['tokens'] >= 5]
-    info = {'eligible_before_clusters': len(elig), 'after_clusters': len(kept), 'linked_groups': sum(1 for r in best if sum(1 for u in elig if find(u) == r) > 1)}
+    info = {'eligible_before_clusters': len(elig), 'after_clusters': len(kept), 'linked_groups': sum(1 for c in collections.Counter(find(u) for u in elig).values() if c > 1)}
     return {'S1': s1, 'S2': s2, 'C0': c0}, elig, info
 
 
@@ -277,33 +288,54 @@ def signals(events, sel, t_lo, t_hi):
         if not first or bt < t_lo or bt >= t_hi or sol < MIN_SIGNAL_SOL: continue
         for k, s in sets.items():
             if user in s and mint not in copied[k]:
-                copied[k].add(mint); out[k].append((slot, bt, mint, user, sol, tok))
+                copied[k].add(mint); out[k].append((slot, bt, mint, user, sol, tok, seq))
     return out
 
 
-def leader_first_sell(events_by_wm, user, mint, after_slot):
-    for slot, bt, buy in events_by_wm.get((user, mint), []):
-        if not buy and slot > after_slot: return slot
+def leader_first_sell(events_by_wm, user, mint, after_slot, after_seq):
+    for slot, bt, buy, seq in events_by_wm.get((user, mint), []):
+        if not buy and (slot, seq) > (after_slot, after_seq): return slot
+    return None
+
+
+COMPLETED = {}  # mint -> slot of the bonding-curve CompleteEvent
+
+
+def tradeable(ser, mint, j):
+    """Index of the first state at or after j that can be traded: a completed curve cannot be, so move on to the
+    first PumpSwap state. None if there is none."""
+    c = COMPLETED.get(mint)
+    if c is None or ser[j][2][0] != 'c' or ser[j][0] < c: return j
+    for k in range(j + 1, len(ser)):
+        if ser[k][2][0] == 'a': return k
     return None
 
 
 def simulate(sig, series, events_by_wm, delay, q, exit_rule, optimistic=False):
-    slot, bt, mint, user, lsol, ltok = sig
+    slot, bt, mint, user, lsol, ltok, lseq = sig
     ser = series[mint]
     target = slot + delay - (1 if optimistic else 0)
     i = state_at_slot_end(ser, target)
     if i < 0: return None
     st = ser[i][2]
-    tok = buy_fill(st, q * 1e9)
-    entry_mid = mid(st)
-    # leader's own fill price (SOL per token, incl. fees) vs our effective price
+    if COMPLETED.get(mint) is not None and st[0] == 'c' and COMPLETED[mint] <= target:
+        return None  # curve already complete and no PumpSwap trade yet: nothing to buy from
+    q_l = q * 1e9
+    # our own footprint on the pool: SOL in, tokens out (kept on later states of the same venue)
+    v0, S0, T0_, fee0 = st
+    dS = q_l / (1 + fee0); dT = T0_ * dS / (S0 + dS)
+    tok = dT * (1 - ADVERSE)
+
+    def with_us(state):
+        return (state[0], state[1] + dS, state[2] - dT, state[3]) if state[0] == v0 else state
+    entry_mid = mid(with_us(st))
     lead_px = lsol / ltok if ltok else 0
     our_px = q / tok if tok else 0
-    t_entry = ser[i][1]
+    t_entry = max(bt + 0.4 * delay, ser[i][1])
     deadline = t_entry + TIME_STOP_S
     trig_slot = None
     if exit_rule == 'E1':
-        ls = leader_first_sell(events_by_wm, user, mint, slot)
+        ls = leader_first_sell(events_by_wm, user, mint, slot, lseq)
         if ls is not None:
             j = state_at_slot_end(ser, ls)
             if j >= 0 and ser[j][1] <= deadline: trig_slot = ls
@@ -311,7 +343,7 @@ def simulate(sig, series, events_by_wm, delay, q, exit_rule, optimistic=False):
         for j in range(i + 1, len(ser)):
             s_, b_, stj = ser[j]
             if b_ > deadline: break
-            r = mid(stj) / entry_mid - 1
+            r = mid(with_us(stj)) / entry_mid - 1
             if r <= STOP or r >= TP:
                 trig_slot = s_; break
     if trig_slot is None:  # time stop: last state at or before deadline
@@ -319,14 +351,16 @@ def simulate(sig, series, events_by_wm, delay, q, exit_rule, optimistic=False):
         while j + 1 < len(ser) and ser[j + 1][1] <= deadline: j += 1
         trig_slot = ser[j][0]
     k = state_at_slot_end(ser, trig_slot + delay)
-    out = sell_fill(ser[k][2], tok) / 1e9
+    k2 = tradeable(ser, mint, k)
+    if k2 is None: k2 = k  # completed curve, no PumpSwap trade recorded: value at the last curve state (flagged in limits)
+    out = sell_fill(with_us(ser[k2][2]), tok) / 1e9
     net = (out - q - FIXED_SOL) / q
     return {'net': net, 'lead_px': lead_px, 'our_px': our_px, 'gap': our_px / lead_px - 1 if lead_px else None, 'mint': mint, 'user': user}
 
 
 def boot(xs, f, n=10000, seed=7):
     rnd = random.Random(seed); m = len(xs)
-    vals = sorted(f([xs[rnd.randrange(m)] for _ in range(m)]) for _ in range(n))
+    vals = sorted(f(rnd.choices(xs, k=m)) for _ in range(n))
     return vals[int(0.025 * n)], vals[int(0.975 * n) - 1]
 
 
@@ -334,7 +368,7 @@ def summarize(rs):
     xs = [r['net'] for r in rs if r]
     if not xs: return {'n': 0}
     mean = sum(xs) / len(xs); med = statistics.median(xs)
-    nb = 10000 if len(xs) < 2000 else 2000
+    nb = 10000
     mci = boot(xs, lambda a: sum(a) / len(a), nb); dci = boot(xs, statistics.median, nb)
     gaps = [r['gap'] for r in rs if r and r['gap'] is not None]
     return {'n': len(xs), 'mean': mean, 'mean_ci': mci, 'median': med, 'median_ci': dci, 'win': sum(x > 0 for x in xs) / len(xs),
@@ -372,6 +406,7 @@ def replay(path):
     series = {m: [(a, b, tuple(c)) for a, b, c in v] for m, v in rep['series'].items()}
     ebw = {tuple(k.split('|')): [tuple(x) for x in v] for k, v in rep['leader_events'].items()}
     sig = {k: [tuple(x) for x in v] for k, v in rep['signals'].items()}
+    COMPLETED.update({m: s for m, s in rep.get('completed', {}).items()})
     cells = run_cells(sig, series, ebw, rep['sol_usd'])
     print(f"replay {path}: SOL/USD {rep['sol_usd']:.2f} adverse {ADVERSE} signals { {k: len(v) for k, v in sig.items()} }")
     print_cells(cells)
@@ -389,7 +424,8 @@ def sol_usd():
 def main():
     os.makedirs(OUT, exist_ok=True)
     t0 = time.time()
-    trades, created, pool_new = load()
+    trades, created, pool_new, completed = load()
+    COMPLETED.update(completed)
     print(f'mode={MODE} trades<=X1: {len(trades)}  created: {len(created)}  pools created live: {len(pool_new)}  load {time.time()-t0:.0f}s', flush=True)
     pools = sorted({t[3] for t in trades if t[4] == 'a'})
     pool_map = map_pools(pools, pool_new)
@@ -401,7 +437,7 @@ def main():
     sig = signals(events, sel, T0, T1)
     events_by_wm = collections.defaultdict(list)
     for slot, seq, bt, mint, user, buy, sol, tok, creator in events:
-        events_by_wm[(user, mint)].append((slot, bt, buy))
+        events_by_wm[(user, mint)].append((slot, bt, buy, seq))
     px = sol_usd()
     results = {'mode': MODE, 'sol_usd': px, 'adverse': ADVERSE, 'windows': [F0, F1, T0, T1, X1], 'select_info': info,
                'n_formation_wallets': len(W), 'n_selected': {k: len(v) for k, v in sel.items()}, 'n_signals': {k: len(v) for k, v in sig.items()}}
@@ -410,12 +446,12 @@ def main():
     first = {}
     for v in sig.values():
         for s in v: first[s[2]] = min(first.get(s[2], s[0]), s[0])
-    rep = {'sol_usd': px, 'adverse': ADVERSE, 'signals': sig,
+    rep = {'sol_usd': px, 'adverse': ADVERSE, 'signals': sig, 'completed': {m: COMPLETED[m] for m in first if m in COMPLETED},
            'series': {m: [[a, b, list(c)] for a, b, c in series[m] if a >= first[m] - 1] for m in first},
            'leader_events': {s[3] + '|' + s[2]: events_by_wm[(s[3], s[2])] for v in sig.values() for s in v}}
     with gzip.open(os.path.join(OUT, f'{MODE}_replay.json.gz'), 'wt') as fh: json.dump(rep, fh)
     # leader persistence (S1/S2): own PnL in the test window vs formation
-    WT, _ = score_wallets(events, series, created, T0, X1)
+    WT, _ = score_wallets(events, series, created, T0, T1)
     pers = {}
     for k in ['S1', 'S2']:
         f = [elig[u]['pnl'] for u in sel[k]]; t = [WT[u]['pnl'] for u in sel[k] if u in WT]
@@ -430,9 +466,9 @@ def main():
                 w = elig[u]
                 fh.write(f"{k},{i+1},{u},{w['tokens']},{w['closed']},{w['buy_sol']:.4f},{w['pnl']:.4f},{w['wins']/w['tokens']:.3f},{statistics.median(w['holds']) if w['holds'] else ''}\n")
     with open(os.path.join(OUT, f'{MODE}_signals.csv'), 'w') as fh:
-        fh.write('set,slot,block_time,mint,leader,leader_sol,leader_tok\n')
+        fh.write('set,slot,block_time,mint,leader,leader_sol,leader_tok,stream_seq\n')
         for k, v in sig.items():
-            for s in v: fh.write(f'{k},{s[0]},{s[1]},{s[2]},{s[3]},{s[4]:.6f},{s[5]}\n')
+            for s in v: fh.write(f'{k},{s[0]},{s[1]},{s[2]},{s[3]},{s[4]:.6f},{s[5]},{s[6]}\n')
     print(f"SOL/USD {px:.2f}  signals {results['n_signals']}  persistence {json.dumps(pers)}")
     print_cells(results['cells'])
     print(f'total {time.time()-t0:.0f}s')
