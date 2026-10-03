@@ -1,0 +1,257 @@
+// Venue-aware round-trip cost model and feasible trade size (docs/ARCHITECTURE.md, "Economics of the 20 dollar trial"):
+// expected net P&L(q) = q * (g - v) - F. Amounts are lamports unless named Usd (micro-dollars).
+// Costs round up, amounts received and caps round down.
+import {
+  type CurveFeeContext, type CurveState, type PoolFeeContext, type PoolState,
+  curveBuyExactQuoteIn, curveSell, poolBuyExactQuoteIn, poolSell,
+} from '../amm/index.ts';
+import { type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../units/index.ts';
+
+export const PPM = 1_000_000n;
+/** The trial's size range (owner brief): never below $2, never above $5. */
+export const MIN_TRADE_USD = 2_000_000n as MicroUsd;
+export const MAX_TRADE_USD = 5_000_000n as MicroUsd;
+/** Solana base fee per signature, charged on failed transactions too (solana.com/docs/core/fees). Input, not assumed. */
+export const BASE_FEE_PER_SIGNATURE = 5_000n;
+/**
+ * Bound on integer rounding in one round trip, in lamports: per leg at most three ceil fees, one floor of the net
+ * amount, the program's "net - 1", and one floor on the output. 16 leaves margin; the tests check v(q) stays under
+ * the bound across the size range.
+ */
+export const ROUND_TRIP_ROUNDING_LAMPORTS = 16n;
+
+/**
+ * Buy for `spend` lamports (fees included), then sell every token back into the same pre-entry state:
+ * the round trip with zero price move. `paid - proceeds === venueFees + impact` exactly.
+ */
+export interface RoundTrip {
+  readonly spend: bigint;
+  /** Lamports actually paid on entry, fees included (<= spend). */
+  readonly paid: bigint;
+  readonly tokens: bigint;
+  /** Lamports received on exit, fees taken. */
+  readonly proceeds: bigint;
+  readonly entryFees: bigint;
+  readonly exitFees: bigint;
+  readonly entryImpact: bigint;
+  readonly exitImpact: bigint;
+}
+export type RoundTripQuoter = (spend: bigint) => RoundTrip;
+
+export const pumpCurveRoundTrip = (state: CurveState, ctx: CurveFeeContext): RoundTripQuoter => (spend) => {
+  const buy = curveBuyExactQuoteIn(state, spend, ctx);
+  if (buy.tokens <= 0n) throw new RangeError('spend buys no tokens');
+  const sell = curveSell(state, buy.tokens, ctx);
+  return {
+    spend, paid: buy.userQuote, tokens: buy.tokens, proceeds: sell.userQuote,
+    entryFees: buy.protocolFee + buy.creatorFee, exitFees: sell.protocolFee + sell.creatorFee,
+    entryImpact: buy.impact, exitImpact: sell.impact,
+  };
+};
+
+export const pumpSwapRoundTrip = (pool: PoolState, ctx: PoolFeeContext): RoundTripQuoter => (spend) => {
+  const buy = poolBuyExactQuoteIn(pool, spend, ctx);
+  if (buy.base <= 0n) throw new RangeError('spend buys no tokens');
+  const sell = poolSell(pool, buy.base, ctx);
+  return {
+    spend, paid: buy.userQuote, tokens: buy.base, proceeds: sell.userQuote,
+    entryFees: buy.lpFee + buy.protocolFee + buy.creatorFee, exitFees: sell.lpFee + sell.protocolFee + sell.creatorFee,
+    entryImpact: buy.impact, exitImpact: sell.impact,
+  };
+};
+
+/** Landing policy per transaction attempt. Priority fee and tip are policy choices, passed in. */
+export interface NetworkPolicy {
+  readonly signaturesPerTx: bigint;
+  readonly baseFeePerSignature: bigint;
+  /** Priority fee per attempt in lamports, billed on the requested CU limit (see `priorityFeeLamports`). */
+  readonly entryPriorityFee: bigint;
+  readonly exitPriorityFee: bigint;
+  /** Tip per landed transaction (e.g. Helius Sender SWQoS-only). It reverts with a failed transaction. */
+  readonly tip: bigint;
+  /** Expected share of attempts that fail and are retried, in ppm (0 <= p < 1,000,000). */
+  readonly entryFailurePpm: bigint;
+  readonly exitFailurePpm: bigint;
+}
+
+/** Rent amounts from `getMinimumBalanceForRentExemption`, never hard-coded (SIMD-0437 keeps lowering them). */
+export interface RentInputs {
+  /** Rent of the token account opened on entry. */
+  readonly tokenAccount: bigint;
+  /** True when the exit sells the full balance and closes the account in the same transaction (rent comes back). */
+  readonly tokenAccountClosedOnExit: boolean;
+  /** Rent of one-time accounts still missing for this wallet (e.g. volume accumulators); 0 once they exist. */
+  readonly oneTime: bigint;
+  /** Rent created and closed inside one transaction (e.g. a WSOL account): needs cash, costs nothing. */
+  readonly transient: bigint;
+}
+
+/** Caller limits on notional, in micro-dollars. Each one only lowers the maximum. */
+export interface SizeCaps {
+  /** Largest loss accepted on this trade. Worst case is the whole notional plus fixed costs. */
+  readonly lossAllowance: MicroUsd;
+  /** Largest notional the venue can execute within the caller's impact limit. */
+  readonly executableDepth: MicroUsd;
+  /** Spendable balance; must also cover fixed costs and locked or transient rent. */
+  readonly cash: MicroUsd;
+  /** Remaining risk budget (same worst case as the loss allowance). */
+  readonly riskBudget: MicroUsd;
+}
+
+/** Ceil(base * p / (1 - p)): expected cost of failed attempts before one success, failure share p in ppm. */
+export const expectedFailureCost = (failedAttemptCost: bigint, failurePpm: bigint): bigint => {
+  if (failurePpm < 0n || failurePpm >= PPM) throw new RangeError('failure share must be in [0, 1,000,000) ppm');
+  return mulDiv(failedAttemptCost, failurePpm, PPM - failurePpm, 'ceil');
+};
+
+/** Priority fee in lamports: ceil(CU price in micro-lamports * CU limit / 1e6), billed on the requested limit. */
+export const priorityFeeLamports = (microLamportsPerCu: bigint, cuLimit: bigint): bigint => mulDiv(microLamportsPerCu, cuLimit, PPM, 'ceil');
+
+export interface LegNetworkCost {
+  /** Base fee, priority fee and tip of the landed transaction. */
+  readonly landed: bigint;
+  /** Expected base and priority fees of failed attempts. */
+  readonly expectedFailures: bigint;
+}
+
+export interface FixedCosts {
+  readonly entry: LegNetworkCost;
+  readonly exit: LegNetworkCost;
+  /** One-time rent charged to this trade. */
+  readonly oneTimeRent: bigint;
+  /** Token account rent that does not come back (account not closed on exit). */
+  readonly unrecoveredRent: bigint;
+  /** F: everything above. */
+  readonly total: bigint;
+  /** Locked during the trade and returned on exit (not part of F). */
+  readonly recoverableRent: bigint;
+}
+
+const legNetwork = (net: NetworkPolicy, priority: bigint, failurePpm: bigint): LegNetworkCost => {
+  if (net.signaturesPerTx < 1n || net.baseFeePerSignature < 0n || priority < 0n || net.tip < 0n) throw new RangeError('network inputs must be non-negative, with at least one signature');
+  const base = net.signaturesPerTx * net.baseFeePerSignature;
+  return { landed: base + priority + net.tip, expectedFailures: expectedFailureCost(base + priority, failurePpm) };
+};
+
+export const fixedCosts = (net: NetworkPolicy, rent: RentInputs): FixedCosts => {
+  if (rent.tokenAccount < 0n || rent.oneTime < 0n || rent.transient < 0n) throw new RangeError('rent must be >= 0');
+  const entry = legNetwork(net, net.entryPriorityFee, net.entryFailurePpm);
+  const exit = legNetwork(net, net.exitPriorityFee, net.exitFailurePpm);
+  const unrecoveredRent = rent.tokenAccountClosedOnExit ? 0n : rent.tokenAccount;
+  const recoverableRent = rent.tokenAccountClosedOnExit ? rent.tokenAccount : 0n;
+  return {
+    entry, exit, oneTimeRent: rent.oneTime, unrecoveredRent, recoverableRent,
+    total: entry.landed + entry.expectedFailures + exit.landed + exit.expectedFailures + rent.oneTime + unrecoveredRent,
+  };
+};
+
+export interface CostAtSize {
+  readonly roundTrip: RoundTrip;
+  /** Venue fees and impact of both legs plus other proportional costs, in lamports. */
+  readonly proportional: bigint;
+  /** v(q) = proportional / paid, in ppm, rounded up. */
+  readonly vPpm: bigint;
+  readonly fixed: FixedCosts;
+  /** Loss of a zero-price-move round trip: proportional + F. */
+  readonly totalLoss: bigint;
+}
+
+/** Per-leg and round-trip cost of spending `spend` lamports. `extraPpm` adds other proportional costs (e.g. a router fee). */
+export const costAtSize = (quote: RoundTripQuoter, spend: bigint, net: NetworkPolicy, rent: RentInputs, extraPpm = 0n): CostAtSize => {
+  if (extraPpm < 0n) throw new RangeError('extra proportional cost must be >= 0');
+  const roundTrip = quote(spend);
+  const extra = mulDiv(roundTrip.paid, extraPpm, PPM, 'ceil');
+  const proportional = roundTrip.entryFees + roundTrip.exitFees + roundTrip.entryImpact + roundTrip.exitImpact + extra;
+  const fixed = fixedCosts(net, rent);
+  return { roundTrip, proportional, vPpm: mulDiv(proportional, PPM, roundTrip.paid, 'ceil'), fixed, totalLoss: proportional + fixed.total };
+};
+
+export type NoTradeReason =
+  | 'caps-below-minimum'
+  | 'edge-not-above-cost'
+  | 'break-even-above-maximum';
+
+export interface SizeInput {
+  readonly quote: RoundTripQuoter;
+  readonly solPrice: MicroUsd;
+  /** Conservative gross edge g, ppm of notional. */
+  readonly edgePpm: bigint;
+  readonly network: NetworkPolicy;
+  readonly rent: RentInputs;
+  readonly caps: SizeCaps;
+  /** Other proportional costs per round trip, ppm (e.g. a router fee on both legs). */
+  readonly extraPpm?: bigint;
+}
+
+export interface SizeRange {
+  readonly minLamports: bigint;
+  readonly maxLamports: bigint;
+  readonly minUsd: MicroUsd;
+  readonly maxUsd: MicroUsd;
+}
+
+interface SizeCommon {
+  readonly fixed: FixedCosts;
+  /** Upper bound of v(q) over the candidate range, ppm. */
+  readonly vPpm: bigint;
+  /** Largest size every cap and the $5 limit allow. */
+  readonly maxUsd: MicroUsd;
+  /** The cap that set `maxUsd`. */
+  readonly bindingCap: keyof SizeCaps | 'tradeMaximum';
+}
+
+export type SizeDecision =
+  | (SizeCommon & { readonly trade: true; readonly range: SizeRange; readonly breakEvenLamports: bigint; readonly expectedNetAtMaxUsd: MicroUsd })
+  | (SizeCommon & { readonly trade: false; readonly reason: NoTradeReason; readonly breakEvenLamports?: bigint });
+
+const minOf = <K extends string>(entries: readonly (readonly [K, bigint])[]): readonly [K, bigint] =>
+  entries.reduce((a, b) => (b[1] < a[1] ? b : a));
+
+/**
+ * The sizes in [$2, $5] worth taking: expected net q * (g - v) - F > 0 within every cap.
+ * v is the largest v(q) over the candidate range plus a rounding allowance, so the answer is conservative.
+ */
+export const feasibleSize = (input: SizeInput): SizeDecision => {
+  const { quote, solPrice, edgePpm, network, rent, caps } = input;
+  const extraPpm = input.extraPpm ?? 0n;
+  if (solPrice <= 0n) throw new RangeError('SOL price must be > 0');
+  const fixed = fixedCosts(network, rent);
+  const fixedUsd = lamportsToMicroUsd(lamports(fixed.total), solPrice, 'ceil');
+  const cashNeedsUsd = fixedUsd + lamportsToMicroUsd(lamports(fixed.recoverableRent + rent.transient), solPrice, 'ceil');
+  const [bindingCap, maxUsdRaw] = minOf<SizeCommon['bindingCap']>([
+    ['tradeMaximum', MAX_TRADE_USD],
+    ['lossAllowance', caps.lossAllowance - fixedUsd],
+    ['riskBudget', caps.riskBudget - fixedUsd],
+    ['executableDepth', caps.executableDepth],
+    ['cash', caps.cash - cashNeedsUsd],
+  ]);
+  const maxUsd = maxUsdRaw as MicroUsd;
+  const lo = microUsdToLamports(MIN_TRADE_USD, solPrice, 'ceil');
+  const hi = maxUsd < MIN_TRADE_USD ? 0n : microUsdToLamports(maxUsd, solPrice, 'floor');
+  if (hi < lo) return { trade: false, reason: 'caps-below-minimum', fixed, vPpm: 0n, maxUsd, bindingCap };
+
+  const vLo = costAtSize(quote, lo, network, rent, extraPpm).vPpm;
+  const vHi = costAtSize(quote, hi, network, rent, extraPpm).vPpm;
+  const vPpm = (vLo > vHi ? vLo : vHi) + mulDiv(ROUND_TRIP_ROUNDING_LAMPORTS, PPM, lo, 'ceil');
+  const common = { fixed, vPpm, maxUsd, bindingCap };
+  if (edgePpm <= vPpm) return { ...common, trade: false, reason: 'edge-not-above-cost' };
+
+  const margin = edgePpm - vPpm;
+  const breakEvenLamports = mulDiv(fixed.total, PPM, margin, 'ceil');
+  // Smallest q with q * margin > F * 1e6 (strictly positive expected net).
+  const firstProfitable = (fixed.total * PPM) / margin + 1n;
+  const min = firstProfitable > lo ? firstProfitable : lo;
+  if (min > hi) return { ...common, trade: false, reason: 'break-even-above-maximum', breakEvenLamports };
+
+  // >= 0 because hi >= firstProfitable.
+  const netAtMax = mulDiv(hi, margin, PPM, 'floor') - fixed.total;
+  return {
+    ...common, trade: true, breakEvenLamports,
+    range: {
+      minLamports: min, maxLamports: hi,
+      minUsd: lamportsToMicroUsd(lamports(min), solPrice, 'ceil'),
+      maxUsd: lamportsToMicroUsd(lamports(hi), solPrice, 'floor'),
+    },
+    expectedNetAtMaxUsd: lamportsToMicroUsd(lamports(netAtMax), solPrice, 'floor'),
+  };
+};
