@@ -1,0 +1,8 @@
+{
+  "note": "RES-3 holdout wall. Decision days on or after wallDay are never read. Set from BT-2 / the STATS-1 registry; until confirmed, the conservative default. May only move earlier without BT-2's confirmation.",
+  "decisionFrom": "2026-08-03",
+  "decisionTo": "2026-10-01",
+  "holdoutFrom": "2026-09-18",
+  "embargoDays": 1,
+  "confirmedBy": null
+}
