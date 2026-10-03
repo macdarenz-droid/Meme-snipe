@@ -1,7 +1,7 @@
 // PumpSwap pool quotes (program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA), integer-exact.
 // Formulas follow @pump-fun/pump-swap-sdk 1.20.0 `buy.ts`/`sell.ts`/`fees.ts` and pump-public-docs
 // NEGATIVE_VIRTUAL_QUOTE_RESERVES.md; checked against mainnet BuyEvent/SellEvent in test/amm/golden.test.ts.
-import { type Bps, applyBps } from '../units/index.ts';
+import { BPS_DENOMINATOR, type Bps, applyBps } from '../units/index.ts';
 import { type CoinFlags, type FeeConfig, type FeeSplit, type Quote, feeOf, marketCap, noQuote, selectFeeTier, unsupportedCoin } from './fees.ts';
 
 export interface PoolState {
@@ -137,7 +137,7 @@ export const poolBuyExactQuoteIn = (pool: PoolState, spend: bigint, ctx: PoolFee
   if (no) return no;
   const fees = poolFees(pool, ctx);
   const totalBps = BigInt(fees.lp) + BigInt(fees.protocol) + BigInt(fees.creator);
-  const untrimmed = (spend * 10_000n) / (10_000n + totalBps);
+  const untrimmed = (spend * BPS_DENOMINATOR) / (BPS_DENOMINATOR + totalBps);
   const over = untrimmed + feeOf(untrimmed, fees.lp) + feeOf(untrimmed, fees.protocol) + feeOf(untrimmed, fees.creator) - spend;
   const quote = over > 0n ? untrimmed - over : untrimmed;
   const input = quote - 1n;

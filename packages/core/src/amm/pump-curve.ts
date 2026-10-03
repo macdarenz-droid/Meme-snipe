@@ -1,7 +1,7 @@
 // pump.fun bonding curve quotes (program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P), integer-exact.
 // Formulas follow @pump-fun/pump-sdk 2.0.0 `bondingCurve.ts`/`fees.ts` and are checked against mainnet
 // TradeEvents in test/amm/golden.test.ts.
-import type { Bps } from '../units/index.ts';
+import { BPS_DENOMINATOR, type Bps } from '../units/index.ts';
 import { type CoinFlags, type FeeSplit, type FeeTier, type Quote, feeOf, marketCap, noQuote, selectFeeTier, unsupportedCoin } from './fees.ts';
 
 /** The trading fields of the `BondingCurve` account (raw units: lamports and token base units). */
@@ -12,6 +12,9 @@ export interface CurveState {
   readonly realQuoteReserves: bigint;
   readonly complete: boolean;
 }
+
+/** One million parts: the scale of `curveProgressPpm`. */
+const PARTS_PER_MILLION = 1_000_000n;
 
 /**
  * Launch and graduation parameters from the pump `Global` account. Pump has changed them before, so they are always
@@ -134,7 +137,7 @@ export const curveBuyExactQuoteIn = (state: CurveState, spend: bigint, ctx: Curv
   if (no) return no;
   const fees = curveFees(state, ctx);
   const totalBps = BigInt(fees.lp) + BigInt(fees.protocol) + BigInt(fees.creator);
-  const untrimmed = (spend * 10_000n) / (10_000n + totalBps);
+  const untrimmed = (spend * BPS_DENOMINATOR) / (BPS_DENOMINATOR + totalBps);
   const over = untrimmed + feeOf(untrimmed, fees.lp) + feeOf(untrimmed, fees.protocol) + feeOf(untrimmed, fees.creator) - spend;
   const quote = over > 0n ? untrimmed - over : untrimmed;
   const input = quote - 1n;
@@ -178,6 +181,6 @@ export const curveSell = (state: CurveState, tokens: bigint, ctx: CurveFeeContex
 export const curveProgressPpm = (state: CurveState, global: PumpGlobalParams): bigint => {
   const { initialRealTokenReserves } = global;
   if (initialRealTokenReserves <= 0n) throw new RangeError('initial real token reserves must be > 0');
-  if (state.complete) return 1_000_000n;
-  return ((initialRealTokenReserves - state.realTokenReserves) * 1_000_000n) / initialRealTokenReserves;
+  if (state.complete) return PARTS_PER_MILLION;
+  return ((initialRealTokenReserves - state.realTokenReserves) * PARTS_PER_MILLION) / initialRealTokenReserves;
 };

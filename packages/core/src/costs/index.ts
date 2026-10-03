@@ -199,20 +199,20 @@ export const roundTripImpactPpm = (quote: RoundTripQuoter, spend: bigint): bigin
   return r.ok ? mulDiv(r.trade.entryImpact + r.trade.exitImpact, PPM, r.trade.paid, 'ceil') : null;
 };
 
-// Stands in for "cannot be quoted at this size" in the searches below: worse than any real measure.
-const UNQUOTABLE = 10n ** 30n;
+// In the searches below a measure of null means "cannot be quoted at this size": worse than any real value.
+const below = (x: bigint | null, y: bigint | null): boolean => (x === null ? y !== null : y !== null && x < y);
 
 /** Argmax of a unimodal `f` over integers in [lo, hi] (ternary search, then the best of the last few points). */
-const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint): bigint => {
+const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint | null): bigint => {
   let a = lo;
   let b = hi;
   while (b - a > 2n) {
     const m1 = a + (b - a) / 3n;
     const m2 = b - (b - a) / 3n;
-    if (f(m1) < f(m2)) a = m1 + 1n; else b = m2;
+    if (below(f(m1), f(m2))) a = m1 + 1n; else b = m2;
   }
   let best = a;
-  for (let q = a + 1n; q <= b; q++) if (f(q) > f(best)) best = q;
+  for (let q = a + 1n; q <= b; q++) if (below(f(best), f(q))) best = q;
   return best;
 };
 
@@ -221,14 +221,15 @@ const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint): bigint => {
  * `measure` grows with size (constant-product impact does); the result is re-checked, so rounding noise can only make
  * it smaller, never unsafe.
  */
-const largestWithin = (lo: bigint, hi: bigint, limit: bigint, measure: (q: bigint) => bigint): bigint | null => {
-  if (measure(lo) > limit) return null;
-  if (measure(hi) <= limit) return hi;
+const largestWithin = (lo: bigint, hi: bigint, limit: bigint, measure: (q: bigint) => bigint | null): bigint | null => {
+  const within = (q: bigint) => { const m = measure(q); return m !== null && m <= limit; };
+  if (!within(lo)) return null;
+  if (within(hi)) return hi;
   let ok = lo;
   let bad = hi;
   while (bad - ok > 1n) {
     const mid = (ok + bad) / 2n;
-    if (measure(mid) <= limit) ok = mid; else bad = mid;
+    if (within(mid)) ok = mid; else bad = mid;
   }
   return ok;
 };
@@ -316,26 +317,29 @@ export const feasibleSize = (input: SizeInput): SizeDecision => {
   if (!first.ok) return reject('unquotable', 0n, first.reason);
 
   // Depth from the pool itself: the largest size whose round-trip impact stays within policy.
-  const impactCap = largestWithin(lo, hi, policy.maxImpactPpm, (q) => roundTripImpactPpm(quote, q) ?? UNQUOTABLE);
+  const impactCap = largestWithin(lo, hi, policy.maxImpactPpm, (q) => roundTripImpactPpm(quote, q));
   if (impactCap === null) { bindingCap = 'impactLimit'; return reject('impact-above-limit', 0n); }
   if (impactCap < hi) { hi = impactCap; bindingCap = 'impactLimit'; maxUsdRaw = lamportsToMicroUsd(lamports(hi), solPrice, 'floor'); }
 
   const allowance = mulDiv(ROUND_TRIP_ROUNDING_LAMPORTS, PPM, lo, 'ceil');
   // Fees and impact also take their share of the gain: net ~ q * (g - v - g*v), so the cross term counts as cost.
-  const vAt = (q: bigint) => {
+  const vAt = (q: bigint): bigint | null => {
     const c = costAtSize(quote, q, network, rent, extraPpm);
-    if (!c.ok) return UNQUOTABLE;
+    if (!c.ok) return null;
     const v = c.trade.vPpm + allowance;
     return v + mulDiv(edgePpm > 0n ? edgePpm : 0n, v, PPM, 'ceil');
   };
-  if (edgePpm <= vAt(lo)) return reject('edge-not-above-cost', vAt(lo));
+  const v0 = vAt(lo);
+  if (v0 === null) return reject('unquotable', 0n);
+  if (edgePpm <= v0) return reject('edge-not-above-cost', v0);
   // Impact grows with size, so q * (g - v(q)) rises and then falls. Past its peak a larger trade earns less in
   // expectation while risking more: cut the range there.
-  const peak = peakOf(lo, hi, (q) => q * (edgePpm - vAt(q)));
+  const peak = peakOf(lo, hi, (q) => { const v = vAt(q); return v === null ? null : q * (edgePpm - v); });
   if (peak < hi) { hi = peak; bindingCap = 'costLimit'; maxUsdRaw = lamportsToMicroUsd(lamports(hi), solPrice, 'floor'); }
 
-  const vLo = vAt(lo);
+  const vLo = v0;
   const vHi = vAt(hi);
+  if (vHi === null) return reject('unquotable', 0n);
   const vPpm = vLo > vHi ? vLo : vHi;
   const common = { fixed, vPpm, maxUsd: maxUsdRaw as MicroUsd, bindingCap };
   const margin = edgePpm - vPpm;
