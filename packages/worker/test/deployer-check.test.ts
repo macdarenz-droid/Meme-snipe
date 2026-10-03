@@ -124,6 +124,18 @@ describe('deployer check on real chain data', () => {
     expect((await checkDeployer(source, RUG_CONFIG, CFG, { ...req, asOfMs: dump.blockTime! * 1_000 - 1 }, 0)).fact.mints[0]!.status).toBe('open');
   });
 
+  it('unresolved history stays unknown, never clean: a history without the create, or a page without block times', async () => {
+    const latest = [...RUG.transactions].reverse().slice(0, 3).map((t): SignatureInfo => ({ signature: t.signature, slot: BigInt(t.slot), err: null, blockTime: t.blockTime }));
+    const base = fixtureSource([RUG]).source;
+    const req = { creator: DEV, mints: [launch(RUG)], fromMs: 0, asOf: at(lastSlot(RUG) + 1n), asOfMs: launch(RUG).createdAtMs + 2 * DAY };
+    // The dump is in the three latest, but without the create the mint cannot be judged: not "clear", not "rug".
+    const cut = await checkDeployer({ ...base, signatures: async () => latest }, RUG_CONFIG, CFG, req, 0);
+    expect(cut.fact.mints[0]).toMatchObject({ status: 'unfetched', detail: 'the history read holds no create of this mint' });
+    const page = Array.from({ length: 1_000 }, (_, k): SignatureInfo => ({ signature: `p${k}`, slot: 1n, err: { failed: true }, blockTime: null }));
+    const blind = await checkDeployer({ ...base, signatures: async () => page }, RUG_CONFIG, CFG, req, 0);
+    expect(blind.fact.mints[0]).toMatchObject({ status: 'unfetched', detail: 'signature p999 has no block time' });
+  });
+
   it('a failing source leaves the mint unfetched, never throws', async () => {
     const r = await checkDeployer(fixtureSource([RUG], true).source, RUG_CONFIG, CFG, { creator: DEV, mints: [launch(RUG)], fromMs: 0, asOf: at(lastSlot(RUG) + 1n), asOfMs: 0 }, 0);
     expect(r.fact.mints).toEqual([expect.objectContaining({ status: 'unfetched', detail: 'rpc down' })]);

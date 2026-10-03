@@ -9,15 +9,23 @@ export interface RugConfig {
   /** The creator (or the launch signer) sold at least this share of total supply, in bps, within the window. */
   readonly creatorDump: { readonly supplyBps: number; readonly windowMs: number };
   /** Quote liquidity fell at least this far below its peak since launch, in bps of the peak, within the window. */
-  readonly collapse: { readonly dropBps: number; readonly windowMs: number };
+  readonly collapse: {
+    readonly dropBps: number;
+    readonly windowMs: number;
+    /**
+     * A collapse counts only from a peak of at least this much quote liquidity (raw units, lamports for SOL), so one
+     * small buy and its sale is not a rug. 0 until measured against executable losses on practice days (rugs-2).
+     */
+    readonly minPeakLamports: number;
+  };
 }
 
 const VALUES: RugConfig = {
-  version: 'rugs-1',
+  version: 'rugs-2',
   // R9's deployer-sale exit (risk.md, ARCHITECTURE §9, policy exits.deployerSellSupplyBps).
   creatorDump: { supplyBps: 200, windowMs: DAY_MS },
   // The TVL −99% label of Li et al., arXiv 2608.20271.
-  collapse: { dropBps: 9_900, windowMs: DAY_MS },
+  collapse: { dropBps: 9_900, windowMs: DAY_MS, minPeakLamports: 0 },
 };
 
 export const RUG_CONFIG: RugConfig = deepFreeze(VALUES);
@@ -62,5 +70,6 @@ export const rugConfigIssues = (c: RugConfig): string[] => {
   duration('creatorDump.windowMs', c.creatorDump.windowMs);
   bps('collapse.dropBps', c.collapse.dropBps);
   duration('collapse.windowMs', c.collapse.windowMs);
+  if (!Number.isSafeInteger(c.collapse.minPeakLamports) || c.collapse.minPeakLamports < 0) issues.push('collapse.minPeakLamports must be a non-negative integer');
   return issues;
 };

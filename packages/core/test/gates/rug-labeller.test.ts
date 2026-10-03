@@ -15,7 +15,7 @@ const POOL = 'Pool111111111111111111111111111111111111111';
 const T0 = 1_790_000_000n; // launch, chain seconds
 
 /** Small numbers so each boundary is one unit wide: 2% of 1,000,000 is 20,000; 1% of a 10,000 peak is 100. */
-const CFG: RugConfig = { version: 'rugs-test', creatorDump: { supplyBps: 200, windowMs: 10_000 }, collapse: { dropBps: 9_900, windowMs: 10_000 } };
+const CFG: RugConfig = { version: 'rugs-test', creatorDump: { supplyBps: 200, windowMs: 10_000 }, collapse: { dropBps: 9_900, windowMs: 10_000, minPeakLamports: 0 } };
 const SUPPLY = 1_000_000n;
 
 let n = 0;
@@ -122,6 +122,13 @@ describe('collapse', () => {
   it('keeps the highest peak', () => {
     expect(run([create(), trade({ sol: 10_000n }), trade({ sol: 5_000n }), trade({ sol: 101n })]).labels).toHaveLength(0);
     expect(run([create(), trade({ sol: 5_000n }), trade({ sol: 10_000n }), trade({ sol: 100n })]).labels).toHaveLength(1);
+  });
+
+  it('counts a collapse only from a peak of at least the configured minimum', () => {
+    const cfg = { ...CFG, collapse: { ...CFG.collapse, minPeakLamports: 10_000 } };
+    expect(run([create(), trade({ sol: 9_999n }), trade({ sol: 0n })], cfg).labels).toHaveLength(0);
+    expect(run([create(), trade({ sol: 10_000n }), trade({ sol: 0n })], cfg).labels).toHaveLength(1);
+    expect(rugConfigIssues({ ...CFG, collapse: { ...CFG.collapse, minPeakLamports: 1.5 } })).toEqual(['collapse.minPeakLamports must be a non-negative integer']);
   });
 
   it('needs a peak above zero', () => {
@@ -232,7 +239,7 @@ describe('scope', () => {
       idx.observe(e);
     }
     const at = events[2]!.moment;
-    expect(idx.factFor(DEV, at, 0).rugs).toEqual([{ mint: MINT, knownAtMs: at.receivedAt }]);
+    expect(idx.factFor(DEV, at, 0).rugs).toEqual([{ mint: MINT, knownAtMs: at.receivedAt, kind: 'collapse' }]);
     expect(idx.factFor(DEV, { ...at, receivedAt: at.receivedAt - 1 }, 0).rugs).toEqual([]);
   });
 });
@@ -274,20 +281,40 @@ describe('malformed and look-alike events', () => {
   });
 });
 
+describe('probe (research runs)', () => {
+  it('sees every level with its running peak and every deployer sale total, also after the label, and labels once', () => {
+    const levels: [bigint, bigint][] = [];
+    const sales: bigint[] = [];
+    const l = new RugLabeller(CFG, { level: (_m, level, peak) => levels.push([level, peak]), sale: (_m, total) => sales.push(total) });
+    const out = [create(), trade({ sol: 10_000n }), trade({ sol: 0n }), trade({ sol: 7n }), trade({ user: DEV, isBuy: false, tokens: 30_000n, sol: 3n })].flatMap((e) => l.observe(e));
+    expect(out.map((e) => (e.value as RugLabel).rule)).toEqual(['collapse']);
+    expect(levels).toEqual([[10_000n, 10_000n], [0n, 10_000n], [7n, 10_000n], [3n, 10_000n]]);
+    expect(sales).toEqual([30_000n]);
+  });
+
+  it('a sale that labels does not hide the levels of the same event from the probe', () => {
+    const levels: bigint[] = [];
+    const l = new RugLabeller(CFG, { level: (_m, level) => levels.push(level) });
+    const out = [create(), trade({ user: DEV, isBuy: false, tokens: 30_000n, sol: 9n })].flatMap((e) => l.observe(e));
+    expect(out).toHaveLength(1);
+    expect(levels).toEqual([9n]);
+  });
+});
+
 describe('config', () => {
   it('the shipped config is valid and versioned', () => {
     expect(rugConfigIssues(RUG_CONFIG)).toEqual([]);
     // Changing a value needs a new version and a DECISIONS entry (docs/DECISIONS.md "Rug labels").
-    expect(RUG_CONFIG).toEqual({ version: 'rugs-1', creatorDump: { supplyBps: 200, windowMs: DAY_MS }, collapse: { dropBps: 9_900, windowMs: DAY_MS } });
+    expect(RUG_CONFIG).toEqual({ version: 'rugs-2', creatorDump: { supplyBps: 200, windowMs: DAY_MS }, collapse: { dropBps: 9_900, windowMs: DAY_MS, minPeakLamports: 0 } });
     expect(Object.isFrozen(RUG_CONFIG.collapse)).toBe(true);
   });
 
   it('refuses thresholds outside 1..10000 bps and windows that are not positive integers', () => {
     expect(rugConfigIssues({ ...CFG, version: '' })).toEqual(['version must be a non-empty string']);
     expect(rugConfigIssues({ ...CFG, creatorDump: { supplyBps: 0, windowMs: 0 } })).toHaveLength(2);
-    expect(rugConfigIssues({ ...CFG, collapse: { dropBps: 10_001, windowMs: 1.5 } })).toHaveLength(2);
+    expect(rugConfigIssues({ ...CFG, collapse: { dropBps: 10_001, windowMs: 1.5, minPeakLamports: -1 } })).toHaveLength(3);
     expect(rugConfigIssues({ ...CFG, creatorDump: { supplyBps: 1.5, windowMs: 2 ** 53 } })).toHaveLength(2);
-    expect(rugConfigIssues({ ...CFG, collapse: { dropBps: 10_000, windowMs: 1 }, creatorDump: { supplyBps: 1, windowMs: 1 } })).toEqual([]);
+    expect(rugConfigIssues({ ...CFG, collapse: { dropBps: 10_000, windowMs: 1, minPeakLamports: 0 }, creatorDump: { supplyBps: 1, windowMs: 1 } })).toEqual([]);
   });
 });
 

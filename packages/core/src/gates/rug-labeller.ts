@@ -19,7 +19,10 @@ export type RugRule = 'creator-dump' | 'collapse';
 export interface RugLabel {
   readonly mint: string;
   readonly creator: string;
+  /** The kind of the label: what was observed. */
   readonly rule: RugRule;
+  /** Labels state observed on-chain facts, never inferred intent; an inferred kind would be a separate label. */
+  readonly evidence: 'observed';
   /** Chain time (ms) of the event that met the rule. */
   readonly atMs: number;
   readonly slot: bigint;
@@ -67,6 +70,12 @@ const signatureOf = (e: MarketEvent): string => {
   return e.id.startsWith('ev:') ? (e.id.split(':')[1] ?? '') : '';
 };
 
+/** Research hooks: every liquidity level (with the running peak) and every running total of deployer sales. */
+export interface RugProbe {
+  readonly level?: (mint: string, level: bigint, peak: bigint, atMs: number) => void;
+  readonly sale?: (mint: string, soldTotal: bigint, atMs: number) => void;
+}
+
 export class RugLabeller {
   readonly #config: RugConfig;
   readonly #launches = new Map<string, Launch>();
@@ -76,8 +85,12 @@ export class RugLabeller {
   /** Mints the dump rule cannot judge, kept while their launch is tracked. */
   readonly #unjudged = new Map<string, string>();
 
-  constructor(config: RugConfig) {
+  readonly #probe: RugProbe | undefined;
+
+  /** `probe` is for research runs (rug validation): it sees every level and deployer sale, labels or not. */
+  constructor(config: RugConfig, probe?: RugProbe) {
     this.#config = config;
+    this.#probe = probe;
   }
 
   /** Feed every released market event here, in release order. Returns the rug facts this event made (zero or one). */
@@ -191,32 +204,39 @@ export class RugLabeller {
 
   /** The launch of a mint that is tracked and not yet labelled. */
   #open(mint: string | null): Launch | null {
-    if (mint === null || this.#labelled.has(mint)) return null;
+    // A labelled mint is done, unless a probe watches it to the end of its history.
+    if (mint === null || (this.#probe === undefined && this.#labelled.has(mint))) return null;
     return this.#launches.get(mint) ?? null;
   }
 
   #judge(e: MarketEvent, l: Launch, at: number, levels: readonly bigint[], sale: { user: string; amount: bigint; id: string } | null): MarketEvent[] {
     const age = at - l.createdAtMs;
     const { creatorDump, collapse } = this.#config;
+    const open = !this.#labelled.has(l.mint);
+    let out: MarketEvent[] = [];
     if (sale !== null && l.sellers.has(sale.user) && !l.sales.has(sale.id)) {
       l.sales.add(sale.id);
       l.sold += sale.amount;
-      if (l.supply !== null && age <= creatorDump.windowMs && l.sold * BPS_DENOMINATOR >= l.supply * BigInt(creatorDump.supplyBps)) {
-        return this.#label(e, l, at, 'creator-dump', `the deployer sold ${l.sold} of ${l.supply} tokens within ${age} ms of launch`);
+      this.#probe?.sale?.(l.mint, l.sold, at);
+      if (open && l.supply !== null && age <= creatorDump.windowMs && l.sold * BPS_DENOMINATOR >= l.supply * BigInt(creatorDump.supplyBps)) {
+        out = this.#label(e, l, at, 'creator-dump', `the deployer sold ${l.sold} of ${l.supply} tokens within ${age} ms of launch`);
+        if (this.#probe === undefined) return out;
       }
     }
     for (const level of levels) {
       if (level > l.peak) l.peak = level;
-      if (l.peak > 0n && age <= collapse.windowMs && level * BPS_DENOMINATOR <= l.peak * (BPS_DENOMINATOR - BigInt(collapse.dropBps))) {
-        return this.#label(e, l, at, 'collapse', `quote liquidity ${level} after a peak of ${l.peak}, within ${age} ms of launch`);
+      this.#probe?.level?.(l.mint, level, l.peak, at);
+      if (open && out.length === 0 && l.peak > 0n && l.peak >= BigInt(collapse.minPeakLamports) && age <= collapse.windowMs && level * BPS_DENOMINATOR <= l.peak * (BPS_DENOMINATOR - BigInt(collapse.dropBps))) {
+        out = this.#label(e, l, at, 'collapse', `quote liquidity ${level} after a peak of ${l.peak}, within ${age} ms of launch`);
+        if (this.#probe === undefined) return out;
       }
     }
-    return [];
+    return out;
   }
 
   #label(e: MarketEvent, l: Launch, atMs: number, rule: RugRule, detail: string): MarketEvent[] {
     this.#labelled.add(l.mint);
-    const value: RugLabel = { mint: l.mint, creator: l.creator, rule, atMs, slot: e.moment.slot, version: this.#config.version, detail };
+    const value: RugLabel = { mint: l.mint, creator: l.creator, rule, evidence: 'observed', atMs, slot: e.moment.slot, version: this.#config.version, detail };
     return [{ kind: 'market', id: `${RUG_PREFIX}${l.mint}`, moment: e.moment, key: `${RUG_PREFIX}${l.mint}`, value }];
   }
 }

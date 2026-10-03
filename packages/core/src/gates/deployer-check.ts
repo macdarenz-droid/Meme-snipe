@@ -113,7 +113,7 @@ export class MintJudge {
   }
 }
 
-export type CheckCover = { readonly covered: true; readonly rugs: readonly string[] } | { readonly covered: false; readonly detail: string };
+export type CheckCover = { readonly covered: true; readonly rugs: readonly { readonly mint: string; readonly kind?: string }[] } | { readonly covered: false; readonly detail: string };
 
 /**
  * Whether a deployer's check covers H14's rug half at `now`: made for this creator, from at or before the look-back
@@ -135,5 +135,6 @@ export const deployerCheckCovers = (
     if (m === undefined) return { covered: false, detail: `the check did not list ${mint}` };
     if (m.status === 'unfetched' || m.status === 'unjudged') return { covered: false, detail: `${mint} ${m.status}: ${m.detail}` };
   }
-  return { covered: true, rugs: fact.mints.filter((m) => m.status === 'rug').map((m) => m.mint).sort() };
+  const rugs = fact.mints.filter((m) => m.status === 'rug').sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0));
+  return { covered: true, rugs: rugs.map((m) => (m.label === undefined ? { mint: m.mint } : { mint: m.mint, kind: m.label.rule })) };
 };

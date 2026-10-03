@@ -301,7 +301,7 @@ describe('on-demand deployer check (RUG-1c)', () => {
     expect(notCovered(open)).toEqual([]);
     expect(open.reasons.filter((x) => x.code === 'prior-rug')).toEqual([]);
     const rug = h([check({}, [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'rug', detail: 'collapse' }])]);
-    expect(rug.reasons).toContainEqual(expect.objectContaining({ gate: 'H14', code: 'prior-rug', detail: expect.stringContaining('P1') }));
+    expect(rug.reasons).toContainEqual(expect.objectContaining({ gate: 'H14', code: 'prior-rug', detail: expect.stringContaining('P1 (unknown kind)') }));
   });
 
   it('a check that missed, could not read or could not judge a prior mint is not coverage', () => {
@@ -332,6 +332,15 @@ describe('on-demand deployer check (RUG-1c)', () => {
     idx.observe(marketOf(`logs:pump:CreateEvent:${MINT}`, createEvent(MINT, DEV, CREATED_AT, SLOT - 20_000n), at(CREATED_AT, SLOT - 20_000n)));
     idx.observe(marketOf('logs:pump:CreateEvent:Old', createEvent('Old', DEV, T - 15 * DAY_MS, SLOT - 3_240_000n), old(15)));
     expect(notCovered(h([check()], idx))).toEqual([]);
+  });
+
+  it('names the kind of each prior rug: a deployer sale or a collapse', () => {
+    const idx = withPrior();
+    idx.observe(marketOf('rug:P1', { mint: 'P1', creator: DEV, rule: 'creator-dump', evidence: 'observed' }, old(2)));
+    idx.observe(marketOf('rug:P2', { mint: 'P2', creator: DEV, rule: 'collapse', evidence: 'observed' }, old(1)));
+    expect(idx.factFor(DEV, NOW, 0).rugs).toEqual([{ mint: 'P1', knownAtMs: T - 2 * DAY_MS, kind: 'creator-dump' }, { mint: 'P2', knownAtMs: T - DAY_MS, kind: 'collapse' }]);
+    const r = evaluateHardRejects(contextWith([], drop(passingFacts(), deployerKey(DEV)), NOW, idx), deps('live'), request(), { stopAtFirst: false });
+    expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'prior-rug', detail: `${DEV} rugged P1 (creator-dump), P2 (collapse) within 14 days`, value: '2' }));
   });
 
   it('the stream coverage, when present, is used and a check is not needed', () => {

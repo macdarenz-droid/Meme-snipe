@@ -418,7 +418,7 @@ const h14 = (env: Env): Outcome => {
   }
   const rugCov = createsCoverage(env.history, env.ev.now, now - lookback, 'rugs');
   // Without stream coverage, an on-demand check of this deployer (RUG-1c) can cover its rug half alone.
-  let checked: readonly string[] = [];
+  let checked: readonly { readonly mint: string; readonly kind?: string }[] = [];
   if (!rugCov.covered) {
     const chk = env.ev.read('rug-check', rugCheckKey(cr.fact.creator), parseRugCheck, 'event', 'H14');
     const prior = d.fact.mints.filter((m) => m.mint !== env.req.mint && m.createdAtMs >= now - lookback).map((m) => m.mint);
@@ -433,7 +433,12 @@ const h14 = (env: Env): Outcome => {
   if (unjudged.length > 0) {
     return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'deployer', neededBy: 'H14', detail: `${env.rugLabeller} could not judge ${unjudged.join(', ')} by ${cr.fact.creator}` }] };
   }
-  const rugs = [...new Set([...d.fact.rugs.filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint), ...checked])].sort();
+  // rugs-1 counts every kind; the kind is named so a later config can weigh deployer sales and collapses apart.
+  const found = new Map<string, string>();
+  for (const x of [...d.fact.rugs.filter((r) => r.mint !== env.req.mint && r.knownAtMs <= now && r.knownAtMs >= now - lookback), ...checked]) {
+    if (!found.has(x.mint) || found.get(x.mint) === 'unknown kind') found.set(x.mint, x.kind ?? 'unknown kind');
+  }
+  const rugs = [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, kind]) => `${mint} (${kind})`);
   if (rugs.length > 0) reasons.push({ gate: 'H14', code: 'prior-rug', input: 'deployer', detail: `${cr.fact.creator} rugged ${rugs.join(', ')} within ${g.deployerRugLookbackDays} days`, value: String(rugs.length), limit: '0' });
   return { reasons };
 };
