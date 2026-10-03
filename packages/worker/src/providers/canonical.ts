@@ -203,9 +203,10 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
 };
 
 /**
- * The backtest Feed's view of recorded frames: the duplicates the live Feed marked are dropped, signatures are
- * ranked by first arrival, and each frame becomes its events. Feed the result to `createReplay`, which sorts it
- * into the engine's total order. Placement and duplicates are read from the frames, as the live Feed recorded
+ * Frames as events, re-sorted: the duplicates the live Feed marked are dropped, signatures are ranked by first
+ * arrival, and each frame becomes its events. Feed the result to `createReplay`, which sorts it into the engine's
+ * total order. Only for data with no release record (e.g. a historical dataset): a re-sort accepts late facts the
+ * live engine refused, so recorded live data is replayed with `replayRecorded` and its release sequence. Placement and duplicates are read from the frames, as the live Feed recorded
  * them, so nothing here depends on when the frames arrived relative to the release point.
  */
 export const frameEvents = (frames: readonly Frame[]): FeedEvent[] => {

@@ -23,8 +23,22 @@ export interface LiveFeedOptions {
   readonly start?: Moment;
   /** Called with every frame, duplicates included: the recorder's input. */
   readonly onFrame?: (frame: Frame) => void;
-  /** Called with every event handed to the engine, in release order. */
-  readonly onRelease?: (event: FeedEvent, info: { readonly late: boolean }) => void;
+  /** Called with every event handed to the engine, in release order. The recorder keeps each `Release`. */
+  readonly onRelease?: (event: FeedEvent, release: Release) => void;
+}
+
+/**
+ * One event handed to the engine. The recorder stores these with the frames: the parity replay of recorded live
+ * data (`replayRecorded`) feeds exactly this sequence, late events included, instead of re-sorting the frames.
+ */
+export interface Release {
+  /** Position in the release sequence, from 0. */
+  readonly index: number;
+  /** The frame the event came from. */
+  readonly frameSeq: number;
+  readonly eventId: string;
+  /** Its slot was already released when the frame arrived; the engine refuses it if it is not after the last event. */
+  readonly late: boolean;
 }
 
 export const DEFAULT_LIVE_FEED: Omit<LiveFeedOptions, 'onFrame' | 'onRelease' | 'start'> = {
@@ -59,7 +73,8 @@ const checkOptions = (o: LiveFeedOptions): LiveFeedOptions => {
   return o;
 };
 
-class LiveClock implements Clock {
+/** The engine's live clock: the moment of the last event released, never moving back. */
+export class ReleaseClock implements Clock {
   #now: Moment;
   constructor(start: Moment) {
     this.#now = start;
@@ -73,9 +88,46 @@ class LiveClock implements Clock {
   }
 }
 
+/**
+ * The backtest Feed for recorded live data: the frames' events in the recorded release order, late ones included,
+ * on a clock that moves exactly as the live one did. This, not a re-sort, is the parity replay (docs/DECISIONS.md,
+ * ENG-1). `frameEvents` with `createReplay` stays for data with no release record.
+ */
+export const replayRecorded = (frames: readonly Frame[], releases: readonly Release[], start: Moment = GENESIS): { readonly clock: Clock; readonly feed: Feed } => {
+  const byId = new Map<string, { event: FeedEvent; frameSeq: number }>();
+  const kept = frames.filter((f) => !f.duplicate).sort((a, b) => a.seq - b.seq);
+  const ranks = new Map<bigint, Map<string, number>>();
+  for (const f of kept) {
+    let r = ranks.get(f.place.slot);
+    if (r === undefined) ranks.set(f.place.slot, (r = new Map()));
+    rankIn(r, f);
+  }
+  for (const f of kept) for (const e of eventsOfFrame(f, ranks.get(f.place.slot)!)) byId.set(e.id, { event: deepFreeze(e), frameSeq: f.seq });
+  const sequence = [...releases].sort((a, b) => a.index - b.index).map((r, k) => {
+    if (r.index !== k) throw new RangeError(`release ${k} is missing`);
+    const hit = byId.get(r.eventId);
+    if (hit === undefined || hit.frameSeq !== r.frameSeq) throw new RangeError(`release ${k}: event ${r.eventId} is not in frame ${r.frameSeq}`);
+    return hit.event;
+  });
+  const clock = new ReleaseClock(start);
+  let head = 0;
+  return {
+    clock,
+    feed: {
+      next: () => {
+        const e = sequence[head];
+        if (e === undefined) return null;
+        head++;
+        clock.cover(e.moment);
+        return e;
+      },
+    },
+  };
+};
+
 export class LiveFeed implements Feed {
   readonly #opts: LiveFeedOptions;
-  readonly #clock: LiveClock;
+  readonly #clock: ReleaseClock;
   #seq = 0;
   #lastReceivedAt = Number.NEGATIVE_INFINITY;
   #tip: bigint | null = null;
@@ -87,7 +139,8 @@ export class LiveFeed implements Feed {
   readonly #keys = new Set<string>();
   readonly #keysBySlot = new Map<bigint, string[]>();
   readonly #gaps = new Map<string, { readonly fromSlot: bigint; readonly since: number }>();
-  #ready: { readonly event: FeedEvent; readonly late: boolean }[] = [];
+  #ready: { readonly event: FeedEvent; readonly frameSeq: number; readonly late: boolean }[] = [];
+  #releases = 0;
   #head = 0;
   #stale = false;
   #duplicates = 0;
@@ -96,7 +149,7 @@ export class LiveFeed implements Feed {
   constructor(opts: LiveFeedOptions = DEFAULT_LIVE_FEED) {
     this.#opts = checkOptions(opts);
     const start = opts.start ?? GENESIS;
-    this.#clock = new LiveClock(start);
+    this.#clock = new ReleaseClock(start);
     this.#released = start.slot - 1n;
   }
 
@@ -154,7 +207,7 @@ export class LiveFeed implements Feed {
     if (place.slot <= this.#released) {
       // Late: its slot is gone. Released now, in arrival order, for the engine to refuse or accept by the total order.
       this.#late++;
-      for (const event of this.#eventsOf([frame], place.slot)) this.#ready.push({ event, late: true });
+      for (const r of this.#eventsOf([frame], place.slot)) this.#ready.push({ ...r, late: true });
       return frame;
     }
     const held = this.#held.get(place.slot);
@@ -189,13 +242,13 @@ export class LiveFeed implements Feed {
     }
     if (target <= this.#released) return 0;
     const slots = [...this.#held.keys()].filter((s) => s <= target).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    const out: FeedEvent[] = [];
+    const out: { event: FeedEvent; frameSeq: number }[] = [];
     for (const s of slots) {
       out.push(...this.#eventsOf(this.#held.get(s)!, s));
       this.#held.delete(s);
     }
-    out.sort(compareEvents);
-    for (const event of out) this.#ready.push({ event, late: false });
+    out.sort((a, b) => compareEvents(a.event, b.event));
+    for (const r of out) this.#ready.push({ ...r, late: false });
     this.#released = target;
     if (this.#held.size === 0) this.#firstHeldAt = null;
     this.#prune();
@@ -212,7 +265,7 @@ export class LiveFeed implements Feed {
       this.#head = 0;
     }
     this.#clock.cover(r.event.moment);
-    this.#opts.onRelease?.(r.event, { late: r.late });
+    this.#opts.onRelease?.(r.event, Object.freeze({ index: this.#releases++, frameSeq: r.frameSeq, eventId: r.event.id, late: r.late }));
     return r.event;
   }
 
@@ -225,12 +278,12 @@ export class LiveFeed implements Feed {
     };
   }
 
-  #eventsOf(frames: readonly Frame[], slot: bigint): FeedEvent[] {
+  #eventsOf(frames: readonly Frame[], slot: bigint): { event: FeedEvent; frameSeq: number }[] {
     let ranks = this.#ranks.get(slot);
     if (ranks === undefined) this.#ranks.set(slot, (ranks = new Map()));
     const sorted = [...frames].sort((a, b) => a.seq - b.seq);
     for (const f of sorted) rankIn(ranks, f);
-    return sorted.flatMap((f) => eventsOfFrame(f, ranks).map((e) => deepFreeze(e)));
+    return sorted.flatMap((f) => eventsOfFrame(f, ranks).map((e) => ({ event: deepFreeze(e), frameSeq: f.seq })));
   }
 
   /** Forgets duplicates and ranks of slots no chain fact can be placed in any more. */

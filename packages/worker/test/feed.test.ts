@@ -4,7 +4,7 @@ import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL } from '../../core/src/chain/index.
 import { createReplay, Engine, runToEnd, type Feed, type FeedEvent, type MarketEvent, type Strategy, type Clock } from '../../core/src/engine/index.ts';
 import { CONFIG } from '../../core/test/fixtures.ts';
 import {
-  ACCOUNT_TX_INDEX, DEFAULT_LIVE_FEED, frameEvents, LIVE_TX_BASE, LiveFeed, type Frame, type FrameBody, type LiveFeedOptions, type Source,
+  ACCOUNT_TX_INDEX, DEFAULT_LIVE_FEED, frameEvents, LIVE_TX_BASE, LiveFeed, replayRecorded, type Frame, type FrameBody, type LiveFeedOptions, type Release, type Source,
 } from '../src/providers/index.ts';
 import { blockNetwork, recordOf, tx, TXS } from './helpers.ts';
 
@@ -32,7 +32,8 @@ interface Arrival {
 const run = (arrivals: readonly Arrival[], opts: Partial<LiveFeedOptions> = {}) => {
   const frames: Frame[] = [];
   const released: { id: string; late: boolean }[] = [];
-  const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, ...opts, onFrame: (f) => frames.push(f), onRelease: (e, i) => released.push({ id: e.id, late: i.late }) });
+  const releases: Release[] = [];
+  const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, ...opts, onFrame: (f) => frames.push(f), onRelease: (e, r) => { released.push({ id: e.id, late: r.late }); releases.push(r); } });
   const engine = engineOn(feed.clock, feed);
   let last = 0;
   for (const a of arrivals) {
@@ -43,7 +44,17 @@ const run = (arrivals: readonly Arrival[], opts: Partial<LiveFeedOptions> = {}) 
   }
   feed.advance(last + 60_000); // the stale rule flushes the rest
   engine.drain();
-  return { feed, engine, frames, released };
+  return { feed, engine, frames, released, releases };
+};
+
+/** The parity replay of recorded live data: frames plus the recorded release sequence, through the same engine. */
+const replayLive = (frames: readonly Frame[], releases: readonly Release[]) => {
+  const r = replayRecorded(frames, releases);
+  const ids: string[] = [];
+  const feed: Feed = { next: () => { const e = r.feed.next(); if (e) ids.push(e.id); return e; } };
+  const engine = engineOn(r.clock, feed);
+  engine.drain();
+  return { engine, ids };
 };
 
 /** Replays recorded frames through the backtest Feed (`createReplay`) and the same engine. */
@@ -90,12 +101,13 @@ const script = (): Arrival[] => {
 };
 
 describe('live Feed', () => {
-  it('ordering parity: recorded frames through the backtest Feed give the live release sequence and the same decision log', () => {
+  it('ordering parity: recorded frames and releases replay to the live release sequence and the same decision log', () => {
     const live = run(script(), { horizonSlots: 4 });
-    expect(live.released.some((r) => r.late)).toBe(false);
-    const back = replay(live.frames);
+    const back = replayLive(live.frames, live.releases);
     expect(back.ids).toEqual(live.released.map((r) => r.id));
     expect(back.engine.logHash()).toBe(live.engine.logHash());
+    // With nothing late, re-sorting the frames gives the same sequence too: the mapping is one.
+    expect(replay(live.frames).engine.logHash()).toBe(live.engine.logHash());
     expect(live.engine.records.filter((r) => r.type === 'fault')).toEqual([]);
     // Real events came through DEC-1's decoder: every fixture's events, in execution order inside each transaction.
     const evs = live.released.filter((r) => r.id.startsWith('ev:'));
@@ -136,6 +148,30 @@ describe('live Feed', () => {
     const first = live.frames.find((f) => f.body.type === 'seen' && f.body.signature === c.signature)!;
     expect(first.duplicate).toBe(false);
     expect(live.frames.filter((f) => f.body.type === 'seen' && f.body.signature === c.signature && f.source === 'pumpportal')[0]!.duplicate).toBe(true);
+  });
+
+  it('parity with late, backfilled-late and cross-slot reordered frames: the recorded release sequence replays exactly', () => {
+    const arrivals = script();
+    const at = (slot: bigint) => arrivals.findIndex((a) => a.body.type === 'slot' && a.body.slot === slot);
+    const early = tx('pump CreateEvent (mayhem)'); // slot 452941175
+    const mid = tx('pump CreateEvent', 1); // slot 452941197
+    // After slot 452941205 is released: a late account state, a backfilled-late sighting and a late sighting of an older slot.
+    const i = at(452941205n);
+    arrivals.splice(i + 1, 0,
+      { at: arrivals[i]!.at + 1, source: 'alchemy', body: { type: 'account', slot: BigInt(mid.slot), address: PUMP_GLOBAL, owner: PUMP_GLOBAL, lamports: 1n, data: Uint8Array.of(9) } },
+      { at: arrivals[i]!.at + 2, source: 'helius', backfilled: true, body: { type: 'seen', signature: tx('pump TradeEvent').signature, slot: BigInt(mid.slot), err: null, via: 'logs:x', detail: null } },
+      { at: arrivals[i]!.at + 3, source: 'helius', body: { type: 'seen', signature: early.signature.slice(0, -1) + (early.signature.endsWith('1') ? '2' : '1'), slot: BigInt(early.slot), err: null, via: 'logs:y', detail: null } },
+    );
+    const live = run(arrivals, { horizonSlots: 4 });
+    expect(live.released.filter((r) => r.late)).toHaveLength(3);
+    expect(live.engine.records.filter((r) => r.type === 'fault').length).toBeGreaterThan(0);
+    const back = replayLive(live.frames, live.releases);
+    expect(back.ids).toEqual(live.released.map((r) => r.id));
+    expect(back.engine.logHash()).toBe(live.engine.logHash());
+    // A re-sort would accept what live refused: it must differ, which is why the release record exists.
+    expect(replay(live.frames).engine.logHash()).not.toBe(live.engine.logHash());
+    // A tampered record is refused, not replayed.
+    expect(() => replayRecorded(live.frames, live.releases.slice(1))).toThrow(/missing/);
   });
 
   it('a fact that arrives after its slot was released is released marked late, and the engine refuses it as out_of_order', () => {

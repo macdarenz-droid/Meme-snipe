@@ -268,25 +268,29 @@ export class RpcStream {
     let filled = 0;
     let failed = 0;
     const jobs = [...this.#watches.values()].map(async (w) => {
+      // A P0–P1 watch serves the open position, so its refill is exit traffic: P0, which the 70% halt never refuses.
+      const priority = w.priority <= P1 ? P0 : w.priority;
       try {
         if (w.kind === 'logs') {
           const opts: { until?: string; limit: number } = { limit: o.backfillLimit };
-          if (w.lastSignature !== null) opts.until = w.lastSignature;
-          const sigs = await o.http.getSignaturesForAddress(w.address, opts, w.priority);
+          const before = w.lastSignature;
+          if (before !== null) opts.until = before;
+          const sigs = await o.http.getSignaturesForAddress(w.address, opts, priority);
           // A full page may have cut older missed signatures off.
           if (w.gap && sigs.length >= o.backfillLimit) w.gap.lossy = true;
           // Newest first from the node; ingest oldest first, as they happened.
           for (const s of sigs.reverse()) {
-            if (w.lastSignature === null && from !== null && s.slot < from) continue;
+            if (before === null && from !== null && s.slot < from) continue;
             this.#seen(w.address, s.signature, s.slot, s.err, w.opts, true);
             filled++;
           }
           const newest = sigs.at(-1);
-          if (newest) w.lastSignature = newest.signature;
+          // The live stream may have moved on while we read: never set the mark back to an older signature.
+          if (newest && w.lastSignature === before) w.lastSignature = newest.signature;
           if (w.gap) w.gap.backfilled = true;
           this.#closeCoverage(w);
         } else if (w.kind === 'account') {
-          const info = await o.http.getAccountInfo(w.address, w.priority);
+          const info = await o.http.getAccountInfo(w.address, priority);
           if (info.value !== null) {
             o.feed.ingest(this.provider, { type: 'account', slot: info.slot, address: w.address, ...info.value }, { receivedAt: o.timers.now(), backfilled: true });
             filled++;

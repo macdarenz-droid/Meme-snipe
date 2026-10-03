@@ -199,6 +199,35 @@ describe('RPC stream', () => {
     expect(keys).toEqual(['logs:truncated:logs:x', 'logs:undecodable:logs:x', 'chain:slot']);
   });
 
+  it('at the 70% halt, the open position still refills after a reconnect: its backfill runs at P0', async () => {
+    const t1 = tx('pump TradeEvent', 0);
+    const t2 = tx('pump TradeEvent', 1);
+    const calls: string[] = [];
+    const { hub, frames, scheduler, stream, timers } = setup((method) => {
+      calls.push(method);
+      if (method === 'getSignaturesForAddress') return [{ signature: t2.signature, slot: 702, err: null }];
+      if (method === 'getAccountInfo') return { context: { slot: 703 }, value: { owner: PUMP_GLOBAL, lamports: 3, data: ['AA==', 'base64'] } };
+      return undefined;
+    }, { used: 699_000 });
+    stream.watchSlots(P0);
+    stream.watchLogs(MINT_AUTH, { priority: P1 });
+    stream.watchAccount(PUMP_AMM_GLOBAL_CONFIG, P1);
+    stream.start();
+    hub.last.open();
+    const [slotSub, logSub] = ack(hub);
+    hub.last.push(slotNote(slotSub!, 701));
+    hub.last.push(logs(logSub!, 701, t1.signature));
+    scheduler.meter(1_000); // the position is open when the month crosses 70%
+    expect(scheduler.halted).toBe(true);
+    hub.last.drop();
+    timers.advance(1_000);
+    hub.last.open();
+    await settle(50);
+    expect(calls).toEqual(['getSignaturesForAddress', 'getAccountInfo']);
+    expect(frames.filter((f) => f.backfilled).map((f) => f.body.type)).toEqual(['seen', 'account']);
+    expect(scheduler.status().granted[0]).toBe(2);
+  });
+
   describe('coverage of the creates stream', () => {
     const facts = (feed: LiveFeed, timers: ManualTimers, key: string) => {
       feed.advance(timers.now() + 60_000);
