@@ -20,10 +20,12 @@ describe('android-preview workflow', () => {
     expect(wf.slice(0, wf.indexOf('\n  release:'))).not.toMatch(/gh release|contents: write/);
   });
 
-  it('replaces the single asset in place', () => {
+  it('replaces the single asset without a window where the link is dead', () => {
     const script = readFileSync(fileURLToPath(new URL('../../../.github/scripts/publish-preview.sh', import.meta.url)), 'utf8');
     expect(releaseJob).toContain('bash .github/scripts/publish-preview.sh');
-    expect(script).toContain('gh release upload preview zeroed-preview.apk --clobber');
+    // Never --clobber (it deletes the old asset before the upload): upload under a temporary name, then swap.
+    expect(script).not.toMatch(/--clobber/);
+    expect(script).toContain('gh release upload preview "$NEXT"');
   });
 
   it('commits no keystore', () => {
