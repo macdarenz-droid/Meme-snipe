@@ -5,6 +5,16 @@ import type { FillConfig } from '../../core/src/config/index.ts';
 import type { RunResult } from './run.ts';
 import type { AttemptRecord } from './sim/world.ts';
 
+/** One leg's costs, lamports: converted to USD at that leg's own time (entry at the entry, exit at the exit). */
+export interface LegCosts {
+  readonly networkBase: bigint;
+  readonly priority: bigint;
+  readonly tip: bigint;
+  readonly venueFee: bigint;
+  readonly creatorFee: bigint;
+  readonly slippage: bigint;
+}
+
 export interface TradeRecord {
   readonly id: string;
   readonly mint: string;
@@ -29,6 +39,8 @@ export interface TradeRecord {
   readonly net: bigint;
   readonly attempts: number;
   readonly failedAttempts: number;
+  /** The totals above split by leg. */
+  readonly legs: { readonly entry: LegCosts; readonly exit: LegCosts };
 }
 
 /** Network fees of attempts that never became a position (failed entries): a real cost, kept apart from trades. */
@@ -73,10 +85,19 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
     const f = k === null ? undefined : r.book.intents[p.entryIntentId]?.fills[k];
     if (f !== undefined) claimed.set(p.entryIntentId, (claimed.get(p.entryIntentId) ?? new Set<string>()).add(f.signature));
   }
-  // One token account per entry: its rent is charged to the first trade of the entry intent only, and comes back only
-  // when every position of that intent is closed (the account is emptied and closed with the last sell).
+  // One token account per entry: its rent is charged to the first trade of the entry intent only, and comes back once,
+  // only when a sell of one of its positions landed as an atomic sell-and-close (world.ts). A sell-only fallback, a
+  // partial exit, dust or an unsolicited token leaves it locked.
   const rentCharged = new Set<string>();
-  const allClosed = (entryIntentId: string) => Object.values(r.book.positions).every((q) => q.entryIntentId !== entryIntentId || q.status === 'closed');
+  const positionOfIntent = new Map<string, string>();
+  for (const i of Object.values(r.book.intents)) if (i.intent.purpose === 'exit') positionOfIntent.set(i.intent.id, i.intent.positionId);
+  const closedEntries = new Set<string>();
+  for (const a of r.attempts) {
+    if (!a.closedAccount) continue;
+    const pid = positionOfIntent.get(a.intentId);
+    const p = pid === undefined ? undefined : r.book.positions[pid];
+    if (p !== undefined) closedEntries.add(p.entryIntentId);
+  }
   const ordered = Object.values(r.book.positions).sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
   for (const p of ordered) {
     const intent = r.book.intents[p.entryIntentId];
@@ -107,22 +128,34 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
     const blocked = p.status !== 'closed';
     const endValue = blocked ? r.endValue(p.mint, held) : 0n;
     const exitSol = soldSol + endValue;
-    let b = 0n;
-    let pr = 0n;
-    let tp = 0n;
-    for (const a of all) {
-      const f = fees(a, base, net.tip);
-      b += f.base;
-      pr += f.priority;
-      tp += f.tip;
-    }
-    const venue = all.reduce((t, a) => t + (a.costs === null ? 0n : a.costs.lpFee + a.costs.protocolFee), 0n);
-    const creator = all.reduce((t, a) => t + (a.costs?.creatorFee ?? 0n), 0n);
-    const slippage = all.reduce((t, a) => t + slippageLamports(a), 0n);
+    const leg = (as: readonly AttemptRecord[]): LegCosts => {
+      let b = 0n;
+      let pr = 0n;
+      let tp = 0n;
+      for (const a of as) {
+        const f = fees(a, base, net.tip);
+        b += f.base;
+        pr += f.priority;
+        tp += f.tip;
+      }
+      return {
+        networkBase: b, priority: pr, tip: tp,
+        venueFee: as.reduce((t, a) => t + (a.costs === null ? 0n : a.costs.lpFee + a.costs.protocolFee), 0n),
+        creatorFee: as.reduce((t, a) => t + (a.costs?.creatorFee ?? 0n), 0n),
+        slippage: as.reduce((t, a) => t + slippageLamports(a), 0n),
+      };
+    };
+    const legs = { entry: leg(entryAttempts), exit: leg(exitAttempts) };
+    const b = legs.entry.networkBase + legs.exit.networkBase;
+    const pr = legs.entry.priority + legs.exit.priority;
+    const tp = legs.entry.tip + legs.exit.tip;
+    const venue = legs.entry.venueFee + legs.exit.venueFee;
+    const creator = legs.entry.creatorFee + legs.exit.creatorFee;
+    const slippage = legs.entry.slippage + legs.exit.slippage;
     const firstOfEntry = !rentCharged.has(p.entryIntentId);
     rentCharged.add(p.entryIntentId);
     const rentPaid = firstOfEntry ? net.tokenAccountRent : 0n;
-    const rentReturned = firstOfEntry && scenario.rentRecovery && allClosed(p.entryIntentId) ? rentPaid : 0n;
+    const rentReturned = firstOfEntry && scenario.rentRecovery && closedEntries.has(p.entryIntentId) ? rentPaid : 0n;
     const closedAt = blocked ? r.endedAt : Math.max(...sold.map((a) => a.landedAt ?? 0));
     trades.push({
       id: p.id, mint: p.mint, symbol: r.symbols.get(p.mint) ?? p.mint.slice(0, 6),
@@ -130,7 +163,7 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
       networkBase: b, priority: pr, tip: tp, venueFee: venue, creatorFee: creator, slippage, rentPaid, rentReturned,
       exitReason: blocked ? 'blocked' : 'time-stop',
       net: exitSol - entryFill.sol - b - pr - tp - rentPaid + rentReturned,
-      attempts: all.length, failedAttempts: all.filter((a) => a.outcome !== 'filled').length,
+      attempts: all.length, failedAttempts: all.filter((a) => a.outcome !== 'filled').length, legs,
     });
   }
   trades.sort((x, y) => x.closedAt - y.closedAt || (x.id < y.id ? -1 : 1));

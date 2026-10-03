@@ -64,15 +64,49 @@ describe('CSV', () => {
 });
 
 describe('regime boundaries', () => {
-  test('the engine sees a regime event at the first block at or after the boundary slot, never before', async () => {
+  test('the engine sees a regime event at the first block at or after the boundary slot, never before (released after the observation delay)', async () => {
     const { Market } = await import('../src/sim/market.ts');
-    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, regimeBoundaries: [{ slot: 12n, label: 'pump-2026-10-02' }] });
-    const at = (slot: number) => market.release({ kind: 'block', slot: BigInt(slot), blockTime: slot, parentSlot: BigInt(slot - 1) });
-    expect(at(10).length).toBe(0);
-    expect(at(11).length).toBe(0);
-    const e = at(13);
-    expect(e.map((x) => x.kind === 'market' && x.key)).toEqual(['regime']);
+    const hooks: { slot: bigint; run: () => void }[] = [];
+    const scheduled: { key: string; slot: bigint }[] = [];
+    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: { slots: 2, providerMs: 0, blackouts: [], seed: 's' },
+      volumeWindowSlots: 150, hook: (h) => hooks.push({ slot: h.moment.slot, run: h.run }), hasRows: () => true,
+      schedule: (x) => { if (x.kind === 'market') scheduled.push({ key: x.key, slot: x.moment.slot }); }, regimeBoundaries: [{ slot: 12n, label: 'pump-2026-10-02' }] });
+    const at = (slot: number) => {
+      expect(market.release({ kind: 'block', slot: BigInt(slot), blockTime: slot, parentSlot: BigInt(slot - 1) })).toEqual([]);
+      // Driver work due at this block runs after it.
+      for (const h of hooks.splice(0)) if (h.slot === BigInt(slot)) h.run(); else hooks.push(h);
+      return scheduled.splice(0);
+    };
+    expect(at(10)).toEqual([]);
+    expect(at(11)).toEqual([]);
+    expect(at(13)).toEqual([]);
     expect(market.regime).toBe('pump-2026-10-02');
-    expect(at(14).length).toBe(0);
+    expect(at(14)).toEqual([]);
+    expect(at(15)).toEqual([{ key: 'regime', slot: 15n }]);
+  });
+});
+
+describe('market volume per window (BT-1c A1)', () => {
+  test('a window\'s volume reads the same at its boundary and long after, so the network chain never walks over zeros', async () => {
+    const { Market } = await import('../src/sim/market.ts');
+    const { syntheticRows } = await import('./synthetic.ts');
+    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {} });
+    const atBoundary = new Map<bigint, bigint>();
+    for (const r of syntheticRows({ mints: 4, slots: 2.5 * 3600 })) {
+      const win = r.slot / 150n;
+      if (!atBoundary.has(win)) atBoundary.set(win, market.volumeBefore(win));
+      market.release(r);
+    }
+    expect([...atBoundary.values()].filter((v) => v > 0n).length).toBeGreaterThan(10);
+    for (const [win, v] of atBoundary) expect(market.volumeBefore(win)).toBe(v);
+  });
+});
+
+describe('registry remote pin (BT-1d)', () => {
+  test('only the project\'s GitHub repository, in https or ssh form', async () => {
+    const { isRepoUrl } = await import('../src/registry-git.ts');
+    const repo = 'macdarenz-droid/Meme-snipe';
+    for (const u of ['https://github.com/macdarenz-droid/Meme-snipe', 'https://github.com/macdarenz-droid/Meme-snipe.git', 'https://x@github.com/macdarenz-droid/meme-snipe/', 'git@github.com:macdarenz-droid/Meme-snipe.git', 'ssh://git@github.com/macdarenz-droid/Meme-snipe']) expect(isRepoUrl(u, repo)).toBe(true);
+    for (const u of ['', '/tmp/origin.git', 'https://github.com/other/Meme-snipe', 'https://github.com/macdarenz-droid/Meme-snipe-fork', 'https://evil.com/macdarenz-droid/Meme-snipe', 'https://github.com.evil.com/macdarenz-droid/Meme-snipe']) expect(isRepoUrl(u, repo)).toBe(false);
   });
 });

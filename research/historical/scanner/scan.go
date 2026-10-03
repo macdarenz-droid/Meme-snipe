@@ -92,6 +92,7 @@ type UnitStats struct {
 	LengthAnomalies int64             `json:"length_anomalies"` // events longer than the IDL by other than 8 bytes
 	RawRecords      int64             `json:"raw_records"`
 	Movements       int64             `json:"movements"`         // token movement rows (movements.go)
+	Delegations     int64             `json:"delegations"`       // delegation rows (delegations.go)
 	MintOnlyRecords int64             `json:"mint_only_records"` // raw records of plain token transactions touching a sampled mint
 	OtherVenueTxs   int64             `json:"other_venue_txs"`   // transactions touching a sampled mint through other programs (counted, not stored)
 	LegacyMeta      int64             `json:"legacy_meta"`
@@ -218,6 +219,7 @@ type blockResult struct {
 	raw       []string
 	mintOnly  int64
 	moves     [][]string
+	delegs    [][]string
 	partial   []string // non-"pump" mints with pump or PumpSwap events (movement coverage: pump transactions only)
 	marks     []coverageMark
 }
@@ -243,7 +245,7 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	outs := map[string]*csvOut{}
 	for name, cols := range map[string][]string{"curve_trades.csv.zst": curveCols, "amm_trades.csv.zst": ammCols,
 		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols, "raw.jsonl.zst": nil,
-		"movements.csv.zst": movementCols, "movement_coverage.csv.zst": movementCoverageCols} {
+		"movements.csv.zst": movementCols, "movement_coverage.csv.zst": movementCoverageCols, "delegations.csv.zst": delegationCols} {
 		o, err := newCSV(filepath.Join(tmp, name), cols)
 		if err != nil {
 			return nil, err
@@ -431,6 +433,7 @@ func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map
 	st.RawRecords += int64(len(r.raw))
 	st.MintOnlyRecords += r.mintOnly
 	st.Movements += int64(len(r.moves))
+	st.Delegations += int64(len(r.delegs))
 	st.mu.Unlock()
 	outs["blocks.csv.zst"].row(r.blockRow)
 	for _, row := range r.curve {
@@ -450,6 +453,9 @@ func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map
 	}
 	for _, row := range r.moves {
 		outs["movements.csv.zst"].row(row)
+	}
+	for _, row := range r.delegs {
+		outs["delegations.csv.zst"].row(row)
 	}
 }
 
@@ -1098,8 +1104,10 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 	r.marks = append(r.marks, swapMarks...)
 	if hasMovementOutsideSwaps(groups) {
 		if full := fullMetaOnce(); fullErr == nil {
-			rows, marks := movementRows(slot, bt, txIdx, keys, groups, full, func(m string) bool { return pumpSuffix(m) || active[m] })
+			want := func(m string) bool { return pumpSuffix(m) || active[m] }
+			rows, marks := movementRows(slot, bt, txIdx, keys, groups, full, want)
 			r.moves, r.marks = append(r.moves, rows...), append(r.marks, marks...)
+			r.delegs = append(r.delegs, delegationRows(slot, bt, txIdx, keys, groups, full, want)...)
 		}
 	}
 	r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, createdMints, eventMints...)
@@ -1298,8 +1306,11 @@ func mintOnlyTxRaw(r *blockResult, st *UnitStats, b *blockData, txIdx int, txByt
 			copy(kk[:], k)
 			mk = append(mk, kk)
 		}
-		rows, marks := movementRows(strconv.FormatUint(b.slot, 10), strconv.FormatInt(b.blockTime, 10), txIdx, mk, ixGroups(tx, full, mk), full, pumpSuffix)
+		groups := ixGroups(tx, full, mk)
+		slotS, btS := strconv.FormatUint(b.slot, 10), strconv.FormatInt(b.blockTime, 10)
+		rows, marks := movementRows(slotS, btS, txIdx, mk, groups, full, pumpSuffix)
 		r.moves, r.marks = append(r.moves, rows...), append(r.marks, marks...)
+		r.delegs = append(r.delegs, delegationRows(slotS, btS, txIdx, mk, groups, full, pumpSuffix)...)
 	}
 	if !hit {
 		return

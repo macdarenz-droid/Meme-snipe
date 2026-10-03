@@ -5,7 +5,7 @@ import { parseReport } from '../../../apps/web/src/api/reportSchema.ts';
 import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { STUDY_CONFIG } from '../src/strategy/config.ts';
 import { holdoutDaysOf, windowDays } from '../src/study/plan.ts';
-import { assertPractice, toPartTrade, trialReport, type TrialPart } from '../src/study/trial.ts';
+import { assertPractice, fromPartTrade, toPartTrade, trialReport, type TrialPart } from '../src/study/trial.ts';
 import type { TradeRecord } from '../src/trades.ts';
 
 const COMMIT = 'a'.repeat(40);
@@ -14,6 +14,10 @@ const trade = (id: string, day: string, net: bigint): TradeRecord => ({
   id, mint: 'M'.repeat(43), symbol: 'TST', openedAt: at(day, 3), closedAt: at(day, 4), entrySol: 16_000_000n, tokens: 5_000_000_000n,
   exitSol: 16_000_000n + net, networkBase: 10_000n, priority: 40_000n, tip: 10_000n, venueFee: 200_000n, creatorFee: 100_000n, slippage: 50_000n,
   rentPaid: 1_513_840n, rentReturned: 1_513_840n, exitReason: 'time-stop', net, attempts: 2, failedAttempts: 0,
+  legs: {
+    entry: { networkBase: 5_000n, priority: 20_000n, tip: 5_000n, venueFee: 100_000n, creatorFee: 50_000n, slippage: 25_000n },
+    exit: { networkBase: 5_000n, priority: 20_000n, tip: 5_000n, venueFee: 100_000n, creatorFee: 50_000n, slippage: 25_000n },
+  },
 });
 const part = (days: string[], trades: TrialPart['trades'], over: Partial<TrialPart> = {}): TrialPart => ({
   kind: 'BT-2 trial part', runId: `trial-${days[0]}`, commit: COMMIT, datasetId: `sha256:${days[0]}`, days,
@@ -46,6 +50,12 @@ describe('trial report', () => {
     // Every practice day is accepted on its own.
     const practice = windowDays(STUDY_CONFIG).filter((d) => !holdoutDaysOf(STUDY_CONFIG).includes(d));
     for (const d of practice) expect(() => assertPractice(STUDY_CONFIG, [d])).not.toThrow();
+  });
+
+  it('carries every amount, per-leg costs included, through the part file and back exactly', () => {
+    const t = trade('p:U2:r', '2026-09-10', 123n);
+    const back = fromPartTrade(JSON.parse(JSON.stringify(toPartTrade(t, 'U2'))) as ReturnType<typeof toPartTrade>);
+    expect({ ...back, tag: undefined }).toEqual({ ...t, tag: undefined });
   });
 
   it('refuses a day in two parts and a part from another commit', () => {

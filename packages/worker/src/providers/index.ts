@@ -13,3 +13,4 @@ export * from './parsed-streams.ts';
 export * from './jupiter.ts';
 export * from './rugcheck.ts';
 export * from './faults.ts';
+export * from './deployer-check.ts';

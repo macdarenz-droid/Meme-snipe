@@ -62,7 +62,7 @@ const offCurveUncached = (address: string): boolean => {
  * the memory is bounded and emptied whole when full, which changes no answer.
  */
 const offCurveCache = new Map<string, boolean>();
-const offCurve = (address: string): boolean => {
+export const offCurve = (address: string): boolean => {
   const hit = offCurveCache.get(address);
   if (hit !== undefined) return hit;
   const v = offCurveUncached(address);

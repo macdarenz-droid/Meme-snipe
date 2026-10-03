@@ -204,7 +204,7 @@ describe('deploy code', () => {
 
 describe('off-server backup gate', () => {
   it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
-    expect(JSON.parse(read('ops/host-config.json'))).toEqual({ offsite_backup: false });
+    expect(JSON.parse(read('ops/host-config.json'))).toEqual({ offsite_backup: false, worker: 'stub' });
     expect(read('ops/host/install-main.sh')).not.toMatch(/enable[^\n]*zeroed-backup-offsite/);
     const send = read('ops/host/files/usr/local/sbin/zeroed-backup-offsite');
     expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeGreaterThan(0);

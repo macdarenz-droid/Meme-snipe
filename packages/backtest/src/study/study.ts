@@ -191,7 +191,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const controlOf = (tag: string) => s0Scored.flatMap((xs) => xs.filter((t) => t.tag === `S0-${tag}`));
   // n_power sizes a holdout that lies after the last boundary: σ̂ comes from the walk-forward of that same regime.
   const lastRegime = regimeOf(c, Date.parse(`${plan.holdout.fromDay}T00:00:00Z`));
-  const sameRegime = <T extends DayReturn & { regime: string }>(xs: readonly T[]): DayReturn[] => xs.filter((t) => t.regime === lastRegime);
+  const sameRegime = <T extends DayReturn & { regime: string }>(xs: readonly T[]): T[] => xs.filter((t) => t.regime === lastRegime);
 
   let reg = loadOrCreate(i.registryPath, universes.length);
   // A run with the regime assumed on is a labelled diagnostic: its counts never feed G1, the trial registry or a

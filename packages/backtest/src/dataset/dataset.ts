@@ -1,12 +1,12 @@
-// The DATA-1 dataset on disk: manifest.json and days/YYYY-MM-DD/<table>-NNN.<csv|jsonl>.zst (schema 1).
+// The DATA-1 dataset on disk: manifest.json and days/YYYY-MM-DD/<table>-NNN.<csv|jsonl>.zst (schema 3).
 // mints.csv.zst is deliberately never read here: it holds whole-life facts (graduation time, tape end, censoring)
 // that would tell the engine the future. Lifecycle facts reach the engine only as the events of the day they happen.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
-import { type DatasetRow, compareRows, readAmm, readBlocks, readCurve, readEvents } from './rows.ts';
 import { readRaw } from './raw.ts';
+import { type CoverageRow, type DatasetRow, type MovementRow, compareRows, readAmm, readBlocks, readCoverage, readCurve, readEvents, readMovements } from './rows.ts';
 
 export interface ManifestFile {
   readonly path: string;
@@ -35,13 +35,13 @@ export interface Manifest {
   readonly [key: string]: unknown;
 }
 
-/** Schema 2 adds raw transaction records, `outer_ix`/`inner_ix` and `jito_tip`; columns are read by name, so both read. */
-export const SUPPORTED_SCHEMAS: readonly number[] = [1, 2];
+/** Schema 3 only: trade rows carry the user token account and its owner, which holder facts need (DATA-1 #46). */
+export const SUPPORTED_SCHEMA = 3;
 
 export const loadManifest = (dir: string): Manifest => {
   const m = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as Manifest;
-  if (!SUPPORTED_SCHEMAS.includes(m.schema)) throw new RangeError(`dataset schema ${String(m.schema)} is not supported (reader reads schemas ${SUPPORTED_SCHEMAS.join(', ')})`);
   if (!Array.isArray(m.days)) throw new RangeError('manifest has no days');
+  if (m.schema !== SUPPORTED_SCHEMA) throw new RangeError(`dataset schema ${String(m.schema)} is not supported (reader is schema ${SUPPORTED_SCHEMA})`);
   return m;
 };
 
@@ -62,6 +62,35 @@ export const tableOf = (path: string): string => {
   return base.replace(/-\d+\.(csv|jsonl)\.zst$/, '').replace(/\.(csv|jsonl)\.zst$/, '');
 };
 
+const readVerified = (dir: string, day: string, f: ManifestFile, options: LoadOptions): string => {
+  const raw = readFileSync(locate(dir, day, f.path));
+  if (options.verify !== false) {
+    if (raw.length !== f.bytes) throw new RangeError(`${f.path}: ${raw.length} bytes, manifest says ${f.bytes}`);
+    const sum = createHash('sha256').update(raw).digest('hex');
+    if (sum !== f.sha256) throw new RangeError(`${f.path}: sha256 ${sum} does not match the manifest`);
+  }
+  return zstdDecompressSync(raw).toString('utf8');
+};
+
+/** One day's token movements (schema 3), in chain order. Only holder rebuilds read them; trading replays never do. */
+export const loadMovements = (dir: string, day: ManifestDay, options: LoadOptions = {}): MovementRow[] => {
+  const out: MovementRow[] = [];
+  for (const f of day.files) if (tableOf(f.path) === 'movements') readMovements(readVerified(dir, day.day, f, options), out);
+  return out.sort((a, b) => (a.slot !== b.slot ? (a.slot < b.slot ? -1 : 1) : a.txIdx - b.txIdx || a.outerIx - b.outerIx || (a.innerIx ?? -1) - (b.innerIx ?? -1)));
+};
+
+/**
+ * The dataset's movement coverage notes (schema 3; listed with the mint files, not by day). Every note is dated, and
+ * a consumer applies it only once the replay reaches its slot.
+ */
+export const loadCoverage = (dir: string, manifest: Manifest, options: LoadOptions = {}): CoverageRow[] => {
+  if (manifest.schema !== SUPPORTED_SCHEMA) throw new RangeError(`movement coverage needs schema ${SUPPORTED_SCHEMA}`);
+  const files = (manifest['mints_files'] ?? []) as readonly ManifestFile[];
+  const out: CoverageRow[] = [];
+  for (const f of files) if (tableOf(f.path) === 'movement_coverage') readCoverage(readVerified(dir, '', f, options), out);
+  return out;
+};
+
 export interface LoadOptions {
   /** Check every file's size and sha256 against the manifest (default true). */
   readonly verify?: boolean;
@@ -73,14 +102,7 @@ export const loadDay = (dir: string, day: ManifestDay, options: LoadOptions = {}
   for (const f of day.files) {
     const reader = TABLES[tableOf(f.path)];
     if (reader === undefined) continue;
-    const full = locate(dir, day.day, f.path);
-    const raw = readFileSync(full);
-    if (options.verify !== false) {
-      if (raw.length !== f.bytes) throw new RangeError(`${f.path}: ${raw.length} bytes, manifest says ${f.bytes}`);
-      const sum = createHash('sha256').update(raw).digest('hex');
-      if (sum !== f.sha256) throw new RangeError(`${f.path}: sha256 ${sum} does not match the manifest`);
-    }
-    reader(zstdDecompressSync(raw).toString('utf8'), out);
+    reader(readVerified(dir, day.day, f, options), out);
   }
   // Array.prototype.sort is stable, so equal keys keep file order.
   return out.sort(compareRows);
@@ -92,7 +114,9 @@ export const loadDay = (dir: string, day: ManifestDay, options: LoadOptions = {}
  */
 export const locate = (dir: string, day: string, path: string): string => {
   const base = path.slice(path.lastIndexOf('/') + 1);
-  for (const p of [join(dir, path.startsWith('days/') ? path : join('days', day, path)), join(dir, `${day}__${base}`)]) if (existsSync(p)) return p;
+  // Dataset-level files (day ''): at the top, by their own name.
+  const where = day === '' ? [join(dir, path)] : [join(dir, path.startsWith('days/') ? path : join('days', day, path)), join(dir, `${day}__${base}`)];
+  for (const p of where) if (existsSync(p)) return p;
   throw new RangeError(`${path} is in neither days/${day}/ nor ${day}__${base}`);
 };
 

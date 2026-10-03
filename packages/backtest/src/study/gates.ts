@@ -1,7 +1,7 @@
 // G0, G1 and G2 for the study (docs/ARCHITECTURE.md §14), from STATS-1's pure gate functions. Inputs come from the
 // scoring stage only; nothing here runs the engine.
 import {
-  createRng, G2_DEFAULTS, gateG0, gateG1, gateG2, nPower, sd, type DayReturn, type G0Input, type G2PowerResult, type GateResult, type HoldoutRegistry, MIN_DAYS,
+  type ClusteredReturn, createRng, G2_DEFAULTS, gateG0, gateG1, gateG2, nPower, sd, type DayReturn, type G0Input, type G2PowerResult, type GateResult, type HoldoutRegistry, MIN_DAYS,
   sharpeRatio, simulateG2Power, type TradeOutcome, type TrialRecord,
 } from '../../../core/src/stats/index.ts';
 
@@ -37,7 +37,7 @@ export const g0 = (input: G0Input): GateResult => gateG0(input);
  * The holdout's size requirement at the attempt's family α: max(300, n_power simulated at α/m, closed form at α/m),
  * exactly what G2 checks with the same α.
  */
-export const powerOf = (walkForward: readonly DayReturn[], control: readonly DayReturn[], familySize: number, seed: number, alpha: number): { ok: true; power: G2PowerResult; required: number } | { ok: false; why: string } => {
+export const powerOf = (walkForward: readonly ClusteredReturn[], control: readonly DayReturn[], familySize: number, seed: number, alpha: number): { ok: true; power: G2PowerResult; required: number } | { ok: false; why: string } => {
   const days = new Set(walkForward.map((t) => t.day)).size;
   if (walkForward.length < 2 || days < 2) return { ok: false, why: `walk-forward has ${walkForward.length} trades on ${days} days: too few to size the holdout` };
   if (control.length === 0) return { ok: false, why: 'no S0 trades on the walk-forward days' };

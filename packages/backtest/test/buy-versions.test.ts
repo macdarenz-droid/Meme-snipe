@@ -27,12 +27,13 @@ const rowOf = (v: V, k: number): AmmSwapRow => {
     pre: { baseReserve: n(e['pool_base_token_reserves']), quoteVault: n(e['pool_quote_token_reserves']), virtualQuoteReserves: n(e['virtual_quote_reserves'] ?? '0') },
     fees: { split: { lp: bps(+e['lp_fee_basis_points']!), protocol: bps(+e['protocol_fee_basis_points']!), creator: bps(+e['coin_creator_fee_basis_points']!) },
       buybackFeeBps: bps(+e['buyback_fee_basis_points']!), instruction: V2.includes(v.ixDisc) ? 'v2' : 'v1' },
-    baseSupply: n(e['base_supply']), ixName: v.ixName, user: 'u', lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '',
+    baseSupply: n(e['base_supply']), ixName: v.ixName, user: 'u', userTokenAccount: 'a', userTokenOwner: 'u', lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '',
   };
 };
 
 describe('both BuyEvent layouts', () => {
-  const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, schedule: () => {} });
+  // Recorded receipt times: each pool state is released with its row.
+  const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {} });
   const cases = golden.pumpswap.map((v, k) => {
     const e = market.release(rowOf(v, k))[0];
     return { v, view: e?.kind === 'market' ? (e.value as PoolView) : null };

@@ -4,12 +4,67 @@
 import { type CoinFlags, type NoQuoteReason, type PoolState, poolBuyExactQuoteIn, poolSell } from '../amm/index.ts';
 import { PPM } from '../costs/index.ts';
 import type { Venue } from '../domain/index.ts';
-import type { Rng } from '../engine/index.ts';
-import { BPS_DENOMINATOR, mulDiv } from '../units/index.ts';
+import { createRng, type Rng } from '../engine/index.ts';
+import { BPS_DENOMINATOR, LAMPORTS_PER_SOL, mulDiv } from '../units/index.ts';
 import { type ObservedFees, observedFeeContext } from './pool.ts';
 
 export type ScenarioName = 'base' | 'conservative' | 'optimistic';
 export const SCENARIO_NAMES: readonly ScenarioName[] = ['base', 'conservative', 'optimistic'];
+
+/**
+ * Correlated failures over windows of slots (supervisor rulings after external review):
+ * - congestion is one persistent network state shared by every open position and every provider at once: a
+ *   two-state chain over windows (enter, stay). Market activity in the previous, complete window (all pools' real
+ *   quote volume, causal) may raise the entry probability, up to a cap; it never defines congestion on its own;
+ * - provider failures on top: in a window where the send path is down, attempts never reach a block.
+ * An attempt broadcast while the network is congested lands less often and later.
+ */
+export interface Congestion {
+  readonly windowSlots: number;
+  readonly network: {
+    /** Entry probability with no market activity, ppm. */
+    readonly enterPpm: bigint;
+    /** Added entry probability per SOL of the previous window's market volume, ppm, up to maxEnterPpm in total. */
+    readonly activityEnterPpmPerSol: bigint;
+    readonly maxEnterPpm: bigint;
+    readonly stayPpm: bigint;
+  };
+  /** Share of windows in which the send path is down, ppm. */
+  readonly providerFailPpm: bigint;
+  /** Landing share in a congested window, as a share of the scenario's landPpm (ppm). */
+  readonly landFactorPpm: bigint;
+  /** Slots added to the landing latency in a congested window. */
+  readonly extraLandingSlots: number;
+}
+
+/** Long-tail landing delays: with probability `ppm` the latency is drawn from `slots` (never sooner than the regular draw). */
+export interface LandingTail {
+  readonly ppm: bigint;
+  readonly slots: readonly number[];
+}
+
+export type DelayProfileName = 'measured' | 'adverse' | 'stress';
+export const DELAY_PROFILE_NAMES: readonly DelayProfileName[] = ['measured', 'adverse', 'stress'];
+
+/**
+ * How late an on-chain observation (a swap's pool state, a lifecycle event, a regime change) reaches the worker, in
+ * three parts. Slots are converted to time with the replay's real slot times.
+ */
+export interface DelayProfile {
+  /** 'unmeasured' until the worker's recorder measures it; 'stress-budget' for a deliberate stress value; 'measured'. */
+  readonly status: 'unmeasured' | 'stress-budget' | 'measured';
+  /** Event slot to processed-commitment availability at the provider. */
+  readonly eventToProcessedSlots: number;
+  /** Processed to confirmed; charged only when the decision path waits for confirmed. */
+  readonly processedToConfirmedSlots: number;
+  /** Provider to worker: network and decoding, ms. */
+  readonly providerMs: number;
+  /**
+   * Feed blackouts per UTC day, each at `atMsOfDay` after midnight or, without it, at a time drawn from the run seed;
+   * the backlog arrives when each ends.
+   */
+  readonly blackouts: readonly { readonly durationMs: number; readonly atMsOfDay?: number }[];
+}
 
 export interface FillScenario {
   readonly name: ScenarioName;
@@ -20,10 +75,19 @@ export interface FillScenario {
    * block height and cost nothing. The rest land as failed transactions and pay the base and priority fees.
    */
   readonly dropPpm: bigint;
+  /** The observation delay profile this scenario uses (FillConfig.delays). */
+  readonly delay: DelayProfileName;
   /** Feed lag before the engine learns of a token, in slots; one value is drawn uniformly per token. */
   readonly discoverySlots: readonly number[];
   /** Slots from broadcast to landing; one value is drawn uniformly per attempt. */
   readonly landingSlots: readonly number[];
+  readonly landingTail: LandingTail;
+  readonly congestion: Congestion;
+  /**
+   * Liquidity worsening during repeated exits: each earlier exit attempt on the same position takes this share (ppm)
+   * off what the next one receives, as other sellers reach the pool first.
+   */
+  readonly exitRetryHaircutPpm: bigint;
   /** Slots from landing until the status reads `confirmed`. */
   readonly confirmSlots: number;
   /** Slots from landing until the status reads `finalized` (a failure is terminal only then). */
@@ -32,11 +96,17 @@ export interface FillScenario {
   readonly slippagePpm: bigint;
   /** Take-profit judged on the trade's wick or on the slot's close (§11: conservative uses close). For the exit rules. */
   readonly takeProfit: 'wick' | 'close';
-  /**
-   * True: the token-account rent comes back when the position's final sell lands (the account is closed in that
-   * transaction); a blocked or unlanded final exit keeps it lost. False: never returned (a sensitivity line only).
-   */
+  /** False: token-account rent counts as never returned (conservative). */
   readonly rentRecovery: boolean;
+  /**
+   * The final sell of a token account closes it in the same transaction (atomic sell-and-close). Share of such
+   * transactions whose close succeeds, ppm; a failed close fails the whole transaction (the sell rolls back, the fee is
+   * charged) and the account falls back to sell-only, so its rent stays locked. An assumption, with no refinement
+   * source yet.
+   */
+  readonly closeSuccessPpm: bigint;
+  /** Share of token accounts left with dust or an unsolicited token, ppm: they cannot be closed, the rent stays locked. */
+  readonly dustPpm: bigint;
 }
 
 /** Network terms of one attempt. Rent and the escalation ladder are separate (config, policy). */
@@ -72,16 +142,89 @@ export interface AttemptDraw {
   readonly fate: AttemptFate;
 }
 
-/** One attempt's latency and fate. Always two draws in the same order, so later draws never depend on the outcome. */
-export const drawAttempt = (rng: Rng, s: FillScenario, venue: Venue): AttemptDraw => {
-  const landingSlots = pick(rng, s.landingSlots, 'landingSlots');
+/** The congestion window holding `slot`. */
+export const windowOf = (slot: bigint, s: FillScenario): bigint => {
+  const n = s.congestion.windowSlots;
+  if (!Number.isSafeInteger(n) || n < 1) throw new RangeError('congestion windowSlots must be >= 1');
+  return slot / BigInt(n);
+};
+
+const draw = (seed: string): bigint => ppmDraw(createRng(seed));
+
+/** The network state's entry probability given the previous window's market volume (lamports), ppm. */
+export const networkEnterPpm = (s: FillScenario, volumeLamports: bigint): bigint => {
+  const n = s.congestion.network;
+  const v = n.enterPpm + mulDiv(volumeLamports < 0n ? 0n : volumeLamports, n.activityEnterPpmPerSol, LAMPORTS_PER_SOL, 'floor');
+  return v > n.maxEnterPpm ? n.maxEnterPpm : v;
+};
+
+/**
+ * The shared network state, window by window: a two-state chain from the seed, so a burst lasts 1 / (1 - stay)
+ * windows on average. It starts at the first window asked from the chain's stationary share at no activity, then
+ * steps forward one window at a time, each entry probability set by the window before's market volume (`volumeBefore`,
+ * already complete when asked). Windows are asked in time order; an earlier one than the first is refused.
+ */
+export class NetworkState {
+  readonly #seed: string;
+  readonly #s: FillScenario;
+  readonly #volumeBefore: (win: bigint) => bigint;
+  #first: bigint | null = null;
+  readonly #states: boolean[] = [];
+
+  constructor(seed: string, s: FillScenario, volumeBefore: (win: bigint) => bigint = () => 0n) {
+    this.#seed = seed;
+    this.#s = s;
+    this.#volumeBefore = volumeBefore;
+  }
+
+  congested(win: bigint): boolean {
+    const { enterPpm, stayPpm } = this.#s.congestion.network;
+    if (this.#first === null) {
+      const leave = PPM - stayPpm;
+      const stationary = enterPpm + leave === 0n ? 0n : mulDiv(enterPpm, PPM, enterPpm + leave, 'floor');
+      this.#first = win;
+      this.#states.push(draw(`${this.#seed}:network:${win}`) < stationary);
+    }
+    if (win < this.#first) throw new RangeError(`network state asked for window ${win} before its first, ${this.#first}`);
+    while (this.#first + BigInt(this.#states.length) <= win) {
+      const w = this.#first + BigInt(this.#states.length);
+      const before = this.#states[this.#states.length - 1]!;
+      this.#states.push(draw(`${this.#seed}:network:${w}`) < (before ? stayPpm : networkEnterPpm(this.#s, this.#volumeBefore(w))));
+    }
+    return this.#states[Number(win - this.#first)]!;
+  }
+}
+
+/** Whether the send path is down in `window`. */
+export const providerDown = (seed: string, win: bigint, s: FillScenario): boolean => draw(`${seed}:provider:${win}`) < s.congestion.providerFailPpm;
+
+/**
+ * One attempt's latency and fate. Always four draws in the same order (regular latency, tail decision, tail latency,
+ * fate), so later draws never depend on an outcome or on congestion.
+ */
+export const drawAttempt = (rng: Rng, s: FillScenario, venue: Venue, congested = false): AttemptDraw => {
+  const regular = pick(rng, s.landingSlots, 'landingSlots');
+  const inTail = ppmDraw(rng) < s.landingTail.ppm;
+  const tail = pick(rng, s.landingTail.slots, 'landingTail.slots');
   const u = ppmDraw(rng);
-  const land = s.landPpm[venue];
+  const extra = congested ? s.congestion.extraLandingSlots : 0;
+  if (!Number.isSafeInteger(extra) || extra < 0) throw new RangeError('extraLandingSlots must be an integer >= 0');
+  const landingSlots = (inTail ? Math.max(regular, tail) : regular) + extra;
+  const land = congested ? mulDiv(s.landPpm[venue], s.congestion.landFactorPpm, PPM, 'floor') : s.landPpm[venue];
   if (u < land) return { landingSlots, fate: 'lands' };
   // The remaining range [land, 1e6) splits by dropPpm into dropped then failed.
   const dropped = mulDiv(PPM - land, s.dropPpm, PPM, 'floor');
   return { landingSlots, fate: u - land < dropped ? 'dropped' : 'fails' };
 };
+
+/**
+ * Whether an attempt's account close succeeds, from a seed per attempt: it draws nothing from the shared stream, so
+ * scenarios keep common random numbers for every other draw.
+ */
+export const closeSucceeds = (seed: string, s: FillScenario): boolean => ppmDraw(createRng(`${seed}:close`)) < s.closeSuccessPpm;
+
+/** Whether a new token account ends up with dust or an unsolicited token, from a seed per account. */
+export const accountGetsDust = (seed: string, s: FillScenario): boolean => ppmDraw(createRng(`${seed}:dust`)) < s.dustPpm;
 
 /** Lamports an attempt costs: a landed success pays base, priority and tip; a landed failure base and priority; a dropped one nothing. */
 export const attemptFee = (net: FillNetwork, priorityFee: bigint, fate: 'filled' | 'failed' | 'dropped'): bigint => {
@@ -124,8 +267,10 @@ export interface OurTrade {
   readonly slippagePpm: bigint;
 }
 
-const finish = (out: bigint, paid: bigint, after: PoolState, t: OurTrade, fees: Omit<ExecutionCosts, 'extraSlippage'>): Execution => {
-  const final = withSlippage(out, t.quotedOut, t.slippagePpm);
+const finish = (out: bigint, paid: bigint, after: PoolState, t: OurTrade, fees: Omit<ExecutionCosts, 'extraSlippage'>, haircutPpm = 0n): Execution => {
+  if (haircutPpm < 0n) throw new RangeError('haircut must be >= 0');
+  const slipped = withSlippage(out, t.quotedOut, t.slippagePpm);
+  const final = slipped - (haircutPpm >= PPM ? slipped : mulDiv(slipped, haircutPpm, PPM, 'ceil'));
   return final < t.minOut || final <= 0n
     ? { ok: false, reason: 'slippage', detail: `out ${final} below min ${t.minOut}` }
     : { ok: true, out: final, paid, after, costs: { ...fees, extraSlippage: out - final } };
@@ -141,10 +286,14 @@ export const executeBuy = (t: OurTrade, spend: bigint): Execution => {
   return q.ok ? finish(q.trade.base, q.trade.userQuote, q.trade.after, t, costsOf(q.trade)) : q;
 };
 
-/** Our sell of `tokens`. `paid` is the tokens sold; `out` the lamports received. */
-export const executeSell = (t: OurTrade, tokens: bigint): Execution => {
+/**
+ * Our sell of `tokens`. `paid` is the tokens sold; `out` the lamports received. `haircutPpm` takes a share off the
+ * proceeds for liquidity lost to earlier sellers (repeated exits); it is counted in extraSlippage, and the pool sees
+ * the same sell.
+ */
+export const executeSell = (t: OurTrade, tokens: bigint, haircutPpm = 0n): Execution => {
   const q = poolSell(t.pool, tokens, observedFeeContext(t.fees, t.baseSupply, t.coin));
-  return q.ok ? finish(q.trade.userQuote, tokens, q.trade.after, t, costsOf(q.trade)) : q;
+  return q.ok ? finish(q.trade.userQuote, tokens, q.trade.after, t, costsOf(q.trade), haircutPpm) : q;
 };
 
 /**

@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
-# Console only: makes a new Telegram pairing code (the old one stops working) and shows it.
+# Console only: makes a new Telegram pairing code (the old one stops working) and shows it. The code works
+# once, for 30 minutes. On a paired server it asks first; the current chat stays paired until the new /pair
+# succeeds.
 set -euo pipefail
 . /usr/local/lib/zeroed/common.sh
-lock
 [ -s "$CRED_DIR/telegram_bot_token" ] || { log "Keys not received yet: run Deploy first."; exit 1; }
+if paired; then
+  printf 'This server is paired with a Telegram chat. Pair a different chat? Alerts stay with the current chat until the new /pair succeeds.\nType yes to continue: '
+  answer=""
+  IFS= read -r answer || true
+  [ "$answer" = yes ] || { log "Cancelled. Nothing changed."; exit 1; }
+fi
+lock
 new_pair_code
+if paired; then
+  notify "Zeroed host: a new Telegram pairing was started at the server console. This chat stays paired until it succeeds; the code expires in 30 minutes." || true
+fi
 log "Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
-log "One try only; a wrong code needs a new one from here."
+log "One try only, within 30 minutes; a wrong or late code needs a new one from here."

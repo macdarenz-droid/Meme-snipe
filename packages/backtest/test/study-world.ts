@@ -173,7 +173,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         rows.push({
           kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 0, signature, mint: pl.mint, isBuy: true, solAmount: 30_000_000n, tokenAmount: amount,
           virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: 700_000_000_000_000n,
-          mayhem: false, quoteMint: '11111111111111111111111111111111', user, extraHex: '',
+          mayhem: false, quoteMint: '11111111111111111111111111111111', user, extraHex: '', userTokenAccount: key(`${seed}:ata:${user}:${p.label}`), userTokenOwner: user,
         });
         rows.push(raw(s, tx, signature, [pl.mint], move(pl, [{ account: pl.curveAta, owner: pl.curve, delta: -amount }, { account: key(`${seed}:ata:${user}:${p.label}`), owner: user, delta: amount }]), []));
       }
@@ -214,7 +214,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
           baseAmount: 0n, quoteAmount: 0n, userQuote: 0n, pre: pl.state, baseSupply: SUPPLY,
           fees: p.feesFrom !== undefined && since >= p.feesFrom.since
             ? { ...FEES, split: { lp: bps(p.feesFrom.lp), protocol: bps(p.feesFrom.protocol), creator: bps(p.feesFrom.creator) } } : FEES,
-          ixName: buy ? 'buy_exact_quote_in' : 'sell', user, lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '',
+          ixName: buy ? 'buy_exact_quote_in' : 'sell', user, lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '', userTokenAccount: ata, userTokenOwner: user,
         };
         const q = replaySwap(pl.state, swap);
         if (!q.ok) continue;

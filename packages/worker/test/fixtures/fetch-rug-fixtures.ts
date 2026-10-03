@@ -52,7 +52,7 @@ for (const c of CASES) {
     const m = t.meta;
     transactions.push({
       signature: s.signature, slot: t.slot, blockTime: t.blockTime, transaction: t.transaction,
-      meta: { err: m['err'], loadedAddresses: m['loadedAddresses'], innerInstructions: m['innerInstructions'], logMessages: m['logMessages'] },
+      meta: { err: m['err'], loadedAddresses: m['loadedAddresses'], innerInstructions: m['innerInstructions'], logMessages: m['logMessages'], preTokenBalances: m['preTokenBalances'], postTokenBalances: m['postTokenBalances'] },
     });
   }
   cases.push({ name: c.name, mint: c.mint, until: c.until, transactions });

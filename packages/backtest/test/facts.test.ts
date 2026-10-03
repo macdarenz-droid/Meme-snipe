@@ -27,7 +27,7 @@ const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | 
     sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete, ...(readLatency === undefined ? {} : { readLatency }), ...(survival === undefined ? {} : { survival }),
     ...(tradesFromMs === undefined ? {} : { tradesFromMs }), ...(poolAccounts === undefined ? {} : { poolAccounts }),
   });
-  const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
+  const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {}, facts });
   const events: FeedEvent[] = [];
   for (const r of rows) {
     const out = market.release(r);
@@ -225,7 +225,7 @@ describe('fact projector', () => {
   it('drops a launch that never graduates after a week, and a graduate past every window', () => {
     const { rows, mints } = studyWorld({ mints: [{ ...PLAN, graduateAfter: 10 ** 9 }, PLAN], slots: SLOTS });
     const facts = new FactProjector({ sampleRate: 1, rugs: RUG_CONFIG, windows: [U2], solUsd: [], solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt: 'test-salt' });
-    const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, schedule: () => {}, facts });
+    const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {}, facts });
     for (const r of rows) market.release(r);
     expect(facts.state(mints[0]!.mint)).toBeDefined();
     const last = rows[rows.length - 1]!;

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# tailscale stand-in inside the e2e test server (ops/test/e2e.sh): no network. Records every call in
+# /var/lib/tailscale-stub/calls. "up" prints a login link and finishes once the test creates
+# /var/lib/tailscale-stub/approve (the owner logging in); "serve" keeps its config like tailscaled does.
+set -euo pipefail
+S=/var/lib/tailscale-stub
+mkdir -p "$S"
+echo "$*" >> "$S/calls"
+case "$1 ${2:-}" in
+  "status --json")
+    if [ -e "$S/logged-in" ]; then echo '{"BackendState":"Running","Self":{"DNSName":"zeroed.tail-e2e.ts.net."}}'; else echo '{"BackendState":"NeedsLogin"}'; fi ;;
+  "up "*)
+    printf '\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/e2e0a1b2c3d4\n\n'
+    for _ in $(seq 1 120); do [ -e "$S/approve" ] && { touch "$S/logged-in"; echo Success.; exit 0; }; sleep 1; done
+    echo 'timeout waiting for login'; exit 1 ;;
+  "serve --bg")
+    # /var/lib/tailscale-stub/bad-serve: tailscaled ends up with Funnel on too (the check must take it down).
+    if [ -e "$S/bad-serve" ]; then
+      printf '{"TCP":{"443":{"HTTPS":true}},"Web":{"zeroed.tail-e2e.ts.net:443":{"Handlers":{"/":{"Proxy":"%s"}}}},"AllowFunnel":{"zeroed.tail-e2e.ts.net:443":true}}\n' "${@: -1}" > "$S/serve.json"
+      exit 0
+    fi
+    printf '{"TCP":{"443":{"HTTPS":true}},"Web":{"zeroed.tail-e2e.ts.net:443":{"Handlers":{"/":{"Proxy":"%s"}}}}}\n' "${@: -1}" > "$S/serve.json" ;;
+  "serve status")
+    cat "$S/serve.json" 2>/dev/null || echo '{}' ;;
+  "serve reset")
+    rm -f "$S/serve.json" ;;
+  "funnel --https="*)
+    # "off" drops that port from AllowFunnel, as tailscaled does (the test turns Funnel on by editing serve.json).
+    port="${2#--https=}"
+    if [ "${3:-}" = off ] && [ -e "$S/serve.json" ]; then
+      jq --arg p ":$port" '.AllowFunnel |= ((. // {}) | with_entries(select(.key | endswith($p) | not)))' "$S/serve.json" > "$S/serve.json.new" && mv "$S/serve.json.new" "$S/serve.json"
+    fi ;;
+  *) echo "tailscale stub: unhandled $*" >&2; exit 1 ;;
+esac

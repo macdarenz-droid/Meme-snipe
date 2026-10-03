@@ -77,7 +77,7 @@ if paired; then
   # Rotation: restart the worker (reconcile first) and tell the owner.
   if systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
   notify "Zeroed server: keys replaced (issue $issued). Worker $w." || true
-  set_webhook || log "Could not set the Telegram webhook for the watchdog."
+  webhook_try || true
 else
   [ -s "$PAIR_CODE_FILE" ] || new_pair_code
 fi

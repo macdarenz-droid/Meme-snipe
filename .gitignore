@@ -14,3 +14,6 @@ data/
 .DS_Store
 *.keystore
 *.jks
+
+# Local copy of the holdout registry; the shared copy is the remote holdout-registry branch.
+research/holdout/registry.json

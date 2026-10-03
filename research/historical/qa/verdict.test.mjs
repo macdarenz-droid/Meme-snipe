@@ -10,7 +10,7 @@ const base = () => ({
   decode_failures: 0, chain_breaks: [], coverage_gaps: [],
   units: [{ unknown_events: { 'pump:742b4dbd117a482b': 3 }, extra_bytes: { 'pump:TradeEvent:8': 5, 'pump:CreateEvent:0': 1 }, newer_layouts: { 'amm:BuyEvent': 2 }, older_layouts: {} }],
 });
-const report = { curve: { real_ok: 1, real_pairs: 1, virtual_ok: 1, virtual_pairs: 1, token_exact: 0, token_checks: 0, quote_balance_ge: 0, quote_balance_checks: 0 }, amm: { chain_ok: 0, chain_pairs: 0, chain_exact: 0, chain_checks: 0 }, swap_attribution: { missing_column: 0, owner_empty_unmarked: 0 }, live: [] };
+const report = { curve: { real_ok: 1, real_pairs: 1, virtual_ok: 1, virtual_pairs: 1, token_exact: 0, token_checks: 0, quote_balance_ge: 0, quote_balance_checks: 0 }, amm: { chain_ok: 0, chain_pairs: 0, chain_exact: 0, chain_checks: 0 }, swap_attribution: { missing_column: 0, owner_empty_unmarked: 0 }, delegations: { files: 1, malformed: 0, outside_coverage: 0 }, live: [] };
 
 test('windowDays lists [from, to)', () => {
   assert.deepEqual(windowDays('2026-09-30', '2026-10-02'), ['2026-09-30', '2026-10-01']);
@@ -115,5 +115,15 @@ test('every swap row carries its attribution, and an empty owner its mark', () =
   assert.deepEqual(strictMisses(base(), { ...report, swap_attribution: { missing_column: 2, owner_empty_unmarked: 3 } }), [
     'trade rows without user_token_account / user_token_owner 2',
     'trade rows with an empty user_token_owner and no swap_owner_unknown mark 3',
+  ]);
+});
+
+test('delegation files must be present and well formed', () => {
+  const { delegations: _, ...without } = report;
+  assert.deepEqual(strictMisses(base(), without), ['delegation files absent']);
+  assert.deepEqual(strictMisses(base(), { ...report, delegations: { files: 0, malformed: 0, outside_coverage: 0 } }), ['delegation files absent']);
+  assert.deepEqual(strictMisses(base(), { ...report, delegations: { files: 1, malformed: 2, outside_coverage: 3 } }), [
+    'malformed delegation rows 2',
+    'delegation rows of non-pump mints outside movement_coverage 3',
   ]);
 });

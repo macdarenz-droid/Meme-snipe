@@ -1,14 +1,14 @@
 // The scoring stage (docs/ARCHITECTURE.md §13, §16.1): outcomes are computed after a run, outside the engine, from
 // its final book and the fill model's records. Nothing here is reachable from the engine or the strategy.
 import type { FillConfig } from '../../../core/src/config/index.ts';
-import type { TradeOutcome } from '../../../core/src/stats/index.ts';
+import type { ClusteredReturn, TradeOutcome } from '../../../core/src/stats/index.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 import { melbourneDay } from '../report.ts';
 import type { RunResult } from '../run.ts';
 import { type TradeRecord, tradesOf } from '../trades.ts';
 
 /** A trade with its universe tag (U1, U2, S0-U1, S0-U2) and its labels. */
-export interface ScoredTrade extends TradeOutcome {
+export interface ScoredTrade extends TradeOutcome, ClusteredReturn {
   readonly tag: string;
   readonly mint: string;
   readonly openedAt: number;
@@ -26,8 +26,25 @@ export interface ScoredTrade extends TradeOutcome {
 export const tagOf = (positionId: string): string => positionId.split(':')[1] ?? '?';
 
 /** Net return on the entry spend, all costs included (§13.1 r_net); severe at −50% or worse, or blocked (y_severe). */
+/**
+ * G2's resampling clusters (STATS-1b). Creator: the deployer named in the entry's log line; a deployer that was not
+ * seen joins one shared "unknown" cluster. Funder: the dataset records no funding, so every trade shares one
+ * "unknown" funder cluster: the conservative side (one cluster cannot exclude zero), until a funder source exists.
+ */
+export const UNKNOWN_CLUSTER = 'unknown';
+const creatorsOf = (records: readonly LogRecord[]): Map<string, string> => {
+  const out = new Map<string, string>();
+  for (const rec of records) {
+    if (rec.type !== 'decision' || rec.reasons[0] !== 'enter') continue;
+    const c = rec.reasons.find((x) => x.startsWith('creator '));
+    if (c !== undefined) out.set(`${rec.reasons[1]}|${rec.reasons[2]}`, c.slice('creator '.length));
+  }
+  return out;
+};
+
 export const scoreRun = (r: RunResult, fills: FillConfig): ScoredTrade[] => {
   const { trades } = tradesOf(r, fills);
+  const creators = creatorsOf(r.records);
   return trades.map((t) => {
     const rNet = Number(t.net) / Number(t.entrySol);
     const rNetNoRent = Number(t.net - t.rentReturned) / Number(t.entrySol);
@@ -36,6 +53,7 @@ export const scoreRun = (r: RunResult, fills: FillConfig): ScoredTrade[] => {
       tag: tagOf(t.id), mint: t.mint, day: melbourneDay(t.openedAt), rNet, ySevere: blocked || rNet <= -0.5, blocked,
       openedAt: t.openedAt, closedAt: t.closedAt, net: t.net.toString(), entrySol: t.entrySol.toString(), exitReason: t.exitReason,
       censored: blocked && t.closedAt >= r.endedAt, rNetNoRent,
+      creatorCluster: creators.get(`${tagOf(t.id)}|${t.mint}`) ?? UNKNOWN_CLUSTER, funderCluster: UNKNOWN_CLUSTER,
     };
   });
 };

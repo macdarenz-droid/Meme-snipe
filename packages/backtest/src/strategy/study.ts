@@ -487,7 +487,7 @@ export class StudyStrategy implements Strategy {
       return void say('risk refused', ...risk.reasons.map((r) => `${r.control}:${r.code}`));
     }
     if (deploy) this.#entries.push({ mint: toMint(mint), atMs: now });
-    this.#enter(c, u, view, pool, risk, spot, setup.stopSpot, stopBps, blockHeight, out);
+    this.#enter(c, u, view, pool, risk, spot, setup.stopSpot, stopBps, blockHeight, out, this.#creator(ctx, mint));
   }
 
   /** The universe's setup at the spot price now, with its structure stop. */
@@ -514,7 +514,7 @@ export class StudyStrategy implements Strategy {
     return { ok: false, why: 'no structure below the price for a stop' };
   }
 
-  #enter(c: Candidate, u: UniverseConfig, view: PoolView, pool: string, risk: EntryAllowed, spot: bigint, stopSpot: bigint, stopBps: number, height: bigint, out: Decision[]): void {
+  #enter(c: Candidate, u: UniverseConfig, view: PoolView, pool: string, risk: EntryAllowed, spot: bigint, stopSpot: bigint, stopBps: number, height: bigint, out: Decision[], creator: string | null): void {
     const q = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL))(risk.spendLamports);
     if (!q.ok) {
       this.funnel.record(c.tag, c.mint, 'risk', 'adverse');
@@ -542,7 +542,8 @@ export class StudyStrategy implements Strategy {
     this.#byPool.set(pool, (this.#byPool.get(pool) ?? new Set()).add(pid));
     const intent = { id, key: entryKey(tm, c.tag), purpose: 'entry' as const, side: 'buy' as const, mint: tm, venue: 'pumpswap' as const, positionId: positionId(pid), spend };
     const act = (event: Exclude<Decision['action'], null>, why: string, ...more: string[]) => out.push({ action: event, reasons: [why, c.tag, c.mint, ...more] });
-    act({ type: 'propose_entry', intent }, 'enter', `notional ${risk.notional}`, `stop ${stopBps} bps`, `round trip ${risk.roundTripPpm} ppm`);
+    // The deployer goes in the log line: G2's creator cluster is read from it at scoring (STATS-1b).
+    act({ type: 'propose_entry', intent }, 'enter', `notional ${risk.notional}`, `stop ${stopBps} bps`, `round trip ${risk.roundTripPpm} ppm`, `creator ${creator ?? 'unknown'}`);
     act({ type: 'intent', intentId: id, event: { type: 'mark_eligible' } }, 'eligible');
     act({ type: 'intent', intentId: id, event: { type: 'approve_risk' } }, 'risk approved');
     act({ type: 'intent', intentId: id, event: { type: 'reserve_exposure', reservation: { id: reservationId(`r:${c.tag}:${c.mint}`), intentId: id, amount: risk.reservation.amount as Lamports, status: 'held' } } }, 'reserve');

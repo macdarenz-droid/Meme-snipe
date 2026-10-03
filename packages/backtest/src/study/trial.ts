@@ -7,7 +7,7 @@ import type { BacktestReportV1, ReportGate } from '../../../core/src/report/inde
 import type { OffchainSeries } from '../dataset/offchain.ts';
 import { buildReport } from '../report.ts';
 import type { StudyConfig } from '../strategy/config.ts';
-import type { TradeRecord } from '../trades.ts';
+import type { LegCosts, TradeRecord } from '../trades.ts';
 import { dayStart, holdoutDaysOf, windowDays } from './plan.ts';
 
 /** One window's trial run, as written by `cli.ts trial` (bigints as decimal strings). */
@@ -23,15 +23,21 @@ export interface TrialPart {
   readonly candidates: number;
   readonly entries: number;
   /** Strategy trades by universe tag (U1, U2) and S0's first seed (S0-U1, S0-U2). */
-  readonly trades: readonly (Omit<TradeRecord, BigKey> & Record<BigKey, string> & { readonly tag: string })[];
+  readonly trades: readonly (Omit<TradeRecord, BigKey | 'legs'> & Record<BigKey, string> & { readonly legs: Record<'entry' | 'exit', Record<LegKey, string>>; readonly tag: string })[];
 }
 
 type BigKey = 'entrySol' | 'tokens' | 'exitSol' | 'networkBase' | 'priority' | 'tip' | 'venueFee' | 'creatorFee' | 'slippage' | 'rentPaid' | 'rentReturned' | 'net';
 const BIG: readonly BigKey[] = ['entrySol', 'tokens', 'exitSol', 'networkBase', 'priority', 'tip', 'venueFee', 'creatorFee', 'slippage', 'rentPaid', 'rentReturned', 'net'];
 
+type LegKey = keyof LegCosts;
+const LEG: readonly LegKey[] = ['networkBase', 'priority', 'tip', 'venueFee', 'creatorFee', 'slippage'];
+const legOut = (l: LegCosts) => Object.fromEntries(LEG.map((k) => [k, l[k].toString()])) as Record<LegKey, string>;
+const legIn = (l: Record<LegKey, string>) => Object.fromEntries(LEG.map((k) => [k, BigInt(l[k])])) as unknown as LegCosts;
+
 export const toPartTrade = (t: TradeRecord, tag: string): TrialPart['trades'][number] =>
-  ({ ...t, ...Object.fromEntries(BIG.map((k) => [k, t[k].toString()])), tag } as unknown as TrialPart['trades'][number]);
-const fromPartTrade = (t: TrialPart['trades'][number]): TradeRecord => ({ ...t, ...Object.fromEntries(BIG.map((k) => [k, BigInt(t[k])])) } as unknown as TradeRecord);
+  ({ ...t, ...Object.fromEntries(BIG.map((k) => [k, t[k].toString()])), legs: { entry: legOut(t.legs.entry), exit: legOut(t.legs.exit) }, tag } as unknown as TrialPart['trades'][number]);
+export const fromPartTrade = (t: TrialPart['trades'][number]): TradeRecord =>
+  ({ ...t, ...Object.fromEntries(BIG.map((k) => [k, BigInt(t[k])])), legs: { entry: legIn(t.legs.entry), exit: legIn(t.legs.exit) } } as unknown as TradeRecord);
 
 /** Refuses anything that touches the fixed holdout window. */
 export const assertPractice = (c: StudyConfig, days: readonly string[], trades: readonly { openedAt: number; closedAt: number }[] = []): void => {
