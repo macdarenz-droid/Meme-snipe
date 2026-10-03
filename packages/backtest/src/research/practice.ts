@@ -93,18 +93,34 @@ export const loadWindow = (path: string): PracticeWindow => parseWindow(JSON.par
  * The window a run may use: never a wall later than the committed one. A confirmed window must also match the STATS-1
  * registry: the wall is the Melbourne day with the date of every registered holdout's first UTC day.
  */
-export const resolveWindow = (committed: PracticeWindow, given: PracticeWindow, registry: HoldoutRegistry | null): PracticeWindow => {
+/**
+ * BT-2's study registry (`docs/evidence/bt2/registry.json`): the STATS-1 holdout registry plus the study plan. The plan's
+ * holdout boundary is fixed before any configuration is frozen; registered entries, when there are any, must agree.
+ */
+export interface StudyRegistry {
+  readonly holdouts: HoldoutRegistry;
+  readonly plan?: { readonly holdout?: { readonly fromDay?: string } };
+}
+
+/** Every holdout start the registry fixes: the plan's boundary and each registered entry's fromDay (UTC data days). */
+const registeredStarts = (r: StudyRegistry): { readonly what: string; readonly fromDay: string }[] => [
+  ...(typeof r.plan?.holdout?.fromDay === 'string' ? [{ what: 'the study plan', fromDay: r.plan.holdout.fromDay }] : []),
+  ...r.holdouts.entries.map((e) => ({ what: `registered holdout ${e.holdoutId}`, fromDay: e.fromDay })),
+];
+
+export const resolveWindow = (committed: PracticeWindow, given: PracticeWindow, registry: StudyRegistry | null): PracticeWindow => {
   if (wallMs(given) > wallMs(committed)) {
     throw new HoldoutWallError(`the given wall ${wallDay(given)} is later than the committed wall ${wallDay(committed)} (research/signals/window.json)`);
   }
   for (const w of [committed, given]) {
     if (w.confirmedBy === null) continue;
-    if (registry === null || registry.entries.length === 0) throw new HoldoutWallError(`the window says confirmed by ${w.confirmedBy}, but no STATS-1 registry with entries was given`);
+    const starts = registry === null ? [] : registeredStarts(registry);
+    if (starts.length === 0) throw new HoldoutWallError(`the window says confirmed by ${w.confirmedBy}, but no study registry with a holdout boundary was given`);
     // The registry's fromDay is a UTC data day (BT-2 study-1; ARCHITECTURE.md §14). The window's wall must be the
     // Melbourne day of the same date, which starts 10–11 h before the registered holdout (conservative, supervisor).
-    for (const e of registry.entries) {
+    for (const e of starts) {
       if (wallDay(w) !== e.fromDay || wallMs(w) > utcMidnight(e.fromDay)) {
-        throw new HoldoutWallError(`registered holdout ${e.holdoutId} starts on UTC day ${e.fromDay}; the window's wall must be Melbourne day ${e.fromDay} (holdoutFrom ${addDays(e.fromDay, w.embargoDays)}), it is ${wallDay(w)}: they must be equal`);
+        throw new HoldoutWallError(`${e.what} starts on UTC day ${e.fromDay}; the window's wall must be Melbourne day ${e.fromDay} (holdoutFrom ${addDays(e.fromDay, w.embargoDays)}), it is ${wallDay(w)}: they must be equal`);
       }
     }
   }

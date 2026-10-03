@@ -1,5 +1,5 @@
 // RES-3 signal research on practice days (docs/research/signals.md).
-//   node packages/backtest/src/research/cli.ts --dataset <dir> --sol-usd <file> [--window <file>] [--registry <STATS-1 registry json>]
+//   node packages/backtest/src/research/cli.ts --dataset <dir> --sol-usd <file> [--window <file>] [--registry <BT-2 study registry json>]
 //        [--out research/signals] [--seed res3-1] [--replicates 2000]
 // The wall comes from the committed research/signals/window.json; --window may only move it earlier. A confirmed window
 // needs the STATS-1 registry. Holdout and embargo days are dropped before any file is opened; a row past the wall stops
@@ -11,11 +11,10 @@ import type { ScenarioName } from '../../../core/src/fills/index.ts';
 import { loadDay, loadManifest, manifestHash, verifySums } from '../dataset/dataset.ts';
 import { readSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
-import type { HoldoutRegistry } from '../../../core/src/stats/index.ts';
 import { evaluate, handoffs, type Obs, type Registry, univariate, withRegistry } from './analysis.ts';
 import { type Candidate, collectCandidates, PLAN_DRIVE, solUsdAsOf, type Universe } from './candidates.ts';
 import { type Outcome, PLAN_BARRIERS, scoreCandidates } from './outcome.ts';
-import { assertReadable, latestRegime, loadWindow, readableDays, resolveWindow, wallDay } from './practice.ts';
+import { assertReadable, latestRegime, loadWindow, readableDays, resolveWindow, type StudyRegistry, wallDay } from './practice.ts';
 
 const args = process.argv.slice(2);
 const flag = (name: string, fallback?: string): string => {
@@ -27,7 +26,7 @@ const flag = (name: string, fallback?: string): string => {
 
 const dataset = flag('dataset');
 const committed = loadWindow(join(import.meta.dirname, '..', '..', '..', '..', 'research', 'signals', 'window.json'));
-const registry = args.includes('--registry') ? (JSON.parse(readFileSync(flag('registry'), 'utf8')) as HoldoutRegistry) : null;
+const registry = args.includes('--registry') ? (JSON.parse(readFileSync(flag('registry'), 'utf8')) as StudyRegistry) : null;
 const window = resolveWindow(committed, args.includes('--window') ? loadWindow(flag('window')) : committed, registry);
 const out = flag('out', 'research/signals');
 const seed = flag('seed', 'res3-1');
