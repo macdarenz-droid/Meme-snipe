@@ -402,6 +402,13 @@ A third reviewer read 8370c2a. Its new findings were checked in code, and the se
   - **Where balances come from:** the stand-in's own balances come from the node's `preBalances`, `postBalances` and token balances inside the same simulation, when the provider returns them (Agave 4.3.0 does, checked 2026-10-03). These are atomic, so a transfer landing between our read and the simulation cannot move the amount. Otherwise they come from one `getMultipleAccounts` read at `processed`. The post balances must equal the accounts read back, or the trade is "malformed".
   - **Fee read-back:** the read-back fee payer already has the base and priority fee taken out (docs/evidence/DRYRUN_SMOKE.md).
   - **Why not venue events:** pump's TradeEvent has no field verified to equal the wallet's net SOL on sells. Its buyback fee is non-zero in the golden sells, and that fee's share is unverified.
+- **2026-10-04 · Mechanics diagnostics in the report (supervisor ruling, 90fac89).** The report also counts:
+  - final-exit simulations (sells that close the position's token account);
+  - those that ran with the real close instruction;
+  - those that completed both the sell and the close;
+  - omitted closes, each with its reason ("the holder holds X, the position is Y").
+
+  They are labelled "mechanics diagnostics; not a landing or rent-recovery probability". The rent model stays the modelled close.
 - **2026-10-03 · The error is |simulated − quoted| / quoted in units of 0.0001 percentage points, rounded up.** The report decides the gate in integers: success share ≥ 95% (every outcome but "simulated" is a failure, "not simulable" and scheduler refusals included), median ≤ 0.5 points and every trade ≤ 2 points, over the successful trades.
 - **2026-10-03 · Follow-up: the creator vault's top-up ignores the creator fee paid into it in the same transaction** (review of PR #28). The vault counts as topped up by `rentExempt(0) − its balance before`. If the trade's creator fee lands first and already covers rent, the wallet pays less than that, or nothing, so `rentPaid` can overstate the rent and the measured sell proceeds by up to one rent-exempt minimum (about 0.00065 SOL). This only happens when the vault is missing or below rent. To fix it, take the vault's top-up from the program's order of transfers (or from inner instructions) once that order is verified.
 - **2026-10-03 · Dry-run calls run at P2 or P3 on the Helius scheduler, never P0 or P1** (both refused with a RangeError before any request; review of PR #28). The worker uses P2. A scheduler refusal is recorded as a failed trade, never retried silently. Each call is a standard RPC call (1 credit).

@@ -52,7 +52,7 @@ const big = (x: unknown): bigint | null | typeof BAD => (x === undefined || x ==
 /** Why a simulation line cannot be trusted as written, or null. Such a line is scored `malformed`, never dropped. */
 export const malformedReason = (l: JournalLine): string | null => {
   if (!isOutcome(l['outcome'])) return 'missing or unknown outcome';
-  for (const k of ['quotedOut', 'simulatedOut', 'quoteAgeSlots', 'rentDeclared', 'rentPaid'] as const) {
+  for (const k of ['quotedOut', 'simulatedOut', 'quoteAgeSlots', 'rentDeclared', 'rentPaid', 'simulatedSlot'] as const) {
     if (big(l[k]) === BAD) return `${k} is not a decimal string`;
   }
   const e = l['amountErrorE4'];
@@ -80,6 +80,8 @@ export const toRecord = (l: JournalLine): DryRunRecord => {
   return {
     id: `${String(l.trade)}|${String(l['leg'])}`,
     side: l['leg'] === 'exit' ? 'sell' : 'buy',
+    // A final exit (the sell closes the position's token account), for TEST-2's mechanics diagnostics.
+    finalExit: l['leg'] === 'exit' && l['finalExit'] === true,
     venue: l['venue'] === 'curve' ? 'curve' : 'pool',
     mint: String(l['mint'] ?? '') as DryRunRecord['mint'],
     outcome: bad === null ? (l['outcome'] as DryRunOutcome) : 'malformed',
@@ -95,7 +97,7 @@ export const toRecord = (l: JournalLine): DryRunRecord => {
     rentDeclared: bigOrNull(l['rentDeclared']),
     rentPaid: bigOrNull(l['rentPaid']),
     balancesFrom: l['balancesFrom'] === 'simulation' || l['balancesFrom'] === 'read' ? l['balancesFrom'] : null,
-    simulatedSlot: null,
+    simulatedSlot: bigOrNull(l['simulatedSlot']),
     unitsConsumed: null,
     logsTail: [],
   };
