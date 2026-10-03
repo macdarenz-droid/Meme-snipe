@@ -12,7 +12,7 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61), GATE-1f (#65), TX-1c (#63), FACTS-1 (#54), APP-2 (#43), EXIT-1b (#55), RISK-1b (#58), SIM-1 (#59), DATA-1 (#46), SEED-1 (#45), APP-2b (#67), FACTS-1c (#68), WORKER-1 (#48).
+Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61), GATE-1f (#65), TX-1c (#63), FACTS-1 (#54), APP-2 (#43), EXIT-1b (#55), RISK-1b (#58), SIM-1 (#59), DATA-1 (#46), SEED-1 (#45), APP-2b (#67), FACTS-1c (#68), WORKER-1 (#48), BT-1c (#53), FILL-2 (#70), DATA-1b (#69), RUG-1c (#74), OPS-1e (#66). Scan run 1 (09-21 back to 09-14) started 8:42 AM.
 - **Server:** live and paired.
 - **History:** the download waits on DATA-1's final data-shape PR (#46: full curve and canonical-pool rows, raw records for every create and migration, owner-resolved token movements, regimes).
 - **Building:** the worker, gate-fact producers, start-up seed, rug check, backtest study, signal research, live app view, server extras, and the review fixes.
@@ -58,7 +58,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - Data: the owner declined asking Triton for a faster download (4 Oct); the scan stays at 80 MB/s on one lane.
 - Owner, before live (RISK-1): worst-case cost per trade C ≈ $0.79 after EXIT-1's retry budget; $5 entries stay blocked until week-start equity reaches $29; new entries stop at about 84% of the peak; the daily and weekly loss count an open loss again each day (stricter; switching to marked boundaries needs the owner's yes).
 - Owner, before live (third opinion): R8 "5 losses in any 20" pauses 79–97% of simulated paths within 8–11 trades, good strategy or bad; choose keep, or a threshold calibrated on practice data and validated separately (never the holdout). With C at about 40% of a $2 trade, one loss of about $0.70 ends the day.
-- Live regime volume: own on-chain volume needs every pump trade, which the free tier can't carry, so live stays paper-only on the regime gate until a source is chosen (owner, before live; may need a paid service).
+- Live regime volume: resolved without a paid service. Live reads our own published day assets with a D−3 lag (FACTS-1d, DATA-1c).
 - Proof timeline: U2 may hold fewer than 300 holdout trades (unmeasured); BT-2 counts the funnel gate by gate on practice days before any freeze, and dates follow that count. "Not proven yet" for U2 is a possible honest result.
 - Owner sign-off, when STATS-1c's simulations are in: replace the DSR gate in G1 with the block-bootstrap SPA test.
 - Workflows: pinned actions target Node 20 and run forced on Node 24; re-pin when workflows are next touched (supervisor, `.github`).
