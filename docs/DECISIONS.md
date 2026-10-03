@@ -142,9 +142,10 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
     - (d) calibrates (c) by simulation across duplicate, independent, heavy-tailed, common-shock and idle-day scenarios: the false-positive rate is at most α at zero edge, and power is reported next to DSR's.
   - Replacing the DSR gate in G1 with (c) is a change of method that can pass more strategies, so it merges only with the owner's sign-off on that evidence. Until then G1 keeps DSR ≥ 0.95.
 - **Holdout.**
-  - The sealed window stays at Melbourne days 09-22 to 10-01, all after B4.
+  - The sealed window is UTC days 2026-09-22 to 2026-10-01 (data days are UTC), all after B4. It starts at 09-22T00:00Z, after the 2 h embargo, as BT-2's `study-1` registers it. RES-3 ends practice at the start of Melbourne day 09-22, 10 hours earlier; that is conservative, so no change. Trade days for the 10-day minimum are counted in Melbourne days, the stats day key.
   - G1 runs on every practice day. Results are reported by regime and described as cross-regime evidence. Only 8 practice days fall wholly after B4, below G1's 10-day minimum, so post-B4 practice results are descriptive only.
-  - The holdout can come up short on trades (n < max(300, n_power)) or on trade days (fewer than 10). The size check counts candidates and entries only, before any outcome is scored. In that case the window extends by whole Melbourne days from 10-02, as the days are published, for at most 28 days, and stops on the first day both counts are met. Past 28 days the result is "not proven". This extension rule is fixed now, before any holdout count is known.
+  - The holdout can come up short on trades (n < max(300, n_power)) or on trade days (fewer than 10). The size check counts candidates and entries only, before any outcome is scored. In that case the window extends by whole UTC days from 10-02, as the days are published, for at most 28 days, and stops on the first day both counts are met. Past 28 days the result is "not proven". This extension rule is fixed now, before any holdout count is known.
+  - The extension may cross B5 (10-02 15:47 UTC). UPG-1 found SOL-market fields, quotes, fees and rent unchanged there, and H5 refuses any non-zero tail, so B5 changes nothing we trade. Results are reported before and after B5. B2–B4 stay hard boundaries for every window.
   - Repeated attempts share one error budget. Attempt 1 is tested at family α = 0.04 (Holm across universes, with n_power simulated at that level). Attempt k ≥ 2 is tested at 0.01 / 2^(k−1) on a new, later window. All attempts together have a false-pass rate of at most 0.05.
   - The 48-hour dry run is operational evidence and G3 only. It is never part of the holdout. STATS-1b, BT-2.
 - **Rent.** Rent follows the transaction's real outcome:
@@ -182,6 +183,26 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
   - recovery measured as "reconciled and able to exit";
   - separate drills for process crash, reboot, RPC loss and host loss.
   A later standby needs exclusive signing, fencing and reconciliation of already-signed transactions. It never relies on a second sell failing for lack of tokens. RUN-1d, OPS-1d.
+
+### Third-opinion rulings (2026-10-04)
+
+A third reviewer read 8370c2a. Its new findings were checked in code; these rulings are the supervisor's.
+
+- **Funnel first.** The holdout may hold far fewer U2 trades than 300 (estimate 1–4 entries a day; uncertain by about 3×). Before any definition is frozen, BT-2 counts the funnel gate by gate on the published practice days. Counts are not outcomes, so this burns nothing. H9 and H11 ablations (offline scores of blocked candidates) also run before the U2 freeze, not after. The board's dates follow from those counts. "Not proven yet" for U2 is an expected, honest result. BT-2.
+- **A dead feed leaves no working stop** (confirmed: `exits/rules.ts:236` treats stale state as no quote, so only time stops fire, and `exits.test.ts:97` locks that in). For every open position whose market state is older than a few seconds, the worker reads the pool account directly over RPC and feeds that as the market. If the read also fails, it raises the critical alert. Acceptance case (§18): feed dead for 5 minutes with a position open and the pool falling 40%, and the exit still goes out within the set time through the fallback read. WATCH-1, after WORKER-1; TEST-3.
+- **Capital measured in SOL as well** (confirmed: equity is a USD ledger; wallet SOL only feeds R4's cash cap). Wherever a size or limit scales with equity, it uses the lower of ledger equity and wallet-marked equity. When wallet-marked capital falls below the kill line, new entries stop. SOL gains never loosen anything. This only tightens. RISK-1b.
+- **Exits per universe** (confirmed: one `policy.exits` block, which BT-2 reads for every universe). The policy gets per-universe exit parameters before any freeze: time stops, partials, ATR bars and multiples. The ladder and the cost reservation stay global. Today's values become U2's. U1 starts from research/risk.md S2 (T_flat 30 min, T_max 4 h, 5-minute ATR bars, partial at 2R), and the study sets the frozen values. These are strategy parameters; turning any universe live stays inside the owner's live switch. CFG-2.
+- **Smaller additions:**
+  - Test getProgramAccounts on both free providers and both token programs. Add a parity test on one real mint: live enumeration against balances rebuilt from movements, at the same slot (FACTS-1, DATA-1).
+  - Exact duplicates of a return series count once. Report DSR under raw and de-duplicated N (STATS-1c).
+  - Rent-recovery odds come from TEST-2's measured close-success rate once available. The congestion state follows the pool's own recent volume, and the blocked-exit rate is reported when the whole ladder falls inside it; this feeds `y_severe` (BT-1c).
+  - After a withdrawal, the weekly budget re-bases to at most 20% of what remains, and the R4 reserve check repeats before the send (RISK-1b).
+  - S0 runs under the same one-position rule in the deployment replay (BT-2).
+  - A candidate materiality rule to test: a collapse counts when the sustained quote reserve reached at least H8's 5 SOL dust line. Creator-sale labels stay size-free (RUG-1c).
+- **Owner, before live** (added to the RISK-1 findings):
+  - R8 ("5 losses in any 20") pauses 79–97% of simulated paths within about 8–11 trades, whether the strategy is bad or good. Choose one: keep the review every ~10 trades, use the holdout's 99th percentile of losses in 20, or use the reverse e-process.
+  - With C reserved at about 40% of a $2 trade, one loss of about $0.70 ends the day.
+- **Later, needs the owner:** a pre-signed full-balance emergency sell on a durable nonce, held by the watchdog and sent only when heartbeats stop with a position open. It changes signer policy and hands a signed transaction to a third party.
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
