@@ -5,6 +5,7 @@ import {
   createHoldoutRegistry, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome,
 } from '../src/stats/index.ts';
+import { TRIAL_POLICY } from '../src/config/index.ts';
 import { bracketTrades, type DayTrade } from './stats-fixtures.ts';
 
 const DAY = 86_400_000;
@@ -196,6 +197,21 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     // The other two stay sealed for a later call, which also runs Holm over the family of three.
     expect(r.registry.entries.filter((e) => e.seal === 'sealed').map((e) => e.universe)).toEqual(['U2', 'U3']);
   }, 120_000);
+  test('family-wise error stays ≤ α when universes of one family are scored in separate calls (simulated)', () => {
+    // Zero true edge in every universe, family of 3. Call 1 scores U1 alone, call 2 scores U2 alone (U3 never ready).
+    // Each call runs Holm over the whole family, so each look is at ≤ α/3; a family-wise error is any universe passing.
+    const reps = 300;
+    let anyPass = 0;
+    for (let r = 0; r < reps; r++) {
+      let reg = sealed(3, ['U1', 'U2', 'U3']);
+      const first = gateG2(g2Pass({ registry: reg, universes: [u('U1', { trades: bracketTrades(20_000 + 2 * r, 0, 25, 20) }, 3)], rng: createRng(r) }));
+      reg = first.registry;
+      const second = gateG2(g2Pass({ registry: reg, universes: [u('U2', { trades: bracketTrades(20_001 + 2 * r, 0, 25, 20) }, 3)], rng: createRng(r + 99_999) }));
+      expect(second.registry.entries.map((e) => e.seal)).toEqual(['opened', 'opened', 'sealed']);
+      if (first.passed || second.passed) anyPass++;
+    }
+    expect(anyPass / reps).toBeLessThanOrEqual(0.05);
+  }, 300_000);
   test('n_power must come from this universe\'s walk-forward', () => {
     const other = wf.map(({ day, rNet }) => ({ day, rNet: rNet + 0.01 }));
     const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), walkForward: summarizeWalkForward(other) } })] }));
@@ -365,13 +381,21 @@ describe('demotion', () => {
     const missed = Array.from({ length: 100 }, (_, i) => i % 4 !== 0); // 25% miscoverage vs 2 × 10%
     expect(evaluateDemotion({ ...demotionQuiet, coverage: { targetMiscoverage: 0.1, covered: missed } }).reasons[0]).toMatch(/^miscoverage/);
   });
-  test('with the cap at the take-profit, demotion catches a −10% decay within 30 days', () => {
-    let caught = 0;
-    for (let r = 0; r < 200; r++) {
-      const decay = bracketTrades(9000 + r, -0.1, 30, 10).map(({ day, rNet }) => ({ day, rNet }));
-      if (evaluateDemotion({ ...demotionQuiet, returns: decay, returnCap: 0.27 }).demote) caught++;
+  // The trial policy has no fixed take-profit: its first profit exit is the partial at partialAtR × R, with R at most
+  // the maximum stop distance (ARCHITECTURE.md §9: 1.5R at R ≤ 20%, i.e. +30%). Returns above it (the runner) are capped,
+  // which can only make demotion fire sooner.
+  const trialCap = (TRIAL_POLICY.exits.partialAtRBps / 10_000) * (TRIAL_POLICY.loss.stopMaxBps / 10_000);
+  test('at the trial take-profit cap and 20 trades a day, demotion catches a −10% decay within 30 trading days in ≥ 80% of runs', () => {
+    expect(trialCap).toBeCloseTo(0.3, 12);
+    for (const rho of [0, 0.05, 0.1]) {
+      let caught = 0;
+      for (let r = 0; r < 300; r++) {
+        const decay = bracketTrades(9000 + r + Math.round(rho * 1e6), -0.1, 30, 20, rho).map(({ day, rNet }) => ({ day, rNet }));
+        if (evaluateDemotion({ ...demotionQuiet, returns: decay, returnCap: trialCap }).demote) caught++;
+      }
+      // Measured (1,000 runs): 0.991 at ρ 0, 0.964 at ρ 0.05, 0.921 at ρ 0.1; median 22 days.
+      expect(caught / 300, `ρ = ${rho}`).toBeGreaterThanOrEqual(0.8);
     }
-    expect(caught / 200).toBeGreaterThanOrEqual(0.95);
   });
   test('the return cap is limited to (0, 3]: an out-of-range cap demotes instead of blinding the detector', () => {
     const decay = bracketTrades(53, -0.1, 100, 10).map(({ day, rNet }) => ({ day, rNet }));
