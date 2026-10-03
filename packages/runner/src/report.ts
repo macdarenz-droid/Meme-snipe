@@ -71,8 +71,10 @@ export interface DrillOutcome {
   readonly state?: RecoveredState;
   /** Qualifying host: host loss or chain rebuild ran as a tabletop worker beside the run, not in it. */
   readonly off_run?: boolean;
-  /** Not run here (VPS chain rebuild); proven in the rehearsal. */
+  /** Not run here; never counts as passed. */
   readonly skipped?: boolean;
+  /** What the restart had to keep (positions, in-flight entries, pending exits; the backup's for host loss). 0: proved nothing. */
+  readonly keep?: number;
   readonly plannedAt: number | null;
   readonly at: number;
   readonly pass: boolean;
@@ -141,6 +143,8 @@ export interface CauseSummary {
   readonly planned: number;
   readonly drills: number;
   readonly passed: number;
+  /** Passed drills that had something to keep: only these show the cause was exercised. */
+  readonly exercised: number;
   readonly mid_trade: number;
   readonly off_run: number;
   readonly skipped: number;
@@ -236,7 +240,8 @@ export const buildReport = (
     ),
     coverage_valid: ops.coverage.problems.length === 0,
     // RUN-1d: every planned cause drilled and passed (a crash, a reboot, a host loss, a chain rebuild, RPC loss).
-    drills_by_cause: [...RESTART_CAUSES, 'rpc'].every((c) => byCause[c]!.planned > 0 && byCause[c]!.passed > 0),
+    // A restart cause counts only when a passed drill of it had something to keep; a skipped drill never counts.
+    drills_by_cause: [...RESTART_CAUSES, 'rpc'].every((c) => byCause[c]!.planned > 0 && (c === 'rpc' ? byCause[c]!.passed > 0 : byCause[c]!.exercised > 0)),
     // Nothing a restart had to keep was lost, and every restored position kept its universe (CFG-2).
     recovered_state: restarts.every((d) => d.skipped === true || d.state?.state_ok === true),
     restored_universe_kept: restarts.every((d) => d.skipped === true || d.state?.universe_ok === true),
@@ -299,7 +304,8 @@ export const recoveryByCause = (meta: RunMeta, drills: readonly DrillOutcome[]):
     out[c] = {
       planned,
       drills: ds.length,
-      passed: ds.filter((d) => d.pass).length,
+      passed: ds.filter((d) => d.pass && d.skipped !== true).length,
+      exercised: ds.filter((d) => d.pass && d.skipped !== true && (d.keep ?? 0) > 0).length,
       mid_trade: ds.filter((d) => d.midTrade === true).length,
       off_run: ds.filter((d) => d.off_run === true).length,
       skipped: ds.filter((d) => d.skipped === true).length,
@@ -355,11 +361,11 @@ export const reportMarkdown = (r: Report): string => {
     '',
     'Recovered means reconciled and able to exit, timed from the kill on the monotonic clock (a host reboot is timed on the wall clock).',
     '',
-    '| Cause | Planned | Drilled | Passed | Mid-trade | Exit capable, median | Exit capable, worst | Exposed | Longest exposure | Worst move |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| Cause | Planned | Drilled | Passed | Exercised | Mid-trade | Exit capable, median | Exit capable, worst | Exposed | Longest exposure | Worst move |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...Object.entries(r.recovery_by_cause).map(
       ([c, v]) =>
-        `| ${c}${v.off_run ? ' (tabletop beside the run)' : ''}${v.skipped ? ' (rehearsal only)' : ''} | ${v.planned} | ${v.drills} | ${v.passed} | ${v.mid_trade} | ${sec(v.exit_capable_ms.median)} | ${sec(v.exit_capable_ms.worst)} | ${v.exposure.drills} | ${sec(v.exposure.worst_duration_ms)} | ${v.exposure.worst_move_bps === null ? '-' : `${v.exposure.worst_move_bps} bps`} |`,
+        `| ${c}${v.off_run ? ' (tabletop beside the run)' : ''}${v.skipped ? ' (not proven on this run)' : ''} | ${v.planned} | ${v.drills} | ${v.passed} | ${c === 'rpc' ? '-' : v.exercised === 0 ? 'not exercised' : v.exercised} | ${v.mid_trade} | ${sec(v.exit_capable_ms.median)} | ${sec(v.exit_capable_ms.worst)} | ${v.exposure.drills} | ${sec(v.exposure.worst_duration_ms)} | ${v.exposure.worst_move_bps === null ? '-' : `${v.exposure.worst_move_bps} bps`} |`,
     ),
   );
   const q = r.ops.quota;

@@ -190,7 +190,7 @@ describe('runner with the stub worker', () => {
     const d = drills.find((x) => x.id === 'restart-1')!;
     expect(d).toMatchObject({ cause: 'reboot', pass: true, recovery: { clock: 'wall' } });
     expect(d.recovery!.exit_capable_ms!).toBeGreaterThanOrEqual(2000);
-    expect(d.notes).toContain('timed on the wall clock across the reboot');
+    expect(d.notes).toContain('timed on the wall clock across the reboot, from the journal');
     expect(existsSync(join(t.evidenceDir, 'pending-reboot.json'))).toBe(false);
   }, 60_000);
 

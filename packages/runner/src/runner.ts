@@ -172,6 +172,14 @@ interface RestartPending {
   expect?: Kept | null;
   /** Host-loss or chain-rebuild tabletop on the qualifying host: the second worker's address and state dir. */
   table?: { healthAddr: string; stateDir: string };
+  /** Rehearsal host loss: the backup was taken at the first trade of the window; the host is lost one sample later. */
+  snapped?: boolean;
+  /** The health reply at the kill was present and valid (pending exits are ids; an open position names its universe). */
+  killValid?: boolean;
+  /** Things the restart had to keep: positions, in-flight entries and pending exits (for host loss, the backup's). */
+  keep?: number;
+  /** Opened after the backup (host loss): reported, not expected back. */
+  afterBackup?: readonly string[];
   reconciledAt?: number;
   ok?: boolean;
 }
@@ -258,11 +266,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   let pending: Pending | null =
     resumed && prev && o.handover !== false ? { kind: 'handover', since: segStart, prevBoot: prev.lastBoot, midTrade: prev.lastInTrade, plannedAt: prev.end ?? segStart } : null;
   // Back from a host reboot drill: the runner died with the host, so this drill is timed on the wall clock.
+  // Kept on disk until the drill is recorded, so a runner crash before then cannot lose it.
   const rebooted: RestartPending | null = readJson(P.reboot, null);
-  if (rebooted) {
-    rmSync(P.reboot, { force: true });
-    pending = rebooted;
-  }
+  if (rebooted) pending = rebooted;
   const done = new Set(outcomes.map((d) => d.id));
   const handovers = outcomes.filter((d) => d.kind === 'handover').length;
 
@@ -320,25 +326,54 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       // Elapsed since the kill on the clock the drill started with.
       const since = (): number => (p.killedMono !== undefined ? performance.now() - p.killedMono : Date.now() - p.killedAt!);
       const clock = p.killedMono !== undefined ? ('monotonic' as const) : ('wall' as const);
+      const hostLossWipe = cause === 'host-loss' && o.hostDrills !== 'tabletop';
       if (p.killedAt === undefined) {
-        if (s.in_trade || t - p.since >= p.drill.windowMs) {
+        const due = s.in_trade || t - p.since >= p.drill.windowMs;
+        if (hostLossWipe && o.backupEveryMs !== undefined && !p.snapped) {
+          // Rehearsal host loss: back up at the first trade of the window and lose the host one sample later, so the
+          // backup always holds something to restore (a host loss with nothing in the backup proves nothing).
+          if (due && h?.reconciled) {
+            snapshotState(o.stateDir, backupDir);
+            backup = { at: t, expect: kept(h) };
+            writeFileSync(P.backup, JSON.stringify(backup));
+            p.snapped = true;
+          }
+        } else if (due && hostLossWipe && backup === null) {
+          record({ ...base, at: t, pass: false, recoveredMs: null, notes: ['no backup to restore'] });
+          pending = null;
+        } else if (due) {
           p.prevBoot = s.boot;
           p.midTrade = s.in_trade;
-          // An entry in flight (an intent, no position yet) is exposed too.
-          p.open = h !== null && (h.open_position != null || h.unresolved_intents.count > 0);
+          p.killValid = killReplyValid(h);
+          // An entry in flight (an intent, no position yet) is exposed too. Without a valid reply nothing is known.
+          p.open = h === null || (h.open_position != null || h.unresolved_intents.count > 0);
           p.trades = h ? exposedTrades(h) : [];
           p.tradesComplete = h !== null && tradeIdsComplete(h);
           p.markBefore = h ? freshMark(h) : null;
-          p.atKill = kept(h);
+          p.atKill = p.killValid ? kept(h) : { pending_exits: [], positions: [] };
           p.expect = cause === 'chain-rebuild' ? null : cause === 'host-loss' ? (backup?.expect ?? { pending_exits: [], positions: [] }) : p.atKill;
+          const inFlight = h?.unresolved_intents.count ?? 0;
+          p.keep =
+            cause === 'host-loss'
+              ? (p.expect?.positions.length ?? 0) + (p.expect?.pending_exits.length ?? 0)
+              : p.atKill.positions.length + p.atKill.pending_exits.length + inFlight;
+          if (cause === 'host-loss' && p.expect) {
+            const inBackup = new Set([...p.expect.positions.map((x) => x.trade), ...p.expect.pending_exits]);
+            p.afterBackup = [...new Set([...p.atKill.positions.map((x) => x.trade), ...p.atKill.pending_exits])].filter((x) => !inBackup.has(x));
+          }
           if ((cause === 'host-loss' || cause === 'chain-rebuild') && o.hostDrills === 'tabletop') {
             // The live worker keeps running: the tabletop worker is the one that "lost its host".
             p.killedAt = Date.now();
             p.killedMono = performance.now();
             p.open = false;
             p.prevBoot = null;
-            p.table = await o.control.tabletop({ restore: cause === 'host-loss', restoreFrom: backupDir });
-            log(`Drill ${p.drill.id} (${cause}): tabletop worker started beside the run.`);
+            try {
+              p.table = await o.control.tabletop({ restore: cause === 'host-loss', restoreFrom: backupDir });
+              log(`Drill ${p.drill.id} (${cause}): tabletop worker started beside the run.`);
+            } catch (e) {
+              record({ ...base, at: t, off_run: true, pass: false, recoveredMs: null, notes: [cause === 'host-loss' ? 'no backup to restore' : 'tabletop did not start', String((e as Error).message).slice(0, 200)] });
+              pending = null;
+            }
           } else {
             p.killedAt = Date.now();
             p.killedMono = performance.now();
@@ -357,39 +392,59 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         }
       }
       // A tabletop drill watches the second worker; every other restart watches the live one.
-      const th = p.table && p.killedAt !== undefined ? await fetchHealth(p.table.healthAddr) : null;
-      const ws: { ready: boolean; boot: string | null; exit_capable: boolean; h: Health | null } = p.table
-        ? { ready: th?.reconciled === true, boot: th?.boot ?? null, exit_capable: th?.exit_capable === true, h: th }
-        : { ready: s.ready, boot: s.boot, exit_capable: s.exit_capable === true, h };
+      const th = pending !== null && p.table && p.killedAt !== undefined ? await fetchHealth(p.table.healthAddr) : null;
+      const ws: { ready: boolean; boot: string | null; exit_capable: boolean } = p.table
+        ? { ready: th?.reconciled === true, boot: th?.boot ?? null, exit_capable: th?.exit_capable === true }
+        : { ready: s.ready, boot: s.boot, exit_capable: s.exit_capable === true };
       const wDir = p.table?.stateDir ?? o.stateDir;
-      if (p.killedAt !== undefined && p.reconciledAt === undefined && ws.ready && ws.boot !== p.prevBoot) {
+      if (pending !== null && p.killedAt !== undefined && p.reconciledAt === undefined && ws.ready && ws.boot !== p.prevBoot) {
         p.reconciledAt = since();
         p.ok = reconciledFirst(wDir, ws.boot!);
       }
       // Recovered means reconciled and able to exit (DECISIONS, Standby), timed for every restart, open position or not.
       if (pending !== null && p.killedAt !== undefined && p.reconciledAt !== undefined && ws.exit_capable && ws.boot !== p.prevBoot) {
         const k = p.killedAt;
-        const exitMs = since();
-        let state = recoveredState(journalLines(wDir), ws.boot!, cause, p.table && cause === 'host-loss' && o.backupEveryMs === undefined ? { pending_exits: [], positions: [] } : (p.expect ?? null), p.atKill ?? { pending_exits: [], positions: [] });
+        const lines = journalLines(wDir);
+        let recovery = { reconciled_ms: p.reconciledAt, exit_capable_ms: since(), clock };
+        const notes: string[] = [];
+        if (clock === 'wall') {
+          // Across a host reboot the runner came back later than the worker: time from the worker's own journal.
+          const fromJournal = journalTimes(lines, ws.boot!, k);
+          if (fromJournal) recovery = { ...recovery, ...fromJournal };
+          notes.push(fromJournal ? 'timed on the wall clock across the reboot, from the journal' : 'timed on the wall clock across the reboot (no exit_capable line: upper bound)');
+        }
+        let state = recoveredState(lines, ws.boot!, cause, p.table && cause === 'host-loss' && o.backupEveryMs === undefined ? { pending_exits: [], positions: [] } : (p.expect ?? null), p.atKill ?? { pending_exits: [], positions: [] });
         if (p.table && cause === 'host-loss' && state.source !== 'state') state = { ...state, state_ok: false, notes: [...state.notes, `restored from the backup but reported source ${String(state.source)}`] };
-        const notes = [p.ok ? 'reconciled before any entry' : 'no successful reconcile before entry', ...state.notes];
+        // Tabletop host loss: what the backup held is what the tabletop worker restored.
+        if (p.table && cause === 'host-loss') {
+          const rl = lines.find((l) => l.boot === ws.boot && l.kind === 'recovered');
+          p.keep = (Array.isArray(rl?.['positions']) ? (rl['positions'] as unknown[]).length : 0) + (Array.isArray(rl?.['pending_exits']) ? (rl['pending_exits'] as unknown[]).length : 0);
+        }
+        if (p.killValid === false) state = { ...state, state_ok: false, notes: [...state.notes, 'the reply at the kill was missing or invalid: what had to be kept is unknown'] };
+        notes.unshift(p.ok ? 'reconciled before any entry' : 'no successful reconcile before entry', ...state.notes);
+        if (p.afterBackup?.length) notes.push(`opened after the backup, not expected back: ${p.afterBackup.join(', ')}`);
+        if (hostLossWipe) notes.push('rehearsal backup copied while the worker ran: a SQLite ledger copied that way can be torn (the host uses SQLite\'s online backup)');
         if (p.table) {
           await o.control.endTabletop();
           notes.push('tabletop beside the qualifying run: the live worker kept running', offsiteNote(o.offsiteBackup));
         }
-        if (clock === 'wall') notes.push('timed on the wall clock across the reboot');
+        const unknown = p.killValid === false;
         const exposure = p.open
-          ? { status: 'measured' as const, duration_ms: exitMs, reconciled_ms: p.reconciledAt, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: h ? freshMark(h) : null, worst_move_bps: moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const }
+          ? {
+              status: unknown ? ('unknown' as const) : ('measured' as const), duration_ms: recovery.exit_capable_ms, reconciled_ms: recovery.reconciled_ms, trades: p.trades ?? [],
+              trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: h ? freshMark(h) : null,
+              worst_move_bps: unknown ? null : moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const,
+            }
           : undefined;
-        record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok, ...(p.table ? { off_run: true } : {}), recoveredMs: p.reconciledAt, recovery: { reconciled_ms: p.reconciledAt, exit_capable_ms: exitMs, clock }, state, ...(exposure ? { exposure } : {}), notes });
+        record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (pending !== null && p.killedAt !== undefined && since() > recoverMs) {
         if (p.table) await o.control.endTabletop();
         const stage = p.reconciledAt === undefined ? 'not ready' : 'not exit capable';
         // No reply at all at the window's end: the exposure is unknown, never assumed.
-        const status = h === null ? ('unknown' as const) : ('unmeasured' as const);
+        const status = h === null || p.killValid === false ? ('unknown' as const) : ('unmeasured' as const);
         record({
-          ...base, ...(p.table ? { off_run: true } : {}), at: p.killedAt, pass: false, recoveredMs: p.reconciledAt ?? null, recovery: { reconciled_ms: p.reconciledAt ?? null, exit_capable_ms: null, clock },
+          ...base, ...(p.table ? { off_run: true } : {}), at: p.killedAt, pass: false, keep: p.keep ?? 0, recoveredMs: p.reconciledAt ?? null, recovery: { reconciled_ms: p.reconciledAt ?? null, exit_capable_ms: null, clock },
           ...(p.open ? { exposure: { status, duration_ms: null, reconciled_ms: p.reconciledAt ?? null, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: null, worst_move_bps: null, move_source: 'marks' as const } } : {}),
           notes: [`${stage} ${recoverMs / 1000} s after the kill${status === 'unknown' ? ' (no health reply)' : ''}`],
         });
@@ -467,6 +522,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   return finish(null);
 
   function record(d: DrillOutcome): void {
+    if (rebooted && d.id === rebooted.drill.id) rmSync(P.reboot, { force: true });
     outcomes.push(d);
     done.add(d.id);
     saveDrills();
@@ -683,4 +739,23 @@ export const recoveredState = (journal: readonly JournalLine[], boot: string, ca
   if (changed.length) notes.push(`universe changed for ${changed.map((x) => x.trade).join(', ')}`);
   if (cause === 'host-loss') notes.push('restored from the latest backup');
   return { source, expected_pending_exits: expect.pending_exits, recovered_pending_exits: recoveredExits, missing, lost: [], state_ok: missing.length === 0, universe_ok: universesNamed && changed.length === 0, notes };
+};
+
+/** The reply at a kill can be trusted: pending exits are ids, and an open position names its universe. */
+export const killReplyValid = (h: Health | null): boolean =>
+  h !== null &&
+  Array.isArray(h.pending_exits) &&
+  h.pending_exits.every((x) => typeof x === 'string' && x !== '') &&
+  (h.open_position === null || (typeof h.open_position.universe === 'string' && h.open_position.universe !== ''));
+
+/** Across a host reboot: reconciled and exit capable from the new boot's own journal lines, ms after the kill. */
+export const journalTimes = (journal: readonly JournalLine[], boot: string, killedAt: number): { reconciled_ms: number; exit_capable_ms: number } | null => {
+  const at = (kind: string, ok?: boolean): number | null => {
+    const l = journal.find((x) => x.boot === boot && x.kind === kind && (ok === undefined || x.ok === ok));
+    const v = l ? Date.parse(l.ts) : Number.NaN;
+    return Number.isNaN(v) ? null : v;
+  };
+  const r = at('reconcile', true);
+  const e = at('exit_capable');
+  return r === null || e === null ? null : { reconciled_ms: r - killedAt, exit_capable_ms: e - killedAt };
 };

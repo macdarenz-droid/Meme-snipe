@@ -251,7 +251,7 @@ export class SystemdControl implements WorkerControl {
   /** The tabletop worker's unit (OPS-1d installs it): `--reconcile-only`, its own state dir and port, the worker's credentials. */
   static readonly TABLETOP_UNIT = 'zeroed-worker-tabletop.service';
   static readonly TABLETOP_DIR = '/var/lib/zeroed-tabletop';
-  static readonly TABLETOP_ADDR = '127.0.0.1:8788';
+  static readonly TABLETOP_ADDR = '127.0.0.1:8789';
 
   async tabletop(o: { readonly restore: boolean }): Promise<Tabletop> {
     const dir = this.tableDir;

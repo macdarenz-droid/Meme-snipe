@@ -133,7 +133,7 @@ describe('helpers', () => {
     writeFileSync(join(dir, 'leftover'), 'x');
     const calls: string[] = [];
     const c = new SystemdControl('zeroed-worker.service', async (f, a) => void calls.push(`${f} ${a.join(' ')}`), dir);
-    expect(await c.tabletop({ restore: true })).toEqual({ healthAddr: '127.0.0.1:8788', stateDir: dir });
+    expect(await c.tabletop({ restore: true })).toEqual({ healthAddr: '127.0.0.1:8789', stateDir: dir });
     expect(readdirSync(dir)).toEqual([]);
     expect(calls[0]).toMatch(/^\/bin\/sh -c .*age -d -i \/etc\/zeroed\/age\/host\.key .*tar -x -C "\$1"/);
     expect(calls[0]!.endsWith(` sh ${dir}`)).toBe(true);

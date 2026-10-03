@@ -136,7 +136,9 @@ export type JournalKind =
    * own files) or 'chain' (no state: rebuilt from wallet balances and pending signatures by address);
    * `pending_exits` (trade ids); `positions` ([{trade, universe}]).
    */
-  | 'recovered';
+  | 'recovered'
+  /** The first moment in a boot the worker is able to exit: times a host reboot from the worker's own journal. */
+  | 'exit_capable';
 
 /** One line of journal.jsonl. Written with a synchronous append per line, so a crash can tear only the last line. */
 export interface JournalLine {

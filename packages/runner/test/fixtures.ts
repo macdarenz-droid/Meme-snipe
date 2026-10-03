@@ -28,7 +28,7 @@ export const fullDrills = (plan: readonly Drill[]): DrillOutcome[] =>
     if (d.kind === 'feed') return { id: d.id, kind: 'feed', plannedAt: 0, at: 0, pass: true, feed: d.feed, notes: [] };
     if (d.kind === 'rpc') return { id: d.id, kind: 'rpc', plannedAt: 0, at: 0, pass: true, recovery: { reconciled_ms: null, exit_capable_ms: 100, clock: 'monotonic' }, notes: [] };
     return {
-      id: d.id, kind: 'restart', cause: d.cause, plannedAt: 0, at: 0, pass: true, midTrade: true, recoveredMs: 1,
+      id: d.id, kind: 'restart', cause: d.cause, plannedAt: 0, at: 0, pass: true, midTrade: true, recoveredMs: 1, keep: 1,
       recovery: { reconciled_ms: 500, exit_capable_ms: 800, clock: 'monotonic' },
       state: { source: d.cause === 'chain-rebuild' ? 'chain' : 'state', expected_pending_exits: [], recovered_pending_exits: [], missing: [], lost: [], state_ok: true, universe_ok: true, notes: [] },
       notes: [],

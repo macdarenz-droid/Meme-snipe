@@ -167,6 +167,7 @@ const stubSimulation = (): Record<string, unknown> => ({
 });
 
 let tradeTimer = 0;
+let exitCapableJournaled = false;
 const tick = (): void => {
   const now = Date.now();
   slot += 1;
@@ -188,6 +189,10 @@ const tick = (): void => {
   } else if (!reasons.length && halted) {
     halted = false;
     journal('resume', { reasons: ['all critical feeds fresh'] });
+  }
+  if (!exitCapableJournaled && now - bootAt >= exitDelayMs && rpcDownUntil <= now) {
+    exitCapableJournaled = true;
+    journal('exit_capable', {});
   }
   if (reconcileOnly) return;
   // Paper trading: open for 60% of each cycle, flat for the rest. Exits run even while entries are halted.
@@ -286,7 +291,8 @@ const health = (): Health => {
     simulation: simulationOn ? 'on' : 'off',
     reconciled: true,
     exit_capable: now - bootAt >= exitDelayMs && rpcDownUntil <= now,
-    pending_exits: pendingExits(),
+    // Test hook: a reply whose pending exits are not ids (the runner must not trust it at a kill).
+    pending_exits: env['ZEROED_STUB_BAD_PENDING'] === '1' ? [''] : pendingExits(),
     quota: quota(now),
     lookups: { counts: lookupCounts },
     entries_halted: halted,

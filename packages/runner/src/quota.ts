@@ -247,7 +247,10 @@ export interface Rejections {
 
 const rate = (n: number, d: number): number => (d === 0 ? 0 : Math.round((n / d) * 10_000) / 10_000);
 
-/** From `decision` lines: action `enter` is not a rejection; every other decision's typed `gate_reasons` are counted. */
+/**
+ * From `decision` lines. Only `reject` and `skip` are rejections; `enter` and the worker's lifecycle steps (prepare,
+ * sign, submit, reconcile, …) are decisions but not rejections. The rate is over all decision lines.
+ */
 export const rejections = (journal: readonly JournalLine[]): Rejections => {
   let decisions = 0;
   let rejected = 0;
@@ -255,7 +258,7 @@ export const rejections = (journal: readonly JournalLine[]): Rejections => {
   for (const l of journal) {
     if (l.kind !== 'decision') continue;
     decisions += 1;
-    if (l['action'] === 'enter') continue;
+    if (l['action'] !== 'reject' && l['action'] !== 'skip') continue;
     rejected += 1;
     const gr = Array.isArray(l['gate_reasons']) ? (l['gate_reasons'] as unknown[]) : [];
     const keys = new Set(
@@ -272,3 +275,4 @@ export const rejections = (journal: readonly JournalLine[]): Rejections => {
     h16_not_covered: { count: h16, rate: rate(h16, decisions) },
   };
 };
+

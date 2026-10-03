@@ -14,7 +14,7 @@ Group=zeroed-worker
 EnvironmentFile=/etc/zeroed/worker.env
 Environment=NODE_ENV=production
 # Its own port and state dir, and no drill endpoint; worker.env cannot point it at the live worker's.
-ExecStart=/usr/bin/env ZEROED_HEALTH_ADDR=127.0.0.1:8788 ZEROED_DRILLS=off WATCHDOG_URL= /usr/local/bin/node /opt/zeroed/current/packages/worker/src/main.ts --reconcile-only
+ExecStart=/usr/bin/env ZEROED_HEALTH_ADDR=127.0.0.1:8789 ZEROED_DRILLS=off WATCHDOG_URL= /usr/local/bin/node /opt/zeroed/current/packages/worker/src/main.ts --reconcile-only
 Restart=no
 TimeoutStopSec=30
 LoadCredentialEncrypted=helius_api_key:/etc/credstore.encrypted/helius_api_key
