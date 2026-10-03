@@ -1,6 +1,5 @@
 import type { BacktestReport } from './contract.ts';
-import { DataError } from './modes.ts';
-import { isDec, isUsd } from '../lib/money.ts';
+import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, re, str, usd, type Check } from './schema.ts';
 
 /**
  * Strict check of a backtest report file (schema version 1, packages/core/src/report).
@@ -9,71 +8,7 @@ import { isDec, isUsd } from '../lib/money.ts';
  * A rejected file never shows partial numbers.
  */
 
-type Check = (v: unknown, path: string) => void;
-
-const fail = (path: string, why: string, kind: DataError['kind'] = 'bad-shape'): never => {
-  throw new DataError(kind, `${path}: ${why}`);
-};
-
-const str: Check = (v, p) => {
-  if (typeof v !== 'string' || v.length === 0 || v.length > 500) fail(p, 'expected text');
-};
-const int: Check = (v, p) => {
-  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) fail(p, 'expected a whole number ≥ 0');
-};
-const bool: Check = (v, p) => {
-  if (typeof v !== 'boolean') fail(p, 'expected true or false');
-};
-const usd: Check = (v, p) => {
-  if (!isUsd(v)) fail(p, 'expected an exact dollar amount as text', 'bad-money');
-};
-const dec: Check = (v, p) => {
-  if (!isDec(v)) fail(p, 'expected an exact decimal as text', 'bad-money');
-};
-const iso: Check = (v, p) => {
-  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/.test(v) || Number.isNaN(Date.parse(v))) fail(p, 'expected a UTC time');
-};
-const day: Check = (v, p) => {
-  if (typeof v !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(v)) fail(p, 'expected a YYYY-MM-DD day');
-};
-const re =
-  (pattern: RegExp, what: string): Check =>
-  (v, p) => {
-    if (typeof v !== 'string' || !pattern.test(v)) fail(p, `expected ${what}`);
-  };
-const oneOf =
-  (...values: readonly unknown[]): Check =>
-  (v, p) => {
-    if (!values.includes(v)) fail(p, `expected one of ${values.join(', ')}`);
-  };
-const nullable =
-  (c: Check): Check =>
-  (v, p) => {
-    if (v !== null) c(v, p);
-  };
-const arr =
-  (c: Check, max = 200_000): Check =>
-  (v, p) => {
-    if (!Array.isArray(v)) return fail(p, 'expected a list');
-    if (v.length > max) fail(p, `more than ${max} items`);
-    v.forEach((x, i) => c(x, `${p}[${i}]`));
-  };
-const obj =
-  (shape: Record<string, Check>): Check =>
-  (v, p) => {
-    if (!v || typeof v !== 'object' || Array.isArray(v)) return fail(p, 'expected an object');
-    const o = v as Record<string, unknown>;
-    for (const k of Object.keys(o)) if (!(k in shape)) fail(`${p}.${k}`, 'unknown field');
-    for (const [k, c] of Object.entries(shape)) {
-      if (!(k in o)) fail(`${p}.${k}`, 'missing');
-      c(o[k], `${p}.${k}`);
-    }
-  };
-
-/** Every record inside the file: a wrong mode is a mixed-mode error, not a shape error. */
-const mode: Check = (v, p) => {
-  if (v !== 'backtest') fail(p, `mode is ${String(v)}, expected backtest`, 'mixed-modes');
-};
+const mode = modeIs('backtest');
 
 const GROUP = oneOf('U1', 'U2', 'U3', 'S0');
 const EXIT = oneOf('price-stop', 'thesis-stop', 'time-stop', 'take-profit', 'trail', 'liquidity-drop', 'flow-stop', 'owner-close', 'blocked');
@@ -169,3 +104,8 @@ export function parseReport(raw: unknown): BacktestReport {
   consistent(r);
   return r;
 }
+
+/** The report endpoint's `data`: a valid report or null (no backtest yet). */
+export const reportData: Check = nullable((v) => {
+  parseReport(v);
+});

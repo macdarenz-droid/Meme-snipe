@@ -44,6 +44,7 @@ const SHOTS = [
   { name: 'decision-detail', hash: '#/dev/fixtures', openDecision: true },
   { name: 'dashboard-backtest', hash: '#/dev/fixtures', mode: 'Backtest' },
   { name: 'dashboard-live', hash: '#/dev/fixtures', mode: 'Live' },
+  { name: 'dashboard-paper', hash: '#/dev/fixtures', mode: 'Paper' },
 ];
 
 const files = [];
@@ -64,7 +65,7 @@ for (const theme of THEMES) {
       await page.waitForSelector('.page-head h1');
       await page.evaluate(() => document.fonts.ready);
       if (s.open) await page.getByRole('button', { name: s.open, exact: true }).first().click();
-      if (s.mode) await page.getByRole('radio', { name: s.mode, exact: true }).click();
+      if (s.mode) await page.getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { name: s.mode, exact: true }).click();
       if (s.openTrade) await page.locator('.row-button').first().click();
       if (s.openDecision) await page.locator('.dash-journal-row').first().click();
       if (s.open || s.openTrade || s.openDecision) await page.waitForSelector('[role="dialog"]');

@@ -3,6 +3,7 @@ import { MIN_TRADES, TIME_ZONE, type BacktestReport, type CalendarMonth, type Da
 import { Sheet } from '../components/Sheet.tsx';
 import { Badge, Empty } from '../components/ui.tsx';
 import { formatUsdExact, toneOf } from '../lib/money.ts';
+import { Boundary } from './Boundary.tsx';
 import { PnlCalendar } from './Calendar.tsx';
 import { CumulativeChart } from './Charts.tsx';
 import { NOT_ENOUGH } from './Sections.tsx';
@@ -239,10 +240,10 @@ export function BacktestReportView({ report }: { report: BacktestReport }) {
 
       <Sheet open={day !== null} title={shownDay ? `${GROUP_LABEL[group]} · ${shownDay.date}` : ''} onClose={close}>
         {shownDay && (
-          <>
+          <Boundary key={shownDay.date}>
             <p className={`day-net num ${toneOf(shownDay.netUsd)}`}>{formatUsdExact(shownDay.netUsd, true)}</p>
             <TradeTable trades={trades.filter((t) => shownDay.tradeIds.includes(t.id))} />
-          </>
+          </Boundary>
         )}
       </Sheet>
     </div>

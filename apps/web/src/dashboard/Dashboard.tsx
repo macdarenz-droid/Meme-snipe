@@ -1,11 +1,14 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import type { DashboardApi, DayRecord, DecisionRecord, Mode, TradeRecord } from '../api/contract.ts';
 import { hasSample } from '../api/modes.ts';
+import { reportData } from '../api/reportSchema.ts';
+import { schemaFor } from '../api/schemas.ts';
 import { useEndpoint } from '../api/useEndpoint.ts';
 import { Sheet } from '../components/Sheet.tsx';
 import { Empty, Section } from '../components/ui.tsx';
 import { formatUsdExact, toneOf } from '../lib/money.ts';
 import { BacktestReportView } from './BacktestReport.tsx';
+import { Boundary } from './Boundary.tsx';
 import { PnlCalendar } from './Calendar.tsx';
 import { CostsChart, CumulativeChart, DailyPnlChart, FunnelChart, RDistribution } from './Charts.tsx';
 import { DecisionDetail, Funnel, Journal, NOT_ENOUGH, OpenPosition, RiskList, Stats, StatusFlags } from './Sections.tsx';
@@ -41,15 +44,15 @@ export function Dashboard({ api, mode, months, session }: DashboardProps) {
   const month = monthByMode[mode] ?? melMonth();
   const setMonth = (m: string) => setMonthByMode((s) => ({ ...s, [mode]: m }));
 
-  const status = useEndpoint(mode, 'status', () => api.status(mode));
-  const funnel = useEndpoint(mode, 'funnel', () => api.funnel(mode));
-  const decisions = useEndpoint(mode, 'decisions', () => api.decisions(mode));
-  const position = useEndpoint(mode, 'position', () => api.position(mode));
-  const calendar = useEndpoint(mode, `calendar/${month}`, () => api.calendar(mode, month));
-  const trades = useEndpoint(mode, 'trades', () => api.trades(mode));
-  const charts = useEndpoint(mode, 'charts', () => api.charts(mode));
-  const stats = useEndpoint(mode, 'stats', () => api.stats(mode));
-  const report = useEndpoint('backtest', 'report', () => api.backtestReport());
+  const status = useEndpoint(mode, 'status', schemaFor('status', mode), () => api.status(mode));
+  const funnel = useEndpoint(mode, 'funnel', schemaFor('funnel', mode), () => api.funnel(mode));
+  const decisions = useEndpoint(mode, 'decisions', schemaFor('decisions', mode), () => api.decisions(mode));
+  const position = useEndpoint(mode, 'position', schemaFor('position', mode), () => api.position(mode));
+  const calendar = useEndpoint(mode, `calendar/${month}`, schemaFor('calendar', mode), () => api.calendar(mode, month));
+  const trades = useEndpoint(mode, 'trades', schemaFor('trades', mode), () => api.trades(mode));
+  const charts = useEndpoint(mode, 'charts', schemaFor('charts', mode), () => api.charts(mode));
+  const stats = useEndpoint(mode, 'stats', schemaFor('stats', mode), () => api.stats(mode));
+  const report = useEndpoint('backtest', 'report', reportData, () => api.backtestReport());
 
   const [open, setOpen] = useState<Open>(null);
   const close = useCallback(() => setOpen(null), []);
@@ -60,9 +63,11 @@ export function Dashboard({ api, mode, months, session }: DashboardProps) {
   const tradeById = new Map(trades.state === 'ready' ? trades.data.map((t) => [t.id, t]) : []);
 
   let title = '';
+  let sheetKey = '';
   let body: ReactNode = null;
   if (shown?.kind === 'day') {
     title = titleOfDay(shown.day.date);
+    sheetKey = `day:${shown.day.date}`;
     const list = shown.day.tradeIds.map((id) => tradeById.get(id)).filter((t): t is TradeRecord => !!t);
     body = (
       <>
@@ -72,9 +77,11 @@ export function Dashboard({ api, mode, months, session }: DashboardProps) {
     );
   } else if (shown?.kind === 'trade') {
     title = `${shown.trade.symbol} trade`;
+    sheetKey = `trade:${shown.trade.id}`;
     body = <TradeDetail trade={shown.trade} />;
   } else if (shown?.kind === 'decision') {
     title = `${shown.decision.symbol} decision`;
+    sheetKey = `decision:${shown.decision.id}`;
     body = <DecisionDetail decision={shown.decision} />;
   }
 
@@ -186,7 +193,7 @@ export function Dashboard({ api, mode, months, session }: DashboardProps) {
           ) : undefined
         }
       >
-        {body}
+        <Boundary key={sheetKey}>{body}</Boundary>
       </Sheet>
     </>
   );

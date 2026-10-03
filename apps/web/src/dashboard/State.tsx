@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { Loaded } from '../api/useEndpoint.ts';
 import { Empty } from '../components/ui.tsx';
+import { Boundary } from './Boundary.tsx';
 import { ago } from './time.ts';
 
 const ERROR_TEXT: Record<Extract<Loaded<unknown>, { state: 'error' }>['reason'], { title: string; detail?: string }> = {
@@ -46,10 +47,11 @@ export function Load<T>({ loaded, children, empty, isEmpty, rows }: { loaded: Lo
   if (loaded.state === 'loading') return <Loading {...(rows ? { rows } : {})} />;
   if (loaded.state === 'error') return loaded.reason === 'offline' && empty ? <>{empty}</> : <ErrorState reason={loaded.reason} />;
   const body = isEmpty?.(loaded.data) ? empty : children(loaded.data);
+  // New data remounts the boundary, so a section recovers once the data is good again.
   return (
-    <>
+    <Boundary key={loaded.asOf}>
       {loaded.stale && <StaleNote asOf={loaded.asOf} />}
       {body}
-    </>
+    </Boundary>
   );
 }

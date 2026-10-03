@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { BacktestReport } from '../src/api/contract.ts';
 import { DataError } from '../src/api/modes.ts';
 import { loadReport, REPORT_URL, type Getter } from '../src/api/reportLoader.ts';
-import { parseReport } from '../src/api/reportSchema.ts';
+import { parseReport, reportData } from '../src/api/reportSchema.ts';
 import { settle } from '../src/api/useEndpoint.ts';
 import { fixtureReport } from '../src/dev/dashboardFixtures.ts';
 
@@ -13,9 +13,9 @@ const NOW = Date.parse('2026-10-03T00:00:00Z');
 
 async function stateOf(get: Getter) {
   try {
-    return settle('backtest', { ok: true, value: await loadReport(REPORT_URL, get) }, NOW);
+    return settle('backtest', reportData, { ok: true, value: await loadReport(REPORT_URL, get) }, NOW);
   } catch (error) {
-    return settle('backtest', { ok: false, error }, NOW);
+    return settle('backtest', reportData, { ok: false, error }, NOW);
   }
 }
 

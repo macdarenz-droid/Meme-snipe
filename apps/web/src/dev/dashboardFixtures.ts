@@ -30,10 +30,10 @@ import { addUsd, cmpUsd, fromMicro, subUsd, toMicro } from '../lib/money.ts';
 
 const ENTRY = 500_000_000n; // $500 in micro-dollars
 const MAX_ENTRY = 1_250_000_000n;
-const FAKE_MINT = (n: number) => `FAKEmint${String(n).padStart(4, '0')}xxxxxxxxxxxxxxxxxxxxxxxxxxxx`.slice(0, 44);
-/** A valid base58 string of 44 characters (no 0, O, I or l), for the strictly checked report file. */
-const FAKE_MINT_B58 = (n: number) => `FAKEmint${String(n).padStart(4, '1').replace(/0/g, '9')}${'x'.repeat(32)}`;
-const FAKE_SIG = (n: number) => `FAKEsig${String(n).padStart(5, '0')}${'x'.repeat(76)}`;
+/** Fake but valid base58 (no 0, O, I or l): the API schemas check addresses strictly. */
+const b58digits = (n: number, width: number) => String(n).padStart(width, '1').replace(/0/g, '9');
+const FAKE_MINT = (n: number) => `FAKEmint${b58digits(n, 4)}${'x'.repeat(32)}`;
+const FAKE_SIG = (n: number) => `FAKEsig${b58digits(n, 5)}${'x'.repeat(76)}`;
 
 function rng(seed: number) {
   let s = seed;
@@ -53,14 +53,17 @@ const hundredths = (v: bigint) => {
   return `${neg ? '-' : ''}${a / 100n}.${(a % 100n).toString().padStart(2, '0')}`;
 };
 
-const PASS_CHECKS: CheckResult[] = [
-  { check: 'H8', result: 'pass', value: '84.2 SOL', limit: '≥ 5 SOL' },
-  { check: 'H12', result: 'pass', value: '6.1%', limit: '≤ 10%' },
-  { check: 'H13', result: 'pass', value: '8.4%', limit: '≤ 15%' },
-  { check: 'H15', result: 'pass', value: '2.3% round trip', limit: '≤ 4.0%' },
-  { check: 'cost', result: 'pass', value: '3.1%', limit: '≤ 5%' },
-  { check: 'size', result: 'pass', value: 'q_min', limit: '≥ q_min' },
-];
+const passChecks = (mode: Mode): CheckResult[] =>
+  (
+    [
+      ['H8', '84.2 SOL', '≥ 5 SOL'],
+      ['H12', '6.1%', '≤ 10%'],
+      ['H13', '8.4%', '≤ 15%'],
+      ['H15', '2.3% round trip', '≤ 4.0%'],
+      ['cost', '3.1%', '≤ 5%'],
+      ['size', 'q_min', '≥ q_min'],
+    ] as const
+  ).map(([check, value, limit]) => ({ mode, check, result: 'pass', value, limit }));
 
 const WIN_EXITS: ExitReason[] = ['take-profit', 'trail', 'time-stop'];
 const LOSS_EXITS: ExitReason[] = ['price-stop', 'thesis-stop', 'liquidity-drop', 'time-stop'];
@@ -118,7 +121,7 @@ function makeTrades(mode: Mode, count: number, start: number, spanDays: number, 
       maeR: hundredths(realized < 0n ? realized - 10n : -30n),
       exitReason: (net > 0n ? WIN_EXITS[i % 3] : LOSS_EXITS[i % 4]) ?? 'price-stop',
       reasons: ['Pullback held above the migration price with net SOL inflow over 5 minutes.', 'Round-trip quote and costs inside limits at this size.'],
-      checks: PASS_CHECKS,
+      checks: passChecks(mode),
       fills: (['buy', 'sell'] as const).map((side, k) => {
         const quoted = side === 'buy' ? size : size + gross;
         return {
@@ -161,7 +164,7 @@ function daysOf(mode: Mode): DayRecord[] {
 function charts(mode: Mode): ChartsView {
   const ts = [...TRADES[mode]].sort((a, b) => a.closedAt.localeCompare(b.closedAt));
   let cum = '0';
-  const cumulative = ts.map((t) => ({ at: t.closedAt, cumNetUsd: (cum = addUsd(cum, t.netUsd)) }));
+  const cumulative = ts.map((t) => ({ mode, at: t.closedAt, cumNetUsd: (cum = addUsd(cum, t.netUsd)) }));
   const days = daysOf(mode);
   const edges = [-2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5, 3];
   const rBuckets = edges.slice(0, -1).map((from, i) => {
@@ -170,20 +173,20 @@ function charts(mode: Mode): ChartsView {
       const r = Number(t.realizedR);
       return (i === 0 || r >= from) && (i === edges.length - 2 || r < to);
     }).length;
-    return { fromR: from.toFixed(1), toR: to.toFixed(1), count };
+    return { mode, fromR: from.toFixed(1), toR: to.toFixed(1), count };
   });
-  const costsDaily = days.map((d) => ({ date: d.date, totalUsd: addUsd('0', ...ts.filter((t) => d.tradeIds.includes(t.id)).map((t) => t.costs.totalUsd)) }));
+  const costsDaily = days.map((d) => ({ mode, date: d.date, totalUsd: addUsd('0', ...ts.filter((t) => d.tradeIds.includes(t.id)).map((t) => t.costs.totalUsd)) }));
   const kinds = ['venueFeeUsd', 'creatorFeeUsd', 'priorityFeeUsd', 'tipUsd', 'networkFeeUsd', 'slippageUsd'] as const;
   return {
     mode,
     cumulative,
-    daily: days.map((d) => ({ date: d.date, netUsd: d.netUsd })),
+    daily: days.map((d) => ({ mode, date: d.date, netUsd: d.netUsd })),
     rBuckets: ts.length ? rBuckets : [],
     costsDaily,
     costsByKind: ts.length
       ? [
-          ...kinds.map((kind) => ({ kind, usd: addUsd('0', ...ts.map((t) => t.costs[kind])) })),
-          { kind: 'rentKeptUsd' as const, usd: addUsd('0', ...ts.map((t) => subUsd(t.costs.rentPaidUsd, t.costs.rentReturnedUsd))) },
+          ...kinds.map((kind) => ({ mode, kind, amountUsd: addUsd('0', ...ts.map((t) => t.costs[kind])) })),
+          { mode, kind: 'rentKeptUsd' as const, amountUsd: addUsd('0', ...ts.map((t) => subUsd(t.costs.rentPaidUsd, t.costs.rentReturnedUsd))) },
         ]
       : [],
   };
@@ -252,13 +255,13 @@ function funnel(mode: Mode): FunnelView {
     from: new Date(mode === 'backtest' ? BACKTEST_START : PAPER_START).toISOString(),
     to: new Date((mode === 'backtest' ? BACKTEST_START : PAPER_START) + 26 * 86_400_000).toISOString(),
     stages: [
-      { stage: 'seen', count: seen },
-      { stage: 'hard-rejects', count: seen - hard },
-      { stage: 'costs', count: seen - hard - cost },
-      { stage: 'risk', count: entered },
-      { stage: 'entered', count: entered },
+      { mode, stage: 'seen', count: seen },
+      { mode, stage: 'hard-rejects', count: seen - hard },
+      { mode, stage: 'costs', count: seen - hard - cost },
+      { mode, stage: 'risk', count: entered },
+      { mode, stage: 'entered', count: entered },
     ],
-    rejects,
+    rejects: rejects.map((r) => ({ mode, ...r })),
     perDay: days.map((d, i) => ({ mode, date: d.date, seen: Math.round(seen / Math.max(days.length, 1)) + ((i * 37) % 23) - 11, entered: d.trades })),
   };
 }
@@ -286,7 +289,7 @@ function decisions(mode: Mode): DecisionRecord[] {
     symbol: `SKIP${i + 1}`,
     venue: 'pumpswap',
     outcome: r.check === 'cost' || r.check === 'risk' ? 'no-trade' : 'rejected',
-    checks: [{ check: r.check, result: r.check === 'H16' ? 'unknown' : 'fail', value: VALUES[r.check] ?? null, limit: LIMITS[r.check] ?? null }, ...PASS_CHECKS.filter((c) => c.check !== r.check).slice(0, 2)],
+    checks: [{ mode, check: r.check, result: r.check === 'H16' ? 'unknown' : 'fail', value: VALUES[r.check] ?? null, limit: LIMITS[r.check] ?? null }, ...passChecks(mode).filter((c) => c.check !== r.check).slice(0, 2)],
     ruleScore: null,
     reasons: [],
     tradeId: null,
@@ -310,10 +313,10 @@ const POSITION: PositionRecord = {
   unrealizedUsd: '6.218804',
   costsSoFarUsd: '15.165413',
   exitRules: [
-    { rule: 'price-stop', trigger: 'Value ≤ $425.00', state: 'armed' },
-    { rule: 'take-profit', trigger: 'Half at +1.5R', state: 'armed' },
-    { rule: 'time-stop', trigger: 'Below +0.5R at 20 min', state: 'armed' },
-    { rule: 'thesis-stop', trigger: 'Liquidity −30% or dev sells > 2%', state: 'armed' },
+    { mode: 'paper', rule: 'price-stop', trigger: 'Value ≤ $425.00', state: 'armed' },
+    { mode: 'paper', rule: 'take-profit', trigger: 'Half at +1.5R', state: 'armed' },
+    { mode: 'paper', rule: 'time-stop', trigger: 'Below +0.5R at 20 min', state: 'armed' },
+    { mode: 'paper', rule: 'thesis-stop', trigger: 'Liquidity −30% or dev sells > 2%', state: 'armed' },
   ],
   exit: 'none',
   worker: 'watching',
@@ -358,7 +361,7 @@ const reportTrade = (t: TradeRecord, group: ReportGroup): ReportTrade => ({
   mode: 'backtest',
   id: t.id,
   group,
-  mint: FAKE_MINT_B58(Number(t.id.split('-').pop())),
+  mint: FAKE_MINT(Number(t.id.split('-').pop())),
   symbol: t.symbol,
   venue: t.venue,
   openedAt: t.openedAt,
@@ -437,9 +440,9 @@ const STATUS: Record<Mode, WorkerStatus> = {
     connected: true,
     flags: ['waiting-for-evidence'],
     risk: [
-      { kind: 'open-exposure', usedUsd: '500', limitUsd: '1250' },
-      { kind: 'daily-loss', usedUsd: '412.5', limitUsd: '500' },
-      { kind: 'weekly-loss', usedUsd: '640', limitUsd: '2000' },
+      { mode: 'paper', kind: 'open-exposure', usedUsd: '500', limitUsd: '1250' },
+      { mode: 'paper', kind: 'daily-loss', usedUsd: '412.5', limitUsd: '500' },
+      { mode: 'paper', kind: 'weekly-loss', usedUsd: '640', limitUsd: '2000' },
     ],
   },
   live: {
@@ -447,8 +450,8 @@ const STATUS: Record<Mode, WorkerStatus> = {
     connected: true,
     flags: [],
     risk: [
-      { kind: 'open-exposure', usedUsd: '0', limitUsd: null },
-      { kind: 'daily-loss', usedUsd: '0', limitUsd: null },
+      { mode: 'live', kind: 'open-exposure', usedUsd: '0', limitUsd: null },
+      { mode: 'live', kind: 'daily-loss', usedUsd: '0', limitUsd: null },
     ],
   },
 };

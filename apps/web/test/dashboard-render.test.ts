@@ -1,9 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { CalendarMonth, StatsView } from '../src/api/contract.ts';
 import { DataError } from '../src/api/modes.ts';
 import { BacktestReportView, groupMonth } from '../src/dashboard/BacktestReport.tsx';
+import { Boundary } from '../src/dashboard/Boundary.tsx';
 import { monthTotals, PnlCalendar } from '../src/dashboard/Calendar.tsx';
 import { Dashboard } from '../src/dashboard/Dashboard.tsx';
 import { headline, Journal, OpenPosition, Stats, StatusFlags } from '../src/dashboard/Sections.tsx';
@@ -140,6 +142,28 @@ describe('backtest report', () => {
     expect(cal.mode).toBe('backtest');
     expect(cal.days.length).toBeGreaterThan(0);
     expect(cal.days.reduce((s, d) => s + d.tradeIds.length, 0)).toBe(cal.days.reduce((s, d) => s + d.trades, 0));
+  });
+});
+
+describe('section error boundary', () => {
+  it('turns a render error into the section error state', () => {
+    expect(Boundary.getDerivedStateFromError()).toEqual({ failed: true });
+    const b = new Boundary({ children: h('p', null, 'fine') });
+    expect(text(html(h('div', null, b.render())))).toBe(' fine ');
+    b.state = Boundary.getDerivedStateFromError();
+    const out = text(html(h('div', null, b.render())));
+    expect(out).toContain('Data failed checks');
+    expect(out).not.toContain('fine');
+  });
+
+  it('wraps every loaded section and every sheet', () => {
+    const src = (f: string) => readFileSync(new URL(`../src/dashboard/${f}`, import.meta.url), 'utf8');
+    expect(src('State.tsx')).toMatch(/<Boundary key=\{loaded\.asOf\}>/);
+    expect(src('Dashboard.tsx')).toMatch(/<Boundary key=\{sheetKey\}>\{body\}<\/Boundary>/);
+    expect(src('BacktestReport.tsx')).toMatch(/<Boundary key=\{shownDay\.date\}>/);
+    // Every section body on the dashboard goes through Load.
+    const dash = src('Dashboard.tsx');
+    expect((dash.match(/<Section /g) ?? []).length).toBe((dash.match(/<Section [^>]*>\s*(<Load|\{backtest \?)/g) ?? []).length);
   });
 });
 

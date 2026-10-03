@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { httpApi, offlineApi, OfflineError } from '../src/api/client.ts';
 import { MIN_TRADES, MODES, PATHS, type DashboardApi, type Mode, type StatsView } from '../src/api/contract.ts';
 import { checkEnvelope, DataError, hasSample, onlyMode, requiredTrades, totalUsd, totalWithin } from '../src/api/modes.ts';
+import { reportData } from '../src/api/reportSchema.ts';
+import { schemaFor, type Endpoint } from '../src/api/schemas.ts';
 import { isStale, settle } from '../src/api/useEndpoint.ts';
 import { FIXTURE_MONTH, fixtureApi } from '../src/dev/dashboardFixtures.ts';
 
 type Call = (api: DashboardApi, m: Mode) => Promise<unknown>;
-const CALLS: Record<string, Call> = {
+const CALLS: Record<Endpoint, Call> = {
   status: (a, m) => a.status(m),
   funnel: (a, m) => a.funnel(m),
   decisions: (a, m) => a.decisions(m),
@@ -23,12 +25,12 @@ describe('worker API contract', () => {
   it('every fixture response passes the contract check for its mode', async () => {
     const api = fixtureApi();
     for (const m of MODES) {
-      for (const [name, call] of Object.entries(CALLS)) {
-        const env = checkEnvelope(await call(api, m), m);
+      for (const [name, call] of Object.entries(CALLS) as [Endpoint, Call][]) {
+        const env = checkEnvelope(await call(api, m), m, schemaFor(name, m));
         expect(env.mode, `${m} ${name}`).toBe(m);
       }
     }
-    expect(checkEnvelope(await api.backtestReport(), 'backtest').mode).toBe('backtest');
+    expect(checkEnvelope(await api.backtestReport(), 'backtest', reportData).mode).toBe('backtest');
   });
 
   it('fixture money is decimal strings, never JSON numbers', async () => {
@@ -39,23 +41,73 @@ describe('worker API contract', () => {
 
   it('rejects a response whose envelope or any nested record is in another mode', async () => {
     const leaky = fixtureApi({ leakMode: 'live' });
-    for (const [name, call] of Object.entries(CALLS)) {
+    for (const [name, call] of Object.entries(CALLS) as [Endpoint, Call][]) {
       if (name === 'position') continue;
       const raw = await call(leaky, 'paper');
-      expect(() => checkEnvelope(raw, 'paper'), name).toThrow(DataError);
-      expect(settle('paper', { ok: true, value: raw }, NOW), name).toEqual({ state: 'error', reason: 'mixed-modes' });
+      expect(() => checkEnvelope(raw, 'paper', schemaFor(name, 'paper')), name).toThrow(DataError);
+      expect(settle('paper', schemaFor(name, 'paper'), { ok: true, value: raw }, NOW), name).toEqual({ state: 'error', reason: 'mixed-modes' });
     }
-    expect(() => checkEnvelope({ mode: 'live', asOf: '2026-10-03T00:00:00Z', data: [] }, 'paper')).toThrow(/mixed|expected paper/);
+    expect(() => checkEnvelope({ mode: 'live', asOf: '2026-10-03T00:00:00Z', data: [] }, 'paper', schemaFor('trades', 'paper'))).toThrow(/expected paper/);
   });
 
-  it('rejects money sent as a number or with more than 6 places, but allows long prices', () => {
+  // Review of 236cee3: each of these passed the old name-based check and then crashed a screen.
+  describe('review probes', () => {
+    const at = '2026-10-03T00:00:00Z';
+    const state = (endpoint: Endpoint, data: unknown) => settle('paper', schemaFor(endpoint, 'paper'), { ok: true, value: { mode: 'paper', asOf: at, data } }, NOW);
+    const paper = async <T>(f: (api: DashboardApi) => Promise<{ data: T }>) => structuredClone((await f(fixtureApi())).data);
+
+    it('a calendar day with no mode is refused', async () => {
+      const cal = await paper((a) => a.calendar('paper', FIXTURE_MONTH.paper));
+      delete (cal.days[0] as unknown as Record<string, unknown>)['mode'];
+      expect(state('calendar', cal)).toEqual({ state: 'error', reason: 'bad-data' });
+    });
+
+    it('a record with no mode is refused even where no schema reaches', () => {
+      expect(() => checkEnvelope({ mode: 'paper', asOf: at, data: [{ x: 1 }] }, 'paper', () => {})).toThrow(/expected paper/);
+    });
+
+    it('cost money that is not an exact string is refused', async () => {
+      const charts = await paper((a) => a.charts('paper'));
+      (charts.costsByKind[0] as unknown as Record<string, unknown>)['amountUsd'] = 12.5;
+      expect(state('charts', charts)).toEqual({ state: 'error', reason: 'bad-data' });
+      const renamed = await paper((a) => a.charts('paper'));
+      (renamed.costsByKind[0] as unknown as Record<string, unknown>)['usd'] = 'abc';
+      expect(state('charts', renamed)).toEqual({ state: 'error', reason: 'bad-data' });
+    });
+
+    it('a malformed decimal is refused (R, win rate, bucket edges, prices)', async () => {
+      const trades = await paper((a) => a.trades('paper'));
+      (trades[0] as unknown as Record<string, unknown>)['realizedR'] = 'abc';
+      expect(state('trades', trades)).toEqual({ state: 'error', reason: 'bad-data' });
+      const stats = await paper((a) => a.stats('paper'));
+      (stats as unknown as Record<string, unknown>)['winRate'] = 0.41;
+      expect(state('stats', stats)).toEqual({ state: 'error', reason: 'bad-data' });
+      const charts = await paper((a) => a.charts('paper'));
+      (charts.rBuckets[0] as unknown as Record<string, unknown>)['fromR'] = '1,5';
+      expect(state('charts', charts)).toEqual({ state: 'error', reason: 'bad-data' });
+      const pos = await paper((a) => a.position('paper'));
+      (pos as unknown as Record<string, unknown>)['entryPriceUsd'] = 4e-5;
+      expect(state('position', pos)).toEqual({ state: 'error', reason: 'bad-data' });
+    });
+
+    it('unknown and missing fields are refused', async () => {
+      const stats = await paper((a) => a.stats('paper'));
+      expect(state('stats', { ...stats, extra: '1' })).toEqual({ state: 'error', reason: 'bad-data' });
+      const { netUsd: _drop, ...noNet } = stats;
+      expect(state('stats', noNet)).toEqual({ state: 'error', reason: 'bad-data' });
+      expect(() => checkEnvelope({ mode: 'paper', asOf: at, data: stats, extra: 1 }, 'paper', schemaFor('stats', 'paper'))).toThrow(/unknown field/);
+    });
+  });
+
+  it('rejects money sent as a number or with more than 6 places', () => {
     const env = (data: unknown) => ({ mode: 'paper', asOf: '2026-10-03T00:00:00Z', data });
-    expect(() => checkEnvelope(env({ netUsd: 1.5 }), 'paper')).toThrow(/exact dollar/);
-    expect(() => checkEnvelope(env({ netUsd: '1.0000001' }), 'paper')).toThrow(/exact dollar/);
-    expect(() => checkEnvelope(env({ entryPriceUsd: 0.00004 }), 'paper')).toThrow(/exact price/);
-    expect(checkEnvelope(env({ entryPriceUsd: '0.0000412300123', netUsd: null }), 'paper').data).toBeTruthy();
-    expect(settle('paper', { ok: true, value: env({ netUsd: 1.5 }) }, NOW)).toEqual({ state: 'error', reason: 'bad-data' });
-    expect(() => checkEnvelope({ mode: 'paper', data: [] }, 'paper')).toThrow(/time/);
+    const stats = schemaFor('stats', 'paper');
+    const base = { mode: 'paper', trades: 0, requiredTrades: null, netUsd: '0', maxDrawdownUsd: '0', winRate: null, meanNetUsd: null, meanR: null, ci95: null };
+    expect(checkEnvelope(env(base), 'paper', stats).data).toEqual(base);
+    expect(() => checkEnvelope(env({ ...base, netUsd: 1.5 }), 'paper', stats)).toThrow(/exact dollar/);
+    expect(() => checkEnvelope(env({ ...base, netUsd: '1.0000001' }), 'paper', stats)).toThrow(/exact dollar/);
+    expect(settle('paper', stats, { ok: true, value: env({ ...base, netUsd: 1.5 }) }, NOW)).toEqual({ state: 'error', reason: 'bad-data' });
+    expect(() => checkEnvelope({ mode: 'paper', data: base }, 'paper', stats)).toThrow(/asOf/);
   });
 
   it('totals refuse records from another mode', () => {
@@ -90,8 +142,9 @@ describe('worker API contract', () => {
   });
 
   it('maps failures to screen states', () => {
-    expect(settle('paper', { ok: false, error: new OfflineError('x') }, NOW)).toEqual({ state: 'error', reason: 'offline' });
-    expect(settle('paper', { ok: false, error: new Error('500') }, NOW)).toEqual({ state: 'error', reason: 'failed' });
+    const s = schemaFor('stats', 'paper');
+    expect(settle('paper', s, { ok: false, error: new OfflineError('x') }, NOW)).toEqual({ state: 'error', reason: 'offline' });
+    expect(settle('paper', s, { ok: false, error: new Error('500') }, NOW)).toEqual({ state: 'error', reason: 'failed' });
   });
 
   it('offline API fails every call as offline', async () => {

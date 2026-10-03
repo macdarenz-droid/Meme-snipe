@@ -7,9 +7,12 @@
  * - Money is a decimal string in US dollars with at most 6 places (`Usd`),
  *   never a JSON number. Prices (fields named `priceUsd` or `...PriceUsd`) and
  *   ratios are decimal strings of any precision (`Dec`).
- * - Every response and every record carries `mode`. A response holds one
- *   mode only; the client rejects any record whose mode differs from the one
- *   it asked for (src/api/modes.ts), so totals never mix modes.
+ * - Every response, and every object inside a list, carries `mode`. A response
+ *   holds one mode only; the client rejects a response with any record whose
+ *   mode is missing or differs from the one it asked for (src/api/modes.ts),
+ *   so totals never mix modes.
+ * - Each endpoint's data has a strict schema (src/api/schemas.ts): unknown,
+ *   missing or mistyped fields reject the whole response.
  * - Days are Melbourne days (Australia/Melbourne), as YYYY-MM-DD.
  * - Times are ISO 8601 UTC strings.
  */
@@ -53,7 +56,7 @@ export type Gate = 'H1' | 'H2' | 'H3' | 'H4' | 'H5' | 'H6' | 'H7' | 'H8' | 'H9' 
 /** Checks after the hard rejects: cost gate (§5.3), sizing and risk (§8), regime (§6.4). */
 export type Check = Gate | 'cost' | 'size' | 'risk' | 'regime';
 
-export interface CheckResult {
+export interface CheckResult extends Moded {
   check: Check;
   result: 'pass' | 'fail' | 'unknown';
   /** Measured value and limit as the worker printed them, e.g. "12.4%" and "≤ 10%". */
@@ -78,7 +81,7 @@ export const STATUS_FLAGS = [
 ] as const;
 export type StatusFlag = (typeof STATUS_FLAGS)[number];
 
-export interface RiskMeter {
+export interface RiskMeter extends Moded {
   kind: 'open-exposure' | 'daily-loss' | 'weekly-loss' | 'session-loss';
   usedUsd: Usd;
   /** Null until the owner sets the limit. */
@@ -105,9 +108,9 @@ export interface FunnelView extends Moded {
   from: Iso;
   to: Iso;
   /** Candidates left after each stage, in order. */
-  stages: { stage: FunnelStage; count: number }[];
+  stages: (Moded & { stage: FunnelStage; count: number })[];
   /** Rejections by the first check that failed. */
-  rejects: { check: Check; count: number }[];
+  rejects: (Moded & { check: Check; count: number })[];
   perDay: FunnelDay[];
 }
 
@@ -142,7 +145,7 @@ export interface PositionRecord extends Moded {
   liquidationValueUsd: Usd;
   unrealizedUsd: Usd;
   costsSoFarUsd: Usd;
-  exitRules: { rule: ExitRule; trigger: string; state: 'armed' | 'triggered' }[];
+  exitRules: (Moded & { rule: ExitRule; trigger: string; state: 'armed' | 'triggered' })[];
   exit: 'none' | 'pending' | 'blocked';
   worker: 'watching' | 'exiting' | 'reconciling';
 }
@@ -218,13 +221,13 @@ export interface TradeRecord extends Moded {
 
 export interface ChartsView extends Moded {
   /** Cumulative net P&L after each closed trade. */
-  cumulative: { at: Iso; cumNetUsd: Usd }[];
-  daily: { date: Day; netUsd: Usd }[];
+  cumulative: (Moded & { at: Iso; cumNetUsd: Usd })[];
+  daily: (Moded & { date: Day; netUsd: Usd })[];
   /** Realized R per trade, bucketed; counts are trades. */
-  rBuckets: { fromR: Dec; toR: Dec; count: number }[];
-  costsDaily: { date: Day; totalUsd: Usd }[];
+  rBuckets: (Moded & { fromR: Dec; toR: Dec; count: number })[];
+  costsDaily: (Moded & { date: Day; totalUsd: Usd })[];
   /** Costs by type over the whole view; rent counts only what was not returned. They add up to the total cost. */
-  costsByKind: { kind: CostKind; usd: Usd }[];
+  costsByKind: (Moded & { kind: CostKind; amountUsd: Usd })[];
 }
 
 // Statistics -----------------------------------------------------------

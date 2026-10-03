@@ -2,7 +2,9 @@ import { PATHS, type DashboardApi, type Envelope, type Mode } from './contract.t
 import { PREVIEW } from '../lib/preview.ts';
 import { checkEnvelope } from './modes.ts';
 import { loadReport } from './reportLoader.ts';
-import { parseReport } from './reportSchema.ts';
+import { reportData } from './reportSchema.ts';
+import type { Check } from './schema.ts';
+import { schemaFor } from './schemas.ts';
 
 export class OfflineError extends Error {}
 
@@ -23,7 +25,7 @@ export const offlineApi: DashboardApi = {
 
 /** Reads the worker over HTTP; every response passes checkEnvelope before use. */
 export function httpApi(base: string, fetcher: typeof fetch = fetch): DashboardApi {
-  async function get<T>(path: string, mode: Mode): Promise<Envelope<T>> {
+  async function get<T>(path: string, mode: Mode, check: Check): Promise<Envelope<T>> {
     let res: Response;
     try {
       res = await fetcher(base.replace(/\/$/, '') + path, { headers: { accept: 'application/json' } });
@@ -31,21 +33,18 @@ export function httpApi(base: string, fetcher: typeof fetch = fetch): DashboardA
       throw new OfflineError('worker not reachable');
     }
     if (!res.ok) throw new Error(`worker answered ${res.status}`);
-    return checkEnvelope<T>(await res.json(), mode);
+    return checkEnvelope<T>(await res.json(), mode, check);
   }
   return {
-    status: (m) => get(PATHS.status(m), m),
-    funnel: (m) => get(PATHS.funnel(m), m),
-    decisions: (m) => get(PATHS.decisions(m), m),
-    position: (m) => get(PATHS.position(m), m),
-    calendar: (m, month) => get(PATHS.calendar(m, month), m),
-    trades: (m) => get(PATHS.trades(m), m),
-    charts: (m) => get(PATHS.charts(m), m),
-    stats: (m) => get(PATHS.stats(m), m),
-    backtestReport: async () => {
-      const env = await get<unknown>(PATHS.backtestReport(), 'backtest');
-      return { ...env, data: env.data === null ? null : parseReport(env.data) };
-    },
+    status: (m) => get(PATHS.status(m), m, schemaFor('status', m)),
+    funnel: (m) => get(PATHS.funnel(m), m, schemaFor('funnel', m)),
+    decisions: (m) => get(PATHS.decisions(m), m, schemaFor('decisions', m)),
+    position: (m) => get(PATHS.position(m), m, schemaFor('position', m)),
+    calendar: (m, month) => get(PATHS.calendar(m, month), m, schemaFor('calendar', m)),
+    trades: (m) => get(PATHS.trades(m), m, schemaFor('trades', m)),
+    charts: (m) => get(PATHS.charts(m), m, schemaFor('charts', m)),
+    stats: (m) => get(PATHS.stats(m), m, schemaFor('stats', m)),
+    backtestReport: () => get(PATHS.backtestReport(), 'backtest', reportData),
   };
 }
 

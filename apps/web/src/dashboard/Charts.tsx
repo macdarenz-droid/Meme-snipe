@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
 import type { ChartsView, FunnelDay, Mode } from '../api/contract.ts';
-import { totalWithin } from '../api/modes.ts';
+import { totalUsd } from '../api/modes.ts';
 import { Empty } from '../components/ui.tsx';
 import { formatUsdCompact } from '../lib/format.ts';
 import { cmpUsd, fromMicro, decToPlot, drawdownsUsd, formatR, formatUsdExact, minUsd, toMicro, toneOf, usdToPlot } from '../lib/money.ts';
@@ -188,11 +188,9 @@ export function BarChart({ bars, label, height = 140, format = (n: number) => fo
 
 export function DailyPnlChart({ daily }: { daily: ChartsView['daily'] }) {
   if (daily.length === 0) return <Empty title="No closed trades" />;
-  const bars: Bar[] = daily.map((d) => {
-    const v = usdToPlot(d.netUsd);
-    return { key: d.date, tick: shortDay(d.date), value: v, text: formatUsdExact(d.netUsd, true), tone: v > 0 ? 'gain' : v < 0 ? 'loss' : 'neutral' };
-  });
-  const up = daily.filter((d) => usdToPlot(d.netUsd) > 0).length;
+  // Colour follows the printed cents (toneOf), never the float used for drawing.
+  const bars: Bar[] = daily.map((d) => ({ key: d.date, tick: shortDay(d.date), value: usdToPlot(d.netUsd), text: formatUsdExact(d.netUsd, true), tone: toneOf(d.netUsd) || 'neutral' }));
+  const up = daily.filter((d) => toneOf(d.netUsd) === 'gain').length;
   return <BarChart bars={bars} label={`${daily.length} days, ${up} up and ${daily.length - up} flat or down`} />;
 }
 
@@ -226,9 +224,9 @@ export function CostsChart({ view, mode }: { view: ChartsView; mode: Mode }) {
 function CostTable({ view, mode }: { view: ChartsView; mode: Mode }) {
   const byKind = view.costsByKind;
   if (byKind.length === 0) return null;
-  const sorted = [...byKind].sort((a, b) => cmpUsd(b.usd, a.usd));
-  const total = toMicro(totalWithin(mode, view, sorted.map((c) => c.usd)));
-  const max = toMicro(sorted[0]?.usd ?? '0');
+  const sorted = [...byKind].sort((a, b) => cmpUsd(b.amountUsd, a.amountUsd));
+  const total = toMicro(totalUsd(mode, sorted, (c) => c.amountUsd));
+  const max = toMicro(sorted[0]?.amountUsd ?? '0');
   const share = (usd: string, of: bigint) => (of > 0n ? Number((toMicro(usd) * 1000n) / of) / 10 : 0);
   return (
     <table className="bars dash-cost-table">
@@ -238,10 +236,10 @@ function CostTable({ view, mode }: { view: ChartsView; mode: Mode }) {
           <tr key={c.kind}>
             <th scope="row">{COST_LABEL[c.kind]}</th>
             <td className="bar-cell" aria-hidden="true">
-              <span className="bar" style={{ width: `${share(c.usd, max)}%` }} />
+              <span className="bar" style={{ width: `${share(c.amountUsd, max)}%` }} />
             </td>
-            <td className="num">{formatUsdExact(c.usd)}</td>
-            <td className="num muted">{total > 0n ? `${Math.round(share(c.usd, total))}%` : ''}</td>
+            <td className="num">{formatUsdExact(c.amountUsd)}</td>
+            <td className="num muted">{total > 0n ? `${Math.round(share(c.amountUsd, total))}%` : ''}</td>
           </tr>
         ))}
       </tbody>

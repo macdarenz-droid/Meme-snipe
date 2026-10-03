@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { STALE_AFTER_SECONDS, type Envelope, type Mode } from './contract.ts';
 import { OfflineError } from './client.ts';
 import { checkEnvelope, DataError } from './modes.ts';
+import type { Check } from './schema.ts';
 
 export type Loaded<T> =
   | { state: 'loading' }
@@ -16,22 +17,22 @@ export function isStale(mode: Mode, asOf: string, now: number): boolean {
 }
 
 /** Turns a response (or failure) into a screen state. Every response is checked for mode and money first. */
-export function settle<T>(mode: Mode, result: { ok: true; value: unknown } | { ok: false; error: unknown }, now: number): Loaded<T> {
+export function settle<T>(mode: Mode, check: Check, result: { ok: true; value: unknown } | { ok: false; error: unknown }, now: number): Loaded<T> {
   if (!result.ok) {
     if (result.error instanceof OfflineError) return { state: 'error', reason: 'offline' };
     if (result.error instanceof DataError) return { state: 'error', reason: result.error.kind === 'mixed-modes' ? 'mixed-modes' : 'bad-data' };
     return { state: 'error', reason: 'failed' };
   }
   try {
-    const env: Envelope<T> = checkEnvelope<T>(result.value, mode);
+    const env: Envelope<T> = checkEnvelope<T>(result.value, mode, check);
     return { state: 'ready', data: env.data, asOf: env.asOf, stale: isStale(mode, env.asOf, now) };
   } catch (e) {
-    return settle<T>(mode, { ok: false, error: e }, now);
+    return settle<T>(mode, check, { ok: false, error: e }, now);
   }
 }
 
 /** Loads one endpoint for one mode. Changing the key (mode, month) drops the old data at once. */
-export function useEndpoint<T>(mode: Mode, what: string, load: () => Promise<Envelope<T>>): Loaded<T> {
+export function useEndpoint<T>(mode: Mode, what: string, check: Check, load: () => Promise<Envelope<T>>): Loaded<T> {
   const key = `${mode}|${what}`;
   const [loaded, setLoaded] = useState<{ key: string; value: Loaded<T> }>({ key, value: { state: 'loading' } });
 
@@ -39,8 +40,8 @@ export function useEndpoint<T>(mode: Mode, what: string, load: () => Promise<Env
     let live = true;
     const run = () =>
       load().then(
-        (value) => live && setLoaded({ key, value: settle<T>(mode, { ok: true, value }, Date.now()) }),
-        (error: unknown) => live && setLoaded({ key, value: settle<T>(mode, { ok: false, error }, Date.now()) }),
+        (value) => live && setLoaded({ key, value: settle<T>(mode, check, { ok: true, value }, Date.now()) }),
+        (error: unknown) => live && setLoaded({ key, value: settle<T>(mode, check, { ok: false, error }, Date.now()) }),
       );
     void run();
     const timer = mode === 'backtest' ? undefined : window.setInterval(run, REFRESH_MS);

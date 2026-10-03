@@ -1,47 +1,38 @@
-import { addUsd, isDec, isUsd } from '../lib/money.ts';
+import { addUsd } from '../lib/money.ts';
 import { MIN_TRADES, MODES, type Envelope, type Mode, type Moded, type StatsView } from './contract.ts';
+import { DataError, iso, obj, oneOf, type Check } from './schema.ts';
+
+export { DataError };
 
 export const MODE_LABEL: Record<Mode, string> = { backtest: 'Backtest', paper: 'Paper', live: 'Live' };
-
-export class DataError extends Error {
-  readonly kind: 'mixed-modes' | 'bad-money' | 'bad-shape';
-  constructor(kind: DataError['kind'], message: string) {
-    super(message);
-    this.kind = kind;
-  }
-}
 
 export const isMode = (m: unknown): m is Mode => typeof m === 'string' && (MODES as readonly string[]).includes(m);
 
 /**
- * Checks a response before any screen sees it: the envelope and every nested
- * record must carry the requested mode, and every field ending in "Usd" must
- * be an exact decimal string (or null); prices may have any number of places. Throws DataError otherwise.
+ * Checks a response before any screen sees it. The envelope must be exactly
+ * { mode, asOf, data } in the requested mode, `data` must pass the endpoint's
+ * strict schema (src/api/schemas.ts), and every object inside a list must carry
+ * the requested mode. Throws DataError otherwise; nothing partial is used.
  */
-export function checkEnvelope<T>(raw: unknown, mode: Mode): Envelope<T> {
-  if (!raw || typeof raw !== 'object') throw new DataError('bad-shape', 'response is not an object');
-  const env = raw as Partial<Envelope<T>>;
-  if (!isMode(env.mode)) throw new DataError('bad-shape', 'response has no mode');
-  if (typeof env.asOf !== 'string' || Number.isNaN(Date.parse(env.asOf))) throw new DataError('bad-shape', 'response has no time');
-  if (!('data' in env)) throw new DataError('bad-shape', 'response has no data');
-  walk(env, mode, '$');
-  return env as Envelope<T>;
+export function checkEnvelope<T>(raw: unknown, mode: Mode, data: Check): Envelope<T> {
+  if (raw && typeof raw === 'object' && 'mode' in raw && isMode(raw.mode) && raw.mode !== mode) {
+    throw new DataError('mixed-modes', `response is ${raw.mode}, expected ${mode}`);
+  }
+  obj({ mode: oneOf(mode), asOf: iso, data })(raw, '$');
+  walk(raw, mode, '$', false);
+  return raw as Envelope<T>;
 }
 
-function walk(v: unknown, mode: Mode, path: string): void {
+/** Second line of defence, independent of the schemas: no record of another mode, and none without a mode, inside any list. */
+function walk(v: unknown, mode: Mode, path: string, inList: boolean): void {
   if (Array.isArray(v)) {
-    v.forEach((x, i) => walk(x, mode, `${path}[${i}]`));
+    v.forEach((x, i) => walk(x, mode, `${path}[${i}]`, true));
     return;
   }
   if (!v || typeof v !== 'object') return;
-  for (const [k, x] of Object.entries(v)) {
-    const p = `${path}.${k}`;
-    if (k === 'mode' && x !== mode) throw new DataError('mixed-modes', `${p} is ${String(x)}, expected ${mode}`);
-    // Prices ("...PriceUsd", "priceUsd") are exact decimals of any precision; every other "...Usd" is money.
-    if (/Usd$/.test(k) && !/[pP]riceUsd$/.test(k) && x !== null && !isUsd(x)) throw new DataError('bad-money', `${p} is not an exact dollar amount`);
-    if (/[pP]riceUsd$/.test(k) && x !== null && !isDec(x)) throw new DataError('bad-money', `${p} is not an exact price`);
-    walk(x, mode, p);
-  }
+  const o = v as Record<string, unknown>;
+  if ('mode' in o ? o['mode'] !== mode : inList) throw new DataError('mixed-modes', `${path}.mode is ${String(o['mode'])}, expected ${mode}`);
+  for (const [k, x] of Object.entries(o)) walk(x, mode, `${path}.${k}`, false);
 }
 
 /** Throws unless every record is in `mode`. */
