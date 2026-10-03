@@ -209,6 +209,22 @@ const tokenize = (source: string): { tokens: Token[]; problems: string[] } => {
   return { tokens, problems };
 };
 
+/** Every string in a ledger/ file (adapters included) that holds SQL reading the clock, randomness or another file. */
+const nondeterministicSql = (tokens: readonly Token[]): string[] => {
+  const found: string[] = [];
+  // Strings joined with + are checked as one, so a value split across pieces cannot hide.
+  for (let k = 0; k < tokens.length; k++) {
+    if (tokens[k]!.type !== 'str' && tokens[k]!.type !== 'template') continue;
+    let text = tokens[k]!.value;
+    while (tokens[k + 1]?.value === '+' && (tokens[k + 2]?.type === 'str' || tokens[k + 2]?.type === 'template')) {
+      text += tokens[k + 2]!.value;
+      k += 2;
+    }
+    if (sqlReadsTheWorld(text)) found.push('SQL reading the clock or randomness');
+  }
+  return found;
+};
+
 const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans: ReadonlySet<string> = new Set(), context: { readonly folder: string } = { folder: '' }): string[] => {
   const { tokens, problems } = tokenize(source);
   const found = [...problems];
@@ -249,18 +265,7 @@ const scan = (source: string, allow: ReadonlySet<string> = new Set(), folderBans
     if ((t.type === 'str' || t.type === 'template') && !OUTCOME_FOLDERS.has(context.folder) && OUTCOME_PATH.test(t.value)) found.push('reaches into the outcome side');
 
   });
-  if (context.folder === 'ledger') {
-    // Strings joined with + are checked as one, so a value split across pieces cannot hide.
-    for (let k = 0; k < tokens.length; k++) {
-      if (tokens[k]!.type !== 'str' && tokens[k]!.type !== 'template') continue;
-      let text = tokens[k]!.value;
-      while (tokens[k + 1]?.value === '+' && (tokens[k + 2]?.type === 'str' || tokens[k + 2]?.type === 'template')) {
-        text += tokens[k + 2]!.value;
-        k += 2;
-      }
-      if (sqlReadsTheWorld(text)) found.push('SQL reading the clock or randomness');
-    }
-  }
+  if (context.folder === 'ledger') found.push(...nondeterministicSql(tokens));
   return found;
 };
 
@@ -503,6 +508,19 @@ describe('purity guard', () => {
     const engine = folderBansFor(join(SRC, 'engine', 'x.ts'));
     for (const snippet of ['async function f() {}', 'await x;', 'Promise.resolve(1);', 'p.then(f);']) expect(scan(snippet, new Set(), engine), snippet).not.toEqual([]);
     expect(scan('p.then(f);', new Set(), folderBansFor(join(SRC, 'ledger', 'x.ts')))).toEqual([]);
+  });
+
+  it('the ledger SQL ban covers every file under ledger/, adapters included', () => {
+    // The adapter exemption lifts the clock, timer and I/O bans only, never nondeterministic SQL.
+    const probe = "export const q = \"select julianday('now'), random()\";";
+    expect(nondeterministicSql(tokenize(probe).tokens)).not.toEqual([]);
+    const ledgerFiles = allSourceFiles(SRC).filter((f) => topFolder(f) === 'ledger');
+    const found = ledgerFiles.flatMap((f) => nondeterministicSql(tokenize(readFileSync(f, 'utf8')).tokens).map((x) => `${relative(SRC, f)}: ${x}`));
+    expect(found).toEqual([]);
+    // The probe placed at ledger/adapters/zz.ts is scanned by this rule (sourceFiles alone would skip it).
+    const adapterProbe = join(SRC, 'ledger', 'adapters', 'zz.ts');
+    expect(topFolder(adapterProbe)).toBe('ledger');
+    expect(sourceFiles(SRC).includes(adapterProbe)).toBe(false);
   });
 
   it('packages/core/src outside adapters folders has none of them', () => {
