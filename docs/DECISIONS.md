@@ -84,6 +84,35 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-04 | H13 funding and the H14 rug half are fetched on demand by RPC with an as-of filter, through one shared module each (FACTS-1, RUG-1c), and cached for the backtest as hashed supplements | The archive scan cannot find funding transactions, and no free feed sees every prior mint's trades | BT-2 and SEED-1 findings |
 | 2026-10-04 | Dry-run evidence reaches the repo through the watchdog's Durable Object and a collect-evidence workflow; the host holds no GitHub credential | A write key on the host could change workflows | OPS-1d |
 | 2026-10-04 | A missing gate input is never a pass: H16 not-covered whenever a producer, coverage fact or look-back is missing | Owner rule "missing evidence means no trade" | RUG-1 review, GATE-1c |
+| 2026-10-03 | 60-day window (UPG-1b): keep the lead-in from 2026-07-20 and the decision days 2026-08-03 to 10-01. Label regime boundaries B2 (07-21 14:23 UTC, BOOST on), B3 (09-09 19:30 UTC, creator-fee and quote-control config) and B4 (09-12 15:24 UTC, holder rewards, events +16 bytes). Only the span from B4 on matches today's fees and layouts, so the holdout lies after B4. DATA-1's strict QA must accept the two dated older layouts before their boundary slots. Old Faithful epochs 1004–1047 are all published and checked | ARCHITECTURE §13.2: a platform change is a regime break. The new window holds three of them, none before Aug 3 except BOOST, which only changes migrations | [venues.md](research/venues.md) §2.7 "Earlier boundaries" |
+
+## Supervisor rulings after the external review (2026-10-04)
+
+The owner relayed an outside review of commit addc685 (20 findings). Each finding goes to the code's owner, who must first reproduce it with a test that fails on the base; a finding that does not reproduce is closed, with the evidence recorded. These rulings are the supervisor's, not the owner's.
+
+- **Holders (H12, H13).** The smallest listed account does not bound an owner with several accounts. Aggregate by owner, and assume the worst case for the unknown remainder. The backtest rebuilds ownership from trades plus an owner-resolved token-movement table (DATA-1). GATE-1d, FACTS-1.
+- **Exits.** A partial sell is quoted at its own size. A blocked retry must recover more than its cost at the worst permitted price. The trail, peak and partial-exit state survive restarts. EXIT-1b, WORKER-1.
+- **Cash flows.** Drawdown is measured on unitized equity, so a withdrawal cannot trip the kill switch. RISK-1b also reports planned R, stressed executable loss and maximum reserved loss separately, and re-runs the risk simulation on the merged policy.
+- **Reports.** G0 is the canonical gate. Holdout runs are authorised and registered before they execute. All-in expectancy includes failed attempts. SOL returns are reported separately from USD/AUD cash flows, and operating costs are shown at bankrolls of $20, $100 and $200. BT-1c.
+- **Fills.** Delay and failure assumptions stay harsh and documented, including correlated failures and long delays during exits. The dry run sends nothing, so landing assumptions stay conservative until on-chain evidence and the owner-authorised canary. The conservative scenario recovers token-account rent only when the final sell lands, because the account is closed in that same transaction; a "no rent recovery" sensitivity line is also reported.
+- **Statistics.**
+  - G3 scores the paper outcomes of candidates vetoed only live, and passes only when the conservative lower bound stays positive. Too little evidence means extend the run.
+  - Cluster sensitivity (multi-day blocks, creator and funder clusters) is required.
+  - The deflated Sharpe ratio counts effective independent trials.
+  - "Agrees" for the post-upgrade (B5) dry run is defined before the run. Inconclusive is not agreement. STATS-1b.
+- **Study design.**
+  - A separate deployment replay runs at the real size: 1 position, 3 entries a day, cooldowns, signal priority.
+  - Executable definitions per universe are frozen before testing, with improvement over a matched S0 required.
+  - H9 and H11 stay on. Blocked candidates are scored offline, and a filter is removed only on out-of-sample net improvement without worse tails.
+  - Every rejected candidate's later outcome is recorded.
+  - Each gate has a completeness manifest.
+  - Strategies abstain where the evidence is unaffordable live.
+  - BT-2, RES-3.
+- **Regime volume.** Our own on-chain volume, computed by the same code for history and live. A gap is unknown, never zero; unknown means the regime is off. FACTS-1.
+- **Rug labels.** The strict rules stay. Observed creator sales and collapses are separate label kinds. A minimum economic collapse size is measured before any relaxation. Transfer-then-sell and linked-wallet dumps are measured. RUG-1c.
+- **Execution shape.** One supported-transaction-shape check is shared by the gates, the backtest and the builders. TX-1b.
+- **Budget.** The dry run reports credits per provider and class, lookup latency, coverage gaps and rejection reasons. It fails if exits (P0/P1) were ever shed or the free tier is exceeded. RUN-1c.
+- **Worker failure.** It is an exposure the stop cannot control; it is measured, not assumed away (ARCHITECTURE §12.5).
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
@@ -309,3 +338,9 @@ One row per decision in the table; detailed module decisions follow in sections 
 - **2026-10-03 · A non-zero tail on a SOL market should block that market.** Every SOL-quoted event sampled has a zero tail. If one stops being zero, or a tail length other than 8 appears, the unpublished field is live where we price. Ruling: refuse that market until the field is identified (safest default). This belongs where per-market evidence is checked (GATE, or the worker's feed), so it is a follow-up task for the supervisor to assign; DEC-1 already exposes `trailing` and `extra`.
 - **2026-10-03 · The 3 new event discriminators stay `other`.** No published name matches them, and none appeared in 89 sampled blocks. DATA-1 has rows that carry them, so their signatures are the way to study them.
 - **2026-10-03 · Regime boundary.** Per ARCHITECTURE §13.2, the upgrade is a platform change. Backtest and validation use slot 452,654,883 as the boundary, which matches DATA-1's `program_upgrade_2026_10_02` label; pump's own change starts at 452,654,933. DATA-1's "about 20:00 UTC" should read 15:47 UTC.
+- **2026-10-03 · Earliest usable day (UPG-1b).**
+  - Decoding is usable from 2026-07-16 Melbourne, after B1. From there, PumpSwap events carry every field our layouts name except the two holder-reward fields, which are added at B4.
+  - Trade economics like today's hold only from 2026-09-13 Melbourne (after B4); 07-22 (after B2) to 09-10 (B3) is one earlier regime, and 09-10 to 09-13 a short one between B3 and B4.
+  - Ruling: download 2026-07-20 to 10-01 as planned. The lead-in features (deployer and creator history) do not depend on BOOST, so B2 inside the lead-in is harmless. Use B2, B3 and B4 as labelled regime boundaries, place the sealed holdout after B4, and report walk-forward results per regime.
+  - Options considered: (a) this ruling; (b) start the decision window at 09-13. (b) leaves about 19 days, below the owner's 30-day minimum. (a) is the safest that still meets it.
+- **2026-10-03 · QA change needed before the 60-day download.** DATA-1's `verdict.mjs` fails a day on any "older layout". Every day before B4 has TradeEvent, BuyEvent and SellEvent 16 bytes shorter, so every such day would fail. The rule should allow exactly that layout, and only before slot 446,462,733 (PumpSwap) or 446,462,760 (pump). It should also list B2, B3 and B4 beside 2026-10-02 as regime boundaries. This is DATA-1's change, not made here.
