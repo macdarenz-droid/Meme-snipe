@@ -33,7 +33,7 @@ function dataset(bad, { movements = [], coverage = null, events = [], raw = [], 
   put('events-000.jsonl.zst', jsonl(events));
   put('raw-000.jsonl.zst', jsonl(raw));
   put('movements-000.csv.zst', csv(MOVE, movements));
-  if (coverage) fs.writeFileSync(path.join(ds, 'movement_coverage-000.csv.zst'), csv(['mint', 'scope', 'from_slot', 'to_slot'], coverage));
+  if (coverage) fs.writeFileSync(path.join(ds, 'movement_coverage-000.csv.zst'), csv(coverage[0]?.length === 8 ? ['mint', 'scope', 'slot', 'reason', 'count', 'tx_idx', 'from_slot', 'to_slot'] : ['mint', 'scope', 'from_slot', 'to_slot'], coverage));
   const man = {
     window: { from: '2026-09-02', to_exclusive: '2026-09-03', lead_in_days: 0 },
     coverage: { first_slot: 1, last_slot: 99, first_block_time: 1788220800, last_block_time: 1788393600 },
@@ -124,4 +124,17 @@ test('per-owner balance changes of a plain token transaction equal its movement 
   const skipped = strict(opts([mv({ amount: 150 })], record(pump)));
   assert.equal(skipped.status, 0, skipped.stdout);
   assert.match(skipped.stdout, /Balances: 0 of 0 .* 1 raw records that touch pump/s);
+});
+
+test('an unresolved mark skips only its own transaction; later transactions stay checked', () => {
+  const tb = (accountIndex, owner, amount) => ({ accountIndex, mint: PMINT, owner, uiTokenAmount: { amount: String(amount) } });
+  const rec = { slot: 10, txIndex: 5, signature: '1'.repeat(64), transaction: Buffer.from([1, ...new Array(64).fill(0), 7]).toString('base64'), err: null,
+    meta: { loadedAddresses: { writable: [], readonly: [] }, preTokenBalances: [tb(1, 'A', 500), tb(2, 'B', 0)], postTokenBalances: [tb(1, 'A', 300), tb(2, 'B', 200)] } };
+  const opts = (coverage) => ({ raw: [rec], movements: [mv({ amount: 150 })], coverage, man: { schema: 2, sampling: { unit_sample_rate_min: 0 } } });
+  // marked on this transaction: skipped
+  assert.equal(strict(opts([[PMINT, 'unresolved', 10, 'owner_change', 1, 5, 1, 20]])).status, 0);
+  // marked on an earlier transaction only: this one is still checked and fails
+  const later = strict(opts([[PMINT, 'unresolved', 9, 'owner_change', 1, 1, 1, 20]]));
+  assert.equal(later.status, 1, later.stdout);
+  assert.match(later.stdout, /token balance changes unexplained by movement rows 1/);
 });

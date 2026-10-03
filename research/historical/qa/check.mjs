@@ -378,6 +378,7 @@ if (man.schema >= 2) {
     coverage_rows: 0, coverage_bad_scope: 0, unresolved_mints: 0, unresolved_by_reason: {}, empty_owner_rows: 0, empty_owner_coverage: 0, balance_skipped_unresolved: 0, supply_mints: 0, supply_negative: 0, supply_bad: [], balance_checks: 0, balance_exact: 0, balance_bad: [], balance_skipped_pump_txs: movementBalanceSkipped };
   const cover = new Map(); // mint -> [[from, to]]
   const unresolvedFrom = new Map(); // mint -> first slot with ownership unresolved
+  const unresolvedTx = new Set(); // mint|slot:tx_idx of the marked transactions
   for (const f of fs.readdirSync(ds).filter((x) => x.startsWith('movement_coverage-')).sort()) {
     for (const c of readTable(f)) {
       st.coverage_rows++;
@@ -387,6 +388,7 @@ if (man.schema >= 2) {
       // (lead-in units carry none).
       if (c.scope === 'unresolved') {
         if (!unresolvedFrom.has(c.mint) || BigInt(c.slot) < unresolvedFrom.get(c.mint)) unresolvedFrom.set(c.mint, BigInt(c.slot));
+        unresolvedTx.add(`${c.mint}|${c.slot}:${c.tx_idx}`);
         st.unresolved_by_reason[c.reason] = (st.unresolved_by_reason[c.reason] || 0) + Number(c.count || 0);
         continue;
       }
@@ -452,8 +454,8 @@ if (man.schema >= 2) {
   st.unresolved_mints = unresolvedFrom.size;
   for (const [k, tx] of movementBalance) {
     for (const [mint, bal] of tx.balances) {
-      const uf = unresolvedFrom.get(mint);
-      if (uf !== undefined && BigInt(k.split(':')[0]) >= uf) { st.balance_skipped_unresolved++; continue; }
+      // Only the marked transactions are skipped; later ones stay checked.
+      if (unresolvedTx.has(`${mint}|${k}`)) { st.balance_skipped_unresolved++; continue; }
       st.balance_checks++;
       const mv = tx.moves.get(mint) || new Map();
       const diff = [...new Set([...bal.keys(), ...mv.keys()])].filter((o) => (bal.get(o) || 0n) !== (mv.get(o) || 0n));

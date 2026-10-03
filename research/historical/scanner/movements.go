@@ -15,6 +15,7 @@ package main
 
 import (
 	"encoding/binary"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,12 +41,13 @@ var movementCols = []string{"slot", "block_time", "tx_idx", "outer_ix", "inner_i
 //	  mints in a transaction), so its ownership is unresolved from slot on;
 //	scope empty_owner: movements whose owner could not be resolved (an account opened
 //	  and closed inside one transaction), with their count.
-var movementCoverageCols = []string{"mint", "scope", "slot", "reason", "count"}
+var movementCoverageCols = []string{"mint", "scope", "slot", "reason", "count", "tx_idx"}
 
 // coverageMark is one unresolved-ownership note found in a transaction.
 type coverageMark struct {
 	mint, scope, reason string
 	slot                uint64
+	txIdx               int
 }
 
 // movementKind returns the movement kind and the source, destination and mint account
@@ -118,7 +120,7 @@ func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef,
 	slotN, _ := strconv.ParseUint(slot, 10, 64)
 	mark := func(mint, scope, reason string) {
 		if mint != "" && want(mint) {
-			marks = append(marks, coverageMark{mint: mint, scope: scope, reason: reason, slot: slotN})
+			marks = append(marks, coverageMark{mint: mint, scope: scope, reason: reason, slot: slotN, txIdx: txIdx})
 		}
 	}
 	for _, tb := range m.PreTokenBalances {
@@ -144,13 +146,57 @@ func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef,
 		}
 		return -1
 	}
+	// Owners of token accounts opened inside the transaction (temp accounts that are
+	// closed again, so absent from the token balances): InitializeAccount (owner =
+	// account 2), InitializeAccount2 and InitializeAccount3 (owner in data[1:33]), at any
+	// depth (for example inside an associated-token-account create).
+	tempOwner := map[int]string{}
+	for _, g := range groups {
+		for _, ix := range g {
+			if (ix.program != tokenProgram && ix.program != token2022Program) || len(ix.data) == 0 {
+				continue
+			}
+			switch {
+			case ix.data[0] == 1 && len(ix.accts) > 2:
+				tempOwner[ix.accts[0]] = key(ix.accts[2])
+			case (ix.data[0] == 16 || ix.data[0] == 18) && len(ix.data) >= 33 && len(ix.accts) > 0:
+				tempOwner[ix.accts[0]] = base58.Encode(ix.data[1:33])
+			}
+		}
+	}
+	mintSet := map[string]bool{}
+	for _, b := range acct {
+		mintSet[b.mint] = true
+	}
 	var rows [][]string
 	tidx := strconv.Itoa(txIdx)
+	// net amount moved into or out of unresolved (empty) owners, per mint
+	net := map[string]*big.Int{}
+	netOf := func(m string) *big.Int {
+		if v, ok := net[m]; ok {
+			return v
+		}
+		return new(big.Int)
+	}
 	walkOutsideSwaps(groups, func(gi, k int, ix ixRef) {
 		// Known instructions this table does not decode: the mint's ownership becomes
 		// unresolved from this slot (counted in movement_coverage, not a failure).
-		if len(ix.data) >= 2 && ix.data[0] == 26 && ix.data[1] == 1 && ix.program == token2022Program {
-			mark(key(at(ix, 1)), "unresolved", "transfer_fee")
+		if len(ix.data) >= 1 && (ix.data[0] == 26 || ix.data[0] == 27) && ix.program == token2022Program {
+			// every transfer-fee (26/*) and confidential-transfer (27/*) instruction: the
+			// mints it names or whose accounts it touches
+			reason := "transfer_fee"
+			if ix.data[0] == 27 {
+				reason = "confidential_transfer"
+			}
+			seen := map[string]bool{}
+			for _, i := range ix.accts {
+				for _, m := range []string{key(i), acct[i].mint} {
+					if m != "" && mintSet[m] && !seen[m] {
+						seen[m] = true
+						mark(m, "unresolved", reason)
+					}
+				}
+			}
 			return
 		}
 		if len(ix.data) >= 2 && ix.data[0] == 6 && ix.data[1] == 2 {
@@ -180,7 +226,10 @@ func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef,
 			if pos < 0 {
 				return ""
 			}
-			return acct[i].owner
+			if b, ok := acct[i]; ok {
+				return b.owner
+			}
+			return tempOwner[i]
 		}
 		account := func(i, pos int) string {
 			if pos < 0 {
@@ -197,31 +246,67 @@ func movementRows(slot, bt string, txIdx int, keys [][32]byte, groups [][]ixRef,
 		if (sp >= 0 && fo == "") || (dp >= 0 && to == "") {
 			mark(mint, "empty_owner", "")
 		}
+		if a := new(big.Int).SetUint64(binary.LittleEndian.Uint64(ix.data[1:9])); true {
+			if sp >= 0 && fo == "" {
+				net[mint] = new(big.Int).Sub(netOf(mint), a)
+			}
+			if dp >= 0 && to == "" {
+				net[mint] = new(big.Int).Add(netOf(mint), a)
+			}
+		}
 		rows = append(rows, []string{slot, bt, tidx, strconv.Itoa(gi), inner, mint, kind,
 			fo, to, amount, account(src, sp), account(dst, dp)})
 	})
+	// An empty owner that does not net to zero carries a real transfer (a temp account on
+	// a swap leg, whose other leg runs inside pump): the mint's ownership is unresolved.
+	nm := make([]string, 0, len(net))
+	for m := range net {
+		nm = append(nm, m)
+	}
+	sort.Strings(nm)
+	for _, m := range nm {
+		if net[m].Sign() != 0 {
+			mark(m, "unresolved", "empty_owner_net")
+		}
+	}
 	return rows, marks
 }
 
-// coverageRows folds a unit's marks into movement_coverage rows: per mint and
-// (scope, reason), the first slot and the count, in mint order.
+// coverageRows builds a unit's movement_coverage rows, in sorted order:
+//
+//	pump_transactions: one row per mint;
+//	unresolved: one row per mint, reason and transaction (slot, tx_idx), with the
+//	  number of instructions; the backtest takes ownership as unresolved from the first
+//	  slot, QA skips only those transactions;
+//	empty_owner: one row per mint with the first slot and the row count.
 func coverageRows(partial map[string]bool, marks []coverageMark) [][]string {
-	type k struct{ mint, scope, reason string }
-	first := map[k]uint64{}
+	type k struct {
+		mint, scope, reason string
+		slot                uint64
+		tx                  int
+	}
 	count := map[k]int{}
+	first := map[string]uint64{}
 	for _, m := range marks {
-		kk := k{m.mint, m.scope, m.reason}
-		if s, ok := first[kk]; !ok || m.slot < s {
-			first[kk] = m.slot
+		kk := k{m.mint, m.scope, m.reason, m.slot, m.txIdx}
+		if m.scope == "empty_owner" {
+			kk.slot, kk.tx = 0, -1
+			if s, ok := first[m.mint]; !ok || m.slot < s {
+				first[m.mint] = m.slot
+			}
 		}
 		count[kk]++
 	}
 	var rows [][]string
 	for m := range partial {
-		rows = append(rows, []string{m, "pump_transactions", "", "", ""})
+		rows = append(rows, []string{m, "pump_transactions", "", "", "", ""})
 	}
-	for kk, s := range first {
-		rows = append(rows, []string{kk.mint, kk.scope, strconv.FormatUint(s, 10), kk.reason, strconv.Itoa(count[kk])})
+	for kk, n := range count {
+		slot, tx := strconv.FormatUint(kk.slot, 10), strconv.Itoa(kk.tx)
+		if kk.scope == "empty_owner" {
+			slot, tx = strconv.FormatUint(first[kk.mint], 10), ""
+		}
+		rows = append(rows, []string{kk.mint, kk.scope, slot, kk.reason, strconv.Itoa(n), tx})
 	}
 	sort.Slice(rows, func(i, j int) bool { return strings.Join(rows[i], ",") < strings.Join(rows[j], ",") })
 	return rows

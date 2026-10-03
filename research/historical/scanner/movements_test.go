@@ -94,7 +94,7 @@ func TestUndecodedTokenClassesMarkOwnershipUnresolved(t *testing.T) {
 	for _, mk := range marks {
 		got[mk.scope+"/"+mk.reason] = true
 	}
-	for _, want := range []string{"unresolved/transfer_fee", "unresolved/owner_change", "unresolved/account_reused", "empty_owner/"} {
+	for _, want := range []string{"unresolved/transfer_fee", "unresolved/owner_change", "unresolved/account_reused", "unresolved/empty_owner_net", "empty_owner/"} {
 		if !got[want] {
 			t.Errorf("missing coverage mark %s (got %v)", want, marks)
 		}
@@ -103,12 +103,78 @@ func TestUndecodedTokenClassesMarkOwnershipUnresolved(t *testing.T) {
 		t.Fatalf("the transfer from an unknown account must still be a row with an empty owner: %v", rows)
 	}
 	cov := coverageRows(map[string]bool{"Other": true}, append(marks, marks...))
-	if len(cov) != 5 || cov[4][0] != "Other" || cov[4][1] != "pump_transactions" {
+	if len(cov) != 6 || cov[5][0] != "Other" || cov[5][1] != "pump_transactions" {
 		t.Fatalf("coverage rows %v", cov)
 	}
-	for _, r := range cov[:4] {
+	for _, r := range cov[:5] {
 		if r[2] != "100" || r[4] != "2" {
 			t.Fatalf("first slot and count not folded: %v", r)
+		}
+		if r[1] == "unresolved" && r[5] != "1" {
+			t.Fatalf("unresolved rows must name their transaction: %v", r)
+		}
+	}
+}
+
+// A temp token account opened and used on a swap leg: A -> temp is a row, temp -> pool
+// runs inside pump (no row). The temp account is in no token balance (opened and closed
+// in the transaction).
+func tempLegFixture(withInit bool) ([][32]byte, [][]ixRef, *TransactionStatusMeta, string) {
+	mint := "8rjKP44zZewzNGx6DyF3Ck1Ub6y45pXbures2Dx3pump"
+	keys := make([][32]byte, 11)
+	keys[1], keys[2], keys[8] = tokenProgram, pumpProgram, mustPK(mint)
+	for _, i := range []int{3, 4, 5, 9, 10} {
+		w := solana.NewWallet().PublicKey()
+		copy(keys[i][:], w[:])
+	}
+	owner := solana.NewWallet().PublicKey()
+	var groups [][]ixRef
+	if withInit {
+		groups = append(groups, []ixRef{{program: tokenProgram, accts: []int{9, 8}, data: append([]byte{18}, owner[:]...), height: 1}})
+	}
+	groups = append(groups,
+		[]ixRef{{program: tokenProgram, accts: []int{4, 9, 0}, data: amountData(3, 50), height: 1}},
+		[]ixRef{{program: pumpProgram, accts: []int{}, data: []byte{1}, height: 1}, {program: tokenProgram, accts: []int{9, 5, 0}, data: amountData(3, 50), height: 2}})
+	m := &TransactionStatusMeta{PreTokenBalances: []*TokenBalance{{AccountIndex: 4, Mint: mint, Owner: "A"}, {AccountIndex: 5, Mint: mint, Owner: "Pool"}},
+		PostTokenBalances: []*TokenBalance{{AccountIndex: 4, Mint: mint, Owner: "A"}, {AccountIndex: 5, Mint: mint, Owner: "Pool"}}}
+	return keys, groups, m, owner.String()
+}
+
+func TestTempAccountOwnerFromInitializeAccount3(t *testing.T) {
+	keys, groups, m, owner := tempLegFixture(true)
+	rows, marks := movementRows("100", "1700", 1, keys, groups, m, pumpSuffix)
+	if len(rows) != 1 || rows[0][8] != owner {
+		t.Fatalf("temp account owner not resolved from InitializeAccount3: %v", rows)
+	}
+	for _, mk := range marks {
+		if mk.scope == "empty_owner" || mk.reason == "empty_owner_net" {
+			t.Fatalf("resolved temp account still marked: %v", marks)
+		}
+	}
+}
+
+func TestUnresolvedTempLegMarksNetEmptyOwner(t *testing.T) {
+	keys, groups, m, _ := tempLegFixture(false)
+	_, marks := movementRows("100", "1700", 1, keys, groups, m, pumpSuffix)
+	found := false
+	for _, mk := range marks {
+		found = found || (mk.scope == "unresolved" && mk.reason == "empty_owner_net" && mk.txIdx == 1)
+	}
+	if !found {
+		t.Fatalf("an empty owner carrying a net transfer must mark the mint unresolved: %v", marks)
+	}
+}
+
+func TestEveryTransferFeeAndConfidentialInstructionIsMarked(t *testing.T) {
+	mint := "8rjKP44zZewzNGx6DyF3Ck1Ub6y45pXbures2Dx3pump"
+	keys := make([][32]byte, 5)
+	keys[1], keys[2] = token2022Program, mustPK(mint)
+	m := &TransactionStatusMeta{PostTokenBalances: []*TokenBalance{{AccountIndex: 3, Mint: mint, Owner: "A"}}}
+	for _, d := range [][]byte{{26, 1}, {26, 3}, {26, 4}, {26, 5}, {27, 0}, {27, 7}} {
+		groups := [][]ixRef{{{program: token2022Program, accts: []int{2, 3, 0}, data: append(d, make([]byte, 16)...), height: 1}}}
+		_, marks := movementRows("100", "1700", 2, keys, groups, m, pumpSuffix)
+		if len(marks) != 1 || marks[0].scope != "unresolved" || marks[0].mint != mint {
+			t.Errorf("instruction %v: marks %v", d, marks)
 		}
 	}
 }

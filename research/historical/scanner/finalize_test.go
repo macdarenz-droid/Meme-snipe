@@ -391,7 +391,7 @@ func TestFinalizeRoutesMovementsAndCoverage(t *testing.T) {
 	// any mint, any time in the window: no tape filter
 	writeZst(t, filepath.Join(dir, "movements.csv.zst"), csvBytes(movementCols, [][]string{
 		mv(1001, day("2026-09-01")+10, "0", "0", "", "XpumpMint"), mv(1001, day("2026-09-01")+10, "0", "1", "0", "Other")}))
-	writeZst(t, filepath.Join(dir, "movement_coverage.csv.zst"), csvBytes(movementCoverageCols, [][]string{{"Other", "pump_transactions", "", "", ""}}))
+	writeZst(t, filepath.Join(dir, "movement_coverage.csv.zst"), csvBytes(movementCoverageCols, [][]string{{"Other", "pump_transactions", "", "", "", ""}}))
 	ds := t.TempDir()
 	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
 		t.Fatal(err)
@@ -402,7 +402,7 @@ func TestFinalizeRoutesMovementsAndCoverage(t *testing.T) {
 		readCSVZst(p, func([]string) error { rows++; return nil })
 	}
 	readCSVZst(filepath.Join(ds, "movement_coverage-000.csv.zst"), func(rec []string) error {
-		if rec[0] == "Other" && rec[1] == "pump_transactions" && rec[5] == "1000" {
+		if rec[0] == "Other" && rec[1] == "pump_transactions" && rec[6] == "1000" {
 			cov++
 		}
 		return nil
@@ -425,7 +425,7 @@ func TestFinalizeCoverageSaysLeadInHasNoMovements(t *testing.T) {
 	}
 	found := false
 	readCSVZst(filepath.Join(ds, "movement_coverage-000.csv.zst"), func(rec []string) error {
-		if rec[0] == "*" && rec[1] == "no_movements" && rec[3] == "lead_in" && rec[5] == "1000" && rec[6] == strconv.FormatUint(lead.to, 10) {
+		if rec[0] == "*" && rec[1] == "no_movements" && rec[3] == "lead_in" && rec[6] == "1000" && rec[7] == strconv.FormatUint(lead.to, 10) {
 			found = true
 		}
 		return nil
