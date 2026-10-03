@@ -5,7 +5,7 @@ Each mutant changes one line of evaluate.ts, melbourne.ts or reservation.ts; it 
 `vitest run packages/core/test/risk` fails. Survivors go to DIR/survivors.txt (file:line | operator | line).
 Workers run in copies of the repo under DIR (default: a temporary folder).
 """
-import os, re, subprocess, sys, shutil, json
+import os, re, signal, subprocess, sys, shutil, json
 from concurrent.futures import ThreadPoolExecutor
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
@@ -98,10 +98,14 @@ def run_one(args):
     lines = list(orig)
     lines[ln - 1] = new
     open(path, 'w').write('\n'.join(lines))
+    # Own process group, so a mutant that loops forever is stopped with all its vitest workers.
+    proc = subprocess.Popen(['npx', 'vitest', 'run', TEST, '--bail=1', '--reporter=dot'], cwd=d,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     try:
-        r = subprocess.run(['npx', 'vitest', 'run', TEST, '--bail=1', '--reporter=dot'], cwd=d, capture_output=True, timeout=90)
-        killed = r.returncode != 0
+        killed = proc.wait(timeout=90) != 0
     except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
         killed = True
     open(path, 'w').write('\n'.join(orig))
     return (f, ln, name, new, killed)

@@ -64,6 +64,10 @@ describe('R2 trade size range', () => {
     const up = allowed(evaluateEntry(baseInput({ latches: latches({ sizeStepUpApproved: true }) }), baseRequest()));
     expect(up.notional).toBeGreaterThan(TRIAL_POLICY.capital.minNotional);
     expect(up.notional).toBeLessThanOrEqual(TRIAL_POLICY.capital.maxNotional);
+    // The reported notional (the q that R15 compares next time) is the spend valued rounded down.
+    const spendUsd = (r: 'floor' | 'ceil') => lamportsToMicroUsd(lamports(up.spendLamports), PRICE, r);
+    expect(spendUsd('ceil')).not.toBe(spendUsd('floor'));
+    expect(up.notional).toBe(spendUsd('floor'));
   });
   test('a 10% drawdown from the high-water mark returns to the minimum', () => {
     const input = baseInput({
