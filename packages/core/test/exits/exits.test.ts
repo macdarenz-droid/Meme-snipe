@@ -7,7 +7,7 @@ import { intentId, mint, positionId } from '../../src/domain/index.ts';
 import {
   type EntryPlan, type ExitDecision, type ExitMarket, type ExitObservation, type ExitTracker, type FlowMinute, type Holding,
   type PriceBar, PRICE_SCALE, atOrBelow, atr, checkStopDistance, decideExit, execPrice, exitBookEvents, exitSettings,
-  liquidationValue, maxExitTransactions, newTracker, noteAttempt, planAttempt, quoteReserve,
+  exitAttemptsOf, liquidationValue, maxExitTransactions, newTracker, noteAttempt, planAttempt, quoteReserve,
 } from '../../src/exits/index.ts';
 import { type ObservedFees, observedFeeContext } from '../../src/fills/index.ts';
 import { type Book, applyBookEvent, emptyBook, isIllegal, newPosition, applyPositionEvent, type PositionState } from '../../src/lifecycle/index.ts';
@@ -44,7 +44,7 @@ const holding = (o: Partial<Holding> & { pnl?: bigint; vault?: bigint } = {}): H
   const quantity = rest.quantity ?? QTY;
   const realized = rest.realized ?? 0n;
   return {
-    status: 'open', quantity, sold: 0n, realized, exitCost: EXIT_COST, exitSeq: 1,
+    status: 'open', quantity, sold: 0n, realized, exitCost: EXIT_COST, exitSeq: 1, exitAttempts: 0,
     costBasis: realized + valueAt(vault, quantity) - EXIT_COST - pnl, ...rest,
   };
 };
@@ -394,7 +394,8 @@ const apply = (b: Book, events: ReturnType<typeof exitBookEvents>) => {
   }
   return { book, effects };
 };
-const holdingOf = (p: PositionState, pnl = 0n): Holding => holding({ status: p.status, quantity: p.quantity, sold: p.sold, pnl });
+const holdingOf = (p: PositionState, pnl = 0n, book?: Book): Holding =>
+  holding({ status: p.status, quantity: p.quantity, sold: p.sold, pnl, exitSeq: p.exitSeq, exitAttempts: book === undefined ? 0 : exitAttemptsOf(book.intents, p.id) });
 
 describe('one exit owner and simultaneous triggers', () => {
   test('a stop, a take-profit and a flow stop in one update: one exit intent for the whole quantity', () => {
@@ -624,27 +625,49 @@ describe('boundaries found by mutation testing', () => {
 // Review round 1 (PR #33): the ladder budget is per position, escalation never goes down, retry cost, partial count.
 describe('ladder budget per position', () => {
   const stop = plan({ stopPrice: execPrice(V0, QTY) });
-  const used = (n: number, rung = 3): ExitTracker => {
-    let t = newTracker();
-    for (let i = 0; i < n; i++) t = noteAttempt(t, Math.min(i, rung));
-    return t;
+  const tried = (rung: number | null): ExitTracker => ({ ...newTracker(), lastRung: rung });
+  /** An attempt recorded on an exit intent, as the book holds it after a sign. Only the count matters here. */
+  const signOn = (b: Book, id: string): Book => {
+    const i = b.intents[id]!;
+    return { ...b, intents: { ...b.intents, [id]: { ...i, attempts: [...i.attempts, i.attempts[0] ?? ({ id: `${id}.a` } as never)] } } };
+  };
+  const unfilled = (b: Book): Book => {
+    const r = applyPositionEvent(b.positions[PID]!, { type: 'exit_unfilled' });
+    if (isIllegal(r)) throw new Error(r.reason);
+    return { ...b, positions: { [PID]: r.state } };
   };
 
-  test('noteAttempt counts attempts and keeps the highest rung', () => {
+  test('noteAttempt keeps the highest rung', () => {
     const t = noteAttempt(noteAttempt(newTracker(), 2), 1);
-    expect(t).toMatchObject({ attemptsUsed: 2, lastRung: 2 });
+    expect(t.lastRung).toBe(2);
     expect(noteAttempt(t, 3).lastRung).toBe(3);
   });
 
+  test('exitAttemptsOf counts the signed attempts of this position\'s exit intents only', () => {
+    let { book } = apply(openBook(), exitBookEvents(PID, decide(holding(), obs(NOW), stop).decision, intentId('ex1')));
+    book = signOn(signOn(book, 'ex1'), 'ex1');
+    const other = { ...book.intents['ex1']!, intent: { ...book.intents['ex1']!.intent, positionId: positionId('p2') } };
+    const entry = { ...book.intents['ex1']!, intent: { ...book.intents['ex1']!.intent, purpose: 'entry' } } as never;
+    const mixed = { ...book.intents, ex2: other, en9: entry };
+    expect(exitAttemptsOf(book.intents, PID)).toBe(2);
+    expect(exitAttemptsOf(mixed, PID)).toBe(2);
+    expect(exitAttemptsOf({}, PID)).toBe(0);
+  });
+
   test('a new owner gets only the attempts that remain, starting above the highest rung tried', () => {
-    expect(decide(holding(), obs(NOW), stop).decision).toMatchObject({ kind: 'exit', startRung: 0, maxAttempts: X.ladder.maxAttempts, blocked: null });
-    expect(decide(holding(), obs(NOW), stop, used(3)).decision).toMatchObject({ kind: 'exit', startRung: 3, maxAttempts: 2, blocked: null });
-    expect(decide(holding(), obs(NOW), stop, used(1)).decision).toMatchObject({ kind: 'exit', startRung: 1, maxAttempts: 4 });
-    expect(decide(holding(), obs(NOW), stop, used(4)).decision).toMatchObject({ kind: 'exit', startRung: 3, maxAttempts: 1, blocked: null });
+    const at = (exitAttempts: number, t = tried(null)) => decide(holding({ exitAttempts }), obs(NOW), stop, t).decision;
+    expect(at(0)).toMatchObject({ kind: 'exit', startRung: 0, maxAttempts: X.ladder.maxAttempts, blocked: null });
+    expect(at(3, tried(2))).toMatchObject({ kind: 'exit', startRung: 3, maxAttempts: 2, blocked: null });
+    expect(at(1, tried(0))).toMatchObject({ kind: 'exit', startRung: 1, maxAttempts: 4 });
+    expect(at(1, tried(2))).toMatchObject({ kind: 'exit', startRung: 3, maxAttempts: 4 });
+    expect(at(4, tried(3))).toMatchObject({ kind: 'exit', startRung: 3, maxAttempts: 1, blocked: null });
+    // A lost rung (restart): the count is the floor, so escalation never goes down.
+    expect(at(2)).toMatchObject({ kind: 'exit', startRung: 2, maxAttempts: 3 });
+    expect(at(4)).toMatchObject({ kind: 'exit', startRung: 3, maxAttempts: 1 });
   });
 
   test('with the ladder used up, a trigger books the exit blocked at once with a critical alert', () => {
-    const d = decide(holding(), obs(NOW), stop, used(X.ladder.maxAttempts)).decision;
+    const d = decide(holding({ exitAttempts: X.ladder.maxAttempts }), obs(NOW), stop).decision;
     expect(d).toMatchObject({ kind: 'exit', maxAttempts: 0, blocked: `exit ladder used: ${X.ladder.maxAttempts} attempts on this position` });
     const events = exitBookEvents(PID, d, intentId('ex9'));
     expect(events.map((e) => e.type)).toEqual(['trigger_exit', 'exit_blocked']);
@@ -653,32 +676,60 @@ describe('ladder budget per position', () => {
     expect(effects).toContainEqual({ type: 'alert', level: 'critical', code: 'exit_blocked', subject: PID });
   });
 
-  test('owners that end unfilled never restart the ladder: at most maxAttempts in total, then blocked', () => {
+  /** Owners end unfilled after two attempts each; the count lives in the book. `restartEvery` drops the tracker. */
+  const drive = (restartEvery: number | null) => {
     let book = openBook();
     let t = newTracker();
     let attempts = 0;
-    for (let round = 0; round < 50; round++) {
+    let now = NOW;
+    for (let round = 0; round < 60; round++) {
+      if (restartEvery !== null && round % restartEvery === 0) t = newTracker();
       const p = book.positions[PID]!;
-      if (p.status === 'exit_blocked') break;
-      const step = decide(holdingOf(p), obs(NOW + round), stop, t);
+      now += X.blockedRetryMs;
+      const step = decide(holdingOf(p, 0n, book), obs(now), stop, t);
       t = step.tracker;
       const d = step.decision;
-      if (d.kind !== 'exit') throw new Error(`round ${round}: ${d.kind}`);
-      book = apply(book, exitBookEvents(PID, d, intentId(`ex${round}`))).book;
-      if (d.blocked !== null) break;
-      // Two attempts per owner, each landing unfilled, then the owner ends unfilled.
+      if (d.kind !== 'exit') continue;
+      const id = `ex${round}`;
+      book = apply(book, exitBookEvents(PID, d, intentId(id))).book;
+      if (d.blocked !== null) continue;
       for (let n = 1; n <= Math.min(2, d.maxAttempts); n++) {
         const a = planAttempt(X.ladder, n, V0, V0, d.startRung, d.maxAttempts, t.lastRung);
         if (!a.ok) break;
         t = noteAttempt(t, a.rung);
+        book = signOn(book, id);
         attempts++;
       }
-      const r = applyPositionEvent(book.positions[PID]!, { type: 'exit_unfilled' });
-      if (isIllegal(r)) throw new Error(r.reason);
-      book = { ...book, positions: { [PID]: r.state } };
+      // The owner's attempts all failed: blocked if it was a retry, else back to open.
+      book = d.retry ? apply(book, [{ type: 'exit_blocked', positionId: PID, reason: 'retry failed' }]).book : unfilled(book);
     }
-    expect(attempts).toBe(X.ladder.maxAttempts);
+    return { attempts, book };
+  };
+
+  test('owners that end unfilled never restart the ladder: maxAttempts plus the bounded retries, then blocked', () => {
+    const { attempts, book } = drive(null);
+    expect(attempts).toBe(X.ladder.maxAttempts + X.blockedRetryAttempts);
+    expect(exitAttemptsOf(book.intents, PID)).toBe(attempts);
     expect(book.positions[PID]!.status).toBe('exit_blocked');
+  });
+
+  test('a restart with a fresh tracker and the same book gets no new ladder and no new retries', () => {
+    for (const every of [1, 2, 3]) {
+      const { attempts, book } = drive(every);
+      // Never more than the bound; a restart also restarts the retry wait, so it can only be fewer.
+      expect(attempts).toBeGreaterThanOrEqual(X.ladder.maxAttempts);
+      expect(attempts).toBeLessThanOrEqual(X.ladder.maxAttempts + X.blockedRetryAttempts);
+      expect(book.positions[PID]!.status).toBe('exit_blocked');
+    }
+    // Directly: budget used, then a fresh tracker.
+    const spent = holding({ exitAttempts: X.ladder.maxAttempts });
+    expect(decide(spent, obs(NOW), stop, newTracker()).decision).toMatchObject({ kind: 'exit', maxAttempts: 0, blocked: expect.any(String) });
+    const blocked = { ...spent, status: 'exit_blocked' as const, exitAttempts: X.ladder.maxAttempts + X.blockedRetryAttempts };
+    expect(decide(blocked, obs(NOW + X.blockedRetryMs), stop, { ...newTracker(), blockedAtMs: NOW }).decision).toMatchObject({ kind: 'hold', detail: 'exit blocked: retries used' });
+    const oneLeft = { ...blocked, exitAttempts: X.ladder.maxAttempts + X.blockedRetryAttempts - 1 };
+    const retry = decide(oneLeft, obs(NOW + X.blockedRetryMs), stop, { ...newTracker(), blockedAtMs: NOW });
+    expect(retry.decision).toMatchObject({ kind: 'exit', retry: true });
+    expect(retry.tracker.blockedRetries).toBe(X.blockedRetryAttempts);
   });
 
   test('escalation never goes down after a skip upward or across owners', () => {

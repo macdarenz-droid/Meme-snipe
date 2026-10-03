@@ -55,6 +55,11 @@ export interface Holding {
   readonly exitCost: bigint;
   /** CORE-1 `exitSeq`: exit owners created so far. Sales under one owner are one partial. */
   readonly exitSeq: number;
+  /**
+   * Ladder attempts signed for this position across every exit owner, from the book (`exitAttemptsOf`). The budget
+   * lives in the book, so a restart with a fresh tracker cannot hand out a new ladder.
+   */
+  readonly exitAttempts: number;
 }
 
 export interface Observed<T> {
@@ -113,9 +118,7 @@ export interface ExitTracker {
   readonly lastSold: bigint;
   /** The exit owner (`exitSeq`) whose sale was last counted as a partial. */
   readonly partialSeq: number | null;
-  /** Ladder attempts signed for this position, across every exit owner (`noteAttempt`). */
-  readonly attemptsUsed: number;
-  /** Highest rung attempted so far; escalation never goes below the next one. */
+  /** Highest rung attempted so far (`noteAttempt`); escalation never goes below the next one. */
   readonly lastRung: number | null;
   /** Consecutive market states whose reverse quote failed. */
   readonly quoteFailures: number;
@@ -128,16 +131,13 @@ export interface ExitTracker {
 }
 
 export const newTracker = (): ExitTracker => ({
-  peak: null, trail: null, partials: 0, lastSold: 0n, partialSeq: null, attemptsUsed: 0, lastRung: null,
+  peak: null, trail: null, partials: 0, lastSold: 0n, partialSeq: null, lastRung: null,
   quoteFailures: 0, lastQuoteAtMs: null, flatMet: false, blockedAtMs: null, blockedRetries: 0,
 });
 
-/**
- * Records one signed ladder attempt of this position. The ladder budget is per position: an exit owner that ends
- * unfilled does not give the next one a fresh ladder.
- */
+/** Records the rung of a signed attempt. The attempt count itself comes from the book (`Holding.exitAttempts`). */
 export const noteAttempt = (t: ExitTracker, rung: number): ExitTracker => ({
-  ...t, attemptsUsed: t.attemptsUsed + 1, lastRung: t.lastRung !== null && t.lastRung > rung ? t.lastRung : rung,
+  ...t, lastRung: t.lastRung !== null && t.lastRung > rung ? t.lastRung : rung,
 });
 
 export type ExitDecision =
@@ -283,15 +283,18 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
   }
 
   const last = x.ladder.steps.length - 1;
-  const left = x.ladder.maxAttempts - t.attemptsUsed;
+  const used = h.exitAttempts;
+  const left = x.ladder.maxAttempts - used;
+  // Without a remembered rung (a restart), every attempt went at least one rung up from the first, so `used` is a floor.
+  const next = Math.min(Math.max(t.lastRung === null ? 0 : t.lastRung + 1, used), last);
   const exit = (quantity: bigint, partial: boolean, retry: boolean, reasons: readonly ExitReason[]): ExitStep => ({
     tracker: t,
     decision: {
       kind: 'exit', quantity, partial, retry, reasons, fired, value: liq,
       // Escalation never goes down: a new owner starts above the highest rung already tried.
-      startRung: retry ? last : t.lastRung === null ? 0 : Math.min(t.lastRung + 1, last),
+      startRung: retry ? last : next,
       maxAttempts: retry ? 1 : Math.max(left, 0),
-      blocked: retry || left > 0 ? null : `exit ladder used: ${t.attemptsUsed} attempts on this position`,
+      blocked: retry || left > 0 ? null : `exit ladder used: ${used} attempts on this position`,
     },
     ignored,
   });
@@ -300,11 +303,13 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
     // Keep watching; retry at the last rung with a fresh quote once the wait has passed, while retries remain and the
     // quote pays more than the attempt costs.
     if (t.blockedAtMs === null) t = { ...t, blockedAtMs: now };
-    if (t.blockedRetries >= x.blockedRetryAttempts) return hold('exit blocked: retries used', fired);
+    // Retries are single attempts past the ladder, so the book bounds them too when the tracker was lost.
+    const retries = Math.max(t.blockedRetries, used - x.ladder.maxAttempts);
+    if (retries >= x.blockedRetryAttempts) return hold('exit blocked: retries used', fired);
     if (now < t.blockedAtMs! + x.blockedRetryMs) return hold('exit blocked: waiting to retry', fired);
     if (!liq.ok) return hold(`exit blocked: ${liq.detail}`, fired);
     if (liq.value <= s.retryCost) return hold('exit blocked: the quote does not cover the attempt', fired);
-    t = { ...t, blockedAtMs: null, blockedRetries: t.blockedRetries + 1 };
+    t = { ...t, blockedAtMs: null, blockedRetries: retries + 1 };
     return exit(h.quantity, false, true, fired.length > 0 ? reasonsOf(fired) : ['emergency']);
   }
 
