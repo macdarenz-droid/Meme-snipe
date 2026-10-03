@@ -34,7 +34,7 @@ const allowedLengths = (program: keyof typeof EVENT_TAIL_UPGRADE_SLOT, slot: big
  * release order, whose tail is non-zero or of a length the boundary does not allow; refuses an unreadable event; and
  * is not covered when there is no trade event at all.
  */
-export const checkPoolTails = (ctx: Pick<GateContext, 'history' | 'now'>, pool: string, fromMs: number): TailCheck => {
+export const checkPoolTails = (ctx: { readonly now: Moment; readonly history: GateContext['history'] }, pool: string, fromMs: number): TailCheck => {
   const entries: AsOfEntry[] = [];
   for (const key of poolTradeKeys(pool)) {
     const h = ctx.history(key, ORIGIN, ctx.now);
