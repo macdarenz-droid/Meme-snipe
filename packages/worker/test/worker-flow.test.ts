@@ -457,12 +457,23 @@ describe('restart drill: H14 creates coverage across a restart (SEED-1 ruling 20
     return m;
   };
 
-  it('a restart reloads the saved coverage and fills the downtime: covered from the first seed, with no gap', async () => {
+  it('a seed that never answers does not hold the start: it gives up and the loop runs (rehearsal 37148935094)', async () => {
+    const h = makeWorker({ seed: () => new Promise(() => undefined), seedMaxMs: 90_000, config: ports(3) });
+    expect(await h.worker.start()).toEqual({ ok: true });
+    expect(h.logs.some((l) => /Deployer index: none \(seed failed: no answer within 90000 ms\)/.test(l))).toBe(true);
+    await h.worker.stop();
+  }, 60_000);
+
+  it('a restart reloads the saved coverage and fills the downtime: covered from the first live start, with no gap', async () => {
     const stateDir = tempState();
     const timers = virtualTimers(T);
-    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers, lookbackDays: 14 });
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
     const h = makeWorker({ stateDir, timers, seed, config: ports(0) });
-    await boot(h);
+    const m = await boot(h);
+    // A first start reads no history: the look-back is covered once the live watch has run through it.
+    expect(h.worker.strategy.coverage).toMatchObject({ covered: false });
+    timers.set(timers.now() + 15 * 86_400_000);
+    await m.run(2_000, 400, () => m.slot());
     const first = h.worker.strategy.coverage;
     expect(first).toMatchObject({ covered: true });
     await h.worker.kill();
