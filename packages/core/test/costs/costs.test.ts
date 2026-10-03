@@ -7,7 +7,7 @@ import {
   costAtSize, expectedFailureCost, feasibleSize, fixedCosts, priorityFeeLamports, pumpCurveRoundTrip, pumpSwapRoundTrip,
 } from '../../src/costs/index.ts';
 import { type MicroUsd, bps, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
-import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, PUMP_GLOBAL, ok } from '../amm/helpers.ts';
+import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, CHECKED_GLOBAL, PUMP_GLOBAL, ok } from '../amm/helpers.ts';
 
 const SOL = 1_000_000_000n;
 const price = solPriceMicroUsd('119.37');
@@ -18,7 +18,7 @@ const curve: CurveState = {
   realQuoteReserves: 0n,
   complete: false,
 };
-const curveCtx = { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN };
+const curveCtx = { feeTiers: PUMP_FEE_CONFIG.feeTiers, global: CHECKED_GLOBAL, creatorFeeCharged: true, coin: NORMAL_COIN };
 const pool: PoolState = { baseReserve: 150_000_000_000_000n, quoteVault: 80n * SOL, virtualQuoteReserves: -2n * SOL };
 const poolCtx = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1' as const, buybackFeeBps: bps(5_000) };
 

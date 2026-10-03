@@ -29,6 +29,10 @@ export interface PumpGlobalParams {
   readonly poolMigrationFee: bigint;
 }
 
+declare const checkedGlobal: unique symbol;
+/** Global parameters that passed `freshGlobal`. Only `freshGlobal` makes one, so unchecked values cannot be wired in. */
+export type CheckedGlobal = PumpGlobalParams & { readonly [checkedGlobal]: true };
+
 /** A decoded Global account with the slot it was read at; `value` is null when it could not be read. */
 export interface PumpGlobalReading {
   readonly value: PumpGlobalParams | null;
@@ -39,7 +43,7 @@ export interface PumpGlobalReading {
  * The Global parameters, or a no-quote reason when they are missing, unusable, older than `maxAgeSlots`, or read after
  * `currentSlot` (a backtest must only see data as of its simulated moment).
  */
-export const freshGlobal = (reading: PumpGlobalReading, currentSlot: bigint, maxAgeSlots: bigint): Quote<PumpGlobalParams> => {
+export const freshGlobal = (reading: PumpGlobalReading, currentSlot: bigint, maxAgeSlots: bigint): Quote<CheckedGlobal> => {
   if (maxAgeSlots < 0n) throw new RangeError('max age must be >= 0');
   if (!reading.value) return noQuote('missing-params', 'pump Global account not read');
   if (reading.readAtSlot > currentSlot) return noQuote('stale-params', `pump Global read at slot ${reading.readAtSlot}, after the current slot ${currentSlot}`);
@@ -48,14 +52,14 @@ export const freshGlobal = (reading: PumpGlobalReading, currentSlot: bigint, max
   if (v.initialRealTokenReserves <= 0n || v.initialVirtualTokenReserves <= v.initialRealTokenReserves || v.tokenTotalSupply <= 0n || v.initialVirtualSolReserves <= 0n) {
     return noQuote('missing-params', 'pump Global parameters are not usable');
   }
-  return { ok: true, trade: reading.value };
+  return { ok: true, trade: v as CheckedGlobal };
 };
 
 export interface CurveFeeContext {
   /** `fee_tiers` from the pump FeeConfig (`8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt`). */
   readonly feeTiers: readonly FeeTier[];
-  /** Supply used for the tier's market cap: `Global.token_total_supply` for normal coins (pump-sdk `ONE_BILLION_SUPPLY`). */
-  readonly supply: bigint;
+  /** Checked Global parameters: `token_total_supply` is the tier's market-cap supply for normal coins (pump-sdk `ONE_BILLION_SUPPLY`). */
+  readonly global: CheckedGlobal;
   /** False when `BondingCurve.creator` is the default key: no creator fee is charged then. */
   readonly creatorFeeCharged: boolean;
   /** Coins priced differently (mayhem, Token-2022 transfer fee or hook) are refused. */
@@ -67,7 +71,7 @@ export interface CurveFeeContext {
  * rate; if one appears it is charged like the others (on the net quote, rounded up) so cost is never understated.
  */
 export const curveFees = (state: CurveState, ctx: CurveFeeContext): FeeSplit => {
-  const tier = selectFeeTier(ctx.feeTiers, marketCap(state.virtualQuoteReserves, state.virtualTokenReserves, ctx.supply));
+  const tier = selectFeeTier(ctx.feeTiers, marketCap(state.virtualQuoteReserves, state.virtualTokenReserves, ctx.global.tokenTotalSupply));
   return { lp: tier.lp, protocol: tier.protocol, creator: ctx.creatorFeeCharged ? tier.creator : (0 as Bps) };
 };
 
@@ -183,7 +187,7 @@ export const curveSell = (state: CurveState, tokens: bigint, ctx: CurveFeeContex
 };
 
 /** Share of the curve's sellable tokens already sold, in parts per million (floored). */
-export const curveProgressPpm = (state: CurveState, global: PumpGlobalParams): bigint => {
+export const curveProgressPpm = (state: CurveState, global: CheckedGlobal): bigint => {
   const { initialRealTokenReserves } = global;
   if (initialRealTokenReserves <= 0n) throw new RangeError('initial real token reserves must be > 0');
   if (state.complete) return PARTS_PER_MILLION;

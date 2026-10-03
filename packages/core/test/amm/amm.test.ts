@@ -5,7 +5,7 @@ import {
   effectiveQuoteReserve, poolBuyExactBase, poolBuyExactQuoteIn, poolFees, poolSell, selectFeeTier,
 } from '../../src/amm/index.ts';
 import { bps } from '../../src/units/index.ts';
-import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, PUMP_GLOBAL, PUMP_GLOBAL_SLOT, ok } from './helpers.ts';
+import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, CHECKED_GLOBAL, PUMP_GLOBAL, PUMP_GLOBAL_SLOT, ok } from './helpers.ts';
 
 const SOL = 1_000_000_000n;
 const freshCurve: CurveState = {
@@ -15,7 +15,7 @@ const freshCurve: CurveState = {
   realQuoteReserves: 0n,
   complete: false,
 };
-const curveCtx: CurveFeeContext = { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN };
+const curveCtx: CurveFeeContext = { feeTiers: PUMP_FEE_CONFIG.feeTiers, global: CHECKED_GLOBAL, creatorFeeCharged: true, coin: NORMAL_COIN };
 // A fresh graduate: ~206.9M tokens against ~85 SOL.
 const pool: PoolState = { baseReserve: 206_900_000_000_000n, quoteVault: 84_990_000_000n, virtualQuoteReserves: 0n };
 const poolCtx: PoolFeeContext = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1', buybackFeeBps: bps(5_000) };
@@ -149,9 +149,9 @@ describe('quote shapes', () => {
     const t = ok(curveBuyExactTokens(near, 1_000n, curveCtx));
     expect(t.tokens).toBe(1_000n);
     expect(t.after.complete).toBe(true);
-    expect(curveProgressPpm(t.after, PUMP_GLOBAL)).toBe(1_000_000n);
+    expect(curveProgressPpm(t.after, CHECKED_GLOBAL)).toBe(1_000_000n);
     expect(curveSell(t.after, 1n, curveCtx)).toMatchObject({ ok: false, reason: 'curve-complete' });
-    expect(curveProgressPpm(freshCurve, PUMP_GLOBAL)).toBe(0n);
+    expect(curveProgressPpm(freshCurve, CHECKED_GLOBAL)).toBe(0n);
   });
 
   test('buys past the tokens left are refused: the program behaviour there is not verified', () => {
@@ -162,9 +162,12 @@ describe('quote shapes', () => {
 
   test('pump Global parameters must be read and fresh', () => {
     const reading = { value: PUMP_GLOBAL, readAtSlot: PUMP_GLOBAL_SLOT };
-    expect(ok(freshGlobal(reading, PUMP_GLOBAL_SLOT + 100n, 150n))).toBe(PUMP_GLOBAL);
+    expect(ok(freshGlobal(reading, PUMP_GLOBAL_SLOT + 100n, 150n))).toEqual(PUMP_GLOBAL);
     expect(freshGlobal(reading, PUMP_GLOBAL_SLOT + 151n, 150n)).toMatchObject({ ok: false, reason: 'stale-params' });
     expect(freshGlobal({ value: null, readAtSlot: 0n }, PUMP_GLOBAL_SLOT, 150n)).toMatchObject({ ok: false, reason: 'missing-params' });
+    // Unchecked values cannot reach a quote: only freshGlobal produces a CheckedGlobal (typecheck enforces this line).
+    // @ts-expect-error raw Global parameters are not a CheckedGlobal
+    expect(curveProgressPpm(freshCurve, PUMP_GLOBAL)).toBe(0n);
     // A reading from after the current slot (a backtest must never see the future) is refused, not treated as fresh.
     expect(freshGlobal(reading, PUMP_GLOBAL_SLOT - 1n, 150n)).toMatchObject({ ok: false, reason: 'stale-params' });
     expect(freshGlobal({ value: { ...PUMP_GLOBAL, tokenTotalSupply: 0n }, readAtSlot: PUMP_GLOBAL_SLOT }, PUMP_GLOBAL_SLOT, 150n)).toMatchObject({ ok: false, reason: 'missing-params' });

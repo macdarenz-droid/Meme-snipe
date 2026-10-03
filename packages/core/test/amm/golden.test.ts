@@ -6,7 +6,7 @@ import {
   curveBuyExactQuoteIn, curveBuyExactTokens, curveFees, curveSell, effectiveQuoteReserve, poolBuyExactBase, poolBuyExactQuoteIn, poolSell,
 } from '../../src/amm/index.ts';
 import { bps } from '../../src/units/index.ts';
-import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, ok, readFixture } from './helpers.ts';
+import { AMM_FEE_CONFIG, CHECKED_GLOBAL, NORMAL_COIN, PUMP_FEE_CONFIG, ok, readFixture } from './helpers.ts';
 
 const DEFAULT_KEY = '11111111111111111111111111111111';
 type Str = Record<string, string>;
@@ -41,7 +41,7 @@ describe('pump curve golden vectors', () => {
       realTokenReserves: n(e.real_token_reserves) + (e.is_buy ? tok : -tok),
       complete: false,
     };
-    const ctx: CurveFeeContext = { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: 1_000_000_000_000_000n, creatorFeeCharged: e.creator !== DEFAULT_KEY, coin: NORMAL_COIN };
+    const ctx: CurveFeeContext = { feeTiers: PUMP_FEE_CONFIG.feeTiers, global: CHECKED_GLOBAL, creatorFeeCharged: e.creator !== DEFAULT_KEY, coin: NORMAL_COIN };
     const [a0] = v.args.map(BigInt) as [bigint, bigint];
     const t = !e.is_buy ? ok(curveSell(pre, a0, ctx)) : v.ixName === 'buy' ? ok(curveBuyExactTokens(pre, a0, ctx)) : ok(curveBuyExactQuoteIn(pre, a0, ctx));
     expect(t.tokens).toBe(tok);
@@ -158,7 +158,7 @@ describe('curve-completing buys', () => {
         virtualQuoteReserves: n(e.virtual_sol_reserves) - sol, virtualTokenReserves: n(e.virtual_token_reserves) + tok,
         realQuoteReserves: n(e.real_sol_reserves) - sol, realTokenReserves: tok, complete: false,
       };
-      const t = ok(curveBuyExactTokens(pre, tok, { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: 1_000_000_000_000_000n, creatorFeeCharged: e.creator !== DEFAULT_KEY, coin: NORMAL_COIN }));
+      const t = ok(curveBuyExactTokens(pre, tok, { feeTiers: PUMP_FEE_CONFIG.feeTiers, global: CHECKED_GLOBAL, creatorFeeCharged: e.creator !== DEFAULT_KEY, coin: NORMAL_COIN }));
       expect(t.quote).toBe(sol);
       expect(t.protocolFee).toBe(n(e.fee));
       expect(t.after.complete).toBe(true);

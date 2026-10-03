@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { FeeConfig, FeeSplit, Quote } from '../../src/amm/index.ts';
+import { type FeeConfig, type FeeSplit, type Quote, freshGlobal } from '../../src/amm/index.ts';
 import { bps } from '../../src/units/index.ts';
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -40,3 +40,5 @@ export const PUMP_GLOBAL = {
   poolMigrationFee: BigInt(g['poolMigrationFee']!),
 };
 export const PUMP_GLOBAL_SLOT = BigInt(g['readAtSlot']!);
+/** The fixture Global after `freshGlobal`, as quotes require. */
+export const CHECKED_GLOBAL = ok(freshGlobal({ value: PUMP_GLOBAL, readAtSlot: PUMP_GLOBAL_SLOT }, PUMP_GLOBAL_SLOT, 0n));
