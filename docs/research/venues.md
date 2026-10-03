@@ -158,9 +158,9 @@ Times are UTC with Melbourne (AEST) in brackets.
 | B2 | 434,319,990 | 07-21 14:23 (07-22 00:23) | Admin `SetBoostAuthority`, `ToggleBoost` | Yes: BOOST on for new coins. About 20% of migration liquidity is held back and spent by buy-and-burn in the first 5 minutes (2.6) | None |
 | B3 | 445,690,911 (fees), 445,691,021 (pump), 445,691,085 (PumpSwap); admin 445,691,266 | 09-09 19:30–19:32 (09-10 05:30–05:32) | Upgrades of all three; admin `InitializeQuoteControl`, `SetQuoteControlAdmin`, `SetExoticFlatFees` ×2, `UpdateCreatorFeeConfig` (pump and PumpSwap) | Yes: creator-fee config and token-quoted flat fees change. pump trades failed with Anchor error 3003 for about 10–30 slots after the upgrade, then resumed | None seen |
 | B4 | 446,462,733 (PumpSwap), 446,462,760 (pump), 446,465,969 (fees); admin 446,462,883 | 09-12 15:24–15:41 (09-13 01:24–01:41) | Upgrades of all three; admin `UpdateHolderRewardConfig`, `UpdateCreatorFeeConfig` ×2 | Yes: holder-reward coins (creator fee paid to holders) | TradeEvent, BuyEvent, SellEvent +16 bytes (`holder_rewards_bps`, `holder_rewards`) |
-| B5 | 447,228,373 | 09-15 10:34 (09-15 20:34) | pump upgrade | None seen | None seen |
-| B6 | 449,734,335 | 09-23 14:45 (09-24 00:45) | pump upgrade | None seen | None seen |
-| B7 | 452,654,882 / 452,654,932 / 452,655,002 | 10-02 15:47 (10-03 01:47) | Above | None on SOL markets | +8 bytes |
+| – | 447,228,373 | 09-15 10:34 (09-15 20:34) | pump upgrade (not a boundary) | None seen | None seen |
+| – | 449,734,335 | 09-23 14:45 (09-24 00:45) | pump upgrade (not a boundary) | None seen | None seen |
+| B5 | 452,654,882 / 452,654,932 / 452,655,002 | 10-02 15:47 (10-03 01:47) | Above | None on SOL markets | +8 bytes |
 
 Notes:
 - No pump_fees upgrade happened between 2026-07-01 and 09-09.

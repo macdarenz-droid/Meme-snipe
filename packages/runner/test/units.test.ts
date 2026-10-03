@@ -1,6 +1,7 @@
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { checkStartHealth, segmentAllowed, type Health } from '../src/contract.ts';
+import { item4 } from '../src/item4.ts';
 import { checkJournal } from '../src/journal.ts';
 import { makePlan } from '../src/plan.ts';
 import { buildReport, reportMarkdown, uptime, type RunMeta, type Sample } from '../src/report.ts';
@@ -13,11 +14,11 @@ const good = [
   J(1, 'a', 'start'),
   J(2, 'a', 'reconcile', { ok: true }),
   J(3, 'a', 'decision', { reasons: R }),
-  J(4, 'a', 'simulation', { trade: 't1', leg: 'entry' }),
+  J(4, 'a', 'simulation', { trade: 't1', leg: 'entry', outcome: 'simulated' }),
   J(5, 'a', 'entry', { trade: 't1', reasons: R }),
   J(6, 'b', 'start'),
   J(7, 'b', 'reconcile', { ok: true }),
-  J(8, 'b', 'simulation', { trade: 't1', leg: 'exit' }),
+  J(8, 'b', 'simulation', { trade: 't1', leg: 'exit', outcome: 'simulated' }),
   J(9, 'b', 'exit', { trade: 't1', reasons: R }),
 ];
 
@@ -29,11 +30,13 @@ describe('journal completeness', () => {
   it.each([
     ['a seq gap', good.filter((_, i) => i !== 3)],
     ['a repeated seq', [...good.slice(0, 5), J(5, 'b', 'start')]],
-    ['an entry before reconcile', [J(1, 'a', 'start'), J(2, 'a', 'simulation', { trade: 'x', leg: 'entry' }), J(3, 'a', 'entry', { trade: 'x', reasons: R })]],
+    ['an entry before reconcile', [J(1, 'a', 'start'), J(2, 'a', 'simulation', { trade: 'x', leg: 'entry', outcome: 'simulated' }), J(3, 'a', 'entry', { trade: 'x', reasons: R })]],
     ['an entry without its simulation', [J(1, 'a', 'start'), J(2, 'a', 'reconcile', { ok: true }), J(3, 'a', 'entry', { trade: 'x', reasons: R })]],
     ['a decision without reasons', [J(1, 'a', 'start'), J(2, 'a', 'decision', { reasons: [] })]],
     ['a boot that does not open with start', [J(1, 'a', 'start'), J(2, 'b', 'reconcile', { ok: true })]],
-    ['a failed reconcile', [J(1, 'a', 'start'), J(2, 'a', 'reconcile', { ok: false }), J(3, 'a', 'simulation', { trade: 'x', leg: 'entry' }), J(4, 'a', 'entry', { trade: 'x', reasons: R })]],
+    ['a simulation without an outcome', [J(1, 'a', 'start'), J(2, 'a', 'reconcile', { ok: true }), J(3, 'a', 'simulation', { trade: 'x', leg: 'entry' }), J(4, 'a', 'entry', { trade: 'x', reasons: R })]],
+    ['a simulation with an unknown outcome', [J(1, 'a', 'start'), J(2, 'a', 'reconcile', { ok: true }), J(3, 'a', 'simulation', { trade: 'x', leg: 'entry', outcome: 'fine' }), J(4, 'a', 'entry', { trade: 'x', reasons: R })]],
+    ['a failed reconcile', [J(1, 'a', 'start'), J(2, 'a', 'reconcile', { ok: false }), J(3, 'a', 'simulation', { trade: 'x', leg: 'entry', outcome: 'simulated' }), J(4, 'a', 'entry', { trade: 'x', reasons: R })]],
   ])('fails on %s', (_, lines) => {
     expect(checkJournal(lines.join('\n')).complete).toBe(false);
   });
@@ -85,7 +88,7 @@ describe('report', () => {
     .concat([{ id: 'feed-f', kind: 'feed' as never, plannedAt: 0, at: 0, pass: true, midTrade: undefined as never, recoveredMs: 1, notes: [], feed: 'f' } as never]);
   const samples = Array.from({ length: 11 }, (_, i) => sample(i * 10, true));
   it('passes every check on a clean run and labels the rehearsal', () => {
-    const r = buildReport(meta, samples, 10, 100, journal, drills, []);
+    const r = buildReport(meta, samples, 10, 100, journal, drills, [], item4([], 'rehearsal', false));
     expect(r.checks).toEqual(Object.fromEntries(Object.keys(r.checks).map((k) => [k, true])));
     expect(r.pass).toBe(true);
     expect(r.counts).toMatch(/Rehearsal: counts for none of §15 items 3, 4 or G3/);
@@ -102,7 +105,7 @@ describe('report', () => {
     ['run cut short', { end: 50 }, 'duration'],
     ['feed names changed', { samples: samples.map((s, i) => (i === 7 ? { ...s, feeds: 'f,g' } : s)) }, 'feeds_fixed'],
   ])('fails on %s', (_, over: { samples?: Sample[]; drills?: typeof drills; end?: number }, check) => {
-    const r = buildReport(meta, over.samples ?? samples, 10, over.end ?? 100, journal, over.drills ?? drills, []);
+    const r = buildReport(meta, over.samples ?? samples, 10, over.end ?? 100, journal, over.drills ?? drills, [], item4([], 'rehearsal', false));
     expect(r.checks[check]).toBe(false);
     expect(r.pass).toBe(false);
   });

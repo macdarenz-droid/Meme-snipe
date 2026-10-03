@@ -1,5 +1,6 @@
 // Journal completeness (RUN-1 accept: "journal completeness"). Pure: takes the file's text.
 import { NEEDS_REASONS, type JournalLine } from './contract.ts';
+import { isOutcome } from './item4.ts';
 
 export interface JournalReport {
   readonly lines: number;
@@ -67,6 +68,8 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
         simulations += 1;
         if (typeof l.trade !== 'string' || (l['leg'] !== 'entry' && l['leg'] !== 'exit')) add(`seq ${l.seq}: simulation without trade and leg`);
         else simulated.add(`${l.trade}|${l['leg']}`);
+        // TEST-2's DryRunRecord: without an outcome the leg cannot be scored for item 4.
+        if (!isOutcome(l['outcome'])) add(`seq ${l.seq}: simulation without an outcome`);
         break;
       case 'entry':
       case 'exit': {
