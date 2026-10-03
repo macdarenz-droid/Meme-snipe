@@ -97,14 +97,17 @@ export const G2_DEFAULTS = { minTradesFloor: 300, familyAlpha: 0.05, minControlS
 const G2_DIR = { minTradesFloor: 'min', familyAlpha: 'max', minControlSeeds: 'min' } as const;
 
 export const G3_DEFAULTS = {
-  minHours: 48, fillDiffMedianMax: 0.005, minPaperTradesForMean: 30, liveOnlyVetoRateMax: 0.1,
+  minHours: 48, fillDiffMedianMax: 0.005, fillDiffMax: 0.02, minPaperTradesForMean: 30, liveOnlyVetoRateMax: 0.1,
   minVetoedForGap: 10, minKeptForGap: 10, vetoBiasMax: 0.05, retainedLowerMin: 0,
+  minCandidatesForRate: 50, minRejectsForMix: 50, minFills: 20, minSimulations: 20, simSuccessMin: 0.95,
 };
-// Fewer paper trades needed before the mean is checked means the check applies more often: stricter. More scored
-// vetoed or kept trades before the gap is measured means the worst-case gap is used more often: stricter.
+// Every minimum sample is a floor: below it a comparison is inconclusive (extend the run), never agreement, so raising
+// it is stricter. More scored vetoed or kept trades before the gap is measured means the worst-case gap is used more
+// often: stricter.
 const G3_DIR = {
-  minHours: 'min', fillDiffMedianMax: 'max', minPaperTradesForMean: 'max', liveOnlyVetoRateMax: 'max',
+  minHours: 'min', fillDiffMedianMax: 'max', fillDiffMax: 'max', minPaperTradesForMean: 'min', liveOnlyVetoRateMax: 'max',
   minVetoedForGap: 'min', minKeptForGap: 'min', vetoBiasMax: 'max', retainedLowerMin: 'min',
+  minCandidatesForRate: 'min', minRejectsForMix: 'min', minFills: 'min', minSimulations: 'min', simSuccessMin: 'min',
 } as const;
 
 export const G4_DEFAULTS = { minTrades: 30, firstAttemptFailRateMax: 0.1, liveMinusPaperMedianMin: -0.01 };
@@ -119,6 +122,8 @@ const DEMOTION_DIR = { reverseWealth: 'max', miscoverageFactor: 'max', blockedEx
 
 /** Net returns can fall slightly below −100% (failed-attempt fees on a blocked exit); the e-process needs a fixed floor. */
 export const RETURN_FLOOR = -1.1;
+/** A net return at or below this is severe (`y_severe`, quant.md §1.2). */
+const SEVERE_RETURN = -0.5;
 
 const MS_PER_DAY = 86_400_000;
 const COVERAGE_WINDOW = 100;
@@ -222,7 +227,8 @@ export interface G1Input {
   readonly registry: readonly TrialRecord[];
   /**
    * Per-trial returns per time row (e.g. per day) for PBO, keyed by trialId. Must hold exactly the registry's trials
-   * (a subset would lower PBO), every one with the same rows.
+   * (a subset would lower PBO), every one with the same rows. The DSR clusters the trials by these series to count the
+   * effective number of independent trials.
    */
   readonly pboMatrix: Readonly<Record<string, readonly number[]>>;
   readonly pboBlocks?: number;
@@ -256,10 +262,11 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
     c.add('registry', false, `selected trial "${input.selectedTrialId}" is not in the experiment registry`);
   } else {
     try {
-      const d = deflatedSharpe(returns, input.registry);
+      const d = deflatedSharpe(returns, input.registry, input.pboMatrix);
       metrics.dsr = d.dsr;
       metrics.trials = d.trials;
-      c.add('DSR', d.dsr >= th.dsrMin, `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} trials (need >= ${th.dsrMin})`);
+      metrics.registeredTrials = d.registeredTrials;
+      c.add('DSR', d.dsr >= th.dsrMin, `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} effective trials (${d.registeredTrials} registered, ${d.clusters} clusters) (need >= ${th.dsrMin})`);
     } catch (e) {
       c.add('DSR', false, (e as Error).message);
     }
@@ -525,6 +532,17 @@ export interface G3Input {
   readonly dryRunReturns: readonly number[];
   /** The backtest holdout the dry run is compared with. */
   readonly holdout: SampleSummary;
+  /** The holdout's share of severe outcomes (`y_severe`: blocked, or a net return of −50% or worse). */
+  readonly holdoutSevereRate: number;
+  /** The agreement plan, registered before the run started. */
+  readonly registration: G3Registration;
+  /** When the run started (the injected clock's time); the plan must be registered before it. */
+  readonly dryRunStartMs: number;
+  /**
+   * Every paper entry and exit built as a real transaction and simulated against mainnet (TEST-2): attempts,
+   * successes, and the failures by error code.
+   */
+  readonly simulations: { readonly attempted: number; readonly succeeded: number; readonly errors: Readonly<Record<string, number>> };
   /** Lower bound of the holdout's mean net return: G2's `lower` for this universe (two-sided CI at its Holm level). */
   readonly holdoutLower: number;
   readonly candidates: { readonly dryRunCount: number; readonly dryRunHours: number; readonly backtestCount: number; readonly backtestHours: number };
@@ -539,6 +557,16 @@ export interface G3Input {
   /** |paper fill − simulated transaction amount| per simulated entry or exit, as a fraction of notional. */
   readonly fillDifferences: readonly number[];
   readonly parityTestPassed: boolean;
+}
+
+/**
+ * What "agrees" means for the dry run, fixed before it starts (supervisor ruling after external review, STATS-1b).
+ * The thresholds can only tighten G3_DEFAULTS. Simulation error codes not listed here are a disagreement.
+ */
+export interface G3Registration {
+  readonly registeredAtMs: number;
+  readonly thresholds: Partial<typeof G3_DEFAULTS>;
+  readonly expectedSimulationErrors: readonly string[];
 }
 
 /** Paper outcomes of the live-only-vetoed candidates, as if entered. */
@@ -578,7 +606,9 @@ const welchBounds = (a: readonly number[], b: readonly number[], alpha = 0.05): 
 };
 
 /**
- * G3 Live dry-run consistency, ARCHITECTURE.md §14. Besides rates, reject mix and fills, it bounds the live-only veto
+ * G3 Live dry-run consistency, ARCHITECTURE.md §14: does the dry run agree with the backtest? "Agrees" is registered
+ * before the run (G3Registration); every comparison has a minimum sample, and below it the answer is inconclusive
+ * ('not-proven': extend the run), never agreement. The notes say agrees, disagrees or inconclusive. It also bounds the live-only veto
  * bias (review STATS-1b): the backtest keeps trades live would veto, so the retained strategy's expectancy is the holdout
  * mean minus v·Δ, Δ the mean of vetoed candidates (scored as if entered) minus the mean of kept trades. The gate needs
  * holdoutLower − v₉₅·max(0, Δ₉₅) − execution allowance > 0, with v₉₅ the Clopper–Pearson and Δ₉₅ the Welch one-sided
@@ -589,17 +619,25 @@ const welchBounds = (a: readonly number[], b: readonly number[], alpha = 0.05): 
  * correlation); the run says so.
  */
 export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>): GateResult => {
-  const th = tighten('G3', G3_DEFAULTS, G3_DIR, overrides);
+  // The registered plan tightens the defaults; overrides can only tighten the plan further.
+  const th = tighten('G3', tighten('G3', G3_DEFAULTS, G3_DIR, input.registration.thresholds), G3_DIR, overrides);
   const c = new Checks();
   const notes: string[] = [];
-  /** Failed checks that a longer run can clear. */
+  /** Failed checks that a longer run can clear: too little evidence is inconclusive, never agreement. */
   const extend = new Set<string>();
+  const short = (name: string, detail: string): void => {
+    c.add(name, false, `${detail}: inconclusive, extend the dry run`);
+    extend.add(name);
+  };
   const m = input.dryRunReturns.length;
   const metrics: Record<string, number | null> = { dryRunTrades: m, dryRunHours: input.dryRunHours };
   c.add('qualifying run', input.qualifyingRun, input.qualifyingRun ? 'the qualifying dry run' : 'a rehearsal run counts for no gate');
+  c.add('registration', input.registration.registeredAtMs <= input.dryRunStartMs,
+    `agreement plan registered at ${input.registration.registeredAtMs}, run started at ${input.dryRunStartMs} (need registered before the run)`);
   c.add('duration', input.dryRunHours >= th.minHours, `${fmt(input.dryRunHours)} h (need >= ${th.minHours})`);
   c.add('parity', input.parityTestPassed, input.parityTestPassed ? 'parity passed on the recorded dry-run data' : 'parity failed on the recorded dry-run data');
 
+  // Paper outcomes against the holdout's expected distribution: the mean and the severe-outcome share.
   if (m >= th.minPaperTradesForMean) {
     const dm = mean(input.dryRunReturns);
     const pi = meanPredictiveInterval(input.holdout, m, 0.9);
@@ -607,21 +645,32 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
     metrics.predictiveLower90 = pi.lower;
     metrics.predictiveUpper90 = pi.upper;
     c.add('mean', dm >= pi.lower && dm <= pi.upper, `dry-run mean ${fmt(dm)} vs holdout 90% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}] for ${m} trades`);
+    const severe = input.dryRunReturns.filter((x) => x <= SEVERE_RETURN).length;
+    const ci = clopperPearsonInterval(severe, m);
+    metrics.dryRunSevereRate = severe / m;
+    c.add('severe share', input.holdoutSevereRate >= ci.lower && input.holdoutSevereRate <= ci.upper,
+      `dry run ${severe}/${m} severe, 95% interval [${fmt(ci.lower)}, ${fmt(ci.upper)}] vs holdout ${fmt(input.holdoutSevereRate)}`);
   } else {
-    notes.push(`${m} paper trades (fewer than ${th.minPaperTradesForMean}): consistency rests on the candidate rate and the reject mix`);
+    short('paper outcomes', `${m} paper trades (need >= ${th.minPaperTradesForMean})`);
   }
 
   const k = input.candidates;
-  const rate = ratesConsistent(k.dryRunCount, k.dryRunHours, k.backtestCount, k.backtestHours);
   metrics.candidateRateDryRun = k.dryRunCount / k.dryRunHours;
   metrics.candidateRateBacktest = k.backtestCount / k.backtestHours;
-  c.add('candidate rate', rate.consistent,
-    `${fmt(metrics.candidateRateDryRun)}/h vs ${fmt(metrics.candidateRateBacktest)}/h (expected share ${fmt(rate.expectedShare)} vs 95% interval [${fmt(rate.lower)}, ${fmt(rate.upper)}])`);
+  if (k.dryRunCount < th.minCandidatesForRate) {
+    short('candidate rate', `${k.dryRunCount} dry-run candidates (need >= ${th.minCandidatesForRate})`);
+  } else {
+    const rate = ratesConsistent(k.dryRunCount, k.dryRunHours, k.backtestCount, k.backtestHours);
+    c.add('candidate rate', rate.consistent,
+      `${fmt(metrics.candidateRateDryRun)}/h vs ${fmt(metrics.candidateRateBacktest)}/h (expected share ${fmt(rate.expectedShare)} vs 95% interval [${fmt(rate.lower)}, ${fmt(rate.upper)}])`);
+  }
 
   const dryTotal = Object.values(input.rejectMix.dryRun).reduce((s, x) => s + x, 0);
   const btTotal = Object.values(input.rejectMix.backtest).reduce((s, x) => s + x, 0);
-  if (dryTotal === 0 || btTotal === 0) {
-    c.add('reject mix', false, `no rejects to compare (dry run ${dryTotal}, backtest ${btTotal})`);
+  if (btTotal === 0) {
+    c.add('reject mix', false, 'no backtest rejects to compare');
+  } else if (dryTotal < th.minRejectsForMix) {
+    short('reject mix', `${dryTotal} dry-run rejects (need >= ${th.minRejectsForMix})`);
   } else {
     const reasons = [...new Set([...Object.keys(input.rejectMix.dryRun), ...Object.keys(input.rejectMix.backtest)])].sort();
     for (const r of reasons) {
@@ -633,23 +682,47 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
     }
   }
 
+  // Executable amounts (TEST-2's bounds: median <= 0.5 points, each <= 2 points).
   let fillUpper = Infinity;
   let fillMean = Infinity;
-  if (input.fillDifferences.length === 0) {
-    c.add('fills', false, 'no simulated fills to compare');
-  } else {
-    const abs = input.fillDifferences.map(Math.abs);
-    const md = median(abs);
-    metrics.fillDiffMedian = md;
-    c.add('fills', md <= th.fillDiffMedianMax, `median |paper − simulated| ${fmt(md)} (need <= ${th.fillDiffMedianMax})`);
+  const abs = input.fillDifferences.map(Math.abs);
+  if (abs.length > 0) {
     fillMean = mean(abs);
     fillUpper = abs.length >= 2 ? fillMean + studentTQuantile(0.95, abs.length - 1) * sd(abs) / Math.sqrt(abs.length) : Math.max(...abs);
+    metrics.fillDiffMedian = median(abs);
+    metrics.fillDiffMax = Math.max(...abs);
+  }
+  if (abs.length > 0 && metrics.fillDiffMax! > th.fillDiffMax) {
+    c.add('fills', false, `largest |paper − simulated| ${fmt(metrics.fillDiffMax)} (need each <= ${th.fillDiffMax})`);
+  } else if (abs.length < th.minFills) {
+    short('fills', `${abs.length} simulated fills (need >= ${th.minFills})`);
+  } else {
+    c.add('fills', metrics.fillDiffMedian! <= th.fillDiffMedianMax,
+      `median |paper − simulated| ${fmt(metrics.fillDiffMedian)} (need <= ${th.fillDiffMedianMax}), largest ${fmt(metrics.fillDiffMax)}`);
+  }
+
+  // Transaction behaviour: simulation success and the error mix.
+  const sim = input.simulations;
+  const simFailed = sim.attempted - sim.succeeded;
+  const errTotal = Object.values(sim.errors).reduce((s, x) => s + x, 0);
+  if (!(sim.succeeded >= 0 && simFailed >= 0 && errTotal === simFailed)) {
+    c.add('simulations', false, `${sim.succeeded} of ${sim.attempted} succeeded but ${errTotal} errors are listed (need every failure listed once)`);
+  } else {
+    const unexpected = Object.entries(sim.errors).filter(([code, n]) => n > 0 && !input.registration.expectedSimulationErrors.includes(code)).map(([code, n]) => `${code} ×${n}`);
+    c.add('simulation errors', unexpected.length === 0, unexpected.length === 0 ? 'only registered error codes' : `unregistered error codes: ${unexpected.join(', ')}`);
+    if (sim.attempted < th.minSimulations) {
+      short('simulations', `${sim.attempted} simulated transactions (need >= ${th.minSimulations})`);
+    } else {
+      metrics.simSuccessRate = sim.succeeded / sim.attempted;
+      c.add('simulations', metrics.simSuccessRate >= th.simSuccessMin,
+        `${sim.succeeded}/${sim.attempted} = ${fmt(metrics.simSuccessRate)} simulated successfully (need >= ${th.simSuccessMin})`);
+    }
   }
 
   const v = input.liveOnlyVetoes;
   if (v.eligible === 0) {
     c.add('live-only vetoes', false, 'no eligible candidates in the run');
-    return { ...result('G3', c, statusFrom(c), metrics), notes };
+    return { ...result('G3', c, statusFrom(c), metrics), notes: [...notes, 'disagrees'] };
   }
   const vRate = v.vetoed / v.eligible;
   const vUpper = clopperPearsonUpper(v.vetoed, v.eligible);
@@ -714,7 +787,7 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
 
   const failed = c.list.filter((x) => !x.passed).map((x) => x.name);
   const status: GateStatus = failed.length === 0 ? 'pass' : failed.every((f) => extend.has(f)) ? 'not-proven' : 'fail';
-  if (status === 'not-proven') notes.push('not proven: extend the dry run');
+  notes.push(status === 'pass' ? 'agrees' : status === 'fail' ? 'disagrees' : 'inconclusive: extend the dry run');
   return { ...result('G3', c, status, metrics), notes };
 };
 

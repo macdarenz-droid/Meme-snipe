@@ -344,7 +344,11 @@ const g3Pass: G3Input = {
   holdout: { n: holdout.length, mean: mean(holdout.map((t) => t.rNet)), sd: sd(holdout.map((t) => t.rNet)) },
   candidates: { dryRunCount: 980, dryRunHours: 49, backtestCount: 20_000, backtestHours: 1000 },
   rejectMix: { dryRun: { H8: 210, H9: 700, H11: 70 }, backtest: { H8: 4300, H9: 14_200, H11: 1500 } },
-  fillDifferences: [0.001, 0.002, 0.004, 0.003, 0.012], parityTestPassed: true,
+  fillDifferences: Array.from({ length: 24 }, (_, i) => [0.001, 0.002, 0.004, 0.003, 0.012, -0.002][i % 6]!), parityTestPassed: true,
+  holdoutSevereRate: holdout.filter((t) => t.ySevere).length / holdout.length,
+  registration: { registeredAtMs: NOW - 2 * DAY, thresholds: {}, expectedSimulationErrors: ['BlockhashNotFound'] },
+  dryRunStartMs: NOW - DAY,
+  simulations: { attempted: 120, succeeded: 118, errors: { BlockhashNotFound: 2 } },
   // The 20 vetoed candidates scored as if entered, like the kept trades; the holdout's lower bound from G2.
   vetoCounterfactuals: { returns: bracketTrades(42, 0.1, 1, 20).map((t) => t.rNet), censored: 0 },
   holdoutLower: 0.06, returnCap: 0.3,
@@ -370,12 +374,54 @@ describe('G3 live dry-run consistency', () => {
     const r = gateG3({ ...g3Pass, dryRunReturns: dry.map((x) => x - 0.3) });
     expect(r.reasons.some((x) => x.startsWith('mean'))).toBe(true);
   });
-  test('fewer than 30 paper trades: no mean check, rates and reject mix decide, and the result says so', () => {
-    const few = gateG3({ ...g3Pass, dryRunReturns: dry.slice(0, 29).map((x) => x - 0.3) });
-    expect(few.passed).toBe(true);
-    expect(few.checks.some((c) => c.name === 'mean')).toBe(false);
-    expect(few.notes[0]).toMatch(/29 paper trades.*candidate rate and the reject mix/);
-    expect(gateG3({ ...g3Pass, dryRunReturns: [] }).passed).toBe(true);
+  test('fewer than 30 paper trades is inconclusive, never agreement (supervisor ruling after external review)', () => {
+    const few = gateG3({ ...g3Pass, dryRunReturns: dry.slice(0, 29) });
+    expect(few).toMatchObject({ passed: false, status: 'not-proven' });
+    expect(few.reasons.join()).toMatch(/paper outcomes: 29 paper trades \(need >= 30\): inconclusive, extend the dry run/);
+    expect(few.notes).toContain('inconclusive: extend the dry run');
+    expect(gateG3({ ...g3Pass, dryRunReturns: [] }).status).toBe('not-proven');
+  });
+  // Pre-registered agreement (STATS-1b item 3): agree, disagree and inconclusive for each comparison.
+  test('agrees: every comparison inside its registered tolerance with enough evidence', () => {
+    const r = gateG3(g3Pass);
+    expect(r.status).toBe('pass');
+    expect(r.notes).toContain('agrees');
+    expect(r.metrics.simSuccessRate).toBeCloseTo(118 / 120, 12);
+  });
+  test('disagrees: simulation success under 95%, an unregistered error code, one fill off by more than 2 points, or a different severe share', () => {
+    const lowSim = gateG3({ ...g3Pass, simulations: { attempted: 120, succeeded: 110, errors: { BlockhashNotFound: 10 } } });
+    expect(lowSim.status).toBe('fail');
+    expect(lowSim.notes).toContain('disagrees');
+    expect(gateG3({ ...g3Pass, simulations: { attempted: 120, succeeded: 118, errors: { SlippageExceeded: 2 } } }).reasons.join()).toMatch(/unregistered error codes: SlippageExceeded ×2/);
+    expect(gateG3({ ...g3Pass, simulations: { attempted: 120, succeeded: 118, errors: {} } }).status).toBe('fail');
+    expect(gateG3({ ...g3Pass, fillDifferences: [...g3Pass.fillDifferences, 0.03] }).reasons.join()).toMatch(/largest \|paper − simulated\| 0.03/);
+    // A small fill sample with one fill off by more than 2 points already disagrees.
+    expect(gateG3({ ...g3Pass, fillDifferences: [0.001, 0.025] }).status).toBe('fail');
+    const severe = gateG3({ ...g3Pass, dryRunReturns: dry.map((x, i) => (i % 3 === 0 ? -0.9 : x)), holdout: { ...g3Pass.holdout, sd: 2 } });
+    expect(severe.reasons.join()).toMatch(/severe share/);
+    expect(severe.status).toBe('fail');
+  });
+  test('inconclusive: too few candidates, rejects, fills or simulations', () => {
+    const cases: Partial<G3Input>[] = [
+      { candidates: { ...g3Pass.candidates, dryRunCount: 49 } },
+      { rejectMix: { dryRun: { H8: 10, H9: 30, H11: 5 }, backtest: g3Pass.rejectMix.backtest } },
+      { fillDifferences: g3Pass.fillDifferences.slice(0, 19) },
+      { simulations: { attempted: 19, succeeded: 19, errors: {} } },
+    ];
+    for (const over of cases) {
+      const r = gateG3({ ...g3Pass, ...over });
+      expect(r.status, JSON.stringify(over)).toBe('not-proven');
+      expect(r.reasons.join()).toMatch(/inconclusive, extend the dry run/);
+    }
+  });
+  test('the plan is registered before the run, and it can only tighten the defaults', () => {
+    const late = gateG3({ ...g3Pass, registration: { ...g3Pass.registration, registeredAtMs: g3Pass.dryRunStartMs + 1 } });
+    expect(late.status).toBe('fail');
+    expect(late.reasons[0]).toMatch(/^registration/);
+    expect(() => gateG3({ ...g3Pass, registration: { ...g3Pass.registration, thresholds: { simSuccessMin: 0.9 } } })).toThrow(/only be tightened/);
+    expect(() => gateG3({ ...g3Pass, registration: { ...g3Pass.registration, thresholds: { minPaperTradesForMean: 20 } } })).toThrow(/only be tightened/);
+    expect(gateG3({ ...g3Pass, registration: { ...g3Pass.registration, thresholds: { minPaperTradesForMean: 100 } } }).status).toBe('not-proven');
+    expect(() => gateG3({ ...g3Pass, registration: { ...g3Pass.registration, thresholds: { simSuccessMin: 0.99 } } }, { simSuccessMin: 0.97 })).toThrow(/only be tightened/);
   });
   test('a rehearsal run counts for nothing', () => {
     expect(gateG3({ ...g3Pass, qualifyingRun: false }).reasons[0]).toMatch(/^qualifying run/);
