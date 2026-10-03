@@ -49,3 +49,38 @@ export interface FeeConfig {
   /** Canonical pools quoted in a mint that is neither SOL nor a listed stable; all-zero means "use flatFees". */
   readonly exoticFlatFees: FeeSplit;
 }
+
+/** Why a state cannot be quoted. These are market facts, not caller mistakes: the answer is "no trade". */
+export type NoQuoteReason =
+  /** The bonding curve has completed; trade on the graduation pool. */
+  | 'curve-complete'
+  /** No usable reserves (an empty pool, or effective quote reserve <= 0). */
+  | 'no-liquidity'
+  /** The trade needs more than the reserves hold. */
+  | 'exceeds-reserves'
+  /** The trade would deliver nothing (fees take all proceeds, or the spend buys no tokens). */
+  | 'zero-output'
+  /** A coin this module does not price as normal: mayhem mode, or a Token-2022 transfer fee or transfer hook. */
+  | 'unsupported-coin';
+
+export type Quote<T> =
+  | { readonly ok: true; readonly trade: T }
+  | { readonly ok: false; readonly reason: NoQuoteReason; readonly detail: string };
+
+export const noQuote = (reason: NoQuoteReason, detail: string): Quote<never> => ({ ok: false, reason, detail });
+
+/**
+ * Coin properties that change pricing in ways these quotes do not model. Read them from the curve or pool account
+ * (`is_mayhem_mode`) and the mint's Token-2022 extensions. Any of them true refuses the quote.
+ */
+export interface CoinFlags {
+  readonly mayhemMode: boolean;
+  readonly transferFee: boolean;
+  readonly transferHook: boolean;
+}
+
+export const unsupportedCoin = (coin: CoinFlags): Quote<never> | null =>
+  coin.mayhemMode ? noQuote('unsupported-coin', 'mayhem-mode coin')
+    : coin.transferFee ? noQuote('unsupported-coin', 'Token-2022 transfer fee')
+      : coin.transferHook ? noQuote('unsupported-coin', 'Token-2022 transfer hook')
+        : null;

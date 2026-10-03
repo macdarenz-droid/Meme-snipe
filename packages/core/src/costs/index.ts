@@ -4,7 +4,7 @@
 // Contract: an unquotable state (completed curve, effective reserve <= 0, a spend that buys nothing, a sell larger
 // than the real reserves) throws RangeError or CurveCompleteError from the quote; callers treat any throw as no trade.
 import {
-  type CurveFeeContext, type CurveState, type PoolFeeContext, type PoolState,
+  type CurveFeeContext, type NoQuoteReason, type Quote, type CurveState, type PoolFeeContext, type PoolState,
   curveBuyExactQuoteIn, curveSell, poolBuyExactQuoteIn, poolSell,
 } from '../amm/index.ts';
 import { type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../units/index.ts';
@@ -36,29 +36,41 @@ export interface RoundTrip {
   readonly entryImpact: bigint;
   readonly exitImpact: bigint;
 }
-export type RoundTripQuoter = (spend: bigint) => RoundTrip;
+export type RoundTripQuoter = (spend: bigint) => Quote<RoundTrip>;
 
 export const pumpCurveRoundTrip = (state: CurveState, ctx: CurveFeeContext): RoundTripQuoter => (spend) => {
   const buy = curveBuyExactQuoteIn(state, spend, ctx);
-  if (buy.tokens <= 0n) throw new RangeError('spend buys no tokens');
-  const sell = curveSell({ ...state, realQuoteReserves: state.realQuoteReserves + buy.quote, realTokenReserves: buy.after.realTokenReserves }, buy.tokens, ctx);
+  if (!buy.ok) return buy;
+  const b = buy.trade;
+  const sell = curveSell({ ...state, realQuoteReserves: state.realQuoteReserves + b.quote, realTokenReserves: b.after.realTokenReserves }, b.tokens, ctx);
+  if (!sell.ok) return sell;
+  const x = sell.trade;
   return {
-    spend, paid: buy.userQuote, tokens: buy.tokens, proceeds: sell.userQuote,
-    entryFees: buy.protocolFee + buy.creatorFee, exitFees: sell.protocolFee + sell.creatorFee,
-    entryImpact: buy.impact, exitImpact: sell.impact,
+    ok: true,
+    trade: {
+      spend, paid: b.userQuote, tokens: b.tokens, proceeds: x.userQuote,
+      entryFees: b.lpFee + b.protocolFee + b.creatorFee, exitFees: x.lpFee + x.protocolFee + x.creatorFee,
+      entryImpact: b.impact, exitImpact: x.impact,
+    },
   };
 };
 
 export const pumpSwapRoundTrip = (pool: PoolState, ctx: PoolFeeContext): RoundTripQuoter => (spend) => {
   const buy = poolBuyExactQuoteIn(pool, spend, ctx);
-  if (buy.base <= 0n) throw new RangeError('spend buys no tokens');
+  if (!buy.ok) return buy;
+  const b = buy.trade;
   // Same effective reserve as before entry; the vault holds what the entry added.
-  const added = buy.quote + buy.lpFee;
-  const sell = poolSell({ ...pool, quoteVault: pool.quoteVault + added, virtualQuoteReserves: pool.virtualQuoteReserves - added }, buy.base, ctx);
+  const added = b.quote + b.lpFee;
+  const sell = poolSell({ ...pool, quoteVault: pool.quoteVault + added, virtualQuoteReserves: pool.virtualQuoteReserves - added }, b.base, ctx);
+  if (!sell.ok) return sell;
+  const x = sell.trade;
   return {
-    spend, paid: buy.userQuote, tokens: buy.base, proceeds: sell.userQuote,
-    entryFees: buy.lpFee + buy.protocolFee + buy.creatorFee, exitFees: sell.lpFee + sell.protocolFee + sell.creatorFee,
-    entryImpact: buy.impact, exitImpact: sell.impact,
+    ok: true,
+    trade: {
+      spend, paid: b.userQuote, tokens: b.base, proceeds: x.userQuote,
+      entryFees: b.lpFee + b.protocolFee + b.creatorFee, exitFees: x.lpFee + x.protocolFee + x.creatorFee,
+      entryImpact: b.impact, exitImpact: x.impact,
+    },
   };
 };
 
@@ -170,20 +182,25 @@ export interface CostAtSize {
 }
 
 /** Per-leg and round-trip cost of spending `spend` lamports. `extraPpm` adds other proportional costs (e.g. a router fee). */
-export const costAtSize = (quote: RoundTripQuoter, spend: bigint, net: NetworkPolicy, rent: RentInputs, extraPpm = 0n): CostAtSize => {
+export const costAtSize = (quote: RoundTripQuoter, spend: bigint, net: NetworkPolicy, rent: RentInputs, extraPpm = 0n): Quote<CostAtSize> => {
   if (extraPpm < 0n) throw new RangeError('extra proportional cost must be >= 0');
-  const roundTrip = quote(spend);
+  const q = quote(spend);
+  if (!q.ok) return q;
+  const roundTrip = q.trade;
   const extra = mulDiv(roundTrip.paid, extraPpm, PPM, 'ceil');
   const proportional = roundTrip.entryFees + roundTrip.exitFees + roundTrip.entryImpact + roundTrip.exitImpact + extra;
   const fixed = fixedCosts(net, rent);
-  return { roundTrip, proportional, vPpm: mulDiv(proportional, PPM, roundTrip.paid, 'ceil'), fixed, totalLoss: proportional + fixed.total };
+  return { ok: true, trade: { roundTrip, proportional, vPpm: mulDiv(proportional, PPM, roundTrip.paid, 'ceil'), fixed, totalLoss: proportional + fixed.total } };
 };
 
-/** Round-trip price impact at `spend`, ppm of what was paid, rounded up. */
-export const roundTripImpactPpm = (quote: RoundTripQuoter, spend: bigint): bigint => {
+/** Round-trip price impact at `spend`, ppm of what was paid, rounded up; null when the size cannot be quoted. */
+export const roundTripImpactPpm = (quote: RoundTripQuoter, spend: bigint): bigint | null => {
   const r = quote(spend);
-  return mulDiv(r.entryImpact + r.exitImpact, PPM, r.paid, 'ceil');
+  return r.ok ? mulDiv(r.trade.entryImpact + r.trade.exitImpact, PPM, r.trade.paid, 'ceil') : null;
 };
+
+// Stands in for "cannot be quoted at this size" in the searches below: worse than any real measure.
+const UNQUOTABLE = 10n ** 30n;
 
 /** Argmax of a unimodal `f` over integers in [lo, hi] (ternary search, then the best of the last few points). */
 const peakOf = (lo: bigint, hi: bigint, f: (q: bigint) => bigint): bigint => {
@@ -217,6 +234,8 @@ const largestWithin = (lo: bigint, hi: bigint, limit: bigint, measure: (q: bigin
 };
 
 export type NoTradeReason =
+  /** The venue cannot be quoted at the minimum size; `quoteReason` says why. */
+  | 'unquotable'
   | 'caps-below-minimum'
   | 'impact-above-limit'
   | 'edge-not-above-cost'
@@ -260,7 +279,7 @@ interface SizeCommon {
 
 export type SizeDecision =
   | (SizeCommon & { readonly trade: true; readonly range: SizeRange; readonly breakEvenLamports: bigint; readonly expectedNetAtMaxUsd: MicroUsd })
-  | (SizeCommon & { readonly trade: false; readonly reason: NoTradeReason; readonly breakEvenLamports?: bigint });
+  | (SizeCommon & { readonly trade: false; readonly reason: NoTradeReason; readonly quoteReason?: NoQuoteReason; readonly breakEvenLamports?: bigint });
 
 const minOf = <K extends string>(entries: readonly (readonly [K, bigint])[]): readonly [K, bigint] =>
   entries.reduce((a, b) => (b[1] < a[1] ? b : a));
@@ -289,20 +308,24 @@ export const feasibleSize = (input: SizeInput): SizeDecision => {
   ]);
   const lo = microUsdToLamports(policy.minNotional, solPrice, 'ceil');
   let hi = maxUsdRaw < policy.minNotional ? 0n : microUsdToLamports(maxUsdRaw as MicroUsd, solPrice, 'floor');
-  const reject = (reason: NoTradeReason, vPpm: bigint, breakEven?: bigint): SizeDecision => ({
-    trade: false, reason, fixed, vPpm, maxUsd: maxUsdRaw as MicroUsd, bindingCap, ...(breakEven === undefined ? {} : { breakEvenLamports: breakEven }),
+  const reject = (reason: NoTradeReason, vPpm: bigint, quoteReason?: NoQuoteReason): SizeDecision => ({
+    trade: false, reason, fixed, vPpm, maxUsd: maxUsdRaw as MicroUsd, bindingCap, ...(quoteReason === undefined ? {} : { quoteReason }),
   });
   if (hi < lo) return reject('caps-below-minimum', 0n);
+  const first = quote(lo);
+  if (!first.ok) return reject('unquotable', 0n, first.reason);
 
   // Depth from the pool itself: the largest size whose round-trip impact stays within policy.
-  const impactCap = largestWithin(lo, hi, policy.maxImpactPpm, (q) => roundTripImpactPpm(quote, q));
+  const impactCap = largestWithin(lo, hi, policy.maxImpactPpm, (q) => roundTripImpactPpm(quote, q) ?? UNQUOTABLE);
   if (impactCap === null) { bindingCap = 'impactLimit'; return reject('impact-above-limit', 0n); }
   if (impactCap < hi) { hi = impactCap; bindingCap = 'impactLimit'; maxUsdRaw = lamportsToMicroUsd(lamports(hi), solPrice, 'floor'); }
 
   const allowance = mulDiv(ROUND_TRIP_ROUNDING_LAMPORTS, PPM, lo, 'ceil');
   // Fees and impact also take their share of the gain: net ~ q * (g - v - g*v), so the cross term counts as cost.
   const vAt = (q: bigint) => {
-    const v = costAtSize(quote, q, network, rent, extraPpm).vPpm + allowance;
+    const c = costAtSize(quote, q, network, rent, extraPpm);
+    if (!c.ok) return UNQUOTABLE;
+    const v = c.trade.vPpm + allowance;
     return v + mulDiv(edgePpm > 0n ? edgePpm : 0n, v, PPM, 'ceil');
   };
   if (edgePpm <= vAt(lo)) return reject('edge-not-above-cost', vAt(lo));

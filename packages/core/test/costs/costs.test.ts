@@ -6,8 +6,8 @@ import {
   BASE_FEE_PER_SIGNATURE, PPM, ROUND_TRIP_ROUNDING_LAMPORTS,
   costAtSize, expectedFailureCost, feasibleSize, fixedCosts, priorityFeeLamports, pumpCurveRoundTrip, pumpSwapRoundTrip,
 } from '../../src/costs/index.ts';
-import { type MicroUsd, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
-import { AMM_FEE_CONFIG, PUMP_FEE_CONFIG } from '../amm/helpers.ts';
+import { type MicroUsd, bps, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
+import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_FEE_CONFIG, ok } from '../amm/helpers.ts';
 
 const SOL = 1_000_000_000n;
 const price = solPriceMicroUsd('119.37');
@@ -18,9 +18,9 @@ const curve: CurveState = {
   realQuoteReserves: 0n,
   complete: false,
 };
-const curveCtx = { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: PUMP_CURVE_PARAMS.tokenTotalSupply, creatorFeeCharged: true };
+const curveCtx = { feeTiers: PUMP_FEE_CONFIG.feeTiers, supply: PUMP_CURVE_PARAMS.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN };
 const pool: PoolState = { baseReserve: 150_000_000_000_000n, quoteVault: 80n * SOL, virtualQuoteReserves: -2n * SOL };
-const poolCtx = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_CURVE_PARAMS.tokenTotalSupply, creatorFeeCharged: true };
+const poolCtx = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol' as const, baseSupply: PUMP_CURVE_PARAMS.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1' as const, buybackFeeBps: bps(5_000) };
 
 // docs/research/execution.md section 8: base 5,000 + priority 20,000 + Sender tip 5,000 per transaction.
 const network: NetworkPolicy = {
@@ -78,13 +78,13 @@ describe('fixed costs', () => {
 
 describe('round trip with zero price move', () => {
   for (const [name, quote, buy, sell] of [
-    ['pump curve', pumpCurveRoundTrip(curve, curveCtx), (s: bigint) => curveBuyExactQuoteIn(curve, s, curveCtx), (t: bigint) => curveSell({ ...curve, realQuoteReserves: 10n * SOL }, t, curveCtx)],
-    ['PumpSwap', pumpSwapRoundTrip(pool, poolCtx), (s: bigint) => poolBuyExactQuoteIn(pool, s, poolCtx), (t: bigint) => poolSell(pool, t, poolCtx)],
+    ['pump curve', pumpCurveRoundTrip(curve, curveCtx), (s: bigint) => ok(curveBuyExactQuoteIn(curve, s, curveCtx)), (t: bigint) => ok(curveSell({ ...curve, realQuoteReserves: 10n * SOL }, t, curveCtx))],
+    ['PumpSwap', pumpSwapRoundTrip(pool, poolCtx), (s: bigint) => ok(poolBuyExactQuoteIn(pool, s, poolCtx)), (t: bigint) => ok(poolSell(pool, t, poolCtx))],
   ] as const) {
     test(`${name}: loses exactly fees plus impact plus fixed costs`, () => {
       for (const dollars of [2, 3.33, 5]) {
         const spend = microUsdToLamports(usd(dollars), price, 'floor');
-        const c = costAtSize(quote, spend, network, rent);
+        const c = ok(costAtSize(quote, spend, network, rent));
         // Independent replay: buy, then sell the same tokens into the untouched pre-entry state.
         const b = buy(spend);
         const tokens = 'tokens' in b ? b.tokens : b.base;
@@ -103,15 +103,15 @@ describe('round trip with zero price move', () => {
     const hi = microUsdToLamports(setting.policy.maxNotional, price, 'floor');
     const step = (hi - lo) / 400n;
     for (const quote of [pumpCurveRoundTrip(curve, curveCtx), pumpSwapRoundTrip(pool, poolCtx)]) {
-      const vLo = costAtSize(quote, lo, network, rent).vPpm;
-      const vHi = costAtSize(quote, hi, network, rent).vPpm;
+      const vLo = ok(costAtSize(quote, lo, network, rent)).vPpm;
+      const vHi = ok(costAtSize(quote, hi, network, rent)).vPpm;
       const bound = (vLo > vHi ? vLo : vHi) + mulDiv(ROUND_TRIP_ROUNDING_LAMPORTS, PPM, lo, 'ceil');
-      for (let q: bigint = lo; q <= hi; q += step) expect(costAtSize(quote, q, network, rent).vPpm).toBeLessThanOrEqual(bound);
+      for (let q: bigint = lo; q <= hi; q += step) expect(ok(costAtSize(quote, q, network, rent)).vPpm).toBeLessThanOrEqual(bound);
     }
   });
 
   test('fees dominate at $2: pump curve round trip costs about 2.5% plus impact', () => {
-    const c = costAtSize(pumpCurveRoundTrip(curve, curveCtx), microUsdToLamports(usd(2), price, 'floor'), network, rent);
+    const c = ok(costAtSize(pumpCurveRoundTrip(curve, curveCtx), microUsdToLamports(usd(2), price, 'floor'), network, rent));
     expect(c.vPpm).toBeGreaterThan(25_000n);
     expect(c.vPpm).toBeLessThan(27_000n);
   });
@@ -198,7 +198,7 @@ describe.each(cases)('feasible size: %s', (_, setting, quote) => {
 
   test('the edge is charged its share of costs: v includes the cross term g * v', () => {
     const d = at({ edgePpm: 300_000n });
-    const raw = costAtSize(quote, lo, network, rent).vPpm;
+    const raw = ok(costAtSize(quote, lo, network, rent)).vPpm;
     expect(d.vPpm).toBeGreaterThanOrEqual(raw + mulDiv(300_000n, raw, PPM, 'ceil'));
   });
 
@@ -206,6 +206,32 @@ describe.each(cases)('feasible size: %s', (_, setting, quote) => {
     const plain = at({ edgePpm: 300_000n });
     const routed = at({ edgePpm: 300_000n, extraPpm: 10_000n });
     expect(routed.vPpm - plain.vPpm).toBeGreaterThanOrEqual(10_000n);
+  });
+});
+
+describe('unquotable venues', () => {
+  test('a state that cannot be quoted gives a typed no-trade reason, not an exception', () => {
+    const done = { ...curve, realTokenReserves: 0n, complete: true };
+    const d = feasibleSize(base({ quote: pumpCurveRoundTrip(done, curveCtx) }));
+    expect(d.trade).toBe(false);
+    if (!d.trade) {
+      expect(d.reason).toBe('unquotable');
+      expect(d.quoteReason).toBe('curve-complete');
+    }
+    const mayhem = feasibleSize(base({ quote: pumpSwapRoundTrip(pool, { ...poolCtx, coin: { ...NORMAL_COIN, mayhemMode: true } }) }));
+    expect(mayhem).toMatchObject({ trade: false, reason: 'unquotable', quoteReason: 'unsupported-coin' });
+    const empty = feasibleSize(base({ quote: pumpSwapRoundTrip({ ...pool, virtualQuoteReserves: -pool.quoteVault }, poolCtx) }));
+    expect(empty).toMatchObject({ trade: false, reason: 'unquotable', quoteReason: 'no-liquidity' });
+  });
+
+  test('sizes the venue cannot fill are cut off the range, not thrown', () => {
+    // A venue that quotes normally up to a limit and reports exceeds-reserves above it.
+    const swap = pumpSwapRoundTrip(pool, poolCtx);
+    const limit = microUsdToLamports(usd(80), price, 'floor');
+    const capped: costsModule.RoundTripQuoter = (spend) => (spend > limit ? { ok: false, reason: 'exceeds-reserves', detail: 'test' } : swap(spend));
+    const d = feasibleSize(base({ quote: capped, edgePpm: 300_000n }, scaled));
+    expect(d.trade).toBe(true);
+    if (d.trade) expect(d.range.maxLamports).toBeLessThanOrEqual(limit);
   });
 });
 
@@ -247,7 +273,7 @@ describe('size scaling', () => {
     // Expected net at the cut beats both a larger and a smaller size.
     const allowance = mulDiv(ROUND_TRIP_ROUNDING_LAMPORTS, PPM, microUsdToLamports(scaled.policy.minNotional, price, 'ceil'), 'ceil');
     const netAt = (q: bigint) => {
-      const v = costAtSize(swap, q, network, rent).vPpm + allowance;
+      const v = ok(costAtSize(swap, q, network, rent)).vPpm + allowance;
       return q * (50_000n - v - mulDiv(50_000n, v, PPM, 'ceil'));
     };
     const top = d.range.maxLamports;
@@ -261,8 +287,8 @@ describe('size scaling', () => {
   });
 
   test('fixed costs weigh less at larger sizes: break-even falls as a share of size', () => {
-    const tc = costAtSize(swap, microUsdToLamports(usd(2), price, 'floor'), network, rent);
-    const sc = costAtSize(swap, microUsdToLamports(usd(100), price, 'floor'), network, rent);
+    const tc = ok(costAtSize(swap, microUsdToLamports(usd(2), price, 'floor'), network, rent));
+    const sc = ok(costAtSize(swap, microUsdToLamports(usd(100), price, 'floor'), network, rent));
     expect(tc.fixed.total).toBe(sc.fixed.total);
     expect(tc.fixed.total * PPM / tc.roundTrip.paid).toBeGreaterThan(sc.fixed.total * PPM / sc.roundTrip.paid);
     // Impact, by contrast, is quoted from reserves at the real size and grows with it.

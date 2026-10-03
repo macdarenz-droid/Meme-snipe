@@ -2,7 +2,7 @@
 // Formulas follow @pump-fun/pump-sdk 2.0.0 `bondingCurve.ts`/`fees.ts` and are checked against mainnet
 // TradeEvents in test/amm/golden.test.ts.
 import type { Bps } from '../units/index.ts';
-import { type FeeTier, feeOf, marketCap, selectFeeTier } from './fees.ts';
+import { type CoinFlags, type FeeSplit, type FeeTier, type Quote, feeOf, marketCap, noQuote, selectFeeTier, unsupportedCoin } from './fees.ts';
 
 /** The trading fields of the `BondingCurve` account (raw units: lamports and token base units). */
 export interface CurveState {
@@ -33,26 +33,17 @@ export interface CurveFeeContext {
   readonly supply: bigint;
   /** False when `BondingCurve.creator` is the default key: no creator fee is charged then. */
   readonly creatorFeeCharged: boolean;
+  /** Coins priced differently (mayhem, Token-2022 transfer fee or hook) are refused. */
+  readonly coin: CoinFlags;
 }
 
-export interface CurveFees {
-  readonly protocol: Bps;
-  readonly creator: Bps;
-}
-
-export class CurveCompleteError extends Error {
-  constructor() {
-    super('bonding curve is complete; trade on the graduation pool');
-    this.name = 'CurveCompleteError';
-  }
-}
-
-/** Fee rates for a trade on this curve, tiered by the pre-trade market cap (pump `compute_fees`). */
-export const curveFees = (state: CurveState, ctx: CurveFeeContext): CurveFees => {
+/**
+ * Fee rates for a curve trade, tiered by the pre-trade market cap (pump `compute_fees`). Live curve tiers have no LP
+ * rate; if one appears it is charged like the others (on the net quote, rounded up) so cost is never understated.
+ */
+export const curveFees = (state: CurveState, ctx: CurveFeeContext): FeeSplit => {
   const tier = selectFeeTier(ctx.feeTiers, marketCap(state.virtualQuoteReserves, state.virtualTokenReserves, ctx.supply));
-  // The curve charges protocol and creator only; refuse a tier with an LP rate rather than understate cost.
-  if (tier.lp !== 0) throw new RangeError(`curve fee tier has an LP rate (${tier.lp} bps) this quote does not model`);
-  return { protocol: tier.protocol, creator: ctx.creatorFeeCharged ? tier.creator : (0 as Bps) };
+  return { lp: tier.lp, protocol: tier.protocol, creator: ctx.creatorFeeCharged ? tier.creator : (0 as Bps) };
 };
 
 export interface CurveTrade {
@@ -60,18 +51,20 @@ export interface CurveTrade {
   readonly tokens: bigint;
   /** Lamports into or out of the curve, before fees (`TradeEvent.sol_amount`). */
   readonly quote: bigint;
+  readonly lpFee: bigint;
   readonly protocolFee: bigint;
   readonly creatorFee: bigint;
   /** What the trader pays in (buy) or receives (sell), fees included. */
   readonly userQuote: bigint;
   /** Lamports lost to price impact against the pre-trade spot price (vQuote / vToken), exact. */
   readonly impact: bigint;
+  readonly fees: FeeSplit;
   readonly after: CurveState;
 }
 
-const assertTradable = (state: CurveState) => {
-  if (state.complete || state.virtualTokenReserves === 0n) throw new CurveCompleteError();
-};
+const refuse = (state: CurveState, ctx: CurveFeeContext): Quote<never> | null =>
+  unsupportedCoin(ctx.coin)
+  ?? (state.complete || state.virtualTokenReserves === 0n || state.realTokenReserves === 0n ? noQuote('curve-complete', 'bonding curve is complete') : null);
 
 // Value of `tokens` at the pre-trade spot price, floored.
 const spotValue = (state: CurveState, tokens: bigint) => (tokens * state.virtualQuoteReserves) / state.virtualTokenReserves;
@@ -84,21 +77,29 @@ const afterBuy = (s: CurveState, tokens: bigint, quote: bigint): CurveState => (
   complete: s.realTokenReserves - tokens === 0n,
 });
 
+const buyTrade = (state: CurveState, tokens: bigint, quote: bigint, fees: FeeSplit, feeBase = quote): Quote<CurveTrade> => {
+  const lpFee = feeOf(feeBase, fees.lp);
+  const protocolFee = feeOf(feeBase, fees.protocol);
+  const creatorFee = feeOf(feeBase, fees.creator);
+  return {
+    ok: true,
+    trade: {
+      tokens, quote, lpFee, protocolFee, creatorFee, fees,
+      userQuote: quote + lpFee + protocolFee + creatorFee,
+      impact: quote - spotValue(state, tokens),
+      after: afterBuy(state, tokens, quote),
+    },
+  };
+};
+
 /** `buy` / `buy_v2`: exactly `tokens` out (capped at the real reserves left), cost rounded up. */
-export const curveBuyExactTokens = (state: CurveState, tokens: bigint, ctx: CurveFeeContext): CurveTrade => {
-  assertTradable(state);
+export const curveBuyExactTokens = (state: CurveState, tokens: bigint, ctx: CurveFeeContext): Quote<CurveTrade> => {
   if (tokens <= 0n) throw new RangeError('tokens must be > 0');
-  const fees = curveFees(state, ctx);
+  const no = refuse(state, ctx);
+  if (no) return no;
   const out = tokens < state.realTokenReserves ? tokens : state.realTokenReserves;
   const quote = (out * state.virtualQuoteReserves) / (state.virtualTokenReserves - out) + 1n;
-  const protocolFee = feeOf(quote, fees.protocol);
-  const creatorFee = feeOf(quote, fees.creator);
-  return {
-    tokens: out, quote, protocolFee, creatorFee,
-    userQuote: quote + protocolFee + creatorFee,
-    impact: quote - spotValue(state, out),
-    after: afterBuy(state, out, quote),
-  };
+  return buyTrade(state, out, quote, curveFees(state, ctx));
 };
 
 /**
@@ -107,47 +108,48 @@ export const curveBuyExactTokens = (state: CurveState, tokens: bigint, ctx: Curv
  * lowered by any excess so net + fees fits in `spend` (fees are not recomputed). Tokens out are priced on net - 1.
  * Verified on mainnet events, which show this order.
  */
-export const curveBuyExactQuoteIn = (state: CurveState, spend: bigint, ctx: CurveFeeContext): CurveTrade => {
-  assertTradable(state);
+export const curveBuyExactQuoteIn = (state: CurveState, spend: bigint, ctx: CurveFeeContext): Quote<CurveTrade> => {
   if (spend <= 1n) throw new RangeError('spend must be > 1 lamport');
+  const no = refuse(state, ctx);
+  if (no) return no;
   const fees = curveFees(state, ctx);
-  const totalBps = BigInt(fees.protocol) + BigInt(fees.creator);
-  let quote = (spend * 10_000n) / (10_000n + totalBps);
-  const protocolFee = feeOf(quote, fees.protocol);
-  const creatorFee = feeOf(quote, fees.creator);
-  const over = quote + protocolFee + creatorFee - spend;
-  if (over > 0n) quote -= over;
+  const totalBps = BigInt(fees.lp) + BigInt(fees.protocol) + BigInt(fees.creator);
+  const untrimmed = (spend * 10_000n) / (10_000n + totalBps);
+  const over = untrimmed + feeOf(untrimmed, fees.lp) + feeOf(untrimmed, fees.protocol) + feeOf(untrimmed, fees.creator) - spend;
+  const quote = over > 0n ? untrimmed - over : untrimmed;
   const input = quote - 1n;
-  let tokens = (input * state.virtualTokenReserves) / (state.virtualQuoteReserves + input);
-  if (tokens > state.realTokenReserves) tokens = state.realTokenReserves;
-  return {
-    tokens, quote, protocolFee, creatorFee,
-    userQuote: quote + protocolFee + creatorFee,
-    impact: quote - spotValue(state, tokens),
-    after: afterBuy(state, tokens, quote),
-  };
+  const tokens = (input * state.virtualTokenReserves) / (state.virtualQuoteReserves + input);
+  if (tokens <= 0n) return noQuote('zero-output', 'spend buys no tokens');
+  // CAPPED_EXACT_IN
+  if (tokens > state.realTokenReserves) return buyTrade(state, state.realTokenReserves, quote, fees, untrimmed);
+  return buyTrade(state, tokens, quote, fees, untrimmed);
 };
 
 /** `sell` / `sell_v2`: exactly `tokens` in; proceeds floored, fees rounded up and taken from them. */
-export const curveSell = (state: CurveState, tokens: bigint, ctx: CurveFeeContext): CurveTrade => {
-  assertTradable(state);
+export const curveSell = (state: CurveState, tokens: bigint, ctx: CurveFeeContext): Quote<CurveTrade> => {
   if (tokens <= 0n) throw new RangeError('tokens must be > 0');
+  const no = refuse(state, ctx);
+  if (no) return no;
   const fees = curveFees(state, ctx);
   const quote = (tokens * state.virtualQuoteReserves) / (state.virtualTokenReserves + tokens);
-  if (quote > state.realQuoteReserves) throw new RangeError('sell exceeds the real quote reserves');
+  if (quote > state.realQuoteReserves) return noQuote('exceeds-reserves', 'sell exceeds the real quote reserves');
+  const lpFee = feeOf(quote, fees.lp);
   const protocolFee = feeOf(quote, fees.protocol);
   const creatorFee = feeOf(quote, fees.creator);
-  const userQuote = quote - protocolFee - creatorFee;
-  if (userQuote < 0n) throw new RangeError('fees exceed the sell proceeds');
+  const userQuote = quote - lpFee - protocolFee - creatorFee;
+  if (userQuote <= 0n) return noQuote('zero-output', 'fees take all sell proceeds');
   return {
-    tokens, quote, protocolFee, creatorFee, userQuote,
-    impact: spotValue(state, tokens) - quote,
-    after: {
-      virtualTokenReserves: state.virtualTokenReserves + tokens,
-      virtualQuoteReserves: state.virtualQuoteReserves - quote,
-      realTokenReserves: state.realTokenReserves + tokens,
-      realQuoteReserves: state.realQuoteReserves - quote,
-      complete: false,
+    ok: true,
+    trade: {
+      tokens, quote, lpFee, protocolFee, creatorFee, fees, userQuote,
+      impact: spotValue(state, tokens) - quote,
+      after: {
+        virtualTokenReserves: state.virtualTokenReserves + tokens,
+        virtualQuoteReserves: state.virtualQuoteReserves - quote,
+        realTokenReserves: state.realTokenReserves + tokens,
+        realQuoteReserves: state.realQuoteReserves - quote,
+        complete: false,
+      },
     },
   };
 };

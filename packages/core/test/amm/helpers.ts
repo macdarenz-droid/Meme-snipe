@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { FeeConfig, FeeSplit } from '../../src/amm/index.ts';
+import type { FeeConfig, FeeSplit, Quote } from '../../src/amm/index.ts';
 import { bps } from '../../src/units/index.ts';
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -21,3 +21,11 @@ const configs = readFixture<{ pump: RawFeeConfig; amm: RawFeeConfig }>('fee-conf
 /** Live pump-fees FeeConfig for the bonding curve (8Wf5…) and for PumpSwap (5PHirr…). */
 export const PUMP_FEE_CONFIG = toConfig(configs.pump);
 export const AMM_FEE_CONFIG = toConfig(configs.amm);
+
+/** Unwraps a quote that must succeed. */
+export const ok = <T>(q: Quote<T>): T => {
+  if (!q.ok) throw new Error(`expected a quote, got ${q.reason}: ${q.detail}`);
+  return q.trade;
+};
+/** Normal coin: no mayhem mode, no Token-2022 transfer fee or hook. */
+export const NORMAL_COIN = { mayhemMode: false, transferFee: false, transferHook: false } as const;
