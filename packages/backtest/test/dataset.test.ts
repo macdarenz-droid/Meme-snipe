@@ -138,3 +138,21 @@ describe('release-asset layout', () => {
     }
   });
 });
+
+describe('PumpSwap reserves in the reader', () => {
+  test('the signed virtual quote reserve is read into the pre-trade state (negative included), never dropped', async () => {
+    const { readAmm } = await import('../src/dataset/rows.ts');
+    const { AMM_COLS } = await import('./dataset-writer.ts');
+    const values: Record<string, string> = {
+      slot: '1', block_time: '2', tx_idx: '0', ev_idx: '0', signature: 's', pool: 'p', base_mint: 'b', quote_mint: 'q', side: 'buy',
+      base_amount: '10', quote_amount: '1000', pool_base_token_reserves: '5000000', pool_quote_token_reserves: '900000',
+      virtual_quote_reserves: '-123456', lp_fee_basis_points: '20', protocol_fee_basis_points: '5', ix_name: 'buy_exact_quote_in_v2',
+    };
+    const text = `${AMM_COLS.join(',')}\n${AMM_COLS.map((c) => values[c] ?? '').join(',')}\n`;
+    const out: import('../src/dataset/rows.ts').DatasetRow[] = [];
+    readAmm(text, out);
+    const r = out[0]!;
+    expect(r.kind === 'amm' && r.pre).toEqual({ baseReserve: 5_000_000n, quoteVault: 900_000n, virtualQuoteReserves: -123_456n });
+    expect(r.kind === 'amm' && r.fees.instruction).toBe('v2');
+  });
+});

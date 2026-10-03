@@ -52,14 +52,14 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - WORKER-1 restart drill: rebuild the exit attempt budget from the book, and restore trail, peak, flatMet and partials (save per step or replay as-of); a reset trail is a looser stop (EXIT-1 review).
 - OPS-1d: install RUN-1's zeroed-dryrun units and runner flags through code updates, hold deploys during a qualifying run, and give the VPS evidence a path into the repo.
 - Runbook (RUN-1/WORKER-1): a v1 ledger must be opened once by a writer (migrates to 2) before `ledger:replay` or `openReader`.
-- Data: the owner was given the text to ask Triton (Old Faithful operators) for a faster download allowance (4 Oct, optional). Raising the 80 MB/s cap needs a code change only if they agree. Paid fallback (Dune Plus, about US$399/month, unverified) only if the free lane fails, and only with the owner's approval.
+- Data: the owner declined asking Triton for a faster download (4 Oct); the scan stays at 80 MB/s on one lane.
 - TX-1 → SIGN-1: maxSolOut needs about 1.5M lamports of PumpSwap headroom; the policy charges Token-2022 ATAs at 170 bytes.
 - Repo tidy-up: branch `claude/ledger-replay-schema-v1` duplicates PR #23's 611a4bb; the safety check refused its deletion, so the owner may delete it.
 
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
 - API keys are in GitHub repository secrets and verified: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` (bot @Zeroed_alerts_bot). Never in chat or in the repo.
-- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Next owner step when OPS-1c (PR #36) merges: console login, one install line, DEPLOY_CODE secret, Deploy, Telegram /pair, `zeroed-status`.
+- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Set up on 2026-10-04 from the PR #36 line: keys stored (4), Telegram paired, signer active. One re-paste of OPS-1d's line comes later; after it, host changes arrive by update.
 - Cloudflare: Account API token (Edit Cloudflare Workers template, 1-year expiry) is in GitHub secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, verified active from CI. Renew before 2027-10-03.
 - Domain: none, and none will be bought (owner rule in CLAUDE.md). Watchdog on the free `workers.dev` address; live dashboard access later through Tailscale's free personal plan.
 - Telegram bot display name: change with /setname in BotFather (optional).
