@@ -13,6 +13,7 @@ import type { FactSource } from '../src/run/facts.ts';
 import { ProviderError, rpcHandler, type Secrets, type Source, scriptedHttp } from '../src/providers/index.ts';
 import { ALCHEMY_FREE, COINBASE_PUBLIC, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, P1, P3, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
 import { MINT, Market, T, dueTimers, makeWorker, passingMarket, scriptedSource, tempState } from './worker-harness.ts';
+import { xcheckKey } from '../../core/src/gates/index.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
@@ -315,4 +316,38 @@ describe('§18: a provider rate-limits (TEST-3)', () => {
     expect(raw).toEqual([]);
     await h.worker.stop();
   });
+
+  it('entries stop through the gates, not a global halt: a candidate whose fact can only come from a refused read is rejected for that fact and never entered', async () => {
+    const timers = dueTimers(T - 16 * 86_400_000);
+    const sched = (spec: SchedulerSpec) => new Scheduler(spec, { timers });
+    const schedulers = { helius: sched(HELIUS_FREE), alchemy: sched(ALCHEMY_FREE), jupiter: sched(JUPITER_FREE), rugcheck: sched(RUGCHECK_FREE) };
+    const http = scriptedHttp(rpcHandler(() => undefined), { fault: () => ({ kind: 'status', status: 429 }) });
+    const live = liveFacts({ policy: TRIAL_POLICY, secrets: { get: () => 'k' } as unknown as Secrets, http, goplus: sched(GOPLUS_FREE), coinbase: sched(COINBASE_PUBLIC) });
+    let reads: { counts: Record<string, { ok: number; failed: number }> } | null = null;
+    const facts: FactSource = {
+      name: live.name,
+      start: (ctx) => live.start({ ...ctx, sink: { ...ctx.sink, fact: (k, v) => (k === FACT_READS_KEY && (reads = v as typeof reads), ctx.sink.fact(k, v)) } }),
+      stop: () => live.stop(),
+    };
+    const feeds = [scriptedSource('helius-ws', true, ['helius'])];
+    const h = makeWorker({ timers, facts: [facts], schedulers, sources: () => feeds, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18908', ZEROED_API_ADDR: '127.0.0.1:18909' } });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    // Every gate passes but the third-party cross-check, which only a read can bring, and every read answers 429.
+    const pm = await passingMarket(h, { omit: [xcheckKey(MINT)] });
+    const entered = () => kinds(h.stateDir, 'decision').filter((l) => l['action'] === 'enter');
+    // Until the read has been refused twice, or an entry happens.
+    await until(pm, () => (reads?.counts['xcheck']?.failed ?? 0) >= 2 || entered().length > 0, 180_000, tick(pm), 400);
+    await pm.run(10_000, 400, tick(pm));
+    expect(entered()).toEqual([]);
+    expect(reads!.counts['xcheck']).toMatchObject({ ok: 0 });
+    expect(Object.values(h.worker.book.positions)).toEqual([]);
+    // Not a global halt: no halt reason names the provider; the gate says which fact is missing.
+    expect(h.worker.health().halt_reasons).toEqual([]);
+    // From T on (every other fact passing), each reject names only the cross-check, missing.
+    const rejects = kinds(h.stateDir, 'decision').filter((l) => l['action'] === 'reject' && Date.parse(String(l['ts'])) >= T).map((l) => (l['reasons'] as string[]).slice(3));
+    expect(rejects.length).toBeGreaterThan(0);
+    for (const r of rejects) expect(r).toEqual([expect.stringMatching(/^hard reject H16: H16 missing no xcheck as of slot \d+$/)]);
+    await h.worker.stop();
+  }, 60_000);
 });
