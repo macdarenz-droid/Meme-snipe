@@ -4,7 +4,8 @@
 
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import type { Fill, TradeIntent, TransactionAttempt } from '../domain/index.ts';
-import type { Effect, IntentStatus, PositionStatus } from '../lifecycle/index.ts';
+import { applyBookEvent, isIllegal, type Book, type BookEvent, type Effect, type IntentStatus, type PositionStatus } from '../lifecycle/index.ts';
+import { encodeBookDetail, rowEventName, stepRows } from './replay/index.ts';
 import type { Lamports } from '../units/index.ts';
 import { fromJson, toJson } from './codec.ts';
 import { FEE_KINDS, INTENT_END_STATUSES, LEDGER_MIGRATIONS, OPERATOR_COMMANDS, type AUTH_LEVELS, type DECISION_MODES, type ISSUERS } from './migrations.ts';
@@ -442,6 +443,56 @@ export class Ledger extends LedgerReads {
     } finally {
       this.#release();
     }
+  }
+
+  /**
+   * Applies one book event with the CORE-1 reducer and writes the rows it changed, in the format the ledger replay
+   * check reads (./replay: stepRows decides the rows; the first intent row carries `encodeBookDetail(event)` and the
+   * effects; a trigger_exit's position rows carry it too). Atomic: one transaction per call, or, when called inside
+   * the caller's transaction (`atomically`), it joins that one, so a refusal or a failed write rolls back the
+   * caller's whole batch. An event the reducer refuses throws a LedgerError and writes nothing. Returns the reducer's
+   * step (the book after the event and its effects); the caller keeps the book for the next call.
+   * The one writer the backtester and the worker share, so their ledgers cannot drift from the replay.
+   */
+  recordBookEvent(before: Book, event: BookEvent, o: { readonly ts: Millis; readonly limits: ReservationLimits }): { readonly book: Book; readonly effects: readonly Effect[] } {
+    const step = applyBookEvent(before, event);
+    if (isIllegal(step)) throw new LedgerError(`book event ${event.type} refused by the reducer: ${step.reason}`);
+    const book = step.state;
+    const rows = stepRows(before, event, step.effects);
+    if (rows === null) return { book, effects: step.effects };
+    const name = rowEventName(event);
+    const ts = o.ts;
+    this.atomically(() => {
+      rows.intents.forEach((id, k) => {
+        const s = book.intents[id]!;
+        const was = before.intents[id];
+        if (was === undefined) {
+          const r = this.recordIntent(s.intent, { status: s.status, ts });
+          if (!r.ok) throw new LedgerError(`intent key ${s.intent.key} already used by ${r.existingIntentId}`);
+        } else {
+          this.appendIntentTransition({ intentId: s.intent.id, status: s.status, event: name, ts, ...(k === 0 ? { detail: encodeBookDetail(event), effects: step.effects } : {}) });
+        }
+        const known = new Set((was?.attempts ?? []).map((a) => a.signature));
+        for (const a of s.attempts) if (!known.has(a.signature)) this.recordAttempt(a, ts);
+        const booked = new Set((was?.fills ?? []).map((f) => f.signature));
+        for (const f of s.fills) if (!booked.has(f.signature)) this.recordFill(f, ts);
+        const r = s.reservation;
+        if (r !== null && was?.reservation == null) {
+          const res = this.reserveExposure({ reservationId: r.id, intentId: id, amount: r.amount, limits: o.limits, ts });
+          if (!res.ok) throw new LedgerError(`reservation ${r.id} refused: ${res.reason}`);
+        }
+        if (r !== null && r.status !== 'held' && was?.reservation?.status !== r.status) this.endReservation(r.id, r.status, ts);
+      });
+      for (const pid of rows.positions) {
+        const p = book.positions[pid]!;
+        if (before.positions[pid] === undefined) {
+          this.openPosition({ positionId: pid, mint: p.mint, venue: p.venue, entryIntentId: p.entryIntentId, ts });
+          if (p.status === 'opening' && p.quantity === 0n && p.cost === 0n) continue;
+        }
+        this.appendPositionState({ positionId: pid, status: p.status, quantity: p.quantity, cost: p.cost, event: name, ts, ...(event.type === 'trigger_exit' ? { detail: encodeBookDetail(event) } : {}) });
+      }
+    });
+    return { book, effects: step.effects };
   }
 
   /** Runs fn as one transaction: either every write inside it lands or none does. */
