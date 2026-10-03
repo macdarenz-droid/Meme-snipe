@@ -24,6 +24,7 @@ import { readSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
 import { authoriseHoldout, runAndSealHoldout } from './holdout.ts';
 import { leakTest, shiftTest } from './proofs.ts';
+import { economics } from './economics.ts';
 import { buildReport } from './report.ts';
 import { runBacktest, type RunOptions } from './run.ts';
 import { tradesOf } from './trades.ts';
@@ -137,6 +138,9 @@ if (command === 'holdout-register' || command === 'holdout') {
     mode: 'backtest' as const, label: c.name, value: measured.has(c.name) ? c.detail.slice(0, 300) : 'not run', limit: 'passes', pass: c.passed,
   }));
   const g0State = g0.passed ? 'pass' as const : g0.checks.some((c) => measured.has(c.name) && !c.passed) ? 'fail' as const : 'not-run' as const;
+  const entryDecisions = Object.values(first.book.intents).filter((i) => i.intent.purpose === 'entry').length;
+  const money = economics({ trades, stray, entryDecisions, solUsd, window: { from, to }, policy: TRIAL_POLICY, research: RESEARCH_CONFIG });
+  const dollars = (v: bigint | null) => (v === null ? 'no trades' : `US$${(Number(v) / 1e6).toFixed(4)}`);
   const report = buildReport({
     runId: `${manifestHash(dataset).slice(0, 12)}-${scenario}-${seed}`, generatedAt: new Date().toISOString(), codeCommit: commit,
     policy: TRIAL_POLICY, fills: FILL_CONFIG, dataset: { id: `sha256:${manifestHash(dataset)}`, from, to }, engine, solUsd,
@@ -145,6 +149,10 @@ if (command === 'holdout-register' || command === 'holdout') {
       { mode: 'backtest', gate: 'G0', state: g0State, checks: g0Checks },
       { mode: 'backtest', gate: 'G1', state: 'not-run', checks: [
         { mode: 'backtest', label: 'S0 exits', value: 'time stop only (until EXIT-1)', limit: 'research run', pass: true },
+        { mode: 'backtest', label: 'Mean net per filled trade', value: dollars(money.usd.conditionalMeanPerTradeMicro), limit: 'above zero', pass: (money.usd.conditionalMeanPerTradeMicro ?? 0n) > 0n },
+        { mode: 'backtest', label: 'All-in net per entry decision', value: dollars(money.usd.allInPerEntryDecisionMicro), limit: 'above zero', pass: (money.usd.allInPerEntryDecisionMicro ?? 0n) > 0n },
+        { mode: 'backtest', label: 'Hosting', value: `${dollars(money.operating.hostingMicro)} over ${money.operating.windowDays.toFixed(2)} days, ${money.operating.hostingShareOfBankrollPerMonthBps / 100}% of the bankroll a month`, limit: 'covered by net', pass: money.operating.netAfterHostingMicro > 0n },
+        { mode: 'backtest', label: 'Break-even net per trade', value: dollars(money.operating.breakEvenNetPerTradeMicro), limit: 'below the mean net per trade', pass: money.operating.breakEvenNetPerTradeMicro !== null && (money.usd.conditionalMeanPerTradeMicro ?? 0n) > money.operating.breakEvenNetPerTradeMicro },
         { mode: 'backtest', label: 'Fill model', value: `${FILL_CONFIG.version}, ${scenario}${FILL_CONFIG.provisional ? ', provisional values' : ''}`, limit: 'measured values', pass: !FILL_CONFIG.provisional },
       ] },
     ],
@@ -156,7 +164,7 @@ if (command === 'holdout-register' || command === 'holdout') {
     scenario, seed, hashes, identicalReplays: identical, leak, shift, g0: { status: g0.status, checks: g0.checks }, stats: first.stats,
     throughput: { rows: first.stats.rows, elapsedMs: times, rowsPerSecond: Math.round(first.stats.rows / (first.stats.elapsedMs / 1000)), days: days.length,
       projected30DaysMinutes: Math.round(((first.stats.elapsedMs / days.length) * 30) / 60_000) },
-    candidates, entries, trades: trades.length, alerts: first.stats.alerts,
+    candidates, entries, trades: trades.length, alerts: first.stats.alerts, economics: money,
     regimeBoundaries: first.regimes.map((b) => ({ slot: b.slot.toString(), label: b.label, at: new Date(b.at).toISOString() })),
     tradesAcrossRegimeBoundary: trades.filter((t) => first.regimes.some((b) => t.openedAt < b.at && t.closedAt >= b.at)).length,
     attemptsCongested: first.attempts.filter((a) => a.congested).length,

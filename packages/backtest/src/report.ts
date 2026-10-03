@@ -44,7 +44,7 @@ export const priceAt = (s: OffchainSeries, ms: number): MicroUsd => {
   return solPriceMicroUsd(best);
 };
 
-const toUsd = (lamports: bigint, px: MicroUsd): bigint =>
+export const toUsd = (lamports: bigint, px: MicroUsd): bigint =>
   lamports < 0n ? -lamportsToMicroUsd(-lamports as Lamports, px, 'floor') : lamportsToMicroUsd(lamports as Lamports, px, 'floor');
 
 /** Exact decimal of a / b with `places` places, rounded down. */
@@ -53,21 +53,37 @@ const decDiv = (a: bigint, b: bigint, places: number): string => toDecimalString
 /** USD per whole token (pump tokens have 6 decimals). */
 const tokenPrice = (sol: bigint, tokens: bigint, px: MicroUsd): string => (tokens === 0n ? '0' : decDiv(sol * px * 1_000_000n, tokens * 1_000_000_000n * 1_000_000n, 12));
 
-const reportTrade = (t: TradeRecord, group: ReportGroup, px: MicroUsd): ReportTrade => {
-  const total = t.venueFee + t.creatorFee + t.priority + t.tip + t.networkBase + t.slippage + t.rentPaid - t.rentReturned;
+/**
+ * A trade in USD, each flow at its own time (item 6 of BT-1c): the entry, the entry leg's costs and the rent at the
+ * entry-time price; the proceeds, the exit leg's costs and any rent returned at the exit-time price. SOL moving in
+ * between therefore shows in the trade's USD result; its SOL result is reported apart (economics.ts).
+ */
+const reportTrade = (t: TradeRecord, group: ReportGroup, pxIn: MicroUsd, pxOut: MicroUsd): ReportTrade => {
+  const both = (k: keyof TradeRecord['legs']['entry']) => toUsd(t.legs.entry[k], pxIn) + toUsd(t.legs.exit[k], pxOut);
+  const c = {
+    venue: both('venueFee'), creator: both('creatorFee'), priority: both('priority'), tip: both('tip'), network: both('networkBase'),
+    slippage: both('slippage'), rentPaid: toUsd(t.rentPaid, pxIn), rentReturned: toUsd(t.rentReturned, pxOut),
+  };
+  const total = c.venue + c.creator + c.priority + c.tip + c.network + c.slippage + c.rentPaid - c.rentReturned;
+  const size = toUsd(t.entrySol, pxIn);
+  const proceeds = toUsd(t.exitSol, pxOut);
+  // Venue fees and slippage are inside the entry and exit amounts; network fees and rent are paid on top.
+  const net = proceeds - size - c.network - c.priority - c.tip - c.rentPaid + c.rentReturned;
   return {
     mode: 'backtest', id: t.id, group, mint: t.mint, symbol: t.symbol || t.mint.slice(0, 6), venue: 'pumpswap',
     openedAt: iso(t.openedAt), closedAt: iso(t.closedAt), holdSeconds: Math.max(0, Math.round((t.closedAt - t.openedAt) / 1000)),
-    entryPriceUsd: tokenPrice(t.entrySol, t.tokens, px), exitPriceUsd: tokenPrice(t.exitSol, t.tokens, px),
-    sizeUsd: usd(toUsd(t.entrySol, px)), grossUsd: usd(toUsd(t.net + total, px)),
+    entryPriceUsd: tokenPrice(t.entrySol, t.tokens, pxIn), exitPriceUsd: tokenPrice(t.exitSol, t.tokens, pxOut),
+    sizeUsd: usd(size), grossUsd: usd(net + total),
     costs: {
-      venueFeeUsd: usd(toUsd(t.venueFee, px)), creatorFeeUsd: usd(toUsd(t.creatorFee, px)), priorityFeeUsd: usd(toUsd(t.priority, px)),
-      tipUsd: usd(toUsd(t.tip, px)), networkFeeUsd: usd(toUsd(t.networkBase, px)), slippageUsd: usd(toUsd(t.slippage, px)),
-      rentPaidUsd: usd(toUsd(t.rentPaid, px)), rentReturnedUsd: usd(toUsd(t.rentReturned, px)), totalUsd: usd(toUsd(total, px)),
+      venueFeeUsd: usd(c.venue), creatorFeeUsd: usd(c.creator), priorityFeeUsd: usd(c.priority), tipUsd: usd(c.tip), networkFeeUsd: usd(c.network),
+      slippageUsd: usd(c.slippage), rentPaidUsd: usd(c.rentPaid), rentReturnedUsd: usd(c.rentReturned), totalUsd: usd(total),
     },
-    netUsd: usd(toUsd(t.net, px)), realizedR: null, exitReason: t.exitReason,
+    netUsd: usd(net), realizedR: null, exitReason: t.exitReason,
   };
 };
+
+/** A trade in USD with each flow at its own time (the report's trade row). */
+export const tradeInUsd = (t: TradeRecord, group: ReportGroup, s: OffchainSeries): ReportTrade => reportTrade(t, group, priceAt(s, t.openedAt), priceAt(s, t.closedAt));
 
 /** "-12.5" → -12500000n. */
 export const micro = (s: string): bigint => {
@@ -81,7 +97,7 @@ export const buildReport = (i: ReportInput): BacktestReportV1 => {
   const results: ReportResult[] = [];
   const trades: ReportTrade[] = [];
   for (const g of i.groups) {
-    const rt = g.trades.map((t) => reportTrade(t, g.group, priceAt(i.solUsd, t.closedAt)));
+    const rt = g.trades.map((t) => tradeInUsd(t, g.group, i.solUsd));
     trades.push(...rt);
     results.push(resultExact(g.group, rt, g.stray.map((s) => ({ at: s.at, netMicro: -toUsd(s.lamports, priceAt(i.solUsd, s.at)) }))));
   }
