@@ -4,7 +4,7 @@ import { ALCHEMY_CU, HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
 import type { Priority, Scheduler } from '../scheduler/scheduler.ts';
 import { type HttpClient, parseJson, ProviderError, send } from './http.ts';
 
-export type RpcMethod = 'getTransaction' | 'getSignaturesForAddress' | 'getAccountInfo';
+export type RpcMethod = 'getTransaction' | 'getSignaturesForAddress' | 'getAccountInfo' | 'getMultipleAccounts';
 
 export interface RpcHttpOptions {
   readonly provider: 'helius' | 'alchemy';
@@ -22,6 +22,8 @@ export interface SignatureInfo {
   readonly signature: string;
   readonly slot: bigint;
   readonly err: unknown;
+  /** Block time in seconds, or null when the node does not give it. */
+  readonly blockTime: number | null;
 }
 
 export interface AccountInfo {
@@ -74,15 +76,17 @@ export class RpcHttp {
     }
   }
 
-  /** Signatures for `address`, newest first, newer than `until` when given. */
-  async getSignaturesForAddress(address: string, opts: { readonly until?: string; readonly limit: number }, priority: Priority): Promise<SignatureInfo[]> {
+  /** Signatures for `address`, newest first, older than `before` and newer than `until` when given. */
+  async getSignaturesForAddress(address: string, opts: { readonly before?: string; readonly until?: string; readonly limit: number; readonly minContextSlot?: bigint }, priority: Priority): Promise<SignatureInfo[]> {
     const cfg: Record<string, unknown> = { commitment: 'confirmed', limit: opts.limit };
+    if (opts.minContextSlot !== undefined) cfg.minContextSlot = Number(opts.minContextSlot);
+    if (opts.before !== undefined) cfg.before = opts.before;
     if (opts.until !== undefined) cfg.until = opts.until;
     const r = await this.call('getSignaturesForAddress', [address, cfg], priority);
     if (!Array.isArray(r)) throw new ProviderError(this.provider, 'shape', 'getSignaturesForAddress result is not an array');
     return r.map((x: unknown) => {
       if (!isObj(x) || typeof x.signature !== 'string' || !Number.isSafeInteger(x.slot)) throw new ProviderError(this.provider, 'shape', 'bad signature entry');
-      return { signature: x.signature, slot: BigInt(x.slot as number), err: x.err ?? null };
+      return { signature: x.signature, slot: BigInt(x.slot as number), err: x.err ?? null, blockTime: Number.isSafeInteger(x.blockTime) ? (x.blockTime as number) : null };
     });
   }
 
@@ -90,6 +94,15 @@ export class RpcHttp {
     const r = await this.call('getAccountInfo', [address, { encoding: 'base64', commitment: 'processed' }], priority);
     if (!isObj(r) || !isObj(r.context) || !Number.isSafeInteger(r.context.slot)) throw new ProviderError(this.provider, 'shape', 'getAccountInfo result has no context');
     return { slot: BigInt(r.context.slot as number), value: r.value === null ? null : accountValue(this.provider, r.value) };
+  }
+
+  /** Accounts read together at confirmed, in one bank: the context slot they are all as of (WATCH-1's snapshot). */
+  async getMultipleAccounts(addresses: readonly string[], priority: Priority): Promise<{ readonly slot: bigint; readonly accounts: ({ readonly owner: string; readonly lamports: bigint; readonly data: Uint8Array } | null)[] }> {
+    if (addresses.length === 0 || addresses.length > 100) throw new RangeError('getMultipleAccounts takes 1 to 100 addresses');
+    const r = await this.call('getMultipleAccounts', [addresses, { encoding: 'base64', commitment: 'confirmed' }], priority);
+    if (!isObj(r) || !isObj(r.context) || !Number.isSafeInteger(r.context.slot)) throw new ProviderError(this.provider, 'shape', 'getMultipleAccounts result has no context');
+    if (!Array.isArray(r.value) || r.value.length !== addresses.length) throw new ProviderError(this.provider, 'shape', 'getMultipleAccounts returned the wrong number of accounts');
+    return { slot: BigInt(r.context.slot as number), accounts: r.value.map((v) => (v === null ? null : accountValue(this.provider, v))) };
   }
 }
 

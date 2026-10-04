@@ -45,6 +45,8 @@ export interface PoolFact {
   readonly address: string;
   /** The program that owns the pool account. */
   readonly owner: string;
+  /** The pool account's data length: it decides the PumpSwap layout the builders need (H17). Absent: unread, H17 rejects. */
+  readonly accountBytes?: number;
   readonly pool: {
     readonly index: number;
     readonly creator: string;
@@ -56,6 +58,10 @@ export interface PoolFact {
     readonly lpSupply: bigint;
     /** Absent on pools written before the field existed: unknown, so H5 rejects. */
     readonly isMayhemMode?: boolean;
+    /** Absent: unread, so H17 rejects. */
+    readonly isCashbackCoin?: boolean;
+    /** Absent: unread, so H17 rejects. */
+    readonly coinCreator?: string;
     readonly virtualQuoteReserves?: bigint;
   };
   readonly baseVault: bigint;
@@ -109,11 +115,17 @@ export interface CandlesFact {
 
 export interface HolderAccount {
   readonly address: string;
+  /** The token account's mint: the gates refuse a read that mixes in another mint's accounts (GATE-1d). */
+  readonly mint: string;
   /** The wallet or account that owns the token account. */
   readonly owner: string;
   /** The program that owns `owner`'s account, when known (null: not read, or a system wallet). */
   readonly ownerProgram: string | null;
   readonly amount: bigint;
+  /** The account's delegate, which may move up to `delegatedAmount` without the owner (null: none). */
+  readonly delegate: string | null;
+  /** 0 when there is no delegate. */
+  readonly delegatedAmount: bigint;
 }
 
 /**
@@ -143,8 +155,11 @@ export interface DeployerFact {
   readonly obs: FactObs;
   readonly coverageFromMs: number;
   readonly mints: readonly { readonly mint: string; readonly createdAtMs: number }[];
-  /** Prior rugs, each dated when the index learned of it. */
-  readonly rugs: readonly { readonly mint: string; readonly knownAtMs: number }[];
+  /**
+   * Prior rugs, each dated when the index learned of it. `kind` is what was observed (the rugs rule that met:
+   * `creator-dump`, a deployer sale; `collapse`, a liquidity collapse), kept apart so H14 can weigh kinds separately.
+   */
+  readonly rugs: readonly { readonly mint: string; readonly knownAtMs: number; readonly kind?: string }[];
   /** Mints the rug labeller could not judge (RUG-1), each dated when the index learned of it. */
   readonly unjudged?: readonly { readonly mint: string; readonly knownAtMs: number }[];
 }
@@ -182,10 +197,13 @@ export interface SolUsdFact {
   readonly points: readonly { readonly tMs: number; readonly price: bigint }[];
 }
 
-/** DefiLlama daily pump.fun curve volume, as fetched (`obs.receivedAt` is the fetch time). `day`: UTC day number. */
+/**
+ * Daily on-chain trade volume of the pump curve and canonical PumpSwap pools, lamports, complete UTC days only (`day`:
+ * UTC day number). A day with any uncovered hour is absent: unknown, never zero (FACTS-1, supervisor ruling after review).
+ */
 export interface CurveVolumeFact {
   readonly obs: FactObs;
-  readonly days: readonly { readonly day: number; readonly volumeUsd: bigint }[];
+  readonly days: readonly { readonly day: number; readonly volumeLamports: bigint }[];
 }
 
 /** Graduates with their effective quote reserves at migration + `survivalAfterMs`, each known at that time. */
@@ -229,6 +247,14 @@ export interface SoftFact {
   readonly keptLiquidityBps?: number;
   /** 5. Holders not in any cohort, gained over the last hour. */
   readonly independentHolderGrowth?: number;
+  /**
+   * 5. Holder owners split by point-in-time funding evidence (FACTS-1): linked to the dev or a common funder, shown
+   * unlinked by funding records as of now, and not yet resolved. Only the producer, which has the funding records,
+   * may call an owner independent; the gates never infer it from a holder list.
+   */
+  readonly knownLinkedOwners?: number;
+  readonly supportedIndependentOwners?: number;
+  readonly unresolvedOwners?: number;
   /** 6. Metadata. */
   readonly metadataMutable?: boolean;
   readonly duplicateNameOrUri?: boolean;
@@ -240,7 +266,7 @@ export interface SoftFact {
 
 export const SOFT_NUMBERS = [
   'buySolBps', 'creationSlotBuyers', 'twoSidedWalletBps', 'roundTripBps', 'microTradeBps', 'funderConcentrationBps', 'freshWalletBps',
-  'sizeEntropyMilli', 'devMigrations', 'devMints', 'keptLiquidityBps', 'independentHolderGrowth', 'socialLinks', 'rugcheckScore',
+  'sizeEntropyMilli', 'devMigrations', 'devMints', 'keptLiquidityBps', 'independentHolderGrowth', 'knownLinkedOwners', 'supportedIndependentOwners', 'unresolvedOwners', 'socialLinks', 'rugcheckScore',
 ] as const;
 export const SOFT_BIGINTS = ['solPerTrade', 'netInflowIndependent'] as const;
 export const SOFT_FLAGS = ['jitoTipInLaunchSlot', 'devBuySameTx', 'metadataMutable', 'duplicateNameOrUri', 'rugcheckSingleHolderFlag'] as const;
@@ -308,6 +334,9 @@ export const parsePool = (v: unknown): PoolFact | null => {
   for (const k of POOL_KEYS) if (!isStr(p[k])) return null;
   if (!isNat(p['lpSupply'])) return null;
   if (p['isMayhemMode'] !== undefined && !isBool(p['isMayhemMode'])) return null;
+  if (p['isCashbackCoin'] !== undefined && !isBool(p['isCashbackCoin'])) return null;
+  if (p['coinCreator'] !== undefined && !isStr(p['coinCreator'])) return null;
+  if (v['accountBytes'] !== undefined && !(Number.isSafeInteger(v['accountBytes']) && (v['accountBytes'] as number) >= 0)) return null;
   if (p['virtualQuoteReserves'] !== undefined && !isBig(p['virtualQuoteReserves'])) return null;
   return v as unknown as PoolFact;
 };
@@ -330,7 +359,8 @@ export const parseCandles = (v: unknown): CandlesFact | null =>
   withObs(v) && isMs(v['intervalMs']) && (v['intervalMs'] as number) > 0 && every(v['candles'], isCandle) ? (v as unknown as CandlesFact) : null;
 
 const isHolder = (v: unknown): v is HolderAccount =>
-  isObj(v) && isStr(v['address']) && isStr(v['owner']) && strOrNull(v['ownerProgram']) && isNat(v['amount']);
+  isObj(v) && isStr(v['address']) && isStr(v['mint']) && isStr(v['owner']) && strOrNull(v['ownerProgram']) && isNat(v['amount'])
+  && strOrNull(v['delegate']) && isNat(v['delegatedAmount']) && (v['delegate'] !== null || v['delegatedAmount'] === 0n);
 
 export const parseHolders = (v: unknown): HoldersFact | null =>
   withObs(v) && isNat(v['supply']) && (v['coverage'] === 'all' || v['coverage'] === 'largest') && every(v['accounts'], isHolder)
@@ -342,7 +372,7 @@ export const parseInsiders = (v: unknown): InsidersFact | null =>
 export const parseDeployer = (v: unknown): DeployerFact | null =>
   withObs(v) && isMs(v['coverageFromMs'])
   && every(v['mints'], (m): m is DeployerFact['mints'][number] => isObj(m) && isStr(m['mint']) && isMs(m['createdAtMs']))
-  && every(v['rugs'], (r): r is DeployerFact['rugs'][number] => isObj(r) && isStr(r['mint']) && isMs(r['knownAtMs']))
+  && every(v['rugs'], (r): r is DeployerFact['rugs'][number] => isObj(r) && isStr(r['mint']) && isMs(r['knownAtMs']) && (r['kind'] === undefined || isStr(r['kind'])))
   && (v['unjudged'] === undefined || every(v['unjudged'], (r): r is DeployerFact['rugs'][number] => isObj(r) && isStr(r['mint']) && isMs(r['knownAtMs'])))
     ? (v as unknown as DeployerFact) : null;
 
@@ -364,7 +394,7 @@ export const parseSolUsd = (v: unknown): SolUsdFact | null =>
     ? (v as unknown as SolUsdFact) : null;
 
 export const parseCurveVolume = (v: unknown): CurveVolumeFact | null =>
-  withObs(v) && every(v['days'], (d): d is CurveVolumeFact['days'][number] => isObj(d) && isMs(d['day']) && isNat(d['volumeUsd']))
+  withObs(v) && every(v['days'], (d): d is CurveVolumeFact['days'][number] => isObj(d) && isMs(d['day']) && isNat(d['volumeLamports']))
     ? (v as unknown as CurveVolumeFact) : null;
 
 export const parseGraduates = (v: unknown): GraduatesFact | null =>

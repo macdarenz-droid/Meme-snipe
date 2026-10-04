@@ -1,13 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { loadDay, loadManifest, regimeBoundariesOf, tableOf, verifySums } from '../src/dataset/dataset.ts';
+import { loadCoverage, loadDay, loadManifest, loadMovements, regimeBoundariesOf, SUPPORTED_SCHEMA, tableOf, verifySums } from '../src/dataset/dataset.ts';
+import type { CoverageRow, MovementRow } from '../src/dataset/rows.ts';
 import { readSeries, usableFrom } from '../src/dataset/offchain.ts';
 import { writeDataset } from './dataset-writer.ts';
-import { SOL_USD, syntheticRows } from './synthetic.ts';
+import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
+import { RESEARCH_CONFIG } from '../../core/src/config/index.ts';
 
 vi.setConfig({ testTimeout: 300_000 });
 const dir = mkdtempSync(join(tmpdir(), 'ds-'));
@@ -85,7 +87,9 @@ describe('command line on an on-disk dataset', () => {
     expect(summary['unreconciledIntents']).toBe(0);
     const report = JSON.parse(readFileSync(out, 'utf8')) as { schemaVersion: number; gates: { gate: string; state: string }[]; trades: unknown[] };
     expect(report.schemaVersion).toBe(1);
-    expect(report.gates.find((g) => g.gate === 'G0')?.state).toBe('pass');
+    expect(summary['shift']).toBe(true);
+    // Three replays and the inputs this run does not measure keep G0 from passing (BT-1c item 1).
+    expect(report.gates.find((g) => g.gate === 'G0')?.state).toBe('fail');
     // One candidate whose single entry attempt may fail: the run is checked, not its luck.
     const evidence = JSON.parse(readFileSync(ev, 'utf8')) as { candidates: number; attempts: Record<string, number>; hashes: string[] };
     expect(evidence.candidates).toBeGreaterThan(0);
@@ -94,12 +98,30 @@ describe('command line on an on-disk dataset', () => {
     expect(report.trades.length).toBe(summary['trades']);
   });
 
-  test('holdout prints only the sealed hash and counts', () => {
+  test('research runs never read holdout days; the registry belongs to the code\'s repository (H1, D1)', () => {
     const cli = join(import.meta.dirname, '..', 'src', 'cli.ts');
-    const stdout = execFileSync('node', [cli, 'holdout', '--dataset', dir, '--sol-usd', join(dir, 'sol.csv'), '--scenario', 'conservative', '--ledger', join(dir, 'h.sqlite')],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    const out = JSON.parse(stdout.trim()) as Record<string, unknown>;
-    expect(Object.keys(out).sort()).toEqual(['counts', 'ledgerHash']);
+    const h = RESEARCH_CONFIG.holdout;
+    // A dataset whose days are holdout days.
+    const shift = Date.parse(`${h.fromDay}T00:00:00Z`) / 1000 - T0 / 1000;
+    const hold = mkdtempSync(join(tmpdir(), 'hold-'));
+    const elsewhere = mkdtempSync(join(tmpdir(), 'elsewhere-'));
+    try {
+      writeDataset(hold, rows.map((r) => ({ ...r, blockTime: r.blockTime + shift })));
+      const sol = join(hold, 'sol.csv');
+      writeFileSync(sol, readFileSync(join(dir, 'sol.csv')));
+      const common = ['--dataset', hold, '--sol-usd', sol, '--scenario', 'conservative', '--out', join(hold, 'r.json'), '--evidence', join(hold, 'e.json')];
+      const cmd = (c: string, cwd: string, ...more: string[]) => execFileSync('node', [cli, c, ...common, ...more], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const repo = join(import.meta.dirname, '..', '..', '..');
+      expect(() => cmd('run', repo, '--days', h.fromDay)).toThrow(/holdout/);
+      expect(() => cmd('run', repo)).toThrow(/no practice days/);
+      expect(existsSync(join(hold, 'r.json'))).toBe(false);
+      expect(() => cmd('holdout-register', repo, '--holdout-id', 'h1', '--registry', join(hold, 'x.json'))).toThrow(/fixed/);
+      // From another directory (not the code's repository) every command is refused.
+      expect(() => cmd('run', elsewhere)).toThrow(/code's repository/);
+    } finally {
+      rmSync(hold, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 });
 
@@ -156,3 +178,63 @@ describe('PumpSwap reserves in the reader', () => {
     expect(r.kind === 'amm' && r.fees.instruction).toBe('v2');
   });
 });
+
+describe('G0 in the report (BT-1c item 1)', () => {
+  test('a single replay and missing checks never read as a G0 pass', () => {
+    const cli = join(import.meta.dirname, '..', 'src', 'cli.ts');
+    const out = join(dir, 'g0-report.json');
+    execFileSync('node', [cli, 'run', '--dataset', dir, '--sol-usd', join(dir, 'sol.csv'), '--scenario', 'base', '--replays', '1', '--out', out, '--evidence', join(dir, 'g0-ev.json')],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const report = JSON.parse(readFileSync(out, 'utf8')) as { gates: { gate: string; state: string; checks: { label: string; value: string; pass: boolean }[] }[] };
+    const g0 = report.gates.find((g) => g.gate === 'G0')!;
+    expect(g0.state).not.toBe('pass');
+    expect(g0.checks.find((c) => c.label === 'replays')?.pass).toBe(false);
+    expect(g0.checks.find((c) => c.label === 'parity')?.value).toBe('not run');
+  });
+});
+
+describe('schema 3 (BT-1d)', () => {
+  test('the loader reads only schema 3, and every trade row carries its user token account and owner', () => {
+    expect(SUPPORTED_SCHEMA).toBe(3);
+    const m = loadManifest(dir);
+    const back = m.days.flatMap((d) => loadDay(dir, d));
+    const amm = back.filter((r) => r.kind === 'amm');
+    expect(amm.length).toBeGreaterThan(0);
+    for (const r of amm) {
+      expect(r.userTokenAccount).not.toBe('');
+      expect(r.userTokenOwner).toBe(r.user);
+    }
+    const old = mkdtempSync(join(tmpdir(), 'old-'));
+    try {
+      writeFileSync(join(old, 'manifest.json'), JSON.stringify({ ...m, schema: 2 }));
+      expect(() => loadManifest(old)).toThrow(/schema 2 is not supported/);
+    } finally {
+      rmSync(old, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('movements and coverage (schema 3)', () => {
+  test('read back exactly, only on request: a trading day never loads them', () => {
+    const d = mkdtempSync(join(tmpdir(), 'mv-'));
+    try {
+      const day0 = rows.find((r) => r.kind === 'block')!;
+      const movements: MovementRow[] = [
+        { slot: day0.slot, blockTime: day0.blockTime, txIdx: 3, outerIx: 1, innerIx: null, mint: 'M', kind: 'transfer', fromOwner: 'A', toOwner: 'B', amount: 5n, fromAccount: 'a', toAccount: 'b' },
+        { slot: day0.slot, blockTime: day0.blockTime, txIdx: 3, outerIx: 1, innerIx: 0, mint: 'M', kind: 'burn', fromOwner: 'B', toOwner: '', amount: 1n, fromAccount: 'b', toAccount: '' },
+      ];
+      const coverage: CoverageRow[] = [
+        { mint: '*', scope: 'no_movements', slot: null, reason: 'lead_in', count: null, txIdx: null, fromSlot: 1n, toSlot: 2n },
+        { mint: 'M', scope: 'unresolved', slot: day0.slot, reason: 'swap_owner_unknown', count: 1, txIdx: 3, fromSlot: day0.slot, toSlot: day0.slot + 10n },
+      ];
+      writeDataset(d, rows, { movements, coverage });
+      const m = loadManifest(d);
+      expect(loadMovements(d, m.days[0]!)).toEqual(movements);
+      expect(loadCoverage(d, m)).toEqual(coverage);
+      expect(loadDay(d, m.days[0]!).some((r) => !['amm', 'curve', 'block', 'event'].includes(r.kind))).toBe(false);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+

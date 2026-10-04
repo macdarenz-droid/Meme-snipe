@@ -5,10 +5,27 @@
 #
 #   bash install.sh                      SSH off (use the provider's web console)
 #   bash install.sh --ssh-key 'ssh-ed25519 AAAA... me'   SSH on, key-only, for that key
+#   bash install.sh --update             run by zeroed-update after each deploy: host files and units only;
+#                                        keeps SSH as it is, shows no code and starts no setup screen
 #
 # Never prints a secret. Never uses set -x.
 set -euo pipefail
 umask 022
+
+SSH_KEY=""
+UPDATE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ssh-key) SSH_KEY="${2:-}"; shift 2 ;;
+    --update) UPDATE=1; shift ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+# An update keeps the addresses this host was installed with.
+if [ "$UPDATE" = 1 ]; then
+  [ -f /etc/zeroed/host.env ] || { echo "Install stopped: --update needs an installed host" >&2; exit 1; }
+  . /etc/zeroed/host.env
+fi
 
 REPO="${ZEROED_REPO:-macdarenz-droid/Meme-snipe}"
 BRANCH="${ZEROED_BRANCH:-ccr-14987baf-i6lrsl}"
@@ -20,14 +37,6 @@ NODE_SHA256=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
 NODE_URL="${ZEROED_NODE_URL:-https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-linux-x64.tar.xz}"
 WEB_FLOW_FPR=968479A1AFF927E37D1A566BB5690EEEBB952194
 
-SSH_KEY=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --ssh-key) SSH_KEY="${2:-}"; shift 2 ;;
-    *) echo "Unknown option: $1" >&2; exit 2 ;;
-  esac
-done
-
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'Install stopped: %s\n' "$*" >&2; exit 1; }
 
@@ -35,15 +44,118 @@ die() { printf 'Install stopped: %s\n' "$*" >&2; exit 1; }
 . /etc/os-release
 [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 24.04 ] || die "needs Ubuntu 24.04 LTS (found ${PRETTY_NAME:-unknown})"
 [ "$(uname -m)" = x86_64 ] || die "needs an x86_64 server"
+[ "$UPDATE" = 0 ] || [ -z "$SSH_KEY" ] || die "--update keeps SSH as it is; --ssh-key needs a full install"
 if [ -n "$SSH_KEY" ]; then
   [[ "$SSH_KEY" =~ ^(ssh-ed25519|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com)\ [A-Za-z0-9+/=]+(\ [^[:cntrl:]]*)?$ ]] || die "--ssh-key must be one public key line (ssh-ed25519 or ecdsa)"
 fi
 
+# An update is all or nothing. Before it changes a host path it keeps the old file (*.zeroed-old) or notes
+# that the path is new, and before it stops a unit it notes whether that unit was enabled and running, all in
+# a journal on disk. If any later step fails (Node, the firewall, the signing key, a package, a unit), the
+# EXIT trap puts every file back, removes the new ones, reloads systemd, restores each unit's state and
+# re-applies the old firewall, so the release that keeps running also keeps its own host files. An update
+# killed half-way leaves the journal behind, and the next update rolls it back first. On success the old
+# copies and the journal are deleted. Known limit: packages apt added for a missing package stay.
+JOURNAL=/var/lib/zeroed-host/update-journal
+MANAGED_ROOT="" # only the tests point this elsewhere
+# managed PATH: true for the paths this installer manages. Roll-back touches nothing else, whatever the
+# journal says.
+managed() {
+  local p="${1#"$MANAGED_ROOT"}"
+  [ "$p" != "$1" ] || [ -z "$MANAGED_ROOT" ] || return 1
+  case "$p" in */../* | */./* | *//* | */.. | */.) return 1 ;; esac
+  # Key material is never the installer's to roll back (an update never writes it): the host's age key, the
+  # GitHub merge-key keyring, the one-time codes and where backups are encrypted to.
+  case "$p" in
+    /etc/zeroed/age | /etc/zeroed/age/* | /etc/zeroed/gnupg | /etc/zeroed/gnupg/*) return 1 ;;
+    /etc/zeroed/deploy-code* | /etc/zeroed/pair-code* | /etc/zeroed/backup-recipients* | /var/lib/zeroed-host/owner_backup_recipient*) return 1 ;;
+  esac
+  case "$p" in
+    /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
+    /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
+    /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
+  esac
+  return 1
+}
+journal() { printf '%s\n' "$*" >> "$JOURNAL"; sync "$JOURNAL" 2>/dev/null || sync; }
+keep_old() { # path
+  [ "$UPDATE" = 1 ] || return 0
+  if grep -qxF -e "backed $1" -e "created $1" "$JOURNAL" 2>/dev/null; then return 0; fi
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    cp -a "$1" "$1.zeroed-old"
+    journal "backed $1"
+  else
+    journal "created $1"
+  fi
+}
+keep_unit() { # unit: its enabled and running state, before it is stopped
+  [ "$UPDATE" = 1 ] || return 0
+  journal "unit $1 $(systemctl is-enabled --quiet "$1" 2>/dev/null && echo 1 || echo 0) $(systemctl is-active --quiet "$1" 2>/dev/null && echo 1 || echo 0)"
+}
+roll_back() {
+  local kind p en act b=0 c=0
+  set +e
+  [ -s "$JOURNAL" ] || return 0
+  while read -r kind p _; do
+    [ "$kind" = created ] || [ "$kind" = backed ] || [ "$kind" = unit ] || { printf 'Roll-back: skipped an unknown journal line.\n' >&2; continue; }
+    [ "$kind" = unit ] || managed "$p" || printf 'Roll-back: skipped %s (not a path this installer manages).\n' "$p" >&2
+  done < "$JOURNAL"
+  while read -r kind p _; do
+    [ "$kind" = created ] && managed "$p" || continue
+    case "$p" in /etc/systemd/system/*) systemctl disable --now "$(basename "$p")" >/dev/null 2>&1 ;; esac
+    rm -f "$p"
+    c=$((c + 1))
+  done < "$JOURNAL"
+  while read -r kind p _; do
+    [ "$kind" = backed ] && managed "$p" || continue
+    [ ! -e "$p.zeroed-old" ] && [ ! -L "$p.zeroed-old" ] || mv -f "$p.zeroed-old" "$p"
+    b=$((b + 1))
+  done < "$JOURNAL"
+  systemctl daemon-reload
+  while read -r kind p en act; do
+    [ "$kind" = unit ] && [[ "$p" =~ ^zeroed-[A-Za-z0-9@._-]+$ ]] || continue
+    [ "$en" != 1 ] || systemctl enable "$p" >/dev/null 2>&1
+    [ "$act" != 1 ] || systemctl start "$p" >/dev/null 2>&1
+  done < "$JOURNAL"
+  nft -f /etc/nftables.conf
+  rm -f "$JOURNAL"
+  printf 'Update failed; every host file is back as it was (%s restored, %s removed).\n' "$b" "$c" >&2
+}
+on_exit() {
+  local rc=$? kind p
+  [ "$UPDATE" = 1 ] || return 0
+  if [ "$rc" != 0 ]; then
+    roll_back
+  elif [ -e "$JOURNAL" ]; then
+    while read -r kind p _; do [ "$kind" != backed ] || rm -f "$p.zeroed-old"; done < "$JOURNAL"
+    rm -f "$JOURNAL"
+  fi
+}
+if [ "$UPDATE" = 0 ] && [ -e "$JOURNAL" ]; then
+  # A full install replaces everything anyway: a journal left by an interrupted update must never roll a
+  # later update back over this install. Drop it and the old copies it lists.
+  while read -r kind p _; do [ "$kind" = backed ] && managed "$p" && rm -f "$p.zeroed-old"; done < "$JOURNAL" || true
+  rm -f "$JOURNAL"
+fi
+if [ "$UPDATE" = 1 ]; then
+  # An update killed half-way (power loss, OOM) left its journal: put that one back before starting.
+  if [ -s "$JOURNAL" ]; then
+    say "A previous update did not finish; putting its host files back first"
+    roll_back 2>&1 | sed 's/^Update failed; /Previous update: /'
+    set -e
+  fi
+  rm -f "$JOURNAL"
+  trap on_exit EXIT
+fi
+
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -q >/dev/null
-apt-get install -y -q --no-install-recommends \
-  age ca-certificates curl git gnupg jq nftables sqlite3 unattended-upgrades xz-utils >/dev/null
+PACKAGES=(age ca-certificates curl git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
+# An update only touches apt when a package is missing (and waits for unattended-upgrades' lock).
+if [ "$UPDATE" = 0 ] || ! dpkg -s "${PACKAGES[@]}" >/dev/null 2>&1; then
+  apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null
+  apt-get -o DPkg::Lock::Timeout=600 install -y -q --no-install-recommends "${PACKAGES[@]}" >/dev/null
+fi
 
 say "Node $NODE_VERSION"
 if [ "$(/usr/local/bin/node --version 2>/dev/null || true)" != "$NODE_VERSION" ]; then
@@ -53,6 +165,7 @@ if [ "$(/usr/local/bin/node --version 2>/dev/null || true)" != "$NODE_VERSION" ]
   rm -rf "/opt/node-$NODE_VERSION"
   mkdir -p "/opt/node-$NODE_VERSION"
   tar -xJf "$tmp/node.tar.xz" -C "/opt/node-$NODE_VERSION" --strip-components=1 --no-same-owner
+  keep_old /usr/local/bin/node # the symlink itself; both /opt/node-* folders stay
   ln -sfn "/opt/node-$NODE_VERSION/bin/node" /usr/local/bin/node
   rm -rf "$tmp"
 fi
@@ -65,9 +178,14 @@ getent group zeroed-worker >/dev/null || groupadd --system zeroed-worker
 getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker --groups zeroed-signer --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-worker
 
 say "Files"
+# The SSH state of the running firewall, read before nftables.conf is replaced (an update keeps it).
+SSH_WAS_OPEN=0
+[ "$UPDATE" = 0 ] || ! nft list ruleset 2>/dev/null | grep -Eq 'tcp dport 22 .*accept' || SSH_WAS_OPEN=1
+CHANGED=()
 install_file() { # path mode, content on stdin
   mkdir -p "$(dirname "$1")"
   cat > "$1.zeroed-new"
+  cmp -s "$1.zeroed-new" "$1" 2>/dev/null || { CHANGED+=("$1"); keep_old "$1"; }
   chmod "$2" "$1.zeroed-new"
   chown root:root "$1.zeroed-new"
   mv -f "$1.zeroed-new" "$1"
@@ -81,17 +199,22 @@ APT::Periodic::AutocleanInterval "7";
 __ZEROED_FILE__
 install_file /etc/apt/apt.conf.d/52zeroed-unattended-upgrades 0644 <<'__ZEROED_FILE__'
 // Zeroed: security origin only (Ubuntu's default list), never reboot on its own.
+// Plus Tailscale's own repository (live view, opt-in; its key is pinned by zeroed-tailscale): it publishes
+// fixes there, not in Ubuntu's security pocket. Matches nothing until Tailscale is installed.
 Unattended-Upgrade::Allowed-Origins {
         "${distro_id}:${distro_codename}-security";
         "${distro_id}ESMApps:${distro_codename}-apps-security";
         "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Tailscale,label=Tailscale,codename=${distro_codename}";
 };
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 __ZEROED_FILE__
 install_file /etc/nftables.conf 0644 <<'__ZEROED_FILE__'
 #!/usr/sbin/nft -f
-# Zeroed host firewall. No inbound ports (SSH only when the installer was given a key).
+# Zeroed host firewall. No inbound ports on the public interface (SSH only when the installer was given a key).
 # Outbound: the worker may use HTTPS and DNS only; the signer has no network at all.
 flush ruleset
 
@@ -103,6 +226,9 @@ table inet zeroed {
     ct state invalid drop
     meta l4proto { icmp, ipv6-icmp } limit rate 10/second accept
 #SSH_RULE#    tcp dport 22 ct state new limit rate 6/minute accept
+    # Live view (opt-in, zeroed-tailscale): HTTPS from the owner's tailnet only. Matches nothing until
+    # Tailscale is installed; the public interface stays closed.
+    iifname "tailscale0" tcp dport 443 accept
   }
 
   chain forward {
@@ -174,6 +300,32 @@ Description=Zeroed: hourly encrypted backup
 OnCalendar=hourly
 Persistent=true
 RandomizedDelaySec=60s
+
+[Install]
+WantedBy=timers.target
+__ZEROED_FILE__
+install_file /etc/systemd/system/zeroed-check.service 0644 <<'__ZEROED_FILE__'
+[Unit]
+Description=Zeroed: stored-key check, Telegram webhook retry and change check, evidence index
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zeroed-check
+UMask=0077
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+__ZEROED_FILE__
+install_file /etc/systemd/system/zeroed-check.timer 0644 <<'__ZEROED_FILE__'
+[Unit]
+Description=Zeroed: host checks every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
 
 [Install]
 WantedBy=timers.target
@@ -307,8 +459,8 @@ SupplementaryGroups=zeroed-signer
 EnvironmentFile=/etc/zeroed/worker.env
 Environment=NODE_ENV=production
 # Reconcile first: every start and restart settles open intents against the chain before trading.
-ExecStartPre=/usr/local/bin/node /opt/zeroed/stub/worker.mjs --reconcile
-ExecStart=/usr/local/bin/node /opt/zeroed/stub/worker.mjs
+ExecStartPre=/usr/local/lib/zeroed/worker-start --reconcile
+ExecStart=/usr/local/lib/zeroed/worker-start
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
@@ -569,6 +721,60 @@ lcnp5rt1PyuXxKOJzNUpywDkgQhX4PrrzsNTRszGRbj0uY4fqM5QVXafORhX7w==
 =L/8U
 -----END PGP PUBLIC KEY BLOCK-----
 __ZEROED_FILE__
+install_file /etc/zeroed/tailscale-archive.asc 0644 <<'__ZEROED_FILE__'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mQINBF5UmbgBEADAA5mxC8EoWEf53RVdlhQJbNnQW7fctUA5yNcGUbGGGTk6XFqO
+nlek0Us0FAl5KVBgcS0Bj+VSwKVI/wx91tnAWI36CHeMyPTawdT4FTcS2jZMHbcN
+UMqM1mcGs3wEQmKz795lfy2cQdVktc886aAF8hy1GmZDSs2zcGMvq5KCNPuX3DD5
+INPumZqRTjwSwlGptUZrJpKWH4KvuGr5PSy/NzC8uSCuhLbFJc1Q6dQGKlQxwh+q
+AF4uQ1+bdy92GHiFsCMi7q43hiBg5J9r55M/skboXkNBlS6kFviP+PADHNZe5Vw0
+0ERtD/HzYb3cH5YneZuYXvnJq2/XjaN6OwkQXuqQpusB5fhIyLXE5ZqNlwBzX71S
+779tIyjShpPXf1HEVxNO8TdVncx/7Zx/FSdwUJm4PMYQmnwBIyKlYWlV2AGgfxFk
+mt2VexyS5s4YA1POuyiwW0iH1Ppp9X14KtOfNimBa0yEzgW3CHTEg55MNZup6k2Q
+mRGtRjeqM5cjrq/Ix15hISmgbZogPRkhz/tcalK38WWAR4h3N8eIoPasLr9i9OVe
+8aqsyXefCrziaiJczA0kCqhoryUUtceMgvaHl+lIPwyW0XWwj+0q45qzjLvKet+V
+Q8oKLT1nMr/whgeSJi99f/jE4sWIbHZ0wwR02ZCikKnS05arl3v+hiBKPQARAQAB
+tERUYWlsc2NhbGUgSW5jLiAoUGFja2FnZSByZXBvc2l0b3J5IHNpZ25pbmcga2V5
+KSA8aW5mb0B0YWlsc2NhbGUuY29tPokCTgQTAQgAOBYhBCWWqZ6qszghiTwKeUWM
+qDKVf1hoBQJeVJm4AhsDBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJEEWMqDKV
+f1hoWHEP/1DYd9WZrodyV5zy1izvj0FXtUReJi374gDn3cHrG6uYtXcE9HWZhxQD
+6nDgYuey5sBhLvPQiE/sl5GYXNw/O95XVk8HS54BHCCYq1GeYkZaiCGLGFBA08JK
+7PZItGsfdJHwHfhSMtGPS7Cpmylje9gh8ic56NAhC7c5tGTlD69Y8zGHjnRQC6Hg
+wF34jdp8JTQpSctpmiOxOXN+eH8N59zb0k30CUym1Am438AR0PI6RBTnubBH+Xsc
+eQhLJnmJ1bM6GP4agXw5T1G/qp95gjIddHXzOkEvrpVfJFCtp91VIlBwycspKYVp
+1IKAdPM6CVf/YoDkawwm4y4OcmvNarA5dhWBG0Xqse4v1dlYbiHIFcDzXuMyrHYs
+D2Wg8Hx8TD64uBHY0fp24nweCLnaZCckVUsnYjb0A494lgwveswbZeZ6JC5SbDKH
+Tc2SE4jq+fsEEJsqsdHIC04d+pMXI95HinJHU1SLBTeKLvEF8Zuk7RTJyaUTjs7h
+Ne+xWDmRjjR/D/GXBxNrM9mEq6Jvp/ilYTdWwAyrSmTdotHb+NWjAGpJWj5AZCH9
+HeBr2mtVhvTu3KtCQmGpRiR18zMbmemRXUh+IX5hpWGzynhtnSt7vXOvhJdqqc1D
+VennRMQZMb09wJjPcvLIApUMl69r29XmyB59NM3UggK/UCJrpYfmuQINBF5UmbgB
+EADTSKKyeF3XWDxm3x67MOv1Zm3ocoe5xGDRApPkgqEMA+7/mjVlahNXqA8btmwM
+z1BH5+trjOUoohFqhr9FPPLuKaS/pE7BBP38KzeA4KcTiEq5FQ4JzZAIRGyhsAr+
+6bxcKV/tZirqOBQFC7bH2UAHH7uIKHDUbBIDFHjnmdIzJ5MBPMgqvSPZvcKWm40g
+W+LWMGoSMH1Uxd+BvW74509eezL8p3ts42txVNvWMSKDkpiCRMBhfcf5c+YFXWbu
+r5qus2mnVw0hIyYTUdRZIkOcYBalBjewVmGuSIISnUv76vHz133i0zh4JcXHUDqc
+yLBUgVWckqci32ahy3jc4MdilPeAnjJQcpJVBtMUNTZ4KM7UxLmOa5hYwvooliFJ
+wUFPB+1ZwN8d+Ly12gRKf8qA/iL8M5H4nQrML2dRJ8NKzP2U73Fw+n6S1ngrDX8k
+TPhQBq4EDjDyX7SW3Liemj5BCuWJAo53/2cL9P9I5Nu3i2pLJOHzjBSXxWaMMmti
+kopArlSMWMdsGgb0xYX+aSV7xW+tefYZJY1AFJ1x2ZgfIc+4zyuXnHYA2jVYLAfF
+pApqwwn8JaTJWNhny/OtAss7XV/WuTEOMWXaTO9nyNmHla9KjxlBkDJG9sCcgYMg
+aCAnoLRUABCWatxPly9ZlVbIPPzBAr8VN/TEUbceAH0nIwARAQABiQI2BBgBCAAg
+FiEEJZapnqqzOCGJPAp5RYyoMpV/WGgFAl5UmbgCGwwACgkQRYyoMpV/WGji9w/8
+Di9yLnnudvRnGLXGDDF2DbQUiwlNeJtHPHH4B9kKRKJDH1Rt5426Lw8vAumDpBlR
+EeuT6/YQU+LSapWoDzNcmDLzoFP7RSQaB9aL/nJXv+VjlsVH/crpSTTgGDs8qGsL
+O3Y2U1Gjo5uMBoOfXwS8o1VWO/5eUwS0KH7hpbOuZcf9U9l1VD2YpGfnMwX1rnre
+INJqseQAUL3oyNl76gRzyuyQ4AIA06r40hZDgybH0ADN1JtfVk8z4ofo/GcfoXqm
+hifWJa2SwwHeijhdN1T/kG0FZFHs1DBuBYJG3iJ3/bMeL15j1OjncIYIYccdoEUd
+uHnp4+ZYj5kND0DFziTvOC4WyPpv3BlBVariPzEnEqnhjx5RYwMabtTXoYJwUkxX
+2gAjKqh2tXissChdwDGRNASSDrChHLkQewx+SxT5kDaOhB84ZDnp+urn9A+clLkN
+lZMsMQUObaRW68uybSbZSmIWFVM1GovRMgrPG3T6PAykQhFyE/kMFrv5KpPh7jDj
+5JwzQkxLkFMcZDdS43VymKEggxqtM6scIRU55i059fLPAVXJG5in1WhMNsmt49lb
+KqB6je3plIWOLSPuCJ/kR9xdFp7Qk88GCXEd0+4z/vFn4hoOr85NXFtxhS8k9GfJ
+mM/ZfUq7YmHR+Rswe0zrrCwTDdePjGMo9cHpd39jCvc=
+=AIVM
+-----END PGP PUBLIC KEY BLOCK-----
+__ZEROED_FILE__
 install_file /opt/zeroed/stub/signer.mjs 0644 <<'__ZEROED_FILE__'
 // Stand-in for the signer until SIGN-1 lands. Holds no key. Listens only on a Unix socket in its runtime
 // directory (the unit has no network at all) and answers every request with "not ready".
@@ -598,6 +804,7 @@ install_file /opt/zeroed/stub/worker.mjs 0644 <<'__ZEROED_FILE__'
 // `--reconcile` is the ExecStartPre step: the real worker settles open intents against the chain there.
 import { createHmac } from 'node:crypto';
 import { existsSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -706,12 +913,42 @@ async function beat() {
 }
 
 const bootId = `${Date.now().toString(36)}-${process.pid}`;
+
+// The worker API (ZEROED_API_ADDR), loopback only (ARCHITECTURE.md 12.4); `tailscale serve` publishes it to the
+// owner's tailnet. Its /health lists the dry-run evidence kept on the host (`evidence`; zeroed-check writes the index).
+const healthAddr = process.env.ZEROED_API_ADDR ?? '';
+let server = null;
+if (healthAddr) {
+  const m = /^(127\.0\.0\.1|\[::1\]):(\d{1,5})$/.exec(healthAddr);
+  if (!m) {
+    console.log('Refused: the worker API must bind loopback only.');
+    process.exit(2);
+  }
+  const evidence = () => {
+    try {
+      const list = JSON.parse(readFileSync('/var/lib/zeroed-index/evidence.json', 'utf8'));
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  };
+  server = createServer((req, res) => {
+    if (req.method !== 'GET' || req.url !== '/health') {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      return res.end('{"error":"not found"}');
+    }
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ stub: true, mode: 'paper', boot: bootId, seq, git_sha: gitSha, paused, signing_key: false, evidence: evidence() }));
+  });
+  server.listen(Number(m[2]), m[1].replace(/[[\]]/g, ''));
+}
 console.log(`Stub worker up: ${loaded.length} of ${NAMES.length} credentials, release ${gitSha.slice(0, 12)}, watchdog ${watchdog ? 'set' : 'not set'}.`);
 event('start', gitSha);
 await beat();
 const timer = setInterval(() => void beat(), intervalMs);
 const stop = () => {
   clearInterval(timer);
+  server?.close();
   event('stop');
   db.close();
   process.exit(0);
@@ -723,11 +960,15 @@ install_file /usr/local/lib/zeroed/common.sh 0644 <<'__ZEROED_FILE__'
 # Shared helpers for the Zeroed host scripts. Sourced, never run. Never prints a secret value.
 # shellcheck shell=bash
 . /etc/zeroed/host.env
+. /usr/local/lib/zeroed/logic.sh
 CRED_DIR=/etc/credstore.encrypted
 STATE_DIR=/var/lib/zeroed-host
 DEPLOY_CODE_FILE=/etc/zeroed/deploy-code
 PAIR_CODE_FILE=/etc/zeroed/pair-code
 API_NAMES=(HELIUS_API_KEY ALCHEMY_API_KEY JUPITER_API_KEY TELEGRAM_BOT_TOKEN)
+# Dry-run evidence stays on the host (RUN-1 writes it); the index of it is world-readable for the worker API.
+EVIDENCE_ROOT=/var/lib/zeroed-dryrun/evidence
+EVIDENCE_INDEX=/var/lib/zeroed-index/evidence.json
 
 log() { printf '%s\n' "$*"; }
 
@@ -742,6 +983,14 @@ store_cred() {
   systemd-creds encrypt --with-key=host --name="$1" - "$CRED_DIR/$1.new"
   chmod 0600 "$CRED_DIR/$1.new"
   mv -f "$CRED_DIR/$1.new" "$CRED_DIR/$1"
+  record_cred "$1"
+}
+
+# record_cred NAME: remembers the SHA-256 of the stored ciphertext (never of the value), so zeroed-check can
+# tell a credential changed outside the handoff or pairing from one stored by them.
+record_cred() {
+  install -d -m 0700 "$STATE_DIR/cred_sha"
+  sha256sum "$CRED_DIR/$1" | cut -c1-64 > "$STATE_DIR/cred_sha/$1"
 }
 
 # tg METHOD [curl args...]: calls the Telegram Bot API. The token (and the chat id, from $tg_chat when
@@ -769,6 +1018,23 @@ notify() {
   local chat
   chat="$(cred telegram_chat_id)" || return 1
   send_to "$chat" "$1"
+}
+
+# alert KEY TEXT: tells the owner once per episode (until alert_clear KEY). Kept pending when Telegram cannot
+# be reached, so the next run tries again; the journal always has the line.
+alert() {
+  install -d -m 0700 "$STATE_DIR/alerts"
+  [ ! -e "$STATE_DIR/alerts/$1" ] || return 0
+  log "$2"
+  if notify "$2"; then : > "$STATE_DIR/alerts/$1"; else log "Could not send that alert to Telegram; trying again next run."; fi
+}
+
+# alert_clear KEY TEXT: sends TEXT once if KEY was alerted, and closes the episode.
+alert_clear() {
+  [ -e "$STATE_DIR/alerts/$1" ] || return 0
+  log "$2"
+  notify "$2" || true
+  rm -f "$STATE_DIR/alerts/$1"
 }
 
 new_pair_code() {
@@ -802,6 +1068,48 @@ set_webhook() {
     IFS= read -r secret || true
     cred telegram_bot_token | { IFS= read -r token || true; printf 'url = "%s/bot%s/setWebhook"\ndata-urlencode = "secret_token=%s"\n' "$ZEROED_TELEGRAM_URL" "$token" "$secret"; }
   } | curl -fsS -m 30 -o /dev/null -K - --data-urlencode "url=$url/telegram" --data-urlencode 'allowed_updates=["message"]'
+}
+
+# webhook_info: Telegram's getWebhookInfo reply (JSON) on stdout.
+webhook_info() { tg_chat="" tg getWebhookInfo 2>/dev/null || echo '{"ok":false}'; }
+
+# webhook_try: one try to set the webhook. On success it records what Telegram now reports as the expected
+# fingerprint; on failure it schedules the next try with back-off (zeroed-check runs it when due) and tells
+# the owner after WEBHOOK_MAX_TRIES failed tries in a row.
+webhook_try() {
+  local tries now
+  if set_webhook 2>/dev/null; then
+    webhook_info | webhook_fp > "$STATE_DIR/webhook_expected"
+    if [ -e "$STATE_DIR/webhook_tries" ]; then log "Telegram webhook set after $(cat "$STATE_DIR/webhook_tries") failed tries."; fi
+    rm -f "$STATE_DIR/webhook_tries" "$STATE_DIR/webhook_next"
+    alert_clear webhook-failed "Zeroed host: the Telegram webhook is set again; /pause and /status work."
+    return 0
+  fi
+  tries=$(($(cat "$STATE_DIR/webhook_tries" 2>/dev/null || echo 0) + 1))
+  now="$(date +%s)"
+  printf '%s
+' "$tries" > "$STATE_DIR/webhook_tries"
+  printf '%s
+' "$((now + $(backoff_s "$tries")))" > "$STATE_DIR/webhook_next"
+  log "Could not set the Telegram webhook for the watchdog (try $tries); next try in $(backoff_s "$tries") s."
+  if [ "$tries" -ge "$WEBHOOK_MAX_TRIES" ]; then
+    alert webhook-failed "Zeroed host: could not set the Telegram webhook after $tries tries, so /pause and /status do not reach the watchdog. Alerts still come here. The server keeps trying every $(($(backoff_s "$tries") / 60)) min."
+  fi
+  return 1
+}
+
+# webhook_off: turns the webhook off on purpose (pairing reads messages with getUpdates), so the change
+# check expects no webhook until it is set again.
+webhook_off() {
+  tg_chat="" tg deleteWebhook -o /dev/null 2>/dev/null || return 1
+  printf 'none\n' > "$STATE_DIR/webhook_expected"
+}
+
+# worker_busy: true while a qualifying dry run is active or the worker reports open intents (or cannot say).
+worker_busy() {
+  [ -z "$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")" ] || return 0
+  systemctl is-active --quiet zeroed-worker.service || return 1
+  [ "$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)" != 0 ]
 }
 
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }
@@ -862,6 +1170,132 @@ const hrpExpand = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp]
 const mod = polymod(hrpExpand.concat(words, [0, 0, 0, 0, 0, 0])) ^ 1;
 const checksum = [0, 1, 2, 3, 4, 5].map((i) => (mod >>> (5 * (5 - i))) & 31);
 process.stdout.write((hrp + '1' + words.concat(checksum).map((d) => CHARSET[d]).join('')).toUpperCase() + '\n');
+__ZEROED_FILE__
+install_file /usr/local/lib/zeroed/logic.sh 0644 <<'__ZEROED_FILE__'
+# Pure decision helpers for the Zeroed host scripts: no side effects, no host paths read unless passed in,
+# so packages/ops/test/host-logic.test.ts runs them anywhere. Sourced, never run. Never prints a secret value.
+# shellcheck shell=bash
+
+PAIR_CODE_TTL_S=1800       # a pairing code works for 30 minutes
+WEBHOOK_MAX_TRIES=5        # the owner is told after this many failed tries in a row
+WORKER_API_ADDR=127.0.0.1:8788 # the worker API, loopback only; tailscale serve publishes it to the tailnet
+WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RUN-1's default), never published
+TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
+RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
+
+# backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
+backoff_s() {
+  local n="$1" s=60
+  while [ "$n" -gt 1 ] && [ "$s" -lt 1800 ]; do s=$((s * 2)); n=$((n - 1)); done
+  [ "$s" -le 1800 ] || s=1800
+  printf '%s\n' "$s"
+}
+
+# pair_code_expired ISSUED NOW: true once a code issued at ISSUED (epoch s) is older than the TTL.
+pair_code_expired() { [ $(($2 - $1)) -gt "$PAIR_CODE_TTL_S" ]; }
+
+# webhook_fp: reads Telegram's getWebhookInfo reply on stdin and prints "none" (no webhook) or the SHA-256 of
+# what defines where updates go (url, certificate, connections, update types). The IP address and error
+# fields are left out: Telegram changes them on its own.
+webhook_fp() {
+  local fp
+  fp="$(jq -r 'if .ok != true then "error"
+    elif ((.result.url // "") == "") then "none"
+    else [.result.url, (.result.has_custom_certificate // false), (.result.max_connections // 40), ((.result.allowed_updates // []) | sort)] | tojson end')" || fp=error
+  case "$fp" in
+    none | error) printf '%s\n' "$fp" ;;
+    *) printf '%s' "$fp" | sha256sum | cut -c1-64 ;;
+  esac
+}
+
+# webhook_host: prints the host of the webhook URL in a getWebhookInfo reply on stdin, or "none".
+webhook_host() { jq -r '(.result.url // "") | if . == "" then "none" else (sub("^[a-z]+://"; "") | sub("[/?#].*$"; "")) end'; }
+
+# qualifying_run EVIDENCE_ROOT UNITS: prints the name of an active qualifying dry run, or nothing. UNITS is
+# the output of `systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend`. A run
+# is also active while EVIDENCE_ROOT/<id>/run.json names it and it has no report.json yet (RUN-1's
+# "unfinished" rule): that covers the minutes after a reboot drill before the runner resumes.
+qualifying_run() {
+  local unit d name
+  unit="$(printf '%s\n' "$2" | sed -n 's/^\(●[[:space:]]*\)\{0,1\}zeroed-dryrun@\([^[:space:]]*\)\.service.*/\2/p' | head -1)"
+  if [ -n "$unit" ]; then printf '%s\n' "$unit"; return 0; fi
+  for d in "$1"/*/; do
+    [ -f "$d/run.json" ] && [ ! -e "$d/report.json" ] || continue
+    name="$(jq -r '.name // empty | strings' "$d/run.json" 2>/dev/null || true)"
+    if [ -n "$name" ]; then printf '%s\n' "$name"; return 0; fi
+  done
+  return 0
+}
+
+# evidence_index EVIDENCE_ROOT: prints a JSON list of the dry runs kept on the host (newest first): id,
+# name, label, commit, started, finished, pass, aborted and the evidence path. Read by the worker's health API.
+evidence_index() {
+  local d id
+  for d in "$1"/*/; do
+    [ -f "$d/run.json" ] || continue
+    id="$(basename "$d")"
+    [[ "$id" =~ ^[A-Za-z0-9._-]{1,120}$ ]] || continue
+    jq -c --arg id "$id" --arg path "${d%/}" \
+      --argjson finished "$([ -f "$d/report.json" ] && echo true || echo false)" \
+      --argjson report "$(jq -c '{pass: (.pass | if type == "boolean" then . else null end)}' "$d/report.json" 2>/dev/null || echo '{"pass":null}')" \
+      --arg aborted "$(head -c 200 "$d/ABORTED" 2>/dev/null | tr -d '\n' || true)" \
+      '{id: $id, name: (.name // null), label: (.label // null), commit: (.commit // null),
+        started: (.startedAt // null), finished: $finished, pass: (if $finished then $report.pass else null end),
+        aborted: (if $aborted == "" then null else $aborted end), path: $path}' "$d/run.json" 2>/dev/null || true
+  done | jq -s 'sort_by(.started // 0, .id) | reverse'
+}
+
+# serve_ok: reads `tailscale serve status --json` on stdin; true only when HTTPS 443 proxies to the worker API
+# on loopback and Funnel is off everywhere.
+serve_ok() {
+  # Exactly one thing published (OPS-1h review): HTTPS on 443, one host, its "/" proxied to the worker API and
+  # nothing else (no other path, port, host, TCP forward or service), and Funnel on for nothing. A serve made by hand
+  # is adopted only in this shape.
+  jq -e --arg target "http://$WORKER_API_ADDR" '
+    type == "object"
+    and ((keys - ["TCP", "Web", "AllowFunnel"]) == [])
+    and .TCP == {"443": {"HTTPS": true}}
+    and ((.Web // {}) | length == 1)
+    and ((.Web // {}) | to_entries[0] | (.key | endswith(":443")) and .value == {"Handlers": {"/": {"Proxy": $target}}})
+    and ((.AllowFunnel // {}) | to_entries | all(.value != true))' >/dev/null 2>&1
+}
+
+# funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
+# public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
+funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
+
+# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when
+# the release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the
+# host's stand-in otherwise. Switching the host to the real worker is a decision, not a side effect of a merge.
+worker_entry() {
+  if [ "$(jq -r '.worker // "stub"' "$1/ops/host-config.json" 2>/dev/null || echo stub)" = release ] && [ -f "$1/packages/worker/src/main.ts" ]; then
+    printf '%s\n' "$1/packages/worker/src/main.ts"
+  else
+    printf '%s\n' /opt/zeroed/stub/worker.mjs
+  fi
+}
+
+# ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
+ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
+__ZEROED_FILE__
+install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# Starts the worker for zeroed-worker.service (ExecStartPre with --reconcile, then ExecStart) with the RUN-1
+# environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
+# endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
+# publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
+# ops/host-config.json says "worker": "release"; until then the host's stand-in. Live is never set here or in
+# any environment file: the worker refuses any mode but paper.
+set -euo pipefail
+. /usr/local/lib/zeroed/logic.sh
+export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
+export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
+entry="$(worker_entry /opt/zeroed/current)"
+if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
+  cd /opt/zeroed/current
+  exec /usr/local/bin/node --no-warnings "$entry" "$@"
+fi
+exec /usr/local/bin/node "$entry" "$@"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -962,6 +1396,115 @@ tg_chat="$chat" tg_field=form tg sendDocument -o /dev/null -F "document=@$copy" 
 printf '%s\n' "$(basename "$newest")" > "$STATE_DIR/last_offsite"
 log "Sent $(basename "$newest") ($size bytes, owner key only) to the paired Telegram chat."
 __ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-check 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# Every minute (zeroed-check.timer), once the keys are here:
+#  1. Stored keys: each credential must decrypt and match the ciphertext the handoff or pairing stored.
+#     A key that fails (missing, does not open, changed outside those paths) is an alert.
+#  2. Webhook: a failed set is tried again with back-off (1, 2, 4, 8 min, then every 30); after 5 failed
+#     tries the owner is told. While paired, the webhook Telegram reports must match the one this server
+#     set; a change (another URL, or none) is an alert, and the server sets its own again.
+#  3. A worker restart that waits for the dry run to end (re-pairing) runs once nothing is in flight.
+#  4. The index of the dry-run evidence kept on the host, for the worker API.
+#  0. Tailscale Funnel must be off (the live view is tailnet only); on is an alert and it is turned off.
+# Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
+set -euo pipefail
+umask 077
+. /usr/local/lib/zeroed/common.sh
+lock
+
+# 4 first: it needs no keys.
+install -d -m 0755 "$(dirname "$EVIDENCE_INDEX")"
+(umask 022; evidence_index "$EVIDENCE_ROOT" > "$EVIDENCE_INDEX.new" 2>/dev/null && mv -f "$EVIDENCE_INDEX.new" "$EVIDENCE_INDEX") || rm -f "$EVIDENCE_INDEX.new"
+
+# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off. Each
+# tailscale call is bounded, so the minute check never hangs on it.
+if command -v tailscale >/dev/null 2>&1; then
+  public="$(timeout 30 tailscale serve status --json 2>/dev/null | funnel_ports)"
+  if [ -n "$public" ]; then
+    alert funnel-on "ALERT Zeroed host: Tailscale Funnel was on ($(printf '%s' "$public" | tr '\n' ' ')), which makes the worker API public. Turning it off."
+    off=1
+    for hp in $public; do timeout 30 tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || off=0; done
+    if [ "$off" = 0 ]; then
+      # Funnel could not be turned off (an error or no answer in time): take the whole serve config down, so the API
+      # never stays public with only an alert. zeroed-tailscale publishes it again.
+      if timeout 30 tailscale serve reset >/dev/null 2>&1; then
+        rm -f "$STATE_DIR/live_view"
+        msg="ALERT Zeroed host: Tailscale Funnel could not be turned off, so the live view was taken down. Run zeroed-tailscale to publish it again."
+        log "$msg"
+        notify "$msg" || log "Could not send that alert to Telegram."
+      else
+        log "Could not turn Funnel off or take the live view down."
+      fi
+    fi
+  else
+    alert_clear funnel-on "CLEARED Zeroed host: Tailscale Funnel is off."
+  fi
+fi
+
+keys_stored || exit 0
+
+# 1. Stored keys.
+names=(helius_api_key alchemy_api_key jupiter_api_key telegram_bot_token)
+paired && names+=(telegram_chat_id)
+for n in heartbeat_hmac_key telegram_webhook_secret; do [ ! -e "$CRED_DIR/$n" ] && [ ! -e "$STATE_DIR/cred_sha/$n" ] || names+=("$n"); done
+bad=()
+for n in "${names[@]}"; do
+  why=""
+  if [ ! -s "$CRED_DIR/$n" ]; then
+    why=missing
+  elif ! systemd-creds decrypt --name="$n" "$CRED_DIR/$n" - >/dev/null 2>&1; then
+    why="does not open"
+  elif [ ! -s "$STATE_DIR/cred_sha/$n" ]; then
+    record_cred "$n" # stored before this check existed: its current ciphertext is the reference
+  elif [ "$(sha256sum "$CRED_DIR/$n" | cut -c1-64)" != "$(cat "$STATE_DIR/cred_sha/$n")" ]; then
+    why="changed outside a key handoff"
+  fi
+  [ -z "$why" ] || bad+=("$n ($why)")
+done
+if [ "${#bad[@]}" -gt 0 ]; then
+  printf '%s\n' "${bad[@]}" > "$STATE_DIR/key_check"
+  alert key-mismatch "ALERT Zeroed host: stored key check failed: ${bad[*]}. Replace the keys: zeroed-new-deploy-code at the console, then Deploy."
+else
+  rm -f "$STATE_DIR/key_check"
+  alert_clear key-mismatch "CLEARED Zeroed host: every stored key passes its check again."
+fi
+
+paired || exit 0
+
+# 2. Webhook: a pending set, when due.
+if [ -e "$STATE_DIR/webhook_tries" ]; then
+  if [ "$(date +%s)" -ge "$(cat "$STATE_DIR/webhook_next" 2>/dev/null || echo 0)" ]; then webhook_try || true; fi
+  webhook_pending=true
+else
+  webhook_pending=false
+fi
+
+# 2. Webhook: what Telegram reports must be what this server set. Skipped while a set is pending (the
+# failed-tries notice covers that) and while re-pairing (the webhook is off on purpose then).
+if [ "$webhook_pending" = false ] && [ ! -s "$PAIR_CODE_FILE" ] && [ ! -s "$STATE_DIR/webhook_expected" ]; then
+  # Paired before this check existed: set it once, which also records what to expect.
+  webhook_try || true
+elif [ "$webhook_pending" = false ] && [ ! -s "$PAIR_CODE_FILE" ]; then
+  info="$(webhook_info)"
+  now_fp="$(printf '%s' "$info" | webhook_fp)"
+  if [ "$now_fp" != error ]; then
+    if [ "$now_fp" != "$(cat "$STATE_DIR/webhook_expected")" ]; then
+      alert webhook-changed "ALERT Zeroed host: the Telegram webhook changed (now: $(printf '%s' "$info" | webhook_host)). Only this server sets it. If you did not change it, rotate the bot token at BotFather and run Deploy. Setting it back now."
+      webhook_try || true
+    else
+      alert_clear webhook-changed "CLEARED Zeroed host: the Telegram webhook is back to the one this server set."
+    fi
+  fi
+fi
+
+# 3. A worker restart that waited for a safe moment.
+if [ -e "$STATE_DIR/worker_restart_pending" ] && ! worker_busy; then
+  rm -f "$STATE_DIR/worker_restart_pending"
+  systemctl try-restart zeroed-worker.service || true
+  log "Restarted the worker for the new Telegram chat."
+fi
+__ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-new-deploy-code 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Console only: makes a new one-time deploy code, for rotating the keys. Put it in the DEPLOY_CODE secret
@@ -1052,21 +1595,32 @@ if paired; then
   # Rotation: restart the worker (reconcile first) and tell the owner.
   if systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
   notify "Zeroed server: keys replaced (issue $issued). Worker $w." || true
-  set_webhook || log "Could not set the Telegram webhook for the watchdog."
+  webhook_try || true
 else
   [ -s "$PAIR_CODE_FILE" ] || new_pair_code
 fi
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-pair-code 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
-# Console only: makes a new Telegram pairing code (the old one stops working) and shows it.
+# Console only: makes a new Telegram pairing code (the old one stops working) and shows it. The code works
+# once, for 30 minutes. On a paired server it asks first; the current chat stays paired until the new /pair
+# succeeds.
 set -euo pipefail
 . /usr/local/lib/zeroed/common.sh
-lock
 [ -s "$CRED_DIR/telegram_bot_token" ] || { log "Keys not received yet: run Deploy first."; exit 1; }
+if paired; then
+  printf 'This server is paired with a Telegram chat. Pair a different chat? Alerts stay with the current chat until the new /pair succeeds.\nType yes to continue: '
+  answer=""
+  IFS= read -r answer || true
+  [ "$answer" = yes ] || { log "Cancelled. Nothing changed."; exit 1; }
+fi
+lock
 new_pair_code
+if paired; then
+  notify "Zeroed host: a new Telegram pairing was started at the server console. This chat stays paired until it succeeds; the code expires in 30 minutes." || true
+fi
 log "Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
-log "One try only; a wrong code needs a new one from here."
+log "One try only, within 30 minutes; a wrong or late code needs a new one from here."
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-restore-drill 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1170,12 +1724,15 @@ else
 fi
 if paired; then
   log "Telegram:  paired"
+  if [ -s "$PAIR_CODE_FILE" ]; then
+    log "           new pairing pending: /pair $(cat "$PAIR_CODE_FILE") within 30 minutes (this chat stays paired until then)"
+  fi
 elif [ -s "$PAIR_CODE_FILE" ]; then
   log "Telegram:  waiting for /pair"
   log ""
   log "  Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
   log ""
-  [ -n "$step" ] || step="One try only. A wrong code needs a new one: zeroed-pair-code"
+  [ -n "$step" ] || step="One try only, within 30 minutes. A wrong or late code needs a new one: zeroed-pair-code"
 elif keys_stored; then
   log "Telegram:  not paired; run zeroed-pair-code"
 fi
@@ -1186,34 +1743,192 @@ elif [ -s "$STATE_DIR/owner_backup_recipient" ]; then
 else
   log "Backups:   hourly here; run zeroed-backup-code once for the off-server copy"
 fi
+if [ -s "$STATE_DIR/key_check" ]; then
+  log "Key check: FAILED: $(tr '\n' ' ' < "$STATE_DIR/key_check")"
+elif keys_stored; then
+  log "Key check: passed"
+fi
+if [ -e "$STATE_DIR/webhook_tries" ]; then
+  log "Webhook:   not set ($(cat "$STATE_DIR/webhook_tries") failed tries; retrying)"
+fi
 log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
+run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"
+log "Dry run:   ${run:+$run active (updates wait)}${run:-none active}"
+log "Evidence:  $EVIDENCE_ROOT ($(jq 'length' "$EVIDENCE_INDEX" 2>/dev/null || echo 0) runs)"
+log "Live view: $(if [ -s "$STATE_DIR/live_view" ]; then echo "https://$(cat "$STATE_DIR/live_view")"; else echo 'off (zeroed-tailscale turns it on)'; fi)"
 [ -z "$step" ] || { log ""; log "$step"; }
+__ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-tailscale 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# Console, opt-in: the live view (ARCHITECTURE.md 17). Installs Tailscale from its signed apt repository
+# (key pinned by fingerprint), joins this server to the owner's tailnet as "zeroed", and publishes the worker
+# API (loopback 127.0.0.1:8788) to the tailnet only, over HTTPS, with Funnel off. No public port opens.
+#   zeroed-tailscale         set up (again): safe to repeat
+#   zeroed-tailscale --off   stop publishing the worker API (Tailscale stays installed)
+# The login link is shown here and sent to the paired Telegram chat, so it can be opened on the phone. So is anything
+# the owner must turn on in the Tailscale admin console first (MagicDNS, HTTPS Certificates): every tailscale call is
+# bounded in time and nothing it asks the owner to do is hidden.
+set -euo pipefail
+umask 022
+. /usr/local/lib/zeroed/common.sh
+TS_FPR=2596A99EAAB33821893C0A79458CA832957F5868
+KEYRING=/usr/share/keyrings/tailscale-archive-keyring.gpg
+TS_WAIT="${ZEROED_TS_WAIT:-60}"
+TS_DNS_PAGE=https://login.tailscale.com/admin/dns
+
+# Every tailscale call runs under a time limit, so a step waiting on something the owner cannot see ends with a
+# "Stopped:" line instead of a silent hang. The login runs the binary itself: it has its own --timeout=15m and runs in
+# the background, where it must stay one process the script can kill.
+tailscale() {
+  local rc=0
+  timeout "$TS_WAIT" "$(type -P tailscale)" "$@" || rc=$?
+  if [ "$rc" = 124 ]; then
+    log "Stopped: 'tailscale ${1:-}' did not finish within ${TS_WAIT}s." >&2
+  fi
+  return "$rc"
+}
+
+if [ "${1:-}" = --off ]; then
+  type -P tailscale >/dev/null || { log "Tailscale is not installed; nothing to turn off."; exit 0; }
+  tailscale serve reset
+  rm -f "$STATE_DIR/live_view"
+  log "Live view off: the worker API is no longer published to the tailnet."
+  exit 0
+fi
+[ $# = 0 ] || { log "Usage: zeroed-tailscale [--off]"; exit 2; }
+
+if ! type -P tailscale >/dev/null; then
+  log "Installing Tailscale from pkgs.tailscale.com"
+  got="$(gpg --show-keys --with-colons /etc/zeroed/tailscale-archive.asc 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')"
+  [ "$got" = "$TS_FPR" ] || { log "Stopped: the Tailscale signing key does not match its pinned fingerprint."; exit 1; }
+  gpg --batch --yes --dearmor -o "$KEYRING.new" /etc/zeroed/tailscale-archive.asc
+  chmod 0644 "$KEYRING.new"
+  mv -f "$KEYRING.new" "$KEYRING"
+  printf 'deb [signed-by=%s] https://pkgs.tailscale.com/stable/ubuntu noble main\n' "$KEYRING" > /etc/apt/sources.list.d/tailscale.list
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null
+  apt-get -o DPkg::Lock::Timeout=600 install -y -q --no-install-recommends tailscale >/dev/null
+fi
+systemctl enable --now tailscaled >/dev/null
+
+state() { tailscale status --json 2>/dev/null | jq -r '.BackendState // "NoState"'; }
+if [ "$(state)" != Running ]; then
+  out="$(mktemp)"
+  trap 'rm -f "$out"; [ -z "${up_pid:-}" ] || kill "$up_pid" 2>/dev/null || true' EXIT
+  # No Tailscale SSH, no routes or DNS taken from the tailnet: the server only offers the one HTTPS page.
+  command tailscale up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m >"$out" 2>&1 &
+  up_pid=$!
+  url=""
+  for _ in $(seq 1 60); do
+    url="$(grep -Eo 'https://login\.tailscale\.com/[A-Za-z0-9/._-]+' "$out" | head -1 || true)"
+    [ -z "$url" ] && [ "$(state)" != Running ] || break
+    sleep 1
+  done
+  if [ -n "$url" ]; then
+    log ""
+    log "  Open this link and log in to Tailscale:  $url"
+    log ""
+    notify "Zeroed host: open this link and log in to Tailscale to add the server to your tailnet: $url" && log "(The link was also sent to your Telegram chat.)" || true
+  fi
+  wait "$up_pid" || { log "Stopped: Tailscale login did not finish ($(tail -1 "$out"))."; exit 1; }
+  up_pid=""
+fi
+
+# The intended target is checked before anything is published: the worker API on loopback, nothing else.
+[[ "$WORKER_API_ADDR" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]] || { log "Stopped: the worker API address is not loopback."; exit 1; }
+
+# tailscale serve needs MagicDNS and HTTPS Certificates on the tailnet. Without them it prints a link to turn HTTPS on
+# and waits for the owner (its "https" node capability); so both are checked first and named here. A serve the owner
+# set up by hand is fine: serving the same target again changes nothing, and the checks below still run.
+st="$(tailscale status --json)" || { log "Stopped: could not read Tailscale's status."; exit 1; }
+need=()
+jq -e '.CurrentTailnet.MagicDNSEnabled == true' <<<"$st" >/dev/null || need+=("MagicDNS")
+jq -e '((.Self.CapMap // {}) | has("https")) and ((.CertDomains // []) | length > 0)' <<<"$st" >/dev/null || need+=("HTTPS Certificates")
+if [ "${#need[@]}" -gt 0 ]; then
+  what="${need[0]}${need[1]:+ and ${need[1]}}"
+  msg="the live view needs $what on your tailnet. Open $TS_DNS_PAGE, turn on $what, then run zeroed-tailscale again."
+  log "Stopped: $msg"
+  notify "Zeroed host: $msg" && log "(This was also sent to your Telegram chat.)" || true
+  exit 1
+fi
+
+# No funnel command here, not even to turn Funnel off: that command first waits for the tailnet's Funnel capability,
+# and the wait never ends on a tailnet without Funnel. serve --https=443 itself clears Funnel for that port, and the
+# check below confirms it is off.
+served="$(mktemp)"
+trap 'rm -f "$served" "${out:-}"' EXIT
+if ! tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >"$served" 2>&1; then
+  # Whatever tailscale printed (an error, or a link to act on) is shown, never dropped.
+  cat "$served"
+  tailscale serve reset >/dev/null 2>&1 || true
+  rm -f "$STATE_DIR/live_view"
+  log "Stopped: tailscale serve did not finish. Nothing is published."
+  exit 1
+fi
+if ! tailscale serve status --json | serve_ok; then
+  cat "$served"
+  # Anything else than exactly that (another target, another port, Funnel on) is taken down at once.
+  # serve reset clears the whole serve config, Funnel included.
+  tailscale serve reset >/dev/null 2>&1 || true
+  rm -f "$STATE_DIR/live_view"
+  log "Stopped: tailscale serve did not publish only the worker API with Funnel off, so it was turned off again. Nothing is published."
+  exit 1
+fi
+name="$(tailscale status --json | jq -r '.Self.DNSName // empty' | sed 's/\.$//')"
+printf '%s\n' "${name:-unknown}" > "$STATE_DIR/live_view"
+log "Live view: https://$name (your tailnet only, HTTPS, Funnel off)."
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-telegram-pair 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Locks the server to the owner's Telegram chat. While a pairing code is pending, reads the bot's messages
 # (getUpdates). "/pair <code>" with the right code stores that chat id (encrypted, root-only) and replies
 # "Paired". A wrong code invalidates the pending code: a new one comes only from the console
-# (zeroed-pair-code). Every other message is ignored. Never prints a value; never set -x.
+# (zeroed-pair-code). A code expires after 30 minutes. Every other message is ignored.
+# Re-pairing (a code made on an already-paired server): the current chat stays paired, and keeps getting
+# alerts, until the new /pair succeeds; a wrong code or an expired one leaves it paired. Never prints a value;
+# never set -x.
 set -euo pipefail
 umask 077
 . /usr/local/lib/zeroed/common.sh
 lock
 
+[ -s "$CRED_DIR/telegram_bot_token" ] || exit 0
+was_paired=false
+if paired; then
+  was_paired=true
+  # Paired and no code pending: nothing to read (the watchdog's webhook gets the messages).
+  [ -s "$PAIR_CODE_FILE" ] || exit 0
+fi
+
+# A re-pair ends (success, wrong code or expiry): the webhook comes back.
+repair_done() {
+  [ "$was_paired" = true ] || return 0
+  webhook_try || true
+}
+
+issued_at="$(stat -c %Y "$PAIR_CODE_FILE" 2>/dev/null || echo 0)"
+if [ -s "$PAIR_CODE_FILE" ] && pair_code_expired "$issued_at" "$(date +%s)"; then
+  rm -f "$PAIR_CODE_FILE"
+  log "The Telegram pairing code expired (30 minutes). Run zeroed-pair-code for a new one."
+  if [ "$was_paired" = true ]; then
+    notify "Zeroed host: the new pairing code expired. This chat stays paired." || true
+    repair_done
+  fi
+  exit 0
+fi
+
 # Until paired, read every message, so one sent while no code was pending never counts against a later code.
-[ -s "$CRED_DIR/telegram_bot_token" ] && ! paired || exit 0
 offset="$(cat "$STATE_DIR/tg_offset" 2>/dev/null || echo 0)"
 get_updates() { tg getUpdates --data-urlencode "offset=$offset" --data-urlencode 'timeout=0' --data-urlencode 'allowed_updates=["message"]'; }
 if ! updates="$(get_updates 2>/dev/null)"; then
   # Re-pairing while the watchdog's webhook is set: Telegram refuses getUpdates then. Turn it off for
-  # pairing; it is set again as soon as the pairing succeeds.
-  tg deleteWebhook -o /dev/null 2>/dev/null && log "Turned off the Telegram webhook while pairing; it comes back once paired." || true
+  # pairing; it is set again as soon as the pairing ends.
+  webhook_off && log "Turned off the Telegram webhook while pairing; it comes back once pairing ends." || true
   updates="$(get_updates)" || { log "Telegram getUpdates failed."; exit 0; }
 fi
 want="$(cat "$PAIR_CODE_FILE" 2>/dev/null || true)"
-issued_at="$(stat -c %Y "$PAIR_CODE_FILE" 2>/dev/null || echo 0)"
 while IFS=$'\t' read -r id date chat kind text; do
   [ -n "$id" ] || continue
   printf '%s\n' "$((id + 1))" > "$STATE_DIR/tg_offset"
@@ -1225,16 +1940,31 @@ while IFS=$'\t' read -r id date chat kind text; do
   # Private chats only: a group or channel can never become the owner's chat.
   [ "$kind" = private ] && [[ "$chat" =~ ^[0-9]{1,20}$ ]] || continue
   if [ "$got" = "$want" ]; then
+    if [ "$was_paired" = true ]; then
+      notify "Zeroed host: a new chat was paired at the console. Alerts go there from now on." || true
+    fi
     printf '%s' "$chat" | store_cred telegram_chat_id
     rm -f "$PAIR_CODE_FILE"
     log "Paired with the owner's Telegram chat."
     notify "Paired. Zeroed alerts come to this chat only." || true
-    set_webhook || log "Could not set the Telegram webhook for the watchdog."
-    systemctl start zeroed-worker.service || true
+    webhook_try || true
+    if [ "$was_paired" = false ]; then
+      systemctl start zeroed-worker.service || true
+    elif worker_busy; then
+      # The worker reads the chat at start; it moves at the next safe moment (zeroed-check).
+      : > "$STATE_DIR/worker_restart_pending"
+      log "Worker restart for the new chat waits for the dry run to end and open intents to settle."
+    else
+      systemctl try-restart zeroed-worker.service || true
+    fi
   else
     rm -f "$PAIR_CODE_FILE"
     log "Wrong pairing code sent in Telegram; that code no longer works. Run zeroed-pair-code for a new one."
     send_to "$chat" "Code not accepted. Get a new one at the server console." || true
+    if [ "$was_paired" = true ]; then
+      notify "Zeroed host: a wrong pairing code was sent, so the new pairing was cancelled. This chat stays paired." || true
+      repair_done
+    fi
   fi
 done < <(printf '%s' "$updates" | jq -r '.result[]? | [(.update_id | tostring), ((.message.date // 0) | tostring), ((.message.chat.id // "-") | tostring), ((.message.chat.type // "-") | tostring), ((.message.text // "-") | gsub("[\t\n]"; " "))] | @tsv')
 __ZEROED_FILE__
@@ -1244,8 +1974,11 @@ install_file /usr/local/sbin/zeroed-update 0755 <<'__ZEROED_FILE__'
 #  1. GitHub signed it (the merge-commit key pinned at install, i.e. a pull-request merge),
 #  2. it is on the integration branch,
 #  3. every check run on it finished green (public GitHub API), and
-#  4. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
-# Then switch to it and restart the worker, which reconciles before it trades. Runs every 5 minutes.
+#  4. no qualifying dry run is active (its unit, or an unfinished named run in the evidence), and
+#  5. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
+# Then apply the new release's host files (install.sh --update: scripts, units, RUN-1's units), and only once
+# that succeeded switch to it and restart the worker, which reconciles before it trades. A failed apply keeps
+# the old release running and is tried again next run, under the same gates. Runs every 5 minutes.
 # Residual risk (DECISIONS.md): write access to the repository is the ability to deploy; the signer
 # (SIGN-1) is the separate guard on funds.
 set -euo pipefail
@@ -1256,6 +1989,26 @@ git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
   "+refs/tags/deploy:refs/tags/deploy" "+refs/heads/$ZEROED_BRANCH:refs/remotes/origin/$ZEROED_BRANCH" 2>/dev/null || exit 0
 commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
 current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
+
+# apply_host COMMIT DIR: the new release's installer in update mode (its RUN-1 units read from DIR), so host
+# changes arrive with the code and nobody pastes the install line again. Releases from before --update
+# existed are skipped.
+apply_host() {
+  local c="$1" installer="$2/ops/install.sh"
+  if ! grep -q -- '--update) UPDATE=1' "$installer" 2>/dev/null; then
+    return 0
+  fi
+  if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then
+    log "Host files from ${c:0:12} applied."
+    alert_clear host-apply "CLEARED Zeroed host: the host files of ${c:0:12} applied."
+  else
+    log "Host files from ${c:0:12} failed to apply (see $STATE_DIR/host_update.log); still on the old release, trying again next run."
+    alert host-apply "ALERT Zeroed host: the host files of ${c:0:12} failed to apply, so the server stays on the release it runs. It tries again every 5 minutes."
+    return 1
+  fi
+}
+
+active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
 [ "$commit" != "$current" ] || exit 0
 
 # GitHub signs every merge it makes with its web-flow key; nothing else is accepted.
@@ -1286,6 +2039,13 @@ if [ "$verdict" != green ]; then
   exit 0
 fi
 
+# No deploy while a qualifying dry run is active: one run, one commit (RUN-1's one_commit check).
+run="$(active_run)"
+if [ -n "$run" ]; then
+  log "Waiting on ${commit:0:12}: the qualifying dry run $run is active."
+  exit 0
+fi
+
 if systemctl is-active --quiet zeroed-worker.service; then
   open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
   if [ "$open" != 0 ]; then
@@ -1300,6 +2060,8 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# Host files first: on failure nothing switches and the worker keeps running the release it has.
+apply_host "$commit" "$dest" || exit 1
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
@@ -9100,6 +9862,9 @@ __ZEROED_FILE__
 
 install -d -m 0755 -o root -g root /etc/zeroed /opt/zeroed /opt/zeroed/releases
 install -d -m 0700 -o root -g root /etc/zeroed/age /etc/credstore.encrypted /var/lib/zeroed-host /var/backups/zeroed
+# Dry-run evidence stays on the host (RUN-1 writes it there); its index is readable by the worker API.
+install -d -m 0700 -o root -g root /var/lib/zeroed-dryrun /var/lib/zeroed-dryrun/evidence
+install -d -m 0755 -o root -g root /var/lib/zeroed-index
 
 say "Host key"
 # The host's own age key: backups are encrypted to it (the owner's key can be added later).
@@ -9113,6 +9878,7 @@ chmod 0400 /etc/zeroed/age/host.key
 # systemd's own host key for encrypted credentials (root-only, created once).
 [ -s /var/lib/systemd/credential.secret ] || systemd-creds setup >/dev/null
 
+keep_old /etc/zeroed/host.env
 cat > /etc/zeroed/host.env.new <<EOF
 ZEROED_REPO=$REPO
 ZEROED_BRANCH=$BRANCH
@@ -9123,10 +9889,10 @@ WEB_FLOW_FPR=$WEB_FLOW_FPR
 EOF
 chmod 0644 /etc/zeroed/host.env.new
 mv /etc/zeroed/host.env.new /etc/zeroed/host.env
-[ -f /etc/zeroed/worker.env ] || install -m 0644 /dev/null /etc/zeroed/worker.env
+[ -f /etc/zeroed/worker.env ] || { keep_old /etc/zeroed/worker.env; install -m 0644 /dev/null /etc/zeroed/worker.env; }
 . /usr/local/lib/zeroed/common.sh
 # A one-time deploy code, unless the keys are already here (re-running the installer keeps them).
-keys_stored || [ -s "$DEPLOY_CODE_FILE" ] || new_deploy_code
+[ "$UPDATE" = 1 ] || keys_stored || [ -s "$DEPLOY_CODE_FILE" ] || new_deploy_code
 
 say "GitHub merge-signing key"
 install -d -m 0700 /etc/zeroed/gnupg
@@ -9137,8 +9903,12 @@ got="$(GNUPGHOME=/etc/zeroed/gnupg gpg --batch --with-colons --fingerprint 2>/de
 say "Firewall: no inbound ports${SSH_KEY:+ except SSH (key-only)}"
 # Password login is off on both paths (the drop-in also covers SSH being turned on later by hand).
 install -d -m 0755 /etc/ssh/sshd_config.d
+keep_old /etc/ssh/sshd_config.d/10-zeroed.conf
 printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
-if [ -n "$SSH_KEY" ]; then
+if [ "$UPDATE" = 1 ]; then
+  # SSH stays exactly as it was: open (key-only) only if the running firewall already let it in.
+  [ "$SSH_WAS_OPEN" = 0 ] || sed -i 's/^#SSH_RULE#//' /etc/nftables.conf
+elif [ -n "$SSH_KEY" ]; then
   install -d -m 0700 /root/.ssh
   printf '%s\n' "$SSH_KEY" > /root/.ssh/authorized_keys
   chmod 0600 /root/.ssh/authorized_keys
@@ -9149,6 +9919,8 @@ else
 fi
 systemctl enable nftables >/dev/null 2>&1
 nft -f /etc/nftables.conf
+# The ruleset flush also drops Tailscale's own rules; its daemon puts them back on restart (live view, opt-in).
+if systemctl is-active --quiet tailscaled 2>/dev/null; then systemctl restart tailscaled || true; fi
 
 say "Security updates"
 systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
@@ -9158,14 +9930,60 @@ if [ ! -d /opt/zeroed/repo/.git ]; then
   git clone --quiet --no-checkout "$GITHUB_URL/$REPO.git" /opt/zeroed/repo
 fi
 
+say "Dry-run units"
+# RUN-1's units come with the deployed release (packages/runner/systemd), so the runner's owner changes them
+# by merge alone. Only zeroed-dryrun* and zeroed-worker-tabletop are taken (none enabled but the tick timer);
+# units a newer release dropped are removed.
+# zeroed-update points ZEROED_RELEASE_DIR at the release it is about to switch to.
+RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"
+new_units=()
+if [ -d "$RELEASE_UNITS" ]; then
+  for f in "$RELEASE_UNITS"/*; do
+    n="$(basename "$f")"
+    [[ "$n" =~ $RELEASE_UNIT_RE ]] || continue
+    install_file "/etc/systemd/system/$n" 0644 < "$f"
+    new_units+=("$n")
+  done
+fi
+for n in $(cat /var/lib/zeroed-host/release-units 2>/dev/null || true); do
+  [[ " ${new_units[*]} " == *" $n "* ]] && continue
+  keep_unit "$n"
+  keep_old "/etc/systemd/system/$n"
+  systemctl disable --now "$n" >/dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/$n"
+done
+keep_old /var/lib/zeroed-host/release-units
+printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
+
 say "Services"
 systemctl daemon-reload
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
-systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer >/dev/null
+systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null
+# The dry run starts only when a merged release asks for one by name (packages/runner/qualifying-run.json).
+if [ -e /etc/systemd/system/zeroed-dryrun-tick.timer ]; then systemctl enable --now zeroed-dryrun-tick.timer >/dev/null; fi
 # Installed but off: the off-server copy goes to a third party (Telegram) and waits for the owner's
 # approval, switched on by a reviewed commit to ops/host-config.json (applied by zeroed-update).
-# Starts once credentials exist (skipped by its ConditionPathExists until then).
+# Host checks once now (Funnel, keys, webhook, evidence index); the timer repeats them every minute.
+/usr/local/sbin/zeroed-check || true
+if [ "$UPDATE" = 1 ]; then
+  # zeroed-update restarts the worker next (reconcile first); the signer only when its own files changed.
+  for f in "${CHANGED[@]}"; do
+    case "$f" in /etc/systemd/system/zeroed-signer.service | /opt/zeroed/stub/signer.mjs) systemctl try-restart zeroed-signer.service || true; break ;; esac
+  done
+  say "Updated: ${#CHANGED[@]} host files changed"
+  exit 0
+fi
+# Starts once credentials exist (skipped by its ConditionPathExists until then). A running worker whose
+# start files changed restarts (reconcile first) unless a dry run or an open intent is in the way.
+if systemctl is-active --quiet zeroed-worker.service; then
+  for f in "${CHANGED[@]}"; do
+    case "$f" in /etc/systemd/system/zeroed-worker.service | /usr/local/lib/zeroed/worker-start | /opt/zeroed/stub/worker.mjs)
+      worker_busy || systemctl restart zeroed-worker.service || true
+      break ;;
+    esac
+  done
+fi
 systemctl start zeroed-worker.service || true
 
 printf '\nInstalled. Next: the deploy code below goes into GitHub as the secret DEPLOY_CODE.\n\n'

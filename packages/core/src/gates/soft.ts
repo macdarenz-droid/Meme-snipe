@@ -27,7 +27,9 @@ export const evaluateSoftFeatures = (ctx: GateContext, deps: GateDeps, mint: str
   const features: SoftFeature[] = [];
   const unknownAll = (names: readonly string[], note: string) => { for (const name of names) features.push({ name, value: null, note }); };
 
-  const soft = ev.read('soft', softKey(mint), parseSoft, 'state', 'H16');
+  // Read as an event: FACTS-1 writes soft values once their window is covered and they no longer change (creation-slot
+  // buyers, same-transaction dev buy, funding classes), so a fact from creation is still the value at the decision.
+  const soft = ev.read('soft', softKey(mint), parseSoft, 'event', 'H16');
   const third = deps.mode === 'live';
   // Third-party scores are live only (§16.3): never logged in the backtest, even if a feed supplied one.
   const names = [...SOFT_BIGINTS, ...SOFT_NUMBERS, ...SOFT_FLAGS].filter((n) => n !== 'rugcheckSingleHolderFlag' && (third || n !== 'rugcheckScore'));
@@ -44,10 +46,11 @@ export const evaluateSoftFeatures = (ctx: GateContext, deps: GateDeps, mint: str
   const holders = ev.read('holders', holdersKey(mint), parseHolders, 'state', 'H12');
   const pool = ev.read('pool', poolKey(mint), parsePool, 'state', 'H12');
   let largestExcluded: boolean | null = null;
-  if (!holders.ok || !pool.ok) unknownAll(['independentHolders', 'unknownProgramHolders'], (!holders.ok ? holders.reason : (pool as { ok: false; reason: { detail: string } }).reason).detail);
+  if (!holders.ok || !pool.ok) unknownAll(['observedDistinctOwners', 'unknownProgramHolders'], (!holders.ok ? holders.reason : (pool as { ok: false; reason: { detail: string } }).reason).detail);
   else {
     const c = concentration(holders.fact, mintAccounts(mint, { address: pool.fact.address, baseVault: pool.fact.pool.poolBaseTokenAccount }));
-    features.push({ name: 'independentHolders', value: String(c.owners.length), ...(holders.fact.coverage === 'largest' ? { note: 'largest accounts only' } : {}) });
+    // Distinct owners seen in the holder read: not "independent" (no funding evidence here; FACTS-1 reports that split).
+    features.push({ name: 'observedDistinctOwners', value: String(new Set(c.classes.filter((x) => !EXCLUDED.has(x.cls)).map((x) => x.owner)).size), ...(holders.fact.coverage === 'largest' ? { note: 'largest accounts only' } : {}) });
     features.push({ name: 'unknownProgramHolders', value: String(c.classes.filter((x) => x.cls === 'unknown-program').length) });
     const largest = [...c.classes].sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.address < b.address ? -1 : 1))[0];
     largestExcluded = largest === undefined ? null : EXCLUDED.has(largest.cls);

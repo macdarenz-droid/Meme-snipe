@@ -2,7 +2,7 @@
 // load or tighten limits). Raising a cap or lowering a floor needs a new policy version made outside the engine.
 import { deepFreeze } from './freeze.ts';
 import { policyHash } from './hash.ts';
-import type { Policy } from './policy.ts';
+import type { Policy, UniverseExits } from './policy.ts';
 import { policyIssues } from './validate.ts';
 
 /**
@@ -18,6 +18,19 @@ export type Rule = 'max' | 'min' | 'locked' | 'free';
 export type RuleTree<T> = T extends bigint | number | string
   ? Rule
   : T extends readonly (infer U)[] ? RuleTree<U> : { readonly [K in keyof T]-?: RuleTree<T[K]> };
+
+const UNIVERSE_EXIT_RULES: RuleTree<UniverseExits> = {
+  stopAtrTenths: 'max',
+  tFlatMs: 'max',
+  flatMinRBps: 'min',
+  tMaxMs: 'max',
+  partialMinShareBps: 'locked',
+  partialAtRBps: 'locked',
+  partialAtGainBps: 'locked',
+  atrPeriod: 'locked',
+  atrBarMs: 'locked',
+  trailAtrTenths: 'max',
+};
 
 /** One rule for every field. A new Policy field without a rule here fails to compile. */
 export const POLICY_RULES: RuleTree<Policy> = {
@@ -46,6 +59,8 @@ export const POLICY_RULES: RuleTree<Policy> = {
     survivalMedianDays: 'locked',
     volumePercentile: 'min',
     volumeWindowDays: 'locked',
+    volumeLagDays: 'locked',
+    volumeMinDays: 'locked',
     solChange24hFloorBps: 'min',
     failedChecksToDisable: 'max',
   },
@@ -68,20 +83,13 @@ export const POLICY_RULES: RuleTree<Policy> = {
     maxQuoteAgeMs: 'max',
   },
   exits: {
-    stopAtrTenths: 'max',
+    // Checked per universe against the same universe's block in the baseline.
+    universes: { U1: UNIVERSE_EXIT_RULES, U2: UNIVERSE_EXIT_RULES },
+    tMaxCapMs: 'max',
     deployerSellSupplyBps: 'max',
     liquidityDropBps: 'max',
     reverseQuoteFailures: 'max',
     negativeFlowMinutes: 'max',
-    tFlatMs: 'max',
-    flatMinRBps: 'min',
-    tMaxMs: 'max',
-    partialMinShareBps: 'locked',
-    partialAtRBps: 'locked',
-    partialAtGainBps: 'locked',
-    atrPeriod: 'locked',
-    atrBarMs: 'locked',
-    trailAtrTenths: 'max',
     maxExitTxAtMinNotional: 'locked',
     maxExitTxAboveDoubleMin: 'locked',
     ladder: {

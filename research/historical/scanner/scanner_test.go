@@ -199,7 +199,7 @@ func TestBlockNode(t *testing.T) {
 	}
 }
 
-func TestEmitRowAggregatesAllKeepsSample(t *testing.T) {
+func TestEmitRowRetention(t *testing.T) {
 	r := &blockResult{blockTime: 7200 + 5, agg: map[aggKey]*aggVal{}}
 	in, out := "", ""
 	for i := 0; i < 2000 && (in == "" || out == ""); i++ {
@@ -219,15 +219,25 @@ func TestEmitRowAggregatesAllKeepsSample(t *testing.T) {
 	}
 	r.emitRow("curve", row(in))
 	r.emitRow("curve", row(out))
-	if len(r.curve) != 1 || r.curve[0][8] != in {
-		t.Fatalf("kept %d rows", len(r.curve))
-	}
-	if len(r.agg) != 2 {
-		t.Fatalf("census must count every mint, got %d", len(r.agg))
+	if len(r.curve) != 2 {
+		t.Fatalf("every curve trade must be kept, kept %d", len(r.curve))
 	}
 	a := r.agg[aggKey{7200, "curve", out, ""}]
-	if a == nil || a.nBuy != 1 || a.quoteBuy != 1000 || a.baseBuy != 5000 {
-		t.Fatalf("bad aggregate %+v", a)
+	if len(r.agg) != 2 || a == nil || a.nBuy != 1 || a.quoteBuy != 1000 || a.baseBuy != 5000 {
+		t.Fatalf("bad census %+v", r.agg)
+	}
+	// PumpSwap: a non-sampled mint is kept only in its canonical pool.
+	amm := func(pool, base string) []string {
+		x := make([]string, len(ammCols))
+		x[0], x[1], x[2], x[3], x[8], x[9], x[10], x[11], x[12], x[13], x[17], x[18] = "100", "7205", "2", "0", pool, base, wsolMint, "buy", "10", "20", "1000", "2000"
+		return x
+	}
+	canon := canonicalPool(out, wsolMint)
+	r.emitRow("amm", amm(canon, out))
+	r.emitRow("amm", amm(solana.NewWallet().PublicKey().String(), out))
+	r.emitRow("amm", amm(solana.NewWallet().PublicKey().String(), in))
+	if len(r.amm) != 2 || r.amm[0][8] != canon || r.amm[1][9] != in {
+		t.Fatalf("kept %d amm rows: want the canonical pool row and the sampled mint's row", len(r.amm))
 	}
 }
 
@@ -253,5 +263,29 @@ func TestCensusQuoteCurveUsesQuoteReserves(t *testing.T) {
 	mergeAgg(dst, r.agg)
 	if dst[aggKey{3600, "curve", mint, ""}].lowPx != 2 {
 		t.Fatalf("mergeAgg kept a zero low price")
+	}
+}
+
+// A SOL curve whose quote_mint is the system program: the census (unchanged, so units
+// stay byte-identical with earlier revisions) counts quote_amount, while qa/volume.ts
+// re-derives the regime volume from sol_amount. On real data the two are equal
+// (2026-10-01: 43,332 of 43,332 rows); if they ever differ, volume_hours carries the
+// census value and the exact cross-check fails the day (packages/backtest/test/
+// volume.test.ts "a system-program curve whose quote_amount differs ..."): loud, never silent.
+func TestCensusSystemProgramQuoteDivergenceReachesVolumeHours(t *testing.T) {
+	r := &blockResult{blockTime: 7200, agg: map[aggKey]*aggVal{}}
+	mint := solana.NewWallet().PublicKey().String()
+	x := make([]string, len(curveCols))
+	x[0], x[1], x[2], x[3], x[8], x[9], x[10], x[11] = "100", "7200", "1", "0", mint, "1", "100", "5000"
+	x[14], x[15] = "2000", "1000"
+	x[curveQuoteMintCol], x[curveQuoteAmountCol], x[curveVirtualQuoteCol] = systemProgramID, "999", "9000"
+	r.emitRow("curve", x)
+	a := r.agg[aggKey{7200, "curve", mint, ""}]
+	if a == nil || a.quoteBuy != 999 {
+		t.Fatalf("census of a system-program curve counts quote_amount (unchanged): %+v", a)
+	}
+	rows := volumeHourRows(0, r.agg, func(int64) bool { return true })
+	if rows[2][1] != "999" {
+		t.Fatalf("volume_hours hour 2: %v, want the census value 999 (the cross-check then sees sol_amount 100)", rows[2])
 	}
 }

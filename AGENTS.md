@@ -78,7 +78,7 @@ Same delivery model as M-arc, applied to a trading app. Where M-arc says "APK", 
 - Merges a PR only when its review passed and every check is green on a head that contains the latest `main`.
 - Treats evidence as valid only for the exact commit it ran on.
 
-**Documents** (one per topic, updated in place): `docs/ARCHITECTURE.md`, `docs/RESEARCH.md`, `docs/DECISIONS.md`, `PROJECT_STATE.md`.
+**Documents** (one per topic, updated in place): `docs/ARCHITECTURE.md`, `docs/RESEARCH.md`, `docs/DECISIONS.md`, `PROJECT_STATE.md`, and `HANDOVER.md` (the supervisor's handover: role, queue mechanics, current state, plan, sessions, owner waits).
 
 **Commands:**
 - `pnpm install --frozen-lockfile`

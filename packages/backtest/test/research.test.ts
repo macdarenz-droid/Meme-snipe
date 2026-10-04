@@ -87,11 +87,11 @@ describe('holdout wall', () => {
     // A ruling fixes the date, so no registry (or one without a boundary) does not block; one that disagrees refuses.
     expect(resolveWindow(committedOpen, confirmed, null)).toBe(confirmed);
     expect(resolveWindow(committedOpen, confirmed, study(createHoldoutRegistry(2)))).toBe(confirmed);
-    const reg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, -1), toDay: '2026-10-01' });
+    const reg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, -1), toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
     expect(() => resolveWindow(committedOpen, confirmed, study(reg))).toThrow(/must be equal/);
-    const laterReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, 1), toDay: '2026-10-01' });
+    const laterReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, 1), toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
     expect(() => resolveWindow(committedOpen, confirmed, study(laterReg))).toThrow(/must be equal/);
-    const okReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay, toDay: '2026-10-01' });
+    const okReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay, toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
     const ok = study(okReg);
     // The plan's boundary alone confirms a wall (entries come only when configurations freeze); it must agree too.
     expect(resolveWindow(committedOpen, confirmed, study(createHoldoutRegistry(2), fromDay))).toBe(confirmed);
@@ -496,4 +496,13 @@ describe('cli', () => {
     }
     // Writing the zstd fixture takes ~25 s of the time (measured 26 s on this container).
   }, 150_000);
+});
+
+// MEM-1: the file's peak memory, so a regression fails here instead of getting the test runner killed. Every test file
+// runs in its own fork, so maxRSS is this file's alone. Measured 2026-10-04: about 0.55 GB (5.6 GB before the shared
+// Melbourne-day formatter); the bound leaves about 2x headroom.
+const PEAK_RSS_BOUND_MB = 1024;
+test('the whole file stays under its memory bound', () => {
+  const peakMb = process.resourceUsage().maxRSS / 1024;
+  expect(peakMb).toBeLessThan(PEAK_RSS_BOUND_MB);
 });

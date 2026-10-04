@@ -90,6 +90,13 @@ describe('worker API contract', () => {
       expect(state('position', pos)).toEqual({ state: 'error', reason: 'bad-data' });
     });
 
+    it('a reject by H17 (unsupported trade shape, TX-1b) is shown; an unknown check is refused', async () => {
+      const funnel = await paper((a) => a.funnel('paper'));
+      const withCheck = (check: string) => ({ ...funnel, rejects: [{ mode: 'paper', check, count: 3 }] });
+      expect(state('funnel', withCheck('H17')).state).not.toBe('error');
+      expect(state('funnel', withCheck('H18'))).toEqual({ state: 'error', reason: 'bad-data' });
+    });
+
     it('unknown and missing fields are refused', async () => {
       const stats = await paper((a) => a.stats('paper'));
       expect(state('stats', { ...stats, extra: '1' })).toEqual({ state: 'error', reason: 'bad-data' });
@@ -155,11 +162,11 @@ describe('worker API contract', () => {
   it('HTTP API reads the contract paths and checks every response', async () => {
     const seen: string[] = [];
     const fixtures = fixtureApi();
-    const fake = (async (url: string) => {
+    const fake = async (url: string) => {
       seen.push(url);
       const body = url.endsWith('/paper/stats') ? await fixtures.stats('live') : await fixtures.trades('paper');
-      return new Response(JSON.stringify(body), { status: 200 });
-    }) as typeof fetch;
+      return { status: 200, body: JSON.stringify(body) };
+    };
     const api = httpApi('https://worker.example/', fake);
     expect((await api.trades('paper')).mode).toBe('paper');
     await expect(api.stats('paper')).rejects.toBeInstanceOf(DataError);

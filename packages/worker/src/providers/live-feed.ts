@@ -162,6 +162,11 @@ export class LiveFeed implements Feed {
     return this.#tip;
   }
 
+  /** The latest receipt time stamped so far (receipt times never decrease); -Infinity before the first frame. */
+  get lastReceivedAt(): number {
+    return this.#lastReceivedAt;
+  }
+
   get releasedThrough(): bigint {
     return this.#released;
   }
@@ -253,6 +258,17 @@ export class LiveFeed implements Feed {
     if (this.#held.size === 0) this.#firstHeldAt = null;
     this.#prune();
     return out.length;
+  }
+
+  /**
+   * Marks the next slot released with nothing in it, for events the worker puts ahead of every live one (SEED-1's seed
+   * and coverage history): they sort after everything released and before every live event still to come. Only while
+   * nothing is held or waiting, so no live event can sort below them; null otherwise.
+   */
+  reserveSlot(): bigint | null {
+    if (this.#held.size > 0 || this.#head < this.#ready.length) return null;
+    this.#released += 1n;
+    return this.#released;
   }
 
   /** Feed: the next released event, or null. Moves the clock to it. */

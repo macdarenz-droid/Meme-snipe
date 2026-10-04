@@ -56,8 +56,8 @@ import (
 
 // Universe rates (overridable on the command line, recorded in the manifest).
 var (
-	launchRate = 0.05
-	gradRate   = 0.05
+	launchRate = 1.0 // every mint created in coverage (needs retentionPolicy units)
+	gradRate   = 1.0 // every graduate in coverage (needs retentionPolicy units)
 	poolRate   = 0.05
 )
 
@@ -78,6 +78,7 @@ type finalizeOpts struct {
 	AllowGaps      bool     // testing only: holes in the scanned slot ranges
 	LeadInDays     int      // days of gap-free coverage required before the window (14 for the dataset)
 	AllowRevisions []string // scanner revisions accepted together; empty: all units must share one
+	Regimes        string   // JSON file of regime boundaries (research/historical/regimes.json), copied into the manifest
 }
 
 type unitDir struct {
@@ -288,7 +289,8 @@ var dayFileSpecs = []struct {
 }{
 	{"curve_trades", "csv", curveCols}, {"amm_trades", "csv", ammCols}, {"events", "jsonl", nil},
 	{"failed", "csv", failedCols}, {"failed_hourly", "csv", failedHourlyCols}, {"agg_hourly", "csv", aggCols}, {"blocks", "csv", blockCols},
-	{"raw", "jsonl", nil},
+	{"raw", "jsonl", nil}, {"movements", "csv", movementCols}, {"delegations", "csv", delegationCols},
+	{"volume_hours", "csv", volumeHourCols},
 }
 
 func dayOf(t int64) string { return time.Unix(t, 0).UTC().Format("2006-01-02") }
@@ -351,8 +353,21 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 			minRate = r
 		}
 	}
-	if launchRate > minRate || gradRate > minRate || poolRate > minRate {
-		return fmt.Errorf("universe rates exceed the smallest unit sample rate %v: rescan needed", minRate)
+	// Retention: units that keep every curve trade and every canonical-pool trade
+	// (retentionPolicy) allow launch and grad rates up to 1.0; the direct-pool universe
+	// (non-canonical pools) and older units stay limited to the hash sample.
+	retention := units[0].stats.Retention
+	for _, u := range units {
+		if u.stats.Retention != retention {
+			return fmt.Errorf("units of retention %q and %q mixed (%s); rescan", retention, u.stats.Retention, u.path)
+		}
+	}
+	rateCap := minRate
+	if retention == retentionPolicy {
+		rateCap = 1
+	}
+	if launchRate > rateCap || gradRate > rateCap || poolRate > minRate {
+		return fmt.Errorf("universe rates exceed what the units keep (launch/grad up to %v, direct pool up to %v): rescan needed", rateCap, minRate)
 	}
 	// Coverage: contiguous scanned slot ranges; the universe needs creation inside them.
 	covStart, covEnd := units[0].stats.FirstBlockTime, units[len(units)-1].stats.LastBlockTime
@@ -548,13 +563,16 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 			base    string
 			mintCol int
 			ev      bool
-		}{{"curve_trades", 8, true}, {"amm_trades", 9, true}, {"failed", 8, false}, {"blocks", -1, false}} {
+		}{{"curve_trades", 8, true}, {"amm_trades", 9, true}, {"failed", 8, false}, {"blocks", -1, false}, {"movements", 5, false}, {"delegations", 5, false}} {
 			// Column positions come from the unit's own header (older schemas differ).
 			userCol, tsCol, signerCol := -1, -1, -1
 			first := true
 			fp := filepath.Join(u.path, spec.base+".csv.zst")
 			if spec.base != "blocks" && beforeWindow(u) && !fileExists(fp) {
 				continue // events-only unit before the window (assembly in windows)
+			}
+			if (spec.base == "movements" || spec.base == "delegations") && !fileExists(fp) {
+				continue // units written before token movements (or delegations) were kept
 			}
 			err := readCSVZst(fp, func(rec []string) error {
 				if first {
@@ -583,6 +601,9 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 				}
 				if spec.base == "blocks" {
 					scanned[dayOf(bt)]++
+				} else if spec.base == "movements" || spec.base == "delegations" {
+					// Kept for every mint the units kept (no tape filter): ownership and control
+					// need the whole history, and presence then depends on nothing in the future.
 				} else if !inTape(rec[spec.mintCol], bt) {
 					return nil
 				}
@@ -592,6 +613,14 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 					k.tx, _ = strconv.ParseInt(rec[2], 10, 64)
 					if spec.ev {
 						k.ev, _ = strconv.ParseInt(rec[3], 10, 64)
+					}
+					if spec.base == "movements" || spec.base == "delegations" {
+						o, _ := strconv.ParseInt(rec[3], 10, 64)
+						in := int64(-1)
+						if rec[4] != "" {
+							in, _ = strconv.ParseInt(rec[4], 10, 64)
+						}
+						k.ev = o*100000 + in + 1
 					}
 				}
 				if err := checkOrder(spec.base, k); err != nil {
@@ -754,6 +783,23 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 			return err
 		}
 	}
+	// Regime volume per hour (volume.go), for every day of the window, with or without
+	// trades: an hour is covered only inside the gap-free, parent-linked coverage.
+	hourCovered := func(h int64) bool {
+		return len(gaps) == 0 && len(chainBreaks) == 0 && covStart <= h && covEnd >= h+3600-1
+	}
+	for d := t0; d.Before(t1); d = d.AddDate(0, 0, 1) {
+		day := d.Format("2006-01-02")
+		w, err := dayW(day, "volume_hours")
+		if err != nil {
+			return err
+		}
+		for _, row := range volumeHourRows(d.Unix(), aggAll[day], hourCovered) {
+			if err := w.writeCSV(row); err != nil {
+				return err
+			}
+		}
+	}
 	for day, m := range aggAll {
 		w, err := dayW(day, "agg_hourly")
 		if err != nil {
@@ -875,6 +921,64 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 	}
 	_ = mp
 
+	// Movement coverage: for mints not ending in "pump", the units whose pump and
+	// PumpSwap transactions were searched for their movements (scope pump_transactions);
+	// outside those rows their ownership is unresolved. "pump" mints are complete in
+	// every unit and are not listed.
+	cw := &partWriter{dir: dsDir, base: "movement_coverage", ext: "csv", header: []string{"mint", "scope", "slot", "reason", "count", "tx_idx", "from_slot", "to_slot"}}
+	var covRows [][]string
+	// Lead-in units carry no movements (assembly reads only their events, stats and
+	// blocks), so ownership of every mint is unresolved before the first window unit:
+	// one row with mint "*" says so, with the slots it covers.
+	if len(units) > 0 && units[0].stats.FirstBlockTime < t0.Unix() {
+		var leadTo uint64
+		for _, u := range units {
+			if u.stats.LastBlockTime < t0.Unix() {
+				leadTo = u.stats.ToSlot
+			}
+		}
+		if leadTo > 0 {
+			covRows = append(covRows, []string{"*", "no_movements", "", "lead_in", "", "", strconv.FormatUint(units[0].stats.FromSlot, 10), strconv.FormatUint(leadTo, 10)})
+		}
+	}
+	for _, u := range units {
+		p := filepath.Join(u.path, "movement_coverage.csv.zst")
+		if !fileExists(p) || u.stats.LastBlockTime < t0.Unix() || u.stats.FirstBlockTime >= t1.Unix() {
+			continue
+		}
+		first := true
+		if err := readCSVZst(p, func(rec []string) error {
+			if first {
+				first = false
+				return nil
+			}
+			row := append([]string(nil), rec...)
+			for len(row) < 6 {
+				row = append(row, "") // units written before slot, reason, count and tx_idx
+			}
+			covRows = append(covRows, append(row[:6], strconv.FormatUint(u.stats.FromSlot, 10), strconv.FormatUint(u.stats.ToSlot, 10)))
+			return nil
+		}); err != nil {
+			return fmt.Errorf("%s movement coverage: %w", u.path, err)
+		}
+	}
+	sort.SliceStable(covRows, func(i, j int) bool { return covRows[i][0] < covRows[j][0] })
+	for _, r := range covRows {
+		if err := cw.writeCSV(r); err != nil {
+			return err
+		}
+	}
+	if err := cw.closePart(); err != nil {
+		return err
+	}
+	for _, name := range cw.files {
+		fi, err := fileSum(filepath.Join(dsDir, name))
+		if err != nil {
+			return err
+		}
+		mintFiles = append(mintFiles, fileInfo{Path: name, Bytes: fi.size, Sha256: fi.sum, Rows: cw.rows})
+	}
+
 	// First slot of every unknown discriminator and extra-bytes key over all units.
 	firstSeen := map[string]uint64{}
 	for _, u := range units {
@@ -900,7 +1004,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 		"programs":        map[string]string{"pump": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pump_amm": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"},
 		"window":          map[string]any{"from": fromDay, "to_exclusive": toDay, "lead_in_days": opt.LeadInDays},
 		"coverage":        map[string]any{"first_block_time": covStart, "last_block_time": covEnd, "first_slot": units[0].stats.FromSlot, "last_slot": units[len(units)-1].stats.ToSlot},
-		"sampling":        map[string]any{"hash": "first 8 bytes of sha256(mint pubkey bytes), big-endian, divided by 2^64", "launch_rate": launchRate, "grad_rate": gradRate, "direct_pool_rate": poolRate, "launch_tape_seconds": tapeHorizon, "grad_and_pool_tape_seconds": poolTapeHorizon, "unit_sample_rate_min": minRate},
+		"sampling":        map[string]any{"hash": "first 8 bytes of sha256(mint pubkey bytes), big-endian, divided by 2^64", "launch_rate": launchRate, "grad_rate": gradRate, "direct_pool_rate": poolRate, "launch_tape_seconds": tapeHorizon, "grad_and_pool_tape_seconds": poolTapeHorizon, "unit_sample_rate_min": minRate, "retention": retention},
 		"universe_counts": map[string]int{"launch": nLaunch, "grad": nGrad, "direct_pool": nPool, "mints_registered": len(ml)},
 		"decode_failures": decodeFail,
 		"coverage_gaps":   gaps,
@@ -916,6 +1020,17 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 		"days":            manifestDays,
 		"mints_files":     mintFiles,
 		"units":           unitsInfo,
+	}
+	if opt.Regimes != "" {
+		b, err := os.ReadFile(opt.Regimes)
+		if err != nil {
+			return fmt.Errorf("regimes: %w", err)
+		}
+		var reg any
+		if err := json.Unmarshal(b, &reg); err != nil {
+			return fmt.Errorf("regimes %s: %w", opt.Regimes, err)
+		}
+		man["regime_boundaries"] = reg
 	}
 	mb, _ := json.MarshalIndent(man, "", "  ")
 	return os.WriteFile(filepath.Join(dsDir, "manifest.json"), mb, 0o644)

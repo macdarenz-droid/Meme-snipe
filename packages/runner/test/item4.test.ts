@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { JournalLine } from '../src/contract.ts';
 import { item4, malformedReason } from '../src/item4.ts';
+import { OPS_OK } from './fixtures.ts';
 import { checkJournal } from '../src/journal.ts';
 import { makePlan } from '../src/plan.ts';
 import { buildReport, reportMarkdown, type RunMeta } from '../src/report.ts';
@@ -84,6 +85,8 @@ describe('bad simulation lines stay in the denominator as malformed', () => {
     ['missing amounts', { quotedOut: null }, 'simulated without positive quotedOut and simulatedOut'],
     ['a zero quote', { quotedOut: '0' }, 'simulated without positive quotedOut and simulatedOut'],
     ['a non-numeric quote age', { quoteAgeSlots: 'soon' }, 'quoteAgeSlots is not a decimal string'],
+    ['a negative quote age', { quoteAgeSlots: '-5' }, 'quoteAgeSlots is not a decimal string'],
+    ['a negative simulated amount', { simulatedOut: '-1000000' }, 'simulatedOut is not a decimal string'],
     ['a number where a bigint string belongs', { rentPaid: 5 }, 'rentPaid is not a decimal string'],
     ['success with a failing outcome', { outcome: 'sim-error' }, 'success disagrees with outcome'],
     ['a simulated outcome marked unsuccessful', { success: false }, 'success disagrees with outcome'],
@@ -119,7 +122,7 @@ describe('report', () => {
     const standIn = { address: 'A', role: 'funded-wallet', tokenAccount: null, closeOmitted: false };
     const lines = [...many(17, () => sim(4000, { standIn })), sim(19_000), sim(6000), fail('policy-violation')];
     const meta: RunMeta = { runId: 'vps-golden', label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'systemd:zeroed-worker.service', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
-    const r = buildReport(meta, [], 10, 100, checkJournal(''), [], [], item4(lines, 'vps', false));
+    const r = buildReport(meta, [], 10, 100, checkJournal(''), [], [], item4(lines, 'vps', false), OPS_OK);
     const md = reportMarkdown(r);
     const block = md.slice(md.indexOf('## Item 4'));
     expect(block).toBe(readFileSync(join(import.meta.dirname, 'golden', 'item4.md'), 'utf8'));
@@ -127,9 +130,28 @@ describe('report', () => {
   });
   it('never prints a pass for a run that does not count', () => {
     const meta: RunMeta = { runId: 'r', label: 'rehearsal', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
-    const md = (lines: JournalLine[]) => reportMarkdown(buildReport(meta, [], 10, 100, checkJournal(''), [], [], item4(lines, 'rehearsal', false)));
+    const md = (lines: JournalLine[]) => reportMarkdown(buildReport(meta, [], 10, 100, checkJournal(''), [], [], item4(lines, 'rehearsal', false), OPS_OK));
     expect(md(many(20, () => sim(0)))).toContain('Item 4: **not counted** (bounds met: yes)');
     expect(md([fail('sim-error')])).toContain('Item 4: **not counted** (bounds met: no)');
     expect(md(many(20, () => sim(0)))).not.toContain('Item 4: **pass**');
+  });
+});
+
+describe('item 4 mechanics diagnostics (TEST-2, supervisor ruling 90fac89)', () => {
+  it('journal lines carry finalExit and simulatedSlot through to the mechanics counts', async () => {
+    const { dryRunReport } = await import('../../worker/src/dryrun/report.ts');
+    const { toRecord } = await import('../src/item4.ts');
+    const standIn = (closeOmitted: boolean) => ({ address: 'x', role: 'holder', tokenAccount: 'y', closeOmitted, closeOmittedReason: closeOmitted ? 'the holder holds 3, the position is 1' : null });
+    const lines = [
+      sim(0, { leg: 'exit', finalExit: true, simulatedSlot: '9', standIn: standIn(false) }),
+      sim(null, { leg: 'exit', finalExit: true, simulatedSlot: '9', standIn: standIn(false), outcome: 'sim-error', success: false, simulatedOut: null }),
+      sim(0, { leg: 'exit', finalExit: true, simulatedSlot: '9', standIn: standIn(true) }),
+      sim(0, { leg: 'exit', finalExit: false, simulatedSlot: '9', standIn: standIn(false) }),
+      sim(0, { leg: 'entry', finalExit: true, simulatedSlot: '9' }),
+    ];
+    const m = dryRunReport(lines.map(toRecord)).mechanics;
+    expect(m).toMatchObject({ finalExitSimulations: 3, withRealClose: 2, completeSellAndClose: 1, closeOmitted: 1 });
+    expect(m.closeOmittedReasons[0]?.reason).toBe('the holder holds 3, the position is 1');
+    expect(malformedReason(sim(0, { simulatedSlot: 9 }))).toBe('simulatedSlot is not a decimal string');
   });
 });

@@ -15,6 +15,7 @@ import {
 import type { Mode } from './hard.ts';
 import type { EvidenceCode, FactName, GateReason } from './reasons.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
+import { VOLUME_SERIES_START_DAY } from '../config/time.ts';
 import { DAY_MS, HOURLY_MAX_AGE_MS, HOUR_MS, floorTo, solUsdExact } from './series.ts';
 
 export type RegimeCondition = 'survival' | 'volume' | 'sol-change';
@@ -91,13 +92,21 @@ const survival = (g: GraduatesFact, at: number, p: Policy['regime']): ConditionR
   return { condition: 'survival', ok: cmpFrac(recent, m) >= 0, value: showFrac(recent), limit: showFrac(m) };
 };
 
-/** Last full UTC day's curve volume against the nearest-rank percentile of the window ending with it. */
-const volume = (v: CurveVolumeFact, at: number, p: Policy['regime']): ConditionResult => {
-  const lastDay = Math.floor(at / DAY_MS) - 1;
+/**
+ * Curve volume of day L = D - volumeLagDays (D is the check's UTC day) against the nearest-rank percentile of the
+ * expanding window from max(series start, L - volumeWindowDays + 1) to L. Fewer than volumeMinDays days in the window,
+ * or any day in it missing, is unknown. The lag leaves room for the archive to finish a day before it is read.
+ */
+export const volumeCondition = (v: CurveVolumeFact, at: number, p: Policy['regime']): ConditionResult => {
+  const lastDay = Math.floor(at / DAY_MS) - p.volumeLagDays;
+  const firstDay = Math.max(VOLUME_SERIES_START_DAY, lastDay - p.volumeWindowDays + 1);
+  if (lastDay - firstDay + 1 < p.volumeMinDays) {
+    return unknown('volume', 'curve-volume', 'not-covered', `${Math.max(0, lastDay - firstDay + 1)} days of curve volume up to UTC day ${lastDay}; ${p.volumeMinDays} needed`);
+  }
   const byDay = new Map<number, bigint>();
-  for (const d of v.days) if ((d.day + 1) * DAY_MS <= at) byDay.set(d.day, d.volumeUsd);
+  for (const d of v.days) if ((d.day + 1) * DAY_MS <= at) byDay.set(d.day, d.volumeLamports);
   const span: bigint[] = [];
-  for (let day = lastDay - p.volumeWindowDays + 1; day <= lastDay; day++) {
+  for (let day = firstDay; day <= lastDay; day++) {
     const x = byDay.get(day);
     if (x === undefined) return unknown('volume', 'curve-volume', 'not-covered', `no curve volume for UTC day ${day}`);
     span.push(x);
@@ -120,7 +129,7 @@ const solChange = (s: SolUsdFact, at: number, p: Policy['regime']): ConditionRes
 };
 
 const check = (atMs: number, g: GraduatesFact, v: CurveVolumeFact, s: SolUsdFact, p: Policy['regime']): RegimeCheck => {
-  const conditions = [survival(g, atMs, p), volume(v, atMs, p), solChange(s, atMs, p)];
+  const conditions = [survival(g, atMs, p), volumeCondition(v, atMs, p), solChange(s, atMs, p)];
   const ok = conditions.some((c) => c.ok === null) ? null : conditions.every((c) => c.ok === true);
   return { atMs, ok, conditions };
 };

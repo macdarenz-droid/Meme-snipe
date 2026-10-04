@@ -58,6 +58,18 @@ export interface WatchOptions {
    * uncovered instead of counting fewer events.
    */
   readonly coverage?: string;
+  /**
+   * Subscribe at `confirmed` instead of `processed` (FACTS-1: a pool's trade stream for candles, which the gates refuse
+   * at processed). The log frames then say so, and their events carry `commitment: 'confirmed'`.
+   */
+  readonly commitment?: 'confirmed';
+  /**
+   * FILL-2: fills a reconnect gap on this watch before it is closed. Called once the gap is ready to close (the watch
+   * is subscribed again, its page backfill is done and a live slot was seen), with the gap's range; the gap is then
+   * closed with a resume when it answers true, and as a bounded lossy gap when it answers false or throws. A new
+   * drop while it runs discards its answer. Without it, the single page backfill decides, as before.
+   */
+  readonly fill?: (gap: { readonly address: string; readonly fromSlot: bigint | null; readonly toSlot: bigint }) => Promise<boolean>;
 }
 
 interface CoverageGap {
@@ -67,12 +79,14 @@ interface CoverageGap {
   lossy: boolean;
   /** First slot seen live on this stream after the watch was subscribed again: where the gap ends. */
   liveAfter: bigint | null;
+  /** FILL-2: the watch's `fill` for this connection: not asked, running, or answered. */
+  fill: 'no' | 'running' | 'done';
 }
 
 type Watch =
   | { readonly kind: 'slot'; readonly priority: Priority; handle: number }
   | {
-    readonly kind: 'logs'; readonly address: string; readonly opts: WatchOptions; readonly priority: Priority; handle: number; lastSignature: string | null;
+    readonly kind: 'logs'; readonly address: string; readonly opts: WatchOptions; priority: Priority; handle: number; lastSignature: string | null;
     /** Subscribed on the current connection. */
     acked: boolean; started: boolean; startPending: boolean; gap: CoverageGap | null;
     /** Slot of the last live log notification, and of the coverage start: where a gap opened now must begin. */
@@ -88,6 +102,8 @@ export class RpcStream {
   readonly #o: RpcStreamOptions;
   readonly #rpc: RpcSocket;
   readonly #watches = new Map<number, Watch>();
+  /** POOL-1: told when a watch stops delivering without its owner asking (dropped at the halt, or refused). */
+  readonly #dropped: ((id: number, reason: 'halted' | 'refused') => void)[] = [];
   #nextId = 1;
   #lastSlot: bigint | null = null;
   #gapFrom: bigint | null = null;
@@ -103,7 +119,9 @@ export class RpcStream {
       onOpen: () => {
         this.#epoch++;
         this.#meter(o.creditsPerConnection);
+        // A reconnect reports up once its backfill is done; the first open is up at once (nothing was missed yet).
         if (this.#wasDown) void this.#backfill();
+        else this.#status('up', { fromSlot: null, first: true });
       },
       onDown: (reason, wasOpen) => this.#down(reason, wasOpen),
       onBytes: (n) => this.#meter(n * o.creditsPerByte),
@@ -123,8 +141,11 @@ export class RpcStream {
     this.#rpc.start();
   }
 
+  /** A stop (shutdown or a drill) is a disconnect: the logs watches open a gap and the next start backfills it. */
   stop(): void {
+    const open = this.#rpc.socket.state === 'open';
     this.#rpc.stop();
+    if (open) this.#down('stopped', true);
   }
 
   /** The socket, for drills (TEST-3 drops it to prove the reconnect and backfill path). */
@@ -149,7 +170,7 @@ export class RpcStream {
     if (!isAddress(address)) throw new RangeError('logs watch needs a base58 address');
     const w: Watch = { kind: 'logs', address, opts, priority: opts.priority, handle: 0, lastSignature: null, acked: false, started: false, startPending: false, gap: null, lastLogSlot: null, startSlot: null };
     return this.#add(w, {
-      method: 'logsSubscribe', params: [{ mentions: [address] }, { commitment: 'processed' }], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification',
+      method: 'logsSubscribe', params: [{ mentions: [address] }, { commitment: opts.commitment ?? 'processed' }], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification',
       onNotify: (r) => {
         if (!isObj(r) || !isObj(r.context) || !isObj(r.value)) return;
         const slot = slotOf(r.context.slot);
@@ -162,7 +183,7 @@ export class RpcStream {
         this.#seen(address, signature, slot, err, opts, false);
         const lines = r.value.logs;
         if (opts.decodeLogs === true && Array.isArray(lines) && lines.every((l) => typeof l === 'string')) {
-          this.#o.feed.ingest(this.provider, { type: 'logs', signature, slot, err, via: `logs:${address}`, logs: lines as string[] }, { receivedAt: this.#o.timers.now() });
+          this.#o.feed.ingest(this.provider, { type: 'logs', signature, slot, err, via: `logs:${address}`, logs: lines as string[], ...(opts.commitment === undefined ? {} : { commitment: opts.commitment }) }, { receivedAt: this.#o.timers.now() });
         }
       },
     });
@@ -188,6 +209,31 @@ export class RpcStream {
     });
   }
 
+  /**
+   * POOL-1: `fn` hears of every watch that stops delivering without its owner asking: one the 70% halt dropped (it is
+   * gone from this stream) or one the server refused (it stays until the next reconnect re-subscribes it, so an owner
+   * that wants it sooner unwatches and watches again).
+   */
+  onDropped(fn: (id: number, reason: 'halted' | 'refused') => void): void {
+    this.#dropped.push(fn);
+  }
+
+  /**
+   * Moves a logs watch to another priority in place: the subscription and its coverage go on, with no gap (POS-1: a
+   * pool that becomes held keeps its trade stream). Returns false for an unknown or non-logs watch. Raising a watch is
+   * always allowed; a watch lowered above P1 while halted is dropped, as at the halt (and reported to `onDropped`).
+   */
+  setPriority(id: number, priority: Priority): boolean {
+    const w = this.#watches.get(id);
+    if (w === undefined || w.kind !== 'logs') return false;
+    w.priority = priority;
+    if (this.#halted && priority > P1) {
+      this.unwatch(id, 'halted');
+      for (const fn of this.#dropped) fn(id, 'halted');
+    }
+    return true;
+  }
+
   unwatch(id: number, reason = 'unwatched'): void {
     const w = this.#watches.get(id);
     if (w === undefined) return;
@@ -208,6 +254,7 @@ export class RpcStream {
           this.#coverageGap(w, this.#openFrom(w), null, 'refused');
           w.gap = null;
         }
+        for (const fn of this.#dropped) fn(id, 'refused');
       },
       onSubscribed: () => {
         if (w.kind !== 'logs') return;
@@ -274,7 +321,11 @@ export class RpcStream {
     }
     if (this.#halted || !this.#o.scheduler.halted) return;
     this.#halted = true;
-    for (const [id, w] of this.#watches) if (w.priority > P1) this.unwatch(id, 'halted');
+    for (const [id, w] of this.#watches) {
+      if (w.priority <= P1) continue;
+      this.unwatch(id, 'halted');
+      for (const fn of this.#dropped) fn(id, 'halted');
+    }
     this.#status('halted', { share: this.#o.scheduler.status().budgetShare });
   }
 
@@ -291,9 +342,10 @@ export class RpcStream {
       if (!w.started) continue;
       if (w.gap) {
         w.gap.backfilled = false;
+        w.gap.fill = 'no'; // a fill running for the lost connection is discarded (see #closeCoverage)
         w.gap.liveAfter = null;
       } else {
-        w.gap = { fromSlot: this.#openFrom(w), reason: 'disconnect', backfilled: false, lossy: w.opts.decodeLogs === true, liveAfter: null };
+        w.gap = { fromSlot: this.#openFrom(w), reason: 'disconnect', backfilled: false, lossy: w.opts.decodeLogs === true, liveAfter: null, fill: 'no' };
         // Visible at once: decisions made during the outage must see the range as uncovered (the engine cannot wait for the end).
         this.#fact(`coverage:${w.opts.coverage}:gap`, { fromSlot: w.gap.fromSlot, toSlot: null, reason: 'disconnect', via: `logs:${w.address}` });
       }
@@ -374,6 +426,21 @@ export class RpcStream {
   #closeCoverage(w: Extract<Watch, { kind: 'logs' }>): void {
     const g = w.gap;
     if (g === null || !w.acked || !g.backfilled || g.liveAfter === null) return;
+    const fill = w.opts.fill;
+    if (fill !== undefined && g.fill !== 'done') {
+      if (g.fill === 'running') return;
+      g.fill = 'running';
+      const epoch = this.#epoch;
+      const toSlot = g.fromSlot !== null && g.liveAfter < g.fromSlot ? g.fromSlot : g.liveAfter;
+      void fill({ address: w.address, fromSlot: g.fromSlot, toSlot }).catch(() => false).then((complete) => {
+        // A drop while the fill ran started a new connection: this answer is for the old one.
+        if (epoch !== this.#epoch || w.gap !== g || g.fill !== 'running') return;
+        g.lossy = !complete;
+        g.fill = 'done';
+        this.#closeCoverage(w);
+      });
+      return;
+    }
     w.gap = null;
     // Never an empty or inverted range: the end is at least the start.
     const to = g.fromSlot !== null && g.liveAfter < g.fromSlot ? g.fromSlot : g.liveAfter;

@@ -4,8 +4,8 @@
 
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import type { Fill, TradeIntent, TransactionAttempt } from '../domain/index.ts';
-import { applyBookEvent, isIllegal, type Book, type BookEvent, type Effect, type IntentStatus, type PositionStatus } from '../lifecycle/index.ts';
-import { encodeBookDetail, rowEventName, stepRows } from './replay/index.ts';
+import { applyBookEvent, isIllegal, type Book, type BookConfig, type BookEvent, type Effect, type IntentStatus, type PositionStatus } from '../lifecycle/index.ts';
+import { encodeBookDetail, rowEventName, stepRows, storedBookEvents } from './replay/index.ts';
 import type { Lamports } from '../units/index.ts';
 import { fromJson, toJson } from './codec.ts';
 import { FEE_KINDS, INTENT_END_STATUSES, LEDGER_MIGRATIONS, OPERATOR_COMMANDS, type AUTH_LEVELS, type DECISION_MODES, type ISSUERS } from './migrations.ts';
@@ -225,6 +225,14 @@ class LedgerReads {
 
   hasSnapshot(snapshotId: bigint): boolean {
     return this.#db.prepare('SELECT 1 FROM feature_snapshot WHERE snapshot_id = ?').get(snapshotId) !== undefined;
+  }
+
+  /**
+   * The book events this ledger stores, in order, and the book they make: what a restarting worker feeds back to its
+   * engine (WORKER-1). Read as the replay check reads them; throws a LedgerError on a row it cannot read.
+   */
+  storedBookEvents(config: BookConfig): { readonly events: BookEvent[]; readonly book: Book } {
+    return storedBookEvents(this, config);
   }
 
   heldReservations(): HeldReservation[] {
@@ -456,6 +464,9 @@ export class LedgerReader extends LedgerReads {
 /** The single writer. Every write is one BEGIN IMMEDIATE transaction; `atomically` groups several into one. */
 export class Ledger extends LedgerReads {
   readonly #release: () => void;
+
+  /** The ledger's file name in the worker's state directory (docs/ARCHITECTURE.md §12.4). */
+  static readonly FILE = 'ledger.sqlite';
 
   constructor(db: DatabaseSync, release: () => void) {
     super(db);

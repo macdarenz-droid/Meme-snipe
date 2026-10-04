@@ -29,6 +29,16 @@ export const SECRET_NAMES = ['HELIUS_API_KEY', 'ALCHEMY_API_KEY', 'JUPITER_API_K
 /** Environment names that would mean key material is present. No signing key exists in a dry run. */
 export const KEY_ENV = /PRIVATE_KEY|SECRET_KEY|KEYPAIR|SEED|MNEMONIC|WALLET_KEY/i;
 
+/** Why the worker went down in a restart drill (DECISIONS "Follow-up rulings", Standby). */
+export type RestartCause = 'crash' | 'reboot' | 'host-loss' | 'chain-rebuild';
+export const RESTART_CAUSES: readonly RestartCause[] = ['crash', 'reboot', 'host-loss', 'chain-rebuild'];
+
+/**
+ * Evidence in the state dir: kept through a host-loss or chain-rebuild drill (the runner copies them aside and back),
+ * because they are the run's record, not the bot's state. Everything else in the state dir is bot state.
+ */
+export const EVIDENCE_FILES: readonly string[] = ['journal.jsonl', 'recorder'];
+
 export const STATE_FILES = {
   journal: 'journal.jsonl',
   recorder: 'recorder',
@@ -48,6 +58,32 @@ export interface FeedHealth {
   readonly dropped_by_drill: boolean;
 }
 
+/** One provider's scheduler (FEED-1's SchedulerStatus plus credits by class and the plan's monthly budget). Counters start at 0 each boot. */
+export interface QuotaStatus {
+  readonly provider: string;
+  readonly credits_used: number;
+  /** Credits by class P0..P3; they sum to credits_used. */
+  readonly credits_by_class: readonly [number, number, number, number];
+  /** The free plan's monthly credits (Helius credits, Alchemy compute units); null for rate-only providers. */
+  readonly monthly_credits: number | null;
+  readonly granted: readonly [number, number, number, number];
+  readonly shed: readonly [number, number, number, number];
+  readonly halted: boolean;
+}
+
+/** Bucket upper bounds (ms) of the historical-lookup latency histogram; the last bucket is everything slower. */
+export const LOOKUP_BOUNDS_MS = [25, 50, 100, 200, 400, 800, 1600, 3200, 6400] as const;
+
+/** A mark older than this when read is not a price: the exposure move it would give is unmeasured. */
+export const MARK_MAX_AGE_MS = 30_000;
+
+export interface OpenPositionHealth {
+  readonly trade: string; readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string;
+  readonly mark: string; readonly mark_slot: number; readonly mark_ts: number;
+  /** The universe the position was entered under (CFG-2: its exit parameters come from it). */
+  readonly universe: string;
+}
+
 /** GET /health. The heartbeat fields of docs/research/security.md §5.2 plus what the runner measures. */
 export interface Health {
   readonly seq: number;
@@ -56,8 +92,17 @@ export interface Health {
   readonly policy_version: string;
   readonly last_processed_slot: number | null;
   readonly feed_ages_ms: Readonly<Record<string, number | null>>;
-  readonly open_position: { readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string } | null;
-  readonly unresolved_intents: { readonly count: number; readonly oldest_age_s: number | null };
+  /**
+   * `mark`: the latest price the position is valued at, a plain decimal string in the unit of `entry`; `mark_slot` and
+   * `mark_ts` (ms) say when it was seen. `trade`: the trade id used in the journal.
+   */
+  readonly open_position: OpenPositionHealth | null;
+  /** Every open position, oldest first (WORKER-1c); `open_position` is its first entry, kept for older readers. */
+  readonly open_positions: readonly OpenPositionHealth[];
+  /** Trade ids with an exit planned or signed and not yet final: what a restart must not lose. */
+  readonly pending_exits: readonly string[];
+  /** `trades`: the trade ids of the unresolved intents (an entry in flight has an intent and no position yet). */
+  readonly unresolved_intents: { readonly count: number; readonly oldest_age_s: number | null; readonly trades: readonly string[] };
   readonly signer: string;
   readonly lease_epoch: number | null;
   readonly sol_reserve: string | null;
@@ -70,8 +115,15 @@ export interface Health {
   readonly recorder: 'on' | 'off';
   readonly simulation: 'on' | 'off';
   readonly reconciled: boolean;
+  /** Reconciled, an exit quote source and a landing path are up: an exit could be sent now (paper: simulated). */
+  readonly exit_capable: boolean;
+  readonly quota: readonly QuotaStatus[];
+  /** Historical lookups since boot: counts per LOOKUP_BOUNDS_MS bucket (length bounds + 1). */
+  readonly lookups: { readonly counts: readonly number[] };
   readonly entries_halted: boolean;
   readonly halt_reasons: readonly string[];
+  /** Critical alerts up now (WATCH-1: a held position with no fresh price), one line each; empty when none. */
+  readonly critical: readonly string[];
   readonly feeds: Readonly<Record<string, FeedHealth>>;
   readonly journal_seq: number;
   /** Always false in a dry run: no signing key exists. */
@@ -80,7 +132,34 @@ export interface Health {
 }
 
 export type JournalKind =
-  | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair';
+  | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair'
+  /** A coverage gap of a discovery stream: journaled when it opens (to_ts null) and again when it closes, same gap_id. */
+  | 'coverage_gap'
+  /** After a restart with an open position: the worst price move over the down window, rebuilt from chain history. */
+  | 'exposure'
+  /** A critical alert raised or cleared (WATCH-1: `level` critical or cleared, `code`, `mint`). */
+  | 'alert'
+  /**
+   * Written once per boot right after the start reconcile: what the worker found and kept. `source`: 'state' (its
+   * own files) or 'chain' (no state: rebuilt from wallet balances and pending signatures by address);
+   * `pending_exits` (trade ids); `positions` ([{trade, universe}]).
+   */
+  | 'recovered'
+  /**
+   * The first moment in a boot the worker is able to exit: times a host reboot from the worker's own journal. Written
+   * before /health first reports `exit_capable: true` in that boot.
+   */
+  | 'exit_capable';
+
+/**
+ * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A
+ * first boot on an empty state dir (the tabletop's chain rebuild, or a genuinely new host) reports source 'chain'.
+ */
+export interface RecoveredFields {
+  readonly source: 'state' | 'chain';
+  readonly pending_exits: readonly string[];
+  readonly positions: readonly { readonly trade: string; readonly universe: string }[];
+}
 
 /** One line of journal.jsonl. Written with a synchronous append per line, so a crash can tear only the last line. */
 export interface JournalLine {
@@ -96,6 +175,12 @@ export interface JournalLine {
 
 /** Kinds that must carry at least one reason ("every decision logged with its reasons", §15 item 3). */
 export const NEEDS_REASONS: ReadonlySet<JournalKind> = new Set(['decision', 'entry', 'exit', 'halt', 'resume']);
+
+/**
+ * Strategies BT-2 has registered (configurations fixed before the holdout): the only entry rules the qualifying run
+ * may use (worker refuses anything else; the report fails a named host run whose start lines differ). None yet.
+ */
+export const REGISTERED_STRATEGIES: readonly string[] = [];
 
 export const isLoopback = (addr: string): boolean => /^(127\.0\.0\.1|\[::1\]):\d{1,5}$/.test(addr);
 

@@ -2,7 +2,7 @@
 // trade is built with the TX-1 builders for the bot wallet and checked against the signer policy, then built again for
 // a stand-in that can pay (see standin.ts), proved structurally identical, and passed to `simulateTransaction`. It is
 // never sent: nothing reachable from this module can send (test/dryrun-nosend.test.ts).
-import { type Address, type LoadedAddresses, NATIVE_MINT, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, decodeTokenAccount, decodeTransaction } from '../../../core/src/chain/index.ts';
+import { type Address, type LoadedAddresses, NATIVE_MINT, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, decodeTokenAccount, decodeTransaction, logEvents } from '../../../core/src/chain/index.ts';
 import { compileV0 } from '../../../core/src/tx/compile.ts';
 import { type PolicyVerdict, type SignerPolicyContext, checkSignerPolicy } from '../../../core/src/tx/policy.ts';
 import { associatedTokenAddress, pumpCreatorVault } from '../../../core/src/tx/programs.ts';
@@ -57,11 +57,15 @@ export interface StandInUse {
   readonly tokenAccount: Address | null;
   /** True when the real build's base-account close was left out (the holder has more tokens than the position). */
   readonly closeOmitted: boolean;
+  /** Why the close was left out, e.g. "the holder holds 3000, the position is 1000"; null when it was kept. */
+  readonly closeOmittedReason: string | null;
 }
 
 export interface DryRunRecord {
   readonly id: string;
   readonly side: 'buy' | 'sell';
+  /** A sell that closes the position's token account (the real build carries the close instruction). */
+  readonly finalExit: boolean;
   readonly venue: 'curve' | 'pool';
   readonly mint: Address;
   readonly outcome: DryRunOutcome;
@@ -122,23 +126,29 @@ const loadedOf = (tx: BuiltTransaction, common: BuildCommon): LoadedAddresses =>
 
 /**
  * Rent the transaction paid out of the wallet into one account other than the wallet's own, from its state before and
- * after: a new account's rent (a wrapped-SOL account's rent reserve, not its balance), a grown account's added bytes,
- * or the pump creator vault's top-up to rent-exempt (its balance also receives creator fees, so only the top-up
- * counts).
+ * after. Only rent counts; anything else stays in the measured amount (review of PR #59):
+ * - a new account: at most the rent-exempt minimum for its size (a wrapped-SOL account's rent reserve likewise);
+ * - a grown account: its added bytes, against its length as read before;
+ * - the pump creator vault: what it gained beyond the creator fees the stand-in's trades paid into it, at most its
+ *   shortfall to rent-exempt (`creatorFees` null, unknown: no top-up is counted, which errs against the trade).
  */
-export const rentPaidInto = (pre: RawAccount | null, post: RawAccount | null, rent: RentRate, isCreatorVault: boolean): bigint => {
+export const rentPaidInto = (pre: RawAccount | null, post: RawAccount | null, rent: RentRate, isCreatorVault: boolean, creatorFees: bigint | null = 0n): bigint => {
   if (isCreatorVault) {
-    const need = rentExempt(0, rent);
+    if (post === null || creatorFees === null) return 0n;
     const have = pre?.lamports ?? 0n;
-    return post !== null && have < need ? need - have : 0n;
+    const topUp = post.lamports - have - creatorFees;
+    const shortfall = rentExempt(0, rent) - have;
+    return topUp <= 0n || shortfall <= 0n ? 0n : topUp < shortfall ? topUp : shortfall;
   }
   if (post === null) return 0n;
   if (pre === null) {
+    const cap = rentExempt(post.data.length, rent);
+    let paid = post.lamports;
     if (post.owner === TOKEN_PROGRAM || post.owner === TOKEN_2022_PROGRAM) {
       const native = decodeTokenAccount(post.data, post.owner as Address).isNative;
-      if (native !== null) return native;
+      if (native !== null) paid = native;
     }
-    return post.lamports;
+    return paid < cap ? paid : cap;
   }
   return post.data.length > pre.data.length ? BigInt(post.data.length - pre.data.length) * rent.lamportsPerByte : 0n;
 };
@@ -217,7 +227,7 @@ const chooseBuyer = async (t: DryRunTrade, d: DryRunDeps): Promise<Chosen> => {
     if (!isPlainWallet(a)) continue;
     const b = buildFor(t, list[i]!, new Set(), false);
     if (typeof b === 'string') continue;
-    if (a.lamports >= b.tx.solOut.total + keep) return { standIn: { address: list[i]!, role: 'funded-wallet', tokenAccount: null, closeOmitted: false } };
+    if (a.lamports >= b.tx.solOut.total + keep) return { standIn: { address: list[i]!, role: 'funded-wallet', tokenAccount: null, closeOmitted: false, closeOmittedReason: null } };
   }
   return { none: 'no buy stand-in has enough SOL for the spend, fees and rent' };
 };
@@ -247,7 +257,9 @@ const chooseHolder = async (t: DryRunTrade, d: DryRunDeps): Promise<Chosen> => {
     const closeOmitted = req.side === 'sell' && req.closeTokenAccount && h.amount !== need;
     const b = buildFor(t, h.owner, new Set(), closeOmitted);
     if (typeof b === 'string') continue;
-    if (a.lamports >= b.tx.solOut.total + keep) return { standIn: { address: h.owner, role: 'holder', tokenAccount: h.tokenAccount, closeOmitted } };
+    if (a.lamports >= b.tx.solOut.total + keep) return {
+      standIn: { address: h.owner, role: 'holder', tokenAccount: h.tokenAccount, closeOmitted, closeOmittedReason: closeOmitted ? `the holder holds ${h.amount}, the position is ${need}` : null },
+    };
   }
   return { none: 'no holder can pay the fees and stay rent-exempt' };
 };
@@ -257,7 +269,7 @@ export const dryRunTrade = async (t: DryRunTrade, d: DryRunDeps): Promise<DryRun
   const req = t.request;
   const mint = baseMintOf(req);
   let rec: DryRunRecord = {
-    id: t.id, side: req.side, venue: req.venue, mint, outcome: 'internal-error', success: false, error: null, standIn: null, policy: null,
+    id: t.id, side: req.side, finalExit: req.side === 'sell' && req.closeTokenAccount, venue: req.venue, mint, outcome: 'internal-error', success: false, error: null, standIn: null, policy: null,
     quotedOut: null, simulatedOut: null, amountErrorE4: null, readSlot: null, quoteAgeSlots: null, rentDeclared: null, rentPaid: null, balancesFrom: null, simulatedSlot: null, unitsConsumed: null, logsTail: [],
   };
   const fail = (outcome: DryRunOutcome, error: string, more: Partial<DryRunRecord> = {}): DryRunRecord => ({ ...rec, ...more, outcome, success: false, error });
@@ -319,9 +331,18 @@ export const dryRunTrade = async (t: DryRunTrade, d: DryRunDeps): Promise<DryRun
       // Rent the transaction actually paid into other accounts. More than the build declared means the builder
       // under-counts the trade's cost: a failure, never absorbed into the amount.
       const vault = req.venue === 'curve' && req.market.curve.creator !== undefined ? pumpCreatorVault(req.market.curve.creator) : null;
+      // Creator fees the stand-in's own trades paid into the creator vault (not rent); unknown if the log was cut.
+      let creatorFees: bigint | null = 0n;
+      const logged = logEvents(sim.value.logs, null);
+      if (logged.truncated) creatorFees = null;
+      for (const e of logged.events) {
+        if (creatorFees !== null && e.name === 'TradeEvent' && e.data.user === s.address && e.data.mint === mint) {
+          creatorFees = e.data.creatorFee === undefined ? null : creatorFees + e.data.creatorFee;
+        }
+      }
       let paid = 0n;
       for (let i = readBack.length; i < addresses.length; i++) {
-        paid += rentPaidInto(pre.accounts[i] ?? null, sim.value.accounts[i] ?? null, t.common.rates.rent, addresses[i] === vault);
+        paid += rentPaidInto(pre.accounts[i] ?? null, sim.value.accounts[i] ?? null, t.common.rates.rent, addresses[i] === vault, creatorFees);
       }
       rec = { ...rec, rentDeclared: o.rent, rentPaid: paid };
       if (paid > o.rent) return fail('amount-check', `the transaction paid ${paid} lamports of rent; the build declared ${o.rent}`);

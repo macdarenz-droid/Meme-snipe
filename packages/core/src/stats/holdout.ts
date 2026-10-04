@@ -5,8 +5,29 @@
 // - The backtester runs the holdout into a sealed ledger file; the registry keeps only its hash and entry counts.
 //   The size check reads the counts alone.
 // - The seal opens once, and only when n ≥ max(300, n_power). Opening early, a hash mismatch, a second open, a re-run
-//   with a different configuration or any inspection outside the scoring stage burns the holdout. Scoring burns it too.
+//   with a different configuration, a run that fails or is interrupted ('run-failed'), an attempt ended without an
+//   opening after its tail ('spent': it failed G1 or came up short) or any inspection outside the
+//   scoring stage burns the holdout. Scoring burns it too.
 // - New proof needs a new, later window that has never been run.
+// - Attempts share one error budget (supervisor rulings, DECISIONS "STATS-1c"): attempt 1 of a universe is tested at
+//   family α = 0.04, attempt k ≥ 2 at 0.01 / 2^(k − 1), each on a new, later window: at most 0.05 family error across
+//   attempts; the bound requires valid testing under each attempt's registered selection, stopping and dependence
+//   assumptions.
+// - An attempt is spent when its configuration is registered, whatever happens next: a window that is halted,
+//   abandoned or short of the requirement is a failed attempt that spent its α, and the next registration takes the
+//   next attempt's level. There is no unspent path after registration.
+// - Every window has a fixed entry cutoff E, registered before any count is known: entries on whole UTC days
+//   [fromDay, E), at most `windowDays` days, then an observation-only tail of `tailDays` days so labels mature. The
+//   seal opens once, after the tail, and never on a failed G1. There is no count-driven extension.
+// - Attempt 1 of every registered universe shares one window (one common endpoint; no universe is dropped after
+//   counts). The rule for later attempts is held from the start: attempt k ≥ 2 is registered only after the
+//   universe's previous attempt is spent, starts on the first whole UTC day after its registration and runs exactly
+//   `windowDays` days with the same tail.
+// - The family size is fixed at creation and counts every universe ever registered, scored or not, so it cannot shrink.
+//   The registry must persist in one append-only store (the scoring stage's ledger): a fresh registry would reset the
+//   attempt count, and that is a storage rule this pure module cannot enforce.
+// - The stopping and gate requirement is one frozen number, max(300, n_power, closed form), recorded with the n_power
+//   seed before the first count is read (freezeRequirement before sealHoldout).
 
 /**
  * What the registry exposes about a sealed holdout: candidate and entry counts only (review of PR #6). Never exit counts
@@ -24,16 +45,60 @@ export interface HoldoutCounts {
 export const HOLDOUT_COUNT_FIELDS = ['candidates', 'entries', 'entryDays'] as const;
 
 export type SealState = 'registered' | 'sealed' | 'opened';
-export type BurnReason = 'scored' | 'early-open' | 'hash-mismatch' | 'count-mismatch' | 'second-open' | 'reconfigured' | 'inspected';
+export type BurnReason =
+  | 'scored' | 'early-open' | 'hash-mismatch' | 'count-mismatch' | 'second-open' | 'reconfigured' | 'inspected'
+  // Failed attempts that spent their α without a score: short of the requirement at E, or halted / abandoned.
+  | 'short' | 'abandoned'
+  // A holdout run that failed or was interrupted (BT-1c).
+  | 'run-failed'
+  // An attempt ended after its tail without an opening (BT-1d endAttempt: failed G1, short or never run).
+  | 'spent';
+
+/** The window rule every attempt follows, fixed when the registry is created. */
+export interface AttemptRule {
+  /** Most whole UTC days of entries in a window (the entry cutoff E is at most fromDay + windowDays). */
+  readonly windowDays: number;
+  /** Observation-only days after E before the seal may open (labels mature). */
+  readonly tailDays: number;
+  /** Least frozen requirement: trades (the owner's 300) and entry days (the gate's MIN_DAYS). */
+  readonly minTrades: number;
+  readonly minDays: number;
+}
+
+/** The owner's floor of 300 out-of-sample trades and the gate's 10 entry days; only a test rule may sit below them. */
+export const REQUIREMENT_FLOOR = { minTrades: 300, minDays: 10 } as const;
+
+/** 28 entry days (09-22 .. 10-19, E = 10-20 for attempt 1) and one tail day: the trial exits end within 120 minutes. */
+export const DEFAULT_ATTEMPT_RULE: AttemptRule = { windowDays: 28, tailDays: 1, ...REQUIREMENT_FLOOR };
+
+/** The frozen size requirement (trades and days), the simulated n_power and the seed its simulation used. */
+export interface FrozenRequirement {
+  /** max(300, n_power, closed form) trades. */
+  readonly requiredTrades: number;
+  /** Entry days the holdout needs (at least the gate's MIN_DAYS). */
+  readonly requiredDays: number;
+  /** The simulated n_power, recorded with its seed. */
+  readonly nPower: number;
+  readonly nPowerSeed: number;
+}
 
 export interface HoldoutEntry {
   readonly holdoutId: string;
   readonly universe: string;
+  /** 1 for the universe's first holdout, k for its k-th; sets the level it is tested at (attemptAlpha). */
+  readonly attempt: number;
+  /** The α this attempt spent at registration (attemptAlpha(attempt)). */
+  readonly alpha: number;
+  /** The UTC day the configuration was registered. */
+  readonly registeredOnDay: string;
+  readonly requirement: FrozenRequirement | null;
   /** The single pre-registered configuration (rules, thresholds, barriers, exits) for this universe. */
   readonly configId: string;
-  /** First and last calendar day of the window, "YYYY-MM-DD" (compared as strings). */
+  /** First and last UTC entry day of the window, "YYYY-MM-DD" (compared as strings). The entry cutoff E is the day
+   * after toDay; the seal may open from tailEnd on. */
   readonly fromDay: string;
   readonly toDay: string;
+  readonly tailEnd: string;
   readonly seal: SealState;
   /** Hash of the sealed ledger file, set when sealed. */
   readonly ledgerHash: string | null;
@@ -44,9 +109,19 @@ export interface HoldoutEntry {
   readonly burnReason: BurnReason | null;
 }
 
+/**
+ * The significance test that gates G1 (owner decision, 2026-10-04: 'spa'). Stored in the registry when it is created,
+ * with the plan and before any G1 evaluation it governs, and never changed: G1 reads it from here, never from a caller.
+ */
+export type G1Test = 'spa' | 'dsr';
+export const G1_TESTS: readonly G1Test[] = ['spa', 'dsr'];
+
 export interface HoldoutRegistry {
-  /** Universes in the Holm family (U1–U3), fixed before the n_power simulation. */
+  /** Universes in the Holm family (U1–U3), fixed before the n_power simulation; counts every universe ever registered. */
   readonly familySize: number;
+  /** G1's significance test, fixed at creation (a registry stored before STATS-1f has none and fails G1 closed). */
+  readonly g1Test: G1Test;
+  readonly rule: AttemptRule;
   readonly entries: readonly HoldoutEntry[];
 }
 
@@ -58,9 +133,95 @@ export interface RegistryStep {
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-export const createHoldoutRegistry = (familySize: number): HoldoutRegistry => {
+/** The ruled error budget: attempt 1 at family α 0.04, attempt k ≥ 2 at 0.01 / 2^(k − 1), together under 0.05. */
+export const ATTEMPT_ALPHA = { first: 0.04, laterBase: 0.01 } as const;
+
+/** Family α for a universe's k-th holdout attempt: 0.04, then 0.01 / 2^(k − 1). */
+export const attemptAlpha = (attempt: number): number => {
+  if (!Number.isInteger(attempt) || attempt < 1) throw new RangeError(`attempt must be an integer >= 1, got ${attempt}`);
+  return attempt === 1 ? ATTEMPT_ALPHA.first : ATTEMPT_ALPHA.laterBase / 2 ** (attempt - 1);
+};
+
+/** The next attempt round of the registry: one more than the highest attempt registered (1 when empty). */
+export const nextAttemptIndex = (registry: HoldoutRegistry): number => registry.entries.reduce((m, e) => Math.max(m, e.attempt), 0) + 1;
+
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/** The calendar day after a "YYYY-MM-DD" day (proleptic Gregorian; no clock or Date object). */
+export const nextDay = (day: string): string => {
+  if (!DAY.test(day)) throw new RangeError(`not a YYYY-MM-DD day: ${day}`);
+  let y = Number(day.slice(0, 4));
+  let m = Number(day.slice(5, 7));
+  let d = Number(day.slice(8, 10)) + 1;
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const len = m === 2 && leap ? 29 : MONTH_DAYS[m - 1]!;
+  if (d > len) {
+    d = 1;
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+};
+
+/** Whole days from `from` to `to` (to − from), by stepping days; refuses more than `limit` steps. */
+export const daysBetween = (from: string, to: string, limit = 400): number => {
+  if (!DAY.test(from) || !DAY.test(to)) throw new RangeError(`not YYYY-MM-DD days: ${from}, ${to}`);
+  if (to < from) return -daysBetween(to, from, limit);
+  let d = from;
+  let n = 0;
+  while (d < to) {
+    d = nextDay(d);
+    n++;
+    if (n > limit) throw new RangeError(`days ${from} and ${to} are more than ${limit} days apart`);
+  }
+  return n;
+};
+
+/** The day `n` days after `day`. */
+export const addDays = (day: string, n: number): string => {
+  let d = day;
+  for (let i = 0; i < n; i++) d = nextDay(d);
+  return d;
+};
+
+/** Day 0 of dayFromNumber. */
+const EPOCH_DAY = '1970-01-01';
+
+/** The UTC day of a day number counted from 1970-01-01 (day 0). */
+export const dayFromNumber = (n: number): string => {
+  if (!Number.isInteger(n) || n < 0) throw new RangeError(`day number must be an integer >= 0, got ${n}`);
+  let y = Number(EPOCH_DAY.slice(0, 4));
+  let rest = n;
+  for (;;) {
+    const len = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 366 : 365;
+    if (rest < len) break;
+    rest -= len;
+    y++;
+  }
+  return addDays(`${String(y).padStart(4, '0')}-01-01`, rest);
+};
+
+/**
+ * A registry with its attempt rule. The requirement floor defaults to REQUIREMENT_FLOOR; a lower floor is for tests on
+ * synthetic data only (G2 still refuses any requirement below max(300, n_power, closed form)).
+ */
+export const createHoldoutRegistry = (
+  familySize: number,
+  g1Test: G1Test,
+  rule: Pick<AttemptRule, 'windowDays' | 'tailDays'> & Partial<Pick<AttemptRule, 'minTrades' | 'minDays'>> = DEFAULT_ATTEMPT_RULE,
+): HoldoutRegistry => {
   if (!Number.isInteger(familySize) || familySize < 1 || familySize > 3) throw new RangeError(`familySize must be 1, 2 or 3, got ${familySize}`);
-  return { familySize, entries: [] };
+  if (!(G1_TESTS as readonly unknown[]).includes(g1Test)) throw new RangeError(`the registry needs G1's test, one of ${G1_TESTS.join(', ')}; got ${JSON.stringify(g1Test)}`);
+  if (!Number.isInteger(rule.windowDays) || rule.windowDays < 1 || !Number.isInteger(rule.tailDays) || rule.tailDays < 0) {
+    throw new RangeError('the attempt rule needs windowDays >= 1 and tailDays >= 0, both integers');
+  }
+  const minTrades = rule.minTrades ?? REQUIREMENT_FLOOR.minTrades;
+  const minDays = rule.minDays ?? REQUIREMENT_FLOOR.minDays;
+  if (!Number.isInteger(minTrades) || minTrades < 1 || !Number.isInteger(minDays) || minDays < 1) throw new RangeError('the requirement floor needs integers >= 1');
+  return { familySize, g1Test, rule: { windowDays: rule.windowDays, tailDays: rule.tailDays, minTrades, minDays }, entries: [] };
 };
 
 const find = (registry: HoldoutRegistry, holdoutId: string): HoldoutEntry => {
@@ -80,29 +241,118 @@ const burn = (registry: HoldoutRegistry, holdoutId: string, reason: BurnReason, 
   reason: `holdout ${holdoutId} burned (${reason}): ${why}`,
 });
 
-/** Register a holdout window for one universe. Throws on anything that would break single-look discipline. */
+/**
+ * Register a holdout window for one universe; this spends the attempt. Throws on anything that would break single-look
+ * discipline or the attempt rules (see the header).
+ */
 export const registerHoldout = (
   registry: HoldoutRegistry,
-  entry: Pick<HoldoutEntry, 'holdoutId' | 'universe' | 'configId' | 'fromDay' | 'toDay'>,
+  entry: Pick<HoldoutEntry, 'holdoutId' | 'universe' | 'configId' | 'fromDay' | 'toDay' | 'registeredOnDay'> & {
+    /** When given, the attempt this registration must be (the universe's count of holdouts + 1); refused otherwise. */
+    readonly attempt?: number;
+    readonly alpha?: number;
+  },
 ): HoldoutRegistry => {
-  if (!DAY.test(entry.fromDay) || !DAY.test(entry.toDay) || entry.fromDay > entry.toDay) {
-    throw new RangeError(`holdout ${entry.holdoutId}: window must be two YYYY-MM-DD days in order`);
+  const id = entry.holdoutId;
+  if (!DAY.test(entry.fromDay) || !DAY.test(entry.toDay) || !DAY.test(entry.registeredOnDay) || entry.fromDay > entry.toDay) {
+    throw new RangeError(`holdout ${id}: window and registration day must be YYYY-MM-DD days, the window in order`);
   }
-  if (registry.entries.some((e) => e.holdoutId === entry.holdoutId)) throw new RangeError(`holdout ${entry.holdoutId} is already registered`);
+  if (registry.entries.some((e) => e.holdoutId === id)) throw new RangeError(`holdout ${id} is already registered`);
   const same = registry.entries.filter((e) => e.universe === entry.universe);
   const open = same.find((e) => !e.burned);
-  if (open) throw new RangeError(`universe ${entry.universe} already has an unscored holdout (${open.holdoutId}, config ${open.configId})`);
-  const live = new Set(registry.entries.filter((e) => !e.burned).map((e) => e.universe));
-  if (live.size >= registry.familySize) throw new RangeError(`the registry was created for ${registry.familySize} universes`);
-  const lastRun = same.reduce((d, e) => (e.toDay > d ? e.toDay : d), '');
-  if (lastRun && entry.fromDay <= lastRun) {
-    throw new RangeError(`holdout ${entry.holdoutId} must start after ${lastRun}, the end of the last window run for ${entry.universe}`);
+  if (open) throw new RangeError(`universe ${entry.universe} already has an unspent holdout (${open.holdoutId}, config ${open.configId})`);
+  const universes = new Set(registry.entries.map((e) => e.universe));
+  if (!universes.has(entry.universe) && universes.size >= registry.familySize) {
+    throw new RangeError(`the registry was created for ${registry.familySize} universes; ${[...universes].join(', ')} are registered`);
+  }
+  const attempt = same.length + 1;
+  if (entry.attempt !== undefined && entry.attempt !== attempt) {
+    throw new RangeError(`holdout ${id}: this is ${entry.universe}'s attempt ${attempt}, not attempt ${entry.attempt}`);
+  }
+  const alpha = attemptAlpha(attempt);
+  if (entry.alpha !== undefined && entry.alpha !== alpha) throw new RangeError(`holdout ${id}: attempt ${attempt} is tested at ${alpha}, not ${entry.alpha}`);
+  const days = daysBetween(entry.fromDay, entry.toDay) + 1;
+  if (days > registry.rule.windowDays) throw new RangeError(`holdout ${id}: ${days} entry days, the rule allows at most ${registry.rule.windowDays}`);
+  const lastRun = same.reduce((d, e) => (e.tailEnd > d ? e.tailEnd : d), '');
+  if (lastRun && entry.fromDay < lastRun) {
+    throw new RangeError(`holdout ${id} must start on or after ${lastRun}, the end of the last window run for ${entry.universe}`);
+  }
+  if (attempt === 1) {
+    const peers = registry.entries.filter((e) => e.attempt === 1);
+    const other = peers.find((e) => e.fromDay !== entry.fromDay || e.toDay !== entry.toDay);
+    if (peers.length > 0 && (peers[0]!.fromDay !== entry.fromDay || peers[0]!.toDay !== entry.toDay || other)) {
+      throw new RangeError(`holdout ${id}: attempt 1 of every universe shares one window, ${peers[0]!.fromDay}..${peers[0]!.toDay}`);
+    }
+  } else {
+    if (entry.fromDay !== nextDay(entry.registeredOnDay)) {
+      throw new RangeError(`holdout ${id}: attempt ${attempt} starts on the first whole UTC day after its registration (${nextDay(entry.registeredOnDay)})`);
+    }
+    if (days !== registry.rule.windowDays) throw new RangeError(`holdout ${id}: attempt ${attempt} runs exactly ${registry.rule.windowDays} days`);
   }
   return {
     ...registry,
-    entries: [...registry.entries, { ...entry, seal: 'registered', ledgerHash: null, counts: null, openedAtMs: null, burned: false, burnReason: null }],
+    entries: [...registry.entries, {
+      holdoutId: id, universe: entry.universe, attempt, alpha, registeredOnDay: entry.registeredOnDay, requirement: null,
+      configId: entry.configId, fromDay: entry.fromDay, toDay: entry.toDay, tailEnd: addDays(entry.toDay, 1 + registry.rule.tailDays),
+      seal: 'registered', ledgerHash: null, counts: null, openedAtMs: null, burned: false, burnReason: null,
+    }],
   };
 };
+
+/**
+ * Freeze the size requirement max(300, n_power, closed form) and the n_power seed, before the first count is read
+ * (sealing refuses a holdout without one). Once frozen it never changes.
+ */
+export const freezeRequirement = (registry: HoldoutRegistry, holdoutId: string, req: FrozenRequirement): RegistryStep => {
+  const e = find(registry, holdoutId);
+  if (!Number.isInteger(req.requiredTrades) || req.requiredTrades < 1 || !Number.isInteger(req.requiredDays) || req.requiredDays < 1
+    || !Number.isInteger(req.nPower) || req.nPower < 0 || !Number.isSafeInteger(req.nPowerSeed)) {
+    throw new RangeError('the required trades and days are positive integers, n_power an integer >= 0 and the seed a safe integer');
+  }
+  if (req.requiredTrades < req.nPower) throw new RangeError(`the requirement ${req.requiredTrades} sits below n_power ${req.nPower}`);
+  // A registry stored before the floor was recorded takes the ruled floor.
+  const minTrades = registry.rule.minTrades ?? REQUIREMENT_FLOOR.minTrades;
+  const minDays = registry.rule.minDays ?? REQUIREMENT_FLOOR.minDays;
+  if (req.requiredTrades < minTrades || req.requiredDays < minDays) {
+    throw new RangeError(`the requirement ${req.requiredTrades} trades on ${req.requiredDays} days sits below the floor of ${minTrades} on ${minDays}`);
+  }
+  if (e.requirement) return { registry, ok: false, reason: `holdout ${holdoutId} already froze ${e.requirement.requiredTrades} trades` };
+  if (e.seal !== 'registered' || e.burned) return { registry, ok: false, reason: `holdout ${holdoutId} is ${e.burned ? 'spent' : e.seal}: the requirement is frozen before any count` };
+  const requirement = { requiredTrades: req.requiredTrades, requiredDays: req.requiredDays, nPower: req.nPower, nPowerSeed: req.nPowerSeed };
+  return { registry: update(registry, holdoutId, { requirement }), ok: true, reason: 'frozen' };
+};
+
+/** Why an attempt's holdout may end after its tail without an opening. */
+export const SPEND_REASONS = ['g1-failed', 'short', 'never-run'] as const;
+export type SpendReason = (typeof SPEND_REASONS)[number];
+
+/**
+ * End a holdout after its tail without an opening, only for a reason the registry proves, so a mandatory opening is
+ * never skipped (BT-1d E1):
+ * - 'g1-failed': G1 has not passed for its registered configuration (`g1Passed` false);
+ * - 'short': it is not ready against its frozen requirement (trades and days), read from the registry;
+ * - 'never-run': its seal is still 'registered'.
+ * The holdout burns 'spent'; its attempt stays spent. Throws on any other reason, before the tail, or when unproven.
+ */
+export const spendHoldout = (registry: HoldoutRegistry, holdoutId: string, spend: { readonly why: SpendReason; readonly nowDay: string; readonly g1Passed: boolean }): RegistryStep => {
+  const { why } = spend;
+  if (!(SPEND_REASONS as readonly string[]).includes(why)) throw new RangeError(`holdout ${holdoutId}: "${String(why)}" is not a reason an attempt may end without an opening`);
+  const e = find(registry, holdoutId);
+  if (e.burned || e.seal === 'opened') throw new RangeError(`holdout ${holdoutId} is already ${e.burned ? `burned (${e.burnReason})` : 'opened'}`);
+  if (!DAY.test(spend.nowDay) || spend.nowDay < e.tailEnd) throw new RangeError(`holdout ${holdoutId}: its tail runs until ${e.tailEnd}`);
+  if (why === 'g1-failed' && spend.g1Passed) throw new RangeError(`holdout ${holdoutId}: its latest G1 passed, so it must be opened, not spent`);
+  if (why === 'short') {
+    if (!e.requirement) throw new RangeError(`holdout ${holdoutId} has no frozen requirement to be short of`);
+    if (holdoutReady(e, e.requirement.requiredTrades, e.requirement.requiredDays)) {
+      throw new RangeError(`holdout ${holdoutId} is ready (${e.counts?.entries} entries on ${e.counts?.entryDays} days), so it is not short`);
+    }
+  }
+  if (why === 'never-run' && e.seal !== 'registered') throw new RangeError(`holdout ${holdoutId} was run (${e.seal}), so it is not never-run`);
+  return burn(registry, holdoutId, 'spent', why);
+};
+
+/** Record a halted or abandoned window: the attempt stays spent (a failed attempt). */
+export const abandonHoldout = (registry: HoldoutRegistry, holdoutId: string, why: string): RegistryStep => burnHoldout(registry, holdoutId, 'abandoned', why);
 
 const checkCounts = (c: HoldoutCounts): HoldoutCounts => {
   const extra = Object.keys(c).filter((k) => !(HOLDOUT_COUNT_FIELDS as readonly string[]).includes(k));
@@ -126,6 +376,7 @@ export const sealHoldout = (
   const counts = checkCounts(run.counts);
   const e = find(registry, holdoutId);
   if (e.burned) return { registry, ok: false, reason: `holdout ${holdoutId} is burned (${e.burnReason})` };
+  if (!e.requirement) return { registry, ok: false, reason: `holdout ${holdoutId} has no frozen requirement: freeze it before any count is read` };
   if (run.configId !== e.configId) return burn(registry, holdoutId, 'reconfigured', `run with ${run.configId}, registered ${e.configId}`);
   if (e.seal === 'opened') return burn(registry, holdoutId, 'second-open', 'already opened');
   if (e.seal === 'sealed') {
@@ -140,22 +391,35 @@ export const holdoutReady = (entry: HoldoutEntry, requiredTrades: number, minDay
   entry.seal === 'sealed' && !entry.burned && entry.counts !== null && entry.counts.entries >= requiredTrades && entry.counts.entryDays >= minDays;
 
 /**
- * Open the seal for scoring (once). The caller passes the hash of the file it is about to score. Opening burns the
- * holdout whatever happens: early, mismatched or repeated opens with a reason, a valid open as 'scored'.
+ * Open the seal for scoring (once). The caller passes the hash of the file it is about to score, the UTC day of the
+ * injected clock and whether G1 passed for this configuration. Before the tail has matured, or after a G1 fail, the
+ * open is refused and nothing is seen. Otherwise opening burns the holdout whatever happens: mismatched or repeated
+ * opens with a reason, a short window as 'short' (a failed attempt), a valid open as 'scored'.
  */
 export const openHoldout = (
   registry: HoldoutRegistry,
   holdoutId: string,
-  open: { readonly configId: string; readonly ledgerHash: string; readonly requiredTrades: number; readonly minDays: number; readonly nowMs: number },
+  open: {
+    readonly configId: string; readonly ledgerHash: string; readonly requiredTrades: number; readonly minDays: number;
+    readonly nowMs: number; readonly nowDay: string; readonly g1Passed: boolean;
+  },
 ): RegistryStep => {
   const e = find(registry, holdoutId);
   if (e.burned) return { registry, ok: false, reason: `holdout ${holdoutId} is burned (${e.burnReason}): a second look is refused` };
   if (e.seal === 'registered') return { registry, ok: false, reason: `holdout ${holdoutId} has not been run and sealed` };
+  if (!open.g1Passed) return { registry, ok: false, reason: `holdout ${holdoutId} stays sealed: G1 did not pass for ${e.configId}` };
+  if (!(open.nowDay >= e.tailEnd)) return { registry, ok: false, reason: `holdout ${holdoutId} stays sealed until ${e.tailEnd}, when its observation tail has matured` };
+  if (e.requirement && (open.requiredTrades !== e.requirement.requiredTrades || open.minDays !== e.requirement.requiredDays)) {
+    return {
+      registry, ok: false,
+      reason: `holdout ${holdoutId} froze ${e.requirement.requiredTrades} trades on ${e.requirement.requiredDays} days, the open asked for ${open.requiredTrades} on ${open.minDays}`,
+    };
+  }
   if (e.seal === 'opened') return burn(registry, holdoutId, 'second-open', 'the seal was already opened');
   if (open.configId !== e.configId) return burn(registry, holdoutId, 'reconfigured', `scored as ${open.configId}, registered ${e.configId}`);
   if (open.ledgerHash !== e.ledgerHash) return burn(registry, holdoutId, 'hash-mismatch', 'the file to score is not the sealed ledger');
   if (!holdoutReady(e, open.requiredTrades, open.minDays)) {
-    return burn(registry, holdoutId, 'early-open', `${e.counts?.entries ?? 0} entries on ${e.counts?.entryDays ?? 0} days, need ${open.requiredTrades} on ${open.minDays}`);
+    return burn(registry, holdoutId, 'short', `${e.counts?.entries ?? 0} entries on ${e.counts?.entryDays ?? 0} days at the cutoff, need ${open.requiredTrades} on ${open.minDays}: not proven, the attempt is spent`);
   }
   return {
     registry: update(registry, holdoutId, { seal: 'opened', openedAtMs: open.nowMs, burned: true, burnReason: 'scored' }),
@@ -171,4 +435,14 @@ export const openHoldout = (
 export const burnHoldout = (registry: HoldoutRegistry, holdoutId: string, reason: Exclude<BurnReason, 'scored'>, why: string): RegistryStep => {
   const e = find(registry, holdoutId);
   return e.burned ? { registry, ok: false, reason: `holdout ${holdoutId} was already burned (${e.burnReason})` } : burn(registry, holdoutId, reason, why);
+};
+
+/**
+ * Count-driven extension is not allowed (supervisor ruling: a count-driven stop is not outcome-independent, because
+ * entry frequency moves with the market). Kept as an API so a caller gets a clear refusal; it never changes the
+ * registry. The window ends at its registered cutoff E.
+ */
+export const extendHoldout = (registry: HoldoutRegistry, holdoutId: string, newToDay: string): RegistryStep => {
+  const e = find(registry, holdoutId);
+  return { registry, ok: false, reason: `holdout ${holdoutId} ends at its registered cutoff ${nextDay(e.toDay)}; extending it to ${newToDay} is refused` };
 };

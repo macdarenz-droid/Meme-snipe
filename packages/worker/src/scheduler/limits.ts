@@ -36,10 +36,12 @@ export const ALCHEMY_FREE: SchedulerSpec = {
 /** Alchemy WebSocket billing: 0.0002 CU per byte (data.md §0, §4). */
 export const ALCHEMY_WS_CU_PER_BYTE = 0.0002;
 /** Alchemy CU per call (compute-unit-costs page, checked 2026-10-03). */
-export const ALCHEMY_CU: Readonly<Record<'getTransaction' | 'getSignaturesForAddress' | 'getAccountInfo', number>> = {
+export const ALCHEMY_CU: Readonly<Record<'getTransaction' | 'getSignaturesForAddress' | 'getAccountInfo' | 'getMultipleAccounts', number>> = {
   getTransaction: 40,
   getSignaturesForAddress: 40,
   getAccountInfo: 10,
+  // Checked on the same page 2026-10-04 (WATCH-1's snapshot read).
+  getMultipleAccounts: 20,
 };
 
 /**
@@ -69,4 +71,49 @@ export const RUGCHECK_FREE: SchedulerSpec = {
   floors: [0, 0, 0, 0],
   maxWaitMs: [NO_LIMIT, 20_000, 15_000, 10_000],
   maxQueue: 16,
+};
+
+/**
+ * GoPlus Solana token security, keyless: its rate limit is unverified (safety.md §7), so one request per 5 s, the
+ * same order as RugCheck's verified spacing. Raise only on a measured limit.
+ */
+export const GOPLUS_FREE: SchedulerSpec = {
+  provider: 'goplus',
+  window: { limit: 1, windowMs: 5_000 },
+  floors: [0, 0, 0, 0],
+  maxWaitMs: [NO_LIMIT, 20_000, 15_000, 10_000],
+  maxQueue: 16,
+};
+
+/** Coinbase Exchange public market data: hourly SOL/USD candles, read a few times an hour; 1 request per 2 s is ample. */
+export const COINBASE_PUBLIC: SchedulerSpec = {
+  provider: 'coinbase',
+  window: { limit: 1, windowMs: 2_000 },
+  floors: [0, 0, 0, 0],
+  maxWaitMs: [NO_LIMIT, 30_000, 30_000, 30_000],
+  maxQueue: 8,
+};
+
+/**
+ * The GitHub REST API without a token: 60 requests an hour per address (docs.github.com, "Rate limits for the REST
+ * API"). Chain volume lists releases once a pass (1 or 2 calls, 100 releases a page); 50 an hour leaves headroom.
+ */
+export const GITHUB_RELEASES: SchedulerSpec = {
+  provider: 'github',
+  window: { limit: 50, windowMs: 3_600_000 },
+  floors: [0, 0, 0, 0],
+  maxWaitMs: [NO_LIMIT, 30_000, 30_000, 30_000],
+  maxQueue: 8,
+};
+
+/**
+ * Release asset downloads from github.com (`browser_download_url`), outside the REST quota: two small files a day once
+ * the window is in, about 150 on a first start with an empty store. One request per 2 s keeps that near 5 minutes.
+ */
+export const GITHUB_DOWNLOADS: SchedulerSpec = {
+  provider: 'github-downloads',
+  window: { limit: 1, windowMs: 2_000 },
+  floors: [0, 0, 0, 0],
+  maxWaitMs: [NO_LIMIT, 30_000, 30_000, 30_000],
+  maxQueue: 8,
 };

@@ -1,0 +1,38 @@
+name: archive-check
+
+# ARCHIVE-CHECK (owner decision, 2026-10-04; docs/DECISIONS.md): every 3 hours, one
+# 64-byte request to the Old Faithful archive with the scanner's own User-Agent. If it
+# is served and no data-scan run is active or queued, the next scan batch is
+# dispatched (research/historical/ci/archive-check.sh). Never another agent, host,
+# address, proxy or client, and no retries inside a check.
+#
+# The checkout sets persist-credentials: false; the token reaches only the check step,
+# which reads data-scan runs and day releases and dispatches data-scan.yml.
+
+on:
+  schedule:
+    - cron: "41 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: archive-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: One archive request; dispatch the next scan batch if served
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+        run: research/historical/ci/archive-check.sh

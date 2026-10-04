@@ -1,0 +1,28 @@
+name: GPA probe
+
+# Manual only (FACTS-1, approved by the supervisor). Checks that getProgramAccounts with a mint memcmp is served on
+# Helius and Alchemy for both token programs. Prints availability, latency, context slot and the published price;
+# never a key or a keyed URL.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Probe
+        env:
+          ZEROED_GPA_PROBE: '1'
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+          ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
+        run: node --no-warnings packages/worker/scripts/gpa-probe.ts

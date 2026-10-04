@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# tailscale stand-in inside the e2e test server (ops/test/e2e.sh): no network. Records every call in
+# /var/lib/tailscale-stub/calls. "up" prints a login link and finishes once the test creates
+# /var/lib/tailscale-stub/approve (the owner logging in); "serve" keeps its config like tailscaled does.
+# The tailnet has MagicDNS and HTTPS Certificates on unless the test creates no-magicdns or no-https. Without the node's
+# "https" capability, "serve" does what tailscale 1.x does (cli enableFeatureInteractive): it prints the link to turn
+# HTTPS on and waits until it is on. serve-hang makes "serve" wait even with HTTPS on.
+set -euo pipefail
+S=/var/lib/tailscale-stub
+mkdir -p "$S"
+echo "$*" >> "$S/calls"
+case "$1 ${2:-}" in
+  "status --json")
+    if [ -e "$S/logged-in" ]; then
+      magic=true; [ -e "$S/no-magicdns" ] && magic=false
+      if [ -e "$S/no-https" ] || [ -e "$S/no-magicdns" ]; then caps='{}'; certs='[]'; else caps='{"https":null}'; certs='["zeroed.tail-e2e.ts.net"]'; fi
+      printf '{"BackendState":"Running","Self":{"DNSName":"zeroed.tail-e2e.ts.net.","CapMap":%s},"CertDomains":%s,"CurrentTailnet":{"Name":"e2e","MagicDNSSuffix":"tail-e2e.ts.net","MagicDNSEnabled":%s}}\n' "$caps" "$certs" "$magic"
+    else echo '{"BackendState":"NeedsLogin"}'; fi ;;
+  "up "*)
+    printf '\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/e2e0a1b2c3d4\n\n'
+    for _ in $(seq 1 120); do [ -e "$S/approve" ] && { touch "$S/logged-in"; echo Success.; exit 0; }; sleep 1; done
+    echo 'timeout waiting for login'; exit 1 ;;
+  "serve --bg")
+    if [ -e "$S/no-https" ] || [ -e "$S/no-magicdns" ] || [ -e "$S/serve-hang" ]; then
+      printf '\nServe is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=e2e\n\n'
+      sleep 3600; exit 0
+    fi
+    # /var/lib/tailscale-stub/bad-serve: tailscaled ends up with Funnel on too (the check must take it down).
+    if [ -e "$S/bad-serve" ]; then
+      printf '{"TCP":{"443":{"HTTPS":true}},"Web":{"zeroed.tail-e2e.ts.net:443":{"Handlers":{"/":{"Proxy":"%s"}}}},"AllowFunnel":{"zeroed.tail-e2e.ts.net:443":true}}\n' "${@: -1}" > "$S/serve.json"
+      exit 0
+    fi
+    # Like tailscaled: the new "/" handler on 443 is added to whatever serve config exists (other paths, ports and
+    # hosts stay), and Funnel for that port is cleared.
+    [ -s "$S/serve.json" ] || echo '{}' > "$S/serve.json"
+    jq --arg t "${@: -1}" '.TCP["443"] = {"HTTPS": true} | .Web["zeroed.tail-e2e.ts.net:443"].Handlers["/"] = {"Proxy": $t}
+      | if .AllowFunnel then .AllowFunnel |= with_entries(select(.key != "zeroed.tail-e2e.ts.net:443")) else . end' \
+      "$S/serve.json" > "$S/serve.json.new" && mv "$S/serve.json.new" "$S/serve.json" ;;
+  "serve status")
+    cat "$S/serve.json" 2>/dev/null || echo '{}' ;;
+  "serve reset")
+    rm -f "$S/serve.json" ;;
+  "funnel --https="*)
+    # funnel-fail: turning Funnel off fails (zeroed-check must then take the serve config down).
+    [ ! -e "$S/funnel-fail" ] || { echo 'error: funnel off failed'; exit 1; }
+    # The funnel command waits for the tailnet's Funnel capability first, even for "off" (cli serve_v2.go,
+    # verifyFunnelEnabled). Funnel is never enabled for this tailnet unless the test switched it on in serve.json.
+    if ! jq -e '[(.AllowFunnel // {})[]] | any' "$S/serve.json" >/dev/null 2>&1; then
+      printf '\nFunnel is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/funnel?node=e2e\n\n'
+      sleep 3600; exit 0
+    fi
+    # "off" drops that port from AllowFunnel, as tailscaled does (the test turns Funnel on by editing serve.json).
+    port="${2#--https=}"
+    if [ "${3:-}" = off ] && [ -e "$S/serve.json" ]; then
+      jq --arg p ":$port" '.AllowFunnel |= ((. // {}) | with_entries(select(.key | endswith($p) | not)))' "$S/serve.json" > "$S/serve.json.new" && mv "$S/serve.json.new" "$S/serve.json"
+    fi ;;
+  *) echo "tailscale stub: unhandled $*" >&2; exit 1 ;;
+esac

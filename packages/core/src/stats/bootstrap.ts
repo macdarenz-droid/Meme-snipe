@@ -60,7 +60,7 @@ const blocks = (a: readonly DayReturn[], b: readonly DayReturn[] = []): DayBlock
 };
 
 /** Bootstrap replicates when the caller gives none. */
-const DEFAULT_REPLICATES = 2000;
+export const DEFAULT_REPLICATES = 2000;
 
 export interface BootstrapOptions {
   readonly rng: Rng;
@@ -68,39 +68,35 @@ export interface BootstrapOptions {
   readonly replicates?: number;
 }
 
-/** Pooled-mean estimate and its CR1 standard error for one side over the given day indices (with repeats). */
-const ratioWithSe = (days: readonly DayBlock[], idx: readonly number[], side: 'A' | 'B'): { est: number; n: number; u: number[] } => {
-  let s = 0;
-  let n = 0;
-  for (const i of idx) {
-    const d = days[i]!;
-    s += side === 'A' ? d.sumA : d.sumB;
-    n += side === 'A' ? d.countA : d.countB;
-  }
-  const est = n > 0 ? s / n : Number.NaN;
-  // Influence of each drawn day on the pooled mean: (S_d − θ·n_d) / N.
-  const u = idx.map((i) => {
-    const d = days[i]!;
-    return side === 'A' ? (d.sumA - est * d.countA) / n : (d.sumB - est * d.countB) / n;
-  });
-  return { est, n, u };
-};
-
-const cr1 = (u: readonly number[]): number => {
-  const D = u.length;
-  let ss = 0;
-  for (const x of u) ss += x * x;
-  return Math.sqrt((D / (D - 1)) * ss);
-};
-
+/**
+ * θ and its cluster-robust (CR1) SE over a set of drawn days (with repeats): the pooled mean (or the difference of the
+ * two pooled means), and SE² = D/(D − 1)·Σ u_d², u_d the drawn day's influence (S_d − θ·n_d)/N (for a difference,
+ * u_A − u_B). Allocation-free: it runs once per bootstrap replicate.
+ */
 type Kind = 'mean' | 'diff';
 
-/** θ and its SE over a set of drawn days. */
 const statistic = (days: readonly DayBlock[], idx: readonly number[], kind: Kind): { theta: number; se: number } => {
-  const a = ratioWithSe(days, idx, 'A');
-  if (kind === 'mean') return { theta: a.est, se: cr1(a.u) };
-  const b = ratioWithSe(days, idx, 'B');
-  return { theta: a.est - b.est, se: cr1(a.u.map((x, i) => x - b.u[i]!)) };
+  let sA = 0;
+  let nA = 0;
+  let sB = 0;
+  let nB = 0;
+  for (const i of idx) {
+    const d = days[i]!;
+    sA += d.sumA;
+    nA += d.countA;
+    sB += d.sumB;
+    nB += d.countB;
+  }
+  const eA = nA > 0 ? sA / nA : Number.NaN;
+  const eB = nB > 0 ? sB / nB : Number.NaN;
+  let ss = 0;
+  for (const i of idx) {
+    const d = days[i]!;
+    const x = kind === 'mean' ? (d.sumA - eA * d.countA) / nA : (d.sumA - eA * d.countA) / nA - (d.sumB - eB * d.countB) / nB;
+    ss += x * x;
+  }
+  const D = idx.length;
+  return { theta: kind === 'mean' ? eA : eA - eB, se: Math.sqrt((D / (D - 1)) * ss) };
 };
 
 /** Studentized replicates t* = (θ* − θ̂) / SE*, sorted. */
