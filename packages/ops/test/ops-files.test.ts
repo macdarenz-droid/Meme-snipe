@@ -470,8 +470,11 @@ describe('key rotation in the Deploy workflow (KEY-ROTATE-SAFE, ops/deploy/publi
     writeFileSync(join(dir, 'wrangler'), `#!/usr/bin/env bash\nset -euo pipefail\nif [ "\${1:-}" = secret ]; then cat >/dev/null; fi\nprintf 'wrangler %s\\n' "$*" >> "${log}"\nif [ "\${1:-}" = deploy ]; then echo "Deployed https://zeroed-watchdog.owners-pick.workers.dev"; fi\n`);
     // The stand-in gh keeps the published bundle, so the test can open it with the code.
     writeFileSync(join(dir, 'gh'), `#!/usr/bin/env bash\nprintf 'gh %s\\n' "$1 \${2:-}" >> "${log}"\nif [ "$1 \${2:-}" = "release create" ]; then cp "$4" "${dir}/published.age"; fi\nif [ "$1" = api ]; then echo ${o.pickup ? 1 : 0}; fi\nexit 0\n`);
-    chmodSync(join(dir, 'wrangler'), 0o755);
-    chmodSync(join(dir, 'gh'), 0o755);
+    // Stand-ins for age (the check job installs none): the recipient is fixed and "encrypting" copies the plaintext,
+    // so the test reads the bundle's fields directly. Real age is covered by the e2e and the derive-key tests.
+    writeFileSync(join(dir, 'age-keygen'), `#!/usr/bin/env bash\ncat >/dev/null\necho age1${'q'.repeat(58)}\n`);
+    writeFileSync(join(dir, 'age'), `#!/usr/bin/env bash\nout=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; *) shift ;; esac; done\ncat > "$out"\n`);
+    for (const f of ['wrangler', 'gh', 'age-keygen', 'age']) chmodSync(join(dir, f), 0o755);
     const child = spawn('bash', [join(root, 'ops/deploy/publish.sh')], {
       env: {
         PATH: `${dir}:${process.env['PATH'] ?? ''}`, GH_REPO: 'o/r', GITHUB_SHA: 'a'.repeat(40), ISSUED: '7',
@@ -487,13 +490,8 @@ describe('key rotation in the Deploy workflow (KEY-ROTATE-SAFE, ops/deploy/publi
     const status = await new Promise<number | null>((r) => child.on('close', r));
     server.close();
     const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
-    // The bundle's field names, opened with the identity the code derives (as the server does).
-    let bundle: string[] = [];
-    if (existsSync(join(dir, 'published.age'))) {
-      const id = execFileSync('node', [join(root, 'ops/host/files/usr/local/lib/zeroed/derive-key.mjs')], { input: 'correct horse battery staple zebra apple' });
-      writeFileSync(join(dir, 'id'), id);
-      bundle = execFileSync('age', ['-d', '-i', join(dir, 'id'), join(dir, 'published.age')], { encoding: 'utf8' }).trim().split('\n').map((l) => l.split('=')[0]!);
-    }
+    // The bundle's field names (the stand-in age left it in plaintext).
+    const bundle = existsSync(join(dir, 'published.age')) ? readFileSync(join(dir, 'published.age'), 'utf8').trim().split('\n').map((l) => l.split('=')[0]!) : [];
     rmSync(dir, { recursive: true, force: true });
     return { status, out, calls, bundle, puts: calls.filter((c) => c.startsWith('wrangler secret put')).map((c) => c.split(' ')[3]) };
   }
