@@ -1,23 +1,62 @@
 // Worker state files in the state directory, each written whole and atomically (temp file, fsync, rename), in lossless
 // JSON. A file that is missing reads as its default; a file that exists but cannot be read stops the start (stored
 // state is never guessed).
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Latches } from '../../../core/src/risk/index.ts';
 import { NO_LATCHES } from '../../../core/src/risk/index.ts';
 import type { EntrySeed, SavedExit } from '../engine/strategy.ts';
 import { parseTyped, typedText } from './json.ts';
 
-export const atomicWrite = (path: string, text: string): void => {
+/** The low-level write: bytes written, which can be fewer than asked (a nearly full disk). Tests pass a short one. */
+export type WriteFn = (fd: number, buf: Uint8Array, offset: number, length: number) => number;
+
+/**
+ * Writes all of `text`, looping on short writes, and returns the bytes written; a write that makes no progress throws
+ * (#159 review N2: `writeSync`'s count was ignored, so a short write on a nearly full disk renamed a cut file over the
+ * good one; a cut `deployers.jsonl` could let H14 pass a deployer who rugged).
+ */
+export const writeAll = (fd: number, text: string, write: WriteFn = writeSync): number => {
+  const buf = Buffer.from(text, 'utf8');
+  for (let off = 0; off < buf.length;) {
+    const n = write(fd, buf, off, buf.length - off);
+    if (!(n > 0)) throw new Error(`short write: ${off} of ${buf.length} bytes written`);
+    off += n;
+  }
+  return buf.length;
+};
+
+/**
+ * Flushes the temp file, checks its size on disk is exactly `bytes`, and renames it over `path`; otherwise removes it
+ * and throws, leaving `path` as it was. Closes `fd` either way.
+ */
+export const commitTemp = (fd: number, tmp: string, path: string, bytes: number): void => {
+  try {
+    fsyncSync(fd);
+    const size = fstatSync(fd).size;
+    if (size !== bytes) throw new Error(`short write: ${tmp} holds ${size} bytes, ${bytes} were written`);
+  } catch (e) {
+    closeSync(fd);
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+  closeSync(fd);
+  renameSync(tmp, path);
+};
+
+/** Temp file, every byte written, checked and flushed, then renamed over `path`. A failed write leaves `path` as it was. */
+export const atomicWrite = (path: string, text: string, write: WriteFn = writeSync): void => {
   const tmp = `${path}.tmp`;
   const fd = openSync(tmp, 'w', 0o600);
+  let bytes: number;
   try {
-    writeSync(fd, text);
-    fsyncSync(fd);
-  } finally {
+    bytes = writeAll(fd, text, write);
+  } catch (e) {
     closeSync(fd);
+    rmSync(tmp, { force: true });
+    throw e;
   }
-  renameSync(tmp, path);
+  commitTemp(fd, tmp, path, bytes);
 };
 
 export class StateFile<T> {

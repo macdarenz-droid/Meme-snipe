@@ -12,7 +12,8 @@
 //   is "not covered", never "clean";
 // - the fill plan tops up only from the saved moment (or an older open gap) to now, within the daily credit budget.
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { atomicWrite, type WriteFn } from '../run/state.ts';
 import type { RugConfig } from '../../../core/src/config/rugs.ts';
 import { DAY_MS } from '../../../core/src/config/time.ts';
 import { compareEvents, compareMoments, type MarketEvent, type Moment } from '../../../core/src/engine/index.ts';
@@ -66,29 +67,23 @@ const reviver = (_k: string, v: unknown): unknown => {
   return v;
 };
 
-/** Writes atomically: a temporary file, flushed, then renamed over the old one. A crash leaves the old file whole. */
-const writeAtomic = (path: string, text: string): void => {
-  const tmp = `${path}.tmp`;
-  const fd = openSync(tmp, 'w');
-  try {
-    writeSync(fd, text);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  renameSync(tmp, path);
-};
+/**
+ * Writes atomically: a temporary file, every write checked, its size on disk checked, flushed, then renamed over the old
+ * one (`atomicWrite`, #159 review N2). A crash or a short write leaves the old file whole.
+ */
+const writeAtomic = (path: string, text: string, write?: WriteFn): void => atomicWrite(path, text, write);
 
 /** After `asOf` in the event order, or received later than it: either way not something the save could have known. */
 const after = (m: Moment, asOf: Moment): boolean => compareMoments(m, asOf) > 0 || m.receivedAt > asOf.receivedAt;
 
-export const saveState = (path: string, s: SavedState): void => {
+/** `write` is for tests (a short write); the default checks every write. */
+export const saveState = (path: string, s: SavedState, write?: WriteFn): void => {
   for (const e of s.coverage) {
     if (after(e.moment, s.asOf)) throw new RangeError(`coverage fact ${e.id} is dated after the snapshot moment`);
   }
   if (compareMoments(s.index.asOf, s.asOf) !== 0) throw new RangeError('the index snapshot was taken at another moment');
   const payload = JSON.stringify(s, replacer);
-  writeAtomic(path, JSON.stringify({ version: STATE_VERSION, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+  writeAtomic(path, JSON.stringify({ version: STATE_VERSION, sha256: createHash('sha256').update(payload).digest('hex'), payload }), write);
 };
 
 type Obj = Readonly<Record<string, unknown>>;
