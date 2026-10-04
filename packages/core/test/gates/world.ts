@@ -226,7 +226,7 @@ export const contextOf = (facts: Facts, now: Moment = NOW): GateContext => {
     store.record(key, value, moment, key);
   }
   clock.advanceTo(now);
-  return { now: clock.now(), lookup: (key, asOf) => store.lookup(key, asOf), history: (key, from, to) => store.history(key, from, to) };
+  return { now: clock.now(), observedTip: clock.now().slot, lookup: (key, asOf) => store.lookup(key, asOf), history: (key, from, to) => store.history(key, from, to) };
 };
 
 export const session = (over: Partial<PolicySession['policy']['gates']> = {}): PolicySession =>

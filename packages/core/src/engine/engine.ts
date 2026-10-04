@@ -4,7 +4,8 @@
 
 import { createHash, type Hash } from 'node:crypto';
 import { applyBookEvent, emptyBook, isIllegal, type Book, type BookConfig, type BookEvent, type Effect } from '../lifecycle/index.ts';
-import { AsOfStore, type AsOfEntry, type Lookup, type RetentionRule } from './asof.ts';
+import { HOUR_MS } from '../config/time.ts';
+import { AsOfStore, type AsOfEntry, type Lookup, type Retention } from './asof.ts';
 import type { Clock } from './clock.ts';
 import type { Feed, FeedEvent, MarketEvent } from './feed.ts';
 import { deepFreeze } from './freeze.ts';
@@ -67,19 +68,12 @@ export interface EngineDeps {
   readonly reconcileLimits?: ReconcileLimits;
   /** Keep every record in memory (default true). The hash is kept either way. */
   readonly keepLog?: boolean;
-  /** Retention of the as-of store (WORKER-GROW); none keeps everything. Live, the parity replay and the backtest pass the same. */
+  /**
+   * How long each key's past stays in the as-of store (default: everything). See `Retention`. With one, the engine also
+   * sweeps the whole store at each hour of the event clock (the received time of the events, never the wall clock, so a
+   * replay of the same events sweeps at the same points), for keys not written again and for stale keys (WORKER-GROW).
+   */
   readonly retention?: Retention;
-}
-
-/**
- * What the as-of store keeps over a long run. At each `everyMs` boundary of the event clock (the received time of the
- * events, never the wall clock, so a replay of the same events prunes at the same points), each key is pruned to its
- * rule's horizon before that boundary (`AsOfStore.prune`). A rule's horizon must cover every look-back a reader of
- * that key takes (see `engineRetention`).
- */
-export interface Retention {
-  readonly everyMs: number;
-  readonly rule: (key: string) => RetentionRule;
 }
 
 export class Engine {
@@ -104,15 +98,13 @@ export class Engine {
     this.#feed = deps.feed;
     this.#strategy = deps.strategy;
     this.#runner = deps.runner;
-    this.#store = new AsOfStore(deps.clock);
+    this.#store = new AsOfStore(deps.clock, deps.retention ?? null);
     this.#rng = createRng(deps.seed);
     const limits = deps.reconcileLimits ?? DEFAULT_RECONCILE_LIMITS;
     this.#guard = new ReconcileGuard(limits);
     this.#book = deepFreeze(emptyBook(deps.book));
     this.#records = deps.keepLog === false ? null : [];
-    const r = deps.retention ?? null;
-    if (r !== null && !(Number.isSafeInteger(r.everyMs) && r.everyMs > 0)) throw new RangeError('retention needs a positive everyMs');
-    this.#retention = r;
+    this.#retention = deps.retention ?? null;
     this.#log({ type: 'start', seed: deps.seed, limits, book: deps.book });
   }
 
@@ -193,15 +185,10 @@ export class Engine {
 
   /** At the first market event at or past a boundary: prune to the horizon before that boundary (deterministic in the events). */
   #prune(atMs: number): void {
-    const r = this.#retention;
-    if (r === null || atMs < this.#pruneAt) return;
-    const boundary = Math.floor(atMs / r.everyMs) * r.everyMs;
-    this.#pruneAt = boundary + r.everyMs;
-    this.#store.prune(boundary, (key) => {
-      const rule = r.rule(key);
-      if (rule !== 'all' && !(Number.isSafeInteger(rule.horizonMs) && rule.horizonMs >= r.everyMs)) throw new RangeError(`retention of ${key}: the horizon must be a whole number of ms, at least everyMs`);
-      return rule;
-    });
+    if (this.#retention === null || atMs < this.#pruneAt) return;
+    const boundary = Math.floor(atMs / HOUR_MS) * HOUR_MS;
+    this.#pruneAt = boundary + HOUR_MS;
+    this.#store.prune(boundary);
   }
 
   /** The as-of store's size (keys and entries), for the retention measure and the worker's health. */

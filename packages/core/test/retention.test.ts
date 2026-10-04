@@ -13,10 +13,10 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const at = (ms: number, slot = BigInt(Math.floor(ms / 400))): Moment => ({ slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: ms });
 
-describe('AsOfStore.prune', () => {
-  const store = () => {
+describe('AsOfStore.prune (one retention mechanism with BT-2: the on-record trim and the sweep share the rules)', () => {
+  const store = (rule: Retention) => {
     const clock = new SimClock(at(0));
-    const s = new AsOfStore(clock);
+    const s = new AsOfStore(clock, rule);
     const put = (key: string, ms: number) => {
       clock.advanceTo(at(ms));
       s.record(key, { ms }, at(ms), `${key}@${ms}`);
@@ -24,35 +24,54 @@ describe('AsOfStore.prune', () => {
     return { s, put, clock };
   };
 
-  it('keeps every entry at or after the cut and the newest before it; a lookup at now and a history from the cut answer as before', () => {
-    const { s, put, clock } = store();
-    for (let ms = 0; ms <= 10 * HOUR; ms += 10 * 60_000) put('chain:slot', ms);
+  it('keeps the latest value at or before the cutoff and every later one; a lookup at now and a history from the cutoff answer as before', () => {
+    const { s, put } = store(() => 4 * HOUR);
+    const plain = new AsOfStore(new SimClock(at(0)));
+    const clock2 = new SimClock(at(0));
+    const ref = new AsOfStore(clock2);
+    for (let ms = 0; ms <= 10 * HOUR; ms += 10 * 60_000) {
+      put('chain:slot', ms);
+      clock2.advanceTo(at(ms));
+      ref.record('chain:slot', { ms }, at(ms), `chain:slot@${ms}`);
+    }
+    expect(plain.size).toEqual({ keys: 0, entries: 0 });
+    s.prune(10 * HOUR);
     const cut = 6 * HOUR;
-    const before = { last: s.lookup('chain:slot'), from: s.history('chain:slot', at(cut)), mid: s.lookup('chain:slot', at(7 * HOUR)) };
-    const r = s.prune(10 * HOUR, () => ({ horizonMs: 4 * HOUR, dropStale: false }));
-    expect(r).toEqual({ entries: 35, keys: 0 });
-    expect(s.lookup('chain:slot')).toEqual(before.last);
-    expect(s.lookup('chain:slot', at(7 * HOUR))).toEqual(before.mid);
-    expect(s.history('chain:slot', at(cut))).toEqual(before.from);
-    // The newest entry before the cut stays, so a lookup just before the cut still answers.
-    expect(s.history('chain:slot', at(0))).toHaveLength(26);
-    expect((s.history('chain:slot', at(0)) as unknown as { source: string }[])[0]!.source).toBe(`chain:slot@${cut - 10 * 60_000}`);
-    expect(clock.now().receivedAt).toBe(10 * HOUR);
+    expect(s.lookup('chain:slot')).toEqual(ref.lookup('chain:slot'));
+    expect(s.lookup('chain:slot', at(7 * HOUR))).toEqual(ref.lookup('chain:slot', at(7 * HOUR)));
+    expect(s.history('chain:slot', at(cut))).toEqual(ref.history('chain:slot', at(cut)));
+    // The latest value at or before the cutoff stays, so a lookup at the cutoff still answers.
+    expect(s.lookup('chain:slot', at(cut))).toEqual(ref.lookup('chain:slot', at(cut)));
+    expect((s.history('chain:slot', at(0)) as unknown as { source: string }[])[0]!.source).toBe(`chain:slot@${cut}`);
+    expect(s.size.entries).toBe(25);
   });
 
-  it("'all' keeps every entry; a stale key goes whole only with dropStale, else its newest entry stays", () => {
-    const { s, put } = store();
+  it('null keeps every value; a dropStale key goes whole once its newest value is at or before the cutoff, a plain horizon keeps its newest', () => {
+    const { s, put } = store((k) => (k.startsWith('coverage:') ? null : k.startsWith('gates/create:') ? { horizonMs: DAY, dropStale: true } : DAY));
     put('coverage:creates:start', 0);
     put('gates/create:M1', 1);
     put('gates/halted', 2);
     put('coverage:creates:start', 3);
     put('later', 9 * DAY);
-    const r = s.prune(9 * DAY, (k) => (k.startsWith('coverage:') ? 'all' : { horizonMs: DAY, dropStale: k.startsWith('gates/create:') }));
+    const r = s.prune(9 * DAY);
     expect(r).toEqual({ entries: 1, keys: 1 });
     expect(s.history('coverage:creates:start', at(0))).toHaveLength(2);
     expect(s.lookup('gates/create:M1')).toEqual({ ok: false, reason: 'missing' });
     expect(s.lookup('gates/halted')).toMatchObject({ ok: true, source: 'gates/halted@2' });
     expect(s.size).toEqual({ keys: 3, entries: 4 });
+  });
+
+  it('BT-2\'s plain rules (a number or null) work unchanged; without a retention prune does nothing', () => {
+    const { s, put } = store((k) => (k === 'x' ? null : 0));
+    for (let ms = 0; ms < 100; ms++) { put('x', ms); put('y', ms); }
+    s.prune(100);
+    expect(s.history('x', at(0))).toHaveLength(100);
+    expect(s.size.entries).toBe(101);
+    const clock = new SimClock(at(0));
+    const none = new AsOfStore(clock);
+    clock.advanceTo(at(5));
+    none.record('k', 1, at(5), 'k@5');
+    expect(none.prune(DAY * 100)).toEqual({ entries: 0, keys: 0 });
   });
 });
 
@@ -86,7 +105,7 @@ describe('the engine prunes at fixed points of the event clock and decides the s
     runToEnd(replay, engine);
     return engine;
   };
-  const RULES: Retention = { everyMs: HOUR, rule: (k) => (k.startsWith('coverage:') ? 'all' : k.startsWith('gates/create:') ? { horizonMs: 2 * HOUR, dropStale: true } : { horizonMs: 2 * HOUR, dropStale: false }) };
+  const RULES: Retention = (k) => (k.startsWith('coverage:') ? null : k.startsWith('gates/create:') ? { horizonMs: 2 * HOUR, dropStale: true } : 2 * HOUR);
 
   it('the same decision log, byte for byte, with and without retention, and the pruned store stays bounded', () => {
     const events = stream(3, 'g4a');
@@ -107,39 +126,30 @@ describe('the engine prunes at fixed points of the event clock and decides the s
     expect(Math.abs(six.entries - two.entries)).toBeLessThan(80);
   });
 
-  it('a retention without a positive everyMs, or a rule horizon below it, is refused', () => {
-    const replay = createReplay([]);
-    const base = { clock: replay.clock, feed: replay.feed, strategy: reader(), runner: { run: () => undefined }, seed: 's', book: { maxOpenPositions: 1 } };
-    expect(() => new Engine({ ...base, retention: { everyMs: 0, rule: () => 'all' } })).toThrow(/everyMs/);
-    const bad = createReplay(stream(1, 'x').slice(0, 300));
-    const e = new Engine({ ...base, clock: bad.clock, feed: bad.feed, retention: { everyMs: HOUR, rule: () => ({ horizonMs: 60_000, dropStale: false }) } });
-    expect(() => runToEnd(bad, e)).toThrow(/at least everyMs/);
-  });
 });
 
 describe('the rule set (engineRetention, retentionFor)', () => {
   const r = retentionFor(TRIAL_POLICY, 240 * 60_000);
-  it('coverage keeps everything; trade keys the look-back plus a day; per-object keys at least a day; the rest an hour', () => {
-    expect(r.everyMs).toBe(HOUR);
-    expect(r.rule('coverage:creates:start')).toBe('all');
-    expect(r.rule('coverage:rugs:gap')).toBe('all');
-    for (const k of [...poolTradeKeys('P'), ...curveTradeKeys('M')]) expect(r.rule(k), k).toEqual({ horizonMs: (TRIAL_POLICY.gates.deployerRugLookbackDays + 1) * DAY, dropStale: true });
+  it('coverage keeps everything; trade keys the look-back plus a day; per-object keys at least a day; the rest (raw creates too) its newest plus an hour', () => {
+    expect(r('coverage:creates:start')).toBeNull();
+    expect(r('coverage:rugs:gap')).toBeNull();
+    for (const k of [...poolTradeKeys('P'), ...curveTradeKeys('M')]) expect(r(k), k).toEqual({ horizonMs: (TRIAL_POLICY.gates.deployerRugLookbackDays + 1) * DAY, dropStale: true });
     // A raw create event keeps its newest entry: the exits' deployer-sell trigger and the gates' create alias read it.
-    for (const k of ['logs:pump:CreateEvent:M', 'pump:CreateEvent:M']) expect(r.rule(k), k).toEqual({ horizonMs: HOUR, dropStale: false });
+    for (const k of ['logs:pump:CreateEvent:M', 'pump:CreateEvent:M']) expect(r(k), k).toBe(HOUR);
     for (const k of [createKey('M'), 'gates/pool:M', 'gates/holders:M', 'gates/deployer:C', 'pump:CompleteEvent:M', 'pump_amm:CreatePoolEvent:P', 'account:A']) {
-      expect(r.rule(k), k).toEqual({ horizonMs: DAY, dropStale: true });
+      expect(r(k), k).toEqual({ horizonMs: DAY, dropStale: true });
     }
-    for (const k of ['chain:slot', 'seen:logs:X', 'gates/sol-usd', 'worker:halt', 'logs:truncated:logs:X', 'gates/stream:chain']) expect(r.rule(k), k).toEqual({ horizonMs: HOUR, dropStale: false });
+    for (const k of ['chain:slot', 'seen:logs:X', 'gates/sol-usd', 'worker:halt', 'logs:truncated:logs:X', 'gates/stream:chain']) expect(r(k), k).toBe(HOUR);
   });
   it('a one-shot key (only observed as released, never looked up) goes after an hour, whatever its family', () => {
     const o = retentionFor(TRIAL_POLICY, 240 * 60_000, ['worker:seed']);
-    expect(o.rule('worker:seed')).toEqual({ horizonMs: HOUR, dropStale: true });
-    expect(r.rule('worker:seed')).toEqual({ horizonMs: HOUR, dropStale: false });
+    expect(o('worker:seed')).toEqual({ horizonMs: HOUR, dropStale: true });
+    expect(r('worker:seed')).toBe(HOUR);
   });
   it('the per-object horizon covers the candidate window plus the longest hold, and the trade horizon the look-back', () => {
     const long = engineRetention({ lookbackDays: 30, candidateWindowMs: 20 * HOUR, maxHoldMs: 6 * HOUR });
-    expect(long.rule(createKey('M'))).toEqual({ horizonMs: 27 * HOUR, dropStale: true });
-    expect(long.rule(poolTradeKeys('P')[0]!)).toEqual({ horizonMs: 31 * DAY, dropStale: true });
+    expect(long(createKey('M'))).toEqual({ horizonMs: 27 * HOUR, dropStale: true });
+    expect(long(poolTradeKeys('P')[0]!)).toEqual({ horizonMs: 31 * DAY, dropStale: true });
     expect(() => engineRetention({ lookbackDays: 0, candidateWindowMs: 1, maxHoldMs: 1 })).toThrow(/lookbackDays/);
   });
 });
@@ -151,6 +161,6 @@ describe('one rule set for live, the parity replay and the backtest (guard)', ()
     const src = (p: string) => readFileSync(join(import.meta.dirname, '..', '..', p), 'utf8');
     expect(src('worker/src/run/worker.ts')).toContain('retention: retentionFor(d.session.policy, d.strategy.windowToMs, [SEED_KEY])');
     expect(src('worker/src/run/parity.ts')).toContain('retention: retentionFor(d.session.policy, d.strategy.windowToMs, [SEED_KEY])');
-    expect(src('backtest/src/run.ts')).toContain('retention: retentionFor(o.policy, config.windowToMs)');
+    expect(src('backtest/src/run.ts')).toContain('retention: o.retention ?? retentionFor(o.policy, config.windowToMs)');
   });
 });

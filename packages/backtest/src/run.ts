@@ -4,13 +4,14 @@
 import { exitsFor, type Policy } from '../../core/src/config/index.ts';
 import { retentionFor } from '../../core/src/gates/retention.ts';
 import type { FillConfig, ResearchConfig } from '../../core/src/config/index.ts';
-import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
+import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Retention, type Strategy } from '../../core/src/engine/index.ts';
 import { blockedExitValue, type DelayProfileName, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
 import { openLedger, type Ledger } from '../../core/src/ledger/index.ts';
 import { isTerminal, type Book } from '../../core/src/lifecycle/index.ts';
 import { type DatasetRow } from './dataset/rows.ts';
 import { type OffchainSeries, seriesReleases } from './dataset/offchain.ts';
 import { type Discovery, Market, rowMoment } from './sim/market.ts';
+import type { FactProjector } from './sim/facts.ts';
 import { type StreamSource, StreamReplay } from './sim/replay.ts';
 import { LedgerSink } from './sim/sink.ts';
 import { type AttemptRecord, World } from './sim/world.ts';
@@ -44,6 +45,12 @@ export interface RunOptions {
   readonly observation?: 'chain-time' | 'recorded';
   /** Program-change slots from the dataset manifest (regime boundaries). */
   readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
+  /** Open positions the book allows (default: no limit; the deployment replay sets the policy's). */
+  readonly maxOpenPositions?: number;
+  /** How long each key's past stays in the engine's as-of store (default: everything). */
+  readonly retention?: Retention;
+  /** BT-2: a fresh fact projector for this run (gate facts, checks, creates and rug labels). */
+  readonly facts?: () => FactProjector;
 }
 
 export interface RunStats {
@@ -80,6 +87,8 @@ export interface RunResult {
   readonly regimes: readonly { readonly slot: bigint; readonly label: string; readonly at: number }[];
   /** Block time (ms) of the last block released. */
   readonly endedAt: number;
+  /** The run's fact projector, when it had one (its counts go in the report). */
+  readonly facts: FactProjector | null;
   /** Feed blackouts of the run's delay profile, ms [from, to). */
   readonly blackouts: readonly { readonly from: number; readonly to: number }[];
 }
@@ -109,6 +118,16 @@ export const s0Config = (o: RunOptions): S0Config => {
 /** Process-wide: performance.now is read only here, outside the engine, for the throughput figure. */
 const clockMs = (): number => performance.now();
 
+/**
+ * Slots between an on-chain event and the engine seeing it (event to processed, plus processed to confirmed when the
+ * decision path waits for confirmed); null with recorded receipt times (released at their own moment).
+ */
+export const observationSlots = (o: Pick<RunOptions, 'fills' | 'scenario' | 'delay' | 'research' | 'observation'>): number | null => {
+  if (o.observation === 'recorded') return null;
+  const profile = o.fills.delays[o.delay ?? o.fills.scenarios[o.scenario].delay];
+  return profile.eventToProcessedSlots + (o.research.decisionCommitment === 'confirmed' ? profile.processedToConfirmedSlots : 0);
+};
+
 export const runBacktest = (o: RunOptions): RunResult => {
   const started = clockMs();
   const scenario = o.fills.scenarios[o.scenario];
@@ -130,12 +149,13 @@ export const runBacktest = (o: RunOptions): RunResult => {
   // Activity as of the last drain: blocks are released in their own drain, so this is the state at the block.
   const live = (): boolean => sink?.inFlight ?? false;
   let replay: StreamReplay<DatasetRow> | null = null;
+  const facts = o.facts?.();
   const market: Market = new Market({
     heartbeatBlocks: o.research.heartbeatBlocks,
     discoveryLag: (mint) => Math.max(1, drawDiscoverySlots(createRng(`${o.seed}:discovery:${mint}`), scenario)),
     active: live,
     observe: o.observation === 'recorded' ? null : {
-      slots: profile.eventToProcessedSlots + (o.research.decisionCommitment === 'confirmed' ? profile.processedToConfirmedSlots : 0),
+      slots: observationSlots(o)!,
       providerMs: profile.providerMs, blackouts: profile.blackouts, seed: `${o.seed}:feed`,
     },
     volumeWindowSlots: scenario.congestion.windowSlots,
@@ -144,6 +164,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     schedule: (e) => replay!.schedule(e),
     ...(o.regimeBoundaries === undefined ? {} : { regimeBoundaries: [...o.regimeBoundaries].sort((a, b) => (a.slot < b.slot ? -1 : 1)) }),
     series: o.series.map((s) => ({ key: s.name === 'SOL/USD' ? 'sol-usd' : s.name, releases: seriesReleases(s) })),
+    ...(facts === undefined ? {} : { facts }),
   });
   const discoveries = new Map<string, Discovery>();
   replay = new StreamReplay<DatasetRow>(source, (row) => market.release(row), (e) => {
@@ -156,7 +177,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
   });
   for (const e of extra) replay.schedule(e);
 
-  const maxOpen = Number.MAX_SAFE_INTEGER;
+  const maxOpen = o.maxOpenPositions ?? Number.MAX_SAFE_INTEGER;
   let ledger: Ledger | null = null;
   if (o.ledgerPath !== undefined) ledger = openLedger(o.ledgerPath, 'backtest');
   sink = new LedgerSink(ledger, { maxOpenPositions: maxOpen }, { maxHeld: 2n ** 62n as never, maxCount: maxOpen });
@@ -170,8 +191,8 @@ export const runBacktest = (o: RunOptions): RunResult => {
   const config = s0Config(o);
   const strategy = o.strategy?.(config) ?? new S0(config);
   // The backtest takes every eligible candidate: no open-position cap beyond one entry in flight at a time (§14).
-  // The same retention as live (WORKER-GROW), so a long backtest keeps the same as-of store as the live worker.
-  engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: world, seed: o.seed, book: { maxOpenPositions: maxOpen }, retention: retentionFor(o.policy, config.windowToMs) });
+  // One retention mechanism (WORKER-GROW, BT-2): the study passes its own rules; any other run keeps what the live worker keeps.
+  engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: world, seed: o.seed, book: { maxOpenPositions: maxOpen }, retention: o.retention ?? retentionFor(o.policy, config.windowToMs) });
 
   let crash: string | null = null;
   try {
@@ -203,6 +224,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     symbols: market.symbols,
     endedAt: market.blockTime * 1000,
     regimes: market.regimesPassed,
+    facts: facts ?? null,
     blackouts: market.blackouts,
     poolDelta: (pool) => market.track(pool)?.shifted.delta ?? { base: 0n, vault: 0n, virtual: 0n },
     endValue: (mint, tokens) => {

@@ -50,11 +50,8 @@ export const engineRetention = (i: RetentionInputs, oneShot: readonly string[] =
   const once = new Set(oneShot);
   const trade: RetentionRule = { horizonMs: (i.lookbackDays + 1) * DAY, dropStale: true };
   const perObject: RetentionRule = { horizonMs: Math.max(DAY, i.candidateWindowMs + i.maxHoldMs + HOUR), dropStale: true };
-  const rest: RetentionRule = { horizonMs: HOUR, dropStale: false };
-  return {
-    everyMs: HOUR,
-    rule: (key) => (key.startsWith('coverage:') ? 'all' : once.has(key) ? { horizonMs: HOUR, dropStale: true } : TRADE.test(key) ? trade : RAW_CREATE.test(key) ? rest : PER_OBJECT.test(key) ? perObject : rest),
-  };
+  const oneHour: RetentionRule = { horizonMs: HOUR, dropStale: true };
+  return (key) => (key.startsWith('coverage:') ? null : once.has(key) ? oneHour : TRADE.test(key) ? trade : RAW_CREATE.test(key) ? HOUR : PER_OBJECT.test(key) ? perObject : HOUR);
 };
 
 /** The rule set from the policy (look-back, the longest hold over every exit universe) and the strategy's window. */

@@ -1076,12 +1076,26 @@ export class FactProducer {
   #flushGraduates(e: MarketEvent, put: (k: string, v: unknown) => void): void {
     if (!this.#graduatesChanged) return;
     this.#graduatesChanged = false;
-    const now = e.moment.receivedAt;
-    const keepFrom = now - this.#o.graduatesKeepMs;
-    for (let i = this.#graduates.length - 1; i >= 0; i--) if (this.#graduates[i]!.migratedAtMs < keepFrom) this.#graduates.splice(i, 1);
-    put(GRADUATES_KEY, {
-      obs: { provider: 'facts', slot: null, receivedAt: now, quality: [] },
-      items: [...this.#graduates].sort((a, b) => a.migratedAtMs - b.migratedAtMs || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0)),
-    });
+    const g = graduatesFact(this.#graduates, e.moment.receivedAt, this.#o.graduatesKeepMs);
+    this.#graduates.splice(0, this.#graduates.length, ...g.kept);
+    put(GRADUATES_KEY, g.value);
   }
 }
+
+type GraduateItem = GraduatesFact['items'][number];
+
+/**
+ * The graduates fact as of `nowMs` (one implementation for the live producer and the backtest, supervisor ruling):
+ * items that migrated within `keepMs` are kept, in their given order; the fact lists them by migration time, then mint.
+ */
+export const graduatesFact = (items: readonly GraduateItem[], nowMs: number, keepMs: number): { readonly kept: GraduateItem[]; readonly value: GraduatesFact } => {
+  const keepFrom = nowMs - keepMs;
+  const kept = items.filter((x) => x.migratedAtMs >= keepFrom);
+  return {
+    kept,
+    value: {
+      obs: { provider: 'facts', slot: null, receivedAt: nowMs, quality: [] },
+      items: [...kept].sort((a, b) => a.migratedAtMs - b.migratedAtMs || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0)),
+    },
+  };
+};
