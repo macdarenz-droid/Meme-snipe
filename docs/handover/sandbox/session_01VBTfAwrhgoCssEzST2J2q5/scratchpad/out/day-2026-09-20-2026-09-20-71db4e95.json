@@ -1,0 +1,195 @@
+{
+ "kind": "BT-2 day run",
+ "runId": "day-2026-09-20-2026-09-20-71db4e95",
+ "commit": "71db4e957fab22cbad0eb442de291c6e6b2deb7c",
+ "dirty": true,
+ "dataset": {
+  "dir": "/tmp/claude-0/-home-user-Meme-snipe/406edd36-7a5c-567a-b0c4-521cf6e925a4/scratchpad/ds",
+  "id": "sha256:cc92b1c44cdf77782bb2a23e4de60c45b714aaa9c0f7aa6591f0462bbfdb8fe5",
+  "schema": 2,
+  "sampleRate": 1,
+  "sumsChecked": 0,
+  "days": [
+   {
+    "day": "2026-09-05",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-06",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-07",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-08",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-09",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-10",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-11",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-12",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-13",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-14",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-15",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-16",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-17",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-18",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-19",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-20",
+    "complete": true,
+    "warmUp": false
+   }
+  ]
+ },
+ "policy": "trial",
+ "fills": "fills-1",
+ "research": "research-1",
+ "studyHash": "fa4fb7c44f40ecbd72eb0b02180e2c4badf8454958f56854b743074e42e53602",
+ "configIds": {
+  "U1": "U1-6113abf2125a18af",
+  "U2": "U2-50963f1630fd2c13"
+ },
+ "scenario": "conservative",
+ "notes": [
+  "Live-only vetoes (§16.3) are absent in the backtest: H15 simulateTransaction, H16 third-party cross-checks, Jupiter routes and fees, execution health. The bias in mean net is at most the veto share v times the gap between vetoed and kept trades; G3 caps v at 10%, which bounds it at 5 points.",
+  "H13 needs the deployer-funded wallets and the dev cluster, which DATA-1 does not record: without a funding source every candidate is rejected (H16 not-covered).",
+  "The dataset keeps trades for a hash sample of mints only; a deployer with a mint outside the sample in the look-back is not judged on prior rugs (H14 not covered).",
+  "2026-10-02 and later are never decision days (program upgrade, regime boundary)."
+ ],
+ "days": [
+  "2026-09-20"
+ ],
+ "entriesWindow": {
+  "from": "2026-09-20T00:00:00.000Z",
+  "to": "2026-09-20T02:30:00.000Z"
+ },
+ "engine": {
+  "stats": {
+   "rows": 9901,
+   "events": 5853,
+   "crashes": 0,
+   "crash": null,
+   "illegalStates": 0,
+   "unreconciledIntents": 0,
+   "mirrorMatches": true,
+   "skippedSwaps": 0,
+   "unquotableSwaps": 0,
+   "alerts": {},
+   "elapsedMs": 1339
+  },
+  "runMs": 1340,
+  "rowsPerSecond": 7389,
+  "replays": 3,
+  "identicalReplays": true,
+  "leak": {
+   "ok": true,
+   "violations": []
+  },
+  "ledgerReplay": {
+   "ok": true,
+   "detail": "ok backtest /tmp/claude-0/-home-user-Meme-snipe/406edd36-7a5c-567a-b0c4-521cf6e925a4/scratchpad/out/day-2026-09-20-2026-09-20-71db4e95.db {\"events\":0,\"intentRows\":0,\"intents\":0,\"positionRows\":0,\"positions\":0}"
+  }
+ },
+ "facts": {
+  "creates": 1,
+  "sampledCreates": 1,
+  "unjudged": 0,
+  "labels": 0,
+  "checks": 181,
+  "holderProblems": 0,
+  "undecodableRaw": 0
+ },
+ "counts": {
+  "U2": {
+   "candidates": 1,
+   "entries": 0,
+   "entryDays": 0
+  }
+ },
+ "rejectMix": {
+  "U2": {
+   "H1:missing": 1,
+   "H2:missing": 1,
+   "H3:missing": 1,
+   "H4:missing": 1,
+   "H6:missing": 1,
+   "H12:missing": 1,
+   "H13:missing": 1
+  }
+ },
+ "s0": [
+  {
+   "seed": "bt2-day:s0:0",
+   "stats": {
+    "crashes": 0,
+    "illegalStates": 0,
+    "unreconciledIntents": 0
+   },
+   "counts": {},
+   "trades": []
+  },
+  {
+   "seed": "bt2-day:s0:1",
+   "stats": {
+    "crashes": 0,
+    "illegalStates": 0,
+    "unreconciledIntents": 0
+   },
+   "counts": {},
+   "trades": []
+  }
+ ],
+ "trades": [],
+ "regimeBoundariesPassed": []
+}

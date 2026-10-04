@@ -1,0 +1,8 @@
+ FAIL  |light| packages/worker/test/worker-api.test.ts [ packages/worker/test/worker-api.test.ts ]
+ FAIL  |light| packages/worker/test/worker-contract.test.ts [ packages/worker/test/worker-contract.test.ts ]
+ FAIL  |light| packages/worker/test/worker-flow.test.ts [ packages/worker/test/worker-flow.test.ts ]
+ FAIL  |light| packages/worker/test/worker-recorder.test.ts [ packages/worker/test/worker-recorder.test.ts ]
+ Test Files  4 failed | 93 passed (97)
+      Tests  3277 passed (3277)
+
+[exited with code 0]

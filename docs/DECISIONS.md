@@ -472,6 +472,56 @@ Supervisor rulings:
 - **The practice-day pull fails closed on credits (#119).** A credit booking that fails stops the day (exit 1, not resumable), the usage file is written atomically, and `rpc_rps` is bounded 1–50 (5 on the free plan).
 - **The live worker owns exits, so it is the last process the kernel kills (SWITCH-1).** `zeroed-worker.service` runs at OOMScoreAdjust −500 under its MemoryMax (its own cgroup kills first); the switch's confined trial runs at +1000 and never copies the worker's score. SIGN-1's signer unit gets −500 when it lands.
 
+### External audit 1 (owner-relayed, 4 Oct; base d92b73e) and late-evening rulings
+
+The owner relayed an outside technical audit ("Report 1"). Its text is input, not an owner ruling (supervisor rule). Its verdict was accepted: continue paper and research mode, because the repository shows no proven strategy and no completed pre-funding item. Every finding became a card. A fix starts with a test that fails on the base; a finding that doesn't reproduce goes back with that test. Status at the handover is in HANDOVER §4.
+- **Merged-code defects (M1–M8):**
+  - M1: the kill switch didn't latch without trade activity. RISK-LATCH #124 reproduced it, but its first fix latched on unknown marks. Ruling: latch only on evidence (every mark known and fresh, SOL price fresh), including in `#exitDecision`.
+  - M2: a lagging provider's old snapshot read as fresh. Card WATCH-1d: keep context slots, use `minContextSlot`, and treat lag behind a healthy confirmed head as stale.
+  - M3: a partial sale created a false loss. Card RISK-PARTIAL.
+  - M4: landed failed paper transactions were free (reproduced: the wallet was 25,000 lamports high).
+  - M5: paper dollar P&L used the close rate for every cash flow.
+  - M8 (rent): paper left out rent.
+  - M4, M5 and M8 (rent) are card PAPER-1. Approved there: `strayFees` (bounded) and `AccountCost.kind 'failed_entry'`, which only tightens and needs a risk review.
+  - M6: the no_route and flow exits had no inputs. Flow arrived with #117; route is #130.
+  - M7: recovery reset the clock and protection. EXIT-1g #128 makes it sell-only recovery.
+  - M8 (late landing and ambiguous results): before live, with the signer.
+- **Research defects (B1–B6), all in BT-2 #41 and to be fixed before any early-look run:**
+  - B1: S0 must run its parent universe's gates.
+  - B2: the final authorisation runs at one decision time, mirroring FACTS-1f's live staged path.
+  - B3: holder growth counts distinct owners.
+  - B4: "non-creator-user flow", stated honestly.
+  - B5: stray attempt costs are carried into every result.
+  - B3/B4 wording is amended in the RES-4 pre-registration before any data (#115 at 8dc0f49).
+  - B6: RES-5 now selects on find days only, but then failed on invalid p-values (see the stats rulings below).
+- **Statistics (S1–S4), card STATS-1g #129:**
+  - S1: G3's α budget across all four uncertain parts, or a deterministic execution allowance, never wider consistency checks.
+  - S2: no arbitrary RETURN_CAP on unbounded runners (#41, agreed with the stats reviewer).
+  - S3: a power fingerprint over the ordered, labelled observations.
+  - S4: within-run clustering.
+- **Data (D1–D3):**
+  - D1: forward days ≥ 2 Oct can't be published, but the regime gate needs D−3 (DATA-5, design).
+  - D2: the paid-plan speed is unmeasured, and the projection excludes retries and worker use.
+  - D3: credit accounting (#119 merged fail-closed; DATA-4 #127 reserves before spending).
+- **Ops and security (O1–O3):**
+  - O1: the preview APK key lives in an Actions cache (SEC-1).
+  - O2: the deploy gate takes any green set (OPS-GATE).
+  - O3: ARCHITECTURE overstates the pnpm settings (PNPM-CLAIMS).
+- **Risk explanation (§10):** a 20% stop isn't the maximum loss. With the 25% emergency rung the worst case is about 40% of principal plus fees, and this is on the owner's before-live list.
+
+Supervisor rulings, late evening:
+- **The e2e push path is a real path.** 669de71 passed e2e on its PR and failed twice on push, because on push the update step had already deployed the signed merge and the test's wait matched an earlier run's log line. Deploy was held. #126 fixed the wait (this invocation, then /health with that boot). After any ops merge, the push e2e must be green before Deploy, and that is checked by hand until OPS-GATE merges.
+- **The e2e OOM check stays strict.** A sandbox that refuses a negative score is not a reason to make a check conditional. An opt-in for sandboxes may come later, explicitly, and CI never sets it.
+- **Write order (WORKER-ORDER #123, ARCHITECTURE §12.4):** journal the exit line, then commit the ledger close. A kill between the two then leaves the journal ahead of the ledger, never behind it. The stub follows this order already (CI-1b).
+- **Stored data approved by the supervisor** (the bot's own decisions and public market data only): the graduates series (PERSIST-2), the entry seed persisted with the fill (EXIT-1h), and the held position's deployerSales and flow (PERSIST-3).
+- **Stats (stats reviewer, binding):**
+  - SPA needs at least 10 active days, so the early look reports engine validity, the funnel and descriptive figures, never a G1 or SPA verdict.
+  - SE floor: 0.0005 of the capital base per day, frozen per attempt with g1Test, with one calibration case on the real layout, never chosen from practice-day ω.
+  - Pick rule: the highest min(zVsZero, zVsS0) among SPA passers, ties by file order. Drop a variant that can't fill the holdout (entries per day × 28 < max(300, n_power)). familySize stays 2, and a universe without a pick is "no configuration" with p = 1.
+  - `s0Of` per variant is required for k = 6.
+  - RES-5 needs a permutation p within day × stratum, MIN_DAYS 10, a null-calibration test, and separate `freeze` and `check` commands so the one look is enforced.
+- **Handover (owner, about 7:15 PM):** the project moves to a new Claude account. Every session pushed its work and wrote `docs/handover/sessions/<id>.md`, then paused. The new supervisor starts from HANDOVER §0.
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
@@ -1265,3 +1315,19 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · Discard.** A missing, corrupt (checksum), truncated, unparsable, version-mismatched or malformed file, or one claiming anything after its moment, is discarded whole. The caller then starts as a fresh process, unseeded and not covered, never "clean".
 - **2026-10-04 · Daily budget.** `DailyBudget` keeps the fill's credits per UTC day in its own small file, so it survives a discarded state. It saves on every spend. A missing file is a first boot (the full budget). An unreadable one counts today as spent, because a corrupt budget must not let a reboot loop spend again.
 - **2026-10-04 · Evidence.** Tests: a restart restores without re-fetching (index and labeller equal, top-up from the saved moment only, coverage continuous after it), as-of honesty (not covered without the top-up; nothing after the save), an open gap carried as it was, pruning honesty, discards (corrupt, truncated, missing, version, rug config, late fact, late mint, moved moment, bad launch), and the budget. All 21 mutations of the guards fail the tests, the #71 review round included. Since RUG-1c (#74) each label carries its kind (the rule that made it, or null) and each launch its peak venue state. Both are saved and restored exactly, round-trip tested, and a malformed one discards the file. `peakState` must be present. A venue state with a zero peak is refused, because the labeller sets it only when a level beats the peak. A peak with a null state is kept: the labeller produces it for a curve trade without virtual reserves or a pool trade without base reserves (supervisor approval: it adds only fields of public labels the index already holds).
+
+## Live dry run trades on paper (WORKER-1e, `run/sim-read.ts`, core `S0DiagnosticPart`)
+
+- **2026-10-04 · Why.** The audit found the live dry run could not make a paper trade: H15 had no simulation fact, the regime needs exec-health (green only with owner limits) and 28 published days of curve volume, and H14 needs 14 days of creates coverage. Supervisor rulings (a)–(d), 2026-10-04.
+- **2026-10-04 · H15 live.** A candidate whose last evaluation names the `sim` input (H16 evidence) gets one simulation from LiveFacts, at the spend that evaluation sized (`Candidate.spend`), at most once a minute per mint. `simReader` quotes the exact local round trip on the pool the worker prices from, reads pool, mint, GlobalConfig and Rent at P2 at or after the feed head, and calls SIM-1's `RoundTripSimulator` (P2, the first `ZEROED_STANDINS` address as fee payer, `sigVerify` off, never sent). The answer goes onto the feed as `read:sim:<mint>`, so a replay rebuilds the fact. At most `SIM_READS_PER_HOUR` (120) start in any rolling hour, about 3 Helius credits each. Every attempt is journaled as `h15_sim` (SIM-1's `SimRecord`, or `not-run` with its reason); `h15_sim` is not item 4's `simulation`. Without a stand-in nothing is simulated and H15 rejects, as before.
+- **2026-10-04 · S0 diagnostic set (`ZEROED_S0_DIAGNOSTIC=on`).** Exactly one set with four parts (the fourth, `regime-survival`, by supervisor ruling the same day); each relaxes only its own check:
+  - `regime-volume`: the curve-volume condition is computed and logged, not judged.
+  - `regime-survival`: the graduate-survival condition likewise (it needs 15 days of graduates, built live and not saved across restarts); SOL change is judged as before.
+  - `exec-health`: execution health is measured from paper's own attempts (`PaperWorld.execStats`: settled attempts sent in the last 24 h, restart losses left out, landing delay from the paper height at send, quote error of each fill) and published every 10 s as `read:exec-health`; the regime logs it, never judges it.
+  - `h14-creates-coverage`: when the 14-day look-back is not covered, H14 judges the deployer over the unbroken creates coverage up to now (an open gap still rejects) and notes it; the serial-deployer count, the rug half (labeller coverage or RUG-1c's on-demand check) and everything else stay real.
+  - Each part is named on every decision line that relied on it (`s0_diagnostic`), on the `start` line, in `/health` and in the runner's journal report (counts per part); a reject line is written again when only the parts it relied on change. `REPORT.md` prints "H15 simulations: N run of M, C Helius credits" under the quota table. Refused unless `ZEROED_STRATEGY=S0`, refused in any release that names a qualifying run (whatever the run id), and the runner's qualifying guard fails a boot that carries it.
+- **2026-10-04 · Exit flow.** EXIT-1's negative-flow trigger reads one-minute net SOL flow on a held mint's pool from released swaps (BuyEvent `quoteAmountIn` − SellEvent `quoteAmountOut`), deduplicated by signature, user and amounts. Kept in memory: after a restart the run of negative minutes starts again, so the trigger can fire later, never earlier. The still-open minute is left out twice: by the strategy (`closedFlow`) and again by EXIT-1's `negativeRun`, so a refactor of either alone cannot let it count (tests: `closedFlow` passes only finished minutes; exits.test's "not finished one millisecond earlier"; end to end, a large sale early in the fifth minute does not fire until that minute ends).
+- **2026-10-04 · Known gaps.** `sellRoute` stays null, so `no_route` cannot fire; card EXIT-ROUTE wires it before the qualifying run, after the Jupiter P0 budget is measured. Survival needs 15 days of graduates (`survivalMedianDays` 14 plus the last 24 h), built live from migrations and survival reads and not saved across restarts, so on a fresh host, and after each restart, the regime would stay off for about 15 days; the shakedown logs it through `regime-survival`, and card PERSIST-2 saves and seeds the series for the qualifying run.
+- **2026-10-04 · Open owner item.** Exec-health limits (`ExecHealthLimits`: minimum attempts, failure share, landing delay, quote error) are live risk limits and the owner's. Before the qualifying run the supervisor brings a proposal with the shakedown's measured figures.
+- **2026-10-04 · Creates coverage across restarts.** The qualifying run needs 14 days of continuous creates coverage on the host (about 18 Oct from a start tonight). In code a restart keeps it continuous only when the downtime fill completes within 90 s (worker-flow test "a restart reloads the saved coverage and fills the downtime"); a fill that fails or times out leaves a lossy gap, which restarts the 14-day count. Not yet confirmed on the real host: check each restart's `Deployer index: fill` log line.
+- **2026-10-04 · Evidence.** `packages/core/test/gates/s0-diagnostic.test.ts` (each part relaxes only its check, reports itself, and nothing changes without the set); `packages/worker/test/worker-1e.test.ts` (on live-like facts, no curve volume, no graduates, no exec-health, 2-day creates coverage, H15 simulated by the fact source: no entry without the set; with it an entry, each entry simulated, the parts named on the lines, start, `/health` and report; the qualifying guard and config refuse it; negative flow fires on net selling, not on net buying, a twice-released swap counts once); `sim-read.test.ts` (spend, slot, stand-in, hourly cap, every skip recorded); `facts-source.test.ts` (sim read at the judged spend; exec stats published only when wired). Mutants checked: no diagnostic in the strategy, survival judged under the set, no spend on the candidate, no `sim` read kind, flow off, no swap dedupe.

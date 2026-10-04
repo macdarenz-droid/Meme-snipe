@@ -1,0 +1,8 @@
+5a6b3386 Merge remote-tracking branch 'origin/ccr-14987baf-i6lrsl' into claude/exit-1g
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |light| packages/worker/test/boundary-marks.test.ts > boundary marks from the marked account (RISK-MARK) > a day boundary with an open position records equity at the executable mark, not as a total loss
+ FAIL  |light| packages/worker/test/boundary-marks.test.ts > boundary marks from the marked account (RISK-MARK) > a fall in the mark after the boundary is the marked measure's day loss, and daily_loss trips
+ Test Files  1 failed | 150 passed (151)
+      Tests  2 failed | 4512 passed (4514)
+
+[exited with code 0]
