@@ -320,8 +320,9 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   // Not latched: it follows the SOL price and lifts when the wallet's value is back above the line.
   if (s.walletEquity !== null && s.walletEquity <= killLine) reasons.push(reason('wallet_below_kill_line', 'the wallet\'s value at the SOL price is at or below the kill line'));
 
-  // R11 (live only): entries per day.
-  if (live) {
+  // R11: entries per day, in paper exactly as live (supervisor ruling, golden rule: paper money is real money); only the
+  // backtest's research evaluation is uncapped.
+  if (mode !== 'backtest') {
     const today = account.entries.filter((e) => e.atMs >= s.dayStartMs).length;
     if (today >= policy.positions.maxEntriesPerDay) reasons.push(reason('entries_per_day', `${today} entries today, limit ${policy.positions.maxEntriesPerDay}`));
   }
@@ -417,8 +418,8 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   const live = mode === 'live';
   const qMin = policy.capital.minNotional;
 
-  // R11 (live only): per mint, and no re-entry after a stop.
-  if (live) {
+  // R11: per mint, and no re-entry after a stop, in paper exactly as live (supervisor ruling); not in the backtest.
+  if (mode !== 'backtest') {
     const day = account.entries.filter((e) => e.mint === request.mint && e.atMs >= s.dayStartMs).length;
     if (day >= policy.positions.maxEntriesPerMintPerDay) reasons.push(reason('entries_per_mint', `${day} entries in this mint today`));
     if (account.closedTrades.some((t) => t.mint === request.mint && t.stoppedOut && nowMs < t.closedAtMs + policy.positions.reentryBlockMs)) {
