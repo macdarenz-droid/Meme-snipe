@@ -8,13 +8,59 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 
 | PR | Reviewed head | Why not merged yet |
 |---|---|---|
-| #202 capped maps | 7557335d | next in line after #137; clean on base + #137 |
-| #148 WORKER-CRASH | passed before the base merge | base-merged at 94c85d95 (tx-fetcher resolution); needs the facts delta and the builder's full check; clean after #137 + #202 |
+| #202 capped maps | 7557335d (persist PASS) | CI green on ebd90eb2 (f3f86395), now behind 97d27652 |
+| #186 VALUATION-MARK | a152e3e6 (risk PASS 8:52) | behind base; next free merge slot after #202/#148 (trial merge clean) |
+| #203 R8-WHOLE | 4ec9c3bf (risk PASS, first at 6:02, re-confirmed 9:05) | conflicts with base after #198 (LateEntry shape); builder base-merges after #198 lands, risk checks the delta (one LateEntry shape, late_settlement once, #199's lossStreakOf note) |
+| #130 EXIT-ROUTE | 8a6a71e4 (EXIT PASS 9:09) | far behind base; builder pushes its base merge + N1 test (exceeds-reserves pinned), then EXIT merge-delta check |
+| #212 ARCHIVE-NOW (owner asked) | 6004f221 (data PASS 9:26) | updated to 3735038e (tree = reviewed change on ad358fe9), ready, CI running from 9:28; merges first (owner is waiting on the archive answer), then dispatch archive-check with only the chain's own Helius run ids (N1) |
+| #198 PAPER-2 | f0b7764f (run/CI PASS 9:34; risk PASS at 64972b76, meter change checked by run/CI: only tightens) | behind ad358fe9 (merge is clean, base code only); GitHub update when its slot comes |
+| #172 N2-WRITES | 7f2ce17b (persist delta PASS 9:34) | behind ad358fe9; conflicts with #139 in DeployerStore.load (second lander keeps #139's coverage pass and #172's written + commitTemp) |
+| #191 RES-5c | d10f2f85 (stats delta PASS 9:15) | stream 5b: CI slots go to streams 1–4 first; merges when the core line is clear |
+| #115 RES-4 | dcb931e8 (BT + stats delta PASS 9:15) | stream 5b, same reason |
+| #122 BT-TAIL | b6200d15 (BT PASS) | stream 5a (early look); after the core money/exit PRs |
+| #149 OPS-1j | 7abab0b9 (ops PASS, delta checked at 8:55) | CI green on ebd90eb2 at 9:13, now behind 97d27652; merge commit only (install pin names 06ea0325) |
+
+**Workers (checked 9:05 from the session list and branch heads; re-checked every wake)**
+
+| Session | Job | Card now | State | Next |
+|---|---|---|---|---|
+| 01Pyd94 | WORKER-HARDEN builder | #209 ops-FAIL fix (pushed 9b3d601b 8:57) | active | base merge after #148; then #164 G4a, growth PRs |
+| 01FvkHM | ops builder 2 | #149 at 7abab0b9 (ops PASS) | waiting CI | BACKUP-STATE, DISK-GUARD after #149 merges |
+| 01WFmrB | WORKER-1d builder | #139 8ac236fd, #168 eb1918dd | waiting reviews | — |
+| 01XVYJj | persist builder | #172 7f2ce17b; #130 base merge local (not pushed) | full check running | push #130 for the EXIT reviewer |
+| 012uJsL | WATCH builder | #141 pushed 23787229 (9:16) | parked | risk delta sent 9:18 |
+| 01AYk3q | BT builder | #154 base merge | active | BT delta |
+| 01L9Zdh | EXIT builder | #176 ready at 97b25025 (sent to EXIT and persist reviewers 9:39); #171 46aefee full check | active | — |
+| 01QvPYM | RES builder | #191, #115 full checks | stream 5b, low priority | park after these heads |
+| 01TSRXx | READ-COHERENT builder | POOL-DATA findings sent 9:33 | parked | #189 merges via GitHub update |
+| 01MgoMn | practice-on builder | #186 PASS a152e3e6; #203 4ec9c3bf | waiting | #203 base merge after #198 |
+| 01UkTpC | API/APP builder | #201 3f9b1f1a | parked | supervisor resolves its DECISIONS conflict |
+| 01JrFut | PAPER builder | #198 fix pushed f0b7764f (9:07; behind ebd90eb2) | waiting | run/CI re-review sent 9:08 |
+| 01Dn7Qz | risk builder | #197 SOL-BOOKS base merge + #168 | active | risk review |
+| 01J1jav | data builder | #212 ARCHIVE-NOW at 6004f221 (9:19) | waiting | data review sent 9:20; merge right after #189 (owner waiting) |
+| 01NGXuv | facts reviewer | #209 (9b3d601b) → #168 → #201 | active | — |
+| 01R3CGB | risk reviewer | #141 delta (23787229) | active | #197, then #203's delta |
+| 01SndtR | run/CI reviewer | #198 PASS 9:34 | idle (nothing due) | — |
+| 01AeE2x | EXIT reviewer | #130 PASS 9:09 | waiting | #130 merge delta, #176 |
+| 014EaQV | persist reviewer | #172, #139 deltas | active | #176 |
+| 018aCfZ | ops reviewer | waits #209 fix | idle (nothing due) | DISK-GUARD, BACKUP-STATE |
+| 01L7Gdf | BT reviewer | waits #154 | idle (nothing due) | #115 |
+| 017ngaD | stats reviewer | waits #191 | idle (nothing due) | — |
+
+Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: #212 review (9:20).
 
 **Log (Melbourne time)**
 - 8:34: every active builder and reviewer told to report here. Owners checked from commit trailers: #168 ACCOUNT-RATE → WORKER-1d builder (session_01WFmrBXa6KfoKgBaRVXXCW8); #197 SOL-BOOKS → risk builder (session_01Dn7Qz3cPQH9nPpwv5eSVVb, parked); #198 PAPER-2 → PAPER builder (session_01JrFutz1ZxstamsdeSWN5XM).
 - 8:31 live summary (worker e32cd0d): starts 80 (about 40 boots), uptime 513 s, candidates seen 490, refused 0, entered 0, trades 0; halts feed-stale 310, feed-disconnected 47, seeding 40. Coins are still not judged.
 - 8:36: #198's run/CI test gap sent to the PAPER builder. #148 put ahead of #209 in the facts reviewer's queue (it is the likely crash fix).
+- 9:40: push check green on 97d27652 → **Deploy run started** (code-only; expect Telegram "deployed 97d27652…", then a summary about 3 min after the worker starts). **#189 SIZE-STEP-UP merged at ad9864b2** (check green on 846af238). Next: #212 (owner's archive question), then #198.
+- 9:25–9:33: **first judgement today** (ELrq…pump 9:25: two `no-market`, one risk refusal; no entry). Sun 4 Oct −$0.16 = the paper wallet's one-time setup rent (PumpSwap user volume accumulator, 137 bytes, account.ts #setUp), not a trade. POOL-DATA (READ-COHERENT builder, from code at ad358fe9): a candidate's pool fact comes only from an account read that the first `no-market` triggers (re-judged at the batch close), and fee terms only from observed swaps (`worker:fees:` is never produced), so a swap-less pool stays `fee context unknown`, the same in live and backtest. Ruling: nothing built now. Restored candidates losing observed fees: revisit only if restarts persist after the crash fix. FEES-READ (FeeConfig reads live + FeeConfig history in the backtest, §4/§16.3) goes to the proof phase. App Liquidity "—" = coins not yet judged have no pool fact (display only).
+- 9:16: ARCHIVE-NOW is PR #212 (claude/archive-now): run-name `data-scan <mode> source=<source>` approved (.github, no permission or step added) plus a dispatch-only `helius_runs` input; the running chain is Helius (verified in run 37220726125's plan log: SOURCE helius, DAYS 2026-09-21, MAX_CREDITS 270000, RPC_RPS 5). After review and merge, the supervisor dispatches archive-check once and reports the result to the owner.
+- 9:14: **#148 WORKER-CRASH merged at 97d27652** (check + historical-data green on 651e3d46 = 94c85d95 on ebd90eb2; facts delta PASS). Deploy when the push check on 97d27652 is green (about 9:38), then watch the summaries for restarts and judgements. Next merge: #189 (gates and simulation judge the size risk uses).
+- 9:05: worker check (table above): no stale worker; risk reviewer was idle with #203 due, so #203 sent to it. **Lesson:** a full sha written from memory was wrong in that message (corrected at once from `git ls-remote`); only paste shas from ls-remote output.
+- 9:01 summary: 44 boots (last start 8:53:36), seen 526, refused 0, entered 0. Owner (about 9:00): find out whether the archive serves the scanner again; card ARCHIVE-NOW to the data builder (session_01J1javobgRjnF4MT3xz3er9): the archive check skips only while an archive-source scan runs (a Helius day never touches the archive), same single 64-byte request from the runner; PR → data reviewer → merge → dispatch archive-check → report to the owner.
+- 8:53: architecture read in full and checked against code and data; board rewritten (PROJECT_STATE). Corrections: proof is blocked on data, not code (no `data-day-*`/`data-volume-*` release exists; owner decides on paid data after practice trades and the early look); #197 SOL-BOOKS un-parked (owner rule; base merge with #168); #164 G4a needed within about 2–3 days of uptime; since Deploy #4 (#170 in e32cd0d) candidates survive restarts, so judgements can start about 9:00 even before the crash fix (check the 9:31 and 10:01 summaries).
+- 8:53–8:54: #209 ops FAIL at 6d7ce423 (summary shape not compatible across a non-atomic deploy: make the new `worker` keys optional as a group or v2 with v1 accepted) → builder. #172 and #139 base-merge deltas → persist reviewer. #130 first review → EXIT reviewer. #149 delta (7abab0b9) → ops reviewer.
 - 8:48: #137 OPS-1i merged at 928821f4 (check, e2e and historical-data green on cc02dd86).
 - Merge order checked with `git merge-tree` on full history: #137 → #202 → #148 merge cleanly in turn; #209 conflicts with #148 in worker.ts (its builder merges after #148 lands). **Lesson:** the session clone is shallow (depth 50); fetch with `--depth=3000` before any merge-tree check, or merge bases come out wrong.
 
