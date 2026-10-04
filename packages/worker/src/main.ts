@@ -15,7 +15,9 @@ import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders, PUMP_CREATE_AUTHORITY } from './run/sources.ts';
 import { redact, setSecretValues } from './run/redact.ts';
-import { runSeed } from './run/seed-start.ts';
+import { join } from 'node:path';
+import { DailyBudget } from './persist/index.ts';
+import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, runSeed } from './run/seed-start.ts';
 import { Worker } from './run/worker.ts';
 
 const environment = readEnvironment();
@@ -63,7 +65,7 @@ try {
     sources: (ctx) => providers.feeds(ctx),
     simulate,
     fetchTx: (sig) => providers.fetchTx(sig),
-    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers }),
+    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now()) }),
     seedWaitMs: 30_000,
     seedMaxMs: 90_000,
     ops: () => providers.ops(),

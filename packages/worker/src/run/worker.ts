@@ -41,6 +41,12 @@ import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './pa
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { riskSnapshot } from '../../../core/src/risk/index.ts';
+import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
+import { loadState, saveState } from '../persist/index.ts';
+
+/** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
+export const PERSIST_FILE = 'deployer-state.json';
+export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { type PoolFact, parsePool } from '../../../core/src/gates/index.ts';
 import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
@@ -201,6 +207,10 @@ export class Worker {
   #liveStartAt: Moment | null = null;
   /** The empty slot the reconcile reserved for SEED-1's events (see `#seedIndex`). */
   #reserved: bigint | null = null;
+  /** PERSIST-1: the saved index and labeller this process restores (null on a fresh start). */
+  #restored: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState } | null = null;
+  #lastSaveMs = 0;
+  #saveRefused = false;
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
@@ -289,6 +299,15 @@ export class Worker {
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
     this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
+    // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
+    // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
+    // downtime fill starts at the saved moment, closing the restart gap on the live creates watch.
+    const restored = loadState(join(c.stateDir, PERSIST_FILE), d.rugs);
+    if (restored.ok) {
+      this.#restored = { asOf: restored.asOf, index: restored.index.snapshot(restored.asOf), labeller: restored.labeller.snapshot() };
+      this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
+      d.log(`Saved state restored as of slot ${restored.asOf.slot}; ${restored.coverage.length} coverage facts, ${restored.fills.length} gaps to fill.`);
+    } else if (restored.reason !== 'no saved state') d.log(`Saved state discarded (${restored.reason}): starting as a fresh process.`);
     this.#desk = new Desk({
       ledger: this.#ledger, config: bookConfig, restored: stored.book,
       journal: (kind, fields) => this.#journal.write(kind, fields),
@@ -512,7 +531,37 @@ export class Worker {
       this.#savedExits = text;
     }
     this.#markAccount(now);
+    if (now - this.#lastSaveMs >= PERSIST_EVERY_MS) this.#persist(now);
     this.#checkHalt(now);
+  }
+
+  /**
+   * PERSIST-1 save: the index, the labeller's tables and every coverage fact, as of the latest released moment.
+   * Refused until the seed (or the restored state) is applied: before it, the index is not this process's to save, and
+   * a save then would replace a good file with an unseeded one. Taken every PERSIST_EVERY_MS and at a clean stop.
+   */
+  #persist(now: number): boolean {
+    this.#lastSaveMs = now;
+    const lookback = (this.#d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
+    let state: ReturnType<LiveStrategy['persistable']>;
+    try {
+      state = this.#strategy.persistable(now - lookback);
+    } catch (e) {
+      this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
+      return false;
+    }
+    if (state === null) {
+      if (!this.#saveRefused) this.#d.log('Saved state not written: the seed is not applied yet.');
+      this.#saveRefused = true;
+      return false;
+    }
+    try {
+      saveState(join(this.#d.config.stateDir, PERSIST_FILE), state);
+      return true;
+    } catch (e) {
+      this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
+      return false;
+    }
   }
 
   /**
@@ -806,6 +855,7 @@ export class Worker {
     if (reserved === null) d.log('Deployer index: no coverage seeded (no free slot ahead of the live events); H14 not covered until the look-back passes.');
     const pos = (k: number): Moment => ({ slot: reserved ?? 0n, txIndex: 0, ixIndex: k, receivedAt: now });
     this.#fact(SEED_KEY, {
+      ...(this.#restored === null ? {} : { state: { index: this.#restored.index, labeller: this.#restored.labeller } }),
       creates: order(result.mode === 'fill' ? saved.creates : [...saved.creates, ...result.creates]),
       coverage: order(coverage.filter((e) => e.key.startsWith('coverage:creates:') && compareMoments(e.moment, asOf) <= 0)),
       fill: order(result.mode === 'fill' ? result.creates : []),
@@ -847,7 +897,7 @@ export class Worker {
 
   /** A position's mark when read within the last 30 s (RUN-1c's MARK_MAX_AGE_MS); an older one is no price. */
   #freshMark(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
-    const m = this.#strategy.markOf(pid);
+    const m = this.#strategy.saleQuoteOf(pid);
     return m === null || this.#d.timers.now() - m.atMs > 30_000 ? null : m;
   }
 
@@ -881,7 +931,7 @@ export class Worker {
     const positions = openPositionsHealth(Object.values(this.#engine.book.positions), {
       openedAt: (id) => this.#account.state.trades.find((t) => t.positionId === id)?.openedAtMs ?? null,
       plan: (id) => savedPlans[id]?.plan ?? null,
-      mark: (id) => this.#strategy.markOf(id),
+      mark: (id) => this.#strategy.saleQuoteOf(id),
     });
     const ops = this.#d.ops?.() ?? { quota: [], lookups: { counts: LOOKUP_BOUNDS_MS.map(() => 0).concat(0) } };
     return {
@@ -952,6 +1002,8 @@ export class Worker {
     try {
       this.step();
     } catch {}
+    // A clean stop saves the deployer state last thing (a crash keeps the last periodic save).
+    if (code === EXIT.clean) this.#persist(d.timers.now());
     // Past this point the state files belong to the next process: a simulation answering late writes nothing.
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);

@@ -198,7 +198,8 @@ export class DailyBudget {
     try {
       const o = JSON.parse(readFileSync(path, 'utf8')) as unknown;
       if (!isObj(o) || o['version'] !== 1 || typeof o['day'] !== 'string' || !Number.isSafeInteger(o['spent']) || (o['spent'] as number) < 0) throw new Error('bad budget file');
-      return new DailyBudget(path, daily, day, o['day'] === day ? (o['spent'] as number) : 0);
+      // A file dated today or later (the clock stepped back since it was written) keeps its spend (WORKER-1c).
+      return o['day'] >= day ? new DailyBudget(path, daily, o['day'] as string, o['spent'] as number) : new DailyBudget(path, daily, day, 0);
     } catch {
       return new DailyBudget(path, daily, day, daily);
     }
@@ -217,9 +218,18 @@ export class DailyBudget {
     writeAtomic(this.#path, JSON.stringify({ version: 1, day: this.#day, spent: this.#spent }));
   }
 
+  /** Gives back credits reserved by `spend` and not used (never below zero). */
+  refund(credits: number, nowMs: number): void {
+    if (!Number.isSafeInteger(credits) || credits < 0) throw new RangeError('credits must be a non-negative integer');
+    this.#roll(nowMs);
+    this.#spent = Math.max(0, this.#spent - credits);
+    writeAtomic(this.#path, JSON.stringify({ version: 1, day: this.#day, spent: this.#spent }));
+  }
+
   #roll(nowMs: number): void {
     const day = dayOf(nowMs);
-    if (day !== this.#day) {
+    // Only forward: a clock stepped back (NTP, a VM restore) keeps today's spend (WORKER-1c review).
+    if (day > this.#day) {
       this.#day = day;
       this.#spent = 0;
     }
