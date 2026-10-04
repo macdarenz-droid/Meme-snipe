@@ -1,7 +1,7 @@
 // FACTS-1d review: the producer's chain volume is kept one row at a time. A restart loads the whole persisted window at
 // once (365 days, 8,760 rows), so the cost must grow with the rows, not with their square, and the answer must stay
 // exactly `dailyChainVolume`'s.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { TRIAL_POLICY } from '../../src/config/index.ts';
 import { CURVE_VOLUME_KEY } from '../../src/gates/index.ts';
 import { ChainVolumeDays, RAW, dailyChainVolume, producerOptions, type VolumeHour } from '../../src/facts/index.ts';
@@ -11,6 +11,7 @@ const DAY = 86_400_000;
 const HOUR = 3_600_000;
 const D0 = 20_654; // 2026-07-20
 const KEEP = producerOptions(TRIAL_POLICY).volumeKeepMs;
+const ORIGINAL_ADD = ChainVolumeDays.prototype.add;
 const window = (days: number): VolumeHour[] =>
   Array.from({ length: days * 24 }, (_, i) => ({ hourStartMs: D0 * DAY + i * HOUR, lamports: BigInt(1 + (i % 97)) * 1_000_000_000n, covered: true }));
 
@@ -79,16 +80,31 @@ describe('ChainVolumeDays', () => {
     expect(v.steps).toBeLessThanOrEqual(2 * rows.length);
   });
 
-  it('the producer loads a 365-day window at once in well under a second, and releases one fact per completed day', () => {
-    const rows = window(365);
-    const w = new FactWorld(producerOptions(TRIAL_POLICY));
-    const at = (D0 + 366) * DAY;
-    const t0 = performance.now();
-    rows.forEach((r, i) => w.push(offchain(RAW.volumeHour, r, BigInt(1 + i), at)));
-    const ms = performance.now() - t0;
-    expect((w.last(CURVE_VOLUME_KEY) as { days: unknown[] }).days.length).toBe(365);
-    expect(w.facts(CURVE_VOLUME_KEY).length).toBe(365);
-    // Measured about 0.3 s here; the old rule (every kept hour re-summed on each row) took about 9 s. 3 s leaves room.
-    expect(ms).toBeLessThan(3_000);
+  it('the producer loads a 365-day window at once in linear work, and releases one fact per completed day', () => {
+    // Counted, not timed, so a busy machine cannot fail it: the producer's own ChainVolumeDays is captured through its
+    // add and its hour visits read after the load. The old rule (every kept hour re-summed on each row) visits about
+    // rows² / 2, 38 million here; the bound is 2 visits a row.
+    const seen = new Set<ChainVolumeDays>();
+    const add = vi.spyOn(ChainVolumeDays.prototype, 'add').mockImplementation(function (this: ChainVolumeDays, r: VolumeHour) {
+      seen.add(this);
+      return ORIGINAL_ADD.call(this, r);
+    });
+    const days = vi.spyOn(ChainVolumeDays.prototype, 'days');
+    try {
+      const rows = window(365);
+      const w = new FactWorld(producerOptions(TRIAL_POLICY));
+      const at = (D0 + 366) * DAY;
+      rows.forEach((r, i) => w.push(offchain(RAW.volumeHour, r, BigInt(1 + i), at)));
+      expect((w.last(CURVE_VOLUME_KEY) as { days: unknown[] }).days.length).toBe(365);
+      expect(w.facts(CURVE_VOLUME_KEY).length).toBe(365);
+      // One incremental add a row, through one instance, and the days listed once a released fact.
+      expect(seen.size).toBe(1);
+      expect(add).toHaveBeenCalledTimes(rows.length);
+      expect(days).toHaveBeenCalledTimes(365);
+      expect([...seen][0]!.steps).toBeLessThanOrEqual(2 * rows.length);
+    } finally {
+      add.mockRestore();
+      days.mockRestore();
+    }
   });
 });
