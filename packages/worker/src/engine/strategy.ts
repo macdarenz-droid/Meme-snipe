@@ -195,6 +195,12 @@ export const universeOfKey = (key: string): ExitUniverse | null => {
 /** A sell quote the pool refused: the one #sellQuote failure that is a real refusal, not missing market data. */
 const NO_QUOTE = 'no quote: ';
 
+/** A saved entry plan the exit rules can run on: every amount a bigint, the open time a number (EXIT-1e). */
+const runnablePlan = (p: Record<string, unknown>): boolean =>
+  typeof p['openedAtMs'] === 'number' && Number.isFinite(p['openedAtMs'])
+  && ['notional', 'riskUnit', 'stopPrice', 'entryReserve'].every((k) => typeof p[k] === 'bigint')
+  && (p['universe'] === undefined || typeof p['universe'] === 'string');
+
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
   readonly #settings: ExitSettings;
@@ -398,7 +404,12 @@ export class LiveStrategy implements Strategy {
     }
     let n = 0;
     for (const [pid, s] of Object.entries(v['exits'])) {
-      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars'])) continue;
+      // A saved exit the exit rules could not run on is refused, never applied: its position falls back to the plan from
+      // its fill (the policy-maximum stop), so one bad entry neither stalls nor crashes the management of the others.
+      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan'])) {
+        out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
+        continue;
+      }
       const saved = s as unknown as SavedExit;
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
