@@ -1664,6 +1664,8 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - The copy or link click reaching the row; the journal without the buttons.
     - Review N1/N2: Unrealized as the rest less the whole entry; Unrealized or Costs rounded toward zero; P&L rounded on its own (in `openUsd` and in the served row).
     - The exit fee: left out; charged with nothing left; from the ladder's second rung; without the tip.
+- **2026-10-04 · A repeat fetch of a known transaction is found, not "not found".** `TxFetcher.fetch` resolved to null for a signature it had already put on the feed, and null means not found. So a cut trade log whose transaction the stream had already fetched became a false `coverage:rugs:gap` (H14 then not covered, the candidate refused), and the delay probe recorded `found: false` for a create the creates watch had fetched. The fetcher now remembers each fetched signature's slot and first arrival (wall and monotonic time, a few dozen bytes; never the record) for the same newest 50,000, and a repeat ask resolves to that arrival marked `again`. The probe records the first confirmed arrival. Evidence: `packages/worker/test/tx-fetcher-known.test.ts` (all four fail on the base); hand mutants M1–M5 are killed.
+
 
 ## Coherent reads (READ-COHERENT, `packages/worker/src/facts/{readers,source}.ts`, `engine/strategy.ts`, core `RAW.batchOpen/batchClose`)
 
