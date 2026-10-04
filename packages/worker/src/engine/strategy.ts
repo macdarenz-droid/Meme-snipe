@@ -201,6 +201,11 @@ export interface AccountFact {
   readonly paper: boolean;
   /** Rent of the one-time accounts this wallet still lacks (0 once its setup made them): risk's `rent.oneTime`. */
   readonly oneTimeRent: bigint;
+  /**
+   * ACCOUNT-RATE (risk ruling): closed trades not yet valued in dollars (booked with no fresh SOL price). Their loss is
+   * not in `history` yet, so no entry is judged until a snapshot with none is released. Absent in older recordings: 0.
+   */
+  readonly unvalued?: number;
 }
 
 /** Exit state of one position, saved after every step so a restart resumes the same stop and trail. */
@@ -1499,6 +1504,10 @@ export class LiveStrategy implements Strategy {
     }
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
+    if ((acct.unvalued ?? 0) > 0) {
+      const detail = `${acct.unvalued} closed trade(s) not yet valued in dollars; waiting for a snapshot with them valued`;
+      return this.#fail(`account unvalued: ${detail}`, [{ gate: 'worker', code: 'account-unvalued', detail }]);
+    }
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
     const rt = quoter(spend);
     if (!rt.ok) return this.#fail(`no round trip: ${rt.reason}`, [{ gate: 'worker', code: 'no-round-trip', detail: rt.reason }]);

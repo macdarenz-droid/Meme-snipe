@@ -134,13 +134,14 @@ describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
     const fact = a.fact(ledger, openBook, NO_LATCHES, PX, T, openLegs);
     const each = realNet.signaturesPerTx * realNet.baseFeePerSignature + 500_000n;
-    // Each failed attempt dated when sent (today), rounded up on its own; the rent at the entry (yesterday).
+    // Each failed attempt dated when the account first saw it (the settle at T, after its send), rounded up on its own;
+    // the rent at the entry (yesterday).
     const eachUsd = lamportsToMicroUsd(each as Lamports, PX, 'ceil');
     expect(eachUsd).toBeGreaterThan(lamportsToMicroUsd(each as Lamports, PX, 'floor'));
     const feesUsd = 3n * eachUsd;
     const rentUsd = lamportsToMicroUsd(realNet.tokenAccountRent as Lamports, PX, 'ceil');
     expect(fact.history.costs.filter((c) => c.kind === 'open_trade')).toEqual([
-      ...sigs.map((_, k) => ({ atMs: T - 3 * HOUR + k * 60_000, amount: eachUsd, kind: 'open_trade' })),
+      ...sigs.map(() => ({ atMs: T, amount: eachUsd, kind: 'open_trade' })),
       { atMs: T - 20 * HOUR, amount: rentUsd, kind: 'open_trade' },
     ]);
     // The position marked at its basis (no price move): only these costs make the day's and week's loss.
@@ -153,6 +154,33 @@ describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
     const sameDay = melbourneDay(T).start <= T - 20 * HOUR;
     expect(snap.dayLoss).toBeGreaterThanOrEqual(feesUsd + (sameDay ? rentUsd : 0n));
     expect(snap.weekLoss).toBeGreaterThanOrEqual(feesUsd);
+    ledger.close();
+  });
+
+  it('a failed fee sent before midnight and first seen after it counts in today\'s day loss, and a restart keeps that date', () => {
+    const dir = tempState();
+    const file = accountFile(dir);
+    const day = melbourneDay(T);
+    const a = new PaperAccount(file, usd(20), day.start - 30 * HOUR, 0n);
+    a.price(usd(100), day.start - 25 * HOUR);
+    const late: PaperLegs = { ...openLegs, attempts: new Map([['e1', { ...attempt('in', 'e1', 'entry', 20_000_000n), sentAtMs: day.start - 20 * HOUR }], ['f1', failed('f1', day.start - HOUR)]]) };
+    const b = { ...openBook, intents: { ...openBook.intents, out: { ...(openBook.intents as Record<string, object>)['out'], attempts: [{ signature: 'f1' }] } } } as unknown as Book;
+    a.filled({ ...base, purpose: 'entry', book: b, atMs: day.start - 20 * HOUR }, usd(100), late);
+    // Resolved (seen) after midnight.
+    a.settle(b, late, usd(100), day.start + HOUR);
+    const each = lamportsToMicroUsd((realNet.signaturesPerTx * realNet.baseFeePerSignature + 500_000n) as Lamports, usd(100), 'ceil');
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const at = (acct: PaperAccount, now: number) => acct.fact(ledger, b, NO_LATCHES, usd(100), now, late).history.costs.filter((c) => c.kind === 'open_trade' && c.amount === each);
+    expect(at(a, T)).toEqual([{ atMs: day.start + HOUR, amount: each, kind: 'open_trade' }]);
+    // A restart (a new process on the same file, later): the same date.
+    expect(at(new PaperAccount(file, usd(20), T, 0n), T)).toEqual([{ atMs: day.start + HOUR, amount: each, kind: 'open_trade' }]);
+    const fact = a.fact(ledger, b, NO_LATCHES, usd(100), T, late);
+    const marked = { ...fact.history, openPositions: fact.history.openPositions.map((x) => ({ ...x, mark: x.notional, markAtMs: T })) };
+    const input = {
+      session: startSession(TRIAL_POLICY), mode: 'paper' as const, clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) },
+      account: marked, latches: NO_LATCHES, market: { solPrice: { value: usd(100), atMs: T }, solBalance: fact.solBalance, regime: 'unknown' as const },
+    };
+    expect(riskSnapshot(input)!.dayLoss).toBeGreaterThanOrEqual(each);
     ledger.close();
   });
 
@@ -202,8 +230,13 @@ describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
     // While open, the failed fees and rent are open-trade costs.
     expect(a.fact(ledger, openBook, NO_LATCHES, usd(100), T - HOUR, openLegs).history.costs.filter((c) => c.kind === 'open_trade').length).toBeGreaterThan(0);
+    a.settle(openBook, openLegs, usd(100), T - 2 * HOUR);
+    expect(Object.keys(a.state.openFeesSeen ?? {}).sort()).toEqual(sigs);
     a.filled({ ...base, purpose: 'exit', book: closedBook, atMs: T - HOUR }, usd(100), closedLegs);
     expect(a.state.trades[0]!.closedAtMs).toBe(T - HOUR);
+    // The first-seen notes go with the open trade (account.json stays bounded).
+    a.settle(closedBook, closedLegs, usd(100), T);
+    expect(a.state.openFeesSeen).toEqual({});
     expect(a.fact(ledger, closedBook, NO_LATCHES, usd(100), T, closedLegs).history.costs.filter((c) => c.kind === 'open_trade')).toEqual([]);
     ledger.close();
   });

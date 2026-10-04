@@ -476,5 +476,37 @@ describe('ACCOUNT-RATE: restarts, missed fills and stale prices', () => {
     expect(trade().pricedLate).toEqual(['close']);
     await h.worker.stop();
   });
+
+  it('risk ruling: while a close is unvalued no entry is approved; on the event the fresh price returns, the candidate is refused, not judged on a day missing that loss', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    const open = () => Object.values(h.worker.book.positions).find((p) => p.status === 'open');
+    expect(await until(m, () => open() !== undefined, 30_000, tick(m))).toBe(true);
+    const pid = open()!.id;
+    // The price feed goes quiet; the position is closed by its flat-time rule (about break-even, so no loss latch).
+    m.omit = new Set([SOL_PRICE_KEY]);
+    const end = m.now + 20 * 60_000;
+    while (h.worker.book.positions[pid]?.status !== 'closed' && m.now < end) await m.run(1_000, 1_000, tick(m));
+    expect(h.worker.book.positions[pid]?.status).toBe('closed');
+    const trade = () => accountFile(h.stateDir).read(null as unknown as AccountState).trades.find((x) => x.positionId === pid)!;
+    expect(trade().netPnl).toBeNull();
+    // Streams fresh again, still no price; then the price returns, with a candidate due on that same event.
+    await m.run(2_000, 400, tick(m));
+    const seq = h.worker.health().journal_seq;
+    m.omit = new Set();
+    const at = m.now;
+    await m.run(6_000, 400, tick(m));
+    const after = lines(h.stateDir).filter((l) => l.seq > seq && l.kind === 'decision');
+    const reasons = (l: JournalLine) => ((l.reasons ?? []) as string[]).join(' | ');
+    // On the price's own event: refused for the unvalued close, never approved.
+    const sameEvent = after.filter((l) => Date.parse(l.ts) === at);
+    expect(sameEvent.some((l) => reasons(l).includes('account unvalued'))).toBe(true);
+    expect(sameEvent.some((l) => l['action'] === 'approve_risk')).toBe(false);
+    expect(trade().netPnl).not.toBeNull();
+    // Once the valued snapshot is out, the next candidate is judged with the loss in it (and here, entered).
+    expect(after.some((l) => l['action'] === 'approve_risk' && Date.parse(l.ts) > at)).toBe(true);
+    await h.worker.stop();
+  });
 });
 

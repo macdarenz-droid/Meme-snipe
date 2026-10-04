@@ -110,10 +110,16 @@ export interface AccountState {
   /** The highest economic NAV seen since the last kill-switch re-arm (R10's NAV high-water mark reads it). */
   navPeak?: { readonly atMs: number; readonly nav: MicroUsd };
   /**
-   * Fees of entries that never filled (the backtest's stray costs, PAPER-1), by signature: when the attempt was sent,
-   * lamports, and micro-dollars at the SOL price when it was booked (rounded up). Supervisor-approved stored data.
+   * Fees of entries that never filled (the backtest's stray costs, PAPER-1), by signature: when booked (never before the
+   * send, ACCOUNT-RATE F3), lamports, and micro-dollars at the SOL price when it was booked (rounded up).
+   * Supervisor-approved stored data.
    */
   strayFees?: Record<string, StrayFee>;
+  /**
+   * ACCOUNT-RATE F1: when the account first saw each failed attempt of a trade still open (`settle`), by signature:
+   * its open-trade cost is dated max(sent, first seen), and a restart keeps that date. Dropped once the trade closes.
+   */
+  openFeesSeen?: Record<string, number>;
   /** Stray fees from before the current Melbourne week, folded into one total: every attempt sent at or before `atMs`. */
   strayFolded?: StrayFee;
 }
@@ -283,6 +289,7 @@ export class PaperAccount {
    */
   settle(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): boolean {
     let moved = false;
+    const seen = this.#noteOpenFees(book, legs, nowMs);
     for (const t of this.#s.trades) {
       if (t.closedAtMs !== null) continue;
       const before = t.booked;
@@ -310,8 +317,42 @@ export class PaperAccount {
       }
     }
     const folded = this.#fold(book, legs, nowMs);
-    if (moved || folded) this.#file.write(this.#s);
+    if (moved || folded || seen) this.#file.write(this.#s);
     return moved;
+  }
+
+  /**
+   * ACCOUNT-RATE F1: notes when each failed attempt of an open trade was first seen (max of its send and now), and drops
+   * the notes of trades no longer open. True when the notes changed.
+   */
+  #noteOpenFees(book: Book, legs: PaperLegs, nowMs: number): boolean {
+    const now = new Set<string>();
+    let changed = false;
+    const notes = this.#s.openFeesSeen ?? {};
+    for (const p of Object.values(book.positions)) {
+      if (p.status === 'closed' || lateFillOf(p.id) !== null) continue;
+      const t = this.#s.trades.find((x) => x.positionId === p.id);
+      for (const i of Object.values(book.intents)) {
+        if (i.intent.positionId !== p.id || (i.intent.purpose === 'entry' && isTerminal(i) && i.fills.length === 0)) continue;
+        for (const att of i.attempts) {
+          const a = legs.attempts.get(att.signature);
+          if (a === undefined || a.outcome !== 'failed') continue;
+          now.add(att.signature);
+          if (notes[att.signature] === undefined) {
+            notes[att.signature] = Math.max(a.sentAtMs ?? t?.openedAtMs ?? nowMs, nowMs);
+            changed = true;
+          }
+        }
+      }
+    }
+    for (const sig of Object.keys(notes)) {
+      if (!now.has(sig)) {
+        delete notes[sig];
+        changed = true;
+      }
+    }
+    if (changed) this.#s.openFeesSeen = notes;
+    return changed;
   }
 
   /**
@@ -397,7 +438,9 @@ export class PaperAccount {
           const a = legs.attempts.get(att.signature);
           if (a === undefined || a.outcome !== 'failed') continue;
           const f = feeParts(legs.network, a.priorityFee, a.outcome);
-          cost(f.base + f.priority + f.tip, a.sentAtMs ?? t?.openedAtMs ?? nowMs);
+          // Dated when the account first saw it (never before its send), so a fee sent before midnight and found after
+          // counts in the day it was found; not yet noted by `settle`: now.
+          cost(f.base + f.priority + f.tip, this.#s.openFeesSeen?.[att.signature] ?? Math.max(a.sentAtMs ?? t?.openedAtMs ?? nowMs, nowMs));
         }
       }
       if (t === undefined) continue;
@@ -445,6 +488,8 @@ export class PaperAccount {
     return {
       history, latches, solBalance: this.#s.walletLamports === null ? null : { value: this.#s.walletLamports as Lamports, atMs: nowMs }, paper: true,
       oneTimeRent: this.#s.oneTimePaid === true ? 0n : this.#oneTimeRent,
+      // A close booked with no fresh SOL price is left out of `closedTrades` until `priceLate` values it: risk is told.
+      unvalued: this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl === null).length,
     };
   }
 }
