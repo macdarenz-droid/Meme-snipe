@@ -55,6 +55,9 @@ export interface CounterfactualTrade {
   readonly censored: boolean;
   /** Why it is censored (null when it is not): never imputed, G3 reports it as "not proven: extend the run". */
   readonly censoredReason: string | null;
+  /** `recording-end`: open when the recording ends (a longer run can close it). `coverage`: a gap, a boot's end or the
+   *  tail cap left its path unknown (no wait closes it). */
+  readonly censoredKind: 'recording-end' | 'coverage' | null;
   readonly exitReasons: readonly string[];
   /** Validity checks the report refuses on: events the scoring book or ledger refused, positions in other mints, and
    *  the paper seed the scoring worker ran (its `start` line). */
@@ -171,7 +174,7 @@ export const scoreCounterfactual = async (o: CounterfactualInput): Promise<Count
       })(),
     };
     await worker.stop();
-    const none = { mint: o.mint, entered: false, enteredAtMs: null, closedAtMs: null, cost: null, net: null, r: null, censored: false, censoredReason: null, exitReasons: [], check };
+    const none = { mint: o.mint, entered: false, enteredAtMs: null, closedAtMs: null, cost: null, net: null, r: null, censored: false, censoredReason: null, censoredKind: null, exitReasons: [], check };
     if (position === undefined) return none;
     const entry = book.intents[position.entryIntentId];
     const cost = entry === undefined ? null : entry.fills.reduce((t, f) => t + f.sol + f.fees, 0n);
@@ -189,11 +192,12 @@ export const scoreCounterfactual = async (o: CounterfactualInput): Promise<Count
       ? `the path crosses the end of a boot at ${new Date(restart).toISOString()}: the pool's stream is not covered past a boot's last frame`
       : gapCrossed(o.frames, poolAddress, fromMs, toMs);
     if (crossed !== null) {
-      return { mint: o.mint, entered: true, enteredAtMs: trade?.openedAtMs ?? null, closedAtMs: null, cost, net: null, r: null, censored: true, censoredReason: crossed, exitReasons: [], check };
+      return { mint: o.mint, entered: true, enteredAtMs: trade?.openedAtMs ?? null, closedAtMs: null, cost, net: null, r: null, censored: true, censoredReason: crossed, censoredKind: 'coverage', exitReasons: [], check };
     }
     return {
       mint: o.mint, entered: true, enteredAtMs: trade?.openedAtMs ?? null, closedAtMs: closed ? trade!.closedAtMs : null, cost,
       net: closed ? trade!.netLamports : null, r: closed ? Number(trade!.netLamports) / Number(cost) : null, censored: !closed,
+      censoredKind: closed ? null : 'recording-end',
       censoredReason: closed ? null : `position ${position.status} when the recording ends (last frame ${o.frames.at(-1)?.receivedAt ?? 'none'}): the pool's state after it was not recorded`, exitReasons: closed ? [...(trade!.exitReasons ?? [])] : [], check,
     };
   } finally {
