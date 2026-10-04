@@ -13,34 +13,40 @@ import { ServerCard } from './Server.tsx';
 import { EMPTY_SESSION, type SessionView } from './types.ts';
 
 const NOT_SET = 'Not set';
+/** A limit the worker's policy does not have (review N2): "None", never "Not set", which reads as missing setup. */
+const NONE = 'None';
 
-const usd = (v: number | null) => (v === null ? NOT_SET : formatUsd(v));
-
-export function SessionCard({ session }: { session: SessionView }) {
+export function SessionCard({ session, label = sessionLabel(session), onStart }: { session: SessionView; label?: string; onStart?: () => void }) {
+  // A served session states every limit; one it leaves null is a limit its policy does not have. Without one, a value
+  // is expected but missing.
+  const usd = (v: number | null) => (v !== null ? formatUsd(v) : session.workerConnected ? NONE : NOT_SET);
   const rows: [string, string][] = [
     ['Mode', session.mode === 'live' ? 'Live' : 'Paper'],
     ['Bankroll', usd(session.bankrollUsd)],
     ['Entry', session.entryUsd === null ? NOT_SET : session.maxEntryUsd === null ? formatUsd(session.entryUsd) : `${formatUsd(session.entryUsd)}, max ${formatUsd(session.maxEntryUsd)}`],
     ['Open positions', session.maxOpenPositions === null ? NOT_SET : String(session.maxOpenPositions)],
     ['Daily loss', usd(session.dailyLossLimitUsd)],
+    ['Weekly loss', usd(session.weeklyLossLimitUsd)],
     ['Session loss', usd(session.sessionLossLimitUsd)],
   ];
   return (
-    <Section title="Session" aside={<Badge>{sessionLabel(session)}</Badge>}>
+    <Section title="Session" aside={<Badge>{label}</Badge>}>
       <dl className="kv">
         {rows.map(([k, v]) => (
           <div key={k}>
             <dt>{k}</dt>
-            <dd className={`num ${v === NOT_SET ? 'muted' : ''}`}>{v}</dd>
+            <dd className={`num ${v === NOT_SET || v === NONE ? 'muted' : ''}`}>{v}</dd>
           </div>
         ))}
       </dl>
-      <div className="actions">
-        <button type="button" className="button button-primary" disabled={!session.workerConnected || session.state === 'running'}>
-          Start paper session
-        </button>
-        {!session.workerConnected && <span className="muted small">Worker not connected</span>}
-      </div>
+      {/* Only a worker that accepts a start from the app, with a start the app can send, gets the button: never a dead one (APP-HOME). */}
+      {session.startable && onStart !== undefined && session.state !== 'running' && (
+        <div className="actions">
+          <button type="button" className="button button-primary" onClick={onStart}>
+            Start paper session
+          </button>
+        </div>
+      )}
     </Section>
   );
 }
@@ -66,13 +72,15 @@ function saveMode(m: Mode): void {
 
 interface SnipeProps {
   session?: SessionView;
+  /** The Session card's state label (the shell's session line), when it comes from the worker. */
+  sessionState?: string;
   /** Sample data (Samples screen). Without it the screens read the saved server. */
   api?: DashboardApi;
   /** First calendar month per mode (Samples screen). */
   months?: Partial<Record<Mode, string>>;
 }
 
-export function Snipe({ session = EMPTY_SESSION, api, months }: SnipeProps) {
+export function Snipe({ session = EMPTY_SESSION, sessionState, api, months }: SnipeProps) {
   const [mode, setMode] = useState<Mode>(() => savedMode(session.mode));
   const conn = useConnection();
   const { origin } = conn;
@@ -83,7 +91,7 @@ export function Snipe({ session = EMPTY_SESSION, api, months }: SnipeProps) {
   };
   const sessionCard =
     mode === session.mode ? (
-      <SessionCard session={session} />
+      <SessionCard session={session} {...(sessionState === undefined ? {} : { label: sessionState })} />
     ) : (
       <Section title="Session">
         <Empty title={mode === 'live' ? 'Live trading off' : 'No session'} />

@@ -204,7 +204,14 @@ describe('deploy code', () => {
 
 describe('off-server backup gate', () => {
   it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
-    expect(JSON.parse(read('ops/host-config.json'))).toEqual({ offsite_backup: false, worker: 'release' });
+    expect(JSON.parse(read('ops/host-config.json'))).toEqual({
+      offsite_backup: false, worker: 'release',
+      // PRACTICE-ON: the S0 shakedown (packages/worker/test/practice-on.test.ts checks each value).
+      shakedown: {
+        ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092',
+        ZEROED_STANDINS: 'CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM', ZEROED_WALLET: 'FdmNGWTvFJfkioV6jPg6HCC1ng3T5vGo4fBKAgX3vTTf',
+      },
+    });
     expect(read('ops/host/install-main.sh')).not.toMatch(/enable[^\n]*zeroed-backup-offsite/);
     const send = read('ops/host/files/usr/local/sbin/zeroed-backup-offsite');
     expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeGreaterThan(0);
@@ -437,5 +444,138 @@ describe('workers.dev subdomain (ops/deploy/cf-subdomain.sh) against a fake Clou
     const other = await run({ status: 404, body: { success: false, errors: [{ code: 7003, message: 'Could not route' }] } });
     expect(other.status).not.toBe(0);
     expect(other.calls.map((c) => c.method)).toEqual(['GET']);
+  });
+});
+
+describe('daily summary deploy step (OPS-SUMMARY, ops/deploy/reports.sh)', () => {
+  /** The workflow step's env block, as name -> source expression. */
+  const stepEnv = (name: string): Record<string, string> => {
+    const wf = read('.github/workflows/deploy.yml').split('\n');
+    const start = wf.findIndex((l) => l.trim() === `- name: ${name}`);
+    expect(start, name).toBeGreaterThan(0);
+    const env: Record<string, string> = {};
+    let inEnv = false;
+    for (const l of wf.slice(start + 1)) {
+      if (/^\s{6}- /.test(l)) break;
+      if (/^\s{8}env:\s*$/.test(l)) inEnv = true;
+      else if (/^\s{8}\S/.test(l)) inEnv = false;
+      else if (inEnv) {
+        const m = /^\s{10}([A-Z_]+): (.*)$/.exec(l);
+        if (m) env[m[1]!] = m[2]!;
+      }
+    }
+    return env;
+  };
+
+  it('runs only after the tag step and the tooling succeeded', () => {
+    const wf = read('.github/workflows/deploy.yml');
+    const step = wf.slice(wf.indexOf('- name: Set up the daily summary'));
+    expect(/^\s+if: (.*)$/m.exec(step)?.[1]).toBe("${{ !cancelled() && steps.tag.outcome == 'success' && steps.tooling.outcome == 'success' }}");
+    expect(wf).toMatch(/- name: Move the deploy tag\n\s+id: tag\n/);
+    expect(wf).toMatch(/- name: Install the locked watchdog tooling[^\n]*\n\s+id: tooling\n/);
+  });
+
+  it('the step gets exactly these secrets and the DATA_REPO variable, and DATA_STORE_TOKEN reaches no other step', () => {
+    const env = stepEnv('Set up the daily summary');
+    const secrets = Object.values(env).flatMap((v) => [...v.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1])).sort();
+    expect(secrets).toEqual(['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'DATA_STORE_TOKEN']);
+    expect(env['DATA_REPO']).toBe('${{ vars.DATA_REPO }}');
+    const wf = read('.github/workflows/deploy.yml');
+    expect(wf.match(/secrets\.DATA_STORE_TOKEN/g)).toHaveLength(1);
+    expect(wf).toContain('run: bash ops/deploy/reports.sh');
+    // The script names no other secret to set, and never the heartbeat key.
+    const s = read('ops/deploy/reports.sh').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    expect([...s.matchAll(/secret put (\S+)/g)].map((m) => m[1])).toEqual(['REPORTS_TOKEN']);
+    expect(s).not.toMatch(/HEARTBEAT_HMAC_KEY|TELEGRAM|DEPLOY_CODE|secret (delete|bulk|list)|--secrets-file/);
+  });
+
+  /**
+   * reports.sh against a fake Cloudflare API, a stand-in wrangler and a small repository whose deploy tag is one commit
+   * behind its tip: the stand-in logs which wrangler.toml it got (the tagged commit's says "tagged").
+   */
+  async function deploy(env: Record<string, string>, o: { tag?: boolean } = {}) {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: true, result: { subdomain: 'owners-pick' } }));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const dir = mkdtempSync(join(tmpdir(), 'zeroed-reports-'));
+    const repo = join(dir, 'repo');
+    const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { stdio: 'pipe' });
+    mkdirSync(join(repo, 'packages/ops'), { recursive: true });
+    execFileSync('git', ['init', '-q', repo]);
+    writeFileSync(join(repo, 'packages/ops/wrangler.toml'), 'tagged\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'tagged');
+    if (o.tag !== false) git('tag', 'deploy');
+    writeFileSync(join(repo, 'packages/ops/wrangler.toml'), 'tip\n');
+    git('commit', '-q', '-am', 'tip');
+    const log = join(dir, 'calls.log');
+    // A stand-in wrangler: records the config's content, the other arguments and what it read on stdin.
+    writeFileSync(join(dir, 'wrangler'), `#!/usr/bin/env bash\nset -euo pipefail\n[ "$1" = --config ] || exit 9\ncfg="$(cat "$2")"\nshift 2\nin=""\nif [ "\${1:-}" = secret ]; then in="$(cat)"; fi\nprintf 'CONFIG %s ARGS %s | STDIN %s\\n' "$cfg" "$*" "$in" >> "${log}"\nif [ "\${1:-}" = deploy ]; then echo "Deployed https://zeroed-watchdog.owners-pick.workers.dev"; fi\n`);
+    chmodSync(join(dir, 'wrangler'), 0o755);
+    const child = spawn('bash', [join(root, 'ops/deploy/reports.sh')], {
+      env: { PATH: process.env['PATH'] ?? '', CLOUDFLARE_API_URL: `http://127.0.0.1:${port}/client/v4`, WRANGLER: join(dir, 'wrangler'), GITHUB_REPOSITORY: 'macdarenz-droid/Meme-snipe', REPO_ROOT: repo, SKIP_TAG_FETCH: '1', ...env },
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const status = await new Promise<number | null>((r) => child.on('close', r));
+    server.close();
+    const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+    const worktrees = execFileSync('git', ['-C', repo, 'worktree', 'list'], { encoding: 'utf8' }).trim().split('\n').length;
+    rmSync(dir, { recursive: true, force: true });
+    return { status, out, calls, worktrees };
+  }
+  const TOKEN = 'github_pat_TESTtoken0123456789abcdefghij';
+  const FULL = { CLOUDFLARE_API_TOKEN: 'TESTcf', CLOUDFLARE_ACCOUNT_ID: 'acc', DATA_STORE_TOKEN: TOKEN, DATA_REPO: 'macdarenz-droid/zeroed-data' };
+
+  it('deploys the code with DATA_REPO and sets only REPORTS_TOKEN, the token on stdin and in no output', async () => {
+    const r = await deploy(FULL);
+    expect(r.status).toBe(0);
+    // From the deploy tag's commit, not the tip; the temporary worktree is removed afterwards.
+    expect(r.calls).toEqual([
+      'CONFIG tagged ARGS deploy --var DATA_REPO:macdarenz-droid/zeroed-data | STDIN ',
+      `CONFIG tagged ARGS secret put REPORTS_TOKEN | STDIN ${TOKEN}`,
+    ]);
+    expect(r.worktrees).toBe(1);
+    expect(r.calls.filter((c) => c.split(' | STDIN')[0]!.includes(TOKEN))).toEqual([]);
+    expect(r.out).not.toContain(TOKEN);
+    expect(r.out).toContain('Its other secrets are unchanged.');
+  });
+
+  it('changes nothing without the Cloudflare token or DATA_STORE_TOKEN', async () => {
+    for (const drop of ['CLOUDFLARE_API_TOKEN', 'DATA_STORE_TOKEN']) {
+      const env: Record<string, string> = { ...FULL };
+      delete env[drop];
+      const r = await deploy(env);
+      expect(r.status, drop).toBe(0);
+      expect(r.calls, drop).toEqual([]);
+      expect(r.out).toContain('the daily summary is not set up');
+    }
+  });
+
+  it('refuses a token that is not a GitHub token, and deploys nothing without a deploy tag', async () => {
+    for (const bad of ['has space 0123456789abcdefghij', 'short_tok', 'github_pat_ok0123456789abcdef;rm -rf /']) {
+      const r = await deploy({ ...FULL, DATA_STORE_TOKEN: bad });
+      expect(r.status, bad).not.toBe(0);
+      expect(r.calls, bad).toEqual([]);
+      expect(r.out).toContain('DATA_STORE_TOKEN has characters a GitHub token does not have.');
+      expect(r.out).not.toContain(bad);
+    }
+    const none = await deploy(FULL, { tag: false });
+    expect(none.status).not.toBe(0);
+    expect(none.calls).toEqual([]);
+    expect(none.out).toContain('No deploy tag');
+  });
+
+  it('refuses this public repository (any case), a missing or malformed DATA_REPO, before any call', async () => {
+    for (const repo of ['macdarenz-droid/Meme-snipe', 'MACDARENZ-DROID/MEME-SNIPE', '', 'https://github.com/x/y', 'zeroed-data']) {
+      const r = await deploy({ ...FULL, DATA_REPO: repo });
+      expect(r.status, repo).not.toBe(0);
+      expect(r.calls, repo).toEqual([]);
+      expect(r.out).not.toContain(TOKEN);
+    }
   });
 });

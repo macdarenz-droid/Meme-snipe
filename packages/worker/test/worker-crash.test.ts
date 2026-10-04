@@ -314,7 +314,7 @@ describe('(d) the delay probe survives a sample it cannot record', () => {
       },
       confirmed: async (sig) => {
         reads.push(sig);
-        return GOOD;
+        return { slot: GOOD.slot, at: 1_000_200, mono: 1, again: false };
       },
     });
     const seen = (signature: string): Frame => ({ seq: 0, receivedAt: 1_000_100, source: 'helius', backfilled: false, place: { at: 'offchain', slot: 1n }, duplicate: false, body: { type: 'seen', signature, slot: GOOD.slot, err: null, via, detail: null } });

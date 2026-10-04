@@ -40,6 +40,9 @@ const entered = async (): Promise<{ h: H; m: Market }> => {
   expect(await h.worker.reconcile()).toEqual({ ok: true });
   const m = await passingMarket(h, { heldPoolFacts: true });
   expect(await until(m, () => position(h)?.status === 'open', 30_000, tick(m))).toBe(true);
+  // The entry plan is made on the market event after the fill and saved with it: stopped before then, a restart has no
+  // plan for the position and sends it to sell-only recovery (EXIT-1g). These tests need the planned position.
+  expect(await until(m, () => h.worker.strategy.saved()[position(h)!.id] !== undefined, 30_000, tick(m))).toBe(true);
   return { h, m };
 };
 
@@ -145,8 +148,9 @@ describe('boundary marks from the marked account (RISK-MARK)', () => {
     const { h, m } = await entered();
     const openAt = m.now;
     const before = account(h).navPeak!;
-    // The price rises 30%: the marked NAV passes the peak taken before the entry, with the position still open.
-    expect(await until(m, () => account(h).navPeak!.atMs >= openAt, 20_000, tick(m, 1_300_000n))).toBe(true);
+    // The price rises 40%: the marked NAV passes the peak taken before the entry, with the position still open. (30% no
+    // longer does since PAPER-1: the token account's rent now leaves the paper wallet at entry, as it does on chain.)
+    expect(await until(m, () => account(h).navPeak!.atMs >= openAt, 20_000, tick(m, 1_400_000n))).toBe(true);
     expect(position(h)!.status).toBe('open');
     expect(account(h).navPeak!.nav).toBeGreaterThan(before.nav);
     await h.worker.stop();
