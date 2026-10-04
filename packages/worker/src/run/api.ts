@@ -118,8 +118,8 @@ export const views = {
     for (const p of Object.values(i.book.positions)) {
       if (p.status === 'exit_pending' || p.status === 'exit_requested') flags.add('exit-pending');
       if (p.status === 'exit_blocked') flags.add('exit-blocked');
-      // A due exit waiting for its first quote is pending; once it has waited the blocked-retry time it is an alert.
-      const since = p.status === 'open' ? i.waitingExits.get(p.id) : undefined;
+      // An exit waiting for a fresh quote is pending; once it has waited the blocked-retry time it is an alert.
+      const since = p.status === 'closed' ? undefined : i.waitingExits.get(p.id);
       if (since !== undefined) {
         flags.add('exit-pending');
         if (i.nowMs - since >= i.policy.exits.blockedRetryMs) flags.add('exit-blocked');
