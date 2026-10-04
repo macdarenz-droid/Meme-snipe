@@ -7,7 +7,8 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { placeBookings } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -354,7 +355,10 @@ export class Worker {
     // position whose saved plan is missing or refused (EXIT-1f).
     const openedAt: Record<string, number> = {};
     for (const e of this.#ledger.positionEvents()) if (e.status === 'open' && openedAt[e.positionId] === undefined) openedAt[e.positionId] = Number(e.ts);
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt }, startAt);
+    // Where each booking sits against the boots (live, or at a reconcile), from the journal's earlier lines (EXIT-1f N2).
+    const journalPath = join(c.stateDir, STATE_FILES.journal);
+    const bookedWhen = placeBookings(existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : null, openedAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen }, startAt);
     if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt);
     if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt);
     this.#drillToken = randomBytes(16).toString('hex');

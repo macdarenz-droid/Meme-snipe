@@ -353,4 +353,32 @@ describe('a restore the strategy cannot use never stalls exits (EXIT-1e review B
       expect(got.some((x) => x[0] === 'restore tracker refused')).toBe(true);
     }
   });
+
+  it('on the same restart, a reconcile-time booking opens at its slot dating when that is earlier, and a live booking keeps its exact time (EXIT-1f N2)', async () => {
+    const { replay } = await recordedBoot2();
+    const run = (when: string) => {
+      let opened: number[] = [];
+      let booked: number[] = [];
+      replay((v) => {
+        const r = v as { exits: Record<string, { plan: Record<string, unknown> }>; openedAt: Record<string, number> };
+        booked = Object.values(r.openedAt);
+        return {
+          exits: Object.fromEntries(Object.entries(r.exits).map(([pid, s]) => [pid, { ...s, plan: { ...s.plan, stopPrice: 'none' } }])),
+          openedAt: r.openedAt,
+          bookedWhen: Object.fromEntries(Object.keys(r.openedAt).map((pid) => [pid, when])),
+        };
+      }, 0, (st) => {
+        if (opened.length === 0) opened = Object.values(st.saved()).map((x) => x.plan.openedAtMs);
+      });
+      expect(booked).toHaveLength(1);
+      expect(opened).toHaveLength(1);
+      return { opened: opened[0]!, booked: booked[0]! };
+    };
+    const live = run('live');
+    expect(live.opened).toBe(live.booked);
+    // The slot bound (above the harness's 400 ms slots) dates the fill earlier than its booking: the earlier one wins.
+    const late = run('reconcile');
+    expect(late.booked).toBe(live.booked);
+    expect(late.opened).toBeLessThan(late.booked);
+  });
 });

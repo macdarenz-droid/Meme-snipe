@@ -141,6 +141,8 @@ export interface RestoreFact {
   readonly exits: Readonly<Record<string, SavedExit>>;
   /** Each position's entry fill moment as the ledger booked it (its first `open` event), by position (EXIT-1f). */
   readonly openedAt?: Readonly<Record<string, number>>;
+  /** Where each booking sits against the boots (`live`, `reconcile`, or `unplaced: why`), from the journal (EXIT-1f N2). */
+  readonly bookedWhen?: Readonly<Record<string, string>>;
 }
 
 /** Strategy settings that are not owner limits. The trading rules stay provisional until BT-2 registers U2's. */
@@ -357,6 +359,8 @@ export class LiveStrategy implements Strategy {
   #restoreSeen = false;
   /** Entry fill moments the ledger booked, from the restore fact: a fallback plan's exact open time (EXIT-1f). */
   readonly #bookedOpenAt = new Map<string, number>();
+  /** Where each booking sits against the boots (restore fact): only a reconcile-time booking may be late (EXIT-1f N2). */
+  readonly #bookedWhen = new Map<string, string>();
   /** Positions whose fallback plan waits for the first slot to date their fill (said once each). */
   readonly #planWaitsForSlot = new Set<string>();
   /** Said once per boot when positions wait for the restore. */
@@ -477,6 +481,9 @@ export class LiveStrategy implements Strategy {
     this.#restoreSeen = true;
     if (isObj(v) && isObj(v['openedAt'])) {
       for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
+    }
+    if (isObj(v) && isObj(v['bookedWhen'])) {
+      for (const [pid, when] of Object.entries(v['bookedWhen'])) if (typeof when === 'string') this.#bookedWhen.set(pid, when);
     }
     if (!isObj(v) || !isObj(v['exits'])) {
       out.push({ action: null, reasons: ['restore refused', 'malformed restore fact'] });
@@ -975,11 +982,17 @@ export class LiveStrategy implements Strategy {
     // booked it (exact, from the restore fact); else, with neither, the fill dated from its slot with an upper bound on
     // the slot time. A restart never restarts T_flat or T_max (EXIT-1f). Until the first slot is seen the slot dating
     // cannot be made, and nothing could be sent either: the plan waits for it.
+    // A fill booked during a boot's reconcile may have landed earlier (found by a status read after downtime): it opens
+    // at the earlier of its booking and its slot dating. A live booking is the fill's own moment and stays exact; one the
+    // journal could not place stays exact too, and says why (EXIT-1f N2).
     const fill = entry?.fills[0];
     const booked = this.#bookedOpenAt.get(pid);
+    const when = this.#bookedWhen.get(pid);
     let fillAt = ctx.now.receivedAt;
-    if (seed === undefined && booked !== undefined) fillAt = Math.min(booked, ctx.now.receivedAt);
-    else if (seed === undefined && fill !== undefined) {
+    if (seed === undefined && booked !== undefined && !(when === 'reconcile' && fill !== undefined)) {
+      fillAt = Math.min(booked, ctx.now.receivedAt);
+      if (when !== undefined && when.startsWith('unplaced')) out.push({ action: null, reasons: ['open time from the booking', p.mint, when] });
+    } else if (seed === undefined && fill !== undefined) {
       if (this.#height === null) {
         if (!this.#planWaitsForSlot.has(pid)) {
           this.#planWaitsForSlot.add(pid);
@@ -988,7 +1001,7 @@ export class LiveStrategy implements Strategy {
         return null;
       }
       const slots = this.#height > fill.slot ? this.#height - fill.slot : 0n;
-      fillAt = ctx.now.receivedAt - Number(slots) * this.#d.config.maxSlotMs;
+      fillAt = Math.min(ctx.now.receivedAt - Number(slots) * this.#d.config.maxSlotMs, booked ?? Number.POSITIVE_INFINITY);
     }
     if (seed === undefined || entry === undefined) {
       // A position the strategy did not plan (none should exist): manage it with the tightest stop the policy allows.
