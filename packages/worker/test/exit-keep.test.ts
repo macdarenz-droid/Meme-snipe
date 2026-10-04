@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SavedExit } from '../src/engine/strategy.ts';
 import { TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { StateFile } from '../src/run/state.ts';
-import { Market, makeWorker, passingMarket, until } from './worker-harness.ts';
+import { DEV, Market, SUPPLY, makeWorker, passingMarket, until } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const HELD = { heldPoolFacts: true } as const;
@@ -110,6 +110,98 @@ describe('a blocked-exit retry the ledger never booked is not spent (EXIT-KEEP N
       await h2.worker.stop();
     } finally {
       spy.mockRestore();
+    }
+  });
+});
+
+describe('a restart keeps the deployer sales and the flow it has seen (EXIT-KEEP B2)', () => {
+  const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+  it('the deployer sells 1.5% of supply, the worker restarts, the deployer sells 1% more: 2.5% exits the position (deployer_sell)', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const pre = new Market(h);
+    pre.create();
+    h.worker.step();
+    const m = await passingMarket(h, HELD);
+    expect(await until(m, 30_000, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), tick(m))).toBe(true);
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    m.swap('SellEvent', DEV, (SUPPLY * 150n) / 10_000n);
+    await m.run(2_000, 400, tick(m));
+    expect(h.worker.book.positions[pid]!.status).toBe('open');
+    await h.worker.kill();
+
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    await m2.run(2_000, 400, tick(m2));
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    // 1% more: under the 2% trigger alone, over it with the 1.5% seen before the restart.
+    m2.swap('SellEvent', DEV, (SUPPLY * 100n) / 10_000n);
+    expect(await until(m2, 20_000, () => h2.worker.book.positions[pid]!.status === 'closed', tick(m2))).toBe(true);
+    const exit = journal(h.stateDir).filter((l) => l['kind'] === 'exit' && l['boot'] === h2.worker.boot);
+    expect(exit[0]!['reasons']).toEqual(expect.arrayContaining(['thesis_lost']));
+    await h2.worker.stop();
+  });
+});
+
+describe('a restart keeps the negative-flow run it has seen (EXIT-KEEP B2)', () => {
+  const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+  const selling = (m: Market) => {
+    let k = 0;
+    return (): void => {
+      m.slot();
+      m.pool();
+      m.swap('SellEvent', `seller${m.now}-${k}`, 1_000_000n, 500_000_000n);
+      m.swap('BuyEvent', `buyer${m.now}-${k++}`, 1_000_000n, 100_000_000n);
+    };
+  };
+  it('three minutes of net selling, a restart, then net selling: the run of five ends within three minutes, not five fresh ones', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    expect(await until(m, 30_000, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), tick(m))).toBe(true);
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    // Start the run on a whole minute after the entry, and sell through three whole minutes.
+    const start = (Math.floor(m.now / 60_000) + 1) * 60_000;
+    await m.run(start - m.now, 400, tick(m));
+    await m.run(3 * 60_000, 400, selling(m));
+    expect(h.worker.book.positions[pid]!.status).toBe('open');
+    await h.worker.kill();
+
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    const restarted = m2.now;
+    expect(await until(m2, 6 * 60_000, () => h2.worker.book.positions[pid]!.status !== 'open', selling(m2))).toBe(true);
+    const exits = journal(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision' && (l['reasons'] as string[])[0] === 'exit');
+    expect(exits.flatMap((l) => l['reasons'] as string[]).some((r) => r.startsWith('negative_flow'))).toBe(true);
+    // Minutes 4 and 5 of the run close at most three minutes after the restart; five fresh minutes would take five.
+    expect(m2.now - restarted).toBeLessThan(3 * 60_000 + 30_000);
+    await h2.worker.stop();
+  });
+});
+
+describe('saved trade evidence the worker cannot act on is refused (EXIT-KEEP B2)', () => {
+  it('a malformed saved evidence refuses the saved exit: the position goes to sell-only recovery', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    expect(await until(m, 30_000, () => Object.keys(h.worker.strategy.saved()).length > 0, tick(m))).toBe(true);
+    const pid = Object.keys(h.worker.strategy.saved())[0]!;
+    await h.worker.kill();
+    const { exitsFile } = await import('../src/run/state.ts');
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    for (const bad of [{ sales: [{ id: 'x', atMs: 1, amount: 'lots' }], flow: [] }, { sales: [], flow: [{ startMs: 0, net: 1n, ids: [7] }] }, { deployer: { sellers: [], supply: 1n }, sales: [], flow: [] }]) {
+      file.write({ ...saved, [pid]: { ...saved[pid]!, evidence: bad as never } });
+      const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+      expect(await h2.worker.reconcile()).toEqual({ ok: true });
+      const m2 = new Market(h2, HELD);
+      await m2.run(1_200, 400, tick(m2));
+      const said = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision').map((l) => (l['reasons'] as string[]).slice(0, 2));
+      expect(said).toEqual(expect.arrayContaining([['restore entry refused', pid], ['recovery exit', pid]]));
+      await h2.worker.kill();
     }
   });
 });
