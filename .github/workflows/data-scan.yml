@@ -47,6 +47,9 @@
 # - Every checkout sets persist-credentials: false; inputs reach the shell only through
 #   env variables.
 name: data-scan
+# The source in the run's title lets archive-check.sh tell a Helius-only run (which never
+# reads the archive) from one that may read it; runs before this line have no source.
+run-name: "data-scan ${{ inputs.mode }} source=${{ inputs.source || 'archive' }}"
 
 on:
   workflow_dispatch:
