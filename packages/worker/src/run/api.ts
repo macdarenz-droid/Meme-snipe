@@ -4,7 +4,7 @@
 // to the owner's tailnet with `tailscale serve`, so the worker never binds anything else. Reads only: no command is
 // served here (pause stays with the watchdog's /pause; commands need their own auth level, never "it came from
 // loopback").
-import { exitsFor } from '../../../core/src/config/index.ts';
+import { PRICE_SCALE, exitsFor } from '../../../core/src/config/index.ts';
 import { createServer, type Server } from 'node:http';
 import type { Policy } from '../../../core/src/config/index.ts';
 import type { Book, ExitReason as BookExitReason, PositionState } from '../../../core/src/lifecycle/index.ts';
@@ -42,6 +42,45 @@ export const priceText = (lamports: bigint, tokens: bigint, price: MicroUsd | nu
   const scaled = (lamports * price * TOKEN_UNIT * 10n ** BigInt(PRICE_PLACES)) / (LAMPORTS_PER_SOL * tokens * 1_000_000n);
   const s = scaled.toString().padStart(PRICE_PLACES + 1, '0');
   return `${s.slice(0, -PRICE_PLACES)}.${s.slice(-PRICE_PLACES)}`;
+};
+
+/** A scaled executable price (PRICE_SCALE: lamports per raw token) in dollars per token, 4 significant digits; null without a SOL price. */
+export const triggerPrice = (scaled: bigint, price: MicroUsd | null): string | null =>
+  price === null ? null : `$${Number(priceText(scaled, PRICE_SCALE, price)).toLocaleString('en-US', { maximumSignificantDigits: 4, useGrouping: false })}`;
+
+/** The app's longest text (its schema's `str`). */
+const TEXT_MAX = 500;
+const GATE_REASONS = 'gate_reasons ';
+
+/**
+ * One decision reason as served (review N2): a typed `gate_reasons` line keeps valid JSON, cut by entries (gate and
+ * code only, the detail the app does not show is dropped) so it fits the app's text limit; any other line is cut at it.
+ */
+export const servedReason = (r: string): string => {
+  if (r.startsWith(GATE_REASONS)) {
+    let typed: unknown;
+    try {
+      typed = JSON.parse(r.slice(GATE_REASONS.length));
+    } catch {
+      typed = null;
+    }
+    if (Array.isArray(typed)) {
+      const kept: { gate: unknown; code: unknown }[] = [];
+      for (const x of typed) {
+        const next = [...kept, { gate: (x as { gate?: unknown })?.gate ?? null, code: (x as { code?: unknown })?.code ?? null }];
+        if (GATE_REASONS.length + JSON.stringify(next).length > TEXT_MAX) break;
+        kept.push(next[next.length - 1]!);
+      }
+      return `${GATE_REASONS}${JSON.stringify(kept)}`;
+    }
+  }
+  return r.length > TEXT_MAX ? `${r.slice(0, TEXT_MAX - 3)}...` : r;
+};
+
+/** An exit rule's trigger in a trader's words (APP-WORDS a): a dollar price, a hold time, an R multiple or a gain. */
+const atOrBelow = (scaled: bigint | null | undefined, price: MicroUsd | null): string => {
+  const usd = scaled == null ? null : triggerPrice(scaled, price);
+  return usd === null ? 'Price unknown' : `Price at or below ${usd}`;
 };
 
 export const melbourneDate = (ms: number): string => {
@@ -266,7 +305,7 @@ export const views = {
     [...i.decisions].reverse().map((d) => ({
       mode: MODE, id: d.id, at: iso(d.atMs), mint: d.mint, symbol: i.symbol(d.mint), venue: 'pumpswap', outcome: d.outcome,
       checks: d.check === null ? [] : [{ mode: MODE, check: d.check, result: 'fail', value: null, limit: null }],
-      ruleScore: null, reasons: d.reasons.slice(0, 40).map((r) => (r.length > 500 ? `${r.slice(0, 497)}...` : r)), tradeId: d.tradeId,
+      ruleScore: null, reasons: d.reasons.slice(0, 40).map(servedReason), tradeId: d.tradeId,
     })),
 
   position: (i: ApiInputs) => {
@@ -286,10 +325,10 @@ export const views = {
       liquidationValueUsd: usdText(lamportsUsd(liq ?? 0n, i.solPrice)), unrealizedUsd: usdText(lamportsUsd((liq ?? 0n) - p.cost, i.solPrice)),
       costsSoFarUsd: usdText(lamportsUsd(fees, i.solPrice)),
       exitRules: [
-        { mode: MODE, rule: 'price-stop', trigger: o === null ? 'unknown' : `executable price at or below ${o.stopPrice}`, state: p.exitOwner?.reasons.includes('stop') ? 'triggered' : 'armed' },
-        { mode: MODE, rule: 'time-stop', trigger: `held ${Math.round(ux.tMaxMs / 60_000)} min`, state: p.exitOwner?.reasons.includes('max_hold') ? 'triggered' : 'armed' },
-        { mode: MODE, rule: 'take-profit', trigger: `+${ux.partialAtRBps / 100}% of R or +${ux.partialAtGainBps / 100}%`, state: p.exitOwner?.reasons.includes('take_profit') ? 'triggered' : 'armed' },
-        ...(o?.trail == null ? [] : [{ mode: MODE, rule: 'trail', trigger: `executable price at or below ${o.trail}`, state: p.exitOwner?.reasons.includes('trailing_stop') ? 'triggered' : 'armed' }]),
+        { mode: MODE, rule: 'price-stop', trigger: atOrBelow(o?.stopPrice, i.solPrice), state: p.exitOwner?.reasons.includes('stop') ? 'triggered' : 'armed' },
+        { mode: MODE, rule: 'time-stop', trigger: `After ${Math.round(ux.tMaxMs / 60_000)} min`, state: p.exitOwner?.reasons.includes('max_hold') ? 'triggered' : 'armed' },
+        { mode: MODE, rule: 'take-profit', trigger: `At +${ux.partialAtRBps / 10_000}R or +${ux.partialAtGainBps / 100}%`, state: p.exitOwner?.reasons.includes('take_profit') ? 'triggered' : 'armed' },
+        ...(o?.trail == null ? [] : [{ mode: MODE, rule: 'trail', trigger: atOrBelow(o.trail, i.solPrice), state: p.exitOwner?.reasons.includes('trailing_stop') ? 'triggered' : 'armed' }]),
       ],
       exit, worker: p.status === 'open' ? 'watching' : p.status === 'exit_blocked' ? 'watching' : 'exiting',
     };
