@@ -279,13 +279,42 @@ describe('live view (tailscale serve)', () => {
     expect(status({})).toBe('no');
   });
 
+  it('accepts nothing more than the worker API (OPS-1h review): a hand-made serve is adopted only in exactly that shape', () => {
+    const tcp = { 443: { HTTPS: true } };
+    // The owner's hand-made `tailscale serve --bg --https=443 http://127.0.0.1:8788` is exactly this.
+    expect(status({ TCP: tcp, Web: web })).toBe('ok');
+    expect(status({ TCP: tcp, Web: web, AllowFunnel: {} })).toBe('ok');
+    expect(status({ TCP: tcp, Web: web, AllowFunnel: { 'zeroed.tail1.ts.net:443': false } })).toBe('ok');
+    const host = 'zeroed.tail1.ts.net:443';
+    for (const [why, o] of [
+      ['an extra path', { TCP: tcp, Web: { [host]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' }, '/admin': { Proxy: 'http://127.0.0.1:9000' } } } } }],
+      ['an extra port', { TCP: { ...tcp, 8443: { HTTPS: true } }, Web: { ...web, 'zeroed.tail1.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' } } } } }],
+      ['a second web host', { TCP: tcp, Web: { ...web, 'other.tail1.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' } } } } }],
+      ['a TCP forward', { TCP: { ...tcp, 2222: { TCPForward: '127.0.0.1:22' } }, Web: web }],
+      ['a TCP forward on 443', { TCP: { 443: { HTTPS: true, TCPForward: '127.0.0.1:22' } }, Web: web }],
+      ['plain HTTP', { TCP: { 443: { HTTP: true } }, Web: web }],
+      ['a service', { TCP: tcp, Web: web, Services: { 'svc:x': {} } }],
+      ['a foreground serve', { TCP: tcp, Web: web, Foreground: { s: { TCP: { 8080: { HTTPS: true } } } } }],
+      ['the handler on another port', { TCP: tcp, Web: { 'zeroed.tail1.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' } } } } }],
+      ['a handler with more than the proxy', { TCP: tcp, Web: { [host]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788', Text: 'x' } } } } }],
+      ['no web host', { TCP: tcp }],
+    ] as const) expect(status(o as Record<string, unknown>), why).toBe('no');
+    expect(sh('serve_ok && echo ok || echo no', '[]').out).toBe('no');
+  });
+
   it('Funnel on for any port is found, alerted and turned off, by the minute check and by every install', () => {
     const ports = (o: Record<string, unknown>) => sh('funnel_ports', JSON.stringify(o)).out;
     expect(ports({ Web: web })).toBe('');
     expect(ports({ AllowFunnel: { 'zeroed.tail1.ts.net:443': false } })).toBe('');
     expect(ports({ AllowFunnel: { 'zeroed.tail1.ts.net:443': true, 'zeroed.tail1.ts.net:8443': true } })).toBe('zeroed.tail1.ts.net:443\nzeroed.tail1.ts.net:8443');
     const check = read('ops/host/files/usr/local/sbin/zeroed-check');
-    expect(check).toContain('public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"');
+    // OPS-1h: both calls are bounded, so the minute check never hangs on tailscale.
+    expect(check).toContain('public="$(timeout 30 tailscale serve status --json 2>/dev/null | funnel_ports)"');
+    expect(check).toContain('timeout 30 tailscale funnel --https="${hp##*:}" off');
+    // OPS-1h review: Funnel that cannot be turned off (error or timeout) takes the whole serve config down, so the API
+    // never stays public with only an alert.
+    const fb = check.slice(check.indexOf('timeout 30 tailscale funnel --https="${hp##*:}" off'));
+    expect(fb).toMatch(/\|\| off=0; done\n\s+if \[ "\$off" = 0 \]; then[^]*?timeout 30 tailscale serve reset[^]*?rm -f "\$STATE_DIR\/live_view"[^]*?notify "\$msg"/);
     expect(check).toContain('alert funnel-on "ALERT');
     expect(check).toContain('tailscale funnel --https="${hp##*:}" off');
     expect(check).toContain('alert_clear funnel-on "CLEARED');
@@ -308,8 +337,17 @@ describe('live view (tailscale serve)', () => {
     const fail = ts.slice(ts.indexOf('if ! tailscale serve status --json | serve_ok; then'));
     expect(fail.indexOf('tailscale serve reset')).toBeGreaterThan(0);
     expect(fail.indexOf('tailscale serve reset')).toBeLessThan(fail.indexOf('exit 1'));
-    expect(fail.slice(0, fail.indexOf('exit 1'))).toContain('tailscale funnel --https=443 off');
     expect(fail.slice(0, fail.indexOf('exit 1'))).not.toContain('Run zeroed-tailscale --off');
+    // OPS-1h: no funnel command at all (it waits forever for the Funnel capability, even for "off"); serve --https=443
+    // clears Funnel for its port and serve reset clears it everywhere, and the serve_ok check confirms Funnel is off.
+    expect(ts).not.toMatch(/tailscale funnel/);
+    // HTTPS Certificates and MagicDNS are checked before serving, every tailscale call is bounded, and serve's output
+    // (an error or a link the owner must open) is kept and shown, never sent to /dev/null.
+    expect(ts.indexOf("has(\"https\")")).toBeGreaterThan(0);
+    expect(ts.indexOf("has(\"https\")")).toBeLessThan(ts.indexOf('tailscale serve --bg'));
+    expect(ts).toContain('timeout "$TS_WAIT" "$(type -P tailscale)" "$@"');
+    expect(ts).toContain('tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >"$served" 2>&1');
+    expect(ts).not.toMatch(/tailscale serve --bg[^\n]*\/dev\/null/);
   });
 
   it("Tailscale's own repository is in the unattended-upgrades origins", () => {
@@ -327,7 +365,6 @@ describe('live view (tailscale serve)', () => {
     const fpr = '2596A99EAAB33821893C0A79458CA832957F5868';
     expect(ts).toContain(`TS_FPR=${fpr}`);
     expect(ts.indexOf('[ "$got" = "$TS_FPR" ]')).toBeLessThan(ts.indexOf('apt-get'));
-    expect(ts).toContain('tailscale funnel --https=443 off');
     expect(ts).toContain('--ssh=false');
     const keys = spawnSync('gpg', ['--show-keys', '--with-colons', join(root, 'ops/host/files/etc/zeroed/tailscale-archive.asc')], { encoding: 'utf8' }).stdout;
     expect(keys.split('\n').filter((l) => l.startsWith('fpr:'))[0]).toBe(`fpr:::::::::${fpr}:`);
