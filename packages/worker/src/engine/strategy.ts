@@ -334,6 +334,7 @@ export class LiveStrategy implements Strategy {
     this.#lifecycle(ctx, out);
     this.#manage(ctx, out);
     // At most one entry step per call, and only while nothing else acted: ctx.book is the book before these decisions.
+    this.#windowEnds(ctx.now.receivedAt, out);
     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
     // Through `untilMs` itself: an exit at exactly the maximum hold (EXIT-1 fires at elapsed >= tMax) needs that moment.
     for (const [mint, t] of this.#tail) if (ctx.now.receivedAt > t.untilMs) this.#tail.delete(mint);
@@ -862,6 +863,29 @@ export class LiveStrategy implements Strategy {
     return read !== undefined && this.#fresh(read, ctx.now);
   }
 
+  /**
+   * Candidates whose window has ended leave, on every event: also while entries are halted (a feed down, a pause,
+   * seeding, sell-only, a divergence), so a rejected candidate's tail starts at its window end and never late (REC-1
+   * review). Evaluated and rejected: its pool stays watched until windowEnd + tMax, or is logged `no tail` at the cap.
+   */
+  #windowEnds(now: number, out: Decision[]): void {
+    const c = this.#d.config;
+    for (const cand of [...this.#cands.values()]) {
+      const to = cand.migratedAtMs + c.windowToMs;
+      if (now < to) continue;
+      const pool = this.#poolOfMint.get(cand.mint);
+      if (cand.lastReason !== null && pool !== undefined) {
+        // At the cap the pool is not watched: logged, so G3 censors that coin with the reason, never imputes it.
+        if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, cand.mint, `tail cap ${c.maxTails}`] });
+        else this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
+      }
+      this.#cands.delete(cand.mint);
+      this.#bars.delete(cand.mint);
+      this.#forget(cand.mint);
+      out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
+    }
+  }
+
   #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[], due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>): void {
     const now = ctx.now.receivedAt;
     const c = this.#d.config;
@@ -874,19 +898,6 @@ export class LiveStrategy implements Strategy {
     for (const cand of this.#cands.values()) {
       const from = cand.migratedAtMs + c.windowFromMs;
       const to = cand.migratedAtMs + c.windowToMs;
-      if (now >= to) {
-        const pool = this.#poolOfMint.get(cand.mint);
-        if (cand.lastReason !== null && pool !== undefined) {
-          // At the cap the pool is not watched: logged, so G3 censors that coin with the reason, never imputes it.
-          if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, cand.mint, `tail cap ${c.maxTails}`] });
-          else this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
-        }
-        this.#cands.delete(cand.mint);
-        this.#bars.delete(cand.mint);
-        this.#forget(cand.mint);
-        out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
-        continue;
-      }
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;

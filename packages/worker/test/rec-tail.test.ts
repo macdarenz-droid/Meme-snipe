@@ -45,8 +45,10 @@ const world = (o: { readonly maxTails?: number } = {}) => {
     put('worker', { type: 'fact', key: migrationKey(mint), value: { obs, graduatedAtMs: now - agoMs, migratedAtMs: now - agoMs, pool, quoteAtMigration: 1n, price: { quote: 1n, base: 1n } } });
   };
   put('worker', { type: 'fact', key: HALT_KEY, value: { halted: false, reasons: [] } });
+  /** Entries halted (or resumed), as the worker publishes it. */
+  const halt = (halted: boolean): void => put('worker', { type: 'fact', key: HALT_KEY, value: { halted, reasons: halted ? ['feed helius-ws disconnected'] : [] } });
   const noTails = (): string[][] => (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' && r.reasons[0] === NO_TAIL ? [r.reasons.slice(2)] : []));
-  return { strategy, jump, shortlist, noTails, now: () => now };
+  return { strategy, jump, shortlist, noTails, halt, now: () => now };
 };
 
 describe('REC-1: a rejected candidate\'s pool is watched until its window end plus the maximum hold', () => {
@@ -136,5 +138,22 @@ describe('REC-1: a rejected candidate\'s pool is watched until its window end pl
     w.jump(6_000);
     expect([...w.strategy.tail.keys()]).toEqual([C]);
     expect(w.noTails()).toHaveLength(1);
+  });
+
+  it('a window that ends while entries are halted still starts its tail at the window end, watched through the halt', () => {
+    const w = world();
+    w.shortlist(M1, config.windowToMs - 5_000);
+    w.jump(400);
+    const c = w.strategy.candidates().get(M1)!;
+    expect(c.lastEvalMs).not.toBeNull();
+    const windowEnd = c.migratedAtMs + config.windowToMs;
+    // Entries halt (a feed drops) before the window ends, and stay halted past it.
+    w.halt(true);
+    w.jump(6_000);
+    expect(w.strategy.candidates().has(M1)).toBe(false);
+    expect(w.strategy.tail.get(M1)).toEqual({ pool: POOL, untilMs: windowEnd + T_MAX });
+    expect(w.strategy.watchedPools().get(POOL)).toEqual({ mint: M1, held: false });
+    w.jump(30 * MIN);
+    expect(w.strategy.watchedPools().has(POOL)).toBe(true);
   });
 });
