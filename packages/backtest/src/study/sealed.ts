@@ -101,7 +101,7 @@ export const runSealedHoldout = (
 /** Whether a universe's sealed counts pass the size check (counts only; nothing is read from the sealed files). */
 export const sealedReady = (store: HoldoutStore, holdoutId: string, required: number): boolean => {
   const e = store.registry.entries.find((x) => x.holdoutId === holdoutId);
-  return e !== undefined && holdoutReady(e, required, MIN_DAYS);
+  return e !== undefined && holdoutReady(e, required, e.requirement?.requiredDays ?? MIN_DAYS);
 };
 
 /**

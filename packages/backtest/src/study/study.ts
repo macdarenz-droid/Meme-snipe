@@ -222,16 +222,27 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   if (!diagnostic) setHoldoutPlan(i.holdout, holdoutPlanOf(c, plan, RULED_ALPHA), i.research);
   const holdoutIdOf = (u: string) => `${u}-${plan.holdout.fromDay}-${plan.holdout.toDay}`;
   const registered = (u: string) => storeNow()?.registry.entries.some((e) => e.holdoutId === holdoutIdOf(u)) === true;
-  if (c.frozen && !diagnostic && !universes.every(registered)) {
+  const familySize = storeNow()?.plan?.familySize ?? universes.length;
+  // The attempt's α: the STATS-1c registry's schedule (attempt 1: 0.04), the same before and after registration.
+  const alpha = attemptAlpha({ alpha: RULED_ALPHA }, c.holdoutAttempt);
+  // 3b. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14): max(300, n_power,
+  // closed form) on MIN_DAYS days, with n_power's seed, frozen with the registration before any holdout count exists.
+  const powerSeed = (u: string) => seedNumber(`${i.seed}:power:${u}`);
+  const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), familySize, powerSeed(u), alpha)]));
+  const unsized = universes.filter((u) => !power[u]!.ok);
+  if (c.frozen && !diagnostic && !universes.every(registered) && unsized.length === 0) {
     if (universes.some(registered)) throw new RangeError('only some universes of this attempt are registered: the registry needs repair before the study runs');
-    registerAttempt(i.holdout, { index: c.holdoutAttempt, entries: universes.map((u) => ({ holdoutId: holdoutIdOf(u), universe: u, configId: ids[u]! })) });
+    registerAttempt(i.holdout, {
+      index: c.holdoutAttempt,
+      entries: universes.map((u) => {
+        const p = power[u] as Extract<ReturnType<typeof powerOf>, { ok: true }>;
+        return { holdoutId: holdoutIdOf(u), universe: u, configId: ids[u]!, requirement: { requiredTrades: p.required, requiredDays: MIN_DAYS, nPower: p.power.nPower, nPowerSeed: powerSeed(u) } };
+      }),
+    });
   }
   let store = storeNow();
-  const familySize = store?.plan?.familySize ?? universes.length;
   const attempt = store?.attempts.find((x) => x.index === c.holdoutAttempt);
-  // The attempt's α as registered; before registration, the α it would spend under the ruled schedule.
-  const alpha = attempt?.alpha ?? attemptAlpha({ alpha: store?.plan?.alpha ?? RULED_ALPHA }, c.holdoutAttempt);
-  if (store?.plan != null && attempt === undefined && c.frozen && !diagnostic) throw new RangeError(`holdout attempt ${c.holdoutAttempt} is not registered`);
+  if (attempt !== undefined && attempt.alpha !== alpha) throw new RangeError(`holdout attempt ${c.holdoutAttempt} spends α ${attempt.alpha}, the schedule says ${alpha}`);
 
   const matrix = pboMatrix(Object.fromEntries(trials.trials.map((t) => [t.trialId, scored.kept.filter((x) => ids[x.tag] === t.trialId)])), wfDays.map((d) => d));
   // G1 per universe and regime (§6.5: never pooled silently); the pooled figure is reported under its own label.
@@ -258,9 +269,9 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     }
   }
 
-  // 4. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14).
-  const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), familySize, seedNumber(`${i.seed}:power:${u}`), alpha)]));
-  const required = Object.fromEntries(universes.map((u) => [u, power[u]!.ok ? power[u]!.required : null]));
+  // 4. The frozen requirement once registered; before that, the one registration would freeze.
+  const frozenOf = (u: string) => store?.registry.entries.find((x) => x.holdoutId === holdoutIdOf(u))?.requirement ?? null;
+  const required = Object.fromEntries(universes.map((u) => [u, frozenOf(u)?.requiredTrades ?? (power[u]!.ok ? power[u]!.required : null)]));
   const holdLedger = `${i.outDir}/holdout-${plan.holdout.fromDay}-${plan.holdout.toDay}.db`;
   let sealed: ReturnType<typeof runSealedHoldout> | null = null;
   const alreadyRun = store?.runs.some((r) => r.outcome !== 'refused' && universes.some((u) => holdoutIdOf(u) === r.holdoutId)) === true;
@@ -293,7 +304,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   if (ready.length === 0) {
     const shorts: G2Short[] = universes.map((u) => {
       const e = entryOf(u);
-      if (e === undefined) return { universe: u, holdoutId: holdoutIdOf(u), entries: 0, entryDays: 0, required: required[u] ?? null, why: 'configurations not frozen: no holdout registered' };
+      if (e === undefined) return { universe: u, holdoutId: holdoutIdOf(u), entries: 0, entryDays: 0, required: required[u] ?? null, why: !c.frozen ? 'configurations not frozen: no holdout registered' : power[u]!.ok ? 'no holdout registered' : `no holdout registered: the size requirement cannot be frozen (${(power[u] as { why: string }).why})` };
       const why = e.burned ? `holdout burned (${e.burnReason})` : e.seal === 'registered' ? 'holdout not run yet' : !g1Passed(u) ? 'G1 did not pass: the seal stays closed' : power[u]!.ok ? 'sample short' : (power[u] as { why: string }).why;
       return { universe: u, holdoutId: e.holdoutId, entries: e.counts?.entries ?? 0, entryDays: e.counts?.entryDays ?? 0, required: required[u] ?? null, why };
     });
@@ -304,7 +315,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       scenario: 'conservative', registry: store!.registry, nowMs: Date.parse(i.startedAt), rng: createRng(seedNumber(`${i.seed}:g2`)),
       universes: ready.map((u) => ({
         universe: u, configId: ids[u]!, holdoutId: holdoutIdOf(u), ledgerHash: open.sealHash, trades: open.outcomes.strategy[u] ?? [],
-        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), walkForward: sameRegime(tradesOf(u)), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
+        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), g1Passed: g1Passed(u), walkForward: sameRegime(tradesOf(u)), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
       })),
     }, { familyAlpha: alpha });
     store = recordHoldoutG2(i.holdout, r.registry);

@@ -8,7 +8,7 @@ import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/confi
 import type { DatasetRow } from '../src/dataset/rows.ts';
 import { STUDY_CONFIG, configId } from '../src/strategy/config.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
-import { readHoldoutStore } from '../src/holdout.ts';
+import { readHoldoutStore, registerAttempt } from '../src/holdout.ts';
 import { readTrialLog } from '../src/study/trials.ts';
 import { runSealedHoldout } from '../src/study/sealed.ts';
 import { runFullStudy, type StudyInputs } from '../src/study/study.ts';
@@ -94,22 +94,36 @@ describe('BT-2 study', () => {
     }
   });
 
-  it('registers one configuration per universe before any holdout run, and G1 is not proven on 2 days', () => {
+  it('sets the plan; registers no attempt while the walk-forward cannot size the requirement; then one per universe, and G1 is not proven on 2 days', () => {
     // Run with the regime gate evaluated as live (the synthetic world has no regime inputs, so nothing enters).
     const evaluated = runFullStudy(inputs({ regimeGate: 'evaluate' }));
-    const reg = storeAt();
-    expect(reg.registry.familySize).toBe(2);
-    expect(reg.registry.entries.map((e) => [e.holdoutId, e.universe, e.configId, e.seal])).toEqual([[`U1-${HOLD}`, 'U1', configId(config, 'U1'), 'registered'], [`U2-${HOLD}`, 'U2', configId(config, 'U2'), 'registered']]);
-    // The plan is registered once, the attempt commits α 0.04, and each G1 result is on record (not a pass: 2 days).
+    let reg = storeAt();
     expect(reg.plan).toMatchObject({ fromDay: '2026-09-22', entryCutoffDay: '2026-09-23', tailEndDay: '2026-09-24', familySize: 2, tieSalt: config.tieSalt, alpha: { first: 0.04, laterBase: 0.01 } });
+    // STATS-1c: a holdout is registered with its frozen size requirement; with no walk-forward trades there is none to
+    // freeze, so nothing is registered and no α is spent.
+    expect(reg.registry.entries).toEqual([]);
+    expect(reg.attempts).toEqual([]);
+    expect(evaluated.gates.G2.reasons.join(' ')).toMatch(/size requirement cannot be frozen/);
+    // A sized walk-forward registers attempt 1 for both universes (here through the registry, as the study does with
+    // the requirement it froze); the next study run finds them and records each G1 result (not a pass: 2 days).
+    const requirement = { requiredTrades: 300, requiredDays: 10, nPower: 300, nPowerSeed: 1 };
+    registerAttempt(authority(), { index: 1, entries: ['U1', 'U2'].map((u) => ({ holdoutId: `${u}-${HOLD}`, universe: u, configId: configId(config, u), requirement })) });
+    const again = runFullStudy(inputs({ regimeGate: 'evaluate' }));
+    reg = storeAt();
+    expect(reg.registry.familySize).toBe(2);
+    expect(reg.registry.entries.map((e) => [e.holdoutId, e.universe, e.configId, e.seal, e.alpha])).toEqual([[`U1-${HOLD}`, 'U1', configId(config, 'U1'), 'registered', 0.04], [`U2-${HOLD}`, 'U2', configId(config, 'U2'), 'registered', 0.04]]);
     expect(reg.attempts.map((a) => [a.index, a.alpha, a.holdoutIds])).toEqual([[1, 0.04, [`U1-${HOLD}`, `U2-${HOLD}`]]]);
     expect(reg.g1.map((g) => [g.holdoutId, g.passed])).toEqual([[`U1-${HOLD}`, false], [`U2-${HOLD}`, false]]);
+    // The frozen requirement is the one reported.
+    expect(again.holdout.required).toEqual({ U1: 300, U2: 300 });
     expect(readTrialLog(join(dir, 'trials.json')).trials.map((t) => t.trialId).sort()).toEqual([configId(config, 'U1'), configId(config, 'U2')].sort());
     // Reported per regime (here every trade is after B4) and pooled under its own label (the diagnostic run has the
     // trades); 2 days are too few.
     expect(Object.keys(first.gates.G1)).toEqual(expect.arrayContaining(['U1 all regimes (pooled)', 'U2 all regimes (pooled)', 'U2 regime B4']));
     for (const k of Object.keys(first.gates.G1)) expect(k).toMatch(/^U[12] (regime B\d|all regimes \(pooled\)(, sensitivity: no rent recovery)?)$/);
-    for (const g of Object.values(evaluated.gates.G1)) expect(g.status).toBe('not-proven');
+    // Without a registered configuration G1 fails its pre-registration check; registered, it is not proven on 2 days.
+    for (const g of Object.values(evaluated.gates.G1)) expect(g.checks.find((x) => x.name === 'pre-registration')?.passed).toBe(false);
+    for (const g of Object.values(again.gates.G1)) expect(g.status).toBe('not-proven');
     expect(evaluated.holdoutRegime).toBe('B4');
     expect(evaluated.gates.G2.status).toBe('not-proven');
     expect(evaluated.holdout.ran).toBe(false);

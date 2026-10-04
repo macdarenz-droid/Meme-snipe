@@ -20,6 +20,8 @@ export interface Heartbeat {
   paused: boolean;
   /** The Telegram chat the server paired with (/pair); the watchdog learns it only from signed heartbeats. */
   owner_chat_id?: string | null;
+  /** Critical alerts the worker raised (WATCH-1: a held position with no fresh price), one line each. */
+  critical?: string[];
 }
 
 export interface Stored {
@@ -160,6 +162,8 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   }
   if (num(hb.sol_reserve) && hb.sol_reserve < l.solReserveFloor) out.push({ key: 'reserve', text: `SOL reserve ${hb.sol_reserve} is below the floor ${l.solReserveFloor}.` });
   if (hb.signer === 'unreachable' || hb.signer === 'timeout') out.push({ key: 'signer', text: `Worker cannot reach the signer (${hb.signer}).` });
+  const critical = Array.isArray(hb.critical) ? hb.critical.filter((c): c is string => typeof c === 'string' && c !== '') : [];
+  if (critical.length > 0) out.push({ key: 'worker_critical', text: `Worker critical: ${critical.join('; ')}.` });
   return out;
 }
 

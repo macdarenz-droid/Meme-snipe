@@ -24,13 +24,14 @@ const plan: HoldoutPlan = {
 const window = { fromDay: h.fromDay, toDay: new Date(Date.parse(`${h.tailEndDay}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) };
 const ids = { U1: 'U1-h', U2: 'U2-h' };
 const configs: Record<string, string> = { U1: 'U1-c', U2: 'U2-c' };
-const counts = { candidates: 40, entries: 12, entryDays: 5 };
+const counts = { candidates: 400, entries: 320, entryDays: 12 };
+const requirement = { requiredTrades: 300, requiredDays: 10, nPower: 280, nPowerSeed: 7 };
 let n = 0;
 /** A fresh registry with the plan and attempt 1 for U1 and U2. */
 const fresh = () => {
   const a = { registryPath: join(dir, `r${n++}.json`), codeCommit: 'c', datasetId: 'd' };
   setHoldoutPlan(a, plan, RESEARCH_CONFIG);
-  registerAttempt(a, { index: 1, entries: [{ holdoutId: 'U1-h', universe: 'U1', configId: 'U1-c' }, { holdoutId: 'U2-h', universe: 'U2', configId: 'U2-c' }] });
+  registerAttempt(a, { index: 1, entries: [{ holdoutId: 'U1-h', universe: 'U1', configId: 'U1-c', requirement }, { holdoutId: 'U2-h', universe: 'U2', configId: 'U2-c', requirement }] });
   return a;
 };
 const seal = (a: ReturnType<typeof fresh>, configOf = (u: string) => configs[u]!) =>
@@ -64,7 +65,7 @@ describe('study holdouts through the one registry', () => {
   it('stores G2\'s registry only when every opening had a latest G1 pass, and only seal changes', () => {
     const a = fresh();
     seal(a);
-    const opened = (id: string) => openHoldout(readHoldoutStore(a.registryPath).registry, id, { configId: id === 'U1-h' ? 'U1-c' : 'U2-c', ledgerHash: 'abc', requiredTrades: 10, minDays: 5, nowMs: 1 });
+    const opened = (id: string) => openHoldout(readHoldoutStore(a.registryPath).registry, id, { configId: id === 'U1-h' ? 'U1-c' : 'U2-c', ledgerHash: 'abc', requiredTrades: 300, minDays: 10, nowMs: 1, nowDay: '2026-12-01', g1Passed: true });
     const u1 = opened('U1-h');
     expect(u1.ok).toBe(true);
     expect(() => recordHoldoutG2(a, u1.registry)).toThrow(/U1-h cannot be opened: U1-h has no G1 result/);
@@ -80,7 +81,7 @@ describe('study holdouts through the one registry', () => {
     const reg = readHoldoutStore(b.registryPath).registry;
     expect(() => recordHoldoutG2(b, { ...reg, entries: reg.entries.map((e) => ({ ...e, configId: 'changed' })) })).toThrow(/more than the seal/);
     expect(() => recordHoldoutG2(b, { ...reg, familySize: 3 })).toThrow(/resize/);
-    const ok = openHoldout(reg, 'U1-h', { configId: 'U1-c', ledgerHash: 'abc', requiredTrades: 10, minDays: 5, nowMs: 1 });
+    const ok = openHoldout(reg, 'U1-h', { configId: 'U1-c', ledgerHash: 'abc', requiredTrades: 300, minDays: 10, nowMs: 1, nowDay: '2026-12-01', g1Passed: true });
     expect(recordHoldoutG2(b, ok.registry).registry.entries[0]!.seal).toBe('opened');
   });
 
