@@ -2,13 +2,24 @@
 # Finalizes one scanned day on its own, runs the strict QA, the decoder parity check and
 # the determinism check, and packages the day as release assets for `data-day-DAY`.
 #   check-day.sh DAY OUT_DIR ASSET_DIR
-# MAX_MBPS (default 80) caps the determinism rescan, like the scan itself.
+# Archive source: MAX_MBPS (default ARCHIVE_MAX_MBPS) caps the determinism rescan, like the
+# scan itself; above ARCHIVE_MAX_MBPS, or with the scanner's request cap above
+# ARCHIVE_MAX_RPS (archive-limits.conf), it exits 2 before anything else.
 set -euo pipefail
 day=$1 out=$2 assets=$3
 next=$(date -u -d "$day + 1 day" +%F)
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$assets"
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
+if [ "${SOURCE:-archive}" != helius ]; then
+  # shellcheck source=archive-limits.conf
+  . "$here/archive-limits.conf"
+  mb=${MAX_MBPS:-$ARCHIVE_MAX_MBPS}
+  awk -v m="$mb" -v c="$ARCHIVE_MAX_MBPS" 'BEGIN { exit !(m + 0 > 0 && m + 0 <= c + 0) }' ||
+    { echo "refused: max_mbps $mb is not in (0, $ARCHIVE_MAX_MBPS] (archive-limits.conf)" | tee -a "$summary"; exit 2; }
+  "$here/scan-day.sh" --rps-ok "${ARCHIVE_GO:-$here/../scanner/archive.go}" > /dev/null ||
+    { echo "refused: the scanner's request cap is not in (0, $ARCHIVE_MAX_RPS] (scanner/archive.go, archive-limits.conf)" | tee -a "$summary"; exit 2; }
+fi
 # phase NAME CMD...: runs CMD and logs its duration to the summary (sizes the 45 min
 # QA-phase budget in data-scan.yml from real days).
 phase() {
@@ -61,11 +72,6 @@ if [ "${SOURCE:-archive}" = helius ]; then
     -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits $(( RPC_CREDIT_CAP - used )) -usage-out "$again/rpc-usage.json" || rc=$?
   "$here/rpc-credits.sh" add "$out" "$again/rpc-usage.json"
 else
-  # shellcheck source=archive-limits.conf
-  . "$here/archive-limits.conf"
-  mb=${MAX_MBPS:-$ARCHIVE_MAX_MBPS}
-  awk -v m="$mb" -v c="$ARCHIVE_MAX_MBPS" 'BEGIN { exit !(m + 0 > 0 && m + 0 <= c + 0) }' ||
-    { echo "refused: max_mbps $mb is not in (0, $ARCHIVE_MAX_MBPS] (archive-limits.conf)" | tee -a "$summary"; exit 2; }
   phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" || rc=$?
 fi
 if [ "$rc" -eq 75 ] && [ "${SOURCE:-archive}" = helius ]; then

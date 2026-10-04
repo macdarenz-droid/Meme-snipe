@@ -106,9 +106,8 @@ d=2026-10-01
 while [[ "$d" > 2026-09-21 ]]; do queue+=("$d"); d=$(date -u -d "$d - 1 day" +%F); done
 
 # ARCHIVE-SAFE hold: no dispatch while the scanner's request cap is above the limit.
-cap=$(sed -n 's/^var reqLimiter = newLimiter(\([0-9.]*\))$/\1/p' "${ARCHIVE_GO:-$here/../scanner/archive.go}")
-if [[ -z "$cap" ]] || ! awk -v c="$cap" -v m="$ARCHIVE_MAX_RPS" 'BEGIN { exit !(c + 0 > 0 && c + 0 <= m + 0) }'; then
-  echo "archive-check: served; held: the scanner's request cap (${cap:-not found}/s, scanner/archive.go) is above $ARCHIVE_MAX_RPS/s (archive-limits.conf); nothing dispatched" | tee -a "$summary"
+if ! cap=$("$here/scan-day.sh" --rps-ok "${ARCHIVE_GO:-$here/../scanner/archive.go}"); then
+  echo "archive-check: served; held: the scanner's request cap ($cap/s, scanner/archive.go) is above $ARCHIVE_MAX_RPS/s (archive-limits.conf); nothing dispatched" | tee -a "$summary"
   exit 0
 fi
 

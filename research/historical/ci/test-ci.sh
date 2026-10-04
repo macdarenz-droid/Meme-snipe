@@ -192,9 +192,13 @@ cat > "$S/sleep" <<'STUB'
 echo "sleep $1" >> "$T/calls.log"
 STUB
 chmod +x "$S"/*
+# A scanner capped at 10 requests/s (archive-limits.conf); variants for the refusals.
+for n in 10 40 10.5; do sed "s/^var reqLimiter = newLimiter([0-9.]*)\$/var reqLimiter = newLimiter($n)/" "$here/../scanner/archive.go" > "$T/archive$n.go"; done
+grep -v '^var reqLimiter' "$here/../scanner/archive.go" > "$T/archivenone.go"
+grep -qx 'var reqLimiter = newLimiter(10)' "$T/archive10.go" || no "test copy of archive.go at 10/s"
 scan() {
   : > "$T/calls.log"
-  PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$1" "${MBPS:-40}" "${2:-300}" > "$T/out.txt" 2>&1
+  ARCHIVE_GO=${ARCHIVE_GO:-$T/archive10.go} PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$1" "${MBPS:-40}" "${2:-300}" > "$T/out.txt" 2>&1
 }
 calls() { tr '\n' ' ' < "$T/calls.log"; }
 o="$T/scan1"; mkdir -p "$o"; now=$(date +%s); echo "$((now - 5)) 600 $((now + 120))" > "$o/archive-429.state"
@@ -219,6 +223,13 @@ bash "$here/scan-day.sh" --hold "$o/archive-429.state" 10800 && [[ $(awk '{print
 o="$T/scan2c"; mkdir -p "$o"; rc=0; MBPS=41 scan "$o" || rc=$?
 rc2=0; MBPS=0 scan "$o" || rc2=$?
 [[ $rc == 2 && $rc2 == 2 && ! -s "$T/calls.log" ]] && grep -q "not in (0, 40\]" "$T/out.txt" && ok "ARCHIVE-SAFE: scan-day refuses max_mbps above 40 (or 0) before any request" || no "mbps cap: $rc $rc2 $(calls)"
+bad=""
+for g in archive40 archive10.5 archivenone; do
+  o="$T/scanrps"; rm -rf "$o"; mkdir -p "$o"; rc=0; ARCHIVE_GO="$T/$g.go" scan "$o" || rc=$?
+  [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "request cap" "$T/out.txt" || bad+=" $g:$rc"
+done
+o="$T/scanrps"; rm -rf "$o"; mkdir -p "$o"; ARCHIVE_GO="$T/archive10.go" scan "$o" && [[ $(calls) == "scan " ]] || bad+=" archive10"
+[[ -z "$bad" ]] && ok "ARCHIVE-SAFE: scan-day refuses (exit 2, no request) a scanner request cap of 40, 10.5 or none found, and scans at 10" || no "scan-day rps:$bad"
 o="$T/scan3"; mkdir -p "$o"; now=$(date +%s); echo "$now 7200 $((now + 7200))" > "$o/archive-429.state"
 rc=0; scan "$o" 60 || rc=$?
 mapfile -t c < "$T/calls.log"; w=${c[0]#sleep }
@@ -276,7 +287,7 @@ printf '{\n  "scanner_revision": "rOld"\n}\n' > "$o/units/1047/1-2/stats.json"
 printf '{\n  "scanner_revision": "rNew"\n}\n' > "$o/units/1047/3-4/stats.json"
 mkdir -p "$o/units/1047/7-8"; printf '{\n  "blocks": 3\n}\n' > "$o/units/1047/7-8/stats.json"
 : > "$T/calls.log"
-SCANNER_REVISION=rNew PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$o" 40 300 > "$T/out.txt" 2>&1
+ARCHIVE_GO="$T/archive10.go" SCANNER_REVISION=rNew PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$o" 40 300 > "$T/out.txt" 2>&1
 [[ ! -d "$o/units/1047/1-2" && ! -d "$o/units/1047/7-8" && -d "$o/units/1047/3-4" && -d "$o/units/1047/5-6" ]] && grep -q "rescanning it" "$T/summary.md" &&
   ok "scan-day: cached units of another revision or with no scanner_revision are dropped and rescanned, the rest kept" || no "scan-day revision drop"
 
@@ -520,6 +531,7 @@ C="$T/cdbin"; mkdir -p "$C"
 cat > "$C/zeroed-scan" <<'STUB'
 #!/usr/bin/env bash
 # finalize: an empty dataset with its manifest; unit (determinism rescan): exit RESCAN_RC
+echo "$*" >> "$T/zs.args"
 if [[ $1 == finalize ]]; then
   while (( $# )); do [[ "$1" == -dataset ]] && ds=$2; shift; done
   mkdir -p "$ds/qa"; echo '{}' > "$ds/manifest.json"; exit 0
@@ -536,7 +548,8 @@ chmod +x "$C"/*
 cdrun() {
   local o="$T/cd-$1"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$o/cache" "$T/cd-ds"; echo x > "$o/units/1046/1-2/blocks.csv.zst"
   : > "$T/summary.md"
-  RESCAN_RC=$2 FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
+  : > "$T/zs.args"
+  ARCHIVE_GO=${ARCHIVE_GO:-$T/archive10.go} RESCAN_RC=$2 FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
     bash "$here/check-day.sh" 2026-09-20 "$o" "$T/cd-assets-$1" > "$T/out.txt" 2>&1
 }
 rc=0; t0=$(date +%s); cdrun a 75 || rc=$?
@@ -544,6 +557,13 @@ end=$(awk '{print $3}' "$T/cd-a/archive-429.state" 2>/dev/null)
 [[ $rc == 4 ]] && (( ${end:-0} >= t0 + 10800 )) && grep -q "429 during the determinism rescan: back-off of at least 3 h; the chain stops" "$T/summary.md" &&
   ok "ARCHIVE-SAFE: check-day: a 429 in the determinism rescan holds a 3 h back-off and exits 4 (not resumable)" || no "check-day 429: rc=$rc end=$end $(cat "$T/out.txt")"
 for p in finalize qa parity volume determinism; do grep -q "^phase $p (2026-09-20): [0-9]* s$" "$T/summary.md" || { no "check-day: no duration for $p"; break; }; done
+u=$(grep '^unit ' "$T/zs.args")
+[[ " $u " == *" -max-mbps 40 -dl 4 "* ]] && ok "ARCHIVE-SAFE: check-day's determinism rescan runs at -max-mbps 40 -dl 4 (archive-limits.conf)" || no "check-day rescan args: $u"
+bad=""
+for v in 41 0; do rc=0; MAX_MBPS=$v cdrun m 0 || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "max_mbps $v is not in" "$T/summary.md" || bad+=" mbps=$v:$rc"; done
+for g in archive40 archive10.5 archivenone; do rc=0; ARCHIVE_GO="$T/$g.go" cdrun m 0 || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "request cap" "$T/summary.md" || bad+=" $g:$rc"; done
+rc=0; MAX_MBPS=40 cdrun m 75 || rc=$?; [[ $rc == 4 ]] && grep -q '^unit ' "$T/zs.args" || bad+=" ok40:$rc"
+[[ -z "$bad" ]] && ok "ARCHIVE-SAFE: check-day (archive) exits 2 before any zeroed-scan call for max_mbps 41 or 0 and a request cap of 40, 10.5 or none; 40 MB/s at 10/s runs" || no "check-day limits:$bad"
 [[ $p == determinism ]] && grep -q "^phase determinism" "$T/summary.md" && ok "check-day: finalize, QA, parity, volume and determinism durations are logged"
 rc=0; cdrun b 1 || rc=$?
 [[ $rc == 1 ]] && grep -q "determinism rescan failed (scanner exit 1)" "$T/summary.md" && ok "check-day: any other rescan failure exits 1 (not resumable)" || no "check-day rescan failure: rc=$rc"
