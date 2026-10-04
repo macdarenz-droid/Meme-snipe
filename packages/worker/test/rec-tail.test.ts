@@ -90,6 +90,7 @@ describe('REC-1: a rejected candidate\'s pool is watched until its window end pl
       stream: {
         watchLogs: (address, o) => (calls.push(`watch ${address} P${o.priority}`), ++id),
         unwatch: (n, reason) => void calls.push(`unwatch ${n} ${reason}`),
+        setPriority: (n, p) => (calls.push(`priority ${n} P${p}`), true),
       },
       timers: { now: () => w.now(), setTimeout: () => ({ id: 0 }), clearTimeout: () => undefined },
       pools: () => w.strategy.watchedPools(),
