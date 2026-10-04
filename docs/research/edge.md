@@ -97,7 +97,7 @@ File: `research/edge/preregistration.json`, sha256 `0841c1c6a03d3dc9fd91d2630bbe
 
 ## 4. What the study will settle
 
-- For each registered hypothesis: whether its out-of-sample mean beats costs and the random control S0 (G1 on practice days, then G2 once on the sealed holdout, Holm across universes).
+- For each registered hypothesis: whether it beats costs and S0 on practice days (G1, SPA over all six, k = 6). The one hypothesis per universe that SPA picks then gets G2 once on the sealed holdout (Holm across U1 and U2).
 - Which hypotheses cannot reach 300 trades by 2026-10-20: these end "not proven yet", not "failed"; a later, never-run window can try again at a smaller error budget (DECISIONS, attempt k ≥ 2).
 - If none pass, the honest result is that no tested setup earns more than its costs at $2, and the bot keeps abstaining.
 
