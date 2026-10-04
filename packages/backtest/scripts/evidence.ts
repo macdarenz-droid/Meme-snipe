@@ -38,7 +38,8 @@ const all = (name: string): string[] => args.flatMap((a, i) => (a === `--${name}
 const git = (...a: string[]): string => execFileSync('git', a, { encoding: 'utf8' }).trim();
 
 const top = git('rev-parse', '--show-toplevel');
-const dirty = git('status', '--porcelain').split('\n').filter((l) => l !== '' && !l.slice(3).startsWith('docs/evidence/'));
+// Untrimmed: each porcelain line starts with a two-letter status that may begin with a space.
+const dirty = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).split('\n').filter((l) => l !== '' && !l.slice(3).startsWith('docs/evidence/'));
 if (dirty.length > 0) throw new Error(`commit the code first; the evidence records the commit it ran on:\n${dirty.join('\n')}`);
 const commit = git('rev-parse', 'HEAD');
 
