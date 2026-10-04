@@ -12,7 +12,8 @@ import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
 import { HALT_KEY, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
-import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, PRICE_SCALE, TRIAL_POLICY } from '../../core/src/config/index.ts';
+import type { SavedExit } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
 import { views } from '../src/run/api.ts';
@@ -755,6 +756,62 @@ describe('the fallback plan opens at the first open event (EXIT-1f review B1)', 
     expect(await until(m3, 4_000, () => said('exit').length > 0, () => m3.slot())).toBe(true);
     expect((said('exit')[0]!['reasons'] as string[]).some((r) => r.startsWith('time_max'))).toBe(true);
     await b.worker.stop();
+  });
+});
+
+describe('sell-only recovery for a position without its own plan (EXIT-1g, audit M7)', () => {
+  /** Entered, killed, its saved exit changed, and booted again at once (no time stop due): what the next boot does. */
+  const recovered = async (change: (saved: Record<string, SavedExit>, pid: string) => Record<string, SavedExit>) => {
+    const h = makeWorker();
+    await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    await h.worker.kill();
+    const file = exitsFile(h.stateDir);
+    file.write(change(file.read({}), pid));
+    const r = await reboot(h, LANDS);
+    return { ...r, pid };
+  };
+  const exitsAtNormalPrice = async (r: Awaited<ReturnType<typeof recovered>>, why: string) => {
+    await r.m.run(800, 400, () => r.m.slot());
+    // The price has not moved: only the recovery exits, at the first fresh quote, on the ladder's first rung.
+    r.m.pool();
+    expect(await until(r.m, 4_000, () => r.mine().some((l) => l['action'] === 'trigger_exit'), () => r.m.slot())).toBe(true);
+    expect(r.first('prepare exit')[0]!['reasons']).toContain('rung 0');
+    const said = r.first('recovery exit');
+    expect(said).toHaveLength(1);
+    expect(said[0]!['reasons']).toEqual(['recovery exit', r.pid, why, 'the whole holding exits at the next fresh quote']);
+    await r.b.worker.stop();
+  };
+  it('the saved plan is missing', async () => {
+    await exitsAtNormalPrice(await recovered((saved, pid) => Object.fromEntries(Object.entries(saved).filter(([k]) => k !== pid))), 'no saved plan');
+  });
+  it('the saved plan is refused', async () => {
+    await exitsAtNormalPrice(await recovered((saved, pid) => ({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, stopPrice: 'none' as unknown as bigint } } })), 'saved plan refused');
+  });
+  it('the saved tracker is refused (its trail and peak cannot be recovered)', async () => {
+    await exitsAtNormalPrice(await recovered((saved, pid) => ({ ...saved, [pid]: { ...saved[pid]!, tracker: { ...saved[pid]!.tracker, trail: 'high' as unknown as bigint } } })), 'saved tracker refused');
+  });
+  it('after a partial sale, the fallback plan prices the entry from the book (cost over tokens bought), not from what is left', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    const held = new Market(h, HELD);
+    await held.run(8_000, 400, () => {
+      held.slot();
+      held.pool(1_150_000n);
+    });
+    const p = h.worker.book.positions[pid]!;
+    expect(p.sold > 0n && p.quantity > 0n && p.quantity < p.bought).toBe(true);
+    await h.worker.kill();
+    void m;
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, stopPrice: 'none' as unknown as bigint } } });
+    const r = await reboot(h, LANDS);
+    expect(await until(r.m, 4_000, () => r.b.worker.strategy.saved()[pid] !== undefined, () => r.m.slot())).toBe(true);
+    const entryPx = (p.cost * PRICE_SCALE) / p.bought;
+    expect(r.b.worker.strategy.saved()[pid]!.plan.stopPrice).toBe(entryPx - (entryPx * BigInt(TRIAL_POLICY.loss.stopMaxBps)) / 10_000n);
+    await r.b.worker.stop();
   });
 });
 
