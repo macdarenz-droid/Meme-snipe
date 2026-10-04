@@ -1508,7 +1508,7 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      rss_bytes: process.memoryUsage().rss, last_exit: this.#journal.previousExit, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),

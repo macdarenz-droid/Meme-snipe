@@ -22,6 +22,10 @@ export interface Heartbeat {
   owner_chat_id?: string | null;
   /** Critical alerts the worker raised (WATCH-1: a held position with no fresh price), one line each. */
   critical?: string[];
+  /** RESTART-ALERT: seconds since this boot started, its resident memory, and how the previous process ended. */
+  uptime_s?: number;
+  rss_bytes?: number;
+  last_exit?: string | null;
 }
 
 export interface Stored {
@@ -165,6 +169,58 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   const critical = Array.isArray(hb.critical) ? hb.critical.filter((c): c is string => typeof c === 'string' && c !== '') : [];
   if (critical.length > 0) out.push({ key: 'worker_critical', text: `Worker critical: ${critical.join('; ')}.` });
   return out;
+}
+
+/** RESTART-ALERT: a boot that replaced the previous one on the same release (a deploy changes `git_sha`). */
+export interface RestartEvent {
+  at: number;
+  boot: string;
+  git_sha: string;
+  /** How the previous process ended, as the new boot read it from the journal. */
+  cause: string;
+  /** The previous boot's last reported uptime and memory: an OOM shows as a high RSS before a `no clean stop`. */
+  prevUptimeS: number | null;
+  prevRssBytes: number | null;
+}
+
+export interface RestartState {
+  /** Unplanned restarts in the last hour, oldest first. */
+  events: RestartEvent[];
+  /** The newest restart already alerted, and when the last restart line was sent. */
+  reportedAt: number;
+  lastSent: number;
+}
+
+export const NO_RESTARTS: RestartState = { events: [], reportedAt: 0, lastSent: 0 };
+
+/**
+ * A new heartbeat from another boot on the same release is an unplanned restart (a crash, an OOM, a kill): systemd
+ * restarts the worker and nothing else says so. A new release (`git_sha`) is a deploy and is not recorded.
+ */
+export function noteRestart(prev: Stored | undefined, hb: Heartbeat, now: number, st: RestartState): RestartState {
+  if (prev === undefined || prev.hb.boot === hb.boot || prev.hb.git_sha !== hb.git_sha) return st;
+  const event: RestartEvent = {
+    at: now, boot: hb.boot, git_sha: hb.git_sha,
+    cause: typeof hb.last_exit === 'string' && hb.last_exit !== '' ? hb.last_exit : 'cause not reported',
+    prevUptimeS: num(prev.hb.uptime_s) ? prev.hb.uptime_s : null,
+    prevRssBytes: num(prev.hb.rss_bytes) ? prev.hb.rss_bytes : null,
+  };
+  return { ...st, events: [...st.events.filter((e) => now - e.at < 3_600_000), event] };
+}
+
+const duration = (s: number): string => (s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`);
+
+/**
+ * The restart line, at most one per `repeatCriticalS`: a crash loop reads as one line with its count, not a flood. A
+ * restart inside the window is reported, with the count, by the next line once the window has passed.
+ */
+export function restartLines(st: RestartState, now: number, l: Limits): { lines: string[]; next: RestartState } {
+  const events = st.events.filter((e) => now - e.at < 3_600_000);
+  const latest = events[events.length - 1];
+  if (latest === undefined || latest.at <= st.reportedAt || now - st.lastSent < l.repeatCriticalS * 1000) return { lines: [], next: { ...st, events } };
+  const before = latest.prevUptimeS === null ? '' : `; the previous boot ran ${duration(latest.prevUptimeS)}${latest.prevRssBytes === null ? '' : ` at ${Math.round(latest.prevRssBytes / 1048576)} MB`}`;
+  const line = `ALERT Worker restarted without a deploy (release ${latest.git_sha.slice(0, 12)}): ${latest.cause}${before}. ${events.length} restart${events.length === 1 ? '' : 's'} in the last hour.`;
+  return { lines: [line], next: { events, reportedAt: latest.at, lastSent: now } };
 }
 
 /** OPS-SUMMARY: a summary that was refused or not written. Trading and the other checks are unaffected. */

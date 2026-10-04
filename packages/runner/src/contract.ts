@@ -111,6 +111,8 @@ export interface Health {
   readonly pid: number;
   readonly uptime_s: number;
   readonly rss_bytes: number;
+  /** How the previous process ended (RESTART-ALERT): `stop: <reason>`, `no clean stop`, or null on a first start. */
+  readonly last_exit?: string | null;
   readonly mode: 'paper';
   readonly recorder: 'on' | 'off';
   readonly simulation: 'on' | 'off';
