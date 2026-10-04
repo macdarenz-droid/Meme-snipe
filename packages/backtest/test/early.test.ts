@@ -80,6 +80,13 @@ describe('early look on the command line', () => {
       expect(report.days[0]!.variants[0]!.funnel!.checks).toBeGreaterThan(0);
       expect(report.days[0]!.notes[0]).toMatch(/not proof/);
       expect(() => run('2026-09-22')).toThrow(/holdout day: the early look never reads one/);
+      // A day outside the practice window, and a practice day the dataset does not hold complete, are refused too.
+      expect(() => run('2026-07-01')).toThrow(/2026-07-01 is not a practice day/);
+      expect(() => run('2026-09-10')).toThrow(/2026-09-10 is not a complete day in the dataset/);
+      expect(() => run('2026-09-20,2026-09-10')).toThrow(/2026-09-10 is not a complete day in the dataset/);
+      // `study` reads RES-4's family only from the file the study configuration pins: a given file is refused, not ignored.
+      expect(() => execFileSync('node', ['--no-warnings', cli, 'study', '--dataset', join(dir, 'ds'), '--sol-usd', join(dir, 'sol.csv'), '--out', join(dir, 'out'), '--preregistration', join(dir, 'x.json'), '--regime-assumed-on'],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })).toThrow(/--preregistration is for the early look only/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

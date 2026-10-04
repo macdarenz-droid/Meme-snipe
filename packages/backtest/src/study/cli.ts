@@ -266,6 +266,8 @@ if (command === 'day' || command === 'trial') {
   writeFileSync(join(out, `${runId}.json`), json({ kind: `BT-2e ${EARLY_LABEL}`, runId, ...common, preregistration: family === null ? null : { sha256: family.sha256, ids: family.hypotheses.map((h) => h.id) }, days: reports }));
   console.log(json({ runId, label: EARLY_LABEL, days: reports.map((r) => ({ day: r.day, trades: Object.fromEntries(r.variants.map((v) => [v.tag, v.stats.trades])), s0: r.s0.stats.trades })) }));
 } else if (command === 'study') {
+  // RES-4's family comes only from the file the study configuration pins (with its hash); a given file is refused.
+  if (has('preregistration') || has('preregistration-sha256')) throw new Error('--preregistration is for the early look only: the study reads the family the study configuration pins');
   const first = [...byDay.keys()].sort()[0]!;
   if (has('registry')) throw new Error(`the holdout registry path is fixed by the research config (${RESEARCH_CONFIG.holdout.registryPath})`);
   // A holdout is bound to exact code: a tree with uncommitted changes may not register or run one.
