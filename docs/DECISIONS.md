@@ -395,6 +395,27 @@ Supervisor rulings:
   - The full pull needs the owner's approval: Developer plan US$49, plus extra credits capped at 10M at US$5 per million, so at most US$99 that month (prices checked 4 Oct). The cap is set after measuring the live dry run's credit use on the same account, so the pull cannot starve the live feed.
   - Raw Helius responses never go into public releases until their terms are confirmed for derived files.
   - A message to Triton (lift the block, or a set rate or bucket, and permission to publish derived day files) is the owner's choice, and keeps the free route open.
+- **ARCHIVE-CHECK: one request every 3 hours (owner decision, 2026-10-04 3:55 PM Melbourne).** This replaces "no request until Triton answers". The owner has emailed Triton.
+  - `archive-check.yml` (cron `41 */3 * * *` and dispatch) runs `ci/archive-check.sh`.
+  - While a data-scan run is active or queued, the check does nothing. Otherwise it makes one range GET of 64 bytes from the runner, with the scanner's own User-Agent, read from `archive.go`.
+  - It never uses another agent, host, address, proxy, client or Triton service, because that would get around the block.
+  - No answer can stream. The body goes through `head -c 65`, which aborts the transfer, and `--max-filesize 64` also stops it. Each was tested alone against a local server that ignores the range and streams a chunked 200.
+  - Only a 206 of at most 64 bytes, with a clean curl exit, counts as served. Anything else is logged (status, bytes, curl exit, cf-ray, time), with no retry.
+  - When served, it dispatches the next 8 unpublished days: pre-holdout days 21 Sep back to 20 Jul first, then the holdout days 1 Oct back to 22 Sep. The scan keeps its own limits: one job, 80 MB/s, 40 requests/s, stop on any 429 with at least 1 h back-off.
+  - A rate or bucket from Triton replaces these limits.
+- **DATA-2 build: one decoder set, re-encoded meta (2026-10-04).**
+  - The RPC reader encodes each `getBlock` transaction as an archive Transaction node, with the meta re-encoded as the archive's protobuf. So `processBlock`, `txNode` and `processTx` are the scanner's own and there is no second decoder.
+  - Review of 1697ddd: the scanner folder's tree, which is the archive units' revision, stays 64e1335c.
+    - The RPC path lives in `research/historical/rpcscan`, which links every scanner source but `main.go`, plus copies of the IDLs that test-ci keeps byte-identical.
+    - This was chosen over a golden old-versus-new test because it leaves nothing to prove.
+  - Measured on 25 real blocks of the comparison unit: every CSV and event row matches the archive byte for byte.
+  - Requests use `maxSupportedTransactionVersion: 1`, because the RPC refuses 0 for blocks with v1 transactions.
+  - Truncated RPC logs (`"Log truncated"`) change only raw records' `logMessages`, not rows. They are reported as explained, never patched: the live bot sees the same logs.
+  - The exemption is per record, from the review. The candidate's log must equal Agave's default 10,000-byte cut of the archive's log, which keeps later messages that still fit, so the marker can sit mid-log. All other fields must be equal. A second differing column, a different row count, a one-sided column or another table's difference is never exempt.
+- **DATA-2 pilot baseline: 1 Oct 09:40–10:00 instead of an hour of 2 Oct (2026-10-04).**
+  - It is the only archive unit in today's schema (epoch 1046, 452,277,000–452,281,499, 4,496 blocks). The 2 Oct slices are schema 1, sampled at 0.25.
+  - It is committed as a digest: per-block and per-column hashes plus counters, with no rows. Publishing files derived from the archive waits on Triton.
+  - The pilot needs about 4.6k credits under its 15k stop.
 
 - **Owner decisions after 3:45 PM:**
   - GitHub Pro (the owner's spend, about 3:47 PM).
