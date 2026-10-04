@@ -322,6 +322,37 @@ Old Faithful refuses our scanner (see `docs/DECISIONS.md`, "The archive's block 
 
   A record is explained only when everything but its log is equal and its log is exactly the archive's log under that rule. Three of these blocks are test fixtures (`rpcscan/testdata/rpc`; 452277901 holds a truncated record). They are taken from inside the holdout window, for data integrity only: no gate, label or outcome is computed on them.
 
+## Regime volume after 2 Oct (DATA-5)
+
+Design only; nothing here is built yet. Research by the DATA-4 builder (session 01XHH3k2), sources read on 2026-10-04.
+
+**Problem.** The regime gate's volume condition reads the chain's curve volume of day D−3 (`packages/core/src/gates/regime.ts`; `volumeLagDays` 3, `volumeWindowDays` 365, `volumePercentile` 25 in `packages/core/src/config/policy.ts`). Live, the worker reads it from the `data-volume-DAY` releases (`packages/worker/src/facts/volume-hours.ts`). data-scan.yml (`REGIME_BOUNDARY_DAY`) and `publish-day.sh` refuse every day on or after 2026-10-02, so from about 2026-10-05 D−3 has no release, the volume condition is unknown and the gate stays shut: no trades until a source exists.
+
+**Metric to keep.** Hourly lamports, buys plus sells, on the quote side (`research/historical/scanner/volume.go`): pump curve trades quoted in SOL (empty quote mint, the system program or WSOL) plus canonical PumpSwap pools with a WSOL quote. An hour that is not covered is unknown, never zero.
+
+**B5.** The undocumented upgrade of 2026-10-02 (~20:00 UTC) added 8 bytes to trade events and new event discriminators (see Limits and known issues). `regimes.json` lists B5 without slots yet. DECISIONS treats B5 as a decoder boundary, not a market boundary, so the volume series may continue across it once the decoder knows the new layouts.
+
+**Options.**
+
+| | Source | Exact, same series as the backtest | Cost | Blocker or risk |
+|---|---|---|---|---|
+| A | Old Faithful + upgrade-aware decoder | yes | free | The archive lags 0.4–1.9 days (fits D−3), but Triton blocks us now; ARCHIVE-CHECK watches for the end of the block. |
+| B | Full blocks over a paid RPC + our decoder | yes | money | Helius: about 250k credits a day, so the free plan covers about 4 days a month; Developer is $49 a month for 10M credits. Alchemy `getBlock`: 40 CU a block, about $4.5 a day, about $136 a month pay-as-you-go. QuickNode: 30 credits a block, about $90–110 a month (plan price unverified). Triton: requests plus bandwidth, likely bandwidth-heavy (unverified). |
+| C | The live worker records hourly volume from its own streams | no | Helius stream credits (2 per 100 kB) | `tradeStreams` (whole-program `logsSubscribe` on pump and PumpSwap) is off as a paid stream. Logs cut at 10 kB, processed commitment, reconnect gaps, 10-02 and 10-03 need a backfill, and the source differs from the backtest series (a parity risk). |
+| D | Dune | close, unproven | Analyst plan $75 a month (no free API) | Spellbook `pumpdotfun_solana_base_trades` reads raw `TradeEvent` bytes at a fixed offset (the +8 bytes don't break it) and keeps successful transactions only; PumpSwap comes from IDL-decoded tables plus token transfers. Refresh about 3 h. USDC-quoted curves may be included, and PumpSwap amounts come from transfers, not the event's quote amounts. |
+| E | Bitquery | unproven | Pro $69 a month (30 days of trades) | The free trial has no archive. |
+| F | Others | no | — | BigQuery's public Solana dataset is community-run and has stalled for days (2025-03/04, 2025-11). Flipside's free tier ended (sold to SonarX, 2026-05). DefiLlama is daily, in USD, and derived from Dune and Allium. |
+| G | On-chain `GlobalVolumeAccumulator` (pump-public-docs IDL) | no | free | Daily, 30 slots inside an admin-set window, probably buys only, possibly frozen since 2025-11 ("Immutable global volume accumulator"). Not usable. |
+
+**Recommendation.**
+- **A stays the default**: free, exact, and the same series as the backtest. It needs no money, only the end of the archive block.
+- **Whichever source is used**, build two things first: B5 slots and layouts in `regimes.json` and the QA pre/post layouts (confirmed from data), and volume-only publication (`data-volume-DAY`) for days on or after 2026-10-02 while day files stay refused. The coverage rule stays: an uncovered hour is unknown.
+- **The single money choice (owner):** while A is blocked, pay for a full-block RPC for D−3 days only, or leave the gate shut. The cheapest exact option is **Helius Developer, $49 a month** (10M credits; a D−3 day is about 250k, so about 40 days a month, enough for every day plus the 10-02 to 10-04 backfill). It needs no new provider code, since `rpcscan` already reads over Helius. It reverses the owner's "Helius free plan only" ruling, so only the owner can make it. Alchemy pay-as-you-go (about $136 a month) is the alternative if a second provider is wanted. Cancel once A is back.
+- **D (Dune, $75 a month)** is a fallback only after its definition is checked against our decoder on overlapping days.
+- **C, E, F and G** are not recommended: C changes the source of the series, E is unproven, F is unreliable or too coarse, G is not the metric.
+
+**Sources** (read 2026-10-04): helius.dev/pricing and Helius credit docs; alchemy.com/pricing and Alchemy's Solana compute-unit table; quicknode.com/pricing and its Solana credit table; dune.com/pricing and the `duneanalytics/spellbook` pump.fun models; bitquery.io/pricing; the BigQuery `crypto_solana` public dataset; pump-public-docs (IDL); the repo files named above.
+
 ## How to extend
 
 **No local scans** (supervisor ruling, 2026-10-03): the archive is read only by `data-scan.yml` on its one lane. Never run `zeroed-scan run` or `unit` against the archive from a container or a laptop next to CI, since that adds a second lane. The commands below are for the CI scripts and for `finalize`, QA and parity on units already downloaded from releases.
