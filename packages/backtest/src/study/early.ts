@@ -1,8 +1,10 @@
 // BT-2e, an early look (owner request, 2026-10-04): the bot's own backtest, the same engine, gates and blind-to-the-future
 // guards, on one or two free practice days, so a first funnel count and a rough result exist before the full data. U2
 // only (U1 needs a 14-day lead-in), each U2 configuration run on its own (RES-4's U2 hypotheses with BT-2's U2), with
-// S0 beside them. Labelled "early look, not proof": nothing is chosen, frozen, registered or recorded from it.
-import { clopperPearsonInterval, createRng, mean, median, nextInt } from '../../../core/src/stats/index.ts';
+// S0 beside them. Labelled "early look, not proof": nothing is chosen, frozen, registered or recorded from it. It reports
+// engine validity, the funnel and descriptive figures only (supervisor and 01FHfb rulings): no G1 or SPA under 10 days,
+// no interval or test of any kind, and no wording that implies one.
+import { mean, median } from '../../../core/src/stats/index.ts';
 import type { FillConfig } from '../../../core/src/config/index.ts';
 import { configTag, type StudyConfig, type UniverseConfig } from '../strategy/config.ts';
 import type { StudyStrategy } from '../strategy/study.ts';
@@ -12,19 +14,13 @@ import { scoreRun, type ScoredTrade } from './score.ts';
 
 export const EARLY_LABEL = 'early look, not proof';
 
+/** Descriptive figures of a set of trades: no interval, no test. */
 export interface TradeStats {
   readonly trades: number;
   readonly tradesPerDay: number;
   readonly winRate: number | null;
-  /** Clopper-Pearson 95% interval of the win rate. */
-  readonly winRate95: { readonly lower: number; readonly upper: number } | null;
   /** Net return per trade after every cost (r_net). */
   readonly meanNet: number | null;
-  /**
-   * 95% percentile interval of the mean, bootstrapping trades: it ignores clustering by day and creator, so the real
-   * uncertainty is wider. With one or two days no day-block interval exists.
-   */
-  readonly meanNet95: { readonly lower: number; readonly upper: number } | null;
   readonly medianNet: number | null;
   /** Sum of winning net returns over the absolute sum of losing ones; null without a losing trade. */
   readonly profitFactor: number | null;
@@ -33,12 +29,10 @@ export interface TradeStats {
   readonly longestLosingStreak: number;
 }
 
-const BOOT = 2000;
-
-/** The early look's trade figures; `seed` fixes the bootstrap. */
-export const tradeStats = (trades: readonly ScoredTrade[], days: number, seed: number): TradeStats => {
+/** The early look's trade figures. */
+export const tradeStats = (trades: readonly ScoredTrade[], days: number): TradeStats => {
   const r = [...trades].sort((a, b) => a.closedAt - b.closedAt || (a.mint < b.mint ? -1 : 1)).map((t) => t.rNet);
-  if (r.length === 0) return { trades: 0, tradesPerDay: 0, winRate: null, winRate95: null, meanNet: null, meanNet95: null, medianNet: null, profitFactor: null, worstNet: null, longestLosingStreak: 0 };
+  if (r.length === 0) return { trades: 0, tradesPerDay: 0, winRate: null, meanNet: null, medianNet: null, profitFactor: null, worstNet: null, longestLosingStreak: 0 };
   const wins = r.filter((x) => x > 0);
   const losses = r.filter((x) => x < 0);
   let streak = 0;
@@ -47,16 +41,10 @@ export const tradeStats = (trades: readonly ScoredTrade[], days: number, seed: n
     streak = x < 0 ? streak + 1 : 0;
     longest = Math.max(longest, streak);
   }
-  let ci: { lower: number; upper: number } | null = null;
-  if (r.length >= 2) {
-    const rng = createRng(seed);
-    const means = Array.from({ length: BOOT }, () => mean(Array.from({ length: r.length }, () => r[nextInt(rng, r.length)]!))).sort((a, b) => a - b);
-    ci = { lower: means[Math.floor(0.025 * BOOT)]!, upper: means[Math.ceil(0.975 * BOOT) - 1]! };
-  }
   const lossSum = -losses.reduce((a, b) => a + b, 0);
   return {
-    trades: r.length, tradesPerDay: r.length / days, winRate: wins.length / r.length, winRate95: clopperPearsonInterval(wins.length, r.length),
-    meanNet: mean(r), meanNet95: ci, medianNet: median(r), profitFactor: lossSum > 0 ? wins.reduce((a, b) => a + b, 0) / lossSum : null,
+    trades: r.length, tradesPerDay: r.length / days, winRate: wins.length / r.length,
+    meanNet: mean(r), medianNet: median(r), profitFactor: lossSum > 0 ? wins.reduce((a, b) => a + b, 0) / lossSum : null,
     worstNet: Math.min(...r), longestLosingStreak: longest,
   };
 };
@@ -68,6 +56,7 @@ export interface EarlyVariant {
   readonly stats: TradeStats;
   readonly crashes: number;
   readonly illegalStates: number;
+  readonly unreconciledIntents: number;
 }
 
 export interface EarlyDay {
@@ -85,13 +74,12 @@ export interface EarlyDay {
  */
 export const earlyDay = (day: string, configs: readonly UniverseConfig[], study: StudyConfig, base: Omit<StudyRunOptions, 'mode' | 'study'>, ids: (c: UniverseConfig) => string, s0Seeds: number, fills: FillConfig): EarlyDay => {
   if (configs.length === 0 || configs.some((c) => c.universe !== 'U2')) throw new RangeError('the early look runs U2 configurations only');
-  const seed = (s: string) => [...s].reduce((h, ch) => (Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0), 2166136261);
   const variants = configs.map((c) => {
     let strategy: StudyStrategy | null = null;
     const r = runStudy({ ...base, study: { ...study, universes: [c] }, mode: 'strategy', onStrategy: (x) => { strategy = x; } });
     const tag = configTag(c);
     const funnel = (strategy as StudyStrategy | null)?.funnel.summary()[tag] ?? null;
-    return { tag, configId: ids(c), funnel, stats: tradeStats(scoreRun(r, fills).filter((t) => t.tag === tag), 1, seed(`${day}:${tag}`)), crashes: r.stats.crashes, illegalStates: r.stats.illegalStates };
+    return { tag, configId: ids(c), funnel, stats: tradeStats(scoreRun(r, fills).filter((t) => t.tag === tag), 1), crashes: r.stats.crashes, illegalStates: r.stats.illegalStates, unreconciledIntents: r.stats.unreconciledIntents };
   });
   // S0 needs one U2 configuration for its universe (its gates and stop); any of them gives the same S0 universe.
   const s0Trades = Array.from({ length: s0Seeds }, (_, k) => {
@@ -99,12 +87,12 @@ export const earlyDay = (day: string, configs: readonly UniverseConfig[], study:
     return scoreRun(r, fills).filter((t) => t.tag === 'S0-U2');
   }).flat();
   return {
-    label: EARLY_LABEL, day, variants, s0: { seeds: s0Seeds, stats: tradeStats(s0Trades, s0Seeds, seed(`${day}:S0`)) },
+    label: EARLY_LABEL, day, variants, s0: { seeds: s0Seeds, stats: tradeStats(s0Trades, s0Seeds) },
     notes: [
       'Early look, not proof: one day, few trades. Nothing here is proven, and no configuration is chosen or frozen from it.',
-      'The intervals are wide on purpose: the mean interval bootstraps trades and ignores clustering by day and creator, so the true uncertainty is larger still.',
+      'Engine checks, the funnel and plain trade figures only: with one or two days no statistical test is run or implied.',
       'No daily trade cap applies in the backtest. S0 is pooled over its seeds; its trades per day are per seed.',
-      'The study and G1 use every practice day later; these days count again there.',
+      'The full study uses every practice day later; these days count again there.',
     ],
   };
 };

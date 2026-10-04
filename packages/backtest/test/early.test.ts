@@ -1,5 +1,5 @@
 // BT-2e's early look: each U2 configuration on its own run through the same engine and gates, S0 beside them, and the
-// trade figures with their intervals, labelled "early look, not proof".
+// engine checks, the funnel and plain trade figures (no interval, no test), labelled "early look, not proof".
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,19 +21,16 @@ const SETUP: MintPlan = { label: 'a', createSlot: 10, graduateAfter: 20 * MIN, m
 const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ start: W0 - 16 * 86_400_000 + k * 3_600_000, close: '120.00' })) };
 
 describe('early look', () => {
-  it('gives the trade figures: win rate with its interval, mean and median net, profit factor, worst trade, longest losing streak', () => {
+  it('gives plain trade figures: win rate, mean and median net, profit factor, worst trade, longest losing streak; no interval', () => {
     const t = (rNet: number, closedAt: number) => ({ rNet, closedAt, mint: `m${closedAt}` }) as ScoredTrade;
-    const s = tradeStats([t(0.2, 1), t(-0.1, 2), t(-0.3, 3), t(0.4, 4), t(-0.05, 5)], 1, 7);
+    const s = tradeStats([t(0.2, 1), t(-0.1, 2), t(-0.3, 3), t(0.4, 4), t(-0.05, 5)], 1);
     expect(s).toMatchObject({ trades: 5, tradesPerDay: 5, winRate: 0.4, worstNet: -0.3, longestLosingStreak: 2 });
     expect(s.meanNet).toBeCloseTo(0.03, 12);
     expect(s.medianNet).toBeCloseTo(-0.05, 12);
     expect(s.profitFactor).toBeCloseTo(0.6 / 0.45, 12);
-    expect(s.winRate95!.lower).toBeLessThan(0.4);
-    expect(s.winRate95!.upper).toBeGreaterThan(0.4);
-    expect(s.meanNet95!.lower).toBeLessThan(s.meanNet!);
-    expect(s.meanNet95!.upper).toBeGreaterThan(s.meanNet!);
-    expect(tradeStats([], 2, 1)).toMatchObject({ trades: 0, winRate: null, meanNet95: null, longestLosingStreak: 0 });
-    expect(tradeStats([t(0.1, 1)], 1, 1)).toMatchObject({ profitFactor: null, meanNet95: null });
+    expect(Object.keys(s).sort()).toEqual(['longestLosingStreak', 'meanNet', 'medianNet', 'profitFactor', 'tradesPerDay', 'trades', 'winRate', 'worstNet'].sort());
+    expect(tradeStats([], 2)).toMatchObject({ trades: 0, winRate: null, meanNet: null, longestLosingStreak: 0 });
+    expect(tradeStats([t(0.1, 1)], 1)).toMatchObject({ profitFactor: null });
   });
 
   it('runs each U2 configuration on its own through the same engine and gates, with S0 beside them, labelled not proof', () => {
@@ -79,6 +76,11 @@ describe('early look on the command line', () => {
       expect(report.kind).toBe(`BT-2e ${EARLY_LABEL}`);
       expect(report.days[0]!.variants[0]!.funnel!.checks).toBeGreaterThan(0);
       expect(report.days[0]!.notes[0]).toMatch(/not proof/);
+      // Engine validity, the funnel and descriptive figures only: no G1 or SPA verdict, no test, no interval, and no
+      // wording that implies one (supervisor ruling; 01FHfb: no G1 or SPA under 10 days).
+      const text = readFileSync(join(dir, 'out', `${summary.runId}.json`), 'utf8');
+      expect(text).not.toMatch(/\bG[12]\b|\bSPA\b|p-?value|significan|verdict|interval|confidence|lower|upper|\bpass(es|ed)?\b|\bbeats?\b|\bedge\b|winRate95|meanNet95/i);
+      expect(JSON.parse(text).days[0].variants[0]).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
       expect(() => run('2026-09-22')).toThrow(/holdout day: the early look never reads one/);
       // A day outside the practice window, and a practice day the dataset does not hold complete, are refused too.
       expect(() => run('2026-07-01')).toThrow(/2026-07-01 is not a practice day/);
