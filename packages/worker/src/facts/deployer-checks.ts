@@ -49,6 +49,9 @@ export interface DeployerCheckOutcome {
   readonly read: readonly string[];
 }
 
+/** Every listed mint judged as rug, clear or open: the only answers H14 accepts (`unjudged` and `unfetched` are not). */
+export const checkCovers = (mints: readonly MintCheck[]): boolean => mints.every((m) => m.status === 'rug' || m.status === 'clear' || m.status === 'open');
+
 export class DeployerChecks {
   readonly #o: DeployerChecksOptions;
   readonly #cache = new Map<string, Map<string, Cached>>();
@@ -100,7 +103,8 @@ export class DeployerChecks {
       // The creator's gap runs from its last read of any kind: a first read counts as a read of its open answers.
       this.#lastReread.set(req.creator, nowMs);
       for (const m of r.fact.mints) {
-        if (m.status === 'rug' && m.label !== undefined && cache.get(m.mint)?.check.status !== 'rug') labels.push({ key: `${RUG_PREFIX}${m.mint}`, value: m.label });
+        // A rug is final and never read again, so its label goes out once.
+        if (m.status === 'rug' && m.label !== undefined) labels.push({ key: `${RUG_PREFIX}${m.mint}`, value: m.label });
         cache.set(m.mint, { check: m, slot: req.asOf.slot });
         read.push(m.mint);
       }
@@ -116,7 +120,7 @@ export class DeployerChecks {
       obs: { provider: 'rug-check', slot: req.asOf.slot, receivedAt: nowMs, quality: [], commitment: 'confirmed' },
       creator: req.creator, version: o.config.version, fromMs: req.fromMs, asOfMs: req.asOfMs, mints, credits,
     };
-    const covered = mints.every((m) => m.status === 'rug' || m.status === 'clear' || m.status === 'open');
+    const covered = checkCovers(mints);
     return { facts: [...labels, { key: rugCheckKey(req.creator), value: fact }], covered, credits, read };
   }
 

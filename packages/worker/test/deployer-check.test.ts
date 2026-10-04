@@ -6,12 +6,12 @@ import { describe, expect, it } from 'vitest';
 import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
 import { RUG_CONFIG, type RugCheckConfig } from '../../core/src/config/index.ts';
 import type { Moment } from '../../core/src/engine/index.ts';
-import { RUG_CHECK_PREFIX, type RugCheckFact } from '../../core/src/gates/index.ts';
+import { RUG_CHECK_PREFIX, type MintCheck, type RugCheckFact } from '../../core/src/gates/index.ts';
 import {
   SupplementRecorder, checkDeployer, checkFacts, rpcHistorySource, supplementSource, type RugHistorySource, type RugSupplement,
 } from '../src/providers/deployer-check.ts';
 import { RpcHttp, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
-import { DEPLOYER_CHECK_CREDITS_PER_DAY, DEPLOYER_CHECK_SPEND_FILE, DeployerChecks, FactReaders, FactRpc } from '../src/facts/index.ts';
+import { DEPLOYER_CHECK_CREDITS_PER_DAY, DEPLOYER_CHECK_SPEND_FILE, DeployerChecks, checkCovers, FactReaders, FactRpc } from '../src/facts/index.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { HELIUS_FREE, ManualTimers, P2, Scheduler } from '../src/scheduler/index.ts';
@@ -425,6 +425,24 @@ describe('deployer checks cached per creator (WORKER-1c review: cost)', () => {
     expect((far.facts.at(-1)!.value as RugCheckFact).obs.slot).toBe(s0 + BigInt(CFG.maxLagSlots) + 1n);
   });
 
+  it('a cached read newer than the asking slot is not used for it (no answer from the future)', async () => {
+    const c = counted([CLEAN]);
+    const d = chk(c.source, { minGapMs: 60 * MIN });
+    const open = launch(CLEAN).createdAtMs + DAY;
+    await d.check(reqAt([launch(CLEAN)], s0, open), 0);
+    const earlier = await d.check(reqAt([launch(CLEAN)], s0 - 10n, open), 1);
+    expect(statuses(earlier)).toEqual(['unfetched']);
+    expect(earlier.covered).toBe(false);
+  });
+
+  it('only rug, clear and open count as covered', () => {
+    const m = (status: MintCheck['status']): MintCheck => ({ mint: status, createdAtMs: 0, status, detail: '' });
+    expect(checkCovers([m('rug'), m('clear'), m('open')])).toBe(true);
+    expect(checkCovers([m('rug'), m('unjudged')])).toBe(false);
+    expect(checkCovers([m('unfetched')])).toBe(false);
+    expect(checkCovers([])).toBe(true);
+  });
+
   it('the daily credits cap every read: past them nothing is read and the mints stay unfetched; a new UTC day starts again', async () => {
     const c = counted([RUG]);
     const d = chk(c.source, { creditsPerDay: 1 });
@@ -452,6 +470,8 @@ describe('deployer checks cached per creator (WORKER-1c review: cost)', () => {
     const b = new DeployerChecks({ history: counted([RUG]).source, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 1_000, spendFile: file });
     expect(b.remaining(MIN)).toBe(1_000 - spent);
     expect(b.remaining(DAY)).toBe(1_000);
+    writeFileSync(file, JSON.stringify({ day: 0, spent: -5 }));
+    expect(new DeployerChecks({ history: counted([RUG]).source, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 1_000, spendFile: file }).remaining(MIN)).toBe(0);
     writeFileSync(file, '{not json');
     const c = new DeployerChecks({ history: counted([RUG]).source, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 1_000, spendFile: file });
     expect(c.remaining(MIN)).toBe(0);
