@@ -1,0 +1,114 @@
+name: data-helius-pilot
+
+# DATA-2 pilot (docs/research/historical-data.md, "History over RPC"): reads blocks from
+# Helius on the free plan and compares one unit row for row with the archive, through
+# the committed digest research/historical/pilot/baseline-*.json.zst.
+#
+# - Manual dispatch only. Hard credit stop: the input is refused above 15000, and the
+#   scanner stops before sending a request past it (exit 75).
+# - HELIUS_API_KEY reaches only the pilot step, as an environment variable; the scanner
+#   never logs the request URL and scrubs the key from every error.
+# - The only output is the pilot report (comparison, usage, projection). The units read
+#   stay on the runner and are deleted as soon as they are digested; no raw Helius
+#   response goes into an artifact until Helius's terms are confirmed.
+# - The checkout sets persist-credentials: false; inputs reach the shell only through
+#   environment variables.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_credits:
+        description: "Hard credit stop for this run (at most 15000)"
+        required: true
+        default: "15000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-helius
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: 1.24.7
+  GO_SHA256: da18191ddb7db8a9339816f3e2b54bdded8047cdc2a5d67059478f8d1595c43f
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check the credit stop
+        env:
+          MAX_CREDITS: ${{ inputs.max_credits }}
+        run: |
+          if ! [[ "$MAX_CREDITS" =~ ^[0-9]+$ ]] || (( MAX_CREDITS < 1 || MAX_CREDITS > 15000 )); then
+            echo "refused: max_credits must be a whole number from 1 to 15000, got '$MAX_CREDITS'"
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install Go (pinned by version and checksum)
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "$RUNNER_TEMP/go.tgz" && rm "$RUNNER_TEMP/go.tgz"
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - name: Build scanner
+        working-directory: research/historical/scanner
+        run: |
+          go version
+          go test ./...
+          rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
+          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Pilot (free plan, hard credit stop)
+        env:
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+          MAX_CREDITS: ${{ inputs.max_credits }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/report"
+          # -sample 0.05 is the baseline unit's (and CI's) sample; the scanner refuses
+          # any other. -rps 8 stays under the free plan's 10 requests a second.
+          zeroed-scan pilot \
+            -baseline research/historical/pilot/baseline-1046-452277000-452281499.json.zst \
+            -compare 1046:452277000-452281499 -sample 0.05 \
+            -max-credits "$MAX_CREDITS" -rps 8 -conc 4 -workers 4 \
+            -work "$RUNNER_TEMP/pilot-work" -report "$RUNNER_TEMP/report/pilot-report.json"
+      - name: Summarise the report
+        if: always()
+        run: |
+          f="$RUNNER_TEMP/report/pilot-report.json"
+          if [ ! -f "$f" ]; then echo "no report written" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          python3 - "$f" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          print("## Helius pilot\n")
+          print(f"**Verdict:** {r['verdict']}\n")
+          print(f"First available block: {r.get('first_available_block', r.get('first_available_error'))}\n")
+          print("| probe | ok | blocks | skipped | first block | last block | blocks/s | error |")
+          print("|---|---|---|---|---|---|---|---|")
+          for p in r["probes"]:
+              print(f"| {p['name']} | {p['ok']} | {p['blocks']} | {p['skipped_slots']} | {p.get('first_block_time','')} | {p.get('last_block_time','')} | {p['blocks_per_second']:.2f} | {p.get('error','')} |")
+          c = r.get("comparison")
+          if c:
+              print("\n| table | status | rows (archive) | rows (Helius) | columns differing | blocks differing |")
+              print("|---|---|---|---|---|---|")
+              for t in c["tables"]:
+                  print(f"| {t['table']} | {t['status']} | {t['rows_baseline']} | {t['rows_candidate']} | {', '.join(t.get('columns_differ') or [])} | {t['blocks_differ']} |")
+              if c.get("stats_differ"):
+                  print(f"\nCounters differing: {json.dumps(c['stats_differ'])}")
+          else:
+              print(f"\nComparison not run: {r.get('comparison_error')}")
+          print(f"\nUsage: {json.dumps(r['usage'])}")
+          if r.get("projection"):
+              print(f"\nProjection (19 Jul to 3 Oct): {json.dumps(r['projection'])}")
+          EOF
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: helius-pilot-report
+          path: ${{ runner.temp }}/report/pilot-report.json
+          if-no-files-found: warn
+          retention-days: 30

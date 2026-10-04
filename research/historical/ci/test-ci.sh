@@ -475,6 +475,27 @@ day_up = next(i for i, st in enumerate(steps) if st.get("with", {}).get("name") 
 assert order("Note the upload start") < day_up < order("Note the publish start") < order("Publish this day") < order("Log the publish duration")
 PY
 
+# ---- data-helius-pilot.yml: dispatch only, a hard credit stop, the key in one step, only the report out ----
+python3 - "$here/../../../.github/workflows/data-helius-pilot.yml" <<'PY' && ok "helius pilot workflow: dispatch only, read-only token, credit stop checked first (at most 15000), HELIUS_API_KEY only in the pilot step's env, inputs only through env, only the report uploaded" || no "helius pilot workflow structure"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+assert list(wf[True].keys()) == ["workflow_dispatch"], wf[True]
+assert wf["permissions"] == {"contents": "read"}, wf["permissions"]
+steps = wf["jobs"]["pilot"]["steps"]
+assert steps[0]["name"] == "Check the credit stop" and "MAX_CREDITS > 15000" in steps[0]["run"], steps[0]
+for st in steps:
+    if "checkout" in st.get("uses", ""):
+        assert st["with"]["persist-credentials"] is False, st
+    assert "${{" not in st.get("run", ""), st  # inputs and secrets reach the shell only through env
+sec = [st for st in steps if "secrets." in str(st)]
+assert len(sec) == 1 and sec[0]["env"] == {"HELIUS_API_KEY": "${{ secrets.HELIUS_API_KEY }}", "MAX_CREDITS": "${{ inputs.max_credits }}"}, sec
+r = sec[0]["run"]
+assert "zeroed-scan pilot" in r and '-max-credits "$MAX_CREDITS"' in r and "-sample 0.05" in r and "HELIUS_API_KEY" not in r, r
+up = [st for st in steps if "upload-artifact" in st.get("uses", "")]
+assert len(up) == 1 and up[0]["with"]["path"].endswith("/report/pilot-report.json"), up
+assert "github.token" not in open(sys.argv[1]).read()
+PY
+
 # ---- check-day.sh: phase durations; a 429 in the determinism rescan is resumable (75) ----
 C="$T/cdbin"; mkdir -p "$C"
 cat > "$C/zeroed-scan" <<'STUB'

@@ -113,7 +113,11 @@ type UnitStats struct {
 	// Retention: which rows the unit keeps (retentionPolicy); empty for older units,
 	// which kept trades of sampled mints only.
 	Retention string `json:"retention"`
-	mu        sync.Mutex
+	// SkippedSlots: slots of the unit without a block, for units read over RPC
+	// (rpcunit.go); the archive simply has no node for them.
+	SkippedSlots int64 `json:"skipped_slots,omitempty"`
+
+	mu sync.Mutex
 }
 
 func (s *UnitStats) decodeErr(msg string) {
@@ -202,6 +206,16 @@ type blockData struct {
 	blockTime int64
 	txNodes   [][]byte
 	frames    map[string][]byte
+	// rpcTxs, when not nil, replaces txNodes and frames: the block's transactions as an
+	// RPC getBlock returned them, in block order, each with its meta already in the
+	// archive's protobuf form (rpcblock.go).
+	rpcTxs []rpcTx
+}
+
+// rpcTx is one transaction of an RPC block: wire bytes and protobuf meta (nil when the
+// RPC returned no meta).
+type rpcTx struct {
+	tx, meta []byte
 }
 
 type blockResult struct {
@@ -237,20 +251,9 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	}
 	st.ByteStart, st.ByteEnd = start, end
 
-	tmp := outDir + ".tmp"
-	os.RemoveAll(tmp)
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
+	u, err := startUnit(outDir, st, workers)
+	if err != nil {
 		return nil, err
-	}
-	outs := map[string]*csvOut{}
-	for name, cols := range map[string][]string{"curve_trades.csv.zst": curveCols, "amm_trades.csv.zst": ammCols,
-		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols, "raw.jsonl.zst": nil,
-		"movements.csv.zst": movementCols, "movement_coverage.csv.zst": movementCoverageCols, "delegations.csv.zst": delegationCols} {
-		o, err := newCSV(filepath.Join(tmp, name), cols)
-		if err != nil {
-			return nil, err
-		}
-		outs[name] = o
 	}
 
 	// Stream and split into blocks.
@@ -259,65 +262,6 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	cnt := &countR{r: rr}
 	br := bufio.NewReaderSize(cnt, 4<<20)
 
-	jobs := make(chan *blockData, workers*2)
-	type indexed struct {
-		seq int
-		res *blockResult
-	}
-	results := make(chan indexed, workers*2)
-	var wg sync.WaitGroup
-	seqCh := make(chan int, 1)
-	_ = seqCh
-	type job struct {
-		seq int
-		b   *blockData
-	}
-	jobQ := make(chan job, workers*2)
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := range jobQ {
-				results <- indexed{j.seq, processBlock(j.b, st)}
-			}
-		}()
-	}
-	_ = jobs
-
-	// Writer: re-orders results by sequence.
-	writeErr := make(chan error, 1)
-	go func() {
-		pending := map[int]*blockResult{}
-		agg := map[aggKey]*aggVal{}
-		partial := map[string]bool{}
-		var marks []coverageMark
-		next := 0
-		for r := range results {
-			pending[r.seq] = r.res
-			for {
-				res, ok := pending[next]
-				if !ok {
-					break
-				}
-				delete(pending, next)
-				next++
-				writeResult(outs, res, st, agg)
-				for _, m := range res.partial {
-					partial[m] = true
-				}
-				marks = append(marks, res.marks...)
-			}
-		}
-		for _, row := range aggRows(agg) {
-			outs["agg_hourly.csv.zst"].row(row)
-		}
-		for _, row := range coverageRows(partial, marks) {
-			outs["movement_coverage.csv.zst"].row(row)
-		}
-		writeErr <- nil
-	}()
-
-	seq := 0
 	var readErr error
 	cur := &blockData{frames: map[string][]byte{}}
 	for {
@@ -344,8 +288,7 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 				break
 			}
 			cur.slot, cur.parent, cur.blockTime = slot, parent, bt
-			jobQ <- job{seq, cur}
-			seq++
+			u.add(cur)
 			cur = &blockData{frames: map[string][]byte{}}
 		}
 		if readErr != nil {
@@ -366,47 +309,162 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	if readErr == nil && len(cur.txNodes) > 0 {
 		readErr = fmt.Errorf("%d transaction nodes after the last block node", len(cur.txNodes))
 	}
-	close(jobQ)
-	wg.Wait()
-	close(results)
-	<-writeErr
-	if readErr != nil {
-		for _, o := range outs {
-			o.close()
-		}
-		return nil, readErr
-	}
-	for _, o := range outs {
-		if err := o.close(); err != nil {
-			return nil, err
-		}
-	}
 	// Completeness: the range starts at the first block at or after `from`, and every
 	// block names the previous one as its parent, so no block of the chain is missing.
 	// Across units, finalize checks each unit's first parent against the previous
 	// unit's last block.
-	switch {
-	case firstBlock == nil && st.Blocks > 0:
-		return nil, fmt.Errorf("found %d blocks where the archive has none", st.Blocks)
-	case firstBlock != nil && st.FirstBlockSlot != firstBlock.Slot:
-		return nil, fmt.Errorf("first block %d, expected %d", st.FirstBlockSlot, firstBlock.Slot)
-	case len(st.ChainBreaks) > 0:
-		return nil, fmt.Errorf("%d parent-link breaks (first %s)", len(st.ChainBreaks), st.ChainBreaks[0])
+	check := func() error {
+		switch {
+		case firstBlock == nil && st.Blocks > 0:
+			return fmt.Errorf("found %d blocks where the archive has none", st.Blocks)
+		case firstBlock != nil && st.FirstBlockSlot != firstBlock.Slot:
+			return fmt.Errorf("first block %d, expected %d", st.FirstBlockSlot, firstBlock.Slot)
+		}
+		st.HTTPRequests = statHTTPRequests.Load() - req0
+		st.HTTPRetries = statHTTPRetries.Load() - ret0
+		st.HTTP429 = statHTTP429.Load() - r4290
+		return nil
 	}
-	st.Seconds = time.Since(t0).Seconds()
-	st.HTTPRequests = statHTTPRequests.Load() - req0
-	st.HTTPRetries = statHTTPRetries.Load() - ret0
-	st.HTTP429 = statHTTP429.Load() - r4290
-	st.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	sb, _ := json.MarshalIndent(st, "", "  ")
-	if err := os.WriteFile(filepath.Join(tmp, "stats.json"), sb, 0o644); err != nil {
-		return nil, err
-	}
-	os.RemoveAll(outDir)
-	if err := os.Rename(tmp, outDir); err != nil {
+	if err := u.finish(readErr, check, t0); err != nil {
 		return nil, err
 	}
 	return st, nil
+}
+
+// unitRun writes one unit from blocks fed in chain order, whatever their source: the
+// archive's CAR stream (ScanUnit) or an RPC getBlock reader (helius.go). Blocks are
+// processed by workers and written in the order they were added, into DIR.tmp, which
+// becomes DIR only when the unit is complete.
+type unitRun struct {
+	outDir, tmp string
+	st          *UnitStats
+	outs        map[string]*csvOut
+	jobQ        chan unitJob
+	results     chan unitIndexed
+	wg          sync.WaitGroup
+	writeDone   chan struct{}
+	seq         int
+}
+
+type unitJob struct {
+	seq int
+	b   *blockData
+}
+
+type unitIndexed struct {
+	seq int
+	res *blockResult
+}
+
+func startUnit(outDir string, st *UnitStats, workers int) (*unitRun, error) {
+	u := &unitRun{outDir: outDir, tmp: outDir + ".tmp", st: st, outs: map[string]*csvOut{}}
+	os.RemoveAll(u.tmp)
+	if err := os.MkdirAll(u.tmp, 0o755); err != nil {
+		return nil, err
+	}
+	for name, cols := range map[string][]string{"curve_trades.csv.zst": curveCols, "amm_trades.csv.zst": ammCols,
+		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols, "raw.jsonl.zst": nil,
+		"movements.csv.zst": movementCols, "movement_coverage.csv.zst": movementCoverageCols, "delegations.csv.zst": delegationCols} {
+		o, err := newCSV(filepath.Join(u.tmp, name), cols)
+		if err != nil {
+			for _, o := range u.outs {
+				o.close()
+			}
+			return nil, err
+		}
+		u.outs[name] = o
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	u.jobQ = make(chan unitJob, workers*2)
+	u.results = make(chan unitIndexed, workers*2)
+	for w := 0; w < workers; w++ {
+		u.wg.Add(1)
+		go func() {
+			defer u.wg.Done()
+			for j := range u.jobQ {
+				u.results <- unitIndexed{j.seq, processBlock(j.b, st)}
+			}
+		}()
+	}
+	// Writer: re-orders results by sequence.
+	u.writeDone = make(chan struct{})
+	go func() {
+		pending := map[int]*blockResult{}
+		agg := map[aggKey]*aggVal{}
+		partial := map[string]bool{}
+		var marks []coverageMark
+		next := 0
+		for r := range u.results {
+			pending[r.seq] = r.res
+			for {
+				res, ok := pending[next]
+				if !ok {
+					break
+				}
+				delete(pending, next)
+				next++
+				writeResult(u.outs, res, st, agg)
+				for _, m := range res.partial {
+					partial[m] = true
+				}
+				marks = append(marks, res.marks...)
+			}
+		}
+		for _, row := range aggRows(agg) {
+			u.outs["agg_hourly.csv.zst"].row(row)
+		}
+		for _, row := range coverageRows(partial, marks) {
+			u.outs["movement_coverage.csv.zst"].row(row)
+		}
+		close(u.writeDone)
+	}()
+	return u, nil
+}
+
+// add queues the next block of the chain.
+func (u *unitRun) add(b *blockData) {
+	u.jobQ <- unitJob{u.seq, b}
+	u.seq++
+}
+
+// finish waits for every queued block, then either discards the unit (readErr, a
+// failed check or a parent-link break) or writes stats.json and moves DIR.tmp to DIR.
+// check runs after every block is written and may fill source-specific stats.
+func (u *unitRun) finish(readErr error, check func() error, t0 time.Time) error {
+	close(u.jobQ)
+	u.wg.Wait()
+	close(u.results)
+	<-u.writeDone
+	if readErr != nil {
+		for _, o := range u.outs {
+			o.close()
+		}
+		return readErr
+	}
+	for _, o := range u.outs {
+		if err := o.close(); err != nil {
+			return err
+		}
+	}
+	st := u.st
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	if len(st.ChainBreaks) > 0 {
+		return fmt.Errorf("%d parent-link breaks (first %s)", len(st.ChainBreaks), st.ChainBreaks[0])
+	}
+	st.Seconds = time.Since(t0).Seconds()
+	st.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	sb, _ := json.MarshalIndent(st, "", "  ")
+	if err := os.WriteFile(filepath.Join(u.tmp, "stats.json"), sb, 0o644); err != nil {
+		return err
+	}
+	os.RemoveAll(u.outDir)
+	return os.Rename(u.tmp, u.outDir)
 }
 
 func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map[aggKey]*aggVal) {
@@ -535,12 +593,25 @@ func processBlock(b *blockData, st *UnitStats) *blockResult {
 	slot := strconv.FormatUint(b.slot, 10)
 	get := frameGetter(b)
 	var nEvents int
-	for _, raw := range b.txNodes {
+	rpc := b.rpcTxs != nil
+	n := len(b.txNodes)
+	if rpc {
+		n = len(b.rpcTxs)
+	}
+	for i := 0; i < n; i++ {
 		r.txs++
-		txBytes, metaBuf, txIdx, err := txNode(raw, get)
-		if err != nil {
-			st.decodeErr(fmt.Sprintf("slot %d: tx node: %v", b.slot, err))
-			continue
+		var txBytes, metaBuf []byte
+		var txIdx int
+		if rpc {
+			// The RPC's meta is already uncompressed protobuf; the archive's is zstd.
+			txBytes, txIdx = b.rpcTxs[i].tx, i
+		} else {
+			var err error
+			txBytes, metaBuf, txIdx, err = txNode(b.txNodes[i], get)
+			if err != nil {
+				st.decodeErr(fmt.Sprintf("slot %d: tx node: %v", b.slot, err))
+				continue
+			}
 		}
 		// A vote transaction: every top-level instruction calls the vote program (or
 		// the compute budget program) and nothing is loaded from lookup tables. The
@@ -553,12 +624,18 @@ func processBlock(b *blockData, st *UnitStats) *blockResult {
 		// Programs reached through an address lookup table are only visible in the meta.
 		if !staticHit && !mayLoadAccounts(txBytes) {
 			if mintScan {
-				mintOnlyTx(r, st, b, txIdx, txBytes, metaBuf)
+				if rpc {
+					mintOnlyRPC(r, st, b, txIdx, txBytes, b.rpcTxs[i].meta)
+				} else {
+					mintOnlyTx(r, st, b, txIdx, txBytes, metaBuf)
+				}
 			}
 			continue
 		}
 		var metaRaw []byte
-		if len(metaBuf) > 0 {
+		if rpc {
+			metaRaw = b.rpcTxs[i].meta
+		} else if len(metaBuf) > 0 {
 			var err error
 			metaRaw, err = zstdDec.DecodeAll(metaBuf, nil)
 			if err != nil {
@@ -1257,6 +1334,15 @@ func mintOnlyTx(r *blockResult, st *UnitStats, b *blockData, txIdx int, txBytes,
 	metaRaw, err := zstdDec.DecodeAll(metaBuf, nil)
 	if err != nil {
 		st.decodeErr(fmt.Sprintf("slot %d: meta zstd: %v", b.slot, err))
+		return
+	}
+	mintOnlyTxRaw(r, st, b, txIdx, txBytes, metaRaw)
+}
+
+// mintOnlyRPC is mintOnlyTx for an RPC block, whose meta is already uncompressed.
+func mintOnlyRPC(r *blockResult, st *UnitStats, b *blockData, txIdx int, txBytes, metaRaw []byte) {
+	if len(metaRaw) == 0 {
+		st.missingMeta(b.slot, txIdx)
 		return
 	}
 	mintOnlyTxRaw(r, st, b, txIdx, txBytes, metaRaw)

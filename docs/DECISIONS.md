@@ -395,6 +395,15 @@ Supervisor rulings:
   - The full pull needs the owner's approval: Developer plan US$49, plus extra credits capped at 10M at US$5 per million, so at most US$99 that month (prices checked 4 Oct). The cap is set after measuring the live dry run's credit use on the same account, so the pull cannot starve the live feed.
   - Raw Helius responses never go into public releases until their terms are confirmed for derived files.
   - A message to Triton (lift the block, or a set rate or bucket, and permission to publish derived day files) is the owner's choice, and keeps the free route open.
+- **DATA-2 build: one decoder set, re-encoded meta (2026-10-04).**
+  - The RPC reader re-encodes each `getBlock` meta into the archive's protobuf, so `processBlock` and `processTx` are shared with the archive scanner and there is no second decoder.
+  - Measured on 25 real blocks of the comparison unit: every CSV and event row matches the archive byte for byte.
+  - Requests use `maxSupportedTransactionVersion: 1`, because the RPC refuses 0 for blocks with v1 transactions.
+  - Truncated RPC logs (`"Log truncated"`) change only raw records' `logMessages`, not rows. They are reported as explained, never patched: the live bot sees the same logs.
+- **DATA-2 pilot baseline: 1 Oct 09:40–10:00 instead of an hour of 2 Oct (2026-10-04).**
+  - It is the only archive unit in today's schema (epoch 1046, 452,277,000–452,281,499, 4,496 blocks). The 2 Oct slices are schema 1, sampled at 0.25.
+  - It is committed as a digest: per-block and per-column hashes plus counters, with no rows. Publishing files derived from the archive waits on Triton.
+  - The pilot needs about 4.6k credits under its 15k stop.
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 

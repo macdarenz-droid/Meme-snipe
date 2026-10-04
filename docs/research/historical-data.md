@@ -253,6 +253,49 @@ Filled from `qa/report.md` (`node research/historical/qa/check.mjs <dataset> --l
   - Mint authorities, which are not in transaction meta.
   - The state of fee and global parameters before the coverage starts (changes inside it are events, and every trade carries its fee rates).
 
+## History over RPC (DATA-2)
+
+Old Faithful refuses our scanner (see `docs/DECISIONS.md`, "The archive's block is respected"), so history comes from Helius `getBlock` after a free pilot. The RPC reader writes the same units as the archive scanner, so QA, finalize, assemble and the volume files are unchanged.
+
+- **Same decoders.** `rpcblock.go` turns each transaction of a `getBlock` result into its wire bytes and the archive's protobuf `TransactionStatusMeta`, then `processBlock` and `processTx` run unchanged. The request is `encoding: base64`, `transactionDetails: full`, `rewards: false`, `maxSupportedTransactionVersion: 1`. The RPC refuses version 0 for these blocks, because v1 transactions (SIMD-0385) are on chain. The meta is re-encoded as follows:
+  - `err` goes from serde JSON to the validator's bincode. Variant order is taken from the solana-sdk transaction-error and instruction-error crates. An unknown variant or shape is an error, never a guess.
+  - Inner instruction `data` goes from base58 to bytes.
+  - A null or absent `innerInstructions` or `logMessages` becomes the archive's `*_none` flag. An empty list stays recorded and empty.
+  - A null `stackHeight` stays absent.
+  - Loaded addresses and token-balance owners and programs keep their values. An omitted owner or program is empty, as in the archive.
+- **Units** (`zeroed-scan rpc-unit`, `rpc-run`) use the archive's 4,500-slot units aligned to epochs. Each unit is read as follows:
+  - `getBlocks` lists the unit's produced slots, and `getBlock` reads each one. The number of skipped slots is recorded in `stats.json` (`skipped_slots`). `root_cid` reads `rpc:getBlock`.
+  - A listed slot whose block comes back as skipped (codes -32007 and -32009) is a gap. The unit fails and leaves no directory.
+  - Parent links are checked as for the archive: within a unit by the writer, across units by finalize.
+  - `rpc-run` plans a window from each epoch's first and last block times (about 4 credits an epoch), with the archive planner's interpolation and margins. Finished units are skipped.
+- **Client** (`helius.go`):
+  - The key comes only from `HELIUS_API_KEY`. No error carries the request URL, and the key is scrubbed from all text.
+  - Requests are paced to `-rps` across all fetchers.
+  - A 429 (HTTP, or code 429 in the body, as the public RPC sends) and a 5xx wait Retry-After, else 1 s doubling to 64 s with jitter, never less than 1 s.
+  - Waiting more than `-max-backoff` in one call stops the run resumably (exit 75).
+  - `-max-credits` is a hard stop. Each HTTP attempt reserves a credit before it is sent (getBlock and getBlocks cost 1 credit each), and nothing is sent past the cap (exit 75). The live dry run shares the account's credits, so the full pull takes a cap set from its measured use.
+- **Pilot** (`zeroed-scan pilot`, workflow `data-helius-pilot`, dispatch only, input capped at 15,000 credits). It reads:
+  - `getFirstAvailableBlock`;
+  - the first 50 slots of epoch 1004 and the last 50 of epoch 1047;
+  - the comparison unit, epoch 1046 slots 452,277,000–452,281,499 (1 Oct 2026, 09:40–10:00 UTC, 4,496 blocks).
+
+  The comparison unit is the only archive unit in today's schema. The 2 Oct slices are schema 1, sampled at 0.25 with older columns. Its rows are not committed, because publishing files derived from the archive waits on Triton. The committed `research/historical/pilot/baseline-1046-452277000-452281499.json.zst` (247 KB, `zeroed-scan digest`) holds:
+  - per table, one digest per block and one per column;
+  - the unit's counters.
+
+  The RPC unit is digested by the same code and compared table by table, so a difference names its table, columns and blocks. Delegations are not compared, because the baseline predates that table. The report gives:
+  - history depth;
+  - per-probe errors, blocks and rate;
+  - credits, requests, 429s, response bytes and latency;
+  - a projection of the full pull's blocks, credits, bytes and hours, with seconds per slot measured between the two edge probes.
+
+  Only the report leaves the runner. The units are deleted once digested, and no raw Helius response is stored.
+- **Measured before the pilot** (public mainnet RPC, 25 blocks of the comparison unit, including the busiest pump blocks and the first block of each event kind):
+  - every blocks, curve, amm, failed, movements and events row is byte-identical to the archive's;
+  - 114 of 118 raw records are byte-identical.
+
+  The 4 that differ differ only in `logMessages`: the RPC node cut each log at its size limit (`"Log truncated"`), while the archive kept the whole log. Rows decode from inner instructions, so no row changes. DEC-1 parity already treats a truncated log as incomplete, and the live bot reads logs over RPC too. The digest comparison marks this case `explained` only when `meta.logMessages` is the one differing column and every differing block has a truncated log. Two of these blocks are the test fixtures (`scanner/testdata/rpc`): their rows must match the baseline's per-block digests.
+
 ## How to extend
 
 **No local scans** (supervisor ruling, 2026-10-03): the archive is read only by `data-scan.yml` on its one lane. Never run `zeroed-scan run` or `unit` against the archive from a container or a laptop next to CI, since that adds a second lane. The commands below are for the CI scripts and for `finalize`, QA and parity on units already downloaded from releases.
