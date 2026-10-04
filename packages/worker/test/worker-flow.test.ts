@@ -439,7 +439,7 @@ describe('exits never wait at a restart (EXIT-1c)', () => {
     h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    const m2 = new Market(h2);
+    const m2 = new Market(h2, HELD);
     const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
     // Slots only, no pool read: the exit waits, open, with nothing booked blocked, and it is visible: said once in the
     // log, pending in the status flags, the position view and the heartbeat's pending exits.
