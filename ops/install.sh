@@ -1302,7 +1302,7 @@ worker_shakedown() {
   jq -r --arg names "$SHAKEDOWN_NAMES" '($names | split(" ")) as $ok | (.shakedown // {}) as $s
     | if ($s | type) != "object" then error("the shakedown block is not an object") else $s | to_entries[]
       | if (.key | IN($ok[]) | not) then error("\(.key) is not a shakedown setting")
-        elif (.value | type) != "string" or (.value | test("^[A-Za-z0-9,]{1,400}$") | not) then error("\(.key) is not 1 to 400 letters, digits and commas")
+        elif (.value | type) != "string" or (.value | test("\\A[A-Za-z0-9,]{1,400}\\z") | not) then error("\(.key) is not 1 to 400 letters, digits and commas")
         else "\(.key)=\(.value)" end end' "$1/ops/host-config.json"
 }
 

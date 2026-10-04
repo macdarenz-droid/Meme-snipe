@@ -256,7 +256,7 @@ describe('worker start and API address', () => {
     // Nothing else, and nothing that could carry a second line, a space or a shell character.
     for (const bad of [
       { ZEROED_MODE: 'live' }, { ZEROED_RUN_ID: 'x' }, { HELIUS_API_KEY: 'x' }, { zeroed_strategy: 'S0' },
-      { ZEROED_STRATEGY: 'S0\nZEROED_MODE=live' }, { ZEROED_STRATEGY: 'S0 x' }, { ZEROED_STRATEGY: '$(id)' }, { ZEROED_STRATEGY: '' },
+      { ZEROED_STRATEGY: 'S0\nZEROED_MODE=live' }, { ZEROED_STRATEGY: 'S0\n' }, { ZEROED_STRATEGY: 'S0 x' }, { ZEROED_STRATEGY: '$(id)' }, { ZEROED_STRATEGY: '' },
       { ZEROED_PAPER_EDGE_PPM: 178092 }, { ZEROED_STANDINS: ['A1'] }, { ZEROED_STANDINS: 'A'.repeat(401) },
     ]) {
       cfg({ worker: 'release', shakedown: bad });

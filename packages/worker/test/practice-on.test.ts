@@ -2,7 +2,7 @@
 // that reads the environment, a shakedown boot passes parity, /health names the entry rule, the host's shakedown values
 // are the ones derived in DECISIONS ("Practice trades on the host"), and the qualifying run still refuses all of it.
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, S0_DIAGNOSTIC_PARTS, simKey } from '../../core/src/gates/index.ts';
@@ -71,25 +71,75 @@ describe('the worker environment', () => {
   });
 });
 
+/** An S0 shakedown boot as the host runs it, with or without the set: rejects that rely on the set's parts when it is on. */
+const shakedownBoot = async (diag: boolean) => {
+  const h = makeWorker({ edgePpm: 0n, entry: { timing: 'random', salt: early, s0Diagnostic: diag }, config: { ZEROED_STRATEGY: 'S0', ...(diag ? { ZEROED_S0_DIAGNOSTIC: 'on' } : {}) } });
+  expect(await h.worker.reconcile()).toEqual({ ok: true });
+  const m = await passingMarket(h, { ...HELD, omit: [CURVE_VOLUME_KEY, GRADUATES_KEY, EXEC_HEALTH_KEY, simKey(MINT)], coverageAt: T - 2 * DAY });
+  await m.run(4_000, 400, () => {
+    m.slot();
+    m.pool();
+  });
+  await h.worker.stop();
+  return h.stateDir;
+};
+const journalOf = (dir: string) => join(dir, 'journal.jsonl');
+const linesOf = (dir: string) => readFileSync(journalOf(dir), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+const parity = (dir: string) => spawnSync(process.execPath, ['--no-warnings', join(ROOT, 'packages/worker/scripts/parity.ts'), dir, '--replays', '2'], { encoding: 'utf8' });
+/** Rewrites the journal's start line (its first) with `f`; `extra` appends further lines after it. */
+const editStart = (dir: string, f: (start: Record<string, unknown>) => Record<string, unknown>, extra: (start: Record<string, unknown>) => Record<string, unknown>[] = () => []) => {
+  const text = readFileSync(journalOf(dir), 'utf8').trim().split('\n');
+  const at = text.findIndex((l) => (JSON.parse(l) as { kind: string }).kind === 'start');
+  const start = JSON.parse(text[at]!) as Record<string, unknown>;
+  text.splice(at, 1, JSON.stringify(f(start)), ...extra(start).map((x) => JSON.stringify(x)));
+  writeFileSync(journalOf(dir), `${text.join('\n')}\n`);
+};
+
 describe('parity of an S0 shakedown boot with the diagnostic set', () => {
   it('the parity command rebuilds the set from the start line and replays the boot to its live decisions', async () => {
-    // As the host runs it: S0 with the set, and rejects that rely on its parts (no H15 simulation ever arrives).
-    const h = makeWorker({ edgePpm: 0n, entry: { timing: 'random', salt: early, s0Diagnostic: true }, config: { ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on' } });
-    expect(await h.worker.reconcile()).toEqual({ ok: true });
-    const m = await passingMarket(h, { ...HELD, omit: [CURVE_VOLUME_KEY, GRADUATES_KEY, EXEC_HEALTH_KEY, simKey(MINT)], coverageAt: T - 2 * DAY });
-    await m.run(4_000, 400, () => {
-      m.slot();
-      m.pool();
-    });
-    await h.worker.stop();
-    const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+    const dir = await shakedownBoot(true);
+    const journal = linesOf(dir);
     expect(journal.find((l) => l['kind'] === 'start')).toMatchObject({ entry_rule: 'S0', s0_salt: early, s0_diagnostic: S0_DIAGNOSTIC_PARTS });
     // The comparison covers lines that only the set produces.
     expect(journal.some((l) => l['kind'] === 'decision' && Array.isArray(l['s0_diagnostic']))).toBe(true);
-    const run = spawnSync(process.execPath, ['--no-warnings', join(ROOT, 'packages/worker/scripts/parity.ts'), h.stateDir, '--replays', '2'], { encoding: 'utf8' });
+    const run = parity(dir);
     expect(run.stderr).toBe('');
     expect(run.status).toBe(0);
     expect(JSON.parse(run.stdout)).toMatchObject({ ok: true });
+  });
+
+  it('an S0 boot without the set replays without it', async () => {
+    const dir = await shakedownBoot(false);
+    const journal = linesOf(dir);
+    expect(journal.find((l) => l['kind'] === 'start')).toMatchObject({ entry_rule: 'S0', s0_diagnostic: null });
+    expect(journal.some((l) => l['kind'] === 'decision' && l['action'] === 'reject')).toBe(true);
+    const run = parity(dir);
+    expect(run.stderr).toBe('');
+    expect(run.status).toBe(0);
+  });
+
+  it('boots that differ in the set are refused: replay them one by one', async () => {
+    const dir = await shakedownBoot(true);
+    editStart(dir, (s) => s, (s) => [{ ...s, seq: Number(s['seq']) + 0.5, boot: 'boot-other', s0_diagnostic: null }]);
+    const run = parity(dir);
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('ran another policy or strategy than boot');
+  });
+
+  it('a set other than this code\'s is refused', async () => {
+    const dir = await shakedownBoot(true);
+    editStart(dir, (s) => ({ ...s, s0_diagnostic: ['regime-volume', 'exec-health'] }));
+    const run = parity(dir);
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('this code has');
+  });
+
+  it('a set on an entry rule other than S0 is refused', async () => {
+    const dir = await shakedownBoot(true);
+    editStart(dir, (s) => ({ ...s, entry_rule: 'none' }));
+    const run = parity(dir);
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('names S0\'s diagnostic set on entry rule none');
   });
 });
 
