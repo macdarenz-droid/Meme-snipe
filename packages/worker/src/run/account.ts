@@ -9,6 +9,7 @@ import { type AccountCost, type AccountHistory, type ClosedTrade, type Latches, 
 import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../../core/src/units/index.ts';
 import type { AccountFact } from '../engine/strategy.ts';
 import type { PaperAttempt } from './paper-world.ts';
+import type { FilledRecord } from './desk.ts';
 import { StateFile } from './state.ts';
 
 /** What a paper trade's settlement reads from the paper world (PAPER-1). */
@@ -209,7 +210,7 @@ export class PaperAccount {
   }
 
   /** A fill was booked: move the paper wallet, open or close the trade record. */
-  filled(r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[] }, solPrice: MicroUsd | null, legs: PaperLegs): void {
+  filled(r: FilledRecord, solPrice: MicroUsd | null, legs: PaperLegs): void {
     const p = r.book.positions[r.positionId];
     if (r.purpose === 'entry') {
       const notionalReason = r.reasons.find((x) => /^notional \d+$/.test(x));
@@ -220,7 +221,7 @@ export class PaperAccount {
     }
     const t = this.#s.trades.find((x) => x.positionId === r.positionId);
     const l = this.#book(t, r.book, legs);
-    if (t !== undefined && l !== null && p !== undefined && p.status === 'closed' && t.closedAtMs === null) {
+    if (t !== undefined && l !== null && p !== undefined && (p.status === 'closed' || r.closes === true) && t.closedAtMs === null) {
       t.closedAtMs = r.atMs;
       t.netLamports = tradeNet(l);
       // Each cash flow at its own SOL price, as the backtest report values a trade (core's `tradeUsd`): the entry leg at

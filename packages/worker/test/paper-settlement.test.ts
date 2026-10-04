@@ -11,7 +11,7 @@ import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } 
 import type { Book } from '../../core/src/lifecycle/index.ts';
 import { positionId, type Fill, type IntentId } from '../../core/src/domain/index.ts';
 import { OFF_CHAIN, type LogRecord } from '../../core/src/engine/index.ts';
-import type { BookEvent } from '../../core/src/lifecycle/index.ts';
+import type { BookEvent, ExitReason } from '../../core/src/lifecycle/index.ts';
 import { raw } from '../../core/src/units/index.ts';
 import { attempt as fxAttempt, entryToSubmitted, fill as fx, on, quote, sig } from '../../core/test/fixtures.ts';
 import { PaperAccount, type PaperLegs, accountFile } from '../src/run/account.ts';
@@ -374,43 +374,107 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
 });
 
 describe('a late-landing sell reaches the paper account (risk review of #133)', () => {
-  it('a sell booked by orphan_fill after its exit ended closes the trade, as a reconcile would', () => {
+  const E1 = 'e1' as IntentId;
+  const X1 = 'x1' as IntentId;
+  const X2 = 'x2' as IntentId;
+  const P1 = positionId('p1');
+  const status = (id: IntentId, n: number, result: 'succeeded' | 'not_found', h: bigint) =>
+    on(id, { type: 'status', signature: sig(n), result, commitment: result === 'succeeded' ? 'finalized' : null, blockHeight: h, searchedHistory: true });
+  /** Bought 1,000 tokens for 16,000,000 lamports. */
+  const ENTRY: BookEvent[] = [
+    ...entryToSubmitted(1, 1_000n),
+    status(E1, 1, 'succeeded', 900n),
+    on(E1, { type: 'reconcile', fills: [fx(E1, 1, 1_000n)], blockHeight: 900n }),
+  ];
+  /** Exit `x` for the whole holding is triggered by `reasons`, sent as attempt `n`, and ends unseen (abandoned). */
+  const exitEndsUnseen = (x: IntentId, n: number, reasons: ExitReason[]): BookEvent[] => [
+    { type: 'trigger_exit', positionId: P1, reasons, intentId: x, quantity: raw(1_000n) },
+    on(x, { type: 'prepare', quote }),
+    on(x, { type: 'sign', attempt: fxAttempt(x, n, 2_500n) }),
+    on(x, { type: 'submit' }),
+    status(x, n, 'not_found', 2_501n),
+    on(x, { type: 'reconcile', fills: [], blockHeight: 2_501n }),
+    on(x, { type: 'abandon' }),
+  ];
+  /** Attempt 11 of X1 found landed after all: 30,000,000 lamports for the 1,000 tokens. */
+  const LATE_SELL: BookEvent[] = [status(X1, 11, 'succeeded', 2_600n), { type: 'orphan_fill', fill: fx(X1, 11, 1_000n, 30_000_000n) }];
+  // Fees and rent off: the trade nets 30,000,000 − 16,000,000 lamports, $1.40 at SOL $100 both ways.
+  const legs: PaperLegs = { network: { ...FILL_CONFIG.network, baseFeePerSignature: 0n, tip: 0n, tokenAccountRent: 0n }, attempts: new Map(), closedAccount: () => false };
+  const PX = 100_000_000n as MicroUsd;
+
+  /** A desk on a fresh ledger whose fills go to a real paper account. */
+  const deskWithAccount = () => {
     // A backtest ledger takes the reservation as an event; the paper one only through the risk snapshot (not under test).
     const ledger = openLedger(join(tempState(), 'ledger.sqlite'), 'backtest');
-    const filled: { purpose: string; positionId: string; closed: boolean }[] = [];
+    const account = new PaperAccount(accountFile(tempState()), 20_000_000n as MicroUsd, T, 0n);
+    account.price(PX, T);
+    const filled: { purpose: string; positionId: string; closes: boolean }[] = [];
     const late: string[] = [];
     const desk = new Desk({
       ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
       journal: () => undefined, report: () => 'world#unused', accountChanged: () => undefined, intentsChanged: () => undefined,
       reserved: () => undefined, diverged: () => undefined, lateBuy: (r) => void late.push(r.positionId),
-      filled: (r) => void filled.push({ purpose: r.purpose, positionId: r.positionId, closed: r.book.positions[r.positionId]?.status === 'closed' }),
+      filled: (r) => {
+        filled.push({ purpose: r.purpose, positionId: r.positionId, closes: r.closes === true });
+        account.filled(r, PX, legs);
+      },
     });
-    const E1 = 'e1' as IntentId;
-    const X1 = 'x1' as IntentId;
-    const status = (id: IntentId, n: number, result: 'succeeded' | 'not_found', h: bigint) =>
-      on(id, { type: 'status', signature: sig(n), result, commitment: result === 'succeeded' ? 'finalized' : null, blockHeight: h, searchedHistory: true });
-    const events: BookEvent[] = [
-      ...entryToSubmitted(1, 1_000n),
-      status(E1, 1, 'succeeded', 900n),
-      on(E1, { type: 'reconcile', fills: [fx(E1, 1, 1_000n)], blockHeight: 900n }),
-      // The whole holding is sold: the exit expires unseen, ends, then its sell is found landed.
-      { type: 'trigger_exit', positionId: positionId('p1'), reasons: ['stop'], intentId: X1, quantity: raw(1_000n) },
-      on(X1, { type: 'prepare', quote }),
-      on(X1, { type: 'sign', attempt: fxAttempt(X1, 11, 2_500n) }),
-      on(X1, { type: 'submit' }),
-      status(X1, 11, 'not_found', 2_501n),
-      on(X1, { type: 'reconcile', fills: [], blockHeight: 2_501n }),
-      on(X1, { type: 'abandon' }),
-      status(X1, 11, 'succeeded', 2_600n),
-      { type: 'orphan_fill', fill: fx(X1, 11, 1_000n, 30_000_000n) },
-    ];
-    const at = { slot: 1n, txIndex: OFF_CHAIN, ixIndex: 0, receivedAt: T };
-    desk.consume(events.map((event, seq) => ({ type: 'world', seq, at, eventId: `w${seq}`, event, result: 'applied', effects: [] }) as unknown as LogRecord));
-    expect(desk.illegal + desk.ledgerRefusals).toBe(0);
-    expect(desk.book.positions[positionId('p1')]?.status).toBe('closed');
-    expect(filled).toEqual([{ purpose: 'entry', positionId: 'p1', closed: false }, { purpose: 'exit', positionId: 'p1', closed: true }]);
-    expect(late).toEqual([]);
-    ledger.close();
+    let seq = 0;
+    const feed = (events: readonly BookEvent[]) => {
+      const at = { slot: 1n, txIndex: OFF_CHAIN, ixIndex: 0, receivedAt: T + seq };
+      desk.consume(events.map((event) => ({ type: 'world', seq: seq++, at, eventId: `w${seq}`, event, result: 'applied', effects: [] }) as unknown as LogRecord));
+      expect(desk.illegal + desk.ledgerRefusals).toBe(0);
+    };
+    return { desk, account, filled, late, feed, close: () => ledger.close() };
+  };
+  const trade = (account: PaperAccount) => {
+    const [t, ...rest] = account.state.trades;
+    expect(rest).toEqual([]);
+    return { closed: t!.closedAtMs !== null, netLamports: t!.netLamports, netPnl: t!.netPnl, stoppedOut: t!.stoppedOut, exitReasons: t!.exitReasons };
+  };
+  const CLOSED_STOP = { closed: true, netLamports: 14_000_000n, netPnl: 1_400_000n, stoppedOut: true, exitReasons: ['stop'] };
+
+  it('a stop that sells in time closes the trade as a stop (the reference)', () => {
+    const d = deskWithAccount();
+    d.feed([...ENTRY, { type: 'trigger_exit', positionId: P1, reasons: ['stop'], intentId: X1, quantity: raw(1_000n) }, on(X1, { type: 'prepare', quote }),
+      on(X1, { type: 'sign', attempt: fxAttempt(X1, 11, 2_500n) }), on(X1, { type: 'submit' }), status(X1, 11, 'succeeded', 2_400n),
+      on(X1, { type: 'reconcile', fills: [fx(X1, 11, 1_000n, 30_000_000n)], blockHeight: 2_400n })]);
+    expect(trade(d.account)).toEqual(CLOSED_STOP);
+    d.close();
+  });
+
+  it('a stop whose sell is booked by orphan_fill after the exit ended closes the trade, still as a stop (B1)', () => {
+    const d = deskWithAccount();
+    d.feed([...ENTRY, ...exitEndsUnseen(X1, 11, ['stop']), ...LATE_SELL]);
+    expect(d.desk.book.positions[P1]?.status).toBe('closed');
+    expect(d.filled).toEqual([{ purpose: 'entry', positionId: 'p1', closes: false }, { purpose: 'exit', positionId: 'p1', closes: true }]);
+    expect(trade(d.account)).toEqual(CLOSED_STOP);
+    expect(d.late).toEqual([]);
+    d.close();
+  });
+
+  it('a late sell while a second exit owns the position closes the trade once; that exit ending changes nothing (B2)', () => {
+    const d = deskWithAccount();
+    d.feed([...ENTRY, ...exitEndsUnseen(X1, 11, ['stop']), { type: 'trigger_exit', positionId: P1, reasons: ['max_hold'], intentId: X2, quantity: raw(1_000n) }, ...LATE_SELL]);
+    // The second exit still owns the position, now holding nothing.
+    expect(d.desk.book.positions[P1]).toMatchObject({ status: 'exit_requested', quantity: 0n });
+    expect(trade(d.account)).toEqual(CLOSED_STOP);
+    const closedAt = d.account.state.trades[0]!.closedAtMs;
+    d.feed([on(X2, { type: 'prepare', quote }), on(X2, { type: 'sign', attempt: fxAttempt(X2, 12, 3_500n) }), on(X2, { type: 'submit' }),
+      status(X2, 12, 'not_found', 3_501n), on(X2, { type: 'reconcile', fills: [], blockHeight: 3_501n }), on(X2, { type: 'abandon' })]);
+    expect(trade(d.account)).toEqual(CLOSED_STOP);
+    expect(d.account.state.trades[0]!.closedAtMs).toBe(closedAt);
+    expect(d.filled.filter((f) => f.purpose === 'exit')).toHaveLength(1);
+    d.close();
+  });
+
+  it('a late sell that leaves tokens keeps the trade open', () => {
+    const d = deskWithAccount();
+    d.feed([...ENTRY, ...exitEndsUnseen(X1, 11, ['stop']), status(X1, 11, 'succeeded', 2_600n), { type: 'orphan_fill', fill: fx(X1, 11, 400n, 12_000_000n) }]);
+    expect(d.desk.book.positions[P1]).toMatchObject({ status: 'open', quantity: 600n });
+    expect(d.filled.at(-1)).toEqual({ purpose: 'exit', positionId: 'p1', closes: false });
+    expect(trade(d.account)).toMatchObject({ closed: false });
+    d.close();
   });
 
   it('a late buy is no trade fill: the desk hands it to lateBuy and the worker halts entries with an alert', async () => {
