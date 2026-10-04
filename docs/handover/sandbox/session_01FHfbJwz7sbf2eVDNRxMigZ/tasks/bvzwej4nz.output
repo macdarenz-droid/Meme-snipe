@@ -1,0 +1,9 @@
+days=3 find=2 null rules: 20/20
+days=4 find=3 null rules: 20/20
+days=6 find=4 null rules: 20/20
+days=15 find=10 null rules: 10/20
+   Start at  08:02:01
+   Duration  107.54s (tests 99%, transform 1%)
+
+
+[exited with code 0]

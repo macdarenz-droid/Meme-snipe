@@ -1,0 +1,13 @@
+const mints=[];
+const a=new WebSocket('wss://pumpportal.fun/api/data');
+a.onopen=()=>a.send(JSON.stringify({method:'subscribeNewToken'}));
+a.onmessage=m=>{const d=JSON.parse(m.data); if(d.txType==='create'&&d.mint&&mints.length<20) mints.push(d.mint); };
+await new Promise(r=>setTimeout(r,45000)); a.close();
+console.log('mints',mints.length, mints.slice(0,2));
+let msgs=0,bytes=0,acks=0,errs=[]; const perSub={}; const sigs=new Set();
+const b=new WebSocket('wss://api.mainnet-beta.solana.com');
+b.onopen=()=>{let id=1; for(const mt of mints) b.send(JSON.stringify({jsonrpc:'2.0',id:id++,method:'logsSubscribe',params:[{mentions:[mt]},{commitment:'processed'}]}));};
+b.onmessage=m=>{const d=JSON.parse(m.data); if(d.id){ if(d.error) errs.push(d.error.message); else acks++; return;} if(d.method==='logsNotification'){msgs++;bytes+=m.data.length; perSub[d.params.subscription]=(perSub[d.params.subscription]||0)+1; sigs.add(d.params.result.value.signature);}};
+const T=120; await new Promise(r=>setTimeout(r,T*1000)); b.close();
+console.log(JSON.stringify({windowS:T,acks,errs:[...new Set(errs)],msgs,uniqueSigs:sigs.size,avgBytes:Math.round(bytes/Math.max(1,msgs)),perSec:(msgs/T).toFixed(2),MB:(bytes/1e6).toFixed(2),perSubTop:Object.values(perSub).sort((x,y)=>y-x).slice(0,6), activeSubs:Object.keys(perSub).length}));
+process.exit(0);

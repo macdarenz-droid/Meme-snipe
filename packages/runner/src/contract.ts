@@ -77,6 +77,13 @@ export const LOOKUP_BOUNDS_MS = [25, 50, 100, 200, 400, 800, 1600, 3200, 6400] a
 /** A mark older than this when read is not a price: the exposure move it would give is unmeasured. */
 export const MARK_MAX_AGE_MS = 30_000;
 
+export interface OpenPositionHealth {
+  readonly trade: string; readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string;
+  readonly mark: string; readonly mark_slot: number; readonly mark_ts: number;
+  /** The universe the position was entered under (CFG-2: its exit parameters come from it). */
+  readonly universe: string;
+}
+
 /** GET /health. The heartbeat fields of docs/research/security.md §5.2 plus what the runner measures. */
 export interface Health {
   readonly seq: number;
@@ -89,12 +96,9 @@ export interface Health {
    * `mark`: the latest price the position is valued at, a plain decimal string in the unit of `entry`; `mark_slot` and
    * `mark_ts` (ms) say when it was seen. `trade`: the trade id used in the journal.
    */
-  readonly open_position: {
-    readonly trade: string; readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string;
-    readonly mark: string; readonly mark_slot: number; readonly mark_ts: number;
-    /** The universe the position was entered under (CFG-2: its exit parameters come from it). */
-    readonly universe: string;
-  } | null;
+  readonly open_position: OpenPositionHealth | null;
+  /** Every open position, oldest first (WORKER-1c); `open_position` is its first entry, kept for older readers. */
+  readonly open_positions: readonly OpenPositionHealth[];
   /** Trade ids with an exit planned or signed and not yet final: what a restart must not lose. */
   readonly pending_exits: readonly string[];
   /** `trades`: the trade ids of the unresolved intents (an entry in flight has an intent and no position yet). */
@@ -125,6 +129,8 @@ export interface Health {
   /** Always false in a dry run: no signing key exists. */
   readonly signing_key: false;
   readonly stub?: true;
+  /** WORKER-1e: S0's diagnostic set (its parts) when the shakedown runs with it; absent otherwise. */
+  readonly s0_diagnostic?: readonly string[];
 }
 
 export type JournalKind =
@@ -145,7 +151,9 @@ export type JournalKind =
    * The first moment in a boot the worker is able to exit: times a host reboot from the worker's own journal. Written
    * before /health first reports `exit_capable: true` in that boot.
    */
-  | 'exit_capable';
+  | 'exit_capable'
+  /** H15's round-trip simulation of a candidate (WORKER-1e: SIM-1's `SimRecord`, or `not-run` with its reason). Not item 4's `simulation`. */
+  | 'h15_sim';
 
 /**
  * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A

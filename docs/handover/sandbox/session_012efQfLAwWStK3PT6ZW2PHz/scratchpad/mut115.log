@@ -1,0 +1,7 @@
+base:       Tests  9 passed (9)
+A-failed-rung1:      × parity: on a still pool the outcome stage's mean loss equals the cost math, within its sampling error 799ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯       Tests  1 failed | 8 passed (9) 
+B-no-failclose:       Tests  9 passed (9) 
+C-ignore-dust:      × parity: on a still pool the outcome stage's mean loss equals the cost math, within its sampling error 765ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯       Tests  1 failed | 8 passed (9) 
+D-rent-always:      × parity: on a still pool the outcome stage's mean loss equals the cost math, within its sampling error 700ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯       Tests  1 failed | 8 passed (9) 
+E-no-tip-exit:       Tests  9 passed (9) 
+DONE 18:58

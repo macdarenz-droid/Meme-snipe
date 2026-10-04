@@ -1,0 +1,13 @@
+3:run() { name="$1"; file="$2"; from="$3"; to="$4"
+10:  out=$(timeout 1200 npx vitest run packages/worker/test 2>&1 | grep -E "Tests ")
+14:run entry-unmarked $S 'account: this.#marked(acct.history, ctx, sol), latches: acct.latches' 'account: acct.history, latches: acct.latches'
+15:run slip-source $S 'slippageBps: step.minOutBelowTriggerBps,' 'slippageBps: 0,'
+16:run exitcost-zero $S 'exitCost: n.signaturesPerTx * n.baseFeePerSignature + step.priorityFeeLamports + n.tip,' 'exitCost: 0n,'
+17:run maxage-source $S 'maxAgeMs: policy.gates.maxQuoteAgeMs,' 'maxAgeMs: 1e12,'
+entry-unmarked:       Tests  434 passed (434)
+slip-source:       Tests  434 passed (434)
+exitcost-zero:       Tests  434 passed (434)
+maxage-source:       Tests  434 passed (434)
+?? node_modules
+
+[exited with code 0]

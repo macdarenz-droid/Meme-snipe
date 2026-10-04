@@ -3,6 +3,8 @@
 // assumptions written out, checked by test/facts-readers.test.ts so a change to a reader or a limit shows here.
 import { ALCHEMY_FREE, HELIUS_FREE, HELIUS_RPC_CREDITS, RUGCHECK_FREE, GOPLUS_FREE } from '../scheduler/limits.ts';
 import { HOLDER_SCANS_PER_DAY } from './readers.ts';
+import { RUG_CHECK_CONFIG } from '../../../core/src/config/rugs.ts';
+import { DEPLOYER_CHECK_CREDITS_PER_DAY } from './deployer-checks.ts';
 
 /** Minutes in a 30-day month: the plans' budgets are monthly. */
 export const MONTH_MINUTES = 30 * 24 * 60;
@@ -48,6 +50,9 @@ export const HELIUS_CALLS_PER_EVALUATION = { accounts: 1, holders: 3, sim: 1 } a
 export interface CandidateBudget {
   readonly heliusCreditsPerMinute: number;
   readonly heliusCreditsOnce: number;
+  /** RUG-1c: the first deployer check of a candidate's creator, at most the per-candidate cap (later ones come from the
+   * per-creator cache, and all of them from the daily cap, `DEPLOYER_CHECK_CREDITS_PER_DAY`). */
+  readonly deployerCheckCreditsOnce: number;
   readonly alchemyCuPerMinute: number;
   readonly rugcheckPerMinute: number;
   readonly goplusPerMinute: number;
@@ -59,6 +64,7 @@ export const perCandidate = (a: typeof ASSUMPTIONS = ASSUMPTIONS): CandidateBudg
   return {
     heliusCreditsPerMinute: calls * HELIUS_RPC_CREDITS * a.evaluationsPerMinute,
     heliusCreditsOnce: a.insiderCallsOnce * HELIUS_RPC_CREDITS,
+    deployerCheckCreditsOnce: RUG_CHECK_CONFIG.creditCapPerCandidate,
     // Alchemy bills WebSocket traffic at 0.0002 CU a byte (data.md §4): the confirmed pool logs watch for candles.
     alchemyCuPerMinute: a.tradesPerMinute * a.logBytes * 0.0002,
     rugcheckPerMinute: a.evaluationsPerMinute,
@@ -83,8 +89,8 @@ export const freePlanPerMinute = () => ({
 export const candidateCapacity = (a: typeof ASSUMPTIONS = ASSUMPTIONS): { readonly helius: number; readonly alchemy: number; readonly rugcheck: number; readonly goplus: number } => {
   const c = perCandidate(a);
   const f = freePlanPerMinute();
-  // The complete holder scans come off the top: the daily cap's worst case, spread over the day.
-  const helius = f.heliusCredits - holderScanCreditsPerDay(HOLDER_SCANS_PER_DAY, a) / (24 * 60);
+  // The complete holder scans and the deployer checks come off the top: each daily cap's worst case, spread over the day.
+  const helius = f.heliusCredits - (holderScanCreditsPerDay(HOLDER_SCANS_PER_DAY, a) + DEPLOYER_CHECK_CREDITS_PER_DAY) / (24 * 60);
   return {
     helius: Math.floor(helius / c.heliusCreditsPerMinute),
     alchemy: Math.floor(f.alchemyCu / c.alchemyCuPerMinute),
@@ -92,3 +98,13 @@ export const candidateCapacity = (a: typeof ASSUMPTIONS = ASSUMPTIONS): { readon
     goplus: Math.floor(f.goplus / c.goplusPerMinute),
   };
 };
+
+/**
+ * The planned worst case for Helius in one day, against what the halt share allows a day: both daily caps spent in
+ * full, plus the candidates the plan carries evaluated every minute all day. The scheduler halts at the share anyway;
+ * this shows the plan stays under it (WORKER-1c review).
+ */
+export const plannedHeliusPerDay = (a: typeof ASSUMPTIONS = ASSUMPTIONS): { readonly planned: number; readonly allowed: number } => ({
+  planned: holderScanCreditsPerDay(HOLDER_SCANS_PER_DAY, a) + DEPLOYER_CHECK_CREDITS_PER_DAY + candidateCapacity(a).helius * perCandidate(a).heliusCreditsPerMinute * 24 * 60,
+  allowed: freePlanPerMinute().heliusCredits * 24 * 60,
+});

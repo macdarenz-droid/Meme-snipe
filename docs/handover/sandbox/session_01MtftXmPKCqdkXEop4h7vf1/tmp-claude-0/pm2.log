@@ -1,0 +1,136 @@
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:9193) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+stdout | packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > with no swap, the pool state goes stale after entry and no price exit can fire; one swap down 30% fires the stop
+[["restore","0 exit plans and trackers restored"],["shortlist","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","migrated at 1791034200000"],["reject","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","regime off: no graduates as of slot 452954000; no curve-volume as of slot 452954000; no sol-usd as of slot 452954000"],["enter","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","notional 2000000","stop 72 bps"],["gates passed","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","H1-H16 pass (17 gates)"],["risk approved","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","reserve {\"reservationId\":\"r:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"intentId\":\"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"amount\":\"19996817\",\"maxHeld\":\"23397420\",\"maxCount\":1,\"accountVersion\":\"0\"}"],["prepare entry","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["sign entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["submit entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"]]
+
+stdout | packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > take-profit then the trail fire from swaps alone
+[["restore","0 exit plans and trackers restored"],["shortlist","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","migrated at 1791034200000"],["reject","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","regime off: no graduates as of slot 452954000; no curve-volume as of slot 452954000; no sol-usd as of slot 452954000"],["enter","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","notional 2000000","stop 72 bps"],["gates passed","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","H1-H16 pass (17 gates)"],["risk approved","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","reserve {\"reservationId\":\"r:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"intentId\":\"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"amount\":\"19996817\",\"maxHeld\":\"23397420\",\"maxCount\":1,\"accountVersion\":\"0\"}"],["prepare entry","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["sign entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["submit entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"]]
+
+stdout | packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > a gap in the swap stream makes the state stale: a later swap down 30% inside the gap prices nothing
+[["restore","0 exit plans and trackers restored"],["shortlist","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","migrated at 1791034200000"],["reject","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","regime off: no graduates as of slot 452954000; no curve-volume as of slot 452954000; no sol-usd as of slot 452954000"],["enter","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","notional 2000000","stop 72 bps"],["gates passed","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","H1-H16 pass (17 gates)"],["risk approved","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","reserve {\"reservationId\":\"r:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"intentId\":\"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"amount\":\"19996817\",\"maxHeld\":\"23397420\",\"maxCount\":1,\"accountVersion\":\"0\"}"],["prepare entry","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["sign entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["submit entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"]]
+
+stdout | packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > a flagged pool fact is never priced from, however fresh: no stop, and no paper market
+[["restore","0 exit plans and trackers restored"],["shortlist","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","migrated at 1791034200000"],["reject","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","regime off: no graduates as of slot 452954000; no curve-volume as of slot 452954000; no sol-usd as of slot 452954000"],["enter","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","notional 2000000","stop 72 bps"],["gates passed","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","H1-H16 pass (17 gates)"],["risk approved","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","reserve {\"reservationId\":\"r:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"intentId\":\"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"amount\":\"19996817\",\"maxHeld\":\"23397420\",\"maxCount\":1,\"accountVersion\":\"0\"}"],["prepare entry","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["sign entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["submit entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"]]
+
+stdout | packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > without the switch the harness publishes no pool fact while held; with it, it does (other tests use it)
+[["restore","0 exit plans and trackers restored"],["shortlist","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","migrated at 1791034200000"],["reject","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","regime off: no graduates as of slot 452954000; no curve-volume as of slot 452954000; no sol-usd as of slot 452954000"],["enter","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","notional 2000000","stop 72 bps"],["gates passed","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","H1-H16 pass (17 gates)"],["risk approved","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","reserve {\"reservationId\":\"r:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"intentId\":\"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"amount\":\"19996817\",\"maxHeld\":\"23397420\",\"maxCount\":1,\"accountVersion\":\"0\"}"],["prepare entry","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["sign entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"],["submit entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"]]
+
+ ❯ |light| packages/worker/test/position-market.test.ts (5 tests | 5 failed) 1232ms
+   ❯ a held position priced from its pool's swap stream (POS-1) (5)
+     × with no swap, the pool state goes stale after entry and no price exit can fire; one swap down 30% fires the stop 401ms
+     × take-profit then the trail fire from swaps alone 234ms
+     × a gap in the swap stream makes the state stale: a later swap down 30% inside the gap prices nothing 234ms
+     × a flagged pool fact is never priced from, however fresh: no stop, and no paper market 205ms
+     × without the switch the harness publishes no pool fact while held; with it, it does (other tests use it) 156ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > with no swap, the pool state goes stale after entry and no price exit can fire; one swap down 30% fires the stop
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ entered packages/worker/test/position-market.test.ts:45:14
+     43|   const ok = await until(m, () => position(h)?.status === 'open', 20_0…
+     44|   if (!ok) console.log(JSON.stringify(decisions(h).slice(-15)));
+     45|   expect(ok).toBe(true);
+       |              ^
+     46|   return { h, m, readSlot };
+     47| };
+ ❯ packages/worker/test/position-market.test.ts:51:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  |light| packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > take-profit then the trail fire from swaps alone
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ entered packages/worker/test/position-market.test.ts:45:14
+     43|   const ok = await until(m, () => position(h)?.status === 'open', 20_0…
+     44|   if (!ok) console.log(JSON.stringify(decisions(h).slice(-15)));
+     45|   expect(ok).toBe(true);
+       |              ^
+     46|   return { h, m, readSlot };
+     47| };
+ ❯ packages/worker/test/position-market.test.ts:72:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  |light| packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > a gap in the swap stream makes the state stale: a later swap down 30% inside the gap prices nothing
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ entered packages/worker/test/position-market.test.ts:45:14
+     43|   const ok = await until(m, () => position(h)?.status === 'open', 20_0…
+     44|   if (!ok) console.log(JSON.stringify(decisions(h).slice(-15)));
+     45|   expect(ok).toBe(true);
+       |              ^
+     46|   return { h, m, readSlot };
+     47| };
+ ❯ packages/worker/test/position-market.test.ts:88:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  |light| packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > a flagged pool fact is never priced from, however fresh: no stop, and no paper market
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ entered packages/worker/test/position-market.test.ts:45:14
+     43|   const ok = await until(m, () => position(h)?.status === 'open', 20_0…
+     44|   if (!ok) console.log(JSON.stringify(decisions(h).slice(-15)));
+     45|   expect(ok).toBe(true);
+       |              ^
+     46|   return { h, m, readSlot };
+     47| };
+ ❯ packages/worker/test/position-market.test.ts:105:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  |light| packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > without the switch the harness publishes no pool fact while held; with it, it does (other tests use it)
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ entered packages/worker/test/position-market.test.ts:45:14
+     43|   const ok = await until(m, () => position(h)?.status === 'open', 20_0…
+     44|   if (!ok) console.log(JSON.stringify(decisions(h).slice(-15)));
+     45|   expect(ok).toBe(true);
+       |              ^
+     46|   return { h, m, readSlot };
+     47| };
+ ❯ packages/worker/test/position-market.test.ts:117:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed (5)
+   Start at  23:46:49
+   Duration  4.29s (transform 62%, tests 30%, import 6%, setup 1%)
+

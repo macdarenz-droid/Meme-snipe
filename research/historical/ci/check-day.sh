@@ -50,10 +50,26 @@ mkdir -p "$again/cache" && cp "$out"/cache/* "$again/cache/" 2>/dev/null || true
 # A 429 stops the rescan (exit 75) with the back-off persisted in $out: resumable, so
 # exit 75 and the next chained run redoes this phase. Any other failure is real (exit 1).
 rc=0
-phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps "${MAX_MBPS:-80}" -on-429 stop -state "$out" || rc=$?
-if [ "$rc" -eq 75 ]; then
+if [ "${SOURCE:-archive}" = helius ]; then
+  # A day read over RPC is reread over RPC; the credits count toward the day's cap
+  # (RPC_CREDIT_CAP, the same total as rpc-day.sh). Exit 3: the cap is spent.
+  used=$("$here/rpc-credits.sh" get "$out")
+  [ $(( ${RPC_CREDIT_CAP:?} - used )) -gt 0 ] || { echo "credit cap spent before the determinism rescan" | tee -a "$summary"; exit 3; }
+  phase determinism zeroed-rpcscan rpc-unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 \
+    -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits $(( RPC_CREDIT_CAP - used )) -usage-out "$again/rpc-usage.json" || rc=$?
+  "$here/rpc-credits.sh" add "$out" "$again/rpc-usage.json"
+else
+  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps "${MAX_MBPS:-80}" -on-429 stop -state "$out" || rc=$?
+fi
+if [ "$rc" -eq 75 ] && [ "${SOURCE:-archive}" = helius ]; then
+  echo "RPC rate-limit back-off ran out during the determinism rescan: stopping resumably; the next run redoes QA" | tee -a "$summary"
+  exit 75
+elif [ "$rc" -eq 75 ]; then
   echo "archive answered 429 during the determinism rescan: stopping resumably; the next run redoes QA" | tee -a "$summary"
   exit 75
+elif [ "$rc" -eq 3 ] && [ "${SOURCE:-archive}" = helius ]; then
+  echo "credit cap spent during the determinism rescan: stopping; not resumable" | tee -a "$summary"
+  exit 3
 elif [ "$rc" -ne 0 ]; then
   echo "determinism rescan failed (scanner exit $rc)" | tee -a "$summary"
   exit 1

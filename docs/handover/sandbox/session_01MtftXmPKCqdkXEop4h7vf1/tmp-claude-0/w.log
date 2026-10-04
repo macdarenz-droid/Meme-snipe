@@ -1,0 +1,29 @@
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:9211) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/worker/test/worker-flow.test.ts (22 tests | 1 failed) 12687ms
+   ❯ a paper trade end to end (3)
+     × an attempt that lands failed is abandoned and its reservation released 189ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > a paper trade end to end > an attempt that lands failed is abandoned and its reservation released
+AssertionError: expected 0 to be greater than or equal to 1
+ ❯ packages/worker/test/worker-flow.test.ts:100:30
+     98|     expect(positions(h).every((p) => p.quantity === 0n && p.status !==…
+     99|     const abandoned = kinds(h.stateDir, 'decision').filter((d) => d['a…
+    100|     expect(abandoned.length).toBeGreaterThanOrEqual(1);
+       |                              ^
+    101|     await h.worker.stop();
+    102|     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatc…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 21 passed (22)
+   Start at  23:46:49
+   Duration  16.34s (tests 78%, transform 19%, import 2%)
+

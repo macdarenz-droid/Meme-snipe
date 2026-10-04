@@ -6,7 +6,7 @@
 // judge freshness and quality from `obs`, so an old, degraded or missing fact rejects under H16.
 import { P2, P3, type Priority, type Scheduler } from '../scheduler/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
-import type { CandidateReason } from '../engine/strategy.ts';
+import type { CandidateView } from '../engine/strategy.ts';
 import type { Ingest } from '../facts/readers.ts';
 
 /** Keys the worker's strategy reads besides GATE-1's (`gates/*`): see engine/strategy.ts. */
@@ -38,10 +38,15 @@ export interface FactContext {
    * replay of the recording rebuilds the same facts.
    */
   readonly ingest: Ingest;
-  /** Each candidate's migration time, its last evaluation and that evaluation's typed reasons (null before the first). */
-  readonly candidates: () => ReadonlyMap<string, { readonly migratedAtMs: number; readonly lastEvalMs: number | null; readonly gates: readonly CandidateReason[] | null }>;
+  /**
+   * Each candidate's migration time, its last evaluation and that evaluation's typed reasons (null before the first),
+   * the spend it sized (H15) and its creator once the create was seen (RUG-1c).
+   */
+  readonly candidates: () => ReadonlyMap<string, CandidateView>;
   /** The newest slot the feed has seen (the decision slot for point-in-time reads), or null before any. */
   readonly tip: () => bigint | null;
+  /** RUG-1c: the deployer index's mints by `creator` known at `nowMs` (each with its launch time), for a deployer check. */
+  readonly priorMints?: (creator: string, nowMs: number) => readonly { readonly mint: string; readonly createdAtMs: number }[];
 }
 
 export interface FactSource {
