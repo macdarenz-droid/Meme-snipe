@@ -5,7 +5,7 @@ import { TokenActions } from '../components/TokenActions.tsx';
 import { Badge, Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
 import { formatPrice4, formatPriceDec, formatR, formatReturn, formatShare, formatSolExact, formatUsdExact, returnHundredths, toMicro, toneOf, toneOfReturn } from '../lib/money.ts';
-import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_CODE_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL, WORKER_CODE_LABEL } from './labels.ts';
+import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_CODE_LABEL, RISK_LABEL, riskHaltLabel, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL, WORKER_CODE_LABEL } from './labels.ts';
 import { ago, melDateTime } from './time.ts';
 
 export const NOT_ENOUGH = 'Not enough trades';
@@ -78,12 +78,12 @@ export interface StatusRow {
  */
 export const statusRows = (status: WorkerStatus): StatusRow[] => {
   const has = new Set<string>(list<string>(status.flags) ?? []);
-  const halts = list<{ code?: unknown }>(status.haltReasons);
+  const halts = list<{ code?: unknown; source?: unknown }>(status.haltReasons);
   const regime = status.regime !== null && typeof status.regime === 'object' && (status.regime.state === 'on' || status.regime.state === 'off') ? status.regime : null;
   const rows: StatusRow[] = [];
   const waived = regime === null ? null : list<unknown>(regime.waived);
 
-  const off = unique([...ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why), ...(halts ?? []).map((h) => label(HALT_LABEL, h.code))]);
+  const off = unique([...ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why), ...(halts ?? []).map((h) => (h.code === 'risk' ? riskHaltLabel(h.source) : label(HALT_LABEL, h.code)))]);
   if (off.length > 0 || (halts !== null && halts.length > 0)) rows.push({ label: 'Entries', value: off.length > 0 ? `Off: ${off.join(', ')}` : 'Off', alert: false });
   // On only with every stop served and none active (the account's risk stops are among the halts), and a regime
   // evaluation that is on and current (at most two candidate evaluation steps old: the worker's regimeMaxAgeMs).
