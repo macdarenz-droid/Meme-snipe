@@ -4,7 +4,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import {
-  bettingEProcess, betaQuantile, clampMoments, deflatedSharpeFromMoments, DSR_KURTOSIS_FLOOR, nextNormal, onCalendar, SPA_BLOCK_LENGTHS, SPA_STUDENTISATION, spaResampleIndices, spaTest, type SpaRegistration, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
+  bettingEProcess, betaQuantile, clampMoments, mergeShortRegimes, deflatedSharpeFromMoments, DSR_KURTOSIS_FLOOR, nextNormal, onCalendar, SPA_BLOCK_LENGTHS, SPA_STUDENTISATION, spaResampleIndices, spaTest, type SpaRegistration, clopperPearsonInterval, clopperPearsonLower, clopperPearsonUpper, createRng,
   dayBlockMeanDiffInterval, dayBlockMeanInterval, deflatedSharpe, designEffect, expectedMaxSharpe, incompleteBeta,
   incompleteGammaUpper, kurtosis, logGamma, mean, meanPredictiveInterval, median, normalCdf, normalQuantile, nPower,
   probabilisticSharpe, probabilityOfBacktestOverfitting, quantileSorted, ratesConsistent, requiredHoldoutTrades,
@@ -315,6 +315,23 @@ describe('purity and isolation', () => {
 });
 
 describe('joint bootstrap SPA test (spa.ts)', () => {
+  test('a regime shorter than the longest block merges into its preceding neighbour, or the following one when first (STATS-1e)', () => {
+    // The real practice layout: 07-20 .. 09-21, B2 on day 1, B3 on day 51, B4 on day 54.
+    const real = [{ from: 0, to: 1 }, { from: 1, to: 51 }, { from: 51, to: 54 }, { from: 54, to: 64 }];
+    expect(mergeShortRegimes(real)).toEqual([{ from: 0, to: 54 }, { from: 54, to: 64 }]);
+    expect(Math.max(...SPA_BLOCK_LENGTHS)).toBe(7);
+    // Long enough regimes stay; a short last regime joins the one before; one regime stays one; no day is dropped.
+    expect(mergeShortRegimes([{ from: 0, to: 20 }, { from: 20, to: 35 }, { from: 35, to: 50 }])).toEqual([{ from: 0, to: 20 }, { from: 20, to: 35 }, { from: 35, to: 50 }]);
+    expect(mergeShortRegimes([{ from: 0, to: 30 }, { from: 30, to: 33 }])).toEqual([{ from: 0, to: 33 }]);
+    expect(mergeShortRegimes([{ from: 0, to: 3 }])).toEqual([{ from: 0, to: 3 }]);
+    expect(mergeShortRegimes([{ from: 0, to: 2 }, { from: 2, to: 4 }, { from: 4, to: 6 }, { from: 6, to: 20 }])).toEqual([{ from: 0, to: 20 }]);
+    // spaTest resamples within the merged regimes and reports them.
+    const rng = createRng(3);
+    const v = { a: Array.from({ length: 64 }, () => nextNormal(rng)), b: Array.from({ length: 64 }, () => nextNormal(rng)) };
+    const r = spaTest({ variants: v, s0: Array<number>(64).fill(0), activeDays: { a: 64, b: 64 }, registration: { seFloor: 1e-6, studentisation: SPA_STUDENTISATION, regimes: real } },
+      { rng: createRng(4), replicates: 400, alpha: 0.05 });
+    expect(r.resampleRegimes).toEqual([{ from: 0, to: 54 }, { from: 54, to: 64 }]);
+  });
   const T = 50;
   const noise = (seed: number, k: number, shift = 0) => {
     const rng = createRng(seed);

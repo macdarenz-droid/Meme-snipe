@@ -654,7 +654,11 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
 export interface G3Input {
   /** The run is the single qualifying dry run (on the VPS, same commit; ARCHITECTURE.md §15), not a rehearsal. */
   readonly qualifyingRun: boolean;
-  /** Hours from dryRunStartMs to the registered end: every input below is cut at registration.evaluateAtMs. */
+  /**
+   * Hours from dryRunStartMs to the registered end. Decisions (candidates, entries, rejects, simulations) are cut at
+   * registration.evaluateAtMs; outcomes of trades entered by then are read up to evaluateAtMs plus the outcome tail
+   * (the G3 report tool's outcomeTailMs), so every judged trade can finish.
+   */
   readonly dryRunHours: number;
   /** Net returns of the dry-run paper trades (the candidates live kept). */
   readonly dryRunReturns: readonly number[];

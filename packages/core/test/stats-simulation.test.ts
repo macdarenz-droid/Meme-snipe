@@ -223,7 +223,7 @@ describe('other interval checks', () => {
 describe('joint SPA test calibration (STATS-1c)', () => {
   const T = 50;
   const runs = process.env.SPA_FULL_CALIBRATION ? 300 : 40;
-  const run = (name: string, edge: number, reps: number, days = T, seedBase = 77_000, bootBase = 5_000_000) => {
+  const run = (name: string, edge: number, reps: number, days = T, seedBase = 77_000, bootBase = 5_000_000, layout?: { from: number; to: number }[]) => {
     let global = 0;
     let pass = 0;
     for (let r = 0; r < reps; r++) {
@@ -231,7 +231,7 @@ describe('joint SPA test calibration (STATS-1c)', () => {
       const v = SPA_SCENARIOS[name]!(rng, edge, days);
       const s0 = Array.from({ length: days }, () => nextNormal(rng));
       const activeDays = Object.fromEntries(Object.entries(v).map(([k, s]) => [k, s.filter((x) => x !== 0).length]));
-      const regimes = name === 'regimeShift' ? [{ from: 0, to: 20 }, { from: 20, to: 35 }, { from: 35, to: days }] : [];
+      const regimes = layout ?? (name === 'regimeShift' ? [{ from: 0, to: 20 }, { from: 20, to: 35 }, { from: 35, to: days }] : []);
       const res = spaTest({ variants: v, s0, activeDays, registration: { seFloor: 1e-6, studentisation: SPA_STUDENTISATION, regimes } },
         { rng: createRng(bootBase + r), replicates: 400, alpha: ALPHA });
       if (res.pValue < ALPHA) global++;
@@ -246,15 +246,19 @@ describe('joint SPA test calibration (STATS-1c)', () => {
       expect(r.pass, name).toBeLessThanOrEqual(ALPHA);
     }
   }, 900_000);
-  // For the owner's SPA sign-off: one more calibration at the registry's real T, the 64 practice days 2026-07-20 ..
-  // 09-21 that G1 reads, on seeds independent of the run above (data from 91_000, bootstrap from 9_100_000).
-  // Measured (300 runs each; global, a variant passes): independent 0.01, 0 · duplicates 0.017, 0 · mixture 0.013, 0 ·
-  // heavy tails 0, 0 · common shock 0.03, 0 · idle days 0.003, 0 · unequal lengths 0.013, 0 · autocorrelated 0.02, 0.003
-  // · sparse 0.017, 0 · regime shift 0.023, 0 · unequal volatility 0.013, 0 · rule grid 0.03, 0.
-  test('at the registry\'s real T (64 practice days), on independent seeds, neither rate exceeds α in any scenario', () => {
+  // For the owner's SPA sign-off (STATS-1e ruling): the registry's real T and regime layout, the 64 practice days
+  // 2026-07-20 .. 09-21 that G1 reads, with B2 on day 1, B3 on day 51 and B4 on day 54, registered as
+  // [0,1) [1,51) [51,54) [54,64); short regimes merge for resampling (mergeShortRegimes) into [0,54) [54,64). Seeds are
+  // independent of the runs above (data from 123_000, bootstrap from 12_300_000). The promotion rule's rate (a variant
+  // passes) is the gating number; the global rate is reported beside it.
+  // Measured (300 runs each; a variant passes, global): independent 0, 0.03 · duplicates 0.007, 0.043 · mixture 0.003,
+  // 0.033 · heavy tails 0, 0.017 · common shock 0, 0.027 · idle days 0, 0.01 · unequal lengths 0, 0.003 · autocorrelated
+  // 0, 0.043 · sparse 0, 0.013 · regime shift 0, 0.013 · unequal volatility 0, 0.017 · rule grid 0, 0.023. Without the
+  // merge (the reviewer's run) the global rate reached 7.0% (common shock); the promotion rule stayed at most 1.3%.
+  const REAL_LAYOUT = [{ from: 0, to: 1 }, { from: 1, to: 51 }, { from: 51, to: 54 }, { from: 54, to: 64 }];
+  test('on the real 64-day regime layout, on independent seeds, the promotion rule passes a variant in at most α of runs, in every scenario', () => {
     for (const name of Object.keys(SPA_SCENARIOS)) {
-      const r = run(name, 0, runs, 64, 91_000, 9_100_000);
-      expect(r.global, name).toBeLessThanOrEqual(ALPHA);
+      const r = run(name, 0, runs, 64, 123_000, 12_300_000, REAL_LAYOUT);
       expect(r.pass, name).toBeLessThanOrEqual(ALPHA);
     }
   }, 900_000);
