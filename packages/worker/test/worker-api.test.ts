@@ -72,14 +72,14 @@ describe('the app API (UI-2 contract)', () => {
   });
 
   it('serves no command: pause, close and session are refused and journaled with the auth level each needs', async () => {
-    const h = makeWorker({ config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18797', ZEROED_API_ADDR: '127.0.0.1:18796' } });
+    const h = makeWorker({ config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18792', ZEROED_API_ADDR: '127.0.0.1:18793' } });
     expect(await h.worker.start()).toEqual({ ok: true });
     for (const c of Object.keys(COMMANDS)) {
-      const r = await fetch(`http://127.0.0.1:18796/api/v1/commands/${c}`, { method: 'POST', body: '{}' });
+      const r = await fetch(`http://127.0.0.1:18793/api/v1/commands/${c}`, { method: 'POST', body: '{}' });
       expect(r.status, c).toBe(403);
       expect(((await r.json()) as { error: string }).error).toBe(`refused: needs ${COMMANDS[c as keyof typeof COMMANDS]}`);
     }
-    expect((await fetch('http://127.0.0.1:18796/api/v1/commands/buy', { method: 'POST' })).status).toBe(404);
+    expect((await fetch('http://127.0.0.1:18793/api/v1/commands/buy', { method: 'POST' })).status).toBe(404);
     await h.worker.stop();
     const refused = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
       .filter((l) => l['action'] === 'command_refused').map((l) => (l['reasons'] as string[])[0]);

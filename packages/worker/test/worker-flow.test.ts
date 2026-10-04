@@ -1,7 +1,7 @@
 // WORKER-1 end to end on a scripted market: gates, risk, the ledger reservation, TEST-2's simulation, the paper fill,
 // the exit engine, the journal the runner checks and the ledger the replay check reads; then a restart drill mid-trade.
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
@@ -19,7 +19,8 @@ import { exitsFile } from '../src/run/state.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
 import type { SeedRpc } from '../src/seed/rpc.ts';
-import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, dueTimers, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import type { SimLeg } from '../src/run/paper-world.ts';
+import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, dueTimers, makeWorker, okSimulation, passingMarket, slotAt, tempState, until, virtualTimers } from './worker-harness.ts';
 
 /** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
 const HELD = { heldPoolFacts: true } as const;
@@ -93,12 +94,15 @@ describe('a paper trade end to end', () => {
   });
 
   it('an attempt that lands failed is abandoned and its reservation released', async () => {
-    // Never dropped: with landing off, a drop draw (pid-seeded) would leave nothing to abandon.
+    // Never dropped: with landing off, a drop draw would leave nothing to abandon.
     const h = makeWorker({ scenario: { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n } });
-    await entered(h);
+    const m = await entered(h);
     expect(positions(h).every((p) => p.quantity === 0n && p.status !== 'open')).toBe(true);
-    const abandoned = kinds(h.stateDir, 'decision').filter((d) => d['action'] === 'abandon');
-    expect(abandoned.length).toBeGreaterThanOrEqual(1);
+    const abandoned = () => kinds(h.stateDir, 'decision').filter((d) => d['action'] === 'abandon');
+    expect(await until(m, 60_000, () => abandoned().length >= 1, () => {
+      m.slot();
+      m.pool();
+    })).toBe(true);
     await h.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
   });
@@ -442,6 +446,91 @@ describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
     expect(report.problems).toEqual([]);
     expect(lines(h.stateDir).filter((l) => l['kind'] === 'reconcile').at(-1)).toMatchObject({ ok: true });
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  }, 60_000);
+});
+
+describe('a restart rebuilds the stored book before it decides', () => {
+  /** A clock that moves 1 ms on every read, as a host's wall clock does while a start opens the ledger and the book. */
+  const moving = (t: ReturnType<typeof virtualTimers>): ReturnType<typeof virtualTimers> => ({
+    ...t,
+    now: () => {
+      const v = t.now();
+      t.set(v + 1);
+      return v;
+    },
+  });
+
+  // Tying: every frame in one millisecond, so the order fell to the ids and `worker:halt` sorts before `world#`
+  // ("work" < "worl"). Moving: the restored frames are stamped after the constructor's first clock read, so a start
+  // fact dated from that read came before some of them.
+  it.each([['a tying clock', false], ['a clock that moves during the start', true]] as const)(
+    'an entry still in flight at the kill, on %s: the stored book is rebuilt first, so the ledger and the engine agree',
+    async (_name, move) => {
+      const h = makeWorker();
+      await h.worker.reconcile();
+      const m = await passingMarket(h);
+      await m.run(4_000, 100, () => m.pool());
+      // The entry reached the paper network and no fill has landed: the ledger carries it past what a fresh engine has.
+      expect(Object.values(h.worker.book.intents).map((i) => i.status)).toEqual(['pending']);
+      await h.worker.kill();
+
+      const timers = h.timers as ReturnType<typeof virtualTimers>;
+      const h2 = makeWorker({ stateDir: h.stateDir, timers: move ? moving(timers) : timers });
+      expect(await h2.worker.reconcile()).toEqual({ ok: true });
+      const dir = join(h.stateDir, 'recorder', h2.worker.boot);
+      const released = readdirSync(join(dir, 'days')).sort()
+        .flatMap((d) => readdirSync(join(dir, 'days', d)).filter((f) => /^releases-/.test(f)).sort().map((f) => join(dir, 'days', d, f)))
+        .flatMap((f) => readFileSync(f, 'utf8').split('\n').filter((l) => l !== '').map((l) => (JSON.parse(l) as { eventId: string }).eventId));
+      // Frames are numbered in arrival order, so the stored book's are every `world#` below the halt fact's own number.
+      const seqOf = (id: string) => Number(id.slice(id.indexOf('#') + 1));
+      const haltAt = released.findIndex((x) => x.startsWith(HALT_KEY));
+      expect(haltAt).toBeGreaterThanOrEqual(0);
+      const stored = released.map((x, k) => ({ x, k })).filter(({ x }) => x.startsWith('world#') && seqOf(x) < seqOf(released[haltAt]!));
+      expect(stored.length).toBeGreaterThan(0);
+      expect(stored.filter(({ k }) => k > haltAt)).toEqual([]);
+      const mine = lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot);
+      expect(mine.filter((l) => l['kind'] === 'halt')).toEqual([]);
+      expect(h2.worker.health().halt_reasons).not.toContain('ledger and book diverged');
+      // What the host unit's ExecStartPre reports: 0, from the ledger's book, which now matches the engine's.
+      expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('0\n');
+      await h2.worker.kill();
+    },
+    60_000,
+  );
+});
+
+describe('a killed worker writes no state file afterwards', () => {
+  it('a simulation that answers after the kill does not overwrite what the next process wrote', async () => {
+    let answer = (): void => undefined;
+    const legs: SimLeg[] = [];
+    const held = async (leg: SimLeg) => {
+      await new Promise<void>((done) => {
+        answer = done;
+      });
+      return okSimulation(legs)(leg);
+    };
+    const h = makeWorker({ simulate: held });
+    await h.worker.reconcile();
+    const m = await passingMarket(h);
+    // Stepped by hand: `run` awaits the paper simulations, and this one is held open on purpose.
+    for (let k = 0; k < 40; k++) {
+      m.pool();
+      h.worker.step();
+      h.timers.set(h.timers.now() + 100);
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('1\n');
+    await h.worker.kill();
+    // The host unit's ExecStartPre settles the intent and writes 0 (here: what that next process would write).
+    writeFileSync(join(h.stateDir, 'open_intents'), '0\n');
+    const paper = readFileSync(join(h.stateDir, 'paper.json'), 'utf8');
+    // The killed process's simulation answers now: its save would write `paper.json` and `open_intents` from a
+    // process that is gone, over the successor's.
+    answer();
+    for (let k = 0; k < 20; k++) await new Promise<void>((r) => setImmediate(r));
+    expect(legs.length).toBe(1);
+    expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('0\n');
+    expect(readFileSync(join(h.stateDir, 'paper.json'), 'utf8')).toBe(paper);
   }, 60_000);
 });
 
