@@ -108,6 +108,8 @@ export interface ApiInputs {
   readonly funnel: FunnelState;
   readonly solPrice: MicroUsd | null;
   readonly symbol: (mint: string) => string;
+  /** Positions whose due exit waits for its first fresh quote, and since when (EXIT-1c). */
+  readonly waitingExits: ReadonlyMap<string, number>;
   /** The open position's plan and our size's liquidation value now (lamports, null when it cannot be quoted). */
   readonly open: (p: PositionState) => { readonly stopPrice: bigint; readonly trail: bigint | null; readonly liquidation: bigint | null; readonly openedAtMs: number; readonly universe: string } | null;
 }
@@ -151,6 +153,12 @@ export const views = {
     for (const p of Object.values(i.book.positions)) {
       if (p.status === 'exit_pending' || p.status === 'exit_requested') flags.add('exit-pending');
       if (p.status === 'exit_blocked') flags.add('exit-blocked');
+      // An exit waiting for a fresh quote is pending; once it has waited the blocked-retry time it is an alert.
+      const since = p.status === 'closed' ? undefined : i.waitingExits.get(p.id);
+      if (since !== undefined) {
+        flags.add('exit-pending');
+        if (i.nowMs - since >= i.policy.exits.blockedRetryMs) flags.add('exit-blocked');
+      }
     }
     if (Object.values(i.book.intents).some((s) => s.status === 'unknown')) flags.add('unknown-tx-result');
     if (i.funnel.stage.size === 0) flags.add('no-eligible-candidate');
@@ -202,9 +210,11 @@ export const views = {
     const o = i.open(p);
     const fees = fillsOf(i, p.id).reduce((s, a) => s + (a.fill?.fees ?? 0n), 0n);
     const liq = o?.liquidation ?? null;
-    const exit = p.status === 'exit_blocked' ? 'blocked' : p.status === 'open' ? 'none' : 'pending';
+    const exit = p.status === 'exit_blocked' ? 'blocked' : p.status === 'open' && !i.waitingExits.has(p.id) ? 'none' : 'pending';
     // The exits of the universe the position was entered under (CFG-2); unknown plan: the strategy's universe.
-    const ux = exitsFor(i.policy.exits, o?.universe ?? 'U2');
+    const u = o?.universe ?? 'U2';
+    // A universe the policy lacks is being flattened (no time stop or take-profit of its own).
+    const ux = Object.hasOwn(i.policy.exits.universes, u) ? exitsFor(i.policy.exits, u) : { tMaxMs: 0, partialAtRBps: 0, partialAtGainBps: 0 };
     return {
       mode: MODE, id: p.id, mint: p.mint, symbol: i.symbol(p.mint), venue: 'pumpswap', openedAt: iso(o?.openedAtMs ?? i.nowMs),
       entryPriceUsd: priceText(p.cost, p.bought, i.solPrice), sizeUsd: usdText(lamportsUsd(p.cost, i.solPrice)),

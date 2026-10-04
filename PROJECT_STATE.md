@@ -12,10 +12,10 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D. Three outside reviews have converged on one set of rules (DECISIONS: consensus of the three reviews). Merged on 4 Oct so far: RES-3 (#47), RUN-1c (#49), GATE-1d (#50), TX-1b (#51), TEST-2 diagnostics (#60), CFG-2 (#57), GATE-1e (#61), GATE-1f (#65), TX-1c (#63), FACTS-1 (#54), APP-2 (#43), EXIT-1b (#55), RISK-1b (#58), SIM-1 (#59), DATA-1 (#46), SEED-1 (#45), APP-2b (#67), FACTS-1c (#68), WORKER-1 (#48), BT-1c (#53), FILL-2 (#70), DATA-1b (#69), RUG-1c (#74), OPS-1e (#66), FACTS-1b (#75), OPS-1f (#72), STATS-1b (#52), OPS-1f e2e (#80), OPS-1g (#79), BT-1d (#73), RUG-1b (#81), RUN-1d (#64). Scan run 1 (09-21 back to 09-14) started 8:42 AM; the owner's server, Tailscale, APK and ruleset steps were sent at 9:25 AM.
-- **Server:** live and paired.
-- **History:** the download waits on DATA-1's final data-shape PR (#46: full curve and canonical-pool rows, raw records for every create and migration, owner-resolved token movements, regimes).
-- **Building:** the worker, gate-fact producers, start-up seed, rug check, backtest study, signal research, live app view, server extras, and the review fixes.
+Wave D, 4 Oct 4:25 PM Melbourne. 65 PRs merged since midnight on 4 Oct (the latest in `HANDOVER.md` §4). The owner finished the server, Tailscale, APK and ruleset steps at 2:31 PM, chose SPA for G1 at 2:33 PM, authorised code-only Deploy runs at 2:45 PM, moved the GitHub account to Pro at about 3:47 PM, chose the free Helius plan for now, and emailed Triton.
+- **Server:** re-installed at pin e28788a, paired, published on the tailnet only. It runs the stub worker, so the app shows "Server error" until SWITCH-1 (after RISK-MARK #103 and WORKER-1c #99): expected about 9 PM – 1 AM (±3 h).
+- **History:** the Old Faithful archive blocks our scanner. A check every 3 hours uses our real identity, never a disguise. DATA-2 (#111, a Helius `getBlock` reader) is in review; its free pilot runs after merge. An early look (BT-2e) runs the bot's own backtest on 1–2 free practice days, about Tue 6 – Wed 7 Oct.
+- **Building:** #103/#99 merges, SWITCH-1, STATS-1f, FACTS-1f, APP-3, EXIT-1g, MEM-1, ARCHIVE-CHECK, BT-2e.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -26,21 +26,15 @@ Wave D. Three outside reviews have converged on one set of rules (DECISIONS: con
 - All four API keys checked from CI: they work.
 
 ## Board
-Builders run as separate sessions; a fresh reviewer session checks each PR; the supervisor merges into `ccr-14987baf-i6lrsl` when review passed and CI is green on a head with the latest base.
+Builders run as separate sessions; a fresh reviewer session checks each PR; the supervisor merges into `ccr-14987baf-i6lrsl` when review passed and CI is green on a head with the latest base. The merge queue, open cards and sessions are in `HANDOVER.md` §4–5 (one place, kept current).
 
-| Task | What | Session | Model | State | Estimate (Melbourne, Sun 4 Oct) |
-|---|---|---|---|---|---|
-| DATA-1c | Regime volume per hour, exact cross-check, back-fill (PR #77); scan runs | session_01XHH3k24fjmkpmmt28xSaYv | Opus 5.5 | PASS, green; held until scan run 1 ends | merge between batches |
-| WORKER-1b | Flake PR first (fixed boot seed, restart ordering, ports, `until`); #82 RUN-1d contract, sell-only start; then WORKER-1c | session_01F7UFCa8r4aee38kW7687Y3 | Opus 5.5 | flake PR in proof loops; #82 fixes | flake PR about 11 AM |
-| FACTS-1d | Regime volume rule and live reader (PR #78, session_019cENcTEidMc4LEhPydYAZK) | session_019cENcTEidMc4LEhPydYAZK | Opus 5.5 | digest, persistence and linear ingest | delta about 11 AM–12 PM |
-| PERSIST-1 | Save and restore index, labeller and coverage (PR #71) | session_013LeD4RMaJMybRnPVRn4LXM | Opus 5.5 | PASS; waits for the flake PR | after the flake PR |
-| TEST-3, WATCH-1 | Fault injection (PR #83); independent timer and coherent second-path read | session_01WGpxEWFacSgAuXL5KAzrKc | Opus 5.5 | #83 fixing the 429 entry case | WATCH-1 about 12–1 PM |
-| EXIT-1c, BT-3 | Reconcile-time exits fire on the first quote; real-data replay evidence | session_016KSN98NC2xQxetiZkpCVtT | Opus 5.5 | EXIT-1c building | EXIT-1c about 11 AM–12 PM |
-| BT-2 | Backtest study (PR #41): funnel count first, deployment replay, registry (E fixed, attempt rules) | session_01VBTfAwrhgoCssEzST2J2q5 | Opus 5.5 | building on fixtures; consuming CFG-2 | data from Mon 5 Oct |
-| STATS-1c | SPA, day-level DSR, registry attempt rules into core (PR #62) | session_01J9yEWHRunNxvo5CaTbuYSe | Opus 5.5 | adapting to BT-1d; STATS-1b merged | review about 12 PM |
-| RUN-1e, 1f | Tabletop follow-ups (PR #76, PASS); host loss counted only when compared; typed `recovered` | session_01VgCLpHWaM7FjpwofRcgrwM | Opus 5.5 | #76 merging; RUN-1d merged | about 11 AM |
-| POS-1, BT-1e | Live position pool state from swaps (new session session_01MtftXmPKCqdkXEop4h7vf1); owner-program supplement workflow (session_01VM97q6A98GgtoPKCamoiT6) | — | Opus 5.5 | building | today |
-| Next | FACTS-1e, FACTS-1f, TEST-1 parity (session_01GDycboQzFrFWxVniy6B6Ps); STATS-1d; the real-worker switch (`"worker": "release"`) once WORKER-1b, FACTS-1d, POS-1 and WATCH-1 are in; SIGN-1 later; evidence upload from the server needs an owner decision | — | — | by dependency | — |
+| Task | What | State | Estimate (Melbourne) |
+|---|---|---|---|
+| Merge queue | #103, #99, SWITCH-1, #107, #98, #106, #97, #109, #111; merged this afternoon: #82, #104, #108, #90, #89 | moving one at a time | about 10–15 min each plus merge checks |
+| SWITCH-1 | e2e proof that the release worker starts on the host, a pre-switch smoke check, the `"worker": "release"` flip; then Deploy (code only) | building (01VM97); merges after #99 and #103 | Sun 4 Oct about 9 PM – Mon 1 AM (±3 h) |
+| EXIT-1f #107, STATS-1f #109 | exact restored open time; G1 on the registered SPA test | in review | today |
+| BT-2 #41 | study: observedTip in live and backtest, funder cluster, funnel count | building | needs historical days |
+| Historical data | DATA-2 #111 (in review), pilot, ARCHIVE-CHECK; BT-2e early look on 1–2 free days | free plan only (owner) | early look about Tue 6 – Wed 7 Oct; all days about Fri 9 – Sun 11 Oct (±1–2 days) only if the owner approves the paid month or Triton allows |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -55,12 +49,12 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - WORKER-1 restart drill: rebuild the exit attempt budget from the book, and restore trail, peak, flatMet and partials (save per step or replay as-of); a reset trail is a looser stop (EXIT-1 review). Store the universe with the position at entry, so a restored position rebuilds its EntryPlan without a default (CFG-2 review).
 - OPS-1d: install RUN-1's zeroed-dryrun units and runner flags through code updates, hold deploys during a qualifying run, and give the VPS evidence a path into the repo.
 - Runbook (RUN-1/WORKER-1): a v1 ledger must be opened once by a writer (migrates to 2) before `ledger:replay` or `openReader`.
-- Data: the owner declined asking Triton for a faster download (4 Oct); the scan stays at 80 MB/s on one lane.
+- Data: the owner declined asking Triton for a faster download (4 Oct); the scan stays at 80 MB/s on one lane. Since then the archive refused all requests for 5 h; if that continues, the owner is asked to request bucket access or limits (about access, not speed).
 - Owner, before live (RISK-1): worst-case cost per trade C ≈ $0.79 after EXIT-1's retry budget; $5 entries stay blocked until week-start equity reaches $29; new entries stop at about 84% of the peak; the daily and weekly loss count an open loss again each day (stricter; switching to marked boundaries needs the owner's yes).
 - Owner, before live (third opinion): R8 "5 losses in any 20" pauses 79–97% of simulated paths within 8–11 trades, good strategy or bad; choose keep, or a threshold calibrated on practice data and validated separately (never the holdout). With C at about 40% of a $2 trade, one loss of about $0.70 ends the day.
 - Live regime volume: resolved without a paid service. Live reads our own published day assets with a D−3 lag (FACTS-1d, DATA-1c).
 - Proof timeline: U2 may hold fewer than 300 holdout trades (unmeasured); BT-2 counts the funnel gate by gate on practice days before any freeze, and dates follow that count. "Not proven yet" for U2 is a possible honest result.
-- Owner sign-off, when STATS-1c's simulations are in: replace the DSR gate in G1 with the block-bootstrap SPA test.
+- G1 uses the SPA test (owner, 4 Oct 2:33 PM; STATS-1f #109). Later, as the owner's upgrade idea: an owner setting to choose G1's test (SPA or DSR). Both paths are kept and tested; no switch is built now.
 - Workflows: pinned actions target Node 20 and run forced on Node 24; re-pin when workflows are next touched (supervisor, `.github`).
 - RUN-1b: a negative quoteAgeSlots passes the decimal check (display only).
 - TX-1 → SIGN-1: maxSolOut needs about 1.5M lamports of PumpSwap headroom; the policy charges Token-2022 ATAs at 170 bytes.
@@ -69,7 +63,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
 - API keys are in GitHub repository secrets and verified: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` (bot @Zeroed_alerts_bot). Never in chat or in the repo.
-- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Set up on 2026-10-04 from the PR #36 line: keys stored (4), Telegram paired, signer active. The owner was sent the re-paste of the current line (OPS-1f, pin 364476c), a new deploy code for the webhook, Tailscale and the holdout-registry ruleset on 4 Oct, 9:25 AM; after the re-paste, host changes arrive by update.
+- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Set up on 2026-10-04: keys stored (4), Telegram paired, signer active. Re-installed by the owner at pin e28788a (OPS-1g) on 4 Oct, with Tailscale (HTTPS on, `tailscale serve` to the tailnet only) and the holdout-registry ruleset, all done at 2:31 PM. Host code changes arrive through code-only Deploy runs (the supervisor may run them; `DEPLOY_CODE` stays deleted) and the server's update gate. The app shows "Server error" until the real worker runs.
 - Cloudflare: Account API token (Edit Cloudflare Workers template, 1-year expiry) is in GitHub secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, verified active from CI. Renew before 2027-10-03.
 - Domain: none, and none will be bought (owner rule in CLAUDE.md). Watchdog on the free `workers.dev` address; live dashboard access later through Tailscale's free personal plan.
 - Telegram bot display name: change with /setname in BotFather (optional).

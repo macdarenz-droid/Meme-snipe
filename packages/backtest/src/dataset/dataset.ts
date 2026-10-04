@@ -106,6 +106,20 @@ export const loadDay = (dir: string, day: ManifestDay, options: LoadOptions = {}
   return out.sort(compareRows);
 };
 
+/** The files of one day that loadDay reads (the trading tables; movements and other tables are not read). */
+export const dayFilesRead = (day: ManifestDay): readonly ManifestFile[] => day.files.filter((f) => TABLES[tableOf(f.path)] !== undefined);
+
+/** The files SHA256SUMS lists, as resolved paths (empty without the file). Call after verifySums. */
+export const sumsListed = (dir: string): ReadonlySet<string> => {
+  const sums = join(dir, 'SHA256SUMS');
+  if (!existsSync(sums)) return new Set();
+  const root = resolve(dir);
+  return new Set(readFileSync(sums, 'utf8').split('\n').flatMap((line) => {
+    const m = /^([0-9a-f]{64})\s+\*?(.+)$/.exec(line.trim());
+    return m === null ? [] : [resolve(root, m[2]!)];
+  }));
+};
+
 /**
  * A day file on disk: `days/<day>/<file>` as the scanner writes it, or `<day>__<file>` as the release assets publish
  * it (DATA-1's workflow flattens the day folders). Missing in both places is an error.

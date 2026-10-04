@@ -71,11 +71,11 @@ describe('holdout wall', () => {
     expect(() => resolveWindow(committed, confirmed, null)).toThrow(/no STATS-1 registry/);
     // The registry's fromDay is a UTC day; the confirmed wall must be the Melbourne day of that date.
     const fromDay = wallDay(earlier);
-    const reg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, -1), toDay: '2026-10-01' });
+    const reg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, -1), toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
     expect(() => resolveWindow(committed, confirmed, reg)).toThrow(/must be equal/);
-    const laterReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, 1), toDay: '2026-10-01' });
+    const laterReg = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, 1), toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
     expect(() => resolveWindow(committed, confirmed, laterReg)).toThrow(/must be equal/);
-    const ok = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay, toDay: '2026-10-01' });
+    const ok = registerHoldout(createHoldoutRegistry(2), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay, toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
     // The wall (Melbourne midnight) comes 10 h before the registered UTC day starts.
     expect(utcStart(fromDay) - wallMs(confirmed)).toBe(10 * 3_600_000);
     expect(resolveWindow(committed, confirmed, ok)).toBe(confirmed);

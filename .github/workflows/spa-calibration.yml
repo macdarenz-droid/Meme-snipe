@@ -1,0 +1,41 @@
+name: SPA calibration (full)
+
+# The full 300-run SPA calibration for the owner's sign-off pack (STATS-1e). Started by hand only; it writes the
+# per-scenario rejection counts to spa-calibration.jsonl and uploads them as an artifact.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Full calibration (300 runs per scenario)
+        env:
+          SPA_FULL_CALIBRATION: '1'
+          SPA_CALIBRATION_OUT: ${{ github.workspace }}/spa-calibration.jsonl
+        # bash -eo pipefail, so a failing calibration fails the job through tee.
+        shell: bash
+        run: |
+          echo "commit ${GITHUB_SHA}" > spa-calibration.txt
+          npx vitest run packages/core/test/stats-simulation.test.ts -t "joint SPA test calibration" 2>&1 | tee -a spa-calibration.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: spa-calibration-${{ github.sha }}
+          path: |
+            spa-calibration.jsonl
+            spa-calibration.txt
+          if-no-files-found: error

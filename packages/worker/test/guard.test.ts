@@ -31,6 +31,14 @@ describe('worker I/O guards', () => {
     }
   });
 
+  it('the worker process hands every provider reader, the fact readers included, the drop-rpc cut client', () => {
+    const main = read('src/main.ts');
+    expect(main).toMatch(/liveFacts\(\{[^)]*http: http\.facts/);
+    // The raw client goes only into the process's clients (`liveHttp`), which cut every provider read.
+    expect(main.match(/\bfetchHttp\b/g)?.length).toBe(2);
+    expect(main).toContain('liveHttp(rpcCut, fetchHttp)');
+  });
+
   it('only boot/environment.ts reads the environment and the credentials, and it hands keys on only as Secrets', () => {
     for (const f of files('boot')) {
       if (f.endsWith('environment.ts')) continue;

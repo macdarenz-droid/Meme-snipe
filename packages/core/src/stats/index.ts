@@ -16,4 +16,6 @@ export * from './power.ts';
 export * from './predictive.ts';
 export * from './rng.ts';
 export * from './sharpe.ts';
+export * from './spa.ts';
 export * from './special.ts';
+export * from './trials.ts';
