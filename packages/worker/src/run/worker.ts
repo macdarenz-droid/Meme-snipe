@@ -52,7 +52,7 @@ import { loadState, saveState } from '../persist/index.ts';
 export const PERSIST_FILE = 'deployer-state.json';
 export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
-import { type PoolFact, S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
+import { S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
 import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
