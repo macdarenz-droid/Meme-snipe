@@ -250,11 +250,13 @@ export interface G1Input {
   readonly pboMatrix: Readonly<Record<string, readonly number[]>>;
   readonly pboBlocks?: number;
   /**
-   * Which multiple-testing check gates G1 (STATS-1c (e)): 'dsr' (default, day-level DSR ≥ 0.95 over every registered
-   * trial) or 'spa' (the joint day-block bootstrap SPA test at familyAlpha). The other one is always reported. 'spa'
-   * stays off until the owner signs off on the calibration evidence; the setting lives in RESEARCH_CONFIG.g1EdgeTest.
+   * The significance test that gates G1, fixed at registration and never changed mid-attempt (owner decision,
+   * 2026-10-04: 'spa'; RESEARCH_CONFIG.g1Test). 'spa': the joint SPA test as registered and calibrated in STATS-1e (the
+   * global test with the step-down promotion of the selected rule, both benchmarks, blocks 3/5/7 with the worst p,
+   * short regimes merged). 'dsr': the per-trade DSR over every registered trial with clamped moments. The other is
+   * always reported, never gating. A registration without it fails G1.
    */
-  readonly edgeTest?: 'dsr' | 'spa';
+  readonly g1Test: G1Test;
   /**
    * The joint SPA test's other inputs, on the calendar of `pboMatrix` (whose rows are the variants' daily net P&L over a
    * fixed capital base): S0's daily P&L, each variant's active days (counted before outcomes) and the registered SE
@@ -267,11 +269,17 @@ export interface G1Input {
   readonly replicates?: number;
 }
 
+/** The registered choice of G1's significance test (only the owner sets it, before the run). */
+export type G1Test = 'spa' | 'dsr';
+export const G1_TESTS: readonly G1Test[] = ['spa', 'dsr'];
+
 /** G1 Walk-forward (research). */
 export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>): GateResult => {
   const th = tighten('G1', G1_DEFAULTS, G1_DIR, overrides);
   const c = new Checks();
   const metrics: Record<string, number | null> = { trades: input.trades.length };
+  const test: G1Test | null = (G1_TESTS as readonly unknown[]).includes(input.g1Test) ? input.g1Test : null;
+  c.add('G1 test', test !== null, test === null ? `no registered G1 test (got ${JSON.stringify(input.g1Test)}; need one of ${G1_TESTS.join(', ')})` : `registered: ${test}`);
   c.add('scenario', input.scenario === 'conservative', `scenario "${input.scenario}" (need "conservative")`);
   c.add('pre-registration', input.rulesRegisteredBeforeHoldout,
     input.rulesRegisteredBeforeHoldout ? 'rules registered before the holdout' : 'rules not registered before the holdout was opened');
@@ -297,7 +305,7 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
   if (!input.registry.some((t) => t.trialId === input.selectedTrialId)) {
     c.add('registry', false, `selected trial "${input.selectedTrialId}" is not in the experiment registry`);
   } else if (!matrixOk) {
-    c.add('DSR', false, matrixProblem);
+    c.add(test === 'dsr' ? 'DSR' : 'SPA', false, matrixProblem);
   } else {
     // Reported only (STATS-1c): the day-level DSR under raw, configuration-de-duplicated and effective N, the
     // block-bootstrap Sharpe p-value of the selected trial's days, and the joint SPA test.
@@ -318,6 +326,11 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
       metrics.dailySharpeP = sb.pNull;
       diag = `day-level DSR ${fmt(d.raw.dsr)} over ${d.raw.trials} trials and ${d.days} days, ${fmt(d.deduplicated.dsr)} over ${d.deduplicated.trials} configurations, `
         + `${fmt(d.effective.dsr)} over ${d.effective.trials} effective trials; day-level Sharpe ${fmt(d.sharpe)}, bootstrap p ${fmt(sb.pNull)}`;
+    } catch (e) {
+      diag = `diagnostics unavailable: ${(e as Error).message}`;
+    }
+    // The joint SPA test, in its own try: when it gates, it never depends on the diagnostics above.
+    try {
       if (input.spa) {
         const spa = spaTest(
           { variants: input.pboMatrix, s0: input.spa.s0Daily, activeDays: input.spa.activeDays,
@@ -334,21 +347,25 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
         spaDetail = 'SPA not run (no S0 calendar or activity counts)';
       }
     } catch (e) {
-      diag = `diagnostics unavailable: ${(e as Error).message}`;
+      spaDetail = `SPA unavailable: ${(e as Error).message}`;
     }
-    if (input.edgeTest === 'spa') {
-      c.add('SPA', spaP !== null && spaP < SPA_ALPHA, `${spaDetail || diag} (need < ${SPA_ALPHA})`);
-    } else {
-      // The gate until the owner signs off STATS-1c: the per-trade DSR over every registered trial, with the moments
-      // clamped (skewness ≤ 0, kurtosis ≥ the registered floor), which can only make a pass harder.
-      try {
-        const d = deflatedSharpe(returns, input.registry, { clamp: true });
-        metrics.dsr = d.dsr;
-        metrics.trials = d.trials;
-        c.add('DSR', d.dsr >= th.dsrMin, `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} trials, moments clamped (need >= ${th.dsrMin}); reported only: ${diag}; ${spaDetail}`);
-      } catch (e) {
-        c.add('DSR', false, (e as Error).message);
-      }
+    // The per-trade DSR over every registered trial with clamped moments (skewness ≤ 0, kurtosis ≥ the registered floor):
+    // the gate when 'dsr' is registered, a descriptive number otherwise.
+    let dsrDetail = '';
+    let dsrOk = false;
+    try {
+      const d = deflatedSharpe(returns, input.registry, { clamp: true });
+      metrics.dsr = d.dsr;
+      metrics.trials = d.trials;
+      dsrOk = d.dsr >= th.dsrMin;
+      dsrDetail = `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} trials, moments clamped`;
+    } catch (e) {
+      dsrDetail = (e as Error).message;
+    }
+    if (test === 'spa') {
+      c.add('SPA', spaP !== null && spaP < SPA_ALPHA, `${spaDetail} (need < ${SPA_ALPHA}); reported only: ${dsrDetail}; ${diag}`);
+    } else if (test === 'dsr') {
+      c.add('DSR', dsrOk, `${dsrDetail} (need >= ${th.dsrMin}); reported only: ${diag}; ${spaDetail}`);
     }
   }
   if (!matrixOk) {
