@@ -13,7 +13,7 @@
 
 ## Phase
 Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Claude account (owner, about 7:15 PM). Every first-account session pushed its work and wrote its notes to `docs/handover/sessions/`, then paused. Start from `HANDOVER.md` §0. 76 PRs merged since midnight on 4 Oct.
-- **Server:** still on the stand-in worker. SWITCH-1 #110 and the e2e fix #126 are merged. Next: check that the push e2e on 7d5e203 is green, then a code-only Deploy, then the owner checks Online.
+- **Server:** code-only Deploy run 37189025276 moved the deploy tag to 7d5e203 (SWITCH-1, WORKER-1e, the e2e fix) at about 7:28 PM. The push e2e on that commit is green. The server switches to the real paper worker within about 5 min. Online is still to be confirmed by the owner (app or Telegram /status).
 - **Practice trades:** WORKER-1e #117 is merged, so the S0 shakedown with the labelled diagnostic set starts once the real worker runs. Practice P&L stays rough until PAPER-1 (audit M4, M5, M8) merges.
 - **External audit (Report 1):** real defects were found in paper accounting, latches, stale snapshots, recovery, research and statistics. Every finding is a card (HANDOVER §4; DECISIONS "External audit 1"). The verdict stands: paper and research mode only.
 - **History:** Helius free only (about 2–3 practice days a month alongside the live worker). 09-21 is downloading (run 37185822426, about 14 h). The proof needs about 50 practice days plus 28 holdout days, which is impossible on free alone; the paid month (about US$94) waits for the owner's decision after seeing a finished product.
@@ -34,7 +34,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 | Task | What | State | Estimate (Melbourne) |
 |---|---|---|---|
 | Merge queue | #114, #116, #118 (delta), #106, #107, #98, #123, then the audit-fix PRs (see HANDOVER §4) | moving one at a time | about 10 min each plus reviews |
-| Online | push e2e on 7d5e203, then a code-only Deploy, then the owner's check | next step for the new supervisor | about 30–60 min after resuming |
+| Online | deployed (7d5e203, run 37189025276); the owner confirms Online | waiting for the owner's check | now |
 | Audit fixes | PAPER-1, RISK-LATCH #124, RISK-PARTIAL, WATCH-1c #121 / 1d, EXIT-1g #128 / 1h, PERSIST-2 #125 / 3, EXIT-ROUTE #130, WORKER-ORDER #123, STATS-1g #129, OPS-GATE, PNPM-CLAIMS, SEC-1, DATA-4 #127, DATA-5 | building or in review | about 2–3 days (±1) |
 | BT-2 #41 | audit B1–B5 and S2, then RES-4 (b)/(c) under the stats rulings; early-look runner ready | building and in review | early look about Tue 6 – Wed 7 Oct |
 | Historical data | 09-21 free day running; DATA-4 ledger after it | free plan only (owner) | 09-21 about Mon 8 AM; more days as credits allow |
