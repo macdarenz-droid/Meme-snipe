@@ -62,6 +62,14 @@ const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 /** The registered strategies live with the run contract (the runner checks the same list). */
 export { REGISTERED_STRATEGIES };
 
+/**
+ * PRACTICE-ON: the bot wallet the S0 shakedown builds for until the signer makes the real one. The program-derived
+ * address of seed "zeroed-shakedown-wallet" under the System program: off the curve, so no private key exists for it, and
+ * no account on chain. Its builds are only compared with the stand-in's (TEST-2), never simulated or signed. Refused in
+ * any release that names a qualifying run: items 3 and 4 need the signer's own wallet.
+ */
+export const SHAKEDOWN_WALLET = 'FdmNGWTvFJfkioV6jPg6HCC1ng3T5vGo4fBKAgX3vTTf';
+
 /** A qualifying-run file that is present but cannot be read. */
 export const UNREADABLE = Symbol('unreadable');
 
@@ -115,6 +123,7 @@ export const parseConfig = (
   const qualifying = qualifyingRun !== null && (runId === undefined || runId === '' || runId === qualifyingRun);
   if (qualifying && (name === 'S0' || edgeText !== undefined)) return refuse('refused: S0 and ZEROED_PAPER_EDGE_PPM are never used in the qualifying run');
   if (qualifying && !REGISTERED_STRATEGIES.includes(name)) return refuse('refused: the qualifying run needs a registered strategy in ZEROED_STRATEGY');
+  if (wallet === SHAKEDOWN_WALLET && qualifyingRun !== null) return refuse('refused: ZEROED_WALLET is the shakedown\'s keyless stand-in; a release with a qualifying run needs the signer\'s wallet');
   let paperEdgePpm: bigint | null = null;
   if (edgeText !== undefined) {
     if (name !== 'S0') return refuse('refused: ZEROED_PAPER_EDGE_PPM is only for the S0 shakedown');
