@@ -1,0 +1,217 @@
+// Strategy health, observation only (STRATEGY-HEALTH-OBS; docs/research/risk.md §10, docs/DECISIONS.md).
+// A pure, deterministic reducer over episode events: one observation per entry decision, z = net lamports / entry
+// lamports (the entry size fixed before the first attempt), fed to a one-sided CUSUM S_i = max(0, S_{i−1} − z_i − κ).
+// The states it computes (unregistered, active, watch, paused, requalifying) are reported next to decisions and enforced
+// nowhere: nothing in entry, exit or risk reads them. Replacing R8 with them would be a loosening, the owner's decision.
+
+/** Where the episodes come from. Each mode keeps its own history: paper never inherits from a backtest. */
+export type HealthMode = 'backtest' | 'paper' | 'live';
+
+/**
+ * What a strategy is. History belongs to the lineage (lineageId within a mode): a new version, policy, venue or
+ * execution model inside the same lineage is recorded but cannot reset its history.
+ */
+export interface StrategyIdentity {
+  readonly lineageId: string;
+  readonly strategyVersionHash: string;
+  readonly universe: string;
+  readonly venue: string;
+  readonly policyHash: string;
+  readonly executionModelHash: string;
+  readonly mode: HealthMode;
+}
+
+export type HealthStatus = 'unregistered' | 'active' | 'watch' | 'paused' | 'requalifying';
+
+export interface HealthConfig {
+  /** CUSUM reference value: S grows only when an episode returns less than −κ. */
+  readonly kappa: number;
+  /** Alarm level: S ≥ h is "paused". */
+  readonly h: number;
+  /** S ≥ watchFraction·h is "watch". */
+  readonly watchFraction: number;
+  /** After a pause S restarts at 0; this many consecutive episodes below the watch level return it to "active". */
+  readonly requalifyEpisodes: number;
+  /** Identities registered for trading; an episode of any other identity is reported "unregistered". */
+  readonly registered: readonly StrategyIdentity[];
+}
+
+/**
+ * κ = 0.005 and h = 7.1 from research/risk/loss_review.py: h is the smallest value with at most 5% alarms within 100
+ * episodes for every synthetic in-control model, chosen on seed 810 and validated on seed 281011 (risk.md §10).
+ */
+export const HEALTH_DEFAULTS = { kappa: 0.005, h: 7.1, watchFraction: 0.5, requalifyEpisodes: 20 } as const;
+
+/**
+ * Episode events in durable-sequence order (`seq` strictly increasing; equal timestamps are ordered by it).
+ *  - entry: the entry decision, with the size fixed before the first attempt.
+ *  - flow: a signed lamport flow of the episode (spend on a fill, proceeds of an exit, every fee, failed attempts'
+ *    fees included). Retries, partial fills and partial exits are flows of the same episode.
+ *  - final: the episode is over. 'closed' and 'failed-entry' are observations; 'dropped' (nothing was sent) is not,
+ *    and a dropped episode that carried flows is refused rather than hidden.
+ */
+export type HealthEvent =
+  | { readonly type: 'entry'; readonly seq: number; readonly episodeId: string; readonly identity: StrategyIdentity; readonly entryLamports: bigint }
+  | { readonly type: 'flow'; readonly seq: number; readonly episodeId: string; readonly lamports: bigint }
+  | { readonly type: 'final'; readonly seq: number; readonly episodeId: string; readonly outcome: 'closed' | 'failed-entry' | 'dropped' };
+
+export interface OpenEpisode {
+  readonly identity: StrategyIdentity;
+  readonly entryLamports: bigint;
+  /** Sum of the flows so far: an unfinished loser stays visible here until it is final. */
+  readonly netLamports: bigint;
+  readonly flows: number;
+  readonly entrySeq: number;
+}
+
+export interface LineageHealth {
+  /** The latest identity seen in the lineage. */
+  readonly identity: StrategyIdentity;
+  readonly s: number;
+  /** The CUSUM state machine, before registration is applied. */
+  readonly machine: Exclude<HealthStatus, 'unregistered'>;
+  /** What is reported: `machine`, or 'unregistered' when the latest identity is not registered. */
+  readonly status: HealthStatus;
+  readonly observations: number;
+  /** Consecutive episodes below the watch level while requalifying. */
+  readonly cleanRun: number;
+  readonly pauses: number;
+}
+
+export interface HealthState {
+  readonly lastSeq: number;
+  readonly open: Readonly<Record<string, OpenEpisode>>;
+  readonly finished: Readonly<Record<string, true>>;
+  /** Fingerprint of every applied event by sequence: a re-delivered event is ignored, a conflicting one refused. */
+  readonly seen: Readonly<Record<number, string>>;
+  readonly lineages: Readonly<Record<string, LineageHealth>>;
+}
+
+export interface HealthObservation {
+  readonly seq: number;
+  readonly episodeId: string;
+  readonly lineage: string;
+  readonly z: number;
+  readonly s: number;
+  readonly from: HealthStatus | null;
+  readonly to: HealthStatus;
+}
+
+export interface HealthStep {
+  readonly state: HealthState;
+  /** Set when the event finished an episode that counts. */
+  readonly observation: HealthObservation | null;
+  /** True when the event was a re-delivery of one already applied (nothing changed). */
+  readonly duplicate: boolean;
+}
+
+export const initialHealthState = (): HealthState => ({ lastSeq: -1, open: {}, finished: {}, seen: {}, lineages: {} });
+
+export const lineageKey = (id: StrategyIdentity): string => `${id.mode}|${id.lineageId}`;
+
+const identityKey = (id: StrategyIdentity): string =>
+  JSON.stringify([id.lineageId, id.strategyVersionHash, id.universe, id.venue, id.policyHash, id.executionModelHash, id.mode]);
+
+const fingerprint = (e: HealthEvent): string => {
+  switch (e.type) {
+    case 'entry': return JSON.stringify(['entry', e.episodeId, identityKey(e.identity), e.entryLamports.toString()]);
+    case 'flow': return JSON.stringify(['flow', e.episodeId, e.lamports.toString()]);
+    case 'final': return JSON.stringify(['final', e.episodeId, e.outcome]);
+  }
+};
+
+const checkConfig = (c: HealthConfig): void => {
+  if (!(Number.isFinite(c.kappa) && Number.isFinite(c.h) && c.h > 0)) throw new RangeError('health config: κ must be finite and h > 0');
+  if (!(c.watchFraction > 0 && c.watchFraction < 1)) throw new RangeError('health config: watchFraction must be in (0, 1)');
+  if (!(Number.isInteger(c.requalifyEpisodes) && c.requalifyEpisodes >= 1)) throw new RangeError('health config: requalifyEpisodes must be a positive integer');
+};
+
+/** The CUSUM step and the state machine for one observation z. */
+const advance = (prev: LineageHealth | undefined, identity: StrategyIdentity, z: number, c: HealthConfig): LineageHealth => {
+  const watch = c.watchFraction * c.h;
+  const machine0 = prev?.machine ?? 'active';
+  // After a pause the CUSUM restarts at 0 and the lineage requalifies.
+  const restart = machine0 === 'paused';
+  const s = Math.max(0, (restart ? 0 : prev?.s ?? 0) - z - c.kappa);
+  let machine: LineageHealth['machine'];
+  let cleanRun = 0;
+  let pauses = prev?.pauses ?? 0;
+  if (s >= c.h) {
+    machine = 'paused';
+    pauses++;
+  } else if (restart || machine0 === 'requalifying') {
+    cleanRun = s < watch ? (restart ? 0 : prev!.cleanRun) + 1 : 0;
+    machine = cleanRun >= c.requalifyEpisodes ? 'active' : 'requalifying';
+  } else {
+    machine = s >= watch ? 'watch' : 'active';
+  }
+  const registered = c.registered.some((r) => identityKey(r) === identityKey(identity));
+  return { identity, s, machine, status: registered ? machine : 'unregistered', observations: (prev?.observations ?? 0) + 1, cleanRun, pauses };
+};
+
+/**
+ * Applies one event. Pure and deterministic: the same events give the same states, observations and transitions,
+ * whether in the worker or the backtest, and across a restart from any saved state (`healthStateToJson`).
+ */
+export const reduceHealth = (state: HealthState, e: HealthEvent, config: HealthConfig): HealthStep => {
+  checkConfig(config);
+  if (!Number.isSafeInteger(e.seq) || e.seq < 0) throw new RangeError(`health event: seq ${e.seq} must be a non-negative integer`);
+  const fp = fingerprint(e);
+  if (e.seq <= state.lastSeq) {
+    const before = state.seen[e.seq];
+    if (before === fp) return { state, observation: null, duplicate: true };
+    throw new RangeError(before === undefined
+      ? `health event seq ${e.seq} arrives after seq ${state.lastSeq}: events must come in durable-sequence order`
+      : `health event seq ${e.seq} conflicts with the event already applied at that sequence`);
+  }
+  const base = { ...state, lastSeq: e.seq, seen: { ...state.seen, [e.seq]: fp } };
+  const open = state.open[e.episodeId];
+  if (e.type === 'entry') {
+    if (open || state.finished[e.episodeId]) throw new RangeError(`episode ${e.episodeId} already has an entry`);
+    if (e.entryLamports <= 0n) throw new RangeError(`episode ${e.episodeId}: entry size must be positive`);
+    const ep: OpenEpisode = { identity: e.identity, entryLamports: e.entryLamports, netLamports: 0n, flows: 0, entrySeq: e.seq };
+    return { state: { ...base, open: { ...state.open, [e.episodeId]: ep } }, observation: null, duplicate: false };
+  }
+  if (!open) throw new RangeError(`episode ${e.episodeId} is not open (${state.finished[e.episodeId] ? 'already final' : 'no entry'})`);
+  if (e.type === 'flow') {
+    const ep: OpenEpisode = { ...open, netLamports: open.netLamports + e.lamports, flows: open.flows + 1 };
+    return { state: { ...base, open: { ...state.open, [e.episodeId]: ep } }, observation: null, duplicate: false };
+  }
+  const { [e.episodeId]: _done, ...rest } = state.open;
+  const closed = { ...base, open: rest, finished: { ...state.finished, [e.episodeId]: true as const } };
+  if (e.outcome === 'dropped') {
+    if (open.flows > 0) throw new RangeError(`episode ${e.episodeId} is dropped but carried ${open.flows} flows (net ${open.netLamports}): a cost is never hidden`);
+    return { state: closed, observation: null, duplicate: false };
+  }
+  // Not clipped: a blocked exit that also paid failed-attempt fees is below −100%, and counts as such.
+  const z = Number(open.netLamports) / Number(open.entryLamports);
+  const key = lineageKey(open.identity);
+  const prev = state.lineages[key];
+  const next = advance(prev, open.identity, z, config);
+  return {
+    state: { ...closed, lineages: { ...state.lineages, [key]: next } },
+    observation: { seq: e.seq, episodeId: e.episodeId, lineage: key, z, s: next.s, from: prev?.status ?? null, to: next.status },
+    duplicate: false,
+  };
+};
+
+/** Folds events in order; returns the final state and every observation. */
+export const replayHealth = (events: readonly HealthEvent[], config: HealthConfig, from: HealthState = initialHealthState()): { state: HealthState; observations: HealthObservation[] } => {
+  let state = from;
+  const observations: HealthObservation[] = [];
+  for (const e of events) {
+    const step = reduceHealth(state, e, config);
+    state = step.state;
+    if (step.observation) observations.push(step.observation);
+  }
+  return { state, observations };
+};
+
+/** A durable form of the state (bigints as decimal strings), for saving at a write boundary. */
+export const healthStateToJson = (s: HealthState): string =>
+  JSON.stringify(s, (_k, v: unknown) => (typeof v === 'bigint' ? { $bigint: v.toString() } : v));
+
+export const healthStateFromJson = (json: string): HealthState =>
+  JSON.parse(json, (_k, v: unknown) =>
+    v !== null && typeof v === 'object' && '$bigint' in v && typeof (v as { $bigint: unknown }).$bigint === 'string'
+      ? BigInt((v as { $bigint: string }).$bigint) : v) as HealthState;
