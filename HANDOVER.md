@@ -16,6 +16,8 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | #172 N2-WRITES | 7f2ce17b (persist delta PASS 9:34) | behind ad358fe9; conflicts with #139 in DeployerStore.load (second lander keeps #139's coverage pass and #172's written + commitTemp) |
 | #209 RESTART-CAUSE | 9b3d601b (facts PASS 9:45; ops FAIL at 6d7ce423 → fix in 9b3d601b not yet re-reviewed) | builder merges base with #148 (worker.ts, harness conflicts) + pins; then facts resolution check and ops summary.ts re-check |
 | #141 WATCH-1d | 23787229 (risk delta PASS 10:01; CI green 9:40) | behind base (trial merge clean); GitHub update when its slot comes |
+| #168 ACCOUNT-RATE | eb1918dd (risk PASS; facts PASS 10:07) | conflicts with base in strategy.ts; builder base-merges, facts re-checks; #197 lands after it |
+| #171 EXIT-1h follow-up | 46aefee5 (EXIT delta pending) | — |
 | #191 RES-5c | d10f2f85 (stats delta PASS 9:15) | stream 5b: CI slots go to streams 1–4 first; merges when the core line is clear |
 | #115 RES-4 | dcb931e8 (BT + stats delta PASS 9:15) | stream 5b, same reason |
 | #122 BT-TAIL | b6200d15 (BT PASS) | stream 5a (early look); after the core money/exit PRs |
