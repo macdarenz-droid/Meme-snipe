@@ -1,0 +1,9 @@
+813:    this.#journal.write('reconcile', { ok: true, restored_events: this.#ledgerEvents(), cancelled: asked.size, open_positions: positions });
+1022:    const fields = { source: cold ? 'chain' : 'state', pending_exits: this.pendingExits(), positions: this.#positionsWithUniverse() } satisfies RecoveredFields;
+1145:      universe: (id) => universes.get(id) ?? NO_UNIVERSE,
+1153:      open_positions: positions,
+1154:      pending_exits: this.pendingExits(),
+1215:    if (!this.#observing) {
+1221:    if (code === EXIT.clean) this.#persist(d.timers.now());
+
+[exited with code 0]

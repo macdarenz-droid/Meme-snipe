@@ -1,0 +1,13 @@
+import { survivalRows, S_T0, SURV_SOL_USD } from '/home/user/Meme-snipe/packages/backtest/test/survival-fixture.ts';
+import { collectSurvival } from '/home/user/Meme-snipe/packages/backtest/src/research/survival.ts';
+import { labelDecisions } from '/home/user/Meme-snipe/packages/backtest/src/research/survival-outcome.ts';
+import { solUsdAsOf } from '/home/user/Meme-snipe/packages/backtest/src/research/candidates.ts';
+import { TRIAL_POLICY } from '/home/user/Meme-snipe/packages/core/src/config/index.ts';
+const W = { decisionFrom: '2026-09-01', decisionTo: '2026-10-01', holdoutFrom: '2026-09-23', embargoDays: 1, confirmedBy: 'test' };
+let t = performance.now();
+const fx = survivalRows([{ name: 'A', creator: 'X', fate: 'survive', createdAtH: 0 }, { name: 'B', creator: 'Y', fate: 'die', createdAtH: 0.1 }, { name: 'C', creator: 'Z', fate: 'rug', createdAtH: 0.2 }, { name: 'D', creator: 'X', fate: 'survive', createdAtH: 26 }], 52);
+console.log('rows', fx.rows.length, performance.now() - t); t = performance.now();
+const d = collectSurvival(fx.rows, { window: W, policy: TRIAL_POLICY, solUsd: solUsdAsOf(SURV_SOL_USD, 3 * 3600000) });
+console.log('decisions', d.decisions.length, d.matured, performance.now() - t);
+const l = labelDecisions(fx.rows, d.decisions.map(({ id, pool, labelAtMs }) => ({ id, pool, labelAtMs })), W);
+for (const x of d.decisions) console.log(x.id.slice(0, 12), x.ageMs / 60000, JSON.stringify(l.find((y) => y.id === x.id)!.label), x.eligibleAs, x.rejects.join(';'), x.features.s_creator_surv, x.features.s_market_surv, x.quoteSol?.toFixed(1), x.mcapSol?.toFixed(0));

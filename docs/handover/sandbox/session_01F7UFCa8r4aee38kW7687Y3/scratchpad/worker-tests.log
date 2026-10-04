@@ -1,0 +1,118 @@
+
+ RUN  v5.0.3 /home/user/Meme-snipe/packages/worker
+
+(node:6976) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7011) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7018) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7108) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7127) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7175) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7189) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7196) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7227) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ test/worker-contract.test.ts (29 tests | 3 failed) 1648ms
+   ❯ S0 shakedown settings (supervisor ruling 2026-10-04) (4)
+     × S0 and the paper edge never reach the qualifying run; only a registered strategy could qualify (none is yet) 11ms
+     × fails closed on the host: with the file in the release and no run id, the worker is the qualifying run 1ms
+     × S0 is selectable and always non-qualifying; unset is none with no edge 2ms
+(node:7271) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7293) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7300) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7335) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7363) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/worker-contract.test.ts > S0 shakedown settings (supervisor ruling 2026-10-04) > S0 and the paper edge never reach the qualifying run; only a registered strategy could qualify (none is yet)
+AssertionError: expected { name: 'S0', …(3) } to deeply equal { name: 'S0', …(2) }
+
+- Expected
++ Received
+
+  {
+    "name": "S0",
+    "paperEdgePpm": 250000n,
+    "qualifying": false,
++   "s0Diagnostic": false,
+  }
+
+ ❯ test/worker-contract.test.ts:126:115
+    124|     expect(q({ ZEROED_RUN_ID: 'qual-1' }, UNREADABLE)).toBe('refused: …
+    125|     // Any other run (a rehearsal, the shakedown) is never qualifying.
+    126|     expect(q({ ZEROED_RUN_ID: 'shakedown-1', ZEROED_STRATEGY: 'S0', ZE…
+       |                                                                                                                   ^
+    127|     expect(REGISTERED_STRATEGIES).toEqual([]);
+    128|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  test/worker-contract.test.ts > S0 shakedown settings (supervisor ruling 2026-10-04) > fails closed on the host: with the file in the release and no run id, the worker is the qualifying run
+AssertionError: expected { name: 'S0', …(3) } to deeply equal { name: 'S0', …(2) }
+
+- Expected
++ Received
+
+  {
+    "name": "S0",
+    "paperEdgePpm": 250000n,
+    "qualifying": false,
++   "s0Diagnostic": false,
+  }
+
+ ❯ test/worker-contract.test.ts:140:81
+    138|     expect(q({}, 'qual-1')).toBe('refused: the qualifying run needs a …
+    139|     // No file in the release: nothing is qualifying, so S0 runs (the …
+    140|     expect(q({ ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' …
+       |                                                                                 ^
+    141|   });
+    142|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  test/worker-contract.test.ts > S0 shakedown settings (supervisor ruling 2026-10-04) > S0 is selectable and always non-qualifying; unset is none with no edge
+AssertionError: expected { name: 'S0', …(3) } to deeply equal { name: 'S0', …(2) }
+
+- Expected
++ Received
+
+  {
+    "name": "S0",
+    "paperEdgePpm": 250000n,
+    "qualifying": false,
++   "s0Diagnostic": false,
+  }
+
+ ❯ test/worker-contract.test.ts:145:39
+    143|   it('S0 is selectable and always non-qualifying; unset is none with n…
+    144|     const p = parseConfig({ ...base, ZEROED_STRATEGY: 'S0', ZEROED_PAP…
+    145|     expect(p.ok && p.config.strategy).toEqual({ name: 'S0', paperEdgeP…
+       |                                       ^
+    146|     const q = parseConfig(base, () => null);
+    147|     expect(q.ok && q.config.strategy).toEqual({ name: 'none', paperEdg…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed | 33 passed (34)
+      Tests  3 failed | 524 passed (527)
+   Start at  05:50:34
+   Duration  67.78s (tests 88%, import 7%, transform 4%)
+
+    Isolate  34 workers spawned · ~129ms startup each (spawn + environment, per file)
+             at least ~4.25s faster with isolate: false — reuses workers across files instead of one per file
+
+EXIT 1

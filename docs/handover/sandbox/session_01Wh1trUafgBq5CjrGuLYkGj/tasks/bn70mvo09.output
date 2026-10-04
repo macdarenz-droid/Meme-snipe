@@ -1,0 +1,10 @@
+     × rejects money sent as a number or with more than 6 places 6ms
+     × the NAV peak rises while a position is open 310ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |light| apps/web/test/dashboard-contract.test.ts > worker API contract > rejects money sent as a number or with more than 6 places
+ FAIL  |light| packages/worker/test/boundary-marks.test.ts > boundary marks from the marked account (RISK-MARK) > the NAV peak rises while a position is open
+ Test Files  2 failed | 150 passed (152)
+      Tests  2 failed | 4509 passed (4511)
+EXIT 1
+
+[exited with code 0]

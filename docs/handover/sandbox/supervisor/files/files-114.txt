@@ -1,0 +1,9 @@
+docs/ARCHITECTURE.md
+docs/DECISIONS.md
+packages/backtest/src/research/outcome.ts
+packages/backtest/src/trades.ts
+packages/backtest/test/research.test.ts
+packages/backtest/test/run.test.ts
+packages/core/src/config/fills.ts
+packages/core/src/fills/model.ts
+packages/core/test/fills/fills.test.ts

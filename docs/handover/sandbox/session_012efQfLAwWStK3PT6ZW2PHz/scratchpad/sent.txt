@@ -1,0 +1,681 @@
+===== 2026-10-03T14:43:12.918Z
+PR #24 (BT-1) review. Verdict: FAIL. Reviewed head 8226422. The merged head has not arrived: 8226422 does not contain base cc227dc, and they differ in 98 files. I'll re-verify on the merged head when you send it.
+
+Gates on 8226422: `pnpm install --frozen-lockfile` OK. `pnpm check` OK (37 files, 1767 tests). No new dependency; the lockfile only adds the empty `packages/backtest: {}` importer. No test loosened. No change to core/engine.
+
+BLOCKING
+1. Entries and time-stop exits are signed with a stale block height, so they expire when they shouldn't.
+   - Where: s0.ts:102-104 (`#blockHeight` reads the last `slot` lookup), used at s0.ts:128/169 and 201/216. market.ts:166-173 only emits `slot` every 150 blocks when nothing is in flight.
+   - Scenario: an entry or time stop decided up to 149 blocks after a heartbeat gets `lastValidBlockHeight = staleHeight + 150`. It then lands 1–6 blocks later after its real validity has ended, and world.ts:138 marks it expired.
+   - Proof: I ran 9 runs (synthetic rows, 12 mints, seeds a/b/c × 3 scenarios) with `dropPpm = 0`, so nothing should expire. 4 entry attempts expired anyway (seed a in all three scenarios; seed b base and conservative). Conservative loses more because its landing latency is longer.
+   - Fix: put the current block height on every market event value S0 acts on (PoolView, Discovery, as well as `slot`). S0 signs with the height of the event it is handling. Add a test: with `dropPpm = 0` and landing under 150 slots, zero attempts expire, on entries and on exits decided between heartbeats.
+2. One unquotable real swap wipes out our price impact.
+   - Where: core/src/fills/pool.ts:104-108. When a real swap can't be replayed on its own pre-trade state, `applyReal` resets `#delta` to zero as well as `#real`.
+   - Scenario: we buy, then one real swap can't be quoted. After that, every later trade and our own exit see a pool with our buy's impact removed. That is optimistic, and the only trace is the `unquotableSwaps` count.
+   - Fix: set `#real = null` and keep `#delta`. The next swap's pre-trade reserves resync the real state and the delta applies again. Update the test at fills.test.ts:98 to assert that the delta survives.
+3. The CLI rereads the whole dataset from disk once per trade for every regime boundary.
+   - Where: cli.ts:53-57 and 117-120 (`rowsTimeOfSlot` inside `trades.filter`).
+   - Scenario: on 30 days, roughly 300 trades × boundaries means hundreds of full dataset reads. The real-data evidence run would take hours, far over the target of 30 days in under an hour.
+   - Fix: record each boundary's block time once. Market already releases the `regime` event at that block, so keep its blockTime and return it in RunResult.
+4. Process: re-verify on the merged head (base merged in) before any merge decision.
+
+NON-BLOCKING
+a. holdout.ts:28-29: a crashed or invalid holdout throws before `chmod`, leaving a writable ledger with fills and P&L in it. Use chmod 0400 in a `finally`. Rerun refusal only checks the file path, so the same holdout can run again into a new file; the STATS-1/BT-2 registry has to record runs and burn them.
+b. run.test.ts holdout test: "Sealed: read-only" only checks that a read works. Assert `statSync(path).mode & 0o777` is `0o400`.
+c. "Conservative never better than optimistic" is only checked on the aggregate net of one synthetic run (run.test.ts:117). Add a config test that each field is monotone (conservative ≤ base ≤ optimistic: latency, slippage, take-profit, rent, land/drop).
+d. world.ts:131: a landing hook in a skipped slot (no block row) lands on the previous block's state with a slot that has no block. Snap it to the next block row.
+e. run.ts:78-91: the U2 window of 60–240 min, entry min-out of 300 bps, blocked retry 10 min × 3 and the 30-min margin are code constants, but the comment says "nothing is a code constant". Move them to config or reword the comment.
+f. fetch-sol-usd.ts:19-22 parses closes as JS numbers. `String(double)` round-trips, so values are exact today, but reading the raw JSON text keeps floats out of money entirely.
+g. cli.ts:81-88: the real-data leak test plants its marker only through the world heap (`extraEvents`). Also plant a future dataset row, so the stream reader path is covered on real data.
+
+CHECKED AND OK
+- Blindness: the feed gates rows, reports and hooks to the clock (`schedule` refuses ≤ now). mints.csv is never read. Discovery is lagged from a per-mint seed. SOL/USD is usable from close + 1 bar. Events are frozen. World and Market are only on the driver side. My own planted-marker reasoning found no path into the strategy before its moment.
+- Same engine as live: there are no backtest branches in core/engine.
+- Fill order: our order lands after the slot's trades and its block row. Later swaps replay on the shifted pool, impact is computed on the real reserves, and fee rates are the ones observed.
+- Seeds: landing, failure, drop and expiry draws are seeded, with two draws in a fixed order.
+- Holdout returns only `{ledgerHash, counts}`. Nothing is logged and the CLI prints nothing else.
+- Money is bigint throughout, and the money-literal scanner passes.
+- The ledger mirror goes through CORE-1 `applyBookEvent`; the `{"v":1,"book":…}` detail waits for #23 as agreed.
+- publish-report refuses `pull_request*` and GITHUB_HEAD_REF runs, and the token goes only in the auth header.
+
+Run time (Melbourne, AEST): review 00:37–00:46 on 4 Oct, about 10 min including one full check (100 s) and the probe runs. Re-review of the merged head with fixes 1–3: about 10–15 min, depending on the size of the diff.
+===== 2026-10-03T14:57:08.363Z
+PR #24 (BT-1) round 2. Verdict: FAIL. Head e3b3dd8, reviewed 8226422..e3b3dd8 including the base merge. One blocking item left.
+
+Gates on e3b3dd8: `pnpm install --frozen-lockfile` OK. `pnpm check` OK (47 files, 1957 tests). Head contains base 9711c8f. No test loosened, and no new dependency.
+
+BLOCKING
+1. Signing height is still stale on events that carry no height (round-1 item 1 is only partly fixed).
+   - Where: s0.ts `#blockHeight` (about lines 104-112). It uses the event's `blockHeight` when present. Otherwise it falls back to `ctx.lookup('slot')`, which is the heartbeat height and can be up to 149 blocks old.
+   - Events with no height: `life:<mint>` (market.ts `#event`), `sol-usd` and the other series, and `regime`. `onMarket` runs entries, exits and lifecycle on every market event. Real data has a lifecycle event from some mint every few slots, so many decisions will land on a `life:` event.
+   - Proof: I took the new test's own `crowd` rows (12 mints, swapEvery 37, seed 'heights') and added one CreateEvent for another mint every 7 slots. With `dropPpm = 0`, attempts still expire: seed h1 conservative 1 entry; h3 base 1 exit; h3 conservative 2 exits. With swaps only, nothing expires.
+   - Why the test misses it: the "nothing expires" test passes only because the synthetic data has no other-mint lifecycle events. It counts decisions on `s:` events, so it never exercises the fallback.
+   - Fix: stamp `blockHeight` on every market event value Market emits (life, series, regime, as well as slot, pool and discovery). Make S0 refuse to sign, with a logged reason, when the event has no height, instead of falling back to the lookup. Extend the test data with other-mint lifecycle events every few slots, and assert that decisions on `e:` events happen and still nothing expires.
+
+ITEMS YOU ASKED ME TO CHECK HARDEST
+- "Nothing expires" test: it does decide entries and time stops between heartbeats on swap events (`betweenHeartbeats > 5`). It is not sufficient, because of item 1.
+- `#real = null` with the delta kept: there is no double application. The next resync computes `shiftedPre = swap.pre + delta` once, then `delta = shiftedPost − real`. `applyOurs` throws while the state is unknown, and the unquotable swap releases no pool view, so nothing can trade on the unknown state. The test asserts the delta survives and our tokens stay out after the resync. OK.
+- Monotone scenarios: every field is covered: landPpm (both venues), dropPpm, discovery, landing, confirm, finalize, slippage, takeProfit and rentRecovery. A key-list test fails if a field is added. OK. (Nit: landPpm is compared on two hard-coded venue keys. Iterating over the keys would also catch a new venue.)
+- RESEARCH_CONFIG: versioned ('research-1') and frozen, but not recorded. Neither the report nor evidence.json carries `research.version`, and `fills.version` isn't recorded either. A run is still reproducible, because both live in code and `codeCommit` is recorded. Required with the item-1 fix: add `fillsVersion` and `researchVersion` to evidence.json; the report needs a schema change only if UI-2 wants them shown.
+
+ROUND-1 ITEMS
+- 2 (delta reset): fixed, see above.
+- 3 (CLI rescans): fixed. Regime times come from `market.regimesPassed` in the same run.
+- 4 (base merge): done.
+- a: fixed. chmod 0400 in `finally`, and the STATS-1 registry seal is wired through `runAndSealHoldout`.
+- b: fixed (mode asserted to be 0o400).
+- c: fixed (see above).
+- d: fixed. A skipped-slot landing walks forward to the next block, and past the data end it becomes `dropped`. The test asserts it never lands in a skipped slot.
+- e: fixed (RESEARCH_CONFIG).
+- f: fixed. Closes are taken from the raw text, and anything that isn't a plain decimal is refused.
+- g: fixed. mergeRows plants a future AMM row through the reader stream, both in the CLI and in the test.
+
+Run time (Melbourne, AEST, 4 Oct): round 2 ran 00:53–00:58, about 6 min including the full check (about 2 min) and the probe. A round 3 on the item-1 fix should take about 10 min. FEED-1 (d9e9bdf) still has to be merged in, and the verdict re-checked on that head.
+===== 2026-10-03T15:14:13.529Z
+PR #24 (BT-1) round 3. Verdict: PASS on 1e63dc1, for the delta e3b3dd8..1e63dc1. This is not merge-ready yet, for two reasons below.
+
+Gates on 1e63dc1: `pnpm install --frozen-lockfile` OK. `pnpm check` OK (63 files, 2169 tests). BT-1's own lockfile change against the merged base is still only the empty `packages/backtest` importer; jsqr, qrcode-generator, packages/worker and the `ledger:replay` script all came from the base. No test loosened.
+
+Round-2 items:
+1. Signing height: fixed.
+   - `Market.#market` stamps `blockHeight` on every market event: pool, life, slot, series, regime, and discovery again at release.
+   - It is the current as-of height: series and regime are stamped after the block's `blockHeight++`, and other events get the latest block before them. No future value.
+   - S0 has no fallback: with no height it logs "not signing" once per key and doesn't sign.
+   - The test now contains my repro (another mint's CreateEvent every 7 slots). It asserts more than 5 entry or time-stop decisions on `e:` events and more than 5 on `s:` events, zero expired or dropped attempts across 3 scenarios × 3 seeds, and no "not signing" record. That decides on exactly the path that failed before.
+   - The +1-slot shift test is unaffected, because height is a block count, not a slot.
+2. evidence.json now has fillsVersion, researchVersion and policyName: OK.
+3. The monotone landPpm check now iterates the keys: OK.
+4. SHA256SUMS check and manifest upgrade boundaries: OK, with nits below.
+
+Before merge:
+A. Base moved again. 8386d1a (LEDGER-1b, #27, "many positions per entry intent") is not in 1e63dc1. It changes the book and ledger shape that the BT-1 mirror sink (sim/sink.ts) and trades.ts read (trades.ts looks up positions by `entryIntentId`). Merge it, rerun check, and send me that head. If BT-1 has to change for it, I'll review that as a delta.
+B. The pending `recordBookEvent` ledger commit. I'll review it as a small delta when it lands. It touches the saved-data shape, which is under owner-approval file ownership (`packages/core/src/ledger/**`). Confirm that the #23 format is already approved and this only writes it; otherwise it needs owner approval.
+
+Non-blocking nits:
+- dataset.ts `regimeBoundariesOf` comment: the first slot where an upgrade's effects are seen is an upper bound on the real upgrade slot, not a lower bound. Trades between the real upgrade and that first sighting are labelled with the earlier regime. Fix the wording, or record the manifest's exact upgrade slot if DATA-1 has it.
+- `verifySums` joins names from SHA256SUMS without rejecting `..` or absolute paths. Refuse any name that resolves outside the directory.
+- Without a SHA256SUMS file it silently checks nothing. That's fine for scanner output, since loadDay still checks each file against the manifest, but the manifest itself is then unverified. Put `sumsChecked` into evidence.json.
+
+Run time (Melbourne, AEST, 4 Oct): round 3 ran 01:10–01:14, about 4 min including the full check (about 2.5 min). Next: re-check after the LEDGER-1b merge plus the ledger delta, about 10 min once they land.
+===== 2026-10-03T15:20:43.621Z
+PR #24 (BT-1) delta 1e63dc1..7205312 (`recordBookEvent`). Verdict: PASS for this delta. Merge is still blocked on the LEDGER-1b merge + trades.ts delta you've already sent the builder.
+
+Gates on 7205312: `pnpm check` OK (64 files, 2174 tests). No test loosened. No dependency or lockfile change.
+
+Checked:
+- Writes nothing else. `recordBookEvent` calls only existing Ledger writers: recordIntent, appendIntentTransition, recordAttempt, recordFill, reserveExposure, endReservation, openPosition and appendPositionState. It adds no table, column or migration.
+- Detail format: `encodeBookDetail(event)` goes only on the first intent row of a step (with the step's effects) and on trigger_exit position rows. That is the #23 format, and stepRows (from ./replay) decides which rows are written.
+- A refused event throws a LedgerError before any write.
+- All-or-nothing: the rollback and SIGKILL tests prove an event writes all its rows or none.
+- Dedupe: attempts and fills are deduped by signature, not by array position, which is safer with LEDGER-1b's several positions per intent.
+- Reservations: one held and released in the same step is reserved, then ended.
+- The sink now holds no ledger-writing code of its own, so backtest and worker ledgers can't drift from the replay check.
+- run.test.ts runs `replayLedgerFile` on a normal ledger and on a lossy one (failed, dropped and blocked exits). Both come back ok, and the intent counts match the book.
+
+Non-blocking:
+- `inTransaction` joins an open outer transaction (sqlite.ts:147). Inside `LedgerSink.consume` the whole batch is one transaction, so a refused event rolls back the whole batch, not just its own rows. In the backtest a refusal is a crash anyway, so that's fine. For WORKER-1, say "one transaction per call, or the caller's" in the doc comment.
+- The sink applies the reducer itself and `recordBookEvent` applies it again. The results are the same, but it's done twice per event. Use the returned book as the sink's mirror, or check the two agree.
+
+Next: the delta with the LEDGER-1b merge, trades.ts several-positions-per-intent and the three nits. Check: trades.ts groups by positionId, not entryIntentId; one entry fill booking into several positions doesn't count fees or rent twice; and the replay check still passes after the merge.
+
+Run time (Melbourne, AEST, 4 Oct): 01:17–01:21, about 4 min including the full check (about 2.5 min). The next delta should take about 10 min.
+===== 2026-10-03T15:24:58.999Z
+PR #24 (BT-1) delta 7205312..11bfbd3. Verdict: PASS. The head contains base f9150fc, LEDGER-1b included. Gates: `pnpm install --frozen-lockfile` OK. `pnpm check` OK (65 files, 2179 tests). Against the base, BT-1 still only adds the empty `packages/backtest` lockfile importer.
+
+Your checks:
+- Grouping by position: OK. Each `.oN` position owns only the intent's n-th fill and that fill's attempt. The main position takes the remaining fills and attempts, failed ones included. Exit attempts are grouped by `positionId`.
+- Fees: no attempt fee is counted twice. The test proves an ended main position adds nothing and stray costs stay empty.
+- Replay check after the merge: the run.test replay test (normal and lossy ledgers) passes on the merged head.
+- Nits:
+  - SHA256SUMS: it now refuses `..`, absolute paths and anything resolving outside the directory, with a test.
+  - `sumsChecked` is in evidence.json.
+  - Regime boundaries use the manifest's exact upgrade slot when there is one, and the comment correctly calls the fallback an upper bound.
+
+Non-blocking:
+- Rent when a main position and a `.oN` position both hold fills on the same mint: trades.ts charges `tokenAccountRent` to each, but one wallet holds one token account per mint. The error is in the conservative direction, and S0 can't produce it today: the World reconciles only once no attempt can still land, and S0 never replaces entry attempts, so no orphan or `.oN` arises in a backtest. Make it one rent per mint while that token account is open before EXIT-1 or BT-2 adds entry rebroadcasts.
+- trades.ts `openedAt = Math.min(...)` becomes Infinity, and the report's `iso()` throws, if a fill has no matching attempt record. That can't happen with the World, but an explicit throw with a clear message would be better.
+
+The last one-line delta (transaction note in the doc comment; the sink using the returned book or asserting it is equal) can be confirmed by sight. Send me the head.
+
+Run time (Melbourne, AEST, 4 Oct): 01:21–01:25, about 4 min including the full check. Remaining: about 2 min for the last delta. Merge then needs green CI on the final head with the latest base.
+===== 2026-10-03T15:28:44.674Z
+PR #24 (BT-1) final verdict: PASS on 9d42ac6, covering 7205312..9d42ac6.
+
+Gates on 9d42ac6: head contains base f9150fc, which is the current base tip. `pnpm check` OK (65 files, 2180 tests). Against the base, BT-1 still only adds the empty `packages/backtest` lockfile importer. No test loosened, and no new dependency.
+
+Last delta:
+- One reduction per event. `recordBookEvent` returns `{book, effects}` and the sink uses it as its mirror. A reducer refusal throws before any write, so catching it as a divergence leaves the outer batch transaction clean. Without a ledger, the sink applies the reducer itself. Any other LedgerError still propagates as a crash. OK.
+- The doc comment now states the transaction rule (its own transaction, or it joins the caller's, which rolls back the whole batch). OK.
+- Rent is charged once per entry intent. It goes to the first position (by id) of that intent that has a fill: a position with no fill exits through the stray-cost path before rent. It comes back only when every position of the intent is closed and the scenario recovers rent. The test with p1 + p1.o2 asserts each attempt fee counted once, total rent equal to one tokenAccountRent, and each position's own tokens. OK. In S0 one entry intent per mint means one token account per mint, so this is right.
+
+Non-blocking, can follow later:
+- sink.ts tells a reducer refusal apart by searching the LedgerError message for 'refused by the reducer'. Give it a code field (e.g. `code: 'reducer_refused'`), so rewording the message can't turn a divergence into a crash.
+- From the previous round: trades.ts `openedAt` should throw a clear error if a fill has no attempt record. That can't happen with the World.
+
+Ready to merge once CI is green on 9d42ac6. Real-data evidence (leak test, S0 over every day, 10 replay hashes, throughput) remains the DATA-1 follow-up, as agreed.
+
+Run time (Melbourne, AEST, 4 Oct): this delta 01:25–01:29, about 4 min including the full check. The whole review ran in 5 rounds, 00:37–01:29, about 50 min elapsed, with about 30 min of active review. Nothing left for me unless a new delta arrives.
+===== 2026-10-03T15:41:01.344Z
+PR #30 (BT-1b nits), 9d5d9f4 on base bd54157: PASS. The sink matches `code === 'reducer_refused'` (no text matching), every other LedgerError gets `code: null`, and trades.ts throws a clear RangeError when a fill has no landed attempt. Nothing passes the constructor a second argument it doesn't expect. Frozen install OK. `pnpm check` OK (70 files, 2313 tests). Run time: 01:37–01:40 Melbourne (AEST), about 3 min.
+===== 2026-10-03T16:19:45.591Z
+PR #30 (BT-1b), 9d5d9f4..c2aab4f: PASS.
+- The PoolView's userQuote now comes from the exact replay of the real swap on its own pre-trade state (`SwapReplay.trade`, added without changing anything else in pool.ts). Its baseAmount does too, on buys. So the misread `user_quote_amount` on `buy_exact_quote_in` no longer reaches any view.
+- I reproduced fail-before / pass-after: the c2aab4f tests run on 9d5d9f4's source give buy-versions 66 of 354 failing, and all pass on c2aab4f.
+- No effect on S0's decisions: S0 quotes from the view's reserves and its own CORE-2 math and never reads view.userQuote or baseAmount, so earlier backtest logic and evidence are unaffected. The rows.ts doc comments now state each field's meaning per instruction. 7c76552 is a reader test only.
+- Frozen install OK. `pnpm check` OK (71 files, 2668 tests).
+Fine to merge once it's updated with base bc3ca3a and CI is green on that head. Run time: 03:16–03:20 Melbourne (AEST), about 4 min.
+===== 2026-10-03T18:42:33.340Z
+BT-1c PR #53 Part 1, head 4fbd158: FAIL on holdout bypasses. Items (1) G0 and (5–7) economics PASS.
+
+Gates: frozen install OK. `pnpm check` OK (92 files, 3252 tests). The new tests use APIs the base doesn't have, so they fail on base by construction.
+
+BLOCKING (holdout can be bypassed or re-run)
+H1. The research `run` command reads the holdout window.
+   - Where: cli.ts:93ff never consults the registry. With no `--days` it runs every manifest day; per DECISIONS the holdout days (from 10-02, extended "as the days are published") sit in the same dataset.
+   - Scenario: `cli.ts run --dataset <dir> …` with no flags, or `--days 2026-10-02,…`, writes report.json and evidence.json with full trades, P&L and economics for the holdout window, before or after it is registered. That defeats the seal entirely.
+   - Fix: `run` takes `--registry` (required whenever the dataset reaches the holdout start) and refuses any selected day inside a registered window, or at or after a configured holdout start date (e.g. a `holdoutFromDay` in research config, so the window is reserved before registration). Add a test: `run` over a registered window is refused, and nothing is written.
+H2. A run window can be re-run under another holdout id or universe label.
+   - Where: `registerHoldout`'s "must start after the last window" check is per universe (stats/holdout.ts:93-101), and `runAndSealHoldout` checks "already run" by holdoutId only (holdout.ts:110).
+   - Scenario: after U2's holdout is scored (burned), register `--universe U9 --holdout-id h2` on the same days and run it. It's accepted: S0 still trades U2, the counts for U9 are 0, but the new sealed ledger holds a fresh, possibly reconfigured, run of the same window.
+   - Fix: refuse registering or running any window that overlaps a window with an earlier `started` record, whatever its id or universe. Refuse a universe the strategy does not produce (`s0Config(o).universe !== u`). Test both.
+H3. The anti-rerun state is a deletable local file.
+   - Where: the `runs` and burn records live only in the `--registry` JSON.
+   - Scenario: delete it, or point `--registry` at a new path, re-register and run the window again.
+   - Fix: the holdout commands require the registry file to be tracked in git and unchanged from HEAD (refuse if `git status --porcelain -- <registry>` is non-empty, before and after the start record), so every start and burn becomes a commit and a deletion shows in history. Also refuse a `--registry` path other than the one fixed in research config. Test the refusal on an untracked or modified registry.
+
+CHECKED OK
+- (1) G0: built by the canonical `gateG0`. Replays, the leak test and the whole-window +1-slot shift test are measured. The other inputs enter as false and display "not run". The state is fail only if a measured check fails, otherwise not-run. Correct.
+- (2) What works:
+  - configId hashes s0Config, policy, fills, scenario, seed, research, regime boundaries, codeId and the dataset id;
+  - the start record is written atomically (tmp file, then rename) before the run;
+  - a start with no end burns the holdout;
+  - a failure burns it ('run-failed', an additive BurnReason);
+  - rows outside the registered window throw, and so burn;
+  - the ledger is chmod 0400;
+  - an existing ledger path is refused;
+  - only `{ledgerHash, counts}` is printed.
+- (5–7) economics.ts:
+  - The conditional mean is per filled trade.
+  - The all-in figure (stray failed-attempt fees included) is given per filled trade and per entry decision.
+  - Daily returns cover every Melbourne day of the window, failed attempts included.
+  - Each leg is converted at its own time: entry, entry costs and rent at the open price; proceeds, exit costs and rent returned at the close price.
+  - SOL results are kept apart.
+  - Hosting is pro-rated, and break-even = (hosting + stray) / n.
+  - The bankroll and ops reserve are marked to market.
+  - Money is bigint throughout; only the daily return ratio is a float, as the DayReturn type expects.
+
+NON-BLOCKING
+- codeId (cli.ts:75-79) uses `git diff HEAD`, which ignores untracked files. Include `git status --porcelain --untracked-files=all` and hash the contents of untracked files under packages/, or refuse when such files exist.
+- DECISIONS:147's extension rule (the window grows by whole days until the counts are met, up to 28 days) can't be done with a fixed registered window: re-registering is refused, or burns. It needs an `extendHoldout(id, newToDay)` allowed only while the holdout is sealed, never opened, and only from counts. STATS-1b or BT-2, but name it now.
+- Exit-leg failed-attempt fees are converted at the close price, not at each attempt's time. That's a small approximation; note it in the doc comment.
+
+Run time (Melbourne, AEST, 4 Oct): Part 1 ran 05:36–05:44, about 8 min including the full check (about 3 min). Part 2 will take about 15 min once the SHA arrives.
+===== 2026-10-03T19:17:17.800Z
+BT-1c #53 Part 2, head 144add8 (BT-1c commits 4ed94d6..6a9251b): FAIL on one optimistic-bias bug, plus the TEST-2 wording you asked me to flag. Everything else PASS.
+
+Gates: frozen install OK. `pnpm check` OK (94 files, 3334 tests). The new tests (delay, rent close, exit failures, network and pool chains, bankrolls) use APIs the base doesn't have, so they fail on base.
+
+BLOCKING
+P1. Pool contention is not a persistent chain across windows nobody asked about, which makes fills optimistic.
+   - Where: world.ts `#contended`: `before = st.win === win - 1n && st.contended`. The state is only advanced in windows where some attempt was broadcast to that pool.
+   - Scenario: a position enters (contended or not), holds for many windows, then exits. At the exit, `before` is false whatever the chain would really be in, so the state is drawn with the entry probability alone (≤ maxEnterPpm) instead of the chain's real state. With stay 0.6 and enter p, the state after a gap is at its stationary share p/(p+0.4), about 2× p at p = 0.1, but the code gives p. So contention at exits is roughly halved. Exits sit far apart from entries (time stop), so this hits nearly every exit.
+   - NetworkState gets this right (it walks every window in a segment); the pool chain must too.
+   - Fix: walk the pool chain through every window since the last state, each window drawn from that window's own previous-window volume. That needs Market to keep each pool's per-window volume history, not just cur/prev; a sparse map of window → volume is enough, since quiet windows have volume 0. Alternatively, when the gap is longer than 1 window, start from the stationary share for the latest volume. Add a test: a pool queried at window w and again at w + k with k ≥ 2 gets the same contended state as a pool queried at every window.
+P2. TEST-2 wiring for closeSuccessPpm. There is no code path, but two comments still state it as the plan:
+   - the fills.ts:16 table row says "Refined from: TEST-2 mainnet simulations (close rate)";
+   - model.ts:102-103 says "TEST-2's measured close-success rate replaces this once it exists".
+   Per your ruling, reword both to the actual refinement source, or "assumption, no refinement source yet".
+
+CHECKED OK
+- Rent:
+  - The refund comes only from a filled attempt with `closedAccount`, i.e. a landed sell of the whole balance closing the account.
+  - A failed close fails the transaction (sell rolled back, base and priority fee charged) and marks the account sell-only, so its rent stays locked.
+  - A dust or unsolicited-token draw on a new account makes it sell-only.
+  - The refund is once per entry intent and token rent only; venue accounts and proceeds are excluded.
+  - economics has `allInNoRentRecoveryMicro`; conservative keeps `rentRecovery: false`.
+  - The close and dust rates are ordered conservative < base < optimistic (0.90/0.95/0.99 close, 0.05/0.02/0.005 dust).
+- Delay:
+  - Three parts (event→processed, processed→confirmed charged under `decisionCommitment: 'confirmed'`, provider ms).
+  - `measured` is labelled unmeasured; adverse is 2+6 slots + 1 s; stress is 4+12 slots + 2 s with 30/60 s blackouts.
+  - Releases happen at the end of the first block at or after the due slot, at that block's real time, and skipped slots move forward.
+  - `observe: null` (recorded receipts) releases at the row moment, never delayed twice.
+  - Every observation carries `observed {slot, at}`, the chain moment.
+  - Blackouts hold only observations; slot events, ticks and the clock continue, and the backlog comes after in chain order.
+  - Blackout placement uses only the seed and the UTC day, so nothing from the future.
+  - Not optimistic: base is unchanged (2 slots + 200 ms), while conservative (3 slots + 500 ms → 8 + 1000 ms) and optimistic (1 + 50 ms → 2 + 200 ms) are both harsher than before.
+- Exit failures:
+  - The network chain is two-state, with stationary restarts per 4096-window segment, so it is order-independent.
+  - Pool entry is driven by the previous complete window's real volume. It is tallied as rows are read, so it is as-of and causal, with no future data (apart from P1's persistence gap).
+  - Provider-down windows and the deterministic 10/30/60 s bursts force a drop, so an attempt can only expire and is replaced only after its last valid height (lifecycle).
+  - `ladderCongestion` and `--burst-sweep` are present.
+- Item 7: the US$20/100/200 projection, with sizes scaled from the policy, labelled as a projection.
+- configId now includes delay, observation and failureBursts.
+
+NON-BLOCKING
+- world.ts `drawCloseSucceeds(this.#d.rng, …)` draws from the shared world RNG only when a full-balance sell executes, so every later attempt's draws shift with slippage outcomes. It stays deterministic, but scenario comparisons lose common random numbers. Use a per-attempt seeded RNG, as `accountGetsDust` does.
+- Base network congestion: the stationary share is 0.03/(0.03+0.4) ≈ 7.0%, against the old 8% burst share. Pool contention and provider failures more than offset it overall, but either set base to ≥ 8% or note why it is lower.
+- Discoveries don't go through blackouts yet. You said that's the next push; I'll check it with H1–H3.
+
+Run time (Melbourne, AEST, 4 Oct): Part 2 ran 06:09–06:18, about 9 min including the full check (about 3 min). The next delta (P1, P2, H1–H3, discoveries through blackouts) should take about 15 min.
+===== 2026-10-03T19:42:11.862Z
+BT-1c #53 re-review, head cb681b1 (commits 5c66b9a, ceb8617, 793efd6): FAIL. P2 is fixed and H1/H2 hold, but (a)–(d) each have a blocking item.
+
+Gates: frozen install OK. `pnpm check` OK (97 files, 3421 tests).
+
+BLOCKING
+A1. (a) Network entry is optimistic across gaps.
+   - Where: market.ts `#tally` deletes window `win - 2`, so `volumeBefore(w)` holds only the last 2 windows. `NetworkState.congested` is called only when an attempt is broadcast, and it walks forward through every intermediate window using `volumeBefore(w)`.
+   - Scenario: after an entry, the position is held for many windows. At the exit, the walk steps through windows whose volume was deleted, gets 0 for each, and uses the no-activity `enterPpm` (base 3%) instead of the activity-raised entry (up to 20%). That repeats P1's bias for exactly the exits.
+   - Fix: keep the full per-window market volume (a Map of window → lamports with no deletion; about 17k entries for 30 days). Better still, advance NetworkState from Market at each window boundary, so the chain never walks over a gap. Add a test: the state at window w + k is the same whether or not the windows in between were queried.
+A2. (a) Base floor: with no activity, the base stationary share is 0.03/(0.03+0.4) ≈ 7.0%, below the 8% floor you set. Raise base `enterPpm` to at least 35,000 ppm (0.035/0.435 ≈ 8.05%) and test that the stationary share at zero activity is ≥ 8%. With activity it rises to a cap of 0.2/0.6 ≈ 33%. Once A1 is fixed, exits then meet congestion at the chain's true rate.
+B. (b) Not done. world.ts:233 still calls `drawCloseSucceeds(this.#d.rng, scenario)` on the shared world RNG. Seed it per attempt, e.g. `createRng(\`${congestionSeed}:close:${rec.signature}\`)`, and test that an earlier slippage outcome doesn't change later attempts' draws.
+C. (c) Not done. market.ts:343-350 schedules `disc:` straight into the replay at slot + lag, so blackouts and the observation delay never hold it. Route discoveries through `#observe` (or an equivalent blackout gate), and test that a discovery due inside a blackout arrives after it, with `graduatedAt` and the age unchanged.
+D1. (d) A different working directory gives a fresh registry.
+   - Where: cli.ts takes `registryRoot` from `git rev-parse --show-toplevel` with no `cwd`, i.e. the process's working directory. codeId uses `import.meta.dirname`.
+   - Scenario: `cd $(mktemp -d) && git init && node <repo>/packages/backtest/src/cli.ts holdout-register … && … holdout …`. The registry there is absent and untracked, so `check()` passes, registration succeeds, and the window runs again with the real code and dataset.
+   - Fix: resolve the root from `import.meta.dirname` (the code's own repository), and refuse if the working directory's top level is not that root.
+D2. (d) A fresh clone or another branch loses the registry.
+   - Where: registry commits are local commits on whatever branch is checked out.
+   - Scenario: `git worktree add ../x origin/<base>` (or a new clone or session) has no `research/holdout/registry.json`, so it registers and runs the window again. This is the realistic path, since every new session starts from a fresh clone.
+   - Fix: the registry must live on the remote, e.g. a dedicated `holdout-registry` branch. Every holdout command first fetches it and refuses unless the local registry equals the remote one, and pushes the start record before the run begins; a failed push means no run. Registration likewise has to be on the remote. Test it with a stubbed VCS.
+
+CHECKED OK
+- P2: the TEST-2 wording is gone; closeSuccessPpm is labelled an assumption refined from observed-chain closes, then the canary.
+- H1: `run` refuses explicit days at or after `holdout.fromDay` (09-22) or inside a registered window, and leaves those days out without `--days`. It refuses before any output is written. The reservation comes from config, so it holds even with no registry.
+- H2: registering a window that overlaps one already started is refused under any id or universe, and so is a universe S0 doesn't produce.
+- H3 in the same repository: the path is fixed (`--registry` is refused), the file must be tracked and unchanged before and after the start, every write is a commit, and a deleted tracked registry is refused.
+- codeId hashes untracked files under packages/.
+- The entry cutoff (10-20) goes through `stopEntriesAt`; the tail runs to 10-21 with one sealed ledger.
+
+NON-BLOCKING
+- D3 symlink: if the registry path is a symlink, `renameSync(tmp, path)` replaces the link with a regular file, so this doesn't break the check. Still refuse when `lstat` shows a symlink, for clarity.
+- A code edit to `research.holdout.fromDay` lets `run` read holdout days. Anyone who edits code can do anything, but `run` should stamp evidence and reports with the dirty codeId (it does), and the publish script should refuse dirty or untracked code ids.
+- Opening the holdout once and only after G1 isn't enforced here. That belongs to STATS-1c, as you said.
+
+Run time (Melbourne, AEST, 4 Oct): 06:33–06:43, about 10 min including the full check (about 3 min). The next delta (A1, A2, B, C, D1, D2) should take about 15 min.
+===== 2026-10-03T20:51:52.953Z
+BT-1c #53, head ac8a1fa: PASS. All six blocking items and D3 are fixed. The blocked-exit drop is sampling noise plus fewer, different exits, not a defect; data below.
+
+Gates: frozen install OK. `pnpm check` OK (103 files, 3631 tests) on a clean run. A first run here hit a vitest worker SIGKILL in research.test.ts, but that came from my own two concurrent runs exhausting memory; it passed on the rerun, so it isn't a flaky test.
+
+Fix by fix:
+- A1 (0e77ea0): every window's volume is kept (`#volume` no longer deletes). The chain at w + k is identical whether the windows in between were queried or not (tested), and the replay "A1" test fails on base.
+- A2 (8761d8c): base `enterPpm` is 40,000, so the stationary share with no activity is 0.04/0.44 ≈ 9.1% (≥ 8%, tested). The activity cap stays at 20% entry, about 33% stationary.
+- B (8761d8c): `closeSucceeds(\`${congestionSeed}:${signature}\`)` is seeded per attempt and takes nothing from the shared stream. Common random numbers are kept (the test fails before).
+- C (497b39e): with a modelled feed, discoveries go through `#enqueue` at their own lag, so blackouts hold them and the backlog comes out in chain order. The queue stays sorted by due slot, and superseded hooks do nothing (`armedAt` check). Recorded feeds keep the direct schedule.
+- D1 (9056292): the root comes from `import.meta.dirname`, and the command refuses unless the working directory's top level is that same repository. My mktemp/`git init` bypass is closed.
+- D2: the registry lives on the remote `holdout-registry` branch.
+  - Every command, `run` included, fetches it with ls-remote + fetch; a fresh clone takes the remote copy.
+  - It refuses a local copy that differs, or one that was never pushed.
+  - Every write is mktree + commit-tree on the remote head, then a plain push before the command goes on; a failed or raced push restores the local file and throws, so nothing runs.
+  - The local copy is gitignored. Tests use a real bare origin (fresh clone, failed push, race, differing copy).
+- D3: `refuseSymlink` runs on every read and write.
+
+Blocked-exit question. I ran the same fixture (30 mints, 8 h, swapEvery 60, seeds s0–s7) three ways on ac8a1fa: real; congestion with no effect (landFactor 1.0, +0 slots); and always congested.
+
+| scenario | mode | positions with exits | blocked | exit attempts | failed or dropped |
+|---|---|---|---|---|---|
+| base | no effect | 155 | 0 | 259 | 104 (40%) |
+| base | real | 147 | 0 | 294 | 147 (50%) |
+| base | always | 92 | 2 | 290 | 200 (69%) |
+| conservative | no effect | 110 | 5 (4.5%) | 291 | 186 (64%) |
+| conservative | real | 93 | 8 (8.6%) | 334 | 249 (75%) |
+| conservative | always | 47 | 21 (45%) | 482 | 456 (95%) |
+
+- Exit failure does read the network state: as congestion goes from none to real to always, failed attempts, ladder exhaustion (conservative 20 → 32 → 84 "exit ladder exhausted") and blocked exits all rise.
+- Retries don't escape congestion too easily: most exhausted ladders are rescued by S0's 3 blocked retries 10 min apart, which is the designed behaviour, and under "always" most aren't.
+- So the observed fall (conservative 15.4% → 11.8%, base 0.65% → 0%) comes from two things:
+  - Small samples: about 90 positions, so 8/93 has a 95% interval of roughly 4–16%, and base is 0–1 blocked out of about 150.
+  - Composition: more congestion also prunes entries and shifts their timing, so the set of positions with exits changes between versions.
+- Required test, named `exit failure responds to congestion`: on this fixture with fixed seeds, assert blocked(always) > blocked(real) ≥ blocked(no effect) and failed-exit share(always) > share(no effect), for both scenarios. It's deterministic, so it isn't flaky.
+
+NON-BLOCKING
+- D2 residuals, all deliberate tampering rather than accidents:
+  - pointing `origin` elsewhere, or deleting or force-pushing the `holdout-registry` branch, gives an empty registry. Pin the remote URL to the repository slug (refuse otherwise).
+  - The owner should protect the `holdout-registry` branch on GitHub against deletion and force-push. Only the owner can set that, so it's your call whether to raise it.
+- The publish script refusing dirty code ids is optional, as you said.
+- Opening the holdout once and only after G1 belongs to STATS-1c.
+
+Run time (Melbourne, AEST, 4 Oct): 07:23–07:52, about 29 min. That includes the full check twice (about 3 min each) and the congestion experiment (48 fixture runs, about 18 min).
+===== 2026-10-03T22:01:34.373Z
+BT-1d PR #73, head 2324bb7: FAIL, with four blocking items. The subprocess change itself is fine (details at the end).
+
+Gates on 2324bb7: frozen install OK. `pnpm check` OK (114 files, 3840 tests). The registry tests push only to temporary bare repositories; I confirmed that origin has no `holdout-registry` branch. The DECISIONS merge markers are fully gone (no `<<<<<<<`, `=======` or `>>>>>>>` left).
+
+BLOCKING
+R1. HolderBook doesn't give the live gate the same account set: no venue accounts, no supply.
+   - Live facts (FACTS-1 `checkHolders`) carry every token account, including the bonding-curve ATA and the canonical pool's base vault at their real balances. They require Σ balances == supply, else they abstain. GATE-1e then excludes the venue accounts by class, so circulating = supply − venue balances.
+   - holders.ts keeps only a relative `venueNetChange` (its own comment says the starting balance isn't in the data) and no supply.
+   - Scenario: any HoldersFact BT-2 builds from `holdersAsOf` with coverage 'all' either
+     - has unaccounted = venue balance ≠ 0, so hard.ts:389 H16 rejects it as 'inconsistent' (backtest rejects what live accepts), or
+     - gets fed a supply missing the venue balance, so circulating = supply and every holder's share is understated (backtest passes what live rejects).
+   - Either way it's a parity break, and the venue balance is large for U2 (pool vault).
+   - Fix: HolderBook tracks absolute venue balances and supply:
+     - the pool base vault = the pool's base reserve after each swap (the reserves are in the rows);
+     - the curve ATA from the curve's token balance;
+     - supply = the create mint, minus burns (boost buy-and-burn included).
+   - `holdersAsOf` returns them as accounts (owner = curve PDA, address = the pool's stored base vault) together with the supply. It is unresolved when Σ ≠ supply, which mirrors `checkHolders`' sum-mismatch.
+   - Test: on a fixture with a curve and a migrated pool, Σ accounts == supply and `concentration()` gives the same excluded and circulating as a live-shaped fact.
+R2. `ownerProgram` is always null, so GATE-1e classifies holders differently from live.
+   - Live fills `ownerProgram` for PDA owners, so `classifyHolder` returns 'locker' for Raydium-locker-owned accounts.
+   - In the backtest every PDA owner becomes 'unknown-program'. The notes differ (hard.ts:393-396), and so does the soft feature `unknownProgramHolders` (soft.ts:54), which parity requires to be identical.
+   - Fix: resolve the owner's program for off-curve owners from the raw records (account owner of the owner account), or mark the mint unresolved when a PDA owner's program is unknown.
+R3. Attempt k ≥ 2 deadlocks after attempt 1 fails G1 (or is short).
+   - registerAttempt (holdout.ts:271-273) needs every earlier holdout to be `burned`. Burning comes only from scoring, misuse or run failure.
+   - Scenario A: attempt 1 runs and seals, but its latest G1 is a fail. `openSealedHoldout` refuses (no burn), so the holdout stays sealed forever and attempt 2 can never be registered. That contradicts DECISIONS: "At E the attempt is spent whatever happens: a window that is halted, abandoned or short counts as a failed attempt, and the next configuration takes the next level".
+   - Scenario B: short counts with a G1 pass. The only exit is calling open, which burns it as 'early-open', the wrong record for a legitimate short end.
+   - Fix: add an `endAttempt` (or do it inside registerAttempt k ≥ 2) that, once the attempt's tail end has passed, burns its still-sealed, unopened holdouts with a new additive BurnReason 'spent' ('short' or 'g1-failed' recorded in `why`) and sets `ended`. Test both scenarios.
+R4. The plan's α isn't held to the ruled error budget.
+   - `setHoldoutPlan` accepts any α in (0, 1).
+   - DECISIONS fixes attempt 1 at 0.04 and k ≥ 2 at 0.01 / 2^(k−1), at most 0.05 spent in total. `attemptAlpha`'s geometric series totals first + laterBase, so a plan with first 0.05 and laterBase 0.05 spends 0.10.
+   - Fix: refuse unless first + laterBase ≤ 0.05, or pin it to the ruled 0.04/0.01. Test it.
+
+CHECKED OK
+- Registry: one store with typed sections (plan, windows, attempts, g1, runs).
+  - The plan is fixed once and must equal the research config window.
+  - A skipped or repeated index refuses and burns the named holdouts (plus the earlier attempt's on a repeat), and the burn is recorded before the refusal.
+  - A run must feed every holdout of its attempt.
+  - `openSealedHoldout` requires the latest G1 to be a pass for the registered configuration. STATS-1's openHoldout burns early, mismatched or second opens.
+  - k ≥ 2 windows: the first whole UTC day after registration (later allowed, never earlier), 28 entry days, the plan's tail length, and no overlap with earlier attempts or started windows.
+  - `attemptAlpha(2)` = 0.005, matching DECISIONS:292.
+- Remote pin: the configured `remote.origin.url` is checked before any insteadOf rewrite (it is github.com/macdarenz-droid/Meme-snipe here, so it passes). A deleted branch, a missing file or an empty file refuses.
+- HolderBook rules that match: swaps credit `user_token_owner`'s account; a boost buy-and-burn credits nobody; movements, burns and mints are handled; an empty owner is left out and marked unresolved; coverage notes apply as the replay reaches them; lead-in without movements and pump-only searches are unresolved; an owner change or mismatch, or a balance below zero at the end of a transaction, is unresolved; zero balances are skipped; chain order is enforced.
+
+SUBPROCESS (your question): OK.
+- No purity coverage is lost. The trap wraps Engine.drain (strategy, effect runner, feed) and the AsOf store and clock, and the same congestion and close paths run under the trap in run.test's other congestion and exit-failure tests. The replay driver's own code (StreamReplay.advance → landing hooks → World.#land, Market observation release) runs outside drain, so it was never trapped, in this test or any other. That gap already existed; I suggest trapping `StreamReplay.prototype.advance` in setup.ts as a follow-up.
+- Deterministic: fixed seeds s0–s7, fixed fixture, nothing from time or ordering.
+- Failure surfaces: a non-zero exit makes `execFileSync` throw with stderr, and malformed output fails JSON.parse.
+- Gap: `execFileSync` has no `timeout`, and a synchronous call can't be interrupted by vitest's test timeout, so a hung child would hang the worker until the CI job times out. Add `timeout: 240_000` (and `maxBuffer`). It's a one-line change; make it a required nit.
+
+NON-BLOCKING
+- DECISIONS:162 ("sealed window 09-22 to 10-01") contradicts :164 and :666 ([09-22, 10-20/21)). It comes from the base, but fix it while you're in the file.
+- Delegates: SPL Token reduces `delegatedAmount` on a delegate-signed transfer and clears the delegate on an AccountOwner SetAuthority. HolderBook does neither (stricter, and an owner change already makes the mint unresolved). Document it.
+- The CLI `holdout-register` output prints the research-config window even for k ≥ 2. Print the attempt's actual window.
+- G2 must use the attempt's α as `familyAlpha` (BT-2's side). Note it in the API docs.
+
+Run time (Melbourne, AEST, 4 Oct): 08:37–09:03, about 26 min, including two full checks (the first, on 81890aa, was cut short when the head moved; then 2324bb7, about 9 min).
+===== 2026-10-03T22:35:33.971Z
+BT-1d PR #73, head 7d7cffd: FAIL on one narrow item (E1). R1, R2, R4 and the nits pass, and R3 passes except for E1. Every new test survives a mutation check.
+
+Gates: frozen install OK. `pnpm check` OK (119 files, 3960 tests). The head merges base 9166874; the base tip is now 67535fa (a supervisor docs commit), so merge it in before merge.
+
+Your three checks:
+(1) α. The current base's core/src/stats/holdout.ts has no α schedule, attempt budget or registration-day rule (grep: no alpha, attemptAlpha or registerAttempt in core). So the local `RULED_ALPHA` is acceptable under your ruling: `setHoldoutPlan` refuses any plan other than 0.04 / 0.01, and the mutation check confirms it. #62 should replace it with core's.
+(2) R2 fails closed:
+   - An off-curve owner missing from the supplement makes `holdersAsOf` return unresolved 'owner_program_unknown'. An owner listed with program null maps to null, the same as live's `programs.get(owner) ?? null`.
+   - `readOwnerPrograms` throws on a sha256 mismatch, a row-count mismatch, malformed or duplicate rows, or a missing manifest or file.
+   - Venue accounts skip the supplement. That's safe: their class comes from owner or address (curve, pool-vault), or 'unknown-program' for a non-canonical pool, and ownerProgram only matters for 'locker'.
+   - Note: the hash detects corruption, not someone deliberately rewriting both the body and the manifest. That's acceptable, since the supplement is generated and committed.
+(3) R1: Σ = supply across curve, migration and pool.
+   - Curve ATA = real reserves + (total − initial real), i.e. total − sold. The migration moves `mint_amount` out of the curve. The pool vault is set to `pool_base_amount` at creation, then base reserve ∓ tokens from each swap's pre-trade reserves.
+   - Supply = create total − burns (movements and boost) + mints.
+   - `holdersAsOf` refuses (sum_mismatch) unless Σ == supply, like live `checkHolders`, and returns unresolved 'no_create' when no create was seen. Results are sorted by address, like live.
+   - The test checks that `concentration()` equals a live-shaped fact. On real data, any migration where `mint_amount` ≠ `pool_base_amount` will show up as sum_mismatch abstentions, failing closed. Have BT-2 report that count on the first real run.
+
+Mutation checks (each mutation applied alone, then the target test run):
+
+| Mutation | Result |
+|---|---|
+| M1: drop the Σ == supply check | 1 test fails |
+| M2: treat a missing owner program as resolved | 1 fails |
+| M3: curve without the migration hold-back | 7 fail |
+| M4: boost doesn't lower supply | 1 fails |
+| M5: migration doesn't debit the curve | 2 fail |
+| M6: burn doesn't lower supply | 1 fails |
+| M7: skip the supplement hash check | 1 fails |
+| M8: no-create counts as resolved | 1 fails |
+| M9: α pin removed | the R4 test fails |
+| M10: endAttempt allowed before the tail | the R3 test fails |
+| M11: endAttempt doesn't burn | the R3 test fails |
+
+All killed.
+
+BLOCKING
+E1. endAttempt can skip a mandatory opening.
+   - Where: holdout.ts `endAttempt(a, index, why, now)` takes `why` as free text and burns every unopened holdout of the attempt as 'spent' once the tail has passed.
+   - Scenario: attempt 1 is sealed with counts ≥ required and its latest G1 is a pass. Calling `endAttempt(1, 'short')` burns it unopened, and attempt 2 can register. DECISIONS says opening is mandatory once the counts are met and G1 has passed; endAttempt is only for "failed G1 or short".
+   - Fix: accept only `why ∈ {'g1-failed', 'short', 'never-run'}` and verify each against the store:
+     - g1-failed: `g1Blocks(s, id)` is non-null for every unopened holdout;
+     - short: `!holdoutReady(e, requiredTrades, minDays)`, with requiredTrades and minDays passed in;
+     - never-run: seal is still 'registered'.
+     Otherwise refuse. Test the ready-and-passed case and confirm it refuses.
+
+NON-BLOCKING
+- Rule ownership: once #62 moves α into core, also move `endAttempt`'s eligibility rule there, so the core registry is the one place that decides when an attempt is spent.
+- The subprocess timeout and the CLI's attempt window/α output nits are both done.
+
+Run time (Melbourne, AEST, 4 Oct): 09:23–09:37, about 14 min, including the full check (about 9 min) and 11 mutation runs.
+===== 2026-10-03T22:59:39.527Z
+BT-1d PR #73, head 7a1c636: PASS on E1 and the delta. One separate issue: a flaky worker test that also fails on base.
+
+E1:
+- `endAttempt` accepts only `SpentReason` = g1-failed | short | never-run; anything else is refused.
+- Each reason is proven for every unopened, unburned holdout of the attempt before anything burns:
+  - g1-failed needs `g1Blocks` to be non-null;
+  - short needs `!holdoutReady` with the required size and days passed in, and refuses if they're missing;
+  - never-run needs the seal to still be 'registered'.
+- It is still refused before the tail end, and the burns happen in one commit.
+- The new test refuses every reason for a sealed, ready, G1-passed attempt. Fail-before confirmed: with holdout.ts from 7d7cffd, the E1 test fails.
+- Mutation check (each reason's check disabled alone): E-g1, E-short and E-never each make the E1 test fail, so all three are killed. Unmutated, it passes.
+
+Gates: frozen install OK. `pnpm check`: 3967 of 3968 passed. The one failure is packages/worker/test/worker-flow.test.ts "an attempt that lands failed is abandoned and its reservation released" (expected abandoned ≥ 1, got 0).
+- It isn't this PR's: the PR doesn't touch packages/worker.
+- It's intermittent. On 7a1c636, three runs of the file alone gave 22/22, 17/22 and 21/22. On base 2609e1a, three runs gave 22/22, 22/22 and 21/22.
+- So it's a timing-dependent test in WORKER-1's suite that already fails on the base. Per the rules a flake is not a root cause: route it to the WORKER-1 owner to make the test deterministic. I haven't touched it.
+
+Merge prerequisites:
+- The base has moved again: 2609e1a (#52 STATS-1b) isn't in 7a1c636, so merge it in and rerun CI.
+- CI on that head may hit the worker flake. That's base-side, not a BT-1d blocker.
+
+NON-BLOCKING
+- 'short' trusts the caller's `requiredTrades` (max(300, n_power)). Record n_power in the plan or attempt at registration and have endAttempt read it, so a caller can't inflate it. This fits the STATS-1c move of α into core.
+
+Run time (Melbourne, AEST, 4 Oct): 09:45–10:00, about 15 min. That includes the full check (about 9 min), the fail-before run, 3 mutation runs and 6 flake reruns.
+===== 2026-10-03T23:52:27.611Z
+BT-1e PR #86, head e7ae620: PASS. #62 STATS-1c is next.
+
+Gates:
+- Head contains base 2609e1a. Frozen install OK. `pnpm check` OK (123 files, 4096 tests).
+- The two new test files pass (31/31).
+- Fail-before: with the base scripts and src restored and the new ci, workflow and scripts files removed, both files fail (13 failures reported; the rest can't load). The builder's count of 18 differs only in how the failures are counted.
+
+Your checks:
+- Least privilege:
+  - Workflow default `contents: read`; the fetch job is read-only; only the publish job has `contents: write`, and its run step calls the script under `env -i` with just PATH, GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA and GITHUB_STEP_SUMMARY.
+  - The RPC key isn't in the publish job at all.
+  - Precisely: GitHub permissions are per job, not per step. The pinned `actions/checkout` and `actions/download-artifact` in the publish job also receive `github.token` by default (checkout with `persist-credentials: false`). So "write only in the last step" holds for our own code; two pinned first-party actions see the token too. That's the usual pattern and I accept it. If you want it literal, pass the publish script and assets in without checkout (not recommended: then it would run unreviewed artifact code under a write token).
+- Pinned actions: checkout, setup-node, upload-artifact and download-artifact are all pinned to full commit SHAs. Inputs reach the shell only through env (`DATASETS`, read into an array, and each tag regex-checked).
+- Key and URL never in logs or outputs (6 scrub paths):
+  - Everything printed or thrown goes through `scrub()`. It covers RPC_URL, HELIUS_API_KEY, each query value, username, password, path segments ≥ 16 chars, search and pathname, longest first.
+  - A fetch failure keeps only the error name, so the cause can't carry the URL.
+  - A provider's JSON error is scrubbed before printing. The success path prints only the manifest, which has no URL.
+  - The key is set only in the "Fetch the owner programs" step's env, and that step runs only when dry_run is false. The uploaded artifact holds only the jsonl, the manifest and SHA256SUMS.
+- Dry run: it's the default (`default: true`). `--dry-run` writes only the plan and never calls `rpcTarget()`. The test runs it with a local RPC server and a key set and asserts no request was made.
+- Batching: `fetchOwnerPrograms` sends calls of at most 100 (`ACCOUNTS_PER_CALL`, tested at 100-account batches) and checks the reply length per batch. 429 and 5xx get 3 retries with backoff and a 30 s timeout per call.
+- Provenance:
+  - Inputs must be releases by github-actions[bot] that aren't drafts, and every file is checked against SHA256SUMS before any row is read.
+  - Output is release `owner-programs-DAY`, a prerelease created in one `gh release create` call with the jsonl, manifest and SHA256SUMS. The manifest is validated with jq before publishing (hash, rows, provider name never a URL, datasets with tag and manifest sha).
+  - An existing release is never edited: the same content exits 0, different content fails, and a gh error other than not-found fails.
+
+NON-BLOCKING
+- Coverage: `owners` collects off-curve owners from trade and movement rows only. HolderBook also credits a non-canonical pool's `creator` from `CreatePoolEvent`. A PDA creator missing from the supplement leaves its mint unresolved: that fails closed, but it causes avoidable abstentions. Add off-curve `creator` from CreatePoolEvent rows.
+- Consumer side: nothing yet checks the release author or the asset digest when BT-2 downloads the supplement. `readOwnerPrograms` checks only the manifest hash. Add a download helper that applies the same `github-actions[bot]`, not-draft and SHA256SUMS checks as collect.sh.
+- `.github/**` is yours under the file-ownership table. This PR adds a workflow with a secret and a write job, which is more than "add checks only", so record your approval on the PR when you merge. HELIUS_API_KEY is an existing owner-provided secret; this only uses its quota (about 1 call per 100 owners).
+
+Run time (Melbourne, AEST, 4 Oct): 10:40–10:54, about 14 min including the full check (about 9 min) and the fail-before run.
+===== 2026-10-04T00:08:50.621Z
+#62 STATS-1c, BT call-site delta (0ffedaf, fcdd901; head fcdd901): PASS on all five points, with one required fix (S1) that can go in a follow-up commit.
+
+Gates on fcdd901: frozen install OK. `pnpm check` OK (119 files, 4037 tests). The base has moved: 565a195 (#84 FACTS-1e) isn't in fcdd901, so merge it in before merge.
+
+1. Registration freezes the requirement and seed: PASS. `registerAttempt` calls core `registerHoldout(..., registeredOnDay)` and then `freezeRequirement(requiredTrades, nPowerSeed)` in the same write. A failed freeze throws inside `mutate`, so nothing is written. `runAndSealHoldout` refuses a holdout with no frozen requirement before anything runs (tested, and no ledger file is created).
+2. The core decides attempt, α and tail: PASS. Core `registerHoldout` sets attempt (per universe), α (`attemptAlpha`: 0.04, then 0.01 / 2^(k−1)) and tailEnd from `rule.tailDays`. BT then refuses if any new entry's α differs from its own `attemptAlpha(plan, index)`, which now delegates to core and still requires the plan to state the ruled budget, or if its tailEnd differs from the attempt's. Both are thrown inside the write, so nothing is written. The core's `openHoldout` additionally refuses before the tail end and on a requirement other than the frozen one, without burning (tested).
+3. endAttempt 'short' against the frozen requirement: PARTIAL; see S1.
+4. Attempt k ≥ 2 starts the day after registration: PASS, and core is stricter. It requires `fromDay === nextDay(registeredOnDay)` and exactly `rule.windowDays` (28) days.
+5. No BT-1c/1d assertion loosened: PASS.
+   - The diff only adds `requirement` arguments and `registeredOnDay`, and moves `nowMs` 0 → TAIL_END because the core now refuses an open before the tail end. That's stricter, and the old early opens would be refused.
+   - The R3 test freezes 300 so that 'short' still means short.
+   - No `expect` was removed.
+   - Cutoff test: its intent holds (entries stop at the cutoff while the run keeps observing to the tail; 0 entries). The only entry day (09-19) now sits before the data day (09-20), which is the tail. The new empty-window refusal (`/in order/`) covers the old shape, where cutoff = from.
+
+REQUIRED
+S1. 'short' still trusts the caller's `minDays`.
+   - Where: holdout.ts `endAttempt`. It now refuses a `requiredTrades` that differs from the frozen one, but `holdoutReady(e, size.requiredTrades, size.minDays)` takes `minDays` from the caller.
+   - Scenario: a ready, G1-passed holdout with the frozen 300 trades on 12 days. Calling `endAttempt(1, 'short', now, { requiredTrades: 300, minDays: 20 })` judges it not ready, and it burns 'spent' unopened. That's the E1 hole again, through the days.
+   - Fix: take both values from the store and ignore the caller's size. Use `e.requirement.requiredTrades` and the ruled minimum of 10 trade days (put it in the core rule or the FrozenRequirement). Refuse 'short' when the requirement is null. Add a mutation-style test: a caller passing minDays 20 on a 12-day holdout is refused.
+
+NON-BLOCKING
+- Stale wording: BT's `registerAttempt` comment and DECISIONS ("a requested start may be later, never earlier") now contradict core, which refuses any start other than the day after registration. Core's rule is the safe one. Update the BT comment and the DECISIONS line, or drop the `fromDay` option.
+- STATS-1c core: `freezeRequirement` accepts any requiredTrades ≥ 1, though its doc says max(300, n_power, closed form). G2's `minTradesFloor: 300` still guards scoring, but a frozen requirement under 300 would let a holdout be opened (and so burned) under the owner's floor. Refuse < 300 in `freezeRequirement` (tests can pass the floor through a test-only rule, or freeze 300 and run larger fixtures). That's for the #62 reviewer of core.
+
+Run time (Melbourne, AEST, 4 Oct): 10:54–11:09, about 15 min including the full check (about 9 min).
+===== 2026-10-04T00:23:21.201Z
+BT-1f PR #92, head d24ab34 (contains base and #86): PASS. The builder sent it to me directly, so I'm reporting to you.
+
+Gates: frozen install OK. `pnpm check` OK (129 files, 4185 tests). The download and script test files pass (21/21).
+
+(1) CreatePoolEvent creators: `owners` adds an off-curve `creator`, skipping `pumpPoolAuthority(mint)`, with mint read as `mint ?? base_mint`. That's the same condition HolderBook uses to credit the creator, so the supplement covers exactly the owners the book can hold.
+
+(2) fetch-owner-programs.sh TAG DIR:
+- The tag is regex-checked, and DIR must not already exist.
+- Release metadata comes from the REST API, and the whole check runs before any download: author github-actions[bot], not a draft, a prerelease, exactly the 3 named assets, each 'uploaded' with a sha256 digest.
+- Each asset is downloaded by id and must match its API digest.
+- SHA256SUMS must list exactly the two data files and pass verification.
+- The manifest's file, sha256 and rows must match the jsonl, and fetchedAt must be on the tag's day.
+- Everything goes to DIR.partial (an EXIT trap removes it on failure) and moves to DIR only when every check passes.
+- Read-only: GET calls only. Asset names are pinned to the 3 expected names, so nothing can be written outside DIR.partial.
+
+Mutation check (each check disabled alone, then both test files run): author, prerelease, asset digest, SHA256SUMS verify, fetchedAt day, the creator collection, and the pumpPoolAuthority skip. Each one makes a test fail (1 failed, 20 passed), so all 7 are killed. That includes the builder's 5 download checks plus the 2 owner-collection checks.
+
+Nothing blocking or non-blocking left. As with #86, the `.github` approval isn't needed here: this PR touches no workflow.
+
+Run time (Melbourne, AEST, 4 Oct): 11:11–11:24, about 13 min including 7 mutation runs and the full check (about 9 min).
+===== 2026-10-04T06:12:05.479Z
+#114 RENT-1, head 484d50a (base 44e0e1e merged): PASS, with one required doc fix.
+
+Gates: frozen install OK. `pnpm check` OK (4414 tests). Typecheck confirms nothing reads the removed `rentRecovery` field.
+
+1. Rent only on a landed close with no dust, and never twice; never venue accounts or WSOL:
+   - Backtest (trades.ts): `rentReturned = firstOfEntry && closedEntries.has(entry)`. `closedEntries` comes only from a filled sell whose `closedAccount` is set. The World sets that only for a full-balance sell on an account that isn't sell-only (no dust, no earlier failed close), when the close draw succeeds. `rentPaid` is 0 on non-first positions, so a double refund can't happen structurally.
+   - Outcome stage: per candidate, `dust` first, then `closes = !dust && closeSucceeds`. Rent comes back only if `closes`; a failed close (no dust) costs one `failedExit`. Only `tokenAccountRent` is ever refunded, and no venue account or WSOL is touched.
+2. Common random numbers and ordering: the dust and close draws are seeded `${seed}:${candidateId}` with no scenario in the seed, and compared against per-scenario thresholds. Conservative (0.90 close / 5% dust) ≤ base (0.95 / 2%) ≤ optimistic (0.99 / 0.5%), so the close sets nest. The new test checks that the mean conservative ≤ base ≤ optimistic on the same draws, and the field-ordering test still covers closeSuccessPpm and dustPpm.
+3. Still-pool band, arithmetic:
+   - $2 at SOL $119.26 is 16.77M lamports of spend. Cost with fees, tip and rent is about 18.3M; rent 1,513,840 is about 8.3% of cost.
+   - Flat trade with rent back: about −2.6%. With rent locked by dust: −2.6 − 8.3 ≈ −10.9%. With a failed close: add 155k / 18.3M ≈ 0.85%, about −11.7%.
+   - New bands: closes > −5%, otherwise < −10%. Both true values sit inside, with 2.4 and 0.9 points of margin.
+   - The exact assertion `|rNet − expected| < 1e-9` is kept and binds tightly, so the one-sided bands don't loosen anything in effect.
+   - Nit: make them two-sided, closes ∈ (−5%, −1%) and otherwise (−14%, −10%), so a sign error in `expected` couldn't slip past.
+4. Nothing in G1–G3 or the registry reads a rent field. `rentReturned` is read only by trades, report, economics (`allInNoRentRecoveryMicro`, the sensitivity line) and tests; core/src/stats has no rent field.
+5. Fills version bump:
+   - `holdoutConfigId` hashes the whole `fills` object, so fills-3 gives a new configId. Any holdout registered under fills-2 is refused at run time ('configuration … is not the authorised …'): it fails closed. Origin has no `holdout-registry` branch yet, so nothing registered is affected.
+   - BT-3 evidence records the commit and refuses a dirty tree, so by the evidence-per-commit rule it must be re-run on the new code. A stale file shows a different commit; it can't silently pass.
+6. Mutants (each applied alone, then the target test):
+   - Killed: O1 rent always back in the outcome stage; O2 no failed-close fee; O3 dust ignored; O4 scenario in the draw seed, which breaks common random numbers; T1 rent back without a close (3 tests fail).
+   - Survived: T2, dropping `firstOfEntry` from the refund. It's equivalent: `rentPaid` is already 0 for non-first positions, so no test can catch it, and "never twice" holds by construction.
+
+REQUIRED
+- docs/ARCHITECTURE.md:307 still lists "no rent recovery" for the conservative scenario. Change it to "rent back per the modelled sell-and-close outcome; the no-recovery line is a reported sensitivity", so the design doc matches RENT-1.
+
+#115 is next (the review is done; sending now). Then BT-2 #41.
+
+Run time (Melbourne, AEST, 4 Oct): 16:52–17:13, about 21 min including the full check, 7 mutants, and a rerun after my own mutation run was interrupted.
+===== 2026-10-04T06:12:31.144Z
+#115 RES-4 cost math: FAIL on parity with the proof's scoring. Reviewed head bf56528, which is newer than the 1f83fd9 you named. edge-costs.ts is unchanged in between in substance; it's the head that carries the pinned costs.json.
+
+Gates (on bf56528, edge files only): edge.test.ts passes 7/7. Regenerating costs.json with the script reproduces it byte for byte (no diff).
+
+What holds:
+- Exact CORE-2 paths: `costAtSize` with `pumpCurveRoundTrip` / `pumpSwapRoundTrip` on mainnet fee-config fixtures (AMM_FEE_CONFIG, PUMP_FEE_CONFIG, CHECKED_GLOBAL). The young-pool, U1-floor and forced-1.15% tiers are built correctly. Nit: src imports `core/test/amm/helpers.ts`; move those fixtures into a non-test module.
+- $20 curve figure above $5: it really is impact. Proportional cost rises 2.74% → 3.53% (+0.80 pts). Constant-product round-trip impact is about 2 × size / reserve: (0.168 − 0.042) SOL × 2 / ~30 SOL ≈ +0.84 pts, which matches. Fixed % falls 0.81 → 0.20, so break-even goes 3.55% → 3.74%.
+- Rent: `rentBack = 0.90 × (1 − 0.05) = 0.855` matches RENT-1's dust-then-close model.
+- Win-rate formula: p = (L + c) / (W + L) is the zero-expectancy point of the bracket, which is right.
+
+BLOCKING
+C1. The fixed costs don't match the proof's outcome stage (outcome.ts), so the tables understate break-even.
+   - Failed exit attempts:
+     - Proof: `failedExit = base + rung-3 priority = 5k + 150k = 155k` each, with failProbability = 1 − landPpm.pumpswap = 0.44, all paid. That's 0.44 / 0.56 = 0.786 failures per trade, about 121.8k lamports.
+     - Table: rung-1 priority (25k each), and only the non-dropped share (0.8). That's 0.629 failures, about 15.7k.
+   - Failed entry attempts on a filled trade: the proof charges none (a failed entry is its own unfilled label). The table adds 0.629 × 25k ≈ 15.7k.
+   - Failed close (RENT-1 as it merges): the proof charges one `failedExit` when the close fails without dust, 0.95 × 0.10 × 155k ≈ 14.7k. The table omits it.
+   - Net, for PumpSwap setups: the proof charges about 105k lamports more per trade than the table.
+     - Size $2 (16.77M lamports): +0.63 pts. Young 4.36% → about 4.99%; U1 floor 3.74% → about 4.37%.
+     - Size $5: +0.25 pts.
+     - Size $20: +0.06 pts.
+     - Win rates at +10/−5 and $2 rise by about 4.2 pts.
+   - The curve rows use curve landing (0.40) where the proof scores PumpSwap only. Either drop the curve from the "as the proof scores it" tables, or label them as a different fill basis.
+   - Fix: compute the fixed part from the same constants the outcome stage uses: exitFixed, failedExit, failProbability, the failed-close term, and an entry with no expected failures. Import or share them, rather than re-deriving them.
+   - Add a parity test: on the still-pool fixture, a flat conservative trade's `rNet` from `scoreCandidates` should equal −breakEvenPct for the matching setup and size, within rounding, once RENT-1 is in. Without that test the two will drift apart again.
+
+NON-BLOCKING
+- The tables leave out congestion (conservative stationary share about 19% at land factor 0.4), ladder escalation beyond the fixed failedExit, and the exit retry haircut. That's consistent with the outcome stage, which leaves them out too. Say so under the table ("as the outcome stage scores it; the backtest's congestion and ladder costs are higher").
+
+Pre-registration content is 01FHfb's to review.
+
+Run time (Melbourne, AEST, 4 Oct): 17:00–17:16, about 16 min, overlapping the #114 runs. BT-2 #41 is next.
+===== 2026-10-04T08:08:22.310Z
+Reviewer: BT-2 #41 at dd19015 is FAIL (2 blocking).
+
+Evidence at dd19015: `pnpm check` 4,542/4,542, 159 files, exit 0. The head merges cleanly into base 669de71, but doesn't contain it yet (it merged 77bec22).
+
+What passes:
+- **Retaken digest hides no tip change.** I ran dd19015's observed-tip.test.ts on the pure base 77bec22, which has no observedTip field. It gives 677234… exactly, so the base's live-strategy changes moved the digest, not the tip. The worker-src diff from 77bec22 to dd19015 is the one observedTip line.
+- **Tip rule.**
+  - Evidence clamps the tip to min(observedTip, now.slot).
+  - The market's tip advances event by event within a release batch, and the tip event is ordered before its event.
+  - The fallback when tip:observed is absent is now.slot, which is the stricter side.
+  - During a blackout the backtest tip freezes, as the live ReleaseClock does.
+  - Mutants caught (run at 501200d; evidence.ts, market.ts and score.ts are unchanged since):
+    - E1 / E3: judging against now.slot instead of the tip (chain facts and stream head);
+    - E2: dropping the clamp;
+    - M1: jumping the tip to the batch max (look-ahead).
+- **Funder cluster.** F1 (ignore `complete`) and F2 (any wallet, not the dev) are caught. G2 fails on an empty cluster (gates.ts clusters checks).
+- **Registration.** R1 (register when unsizable) is caught: 3 full-study failures. G1 now needs the stored registry (g1NotEvaluated without one). recordHoldoutG2 and openSealed need g1Blocks to be clear.
+- **Early runner.**
+  - It refuses holdout, non-practice and incomplete days.
+  - It reads rows only up to the day.
+  - It writes only `<out>/early-*.json`, with no registry, trials or plan.
+- **Pre-registration.** `--preregistration` + sha is read only in the `early` branch. `study` loads only the pinned path + sha from STUDY_CONFIG. The plan records the family, recordTrials refuses tags outside it, and runFullStudy refuses configurations that aren't exact hypotheses.
+
+Blocking:
+1. **Live tip is untested** (packages/worker/src/engine/strategy.ts:432). With `observedTip: ctx.now.slot` changed to `observedTip: 0n`, all 737 worker + runner tests still pass (observed-tip digest included). In that state every live chain fact and stream is judged 0 − slot behind, so nothing is ever stale. The digest session never puts a fact past maxStateSlotLag.
+   - Fix: a worker test where a chain-state fact (or the stream head) is more than maxStateSlotLag behind the clock's slot. Live must abstain with the 'stale' reason, and the test must fail with the tip lowered or set to 0n.
+2. **U1 holder growth doesn't follow RES-4's pre-registered definition** (#115 at 8dc0f49, `definitions.holderGrowth`, which says "BT-2's rule evaluation must follow these"). H3 is a pre-registered hypothesis evaluated by `walletHolders`, packages/backtest/src/strategy/study.ts:750–757. That function:
+   - (a) counts `classes` entries, which are token accounts, not distinct owners;
+   - (b) counts the 'locker' and 'unknown-program' (program-owned) classes, which the definition excludes;
+   - (c) calls `mintAccounts(mint, null)`, so the pool base vault isn't excluded and counts as a holder;
+   - (d) counts zero-balance accounts; the definition says a positive balance.
+   - Failing scenario: one owner with 3 token accounts plus a vault reads as 4 "holders". H3 passes or fails on a different quantity than the one pre-registered, which voids the family once the sha is pinned.
+   - Fix: count distinct `owner`s with summed amount > 0 among cls === 'wallet'. Pass the pool (baseVault) from the tape. Require complete coverage at both moments, else return null (fail). Add tests for multi-account owners, locker, program-owned, vault and zero balance.
+   - Alternative: if you'd rather land #41 first, this must be a hard prerequisite of setting `STUDY_CONFIG.preregistration.sha256`.
+
+Non-blocking:
+- Merge base 669de71 before merge (clean).
+- The early CLI test checks only the holdout-day refusal. Add the non-practice and incomplete-day refusals.
+- `study` silently ignores `--preregistration`. Refusing the flag there would make the boundary explicit.
+
+#115 at 8dc0f49 is also FAIL (C1 drift guard incomplete).
+1. **The outcome stage can drift alone without a failing test** (packages/backtest/test/edge.test.ts parity). I applied each mutant to outcome.ts alone:
+   - caught (parity fails): A (failed attempt at rung 1), C (ignore dust), D (rent always back);
+   - not caught (all 9 edge tests pass): B (drop the failed-close fee `- (!p.dust && !p.closes ? failedExit : 0n)`) and E (drop `net.tip` from exitFixed). Both are inside the 4-SE band.
+   - The "fixed costs" test re-derives edge-costs' own formula, so it guards edge-costs only.
+   - Fix: make the parity exact. Score the still pool under scenario overrides with zero variance and assert exact lamport equality with costRow/terms:
+     - (i) landPpm.pumpswap = 1e6, closeSuccessPpm = 1e6, dustPpm = 0: the loss is proportional + entry + exitFixed − rent back;
+     - (ii) closeSuccessPpm = 0: + rent + failedExit;
+     - (iii) dustPpm = 1e6: + rent, no fee.
+     - Keep the statistical test for the failure ladder.
+   - Alternatively, share one `scoringTerms` between both sides, as d8e500b did.
+2. **Definitions.**
+   - The text is sound: owners, positive balance, H12's exclusions, same coverage or fail.
+   - The nonCreatorUserFlow limit matches the tape: `own` = view.user === deployer, exact address.
+   - The f_indep60 note is fine.
+   - But the definitions test only regex-matches wording, and the implementing code doesn't follow holderGrowth yet (#41 item 2). Don't pin the sha until that's fixed.
+   - `pnpm check` for #115 is still running. I'll send its count with the re-check.
+
+BT-TAIL #122 at b6200d1: verdict to follow once its full check (merged onto 669de71) finishes. So far:
+- the new test fails before and passes after;
+- old and new scoring are byte-identical on 36 candidates × all barriers × the conservative and base scenarios at 400 ms slots.
+
+Run time (Melbourne, AEDT since 02:00 today):
+- #41: about 18:25–19:10 for dd19015, plus about 1 h earlier on 501200d.
+- #115: about 18:50–19:10.
+- Remaining: #115 and #122 full checks, about 40 min each, run one at a time to avoid memory kills. Done around 20:30 ±20 min.

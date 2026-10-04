@@ -1,0 +1,114 @@
+
+> meme-snipe@ check /tmp/claude-0/rv
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /tmp/claude-0/rv
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+apps/web typecheck: Done
+packages/runner typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: Done
+
+> meme-snipe@ test /tmp/claude-0/rv
+> vitest run
+
+
+ RUN  v5.0.3 /tmp/claude-0/rv
+
+(node:827) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1128) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1181) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: directory '/root/.gnupg' created
+gpg: keybox '/root/.gnupg/pubring.kbx' created
+gpg: /root/.gnupg/trustdb.gpg: trustdb created
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+(node:1617) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/worker/test/worker-contract.test.ts (16 tests | 2 failed) 872ms
+   ❯ the reservation goes through the ledger with the snapshot's account version (RISK-1, LEDGER-1c) (2)
+     × a reservation decided on a snapshot the account has moved past is refused as stale and goes back as a reject 21ms
+     × the strategy re-evaluates: a new decision on the current snapshot is stored (never a blind retry of the old one) 11ms
+(node:1779) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1962) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1976) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2567) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2640) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2728) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2890) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2903) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/worker/test/worker-contract.test.ts > the reservation goes through the ledger with the snapshot's account version (RISK-1, LEDGER-1c) > a reservation decided on a snapshot the account has moved past is refused as stale and goes back as a reject
+LedgerError: a paper ledger reserves only with the account version of the risk snapshot
+ ❯ snapshotVersionProblem packages/core/src/ledger/ledger.ts:724:39
+    722|   if (accountVersion === undefined) {
+    723|     const purpose = db.prepare("SELECT value FROM ledger_meta WHERE ke…
+    724|     if (purpose !== 'backtest') throw new LedgerError(`a ${String(purp…
+       |                                       ^
+    725|     return null;
+    726|   }
+ ❯ checkSnapshotVersion packages/core/src/ledger/ledger.ts:732:7
+ ❯ packages/core/src/ledger/ledger.ts:508:21
+ ❯ inTransaction packages/core/src/ledger/sqlite.ts:168:20
+ ❯ Ledger.atomically packages/core/src/ledger/ledger.ts:543:12
+ ❯ Ledger.recordBookEvent packages/core/src/ledger/ledger.ts:506:10
+ ❯ changeAccount packages/worker/test/worker-contract.test.ts:207:37
+ ❯ packages/worker/test/worker-contract.test.ts:217:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |light| packages/worker/test/worker-contract.test.ts > the reservation goes through the ledger with the snapshot's account version (RISK-1, LEDGER-1c) > the strategy re-evaluates: a new decision on the current snapshot is stored (never a blind retry of the old one)
+LedgerError: a paper ledger reserves only with the account version of the risk snapshot
+ ❯ snapshotVersionProblem packages/core/src/ledger/ledger.ts:724:39
+    722|   if (accountVersion === undefined) {
+    723|     const purpose = db.prepare("SELECT value FROM ledger_meta WHERE ke…
+    724|     if (purpose !== 'backtest') throw new LedgerError(`a ${String(purp…
+       |                                       ^
+    725|     return null;
+    726|   }
+ ❯ checkSnapshotVersion packages/core/src/ledger/ledger.ts:732:7
+ ❯ packages/core/src/ledger/ledger.ts:508:21
+ ❯ inTransaction packages/core/src/ledger/sqlite.ts:168:20
+ ❯ Ledger.atomically packages/core/src/ledger/ledger.ts:543:12
+ ❯ Ledger.recordBookEvent packages/core/src/ledger/ledger.ts:506:10
+ ❯ changeAccount packages/worker/test/worker-contract.test.ts:207:37
+ ❯ packages/worker/test/worker-contract.test.ts:233:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 94 passed (95)
+      Tests  2 failed | 3259 passed (3261)
+   Start at  18:07:57
+   Duration  209.20s (tests 93%, import 5%, transform 1%, setup 1%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+ ELIFECYCLE  Command failed with exit code 1.
+EXIT 1
