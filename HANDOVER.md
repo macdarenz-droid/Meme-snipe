@@ -2,7 +2,13 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, about 7:45 PM Melbourne (AEDT). This is the account-transition handover, written when the owner paused every session to continue the project from a new Claude account.
+**Last updated:** Sun 4 Oct 2026, about 8:20 PM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
+
+**New account (from about 8:00 PM, 4 Oct).**
+- Supervisor: session_012En9L5mnYQtEz7oyp1Eryf. It read AGENTS.md, CLAUDE.md, this file, all 22 session notes and the supervisor log, and re-listed the open PRs (heads matched §4).
+- 24 new sessions were started at about 8:05 PM, one per card line, each from its predecessor's notes: 10 builders, 8 reviewers and 6 read-audit sessions (the owner asked for every file in the repo to be read; the audits cover all 2,015 tracked files in six slices and report findings only). The table is in §5.
+- Base CI was red on 456d58fe (push run 37190077658): `packages/runner/test/runner.test.ts:179`, the host-loss tabletop, `recovered_state: false`. The only change since the green 35d31f4e was HANDOVER.md, so it is the known stub write-order flake, which CI-1b #116 fixes (20e8d5f: the stub journals an exit before its state drops the position). #116 merged first, at about 8:15 PM (bf62839; check green on 80b50d1, change identical to the reviewed c5aaf88).
+- The first account's supervisor (session_01Bne9GqXR99gJn6D9U2mJFZ) pushed two docs commits after the handover (a8165aa, fff0017 at 7:59 PM). The owner was asked to pause it so only one supervisor acts.
 
 ## 0. Account transition (read this first)
 
@@ -181,7 +187,42 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 - Helius free is 1M credits a month. A day costs about 250k, and the live worker needs about 408k a month. So only about 2–3 practice days a month fit; never dispatch a second day without checking the ledger.
 - The archive (Old Faithful) blocks our scanner. Triton has been emailed by the owner. ARCHIVE-CHECK asks every 3 h; never disguise the scanner.
 
-## 5. Sessions (first account; paused, not reachable from the new account)
+## 5. Sessions
+
+### New account (live; started about 8:05 PM, 4 Oct)
+
+Every session reports to the supervisor with `send_message`. Model: `claude-opus-5-5` unless noted. Each continues from the first-account notes named in its prompt.
+
+| Role | Cards (in order) | Predecessor | Session |
+|---|---|---|---|
+| Builder | WORKER-ORDER #123 fix, then WORKER-1d (branch claude/worker-1d-prune) | 019cEN | session_01WFmrBXa6KfoKgBaRVXXCW8 |
+| Builder | RISK-LATCH #124 fix, RISK-FAULT (claude/risk-fault), RISK-PARTIAL #132 base merge after #124 | 01MtftX | session_01Dn7Qz3cPQH9nPpwv5eSVVb |
+| Builder | WATCH-1d PR, #121 upkeep, G3 fold after #98 | 01WGpx | session_012uJsLd8BGFN9FzFw4hJeRH |
+| Builder | EXIT-1h PR, the #107/#128/EXIT-1h stack after #107, BT-3 evidence re-run on fills-3 after #114 (claude/bt3-fills3) | 016KSN | session_01L9Zdh5zpjSQ9go7WEQQZcC |
+| Builder | BT-2 #41: base merge, audit B5, B1, B3, B2, B4, S2 (estimand ruling first), 012efQ B1, rulings | 01VBTf | session_01AYk3qRoMccUhz8xEwEjvER |
+| Builder | RES-4 #115 C1b (test-only exact parity) and §4 line; base merges into res-4/res-5 after #114; #56 | 018esL | session_01QvPYMaMxLVnoBuWzjswcvW |
+| Builder | DATA-4 #127 B1/B2 and doc line; DATA-5 write-up (claude/data-5); 09-21 spend after the chain | 01XHH3k | session_01J1javobgRjnF4MT3xz3er9 |
+| Builder | OPS-GATE #134, PNPM-CLAIMS #135, SEC-1 #136 after #134 | 01VgCL | session_015LRm59hPdRdz8jbGtxs6pV |
+| Builder | API-1 #118 check and base merge; APP-MODES; OPS-1i (holds() git_sha, e2e.sh:645 scope) | 01VM97 | session_01UkTpC4mnY6EVAK7Y7qBNM4 |
+| Builder | PERSIST-2 #125 base merge, PERSIST-3 #131 check, EXIT-ROUTE #130 upkeep | 01F7UF | session_01XVYJjps9QBz53C8jjWZsgi |
+| Reviewer | risk: #121 delta, #132, #133 failed_entry kind, VERIFY-MARKS; later #124, WATCH-1d, RISK-FAULT | 017PBU | session_01R3CGBftm63CCqU4mfNqWvx |
+| Reviewer | worker/facts: #130, #133 (all but the risk type); later #123 | 012QdD | session_01NGXuvZax56XDPC3y6AUCNo |
+| Reviewer | PERSIST: #131, then #125 | 01NZwy | session_014EaQVyrAfSCS4FRodKNUWQ |
+| Reviewer | ops: #134, #135, later #136; push e2e after the next ops merge | 01Ty8L | session_018aCfZbFj6u7zkwK7Wg7Czb |
+| Reviewer | BT: #122 full check, #62 S1 and #114 doc check; later #41, #115 | 012efQ | session_01L7GdfN89hXuBxLHRS8jnY6 |
+| Reviewer | stats: #129, #120; later #115 §4, s0Of, SE-floor calibration | 01FHfb | session_017ngaDxRifzZxMNLokAJ8LZ |
+| Reviewer | run/CI: #118 delta | 01DdN4 | session_01SndtRnoTtCGJrTDuJhTWMW |
+| Reviewer | EXIT: #128, later EXIT-1h | 01UXzG (no notes) | session_01AeE2xarrFptXtPvuugJXUP |
+| Read-audit | packages/core | — | session_01HHVUjTjH6BxWnBgc3w5sMZ |
+| Read-audit | packages/worker, runner, ops | — | session_016zNeDtRwejxacaL3e9y6wi |
+| Read-audit | packages/backtest, research | — | session_01Q5o53anApTveK5RMUEusnK |
+| Read-audit | apps, ops, .github, brand, root files | — | session_01VjRmz6eLWhKx9fhE4c6A4m |
+| Read-audit | docs (all but the sandbox), HANDOVER, PROJECT_STATE | — | session_014g6TsnoKDTzrPa8CKZdWW2 |
+| Read-audit | docs/handover/sandbox (manifests, exposure scan); `claude-sonnet-5-5` | — | session_01SMMcQJZka8e3j3TVC5KoHd |
+
+Not started yet: a data reviewer for #127 (after the builder's fix), PAPER-1 and STATS-1g builders (started when their reviews return findings), and the unassigned leftovers in §4 (VERIFY-MARKS went to the risk reviewer).
+
+### First account (paused, not reachable from the new account)
 
 Each session's notes: `docs/handover/sessions/<session id>.md`.
 
