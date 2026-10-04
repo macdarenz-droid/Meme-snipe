@@ -1,6 +1,7 @@
 // The scoring stage (docs/ARCHITECTURE.md §13, §16.1): outcomes are computed after a run, outside the engine, from
 // its final book and the fill model's records. Nothing here is reachable from the engine or the strategy.
 import type { FillConfig } from '../../../core/src/config/index.ts';
+import type { FunderRead } from '../../../core/src/facts/index.ts';
 import type { ClusteredReturn, TradeOutcome } from '../../../core/src/stats/index.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 import { melbourneDay } from '../report.ts';
@@ -27,11 +28,21 @@ export const tagOf = (positionId: string): string => positionId.split(':')[1] ??
 
 /** Net return on the entry spend, all costs included (§13.1 r_net); severe at −50% or worse, or blocked (y_severe). */
 /**
- * G2's resampling clusters (STATS-1b). Creator: the deployer named in the entry's log line; a deployer that was not
- * seen joins one shared "unknown" cluster. Funder: the dataset records no funding, so every trade shares one
- * "unknown" funder cluster: the conservative side (one cluster cannot exclude zero), until a funder source exists.
+ * G2's resampling clusters (STATS-1b). Creator: the deployer named in the entry's log line. Funder: the dev's first
+ * funder, read point in time by the same reader as live (the insider-funding supplement, core facts/funding.ts). A trade
+ * without either label has none: G2 fails it as missing evidence (the stricter outcome; supervisor ruling). There is
+ * no shared "unknown" cluster and no singleton for an unknown, either of which would loosen the gate.
  */
-export const UNKNOWN_CLUSTER = 'unknown';
+export const NO_CLUSTER = '';
+/** The dev's first funder of a mint, or null when the read was incomplete or there is none. */
+export type FunderOf = (mint: string) => string | null;
+
+/** G2's funder label from the insider-funding supplement's rows: the dev's own read, complete and with a funder. */
+export const devFunderOf = (rows: ReadonlyMap<string, { readonly creator: string; readonly reads: readonly FunderRead[] }> | undefined): FunderOf => (mint) => {
+  const r = rows?.get(mint);
+  const dev = r?.reads.find((x) => x.wallet === r.creator);
+  return dev !== undefined && dev.complete && dev.funder !== null ? dev.funder : null;
+};
 const creatorsOf = (records: readonly LogRecord[]): Map<string, string> => {
   const out = new Map<string, string>();
   for (const rec of records) {
@@ -42,7 +53,7 @@ const creatorsOf = (records: readonly LogRecord[]): Map<string, string> => {
   return out;
 };
 
-export const scoreRun = (r: RunResult, fills: FillConfig): ScoredTrade[] => {
+export const scoreRun = (r: RunResult, fills: FillConfig, funderOf: FunderOf = () => null): ScoredTrade[] => {
   const { trades } = tradesOf(r, fills);
   const creators = creatorsOf(r.records);
   return trades.map((t) => {
@@ -53,7 +64,7 @@ export const scoreRun = (r: RunResult, fills: FillConfig): ScoredTrade[] => {
       tag: tagOf(t.id), mint: t.mint, day: melbourneDay(t.openedAt), rNet, ySevere: blocked || rNet <= -0.5, blocked,
       openedAt: t.openedAt, closedAt: t.closedAt, net: t.net.toString(), entrySol: t.entrySol.toString(), exitReason: t.exitReason,
       censored: blocked && t.closedAt >= r.endedAt, rNetNoRent,
-      creatorCluster: creators.get(`${tagOf(t.id)}|${t.mint}`) ?? UNKNOWN_CLUSTER, funderCluster: UNKNOWN_CLUSTER,
+      creatorCluster: creators.get(`${tagOf(t.id)}|${t.mint}`) ?? NO_CLUSTER, funderCluster: funderOf(t.mint) ?? NO_CLUSTER,
     };
   });
 };

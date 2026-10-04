@@ -5,6 +5,7 @@ import type { LogRecord } from '../../core/src/engine/index.ts';
 import { runStudy, type StudyRunOptions } from '../src/study/run.ts';
 import { STUDY_CONFIG, configId } from '../src/strategy/config.ts';
 import { tradesOf } from '../src/trades.ts';
+import { devFunderOf, NO_CLUSTER, scoreRun } from '../src/study/score.ts';
 import { mintHashFraction } from '../src/sim/facts.ts';
 import { key, type MintPlan, studyWorld, W0 } from './study-world.ts';
 import { SOL_USD } from './synthetic.ts';
@@ -57,6 +58,21 @@ describe('BT-2 study runs', () => {
     expect(FILL_CONFIG.scenarios.conservative.rentRecovery).toBe(false);
     // The exit came from EXIT-1's rules, booked under a lifecycle reason.
     expect(decisions(r.records).some((d) => /^exit (time_flat|time_max|price_stop|take_profit|negative_flow|trailing_stop|break_even|liquidity_drop)/.test(d.reasons[0]!))).toBe(true);
+  });
+
+  it('labels each scored trade with its creator and the dev\'s first funder; an incomplete read leaves no funder label', () => {
+    const { r } = base;
+    const t = tradesOf(r, FILL_CONFIG).trades[0]!;
+    const read = (wallet: string, complete: boolean, funder: string | null) => ({ wallet, asOfSlot: 1n, complete, funder, signature: null, slot: funder === null ? null : 1n, atMs: funder === null ? null : 1 });
+    const creator = scoreRun(r, FILL_CONFIG)[0]!.creatorCluster;
+    expect(creator).not.toBe(NO_CLUSTER);
+    const rows = (dev: ReturnType<typeof read>) => new Map([[t.mint, { creator, reads: [read('buyer', true, 'x'), dev] }]]);
+    expect(scoreRun(r, FILL_CONFIG, devFunderOf(rows(read(creator, true, 'F1'))))[0]).toMatchObject({ creatorCluster: creator, funderCluster: 'F1' });
+    // Incomplete, funderless or absent: no label (G2 fails it), never a shared "unknown".
+    expect(scoreRun(r, FILL_CONFIG, devFunderOf(rows(read(creator, false, 'F1'))))[0]!.funderCluster).toBe(NO_CLUSTER);
+    expect(scoreRun(r, FILL_CONFIG, devFunderOf(rows(read(creator, true, null))))[0]!.funderCluster).toBe(NO_CLUSTER);
+    expect(scoreRun(r, FILL_CONFIG)[0]!.funderCluster).toBe(NO_CLUSTER);
+    expect(NO_CLUSTER).toBe('');
   });
 
   it('replays to the same decision log', () => {

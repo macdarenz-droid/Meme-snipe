@@ -28,7 +28,7 @@ import { holdoutSummary } from './summary.ts';
 import { melbourneDay } from '../report.ts';
 import { microUsdToLamports, solPriceMicroUsd } from '../../../core/src/units/index.ts';
 import { openSealed, runSealedHoldout, sealedReady } from './sealed.ts';
-import { countsOf, rejectMix, scoreRun, type ScoredTrade } from './score.ts';
+import { countsOf, type FunderOf, rejectMix, scoreRun, type ScoredTrade } from './score.ts';
 import { completenessManifest, type ManifestRow, missingEvidence } from './completeness.ts';
 import { tradesOf as tradesOfRun } from '../trades.ts';
 import type { DeploymentStats, StudyStrategy } from '../strategy/study.ts';
@@ -48,6 +48,8 @@ export interface StudyInputs {
   readonly sampleRate: number | null;
   readonly coverageGaps?: readonly unknown[];
   readonly insiders?: StudyRunOptions['insiders'];
+  /** G2's funder cluster: the dev's first funder from the insider-funding supplement (none: no label, G2 fails). */
+  readonly funderOf?: FunderOf;
   readonly poolAccounts?: StudyRunOptions['poolAccounts'];
   readonly delegatesComplete?: boolean;
   /** The regime gate as live (default), or assumed on (a labelled diagnostic; the holdout refuses to run then). */
@@ -200,8 +202,8 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const ablationRuns = ABLATIONS.map((g) => ({ gates: g, run: runStudy({ ...wfOpts, mode: 'strategy', ablate: g, seed: `${i.seed}:ablate:${g.join('')}` }) }));
 
   // 2. Scoring stage.
-  const scored = purge(scoreRun(wf, i.fills), plan, c.embargoMs, regime);
-  const s0Scored = s0.map((r) => purge(scoreRun(r, i.fills), plan, c.embargoMs, regime).kept);
+  const scored = purge(scoreRun(wf, i.fills, i.funderOf), plan, c.embargoMs, regime);
+  const s0Scored = s0.map((r) => purge(scoreRun(r, i.fills, i.funderOf), plan, c.embargoMs, regime).kept);
   const tradesOf = (tag: string) => scored.kept.filter((t) => t.tag === tag);
   const controlOf = (tag: string) => s0Scored.flatMap((xs) => xs.filter((t) => t.tag === `S0-${tag}`));
   // n_power sizes a holdout that lies after the last boundary: σ̂ comes from the walk-forward of that same regime.
@@ -271,6 +273,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       byUniverse: universes.map((u) => ({ universe: u, holdoutId: holdoutIdOf(u), configId: ids[u]! })),
       required: Object.fromEntries(universes.map((u) => [u, required[u] ?? Number.POSITIVE_INFINITY])),
       window: { fromDay: plan.holdout.fromDay, toDay: plan.holdout.toDay },
+      ...(i.funderOf === undefined ? {} : { funderOf: i.funderOf }),
     }, Array.from({ length: c.s0SeedsHoldout }, (_, k) => `${i.seed}:holdout-s0:${k}`), i.fills);
     store = storeNow();
   }
@@ -358,7 +361,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     },
     funnel: { research, deployment: admitted },
     ablations: ablationRuns.map(({ gates, run }) => {
-      const blocked = purge(scoreRun(run, i.fills), plan, c.embargoMs, regime).kept;
+      const blocked = purge(scoreRun(run, i.fills, i.funderOf), plan, c.embargoMs, regime).kept;
       const byUniverse: Record<string, Record<string, { blocked: number; meanNet: number | null; lossesAvoided: number; profitsExcluded: number; p5: number | null }>> = {};
       for (const u of universes) {
         const mine = blocked.filter((t) => t.tag === `${u}-no${gates.join('')}`);
@@ -376,14 +379,14 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     }),
     deployment: (() => {
       const ds = depStats as DeploymentStats | null;
-      const tr = scoreRun(dep, i.fills);
+      const tr = scoreRun(dep, i.fills, i.funderOf);
       // SPA panel: every variant's daily P&L over one fixed capital base on the walk-forward's Melbourne calendar.
       const wfStart = Date.parse(`${wfDays[0]}T00:00:00Z`);
       const calendar: string[] = [];
       for (let t = wfStart; melbourneDay(t) <= melbourneDay(wfEnd - 1); t += 86_400_000) calendar.push(melbourneDay(t));
       const solBar = i.series.flatMap((x) => x.bars).filter((b) => b.start <= wfStart).sort((a, b) => b.start - a.start)[0];
       const base = solBar === undefined ? null : microUsdToLamports(i.policy.capital.bankroll, solPriceMicroUsd(solBar.close), 'floor');
-      const s0Scored = depS0.map((r, k) => ({ k, trades: scoreRun(r, i.fills) }));
+      const s0Scored = depS0.map((r, k) => ({ k, trades: scoreRun(r, i.fills, i.funderOf) }));
       const spa = base === null || base <= 0n ? null : spaPanel([
         ...universes.map((u) => ({ variant: u, trades: tr.filter((t) => t.tag === u) })),
         ...s0Scored.flatMap(({ k, trades }) => universes.map((u) => ({ variant: `S0-${u} seed ${k}`, trades: trades.filter((t) => t.tag === `S0-${u}`) }))),

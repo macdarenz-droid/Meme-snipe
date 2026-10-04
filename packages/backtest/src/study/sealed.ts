@@ -9,7 +9,7 @@ import { holdoutReady, type HoldoutCounts, MIN_DAYS } from '../../../core/src/st
 import { g1Blocks, type HoldoutAuthority, type HoldoutStore, sealThroughStore } from '../holdout.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
 import { runStudy, type StudyRunOptions } from './run.ts';
-import { countsOf, scoreRun, type ScoredTrade } from './score.ts';
+import { countsOf, type FunderOf, scoreRun, type ScoredTrade } from './score.ts';
 import { rejectMixOf } from './summary.ts';
 
 export interface SealedTargets {
@@ -19,6 +19,8 @@ export interface SealedTargets {
   readonly required: Readonly<Record<string, number>>;
   /** The registered window, first and last UTC day (the data runs on to its last day; rows after it stop the run). */
   readonly window: { readonly fromDay: string; readonly toDay: string };
+  /** G2's funder cluster per mint (none: no label). */
+  readonly funderOf?: FunderOf;
 }
 
 export interface SealedResult {
@@ -81,10 +83,10 @@ export const runSealedHoldout = (
         ? s0Seeds.map((seed) => {
           const x = runStudy({ ...run, rows: bounded, mode: 's0', seed });
           if (x.stats.crash !== null || x.stats.illegalStates !== 0) throw new Error(`S0 seed ${seed}: crashed or illegal states`);
-          return byTag(scoreRun(x, fills), tags.map((tg) => `S0-${tg}`));
+          return byTag(scoreRun(x, fills, targets.funderOf), tags.map((tg) => `S0-${tg}`));
         })
         : [];
-      const outcomes: Outcomes = { strategy: byTag(scoreRun(r, fills), tags), s0, rejectMix: Object.fromEntries(tags.map((tg) => [tg, rejectMixOf(r.records, tg)])) };
+      const outcomes: Outcomes = { strategy: byTag(scoreRun(r, fills, targets.funderOf), tags), s0, rejectMix: Object.fromEntries(tags.map((tg) => [tg, rejectMixOf(r.records, tg)])) };
       writeFileSync(outcomesPath, `${JSON.stringify(outcomes)}\n`);
       lock();
       return { ledgerHash: sealHashOf(ledgerPath, outcomesPath), counts };

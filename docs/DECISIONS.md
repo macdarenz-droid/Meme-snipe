@@ -732,6 +732,12 @@ The second reviewer, the third opinion and the supervisor reached one position o
   Curve volume waits for FACTS-1d's core `parseVolumeHoursCsv` (#78) and DATA-1c's `volume-hours` assets. SOL/USD uses the existing hourly series. Until volume exists, the regime reads "unknown" and real-day counts run in the labelled assume-on mode. The synthetic CreatePoolEvent gained `pool_base_amount` and `pool_quote_amount`, as the real event carries them. Test: `test/facts.test.ts`.
 ## External review of the promotion gates (STATS-1b)
 
+- **2026-10-04 · G2's funder cluster is the dev's first funder (supervisor ruling).** The label comes from the dev's own read in the insider-funding supplement: `worker/scripts/funding-backfill.ts` writes `insider-funding.jsonl` with its sha256 manifest, and `readSupplement` reads it. It is the same point-in-time reader and the same supplement as H13's links (core `facts/funding.ts`), so there is no new source. The read counts only when it is complete and names a funder; otherwise the trade has no funder label.
+  - A trade without either label fails G2 as missing evidence (the stricter outcome).
+  - There is no shared "unknown" cluster, and an unknown never gets a singleton cluster (either would loosen the gate).
+  - The creator label works the same way: the deployer named in the entry line, otherwise none.
+
+  The CLI's `--insiders <dir>` now reads the supplement itself (`devFunderOf` in `src/study/score.ts`). No backfill runs before its Helius credit estimate is reported and cleared. Test: `test/study.test.ts` (labels).
 - **2026-10-04 · BT-2 on GATE-2's stages.** BT-2's copies of `HARD_STAGE`, `gatesOfStages` and `only` are dropped for GATE-2's (#94). The study's two staged evaluations, merged, are `complete` only when together they evaluated every hard gate. An entry needs a complete evaluation with no reasons; anything less stops as "not evaluated" (not covered), never a pass. Test: `test/funnel.test.ts` (staged gates).
 - **2026-10-04 · BT-2 writes through the one holdout registry (supervisor ruling).** BT-2's own registry file and `docs/evidence/bt2/registry.json` are gone. The study now:
   - sets its plan once with `setHoldoutPlan`: window, cutoff E, tail, tie salt, the ruled α schedule, B5 as a decoder boundary, and the procedure in words (`holdoutPlanOf` in `src/study/plan.ts`). The plan holds only what was fixed before any data was read, so the same study registers the same plan;
