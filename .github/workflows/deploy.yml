@@ -71,6 +71,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER: ops/watchdog/deploy/node_modules/.bin/wrangler --config packages/ops/wrangler.toml
+          FORCE_KEY_ROTATE: ${{ vars.FORCE_KEY_ROTATE }}
         run: bash ops/deploy/publish.sh
 
       # OPS-SUMMARY: the watchdog's code and its one reports secret. No DEPLOY_CODE needed, and it never touches

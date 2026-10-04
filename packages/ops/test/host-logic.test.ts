@@ -196,6 +196,10 @@ describe('evidence on the host', () => {
     expect(stub).toContain("readFileSync('/var/lib/zeroed-index/evidence.json', 'utf8')");
     expect(stub).toContain('evidence: evidence()');
     expect(stub).toContain("const healthAddr = process.env.ZEROED_API_ADDR ?? '';");
+    // OWNER-REVIEW ops ruling: the stand-in checks the watchdog's reply signature (bound to its heartbeat) and an unsigned
+    // reply may only start a pause (e2e section 9b drives the signed path against the real watchdog).
+    expect(stub).toContain('`${m[1]}\\nREPLY\\n/heartbeat\\n${sig}\\n${text}`');
+    expect(stub).toContain('reply.paused !== paused && (signed || reply.paused)');
     // No path from the host to the repository or GitHub: no token, no push, no upload.
     for (const p of ['ops/host/install-main.sh', ...['zeroed-check', 'zeroed-update', 'zeroed-status', 'zeroed-tailscale'].map((n) => `ops/host/files/usr/local/sbin/${n}`)]) {
       expect(read(p), p).not.toMatch(/git push|gh (api|release)|GITHUB_TOKEN|-X (POST|PUT|PATCH)[^\n]*api\.github|ZEROED_API_URL[^\n]*-X/);

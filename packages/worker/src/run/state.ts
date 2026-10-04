@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { Latches } from '../../../core/src/risk/index.ts';
 import { NO_LATCHES } from '../../../core/src/risk/index.ts';
 import type { EntrySeed, SavedExit } from '../engine/strategy.ts';
+import type { HandledCommand } from './owner-review.ts';
 import { parseTyped, typedText } from './json.ts';
 
 export const atomicWrite = (path: string, text: string): void => {
@@ -59,10 +60,15 @@ export interface Control {
   readonly paused: boolean;
   readonly pausedAtMs: number | null;
   readonly latches: Latches;
+  /** OWNER-REVIEW: the owner commands handled (newest last, capped). Absent in files from before. */
+  readonly commands?: readonly HandledCommand[];
 }
 export const NO_CONTROL: Control = { paused: false, pausedAtMs: null, latches: NO_LATCHES };
+const isHandled = (c: unknown): boolean =>
+  isObj(c) && typeof c['id'] === 'string' && typeof c['kind'] === 'string' && typeof c['trip'] === 'string' && ['applied', 'stale', 'invalid', 'expired'].includes(c['result'] as string) && typeof c['atMs'] === 'number';
 export const controlFile = (dir: string) =>
-  new StateFile<Control>(dir, 'control.json', (v) => (isObj(v) && typeof v['paused'] === 'boolean' && isObj(v['latches']) ? (v as unknown as Control) : null));
+  new StateFile<Control>(dir, 'control.json', (v) => (isObj(v) && typeof v['paused'] === 'boolean' && isObj(v['latches'])
+    && (v['commands'] === undefined || (Array.isArray(v['commands']) && v['commands'].every(isHandled))) ? (v as unknown as Control) : null));
 
 /**
  * Trades open or in flight when the previous process died, and when it last wrote (RUN-1c's exposure window): kept

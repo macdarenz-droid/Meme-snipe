@@ -41,13 +41,14 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
+import { type HandledCommand, type OpenStops, ackedOf, type commandsOf, handleCommand, keepHandled, openStops, reviewBlock } from './owner-review.ts';
 import { Summarizer, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
-import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { type RiskInput, type RiskSnapshot, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
@@ -263,6 +264,8 @@ export class Worker {
   #pricedSettle = false;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
+  /** OWNER-REVIEW: the latest account valuation, for the SOL evidence of the owner's stops. */
+  #lastSnapshot: RiskSnapshot | null = null;
   /** RISK-FAULT: why risk last could not value the account, while it still cannot (logged once per episode). */
   #valuationFault: string | null = null;
   /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
@@ -921,6 +924,7 @@ export class Worker {
     this.#valuationFault = exit.fault;
     const snapshot = riskSnapshot(input);
     if (snapshot === null) return;
+    this.#lastSnapshot = snapshot;
     const maxAge = policy.gates.maxQuoteAgeMs;
     const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
     // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
@@ -1513,12 +1517,71 @@ export class Worker {
       mark: mark === null ? null : Number(mark.price),
       last_exit_attempt_ts: lastExit === 0 ? null : lastExit,
     };
-    const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, position, hb.ownerChatId), this.#d.timers.now());
+    const stops = this.#ownerStops(this.#d.timers.now());
+    const owner = { review: stops === null ? null : reviewBlock(stops), acked: ackedOf(this.#ctl.commands ?? []) };
+    const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, position, hb.ownerChatId, owner), this.#d.timers.now());
     if (!r.ok) {
       this.#d.log(`Heartbeat not accepted: ${r.reason}.`);
       return;
     }
+    if (!r.signed) {
+      // Fail closed: an unsigned reply may keep or start a pause, never lift one, and carries no command.
+      this.#d.log('Heartbeat reply not signed: an un-pause and any owner command in it are ignored.');
+      if (r.paused) this.applyPause(true);
+      return;
+    }
     this.applyPause(r.paused);
+    this.applyOwnerCommands(r.commands);
+  }
+
+  /** OWNER-REVIEW: the stops the owner can clear now, from the worker's own account and latches; null before the start reconcile. */
+  #ownerStops(now: number): OpenStops | null {
+    if (!this.#reconciled) return null;
+    const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, now);
+    const trades = this.#account.state.trades;
+    return openStops({
+      latches: this.#ctl.latches, closed: fact.history.closedTrades, loss: this.#d.session.policy.loss, snapshot: this.#lastSnapshot,
+      netLamports: (fromMs, toMs) => {
+        let net = 0n;
+        for (const t of trades) {
+          if (t.closedAtMs === null || t.closedAtMs < fromMs || t.closedAtMs > toMs) continue;
+          if (t.netLamports === null) return null;
+          net += t.netLamports;
+        }
+        return net;
+      },
+    });
+  }
+
+  /**
+   * OWNER-REVIEW: the owner's commands from the heartbeat reply. Each is checked against the worker's own open stop now;
+   * an applied one writes only its review moment into the latches. Every handled command is saved in control.json (so a
+   * repeat is a no-op and a restart keeps it), journaled, and acknowledged in the next heartbeat. Before the start
+   * reconcile nothing is handled: the watchdog keeps the command and sends it again.
+   */
+  applyOwnerCommands(commands: ReturnType<typeof commandsOf>): void {
+    if (commands.length === 0) return;
+    const now = this.#d.timers.now();
+    const stops = this.#ownerStops(now);
+    if (stops === null) return;
+    let latches = this.#ctl.latches;
+    let handled = this.#ctl.commands ?? [];
+    const done: HandledCommand[] = [];
+    for (const c of commands) {
+      const r = handleCommand(c, stops, latches, handled, now);
+      if (r === null) continue;
+      latches = r.latches;
+      handled = keepHandled(handled, r.entry);
+      done.push(r.entry);
+    }
+    if (done.length === 0) return;
+    this.#ctl = { ...this.#ctl, latches, commands: handled };
+    this.#control.write(this.#ctl);
+    for (const e of done) {
+      this.#journal.write('owner_command', { id: e.id, command: e.kind, trip: e.trip, result: e.result, at_ms: e.atMs });
+      this.#d.log(`Owner command ${e.kind} for ${e.trip}: ${e.result}.`);
+    }
+    if (done.some((e) => e.result === 'applied')) this.#publishAccount();
   }
 
   /** The watchdog's flag, both ways: true stops new entries (exits go on), false allows them again. */

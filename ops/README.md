@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/aa852f66d0ae846801d508e00abf6b06399d2804/ops/install.sh -o i && echo '50cc46f11c384551e4653bb3f6d0c686dc13529844ce60a315460d6af63ce151  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/7dd6b619637d7a7565ae87d5b84e7dc709faee80/ops/install.sh -o i && echo '444273a4e4502ba609dbacde116ad125ab26fb206c50db91885fb8e076ffeee6  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/aa852f66
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `50cc46f11c384551e4653bb3f6d0c686dc13529844ce60a315460d6af63ce151`
+SHA-256 of `install.sh`: `444273a4e4502ba609dbacde116ad125ab26fb206c50db91885fb8e076ffeee6`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -108,16 +108,31 @@ Checks:
 - unresolved intents past blockhash expiry;
 - SOL reserve below the floor;
 - signer unreachable;
+- a new heartbeat key or webhook secret on offer for more than 24 h ("Key offer pending");
 - daily summary not written (below).
 
 Alerts go to Telegram once, repeat every 5 minutes during the first hour and hourly after that, and always send a "cleared" line. Chain lookups are bounded (5 s), so a hung RPC never delays the heartbeat check.
 
-Telegram commands: only `/pause` and `/status`, only from the paired chat, only with the webhook secret. `/pause` stops new entries and never stops exits. It is cleared only from the console (`zeroed-resume`, signed with the heartbeat key).
+Telegram commands: `/pause`, `/status`, `/review`, `/rearm` and `/weekly`, only from the paired chat, only with the webhook secret. `/pause` stops new entries and never stops exits. It is cleared only from the console (`zeroed-resume`, signed with the heartbeat key).
+
+Review commands (OWNER-REVIEW): `/review` (the loss review, 5 losses in 20 trades), `/rearm` (the kill switch) and `/weekly` (the weekly loss) answer with the stop's evidence in SOL from the worker's last heartbeat and the exact line to send, for example `/rearm confirm rearm-1759600000000`. The watchdog queues that confirm only if the trip is the one the worker reports open now, and sends it in the heartbeat reply. The worker checks it again against its own stop, writes only that stop's review time, and the owner gets "Applied" or "Refused" once. A confirm for an older trip is refused at both ends. A confirm counts for 15 minutes: one the worker has not received by then expires ("Expired: … Send it again."), and the worker refuses one that reaches it later. `/weekly` records the review; entries stay paused until the week ends.
 
 The Deploy workflow deploys it only together with a key handoff, so the server and the watchdog always get the same fresh heartbeat key. If the account has no workers.dev subdomain yet, Deploy registers one (`zeroed-` plus random hex) through the Cloudflare API. That needs Account → Workers Scripts → Edit, which the "Edit Cloudflare Workers" template includes. The steps:
 - wrangler 4.141.0 from `ops/watchdog/deploy`, locked by its `package-lock.json`, installed with `npm ci --ignore-scripts`;
 - it discovers the Worker's address from wrangler's output and sends it to the server in the encrypted bundle;
 - it sets the Worker's secrets, and sends the webhook secret to the server in the bundle. The server sets the Telegram webhook itself once paired, because Telegram refuses the `getUpdates` that `/pair` relies on while a webhook is set.
+
+**Key rotation never cuts off the server (KEY-ROTATE-SAFE).** The heartbeat key and the webhook secret each have two slots on the watchdog: `HEARTBEAT_HMAC_KEY_A` and `_B`, and `TELEGRAM_WEBHOOK_SECRET_A` and `_B`. The old single names (`HEARTBEAT_HMAC_KEY`, `TELEGRAM_WEBHOOK_SECRET`) count as a third slot, `legacy`, which a watchdog deployed before this change starts on.
+- **Which slot Deploy writes:** it asks the watchdog which slot is active (`GET /slot`, which answers only `legacy`, `A` or `B`) and writes the new value into the other slot. It never touches the active one. If the watchdog does not answer, nothing is rotated.
+- **The switch:** the watchdog accepts the active value, and the new value while it is on offer. The server's first heartbeat signed with the new key makes that slot active and refuses the old key from then on. Telegram's first request with the new webhook secret does the same for the webhook. The watchdog keeps only the active slot and hashes of the values it retired, never a key.
+- **When the server never gets the bundle** (no pickup, or a `DEPLOY_CODE` that is stale or wrong), nothing it uses changes: the server keeps beating with its key, and a later good Deploy writes over the same pending slot. A new key left unused for 24 hours raises the alert "Key offer pending", so a second valid key never sits unseen. It clears when the server uses the key or a forced Deploy replaces it.
+- **While an offer is pending, Deploy does not rotate again.** The server may already hold the offered key: a fresh server waiting for `/pair`, or a run it picked up but has not restarted for yet. Replacing that key would cut the server off. So the run says "Key rotation refused: an offer is still waiting for the server; nothing rotated" as a warning in the log and in the run's summary. It still hands over the API keys, without watchdog keys, so the server keeps the ones it has, and the code update still lands.
+- **The webhook secret is adopted with the key.** It comes in the same bundle, so the server's first heartbeat with the new key marks the new secret adopted: it is no longer pending and raises no offer alert. The old secret keeps working until Telegram's first request with the new one, or 24 hours, so a `/pause` sent during the switch is never refused.
+
+**To rotate anyway** (only when the alert says the server never got the key, for example after a wrong `DEPLOY_CODE`):
+1. In GitHub, open Settings → Secrets and variables → Actions → **Variables** → **New repository variable**. Name `FORCE_KEY_ROTATE`, value `yes`.
+2. Put a fresh deploy code in `DEPLOY_CODE` (`zeroed-new-deploy-code` on the console), then run Actions → **Deploy**.
+3. Delete the `FORCE_KEY_ROTATE` variable straight after the run. Left set, it lets the next Deploy replace a key the server may already hold.
 
 To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in GitHub (on a new server, the first setup already covers it):
 1. Paste the install line above again on the console. This updates the server's scripts and keeps everything.
@@ -202,7 +217,8 @@ A server installed from an earlier line (before this fix) has its webhook off af
 - Serve the API on `ZEROED_API_ADDR` (`127.0.0.1:8788` on the host, loopback only; the health route for the runner stays on `ZEROED_HEALTH_ADDR`, `127.0.0.1:8787`). The API serves the app's paths (`/api/v1/<mode>/…`, ARCHITECTURE.md §12.4); a mode the worker does not run answers with `data: null` and a reason, and the app shows "Not running". Dry-run evidence stays in `/var/lib/zeroed-index/evidence.json`, which `zeroed-status` reads.
 - Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
 - Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
-- Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.
+- Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree. The reply counts only when its `x-zeroed-signature` is valid: `t=…,v1=<HMAC-SHA256 with the heartbeat key over "t\nREPLY\n/heartbeat\n<this heartbeat's v1>\nreply body">`. An unsigned or badly signed reply may only start or keep a pause; its un-pause and commands are ignored.
+- Send `review` (each open stop the owner can clear, with its trip id and evidence) and `acked` (the owner commands handled, with their results) in every heartbeat. Apply the reply's `commands` only for the worker's own open trip, save each handled command in `control.json` (a repeat is a no-op) and journal it as `owner_command`.
 - Post the daily summary (`packages/ops/src/watchdog/summary.ts` shape) to `/summary` every `ZEROED_SUMMARY_MS` (default 30 minutes) and just after Melbourne midnight, signed over `t\nPOST\n/summary\nbody` with a signature time newer than the last one. Never wait on it.
 
 ## Test it
