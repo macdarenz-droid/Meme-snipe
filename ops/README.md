@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/ec3496c0d888c2a231dc16a2bebb8f50114b017a/ops/install.sh -o i && echo '07c2bdcb39ee71b76edabb1214bbc7575296a5d9dcf7859075484b5fdc22755e  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/3c5a8fc3c1827a9474a5fc5a44a9bb641ce9e725/ops/install.sh -o i && echo '2d0142fd03886351f4270bc409bfce0ae256905c87e432c86eb87ada71bc3d42  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/ec3496c0
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `07c2bdcb39ee71b76edabb1214bbc7575296a5d9dcf7859075484b5fdc22755e`
+SHA-256 of `install.sh`: `2d0142fd03886351f4270bc409bfce0ae256905c87e432c86eb87ada71bc3d42`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -65,7 +65,8 @@ Run `zeroed-new-deploy-code` on the console and put the new 6 words in `DEPLOY_C
 Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987baf-i6lrsl` that GitHub signed, which is a pull-request merge (`ops/deploy/tag.sh`). Every 5 minutes the server (`zeroed-update`) switches to it only when all of these hold:
 - the commit carries GitHub's merge signature (fingerprint `968479A1AFF927E37D1A566BB5690EEEBB952194`, pinned at install);
 - it is on the branch;
-- every check run on it finished green (public API);
+- GitHub Actions' `check` passed on it, and every other GitHub Actions run on it finished green (public API; runs from other apps do not count, and none at all means wait);
+- `e2e` passed on the newest commit at or before it that changed the ops end-to-end paths (`ops/`, `packages/ops/`, the Deploy and ops e2e workflows), since a merge that leaves ops alone runs no e2e of its own;
 - no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
 - the worker reports no open intent (`/var/lib/zeroed/open_intents`).
 
@@ -73,7 +74,7 @@ First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). 
 
 ## Backups
 
-Every hour `zeroed-backup` copies the worker's bot state: every file under `/var/lib/zeroed` except the run's evidence (`journal.jsonl`, `recorder/`), the drill token and files still being written. SQLite files go through SQLite's online backup and its integrity check; the JSON state files (paper account, exit plans, deployer index, budgets, controls) are copied whole and must parse. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
 **Off-server copy (free, no R2): off until the owner approves.** Sending backups to Telegram is sending data to a third party, which needs the owner's approval (CLAUDE.md). The timer is installed but disabled, and `zeroed-backup-offsite` refuses to send while `ops/host-config.json` says `"offsite_backup": false` (the default). Switching it on is a reviewed commit that sets it to `true`; the next code update (`zeroed-update`) applies it.
 
@@ -81,9 +82,13 @@ Once on: run `zeroed-backup-code` once at the console. It shows a 6-word backup 
 
 To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.age | tar -x`.
 
-`zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It lists every file and prints PASS once the manifest matches, the SQLite files pass the integrity check with the live tables, and the JSON files parse. It never touches the live files.
+`zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It prints PASS once the manifest, the integrity check and the tables all match, and never touches the live files.
 
-To restore for real: `zeroed-restore /etc/zeroed/age/host.key` (or the identity made from the words, and optionally a backup file). It runs the drill on the backup first, stops the worker, moves the bot state it has to `/var/lib/zeroed-prerestore/<UTC time>/`, puts the backup's files in its place (the evidence stays), gives them to the worker and starts it; the worker reconciles before it trades. A backup without `control.json` restores with new entries paused.
+To restore for real:
+1. `systemctl stop zeroed-worker`
+2. Decrypt and unpack the bundle into `/var/lib/zeroed`.
+3. `chown -R zeroed-worker: /var/lib/zeroed`
+4. `systemctl start zeroed-worker` (it reconciles first).
 
 ## Watchdog (OPS-1b)
 

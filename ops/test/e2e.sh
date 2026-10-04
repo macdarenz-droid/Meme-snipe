@@ -93,6 +93,16 @@ done
 [ -n "$signed" ] && [ -n "$signed2" ] && [ -n "$unsigned" ] || fail "test repo needs two GitHub-signed and an unsigned commit on $BRANCH"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null
 mkdir -p "$STATE/checks"
+# The server also needs a green e2e on the newest commit at or before the deployed one that touched the
+# ops end-to-end paths (logic.sh e2e_commit, OPS-GATE): mark those green.
+e2e_of() { (. "$ROOT/ops/host/files/usr/local/lib/zeroed/logic.sh" && e2e_commit "$BARE" "$1"); }
+# A test commit that is its own e2e commit gets its checks file in its own case below: written here, the
+# update timer would deploy it before the gate cases run.
+for c in "$signed" "$signed2" "$unsigned"; do
+  e="$(e2e_of "$c")"
+  [ -n "$e" ] || fail "no commit at or before ${c:0:12} touched the ops end-to-end paths"
+  case "$e" in "$signed" | "$signed2" | "$unsigned") ;; *) echo success >"$STATE/checks/$e" ;; esac
+done
 git -C "$BARE" update-server-info
 printf '%s' "$T_TELEGRAM" >"$STATE/telegram-token"
 STATE="$STATE" GIT_ROOT="$E2E/git" PORT="$PORT" node "$ROOT/ops/test/fake-services.mjs" >"$LOGS/fake-services.log" 2>&1 &
@@ -286,6 +296,14 @@ echo pending >"$STATE/checks/$signed"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with a pending check"
 echo success >"$STATE/checks/$signed"
+e2e_signed="$(e2e_of "$signed")"
+if [ "$e2e_signed" != "$signed" ]; then
+  # A green merge that left ops alone still waits on the red end-to-end of the ops change before it.
+  echo failure >"$STATE/checks/$e2e_signed"
+  upd_run || true
+  [ -z "$(current)" ] || fail "deployed with the ops end-to-end of ${e2e_signed:0:12} red"
+  echo success >"$STATE/checks/$e2e_signed"
+fi
 in_c "echo 2 > /var/lib/zeroed/open_intents"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with open intents"
@@ -294,12 +312,13 @@ upd_run || fail "update failed on a green, GitHub-signed commit"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current release not switched"
 in_c "journalctl -u zeroed-update -o cat --no-pager" >"$LOGS/update-journal.txt"
 grep -q 'its checks are red' "$LOGS/update-journal.txt" && grep -q 'its checks are pending' "$LOGS/update-journal.txt" && grep -q 'open intents (2)' "$LOGS/update-journal.txt" || fail "update reasons not logged"
+[ "$e2e_signed" = "$signed" ] || grep -q "its checks are red: the ops end-to-end of ${e2e_signed:0:12}" "$LOGS/update-journal.txt" || fail "the red ops end-to-end was not logged"
 git -C "$BARE" tag -f deploy "$unsigned" >/dev/null && git -C "$BARE" update-server-info
 echo success >"$STATE/checks/$unsigned"
 upd_run && fail "an unsigned commit was deployed"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current moved to an unsigned commit"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
-pass "update: waits on failed and pending checks and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
+pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e2e_signed:0:12} and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
 # ---------- 9. Backup and restore drill ----------
 # A JSON state file as the real worker keeps beside the ledger (exit plans): the backup must hold it (OPS-1j).
