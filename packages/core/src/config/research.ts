@@ -56,20 +56,21 @@ export interface ResearchConfig {
     readonly projectionBankrolls: readonly MicroUsd[];
   };
   /**
-   * Which check gates G1 for multiple testing: 'dsr' (per-trade deflated Sharpe, clamped moments) or 'spa' (joint bootstrap SPA test).
-   * Stays 'dsr' until the owner signs off on the SPA calibration (STATS-1c); both are always reported.
+   * The significance test that gates G1, recorded in each strategy's registration before its run (owner decision,
+   * 2026-10-04: 'spa', the joint SPA test; 'dsr' keeps the clamped per-trade DSR). Only the owner changes it, never
+   * mid-attempt; the other test is always reported.
    */
-  readonly g1EdgeTest: 'dsr' | 'spa';
+  readonly g1Test: 'spa' | 'dsr';
 }
 
 const VALUES: ResearchConfig = {
-  version: 'research-3',
+  version: 'research-4',
   s0: { u2WindowFromMs: 60 * MINUTE, u2WindowToMs: 240 * MINUTE, entryMinOutBelowBps: 300, blockedRetryMs: 10 * MINUTE, blockedRetries: 3, endMarginMs: 30 * MINUTE },
   heartbeatBlocks: 150,
   decisionCommitment: 'confirmed',
   holdout: { fromDay: '2026-09-22', entryCutoffDay: '2026-10-20', tailEndDay: '2026-10-21', registryPath: 'research/holdout/registry.json', registryRemote: 'origin', registryBranch: 'holdout-registry', registryRepo: 'macdarenz-droid/Meme-snipe' },
   operating: { hostingUsdPerMonth: usd('6'), projectionBankrolls: [usd('20'), usd('100'), usd('200')] },
-  g1EdgeTest: 'dsr',
+  g1Test: 'spa',
 };
 
 export const RESEARCH_CONFIG: ResearchConfig = deepFreeze(VALUES);

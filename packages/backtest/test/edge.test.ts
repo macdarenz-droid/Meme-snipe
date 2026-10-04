@@ -56,7 +56,7 @@ describe('cost math', () => {
     const win: PracticeWindow = { decisionFrom: '2026-09-19', decisionTo: '2026-10-01', holdoutFrom: '2026-09-25', embargoDays: 1, confirmedBy: 'test' };
     const c = collectCandidates(still, { window: win, policy: TRIAL_POLICY, solUsd: solUsdAsOf(SOL_USD, 3 * 3_600_000), ...PLAN_DRIVE }).candidates[0]!;
     const targets = Array.from({ length: 2000 }, (_, i) => ({ id: `${c.id}#${i}`, pool: c.pool, decisionSlot: c.decisionSlot, decisionMs: c.decisionMs, solUsd: c.solUsd }));
-    const out = scoreCandidates(still, targets, { window: win, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'parity', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps, rentModel: 'rent-1' });
+    const out = scoreCandidates(still, targets, { window: win, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'parity', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps });
     const losses = out.filter((o) => o.labels[0]!.entryFilled && o.labels[0]!.rNet !== null).map((o) => -o.labels[0]!.rNet! * Number(o.entryCost));
     expect(losses.length).toBeGreaterThan(800);
     const sw = still.filter((r): r is AmmSwapRow => r.kind === 'amm' && r.pool === c.pool).at(-1)!;

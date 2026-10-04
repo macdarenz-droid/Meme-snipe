@@ -9,7 +9,6 @@ import { type FeeConfig, type FeeSplit, type PoolFeeContext, type PoolState, poo
 import { FILL_CONFIG, TRIAL_POLICY } from '../../../core/src/config/index.ts';
 import { pumpSwapRoundTrip } from '../../../core/src/costs/index.ts';
 import { bps } from '../../../core/src/units/index.ts';
-import { expectedFailedExits, scoringTerms } from './outcome.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..', '..');
 /** SOL/USD used for sizes (docs/RESEARCH.md: research dated 2026-10-03, SOL about $119.26). */
@@ -26,13 +25,38 @@ export const AMM_FEES: FeeConfig = (() => {
   return { flatFees: split(raw.flat_fees), exoticFlatFees: split(raw.exotic_flat_fees), feeTiers: raw.fee_tiers.map((t) => ({ marketCapThreshold: BigInt(t.market_cap_lamports_threshold), fees: split(t.fees) })) };
 })();
 
-export const terms = scoringTerms(FILL_CONFIG, TRIAL_POLICY, 'conservative');
+/**
+ * The constants the outcome stage (outcome.ts `scoreCandidates`) charges, derived from the same configuration the same
+ * way: the landed entry and exit, one failed exit attempt (base + the third ladder rung's priority, all paid), the
+ * PumpSwap failure rate, the ladder length and RENT-1's close and dust shares. The parity test in edge.test.ts checks
+ * these against the outcome stage's own scores.
+ */
+const scen = FILL_CONFIG.scenarios.conservative;
+const net = FILL_CONFIG.network;
+const ladder = TRIAL_POLICY.exits.ladder;
+const base = net.signaturesPerTx * net.baseFeePerSignature;
+export const terms = {
+  entryLanded: base + net.entryPriorityFee + net.tip,
+  exitFixed: base + ladder.steps[0]!.priorityFeeLamports + net.tip,
+  failedExit: base + ladder.steps[Math.min(2, ladder.steps.length - 1)]!.priorityFeeLamports,
+  failProbability: 1 - Number(scen.landPpm.pumpswap) / 1e6,
+  maxAttempts: ladder.maxAttempts,
+  rent: net.tokenAccountRent,
+  closeSuccess: Number(scen.closeSuccessPpm) / 1e6,
+  dust: Number(scen.dustPpm) / 1e6,
+} as const;
+/** Expected failed exit attempts on the ladder: Σ_{k=1..max} f^k (the k-th failure needs k failures in a row). */
+export const expectedFailedExits = (): number => {
+  let e = 0;
+  for (let k = 1; k <= terms.maxAttempts; k++) e += terms.failProbability ** k;
+  return e;
+};
 /** RENT-1: rent back when the sell-and-close lands with no dust; a close that fails without dust pays one failed exit. */
 export const rentBack = terms.closeSuccess * (1 - terms.dust);
 const failedClose = (1 - terms.closeSuccess) * (1 - terms.dust);
 /** Expected fixed lamports per filled round trip, exactly as the outcome stage charges them. */
 export const expectedFixed = (): number =>
-  Number(terms.entryLanded) + Number(terms.exitFixed) + expectedFailedExits(terms) * Number(terms.failedExit)
+  Number(terms.entryLanded) + Number(terms.exitFixed) + expectedFailedExits() * Number(terms.failedExit)
   + (1 - rentBack) * Number(terms.rent) + failedClose * Number(terms.failedExit);
 
 // TX-1 uses PumpSwap's v1 instructions on SOL pools; v1 and v2 price the same (pump-swap.ts).
@@ -107,7 +131,7 @@ if (import.meta.main) {
   const r = rows();
   const f = (x: number, d = 2) => x.toFixed(d);
   const lines = [
-    `Conservative scenario, PumpSwap: an exit attempt fails ${f(terms.failProbability * 100, 0)}% of the time and each failure pays ${terms.failedExit.toLocaleString('en-US')} lamports (${f(expectedFailedExits(terms), 4)} expected); rent back ${f(rentBack * 100, 1)}%; a close that fails without dust pays one more failed attempt. SOL $${SOL_USD}.`,
+    `Conservative scenario, PumpSwap: an exit attempt fails ${f(terms.failProbability * 100, 0)}% of the time and each failure pays ${terms.failedExit.toLocaleString('en-US')} lamports (${f(expectedFailedExits(), 4)} expected); rent back ${f(rentBack * 100, 1)}%; a close that fails without dust pays one more failed attempt. SOL $${SOL_USD}.`,
     '',
     '| Setup | Size | Fee/side | Fees+impact (both legs) | Fixed (lamports) | Fixed % | Break-even move | Break-even, no rent back |',
     '|---|---|---|---|---|---|---|---|',

@@ -224,8 +224,10 @@ export const setHoldoutPlan = (
       if (canonical(s.plan) === canonical(plan)) return { store: s, value: s };
       throw new RangeError('the holdout plan is fixed once set');
     }
+    // The registry is created with the plan and stamps G1's test from the research config (STATS-1f): it exists before
+    // any G1 evaluation it governs and never changes.
     const store: HoldoutStore = s === null
-      ? { version: 2, plan, registry: createHoldoutRegistry(plan.familySize, { windowDays: LATER_ATTEMPT_ENTRY_DAYS, tailDays: daysBetween(plan.entryCutoffDay, plan.tailEndDay), ...testFloor }), attempts: [], g1: [], runs: [] }
+      ? { version: 2, plan, registry: createHoldoutRegistry(plan.familySize, research.g1Test, { windowDays: LATER_ATTEMPT_ENTRY_DAYS, tailDays: daysBetween(plan.entryCutoffDay, plan.tailEndDay), ...testFloor }), attempts: [], g1: [], runs: [] }
       : { ...s, plan };
     return { store, value: store };
   });

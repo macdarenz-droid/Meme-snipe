@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import type { AmmSwapRow, DatasetRow } from '../src/dataset/rows.ts';
-import { solUsdAsOf } from '../src/research/candidates.ts';
+import { collectCandidates, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
 import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
 import { HoldoutWallError, type PracticeWindow } from '../src/research/practice.ts';
 import { collectSurvival, SURVIVAL_FEATURES, type SurvivalFeature } from '../src/research/survival.ts';
@@ -13,6 +13,7 @@ import { LabelTimeError, SURVIVAL_RULE, survivalLabel } from '../src/research/su
 import { labelDecisions } from '../src/research/survival-outcome.ts';
 import type { Features } from '../src/research/tracker.ts';
 import { S_T0, SURV_SOL_USD, survivalRows } from './survival-fixture.ts';
+import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
 
 const SRC = join(import.meta.dirname, '..', 'src', 'research');
 const W: PracticeWindow = { decisionFrom: '2026-09-01', decisionTo: '2026-10-01', holdoutFrom: '2026-09-23', embargoDays: 1, confirmedBy: 'test' };
@@ -118,19 +119,22 @@ describe('outcome stage', () => {
 });
 
 describe('RENT-1 in the outcome stage', () => {
-  test('RENT-1: the rent comes back when the close lands without dust; a failed close without dust pays one failed exit', () => {
-    const t = [of('A', 60)].map(({ id, pool, decisionSlot, decisionMs, solUsd }) => ({ id, pool, decisionSlot, decisionMs, solUsd }));
-    const c = FILL_CONFIG.scenarios.conservative;
-    const fills = (closeSuccessPpm: bigint, dustPpm: bigint) => ({ ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, conservative: { ...c, closeSuccessPpm, dustPpm } } });
-    const run = (f: typeof FILL_CONFIG, rentModel: 'scenario' | 'rent-1') => scoreCandidates(fx.rows, t, { window: W, policy: TRIAL_POLICY, fills: f, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'land', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps, rentModel })[0]!;
-    const none = run(FILL_CONFIG, 'scenario');
-    expect(none.labels[0]!.entryFilled).toBe(true);
-    expect(none.labels[0]!.censored).toBe(false);
-    const cost = Number(none.entryCost);
+  test('RENT-1 (#114) in the outcome stage the comparison uses: rent back on a landed close, one failed exit on a failed close, nothing with dust', () => {
+    // Research's 0.4-s-slot market with no swap after 50 min: every trade round-trips on a still pool.
+    const still = syntheticRows({ mints: 1, slots: 2.5 * 3600 * 6 }).filter((r) => r.kind !== 'amm' || r.blockTime * 1000 < T0 + 50 * 60_000);
+    const win: PracticeWindow = { decisionFrom: '2026-09-19', decisionTo: '2026-10-01', holdoutFrom: '2026-09-25', embargoDays: 1, confirmedBy: 'test' };
+    const c = collectCandidates(still, { window: win, policy: TRIAL_POLICY, solUsd: solUsdAsOf(SOL_USD, 3 * H), ...PLAN_DRIVE }).candidates[0]!;
+    const t = [{ id: c.id, pool: c.pool, decisionSlot: c.decisionSlot, decisionMs: c.decisionMs, solUsd: c.solUsd }];
+    const sc = FILL_CONFIG.scenarios.conservative;
+    const fills = (closeSuccessPpm: bigint, dustPpm: bigint) => ({ ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, conservative: { ...sc, closeSuccessPpm, dustPpm } } });
+    const run = (f: typeof FILL_CONFIG) => scoreCandidates(still, t, { window: win, policy: TRIAL_POLICY, fills: f, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'land', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps })[0]!;
+    const dust = run(fills(1_000_000n, 1_000_000n));
+    expect(dust.labels[0]!.entryFilled).toBe(true);
+    expect(dust.labels[0]!.censored).toBe(false);
+    const cost = Number(dust.entryCost);
     const failedExit = Number(FILL_CONFIG.network.signaturesPerTx * FILL_CONFIG.network.baseFeePerSignature + TRIAL_POLICY.exits.ladder.steps[2]!.priorityFeeLamports);
-    expect(run(fills(1_000_000n, 0n), 'rent-1').labels[0]!.rNet! - none.labels[0]!.rNet!).toBeCloseTo(Number(FILL_CONFIG.network.tokenAccountRent) / cost, 9);
-    expect(run(fills(0n, 0n), 'rent-1').labels[0]!.rNet! - none.labels[0]!.rNet!).toBeCloseTo(-failedExit / cost, 9);
-    expect(run(fills(1_000_000n, 1_000_000n), 'rent-1').labels[0]!.rNet!).toBeCloseTo(none.labels[0]!.rNet!, 12);
+    expect(run(fills(1_000_000n, 0n)).labels[0]!.rNet! - dust.labels[0]!.rNet!).toBeCloseTo(Number(FILL_CONFIG.network.tokenAccountRent) / cost, 9);
+    expect(run(fills(0n, 0n)).labels[0]!.rNet! - dust.labels[0]!.rNet!).toBeCloseTo(-failedExit / cost, 9);
   });
 });
 

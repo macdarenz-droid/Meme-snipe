@@ -11,7 +11,7 @@ import type { CoinFlags } from '../../../core/src/amm/index.ts';
 import { poolBuyExactQuoteIn, poolSell } from '../../../core/src/amm/index.ts';
 import type { FillConfig, Policy } from '../../../core/src/config/index.ts';
 import { createRng as engineRng } from '../../../core/src/engine/index.ts';
-import { type ObservedFees, type ScenarioName, ShiftedPool, drawAttempt, executeBuy, observedFeeContext, withSlippage } from '../../../core/src/fills/index.ts';
+import { type ObservedFees, type ScenarioName, ShiftedPool, accountGetsDust, closeSucceeds, drawAttempt, executeBuy, observedFeeContext, withSlippage } from '../../../core/src/fills/index.ts';
 import { createRng, labelTripleBarrier, type TripleBarrierLabel, type ValuePoint } from '../../../core/src/stats/index.ts';
 import { BPS_DENOMINATOR, mulDiv } from '../../../core/src/units/index.ts';
 import type { AmmSwapRow, DatasetRow } from '../dataset/rows.ts';
@@ -51,52 +51,7 @@ export interface OutcomeOptions {
   readonly seed: string;
   /** Least accepted entry output below the decision quote (research config `s0.entryMinOutBelowBps`). */
   readonly entryMinOutBelowBps: number;
-  /**
-   * How token-account rent is scored. 'scenario' (default): the scenario's `rentRecovery` flag, all or nothing.
-   * 'rent-1' (DECISIONS "Rent"): per trade, seeded draws decide whether the atomic sell-and-close lands
-   * (`closeSuccessPpm`) and whether dust stays (`dustPpm`): the rent comes back only when the close lands with no
-   * dust; a close that fails without dust also pays one failed exit attempt.
-   */
-  readonly rentModel?: 'scenario' | 'rent-1';
 }
-
-/** The constants the outcome stage scores a trade with; RES-4's cost math (edge-costs.ts) uses the same ones. */
-export interface ScoringTerms {
-  readonly base: bigint;
-  /** Base, priority and tip of the landed entry. */
-  readonly entryLanded: bigint;
-  /** Base, rung-1 priority and tip of the landed exit. */
-  readonly exitFixed: bigint;
-  /** One failed exit attempt: base and the third rung's priority (conservative bound). */
-  readonly failedExit: bigint;
-  /** Chance an exit attempt fails although the position is sellable (1 − PumpSwap land rate); every failure pays. */
-  readonly failProbability: number;
-  readonly maxAttempts: number;
-  readonly latencySlots: number;
-  readonly rent: bigint;
-  readonly closeSuccess: number;
-  readonly dust: number;
-}
-
-export const scoringTerms = (fills: FillConfig, policy: Policy, scenario: ScenarioName): ScoringTerms => {
-  const scen = fills.scenarios[scenario];
-  const net = fills.network;
-  const ladder = policy.exits.ladder;
-  const base = net.signaturesPerTx * net.baseFeePerSignature;
-  return {
-    base, entryLanded: base + net.entryPriorityFee + net.tip, exitFixed: base + ladder.steps[0]!.priorityFeeLamports + net.tip,
-    failedExit: base + ladder.steps[Math.min(2, ladder.steps.length - 1)]!.priorityFeeLamports,
-    failProbability: 1 - Number(scen.landPpm.pumpswap) / 1e6, maxAttempts: ladder.maxAttempts, latencySlots: Math.max(...scen.landingSlots),
-    rent: net.tokenAccountRent, closeSuccess: Number(scen.closeSuccessPpm) / 1e6, dust: Number(scen.dustPpm) / 1e6,
-  };
-};
-
-/** Expected failed exit attempts on the ladder: Σ_{k=1..max} f^k (the k-th failure needs k failures in a row). */
-export const expectedFailedExits = (t: ScoringTerms): number => {
-  let e = 0;
-  for (let k = 1; k <= t.maxAttempts; k++) e += t.failProbability ** k;
-  return e;
-};
 
 export interface Outcome {
   readonly id: string;
@@ -125,6 +80,9 @@ interface Pending {
   vertical: (bigint | null)[];
   fees: ObservedFees | null;
   baseSupply: bigint;
+  /** Dust in the token account (never closable) and whether the final sell-and-close lands (RENT-1). */
+  dust: boolean;
+  closes: boolean;
 }
 
 const seedOf = (s: string): number => Number.parseInt(createHash('sha256').update(s).digest('hex').slice(0, 12), 16);
@@ -133,13 +91,17 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   const scen = o.fills.scenarios[o.scenario];
   const net = o.fills.network;
   const ladder = o.policy.exits.ladder;
-  const terms = scoringTerms(o.fills, o.policy, o.scenario);
-  const { base, exitFixed, failedExit, failProbability, rent } = terms;
-  const landing = BigInt(terms.latencySlots);
-  const latency = terms.latencySlots;
-  // Slots after the last horizon for the exit ladder: every attempt (latency + retries) plus one more, counted in
-  // slots, so the ladder is fully observed whatever the slot time.
-  const tailSlots = BigInt((ladder.maxAttempts + 1) * latency);
+  const landing = BigInt(Math.max(...scen.landingSlots));
+  const latency = Math.max(...scen.landingSlots);
+  const base = net.signaturesPerTx * net.baseFeePerSignature;
+  const exitFixed = base + ladder.steps[0]!.priorityFeeLamports + net.tip;
+  // One cost for every failed exit attempt: the third rung's priority fee, above the first two (conservative bound).
+  const failedExit = base + ladder.steps[Math.min(2, ladder.steps.length - 1)]!.priorityFeeLamports;
+  const failProbability = 1 - Number(scen.landPpm.pumpswap) / 1e6;
+  const rent = net.tokenAccountRent;
+  const maxHorizon = Math.max(...o.barriers.map((b) => b.horizonMs));
+  // Time after the horizon for the exit ladder, at 1 s per slot: conservative, since slots run ~0.27–0.4 s (more slots fit).
+  const tail = (ladder.maxAttempts + 1) * latency * 1000;
 
   const byPool = new Map<string, Pending[]>();
   const all: Pending[] = [];
@@ -149,7 +111,7 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   for (const t of targets) {
     const p: Pending = {
       t, phase: 'quote', quotedOut: 0n, entrySlot: t.decisionSlot + landing, entryMs: 0, shifted: null, tokens: 0n, cost: 0n, failedEntry: 0n,
-      filled: false, noQuote: false, path: [], vertical: o.barriers.map(() => null), fees: null, baseSupply: 0n,
+      filled: false, noQuote: false, path: [], vertical: o.barriers.map(() => null), fees: null, baseSupply: 0n, dust: false, closes: false,
     };
     all.push(p);
     const list = byPool.get(t.pool) ?? [];
@@ -161,20 +123,15 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   const realState = new Map<string, ShiftedPool>();
   const out = new Map<string, Outcome>();
 
-  const rentOf = (p: Pending): { readonly back: boolean; readonly failedClose: boolean } => {
-    if (o.rentModel !== 'rent-1') return { back: scen.rentRecovery, failedClose: false };
-    const rng = createRng(seedOf(`${o.seed}:${p.t.id}:rent`));
-    const close = rng.next() < terms.closeSuccess;
-    const dust = rng.next() < terms.dust;
-    return { back: close && !dust, failedClose: !close && !dust };
-  };
   const value = (p: Pending): bigint | null => {
     const s = p.shifted!.state;
     if (s === null || p.fees === null) return null;
     const q = poolSell(s, p.tokens, observedFeeContext(p.fees, p.baseSupply, NORMAL));
     if (!q.ok) return null;
-    const r = rentOf(p);
-    const v = q.trade.userQuote - exitFixed + (r.back ? rent : 0n) - (r.failedClose ? failedExit : 0n);
+    // RENT-1: the final sell closes the token account in the same transaction. Its rent comes back only when that close
+    // lands; dust in the account keeps it open (rent locked), and a failed close fails the sell (one failed attempt's fee)
+    // before a sell-only retry that leaves the rent locked.
+    const v = q.trade.userQuote - exitFixed + (p.closes ? rent : 0n) - (!p.dust && !p.closes ? failedExit : 0n);
     return v > 0n ? v : 0n;
   };
   const point = (p: Pending, slot: bigint): void => {
@@ -279,6 +236,10 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
         p.fees = sw.fees;
         p.baseSupply = sw.baseSupply;
         p.tokens = ex.out;
+        // The account's close outcome, drawn once per candidate and independent of the scenario (common random numbers):
+        // dust picked up at entry, then whether the final sell-and-close lands.
+        p.dust = accountGetsDust(`${o.seed}:${p.t.id}`, scen);
+        p.closes = !p.dust && closeSucceeds(`${o.seed}:${p.t.id}`, scen);
         p.cost = ex.paid + failFee + net.tip + rent;
         p.filled = true;
         p.phase = 'hold';
@@ -289,8 +250,7 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
         o.barriers.forEach((b, i) => {
           if (p.vertical[i] === null && ms >= p.entryMs + b.horizonMs) p.vertical[i] = row.slot;
         });
-        const last = p.vertical.reduce<bigint | null>((m, v) => (v === null || m === null ? null : v > m ? v : m), 0n);
-        if (last !== null && row.slot >= last + tailSlots) finish(p, row.slot);
+        if (ms >= p.entryMs + maxHorizon + tail) finish(p, row.slot);
       }
     }
     if (active.some((p) => p.phase === 'done')) active = active.filter((p) => p.phase !== 'done');

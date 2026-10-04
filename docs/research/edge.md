@@ -44,7 +44,7 @@ Conservative scenario, PumpSwap: an exit attempt fails 44% of the time and each 
 | u1-1.15 | $5 | 55.2% | 44.3% | 40.6% | 33.3% |
 | u1-1.15 | $20 | 50.7% | 42.0% | 39.1% | 32.3% |
 
-As the outcome stage scores a trade (`outcome.ts`, the same constants through `scoringTerms`); the backtest's congestion, landing-tail and ladder costs are higher. A parity test checks that the outcome stage's mean loss on a still pool equals this cost math. The pump curve is not in the table: the proof's fills land on PumpSwap only, and the curve is paper-only research (§3.1); on the curve, fees are the same 1.25% per side but landing is worse (40% conservative).
+As the outcome stage scores a trade (`outcome.ts` with RENT-1, #114: the same constants, derived from the same configuration; a parity test checks the two agree); the backtest's congestion, landing-tail and ladder costs are higher. A parity test checks that the outcome stage's mean loss on a still pool equals this cost math. The pump curve is not in the table: the proof's fills land on PumpSwap only, and the curve is paper-only research (§3.1); on the curve, fees are the same 1.25% per side but landing is worse (40% conservative).
 
 The second table is the break-even win rate of a bracket exit (+W / −L gross), cost included: p = (L + c) / (W + L).
 

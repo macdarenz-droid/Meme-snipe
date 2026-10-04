@@ -34,7 +34,10 @@ const usd = (v: bigint): string => toDecimalString(v, 6);
 const iso = (ms: number): string => new Date(ms).toISOString();
 
 /** YYYY-MM-DD in Melbourne (AEST/AEDT). Read outside the engine only. */
-export const melbourneDay = (ms: number): string => new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).format(ms);
+// One formatter for the process (MEM-1): a new Intl.DateTimeFormat per call costs about 0.7 ms and holds ICU memory
+// outside the JS heap, so the collector does not see it; per-row calls grew one test fork to 5.6 GB.
+const MELBOURNE_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' });
+export const melbourneDay = (ms: number): string => MELBOURNE_DAY.format(ms);
 
 /** The SOL/USD price usable at `ms`: the latest bar whose usable moment is at or before it. */
 export const priceAt = (s: OffchainSeries, ms: number): MicroUsd => {
