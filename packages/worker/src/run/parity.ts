@@ -46,7 +46,7 @@ export class SavedStateMissing extends Error {}
  * carries, before anything is replayed. A copy that is missing, unreadable, refused or of another hash fails the replay
  * loudly (`SavedStateMissing`); it never falls back to an empty or other state.
  */
-const savedStateOf = (b: Pick<BootInput, 'frames' | 'savedState'> & { readonly boot?: string }, d: ParityDeps): Pick<StrategyDeps, 'savedState'> => {
+export const savedStateOf = (b: Pick<BootInput, 'frames' | 'savedState'> & { readonly boot?: string }, d: ParityDeps): Pick<StrategyDeps, 'savedState'> => {
   const seed = b.frames.find((f) => f.body.type === 'fact' && f.body.key === SEED_KEY);
   const st = seed !== undefined && seed.body.type === 'fact' && isObj(seed.body.value) ? seed.body.value['state'] : undefined;
   const ref = isObj(st) && isObj(st['ref']) ? st['ref'] as unknown as SavedStateRef : null;

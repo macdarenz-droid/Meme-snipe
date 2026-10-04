@@ -9,8 +9,11 @@ import { parseTyped } from '../src/run/json.ts';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
+import { TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { RAW } from '../../core/src/facts/raw.ts';
+import { GRADUATES_KEY, survivalCondition } from '../../core/src/gates/index.ts';
 import { DailyBudget, fileSha256, loadState } from '../src/persist/index.ts';
-import { SavedStateMissing, checkBoot, loadSession, replayBoot } from '../src/run/parity.ts';
+import { SavedStateMissing, checkBoot, loadSession, replayBoot, savedStateOf } from '../src/run/parity.ts';
 import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, SEED_CREDIT_CAP, runSeed } from '../src/run/seed-start.ts';
 import { PERSIST_EVERY_MS, PERSIST_FILE, type SeedRequest, type SeedResult } from '../src/run/worker.ts';
 import { DEV, MINT, Market, T, dueTimers, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
@@ -121,6 +124,15 @@ describe('PERSIST-1 in the worker', () => {
     expect(loadState(other, RUG_CONFIG).ok).toBe(true);
     expect(fileSha256(other)).not.toBe(fileSha256(copy));
     expect(() => replayBoot({ ...b2, savedState: other }, d)).toThrow(/the recording's copy has sha256/);
+    // The copy is handed over once, and only for exactly the reference the seed names.
+    const ref = { file: PERSIST_FILE, sha256: fileSha256(copy), version: 2 };
+    const once = savedStateOf(b2, d);
+    expect(once.savedState!(ref).index.factFor(DEV, { slot: 1n << 40n, txIndex: 0, ixIndex: 0, receivedAt: timers.now() }, 0).mints.map((x) => x.mint)).toEqual([MINT]);
+    expect(() => once.savedState!(ref)).toThrow(SavedStateMissing);
+    expect(() => once.savedState!(ref)).toThrow(/a second or different saved state asked for/);
+    for (const bad of [{ ...ref, sha256: '0'.repeat(64) }, { ...ref, file: 'other.json' }, { ...ref, version: 1 }]) {
+      expect(() => savedStateOf(b2, d).savedState!(bad)).toThrow(/a second or different saved state asked for/);
+    }
   }, 60_000);
 
   it('the restored state is handed to the seed that names it, by file, sha256 and version, and only once (WORKER-GROW)', async () => {
@@ -140,6 +152,53 @@ describe('PERSIST-1 in the worker', () => {
     expect(() => h2.worker.savedStateFor(ref)).toThrow(/not the one this process restored/);
     await h2.worker.stop();
   });
+
+  it('PERSIST-2: a restart inside the 14-day window keeps survival known (the series comes back through a recorded seed read)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const h = makeWorker({ stateDir, timers, seed });
+    const m = await boot(h);
+    // 16 days of graduates, one every 6 hours, the newest well past its +30 min mark.
+    const P = TRIAL_POLICY.regime;
+    const items = Array.from({ length: 64 }, (_, k) => ({ mint: `Grad${k}`, migratedAtMs: m.now - 2 * 3_600_000 - k * 6 * 3_600_000, reserveAfter: k % 3 === 0 ? 1n : 100_000_000_000n }))
+      .sort((a, b) => a.migratedAtMs - b.migratedAtMs);
+    // One more graduate whose +30 min mark is still ahead at the save: it is not saved.
+    const young = { mint: 'Young', migratedAtMs: m.now - 10 * 60_000, reserveAfter: 1n };
+    m.fact(GRADUATES_KEY, { obs: { provider: 'facts', slot: null, receivedAt: m.now, quality: [] }, items: [...items, young] });
+    await m.run(1_000, 200, () => m.slot());
+    expect(survivalCondition({ obs: { provider: 'facts', slot: null, receivedAt: m.now, quality: [] }, items }, m.now, P).ok).not.toBeNull();
+    await h.worker.stop();
+    const saved = loadState(join(stateDir, PERSIST_FILE), RUG_CONFIG);
+    expect(saved.ok && saved.graduates?.items).toEqual(items);
+
+    timers.set(timers.now() + 10 * 60_000);
+    const h2 = makeWorker({ stateDir, timers, seed });
+    const m2 = await boot(h2);
+    // This process saw no graduate of its own: the producer's series is the saved one, and survival is computed.
+    const back = h2.worker.strategy.persistable(0)?.state.graduates;
+    expect(back?.items).toEqual(items);
+    expect(survivalCondition({ obs: { provider: 'facts', slot: null, receivedAt: m2.now, quality: [] }, items: back!.items }, m2.now, P).ok).not.toBeNull();
+    // The seed's outcome is journaled and shown in /health.
+    expect(h2.worker.health().graduates_seed).toEqual({ source: 'persist', accepted: true, added: items.length, reason: null });
+    expect(journal(stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'graduates_seed').map((l) => l['accepted'])).toEqual([true]);
+    await h2.worker.stop();
+    // A host clock behind the save (a VM restored, NTP stepping back): the seed is dated after its release and refused,
+    // visibly, so the regime's unknown survival has a named cause.
+    const behind = makeWorker({ stateDir, timers: virtualTimers(saved.ok ? saved.asOf.receivedAt - 3_600_000 : 0), seed });
+    expect(behind.worker.health().graduates_seed).toBeUndefined();
+    await boot(behind);
+    expect(behind.worker.health().graduates_seed).toMatchObject({ source: 'persist', accepted: false, added: 0, reason: expect.stringMatching(/after its release/) });
+    expect(behind.logs.some((l) => l.startsWith('ALERT graduates seed refused: '))).toBe(true);
+    expect(journal(stateDir).filter((l) => l['boot'] === behind.worker.boot && l['kind'] === 'graduates_seed').map((l) => l['accepted'])).toEqual([false]);
+    await behind.worker.stop();
+    // Replay parity: the series travels as a recorded raw read.
+    const dir = join(stateDir, 'recorder', h2.worker.boot, 'days');
+    const frames = readdirSync(dir).flatMap((d) => readdirSync(join(dir, d)).filter((f) => /^frames-/.test(f)).map((f) => zstdDecompressSync(readFileSync(join(dir, d, f))).toString('utf8')))
+      .join('\n').split('\n').filter((l) => l !== '').map((l) => parseTyped(l) as Frame);
+    const seedRead = frames.find((f) => f.body.type === 'offchain' && f.body.key === RAW.graduatesSeed);
+    expect((seedRead?.body as { value: { source: string; items: unknown } }).value).toMatchObject({ source: 'persist', items });
+  }, 60_000);
 
   it('saves every PERSIST_EVERY_MS once the seed is applied, and never before it', async () => {
     const stateDir = tempState();
