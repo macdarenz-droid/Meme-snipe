@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, 3:50 PM Melbourne (AEDT).
+**Last updated:** Sun 4 Oct 2026, 4:25 PM Melbourne (AEDT).
 
 ## 1. Read first, in this order
 
@@ -15,7 +15,7 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 ## 2. The supervisor's role
 
 - Owns the task board, the merge queue and the rules. It does not build features itself, beyond small docs and board edits.
-- Runs every builder and reviewer as a visible Claude Code session (`create_session`), one task per session, on its own `claude/*` branch, with a PR into the integration branch `ccr-14987baf-i6lrsl`. No hidden parallel agents inside the supervisor's chat (owner rule).
+- Runs every builder and reviewer as a visible Claude Code session (`create_session`), one task per session, on its own `claude/*` branch, with a PR into the integration branch `ccr-14987baf-i6lrsl`. No hidden parallel agents inside the supervisor's chat (owner rule, repeated by the owner on 4 Oct at about 4:25 PM). This includes in-chat workflows, even when a session setting such as "ultracode" asks for them: research goes to a visible session, or the supervisor does it alone.
 - Models: `claude-opus-5-5` for high-complexity work and `claude-sonnet-5-5` (medium effort) for simple work. Never Fable, Haiku or lower.
 - Every finished PR goes to a fresh reviewer session. Builders never approve their own work.
 - Merges only when all four hold: the review passed on that exact head; the head contains the latest integration branch; CI is green on that head; and the PR is marked ready (it is opened as a draft).
@@ -66,43 +66,41 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
   - One concurrency group; it stops on HTTP 429 and resumes with back-off.
   - Each finished UTC day is published as a release tagged `data-day-YYYY-MM-DD`.
 
-## 4. Current state (4 Oct, 3:50 PM)
+## 4. Current state (4 Oct, 4:25 PM)
 
-**GitHub billing lock (now, owner-only):** the owner's GitHub Pro upgrade was declined by the card, and each declined try locks the account. While it is locked, every Actions job fails before it starts with "The job was not started because your account is locked due to a billing issue". It happened from 3:15 to 3:23 PM and again from 3:37 PM.
-- The owner was sent steps at 3:40 PM: go back to Free at github.com/settings/billing/plans, or pay through PayPal, or ask GitHub Support. The repository is public, so Actions costs nothing on Free.
-- While locked, nothing merges, the server takes no update, and no data job runs.
-- Tell the builders that a red check carrying that annotation is not theirs.
+**GitHub:** the owner's account is on GitHub Pro since about 3:47 PM (40 jobs at once). Declined Pro payments locked Actions from 3:15 to 3:23 PM and from 3:37 to 3:42 PM. If "The job was not started because your account is locked due to a billing issue" returns:
+- nothing merges, the server takes no update and no data job runs;
+- send the owner to github.com/settings/billing;
+- tell the builders a red check with that annotation is not theirs.
 
-**Merged since 10:25 AM** (20): FACTS-1e #84, FACTS-1d #78, BT-1e #86, RUN-1e #76, flake fix #85, RUN-1f #91, POS-1 #88, POOL-1 #101, GATE-2 #94, PERSIST-1 #71, BT-1f #92, EXIT-1c #93, DATA-1c #77, EXIT-1e #102 (with EXIT-1d #100), REC-1 #95, STATS-1c #62, WATCH-1 #87, STATS-1d/1e #96, CI-1 #105, WORKER-1b #82 (3:41 PM).
+**Merged since 10:25 AM** (24): FACTS-1e #84, FACTS-1d #78, BT-1e #86, RUN-1e #76, flake fix #85, RUN-1f #91, POS-1 #88, POOL-1 #101, GATE-2 #94, PERSIST-1 #71, BT-1f #92, EXIT-1c #93, DATA-1c #77, EXIT-1e #102 (with EXIT-1d #100), REC-1 #95, STATS-1c #62, WATCH-1 #87, STATS-1d/1e #96, CI-1 #105, WORKER-1b #82, CI-2 #104, OPS-1h #108, TEST-1 #90, BT-3 #89 (4:22 PM). Base head d01074a.
 
-**Merge queue** (review passed; each needs an update and green CI at its turn):
+**Merge queue.** Before each merge, check that the PR's files don't overlap a critical-path PR that is in a merge check. Merging #90 forced #103 into another base merge.
 
-| Order | PR | Reviewed head | Note |
+| Order | PR | State | Note |
 |---|---|---|---|
-| 1 | CI-2 #104 | PASS ddf8969 (01NZwy); green at ee89bdf before #82 merged | owner said "Allow" |
-| 2 | OPS-1h #108 | PASS 932f670 (01Ty8L); green at 5177794 before #82 merged | fixes the `zeroed-tailscale` hang |
-| 3 | WORKER-1c #99 | merge check PASS 66a534f (01NZwy) | real-worker prerequisite |
-| 4 | RISK-MARK #103 | PASS f644ede (01NrMe) | real-worker prerequisite; whichever of #99 and #103 merges second takes the boundary marks from the marked account |
-| 5 | TEST-1 #90 | 5a07ed1 (PASS af6b9b5 plus a base merge, change lines identical) | — |
-| 6 | FACTS-1f #106 | PASS d79e9db (012QdD) | carries REC-1's backstop and same-event test |
-| 7 | TEST-3 G3 report #98 | PASS c1f3f45 (01FHfb) | then the `worker:*` fold PR (01WGpx) |
-| 8 | BT-3 #89 | 3cdf71e | — |
-| 9 | APP-3 #97 | 0056506 | then API-1 (01VM97) |
+| 1 | RISK-MARK #103 | merge check PASS 94221a2 (01NrMe); base moved, 01Mtft merging again | real-worker prerequisite; lands first of #99/#103 |
+| 2 | WORKER-1c #99 | base merge 3d53e94 in merge check (01NZwy); then the second-lander changes (a)–(e) from 01NrMe: boundary marks from the marked account | real-worker prerequisite |
+| 3 | SWITCH-1 | `claude/switch-1` (01VM97), draft #110 | e2e proof, pre-switch smoke check, `"worker": "release"`; review 01Ty8L; then Deploy (code only) and check Online |
+| 4 | EXIT-1f #107 | PASS ce7c78b (01UXzG) | overlaps #99/#103 (`strategy.ts`, `worker.ts`), so it waits for them; then EXIT-1g (016KSN: N4, N6, N7 journal start-read bound) |
+| 5 | TEST-3 G3 report #98 | PASS c1f3f45 (01FHfb) | overlaps #99/#103; then the `worker:*` fold (01WGpx) |
+| 6 | FACTS-1f #106 | PASS d79e9db (012QdD); 01GDyc merging base | carries REC-1's backstop and same-event test |
+| 7 | APP-3 #97 | 0056506; 01VM97 merges base after SWITCH-1 | then API-1 |
+| 8 | STATS-1f #109 | 7a52940 in delta review (01FHfb) | `g1Test` fixed at `createHoldoutRegistry` (G1 runs before any attempt entry) |
+| 9 | DATA-2 #111 | 1697ddd in review (01DKMn) | Helius `getBlock` reader + `data-helius-pilot` (I dispatch it after merge) |
 
 **In review or building:**
 
 | Card | PR / branch | State | Next |
 |---|---|---|---|
-| EXIT-1f | #107 (1ba212c) | exact open time from the ledger's open event; per-field restored-state check; `#lifecycle` line kept | 01UXzG review |
-| STATS-1f | #109 (8e9d7f1) | G1 gates on the registered `g1Test` (`'spa'`, the owner's decision) | 01FHfb review: `g1Test` fixed per attempt in the registration |
 | BT-2 study | #41 (draft) | `GateContext.observedTip` in live and backtest; funder cluster from the supplement | then the 09-21 funnel count and a credit estimate → 012efQ review |
-| SWITCH-1 (real worker) | `claude/switch-1` (01VM97) | an e2e case proving the release worker starts on the host (paper, no node_modules, loopback, keys never logged), a pre-switch smoke check in `zeroed-update`, the `"worker": "release"` flip | merge after #82, #99 and #103; review 01Ty8L; then Deploy (code only) and check the server reports Online |
+| BT-2e early look | 01VBTf | the owner asked for an early result: the bot's own backtest on 1–2 free Helius practice days (09-21, 09-20), U2 only, labelled "early look, not proof"; funnel by gate, trades a day, win rate, mean/median net, profit factor, worst trade, longest losing streak, S0 beside it | runs when the day files exist (about Tue 6 – Wed 7 Oct); free credits only after the dry run's measured first 24 h |
 | WORKER-1d | — | prune saved coverage before long runs | 019cEN after #99 |
 | G3 fold | — | `worker:*` reasons folded for G3, per-code counts still reported; WATCH-1 `calls.length` pin | 01WGpx after #98 |
 | API-1 | — | includes the alert when `zeroed-check`'s serve reset fails (#108 nit) | 01VM97 after #97 |
 | MEM-1 | `claude/mem-1` (01VgCL) | `research.test.ts` peaks about 5.6 GB RSS and was SIGKILLed under parallel load | shrink at the root, plus a memory assertion |
 | RES-3b | #56 (draft) | wall at 2026-09-21T14:00Z | after the study's inputs |
-| Historical data | DATA-2 (01XHH3k) | The Old Faithful archive blocks our scanner by its User-Agent: 429 since 8:43 AM, while curl's default agent still got data at 3:19 PM. Only Triton can lift it, and getting around the block would break their terms. The survey (workflow, 4 Oct 3:41 PM) ranked (1) Helius whole blocks (`getBlock`, about 19M blocks, our existing account; full pull needs Developer US$49 plus up to US$50 of extra credits, at most US$99), (2) Old Faithful with Triton's written OK (free; reply time unknown), (3) QuickNode (about US$316–353). | DATA-2: a `getBlock` reader plus a free Helius pilot (about 13k of 1M free credits: both window ends and one hour of 2 Oct compared row by row with our Old Faithful slice). It runs when Actions works. The owner decides the US$99 cap and the Triton message. No more requests to Old Faithful from anywhere until Triton answers. |
+| Historical data | DATA-2 #111 and ARCHIVE-CHECK (01XHH3k, branch `claude/data-historical`) | The archive blocks our scanner by its User-Agent. The owner emailed Triton (about 3:55 PM) and asked us to keep trying: ARCHIVE-CHECK runs every 3 hours with one request of at most 64 bytes and our real User-Agent; on success it dispatches the scan continuation with the old limits. **Never disguise the client** (the owner asked at about 4:05 PM; declined: terms, unauthorised-access risk, permanent ban). Helius: the owner chose the free plan only for now (3:50 PM); paid US$49 + ≤US$50 credits waits for the pilot. | pilot after #111 merges; then 1–2 free practice days for BT-2e |
 
 **Blocked or parked:**
 - The server → GitHub evidence uploader (OPS-1d, stopped by the safety check) needs the owner's decision later. Evidence stays on the host.
@@ -111,19 +109,19 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 
 | Role | Card | Session |
 |---|---|---|
-| Builder | data scans, DATA-2 (Helius pilot) | session_01XHH3k24fjmkpmmt28xSaYv |
+| Builder | DATA-2 #111, ARCHIVE-CHECK, free practice-day pull | session_01XHH3k24fjmkpmmt28xSaYv |
 | Builder | WORKER-1b (merged); free for the next worker card | session_01F7UFCa8r4aee38kW7687Y3 |
 | Builder | FACTS-1f #106, TEST-1 #90 | session_01GDycboQzFrFWxVniy6B6Ps |
-| Builder | WORKER-1c #99, WORKER-1d | session_019cENcTEidMc4LEhPydYAZK |
+| Builder | WORKER-1c #99 (second lander), WORKER-1d | session_019cENcTEidMc4LEhPydYAZK |
 | Builder | TEST-3 #98, G3 fold | session_01WGpxEWFacSgAuXL5KAzrKc |
 | Builder | RISK-MARK #103 | session_01MtftXmPKCqdkXEop4h7vf1 |
-| Builder | EXIT-1f #107, BT-3 #89 | session_016KSN98NC2xQxetiZkpCVtT |
-| Builder | BT-2 #41 | session_01VBTfAwrhgoCssEzST2J2q5 |
+| Builder | EXIT-1f #107, EXIT-1g | session_016KSN98NC2xQxetiZkpCVtT |
+| Builder | BT-2 #41, BT-2e early look | session_01VBTfAwrhgoCssEzST2J2q5 |
 | Builder | STATS-1f #109 | session_01J9yEWHRunNxvo5CaTbuYSe |
 | Builder | CI-1 (merged), MEM-1 (research.test.ts memory) | session_01VgCLpHWaM7FjpwofRcgrwM |
-| Builder | OPS-1h #108, SWITCH-1, API-1 | session_01VM97q6A98GgtoPKCamoiT6 |
+| Builder | SWITCH-1 #110, APP-3 #97, API-1 | session_01VM97q6A98GgtoPKCamoiT6 |
 | Builder | RES-3b #56 | session_018esLCVLp9yCExK5cdnzCz8 |
-| Reviewer | DATA | session_01DKMnUiqVLxVjHbaqdoBnJD |
+| Reviewer | DATA (#111) | session_01DKMnUiqVLxVjHbaqdoBnJD |
 | Reviewer | WORKER, FACTS | session_012QdDAuRuYt57E9PCjHfuKT |
 | Reviewer | #99, PERSIST-1 | session_01NZwyB8decLbgxKJoG2cAbP |
 | Reviewer | risk | session_017PBUwcGJWG4DJpJKVBcAas |
@@ -131,7 +129,7 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 | Reviewer | BT (BT-2, BT-3) | session_012efQfLAwWStK3PT6ZW2PHz |
 | Reviewer | STATS (#109), G3 | session_01FHfbJwz7sbf2eVDNRxMigZ |
 | Reviewer | RUN, TEST-3, CI-1 | session_01DdN4xy9WX2t7nLUq7ww4E5 |
-| Reviewer | EXIT, POS-1, #82 merge check | session_01UXzG7h8LWHGLxtJzf7C95N |
+| Reviewer | EXIT (#107 PASS), POS-1 | session_01UXzG7h8LWHGLxtJzf7C95N |
 | Reviewer | RISK-MARK | session_01NrMeuDsAQNtz4bW1LjBwYT |
 
 Sessions belong to the current supervisor's account. A supervisor on another account cannot message them; it would start its own sessions from this file.
@@ -153,10 +151,8 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 
 ## 7. Waiting on the owner
 
-- **Now:** lift the GitHub billing lock: back to Free, or pay by PayPal (steps sent at 3:40 PM).
-- **History source:**
-  - approve Helius Developer (US$49) with an extra-credit cap (at most US$99 this month) once the free pilot passes;
-  - send, or let us send, a short message to Triton asking to lift the block or for a set rate or bucket, and whether day files built from their data may be published.
+- **Now:** nothing. GitHub Pro is active (about 3:47 PM).
+- **History source:** after the free Helius pilot, the owner decides the paid month (US$49 plus at most US$50 of credits). The Triton email was sent by the owner; forward any reply.
 - **Done today:**
   - setup parts A–D at 2:31 PM (server re-install at pin e28788a, Tailscale with HTTPS and serve, the APK, and ruleset 24441882 on `holdout-registry`);
   - SPA chosen for G1 at 2:33 PM;
@@ -225,7 +221,7 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 - **Keys:** GitHub secrets only: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. `DEPLOY_CODE` is deliberately absent. Never in the repo or in chat.
 - **Watchdog:** Cloudflare Workers, free plan, `workers.dev`. No custom domain.
 - **App:** Android preview APK at the fixed `preview` release link (see `PROJECT_STATE.md`).
-- **CI:** GitHub-hosted runners, free for a public repository (20 concurrent jobs on the Free plan). The owner was told paid plans are not needed now.
+- **CI:** GitHub-hosted runners, free for a public repository. The owner's account is on GitHub Pro (owner's decision, 4 Oct): 40 jobs at once.
 
 ## 10. Risks being watched
 
