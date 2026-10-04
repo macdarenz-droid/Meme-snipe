@@ -1,0 +1,58 @@
+# Data quality report
+
+Dataset window 2026-10-01 to 2026-10-02 (exclusive). Generated 2026-10-03T19:40:52.728Z.
+
+## Coverage
+
+Scanned slots 452277000 to 452281499 (block times 2026-10-01T11:40:45.000Z to 2026-10-01T12:00:44.000Z). Every block's parent is the previous scanned block (0 breaks), so no block is missing in between.
+
+| Day | Whole day covered | Blocks | Warm-up | Curve trades | AMM trades |
+|---|---|---|---|---|---|
+| 2026-10-01 | partly | 4496 | yes | 33810 | 34714 |
+
+## Decoding
+
+Decode failures: 0. Unknown events: {}. Newer layouts than the IDL: {}. Coverage gaps: [].
+
+## Reserve chain
+
+Bonding curve real reserves: 33238 of 33238 consecutive trade pairs rebuild exactly (100.0000%). Virtual reserves: 21441 of 21441 (100.0000%) on regular curves; on mayhem-mode curves, where the program re-prices virtual reserves, 3745 of 11797.
+PumpSwap: 34714 of 34714 trades start from exactly the rebuilt reserves (100.0000%); 119 liquidity, boost and pool-creation events applied.
+
+## Against recorded account balances
+
+Curves quoted in a token other than SOL: 1181 trades; their quote token account equals real_quote_reserves in 1172 of 1172 checks and is never below it in 1172 (the excess is quote tokens held by the curve outside its reserves, such as fees awaiting distribution; real reserves themselves rebuild exactly). Bonding curve token account: 33551 of 33551 checks equal real_token_reserves plus the reserved migration tokens exactly (100.0000%). Lamports: 32980 of 32980 checks keep the same rent offset as the previous check (188 of them changed exactly at an account extension) (100.0000%). Most common offsets (reserved tokens | rent): [["206900000000000|1417320",23763],["206900000000000|1285240",9789]].
+PumpSwap: 34705 of 34705 checks match both vault balances exactly (100.0000%).
+
+## Swap attribution
+
+A swap credits or debits user_token_owner (the owner of the token account the instruction used), never user or the signer. 33810 curve and 34714 PumpSwap trades; 76 with user_token_owner different from user; 184 with an empty owner, 0 of them marked swap_owner_unknown, 184 without a user account (boost buy-and-burn), 0 unmarked; 0 rows without the attribution columns.
+
+## Token movements
+
+Coverage: mints ending in "pump" have every token movement of every successful transaction (complete); other mints have only the movements inside transactions that carry a pump or PumpSwap event of that mint, listed in movement_coverage (scope pump_transactions) for the units' slot ranges, and their ownership outside those rows is unresolved.
+
+27337 rows in 1 files ({"transfer":20045,"burn":3978,"mint":3314}); 0 malformed; 366 with amount 0 (valid on chain, not a miss); 3028 rows of other mints, 0 of them outside movement_coverage (873 coverage rows, 0 with an unknown scope). Ownership unresolved for 4 mints from the slot of an undecoded token instruction ({"transfer_fee":5,"owner_change":155}); 0 rows with an owner that could not be resolved (coverage records count 0). 
+
+Supply: 425 "pump" mints with their CreateEvent in the dataset; token_total_supply + mints - burns (movement rows) - BoostBuyAndBurnEvent burns is below zero for 0. Ownership per holder is not rebuilt here.
+
+Balances: 153 of 153 (transaction, "pump" mint) pairs match exactly: per owner, the token balance change in the raw record equals the sum of that transaction's movement rows. Scope: successful raw records of transactions that reference neither pump nor PumpSwap (plain token transactions of hash-sampled mints); 2028 raw records that touch pump or PumpSwap are not balance-checked here (their movement rows are checked against the instructions by the parity check).
+
+## Regime boundaries
+
+Program and configuration changes that split the data into regimes (UPG-1b, PR #44). Before B4 the trade events are exactly two fields (16 bytes) shorter; the strict QA allows that layout only in units that start before B4.
+
+| Id | UTC | Slots | Change |
+|---|---|---|---|
+| B2 | 2026-07-21T14:23Z | admin 434319990 | admin BOOST on, migration economics |
+| B3 | 2026-09-09T19:30Z | pump 445690911, pump_amm 445691021, other 445691085, admin 445691266 | fee and creator-fee config changes |
+| B4 | 2026-09-12T15:24Z | pump_amm 446462733, pump 446462760, admin 446462883 | TradeEvent, BuyEvent and SellEvent grew 16 bytes (holder_rewards_bps, holder_rewards) |
+| B5 | 2026-10-02T20:00Z | n/a | undocumented upgrade: +8 bytes on trade events, new event discriminators; 2026-10-02 is the regime-boundary day, never a decision day |
+
+## Verdict
+
+FAIL: day 2026-10-01 incomplete
+
+Parity scope: raw records, and so the decoder parity check (qa/parity.json), cover only transactions of hash-sampled mints (h(mint) < 0.05, retention curve-all,canonical-all,sample). Rows of other mints come from the same decoder but are not re-decoded one by one; this is sample parity, not full-row parity.
+
+Raw records: 4601; signature mismatches 0; 3880 of 3880 trade and failed transactions of hash-sampled mints have their raw record.
