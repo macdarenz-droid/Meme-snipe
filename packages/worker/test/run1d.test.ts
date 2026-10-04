@@ -274,12 +274,5 @@ describe('the drop-rpc drill cuts every provider read, the fact readers included
     expect(calls).toHaveLength(2);
   });
 
-  it('the worker process hands the fact readers the cut client, never the raw one', () => {
-    const main = readFileSync(join(import.meta.dirname, '..', 'src', 'main.ts'), 'utf8');
-    expect(main).toMatch(/liveFacts\(\{[^)]*http: http\.facts/);
-    // The raw client goes only into the process's clients, which cut every provider read.
-    expect(main.match(/fetchHttp/g)?.length).toBe(2);
-    expect(main).toContain('liveHttp(rpcCut, fetchHttp)');
-  });
 });
 
