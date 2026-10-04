@@ -10,7 +10,7 @@ import { RUG_CONFIG } from '../../core/src/config/index.ts';
 import { Engine, type LogRecord } from '../../core/src/engine/index.ts';
 import { HARD_GATES, HARD_STAGE, candlesKey, evaluateHardRejects, gatesOfStages, holdersKey, mintKey } from '../../core/src/gates/index.ts';
 import { contextOf, deps, drop, MINT, passingFacts, patch, request, session } from '../../core/test/gates/world.ts';
-import { GATE_REASONS_PREFIX, HARD_STAGE_GROUPS, hardAllowsEntry, LiveStrategy, NOT_EVALUATED, stagedHardRejects } from '../src/engine/strategy.ts';
+import { GATE_REASONS_PREFIX, HARD_STAGE_GROUPS, hardAllowsEntry, LiveStrategy, NOT_EVALUATED, STAGE_PREFIX, stagedHardRejects } from '../src/engine/strategy.ts';
 import { replayRecorded, type Frame, type Release } from '../src/providers/index.ts';
 import { engineFeed } from '../src/run/engine-feed.ts';
 import { parseTyped } from '../src/run/json.ts';
@@ -112,14 +112,19 @@ describe('the live worker records staged rejects, and the recording replays to t
       m.fact(mintKey(MINT), { unreadable: true });
     });
     await h.worker.stop();
-    const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; event?: string; reasons?: string[]; gate_reasons?: { gate: string; code: string }[] });
+    const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; event?: string; reasons?: string[]; stage?: string; gate_reasons?: { gate: string; code: string; input?: string; needed_by?: string }[] });
     const rejects = journal.filter((l) => l.kind === 'decision' && (l.reasons ?? [])[0] === 'reject');
     const stage2 = rejects.find((l) => (l.reasons ?? []).some((x) => x.includes('H16 malformed mint')));
     expect(stage2).toBeDefined();
     expect(stage2!.reasons!.join(' ')).toContain(`${NOT_EVALUATED}${STAGES_3_4.join(',')}`);
+    // SUMMARY-FUNNEL: the stage that refused, and the evidence reason's input and the gate that needed it.
+    expect(stage2!.stage).toBe('hard-2');
+    expect(stage2!.gate_reasons).toEqual(expect.arrayContaining([expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'mint', needed_by: expect.stringMatching(/^H\d+$/) })]));
     const stage3 = rejects.find((l) => (l.reasons ?? []).some((x) => x.includes('H16 malformed holders')));
     expect(stage3).toBeDefined();
     expect(stage3!.reasons!.join(' ')).not.toContain(NOT_EVALUATED);
+    expect(stage3!.stage).toBe('hard-3-4');
+    expect(stage3!.gate_reasons).toEqual(expect.arrayContaining([expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'holders' })]));
 
     // The recording, replayed through the same engine path: the same decisions, with the same typed reasons.
     const dir = join(h.stateDir, 'recorder', h.worker.boot);
@@ -132,8 +137,9 @@ describe('the live worker records staged rejects, and the recording replays to t
     engine.drain();
     const replayed = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' && r.reasons[0] === 'reject' ? [r] : []));
     const typed = (reasons: readonly string[]) => JSON.parse(reasons.find((x) => x.startsWith(GATE_REASONS_PREFIX))!.slice(GATE_REASONS_PREFIX.length)) as unknown;
-    expect(replayed.map((r) => ({ event: r.eventId, reasons: r.reasons.filter((x) => !x.startsWith(GATE_REASONS_PREFIX)), gate_reasons: typed(r.reasons) })))
-      .toEqual(rejects.map((l) => ({ event: l.event, reasons: l.reasons, gate_reasons: l.gate_reasons })));
+    const stageOf = (reasons: readonly string[]) => reasons.find((x) => x.startsWith(STAGE_PREFIX))?.slice(STAGE_PREFIX.length);
+    expect(replayed.map((r) => ({ event: r.eventId, reasons: r.reasons.filter((x) => !x.startsWith(GATE_REASONS_PREFIX) && !x.startsWith(STAGE_PREFIX)), gate_reasons: typed(r.reasons), stage: stageOf(r.reasons) })))
+      .toEqual(rejects.map((l) => ({ event: l.event, reasons: l.reasons, gate_reasons: l.gate_reasons, stage: l.stage })));
   });
 });
 
