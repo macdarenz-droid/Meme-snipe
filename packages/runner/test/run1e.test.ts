@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { STUB_ENTRY, type JournalLine } from '../src/contract.ts';
-import { backupTime, LocalControl, snapshotState, SystemdControl, type Tabletop } from '../src/control.ts';
+import { backupTime, LocalControl, SystemdControl } from '../src/control.ts';
+import { HostLike } from './host-like.ts';
 import { checkJournal } from '../src/journal.ts';
 import { item4 } from '../src/item4.ts';
 import { makePlan } from '../src/plan.ts';
@@ -87,31 +88,11 @@ describe('b. the live worker\'s state when a host backup was taken', () => {
   });
 });
 
-// The host's tabletop with a stand-in for the hourly backup: the live state dir copied when the tabletop starts.
-class HostLike extends LocalControl {
-  readonly backupDir: string;
-  readonly restoreEmpty: boolean;
-  readonly named: boolean;
-  readonly liveDir: string;
-  constructor(o: ConstructorParameters<typeof LocalControl>[0], backupDir: string, restoreEmpty: boolean, named: boolean) {
-    super(o);
-    this.liveDir = o.stateDir!;
-    this.backupDir = backupDir;
-    this.restoreEmpty = restoreEmpty;
-    this.named = named;
-  }
-  override async tabletop(o: { readonly restore: boolean; readonly restoreFrom?: string }): Promise<Tabletop> {
-    if (!this.restoreEmpty) snapshotState(this.liveDir, this.backupDir);
-    const t = await super.tabletop({ restore: o.restore, restoreFrom: this.backupDir });
-    return this.named ? { ...t, backup: { name: 'zeroed-stand-in.tar.age', at: Date.now() - 50 } } : t;
-  }
-}
-
 describe('b–d. a host-loss tabletop on the host, end to end', () => {
   const hostRun = async (restoreEmpty: boolean, named: boolean) => {
     // A position open from the first tick and held (no exit within the run), so the state is steady around the backup.
     const t = await setup({ ZEROED_STUB_CYCLE_MS: '60000', ZEROED_STUB_OPEN_AT_START: '1' });
-    const control = new HostLike(t.opts, join(t.dir, 'backup'), restoreEmpty, named);
+    const control = new HostLike(t.opts, { backupDir: join(t.dir, 'backup'), evidenceDir: t.evidenceDir, restoreEmpty, namedFrom: named ? 1 : Number.POSITIVE_INFINITY, sampleMs: 100, windowMs: 300 });
     const res = await runSegment({
       ...t.common, control, recoverMs: 6000, segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'tabletop', offsiteBackup: true, backupWindowMs: 300,
       newRun: { runId: 'run', targetMs: 20_000, entry: STUB_ENTRY, restarts: 3, causes: ['host-loss', 'crash', 'crash'], restartWindowMs: 500, rpcDrops: 0 },
@@ -123,7 +104,7 @@ describe('b–d. a host-loss tabletop on the host, end to end', () => {
   it('compares the restore with what the live worker held when the backup was taken', async () => {
     const { t, r, d } = await hostRun(false, true);
     expect(d).toMatchObject({ cause: 'host-loss', off_run: true, compared: true, pass: true, keep: 1 });
-    expect(d.notes).toContain("compared with the live worker's state when zeroed-stand-in.tar.age was taken");
+    expect(d.notes).toContain("compared with the live worker's state when zeroed-stand-in-1.tar.age was taken");
     expect(d.state!.missing).toEqual([]);
     expect(r.recovery_by_cause['host-loss']).toMatchObject({ exercised: 1, self_reported: 0 });
     // d. The tabletop worker's quota is sampled like any boot, and its journal is kept as evidence.
