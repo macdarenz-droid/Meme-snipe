@@ -3,7 +3,16 @@
 # archive once whether it serves our scanner again, and if it does, dispatch the next
 # scan batch. Run by .github/workflows/archive-check.yml.
 #
-#   - While a data-scan run is active or queued, it does nothing (no request at all).
+#   - While a data-scan run that may read the archive is active or queued, it does
+#     nothing (no request at all). A run counts as Helius-only (source helius, which
+#     never touches the archive) only when its title, set by data-scan.yml's run-name,
+#     is exactly "data-scan scan source=helius"; any other title (the archive source,
+#     a run dispatched before run-name existed, anything unexpected) counts as archive,
+#     unless its id is in HELIUS_RUNS (a manual dispatch input, digits and commas only,
+#     for Helius runs dispatched before run-name; scheduled checks never set it).
+#   - A served answer dispatches a scan only while no data-scan run at all is active or
+#     queued: one lane (data-scan's concurrency group "data-scan"), and a new dispatch
+#     must never replace a pending chained run of a Helius day.
 #   - Otherwise it makes ONE request: a range GET of 64 bytes with the scanner's own
 #     User-Agent (read from scanner/archive.go), from the runner. Never another agent,
 #     host, address, proxy or client: that would be getting around the block, which
@@ -34,10 +43,22 @@ if [[ -z "$ua" || "$ua" != zeroed-historical-scanner/* ]]; then
   exit 1
 fi
 
-active=$("$gh" run list --repo "$GH_REPO" --workflow data-scan.yml --limit 50 --json status \
-  --jq '[.[] | select(.status != "completed")] | length')
-if [[ "$active" != "0" ]]; then
-  echo "archive-check $(date -u +%FT%TZ): $active data-scan run(s) active or queued; no request made" | tee -a "$summary"
+named=${HELIUS_RUNS:-}
+if [[ -n "$named" && ! "$named" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+  echo "archive-check: helius_runs must be run ids separated by commas, got '$named'; no request made" | tee -a "$summary"
+  exit 1
+fi
+runs=$("$gh" run list --repo "$GH_REPO" --workflow data-scan.yml --limit 50 --json databaseId,status,displayTitle \
+  --jq '.[] | select(.status != "completed") | "\(.databaseId)\t\(.displayTitle)"')
+active=0 archive=0
+while IFS=$'\t' read -r id title; do
+  [[ -n "$id" ]] || continue
+  active=$(( active + 1 ))
+  if [[ "$title" == "data-scan scan source=helius" || ",$named," == *",$id,"* ]]; then continue; fi
+  archive=$(( archive + 1 ))
+done <<< "$runs"
+if (( archive > 0 )); then
+  echo "archive-check $(date -u +%FT%TZ): $archive data-scan run(s) that may read the archive active or queued; no request made" | tee -a "$summary"
   exit 0
 fi
 
@@ -67,6 +88,10 @@ now=$(date -u +%FT%TZ)
 echo "archive-check $now: status ${code:-none}, $got bytes, curl exit $rc, cf-ray ${ray:-none}"
 if ! [[ "$code" == 206 && $rc == 0 && $got -le 64 ]]; then
   echo "archive-check: not served; nothing dispatched until the next check" | tee -a "$summary"
+  exit 0
+fi
+if (( active > 0 )); then
+  echo "archive-check: served; nothing dispatched while $active Helius data-scan run(s) are active or queued (one lane; the next check dispatches once they end)" | tee -a "$summary"
   exit 0
 fi
 
