@@ -307,9 +307,13 @@ fi
 in_c "echo 2 > /var/lib/zeroed/open_intents"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with open intents"
-# Held by a worker that is not running: one alert with where the console steps are; its start (reconcile first)
-# writes the count again, and the deploy that follows says the hold is gone.
+# Held by a worker that is not running: no alert on the first run (a routine restart is over by the next one), one
+# alert with where the console steps are on the second; its start (reconcile first) writes the count again, and the
+# deploy that follows says the hold is gone.
 in_c "systemctl stop zeroed-worker.service && echo 2 > /var/lib/zeroed/open_intents"
+upd_run || true
+[ -z "$(current)" ] || fail "deployed with open intents and the worker stopped"
+grep -q 'is held: the worker is inactive' "$STATE/telegram.jsonl" && fail "the intents hold alerted on its first run"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with open intents and the worker stopped"
 grep -q 'is held: the worker is inactive and its last open-intent count is 2. Nothing updates until a worker starts and reconciles.' "$STATE/telegram.jsonl" || fail "no alert for an update held by a stopped worker"
@@ -341,6 +345,13 @@ done
 # file, so both must come back byte for byte (OPS-1j).
 MARK="{\"e2e\":\"$(rnd 8)\"}"
 in_c "printf '{}\n' > /var/lib/zeroed/exits.json && printf '%s\n' '$MARK' > /var/lib/zeroed/e2e-state.json && chown zeroed-worker: /var/lib/zeroed/exits.json /var/lib/zeroed/e2e-state.json"
+# The owner's controls (BACKUP-STATE): a tripped kill switch, in the worker's own control.json shape, written while the
+# worker is stopped (a running worker rewrites the file from what it holds) and read by the worker as it starts.
+KILL_AT="$(( $(date +%s) * 1000 ))"
+latches() { printf '{"paused":false,"pausedAtMs":null,"latches":{"killTrippedAtMs":%s,"killRearmedAtMs":null,"weeklyTrippedAtMs":null,"weeklyReviewedAtMs":null,"lossReviewedAtMs":null,"sizeStepUpApproved":false}}' "$1"; }
+in_c "systemctl stop zeroed-worker.service && printf '%s\n' '$(latches "$KILL_AT")' > /var/lib/zeroed/control.json && chown zeroed-worker: /var/lib/zeroed/control.json && systemctl start zeroed-worker.service"
+in_c "for i in \$(seq 60); do systemctl is-active --quiet zeroed-worker.service && exit 0; sleep 1; done; exit 1" || fail "worker not back with a tripped kill switch"
+in_c "jq -e '.latches.killTrippedAtMs == $KILL_AT' /var/lib/zeroed/control.json" >/dev/null || fail "the worker did not keep its tripped kill switch"
 in_c "systemctl start zeroed-backup.service" || fail "backup failed"
 bk="$(in_c "ls -1 /var/backups/zeroed/ | tail -1")"
 [[ "$bk" =~ ^zeroed-[0-9]{8}T[0-9]{6}Z\.tar\.age$ ]] || fail "no backup file"
@@ -353,6 +364,9 @@ in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalend
 # Real restore: the newer state goes aside, the backup's comes back, the evidence stays, the worker starts again.
 # The evidence is append-only and the worker appends to it as it stops and starts, so "kept" means every byte
 # that was there before the restore is still there, in place.
+# The newer state has the kill switch cleared, as a host rebuilt without the backup would: the restore must bring the
+# trip back, and the worker that starts on it must keep it.
+in_c "systemctl stop zeroed-worker.service && printf '%s\n' '$(latches null)' > /var/lib/zeroed/control.json"
 in_c "printf '{\"newer\":true}\n' > /var/lib/zeroed/e2e-state.json && touch /var/lib/zeroed/journal.jsonl && cp /var/lib/zeroed/journal.jsonl /root/journal-before.jsonl"
 in_c "zeroed-restore /etc/zeroed/age/host.key" >"$LOGS/restore.txt" 2>&1 || { cat "$LOGS/restore.txt"; fail "restore"; }
 [ "$(in_c "cat /var/lib/zeroed/e2e-state.json")" = "$MARK" ] || fail "restore did not bring back the worker's JSON state"
@@ -361,7 +375,10 @@ in_c "cmp -s -n \$(stat -c %s /root/journal-before.jsonl) /root/journal-before.j
 in_c "rm -f /root/journal-before.jsonl"
 in_c "test ! -e /var/lib/zeroed/MANIFEST.sha256 && stat -c %U /var/lib/zeroed/exits.json /var/lib/zeroed/e2e-state.json | sort -u" | grep -qx zeroed-worker || fail "restored files not the worker's"
 in_c "for i in \$(seq 60); do systemctl is-active --quiet zeroed-worker.service && exit 0; sleep 1; done; exit 1" || fail "worker not back after restore"
-pass "backup: hourly timer, $bk encrypted, worker JSON state included; restore drill PASS into a scratch directory, FAIL on a tampered file; zeroed-restore brings the state back, keeps the evidence and the replaced state, restarts the worker"
+in_c "jq -e '.latches.killTrippedAtMs == $KILL_AT' /var/lib/zeroed-prerestore/*/control.json" >/dev/null && fail "test setup: the replaced control.json still had the trip"
+sleep 5
+in_c "systemctl is-active --quiet zeroed-worker.service && jq -e '.latches.killTrippedAtMs == $KILL_AT' /var/lib/zeroed/control.json" >/dev/null || fail "the tripped kill switch did not survive the restore"
+pass "backup: hourly timer, $bk encrypted, worker JSON state included; restore drill PASS into a scratch directory, FAIL on a tampered file; zeroed-restore brings the state back, keeps the evidence and the replaced state, restarts the worker; a tripped kill switch survives a restore over a host that had it cleared"
 
 # Off-server copy: the owner's backup code (shown once, never stored), then a silent Telegram document.
 BCODE="$(in_c "zeroed-backup-code" | tee "$LOGS/console/backup-code.txt" | sed -n 's/^  \([a-z -]*\)$/\1/p')"

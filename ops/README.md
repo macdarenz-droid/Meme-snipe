@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/750cb57eb3880fb83017f2c9f0eb8b7a54929163/ops/install.sh -o i && echo 'eee8d9302e465a3b62faf4f40d44e94de7a00bcfbf784b8eab90ab5215e42f58  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/750cb57eb3880fb83017f2c9f0eb8b7a54929163/ops/install.sh -o i && echo 'a7e2f869f98fb5913cd6511069f9246b1006a16dea87a267069d17bdac8b8596  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/750cb57e
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `eee8d9302e465a3b62faf4f40d44e94de7a00bcfbf784b8eab90ab5215e42f58`
+SHA-256 of `install.sh`: `a7e2f869f98fb5913cd6511069f9246b1006a16dea87a267069d17bdac8b8596`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -74,7 +74,7 @@ First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). 
 
 ### Updates held by open intents
 
-Only the worker's own count lifts this gate, and only a worker that starts writes it: its start runs `--reconcile` first, which reconciles every intent against the ledger and writes `open_intents`. When an update is waiting and the worker is not running, Telegram gets one alert: "update … is held: the worker is … and its last open-intent count is …". A second message says when the hold is gone. Never write `open_intents` or change the ledger by hand: a `0` the worker did not write lets an update through over intents nobody reconciled.
+Only the worker's own count lifts this gate, and only a worker that starts writes it: its start runs `--reconcile` first, which reconciles every intent against the ledger and writes `open_intents`. When an update is waiting and the worker has been down for two runs of `zeroed-update` in a row (5 to 10 minutes; a routine restart is over by the second), Telegram gets one alert: "update … is held: the worker is … and its last open-intent count is …". A second message says when the hold is gone. Never write `open_intents` or change the ledger by hand: a `0` the worker did not write lets an update through over intents nobody reconciled.
 
 At the server console, as root:
 1. Where it stands: `zeroed-status`, `systemctl status zeroed-worker --no-pager`, `journalctl -u zeroed-worker -n 100 --no-pager` (why it stopped) and `cat /var/lib/zeroed/open_intents` (the last count).

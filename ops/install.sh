@@ -2346,18 +2346,25 @@ fi
 
 # Fails closed: a worker that is starting, reconciling, restarting or stopped holds the update too unless its
 # last count is 0 (logic.sh intents_hold). A hold by a worker that is not running is never silent: only a worker
-# that starts and reconciles can lift it, so the owner is told once, with where the console steps are.
+# that starts and reconciles can lift it, so the owner is told once, with where the console steps are. A routine
+# restart is over within one run (every 5 minutes), so the alert waits for a second run in a row with it down.
 wstate="$(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
 if intents_hold "$wstate" /var/lib/zeroed; then
   n="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
   log "Waiting on ${commit:0:12}: the worker has open intents ($n)."
   if [ "$wstate" != active ]; then
-    alert intents-hold "ALERT Zeroed host: update ${commit:0:12} is held: the worker is ${wstate:-unknown} and its last open-intent count is $n. Nothing updates until a worker starts and reconciles. Console steps: ops/README.md, \"Updates held by open intents\"."
+    down="$(cat "$STATE_DIR/intents_hold_down" 2>/dev/null || true)"
+    [[ "$down" =~ ^(0|[1-9][0-9]{0,5})$ ]] || down=0
+    down=$((down + 1))
+    printf '%s\n' "$down" > "$STATE_DIR/intents_hold_down"
+    [ "$down" -lt 2 ] || alert intents-hold "ALERT Zeroed host: update ${commit:0:12} is held: the worker is ${wstate:-unknown} and its last open-intent count is $n. Nothing updates until a worker starts and reconciles. Console steps: ops/README.md, \"Updates held by open intents\"."
   else
+    rm -f "$STATE_DIR/intents_hold_down"
     alert_clear intents-hold "CLEARED Zeroed host: the worker is running again; update ${commit:0:12} waits for its open intents ($n) to finish."
   fi
   exit 0
 fi
+rm -f "$STATE_DIR/intents_hold_down"
 alert_clear intents-hold "CLEARED Zeroed host: no open intents hold update ${commit:0:12} now."
 
 dest="/opt/zeroed/releases/$commit"

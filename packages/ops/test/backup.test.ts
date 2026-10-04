@@ -297,7 +297,7 @@ describe('open intents hold updates and restarts, fail closed', () => {
     expect(busy('active', unit, { open_intents: '0\n', 'ledger.sqlite': 'x' })).toBe('busy');
   });
 
-  it("zeroed-update's hold, run in bash: a hold by a worker that is not running alerts once, and clears when it lifts", () => {
+  it("zeroed-update's hold, run in bash: a worker down two runs in a row with intents held alerts once, and it clears when the hold lifts", () => {
     const update = read('ops/host/files/usr/local/sbin/zeroed-update');
     const gate = update.slice(update.indexOf('# Fails closed:'), update.indexOf('dest="/opt/zeroed/releases/$commit"'));
     const common = read('ops/host/files/usr/local/lib/zeroed/common.sh');
@@ -327,20 +327,31 @@ describe('open intents hold updates and restarts, fail closed', () => {
       return { proceed: r.stdout.includes('PROCEED'), told: after.slice(before.length).trim() };
     };
     expect(gate.split('/var/lib/zeroed').length).toBeGreaterThan(2);
+    const held = (state: string, count: string) =>
+      `ALERT Zeroed host: update ${'d'.repeat(12)} is held: the worker is ${state} and its last open-intent count is ${count}. Nothing updates until a worker starts and reconciles. Console steps: ops/README.md, "Updates held by open intents".`;
     // A running worker with intents open: a normal wait, nothing to tell.
     expect(step('active', '2\n')).toEqual({ proceed: false, told: '' });
-    // It goes down with intents open: one alert naming its state and last count, then silence while it stays down.
-    const down = step('failed', '2\n');
-    expect(down.proceed).toBe(false);
-    expect(down.told).toBe(`ALERT Zeroed host: update ${'d'.repeat(12)} is held: the worker is failed and its last open-intent count is 2. Nothing updates until a worker starts and reconciles. Console steps: ops/README.md, "Updates held by open intents".`);
+    // A routine restart (down for one run, then running): never pages.
+    expect(step('activating', '2\n')).toEqual({ proceed: false, told: '' });
+    expect(step('active', '2\n')).toEqual({ proceed: false, told: '' });
+    expect(step('failed', '2\n')).toEqual({ proceed: false, told: '' });
+    // Down a second run in a row: one alert naming its state and last count, then silence while it stays down.
+    expect(step('failed', '2\n')).toEqual({ proceed: false, told: held('failed', '2') });
     expect(step('activating', null)).toEqual({ proceed: false, told: '' });
     // Back up and still busy: the episode closes; the update keeps waiting.
     expect(step('active', '1\n')).toEqual({ proceed: false, told: `CLEARED Zeroed host: the worker is running again; update ${'d'.repeat(12)} waits for its open intents (1) to finish.` });
-    // Down again with no readable count: a new episode, "unknown".
-    expect(step('inactive', null).told).toContain('the worker is inactive and its last open-intent count is unknown.');
+    // Down again with no readable count: the grace starts over, then a new episode says "unknown".
+    expect(step('inactive', null)).toEqual({ proceed: false, told: '' });
+    expect(step('inactive', null)).toEqual({ proceed: false, told: held('inactive', 'unknown') });
     // Reconciled to 0: the update goes ahead and the owner hears the hold is gone.
     expect(step('inactive', '0\n')).toEqual({ proceed: true, told: `CLEARED Zeroed host: no open intents hold update ${'d'.repeat(12)} now.` });
     expect(step('active', '0\n')).toEqual({ proceed: true, told: '' });
+    // The run counter starts over once the update went ahead; a counter that is not a plain number counts as 0.
+    expect(step('inactive', '1\n')).toEqual({ proceed: false, told: '' });
+    expect(step('active', '0\n')).toEqual({ proceed: true, told: '' });
+    writeFileSync(join(host, 'intents_hold_down'), '08\n');
+    expect(step('inactive', '1\n')).toEqual({ proceed: false, told: '' });
+    expect(step('inactive', '1\n')).toEqual({ proceed: false, told: held('inactive', '1') });
   });
 
   it('the update gate and the safe-restart check both use it, whatever the worker state', () => {
