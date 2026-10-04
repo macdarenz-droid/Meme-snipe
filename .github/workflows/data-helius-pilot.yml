@@ -55,13 +55,13 @@ jobs:
           echo "${GO_SHA256}  $RUNNER_TEMP/go.tgz" | sha256sum -c -
           sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "$RUNNER_TEMP/go.tgz" && rm "$RUNNER_TEMP/go.tgz"
           echo "/usr/local/go/bin" >> "$GITHUB_PATH"
-      - name: Build scanner
-        working-directory: research/historical/scanner
+      - name: Build the RPC scanner
+        working-directory: research/historical/rpcscan
         run: |
           go version
           go test ./...
-          rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
-          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          rev=$("$GITHUB_WORKSPACE/research/historical/ci/rpcscan-rev.sh")
+          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-rpcscan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Pilot (free plan, hard credit stop)
         env:
@@ -71,7 +71,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/report"
           # -sample 0.05 is the baseline unit's (and CI's) sample; the scanner refuses
           # any other. -rps 8 stays under the free plan's 10 requests a second.
-          zeroed-scan pilot \
+          zeroed-rpcscan pilot \
             -baseline research/historical/pilot/baseline-1046-452277000-452281499.json.zst \
             -compare 1046:452277000-452281499 -sample 0.05 \
             -max-credits "$MAX_CREDITS" -rps 8 -conc 4 -workers 4 \

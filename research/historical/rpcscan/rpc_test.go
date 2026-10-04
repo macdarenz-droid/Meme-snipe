@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gagliardetto/solana-go"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -129,15 +130,39 @@ func TestRPCBlockRefusesIncompleteBlocks(t *testing.T) {
 		}
 	}
 	b, err := rpcBlock(5, []byte(`{"blockTime":9,"parentSlot":3,"transactions":[]}`))
-	if err != nil || b.parent != 3 || b.blockTime != 9 || b.rpcTxs == nil || len(b.rpcTxs) != 0 {
+	if err != nil || b.parent != 3 || b.blockTime != 9 || b.txNodes == nil || len(b.txNodes) != 0 || b.frames == nil {
 		t.Fatalf("an empty block is a block: %+v %v", b, err)
 	}
 }
 
-// Two real blocks of the comparison unit, as the public mainnet RPC returned them
+// An encoded Transaction node reads back through the scanner's txNode: payloads of
+// every CBOR length form, the position, and an empty (missing) meta.
+func TestArchiveTxNodeReadsBackThroughTxNode(t *testing.T) {
+	get := func(string) (*frame, error) { return nil, errors.New("no frames") }
+	for _, n := range []int{0, 23, 24, 255, 256, 65535, 65536, 300000} {
+		tx := make([]byte, n)
+		for i := range tx {
+			tx[i] = byte(i * 7)
+		}
+		meta := append([]byte("meta"), tx...)
+		for _, idx := range []int{0, 23, 1000, 70000} {
+			d, m, i, err := txNode(archiveTxNode(452277009, idx, tx, meta), get)
+			if err != nil || string(d) != string(tx) || string(m) != string(meta) || i != idx {
+				t.Fatalf("n=%d idx=%d: %v (index %d)", n, idx, err, i)
+			}
+		}
+	}
+	if _, m, _, err := txNode(archiveTxNode(1, 0, []byte{1}, nil), get); err != nil || len(m) != 0 {
+		t.Fatalf("empty meta: %v %d", err, len(m))
+	}
+}
+
+// Real blocks of the comparison unit, as the public mainnet RPC returned them
 // (getBlock, base64, full, maxSupportedTransactionVersion 1), give exactly the
-// archive's rows: their per-block digests equal the committed baseline's, which was
-// made from the archive unit.
+// archive's rows: every table's per-block digest equals the committed baseline's
+// (made from the archive unit), except raw records whose log the RPC cut at its size
+// limit, and each of those must be explained record by record. 452277901 holds such a
+// record. RPC_FIXTURES=DIR runs the same check over more recorded blocks.
 func TestRPCBlocksMatchArchiveRows(t *testing.T) {
 	defer func(s float64) { sampleRate = s }(sampleRate)
 	sampleRate = 0.05 // the baseline unit's sample
@@ -145,35 +170,48 @@ func TestRPCBlocksMatchArchiveRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dir := "testdata/rpc"
+	if d := os.Getenv("RPC_FIXTURES"); d != "" {
+		dir = d
+	}
+	slots, err := dirSource{dir}.producedSlots(context.Background(), 0, 1<<62)
+	if err != nil || len(slots) == 0 {
+		t.Fatalf("fixtures: %v", err)
+	}
 	out := t.TempDir()
-	compared := 0
-	for _, slot := range []uint64{452277009, 452277012} {
-		dir := filepath.Join(out, fmt.Sprint(slot))
-		st, err := RPCUnit(context.Background(), dirSource{"testdata/rpc"}, 1046, slot, slot, dir, 2, 2)
+	compared, explained := 0, 0
+	for _, slot := range slots {
+		udir := filepath.Join(out, fmt.Sprint(slot))
+		st, err := RPCUnit(context.Background(), dirSource{dir}, 1046, slot, slot, udir, 2, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if st.Blocks != 1 || st.SkippedSlots != 0 || st.DecodeFailures != 0 || st.MissingMeta != 0 {
 			t.Fatalf("slot %d: %+v", slot, st)
 		}
-		d, err := digestUnit(dir)
+		d, err := digestUnit(udir)
 		if err != nil {
 			t.Fatal(err)
 		}
 		s := fmt.Sprint(slot)
 		for _, tb := range []string{"blocks", "curve_trades", "amm_trades", "failed", "movements", "raw", "events"} {
 			want, got := base.Tables[tb].Blocks[s], d.Tables[tb].Blocks[s]
-			if want != got {
-				t.Fatalf("slot %d %s: block digest %q, archive %q", slot, tb, got, want)
-			}
 			if want != "" {
 				compared++
 			}
+			if want == got {
+				continue
+			}
+			if tb != "raw" || !rawDiffExplained(base.Tables["raw"], d.Tables["raw"], []string{s}) {
+				t.Fatalf("slot %d %s: block digest %q, archive %q", slot, tb, got, want)
+			}
+			explained++
 		}
 	}
-	if compared < 10 {
-		t.Fatalf("only %d table blocks had rows to compare", compared)
+	if compared < 10 || (dir == "testdata/rpc" && explained != 1) {
+		t.Fatalf("compared %d table blocks, %d explained by truncated logs", compared, explained)
 	}
+	t.Logf("%d blocks: %d table blocks compared, %d raw blocks explained by truncated logs", len(slots), compared, explained)
 }
 
 func TestDirSourceAndSkippedSlots(t *testing.T) {
@@ -339,9 +377,26 @@ func TestHeliusClientKeyCapAndBackoff(t *testing.T) {
 }
 
 // compareDigests names the table, column and block of a difference, and explains a
-// raw-record difference only when it is a truncated RPC log.
+// raw-record difference only when, record by record, the candidate's log is exactly
+// the archive's log under Agave's log limit and nothing else differs (review of
+// 1697ddd: every condition pinned; each case below is in a block with a truncated log).
 func TestCompareDigestsLocatesAndExplains(t *testing.T) {
-	mk := func(curveFee, logs string, truncated bool) string {
+	long := make([]string, 200) // 200 lines of 60 bytes: past the 10,000-byte limit
+	for i := range long {
+		long[i] = fmt.Sprintf("Program log: line %03d %s", i, strings.Repeat("x", 37))
+	}
+	cut := agaveLogCut(long, logLimitBytes)
+	if len(cut) >= len(long) || cut[len(cut)-1] != logTruncated {
+		t.Fatalf("fixture log not cut: %d lines", len(cut))
+	}
+	jl := func(l []string) string { b, _ := json.Marshal(l); return string(b) }
+	type rec struct {
+		slot, idx int
+		fee       int
+		logs      string
+		extra     string // extra meta key
+	}
+	mk := func(curveFee string, recs []rec) *unitDigest {
 		dir := t.TempDir()
 		st := map[string]any{"epoch": 0, "from_slot": 1, "to_slot": 2, "blocks": 2, "root_cid": "x", "sample_rate": 0.05}
 		b, _ := json.Marshal(st)
@@ -351,41 +406,60 @@ func TestCompareDigestsLocatesAndExplains(t *testing.T) {
 			os.WriteFile(filepath.Join(dir, name), enc.EncodeAll([]byte(body), nil), 0o644)
 		}
 		put("curve_trades.csv.zst", "slot,fee,mint\n1,10,a\n2,"+curveFee+",b\n")
-		put("raw.jsonl.zst", `{"slot":1,"signature":"s","meta":{"fee":5,"logMessages":`+logs+`}}`+"\n")
-		if truncated {
-			put("raw.jsonl.zst", `{"slot":1,"signature":"s","meta":{"fee":5,"logMessages":["a","Log truncated"]}}`+"\n")
+		var raw strings.Builder
+		for _, r := range recs {
+			fmt.Fprintf(&raw, `{"slot":%d,"txIndex":%d,"signature":"s%d","meta":{"fee":%d%s,"logMessages":%s}}`+"\n", r.slot, r.idx, r.idx, r.fee, r.extra, r.logs)
 		}
-		return dir
+		put("raw.jsonl.zst", raw.String())
+		d, err := digestUnit(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
 	}
-	base, _ := digestUnit(mk("20", `["a","b","c"]`, false))
-	same, _ := digestUnit(mk("20", `["a","b","c"]`, false))
-	if c := compareDigests(base, same); !c.Equal {
+	baseRecs := []rec{{1, 0, 5, jl(long), ""}, {1, 1, 5, `["a","b"]`, ""}, {2, 0, 5, `["c"]`, ""}}
+	base := mk("20", baseRecs)
+	status := func(c *digestComparison, table string) string {
+		for _, tc := range c.Tables {
+			if tc.Table == table {
+				return tc.Status
+			}
+		}
+		return "absent"
+	}
+	if c := compareDigests(base, mk("20", baseRecs)); !c.Equal {
 		t.Fatalf("equal units differ: %+v", c)
 	}
-	cand, _ := digestUnit(mk("21", `["a","b","c"]`, false))
-	c := compareDigests(base, cand)
-	var curve *tableComparison
+	// A curve difference is located by column and block.
+	c := compareDigests(base, mk("21", baseRecs))
 	for _, tc := range c.Tables {
-		if tc.Table == "curve_trades" {
-			curve = tc
+		if tc.Table == "curve_trades" && (tc.Status != "differs" || fmt.Sprint(tc.ColumnsDiffer) != "[fee]" || fmt.Sprint(tc.BlocksSample) != "[2]") {
+			t.Fatalf("curve difference not located: %+v", tc)
 		}
 	}
-	if c.Equal || curve.Status != "differs" || fmt.Sprint(curve.ColumnsDiffer) != "[fee]" || fmt.Sprint(curve.BlocksSample) != "[2]" {
-		t.Fatalf("curve difference not located: %+v", curve)
+	// The one explained case: record 1:0's log is exactly Agave's cut of the archive's.
+	truncated := []rec{{1, 0, 5, jl(cut), ""}, {1, 1, 5, `["a","b"]`, ""}, {2, 0, 5, `["c"]`, ""}}
+	if c := compareDigests(base, mk("20", truncated)); !c.Equal || status(c, "raw") != "explained" {
+		t.Fatalf("an exact log cut must be explained: %+v", c)
 	}
-	tr, _ := digestUnit(mk("20", "", true))
-	c = compareDigests(base, tr)
-	for _, tc := range c.Tables {
-		if tc.Table == "raw" && tc.Status != "explained" {
-			t.Fatalf("truncated logs not explained: %+v", tc)
+	cases := map[string]struct {
+		curveFee string
+		recs     []rec
+		table    string
+	}{
+		"logMessages and a second meta column differ":    {"20", []rec{{1, 0, 6, jl(cut), ""}, {1, 1, 5, `["a","b"]`, ""}, {2, 0, 5, `["c"]`, ""}}, "raw"},
+		"raw row counts differ":                          {"20", []rec{{1, 0, 5, jl(cut), ""}, {1, 1, 5, `["a","b"]`, ""}, {1, 2, 5, `["z"]`, ""}, {2, 0, 5, `["c"]`, ""}}, "raw"},
+		"a column on one side only":                      {"20", []rec{{1, 0, 5, jl(cut), `,"returnData":null`}, {1, 1, 5, `["a","b"]`, ""}, {2, 0, 5, `["c"]`, ""}}, "raw"},
+		"a non-raw table differs":                        {"21", truncated, "curve_trades"},
+		"another record's log differs in the same block": {"20", []rec{{1, 0, 5, jl(cut), ""}, {1, 1, 5, `["a","B"]`, ""}, {2, 0, 5, `["c"]`, ""}}, "raw"},
+		"a truncated log that is not the archive's cut":  {"20", []rec{{1, 0, 5, jl(append(append([]string{}, cut[:len(cut)-2]...), logTruncated)), ""}, {1, 1, 5, `["a","b"]`, ""}, {2, 0, 5, `["c"]`, ""}}, "raw"},
+		"a log cut where the archive's was short":        {"20", []rec{{1, 0, 5, jl(cut), ""}, {1, 1, 5, `["a","Log truncated"]`, ""}, {2, 0, 5, `["c"]`, ""}}, "raw"},
+	}
+	for name, k := range cases {
+		c := compareDigests(base, mk(k.curveFee, k.recs))
+		if c.Equal || status(c, k.table) != "differs" {
+			t.Fatalf("%s: must differ (%s %s): %+v", name, k.table, status(c, k.table), c)
 		}
-	}
-	if !c.Equal {
-		t.Fatalf("a truncated log alone must not fail parity: %+v", c)
-	}
-	other, _ := digestUnit(mk("20", `["a","x","c"]`, false))
-	if c := compareDigests(base, other); c.Equal {
-		t.Fatalf("a log difference without truncation must fail parity")
 	}
 }
 
@@ -597,4 +671,45 @@ func TestPlanCosts(t *testing.T) {
 	if !strings.Contains(free.Summary, "none can be bought") || !strings.Contains(dev.Summary, "US$92") {
 		t.Fatalf("summaries: %q / %q", free.Summary, dev.Summary)
 	}
+}
+
+const attrMint = "8rjKP44zZewzNGx6DyF3Ck1Ub6y45pXbures2Dx3pump"
+
+func mustPKpub(s string) solana.PublicKey { return solana.MustPublicKeyFromBase58(s) }
+
+// agaveLogCut is Agave's LogCollector rule, as measured on the public RPC (block
+// 452277384, tx 645: a long "Program data:" line dropped, the next two short lines
+// kept): a message reaching the limit is dropped, the first drop writes "Log
+// truncated" once, later messages that still fit are kept.
+func TestAgaveLogCut(t *testing.T) {
+	line := func(n int) string { return strings.Repeat("x", n) }
+	logs := []string{line(9796), line(210), line(50), line(75), line(100), line(1)}
+	got := agaveLogCut(logs, 10000)
+	want := []string{line(9796), logTruncated, line(50), line(75), line(1)}
+	if fmt.Sprint(len(got)) != fmt.Sprint(len(want)) || jsonEq(got, want) == false {
+		t.Fatalf("cut %v", lens(got))
+	}
+	// Reaching the limit exactly is past it: 9,999 + 1 is dropped.
+	if got := agaveLogCut([]string{line(9999), line(1)}, 10000); !jsonEq(got, []string{line(9999), logTruncated}) {
+		t.Fatalf("boundary %v", lens(got))
+	}
+	// A log within the limit is unchanged.
+	short := []string{"a", "b"}
+	if got := agaveLogCut(short, 10000); !jsonEq(got, short) {
+		t.Fatalf("short %v", got)
+	}
+}
+
+func jsonEq(a, b []string) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
+}
+
+func lens(l []string) []int {
+	out := make([]int, len(l))
+	for i, s := range l {
+		out[i] = len(s)
+	}
+	return out
 }

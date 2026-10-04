@@ -30,9 +30,93 @@ type tableDigest struct {
 	Rows    int               `json:"rows"`
 	Columns map[string]string `json:"columns"`
 	Blocks  map[string]string `json:"blocks,omitempty"` // slot -> digest; unit-level tables have none
-	// LogTruncatedBlocks: blocks with a raw record whose logs end in "Log truncated"
-	// (an RPC node's log size limit; the archive keeps whole logs).
-	LogTruncatedBlocks []string `json:"log_truncated_blocks,omitempty"`
+	// Records: raw records only, keyed "slot:txIndex", so a log the RPC cut at its
+	// size limit can be matched against the archive's whole log record by record.
+	Records map[string]*rawRecordDigest `json:"records,omitempty"`
+}
+
+// rawRecordDigest fingerprints one raw record. A candidate record differing from the
+// baseline only in its log is explained when its other fields are equal (NoLogs) and
+// its log is exactly the baseline's log as a validator with Agave's default log limit
+// records it (Cut).
+type rawRecordDigest struct {
+	Full   string `json:"f"`           // the whole line
+	NoLogs string `json:"n"`           // the record without meta.logMessages
+	Logs   string `json:"l"`           // the log lines ("null" when not recorded)
+	Cut    string `json:"c,omitempty"` // the log after agaveLogCut, when that changes it
+}
+
+const (
+	logTruncated  = "Log truncated"
+	logLimitBytes = 10000 // Agave's default log_messages_bytes_limit
+)
+
+// agaveLogCut applies Agave's LogCollector limit to a complete log: a message that
+// would bring the bytes written to the limit or past it is dropped, the first drop
+// writes "Log truncated", and later messages that still fit are kept. Measured: the
+// public RPC's log of every one of the 118 raw records in 25 blocks of the comparison
+// unit equals this cut of the archive's log (4 of them shorter than the archive's).
+func agaveLogCut(logs []string, limit int) []string {
+	out := make([]string, 0, len(logs))
+	written, warned := 0, false
+	for _, m := range logs {
+		if written+len(m) >= limit {
+			if !warned {
+				warned = true
+				out = append(out, logTruncated)
+			}
+			continue
+		}
+		written += len(m)
+		out = append(out, m)
+	}
+	return out
+}
+
+func hashLines(lines []string) string {
+	h := sha256.New()
+	for _, l := range lines {
+		io.WriteString(h, l)
+		h.Write([]byte{'\n'})
+	}
+	return shortHash(h.Sum(nil))
+}
+
+// rawDigest builds a raw record's fingerprint from its parsed line.
+func rawDigest(line string, obj map[string]json.RawMessage, meta map[string]json.RawMessage) *rawRecordDigest {
+	d := &rawRecordDigest{Full: shortHash(sha256Sum(line)), Logs: "null"}
+	if lm, ok := meta["logMessages"]; ok && string(lm) != "null" {
+		var logs []string
+		json.Unmarshal(lm, &logs)
+		d.Logs = hashLines(logs)
+		if cut := agaveLogCut(logs, logLimitBytes); len(cut) != len(logs) || hashLines(cut) != d.Logs {
+			d.Cut = hashLines(cut)
+		}
+	}
+	noLogs := map[string]json.RawMessage{}
+	for k, v := range obj {
+		noLogs[k] = v
+	}
+	m2 := map[string]json.RawMessage{}
+	for k, v := range meta {
+		if k != "logMessages" {
+			m2[k] = v
+		}
+	}
+	mb, _ := json.Marshal(m2)
+	noLogs["meta"] = mb
+	nb, _ := json.Marshal(noLogs) // keys sorted by encoding/json
+	d.NoLogs = shortHash(sha256Sum(string(nb)))
+	return d
+}
+
+func sha256Sum(s string) []byte { h := sha256.Sum256([]byte(s)); return h[:] }
+
+// recordExplained reports whether candidate record c differs from baseline record b
+// only by an RPC's log limit: every other field equal, and the candidate's log exactly
+// the baseline's log after agaveLogCut (which must have changed it).
+func recordExplained(b, c *rawRecordDigest) bool {
+	return b != nil && c != nil && b.NoLogs == c.NoLogs && b.Cut != "" && c.Logs == b.Cut
 }
 
 type unitDigest struct {
@@ -147,7 +231,9 @@ func digestTable(path string, perBlock, raw bool) (*tableDigest, error) {
 		io.WriteString(h, line)
 		h.Write([]byte{'\n'})
 	}
-	truncated := map[string]bool{}
+	if raw {
+		td.Records = map[string]*rawRecordDigest{}
+	}
 	if strings.HasSuffix(path, ".csv.zst") {
 		cr := csv.NewReader(bufio.NewReaderSize(zr, 1<<20))
 		cr.FieldsPerRecord = -1
@@ -204,8 +290,10 @@ func digestTable(path string, perBlock, raw bool) (*tableDigest, error) {
 						for mk, mv := range meta {
 							addCol("meta."+mk, s+" "+string(mv)) // keyed by slot: meta keys vary per record
 						}
-						if raw && bytes.Contains(meta["logMessages"], []byte(`"Log truncated"`)) {
-							truncated[s] = true
+						if raw {
+							var idx int
+							json.Unmarshal(obj["txIndex"], &idx)
+							td.Records[s+":"+strconv.Itoa(idx)] = rawDigest(line, obj, meta)
 						}
 						continue
 					}
@@ -227,10 +315,6 @@ func digestTable(path string, perBlock, raw bool) (*tableDigest, error) {
 			td.Blocks[s] = shortHash(h.Sum(nil))
 		}
 	}
-	for s := range truncated {
-		td.LogTruncatedBlocks = append(td.LogTruncatedBlocks, s)
-	}
-	sort.Strings(td.LogTruncatedBlocks)
 	return td, nil
 }
 
@@ -339,9 +423,9 @@ func compareDigests(base, cand *unitDigest) *digestComparison {
 		case tc.RowsBaseline == tc.RowsCandidate && len(tc.ColumnsDiffer) == 0 && len(tc.ColumnsMissing) == 0 && len(diff) == 0:
 			tc.Status = "equal"
 		case n == "raw" && tc.RowsBaseline == tc.RowsCandidate && len(tc.ColumnsMissing) == 0 &&
-			len(tc.ColumnsDiffer) == 1 && tc.ColumnsDiffer[0] == "meta.logMessages" && subset(diff, c.LogTruncatedBlocks):
+			len(tc.ColumnsDiffer) == 1 && tc.ColumnsDiffer[0] == "meta.logMessages" && rawDiffExplained(b, c, diff):
 			tc.Status = "explained"
-			tc.Why = "only meta.logMessages differs, and only in blocks where the RPC cut a log at its size limit (\"Log truncated\"); the archive kept the whole log"
+			tc.Why = "only meta.logMessages differs, and every differing record's log is exactly the archive's log as Agave's default 10,000-byte log limit records it (\"Log truncated\"), with every other field equal"
 		default:
 			tc.Status = "differs"
 			out.Unexplained++
@@ -354,20 +438,41 @@ func compareDigests(base, cand *unitDigest) *digestComparison {
 	return out
 }
 
-func isEmptyJSON(b []byte) bool {
-	s := string(b)
-	return s == "null" || s == "{}" || s == "[]"
-}
-
-// subset reports whether every element of a is in sorted b.
-func subset(a, b []string) bool {
-	for _, x := range a {
-		i := sort.SearchStrings(b, x)
-		if i == len(b) || b[i] != x {
+// rawDiffExplained checks every record of every differing block: each must be equal
+// or explained by recordExplained, and both sides must hold the same records.
+func rawDiffExplained(b, c *tableDigest, blocks []string) bool {
+	if b.Records == nil || c.Records == nil || len(blocks) == 0 {
+		return false
+	}
+	in := map[string]bool{}
+	for _, s := range blocks {
+		in[s] = true
+	}
+	seen := 0
+	for k, br := range b.Records {
+		if !in[k[:strings.IndexByte(k, ':')]] {
+			continue
+		}
+		cr := c.Records[k]
+		if cr == nil {
+			return false
+		}
+		seen++
+		if br.Full != cr.Full && !recordExplained(br, cr) {
 			return false
 		}
 	}
-	return true
+	for k := range c.Records {
+		if in[k[:strings.IndexByte(k, ':')]] {
+			seen--
+		}
+	}
+	return seen == 0
+}
+
+func isEmptyJSON(b []byte) bool {
+	s := string(b)
+	return s == "null" || s == "{}" || s == "[]"
 }
 
 // writeDigest and readDigest store a digest as zstd-compressed JSON.

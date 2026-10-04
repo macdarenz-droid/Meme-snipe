@@ -47,6 +47,9 @@ jobs:
       - name: Scanner tests
         working-directory: research/historical/scanner
         run: go vet ./... && go test ./...
+      - name: RPC scanner tests (DATA-2; the scanner's sources through symlinks)
+        working-directory: research/historical/rpcscan
+        run: go vet ./... && go test ./...
       - name: QA tests
         run: node --test research/historical/qa/*.test.mjs
       - name: CI script tests

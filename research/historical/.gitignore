@@ -3,7 +3,7 @@ data/
 dataset/
 *.zst
 scanner/zeroed-scan
-# committed exceptions: the pilot's baseline digest (hashes only, no rows) and two
-# recorded public-RPC getBlock responses the scanner tests read
+# committed exceptions: the pilot's baseline digest (hashes only, no rows) and three
+# recorded public-RPC getBlock responses the RPC scanner tests read
 !pilot/baseline-*.json.zst
-!scanner/testdata/rpc/*.json.zst
+!rpcscan/testdata/rpc/*.json.zst

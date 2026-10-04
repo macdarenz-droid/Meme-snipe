@@ -2,10 +2,12 @@ package main
 
 // RPC getBlock blocks (DATA-2): a block as the JSON-RPC getBlock method returns it
 // (encoding "base64", transactionDetails "full") becomes the same blockData the
-// archive's CAR stream gives, with each transaction's meta re-encoded as the
-// archive's protobuf TransactionStatusMeta. processBlock and processTx then run
-// unchanged, so a unit read over RPC has exactly the rows of one read from the
-// archive. Only the meta fields the scanner reads are re-encoded (leanmeta.go).
+// archive's CAR stream gives: each transaction is encoded as an archive Transaction
+// node (DAG-CBOR, schema in ../scanner/fastnode.go) whose metadata frame holds the
+// archive's zstd-compressed protobuf TransactionStatusMeta. The scanner's processBlock,
+// txNode and processTx then run unchanged, so a unit read over RPC has exactly the
+// rows of one read from the archive. Only the meta fields the scanner reads are
+// re-encoded (leanmeta.go).
 
 import (
 	"bytes"
@@ -15,6 +17,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/mr-tron/base58"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -87,7 +90,8 @@ func rpcBlock(slot uint64, result []byte) (*blockData, error) {
 	if bj.Transactions == nil {
 		return nil, fmt.Errorf("slot %d: block has no transactions array (transactionDetails must be full)", slot)
 	}
-	b := &blockData{slot: slot, parent: *bj.ParentSlot, blockTime: *bj.BlockTime, rpcTxs: make([]rpcTx, 0, len(bj.Transactions))}
+	b := &blockData{slot: slot, parent: *bj.ParentSlot, blockTime: *bj.BlockTime, frames: map[string][]byte{},
+		txNodes: make([][]byte, 0, len(bj.Transactions))}
 	for i, t := range bj.Transactions {
 		tx, err := rpcTxBytes(t.Transaction)
 		if err != nil {
@@ -95,13 +99,51 @@ func rpcBlock(slot uint64, result []byte) (*blockData, error) {
 		}
 		var meta []byte
 		if t.Meta != nil {
-			if meta, err = rpcMetaProto(t.Meta); err != nil {
+			raw, err := rpcMetaProto(t.Meta)
+			if err != nil {
 				return nil, fmt.Errorf("slot %d tx %d: meta: %w", slot, i, err)
 			}
+			meta = zstdEnc.EncodeAll(raw, nil)
 		}
-		b.rpcTxs = append(b.rpcTxs, rpcTx{tx: tx, meta: meta})
+		b.txNodes = append(b.txNodes, archiveTxNode(slot, i, tx, meta))
 	}
 	return b, nil
+}
+
+var zstdEnc, _ = zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1))
+
+// archiveTxNode encodes a Transaction node as the archive stores it, with both
+// payloads in single frames: [0, frame(tx), frame(meta), slot, index], where a frame
+// is [6, hash, index, total, data] with the optional fields null. An empty meta is an
+// empty frame, which the scanner counts as missing meta, as for the archive.
+func archiveTxNode(slot uint64, index int, tx, meta []byte) []byte {
+	b := []byte{0x85} // array(5)
+	b = cborUint(b, 0, kindTransaction)
+	for _, data := range [][]byte{tx, meta} {
+		b = append(b, 0x85)
+		b = cborUint(b, 0, kindDataFrame)
+		b = append(b, 0xf6, 0xf6, 0xf6) // hash, index, total: null
+		b = cborUint(b, 2, uint64(len(data)))
+		b = append(b, data...)
+	}
+	b = cborUint(b, 0, slot)
+	return cborUint(b, 0, uint64(index))
+}
+
+// cborUint appends a CBOR head of major type major with argument v.
+func cborUint(b []byte, major byte, v uint64) []byte {
+	m := major << 5
+	switch {
+	case v < 24:
+		return append(b, m|byte(v))
+	case v <= 0xff:
+		return append(b, m|24, byte(v))
+	case v <= 0xffff:
+		return append(b, m|25, byte(v>>8), byte(v))
+	case v <= 0xffffffff:
+		return append(b, m|26, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+	}
+	return append(b, m|27, byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32), byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 
 func rpcTxBytes(raw json.RawMessage) ([]byte, error) {

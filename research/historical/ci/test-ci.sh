@@ -475,6 +475,17 @@ day_up = next(i for i, st in enumerate(steps) if st.get("with", {}).get("name") 
 assert order("Note the upload start") < day_up < order("Note the publish start") < order("Publish this day") < order("Log the publish duration")
 PY
 
+# ---- rpcscan: the scanner's own sources through symlinks; the IDLs byte-identical ----
+rs="$here/../rpcscan"; sc="$here/../scanner"; bad=""
+for f in $(cd "$sc" && git ls-files '*.go' | grep -v '_test.go$' | grep -v '^main.go$') go.mod go.sum; do
+  [[ -L "$rs/$f" && "$(readlink "$rs/$f")" == "../scanner/$f" ]] || bad+=" $f"
+done
+for f in "$rs"/*.go; do
+  b=$(basename "$f"); [[ -L "$f" ]] && { [[ -e "$sc/$b" && "$b" != main.go && "$b" != *_test.go ]] || bad+=" stray-link:$b"; }
+done
+for f in $(cd "$sc/idl" && ls); do cmp -s "$sc/idl/$f" "$rs/idl/$f" || bad+=" idl/$f"; done
+[[ -z "$bad" ]] && ok "rpcscan: every scanner source but main.go is a symlink to ../scanner (no copied decoder), and the embedded IDLs equal the scanner's" || no "rpcscan links:$bad"
+
 # ---- data-helius-pilot.yml: dispatch only, a hard credit stop, the key in one step, only the report out ----
 python3 - "$here/../../../.github/workflows/data-helius-pilot.yml" <<'PY' && ok "helius pilot workflow: dispatch only, read-only token, credit stop checked first (at most 15000), HELIUS_API_KEY only in the pilot step's env, inputs only through env, only the report uploaded" || no "helius pilot workflow structure"
 import sys, yaml
@@ -490,7 +501,7 @@ for st in steps:
 sec = [st for st in steps if "secrets." in str(st)]
 assert len(sec) == 1 and sec[0]["env"] == {"HELIUS_API_KEY": "${{ secrets.HELIUS_API_KEY }}", "MAX_CREDITS": "${{ inputs.max_credits }}"}, sec
 r = sec[0]["run"]
-assert "zeroed-scan pilot" in r and '-max-credits "$MAX_CREDITS"' in r and "-sample 0.05" in r and "HELIUS_API_KEY" not in r, r
+assert "zeroed-rpcscan pilot" in r and '-max-credits "$MAX_CREDITS"' in r and "-sample 0.05" in r and "HELIUS_API_KEY" not in r, r
 up = [st for st in steps if "upload-artifact" in st.get("uses", "")]
 assert len(up) == 1 and up[0]["with"]["path"].endswith("/report/pilot-report.json"), up
 assert "github.token" not in open(sys.argv[1]).read()

@@ -1,8 +1,9 @@
 package main
 
 // Units read over JSON-RPC (DATA-2): the produced slots of a unit come from getBlocks,
-// each block from getBlock, and the unit is written by the same unitRun as an
-// archive unit, so every file and row has the archive's format (schema 3).
+// each block from getBlock, and the unit is written with the scanner's processBlock,
+// writeResult and aggregate rows, so every file and row has the archive's format
+// (schema 3). The unit writer (unitRun) follows the scanner's ScanUnit step for step.
 
 import (
 	"context"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,7 +37,7 @@ var errSlotSkipped = errors.New("slot skipped or missing")
 
 // RPCUnit reads blocks in [from, to] of epoch ep from src into outDir. conc blocks are
 // fetched at once; they are added to the unit in slot order.
-func RPCUnit(ctx context.Context, src blockSource, ep, from, to uint64, outDir string, conc, workers int) (*UnitStats, error) {
+func RPCUnit(ctx context.Context, src blockSource, ep, from, to uint64, outDir string, conc, workers int) (*rpcUnitStats, error) {
 	t0 := time.Now()
 	st := &UnitStats{Schema: schemaVersion, Epoch: ep, RootCid: rpcSourceTag, FromSlot: from, ToSlot: to,
 		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ExtraBytes: map[string]int{}, FirstSeen: map[string]uint64{}, ScannerRevision: scannerRevision, SampleRate: sampleRate, Retention: retentionPolicy}
@@ -51,8 +53,8 @@ func RPCUnit(ctx context.Context, src blockSource, ep, from, to uint64, outDir s
 			return nil, fmt.Errorf("unit %d-%d: produced slots not ascending inside the unit (%d)", from, to, s)
 		}
 	}
-	st.SkippedSlots = int64(to-from+1) - int64(len(slots))
-	u, err := startUnit(outDir, st, workers)
+	rs := &rpcUnitStats{UnitStats: st, SkippedSlots: int64(to-from+1) - int64(len(slots))}
+	u, err := startUnit(outDir, rs, workers)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +131,148 @@ func RPCUnit(ctx context.Context, src blockSource, ep, from, to uint64, outDir s
 	if err := u.finish(readErr, check, t0); err != nil {
 		return nil, err
 	}
-	return st, nil
+	return rs, nil
+}
+
+// rpcUnitStats is the scanner's UnitStats plus the RPC-only count of slots without a
+// block (the archive simply has no node for them); stats.json holds both.
+type rpcUnitStats struct {
+	*UnitStats
+	SkippedSlots int64 `json:"skipped_slots"`
+}
+
+// unitRun writes one unit from blocks fed in chain order, as the scanner's ScanUnit
+// does: blocks are processed by workers with the scanner's processBlock and written in
+// the order they were added, into DIR.tmp, which becomes DIR only when the unit is
+// complete.
+type unitRun struct {
+	outDir, tmp string
+	rs          *rpcUnitStats
+	outs        map[string]*csvOut
+	jobQ        chan unitJob
+	results     chan unitIndexed
+	wg          sync.WaitGroup
+	writeDone   chan struct{}
+	seq         int
+}
+
+type unitJob struct {
+	seq int
+	b   *blockData
+}
+
+type unitIndexed struct {
+	seq int
+	res *blockResult
+}
+
+func startUnit(outDir string, rs *rpcUnitStats, workers int) (*unitRun, error) {
+	st := rs.UnitStats
+	u := &unitRun{outDir: outDir, tmp: outDir + ".tmp", rs: rs, outs: map[string]*csvOut{}}
+	os.RemoveAll(u.tmp)
+	if err := os.MkdirAll(u.tmp, 0o755); err != nil {
+		return nil, err
+	}
+	for name, cols := range map[string][]string{"curve_trades.csv.zst": curveCols, "amm_trades.csv.zst": ammCols,
+		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols, "raw.jsonl.zst": nil,
+		"movements.csv.zst": movementCols, "movement_coverage.csv.zst": movementCoverageCols, "delegations.csv.zst": delegationCols} {
+		o, err := newCSV(filepath.Join(u.tmp, name), cols)
+		if err != nil {
+			for _, o := range u.outs {
+				o.close()
+			}
+			return nil, err
+		}
+		u.outs[name] = o
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	u.jobQ = make(chan unitJob, workers*2)
+	u.results = make(chan unitIndexed, workers*2)
+	for w := 0; w < workers; w++ {
+		u.wg.Add(1)
+		go func() {
+			defer u.wg.Done()
+			for j := range u.jobQ {
+				u.results <- unitIndexed{j.seq, processBlock(j.b, st)}
+			}
+		}()
+	}
+	u.writeDone = make(chan struct{})
+	go func() {
+		pending := map[int]*blockResult{}
+		agg := map[aggKey]*aggVal{}
+		partial := map[string]bool{}
+		var marks []coverageMark
+		next := 0
+		for r := range u.results {
+			pending[r.seq] = r.res
+			for {
+				res, ok := pending[next]
+				if !ok {
+					break
+				}
+				delete(pending, next)
+				next++
+				writeResult(u.outs, res, st, agg)
+				for _, m := range res.partial {
+					partial[m] = true
+				}
+				marks = append(marks, res.marks...)
+			}
+		}
+		for _, row := range aggRows(agg) {
+			u.outs["agg_hourly.csv.zst"].row(row)
+		}
+		for _, row := range coverageRows(partial, marks) {
+			u.outs["movement_coverage.csv.zst"].row(row)
+		}
+		close(u.writeDone)
+	}()
+	return u, nil
+}
+
+func (u *unitRun) add(b *blockData) {
+	u.jobQ <- unitJob{u.seq, b}
+	u.seq++
+}
+
+// finish waits for every queued block, then either discards the unit (readErr, a
+// failed check or a parent-link break) or writes stats.json and moves DIR.tmp to DIR.
+func (u *unitRun) finish(readErr error, check func() error, t0 time.Time) error {
+	close(u.jobQ)
+	u.wg.Wait()
+	close(u.results)
+	<-u.writeDone
+	if readErr != nil {
+		for _, o := range u.outs {
+			o.close()
+		}
+		return readErr
+	}
+	for _, o := range u.outs {
+		if err := o.close(); err != nil {
+			return err
+		}
+	}
+	st := u.rs.UnitStats
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	if len(st.ChainBreaks) > 0 {
+		return fmt.Errorf("%d parent-link breaks (first %s)", len(st.ChainBreaks), st.ChainBreaks[0])
+	}
+	st.Seconds = time.Since(t0).Seconds()
+	st.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	sb, _ := json.MarshalIndent(u.rs, "", "  ")
+	if err := os.WriteFile(filepath.Join(u.tmp, "stats.json"), sb, 0o644); err != nil {
+		return err
+	}
+	os.RemoveAll(u.outDir)
+	return os.Rename(u.tmp, u.outDir)
 }
 
 // dirSource serves recorded getBlock responses: DIR/<slot>.json (or .json.zst) holds
