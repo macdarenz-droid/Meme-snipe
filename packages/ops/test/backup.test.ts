@@ -7,9 +7,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
-import { NO_LATCHES } from '../../core/src/risk/types.ts';
-import { EVIDENCE_FILES, STATE_FILES } from '../../runner/src/contract.ts';
-import { NO_CONTROL, controlFile } from '../../worker/src/run/state.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const read = (p: string) => readFileSync(join(root, p), 'utf8');
@@ -17,6 +14,15 @@ const LIB = join(root, 'ops/host/files/usr/local/lib/zeroed');
 const SBIN = join(root, 'ops/host/files/usr/local/sbin');
 const tmp = mkdtempSync(join(tmpdir(), 'zeroed-backup-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+/** Runs `code` as an ES module under Node with the repo's TypeScript sources (this package's tsconfig stays its own). */
+const nodeEval = (code: string): unknown => {
+  const r = spawnSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', code], { cwd: root, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(r.stderr);
+  return JSON.parse(r.stdout);
+};
+const contract = nodeEval("import { EVIDENCE_FILES, STATE_FILES } from './packages/runner/src/contract.ts'; console.log(JSON.stringify({ EVIDENCE_FILES, STATE_FILES }))") as { EVIDENCE_FILES: string[]; STATE_FILES: Record<string, string> };
+const { EVIDENCE_FILES, STATE_FILES } = contract;
 
 const logic = (script: string) => {
   const r = spawnSync('bash', ['-c', `set -euo pipefail; . "${LIB}/logic.sh"; ${script}`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '' } });
@@ -198,10 +204,11 @@ describe('restore drill and restore', () => {
     const r = run('zeroed-restore', [id, made2.bundle!], { ZEROED_BACKUP_SRC: live, ZEROED_BACKUP_OUT: join(tmp, 'noctl-out'), ZEROED_RESTORE_ASIDE: join(tmp, 'aside2'), ZEROED_RESTORE_DRILL: join(SBIN, 'zeroed-restore-drill') });
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain('The backup had no control.json, so entries start paused.');
-    const ctl = controlFile(live).read(NO_CONTROL);
+    // Read back with the worker's own reader: it throws on a file it does not accept.
+    const { ctl, none } = nodeEval(`import { controlFile, NO_CONTROL } from './packages/worker/src/run/state.ts'; import { NO_LATCHES } from './packages/core/src/risk/types.ts'; console.log(JSON.stringify({ ctl: controlFile(${JSON.stringify(live)}).read(NO_CONTROL), none: NO_LATCHES }))`) as { ctl: { paused: boolean; pausedAtMs: unknown; latches: unknown }; none: unknown };
     expect(ctl.paused).toBe(true);
     expect(typeof ctl.pausedAtMs).toBe('number');
-    expect(ctl.latches).toEqual(NO_LATCHES);
+    expect(ctl.latches).toEqual(none);
   });
 });
 
