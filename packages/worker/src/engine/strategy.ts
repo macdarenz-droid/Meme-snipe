@@ -25,12 +25,12 @@ import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Stra
 import { observedFeeContext } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type FlowMinute, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
-  atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
+  atr, attemptRung, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
   type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
-import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
+import { type Book, type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
@@ -498,6 +498,23 @@ export class LiveStrategy implements Strategy {
 
   /** The latest account stops (RiskStopsView); null before the first event. */
   #stops: RiskStopsView | null = null;
+
+  /**
+   * The rung a close of position `pid` would go at now, as `#sendExit` would send it (core `attemptRung`): an exit owner
+   * in flight with no signed attempt uses its start rung (a blocked retry's is the last); a blocked position with no
+   * owner yet retries at the last rung; otherwise the next rung up. Unknown (no saved plan): the last rung, the dearest.
+   */
+  closeRung(pid: string, status: string, book: Book): number {
+    const last = this.#d.session.policy.exits.ladder.steps.length - 1;
+    const saved = this.#exits.get(pid);
+    if (saved === undefined) return last;
+    const used = exitAttemptsOf(book.intents, pid as PositionId);
+    const live = Object.values(book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === pid && !isTerminal(i)).at(-1);
+    const owner = live === undefined ? undefined : this.#owners.get(live.intent.id);
+    if (live !== undefined && owner !== undefined) return attemptRung(saved.tracker.lastRung, used, last, { startRung: owner.startRung, signed: live.attempts.length });
+    if (status === 'exit_blocked') return last;
+    return attemptRung(saved.tracker.lastRung, used, last, null);
+  }
 
   riskStops(): RiskStopsView | null {
     return this.#stops;
@@ -1093,9 +1110,10 @@ export class LiveStrategy implements Strategy {
     const last = steps.length - 1;
     const owner = this.#owners.get(id);
     const used = exitAttemptsOf(ctx.book.intents, pid);
-    // Escalation never goes down: one rung above the highest tried, and never below the position's attempt count.
+    // Escalation never goes down: one rung above the highest tried, and never below the position's attempt count; a new
+    // owner's first attempt goes at its own start rung (core attemptRung, which the app's close fee also reads).
     const lastRung = saved?.tracker.lastRung ?? null;
-    const rung = Math.min(signed === 0 && owner !== undefined ? owner.startRung : Math.max(lastRung === null ? 0 : lastRung + 1, used), last);
+    const rung = attemptRung(lastRung, used, last, owner === undefined ? null : { startRung: owner.startRung, signed });
     const height = this.#height;
     const q = height === null ? 'no slot height yet' : this.#sellQuote(ctx, mint, quantity, rung);
     if (typeof q === 'string' && !q.startsWith(NO_QUOTE)) {

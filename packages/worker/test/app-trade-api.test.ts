@@ -9,7 +9,7 @@ import { toMicro } from '../../../apps/web/src/lib/money.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import type { MicroUsd } from '../../core/src/units/index.ts';
 import { attemptFee } from '../../core/src/fills/index.ts';
-import { nextExitRung } from '../../core/src/exits/index.ts';
+import { attemptRung, nextExitRung } from '../../core/src/exits/index.ts';
 import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { lamports } from '../../core/src/units/index.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
@@ -126,18 +126,29 @@ describe('the close fee\'s rung (APP-TRADE follow-up): the rung the next exit at
     expect(nextExitRung(1, 1, 3)).toBe(2);
   });
 
-  it('the fee: that rung\'s priority fee, capped at the per-attempt maximum; blocked, at the top or unknown: the last rung', () => {
+  it('a new exit owner with no signed attempt goes at its own start rung (a blocked retry\'s is the last); later attempts climb', () => {
+    // Blocked after one attempt at rung 0: the retry owner starts at the last rung, though the next rung up would be 1.
+    expect(attemptRung(0, 1, 3, { startRung: 3, signed: 0 })).toBe(3);
+    expect(nextExitRung(0, 1, 3)).toBe(1);
+    expect(attemptRung(0, 1, 3, { startRung: 9, signed: 0 })).toBe(3);
+    // Once it has signed, the ladder climbs as before; with no owner known (a restart), as before.
+    expect(attemptRung(3, 2, 3, { startRung: 3, signed: 1 })).toBe(3);
+    expect(attemptRung(0, 1, 3, { startRung: 0, signed: 1 })).toBe(1);
+    expect(attemptRung(0, 1, 3, null)).toBe(1);
+  });
+
+  it('the fee: that rung\'s priority fee, capped at the per-attempt maximum', () => {
     const net = FILL_CONFIG.network;
     const ladder = { ...TRIAL_POLICY.exits.ladder, maxFeePerAttempt: lamports(100_000n) };
     const at = (fee: bigint) => attemptFee(net, fee, 'filled');
-    expect(closeFee(ladder, net, 'open', null, 0)).toBe(at(20_000n));
-    expect(closeFee(ladder, net, 'open', 0, 1)).toBe(at(60_000n));
+    expect(closeFee(ladder, net, 0)).toBe(at(20_000n));
+    expect(closeFee(ladder, net, 1)).toBe(at(60_000n));
     // Rung 2's 150,000 and rung 3's 500,000 are capped at 100,000.
-    expect(closeFee(ladder, net, 'open', 1, 2)).toBe(at(100_000n));
-    expect(closeFee(ladder, net, 'exit_blocked', null, 0)).toBe(at(100_000n));
-    expect(closeFee(ladder, net, 'open', undefined, 0)).toBe(at(100_000n));
-    expect(closeFee(TRIAL_POLICY.exits.ladder, net, 'exit_blocked', null, 0)).toBe(at(500_000n));
+    expect(closeFee(ladder, net, 2)).toBe(at(100_000n));
+    expect(closeFee(ladder, net, 3)).toBe(at(100_000n));
+    expect(closeFee(TRIAL_POLICY.exits.ladder, net, 3)).toBe(at(500_000n));
   });
+
 });
 
 describe('Unrealized after a partial exit (APP-TRADE, review N1)', () => {
@@ -172,6 +183,8 @@ describe('Unrealized after a partial exit (APP-TRADE, review N1)', () => {
     tracker.lastRung = null;
     expect(inputs.exitFee(p)).toBe(fee);
     tracker.lastRung = 0;
+    // A position with no saved plan (unknown): the last rung, the dearest.
+    expect(h.worker.strategy.closeRung('p:unknown', 'open', h.worker.book)).toBe(ladder.steps.length - 1);
     // Blocked: the last rung, the highest fee (capped at the policy's per-attempt maximum).
     const top = ladder.steps[ladder.steps.length - 1]!.priorityFeeLamports;
     expect(inputs.exitFee({ ...p, status: 'exit_blocked' })).toBe(attemptFee(FILL_CONFIG.network, BigInt(top < ladder.maxFeePerAttempt ? top : ladder.maxFeePerAttempt), 'filled'));

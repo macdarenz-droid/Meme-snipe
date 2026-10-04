@@ -156,6 +156,14 @@ export const newTracker = (): ExitTracker => ({
  */
 export const nextExitRung = (lastRung: number | null, used: number, last: number): number => Math.min(Math.max(lastRung === null ? 0 : lastRung + 1, used), last);
 
+/**
+ * The rung an exit owner's next attempt is sent at (the strategy's `#sendExit`, and the open P&L's expected close fee):
+ * an owner with no signed attempt yet uses its own start rung (a blocked retry's is the last), else `nextExitRung`.
+ * One rule, so the display and the send cannot drift (EXIT review of the APP-TRADE follow-up, B1/N1).
+ */
+export const attemptRung = (lastRung: number | null, used: number, last: number, owner: { readonly startRung: number; readonly signed: number } | null): number =>
+  owner !== null && owner.signed === 0 ? Math.min(owner.startRung, last) : nextExitRung(lastRung, used, last);
+
 /** Records the rung of a signed attempt. The attempt count itself comes from the book (`Holding.exitAttempts`). */
 export const noteAttempt = (t: ExitTracker, rung: number): ExitTracker => ({
   ...t, lastRung: t.lastRung !== null && t.lastRung > rung ? t.lastRung : rung,
