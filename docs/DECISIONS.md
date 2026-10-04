@@ -1690,6 +1690,31 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Backtest parity.** The engine judges a batch at its close; a backtest that supplies these reads (BT-2) puts them on its feed the same way (open, members, close at one moment), so live and the backtest decide on the same view (core `RAW.batchOpen/batchClose`, `facts/kinds.ts`). Live and the replay of its recording make the same decisions (test).
 - **Not changed.** The survival read (regime) and the insiders' mint history stay single reads with FACTS-1e's landed-read mark; neither feeds a lag-bound gate input of the candidate's decision. No gate, limit, freshness rule or cap was changed.
 - **Evidence.** `packages/worker/test/read-coherent.test.ts`: the card's harness (real LiveFacts, FactReaders and LiveStrategy on a fake RPC whose confirmed context slot is the processed tip − 1 and that answers each call one slot later, every fact otherwise passing) enters within 5 simulated minutes, at a batch's close; on the base code it never does (H16 stale mint at every landing). A batch answering three slots late still rejects (stale). Live and replay decide the same, and no evaluation happens inside an open batch. `readBatch` unit tests: one bank, nothing on the feed before the last part, the scan's order and owners, the cap. `LiveFacts` tests: what each batch reads. Hand mutants killed: no open-batch skip, close judged at the next event, close never judged, scan order check removed, unclassified owners accepted, members put on as they answer, `minContextSlot` 0, never scanning, no simulation in the batch, the close's slot taken as the newest member.
+## Bounded boot and saves (WORKER-GROW G4b, `persist/state.ts`, `run/deployer-store.ts`, `run/worker.ts`, `run/parity.ts`, `run/recorder.ts`, core `DeployerIndex`)
+
+- **2026-10-05 · Supervisor ruling on the structure ((a) and (b), approved).** The stored-data rule holds: public chain data and our own labels only, the same data as today. So the supervisor approves it.
+- **(a) `deployer-state.json` version 2 is streamed.** The file is written as:
+  - a format line;
+  - the payload with the index's mint rows left out;
+  - one line per creator's mint row (`DeployerIndex.mintRows`);
+  - a last line with the sha256 of every line between the first and the last, and their count.
+  The save writes the rows as it reads them from the index, with every write checked (#159 review N2, `writeAll`), then fsync and rename; a failure leaves the old file whole. The load restores the index row by row and accepts it only if the last line matches; anything less discards the file. A version 1 file (the payload as a string inside one object) is still read, so a deploy keeps the saved coverage. Test: the last line's hash equals the hash of those lines read whole; version 1 and version 2 of the same state restore the same.
+- **(b) The seed names the saved file; it never carries it.**
+  - The worker copies `deployer-state.json` into the boot's recording folder, restores from that copy, and the seed fact carries `{ file, sha256 over every byte, version }`. The recording's manifest lists the copy (`attachments`: file, sha256, size), and a leftover boot's manifest keeps it.
+  - Live, the strategy gets the restored index and labeller from the worker (`savedStateFor`): once, and only for exactly that file, hash and version.
+  - The parity replay reads the copy, checks its sha256 against the seed's, restores it, and checks the version. A missing, unreadable, refused or other copy throws `SavedStateMissing` before anything is replayed; it never falls back to an empty or other state.
+  - A recording made before this change (the state inside the seed) still replays from the seed.
+- **Also in G4b:**
+  - a start whose saved index restores keeps the deployer store's creates in the file only;
+  - with no saved index, the seed is capped at `MAX_SEED_CREATES` (200,000, about three days of creates). Past it, the seed is refused whole, so H14 is not covered until the look-back passes (fail safe);
+  - checked writes (#159 N2) in `atomicWrite`, the state save and the store rewrite.
+- **Measured** (a real worker boot, `reconcile`, on 1,000,000 saved creates and a 1,000,000-mint saved index, the full 15-day size): peak RSS 1,629 MB on #159 alone; 1,085 MB with the first G4b changes; **544 MB with (a) and (b)**. `loadState` alone: 588 MB for a version 1 file, 275 MB for version 2. At 200,000 creates (about three days) a boot peaked at 365 MB before (a) and (b). The recording copy is 66 MB per boot at 1M mints and about 16 MB at three days. G4c's rotation covers these copies. The remaining boot cost is mostly streaming `deployers.jsonl` itself (194 MB peak at 1M).
+- **With CREATE-AFTER-RESTART (merge of d66a2e0).** A restored start keeps the store's creates in the file only, but CREATE-AFTER-RESTART needs their signatures. The store now shows every create in the window to `onCreate` as it streams, kept or not. The worker keeps the newest `CREATE_SIGS_MAX` (200,000) mint and signature pairs in a ring and notes them once. Noting a million creates one by one into the capped map instead cost 765 MB and 99 s at boot. With the ring: 537 MB and 25 s (1M creates, restored).
+- **Tests.**
+  - `persist.test.ts`: version 2 cut anywhere, an extra line, a cut format line; version 1 equals version 2; the trailer hash.
+  - `persist-worker.test.ts`: the seed carries the reference; the copy is byte for byte the file restored from and is listed in the manifest; the parity replay reproduces the restarted boot's decisions from the copy and refuses with no copy, one byte changed, or another well-formed state; the handoff by file, hash and version, once.
+  - `growth-sweep.test.ts`: the store without creates, the seed cap, the worker's cap wiring, short writes.
+  - Hand mutants P1–P6 are killed: hash check skipped, copy re-serialized, no handoff, handoff accepting any hash, a missing copy tolerated, handoff given twice.
 
 ## A fill's transactions keep chain order on the feed (FILL-ORDER; `live-feed.ts` `after`, `canonical.ts` off-chain moment)
 
