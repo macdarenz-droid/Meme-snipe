@@ -343,11 +343,14 @@ in_c "rm -f /root/tampered.age"
 grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^  exits.json: ' "$LOGS/drill-host.txt" && grep -q '^  e2e-state.json: ' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
 in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalendar --value zeroed-backup.timer" | grep -q 'OnCalendar=\*-\*-\* \*:00:00' || fail "backup timer is not hourly"
 # Real restore: the newer state goes aside, the backup's comes back, the evidence stays, the worker starts again.
-in_c "printf '{\"newer\":true}\n' > /var/lib/zeroed/e2e-state.json && printf '{\"seq\":1}\n' >> /var/lib/zeroed/journal.jsonl && wc -l < /var/lib/zeroed/journal.jsonl" >"$LOGS/journal-before.txt"
+# The evidence is append-only and the worker appends to it as it stops and starts, so "kept" means every byte
+# that was there before the restore is still there, in place.
+in_c "printf '{\"newer\":true}\n' > /var/lib/zeroed/e2e-state.json && touch /var/lib/zeroed/journal.jsonl && cp /var/lib/zeroed/journal.jsonl /root/journal-before.jsonl"
 in_c "zeroed-restore /etc/zeroed/age/host.key" >"$LOGS/restore.txt" 2>&1 || { cat "$LOGS/restore.txt"; fail "restore"; }
 [ "$(in_c "cat /var/lib/zeroed/e2e-state.json")" = "$MARK" ] || fail "restore did not bring back the worker's JSON state"
 in_c "grep -lx '{\"newer\":true}' /var/lib/zeroed-prerestore/*/e2e-state.json" >/dev/null || fail "restore did not keep the replaced state aside"
-[ "$(in_c "wc -l < /var/lib/zeroed/journal.jsonl")" = "$(cat "$LOGS/journal-before.txt")" ] || fail "restore touched the evidence"
+in_c "cmp -s -n \$(stat -c %s /root/journal-before.jsonl) /root/journal-before.jsonl /var/lib/zeroed/journal.jsonl" || fail "restore touched the evidence"
+in_c "rm -f /root/journal-before.jsonl"
 in_c "test ! -e /var/lib/zeroed/MANIFEST.sha256 && stat -c %U /var/lib/zeroed/exits.json /var/lib/zeroed/e2e-state.json | sort -u" | grep -qx zeroed-worker || fail "restored files not the worker's"
 in_c "for i in \$(seq 60); do systemctl is-active --quiet zeroed-worker.service && exit 0; sleep 1; done; exit 1" || fail "worker not back after restore"
 pass "backup: hourly timer, $bk encrypted, worker JSON state included; restore drill PASS into a scratch directory, FAIL on a tampered file; zeroed-restore brings the state back, keeps the evidence and the replaced state, restarts the worker"
