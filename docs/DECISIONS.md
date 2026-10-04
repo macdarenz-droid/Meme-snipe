@@ -1750,6 +1750,12 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - midnight gives exactly one final.
 
     All four fail on the old schedule (hand mutant M1). M2 (no 10-minute check), M3 (`last_posted_ms` not kept) and M4 (no midnight post) are each killed.
+- **2026-10-05 · Follow-ups from the review of #208 (supervisor, golden rule).**
+  - **N1.** The day's first slot (00:01 with 30 minutes) is skipped when the watchdog took a post since that midnight, under 10 minutes before. That post is the day-end final at 00:00:05, so two posts no longer land 55 s apart. The day-end post is kept.
+  - **Why only the first slot.** Skipping any slot within 10 minutes of a post would also drop the half-hour after a start's post (20-minute restarts: 18:23, then 18:31). That would break SUMMARY-CLOCK's every-half-hour rule.
+  - **Not skipped when the final is still owed.** A post before midnight (23:55) does not skip 00:01. Neither does a refused day-end post, so 00:01 posts the final.
+  - **N2.** Two tests pin earlier behaviour: a host clock behind `last_posted_ms` never holds back the after-start post, and a replaced journal keeps `last_posted_ms`.
+  - **Evidence.** Hand mutants N1a (no skip, the #208 behaviour), N1b (skip whatever was posted before midnight), N2a (no `ago >= 0`) and N2b (dropped on replace) are each killed in `summary.test.ts`, "SUMMARY-CLOCK: around midnight and odd clocks".
 
 ## Growing files read whole (GROWTH-SWEEP, `runner/src/lines.ts`, `run/deployer-store.ts`, `run/booked.ts`, `runner/src/runner.ts`)
 

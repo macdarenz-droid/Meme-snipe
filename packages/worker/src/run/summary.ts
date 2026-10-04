@@ -444,11 +444,19 @@ export const SUMMARY_MIN_GAP_MS = 600_000;
  * :00 and :30 with 30 minutes) plus a short lag, or just after the next Melbourne midnight when that comes first. The
  * slots come from the clock alone, never from when the process started, so a worker that restarts often still posts.
  */
-export const nextSummaryDelay = (nowMs: number, everyMs: number): number => {
+export const nextSummaryDelay = (nowMs: number, everyMs: number): number => nextSummary(nowMs, everyMs).delayMs;
+
+/**
+ * The next scheduled post (nextSummaryDelay's), and whether it is the day's first slot (00:01 with 30 minutes), with
+ * the Melbourne midnight that day starts at: the slot that comes just after the day-end post.
+ */
+export const nextSummary = (nowMs: number, everyMs: number): { readonly delayMs: number; readonly firstSlotOf: number | null } => {
   const day = melbourneDay(nowMs);
   const lag = Math.min(SLOT_LAG_MS, Math.floor(everyMs / 30));
-  const slot = day.start + (Math.floor((nowMs - day.start - lag) / everyMs) + 1) * everyMs + lag;
-  return Math.max(1000, Math.min(slot, day.end + 5_000) - nowMs);
+  const k = Math.floor((nowMs - day.start - lag) / everyMs) + 1;
+  const slot = day.start + k * everyMs + lag;
+  const atSlot = slot <= day.end + 5_000;
+  return { delayMs: Math.max(1000, (atSlot ? slot : day.end + 5_000) - nowMs), firstSlotOf: atSlot && k === 0 ? day.start : null };
 };
 
 export interface SummaryClockDeps {
@@ -477,13 +485,25 @@ export class SummaryClock {
 
   start(): void {
     const d = this.#d;
-    const run = (): void => {
+    const schedule = (): void => {
+      const next = nextSummary(d.timers.now(), d.everyMs);
+      this.#slot = d.timers.setTimeout(() => run(next.firstSlotOf), next.delayMs);
+    };
+    const run = (firstSlotOf: number | null): void => {
       if (this.#stopped) return;
+      // The day's first slot comes a minute after the day-end post: it is skipped when the watchdog already took a post
+      // since that midnight, less than SUMMARY_MIN_GAP_MS ago (two posts a minute apart say nothing new).
+      const last = d.lastPostedMs();
+      const ago = last === null ? null : d.timers.now() - last;
+      if (firstSlotOf !== null && last !== null && last >= firstSlotOf && ago !== null && ago >= 0 && ago < SUMMARY_MIN_GAP_MS) {
+        schedule();
+        return;
+      }
       void d.tick().finally(() => {
-        if (!this.#stopped) this.#slot = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.everyMs));
+        if (!this.#stopped) schedule();
       });
     };
-    this.#slot = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.everyMs));
+    schedule();
     this.#afterStart = d.timers.setTimeout(() => {
       this.#afterStart = null;
       if (this.#stopped) return;

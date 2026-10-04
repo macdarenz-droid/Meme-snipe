@@ -527,3 +527,107 @@ describe('SUMMARY-CLOCK: a worker that restarts still posts', () => {
     }
   });
 });
+
+// SUMMARY-CLOCK follow-up (supervisor review of #208): no second post a minute after the day-end post, and two
+// survivors pinned: a host clock behind last_posted_ms, and last_posted_ms kept when the journal is replaced.
+describe('SUMMARY-CLOCK: around midnight and odd clocks', () => {
+  const HALF = 1_800_000;
+  const MIDNIGHT = Date.parse('2026-10-05T13:00:00.000Z');
+  const dirWith = () => {
+    const dir = tempState();
+    writeFileSync(join(dir, 'journal.jsonl'), `${JSON.stringify({ seq: 1, ts: at(MIDNIGHT - 3_600_000), boot: 'b', kind: 'start', git_sha: 'a'.repeat(40), entry_rule: 'S0', recorder: true })}\n`);
+    return dir;
+  };
+
+  it('a worker up across midnight posts the day-end final at 00:00:05 and skips the 00:01 slot; the next is 00:31', async () => {
+    const dir = dirWith();
+    const timers = new ManualTimers(MIDNIGHT - 10 * 60_000);
+    const posts: { final: boolean; at: number }[] = [];
+    const http: HttpClient = async (req) => {
+      const b = JSON.parse(req.body!) as { final: boolean; generated_at: string };
+      posts.push({ final: b.final, at: Date.parse(b.generated_at) });
+      return { status: 200, header: () => null, text: '{"ok":true,"written":true}' };
+    };
+    const sz = new Summarizer({ journalPath: join(dir, 'journal.jsonl'), stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => timers.now(), log: () => {}, live: () => inputs() });
+    const inflight: Promise<void>[] = [];
+    const clock = new SummaryClock({ timers, everyMs: HALF, tick: () => {
+      const p = sz.tick();
+      inflight.push(p);
+      return p;
+    }, lastPostedMs: () => sz.lastPostedMs });
+    clock.start();
+    while (timers.now() < MIDNIGHT + 40 * 60_000) {
+      timers.advance(5_000);
+      while (inflight.length > 0) await inflight.shift();
+    }
+    clock.stop();
+    const after = posts.filter((p) => p.at >= MIDNIGHT - 60_000);
+    expect(after).toEqual([{ final: true, at: MIDNIGHT + 5_000 }, { final: false, at: MIDNIGHT + 5_000 }, { final: false, at: MIDNIGHT + HALF + 60_000 }]);
+  });
+
+  it('when the watchdog refused the day-end post, the 00:01 slot still posts the final', async () => {
+    // A process started at 23:52 posts at 23:55 (3 minutes in); the watchdog refuses every post from midnight to
+    // 00:00:30. The 23:55 post is under 10 minutes before 00:01 but before midnight, so 00:01 is not skipped.
+    const simulateAround = async () => {
+      const dir = dirWith();
+      const timers = new ManualTimers(MIDNIGHT - 8 * 60_000);
+      const posts: { final: boolean; at: number }[] = [];
+      const http: HttpClient = async (req) => {
+        const b = JSON.parse(req.body!) as { final: boolean; generated_at: string };
+        if (Date.parse(b.generated_at) < MIDNIGHT + 30_000 && Date.parse(b.generated_at) >= MIDNIGHT) return { status: 503, header: () => null, text: '{}' };
+        posts.push({ final: b.final, at: Date.parse(b.generated_at) });
+        return { status: 200, header: () => null, text: '{"ok":true,"written":true}' };
+      };
+      const sz = new Summarizer({ journalPath: join(dir, 'journal.jsonl'), stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => timers.now(), log: () => {}, live: () => inputs() });
+      const inflight: Promise<void>[] = [];
+      const clock = new SummaryClock({ timers, everyMs: HALF, tick: () => {
+        const p = sz.tick();
+        inflight.push(p);
+        return p;
+      }, lastPostedMs: () => sz.lastPostedMs });
+      clock.start();
+      while (timers.now() < MIDNIGHT + 10 * 60_000) {
+        timers.advance(5_000);
+        while (inflight.length > 0) await inflight.shift();
+      }
+      clock.stop();
+      return posts;
+    };
+    const posts = await simulateAround();
+    expect(posts[0]).toEqual({ final: false, at: MIDNIGHT - 5 * 60_000 });
+    expect(posts.filter((p) => p.final)).toEqual([{ final: true, at: MIDNIGHT + 60_000 }]);
+  });
+
+  it('a host clock behind last_posted_ms never holds back the post after a start', async () => {
+    // 00:05: the next slot is 00:31, so the only run in the first 3 minutes is the one after the start.
+    const timers = new ManualTimers(MIDNIGHT + 5 * 60_000);
+    let ticks = 0;
+    const clock = new SummaryClock({ timers, everyMs: HALF, tick: async () => void ticks++, lastPostedMs: () => MIDNIGHT + 3_600_000 });
+    clock.start();
+    timers.advance(SUMMARY_AFTER_START_MS - 1);
+    expect(ticks).toBe(0);
+    timers.advance(1);
+    expect(ticks).toBe(1);
+    clock.stop();
+  });
+
+  it('a replaced journal keeps last_posted_ms, so a start right after still holds its post back', async () => {
+    const dir = dirWith();
+    const p = join(dir, 'journal.jsonl');
+    let now = MIDNIGHT + 3_600_000;
+    let up = true;
+    const http: HttpClient = async () => (up ? { status: 200, header: () => null, text: '{"ok":true,"written":true}' } : { status: 503, header: () => null, text: '{}' });
+    const sz = new Summarizer({ journalPath: p, stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => now, log: () => {}, live: () => inputs() });
+    await sz.tick();
+    expect(sz.lastPostedMs).toBe(MIDNIGHT + 3_600_000);
+    // The journal is replaced by a shorter one; this run counts again from its start and its post is refused.
+    writeFileSync(p, '');
+    up = false;
+    now += 60_000;
+    await sz.tick();
+    expect(sz.state.offset).toBe(0);
+    expect(sz.lastPostedMs).toBe(MIDNIGHT + 3_600_000);
+    const again = new Summarizer({ journalPath: p, stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => now, log: () => {}, live: () => inputs() });
+    expect(again.lastPostedMs).toBe(MIDNIGHT + 3_600_000);
+  });
+});
