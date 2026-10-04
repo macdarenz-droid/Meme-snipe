@@ -1484,7 +1484,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **After RISK-LATCH (#124) merged.**
     - `latchable` also requires `mark >= 0n`, core's validity rule (`evaluate.ts`: a negative mark is no mark, a total-loss stand-in). This cannot happen today, since `executableMark` floors at zero; it is kept aligned anyway (risk review of 658dd48).
     - The worker's account valuation now latches R9/R10 at the end of every step, which comes before a candidate is first judged. So in the whole worker, a flat account's booked loss is latched there, and the entry path is the backup.
-    - The entry tests show that valuation one unmarked position through the marking seam, so they pin the entry path itself. Test (a) runs the whole worker.
+    - The entry tests show that valuation one unmarked position through its own test-only seam (`WorkerDeps.valuationMark`, read only by `#markAccount`; unset, it follows `markedHistory`, so production is unchanged), so they pin the entry path itself. Test (a) runs the whole worker.
 - **2026-10-05 · R11 in paper exactly as live (supervisor ruling, golden rule).** 3 entries a day, 1 per mint a day, and no re-entry on a stopped mint for 24 h now apply in paper too (`evaluate.ts`). This only tightens.
   - Only the backtest's research evaluation stays uncapped, since its statistics need every candidate.
   - The live dry run's paper trades are therefore capped where the backtest's are not. G3's comparison of the two must account for that.
