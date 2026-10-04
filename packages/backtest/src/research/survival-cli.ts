@@ -1,8 +1,11 @@
-// RES-5 survival study on practice days (docs/research/survival.md). Exploration, not proof.
-//   node packages/backtest/src/research/survival-cli.ts --dataset <dir> --sol-usd <file> [--window <file>] [--registry <file>]
-//        [--out research/survival] [--seed res5-1] [--replicates 2000]
+// RES-5 survival study on practice days (docs/research/survival.md). Exploration, not proof. Two commands, one look:
+//   node packages/backtest/src/research/survival-cli.ts freeze --dataset <dir> --sol-usd <file> [--window <file>] [--registry <file>] [--out research/survival]
+//     chooses the rule on the find-days, reads no check-day label, writes <out>/frozen.json (refuses to overwrite it).
+//     Commit frozen.json before running `check`.
+//   node packages/backtest/src/research/survival-cli.ts check --dataset <dir> --sol-usd <file> [same options]
+//     refuses unless frozen.json matches this dataset and these find-days; refuses to overwrite results.json; counts runs.
 // The wall is RES-3's committed one (research/signals/window.json); --window may only move it earlier.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../../core/src/config/index.ts';
 import { loadDay, loadManifest, manifestHash, verifySums } from '../dataset/dataset.ts';
@@ -10,14 +13,15 @@ import { readSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
 import { solUsdAsOf } from './candidates.ts';
 import { PLAN_BARRIERS, scoreCandidates } from './outcome.ts';
-import { assertReadable, loadWindow, readableDays, resolveWindow, type StudyRegistry, wallDay } from './practice.ts';
+import { addDays, assertReadable, isPracticeDay, loadWindow, melbourneDay, readableDays, resolveWindow, type StudyRegistry, wallDay } from './practice.ts';
 import { collectSurvival, type SurvivalDecision } from './survival.ts';
-import { featureTests, type LabelledDecision, splitDays } from './survival-analysis.ts';
-import { compareRules, type FeatureCond, freezeRule, passesFeatures, passesSurvival } from './survival-compare.ts';
+import { featureTests, type LabelledDecision, PERMUTATIONS, splitDays } from './survival-analysis.ts';
+import { compareRules, type FeatureCond, type FrozenRule, freezeRule, passesFeatures, passesSurvival } from './survival-compare.ts';
 import { labelDecisions } from './survival-outcome.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..', '..');
-const args = process.argv.slice(2);
+const [command, ...args] = process.argv.slice(2);
+if (command !== 'freeze' && command !== 'check') throw new Error('usage: survival-cli.ts freeze|check --dataset <dir> --sol-usd <file> ...');
 const flag = (name: string, fallback?: string): string => {
   const i = args.indexOf(`--${name}`);
   const v = i >= 0 ? args[i + 1] : fallback;
@@ -25,65 +29,115 @@ const flag = (name: string, fallback?: string): string => {
   return v;
 };
 
+/** Registered once, not run options: the seed and the counts are fixed here and written into frozen.json. */
+const SEED = 'res5-1';
+const BOOTSTRAP_REPLICATES = 2000;
+
 const dataset = flag('dataset');
 const committed = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
 const registryPath = args.includes('--registry') ? flag('registry') : join(ROOT, 'docs', 'evidence', 'bt2', 'registry.json');
 const registry = existsSync(registryPath) ? (JSON.parse(readFileSync(registryPath, 'utf8')) as StudyRegistry) : null;
 const window = resolveWindow(committed, args.includes('--window') ? loadWindow(flag('window')) : committed, registry);
 const out = flag('out', join(ROOT, 'research', 'survival'));
-const seed = flag('seed', 'res5-1');
-const replicates = Number(flag('replicates', '2000'));
 verifySums(dataset);
 const manifest = loadManifest(dataset);
-const days = readableDays(window, manifest.days);
-for (const d of days) assertReadable(window, d.day);
+const datasetHash = `sha256:${manifestHash(dataset)}`;
+const files = readableDays(window, manifest.days);
+for (const d of files) assertReadable(window, d.day);
 const solUsd = solUsdAsOf(readSeries(flag('sol-usd')), 2 * 3_600_000);
 function* rows(): Generator<DatasetRow> {
-  for (const d of days) yield* loadDay(dataset, d);
+  for (const d of files) yield* loadDay(dataset, d);
 }
 
-// Feature stage, then the outcome stage on a second pass (labels never reach the feature stage).
-const drive = collectSurvival(rows(), { window, policy: TRIAL_POLICY, solUsd });
-const labels = new Map(labelDecisions(rows(), drive.decisions.map(({ id, pool, labelAtMs }) => ({ id, pool, labelAtMs })), window).map((x) => [x.id, x.label]));
-const labelled: (LabelledDecision & { readonly d: SurvivalDecision })[] = drive.decisions.flatMap((d) => {
-  const l = labels.get(d.id);
-  return l === null || l === undefined ? [] : [{ id: d.id, day: d.day, ageMs: d.ageMs, stratum: d.stratum, features: d.features, survived: l.survived, d }];
-});
-// The rule is chosen and frozen on the find-days alone; its hash is fixed before any check-day trade is scored.
-const rule = freezeRule(labelled, replicates, 17);
-// Descriptive find/check report of every feature (not used to choose the rule).
-const tests = featureTests(labelled, replicates, 11);
+/** The practice days (Melbourne) the readable files cover, from the window and the manifest alone: no label is read. */
+const practiceDays = (): string[] => {
+  if (files.length === 0) return [];
+  const out: string[] = [];
+  for (let d = melbourneDay(Date.parse(`${files[0]!.day}T00:00:00Z`)); d < wallDay(window); d = addDays(d, 1)) if (isPracticeDay(window, d)) out.push(d);
+  return out;
+};
+const split = splitDays(practiceDays());
 
-// Comparison on the check-days, at the decision points, eligible decisions only.
-const { check } = splitDays(labelled.map((x) => x.day));
-const C = new Set(check);
-const eligible = drive.decisions.filter((d) => d.eligibleAs !== null && C.has(d.day));
-const scored = new Map(scoreCandidates(rows(), eligible.map(({ id, pool, decisionSlot, decisionMs, solUsd: px }) => ({ id, pool, decisionSlot, decisionMs, solUsd: px })), {
-  window, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(0, 2), seed, entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps,
-}).map((o) => [o.id, o]));
-const pre = JSON.parse(readFileSync(join(ROOT, 'research', 'edge', 'preregistration.json'), 'utf8')) as { hypotheses: { id: string; universe: 'U1' | 'U2'; rules: { kind: string; conds?: FeatureCond[] } }[] };
-const tradesOf = (pick: (d: SurvivalDecision) => boolean, barrier: number) => eligible.filter(pick).flatMap((d) => {
-  const o = scored.get(d.id);
-  const l = o?.labels[barrier];
-  return o === undefined || o.noQuote || l === undefined || l.rNet === null ? [] : [{ day: d.day, rNet: l.rNet }];
-});
-const comparison = PLAN_BARRIERS.slice(0, 2).map((b, i) => {
-  const s0 = tradesOf(() => true, i);
-  const rules = [
-    { rule: 'S0 (every eligible decision)', trades: s0 },
-    { rule: `survival rule: ${rule.conds.length === 0 ? 'none passed on the find-days' : `${rule.ageMs! / 60_000} min, ${rule.conds.map((c) => `${c.f} ${c.dir === 'gt' ? '>' : '<='} ${c.t}`).join(' & ')}`} (sha256 ${rule.hash.slice(0, 12)})`, trades: rule.conds.length === 0 ? [] : tradesOf((d) => passesSurvival(rule, d), i) },
-    ...pre.hypotheses.filter((h) => h.rules.kind === 'features').map((h) => ({ rule: h.id, trades: tradesOf((d) => d.eligibleAs === h.universe && passesFeatures(h.rules.conds!, d.f), i) })),
-  ];
-  return { barrier: b.cfgId, results: compareRules(rules, s0, { seed: 13, replicates }) };
-});
+// Feature stage over every readable row (no labels), then labels for one side only.
+const drive = collectSurvival(rows(), { window, policy: TRIAL_POLICY, solUsd });
+const labelSide = (days: readonly string[]): (LabelledDecision & { readonly d: SurvivalDecision })[] => {
+  const D = new Set(days);
+  const side = drive.decisions.filter((d) => D.has(d.day));
+  const labels = new Map(labelDecisions(rows(), side.map(({ id, pool, labelAtMs }) => ({ id, pool, labelAtMs })), window).map((x) => [x.id, x.label]));
+  return side.flatMap((d) => {
+    const l = labels.get(d.id);
+    return l === null || l === undefined ? [] : [{ id: d.id, day: d.day, ageMs: d.ageMs, stratum: d.stratum, features: d.features, survived: l.survived, d }];
+  });
+};
+
+interface Frozen {
+  readonly task: 'RES-5';
+  readonly rule: FrozenRule;
+  readonly dataset: string;
+  readonly findDays: readonly string[];
+  readonly checkDays: readonly string[];
+  readonly permutations: number;
+  readonly bootstrapReplicates: number;
+  readonly seed: string;
+  readonly decisions: number;
+  readonly findLabelled: number;
+}
 
 mkdirSync(out, { recursive: true });
-const result = {
-  task: 'RES-5', label: 'exploration, not proof', dataset: `sha256:${manifestHash(dataset)}`, wall: wallDay(window), days: days.map((d) => d.day),
-  decisions: drive.decisions.length, labelled: labelled.length, censored: drive.decisions.length - labelled.length, labelPastWall: drive.labelPastWall,
-  survivalRate: labelled.length === 0 ? null : labelled.filter((x) => x.survived).length / labelled.length,
-  trials: { featureTests: tests.length, ruleSelectionTests: rule.trials, rules: 1 + pre.hypotheses.filter((h) => h.rules.kind === 'features').length },
-  tests, survivalRule: rule, comparison,
-};
-writeFileSync(join(out, 'results.json'), JSON.stringify(result, (_, v) => (typeof v === 'bigint' ? v.toString() : v), 2));
-console.log(JSON.stringify({ days: result.days.length, decisions: result.decisions, labelled: result.labelled, survivalRate: result.survivalRate, heldUp: tests.filter((x) => x.heldUp).map((x) => `${x.feature}@${x.ageMs / 60_000}m`), rule }, null, 2));
+const frozenPath = join(out, 'frozen.json');
+
+if (command === 'freeze') {
+  if (existsSync(frozenPath)) throw new Error(`${frozenPath} exists: the rule is frozen once`);
+  const find = labelSide(split.find);
+  const rule = freezeRule(find, practiceDays(), PERMUTATIONS, 17);
+  const frozen: Frozen = {
+    task: 'RES-5', rule, dataset: datasetHash, findDays: split.find, checkDays: split.check, permutations: PERMUTATIONS,
+    bootstrapReplicates: BOOTSTRAP_REPLICATES, seed: SEED, decisions: drive.decisions.length, findLabelled: find.length,
+  };
+  writeFileSync(frozenPath, JSON.stringify(frozen, null, 2) + '\n');
+  console.log(JSON.stringify({ frozen: frozenPath, rule: rule.none ?? rule.conds, hash: rule.hash, findDays: split.find.length, checkDays: split.check.length }, null, 2));
+} else {
+  if (!existsSync(frozenPath)) throw new Error(`${frozenPath} is missing: run freeze and commit frozen.json first`);
+  const frozen = JSON.parse(readFileSync(frozenPath, 'utf8')) as Frozen;
+  if (frozen.dataset !== datasetHash) throw new Error(`frozen.json was made on ${frozen.dataset}, this dataset is ${datasetHash}`);
+  if (JSON.stringify(frozen.findDays) !== JSON.stringify(split.find) || JSON.stringify(frozen.checkDays) !== JSON.stringify(split.check)) throw new Error('frozen.json was made on other find- or check-days');
+  const resultsPath = join(out, 'results.json');
+  if (existsSync(resultsPath)) throw new Error(`${resultsPath} exists: the check-days are looked at once`);
+  appendFileSync(join(out, 'runs.log'), `${new Date().toISOString()} check ${datasetHash} rule ${frozen.rule.hash}\n`);
+  const runs = readFileSync(join(out, 'runs.log'), 'utf8').trim().split('\n').length;
+  const rule = frozen.rule;
+
+  const findSide = labelSide(frozen.findDays);
+  const checkSide = labelSide(frozen.checkDays);
+  // Descriptive find/check report of every feature (never chooses the rule).
+  const tests = featureTests([...findSide, ...checkSide], { find: frozen.findDays, check: frozen.checkDays }, frozen.bootstrapReplicates, frozen.permutations, 11);
+  const C = new Set(frozen.checkDays);
+  const eligible = drive.decisions.filter((d) => d.eligibleAs !== null && C.has(d.day));
+  const scored = new Map(scoreCandidates(rows(), eligible.map(({ id, pool, decisionSlot, decisionMs, solUsd: px }) => ({ id, pool, decisionSlot, decisionMs, solUsd: px })), {
+    window, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(0, 2), seed: frozen.seed, entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps,
+  }).map((o) => [o.id, o]));
+  const pre = JSON.parse(readFileSync(join(ROOT, 'research', 'edge', 'preregistration.json'), 'utf8')) as { hypotheses: { id: string; universe: 'U1' | 'U2'; rules: { kind: string; conds?: FeatureCond[] } }[] };
+  const tradesOf = (pick: (d: SurvivalDecision) => boolean, barrier: number) => eligible.filter(pick).flatMap((d) => {
+    const o = scored.get(d.id);
+    const l = o?.labels[barrier];
+    return o === undefined || o.noQuote || l === undefined || l.rNet === null ? [] : [{ day: d.day, rNet: l.rNet }];
+  });
+  const comparison = PLAN_BARRIERS.slice(0, 2).map((b, i) => {
+    const s0 = tradesOf(() => true, i);
+    const rules = [
+      { rule: 'S0 (every eligible decision)', trades: s0 },
+      { rule: `survival rule: ${rule.none ?? `${rule.ageMs! / 60_000} min, ${rule.conds.map((c) => `${c.f} ${c.dir === 'gt' ? '>' : '<='} ${c.t}`).join(' & ')}`} (sha256 ${rule.hash.slice(0, 12)})`, trades: rule.conds.length === 0 ? [] : tradesOf((d) => passesSurvival(rule, d), i) },
+      ...pre.hypotheses.filter((h) => h.rules.kind === 'features').map((h) => ({ rule: `${h.id}: not RES-4's registered test; its G1 is BT-2's SPA`, trades: tradesOf((d) => d.eligibleAs === h.universe && passesFeatures(h.rules.conds!, d.f), i) })),
+    ];
+    return { barrier: b.cfgId, note: 'unadjusted, 10 intervals, exploration', results: compareRules(rules, s0, { seed: 13, replicates: frozen.bootstrapReplicates }) };
+  });
+  const result = {
+    task: 'RES-5', label: 'exploration, not proof', dataset: datasetHash, wall: wallDay(window), checkRun: runs, frozen,
+    labelled: { find: findSide.length, check: checkSide.length },
+    survivalRate: checkSide.length + findSide.length === 0 ? null : [...findSide, ...checkSide].filter((x) => x.survived).length / (checkSide.length + findSide.length),
+    trials: { featureTests: tests.length, ruleSelectionTests: rule.trials, rules: 1 + pre.hypotheses.filter((h) => h.rules.kind === 'features').length },
+    tests, comparison,
+  };
+  writeFileSync(resultsPath, JSON.stringify(result, (_, v) => (typeof v === 'bigint' ? v.toString() : v), 2));
+  console.log(JSON.stringify({ checkRun: runs, rule: rule.none ?? rule.conds, labelled: result.labelled }, null, 2));
+}

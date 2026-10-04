@@ -7,8 +7,9 @@ import { collectCandidates, PLAN_DRIVE, solUsdAsOf } from '../src/research/candi
 import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
 import { HoldoutWallError, type PracticeWindow } from '../src/research/practice.ts';
 import { collectSurvival, SURVIVAL_FEATURES, type SurvivalFeature } from '../src/research/survival.ts';
-import { dayBootstrap, featureTests, type LabelledDecision, mhRiskDifference, splitDays, tradeMeasures, wilson } from '../src/research/survival-analysis.ts';
-import { freezeRule, passesFeatures, passesSurvival } from '../src/research/survival-compare.ts';
+import { ALPHA, dayBootstrap, featureTests, type LabelledDecision, mhRiskDifference, PERMUTATIONS, permutationTest, splitDays, tradeMeasures, wilson } from '../src/research/survival-analysis.ts';
+import { clopperPearsonLower } from '../../core/src/stats/index.ts';
+import { freezeRule, passesFeatures, passesSurvival, selectSurvivalRule } from '../src/research/survival-compare.ts';
 import { LabelTimeError, SURVIVAL_RULE, survivalLabel } from '../src/research/survival-label.ts';
 import { labelDecisions } from '../src/research/survival-outcome.ts';
 import type { Features } from '../src/research/tracker.ts';
@@ -180,7 +181,8 @@ describe('matched strata', () => {
     expect(splitDays(['d3', 'd1', 'd2', 'd1', 'd4', 'd5', 'd6'])).toEqual({ find: ['d1', 'd2', 'd3', 'd4'], check: ['d5', 'd6'] });
   });
 
-  const days = Array.from({ length: 12 }, (_, d) => `2026-09-${String(d + 1).padStart(2, '0')}`);
+  // 15 days: 10 find-days (the registered minimum) and 5 check-days.
+  const days = Array.from({ length: 15 }, (_, d) => `2026-09-${String(d + 1).padStart(2, '0')}`);
   const rnd = (seed: number) => {
     let s = seed >>> 0;
     return () => {
@@ -203,33 +205,79 @@ describe('matched strata', () => {
     return xs;
   };
 
+  const split = splitDays(days);
+
   test('a planted survival feature holds up on the check-days after Holm over every test; noise does not', () => {
-    const planted = featureTests(synth(0.3, 1), 400, 3);
+    const planted = featureTests(synth(0.3, 1), split, 200, PERMUTATIONS, 3);
     expect(planted.length).toBe(SURVIVAL_FEATURES.length);
     expect(planted.find((x) => x.feature === 's_net60')!.heldUp).toBe(true);
     expect(planted.filter((x) => x.heldUp).map((x) => x.feature)).toEqual(['s_net60']);
-    const noise = featureTests(synth(0, 2), 400, 3);
-    expect(noise.filter((x) => x.heldUp).length).toBe(0);
+    // On noise a feature holds up at most α of the time (one seed alone would fail by chance about 5% of the time).
+    let held = 0;
+    for (let seed = 20; seed < 40; seed++) if (featureTests(synth(0, seed), split, 50, PERMUTATIONS, 3).some((x) => x.heldUp)) held++;
+    expect(clopperPearsonLower(held, 20)).toBeLessThanOrEqual(ALPHA);
+  });
+
+  test('permutation p: (1 + k) / (1 + B), never 0, within day × stratum cells; B is the registered minimum', () => {
+    expect(PERMUTATIONS).toBe(Math.ceil((20 * 45) / 0.05));
+    const xs = synth(0, 6);
+    const r = permutationTest(xs, 's_net60', 0.5, 999, 1);
+    expect(r.p!).toBeGreaterThanOrEqual(1 / 1000);
+    expect(r.p!).toBeLessThanOrEqual(1);
+    expect(Number.isInteger(r.p! * 1000)).toBe(true);
+    // A strong effect reaches the smallest possible p.
+    expect(permutationTest(synth(0.5, 7), 's_net60', 0.5, 999, 1).p).toBe(1 / 1000);
   });
 
   test('the survival rule is chosen and frozen on the find-days alone; a planted signal is found, noise gives none', () => {
     const data = synth(0.3, 1);
-    const rule = freezeRule(data, 400, 5);
-    const { find } = splitDays(data.map((x) => x.day));
+    const rule = freezeRule(data, days, PERMUTATIONS, 5);
     const findMedian = (() => {
-      const v = data.filter((x) => find.includes(x.day)).map((x) => x.features.s_net60!).sort((a, b) => a - b);
+      const v = data.filter((x) => split.find.includes(x.day)).map((x) => x.features.s_net60!).sort((a, b) => a - b);
       return (v[v.length / 2 - 1]! + v[v.length / 2]!) / 2;
     })();
     expect(rule.ageMs).toBe(60 * 60_000);
     expect(rule.conds).toEqual([{ f: 's_net60', dir: 'gt', t: findMedian }]);
+    expect(rule.none).toBeNull();
     expect(rule.hash).toMatch(/^[0-9a-f]{64}$/);
     expect(rule.trials).toBe(SURVIVAL_FEATURES.length);
-    expect(freezeRule(synth(0, 2), 400, 5).conds).toEqual([]);
+    expect(freezeRule(synth(0, 2), days, PERMUTATIONS, 5).conds).toEqual([]);
+    expect(() => freezeRule(data, days, PERMUTATIONS - 1, 5)).toThrow(/permutations are registered/);
   });
 
+  test('fewer than 10 find-days: no rule, recorded as such, even with a strong signal', () => {
+    const few = days.slice(0, 4); // 3 find-days
+    const data = synth(0.5, 1).filter((x) => few.includes(x.day));
+    const rule = freezeRule(data, few, PERMUTATIONS, 5);
+    expect(rule.conds).toEqual([]);
+    expect(rule.none).toMatch(/fewer than 10 find-days \(3\)/);
+  });
+
+  test('null calibration: on pure noise at three ages and 15 random features, a rule is chosen at most α of the time', () => {
+    // Every feature random, survival independent of all of them; 10 find-days, the registered B.
+    const noise = (seed: number): LabelledDecision[] => {
+      const u = rnd(seed);
+      const xs: LabelledDecision[] = [];
+      let i = 0;
+      for (const day of days.slice(0, 10)) {
+        for (const ageMs of [60, 240, 1440].map((m) => m * 60_000)) {
+          for (let k = 0; k < 30; k++) {
+            const stratum = `${ageMs}|${u() < 0.5 ? 'a' : 'b'}`;
+            xs.push({ id: `${seed}:${i++}`, day, ageMs, stratum, features: Object.fromEntries(SURVIVAL_FEATURES.map((f) => [f, u()])) as Record<SurvivalFeature, number>, survived: u() < 0.1 });
+          }
+        }
+      }
+      return xs;
+    };
+    const runs = 40;
+    let chosen = 0;
+    for (let r = 0; r < runs; r++) if (selectSurvivalRule(noise(1000 + r), days.slice(0, 10), PERMUTATIONS, r).conds.length > 0) chosen++;
+    // The observed rate is consistent with α: its 95% Clopper–Pearson lower bound does not exceed α.
+    expect(clopperPearsonLower(chosen, runs)).toBeLessThanOrEqual(ALPHA);
+  }, 300_000);
+
   test('no check-day value reaches selection: a check-only signal is never chosen, and a planted check-day marker leaves the frozen rule identical', () => {
-    const { check } = splitDays(days);
-    const C = new Set(check);
+    const C = new Set(split.check);
     // Signal only on the check-days, in s_top10: selection must not see it.
     const u = rnd(9);
     const checkOnly = synth(0, 4).map((x) => {
@@ -237,11 +285,11 @@ describe('matched strata', () => {
       const v = u();
       return { ...x, features: { ...x.features, s_top10: v }, survived: v > 0.5 };
     });
-    expect(freezeRule(checkOnly, 400, 5).conds).toEqual([]);
+    expect(freezeRule(checkOnly, days, PERMUTATIONS, 5).conds).toEqual([]);
     // A marker on every check-day decision (impossible values, flipped labels) changes nothing in the frozen rule.
     const base = synth(0.3, 1);
     const marked = base.map((x) => (C.has(x.day) ? { ...x, survived: !x.survived, features: Object.fromEntries(SURVIVAL_FEATURES.map((k) => [k, 999])) as Record<SurvivalFeature, number> } : x));
-    expect(freezeRule(marked, 400, 5)).toEqual(freezeRule(base, 400, 5));
+    expect(freezeRule(marked, days, PERMUTATIONS, 5)).toEqual(freezeRule(base, days, PERMUTATIONS, 5));
   });
 
   test('day-block bootstrap needs at least two days', () => {
@@ -279,25 +327,41 @@ test('fixture sanity: graduates migrate on the practice days', () => {
 });
 
 describe('cli', () => {
-  test('runs under the committed wall and writes results labelled exploration', async () => {
-    const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  test('freeze reads no check-day label and writes frozen.json once; check needs it, matches it, runs once, counts runs', async () => {
+    const { existsSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
-    const { execFileSync } = await import('node:child_process');
+    const { execFileSync, spawnSync } = await import('node:child_process');
     const { writeDataset } = await import('./dataset-writer.ts');
     const dir = mkdtempSync(join(tmpdir(), 'res5-'));
     try {
       writeDataset(join(dir, 'data'), fx.rows);
       writeFileSync(join(dir, 'sol.csv'), ['# name: SOL/USD', '# tag: fixed', '# bar_ms: 3600000', `# fetched_at: ${new Date(S_T0).toISOString()}`, 'start,close',
         ...SURV_SOL_USD.bars.map((b) => `${new Date(b.start).toISOString()},${b.close}`)].join('\n'));
-      const summary = JSON.parse(execFileSync(process.execPath, ['--no-warnings', join(SRC, 'survival-cli.ts'), '--dataset', join(dir, 'data'), '--sol-usd', join(dir, 'sol.csv'), '--out', join(dir, 'out'), '--replicates', '200'], { encoding: 'utf8' })) as { decisions: number; labelled: number };
-      expect(summary.decisions).toBe(12);
-      expect(summary.labelled).toBe(11);
-      const res = JSON.parse(readFileSync(join(dir, 'out', 'results.json'), 'utf8')) as { label: string; trials: { featureTests: number }; comparison: { results: { rule: string }[] }[] };
+      const cmd = (c: string, data = 'data') => [join(SRC, 'survival-cli.ts'), c, '--dataset', join(dir, data), '--sol-usd', join(dir, 'sol.csv'), '--out', join(dir, 'out')];
+      const run = (c: string, data?: string) => spawnSync(process.execPath, ['--no-warnings', ...cmd(c, data)], { encoding: 'utf8' });
+      // check before freeze is refused.
+      expect(run('check').stderr).toMatch(/frozen\.json is missing/);
+      const frozen = JSON.parse(execFileSync(process.execPath, ['--no-warnings', ...cmd('freeze')], { encoding: 'utf8' })) as { rule: unknown; findDays: number };
+      // The fixture covers few practice days: fewer than 10 find-days, so no rule, said so.
+      expect(String(frozen.rule)).toMatch(/fewer than 10 find-days/);
+      expect(run('freeze').stderr).toMatch(/frozen once/);
+      const f = JSON.parse(readFileSync(join(dir, 'out', 'frozen.json'), 'utf8')) as { dataset: string; permutations: number; seed: string; findDays: string[] };
+      expect(f.permutations).toBe(PERMUTATIONS);
+      expect(f.seed).toBe('res5-1');
+      const checked = JSON.parse(execFileSync(process.execPath, ['--no-warnings', ...cmd('check')], { encoding: 'utf8' })) as { checkRun: number };
+      expect(checked.checkRun).toBe(1);
+      const res = JSON.parse(readFileSync(join(dir, 'out', 'results.json'), 'utf8')) as { label: string; frozen: { rule: { hash: string } }; comparison: { note: string; results: { rule: string }[] }[] };
       expect(res.label).toBe('exploration, not proof');
-      expect(res.trials.featureTests).toBe(45);
-      expect(res.comparison[0]!.results.map((r) => r.rule.split(':')[0])).toEqual(['S0 (every eligible decision)', 'survival rule', 'H1-U1-dip-reversal', 'H2-U1-quiet-accumulation', 'H5-U2-exhausted-dump', 'H6-U1-dip-reversal-sol-up']);
+      expect(res.comparison[0]!.note).toBe('unadjusted, 10 intervals, exploration');
+      expect(res.comparison[0]!.results.filter((r) => r.rule.startsWith('H')).every((r) => r.rule.endsWith("not RES-4's registered test; its G1 is BT-2's SPA"))).toBe(true);
+      // A second check is refused and still counted; a check on another dataset is refused.
+      expect(run('check').stderr).toMatch(/looked at once/);
+      writeDataset(join(dir, 'other'), fx.rows.slice(0, fx.rows.length - 1000));
+      rmSync(join(dir, 'out', 'results.json'));
+      expect(run('check', 'other').stderr).toMatch(/frozen\.json was made on/);
+      expect(existsSync(join(dir, 'out', 'runs.log'))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 150_000);
+  }, 300_000);
 });

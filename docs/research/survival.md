@@ -48,13 +48,16 @@ Each is computed from rows released before the decision, at ages 60 min, 240 min
 - **Look-alikes:** at each decision age, graduates are put in strata by what they looked like then: market cap (< 300, 300–1,000, 1,000–3,000, ≥ 3,000 SOL) × real quote vault (< 20, 20–50, 50–150, ≥ 150 SOL). Survivors are compared only with losers in the same stratum, never with all losers.
 - **Per feature:** split at the median of the find-days (below), fixed before the check-days are read. Report:
   - the survival rate with the feature high and the base rate at that age, with Wilson 95% intervals;
-  - the stratum-matched risk difference (Mantel–Haenszel weights), with a 95% interval from a day-block bootstrap (2,000 resamples).
-- **Multiple tests:** Holm across all 45 on the check-days. A feature "held up" only if its check-day matched difference has the same sign as on the find-days and passes Holm.
+  - the stratum-matched risk difference (Mantel–Haenszel weights), with a 95% interval from a day-block bootstrap (an interval only, never a test);
+  - its **p-value from a permutation test** that shuffles survival labels within each day × stratum cell (so the day structure, the strata and every cell's survivor count are kept), two-sided, p = (1 + k) / (1 + B) with **B = ceil(20 · 45 / α) = 18,000** registered.
+- **Multiple tests:** Holm across all 45 at α = 0.05. On the check-days this is a description ("held up": same sign as on the find-days and Holm passes); it never chooses the rule.
+- **Calibration:** a test runs the selection on pure noise at all three ages and 15 random features, 40 times, and fails unless the share of runs that choose a rule is consistent with α (Clopper–Pearson lower bound ≤ α).
 
 ## 4. Data split
 
 - Only practice days before RES-3's wall (2026-09-21T14:00Z); a holdout day is never read. The wall guard (`practice.ts`) covers both stages.
-- **Find-days:** the earliest two thirds of the labelled days; **check-days:** the latest third. Days used to find a feature never count in its check.
+- **Find-days:** the earliest two thirds of the practice days the readable data covers, worked out from the window and the manifest alone (never from which decisions got a label); **check-days:** the latest third. Days used to find a feature never count in its check.
+- **At least 10 find-days** (as `g2rule.ts`'s minimum) for any rule; below that the frozen result is "no rule: fewer than 10 find-days".
 - With the early-look days only (09-20, 09-21), nothing can be checked: the 24 h label leaves 09-20 graduates up to about 13:30 UTC labelled, so phase B on those days is description only.
 
 ## 5. Comparison with what we have
@@ -81,8 +84,12 @@ On the check-days, with one exit for every rule (STATS-1's triple barrier throug
 `packages/backtest/src/research/`: `survival-label.ts` (the pure label rule), `survival.ts` (feature stage), `survival-outcome.ts` (labels, second pass), `survival-analysis.ts` (split, strata, Mantel–Haenszel, Wilson, day bootstrap, Holm, trade measures), `survival-compare.ts` (the survival rule, RES-4's feature rules, comparison with S0), `survival-cli.ts`. Tests: `packages/backtest/test/survival.test.ts` on a synthetic market with known fates (`survival-fixture.ts`): label thresholds, a label time after "now" refused, creator and market history only from matured labels of other graduates, a planted future swap moves no earlier feature, no outcome import in the feature stage, labels per fate and censoring, the wall in both stages, RENT-1 refund, a Simpson's-paradox case and a hand-computed Mantel–Haenszel weight, a planted feature holding up after Holm while noise does not, the trade measures, the CLI.
 
 ```
-node packages/backtest/src/research/survival-cli.ts --dataset <DATA dir> --sol-usd <SOL/USD series> [--out research/survival]
+node packages/backtest/src/research/survival-cli.ts freeze --dataset <DATA dir> --sol-usd <SOL/USD series> [--out research/survival]
+# commit research/survival/frozen.json, then:
+node packages/backtest/src/research/survival-cli.ts check --dataset <DATA dir> --sol-usd <SOL/USD series> [--out research/survival]
 ```
+
+**One look, enforced:** `freeze` chooses the rule on the find-days, reads no check-day label, and writes `frozen.json` (the rule and its hash, the dataset's manifest hash, the find- and check-days, B, the bootstrap count and the seed; the seed and counts are constants in code, not run options). It refuses to overwrite `frozen.json`. **`frozen.json` is committed before `check` runs.** `check` refuses unless `frozen.json` matches the dataset and the days, refuses to overwrite `results.json`, and appends every run to `runs.log`. The comparison table is marked "unadjusted, 10 intervals, exploration", and each RES-4 row says it is not RES-4's registered test (its G1 is BT-2's SPA).
 
 ## 8. Changes to the plan
 
@@ -92,6 +99,8 @@ node packages/backtest/src/research/survival-cli.ts --dataset <DATA dir> --sol-u
   - Found on the 10-second-slot test market: the outcome stage waited for the exit ladder in wall-clock seconds, so trades there were wrongly censored. The fix is its own PR (BT-TAIL, #122), since `outcome.ts` is what the proof scores from; RES-5 changes nothing in it.
 
 - 2026-10-04, before any data was read (external audit): the survival rule was chosen by check-day p-values and then scored on the same check-days (selection leakage). It is now chosen on the find-days alone, frozen with a hash, and scored once on the check-days; the find-day selection runs its own 45 counted tests.
+
+- 2026-10-04, before any data was read (review of #120 at 8a7856e): the day-bootstrap p was not a valid test (a percentile read as a test, often exactly 0, no (1 + k)/(1 + B)), and selection chose rules from pure noise. Now: a within day × stratum permutation test with B = 18,000, a 10-find-day minimum, a null-calibration test, and freeze/check as two commands with `frozen.json` committed in between. Days are split from the readable data, not from the labelled decisions.
 
 ## 9. Results
 

@@ -13,7 +13,7 @@ export interface LabelledDecision {
   readonly survived: boolean;
 }
 
-/** Earliest ceil(2/3) of the days find features; the rest check them (survival.md §4). */
+/** Earliest ceil(2/3) of the days find features; the rest check them (survival.md §4). Pass the window's readable days. */
 export const splitDays = (days: readonly string[]): { readonly find: string[]; readonly check: string[] } => {
   const d = [...new Set(days)].sort();
   const k = Math.ceil((2 * d.length) / 3);
@@ -68,13 +68,13 @@ export const mhRiskDifference = (xs: readonly LabelledDecision[], f: SurvivalFea
   return den === 0 ? null : num / den;
 };
 
-/** Day-block bootstrap of a statistic over decisions: resample whole days, 2.5/97.5 percentiles and a two-sided p. */
+/** Day-block bootstrap of a statistic over decisions: resample whole days, 2.5/97.5 percentiles. An interval only, never a test. */
 export const dayBootstrap = (xs: readonly LabelledDecision[], stat: (ys: readonly LabelledDecision[]) => number | null, reps: number, seed: number) => {
   const byDay = new Map<string, LabelledDecision[]>();
   for (const x of xs) byDay.set(x.day, [...(byDay.get(x.day) ?? []), x]);
   const days = [...byDay.keys()].sort();
   const est = stat(xs);
-  if (est === null || days.length < 2) return { est, lower: null, upper: null, p: null };
+  if (est === null || days.length < 2) return { est, lower: null, upper: null };
   const rng = createRng(seed);
   const vals: number[] = [];
   for (let r = 0; r < reps; r++) {
@@ -83,13 +83,114 @@ export const dayBootstrap = (xs: readonly LabelledDecision[], stat: (ys: readonl
     const v = stat(ys);
     if (v !== null) vals.push(v);
   }
-  if (vals.length < reps * 0.9) return { est, lower: null, upper: null, p: null };
+  if (vals.length < reps * 0.9) return { est, lower: null, upper: null };
   vals.sort((a, b) => a - b);
   const q = (p: number) => vals[Math.min(vals.length - 1, Math.max(0, Math.floor(p * vals.length)))]!;
-  const le = vals.filter((v) => v <= 0).length / vals.length;
-  const ge = vals.filter((v) => v >= 0).length / vals.length;
-  return { est, lower: q(0.025), upper: q(0.975), p: Math.min(1, 2 * Math.min(le, ge)) };
+  return { est, lower: q(0.025), upper: q(0.975) };
 };
+
+/** Family-wise level, the number of tests in the family, and the registered permutation count B ≥ ceil(20·45/α). */
+export const ALPHA = 0.05;
+export const FAMILY_TESTS = 45;
+export const PERMUTATIONS = Math.ceil((20 * FAMILY_TESTS) / ALPHA);
+/** Fewer find-days than this: no rule is chosen, recorded as such (survival.md §5; as g2rule.ts's minimum). */
+export const MIN_FIND_DAYS = 10;
+
+interface Cell {
+  readonly stratum: number;
+  /** Decisions, survivors and feature-high decisions in the cell. */
+  readonly m: number;
+  readonly k: number;
+  readonly h: number;
+  /** CDF of the hypergeometric number of high survivors, from `lo` up. */
+  readonly lo: number;
+  readonly cdf: Float64Array;
+}
+
+const logFact = (() => {
+  const t: number[] = [0];
+  return (n: number): number => {
+    for (let i = t.length; i <= n; i++) t.push(t[i - 1]! + Math.log(i));
+    return t[n]!;
+  };
+})();
+const logChoose = (n: number, k: number): number => logFact(n) - logFact(k) - logFact(n - k);
+
+/**
+ * Permutation test of the matched (Mantel–Haenszel) difference: survival labels are shuffled within each day ×
+ * stratum cell, which keeps the day structure, the strata and every cell's survivor count. Under that shuffle the
+ * high-group survivors of a cell are hypergeometric, so each permutation draws one number per cell. Two-sided;
+ * p = (1 + k) / (1 + B) with k the permutations at least as extreme (Phipson & Smyth 2010).
+ */
+export const permutationTest = (xs: readonly LabelledDecision[], f: SurvivalFeature, split: number, permutations: number, seed: number): { readonly est: number | null; readonly p: number | null } => {
+  const est = mhRiskDifference(xs, f, split);
+  if (est === null) return { est, p: null };
+  const strataIds = new Map<string, number>();
+  const cellMap = new Map<string, { stratum: number; m: number; k: number; h: number }>();
+  for (const x of xs) {
+    const v = x.features[f];
+    if (v === null || !Number.isFinite(v)) continue;
+    const sid = strataIds.get(x.stratum) ?? strataIds.size;
+    strataIds.set(x.stratum, sid);
+    const key = `${x.day}|${x.stratum}`;
+    const c = cellMap.get(key) ?? { stratum: sid, m: 0, k: 0, h: 0 };
+    c.m++;
+    if (x.survived) c.k++;
+    if (v > split) c.h++;
+    cellMap.set(key, c);
+  }
+  const S = strataIds.size;
+  const hn = new Float64Array(S);
+  const ln = new Float64Array(S);
+  const kTot = new Float64Array(S);
+  const cells: Cell[] = [];
+  for (const c of cellMap.values()) {
+    hn[c.stratum]! += c.h;
+    ln[c.stratum]! += c.m - c.h;
+    kTot[c.stratum]! += c.k;
+    const lo = Math.max(0, c.h + c.k - c.m);
+    const hi = Math.min(c.h, c.k);
+    const cdf = new Float64Array(hi - lo + 1);
+    let acc = 0;
+    for (let x = lo; x <= hi; x++) {
+      acc += Math.exp(logChoose(c.k, x) + logChoose(c.m - c.k, c.h - x) - logChoose(c.m, c.h));
+      cdf[x - lo] = acc;
+    }
+    cells.push({ ...c, lo, cdf });
+  }
+  const w = new Float64Array(S);
+  let wSum = 0;
+  for (let s = 0; s < S; s++) {
+    if (hn[s]! > 0 && ln[s]! > 0) {
+      w[s] = (hn[s]! * ln[s]!) / (hn[s]! + ln[s]!);
+      wSum += w[s]!;
+    }
+  }
+  const rng = createRng(seed);
+  const xHi = new Float64Array(S);
+  const abs = Math.abs(est) - 1e-12;
+  let k = 0;
+  for (let b = 0; b < permutations; b++) {
+    xHi.fill(0);
+    for (const c of cells) {
+      const u = rng.next() * c.cdf[c.cdf.length - 1]!;
+      let i = 0;
+      while (i < c.cdf.length - 1 && c.cdf[i]! < u) i++;
+      xHi[c.stratum]! += c.lo + i;
+    }
+    let num = 0;
+    for (let s = 0; s < S; s++) if (w[s]! > 0) num += w[s]! * (xHi[s]! / hn[s]! - (kTot[s]! - xHi[s]!) / ln[s]!);
+    if (Math.abs(num / wSum) >= abs) k++;
+  }
+  return { est, p: (1 + k) / (1 + permutations) };
+};
+
+interface SideResult {
+  readonly est: number | null;
+  readonly lower: number | null;
+  readonly upper: number | null;
+  readonly p: number | null;
+}
 
 export interface FeatureTest {
   readonly feature: SurvivalFeature;
@@ -98,18 +199,23 @@ export interface FeatureTest {
   readonly split: number | null;
   readonly base: ReturnType<typeof wilson>;
   readonly high: ReturnType<typeof wilson>;
-  readonly find: ReturnType<typeof dayBootstrap>;
-  readonly check: ReturnType<typeof dayBootstrap>;
+  readonly find: SideResult;
+  readonly check: SideResult;
   readonly holmPass: boolean;
-  /** Same sign on find- and check-days, and Holm passes on the check-days. */
+  /** Same sign on find- and check-days, and Holm passes on the check-days. Description only: it never chooses a rule. */
   readonly heldUp: boolean;
 }
 
-/** Every feature at every decision age (survival.md §3): 15 × 3 = 45 counted tests. */
-export const featureTests = (xs: readonly LabelledDecision[], reps: number, seed: number): FeatureTest[] => {
-  const { find, check } = splitDays(xs.map((x) => x.day));
-  const F = new Set(find);
-  const C = new Set(check);
+const side = (xs: readonly LabelledDecision[], f: SurvivalFeature, split: number | null, reps: number, perms: number, seed: number): SideResult => {
+  if (split === null) return { est: null, lower: null, upper: null, p: null };
+  const ci = dayBootstrap(xs, (ys) => mhRiskDifference(ys, f, split), reps, seed);
+  return { ...ci, p: permutationTest(xs, f, split, perms, seed + 7).p };
+};
+
+/** Every feature at every decision age (survival.md §3): 15 × 3 = 45 counted tests, find- and check-days given. */
+export const featureTests = (xs: readonly LabelledDecision[], days: { readonly find: readonly string[]; readonly check: readonly string[] }, reps: number, perms: number, seed: number): FeatureTest[] => {
+  const F = new Set(days.find);
+  const C = new Set(days.check);
   const ages = [...new Set(xs.map((x) => x.ageMs))].sort((a, b) => a - b);
   const raw = ages.flatMap((ageMs) => SURVIVAL_FEATURES.map((feature) => {
     const all = xs.filter((x) => x.ageMs === ageMs);
@@ -121,8 +227,8 @@ export const featureTests = (xs: readonly LabelledDecision[], reps: number, seed
       feature, ageMs, split,
       base: wilson(cd.filter((x) => x.survived).length, cd.length),
       high: wilson(hi.filter((x) => x.survived).length, hi.length),
-      find: split === null ? { est: null, lower: null, upper: null, p: null } : dayBootstrap(fd, (ys) => mhRiskDifference(ys, feature, split), reps, seed),
-      check: split === null ? { est: null, lower: null, upper: null, p: null } : dayBootstrap(cd, (ys) => mhRiskDifference(ys, feature, split), reps, seed + 1),
+      find: side(fd, feature, split, reps, perms, seed),
+      check: side(cd, feature, split, reps, perms, seed + 1),
     };
   }));
   const h = holm(raw.map((r) => r.check.p ?? 1));
