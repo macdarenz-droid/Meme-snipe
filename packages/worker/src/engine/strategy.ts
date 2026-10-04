@@ -1255,9 +1255,12 @@ export class LiveStrategy implements Strategy {
 
   /** Solana's target slot time: a slot's time from a block-time anchor (an estimate, used only off a swap). */
   static readonly SLOT_MS = 400;
+  /** The farthest (in slots, about 60 s) an anchor dates another slot from; past it the anchor is stale. */
+  static readonly ANCHOR_MAX_SLOTS = 150n;
   /**
-   * The newest block-time anchor from any PumpSwap swap released: slot and block time. A swap's own pool update comes
-   * right after it at the same moment, so it is dated by its own swap.
+   * The newest block-time anchor from any PumpSwap swap released: slot (the swap's own `txSlot`: a fill's trades sit
+   * at the open slot) and block time. A swap's own pool update comes right after it at the same moment, so a swap at or
+   * after the anchor's slot is dated exactly; an older one (a fill behind live) by the estimate.
    */
   #blockClock: { slot: bigint; ms: number } | null = null;
 
@@ -1267,7 +1270,11 @@ export class LiveStrategy implements Strategy {
     const slot = isObj(v) && isObj(v['obs']) && typeof v['obs']['slot'] === 'bigint' ? v['obs']['slot'] : isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null;
     const a = this.#blockClock;
     if (a === null || slot === null) return nowMs;
-    return Math.min(a.ms + Number(slot - a.slot) * LiveStrategy.SLOT_MS, nowMs);
+    // A stale anchor (supervisor ruling): past ANCHOR_MAX_SLOTS the 400 ms guess drifts tens of seconds (slots run
+    // slower), enough to cross a minute; the receipt time is the better date then, as with no anchor at all.
+    const gap = slot - a.slot;
+    if ((gap < 0n ? -gap : gap) > LiveStrategy.ANCHOR_MAX_SLOTS) return nowMs;
+    return Math.min(a.ms + Number(gap) * LiveStrategy.SLOT_MS, nowMs);
   }
 
   #attempt(id: IntentId, n: number, quote: QuoteContext, height: bigint): TransactionAttempt {

@@ -11,7 +11,7 @@ import type { StrategyContext } from '../../core/src/engine/index.ts';
 import { emptyBook } from '../../core/src/lifecycle/index.ts';
 import { LiveStrategy, RESTORE_KEY } from '../src/engine/strategy.ts';
 import { strategyConfig } from '../src/run/settings.ts';
-import { migrationKey, rugCheckKey, simKey } from '../../core/src/gates/index.ts';
+import { migrationKey, poolKey, rugCheckKey, simKey } from '../../core/src/gates/index.ts';
 import { STREAMS } from '../../core/src/facts/index.ts';
 import { atr } from '../../core/src/exits/index.ts';
 import type { PoolState } from '../../core/src/amm/index.ts';
@@ -305,6 +305,85 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       expect(b.filter((x) => x.startMs > Math.floor(SAVE / MIN) * MIN && x.startMs < Math.floor(RESTART / MIN) * MIN)).toEqual([]);
       expect(b.length).toBeLessThan(a.length);
     }, 120_000);
+  });
+
+  describe('#track dates a pool update on block time (anchor from released swaps)', () => {
+    const m0 = Math.floor(NOW / MIN) * MIN + 40_000; // block time of the anchor swap: 40 s into a minute
+    const S = SLOT;
+    /** A strategy holding the candidate, with the facts its market reads, and a feed of events at receipt times. */
+    const world = () => {
+      const session = startSession(TRIAL_POLICY);
+      const strategy = new LiveStrategy({ session, rugs: RUG_CONFIG, config: strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG) });
+      const facts = new Map<string, unknown>([[feesKey(MINT), FEE_CONTEXT]]);
+      let seq = 0;
+      const ev = (key: string, value: unknown, recv: number, slot = S) => {
+        const moment = { slot, txIndex: 0, ixIndex: 0, receivedAt: recv };
+        const ctx = {
+          now: moment, book: emptyBook({ maxOpenPositions: session.policy.positions.maxOpen }), rng: { next: () => 0 }, history: () => [],
+          lookup: (k: string) => (facts.has(k) ? { ok: true, moment, value: facts.get(k), source: 'test' } : { ok: false, reason: 'missing' }),
+        } as unknown as StrategyContext;
+        return strategy.onMarket({ kind: 'market', id: `k${seq++}`, moment, key, value }, ctx);
+      };
+      ev(RESTORE_KEY, { exits: {}, candidates: [{ ...GOOD, lastEvalMs: null, bars: [] }] }, m0 - 120_000);
+      const base = passingFacts().get(poolKey(MINT))!.value as { obs: Record<string, unknown>; quoteVault: bigint };
+      /** A pool update read at `slot` (an account read: no swap of its own), quote scaled by `ppm`, received at `recv`. */
+      const read = (slot: bigint, recv: number, ppm = 1_000_000n) => {
+        const v = { ...base, obs: { ...base.obs, slot, receivedAt: recv }, quoteVault: (base.quoteVault * ppm) / 1_000_000n };
+        facts.set(poolKey(MINT), v);
+        ev(poolKey(MINT), v, recv, slot);
+      };
+      /** A swap on another pool: only the block-time anchor moves (its txSlot, at the open slot like a fill's). */
+      const anchor = (txSlot: bigint, blockMs: number, recv: number, momentSlot = txSlot) =>
+        ev(`logs:pump_amm:BuyEvent:other-pool`, { event: { program: 'pump_amm', name: 'BuyEvent', data: { pool: 'other-pool', timestamp: BigInt(Math.floor(blockMs / 1000)) } }, signature: `a${seq}`, txSlot }, recv, momentSlot);
+      return { strategy, read, anchor, bars: () => strategy.barsOf(MINT) };
+    };
+    const minute = (ms: number) => Math.floor(ms / MIN) * MIN;
+
+    it('a fresh anchor dates a read by its slot; an estimate past now lands in now\'s bar (K1)', () => {
+      const w = world();
+      w.anchor(S, m0, m0 + 500);
+      // 50 slots on: about 20 s after the anchor, the same minute's next bar (m0 is 40 s in).
+      w.read(S + 50n, m0 + 25_000);
+      expect(w.bars().map((b) => b.startMs)).toEqual([minute(m0 + 20_000)]);
+      // 100 slots on (40 s after the anchor) but received only 5 s after it: never dated past the engine clock.
+      const x = world();
+      x.anchor(S, m0, m0 + 500);
+      x.read(S + 100n, m0 + 5_000);
+      expect(x.bars().map((b) => b.startMs)).toEqual([minute(m0 + 5_000)]);
+    });
+
+    it('a stale anchor (over 150 slots) does not date a read: receipt time, so a slow-slot drift never crosses a minute (ruling)', () => {
+      const w = world();
+      w.anchor(S, m0, m0 + 500);
+      // 1,500 slots at 420 ms: received 630 s after the anchor; the 400 ms guess (600 s) would be the minute before.
+      w.read(S + 1_500n, m0 + 630_000);
+      expect(minute(m0 + 600_000)).not.toBe(minute(m0 + 630_000));
+      expect(w.bars().map((b) => b.startMs)).toEqual([minute(m0 + 630_000)]);
+    });
+
+    it('the anchor is the swap\'s own txSlot, not the open slot its event sits at (K6)', () => {
+      const w = world();
+      // A fill's swap at slot S, released at an open slot 500 later.
+      w.anchor(S, m0, m0 + 300_000, S + 500n);
+      w.read(S + 50n, m0 + 300_000);
+      expect(w.bars().map((b) => b.startMs)).toEqual([minute(m0 + 20_000)]);
+    });
+
+    it('a late sample in an earlier bar widens it, keeps the order, and never moves its close back (K4, K5)', () => {
+      const w = world();
+      w.anchor(S, m0, m0 + 500);
+      w.read(S, m0 + 1_000, 1_000_000n); // minute of m0, price p
+      w.read(S + 75n, m0 + 31_000, 1_010_000n); // 30 s on: the next minute
+      const [b0, b1] = w.bars();
+      expect([b0!.startMs, b1!.startMs]).toEqual([minute(m0), minute(m0 + 30_000)]);
+      // A read for slot S + 10 (4 s after the anchor) arriving after the next minute's: it widens the first bar only.
+      w.read(S + 10n, m0 + 32_000, 1_050_000n);
+      const after = w.bars();
+      expect(after.map((b) => b.startMs)).toEqual([minute(m0), minute(m0 + 30_000)]);
+      expect(after[0]!.high > b0!.high).toBe(true);
+      expect(after[0]!.close).toBe(b0!.close);
+      expect(after[1]).toEqual(b1);
+    });
   });
 
   it('restores REC-1\'s tail watches: a live one keeps its pool watched, an ended one is dropped, past the cap logged', () => {
