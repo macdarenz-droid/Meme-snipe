@@ -164,6 +164,19 @@ describe('HolderBook', () => {
     expect(ok(known.holdersAsOf(M)).accounts.find((x) => x.owner === curvePda)).toBeDefined();
   });
 
+  test('a closed account stops counting: a close removes it, and with no close in the data a zero balance does', () => {
+    const b = fresh();
+    b.swap(curve(2, true, 100n));
+    b.swap(curve(3, true, 50n, R));
+    b.swap(curve(4, false, 100n));
+    // O sold everything and its account was never closed: a zero balance is not a holder.
+    expect(ok(b.holdersAsOf(M)).accounts.map((a) => a.owner)).not.toContain(O);
+    b.swap(curve(5, false, 50n, R));
+    b.applyAccountOps({ slot: 6n, txIdx: 0 }, [{ kind: 'close', mint: M, account: ata(R) }]);
+    expect(ok(b.holdersAsOf(M)).accounts.map((a) => a.owner)).not.toContain(R);
+    expect(byOwner(b.holdersAsOf(M))).toEqual({ [curvePda]: TOTAL });
+  });
+
   test('delegates from account operations; an owner change or a negative balance is unresolved', () => {
     const b = fresh();
     b.swap(curve(2, true, 100n));

@@ -52,4 +52,16 @@ describe('holder growth counts distinct owners (audit B3)', () => {
     expect(walletHolders(ctx({ [holdersKey(MINT)]: holders() }), MINT, POOL)).toBeNull();
     expect(walletHolders(ctx({ [holdersKey(MINT)]: holders(), [poolKey(MINT)]: pool(wallet()) }), MINT, POOL)).toBeNull();
   });
+
+  it('counts control, not addresses: owners whose accounts are delegated to one party count once with it (HANDOVER: delegates count as control)', () => {
+    const D = wallet();
+    const delegated = (owner: string, amount: bigint) => acct(owner, amount, { delegate: D, delegatedAmount: amount });
+    const accounts = [...ACCOUNTS.filter((a) => a.owner !== W3), delegated(W3, 10n), delegated(wallet(), 4n), delegated(wallet(), 6n)];
+    const h = { obs, supply: accounts.reduce((t, a) => t + a.amount, 0n), coverage: 'all', accounts };
+    // W1 alone, then W3 and the two new owners all moved by D: 2 holders, not 4.
+    expect(walletHolders(ctx({ [holdersKey(MINT)]: h, [poolKey(MINT)]: pool() }), MINT, POOL)).toBe(2);
+    // A delegation of nothing (0 delegated) controls nothing: those owners count on their own.
+    const none = accounts.map((a) => (a.delegate === D ? { ...a, delegatedAmount: 0n } : a));
+    expect(walletHolders(ctx({ [holdersKey(MINT)]: { ...h, accounts: none }, [poolKey(MINT)]: pool() }), MINT, POOL)).toBe(4);
+  });
 });

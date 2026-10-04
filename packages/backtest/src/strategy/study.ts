@@ -756,7 +756,7 @@ export const u2Setup = (r: U2Rules, tape: PoolTape, spot: bigint, now: number, m
 
 /**
  * H3's holder count as of a moment (#115 definitions.holderGrowth, audit B3): distinct wallet owners whose accounts of
- * the mint sum to a positive balance. The pool vault (of the tape's pool, named by its pool fact), the curve, the
+ * the mint sum to a positive balance, an owner and its delegate counted as one. The pool vault (of the tape's pool, named by its pool fact), the curve, the
  * mayhem vault, burns, lockers and program-owned accounts are not holders. Only complete coverage counts: a
  * largest-accounts view, a quality flag, accounts that do not sum to the supply, or no pool fact for the tape's pool
  * leave it unknown (null), and the condition then fails.
@@ -770,9 +770,26 @@ export const walletHolders = (ctx: Pick<StrategyContext, 'lookup'>, mint: string
   if (pf === null || pf.address !== pool) return null;
   const c = concentration(h, mintAccounts(mint, { address: pf.address, baseVault: pf.pool.poolBaseTokenAccount }));
   if (c.unaccounted !== 0n) return null;
-  const byOwner = new Map<string, bigint>();
-  for (const x of c.classes) if (x.cls === 'wallet') byOwner.set(x.owner, (byOwner.get(x.owner) ?? 0n) + x.amount);
-  return [...byOwner.values()].filter((v) => v > 0n).length;
+  // Delegates count as control (HANDOVER ruling): an owner and the party its account is delegated to (a positive
+  // delegated amount) are one holder, so owners moved by one delegate count once.
+  const parent = new Map<string, string>();
+  const root = (x: string): string => {
+    let r = x;
+    while (parent.has(r) && parent.get(r) !== r) r = parent.get(r)!;
+    parent.set(x, r);
+    return r;
+  };
+  const join = (a: string, b: string) => {
+    const [ra, rb] = [root(a), root(b)];
+    if (ra !== rb) parent.set(ra < rb ? rb : ra, ra < rb ? ra : rb);
+  };
+  const isWallet = new Set(c.classes.filter((x) => x.cls === 'wallet').map((x) => x.address));
+  const wallets = h.accounts.filter((a) => isWallet.has(a.address) && a.amount > 0n);
+  for (const a of wallets) {
+    root(a.owner);
+    if (a.delegate !== null && a.delegate !== a.owner && a.delegatedAmount > 0n) join(a.owner, a.delegate);
+  }
+  return new Set(wallets.map((a) => root(a.owner))).size;
 };
 
 /** U1: range breakout with volume and holder growth, on pools with a market cap of size (§3.2). */
