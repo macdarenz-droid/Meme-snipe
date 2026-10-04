@@ -296,7 +296,8 @@ export const entryRule = (starts: readonly StartFields[], expected: string, regi
   const seen = [...new Set(starts.map((l) => String(l.entry_rule ?? null)))];
   const salts = new Set(starts.map((l) => JSON.stringify(l.s0_salt ?? null)));
   if (starts.length === 0) problems.push('no start line');
-  if (!registered.includes(expected)) problems.push(`strategy ${expected} is not registered (registered: ${registered.join(', ') || 'none yet'})`);
+  if (expected === 'none') problems.push('no registered strategy (--strategy none)');
+  else if (!registered.includes(expected)) problems.push(`strategy ${expected} is not registered (registered: ${registered.join(', ') || 'none yet'})`);
   for (const l of starts) {
     if (l.entry_rule !== expected) problems.push(`boot ${l.boot}: entry rule ${JSON.stringify(l.entry_rule ?? null)}, the run's strategy is ${expected}`);
     if (l.paper_edge_ppm !== null && l.paper_edge_ppm !== undefined) problems.push(`boot ${l.boot}: paper edge ${String(l.paper_edge_ppm)} ppm`);
