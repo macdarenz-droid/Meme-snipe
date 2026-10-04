@@ -260,6 +260,29 @@ describe('RPC stream', () => {
       return { ...t, reopen, drop: () => t.hub.last.drop() };
     };
 
+    it('REC-1: at the budget halt a rejected candidate\'s tail pool (P3) is shed first, with an open gap recorded; an open position\'s pool (P1) stays', async () => {
+      const TAIL = MINT_AUTH;
+      const HELD = PUMP_AMM_GLOBAL_CONFIG;
+      const t = setup(() => [], { used: 699_990 });
+      t.stream.watchSlots(P1);
+      // What the strategy hands the pool watch: the tail pool (not held, P3) and a held pool (P1).
+      const pools = new Map([[TAIL, { mint: 'tail-mint', held: false }], [HELD, { mint: 'held-mint', held: true }]]);
+      const watch = new PoolWatch({ stream: t.stream, timers: t.timers, pools: () => pools, everyMs: 2_000 });
+      watch.sync();
+      t.stream.start();
+      t.hub.last.open();
+      const [slotSub] = ack(t.hub);
+      t.hub.last.push(slotNote(slotSub!, 600));
+      await settle();
+      expect(facts(t.feed, t.timers, `coverage:trades:${TAIL}:start`)).toHaveLength(1);
+      t.hub.last.push('x'.repeat(500_000)); // 10 credits: the month crosses 70%
+      expect(t.scheduler.halted).toBe(true);
+      expect(facts(t.feed, t.timers, `coverage:trades:${TAIL}:gap`)).toEqual([expect.objectContaining({ toSlot: null, reason: 'halted', via: `logs:${TAIL}` })]);
+      expect(facts(t.feed, t.timers, `coverage:trades:${HELD}:gap`)).toEqual([]);
+      // The held pool's watch is still live: a swap on it is recorded, while the tail's gap stays open (unknown).
+      expect(t.hub.last.requests().filter((r) => r.method === 'logsUnsubscribe')).toHaveLength(1);
+    });
+
     describe('POOL-1: a pool watch the stream drops by itself is watched again', () => {
       const CAND = MINT_AUTH;
       const HELD = PUMP_AMM_GLOBAL_CONFIG;

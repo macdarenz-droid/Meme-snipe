@@ -18,7 +18,7 @@ import {
   CREATED_AT, DEV, FEE_CONTEXT, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, SUPPLY, T, passingFacts, roundTrip,
 } from '../../core/test/gates/world.ts';
 import { EXEC_HEALTH_KEY, TX_CREATE_PREFIX, holdersKey, lpKey, migrationKey, poolKey, simKey, softKey, streamKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
-import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
+import { SOL_PRICE_KEY, feesKey, type StrategyConfig } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import type { PoolState } from '../../core/src/amm/index.ts';
 import { RAW, STREAMS } from '../../core/src/facts/index.ts';
@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord> } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; strategy?: Partial<StrategyConfig> } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -161,7 +161,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     boot: `boot-${n}`,
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
-    strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }) },
+    strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }), ...o.strategy },
     scenario: o.scenario ?? LANDS, network: FILL_CONFIG.network, timers,
     sources: o.sources ?? (() => {
       order.push('sources');
