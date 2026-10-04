@@ -16,7 +16,7 @@ import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
-import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts';
+import { attemptFee, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
@@ -39,6 +39,7 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
+import { Summarizer, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
@@ -152,6 +153,8 @@ export interface WorkerDeps {
    * the feed. Null loses it (an API call that timed out after the send); another event replaces it. Tests only.
    */
   readonly worldFault?: (event: BookEvent) => BookEvent | null;
+  /** OPS-SUMMARY's fault seam: called before each summary reads the worker's state; a throw fails that summary. Tests only. */
+  readonly summaryFault?: () => void;
   /** Test seam: the desk calls it right after each of a fill's two durable writes (ARCHITECTURE §12.4). */
   readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
   /**
@@ -291,6 +294,8 @@ export class Worker {
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
+  #summaryTimer: ReturnType<Timers['setTimeout']> | null = null;
+  #summary: Summarizer | null = null;
   #server: Server | null = null;
   #api: Server | null = null;
   /** The app's views: recent candidate decisions, the funnel, token symbols seen on creates. */
@@ -607,6 +612,18 @@ export class Worker {
     return this.#poolReleasedAt.get(mint) ?? null;
   }
 
+  /**
+   * A mint's pool reserves as read, without the fee terms poolOf also needs (APP-TRADE): Discovered's liquidity needs
+   * only the reserves, and a new pool has no fee terms until its first swap is seen.
+   */
+  reservesOf(mint: string): PaperMarket['pool'] | null {
+    const p = parsePool(this.#pools.get(mint));
+    const snap = this.#snapshots.get(mint);
+    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return snap.state;
+    if (p === null || flagged(p)) return null;
+    return { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+  }
+
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
     const p = parsePool(this.#pools.get(mint));
     const snap = this.#snapshots.get(mint);
@@ -860,16 +877,17 @@ export class Worker {
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
       book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
+      exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
-        const m = this.poolOf(mint);
-        return { mint, symbol: this.#symbols.get(mint) ?? null, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates, quoteReserve: m === null ? null : effectiveQuoteReserve(m.state) };
+        const r = this.reservesOf(mint);
+        return { mint, symbol: this.#symbols.get(mint) ?? null, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates, quoteReserve: r === null ? null : effectiveQuoteReserve(r) };
       }),
       open: (p) => {
         const saved = this.#strategy.saved()[p.id];
         const m = this.poolOf(p.mint);
         const q = m === null ? null : poolSell(m.state, p.quantity, m.ctx);
-        return saved === undefined ? null : { stopPrice: saved.plan.stopPrice, trail: saved.tracker.trail, liquidation: q !== null && q.ok ? q.trade.userQuote : null, openedAtMs: saved.plan.openedAtMs, universe: saved.plan.universe };
+        return saved === undefined ? null : { stopPrice: saved.plan.stopPrice, trail: saved.tracker.trail, liquidation: q !== null && q.ok ? q.trade.userQuote : null, openedAtMs: saved.plan.openedAtMs, universe: saved.plan.universe, markedAtMs: q !== null && q.ok ? m!.atMs : null };
       },
     };
   }
@@ -1006,6 +1024,7 @@ export class Worker {
       });
     };
     beat();
+    this.#startSummary();
     // The loop already runs (exits never wait for the seed); entries resume once the seed is placed or given up.
     try {
       await this.#seedIndex(this.#reserved);
@@ -1286,6 +1305,49 @@ export class Worker {
     return h;
   }
 
+  /**
+   * OPS-SUMMARY: the daily summary, posted every `summaryMs` and just after Melbourne midnight. Only with a watchdog
+   * and its key; it runs beside the loop and never touches the engine, the ledger or the journal (it only reads it).
+   */
+  #startSummary(): void {
+    const d = this.#d;
+    if (this.#summarizer() === null) return;
+    const run = (): void => {
+      if (this.#stopping) return;
+      void this.summaryNow().finally(() => {
+        if (!this.#stopping) this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
+      });
+    };
+    this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
+  }
+
+  /** The summarizer, made on first use; null without a watchdog or its key. */
+  #summarizer(): Summarizer | null {
+    const d = this.#d;
+    const url = d.config.watchdogUrl;
+    const key = d.heartbeat.key;
+    if (url === null || key === null) return null;
+    this.#summary ??= new Summarizer({
+      journalPath: join(d.config.stateDir, STATE_FILES.journal), stateDir: d.config.stateDir, http: d.heartbeat.http,
+      watchdogUrl: url, key, now: () => d.timers.now(), log: d.log,
+      live: () => {
+        d.summaryFault?.();
+        return {
+          gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',
+          uptimeS: (d.timers.now() - this.#started) / 1000, trades: this.#account.state.trades,
+          openPositions: Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').length,
+          solPrice: this.#solPrice, credits: d.ops?.().quota ?? [],
+        };
+      },
+    });
+    return this.#summary;
+  }
+
+  /** One summary post now (the timer's and the tests' entry). Resolves when done; never rejects. */
+  async summaryNow(): Promise<void> {
+    await this.#summarizer()?.tick();
+  }
+
   /** One signed heartbeat; the reply's pause is applied both ways. */
   async heartbeat(): Promise<void> {
     const hb = this.#d.heartbeat;
@@ -1328,6 +1390,7 @@ export class Worker {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
+    if (this.#summaryTimer !== null) d.timers.clearTimeout(this.#summaryTimer);
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
     this.#watch?.stop();
@@ -1365,6 +1428,7 @@ export class Worker {
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
+    if (this.#summaryTimer !== null) this.#d.timers.clearTimeout(this.#summaryTimer);
     for (const s of this.#sources) s.stop();
     this.#watch?.stop();
     this.#ledger.close();

@@ -97,6 +97,7 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-04 | Dataset schema 3: trade rows carry `user_token_account` and `user_token_owner`; a swap credits or debits `user_token_owner`, never `user` or the signer; an unknown owner marks the mint `unresolved` / `swap_owner_unknown` for that transaction (supervisor ruling, PR #46) | The event's `user` is whoever the program names, not who holds the tokens: a buy can land in another wallet's account, a delegate can sell the owner's tokens, and a router can sign, so crediting `user` would put balances on the wrong holder | [historical-data.md](research/historical-data.md) "Schema 3 additions" |
 | 2026-10-04 | Regime volume per hour as release `data-volume-DAY` (DATA-1c): SOL-quoted curve plus canonical WSOL PumpSwap volume, lamports, buys plus sells, `covered` only for fully scanned hours; exact cross-check against kept rows; back-fill from published units; regime reads day D−3 (supervisor rulings) | A separate release keeps every published `data-day-DAY` complete and unedited; D−3 always holds under the measured archive lag (epoch ready 0.29–0.60 d after its end, epochs about 1.34 d long) plus a 2–3 h scan | [historical-data.md](research/historical-data.md) "Regime volume per hour" |
 | 2026-10-04 | The census stays unchanged for curves whose `quote_mint` is the system program (it counts `quote_amount`, while `qa/volume.ts` re-derives from `sol_amount`); units stay byte-identical with run 1's (supervisor ruling on #77) | Changing `emitRow` would change `agg_hourly` and break unit identity across the run. On 2026-10-01 all 43,332 such rows have `quote_amount` = `sol_amount` and `virtual_quote_reserves` = `virtual_sol_reserves`. If they ever differ, the exact cross-check fails the day loudly, the safe direction (tests: scanner `TestCensusSystemProgramQuoteDivergenceReachesVolumeHours`, `volume.test.ts`) | [historical-data.md](research/historical-data.md) "Regime volume per hour" |
+| 2026-10-04 | Daily summary of the paper worker goes to a private GitHub repository through the watchdog (owner: "yes summary"; design approved by the supervisor) (OPS-SUMMARY) | No agent can read the host; the watchdog already has the signed channel and the free plan, so the server needs no new secret | "Daily summary (OPS-SUMMARY)" below, [ops/README.md](../ops/README.md) "Daily summary" |
 
 ## Supervisor rulings after the external review (2026-10-04)
 
@@ -633,6 +634,18 @@ Supervisor rulings, late evening:
   - New endpoint `GET /api/v1/<mode>/discovered`: the strategy's candidates (the tokens it watches), at most 200, newest migration first. Each has its mint, its symbol once read (else null), its migration time, venue, pool liquidity (twice the quote reserve at the SOL price; null until both are read), and the last evaluation's token checks with their time. Checks: `failed` on a hard gate (H1–H15, H17); `missing` before an evaluation or when evidence (H16), the regime or the worker's inputs stopped it first; `passed` otherwise. Only public market data and the bot's own checks, so no new kind of stored or sent personal data; it is computed on request, and nothing is written.
   - Home lists those tokens. Columns the worker does not serve (volume, holders, top holder) show "—". Zero candidates read "No tokens discovered", with no claim about the feed. No answer shows the offline state or "Not running".
   - Snipe's Session card (the owner's screenshots at 10:42 PM: "Not started", every limit "Not set", and "Start paper session — Worker not connected" while the S0 worker ran). The paper status now carries `session`: its state (running, paused, ended) and the loaded policy's bankroll, entry and maximum entry, open positions, and daily and weekly loss limits. The trial policy has no session loss limit, so that value is null and shows "Not set". `startable` is false because the worker starts its own paper session (main.ts `startSession`), so the card offers no start button; it would appear only for a worker that reports it can accept a start. The shell and the card read the same status, polled once.
+- **2026-10-05 · A newer worker reads "App update needed" (APP-COMPAT).** From real use: the owner's APK from before API-1 showed "Server error" when the worker added status fields, because the strict schema refuses unknown fields.
+  - Every check stays strict. An answer with a field the app does not know is still refused and never shown.
+  - The refusal's cause is now told apart. When the schema refuses an unknown field, the app re-checks the same answer once with unknown fields skipped (`onlyUnknownFields`, classification only; the answer stays refused). If nothing else fails, the refusal is `app-outdated`:
+    - the connection reads "App update needed" on the Server card and the shell line;
+    - the section reads "App update needed".
+  - Any other refusal stays "Server error": a missing field, a bad value (also next to a new field), or an HTTP error. A real error on any endpoint outranks "App update needed", and both expire after `BAD_ANSWER_TTL_MS` as before.
+  - The other direction was already handled: fields added later are `optional()`, so an older worker still loads. A test pins this.
+- **2026-10-04 · App wiring (APP-WIRE).** After APP-HOME wired the shell, Home and the Session card:
+  - One test runs the app's own client against the real worker's `route()` for every endpoint in all three modes (`app-wire.test.ts`). Paper passes the strict schemas; live and backtest answer "Not running"; the backtest report is empty; no path falls through to a 404.
+  - The Pause control stays disabled. The app sends no commands, and pausing is the watchdog's signed `/pause`, sent from Telegram. Its hidden note reads "Telegram /pause" instead of "Worker not connected", and it reads "Paused" while the worker reports the owner's pause.
+  - A worker that answers with `connected: false` reads "Feeds down", not "Worker not connected" (supervisor ruling). In api.ts, `connected` means reconciled and at least one market feed up, and the API starts only after the reconcile, so for any answer it means no market feed is connected.
+  - Wallet stays as it is. A paper worker has no signing key and no bot wallet, so "Not created", "—" and "No transactions" are true. Paper's simulated balance is not shown there, because it is not a wallet.
 - **2026-10-04 · Live view setup never waits unseen (OPS-1h).** This came from real use: after a successful Tailscale login, `zeroed-tailscale` sat silent. The cause is in Tailscale's CLI source (v1.104, `cmd/tailscale/cli` serve_v2.go and serve_legacy.go, `enableFeatureInteractive`):
   - `tailscale serve --https` needs the node capability `https`. Without it, serve prints a link to turn HTTPS on and blocks until it is on.
   - `tailscale funnel … off` checks the `https` and `funnel` capabilities first, even to turn Funnel off. On a tailnet without Funnel it blocks forever.
@@ -1424,6 +1437,28 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - `ops/test/e2e.sh` 10b2: the release built from this commit shows S0 and the four parts in `/health`, the start line (not qualifying, the edge) and the worker's environment. The trial refuses the shakedown in a release with a qualifying run, and a block with a name outside the five.
   - Hand mutants, all caught: `ENV_NAMES` without the name; parity without the set; a fixed `entry_rule`; the wallet refusal only when qualifying; the edge one lower and one higher; a tip-account stand-in; `worker_shakedown` with no name check, a longer value limit, or shell characters allowed.
 
+## Daily summary (OPS-SUMMARY, `packages/worker/src/run/summary.ts`, `packages/ops/src/watchdog/{summary,reports}.ts`, `ops/deploy/reports.sh`)
+
+Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the supervisor's offer of a daily summary the server sends to a private GitHub repository the supervisor can read, holding only decision counts, refusal reasons, trades and paper profit or loss.
+
+- **Transport: the watchdog writes it.** The worker posts the summary every 30 minutes and just after Melbourne midnight (the day that ended, marked `final`, resent until the watchdog takes it) to a new watchdog route, `POST /summary`. The post is signed with the heartbeat key the server already holds. The signature binds the path (`logic.ts` `signedText`), so a heartbeat signature cannot post a summary or the reverse, and each signature time is taken once. The watchdog checks it again and writes `reports/<day>.json` and `reports/latest.json` through the GitHub Contents API. `latest.json` only moves forward. Rejected: (b) the host pushing with its own token (a GitHub write token on the trading box, and a new key handoff from the console), and (c) an Actions schedule pulling from the watchdog (a new read key on both sides, the payload passing through a public repository's job, and schedules that lag).
+- **Secrets: none new on the server.** The watchdog gets one Cloudflare secret, `REPORTS_TOKEN`, copied from the repository secret `DATA_STORE_TOKEN` (the same fine-grained token for the same private repository that DATA-STORE #150 recommends). It also gets the plain variable `DATA_REPO`. A new Deploy step (`ops/deploy/reports.sh`) sets them and deploys the watchdog code from the deploy tag's commit (never the branch tip), only after the tag step and the tooling succeeded, with no `DEPLOY_CODE`. It never sets, reads or rotates `HEARTBEAT_HMAC_KEY` or any other secret. Cloudflare: "Secrets are never deleted by a deployment" ([wrangler deploy](https://developers.cloudflare.com/workers/wrangler/commands/workers/)). A test checks the step's exact secret set and that the token reaches wrangler only on stdin.
+- **Fail closed.** Before every write, `DATA_REPO` must be `owner/name` and must not be this public repository (any case), and GitHub must report `private: true` for that exact name (a renamed or transferred repository redirects and is refused). Anything else, or a write error, writes nothing and raises the watchdog alert `summary` ("Daily summary not written: …"), cleared by the next good write. If neither the repository nor the token is set up, there is no alert. The worker never waits on a post: it runs beside the loop, every failure is logged and swallowed, and tests drive a worker through an unreachable watchdog and a 401 while it keeps entering and journaling. A summary failure never changes the heartbeat, the pause or the lease.
+- **Content.** One file per Melbourne day:
+  - the worker's git sha, entry rule, uptime and starts that day, and the recorder;
+  - critical alerts by code, and halts by code as they start;
+  - candidates seen, entered and refused, with each refused candidate's last refusal reason (gate and code, top 10 plus the rest);
+  - each paper trade: mint, open and close times, size, exit reason, and paper net in lamports and USD;
+  - the day's closed-trade P&L, open positions, and provider credits counted since boot (Helius credits, Alchemy compute units).
+
+  Counts come from `journal.jsonl`, read forward from a byte offset saved with the counts (`summary.json`, written atomically), so a restart neither loses nor double-counts a line. It is folded one chunk at a time, and lines older than the kept days are skipped by their `ts` prefix before any parse. A first run over the host's whole journal, or a lost `summary.json`, therefore never holds the journal in memory (the worker unit's `MemoryMax=800M`). Trades come from `account.json`. Stored-data ruling: only the bot's own decisions and trades plus public market data, so the supervisor approves the shape; the owner approved sending it to GitHub.
+- **Never in it:** keys, tokens, URLs, the tailnet name, IPs, hostnames, chat ids, the wallet, evidence paths or personal data. Two guards run on both sides (`summary.ts`):
+  - an exact-shape check, where every string is an enum or a narrow pattern, with no free text and a letter required in every code, so a bare number cannot pass as a code;
+  - a forbidden-pattern scan of the whole text.
+
+  The worker codes or drops anything that fails (`fits`) before building the summary. The watchdog refuses the body if either guard fails. Tests plant an age key, GitHub tokens, IPv4 and IPv6 addresses, a tailnet name, URLs, hostnames, a Telegram token, a UUID key, a 64-byte secret, an email address, a PEM header and a chat id in every free-text field on both sides. Residual: an amount field can hold any digits, but the worker fills amounts only from its own numbers.
+- **Risk recorded, fixed separately (KEY-ROTATE-SAFE, next card):** a Deploy run while `DEPLOY_CODE` holds an already-used code gives the watchdog a new `HEARTBEAT_HMAC_KEY` (`publish.sh` deploys and sets it before pickup). The server has wiped its code (`zeroed-pair`, `shred -u "$DEPLOY_CODE_FILE"`) and exits before downloading, so it keeps the old key. Every heartbeat then gets 401: a stale-heartbeat alert fires and `/pause` stops reaching the worker. It does not occur today: tonight's Deploy log says "No DEPLOY_CODE secret: code update only, no keys sent." The fix rotates the watchdog key only after pickup is confirmed, and keeps or restores the old key on a timeout.
+
 ## Growing files read whole (GROWTH-SWEEP, `runner/src/lines.ts`, `run/deployer-store.ts`, `run/booked.ts`, `runner/src/runner.ts`)
 
 - **2026-10-04 · One chunked line reader for files that grow all run.** `fileLines` (runner) reads 1 MiB at a time through a `StringDecoder`. `booked.journalLines` now uses it: its own reader decoded each chunk alone, so a multi-byte character cut by a chunk boundary became U+FFFD (test).
@@ -1437,3 +1472,45 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-05 · n = 100, locked.** Measured from the data we have: 718 migrations in 11.97 h on 2026-10-01/02 (`research/empirical/backfill/migrations.jsonl`), 43–77 an hour, about 1,400 a day; no DATA day is published yet. Other sources put the daily count at about 100 to 660 (docs/research/data.md). At n = 100 a share's standard error is at most 0.05; at n = 30 (the first proposal) it is 0.09, too wide against a 14-day median. A measured day holds about 14 times the minimum, so it bites only on gaps and stalls. Re-check when DATA publishes its days: if a normal day falls below 100, that day stays unknown (no trade) until the owner rules otherwise; the number is never lowered by code.
 - **Evidence.** `packages/core/test/gates/regime-survival-min.test.ts`: exactly 100 on every day passes; 99 in the recent day, or on median day 1, 7 or 14, is unknown and the regime is off; a recent day of 10 graduates that all survive is unknown, not true; the policy value, its lock and its validation. The gate test world now holds 120 graduates a day. Hand mutants caught: no minimum (only an empty day unknown), `<=` for `<`, and the minimum checked on the recent day only.
 
+## Open trade as a live trade (APP-TRADE, `run/api.ts` `openPnl`, `lib/money.ts` `returnHundredths`, `dashboard/Sections.tsx` `OpenPosition`)
+- **2026-10-05 · The P&L has one definition: net if closed now.** `openPnl` (worker) works in exact lamports. It is:
+  - the rest's liquidation quote (net of the pool's fees),
+  - less the close's own network fee (`exitFee`: base + the exit ladder's first priority fee + tip, the paper fill's charge for a filled exit attempt; supervisor ruling under the paper-as-real rule),
+  - plus what exits already sold for,
+  - less what the entry paid and every network fee paid so far.
+  - With nothing left there is no close to pay for. It then equals the closed trade's net in `account.ts` (test on a real closed trade).
+  - "Unrealized" is its gross (before the fees already paid, after the close's fee), "Costs so far" the fees actually paid, and "P&L" its net.
+  - Before this, Unrealized left out a partial exit's proceeds (review N1 pins it after a real partial).
+  - In dollars (`openUsd`, review N2), Unrealized and Costs so far round on the safe side, like a closed trade's net: gains down, losses and costs up.
+  - P&L is their exact difference, so P&L = Unrealized − Costs so far to the micro-dollar. On screen each row is rounded to the cent on its own.
+  - P&L is null without a SOL price, and a rest that cannot be quoted counts as worth nothing.
+- **2026-10-05 · Return has one formula.** It is net ÷ size, exact on micro-dollars, rounded half away from zero to 0.01%.
+  - The open trade uses the P&L. Closed trades (list and detail) use Net ÷ Size.
+  - It is never computed on gross. It is toned by the printed value.
+- **2026-10-05 · Price now.** It is the rest's executable price (liquidation quote per token held), the price the stops judge. It uses the triggers' "$" and 4 significant digits.
+  - `markedAt` is when its pool was read. Past the app's stale rule (15 s) both turn the loss colour.
+  - "Running" counts from the server's `openedAt`, re-read every second, never from the phone.
+- **2026-10-05 · No margin row.** The bot buys outright (spot swaps on the pool, no borrowing, no leverage), so the size is the whole amount at risk, and a margin row would only repeat Size.
+- **2026-10-05 · Older workers.** `pnlUsd`, `markPriceUsd` and `markedAt` are `optional()` in the app's schema, so a worker without them loads and shows "—".
+  - An app older than these fields refuses them. After APP-COMPAT (#162) it reads "App update needed".
+- **2026-10-05 · Discovered.**
+  - "Volume 24h" and "Holders" are removed. The worker has no 24-hour volume for tokens minutes old, and its holder read is the largest accounts, not a count. A column that is always "—" says nothing.
+  - Liquidity was "—" until the pool's first swap was seen. It came from `poolOf`, which also needs the pool's fee terms (from a fees fact or the latest swap). It now reads only the reserves (`reservesOf`). The owner's 1m19s token fits this cause; the phone's data can't be replayed, so that is not proven.
+- **2026-10-05 · Copy address and Open in Pump.fun** (`components/TokenActions.tsx`). They show on Home's Discovered rows, the open trade, the trades list and detail, and the journal rows and detail.
+  - Copy writes the full mint. It uses the Clipboard API, else the copy command on a hidden field. It says "Copied" only when one of them reports success, else "Copy failed".
+  - The Pump.fun link is `https://pump.fun/coin/<mint>`, built only when the mint passes the API's `MINT_RE` (base58, 32–44 characters). A malformed mint shows no buttons.
+  - Clicks stop at the buttons, and the buttons sit beside a row's own button, never inside it.
+  - No plugin was added. Capacitor's Android webview already hands any navigation off the app's own host to the phone (the browser, or the Pump.fun app if it claims the link), as with the Solscan links.
+  - On-phone behaviour (the clipboard in the webview and the hand-off) needs a real-device check.
+- **2026-10-05 · Evidence.**
+  - `apps/web/test/app-trade.test.ts` and `packages/worker/test/app-trade-api.test.ts`: 21 tests, all failing before except N1's partial-exit pin. That one passes on the change it pins and fails when the change is reverted.
+  - Hand mutants, all caught:
+    - Return on gross; Return truncated.
+    - Running from the mark's time; Running from the phone's clock.
+    - P&L without fees; P&L without exit proceeds; losses rounded toward zero.
+    - Stale at exactly 15 s; the mark at the entry price.
+    - Discovered back on `poolOf`.
+    - The link without the mint check; copying the short address; a false "Copied" (twice: the click and the copy-command fallback).
+    - The copy or link click reaching the row; the journal without the buttons.
+    - Review N1/N2: Unrealized as the rest less the whole entry; Unrealized or Costs rounded toward zero; P&L rounded on its own (in `openUsd` and in the served row).
+    - The exit fee: left out; charged with nothing left; from the ladder's second rung; without the tip.
