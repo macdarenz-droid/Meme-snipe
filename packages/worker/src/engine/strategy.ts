@@ -192,6 +192,15 @@ export const universeOfKey = (key: string): ExitUniverse | null => {
   return (EXIT_UNIVERSES as readonly string[]).includes(u) ? (u as ExitUniverse) : null;
 };
 
+/** A sell quote the pool refused: the one #sellQuote failure that is a real refusal, not missing market data. */
+const NO_QUOTE = 'no quote: ';
+
+/** A saved entry plan the exit rules can run on: every amount a bigint, the open time a number (EXIT-1e). */
+const runnablePlan = (p: Record<string, unknown>): boolean =>
+  typeof p['openedAtMs'] === 'number' && Number.isFinite(p['openedAtMs'])
+  && ['notional', 'riskUnit', 'stopPrice', 'entryReserve'].every((k) => typeof p[k] === 'bigint')
+  && (p['universe'] === undefined || typeof p['universe'] === 'string');
+
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
   readonly #settings: ExitSettings;
@@ -256,9 +265,26 @@ export class LiveStrategy implements Strategy {
   /** Each held position's latest mark (executable price, PRICE_SCALE) with when it was read. */
   readonly #marks = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
 
-  /** Open positions whose due full exit waits for its first fresh quote, with the moment it started waiting (EXIT-1c). */
+  /**
+   * Exit owners said to be waiting for a fresh market in this process (EXIT-1d), by intent, with their position. The wait
+   * start itself is the position's saved `waitingSinceMs`, so a restart keeps it.
+   */
+  readonly #waitingMarket = new Map<string, string>();
+
+  /**
+   * Positions whose exit waits for a fresh quote, with the moment it started waiting (saved with the plan, so a restart
+   * keeps it): a due full exit not yet owned (EXIT-1c) or an exit owner's next attempt (EXIT-1d).
+   */
   waitingExits(): ReadonlyMap<string, number> {
     return new Map([...this.#exits].flatMap(([pid, s]) => (s.waitingSinceMs == null ? [] : [[pid, s.waitingSinceMs] as const])));
+  }
+
+  /** Starts (keeping an earlier start) or ends a position's wait for a fresh quote. */
+  #setWaiting(pid: string, nowMs: number | null): void {
+    const saved = this.#exits.get(pid);
+    if (saved === undefined) return;
+    const since = nowMs === null ? null : (saved.waitingSinceMs ?? nowMs);
+    if (since !== (saved.waitingSinceMs ?? null)) this.#exits.set(pid, { ...saved, waitingSinceMs: since });
   }
 
   markOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
@@ -267,6 +293,14 @@ export class LiveStrategy implements Strategy {
 
   /** Positions whose partials were checked against the book in this process. */
   readonly #fromBook = new Set<string>();
+  /**
+   * Whether this boot's restore fact (saved plans and trackers) has been applied, refused or not. Until then no position
+   * is managed: the stored book comes back first, and the boot's other start facts (or a market event dated before the
+   * restore) must never plan a restored position from its fill under the policy-maximum stop, even for one step (EXIT-1e).
+   */
+  #restoreSeen = false;
+  /** Said once per boot when positions wait for the restore. */
+  #saidRestoreWait = false;
 
   /** The fee terms of the latest swap seen on a mint's pool (for the paper fill when no fee-context fact exists). */
   observedFees(mint: string): PoolFeeContext | undefined {
@@ -363,13 +397,19 @@ export class LiveStrategy implements Strategy {
   }
 
   #restore(v: unknown, out: Decision[]): void {
+    this.#restoreSeen = true;
     if (!isObj(v) || !isObj(v['exits'])) {
       out.push({ action: null, reasons: ['restore refused', 'malformed restore fact'] });
       return;
     }
     let n = 0;
     for (const [pid, s] of Object.entries(v['exits'])) {
-      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars'])) continue;
+      // A saved exit the exit rules could not run on is refused, never applied: its position falls back to the plan from
+      // its fill (the policy-maximum stop), so one bad entry neither stalls nor crashes the management of the others.
+      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan'])) {
+        out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
+        continue;
+      }
       const saved = s as unknown as SavedExit;
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
@@ -607,6 +647,14 @@ export class LiveStrategy implements Strategy {
 
   /** Entry intents that resolved without a fill end; exit owners that did get a new attempt or are booked blocked. */
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
+    // A waiting owner that settled or was booked another way no longer waits.
+    for (const [id, pid] of this.#waitingMarket) {
+      const i = ctx.book.intents[id];
+      if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
+        this.#waitingMarket.delete(id);
+        if (ctx.book.positions[pid]?.status !== 'open') this.#setWaiting(pid, null);
+      }
+    }
     for (const i of Object.values(ctx.book.intents)) {
       if (isTerminal(i)) continue;
       const mint = i.intent.mint;
@@ -648,7 +696,7 @@ export class LiveStrategy implements Strategy {
     if (typeof m === 'string') return m;
     if (ctx.now.receivedAt - m.atMs > this.#d.session.policy.gates.maxQuoteAgeMs) return 'pool state is stale';
     const q = poolSell(m.pool, tokens, m.ctx);
-    if (!q.ok) return `no quote: ${q.reason}`;
+    if (!q.ok) return `${NO_QUOTE}${q.reason}`;
     const step = this.#d.session.policy.exits.ladder.steps[rung]!;
     const below = BigInt(step.minOutBelowTriggerBps);
     return {
@@ -669,11 +717,28 @@ export class LiveStrategy implements Strategy {
     const rung = Math.min(signed === 0 && owner !== undefined ? owner.startRung : Math.max(lastRung === null ? 0 : lastRung + 1, used), last);
     const height = this.#height;
     const q = height === null ? 'no slot height yet' : this.#sellQuote(ctx, mint, quantity, rung);
+    if (typeof q === 'string' && !q.startsWith(NO_QUOTE)) {
+      // No slot yet (a restart's reconcile runs before the feeds start) or no fresh market state (unknown, malformed, no
+      // fee terms, or stale) is timing, not a refusal: the owner waits for the first fresh market, said once and kept
+      // visible (EXIT-1d; the no-slot case is also TEST-3's, #83). Booked blocked, it would wait out the blocked-retry
+      // time and go as a single last-rung retry. Blocked stays for a market that refuses the sale.
+      if (!this.#waitingMarket.has(id)) {
+        this.#waitingMarket.set(id, pid);
+        out.push({ action: null, reasons: ['exit waiting for a fresh market', mint, q] });
+      }
+      this.#setWaiting(pid, ctx.now.receivedAt);
+      return;
+    }
+    // Sent or booked blocked below: the wait, of this owner or of the due exit it carries (EXIT-1c), is over.
+    this.#waitingMarket.delete(id);
+    this.#setWaiting(pid, null);
     if (typeof q === 'string' || height === null) {
       out.push({ action: { type: 'exit_blocked', positionId: pid, reason: String(q) }, reasons: ['exit blocked', mint, String(q)] });
       return;
     }
-    if (saved !== undefined) this.#exits.set(pid, { ...saved, tracker: noteAttempt(saved.tracker, rung) });
+    // Read again: the wait was just cleared on this same saved exit.
+    const now = this.#exits.get(pid);
+    if (now !== undefined) this.#exits.set(pid, { ...now, tracker: noteAttempt(now.tracker, rung) });
     const attempt = this.#attempt(id, signed + 1, q, height);
     if (signed === 0) {
       out.push({ action: { type: 'intent', intentId: id, event: { type: 'prepare', quote: q } }, reasons: ['prepare exit', mint, `rung ${rung}`] });
@@ -711,6 +776,13 @@ export class LiveStrategy implements Strategy {
         continue;
       }
       if (p.status === 'opening') continue;
+      if (!this.#restoreSeen) {
+        if (!this.#saidRestoreWait) {
+          this.#saidRestoreWait = true;
+          out.push({ action: null, reasons: ['positions wait for the restore', `${Object.values(ctx.book.positions).filter((x) => x.status !== 'closed' && x.status !== 'opening').length} open`] });
+        }
+        return;
+      }
       let saved = this.#exits.get(p.id) ?? this.#planFromFill(p.id, p.entryIntentId, ctx, out);
       if (saved === null) continue;
       const exitIntents = Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === p.id);
@@ -761,9 +833,11 @@ export class LiveStrategy implements Strategy {
       });
       // A due full exit with no quote yet is held, remembered in the tracker (EXIT-1c): said once, and kept visible as
       // pending (and as an alert once it has waited the blocked-retry time) until the first fresh quote takes it.
+      // Only an open position's wait is decided here; an exit owner's wait (EXIT-1d) is #sendExit's.
       const waiting = p.status === 'open' && step.tracker.pendingFull !== null;
       if (waiting && saved.waitingSinceMs == null) out.push({ action: null, reasons: ['exit waiting for a fresh quote', p.mint, step.tracker.pendingFull!.join(', ')] });
-      saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs: waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null };
+      const waitingSinceMs = p.status !== 'open' ? (saved.waitingSinceMs ?? null) : waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null;
+      saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
       this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out);
