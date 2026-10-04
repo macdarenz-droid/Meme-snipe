@@ -31,6 +31,10 @@ export interface DeskDeps {
   readonly reserved: (r: { readonly intentId: string; readonly mint: string; readonly amount: bigint; readonly atMs: number }) => void;
   /** A position filled or closed (the paper wallet and closed-trade records). */
   readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[] }) => void;
+  /** Fill lines the journal already holds (`journaledFillKeys`), each skipped once when its fill is booked again. */
+  readonly journaledFills?: Set<string>;
+  /** Test seam: called right after each of a fill's two durable writes (a crash image is taken there). */
+  readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
 }
 
 /**
@@ -65,6 +69,24 @@ export const journalFields = (r: LogRecord): Readonly<Record<string, unknown>> |
   // A world event the engine refused; an applied one is not a decision line.
   return r.result === 'illegal' ? { action: 'world_refused', event: r.eventId, reasons: [`world event ${r.event.type} refused: ${r.reason ?? ''}`] } : null;
 };
+
+/** The key of a fill line: its intent and the tokens it booked in all (a later partial fill is a new line). */
+export const fillKey = (intentId: string, tokens: bigint): string => `${intentId}:${tokens}`;
+
+/** The `entry` and `exit` lines already in a journal, by `fillKey`: what a restart must not write again. */
+export const journaledFillKeys = (lines: readonly Readonly<Record<string, unknown>>[]): Set<string> =>
+  new Set(lines.flatMap((l) => ((l['kind'] === 'entry' || l['kind'] === 'exit') && typeof l['intent'] === 'string' && typeof l['tokens'] === 'string' && /^\d+$/.test(l['tokens'])
+    ? [fillKey(l['intent'], BigInt(l['tokens']))] : [])));
+
+interface Fill {
+  readonly purpose: 'entry' | 'exit';
+  readonly intentId: string;
+  readonly positionId: string;
+  readonly mint: string;
+  readonly reasons: readonly string[];
+  /** The journal line, or null when the journal already holds it. */
+  readonly line: Readonly<Record<string, unknown>> | null;
+}
 
 export class Desk {
   readonly #d: DeskDeps;
@@ -127,6 +149,15 @@ export class Desk {
 
   #write(event: BookEvent, ts: number): void {
     const before = this.#book;
+    // A fill is journaled before the ledger lets the position go (ARCHITECTURE §12.4): a kill between the two writes
+    // must never leave a position closed in the ledger with no `exit` line, which a restart check reads as lost. The
+    // other way round, the restart books the same fill again from the world and the line is not written twice.
+    const step = applyBookEvent(before, event);
+    const fill = isIllegal(step) ? null : this.#fill(before, step.state, event);
+    if (fill !== null && fill.line !== null) {
+      this.#d.journal(fill.purpose, fill.line);
+      this.#d.crashPoint?.('fill-journaled', fill.intentId);
+    }
     try {
       this.#book = this.#d.ledger.recordBookEvent(before, event, { ts, limits: { maxHeld: (2n ** 62n) as Lamports, maxCount: Number.MAX_SAFE_INTEGER } }).book;
     } catch (e) {
@@ -135,29 +166,32 @@ export class Desk {
       const reason = `ledger refused ${event.type}: ${e instanceof Error ? e.message : String(e)}`;
       this.#d.journal('decision', { action: 'ledger_refused', reasons: [reason] });
       this.#d.diverged(reason);
-      const step = applyBookEvent(before, event);
       if (!isIllegal(step)) this.#book = step.state;
       return;
     }
-    this.#after(before, event, ts);
+    if (fill !== null) this.#d.crashPoint?.('fill-committed', fill.intentId);
+    this.#after(fill, ts);
   }
 
-  #after(before: Book, event: BookEvent, ts: number): void {
+  #after(fill: Fill | null, ts: number): void {
     // The trade records first, so the account snapshot published next already holds this fill.
-    this.#fills(before, event, ts);
+    if (fill !== null) this.#d.filled({ purpose: fill.purpose, positionId: fill.positionId, mint: fill.mint, book: this.#book, atMs: ts, reasons: fill.reasons });
     this.#d.accountChanged();
     this.#d.intentsChanged(openIntents(this.#book));
   }
 
-  /** A reconcile that booked fills: the `entry` or `exit` line (after its `simulation` line) and the trade record. */
-  #fills(before: Book, event: BookEvent, ts: number): void {
-    if (event.type !== 'intent' || event.event.type !== 'reconcile') return;
-    const s = this.#book.intents[event.intentId];
+  /**
+   * A reconcile that books fills: its `entry` or `exit` line (after its `simulation` line), or null. A line the journal
+   * already holds for the same intent and amount (written before a kill that came ahead of the ledger) is not repeated.
+   */
+  #fill(before: Book, after: Book, event: BookEvent): Fill | null {
+    if (event.type !== 'intent' || event.event.type !== 'reconcile') return null;
+    const s = after.intents[event.intentId];
     const was = before.intents[event.intentId];
-    if (s === undefined || s.fills.length === 0 || (was !== undefined && was.fills.length === s.fills.length)) return;
+    if (s === undefined || s.fills.length === 0 || (was !== undefined && was.fills.length === s.fills.length)) return null;
     const purpose = s.intent.purpose;
     const pid = s.intent.positionId;
-    const p = this.#book.positions[pid];
+    const p = after.positions[pid];
     const tokens = s.fills.reduce((t, f) => t + f.tokens, 0n);
     const sol = s.fills.reduce((t, f) => t + f.sol, 0n);
     const fees = s.fills.reduce((t, f) => t + f.fees, 0n);
@@ -165,8 +199,13 @@ export class Desk {
       ? ['entry filled (paper)', ...(this.#why.get(s.intent.id) ?? [])]
       : ['exit filled (paper)', ...(before.positions[pid]?.exitOwner?.reasons ?? [])];
     this.#why.delete(s.intent.id);
-    this.#d.journal(purpose, { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, reasons });
-    this.#d.filled({ purpose, positionId: pid, mint: s.intent.mint, book: this.#book, atMs: ts, reasons });
+    const line = { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, reasons };
+    const key = fillKey(s.intent.id, tokens);
+    if (this.#d.journaledFills?.has(key) === true) {
+      this.#d.journaledFills.delete(key);
+      return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons, line: null };
+    }
+    return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons, line };
   }
 
   /** Writes the reservation first, then hands it to the engine; a refusal goes back as a reject. */
@@ -189,7 +228,7 @@ export class Desk {
     }
     const mint = before.intents[intentId]?.intent.mint ?? '';
     this.#d.reserved({ intentId, mint, amount: req.amount, atMs: ts });
-    this.#after(before, event, ts);
+    this.#after(null, ts);
     this.#written.add(this.#d.report(event));
   }
 
