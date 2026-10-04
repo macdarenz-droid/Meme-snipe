@@ -23,7 +23,7 @@ describe('baseline', () => {
     expect(d.reservation.amount).toBe(d.spendLamports + d.maxCostsLamports);
     expect(d.reservation.limits.maxCount).toBe(TRIAL_POLICY.positions.maxOpen);
     expect(d.trips).toEqual([]);
-    expect(evaluateExit(baseInput())).toEqual({ allow: true, tripped: [], trips: [] });
+    expect(evaluateExit(baseInput())).toEqual({ allow: true, tripped: [], trips: [], fault: null });
   });
 
   test('C counts fees, rent, priority fees and the exit ladder at its worst', () => {
@@ -300,7 +300,7 @@ describe('item 2: exits return trips so a marked dip is latched', () => {
   });
 });
 
-describe('R11 entries (live only)', () => {
+describe('R11 entries (live and paper; supervisor ruling: paper money is real money)', () => {
   const entries = (n: number, m = MINT_B) => Array.from({ length: n }, (_, i) => ({ mint: m, atMs: DAY_START + (i + 1) * HOUR }));
   test('3 live entries a day', () => {
     expectRefusedButExitPasses(baseInput({ account: account({ entries: entries(3) }) }), baseRequest(), 'entries_per_day', true);
@@ -315,9 +315,19 @@ describe('R11 entries (live only)', () => {
     const old = trade(NOW - TRIAL_POLICY.positions.reentryBlockMs, '0.1', { mint: MINT_A, stoppedOut: true });
     allowed(evaluateEntry(baseInput({ account: account({ closedTrades: [old] }) }), baseRequest()));
   });
-  test('paper and backtest have no entry caps', () => {
-    const input = baseInput({ mode: 'paper', account: account({ entries: [...entries(3), ...entries(1, MINT_A)] }) });
-    allowed(evaluateEntry(input, baseRequest()));
+  test('paper is capped exactly as live: 3 a day, 1 per mint a day, no re-entry on a stopped mint for 24 h', () => {
+    expect(codes(evaluateEntry(baseInput({ mode: 'paper', account: account({ entries: entries(3) }) }), baseRequest()))).toContain('entries_per_day');
+    allowed(evaluateEntry(baseInput({ mode: 'paper', account: account({ entries: entries(2) }) }), baseRequest()));
+    expect(codes(evaluateEntry(baseInput({ mode: 'paper', account: account({ entries: entries(1, MINT_A) }) }), baseRequest()))).toContain('entries_per_mint');
+    const stopped = trade(NOW - 23 * HOUR, '0.1', { mint: MINT_A, stoppedOut: true });
+    expect(codes(evaluateEntry(baseInput({ mode: 'paper', account: account({ closedTrades: [stopped] }) }), baseRequest()))).toContain('reentry_after_stop');
+  });
+  test('only the backtest\'s research evaluation has no entry caps', () => {
+    const stopped = trade(NOW - 23 * HOUR, '0.1', { mint: MINT_A, stoppedOut: true });
+    const input = baseInput({ mode: 'backtest', account: account({ entries: [...entries(3), ...entries(1, MINT_A)], closedTrades: [stopped] }) });
+    expect(codes(evaluateEntry(input, baseRequest()))).not.toEqual(expect.arrayContaining(['entries_per_day']));
+    expect(codes(evaluateEntry(input, baseRequest()))).not.toContain('entries_per_mint');
+    expect(codes(evaluateEntry(input, baseRequest()))).not.toContain('reentry_after_stop');
   });
 });
 
@@ -404,11 +414,25 @@ describe('every reason names its control, and exits survive anything', () => {
     const d = evaluateEntry({ ...input, market: { ...input.market, regime: 'off' } }, baseRequest({ stopBps: 9000 }));
     expect(new Set(d.allow ? [] : d.reasons.map((r) => r.control))).toEqual(new Set(['R3', 'R5', 'R6', 'R10', 'R16']));
   });
-  test('an exit passes even when the inputs are broken', () => {
+  test('an exit passes even when the inputs are broken, and says it could not evaluate them (RISK-FAULT)', () => {
     const input = baseInput({ clock: clockAt(Number.NaN) });
-    expect(evaluateExit(input)).toEqual({ allow: true, tripped: [], trips: [] });
-    const nonsense = baseInput({ account: { ...account(), closedTrades: null as never } });
-    expect(evaluateExit(nonsense).allow).toBe(true);
+    const bad = evaluateExit(input);
+    expect(bad.allow).toBe(true);
+    expect(bad.trips).toEqual([]);
+    expect(bad.fault).toEqual(expect.any(String));
+    expect(bad.tripped).toEqual([{ control: 'R1', code: 'risk_fault', detail: `risk could not be evaluated: ${bad.fault}` }]);
+    const nonsense = evaluateExit(baseInput({ account: { ...account(), closedTrades: null as never } }));
+    expect(nonsense.allow).toBe(true);
+    expect(nonsense.trips).toEqual([]);
+    expect(nonsense.fault).toMatch(/null/);
+    expect(nonsense.tripped.map((r) => r.code)).toEqual(['risk_fault']);
+    // A thrown value that is not an Error, or whose text cannot be read, still gives a fault; nothing throws.
+    expect(evaluateExit(baseInput({ clock: { now: () => { throw 'no clock'; } } as never })).fault).toBe('unknown error');
+    const hostile = new Error('x');
+    Object.defineProperty(hostile, 'message', { get: () => { throw new Error('again'); } });
+    expect(evaluateExit(baseInput({ clock: { now: () => { throw hostile; } } as never })).fault).toBe('unknown error');
+    // A clean account with nothing tripped is told apart: no fault.
+    expect(evaluateExit(baseInput()).fault).toBeNull();
   });
   test('a figure check: the snapshot reports loss in micro-dollars against Melbourne boundaries', () => {
     const input = baseInput({ account: account({ closedTrades: [trade(DAY_START + HOUR, '-0.75')] }) });
