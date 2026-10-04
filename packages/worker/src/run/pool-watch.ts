@@ -1,14 +1,19 @@
 // The swap stream of every watched pool (WORKER-1): a logs watch on each candidate's and each open position's PumpSwap
 // pool, decoded from the log lines, named `trades:<pool>` (FACTS-1's stream name, for candles and coverage). The
 // strategy reads the swaps for the pool's fee terms and EXIT-1's deployer-sell trigger. A position's pool is exit
-// traffic (P1); a candidate's is P3. Watches follow the strategy's list, re-read every `everyMs`.
+// traffic (P1); a candidate's is P3. Watches follow the strategy's list, re-read every `everyMs`. A watch the stream
+// drops by itself (the 70% halt, a server refusal) is forgotten and watched again at a later sync (POOL-1): after a
+// halt as soon as the stream takes P3 watches again, after a refusal with a growing wait (2 s doubling to 60 s).
 import { P1, P3, type Timers } from '../scheduler/index.ts';
 import type { RpcStream } from '../providers/index.ts';
 
 export const tradesStream = (pool: string): string => `trades:${pool}`;
 
+/** POOL-1: the first wait before a refused pool watch is asked again, doubled per refusal up to the most. */
+export const REFUSED_RETRY_MS = { first: 2_000, most: 60_000 } as const;
+
 export interface PoolWatchOptions {
-  readonly stream: Pick<RpcStream, 'watchLogs' | 'unwatch'>;
+  readonly stream: Pick<RpcStream, 'watchLogs' | 'unwatch'> & Partial<Pick<RpcStream, 'onDropped'>>;
   readonly timers: Timers;
   readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean }>;
   readonly everyMs: number;
@@ -19,9 +24,23 @@ export class PoolWatch {
   readonly #watching = new Map<string, { readonly id: number; readonly held: boolean }>();
   #timer: ReturnType<Timers['setTimeout']> | null = null;
   #running = false;
+  /** Pools whose watch the server refused: not asked again before `at`; `wait` doubles per refusal. */
+  readonly #retry = new Map<string, { at: number; wait: number }>();
 
   constructor(o: PoolWatchOptions) {
     this.#o = o;
+    o.stream.onDropped?.((id, reason) => this.#dropped(id, reason));
+  }
+
+  #dropped(id: number, reason: 'halted' | 'refused'): void {
+    const pool = [...this.#watching].find(([, w]) => w.id === id)?.[0];
+    if (pool === undefined) return;
+    this.#watching.delete(pool);
+    if (reason === 'halted') return; // gone from the stream; it refuses new P3 watches until the halt lifts
+    // A refused watch stays subscribed-in-name until a reconnect: drop it, and ask again after a wait.
+    this.#o.stream.unwatch(id, 'refused');
+    const wait = Math.min(REFUSED_RETRY_MS.most, (this.#retry.get(pool)?.wait ?? REFUSED_RETRY_MS.first / 2) * 2);
+    this.#retry.set(pool, { at: this.#o.timers.now() + wait, wait });
   }
 
   get watching(): ReadonlyMap<string, { readonly id: number; readonly held: boolean }> {
@@ -55,8 +74,11 @@ export class PoolWatch {
         this.#watching.delete(pool);
       }
     }
+    for (const pool of this.#retry.keys()) if (!want.has(pool)) this.#retry.delete(pool);
     for (const [pool, { held }] of want) {
       if (this.#watching.has(pool)) continue;
+      const retry = this.#retry.get(pool);
+      if (retry !== undefined && this.#o.timers.now() < retry.at) continue;
       try {
         const id = this.#o.stream.watchLogs(pool, { priority: held ? P1 : P3, decodeLogs: true, coverage: tradesStream(pool) });
         this.#watching.set(pool, { id, held });

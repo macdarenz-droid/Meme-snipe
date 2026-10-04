@@ -102,6 +102,8 @@ export class RpcStream {
   readonly #o: RpcStreamOptions;
   readonly #rpc: RpcSocket;
   readonly #watches = new Map<number, Watch>();
+  /** POOL-1: told when a watch stops delivering without its owner asking (dropped at the halt, or refused). */
+  readonly #dropped: ((id: number, reason: 'halted' | 'refused') => void)[] = [];
   #nextId = 1;
   #lastSlot: bigint | null = null;
   #gapFrom: bigint | null = null;
@@ -207,6 +209,15 @@ export class RpcStream {
     });
   }
 
+  /**
+   * POOL-1: `fn` hears of every watch that stops delivering without its owner asking: one the 70% halt dropped (it is
+   * gone from this stream) or one the server refused (it stays until the next reconnect re-subscribes it, so an owner
+   * that wants it sooner unwatches and watches again).
+   */
+  onDropped(fn: (id: number, reason: 'halted' | 'refused') => void): void {
+    this.#dropped.push(fn);
+  }
+
   unwatch(id: number, reason = 'unwatched'): void {
     const w = this.#watches.get(id);
     if (w === undefined) return;
@@ -227,6 +238,7 @@ export class RpcStream {
           this.#coverageGap(w, this.#openFrom(w), null, 'refused');
           w.gap = null;
         }
+        for (const fn of this.#dropped) fn(id, 'refused');
       },
       onSubscribed: () => {
         if (w.kind !== 'logs') return;
@@ -293,7 +305,11 @@ export class RpcStream {
     }
     if (this.#halted || !this.#o.scheduler.halted) return;
     this.#halted = true;
-    for (const [id, w] of this.#watches) if (w.priority > P1) this.unwatch(id, 'halted');
+    for (const [id, w] of this.#watches) {
+      if (w.priority <= P1) continue;
+      this.unwatch(id, 'halted');
+      for (const fn of this.#dropped) fn(id, 'halted');
+    }
     this.#status('halted', { share: this.#o.scheduler.status().budgetShare });
   }
 
