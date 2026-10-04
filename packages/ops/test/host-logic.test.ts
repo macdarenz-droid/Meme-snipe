@@ -240,8 +240,28 @@ describe('worker start and API address', () => {
     expect(entry()).toBe(STUB); // asked for, but the release has no worker
     writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
     expect(entry()).toBe(STUB);
-    // The repository ships with the stand-in: the switch is its own reviewed commit.
-    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('stub');
+    // SWITCH-1 is the reviewed switch: the repository now runs the release's own worker.
+    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('release');
+  });
+
+  it("SWITCH-1: zeroed-update tries the new release's worker before anything changes", () => {
+    const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const smoke = upd.indexOf('/usr/local/lib/zeroed/worker-smoke "$dest"');
+    expect(smoke).toBeGreaterThan(0);
+    // Before the host files apply and before current moves; a failed trial alerts and exits.
+    expect(smoke).toBeLessThan(upd.indexOf('apply_host "$commit" "$dest" || exit 1'));
+    expect(smoke).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    expect(upd.slice(smoke, upd.indexOf('apply_host "$commit" "$dest" || exit 1'))).toMatch(/alert worker-smoke "ALERT[^\n]*stays on the release it runs[^\n]*"\n\s+exit 1\n/);
+    const s = read('ops/host/files/usr/local/lib/zeroed/worker-smoke');
+    // Beside the running worker: its own ports, a scratch state directory, the worker's user, paper only.
+    expect(sh('echo "$SMOKE_HEALTH_ADDR $SMOKE_API_ADDR"').out).toBe('127.0.0.1:8797 127.0.0.1:8798');
+    expect(s).toContain('ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" ZEROED_API_ADDR="$SMOKE_API_ADDR"');
+    expect(s).toContain('ZEROED_STATE_DIR="$tmp/state"');
+    expect(s).toContain('runuser -u zeroed-worker -- env -i');
+    expect(s).toContain('ZEROED_MODE=paper');
+    expect(s).not.toMatch(/ZEROED_MODE=(?!paper )/);
+    expect(s).not.toMatch(/CREDENTIALS_DIRECTORY|credstore|systemctl/);
+    expect(s).toContain('run 120 --reconcile');
   });
 
   it('health for the runner on 127.0.0.1:8787 and the worker API on 127.0.0.1:8788, as WORKER-1 and RUN-1 expect', () => {

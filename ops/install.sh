@@ -1181,6 +1181,8 @@ WEBHOOK_MAX_TRIES=5        # the owner is told after this many failed tries in a
 WORKER_API_ADDR=127.0.0.1:8788 # the worker API, loopback only; tailscale serve publishes it to the tailnet
 WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RUN-1's default), never published
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
+SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
+SMOKE_API_ADDR=127.0.0.1:8798
 RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
@@ -1271,6 +1273,66 @@ worker_entry() {
 
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
+__ZEROED_FILE__
+install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# worker-smoke RELEASE_DIR: can this release's own worker start? zeroed-update runs it before it switches to a new
+# release (SWITCH-1), so a release whose worker cannot start never becomes current and the running worker is never
+# stopped for it. The trial runs beside the running worker and touches none of its state or ports:
+#   - as the worker's user, with a scratch state directory, no credentials (provider keys are not needed to start; a
+#     worker without providers runs degraded, entries halted), health and API on SMOKE_* loopback ports;
+#   - --reconcile (the unit's ExecStartPre) must exit 0, then the worker must answer its health route in paper mode
+#     within 90 s and still be running. It is then stopped and the scratch directory removed.
+# Prints one line saying why when it fails; exit 0 when the worker starts, 1 when it does not. A release still on the
+# host's stand-in has no worker of its own to try and passes.
+set -euo pipefail
+. /usr/local/lib/zeroed/logic.sh
+dir="${1:?usage: worker-smoke RELEASE_DIR}"
+entry="$(worker_entry "$dir")"
+[ "$entry" != /opt/zeroed/stub/worker.mjs ] || exit 0
+
+tmp="$(mktemp -d /var/tmp/zeroed-smoke.XXXXXX)"
+pid=""
+cleanup() {
+  [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+install -d -m 0700 -o zeroed-worker -g zeroed-worker "$tmp/state"
+# run LIMIT_S ARGS...: the release's worker with the worker unit's environment (worker-start) and nothing from this
+# shell, stopped after LIMIT_S seconds (0: no limit). ZEROED_GIT_SHA names the trial release.
+run() {
+  local limit="$1"
+  shift
+  timeout "$limit" runuser -u zeroed-worker -- env -i PATH=/usr/bin:/bin HOME="$tmp" NODE_ENV=production \
+    ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on ZEROED_STATE_DIR="$tmp/state" \
+    ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" ZEROED_API_ADDR="$SMOKE_API_ADDR" ZEROED_GIT_SHA="$(basename "$dir")" \
+    /usr/local/bin/node --no-warnings "$entry" "$@"
+}
+last() { tail -n 1 "$1" | tr -cd '[:print:]' | cut -c1-200; }
+
+cd "$dir"
+rc=0
+run 120 --reconcile >"$tmp/reconcile.log" 2>&1 || rc=$?
+if [ "$rc" != 0 ]; then
+  echo "its reconcile exited $rc: $(last "$tmp/reconcile.log")"
+  exit 1
+fi
+run 0 >"$tmp/start.log" 2>&1 &
+pid=$!
+for _ in $(seq 1 90); do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rc=0; wait "$pid" || rc=$?; pid=""
+    echo "it exited $rc: $(last "$tmp/start.log")"
+    exit 1
+  fi
+  if curl -fsS -m 2 "http://$SMOKE_HEALTH_ADDR/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 1
+done
+echo "its health route did not answer within 90 s: $(last "$tmp/start.log")"
+exit 1
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1731,7 +1793,16 @@ fi
 if [ -e "$STATE_DIR/webhook_tries" ]; then
   log "Webhook:   not set ($(cat "$STATE_DIR/webhook_tries") failed tries; retrying)"
 fi
-log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
+# Which worker runs: the release's own (SWITCH-1) or the host's stand-in, from the running process itself.
+wpid="$(systemctl show -p MainPID --value zeroed-worker.service 2>/dev/null || echo 0)"
+wkind=""
+if [ "${wpid:-0}" != 0 ] && [ -r "/proc/$wpid/cmdline" ]; then
+  case "$(tr '\0' ' ' < "/proc/$wpid/cmdline")" in
+    *packages/worker/src/main.ts*) wkind=" (the release's worker, $(basename "$(readlink -f /opt/zeroed/current)" | cut -c1-12))" ;;
+    *stub/worker.mjs*) wkind=" (the host's stand-in)" ;;
+  esac
+fi
+log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)$wkind"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
 run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"
@@ -1996,6 +2067,14 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# The release's own worker must start before anything changes (SWITCH-1): a trial start beside the running worker
+# (worker-smoke). If it cannot start, nothing switches, the running worker is untouched, and the owner gets one alert.
+if ! why="$(/usr/local/lib/zeroed/worker-smoke "$dest" 2>&1)"; then
+  log "The worker of ${commit:0:12} did not start in a trial ($why); still on the old release, trying again next run."
+  alert worker-smoke "ALERT Zeroed host: the worker of ${commit:0:12} did not start in a trial ($why), so the server stays on the release it runs. It tries again every 5 minutes."
+  exit 1
+fi
+alert_clear worker-smoke "CLEARED Zeroed host: the worker of ${commit:0:12} starts."
 # Host files first: on failure nothing switches and the worker keeps running the release it has.
 apply_host "$commit" "$dest" || exit 1
 ln -sfn "$dest" /opt/zeroed/current.new

@@ -89,6 +89,14 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# The release's own worker must start before anything changes (SWITCH-1): a trial start beside the running worker
+# (worker-smoke). If it cannot start, nothing switches, the running worker is untouched, and the owner gets one alert.
+if ! why="$(/usr/local/lib/zeroed/worker-smoke "$dest" 2>&1)"; then
+  log "The worker of ${commit:0:12} did not start in a trial ($why); still on the old release, trying again next run."
+  alert worker-smoke "ALERT Zeroed host: the worker of ${commit:0:12} did not start in a trial ($why), so the server stays on the release it runs. It tries again every 5 minutes."
+  exit 1
+fi
+alert_clear worker-smoke "CLEARED Zeroed host: the worker of ${commit:0:12} starts."
 # Host files first: on failure nothing switches and the worker keeps running the release it has.
 apply_host "$commit" "$dest" || exit 1
 ln -sfn "$dest" /opt/zeroed/current.new
