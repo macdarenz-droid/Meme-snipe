@@ -1,0 +1,11 @@
+import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '/home/user/Meme-snipe/packages/core/src/config/index.ts';
+import { runBacktest } from '/home/user/Meme-snipe/packages/backtest/src/run.ts';
+import { SOL_USD, syntheticRows, T0 } from '/home/user/Meme-snipe/packages/backtest/test/synthetic.ts';
+const hours = Number(process.argv[2] ?? 24), mints = Number(process.argv[3] ?? 60);
+const rows = syntheticRows({ mints, slots: 2.5 * 3600 * hours, swapEvery: 40 });
+const sol = { ...SOL_USD, bars: Array.from({ length: hours + 10 }, (_, k) => ({ start: T0 - 6 * 3_600_000 + k * 3_600_000, close: '120.00' })) };
+const t = performance.now();
+const r = runBacktest({ rows: () => rows[Symbol.iterator](), series: [sol], seed: 's', scenario: 'base', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, windowEnd: T0 + hours * 3_600_000 });
+const ms = performance.now() - t;
+console.log(JSON.stringify({ hours, mints, rows: r.stats.rows, ms: Math.round(ms), rowsPerSec: Math.round(r.stats.rows / ms * 1000), intents: Object.keys(r.book.intents).length, records: r.records.length, illegal: r.stats.illegalStates, unrec: r.stats.unreconciledIntents, heapMB: Math.round(process.memoryUsage().heapUsed / 1e6) }));
+for (const x of r.records) if ((x.type === 'decision' || x.type === 'world') && x.result === 'illegal' || x.type === 'fault') console.log(JSON.stringify(x, (_, v) => typeof v === 'bigint' ? v.toString() : v).slice(0, 600));

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+u=; while (( $# )); do [[ $1 == -usage-out ]] && u=$2; shift; done
+printf '{\n  "cre' > "$u"   # truncated write (killed mid-write)
+exit 75

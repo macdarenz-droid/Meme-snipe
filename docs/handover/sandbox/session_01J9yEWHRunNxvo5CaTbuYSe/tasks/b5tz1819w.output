@@ -1,0 +1,21 @@
+Traceback (most recent call last):
+  File "<stdin>", line 4, in <module>
+AssertionError
+test/stats-gates.test.ts(112,63): error TS2322: Type '{ nPower: number; powerAtN: number; level: number; evaluations: never[]; }' is not assignable to type 'PowerSpec'.
+  Property 'units' is missing in type '{ nPower: number; powerAtN: number; level: number; evaluations: never[]; }' but required in type 'Omit<G2PowerResult, "walkForward">'.
+     × independent trades: close to the textbook n; power at n ≥ 80% and below it < 80% 141565ms
+     × intra-day correlation raises n by about the design effect; three universes raise it further 367201ms
+     × n_power includes the creator and funder cluster units: concentrated creators raise it 136527ms
+     × a control as good as the strategy makes the S0 comparison bind 420171ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+Error: Test timed out in 120000ms.
+Error: Test timed out in 180000ms.
+AssertionError: expected 453 to be greater than 514.8
+Error: Test timed out in 240000ms.
+      Tests  4 failed | 8 passed (12)
+
+real	17m47.323s
+user	17m39.671s
+sys	0m5.688s
+
+[exited with code 0]

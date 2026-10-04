@@ -1,0 +1,36 @@
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:9191) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/worker/test/position-market.test.ts (5 tests | 1 failed) 1303ms
+   ❯ a held position priced from its pool's swap stream (POS-1) (5)
+     × take-profit then the trail fire from swaps alone 334ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > take-profit then the trail fire from swaps alone
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/worker/test/position-market.test.ts:82:105
+     80|     // A seller takes it back down under the trail: the runner closes …
+     81|     m.chainSwap('sell', (m.chainState.baseReserve * 12n) / 100n, h.wor…
+     82|     expect(await until(m, () => h.worker.book.positions[pid]!.status =…
+       |                                                                                                         ^
+     83|     expect(decisions(h).some((r) => r[0] === 'exit' && r.some((x) => x…
+     84|     await h.worker.stop();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 4 passed (5)
+   Start at  23:46:49
+   Duration  3.91s (transform 56%, tests 35%, import 8%, setup 1%)
+

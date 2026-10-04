@@ -1,0 +1,12 @@
+caught: missing ignored
+caught: redactions ignored
+caught: ledger_refused ignored
+caught: no seed not flagged
+caught: no recording not flagged
+SURVIVED: excluded-only boot skipped
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ Test Files  1 failed | 129 passed (130)
+      Tests  1 failed | 4210 passed (4211)
+rc=1
+
+[exited with code 0]

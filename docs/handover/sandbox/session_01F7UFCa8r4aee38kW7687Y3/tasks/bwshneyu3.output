@@ -1,0 +1,6 @@
+af82601 PERSIST-2: save the graduates series and restore it through a recorded seed read; DATA-1 seed shape; restart-reset inputs listed
+EXIT 0
+ Test Files  150 passed (150)
+      Tests  4499 passed (4499)
+
+[exited with code 0]

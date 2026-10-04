@@ -1,0 +1,26 @@
+[M1 no clamp]       Tests  127 passed (127)
+[M2 default spa] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  6 failed | 79 passed (85)
+[M3 registry alpha ignored] ⎯⎯⎯⎯⎯⎯ Failed Tests 20 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  20 failed | 65 passed (85)
+[M4 tail ignored] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 84 passed (85)
+[M5 frozen < computed ok] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  3 failed | 82 passed (85)
+[M6 open after G1 fail]       Tests  173 passed (173)
+[M7 attempt-2 start free] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 146 passed (147)
+[M8 attempt-1 alpha 0.05] ⎯⎯⎯⎯⎯⎯ Failed Tests 21 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  21 failed | 126 passed (147)
+[M9 early G3 = fail not extend] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 84 passed (85)
+[M10 judged before end] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 84 passed (85)
+[M11 one benchmark enough] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  2 failed | 125 passed (127)
+[M12 seal without frozen req] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 146 passed (147)
+[M13 attempt-2 length free] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 146 passed (147)
+
+[exited with code 0]
