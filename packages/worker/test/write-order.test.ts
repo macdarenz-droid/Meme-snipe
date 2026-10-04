@@ -12,10 +12,10 @@ import type { Health, JournalLine } from '../../runner/src/contract.ts';
 import type { Kept } from '../../runner/src/report.ts';
 import { closedSince, recoveredState, withoutTrades } from '../../runner/src/runner.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
-import { type AccountState, accountFile } from '../src/run/account.ts';
+import { type AccountState, accountFile, paperTradeLamports } from '../src/run/account.ts';
 import { FILL_RATE_UNKNOWN, fillKey, journaledFillKeys } from '../src/run/desk.ts';
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
-import { attemptFee } from '../../core/src/fills/index.ts';
+import { attemptFee, tradeNet, tradeUsd } from '../../core/src/fills/index.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import { LANDS, Market, SOL_PRICE, makeWorker, passingMarket } from './worker-harness.ts';
 
@@ -186,10 +186,14 @@ describe('an exit fill is journaled before the ledger lets the position go (§12
     const atFill = net >= 0n ? lamportsToMicroUsd(net as Lamports, SOL_PRICE as MicroUsd, 'floor') : -lamportsToMicroUsd((-net) as Lamports, SOL_PRICE as MicroUsd, 'ceil');
     expect(net).not.toBe(0n);
     expect(String(t.closeSolPrice)).toBe(String(SOL_PRICE));
-    // Each flow rounded against us (AUDIT-RM1 F5): at or a few micro-dollars below the SOL result at the fill's rate;
-    // at the doubled rate it would be far off.
-    const off = atFill - BigInt(String(t.netPnl));
-    expect(off >= 0n && off <= 10n).toBe(true);
+    // Exactly the backtest's settlement of this trade's legs at the fill's rate (entry and close both at SOL_PRICE), each
+    // flow rounded against us (AUDIT-RM1 F5), so at or below the SOL result at that rate; at the doubled rate it would be
+    // far off.
+    const legs = paperTradeLamports(h2.worker.book, pid, h2.worker.apiInputs().legs)!;
+    expect(tradeNet(legs)).toBe(net);
+    const exact = tradeUsd(legs, SOL_PRICE as MicroUsd, SOL_PRICE as MicroUsd).net;
+    expect(String(t.netPnl)).toBe(String(exact));
+    expect(exact <= atFill).toBe(true);
     await h2.worker.stop();
   });
 
@@ -287,6 +291,8 @@ describe('an exit fill is journaled before the ledger lets the position go (§12
     const atLine = flows >= 0n ? lamportsToMicroUsd(flows as Lamports, SOL_PRICE as MicroUsd, 'floor') : -lamportsToMicroUsd((-flows) as Lamports, SOL_PRICE as MicroUsd, 'ceil');
     const off = atLine - BigInt(String(t.netPnl));
     expect(off >= 0n && off <= 10n).toBe(true);
+    // Exactly the backtest's settlement of these legs at the line's rate.
+    expect(String(t.netPnl)).toBe(String(tradeUsd(paperTradeLamports(h2.worker.book, pid, h2.worker.apiInputs().legs)!, SOL_PRICE as MicroUsd, SOL_PRICE as MicroUsd).net));
     await h2.worker.stop();
   });
 
