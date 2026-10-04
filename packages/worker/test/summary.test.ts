@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { verifySignature } from '../../ops/src/watchdog/logic.ts';
 import { SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, checkSummary } from '../../ops/src/watchdog/summary.ts';
-import type { MicroUsd } from '../../core/src/units/index.ts';
+import type { Lamports, MicroUsd } from '../../core/src/units/index.ts';
 import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
 import {
@@ -28,7 +28,7 @@ const reject = (ms: number, mint: string, gate: string, code: string) =>
   line('decision', ms, { action: 'reject', reasons: ['reject', 'U2', mint, `hard reject ${gate}`], gate_reasons: [{ gate, code, detail: 'x' }] });
 
 const trade = (o: Partial<PaperTrade> = {}): PaperTrade => ({
-  positionId: 'p1', mint: M1, openedAtMs: NOON, notional: 3_000_000n as MicroUsd, closedAtMs: NOON + 60_000, netLamports: -1_500_000n,
+  positionId: 'p1', mint: M1, openedAtMs: NOON, notional: 20_000_000n as Lamports, closedAtMs: NOON + 60_000, netLamports: -1_500_000n,
   netPnl: -300_000n as MicroUsd, stoppedOut: true, booked: 0n, exitReasons: ['stop'], ...o,
 });
 const inputs = (o: Partial<SummaryInputs> = {}): SummaryInputs => ({

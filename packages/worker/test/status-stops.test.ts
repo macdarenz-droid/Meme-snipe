@@ -2,12 +2,12 @@
 // (core risk's tripped entry controls, nothing latched), so the app never shows "Entries: On" while a stop refuses
 // every entry; and the regime evaluation counts only while current.
 import { describe, expect, it } from 'vitest';
-import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession, usd } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
 import type { MarketEvent, StrategyContext } from '../../core/src/engine/index.ts';
 import { emptyBook } from '../../core/src/lifecycle/book.ts';
 import { type Latches, NO_LATCHES, maxTradeCosts } from '../../core/src/risk/index.ts';
-import { BPS_DENOMINATOR, lamports, lamportsToMicroUsd, mulDiv } from '../../core/src/units/index.ts';
-import { DAY_START, HOUR, MINUTE, NOW, PRICE, SOL, WEEK_START, account, latches, trade } from '../../core/test/risk/helpers.ts';
+import { BPS_DENOMINATOR, lamports, mulDiv } from '../../core/src/units/index.ts';
+import { DAY_START, HOUR, MINUTE, NOW, PRICE, SOL, WEEK_START, account, atOpening, latches, trade, usd } from '../../core/test/risk/helpers.ts';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor } from '../../../apps/web/src/api/schemas.ts';
 import { ACCOUNT_KEY, LiveStrategy, SOL_PRICE_KEY } from '../src/engine/strategy.ts';
@@ -54,10 +54,11 @@ describe('the strategy reads the account stops from its risk state', () => {
     // The entry path's own rule (core evaluateEntry R7): L_day + C >= the daily limit refuses every entry.
     const policy = startSession(TRIAL_POLICY).policy;
     const config = strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG);
-    const limit = mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), BPS_DENOMINATOR, 'floor');
-    const costs = lamportsToMicroUsd(maxTradeCosts(policy, { network: config.network, rent: { ...config.rent, oneTime: 0n } }).total, PRICE, 'ceil');
+    // SOL-BOOKS: both in lamports; the limit is 7.5% of B at the opening price.
+    const limit = mulDiv(atOpening(policy.capital.bankroll), BigInt(policy.loss.dailyBps), BPS_DENOMINATOR, 'floor');
+    const costs = maxTradeCosts(policy, { network: config.network, rent: { ...config.rent, oneTime: 0n } }).total;
     expect(costs).toBeGreaterThan(0n);
-    const lost = (micro: bigint) => account({ closedTrades: [trade(DAY_START + HOUR, `-${micro / 1_000_000n}.${String(micro % 1_000_000n).padStart(6, '0')}`)] });
+    const lost = (l: bigint) => account({ closedTrades: [trade(DAY_START + HOUR, '0', { netPnl: -l as never })] });
     expect(codes(lost(limit - costs - 1n))).toEqual([]);
     expect(codes(lost(limit - costs))).toEqual(['daily_loss']);
     expect(codes(lost(limit - 1n))).toEqual(['daily_loss']);

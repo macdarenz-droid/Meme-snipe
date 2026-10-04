@@ -271,6 +271,10 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   };
   const reasons: RiskReason[] = [...f.problems];
   const trips: Trip[] = [];
+  // SOL-BOOKS: with no SOL bankroll (no valid opening SOL price yet) every figure is zero and every line reads as
+  // reached. That proves no breach: R1 refuses entries, and nothing is handed back to latch.
+  const valued = f.snapshot.bankroll > 0n;
+  const trip = (t: Trip): void => { if (valued) trips.push(t); };
   const live = mode === 'live';
 
   // R1: the bankroll in SOL (a figure above); no live SOL/USD price is read (SOL-BOOKS).
@@ -315,7 +319,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   );
   if (s.weekLoss >= weekLimit || s.weekBaseLoss >= weekBaseLimit) {
     reasons.push(reason('weekly_loss', 'weekly loss trigger reached; paused for the week'));
-    if (!weeklyLatched) trips.push('weekly_loss');
+    if (!weeklyLatched) trip('weekly_loss');
   }
   if (weeklyLatched) reasons.push(reason('weekly_review', 'weekly loss trigger tripped; paused until the week ends and the owner reviews'));
 
@@ -328,7 +332,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   const navBelow = s.nav !== null && navKillLine !== null && s.nav <= navKillLine;
   if (s.equity <= killLine || navBelow || killLatched) {
     reasons.push(reason('kill_switch', 'equity at or below the kill line; only the owner re-arms'));
-    if (!killLatched) trips.push('kill_switch');
+    if (!killLatched) trip('kill_switch');
   }
   // Not latched: it lifts when the wallet's SOL (with open positions at their marks) is back above the line.
   if (s.walletEquity !== null && s.walletEquity <= killLine) reasons.push(reason('wallet_below_kill_line', 'the wallet\'s SOL is at or below the kill line'));

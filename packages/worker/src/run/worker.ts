@@ -685,7 +685,7 @@ export class Worker {
   }
 
   #publishAccount(): void {
-    this.#fact(ACCOUNT_KEY, this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, this.#d.timers.now()));
+    this.#fact(ACCOUNT_KEY, this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#d.timers.now()));
   }
 
   #writeOpenIntents(): void {
@@ -804,8 +804,7 @@ export class Worker {
    */
   #markAccount(now: number): void {
     if (!this.#reconciled) return;
-    const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, now);
-    const sol = this.#solPrice === null || this.#solPriceAt === null ? null : { value: this.#solPrice, atMs: this.#solPriceAt };
+    const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, now);
     const policy = this.#d.session.policy;
     const held = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed');
     const account = riskAccount(fact.history, (mint) => {
@@ -813,10 +812,10 @@ export class Worker {
       if (p === undefined) return undefined;
       const m = this.poolOf(mint);
       return { quantity: p.quantity, market: m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs } };
-    }, sol, now, markSettings(policy, this.#d.strategy.network), { fallback: true, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
+    }, now, markSettings(policy, this.#d.strategy.network), { fallback: true, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
     const input: RiskInput = {
       session: this.#d.session, mode: 'paper', clock: { now: () => ({ slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now }) },
-      account, latches: fact.latches, market: { solPrice: sol, solBalance: fact.solBalance, regime: 'unknown' },
+      account, latches: fact.latches, market: { solBalance: fact.solBalance, regime: 'unknown' },
     };
     // RISK-FAULT: a valuation risk cannot make is said once when it starts and once when it clears, never silent.
     const exit = evaluateExit(input);
@@ -829,17 +828,17 @@ export class Worker {
     const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
     // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
     // exit is being evaluated, so a breach that recovers before the next one still holds until the owner reviews it.
-    // Only a fully marked valuation at a fresh SOL price latches: an unknown mark is a stand-in loss, not a breach.
-    if (latchable(account, sol, now, maxAge)) {
+    // Only a fully marked valuation latches: an unknown mark is a stand-in loss, not a breach.
+    if (latchable(account, now, maxAge)) {
       const trips = exit.trips;
       if (trips.length > 0) {
-        this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity}, NAV ${snapshot.nav ?? 'unknown'}).`);
+        this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity} lamports, NAV ${snapshot.nav ?? 'unknown'}).`);
         this.#latch(trips, now);
       }
     }
     const day = this.#account.state.dayMark?.startMs;
     if (this.#account.mark(snapshot, marked, this.#ctl.latches.killRearmedAtMs, now)) {
-      if (day !== this.#account.state.dayMark?.startMs) this.#d.log(`Account marks: equity ${snapshot.equity} at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
+      if (day !== this.#account.state.dayMark?.startMs) this.#d.log(`Account marks: equity ${snapshot.equity} lamports at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
       this.#publishAccount();
     }
   }

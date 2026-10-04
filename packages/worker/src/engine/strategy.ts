@@ -522,21 +522,17 @@ export class LiveStrategy implements Strategy {
       // Judged as the entry path judges it: marked with no fallback (a mark that fails refuses the entry there), and
       // unknown when core cannot evaluate the account (riskSnapshot is null exactly when its account check throws,
       // where evaluateExit would report nothing tripped).
-      const sol = this.#spotSol(ctx);
-      const account = this.#marked(risk.history, ctx, sol, { fallback: false });
-      const input = { session: this.#d.session, mode: 'paper' as const, clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' as const } };
+      const account = this.#marked(risk.history, ctx, { fallback: false });
+      const input = { session: this.#d.session, mode: 'paper' as const, clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solBalance: this.#balance(risk, ctx), regime: 'unknown' as const } };
       const snap = riskSnapshot(input);
       if (snap === null) return void (this.#stops = { atMs: now, codes: null });
       const r = evaluateExit(input);
       const codes = new Set<string>(r.tripped.map((x) => x.code));
       // R7 per entry, as evaluateEntry judges it (API-1 N2a): when today's loss plus one trade's worst-case costs reaches
       // the daily limit, no entry can pass, so the status serves the daily-loss stop instead of "Entries: On".
-      if (sol !== null) {
-        const policy = this.#d.session.policy;
-        const limit = mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), BPS, 'floor');
-        const costs = maxTradeCosts(policy, { network: this.#d.config.network, rent: { ...this.#d.config.rent, oneTime: risk.oneTimeRent } }).total;
-        if (snap.dayLoss + lamportsToMicroUsd(costs, sol.value, 'ceil') >= limit) codes.add('daily_loss');
-      }
+      // SOL-BOOKS: both sides in lamports; the limit is the snapshot's own (B in SOL at the opening price).
+      const costs = maxTradeCosts(this.#d.session.policy, { network: this.#d.config.network, rent: { ...this.#d.config.rent, oneTime: risk.oneTimeRent } }).total;
+      if (snap.dayLoss + costs >= snap.dailyLimit) codes.add('daily_loss');
       this.#stops = { atMs: now, codes: [...codes].sort() };
     } catch {
       this.#stops = { atMs: now, codes: null };
@@ -1303,11 +1299,10 @@ export class LiveStrategy implements Strategy {
     const why = [...note, ...d.fired.map((t) => `${t.code}: ${t.detail}`)];
     if (risk !== null) {
       // Exits are never blocked; tripped controls are logged and latched.
-      const sol = this.#spotSol(ctx);
-      const account = this.#marked(risk.history, ctx, sol, { fallback: true });
-      const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
-      // RISK-LATCH: only a fully marked account at a fresh SOL price latches; a fallback or unmarked one is still logged.
-      if (latchable(account, sol, ctx.now.receivedAt, this.#d.session.policy.gates.maxQuoteAgeMs)) for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
+      const account = this.#marked(risk.history, ctx, { fallback: true });
+      const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
+      // RISK-LATCH: only a fully marked account latches; a fallback or unmarked one is still logged.
+      if (latchable(account, ctx.now.receivedAt, this.#d.session.policy.gates.maxQuoteAgeMs)) for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
       const own = account.openPositions.find((o) => o.mint === mint);
       if (own !== undefined) why.push(`${MARK_PREFIX}${own.mark ?? 'unknown'}`);
       if (r.tripped.length > 0) why.push(`${TRIPPED_PREFIX}${[...new Set(r.tripped.map((x) => x.code))].sort().join(',')}`);
@@ -1545,12 +1540,15 @@ export class LiveStrategy implements Strategy {
     this.#waived = [...regime.waived];
     this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };
     if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
-    const sol = this.#spotSol(ctx);
-    if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
     const m = this.#market(ctx, cand.mint);
     if (typeof m === 'string') return this.#fail(m, [{ gate: 'worker', code: 'no-market', detail: m }]);
+    const acct = this.#account(ctx);
+    if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
+    // SOL-BOOKS: q_min in SOL at the session's opening SOL price, exactly as risk sizes it; no live SOL/USD price.
+    const opening = acct.history.openingSolPrice;
+    if (opening <= 0n) return this.#fail('opening SOL price unknown', [{ gate: 'worker', code: 'no-opening-price', detail: 'the account has no opening SOL price' }]);
     const notional = policy.capital.minNotional;
-    const spend = microUsdToLamports(notional, sol.value, 'ceil');
+    const spend = microUsdToLamports(notional, opening, 'ceil');
     cand.spend = spend;
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     const { hard, notEvaluated } = stagedHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
@@ -1566,8 +1564,6 @@ export class LiveStrategy implements Strategy {
       const later = notEvaluated.length > 0 ? `; ${NOT_EVALUATED}${notEvaluated.join(',')}` : '';
       return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}${later}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
     }
-    const acct = this.#account(ctx);
-    if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
     const rt = quoter(spend);
     if (!rt.ok) return this.#fail(`no round trip: ${rt.reason}`, [{ gate: 'worker', code: 'no-round-trip', detail: rt.reason }]);
@@ -1590,7 +1586,7 @@ export class LiveStrategy implements Strategy {
     // A failure while marking refuses this candidate (fail closed); it never stops the worker.
     let account: AccountHistory;
     try {
-      account = this.#marked(acct.history, ctx, sol, { fallback: false });
+      account = this.#marked(acct.history, ctx, { fallback: false });
     } catch (e) {
       const detail = e instanceof Error ? e.message : 'error';
       return this.#fail(`risk mark failed: ${detail}`, [{ gate: 'worker', code: 'risk-mark-failed', detail }]);
@@ -1599,20 +1595,20 @@ export class LiveStrategy implements Strategy {
     let r: ReturnType<typeof evaluateEntry>;
     try {
       r = evaluateEntry(
-        { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
+        { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solBalance: this.#balance(acct, ctx), regime: 'on' } },
         {
           intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
-          quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
+          quote: quoter, quoteAtMs: m.atMs, poolLiquidity: (reserveLiq * 2n) as Lamports, network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
         },
       );
     } catch (e) {
       const detail = e instanceof Error ? e.message : 'error';
       return this.#fail(`risk fault: ${detail}`, [{ gate: 'R1', code: 'risk_fault', detail }]);
     }
-    // RISK-LATCH: an entry latches R9/R10 only from a fully marked account at a fresh SOL price; an unknown or stale mark
+    // RISK-LATCH: an entry latches R9/R10 only from a fully marked account; an unknown or stale mark
     // counts as a total loss, which refuses the entry but proves no breach. The refusal still names every trip it saw.
     const seen = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
-    const trips = latchable(account, sol, ctx.now.receivedAt, policy.gates.maxQuoteAgeMs) ? seen : [];
+    const trips = latchable(account, ctx.now.receivedAt, policy.gates.maxQuoteAgeMs) ? seen : [];
     if (!r.allow) {
       this.#lastTrips = trips;
       return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${seen.length > 0 ? `; ${seen.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
@@ -1622,7 +1618,8 @@ export class LiveStrategy implements Strategy {
     }
     const pid = positionId(`p:${cand.mint}:${cand.tries}`);
     const tm = toMint(cand.mint);
-    this.#seeds.set(id, { mint: cand.mint, universe: c.universe, notional: r.notional, stopPrice, entryReserve: reserveLiq });
+    // The exit plan counts its exit transactions against q_min in dollars (core exits): the SOL spent at the opening price.
+    this.#seeds.set(id, { mint: cand.mint, universe: c.universe, notional: lamportsToMicroUsd(r.notional, opening, 'floor'), stopPrice, entryReserve: reserveLiq });
     const q = r.reservation;
     const request = { reservationId: q.reservationId, intentId: q.intentId, amount: String(q.amount), maxHeld: String(q.limits.maxHeld), maxCount: q.limits.maxCount, accountVersion: String(q.accountVersion) };
     const base = [c.universe, cand.mint];
@@ -1633,13 +1630,13 @@ export class LiveStrategy implements Strategy {
   }
 
   /** The account risk judges: each open position at its executable mark now, or null when it cannot be (marks.ts). */
-  #marked(h: AccountHistory, ctx: StrategyContext, sol: Timed<MicroUsd> | null, o: { readonly fallback: boolean }): AccountHistory {
+  #marked(h: AccountHistory, ctx: StrategyContext, o: { readonly fallback: boolean }): AccountHistory {
     return riskAccount(h, (mint) => {
       const p = Object.values(ctx.book.positions).find((x) => x.mint === mint && x.status !== 'closed');
       if (p === undefined) return undefined;
       const m = this.#market(ctx, mint);
       return { quantity: p.quantity, market: typeof m === 'string' ? null : m };
-    }, sol, ctx.now.receivedAt, markSettings(this.#d.session.policy, this.#d.config.network), { ...o, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
+    }, ctx.now.receivedAt, markSettings(this.#d.session.policy, this.#d.config.network), { ...o, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
   }
 }
 

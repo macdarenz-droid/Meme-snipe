@@ -426,8 +426,11 @@ describe('history and marks', () => {
 describe('price and costs', () => {
   // SOL-BOOKS: the only price risk uses is the session's opening SOL price, which fixes the policy's dollars in SOL.
   const withOpening = (value: bigint) => baseInput({ account: { ...account(), openingSolPrice: value as never } });
-  test('a zero opening SOL price is refused without dividing by it', () => {
+  test('a zero opening SOL price is refused without dividing by it, and latches nothing', () => {
     expect(codes(evaluateEntry(withOpening(0n), baseRequest()))).toContain('bankroll_invalid');
+    // No SOL bankroll: every figure is zero and every line reads as reached, which proves no breach.
+    expect(evaluateEntry(withOpening(0n), baseRequest()).trips).toEqual([]);
+    expect(evaluateExit(withOpening(0n)).trips).toEqual([]);
   });
   test('a one-micro-dollar opening price is a price (the trade then fails on cash, not on the price)', () => {
     const c = codes(evaluateEntry(withOpening(1n), baseRequest()));

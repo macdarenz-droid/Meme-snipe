@@ -278,7 +278,9 @@ describe('an exit fill is journaled before the ledger lets the position go (§12
     };
     const nul = await caughtUp(withLine((l) => { l['sol_usd'] = null; }));
     expect(nul.t.closeSolPrice ?? null).toBeNull();
-    expect(String(nul.t.netPnl)).toBe(String(-BigInt(String(nul.t.notional))));
+    // SOL-BOOKS: with no rate the dollar figure (display only) is unknown; risk counts the trade's lamports, always known.
+    expect(nul.t.netPnl ?? null).toBeNull();
+    expect(typeof nul.t.netLamports).toBe('bigint');
     expect(nul.logs.some((l) => l.includes(FILL_RATE_UNKNOWN))).toBe(false);
     const absent = await caughtUp(withLine((l) => { delete l['sol_usd']; }));
     expect(String(absent.t.closeSolPrice)).toBe(String(SOL_PRICE * 2n));

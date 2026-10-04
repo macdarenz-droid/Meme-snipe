@@ -4,22 +4,21 @@
 // week limits, and entries while a position is open under the configured maxOpen.
 import { describe, expect, it } from 'vitest';
 import { type PoolFeeContext, type PoolState, poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
-import { TRIAL_POLICY, startSession, usd } from '../../core/src/config/index.ts';
+import { TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
 import { executableMark } from '../../core/src/exits/index.ts';
 import { type AccountHistory, evaluateEntry, evaluateExit } from '../../core/src/risk/index.ts';
-import { type Lamports, type MicroUsd, bps, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
+import { type Lamports, bps } from '../../core/src/units/index.ts';
 import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_GLOBAL } from '../../core/test/amm/helpers.ts';
-import { DEEP_POOL, MINT_A, MINT_B, NOW, PRICE, account, baseInput, baseRequest } from '../../core/test/risk/helpers.ts';
+import { DEEP_POOL, MINT_A, MINT_B, NOW, account, baseInput, baseRequest, usd } from '../../core/test/risk/helpers.ts';
 import { type HeldMarket, type MarkSettings, latchable, markSettings, markedHistory, riskAccount } from '../src/engine/marks.ts';
 
 const CTX: PoolFeeContext = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol', baseSupply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1', buybackFeeBps: bps(5_000) };
 const SETTINGS: MarkSettings = { slippageBps: 300, exitCost: 30_000n, maxAgeMs: TRIAL_POLICY.gates.maxQuoteAgeMs };
-const SOL = { value: PRICE, atMs: NOW - 500 };
 
-/** A $4.50 position in MINT_A bought from the deep pool: its tokens, the pool after the buy, and its cost basis. */
+/** A $4.50 position (at the $100 opening price, in lamports) in MINT_A from the deep pool: tokens, pool after, basis. */
 const NOTIONAL = usd('4.5');
 const bought = (() => {
-  const q = poolBuyExactQuoteIn(DEEP_POOL, microUsdToLamports(NOTIONAL, PRICE, 'ceil'), CTX);
+  const q = poolBuyExactQuoteIn(DEEP_POOL, NOTIONAL, CTX);
   if (!q.ok) throw new Error(q.reason);
   return { tokens: q.trade.base, pool: q.trade.after };
 })();
@@ -33,7 +32,7 @@ const sold = (share: bigint): PoolState => {
 const history = (): AccountHistory => account({ openPositions: [{ mint: MINT_A, openedAtMs: NOW - 60_000, notional: NOTIONAL, mark: null, markAtMs: null }] });
 const held = (pool: PoolState | null, atMs = NOW - 300): ((mint: string) => HeldMarket | undefined) => (mint) =>
   mint === MINT_A ? { quantity: bought.tokens, market: pool === null ? null : { pool, ctx: CTX, atMs } } : undefined;
-const marked = (pool: PoolState | null, atMs?: number) => markedHistory(history(), held(pool, atMs), SOL, NOW, SETTINGS);
+const marked = (pool: PoolState | null, atMs?: number) => markedHistory(history(), held(pool, atMs), NOW, SETTINGS);
 
 describe('the executable mark (RISK-MARK)', () => {
   it('is the full-size sell after fees, less the exit slippage and network cost, never below zero', () => {
@@ -49,33 +48,27 @@ describe('the executable mark (RISK-MARK)', () => {
     expect(() => executableMark(m, 1n, { slippageBps: 0, exitCost: -1n })).toThrow(RangeError);
   });
 
-  it('marks a position from a fresh market, in micro-dollars at the SOL price, dated at the market', () => {
+  it('marks a position from a fresh market, in lamports with no SOL/USD price (SOL-BOOKS), dated at the market', () => {
     const p = marked(bought.pool).openPositions[0]!;
     const v = executableMark({ venue: 'pumpswap', pool: bought.pool, ctx: CTX }, bought.tokens, SETTINGS);
     if (!v.ok) throw new Error('no mark');
-    expect(p).toMatchObject({ mark: lamportsToMicroUsd(v.value as Lamports, PRICE, 'floor'), markAtMs: NOW - 300 });
+    expect(p).toMatchObject({ mark: v.value as Lamports, markAtMs: NOW - 300 });
     // Below the cost: fees both ways, slippage and the exit's network cost.
     expect(p.mark! < NOTIONAL).toBe(true);
     expect(p.mark! > (NOTIONAL * 9n) / 10n).toBe(true);
   });
 
-  it('keeps the mark null with no market, a stale or future market, no SOL price, or nothing held', () => {
+  it('keeps the mark null with no market, a stale or future market, or nothing held', () => {
     const nulls = [
       marked(null),
       marked(bought.pool, NOW - SETTINGS.maxAgeMs - 1),
       marked(bought.pool, NOW + 1),
-      markedHistory(history(), held(bought.pool), null, NOW, SETTINGS),
-      markedHistory(history(), held(bought.pool), { value: 0n as MicroUsd, atMs: NOW }, NOW, SETTINGS),
-      // A stale or future-dated SOL price (risk's freshness rule) values nothing.
-      markedHistory(history(), held(bought.pool), { value: PRICE, atMs: NOW - SETTINGS.maxAgeMs - 1 }, NOW, SETTINGS),
-      markedHistory(history(), held(bought.pool), { value: PRICE, atMs: NOW + 1 }, NOW, SETTINGS),
-      markedHistory(history(), () => undefined, SOL, NOW, SETTINGS),
-      markedHistory(history(), () => ({ quantity: 0n, market: { pool: bought.pool, ctx: CTX, atMs: NOW } }), SOL, NOW, SETTINGS),
+      markedHistory(history(), () => undefined, NOW, SETTINGS),
+      markedHistory(history(), () => ({ quantity: 0n, market: { pool: bought.pool, ctx: CTX, atMs: NOW } }), NOW, SETTINGS),
     ];
     for (const h of nulls) expect(h.openPositions[0]).toMatchObject({ mark: null, markAtMs: null });
     // Exactly maxAgeMs old is still fresh.
     expect(marked(bought.pool, NOW - SETTINGS.maxAgeMs).openPositions[0]!.mark).not.toBeNull();
-    expect(markedHistory(history(), held(bought.pool), { value: PRICE, atMs: NOW - SETTINGS.maxAgeMs }, NOW, SETTINGS).openPositions[0]!.mark).not.toBeNull();
   });
 
   it('is valued at the ladder\'s worst accepted slippage and that rung\'s network cost (ruling N1)', () => {
@@ -93,36 +86,31 @@ describe('the executable mark (RISK-MARK)', () => {
       throw new Error('no market');
     };
     const h = history();
-    expect(riskAccount(h, boom, SOL, NOW, SETTINGS, { fallback: true })).toBe(h);
-    expect(() => riskAccount(h, boom, SOL, NOW, SETTINGS, { fallback: false })).toThrow('no market');
-    expect(riskAccount(h, held(bought.pool), SOL, NOW, SETTINGS, { fallback: true })).toEqual(marked(bought.pool));
+    expect(riskAccount(h, boom, NOW, SETTINGS, { fallback: true })).toBe(h);
+    expect(() => riskAccount(h, boom, NOW, SETTINGS, { fallback: false })).toThrow('no market');
+    expect(riskAccount(h, held(bought.pool), NOW, SETTINGS, { fallback: true })).toEqual(marked(bought.pool));
   });
 });
 
 describe('when a valuation may latch R9 or R10 (RISK-LATCH review)', () => {
   const AGE = SETTINGS.maxAgeMs;
   const empty: AccountHistory = { ...history(), openPositions: [] };
-  it('only at a fresh SOL price with every open position marked and fresh', () => {
+  it('only with every open position marked and fresh (SOL-BOOKS: no SOL/USD price takes part)', () => {
     const m = marked(bought.pool);
     expect(m.openPositions[0]!.mark).not.toBeNull();
-    expect(latchable(m, SOL, NOW, AGE)).toBe(true);
-    // Nothing held: the SOL price alone decides.
-    expect(latchable(empty, SOL, NOW, AGE)).toBe(true);
-    // No SOL price, a stale one, or one stamped after now.
-    expect(latchable(m, null, NOW, AGE)).toBe(false);
-    expect(latchable(empty, { value: PRICE, atMs: NOW - AGE - 1 }, NOW, AGE)).toBe(false);
-    expect(latchable(empty, { value: PRICE, atMs: NOW + 1 }, NOW, AGE)).toBe(false);
-    expect(latchable(empty, { value: PRICE, atMs: NOW - AGE }, NOW, AGE)).toBe(true);
+    expect(latchable(m, NOW, AGE)).toBe(true);
+    // Nothing held: nothing to wait for.
+    expect(latchable(empty, NOW, AGE)).toBe(true);
     // An open position with no mark, a stale mark, or one stamped after now.
     const with_ = (mark: bigint | null, markAtMs: number | null) => ({ ...m, openPositions: m.openPositions.map((o) => ({ ...o, mark: mark as never, markAtMs })) });
-    expect(latchable(with_(null, null), SOL, NOW, AGE)).toBe(false);
-    expect(latchable(with_(1n, null), SOL, NOW, AGE)).toBe(false);
-    expect(latchable(with_(1n, NOW - AGE - 1), SOL, NOW, AGE)).toBe(false);
-    expect(latchable(with_(1n, NOW + 1), SOL, NOW, AGE)).toBe(false);
-    expect(latchable(with_(1n, NOW - AGE), SOL, NOW, AGE)).toBe(true);
+    expect(latchable(with_(null, null), NOW, AGE)).toBe(false);
+    expect(latchable(with_(1n, null), NOW, AGE)).toBe(false);
+    expect(latchable(with_(1n, NOW - AGE - 1), NOW, AGE)).toBe(false);
+    expect(latchable(with_(1n, NOW + 1), NOW, AGE)).toBe(false);
+    expect(latchable(with_(1n, NOW - AGE), NOW, AGE)).toBe(true);
     // A negative mark is no mark to core (a total-loss stand-in), so it never latches; zero is a real mark.
-    expect(latchable(with_(-1n, NOW), SOL, NOW, AGE)).toBe(false);
-    expect(latchable(with_(0n, NOW), SOL, NOW, AGE)).toBe(true);
+    expect(latchable(with_(-1n, NOW), NOW, AGE)).toBe(false);
+    expect(latchable(with_(0n, NOW), NOW, AGE)).toBe(true);
   });
 });
 
@@ -162,9 +150,9 @@ describe('what the mark changes in risk (limits unchanged)', () => {
 
   it('the kill line (R10) is judged on the mark: a near-total fall trips it, the position marked near cost does not', () => {
     const big = account({ openingEquity: usd('20'), openPositions: [{ mint: MINT_A, openedAtMs: NOW - 60_000, notional: usd('7'), mark: null, markAtMs: null }] });
-    const crashed = { ...big, openPositions: [{ ...big.openPositions[0]!, mark: usd('0.5') as MicroUsd, markAtMs: NOW - 300 }] };
+    const crashed = { ...big, openPositions: [{ ...big.openPositions[0]!, mark: usd('0.5'), markAtMs: NOW - 300 }] };
     expect(evaluateExit(baseInput({ account: crashed })).trips).toContain('kill_switch');
-    const nearCost = markedHistory(history(), held(bought.pool), SOL, NOW, SETTINGS);
+    const nearCost = markedHistory(history(), held(bought.pool), NOW, SETTINGS);
     expect(evaluateExit(baseInput({ account: nearCost })).trips).not.toContain('kill_switch');
   });
 

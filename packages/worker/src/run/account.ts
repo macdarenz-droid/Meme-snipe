@@ -13,9 +13,12 @@ export interface PaperTrade {
   readonly positionId: string;
   readonly mint: string;
   readonly openedAtMs: number;
-  readonly notional: MicroUsd;
+  /** SOL-BOOKS: q, the SOL the entry spent (the decision's `notional`), in lamports. */
+  notional: Lamports;
   closedAtMs: number | null;
+  /** The whole trade's net result in lamports: what risk counts (SOL-BOOKS). */
   netLamports: bigint | null;
+  /** The same in micro-dollars at the close's SOL price, for display only (null without a price). */
   netPnl: MicroUsd | null;
   stoppedOut: boolean;
   /** Net lamports of this trade already applied to the paper wallet. */
@@ -29,21 +32,29 @@ export interface PaperTrade {
    * RISK-PARTIAL: each partial sale's realized result (proceeds after its fees less its share of the basis), and the
    * tokens and net exit lamports those parts cover. Absent in files from before (no partial booked).
    */
-  partials?: { readonly atMs: number; readonly lamports: bigint; readonly pnl: MicroUsd }[];
+  partials?: { readonly atMs: number; readonly lamports: bigint }[];
   partialSold?: bigint;
   partialNet?: bigint;
 }
 
 export interface AccountState {
   readonly openedAtMs: number;
+  /** The bankroll B in micro-dollars, as configured. */
   readonly openingEquity: MicroUsd;
+  /**
+   * SOL-BOOKS: the SOL/USD price fixed at the first price the account saw. It converts B (and the policy's other dollar
+   * amounts, in risk) into lamports once; no later price moves a figure or a limit. Absent until that first price.
+   */
+  openingSolPrice?: MicroUsd;
+  /** 'sol' once every amount below is in lamports; absent in a file from before SOL-BOOKS (converted at the opening). */
+  books?: 'sol';
   /** The paper wallet in lamports: null until the first SOL/USD price converts the bankroll. */
   walletLamports: bigint | null;
   readonly trades: PaperTrade[];
   readonly entries: { readonly mint: string; readonly atMs: number }[];
   /** The paper wallet's one-time accounts were paid at its setup; absent in files from before (paid at the next start). */
   oneTimePaid?: boolean;
-  /** That setup as a realised cost: when, in lamports, and in micro-dollars at the setup SOL price (rounded up). */
+  /** That setup as a realised cost: when, in lamports (risk counts these), and in micro-dollars at the setup SOL price. */
   setup?: { readonly atMs: number; readonly lamports: bigint; readonly cost: MicroUsd };
   /**
    * Marked equity at the start of the Melbourne day and week (WORKER-1c): the first equity the worker saw at or after
@@ -51,14 +62,14 @@ export interface AccountState {
    */
   dayMark?: BoundaryMark;
   weekMark?: BoundaryMark;
-  /** The highest economic NAV seen since the last kill-switch re-arm (R10's NAV high-water mark reads it). */
-  navPeak?: { readonly atMs: number; readonly nav: MicroUsd };
+  /** The highest economic NAV seen since the last kill-switch re-arm (R10's NAV high-water mark reads it), in lamports. */
+  navPeak?: { readonly atMs: number; readonly nav: Lamports };
 }
 
 export interface BoundaryMark {
   readonly startMs: number;
   readonly atMs: number;
-  readonly equity: MicroUsd;
+  readonly equity: Lamports;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -76,11 +87,9 @@ const soldBasis = (basis: bigint, bought: bigint, sold: bigint): bigint => {
   return basis - (basis * left + bought - 1n) / bought;
 };
 
-/** Lamports in micro-dollars, a loss rounded up; no price: a gain counts as nothing and a loss as `whole` (the safe side). */
-const pnlUsd = (l: bigint, price: MicroUsd | null, whole: MicroUsd): MicroUsd => {
-  if (price === null) return (l >= 0n ? 0n : -whole) as MicroUsd;
-  return (l >= 0n ? lamportsToMicroUsd(l as Lamports, price, 'floor') : -lamportsToMicroUsd((-l) as Lamports, price, 'ceil')) as MicroUsd;
-};
+/** Lamports in micro-dollars for display, a loss rounded up. */
+const usdOf = (l: bigint, price: MicroUsd): MicroUsd =>
+  (l >= 0n ? lamportsToMicroUsd(l as Lamports, price, 'floor') : -lamportsToMicroUsd((-l) as Lamports, price, 'ceil')) as MicroUsd;
 
 const STOPS = new Set(['stop', 'trailing_stop', 'thesis_lost', 'liquidity']);
 const EXIT_REASONS = new Set(['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency']);
@@ -96,7 +105,7 @@ export class PaperAccount {
   constructor(file: StateFile<AccountState>, bankroll: MicroUsd, nowMs: number, oneTimeRent: bigint) {
     this.#file = file;
     this.#oneTimeRent = oneTimeRent;
-    this.#s = file.read({ openedAtMs: nowMs, openingEquity: bankroll, walletLamports: null, trades: [], entries: [] });
+    this.#s = file.read({ openedAtMs: nowMs, openingEquity: bankroll, books: 'sol', walletLamports: null, trades: [], entries: [] });
     this.#now = nowMs;
     file.write(this.#s);
   }
@@ -105,13 +114,35 @@ export class PaperAccount {
     return this.#s;
   }
 
-  /** Converts the bankroll into the paper wallet at the first known SOL price. */
+  /**
+   * At the first known SOL price: fixes it as the opening SOL price (SOL-BOOKS) and converts the bankroll into the paper
+   * wallet at it. Later prices change nothing here.
+   */
   price(solPrice: MicroUsd | null, nowMs: number = this.#now): void {
     if (solPrice === null || solPrice <= 0n) return;
-    if (this.#s.walletLamports !== null && this.#s.oneTimePaid === true) return;
-    if (this.#s.walletLamports === null) this.#s.walletLamports = microUsdToLamports(this.#s.openingEquity, solPrice, 'floor');
+    const opening = this.#s.openingSolPrice === undefined;
+    if (!opening && this.#s.walletLamports !== null && this.#s.oneTimePaid === true) return;
+    if (opening) this.#open(solPrice);
+    if (this.#s.walletLamports === null) this.#s.walletLamports = microUsdToLamports(this.#s.openingEquity, this.#s.openingSolPrice!, 'floor');
     this.#setUp(solPrice, nowMs);
     this.#file.write(this.#s);
+  }
+
+  /**
+   * SOL-BOOKS: fixes the opening SOL price. A file from before kept its marks, NAV peak and trade sizes in micro-dollars;
+   * they are converted once at this price, each rounded the tighter way (marks and the peak up, sizes down), so no
+   * line or cap loosens. Trade results are already in lamports (`netLamports`, each part's `lamports`).
+   */
+  #open(price: MicroUsd): void {
+    this.#s.openingSolPrice = price;
+    if (this.#s.books !== 'sol') {
+      const up = (v: bigint): Lamports => (v <= 0n ? (v as Lamports) : microUsdToLamports(v as MicroUsd, price, 'ceil'));
+      if (this.#s.dayMark !== undefined) this.#s.dayMark = { ...this.#s.dayMark, equity: up(this.#s.dayMark.equity) };
+      if (this.#s.weekMark !== undefined) this.#s.weekMark = { ...this.#s.weekMark, equity: up(this.#s.weekMark.equity) };
+      if (this.#s.navPeak !== undefined) this.#s.navPeak = { ...this.#s.navPeak, nav: up(this.#s.navPeak.nav) };
+      for (const t of this.#s.trades) t.notional = (t.notional <= 0n ? t.notional : microUsdToLamports(t.notional as unknown as MicroUsd, price, 'floor'));
+      this.#s.books = 'sol';
+    }
   }
 
   /**
@@ -168,7 +199,8 @@ export class PaperAccount {
     const sum = (purpose: 'entry' | 'exit', f: 'sol' | 'fees') => intents.filter((i) => i.intent.purpose === purpose).reduce((t, i) => t + i.fills.reduce((s, x) => s + x[f], 0n), 0n);
     if (r.purpose === 'entry') {
       const notionalReason = r.reasons.find((x) => /^notional \d+$/.test(x));
-      const notional = (notionalReason === undefined ? 0n : BigInt(notionalReason.slice('notional '.length))) as MicroUsd;
+      // SOL-BOOKS: the decision's notional is q in lamports.
+      const notional = (notionalReason === undefined ? 0n : BigInt(notionalReason.slice('notional '.length))) as Lamports;
       if (!this.#s.trades.some((t) => t.positionId === r.positionId)) {
         this.#s.trades.push({ positionId: r.positionId, mint: r.mint, openedAtMs: r.atMs, notional, closedAtMs: null, netLamports: null, netPnl: null, stoppedOut: false, booked: 0n, openSolPrice: solPrice });
       }
@@ -187,11 +219,9 @@ export class PaperAccount {
       const before = t.partialSold ?? 0n;
       const lamports = (exitNet - (t.partialNet ?? 0n)) - (soldBasis(basis, p.bought, p.sold) - soldBasis(basis, p.bought, before));
       if (p.sold !== before || exitNet !== (t.partialNet ?? 0n)) {
-        // No SOL price: the part's loss is its share of the whole cost in dollars, the notional and the entry fees (at
-        // the entry's own SOL-to-dollar rate, notional over entry SOL), rounded up (risk review, golden rule).
-        const den = p.bought * (p.cost > 0n ? p.cost : 1n);
-        const lostShare = p.bought <= 0n ? 0n : (t.notional * (p.cost > 0n ? basis : 1n) * (p.sold - before) + den - 1n) / den;
-        (t.partials ??= []).push({ atMs: r.atMs, lamports, pnl: pnlUsd(lamports, solPrice ?? t.openSolPrice ?? null, lostShare as MicroUsd) });
+        // SOL-BOOKS: the part is its lamports (proceeds after fees less its share of the basis, entry fees included);
+        // no SOL/USD price is needed, so there is no no-price path.
+        (t.partials ??= []).push({ atMs: r.atMs, lamports });
         t.partialSold = p.sold;
         t.partialNet = exitNet;
       }
@@ -199,8 +229,8 @@ export class PaperAccount {
     if (t !== undefined && p !== undefined && p.status === 'closed' && t.closedAtMs === null) {
       t.closedAtMs = r.atMs;
       t.netLamports = net;
-      // Valued at the close's SOL price; unknown price: valued as a total loss of the notional (the safe side).
-      t.netPnl = solPrice === null ? (-t.notional as MicroUsd) : (net >= 0n ? lamportsToMicroUsd(net as Lamports, solPrice, 'floor') : (-lamportsToMicroUsd((-net) as Lamports, solPrice, 'ceil') as MicroUsd));
+      // Risk counts `netLamports`; this dollar figure at the close's SOL price is for display only.
+      t.netPnl = solPrice === null ? null : usdOf(net, solPrice);
       t.stoppedOut = r.reasons.some((x) => STOPS.has(x));
       t.closeSolPrice = solPrice;
       t.exitReasons = r.reasons.filter((x) => EXIT_REASONS.has(x));
@@ -225,16 +255,18 @@ export class PaperAccount {
   }
 
   /** The account snapshot risk reads, with the ledger's held reservations and version read in one transaction. */
-  fact(ledger: Ledger, book: Book, latches: Latches, solPrice: MicroUsd | null, nowMs: number): AccountFact {
+  fact(ledger: Ledger, book: Book, latches: Latches, nowMs: number): AccountFact {
     const { version, value: held } = ledger.withSnapshot(() => ledger.heldExposure());
-    const closedTrades: ClosedTrade[] = this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).map((t) => ({
-      mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
-      partials: (t.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),
+    // SOL-BOOKS: every amount in lamports. Before the opening SOL price the history has none (0), which risk refuses (R1).
+    const openingSolPrice = this.#s.openingSolPrice ?? (0n as MicroUsd);
+    const closedTrades: ClosedTrade[] = this.#s.trades.filter((t) => t.closedAtMs !== null && t.netLamports !== null).map((t) => ({
+      mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netLamports! as Lamports, stoppedOut: t.stoppedOut,
+      partials: (t.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.lamports as Lamports })),
     }));
     // The wallet's setup rent is an account cost (RISK-1b `costs`): it lowers equity and counts toward the day's and
     // week's loss, and it is never a trade (R8, R11, R15 and statistics do not see it).
     const su = this.#s.setup;
-    const costs: AccountCost[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, kind: 'wallet_setup' }];
+    const costs: AccountCost[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.lamports as Lamports, kind: 'wallet_setup' }];
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'entry').reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);
@@ -243,14 +275,14 @@ export class PaperAccount {
       const sold = t?.partialSold ?? 0n;
       const full = p.cost + fees;
       const basis = (full - soldBasis(full, p.bought, sold)) as Lamports;
-      const notional = t === undefined ? (0n as MicroUsd) : (t.notional - (p.bought <= 0n ? 0n : (t.notional * sold) / p.bought)) as MicroUsd;
       return {
-        mint: p.mint, openedAtMs: t?.openedAtMs ?? nowMs, notional: solPrice === null ? notional : lamportsToMicroUsd(basis, solPrice, 'ceil'), mark: null, markAtMs: null,
-        partials: (t?.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),
+        mint: p.mint, openedAtMs: t?.openedAtMs ?? nowMs, notional: basis, mark: null, markAtMs: null,
+        partials: (t?.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.lamports as Lamports })),
       };
     });
     const history: AccountHistory = {
-      openingEquity: this.#s.openingEquity, openedAtMs: this.#s.openedAtMs, flows: [], closedTrades, costs, openPositions,
+      openingEquity: (openingSolPrice > 0n ? microUsdToLamports(this.#s.openingEquity, openingSolPrice, 'floor') : 0n) as Lamports,
+      openingSolPrice, openedAtMs: this.#s.openedAtMs, flows: [], closedTrades, costs, openPositions,
       // WORKER-1c: the boundary marks of this day and week (none recorded for them: null, and risk uses the realized
       // loss only), and the NAV peak since the last re-arm.
       markedAtDayStart: this.#s.dayMark !== undefined && this.#s.dayMark.startMs === melbourneDay(nowMs).start ? this.#s.dayMark.equity : null,
