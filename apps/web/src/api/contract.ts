@@ -37,6 +37,8 @@ export interface Envelope<T> {
   mode: Mode;
   asOf: Iso;
   data: T;
+  /** API-1: the server does not run this mode (data is null); the reason, for the record. Never shown as an error. */
+  notRunning?: string;
 }
 
 /** Paper and live data older than this shows as stale. A backtest is a finished run and never goes stale. */

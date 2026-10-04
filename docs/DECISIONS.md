@@ -482,6 +482,8 @@ Supervisor rulings:
   - `exitCapable`: `/health`'s exit_capable.
   - `alerts`: the engine's critical alerts since boot. Each code and subject is kept once, at its first sighting, and only the newest 50 are kept, in memory only.
   - `regime`: the latest regime evaluation (state, time, and each reason's code and input). The strategy evaluates the regime first for every candidate, so the latest candidate's evaluation is the current state as of its time. It is null before the first candidate.
+  - "Not running" (supervisor, from real use: the app showed "Server error" for 10 minutes after the owner visited Live or Backtest, because a paper-only worker answered those modes with 404). Every app path of a mode the worker does not run (`live`, `backtest`) now answers 200 with `{mode, asOf, data: null, notRunning}`. The app accepts exactly that shape: the connection counts it as a good answer, and sections show "Not running". Unknown modes and paths stay 404.
+  - The worker API has no `/health` and does not serve the dry-run evidence (only the host's stand-in did). ARCHITECTURE §12.4 and ops/README now say so: the evidence stays in the host index, which `zeroed-status` reads. Adding it to the API would be a new served data surface for no current reader.
 
   In the app schema the four fields are optional and strict: a worker without them still validates, and a malformed one is refused whole. The card shows a row only when a field proves it:
   - Entries shows `On` only with no halt reason, the regime on and no stopping flag. A halt reason the app does not name still reads `Off`.

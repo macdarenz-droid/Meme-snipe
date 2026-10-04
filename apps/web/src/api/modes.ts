@@ -1,6 +1,6 @@
 import { addUsd } from '../lib/money.ts';
 import { MIN_TRADES, MODES, type Envelope, type Mode, type Moded, type StatsView } from './contract.ts';
-import { DataError, iso, obj, oneOf, type Check } from './schema.ts';
+import { DataError, iso, obj, oneOf, str, type Check } from './schema.ts';
 
 export { DataError };
 
@@ -17,6 +17,11 @@ export const isMode = (m: unknown): m is Mode => typeof m === 'string' && (MODES
 export function checkEnvelope<T>(raw: unknown, mode: Mode, data: Check): Envelope<T> {
   if (raw && typeof raw === 'object' && 'mode' in raw && isMode(raw.mode) && raw.mode !== mode) {
     throw new DataError('mixed-modes', `response is ${raw.mode}, expected ${mode}`);
+  }
+  // A server that does not run this mode answers its paths with no data and the reason (API-1): exactly that shape.
+  if (raw && typeof raw === 'object' && Object.hasOwn(raw, 'notRunning')) {
+    obj({ mode: oneOf(mode), asOf: iso, data: oneOf(null), notRunning: str })(raw, '$');
+    return raw as Envelope<T>;
   }
   obj({ mode: oneOf(mode), asOf: iso, data })(raw, '$');
   walk(raw, mode, '$', false);

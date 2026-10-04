@@ -346,6 +346,10 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
   };
 };
 
+/** The app's other modes: this worker runs paper only, so their paths answer "not running" (API-1). */
+const OTHER_MODES = ['live', 'backtest'] as const;
+export const NOT_RUNNING = 'this server runs paper only';
+
 export type ApiEndpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'trades' | 'charts' | 'stats';
 const ENDPOINTS: readonly ApiEndpoint[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats'];
 
@@ -359,7 +363,13 @@ export const route = (path: string, inputs: () => ApiInputs): { readonly status:
   const m = /^\/api\/v1\/([a-z]+)\/([a-z]+)(?:\/(\d{4}-(?:0[1-9]|1[0-2])))?$/.exec(path);
   if (m === null) return { status: 404, body: { error: 'not found' } };
   const [, mode, endpoint, month] = m;
-  if (mode !== MODE) return { status: 404, body: { error: `this worker serves paper data only, not ${mode}` } };
+  if (mode !== MODE) {
+    // A mode this worker does not run (API-1): every app path of it answers, with no data and the reason, so the app
+    // shows "Not running" for that mode instead of a server error. Unknown modes and paths stay 404.
+    if (!OTHER_MODES.includes(mode as (typeof OTHER_MODES)[number])) return { status: 404, body: { error: 'not found' } };
+    if (!(endpoint === 'calendar' ? month !== undefined : month === undefined && ENDPOINTS.includes(endpoint as ApiEndpoint))) return { status: 404, body: { error: 'not found' } };
+    return { status: 200, body: { mode, asOf: iso(inputs().nowMs), data: null, notRunning: NOT_RUNNING } };
+  }
   const i = inputs();
   if (endpoint === 'calendar' && month !== undefined) return { status: 200, body: { mode: MODE, asOf: asOf(i), data: views.calendar(i, month) } };
   if (month !== undefined || !ENDPOINTS.includes(endpoint as ApiEndpoint)) return { status: 404, body: { error: 'not found' } };
