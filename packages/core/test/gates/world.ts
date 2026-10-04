@@ -144,7 +144,7 @@ export const passingFacts = (): Facts => {
   const m = mintFixture(MINT);
   // FEED-1's creates stream started 30 days ago and has had no gap (GATE-1b coverage).
   put('coverage:creates:start', { value: { fromSlot: SLOT - 6_000_000n, via: 'logs:creates' }, source: 'worker', backfilled: false, seq: 1 }, at(T - 30 * DAY_MS, SLOT - 6_000_000n));
-  // A reviewed rug labeller (RUG-1, not built yet) covering the same 30 days.
+  // Rug-label coverage from the RUG-1 labeller (src/gates/rug-labeller.ts) over the same 30 days.
   put('coverage:rugs:start', { value: { fromSlot: SLOT - 6_000_000n, via: 'rug-labeller' }, source: 'worker', backfilled: false, seq: 2 }, at(T - 30 * DAY_MS + 1, SLOT - 5_999_999n));
   // A PumpSwap trade on the pool after migration, carrying the 2026-10-02 upgrade's 8-byte tail as zeros (GATE-1c).
   put(`pump_amm:BuyEvent:${POOL_ADDRESS}`, tradeEvent('BuyEvent', 8, '0000000000000000', SLOT - 1_500n, 'SigBuy1'), at(T - 10 * MINUTE_MS, SLOT - 1_500n));

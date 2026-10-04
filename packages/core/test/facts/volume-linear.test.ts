@@ -1,8 +1,15 @@
 // FACTS-1d review: the producer's chain volume is kept one row at a time. A restart loads the whole persisted window at
 // once (365 days, 8,760 rows), so the cost must grow with the rows, not with their square, and the answer must stay
 // exactly `dailyChainVolume`'s.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { TRIAL_POLICY } from '../../src/config/index.ts';
+
+// The whole-window rule, counted: the producer must never fall back to it on a load.
+const whole = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('../../src/facts/volume.ts', async (actual) => {
+  const m = await actual<typeof import('../../src/facts/volume.ts')>();
+  return { ...m, dailyChainVolume: (...a: Parameters<typeof m.dailyChainVolume>) => (whole.calls++, m.dailyChainVolume(...a)) };
+});
 import { CURVE_VOLUME_KEY } from '../../src/gates/index.ts';
 import { ChainVolumeDays, RAW, dailyChainVolume, producerOptions, type VolumeHour } from '../../src/facts/index.ts';
 import { FactWorld, offchain } from './helpers.ts';
@@ -11,6 +18,9 @@ const DAY = 86_400_000;
 const HOUR = 3_600_000;
 const D0 = 20_654; // 2026-07-20
 const KEEP = producerOptions(TRIAL_POLICY).volumeKeepMs;
+const ORIGINAL_ADD = ChainVolumeDays.prototype.add;
+/** Field reads a row may cost on a load: parsing, the store and ChainVolumeDays' few visits (measured: 11). */
+const READS_PER_ROW = 16;
 const window = (days: number): VolumeHour[] =>
   Array.from({ length: days * 24 }, (_, i) => ({ hourStartMs: D0 * DAY + i * HOUR, lamports: BigInt(1 + (i % 97)) * 1_000_000_000n, covered: true }));
 
@@ -79,16 +89,43 @@ describe('ChainVolumeDays', () => {
     expect(v.steps).toBeLessThanOrEqual(2 * rows.length);
   });
 
-  it('the producer loads a 365-day window at once in well under a second, and releases one fact per completed day', () => {
-    const rows = window(365);
-    const w = new FactWorld(producerOptions(TRIAL_POLICY));
-    const at = (D0 + 366) * DAY;
-    const t0 = performance.now();
-    rows.forEach((r, i) => w.push(offchain(RAW.volumeHour, r, BigInt(1 + i), at)));
-    const ms = performance.now() - t0;
-    expect((w.last(CURVE_VOLUME_KEY) as { days: unknown[] }).days.length).toBe(365);
-    expect(w.facts(CURVE_VOLUME_KEY).length).toBe(365);
-    // Measured about 0.3 s here; the old rule (every kept hour re-summed on each row) took about 9 s. 3 s leaves room.
-    expect(ms).toBeLessThan(3_000);
+  it('the producer loads a 365-day window at once in linear work, and releases one fact per completed day', () => {
+    // Counted, not timed, so a busy machine cannot fail it. Every field read of every hour row the producer is handed
+    // is counted, wherever it happens (the producer, ChainVolumeDays, dailyChainVolume or any other walk over kept
+    // rows), and the producer's own ChainVolumeDays is captured through its add. The old rule (every kept hour
+    // re-summed on each row) reads about rows² / 2 fields, so doubling the rows would quadruple the reads.
+    const load = (n: number) => {
+      const seen = new Set<ChainVolumeDays>();
+      const add = vi.spyOn(ChainVolumeDays.prototype, 'add').mockImplementation(function (this: ChainVolumeDays, r: VolumeHour) {
+        seen.add(this);
+        return ORIGINAL_ADD.call(this, r);
+      });
+      const days = vi.spyOn(ChainVolumeDays.prototype, 'days');
+      try {
+        const reads = { n: 0 };
+        const rows = window(n).map((r) => Object.defineProperties({}, Object.fromEntries(Object.entries(r).map(([k, v]) => [k, { enumerable: true, get: () => (reads.n++, v) }]))) as VolumeHour);
+        const w = new FactWorld(producerOptions(TRIAL_POLICY));
+        const at = (D0 + n + 1) * DAY;
+        whole.calls = 0;
+        rows.forEach((r, i) => w.push(offchain(RAW.volumeHour, r, BigInt(1 + i), at)));
+        expect((w.last(CURVE_VOLUME_KEY) as { days: unknown[] }).days.length).toBe(n);
+        expect(w.facts(CURVE_VOLUME_KEY).length).toBe(n);
+        // One incremental add a row, through one instance, the days listed once a released fact, no whole-window sum.
+        expect(whole.calls).toBe(0);
+        expect(seen.size).toBe(1);
+        expect(add).toHaveBeenCalledTimes(rows.length);
+        expect(days).toHaveBeenCalledTimes(n);
+        expect([...seen][0]!.steps).toBeLessThanOrEqual(2 * rows.length);
+        return { rows: rows.length, reads: reads.n };
+      } finally {
+        add.mockRestore();
+        days.mockRestore();
+      }
+    };
+    const half = load(183);
+    const full = load(365);
+    expect(full.reads).toBeLessThanOrEqual(READS_PER_ROW * full.rows);
+    // Twice the rows (to within the one-row rounding of 183 → 365 days) is twice the work, never four times.
+    expect(full.reads / half.reads).toBeLessThanOrEqual(2.05);
   });
 });
