@@ -16,6 +16,7 @@ import {
   type DashboardApi,
   type DayRecord,
   type DecisionRecord,
+  type DiscoveredView,
   type Envelope,
   type ExitReason,
   type FunnelView,
@@ -470,6 +471,17 @@ export interface FixtureOptions {
 }
 
 /** The worker API served from the data above. Each call returns a fresh copy. */
+/** Tokens the bot is watching, timed from `now` (made up; paper only, other modes watch nothing). */
+export function fixtureDiscovered(mode: Mode, now = Date.now()): DiscoveredView {
+  const checks = ['passed', 'failed', 'missing'] as const;
+  const tokens = mode !== 'paper' ? [] : Array.from({ length: 6 }, (_, i) => ({
+    mode, mint: FAKE_MINT(700 + i), symbol: i === 5 ? null : `FAKE${i + 1}`, migratedAt: new Date(now - (i + 1) * 7 * 60_000).toISOString(),
+    venue: 'PumpSwap' as const, liquidityUsd: i === 4 ? null : fromMicro(BigInt(38_000 + i * 9_100) * 1_000_000n),
+    checks: checks[i % 3]!, checkedAt: i === 5 ? null : new Date(now - (i + 2) * 1000).toISOString(),
+  }));
+  return { mode, tokens };
+}
+
 export function fixtureApi(opts: FixtureOptions = {}): DashboardApi {
   const wrap = <T>(mode: Mode, data: T): Promise<Envelope<T>> => {
     let copy = structuredClone(data) as T;
@@ -485,6 +497,7 @@ export function fixtureApi(opts: FixtureOptions = {}): DashboardApi {
     trades: (m) => wrap(m, [...TRADES[m]].reverse()),
     charts: (m) => wrap(m, charts(m)),
     stats: (m) => wrap(m, stats(m)),
+    discovered: (m) => wrap(m, fixtureDiscovered(m)),
     backtestReport: () => wrap('backtest', REPORT),
   };
 }

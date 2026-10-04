@@ -12,7 +12,7 @@ import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 /** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
 const HELD = { heldPoolFacts: true } as const;
 
-const ENDPOINTS: Exclude<Endpoint, 'calendar'>[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats'];
+const ENDPOINTS: Exclude<Endpoint, 'calendar'>[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats', 'discovered'];
 
 describe('the app API (UI-2 contract)', () => {
   it('every endpoint of a worker with a closed paper trade and an open one passes the app\'s strict paper schema', async () => {
@@ -46,6 +46,12 @@ describe('the app API (UI-2 contract)', () => {
     expect(stats.trades).toBe(trades.length);
     const pos = bodies['position']!.data as { mint: string; exit: string } | null;
     if (pos !== null) expect(pos.mint).toBe(MINT);
+    // APP-HOME: the candidate the worker watched is listed, its pool read and its hard gates passed (it entered).
+    const discovered = bodies['discovered']!.data as { tokens: { mint: string; liquidityUsd: string | null; checks: string; checkedAt: string | null; venue: string }[] };
+    const tok = discovered.tokens.find((t) => t.mint === MINT)!;
+    expect(tok).toMatchObject({ venue: 'PumpSwap', checks: 'passed' });
+    expect(tok.liquidityUsd).not.toBeNull();
+    expect(tok.checkedAt).not.toBeNull();
     await h.worker.stop();
   });
 
