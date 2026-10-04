@@ -135,6 +135,8 @@ const MS_PER_HOUR = MS_PER_DAY / 24;
 /** Level of the SPA test when it gates G1 (one test over the whole registry). */
 const SPA_ALPHA = 0.05;
 const COVERAGE_WINDOW = 100;
+/** How far the judged dry-run data may end from G3's registered end (inputs are cut at it). */
+export const G3_END_TOLERANCE_MS = MS_PER_HOUR / 60;
 
 // ---- helpers ----------------------------------------------------------------------------------------------------
 
@@ -548,12 +550,13 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     const required = e.requirement!.requiredTrades;
     c.add(`requirement ${u.universe}`, required >= computed,
       `frozen ${required} trades (need >= max(${th.minTradesFloor}, simulated n_power ${u.power.nPower}, closed form ${closed}) = ${computed})`);
-    // The frozen days count too; they never lower the gate's MIN_DAYS.
-    const days = Math.max(MIN_DAYS, e.requirement!.requiredDays);
+    // The frozen days are the day requirement; they may not sit below the gate's MIN_DAYS.
+    const days = e.requirement!.requiredDays;
+    c.add(`requirement days ${u.universe}`, days >= MIN_DAYS, `frozen ${days} entry days (need >= ${MIN_DAYS})`);
     const ready = holdoutReady(e, required, days);
     c.add(`sample ${u.universe}`, ready,
       `${e.counts!.entries} sealed entries on ${e.counts!.entryDays} days at the cutoff (need >= ${required}, on >= ${days} days)`);
-    return { u, e, required, ready, fits: required >= computed };
+    return { u, e, required, ready, fits: required >= computed && days >= MIN_DAYS };
   });
   if (sized.some((x) => !x.fits)) return failWith();
   // A window short at its cutoff is a failed attempt: it is recorded as spent ('short') and is "not proven".
@@ -578,7 +581,7 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
 
   for (const { u, e, required } of entering) {
     const step = openHoldout(registry, e.holdoutId, {
-      configId: u.configId, ledgerHash: u.ledgerHash, requiredTrades: required, minDays: MIN_DAYS, nowMs: input.nowMs, nowDay, g1Passed: u.g1Passed,
+      configId: u.configId, ledgerHash: u.ledgerHash, requiredTrades: required, minDays: e.requirement!.requiredDays, nowMs: input.nowMs, nowDay, g1Passed: u.g1Passed,
     });
     registry = step.registry;
     if (!step.ok) {
@@ -644,6 +647,7 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
 export interface G3Input {
   /** The run is the single qualifying dry run (on the VPS, same commit; ARCHITECTURE.md §15), not a rehearsal. */
   readonly qualifyingRun: boolean;
+  /** Hours from dryRunStartMs to the registered end: every input below is cut at registration.evaluateAtMs. */
   readonly dryRunHours: number;
   /** Net returns of the dry-run paper trades (the candidates live kept). */
   readonly dryRunReturns: readonly number[];
@@ -798,11 +802,16 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   c.add('registration', input.registration.registeredAtMs <= input.dryRunStartMs,
     `agreement plan registered at ${input.registration.registeredAtMs}, run started at ${input.dryRunStartMs} (need registered before the run)`);
   c.add('duration', input.dryRunHours >= th.minHours, `${fmt(input.dryRunHours)} h (need >= ${th.minHours})`);
-  // G3 is not evaluated before its registered end: a run judged early could stop on a good stretch.
+  // G3 is judged at its registered end, neither earlier (a run judged early could stop on a good stretch) nor later (a
+  // run judged late could wait for one). The inputs are cut at evaluateAtMs (the G3 report tool does the cut); the
+  // judged data must end there, within G3_END_TOLERANCE_MS.
   const runEndMs = input.dryRunStartMs + input.dryRunHours * MS_PER_HOUR;
-  c.add('registered end', input.registration.evaluateAtMs >= input.dryRunStartMs + th.minHours * MS_PER_HOUR && runEndMs >= input.registration.evaluateAtMs,
-    `run ends ${runEndMs}, registered end ${input.registration.evaluateAtMs} (need the run to reach it, and it at least ${th.minHours} h after the start)`);
-  if (runEndMs < input.registration.evaluateAtMs) extend.add('registered end');
+  const endAt = input.registration.evaluateAtMs;
+  const reached = runEndMs >= endAt - G3_END_TOLERANCE_MS;
+  const cut = runEndMs <= endAt + G3_END_TOLERANCE_MS;
+  c.add('registered end', endAt >= input.dryRunStartMs + th.minHours * MS_PER_HOUR && reached && cut,
+    `run ends ${runEndMs}, registered end ${endAt} (need the judged data to end there within ${(G3_END_TOLERANCE_MS / MS_PER_HOUR) * 60} min, cut at it, and it at least ${th.minHours} h after the start)`);
+  if (!reached) extend.add('registered end');
   c.add('parity', input.parityTestPassed, input.parityTestPassed ? 'parity passed on the recorded dry-run data' : 'parity failed on the recorded dry-run data');
 
   // Paper outcomes against the holdout's expected distribution: the mean and the severe-outcome share.

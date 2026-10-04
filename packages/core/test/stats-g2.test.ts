@@ -110,6 +110,11 @@ describe('sealed holdout registry', () => {
     expect(freezeRequirement(sealed, 'h1', { requiredTrades: 330, requiredDays: 10, nPower: 300, nPowerSeed: 7 }).ok).toBe(false);
     expect(sealed.entries[0]!.requirement).toEqual({ requiredTrades: 330, requiredDays: 10, nPower: 300, nPowerSeed: 7 });
   });
+  test('M6: after a G1 fail the seal stays closed, unburned, even when ready and past the tail', () => {
+    const r = open(sealed, { g1Passed: false });
+    expect(r).toMatchObject({ ok: false, reason: expect.stringMatching(/stays sealed: G1 did not pass for c1/) });
+    expect(r.registry.entries[0]).toMatchObject({ seal: 'sealed', burned: false, burnReason: null, openedAtMs: null });
+  });
   test('sealing stores hash and counts; an identical re-run is fine, a changed one burns', () => {
     expect(sealed.entries[0]).toMatchObject({ seal: 'sealed', ledgerHash: 'H', counts, burned: false });
     expect(sealHoldout(sealed, 'h1', { configId: 'c1', ledgerHash: 'H', counts }).ok).toBe(true);
