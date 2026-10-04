@@ -8,7 +8,7 @@ import type { LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
 import { applyBookEvent, type Book, type BookConfig, type BookEvent, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports, MicroUsd } from '../../../core/src/units/index.ts';
-import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, reservationOf, universeOfKey } from '../engine/strategy.ts';
+import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, STAGE_PREFIX, reservationOf, universeOfKey } from '../engine/strategy.ts';
 
 /** Open intents for the host's update gate: intents not finished (`open_intents`, ops/README.md). */
 export const openIntents = (book: Book): number => Object.values(book.intents).filter((s) => !isTerminal(s)).length;
@@ -73,7 +73,9 @@ export const journalFields = (r: LogRecord): Readonly<Record<string, unknown>> |
     const typed = r.reasons.find((x) => x.startsWith(GATE_REASONS_PREFIX));
     // WORKER-1e: the S0 diagnostic parts the decision relied on, named on its line.
     const diag = r.reasons.find((x) => x.startsWith(S0_DIAGNOSTIC_PREFIX));
-    const reasons = r.reasons.filter((x) => x !== typed && x !== diag);
+    // SUMMARY-FUNNEL: where a reject was made (strategy.ts `RejectStage`), journaled as its own field.
+    const stage = r.reasons.find((x) => x.startsWith(STAGE_PREFIX));
+    const reasons = r.reasons.filter((x) => x !== typed && x !== diag && x !== stage);
     const reject = action === null && reasons[0] === 'reject';
     let gateReasons: unknown = null;
     if (typed !== undefined) {
@@ -89,6 +91,7 @@ export const journalFields = (r: LogRecord): Readonly<Record<string, unknown>> |
       result: r.result, ...(r.reason === undefined ? {} : { refused: r.reason }), event: r.eventId,
       reasons: reasons.length > 0 ? reasons : ['no reason given'],
       ...(reject ? { gate_reasons: gateReasons ?? [] } : {}),
+      ...(reject && stage !== undefined ? { stage: stage.slice(STAGE_PREFIX.length) } : {}),
       ...(diag === undefined ? {} : { s0_diagnostic: diag.slice(S0_DIAGNOSTIC_PREFIX.length).split(',') }),
     };
   }

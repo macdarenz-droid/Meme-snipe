@@ -383,7 +383,7 @@ export const until = async (m: Market, maxMs: number, ready: () => boolean, each
 };
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
-export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[]; readonly coverageAt?: number } = {}): Promise<Market> => {
+export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[]; readonly coverageAt?: number; readonly bars?: number } = {}): Promise<Market> => {
   const m = new Market(h, { heldPoolFacts: o.heldPoolFacts ?? false });
   m.withFees = o.fees ?? true;
   m.omit = new Set(o.omit ?? []);
@@ -407,8 +407,10 @@ export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; re
   h.timers.set(T - 20 * 60_000);
   m.slot();
   m.fact(migrationKey(MINT), facts.get(migrationKey(MINT))!.value);
-  for (let k = 0; k < 20; k++) {
-    h.timers.set(T - (20 - k) * 60_000);
+  // `bars` minute pool facts (default 20, enough for the ATR), the last a minute before T.
+  const bars = o.bars ?? 20;
+  for (let k = 0; k < bars; k++) {
+    h.timers.set(T - (bars - k) * 60_000);
     m.slot();
     m.pool(1_000_000n + BigInt((k % 3) * 2_000));
     await m.run(2_500);

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { transactionEvents } from '../../core/src/chain/index.ts';
 import { coverageGaps, rejections } from '../../runner/src/quota.ts';
+import { REJECT_STAGES } from '../src/engine/strategy.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import type { JournalLine } from '../../runner/src/contract.ts';
 import { CoverageJournal } from '../src/run/coverage-journal.ts';
@@ -131,8 +132,15 @@ describe('typed gate_reasons and the health fields', () => {
     expect(rejects.length).toBeGreaterThan(0);
     for (const r of rejects) {
       expect(Array.isArray(r['gate_reasons'])).toBe(true);
-      for (const g of r['gate_reasons'] as { gate: string; code: string; detail: string }[]) expect(g).toEqual({ gate: expect.any(String), code: expect.any(String), detail: expect.any(String) });
-      expect((r.reasons ?? []).some((x) => x.startsWith('gate_reasons '))).toBe(false);
+      for (const g of r['gate_reasons'] as Record<string, unknown>[]) {
+        expect(g).toMatchObject({ gate: expect.any(String), code: expect.any(String), detail: expect.any(String) });
+        // SUMMARY-FUNNEL: the fact and the gate that needed it, when the reason has them; nothing else.
+        expect(Object.keys(g).every((k) => ['gate', 'code', 'detail', 'input', 'needed_by'].includes(k))).toBe(true);
+        if ('input' in g) expect(g['input']).toEqual(expect.stringMatching(/^[a-z-]+$/));
+        if ('needed_by' in g) expect(g['needed_by']).toEqual(expect.stringMatching(/^H\d+$/));
+      }
+      expect(REJECT_STAGES).toContain(r['stage']);
+      expect((r.reasons ?? []).some((x) => x.startsWith('gate_reasons ') || x.startsWith('stage '))).toBe(false);
     }
     expect(decisions.some((l) => l['action'] === 'enter')).toBe(true);
     expect(Object.keys(rejections(decisions).by_reason)).toEqual(expect.arrayContaining(['regime:unknown']));
