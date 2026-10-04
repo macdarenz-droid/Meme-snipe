@@ -180,6 +180,18 @@ describe('crash-site guarantees (review of #209)', () => {
     expect(site).toMatch(/^Error at packages\/worker\/test\/restart-alert\.test\.ts:\d+$/);
   });
 
+  it('no frame is read when the head no longer matches, or from a line that is not an "at" frame', () => {
+    // The message changed after .stack was read: the head no longer matches, so nothing after it is trusted.
+    const changed = new Error('x\n    at (packages/k.ts:1)');
+    void changed.stack;
+    changed.message = 'changed';
+    expect(crashSite(changed)).toBe('Error at no frame in packages/');
+    // A head that matches, then only a "Caused by:" line holding a packages path: not a frame.
+    const caused = new Error('m');
+    caused.stack = 'Error: m\nCaused by: packages/z.ts:2';
+    expect(crashSite(caused)).toBe('Error at no frame in packages/');
+  });
+
   it('an event key keeps its kind: ids and long segments are left out', () => {
     expect(eventKind(`logs:pump:CreateEvent:${'M'.repeat(44)}`)).toBe('logs:pump:CreateEvent');
     expect(eventKind(`pool:${'a'.repeat(30)}:state`)).toBe('pool:state');
