@@ -9,7 +9,13 @@ import { NO_LATCHES, melbourneWeek, riskSnapshot } from '../../core/src/risk/ind
 import { attemptFee } from '../../core/src/fills/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import type { Book } from '../../core/src/lifecycle/index.ts';
+import { positionId, type IntentId } from '../../core/src/domain/index.ts';
+import { OFF_CHAIN, type LogRecord } from '../../core/src/engine/index.ts';
+import type { BookEvent } from '../../core/src/lifecycle/index.ts';
+import { raw } from '../../core/src/units/index.ts';
+import { attempt as fxAttempt, entryToSubmitted, fill as fx, on, quote, sig } from '../../core/test/fixtures.ts';
 import { PaperAccount, type PaperLegs, accountFile } from '../src/run/account.ts';
+import { Desk } from '../src/run/desk.ts';
 import { type ApiInputs, views } from '../src/run/api.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
@@ -327,5 +333,44 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     account.settle(book, legsOf([...done, pending]), PRICE, start + 1_000);
     expect(Object.keys(account.state.strayFees!)).toEqual(['a']);
     expect(account.state.strayFolded).toBeUndefined();
+  });
+});
+
+describe('a late-landing sell reaches the paper account (risk review of #133)', () => {
+  it('a sell booked by orphan_fill after its exit ended closes the trade, as a reconcile would', () => {
+    // A backtest ledger takes the reservation as an event; the paper one only through the risk snapshot (not under test).
+    const ledger = openLedger(join(tempState(), 'ledger.sqlite'), 'backtest');
+    const filled: { purpose: string; positionId: string; closed: boolean }[] = [];
+    const desk = new Desk({
+      ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
+      journal: () => undefined, report: () => 'world#unused', accountChanged: () => undefined, intentsChanged: () => undefined,
+      reserved: () => undefined, diverged: () => undefined,
+      filled: (r) => void filled.push({ purpose: r.purpose, positionId: r.positionId, closed: r.book.positions[r.positionId]?.status === 'closed' }),
+    });
+    const E1 = 'e1' as IntentId;
+    const X1 = 'x1' as IntentId;
+    const status = (id: IntentId, n: number, result: 'succeeded' | 'not_found', h: bigint) =>
+      on(id, { type: 'status', signature: sig(n), result, commitment: result === 'succeeded' ? 'finalized' : null, blockHeight: h, searchedHistory: true });
+    const events: BookEvent[] = [
+      ...entryToSubmitted(1, 1_000n),
+      status(E1, 1, 'succeeded', 900n),
+      on(E1, { type: 'reconcile', fills: [fx(E1, 1, 1_000n)], blockHeight: 900n }),
+      // The whole holding is sold: the exit expires unseen, ends, then its sell is found landed.
+      { type: 'trigger_exit', positionId: positionId('p1'), reasons: ['stop'], intentId: X1, quantity: raw(1_000n) },
+      on(X1, { type: 'prepare', quote }),
+      on(X1, { type: 'sign', attempt: fxAttempt(X1, 11, 2_500n) }),
+      on(X1, { type: 'submit' }),
+      status(X1, 11, 'not_found', 2_501n),
+      on(X1, { type: 'reconcile', fills: [], blockHeight: 2_501n }),
+      on(X1, { type: 'abandon' }),
+      status(X1, 11, 'succeeded', 2_600n),
+      { type: 'orphan_fill', fill: fx(X1, 11, 1_000n, 30_000_000n) },
+    ];
+    const at = { slot: 1n, txIndex: OFF_CHAIN, ixIndex: 0, receivedAt: T };
+    desk.consume(events.map((event, seq) => ({ type: 'world', seq, at, eventId: `w${seq}`, event, result: 'applied', effects: [] }) as unknown as LogRecord));
+    expect(desk.illegal + desk.ledgerRefusals).toBe(0);
+    expect(desk.book.positions[positionId('p1')]?.status).toBe('closed');
+    expect(filled).toEqual([{ purpose: 'entry', positionId: 'p1', closed: false }, { purpose: 'exit', positionId: 'p1', closed: true }]);
+    ledger.close();
   });
 });

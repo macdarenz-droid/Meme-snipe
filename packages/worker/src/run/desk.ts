@@ -152,11 +152,17 @@ export class Desk {
     this.#d.intentsChanged(openIntents(this.#book));
   }
 
-  /** A reconcile that booked fills: the `entry` or `exit` line (after its `simulation` line) and the trade record. */
+  /**
+   * A reconcile that booked fills, or a late-landing sell booked after its exit ended (`orphan_fill`): the `entry` or
+   * `exit` line (after its `simulation` line) and the trade record. A late buy opens its own position, which is not a
+   * paper trade (DECISIONS, PAPER-1).
+   */
   #fills(before: Book, event: BookEvent, ts: number): void {
-    if (event.type !== 'intent' || event.event.type !== 'reconcile') return;
-    const s = this.#book.intents[event.intentId];
-    const was = before.intents[event.intentId];
+    const id = event.type === 'intent' && event.event.type === 'reconcile' ? event.intentId
+      : event.type === 'orphan_fill' && this.#book.intents[event.fill.intentId]?.intent.purpose === 'exit' ? event.fill.intentId : null;
+    if (id === null) return;
+    const s = this.#book.intents[id];
+    const was = before.intents[id];
     if (s === undefined || s.fills.length === 0 || (was !== undefined && was.fills.length === s.fills.length)) return;
     const purpose = s.intent.purpose;
     const pid = s.intent.positionId;
