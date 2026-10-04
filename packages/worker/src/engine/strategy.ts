@@ -327,7 +327,8 @@ export class LiveStrategy implements Strategy {
     const due = this.#due;
     this.#due = new Map();
     if (e.key === HALT_KEY) this.#seedWait(unwrap(e.value));
-    if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
+    // Released in order (the engine refuses a late event before the strategy sees it): the latest is the last.
+    this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);

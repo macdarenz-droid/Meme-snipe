@@ -58,9 +58,17 @@ describe('PERSIST-1 in the worker', () => {
     expect(requests[0]!.close).toEqual({ via: VIA, fromSlot: asOf!.slot });
     // The index came back from the file (no create was seen by this process), and the restore is the seed decision.
     expect(h2.worker.strategy.deployers.factFor(DEV, { slot: 1n << 40n, txIndex: 0, ixIndex: 0, receivedAt: timers.now() }, 0).mints.map((x) => x.mint)).toEqual([MINT]);
+    // The labeller's tables came back as saved (this process saw no launch of its own).
+    expect(h2.worker.strategy.persistable(0)?.labeller).toEqual(saved.ok ? saved.labeller.snapshot() : null);
     const seeds = journal(stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision' && /^seed/.test(((l['reasons'] as string[]) ?? [])[0] ?? ''));
     expect(seeds.map((l) => (l['reasons'] as string[]).slice(0, 2))).toEqual([['seed', expect.stringMatching(/^saved state restored/)]]);
     await h2.worker.stop();
+    // The next save carries the restored coverage history too: boot 1's watch start and the restart gap on it.
+    const second = loadState(join(stateDir, PERSIST_FILE), RUG_CONFIG);
+    expect(second.ok).toBe(true);
+    const cov = second.ok ? second.coverage.map((e) => ({ key: e.key, v: (e.value as { value: Record<string, unknown> }).value })) : [];
+    expect(cov.filter((c) => c.key === 'coverage:creates:start' && c.v['via'] === VIA).length).toBeGreaterThanOrEqual(2);
+    expect(cov).toContainEqual({ key: 'coverage:creates:gap', v: expect.objectContaining({ reason: 'restart', via: VIA, fromSlot: asOf!.slot }) });
     // Replay parity: the restored state travels in the recorded seed fact, so a replay of this boot rebuilds it.
     const dir = join(stateDir, 'recorder', h2.worker.boot, 'days');
     const frames = readdirSync(dir).flatMap((d) => readdirSync(join(dir, d)).filter((f) => /^frames-/.test(f)).map((f) => zstdDecompressSync(readFileSync(join(dir, d, f))).toString('utf8')))
