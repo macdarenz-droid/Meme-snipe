@@ -18,7 +18,8 @@
 // z_jb < −√(2·ln ln T), else 0; T_boot = max(0, max √T·(mean(d*) − mean(d) + μc)/ω).
 // Bootstrap: one stationary-bootstrap index sequence per replicate (Politis & Romano, JASA 89(428), 1994) applied to
 // every variant and S0 alike, drawn within each registered regime (a block never crosses a regime boundary; each regime
-// keeps its registered number of days, so its weight). Expected block lengths 3, 5 and 7 days; promotion uses the
+// keeps its registered number of days, so its weight); a regime shorter than the longest block is first merged into a
+// neighbour (mergeShortRegimes). Expected block lengths 3, 5 and 7 days; promotion uses the
 // largest p of the three, and a variant passes only if it passes at all three.
 // Support: variants active on fewer than SPA_MIN_ACTIVE_DAYS days (from activity counts, decided before outcomes) are
 // left out of selection; an all-zero series is never active. Every ω is floored at the registered SE floor, applied
@@ -28,6 +29,26 @@ import { nextInt, type Rng } from './rng.ts';
 
 /** Expected block lengths in days; promotion takes the largest p across them. */
 export const SPA_BLOCK_LENGTHS = [3, 5, 7] as const;
+/**
+ * Registered before any data (STATS-1e ruling): a regime shorter than the longest expected block is merged, for
+ * resampling only, into its preceding neighbour, or into the following one when it is first; repeated until every
+ * regime is at least that long or one remains. No day is dropped. On the real practice layout (07-20 .. 09-21 with B2
+ * on day 1, B3 on day 51 and B4 on day 54) the regimes [0,1) [1,51) [51,54) [54,64) resample as [0,54) [54,64).
+ */
+export const mergeShortRegimes = (
+  regimes: readonly { readonly from: number; readonly to: number }[],
+  minDays: number = Math.max(...SPA_BLOCK_LENGTHS),
+): { from: number; to: number }[] => {
+  const out = regimes.map((r) => ({ from: r.from, to: r.to }));
+  for (;;) {
+    if (out.length <= 1) return out;
+    const i = out.findIndex((r) => r.to - r.from < minDays);
+    if (i < 0) return out;
+    if (i > 0) out.splice(i - 1, 2, { from: out[i - 1]!.from, to: out[i]!.to });
+    else out.splice(0, 2, { from: out[0]!.from, to: out[1]!.to });
+  }
+};
+
 /** Fewest active days for a variant to be selectable (the stats MIN_DAYS). */
 export const SPA_MIN_ACTIVE_DAYS = 10;
 
@@ -90,6 +111,8 @@ export interface SpaResult {
   readonly days: number;
   /** Mean number of blocks a replicate draws, per block length (T / L, summed over regimes). */
   readonly effectiveBlocks: Readonly<Record<number, number>>;
+  /** The regimes resampled within, after short ones were merged (mergeShortRegimes). */
+  readonly resampleRegimes: readonly { readonly from: number; readonly to: number }[];
   readonly variants: readonly SpaVariantResult[];
   /** Variants left out of selection for too little activity (all-zero series included). */
   readonly excluded: readonly string[];
@@ -235,6 +258,7 @@ export const spaTest = (input: SpaInput, opts: SpaOptions): SpaResult => {
     at = r.to;
   }
   if (at !== T) throw new RangeError(`regimes cover ${at} days, the calendar has ${T}`);
+  const merged = mergeShortRegimes(regimes);
 
   const excluded: string[] = [];
   const kept: string[] = [];
@@ -255,13 +279,13 @@ export const spaTest = (input: SpaInput, opts: SpaOptions): SpaResult => {
   let zs: { zVsZero: number; zVsS0: number }[] = [];
   const rootT = Math.sqrt(T);
   for (const L of SPA_BLOCK_LENGTHS) {
-    blocks[L] = regimes.reduce((s, r) => s + (r.to - r.from) / L, 0);
+    blocks[L] = merged.reduce((s, r) => s + (r.to - r.from) / L, 0);
     if (kept.length === 0) {
       pBy[L] = 1;
       continue;
     }
     const stats = build();
-    const r = runAtBlockLength(stats, T, regimes, L, reg, opts);
+    const r = runAtBlockLength(stats, T, merged, L, reg, opts);
     pBy[L] = r.p;
     statistic = Math.max(statistic, r.tObs);
     zs = kept.map((_, j) => ({ zVsZero: (rootT * stats[2 * j]!.mean) / stats[2 * j]!.omega, zVsS0: (rootT * stats[2 * j + 1]!.mean) / stats[2 * j + 1]!.omega }));
@@ -269,7 +293,7 @@ export const spaTest = (input: SpaInput, opts: SpaOptions): SpaResult => {
   }
   const pValue = Math.max(...SPA_BLOCK_LENGTHS.map((L) => pBy[L]!));
   const variants = kept.map((id, j) => ({ id, zVsZero: zs[j]?.zVsZero ?? 0, zVsS0: zs[j]?.zVsS0 ?? 0, passed: passAll.has(j) }));
-  return { pValue, pByBlockLength: pBy, statistic, days: T, effectiveBlocks: blocks, variants, excluded, passing: variants.filter((v) => v.passed).map((v) => v.id) };
+  return { pValue, pByBlockLength: pBy, statistic, days: T, effectiveBlocks: blocks, resampleRegimes: merged, variants, excluded, passing: variants.filter((v) => v.passed).map((v) => v.id) };
 };
 
 /**
