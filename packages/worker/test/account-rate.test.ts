@@ -235,3 +235,23 @@ describe('ACCOUNT-RATE F3: a stray fee booked after midnight', () => {
   });
 });
 
+describe('ACCOUNT-RATE: no-price loss paths count the entry fees', () => {
+  it('with no SOL price, an open position is costed at its notional plus entry fees at the entry\'s own rate, rounded up', () => {
+    const dir = tempState();
+    const a = new PaperAccount(accountFile(dir), usd(20), T - 30 * HOUR, 0n);
+    a.price(usd(100), T - 25 * HOUR);
+    // An entry of 0.02 SOL for a $2 notional ($100 a SOL), with 15,001 lamports of fill fees.
+    const feeFill = { ...fill('in', 'e1', 20_000_000n), fees: 15_001n };
+    const b = {
+      positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n, cost: 20_000_000n } },
+      intents: { in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, fills: [feeFill], attempts: [{ signature: 'e1' }] } },
+    } as unknown as Book;
+    a.filled({ ...base, purpose: 'entry', book: b, atMs: T - 2 * HOUR }, usd(100), legs(false));
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const [p] = a.fact(ledger, b, NO_LATCHES, null, T, legs(false)).history.openPositions;
+    // $2 × 20,015,001 / 20,000,000 = $2.0015001, rounded up to whole micro-dollars.
+    expect(p!.notional).toBe(2_001_501n);
+    ledger.close();
+  });
+});
+

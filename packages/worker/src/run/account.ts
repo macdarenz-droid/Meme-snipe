@@ -426,7 +426,10 @@ export class PaperAccount {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id).reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);
       const basis = (p.cost + fees) as Lamports;
-      return { mint: p.mint, openedAtMs: t?.openedAtMs ?? nowMs, notional: solPrice === null ? (t?.notional ?? (0n as MicroUsd)) : lamportsToMicroUsd(basis, solPrice, 'ceil'), mark: null, markAtMs: null };
+      // No SOL price: the basis (the tokens' cost and the entry fees) at the entry's own SOL-to-dollar rate (notional over
+      // entry SOL), rounded up, as #132's no-price share (ACCOUNT-RATE; golden rule): never the notional alone.
+      const atEntryRate = t === undefined ? (0n as MicroUsd) : p.cost > 0n ? (((t.notional * basis) + p.cost - 1n) / p.cost) as MicroUsd : t.notional;
+      return { mint: p.mint, openedAtMs: t?.openedAtMs ?? nowMs, notional: solPrice === null ? atEntryRate : lamportsToMicroUsd(basis, solPrice, 'ceil'), mark: null, markAtMs: null };
     });
     const history: AccountHistory = {
       openingEquity: this.#s.openingEquity, openedAtMs: this.#s.openedAtMs, flows: [], closedTrades, costs, openPositions,
