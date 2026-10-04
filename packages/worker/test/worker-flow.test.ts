@@ -690,6 +690,28 @@ describe('a restored position is never managed from a plan it was not entered wi
   });
 });
 
+describe('a restart never extends a time stop (EXIT-1f)', () => {
+  it('a refused saved plan falls back to the fill dated from its slot: the time stop due during the downtime fires at once', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    // The saved plan is refused (its stop is not an amount): the position falls back to the plan from its fill.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, stopPrice: 'none' as unknown as bigint } } });
+    const { b, m, first } = await reboot(h, LANDS);
+    expect(await until(m, 4_000, () => b.worker.strategy.saved()[pid] !== undefined, () => m.slot())).toBe(true);
+    expect(first('restore entry refused')).toHaveLength(1);
+    expect(first('entry plan waits for the first slot')).toHaveLength(1);
+    // The fallback plan's open time is at or before the real fill, so the hold is already past T_max.
+    const plan = b.worker.strategy.saved()[pid]!.plan;
+    expect(plan.openedAtMs).toBeLessThanOrEqual(saved[pid]!.plan.openedAtMs);
+    expect(m.now - plan.openedAtMs).toBeGreaterThanOrEqual(TRIAL_POLICY.exits.universes.U2.tMaxMs);
+    m.pool();
+    expect(await until(m, 4_000, () => first('exit').length > 0, () => m.slot())).toBe(true);
+    expect((first('exit')[0]!['reasons'] as string[]).some((r) => r.startsWith('time_max'))).toBe(true);
+    await b.worker.stop();
+  });
+});
+
 describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
   it('settles what a killed worker left open, writes open_intents 0 and exits 0, as a separate process', async () => {
     const h = makeWorker();

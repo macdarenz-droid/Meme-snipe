@@ -46,6 +46,9 @@ export const strategyConfig = (
     blockhashValidBlocks: net.blockhashValidBlocks,
     evaluateEveryMs: policy.gates.maxQuoteAgeMs,
     barMs: exitsFor(policy.exits, 'U2').atrBarMs,
+    // Mainnet's slot target is 350 ms since epoch 1020 (August 2026; 400 ms from genesis, about 360 ms measured after the
+    // change); 500 ms bounds the mean from above, so a fill dated from its slot is never dated later than it happened.
+    maxSlotMs: 500,
     keepBars: exitsFor(policy.exits, 'U2').atrPeriod * 4,
   };
 };

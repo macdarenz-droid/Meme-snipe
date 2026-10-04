@@ -235,4 +235,30 @@ describe('a restore the strategy cannot use never stalls exits (EXIT-1e review B
     expect(got.find((x) => x[0] === 'restore')).toContain('1 exit plans and trackers restored');
     expect(got.some((x) => x[0] === 'exit')).toBe(true);
   });
+
+  it('a saved open time that is not a time is refused (EXIT-1f): the time stops would never fire from it', async () => {
+    const { replay } = await recordedBoot2();
+    const got = replay((v) => {
+      const exits = (v as { exits: Record<string, { plan: Record<string, unknown> }> }).exits;
+      return { exits: Object.fromEntries(Object.entries(exits).map(([pid, s]) => [pid, { ...s, plan: { ...s.plan, openedAtMs: 'soon' } }])) };
+    });
+    const at = (r: string) => got.findIndex((x) => x[0] === r);
+    expect(at('restore entry refused')).toBeGreaterThanOrEqual(0);
+    expect(at('no entry plan')).toBeGreaterThan(at('restore entry refused'));
+    expect(at('exit')).toBeGreaterThan(at('no entry plan'));
+  });
+
+  it('a saved tracker of the wrong types is refused and reset (EXIT-1f): exits keep working for the position', async () => {
+    const { replay } = await recordedBoot2();
+    const got = replay((v) => {
+      const exits = (v as { exits: Record<string, { tracker: Record<string, unknown> }> }).exits;
+      // A trail that is not a price: run as is, every manage step would throw on it.
+      return { exits: Object.fromEntries(Object.entries(exits).map(([pid, s]) => [pid, { ...s, tracker: { ...s.tracker, trail: 'high' } }])) };
+    });
+    const at = (r: string) => got.findIndex((x) => x[0] === r);
+    expect(at('restore tracker refused')).toBeGreaterThanOrEqual(0);
+    expect(got.find((x) => x[0] === 'restore')).toContain('1 exit plans and trackers restored');
+    expect(got.some((x) => x[0] === 'no entry plan')).toBe(false);
+    expect(at('exit')).toBeGreaterThan(at('restore tracker refused'));
+  });
 });

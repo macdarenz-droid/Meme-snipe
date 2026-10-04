@@ -126,6 +126,12 @@ export interface StrategyConfig {
   /** A candidate is evaluated at most once per this many ms. */
   readonly evaluateEveryMs: number;
   /** Width of the price bars kept per mint (the policy's ATR bar). */
+  /**
+   * An upper bound on mainnet's mean slot time, used only to date a fill the strategy did not see (a restart whose saved
+   * plan is missing or refused) from its slot: the larger the bound, the earlier the open time, so a restart can never
+   * extend a time stop (EXIT-1f).
+   */
+  readonly maxSlotMs: number;
   readonly barMs: number;
   /** Bars kept per mint. */
   readonly keepBars: number;
@@ -196,6 +202,17 @@ export const universeOfKey = (key: string): ExitUniverse | null => {
 const NO_QUOTE = 'no quote: ';
 
 /** A saved entry plan the exit rules can run on: every amount a bigint, the open time a number (EXIT-1e). */
+/** A saved exit tracker the exit rules can run on: every field of its type (EXIT-1f). */
+const runnableTracker = (t: Record<string, unknown>): boolean => {
+  const big = (k: string, nullable: boolean) => typeof t[k] === 'bigint' || (nullable && t[k] === null);
+  const num = (k: string, nullable: boolean) => (typeof t[k] === 'number' && Number.isFinite(t[k])) || (nullable && t[k] === null);
+  const pending = t['pendingFull'];
+  return big('peak', true) && big('trail', true) && big('lastSold', false)
+    && num('partials', false) && num('partialSeq', true) && num('lastRung', true) && num('quoteFailures', false) && num('lastQuoteAtMs', true)
+    && num('blockedAtMs', true) && num('blockedRetries', false) && typeof t['flatMet'] === 'boolean'
+    && (pending === null || pending === undefined || (Array.isArray(pending) && pending.every((r) => typeof r === 'string')));
+};
+
 const runnablePlan = (p: Record<string, unknown>): boolean =>
   typeof p['openedAtMs'] === 'number' && Number.isFinite(p['openedAtMs'])
   && ['notional', 'riskUnit', 'stopPrice', 'entryReserve'].every((k) => typeof p[k] === 'bigint')
@@ -299,6 +316,8 @@ export class LiveStrategy implements Strategy {
    * restore) must never plan a restored position from its fill under the policy-maximum stop, even for one step (EXIT-1e).
    */
   #restoreSeen = false;
+  /** Positions whose fallback plan waits for the first slot to date their fill (said once each). */
+  readonly #planWaitsForSlot = new Set<string>();
   /** Said once per boot when positions wait for the restore. */
   #saidRestoreWait = false;
 
@@ -410,7 +429,16 @@ export class LiveStrategy implements Strategy {
         out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
         continue;
       }
-      const saved = s as unknown as SavedExit;
+      let saved = s as unknown as SavedExit;
+      if (!runnableTracker(s['tracker'] as Record<string, unknown>)) {
+        // A tracker the exit rules would throw on is replaced, never applied: partials come back from the book; the peak,
+        // trail and flat target start again from now (the plan, its stop and its open time are kept).
+        out.push({ action: null, reasons: ['restore tracker refused', pid, 'malformed saved tracker; tracker reset'] });
+        saved = { ...saved, tracker: newTracker() };
+      } else if (saved.tracker.pendingFull === undefined) {
+        // Saved before EXIT-1b added it.
+        saved = { ...saved, tracker: { ...saved.tracker, pendingFull: null } };
+      }
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
       if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
@@ -874,11 +902,26 @@ export class LiveStrategy implements Strategy {
     const seed = this.#seeds.get(entryId);
     const entry = ctx.book.intents[entryId];
     const p = ctx.book.positions[pid]!;
+    // The open time: the fill's moment when this process saw it (it holds the decision seed); otherwise the fill is dated
+    // from its slot with an upper bound on the slot time, so a restart never restarts T_flat or T_max (EXIT-1f). Until
+    // the first slot is seen nothing can be dated, and nothing could be sent either: the plan waits for it.
+    const fill = entry?.fills[0];
+    let fillAt = ctx.now.receivedAt;
+    if (seed === undefined && fill !== undefined) {
+      if (this.#height === null) {
+        if (!this.#planWaitsForSlot.has(pid)) {
+          this.#planWaitsForSlot.add(pid);
+          out.push({ action: null, reasons: ['entry plan waits for the first slot', p.mint, 'the fill is dated from its slot'] });
+        }
+        return null;
+      }
+      const slots = this.#height > fill.slot ? this.#height - fill.slot : 0n;
+      fillAt = ctx.now.receivedAt - Number(slots) * this.#d.config.maxSlotMs;
+    }
     if (seed === undefined || entry === undefined) {
       // A position the strategy did not plan (none should exist): manage it with the tightest stop the policy allows.
       out.push({ action: null, reasons: ['no entry plan', p.mint, 'position managed with the policy maximum stop'] });
     }
-    const fillAt = ctx.now.receivedAt;
     const cost = p.cost;
     const entryPx = p.quantity > 0n ? (cost * PRICE_SCALE) / p.quantity : 0n;
     const stopPrice = seed?.stopPrice ?? entryPx - (entryPx * BigInt(this.#d.session.policy.loss.stopMaxBps)) / BPS;
