@@ -159,7 +159,8 @@ export type ExitDecision =
   | { readonly kind: 'hold'; readonly fired: readonly Trigger[]; readonly detail: string }
   /**
    * Request an exit of `quantity`. `value` is the liquidation quote it starts from; when it is not ok, or `blocked`
-   * names why no attempt is left, the exit is booked blocked at once (never a fabricated fill). Attempts start at
+   * names why no attempt is left, the exit is booked blocked at once (never a fabricated fill). It is never not ok for
+   * want of a fresh market state: such an exit is held until the first fresh quote (EXIT-1c). Attempts start at
    * `startRung`, at most `maxAttempts` (what remains of the position's ladder).
    */
   | {
@@ -345,10 +346,18 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
     return exit(h.quantity, false, true, fired.length > 0 ? reasonsOf(fired) : ['emergency']);
   }
 
+  // No quote yet (no market state, or a stale one) is timing, not a dead pool: a full exit that fires then (a time stop
+  // after downtime, the deployer trigger) is remembered and goes on the first step with a fresh executable quote, on the
+  // normal ladder. Booked blocked, it would wait out the blocked-retry time and go as a single last-rung retry. Blocked
+  // stays for a real refusal: a fresh market that cannot quote the sale, or a used ladder (EXIT-1c).
+  if (!liq.ok && liq.reason === 'no-market' && (full.length > 0 || t.pendingFull !== null)) {
+    if (full.length > 0) t = { ...t, pendingFull: [...new Set([...(t.pendingFull ?? []), ...reasonsOf(full)])] };
+    return hold('full exit remembered: waiting for a fresh quote', fired);
+  }
   if (t.pendingFull !== null) {
-    // A full exit fired while a partial was in flight: the rest goes on the first step with a fresh quote, on the normal
-    // ladder. A missing or stale quote at the fill is timing, not a dead pool, so it waits (EXIT-1b review); a trigger
-    // that fires without a quote (time, deployer, route, quote failures) still exits at once below.
+    // A full exit fired while a partial was in flight, or before a quote existed: the rest goes on the first step with a
+    // fresh quote, on the normal ladder (EXIT-1b review, EXIT-1c). A fresh market that refuses the sale with nothing
+    // firing now still waits; with a trigger firing, the exit is taken and booked blocked below.
     if (!liq.ok && full.length === 0) return hold('full exit remembered: waiting for a fresh quote', fired);
     const reasons = [...new Set([...t.pendingFull, ...reasonsOf(fired)])];
     t = { ...t, pendingFull: null };

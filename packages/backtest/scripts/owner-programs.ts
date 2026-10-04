@@ -1,5 +1,5 @@
 // Builds the owner-program supplement (src/dataset/owner-programs.ts) for schema-3 datasets: every off-curve owner
-// seen in their trade and movement rows, looked up once with getMultipleAccounts.
+// seen in their trade and movement rows and every off-curve pool creator, looked up once with getMultipleAccounts.
 //
 //   node packages/backtest/scripts/owner-programs.ts owners --dataset <dir> [--dataset <dir> ...]
 //       prints the datasets' off-curve owners, one per line, sorted and unique (SHA256SUMS checked when present)
@@ -13,6 +13,7 @@
 // The owners workflow (.github/workflows/owner-programs.yml) runs `owners` per dataset release and `fetch` once.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pumpPoolAuthority, type Address } from '../../core/src/chain/index.ts';
 import { offCurve } from '../../core/src/gates/index.ts';
 import { loadDay, loadManifest, loadMovements, manifestHash, verifySums } from '../src/dataset/dataset.ts';
 import { ACCOUNTS_PER_CALL, fetchOwnerPrograms, writeOwnerPrograms, type DatasetSource } from '../src/dataset/owner-programs.ts';
@@ -46,13 +47,23 @@ const secrets = [process.env['RPC_URL'], process.env['HELIUS_API_KEY'], ...urlPa
   .sort((a, b) => b.length - a.length);
 const scrub = (s: string): string => secrets.reduce((t, x) => t.split(x).join('[redacted]'), s);
 
-/** Off-curve owners of one dataset's trade and movement rows. */
+/**
+ * Off-curve owners of one dataset's rows: trade and movement owners, and the creator of a CreatePoolEvent, which the
+ * holder book credits with the base it pays in (src/dataset/holders.ts), except pump's own pool authority on a migration.
+ */
 const ownersOf = (dataset: string): Set<string> => {
   verifySums(dataset);
   const manifest = loadManifest(dataset);
   const owners = new Set<string>();
   for (const day of manifest.days) {
-    for (const r of loadDay(dataset, day)) if ((r.kind === 'amm' || r.kind === 'curve') && r.userTokenOwner !== '' && offCurve(r.userTokenOwner)) owners.add(r.userTokenOwner);
+    for (const r of loadDay(dataset, day)) {
+      if ((r.kind === 'amm' || r.kind === 'curve') && r.userTokenOwner !== '' && offCurve(r.userTokenOwner)) owners.add(r.userTokenOwner);
+      if (r.kind === 'event' && r.event === 'CreatePoolEvent') {
+        const creator = r.fields['creator'] ?? '';
+        const mint = r.fields['mint'] ?? r.fields['base_mint'];
+        if (creator !== '' && mint !== undefined && offCurve(creator) && creator !== pumpPoolAuthority(mint as Address)) owners.add(creator);
+      }
+    }
     for (const m of loadMovements(dataset, day)) for (const o of [m.fromOwner, m.toOwner]) if (o !== '' && offCurve(o)) owners.add(o);
   }
   return owners;
