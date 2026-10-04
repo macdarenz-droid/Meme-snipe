@@ -12,6 +12,7 @@ import { attemptFee } from '../../core/src/fills/index.ts';
 import { attemptRung, nextExitRung } from '../../core/src/exits/index.ts';
 import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { lamports } from '../../core/src/units/index.ts';
+import { closeRungOf } from '../src/engine/strategy.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 const HELD = { heldPoolFacts: true } as const;
@@ -135,6 +136,18 @@ describe('the close fee\'s rung (APP-TRADE follow-up): the rung the next exit at
     expect(attemptRung(3, 2, 3, { startRung: 3, signed: 1 })).toBe(3);
     expect(attemptRung(0, 1, 3, { startRung: 0, signed: 1 })).toBe(1);
     expect(attemptRung(0, 1, 3, null)).toBe(1);
+  });
+
+  it('closeRungOf: a live unsigned owner uses its start rung (a blocked retry\'s is the last), not the next rung up (EXIT review C1)', () => {
+    // Blocked after one attempt at rung 0, the retry decided at the last rung, its first send not yet signed.
+    expect(closeRungOf({ last: 3, status: 'exit_requested', lastRung: 0, used: 1, owner: { startRung: 3, signed: 0 } })).toBe(3);
+    // Once signed, the next rung up from the highest tried (held at the last).
+    expect(closeRungOf({ last: 3, status: 'exit_pending', lastRung: 3, used: 2, owner: { startRung: 3, signed: 1 } })).toBe(3);
+    expect(closeRungOf({ last: 3, status: 'exit_pending', lastRung: 0, used: 1, owner: { startRung: 0, signed: 1 } })).toBe(1);
+    // No owner: blocked retries at the last rung; otherwise the next rung up; no saved plan: the last rung.
+    expect(closeRungOf({ last: 3, status: 'exit_blocked', lastRung: 0, used: 1, owner: null })).toBe(3);
+    expect(closeRungOf({ last: 3, status: 'open', lastRung: 0, used: 1, owner: null })).toBe(1);
+    expect(closeRungOf({ last: 3, status: 'open', lastRung: undefined, used: 0, owner: null })).toBe(3);
   });
 
   it('the fee: that rung\'s priority fee, capped at the per-attempt maximum', () => {

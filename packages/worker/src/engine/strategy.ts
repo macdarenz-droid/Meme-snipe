@@ -22,17 +22,22 @@ import {
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
 import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
+import { RAW } from '../../../core/src/facts/raw.ts';
 import { observedFeeContext } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type FlowMinute, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
   atr, attemptRung, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type GraduatesFact, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
+import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
+
+/** PERSIST-2: the graduates series as saved (a `GraduatesSeed` without its source). */
+export type SavedGraduates = Omit<GraduatesSeed, 'source'>;
 import { type Book, type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
-import { type markedHistory, markSettings, riskAccount } from './marks.ts';
+import { latchable, type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
 
 export const ACCOUNT_KEY = 'worker:account';
@@ -72,6 +77,17 @@ export interface RiskStopsView {
   readonly atMs: number;
   readonly codes: readonly string[] | null;
 }
+/**
+ * The rung a close would go at now, as `#sendExit` would send it (core `attemptRung`; EXIT review B1/N1): an exit owner in
+ * flight with no signed attempt uses its own start rung (a blocked retry's is the last); a blocked position with no owner
+ * yet retries at the last rung; otherwise the next rung up. Unknown (no saved plan, `lastRung` undefined): the last rung.
+ */
+export const closeRungOf = (i: { readonly last: number; readonly status: string; readonly lastRung: number | null | undefined; readonly used: number; readonly owner: { readonly startRung: number; readonly signed: number } | null }): number => {
+  if (i.lastRung === undefined) return i.last;
+  if (i.owner !== null) return attemptRung(i.lastRung, i.used, i.last, i.owner);
+  if (i.status === 'exit_blocked') return i.last;
+  return attemptRung(i.lastRung, i.used, i.last, null);
+};
 /** Account stops are read again on the account's own event, else at most once per this much event time. */
 export const STOPS_EVERY_MS = 1000;
 /** A reject's typed reasons ride in its last reason as `gate_reasons <json>`; the desk journals them as `gate_reasons`. */
@@ -437,6 +453,8 @@ export class LiveStrategy implements Strategy {
   #seedApplied = false;
   /** Each watched mint's PumpSwap pool, from its migration or its pool fact, and back. */
   readonly #poolOfMint = new Map<string, string>();
+  /** S0-ZERO: each candidate's migration slot, where its pool's trade coverage must start (the oldest seen). */
+  readonly #migrationSlot = new Map<string, bigint>();
   readonly #mintOfPool = new Map<string, string>();
   /** The fee terms of the latest released swap on each mint's pool (rates are per trade on chain). */
   readonly #observedFees = new Map<string, PoolFeeContext>();
@@ -499,21 +517,15 @@ export class LiveStrategy implements Strategy {
   /** The latest account stops (RiskStopsView); null before the first event. */
   #stops: RiskStopsView | null = null;
 
-  /**
-   * The rung a close of position `pid` would go at now, as `#sendExit` would send it (core `attemptRung`): an exit owner
-   * in flight with no signed attempt uses its start rung (a blocked retry's is the last); a blocked position with no
-   * owner yet retries at the last rung; otherwise the next rung up. Unknown (no saved plan): the last rung, the dearest.
-   */
+  /** The rung a close of position `pid` would go at now (`closeRungOf`, from this strategy's plan, owners and the book). */
   closeRung(pid: string, status: string, book: Book): number {
-    const last = this.#d.session.policy.exits.ladder.steps.length - 1;
     const saved = this.#exits.get(pid);
-    if (saved === undefined) return last;
-    const used = exitAttemptsOf(book.intents, pid as PositionId);
     const live = Object.values(book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === pid && !isTerminal(i)).at(-1);
     const owner = live === undefined ? undefined : this.#owners.get(live.intent.id);
-    if (live !== undefined && owner !== undefined) return attemptRung(saved.tracker.lastRung, used, last, { startRung: owner.startRung, signed: live.attempts.length });
-    if (status === 'exit_blocked') return last;
-    return attemptRung(saved.tracker.lastRung, used, last, null);
+    return closeRungOf({
+      last: this.#d.session.policy.exits.ladder.steps.length - 1, status, lastRung: saved === undefined ? undefined : saved.tracker.lastRung,
+      used: exitAttemptsOf(book.intents, pid as PositionId), owner: live !== undefined && owner !== undefined ? { startRung: owner.startRung, signed: live.attempts.length } : null,
+    });
   }
 
   riskStops(): RiskStopsView | null {
@@ -582,12 +594,15 @@ export class LiveStrategy implements Strategy {
    * The pools to watch for swaps (WORKER-1 subscribes `trades:<pool>`): every candidate in its window and every open
    * position, with whether a position holds it (exit traffic).
    */
-  watchedPools(): Map<string, { readonly mint: string; readonly held: boolean }> {
+  watchedPools(): Map<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }> {
     const held = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
-    const out = new Map<string, { mint: string; held: boolean }>();
+    const out = new Map<string, { mint: string; held: boolean; fromSlot?: bigint }>();
     for (const mint of this.watched()) {
       const pool = this.#poolOfMint.get(mint);
-      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint) });
+      // A candidate's pool is watched from its migration (S0-ZERO): its candles are observed from the pool's creation.
+      // A held pool is already watched (an exit never waits on a catch-up).
+      const from = this.#cands.has(mint) && !held.has(mint) ? this.#migrationSlot.get(mint) : undefined;
+      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint), ...(from === undefined ? {} : { fromSlot: from }) });
     }
     for (const [mint, t] of this.#tail) if (!out.has(t.pool)) out.set(t.pool, { mint, held: false });
     return out;
@@ -620,11 +635,17 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[] } | null {
+  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
-    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts] };
+    // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
+    // the save moment (the fact itself is never newer than the last released event).
+    const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
+    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items } };
   }
+
+  /** PERSIST-2: the newest graduates fact released (the regime's survival series), for the saved state. */
+  #graduatesFact: GraduatesFact | null = null;
 
   get deployers(): DeployerIndex {
     return this.#deployers;
@@ -641,6 +662,7 @@ export class LiveStrategy implements Strategy {
     // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
     if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
+    if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
@@ -650,6 +672,9 @@ export class LiveStrategy implements Strategy {
     }
     this.#discover(e, ctx, out);
     this.#readLanded(e);
+    // READ-COHERENT: a batch's close is judged at once, on its own event, when every member's facts are out.
+    const closed = this.#batchLanded(e);
+    if (closed !== null) due.set(closed.mint, closed.read);
     this.#poolTrade(e, ctx);
     if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
@@ -820,7 +845,10 @@ export class LiveStrategy implements Strategy {
       // GATE-1's migration fact (a fetched, confirmed migration) also names a candidate.
       const f = parseMigration(e.value);
       const mint = e.key.slice(MIGRATION_PREFIX.length);
-      if (f !== null) this.#notePool(mint, f.pool);
+      if (f !== null) {
+        this.#notePool(mint, f.pool);
+        this.#noteMigrationSlot(mint, f.obs.slot);
+      }
       if (f !== null && !this.#cands.has(mint)) {
         this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
@@ -834,7 +862,11 @@ export class LiveStrategy implements Strategy {
     const d = ev['data'];
     const mint = typeof d['mint'] === 'string' ? d['mint'] : null;
     const ts = typeof d['timestamp'] === 'bigint' ? Number(d['timestamp']) * 1000 : null;
-    if (mint !== null && typeof d['pool'] === 'string') this.#notePool(mint, d['pool']);
+    if (mint !== null && typeof d['pool'] === 'string') {
+      this.#notePool(mint, d['pool']);
+      // The migration transaction's own slot (a logs sighting carries it as txSlot): the pool cannot trade before it.
+      this.#noteMigrationSlot(mint, typeof v['txSlot'] === 'bigint' ? v['txSlot'] : e.moment.slot);
+    }
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
@@ -847,7 +879,13 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
-    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales]) m.delete(mint);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#migrationSlot]) m.delete(mint);
+  }
+
+  #noteMigrationSlot(mint: string, slot: bigint | null): void {
+    if (slot === null) return;
+    const was = this.#migrationSlot.get(mint);
+    if (was === undefined || slot < was) this.#migrationSlot.set(mint, slot);
   }
 
   #notePool(mint: string, pool: string): void {
@@ -1289,7 +1327,8 @@ export class LiveStrategy implements Strategy {
       const sol = this.#spotSol(ctx);
       const account = this.#marked(risk.history, ctx, sol, { fallback: true });
       const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
-      for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
+      // RISK-LATCH: only a fully marked account at a fresh SOL price latches; a fallback or unmarked one is still logged.
+      if (latchable(account, sol, ctx.now.receivedAt, this.#d.session.policy.gates.maxQuoteAgeMs)) for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
       const own = account.openPositions.find((o) => o.mint === mint);
       if (own !== undefined) why.push(`${MARK_PREFIX}${own.mark ?? 'unknown'}`);
       if (r.tripped.length > 0) why.push(`${TRIPPED_PREFIX}${[...new Set(r.tripped.map((x) => x.code))].sort().join(',')}`);
@@ -1394,6 +1433,30 @@ export class LiveStrategy implements Strategy {
     this.#due.set(mint, { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt });
   }
 
+  /** Mints whose read batch is on the feed but not closed yet: never judged on part of a batch. */
+  readonly #batchOpen = new Set<string>();
+
+  /**
+   * READ-COHERENT: a coherent batch of reads (FactReaders.readBatch) is put on the feed between `RAW.batchOpen` and
+   * `RAW.batchClose`, and at one moment the open is released before its members and the close after them and after
+   * every fact they made. While open the candidate is not evaluated (`#entries`), so no decision is made on part of a
+   * batch; the close is the batch's landing, judged at its own event (not the next one, which may be
+   * a slot later), with the batch's oldest slot-judged member as its age. Recorded frames, so a replay does the same.
+   */
+  #batchLanded(e: MarketEvent): { readonly mint: string; readonly read: { readonly slot: bigint | null; readonly receivedAt: number } } | null {
+    const open = RAW.batchOpen('');
+    const close = RAW.batchClose('');
+    if (e.key.startsWith(open)) {
+      this.#batchOpen.add(e.key.slice(open.length));
+      return null;
+    }
+    if (!e.key.startsWith(close)) return null;
+    const mint = e.key.slice(close.length);
+    this.#batchOpen.delete(mint);
+    const v = unwrap(e.value);
+    return { mint, read: { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt } };
+  }
+
   /** A read landed for the mint and is still fresh now: a slower event after it (a quiet feed) can outlive it. */
   #landedFresh(due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>, mint: string, ctx: StrategyContext): boolean {
     const read = due.get(mint);
@@ -1437,6 +1500,7 @@ export class LiveStrategy implements Strategy {
       const to = cand.migratedAtMs + c.windowToMs;
       // Backstop: `#windowEnds` has already removed it on this event; an ended window is never an entry whatever the order.
       if (now >= to) continue;
+      if (this.#batchOpen.has(cand.mint)) continue;
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
@@ -1451,7 +1515,9 @@ export class LiveStrategy implements Strategy {
       // The S0 diagnostic parts relied on count too: the same reason with a different set is a new line.
       const key = (x: string | null) => (x === null ? null : x.replace(/\d+/g, '#'));
       const waived = this.#waived.join(',');
-      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#diagnostic()] });
+      // A line that carries a trip is always written: risk reports a trip only while it is not latched, so it is never
+      // swallowed as "the same reason" (after an owner's re-arm the same reject must latch again) and never repeats once latched.
+      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived || this.#lastTrips.length > 0)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#lastTrips, ...this.#diagnostic()] });
       if (r !== null) {
         cand.lastReason = r;
         cand.lastWaived = waived;
@@ -1470,6 +1536,12 @@ export class LiveStrategy implements Strategy {
   /** The typed reasons of the last reject `#evaluate` returned (RUN-1c's `gate_reasons`). */
   #lastGates: readonly GateReasonLine[] = [];
 
+  /**
+   * ENTRY-TRIPS: the `trip X` reasons risk found on the last refused entry (a weekly loss or NAV kill reached while flat),
+   * each its own reason on the reject line, so the worker latches it (worker.ts reads elements that start `trip `).
+   */
+  #lastTrips: readonly string[] = [];
+
   /** The same reasons with their inputs, for the candidate (not journaled: gate_reasons keeps its shape). */
   #lastNeeds: readonly CandidateReason[] = [];
 
@@ -1484,6 +1556,7 @@ export class LiveStrategy implements Strategy {
 
   /** One candidate through regime, hard rejects and risk. Returns the reject reason, or null when it proposed an entry. */
   #evaluate(cand: Candidate, ctx: StrategyContext, gctx: GateContext, out: Decision[]): string | null {
+    this.#lastTrips = [];
     const c = this.#d.config;
     const session = this.#d.session;
     const policy = session.policy;
@@ -1549,9 +1622,13 @@ export class LiveStrategy implements Strategy {
         quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
       },
     );
-    const trips = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
+    // RISK-LATCH: an entry latches R9/R10 only from a fully marked account at a fresh SOL price; an unknown or stale mark
+    // counts as a total loss, which refuses the entry but proves no breach. The refusal still names every trip it saw.
+    const seen = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
+    const trips = latchable(account, sol, ctx.now.receivedAt, policy.gates.maxQuoteAgeMs) ? seen : [];
     if (!r.allow) {
-      return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${trips.length > 0 ? `; ${trips.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
+      this.#lastTrips = trips;
+      return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${seen.length > 0 ? `; ${seen.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
     }
     if (r.spendLamports !== spend) {
       return this.#fail(`risk sized ${r.spendLamports} lamports, gates judged ${spend}`, [{ gate: 'worker', code: 'size-mismatch', detail: `risk sized ${r.spendLamports}, gates judged ${spend}` }]);
