@@ -1,6 +1,6 @@
 // RUN-1f: a host loss counts only when its restore was compared (VPS); a self-reported one retries after the next
 // backup, labelled; the recovered line and the health fields the runner reads are typed in the contract.
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -131,4 +131,54 @@ describe('b. the contract types what the runner reads', () => {
     expectTypeOf<Health['exit_capable']>().toEqualTypeOf<boolean>();
     expectTypeOf<Health['unresolved_intents']['trades']>().toEqualTypeOf<readonly string[]>();
   });
+});
+
+describe('a. the retry file is kept until its try is recorded', () => {
+  const setup = async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'run1f-retry-'));
+    const addr = `127.0.0.1:${await freePort()}`;
+    const stateDir = join(dir, 'state');
+    const evidenceDir = join(dir, 'ev');
+    const opts = {
+      entry: STUB_ENTRY, cwd: root, logPath: join(evidenceDir, 'logs', 'w.log'), stateDir, restartDelayMs: 200,
+      env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_CYCLE_MS: '60000', ZEROED_STUB_OPEN_AT_START: '1' },
+    };
+    const common = { identity: { label: 'vps' as const, commit: 'c0ffee' }, healthAddr: addr, stateDir, evidenceDir, keepRecorded: 'copy' as const, sampleMs: 100, log: () => {}, handover: false, hostDrills: 'tabletop' as const, offsiteBackup: true, backupWindowMs: 300, hostRetryAfterMs: 1500 };
+    // A long run, so no planned drill falls due in these short segments: only the retry runs.
+    await runSegment({ ...common, control: new LocalControl(opts), recoverMs: 6000, segmentEnd: Date.now() + 800, newRun: { runId: 'run', name: 'qual-1', targetMs: 600_000, entry: STUB_ENTRY, restarts: 3, causes: ['host-loss', 'crash', 'crash'], rpcDrops: 0 } });
+    const file = join(evidenceDir, 'host-loss-retry.json');
+    writeFileSync(file, JSON.stringify({ drill: 'restart-1', attempt: 1, dueAt: Date.now() - 1000 }));
+    return { dir, opts, common, evidenceDir, file };
+  };
+  // A tabletop worker that never answers: the try is still running when the segment (the runner) stops.
+  class DeadTable extends LocalControl {
+    override async tabletop(): Promise<Tabletop> {
+      return { healthAddr: '127.0.0.1:9', stateDir: mkdtempSync(join(tmpdir(), 'run1f-dead-')) };
+    }
+  }
+  const drills = (ev: string) => (existsSync(join(ev, 'drills.json')) ? (JSON.parse(readFileSync(join(ev, 'drills.json'), 'utf8')) as DrillOutcome[]) : []);
+
+  it('a runner stop mid-try leaves the file, and the next segment runs the try and only then replaces it', async () => {
+    const t = await setup();
+    await runSegment({ ...t.common, control: new DeadTable(t.opts), recoverMs: 60_000, segmentEnd: Date.now() + 1500 });
+    expect(drills(t.evidenceDir).some((d) => d.id === 'restart-1-retry-1')).toBe(false);
+    expect(existsSync(t.file)).toBe(true);
+    // The next try is set far off, so this segment ends with only this try run.
+    await runSegment({ ...t.common, control: new HostLike(t.opts, join(t.dir, 'backup'), 1), recoverMs: 6000, hostRetryAfterMs: 600_000, segmentEnd: Date.now() + 6000 });
+    // Run once and recorded. Straight after a restart the samples cannot cover the backup's window, so this try
+    // self-reports too: its own file is gone and the next try's has taken its place.
+    expect(drills(t.evidenceDir).filter((d) => d.id === 'restart-1-retry-1')).toMatchObject([{ cause: 'host-loss', compared: false }]);
+    expect(JSON.parse(readFileSync(t.file, 'utf8'))).toMatchObject({ drill: 'restart-1', attempt: 2 });
+  }, 60_000);
+
+  it('a try already recorded is dropped at start, never run twice', async () => {
+    const t = await setup();
+    const done: DrillOutcome = { id: 'restart-1-retry-1', kind: 'restart', cause: 'host-loss', plannedAt: 0, at: Date.now() - 5000, pass: true, keep: 1, compared: true, notes: ['recorded before the runner stopped'] };
+    writeFileSync(join(t.evidenceDir, 'drills.json'), JSON.stringify([done]));
+    const control = new HostLike(t.opts, join(t.dir, 'backup'), 1);
+    await runSegment({ ...t.common, control, recoverMs: 6000, segmentEnd: Date.now() + 1500 });
+    expect(existsSync(t.file)).toBe(false);
+    expect(control.calls).toBe(0);
+    expect(drills(t.evidenceDir).filter((d) => d.id === 'restart-1-retry-1')).toEqual([done]);
+  }, 60_000);
 });

@@ -279,6 +279,11 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   // Back from a host reboot drill: the runner died with the host, so this drill is timed on the wall clock.
   // Kept on disk until the drill is recorded, so a runner crash before then cannot lose it.
   const done = new Set(outcomes.map((d) => d.id));
+  // A retry already recorded (the runner stopped between recording it and deleting the file) is never run twice.
+  if (retry !== null && done.has(retryId(retry))) {
+    rmSync(P.retry, { force: true });
+    retry = null;
+  }
   const rebooted = readJson<RestartPending | null>(P.reboot, null);
   // Already recorded (the runner stopped between recording it and deleting the file): never run it twice.
   if (rebooted && done.has(rebooted.drill.id)) rmSync(P.reboot, { force: true });
@@ -306,9 +311,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       const due = meta.plan.find((d) => !done.has(d.id) && d.atMs <= rel);
       if (due === undefined && retry !== null && t >= retry.dueAt) {
         const orig = meta.plan.find((d): d is Extract<Drill, { kind: 'restart' }> => d.id === retry!.drill && d.kind === 'restart');
-        if (orig) pending = { kind: 'restart', drill: { ...orig, id: `${orig.id}-retry-${retry.attempt}` }, since: t };
+        if (orig) pending = { kind: 'restart', drill: { ...orig, id: retryId(retry) }, since: t };
+        // The file stays until the try is recorded, so a runner crash mid-try runs it again after the restart.
         retry = null;
-        rmSync(P.retry, { force: true });
       }
       if (due?.kind === 'restart') pending = { kind: 'restart', drill: due, since: t };
       else if (due?.kind === 'rpc') {
@@ -580,6 +585,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   function record(d: DrillOutcome): void {
     // Any record of the drill on disk ends it, whether it was loaded at start or written in this segment.
     if (readJson<RestartPending | null>(P.reboot, null)?.drill.id === d.id) rmSync(P.reboot, { force: true });
+    // A host-loss retry ends when its own try is recorded (a self-reported try has already written the next one).
+    const r = readJson<HostLossRetry | null>(P.retry, null);
+    if (r !== null && retryId(r) === d.id) rmSync(P.retry, { force: true });
     outcomes.push(d);
     done.add(d.id);
     saveDrills();
@@ -831,6 +839,8 @@ interface HostLossRetry {
   readonly attempt: number;
   readonly dueAt: number;
 }
+
+const retryId = (r: HostLossRetry): string => `${r.drill}-retry-${r.attempt}`;
 
 /** Retries of a self-reported host-loss tabletop, at most; each starts the tabletop worker once. */
 export const HOST_LOSS_RETRIES = 3;
