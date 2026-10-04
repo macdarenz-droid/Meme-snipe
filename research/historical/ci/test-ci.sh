@@ -877,11 +877,27 @@ PY
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: no day artifact, no data-day or data-volume publish; the packaged assets go only to the actions cache (data-rpc-assets-DAY-*)" || no "data-scan helius publish gate"
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
-for s in steps:
-    run, uses, cond = s.get("run", ""), s.get("uses", ""), s.get("if", "")
-    outward = ("upload-artifact" in uses and s["with"]["name"] != "resume-${{ matrix.day }}") or ("github.token" in str(s) and "--check" not in run)
-    if outward:
-        assert "inputs.source != 'helius'" in cond, (s.get("name") or uses, cond)
+# The only token steps a helius day may run: the credit ledger's Reserve and Settle
+# (DATA-4), which write credit numbers to release helius-ledger and nothing else.
+LEDGER = {"Reserve Helius credits": "reserve", "Settle Helius credits": "settle"}
+def gate(steps):
+    for s in steps:
+        run, uses, cond, name = s.get("run", ""), s.get("uses", ""), s.get("if", ""), s.get("name", "")
+        if name in LEDGER:
+            body = run.replace("\\\n", " ")
+            assert "rpc-ledger.sh" in run and f'rpc-ledger.sh" {LEDGER[name]} ' in " ".join(body.split()), (name, run)
+            assert not any(k in run for k in ("publish-", "release create", "release upload", "upload-artifact")), (name, run)
+            continue
+        outward = ("upload-artifact" in uses and s["with"]["name"] != "resume-${{ matrix.day }}") or ("github.token" in str(s) and "--check" not in run)
+        if outward:
+            assert "inputs.source != 'helius'" in cond, (name or uses, cond)
+gate(steps)
+assert sorted(s["name"] for s in steps if s.get("name") in LEDGER) == sorted(LEDGER), "the ledger steps are named as listed"
+extra = {"name": "Upload a helius extra", "if": "inputs.source == 'helius'", "env": {"GH_TOKEN": "${{ github.token }}"}, "run": "gh release upload x y"}
+try:
+    gate(steps + [extra]); raise SystemExit("a third helius step with github.token passed the gate")
+except AssertionError:
+    pass
 pub = [s for s in steps if 'publish-day.sh" "$DAY"' in s.get("run", "") or "publish-volume.sh" in s.get("run", "")]
 assert len(pub) == 2 and all("inputs.source != 'helius'" in s["if"] for s in pub), pub
 keep = [s for s in steps if "actions/cache/save" in s.get("uses", "") and "work/assets" in s["with"]["path"]]
