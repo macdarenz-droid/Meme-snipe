@@ -34,7 +34,7 @@ import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
 import type { SeedRpc } from '../seed/rpc.ts';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
-import { type ApiInputs, type DecisionRow, checkOf, melbourneDate, stageOf, startApiServer } from './api.ts';
+import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
@@ -53,7 +53,7 @@ import { loadState, saveState } from '../persist/index.ts';
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export const PERSIST_FILE = 'deployer-state.json';
 export const PERSIST_EVERY_MS = 5 * 60_000;
-import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
+import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { type PoolFact, S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -204,6 +204,8 @@ export class Worker {
   readonly #ledger: Ledger;
   readonly #control: StateFile<Control>;
   readonly #exitsFile: ReturnType<typeof exitsFile>;
+  readonly #seedsFile: ReturnType<typeof seedsFile>;
+  #savedSeeds = '';
   readonly #account: PaperAccount;
   readonly #feed: LiveFeed;
   readonly #facts: EngineFeed;
@@ -239,6 +241,8 @@ export class Worker {
   #seeding = false;
   /** A ledger/book divergence: a halt reason for the rest of the process. */
   #diverged: readonly string[] = [];
+  /** Critical alerts the engine raised since boot (code and subject, first time seen), newest last; memory only. */
+  #alerts: AlertSeen[] = [];
   #savedExits = '';
   #probe: DelayProbe | null = null;
   #rpcDownUntil = 0;
@@ -302,6 +306,7 @@ export class Worker {
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
     this.#exitsFile = exitsFile(c.stateDir);
+    this.#seedsFile = seedsFile(c.stateDir);
     this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
 
     this.#feed = new LiveFeed({
@@ -419,7 +424,7 @@ export class Worker {
     // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen }, startAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}) }, startAt);
     this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt + 1);
     if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt + 1);
     if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt + 1);
@@ -615,6 +620,16 @@ export class Worker {
     writeFileSync(join(this.#d.config.stateDir, STATE_FILES.openIntents), `${n}\n`);
   }
 
+  /** The strategy's exit plans and trackers, written when they changed. */
+  #saveExits(): void {
+    const saved = this.#strategy.saved();
+    const text = jsonText(saved);
+    if (text !== this.#savedExits) {
+      this.#exitsFile.write(saved);
+      this.#savedExits = text;
+    }
+  }
+
   /** One engine step: release what is due, decide, record, write. */
   step(): void {
     const now = this.#d.timers.now();
@@ -623,6 +638,16 @@ export class Worker {
     this.#engine.drain();
     this.#recorder?.flush();
     this.#watchOpened();
+    // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
+    // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
+    // The plans go first: a plan made this step replaced its seed, so the seed may leave the disk only once the plan is
+    // on it (EXIT-1h review B1: a kill between the two writes left neither).
+    this.#saveExits();
+    const seeds = jsonText(this.#strategy.seeds());
+    if (seeds !== this.#savedSeeds) {
+      this.#seedsFile.write(this.#strategy.seeds());
+      this.#savedSeeds = seeds;
+    }
     const records = this.#engine.records as LogRecord[];
     const n = records.length;
     for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);
@@ -637,12 +662,7 @@ export class Worker {
         this.#report({ type: 'tick', blockHeight: this.#lastSlot });
       }
     }
-    const saved = this.#strategy.saved();
-    const text = jsonText(saved);
-    if (text !== this.#savedExits) {
-      this.#exitsFile.write(saved);
-      this.#savedExits = text;
-    }
+    this.#saveExits();
     this.#markAccount(now);
     if (now - this.#lastSaveMs >= PERSIST_EVERY_MS) this.#persist(now);
     this.#checkHalt(now);
@@ -712,6 +732,7 @@ export class Worker {
   }
 
   #afterRecord(r: LogRecord): void {
+    collectAlerts(this.#alerts, r);
     if (r.type !== 'decision') return;
     if (r.reasons[0] === SHORTLIST) {
       const mint = r.reasons[2];
@@ -781,6 +802,8 @@ export class Worker {
     return {
       nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
+      exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
+      alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
       book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       open: (p) => {

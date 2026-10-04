@@ -31,7 +31,7 @@ import {
   type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
-import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
+import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
 
@@ -54,6 +54,26 @@ export const SOL_PRICE_KEY = 'worker:sol-price';
 export const SEED_KEY = 'worker:seed';
 /** The halt reason while the seed is pending: entries wait, exits and monitoring go on. */
 export const SEEDING = 'deployer index seeding';
+
+/** The latest regime evaluation as the app's status shows it: when, on or off, and each reason's code and input. */
+export interface RegimeView {
+  readonly atMs: number;
+  readonly on: boolean;
+  readonly reasons: readonly { readonly code: string; readonly input: string | null }[];
+  /** Regime parts the S0 diagnostic set did not judge (WORKER-1e): an "on" with any of these is practice only. */
+  readonly waived: readonly string[];
+}
+/**
+ * The account-level entry stops as of `atMs`: the codes of every entry control core risk reports tripped with no trade
+ * (evaluateExit's `tripped`: daily, weekly and kill-switch loss, the loss pauses, the policy session, open positions,
+ * SOL price and balance), for the app's status. `codes` is null when the account cannot be read or judged: unknown.
+ */
+export interface RiskStopsView {
+  readonly atMs: number;
+  readonly codes: readonly string[] | null;
+}
+/** Account stops are read again on the account's own event, else at most once per this much event time. */
+export const STOPS_EVERY_MS = 1000;
 /** A reject's typed reasons ride in its last reason as `gate_reasons <json>`; the desk journals them as `gate_reasons`. */
 export const GATE_REASONS_PREFIX = 'gate_reasons ';
 /** The S0 diagnostic parts a decision relied on ride in a reason as `s0_diagnostic <part,part>`; the desk journals them as `s0_diagnostic`. */
@@ -205,6 +225,8 @@ export interface RestoreFact {
   readonly exits: Readonly<Record<string, SavedExit>>;
   /** Each position's entry fill moment as the ledger booked it (its first `open` event), by position (EXIT-1f). */
   readonly openedAt?: Readonly<Record<string, number>>;
+  /** Entry decisions' plan inputs by entry intent, saved before the intent was booked (EXIT-1h). */
+  readonly seeds?: Readonly<Record<string, EntrySeed>>;
   /** Where each booking sits against the boots (`live`, `reconcile`, or `unplaced: why`), from the journal (EXIT-1f N2). */
   readonly bookedWhen?: Readonly<Record<string, string>>;
 }
@@ -289,7 +311,8 @@ interface Candidate {
 }
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
-interface EntrySeed {
+/** An entry decision's own plan inputs, saved before its intent is booked (EXIT-1h) so a restart rebuilds its plan. */
+export interface EntrySeed {
   readonly mint: string;
   readonly universe: ExitUniverse;
   readonly notional: MicroUsd;
@@ -363,6 +386,15 @@ export class LiveStrategy implements Strategy {
   #lastMoment: Moment | null = null;
   readonly #cands = new Map<string, Candidate>();
   readonly #seeds = new Map<string, EntrySeed>();
+  /** Seeds that came from the restore, not from a decision in this process: their fill's moment is not this process's. */
+  readonly #restoredSeeds = new Set<string>();
+  /** Entry intents whose saved seed the restore refused: their positions go into sell-only recovery, saying so. */
+  readonly #refusedSeeds = new Set<string>();
+
+  /** Entry decisions' plan inputs not yet made into a plan, by entry intent: saved before the intent is booked (EXIT-1h). */
+  seeds(): Record<string, EntrySeed> {
+    return Object.fromEntries(this.#seeds);
+  }
   readonly #exits = new Map<string, SavedExit>();
   readonly #bars = new Map<string, PriceBar[]>();
   /** Per exit owner: the rung its first attempt uses and how many attempts it may sign (EXIT-1's decision). */
@@ -455,6 +487,51 @@ export class LiveStrategy implements Strategy {
    */
   displayQuoteOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
     return this.#displayQuotes.get(pid) ?? null;
+  }
+
+  /** The latest regime evaluation (every candidate's first check), for the app's status; null before the first. */
+  #regime: RegimeView | null = null;
+
+  regime(): RegimeView | null {
+    return this.#regime;
+  }
+
+  /** The latest account stops (RiskStopsView); null before the first event. */
+  #stops: RiskStopsView | null = null;
+
+  riskStops(): RiskStopsView | null {
+    return this.#stops;
+  }
+
+  /** Reads the account stops for status. Read-only: a trip found here is not latched (entries and exits latch theirs). */
+  #readStops(e: MarketEvent, ctx: StrategyContext): void {
+    const now = ctx.now.receivedAt;
+    if (this.#stops !== null && e.key !== ACCOUNT_KEY && now - this.#stops.atMs < STOPS_EVERY_MS) return;
+    const risk = this.#account(ctx);
+    if (risk === null) return void (this.#stops = { atMs: now, codes: null });
+    try {
+      // Judged as the entry path judges it: marked with no fallback (a mark that fails refuses the entry there), and
+      // unknown when core cannot evaluate the account (riskSnapshot is null exactly when its account check throws,
+      // where evaluateExit would report nothing tripped).
+      const sol = this.#spotSol(ctx);
+      const account = this.#marked(risk.history, ctx, sol, { fallback: false });
+      const input = { session: this.#d.session, mode: 'paper' as const, clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' as const } };
+      const snap = riskSnapshot(input);
+      if (snap === null) return void (this.#stops = { atMs: now, codes: null });
+      const r = evaluateExit(input);
+      const codes = new Set<string>(r.tripped.map((x) => x.code));
+      // R7 per entry, as evaluateEntry judges it (API-1 N2a): when today's loss plus one trade's worst-case costs reaches
+      // the daily limit, no entry can pass, so the status serves the daily-loss stop instead of "Entries: On".
+      if (sol !== null) {
+        const policy = this.#d.session.policy;
+        const limit = mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), BPS, 'floor');
+        const costs = maxTradeCosts(policy, { network: this.#d.config.network, rent: { ...this.#d.config.rent, oneTime: risk.oneTimeRent } }).total;
+        if (snap.dayLoss + lamportsToMicroUsd(costs, sol.value, 'ceil') >= limit) codes.add('daily_loss');
+      }
+      this.#stops = { atMs: now, codes: [...codes].sort() };
+    } catch {
+      this.#stops = { atMs: now, codes: null };
+    }
   }
 
   /** Positions whose universe the policy lacks, being flattened (said once each). */
@@ -570,6 +647,7 @@ export class LiveStrategy implements Strategy {
     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
     // Through `untilMs` itself: an exit at exactly the maximum hold (EXIT-1 fires at elapsed >= tMax) needs that moment.
     for (const [mint, t] of this.#tail) if (ctx.now.receivedAt > t.untilMs) this.#tail.delete(mint);
+    this.#readStops(e, ctx);
     return out;
   }
 
@@ -613,6 +691,17 @@ export class LiveStrategy implements Strategy {
     this.#restoreSeen = true;
     if (isObj(v) && isObj(v['openedAt'])) {
       for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
+    }
+    if (isObj(v) && isObj(v['seeds'])) {
+      for (const [id, x] of Object.entries(v['seeds'])) {
+        if (isObj(x) && typeof x['mint'] === 'string' && typeof x['universe'] === 'string' && typeof x['notional'] === 'bigint' && typeof x['stopPrice'] === 'bigint' && typeof x['entryReserve'] === 'bigint') {
+          this.#seeds.set(id, x as unknown as EntrySeed);
+          this.#restoredSeeds.add(id);
+        } else {
+          out.push({ action: null, reasons: ['restore seed refused', id, 'malformed saved seed'] });
+          this.#refusedSeeds.add(id);
+        }
+      }
     }
     if (isObj(v) && isObj(v['bookedWhen'])) {
       for (const [pid, when] of Object.entries(v['bookedWhen'])) if (typeof when === 'string') this.#bookedWhen.set(pid, when);
@@ -926,6 +1015,20 @@ export class LiveStrategy implements Strategy {
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
     // A waiting owner that settled or was booked another way no longer waits. #manage also ends the saved wait from the
     // book on every step (which covers a restart, when this list is empty); both are kept.
+    // A seed whose entry ended without a fill is never made into a plan (EXIT-1h).
+    // A restored seed whose intent is not in the rebuilt book (the kill came before the desk booked it) never will be:
+    // dropped at the restore's first step, so the file does not grow by one per such kill (EXIT-1h review N1).
+    for (const id of this.#seeds.keys()) {
+      const e = ctx.book.intents[id];
+      if (e !== undefined && isTerminal(e) && e.fills.length === 0) {
+        this.#seeds.delete(id);
+        this.#restoredSeeds.delete(id);
+      } else if (e === undefined && this.#restoredSeeds.has(id)) {
+        this.#seeds.delete(id);
+        this.#restoredSeeds.delete(id);
+        out.push({ action: null, reasons: ['restored seed dropped', id, 'its intent never reached the book'] });
+      }
+    }
     for (const [id, pid] of this.#waitingMarket) {
       const i = ctx.book.intents[id];
       if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
@@ -1187,6 +1290,9 @@ export class LiveStrategy implements Strategy {
   /** The entry plan of a position that just filled, from its decision seed and the fill. */
   #planFromFill(pid: PositionId, entryId: IntentId, ctx: StrategyContext, out: Decision[]): SavedExit | null {
     const seed = this.#seeds.get(entryId);
+    // A seed saved by an earlier process (EXIT-1h) rebuilds the plan, but its fill was not seen here: dated like a fill
+    // without one (the booked moment, else the slot), never at this process's clock.
+    const seen = seed !== undefined && !this.#restoredSeeds.has(entryId);
     const entry = ctx.book.intents[entryId];
     const p = ctx.book.positions[pid]!;
     // The open time: the fill's moment when this process saw it (it holds the decision seed); else the moment the ledger
@@ -1200,10 +1306,10 @@ export class LiveStrategy implements Strategy {
     const booked = this.#bookedOpenAt.get(pid);
     const when = this.#bookedWhen.get(pid);
     let fillAt = ctx.now.receivedAt;
-    if (seed === undefined && booked !== undefined && !(when === 'reconcile' && fill !== undefined)) {
+    if (!seen && booked !== undefined && !(when === 'reconcile' && fill !== undefined)) {
       fillAt = Math.min(booked, ctx.now.receivedAt);
       if (when !== undefined && when.startsWith('unplaced')) out.push({ action: null, reasons: ['open time from the booking', p.mint, when] });
-    } else if (seed === undefined && fill !== undefined) {
+    } else if (!seen && fill !== undefined) {
       if (this.#height === null) {
         if (!this.#planWaitsForSlot.has(pid)) {
           this.#planWaitsForSlot.add(pid);
@@ -1221,7 +1327,7 @@ export class LiveStrategy implements Strategy {
     const recovery = seed === undefined || entry === undefined;
     let why: string | null = null;
     if (recovery) {
-      why = this.#recoveryWhy.get(pid) ?? (this.#restoreSeen && !this.#exits.has(pid) && this.#bookedOpenAt.has(pid) ? 'no saved plan' : 'no decision seed');
+      why = this.#recoveryWhy.get(pid) ?? (this.#refusedSeeds.has(entryId) ? 'saved seed refused' : null) ?? (this.#restoreSeen && !this.#exits.has(pid) && this.#bookedOpenAt.has(pid) ? 'no saved plan' : 'no decision seed');
       out.push({ action: null, reasons: ['no entry plan', p.mint, 'sell-only recovery'] });
       out.push({ action: null, reasons: ['recovery exit', pid, why, 'the whole holding exits at the next fresh quote'] });
     }
@@ -1239,6 +1345,7 @@ export class LiveStrategy implements Strategy {
     this.#bars.set(pid, [...saved.bars]);
     this.#exits.set(pid, saved);
     this.#seeds.delete(entryId);
+    this.#restoredSeeds.delete(entryId);
     out.push({ action: null, reasons: ['entry plan', p.mint, `stop ${stopPrice}`, `1R ${riskUnit} lamports`] });
     return saved;
   }
@@ -1365,6 +1472,7 @@ export class LiveStrategy implements Strategy {
     const diag = c.s0Diagnostic === true ? { s0Diagnostic: true } as const : {};
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
+    this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };
     if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
@@ -1376,7 +1484,11 @@ export class LiveStrategy implements Strategy {
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     const { hard, notEvaluated } = stagedHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
     // The S0 diagnostic set's H14 note, from whichever stages ran (WORKER-1e).
-    if (hard.notes.some((n) => n.code === 's0-diagnostic')) this.#waived.push('h14-creates-coverage');
+    if (hard.notes.some((n) => n.code === 's0-diagnostic')) {
+      this.#waived.push('h14-creates-coverage');
+      // Served with the regime too: the card never reads a plain "On" while any part of the set is waived (API-1 N1).
+      if (this.#regime !== null) this.#regime = { ...this.#regime, waived: [...this.#regime.waived, 'h14-creates-coverage'] };
+    }
     if (!hardAllowsEntry(hard)) {
       // Fails closed: a pass that left a gate out (groups that stop covering every hard gate) is no entry.
       if (hard.reasons.length === 0) return this.#fail('hard rejects incomplete', [{ gate: 'worker', code: 'hard-incomplete', detail: 'not every hard gate was evaluated' }]);
