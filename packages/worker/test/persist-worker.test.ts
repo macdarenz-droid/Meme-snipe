@@ -9,6 +9,9 @@ import { parseTyped } from '../src/run/json.ts';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
+import { TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { RAW } from '../../core/src/facts/raw.ts';
+import { GRADUATES_KEY, survivalCondition } from '../../core/src/gates/index.ts';
 import { DailyBudget, loadState } from '../src/persist/index.ts';
 import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, SEED_CREDIT_CAP, runSeed } from '../src/run/seed-start.ts';
 import { PERSIST_EVERY_MS, PERSIST_FILE, type SeedRequest, type SeedResult } from '../src/run/worker.ts';
@@ -74,6 +77,54 @@ describe('PERSIST-1 in the worker', () => {
       .join('\n').split('\n').filter((l) => l !== '').map((l) => parseTyped(l) as Frame);
     const seedFrame = frames.find((f) => f.body.type === 'fact' && f.body.key === SEED_KEY);
     expect((seedFrame?.body as { value: { state?: { index: unknown; labeller: unknown } } }).value.state).toEqual({ index: saved.ok ? saved.index.snapshot(saved.asOf) : null, labeller: saved.ok ? saved.labeller.snapshot() : null });
+  }, 60_000);
+
+  it('PERSIST-2: a restart inside the 14-day window keeps survival known (the series comes back through a recorded seed read)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const h = makeWorker({ stateDir, timers, seed });
+    const m = await boot(h);
+    // About 16 days of graduates, one every 13 min (110 or 111 a day, above the policy's survivalMinGraduates of 100),
+    // the newest well past its +30 min mark.
+    const P = TRIAL_POLICY.regime;
+    const items = Array.from({ length: 16 * 110 }, (_, k) => ({ mint: `Grad${k}`, migratedAtMs: m.now - 2 * 3_600_000 - k * 13 * 60_000, reserveAfter: k % 3 === 0 ? 1n : 100_000_000_000n }))
+      .sort((a, b) => a.migratedAtMs - b.migratedAtMs);
+    // One more graduate whose +30 min mark is still ahead at the save: it is not saved.
+    const young = { mint: 'Young', migratedAtMs: m.now - 10 * 60_000, reserveAfter: 1n };
+    m.fact(GRADUATES_KEY, { obs: { provider: 'facts', slot: null, receivedAt: m.now, quality: [] }, items: [...items, young] });
+    await m.run(1_000, 200, () => m.slot());
+    expect(survivalCondition({ obs: { provider: 'facts', slot: null, receivedAt: m.now, quality: [] }, items }, m.now, P).ok).not.toBeNull();
+    await h.worker.stop();
+    const saved = loadState(join(stateDir, PERSIST_FILE), RUG_CONFIG);
+    expect(saved.ok && saved.graduates?.items).toEqual(items);
+
+    timers.set(timers.now() + 10 * 60_000);
+    const h2 = makeWorker({ stateDir, timers, seed });
+    const m2 = await boot(h2);
+    // This process saw no graduate of its own: the producer's series is the saved one, and survival is computed.
+    const back = h2.worker.strategy.persistable(0)?.graduates;
+    expect(back?.items).toEqual(items);
+    expect(survivalCondition({ obs: { provider: 'facts', slot: null, receivedAt: m2.now, quality: [] }, items: back!.items }, m2.now, P).ok).not.toBeNull();
+    // The seed's outcome is journaled and shown in /health.
+    expect(h2.worker.health().graduates_seed).toEqual({ source: 'persist', accepted: true, added: items.length, reason: null });
+    expect(journal(stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'graduates_seed').map((l) => l['accepted'])).toEqual([true]);
+    await h2.worker.stop();
+    // A host clock behind the save (a VM restored, NTP stepping back): the seed is dated after its release and refused,
+    // visibly, so the regime's unknown survival has a named cause.
+    const behind = makeWorker({ stateDir, timers: virtualTimers(saved.ok ? saved.asOf.receivedAt - 3_600_000 : 0), seed });
+    expect(behind.worker.health().graduates_seed).toBeUndefined();
+    await boot(behind);
+    expect(behind.worker.health().graduates_seed).toMatchObject({ source: 'persist', accepted: false, added: 0, reason: expect.stringMatching(/after its release/) });
+    expect(behind.logs.some((l) => l.startsWith('ALERT graduates seed refused: '))).toBe(true);
+    expect(journal(stateDir).filter((l) => l['boot'] === behind.worker.boot && l['kind'] === 'graduates_seed').map((l) => l['accepted'])).toEqual([false]);
+    await behind.worker.stop();
+    // Replay parity: the series travels as a recorded raw read.
+    const dir = join(stateDir, 'recorder', h2.worker.boot, 'days');
+    const frames = readdirSync(dir).flatMap((d) => readdirSync(join(dir, d)).filter((f) => /^frames-/.test(f)).map((f) => zstdDecompressSync(readFileSync(join(dir, d, f))).toString('utf8')))
+      .join('\n').split('\n').filter((l) => l !== '').map((l) => parseTyped(l) as Frame);
+    const seedRead = frames.find((f) => f.body.type === 'offchain' && f.body.key === RAW.graduatesSeed);
+    expect((seedRead?.body as { value: { source: string; items: unknown } }).value).toMatchObject({ source: 'persist', items });
   }, 60_000);
 
   it('saves every PERSIST_EVERY_MS once the seed is applied, and never before it', async () => {

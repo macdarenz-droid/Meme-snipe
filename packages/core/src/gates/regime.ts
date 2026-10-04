@@ -91,7 +91,7 @@ const unknown = (condition: RegimeCondition, input: FactName, code: EvidenceCode
  * Survival share of graduates whose +30 min mark falls in the 24 h before `at`, against the median of the 14 days before.
  * A day with fewer than survivalMinGraduates graduates is unknown, never a pass (REGIME-MIN): its share is too noisy.
  */
-const survival = (g: GraduatesFact, at: number, p: Policy['regime']): ConditionResult => {
+export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regime']): ConditionResult => {
   const known = g.items.filter((i) => i.migratedAtMs + p.survivalAfterMs <= at);
   const share = (from: number, to: number): Frac | number => {
     const inWindow = known.filter((i) => i.migratedAtMs + p.survivalAfterMs > from && i.migratedAtMs + p.survivalAfterMs <= to);
@@ -151,7 +151,7 @@ type Missing = { readonly missing: string };
 /** One check; with the diagnostic set volume and survival are listed but left out of `ok` (`missing`: no such fact). */
 const check = (atMs: number, g: GraduatesFact | Missing, v: CurveVolumeFact | Missing, s: SolUsdFact, p: Policy['regime'], diag: boolean): RegimeCheck => {
   const volume = 'missing' in v ? unknown('volume', 'curve-volume', 'missing', v.missing) : volumeCondition(v, atMs, p);
-  const surv = 'missing' in g ? unknown('survival', 'graduates', 'missing', g.missing) : survival(g, atMs, p);
+  const surv = 'missing' in g ? unknown('survival', 'graduates', 'missing', g.missing) : survivalCondition(g, atMs, p);
   const conditions = [surv, volume, solChange(s, atMs, p)];
   const judged = diag ? conditions.filter((c) => !UNJUDGED.has(c.condition)) : conditions;
   const ok = judged.some((c) => c.ok === null) ? null : judged.every((c) => c.ok === true);
