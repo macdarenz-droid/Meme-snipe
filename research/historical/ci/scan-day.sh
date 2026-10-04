@@ -29,6 +29,21 @@ hold_back() {
     echo "$now $2 $want" > "$1"
   fi
 }
+# rps_cap FILE: the scanner's request cap (the literal "var reqLimiter = newLimiter(N)"
+# in scanner/archive.go), or nothing. rps_ok FILE: it is above 0 and at most
+# ARCHIVE_MAX_RPS (archive-limits.conf). Shared with check-day.sh and archive-check.sh.
+rps_cap() { sed -n 's/^var reqLimiter = newLimiter(\([0-9.]*\))$/\1/p' "$1" 2>/dev/null | head -1; }
+rps_ok() {
+  local cap max
+  cap=$(rps_cap "$1")
+  max=$(. "$(dirname "$0")/archive-limits.conf" && echo "$ARCHIVE_MAX_RPS")
+  awk -v c="$cap" -v m="$max" 'BEGIN { exit !(c + 0 > 0 && c + 0 <= m + 0) }'
+}
+if [ "${1:-}" = --rps-ok ]; then
+  [ $# -eq 2 ] || { echo "usage: scan-day.sh --rps-ok ARCHIVE_GO" >&2; exit 2; }
+  cap=$(rps_cap "$2"); echo "${cap:-not found}"
+  rps_ok "$2"; exit $?
+fi
 if [ "${1:-}" = --hold ]; then
   [ $# -eq 3 ] || { echo "usage: scan-day.sh --hold FILE MIN_S" >&2; exit 2; }
   mkdir -p "$(dirname "$2")" && hold_back "$2" "$3"
@@ -48,6 +63,9 @@ day=$1 out=$2 mbps=$3 budget=$4
 . "$(dirname "$0")/archive-limits.conf"
 awk -v m="$mbps" -v c="$ARCHIVE_MAX_MBPS" 'BEGIN { exit !(m + 0 > 0 && m + 0 <= c + 0) }' ||
   { echo "refused: max_mbps $mbps is not in (0, $ARCHIVE_MAX_MBPS] (archive-limits.conf)" >&2; exit 2; }
+archive_go=${ARCHIVE_GO:-$(dirname "$0")/../scanner/archive.go}
+rps_ok "$archive_go" ||
+  { echo "refused: the scanner's request cap ($(rps_cap "$archive_go" || true)/s, scanner/archive.go) is not in (0, $ARCHIVE_MAX_RPS] (archive-limits.conf)" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" >&2; exit 2; }
 next=$(date -u -d "$day + 1 day" +%F)
 start=$(date +%s)
 case $budget in
