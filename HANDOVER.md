@@ -1,5 +1,23 @@
 # Supervisor handover
 
+## Current supervisor (from Mon 5 Oct 8:34 AM)
+
+Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hourly owner update: Routine trig_01K3Z2WExmSzU2WnT6EytpL2 (Melbourne :49) into this session; the old trig_017KiLULXYBToCWdWfSN7QNP is disabled.
+
+**PASS waiting to merge, with the reason it has not merged yet** (re-checked every hour):
+
+| PR | Reviewed head | Why not merged yet |
+|---|---|---|
+| #202 capped maps | 7557335d | next in line after #137; clean on base + #137 |
+| #148 WORKER-CRASH | passed before the base merge | base-merged at 94c85d95 (tx-fetcher resolution); needs the facts delta and the builder's full check; clean after #137 + #202 |
+
+**Log (Melbourne time)**
+- 8:34: every active builder and reviewer told to report here. Owners checked from commit trailers: #168 ACCOUNT-RATE → WORKER-1d builder (session_01WFmrBXa6KfoKgBaRVXXCW8); #197 SOL-BOOKS → risk builder (session_01Dn7Qz3cPQH9nPpwv5eSVVb, parked); #198 PAPER-2 → PAPER builder (session_01JrFutz1ZxstamsdeSWN5XM).
+- 8:31 live summary (worker e32cd0d): starts 80 (about 40 boots), uptime 513 s, candidates seen 490, refused 0, entered 0, trades 0; halts feed-stale 310, feed-disconnected 47, seeding 40. Coins are still not judged.
+- 8:36: #198's run/CI test gap sent to the PAPER builder. #148 put ahead of #209 in the facts reviewer's queue (it is the likely crash fix).
+- 8:48: #137 OPS-1i merged at 928821f4 (check, e2e and historical-data green on cc02dd86).
+- Merge order checked with `git merge-tree` on full history: #137 → #202 → #148 merge cleanly in turn; #209 conflicts with #148 in worker.ts (its builder merges after #148 lands). **Lesson:** the session clone is shallow (depth 50); fetch with `--depth=3000` before any merge-tree check, or merge bases come out wrong.
+
 ## Supervisor change, Mon 5 Oct about 8:30 AM (paste-ready takeover prompt)
 
 You are the new supervisor for the Zeroed trading bot, repo macdarenz-droid/Meme-snipe. You replace the previous supervisor session (session_012En9L5mnYQtEz7oyp1Eryf), which the owner fired on Mon 5 Oct 2026 at about 8:30 AM Melbourne time.
