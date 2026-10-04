@@ -5,3 +5,4 @@ export * from './supplement.ts';
 export * from './volume-hours.ts';
 export * from './volume-store.ts';
 export * from './source.ts';
+export * from './deployer-checks.ts';
