@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/82d8f81c6f926ce37750acfee6b6850c07c3aa75/ops/install.sh -o i && echo '8e0b9800d017b592619e965f55bb16c625802dffb83287109a6e671f2a275960  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/a45fc86ef6ff2456b9ee5088bf6ae0ce5565ae66/ops/install.sh -o i && echo '45827123f3797bef2fc7ae66b4ee158b6ed971b574d52b1aaefe1f28316594ea  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/82d8f81c
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `8e0b9800d017b592619e965f55bb16c625802dffb83287109a6e671f2a275960`
+SHA-256 of `install.sh`: `45827123f3797bef2fc7ae66b4ee158b6ed971b574d52b1aaefe1f28316594ea`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -69,7 +69,7 @@ Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987b
 - no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
 - the worker reports no open intent (`/var/lib/zeroed/open_intents`).
 
-Before switching, it runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. Only when that succeeds does it switch and restart the worker. The update is all or nothing: it keeps each host file it changes (the Node link included) and notes each unit it stops. If any step fails, it puts every file back, removes new ones, reloads systemd, restarts what was running and re-applies the old firewall. An update cut off half-way is rolled back by the next one first. Packages apt added stay installed. A failure keeps the running release and worker as they are, alerts once, and is tried again every 5 minutes under the same gates. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*` and `zeroed-worker-tabletop.service`, the host-loss tabletop worker on 127.0.0.1:8789, which is never published), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
+First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). The trial runs beside the running worker as transient units, under the worker unit's own sandbox and environment file. It has a scratch state directory as its only writable path, its own loopback ports (127.0.0.1:8797 and 8798), and memory capped at 280M. Its `--reconcile` must exit 0. It must then answer its health route in paper mode within 90 seconds, and still be running and answering 30 seconds later. If it does not (a file that does not strip or load, a missing file, a refused config, a worker that dies), nothing changes: current stays, the running worker keeps running, and one Telegram alert says why. It is tried again every 5 minutes. After the switch, the new worker must answer within 60 seconds and then run 30 seconds without a restart. If it does not, the server goes back to the release it ran: current, the deployed record, its host files and its worker. That commit is not tried again (a newer deploy is), and one alert says why. Then it runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. Only when that succeeds does it switch and restart the worker. The update is all or nothing: it keeps each host file it changes (the Node link included) and notes each unit it stops. If any step fails, it puts every file back, removes new ones, reloads systemd, restarts what was running and re-applies the old firewall. An update cut off half-way is rolled back by the next one first. Packages apt added stay installed. A failure keeps the running release and worker as they are, alerts once, and is tried again every 5 minutes under the same gates. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*` and `zeroed-worker-tabletop.service`, the host-loss tabletop worker on 127.0.0.1:8789, which is never published), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
 
 ## Backups
 
@@ -139,9 +139,18 @@ A failed webhook set is tried again after 1, 2, 4 and 8 minutes, then every 30 m
 
 ## Dry run
 
-The worker unit starts `/usr/local/lib/zeroed/worker-start`, for both the reconcile step and the run. The wrapper sets `ZEROED_MODE=paper`, `ZEROED_RECORDER=on`, `ZEROED_SIMULATE=on` and `ZEROED_DRILLS=on`, the health route for the runner on `ZEROED_HEALTH_ADDR=127.0.0.1:8787` and the worker API on `ZEROED_API_ADDR=127.0.0.1:8788`. It runs the release's own worker (`packages/worker/src/main.ts`) only when the release's `ops/host-config.json` says `"worker": "release"`; it ships as `"stub"`, so the host keeps its stand-in until that switch is a reviewed commit, applied by the next code update. Live is never set there or in any environment file.
+The worker unit starts `/usr/local/lib/zeroed/worker-start`, for both the reconcile step and the run. The wrapper sets `ZEROED_MODE=paper`, `ZEROED_RECORDER=on`, `ZEROED_SIMULATE=on` and `ZEROED_DRILLS=on`, the health route for the runner on `ZEROED_HEALTH_ADDR=127.0.0.1:8787` and the worker API on `ZEROED_API_ADDR=127.0.0.1:8788`. It runs the release's own worker (`packages/worker/src/main.ts`, under the host's Node 22 with no `node_modules`) when the release's `ops/host-config.json` says `"worker": "release"`, which it does since SWITCH-1. A release without that switch, or without the file, runs the host's stand-in. Live is never set there or in any environment file, and the worker refuses any mode but paper.
 
 Evidence stays on the host in `/var/lib/zeroed-dryrun/evidence/<run id>/` (root only), written by `zeroed-dryrun@<name>`. Nothing uploads it; the way into the repository waits for the owner's decision. `zeroed-check` writes its index (id, name, label, commit, start, finished, pass, aborted reason, path) to `/var/lib/zeroed-index/evidence.json`. The worker API's `GET /health` lists it as `evidence`, and `zeroed-status` counts the runs. The restore drill for host-loss drills is `zeroed-restore-drill /etc/zeroed/age/host.key`. The reboot drill unit `zeroed-dryrun-reboot.service` arrives with RUN-1's units.
+
+## Online
+
+The app shows the server as Online when the worker API answers it with data that passes the app's checks. That needs:
+1. The release's own worker running. `zeroed-status` shows `Worker: active (the release's worker, <commit>)`. `(the host's stand-in)` means the server still runs a release from before the switch; the next code update moves it.
+2. The live view on (below), and the phone in the same tailnet.
+3. In the app, the server address set to the live view address.
+
+With no provider reachable, or keys missing, the worker still answers: it runs degraded, entries are halted, and the app shows why.
 
 ## Live view
 
@@ -175,5 +184,6 @@ A server installed from an earlier line (before this fix) has its webhook off af
 - the dry-run update gate, `install.sh --update` through `zeroed-update` (with SSH kept open or closed), the worker wrapper and the worker API's evidence list;
 - webhook change alerts, retries with back-off and the notice after 5 failed tries; the stored-key check;
 - re-pairing (refused, wrong code, expiry, success during a dry run) and the live view with a Tailscale stand-in.
+- the release's own worker (SWITCH-1): it runs on the host's Node 22 with keys from systemd credentials, reconciles first, serves health and the API on loopback, runs degraded without providers, restarts clean and refuses live. A release whose worker cannot start (a syntax error, a missing file, a refused config) is never switched to.
 
 It ends with a scan of every log and output for every test value and code. The `ops-e2e` workflow runs it on every change to `ops/`.
