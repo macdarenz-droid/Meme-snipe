@@ -942,6 +942,31 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · Demotion power, per universe at its own cap** (−10% decay, 20 trades a day, 30 days, ρ 0 / 0.05 / 0.1):
   - U2 (cap +30%): 0.987 / 0.983 / 0.927.
   - **U1 (cap +40%): 0.713 / 0.613 / 0.523, below the 80% target.** U1 would need 40 trading days (1.0 / 0.99 / 0.93) or a −12.5% detectable decay at 30 days (0.997 / 0.987 / 0.91). Supervisor ruling (2026-10-04): the shortfall is recorded as is and nothing changes in STATS-1c. Follow-up STATS-1d: U1 runs the current window plus a 40-day window and demotes on either (more demotion is the safe direction, so the owner is not needed), reporting the combined false-demotion rate and power. Until then the risk layer's hard limits are the backstop.
+- **2026-10-05 · STRATEGY-HEALTH-OBS: calibration rule registered before the first run** (builder, under the supervisor's card; observation only, no entry behaviour, limit or stop changes).
+  - Candidate monitor beside R8: CUSUM on episode net returns, S_i = max(0, S_{i−1} − z_i − κ), κ = 0.005, alarm at S_i ≥ h.
+  - h is the smallest value on the grid 0.05, 0.10, …, 4.00 whose alarm rate within 100 episodes is ≤ 5% for every in-control model (risk.md §1.6's S2 and S3 net of v = 3.5%, and 10% at +100% / 90% at −5%), on seed 810 (20,000 paths, `SeedSequence.spawn(12)` streams).
+  - Validation on seed 281011: each in-control alarm rate ≤ 5% + 2·SE (≈ 5.31%). A miss is reported as a failed calibration, never re-tuned on the validation seed.
+  - Stress and change scenarios are reported, not tuned on. All results are synthetic.
+  - Amendment (training seed only, before the validation seed was run): the grid to 4.00 held no h; S2 net's 95th percentile of the path maximum is 7.05 (median 3.37). The grid is extended to 12.00 with the same rule. That an S2-like marginal strategy needs h ≈ 7 is itself a finding: on raw fat-tailed returns a 5% false-alarm CUSUM tolerates about seven full losses beyond drift.
+  - **Acceptance, registered before the reducer is written** (observation only; each maps to a named test in `core/test/strategy-health.test.ts`; step 3's cases are tested in the wiring PR):
+    1. Same sign sequence, different amounts → different S and states.
+    2. A profitable strategy that loses often stays active.
+    3. Tiny wins with severe losses reach watch/paused while R8's sign count would not.
+    4. A failed entry that paid fees and opened no position is one observation (z = −fees/entry).
+    5. Retries then an exit are one episode.
+    6. Partial fills and partial exits are one episode.
+    7. A duplicate status (a replayed sequence number) changes nothing.
+    8. Restart at every durable-write boundary (serialize, restore, replay from the last checkpoint) gives the same transitions as one uninterrupted run.
+    9. Unfinished losers never vanish: an open episode stays in the state with its flows until it is final.
+    10. Equal timestamps are ordered by durable sequence; an out-of-order or conflicting sequence is refused.
+    11. A rename (display name) or a version or policy change within a lineage cannot reset its history; a paused lineage stays paused or requalifying.
+    12. Returns below −100% are not clipped.
+    13. A dropped attempt (nothing sent) is not an observation; a dropped episode carrying fees is refused rather than hidden.
+    14. An identity that is not registered is reported as unregistered, with its S still computed.
+    15. The reducer is pure: same events, same output; the core purity guard covers it.
+    16. Step 3 (wiring PR): existing decisions byte-identical with the monitor on; exits unaffected; no future labels; recorded-feed replay parity between worker and backtest.
+    17. Step 3 also: `seen` and `finished` are pruned or checkpointed (they grow with every event); late flows after `final` are defined and tested. Either the wiring emits `final` only after every flow of the episode, or the reducer accepts a late close fee or rent refund as an adjustment. Until then a flow after `final` is refused (test 10).
+  - **Stats review of #175 at 52c66d3 (B1):** the false-alarm target is per 100 episodes. False pauses accumulate over longer runs (S2 net: 5.05 / 22.2 / 44.0 / 71.4% by 100 / 250 / 500 / 1,000 episodes), so a pause is evidence read against the episodes observed. Recorded in risk.md §10, the script and `HEALTH_DEFAULTS`.
 - **2026-10-04 · STATS-1g: external audit of core stats (S1, S3, S4); each item was reproduced before it was fixed.**
   - **S1, the G3 retained-expectancy budget.**
     - The bound subtracted four uncertain parts: the holdout lower bound, v⁺ and Δ⁺ at α/3 each, plus a 95% fill-error bound. The union bound is 3·(0.05/3) + 0.05 = 0.10, so only 90% joint coverage was established.
