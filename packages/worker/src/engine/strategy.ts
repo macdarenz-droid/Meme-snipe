@@ -197,6 +197,10 @@ export interface SavedExit {
 
 export interface RestoreFact {
   readonly exits: Readonly<Record<string, SavedExit>>;
+  /** Each position's entry fill moment as the ledger booked it (its first `open` event), by position (EXIT-1f). */
+  readonly openedAt?: Readonly<Record<string, number>>;
+  /** Where each booking sits against the boots (`live`, `reconcile`, or `unplaced: why`), from the journal (EXIT-1f N2). */
+  readonly bookedWhen?: Readonly<Record<string, string>>;
 }
 
 /** Strategy settings that are not owner limits. The trading rules stay provisional until BT-2 registers U2's. */
@@ -221,6 +225,12 @@ export interface StrategyConfig {
   /** A candidate is evaluated at most once per this many ms. */
   readonly evaluateEveryMs: number;
   /** Width of the price bars kept per mint (the policy's ATR bar). */
+  /**
+   * An upper bound on mainnet's mean slot time, used only to date a fill the strategy did not see (a restart whose saved
+   * plan is missing or refused) from its slot: the larger the bound, the earlier the open time, so a restart can never
+   * extend a time stop (EXIT-1f).
+   */
+  readonly maxSlotMs: number;
   readonly barMs: number;
   /** Bars kept per mint. */
   readonly keepBars: number;
@@ -317,6 +327,17 @@ export const sellOnlyReason = (pid: string, universe: string | null, universes: 
 const NO_QUOTE = 'no quote: ';
 
 /** A saved entry plan the exit rules can run on: every amount a bigint, the open time a number (EXIT-1e). */
+/** A saved exit tracker the exit rules can run on: every field of its type (EXIT-1f). */
+const runnableTracker = (t: Record<string, unknown>): boolean => {
+  const big = (k: string, nullable: boolean) => typeof t[k] === 'bigint' || (nullable && t[k] === null);
+  const num = (k: string, nullable: boolean) => (typeof t[k] === 'number' && Number.isFinite(t[k])) || (nullable && t[k] === null);
+  const pending = t['pendingFull'];
+  return big('peak', true) && big('trail', true) && big('lastSold', false)
+    && num('partials', false) && num('partialSeq', true) && num('lastRung', true) && num('quoteFailures', false) && num('lastQuoteAtMs', true)
+    && num('blockedAtMs', true) && num('blockedRetries', false) && typeof t['flatMet'] === 'boolean'
+    && (pending === null || (Array.isArray(pending) && pending.every((r) => typeof r === 'string')));
+};
+
 const runnablePlan = (p: Record<string, unknown>): boolean =>
   typeof p['openedAtMs'] === 'number' && Number.isFinite(p['openedAtMs'])
   && ['notional', 'riskUnit', 'stopPrice', 'entryReserve'].every((k) => typeof p[k] === 'bigint')
@@ -438,6 +459,12 @@ export class LiveStrategy implements Strategy {
    * restore) must never plan a restored position from its fill under the policy-maximum stop, even for one step (EXIT-1e).
    */
   #restoreSeen = false;
+  /** Entry fill moments the ledger booked, from the restore fact: a fallback plan's exact open time (EXIT-1f). */
+  readonly #bookedOpenAt = new Map<string, number>();
+  /** Where each booking sits against the boots (restore fact): only a reconcile-time booking may be late (EXIT-1f N2). */
+  readonly #bookedWhen = new Map<string, string>();
+  /** Positions whose fallback plan waits for the first slot to date their fill (said once each). */
+  readonly #planWaitsForSlot = new Set<string>();
   /** Said once per boot when positions wait for the restore. */
   #saidRestoreWait = false;
 
@@ -573,6 +600,12 @@ export class LiveStrategy implements Strategy {
 
   #restore(v: unknown, out: Decision[]): void {
     this.#restoreSeen = true;
+    if (isObj(v) && isObj(v['openedAt'])) {
+      for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
+    }
+    if (isObj(v) && isObj(v['bookedWhen'])) {
+      for (const [pid, when] of Object.entries(v['bookedWhen'])) if (typeof when === 'string') this.#bookedWhen.set(pid, when);
+    }
     if (!isObj(v) || !isObj(v['exits'])) {
       out.push({ action: null, reasons: ['restore refused', 'malformed restore fact'] });
       return;
@@ -585,7 +618,13 @@ export class LiveStrategy implements Strategy {
         out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
         continue;
       }
-      const saved = s as unknown as SavedExit;
+      let saved = s as unknown as SavedExit;
+      if (!runnableTracker(s['tracker'] as Record<string, unknown>)) {
+        // A tracker the exit rules would throw on is replaced, never applied: partials come back from the book; the peak,
+        // trail and flat target start again from now (the plan, its stop and its open time are kept).
+        out.push({ action: null, reasons: ['restore tracker refused', pid, 'malformed saved tracker; tracker reset'] });
+        saved = { ...saved, tracker: newTracker() };
+      }
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
       if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
@@ -872,7 +911,8 @@ export class LiveStrategy implements Strategy {
 
   /** Entry intents that resolved without a fill end; exit owners that did get a new attempt or are booked blocked. */
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
-    // A waiting owner that settled or was booked another way no longer waits.
+    // A waiting owner that settled or was booked another way no longer waits. #manage also ends the saved wait from the
+    // book on every step (which covers a restart, when this list is empty); both are kept.
     for (const [id, pid] of this.#waitingMarket) {
       const i = ctx.book.intents[id];
       if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
@@ -1070,7 +1110,11 @@ export class LiveStrategy implements Strategy {
       // Only an open position's wait is decided here; an exit owner's wait (EXIT-1d) is #sendExit's.
       const waiting = p.status === 'open' && step.tracker.pendingFull !== null;
       if (waiting && saved.waitingSinceMs == null) out.push({ action: null, reasons: ['exit waiting for a fresh quote', p.mint, step.tracker.pendingFull!.join(', ')] });
-      const waitingSinceMs = p.status !== 'open' ? (saved.waitingSinceMs ?? null) : waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null;
+      // A position being exited keeps its wait only while one of its exit owners can still be waiting for a market (not
+      // yet sent, or resolved without a fill); booked blocked, run out of budget, cancelled or settled, the wait is over.
+      // Read from the book on every step, so a restart (which forgets which owners were said to wait) agrees.
+      const ownerMayWait = exitIntents.some((i) => !isTerminal(i) && (i.status === 'exposure_reserved' || (i.status === 'reconciled' && i.fills.length === 0)));
+      const waitingSinceMs = p.status !== 'open' ? (ownerMayWait ? (saved.waitingSinceMs ?? null) : null) : waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null;
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
@@ -1122,11 +1166,35 @@ export class LiveStrategy implements Strategy {
     const seed = this.#seeds.get(entryId);
     const entry = ctx.book.intents[entryId];
     const p = ctx.book.positions[pid]!;
+    // The open time: the fill's moment when this process saw it (it holds the decision seed); else the moment the ledger
+    // booked it (exact, from the restore fact); else, with neither, the fill dated from its slot with an upper bound on
+    // the slot time. A restart never restarts T_flat or T_max (EXIT-1f). Until the first slot is seen the slot dating
+    // cannot be made, and nothing could be sent either: the plan waits for it.
+    // A fill booked during a boot's reconcile may have landed earlier (found by a status read after downtime): it opens
+    // at the earlier of its booking and its slot dating. A live booking is the fill's own moment and stays exact; one the
+    // journal could not place stays exact too, and says why (EXIT-1f N2).
+    const fill = entry?.fills[0];
+    const booked = this.#bookedOpenAt.get(pid);
+    const when = this.#bookedWhen.get(pid);
+    let fillAt = ctx.now.receivedAt;
+    if (seed === undefined && booked !== undefined && !(when === 'reconcile' && fill !== undefined)) {
+      fillAt = Math.min(booked, ctx.now.receivedAt);
+      if (when !== undefined && when.startsWith('unplaced')) out.push({ action: null, reasons: ['open time from the booking', p.mint, when] });
+    } else if (seed === undefined && fill !== undefined) {
+      if (this.#height === null) {
+        if (!this.#planWaitsForSlot.has(pid)) {
+          this.#planWaitsForSlot.add(pid);
+          out.push({ action: null, reasons: ['entry plan waits for the first slot', p.mint, 'the fill is dated from its slot'] });
+        }
+        return null;
+      }
+      const slots = this.#height > fill.slot ? this.#height - fill.slot : 0n;
+      fillAt = Math.min(ctx.now.receivedAt - Number(slots) * this.#d.config.maxSlotMs, booked ?? Number.POSITIVE_INFINITY);
+    }
     if (seed === undefined || entry === undefined) {
       // A position the strategy did not plan (none should exist): manage it with the tightest stop the policy allows.
       out.push({ action: null, reasons: ['no entry plan', p.mint, 'position managed with the policy maximum stop'] });
     }
-    const fillAt = ctx.now.receivedAt;
     const cost = p.cost;
     const entryPx = p.quantity > 0n ? (cost * PRICE_SCALE) / p.quantity : 0n;
     const stopPrice = seed?.stopPrice ?? entryPx - (entryPx * BigInt(this.#d.session.policy.loss.stopMaxBps)) / BPS;
