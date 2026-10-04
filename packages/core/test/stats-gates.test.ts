@@ -1,14 +1,14 @@
 // Every gate has a passing and a failing fixture; thresholds can be tightened but never loosened.
 import { describe, expect, test } from 'vitest';
 import {
-  createRng, deflatedSharpe, deflatedSharpeDaily, spaTest, evaluateDemotion, G2_SENSITIVITY_VARIANTS, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
+  createRng, deflatedSharpe, deflatedSharpeDaily, spaTest, DEMOTION_TRAILING_DAYS, evaluateDemotion, G2_SENSITIVITY_VARIANTS, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
   burnHoldout, createHoldoutRegistry, freezeRequirement, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
   type RevalidationInput,
 } from '../src/stats/index.ts';
 import { EXIT_UNIVERSES, KNOWN_PLATFORM_CHANGES, RESEARCH_CONFIG, TRIAL_POLICY } from '../src/config/index.ts';
-import { bracketTrades, type DayTrade } from './stats-fixtures.ts';
+import { bracketTrades, dayKey, type DayTrade } from './stats-fixtures.ts';
 
 const DAY = 86_400_000;
 const NOW = 1_790_000_000_000;
@@ -836,7 +836,8 @@ describe('demotion', () => {
   // (+40%). Returns above it (the runner) are capped, which can only make demotion fire sooner. STATS-1c: the check
   // runs for every universe at its own cap. Measured (300 runs, 20 trades a day, a −10% decay): U2 at 30 days 0.987 /
   // 0.983 / 0.927 at ρ 0 / 0.05 / 0.1; U1 at 30 days 0.713 / 0.613 / 0.523, below 80%; U1 would need 40 days (1.0 / 0.99
-  // / 0.93) or a −12.5% decay at 30 days (0.997 / 0.987 / 0.91). Nothing is changed: the choice is the supervisor's.
+  // / 0.93) or a −12.5% decay at 30 days (0.997 / 0.987 / 0.91). Recorded as is (supervisor ruling); STATS-1d's trailing
+  // detector below cannot change a decay from the start, where it sees the same days.
   const capOf = (u: (typeof EXIT_UNIVERSES)[number]) => (TRIAL_POLICY.exits.universes[u].partialAtRBps / 10_000) * (TRIAL_POLICY.loss.stopMaxBps / 10_000);
   const caught = (cap: number, days: number, decay: number, rho: number) => {
     let n = 0;
@@ -865,6 +866,70 @@ describe('demotion', () => {
     }
     expect(checked).toEqual([...EXIT_UNIVERSES]);
   }, 600_000);
+  // STATS-1d (supervisor ruling, 2026-10-04): beside the full-history reverse e-process, the same detector restarted on
+  // the last 40 trading days; demotion fires on either. Measured by evaluating demotion daily, as the worker does.
+  // Measured (100 runs): a −10% decay after 60 days at +5% is caught within 40 days by U1 1.0 / 0.95 and U2 1.0 / 1.0 at
+  // ρ 0 / 0.1; full history alone at most 0.17; no demotion during the good stretch.
+  /** The first day (0-based) a daily evaluation demotes, or null; `fullOnly` drops the trailing trigger (ablation). */
+  const firstDemotion = (d: readonly { day: string; rNet: number }[], cap: number, fullOnly = false): number | null => {
+    const days = [...new Set(d.map((t) => t.day))];
+    for (let i = 0; i < days.length; i++) {
+      const upTo = d.filter((t) => t.day <= days[i]!);
+      const r = evaluateDemotion({ ...demotionQuiet, returns: upTo, returnCap: cap });
+      const fired = fullOnly ? r.reasons.some((x) => x.startsWith('reverse e-process:')) : r.demote;
+      if (fired) return i;
+    }
+    return null;
+  };
+  /** `good` days at +5%, then `bad` days at `decay`, 20 trades a day, day shock ρ. */
+  const lateDecay = (seed: number, good: number, bad: number, decay: number, rho: number) => [
+    ...bracketTrades(seed, 0.05, good, 20, rho).map(({ day, rNet }) => ({ day, rNet })),
+    ...bracketTrades(seed + 50_000, decay, bad, 20, rho).map(({ rNet }, i) => ({ day: dayKey(good + Math.floor(i / 20)), rNet })),
+  ];
+  test('a decay after a good stretch is caught by the 40-day trailing detector; full history alone misses it', () => {
+    expect(DEMOTION_TRAILING_DAYS).toBe(40);
+    const RUNS = 100;
+    for (const u of EXIT_UNIVERSES) {
+      for (const rho of [0, 0.1]) {
+        let caught = 0;
+        let caughtFull = 0;
+        let early = 0;
+        for (let r = 0; r < RUNS; r++) {
+          const d = lateDecay(20_000 + r + Math.round(rho * 1e6), 60, 40, -0.1, rho);
+          const at = firstDemotion(d, capOf(u));
+          if (at !== null && at < 60) early++;
+          else if (at !== null) caught++;
+          const full = firstDemotion(d, capOf(u), true);
+          if (full !== null && full >= 60) caughtFull++;
+        }
+        expect(caught / RUNS, `${u} ρ ${rho}: caught within 40 days of the decay`).toBeGreaterThanOrEqual(0.8);
+        expect(caughtFull / RUNS, `${u} ρ ${rho}: full history alone`).toBeLessThan(0.2);
+        expect(early / RUNS, `${u} ρ ${rho}: demoted during the good stretch`).toBeLessThanOrEqual(0.05);
+      }
+    }
+  }, 900_000);
+  // Measured (100 runs, 120 days at zero edge, daily evaluation): U1 0 / 0.01 and U2 0 / 0.21 at ρ 0 / 0.1. U2 at ρ 0.1
+  // comes from its +30% cap clipping the day shocks (full history alone: 0.18), the intended safe side; the trailing
+  // detector adds at most a few points.
+  test('false demotion at zero edge over 120 days: at most 5% unless the cap clips day shocks; the trailing detector adds at most 5 points', () => {
+    const RUNS = 100;
+    const rate: Record<string, number> = {};
+    for (const u of EXIT_UNIVERSES) {
+      for (const rho of [0, 0.1]) {
+        let fired = 0;
+        let full = 0;
+        for (let r = 0; r < RUNS; r++) {
+          const d = bracketTrades(30_000 + r + Math.round(rho * 1e6), 0, 120, 20, rho).map(({ day, rNet }) => ({ day, rNet }));
+          if (firstDemotion(d, capOf(u)) !== null) fired++;
+          if (firstDemotion(d, capOf(u), true) !== null) full++;
+        }
+        rate[`${u} ${rho}`] = fired / RUNS;
+        expect((fired - full) / RUNS, `${u} ρ ${rho}: added by the trailing detector`).toBeLessThanOrEqual(0.05);
+        if (rho === 0 || u === 'U1') expect(fired / RUNS, `${u} ρ ${rho}`).toBeLessThanOrEqual(0.05);
+      }
+    }
+    expect(rate).toEqual({ 'U1 0': 0, 'U1 0.1': 0.01, 'U2 0': 0, 'U2 0.1': 0.21 });
+  }, 900_000);
   test('the return cap is limited to (0, 3]: an out-of-range cap demotes instead of blinding the detector', () => {
     const decay = bracketTrades(53, -0.1, 100, 10).map(({ day, rNet }) => ({ day, rNet }));
     expect(evaluateDemotion({ ...demotionQuiet, returns: decay, returnCap: 0.27 }).reasons[0]).toMatch(/^reverse e-process/);
