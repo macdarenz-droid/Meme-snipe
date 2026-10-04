@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { MicroUsd } from '../../core/src/units/index.ts';
 import { markedHistory } from '../src/engine/marks.ts';
 import { SOL_PRICE_KEY, TRIPPED_PREFIX, TRIP_PREFIX } from '../src/engine/strategy.ts';
 import { accountFile } from '../src/run/account.ts';
@@ -120,7 +121,7 @@ describe('a latch rests only on a fully marked valuation at a fresh SOL price (R
       const h1 = seam.mode === 'real' ? h0 : { ...h0, closedTrades: [...h0.closedTrades, lost] };
       const r = markedHistory(h1, held, sol, nowMs, st);
       if (seam.mode === 'unmarked') return { ...r, openPositions: r.openPositions.map((o) => ({ ...o, mark: null, markAtMs: null })) };
-      if (seam.mode === 'dip') return { ...r, openPositions: r.openPositions.map((o) => (o.mark === null ? o : { ...o, mark: 1n })) };
+      if (seam.mode === 'dip') return { ...r, openPositions: r.openPositions.map((o) => (o.mark === null ? o : { ...o, mark: 1n as MicroUsd })) };
       return r;
     };
     return { h: makeWorker({ markedHistory: mark }), seam };
