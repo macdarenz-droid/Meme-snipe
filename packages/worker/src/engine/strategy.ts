@@ -219,6 +219,12 @@ export interface SavedExit {
    * that ends unfilled, before or after a restart, never leaves the position held under the fallback plan.
    */
   readonly recovery?: string | null;
+  /**
+   * The exit owners made as blocked-exit retries, by intent id (EXIT-KEEP N1). The tracker counts a retry when it is
+   * decided, and the plans reach disk before the ledger books the step; a restart counts only the retries the ledger
+   * booked, so a kill in between never loses one of the retries.
+   */
+  readonly retryIds?: readonly string[];
 }
 
 export interface RestoreFact {
@@ -374,6 +380,9 @@ const runnablePlan = (p: Record<string, unknown>): boolean =>
 
 /** A saved recovery reason the worker can act on: absent, null or a reason (EXIT-1g review B1). */
 const runnableRecovery = (r: unknown): boolean => r === undefined || r === null || typeof r === 'string';
+
+/** Saved blocked-retry ids the worker can act on: absent, or a list of ids (EXIT-KEEP N1). */
+const runnableRetryIds = (r: unknown): boolean => r === undefined || (Array.isArray(r) && r.every((x) => typeof x === 'string'));
 
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
@@ -714,7 +723,7 @@ export class LiveStrategy implements Strategy {
     for (const [pid, s] of Object.entries(v['exits'])) {
       // A saved exit the exit rules could not run on is refused, never applied: its position goes into sell-only recovery
       // (EXIT-1g), so one bad entry neither stalls nor crashes the management of the others.
-      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan']) || !runnableRecovery(s['recovery'])) {
+      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan']) || !runnableRecovery(s['recovery']) || !runnableRetryIds(s['retryIds'])) {
         out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
         this.#recoveryWhy.set(pid, 'saved plan refused');
         continue;
@@ -1188,6 +1197,20 @@ export class LiveStrategy implements Strategy {
           this.#exits.set(p.id, saved);
           out.push({ action: null, reasons: ['partials from the book', p.id, `${sold.length} partials, ${p.sold} sold (saved: ${t.partials}, ${t.lastSold})`] });
         }
+        // Blocked-exit retries the ledger never booked (a kill after the plans were saved, before the desk booked the
+        // step) are not spent: the count follows the book, and a lost retry, already due when it was decided, is due at
+        // once (EXIT-KEEP N1).
+        const ids = saved.retryIds;
+        if (ids !== undefined && ids.length > 0) {
+          const booked = ids.filter((id) => ctx.book.intents[id] !== undefined);
+          if (booked.length < ids.length) {
+            const tr = saved.tracker;
+            const lost = ids.length - booked.length;
+            saved = { ...saved, retryIds: booked, tracker: { ...tr, blockedRetries: Math.max(0, tr.blockedRetries - lost), blockedAtMs: 0 } };
+            this.#exits.set(p.id, saved);
+            out.push({ action: null, reasons: ['blocked retry not booked', p.id, `${lost} retry not in the ledger; due again at once`] });
+          }
+        }
       }
       const recoveryWhy = saved.recovery ?? null;
       if (recoveryWhy !== null && p.status === 'open' && saved.tracker.pendingFull === null && exitIntents.every(isTerminal)) {
@@ -1281,6 +1304,10 @@ export class LiveStrategy implements Strategy {
     const label = d.kind === 'merge' ? 'exit reasons merged' : d.kind === 'exit' && d.retry ? 'retry blocked exit' : d.kind === 'exit' && d.partial ? 'partial exit' : 'exit';
     for (const ev of events) out.push({ action: ev, reasons: [label, mint, ...(why.length > 0 ? why : ['no trigger detail'])] });
     // A new owner that is not booked blocked goes out in the same step, at the rung EXIT-1 chose.
+    if (d.kind === 'exit' && d.retry) {
+      const saved = this.#exits.get(pid);
+      if (saved !== undefined) this.#exits.set(pid, { ...saved, retryIds: [...(saved.retryIds ?? []), id] });
+    }
     if (d.kind === 'exit' && events.length === 1) {
       this.#owners.set(id, { startRung: d.startRung, maxAttempts: d.maxAttempts });
       this.#sendExit(id, pid, mint, d.quantity, 0, ctx, out);
