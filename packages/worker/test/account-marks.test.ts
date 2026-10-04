@@ -33,6 +33,10 @@ describe('PaperAccount marks', () => {
     expect(a.mark(snap(next, 17, null), null, next)).toBe(true);
     expect(a.state.dayMark).toEqual({ startMs: melbourneDay(next).start, atMs: next, equity: usd(17) });
     expect(a.state.weekMark!.equity).toBe(usd(19.5));
+    // The next Melbourne week: a new week mark.
+    const week = melbourneWeek(T).end + 2 * HOUR;
+    expect(a.mark(snap(week, 16, null), null, week)).toBe(true);
+    expect(a.state.weekMark).toEqual({ startMs: melbourneWeek(week).start, atMs: week, equity: usd(16) });
   });
 
   it('keeps the NAV peak: it only rises, and restarts after a kill-switch re-arm', () => {
@@ -44,10 +48,14 @@ describe('PaperAccount marks', () => {
     expect(a.state.navPeak).toEqual({ atMs: T + 2, nav: usd(22) });
     // No NAV (a position without a mark, a stale price): nothing recorded.
     expect(a.mark(snap(T + 3, 20, null), null, T + 3)).toBe(false);
+    // A NAV of zero or less is never recorded (risk refuses a non-positive mark as an invalid bankroll), even as a
+    // first value after a re-arm.
+    expect(a.mark(snap(T + 4, 20, 0), T + 3, T + 4)).toBe(false);
+    expect(a.state.navPeak).toEqual({ atMs: T + 2, nav: usd(22) });
     // Re-armed after the peak: the next NAV starts it again, even when lower.
-    a.mark(snap(T + 5, 20, 15), T + 4, T + 5);
+    a.mark(snap(T + 5, 20, 15), T + 3, T + 5);
     expect(a.state.navPeak).toEqual({ atMs: T + 5, nav: usd(15) });
-    expect(a.mark(snap(T + 6, 20, 14), T + 4, T + 6)).toBe(false);
+    expect(a.mark(snap(T + 6, 20, 14), T + 3, T + 6)).toBe(false);
   });
 
   it('survives a restart (kept in account.json)', () => {
