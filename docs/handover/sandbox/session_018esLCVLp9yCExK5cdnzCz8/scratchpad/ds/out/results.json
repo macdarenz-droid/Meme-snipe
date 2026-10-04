@@ -1,0 +1,752 @@
+{
+  "task": "RES-3",
+  "dataset": "sha256:8e7f2c04d0dafd8eb6b50ef4abed00ce9d719a4dd505699b155a3d837eee847f",
+  "wall": "2026-09-24",
+  "window": {
+    "decisionFrom": "2026-09-19",
+    "decisionTo": "2026-10-01",
+    "holdoutFrom": "2026-09-25",
+    "embargoDays": 1,
+    "confirmedBy": "test"
+  },
+  "days": [
+    "2026-09-20"
+  ],
+  "seed": "res3-1",
+  "purged": 0,
+  "unquotableSwaps": 0,
+  "counts": {
+    "U1": {
+      "decisions": 0,
+      "eligible": 0,
+      "rejects": {}
+    },
+    "U2": {
+      "decisions": 9,
+      "eligible": 0,
+      "rejects": {
+        "H8 below liquidity floor": 8,
+        "H9 creation unknown": 9,
+        "H11 chase above migration price": 9
+      }
+    }
+  },
+  "trials": 0,
+  "verdicts": [
+    {
+      "universe": "U1",
+      "barrier": "B1_tp50_sl20_h120m",
+      "skipped": "only 0 practice days with labelled candidates"
+    },
+    {
+      "universe": "U1",
+      "barrier": "B2_time_h120m",
+      "skipped": "only 0 practice days with labelled candidates"
+    },
+    {
+      "universe": "U1",
+      "barrier": "B3_tp30_sl15_h60m",
+      "skipped": "only 0 practice days with labelled candidates"
+    },
+    {
+      "universe": "U2",
+      "barrier": "B1_tp50_sl20_h120m",
+      "skipped": "only 0 practice days with labelled candidates"
+    },
+    {
+      "universe": "U2",
+      "barrier": "B2_time_h120m",
+      "skipped": "only 0 practice days with labelled candidates"
+    },
+    {
+      "universe": "U2",
+      "barrier": "B3_tp30_sl15_h60m",
+      "skipped": "only 0 practice days with labelled candidates"
+    }
+  ],
+  "baseScenario": [],
+  "univariate": [
+    {
+      "universe": "U1",
+      "features": [
+        {
+          "feature": "f_net15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_net60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_bsr15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_indep60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_size15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_trades15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_ret15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_ret60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_dd",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_vwap",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_hl",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_vol60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_liq",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_liqchg60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_age",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_2side60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_top60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_c2g",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_devnet",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_bundle",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_top10",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_dep24",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_grad24",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_sol24",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        }
+      ]
+    },
+    {
+      "universe": "U2",
+      "features": [
+        {
+          "feature": "f_net15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_net60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_bsr15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_indep60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_size15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_trades15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_ret15",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_ret60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_dd",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_vwap",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_hl",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_vol60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_liq",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_liqchg60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_age",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_2side60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_top60",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_c2g",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_devnet",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_bundle",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_top10",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_dep24",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_grad24",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        },
+        {
+          "feature": "f_sol24",
+          "known": 0,
+          "spearman": null,
+          "quintiles": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "topMinusBottom": null,
+          "holmPass": false
+        }
+      ]
+    }
+  ]
+}
