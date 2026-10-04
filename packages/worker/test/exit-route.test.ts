@@ -27,6 +27,21 @@ describe('sellRouteOf', () => {
     expect(sellRouteOf(at(NOW, POOL, { ...FEE_CONTEXT, coin: { ...FEE_CONTEXT.coin, transferHook: true } }), 1_000_000_000n, NOW, AGE)).toEqual({ atMs: NOW, value: 'missing' });
   });
 
+  it('a holding whose sale needs more than the real quote vault (virtual reserves set the price) is a lost route', () => {
+    // The price comes from the vault plus the virtual reserves; the sale pays out of the real vault only.
+    const effective = 170_000_000_000n;
+    const full = poolSell({ ...POOL, quoteVault: effective, virtualQuoteReserves: 0n }, 1_000_000_000n, FEE_CONTEXT);
+    if (!full.ok) throw new Error(full.reason);
+    const need = full.trade.quote - full.trade.lpFee;
+    const vault = (v: bigint) => ({ ...POOL, quoteVault: v, virtualQuoteReserves: effective - v });
+    // One lamport short of what the sale takes from the vault: exceeds-reserves, so the route is lost.
+    const short = poolSell(vault(need - 1n), 1_000_000_000n, FEE_CONTEXT);
+    expect(short.ok ? null : short.reason).toBe('exceeds-reserves');
+    expect(sellRouteOf(at(NOW, vault(need - 1n)), 1_000_000_000n, NOW, AGE)).toEqual({ atMs: NOW, value: 'missing' });
+    // Exactly enough: a route.
+    expect(sellRouteOf(at(NOW, vault(need)), 1_000_000_000n, NOW, AGE)).toEqual({ atMs: NOW, value: 'ok' });
+  });
+
   it('unknown is never a route: no market, a stale one, one from the future, or nothing held', () => {
     expect(sellRouteOf('pool state unknown', 1_000_000_000n, NOW, AGE)).toBeNull();
     expect(sellRouteOf('pool state flagged gap', 1_000_000_000n, NOW, AGE)).toBeNull();
