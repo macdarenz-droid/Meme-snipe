@@ -1,0 +1,13 @@
+docs/DECISIONS.md
+ops/README.md
+ops/host-config.json
+ops/host/files/etc/systemd/system/zeroed-worker.service
+ops/host/files/usr/local/lib/zeroed/logic.sh
+ops/host/files/usr/local/lib/zeroed/worker-smoke
+ops/host/files/usr/local/sbin/zeroed-check
+ops/host/files/usr/local/sbin/zeroed-status
+ops/host/files/usr/local/sbin/zeroed-update
+ops/install.sh
+ops/test/e2e.sh
+packages/ops/test/host-logic.test.ts
+packages/ops/test/ops-files.test.ts

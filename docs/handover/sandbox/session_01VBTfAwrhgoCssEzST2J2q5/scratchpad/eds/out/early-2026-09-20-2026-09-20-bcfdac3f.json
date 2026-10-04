@@ -1,0 +1,90 @@
+{
+ "kind": "BT-2e early look, not proof",
+ "runId": "early-2026-09-20-2026-09-20-bcfdac3f",
+ "commit": "bcfdac3f62c13c06c3512686b0af95d4f383ce0a",
+ "dirty": true,
+ "regimeGate": "assumed on (diagnostic)",
+ "dataset": {
+  "dir": "/tmp/claude-0/-home-user-Meme-snipe/406edd36-7a5c-567a-b0c4-521cf6e925a4/scratchpad/eds/ds",
+  "id": "sha256:6df644774a8e331499de1fa5c57a568e551e0116660b6d68e528619e5a75233d",
+  "schema": 3,
+  "sampleRate": null,
+  "sumsChecked": 0,
+  "days": [
+   {
+    "day": "2026-09-19",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-20",
+    "complete": true,
+    "warmUp": false
+   }
+  ]
+ },
+ "policy": "trial",
+ "fills": "fills-2",
+ "research": "research-3",
+ "studyHash": "6ef7a8222d14d66cf01a9964765961657f7da24e463975940b0e3de9da5b338a",
+ "configIds": {
+  "U1": "U1-20fab88647eeb174",
+  "U2": "U2-4bdb462fb6d2abd1"
+ },
+ "scenario": "conservative",
+ "notes": [
+  "Live-only vetoes (§16.3) are absent in the backtest: H15 simulateTransaction, H16 third-party cross-checks, Jupiter routes and fees, execution health. The bias in mean net is at most the veto share v times the gap between vetoed and kept trades; G3 caps v at 10%, which bounds it at 5 points.",
+  "H13 needs the deployer-funded wallets and the dev cluster, which DATA-1 does not record: without a funding source every candidate is rejected (H16 not-covered).",
+  "The dataset keeps trades for a hash sample of mints only; a deployer with a mint outside the sample in the look-back is not judged on prior rugs (H14 not covered).",
+  "Practice days end at 2026-09-22; holdout days run to the entry cutoff 2026-10-20T00:00:00Z plus 1 observation day(s) and are never practice days."
+ ],
+ "preregistration": null,
+ "days": [
+  {
+   "label": "early look, not proof",
+   "day": "2026-09-20",
+   "variants": [
+    {
+     "tag": "U2",
+     "configId": "U2-4bdb462fb6d2abd1",
+     "funnel": null,
+     "stats": {
+      "trades": 0,
+      "tradesPerDay": 0,
+      "winRate": null,
+      "winRate95": null,
+      "meanNet": null,
+      "meanNet95": null,
+      "medianNet": null,
+      "profitFactor": null,
+      "worstNet": null,
+      "longestLosingStreak": 0
+     },
+     "crashes": 0,
+     "illegalStates": 0
+    }
+   ],
+   "s0": {
+    "seeds": 1,
+    "stats": {
+     "trades": 0,
+     "tradesPerDay": 0,
+     "winRate": null,
+     "winRate95": null,
+     "meanNet": null,
+     "meanNet95": null,
+     "medianNet": null,
+     "profitFactor": null,
+     "worstNet": null,
+     "longestLosingStreak": 0
+    }
+   },
+   "notes": [
+    "Early look, not proof: one day, few trades. Nothing here is proven, and no configuration is chosen or frozen from it.",
+    "The intervals are wide on purpose: the mean interval bootstraps trades and ignores clustering by day and creator, so the true uncertainty is larger still.",
+    "No daily trade cap applies in the backtest. S0 is pooled over its seeds; its trades per day are per seed.",
+    "The study and G1 use every practice day later; these days count again there."
+   ]
+  }
+ ]
+}

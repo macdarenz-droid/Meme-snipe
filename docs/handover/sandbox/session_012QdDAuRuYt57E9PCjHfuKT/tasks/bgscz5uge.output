@@ -1,0 +1,7 @@
+EXIT 0
+74:      Tests  4214 passed (4214)
+EXIT 1
+78: FAIL  |light| packages/runner/test/run1e.test.ts > b–d. a host-loss tabletop on the host, end to end > compares the restore with what the live worker held when the backup was taken
+106:      Tests  1 failed | 4213 passed (4214)
+
+[exited with code 0]

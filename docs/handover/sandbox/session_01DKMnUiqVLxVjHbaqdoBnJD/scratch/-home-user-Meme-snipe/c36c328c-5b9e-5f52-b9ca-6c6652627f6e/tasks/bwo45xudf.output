@@ -1,0 +1,17 @@
+105 passed, 0 failed
+r1-ignore-used killed: 
+r2-no-early-stop killed: 
+r3-no-add killed: 
+r4-no-rm-usage SURVIVED
+r5-keep-old-rev killed: 
+r6-budget-exit1 killed: 
+r7-rc3-as-75 SURVIVED
+c1-no-sum killed: 
+c2-malformed-ok killed: 
+k1-full-cap killed: 
+k2-no-add killed: 
+k3-no-precheck killed: 
+k4-rc3-as-1 SURVIVED
+k5-archive-path-rpc killed: 
+
+[exited with code 0]

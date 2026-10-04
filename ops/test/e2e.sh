@@ -37,6 +37,15 @@ wait_for() { # seconds description command
 }
 
 cleanup() {
+  local rc=$?
+  # On a failure, what the worker was doing: its last invocation's journal, restarts and state (TEST values only).
+  if [ "$rc" != 0 ] && [ -n "${LOGS:-}" ] && docker inspect "$C" >/dev/null 2>&1; then
+    { docker exec "$C" systemctl show -p ActiveState -p SubState -p NRestarts -p InvocationID -p MainPID -p ExecMainStatus zeroed-worker
+      docker exec "$C" bash -c 'journalctl -o short-iso-precise --no-pager _SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value zeroed-worker) | tail -n 200'
+      echo '--- all invocations, last 100 lines'
+      docker exec "$C" journalctl -u zeroed-worker -o short-iso-precise --no-pager | tail -n 100
+    } >"$LOGS/failure-worker.txt" 2>&1 || true
+  fi
   [ -n "${FAKE_PID:-}" ] && kill "$FAKE_PID" 2>/dev/null || true
   [ -n "${WD_PID:-}" ] && kill -- "-$WD_PID" 2>/dev/null || true # wrangler, its node and workerd children
   [ "$KEEP" = --keep ] && { echo "Kept container $C and $E2E"; return; }
@@ -84,6 +93,16 @@ done
 [ -n "$signed" ] && [ -n "$signed2" ] && [ -n "$unsigned" ] || fail "test repo needs two GitHub-signed and an unsigned commit on $BRANCH"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null
 mkdir -p "$STATE/checks"
+# The server also needs a green e2e on the newest commit at or before the deployed one that touched the
+# ops end-to-end paths (logic.sh e2e_commit, OPS-GATE): mark those green.
+e2e_of() { (. "$ROOT/ops/host/files/usr/local/lib/zeroed/logic.sh" && e2e_commit "$BARE" "$1"); }
+# A test commit that is its own e2e commit gets its checks file in its own case below: written here, the
+# update timer would deploy it before the gate cases run.
+for c in "$signed" "$signed2" "$unsigned"; do
+  e="$(e2e_of "$c")"
+  [ -n "$e" ] || fail "no commit at or before ${c:0:12} touched the ops end-to-end paths"
+  case "$e" in "$signed" | "$signed2" | "$unsigned") ;; *) echo success >"$STATE/checks/$e" ;; esac
+done
 git -C "$BARE" update-server-info
 printf '%s' "$T_TELEGRAM" >"$STATE/telegram-token"
 STATE="$STATE" GIT_ROOT="$E2E/git" PORT="$PORT" node "$ROOT/ops/test/fake-services.mjs" >"$LOGS/fake-services.log" 2>&1 &
@@ -242,6 +261,9 @@ r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 
 rm -f "$STATE/cf-subdomain" # the account lost its subdomain: Deploy registers a new one
 n_hook="$(grep -c '"method":"setWebhook"' "$STATE/telegram.jsonl")"
 publish 1002 publish-rotate.log "$CODE2" CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4" || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
+# Deploy returns once the server has downloaded the bundle; the server then stores the keys, restarts the worker
+# (reconcile first), tells the owner and sets the webhook. Wait for those ends, not for Deploy's return.
+wait_for 120 "the server finished the rotation" "grep -q 'keys replaced (issue 1002)' '$STATE/telegram.jsonl' && [ \$(grep -c '\"method\":\"setWebhook\",\"token_ok\":true' '$STATE/telegram.jsonl') -gt $n_hook ] && [ \$(docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents, 5 of 5') -gt $r0 ]"
 grep -q '"method":"PUT","auth_ok":true' "$STATE/cloudflare.jsonl" && [[ "$(cat "$STATE/cf-subdomain")" =~ ^zeroed-[0-9a-f]{8}$ ]] || fail "workers.dev subdomain not registered"
 grep -q "Registered the workers.dev subdomain $(cat "$STATE/cf-subdomain")" "$LOGS/publish-rotate.log" || fail "subdomain registration not reported"
 [ "$(in_c "systemd-creds decrypt --name=heartbeat_hmac_key /etc/credstore.encrypted/heartbeat_hmac_key - | sha256sum | cut -c1-64")" = "$(sha256sum <"$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY" | cut -c1-64)" ] || fail "server and watchdog got different heartbeat keys"
@@ -274,6 +296,14 @@ echo pending >"$STATE/checks/$signed"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with a pending check"
 echo success >"$STATE/checks/$signed"
+e2e_signed="$(e2e_of "$signed")"
+if [ "$e2e_signed" != "$signed" ]; then
+  # A green merge that left ops alone still waits on the red end-to-end of the ops change before it.
+  echo failure >"$STATE/checks/$e2e_signed"
+  upd_run || true
+  [ -z "$(current)" ] || fail "deployed with the ops end-to-end of ${e2e_signed:0:12} red"
+  echo success >"$STATE/checks/$e2e_signed"
+fi
 in_c "echo 2 > /var/lib/zeroed/open_intents"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with open intents"
@@ -282,12 +312,13 @@ upd_run || fail "update failed on a green, GitHub-signed commit"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current release not switched"
 in_c "journalctl -u zeroed-update -o cat --no-pager" >"$LOGS/update-journal.txt"
 grep -q 'its checks are red' "$LOGS/update-journal.txt" && grep -q 'its checks are pending' "$LOGS/update-journal.txt" && grep -q 'open intents (2)' "$LOGS/update-journal.txt" || fail "update reasons not logged"
+[ "$e2e_signed" = "$signed" ] || grep -q "its checks are red: the ops end-to-end of ${e2e_signed:0:12}" "$LOGS/update-journal.txt" || fail "the red ops end-to-end was not logged"
 git -C "$BARE" tag -f deploy "$unsigned" >/dev/null && git -C "$BARE" update-server-info
 echo success >"$STATE/checks/$unsigned"
 upd_run && fail "an unsigned commit was deployed"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current moved to an unsigned commit"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
-pass "update: waits on failed and pending checks and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
+pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e2e_signed:0:12} and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
 # ---------- 9. Backup and restore drill ----------
 in_c "systemctl start zeroed-backup.service" || fail "backup failed"
@@ -539,8 +570,14 @@ wait_for 60 "the release's worker running" "docker exec $C systemctl is-active z
 in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has '^/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/worker/src/main.ts $' || fail "zeroed-worker does not run the release's main.ts under the host's node"
 inv() { in_c "journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)"; }
 relname="$(basename "$rel")"
-wait_for 180 "the worker's start line" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -q 'Worker up: boot .*, release ${relname:0:12}, recorder on, simulation on'"
+# The start line of this invocation (the unit's journal also holds earlier runs of the same release, whose start line
+# would match at once while this one is still starting), then its health route answering with that same boot.
+up="Worker up: boot [^,]*, release ${relname:0:12}, recorder on, simulation on"
+wait_for 180 "the worker's start line" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q '$up'"
 inv >"$LOGS/worker-real.txt"
+boot_up="$(grep -o "$up" "$LOGS/worker-real.txt" | tail -1 | sed 's/^Worker up: boot \([^,]*\),.*/\1/')"
+[ -n "$boot_up" ] || fail "no start line in this invocation's journal"
+wait_for 30 "health answering for boot $boot_up" "docker exec $C curl -fsS -m 2 http://127.0.0.1:8787/health | jq -e --arg b '$boot_up' '.boot == \$b' >/dev/null"
 grep -q 'Reconcile: done, open intents written.' "$LOGS/worker-real.txt" || fail "the reconcile before the start did not finish"
 in_c "systemctl show -p ExecStartPre --value zeroed-worker" | has 'code=exited ; status=0 }' || fail "the --reconcile ExecStartPre did not exit 0"
 [ "$(in_c "systemctl show -p OOMScoreAdjust --value zeroed-worker")" = -500 ] && in_c "grep -qx -- '-500' /proc/\$(systemctl show -p MainPID --value zeroed-worker)/oom_score_adj" || fail "the worker is not the last the kernel takes under memory pressure"
@@ -549,7 +586,8 @@ grep -q 'Credentials present: 3 of 3 provider keys; heartbeat key present.' "$LO
 in_c "tail -n 200 /var/lib/zeroed/journal.jsonl | jq -c 'select(.kind == \"start\")' | tail -1" >"$LOGS/worker-start-record.json"
 jq -e --arg r "$relname" '.mode == "paper" and .recorder == true and .simulation == true and .git_sha == $r' "$LOGS/worker-start-record.json" >/dev/null || fail "the start record is not paper with recorder and simulation on: $(cat "$LOGS/worker-start-record.json")"
 # Drills on: the drill endpoint exists (403 without the boot's token; 404 when drills are off).
-[ "$(in_c "curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' http://127.0.0.1:8787/drill/drop-feed")" = 403 ] || fail "the drill endpoint is not on"
+code="$(in_c "curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' http://127.0.0.1:8787/drill/drop-feed")"
+[ "$code" = 403 ] || fail "the drill endpoint is not on (HTTP $code, want 403; 404 is drills off, 000 is not listening)"
 in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" >"$LOGS/health-real.json" || fail "health does not answer on 127.0.0.1:8787"
 jq -e '.mode == "paper" and .signing_key == false and .reconciled == true' "$LOGS/health-real.json" >/dev/null || fail "health is not paper, reconciled, without a signing key"
 in_c "curl -fsS -m 3 http://127.0.0.1:8788/api/v1/paper/status" >"$LOGS/api-real.json" || fail "the API does not answer on 127.0.0.1:8788"

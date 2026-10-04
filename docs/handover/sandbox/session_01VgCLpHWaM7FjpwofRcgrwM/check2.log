@@ -1,0 +1,184 @@
+
+> meme-snipe@ check /home/user/Meme-snipe
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /home/user/Meme-snipe
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+apps/web typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck: Done
+packages/runner typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: Done
+
+> meme-snipe@ test /home/user/Meme-snipe
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:20783) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/ops/test/supply-chain.test.ts (4 tests | 3 failed) 2186ms
+   ❯ pnpm supply-chain settings (PNPM-CLAIMS) (4)
+     × resolves only versions at least 7 days old 679ms
+     × refuses a version published with weaker trust evidence than an earlier one 504ms
+     × refuses a dependency of a dependency from git 831ms
+(node:22284) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:23499) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:23549) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:23692) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:23699) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:23730) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:23749) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:24089) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+(node:24409) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:24426) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:24776) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:24797) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:24832) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:24882) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25016) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25098) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25436) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25450) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25545) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25908) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:26340) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:26445) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:26525) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:26532) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:26539) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:26599) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:26793) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/ops/test/supply-chain.test.ts > pnpm supply-chain settings (PNPM-CLAIMS) > resolves only versions at least 7 days old
+AssertionError: expected 'lockfileVersion: \'9.0\'\n\nsettings:…' to contain 'fresh@1.0.1'
+
+- Expected
++ Received
+
+- fresh@1.0.1
++ lockfileVersion: '9.0'
++
++ settings:
++   autoInstallPeers: true
++   excludeLinksFromLockfile: false
++
++ importers:
++
++   .:
++     dependencies:
++       fresh:
++         specifier: ^1.0.0
++         version: 1.0.0
++
++ packages:
++
++   fresh@1.0.0:
++     resolution: {integrity: sha512-gYsJqw+TXv2vNDyjdqhz3H+yvcYg9E2yZ635WNx5QHgVsDqFE8Xi7+im2dZ5qxGMtnRBjVOufkGER4gNTkCnKA==}
++
++ snapshots:
++
++   fresh@1.0.0: {}
++
+
+ ❯ packages/ops/test/supply-chain.test.ts:101:22
+     99|     const off = await pnpm({ fresh: '^1.0.0' }, false);
+    100|     expect(off.ok, off.out).toBe(true);
+    101|     expect(off.lock).toContain('fresh@1.0.1');
+       |                      ^
+    102|     const on = await pnpm({ fresh: '^1.0.0' }, true);
+    103|     expect(on.ok, on.out).toBe(true);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  |light| packages/ops/test/supply-chain.test.ts > pnpm supply-chain settings (PNPM-CLAIMS) > refuses a version published with weaker trust evidence than an earlier one
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/ops/test/supply-chain.test.ts:109:58
+    107|
+    108|   it('refuses a version published with weaker trust evidence than an e…
+    109|     expect((await pnpm({ trusted: '1.0.1' }, false)).ok).toBe(true);
+       |                                                          ^
+    110|     const on = await pnpm({ trusted: '1.0.1' }, true);
+    111|     expect(on.ok).toBe(false);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  |light| packages/ops/test/supply-chain.test.ts > pnpm supply-chain settings (PNPM-CLAIMS) > refuses a dependency of a dependency from git
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/ops/test/supply-chain.test.ts:125:83
+    123|     const t = await tarball(join(dir, 'parent'), { name: 'parent', ver…
+    124|     writeFileSync(join(dir, 'parent.tgz'), t);
+    125|     expect((await pnpm({ parent: `file:${join(dir, 'parent.tgz')}` }, …
+       |                                                                                   ^
+    126|     const on = await pnpm({ parent: `file:${join(dir, 'parent.tgz')}` …
+    127|     expect(on.ok).toBe(false);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed | 153 passed (154)
+      Tests  3 failed | 4517 passed (4520)
+   Start at  08:28:05
+   Duration  915.97s (tests 95%, import 4%, transform 1%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+ ELIFECYCLE  Command failed with exit code 1.

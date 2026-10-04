@@ -1,0 +1,10 @@
+import { survivalRows, SURV_SOL_USD } from '/home/user/Meme-snipe/packages/backtest/test/survival-fixture.ts';
+import { collectSurvival } from '/home/user/Meme-snipe/packages/backtest/src/research/survival.ts';
+import { solUsdAsOf } from '/home/user/Meme-snipe/packages/backtest/src/research/candidates.ts';
+import { PLAN_BARRIERS, scoreCandidates } from '/home/user/Meme-snipe/packages/backtest/src/research/outcome.ts';
+import { FILL_CONFIG, TRIAL_POLICY } from '/home/user/Meme-snipe/packages/core/src/config/index.ts';
+const W = { decisionFrom: '2026-09-01', decisionTo: '2026-10-01', holdoutFrom: '2026-09-23', embargoDays: 1, confirmedBy: 'test' };
+const fx = survivalRows([{ name: 'A', creator: 'X', fate: 'survive', createdAtH: 0 }], 30);
+const d = collectSurvival(fx.rows, { window: W, policy: TRIAL_POLICY, solUsd: solUsdAsOf(SURV_SOL_USD, 3 * 3600000) });
+const t = d.decisions.slice(0, 1).map(({ id, pool, decisionSlot, decisionMs, solUsd }) => ({ id, pool, decisionSlot, decisionMs, solUsd }));
+for (const ppm of [1000000n, 0n]) console.log(JSON.stringify(scoreCandidates(fx.rows, t, { window: W, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'land', entryMinOutBelowBps: 300, rentRefundPpm: ppm }), (_, v) => typeof v === 'bigint' ? v.toString() : v));

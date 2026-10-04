@@ -1,0 +1,739 @@
+diff --git a/packages/backtest/src/cli.ts b/packages/backtest/src/cli.ts
+index 32d3e65..110d1f5 100644
+--- a/packages/backtest/src/cli.ts
++++ b/packages/backtest/src/cli.ts
+@@ -3,6 +3,7 @@
+ //
+ //   node packages/backtest/src/cli.ts run --dataset <dir> --sol-usd <file> [--scenario conservative] [--seed s0-1]
+ //        [--replays 10] [--days 2026-09-01,2026-09-02] [--out report.json] [--evidence evidence.json] [--ledger bt.sqlite]
++//        [--delay measured|adverse|stress] [--burst-sweep]
+ //   node packages/backtest/src/cli.ts holdout-register --dataset <dir> --sol-usd <file> --registry <file> --holdout-id <id>
+ //        [--universe U2] [--family-size 1] [--days ...] [--scenario ...] [--seed ...]
+ //   node packages/backtest/src/cli.ts holdout --dataset <dir> --sol-usd <file> --registry <file> --holdout-id <id>
+@@ -17,7 +18,7 @@ import { writeFileSync } from 'node:fs';
+ import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
+ import { OFF_CHAIN } from '../../core/src/engine/index.ts';
+ import { gateG0 } from '../../core/src/stats/index.ts';
+-import { SCENARIO_NAMES, type ScenarioName } from '../../core/src/fills/index.ts';
++import { DELAY_PROFILE_NAMES, type DelayProfileName, SCENARIO_NAMES, type ScenarioName } from '../../core/src/fills/index.ts';
+ import type { Bps } from '../../core/src/units/index.ts';
+ import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
+ import { readSeries } from './dataset/offchain.ts';
+@@ -26,6 +27,7 @@ import { authoriseHoldout, runAndSealHoldout } from './holdout.ts';
+ import { leakTest, shiftTest } from './proofs.ts';
+ import { economics } from './economics.ts';
+ import { buildReport } from './report.ts';
++import { burstSweep, ladderCongestion } from './stress.ts';
+ import { runBacktest, type RunOptions } from './run.ts';
+ import { tradesOf } from './trades.ts';
+ 
+@@ -48,6 +50,8 @@ const solUsd = readSeries(flag('sol-usd'));
+ const scenario = flag('scenario', 'conservative') as ScenarioName;
+ if (!SCENARIO_NAMES.includes(scenario)) throw new Error(`scenario must be one of ${SCENARIO_NAMES.join(', ')}`);
+ const seed = flag('seed', 's0-1');
++const delay = args.includes('--delay') ? flag('delay') as DelayProfileName : undefined;
++if (delay !== undefined && !DELAY_PROFILE_NAMES.includes(delay)) throw new Error(`delay must be one of ${DELAY_PROFILE_NAMES.join(', ')}`);
+ const from = Date.parse(`${days[0]!.day}T00:00:00Z`);
+ const lastDay = Date.parse(`${days[days.length - 1]!.day}T00:00:00Z`) + 86_400_000;
+ // A partly covered last day ends where the data ends, so S0 plans nothing it could not finish.
+@@ -68,7 +72,7 @@ const plantedSwap = (token: string, slot: bigint, blockTime: number): DatasetRow
+   fees: { split: { lp: 20 as Bps, protocol: 5 as Bps, creator: 95 as Bps }, buybackFeeBps: 0 as Bps, instruction: 'v1' },
+   baseSupply: 1_000_000_000_000_000n, ixName: 'buy_exact_quote_in', user: token,
+ });
+-const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, windowEnd: to, regimeBoundaries };
++const base: RunOptions = { rows, series: [solUsd], seed, scenario, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, windowEnd: to, regimeBoundaries, ...(delay === undefined ? {} : { delay }) };
+ 
+ const git = (...a: string[]) => execFileSync('git', a, { encoding: 'utf8', cwd: import.meta.dirname });
+ /** The commit, plus a hash of any uncommitted change, so the id always names the code that ran. */
+@@ -153,6 +157,7 @@ if (command === 'holdout-register' || command === 'holdout') {
+         { mode: 'backtest', label: 'All-in net per entry decision', value: dollars(money.usd.allInPerEntryDecisionMicro), limit: 'above zero', pass: (money.usd.allInPerEntryDecisionMicro ?? 0n) > 0n },
+         { mode: 'backtest', label: 'Hosting', value: `${dollars(money.operating.hostingMicro)} over ${money.operating.windowDays.toFixed(2)} days, ${money.operating.hostingShareOfBankrollPerMonthBps / 100}% of the bankroll a month`, limit: 'covered by net', pass: money.operating.netAfterHostingMicro > 0n },
+         { mode: 'backtest', label: 'Break-even net per trade', value: dollars(money.operating.breakEvenNetPerTradeMicro), limit: 'below the mean net per trade', pass: money.operating.breakEvenNetPerTradeMicro !== null && (money.usd.conditionalMeanPerTradeMicro ?? 0n) > money.operating.breakEvenNetPerTradeMicro },
++        { mode: 'backtest', label: 'Hosting at other bankrolls', value: money.atBankrolls.map((b) => `US$${Number(b.bankrollMicro) / 1e6}: ${b.hostingShareOfBankrollPerMonthBps / 100}%/month, break-even ${b.breakEvenBpsOfMinTrade === null ? 'no trades' : `${b.breakEvenBpsOfMinTrade / 100}% of a US$${Number(b.minNotionalMicro) / 1e6} trade`}`).join('; '), limit: 'projection', pass: true },
+         { mode: 'backtest', label: 'Fill model', value: `${FILL_CONFIG.version}, ${scenario}${FILL_CONFIG.provisional ? ', provisional values' : ''}`, limit: 'measured values', pass: !FILL_CONFIG.provisional },
+       ] },
+     ],
+@@ -160,7 +165,8 @@ if (command === 'holdout-register' || command === 'holdout') {
+   const evidence = {
+     commit, dataset: { dir: dataset, manifestSha256: manifestHash(dataset), days: days.map((d) => d.day), complete: days.map((d) => d.complete) },
+     sumsChecked,
+-    fillsVersion: FILL_CONFIG.version, fillsProvisional: FILL_CONFIG.provisional, researchVersion: RESEARCH_CONFIG.version, policyName: TRIAL_POLICY.name,
++    fillsVersion: FILL_CONFIG.version, fillsProvisional: FILL_CONFIG.provisional,
++    delayProfile: { name: delay ?? FILL_CONFIG.scenarios[scenario].delay, ...FILL_CONFIG.delays[delay ?? FILL_CONFIG.scenarios[scenario].delay], decisionCommitment: RESEARCH_CONFIG.decisionCommitment }, blackouts: first.blackouts, researchVersion: RESEARCH_CONFIG.version, policyName: TRIAL_POLICY.name,
+     scenario, seed, hashes, identicalReplays: identical, leak, shift, g0: { status: g0.status, checks: g0.checks }, stats: first.stats,
+     throughput: { rows: first.stats.rows, elapsedMs: times, rowsPerSecond: Math.round(first.stats.rows / (first.stats.elapsedMs / 1000)), days: days.length,
+       projected30DaysMinutes: Math.round(((first.stats.elapsedMs / days.length) * 30) / 60_000) },
+@@ -168,6 +174,11 @@ if (command === 'holdout-register' || command === 'holdout') {
+     regimeBoundaries: first.regimes.map((b) => ({ slot: b.slot.toString(), label: b.label, at: new Date(b.at).toISOString() })),
+     tradesAcrossRegimeBoundary: trades.filter((t) => first.regimes.some((b) => t.openedAt < b.at && t.closedAt >= b.at)).length,
+     attemptsCongested: first.attempts.filter((a) => a.congested).length,
++    attemptsForcedDrop: { provider: first.attempts.filter((a) => a.forcedDrop === 'provider').length, burst: first.attempts.filter((a) => a.forcedDrop === 'burst').length },
++    // Blocked exits when the whole ladder fell inside congestion (feeds y_severe).
++    ladderCongestion: ladderCongestion(first),
++    // Expectancy and survival against burst frequency (opt-in: 12 more runs).
++    burstSweep: args.includes('--burst-sweep') ? burstSweep(base, { perDay: [0, 2, 8, 24], durationsMs: [10_000, 30_000, 60_000] }, { from, to }) : 'not run (--burst-sweep)',
+     exitRetries: first.attempts.filter((a) => a.exitRetry > 0).length,
+     attempts: Object.fromEntries(['filled', 'failed', 'dropped', 'expired', 'in_flight'].map((o) => [o, first.attempts.filter((a) => a.outcome === o).length])),
+   };
+diff --git a/packages/backtest/src/economics.ts b/packages/backtest/src/economics.ts
+index 881ae60..e9009e0 100644
+--- a/packages/backtest/src/economics.ts
++++ b/packages/backtest/src/economics.ts
+@@ -48,7 +48,11 @@ export interface Economics {
+     readonly conditionalMeanPerTradeMicro: bigint | null;
+     readonly allInPerFilledTradeMicro: bigint | null;
+     readonly allInPerEntryDecisionMicro: bigint | null;
++    /** The all-in result if no rent ever came back (the no-recovery line). */
++    readonly allInNoRentRecoveryMicro: bigint;
+   };
++  /** The bankroll plus the all-in result over time: its lowest point, and whether it stayed above the kill line. */
++  readonly survival: { readonly minEquityMicro: bigint; readonly killLineMicro: bigint; readonly survived: boolean };
+   /** The bankroll (bought as SOL at the start price) and the ops reserve, revalued at the end price. */
+   readonly markToMarket: {
+     readonly startPriceMicro: bigint;
+@@ -69,8 +73,27 @@ export interface Economics {
+   };
+   /** Every Melbourne day of the window, failed attempts included, as a share of the bankroll. */
+   readonly dailyReturns: readonly DayReturn[];
++  /**
++   * The operating-cost line at each projection bankroll (research config), with the policy's trade sizes kept at their
++   * share of the bankroll, and this run's trade count. A projection: per-trade nets at a larger size need a run at it.
++   */
++  readonly atBankrolls: readonly {
++    readonly bankrollMicro: bigint;
++    readonly minNotionalMicro: bigint;
++    readonly maxNotionalMicro: bigint;
++    readonly hostingShareOfBankrollPerMonthBps: number;
++    readonly breakEvenNetPerTradeMicro: bigint | null;
++    /** Break-even net per trade as a return on the minimum trade size, bps (null without trades). */
++    readonly breakEvenBpsOfMinTrade: number | null;
++  }[];
+ }
+ 
++/** The policy's capital sizes at another bankroll, each kept at its share of the configured bankroll. */
++export const sizesAtBankroll = (policy: Policy, bankroll: bigint): { readonly minNotional: bigint; readonly maxNotional: bigint } => {
++  const b = policy.capital.bankroll as bigint;
++  return { minNotional: ((policy.capital.minNotional as bigint) * bankroll) / b, maxNotional: ((policy.capital.maxNotional as bigint) * bankroll) / b };
++};
++
+ const per = (total: bigint, n: number): bigint | null => (n === 0 ? null : total / BigInt(n));
+ 
+ export const economics = (i: EconomicsInput): Economics => {
+@@ -102,6 +125,25 @@ export const economics = (i: EconomicsInput): Economics => {
+     byDay.set(d, (byDay.get(d) ?? 0n) + e.net);
+   }
+ 
++  const breakEven = per(hostingMicro - strayMicro, n);
++  let equity = bankroll as bigint;
++  let minEquity = equity;
++  for (const e of [...tradeUsd, ...strayUsd].sort((a, b) => a.at - b.at)) {
++    equity += e.net;
++    if (equity < minEquity) minEquity = equity;
++  }
++  const killLine = ((bankroll as bigint) * BigInt(i.policy.loss.killSwitchFloorBps)) / 10_000n;
++  const atBankrolls = i.research.operating.projectionBankrolls.map((bk) => {
++    const b = bk as bigint;
++    const sizes = sizesAtBankroll(i.policy, b);
++    return {
++      bankrollMicro: b, minNotionalMicro: sizes.minNotional, maxNotionalMicro: sizes.maxNotional,
++      hostingShareOfBankrollPerMonthBps: Number((perMonth * 10_000n) / b),
++      breakEvenNetPerTradeMicro: breakEven,
++      breakEvenBpsOfMinTrade: breakEven === null || sizes.minNotional === 0n ? null : Number((breakEven * 10_000n) / sizes.minNotional),
++    };
++  });
++
+   return {
+     filledTrades: n,
+     entryDecisions: i.entryDecisions,
+@@ -114,7 +156,9 @@ export const economics = (i: EconomicsInput): Economics => {
+       conditionalMeanPerTradeMicro: per(tradeNetMicro, n),
+       allInPerFilledTradeMicro: per(allInMicro, n),
+       allInPerEntryDecisionMicro: per(allInMicro, i.entryDecisions),
++      allInNoRentRecoveryMicro: allInMicro - i.trades.reduce((a, t) => a + toUsd(t.rentReturned, priceAt(i.solUsd, t.closedAt)), 0n),
+     },
++    survival: { minEquityMicro: minEquity, killLineMicro: killLine, survived: minEquity > killLine },
+     markToMarket: {
+       startPriceMicro: startPx, endPriceMicro: endPx, bankrollLamports, opsReserveLamports: ops,
+       idleRevaluationMicro: toUsd(held as Lamports, endPx) - toUsd(held as Lamports, startPx),
+@@ -124,10 +168,11 @@ export const economics = (i: EconomicsInput): Economics => {
+       windowDays: windowMs / 86_400_000,
+       hostingMicro,
+       hostingPerTradeMicro: per(hostingMicro, n),
+-      breakEvenNetPerTradeMicro: per(hostingMicro - strayMicro, n),
++      breakEvenNetPerTradeMicro: breakEven,
+       hostingShareOfBankrollPerMonthBps: Number((perMonth * 10_000n) / (bankroll as bigint)),
+       netAfterHostingMicro: allInMicro - hostingMicro,
+     },
++    atBankrolls,
+     dailyReturns: [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([day, v]) => ({ day, rNet: Number(v) / Number(bankroll) })),
+   };
+ };
+diff --git a/packages/backtest/src/holdout.ts b/packages/backtest/src/holdout.ts
+index 527cecd..f8c5479 100644
+--- a/packages/backtest/src/holdout.ts
++++ b/packages/backtest/src/holdout.ts
+@@ -32,6 +32,7 @@ export interface HoldoutAuthority {
+ export const holdoutConfigId = (o: RunOptions, a: Pick<HoldoutAuthority, 'codeCommit' | 'datasetId'>): string =>
+   createHash('sha256').update(canonical({
+     s0: s0Config(o), policy: o.policy, fills: o.fills, scenario: o.scenario, seed: o.seed, research: o.research,
++    delay: o.delay ?? null, observation: o.observation ?? 'chain-time', failureBursts: o.failureBursts ?? null,
+     regimeBoundaries: o.regimeBoundaries ?? [], codeCommit: a.codeCommit, datasetId: a.datasetId,
+   })).digest('hex');
+ 
+diff --git a/packages/backtest/src/run.ts b/packages/backtest/src/run.ts
+index 1fbe5e5..d894ba7 100644
+--- a/packages/backtest/src/run.ts
++++ b/packages/backtest/src/run.ts
+@@ -4,7 +4,7 @@
+ import type { Policy } from '../../core/src/config/index.ts';
+ import type { FillConfig, ResearchConfig } from '../../core/src/config/index.ts';
+ import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
+-import { blockedExitValue, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
++import { blockedExitValue, type DelayProfileName, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
+ import { openLedger, type Ledger } from '../../core/src/ledger/index.ts';
+ import { isTerminal, type Book } from '../../core/src/lifecycle/index.ts';
+ import { type DatasetRow } from './dataset/rows.ts';
+@@ -33,6 +33,12 @@ export interface RunOptions {
+   readonly s0?: Partial<S0Config>;
+   /** Extra events (a planted leak marker), merged into the replay. */
+   readonly extraEvents?: readonly FeedEvent[];
++  /** Deterministic failure bursts (stress): every attempt sent inside one never reaches a block. */
++  readonly failureBursts?: { readonly perDay: number; readonly durationMs: number };
++  /** Observation delay profile instead of the scenario's (a stress run). */
++  readonly delay?: DelayProfileName;
++  /** 'recorded': the rows carry recorded receipt times (recorder data), so no delay is added. Default 'chain-time'. */
++  readonly observation?: 'chain-time' | 'recorded';
+   /** Program-change slots from the dataset manifest (regime boundaries). */
+   readonly regimeBoundaries?: readonly { readonly slot: bigint; readonly label: string }[];
+ }
+@@ -71,6 +77,8 @@ export interface RunResult {
+   readonly regimes: readonly { readonly slot: bigint; readonly label: string; readonly at: number }[];
+   /** Block time (ms) of the last block released. */
+   readonly endedAt: number;
++  /** Feed blackouts of the run's delay profile, ms [from, to). */
++  readonly blackouts: readonly { readonly from: number; readonly to: number }[];
+ }
+ 
+ /** S0 settings from the policy (size, hold, ladder), the fill config and the research config; no code constants. */
+@@ -98,6 +106,7 @@ const clockMs = (): number => performance.now();
+ export const runBacktest = (o: RunOptions): RunResult => {
+   const started = clockMs();
+   const scenario = o.fills.scenarios[o.scenario];
++  const profile = o.fills.delays[o.delay ?? scenario.delay];
+   const it = o.rows();
+   let rows = 0;
+   const extra = [...(o.extraEvents ?? [])];
+@@ -119,8 +128,13 @@ export const runBacktest = (o: RunOptions): RunResult => {
+     heartbeatBlocks: o.research.heartbeatBlocks,
+     discoveryLag: (mint) => Math.max(1, drawDiscoverySlots(createRng(`${o.seed}:discovery:${mint}`), scenario)),
+     active: live,
+-    observationSlots: scenario.observationSlots,
+-    receiptMs: scenario.receiptMs,
++    observe: o.observation === 'recorded' ? null : {
++      slots: profile.eventToProcessedSlots + (o.research.decisionCommitment === 'confirmed' ? profile.processedToConfirmedSlots : 0),
++      providerMs: profile.providerMs, blackouts: profile.blackouts.map((b) => b.durationMs), seed: `${o.seed}:feed`,
++    },
++    volumeWindowSlots: scenario.congestion.windowSlots,
++    hook: (h) => replay!.hook(h),
++    hasRows: () => replay!.hasRows(),
+     schedule: (e) => replay!.schedule(e),
+     ...(o.regimeBoundaries === undefined ? {} : { regimeBoundaries: [...o.regimeBoundaries].sort((a, b) => (a.slot < b.slot ? -1 : 1)) }),
+     series: o.series.map((s) => ({ key: s.name === 'SOL/USD' ? 'sol-usd' : s.name, releases: seriesReleases(s) })),
+@@ -132,7 +146,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
+       discoveries.set(d.mint, d);
+       return { ...e, value: d } as MarketEvent;
+     }
+-    return e.kind === 'market' ? market.observed(e) : e;
++    return e;
+   });
+   for (const e of extra) replay.schedule(e);
+ 
+@@ -142,7 +156,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
+   sink = new LedgerSink(ledger, { maxOpenPositions: maxOpen }, { maxHeld: 2n ** 62n as never, maxCount: maxOpen });
+   const net = o.fills.network;
+   const world = new World({
+-    replay: replay as StreamReplay<unknown>, market, book, rng: createRng(`${o.seed}:world`), congestionSeed: `${o.seed}:world`, scenario, network: net,
++    replay: replay as StreamReplay<unknown>, market, book, rng: createRng(`${o.seed}:world`), congestionSeed: `${o.seed}:world`, failureBursts: o.failureBursts, scenario, network: net,
+     ladder: o.policy.exits.ladder.steps,
+     poolOf: (mint) => discoveries.get(mint)?.pool,
+     onSettled: (a) => sink!.fees(a, net.signaturesPerTx * net.baseFeePerSignature, net.tip, replay!.clock.now().receivedAt),
+@@ -182,6 +196,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
+     symbols: market.symbols,
+     endedAt: market.blockTime * 1000,
+     regimes: market.regimesPassed,
++    blackouts: market.blackouts,
+     poolDelta: (pool) => market.track(pool)?.shifted.delta ?? { base: 0n, vault: 0n, virtual: 0n },
+     endValue: (mint, tokens) => {
+       const pool = discoveries.get(mint)?.pool;
+diff --git a/packages/backtest/src/sim/market.ts b/packages/backtest/src/sim/market.ts
+index 5c482e7..e3fd655 100644
+--- a/packages/backtest/src/sim/market.ts
++++ b/packages/backtest/src/sim/market.ts
+@@ -2,9 +2,12 @@
+ // in the pool state (docs/ARCHITECTURE.md §16.2). Only the replay driver holds this object; the engine sees events.
+ //
+ // Keys the engine can look up:
+-// Every on-chain observation (pool, life, regime) reaches the engine after the scenario's observation delay: the
+-// commitment slots after its own slot, plus the receipt time. It is built when its row is read (so a pool state is the
+-// one right after that swap) and released later, stamped with the block height known when it arrives.
++// Every on-chain observation (pool, life, regime) reaches the engine after the observation delay: it is built when its
++// row is read (so a pool state is the one right after that swap), and released at the end of the first block at or
++// after its own slot plus the delay slots, at that block's real time plus the provider-to-worker time, stamped with the
++// block height known then. During a feed blackout nothing is released; the backlog follows in chain order when it ends.
++// Each observation carries its chain moment (`observed`), so its age never resets on arrival. With recorded receipt
++// times (`observe: null`) observations are released at their own moment, never delayed twice.
+ //
+ //   pool:<pool>   the PumpSwap pool after each real swap, as our trades left it (PoolView)
+ //   life:<mint>   a lifecycle event of the mint (create, migration, pool creation, liquidity, boost, ...)
+@@ -13,10 +16,11 @@
+ //   sol-usd       the SOL/USD close once it is usable (offchain.ts)
+ import { poolAddress, pumpPoolAuthority, toAddress } from '../../../core/src/chain/index.ts';
+ import type { FeedEvent, MarketEvent, Moment } from '../../../core/src/engine/index.ts';
+-import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
++import { createRng, OFF_CHAIN } from '../../../core/src/engine/index.ts';
+ import { type ObservedFees, ShiftedPool } from '../../../core/src/fills/index.ts';
+ import type { SeriesBar } from '../dataset/offchain.ts';
+ import type { AmmSwapRow, BlockRow, DatasetRow, EventRow } from '../dataset/rows.ts';
++import type { Hook } from './replay.ts';
+ 
+ /** A block's row sorts after the slot's transactions; our landing after it; world reports last. */
+ export const BLOCK_TX = OFF_CHAIN - 2;
+@@ -38,8 +42,10 @@ export interface PoolView {
+   readonly side: 'buy' | 'sell';
+   readonly userQuote: bigint;
+   readonly baseAmount: bigint;
+-  /** Height of the latest block when this swap happened (a transaction signed now takes that block's hash). */
++  /** Height of the latest block when this state was released (a transaction signed now takes that block's hash). */
+   readonly blockHeight: bigint;
++  /** The swap's own chain moment: its slot and block time (ms). The state's age is measured from here. */
++  readonly observed: { readonly slot: bigint; readonly at: number };
+ }
+ 
+ export interface Discovery {
+@@ -96,10 +102,18 @@ export interface MarketOptions {
+   readonly discoveryLag: (mint: string) => number;
+   /** An intent in flight: slot events and ticks every block while true (a held position needs only the heartbeat). */
+   readonly active: () => boolean;
+-  /** Commitment delay of on-chain observations, slots (>= 1). */
+-  readonly observationSlots: number;
+-  /** Receipt delay on top, ms (>= 0). */
+-  readonly receiptMs: number;
++  /**
++   * The observation delay: total slots (event → processed, plus processed → confirmed when the decision path waits for
++   * it), provider-to-worker ms, and blackout durations per UTC day placed from `seed`. Null: the rows carry recorded
++   * receipt times, so nothing is added.
++   */
++  readonly observe: { readonly slots: number; readonly providerMs: number; readonly blackouts: readonly number[]; readonly seed: string } | null;
++  /** Slots per window of the pool-volume tally (the fill model's congestion window). */
++  readonly volumeWindowSlots: number;
++  /** Puts driver work into the replay (the observation release). */
++  readonly hook: (h: Hook) => void;
++  /** True while dataset rows remain. */
++  readonly hasRows: () => boolean;
+   /** Puts a derived event (a discovery, a delayed observation) into the replay. */
+   readonly schedule: (e: FeedEvent) => void;
+   /** Slots where the chain's programs changed (DATA-1 manifest): a `regime` event at the first block at or after each. */
+@@ -132,35 +146,120 @@ export class Market {
+ 
+   constructor(opts: MarketOptions) {
+     if (!Number.isSafeInteger(opts.heartbeatBlocks) || opts.heartbeatBlocks < 1) throw new RangeError('heartbeatBlocks must be >= 1');
+-    if (!Number.isSafeInteger(opts.observationSlots) || opts.observationSlots < 1) throw new RangeError('observationSlots must be >= 1');
+-    if (!Number.isSafeInteger(opts.receiptMs) || opts.receiptMs < 0) throw new RangeError('receiptMs must be >= 0');
++    const o = opts.observe;
++    if (o !== null && (!Number.isSafeInteger(o.slots) || o.slots < 1)) throw new RangeError('observation delay must be at least one slot');
++    if (o !== null && (!Number.isSafeInteger(o.providerMs) || o.providerMs < 0)) throw new RangeError('providerMs must be >= 0');
+     this.#opts = opts;
+     this.#seriesAt = (opts.series ?? []).map(() => 0);
+   }
+ 
++  /** Each pool's quote volume (lamports, real swaps) in its latest window and the window before. */
++  readonly #volume = new Map<string, { win: bigint; cur: bigint; prev: bigint }>();
++
++  /** The pool's real quote volume in window `win - 1` (complete when asked during `win`), lamports. */
++  volumeBefore(pool: string, win: bigint): bigint {
++    const v = this.#volume.get(pool);
++    if (v === undefined) return 0n;
++    if (v.win === win) return v.prev;
++    return v.win === win - 1n ? v.cur : 0n;
++  }
++
++  #tally(pool: string, slot: bigint, lamports: bigint): void {
++    const win = slot / BigInt(this.#opts.volumeWindowSlots);
++    const v = this.#volume.get(pool);
++    if (v === undefined) this.#volume.set(pool, { win, cur: lamports, prev: 0n });
++    else if (v.win === win) v.cur += lamports;
++    else this.#volume.set(pool, { win, cur: lamports, prev: v.win === win - 1n ? v.cur : 0n });
++  }
++
+   track(pool: string): PoolTrack | undefined {
+     return this.pools.get(pool);
+   }
+ 
+-  readonly #delayed = new Set<string>();
++  /** Observations waiting for their release block, in chain order (their due slots never decrease). */
++  #queue: { readonly due: bigint; readonly e: MarketEvent }[] = [];
++  #queueAt = 0;
++  #armed = false;
++  #seq = 0;
++  #hooks = 0;
++  /** Observations released at the row's own moment (recorded receipt times). */
++  #now: FeedEvent[] = [];
++  /** Feed blackouts placed so far, ms [from, to). */
++  readonly blackouts: { readonly from: number; readonly to: number }[] = [];
++  #blackoutDays = new Set<string>();
+ 
+-  /** Schedules an observation for when the bot's feed would report it. */
+   #observe(e: MarketEvent): void {
+-    const d = this.#opts.observationSlots;
+-    this.#delayed.add(e.id);
+-    this.#opts.schedule({ ...e, moment: { ...e.moment, slot: e.moment.slot + BigInt(d), receivedAt: e.moment.receivedAt + d * 400 + this.#opts.receiptMs } });
++    const observed = { slot: e.moment.slot, at: e.moment.receivedAt };
++    const ev: MarketEvent = { ...e, value: { ...(e.value as Readonly<Record<string, unknown>>), observed } };
++    const o = this.#opts.observe;
++    if (o === null) {
++      this.#now.push(ev);
++      return;
++    }
++    this.#queue.push({ due: e.moment.slot + BigInt(o.slots), e: ev });
++    if (!this.#armed) this.#arm(e.moment.slot + BigInt(o.slots), e.moment.receivedAt);
++  }
++
++  #arm(slot: bigint, receivedAt: number): void {
++    this.#armed = true;
++    this.#opts.hook({ id: `obs:${this.#hooks++}`, moment: { slot, txIndex: BLOCK_TX, ixIndex: 1, receivedAt }, run: () => this.#release(slot) });
++  }
++
++  #inBlackout(t: number): boolean {
++    return this.blackouts.some((b) => t >= b.from && t < b.to);
++  }
++
++  /** Places the blackouts of the UTC day holding `ms` (once per day), from the seed. */
++  #placeBlackouts(ms: number): void {
++    const o = this.#opts.observe;
++    if (o === null || o.blackouts.length === 0) return;
++    const day = new Date(ms).toISOString().slice(0, 10);
++    if (this.#blackoutDays.has(day)) return;
++    this.#blackoutDays.add(day);
++    const start = Date.parse(`${day}T00:00:00Z`);
++    o.blackouts.forEach((d, k) => {
++      const at = start + Math.floor((createRng(`${o.seed}:blackout:${day}:${k}`).nextU32() / 2 ** 32) * (86_400_000 - d));
++      this.blackouts.push({ from: at, to: at + d });
++    });
+   }
+ 
+-  /** Completes a delayed observation when it is released: the block height known then (signing takes its hash). */
+-  observed(e: MarketEvent): MarketEvent {
+-    if (!this.#delayed.delete(e.id)) return e;
+-    return { ...e, value: { ...(e.value as Readonly<Record<string, unknown>>), blockHeight: this.blockHeight } };
++  /** At the end of block `slot` (if it has one): releases every due observation, unless the feed is blacked out. */
++  #release(slot: bigint): void {
++    this.#armed = false;
++    const o = this.#opts.observe!;
++    const next = () => (this.#opts.hasRows() ? this.#arm(slot + 1n, this.blockTime * 1000) : this.#drop());
++    if (this.slot !== slot) return next();
++    const t = this.blockTime * 1000 + o.providerMs;
++    if (this.#inBlackout(t)) return next();
++    while (this.#queueAt < this.#queue.length && this.#queue[this.#queueAt]!.due <= slot) {
++      const { e } = this.#queue[this.#queueAt++]!;
++      this.#opts.schedule({ ...e, moment: { slot, txIndex: BLOCK_TX, ixIndex: 2 + this.#seq++, receivedAt: t }, value: { ...(e.value as Readonly<Record<string, unknown>>), blockHeight: this.blockHeight } });
++    }
++    if (this.#queueAt > 4096) {
++      this.#queue = this.#queue.slice(this.#queueAt);
++      this.#queueAt = 0;
++    }
++    const head = this.#queue[this.#queueAt];
++    if (head !== undefined) this.#arm(head.due > slot ? head.due : slot + 1n, t);
++  }
++
++  /** The data ended before these observations' release block: they are never seen. */
++  #drop(): void {
++    this.#queue = [];
++    this.#queueAt = 0;
+   }
+ 
+   /** The events a row releases now, in id order, all at the row's moment (observations are scheduled for later). */
+   release(row: DatasetRow): FeedEvent[] {
++    this.#now = [];
++    const out = this.#row(row);
++    return this.#now.length === 0 ? out : [...out, ...this.#now];
++  }
++
++  #row(row: DatasetRow): FeedEvent[] {
+     switch (row.kind) {
+       case 'block':
++        this.#placeBlackouts(row.blockTime * 1000);
+         return this.#block(row);
+       case 'amm':
+         return this.#swap(row);
+@@ -225,11 +324,12 @@ export class Market {
+       return [];
+     }
+     if (!r.replayed) this.skippedSwaps++;
++    this.#tally(row.pool, row.slot, r.trade.userQuote);
+     const view: PoolView = {
+       pool: row.pool, mint: row.baseMint, quoteMint: row.quoteMint,
+       baseReserve: r.shifted.baseReserve, quoteVault: r.shifted.quoteVault, virtualQuoteReserves: r.shifted.virtualQuoteReserves,
+       fees: row.fees, baseSupply: row.baseSupply, side: row.side, userQuote: r.trade.userQuote, baseAmount: row.side === 'buy' ? r.trade.base : row.baseAmount,
+-      blockHeight: this.blockHeight,
++      blockHeight: this.blockHeight, observed: { slot: row.slot, at: row.blockTime * 1000 },
+     };
+     this.#observe(this.#market(`s:${row.signature}:${row.evIdx}`, rowMoment(row), `pool:${row.pool}`, view as unknown as Readonly<Record<string, unknown>>));
+     return [];
+diff --git a/packages/backtest/src/sim/world.ts b/packages/backtest/src/sim/world.ts
+index 31020a1..5ac1826 100644
+--- a/packages/backtest/src/sim/world.ts
++++ b/packages/backtest/src/sim/world.ts
+@@ -4,7 +4,7 @@
+ // swaps see its impact (market.ts). Results come back to the engine only as feed events, never as return values.
+ import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
+ import { type EffectRunner, type Moment, OFF_CHAIN, type Rng } from '../../../core/src/engine/index.ts';
+-import { attemptFee, congestedAt, drawAttempt, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
++import { accountGetsDust, attemptFee, drawAttempt, drawCloseSucceeds, NetworkState, poolContended, providerDown, windowOf, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
+ import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
+ import type { LadderStep } from '../../../core/src/config/index.ts';
+ import type { RawAmount, Lamports } from '../../../core/src/units/index.ts';
+@@ -29,10 +29,14 @@ export interface AttemptRecord {
+   fill: Fill | null;
+   /** Venue fees, impact and extra slippage of a filled attempt. */
+   costs: ExecutionCosts | null;
+-  /** Broadcast in a congested window. */
++  /** Broadcast while the shared network state or the attempt's pool was congested. */
+   readonly congested: boolean;
++  /** Why the attempt never reached a block regardless of its draw: the send path was down, or a failure burst. */
++  readonly forcedDrop: 'provider' | 'burst' | null;
+   /** Earlier exit attempts on the same position (0 for entries and first exits): the liquidity haircut's multiple. */
+   readonly exitRetry: number;
++  /** This filled sell emptied and closed the token account (atomic sell-and-close): its rent came back. */
++  closedAccount: boolean;
+ }
+ 
+ export interface WorldDeps {
+@@ -40,8 +44,10 @@ export interface WorldDeps {
+   readonly market: Market;
+   readonly book: () => Book;
+   readonly rng: Rng;
+-  /** Seed of the congestion windows (one draw per window, shared by every attempt in it). */
++  /** Seed of the network, pool and provider states (one draw per window, shared by every attempt in it). */
+   readonly congestionSeed: string;
++  /** Deterministic failure bursts (stress): `perDay` evenly spaced from each UTC midnight, each `durationMs` long. */
++  readonly failureBursts?: { readonly perDay: number; readonly durationMs: number } | undefined;
+   readonly scenario: FillScenario;
+   readonly network: FillNetwork;
+   readonly ladder: readonly LadderStep[];
+@@ -59,10 +65,39 @@ export class World implements EffectRunner {
+   readonly attempts = new Map<string, AttemptRecord>();
+   readonly alerts = new Map<string, number>();
+   readonly #exitAttempts = new Map<string, number>();
++  /** Our token balance per mint (one account per mint), from our own fills. */
++  readonly #account = new Map<string, bigint>();
++  /** Accounts that can no longer be closed in a sell (dust, an unsolicited token, a failed close): sell-only. */
++  readonly #sellOnly = new Set<string>();
+   #seq = 0;
+ 
++  readonly #network: NetworkState;
++  readonly #pools = new Map<string, { win: bigint; contended: boolean }>();
++
+   constructor(deps: WorldDeps) {
+     this.#d = deps;
++    this.#network = new NetworkState(`${deps.congestionSeed}:net`, deps.scenario);
++    const b = deps.failureBursts;
++    if (b !== undefined && (!Number.isSafeInteger(b.perDay) || b.perDay < 0 || !Number.isSafeInteger(b.durationMs) || b.durationMs < 0)) throw new RangeError('failure bursts need integers >= 0');
++  }
++
++  /** Pool contention in `win`: persists from the window before, else enters by the pool's volume in the window before. */
++  #contended(pool: string, win: bigint): boolean {
++    const st = this.#pools.get(pool);
++    if (st !== undefined && st.win === win) return st.contended;
++    const before = st !== undefined && st.win === win - 1n && st.contended;
++    const contended = poolContended(this.#d.congestionSeed, pool, win, before, this.#d.market.volumeBefore(pool, win), this.#d.scenario);
++    this.#pools.set(pool, { win, contended });
++    return contended;
++  }
++
++  /** True when `ms` falls inside a deterministic failure burst. */
++  #inBurst(ms: number): boolean {
++    const b = this.#d.failureBursts;
++    if (b === undefined || b.perDay === 0 || b.durationMs === 0) return false;
++    const day = 86_400_000;
++    const spacing = Math.floor(day / b.perDay);
++    return ((ms % day) % spacing) < b.durationMs && Math.floor((ms % day) / spacing) < b.perDay;
+   }
+ 
+   #id(): string {
+@@ -121,8 +156,14 @@ export class World implements EffectRunner {
+     const i = this.#intent(intentId);
+     const attempt = i.attempts.find((a) => a.signature === signature);
+     if (attempt === undefined) throw new RangeError(`world: ${signature} is not an attempt of ${intentId}`);
+-    const congested = congestedAt(this.#d.congestionSeed, now.slot, this.#d.scenario);
+-    const draw = drawAttempt(this.#d.rng, this.#d.scenario, i.intent.venue, congested);
++    const win = windowOf(now.slot, this.#d.scenario);
++    const pool = this.#d.poolOf(i.intent.mint);
++    const congested = this.#network.congested(win) || (pool !== undefined && this.#contended(pool, win));
++    const drawn = drawAttempt(this.#d.rng, this.#d.scenario, i.intent.venue, congested);
++    // Provider failures and stress bursts sit on top: the attempt never reaches a block, so it can only expire. The
++    // lifecycle then waits for its last valid height before any replacement (never an unsafe one).
++    const forcedDrop = providerDown(this.#d.congestionSeed, win, this.#d.scenario) ? 'provider' as const : this.#inBurst(now.receivedAt) ? 'burst' as const : null;
++    const draw = forcedDrop === null ? drawn : { ...drawn, fate: 'dropped' as const };
+     let exitRetry = 0;
+     if (i.intent.purpose === 'exit') {
+       const position = i.intent.positionId;
+@@ -132,12 +173,13 @@ export class World implements EffectRunner {
+     const rec: AttemptRecord = {
+       intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i),
+       lastValidBlockHeight: attempt.lastValidBlockHeight, outcome: 'in_flight', reason: draw.fate,
+-      landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null, congested, exitRetry,
++      landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null, congested, forcedDrop, exitRetry, closedAccount: false,
+     };
+     this.attempts.set(signature, rec);
+     this.#report(this.#after(now), { type: 'intent', intentId, event: { type: 'send_accepted' } });
+     if (draw.fate === 'dropped') {
+       rec.outcome = 'dropped';
++      if (forcedDrop !== null) rec.reason = forcedDrop;
+       this.#d.onSettled?.(rec);
+       return;
+     }
+@@ -195,7 +237,26 @@ export class World implements EffectRunner {
+     const t = { pool: state, fees: track.fees, baseSupply: track.baseSupply, coin: NORMAL, quotedOut: quote.quotedOut, minOut: quote.minOut, slippagePpm: scenario.slippagePpm };
+     const x = rec.purpose === 'entry' ? executeBuy(t, quote.inAmount) : executeSell(t, quote.inAmount, BigInt(rec.exitRetry) * scenario.exitRetryHaircutPpm);
+     if (!x.ok) return fail(x.reason);
++    const held = this.#account.get(rec.mint) ?? 0n;
++    // A sell of the whole balance closes the account in the same transaction, unless the account is sell-only. Tokens
++    // only: venue accounts and the SOL proceeds are never part of the refund.
++    const closes = rec.purpose === 'exit' && x.paid === held && !this.#sellOnly.has(rec.mint);
++    if (closes && !drawCloseSucceeds(this.#d.rng, scenario)) {
++      // The close fails the transaction: the sell rolls back and the fee is still paid. Later sells are sell-only.
++      this.#sellOnly.add(rec.mint);
++      return fail('close failed');
++    }
+     track.shifted.applyOurs(x.after);
++    if (rec.purpose === 'entry') {
++      // A new account may pick up dust or an unsolicited token: it can then never be closed by a sell.
++      if (held === 0n && accountGetsDust(`${this.#d.congestionSeed}:${rec.mint}:${rec.signature}`, scenario)) this.#sellOnly.add(rec.mint);
++      this.#account.set(rec.mint, held + x.out);
++    } else {
++      this.#account.set(rec.mint, held - x.paid);
++      rec.closedAccount = closes;
++      // Emptied without a close: the account stays open (its rent locked) until a later sell-and-close, never here.
++      if (closes) this.#sellOnly.delete(rec.mint);
++    }
+     rec.outcome = 'filled';
+     rec.reason = 'filled';
+     rec.costs = x.costs;
+diff --git a/packages/backtest/src/stress.ts b/packages/backtest/src/stress.ts
+new file mode 100644
+index 0000000..726cad9
+--- /dev/null
++++ b/packages/backtest/src/stress.ts
+@@ -0,0 +1,76 @@
++// Exit-failure stress views of finished runs (scoring side; BT-1c exit-failure ruling): the blocked-exit rate when a
++// position's whole exit ladder fell inside congestion (this feeds y_severe), and expectancy and survival as
++// deterministic failure bursts of a given length become more frequent.
++import { economics } from './economics.ts';
++import { type RunOptions, type RunResult, runBacktest } from './run.ts';
++import { tradesOf } from './trades.ts';
++
++export interface LadderCongestion {
++  /** Positions with exit attempts, every one of them sent while congested. */
++  readonly allCongested: number;
++  readonly allCongestedBlocked: number;
++  /** Positions with exit attempts of which at least one was sent in calm. */
++  readonly rest: number;
++  readonly restBlocked: number;
++}
++
++export const ladderCongestion = (r: RunResult): LadderCongestion => {
++  const byPosition = new Map<string, boolean[]>();
++  const positionOf = new Map<string, string>();
++  for (const i of Object.values(r.book.intents)) if (i.intent.purpose === 'exit') positionOf.set(i.intent.id, i.intent.positionId);
++  for (const pid of positionOf.values()) byPosition.set(pid, byPosition.get(pid) ?? []);
++  for (const a of r.attempts) {
++    const pid = positionOf.get(a.intentId);
++    if (pid !== undefined) byPosition.get(pid)!.push(a.congested);
++  }
++  let allCongested = 0;
++  let allCongestedBlocked = 0;
++  let rest = 0;
++  let restBlocked = 0;
++  for (const [pid, flags] of byPosition) {
++    const blocked = r.book.positions[pid]?.status !== 'closed';
++    if (flags.length > 0 && flags.every((f) => f)) {
++      allCongested++;
++      if (blocked) allCongestedBlocked++;
++    } else {
++      rest++;
++      if (blocked) restBlocked++;
++    }
++  }
++  return { allCongested, allCongestedBlocked, rest, restBlocked };
++};
++
++export interface BurstRow {
++  readonly perDay: number;
++  readonly durationMs: number;
++  readonly trades: number;
++  readonly entryDecisions: number;
++  readonly allInPerEntryDecisionMicro: bigint | null;
++  /** Share of positions with exits that ended blocked. */
++  readonly blockedExitRate: number;
++  readonly minEquityMicro: bigint;
++  readonly survived: boolean;
++}
++
++/** One run per burst length and frequency (bursts per UTC day, evenly spaced), the rest of the options unchanged. */
++export const burstSweep = (base: RunOptions, grid: { readonly perDay: readonly number[]; readonly durationsMs: readonly number[] },
++  window: { readonly from: number; readonly to: number }): BurstRow[] => {
++  const out: BurstRow[] = [];
++  const solUsd = base.series.find((s) => s.name === 'SOL/USD');
++  if (solUsd === undefined) throw new RangeError('the sweep needs the SOL/USD series');
++  for (const durationMs of grid.durationsMs) {
++    for (const perDay of grid.perDay) {
++      const r = runBacktest({ ...base, failureBursts: { perDay, durationMs } });
++      const { trades, stray } = tradesOf(r, base.fills);
++      const entryDecisions = Object.values(r.book.intents).filter((i) => i.intent.purpose === 'entry').length;
++      const e = economics({ trades, stray, entryDecisions, solUsd, window, policy: base.policy, research: base.research });
++      const l = ladderCongestion(r);
++      const exits = l.allCongested + l.rest;
++      out.push({
++        perDay, durationMs, trades: trades.length, entryDecisions, allInPerEntryDecisionMicro: e.usd.allInPerEntryDecisionMicro,
++        blockedExitRate: exits === 0 ? 0 : (l.allCongestedBlocked + l.restBlocked) / exits, minEquityMicro: e.survival.minEquityMicro, survived: e.survival.survived,
++      });
++    }
++  }
++  return out;
++};
+diff --git a/packages/backtest/src/trades.ts b/packages/backtest/src/trades.ts
+index 67c9f73..2b58e9c 100644
+--- a/packages/backtest/src/trades.ts
++++ b/packages/backtest/src/trades.ts
+@@ -85,10 +85,19 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
+     const f = k === null ? undefined : r.book.intents[p.entryIntentId]?.fills[k];
+     if (f !== undefined) claimed.set(p.entryIntentId, (claimed.get(p.entryIntentId) ?? new Set<string>()).add(f.signature));
+   }
+-  // One token account per entry: its rent is charged to the first trade of the entry intent only, and comes back only
+-  // when every position of that intent is closed (the account is emptied and closed with the last sell).
++  // One token account per entry: its rent is charged to the first trade of the entry intent only, and comes back once,
++  // only when a sell of one of its positions landed as an atomic sell-and-close (world.ts). A sell-only fallback, a
++  // partial exit, dust or an unsolicited token leaves it locked.
+   const rentCharged = new Set<string>();
+-  const allClosed = (entryIntentId: string) => Object.values(r.book.positions).every((q) => q.entryIntentId !== entryIntentId || q.status === 'closed');
++  const positionOfIntent = new Map<string, string>();
++  for (const i of Object.values(r.book.intents)) if (i.intent.purpose === 'exit') positionOfIntent.set(i.intent.id, i.intent.positionId);
++  const closedEntries = new Set<string>();
++  for (const a of r.attempts) {
++    if (!a.closedAccount) continue;
++    const pid = positionOfIntent.get(a.intentId);
++    const p = pid === undefined ? undefined : r.book.positions[pid];
++    if (p !== undefined) closedEntries.add(p.entryIntentId);
++  }
+   const ordered = Object.values(r.book.positions).sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+   for (const p of ordered) {
+     const intent = r.book.intents[p.entryIntentId];
+@@ -146,7 +155,7 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
+     const firstOfEntry = !rentCharged.has(p.entryIntentId);
+     rentCharged.add(p.entryIntentId);
+     const rentPaid = firstOfEntry ? net.tokenAccountRent : 0n;
+-    const rentReturned = firstOfEntry && scenario.rentRecovery && allClosed(p.entryIntentId) ? rentPaid : 0n;
++    const rentReturned = firstOfEntry && scenario.rentRecovery && closedEntries.has(p.entryIntentId) ? rentPaid : 0n;
+     const closedAt = blocked ? r.endedAt : Math.max(...sold.map((a) => a.landedAt ?? 0));
+     trades.push({
+       id: p.id, mint: p.mint, symbol: r.symbols.get(p.mint) ?? p.mint.slice(0, 6),
