@@ -26,7 +26,7 @@ import {
 import { observedFeeContext, type ScenarioName } from '../../../core/src/fills/index.ts';
 import {
   DeployerIndex, evaluateHardRejects, evaluateRegime, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
-  migrationKey, parseMigration, concentration, mintAccounts, poolKey, parsePool, type HardResult, type HardGate, gatesOfStages, HARD_GATES,
+  migrationKey, parseMigration, concentration, mintAccounts, poolKey, parsePool, type HardResult, type HardGate, HARD_GATES, HARD_STAGE_GROUPS, type Staged, stagedHardRejects,
 } from '../../../core/src/gates/index.ts';
 import { OBSERVED_TIP_KEY } from '../sim/market.ts';
 import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src/lifecycle/index.ts';
@@ -832,35 +832,8 @@ export const u1Setup = (r: U1Rules, tape: PoolTape, spot: bigint, now: number, c
 
 export { LAMPORTS_PER_SOL };
 
-/** GATE-2's stage groups, as live (FACTS-1f): stage 1 (stream-derived), stage 2 (account reads), stages 3 and 4. */
-export const HARD_STAGE_GROUPS: readonly (readonly HardGate[])[] = [gatesOfStages([1]), gatesOfStages([2]), gatesOfStages([3, 4])];
-
-/** A staged evaluation: `stopped` when a group failed on a gate that is not ablated, the groups after it unread. */
-export interface Staged {
-  readonly hard: HardResult;
-  readonly stopped: boolean;
-  readonly notEvaluated: readonly HardGate[];
-}
-
-/**
- * The hard rejects in GATE-2's stage groups, as FACTS-1f's live `stagedHardRejects` evaluates them (#106), in one call
- * at one `ctx.now`: groups in order, every gate of a group evaluated, stopping at the first group with a reject; the
- * gates after it are not evaluated, never passed. `groups` limits how far the reads have landed. A paper ablation run
- * goes on past a group whose only failures are its ablated gates. `complete` is GATE-2's: every hard gate evaluated.
- */
-export const stagedHardRejects = (gctx: GateContext, deps: Parameters<typeof evaluateHardRejects>[1], req: Parameters<typeof evaluateHardRejects>[2], groups: 1 | 2 | 3 = 3, ablate: readonly HardGate[] = []): Staged => {
-  let hard: HardResult | null = null;
-  for (let k = 0; k < groups; k++) {
-    const r = evaluateHardRejects(gctx, deps, req, { stopAtFirst: false, only: HARD_STAGE_GROUPS[k]! });
-    hard = hard === null ? r : {
-      ...r, pass: hard.pass && r.pass, evaluated: [...hard.evaluated, ...r.evaluated], passed: [...hard.passed, ...r.passed],
-      failed: [...hard.failed, ...r.failed], reasons: [...hard.reasons, ...r.reasons], notes: [...hard.notes, ...r.notes],
-    };
-    if (!r.pass && !r.failed.every((g) => ablate.includes(g))) return { hard: { ...hard, complete: false }, stopped: true, notEvaluated: HARD_STAGE_GROUPS.slice(k + 1).flat() };
-  }
-  const done = hard!;
-  return { hard: { ...done, complete: HARD_GATES.every((g) => done.evaluated.includes(g)) }, stopped: false, notEvaluated: HARD_STAGE_GROUPS.slice(groups).flat() };
-};
+// The staged hard rejects (audit B2) are core's, the same implementation the live worker calls (FACTS-1f).
+export { HARD_STAGE_GROUPS, type Staged, stagedHardRejects } from '../../../core/src/gates/index.ts';
 
 const fixedStop = (stopBelowBps: number, spot: bigint): { ok: true; stopSpot: bigint } | { ok: false; why: string } => {
   // Rounded up, so the stop is never further than `stopBelowBps` below the spot (a barrier at the policy's widest stop

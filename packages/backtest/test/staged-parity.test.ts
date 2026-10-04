@@ -1,9 +1,10 @@
-// Audit B2: the study's entry decision evaluates every hard-gate stage from stage 1 in one call at one moment, as the
-// live worker's staged path (FACTS-1f), and on the same facts it allows an entry exactly when the live gate does.
+// Audit B2: the study's entry decision evaluates every hard-gate stage from stage 1 in one call at one moment, with the
+// live worker's staged path (FACTS-1f), one implementation in core; on the same facts both give identical rejects.
 import { describe, expect, it } from 'vitest';
 import { createKey, evaluateHardRejects, HARD_GATES, holdersKey, mintKey, type Mode } from '../../core/src/gates/index.ts';
 import { contextOf, deps, drop, passingFacts, request, session, type Facts } from '../../core/test/gates/world.ts';
 import { HARD_STAGE_GROUPS, stagedHardRejects } from '../src/strategy/study.ts';
+import { stagedHardRejects as coreStaged } from '../../core/src/gates/index.ts';
 import { HARD_STAGE_GROUPS as LIVE_GROUPS, hardAllowsEntry, stagedHardRejects as liveStaged } from '../../worker/src/engine/strategy.ts';
 
 const WORLDS: Record<string, Facts> = {
@@ -14,8 +15,10 @@ const WORLDS: Record<string, Facts> = {
 };
 
 describe('staged hard rejects (audit B2)', () => {
-  it('uses the live worker\'s stage groups', () => {
-    expect(HARD_STAGE_GROUPS).toEqual(LIVE_GROUPS);
+  it('is one implementation: the study and the live worker both call core\'s staged evaluation and its groups', () => {
+    expect(stagedHardRejects).toBe(coreStaged);
+    expect(liveStaged).toBe(coreStaged);
+    expect(HARD_STAGE_GROUPS).toBe(LIVE_GROUPS);
   });
 
   for (const mode of ['live', 'backtest'] as const satisfies readonly Mode[]) {
