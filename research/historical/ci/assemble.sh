@@ -19,8 +19,8 @@
 #      delete the parts, move each unit into OUT_DIR/data/units/EPOCH/RANGE. A unit that
 #      crosses midnight arrives twice: every *.zst present in both copies must have the
 #      same sha256, and its two stats.json must agree on epoch, slots, blocks, schema and
-#      scanner revision (the first is kept), else stop; files only the new copy has are
-#      moved in;
+#      scanner revision (two revisions both in ALLOW_REVISIONS are accepted; the first copy
+#      is kept), else stop; files only the new copy has are moved in;
 #   3. free-space guard (finalize_guard: 2x the extracted units + 10 GB), finalize,
 #      strict QA, decoder parity, then the release directory is built by
 #      moving files (never copying), checksummed and published.
@@ -76,13 +76,23 @@ free_guard() {
 
 # stats_match A B: two stats.json copies of one unit describe the same scan. They are
 # written at scan time, so seconds, finished_at and the HTTP counters differ between the
-# two days' scans; the identity fields below must not.
+# two days' scans; the identity fields below must not. scanner_revision may differ only
+# when both values are listed in ALLOW_REVISIONS (the window then spans a revision
+# boundary that finalize also accepts); every data file must still hash equal
+# (merge_unit).
 stats_match() {
-  python3 - "$1" "$2" <<'PY'
-import json, sys
+  ALLOW_REVISIONS="${ALLOW_REVISIONS:-}" python3 - "$1" "$2" <<'PY'
+import json, os, sys
 a, b = (json.load(open(p)) for p in sys.argv[1:3])
+allowed = set(filter(None, os.environ["ALLOW_REVISIONS"].split(",")))
 keys = ("epoch", "from_slot", "to_slot", "blocks", "schema", "scanner_revision")
-bad = [k for k in keys if k not in a or k not in b or a[k] != b[k]]
+def same(k):
+    if k not in a or k not in b:
+        return False
+    if k == "scanner_revision" and a[k] != b[k]:
+        return a[k] in allowed and b[k] in allowed
+    return a[k] == b[k]
+bad = [k for k in keys if not same(k)]
 if bad:
     sys.exit("stats.json differs in " + ", ".join(f"{k} ({a.get(k)!r} vs {b.get(k)!r})" for k in bad))
 PY

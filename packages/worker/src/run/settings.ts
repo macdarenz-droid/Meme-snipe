@@ -47,6 +47,8 @@ export const strategyConfig = (
     evaluateEveryMs: policy.gates.maxQuoteAgeMs,
     barMs: exitsFor(policy.exits, 'U2').atrBarMs,
     keepBars: exitsFor(policy.exits, 'U2').atrPeriod * 4,
+    // REC-1 (supervisor ruling): at most 3 rejected candidates' pools watched past their window at once (Helius cost).
+    maxTails: 3,
   };
 };
 
