@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
+import { NO_LATCHES } from '../../core/src/risk/types.ts';
 import { EVIDENCE_FILES, STATE_FILES } from '../../runner/src/contract.ts';
+import { NO_CONTROL, controlFile } from '../../worker/src/run/state.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const read = (p: string) => readFileSync(join(root, p), 'utf8');
@@ -39,6 +41,12 @@ if [ "$1" = -d ]; then cat "$4"; else cat > "$4"; fi
 `);
 chmodSync(join(bin, 'sqlite3'), 0o755);
 chmodSync(join(bin, 'age'), 0o755);
+// systemctl and chown stand-ins log their calls.
+const calls = join(tmp, 'calls');
+for (const name of ['systemctl', 'chown']) {
+  writeFileSync(join(bin, name), `#!/usr/bin/env bash\necho "${name} $*" >> "${calls}"\n`);
+  chmodSync(join(bin, name), 0o755);
+}
 
 /** A worker state dir as the real worker leaves it (worker/src/run/state.ts, account.ts, runner contract). */
 const STATE: Record<string, string> = {
@@ -167,12 +175,6 @@ describe('restore drill and restore', () => {
     writeFileSync(join(live, 'account.json'), '{"newer":true}\n');
     writeFileSync(join(live, 'stray.json'), '{}\n');
     writeFileSync(join(live, 'journal.jsonl'), '{"seq":1}\n{"seq":2}\n');
-    // systemctl and chown stand-ins log their calls.
-    const calls = join(tmp, 'calls');
-    for (const name of ['systemctl', 'chown']) {
-      writeFileSync(join(bin, name), `#!/usr/bin/env bash\necho "${name} $*" >> "${calls}"\n`);
-      chmodSync(join(bin, name), 0o755);
-    }
     const aside = join(tmp, 'aside');
     const r = run('zeroed-restore', [id, made.bundle!], { ZEROED_BACKUP_SRC: live, ZEROED_BACKUP_OUT: out, ZEROED_RESTORE_ASIDE: aside, ZEROED_RESTORE_DRILL: join(SBIN, 'zeroed-restore-drill') });
     expect(r.status, r.out).toBe(0);
@@ -184,6 +186,22 @@ describe('restore drill and restore', () => {
     const [kept] = readdirSync(aside);
     expect(readFileSync(join(aside, kept!, 'account.json'), 'utf8')).toBe('{"newer":true}\n');
     expect(readFileSync(calls, 'utf8')).toBe(`systemctl stop zeroed-worker.service\nchown -R zeroed-worker:zeroed-worker ${live}\nsystemctl start zeroed-worker.service\n`);
+  });
+
+  it('a backup without control.json restores with entries paused, in the form the worker reads', () => {
+    const { 'control.json': _dropped, ...rest } = STATE;
+    const noCtl = stateDir('restore-noctl-src', rest);
+    const made2 = backup(noCtl, join(tmp, 'noctl-out'));
+    expect(made2.status, made2.out).toBe(0);
+    const live = join(tmp, 'restore-noctl-live');
+    cpSync(src, live, { recursive: true });
+    const r = run('zeroed-restore', [id, made2.bundle!], { ZEROED_BACKUP_SRC: live, ZEROED_BACKUP_OUT: join(tmp, 'noctl-out'), ZEROED_RESTORE_ASIDE: join(tmp, 'aside2'), ZEROED_RESTORE_DRILL: join(SBIN, 'zeroed-restore-drill') });
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain('The backup had no control.json, so entries start paused.');
+    const ctl = controlFile(live).read(NO_CONTROL);
+    expect(ctl.paused).toBe(true);
+    expect(typeof ctl.pausedAtMs).toBe('number');
+    expect(ctl.latches).toEqual(NO_LATCHES);
   });
 });
 

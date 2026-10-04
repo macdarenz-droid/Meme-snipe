@@ -83,7 +83,7 @@ To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type 
 
 `zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It lists every file and prints PASS once the manifest matches, the SQLite files pass the integrity check with the live tables, and the JSON files parse. It never touches the live files.
 
-To restore for real: `zeroed-restore /etc/zeroed/age/host.key` (or the identity made from the words, and optionally a backup file). It runs the drill on the backup first, stops the worker, moves the bot state it has to `/var/lib/zeroed-prerestore/<UTC time>/`, puts the backup's files in its place (the evidence stays), gives them to the worker and starts it; the worker reconciles before it trades.
+To restore for real: `zeroed-restore /etc/zeroed/age/host.key` (or the identity made from the words, and optionally a backup file). It runs the drill on the backup first, stops the worker, moves the bot state it has to `/var/lib/zeroed-prerestore/<UTC time>/`, puts the backup's files in its place (the evidence stays), gives them to the worker and starts it; the worker reconciles before it trades. A backup without `control.json` restores with new entries paused.
 
 ## Watchdog (OPS-1b)
 
