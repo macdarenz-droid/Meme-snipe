@@ -960,6 +960,8 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
     14. An identity that is not registered is reported as unregistered, with its S still computed.
     15. The reducer is pure: same events, same output; the core purity guard covers it.
     16. Step 3 (wiring PR): existing decisions byte-identical with the monitor on; exits unaffected; no future labels; recorded-feed replay parity between worker and backtest.
+    17. Step 3 also: `seen` and `finished` are pruned or checkpointed (they grow with every event); late flows after `final` are defined and tested. Either the wiring emits `final` only after every flow of the episode, or the reducer accepts a late close fee or rent refund as an adjustment. Until then a flow after `final` is refused (test 10).
+  - **Stats review of #175 at 52c66d3 (B1):** the false-alarm target is per 100 episodes. False pauses accumulate over longer runs (S2 net: 5.05 / 22.2 / 44.0 / 71.4% by 100 / 250 / 500 / 1,000 episodes), so a pause is evidence read against the episodes observed. Recorded in risk.md §10, the script and `HEALTH_DEFAULTS`.
 - **2026-10-04 · STATS-1g: external audit of core stats (S1, S3, S4); each item was reproduced before it was fixed.**
   - **S1, the G3 retained-expectancy budget.**
     - The bound subtracted four uncertain parts: the holdout lower bound, v⁺ and Δ⁺ at α/3 each, plus a 95% fill-error bound. The union bound is 3·(0.05/3) + 0.05 = 0.10, so only 90% joint coverage was established.

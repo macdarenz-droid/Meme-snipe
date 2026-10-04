@@ -376,6 +376,17 @@ Exact chance of 5 or more losses in one window of 20 independent trades, by win 
 | S3 with 1% at −105% | +11.77% | 100% | 0.18% |
 | S3 with deviations doubled (same mean) | +12.91% | 100% | 34.6% |
 
+**False pauses accumulate.** The 5% target is per 100 episodes, not a fixed-level test. Over a longer in-control run the share of paths falsely paused keeps growing (validation seed):
+
+| In control | by 100 | by 250 | by 500 | by 1,000 episodes |
+|---|---|---|---|---|
+| S2 marginal, net | 5.05% | 22.2% | 44.0% | 71.4% |
+| S3 positive, net | 0.06% | 0.18% | 0.41% | 1.02% |
+
+So "paused" is evidence to be read against the number of episodes observed. A marginal strategy will eventually be flagged.
+
+The CUSUM also alarms on a rise in variance at the same positive mean: 34.6% of S3 paths alarm when every deviation is doubled. It reads severe losses, whether they come from a worse mean or from a wider spread.
+
 **Change detection.** The first 50 episodes are at the design edge (S3's shape shifted to +5%); the last 50 are shifted. Columns give alarms in the first 50, alarms in the last 50, and the median delay.
 
 | Change | R8 | CUSUM |

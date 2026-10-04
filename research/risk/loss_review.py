@@ -219,6 +219,15 @@ def main():
     print(f"  validation {'holds' if ok else 'FAILS'}")
     print()
 
+    print("In-control run length (validation seed, streams 10 and 11): share of paths alarmed by episode n. The 5% target")
+    print("is per 100 episodes; over a longer run false pauses accumulate, so a pause is evidence read against the episodes seen.")
+    rngs = streams(VALID_SEED)
+    for k, (name, dist) in enumerate((("S2 marginal (net)", S2), ("S3 positive (net)", S3))):
+        first = cusum_first_alarm(draw(rngs[10 + k], dist, (PATHS, 1000)), h)
+        by = [float(((first > 0) & (first <= n)).mean()) for n in (100, 250, 500, 1000)]
+        print(f"  {name:<20} by 100 {pct(by[0])}  250 {pct(by[1])}  500 {pct(by[2])}  1,000 {pct(by[3])}")
+    print()
+
     print(f"Stress (validation seed): share of paths paused or alarmed within {TRADES} episodes")
     for name, z in stress_samples(VALID_SEED).items():
         r8 = float((r8_first_trip(z) > 0).mean())

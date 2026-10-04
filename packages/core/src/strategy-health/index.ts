@@ -39,6 +39,9 @@ export interface HealthConfig {
 /**
  * κ = 0.005 and h = 7.1 from research/risk/loss_review.py: h is the smallest value with at most 5% alarms within 100
  * episodes for every synthetic in-control model, chosen on seed 810 and validated on seed 281011 (risk.md §10).
+ * The 5% is per 100 episodes, not a fixed-level test: false pauses accumulate over a longer run (a marginal +1.75%
+ * strategy is falsely paused on about 5% of paths by 100 episodes, 22% by 250, 44% by 500, 71% by 1,000), and a rise
+ * in variance at the same mean also alarms. "Paused" is evidence read against the episodes observed.
  */
 export const HEALTH_DEFAULTS = { kappa: 0.005, h: 7.1, watchFraction: 0.5, requalifyEpisodes: 20 } as const;
 
