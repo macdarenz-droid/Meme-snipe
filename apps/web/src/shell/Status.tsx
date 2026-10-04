@@ -35,7 +35,7 @@ export function shellSession(status: Loaded<WorkerStatus>, conn: Pick<Connection
   }
   if (status.state === 'not-running') return { label: 'Not running', on: false };
   if (status.state === 'loading') return { label: 'Connecting', on: false };
-  return { label: status.reason === 'offline' ? 'Offline' : 'Unknown', on: false };
+  return { label: status.reason === 'offline' ? 'Offline' : status.reason === 'update-needed' ? 'App update needed' : 'Unknown', on: false };
 }
 
 /**
