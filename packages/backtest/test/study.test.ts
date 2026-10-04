@@ -199,6 +199,16 @@ describe('BT-2 study runs', () => {
     expect(rejects(two.r.records)).toContain('H14:not-covered');
   });
 
+  it('S0 and the setups enter only on a current SOL/USD close (at most 2 h old): a series that stops is "not covered", never an old price', () => {
+    // The hourly series ends three hours before the entry window: the last close is stale for every check.
+    const short = { ...sol, bars: sol.bars.filter((b) => b.start < W0 - 3 * 3_600_000) };
+    for (const mode of ['strategy', 's0'] as const) {
+      const r = run([SETUP], { mode, seed: 's0-1', series: [short] });
+      expect(decisions(r.r.records).filter((d) => d.reasons[0] === 'enter'), mode).toHaveLength(0);
+      expect(decisions(r.r.records).some((d) => d.reasons[0] === 'no entry' && d.reasons[3] === 'SOL/USD stale'), mode).toBe(true);
+    }
+  });
+
   it('S0 enters at a seeded random eligible check, with the same gates', () => {
     const a = run([SETUP], { mode: 's0', seed: 's0-1' });
     const b = run([SETUP], { mode: 's0', seed: 's0-2' });

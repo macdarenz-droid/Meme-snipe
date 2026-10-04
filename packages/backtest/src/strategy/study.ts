@@ -396,11 +396,10 @@ export class StudyStrategy implements Strategy {
     const pool = mig?.pool ?? null;
     const pv = pool === null ? null : ctx.lookup(`pool:${pool}`);
     const view = pv !== null && pv.ok ? (pv.value as PoolView) : null;
-    const sol = parseSolUsd(ctx.lookup(SOL_USD_KEY).ok ? (ctx.lookup(SOL_USD_KEY) as { value: unknown }).value : null);
-    const px = sol === null ? null : solUsdAt(sol, now);
+    const px = solForEntry(ctx, now);
     const stop = (stage: Stage, cls: StopClass, gates?: HardResult) => this.funnel.record(tag, mint, stage, cls, gates);
     if (view === null || pool === null) return void (stop('market data', 'not covered'), say('no entry', 'pool state unknown'));
-    if (px === null) return void (stop('market data', 'not covered'), say('no entry', 'SOL/USD unknown'));
+    if (px === null || px === 'stale') return void (stop('market data', 'not covered'), say('no entry', px === null ? 'SOL/USD unknown' : 'SOL/USD stale'));
     const policy = this.#o.session.policy;
     const spend = microUsdToLamports(policy.capital.minNotional, px.price as MicroUsd, 'ceil');
     const quoter = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL));
@@ -437,10 +436,9 @@ export class StudyStrategy implements Strategy {
     const pool = mig?.pool ?? null;
     const pv = pool === null ? null : ctx.lookup(`pool:${pool}`);
     const view = pv !== null && pv.ok ? (pv.value as PoolView) : null;
-    const sol = parseSolUsd(ctx.lookup(SOL_USD_KEY).ok ? (ctx.lookup(SOL_USD_KEY) as { value: unknown }).value : null);
-    const px = sol === null ? null : solUsdAt(sol, now);
+    const px = solForEntry(ctx, now);
     if (view === null || pool === null) return void (this.#pending.delete(key), stop('market data', 'not covered'), say('no entry', 'pool state unknown'));
-    if (px === null) return void (this.#pending.delete(key), stop('market data', 'not covered'), say('no entry', 'SOL/USD unknown'));
+    if (px === null || px === 'stale') return void (this.#pending.delete(key), stop('market data', 'not covered'), say('no entry', px === null ? 'SOL/USD unknown' : 'SOL/USD stale'));
     const policy = this.#o.session.policy;
     const spend = microUsdToLamports(policy.capital.minNotional, px.price as MicroUsd, 'ceil');
     const quoter = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL));
@@ -724,6 +722,22 @@ export class StudyStrategy implements Strategy {
     }
   }
 }
+
+/**
+ * The SOL/USD price an entry is sized and judged at: the latest hourly close released, no older than the series lets it
+ * be. Live refuses a SOL price older than maxQuoteAgeMs (2 s) from its stream; the dataset has hourly closes only, each
+ * stamped at its bar's end and usable one bar later (offchain.ts `usableFrom`), so a healthy close is 1 to 2 hours old
+ * and the backtest's bound is 2 hours. Older, as when the series stops, the entry is "not covered", never sized at an
+ * old price. Exits and the books keep the latest price (refusing it there would drop a loss from the account).
+ */
+export const SOL_USD_MAX_AGE_MS = 2 * 3_600_000;
+const solForEntry = (ctx: StrategyContext, now: number): { readonly tMs: number; readonly price: bigint } | 'stale' | null => {
+  const r = ctx.lookup(SOL_USD_KEY);
+  const sol = r.ok ? parseSolUsd(r.value) : null;
+  const pt = sol === null ? null : solUsdAt(sol, now);
+  if (pt === null) return null;
+  return now - pt.tMs > SOL_USD_MAX_AGE_MS ? 'stale' : pt;
+};
 
 /** Failed gates with their first reason code, for the log: "H13:not-covered". */
 export const gateCodes = (g: HardResult): string[] =>
