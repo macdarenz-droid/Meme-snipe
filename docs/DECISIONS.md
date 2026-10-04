@@ -860,6 +860,26 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - **Redactions in recorded files are listed.** Each redaction is named, with its count, in the manifest's `coverage_gaps`, so a replay difference there is explained.
   - **Simulation lines carry `finalExit`, `simulatedSlot` and `standIn`** in full, null when unknown.
   - **The rehearsal workflow runs S0 with a paper-only edge of 400,000 ppm.** The supervisor approved this as a `.github` change. It lets trades open, so the restart drills can run mid-trade.
+- **2026-10-04 · RUN-1d contract (WORKER-1b).**
+  - `pending_exits`: every trade whose position is exit-requested, pending or blocked, or that has an exit intent not yet final.
+  - `open_position.universe`: from the plan, else the entry key.
+  - `recovered` is journaled once per full start, after the reconcile. Its source is `chain` when the state dir began with no ledger (marked by `cold_start` until a full start journals it), else `state`. It lists `pending_exits` and each open position with its universe. A genuine first boot therefore reports `recovered` with source `chain` and nothing kept. A position with no universe on record is listed as `none on record` (the runner counts it as missing, and the worker starts sell-only and flattens it). A boot whose ledger cannot be opened stops before its `start` line (the ledger opens first), so the journal has no line for that boot; the error is in the process log and the exit code.
+  - `POST /drill/drop-rpc {ms}` (same token and codes as drop-feed) does three things:
+    - drops every feed;
+    - refuses every provider RPC through `RpcCut` (a network error, never a shed);
+    - makes `exit_capable` false until the cut ends.
+  - `--reconcile-only` does the following:
+    - reconciles on its own state dir and journals `recovered`;
+    - serves only `/health`: no API, drills, heartbeat, seed or fact producers;
+    - drains the live feeds unread, so `exit_capable` is real while nothing is decided;
+    - runs until SIGTERM.
+  - The contract types arrive with #64. Until then the two health fields ride on top of `Health`, and `recovered` widens the journal kind.
+- **2026-10-04 · A restored position whose universe the policy lacks (EXIT-1b review, supervisor ruling).** Exits are never blocked, so the worker still starts, as follows:
+  - it runs sell-only for the whole process: an entry halt reason per such position, journaled and logged as an alert;
+  - the reasons are listed in the start line's `sell_only`;
+  - the strategy flattens the position through the global exit ladder: that universe's exit block is replaced by one with zero time stops and no take-profit, so the whole position goes at once;
+  - the exit's decision line carries `universe missing: flatten`.
+  Before this, `exitsFor` threw and the position got no exit decision.
 - **2026-10-04 · Rehearsal 37148935094 (S0): the first start no longer reads 14 days of creates over RPC.** That read spent about 4,000 Helius credits in the first minutes; at roughly 64,000 creates a day, a full look-back is far beyond the free month. It also held the start, so the loop and every exit waited. A partial read leaves H14 not covered anyway.
   - A first start now seeds from day releases only. There are none on the host yet, so the look-back is a gap until the live watch has run through it.
   - Restarts still fill the downtime over RPC.
@@ -872,6 +892,7 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - Tests: an exit during a seed that never answers, before `seedMaxMs` (fails when the loop waits for the seed); a restart whose fill misses the cap is not covered across the downtime and stops its RPC; the restart drill's seed is taken in full, never refused (fails without the held-back events); no call after an abort.
 - **2026-10-04 · A restart rebuilds the stored book before it decides, and a killed process writes no state file (root cause of the one-off `--reconcile` failure).** The worker's own start facts (`worker:halt`, `worker:restore`) are dated 1 ms after the stored book's world frames, so every restored event sorts before them whatever the clock's resolution.
   - The failure: all those frames are placed in the same off-chain slot, so a tie on receipt time was broken by id, and `worker:halt` sorts before `world#…` ("work" < "worl"). The strategy then saw an intent the ledger had already carried to sent, cancelled it ("no slot height yet"), and the engine refused the restored `prepare`, `sign` and `submit` that followed. The two books ended apart: `--reconcile` reported success from the engine's and wrote `open_intents` 1 from the ledger's. It reproduced about once in 50 runs of the test under full-suite load, never alone.
+  - The saved exit plans come before the halt fact (1 ms apart). With both dated after the restored frames at one instant, the halt sorted first by id; the strategy manages positions on any market event, so on the halt it built a fresh plan and tracker from the fill and could exit on them (a tracker that had met its flat target got the flat time stop) before the saved plans arrived. Test: a restored tracker past its flat deadline with `flatMet` keeps its position (fails with the halt first).
   - A refused world event the ledger already holds is now a divergence: entries halt until a restart, with a journal line, instead of the books quietly differing.
   - A paper simulation can answer after the worker was killed or stopped. `PaperWorld.stop()` ends its state writes, so a dead process never writes `paper.json` or `open_intents` over what the next one (the host unit's ExecStartPre) wrote.
   - Tests: the restored events are released before the halt fact on a tying clock (8 of them came after it before the fix); a simulation answering after a kill leaves both files as the successor wrote them.
