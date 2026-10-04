@@ -208,6 +208,8 @@ export class Worker {
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
   #pools = new Map<string, unknown>();
+  /** When each mint's latest pool fact was released to the engine (WATCH-1 judges a feed fact by its release). */
+  readonly #poolReleasedAt = new Map<string, number>();
   #fees = new Map<string, PoolFeeContext>();
   /** WATCH-1's latest snapshot per held mint, as released. */
   #snapshots = new Map<string, SnapshotFact>();
@@ -347,7 +349,7 @@ export class Worker {
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
-      if (e.key.startsWith(POOL_PREFIX)) this.#pools.set(e.key.slice(POOL_PREFIX.length), e.value);
+      if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
@@ -461,7 +463,7 @@ export class Worker {
     if (!r.late) this.#deployerStore.keep(m);
     // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
     if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) this.#lastSlot = m.value['slot'];
-    else if (m.key.startsWith(POOL_PREFIX)) this.#pools.set(m.key.slice(POOL_PREFIX.length), m.value);
+    else if (m.key.startsWith(POOL_PREFIX)) this.#setPool(m.key.slice(POOL_PREFIX.length), m.value);
     else if (m.key.startsWith('worker:fees:')) this.#fees.set(m.key.slice('worker:fees:'.length), m.value as PoolFeeContext);
     else if (m.key.startsWith(SNAPSHOT_PREFIX)) {
       const snap = parseSnapshotFact(m.value);
@@ -509,6 +511,24 @@ export class Worker {
    * The mint's newest whole market (merge rule M, as the strategy's #market): WATCH-1's snapshot when it is newer than
    * the pool fact; else the pool fact, unless POS-1 flagged it (a stale swap stream), which is no market at all.
    */
+  #setPool(mint: string, value: unknown): void {
+    this.#pools.set(mint, value);
+    this.#poolReleasedAt.set(mint, this.#d.timers.now());
+  }
+
+  /**
+   * The moment WATCH-1 judges a held mint's market by (null: no market). A pool fact from the feed counts from its
+   * release: a healthy feed releases one every slot, already up to the horizon old by design, so judging it by receipt
+   * would read the second path all the time. WATCH-1's own snapshot counts from its read, as its age bound needs.
+   */
+  #watchMarketAt(mint: string): number | null {
+    const p = parsePool(this.#pools.get(mint));
+    const snap = this.#snapshots.get(mint);
+    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return snap.atMs;
+    if (this.poolOf(mint) === null) return null;
+    return this.#poolReleasedAt.get(mint) ?? null;
+  }
+
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
     const p = parsePool(this.#pools.get(mint));
     const snap = this.#snapshots.get(mint);
@@ -1011,7 +1031,7 @@ export class Worker {
         const seen = new Set(open.map((h) => h.mint));
         return [...open, ...entering.filter((e) => !seen.has(e.mint) && seen.add(e.mint))];
       },
-      marketAt: (mint) => this.poolOf(mint)?.atMs ?? null,
+      marketAt: (mint) => this.#watchMarketAt(mint),
       read: d.watchRead ?? (() => Promise.reject(new Error('no second path configured'))),
       put: (snap, atMs) => this.#fact(snapshotKey(snap.mint), { pool: snap.pool, slot: snap.slot, atMs, state: snap.state, ctx: snap.ctx }),
       alert: (mint, reason) => {
