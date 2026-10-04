@@ -307,7 +307,7 @@ export function stopText(kind: OwnerKind, stop: ReportedStop | null): string {
   const confirm = `/${kind} confirm ${stop.trip}`;
   if (kind === 'review') {
     return [
-      `${NAMES.review}: ${e['losses'] ?? '?'} losses in ${e['window'] ?? '?'} trades, closed ${melbourneText(e['from_ms'])} to ${melbourneText(e['to_ms'])}.`,
+      `${NAMES.review}: ${e['losses'] ?? '?'} losses in ${e['trades'] ?? '?'} trades, closed ${melbourneText(e['from_ms'])} to ${melbourneText(e['to_ms'])}.`,
       `Net of those trades: ${solText(e['net_lamports'])}.`,
       `To clear it, send: ${confirm}`,
     ].join('\n');

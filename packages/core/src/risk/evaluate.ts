@@ -32,12 +32,14 @@ const fresh = (atMs: number, nowMs: number, maxAgeMs: number): boolean => isTime
 const byClose = (a: ClosedTrade, b: ClosedTrade): number => a.closedAtMs - b.closedAtMs;
 const isLoss = (t: ClosedTrade): boolean => t.netPnl < 0n;
 
-/** An R8 review that is due: the trades from `fromMs` to `atMs` hold `losses` losses in one window. */
+/** An R8 review that is due: the window of `trades` trades closed from `fromMs` to `toMs` holds `losses` losses. */
 export interface LossReviewTrip {
   /** The close of the loss that completed the window: the trip's moment, the same until the owner reviews it. */
   readonly atMs: number;
-  /** The close of the window's first trade. */
+  /** The closes of the window's first and last trades. */
   readonly fromMs: number;
+  readonly toMs: number;
+  readonly trades: number;
   readonly losses: number;
 }
 
@@ -54,7 +56,8 @@ export const lossReviewTrip = (closed: readonly ClosedTrade[], reviewedAtMs: num
     const losses = window.filter(isLoss);
     if (losses.length >= loss.reviewLosses) {
       const completing = losses[loss.reviewLosses - 1] ?? window.at(-1);
-      return { atMs: completing?.closedAtMs ?? reviewedAtMs ?? 0, fromMs: window[0]?.closedAtMs ?? reviewedAtMs ?? 0, losses: losses.length };
+      const none = reviewedAtMs ?? 0;
+      return { atMs: completing?.closedAtMs ?? none, fromMs: window[0]?.closedAtMs ?? none, toMs: window.at(-1)?.closedAtMs ?? none, trades: window.length, losses: losses.length };
     }
   }
   return null;

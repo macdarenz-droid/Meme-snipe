@@ -78,7 +78,7 @@ export const openStops = (i: StopInputs): OpenStops => {
   return {
     review: r8 === null ? null : {
       trip: tripId('review', r8.atMs), atMs: r8.atMs,
-      evidence: { losses: r8.losses, window: i.loss.reviewWindowTrades, from_ms: r8.fromMs, to_ms: r8.atMs, net_lamports: lamports(i.netLamports(r8.fromMs, r8.atMs)) },
+      evidence: { losses: r8.losses, trades: r8.trades, from_ms: r8.fromMs, to_ms: r8.toMs, net_lamports: lamports(i.netLamports(r8.fromMs, r8.toMs)) },
     },
     rearm: !killOpen(l) ? null : {
       trip: tripId('rearm', l.killTrippedAtMs), atMs: l.killTrippedAtMs,

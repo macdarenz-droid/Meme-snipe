@@ -292,14 +292,14 @@ describe('R8 edges', () => {
     const loss = TRIAL_POLICY.loss;
     const fifth = in20.filter((t) => t.netPnl < 0n)[4]!;
     const trip = lossReviewTrip(in20, null, loss);
-    expect(trip).toEqual({ atMs: fifth.closedAtMs, fromMs: in20[0]!.closedAtMs, losses: 5 });
+    expect(trip).toEqual({ atMs: fifth.closedAtMs, fromMs: in20[0]!.closedAtMs, toMs: in20[19]!.closedAtMs, trades: 20, losses: 5 });
     // The ledger's order does not matter, and later trades (losses too) never move it.
     expect(lossReviewTrip([...in20].reverse(), null, loss)).toEqual(trip);
     const later = [...in20, trade(LAST_WEEK + HOUR, '-0.1'), trade(LAST_WEEK + 2 * HOUR, '0.1'), trade(LAST_WEEK + 3 * HOUR, '-0.1')];
     expect(lossReviewTrip(later, null, loss)?.atMs).toBe(fifth.closedAtMs);
     // Fewer trades than the window: the fifth loss trips it, and a win after it does not move the trip.
     const early = series('LLLLLW', LAST_WEEK);
-    expect(lossReviewTrip(early, null, loss)).toEqual({ atMs: early[4]!.closedAtMs, fromMs: early[0]!.closedAtMs, losses: 5 });
+    expect(lossReviewTrip(early, null, loss)).toEqual({ atMs: early[4]!.closedAtMs, fromMs: early[0]!.closedAtMs, toMs: early[5]!.closedAtMs, trades: 6, losses: 5 });
     // It agrees with R8 wherever R8 decides.
     const in21 = series('L' + 'W'.repeat(4) + 'L' + 'W'.repeat(4) + 'L' + 'W'.repeat(4) + 'L' + 'WWWWL', LAST_WEEK);
     for (const closed of [in20, in21, series('LWLWLWLWWWWWWWWWWWWW', LAST_WEEK), later]) {

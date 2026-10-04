@@ -19,13 +19,15 @@ const ownerLines = (dir: string) => lines(dir).filter((l) => l['kind'] === 'owne
 describe('owner commands against the open stops', () => {
   const T = 1_800_000_000_000;
   const latched: Latches = { ...NO_LATCHES, killTrippedAtMs: T - 600_000, weeklyTrippedAtMs: T - 1_200_000 };
-  const trades = [1, 2, 3, 4, 5].map((i) => ({ mint: `M${i}`, openedAtMs: T - 7_200_000 + i, closedAtMs: T - 3_600_000 + i * 60_000, notional: 2_000_000n, netPnl: -100_000n, stoppedOut: true }) as never);
-  const stops = (l: Latches): OpenStops => openStops({ latches: l, closed: trades, loss: LOSS, netLamports: () => -5n, snapshot: null });
+  // Five losses, then a win: the window runs past the trip.
+  const trades = [1, 2, 3, 4, 5, 6].map((i) => ({ mint: `M${i}`, openedAtMs: T - 7_200_000 + i, closedAtMs: T - 3_600_000 + i * 60_000, notional: 2_000_000n, netPnl: i === 6 ? 50_000n : -100_000n, stoppedOut: i !== 6 }) as never);
+  // A stand-in sum that shows which closes it was asked for.
+  const stops = (l: Latches): OpenStops => openStops({ latches: l, closed: trades, loss: LOSS, netLamports: (from, to) => BigInt(to - from), snapshot: null });
 
   it('names each open stop by kind and moment; a cleared one is not open', () => {
     const s = stops(latched);
     expect(s.review?.trip).toBe(tripId('review', T - 3_600_000 + 5 * 60_000));
-    expect(s.review?.evidence).toMatchObject({ losses: 5, window: 20, net_lamports: '-5' });
+    expect(s.review?.evidence).toEqual({ losses: 5, trades: 6, from_ms: T - 3_600_000 + 60_000, to_ms: T - 3_600_000 + 6 * 60_000, net_lamports: String(5 * 60_000) });
     expect(s.rearm).toMatchObject({ trip: `rearm-${T - 600_000}`, atMs: T - 600_000 });
     expect(s.weekly?.evidence['week_ends_ms']).toBeGreaterThan(T - 1_200_000);
     const cleared = stops({ ...latched, killRearmedAtMs: T - 1, weeklyReviewedAtMs: T - 1, lossReviewedAtMs: T - 1 });
@@ -116,7 +118,7 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     expect(review['rearm']?.trip).toBe(`rearm-${f.latches.killTrippedAtMs}`);
     expect(review['weekly']?.trip).toBe(`weekly-${f.latches.weeklyTrippedAtMs}`);
     expect(review['review']?.trip).toBe(`review-${f.r8At}`);
-    expect(review['review']?.evidence).toMatchObject({ losses: 5, net_lamports: String(-5n * f.lost) });
+    expect(review['review']?.evidence).toEqual({ losses: 5, trades: 5, from_ms: f.r8At - 4 * 60_000, to_ms: f.r8At, net_lamports: String(-5n * f.lost) });
     expect(w.sent[0]!['acked']).toEqual([]);
 
     // A stale trip, another kind's trip, and the current one: only the last is applied, to its own field.

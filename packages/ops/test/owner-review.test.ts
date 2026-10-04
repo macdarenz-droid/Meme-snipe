@@ -16,7 +16,7 @@ const hb = (over: Partial<Heartbeat> = {}): Heartbeat => ({
   paused: false, owner_chat_id: '42', ...over,
 });
 const REVIEW = {
-  review: { trip: `review-${R8_AT}`, evidence: { losses: 5, window: 20, from_ms: R8_AT - 3_600_000, to_ms: R8_AT, net_lamports: '-12300000' } },
+  review: { trip: `review-${R8_AT}`, evidence: { losses: 5, trades: 20, from_ms: R8_AT - 3_600_000, to_ms: R8_AT, net_lamports: '-12300000' } },
   rearm: { trip: `rearm-${KILL_AT}`, evidence: { tripped_ms: KILL_AT, equity_lamports: '140000000', nav_lamports: '130000000', nav_peak_lamports: '200000000' } },
   weekly: null,
 };
