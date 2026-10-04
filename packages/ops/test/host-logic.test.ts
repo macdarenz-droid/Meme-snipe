@@ -240,8 +240,53 @@ describe('worker start and API address', () => {
     expect(entry()).toBe(STUB); // asked for, but the release has no worker
     writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
     expect(entry()).toBe(STUB);
-    // The repository ships with the stand-in: the switch is its own reviewed commit.
-    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('stub');
+    // SWITCH-1 is the reviewed switch: the repository now runs the release's own worker.
+    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('release');
+  });
+
+  it("SWITCH-1: zeroed-update tries the new release's worker before anything changes", () => {
+    const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const smoke = upd.indexOf('/usr/local/lib/zeroed/worker-smoke "$dest"');
+    expect(smoke).toBeGreaterThan(0);
+    // Before the host files apply and before current moves; a failed trial alerts and exits.
+    expect(smoke).toBeLessThan(upd.indexOf('apply_host "$commit" "$dest" || exit 1'));
+    expect(smoke).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    expect(upd.slice(smoke, upd.indexOf('apply_host "$commit" "$dest" || exit 1'))).toMatch(/alert worker-smoke "ALERT[^\n]*stays on the release it runs[^\n]*"\n\s+exit 1\n/);
+    const s = read('ops/host/files/usr/local/lib/zeroed/worker-smoke');
+    // Beside the running worker: its own ports, a scratch state directory, the worker's user, paper only.
+    expect(sh('echo "$SMOKE_HEALTH_ADDR $SMOKE_API_ADDR"').out).toBe('127.0.0.1:8797 127.0.0.1:8798');
+    expect(s).toContain('--setenv=ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" --setenv=ZEROED_API_ADDR="$SMOKE_API_ADDR"');
+    expect(s).toContain('--setenv=ZEROED_STATE_DIR="$tmp/state"');
+    expect(s).toContain('--setenv=ZEROED_MODE=paper');
+    expect(s).not.toMatch(/ZEROED_MODE=(?!paper )/);
+    expect(s).not.toMatch(/CREDENTIALS_DIRECTORY|credstore|LoadCredential/);
+    expect(s).toContain('if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi');
+    // The worker's own arguments go after the program, never among systemd-run's options.
+    expect(s).toContain('/usr/local/bin/node --no-warnings "$entry" "${args[@]}"');
+    // Review #110: a transient unit under the worker unit's sandbox, capped in memory, the worker's environment file,
+    // the scratch directory its only writable path; and it must stay up for a hold after its first answer.
+    expect(sh('echo "$SMOKE_MEMORY_MAX $SMOKE_HOLD_S $SWITCH_HOLD_S"').out).toBe('280M 30 30');
+    expect(s).toMatch(/systemd-run --quiet --unit="\$unit" "\$\{opts\[@\]\}" "\$\{props\[@\]\}" \\\n\s+-p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="\$SMOKE_MEMORY_MAX" -p OOMScoreAdjust=1000 /);
+    expect(s).toContain('-p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp"');
+    expect(s).toContain('done < <(unit_sandbox "$UNIT_FILE")');
+    expect(s).toContain('for _ in $(seq 1 "$SMOKE_HOLD_S"); do');
+    const unit = read('ops/host/files/etc/systemd/system/zeroed-worker.service');
+    const sandbox = sh(`unit_sandbox "${join(root, 'ops/host/files/etc/systemd/system/zeroed-worker.service')}"`).out.split('\n');
+    // Every hardening and limit line of the unit reaches the trial; nothing that would give it identity, keys or state.
+    for (const l of unit.slice(unit.indexOf('# Hardening'), unit.indexOf('[Install]')).split('\n').filter((x) => /^[A-Z]/.test(x))) expect(sandbox, l).toContain(l);
+    for (const k of ['UMask=0077', 'TasksMax=256', 'LimitCORE=0', 'NoNewPrivileges=yes', 'ProtectSystem=strict', 'PrivateTmp=yes', 'CapabilityBoundingSet=']) expect(sandbox).toContain(k);
+    for (const l of sandbox) expect(l).not.toMatch(/^(User|Group|SupplementaryGroups|LoadCredential|LoadCredentialEncrypted|ImportCredential|StateDirectory|MemoryMax|OOMScoreAdjust|ExecStart|ExecStartPre|Restart|EnvironmentFile)=/);
+    // Under memory pressure the kernel takes the trial first and the live worker (which owns exits) last.
+    expect(unit).toMatch(/^OOMScoreAdjust=-500$/m);
+    expect(s).toContain('-p OOMScoreAdjust=1000');
+    expect(sandbox.length).toBeGreaterThan(25);
+    // After the switch: the new worker must stay up, else back to the release that ran, not tried again, one alert.
+    const after = upd.slice(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    expect(upd.indexOf('prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"')).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    expect(after).toMatch(/systemctl restart zeroed-worker\.service \|\| rollback "it failed to start"\n\s+if ! why="\$\(holds\)"; then rollback "\$why"; fi/);
+    const rb = upd.slice(upd.indexOf('rollback() {'), upd.indexOf('# Restart with reconcile first'));
+    for (const want of ['printf \'%s\\n\' "$commit" > "$STATE_DIR/failed_release"', 'ln -sfn "$prev" /opt/zeroed/current.new', 'printf \'%s\\n\' "$current" > "$STATE_DIR/deployed"', 'apply_host', 'systemctl restart zeroed-worker.service', 'alert worker-switch "ALERT']) expect(rb, want).toContain(want);
+    expect(upd).toContain('[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0');
   });
 
   it('health for the runner on 127.0.0.1:8787 and the worker API on 127.0.0.1:8788, as WORKER-1 and RUN-1 expect', () => {
@@ -279,13 +324,44 @@ describe('live view (tailscale serve)', () => {
     expect(status({})).toBe('no');
   });
 
+  it('accepts nothing more than the worker API (OPS-1h review): a hand-made serve is adopted only in exactly that shape', () => {
+    const tcp = { 443: { HTTPS: true } };
+    // The owner's hand-made `tailscale serve --bg --https=443 http://127.0.0.1:8788` is exactly this.
+    expect(status({ TCP: tcp, Web: web })).toBe('ok');
+    expect(status({ TCP: tcp, Web: web, AllowFunnel: {} })).toBe('ok');
+    expect(status({ TCP: tcp, Web: web, AllowFunnel: { 'zeroed.tail1.ts.net:443': false } })).toBe('ok');
+    const host = 'zeroed.tail1.ts.net:443';
+    for (const [why, o] of [
+      ['an extra path', { TCP: tcp, Web: { [host]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' }, '/admin': { Proxy: 'http://127.0.0.1:9000' } } } } }],
+      ['an extra port', { TCP: { ...tcp, 8443: { HTTPS: true } }, Web: { ...web, 'zeroed.tail1.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' } } } } }],
+      ['a second web host', { TCP: tcp, Web: { ...web, 'other.tail1.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' } } } } }],
+      ['a TCP forward', { TCP: { ...tcp, 2222: { TCPForward: '127.0.0.1:22' } }, Web: web }],
+      ['a TCP forward on 443', { TCP: { 443: { HTTPS: true, TCPForward: '127.0.0.1:22' } }, Web: web }],
+      ['plain HTTP', { TCP: { 443: { HTTP: true } }, Web: web }],
+      ['a service', { TCP: tcp, Web: web, Services: { 'svc:x': {} } }],
+      ['a foreground serve', { TCP: tcp, Web: web, Foreground: { s: { TCP: { 8080: { HTTPS: true } } } } }],
+      ['the handler on another port', { TCP: tcp, Web: { 'zeroed.tail1.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' } } } } }],
+      ['a handler with more than the proxy', { TCP: tcp, Web: { [host]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788', Text: 'x' } } } } }],
+      ['no web host', { TCP: tcp }],
+    ] as const) expect(status(o as Record<string, unknown>), why).toBe('no');
+    expect(sh('serve_ok && echo ok || echo no', '[]').out).toBe('no');
+  });
+
   it('Funnel on for any port is found, alerted and turned off, by the minute check and by every install', () => {
     const ports = (o: Record<string, unknown>) => sh('funnel_ports', JSON.stringify(o)).out;
     expect(ports({ Web: web })).toBe('');
     expect(ports({ AllowFunnel: { 'zeroed.tail1.ts.net:443': false } })).toBe('');
     expect(ports({ AllowFunnel: { 'zeroed.tail1.ts.net:443': true, 'zeroed.tail1.ts.net:8443': true } })).toBe('zeroed.tail1.ts.net:443\nzeroed.tail1.ts.net:8443');
     const check = read('ops/host/files/usr/local/sbin/zeroed-check');
-    expect(check).toContain('public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"');
+    // OPS-1h: both calls are bounded, so the minute check never hangs on tailscale.
+    expect(check).toContain('public="$(timeout 30 tailscale serve status --json 2>/dev/null | funnel_ports)"');
+    expect(check).toContain('timeout 30 tailscale funnel --https="${hp##*:}" off');
+    // OPS-1h review: Funnel that cannot be turned off (error or timeout) takes the whole serve config down, so the API
+    // never stays public with only an alert.
+    const fb = check.slice(check.indexOf('timeout 30 tailscale funnel --https="${hp##*:}" off'));
+    expect(fb).toMatch(/\|\| off=0; done\n\s+if \[ "\$off" = 0 \]; then[^]*?timeout 30 tailscale serve reset[^]*?rm -f "\$STATE_DIR\/live_view"[^]*?notify "\$msg"/);
+    // OPS-1h review nit: if serve reset fails too, the owner is told on Telegram, not only in the log.
+    expect(fb).toMatch(/else\n\s+# Neither worked[^]*?msg="ALERT Zeroed host: Tailscale Funnel could not be turned off and the live view could not be taken down[^"]*"\n\s+log "\$msg"\n\s+notify "\$msg"/);
     expect(check).toContain('alert funnel-on "ALERT');
     expect(check).toContain('tailscale funnel --https="${hp##*:}" off');
     expect(check).toContain('alert_clear funnel-on "CLEARED');
@@ -308,8 +384,17 @@ describe('live view (tailscale serve)', () => {
     const fail = ts.slice(ts.indexOf('if ! tailscale serve status --json | serve_ok; then'));
     expect(fail.indexOf('tailscale serve reset')).toBeGreaterThan(0);
     expect(fail.indexOf('tailscale serve reset')).toBeLessThan(fail.indexOf('exit 1'));
-    expect(fail.slice(0, fail.indexOf('exit 1'))).toContain('tailscale funnel --https=443 off');
     expect(fail.slice(0, fail.indexOf('exit 1'))).not.toContain('Run zeroed-tailscale --off');
+    // OPS-1h: no funnel command at all (it waits forever for the Funnel capability, even for "off"); serve --https=443
+    // clears Funnel for its port and serve reset clears it everywhere, and the serve_ok check confirms Funnel is off.
+    expect(ts).not.toMatch(/tailscale funnel/);
+    // HTTPS Certificates and MagicDNS are checked before serving, every tailscale call is bounded, and serve's output
+    // (an error or a link the owner must open) is kept and shown, never sent to /dev/null.
+    expect(ts.indexOf("has(\"https\")")).toBeGreaterThan(0);
+    expect(ts.indexOf("has(\"https\")")).toBeLessThan(ts.indexOf('tailscale serve --bg'));
+    expect(ts).toContain('timeout "$TS_WAIT" "$(type -P tailscale)" "$@"');
+    expect(ts).toContain('tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >"$served" 2>&1');
+    expect(ts).not.toMatch(/tailscale serve --bg[^\n]*\/dev\/null/);
   });
 
   it("Tailscale's own repository is in the unattended-upgrades origins", () => {
@@ -327,7 +412,6 @@ describe('live view (tailscale serve)', () => {
     const fpr = '2596A99EAAB33821893C0A79458CA832957F5868';
     expect(ts).toContain(`TS_FPR=${fpr}`);
     expect(ts.indexOf('[ "$got" = "$TS_FPR" ]')).toBeLessThan(ts.indexOf('apt-get'));
-    expect(ts).toContain('tailscale funnel --https=443 off');
     expect(ts).toContain('--ssh=false');
     const keys = spawnSync('gpg', ['--show-keys', '--with-colons', join(root, 'ops/host/files/etc/zeroed/tailscale-archive.asc')], { encoding: 'utf8' }).stdout;
     expect(keys.split('\n').filter((l) => l.startsWith('fpr:'))[0]).toBe(`fpr:::::::::${fpr}:`);

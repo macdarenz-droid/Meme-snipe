@@ -1,15 +1,24 @@
 name: CI
 
 on:
+  # Feature branches run through their pull request only (the push run was a duplicate of the same commit);
+  # draft pull requests wait until they are marked ready, and a newer head cancels the older run.
   push:
-    branches: ['**']
+    branches: [main, ccr-14987baf-i6lrsl]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
 
+concurrency:
+  # One run per pull request; every push to the base branches gets its own group, so none is dropped.
+  group: ci-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -26,6 +35,7 @@ jobs:
 
   historical-data:
     # DATA-1 scanner, QA verdict and CI script tests (offline; no archive access).
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -46,6 +56,9 @@ jobs:
           echo "/usr/local/go/bin" >> "$GITHUB_PATH"
       - name: Scanner tests
         working-directory: research/historical/scanner
+        run: go vet ./... && go test ./...
+      - name: RPC scanner tests (DATA-2; the scanner's sources through symlinks)
+        working-directory: research/historical/rpcscan
         run: go vet ./... && go test ./...
       - name: QA tests
         run: node --test research/historical/qa/*.test.mjs

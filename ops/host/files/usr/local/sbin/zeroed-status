@@ -43,7 +43,16 @@ fi
 if [ -e "$STATE_DIR/webhook_tries" ]; then
   log "Webhook:   not set ($(cat "$STATE_DIR/webhook_tries") failed tries; retrying)"
 fi
-log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
+# Which worker runs: the release's own (SWITCH-1) or the host's stand-in, from the running process itself.
+wpid="$(systemctl show -p MainPID --value zeroed-worker.service 2>/dev/null || echo 0)"
+wkind=""
+if [ "${wpid:-0}" != 0 ] && [ -r "/proc/$wpid/cmdline" ]; then
+  case "$(tr '\0' ' ' < "/proc/$wpid/cmdline")" in
+    *packages/worker/src/main.ts*) wkind=" (the release's worker, $(basename "$(readlink -f /opt/zeroed/current)" | cut -c1-12))" ;;
+    *stub/worker.mjs*) wkind=" (the host's stand-in)" ;;
+  esac
+fi
+log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)$wkind"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
 run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"

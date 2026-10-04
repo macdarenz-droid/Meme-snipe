@@ -12,7 +12,6 @@ import { placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
-import { execPrice } from '../../../core/src/exits/index.ts';
 import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
@@ -22,7 +21,7 @@ import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { NO_UNIVERSE, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
@@ -44,6 +43,15 @@ import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
+import { entryPrice, openPositionsHealth } from './open-positions.ts';
+import { riskSnapshot } from '../../../core/src/risk/index.ts';
+import { markSettings, riskAccount } from '../engine/marks.ts';
+import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
+import { loadState, saveState } from '../persist/index.ts';
+
+/** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
+export const PERSIST_FILE = 'deployer-state.json';
+export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { type PoolFact, parsePool } from '../../../core/src/gates/index.ts';
 
@@ -86,6 +94,8 @@ export interface WorkerDeps {
   readonly session: PolicySession;
   readonly rugs: RugConfig;
   readonly strategy: StrategyConfig;
+  /** Test seam: replaces the strategy's position marking (marks.ts `markedHistory`). */
+  readonly markedHistory?: StrategyDeps['markedHistory'];
   readonly scenario: FillScenario;
   readonly network: FillNetwork;
   readonly timers: Timers;
@@ -178,10 +188,6 @@ interface FeedState {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** A position's entry as a price per token (PRICE_SCALE), the unit of its stop and mark: entry spend over tokens bought. */
-const entryPrice = (p: { readonly cost: bigint; readonly quantity: bigint; readonly sold: bigint }): bigint =>
-  p.quantity + p.sold > 0n ? execPrice(p.cost, p.quantity + p.sold) : 0n;
-
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
 
@@ -208,7 +214,11 @@ export class Worker {
   #lastSlot: bigint | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
+  /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
+  #solPriceAt: number | null = null;
   #pools = new Map<string, unknown>();
+  /** When each mint's latest pool fact was released to the engine (WATCH-1 judges a feed fact by its release). */
+  readonly #poolReleasedAt = new Map<string, number>();
   #fees = new Map<string, PoolFeeContext>();
   /** WATCH-1's latest snapshot per held mint, as released. */
   #snapshots = new Map<string, SnapshotFact>();
@@ -242,6 +252,10 @@ export class Worker {
   #liveStartAt: Moment | null = null;
   /** The empty slot the reconcile reserved for SEED-1's events (see `#seedIndex`). */
   #reserved: bigint | null = null;
+  /** PERSIST-1: the saved index and labeller this process restores (null on a fresh start). */
+  #restored: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState } | null = null;
+  #lastSaveMs = 0;
+  #saveRefused = false;
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
@@ -289,7 +303,7 @@ export class Worker {
       onFrame: (f) => this.#onFrame(f),
       onRelease: (e, r) => this.#onRelease(e, r),
     });
-    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy });
+    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }) });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
     // RUN-1c: trades open or in flight when the previous process stopped writing, kept until a full start journals them.
@@ -348,11 +362,20 @@ export class Worker {
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
-      if (e.key.startsWith(POOL_PREFIX)) this.#pools.set(e.key.slice(POOL_PREFIX.length), e.value);
+      if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
     this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
+    // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
+    // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
+    // downtime fill starts at the saved moment, closing the restart gap on the live creates watch.
+    const restored = loadState(join(c.stateDir, PERSIST_FILE), d.rugs);
+    if (restored.ok) {
+      this.#restored = { asOf: restored.asOf, index: restored.index.snapshot(restored.asOf), labeller: restored.labeller.snapshot() };
+      this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
+      d.log(`Saved state restored as of slot ${restored.asOf.slot}; ${restored.coverage.length} coverage facts, ${restored.fills.length} gaps to fill.`);
+    } else if (restored.reason !== 'no saved state') d.log(`Saved state discarded (${restored.reason}): starting as a fresh process.`);
     this.#desk = new Desk({
       ledger: this.#ledger, config: bookConfig, restored: stored.book,
       journal: (kind, fields) => this.#journal.write(kind, fields),
@@ -469,7 +492,7 @@ export class Worker {
     if (!r.late) this.#deployerStore.keep(m);
     // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
     if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) this.#lastSlot = m.value['slot'];
-    else if (m.key.startsWith(POOL_PREFIX)) this.#pools.set(m.key.slice(POOL_PREFIX.length), m.value);
+    else if (m.key.startsWith(POOL_PREFIX)) this.#setPool(m.key.slice(POOL_PREFIX.length), m.value);
     else if (m.key.startsWith('worker:fees:')) this.#fees.set(m.key.slice('worker:fees:'.length), m.value as PoolFeeContext);
     else if (m.key.startsWith(SNAPSHOT_PREFIX)) {
       const snap = parseSnapshotFact(m.value);
@@ -480,6 +503,7 @@ export class Worker {
       if (p !== null) {
         const first = this.#account.state.walletLamports === null || this.#account.state.oneTimePaid !== true;
         this.#solPrice = p.price as MicroUsd;
+        this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
         // The paper wallet exists from the first price on: risk needs its balance (R4).
         if (first && this.#account.state.walletLamports !== null && this.#reconciled) this.#publishAccount();
@@ -517,6 +541,24 @@ export class Worker {
    * The mint's newest whole market (merge rule M, as the strategy's #market): WATCH-1's snapshot when it is newer than
    * the pool fact; else the pool fact, unless POS-1 flagged it (a stale swap stream), which is no market at all.
    */
+  #setPool(mint: string, value: unknown): void {
+    this.#pools.set(mint, value);
+    this.#poolReleasedAt.set(mint, this.#d.timers.now());
+  }
+
+  /**
+   * The moment WATCH-1 judges a held mint's market by (null: no market). A pool fact from the feed counts from its
+   * release: a healthy feed releases one every slot, already up to the horizon old by design, so judging it by receipt
+   * would read the second path all the time. WATCH-1's own snapshot counts from its read, as its age bound needs.
+   */
+  #watchMarketAt(mint: string): number | null {
+    const p = parsePool(this.#pools.get(mint));
+    const snap = this.#snapshots.get(mint);
+    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return snap.atMs;
+    if (this.poolOf(mint) === null) return null;
+    return this.#poolReleasedAt.get(mint) ?? null;
+  }
+
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
     const p = parsePool(this.#pools.get(mint));
     const snap = this.#snapshots.get(mint);
@@ -589,7 +631,72 @@ export class Worker {
       this.#exitsFile.write(saved);
       this.#savedExits = text;
     }
+    this.#markAccount(now);
+    if (now - this.#lastSaveMs >= PERSIST_EVERY_MS) this.#persist(now);
     this.#checkHalt(now);
+  }
+
+  /**
+   * PERSIST-1 save: the index, the labeller's tables and every coverage fact, as of the latest released moment.
+   * Refused until the seed (or the restored state) is applied: before it, the index is not this process's to save, and
+   * a save then would replace a good file with an unseeded one. Taken every PERSIST_EVERY_MS and at a clean stop.
+   */
+  #persist(now: number): boolean {
+    this.#lastSaveMs = now;
+    const lookback = (this.#d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
+    let state: ReturnType<LiveStrategy['persistable']>;
+    try {
+      state = this.#strategy.persistable(now - lookback);
+    } catch (e) {
+      this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
+      return false;
+    }
+    if (state === null) {
+      if (!this.#saveRefused) this.#d.log('Saved state not written: the seed is not applied yet.');
+      this.#saveRefused = true;
+      return false;
+    }
+    try {
+      saveState(join(this.#d.config.stateDir, PERSIST_FILE), state);
+      return true;
+    } catch (e) {
+      this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
+      return false;
+    }
+  }
+
+  /**
+   * WORKER-1c: the day and week boundary marks and the NAV peak, from the figures risk would use now on the marked
+   * account (RISK-MARK: each open position at its executable mark from its newest market under rule M, valued at the
+   * live SOL price; the same `riskAccount` path the strategy's exits use, falling back to the unmarked account on a
+   * failure). A boundary is recorded only when every open position has a fresh mark; otherwise the next look takes it.
+   * When they change, the account fact is put again, so the next evaluation's day and week loss take the stricter of
+   * the realized and the marked measure and R10 sees the peak.
+   */
+  #markAccount(now: number): void {
+    if (!this.#reconciled) return;
+    const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, now);
+    const sol = this.#solPrice === null || this.#solPriceAt === null ? null : { value: this.#solPrice, atMs: this.#solPriceAt };
+    const policy = this.#d.session.policy;
+    const held = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed');
+    const account = riskAccount(fact.history, (mint) => {
+      const p = held.find((x) => x.mint === mint);
+      if (p === undefined) return undefined;
+      const m = this.poolOf(mint);
+      return { quantity: p.quantity, market: m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs } };
+    }, sol, now, markSettings(policy, this.#d.strategy.network), { fallback: true, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
+    const snapshot = riskSnapshot({
+      session: this.#d.session, mode: 'paper', clock: { now: () => ({ slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now }) },
+      account, latches: fact.latches, market: { solPrice: sol, solBalance: fact.solBalance, regime: 'unknown' },
+    });
+    if (snapshot === null) return;
+    const maxAge = policy.gates.maxQuoteAgeMs;
+    const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
+    const day = this.#account.state.dayMark?.startMs;
+    if (this.#account.mark(snapshot, marked, this.#ctl.latches.killRearmedAtMs, now)) {
+      if (day !== this.#account.state.dayMark?.startMs) this.#d.log(`Account marks: equity ${snapshot.equity} at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
+      this.#publishAccount();
+    }
   }
 
   #afterRecord(r: LogRecord): void {
@@ -781,6 +888,7 @@ export class Worker {
         sink: { fact: (key, value) => this.#fact(key, value), now: () => d.timers.now() },
         timers: d.timers, schedulers: d.schedulers, watched: () => this.#strategy.watched(),
         ingest: this.#feed, candidates: () => this.#strategy.candidates(), tip: () => this.#feed.tip,
+        priorMints: (creator, nowMs) => this.#strategy.deployers.factFor(creator, { slot: this.#feed.tip ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: nowMs }, 0).mints,
       };
       for (const f of d.facts) f.start(ctx);
     }
@@ -899,6 +1007,7 @@ export class Worker {
     if (reserved === null) d.log('Deployer index: no coverage seeded (no free slot ahead of the live events); H14 not covered until the look-back passes.');
     const pos = (k: number): Moment => ({ slot: reserved ?? 0n, txIndex: 0, ixIndex: k, receivedAt: now });
     this.#fact(SEED_KEY, {
+      ...(this.#restored === null ? {} : { state: { index: this.#restored.index, labeller: this.#restored.labeller } }),
       creates: order(result.mode === 'fill' ? saved.creates : [...saved.creates, ...result.creates]),
       coverage: order(coverage.filter((e) => e.key.startsWith('coverage:creates:') && compareMoments(e.moment, asOf) <= 0)),
       fill: order(result.mode === 'fill' ? result.creates : []),
@@ -973,8 +1082,8 @@ export class Worker {
   }
 
   /** A position's mark when read within the last 30 s (RUN-1c's MARK_MAX_AGE_MS); an older one is no price. */
-  #freshMark(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
-    const m = this.#strategy.markOf(pid);
+  #freshDisplayQuote(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
+    const m = this.#strategy.displayQuoteOf(pid);
     return m === null || this.#d.timers.now() - m.atMs > 30_000 ? null : m;
   }
 
@@ -1019,7 +1128,7 @@ export class Worker {
         const seen = new Set(open.map((h) => h.mint));
         return [...open, ...entering.filter((e) => !seen.has(e.mint) && seen.add(e.mint))];
       },
-      marketAt: (mint) => this.poolOf(mint)?.atMs ?? null,
+      marketAt: (mint) => this.#watchMarketAt(mint),
       read: d.watchRead ?? (() => Promise.reject(new Error('no second path configured'))),
       put: (snap, atMs) => this.#fact(snapshotKey(snap.mint), { pool: snap.pool, slot: snap.slot, atMs, state: snap.state, ctx: snap.ctx }),
       alert: (mint, reason) => {
@@ -1056,20 +1165,20 @@ export class Worker {
       ages[name] = age;
       feeds[name] = { connected: s.connected && s.droppedUntil <= now, age_ms: age, critical: s.src.critical, dropped_by_drill: s.droppedUntil > now };
     }
-    const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
-    const saved = p === undefined ? undefined : this.#strategy.saved()[p.id];
-    const mark = p === undefined ? null : this.#strategy.markOf(p.id);
+    const savedPlans = this.#strategy.saved();
+    const universes = new Map(this.#positionsWithUniverse().map((x) => [x.trade, x.universe]));
+    const positions = openPositionsHealth(Object.values(this.#engine.book.positions), {
+      openedAt: (id) => this.#account.state.trades.find((t) => t.positionId === id)?.openedAtMs ?? null,
+      plan: (id) => savedPlans[id]?.plan ?? null,
+      universe: (id) => universes.get(id) ?? NO_UNIVERSE,
+      mark: (id) => this.#strategy.displayQuoteOf(id),
+    });
     const ops = this.#d.ops?.() ?? { quota: [], lookups: { counts: LOOKUP_BOUNDS_MS.map(() => 0).concat(0) } };
-    const universe = p === undefined ? null : (this.#positionsWithUniverse().find((x) => x.trade === p.id)?.universe ?? NO_UNIVERSE);
     const h: Health = {
       seq: this.#beatSeq, ts: now, git_sha: this.#d.config.gitSha, policy_version: this.#d.session.versionHash,
       last_processed_slot: this.#lastSlot === null ? null : Number(this.#lastSlot), feed_ages_ms: ages,
-      open_position: p === undefined ? null : {
-        trade: p.id, mint: p.mint, qty: String(p.quantity), entry: String(entryPrice(p)), stop: saved === undefined ? 'unknown' : String(saved.plan.stopPrice),
-        // No mark read yet: the entry, seen at time 0, which the runner reads as unmeasured (older than 30 s).
-        mark: String(mark?.price ?? entryPrice(p)), mark_slot: mark === null ? 0 : Number(mark.slot), mark_ts: mark?.atMs ?? 0,
-        universe: universe ?? NO_UNIVERSE,
-      },
+      open_position: positions[0] ?? null,
+      open_positions: positions,
       pending_exits: this.pendingExits(),
       unresolved_intents: this.#desk.unresolved(now, (id) => this.#intentAt.get(id) ?? null),
       signer: 'none', lease_epoch: null,
@@ -1090,7 +1199,7 @@ export class Worker {
     const h = this.health();
     const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
     const saved = p === undefined ? undefined : this.#strategy.saved()[p.id];
-    const mark = p === undefined ? null : this.#freshMark(p.id);
+    const mark = p === undefined ? null : this.#freshDisplayQuote(p.id);
     const lastExit = p === undefined ? null : Math.max(...Object.values(this.#engine.book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'exit').map((i) => this.#intentAt.get(i.intent.id) ?? 0), 0);
     const position: HeartbeatPosition | null = p === undefined ? null : {
       // Unknown is null, never 0 (a 0 stop or mark reads as a price to the watchdog). Entry, stop and mark share one unit:
@@ -1136,6 +1245,8 @@ export class Worker {
         this.step();
       } catch {}
     }
+    // A clean stop saves the deployer state last thing (a crash keeps the last periodic save).
+    if (code === EXIT.clean) this.#persist(d.timers.now());
     // Past this point the state files belong to the next process: a simulation answering late writes nothing.
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);

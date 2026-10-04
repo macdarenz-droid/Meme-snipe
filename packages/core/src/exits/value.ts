@@ -5,6 +5,7 @@ import {
   curveSell, effectiveQuoteReserve, poolSell,
 } from '../amm/index.ts';
 import { PRICE_SCALE } from '../config/index.ts';
+import { BPS_DENOMINATOR } from '../units/index.ts';
 
 /** The market an exit sells into, as of the current moment. */
 export type ExitMarket =
@@ -21,6 +22,20 @@ export const liquidationValue = (m: ExitMarket, tokens: bigint): Liquidation => 
   const q = m.venue === 'pumpswap' ? poolSell(m.pool, tokens, m.ctx) : curveSell(m.curve, tokens, m.ctx);
   if (!q.ok) return q;
   return { ok: true, value: q.trade.userQuote };
+};
+
+/**
+ * Risk's mark of a holding (RISK-MARK): what selling all of it now would surely net, in lamports. The full-size sell
+ * quote after the pool's fees (`liquidationValue`), less the slippage the exit accepts (its minimum out at
+ * `slippageBps` below the quote) and the exit transaction's network cost; never below zero.
+ */
+export const executableMark = (m: ExitMarket, tokens: bigint, o: { readonly slippageBps: number; readonly exitCost: bigint }): Liquidation => {
+  if (!Number.isSafeInteger(o.slippageBps) || o.slippageBps < 0 || BigInt(o.slippageBps) > BPS_DENOMINATOR) throw new RangeError('slippageBps must be 0..10000');
+  if (o.exitCost < 0n) throw new RangeError('exitCost must be >= 0');
+  const l = liquidationValue(m, tokens);
+  if (!l.ok) return l;
+  const minOut = (l.value * (BPS_DENOMINATOR - BigInt(o.slippageBps))) / BPS_DENOMINATOR;
+  return { ok: true, value: minOut > o.exitCost ? minOut - o.exitCost : 0n };
 };
 
 /** SOL that can leave the market: the pool's effective quote reserve or the curve's real SOL reserve. */

@@ -95,6 +95,10 @@
   color: var(--loss);
 }
 
+.dash-status-alert {
+  color: var(--loss);
+}
+
 .dash-sub {
   display: flex;
   align-items: center;

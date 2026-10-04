@@ -72,15 +72,16 @@ export GNUPGHOME="$E2E/gnupg"
 mkdir -p -m 0700 "$GNUPGHOME"
 gpg --batch --quiet --import "$ROOT/ops/host/files/etc/zeroed/github-web-flow.asc" 2>/dev/null
 signed=""
+signed2="" # an older GitHub-signed merge: SWITCH-1's broken-release update case deploys "it"
 unsigned=""
 for c in $(git -C "$BARE" rev-list --first-parent --max-count=50 "$BRANCH"); do
   if git -C "$BARE" verify-commit --raw "$c" 2>&1 | grep -q 'VALIDSIG .* 968479A1AFF927E37D1A566BB5690EEEBB952194$'; then
-    [ -n "$signed" ] || signed="$c"
+    if [ -z "$signed" ]; then signed="$c"; elif [ -z "$signed2" ]; then signed2="$c"; fi
   else
     [ -n "$unsigned" ] || unsigned="$c"
   fi
 done
-[ -n "$signed" ] && [ -n "$unsigned" ] || fail "test repo needs a GitHub-signed and an unsigned commit on $BRANCH"
+[ -n "$signed" ] && [ -n "$signed2" ] && [ -n "$unsigned" ] || fail "test repo needs two GitHub-signed and an unsigned commit on $BRANCH"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null
 mkdir -p "$STATE/checks"
 git -C "$BARE" update-server-info
@@ -141,7 +142,7 @@ publish() { # issued log code [extra env...]
   shift 3
   env -i PATH="$STUBS:$PATH" HOME="$E2E" STATE="$STATE" GH_REPO="$REPO" GITHUB_SHA="$signed" ISSUED="$issued" DEPLOY_CODE="$code" \
     HELIUS_API_KEY="$T_HELIUS" ALCHEMY_API_KEY="$T_ALCHEMY" JUPITER_API_KEY="$T_JUPITER" TELEGRAM_BOT_TOKEN="$T_TELEGRAM" \
-    PICKUP_TIMEOUT_S=150 PICKUP_POLL_S=2 PICKUP_GRACE_S=2 "$@" \
+    PICKUP_TIMEOUT_S=240 PICKUP_POLL_S=2 PICKUP_GRACE_S=2 "$@" \
     bash "$ROOT/ops/deploy/publish.sh" >"$LOGS/$log" 2>&1
 }
 status() { in_c "zeroed-status" >"$LOGS/console/status-$1.txt" 2>&1; cat "$LOGS/console/status-$1.txt"; }
@@ -339,6 +340,10 @@ curl -s -m 2 -o /dev/null http://127.0.0.1:443/ && fail "port 443 is already in 
 (cd "$WD" && exec setsid "$ROOT/ops/watchdog/deploy/node_modules/.bin/wrangler" dev --local --ip 0.0.0.0 --port 443 --test-scheduled) >"$LOGS/wrangler-dev.log" 2>&1 &
 WD_PID=$!
 wait_for 120 "wrangler dev up" "curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:443/heartbeat | grep -q 401"
+# The local watchdog speaks plain http, which only the host's stand-in accepts (the release's worker requires an https
+# WATCHDOG_URL): the host sections run the stand-in, whatever the test release's host-config says. Section 10b2 runs
+# the release's own worker (SWITCH-1).
+in_c "jq '.worker = \"stub\"' /opt/zeroed/current/ops/host-config.json > /tmp/hc && cat /tmp/hc > /opt/zeroed/current/ops/host-config.json"
 in_c "printf 'WATCHDOG_URL=http://$GW:443\nZEROED_HEARTBEAT_MS=3000\n' > /etc/zeroed/worker.env && systemctl restart zeroed-worker"
 sched() { curl -s "http://127.0.0.1:443/__scheduled?cron=*+*+*+*+*" >/dev/null; }
 hook() { # chat text [secret]
@@ -422,12 +427,12 @@ docker exec -i "$C" cmp -s /usr/local/sbin/zeroed-update - <"$ROOT/ops/host/file
 # is told once, and the next run tries again under the same gates.
 in_c "echo 0000000000000000000000000000000000000000 > /var/lib/zeroed-host/deployed"
 in_c "mkdir -p /opt/zeroed/releases/$signed/ops && printf '#!/usr/bin/env bash\n# --update) UPDATE=1\nexit 1\n' > /opt/zeroed/releases/$signed/ops/install.sh"
-w0="$(jl zeroed-worker | grep -c 'Stub worker up')"
+w0="$(jl zeroed-worker | grep -c 'Started zeroed-worker.service')"
 n0="$(wc -l <"$STATE/telegram.jsonl")"
 upd_run && fail "update reported success with failing host files"
 upd_run && fail "update reported success with failing host files (second run)"
 in_c "cat /var/lib/zeroed-host/deployed" | has -x 0000000000000000000000000000000000000000 || fail "switched to a release whose host files failed"
-[ "$(jl zeroed-worker | grep -c 'Stub worker up')" = "$w0" ] || fail "worker restarted on failed host files"
+[ "$(jl zeroed-worker | grep -c 'Started zeroed-worker.service')" = "$w0" ] || fail "worker restarted on failed host files"
 [ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c 'failed to apply, so the server stays on the release it runs')" = 1 ] || fail "no single alert for failed host files"
 jl zeroed-update | has 'still on the old release, trying again next run' || fail "failed apply not logged"
 # All or nothing: a release whose installer changes host files (two scripts, a new unit, RUN-1's units) and
@@ -451,7 +456,7 @@ diff -u "$LOGS/manifest-before.txt" "$LOGS/manifest-after.txt" >"$LOGS/manifest-
 in_c "find / -xdev -name '*.zeroed-old' 2>/dev/null" | has . && fail "backups left behind after a roll-back"
 in_c "cat /var/lib/zeroed-host/host_update.log" | has 'Update failed; every host file is back as it was' || fail "roll-back not reported"
 in_c "cat /var/lib/zeroed-host/deployed" | has -x 0000000000000000000000000000000000000000 || fail "switched after a rolled-back update"
-[ "$(jl zeroed-worker | grep -c 'Stub worker up')" = "$w0" ] || fail "worker restarted after a rolled-back update"
+[ "$(jl zeroed-worker | grep -c 'Started zeroed-worker.service')" = "$w0" ] || fail "worker restarted after a rolled-back update"
 [ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c 'failed to apply')" = 1 ] || fail "the failure episode alerted more than once"
 # The release carries this branch's installer and RUN-1 units (a GitHub-signed merge of it would): the next
 # run applies them, then switches.
@@ -480,22 +485,146 @@ grep -q 'Deploy code' "$LOGS/console/update-ssh-open.txt" "$LOGS/console/update-
 in_c "nft list ruleset" | has 'iifname "tailscale0" tcp dport 443 accept' || fail "tailnet HTTPS rule"
 wait_for 30 "worker running after the update" "docker exec $C systemctl is-active zeroed-worker"
 in_c "systemctl show -p ExecStart --value zeroed-worker" | has /usr/local/lib/zeroed/worker-start || fail "worker not started by the wrapper"
-# The release carries WORKER-1's worker, but its host-config keeps the stand-in until a reviewed switch.
-if in_c "test -f /opt/zeroed/current/packages/worker/src/main.ts"; then
-  in_c "jq -r .worker /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo none" | has -vx release || fail "test release already switched to the real worker"
-  in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has /opt/zeroed/stub/worker.mjs || fail "the release's worker ran without the host-config switch"
+# The worker the release's host-config names: its own (SWITCH-1, "worker": "release") or the host's stand-in.
+cmd="$(in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline")"
+if in_c "jq -e '.worker == \"release\"' /opt/zeroed/current/ops/host-config.json" >/dev/null 2>&1; then
+  has /opt/zeroed/current/packages/worker/src/main.ts <<<"$cmd" || fail "the release says worker: release, but its worker does not run"
+  STANDIN=0
+else
+  has /opt/zeroed/stub/worker.mjs <<<"$cmd" || fail "the release's worker ran without the host-config switch"
+  STANDIN=1
 fi
 pid="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
 in_c "tr '\0' '\n' < /proc/$pid/environ" >"$LOGS/worker-env.txt"
 for want in ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on ZEROED_HEALTH_ADDR=127.0.0.1:8787 ZEROED_API_ADDR=127.0.0.1:8788; do grep -qx "$want" "$LOGS/worker-env.txt" || fail "worker environment: $want"; done
 chk
-wait_for 20 "worker API up" "docker exec $C curl -fsS -m 3 http://127.0.0.1:8788/health"
-in_c "curl -fsS http://127.0.0.1:8788/health" >"$LOGS/health.json"
-jq -e '.mode == "paper" and .signing_key == false and (.evidence | map(.id) | index("vps-e2e") != null) and (.evidence[] | select(.id == "vps-e2e") | .finished == true and .pass == false and .name == "e2e-q")' "$LOGS/health.json" >/dev/null || fail "health API does not list the evidence on the host"
 CIP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$C")"
-curl -s -m 3 -o /dev/null "http://$CIP:8788/health" && fail "the worker API answered on the public interface"
+if [ "$STANDIN" = 1 ]; then
+  # The stand-in's API lists the evidence kept on the host (the release's worker: section 10b2).
+  wait_for 20 "worker API up" "docker exec $C curl -fsS -m 3 http://127.0.0.1:8788/health"
+  in_c "curl -fsS http://127.0.0.1:8788/health" >"$LOGS/health.json"
+  jq -e '.mode == "paper" and .signing_key == false and (.evidence | map(.id) | index("vps-e2e") != null) and (.evidence[] | select(.id == "vps-e2e") | .finished == true and .pass == false and .name == "e2e-q")' "$LOGS/health.json" >/dev/null || fail "health API does not list the evidence on the host"
+  curl -s -m 3 -o /dev/null "http://$CIP:8788/health" && fail "the worker API answered on the public interface"
+fi
 in_c "zeroed-status" | has 'Evidence:  /var/lib/zeroed-dryrun/evidence (1 runs)' || fail "status does not list the evidence"
 pass "install.sh --update through zeroed-update: failing host files keep the old release and the worker (one alert, cleared later); an installer that fails after writing files (bad firewall) is rolled back to byte-identical host files, units and ruleset; RUN-1 units from the release installed (tick timer on, template off), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on, health on 127.0.0.1:8787 and API on 127.0.0.1:8788, the stand-in until the release switches to its own worker; worker API on loopback only lists the evidence kept on the host"
+
+# ---------- 10b2. The release's own worker (SWITCH-1) ----------
+# reset-failed first: this test restarts the worker more often than its unit's start limit (10 in 10 minutes) allows.
+wrestart() { in_c "systemctl reset-failed zeroed-worker 2>/dev/null; ${1:+$1 && }systemctl restart zeroed-worker"; }
+orig="$(current)"
+rel="$orig"
+if [ "$STANDIN" = 1 ]; then
+  # This test release is from before the switch: the same code with "worker": "release", as a release of its own.
+  rel="$orig-switch"
+  in_c "cp -a '$orig' '$rel' && jq '.worker = \"release\"' '$rel/ops/host-config.json' > /tmp/hc && mv /tmp/hc '$rel/ops/host-config.json'"
+fi
+# No node_modules: the worker runs on Node 22's type stripping with no runtime dependency.
+in_c "find '$rel' -name node_modules | grep -q ." && fail "the release carries node_modules"
+in_c "/usr/local/bin/node --version" | has -x 'v22\.[0-9]*\.[0-9]*' || fail "host node is not Node 22"
+# The release's worker takes only an https watchdog address: the one the handoff delivered (unreachable from the test
+# server, so its heartbeats fail, which it logs and survives). The trial reads the same environment file. Section 9b's
+# plain-http address comes back at the end.
+wd0="$(in_c "sed -n 's/^WATCHDOG_URL=//p' /etc/zeroed/worker.env")"
+in_c "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=https://zeroed-watchdog.e2e.workers.dev#' /etc/zeroed/worker.env"
+# A trial start beside the running worker (zeroed-update runs it before switching): this release's worker starts.
+pid0="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
+in_c "/usr/local/lib/zeroed/worker-smoke '$rel'" >"$LOGS/smoke-good.txt" 2>&1 || { cat "$LOGS/smoke-good.txt"; fail "worker-smoke refused a release whose worker starts"; }
+[ "$(in_c "systemctl show -p MainPID --value zeroed-worker")" = "$pid0" ] || fail "the trial start touched the running worker"
+in_c "! ss -ltn | grep -q ':879[78] ' && ! pgrep -u zeroed-worker -f -- '$rel/packages/worker/src/main.ts'" || fail "the trial worker was left running"
+in_c "! systemctl list-units --all --plain --no-legend 'zeroed-worker-smoke*' | grep -q ." || fail "the trial left a unit behind"
+in_c "journalctl -o cat --no-pager -u zeroed-worker-smoke.service | tail -20" >"$LOGS/smoke-unit.txt"
+wrestart "ln -sfn '$rel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
+wait_for 60 "the release's worker running" "docker exec $C systemctl is-active zeroed-worker"
+in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has '^/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/worker/src/main.ts $' || fail "zeroed-worker does not run the release's main.ts under the host's node"
+inv() { in_c "journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)"; }
+relname="$(basename "$rel")"
+wait_for 180 "the worker's start line" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -q 'Worker up: boot .*, release ${relname:0:12}, recorder on, simulation on'"
+inv >"$LOGS/worker-real.txt"
+grep -q 'Reconcile: done, open intents written.' "$LOGS/worker-real.txt" || fail "the reconcile before the start did not finish"
+in_c "systemctl show -p ExecStartPre --value zeroed-worker" | has 'code=exited ; status=0 }' || fail "the --reconcile ExecStartPre did not exit 0"
+[ "$(in_c "systemctl show -p OOMScoreAdjust --value zeroed-worker")" = -500 ] && in_c "grep -qx -- '-500' /proc/\$(systemctl show -p MainPID --value zeroed-worker)/oom_score_adj" || fail "the worker is not the last the kernel takes under memory pressure"
+# Keys come from the unit's systemd credentials, as boot/environment.ts reads them.
+grep -q 'Credentials present: 3 of 3 provider keys; heartbeat key present.' "$LOGS/worker-real.txt" || fail "the worker did not read its 3 provider keys and the heartbeat key from credentials"
+in_c "tail -n 200 /var/lib/zeroed/journal.jsonl | jq -c 'select(.kind == \"start\")' | tail -1" >"$LOGS/worker-start-record.json"
+jq -e --arg r "$relname" '.mode == "paper" and .recorder == true and .simulation == true and .git_sha == $r' "$LOGS/worker-start-record.json" >/dev/null || fail "the start record is not paper with recorder and simulation on: $(cat "$LOGS/worker-start-record.json")"
+# Drills on: the drill endpoint exists (403 without the boot's token; 404 when drills are off).
+[ "$(in_c "curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' http://127.0.0.1:8787/drill/drop-feed")" = 403 ] || fail "the drill endpoint is not on"
+in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" >"$LOGS/health-real.json" || fail "health does not answer on 127.0.0.1:8787"
+jq -e '.mode == "paper" and .signing_key == false and .reconciled == true' "$LOGS/health-real.json" >/dev/null || fail "health is not paper, reconciled, without a signing key"
+in_c "curl -fsS -m 3 http://127.0.0.1:8788/api/v1/paper/status" >"$LOGS/api-real.json" || fail "the API does not answer on 127.0.0.1:8788"
+jq -e '.mode == "paper" and .data.mode == "paper"' "$LOGS/api-real.json" >/dev/null || fail "the API status is not paper"
+for port in 8787 8788; do curl -s -m 3 -o /dev/null "http://$CIP:$port/" && fail "the worker answered on the public interface ($port)"; done
+for v in "$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM"; do grep -qF -- "$v" "$LOGS/health-real.json" "$LOGS/api-real.json" "$LOGS/worker-real.txt" && fail "a key value is in the worker's output"; done
+# No provider is reachable from the test server: the worker runs degraded (entries halted), it does not crash-loop.
+r0="$(in_c "systemctl show -p NRestarts --value zeroed-worker")"
+sleep 30
+[ "$(in_c "systemctl show -p NRestarts --value zeroed-worker")" = "$r0" ] && in_c "systemctl is-active zeroed-worker" >/dev/null || fail "the worker restarted without its providers"
+in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" | jq -e '.entries_halted == true and (.halt_reasons | length > 0)' >/dev/null || fail "without providers the worker is not degraded with entries halted"
+# A restart comes back clean, reconciling first.
+boot0="$(jq -r .boot "$LOGS/health-real.json")"
+wrestart
+wait_for 60 "the worker back after a restart" "docker exec $C curl -fsS -m 2 http://127.0.0.1:8787/health | jq -e '.boot != \"$boot0\" and .reconciled == true' >/dev/null"
+inv | has 'Reconcile: done, open intents written.' || fail "the restart did not reconcile first"
+# Any mode but paper is refused: the wrapper sets paper over the environment file, and the worker itself refuses live.
+wrestart "echo ZEROED_MODE=live >> /etc/zeroed/worker.env"
+wait_for 60 "the worker after a live setting" "docker exec $C systemctl is-active zeroed-worker"
+in_c "tr '\\0' '\\n' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/environ" | has -x 'ZEROED_MODE=paper' || fail "the environment file switched the worker out of paper"
+in_c "sed -i '/^ZEROED_MODE=live\$/d' /etc/zeroed/worker.env"
+rc=0; in_c "cd /opt/zeroed/current && runuser -u zeroed-worker -- env -i PATH=/usr/bin:/bin ZEROED_MODE=live ZEROED_STATE_DIR=/tmp /usr/local/bin/node --no-warnings packages/worker/src/main.ts" >"$LOGS/worker-live.txt" 2>&1 || rc=$?
+[ "$rc" = 2 ] && grep -q 'refused: ZEROED_MODE must be paper' "$LOGS/worker-live.txt" || fail "the worker did not refuse live (exit $rc)"
+in_c "zeroed-status" | has "Worker:    active (the release's worker, ${relname:0:12})" || fail "zeroed-status does not say which worker runs"
+# A release whose worker cannot start is never switched to: a syntax error, a missing file, a refused config.
+broken() { # NAME: a copy of this release with the switch on, to break
+  in_c "rm -rf '/opt/zeroed/releases/$1' && cp -a '$rel' '/opt/zeroed/releases/$1'"
+}
+broken smoke-syntax && in_c "printf 'const = ;\n' >> /opt/zeroed/releases/smoke-syntax/packages/worker/src/run/api.ts"
+broken smoke-missing && in_c "rm /opt/zeroed/releases/smoke-missing/packages/worker/src/run/config.ts"
+broken smoke-config && in_c "echo '{not json' > /opt/zeroed/releases/smoke-config/packages/runner/qualifying-run.json"
+# A worker that answers, then dies 15 s later: the trial's hold catches it.
+broken smoke-dies && in_c "sed -i '1i if (!process.argv.includes(\"--reconcile\")) setTimeout(() => process.exit(1), 15_000);' /opt/zeroed/releases/smoke-dies/packages/worker/src/main.ts"
+for b in smoke-syntax smoke-missing smoke-config smoke-dies; do
+  rc=0; in_c "/usr/local/lib/zeroed/worker-smoke /opt/zeroed/releases/$b" >"$LOGS/$b.txt" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && [ "$(wc -l < "$LOGS/$b.txt")" = 1 ] || { cat "$LOGS/$b.txt"; fail "worker-smoke passed a broken release ($b, exit $rc)"; }
+done
+grep -q 'exited 1' "$LOGS/smoke-syntax.txt" && grep -q 'exited 1' "$LOGS/smoke-missing.txt" && grep -q 'exited 2' "$LOGS/smoke-config.txt" && grep -q 'exited 1 within 30 s of answering' "$LOGS/smoke-dies.txt" || fail "worker-smoke reasons: $(cat "$LOGS"/smoke-*.txt)"
+in_c "rm -rf /opt/zeroed/releases/smoke-missing /opt/zeroed/releases/smoke-config /opt/zeroed/releases/smoke-dies && mv /opt/zeroed/releases/smoke-syntax '/opt/zeroed/releases/$signed2'"
+# Through zeroed-update: a green, GitHub-signed release with that broken worker stays undeployed; one alert.
+pid0="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
+n0="$(wc -l < "$STATE/telegram.jsonl")"
+echo success >"$STATE/checks/$signed2"
+git -C "$BARE" tag -f deploy "$signed2" >/dev/null && git -C "$BARE" update-server-info
+upd_run && fail "zeroed-update deployed a release whose worker does not start"
+[ "$(current)" = "$rel" ] || fail "current moved to a release whose worker does not start"
+[ "$(in_c "systemctl show -p MainPID --value zeroed-worker")" = "$pid0" ] || fail "the running worker was stopped for a release whose worker does not start"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "the deployed record moved"
+upd_run && fail "zeroed-update deployed a release whose worker does not start (second run)"
+[ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c "did not start in a trial")" = 1 ] || fail "not exactly one alert for a release whose worker does not start"
+# A release whose worker passes the trial but dies under the unit (here: only once it has its credentials) is switched
+# to, does not stay up, and the server goes back to the release it ran: current, deployed record, worker; one alert;
+# that commit is not tried again.
+in_c "rm -rf '/opt/zeroed/releases/$signed2'"
+broken "$signed2" && in_c "sed -i '1i if (process.env.CREDENTIALS_DIRECTORY \&\& !process.argv.includes(\"--reconcile\")) setTimeout(() => process.exit(1), 15_000);' '/opt/zeroed/releases/$signed2/packages/worker/src/main.ts'"
+in_c "/usr/local/lib/zeroed/worker-smoke '/opt/zeroed/releases/$signed2'" >"$LOGS/smoke-unit-dies.txt" 2>&1 || { cat "$LOGS/smoke-unit-dies.txt"; fail "the trial refused a worker that dies only under the unit"; }
+n0="$(wc -l < "$STATE/telegram.jsonl")"
+in_c "systemctl reset-failed zeroed-worker"
+upd_run && fail "zeroed-update reported success for a release whose worker did not stay up"
+[ "$(current)" = "$rel" ] || fail "current did not go back to the release that ran"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "the deployed record did not go back"
+in_c "cat /var/lib/zeroed-host/failed_release" | has -x "$signed2" || fail "the failed release is not recorded"
+wait_for 90 "the old release's worker back" "docker exec $C curl -fsS -m 2 http://127.0.0.1:8787/health | jq -e '.git_sha == \"$relname\"' >/dev/null"
+[ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c "did not stay up after the switch")" = 1 ] || fail "not exactly one alert for a worker that did not stay up"
+pid0="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
+upd_run || fail "zeroed-update on a release it already rolled back"
+[ "$(current)" = "$rel" ] && [ "$(in_c "systemctl show -p MainPID --value zeroed-worker")" = "$pid0" ] || fail "a rolled-back release was tried again"
+git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
+in_c "rm -rf '/opt/zeroed/releases/$signed2'"
+upd_run || fail "zeroed-update after the deploy tag came back"
+[ "$(current)" = "$rel" ] || fail "current moved after the deploy tag came back"
+# Back to the stand-in and the local watchdog for the sections that follow.
+wrestart "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=$wd0#' /etc/zeroed/worker.env && ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
+wait_for 60 "the stand-in back" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager -n 5 | grep -q 'Stub worker up'"
+pass "release's worker (SWITCH-1): zeroed-worker runs the release's main.ts under the host's Node 22 with no node_modules; --reconcile first (exit 0); start line and journal say paper with recorder, simulation and drills on; 3 keys read from systemd credentials and none in its output; health on 127.0.0.1:8787 and API on 127.0.0.1:8788, loopback only; without providers it runs degraded, entries halted, no restarts; a restart comes back reconciled; live is refused; zeroed-status names the worker; worker-smoke passes it beside the running worker in the unit's sandbox and memory cap, and refuses a syntax error, a missing file, a refused config and a worker that dies after answering; zeroed-update keeps a green signed release whose worker cannot start off current, keeps the worker running and alerts once; a release whose worker passes the trial but dies under the unit is rolled back (current, deployed record, worker), alerted once and not tried again"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on
@@ -581,18 +710,18 @@ jq -e --arg u "$WD_URL" '.url == $u' "$STATE/webhook.json" >/dev/null || fail "w
 # Success while a dry run is active: the chat moves at once, the worker restart waits for the run.
 in_c "rm -f /var/lib/zeroed-dryrun/evidence/vps-e2e/report.json"
 RP="$(repair_code)"
-w0="$(jl zeroed-worker | grep -c 'Stub worker up')"
+w0="$(jl zeroed-worker | grep -c 'Started zeroed-worker.service')"
 send_tg "$T_CHAT2" "/pair $RP"
 chat_is "$T_CHAT2" || fail "re-pair with the right code did not move the chat"
 grep -q "\"chat_id\":\"$T_CHAT\",\"text\":\"Zeroed host: a new chat was paired at the console" "$STATE/telegram.jsonl" || fail "old chat not told it was replaced"
 grep -q "\"chat_id\":\"$T_CHAT2\",\"text\":\"Paired." "$STATE/telegram.jsonl" || fail "new chat not told Paired"
 jq -e --arg u "$WD_URL" '.url == $u' "$STATE/webhook.json" >/dev/null || fail "webhook not set after re-pair"
 in_c "test -e /var/lib/zeroed-host/worker_restart_pending" || fail "worker restart did not wait for the dry run"
-[ "$(jl zeroed-worker | grep -c 'Stub worker up')" = "$w0" ] || fail "worker restarted during the dry run"
+[ "$(jl zeroed-worker | grep -c 'Started zeroed-worker.service')" = "$w0" ] || fail "worker restarted during the dry run"
 in_c "printf '{\"pass\":false}' > /var/lib/zeroed-dryrun/evidence/vps-e2e/report.json"
 n0="$(wc -l <"$STATE/telegram.jsonl")"
 chk
-wait_for 30 "worker restarted for the new chat" "[ \$(docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Stub worker up') -gt $w0 ]"
+wait_for 30 "worker restarted for the new chat" "[ \$(docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Started zeroed-worker.service') -gt $w0 ]"
 in_c "! test -e /var/lib/zeroed-host/worker_restart_pending" || fail "restart still pending"
 [ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c ALERT)" = 0 ] || fail "re-pairing raised an alert"
 pass "re-pair: asks first (no = nothing changes); the current chat is told and stays paired through a wrong code and an expired code (webhook back each time); the right code moves alerts to the new chat, tells both, sets the webhook; the worker restart for the new chat waits for the dry run; no false webhook or key alert"
@@ -609,7 +738,9 @@ in_c "touch /var/lib/tailscale-stub/approve"
 wait "$TS_PID" || { cat "$LOGS/console/tailscale.txt"; fail "zeroed-tailscale"; }
 grep -q 'Live view: https://zeroed.tail-e2e.ts.net (your tailnet only, HTTPS, Funnel off).' "$LOGS/console/tailscale.txt" || fail "live view address"
 in_c "cat /var/lib/tailscale-stub/calls" >"$LOGS/tailscale-calls.txt"
-grep -qx 'up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m' "$LOGS/tailscale-calls.txt" && grep -qx 'funnel --https=443 off' "$LOGS/tailscale-calls.txt" && grep -qx 'serve --bg --https=443 http://127.0.0.1:8788' "$LOGS/tailscale-calls.txt" || fail "tailscale calls"
+grep -qx 'up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m' "$LOGS/tailscale-calls.txt" && grep -qx 'serve --bg --https=443 http://127.0.0.1:8788' "$LOGS/tailscale-calls.txt" || fail "tailscale calls"
+# OPS-1h: no funnel command (it would wait forever for a Funnel capability this tailnet does not have).
+! grep -q '^funnel' "$LOGS/tailscale-calls.txt" || fail "zeroed-tailscale ran a funnel command"
 in_c "zeroed-status" | has 'Live view: https://zeroed.tail-e2e.ts.net' || fail "status after the live view"
 in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale is not safe to repeat"
 # Funnel switched on by someone: alert, turned off, then cleared; installs run the same check.
@@ -625,6 +756,16 @@ in_c "jq -e '(.AllowFunnel // {}) | length == 0' /var/lib/tailscale-stub/serve.j
 grep -q 'ALERT Zeroed host: Tailscale Funnel was on' <(tail -3 "$STATE/telegram.jsonl") || fail "the installer's check raised no Funnel alert"
 in_c "systemctl stop zeroed-check.timer"
 chk
+# OPS-1h review: Funnel that cannot be turned off (an error here) takes the whole serve config down, with an alert.
+in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale before the Funnel-off failure"
+in_c "jq '.AllowFunnel = {\"zeroed.tail-e2e.ts.net:443\": true}' /var/lib/tailscale-stub/serve.json > /tmp/s && mv /tmp/s /var/lib/tailscale-stub/serve.json"
+in_c "touch /var/lib/tailscale-stub/funnel-fail"
+chk
+in_c "! test -e /var/lib/tailscale-stub/serve.json && ! test -e /var/lib/zeroed-host/live_view" || fail "Funnel that could not be turned off left the API published"
+grep -q 'Tailscale Funnel could not be turned off, so the live view was taken down' <(tail -3 "$STATE/telegram.jsonl") || fail "no alert when Funnel could not be turned off"
+in_c "rm -f /var/lib/tailscale-stub/funnel-fail"
+chk
+in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale after the Funnel-off failure"
 in_c "zeroed-tailscale --off" | has 'Live view off' && grep -qx 'serve reset' <(in_c "cat /var/lib/tailscale-stub/calls") || fail "zeroed-tailscale --off"
 # A serve result other than exactly the worker API (here: Funnel on as well) is taken down by the script.
 in_c "touch /var/lib/tailscale-stub/bad-serve"
@@ -633,7 +774,45 @@ grep -q 'so it was turned off again. Nothing is published.' "$LOGS/console/tails
 in_c "! test -e /var/lib/tailscale-stub/serve.json" || fail "bad serve left published"
 in_c "rm -f /var/lib/tailscale-stub/bad-serve"
 in_c "zeroed-status" | has 'Live view: off' || fail "status after a refused serve"
-pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it, a serve that is not exactly the worker API is taken down by the script; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
+# OPS-1h: a tailnet without HTTPS Certificates (or MagicDNS) is named with where to turn it on, on the console and in
+# the chat, and the script ends at once (exit 1); it never reaches the serve that would wait unseen for the owner.
+in_c "touch /var/lib/tailscale-stub/no-https"
+n0="$(wc -l < "$STATE/telegram.jsonl")"
+rc=0; timeout 60 docker exec "$C" bash -c "zeroed-tailscale" >"$LOGS/console/tailscale-no-https.txt" 2>&1 || rc=$?
+[ "$rc" = 1 ] || { cat "$LOGS/console/tailscale-no-https.txt"; fail "zeroed-tailscale without HTTPS: exit $rc, expected 1 (124 = it hung)"; }
+grep -qx 'Stopped: the live view needs HTTPS Certificates on your tailnet. Open https://login.tailscale.com/admin/dns, turn on HTTPS Certificates, then run zeroed-tailscale again.' "$LOGS/console/tailscale-no-https.txt" || fail "HTTPS step not named"
+tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT2\",\"text\":\"Zeroed host: the live view needs HTTPS Certificates on your tailnet." || fail "HTTPS step not sent to the paired chat"
+in_c "tail -1 /var/lib/tailscale-stub/calls" | grep -qx 'status --json' || fail "zeroed-tailscale called tailscale after finding HTTPS off"
+in_c "! test -e /var/lib/tailscale-stub/serve.json && ! test -e /var/lib/zeroed-host/live_view" || fail "published without HTTPS"
+in_c "touch /var/lib/tailscale-stub/no-magicdns"
+rc=0; timeout 60 docker exec "$C" bash -c "zeroed-tailscale" >"$LOGS/console/tailscale-no-dns.txt" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q '^Stopped: the live view needs MagicDNS and HTTPS Certificates on your tailnet. Open https://login.tailscale.com/admin/dns' "$LOGS/console/tailscale-no-dns.txt" || fail "MagicDNS step not named (exit $rc)"
+in_c "rm -f /var/lib/tailscale-stub/no-https /var/lib/tailscale-stub/no-magicdns"
+# A tailscale call that never answers ends with a Stopped line within its limit, and whatever it printed is shown.
+in_c "touch /var/lib/tailscale-stub/serve-hang"
+rc=0; timeout 60 docker exec "$C" bash -c "ZEROED_TS_WAIT=5 zeroed-tailscale" >"$LOGS/console/tailscale-hang.txt" 2>&1 || rc=$?
+[ "$rc" = 1 ] || { cat "$LOGS/console/tailscale-hang.txt"; fail "a hanging tailscale serve: exit $rc, expected 1 (124 = it hung)"; }
+grep -qx "Stopped: 'tailscale serve' did not finish within 5s." "$LOGS/console/tailscale-hang.txt" && grep -q 'https://login.tailscale.com/f/serve?node=e2e' "$LOGS/console/tailscale-hang.txt" && grep -qx 'Stopped: tailscale serve did not finish. Nothing is published.' "$LOGS/console/tailscale-hang.txt" || { cat "$LOGS/console/tailscale-hang.txt"; fail "hanging serve not explained"; }
+in_c "! test -e /var/lib/tailscale-stub/serve.json && ! test -e /var/lib/zeroed-host/live_view" || fail "published after a hanging serve"
+in_c "rm -f /var/lib/tailscale-stub/serve-hang"
+in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale after HTTPS was turned on"
+in_c "test -s /var/lib/zeroed-host/live_view" || fail "live view state not written"
+# A serve the owner set up by hand (no live_view state file): running zeroed-tailscale again takes it over cleanly.
+in_c "zeroed-tailscale --off" >/dev/null
+in_c "tailscale serve --bg --https=443 http://127.0.0.1:8788 && ! test -e /var/lib/zeroed-host/live_view"
+rc=0; timeout 60 docker exec "$C" bash -c "zeroed-tailscale" >"$LOGS/console/tailscale-over-hand.txt" 2>&1 || rc=$?
+[ "$rc" = 0 ] && grep -q 'Live view: https://zeroed.tail-e2e.ts.net' "$LOGS/console/tailscale-over-hand.txt" || { cat "$LOGS/console/tailscale-over-hand.txt"; fail "zeroed-tailscale over a hand-made serve (exit $rc)"; }
+in_c "grep -qx zeroed.tail-e2e.ts.net /var/lib/zeroed-host/live_view" || fail "live view state not written over a hand-made serve"
+# A hand-made serve that publishes more than the worker API (here an extra path) is never adopted: serve keeps the
+# extra handler, the exact check refuses it, and everything is taken down.
+in_c "zeroed-tailscale --off" >/dev/null
+in_c "printf '%s\n' '{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"zeroed.tail-e2e.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:8788\"},\"/admin\":{\"Proxy\":\"http://127.0.0.1:9000\"}}}}}' > /var/lib/tailscale-stub/serve.json"
+rc=0; timeout 60 docker exec "$C" bash -c "zeroed-tailscale" >"$LOGS/console/tailscale-over-extra.txt" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q 'so it was turned off again. Nothing is published.' "$LOGS/console/tailscale-over-extra.txt" || { cat "$LOGS/console/tailscale-over-extra.txt"; fail "a hand-made serve with an extra path was adopted (exit $rc)"; }
+in_c "! test -e /var/lib/tailscale-stub/serve.json && ! test -e /var/lib/zeroed-host/live_view" || fail "a hand-made serve with an extra path stayed published"
+in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale after refusing a hand-made serve"
+in_c "zeroed-tailscale --off" | has 'Live view off' || fail "zeroed-tailscale --off (after OPS-1h)"
+pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it, a serve that is not exactly the worker API is taken down by the script; a tailnet without HTTPS Certificates or MagicDNS is named with where to turn it on (console and chat, exit 1, no hang), no funnel command is run (it waits forever without Funnel), a hand-made serve is taken over only when it is exactly the worker API, Funnel that cannot be turned off takes the serve down, and a tailscale call that hangs ends with a Stopped line within its limit; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
 
 # ---------- 11. Secret scan ----------
 in_c "journalctl --no-pager -o cat" >"$LOGS/container-journal.txt"
