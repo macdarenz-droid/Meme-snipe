@@ -95,6 +95,21 @@ describe('PERSIST-1 in the worker', () => {
     }]);
   }, 60_000);
 
+  it('the observe-only start (the tabletop) packs its recording\'s copy too (G4c-2)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const h = makeWorker({ stateDir, timers, seed: (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers }) });
+    const m = await boot(h);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await h.worker.stop();
+    const h2 = makeWorker({ stateDir, timers });
+    expect(await h2.worker.observeOnly()).toEqual({ ok: true });
+    const copy = join(stateDir, 'recorder', h2.worker.boot, PERSIST_FILE);
+    expect([existsSync(copy), existsSync(`${copy}.zst`)]).toEqual([false, true]);
+    await h2.worker.stop();
+  });
+
   it('the parity replay restores a restarted boot from its recording\'s copy and reproduces its decisions; it refuses loudly without exactly that copy (WORKER-GROW)', async () => {
     const stateDir = tempState();
     const timers = virtualTimers(T);
