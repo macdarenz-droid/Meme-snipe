@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -28,7 +28,7 @@ import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release,
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
-import { Desk, openIntents } from './desk.ts';
+import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
@@ -152,6 +152,8 @@ export interface WorkerDeps {
    * the feed. Null loses it (an API call that timed out after the send); another event replaces it. Tests only.
    */
   readonly worldFault?: (event: BookEvent) => BookEvent | null;
+  /** Test seam: the desk calls it right after each of a fill's two durable writes (ARCHITECTURE §12.4). */
+  readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
   /**
    * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
@@ -194,6 +196,18 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
 
+/** The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. */
+const readJournalFills = (path: string): Record<string, unknown>[] => {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8').split('\n').filter((l) => l.includes('"kind":"entry"') || l.includes('"kind":"exit"')).flatMap((l) => {
+    try {
+      return [JSON.parse(l) as Record<string, unknown>];
+    } catch {
+      return [];
+    }
+  });
+};
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
@@ -221,6 +235,10 @@ export class Worker {
   #solPrice: MicroUsd | null = null;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
+  /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
+  readonly #fillLines: Record<string, unknown>[];
+  /** Fills the ledger holds and account.json does not, recorded once a SOL price is known. */
+  #accountBehind: { readonly positionId: string; readonly purpose: 'entry' | 'exit' }[] = [];
   #pools = new Map<string, unknown>();
   /** When each mint's latest pool fact was released to the engine (WATCH-1 judges a feed fact by its release). */
   readonly #poolReleasedAt = new Map<string, number>();
@@ -284,6 +302,7 @@ export class Worker {
     this.#boot = d.boot ?? `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
+    this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
@@ -388,6 +407,10 @@ export class Worker {
     this.#desk = new Desk({
       ledger: this.#ledger, config: bookConfig, restored: stored.book,
       journal: (kind, fields) => this.#journal.write(kind, fields),
+      // Fill lines written before a kill that came ahead of the ledger: the restart books those fills again, once.
+      journaledFills: journaledFillKeys(this.#fillLines),
+      solUsd: () => this.#solPrice,
+      ...(d.crashPoint === undefined ? {} : { crashPoint: d.crashPoint }),
       report: (event) => this.#report(event),
       accountChanged: () => this.#publishAccount(),
       intentsChanged: () => this.#writeOpenIntents(),
@@ -399,10 +422,13 @@ export class Worker {
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       filled: (r) => {
-        this.#account.filled(r, this.#solPrice);
+        // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
+        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice);
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
     });
+    // WORKER-ORDER: fills the ledger holds that account.json missed (a kill between the two), caught up at the first price.
+    this.#accountBehind = this.#account.behind(stored.book);
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
     for (const e of stored.events) this.#desk.written(this.#report(e));
     // The worker's own start facts are dated 1 ms after the last restored frame, so every restored event sorts before
@@ -514,6 +540,7 @@ export class Worker {
         this.#solPrice = p.price as MicroUsd;
         this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
+        if (this.#accountBehind.length > 0) this.#catchUpAccount();
         // The paper wallet exists from the first price on: risk needs its balance (R4).
         if (first && this.#account.state.walletLamports !== null && this.#reconciled) this.#publishAccount();
       }
@@ -692,6 +719,30 @@ export class Worker {
       this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
       return false;
     }
+  }
+
+  /**
+   * WORKER-ORDER: records the fills a kill between the ledger commit and account.json left out, from the book and the
+   * fill's own journal line (always written before the ledger since §12.4: its time, reasons and SOL/USD rate).
+   */
+  #catchUpAccount(): void {
+    const book = this.#desk.book;
+    for (const b of this.#accountBehind) {
+      const p = book.positions[b.positionId];
+      if (p === undefined) continue;
+      const line = this.#fillLines.filter((l) => l['kind'] === b.purpose && l['trade'] === b.positionId && (b.purpose === 'entry' || l['position'] === 'closed')).at(-1);
+      const at = typeof line?.['ts'] === 'string' ? Date.parse(line['ts']) : Number.NaN;
+      const reasons = lineReasons(line) ?? [`${b.purpose} filled (paper)`];
+      // Valued at the fill's own SOL/USD rate from its line (PAPER-1). Null there means no price at booking, which the
+      // live path valued as null too (the safe side); only a line without the field falls back to the price now, flagged.
+      const fromLine = lineRate(line);
+      const known = fromLine !== undefined;
+      const rate = known ? fromLine : this.#solPrice;
+      this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate);
+      this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two)${known ? '' : `; ${FILL_RATE_UNKNOWN}`}.`);
+    }
+    this.#accountBehind = [];
+    if (this.#reconciled) this.#publishAccount();
   }
 
   /**
