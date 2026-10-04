@@ -113,7 +113,9 @@ Checks:
 
 Alerts go to Telegram once, repeat every 5 minutes during the first hour and hourly after that, and always send a "cleared" line. Chain lookups are bounded (5 s), so a hung RPC never delays the heartbeat check.
 
-Telegram commands: only `/pause` and `/status`, only from the paired chat, only with the webhook secret. `/pause` stops new entries and never stops exits. It is cleared only from the console (`zeroed-resume`, signed with the heartbeat key).
+Telegram commands: `/pause`, `/status`, `/review`, `/rearm` and `/weekly`, only from the paired chat, only with the webhook secret. `/pause` stops new entries and never stops exits. It is cleared only from the console (`zeroed-resume`, signed with the heartbeat key).
+
+Review commands (OWNER-REVIEW): `/review` (the loss review, 5 losses in 20 trades), `/rearm` (the kill switch) and `/weekly` (the weekly loss) answer with the stop's evidence in SOL from the worker's last heartbeat and the exact line to send, for example `/rearm confirm rearm-1759600000000`. The watchdog queues that confirm only if the trip is the one the worker reports open now, and sends it in the heartbeat reply. The worker checks it again against its own stop, writes only that stop's review time, and the owner gets "Applied" or "Refused" once. A confirm for an older trip is refused at both ends. `/weekly` records the review; entries stay paused until the week ends.
 
 The Deploy workflow deploys it only together with a key handoff, so the server and the watchdog always get the same fresh heartbeat key. If the account has no workers.dev subdomain yet, Deploy registers one (`zeroed-` plus random hex) through the Cloudflare API. That needs Account → Workers Scripts → Edit, which the "Edit Cloudflare Workers" template includes. The steps:
 - wrangler 4.141.0 from `ops/watchdog/deploy`, locked by its `package-lock.json`, installed with `npm ci --ignore-scripts`;
@@ -216,6 +218,7 @@ A server installed from an earlier line (before this fix) has its webhook off af
 - Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
 - Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
 - Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.
+- Send `review` (each open stop the owner can clear, with its trip id and evidence) and `acked` (the owner commands handled, with their results) in every heartbeat. Apply the reply's `commands` only for the worker's own open trip, save each handled command in `control.json` (a repeat is a no-op) and journal it as `owner_command`.
 - Post the daily summary (`packages/ops/src/watchdog/summary.ts` shape) to `/summary` every `ZEROED_SUMMARY_MS` (default 30 minutes) and just after Melbourne midnight, signed over `t\nPOST\n/summary\nbody` with a signature time newer than the last one. Never wait on it.
 
 ## Test it

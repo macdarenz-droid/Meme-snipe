@@ -32,6 +32,34 @@ const fresh = (atMs: number, nowMs: number, maxAgeMs: number): boolean => isTime
 const byClose = (a: ClosedTrade, b: ClosedTrade): number => a.closedAtMs - b.closedAtMs;
 const isLoss = (t: ClosedTrade): boolean => t.netPnl < 0n;
 
+/** An R8 review that is due: the trades from `fromMs` to `atMs` hold `losses` losses in one window. */
+export interface LossReviewTrip {
+  /** The close of the loss that completed the window: the trip's moment, the same until the owner reviews it. */
+  readonly atMs: number;
+  /** The close of the window's first trade. */
+  readonly fromMs: number;
+  readonly losses: number;
+}
+
+/**
+ * R8: the first window of `reviewWindowTrades` trades, counting only trades closed after the owner's last review, that
+ * holds `reviewLosses` losses; null when none does. A window, once full, never changes, so the trip stays the same
+ * while more trades close (OWNER-REVIEW: the owner's confirm names it).
+ */
+export const lossReviewTrip = (closed: readonly ClosedTrade[], reviewedAtMs: number | null, loss: Pick<Policy['loss'], 'reviewWindowTrades' | 'reviewLosses'>): LossReviewTrip | null => {
+  const since = [...closed].sort(byClose).filter((t) => reviewedAtMs === null || t.closedAtMs > reviewedAtMs);
+  const size = loss.reviewWindowTrades;
+  for (let i = 0; i < Math.max(1, since.length - size + 1); i++) {
+    const window = since.slice(i, i + size);
+    const losses = window.filter(isLoss);
+    if (losses.length >= loss.reviewLosses) {
+      const completing = losses[loss.reviewLosses - 1] ?? window.at(-1);
+      return { atMs: completing?.closedAtMs ?? reviewedAtMs ?? 0, fromMs: window[0]?.closedAtMs ?? reviewedAtMs ?? 0, losses: losses.length };
+    }
+  }
+  return null;
+};
+
 // ---------- Account figures (R1, R6 to R10) ----------
 
 interface Figures {
@@ -280,16 +308,8 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   if (last && s.lossStreak >= policy.loss.pauseDayAfterLosses && last.closedAtMs >= s.dayStartMs) {
     reasons.push(reason('loss_day_pause', `${s.lossStreak} losses in a row; paused for the day`));
   }
-  const reviewed = latches.lossReviewedAtMs;
-  const sinceReview = f.trades.filter((t) => reviewed === null || t.closedAtMs > reviewed);
-  const reviewWindow = policy.loss.reviewWindowTrades;
-  for (let i = 0; i < Math.max(1, sinceReview.length - reviewWindow + 1); i++) {
-    const losses = sinceReview.slice(i, i + reviewWindow).filter(isLoss).length;
-    if (losses >= policy.loss.reviewLosses) {
-      reasons.push(reason('loss_review', `${losses} losses in ${reviewWindow} trades; paused until reviewed`));
-      break;
-    }
-  }
+  const review = lossReviewTrip(f.trades, latches.lossReviewedAtMs, policy.loss);
+  if (review !== null) reasons.push(reason('loss_review', `${review.losses} losses in ${policy.loss.reviewWindowTrades} trades; paused until reviewed`));
 
   // R9: weekly loss, latched until the week ends and the owner has reviewed it (a review strictly after the trip).
   // Counted two ways and the tighter applies: in dollars against week-start equity, and time-weighted against the

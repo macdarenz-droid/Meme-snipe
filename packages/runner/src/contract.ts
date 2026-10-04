@@ -159,7 +159,12 @@ export type JournalKind =
   /** H15's round-trip simulation of a candidate (WORKER-1e: SIM-1's `SimRecord`, or `not-run` with its reason). Not item 4's `simulation`. */
   | 'h15_sim'
   /** PERSIST-2: a graduates seed taken or refused (`source`, `accepted`, `added`, `reason`). */
-  | 'graduates_seed';
+  | 'graduates_seed'
+  /**
+   * OWNER-REVIEW: an owner command from the watchdog (`id`, `command` review/rearm/weekly, `trip`, `result` applied or
+   * stale or invalid, `at_ms` the review moment written when applied).
+   */
+  | 'owner_command';
 
 /**
  * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A

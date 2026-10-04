@@ -1,7 +1,15 @@
 // Cloudflare Worker entry: routes requests and the minute cron to the single Watchdog Durable Object.
 // Types are declared here (no @cloudflare/workers-types dependency); only what this file uses.
 import {
+  ackedOf,
+  confirmedTrip,
   evaluate,
+  queueConfirm,
+  reviewOf,
+  settleAcks,
+  stopText,
+  type OwnerKind,
+  type PendingCommand,
   isNewer,
   limitsFrom,
   parseCommand,
@@ -132,7 +140,14 @@ export class Watchdog {
     // The owner's chat comes only from the server's signed heartbeat (paired there with /pair).
     if (typeof hb.owner_chat_id === 'string' && /^-?\d{1,20}$/.test(hb.owner_chat_id)) await this.state.storage.put('owner_chat', hb.owner_chat_id);
     const paused = await this.state.storage.get<{ at: number }>('paused');
-    return json({ ok: true, paused: Boolean(paused) });
+    // OWNER-REVIEW: commands the worker handled leave the queue and the owner hears the result once; the rest go in the reply.
+    const settled = settleAcks((await this.state.storage.get<PendingCommand[]>('owner_cmds')) ?? [], ackedOf(hb));
+    if (settled.lines.length > 0) {
+      await this.state.storage.put('owner_cmds', settled.pending);
+      await this.say(settled.lines.join('\n'));
+    }
+    const commands = settled.pending.map(({ id, kind, trip }) => ({ id, kind, trip }));
+    return json({ ok: true, paused: Boolean(paused), ...(commands.length > 0 ? { commands } : {}) });
   }
 
   private async ring(base: string): Promise<Ring> {
@@ -233,10 +248,31 @@ export class Watchdog {
       await this.say('Entries paused. Exits keep running. The worker applies it on its next heartbeat.');
     } else if (cmd === 'status') {
       await this.say(await this.status(Date.now()));
+    } else if (cmd === 'review' || cmd === 'rearm' || cmd === 'weekly') {
+      await this.ownerCommand(cmd, confirmedTrip(update, (await this.state.storage.get<string>('owner_chat')) ?? ''));
     } else if (cmd === 'other') {
-      await this.say('Commands: /pause, /status');
+      await this.say('Commands: /pause, /status, /review, /rearm, /weekly');
     }
     return new Response('ok');
+  }
+
+  /**
+   * OWNER-REVIEW: without a confirm, the stop's evidence from the worker's last heartbeat and the exact confirm line. A
+   * confirm is queued only for the trip the worker reports open now; the worker checks it again before it applies it.
+   */
+  private async ownerCommand(kind: OwnerKind, trip: string | null): Promise<void> {
+    const review = reviewOf((await this.state.storage.get<Stored>('hb'))?.hb);
+    if (trip === null) {
+      await this.say(stopText(kind, review[kind]));
+      return;
+    }
+    const q = queueConfirm((await this.state.storage.get<PendingCommand[]>('owner_cmds')) ?? [], review, kind, trip, Date.now());
+    if (!q.queued) {
+      await this.say(`Not queued: ${trip} is not the current trip. Send /${kind} to see the current one.`);
+      return;
+    }
+    await this.state.storage.put('owner_cmds', q.pending);
+    await this.say(`Queued: /${kind} for ${trip}. The worker checks it and applies it on its next heartbeat.`);
   }
 
   private async status(now: number): Promise<string> {

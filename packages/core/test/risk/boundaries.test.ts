@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import { TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
 import { costAtSize, feasibleSize, fixedCosts } from '../../src/costs/index.ts';
-import { type EntryAllowed, evaluateEntry, evaluateExit, maxTradeCosts, melbourneWeek, opsReserve } from '../../src/risk/index.ts';
+import { type EntryAllowed, evaluateEntry, evaluateExit, lossReviewTrip, maxTradeCosts, melbourneWeek, opsReserve } from '../../src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
 import {
   DAY_START, DEEP_POOL, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest,
@@ -286,6 +286,30 @@ describe('R8 edges', () => {
     expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: in21 }) }), baseRequest()))).not.toContain('loss_review');
     const four = series('LWLWLWLWWWWWWWWWWWWW', LAST_WEEK);
     expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: four }) }), baseRequest()))).not.toContain('loss_review');
+  });
+  test('OWNER-REVIEW: the R8 trip is the close of the loss that completed the window, the same while more trades close, and only trades after a review count', () => {
+    const in20 = series('L' + 'W'.repeat(4) + 'L' + 'W'.repeat(4) + 'L' + 'W'.repeat(4) + 'L' + 'WWWL' + 'W', LAST_WEEK);
+    const loss = TRIAL_POLICY.loss;
+    const fifth = in20.filter((t) => t.netPnl < 0n)[4]!;
+    const trip = lossReviewTrip(in20, null, loss);
+    expect(trip).toEqual({ atMs: fifth.closedAtMs, fromMs: in20[0]!.closedAtMs, losses: 5 });
+    // The ledger's order does not matter, and later trades (losses too) never move it.
+    expect(lossReviewTrip([...in20].reverse(), null, loss)).toEqual(trip);
+    const later = [...in20, trade(LAST_WEEK + HOUR, '-0.1'), trade(LAST_WEEK + 2 * HOUR, '0.1'), trade(LAST_WEEK + 3 * HOUR, '-0.1')];
+    expect(lossReviewTrip(later, null, loss)?.atMs).toBe(fifth.closedAtMs);
+    // Fewer trades than the window: the fifth loss trips it, and a win after it does not move the trip.
+    const early = series('LLLLLW', LAST_WEEK);
+    expect(lossReviewTrip(early, null, loss)).toEqual({ atMs: early[4]!.closedAtMs, fromMs: early[0]!.closedAtMs, losses: 5 });
+    // It agrees with R8 wherever R8 decides.
+    const in21 = series('L' + 'W'.repeat(4) + 'L' + 'W'.repeat(4) + 'L' + 'W'.repeat(4) + 'L' + 'WWWWL', LAST_WEEK);
+    for (const closed of [in20, in21, series('LWLWLWLWWWWWWWWWWWWW', LAST_WEEK), later]) {
+      const tripped = codes(evaluateEntry(baseInput({ account: account({ closedTrades: closed }) }), baseRequest())).includes('loss_review');
+      expect(lossReviewTrip(closed, null, loss) !== null).toBe(tripped);
+    }
+    // Reviewed at the trip: those trades no longer count; five new losses after it make a new trip.
+    expect(lossReviewTrip(in20, fifth.closedAtMs, loss)).toBeNull();
+    const fresh = [...in20, ...series('LLLLL', LAST_WEEK + 6 * HOUR)];
+    expect(lossReviewTrip(fresh, fifth.closedAtMs, loss)?.atMs).toBe(fresh.at(-1)!.closedAtMs);
   });
   test('a trade closed at the moment of the review counts before it', () => {
     const closed = series('LWLWLWLWL', LAST_WEEK);
