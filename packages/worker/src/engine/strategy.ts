@@ -98,6 +98,8 @@ export interface SavedExit {
   /** The position's pool and its last spot price (PRICE_SCALE): the exposure rebuild after a kill reads them. */
   readonly pool?: string | null;
   readonly spot?: { readonly price: bigint; readonly atMs: number } | null;
+  /** Since when a due full exit has waited for its first fresh quote (EXIT-1c); null or absent when none waits. */
+  readonly waitingSinceMs?: number | null;
 }
 
 export interface RestoreFact {
@@ -253,6 +255,11 @@ export class LiveStrategy implements Strategy {
 
   /** Each held position's latest mark (executable price, PRICE_SCALE) with when it was read. */
   readonly #marks = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
+
+  /** Open positions whose due full exit waits for its first fresh quote, with the moment it started waiting (EXIT-1c). */
+  waitingExits(): ReadonlyMap<string, number> {
+    return new Map([...this.#exits].flatMap(([pid, s]) => (s.waitingSinceMs == null ? [] : [[pid, s.waitingSinceMs] as const])));
+  }
 
   markOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
     return this.#marks.get(pid) ?? null;
@@ -752,7 +759,11 @@ export class LiveStrategy implements Strategy {
         market: typeof m === 'string' ? null : { atMs: m.atMs, value: { venue: 'pumpswap', pool: m.pool, ctx: m.ctx } },
         deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: [], bars: this.#bars.get(p.id) ?? saved.bars,
       });
-      saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars };
+      // A due full exit with no quote yet is held, remembered in the tracker (EXIT-1c): said once, and kept visible as
+      // pending (and as an alert once it has waited the blocked-retry time) until the first fresh quote takes it.
+      const waiting = p.status === 'open' && step.tracker.pendingFull !== null;
+      if (waiting && saved.waitingSinceMs == null) out.push({ action: null, reasons: ['exit waiting for a fresh quote', p.mint, step.tracker.pendingFull!.join(', ')] });
+      saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs: waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
       this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out);
