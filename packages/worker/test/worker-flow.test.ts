@@ -22,6 +22,9 @@ import type { SeedRpc } from '../src/seed/rpc.ts';
 import type { SimLeg } from '../src/run/paper-world.ts';
 import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, dueTimers, makeWorker, okSimulation, passingMarket, slotAt, tempState, until, virtualTimers } from './worker-harness.ts';
 
+/** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
+const HELD = { heldPoolFacts: true } as const;
+
 const journalText = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
 const lines = (dir: string) => journalText(dir).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
 const kinds = (dir: string, kind: string) => lines(dir).filter((l) => l['kind'] === kind);
@@ -31,7 +34,7 @@ const positions = (h: ReturnType<typeof makeWorker>) => Object.values(h.worker.b
 const entered = async (h: ReturnType<typeof makeWorker>) => {
   const r = await h.worker.reconcile();
   expect(r).toEqual({ ok: true });
-  const m = await passingMarket(h);
+  const m = await passingMarket(h, HELD);
   await m.run(4_000, 100, () => m.pool());
   await m.run(10_000, 400, () => {
     m.slot();
@@ -136,7 +139,7 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
   it('with no fee-context fact, the terms of the latest swap on the pool price the entry', async () => {
     const without = makeWorker();
     expect(await without.worker.reconcile()).toEqual({ ok: true });
-    const m0 = await passingMarket(without, { fees: false });
+    const m0 = await passingMarket(without, { ...HELD, fees: false });
     await m0.run(4_000, 100, () => m0.pool());
     expect(positions(without)).toEqual([]);
     await without.worker.stop();
@@ -149,7 +152,7 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
     pre.fact(migrationKey(MINT), passingFacts().get(migrationKey(MINT))!.value);
     pre.swap('BuyEvent', 'someone', 1_000n);
     h.worker.step();
-    const m = await passingMarket(h, { fees: false });
+    const m = await passingMarket(h, { ...HELD, fees: false });
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -167,7 +170,7 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
     const pre = new Market(h);
     pre.create();
     h.worker.step();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -207,7 +210,7 @@ describe('a stalled feed (supervisor ruling 2026-10-04: stale state never become
   it('while nothing new arrives, the clock keeps running, the facts age and the stale-data reject fires', async () => {
     const h = makeWorker();
     expect(await h.worker.reconcile()).toEqual({ ok: true });
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     // The feed stalls before the passing facts are released: only the clock moves (and slots, so the engine runs).
     await m.run(6_000, 400, () => m.slot());
     expect(positions(h)).toEqual([]);
@@ -274,7 +277,7 @@ describe('entry halts fail closed (review of f679188, items 5 and 6)', () => {
     h.worker.step();
     // A halt fact that cannot be read: the passing market that enters otherwise (the end-to-end test) makes no entry.
     new Market(h).fact(HALT_KEY, { halted: 'no' });
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     expect(positions(h)).toEqual([]);
     await h.worker.stop();
@@ -379,7 +382,7 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
     file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, universe: 'U1' } } });
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    await new Market(h2).run(1_000, 400, () => undefined);
+    await new Market(h2, HELD).run(1_000, 400, () => undefined);
     expect(h2.worker.strategy.saved()[pid]!.plan.universe).toBe('U1');
     await h2.worker.kill();
     // A plan saved before universes were stored: the universe comes from the entry's intent key.
@@ -388,7 +391,7 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
     file.write({ ...old, [pid]: { ...old[pid]!, plan: plan as typeof old[string]['plan'] } });
     const h3 = makeWorker({ stateDir: h.stateDir, timers: h.timers, universe: 'U1' });
     expect(await h3.worker.reconcile()).toEqual({ ok: true });
-    await new Market(h3).run(1_000, 400, () => undefined);
+    await new Market(h3, HELD).run(1_000, 400, () => undefined);
     expect(h3.worker.strategy.saved()[pid]!.plan.universe).toBe('U2');
     expect(kinds(h.stateDir, 'decision').some((d) => (d['reasons'] as string[])[0] === 'plan universe restored')).toBe(true);
     await h3.worker.stop();
@@ -399,7 +402,7 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
   it('an attempt in flight at the kill never lands: the restart settles it before any entry', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     // Run until the entry is submitted, then kill before its landing slot.
     await m.run(4_000, 100, () => m.pool());
     const live = Object.values(h.worker.book.intents).filter((i) => i.status === 'pending' || i.status === 'submitted');
@@ -428,7 +431,7 @@ describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
   it('settles what a killed worker left open, writes open_intents 0 and exits 0, as a separate process', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await h.worker.kill();
     expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('1\n');
@@ -630,7 +633,7 @@ describe('exits never wait for the seed (review of 9fdf837)', () => {
   it('a restart with an open position and a seed that never answers: the stop exits during the wait, before seedMaxMs; entries halt', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -649,7 +652,7 @@ describe('exits never wait for the seed (review of 9fdf837)', () => {
       for (let k = 0; k < 4; k++) await new Promise<void>((r) => setImmediate(r));
     };
     for (let k = 0; k < 600 && !h2.order.includes('start helius-ws'); k++) await tick();
-    const m2 = new Market(h2);
+    const m2 = new Market(h2, HELD);
     const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
     let exit: Record<string, unknown> | undefined;
     for (let k = 0; k < 300 && exit === undefined; k++) {
