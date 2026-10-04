@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/157a78dd78d4368d66697e10eb8fa08340f4520d/ops/install.sh -o i && echo 'a7e2f869f98fb5913cd6511069f9246b1006a16dea87a267069d17bdac8b8596  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/157a78dd78d4368d66697e10eb8fa08340f4520d/ops/install.sh -o i && echo '98490d6019362ee5987416ab5008b9fcd2b82b5b49116b835f4a94fe844a485b  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/157a78dd
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `a7e2f869f98fb5913cd6511069f9246b1006a16dea87a267069d17bdac8b8596`
+SHA-256 of `install.sh`: `98490d6019362ee5987416ab5008b9fcd2b82b5b49116b835f4a94fe844a485b`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -162,7 +162,7 @@ Each day the worker sends a summary of what it did to a private GitHub repositor
 - each paper trade and the day's paper P&L;
 - the worker's commit and entry rule.
 
-It never holds a key, token, address, host name, chat id, wallet or personal data. The worker posts it signed to the watchdog every 30 minutes and just after Melbourne midnight. The watchdog checks it again and writes `reports/<day>.json` and `reports/latest.json`. Before every write the watchdog checks that the repository is private and is not this one. If that check or the write fails, nothing is written and Telegram gets a "Daily summary not written" alert, repeated and cleared like every watchdog alert. Trading and recording never wait on it. No new secret goes on the server, and nothing is typed at the console.
+It never holds a key, token, address, host name, chat id, wallet or personal data. The worker posts it signed to the watchdog on the Melbourne half-hours (about a minute after :00 and :30), just after Melbourne midnight, and about 3 minutes after each start unless a post was taken in the 10 minutes before. The watchdog checks it again and writes `reports/<day>.json` and `reports/latest.json`. Before every write the watchdog checks that the repository is private and is not this one. If that check or the write fails, nothing is written and Telegram gets a "Daily summary not written" alert, repeated and cleared like every watchdog alert. Trading and recording never wait on it. No new secret goes on the server, and nothing is typed at the console.
 
 Owner steps, once:
 1. Open github.com/new. Owner `macdarenz-droid`, name `zeroed-data`, select **Private**, tick **Add a README file**, then **Create repository**. (This is the same repository DATA-STORE uses.)
@@ -228,7 +228,7 @@ A server installed from an earlier line (before this fix) has its webhook off af
 - Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
 - Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
 - Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.
-- Post the daily summary (`packages/ops/src/watchdog/summary.ts` shape) to `/summary` every `ZEROED_SUMMARY_MS` (default 30 minutes) and just after Melbourne midnight, signed over `t\nPOST\n/summary\nbody` with a signature time newer than the last one. Never wait on it.
+- Post the daily summary (`packages/ops/src/watchdog/summary.ts` shape) to `/summary` on the Melbourne wall-clock slots of `ZEROED_SUMMARY_MS` (default 30 minutes, so :00 and :30, about a minute after), just after Melbourne midnight, and about 3 minutes after each reconciled start unless the last accepted post (`last_posted_ms` in `summary.json`) was under 10 minutes before, signed over `t\nPOST\n/summary\nbody` with a signature time newer than the last one. Never wait on it.
 
 ## Test it
 

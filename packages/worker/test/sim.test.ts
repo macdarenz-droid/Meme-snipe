@@ -29,7 +29,7 @@ const roundTripRequest = (venue: Venue, over: Partial<RoundTripRequest> = {}): R
   const r = request(venue === 'curve' ? 'curve-buy' : 'pool-buy');
   if (r.side !== 'buy') throw new Error('buy');
   const tokens = r.venue === 'curve' ? r.quote.tokens : r.quote.base;
-  const quote: RoundTrip = { spend: SPEND, paid: r.quote.userQuote, tokens, proceeds: 38_000_000n, entryFees: 0n, exitFees: 0n, entryImpact: 0n, exitImpact: 0n };
+  const quote: RoundTrip = { spend: SPEND, paid: r.quote.userQuote, tokens, proceeds: 38_000_000n, immediateProceeds: 38_000_000n, entryFees: 0n, exitFees: 0n, entryImpact: 0n, exitImpact: 0n };
   return {
     mint: r.mint,
     venue: r.venue === 'curve' ? { venue: 'curve', market: r.market } : { venue: 'pool', market: r.market },

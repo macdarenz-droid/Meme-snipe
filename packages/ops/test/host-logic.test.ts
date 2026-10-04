@@ -323,6 +323,24 @@ describe('worker start and API address', () => {
     expect(upd).toContain('[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0');
   });
 
+  it('OPS-1i: zeroed-update holds the switch only for the new commit\'s worker, never on an answer from the release before', () => {
+    const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const fns = upd.slice(upd.indexOf('answers() {'), upd.indexOf('# rollback WHY'));
+    // answers() and holds() as the script has them, with systemd, curl and sleep stood in: the unit is active, never
+    // restarts, and its health route answers paper as release $SHA_NOW.
+    const holds = (shaNow: string) => spawnSync('bash', ['-c', `set -euo pipefail
+WORKER_HEALTH_ADDR=127.0.0.1:8787 WORKER_API_ADDR=127.0.0.1:8788 SWITCH_HOLD_S=1 commit=${'b'.repeat(40)}
+systemctl() { [ "$1" = show ] && echo 0; return 0; }
+sleep() { :; }
+curl() { printf '{"mode":"paper","git_sha":"%s"}' "$SHA_NOW"; }
+${fns}
+holds`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', SHA_NOW: shaNow } });
+    expect(holds('b'.repeat(40))).toMatchObject({ status: 0, stdout: '' });
+    const old = holds('a'.repeat(40));
+    expect(old.status).toBe(1);
+    expect(old.stdout.trim()).toBe(`its health route did not answer as ${'b'.repeat(12)} within 60 s`);
+  });
+
   it('health for the runner on 127.0.0.1:8787 and the worker API on 127.0.0.1:8788, as WORKER-1 and RUN-1 expect', () => {
     expect(sh('echo "$WORKER_API_ADDR"').out).toBe('127.0.0.1:8788');
     expect(sh('echo "$WORKER_HEALTH_ADDR"').out).toBe('127.0.0.1:8787');
