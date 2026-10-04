@@ -50,18 +50,18 @@ type pilotProbe struct {
 }
 
 type pilotProjection struct {
-	WindowFrom          string  `json:"window_from"`
-	WindowToExclusive   string  `json:"window_to_exclusive"`
-	SecondsPerSlot      float64 `json:"seconds_per_slot"`
-	SlotsEstimate       int64   `json:"slots_estimate"`
-	ProducedRatio       float64 `json:"produced_ratio"`
-	BlocksEstimate      int64   `json:"blocks_estimate"`
-	CreditsEstimate     int64   `json:"credits_estimate"` // one getBlock per block plus one getBlocks per unit
-	BytesEstimate       int64   `json:"response_bytes_estimate"`
-	MeanBlockBytes      float64 `json:"mean_block_bytes"`
-	HoursAtMeasuredRate float64 `json:"hours_at_measured_rate"`
-	HoursAt50RPS        float64 `json:"hours_at_50_rps"` // Developer plan limit, if latency allows (see conc)
-	Note                string  `json:"note"`
+	WindowFrom          string     `json:"window_from"`
+	WindowToExclusive   string     `json:"window_to_exclusive"`
+	SecondsPerSlot      float64    `json:"seconds_per_slot"`
+	SlotsEstimate       int64      `json:"slots_estimate"`
+	ProducedRatio       float64    `json:"produced_ratio"`
+	BlocksEstimate      int64      `json:"blocks_estimate"`
+	CreditsEstimate     int64      `json:"credits_estimate"` // one getBlock per block plus one getBlocks per unit
+	BytesEstimate       int64      `json:"response_bytes_estimate"`
+	MeanBlockBytes      float64    `json:"mean_block_bytes"`
+	HoursAtMeasuredRate float64    `json:"hours_at_measured_rate"`
+	Plans               []planCost `json:"plans"` // what the full pull would cost on each plan
+	Note                string     `json:"note"`
 }
 
 type pilotReport struct {
@@ -189,18 +189,14 @@ func runPilot(ctx context.Context, h *heliusClient, conc, workers int, units []p
 			meanBytes = float64(rep.Usage.ResponseBytes) / float64(rep.Usage.Requests)
 		}
 		rate := float64(compareBlocks) / compareSecs
+		// One getBlock per block, one getBlocks per unit, about 4 planning calls an epoch.
+		credits := blocks + slots/unitSlots + 4*(slots/432000+2)
 		pr := &pilotProjection{WindowFrom: "2026-07-19", WindowToExclusive: "2026-10-03", SlotsEstimate: slots,
-			ProducedRatio: ratio, BlocksEstimate: blocks, CreditsEstimate: blocks + slots/unitSlots + 1,
+			ProducedRatio: ratio, BlocksEstimate: blocks, CreditsEstimate: credits,
 			MeanBlockBytes: meanBytes, BytesEstimate: int64(meanBytes * float64(blocks)),
 			HoursAtMeasuredRate: float64(blocks) / rate / 3600,
 			SecondsPerSlot:      secPerSlot, Note: note}
-		// At 50 requests/s the limit is the plan, if enough fetchers hide the latency.
-		lat := rep.Usage.MeanLatencyMs / 1000
-		perFetcher := 1.0
-		if lat > 0 {
-			perFetcher = 1 / lat
-		}
-		pr.HoursAt50RPS = float64(blocks) / math.Min(50, perFetcher*64) / 3600
+		pr.Plans = planCosts(credits, rep.Usage.MeanLatencyMs/1000)
 		rep.Projection = pr
 	}
 	switch {
@@ -222,6 +218,71 @@ func runPilot(ctx context.Context, h *heliusClient, conc, workers int, units []p
 		return rep, err
 	}
 	return rep, os.WriteFile(reportPath, b, 0o644)
+}
+
+// Helius plans (helius.dev/pricing, checked 2026-10-04): credits included a month,
+// requests a second, price a month, and extra credits (Developer only).
+type heliusPlan struct {
+	Name             string
+	MonthlyUSD       float64
+	CreditsPerMonth  int64
+	RPS              float64
+	ExtraUSDPerMilli float64 // per million extra credits; 0 = cannot buy more
+}
+
+var heliusPlans = []heliusPlan{
+	{"free", 0, 1_000_000, 10, 0},
+	{"developer", 49, 10_000_000, 50, 5},
+}
+
+// planCost is the full pull on one plan, at the pilot's measured latency.
+type planCost struct {
+	Plan            string  `json:"plan"`
+	CreditsNeeded   int64   `json:"credits_needed"`
+	CreditsPerMonth int64   `json:"credits_per_month"`
+	MonthsOfCredits float64 `json:"months_of_credits"` // the pull's credits over the monthly allowance
+	ExtraCredits    int64   `json:"extra_credits"`     // bought beyond the allowance (Developer)
+	CostUSD         float64 `json:"cost_usd"`          // one month's plan plus the extra credits
+	RequestsPerSec  float64 `json:"requests_per_sec"`  // the plan's limit, or less if latency caps 64 fetchers
+	Hours           float64 `json:"hours"`             // reading time with credits available
+	CalendarDays    float64 `json:"calendar_days"`     // free plan: waiting for monthly credits included
+	Summary         string  `json:"summary"`
+}
+
+// planCosts prices a pull of credits on each plan. latency is the mean seconds per
+// request; up to 64 concurrent fetchers hide it, so the rate is the plan's limit
+// unless 64/latency is lower. The free plan cannot buy credits: past its monthly
+// allowance the pull waits for the next month, and the live dry run, which shares the
+// account, would have nothing left.
+func planCosts(credits int64, latency float64) []planCost {
+	var out []planCost
+	for _, p := range heliusPlans {
+		rps := p.RPS * 0.8 // the client paces under the limit (-rps 8 on the free plan)
+		if latency > 0 && 64/latency < rps {
+			rps = 64 / latency
+		}
+		c := planCost{Plan: p.Name, CreditsNeeded: credits, CreditsPerMonth: p.CreditsPerMonth,
+			MonthsOfCredits: float64(credits) / float64(p.CreditsPerMonth), RequestsPerSec: rps,
+			Hours: float64(credits) / rps / 3600, CostUSD: p.MonthlyUSD}
+		c.CalendarDays = c.Hours / 24
+		if p.ExtraUSDPerMilli > 0 {
+			if credits > p.CreditsPerMonth {
+				c.ExtraCredits = credits - p.CreditsPerMonth
+			}
+			c.CostUSD += float64(c.ExtraCredits) / 1e6 * p.ExtraUSDPerMilli
+			c.Summary = fmt.Sprintf("%s: US$%.0f (plan US$%.0f + %.1fM extra credits), about %.1f days of reading at %.0f requests/s",
+				p.Name, c.CostUSD, p.MonthlyUSD, float64(c.ExtraCredits)/1e6, c.CalendarDays, rps)
+		} else {
+			months := math.Ceil(c.MonthsOfCredits)
+			if months > 1 {
+				c.CalendarDays = math.Max(c.CalendarDays, (months-1)*30)
+			}
+			c.Summary = fmt.Sprintf("%s: US$0, but %.1f months of its credits (%.0fM a month, none can be bought), so about %.0f calendar days, with no credits left for the live dry run meanwhile",
+				p.Name, c.MonthsOfCredits, float64(p.CreditsPerMonth)/1e6, c.CalendarDays)
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // defaultPilotUnits: edge probes of n slots at both ends of the window, and the

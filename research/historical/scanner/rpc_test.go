@@ -575,3 +575,26 @@ func planRPCCase(t *testing.T, msPerSlot int64) {
 		t.Fatalf("want errEpochIncomplete, got %v", err)
 	}
 }
+
+// The pilot's plan comparison: the free plan waits for monthly credits and buys none,
+// Developer buys the credits beyond its 10M; latency can cap the rate below the limit.
+func TestPlanCosts(t *testing.T) {
+	p := planCosts(18_600_000, 0.2)
+	free, dev := p[0], p[1]
+	if free.Plan != "free" || free.CostUSD != 0 || free.ExtraCredits != 0 || free.MonthsOfCredits < 18.5 || free.CalendarDays < 18*30 {
+		t.Fatalf("free %+v", free)
+	}
+	if dev.Plan != "developer" || dev.ExtraCredits != 8_600_000 || dev.CostUSD != 49+43 || dev.RequestsPerSec != 40 {
+		t.Fatalf("developer %+v", dev)
+	}
+	if h := dev.Hours; h < 129 || h > 130 { // 18.6M / 40 per second
+		t.Fatalf("developer hours %v", h)
+	}
+	slow := planCosts(1000, 4)[1] // 64 fetchers at 4 s each: 16 requests/s
+	if slow.RequestsPerSec != 16 || slow.ExtraCredits != 0 || slow.CostUSD != 49 {
+		t.Fatalf("latency-bound %+v", slow)
+	}
+	if !strings.Contains(free.Summary, "none can be bought") || !strings.Contains(dev.Summary, "US$92") {
+		t.Fatalf("summaries: %q / %q", free.Summary, dev.Summary)
+	}
+}

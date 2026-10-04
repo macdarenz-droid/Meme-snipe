@@ -287,7 +287,12 @@ Old Faithful refuses our scanner (see `docs/DECISIONS.md`, "The archive's block 
   - history depth;
   - per-probe errors, blocks and rate;
   - credits, requests, 429s, response bytes and latency;
-  - a projection of the full pull's blocks, credits, bytes and hours, with seconds per slot measured between the two edge probes.
+  - a projection of the full pull's blocks, credits, bytes and hours, with seconds per slot measured between the two edge probes;
+  - the full pull's cost on each plan, for the owner's decision (prices checked 4 Oct 2026):
+    - Free has 1M credits a month at 10 requests/s, and no credits can be bought. The pull would take months of the allowance and leave none for the live dry run.
+    - Developer is US$49 a month for 10M credits at 50 requests/s, with extra credits at US$5 per million.
+    - The report gives US$, months of credits, and reading or calendar days.
+  - **Holdout condition:** 1 Oct lies inside the sealed holdout window. The comparison is a data-integrity check only, the same kind scan QA runs on every day. No gate, strategy, label or outcome metric is computed on it, and diagnosing a mismatch looks at row fields only.
 
   Only the report leaves the runner. The units are deleted once digested, and no raw Helius response is stored.
 - **Measured before the pilot** (public mainnet RPC, 25 blocks of the comparison unit, including the busiest pump blocks and the first block of each event kind):

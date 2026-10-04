@@ -102,8 +102,13 @@ jobs:
           else:
               print(f"\nComparison not run: {r.get('comparison_error')}")
           print(f"\nUsage: {json.dumps(r['usage'])}")
-          if r.get("projection"):
-              print(f"\nProjection (19 Jul to 3 Oct): {json.dumps(r['projection'])}")
+          pr = r.get("projection")
+          if pr:
+              print(f"\n### Full pull, 19 Jul to 3 Oct\n")
+              print(f"About {pr['blocks_estimate']:,} blocks, {pr['credits_estimate']:,} credits, {pr['response_bytes_estimate']/1e12:.1f} TB of responses.\n")
+              for p in pr.get("plans", []):
+                  print(f"- {p['summary']}")
+              print(f"\nDetails: {json.dumps(pr)}")
           EOF
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
