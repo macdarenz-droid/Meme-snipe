@@ -94,3 +94,28 @@ describe('a fill without its attempt', () => {
     expect(() => tradesOf(run, FILL_CONFIG)).toThrow(/has no landed attempt record/);
   });
 });
+
+describe('a failed entry (audit B5)', () => {
+  test('its landed fee is a stray cost at its landing time, with the position it was for, and no trade', () => {
+    const i = entryIntent(1);
+    const a = attempt(i.id, 1, 100n);
+    const book = apply([
+      ...entryToSubmitted(1, 100n),
+      on(i.id, { type: 'send_accepted' }),
+      on(i.id, { type: 'status', signature: a.signature, result: 'failed', commitment: 'finalized', blockHeight: 101n, searchedHistory: false }),
+      on(i.id, { type: 'reconcile', fills: [], blockHeight: 101n }),
+      on(i.id, { type: 'abandon' }),
+    ]);
+    expect(book.positions[i.positionId]).toMatchObject({ status: 'closed', bought: 0n });
+    const rec: AttemptRecord = {
+      intentId: i.id, signature: a.signature, purpose: 'entry', mint: i.mint, priorityFee: 20_000n, lastValidBlockHeight: 100n, outcome: 'failed',
+      reason: 'slippage', landedSlot: 1n, landedAt: 4_000, fee: 25_000n, fill: null, costs: null, congested: false, forcedDrop: null, exitRetry: 0, closedAccount: false,
+    };
+    // A dropped attempt never landed: it costs nothing.
+    const dropped: AttemptRecord = { ...rec, signature: 'dropped' as never, outcome: 'dropped', landedSlot: null, landedAt: null, fee: 0n };
+    const run = { attempts: [rec, dropped], book, scenario: 'base', symbols: new Map(), endValue: () => 0n, endedAt: 9_000 } as unknown as RunResult;
+    const { trades, stray } = tradesOf(run, FILL_CONFIG);
+    expect(trades).toEqual([]);
+    expect(stray).toEqual([{ at: 4_000, lamports: 25_000n, intentId: i.id, positionId: i.positionId }]);
+  });
+});

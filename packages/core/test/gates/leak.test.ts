@@ -36,8 +36,9 @@ const run = (planted: boolean): ProofRun => {
   const strategy = (): Strategy => ({
     onMarket: (e, ctx) => {
       if (e.key !== 'tick') return [];
-      const hard = evaluateHardRejects(ctx, deps('backtest', session(), 'RUG-1'), request(), { stopAtFirst: false });
-      const regime = evaluateRegime(ctx, deps('backtest'));
+      const gctx = { now: ctx.now, observedTip: ctx.now.slot, lookup: (k: string, a?: Parameters<typeof ctx.lookup>[1]) => ctx.lookup(k, a), history: (k: string, f: Parameters<typeof ctx.history>[1], t?: Parameters<typeof ctx.history>[2]) => ctx.history(k, f, t) };
+      const hard = evaluateHardRejects(gctx, deps('backtest', session(), 'RUG-1'), request(), { stopAtFirst: false });
+      const regime = evaluateRegime(gctx, deps('backtest'));
       const reasons = [
         ...hard.reasons.map((r) => `${r.gate}:${r.code}:${r.input ?? ''}:${r.neededBy ?? ''}:${r.detail}`),
         ...regime.reasons.map((r) => `regime:${r.code}:${r.detail}`),
