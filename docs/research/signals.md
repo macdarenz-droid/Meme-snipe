@@ -49,7 +49,7 @@ Price is the pool's spot price (quote reserve incl. virtual quote / base reserve
 | f_hl | 1 if the lowest price of the last 30 min is above the lowest of the 30 min before it, else 0 | Higher low | U2 hypothesis |
 | f_vol60 | standard deviation of 1-min log returns, 60 min | Risk | |
 | f_liq | log of quote reserve (SOL) | Liquidity | H8, R12 |
-| f_liqchg60 | quote reserve now ÷ 60 min ago − 1 | Liquidity | liquidity pulls (safety.md) |
+| f_liqchg60 | quote vault now ÷ 60 min ago − 1 (it also falls on ordinary sells, not only on liquidity pulls) | Liquidity, flow | liquidity pulls (safety.md) |
 | f_age | minutes since migration (log) | Age | §3.2 |
 | f_2side60 | share of SOL volume from wallets that both bought and sold in 60 min | Wash | §7.2 item 3 |
 | f_top60 | share of SOL volume from the single largest wallet, 60 min | Concentration | §7.2 item 3 |
