@@ -911,6 +911,83 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · Fail safe and budget.** Until a fill completes, the gap stands and H5/H11 reject. A partial, skipped or failed fill is lossy, never covered. One credit cap per restart (config, passed by WORKER-1) is shared: open positions first at P2, then candidates at P3, oldest gap first. Positions fill at P2, below live open-position monitoring at P1, because exits never wait (supervisor ruling on the #70 review). A test shows a P1 call admitted at once while a long position fill holds its P2 share. Each gap reads at most `maxPagesPerFill` signature pages (default 10, i.e. 10,000 signatures); a busier gap stops as `page-cap`, partial, and stays a gap. A gap reached after the cap is spent is skipped and closed as lossy; a cap that runs out inside a gap stops it there (partial). Each fill reports credits, calls, retries, latency, futures dropped and why it stopped.
 - **2026-10-04 · Evidence.** Real PumpSwap transactions from DEC-1's fixtures. Tests: a complete fill makes coverage continuous, a partial fill stays a gap, filled events equal the stream's, nothing is dated after the process start, over budget leaves the gap, the empty fill, and the in-run hook (complete, false, throw, a drop mid-fill, `ingestingFill` into a live feed). 13 of 14 mutations fail the tests. The close's 1 ms margin is tested with the feed's real start id (`coverage:<stream>:start#<seq>`, which sorts before the fill's ids on a tie), here and in SEED-1's tests, which had used an id that hid it (#70 review). The survivor is the hook's "asked once" guard, unreachable today: the socket checks a gap's close once per connection. It is kept as a guard against a double fill.
 
+## Fault injection (TEST-3, `packages/worker/test/fault-injection.test.ts`)
+
+- **Scripted faults on the real worker.** Each §18 case runs on the worker harness with the virtual clock. Waits are "until the effect, within a virtual-time bound", never a fixed wall-clock window. The only seam added to production code is `WorkerDeps.worldFault`. Every paper-world answer passes through it: null loses the answer, and another event replaces it. Tests set it; `main.ts` never does.
+- **Cases and their guards.** Mutation evidence: each guard was removed in turn, and the case fails without it.
+  - Timeout after a send. The send times out and the landing notice is lost, so the fill is found by the status read after expiry. It is booked once, with no second buy. Guards: `send_timeout` leads to unknown plus a status read (`lifecycle/intent.ts`), and so does a tick past the last valid height.
+  - 429s. The first burst stays inside the window above the exit floor. After a 429 the provider gets nothing for one window. An exit-class read then goes before the queued reads, a refused read makes no fact, and the open position still exits on its stop. Guards: `penalize()` on a 429 and the scheduler floors. Class order is masked by the floor here; `scheduler.test.ts` covers it.
+    - Entries under rate limits (supervisor ruling on the #83 review). A rate limit stops entries through the gates failing closed on the fact it withholds. It is not a global halt, so one limited provider never stops entries that do not need it. Halts stay for critical feeds, the owner pause, the seed and a ledger divergence.
+    - Test: every read answers 429, and a candidate passes every gate but the third-party cross-check, which only a read can bring. Its reads are refused (counted failed, no fact), and each reject from then on is "H16 missing no xcheck". It is never entered, and no halt reason is raised. If the gate is made to pass on a missing cross-check, the candidate enters and the test fails.
+  - Kill mid-trade, with the stop's exit in flight. The restart settles the old attempt unfilled before any entry. The stop then exits on the first slot, in full, once. Guards: a paper attempt in flight at a restart is lost, and the `#sendExit` fix below.
+  - A restart with a signed, unsent transaction. The ledger holds the sign but not the submit, and no paper attempt exists. The intent becomes unknown, is never sent, settles as expired with no fill, and is released before any entry. Guards: restart turns `signed` into unknown with no rebroadcast, and an unseen signature is reported past its last valid height.
+    - The reconcile's `status === 'signed'` skip is not reachable here. The restart event always turns `signed` into unknown before the cancel pass, so removing the skip changes nothing (an equivalent mutant).
+  - Feed gap. A critical feed goes silent past `staleFeedMs`, while the chain feed keeps its slots. No entry is proposed while it is out, exits stay able, and the candidate enters only after it is back. When the chain feed goes silent, `exit_capable` turns false. Guards: the stale clause in `#checkHalt`, the strategy failing closed on the halt fact, and the freshness check in `#exitCapable`.
+- **Found and fixed: an exit before the first slot was booked blocked.** A restart's reconcile runs before the feeds start, so it has no slot height yet. `#sendExit` booked such an exit blocked ("no slot height yet"), so the stop waited out `blockedRetryMs` (60 s) and went as a single last-rung retry. The owner now waits for the first slot, said once in the log. The kill-mid-trade case fails without the fix (exit not sent within 1 s of the first slot).
+- **Found, not fixed here (EXIT-1 follow-up).** An exit decided during the start reconcile without a fresh quote is booked blocked by `exitBookEvents` ("no executable quote") and waits 60 s. Examples: the time stop after downtime longer than T_max, or the deployer trigger. That is timing, not a dead pool, the same reasoning as EXIT-1b's `pendingFull`.
+- **Stale feed with an open position (§18 case 1).** Built by WATCH-1; see "Position watch (WATCH-1)".
+- **Ordering note for SIGN-1.** In the paper worker the engine runs effects (the paper broadcast) inside `drain`, before the desk writes the ledger. Live signing must store the signed attempt before the first broadcast, as the `attempt` table says.
+
+## Position watch (WATCH-1, `packages/worker/src/run/watch.ts`, `run/snapshot.ts`)
+
+- **2026-10-04 · What.** An independent timer (`ZEROED_WATCH_EVERY_MS`, default 1 s) looks at every open position. It runs on the worker's timers, outside the engine step, and needs no feed event.
+  - When the market the position is priced at is older than `ZEROED_WATCH_STALE_MS` (default 3 s), it reads a coherent snapshot through the second path.
+  - The snapshot is the pool, both vaults, the mint, PumpSwap's GlobalConfig and its pump-fees FeeConfig, read in one `getMultipleAccounts` at confirmed: one bank, one context slot.
+  - The read goes through Alchemy over HTTP (not the Helius socket the feed runs on), through Alchemy's quota scheduler at P1, above fills and seeds. It costs 20 CU (Alchemy's compute-unit page, checked 2026-10-04).
+  - The vault addresses are learned from one read of the pool account and kept. A snapshot that fails the vault or mint checks drops them, so the next read learns them again.
+- **The snapshot is the whole market.** `decodeSnapshot` builds the pool state and the full fee context from that read alone:
+  - the FeeConfig tiers;
+  - canonical, from pump's pool-authority PDA;
+  - the SOL quote;
+  - the live mint supply for the tier's market cap;
+  - the coin creator and the pool's own creator fee;
+  - mayhem mode;
+  - active Token-2022 transfer fee or hook;
+  - GlobalConfig's buyback share.
+  It goes on the feed as `worker:snapshot:<mint>` (recorded, so a replay makes the same decisions). The strategy's `#market` and the paper world's market take it whole when it is newer than the pool fact. Its reserves are never mixed with the feed's fee terms.
+  - Evidence: on a real mainnet read (`fixtures/watch-snapshot.json`), the pool's next swap, quoted from the snapshot alone, matches the chain to the lamport: LP, protocol, creator and buyback fees, and the amount paid. Edited real accounts prove each field's source.
+- **Failure is never "fine".** A read that fails, or that cannot be trusted, raises the critical alert once per episode:
+  - a journal `alert` line;
+  - Health `critical`, which the heartbeat carries;
+  - the watchdog's `worker_critical` alert to the owner.
+  The position is read again every period, and nothing is sent without a price. The alert clears on the first good snapshot.
+- **Acceptance (§18 case 1), on the real worker and virtual time.** The feed dies with a position open and the pool falls 40%.
+  - The watch reads the snapshot.
+  - The stop exit is submitted within the stale limit + one period + the feed's stale release + a step (6.5 s), its quote equal to `poolSell` on the snapshot.
+  - The price stays fresh for the 5 minutes.
+  - The position closes when the feed returns.
+  - A failing second path alerts once, retries every period, sends nothing, then clears and exits when the path recovers.
+  - Mutation evidence: 19 of 19 mutants fail the tests (7 on the watch and the strategy, 12 on the snapshot decoder).
+- **Limits.** A paper exit lands only on new slots, so with the slot feed dead it is submitted but lands when the feed returns. Exits are not halted by the feed state, but `exit_capable` still reports the chain feed.
+- **Found while building: live positions had no fresh pool state.** After the entry nothing refreshed a held position's pool fact (only candidate reads and the survival read make one). Until POS-1 prices held positions from their swap events, the watch is their only live price source: one 20 CU read per open position every stale period. With positions open around the clock that is about 0.58 M CU a day, against Alchemy's 30 M a month.
+- **2026-10-04 · Review of #87 (risk reviewer): no gap between snapshots.**
+  - Exits treat a market older than the policy's `maxQuoteAgeMs` (2 s) as no quote. The watch is now tied to it: the oldest a watched market can be when an exit is judged is staleMs + everyMs + latencyMs + the feed's release (2 slots × 400 ms, while slots arrive).
+  - `watchTimingProblem` refuses any setting where that sum reaches the quote age. The entry exits 2, and the Worker refuses to build.
+  - New defaults: period 200 ms, stale 500 ms, latency 400 ms (`ZEROED_WATCH_LATENCY_MS`). An answer later than the latency is not used: it raises the alert and is read again.
+  - Found by the new entry test: `boot/environment.ts`'s allowlist had not passed the three settings at all. Fixed.
+  - Test: slots arrive, no pool fact does, and every read answers 300 ms late. Over 20 s the position's market age stays below 2 s at every 100 ms step, and the market moves with each snapshot.
+- **Paper fills and fees.**
+  - A paper exit that lands after a snapshot is filled on the snapshot's reserves and fee context. The test computes the expected fill from its own decode of the read, not through the worker.
+  - The 40%-fall case asserts that the feed's own fee terms would have priced the exit differently.
+- **Newest by slot.** A snapshot is newer than the pool fact by slot when both carry one; the receipt time only breaks a tie or stands in for a slotless fact (`snapshotWins`).
+- **FeeConfig owner.** The FeeConfig must be owned by pump-fees.
+- **Cost, at the new period.** A held position with no fresh pool fact is read about every 0.7–1.1 s.
+  - About 2.2 M CU a day if held around the clock, or about 0.18 M CU per 120-minute hold, against Alchemy's 30 M a month.
+  - The watch reads at **P0** (review of #87, risk reviewer). It prices an exit, only for open positions, only while their market is stale, at most T_max each, so the monthly budget's halt (every class but P0, at 70%) never removes the price an exit needs. Its worst case is about 0.18 M CU per position per full-outage hold. Tested: a P0 read goes through at the halt.
+  - POS-1's swap-derived pool facts make the watch idle while a pool trades. A quiet pool (no swap for a stale period) is still read.
+- **On POS-1's merge (agreed with its builder):**
+  - poolOf null, or a pool fact flagged `partial`, reads at once.
+  - The flag is checked only when the pool fact is the newest whole market, so a newer snapshot still wins.
+- **Mutation evidence:** 27 of 27 mutants fail the tests. That is the 19 above plus the eight review mutants: timing not tied to the policy, a late answer used, snapshot reserves with the feed's fee fact, the paper world on the pool fact, newest by receipt time only, FeeConfig owner unchecked, settings not passed from the environment, and the paper market mixing the feed's fees.
+- **2026-10-04 · Entries stop when the second path cannot serve** (review of #87). The halt reason "second price path unavailable" is raised when no second path is configured, or when its provider's budget is halted. A position entered then could lose its price with no read to recover it; exits go on. Both cases are tested.
+- **The feed's observed fee terms.** In the 40%-fall case the held mint also has fee terms observed on its swaps, and the exit is still priced with the snapshot's FeeConfig. The reviewer's mutant (`ctx: this.observedFees(mint) ?? snap.ctx`) fails it. In all, 4 more of 4 mutants fail (that one, the two halt cases, and P1 instead of P0).
+
+- **2026-10-04 · No gap at the open (risk review B1).** Under POS-1 a quiet pool's last fact was read before the entry was sent, so at the open it was already past the quote age (4.85 s against 2 s), and no price stop could fire for up to one watch cycle. Two fixes:
+  - The watch also covers an entry in flight (reserved through pending, unknown or confirmed, and on through its fill until the position shows its quantity), on its decision's pool, with the same read rule, so a fresh snapshot already exists when it lands and an alert is not cleared and raised again across the open. An entry that settles unfilled (failed, expired, rejected, cancelled, abandoned) drops out, as does one whose position closed, and the watch stops reading for it.
+  - A position that opens is read once at once (`PositionWatch.opened`, from the worker's step), whatever its market's age, for an entry that lands faster than one cycle.
+  - Tests: the held market's age, measured from the step the position opens with no skipped window, stays under `maxQuoteAgeMs` (failed before at 4,850 ms); an unlanded entry's market stays fresh while it is in flight and gets no read after it settles; `opened` reads at once, never twice at a time, and not once stopped. The open is read in the step that books it; a closed position gets no read after. A read already in flight for the mint stands in for the open read. Mutants killed: 8 of 8 (no in-flight entries, settled entries kept, confirmed fills left out, closed positions' entries kept, no `opened` call, `opened` a no-op or ignoring the in-flight or stopped guard).
+- **2026-10-04 · With POS-1 (merge rule M).** The strategy's `#market` and the worker's `poolOf` (which the paper world and the watch's `marketAt` use) take the newest whole market first: the snapshot when it is newer than the pool fact, by slot then receipt time. Only when the pool fact wins is POS-1's flag checked, and a flagged fact is no market at all, so the watch sees it as stale and reads. Test: a held position whose swap stream gaps, so its pool fact is flagged, with no swap after; a 30% drop seen only by the snapshot fires the stop within `staleMs + everyMs` and one step (measured 600 ms of the 800 ms bound). Mutants killed: the flag check dropped, or run before the snapshot, in the worker or the strategy (3/3). TEST-3's fault cases that are not about the price path use POS-1's `heldPoolFacts` test switch.
+
 ## Position market from swaps (POS-1, `packages/core/src/facts/producer.ts`, `packages/core/src/fills/pool.ts`)
 
 - **2026-10-04 · Why.** Live, the pool fact came only from account reads, which are made for candidate evidence and the survival mark. Nothing refreshed a held position's pool after entry, so about 2 s later (`maxQuoteAgeMs`) its state was stale: no price stop, trail or take-profit could fire and exits were booked blocked "pool state is stale". Only T_max and the deployer trigger worked. The harness hid it by publishing a pool fact every step.
