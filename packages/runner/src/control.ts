@@ -13,7 +13,15 @@ import { EVIDENCE_FILES, STATE_FILES } from './contract.ts';
 export interface Tabletop {
   readonly healthAddr: string;
   readonly stateDir: string;
+  /** Host: the backup file restored and when it was taken (from its name), so the runner can compare the restore. */
+  readonly backup?: { readonly name: string; readonly at: number };
 }
+
+/** A host backup's time from its name (`zeroed-YYYYMMDDTHHMMSSZ.tar.age`, ops/host/files/usr/local/sbin/zeroed-backup); null otherwise. */
+export const backupTime = (name: string): number | null => {
+  const m = /^zeroed-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z\.tar\.age$/.exec(name);
+  return m ? Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!, +m[6]!) : null;
+};
 
 export interface WorkerControl {
   /** Bring the worker up (or confirm the host keeps it up). */
@@ -266,12 +274,20 @@ export class SystemdControl implements WorkerControl {
     // The dir is a StateDirectory of both units: empty it, never remove it.
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     emptyDir(dir);
+    let backup: Tabletop['backup'];
     if (o.restore) {
       // The newest hourly backup, decrypted with the host key into the tabletop's own state dir (never the live one).
-      await this.run('/bin/sh', ['-c', 'set -e; b="$(ls -1 /var/backups/zeroed/zeroed-*.tar.age | LC_ALL=C sort -r | head -n 1)"; [ -n "$b" ]; age -d -i /etc/zeroed/age/host.key "$b" | tar -x -C "$1" --no-same-owner', 'sh', dir], { timeout: 120_000 });
+      // Prints the file's name: its time is when the backup was taken.
+      const r = await this.run('/bin/sh', ['-c', 'set -e; b="$(ls -1 /var/backups/zeroed/zeroed-*.tar.age | LC_ALL=C sort -r | head -n 1)"; [ -n "$b" ]; age -d -i /etc/zeroed/age/host.key "$b" | tar -x -C "$1" --no-same-owner; basename "$b"', 'sh', dir], { timeout: 120_000 });
+      const name = String((r as { stdout?: unknown } | undefined)?.stdout ?? '').trim();
+      const at = backupTime(name);
+      if (at !== null) backup = { name, at };
     }
+    // The runner (root) extracted these files; the tabletop worker runs as zeroed-worker. systemd re-owns a
+    // StateDirectory only when its top folder's owner differs, so a second tabletop would find root-owned files.
+    await this.run('chown', ['-R', 'zeroed-worker:zeroed-worker', dir]);
     await this.run('systemctl', ['start', SystemdControl.TABLETOP_UNIT]);
-    return { healthAddr: SystemdControl.TABLETOP_ADDR, stateDir: dir };
+    return { healthAddr: SystemdControl.TABLETOP_ADDR, stateDir: dir, ...(backup ? { backup } : {}) };
   }
 
   async endTabletop(): Promise<void> {
