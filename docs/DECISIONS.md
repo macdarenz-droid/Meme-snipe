@@ -904,6 +904,9 @@ Supervisor rulings, late evening:
     - it ran on the live worker (a tabletop keeps RUN-1f's own retry);
     - no other retry is waiting.
   - A failed drill is never retried: its failure stands. Each try is its own labelled drill (`<id>-retry-<n>`), as with host loss.
+  - A try kills only on a trade it saw open after it saw the worker flat in its window, or at the window's end (`killDue`). So the trade has the most time left before it closes. Under full CPU load, a try that killed on the first trade it saw hit the same race again: 3 tries of one reboot each found "closed between the last reply and the kill". A first try keeps killing on the first trade it sees.
+  - It has its own slot and file (`unexercised-retry.json`), apart from RUN-1f's host-loss retry (`host-loss-retry.json`), so neither overwrites the other (ops review of #193). Each is picked up only when no planned drill is due.
+  - Each try is a restart, so it adds a worker boot. The tabletop test counts its boots as 2 plus the live tries, and checks that each try follows a drill that passed with nothing to keep (ops review of #193: the exact count of 2 flaked once a try happened).
   - **Tests.**
     - The runner with the stub. While the boot the reboot drill kills is up, every trade is shown only once it has closed, so that kill always finds nothing to keep. The reboot is tried again and exercised, and `drills_by_cause` holds. It failed before.
     - Unit cases for every condition.

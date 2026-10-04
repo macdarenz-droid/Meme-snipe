@@ -215,7 +215,16 @@ describe('runner with the stub worker', () => {
     }
     expect(table.find((d) => d.cause === 'chain-rebuild')!.state!.source).toBe('chain');
     // The live worker was never stopped by either tabletop: one boot until the crash drill.
-    expect(r.journal.boots).toBe(2);
+    // One boot for the start and one for the live crash drill, plus one for each try of a live restart that passed with
+    // nothing to keep (RUN-1d's unexercised retry); every such try follows a drill that kept nothing.
+    const tries = r.drills.filter((d) => d.kind === 'restart' && d.off_run !== true && /-retry-\d+$/.test(d.id));
+    for (const d of tries) {
+      const n = Number(/-retry-(\d+)$/.exec(d.id)![1]);
+      const root = d.id.replace(/-retry-\d+$/, '');
+      const before = r.drills.find((x) => x.id === (n === 1 ? root : `${root}-retry-${n - 1}`))!;
+      expect(before).toMatchObject({ pass: true, keep: 0 });
+    }
+    expect(r.journal.boots).toBe(2 + tries.length);
     expect(r.checks).toMatchObject({ recovered_state: true, restored_universe_kept: true, journal_complete: true });
     expect(reportMarkdown(r)).toContain('(tabletop beside the run)');
   }, 60_000);
