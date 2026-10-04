@@ -61,6 +61,8 @@ export interface GateDeps {
   readonly rugCheck?: RugCheckConfig;
   /** The rug definition whose windows set how far before the look-back a check must read; the shipped one when not given. */
   readonly rugs?: RugConfig;
+  /** The S0 shakedown's diagnostic set (regime.ts `S0DiagnosticPart`): H14 judges over the creates coverage it has. */
+  readonly s0Diagnostic?: true;
 }
 
 export const RUG_LABELS_UNAVAILABLE = 'rug labels unavailable (no reviewed labeller; RUG-1)';
@@ -101,6 +103,7 @@ interface Env {
   readonly mode: Mode;
   readonly req: GateRequest;
   readonly memo: Map<string, unknown>;
+  readonly s0Diagnostic: boolean;
 }
 
 interface Outcome {
@@ -486,9 +489,20 @@ const h14 = (env: Env): Outcome => {
   const now = env.ev.now.receivedAt;
   const g = env.policy.gates;
   const lookback = g.deployerRugLookbackDays * DAY_MS;
-  const need = now - Math.max(lookback, DAY_MS);
+  const full = now - Math.max(lookback, DAY_MS);
   // Second guard, whatever built the index: the creates stream must have been complete over the whole look-back.
-  const cov = createsCoverage(env.history, env.ev.now, need);
+  let cov = createsCoverage(env.history, env.ev.now, full);
+  let need = full;
+  const notes: GateNote[] = [];
+  if (!cov.covered && env.s0Diagnostic) {
+    // S0 diagnostic: the deployer is judged over the unbroken creates coverage the host has up to now (an open gap still rejects).
+    const short = createsCoverage(env.history, env.ev.now, now);
+    if (short.covered) {
+      notes.push({ gate: 'H14', code: 's0-diagnostic', detail: `h14-creates-coverage: judged from ${short.fromMs}, the rule needs ${full} (${cov.detail})` });
+      cov = short;
+      need = short.fromMs;
+    }
+  }
   if (!cov.covered) return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: cov.detail }] };
   const d = env.deployers !== undefined
     ? { ok: true as const, fact: env.deployers.factFor(cr.fact.creator, env.ev.now, cov.fromMs) }
@@ -496,10 +510,10 @@ const h14 = (env: Env): Outcome => {
   if (!d.ok) return fromRead(d);
   const lost = env.deployers?.lostCreate(need, env.ev.now) ?? null;
   if (lost !== null) {
-    return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `creates log ${lost.signature} on ${lost.via} was cut or undecodable at ${lost.atMs} and its transaction is not fetched` }] };
+    return { notes, reasons: [{ gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `creates log ${lost.signature} on ${lost.via} was cut or undecodable at ${lost.atMs} and its transaction is not fetched` }] };
   }
   if (d.fact.coverageFromMs > need) {
-    return { reasons: [{ gate: 'H16', code: 'not-covered', input: 'deployer', neededBy: 'H14', detail: `deployer index covers from ${d.fact.coverageFromMs}, the rule needs ${need}` }] };
+    return { notes, reasons: [{ gate: 'H16', code: 'not-covered', input: 'deployer', neededBy: 'H14', detail: `deployer index covers from ${d.fact.coverageFromMs}, the rule needs ${need}` }] };
   }
   const recent = new Set(d.fact.mints.filter((m) => m.createdAtMs > now - DAY_MS && m.createdAtMs <= now).map((m) => m.mint));
   if (cr.fact.createdAtMs > now - DAY_MS) recent.add(env.req.mint);
@@ -511,7 +525,7 @@ const h14 = (env: Env): Outcome => {
   // coverage:rugs:* facts) and judged every mint in it. Otherwise H14 is not covered and rejects: no labels is never
   // zero rugs (RUG-1 review).
   if (env.rugLabeller === undefined) {
-    return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: RUG_LABELS_UNAVAILABLE }] };
+    return { notes, reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: RUG_LABELS_UNAVAILABLE }] };
   }
   const rugCov = createsCoverage(env.history, env.ev.now, now - lookback, 'rugs');
   // Without stream coverage, an on-demand check of this deployer (RUG-1c) can cover its rug half alone.
@@ -524,13 +538,13 @@ const h14 = (env: Env): Outcome => {
     const cover = chk.ok ? deployerCheckCovers(chk.fact, cr.fact.creator, prior, from, env.ev.now, env.rugCheck) : null;
     if (cover === null || !cover.covered) {
       const why = cover === null ? (chk.ok ? '' : chk.reason.detail) : cover.covered ? '' : cover.detail;
-      return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}; deployer check: ${why}` }] };
+      return { notes, reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}; deployer check: ${why}` }] };
     }
     checked = cover.rugs;
   }
   const unjudged = (d.fact.unjudged ?? []).filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
   if (unjudged.length > 0) {
-    return { reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'deployer', neededBy: 'H14', detail: `${env.rugLabeller} could not judge ${unjudged.join(', ')} by ${cr.fact.creator}` }] };
+    return { notes, reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'deployer', neededBy: 'H14', detail: `${env.rugLabeller} could not judge ${unjudged.join(', ')} by ${cr.fact.creator}` }] };
   }
   // rugs-1 counts every kind; the kind is named so a later config can weigh deployer sales and collapses apart.
   const found = new Map<string, string>();
@@ -539,7 +553,7 @@ const h14 = (env: Env): Outcome => {
   }
   const rugs = [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, kind]) => `${mint} (${kind})`);
   if (rugs.length > 0) reasons.push({ gate: 'H14', code: 'prior-rug', input: 'deployer', detail: `${cr.fact.creator} rugged ${rugs.join(', ')} within ${g.deployerRugLookbackDays} days`, value: String(rugs.length), limit: '0' });
-  return { reasons };
+  return { notes, reasons };
 };
 
 // ---------- H15, H16: sellability and cross-checks ----------
@@ -649,7 +663,7 @@ export const evaluateHardRejects = (ctx: GateContext, deps: GateDeps, req: GateR
   if (!deps.session.running) return fail('policy-session-ended', 'the policy session has ended; start a new session');
   const problem = requestProblem(req);
   if (problem !== null) return fail('bad-request', problem);
-  const env: Env = { ev: new Evidence(ctx, deps.session.policy), history: (k, f, t) => ctx.history(k, f, t), deployers: ctx.deployers, rugLabeller: deps.rugLabeller, rugCheck: deps.rugCheck ?? RUG_CHECK_CONFIG, rugs: deps.rugs ?? RUG_CONFIG, policy: deps.session.policy, mode: deps.mode, req, memo: new Map() };
+  const env: Env = { ev: new Evidence(ctx, deps.session.policy), history: (k, f, t) => ctx.history(k, f, t), deployers: ctx.deployers, rugLabeller: deps.rugLabeller, rugCheck: deps.rugCheck ?? RUG_CHECK_CONFIG, rugs: deps.rugs ?? RUG_CONFIG, policy: deps.session.policy, mode: deps.mode, req, memo: new Map(), s0Diagnostic: deps.s0Diagnostic === true };
   const evaluated: HardGate[] = [];
   const passed: HardGate[] = [];
   const failed: HardGate[] = [];
