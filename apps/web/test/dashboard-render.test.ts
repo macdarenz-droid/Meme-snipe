@@ -129,8 +129,10 @@ describe('backtest report', () => {
   });
 
   it('holds back win rate, average and interval for a group below 300 trades', () => {
-    const counts = fixtureReport.results.map((r) => r.trades);
-    expect(counts.some((n) => n >= 300) || counts.every((n) => n < 300)).toBe(true);
+    // Per group: one group just below 300 holds back its three figures, the others at 300 show theirs.
+    expect(fixtureReport.results.length).toBeGreaterThanOrEqual(2);
+    const mixed = { ...fixtureReport, results: fixtureReport.results.map((r, i) => ({ ...r, trades: i === 0 ? 299 : 300, wins: 150 })) };
+    expect(text(html(h(BacktestReportView, { report: mixed }))).match(/Not enough trades/g)).toHaveLength(3);
     const small = { ...fixtureReport, results: fixtureReport.results.map((r) => ({ ...r, trades: 299 })) };
     const out = text(html(h(BacktestReportView, { report: small })));
     expect(out.match(/Not enough trades/g)).toHaveLength(3 * small.results.length);
