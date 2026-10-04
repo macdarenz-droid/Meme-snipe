@@ -25,6 +25,14 @@
 # refuses while the asset exists, so only one job reads, changes and writes the ledger
 # at a time. A job that cannot take it within LOCK_WAIT seconds (default 300) fails
 # closed; a lock left by a killed job blocks spending until `unlock` (helius-ledger.yml).
+# `unlock` refuses a lock younger than LOCK_WAIT, which a live writer may still hold.
+#
+# Writes never leave the release without the newest ledger: `gh release upload --clobber`
+# deletes the old asset before it uploads, so a write first uploads ledger.next.json
+# (no clobber), then replaces ledger.json, then deletes ledger.next.json. Readers take
+# ledger.next.json when it exists (it is never older than ledger.json), the next writer
+# first copies it over ledger.json, and init refuses while either exists. A failed write
+# exits 1 and prints the ledger it meant to write, also to the step summary.
 # gh: GH_BIN (default /usr/bin/gh), with GH_TOKEN and GITHUB_REPOSITORY for the repo.
 set -euo pipefail
 gh=${GH_BIN:-/usr/bin/gh}
@@ -54,23 +62,55 @@ lock() {
   locked=1
 }
 
-fetch() { # the ledger into $tmp/ledger.json, or fail closed
-  if ! "$gh" release download "$tag" --dir "$tmp" --pattern ledger.json >/dev/null 2>"$tmp/err" || [ ! -s "$tmp/ledger.json" ]; then
-    echo "rpc-ledger: no readable ledger.json on release $tag ($(head -c 200 "$tmp/err")): refusing to spend credits; create it with 'rpc-ledger.sh init'" >&2
+assets() { # the release's asset names into $tmp/assets, or fail closed
+  "$gh" release view "$tag" --json assets --jq '.assets[].name' > "$tmp/assets" 2>"$tmp/err" || {
+    echo "rpc-ledger: cannot list release $tag ($(head -c 200 "$tmp/err")): refusing to spend credits; create the ledger with 'rpc-ledger.sh init'" >&2
+    exit 1
+  }
+}
+stale_next=
+fetch() { # the newest ledger into $tmp/ledger.json, or fail closed
+  : > "$tmp/err"
+  assets
+  local name=ledger.json
+  if grep -qx ledger.next.json "$tmp/assets"; then name=ledger.next.json; stale_next=1; fi
+  mkdir -p "$tmp/dl"
+  if ! grep -qx "$name" "$tmp/assets" || ! "$gh" release download "$tag" --dir "$tmp/dl" --pattern "$name" >/dev/null 2>"$tmp/err" || [ ! -s "$tmp/dl/$name" ]; then
+    echo "rpc-ledger: no readable $name on release $tag ($(head -c 200 "$tmp/err")): refusing to spend credits; create it with 'rpc-ledger.sh init'" >&2
     exit 1
   fi
+  cp "$tmp/dl/$name" "$tmp/ledger.json"
+  [ -z "$stale_next" ] || { mkdir -p "$tmp/repair"; cp "$tmp/dl/$name" "$tmp/repair/ledger.json"; }
 }
-push() {
-  "$gh" release upload "$tag" --clobber -- "$tmp/ledger.json" >/dev/null || { echo "rpc-ledger: could not write the ledger" >&2; exit 1; }
+write_failed() {
+  echo "rpc-ledger: could not write the ledger ($1): refusing to spend credits. The ledger it meant to write:" >&2
+  cat "$tmp/ledger.json" >&2
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo "### Helius ledger write failed ($1)"; echo; echo "The ledger it meant to write:"; echo; echo '```json'; cat "$tmp/ledger.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+  fi
+  exit 1
+}
+push() { # under the lock: next first, then ledger.json, then drop next
+  if [ -n "$stale_next" ]; then # a write that failed half-way: make ledger.json the newest first
+    "$gh" release upload "$tag" --clobber -- "$tmp/repair/ledger.json" >/dev/null || write_failed "copying the left-over ledger.next.json to ledger.json"
+    "$gh" release delete-asset "$tag" ledger.next.json -y >/dev/null || write_failed "deleting the left-over ledger.next.json"
+  fi
+  mkdir -p "$tmp/next"; cp "$tmp/ledger.json" "$tmp/next/ledger.next.json"
+  "$gh" release upload "$tag" -- "$tmp/next/ledger.next.json" >/dev/null || write_failed "uploading ledger.next.json"
+  "$gh" release upload "$tag" --clobber -- "$tmp/ledger.json" >/dev/null || write_failed "replacing ledger.json; ledger.next.json holds the new ledger"
+  "$gh" release delete-asset "$tag" ledger.next.json -y >/dev/null || write_failed "deleting ledger.next.json after ledger.json was written"
 }
 
 case $cmd in
   init)
     [ $# -ge 3 ] || { echo "usage: rpc-ledger.sh init PERIOD LIMIT WORKER_BUDGET [USED [DAY=USED ...]]" >&2; exit 2; }
-    if "$gh" release view "$tag" >/dev/null 2>&1; then lock; fi
-    if "$gh" release download "$tag" --dir "$tmp" --pattern ledger.json >/dev/null 2>&1 && [ -s "$tmp/ledger.json" ]; then
-      echo "rpc-ledger: a ledger already exists ($(cat "$tmp/ledger.json" | head -c 120)...): refusing to overwrite it" >&2
-      exit 1
+    if "$gh" release view "$tag" >/dev/null 2>&1; then
+      lock
+      assets
+      if grep -qx -e ledger.json -e ledger.next.json "$tmp/assets"; then
+        echo "rpc-ledger: a ledger already exists ($(grep -x -e ledger.json -e ledger.next.json "$tmp/assets" | tr '\n' ' ')): refusing to overwrite it" >&2
+        exit 1
+      fi
     fi
     "$py" - "$tmp/ledger.json" "$@" <<'PY'
 import json, re, sys
@@ -99,9 +139,9 @@ PY
     lock
     fetch
     rc=0
-    "$py" - "$tmp/ledger.json" "$@" <<'PY' || rc=$?
+    "$py" - "$tmp/ledger.json" "$1" "$2" "$3" "$4" "$tmp/amount" <<'PY' || rc=$?
 import json, sys, time
-path, rid, day, day_cap, budget, out = sys.argv[1:]
+path, rid, day, day_cap, budget, out = sys.argv[1:]  # out: the amount, copied to OUT_FILE once written
 try:
     l = json.load(open(path))
     used, limit, worker = int(l["used"]), int(l["limit"]), int(l["worker_budget"])
@@ -125,6 +165,7 @@ open(out, "w").write(str(amount))
 PY
     [ "$rc" -eq 0 ] || exit "$rc"
     push
+    cp "$tmp/amount" "$5"
     ;;
   settle)
     [ $# -eq 2 ] || { echo "usage: rpc-ledger.sh settle ID WORK_DIR" >&2; exit 2; }
@@ -163,6 +204,15 @@ PY
     "$py" -c 'import json,sys; l=json.load(open(sys.argv[1])); print(json.dumps({k: l[k] for k in ("period","limit","worker_budget","used","days","outstanding")}, indent=1))' "$tmp/ledger.json"
     ;;
   unlock)
+    "$gh" release download "$tag" --dir "$tmp" --pattern ledger.lock >/dev/null 2>&1 || true
+    if [ -s "$tmp/ledger.lock" ]; then
+      at=$(awk '{print $2}' "$tmp/ledger.lock"); at=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
+      age=$(( $(date -u +%s) - at ))
+      if [ "$at" -gt 0 ] && [ "$age" -lt "${LOCK_WAIT:-300}" ]; then
+        echo "rpc-ledger: the lock is ${age} s old ($(head -c 120 "$tmp/ledger.lock")): a job may still be writing; wait ${LOCK_WAIT:-300} s and retry" >&2
+        exit 1
+      fi
+    fi
     "$gh" release delete-asset "$tag" ledger.lock -y >/dev/null && echo "rpc-ledger: lock removed" ;;
   *) echo "usage: rpc-ledger.sh init|reserve|settle|show|unlock ..." >&2; exit 2 ;;
 esac

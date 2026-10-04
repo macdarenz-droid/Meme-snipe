@@ -47,9 +47,13 @@ case "$cmd" in
     clob=; while (( $# )) && [[ "$1" != -- ]]; do [[ "$1" == --clobber ]] && clob=1; shift; done; shift
     [[ -d "$dir" ]] || { echo "release not found" >&2; exit 1; }
     [[ -n "${FAKE_GH_UPLOAD_FAIL:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
+    for f in "$@"; do [[ "$(basename "$f")" == "${FAKE_GH_FAIL_ASSET:-}" ]] && { echo "HTTP 502" >&2; exit 1; }; done
+    # gh's --clobber deletes the old asset first, then uploads: this fails after the delete
+    if [[ -n "$clob" && -n "${FAKE_GH_CLOBBER_FAIL:-}" ]]; then for f in "$@"; do rm -f -- "$dir/$(basename "$f")"; done; echo "HTTP 502" >&2; exit 1; fi
     if [[ -z "$clob" ]]; then for f in "$@"; do [[ -e "$dir/$(basename "$f")" ]] && { echo "asset under the same name already exists" >&2; exit 1; }; done; fi
     cp -- "$@" "$dir/" ;;
   delete-asset)
+    [[ "$1" == "${FAKE_GH_DELETE_FAIL_ASSET:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
     rm -- "$dir/$1" ;;
   *) exit 2 ;;
 esac
@@ -660,6 +664,37 @@ rcR=0; led bash "$here/rpc-ledger.sh" reserve r8 2026-09-15 900 1 "$L/r8" 2>/dev
   ok "rpc-ledger: while another job holds the lock, a writer fails closed and changes nothing" || no "rpc-ledger lock: rc=$rc $(cat "$L/err")"
 bash "$here/rpc-ledger.sh" unlock >/dev/null && [[ ! -e "$T/rel/helius-ledger/ledger.lock" ]] && led bash "$here/rpc-ledger.sh" settle r6 "$L/w5" >/dev/null &&
   [[ ! -e "$T/rel/helius-ledger/ledger.lock" ]] && ok "rpc-ledger: unlock clears a stale lock; a writer releases its own lock" || no "rpc-ledger unlock"
+# A write that fails half-way never loses the ledger or a reservation (gh's --clobber
+# deletes ledger.json before it uploads), and every failed write fails the command.
+HL="$T/rel/helius-ledger"; lnx() { python3 -c 'import json,sys; l=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$HL/ledger.next.json" "$1"; }
+rc=0; led FAKE_GH_CLOBBER_FAIL=1 GITHUB_STEP_SUMMARY="$L/sum" bash "$here/rpc-ledger.sh" reserve rB 2026-09-14 900 10 "$L/rB" >/dev/null 2>"$L/err" || rc=$?
+[[ $rc == 1 && ! -e "$L/rB" && ! -e "$HL/ledger.json" && ! -e "$HL/ledger.lock" && $(lnx '[o["id"] for o in l["outstanding"]]') == "['r7', 'rB']" ]] &&
+  grep -q '"rB"' "$L/sum" && grep -q "could not write the ledger" "$L/err" &&
+  ok "rpc-ledger: reserve fails (no amount written) when replacing ledger.json fails after gh deleted it; ledger.next.json keeps every reservation, and the ledger goes to the step summary" || no "rpc-ledger clobber fail reserve: rc=$rc $(cat "$L/err")"
+led bash "$here/rpc-ledger.sh" show | grep -q '"rB"' && ok "rpc-ledger: readers fall back to ledger.next.json" || no "rpc-ledger show next"
+rc=0; led bash "$here/rpc-ledger.sh" init 2026-10 1000 0 2>"$L/err" || rc=$?
+[[ $rc == 1 && ! -e "$HL/ledger.json" && -e "$HL/ledger.next.json" ]] && grep -q "a ledger already exists (ledger.next.json" "$L/err" && ok "rpc-ledger: init refuses while only ledger.next.json exists" || no "rpc-ledger init next: rc=$rc"
+mkdir -p "$L/wB"; led bash "$here/rpc-ledger.sh" settle rB "$L/wB" >/dev/null && [[ ! -e "$HL/ledger.next.json" && ! -e "$HL/ledger.lock" ]] &&
+  [[ $(lj '[o["id"] for o in l["outstanding"]], [s["id"] for s in l["settled"]][-1]') == "(['r7'], 'rB')" ]] &&
+  ok "rpc-ledger: the next writer carries ledger.next.json over and the release ends with one full ledger.json" || no "rpc-ledger next repair: $(ls "$HL") $(lj 'l')"
+led bash "$here/rpc-ledger.sh" reserve rC 2026-09-14 900 10 "$L/rC" >/dev/null
+rc=0; led FAKE_GH_CLOBBER_FAIL=1 bash "$here/rpc-ledger.sh" settle rC "$L/wB" >/dev/null 2>&1 || rc=$?
+[[ $rc == 1 && ! -e "$HL/ledger.json" && $(lnx '[s["id"] for s in l["settled"]][-1], [o["id"] for o in l["outstanding"]]') == "('rC', ['r7'])" ]] &&
+  ok "rpc-ledger: settle fails when replacing ledger.json fails; ledger.next.json holds the settlement" || no "rpc-ledger clobber fail settle: rc=$rc"
+led bash "$here/rpc-ledger.sh" reserve rZ 2026-09-13 900 1 "$L/rZ" >/dev/null && led bash "$here/rpc-ledger.sh" settle rZ "$L/wB" >/dev/null && [[ -e "$HL/ledger.json" && ! -e "$HL/ledger.next.json" ]] || no "rpc-ledger repair after settle"
+before=$(cat "$HL/ledger.json")
+rc=0; led FAKE_GH_FAIL_ASSET=ledger.next.json bash "$here/rpc-ledger.sh" reserve rY 2026-09-13 900 1 "$L/rY" >/dev/null 2>&1 || rc=$?
+[[ $rc == 1 && ! -e "$L/rY" && "$(cat "$HL/ledger.json")" == "$before" && ! -e "$HL/ledger.next.json" && ! -e "$HL/ledger.lock" ]] &&
+  ok "rpc-ledger: a failed first upload fails reserve and leaves ledger.json as it was" || no "rpc-ledger next upload fail: rc=$rc"
+rc=0; led FAKE_GH_DELETE_FAIL_ASSET=ledger.next.json bash "$here/rpc-ledger.sh" reserve rX 2026-09-13 900 1 "$L/rX" >/dev/null 2>&1 || rc=$?
+[[ $rc == 1 && ! -e "$L/rX" && $(lj '[o["id"] for o in l["outstanding"]]') == "['r7', 'rX']" && $(lnx '[o["id"] for o in l["outstanding"]]') == "['r7', 'rX']" ]] &&
+  led bash "$here/rpc-ledger.sh" settle rX "$L/wB" >/dev/null && [[ ! -e "$HL/ledger.next.json" ]] &&
+  ok "rpc-ledger: a failed delete of ledger.next.json fails reserve (the reservation stays booked, not spent); the next writer clears it" || no "rpc-ledger next delete fail: rc=$rc"
+echo "123 $(date -u +%FT%TZ)" > "$HL/ledger.lock"
+rc=0; bash "$here/rpc-ledger.sh" unlock >/dev/null 2>"$L/err" || rc=$?
+[[ $rc == 1 && -e "$HL/ledger.lock" ]] && grep -q "may still be writing" "$L/err" && echo "123 2026-01-01T00:00:00Z" > "$HL/ledger.lock" &&
+  bash "$here/rpc-ledger.sh" unlock >/dev/null && [[ ! -e "$HL/ledger.lock" ]] &&
+  ok "rpc-ledger: unlock refuses a lock younger than LOCK_WAIT and removes an old one" || no "rpc-ledger unlock young: rc=$rc $(cat "$L/err")"
 # End to end: a day read killed mid-unit is settled at its whole reservation (the old
 # per-run total booked only the last count the scanner wrote).
 o="$T/rdk"; rm -rf "$o"; rc=0; RD_CREDITS=$(cat "$L/r7") rd "$o" RPC_CREDITS=7 RPC_RC=137 || rc=$?
