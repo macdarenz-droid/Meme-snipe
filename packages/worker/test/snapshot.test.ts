@@ -11,7 +11,7 @@ import { decodeSnapshot, type ReadAccount, snapshotAddresses } from '../src/run/
 import { type SnapshotFact, snapshotWins } from '../src/engine/strategy.ts';
 import { PositionWatch } from '../src/run/watch.ts';
 import { FakeSocketHub, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
-import { ManualTimers } from '../src/scheduler/index.ts';
+import { ALCHEMY_FREE, ManualTimers } from '../src/scheduler/index.ts';
 import { CreditBook, LiveProviders } from '../src/run/sources.ts';
 import { testSecrets } from './helpers.ts';
 import { tempState } from './worker-harness.ts';
@@ -131,7 +131,7 @@ describe('the coherent snapshot (WATCH-1)', () => {
 });
 
 describe('the second path (LiveProviders.watchRead)', () => {
-  it('reads every account in one getMultipleAccounts at confirmed, on Alchemy, at P1, charged 20 CU', async () => {
+  it('reads every account in one getMultipleAccounts at confirmed, on Alchemy, at P0, charged 20 CU, and still reads at the budget halt', async () => {
     const timers = new ManualTimers(0);
     const http = scriptedHttp(rpcHandler((method) => (method === 'getMultipleAccounts' ? { context: { slot: F.slot }, value: F.accounts.map((a) => (a.dataBase64 === null ? null : { owner: a.owner, lamports: 1, data: [a.dataBase64, 'base64'], executable: false, rentEpoch: 0 })) } : undefined)));
     const providers = new LiveProviders({ tradeStreams: false, secrets: testSecrets, http, factory: new FakeSocketHub().factory, credits: new CreditBook(tempState(), timers) });
@@ -145,9 +145,15 @@ describe('the second path (LiveProviders.watchRead)', () => {
     expect(body.params[0]).toEqual(F.accounts.map((a) => a.address));
     expect(body.params[1].commitment).toBe('confirmed');
     const st = providers.alchemy.status();
-    expect(st.granted).toEqual([0, 1, 0, 0]);
+    expect(st.granted).toEqual([0 + 1, 0, 0, 0]);
     expect(st.creditsUsed).toBe(20);
     expect(providers.helius.status().granted).toEqual([0, 0, 0, 0]);
+    // The month's budget at its halt share: every other class is refused, the exit's price read still goes.
+    providers.alchemy.resetBudget(ALCHEMY_FREE.budget!.monthlyCredits * ALCHEMY_FREE.budget!.haltShare);
+    expect(providers.alchemy.halted).toBe(true);
+    const again = await providers.watchRead()(F.accounts.map((a) => a.address));
+    expect(again.slot).toBe(BigInt(F.slot));
+    expect(providers.alchemy.status().granted).toEqual([2, 0, 0, 0]);
   });
 });
 

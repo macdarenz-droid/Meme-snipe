@@ -909,9 +909,11 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **FeeConfig owner.** The FeeConfig must be owned by pump-fees.
 - **Cost, at the new period.** A held position with no fresh pool fact is read about every 0.7–1.1 s.
   - About 2.2 M CU a day if held around the clock, or about 0.18 M CU per 120-minute hold, against Alchemy's 30 M a month.
-  - The scheduler halts every class but P0 at 70% of the month, so the watch (P1) stops there and alerts.
+  - The watch reads at **P0** (review of #87, risk reviewer). It prices an exit, only for open positions, only while their market is stale, at most T_max each, so the monthly budget's halt (every class but P0, at 70%) never removes the price an exit needs. Its worst case is about 0.18 M CU per position per full-outage hold. Tested: a P0 read goes through at the halt.
   - POS-1's swap-derived pool facts make the watch idle while a pool trades. A quiet pool (no swap for a stale period) is still read.
 - **On POS-1's merge (agreed with its builder):**
   - poolOf null, or a pool fact flagged `partial`, reads at once.
   - The flag is checked only when the pool fact is the newest whole market, so a newer snapshot still wins.
 - **Mutation evidence:** 27 of 27 mutants fail the tests. That is the 19 above plus the eight review mutants: timing not tied to the policy, a late answer used, snapshot reserves with the feed's fee fact, the paper world on the pool fact, newest by receipt time only, FeeConfig owner unchecked, settings not passed from the environment, and the paper market mixing the feed's fees.
+- **2026-10-04 · Entries stop when the second path cannot serve** (review of #87). The halt reason "second price path unavailable" is raised when no second path is configured, or when its provider's budget is halted. A position entered then could lose its price with no read to recover it; exits go on. Both cases are tested.
+- **The feed's observed fee terms.** In the 40%-fall case the held mint also has fee terms observed on its swaps, and the exit is still priced with the snapshot's FeeConfig. The reviewer's mutant (`ctx: this.observedFees(mint) ?? snap.ctx`) fails it. In all, 4 more of 4 mutants fail (that one, the two halt cases, and P1 instead of P0).

@@ -46,6 +46,9 @@ import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFil
 import { parsePool } from '../../../core/src/gates/index.ts';
 import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
 
+/** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
+export const SECOND_PATH_UNAVAILABLE = 'second price path unavailable';
+
 /** One live source the worker runs (a provider stream). Its name is a health feed name, fixed for the whole run. */
 export interface FeedSource {
   readonly name: string;
@@ -125,6 +128,8 @@ export interface WorkerDeps {
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
    */
   readonly watchRead?: (addresses: readonly string[]) => Promise<WatchRead>;
+  /** True while the second path's provider budget is halted (its scheduler's haltShare): entries stop. */
+  readonly watchHalted?: () => boolean;
 }
 
 export interface SeedRequest {
@@ -608,6 +613,8 @@ export class Worker {
       else if (s.last === null || now - s.last > this.#d.staleFeedMs) reasons.push(`feed ${s.src.name} stale`);
     }
     if (this.#ctl.paused) reasons.push('owner pause (watchdog)');
+    // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
+    if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
     reasons.push(...this.#diverged);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);

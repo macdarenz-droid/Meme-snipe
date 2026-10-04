@@ -21,6 +21,7 @@ import { PUMP_AMM_GLOBAL_CONFIG, fromBase64 } from '../../core/src/chain/index.t
 import { PUMP_AMM_FEE_CONFIG, type ReadAccount, decodeSnapshot } from '../src/run/snapshot.ts';
 import type { WatchRead } from '../src/run/watch.ts';
 import { parseConfig } from '../src/run/config.ts';
+import { SECOND_PATH_UNAVAILABLE } from '../src/run/worker.ts';
 import { xcheckKey } from '../../core/src/gates/index.ts';
 
 type H = ReturnType<typeof makeWorker>;
@@ -392,6 +393,13 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(m), 100);
     const p0 = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!;
     expect(calls).toEqual([]);
+    // Swaps on the pool give the strategy observed fee terms of its own, before the feed dies.
+    for (let k = 0; k < 3; k++) {
+      m.swap('BuyEvent', `buyer${k}`, 1_000_000n);
+      await m.run(400, 400, tick(m));
+    }
+    const observed = h.worker.strategy.observedFees(MINT);
+    expect(observed).toBeDefined();
     // The feed dies: no slot, no pool fact, nothing. The pool falls 40% on chain.
     scale = 600_000n;
     const deadAt = m.now;
@@ -415,9 +423,12 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     const q = poolSell(snap.snapshot.state, exit.attempts[0]!.quote.inAmount, snap.snapshot.ctx);
     if (!q.ok) throw new Error(q.detail);
     expect(exit.attempts[0]!.quote.quotedOut).toBe(q.trade.userQuote);
-    // The feed's own fee terms would price it differently: the snapshot's fee context is the one used.
-    const mixed = poolSell(snap.snapshot.state, exit.attempts[0]!.quote.inAmount, FEE_CONTEXT);
-    expect(mixed.ok && mixed.trade.userQuote).not.toBe(q.trade.userQuote);
+    // The feed's own fee terms, the published ones and those observed on the pool's swaps, would price it differently:
+    // the snapshot's fee context is the one used.
+    for (const feed of [FEE_CONTEXT, observed!]) {
+      const mixed = poolSell(snap.snapshot.state, exit.attempts[0]!.quote.inAmount, feed);
+      expect(mixed.ok && mixed.trade.userQuote).not.toBe(q.trade.userQuote);
+    }
     expect(kinds(h.stateDir, 'alert')).toEqual([]);
     // Still dead for the rest of the 5 minutes: entries halted, no exit able to land, the watch keeps the price fresh.
     await m.run(5 * 60_000 - (m.now - deadAt), 1_000);
@@ -502,4 +513,28 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     expect(snap.snapshot.state.quoteVault).toBe((QUOTE_VAULT * 600_000n) / 1_000_000n);
     await h.worker.stop();
   }, 60_000);
+
+  it('entries stop while the second price path cannot serve: none configured, or its budget halted', async () => {
+    for (const o of [{ watchRead: null }, { watchHalted: () => true }] as const) {
+      const h = makeWorker(o);
+      expect(await h.worker.reconcile()).toEqual({ ok: true });
+      h.worker.step();
+      expect(h.worker.health().halt_reasons).toEqual([SECOND_PATH_UNAVAILABLE]);
+      const m = await passingMarket(h);
+      await m.run(10_000, 400, tick(m));
+      expect(Object.values(h.worker.book.positions)).toEqual([]);
+      expect(h.worker.health().halt_reasons).toContain(SECOND_PATH_UNAVAILABLE);
+      await h.worker.stop();
+    }
+    // With the path back, nothing names it.
+    let halted = true;
+    const h = makeWorker({ watchHalted: () => halted });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    h.worker.step();
+    expect(h.worker.health().halt_reasons).toEqual([SECOND_PATH_UNAVAILABLE]);
+    halted = false;
+    h.worker.step();
+    expect(h.worker.health().halt_reasons).toEqual([]);
+    await h.worker.stop();
+  });
 });

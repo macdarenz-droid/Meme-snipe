@@ -77,6 +77,7 @@ try {
     schedulers: { helius: providers.helius, alchemy: providers.alchemy, jupiter: providers.jupiter, rugcheck: providers.rugcheck },
     exposureRpc: providers.seedRpc(),
     watchRead: providers.watchRead(),
+    watchHalted: () => providers.alchemy.halted,
     delayProbe: { confirmed: (sig) => providers.confirmed(sig), via: `logs:${PUMP_CREATE_AUTHORITY}`, everyMs: 60_000 },
     commitments: FEED_COMMITMENTS,
     heartbeat: { http: fetchHttp, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },
