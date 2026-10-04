@@ -496,6 +496,43 @@ describe('a restart rebuilds the stored book before it decides', () => {
   );
 });
 
+describe('a restart restores the saved exit plans before it manages a position', () => {
+  it('a tracker that met its flat target is not judged by a fresh one: no time_flat exit after the restart', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    await h.worker.kill();
+    // Met its flat target before the kill; the restart comes after the flat deadline and well before the time max.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    const plan = saved[pid]!.plan;
+    file.write({ ...saved, [pid]: { ...saved[pid]!, tracker: { ...saved[pid]!.tracker, flatMet: true } } });
+    const x = h.session.policy.exits.universes[plan.universe]!;
+    expect(x.tMaxMs).toBeGreaterThan(x.tFlatMs + 10 * 60_000);
+    h.timers.set(plan.openedAtMs + x.tFlatMs + 5 * 60_000);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2);
+    await m2.run(10_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    // Before the fix the halt fact came before the saved plans at the same instant: the position got a fresh plan and
+    // tracker (flatMet false), and the flat time stop sold it.
+    const mine = lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    expect(mine.filter((l) => (l['reasons'] as string[])[0] === 'no entry plan')).toEqual([]);
+    expect(mine.filter((l) => (l['reasons'] as string[]).some((r) => r.startsWith('time_flat')))).toEqual([]);
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    await h2.worker.stop();
+  }, 60_000);
+});
+
 describe('a killed worker writes no state file afterwards', () => {
   it('a simulation that answers after the kill does not overwrite what the next process wrote', async () => {
     let answer = (): void => undefined;

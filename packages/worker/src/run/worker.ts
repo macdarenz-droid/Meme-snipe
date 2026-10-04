@@ -345,10 +345,13 @@ export class Worker {
     // then wrote `open_intents` 1 from the ledger's book after reporting success from the engine's). Measured after
     // the restore, not from the constructor's start: opening the ledger and reading the book takes milliseconds.
     const startAt = Math.max(this.#d.timers.now(), this.#feed.lastReceivedAt) + 1;
-    this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt);
+    // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
+    // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
+    // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
     this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}) }, startAt);
-    if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt);
-    if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt);
+    this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt + 1);
+    if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt + 1);
+    if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt + 1);
     this.#drillToken = randomBytes(16).toString('hex');
     if (c.drills) writeFileSync(join(c.stateDir, STATE_FILES.drillToken), this.#drillToken, { mode: 0o600 });
   }

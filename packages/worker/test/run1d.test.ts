@@ -3,10 +3,13 @@
 import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { openLedger } from '../../core/src/ledger/index.ts';
+import { emptyBook } from '../../core/src/lifecycle/index.ts';
+import type { Lamports } from '../../core/src/units/index.ts';
 import type { JournalLine } from '../../runner/src/contract.ts';
 import { resolveUniverse, sellOnlyReason } from '../src/engine/strategy.ts';
 import { exitsFile } from '../src/run/state.ts';
-import { LANDS, Market, makeWorker, passingMarket, tempState } from './worker-harness.ts';
+import { LANDS, Market, T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
 const lines = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as JournalLine);
 const token = (dir: string) => readFileSync(join(dir, 'drill.token'), 'utf8').trim();
@@ -175,6 +178,63 @@ describe('a restored position whose universe the loaded policy lacks (EXIT-1b re
     expect(leg.priorityFee).toBe(h2.session.policy.exits.ladder.steps[0]!.priorityFeeLamports);
     await h2.worker.stop();
   }, 60_000);
+
+  // A ledger written before entry keys carried a universe: the key's local part is `<version>.<n>`. Rewritten in place
+  // here (the stored book reads the key from `intent.idem_key`), with the saved plan's universe gone or no plan at all.
+  it.each([['a saved plan without a universe', 'plan'], ['no saved plan (the plan is made again from the fill)', 'none']] as const)(
+    'a restored position with no universe on record, %s: flattened at once on the global ladder, never managed as the trading universe',
+    async (_name, saved) => {
+      const h = makeWorker();
+      await entered(h);
+      const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+      const quantity = h.worker.book.positions[pid]!.quantity;
+      await h.worker.kill();
+      // The ledger is append-only, so the legacy one is written again through its own API from the stored events.
+      const path = join(h.stateDir, 'ledger.sqlite');
+      const config = { maxOpenPositions: h.session.policy.positions.maxOpen };
+      const old = openLedger(path, 'paper');
+      const { events } = old.storedBookEvents(config);
+      old.close();
+      for (const f of [path, `${path}-wal`, `${path}-shm`]) rmSync(f, { force: true });
+      const legacy = openLedger(path, 'paper');
+      let book = emptyBook(config);
+      for (const e of events) {
+        const ev = e.type === 'propose_entry' ? { ...e, intent: { ...e.intent, key: e.intent.key.replace(':U2.', ':') as typeof e.intent.key } } : e;
+        book = legacy.recordBookEvent(book, ev, { ts: T, limits: { maxHeld: (2n ** 62n) as Lamports, maxCount: Number.MAX_SAFE_INTEGER }, accountVersion: legacy.accountVersion() }).book;
+      }
+      legacy.close();
+      const file = exitsFile(h.stateDir);
+      const plans = file.read({});
+      const { universe: _u, ...plan } = plans[pid]!.plan;
+      const { [pid]: _gone, ...others } = plans;
+      file.write(saved === 'plan' ? { ...plans, [pid]: { ...plans[pid]!, plan: plan as never } } : others);
+
+      const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+      const start = lines(h.stateDir).filter((l) => l.kind === 'start').at(-1)!;
+      expect(start['sell_only']).toEqual([`sell-only: no universe on record for ${pid}`]);
+      expect(await h2.worker.reconcile()).toEqual({ ok: true });
+      const t0 = h2.timers.now();
+      const m = new Market(h2);
+      await m.run(150_000, 1_000, () => {
+        m.slot();
+        m.pool();
+      });
+      expect(h2.worker.book.positions[pid]!.status).toBe('closed');
+      const exits = Object.values(h2.worker.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === pid && i.fills.length > 0);
+      expect(exits).toHaveLength(1);
+      expect(exits[0]!.fills.reduce((t, f) => t + f.tokens, 0n)).toBe(quantity);
+      const decisions = lines(h.stateDir).filter((l) => l.kind === 'decision' && l.boot === h2.worker.boot);
+      const said = decisions.find((d) => ['plan universe restored', 'no entry universe'].includes((d.reasons ?? [])[0]!))!;
+      expect(said.reasons).toContain('no universe on record; flattened through the global exit ladder');
+      const exit = decisions.find((d) => (d.reasons ?? [])[0] === 'exit')!;
+      expect(exit.reasons).toEqual(expect.arrayContaining(['universe missing: flatten', expect.stringMatching(/^time_max: /)]));
+      expect(Date.parse(exit.ts) - t0).toBeLessThan(5_000);
+      expect(h2.legs.find((l) => l.leg === 'exit')!.priorityFee).toBe(h2.session.policy.exits.ladder.steps[0]!.priorityFeeLamports);
+      expect(h2.worker.health().halt_reasons).toContain(`sell-only: no universe on record for ${pid}`);
+      await h2.worker.stop();
+    },
+    60_000,
+  );
 
   it('a position with no universe on record is sell-only too: unknown means no entry', () => {
     const universes = { U1: {}, U2: {} };
