@@ -279,7 +279,8 @@ export class Desk {
    * A reconcile that books fills, or a late-landing sell booked after its exit ended (`orphan_fill`): its `entry` or
    * `exit` line (after its `simulation` line), or null. A line the journal already holds for the same intent and amount
    * (written before a kill that came ahead of the ledger) is not repeated. A late buy opens its own position, which is
-   * not a paper trade: `#write` hands it to `lateBuy` instead (DECISIONS, PAPER-1).
+   * not a paper trade: `#write` hands it to `lateBuy` instead (DECISIONS, PAPER-1). RISK-PARTIAL: a late sell that
+   * leaves tokens held books its part when it lands.
    */
   #fill(before: Book, after: Book, event: BookEvent): Fill | null {
     const id = event.type === 'intent' && event.event.type === 'reconcile' ? event.intentId
