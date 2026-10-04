@@ -29,15 +29,17 @@ Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Clau
 - All four API keys checked from CI: they work.
 
 ## Board
-Builders run as separate sessions; a fresh reviewer session checks each PR; the supervisor merges into `ccr-14987baf-i6lrsl` when review passed and CI is green on a head with the latest base. The merge queue, open cards and sessions are in `HANDOVER.md` §4–5 (one place, kept current).
+Core plan, Mon 5 Oct about 8:22 AM (owner: "focus ... assign workers that will make the core of the bot done and production level"). Builders run as separate sessions, a fresh reviewer checks each PR, and the supervisor merges one at a time into `ccr-14987baf-i6lrsl` (CI about 24 min per merge, the bottleneck). Details and session ids: `HANDOVER.md`.
 
-| Task | What | State | Estimate (Melbourne) |
-|---|---|---|---|
-| Merge queue | #114, #116, #118 (delta), #106, #107, #98, #123, then the audit-fix PRs (see HANDOVER §4) | moving one at a time | about 10 min each plus reviews |
-| Online | deployed (7d5e203, run 37189025276); the owner confirms Online | waiting for the owner's check | now |
-| Audit fixes | PAPER-1, RISK-LATCH #124, RISK-PARTIAL, WATCH-1c #121 / 1d, EXIT-1g #128 / 1h, PERSIST-2 #125 / 3, EXIT-ROUTE #130, WORKER-ORDER #123, STATS-1g #129, OPS-GATE, PNPM-CLAIMS, SEC-1, DATA-4 #127, DATA-5 | building or in review | about 2–3 days (±1) |
-| BT-2 #41 | audit B1–B5 and S2, then RES-4 (b)/(c) under the stats rulings; early-look runner ready | building and in review | early look about Tue 6 – Wed 7 Oct |
-| Historical data | 09-21 free day running; DATA-4 ledger after it | free plan only (owner) | 09-21 about Mon 8 AM; more days as credits allow |
+| Stream | What it gives the bot | PRs (merge order) | Builder | Reviewers |
+|---|---|---|---|---|
+| 1 Stays up | no crash loop (about 38 restarts since midnight, so no coin gets judged); memory and disk safe; backups | #148, #209, then the crash fix; #164, #202 → #207, #139, #172, #187, #204, #192, #196; #137 → #149, BACKUP-STATE, DISK-GUARD | WORKER-HARDEN; ops builder 2 | worker/facts, persist, ops |
+| 2 Judges coins right | entry gates and the simulation use the real trade size; regime inputs trustworthy | #189, #177, #138 | READ-COHERENT; data builder | EXIT, persist, stats |
+| 3 Right money | paper P&L exact in SOL (fees, rent, late fills, loss streaks) | #198 → #203, #168, #201, #197, #186 | PAPER, practice-on, API/APP (#201 only) | risk, worker/facts, run/CI |
+| 4 Exits work | a restart keeps the exit's evidence and resends a lost exit; the sell route is checked | #176, #171, #130, #141 | EXIT; persist builder; WATCH builder | EXIT, persist, risk |
+| 5 Strategy proof | what the bot may trade, proven on history | #154, #160, #98, #122, #115, #191, #127, #152 | BT, RES, STATS, data builders | BT, stats, data |
+
+Waiting (outside the core): Telegram alerts and controls (#161, #178, #190, #199), app changes (#167, #181, #182), summaries and observability (#174, #194, #200, #175, #211, #210), drills (#193, needed later for the qualifying run), CI-SHARD (#206, blocked by the safety check), docs and supply chain (#143, #146, #135, #136), paid history storage (#150, owner decision).
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -62,6 +64,24 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - RUN-1b: a negative quoteAgeSlots passes the decimal check (display only).
 - TX-1 → SIGN-1: maxSolOut needs about 1.5M lamports of PumpSwap headroom; the policy charges Token-2022 ATAs at 170 bytes.
 - Repo tidy-up: branch `claude/ledger-replay-schema-v1` duplicates PR #23's 611a4bb; the safety check refused its deletion, so the owner may delete it.
+
+## Last part (before funding)
+Owner, Mon 5 Oct about 5:07 AM (three marked screenshots): "These are future updates, when all task is done. When we reach production area and I'm about to put money. To be done in last part." Built after every other task, before the owner funds the bot; not started earlier.
+- **Stats tab.** The bottom tab "Samples" (the preview-only sample-data screen) becomes "Stats": every visual on real data (stats, charts, diagrams). The sample-data screen leaves the app.
+- **Settings screen** (new). It holds:
+  - the Server card (address, status, last update, access, Change and Remove), also kept on Snipe;
+  - the theme choice (Paper or Silent Black), which leaves Home.
+- **Header.** The "Paper" chip beside the logo reads "Zeroed".
+- **Paper and backtest removal** (owner, Mon 5 Oct about 5:15 AM: "when the app is ready we gonna remove all paper based features in ui. Even all paper, backtest logics. In the future. NOT NOW. ONLY WHEN THE APP IS READY. Removal of those treat as high risk and be very careful ... before removal of these items, i need it to be architectured properly").
+  - When: only after the owner says the app is ready, which is after the six pre-funding items pass (they need paper and the backtest).
+  - What: every paper feature in the app, and the paper and backtest code.
+  - The risk: live trading runs on the same engine, quotes, risk, fills and exits code that paper and the backtest use (only the feed and the clock differ). Deleting by name ("paper", "backtest") could delete code that live money depends on.
+  - Before any removal, an architecture plan in `docs/ARCHITECTURE.md` is written and reviewed:
+    - every module mapped as paper-only, backtest-only or shared with live, with its callers;
+    - the order of removal in small PRs.
+  - Each removal PR proves live is unchanged: recorded live data replays to identical decisions and transactions before and after, every live-path test still passes unchanged, and the risk reviewer and a fresh reviewer pass it.
+  - Shared code is never deleted or changed as part of the removal.
+  - The "Paper" theme is a theme name, not paper trading. It stays, and moves to Settings with Silent Black.
 
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.

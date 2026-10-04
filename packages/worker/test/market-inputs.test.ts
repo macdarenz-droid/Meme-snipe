@@ -215,7 +215,7 @@ describe('processed and confirmed arrival of the same signature (supervisor ruli
       timers, via: 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM', everyMs: 60_000, record: (row, at) => void rows.push({ row, at }), mono: () => (mono += 250.5),
       confirmed: async (sig) => {
         reads.push(sig);
-        return record;
+        return { slot: record.slot, at: timers.now(), mono: (mono += 250.5), again: false }; // the read's arrival, on the probe's clock
       },
     });
     const seen = (via: string, at: number, backfilled = false): Frame => ({ seq: 0, receivedAt: at, source: 'helius', backfilled, place: { at: 'offchain', slot: 1n }, duplicate: false, body: { type: 'seen', signature: t.signature, slot: record.slot, err: null, via, detail: null } });
@@ -273,7 +273,7 @@ describe('the delay probe after FACTS-1 (log frames name their commitment)', () 
     const timers = new ManualTimers(1_000_000);
     const rows: Readonly<Record<string, unknown>>[] = [];
     const via = 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
-    const probe = new DelayProbe({ timers, via, everyMs: 60_000, record: (row) => void rows.push(row), confirmed: async () => record, mono: () => 0 });
+    const probe = new DelayProbe({ timers, via, everyMs: 60_000, record: (row) => void rows.push(row), confirmed: async () => ({ slot: record.slot, at: timers.now(), mono: 0, again: false }), mono: () => 0 });
     const logs = (at: number, commitment?: 'confirmed'): Frame => ({ seq: 0, receivedAt: at, source: 'helius', backfilled: false, place: { at: 'chain', slot: record.slot }, duplicate: false, body: { type: 'logs', signature: t.signature, slot: record.slot, err: null, via, logs: [], ...(commitment === undefined ? {} : { commitment }) } });
     probe.frame(logs(1_000_100));
     probe.frame(logs(1_000_900, 'confirmed'));

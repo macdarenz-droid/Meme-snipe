@@ -33,6 +33,8 @@ export interface SavedDeployers {
   readonly coverage: readonly MarketEvent[];
   /** The newest moment saved (slot and receipt time): where a downtime fill starts. */
   readonly last: { readonly slot: bigint; readonly ms: number } | null;
+  /** Why the saved seed was refused whole (over the cap), if it was. */
+  readonly refused?: string;
 }
 
 export class DeployerStore {
@@ -57,8 +59,16 @@ export class DeployerStore {
    * last line from a kill is dropped). Coverage facts are all kept: a start older than the window is what says the
    * stream has run since before it.
    */
-  load(fromMs: number): SavedDeployers {
+  load(fromMs: number, o: { readonly keepCreates?: boolean; readonly maxCreates?: number; readonly onCreate?: (e: MarketEvent) => void } = {}): SavedDeployers {
     if (!existsSync(this.#path)) return { creates: [], rugs: [], coverage: [], last: null };
+    // WORKER-GROW: with a restored index the creates are already in it, so they stay in the file only (`keepCreates`
+    // false). Without one they seed the index, at most `maxCreates` of them: past that the seed is refused whole (no
+    // creates, rugs or coverage), so H14 reads not covered until the look-back passes, which is fail safe; seeding the
+    // coverage without all of its creates would not be.
+    const keepCreates = o.keepCreates ?? true;
+    const maxCreates = o.maxCreates ?? Number.POSITIVE_INFINITY;
+    let creates = 0;
+    let last: { slot: bigint; ms: number } | null = null;
     const kept: MarketEvent[] = [];
     // Streamed in chunks and rewritten in 1 MiB batches (GROWTH-SWEEP): 15 days of creates is about a million lines, too big
     // to hold as one string and its split beside the parsed events under the worker's MemoryMax.
@@ -82,7 +92,13 @@ export class DeployerStore {
           continue;
         }
         if (!isCoverage(e.key) && e.moment.receivedAt < fromMs) continue;
-        kept.push(e);
+        if (last === null || e.moment.slot > last.slot) last = { slot: e.moment.slot, ms: e.moment.receivedAt };
+        if (isCreate(e.key)) {
+          creates++;
+          // CREATE-AFTER-RESTART: every create in the window is shown to `onCreate` (its mint and signature), kept or not.
+          o.onCreate?.(e);
+          if (keepCreates && creates <= maxCreates) kept.push(e);
+        } else kept.push(e);
         const text = `${typedText(e)}\n`;
         out.push(text);
         outBytes += text.length;
@@ -96,8 +112,7 @@ export class DeployerStore {
       throw e;
     }
     commitTemp(fd, tmp, this.#path, written);
-    let last: { slot: bigint; ms: number } | null = null;
-    for (const e of kept) if (last === null || e.moment.slot > last.slot) last = { slot: e.moment.slot, ms: e.moment.receivedAt };
+    if (keepCreates && creates > maxCreates) return { creates: [], rugs: [], coverage: [], last: null, refused: `${creates} saved creates, over the seed cap of ${maxCreates}` };
     return { creates: kept.filter((e) => isCreate(e.key)), rugs: kept.filter((e) => isRugFact(e.key)), coverage: kept.filter((e) => isCoverage(e.key)), last };
   }
 }

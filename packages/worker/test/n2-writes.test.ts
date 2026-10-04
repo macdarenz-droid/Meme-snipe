@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { MarketEvent } from '../../core/src/engine/index.ts';
 import { LOG_CREATE_PREFIX } from '../../core/src/gates/index.ts';
-import { saveState } from '../src/persist/index.ts';
+import { saveState, STATE_VERSION } from '../src/persist/index.ts';
 import { DeployerStore } from '../src/run/deployer-store.ts';
 import { typedText } from '../src/run/json.ts';
 import { atomicWrite, type WriteFn } from '../src/run/state.ts';
@@ -68,7 +68,7 @@ describe('the deployer state save', () => {
     expect(readFileSync(p, 'utf8')).toBe('the previous good save');
     expect(readdirSync(dir)).toEqual(['deployer-state.json']);
     saveState(p, state(), oneByte);
-    expect(readFileSync(p, 'utf8')).toContain('"version":1');
+    expect(readFileSync(p, 'utf8')).toContain(`"version":${STATE_VERSION}`);
   });
 });
 
