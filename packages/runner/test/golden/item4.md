@@ -10,4 +10,6 @@
 
 Outcomes: policy-violation 1, simulated 19. Stand-in legs: 17. Close omitted: 0. Median quote age: 3 slots.
 
+Simulation time (paper attempts land only once simulated): median - ms, - slots, over 0 timed legs; held the drawn landing 0; past the blockhash 0 (should be 0: our own queue, not the network).
+
 Item 4: **pass**

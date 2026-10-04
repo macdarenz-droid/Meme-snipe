@@ -11,6 +11,7 @@ import { executableMark } from '../../core/src/exits/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
 import { markSettings, markedHistory } from '../src/engine/marks.ts';
 import { MARK_PREFIX, TRIPPED_PREFIX } from '../src/engine/strategy.ts';
+import { type AccountState, accountFile } from '../src/run/account.ts';
 import { MINT, type Market, SOL_PRICE, makeWorker, passingMarket } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
@@ -165,10 +166,18 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     expect(decisions(h).some((r) => r[0] === 'partial exit' && r.some((x) => x.startsWith('take_profit: ')))).toBe(true);
     const trail = h.worker.strategy.saved()[pid]!.tracker.trail;
     expect(trail).not.toBeNull();
+    // RISK-PARTIAL: the half sold at a profit is realized now; no trade is closed yet.
+    const trade = () => accountFile(h.stateDir).read(null as unknown as AccountState).trades.find((t) => t.positionId === pid)!;
+    expect(trade().partials).toHaveLength(1);
+    expect(trade().partials![0]!.pnl).toBeGreaterThan(0n);
+    expect(trade().closedAtMs).toBeNull();
     // A seller takes it back down under the trail: the runner closes on the trailing stop.
     m.chainSwap('sell', (m.chainState.baseReserve * 12n) / 100n, h.worker.feed.openSlot);
     expect(await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 20_000, ticks(h, m))).toBe(true);
     expect(decisions(h).some((r) => r[0] === 'exit' && r.some((x) => x.startsWith('trailing_stop: ') || x.startsWith('break_even: ')))).toBe(true);
+    // One whole trade, its result the whole round trip's; the partial stays recorded at its time.
+    expect(trade().closedAtMs).not.toBeNull();
+    expect(trade().partials).toHaveLength(1);
     await h.worker.stop();
   });
 

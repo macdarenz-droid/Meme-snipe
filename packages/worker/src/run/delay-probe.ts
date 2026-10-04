@@ -3,18 +3,20 @@
 // `delays` table gets both arrival times on this host for that same signature and slot. Never the second-resolution
 // block time as the reference. One Helius credit a minute (about 43,000 a month), at P3.
 import { P3, type Timers } from '../scheduler/index.ts';
-import type { TransactionRecord } from '../../../core/src/chain/index.ts';
-import type { Frame } from '../providers/index.ts';
+import type { Fetched, Frame } from '../providers/index.ts';
 
 export interface DelayProbeOptions {
   readonly timers: Timers;
-  /** The confirmed read (the TxFetcher's, so the transaction also goes on the feed). Null when not found. */
-  readonly confirmed: (signature: string) => Promise<TransactionRecord | null>;
+  /**
+   * The confirmed read (the TxFetcher's, so the transaction also goes on the feed). Null when not found; its first
+   * confirmed arrival on this host when another path fetched it first.
+   */
+  readonly confirmed: (signature: string) => Promise<Fetched | null>;
   readonly record: (row: Readonly<Record<string, unknown>>, atMs: number) => void;
   /** The `via` of the processed sightings sampled (the creates watch). */
   readonly via: string;
   readonly everyMs: number;
-  /** A monotonic local clock (ms) for the arrival stamps; wall time is kept beside it for display only. */
+  /** A monotonic local clock (ms) for the processed stamps, the same clock as the read's; wall time is for display only. */
   readonly mono?: () => number;
 }
 
@@ -80,7 +82,7 @@ export class DelayProbe {
     if (s === null || this.#inFlight) return;
     this.#latest = null;
     this.#inFlight = true;
-    let r: TransactionRecord | null = null;
+    let r: Fetched | null = null;
     let error: string | null = null;
     try {
       r = await this.#o.confirmed(s.signature);
@@ -88,13 +90,12 @@ export class DelayProbe {
       error = e instanceof Error ? e.message : 'error';
     }
     const at = this.#o.timers.now();
-    const mono = this.#mono();
     this.#o.record({
       signature: s.signature, slot: s.slot,
       // The delay is measured on the monotonic clock (immune to wall-clock steps); the wall times are for display.
-      processed_mono_ms: s.mono, confirmed_mono_ms: r === null ? null : mono, delay_ms: r === null ? null : Math.round((mono - s.mono) * 1000) / 1000,
+      processed_mono_ms: s.mono, confirmed_mono_ms: r === null ? null : r.mono, delay_ms: r === null ? null : Math.round((r.mono - s.mono) * 1000) / 1000,
       processed_at_ms: s.at, processed_path: `helius logsSubscribe ${this.#o.via}`, processed_commitment: 'processed',
-      confirmed_at_ms: r === null ? null : at, confirmed_path: 'helius getTransaction', confirmed_commitment: 'confirmed', confirmed_slot: r?.slot ?? null,
+      confirmed_at_ms: r === null ? null : r.at, confirmed_path: 'helius getTransaction', confirmed_commitment: 'confirmed', confirmed_slot: r?.slot ?? null,
       found: r !== null, error, other_sightings: this.#others.get(s.signature) ?? [],
     }, at);
     this.#inFlight = false;
