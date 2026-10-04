@@ -5,6 +5,8 @@
 // served here (pause stays with the watchdog's /pause; commands need their own auth level, never "it came from
 // loopback").
 import { PRICE_SCALE, exitsFor } from '../../../core/src/config/index.ts';
+import { nextExitRung } from '../../../core/src/exits/index.ts';
+import { attemptFee, type FillNetwork } from '../../../core/src/fills/index.ts';
 import { createServer, type Server } from 'node:http';
 import type { Policy } from '../../../core/src/config/index.ts';
 import type { Book, ExitReason as BookExitReason, PositionState } from '../../../core/src/lifecycle/index.ts';
@@ -155,10 +157,12 @@ export interface ApiInputs {
   readonly funnel: FunnelState;
   readonly solPrice: MicroUsd | null;
   /**
-   * The network fee a close would pay now (lamports): base + the exit ladder's first priority fee + tip, the paper fill's
-   * model for a filled exit attempt (paper-world `#broadcast`, fills `attemptFee`). The open P&L counts it (APP-TRADE).
+   * The network fee a close of this position would pay now (lamports): base + tip + the priority fee of the rung its next
+   * exit attempt uses (core `nextExitRung`: one above the highest tried; the last rung once blocked or at the top; capped
+   * at the policy's per-attempt maximum), as fills `attemptFee` charges a filled attempt. The open P&L counts it, so it is
+   * never shown higher than a real close would give (APP-TRADE).
    */
-  readonly exitFee: bigint;
+  readonly exitFee: (p: PositionState) => bigint;
   readonly symbol: (mint: string) => string;
   /** Positions whose due exit waits for its first fresh quote, and since when (EXIT-1c). */
   readonly waitingExits: ReadonlyMap<string, number>;
@@ -223,6 +227,18 @@ export const openUsd = (pnl: ReturnType<typeof openPnl>, price: MicroUsd): { rea
   const unrealized = pnlMicroUsd(pnl.gross, price);
   const costs = -pnlMicroUsd(-pnl.fees, price);
   return { unrealized, costs, pnl: unrealized - costs };
+};
+
+/**
+ * The network fee a close would pay now (APP-TRADE follow-up): base + tip + the priority fee of the rung the next exit
+ * attempt uses (core `nextExitRung`), capped at the ladder's per-attempt maximum. A blocked exit, one already at the top
+ * rung, or one with no saved plan (`lastRung` undefined: unknown) pays the last rung's, the highest.
+ */
+export const closeFee = (ladder: Policy['exits']['ladder'], network: FillNetwork, status: PositionState['status'], lastRung: number | null | undefined, used: number): bigint => {
+  const last = ladder.steps.length - 1;
+  const rung = status === 'exit_blocked' || lastRung === undefined || lastRung === last ? last : nextExitRung(lastRung, used, last);
+  const fee = ladder.steps[rung]!.priorityFeeLamports;
+  return attemptFee(network, fee < ladder.maxFeePerAttempt ? fee : ladder.maxFeePerAttempt, 'filled');
 };
 
 const fillsOf = (i: ApiInputs, pid: string): PaperAttempt[] =>
@@ -347,7 +363,7 @@ export const views = {
     if (p === undefined) return null;
     const o = i.open(p);
     const liq = o?.liquidation ?? null;
-    const pnl = openPnl(liq, fillsOf(i, p.id), p.quantity > 0n ? i.exitFee : 0n);
+    const pnl = openPnl(liq, fillsOf(i, p.id), p.quantity > 0n ? i.exitFee(p) : 0n);
     const usd = i.solPrice === null ? { unrealized: 0n, costs: 0n } : openUsd(pnl, i.solPrice);
     // The mark: our rest's executable price now (the liquidation quote per token held), the price the stops judge.
     const mark = liq === null || p.quantity <= 0n || i.solPrice === null ? null : priceText(liq, p.quantity, i.solPrice);

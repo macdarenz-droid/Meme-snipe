@@ -1484,6 +1484,14 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **2026-10-05 · Price now.** It is the rest's executable price (liquidation quote per token held), the price the stops judge. It uses the triggers' "$" and 4 significant digits.
   - `markedAt` is when its pool was read. Past the app's stale rule (15 s) both turn the loss colour.
   - "Running" counts from the server's `openedAt`, re-read every second, never from the phone.
+- **2026-10-05 · The close fee is the next attempt's rung (follow-up, supervisor ruling under the paper-as-real rule).**
+  - `closeFee` charges base + tip + the priority fee of the rung the position's next exit attempt uses, capped at the ladder's per-attempt maximum.
+  - The rung comes from core `nextExitRung`: one above the highest rung tried, or the attempt count when the rung was forgotten, held at the last rung. Core's own exit (`decideExit`) now uses the same function.
+  - A blocked exit, one already at the top rung, or one with no saved plan pays the last rung's fee.
+  - So after an attempt, the open P&L counts the higher fee and is never shown above what a real close would give.
+  - Before, it always counted the first rung's fee.
+  - Tests in `app-trade-api.test.ts`, failing before: a real position after a partial exit pays rung 1's fee; blocked pays the last; a remembered rung 2 means rung 3; a forgotten rung falls back to the attempt count; `closeFee`'s cap with a lower maximum; `nextExitRung`'s cases.
+  - Mutants caught (9): rung 0 always; blocked or unknown not the last; no cap; the same rung again; a restart ignoring the attempt count; not held at the last rung; the worker without the attempt count or the tracker.
 - **2026-10-05 · No margin row.** The bot buys outright (spot swaps on the pool, no borrowing, no leverage), so the size is the whole amount at risk, and a margin row would only repeat Size.
 - **2026-10-05 · Older workers.** `pnlUsd`, `markPriceUsd` and `markedAt` are `optional()` in the app's schema, so a worker without them loads and shows "—".
   - An app older than these fields refuses them. After APP-COMPAT (#162) it reads "App update needed".
