@@ -12,12 +12,16 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | #186 VALUATION-MARK | a152e3e6 (risk PASS 8:52) | behind base; next free merge slot after #202/#148 (trial merge clean) |
 | #203 R8-WHOLE | 4ec9c3bf (risk PASS, first at 6:02, re-confirmed 9:05) | conflicts with base after #198 (LateEntry shape); builder base-merges after #198 lands, risk checks the delta (one LateEntry shape, late_settlement once, #199's lossStreakOf note) |
 | #130 EXIT-ROUTE | 992da7ce (EXIT merge delta PASS 10:05) | behind base; GitHub update when its slot comes |
-| #198 PAPER-2 | f0b7764f (run/CI PASS 9:34; risk PASS at 64972b76, meter change checked by run/CI: only tightens) | behind ad358fe9 (merge is clean, base code only); GitHub update when its slot comes |
 | #172 N2-WRITES | 7f2ce17b (persist delta PASS 9:34) | behind ad358fe9; conflicts with #139 in DeployerStore.load (second lander keeps #139's coverage pass and #172's written + commitTemp) |
-| #209 RESTART-CAUSE | 9b3d601b (facts PASS 9:45; ops FAIL at 6d7ce423 → fix in 9b3d601b not yet re-reviewed) | builder merges base with #148 (worker.ts, harness conflicts) + pins; then facts resolution check and ops summary.ts re-check |
+| #209 RESTART-CAUSE | f1e3112d (ops PASS 10:12: both deploy directions ride out; facts re-check of the #148 resolution pending) | behind 4cd29d86; GitHub update when facts passes and its slot comes |
 | #141 WATCH-1d | 23787229 (risk delta PASS 10:01; CI green 9:40) | behind base (trial merge clean); GitHub update when its slot comes |
+| #168 ACCOUNT-RATE | eb1918dd (risk PASS; facts PASS 10:07) | conflicts with base in strategy.ts; builder base-merges, facts re-checks; #197 lands after it |
+| #171 EXIT-1h follow-up | 46aefee5 (EXIT delta pending) | — |
+| #201 PAPER-FEE-RUNG | 3f9b1f1a (BT PASS; facts PASS 10:27) | DECISIONS-only conflict with base: the supervisor resolves it (base side first) when its slot comes. Non-blocking follow-up: S0's backtest entry fee (no `;fee=` → entryPriorityFee) is unpinned |
+| #213 ARCHIVE-SAFE A | ac9561f8 (data review sent 10:29) | owner-ordered safety; merges as soon as it passes (before the 09-21 chain ends); PR B (Go: 10 req/s, any 503 stops) drafted next, merges only after the chain ends |
 | #191 RES-5c | d10f2f85 (stats delta PASS 9:15) | stream 5b: CI slots go to streams 1–4 first; merges when the core line is clear |
 | #115 RES-4 | dcb931e8 (BT + stats delta PASS 9:15) | stream 5b, same reason |
+| #154 BT-WALL | 3d277751 (base merged 10:19; BT delta sent) | stream 5a early look; after the core money/exit PRs |
 | #122 BT-TAIL | b6200d15 (BT PASS) | stream 5a (early look); after the core money/exit PRs |
 | #149 OPS-1j | 7abab0b9 (ops PASS, delta checked at 8:55) | CI green on ebd90eb2 at 9:13, now behind 97d27652; merge commit only (install pin names 06ea0325) |
 
@@ -30,8 +34,8 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | 01WFmrB | WORKER-1d builder | #139 8ac236fd, #168 eb1918dd | waiting reviews | — |
 | 01XVYJj | persist builder | #172 7f2ce17b; #130 base merge local (not pushed) | full check running | push #130 for the EXIT reviewer |
 | 012uJsL | WATCH builder | #141 pushed 23787229 (9:16) | parked | risk delta sent 9:18 |
-| 01AYk3q | BT builder | #154 base merge | active | BT delta |
-| 01L9Zdh | EXIT builder | #176 ready at 97b25025 (sent to EXIT and persist reviewers 9:39); #171 46aefee full check | active | — |
+| 01AYk3q | BT builder | #154 at 3d277751 | waiting BT delta | — |
+| 01L9Zdh | EXIT builder | #176 97b25025 and #171 46aefee5 in review | parked 10:14 | branch claude/exit-downtime ba785bc (downtime held-pool fill, stacked on #176, no PR) built before the park message; not on the board; decide after #176 merges |
 | 01QvPYM | RES builder | #191, #115 full checks | stream 5b, low priority | park after these heads |
 | 01TSRXx | READ-COHERENT builder | FEES-KEEP + no-market split (9:53) | active | persist review |
 | 01MgoMn | practice-on builder | #186 PASS a152e3e6; #203 4ec9c3bf | waiting | #203 base merge after #198 |
@@ -45,15 +49,21 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | 01AeE2x | EXIT reviewer | #130 PASS 9:09 | waiting | #130 merge delta, #176 |
 | 014EaQV | persist reviewer | #172, #139 deltas | active | #176 |
 | 018aCfZ | ops reviewer | waits #209 fix | idle (nothing due) | DISK-GUARD, BACKUP-STATE |
-| 01L7Gdf | BT reviewer | waits #154 | idle (nothing due) | #115 |
+| 01L7Gdf | BT reviewer | #154 delta (10:20) | active | — |
 | 017ngaD | stats reviewer | waits #191 | idle (nothing due) | — |
 
-Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: #212 review (9:20).
+Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
 - 8:34: every active builder and reviewer told to report here. Owners checked from commit trailers: #168 ACCOUNT-RATE → WORKER-1d builder (session_01WFmrBXa6KfoKgBaRVXXCW8); #197 SOL-BOOKS → risk builder (session_01Dn7Qz3cPQH9nPpwv5eSVVb, parked); #198 PAPER-2 → PAPER builder (session_01JrFutz1ZxstamsdeSWN5XM).
 - 8:31 live summary (worker e32cd0d): starts 80 (about 40 boots), uptime 513 s, candidates seen 490, refused 0, entered 0, trades 0; halts feed-stale 310, feed-disconnected 47, seeding 40. Coins are still not judged.
 - 8:36: #198's run/CI test gap sent to the PAPER builder. #148 put ahead of #209 in the facts reviewer's queue (it is the likely crash fix).
+- 10:32: **Deploy: tag `deploy` → 1e54cf90** (checklist: first signed first-parent commit 1e54cf90, its check runs all green, e2e_commit e444d7e2 green; tag verified by ls-remote at 10:31:40). Carries #148 WORKER-CRASH, #189 and #212. Server switches within about 5 min if no open intent; verify from the next summary's git_sha. **#198 PAPER-2 merged at 8016ee1a** (check green on 60d91a61, which contains 4cd29d86). Next: #203 base merge (builder), then #141.
+- 10:21: owner: the Decision journal is a long scroll; show the 5 newest, then a "Show more" button → added to APP-TRUTH (API/APP builder). The 10:20 burst (every coin refused at once, "Risk limits" then "Costs") fits a restart: checkOf files "live SOL price unknown" under risk, and that check runs before #market, so the first look after a boot has no SOL price yet (to confirm from the 10:31 summary's start time).
+- 10:18: owner (precaution): an agent watches the downloads. One watcher for all archive runs, not one per run (per-run agents would repeat the same checks; more machines downloading at once would break Triton's rules): the data reviewer (session_01XAwN7YXrj1TKxjQzhwcaBQ) holds standing card ARCHIVE-WATCH: at each archive run's start confirm source, one day, ≤ 40 MB/s, capped streams and 10/s; every ~30 min check for 429/503; cancel a run that breaks the limits or does not stop on a 429/503, then report. Activated when the first archive scan run starts.
+- 10:15: ARCHIVE-SAFE split (builder, agreed): PR A now (scripts and workflow only: ≤ 40 MB/s, scan-day `-parallel 1 -dl 4` instead of 12 connections, a 429/back-off stop persists ≥ 3 h and is non-resumable, 1 day per served check, one config file, and a fail-closed hold: archive-check dispatches nothing while archive.go's request cap is above 10/s). PR B after the 09-21 chain ends (archive.go request cap 10/s, every 503 stops like a 429; moves the scanner revision, which mid-chain would reread the cached 09-21 units).
+- 10:14: owner: download from the archive carefully to avoid blocks, per block. Card ARCHIVE-SAFE to the data builder: archive scan ≤ 40 MB/s and ≤ 10 requests/s; any 429/503 stops the chain with ≥ 3 h back-off and only a later served check resumes; archive-check dispatches 1 day per served check (not 8); real User-Agent, one lane, runner only; a Triton rate replaces the numbers. Must merge before the 09-21 Helius chain ends (run 37240347289); otherwise the supervisor cancels any archive run that starts at the old 80 MB/s.
+- 10:07: **archive answer: served.** archive-check run 37242530173 at 23:06:29Z: status 206, 64 bytes, curl exit 0, cf-ray a457d65c1cb6db3b-SJC; nothing dispatched while Helius run 37240347289 (09-21) is active (one lane; data-scan's concurrency group would queue it anyway). The next scheduled check after the Helius chain ends dispatches the archive batch (8 days, 09-21 back to 07-20 first, then holdout days). One served request does not prove a full scan won't be throttled again (the scan stops on 429 with ≥1 h back-off). #198 updated to 60d91a61 (tree = f0b7764f on 4cd29d86), ready, CI running.
 - 10:06: **#212 ARCHIVE-NOW merged at 1e54cf90** (check + historical-data green on 8e5ef476; first parent 09100c9f, so the deploy gate sees it). archive-check dispatched with helius_runs=37240347289 (run 8, verified SOURCE helius, DAYS 2026-09-21 in its plan log; the only active data-scan run). Docs landed by rebase (linear). Deploy after 1e54cf90's push check (about 10:30) per the checklist.
 - 10:00: Ops end-to-end on e444d7e2 (run 37241348721) green, so the deploy gate's e2e condition holds again.
 - 9:59: **my error**: I told the owner a first practice buy had happened from the Session card's "Open positions: 1"; the owner says it has shown 1 since install. Verified in code: Snipe.tsx:27 shows `session.maxOpenPositions` (the R3 limit), not a count. No trade exists (Results: 0 trades). Card APP-TRUTH to the API/APP builder: relabel that row as the limit, and name the rule behind "Entries: Off: risk limit" (stopHalts sends code 'risk' with the RiskCode as source; the app shows only "risk limit"). Journal 9:54–9:56 also shows H7 "Stuck curve" refusals (GaGo), so hard rejects run.

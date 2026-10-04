@@ -30,7 +30,27 @@ const isTime = (t: number): boolean => Number.isSafeInteger(t);
 const fresh = (atMs: number, nowMs: number, maxAgeMs: number): boolean => isTime(atMs) && atMs <= nowMs && nowMs - atMs <= maxAgeMs;
 
 const byClose = (a: ClosedTrade, b: ClosedTrade): number => a.closedAtMs - b.closedAtMs;
-const isLoss = (t: ClosedTrade): boolean => t.netPnl < 0n;
+/**
+ * R8-WHOLE (supervisor ruling): when a closed trade became a loss, as of `nowMs`, or null while it is not one: its close
+ * when the close lost, else the booking time of the first late entry that takes its whole result below zero. Sticky:
+ * a later gain never makes it a win again (a loss is never lowered after the fact, as equity does). A late loss with
+ * no dollar value (no SOL price when it was booked) makes it a loss from then, the safe side until the books are in
+ * SOL. Entries booked after `nowMs` are not read.
+ */
+const lossAt = (t: ClosedTrade, nowMs: number): number | null => {
+  if (t.netPnl < 0n) return t.closedAtMs;
+  let whole: bigint = t.netPnl;
+  for (const x of [...(t.late ?? [])].filter((e) => e.atMs <= nowMs).sort((a, b) => a.atMs - b.atMs)) {
+    if (x.usd === null) {
+      if (x.lamports < 0n) return x.atMs;
+      continue;
+    }
+    whole += x.usd;
+    if (whole < 0n) return x.atMs;
+  }
+  return null;
+};
+const isLoss = (t: ClosedTrade, nowMs: number): boolean => lossAt(t, nowMs) !== null;
 
 // ---------- Account figures (R1, R6 to R10) ----------
 
@@ -148,7 +168,7 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
   const problems: RiskReason[] = [];
   const latchTimes = [latches.killTrippedAtMs, latches.killRearmedAtMs, latches.weeklyTrippedAtMs, latches.weeklyReviewedAtMs, latches.lossReviewedAtMs]
     .filter((t): t is number => t !== null);
-  const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.navMarks.map((m) => m.atMs), ...a.costs.map((c) => c.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...partialTimes(a), ...a.entries.map((e) => e.atMs), ...latchTimes];
+  const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.navMarks.map((m) => m.atMs), ...a.costs.map((c) => c.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...a.closedTrades.flatMap((c) => (c.late ?? []).map((x) => x.atMs)), ...partialTimes(a), ...a.entries.map((e) => e.atMs), ...latchTimes];
   if (times.some((t) => !isTime(t) || t > nowMs)) problems.push(reason('bankroll_invalid', 'account history or a latch has an invalid or future time'));
   if (a.heldReservations < 0n) problems.push(reason('bankroll_invalid', 'held reservations are negative'));
   if (a.flows.some((f) => f.navBefore <= 0n)) problems.push(reason('bankroll_invalid', 'a deposit or withdrawal has no positive valuation'));
@@ -189,7 +209,7 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
 
   const trades = [...a.closedTrades].sort(byClose);
   let lossStreak = 0;
-  for (let i = trades.length - 1; i >= 0 && isLoss(trades[i] as ClosedTrade); i--) lossStreak++;
+  for (let i = trades.length - 1; i >= 0 && isLoss(trades[i] as ClosedTrade, nowMs); i--) lossStreak++;
 
   if (equity <= 0n || atWeek.equity <= 0n) problems.push(reason('bankroll_invalid', 'equity is not positive'));
   return {
@@ -273,18 +293,22 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   if (s.dayLoss >= dailyLimit) reasons.push(reason('daily_loss', 'daily loss trigger reached; entries resume at midnight Melbourne time'));
 
   // R8: consecutive losses.
-  const last = f.trades.at(-1);
-  if (last && s.lossStreak >= policy.loss.cooldownAfterLosses && nowMs < last.closedAtMs + policy.loss.cooldownMs) {
+  // R8-WHOLE: timed from the streak's latest loss moment (a late loss that completes it starts the cooldown and the day
+  // pause when it was booked); the close's own day, already checked, is never rewritten.
+  const streakAt = s.lossStreak === 0 ? null : Math.max(...f.trades.slice(-s.lossStreak).map((t) => lossAt(t, nowMs)!));
+  if (streakAt !== null && s.lossStreak >= policy.loss.cooldownAfterLosses && nowMs < streakAt + policy.loss.cooldownMs) {
     reasons.push(reason('loss_cooldown', `${s.lossStreak} losses in a row; cooling down`));
   }
-  if (last && s.lossStreak >= policy.loss.pauseDayAfterLosses && last.closedAtMs >= s.dayStartMs) {
+  if (streakAt !== null && s.lossStreak >= policy.loss.pauseDayAfterLosses && streakAt >= s.dayStartMs) {
     reasons.push(reason('loss_day_pause', `${s.lossStreak} losses in a row; paused for the day`));
   }
   const reviewed = latches.lossReviewedAtMs;
-  const sinceReview = f.trades.filter((t) => reviewed === null || t.closedAtMs > reviewed);
+  // A trade whose close or loss moment is after the review counts (a loss learned after a review is new evidence); the
+  // window keeps close order.
+  const sinceReview = f.trades.filter((t) => reviewed === null || t.closedAtMs > reviewed || (lossAt(t, nowMs) ?? -Infinity) > reviewed);
   const reviewWindow = policy.loss.reviewWindowTrades;
   for (let i = 0; i < Math.max(1, sinceReview.length - reviewWindow + 1); i++) {
-    const losses = sinceReview.slice(i, i + reviewWindow).filter(isLoss).length;
+    const losses = sinceReview.slice(i, i + reviewWindow).filter((t) => isLoss(t, nowMs)).length;
     if (losses >= policy.loss.reviewLosses) {
       reasons.push(reason('loss_review', `${losses} losses in ${reviewWindow} trades; paused until reviewed`));
       break;
@@ -511,7 +535,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   cap('R6', 'full loss inside the weekly limit', weekAllowance - heldUsd - cMaxUsd);
   if (request.poolLiquidity !== null) cap('R12', 'liquidity floor multiple', request.poolLiquidity / BigInt(policy.liquidity.floorNotionalMultiple));
   const lastTrade = check.figures.trades.at(-1);
-  if (lastTrade && isLoss(lastTrade)) cap('R15', 'no larger size after a loss', lastTrade.notional);
+  if (lastTrade && isLoss(lastTrade, nowMs)) cap('R15', 'no larger size after a loss', lastTrade.notional);
 
   const capCode: Partial<Record<SizeCapEntry['control'], RiskCode>> = {
     R2: 'size_below_minimum', R4: 'ops_reserve', R5: 'planned_risk', R12: 'liquidity_floor', R15: 'size_after_loss',
