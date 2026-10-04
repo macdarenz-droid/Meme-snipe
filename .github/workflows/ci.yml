@@ -17,7 +17,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
+  # CI-SHARD: the test suite runs in parallel shards, each file in exactly one (vitest --shard); `check` waits on
+  # every shard and on typecheck and build, and passes only when all passed and the shards' reports cover the file
+  # list exactly once. The name `check` is what OPS-GATE (ops/deploy/tag.sh, the host's zeroed-update) and the
+  # preview release (.github/scripts/require-check.sh) read, so it stays the one verdict.
+  static:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -30,8 +34,66 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm test
       - run: pnpm -r --if-present build
+      - name: The test file list the shards must cover
+        run: pnpm exec vitest list --filesOnly --json > test-files.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-files
+          path: test-files.json
+          retention-days: 3
+
+  test:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # Every shard reports, so one failure never hides another's.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The same `vitest run` as `pnpm test`, one shard of it; the light and heavy worker caps (vitest.config.ts) hold per shard.
+      - run: pnpm test --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json=shard.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shard-${{ matrix.shard }}
+          path: shard.json
+          retention-days: 3
+
+  check:
+    # Runs when a shard or the static job failed too (not when the run was cancelled), so a failure is a red
+    # `check`, never a skipped one.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    needs: [static, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Every shard, typecheck and build passed
+        env:
+          STATIC: ${{ needs.static.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "static: $STATIC; test shards: $TEST"
+          [ "$STATIC" = success ] && [ "$TEST" = success ]
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: reports
+      - name: The shards ran every test file exactly once
+        run: node .github/scripts/shard-cover.mjs reports/test-files/test-files.json reports/shard-*/shard.json
 
   historical-data:
     # DATA-1 scanner, QA verdict and CI script tests (offline; no archive access).
