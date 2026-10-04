@@ -87,6 +87,8 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     const { h2, m2, fetchedWhy } = await restart(h, timers, seed);
     expect(decisions(h2).filter((r) => r[0] === 'candidate restored').map((r) => r[2])).toEqual([MINT]);
     expect(h2.worker.strategy.candidates().get(MINT)?.migratedAtMs).toBe(MIGRATED_AT);
+    // The restored pool is watched with its catch-up from the migration slot (S0-ZERO), not from the restart.
+    expect(h2.worker.strategy.watchedPools().get(POOL_ADDRESS)?.fromSlot).toBe(SLOT - 15_000n);
     // Read again at confirmed once the sources are up: the migration and the create.
     expect(fetchedWhy).toEqual(expect.arrayContaining([[MIG_SIG, 'restore'], ['create-1', 'create']]));
     // Before the window: not evaluated. Inside it: evaluated (its facts are not all there, so a reject), never forgotten.
@@ -115,7 +117,8 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     const s = restoreInto([GOOD]);
     expect(s.out).toContainEqual({ action: null, reasons: ['candidate restored', 'U2', MINT, `migrated at ${GOOD.migratedAtMs}`, 'tries 2'] });
     expect(s.strategy.candidates().get(MINT)).toEqual(expect.objectContaining({ migratedAtMs: GOOD.migratedAtMs, lastEvalMs: GOOD.lastEvalMs }));
-    expect(s.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
+    // S0-ZERO's catch-up starts the pool's trade coverage at the saved migration slot.
+    expect(s.strategy.watchedPools().get(POOL_ADDRESS)).toEqual({ mint: MINT, held: false, fromSlot: GOOD.migrationSlot });
   });
 
   it('restores REC-1\'s tail watches: a live one keeps its pool watched, an ended one is dropped, past the cap logged', () => {
