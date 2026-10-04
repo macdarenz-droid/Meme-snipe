@@ -539,6 +539,64 @@ for p in finalize qa parity volume determinism; do grep -q "^phase $p (2026-09-2
 rc=0; cdrun b 1 || rc=$?
 [[ $rc == 1 ]] && grep -q "determinism rescan failed (scanner exit 1)" "$T/summary.md" && ok "check-day: any other rescan failure exits 1 (not resumable)" || no "check-day rescan failure: rc=$rc"
 
+# ---- rpc-day.sh / rpc-credits.sh / check-day.sh (source helius): one credit total per day across runs ----
+R="$T/rpcbin"; mkdir -p "$R"
+cat > "$R/zeroed-rpcscan" <<'STUB'
+#!/usr/bin/env bash
+# rpc-run / rpc-unit stand-in: logs its arguments, writes RPC_CREDITS into -usage-out,
+# sleeps RPC_SLEEP (interruptible: SIGINT writes the usage and exits 1), exits RPC_RC.
+echo "$*" >> "$RPCLOG"
+u=; while (( $# )); do [[ $1 == -usage-out ]] && u=$2; shift; done
+w() { [[ -n "$u" && -z "${RPC_NOUSAGE:-}" ]] || return 0
+  if [[ -n "${RPC_USAGE_RAW:-}" ]]; then printf '%s' "$RPC_USAGE_RAW" > "$u"; else printf '{\n  "credits": %s,\n  "requests": 1\n}\n' "${RPC_CREDITS:-0}" > "$u"; fi; }
+trap 'w; exit 1' INT
+[[ -n "${RPC_SLEEP:-}" ]] && { sleep "$RPC_SLEEP" & wait $!; }
+w; exit "${RPC_RC:-0}"
+STUB
+chmod +x "$R/zeroed-rpcscan"
+rd() { local o=$1; shift; : > "$T/summary.md"; env RPCLOG="$T/rpc.log" PATH="$R:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" "$@" \
+  bash "$here/rpc-day.sh" 2026-09-21 "$o" "${RD_BUDGET:-5}" 1000 > "$T/out.txt" 2>&1; }
+o="$T/rd1"; rm -rf "$o" "$T/rpc.log"
+rc=0; rd "$o" RPC_CREDITS=100 RPC_RC=75 || rc=$?
+[[ $rc == 75 && $(cat "$o/rpc-credits-used") == 100 ]] && grep -q -- "-max-credits 1000 " "$T/rpc.log" && grep -q -- "-from 2026-09-21 -to 2026-09-22 " "$T/rpc.log" &&
+  ok "rpc-day: a back-off stop exits 75 (resumable) and books the run's credits" || no "rpc-day 75: rc=$rc $(cat "$T/out.txt")"
+rc=0; rd "$o" RPC_CREDITS=50 RPC_RC=0 || rc=$?
+[[ $rc == 0 && $(cat "$o/rpc-credits-used") == 150 ]] && grep -q -- "-max-credits 900 " "$T/rpc.log" &&
+  ok "rpc-day: the next chained run may spend only what is left of the day's cap (900 of 1000), and the total adds up" || no "rpc-day resume: rc=$rc $(cat "$T/rpc.log")"
+rc=0; rd "$o" RPC_CREDITS=850 RPC_RC=3 || rc=$?
+[[ $rc == 3 && $(cat "$o/rpc-credits-used") == 1000 ]] && grep -q "credit cap 1000 spent while reading" "$T/summary.md" &&
+  ok "rpc-day: the cap spent mid-run exits 3 (not resumable) with the credits booked" || no "rpc-day cap: rc=$rc"
+n=$(wc -l < "$T/rpc.log"); rc=0; rd "$o" || rc=$?
+[[ $rc == 3 && $(wc -l < "$T/rpc.log") == "$n" ]] && ok "rpc-day: with the cap spent, no request is made (exit 3)" || no "rpc-day spent: rc=$rc"
+o="$T/rd2"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2"; echo '{"scanner_revision": "old"}' > "$o/units/1046/1-2/stats.json"
+rc=0; rd "$o" SCANNER_REVISION=new RPC_CREDITS=1 || rc=$?
+[[ $rc == 0 && ! -e "$o/units/1046/1-2" ]] && ok "rpc-day: units of another revision are reread" || no "rpc-day revision"
+o="$T/rd3"; rm -rf "$o"; t0=$(date +%s); rc=0; RD_BUDGET=2s rd "$o" RPC_SLEEP=30 RPC_CREDITS=7 || rc=$?
+[[ $rc == 75 && $(cat "$o/rpc-credits-used") == 7 ]] && (( $(date +%s) - t0 < 20 )) &&
+  ok "rpc-day: at the time budget the read is interrupted, its credits booked, exit 75" || no "rpc-day budget: rc=$rc $(cat "$T/out.txt")"
+o="$T/rd4"; rm -rf "$o"; rc=0; rd "$o" RPC_USAGE_RAW='{"cre' RPC_RC=75 || rc=$?
+[[ $rc != 0 && $rc != 75 ]] && grep -q "not booked" "$T/summary.md" &&
+  ok "rpc-day: credits that cannot be booked (malformed usage file) stop the day, not resumable (exit $rc, never 75)" || no "rpc-day unbooked: rc=$rc $(cat "$T/out.txt")"
+o="$T/rd5"; rm -rf "$o"; rc=0; rd "$o" RPC_CREDITS=100 RPC_RC=75 || rc=$?; rd "$o" RPC_NOUSAGE=1 RPC_RC=75 || true
+[[ $(cat "$o/rpc-credits-used") == 100 ]] && ok "rpc-day: a run that writes no usage file books nothing (the previous run's file is not counted again)" || no "rpc-day stale usage: $(cat "$o/rpc-credits-used")"
+printf '{\n  "requests": 3\n}\n' > "$T/bad-usage.json"; mkdir -p "$T/rc0"
+"$here/rpc-credits.sh" add "$T/rc0" "$T/bad-usage.json" 2>/dev/null && no "rpc-credits accepted a usage file without credits" || ok "rpc-credits: a usage file without credits fails (never drops spent credits)"
+# check-day, source helius: the determinism rescan goes over RPC within the day's cap
+cdh() {
+  local o="$T/cdh-$1"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$T/cd-ds"; echo x > "$o/units/1046/1-2/blocks.csv.zst"
+  [[ -n "${2:-}" ]] && echo "$2" > "$o/rpc-credits-used"
+  : > "$T/summary.md"; rm -f "$T/rpc.log"
+  env SOURCE=helius RPC_CREDIT_CAP=500 RPCLOG="$T/rpc.log" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$R:$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" "${@:3}" \
+    bash "$here/check-day.sh" 2026-09-20 "$o" "$T/cdh-assets-$1" > "$T/out.txt" 2>&1
+}
+rc=0; cdh a 200 RPC_CREDITS=40 RESCAN_RC=1 || rc=$?
+[[ $(cat "$T/cdh-a/rpc-credits-used") == 240 ]] && grep -q -- "rpc-unit .*-epoch 1046 -from-slot 1 -to-slot 2 .*-max-credits 300 " "$T/rpc.log" &&
+  ok "check-day (helius): the determinism rescan is an RPC rpc-unit within what is left of the cap, its credits booked" || no "check-day helius rescan: rc=$rc $(cat "$T/rpc.log" 2>/dev/null) $(tail -3 "$T/out.txt")"
+rc=0; cdh b 500 || rc=$?
+[[ $rc == 3 && ! -s "$T/rpc.log" ]] && ok "check-day (helius): with the cap spent, no rescan request and exit 3" || no "check-day helius cap: rc=$rc"
+rc=0; cdh c 0 RPC_RC=75 || rc=$?
+[[ $rc == 75 ]] && grep -q "RPC rate-limit back-off ran out during the determinism rescan" "$T/summary.md" && ok "check-day (helius): an RPC back-off stop in the rescan is resumable (75)" || no "check-day helius 75: rc=$rc"
+
 # ---- time-left.sh: a phase starts only when it fits before the job timeout ----
 now=$(date +%s); : > "$T/summary.md"
 GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/time-left.sh" $((now - 300 * 60)) 355 45 >/dev/null && ok "time-left: 55 min left, 45 needed: the phase runs" || no "time-left enough"
@@ -649,6 +707,47 @@ assert steps[1]["run"] == "research/historical/ci/archive-check.sh" and "github.
 assert all("${{" not in st.get("run", "") for st in steps)
 assert not any(k in str(steps) for k in ("ARCHIVE_CHECK_URL", "CURL_BIN", "GH_BIN")), "test-only overrides in the workflow"
 PY
+
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: refused without a cap of 1 to 1000000 or outside scan mode; the key only in the scan and QA steps and only for helius; own progress cache; the chain carries source and cap" || no "data-scan helius wiring"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+ins = wf[True]["workflow_dispatch"]["inputs"]
+assert ins["source"]["options"] == ["archive", "helius"] and ins["source"]["default"] == "archive", ins["source"]
+plan = wf["jobs"]["plan"]["steps"][0]["run"]
+assert 'source helius needs max_credits from 1 to 1000000' in plan and 'source helius is for mode scan only' in plan
+steps = wf["jobs"]["scan"]["steps"]
+key = [s for s in steps if "HELIUS_API_KEY" in str(s)]
+assert [s.get("id") for s in key] == ["scan", "qa"], [s.get("name") for s in key]
+for s in key:
+    assert s["env"]["HELIUS_API_KEY"] == "${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}", s["env"]
+assert "rpc-day.sh" in steps[[s.get("id") for s in steps].index("scan")]["run"]
+caches = [s for s in steps if "actions/cache" in s.get("uses", "") and "work/data" in s["with"]["path"]]
+assert caches and all(s["with"]["key"].startswith("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-") for s in caches), caches
+r = wf["jobs"]["continue"]["steps"][0]["run"]
+assert '-f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS"' in r, r
+assert 'rpc_rps must be from 1 to 50' in plan and ins["rpc_rps"]["default"] == "5"
+for s in key:
+    assert s["env"]["RPC_RPS"] == "${{ inputs.rpc_rps }}", s["env"]
+assert "secrets." not in str(wf["jobs"]["continue"]) and "secrets." not in str(wf["jobs"]["plan"])
+saq = next(s for s in steps if s.get("name") == "Save progress after QA")
+assert "inputs.source == 'helius'" in saq["if"] and "always()" in saq["if"], saq["if"]
+PY
+
+# The plan job's own validation, run as written in data-scan.yml.
+python3 - "$here/../../../.github/workflows/data-scan.yml" > "$T/plan.py" <<'PY'
+import sys, yaml
+run = yaml.safe_load(open(sys.argv[1]))["jobs"]["plan"]["steps"][0]["run"]
+print(run.split("<<'EOF' >> \"$GITHUB_OUTPUT\"\n", 1)[1].rsplit("\nEOF", 1)[0])
+PY
+plan() { env MODE=scan DAYS=2026-09-21 MAX_MBPS=80 SOURCE=helius MAX_CREDITS=260000 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 "$@" python3 "$T/plan.py" > "$T/plan.out" 2>&1; }
+bad=""
+plan || bad+=" valid-refused"
+for v in 0 51 5.5 ""; do plan RPC_RPS="$v" && bad+=" rps=$v"; done
+for v in 0 1000001 ""; do plan MAX_CREDITS="$v" && bad+=" credits=$v"; done
+plan MODE=volume && bad+=" helius-volume"
+plan SOURCE=other && bad+=" source=other"
+plan SOURCE=archive MAX_CREDITS=0 RPC_RPS=0 || bad+=" archive-refused"
+[[ -z "$bad" ]] && ok "data-scan plan: refuses rpc_rps 0, 51, 5.5 and empty, a cap outside 1..1000000, helius outside scan, an unknown source; accepts the free day and archive scans" || no "data-scan plan validation:$bad"
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
