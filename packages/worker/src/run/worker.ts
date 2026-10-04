@@ -7,8 +7,8 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { placeBookings } from './booked.ts';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -52,7 +52,7 @@ import { loadState, saveState } from '../persist/index.ts';
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export const PERSIST_FILE = 'deployer-state.json';
 export const PERSIST_EVERY_MS = 5 * 60_000;
-import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
+import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { type PoolFact, S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -203,6 +203,8 @@ export class Worker {
   readonly #ledger: Ledger;
   readonly #control: StateFile<Control>;
   readonly #exitsFile: ReturnType<typeof exitsFile>;
+  readonly #seedsFile: ReturnType<typeof seedsFile>;
+  #savedSeeds = '';
   readonly #account: PaperAccount;
   readonly #feed: LiveFeed;
   readonly #facts: EngineFeed;
@@ -301,6 +303,7 @@ export class Worker {
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
     this.#exitsFile = exitsFile(c.stateDir);
+    this.#seedsFile = seedsFile(c.stateDir);
     this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
 
     this.#feed = new LiveFeed({
@@ -414,11 +417,11 @@ export class Worker {
     for (const e of this.#ledger.positionEvents()) if (e.status === 'open' && openedAt[e.positionId] === undefined) openedAt[e.positionId] = Number(e.ts);
     // Where each booking sits against the boots (live, or at a reconcile), from the journal's earlier lines (EXIT-1f N2).
     const journalPath = join(c.stateDir, STATE_FILES.journal);
-    const bookedWhen = placeBookings(existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : null, openedAt);
+    const bookedWhen = placeBookingsAt(journalPath, openedAt);
     // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen }, startAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}) }, startAt);
     this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt + 1);
     if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt + 1);
     if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt + 1);
@@ -614,6 +617,16 @@ export class Worker {
     writeFileSync(join(this.#d.config.stateDir, STATE_FILES.openIntents), `${n}\n`);
   }
 
+  /** The strategy's exit plans and trackers, written when they changed. */
+  #saveExits(): void {
+    const saved = this.#strategy.saved();
+    const text = jsonText(saved);
+    if (text !== this.#savedExits) {
+      this.#exitsFile.write(saved);
+      this.#savedExits = text;
+    }
+  }
+
   /** One engine step: release what is due, decide, record, write. */
   step(): void {
     const now = this.#d.timers.now();
@@ -622,6 +635,16 @@ export class Worker {
     this.#engine.drain();
     this.#recorder?.flush();
     this.#watchOpened();
+    // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
+    // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
+    // The plans go first: a plan made this step replaced its seed, so the seed may leave the disk only once the plan is
+    // on it (EXIT-1h review B1: a kill between the two writes left neither).
+    this.#saveExits();
+    const seeds = jsonText(this.#strategy.seeds());
+    if (seeds !== this.#savedSeeds) {
+      this.#seedsFile.write(this.#strategy.seeds());
+      this.#savedSeeds = seeds;
+    }
     const records = this.#engine.records as LogRecord[];
     const n = records.length;
     for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);
@@ -636,12 +659,7 @@ export class Worker {
         this.#report({ type: 'tick', blockHeight: this.#lastSlot });
       }
     }
-    const saved = this.#strategy.saved();
-    const text = jsonText(saved);
-    if (text !== this.#savedExits) {
-      this.#exitsFile.write(saved);
-      this.#savedExits = text;
-    }
+    this.#saveExits();
     this.#markAccount(now);
     if (now - this.#lastSaveMs >= PERSIST_EVERY_MS) this.#persist(now);
     this.#checkHalt(now);
@@ -1204,6 +1222,7 @@ export class Worker {
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
       rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
     };
     return h;
