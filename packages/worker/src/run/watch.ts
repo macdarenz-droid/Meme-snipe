@@ -18,6 +18,8 @@ export interface PositionWatchOptions {
   readonly everyMs: number;
   /** A held position's market older than this is read again (config: ZEROED_WATCH_STALE_MS). */
   readonly staleMs: number;
+  /** An answer later than this is not used: it would already be too old to quote (config: ZEROED_WATCH_LATENCY_MS). */
+  readonly latencyMs: number;
   /** Open positions: the mint and the pool it trades on (null when no pool is known yet). */
   readonly held: () => readonly { readonly mint: string; readonly pool: string | null }[];
   /** When the market the position is priced at was observed (ms), or null when it has none. */
@@ -90,19 +92,31 @@ export class PositionWatch {
     }
   }
 
+  /** One read through the second path, refused when its answer comes later than `latencyMs`. */
+  #read(addresses: readonly string[]): Promise<WatchRead> {
+    const ms = this.#o.latencyMs;
+    let timer: TimerHandle | null = null;
+    const late = new Promise<never>((_, reject) => {
+      timer = this.#o.timers.setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+    });
+    return Promise.race([this.#o.read(addresses), late]).finally(() => {
+      if (timer !== null) this.#o.timers.clearTimeout(timer);
+    });
+  }
+
   async #snapshot(mint: string, pool: string): Promise<void> {
     this.reads++;
     try {
       let vaults = this.#vaults.get(pool);
       if (vaults === undefined) {
-        const first = await this.#o.read([pool]);
+        const first = await this.#read([pool]);
         const acc = first.accounts[0];
         if (acc == null) throw new Error('the pool account does not exist');
         const p = decodePool(acc.data).value;
         vaults = [p.poolBaseTokenAccount, p.poolQuoteTokenAccount];
         this.#vaults.set(pool, vaults);
       }
-      const r = await this.#o.read(snapshotAddresses(pool, vaults[0], vaults[1], mint));
+      const r = await this.#read(snapshotAddresses(pool, vaults[0], vaults[1], mint));
       const s = decodeSnapshot(mint, pool, r.slot, r.accounts);
       if (!s.ok) {
         // The layout may have moved: learn it again on the next read.

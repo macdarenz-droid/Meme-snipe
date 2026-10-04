@@ -20,7 +20,8 @@ import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, TRIP_PREFIX, parseSnapshotFact, snapshotKey } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
@@ -232,6 +233,8 @@ export class Worker {
     mkdirSync(c.stateDir, { recursive: true });
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
+    const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
+    if (timing !== null) throw new RangeError(timing);
     const seed = `paper:${this.#boot}`;
     this.#journal.write('start', {
       git_sha: c.gitSha, run_id: c.runId, label: c.runLabel, recorder: c.recorder, simulation: c.simulate, mode: c.mode,
@@ -443,7 +446,7 @@ export class Worker {
     const p = parsePool(this.#pools.get(mint));
     const snap = this.#snapshots.get(mint);
     // The strategy's rule (#market): WATCH-1's snapshot, when newer than the pool fact, is the whole market.
-    if (snap !== undefined && (p === null || snap.atMs > p.obs.receivedAt)) return { address: snap.pool, state: snap.state, ctx: snap.ctx, atMs: snap.atMs };
+    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return { address: snap.pool, state: snap.state, ctx: snap.ctx, atMs: snap.atMs };
     const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
     if (p === null || ctx === undefined) return null;
     return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: p.obs.receivedAt };
@@ -833,7 +836,7 @@ export class Worker {
   #positionWatch(): PositionWatch {
     const d = this.#d;
     return new PositionWatch({
-      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs,
+      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs,
       held: () => Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed' && p.quantity > 0n).map((p) => ({
         mint: p.mint, pool: this.poolOf(p.mint)?.address ?? this.#strategy.saved()[p.id]?.pool ?? null,
       })),

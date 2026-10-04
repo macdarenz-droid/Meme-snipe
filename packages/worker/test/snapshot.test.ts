@@ -8,6 +8,8 @@ import { poolBuyExactBase, poolSell } from '../../core/src/amm/index.ts';
 import { type Address, decodeAddressBytes, decodeMint, decodePool, fromBase64, recordFromRpc, transactionEvents, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
 import { CHAIN_ACCOUNTS as CHAIN } from '../../core/test/gates/world.ts';
 import { decodeSnapshot, type ReadAccount, snapshotAddresses } from '../src/run/snapshot.ts';
+import { type SnapshotFact, snapshotWins } from '../src/engine/strategy.ts';
+import { PositionWatch } from '../src/run/watch.ts';
 import { FakeSocketHub, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
 import { ManualTimers } from '../src/scheduler/index.ts';
 import { CreditBook, LiveProviders } from '../src/run/sources.ts';
@@ -111,6 +113,11 @@ describe('the coherent snapshot (WATCH-1)', () => {
     expect(flags(hook)).toMatchObject({ transferFee: false, transferHook: true });
   });
 
+  it('a FeeConfig not owned by pump-fees is refused', () => {
+    const accts = read();
+    expect(decodeSnapshot(F.mint, F.pool, BigInt(F.slot), accts.map((a, i) => (i === 5 ? { owner: accts[0]!.owner, data: a!.data } : a)))).toMatchObject({ ok: false, reason: expect.stringMatching(/pump-fees/) });
+  });
+
   it('refuses a read it cannot trust: a missing account, another mint, vaults that are not the pool\'s, a non-SOL quote', () => {
     const accts = read();
     const slot = BigInt(F.slot);
@@ -119,7 +126,7 @@ describe('the coherent snapshot (WATCH-1)', () => {
     expect(decodeSnapshot(F.accounts[0]!.address, F.pool, slot, accts)).toMatchObject({ ok: false, reason: expect.stringMatching(/base mint/) });
     expect(decodeSnapshot(F.mint, F.pool, slot, [accts[0]!, accts[2]!, accts[1]!, ...accts.slice(3)])).toMatchObject({ ok: false, reason: expect.stringMatching(/vaults/) });
     expect(decodeSnapshot(F.mint, F.accounts[1]!.address, slot, accts)).toMatchObject({ ok: false, reason: expect.stringMatching(/vaults/) });
-    expect(decodeSnapshot(F.mint, F.pool, slot, accts.map((a, i) => (i === 5 ? accts[4]! : a)))).toMatchObject({ ok: false, reason: expect.stringMatching(/undecodable/) });
+    expect(decodeSnapshot(F.mint, F.pool, slot, accts.map((a, i) => (i === 5 ? { owner: a!.owner, data: accts[4]!.data } : a)))).toMatchObject({ ok: false, reason: expect.stringMatching(/undecodable/) });
   });
 });
 
@@ -141,5 +148,40 @@ describe('the second path (LiveProviders.watchRead)', () => {
     expect(st.granted).toEqual([0, 1, 0, 0]);
     expect(st.creditsUsed).toBe(20);
     expect(providers.helius.status().granted).toEqual([0, 0, 0, 0]);
+  });
+});
+
+describe('which market is newer (review of #87)', () => {
+  const snap = (slot: bigint, atMs: number): SnapshotFact => ({ pool: 'p', slot, atMs, state: { baseReserve: 1n, quoteVault: 1n, virtualQuoteReserves: 0n }, ctx: {} as SnapshotFact['ctx'] });
+  it('by slot when both carry one, the receipt time only breaking a tie or standing in for a pool fact with no slot', () => {
+    expect(snapshotWins(snap(10n, 1_000), { slot: 9n, receivedAt: 5_000 })).toBe(true);
+    expect(snapshotWins(snap(9n, 9_000), { slot: 10n, receivedAt: 1_000 })).toBe(false);
+    expect(snapshotWins(snap(10n, 2_000), { slot: 10n, receivedAt: 1_000 })).toBe(true);
+    expect(snapshotWins(snap(10n, 1_000), { slot: 10n, receivedAt: 1_000 })).toBe(false);
+    expect(snapshotWins(snap(1n, 2_000), { slot: null, receivedAt: 1_000 })).toBe(true);
+    expect(snapshotWins(snap(1n, 1_000), null)).toBe(true);
+  });
+});
+
+describe('the watch\'s read latency (review of #87)', () => {
+  it('an answer later than the allowed latency is refused: the alert is raised and nothing is put on the feed', async () => {
+    const timers = new ManualTimers(0);
+    const put: unknown[] = [];
+    const alerts: string[] = [];
+    const accounts = read();
+    const w = new PositionWatch({
+      timers, everyMs: 200, staleMs: 500, latencyMs: 400,
+      held: () => [{ mint: F.mint, pool: F.pool }], marketAt: () => null,
+      read: (addresses) => new Promise((r) => timers.setTimeout(() => r({ slot: BigInt(F.slot), accounts: addresses.length === 1 ? [accounts[0]!] : accounts }), 450)),
+      put: (s) => void put.push(s), alert: (_m, why) => void alerts.push(why), cleared: () => undefined,
+    });
+    w.start();
+    for (let k = 0; k < 20; k++) {
+      timers.advance(100);
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    w.stop();
+    expect(put).toEqual([]);
+    expect(alerts).toEqual(['no answer within 400 ms']);
   });
 });

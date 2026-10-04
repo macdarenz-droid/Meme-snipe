@@ -12,12 +12,15 @@ import { FACT_READS_KEY, FactRpc, liveFacts } from '../src/facts/index.ts';
 import type { FactSource } from '../src/run/facts.ts';
 import { ProviderError, rpcHandler, type Secrets, type Source, scriptedHttp } from '../src/providers/index.ts';
 import { ALCHEMY_FREE, COINBASE_PUBLIC, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, P1, P3, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
-import { MINT, Market, POOL_ADDRESS, T, dueTimers, makeWorker, passingMarket, scriptedSource, tempState } from './worker-harness.ts';
+import { LANDS, MINT, Market, POOL_ADDRESS, T, dueTimers, makeWorker, passingMarket, scriptedSource, tempState } from './worker-harness.ts';
 import { POOL, QUOTE_VAULT, account } from '../../core/test/gates/world.ts';
 import { poolSell } from '../../core/src/amm/index.ts';
+import { withSlippage } from '../../core/src/fills/index.ts';
+import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { PUMP_AMM_GLOBAL_CONFIG, fromBase64 } from '../../core/src/chain/index.ts';
 import { PUMP_AMM_FEE_CONFIG, type ReadAccount, decodeSnapshot } from '../src/run/snapshot.ts';
 import type { WatchRead } from '../src/run/watch.ts';
+import { parseConfig } from '../src/run/config.ts';
 import { xcheckKey } from '../../core/src/gates/index.ts';
 
 type H = ReturnType<typeof makeWorker>;
@@ -362,8 +365,9 @@ const chainAccount = (address: string): ReadAccount => {
   const a = account(address);
   return { owner: a.owner, data: fromBase64(a.dataBase64) };
 };
-const scaledRead = (h: H, scalePpm: () => bigint, calls: string[][]) => async (addresses: readonly string[]): Promise<WatchRead> => {
+const scaledRead = (h: H, scalePpm: () => bigint, calls: string[][], latencyMs = 0) => async (addresses: readonly string[]): Promise<WatchRead> => {
   calls.push([...addresses]);
+  if (latencyMs > 0) await new Promise<void>((r) => h.timers.setTimeout(r, latencyMs));
   const accounts = addresses.map((address) => {
     const acc = chainAccount(address);
     if (address !== POOL.poolQuoteTokenAccount || acc === null) return acc;
@@ -381,7 +385,7 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     const feeds = [scriptedSource('helius-ws', true, ['helius'])];
     const timers = dueTimers(T - 16 * 86_400_000);
     let h!: H;
-    h = makeWorker({ timers, sources: () => feeds, watchRead: (a) => scaledRead(h, () => scale, calls)(a), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18904', ZEROED_API_ADDR: '127.0.0.1:18905', ZEROED_WATCH_EVERY_MS: '1000', ZEROED_WATCH_STALE_MS: '3000' } });
+    h = makeWorker({ timers, sources: () => feeds, watchRead: (a) => scaledRead(h, () => scale, calls)(a), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18904', ZEROED_API_ADDR: '127.0.0.1:18905' } });
     const m = new Market(h);
     await boot(h, m, feeds);
     await passingMarket(h);
@@ -394,7 +398,8 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     const mine = () => kinds(h.stateDir, 'decision').filter((l) => Date.parse(String(l['ts'])) >= deadAt);
     const took = await until(m, () => mine().some((l) => l['action'] === 'submit'), 60_000, undefined, 100);
     // Within the set time: the stale limit, one watch period, the feed's stale release, and a step.
-    expect(took).toBeLessThanOrEqual(3_000 + 1_000 + 2_000 + 500);
+    const w = (parseConfig({ ZEROED_STATE_DIR: '/x', ZEROED_MODE: 'paper' }, () => null) as { config: { watch: { staleMs: number; everyMs: number } } }).config.watch;
+    expect(took).toBeLessThanOrEqual(w.staleMs + w.everyMs + 2_000 + 500);
     // One read for the vault layout, then the coherent read: pool, vaults, mint, GlobalConfig, FeeConfig.
     expect(calls[0]).toEqual([POOL_ADDRESS]);
     expect(calls[1]).toEqual([POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenAccount, MINT, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG]);
@@ -410,6 +415,9 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     const q = poolSell(snap.snapshot.state, exit.attempts[0]!.quote.inAmount, snap.snapshot.ctx);
     if (!q.ok) throw new Error(q.detail);
     expect(exit.attempts[0]!.quote.quotedOut).toBe(q.trade.userQuote);
+    // The feed's own fee terms would price it differently: the snapshot's fee context is the one used.
+    const mixed = poolSell(snap.snapshot.state, exit.attempts[0]!.quote.inAmount, FEE_CONTEXT);
+    expect(mixed.ok && mixed.trade.userQuote).not.toBe(q.trade.userQuote);
     expect(kinds(h.stateDir, 'alert')).toEqual([]);
     // Still dead for the rest of the 5 minutes: entries halted, no exit able to land, the watch keeps the price fresh.
     await m.run(5 * 60_000 - (m.now - deadAt), 1_000);
@@ -451,6 +459,47 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     await until(m, () => kinds(h.stateDir, 'decision').some((l) => Date.parse(String(l['ts'])) >= deadAt && l['action'] === 'submit'), 10_000, undefined, 100);
     expect(kinds(h.stateDir, 'alert').map((l) => l['level'])).toEqual(['critical', 'cleared']);
     expect(h.worker.health().critical).toEqual([]);
+    await h.worker.stop();
+  }, 60_000);
+
+  it('slots arrive but no pool fact does: the watched market stays younger than the quote age every step, and the paper exit fills on the snapshot\'s reserves', async () => {
+    let scale = 1_000_000n;
+    const calls: string[][] = [];
+    const feeds = [scriptedSource('helius-ws', true, ['helius'])];
+    let h!: H;
+    // Every read answers 300 ms late (inside the 400 ms the timing allows).
+    h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, watchRead: (a) => scaledRead(h, () => scale, calls, 300)(a), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18910', ZEROED_API_ADDR: '127.0.0.1:18911' } });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    await passingMarket(h);
+    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(m), 100);
+    const p0 = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!;
+    // From here only slot notices: the position's pool fact is never read again (live, before POS-1).
+    const ages: number[] = [];
+    const seen = new Set<number>();
+    for (let k = 0; k < 200; k++) {
+      await m.run(100, 100, () => m.slot());
+      const at = h.worker.poolOf(MINT)!.atMs;
+      seen.add(at);
+      ages.push(m.now - at);
+    }
+    expect(Math.max(...ages)).toBeLessThan(TRIAL_POLICY.gates.maxQuoteAgeMs);
+    // marketAt moves: many snapshots, one after another.
+    expect(seen.size).toBeGreaterThan(10);
+    expect(h.worker.book.positions[p0.id]!.status).toBe('open');
+    // The pool falls 40%: the stop exits, and the paper fill is priced on the snapshot's reserves, not the old pool fact.
+    scale = 600_000n;
+    await until(m, () => h.worker.book.positions[p0.id]!.status === 'closed', 30_000, () => m.slot(), 100);
+    const exit = Object.values(h.worker.book.intents).find((i) => i.intent.purpose === 'exit' && i.intent.positionId === p0.id && i.fills.length > 0)!;
+    const sold = exit.fills[0]!;
+    // The expected fill from the scripted read itself, decoded on its own (not through the worker).
+    const snap = decodeSnapshot(MINT, POOL_ADDRESS, 0n, (await scaledRead(h, () => 600_000n, [])(calls.at(-1)!)).accounts);
+    if (!snap.ok) throw new Error(snap.reason);
+    const at = poolSell(snap.snapshot.state, sold.tokens, snap.snapshot.ctx);
+    if (!at.ok) throw new Error(at.detail);
+    const attempt = exit.attempts.find((a) => a.signature === sold.signature)!;
+    expect(sold.sol).toBe(withSlippage(at.trade.userQuote, attempt.quote.quotedOut, LANDS.slippagePpm));
+    expect(snap.snapshot.state.quoteVault).toBe((QUOTE_VAULT * 600_000n) / 1_000_000n);
     await h.worker.stop();
   }, 60_000);
 });

@@ -86,6 +86,16 @@ export interface SnapshotFact {
   readonly ctx: PoolFeeContext;
 }
 
+/**
+ * Whether a snapshot is newer than the pool fact (null: none). By slot when both carry one (the chain's own order),
+ * the receipt time only breaking a tie or standing in when the pool fact has no slot.
+ */
+export const snapshotWins = (snap: SnapshotFact, pool: { readonly slot: bigint | null; readonly receivedAt: number } | null): boolean => {
+  if (pool === null) return true;
+  if (pool.slot !== null && snap.slot !== pool.slot) return snap.slot > pool.slot;
+  return snap.atMs > pool.receivedAt;
+};
+
 export const parseSnapshotFact = (v: unknown): SnapshotFact | null => {
   if (!isObj(v) || typeof v['pool'] !== 'string' || typeof v['slot'] !== 'bigint' || typeof v['atMs'] !== 'number' || !isObj(v['state']) || !isObj(v['ctx'])) return null;
   const st = v['state'];
@@ -549,7 +559,7 @@ export class LiveStrategy implements Strategy {
     const snap = sr.ok ? parseSnapshotFact(unwrap(sr.value)) : null;
     const pool = p.ok ? parsePool(p.value) : null;
     // WATCH-1: a snapshot newer than the pool fact is the market, reserves and fee context alike.
-    if (snap !== null && (pool === null || snap.atMs > pool.obs.receivedAt)) {
+    if (snap !== null && snapshotWins(snap, pool === null ? null : pool.obs)) {
       this.#notePool(mint, snap.pool);
       return { pool: snap.state, ctx: snap.ctx, atMs: snap.atMs, address: snap.pool };
     }

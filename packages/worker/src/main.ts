@@ -8,9 +8,9 @@ import { EXIT } from '../../runner/src/contract.ts';
 import { DryRunRpc } from './dryrun/index.ts';
 import { liveFacts } from './facts/index.ts';
 import { COINBASE_PUBLIC, GOPLUS_FREE } from './scheduler/index.ts';
-import { fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
+import { DEFAULT_LIVE_FEED, fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
 import { systemTimers } from './scheduler/index.ts';
-import { parseConfig } from './run/config.ts';
+import { SLOT_MS, parseConfig, watchTimingProblem } from './run/config.ts';
 import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders, PUMP_CREATE_AUTHORITY } from './run/sources.ts';
@@ -37,6 +37,11 @@ const session = startSession(TRIAL_POLICY);
 const credits = new CreditBook(config.stateDir, timers);
 const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: fetchHttp, factory: globalSocketFactory, credits });
 const policy = session.policy;
+const timing = watchTimingProblem(config.watch, policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
+if (timing !== null) {
+  fail(timing);
+  process.exit(EXIT.config);
+}
 const rpc = new DryRunRpc({ url: () => heliusRpcUrl(environment.secrets), http: fetchHttp, scheduler: providers.helius, timeoutMs: 10_000 });
 let worker: Worker | null = null;
 const simulate = liveSimulator({

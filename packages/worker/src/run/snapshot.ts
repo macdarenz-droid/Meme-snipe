@@ -4,7 +4,7 @@
 // so a stop judged on it judges one moment of the chain. Pure: the reader passes the accounts in.
 import type { PoolFeeContext, PoolState } from '../../../core/src/amm/index.ts';
 import {
-  type Address, NATIVE_MINT, NATIVE_MINT_2022, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_PROGRAM, SYSTEM_PROGRAM, decodeFeeConfig, decodeGlobalConfig, decodeMint, decodePool,
+  type Address, NATIVE_MINT, NATIVE_MINT_2022, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_PROGRAM, PUMP_FEES_PROGRAM, SYSTEM_PROGRAM, decodeFeeConfig, decodeGlobalConfig, decodeMint, decodePool,
   decodeTokenAccount, feeConfigAddress, feeSchedules, pumpPoolAuthority, toAddress,
 } from '../../../core/src/chain/index.ts';
 import { bps } from '../../../core/src/units/index.ts';
@@ -50,6 +50,7 @@ export const decodeSnapshot = (mint: string, pool: string, slot: bigint, account
     const m = decodeMint(mintAcc.data, toAddress(mintAcc.owner));
     if (globalAcc.owner !== PUMP_AMM_PROGRAM) return no('GlobalConfig is not a PumpSwap account');
     const global = decodeGlobalConfig(globalAcc.data).value;
+    if (feeAcc.owner !== PUMP_FEES_PROGRAM) return no('FeeConfig is not a pump-fees account');
     const fees = feeSchedules(decodeFeeConfig(feeAcc.data).value);
     const ext = (kind: string) => m.extensions.find((e) => e.kind === kind) as { readonly fields: Record<string, unknown> } | undefined;
     const tf = ext('TransferFeeConfig')?.fields as { olderTransferFee: { transferFeeBasisPoints: number }; newerTransferFee: { transferFeeBasisPoints: number } } | undefined;

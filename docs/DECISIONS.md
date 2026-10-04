@@ -894,3 +894,22 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - Mutation evidence: 19 of 19 mutants fail the tests (7 on the watch and the strategy, 12 on the snapshot decoder).
 - **Limits.** A paper exit lands only on new slots, so with the slot feed dead it is submitted but lands when the feed returns. Exits are not halted by the feed state, but `exit_capable` still reports the chain feed.
 - **Found while building: live positions had no fresh pool state.** After the entry nothing refreshed a held position's pool fact (only candidate reads and the survival read make one). Until POS-1 prices held positions from their swap events, the watch is their only live price source: one 20 CU read per open position every stale period. With positions open around the clock that is about 0.58 M CU a day, against Alchemy's 30 M a month.
+- **2026-10-04 · Review of #87 (risk reviewer): no gap between snapshots.**
+  - Exits treat a market older than the policy's `maxQuoteAgeMs` (2 s) as no quote. The watch is now tied to it: the oldest a watched market can be when an exit is judged is staleMs + everyMs + latencyMs + the feed's release (2 slots × 400 ms, while slots arrive).
+  - `watchTimingProblem` refuses any setting where that sum reaches the quote age. The entry exits 2, and the Worker refuses to build.
+  - New defaults: period 200 ms, stale 500 ms, latency 400 ms (`ZEROED_WATCH_LATENCY_MS`). An answer later than the latency is not used: it raises the alert and is read again.
+  - Found by the new entry test: `boot/environment.ts`'s allowlist had not passed the three settings at all. Fixed.
+  - Test: slots arrive, no pool fact does, and every read answers 300 ms late. Over 20 s the position's market age stays below 2 s at every 100 ms step, and the market moves with each snapshot.
+- **Paper fills and fees.**
+  - A paper exit that lands after a snapshot is filled on the snapshot's reserves and fee context. The test computes the expected fill from its own decode of the read, not through the worker.
+  - The 40%-fall case asserts that the feed's own fee terms would have priced the exit differently.
+- **Newest by slot.** A snapshot is newer than the pool fact by slot when both carry one; the receipt time only breaks a tie or stands in for a slotless fact (`snapshotWins`).
+- **FeeConfig owner.** The FeeConfig must be owned by pump-fees.
+- **Cost, at the new period.** A held position with no fresh pool fact is read about every 0.7–1.1 s.
+  - About 2.2 M CU a day if held around the clock, or about 0.18 M CU per 120-minute hold, against Alchemy's 30 M a month.
+  - The scheduler halts every class but P0 at 70% of the month, so the watch (P1) stops there and alerts.
+  - POS-1's swap-derived pool facts make the watch idle while a pool trades. A quiet pool (no swap for a stale period) is still read.
+- **On POS-1's merge (agreed with its builder):**
+  - poolOf null, or a pool fact flagged `partial`, reads at once.
+  - The flag is checked only when the pool fact is the newest whole market, so a newer snapshot still wins.
+- **Mutation evidence:** 27 of 27 mutants fail the tests. That is the 19 above plus the eight review mutants: timing not tied to the policy, a late answer used, snapshot reserves with the feed's fee fact, the paper world on the pool fact, newest by receipt time only, FeeConfig owner unchecked, settings not passed from the environment, and the paper market mixing the feed's fees.
