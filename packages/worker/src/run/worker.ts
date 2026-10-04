@@ -45,8 +45,8 @@ import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
-import { riskSnapshot } from '../../../core/src/risk/index.ts';
-import { markSettings, riskAccount } from '../engine/marks.ts';
+import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
 
@@ -789,18 +789,44 @@ export class Worker {
       const m = this.poolOf(mint);
       return { quantity: p.quantity, market: m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs } };
     }, sol, now, markSettings(policy, this.#d.strategy.network), { fallback: true, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
-    const snapshot = riskSnapshot({
+    const input: RiskInput = {
       session: this.#d.session, mode: 'paper', clock: { now: () => ({ slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now }) },
       account, latches: fact.latches, market: { solPrice: sol, solBalance: fact.solBalance, regime: 'unknown' },
-    });
+    };
+    const snapshot = riskSnapshot(input);
     if (snapshot === null) return;
     const maxAge = policy.gates.maxQuoteAgeMs;
     const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
+    // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
+    // exit is being evaluated, so a breach that recovers before the next one still holds until the owner reviews it.
+    // Only a fully marked valuation at a fresh SOL price latches: an unknown mark is a stand-in loss, not a breach.
+    if (latchable(account, sol, now, maxAge)) {
+      const trips = evaluateExit(input).trips;
+      if (trips.length > 0) {
+        this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity}, NAV ${snapshot.nav ?? 'unknown'}).`);
+        this.#latch(trips, now);
+      }
+    }
     const day = this.#account.state.dayMark?.startMs;
     if (this.#account.mark(snapshot, marked, this.#ctl.latches.killRearmedAtMs, now)) {
       if (day !== this.#account.state.dayMark?.startMs) this.#d.log(`Account marks: equity ${snapshot.equity} at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
       this.#publishAccount();
     }
+  }
+
+  /** Latches R10 and R9 at `at` (a latch already set keeps its moment), saves them in control.json and puts the account. */
+  #latch(trips: readonly string[], at: number): void {
+    const l = this.#ctl.latches;
+    this.#ctl = {
+      ...this.#ctl,
+      latches: {
+        ...l,
+        killTrippedAtMs: trips.includes('kill_switch') && l.killTrippedAtMs === null ? at : l.killTrippedAtMs,
+        weeklyTrippedAtMs: trips.includes('weekly_loss') && l.weeklyTrippedAtMs === null ? at : l.weeklyTrippedAtMs,
+      },
+    };
+    this.#control.write(this.#ctl);
+    this.#publishAccount();
   }
 
   #afterRecord(r: LogRecord): void {
@@ -813,20 +839,7 @@ export class Worker {
       else this.#d.log(`Shortlisted ${mint ?? '?'}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
     }
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
-    if (trips.length > 0) {
-      const at = r.at.receivedAt;
-      const l = this.#ctl.latches;
-      this.#ctl = {
-        ...this.#ctl,
-        latches: {
-          ...l,
-          killTrippedAtMs: trips.includes('kill_switch') && l.killTrippedAtMs === null ? at : l.killTrippedAtMs,
-          weeklyTrippedAtMs: trips.includes('weekly_loss') && l.weeklyTrippedAtMs === null ? at : l.weeklyTrippedAtMs,
-        },
-      };
-      this.#control.write(this.#ctl);
-      this.#publishAccount();
-    }
+    if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);
     this.#view(r);
   }
