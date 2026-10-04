@@ -68,6 +68,8 @@ export const RUG_LABELS_UNAVAILABLE = 'rug labels unavailable (no reviewed label
 export interface HardOptions {
   /** Stop at the first failing gate (default). False evaluates every gate, for calibration logs. */
   readonly stopAtFirst?: boolean;
+  /** Evaluate only these gates (an evaluation stage, `HARD_STAGE`); the others are left out of the result. */
+  readonly only?: readonly HardGate[];
 }
 
 export interface HardResult {
@@ -605,6 +607,23 @@ const STEPS: readonly { readonly gate: HardGate; readonly cost: 0 | 1 | 2; reado
   { gate: 'H15', cost: 2, run: h15 },
 ];
 
+/**
+ * Evaluation stages (FACTS-1 staging, supervisor ruling): 1 the gates whose inputs come from the event streams
+ * (create, curve completion, migration, candles, deployer history); 2 the gates that need RPC reads (mint, pool and LP
+ * accounts, cross-checks), asked only for candidates that pass stage 1; 3 the complete holder scan and the funders
+ * (H12, H13), last; 4 the round-trip simulation (H15, live only). Live and the backtest follow the same stages, and a
+ * candidate whose read budget is spent at a stage is "not evaluated", never a pass.
+ */
+export const HARD_STAGE: Readonly<Record<HardGate, 1 | 2 | 3 | 4>> = {
+  H7: 1, H9: 1, H10: 1, H11: 1, H14: 1,
+  H1: 2, H2: 2, H3: 2, H4: 2, H5: 2, H6: 2, H8: 2, H16: 2, H17: 2,
+  H12: 3, H13: 3,
+  H15: 4,
+};
+
+/** The gates of the given stages, in evaluation order. */
+export const gatesOfStages = (stages: readonly (1 | 2 | 3 | 4)[]): HardGate[] => STEPS.filter((x) => stages.includes(HARD_STAGE[x.gate])).map((x) => x.gate);
+
 export const HARD_ORDER: readonly { readonly gate: HardGate; readonly cost: 0 | 1 | 2 }[] = STEPS.map(({ gate, cost }) => ({ gate, cost }));
 
 const requestProblem = (req: GateRequest): string | null => {
@@ -631,6 +650,7 @@ export const evaluateHardRejects = (ctx: GateContext, deps: GateDeps, req: GateR
   const reasons: GateReason[] = [];
   const notes: GateNote[] = [];
   for (const step of STEPS) {
+    if (options.only !== undefined && !options.only.includes(step.gate)) continue;
     const out = step.run(env);
     evaluated.push(step.gate);
     notes.push(...(out.notes ?? []));
