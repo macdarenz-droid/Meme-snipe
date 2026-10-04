@@ -26,7 +26,7 @@ import {
 } from '../gates/facts.ts';
 import { HOURLY_MAX_AGE_MS } from '../gates/series.ts';
 import { insiderLinks } from './funding.ts';
-import { dailyChainVolume } from './volume.ts';
+import { ChainVolumeDays } from './volume.ts';
 import type { VolumeHour } from './raw.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
 import {
@@ -90,7 +90,7 @@ export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): Produ
   survivalReadWindowMs: MINUTE_MS,
   graduatesKeepMs: (p.regime.survivalMedianDays + 2) * 24 * HOUR_MS + p.regime.survivalAfterMs,
   solUsdKeepMs: 24 * HOUR_MS + (p.regime.failedChecksToDisable + 1) * HOUR_MS + HOURLY_MAX_AGE_MS,
-  volumeKeepMs: (p.regime.volumeWindowDays + 2) * 24 * HOUR_MS,
+  volumeKeepMs: (p.regime.volumeWindowDays + p.regime.volumeLagDays + 2) * 24 * HOUR_MS,
   insiderSlots: 2,
   firstBuyers: 20,
   ...(execHealth === undefined ? {} : { execHealth }),
@@ -337,7 +337,7 @@ export class FactProducer {
   readonly #pending = new Map<string, Pending>();
   readonly #graduates: GraduatesFact['items'][number][] = [];
   readonly #sol = new Map<number, bigint>();
-  readonly #volume = new Map<number, VolumeHour>();
+  readonly #volume: ChainVolumeDays;
   #abstain = new Map<string, number>();
   #abstainDay = -1;
   #head: bigint | null = null;
@@ -350,6 +350,7 @@ export class FactProducer {
       if (k !== 'execHealth' && !(Number.isSafeInteger(v) && (v as number) >= 0)) throw new RangeError(`producer option ${k} must be a whole number >= 0`);
     }
     this.#o = options;
+    this.#volume = new ChainVolumeDays(options.volumeKeepMs);
   }
 
   /** Feed every released market event, in release order. Returns the facts it changes, each at most once. */
@@ -784,9 +785,8 @@ export class FactProducer {
       const r = parseVolumeHour(v);
       // An hour row is usable only once its hour has ended: earlier it would be a look into the future.
       if (r === null || at < r.hourStartMs + HOUR_MS) return;
-      this.#volume.set(r.hourStartMs, this.#volume.has(r.hourStartMs) && (this.#volume.get(r.hourStartMs)!.lamports !== r.lamports || this.#volume.get(r.hourStartMs)!.covered !== r.covered) ? { ...r, covered: false } : r);
-      for (const t of [...this.#volume.keys()]) if (t < r.hourStartMs - this.#o.volumeKeepMs) this.#volume.delete(t);
-      put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: dailyChainVolume([...this.#volume.values()]) });
+      // Linear in rows: a new fact only when the complete days change (a whole window loads at once after a restart).
+      if (this.#volume.add(r)) put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: this.#volume.days() });
     } else if (key === RAW.exec) {
       const r = parseExecStats(v);
       if (r === null) return;
