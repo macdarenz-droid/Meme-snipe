@@ -1,7 +1,7 @@
 // GROWTH-SWEEP: files that grow for the whole run (journal.jsonl, deployers.jsonl, the runner's samples) are read in
 // chunks, never whole, on the worker's boot path and in the runner's drills and report; the chunked reader keeps a
 // multi-byte character cut by a chunk boundary whole; the streamed journal check equals the whole-text one.
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -12,6 +12,7 @@ import { fileLines } from '../../runner/src/lines.ts';
 import { journalLines } from '../src/run/booked.ts';
 import { DeployerStore } from '../src/run/deployer-store.ts';
 import { typedText } from '../src/run/json.ts';
+import { atomicWrite, type WriteFn } from '../src/run/state.ts';
 import { T, makeWorker } from './worker-harness.ts';
 
 const temp = (): string => mkdtempSync(join(tmpdir(), 'growth-'));
@@ -160,5 +161,41 @@ describe('the seed cap at a worker start with no saved index (WORKER-GROW G4b)',
     const ok = makeWorker({ stateDir: dir, maxSeedCreates: 3 });
     expect(ok.logs.some((l) => l.startsWith('Deployer store not seeded'))).toBe(false);
     await ok.worker.stop();
+  });
+});
+
+describe('checked writes (#159 review N2)', () => {
+  /** A disk that takes `room` bytes and then no more; or one that takes one byte per call. */
+  const shortWrite = (room: number): WriteFn => {
+    let left = room;
+    return (fd, buf, off, len) => {
+      const n = Math.min(left, len);
+      left -= n;
+      return n === 0 ? 0 : writeSync(fd, buf, off, n);
+    };
+  };
+  const oneByte: WriteFn = (fd, buf, off) => writeSync(fd, buf, off, 1);
+
+  it('atomicWrite: a short write throws before the rename, the old file is untouched and no temp is left; a write that progresses a byte at a time completes', () => {
+    const dir = temp();
+    const p = join(dir, 'f.json');
+    writeFileSync(p, 'old good content');
+    expect(() => atomicWrite(p, 'new content that does not fit', shortWrite(5))).toThrow(/short write: 5 of 29 bytes/);
+    expect(readFileSync(p, 'utf8')).toBe('old good content');
+    expect(readdirSync(dir)).toEqual(['f.json']);
+    atomicWrite(p, 'é new 🙂', oneByte);
+    expect(readFileSync(p, 'utf8')).toBe('é new 🙂');
+  });
+
+  it('the deployer store rewrite: a short write stops the load with the error and leaves deployers.jsonl whole', () => {
+    const dir = temp();
+    const path = join(dir, 'deployers.jsonl');
+    const text = Array.from({ length: 20 }, (_, k) => typedText({ kind: 'market', id: `log:s${k}:00001`, moment: { slot: BigInt(k + 1), txIndex: 0, ixIndex: 0, receivedAt: 1_000 + k }, key: `${LOG_CREATE_PREFIX}M${k}`, value: { event: { name: 'CreateEvent', program: 'pump', data: { mint: `M${k}`, creator: 'D', timestamp: 1n } } } } as MarketEvent)).join('\n') + '\n';
+    writeFileSync(path, text);
+    expect(() => new DeployerStore(dir, shortWrite(100)).load(0)).toThrow(/short write/);
+    expect(readFileSync(path, 'utf8')).toBe(text);
+    expect(readdirSync(dir)).toEqual(['deployers.jsonl']);
+    expect(new DeployerStore(dir, oneByte).load(0).creates).toHaveLength(20);
+    expect(readFileSync(path, 'utf8')).toBe(text);
   });
 });

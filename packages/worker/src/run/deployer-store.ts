@@ -2,12 +2,13 @@
 // (creates, rug labels, unjudged mints) and every creates and rugs coverage fact, appended as it is released, so a
 // restart re-seeds the index and puts the coverage history back into the engine instead of blanking H14 for a whole
 // look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start.
-import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, writeSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync } from 'node:fs';
 import { fileLines } from '../../../runner/src/lines.ts';
 import { join } from 'node:path';
 import type { MarketEvent } from '../../../core/src/engine/index.ts';
 import { LOG_CREATE_PREFIX, RUG_PREFIX, RUG_UNJUDGED_PREFIX, TX_CREATE_PREFIX } from '../../../core/src/gates/index.ts';
 import { parseTyped, typedText } from './json.ts';
+import { writeAll, type WriteFn } from './state.ts';
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -39,8 +40,12 @@ export interface SavedDeployers {
 export class DeployerStore {
   readonly #path: string;
 
-  constructor(stateDir: string) {
+  readonly #write: WriteFn | undefined;
+
+  /** `write` is for tests (a short write); the default checks every write's count. */
+  constructor(stateDir: string, write?: WriteFn) {
     this.#path = join(stateDir, 'deployers.jsonl');
+    this.#write = write;
   }
 
   /** Keeps a released event when the index or H14's coverage reads it. */
@@ -72,7 +77,7 @@ export class DeployerStore {
     let out: string[] = [];
     let outBytes = 0;
     const flush = (): void => {
-      if (out.length > 0) writeSync(fd, out.join(''));
+      if (out.length > 0) writeAll(fd, out.join(''), this.#write);
       out = [];
       outBytes = 0;
     };
@@ -98,9 +103,13 @@ export class DeployerStore {
       }
       flush();
       fsyncSync(fd);
-    } finally {
+    } catch (e) {
+      // A short write (a nearly full disk) or a read error: the old file stays whole and the start stops with the error.
       closeSync(fd);
+      rmSync(tmp, { force: true });
+      throw e;
     }
+    closeSync(fd);
     renameSync(tmp, this.#path);
     if (keepCreates && creates > maxCreates) return { creates: [], rugs: [], coverage: [], last: null, refused: `${creates} saved creates, over the seed cap of ${maxCreates}` };
     return { creates: kept.filter((e) => isCreate(e.key)), rugs: kept.filter((e) => isRugFact(e.key)), coverage: kept.filter((e) => isCoverage(e.key)), last };
