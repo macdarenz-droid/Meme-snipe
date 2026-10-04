@@ -2,10 +2,13 @@
 // never leaves a position unwatched. ALERT-EXIT B1: a blocked exit is a critical line of its own.
 import { describe, expect, it } from 'vitest';
 import type { PositionState } from '../../core/src/lifecycle/index.ts';
-import { evaluate, limitsFrom, parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
+import type { LogRecord } from '../../core/src/engine/index.ts';
+import type { AlertCode } from '../../core/src/lifecycle/types.ts';
+import { evaluate, limitsFrom, parseHeartbeat, planAlerts } from '../../ops/src/watchdog/logic.ts';
 import type { Health } from '../../runner/src/contract.ts';
 import { heartbeatBody, heartbeatPositions } from '../src/run/heartbeat.ts';
-import { entryPrice, exitCritical } from '../src/run/open-positions.ts';
+import { type AlertSeen, collectAlerts } from '../src/run/api.ts';
+import { criticalLines, entryPrice, exitCritical } from '../src/run/open-positions.ts';
 
 const pos = (id: string, status: PositionState['status'], blockedReason: string | null = null): PositionState =>
   ({ id, mint: `mint-${id}`, venue: 'pumpswap', entryIntentId: `e-${id}`, status, quantity: 1_000n, cost: 1_000_000n, bought: 1_000n, sold: 0n, exitOwner: null, exitSeq: 0, blockedReason }) as unknown as PositionState;
@@ -50,5 +53,43 @@ describe('exitCritical (ALERT-EXIT B1)', () => {
       'mint-b: exit blocked, position b (exit ladder used: 3 attempts on this position)',
     ]);
     expect(exitCritical([pos('a', 'open')])).toEqual([]);
+  });
+});
+
+describe('every critical book alert reaches the owner (ALERT-EXIT, supervisor ruling)', () => {
+  const rec = (ms: number, effects: { level: string; code: AlertCode; subject: string }[]): LogRecord =>
+    ({ type: 'world', seq: 1, at: { slot: 1n, receivedAt: ms }, eventId: 'e', inputs: [], action: null, reasons: [], result: 'applied', effects: effects.map((e) => ({ effect: { type: 'alert', ...e }, dispatch: 'runner' })) }) as unknown as LogRecord;
+  const L = limitsFrom({});
+  const pushed = (critical: string[], active = {}, now = 10_000) => {
+    const hb = parseHeartbeat(heartbeatBody(health([], critical), [], null))!;
+    return planAlerts(active, evaluate({ hb, receivedAt: now }, now, L, { slot: null, heldMints: null }), now, L);
+  };
+  const CLASSES: readonly AlertCode[] = ['double_fill', 'oversold', 'unbooked_landing', 'late_landing', 'status_balance_mismatch'];
+
+  for (const code of CLASSES) {
+    it(`${code}: a critical line of its own, pushed at once, also while another alert is up`, () => {
+      const alerts: AlertSeen[] = [];
+      collectAlerts(alerts, rec(5_000, [{ level: 'critical', code, subject: 'i:1' }]));
+      const lines = criticalLines(['MintA: no fresh price (timeout)'], [], alerts);
+      expect(lines).toEqual(['MintA: no fresh price (timeout)', `${code} i:1 (at ${new Date(5_000).toISOString()})`]);
+      // WATCH-1's alert is already up; the book's alert is pushed now, not at that alert's repeat.
+      const before = pushed(['MintA: no fresh price (timeout)']);
+      const after = pushed(lines, before.next, 70_000);
+      expect(after.lines).toEqual([`ALERT Worker critical: ${code} i:1 (at ${new Date(5_000).toISOString()}).`]);
+      // A second subject of the same class is a second alert.
+      collectAlerts(alerts, rec(6_000, [{ level: 'critical', code, subject: 'i:2' }]));
+      expect(pushed(criticalLines([], [], alerts)).lines).toHaveLength(2);
+    });
+  }
+
+  it('warnings are not pushed; exit_blocked follows its position, not the alert history', () => {
+    const alerts: AlertSeen[] = [];
+    collectAlerts(alerts, rec(5_000, [
+      { level: 'warn', code: 'restart_recovery', subject: 'book' }, { level: 'warn', code: 'orphan_cleared', subject: 'i:9' },
+      { level: 'warn', code: 'cancel_after_broadcast', subject: 'i:8' }, { level: 'critical', code: 'exit_blocked', subject: 'a' },
+    ]));
+    // The exit was booked blocked, then an exit owned the position again: no line.
+    expect(criticalLines([], [pos('a', 'exit_pending')], alerts)).toEqual([]);
+    expect(criticalLines([], [pos('a', 'exit_blocked', 'no quote: x')], alerts)).toEqual(['mint-a: exit blocked, position a (no quote: x)']);
   });
 });

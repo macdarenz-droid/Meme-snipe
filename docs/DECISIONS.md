@@ -1278,6 +1278,20 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
     - On the real worker, a drained pool books the exit blocked with no mark. The heartbeat's `critical` names it, and the watchdog's `evaluate` returns its alert. It failed before with `[]`.
     - A blocked exit raised a minute after a WATCH-1 alert is pushed at once. A changed reason is no new push.
     - Only `exit_blocked` positions get a line.
+- **2026-10-05 · Every critical book alert reaches the owner (supervisor ruling, golden rule).** The book's other critical alerts reached only the app, the same gap as a blocked exit:
+  - double_fill;
+  - oversold;
+  - unbooked_landing;
+  - late_landing;
+  - status_balance_mismatch.
+  - Each one `collectAlerts` keeps is now a line of its own in the heartbeat's `critical` list: `<code> <subject> (at <ISO time>)`. So the watchdog pushes it at once, per code and subject, also while another alert is up.
+  - These are events with no state that clears them. A line stays up while the worker runs, which is the app's bounded list, the newest 50. A restart drops it, and the watchdog then sends its cleared line. The engine log keeps every alert.
+  - `exit_blocked` is left to the position's own line, which clears when the exit is owned again.
+  - restart_recovery, orphan_cleared and cancel_after_broadcast are warnings by design (core lifecycle), so they are not pushed.
+  - `criticalLines` builds the whole list.
+  - Tests: one per class, from the alert record to the critical list to the heartbeat to the watchdog's push. A second subject of a class is a second alert. Warnings are not pushed. A cleared exit block has no line.
+  - Mutants 4 of 4 killed: the book's lines dropped, exit_blocked not filtered, one line for all, the subject left out.
+  - Residual: the worker's call that passes its alert list into `criticalLines` is covered by its type only. No harness path raises a real double fill or late landing.
 - **2026-10-05 · Every open position is watched (audit N3).**
   - The heartbeat carried only the first open position, so the watchdog's stop and wallet checks were blind past `maxOpen` 1.
   - It now sends `open_positions`, every position in /health's order. `open_position` stays as the first, for older readers.

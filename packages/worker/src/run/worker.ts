@@ -44,7 +44,7 @@ import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
-import { exitCritical, openPositionsHealth } from './open-positions.ts';
+import { criticalLines, openPositionsHealth } from './open-positions.ts';
 import { riskSnapshot } from '../../../core/src/risk/index.ts';
 import { markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
@@ -1285,7 +1285,7 @@ export class Worker {
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
       rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? []), ...exitCritical(Object.values(this.#engine.book.positions))], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: criticalLines(this.#watch?.critical ?? [], Object.values(this.#engine.book.positions), this.#alerts), feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
     };
