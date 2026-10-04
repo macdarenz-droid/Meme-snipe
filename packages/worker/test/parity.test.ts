@@ -304,6 +304,18 @@ describe('TEST-1 parity harness', () => {
     expect(r.ok).toBe(true);
   });
 
+  it('a boot whose only decision lines are ledger refusals is not skipped: its refusal fails the session', async () => {
+    const h = await session();
+    const lines = readFileSync(journalPath(h), 'utf8').split('\n').filter((l) => l !== '');
+    lines.push(JSON.stringify({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot: 'refused-1', kind: 'start', seed: 'paper:refused-1' }));
+    lines.push(JSON.stringify({ seq: 2, ts: '2026-10-04T00:00:01.000Z', boot: 'refused-1', kind: 'decision', action: 'ledger_refused', reasons: ['ledger refused fill: planted'] }));
+    writeFileSync(journalPath(h), `${lines.join('\n')}\n`);
+    const r = checkSession(h.stateDir, deps(h), replayLedgerFile, 1);
+    const b = r.boots.find((x) => x.boot === 'refused-1');
+    expect(b).toMatchObject({ excluded: { ledger_refused: 1 } });
+    expect(r.ok).toBe(false);
+  });
+
   it('normalise drops only seq, ts and boot', () => {
     expect(normalise('{"seq":12,"ts":"2026-10-03T00:00:00.000Z","boot":"abc-1","kind":"decision","event":"x"}')).toBe('{"kind":"decision","event":"x"}');
     expect(normalise('{"kind":"decision","seq":1}')).toBe('{"kind":"decision","seq":1}');
