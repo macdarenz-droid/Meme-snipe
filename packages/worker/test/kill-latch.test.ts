@@ -10,7 +10,8 @@ import { markedHistory } from '../src/engine/marks.ts';
 import { SOL_PRICE_KEY, TRIPPED_PREFIX, TRIP_PREFIX } from '../src/engine/strategy.ts';
 import { accountFile } from '../src/run/account.ts';
 import { controlFile, NO_CONTROL } from '../src/run/state.ts';
-import { MINT, Market, SOL_PRICE, makeWorker, passingMarket, until } from './worker-harness.ts';
+import { killLatchHolds, weeklyLatchHolds } from '../../core/src/risk/index.ts';
+import { MINT, Market, SOL_PRICE, T, makeWorker, passingMarket, tempState, until, virtualTimers } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const latches = (h: H) => controlFile(h.stateDir).read(NO_CONTROL).latches;
@@ -180,5 +181,60 @@ describe('a latch rests only on a fully marked valuation at a fresh SOL price (R
     expect(latches(h).weeklyTrippedAtMs).toBeNull();
     expect(latches(h).killTrippedAtMs).toBeNull();
     await h.worker.stop();
+  });
+});
+
+// RISK-LATCH-2 (AUDIT-RM2 F2): core holds a latch only until the owner re-arms (R10) or reviews after the week (R9).
+// The worker stored a trip only while none was stored, so after one re-arm a later breach never latched again.
+describe('a trip after an owner re-arm or review latches again (RISK-LATCH-2)', () => {
+  it('R10: tripped at T1 and re-armed at R; a new NAV breach latches at T2 > R, which holds after the recovery', async () => {
+    const timers = virtualTimers(T - 16 * 86_400_000);
+    const stateDir = tempState();
+    const t1 = timers.now() - 2 * 3_600_000;
+    const r = timers.now() - 3_600_000;
+    controlFile(stateDir).write({ ...NO_CONTROL, latches: { ...NO_CONTROL.latches, killTrippedAtMs: t1, killRearmedAtMs: r } });
+    const h = makeWorker({ stateDir, timers });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h);
+    await m.run(4_000, 400, () => priced(h, m, 1_000_000n));
+    expect(killLatchHolds(latches(h))).toBe(false);
+    await m.run(4_000, 400, () => priced(h, m, 440_000n));
+    const t2 = latches(h).killTrippedAtMs!;
+    expect(t2).toBeGreaterThan(r);
+    expect(latches(h).killRearmedAtMs).toBe(r);
+    await m.run(2_000, 400, () => priced(h, m, 1_000_000n));
+    // Recovered, and still latched: entries stay refused until the owner re-arms again.
+    expect(latches(h).killTrippedAtMs).toBe(t2);
+    expect(killLatchHolds(latches(h))).toBe(true);
+    await h.worker.stop();
+  });
+
+  it('R9: a trip reviewed after its week has ended latches again on a new weekly loss; one still held keeps its moment', async () => {
+    const timers = virtualTimers(T - 16 * 86_400_000);
+    const stateDir = tempState();
+    const now = timers.now();
+    // Tripped 9 days ago (its week is over) and reviewed 1 day ago: no longer held.
+    controlFile(stateDir).write({ ...NO_CONTROL, latches: { ...NO_CONTROL.latches, weeklyTrippedAtMs: now - 9 * 86_400_000, weeklyReviewedAtMs: now - 86_400_000 } });
+    const h = makeWorker({ stateDir, timers });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h);
+    await m.run(4_000, 400, () => priced(h, m, 1_000_000n));
+    expect(weeklyLatchHolds(latches(h), m.now)).toBe(false);
+    await h.worker.stop();
+    const file = accountFile(h.stateDir);
+    const a = file.read(null as never);
+    const lost = 30_000_000n;
+    file.write({ ...a, walletLamports: a.walletLamports! - lost, trades: [{ positionId: 'p:x:1', mint: 'MintX', openedAtMs: m.now - 7_200_000, notional: 5_000_000n, closedAtMs: m.now - 3_600_000, netLamports: -lost, netPnl: -4_500_000n, stoppedOut: true, booked: -lost }] } as never);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2);
+    await m2.run(4_000, 400, () => priced(h2, m2, 1_000_000n));
+    const at = latches(h2).weeklyTrippedAtMs!;
+    expect(at).toBeGreaterThan(now);
+    expect(weeklyLatchHolds(latches(h2), m2.now)).toBe(true);
+    // Held now: later valuations keep the first moment.
+    await m2.run(2_000, 400, () => priced(h2, m2, 1_000_000n));
+    expect(latches(h2).weeklyTrippedAtMs).toBe(at);
+    await h2.worker.stop();
   });
 });

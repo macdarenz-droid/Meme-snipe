@@ -43,7 +43,7 @@ import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
-import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { type RiskInput, evaluateExit, killLatchHolds, riskSnapshot, weeklyLatchHolds } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
@@ -714,12 +714,14 @@ export class Worker {
   /** Latches R10 and R9 at `at` (a latch already set keeps its moment), saves them in control.json and puts the account. */
   #latch(trips: readonly string[], at: number): void {
     const l = this.#ctl.latches;
+    // RISK-LATCH-2: a trip is stored when no trip holds, by core's own rule: none stored, or the stored one re-armed
+    // (R10) or reviewed after its week (R9). Only "only while null" let a trip after a re-arm go unlatched.
     this.#ctl = {
       ...this.#ctl,
       latches: {
         ...l,
-        killTrippedAtMs: trips.includes('kill_switch') && l.killTrippedAtMs === null ? at : l.killTrippedAtMs,
-        weeklyTrippedAtMs: trips.includes('weekly_loss') && l.weeklyTrippedAtMs === null ? at : l.weeklyTrippedAtMs,
+        killTrippedAtMs: trips.includes('kill_switch') && !killLatchHolds(l) ? at : l.killTrippedAtMs,
+        weeklyTrippedAtMs: trips.includes('weekly_loss') && !weeklyLatchHolds(l, at) ? at : l.weeklyTrippedAtMs,
       },
     };
     this.#control.write(this.#ctl);
