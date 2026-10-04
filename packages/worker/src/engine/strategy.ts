@@ -1433,7 +1433,9 @@ export class LiveStrategy implements Strategy {
       // The S0 diagnostic parts relied on count too: the same reason with a different set is a new line.
       const key = (x: string | null) => (x === null ? null : x.replace(/\d+/g, '#'));
       const waived = this.#waived.join(',');
-      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#diagnostic()] });
+      // A line that carries a trip is always written: risk reports a trip only while it is not latched, so it is never
+      // swallowed as "the same reason" (after an owner's re-arm the same reject must latch again) and never repeats once latched.
+      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived || this.#lastTrips.length > 0)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#lastTrips, ...this.#diagnostic()] });
       if (r !== null) {
         cand.lastReason = r;
         cand.lastWaived = waived;
@@ -1452,6 +1454,12 @@ export class LiveStrategy implements Strategy {
   /** The typed reasons of the last reject `#evaluate` returned (RUN-1c's `gate_reasons`). */
   #lastGates: readonly GateReasonLine[] = [];
 
+  /**
+   * ENTRY-TRIPS: the `trip X` reasons risk found on the last refused entry (a weekly loss or NAV kill reached while flat),
+   * each its own reason on the reject line, so the worker latches it (worker.ts reads elements that start `trip `).
+   */
+  #lastTrips: readonly string[] = [];
+
   /** The same reasons with their inputs, for the candidate (not journaled: gate_reasons keeps its shape). */
   #lastNeeds: readonly CandidateReason[] = [];
 
@@ -1466,6 +1474,7 @@ export class LiveStrategy implements Strategy {
 
   /** One candidate through regime, hard rejects and risk. Returns the reject reason, or null when it proposed an entry. */
   #evaluate(cand: Candidate, ctx: StrategyContext, gctx: GateContext, out: Decision[]): string | null {
+    this.#lastTrips = [];
     const c = this.#d.config;
     const session = this.#d.session;
     const policy = session.policy;
@@ -1533,6 +1542,7 @@ export class LiveStrategy implements Strategy {
     );
     const trips = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
     if (!r.allow) {
+      this.#lastTrips = trips;
       return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${trips.length > 0 ? `; ${trips.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
     }
     if (r.spendLamports !== spend) {
