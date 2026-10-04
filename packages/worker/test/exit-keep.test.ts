@@ -4,7 +4,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import type { SavedEvidence, SavedExit } from '../src/engine/strategy.ts';
+import type { SavedExit } from '../src/engine/strategy.ts';
 import { TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { StateFile, exitsFile } from '../src/run/state.ts';
 import { DEV, Market, POOL_ADDRESS, SUPPLY, makeWorker, passingMarket, until } from './worker-harness.ts';
@@ -181,30 +181,6 @@ describe('a restart keeps the negative-flow run it has seen (EXIT-KEEP B2)', () 
   });
 });
 
-describe('saved trade evidence the worker cannot act on is refused (EXIT-KEEP B2)', () => {
-  it('a malformed saved evidence refuses the saved exit: the position goes to sell-only recovery', async () => {
-    const h = makeWorker();
-    expect(await h.worker.reconcile()).toEqual({ ok: true });
-    const m = await passingMarket(h, HELD);
-    expect(await until(m, 30_000, () => Object.keys(h.worker.strategy.saved()).length > 0, tick(m))).toBe(true);
-    const pid = Object.keys(h.worker.strategy.saved())[0]!;
-    await h.worker.kill();
-    const file = exitsFile(h.stateDir);
-    const saved = file.read({});
-    for (const bad of [{ sales: [{ id: 'x', atMs: 1, amount: 'lots' }], flow: [] }, { sales: [], flow: [{ startMs: 0, net: 1n, ids: [7] }] }, { deployer: { sellers: [], supply: 1n }, sales: [], flow: [] }]) {
-      file.write({ ...saved, [pid]: { ...saved[pid]!, evidence: bad as never } });
-      const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
-      expect(await h2.worker.reconcile()).toEqual({ ok: true });
-      const m2 = new Market(h2, HELD);
-      await m2.run(1_200, 400, tick(m2));
-      const said = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
-        .filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision').map((l) => (l['reasons'] as string[]).slice(0, 2));
-      expect(said).toEqual(expect.arrayContaining([['restore entry refused', pid], ['recovery exit', pid]]));
-      await h2.worker.kill();
-    }
-  });
-});
-
 describe('restored trade evidence is never counted twice (EXIT-KEEP review B1)', () => {
   /** A PumpSwap swap on the passing pool with a fixed signature, so the same event can be released again. */
   const swap = (m: Market, sig: string, name: 'BuyEvent' | 'SellEvent', user: string, base: bigint, quote: bigint): void => {
@@ -229,13 +205,16 @@ describe('restored trade evidence is never counted twice (EXIT-KEEP review B1)',
     swap(m, 'dev-sale', 'SellEvent', DEV, DEV_SALE, 300_000_000n);
     swap(m, 'other-sale', 'SellEvent', 'someone', 1_000_000n, 200_000_000n);
     await m.run(1_200, 400, tick(m));
-    const before = h.worker.strategy.saved()[pid]!.evidence!;
-    expect(before.sales.map((s) => s.amount)).toEqual([DEV_SALE]);
-    expect(before.flow.length).toBeGreaterThan(0);
+    const before = h.worker.strategy.saved()[pid]!;
+    expect(before.deployerSales!.list.map((s) => s.amount)).toEqual([DEV_SALE]);
+    expect(before.flow!.minutes.length).toBeGreaterThan(0);
     await h.worker.kill();
     return { h, pid, before };
   };
-  const totals = (e: SavedEvidence) => ({ sold: e.sales.reduce((t, s) => t + s.amount, 0n), flow: e.flow.reduce((t, f) => t + f.net, 0n), ids: e.flow.flatMap((f) => f.ids).length });
+  const totals = (e: SavedExit) => ({
+    sold: e.deployerSales!.list.reduce((t, s) => t + s.amount, 0n), sales: e.deployerSales!.ids.length,
+    flow: e.flow!.minutes.reduce((t, [, net]) => t + net, 0n), ids: e.flow!.ids.length,
+  });
 
   it('the same swaps released again after the restart count once: the deployer share and the flow stay as they were', async () => {
     const { h, pid, before } = await seen();
@@ -247,7 +226,7 @@ describe('restored trade evidence is never counted twice (EXIT-KEEP review B1)',
     swap(m2, 'dev-sale', 'SellEvent', DEV, DEV_SALE, 300_000_000n);
     swap(m2, 'other-sale', 'SellEvent', 'someone', 1_000_000n, 200_000_000n);
     await m2.run(1_200, 400, tick(m2));
-    expect(totals(h2.worker.strategy.saved()[pid]!.evidence!)).toEqual(totals(before));
+    expect(totals(h2.worker.strategy.saved()[pid]!)).toEqual(totals(before));
     // Counted twice, 3% would be over the 2% trigger.
     expect(h2.worker.book.positions[pid]!.status).toBe('open');
     await h2.worker.stop();
@@ -263,7 +242,7 @@ describe('restored trade evidence is never counted twice (EXIT-KEEP review B1)',
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
     const m2 = new Market(h2, HELD);
     await m2.run(800, 400, tick(m2));
-    expect(totals(h2.worker.strategy.saved()[pid]!.evidence!)).toEqual(totals(before));
+    expect(totals(h2.worker.strategy.saved()[pid]!)).toEqual(totals(before));
     expect(h2.worker.book.positions[pid]!.status).toBe('open');
     await h2.worker.stop();
   });

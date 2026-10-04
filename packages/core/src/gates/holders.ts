@@ -1,6 +1,7 @@
 // Holder concentration done correctly (docs/research/safety.md §4; docs/ARCHITECTURE.md H12, H13).
 // Before measuring, remove the accounts that are not traders: the bonding-curve ATA, pool vaults, the mayhem vault,
 // lockers, burns and accounts of known programs. Shares are of circulating supply = supply - excluded balances.
+import { MEMORY_LIMITS } from '../config/memory.ts';
 import { findProgramAddress, isOnCurve } from '../chain/address.ts';
 import type { Address } from '../chain/bytes.ts';
 import { bondingCurveAddress } from '../chain/pump.ts';
@@ -46,13 +47,28 @@ export interface MintAccounts {
 export const mintAccounts = (mint: string, pool: MintAccounts['pool']): MintAccounts => ({ curve: bondingCurveAddress(mint as Address), pool });
 
 /** True for a PDA. An owner that is not a 32-byte address counts as one too: it is kept as a holder and noted. */
-export const offCurve = (address: string): boolean => {
+const offCurveUncached = (address: string): boolean => {
   try {
     const bytes = decodeBase58(address);
     return bytes.length !== 32 || !isOnCurve(bytes);
   } catch {
     return true;
   }
+};
+
+/**
+ * The curve check decompresses a point with big-integer powers (about 1 ms); the backtest asks it for every holder
+ * at every check (BT-2 measured 84% of a run here). The answer depends on the address alone, so it is remembered;
+ * the memory is bounded and emptied whole when full, which changes no answer.
+ */
+const offCurveCache = new Map<string, boolean>();
+export const offCurve = (address: string): boolean => {
+  const hit = offCurveCache.get(address);
+  if (hit !== undefined) return hit;
+  const v = offCurveUncached(address);
+  if (offCurveCache.size >= MEMORY_LIMITS.offCurveCache) offCurveCache.clear();
+  offCurveCache.set(address, v);
+  return v;
 };
 
 export const classifyHolder = (a: HolderAccount, known: MintAccounts): HolderClass => {

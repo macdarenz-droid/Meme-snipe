@@ -82,7 +82,7 @@ export interface SimRecord {
   readonly paid: bigint | null;
   readonly proceeds: bigint | null;
   readonly loss: bigint | null;
-  /** The local model's loss (`quote.paid − quote.proceeds`), for the record. */
+  /** The local model's loss for the simulated sequence (`quote.paid − quote.immediateProceeds`, what H15 compares), for the record. */
   readonly modelLoss: bigint;
   readonly networkFee: bigint | null;
   readonly rentPaid: bigint | null;
@@ -190,7 +190,7 @@ export class RoundTripSimulator {
     let credits = 0;
     let rec: SimRecord = {
       mint, spend: req.spend, outcome: 'malformed', reason: null, credits: 0, latencyMs: 0, slot: null, standIn: d.standIn,
-      paid: null, proceeds: null, loss: null, modelLoss: req.quote.paid - req.quote.proceeds, networkFee: null, rentPaid: null, unitsConsumed: null,
+      paid: null, proceeds: null, loss: null, modelLoss: req.quote.paid - req.quote.immediateProceeds, networkFee: null, rentPaid: null, unitsConsumed: null,
     };
     const done = (outcome: SimOutcome, reason: string | null, read: SimRead | null, more: Partial<SimRecord> = {}): SimResult => ({
       read,

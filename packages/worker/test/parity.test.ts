@@ -79,8 +79,11 @@ describe('TEST-1 parity harness', () => {
   it('a recording that misses events is reported where the replay first runs short', async () => {
     const h = await session();
     const b = loadSession(h.stateDir)[0]!;
-    // Drop the last release: the replay ends before live did.
-    const short = replayBoot({ ...b, releases: b.releases.slice(0, -40) }, deps(h));
+    // Drop the releases from the last live decision's event on: the replay ends before live did.
+    const lastEvent = (JSON.parse(b.live.at(-1)!) as { event: string }).event;
+    const cut = b.releases.findIndex((r) => r.eventId === lastEvent);
+    expect(cut).toBeGreaterThan(0);
+    const short = replayBoot({ ...b, releases: b.releases.slice(0, cut) }, deps(h));
     const d = firstDivergence(b.live, short);
     expect(d).not.toBeNull();
     expect(d!.index).toBeLessThan(b.live.length);
