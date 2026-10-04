@@ -7,10 +7,11 @@
 import { describe, expect, it } from 'vitest';
 import { transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
 import { startSession, TRIAL_POLICY } from '../../core/src/config/index.ts';
-import { OFF_CHAIN, type MarketEvent, type Moment } from '../../core/src/engine/index.ts';
+import { OFF_CHAIN, canonical, compareEvents, type FeedEvent, type MarketEvent, type Moment } from '../../core/src/engine/index.ts';
 import { Evidence, candlesKey, parseCandles } from '../../core/src/gates/index.ts';
 import { FactWorld, MINT, POOL, RECORDS, atOf, chainTx, coverage, txEvents } from '../../core/test/facts/helpers.ts';
-import { DEFAULT_LIVE_FEED, LiveFeed, eventsOfFrame, type Frame } from '../src/providers/index.ts';
+import { DEFAULT_LIVE_FEED, LiveFeed, eventsOfFrame, replayRecorded, type Frame, type Release } from '../src/providers/index.ts';
+import { parseTyped, typedText } from '../src/run/json.ts';
 import { blockNetwork } from './helpers.ts';
 
 blockNetwork();
@@ -139,5 +140,73 @@ describe('a fill reaches the engine in chain order, before the resume that close
     expect(eventsOfFrame(now, new Map()).map((e) => e.moment)).toEqual([{ slot: head, txIndex: OFF_CHAIN, ixIndex: 8, receivedAt: at }]);
     // Event ids do not change either way.
     expect(eventsOfFrame(now, new Map()).map((e) => e.id)).toEqual(eventsOfFrame(old, new Map()).map((e) => e.id));
+  });
+
+  // BT review of 741ae5b: replay parity, committed. The recorder writes each frame through typedText and the replay
+  // reads it back with parseTyped; replayRecorded then rebuilds each event from its frame in the recorded release order.
+  const record = () => {
+    const frames: Frame[] = [];
+    const rel: Release[] = [];
+    const live: FeedEvent[] = [];
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, onFrame: (f) => frames.push(parseTyped(typedText(f)) as Frame), onRelease: (_e, r) => rel.push(r) });
+    feed.ingest('helius', { type: 'slot', slot: head, parent: head - 1n, root: null }, { receivedAt: at });
+    for (const r of swaps) feed.ingest('helius', { type: 'tx', record: r }, { receivedAt: at, backfilled: true, lookup: true, after: true });
+    feed.ingest('helius', { type: 'offchain', key: `coverage:${stream}:resume`, value: { fromSlot: migrate.slot, toSlot: head - 1n, via: `logs:${POOL}` } }, { receivedAt: at });
+    feed.ingest('helius', { type: 'slot', slot: head + 1n, parent: head, root: null }, { receivedAt: at + 1 });
+    feed.advance(at + 2);
+    for (let e = feed.next(); e !== null; e = feed.next()) live.push(e);
+    return { frames, rel, live };
+  };
+  const drain = (frames: readonly Frame[], rel: readonly Release[]): FeedEvent[] => {
+    const { feed } = replayRecorded(frames, rel);
+    const out: FeedEvent[] = [];
+    for (let e = feed.next(); e !== null; e = feed.next()) out.push(e);
+    return out;
+  };
+  const strip = (f: Frame): Frame => ({ ...f, place: f.place.at === 'chain' ? f.place : { at: 'offchain', slot: f.place.slot } });
+
+  it('replay parity (a): a recording made now (its off-chain frames flagged `arrival`) replays identically to live', () => {
+    const { frames, rel, live } = record();
+    expect(frames.filter((f) => f.place.at === 'offchain').every((f) => f.place.arrival === true)).toBe(true);
+    expect(canonical(drain(frames, rel))).toBe(canonical(live));
+  });
+
+  it('replay parity (b): a recording in the old format (no flag, released in the old id order) replays identically to its own live run', () => {
+    const { frames } = record();
+    const old = frames.map(strip);
+    // What the feed before FILL-ORDER released for these frames: one release, every event in the engine's total order.
+    const ranks = new Map<string, number>();
+    const byFrame = old.flatMap((f) => {
+      if (f.place.at === 'chain' && f.body.type === 'tx') ranks.set(f.body.record.signature, ranks.size);
+      return eventsOfFrame(f, ranks).map((event) => ({ event, frameSeq: f.seq }));
+    });
+    const oldLive = [...byFrame].sort((a, b) => compareEvents(a.event, b.event));
+    const oldRel: Release[] = oldLive.map((x, index) => ({ index, frameSeq: x.frameSeq, eventId: x.event.id, late: false }));
+    expect(canonical(drain(old, oldRel))).toBe(canonical(oldLive.map((x) => x.event)));
+    // And that old order is the bug: the swaps in signature order, the resume ahead of them.
+    expect(oldLive.findIndex((x) => x.event.kind === 'market' && x.event.key === `coverage:${stream}:resume`)).toBeLessThan(oldLive.findIndex((x) => x.event.id.startsWith('ev:')));
+  });
+
+  it('replay parity (c): the flag is load-bearing: a new recording with it stripped does not replay to its live run', () => {
+    const { frames, rel, live } = record();
+    let replayed: string | null = null;
+    try {
+      replayed = canonical(drain(frames.map(strip), rel));
+    } catch {
+      replayed = null; // the clock refusing to move back is a failure to replay, as good as a difference
+    }
+    expect(replayed).not.toBe(canonical(live));
+  });
+
+  it('an arrival frame\'s index is 1 + its seq: never 0, the slot notice\'s, whatever its seq', () => {
+    const { frames, live } = record();
+    const seqOf = new Map(frames.map((f) => [f.seq, f]));
+    for (const e of live) {
+      if (e.moment.txIndex !== OFF_CHAIN || e.moment.ixIndex === 0) continue;
+      const f = [...seqOf.values()].find((x) => x.place.arrival === true && e.moment.ixIndex === 1 + x.seq);
+      expect(f, e.id).toBeDefined();
+    }
+    const zero: Frame = { seq: 0, receivedAt: at, source: 'helius', backfilled: false, place: { at: 'offchain', slot: head, arrival: true }, duplicate: false, body: { type: 'offchain', key: 'k', value: 1 } };
+    expect(eventsOfFrame(zero, new Map())[0]!.moment.ixIndex).toBe(1);
   });
 });
