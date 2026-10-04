@@ -8,8 +8,8 @@ import { zstdDecompressSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
 import { RUG_CONFIG } from '../../core/src/config/index.ts';
-import { Engine, type LogRecord } from '../../core/src/engine/index.ts';
-import { GATE_REASONS_PREFIX, LiveStrategy } from '../src/engine/strategy.ts';
+import { Engine, type LogRecord, type Strategy } from '../../core/src/engine/index.ts';
+import { GATE_REASONS_PREFIX, LiveStrategy, RESTORE_KEY } from '../src/engine/strategy.ts';
 import { replayRecorded, type Frame, type Release } from '../src/providers/index.ts';
 import { engineFeed } from '../src/run/engine-feed.ts';
 import { parseTyped } from '../src/run/json.ts';
@@ -148,5 +148,91 @@ describe('the market recorder', () => {
     engine.drain();
     const replayed = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' ? [{ event: r.eventId, reasons: r.reasons.filter((x) => !x.startsWith(GATE_REASONS_PREFIX)), result: r.result }] : []));
     expect(replayed).toEqual(live);
+  });
+});
+
+describe('a restore the strategy cannot use never stalls exits (EXIT-1e review B1)', () => {
+  /** Boot 2 of a restart with an open position and a price drop, recorded; replayed with its restore fact changed. */
+  const recordedBoot2 = async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    await h.worker.kill();
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    await m2.run(8_000, 400, () => {
+      m2.slot();
+      m2.pool(700_000n);
+    });
+    await h2.worker.stop();
+    const dir = join(h.stateDir, 'recorder', h2.worker.boot);
+    const frames = rows(files(dir, /^frames-/), (l) => parseTyped(l) as Frame);
+    const releases = rows(files(dir, /^releases-/), (l) => JSON.parse(l) as Release);
+    const start = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; boot: string; seed: string })
+      .find((l) => l.kind === 'start' && l.boot === h2.worker.boot)!;
+    /** Replays with the restore fact changed; `early` market events reach the strategy just before the restore. */
+    const replay = (restore: (value: unknown) => unknown, early = 0): readonly string[][] => {
+      let changed = 0;
+      const altered = frames.map((f) => {
+        const b = f.body as { type: string; key?: string; value?: unknown };
+        if (b.type !== 'fact' || b.key !== RESTORE_KEY) return f;
+        changed++;
+        return { ...f, body: { ...b, value: restore(b.value) } } as Frame;
+      });
+      expect(changed).toBe(1);
+      const { clock, feed } = replayRecorded(altered, releases);
+      const inner = new LiveStrategy({ session: h2.session, rugs: RUG_CONFIG, config: h2.worker.strategyConfig });
+      const before: string[][] = [];
+      const strategy: Strategy = {
+        onMarket: (e, ctx) => {
+          if (e.key === RESTORE_KEY) {
+            for (let k = 0; k < early; k++) before.push(...inner.onMarket({ ...e, id: `${e.id}:early-${k}`, key: `test:early-${k}`, value: null }, ctx).map((d) => [...d.reasons]));
+          }
+          return inner.onMarket(e, ctx);
+        },
+      };
+      const engine = new Engine({ clock, feed: engineFeed(feed, h2.session.policy).feed, strategy, runner: { run: () => undefined }, seed: start.seed, book: { maxOpenPositions: h2.session.policy.positions.maxOpen } });
+      engine.drain();
+      return [...before, ...(engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' ? [r.reasons as string[]] : []))];
+    };
+    return { replay };
+  };
+
+  it('a malformed restore fact: "restore refused" is logged, the gate is released and the stop exits from the fill plan', async () => {
+    const { replay } = await recordedBoot2();
+    const got = replay(() => 'not a restore');
+    const at = (r: string) => got.findIndex((x) => x[0] === r);
+    expect(at('restore refused')).toBeGreaterThanOrEqual(0);
+    expect(at('no entry plan')).toBeGreaterThan(at('restore refused'));
+    expect(at('exit')).toBeGreaterThan(at('no entry plan'));
+  });
+
+  it('a restored plan the exit rules cannot run on is refused: the gate is released and the position falls back to the plan from its fill', async () => {
+    const { replay } = await recordedBoot2();
+    const got = replay((v) => {
+      const exits = (v as { exits: Record<string, { plan: Record<string, unknown> }> }).exits;
+      // A stop price that is not an amount: run as is, the exit rules would throw on the first manage step.
+      return { exits: Object.fromEntries(Object.entries(exits).map(([pid, s]) => [pid, { ...s, plan: { ...s.plan, stopPrice: 'none' } }])) };
+    });
+    const at = (r: string) => got.findIndex((x) => x[0] === r);
+    expect(at('restore entry refused')).toBeGreaterThanOrEqual(0);
+    expect(got.find((x) => x[0] === 'restore')).toContain('0 exit plans and trackers restored');
+    expect(at('no entry plan')).toBeGreaterThan(at('restore entry refused'));
+    expect(at('exit')).toBeGreaterThan(at('no entry plan'));
+  });
+
+  it('two market events before the restore, with the position open in the book: the wait is said once and nothing is planned from the fill (N1)', async () => {
+    const { replay } = await recordedBoot2();
+    const got = replay((v) => v, 2);
+    expect(got.filter((x) => x[0] === 'positions wait for the restore')).toHaveLength(1);
+    expect(got.filter((x) => x[0] === 'no entry plan' || x[0] === 'entry plan')).toEqual([]);
+    expect(got.find((x) => x[0] === 'restore')).toContain('1 exit plans and trackers restored');
+    expect(got.some((x) => x[0] === 'exit')).toBe(true);
   });
 });
