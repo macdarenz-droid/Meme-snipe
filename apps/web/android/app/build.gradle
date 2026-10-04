@@ -19,14 +19,16 @@ android {
     }
     signingConfigs {
         debug {
-            // A stable debug keystore kept outside the repo (CI cache), so each build installs over the last.
-            // The passwords are the public Android debug defaults, not secrets.
+            // A stable keystore kept outside the repo, so each build installs over the last (android-preview.yml,
+            // SEC-1): the owner's key from a secret, with its password from a secret, or a throwaway or cached
+            // debug key with the public Android debug defaults.
             def keystore = System.getenv('ZEROED_DEBUG_KEYSTORE')
             if (keystore) {
+                def password = System.getenv('ZEROED_KEYSTORE_PASSWORD') ?: 'android'
                 storeFile file(keystore)
-                storePassword 'android'
-                keyAlias 'androiddebugkey'
-                keyPassword 'android'
+                storePassword password
+                keyAlias(System.getenv('ZEROED_KEY_ALIAS') ?: 'androiddebugkey')
+                keyPassword password
             }
         }
     }

@@ -16,7 +16,26 @@ Download (always the newest build): https://github.com/macdarenz-droid/Meme-snip
 - Pull requests and other branches upload the APK as a workflow artifact only. A push or manual run on `ccr-14987baf-i6lrsl` also replaces the single asset `zeroed-preview.apk` of the `preview` prerelease (`.github/scripts/publish-preview.sh`): the new file is uploaded as `zeroed-preview.apk.new` first and checked (state uploaded, same size), the old asset is swapped out only after that succeeds (and put back if the swap fails), and the tag and notes change last, so a failed upload leaves the fixed link working. A release run skips itself if the branch has moved on.
 
 ## Keystore
-A debug keystore is created on a cache miss and kept in `actions/cache` under the key `zeroed-preview-debug-keystore-v1`. Nothing key-like is committed (`*.keystore` and `*.jks` are ignored). If GitHub evicts the cache (unused for 7 days, or storage pressure), the next build creates a new key and the phone needs one uninstall. Caches made by a pull request are not visible to the integration branch, so releases always use the integration branch's own key. Pull requests from forks never restore or save the cache (a pull request can read its base branch's caches); they build with a throwaway key.
+Signing (SEC-1, `.github/scripts/preview-signing.sh`):
+- Pull requests and every other branch sign with a throwaway key made for that build. They never restore a cache or read the owner's key, even when a same-repo pull request receives secrets.
+- The integration branch signs with the owner's key from the `PREVIEW_KEYSTORE_B64` and `PREVIEW_KEYSTORE_PASSWORD` secrets. The build refuses to sign unless the key's certificate SHA-256 equals the `PREVIEW_CERT_SHA256` repository variable; the APK's one signer is checked against it after the build and again in the release job before the link changes (`verify-preview-cert.sh`).
+- Until the owner adds them, the integration branch keeps the APP-1 key in `actions/cache` (`zeroed-preview-debug-keystore-v1`) and every run warns. That key is exposed: any pull-request workflow, including one a fork edits, can restore a cache of its base branch (confirmed on 2026-10-04: run 37188909095 of pull request #134 restored it, its "Create debug keystore" step skipped on a cache hit). Whoever holds it can sign an APK that installs over Zeroed on the phone. A YAML guard cannot stop a fork, because a fork's pull request runs the fork's workflow files.
+
+Nothing key-like is committed (`*.keystore`, `*.jks`, `*.p12` and `*.b64` are ignored).
+
+### Owner steps
+On any computer with Java 17 or newer (a free GitHub Codespace works):
+1. `keytool -genkeypair -keystore zeroed-preview.p12 -storetype PKCS12 -alias zeroed-preview -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=Zeroed preview,O=Zeroed,C=AU"`. Enter a new password of at least 16 characters twice and save it in your password manager.
+2. `keytool -list -v -keystore zeroed-preview.p12 | grep SHA256:` and copy the fingerprint (the part after `SHA256:`).
+3. `base64 -w0 zeroed-preview.p12 > zeroed-preview.b64` (on a Mac: `base64 -i zeroed-preview.p12 -o zeroed-preview.b64`).
+4. GitHub, the repository, Settings, Secrets and variables, Actions:
+   - Secrets, New repository secret: `PREVIEW_KEYSTORE_B64` with the whole content of `zeroed-preview.b64`; then `PREVIEW_KEYSTORE_PASSWORD` with the password.
+   - Variables, New repository variable: `PREVIEW_CERT_SHA256` with the fingerprint from step 2.
+5. Keep `zeroed-preview.p12` and its password in your password manager as the only backup, then delete `zeroed-preview.b64` and the Codespace.
+6. Actions, Caches: delete `zeroed-preview-debug-keystore-v1`.
+7. On the phone, once the next preview is out: uninstall Zeroed, then install from the link. The key changed, so Android refuses an update; app data is not backed up and is lost.
+
+Rotating the key later is the same steps with a new key, and the same uninstall on the phone.
 
 Every third-party action in `.github/workflows` is pinned to a full commit SHA with its tag in a comment (`test/android-workflow.test.ts` fails on a tag-only pin).
 

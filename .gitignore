@@ -17,3 +17,5 @@ data/
 
 # Local copy of the holdout registry; the shared copy is the remote holdout-registry branch.
 research/holdout/registry.json
+*.p12
+*.b64

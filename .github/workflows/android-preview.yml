@@ -14,6 +14,7 @@ on:
       - 'brand/**'
       - 'pnpm-lock.yaml'
       - '.github/workflows/android-preview.yml'
+      - '.github/scripts/**'
   workflow_dispatch:
 
 permissions:
@@ -72,20 +73,30 @@ jobs:
           yes | "$mgr" --licenses > /dev/null || true
           "$mgr" "platforms;android-36" "build-tools;36.0.0"
 
-      # Same debug keystore on every build, so a new APK installs over the old one. It is created on
-      # a cache miss and never committed. Pull requests from forks never touch the cache (a pull
-      # request can read its base branch's caches, which would hand them the key): they skip the
-      # restore, and so the save, and build with a throwaway key made below.
+      # Signing (SEC-1, docs/ANDROID_PREVIEW.md Keystore). Pull requests and other branches always sign with a
+      # throwaway key made below and never see a stable one. The integration branch signs with the owner's
+      # key from the PREVIEW_KEYSTORE_B64 secret, refused unless its certificate matches the
+      # PREVIEW_CERT_SHA256 variable. Until the owner adds them, it keeps APP-1's cached key; any
+      # pull-request workflow can restore that cache, so it is replaced, never trusted further.
+      - name: Signing key
+        id: signing
+        env:
+          INTEGRATION: ${{ github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && github.event_name != 'pull_request' }}
+          KEYSTORE_B64: ${{ secrets.PREVIEW_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.PREVIEW_KEYSTORE_PASSWORD }}
+          CERT_SHA256: ${{ vars.PREVIEW_CERT_SHA256 }}
+        run: bash .github/scripts/preview-signing.sh
+
       - name: Restore debug keystore
         id: keystore
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.signing.outputs.source == 'cache'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.zeroed-preview/debug.keystore
           key: zeroed-preview-debug-keystore-v1
 
-      - name: Create debug keystore (cache miss, or a fork pull request)
-        if: steps.keystore.outputs.cache-hit != 'true'
+      - name: Create debug keystore (throwaway, or a cache miss)
+        if: steps.signing.outputs.source == 'throwaway' || (steps.signing.outputs.source == 'cache' && steps.keystore.outputs.cache-hit != 'true')
         run: |
           mkdir -p ~/.zeroed-preview
           keytool -genkeypair -keystore ~/.zeroed-preview/debug.keystore \
@@ -95,13 +106,18 @@ jobs:
 
       - name: Build debug APK
         working-directory: apps/web/android
+        env:
+          ZEROED_KEYSTORE_PASSWORD: ${{ steps.signing.outputs.source == 'secret' && secrets.PREVIEW_KEYSTORE_PASSWORD || '' }}
         run: |
-          export ZEROED_DEBUG_KEYSTORE="$HOME/.zeroed-preview/debug.keystore"
+          export ZEROED_DEBUG_KEYSTORE="${ZEROED_DEBUG_KEYSTORE:-$HOME/.zeroed-preview/debug.keystore}"
           ./gradlew --no-daemon assembleDebug \
             -PzeroedVersionCode='${{ steps.version.outputs.code }}' \
             -PzeroedVersionName='${{ steps.version.outputs.name }}'
 
       - name: Verify the APK
+        env:
+          SIGNING: ${{ steps.signing.outputs.source }}
+          CERT_SHA256: ${{ vars.PREVIEW_CERT_SHA256 }}
         run: |
           set -euo pipefail
           apk=apps/web/android/app/build/outputs/apk/debug/app-debug.apk
@@ -114,6 +130,7 @@ jobs:
           echo "$line" | grep -q "name='$APP_ID'"
           echo "$line" | grep -q "versionCode='${{ steps.version.outputs.code }}'"
           echo "$line" | grep -q "versionName='${{ steps.version.outputs.name }}'"
+          if [ "$SIGNING" = secret ]; then APKSIGNER="$bt/apksigner" bash .github/scripts/verify-preview-cert.sh "$apk"; fi
           mkdir -p out
           cp "$apk" out/zeroed-preview.apk
           sha256sum out/zeroed-preview.apk
@@ -160,6 +177,13 @@ jobs:
             echo "current=false" >> "$GITHUB_OUTPUT"
             echo "::notice::$INTEGRATION_BRANCH moved to $head; a newer run publishes the release."
           fi
+
+      # The owner's key only (SEC-1): the downloaded APK's one signer must match PREVIEW_CERT_SHA256.
+      - name: Check the signing certificate
+        if: steps.newest.outputs.current == 'true'
+        env:
+          CERT_SHA256: ${{ vars.PREVIEW_CERT_SHA256 }}
+        run: bash .github/scripts/verify-preview-cert.sh zeroed-preview.apk
 
       - name: Move the preview tag, write the notes, replace the single asset
         if: steps.newest.outputs.current == 'true'
