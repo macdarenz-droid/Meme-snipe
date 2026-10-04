@@ -113,6 +113,8 @@ export interface StudyReport {
     /** Value still held when the data ended (blocked or never exited), lamports at the last rung's quote. */
     readonly strandedLamports: string;
     readonly maxDrawdownUsd: string;
+    /** Closes and marks valued at a SOL/USD close older than 2 h (still booked; the dollar conversion may be off). */
+    readonly staleSolUsd: { readonly closes: number; readonly marks: number };
     readonly killSwitchTrips: number;
     readonly weeklyTrips: number;
     readonly rejectedOpportunities: Readonly<Record<string, number>>;
@@ -497,6 +499,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
         spa,
         stats: dep.stats, trades: tr.length, netLamports: netOf(depAll).toString(),
         strandedLamports: tradesOfRun(dep, i.fills).trades.filter((t) => t.exitReason === 'blocked').reduce((a, t) => a + t.exitSol, 0n).toString(),
+        staleSolUsd: { closes: ds?.staleSolUsdCloses ?? 0, marks: ds?.staleSolUsdMarks ?? 0 },
         maxDrawdownUsd: (ds?.maxDrawdownUsd ?? 0n).toString(), killSwitchTrips: ds?.trips.filter((x) => x.trip === 'kill_switch').length ?? 0,
         weeklyTrips: ds?.trips.filter((x) => x.trip === 'weekly_loss').length ?? 0, rejectedOpportunities: ds?.rejected ?? {},
         notes: ['Signal priority: the earliest fully eligible signal wins; checks due at the same block break ties by sha256(salt | universe | mint), the salt fixed in the study configuration.', 'S0 runs under the same account, capacity, timing and cost rules (control).'],

@@ -88,6 +88,12 @@ export interface DeploymentStats {
   peakEquityUsd: bigint;
   maxDrawdownUsd: bigint;
   closed: number;
+  /**
+   * Closes and marks valued in dollars at a SOL/USD close older than SOL_USD_MAX_AGE_MS (the series stopped). They are
+   * still booked (a loss is never dropped); their lamports are exact, only the dollar conversion may be off.
+   */
+  staleSolUsdCloses: number;
+  staleSolUsdMarks: number;
 }
 
 /** Plans and state of one candidate in one universe. */
@@ -146,7 +152,7 @@ export class StudyStrategy implements Strategy {
   /** When each mint's reads were last asked: at most one read round per mint per `minReadGapMs`. */
   readonly #lastAsk = new Map<string, number>();
   #latches: Latches = NO_LATCHES;
-  readonly #stats: DeploymentStats = { trips: [], rejected: {}, peakEquityUsd: 0n, maxDrawdownUsd: 0n, closed: 0 };
+  readonly #stats: DeploymentStats = { trips: [], rejected: {}, peakEquityUsd: 0n, maxDrawdownUsd: 0n, closed: 0, staleSolUsdCloses: 0, staleSolUsdMarks: 0 };
   #prunedAt = Number.MIN_SAFE_INTEGER;
   /** Every check inside the entry window, counted at the stage where it stopped (funnel first, review consensus). */
   readonly funnel = new Funnel();
@@ -236,10 +242,9 @@ export class StudyStrategy implements Strategy {
       lamports -= BigInt(Math.max(0, i.attempts.length - i.fills.length)) * net.signaturesPerTx * net.baseFeePerSignature;
     }
     // The account is closed by the final sell (fills-2): the rent paid at entry comes back with it.
-    const sol = ctx.lookup(SOL_USD_KEY);
-    const s = sol.ok ? parseSolUsd(sol.value) : null;
-    const pt = s === null ? null : solUsdAt(s, now);
+    const pt = solUsdForBooks(ctx, now);
     if (pt === null) return;
+    if (pt.stale) this.#stats.staleSolUsdCloses++;
     const netPnl = lamports < 0n ? -lamportsToMicroUsd((-lamports) as Lamports, pt.price as MicroUsd, 'ceil') : lamportsToMicroUsd(lamports as Lamports, pt.price as MicroUsd, 'floor');
     const stopped = Object.values(ctx.book.intents).some((i) => i.intent.purpose === 'exit' && i.intent.positionId === pid) && (p.exitOwner?.reasons ?? []).some((r) => r === 'stop' || r === 'thesis_lost' || r === 'liquidity');
     this.#closed.push({ mint: p.mint, openedAtMs: t.plan?.openedAtMs ?? now, closedAtMs: now, notional: t.notional, netPnl: netPnl as MicroUsd, stoppedOut: stopped });
@@ -641,9 +646,8 @@ export class StudyStrategy implements Strategy {
       t.tracker = step.tracker;
       if (this.#deploy) {
         // Equity marked at executable liquidation value on every update of the open position (drawdown).
-        const sl = ctx.lookup(SOL_USD_KEY);
-        const sp = sl.ok ? parseSolUsd(sl.value) : null;
-        const pt = sp === null ? null : solUsdAt(sp, now);
+        const pt = solUsdForBooks(ctx, now);
+        if (pt !== null && pt.stale) this.#stats.staleSolUsdMarks++;
         if (pt !== null) this.#account(ctx, pt.price as MicroUsd, now);
       }
       // A merge that adds no new reason to the exit owner changes nothing; it is not logged.
@@ -731,6 +735,13 @@ export class StudyStrategy implements Strategy {
  * old price. Exits and the books keep the latest price (refusing it there would drop a loss from the account).
  */
 export const SOL_USD_MAX_AGE_MS = 2 * 3_600_000;
+/** The SOL/USD price the books use (closes, marks): the latest close however old, flagged stale past the entry bound. */
+export const solUsdForBooks = (ctx: Pick<StrategyContext, 'lookup'>, now: number): { readonly tMs: number; readonly price: bigint; readonly stale: boolean } | null => {
+  const r = ctx.lookup(SOL_USD_KEY);
+  const sol = r.ok ? parseSolUsd(r.value) : null;
+  const pt = sol === null ? null : solUsdAt(sol, now);
+  return pt === null ? null : { ...pt, stale: now - pt.tMs > SOL_USD_MAX_AGE_MS };
+};
 const solForEntry = (ctx: StrategyContext, now: number): { readonly tMs: number; readonly price: bigint } | 'stale' | null => {
   const r = ctx.lookup(SOL_USD_KEY);
   const sol = r.ok ? parseSolUsd(r.value) : null;
