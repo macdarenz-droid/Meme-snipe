@@ -91,7 +91,13 @@ export interface RiskMeter extends Moded {
 }
 
 /** Why entries are off (API-1); `other` is a reason this app does not name. */
-export const HALT_CODES = ['starting', 'feed-stale', 'feed-disconnected', 'feed-dropped', 'paused', 'seeding', 'divergence', 'budget', 'other'] as const;
+export const HALT_CODES = [
+  'starting', 'feed-stale', 'feed-disconnected', 'feed-dropped', 'paused', 'seeding', 'divergence', 'budget',
+  // The account's risk stops (core risk's tripped entry controls); 'risk' is any other, its code the source.
+  'daily-loss', 'weekly-loss', 'weekly-review', 'kill-switch', 'wallet-below-kill-line', 'loss-cooldown', 'loss-day-pause',
+  'loss-review', 'session-ended', 'max-open-positions', 'risk', 'risk-unknown',
+  'other',
+] as const;
 export type HaltCode = (typeof HALT_CODES)[number];
 
 /** The engine's alert codes (AlertCode in the core lifecycle types). */
@@ -121,7 +127,7 @@ export interface WorkerStatus extends Moded {
   /** Critical alerts since the worker started. */
   alerts?: (Moded & { code: AlertCode; subject: string; at: Iso })[];
   /** The latest regime evaluation; null before the first candidate. */
-  regime?: { state: 'on' | 'off'; at: Iso; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[] } | null;
+  regime?: { state: 'on' | 'off'; at: Iso; /** At most two candidate evaluation steps old as of asOf. */ current: boolean; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[] } | null;
 }
 
 // Funnel ---------------------------------------------------------------

@@ -48,6 +48,18 @@ export const HALT_LABEL: Record<Exclude<HaltCode, 'other'>, string> = {
   seeding: 'seeding',
   divergence: 'ledger mismatch',
   budget: 'request budget',
+  'daily-loss': 'daily loss',
+  'weekly-loss': 'weekly loss',
+  'weekly-review': 'weekly review',
+  'kill-switch': 'kill switch',
+  'wallet-below-kill-line': 'wallet below kill line',
+  'loss-cooldown': 'loss cooldown',
+  'loss-day-pause': 'losses today',
+  'loss-review': 'loss review',
+  'session-ended': 'session ended',
+  'max-open-positions': 'open trade limit',
+  risk: 'risk limit',
+  'risk-unknown': 'risk unknown',
 };
 
 export const ALERT_LABEL: Record<AlertCode, string> = {

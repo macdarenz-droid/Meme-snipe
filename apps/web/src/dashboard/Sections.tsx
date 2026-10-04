@@ -77,9 +77,12 @@ export const statusRows = (status: WorkerStatus): StatusRow[] => {
 
   const off = unique([...ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why), ...(halts ?? []).map((h) => label(HALT_LABEL, h.code))]);
   if (off.length > 0 || (halts !== null && halts.length > 0)) rows.push({ label: 'Entries', value: off.length > 0 ? `Off: ${off.join(', ')}` : 'Off', alert: false });
-  else if (halts !== null && regime?.state === 'on') rows.push({ label: 'Entries', value: 'On', alert: false });
+  // On only with every stop served and none active (the account's risk stops are among the halts), and a regime
+  // evaluation that is on and current (at most two candidate evaluation steps old: the worker's regimeMaxAgeMs).
+  else if (halts !== null && regime?.state === 'on' && regime.current === true) rows.push({ label: 'Entries', value: 'On', alert: false });
 
-  if (regime !== null) {
+  if (regime !== null && regime.current !== true) rows.push({ label: 'Regime', value: 'Not checked lately', alert: false });
+  else if (regime !== null) {
     const why = unique((list<{ code?: unknown; input?: unknown }>(regime.reasons) ?? []).map((r) => (r.code === 'unknown' ? (label(REGIME_INPUT_LABEL, r.input) ?? null) : label(REGIME_REASON_LABEL, r.code))));
     rows.push({ label: 'Regime', value: regime.state === 'on' ? 'On' : why.length > 0 ? `Off: ${why.join(', ')}` : 'Off', alert: false });
   }

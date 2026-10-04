@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { httpApi } from '../src/api/client.ts';
 import { ConnectionStore } from '../src/api/connection.ts';
 import { checkEnvelope } from '../src/api/modes.ts';
+import { DataError } from '../src/api/schema.ts';
 import { schemaFor } from '../src/api/schemas.ts';
 import { settle } from '../src/api/useEndpoint.ts';
 import { Load } from '../src/dashboard/State.tsx';
@@ -31,6 +32,12 @@ describe('a mode the server does not run', () => {
       { mode: m, data: null, notRunning: 'x' },
       { ...notRunning(m), asOf: 'yesterday' },
     ]) expect(() => checkEnvelope(bad, m, schemaFor('status', m))).toThrow();
+    // Paper always runs: a paper answer saying it does not is bad data, refused even in the not-running shape.
+    let refused: unknown = null;
+    try { checkEnvelope(notRunning('paper'), 'paper', schemaFor('status', 'paper')); } catch (e) { refused = e; }
+    expect(refused).toBeInstanceOf(DataError);
+    expect((refused as DataError).kind).toBe('bad-shape');
+    expect(settle('paper', schemaFor('status', 'paper'), { ok: true, value: notRunning('paper') }, Date.parse(AT))).toEqual({ state: 'error', reason: 'bad-data' });
     // Without the reason, null data is still checked by the endpoint's own schema (and refused there).
     expect(() => checkEnvelope({ mode: m, asOf: AT, data: null }, m, schemaFor('status', m))).toThrow();
   });

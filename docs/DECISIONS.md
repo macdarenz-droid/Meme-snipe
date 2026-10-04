@@ -491,6 +491,12 @@ Supervisor rulings:
   - Exits shows `Ready` or `Not ready`; a blocked or pending exit flag takes precedence.
   - Alerts are listed by name.
   - Unknown values add nothing.
+
+  Review fixes (01DdN4's FAIL at 7433148, supervisor ruling):
+  - Risk stops in status. The card showed "Entries: On" while a risk stop refused every entry, because daily, weekly and kill-switch loss and the loss pauses live only in the candidate path. The strategy now reads core risk's tripped entry controls (`evaluateExit`'s `tripped`, the same inputs as an exit; read only, nothing latched) on the account's own event and at least once per second of event time. Status serves each as a halt code (daily-loss, weekly-loss, weekly-review, kill-switch, wallet-below-kill-line, loss-cooldown, loss-day-pause, loss-review, session-ended, max-open-positions; any other is `risk` with the core code as source). `risk-unknown` is served when the account cannot be read, before the first event, or when the reading is over 5 s old. The status's own daily-loss meter at its limit also serves daily-loss. No change under `packages/core/src/risk/**`.
+  - Known gap, needs a core change (risk reviewer): `evaluateExit` returns no tripped controls if it throws inside, the same as a clean account. The worker cannot tell the two apart, so a fault inside core risk would read as no stop. It is not made here.
+  - Regime freshness. "Entries: On" and "Regime: On" need a regime evaluation at most `regimeMaxAgeMs` old: two candidate evaluation steps (`evaluateEveryMs`, which is the policy's `maxQuoteAgeMs`, 2 s on the trial policy, settings.ts). The worker evaluates the regime first for every candidate at that step, so an older evaluation means no candidate is being judged. Status serves `regime.current`; when it is false the card shows "Regime: Not checked lately".
+  - A paper answer with `notRunning` is bad data (`bad-shape`), never "Not running": every server runs paper.
 - **2026-10-04 · Live view setup never waits unseen (OPS-1h).** This came from real use: after a successful Tailscale login, `zeroed-tailscale` sat silent. The cause is in Tailscale's CLI source (v1.104, `cmd/tailscale/cli` serve_v2.go and serve_legacy.go, `enableFeatureInteractive`):
   - `tailscale serve --https` needs the node capability `https`. Without it, serve prints a link to turn HTTPS on and blocks until it is on.
   - `tailscale funnel … off` checks the `https` and `funnel` capabilities first, even to turn Funnel off. On a tailnet without Funnel it blocks forever.

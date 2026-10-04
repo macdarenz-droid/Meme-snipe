@@ -12,7 +12,7 @@ import { melbourneDay } from '../../../core/src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../../core/src/units/index.ts';
 import type { PaperTrade } from './account.ts';
 import type { PaperAttempt } from './paper-world.ts';
-import { SEEDING } from '../engine/strategy.ts';
+import { SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 
 const MODE = 'paper' as const;
@@ -101,6 +101,14 @@ export interface ApiInputs {
   readonly alerts: readonly { readonly code: string; readonly subject: string; readonly atMs: number }[];
   /** The latest regime evaluation; null before the first candidate. */
   readonly regime: { readonly atMs: number; readonly on: boolean; readonly reasons: readonly { readonly code: string; readonly input: string | null }[] } | null;
+  /**
+   * How old a regime evaluation may be and still count as current: two of the strategy's candidate evaluation steps
+   * (`evaluateEveryMs`, settings.ts: the policy's maxQuoteAgeMs). While any candidate is in its window the regime is
+   * evaluated at least once per step; the second step allows for the gap to the next event.
+   */
+  readonly regimeMaxAgeMs: number;
+  /** The account's entry stops (strategy RiskStopsView); null before the first event. */
+  readonly stops: { readonly atMs: number; readonly codes: readonly string[] | null } | null;
   readonly book: Book;
   readonly trades: readonly PaperTrade[];
   readonly attempts: ReadonlyMap<string, PaperAttempt>;
@@ -142,6 +150,21 @@ export const haltOf = (reason: string): { readonly code: string; readonly source
   return { code: 'other', source: null };
 };
 
+/** Account stops older than this are unknown: they are read at least once per STOPS_EVERY_MS of event time. */
+export const STOPS_MAX_AGE_MS = 5 * STOPS_EVERY_MS;
+/** The core risk codes the app names one by one; any other tripped entry control is 'risk', with its code as source. */
+const STOP_HALT: Readonly<Record<string, string>> = {
+  daily_loss: 'daily-loss', weekly_loss: 'weekly-loss', weekly_review: 'weekly-review', kill_switch: 'kill-switch',
+  wallet_below_kill_line: 'wallet-below-kill-line', loss_cooldown: 'loss-cooldown', loss_day_pause: 'loss-day-pause',
+  loss_review: 'loss-review', session_not_running: 'session-ended', max_open_positions: 'max-open-positions',
+};
+
+/** The account stops as halts: each tripped control, or 'risk-unknown' when they are not known as of now. */
+export const stopHalts = (stops: ApiInputs['stops'], nowMs: number): { readonly code: string; readonly source: string | null }[] => {
+  if (stops === null || stops.codes === null || nowMs - stops.atMs > STOPS_MAX_AGE_MS) return [{ code: 'risk-unknown', source: null }];
+  return stops.codes.map((c) => (STOP_HALT[c] !== undefined ? { code: STOP_HALT[c], source: null } : { code: 'risk', source: c }));
+};
+
 export const views = {
   status: (i: ApiInputs) => {
     const flags = new Set<string>();
@@ -166,15 +189,19 @@ export const views = {
     const lossToday = i.trades.filter((t) => t.closedAtMs !== null && t.closedAtMs >= day.start && (t.netPnl ?? 0n) < 0n).reduce((s, t) => s - (t.netPnl ?? 0n), 0n);
     const open = Object.values(i.book.positions).filter((p) => p.status !== 'closed').reduce((s, p) => s + lamportsUsd(p.cost, i.solPrice), 0n);
     const bankroll = i.policy.capital.bankroll as bigint;
+    const dailyLimit = (bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n;
+    const halts = [...i.halted.map(haltOf), ...i.budgetHalted.map((p) => ({ code: 'budget', source: p })), ...stopHalts(i.stops, i.nowMs)];
+    // The meter below and core risk count today's loss from the same trades; either at its limit stops entries.
+    if (lossToday >= dailyLimit && !halts.some((h) => h.code === 'daily-loss')) halts.push({ code: 'daily-loss', source: null });
     return {
       mode: MODE, connected: i.connected, flags: [...flags],
-      haltReasons: [...i.halted.map(haltOf), ...i.budgetHalted.map((p) => ({ code: 'budget', source: p }))].map((h) => ({ mode: MODE, ...h })),
+      haltReasons: halts.map((h) => ({ mode: MODE, ...h })),
       exitCapable: i.exitCapable,
       alerts: i.alerts.map((a) => ({ mode: MODE, code: a.code, subject: a.subject, at: iso(a.atMs) })),
-      regime: i.regime === null ? null : { state: i.regime.on ? 'on' : 'off', at: iso(i.regime.atMs), reasons: i.regime.reasons.map((r) => ({ mode: MODE, code: r.code, input: r.input })) },
+      regime: i.regime === null ? null : { state: i.regime.on ? 'on' : 'off', at: iso(i.regime.atMs), current: i.nowMs - i.regime.atMs <= i.regimeMaxAgeMs, reasons: i.regime.reasons.map((r) => ({ mode: MODE, code: r.code, input: r.input })) },
       risk: [
         { mode: MODE, kind: 'open-exposure', usedUsd: usdText(open), limitUsd: null },
-        { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText((bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n) },
+        { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText(dailyLimit) },
       ],
     };
   },

@@ -6,7 +6,7 @@ import { schemaFor } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { SEEDING } from '../src/engine/strategy.ts';
-import { type AlertSeen, collectAlerts, haltOf, MAX_ALERTS, route, views } from '../src/run/api.ts';
+import { type AlertSeen, collectAlerts, haltOf, MAX_ALERTS, route, stopHalts, views } from '../src/run/api.ts';
 import { makeWorker, passingMarket } from './worker-harness.ts';
 
 type Status = { haltReasons: { mode: string; code: string; source: string | null }[]; exitCapable: boolean; alerts: { mode: string; code: string; subject: string; at: string }[]; regime: { state: string; at: string; reasons: { mode: string; code: string; input: string | null }[] } | null };
@@ -56,7 +56,8 @@ describe('/api/v1/paper/status (API-1)', () => {
     const h = makeWorker();
     const get = () => strict(route(PATHS.status('paper'), () => h.worker.apiInputs()).body).data;
     const before = get();
-    expect(before.haltReasons).toEqual([{ mode: 'paper', code: 'starting', source: null }]);
+    // Before any event the account stops are not known: never none.
+    expect(before.haltReasons).toEqual([{ mode: 'paper', code: 'starting', source: null }, { mode: 'paper', code: 'risk-unknown', source: null }]);
     expect(before.exitCapable).toBe(false);
     expect(before.regime).toBeNull();
     expect(before.alerts).toEqual([]);
@@ -65,7 +66,7 @@ describe('/api/v1/paper/status (API-1)', () => {
     await h.worker.stop();
   });
 
-  it('shows the regime the latest candidate was judged under, and no halt reason once entries run', async () => {
+  it('shows the regime the latest candidate was judged under, and only the account stops once entries run', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
     const m = await passingMarket(h);
@@ -73,7 +74,9 @@ describe('/api/v1/paper/status (API-1)', () => {
     const s = strict(route(PATHS.status('paper'), () => h.worker.apiInputs()).body).data;
     expect(s.regime).toMatchObject({ state: 'on', reasons: [] });
     expect(Date.parse(s.regime!.at)).toBeLessThanOrEqual(h.timers.now());
-    expect(s.haltReasons).toEqual(h.worker.health().halt_reasons.map((r) => ({ mode: 'paper', ...haltOf(r) })));
+    const i = h.worker.apiInputs();
+    expect(s.haltReasons).toEqual([...h.worker.health().halt_reasons.map(haltOf), ...stopHalts(i.stops, i.nowMs)].map((r) => ({ mode: 'paper', ...r })));
+    expect(i.stops?.codes).not.toBeNull();
     expect(s.exitCapable).toBe(h.worker.health().exit_capable);
     await h.worker.stop();
   });
@@ -97,7 +100,7 @@ describe('/api/v1/paper/status (API-1)', () => {
       regime: { atMs: 6_000, on: false, reasons: [{ code: 'unknown', input: 'curve-volume' }, { code: 'regime-off', input: null }] },
     }) }).data;
     expect(s.alerts).toEqual([{ mode: 'paper', code: 'exit_blocked', subject: 'p1', at: new Date(5_000).toISOString() }]);
-    expect(s.regime).toEqual({ state: 'off', at: new Date(6_000).toISOString(), reasons: [{ mode: 'paper', code: 'unknown', input: 'curve-volume' }, { mode: 'paper', code: 'regime-off', input: null }] });
+    expect(s.regime).toEqual({ state: 'off', at: new Date(6_000).toISOString(), current: i.nowMs - 6_000 <= i.regimeMaxAgeMs, reasons: [{ mode: 'paper', code: 'unknown', input: 'curve-volume' }, { mode: 'paper', code: 'regime-off', input: null }] });
     await h.worker.stop();
   });
 });

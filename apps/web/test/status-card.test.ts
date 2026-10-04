@@ -78,8 +78,8 @@ describe('dashboard', () => {
 describe('worker card with the API-1 fields', () => {
   const at = '2026-10-04T01:00:00.000Z';
   const halt = (code: string, source: string | null = null) => ({ mode: 'paper' as const, code, source }) as NonNullable<WorkerStatus['haltReasons']>[number];
-  const reg = (state: 'on' | 'off', reasons: [string, string | null][] = []): NonNullable<WorkerStatus['regime']> =>
-    ({ state, at, reasons: reasons.map(([code, input]) => ({ mode: 'paper', code, input })) }) as NonNullable<WorkerStatus['regime']>;
+  const reg = (state: 'on' | 'off', reasons: [string, string | null][] = [], current = true): NonNullable<WorkerStatus['regime']> =>
+    ({ state, at, current, reasons: reasons.map(([code, input]) => ({ mode: 'paper', code, input })) }) as NonNullable<WorkerStatus['regime']>;
   const alert = (code: string) => ({ mode: 'paper' as const, code, subject: 'p1', at }) as NonNullable<WorkerStatus['alerts']>[number];
   const with_ = (extra: Partial<WorkerStatus>, flags: readonly string[] = []) => statusRows({ ...status(flags), ...extra }).map((r) => `${r.label}: ${r.value}`);
 
@@ -92,6 +92,18 @@ describe('worker card with the API-1 fields', () => {
     ['seeding', 'seeding'],
     ['divergence', 'ledger mismatch'],
     ['budget', 'request budget'],
+    ['daily-loss', 'daily loss'],
+    ['weekly-loss', 'weekly loss'],
+    ['weekly-review', 'weekly review'],
+    ['kill-switch', 'kill switch'],
+    ['wallet-below-kill-line', 'wallet below kill line'],
+    ['loss-cooldown', 'loss cooldown'],
+    ['loss-day-pause', 'losses today'],
+    ['loss-review', 'loss review'],
+    ['session-ended', 'session ended'],
+    ['max-open-positions', 'open trade limit'],
+    ['risk', 'risk limit'],
+    ['risk-unknown', 'risk unknown'],
   ])('halt %s reads "Entries: Off: %s"', (code, why) => {
     expect(with_({ haltReasons: [halt(code)] })).toEqual([`Entries: Off: ${why}`]);
   });
@@ -114,6 +126,21 @@ describe('worker card with the API-1 fields', () => {
     expect(with_({ haltReasons: [], regime: reg('on') }, ['waiting-for-evidence'])).toEqual(['Entries: Off: no evidence', 'Regime: On']);
   });
 
+  it.each(['daily-loss', 'weekly-loss', 'weekly-review', 'kill-switch', 'loss-cooldown', 'loss-day-pause', 'loss-review', 'session-ended', 'risk-unknown'])(
+    'a risk stop (%s) with the regime on and current is never "Entries: On"',
+    (code) => {
+      const r = with_({ haltReasons: [halt(code)], regime: reg('on') });
+      expect(r).not.toContain('Entries: On');
+      expect(r[0]).toMatch(/^Entries: Off: /);
+    },
+  );
+
+  it('a regime evaluation that is not current never shows "Entries: On" or "Regime: On"', () => {
+    expect(with_({ haltReasons: [], regime: reg('on', [], false) })).toEqual(['Regime: Not checked lately']);
+    expect(with_({ haltReasons: [], regime: reg('off', [['regime-off', null]], false) })).toEqual(['Regime: Not checked lately']);
+    expect(with_({ haltReasons: [], regime: { state: 'on', at, reasons: [] } as unknown as NonNullable<WorkerStatus['regime']> })).not.toContain('Entries: On');
+  });
+
   it.each([
     [[['unknown', 'curve-volume']], 'Regime: Off: volume unknown'],
     [[['unknown', 'sol-usd']], 'Regime: Off: SOL price unknown'],
@@ -131,7 +158,7 @@ describe('worker card with the API-1 fields', () => {
   });
 
   it('a regime in a state the app does not know renders nothing', () => {
-    expect(with_({ regime: { state: 'maybe', at, reasons: [] } as unknown as NonNullable<WorkerStatus['regime']> })).toEqual([]);
+    expect(with_({ regime: { state: 'maybe', at, current: true, reasons: [] } as unknown as NonNullable<WorkerStatus['regime']> })).toEqual([]);
   });
 
   it('exits: ready, not ready, and a blocked or pending exit over either', () => {
@@ -180,7 +207,7 @@ describe('status schema (API-1 fields optional, strict when present)', () => {
     const check = schemaFor('status', 'paper');
     const base = { mode: 'paper', connected: true, flags: [], risk: [] };
     expect(() => check(base, '$')).not.toThrow();
-    const full = { ...base, haltReasons: [{ mode: 'paper', code: 'budget', source: 'helius' }], exitCapable: true, alerts: [{ mode: 'paper', code: 'oversold', subject: 'p1', at: '2026-10-04T01:00:00.000Z' }], regime: { state: 'off', at: '2026-10-04T01:00:00.000Z', reasons: [{ mode: 'paper', code: 'unknown', input: 'sol-usd' }] } };
+    const full = { ...base, haltReasons: [{ mode: 'paper', code: 'budget', source: 'helius' }], exitCapable: true, alerts: [{ mode: 'paper', code: 'oversold', subject: 'p1', at: '2026-10-04T01:00:00.000Z' }], regime: { state: 'off', at: '2026-10-04T01:00:00.000Z', current: true, reasons: [{ mode: 'paper', code: 'unknown', input: 'sol-usd' }] } };
     expect(() => check(full, '$')).not.toThrow();
     expect(() => check({ ...full, regime: null }, '$')).not.toThrow();
     for (const bad of [
@@ -190,6 +217,7 @@ describe('status schema (API-1 fields optional, strict when present)', () => {
       { ...full, alerts: [{ mode: 'paper', code: 'oversold', subject: 'p1', at: 'yesterday' }] },
       { ...full, regime: { state: 'maybe', at: full.regime.at, reasons: [] } },
       { ...full, regime: { ...full.regime, extra: 1 } },
+      { ...full, regime: { state: 'on', at: full.regime.at, reasons: [] } },
       { ...full, unknownField: 1 },
     ]) expect(() => check(bad, '$')).toThrow();
   });
