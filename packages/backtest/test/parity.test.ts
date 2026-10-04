@@ -37,6 +37,7 @@ import {
   parseTapes,
   runParity,
 } from '../src/dataset/parity.ts';
+import { encode } from '../../core/test/chain/encode.ts';
 
 // ---- byte builders ----
 
@@ -49,33 +50,6 @@ const le = (v: bigint, n: number) => {
   }
   return out;
 };
-
-/** Borsh-encodes `values` for the fields of a layout, from each codec's IDL type. */
-const encode = (fields: readonly (readonly [string, { idl: unknown }])[], values: Record<string, unknown>): number[] =>
-  fields.flatMap(([name, c]) => {
-    const v = values[name];
-    switch (c.idl) {
-      case 'pubkey':
-        return [...decodeBase58(v as string)];
-      case 'u64':
-      case 'i64':
-        return le(BigInt(v as bigint), 8);
-      case 'i128':
-        return le(BigInt(v as bigint), 16);
-      case 'u16':
-        return le(BigInt(v as number), 2);
-      case 'u8':
-        return [v as number];
-      case 'bool':
-        return [v ? 1 : 0];
-      case 'string': {
-        const b = new TextEncoder().encode(v as string);
-        return [...le(BigInt(b.length), 4), ...b];
-      }
-      default:
-        throw new Error(`fixture encoder: unsupported type ${JSON.stringify(c.idl)} of ${name}`);
-    }
-  });
 
 const key = (b: number) => encodeBase58(new Uint8Array(32).fill(b));
 const PAYER = key(1);

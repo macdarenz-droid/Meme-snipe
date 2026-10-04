@@ -12,6 +12,9 @@ import { rebuildMove, swapPrices } from '../src/run/exposure.ts';
 import { recordOf, tx } from './helpers.ts';
 import { makeWorker, Market, passingMarket } from './worker-harness.ts';
 
+/** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
+const HELD = { heldPoolFacts: true } as const;
+
 const lines = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as JournalLine);
 
 describe('coverage_gap lines', () => {
@@ -76,7 +79,7 @@ describe('exposure lines', () => {
   it('a kill with a position open: the next start journals one exposure line for it, from the last line before the kill', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -95,7 +98,7 @@ describe('exposure lines', () => {
       getTransaction: async () => null,
     } });
     expect(await h2.worker.start()).toEqual({ ok: true });
-    await new Market(h2).run(1_000, 200);
+    await new Market(h2, HELD).run(1_000, 200);
     const exposure = lines(h.stateDir).filter((l) => l.kind === 'exposure');
     expect(exposure).toEqual([expect.objectContaining({ trade: pid, from_ts: lastBefore, worst_move_bps: 0, swaps: 0, pool: expect.any(String) })]);
     expect(reads).toEqual([exposure[0]!['pool']]);
@@ -105,7 +108,7 @@ describe('exposure lines', () => {
     const lastOfBoot2 = lines(h.stateDir).at(-1)!.ts;
     const h3 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     expect(await h3.worker.start()).toEqual({ ok: true });
-    await new Market(h3).run(1_000, 200);
+    await new Market(h3, HELD).run(1_000, 200);
     const all = lines(h.stateDir).filter((l) => l.kind === 'exposure');
     expect(all).toHaveLength(2);
     expect(all[1]).toMatchObject({ trade: pid, from_ts: lastOfBoot2, worst_move_bps: null, detail: 'no chain history reader configured' });
@@ -117,7 +120,7 @@ describe('typed gate_reasons and the health fields', () => {
   it('every reject carries typed reasons the runner counts by gate and code; an entry is "enter"', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
