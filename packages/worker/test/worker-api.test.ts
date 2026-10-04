@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor, type Endpoint } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
-import { COMMANDS, route } from '../src/run/api.ts';
+import { COMMANDS, NOT_RUNNING, route } from '../src/run/api.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 /** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
@@ -49,13 +49,23 @@ describe('the app API (UI-2 contract)', () => {
     await h.worker.stop();
   });
 
-  it('serves paper only: backtest and live paths are not served, the backtest report is empty, writes are refused', async () => {
+  it('serves paper only: live and backtest answer "not running" on every app path, the backtest report is empty, writes are refused', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
     const get = (path: string) => route(path, () => h.worker.apiInputs());
-    expect(get(PATHS.status('live')).status).toBe(404);
-    expect(get(PATHS.trades('backtest')).status).toBe(404);
-    expect(get('/api/v1/paper/nothing').status).toBe(404);
+    // API-1: a mode this worker does not run answers every app path with no data and the reason, which the app's
+    // envelope check accepts as "not running" for that mode (never a server error).
+    const month = new Date(h.timers.now()).toISOString().slice(0, 7);
+    for (const m of ['live', 'backtest'] as const) {
+      for (const [e, path] of [...ENDPOINTS.map((e) => [e, PATHS[e](m)] as const), ['calendar', PATHS.calendar(m, month)] as const]) {
+        const r = get(path);
+        expect(r.status, path).toBe(200);
+        expect(r.body).toMatchObject({ mode: m, data: null, notRunning: NOT_RUNNING });
+        const env = checkEnvelope(JSON.parse(JSON.stringify(r.body)), m, schemaFor(e as Endpoint, m));
+        expect(env.notRunning, path).toBe(NOT_RUNNING);
+      }
+    }
+    for (const path of ['/api/v1/demo/status', '/api/v1/live/nothing', '/api/v1/live/calendar', '/api/v1/live/status/2026-10', '/api/v1/paper/nothing']) expect(get(path).status, path).toBe(404);
     expect(get(PATHS.backtestReport()).body).toMatchObject({ mode: 'backtest', data: null });
     await h.worker.stop();
   });

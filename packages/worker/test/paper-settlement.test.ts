@@ -497,7 +497,8 @@ describe('a late-landing sell reaches the paper account (risk review of #133)', 
     m.slot();
     await m.run(800, 100, () => { m.slot(); m.pool(); });
     const pid = `${i.intent.positionId}.o1`;
-    expect(h.worker.book.positions[pid]?.status).toBe('open');
+    // The late position exists, and exits still run for it under the halt.
+    expect(h.worker.book.positions[pid]).toBeDefined();
     const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(journal.filter((l) => l['kind'] === 'alert' && l['code'] === 'late_buy').map((l) => l['trade'])).toEqual([pid]);
     expect(h.worker.health().halt_reasons).toContain(LATE_BUY);
@@ -512,6 +513,12 @@ describe('a late-landing sell reaches the paper account (risk review of #133)', 
     m2.slot();
     await m2.run(400, 100);
     expect(h2.worker.health().halt_reasons).toContain(LATE_BUY);
+    // The restart's catch-up (WORKER-ORDER, at the first price) opens no trade for the late position either.
+    expect(await until(m2, 10_000, () => h2.worker.apiInputs().solPrice !== null, () => {
+      m2.solPrice();
+      m2.slot();
+    })).toBe(true);
+    expect(trades()).toBe(before);
     await h2.worker.stop();
   });
 });

@@ -313,6 +313,23 @@ export class PaperAccount {
     return l;
   }
 
+  /**
+   * Positions whose fills the ledger holds but this record does not (WORKER-ORDER): a kill after the ledger commit and
+   * before this file was written. An entry with no trade record, or a closed position whose trade is still open.
+   */
+  behind(book: Book): { readonly positionId: string; readonly purpose: 'entry' | 'exit' }[] {
+    const out: { positionId: string; purpose: 'entry' | 'exit' }[] = [];
+    const claims = lateFillClaims(book);
+    for (const p of Object.values(book.positions)) {
+      // A late buy's position is no paper trade (it halts entries instead), and its fill is not its parent's (PAPER-1).
+      if (lateFillOf(p.id) !== null || entryShare(book, p, claims).fills.length === 0) continue;
+      const t = this.#s.trades.find((x) => x.positionId === p.id);
+      if (t === undefined) out.push({ positionId: p.id, purpose: 'entry' });
+      if (p.status === 'closed' && (t === undefined || t.closedAtMs === null)) out.push({ positionId: p.id, purpose: 'exit' });
+    }
+    return out;
+  }
+
   /** The account snapshot risk reads, with the ledger's held reservations and version read in one transaction. */
   fact(ledger: Ledger, book: Book, latches: Latches, solPrice: MicroUsd | null, nowMs: number): AccountFact {
     const { version, value: held } = ledger.withSnapshot(() => ledger.heldExposure());

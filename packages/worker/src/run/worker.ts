@@ -8,7 +8,7 @@
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { placeBookings } from './booked.ts';
+import { placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -28,13 +28,13 @@ import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release,
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
-import { Desk, openIntents } from './desk.ts';
+import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
 import type { SeedRpc } from '../seed/rpc.ts';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
-import { type ApiInputs, type DecisionRow, checkOf, melbourneDate, stageOf, startApiServer } from './api.ts';
+import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
@@ -52,7 +52,7 @@ import { loadState, saveState } from '../persist/index.ts';
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export const PERSIST_FILE = 'deployer-state.json';
 export const PERSIST_EVERY_MS = 5 * 60_000;
-import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
+import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { type PoolFact, S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -154,6 +154,8 @@ export interface WorkerDeps {
    * the feed. Null loses it (an API call that timed out after the send); another event replaces it. Tests only.
    */
   readonly worldFault?: (event: BookEvent) => BookEvent | null;
+  /** Test seam: the desk calls it right after each of a fill's two durable writes (ARCHITECTURE §12.4). */
+  readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
   /**
    * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
@@ -196,6 +198,18 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
 
+/** The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. */
+const readJournalFills = (path: string): Record<string, unknown>[] => {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8').split('\n').filter((l) => l.includes('"kind":"entry"') || l.includes('"kind":"exit"')).flatMap((l) => {
+    try {
+      return [JSON.parse(l) as Record<string, unknown>];
+    } catch {
+      return [];
+    }
+  });
+};
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
@@ -205,6 +219,8 @@ export class Worker {
   readonly #ledger: Ledger;
   readonly #control: StateFile<Control>;
   readonly #exitsFile: ReturnType<typeof exitsFile>;
+  readonly #seedsFile: ReturnType<typeof seedsFile>;
+  #savedSeeds = '';
   readonly #account: PaperAccount;
   readonly #feed: LiveFeed;
   readonly #facts: EngineFeed;
@@ -223,6 +239,10 @@ export class Worker {
   #pricedSettle = false;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
+  /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
+  readonly #fillLines: Record<string, unknown>[];
+  /** Fills the ledger holds and account.json does not, recorded once a SOL price is known. */
+  #accountBehind: { readonly positionId: string; readonly purpose: 'entry' | 'exit' }[] = [];
   #pools = new Map<string, unknown>();
   /** When each mint's latest pool fact was released to the engine (WATCH-1 judges a feed fact by its release). */
   readonly #poolReleasedAt = new Map<string, number>();
@@ -242,6 +262,8 @@ export class Worker {
   #seeding = false;
   /** A ledger/book divergence: a halt reason for the rest of the process. */
   #diverged: readonly string[] = [];
+  /** Critical alerts the engine raised since boot (code and subject, first time seen), newest last; memory only. */
+  #alerts: AlertSeen[] = [];
   #savedExits = '';
   #probe: DelayProbe | null = null;
   #rpcDownUntil = 0;
@@ -284,6 +306,7 @@ export class Worker {
     this.#boot = d.boot ?? `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
+    this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
@@ -303,6 +326,7 @@ export class Worker {
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
     this.#exitsFile = exitsFile(c.stateDir);
+    this.#seedsFile = seedsFile(c.stateDir);
     this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
 
     this.#feed = new LiveFeed({
@@ -391,6 +415,10 @@ export class Worker {
     this.#desk = new Desk({
       ledger: this.#ledger, config: bookConfig, restored: stored.book,
       journal: (kind, fields) => this.#journal.write(kind, fields),
+      // Fill lines written before a kill that came ahead of the ledger: the restart books those fills again, once.
+      journaledFills: journaledFillKeys(this.#fillLines),
+      solUsd: () => this.#solPrice,
+      ...(d.crashPoint === undefined ? {} : { crashPoint: d.crashPoint }),
       report: (event) => this.#report(event),
       // An entry that ended with no fill books its failed attempts' fees here (PAPER-1, M4), before the snapshot.
       accountChanged: () => {
@@ -412,10 +440,13 @@ export class Worker {
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       filled: (r) => {
-        this.#account.filled(r, this.#solPrice, this.#legs());
+        // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
+        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
     });
+    // WORKER-ORDER: fills the ledger holds that account.json missed (a kill between the two), caught up at the first price.
+    this.#accountBehind = this.#account.behind(stored.book);
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
     for (const e of stored.events) this.#desk.written(this.#report(e));
     // The worker's own start facts are dated 1 ms after the last restored frame, so every restored event sorts before
@@ -430,11 +461,11 @@ export class Worker {
     for (const e of this.#ledger.positionEvents()) if (e.status === 'open' && openedAt[e.positionId] === undefined) openedAt[e.positionId] = Number(e.ts);
     // Where each booking sits against the boots (live, or at a reconcile), from the journal's earlier lines (EXIT-1f N2).
     const journalPath = join(c.stateDir, STATE_FILES.journal);
-    const bookedWhen = placeBookings(existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : null, openedAt);
+    const bookedWhen = placeBookingsAt(journalPath, openedAt);
     // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen }, startAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}) }, startAt);
     this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt + 1);
     if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt + 1);
     if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt + 1);
@@ -526,6 +557,7 @@ export class Worker {
         this.#solPrice = p.price as MicroUsd;
         this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
+        if (this.#accountBehind.length > 0) this.#catchUpAccount();
         // The paper wallet exists from the first price on: risk needs its balance (R4). Every process settles once at its
         // first price after the reconcile: fees of entries that ended unfilled while no price was known (in that
         // reconcile, a restart's) are booked here, not at some later book event.
@@ -645,6 +677,16 @@ export class Worker {
     writeFileSync(join(this.#d.config.stateDir, STATE_FILES.openIntents), `${n}\n`);
   }
 
+  /** The strategy's exit plans and trackers, written when they changed. */
+  #saveExits(): void {
+    const saved = this.#strategy.saved();
+    const text = jsonText(saved);
+    if (text !== this.#savedExits) {
+      this.#exitsFile.write(saved);
+      this.#savedExits = text;
+    }
+  }
+
   /** One engine step: release what is due, decide, record, write. */
   step(): void {
     const now = this.#d.timers.now();
@@ -653,6 +695,16 @@ export class Worker {
     this.#engine.drain();
     this.#recorder?.flush();
     this.#watchOpened();
+    // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
+    // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
+    // The plans go first: a plan made this step replaced its seed, so the seed may leave the disk only once the plan is
+    // on it (EXIT-1h review B1: a kill between the two writes left neither).
+    this.#saveExits();
+    const seeds = jsonText(this.#strategy.seeds());
+    if (seeds !== this.#savedSeeds) {
+      this.#seedsFile.write(this.#strategy.seeds());
+      this.#savedSeeds = seeds;
+    }
     const records = this.#engine.records as LogRecord[];
     const n = records.length;
     for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);
@@ -667,12 +719,7 @@ export class Worker {
         this.#report({ type: 'tick', blockHeight: this.#lastSlot });
       }
     }
-    const saved = this.#strategy.saved();
-    const text = jsonText(saved);
-    if (text !== this.#savedExits) {
-      this.#exitsFile.write(saved);
-      this.#savedExits = text;
-    }
+    this.#saveExits();
     this.#markAccount(now);
     if (now - this.#lastSaveMs >= PERSIST_EVERY_MS) this.#persist(now);
     this.#checkHalt(now);
@@ -705,6 +752,30 @@ export class Worker {
       this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
       return false;
     }
+  }
+
+  /**
+   * WORKER-ORDER: records the fills a kill between the ledger commit and account.json left out, from the book and the
+   * fill's own journal line (always written before the ledger since §12.4: its time, reasons and SOL/USD rate).
+   */
+  #catchUpAccount(): void {
+    const book = this.#desk.book;
+    for (const b of this.#accountBehind) {
+      const p = book.positions[b.positionId];
+      if (p === undefined) continue;
+      const line = this.#fillLines.filter((l) => l['kind'] === b.purpose && l['trade'] === b.positionId && (b.purpose === 'entry' || l['position'] === 'closed')).at(-1);
+      const at = typeof line?.['ts'] === 'string' ? Date.parse(line['ts']) : Number.NaN;
+      const reasons = lineReasons(line) ?? [`${b.purpose} filled (paper)`];
+      // Valued at the fill's own SOL/USD rate from its line (PAPER-1). Null there means no price at booking, which the
+      // live path valued as null too (the safe side); only a line without the field falls back to the price now, flagged.
+      const fromLine = lineRate(line);
+      const known = fromLine !== undefined;
+      const rate = known ? fromLine : this.#solPrice;
+      this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate, this.#legs());
+      this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two)${known ? '' : `; ${FILL_RATE_UNKNOWN}`}.`);
+    }
+    this.#accountBehind = [];
+    if (this.#reconciled) this.#publishAccount();
   }
 
   /**
@@ -742,6 +813,7 @@ export class Worker {
   }
 
   #afterRecord(r: LogRecord): void {
+    collectAlerts(this.#alerts, r);
     if (r.type !== 'decision') return;
     if (r.reasons[0] === SHORTLIST) {
       const mint = r.reasons[2];
@@ -811,6 +883,8 @@ export class Worker {
     return {
       nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
+      exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
+      alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
       book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       open: (p) => {
