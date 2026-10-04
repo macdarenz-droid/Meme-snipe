@@ -70,13 +70,15 @@ func (l *limiter) wait() {
 	}
 }
 
-var reqLimiter = newLimiter(40)
+// At most 10 request starts per second (ARCHIVE-SAFE, research/historical/ci/archive-limits.conf
+// ARCHIVE_MAX_RPS; archive-check.sh reads this literal and dispatches nothing above it).
+var reqLimiter = newLimiter(10)
 
 // Politeness towards the archive (a free public host); see polite.go for the rules
 // and the persisted back-off state.
 //   - request starts are spaced by reqLimiter;
 //   - bytes are paced by byteLimiter (-max-mbps, tokens of 1e6 bytes);
-//   - a 429 (or a 503 with Retry-After) stops the run by default (-on-429 stop); with
+//   - a 429 or any 503 stops the run by default (-on-429 stop); with
 //     -on-429 pause every request of the process waits max(1 h, Retry-After), for at
 //     most maxBlockedWait in total.
 //
@@ -103,10 +105,10 @@ func retryAfterOf(resp *http.Response) time.Duration {
 	return 0
 }
 
-// isBlocked: a 429, or a 503 that carries Retry-After, means "slow down".
+// isBlocked: a 429 or any 503 (with or without Retry-After) means "slow down"
+// (ARCHIVE-SAFE: every 503 stops the run like a 429).
 func isBlocked(resp *http.Response) bool {
-	return resp.StatusCode == http.StatusTooManyRequests ||
-		(resp.StatusCode == http.StatusServiceUnavailable && resp.Header.Get("Retry-After") != "")
+	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
 }
 
 var (

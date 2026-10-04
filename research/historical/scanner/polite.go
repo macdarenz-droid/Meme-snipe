@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	maxAllowedMBps = 80
+	maxAllowedMBps = 40 // ARCHIVE-SAFE: ARCHIVE_MAX_MBPS in research/historical/ci/archive-limits.conf
 	minBackoff     = time.Hour
 	stateFileName  = "archive-429.state"
 )

@@ -686,18 +686,20 @@ ac env AC_STATUS=429
   grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 64 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
   ok "archive-check: a 429 makes exactly one 64-byte request with the scanner's agent, logs status and cf-ray, dispatches nothing" || no "archive-check 429"
 printf '2026-09-21\n2026-09-19\n' > "$A/published"
-# ARCHIVE-SAFE hold: with the scanner's request cap above 10/s (today's 40), a served
-# check dispatches nothing; a scanner capped at 10/s (a test copy) lets it dispatch.
-ac env AC_STATUS=206
+# ARCHIVE-SAFE hold: with the scanner's request cap above 10/s (the old 40, a test copy),
+# a served check dispatches nothing; the real scanner (10/s) lets it dispatch.
+grep -qx 'var reqLimiter = newLimiter(10)' "$here/../scanner/archive.go" || no "scanner/archive.go request cap is not the literal newLimiter(10)"
+sed 's/^var reqLimiter = newLimiter(10)$/var reqLimiter = newLimiter(40)/' "$here/../scanner/archive.go" > "$A/archive40.go"
+ac env AC_STATUS=206 ARCHIVE_GO="$A/archive40.go"
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -q "held: the scanner's request cap (40/s, scanner/archive.go) is above 10/s" "$A/summary.md" &&
-  ok "ARCHIVE-SAFE: served, but the scanner's request cap (40/s) is above 10/s: held, nothing dispatched" || no "archive-check hold: $(cat "$A/summary.md")"
-sed 's/^var reqLimiter = newLimiter(40)$/var reqLimiter = newLimiter(10)/' "$here/../scanner/archive.go" > "$A/archive10.go"
-sed 's/^var reqLimiter = newLimiter(40)$/var reqLimiter = newLimiter(10.5)/' "$here/../scanner/archive.go" > "$A/archive105.go"
+  ok "ARCHIVE-SAFE: served, but a scanner request cap of 40/s is above 10/s: held, nothing dispatched" || no "archive-check hold: $(cat "$A/summary.md")"
+cp "$here/../scanner/archive.go" "$A/archive10.go"
+sed 's/^var reqLimiter = newLimiter(10)$/var reqLimiter = newLimiter(10.5)/' "$here/../scanner/archive.go" > "$A/archive105.go"
 grep -v '^var reqLimiter' "$here/../scanner/archive.go" > "$A/archivenone.go"
 bad=""
 for g in archive105 archivenone; do ac env AC_STATUS=206 ARCHIVE_GO="$A/$g.go"; [[ ! -e "$A/dispatch.log" ]] && grep -q "held:" "$A/summary.md" || bad+=" $g"; done
 [[ -z "$bad" ]] && ok "ARCHIVE-SAFE: a cap of 10.5/s or no cap found is held too" || no "archive-check hold variants:$bad"
-ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
+ac env AC_STATUS=206
 [[ $(wc -l < "$A/curl.calls") == 1 && $(wc -l < "$A/dispatch.log") == 1 ]] &&
   grep -q -- "data-scan.yml --repo o/r --ref main -f mode=scan -f days=2026-09-20 -f max_mbps=40$" "$A/dispatch.log" &&
   ok "ARCHIVE-SAFE: a 206 dispatches once, the next 1 unpublished pre-holdout day at 40 MB/s" || no "archive-check 206 dispatch: $(cat "$A/dispatch.log" 2>/dev/null)"
