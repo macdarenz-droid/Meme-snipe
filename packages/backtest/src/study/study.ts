@@ -310,7 +310,10 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // 3b. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14): max(300, n_power,
   // closed form) on MIN_DAYS days, with n_power's seed, frozen with the registration before any holdout count exists.
   const powerSeed = (u: string) => seedNumber(`${i.seed}:power:${u}`);
-  const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), familySize, powerSeed(u), alpha)]));
+  // n_power's inputs, defined once: G2 is handed exactly these (walkForward, walkForwardControl), so its fingerprint check
+  // compares like with like (STATS-1g M2).
+  const powerInputs = (u: string) => ({ walkForward: sameRegime(tradesOf(u)), walkForwardControl: sameRegime(controlOf(u)) });
+  const power = Object.fromEntries(universes.map((u) => [u, powerOf(powerInputs(u).walkForward, powerInputs(u).walkForwardControl, familySize, powerSeed(u), alpha)]));
   const unsized = holdoutUniverses.filter((u) => !power[u]!.ok);
   if (c.frozen && !diagnostic && holdoutUniverses.length > 0 && !holdoutUniverses.every(registered) && unsized.length === 0) {
     if (holdoutUniverses.some(registered)) throw new RangeError('only some universes of this attempt are registered: the registry needs repair before the study runs');
@@ -403,7 +406,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       scenario: 'conservative', registry: store!.registry, nowMs: Date.parse(i.startedAt), rng: createRng(seedNumber(`${i.seed}:g2`)),
       universes: ready.map((u) => ({
         universe: u, configId: ids[u]!, holdoutId: holdoutIdOf(u), ledgerHash: open.sealHash, trades: open.outcomes.strategy[u] ?? [],
-        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), g1Passed: g1Passed(u), walkForward: sameRegime(tradesOf(u)), walkForwardControl: sameRegime(controlOf(u)), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
+        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), g1Passed: g1Passed(u), ...powerInputs(u), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
       })),
     }, { familyAlpha: alpha });
     store = recordHoldoutG2(i.holdout, r.registry);
