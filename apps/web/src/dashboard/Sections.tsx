@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { type CheckResult, type DecisionRecord, type FunnelView, MODES, type Mode, type PositionRecord, type RiskMeter, type StatsView, type WorkerStatus } from '../api/contract.ts';
+import { type CheckResult, type DecisionRecord, type FunnelView, MODES, type Mode, type PositionRecord, type RiskMeter, type StatsView, type StatusFlag, type WorkerStatus } from '../api/contract.ts';
 import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
 import { Badge, Empty } from '../components/ui.tsx';
 import { shortAddress } from '../lib/format.ts';
@@ -41,6 +41,55 @@ export function StatusFlags({ status }: { status: WorkerStatus }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Flags that stop new entries, and the reason each prints after "Off:". */
+const ENTRY_OFF: readonly (readonly [StatusFlag, string])[] = [
+  ['paused', 'paused'],
+  ['stale-data', 'stale data'],
+  ['regime-off', 'regime'],
+  ['waiting-for-evidence', 'no evidence'],
+];
+const ALERTS: readonly StatusFlag[] = ['unknown-tx-result', 'low-fee-reserve', 'rate-limited'];
+
+export interface StatusRow {
+  readonly label: 'Entries' | 'Candidates' | 'Exits' | 'Alerts';
+  readonly value: string;
+  readonly alert: boolean;
+}
+
+/**
+ * The worker card's rows, from the status flags the worker serves. A row appears only when a flag proves it: the
+ * status endpoint does not carry halt reasons, exit readiness or the regime's reason yet (docs/DECISIONS.md, APP-3),
+ * so "Entries: On" or "Exits: Ready" is never shown. Unknown flags add nothing.
+ */
+export const statusRows = (status: WorkerStatus): StatusRow[] => {
+  const has = new Set<string>(Array.isArray(status.flags) ? status.flags : []);
+  const rows: StatusRow[] = [];
+  const off = ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why);
+  if (off.length > 0) rows.push({ label: 'Entries', value: `Off: ${off.join(', ')}`, alert: false });
+  if (has.has('no-eligible-candidate')) rows.push({ label: 'Candidates', value: 'None yet', alert: false });
+  if (has.has('exit-blocked')) rows.push({ label: 'Exits', value: 'Blocked', alert: true });
+  else if (has.has('exit-pending')) rows.push({ label: 'Exits', value: 'Pending', alert: false });
+  const alerts = ALERTS.filter((f) => has.has(f)).map((f) => FLAG_LABEL[f]);
+  if (alerts.length > 0) rows.push({ label: 'Alerts', value: alerts.join(', '), alert: true });
+  return rows;
+};
+
+export function StatusCard({ status }: { status: WorkerStatus }) {
+  if (!status.connected) return <span className="badge badge-neutral">Worker not connected</span>;
+  const rows = statusRows(status);
+  if (rows.length === 0) return <span className="muted small">No alerts</span>;
+  return (
+    <dl className="status-list" aria-label="Worker state">
+      {rows.map((r) => (
+        <div key={r.label}>
+          <dt>{r.label}</dt>
+          <dd className={r.alert ? 'dash-status-alert' : undefined}>{r.value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
