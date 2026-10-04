@@ -19,6 +19,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | #168 ACCOUNT-RATE | eb1918dd (risk PASS; facts PASS 10:07) | conflicts with base in strategy.ts; builder base-merges, facts re-checks; #197 lands after it |
 | #171 EXIT-1h follow-up | 46aefee5 (EXIT delta pending) | — |
 | #201 PAPER-FEE-RUNG | 3f9b1f1a (BT PASS; facts PASS 10:27) | DECISIONS-only conflict with base: the supervisor resolves it (base side first) when its slot comes. Non-blocking follow-up: S0's backtest entry fee (no `;fee=` → entryPriorityFee) is unpinned |
+| #213 ARCHIVE-SAFE A | ac9561f8 (data review sent 10:29) | owner-ordered safety; merges as soon as it passes (before the 09-21 chain ends); PR B (Go: 10 req/s, any 503 stops) drafted next, merges only after the chain ends |
 | #191 RES-5c | d10f2f85 (stats delta PASS 9:15) | stream 5b: CI slots go to streams 1–4 first; merges when the core line is clear |
 | #115 RES-4 | dcb931e8 (BT + stats delta PASS 9:15) | stream 5b, same reason |
 | #154 BT-WALL | 3d277751 (base merged 10:19; BT delta sent) | stream 5a early look; after the core money/exit PRs |
