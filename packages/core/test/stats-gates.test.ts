@@ -230,7 +230,7 @@ type PowerSpec = Omit<G2PowerResult, 'walkForward' | 'inputs' | 'settings' | 'st
 };
 const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN: 0.8, level: 0.04 / familySize, evaluations: [], units: G2_SENSITIVITY_VARIANTS, seed: 7 });
 const settingsOf = (p: PowerSpec, familySize: number): G2PowerSettings => ({
-  targetMean: 0.05, familySize, alpha: 0.04, power: 0.8, simulations: 400, replicates: 500, maxTrades: 50_000, units: p.units, seed: p.seed,
+  targetMean: 0.05, familySize, alpha: 0.04, power: 0.8, simulations: 400, replicates: Math.ceil(20 / (0.04 / familySize)), maxTrades: 50_000, units: p.units, seed: p.seed,
 });
 // The closed-form n for the walk-forward σ̂ (≈ 0.33) at a family's level; the frozen requirement is at least it.
 const closedFor = (familySize: number) => nPower(sd(wf.map((t) => t.rNet)), 0.05, { alpha: 0.04 / familySize });
@@ -444,6 +444,42 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     expect(low.status).toBe('fail');
     expect(low.reasons.join()).toMatch(/n_power validated U1: n 330: .*0\.76 ± 0\.02 on independent draws/);
     expect(gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), validation: { n: 300, power: 0.9, standardError: 0.02 } } })] })).status).toBe('fail');
+  });
+  test('n_power settings are pinned, not taken from the result: each self-declared goal fails (review B3)', () => {
+    const base = settingsOf(power(330), 1);
+    expect(gateG2(g2Pass()).checks.find((x) => x.name === 'n_power settings U1')).toMatchObject({ passed: true });
+    // A consistent result (its inputs fingerprint matches) that declared an easier goal for itself.
+    const cases: [Partial<G2PowerSettings>, RegExp][] = [
+      [{ power: 0.5 }, /power 0\.5 \(need >= 0\.8\)/],
+      [{ power: 0.79 }, /power 0\.79 \(need >= 0\.8\)/],
+      [{ targetMean: 0.2 }, /target mean 0\.2 \(need <= 0\.05\)/],
+      [{ targetMean: 0.051 }, /target mean 0\.051 \(need <= 0\.05\)/],
+      [{ simulations: 100 }, /100 simulations \(need >= 400\)/],
+      [{ simulations: 399 }, /399 simulations \(need >= 400\)/],
+      [{ replicates: 499 }, /499 replicates \(need >= 500\)/],
+      [{ familySize: 2 }, /family size 2 \(the registry's is 1\)/],
+      [{ alpha: 0.05 }, /α 0\.05 \(the attempt's is 0\.04\)/],
+      [{ units: ['days-1', 'days-2', 'days-3', 'creator'] }, /not every resampling unit/],
+    ];
+    for (const [over, why] of cases) {
+      const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), settings: { ...base, ...over } } })] }));
+      expect(r.checks.find((x) => x.name === 'n_power inputs U1')!.passed).toBe(true);
+      expect(r.status).toBe('fail');
+      expect(r.reasons.join()).toMatch(new RegExp(`n_power settings U1: n_power simulated with ${why.source}`));
+      expect(r.registry.entries[0]!.seal).toBe('sealed');
+    }
+    // Stricter settings pass: more power, a smaller edge, more simulations and replicates.
+    const strict = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), settings: { ...base, power: 0.9, targetMean: 0.03, simulations: 1000, replicates: 2000 } } })] }));
+    expect(strict.checks.find((x) => x.name === 'n_power settings U1')!.passed).toBe(true);
+    // A family of 3 at 0.04/3 needs 20 / (0.04/3) = 1,500 replicates.
+    const fam3 = gateG2(g2Pass({ registry: sealed(3, ['U1'], counts520), universes: [u('U1', { power: { ...power(330, 3), settings: { ...settingsOf(power(330, 3), 3), replicates: 1499 } } }, 3)] }));
+    expect(fam3.reasons.join()).toMatch(/n_power settings U1: n_power simulated with 1499 replicates \(need >= 1500\)/);
+  });
+  test('the settings\' seed must be the result\'s seed (the frozen one), even when the fingerprint matches', () => {
+    const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), settings: { ...settingsOf(power(330), 1), seed: 8 } } })] }));
+    expect(r.status).toBe('fail');
+    expect(r.checks.find((x) => x.name === 'n_power seed U1')!.passed).toBe(true);
+    expect(r.checks.find((x) => x.name === 'n_power inputs U1')!.passed).toBe(false);
   });
   test('n_power simulated without every resampling unit is refused before the seal opens', () => {
     const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), units: ['days-1'] } })] }));
@@ -841,6 +877,26 @@ describe('G3 live dry-run consistency', () => {
     const oneCreator = gateG3({ ...g3Pass, ...keptOf(dry, dry.map(() => 'same')) });
     expect(oneCreator.metrics.vetoGap).toBeNull();
     expect(oneCreator.notes.join()).toMatch(/on >= 2 creator clusters each\): the worst case/);
+  });
+  test('the cluster-robust gap bound by hand: CR2 variance and Bell–McCaffrey df on 3 creators a side (review B4)', () => {
+    // a = 1, 2, 3, 6 on creators x, x, y, z: mean 3, residual sums x −3, y 0, z 3, sizes 2, 1, 1 of 4.
+    // CR2: (9/(1 − 2/4) + 0/(1 − 1/4) + 9/(1 − 1/4)) / 4² = 30/16 = 1.875 (CR1 would give 3/2 · 18/16 = 1.6875).
+    // df: r_g = n_g²/(n − n_g) = 2, 1/3, 1/3; 4² / (Σn_g² + (Σr)² − Σr²) = 16 / (6 + 64/9 − 38/9) = 1.8 (G − 1 would be 2).
+    // b = 0, 2, 4 on creators p, q, r: mean 2, sums −2, 0, 2, sizes 1 of 3: (4/(2/3) + 0 + 4/(2/3))/9 = 4/3 = 32/24,
+    // df: r_g = 1/2 each, 9 / (3 + 9/4 − 3/4) = 2 (one trade a creator: n − 1).
+    // Satterthwaite: (Va + Vb)² / (Va²/1.8 + Vb²/2) = 77² / (45²/1.8 + 32²/2) = 5929/1637 with Va = 45/24, Vb = 32/24.
+    const r = clusterWelchBounds([1, 2, 3, 6], ['x', 'x', 'y', 'z'], [0, 2, 4], ['p', 'q', 'r'], 0.05);
+    const df = 5929 / 1637;
+    expect(r.diff).toBe(1);
+    expect(r.se ** 2).toBeCloseTo(77 / 24, 12);
+    expect(r.df).toBeCloseTo(df, 12);
+    expect(r.df).toBeCloseTo(3.62187, 5);
+    expect(r.upper).toBeCloseTo(1 + studentTQuantile(0.95, df) * Math.sqrt(77 / 24), 12);
+    expect(r.lower).toBeCloseTo(1 - studentTQuantile(0.95, df) * Math.sqrt(77 / 24), 12);
+    // Every observation its own cluster: the Welch variance s²/n and df n − 1 a side.
+    const own = clusterWelchBounds([1, 2, 3, 6], ['a', 'b', 'c', 'd'], [0, 0, 3, 5], ['e', 'f', 'g', 'h']);
+    expect(own.se ** 2).toBeCloseTo(variance([1, 2, 3, 6]) / 4 + variance([0, 0, 3, 5]) / 4, 12);
+    expect(own.df).toBeCloseTo((7 / 6 + 1.5) ** 2 / ((7 / 6) ** 2 / 3 + 1.5 ** 2 / 3), 12);
   });
   test('counterfactual scoring takes the outcome-stage labels of the vetoed candidates and counts censored ones', () => {
     const label = (rNet: number | null, censored = false): TripleBarrierLabel => ({

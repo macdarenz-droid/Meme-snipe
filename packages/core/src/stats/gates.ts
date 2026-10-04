@@ -138,6 +138,14 @@ const COVERAGE_WINDOW = 100;
 /** One-sided 95% normal quantile: the validation power may sit at most this many standard errors below the target. */
 const N_POWER_VALIDATION_Z = 1.645;
 /**
+ * The n_power settings G2 accepts (STATS-1g review B3): a result cannot declare its own goal. Power at least 80%
+ * (owner rule 6), a design edge of at most +5 points (a smaller edge needs more trades), at least 400 simulations; the
+ * family size, α and bootstrap replicates are the registry's and the gate's own.
+ */
+const N_POWER_MIN_POWER = 0.8;
+const N_POWER_MAX_TARGET_MEAN = 0.05;
+const N_POWER_MIN_SIMULATIONS = 400;
+/**
  * Days of the trailing reverse e-process that runs beside the full-history one (STATS-1d). After a good stretch the
  * full-history process has bet against the strategy for weeks and lost wealth, so a later decay barely moves it
  * (U1, −10% after 60 days at +5%: caught within 40 days in under 1% of runs); a process restarted on the last 40 days
@@ -563,6 +571,19 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     c.add(`n_power inputs ${u.universe}`, inputsNow !== null && inputsNow === u.power.inputs && settings!.seed === u.power.seed,
       inputsNow === null ? 'n_power carries no settings: its inputs cannot be checked'
         : `n_power was simulated on walk-forward ${describeSummary(u.power.walkForward)}${inputsNow === u.power.inputs ? '' : ' with other trades, labels, control or settings'}; this universe's walk-forward is ${describeSummary(wfNow)}`);
+    // The settings are pinned to fixed or registered values, never taken from the result itself (review B3).
+    if (settings) {
+      const off = [
+        ...(settings.power >= N_POWER_MIN_POWER ? [] : [`power ${fmt(settings.power)} (need >= ${N_POWER_MIN_POWER})`]),
+        ...(settings.targetMean <= N_POWER_MAX_TARGET_MEAN ? [] : [`target mean ${fmt(settings.targetMean)} (need <= ${N_POWER_MAX_TARGET_MEAN})`]),
+        ...(settings.simulations >= N_POWER_MIN_SIMULATIONS ? [] : [`${settings.simulations} simulations (need >= ${N_POWER_MIN_SIMULATIONS})`]),
+        ...(settings.replicates >= minReplicates ? [] : [`${settings.replicates} replicates (need >= ${minReplicates})`]),
+        ...(settings.familySize === registry.familySize ? [] : [`family size ${settings.familySize} (the registry's is ${registry.familySize})`]),
+        ...(Math.abs(settings.alpha - alpha) < 1e-12 ? [] : [`α ${fmt(settings.alpha)} (the attempt's is ${fmt(alpha)})`]),
+        ...(G2_SENSITIVITY_VARIANTS.every((x) => settings.units.includes(x)) ? [] : ['not every resampling unit']),
+      ];
+      c.add(`n_power settings ${u.universe}`, off.length === 0, `n_power simulated with ${off.join(', ') || 'the required settings'}`);
+    }
     // The chosen n confirmed on independent draws: its validation power may not sit significantly below the target.
     const val = u.power.validation;
     const goal = settings?.power ?? Number.NaN;
@@ -822,35 +843,56 @@ export const rejectMixGTest = (
 };
 
 /**
- * Cluster-robust variance of a sample mean (CR1, Liang & Zeger 1986; Cameron & Miller, J. Human Resources 50(2),
- * 2015): G/(G − 1) · Σ_c (Σ_{i∈c} (x_i − x̄))² / n², with G clusters. With every trade its own cluster it is s²/n.
+ * Cluster-robust variance of a sample mean with the Bell–McCaffrey small-sample correction (CR2; Bell & McCaffrey,
+ * Survey Methodology 28(2), 2002; Pustejovsky & Tipton, JBES 36(4), 2018), and its Bell–McCaffrey degrees of freedom
+ * (Imbens & Kolesár, REStat 98(4), 2016). For a mean the hat matrix of cluster g is J/n, so CR2 scales each cluster's
+ * residual sum by (1 − n_g/n)^−½: V = Σ_g (Σ_{i∈g} (x_i − x̄))² / (1 − n_g/n) / n². The df is (tr M)² / tr(M²) for
+ * M_gh = c_g c_h (δ_gh n_g − n_g n_h / n), c_g = (1 − n_g/n)^−½, under a working model of independent equal-variance
+ * trades: tr M = n and tr(M²) = Σ n_g² + (Σ r_g)² − Σ r_g², r_g = n_g² / (n − n_g). With equal cluster sizes the df is
+ * G − 1; with every trade its own cluster V = s²/n and the df is n − 1. One dominant creator lowers the df well below
+ * G − 1, which is what CR1 with G − 1 missed (STATS-1g review B1).
  */
-const clusterMeanVariance = (xs: readonly number[], clusters: readonly string[]): { variance: number; clusters: number } => {
+const clusterMeanVariance = (xs: readonly number[], clusters: readonly string[]): { variance: number; df: number; clusters: number } => {
+  const n = xs.length;
   const m = mean(xs);
-  const sums = new Map<string, number>();
-  xs.forEach((x, i) => sums.set(clusters[i]!, (sums.get(clusters[i]!) ?? 0) + (x - m)));
+  const sums = new Map<string, { sum: number; size: number }>();
+  xs.forEach((x, i) => {
+    const c = sums.get(clusters[i]!) ?? { sum: 0, size: 0 };
+    sums.set(clusters[i]!, { sum: c.sum + (x - m), size: c.size + 1 });
+  });
   const g = sums.size;
+  if (g < 2) return { variance: Number.NaN, df: Number.NaN, clusters: g };
   let ss = 0;
-  for (const v of sums.values()) ss += v * v;
-  return { variance: g > 1 ? (g / (g - 1)) * ss / (xs.length * xs.length) : Number.NaN, clusters: g };
+  let sizeSq = 0;
+  let r = 0;
+  let rSq = 0;
+  for (const { sum, size } of sums.values()) {
+    ss += (sum * sum) / (1 - size / n);
+    sizeSq += size * size;
+    const rg = (size * size) / (n - size);
+    r += rg;
+    rSq += rg * rg;
+  }
+  return { variance: ss / (n * n), df: (n * n) / (sizeSq + r * r - rSq), clusters: g };
 };
 
 /**
- * One-sided (1 − α) cluster-robust Welch bounds on mean(a) − mean(b): CR1 variances, Satterthwaite degrees of freedom
- * with G − 1 per side (external audit S4). Equals the classic Welch bound when every observation is its own cluster.
+ * One-sided (1 − α) cluster-robust Welch bounds on mean(a) − mean(b) (external audit S4, review B1): CR2 variances,
+ * Bell–McCaffrey df per side, combined by Satterthwaite. Equals the classic Welch bound when every observation is its
+ * own cluster.
  */
 export const clusterWelchBounds = (
   a: readonly number[], ca: readonly string[], b: readonly number[], cb: readonly string[], alpha = 0.05,
-): { diff: number; lower: number; upper: number; clustersA: number; clustersB: number } => {
+): { diff: number; lower: number; upper: number; se: number; df: number; clustersA: number; clustersB: number } => {
   if (ca.length !== a.length || cb.length !== b.length) throw new RangeError('every observation needs its cluster');
   const diff = mean(a) - mean(b);
   const va = clusterMeanVariance(a, ca);
   const vb = clusterMeanVariance(b, cb);
   if (va.clusters < 2 || vb.clusters < 2) throw new RangeError('cluster-robust bounds need at least two clusters on each side');
   const se = Math.sqrt(va.variance + vb.variance);
-  const base = { diff, clustersA: va.clusters, clustersB: vb.clusters };
+  const df = (va.variance + vb.variance) ** 2 / (va.variance ** 2 / va.df + vb.variance ** 2 / vb.df);
+  const base = { diff, se, df, clustersA: va.clusters, clustersB: vb.clusters };
   if (!(se > 0)) return { ...base, lower: diff, upper: diff };
-  const df = (va.variance + vb.variance) ** 2 / (va.variance ** 2 / (va.clusters - 1) + vb.variance ** 2 / (vb.clusters - 1));
   const t = studentTQuantile(1 - alpha, df);
   return { ...base, lower: diff - t * se, upper: diff + t * se };
 };

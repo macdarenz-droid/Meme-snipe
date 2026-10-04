@@ -295,11 +295,8 @@ const fullRulePasses = (
   return true;
 };
 
-/**
- * n_power by simulation of the exact G2 rule, cluster sensitivity included (review of STATS-1b: the largest p over
- * 1-, 2- and 3-day blocks and creator and funder clusters). The holdout must hold max(300, nPower) trades.
- */
-export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
+/** Checked settings and the per-stream power simulation shared by the search, the validation and their re-checks. */
+const prepareG2Power = (opts: G2PowerOptions) => {
   const target = opts.targetMean ?? 0.05;
   const universes = opts.familySize;
   const alpha = opts.alpha ?? 0.05;
@@ -320,9 +317,6 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
   const wf = opts.walkForward.map((t) => t.rNet);
   const shift = target - mean(wf);
   const level = alpha / universes;
-  const evaluations: { n: number; power: number }[] = [];
-  const cache = new Map<number, number>();
-
   const simulatePower = (n: number, rng: ReturnType<typeof createRng>): number => {
     let pass = 0;
     for (let s = 0; s < sims; s++) {
@@ -332,6 +326,25 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     }
     return pass / sims;
   };
+  return { target, universes, alpha, goal, sims, replicates, maxTrades, units, wf, level, simulatePower };
+};
+
+/**
+ * Power of the full G2 rule at n on one random stream (`createRng(stream)`): the step simulateG2Power runs for each
+ * candidate n (stream seed·STRIDE + n) and for the independent validation (stream seed·STRIDE + STRIDE − 1 − n).
+ */
+export const simulateG2PowerOnStream = (opts: G2PowerOptions, n: number, stream: number): number =>
+  prepareG2Power(opts).simulatePower(n, createRng(stream));
+
+/**
+ * n_power by simulation of the exact G2 rule, cluster sensitivity included (review of STATS-1b: the largest p over
+ * 1-, 2- and 3-day blocks and creator and funder clusters). The holdout must hold max(300, nPower) trades.
+ */
+export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
+  const { target, universes, alpha, goal, sims, replicates, maxTrades, units, wf, level, simulatePower } = prepareG2Power(opts);
+  const evaluations: { n: number; power: number }[] = [];
+  const cache = new Map<number, number>();
+
   const powerAt = (n: number): number => {
     const hit = cache.get(n);
     if (hit !== undefined) return hit;
