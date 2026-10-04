@@ -199,6 +199,8 @@ export const NO_RESTARTS: RestartState = { events: [], reportedAt: 0, lastSent: 
  */
 export function noteRestart(prev: Stored | undefined, hb: Heartbeat, now: number, st: RestartState): RestartState {
   if (prev === undefined || prev.hb.boot === hb.boot || prev.hb.git_sha !== hb.git_sha) return st;
+  // A restart the runner planned (a drill's kill or reboot) is not an outage to report.
+  if (typeof hb.last_exit === 'string' && hb.last_exit.startsWith('planned: ')) return st;
   const event: RestartEvent = {
     at: now, boot: hb.boot, git_sha: hb.git_sha,
     cause: typeof hb.last_exit === 'string' && hb.last_exit !== '' ? hb.last_exit : 'cause not reported',

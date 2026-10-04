@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -253,9 +253,29 @@ export const readJournalFills = (path: string, chunkBytes?: number): Record<stri
   return out;
 };
 
+/** A planned restart's marker younger than this is believed; an older one is stale (its kill never came). */
+export const PLANNED_RESTART_MS = 10 * 60_000;
+
+/**
+ * RESTART-ALERT: the runner's marker for a drill's kill or reboot, read and removed at boot: `planned: <cause>` when it
+ * is recent and well formed, else null (the journal's reading stands).
+ */
+export const plannedRestart = (path: string, nowMs: number): string | null => {
+  if (!existsSync(path)) return null;
+  let out: string | null = null;
+  try {
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { cause?: unknown; at?: unknown };
+    if (typeof m.cause === 'string' && m.cause !== '' && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) out = `planned: ${m.cause.slice(0, 80)}`;
+  } catch {}
+  rmSync(path, { force: true });
+  return out;
+};
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
+  /** How the previous process ended (RESTART-ALERT): a planned restart's marker, else the journal's last line. */
+  readonly #lastExit: string | null;
   readonly #started: number;
   readonly #journal: Journal;
   readonly #recorder: Recorder | null;
@@ -361,6 +381,7 @@ export class Worker {
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
+    this.#lastExit = plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? this.#journal.previousExit;
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
     const seed = `paper:${this.#boot}`;
@@ -1508,7 +1529,7 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss, last_exit: this.#journal.previousExit, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),

@@ -417,6 +417,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
               delete onDisk.killedMono;
               writeFileSync(P.reboot, JSON.stringify(onDisk));
             }
+            // RESTART-ALERT: the next boot reports this kill as planned, so the watchdog does not alert it as a crash or an OOM.
+            if (cause === 'crash' || cause === 'reboot') writeFileSync(join(o.stateDir, STATE_FILES.plannedRestart), JSON.stringify({ cause: `drill ${p.drill.id} (${cause})`, at: Date.now() }));
             if (cause === 'crash') await o.control.kill();
             else if (cause === 'reboot') await o.control.reboot();
             else if (cause === 'host-loss') await o.control.wipe({ restoreFrom: backupDir });

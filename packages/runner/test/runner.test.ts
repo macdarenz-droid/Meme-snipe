@@ -77,6 +77,8 @@ describe('runner with the stub worker', () => {
     const byKind = (k: string) => r.drills.filter((d) => d.kind === k);
     expect(byKind('restart')).toHaveLength(3);
     expect(byKind('restart').every((d) => d.pass && d.midTrade === true)).toBe(true);
+    // RESTART-ALERT: each crash drill left its marker for the next boot (the stub worker does not consume it).
+    expect(JSON.parse(readFileSync(join(t.stateDir, 'planned_restart'), 'utf8'))).toMatchObject({ cause: expect.stringMatching(/^drill restart-3 \(crash\)$/), at: expect.any(Number) });
     expect(byKind('handover')).toHaveLength(1);
     expect(byKind('handover')[0]!.pass).toBe(true);
     expect(r.drills_summary.feeds_passed).toEqual(['alchemy-ws', 'helius-ws', 'pumpportal']);

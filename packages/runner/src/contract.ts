@@ -45,6 +45,8 @@ export const STATE_FILES = {
   openIntents: 'open_intents',
   drillToken: 'drill.token',
   cleanStop: 'clean_stop',
+  /** RESTART-ALERT: written by the runner just before a drill kills or reboots the worker; the next boot reads and removes it. */
+  plannedRestart: 'planned_restart',
 } as const;
 
 export const DEFAULT_HEALTH_ADDR = '127.0.0.1:8787';

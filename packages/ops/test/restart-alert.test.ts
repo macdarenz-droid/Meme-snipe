@@ -27,8 +27,9 @@ describe('unplanned restarts (logic)', () => {
     expect(restartLines(st, T0 + 3_000_000, L).lines).toEqual([]);
   });
 
-  it('a deploy (new release), the same boot and a first heartbeat record nothing', () => {
+  it('a deploy (new release), a planned drill restart, the same boot and a first heartbeat record nothing', () => {
     const prev = stored(hb());
+    expect(noteRestart(prev, hb({ boot: 'b2', last_exit: 'planned: drill restart-1 (crash)' }), T0, NO_RESTARTS)).toBe(NO_RESTARTS);
     expect(noteRestart(prev, hb({ boot: 'b2', git_sha: 'b'.repeat(40) }), T0, NO_RESTARTS)).toBe(NO_RESTARTS);
     expect(noteRestart(prev, hb({ seq: 2, ts: T0 + 1 }), T0, NO_RESTARTS)).toBe(NO_RESTARTS);
     expect(noteRestart(undefined, hb({ boot: 'b2' }), T0, NO_RESTARTS)).toBe(NO_RESTARTS);
