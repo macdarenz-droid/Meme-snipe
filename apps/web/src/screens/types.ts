@@ -1,16 +1,16 @@
-/** Rows for the discovered-token table, filled by the worker API later. */
+/** Rows for the discovered-token table. Null is a value the worker does not serve or has not read yet: shown as "—". */
 export interface TokenRowView {
   mint: string;
-  symbol: string;
+  symbol: string | null;
   ageSeconds: number;
   venue: string;
-  liquidityUsd: number;
-  volume24hUsd: number;
-  holders: number;
-  topHolderShare: number;
+  liquidityUsd: number | null;
+  volume24hUsd: number | null;
+  holders: number | null;
+  topHolderShare: number | null;
   security: 'passed' | 'failed' | 'missing';
   promoted: boolean;
-  dataAgeSeconds: number;
+  dataAgeSeconds: number | null;
 }
 
 /**
@@ -26,8 +26,11 @@ export interface SessionView {
   maxEntryUsd: number | null;
   maxOpenPositions: number | null;
   dailyLossLimitUsd: number | null;
+  weeklyLossLimitUsd: number | null;
   sessionLossLimitUsd: number | null;
   workerConnected: boolean;
+  /** Whether the worker accepts a session start from the app; false when it runs its own session (APP-HOME). */
+  startable: boolean;
 }
 
 export interface WalletView {
@@ -56,8 +59,10 @@ export const EMPTY_SESSION: SessionView = {
   maxEntryUsd: null,
   maxOpenPositions: null,
   dailyLossLimitUsd: null,
+  weeklyLossLimitUsd: null,
   sessionLossLimitUsd: null,
   workerConnected: false,
+  startable: false,
 };
 
 export const EMPTY_WALLET: WalletView = {
