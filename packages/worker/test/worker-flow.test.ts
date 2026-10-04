@@ -11,7 +11,8 @@ import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
-import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
+import { evaluate, limitsFrom, parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
+import { heartbeatBody } from '../src/run/heartbeat.ts';
 import { HALT_KEY, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
 import { FILL_CONFIG, PRICE_SCALE, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import type { SavedExit } from '../src/engine/strategy.ts';
@@ -584,6 +585,54 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     expect(b.worker.book.positions[pid]!.status).toBe('exit_blocked');
     expect(b.worker.strategy.waitingExits().has(pid)).toBe(false);
     await b.worker.stop();
+  });
+
+  it('a blocked exit reaches the owner: the heartbeat\'s critical list names it and the watchdog pushes it, with no mark to fire the stop check (ALERT-EXIT B1)', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const { b, m: m2 } = await reboot(h);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    await m2.run(800, 400, () => m2.slot());
+    // A drained pool: the sale cannot be quoted, so the exit is booked blocked and the position has no mark.
+    expect(await until(m2, 60_000, () => b.worker.book.positions[pid]!.status === 'exit_blocked', () => {
+      m2.slot();
+      m2.pool(0n);
+    })).toBe(true);
+    const reason = b.worker.book.positions[pid]!.blockedReason!;
+    expect(reason.startsWith('no quote: ')).toBe(true);
+    const hb = parseHeartbeat(heartbeatBody(b.worker.health(), [], null))!;
+    expect(hb.critical).toEqual([`${MINT}: exit blocked, position ${pid} (${reason})`]);
+    const alerts = evaluate({ hb, receivedAt: m2.now }, m2.now, limitsFrom({}), { slot: null, heldMints: null });
+    expect(alerts).toEqual([{ key: `worker_critical:${MINT}: exit blocked, position ${pid}`, text: `Worker critical: ${MINT}: exit blocked, position ${pid} (${reason}).` }]);
+    await b.worker.stop();
+  });
+
+  it('a critical book alert in the worker\'s store reaches /health and the signed heartbeat under its own name (ALERT-EXIT, ops review)', async () => {
+    // No harness path raises a real double fill, so one record carrying the alert is added to a step's records on their
+    // way to the alert store: the worker's own wiring from there to /health and the heartbeat is what is tested.
+    let added = false;
+    const sent: { body?: string }[] = [];
+    const h = makeWorker({
+      key: 'k',
+      http: async (req) => {
+        sent.push(req);
+        return { status: 200, header: () => null, text: JSON.stringify({ ok: true, paused: false }) };
+      },
+      alertRecords: (records) => {
+        if (added || records.length === 0) return records;
+        added = true;
+        return [...records, { type: 'world', seq: 0, at: { slot: 0n, receivedAt: 1_000 }, eventId: 'test', inputs: [], action: null, reasons: [], result: 'applied', effects: [{ effect: { type: 'alert', level: 'critical', code: 'double_fill', subject: 'i:test' }, dispatch: 'runner' }] } as unknown as LogRecord];
+      },
+    });
+    const m = await entered(h);
+    expect(added).toBe(true);
+    const line = h.worker.health().critical.find((c) => c.startsWith('double_fill i:test (at '));
+    expect(line).toBeDefined();
+    await h.worker.heartbeat();
+    const hb = parseHeartbeat(sent.at(-1)!.body!)!;
+    expect(hb.critical).toContain(line);
+    expect(evaluate({ hb, receivedAt: m.now }, m.now, limitsFrom({}), { slot: null, heldMints: null }).map((a) => a.key)).toContain('worker_critical:double_fill i:test');
+    await h.worker.stop();
   });
 
   it('a wait that ends another way (a refusal books it blocked) stops being reported (#100 N1)', async () => {

@@ -1278,6 +1278,76 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **Stale feed with an open position (§18 case 1).** Built by WATCH-1; see "Position watch (WATCH-1)".
 - **Ordering note for SIGN-1.** In the paper worker the engine runs effects (the paper broadcast) inside `drain`, before the desk writes the ledger. Live signing must store the signed attempt before the first broadcast, as the `attempt` table says.
 
+## Exit alerts to the owner (ALERT-EXIT, `packages/worker/src/run/open-positions.ts`, `run/heartbeat.ts`, `packages/ops/src/watchdog/logic.ts`)
+
+- **2026-10-05 · A blocked exit reaches the owner (audit AUDIT-RM3 B1).**
+  - **The defect.** The book raised `exit_blocked` as a critical alert, but only into the worker's memory and the app's API. The heartbeat's `critical` list held only WATCH-1's lines. The watchdog alerted on a position only through its stop check, which needs a fresh mark below the stop. So a drained or unquotable pool (a rug), or an exit whose retries were used, with the last mark above the stop or no mark at all, stayed held with no push to the owner.
+  - **The fix.**
+    - Every position booked `exit_blocked` is a line in the heartbeat's `critical` list: `<mint>: exit blocked, position <id> (<reason>)`.
+    - The line comes from the book's state, not from the alert history. It stays up while the exit is blocked, whether its retries are waiting or used ("exit blocked: retries used" holds the position in that state). It goes when an exit owns the position again or it closes, and the watchdog then sends its cleared line.
+    - The watchdog pushes one alert per critical line, keyed by the line's name (the text before the bracketed reason). Before, all lines shared one key, so a blocked exit raised while a WATCH-1 alert was up waited for that alert's 5-minute repeat. A reason that changes on the same name updates the text and pushes nothing new.
+  - **Tests.**
+    - On the real worker, a drained pool books the exit blocked with no mark. The heartbeat's `critical` names it, and the watchdog's `evaluate` returns its alert. It failed before with `[]`.
+    - A blocked exit raised a minute after a WATCH-1 alert is pushed at once. A changed reason is no new push.
+    - Only `exit_blocked` positions get a line.
+- **2026-10-05 · Every critical book alert reaches the owner (supervisor ruling, golden rule).** The book's other critical alerts reached only the app, the same gap as a blocked exit:
+  - double_fill;
+  - oversold;
+  - unbooked_landing;
+  - late_landing;
+  - status_balance_mismatch.
+  - Each one `collectAlerts` keeps is now a line of its own in the heartbeat's `critical` list: `<code> <subject> (at <ISO time>)`. So the watchdog pushes it at once, per code and subject, also while another alert is up.
+  - These are events with no state that clears them. A line stays up while the worker runs, which is the app's bounded list, the newest 50. A restart drops it, and the watchdog then sends its cleared line. The engine log keeps every alert.
+  - `exit_blocked` is left to the position's own line, which clears when the exit is owned again.
+  - restart_recovery, orphan_cleared and cancel_after_broadcast are warnings by design (core lifecycle), so they are not pushed.
+  - `criticalLines` builds the whole list.
+  - Tests: one per class, from the alert record to the critical list to the heartbeat to the watchdog's push. A second subject of a class is a second alert. Warnings are not pushed. A cleared exit block has no line.
+  - Mutants 4 of 4 killed: the book's lines dropped, exit_blocked not filtered, one line for all, the subject left out.
+  - The worker's wiring (ops review): a test seam, `alertRecords`, adds a record carrying a double fill to a step's records on their way to the alert store. No harness path raises a real one. The test checks that `/health`'s `critical` lists it, and so does the signed heartbeat sent to the watchdog, under the key `worker_critical:double_fill <subject>`. The mutant that passes `[]` instead of the store fails it.
+- **2026-10-05 · Every open position is watched (audit N3).**
+  - The heartbeat carried only the first open position, so the watchdog's stop and wallet checks were blind past `maxOpen` 1.
+  - It now sends `open_positions`, every position in /health's order. `open_position` stays as the first, for older readers.
+  - The watchdog checks each position's stop and matches every reported mint against the wallet. An older sender without the list still counts its one position.
+  - Alert keys are per mint (`stop:<mint>`, `position:<mint>`), so a second position's breach is pushed at once. The key does not change when the position count does.
+  - Tests: two positions, the second below its stop, alert on the second. Both below, two alerts. The wallet holds one of two, alert on the other. The status line names every position. These failed before.
+- **2026-10-05 · What the watchdog sends is never lost (ops review of #178, blocking).**
+  - **The defect.** Telegram refuses a message over 4,096 characters. The watchdog sent each check's lines as one unchecked message, after marking them sent. So a large incident (about 30 per-position lines) was lost silently, and so was any message Telegram refused (a 429 or a 400).
+  - **The fix.**
+    - `say` splits the lines into messages of at most 4,096 characters, on line boundaries. A longer line is cut into pieces of its own.
+    - The messages are sent in order, and each reply is checked. Sending stops at the first refused message.
+    - Only the lines delivered whole are marked sent (`unsent`). On the next check, a new alert not delivered is sent again, a repeat not delivered stays due, and a cleared line not delivered is sent again.
+  - **Also, under the golden rule.**
+    - The old keys `stop`, `position` and `worker_critical` are dropped once, with no misleading cleared line; their alerts come back under the new keys.
+    - A heartbeat is read with at most 64 open positions and 64 critical lines. What is cut is named in a critical line of its own, never dropped silently.
+    - Each cut line has a fixed name (`open positions cut`, `critical alerts cut`), with the count in brackets, so a changing count stays one alert (ops review).
+  - **Tests.**
+    - 30 long lines go out as several messages, each at most 4,096 characters, every line once.
+    - Telegram refusing the second message: the rest goes out on the next check, nothing twice.
+    - A refused cleared line or repeat is planned again.
+    - The old keys are dropped, and the alert returns under its new key.
+    - The caps.
+    - The DO tests failed on the old sender.
+  - **Mutants.** 9 of 9 killed:
+    - the reply unchecked;
+    - every line marked sent;
+    - no size limit;
+    - no key migration;
+    - a new alert kept as sent;
+    - a cleared alert dropped;
+    - no position cap;
+    - a silent critical cap;
+    - a cut line counted as delivered.
+- **Mutants.** 9 of 9 killed:
+  - no exit lines in /health;
+  - the wrong status;
+  - the watchdog's stop check on the first position only;
+  - one combined critical key;
+  - the body with the first position only;
+  - the watchdog ignoring `open_positions`;
+  - the wallet check on the first position only;
+  - the positions mapped from the first only;
+  - the critical key keeping its reason.
+
 ## Position watch (WATCH-1, `packages/worker/src/run/watch.ts`, `run/snapshot.ts`)
 
 - **2026-10-04 · What.** An independent timer (`ZEROED_WATCH_EVERY_MS`, default 1 s) looks at every open position. It runs on the worker's timers, outside the engine step, and needs no feed event.

@@ -3,6 +3,7 @@
 import type { PositionState } from '../../../core/src/lifecycle/index.ts';
 import { execPrice } from '../../../core/src/exits/index.ts';
 import type { OpenPositionHealth } from '../../../runner/src/contract.ts';
+import type { AlertSeen } from './api.ts';
 
 /** A position's entry as a price per token (PRICE_SCALE), the unit of its stop and mark: entry spend over tokens bought. */
 export const entryPrice = (p: { readonly cost: bigint; readonly quantity: bigint; readonly sold: bigint }): bigint =>
@@ -33,3 +34,27 @@ export const openPositionsHealth = (positions: readonly PositionState[], s: Posi
       };
     });
 };
+
+/**
+ * ALERT-EXIT B1: the critical line for every position whose exit is booked blocked, for the heartbeat's `critical` list
+ * (the watchdog pushes each to the owner). Read from the book's state, so a line stays up while the exit is blocked
+ * (its retries waiting or used) and goes when an exit owns it again or it closes. The part before " (" names the alert;
+ * the reason follows in brackets.
+ */
+export const exitCritical = (positions: readonly PositionState[]): string[] =>
+  positions.filter((p) => p.status === 'exit_blocked')
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .map((p) => `${p.mint}: exit blocked, position ${p.id} (${p.blockedReason ?? 'no reason recorded'})`);
+
+/**
+ * ALERT-EXIT (supervisor ruling 2026-10-05): every other critical alert the book raised this boot (double_fill, oversold,
+ * unbooked_landing, late_landing, status_balance_mismatch: whatever `collectAlerts` keeps), one line per code and
+ * subject, so the watchdog pushes each. They are events with no state that clears them: a line stays up while the
+ * worker runs (the app's bounded list, newest 50). exit_blocked is left to `exitCritical`, which follows the position.
+ */
+export const bookCritical = (alerts: readonly AlertSeen[]): string[] =>
+  alerts.filter((a) => a.code !== 'exit_blocked').map((a) => `${a.code} ${a.subject} (at ${new Date(a.atMs).toISOString()})`);
+
+/** The heartbeat's whole `critical` list: WATCH-1's lines, the blocked exits, then the book's other critical alerts. */
+export const criticalLines = (watch: readonly string[], positions: readonly PositionState[], alerts: readonly AlertSeen[]): string[] =>
+  [...watch, ...exitCritical(positions), ...bookCritical(alerts)];

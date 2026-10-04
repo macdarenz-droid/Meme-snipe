@@ -122,7 +122,10 @@ export interface Health {
   readonly lookups: { readonly counts: readonly number[] };
   readonly entries_halted: boolean;
   readonly halt_reasons: readonly string[];
-  /** Critical alerts up now (WATCH-1: a held position with no fresh price), one line each; empty when none. */
+  /**
+   * Critical alerts up now, one line each; empty when none: WATCH-1's held position with no fresh price, ALERT-EXIT's
+   * position whose exit is booked blocked, and the book's other critical alerts this boot (`<code> <subject> (at <time>)`). The part before " (" names the alert; the watchdog pushes each name once.
+   */
   readonly critical: readonly string[];
   readonly feeds: Readonly<Record<string, FeedHealth>>;
   readonly journal_seq: number;

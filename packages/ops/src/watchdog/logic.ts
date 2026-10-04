@@ -1,6 +1,8 @@
 // Watchdog logic with no Cloudflare APIs, so it runs and is tested in plain Node. worker.ts wires it to the
 // Worker cron, the Durable Object storage and Telegram.
 
+export interface HeartbeatPosition { mint: string; qty: number; entry: number; stop: number; mark: number | null; last_exit_attempt_ts: number | null }
+
 /** What the worker reports every 15–30 s (security.md 5.2). Fields the stub cannot know yet are null. */
 export interface Heartbeat {
   seq: number;
@@ -12,7 +14,9 @@ export interface Heartbeat {
   wallet?: string | null;
   last_processed_slot: number | null;
   feed_ages_ms: Record<string, number>;
-  open_position: { mint: string; qty: number; entry: number; stop: number; mark: number | null; last_exit_attempt_ts: number | null } | null;
+  open_position: HeartbeatPosition | null;
+  /** Every open position (ALERT-EXIT N3); `open_position` is its first entry, kept for older senders. */
+  open_positions?: HeartbeatPosition[];
   unresolved_intents: { count: number; oldest_age_s: number | null };
   signer: string;
   lease_epoch: number | null;
@@ -20,7 +24,10 @@ export interface Heartbeat {
   paused: boolean;
   /** The Telegram chat the server paired with (/pair); the watchdog learns it only from signed heartbeats. */
   owner_chat_id?: string | null;
-  /** Critical alerts the worker raised (WATCH-1: a held position with no fresh price), one line each. */
+  /**
+   * Critical alerts up in the worker, one line each (WATCH-1: a held position with no fresh price; ALERT-EXIT: an exit
+   * booked blocked). The part before " (" names the alert; a reason may follow in brackets.
+   */
   critical?: string[];
 }
 
@@ -94,6 +101,9 @@ export async function verifySignature(header: string | null, method: string, pat
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
+/** The most open positions and critical lines a heartbeat is read with. */
+export const MAX_LISTED = 64;
+
 /** Shape check for a signed heartbeat. Signed by the host, but still never trusted blindly. */
 export function parseHeartbeat(body: string): Heartbeat | null {
   let x: unknown;
@@ -108,6 +118,19 @@ export function parseHeartbeat(body: string): Heartbeat | null {
   if (typeof h['signer'] !== 'string' || typeof h['paused'] !== 'boolean') return null;
   const ui = h['unresolved_intents'] as Record<string, unknown> | undefined;
   if (typeof ui !== 'object' || ui === null || !num(ui['count'])) return null;
+  // Bounded (ALERT-EXIT review): at most MAX_LISTED positions and critical lines are kept; what is cut is named in a
+  // critical line of its own, never dropped silently. Its name (before " (") is fixed, so a changing count is one alert.
+  const cut: string[] = [];
+  if (Array.isArray(h['open_positions']) && h['open_positions'].length > MAX_LISTED) {
+    cut.push(`open positions cut (${h['open_positions'].length} reported, the first ${MAX_LISTED} are checked)`);
+    h['open_positions'] = h['open_positions'].slice(0, MAX_LISTED);
+  }
+  if (Array.isArray(h['critical']) && h['critical'].length + cut.length > MAX_LISTED) {
+    const keep = MAX_LISTED - 1 - cut.length;
+    cut.push(`critical alerts cut (${h['critical'].length - keep} more; see the app)`);
+    h['critical'] = h['critical'].slice(0, keep);
+  }
+  if (cut.length) h['critical'] = [...(Array.isArray(h['critical']) ? h['critical'] : []), ...cut];
   return x as Heartbeat;
 }
 
@@ -133,6 +156,18 @@ export function limitsFrom(env: Record<string, unknown>): Limits {
   };
 }
 
+/** The heartbeat's open positions: `open_positions` when sent, else `open_position` alone (an older sender). */
+export function openPositions(hb: Heartbeat): HeartbeatPosition[] {
+  const list = Array.isArray(hb.open_positions) ? hb.open_positions : hb.open_position ? [hb.open_position] : [];
+  return list.filter((p): p is HeartbeatPosition => typeof p === 'object' && p !== null && typeof p.mint === 'string');
+}
+
+/** A critical line's name: the text before its bracketed reason. */
+export const criticalName = (line: string): string => {
+  const i = line.indexOf(' (');
+  return i < 0 ? line : line.slice(0, i);
+};
+
 /** The independent checks (security.md 5.2). Nothing is checked before the first heartbeat ever arrives. */
 export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: ChainView): Alert[] {
   if (!s) return [];
@@ -144,17 +179,21 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
     const lag = chain.slot - hb.last_processed_slot;
     if (lag > l.slotLagMax) out.push({ key: 'slot_lag', text: `Worker is ${lag} slots behind the chain (limit ${l.slotLagMax}).` });
   }
+  const open = openPositions(hb);
   if (chain.heldMints) {
-    const reported = hb.open_position?.mint ?? null;
+    const reported = [...new Set(open.map((p) => p.mint))];
     const held = chain.heldMints;
-    if (reported && !held.includes(reported)) out.push({ key: 'position', text: `Worker reports an open position in ${reported}, but the wallet holds none on chain.` });
-    const extra = held.filter((m) => m !== reported);
-    if (extra.length) out.push({ key: 'position_unreported', text: `Wallet holds ${extra.join(', ')} on chain, but the worker reports ${reported ? 'only ' + reported : 'no position'}.` });
+    for (const m of reported) {
+      if (!held.includes(m)) out.push({ key: `position:${m}`, text: `Worker reports an open position in ${m}, but the wallet holds none on chain.` });
+    }
+    const extra = held.filter((m) => !reported.includes(m));
+    if (extra.length) out.push({ key: 'position_unreported', text: `Wallet holds ${extra.join(', ')} on chain, but the worker reports ${reported.length ? 'only ' + reported.join(', ') : 'no position'}.` });
   }
-  const p = hb.open_position;
-  if (p && num(p.mark) && p.mark < p.stop) {
+  // Every open position's stop (N3): raising maxOpen never leaves one unwatched.
+  for (const p of open) {
+    if (!(num(p.mark) && num(p.stop) && p.mark < p.stop)) continue;
     const since = num(p.last_exit_attempt_ts) ? Math.round((now - p.last_exit_attempt_ts) / 1000) : null;
-    if (since === null || since > l.stopNoExitS) out.push({ key: 'stop', text: `${p.mint} is below its stop with no exit attempt in the last ${l.stopNoExitS} s.` });
+    if (since === null || since > l.stopNoExitS) out.push({ key: `stop:${p.mint}`, text: `${p.mint} is below its stop with no exit attempt in the last ${l.stopNoExitS} s.` });
   }
   const oldest = hb.unresolved_intents.oldest_age_s;
   if (hb.unresolved_intents.count > 0 && num(oldest) && oldest > l.intentMaxAgeS) {
@@ -163,7 +202,9 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   if (num(hb.sol_reserve) && hb.sol_reserve < l.solReserveFloor) out.push({ key: 'reserve', text: `SOL reserve ${hb.sol_reserve} is below the floor ${l.solReserveFloor}.` });
   if (hb.signer === 'unreachable' || hb.signer === 'timeout') out.push({ key: 'signer', text: `Worker cannot reach the signer (${hb.signer}).` });
   const critical = Array.isArray(hb.critical) ? hb.critical.filter((c): c is string => typeof c === 'string' && c !== '') : [];
-  if (critical.length > 0) out.push({ key: 'worker_critical', text: `Worker critical: ${critical.join('; ')}.` });
+  // One alert per line (ALERT-EXIT B1), keyed by its name without the bracketed reason: a new alert is pushed at once,
+  // never folded into one already up (which would wait for its repeat).
+  for (const c of [...new Set(critical)]) out.push({ key: `worker_critical:${criticalName(c)}`, text: `Worker critical: ${c}.` });
   return out;
 }
 
@@ -175,18 +216,22 @@ export const summaryAlert = (reason: string): Alert => ({ key: 'summary', text: 
  * and hourly after that while it lasts, and a "cleared" line is always sent when it goes away. All lines of
  * one run go out as one message (Telegram allows about one message per second per chat).
  */
-export function planAlerts(active: Record<string, ActiveAlert>, current: Alert[], now: number, l: Limits): { lines: string[]; next: Record<string, ActiveAlert> } {
+export function planAlerts(active: Record<string, ActiveAlert>, current: Alert[], now: number, l: Limits): { lines: string[]; keys: string[]; next: Record<string, ActiveAlert> } {
   const next: Record<string, ActiveAlert> = {};
   const lines: string[] = [];
+  // `keys[i]` is the alert `lines[i]` is about, so a line that was not delivered can be planned again (`unsent`).
+  const keys: string[] = [];
   for (const a of current) {
     const prev = active[a.key];
     if (!prev) {
+      keys.push(a.key);
       lines.push(`ALERT ${a.text}`);
       next[a.key] = { text: a.text, since: now, lastSent: now };
       continue;
     }
     const every = now - prev.since < 3_600_000 ? l.repeatCriticalS * 1000 : 3_600_000;
     if (now - prev.lastSent >= every) {
+      keys.push(a.key);
       lines.push(`STILL ${a.text} (since ${Math.round((now - prev.since) / 60000)} min)`);
       next[a.key] = { text: a.text, since: prev.since, lastSent: now };
     } else {
@@ -194,9 +239,74 @@ export function planAlerts(active: Record<string, ActiveAlert>, current: Alert[]
     }
   }
   for (const [key, prev] of Object.entries(active)) {
-    if (!next[key]) lines.push(`CLEARED ${prev.text}`);
+    if (!next[key]) {
+      keys.push(key);
+      lines.push(`CLEARED ${prev.text}`);
+    }
   }
-  return { lines, next };
+  return { lines, keys, next };
+}
+
+/**
+ * The alert state to store when only the first `delivered` of the planned lines reached the owner: every line not
+ * delivered is planned again on the next check (a new alert stays unsent, a repeat keeps its last send, a cleared
+ * alert stays active until its cleared line is sent). Nothing is marked sent that was not.
+ */
+export function unsent(active: Record<string, ActiveAlert>, plan: { keys: string[]; next: Record<string, ActiveAlert> }, delivered: number): Record<string, ActiveAlert> {
+  const next = { ...plan.next };
+  for (const key of plan.keys.slice(delivered)) {
+    const prev = active[key];
+    if (prev) next[key] = prev;
+    else delete next[key];
+  }
+  return next;
+}
+
+/** Alert keys before ALERT-EXIT's per-subject keys: dropped once, with no cleared line (their alerts come back under the new keys). */
+export const LEGACY_ALERT_KEYS: readonly string[] = ['stop', 'position', 'worker_critical'];
+
+export function withoutLegacyKeys(active: Record<string, ActiveAlert>): Record<string, ActiveAlert> {
+  const out = { ...active };
+  for (const k of LEGACY_ALERT_KEYS) delete out[k];
+  return out;
+}
+
+/** Telegram refuses a message over 4,096 characters. */
+export const TELEGRAM_MAX_CHARS = 4096;
+
+/**
+ * Lines grouped into messages of at most `max` characters, split on line boundaries; a line longer than that is cut
+ * into pieces of its own. `ends[i]` is how many lines are complete once message i is sent.
+ */
+export function chunkLines(lines: readonly string[], max = TELEGRAM_MAX_CHARS): { texts: string[]; ends: number[] } {
+  const texts: string[] = [];
+  const ends: number[] = [];
+  let cur = '';
+  lines.forEach((line, i) => {
+    if (line.length > max) {
+      if (cur) {
+        texts.push(cur);
+        ends.push(i);
+        cur = '';
+      }
+      for (let k = 0; k < line.length; k += max) {
+        texts.push(line.slice(k, k + max));
+        ends.push(k + max >= line.length ? i + 1 : i);
+      }
+      return;
+    }
+    if (cur && cur.length + 1 + line.length > max) {
+      texts.push(cur);
+      ends.push(i);
+      cur = '';
+    }
+    cur = cur ? `${cur}\n${line}` : line;
+  });
+  if (cur) {
+    texts.push(cur);
+    ends.push(lines.length);
+  }
+  return { texts, ends };
 }
 
 /** Telegram: only /pause and /status, only from the owner's chat. Anything else is ignored. */
@@ -218,7 +328,8 @@ export function statusText(s: Stored | undefined, now: number, paused: { at: num
     const { hb } = s;
     lines.push(`Heartbeat: ${Math.round((now - s.receivedAt) / 1000)} s ago (seq ${hb.seq}).`);
     lines.push(`Release: ${hb.git_sha.slice(0, 12)}, policy ${hb.policy_version}${hb.stub ? ' (stub worker)' : ''}.`);
-    lines.push(`Position: ${hb.open_position ? `${hb.open_position.mint}, stop ${hb.open_position.stop}` : 'none'}.`);
+    const open = openPositions(hb);
+    lines.push(`Position${open.length > 1 ? 's' : ''}: ${open.length ? open.map((p) => `${p.mint}, stop ${p.stop}`).join('; ') : 'none'}.`);
     lines.push(`Unresolved intents: ${hb.unresolved_intents.count}.`);
     lines.push(`Signer: ${hb.signer}.`);
     lines.push(`SOL reserve: ${hb.sol_reserve ?? 'unknown'}.`);

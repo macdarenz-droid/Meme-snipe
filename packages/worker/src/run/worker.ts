@@ -40,13 +40,13 @@ import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlert
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
-import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
+import { heartbeatBody, heartbeatPositions, sendHeartbeat } from './heartbeat.ts';
 import { Summarizer, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
-import { entryPrice, openPositionsHealth } from './open-positions.ts';
+import { criticalLines, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
@@ -157,6 +157,11 @@ export interface WorkerDeps {
    * the feed. Null loses it (an API call that timed out after the send); another event replaces it. Tests only.
    */
   readonly worldFault?: (event: BookEvent) => BookEvent | null;
+  /**
+   * ALERT-EXIT's seam: each step's engine records pass through it on their way to the worker's alert store (not to the
+   * desk), so a test can add a critical alert no harness path raises (a double fill). Tests only.
+   */
+  readonly alertRecords?: (records: readonly LogRecord[]) => readonly LogRecord[];
   /** OPS-SUMMARY's fault seam: called before each summary reads the worker's state; a throw fails that summary. Tests only. */
   readonly summaryFault?: () => void;
   /** Test seam: the desk calls it right after each of a fill's two durable writes (ARCHITECTURE §12.4). */
@@ -721,7 +726,8 @@ export class Worker {
     }
     const records = this.#engine.records as LogRecord[];
     const n = records.length;
-    for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);
+    if (this.#d.alertRecords === undefined) for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);
+    else for (const r of this.#d.alertRecords(records.slice(0, n))) this.#afterRecord(r);
     this.#desk.consume(records.slice(0, n));
     // Consumed records are dropped so a 48 h run keeps its memory flat; the engine keeps the log's hash.
     records.splice(0, n);
@@ -1334,7 +1340,7 @@ export class Worker {
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
       rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: criticalLines(this.#watch?.critical ?? [], Object.values(this.#engine.book.positions), this.#alerts), feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
       ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
@@ -1392,18 +1398,17 @@ export class Worker {
     this.#beatSeq++;
     if (url === null || hb.key === null) return;
     const h = this.health();
-    const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
-    const saved = p === undefined ? undefined : this.#strategy.saved()[p.id];
-    const mark = p === undefined ? null : this.#freshDisplayQuote(p.id);
-    const lastExit = p === undefined ? null : Math.max(...Object.values(this.#engine.book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'exit').map((i) => this.#intentAt.get(i.intent.id) ?? 0), 0);
-    const position: HeartbeatPosition | null = p === undefined ? null : {
-      // Unknown is null, never 0 (a 0 stop or mark reads as a price to the watchdog). Entry, stop and mark share one unit:
-      // an executable price (PRICE_SCALE lamports per token).
-      mint: p.mint, qty: Number(p.quantity), entry: Number(entryPrice(p)), stop: saved === undefined ? (null as unknown as number) : Number(saved.plan.stopPrice),
-      mark: mark === null ? null : Number(mark.price),
-      last_exit_attempt_ts: lastExit === 0 ? null : lastExit,
-    };
-    const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, position, hb.ownerChatId), this.#d.timers.now());
+    // Every open position, in /health's order (oldest first), so the watchdog checks each one's stop (ALERT-EXIT N3).
+    const saved = this.#strategy.saved();
+    const positions = heartbeatPositions(h, this.#engine.book.positions, {
+      stop: (id) => saved[id]?.plan.stopPrice ?? null,
+      mark: (id) => this.#freshDisplayQuote(id)?.price ?? null,
+      lastExitAt: (id) => {
+        const at = Math.max(...Object.values(this.#engine.book.intents).filter((i) => i.intent.positionId === id && i.intent.purpose === 'exit').map((i) => this.#intentAt.get(i.intent.id) ?? 0), 0);
+        return at === 0 ? null : at;
+      },
+    });
+    const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, positions, hb.ownerChatId), this.#d.timers.now());
     if (!r.ok) {
       this.#d.log(`Heartbeat not accepted: ${r.reason}.`);
       return;
