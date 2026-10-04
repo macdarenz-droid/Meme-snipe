@@ -75,6 +75,19 @@ describe('BT-2 study runs', () => {
     expect(NO_CLUSTER).toBe('');
   });
 
+  it('sees facts, checks and read landings after the observation delay; the delay alone makes nothing stale, and the fill pays for it', () => {
+    const delayed = base.r;
+    const recorded = run([SETUP], { observation: 'recorded' }).r;
+    for (const r of [delayed, recorded]) expect(rejects(r.records).filter((x) => x.includes(':stale'))).toEqual([]);
+    const enter = (r: typeof delayed) => decisions(r.records).find((d) => d.reasons[0] === 'enter')!;
+    // Conservative uses the adverse profile: 2 + 6 slots to confirmed, 1 s to the worker.
+    const slots = FILL_CONFIG.delays.adverse.eventToProcessedSlots + FILL_CONFIG.delays.adverse.processedToConfirmedSlots;
+    expect(FILL_CONFIG.scenarios.conservative.delay).toBe('adverse');
+    expect(enter(delayed).at.slot - enter(recorded).at.slot).toBeGreaterThanOrEqual(BigInt(slots));
+    const opened = (r: typeof delayed) => tradesOf(r, FILL_CONFIG).trades[0]!.openedAt;
+    expect(opened(delayed)).toBeGreaterThan(opened(recorded));
+  });
+
   it('replays to the same decision log', () => {
     expect(run([SETUP]).r.logHash).toBe(base.r.logHash);
   });

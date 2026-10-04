@@ -16,6 +16,11 @@ export interface GateContext {
   history(key: string, from: Moment, to?: Moment): readonly AsOfEntry[] | { readonly ok: false; readonly reason: 'future' };
   /** Our own deployer index, fed with every released event (GATE-1b). Without it H14 reads a stored deployer fact. */
   readonly deployers?: DeployerIndex;
+  /**
+   * The chain tip as the process has observed it (a backtest with an observation delay: the delay is in when an event
+   * is seen, never in its chain slot). Chain state is judged fresh against it. Absent, the tip is `now.slot` (live).
+   */
+  readonly observedTip?: bigint;
 }
 
 /**
@@ -103,8 +108,11 @@ export class Evidence {
     }
     if (obs.slot === null) return evidenceReason(name, 'malformed', neededBy, `${name} is chain state without a slot`);
     const lag = BigInt(maxStateSlotLag);
+    // Never past now: a tip ahead of the clock cannot have been observed.
+    const given = this.#ctx.observedTip;
+    const tip = given !== undefined && given < now.slot ? given : now.slot;
     if (obs.stream === undefined) {
-      const behind = now.slot - obs.slot;
+      const behind = tip - obs.slot;
       return behind > lag ? evidenceReason(name, 'stale', neededBy, `${name} read at slot ${obs.slot}, ${behind} slots behind`, String(behind), String(lag)) : null;
     }
     const sv = this.raw(streamKey(obs.stream));
@@ -114,7 +122,7 @@ export class Evidence {
     const problem = obsProblem(stream.obs, now);
     if (problem) return evidenceReason('stream', problem.code, neededBy, `stream ${obs.stream} ${problem.detail}`, problem.value);
     const head = stream.obs.slot ?? 0n;
-    const behind = now.slot - head;
+    const behind = tip - head;
     if (behind > lag) return evidenceReason('stream', 'stale', neededBy, `stream ${obs.stream} is at slot ${head}, ${behind} slots behind`, String(behind), String(lag));
     if (stream.gapFreeSince > obs.slot) {
       return evidenceReason('stream', 'gap', neededBy, `stream ${obs.stream} had a gap after ${name} was observed at slot ${obs.slot} (gap-free since ${stream.gapFreeSince})`);

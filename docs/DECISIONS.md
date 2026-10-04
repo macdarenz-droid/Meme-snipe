@@ -732,6 +732,18 @@ The second reviewer, the third opinion and the supervisor reached one position o
   Curve volume waits for FACTS-1d's core `parseVolumeHoursCsv` (#78) and DATA-1c's `volume-hours` assets. SOL/USD uses the existing hourly series. Until volume exists, the regime reads "unknown" and real-day counts run in the labelled assume-on mode. The synthetic CreatePoolEvent gained `pool_base_amount` and `pool_quote_amount`, as the real event carries them. Test: `test/facts.test.ts`.
 ## External review of the promotion gates (STATS-1b)
 
+- **2026-10-04 · Projector facts through the observation delay (supervisor ruling).** The delay is when the engine sees an event; an event's chain slot never changes. The projector's facts, checks and read landings now go through the same observation queue as the pool tape (`src/sim/market.ts`).
+  - Release: each is released at the first block at or after its slot plus the delay slots. The release moment (and the provider time) only places it in the engine's order, which runs by moment, so a delayed event cannot keep its chain slot there. Its value goes as built and keeps every chain slot.
+  - Observed tip: each release publishes `tip:observed`, the newest chain slot released so far, before the batch. During a blackout nothing is released and the tip stands still.
+  - Staleness: the study strategy passes the tip as `GateContext.observedTip`, and core `Evidence` judges chain state and stream heads against it, as live judges them against its own clock slot. A tip ahead of the clock is ignored. Live passes none and is unchanged.
+  - Effect: a uniform delay alone makes nothing stale. A backlog after a blackout is judged against the tip as of its release.
+  - Fills still pay for the delay: the entry is decided later and filled at chain state then (BT-1c).
+  - Rows with recorded receipt times are not delayed again.
+
+  Tests:
+  - `test/replay.test.ts`: released after the delay, chain slots unchanged, tip first and equal to the newest chain slot;
+  - `core/test/gates/hard.test.ts`: freshness against the tip, and a tip ahead of the clock ignored;
+  - `test/study.test.ts`: no stale reason under the adverse profile, the entry at least 8 slots later and opened later than with recorded times. With the tip removed, it rejects `H11:stale`.
 - **2026-10-04 · G2's funder cluster is the dev's first funder (supervisor ruling).** The label comes from the dev's own read in the insider-funding supplement: `worker/scripts/funding-backfill.ts` writes `insider-funding.jsonl` with its sha256 manifest, and `readSupplement` reads it. It is the same point-in-time reader and the same supplement as H13's links (core `facts/funding.ts`), so there is no new source. The read counts only when it is complete and names a funder; otherwise the trade has no funder label.
   - A trade without either label fails G2 as missing evidence (the stricter outcome).
   - There is no shared "unknown" cluster, and an unknown never gets a singleton cluster (either would loosen the gate).
@@ -776,7 +788,7 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - Schema 3 is the only dataset schema. Raw records ride in it (the writer and reader keep them), and trade rows carry `lp_fee`, `quote_amount_lp_adjusted` and `extra_hex` beside BT-1d's `user_token_account`/`user_token_owner`.
   - Rent follows BT-1c's account-close outcome model: the conservative scenario keeps `rentRecovery: false`, which supersedes fills-2.
   - G2 resamples by creator and funder cluster (STATS-1b). The creator cluster is the deployer, written in each entry's log line and read at scoring. The funder cluster is one shared "unknown" for every trade because the dataset records no funding. That is the conservative side: G2 cannot pass the funder variant until a funder source exists. Raised with the supervisor.
-  - The projector's facts, checks and read landings are released at chain time, not through BT-1c's observation delay. Delayed events are re-stamped at their release slot, so under the "adverse" profile (2 + 6 slots) every chain-state fact would sit past `maxStateSlotLag` (2) and every check would read "stale". In live the engine's clock follows each event's own slot. Until ruled, the gate facts are kinder than live by the observation delay, while the strategy's pool tape is delayed as BT-1c models. Raised with the supervisor.
+  - The projector's facts, checks and read landings are released at chain time, not through BT-1c's observation delay. Delayed events are re-stamped at their release slot, so under the "adverse" profile (2 + 6 slots) every chain-state fact would sit past `maxStateSlotLag` (2) and every check would read "stale". In live the engine's clock follows each event's own slot. Until ruled, the gate facts are kinder than live by the observation delay, while the strategy's pool tape is delayed as BT-1c models. Raised with the supervisor. *(Superseded: "Projector facts through the observation delay" below.)*
   - Synthetic test seeds changed where BT-1c's fill draws now drop or fail the one entry a mechanic needs: study runs use 'e2', the deployment busy-book test 'd3', the full study 'study3'. The assertions are unchanged. The S0 one-position test now proves the rule binds by its busy-book refusals rather than by a research-S0 overlap.
   - A feature rule's fixed stop is rounded up, so a barrier at the policy's widest stop (B1, −20%) is never refused for being a rounding unit too wide (test).
 

@@ -82,7 +82,45 @@ describe('regime boundaries', () => {
     expect(at(13)).toEqual([]);
     expect(market.regime).toBe('pump-2026-10-02');
     expect(at(14)).toEqual([]);
-    expect(at(15)).toEqual([{ key: 'regime', slot: 15n }]);
+    expect(at(15)).toEqual([{ key: 'tip:observed', slot: 15n }, { key: 'regime', slot: 15n }]);
+  });
+});
+
+describe('projector facts through the observation delay (supervisor ruling)', () => {
+  test('facts, checks and landings are seen after the delay with their chain slots unchanged, the observed tip first', async () => {
+    const { Market, OBSERVED_TIP_KEY } = await import('../src/sim/market.ts');
+    const hooks: { slot: bigint; run: () => void }[] = [];
+    const scheduled: { key: string; slot: bigint; value: unknown }[] = [];
+    // A stand-in projector: at each block, one chain-state fact as of that block and one check.
+    const facts = {
+      observe: (row: { slot: bigint }, m: { slot: bigint; txIndex: number; ixIndex: number; receivedAt: number }) => [
+        { kind: 'market' as const, id: `f:${row.slot}`, moment: m, key: 'holders:m', value: { obs: { slot: row.slot } } },
+        { kind: 'market' as const, id: `f:${row.slot}:~check`, moment: m, key: 'check:m', value: { n: Number(row.slot) } },
+      ],
+    } as unknown as NonNullable<ConstructorParameters<typeof Market>[0]['facts']>;
+    const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: { slots: 3, providerMs: 400, blackouts: [], seed: 's' },
+      volumeWindowSlots: 150, hook: (h) => hooks.push({ slot: h.moment.slot, run: h.run }), hasRows: () => true,
+      schedule: (x) => { if (x.kind === 'market') scheduled.push({ key: x.key, slot: x.moment.slot, value: x.value }); }, facts });
+    // Driver work runs in moment order: hooks of earlier slots before the row, hooks of its own slot after it.
+    const runHooks = (upTo: bigint, inclusive: boolean) => {
+      for (let h = hooks.findIndex((x) => (inclusive ? x.slot <= upTo : x.slot < upTo)); h >= 0; h = hooks.findIndex((x) => (inclusive ? x.slot <= upTo : x.slot < upTo))) hooks.splice(h, 1)[0]!.run();
+    };
+    const at = (slot: number) => {
+      runHooks(BigInt(slot), false);
+      // Nothing from the projector at the row's own moment.
+      expect(market.release({ kind: 'block', slot: BigInt(slot), blockTime: slot, parentSlot: BigInt(slot - 1) })).toEqual([]);
+      runHooks(BigInt(slot), true);
+      return scheduled.splice(0);
+    };
+    expect(at(10)).toEqual([]);
+    expect(at(12)).toEqual([]);
+    // Due at 13; the next block row is 20: released there, re-stamped only in the engine's order.
+    const out = at(20);
+    expect(out.map((x) => [x.key, x.slot])).toEqual([[OBSERVED_TIP_KEY, 20n], ['holders:m', 20n], ['check:m', 20n], ['holders:m', 20n], ['check:m', 20n]]);
+    // The tip is the newest chain slot seen (12, not the release block's 20), so a uniform delay makes nothing stale.
+    expect(out[0]!.value).toEqual({ slot: 12n });
+    // Values go as built: the chain slots stay 10 and 12, and nothing is added.
+    expect(out.slice(1).map((x) => x.value)).toEqual([{ obs: { slot: 10n } }, { n: 10 }, { obs: { slot: 12n } }, { n: 12 }]);
   });
 });
 

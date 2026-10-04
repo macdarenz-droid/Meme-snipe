@@ -28,6 +28,7 @@ import {
   DeployerIndex, evaluateHardRejects, evaluateRegime, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
   migrationKey, parseMigration, concentration, mintAccounts, type HardResult, type HardGate, gatesOfStages, HARD_GATES,
 } from '../../../core/src/gates/index.ts';
+import { OBSERVED_TIP_KEY } from '../sim/market.ts';
 import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src/lifecycle/index.ts';
 import { economicNav, evaluateEntry, NO_LATCHES, type NavMark, type AccountCost, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, LAMPORTS_PER_SOL, type MicroUsd, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
@@ -331,9 +332,24 @@ export class StudyStrategy implements Strategy {
   }
 
   /** The hard rejects of the given gates as of now, every one evaluated. */
+  /**
+   * The chain tip as observed now: the newest chain slot among the observations released so far (the market's
+   * `tip:observed`, with an observation delay). Absent (recorded receipt times), the clock's own slot, as live.
+   */
+  #tipOf(ctx: StrategyContext): { observedTip?: bigint } {
+    const tip = this.#tip(ctx);
+    return tip === undefined ? {} : { observedTip: tip };
+  }
+
+  #tip(ctx: StrategyContext): bigint | undefined {
+    const r = ctx.lookup(OBSERVED_TIP_KEY);
+    const slot = r.ok ? (r.value as { readonly slot?: unknown }).slot : undefined;
+    return typeof slot === 'bigint' ? slot : undefined;
+  }
+
   #gates(ctx: StrategyContext, u: UniverseConfig, mint: string, roundTrip: ReturnType<ReturnType<typeof pumpSwapRoundTrip>>, spend: bigint, only: readonly HardGate[]): HardResult {
     const policy = this.#o.session.policy;
-    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers };
+    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, ...this.#tipOf(ctx) };
     return evaluateHardRejects(gctx, { session: this.#o.session, mode: 'backtest', rugLabeller: 'RUG-1' },
       { mint, universe: (this.#s0 ? 'S0' : u.universe) as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip }, { stopAtFirst: false, only });
   }
@@ -364,7 +380,7 @@ export class StudyStrategy implements Strategy {
     if (c.checks === 1 || c.target === c.checks) say('candidate', `check ${c.checks}`);
     // The regime gate first, as live (worker strategy: regime off rejects before any hard reject). Off is its own
     // funnel stage, never skipped: "not covered" when its inputs are unknown, adverse when its conditions fail.
-    const gctxR: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers };
+    const gctxR: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, ...this.#tipOf(ctx) };
     const regime = this.#o.regime === 'assume-on' ? null : evaluateRegime(gctxR, { session: this.#o.session, mode: 'backtest' });
     if (regime !== null && !regime.on) {
       const unknown = regime.reasons.length > 0 && regime.reasons.every((r) => r.code === 'unknown');

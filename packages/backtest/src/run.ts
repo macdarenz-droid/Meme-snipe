@@ -117,6 +117,16 @@ export const s0Config = (o: RunOptions): S0Config => {
 /** Process-wide: performance.now is read only here, outside the engine, for the throughput figure. */
 const clockMs = (): number => performance.now();
 
+/**
+ * Slots between an on-chain event and the engine seeing it (event to processed, plus processed to confirmed when the
+ * decision path waits for confirmed); null with recorded receipt times (released at their own moment).
+ */
+export const observationSlots = (o: Pick<RunOptions, 'fills' | 'scenario' | 'delay' | 'research' | 'observation'>): number | null => {
+  if (o.observation === 'recorded') return null;
+  const profile = o.fills.delays[o.delay ?? o.fills.scenarios[o.scenario].delay];
+  return profile.eventToProcessedSlots + (o.research.decisionCommitment === 'confirmed' ? profile.processedToConfirmedSlots : 0);
+};
+
 export const runBacktest = (o: RunOptions): RunResult => {
   const started = clockMs();
   const scenario = o.fills.scenarios[o.scenario];
@@ -144,7 +154,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     discoveryLag: (mint) => Math.max(1, drawDiscoverySlots(createRng(`${o.seed}:discovery:${mint}`), scenario)),
     active: live,
     observe: o.observation === 'recorded' ? null : {
-      slots: profile.eventToProcessedSlots + (o.research.decisionCommitment === 'confirmed' ? profile.processedToConfirmedSlots : 0),
+      slots: observationSlots(o)!,
       providerMs: profile.providerMs, blackouts: profile.blackouts, seed: `${o.seed}:feed`,
     },
     volumeWindowSlots: scenario.congestion.windowSlots,

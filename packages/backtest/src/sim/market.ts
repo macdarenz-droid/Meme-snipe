@@ -14,6 +14,8 @@
 //   disc:<mint>   the bot learns of a graduation, after the modelled discovery lag (Discovery)
 //   slot          a block: height and time (every block while trading is active, otherwise a heartbeat)
 //   sol-usd       the SOL/USD close once it is usable (offchain.ts)
+//   tip:observed  the newest chain slot among released observations (`{ slot }`), before each delayed release
+// The fact projector's facts, checks and read landings go through the same delay, values unchanged.
 import { poolAddress, pumpPoolAuthority, toAddress } from '../../../core/src/chain/index.ts';
 import type { FeedEvent, MarketEvent, Moment } from '../../../core/src/engine/index.ts';
 import { compareMoments, createRng, OFF_CHAIN } from '../../../core/src/engine/index.ts';
@@ -26,6 +28,8 @@ import type { Hook } from './replay.ts';
 /** A block's row sorts after the slot's transactions; our landing after it; world reports last. */
 export const BLOCK_TX = OFF_CHAIN - 2;
 export const LANDING_TX = OFF_CHAIN - 1;
+/** The newest chain slot among the observations released so far (`{ slot }`), published with each delayed release. */
+export const OBSERVED_TIP_KEY = 'tip:observed';
 
 export const NATIVE_MINTS = new Set(['So11111111111111111111111111111111111111112', '9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP']);
 
@@ -179,7 +183,7 @@ export class Market {
   }
 
   /** Observations waiting for their release block, in chain order (their due slots never decrease). */
-  #queue: { readonly due: bigint; readonly e: MarketEvent }[] = [];
+  #queue: { readonly due: bigint; readonly e: MarketEvent; readonly asIs: boolean }[] = [];
   #queueAt = 0;
   #armed = false;
   #seq = 0;
@@ -202,15 +206,17 @@ export class Market {
   }
 
   /** Queues an observation for its due slot, keeping the queue ordered by due slot (stable). */
-  #enqueue(due: bigint, e: MarketEvent): void {
+  #enqueue(due: bigint, e: MarketEvent, asIs = false): void {
     let k = this.#queue.length;
     while (k > this.#queueAt && this.#queue[k - 1]!.due > due) k--;
-    this.#queue.splice(k, 0, { due, e });
+    this.#queue.splice(k, 0, { due, e, asIs });
     if (!this.#armed) this.#arm(this.#queue[this.#queueAt]!.due, e.moment.receivedAt);
     else if (due < this.#armedAt) this.#arm(due, e.moment.receivedAt);
   }
 
   #armedAt = 0n;
+  /** Newest chain slot released so far. */
+  #tip = 0n;
 
   #arm(slot: bigint, receivedAt: number): void {
     this.#armed = true;
@@ -249,11 +255,18 @@ export class Market {
     const t = this.blockTime * 1000 + o.providerMs;
     if (this.#inBlackout(t)) return next();
     // Everything due is released in chain order (its own moment), whatever its delay.
-    const batch: MarketEvent[] = [];
-    while (this.#queueAt < this.#queue.length && this.#queue[this.#queueAt]!.due <= slot) batch.push(this.#queue[this.#queueAt++]!.e);
-    batch.sort((a, b) => compareMoments(a.moment, b.moment) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    for (const e of batch) {
-      this.#opts.schedule({ ...e, moment: { slot, txIndex: BLOCK_TX, ixIndex: 2 + this.#seq++, receivedAt: t }, value: { ...(e.value as Readonly<Record<string, unknown>>), blockHeight: this.blockHeight } });
+    const batch: { readonly e: MarketEvent; readonly asIs: boolean }[] = [];
+    while (this.#queueAt < this.#queue.length && this.#queue[this.#queueAt]!.due <= slot) batch.push(this.#queue[this.#queueAt++]!);
+    batch.sort((a, b) => compareMoments(a.e.moment, b.e.moment) || (a.e.id < b.e.id ? -1 : a.e.id > b.e.id ? 1 : 0));
+    // Released at this block's moment, which only places them in the engine's order; every value keeps its chain slot.
+    // The projector's facts go as built (their observations carry their own slots); feed observations get the block
+    // height known now.
+    // The tip first, so every decision in the batch judges freshness against what has been seen, this batch included.
+    for (const { e } of batch) if (e.moment.slot > this.#tip) this.#tip = e.moment.slot;
+    if (batch.length > 0) this.#opts.schedule({ kind: 'market', id: `tip:${slot}`, moment: { slot, txIndex: BLOCK_TX, ixIndex: 2 + this.#seq++, receivedAt: t }, key: OBSERVED_TIP_KEY, value: { slot: this.#tip } });
+    for (const { e, asIs } of batch) {
+      const moment = { slot, txIndex: BLOCK_TX, ixIndex: 2 + this.#seq++, receivedAt: t };
+      this.#opts.schedule(asIs ? { ...e, moment } : { ...e, moment, value: { ...(e.value as Readonly<Record<string, unknown>>), blockHeight: this.blockHeight } });
     }
     if (this.#queueAt > 4096) {
       this.#queue = this.#queue.slice(this.#queueAt);
@@ -275,10 +288,18 @@ export class Market {
     const out = this.#row(row);
     const own = this.#now.length === 0 ? out : [...out, ...this.#now];
     const facts = this.#opts.facts;
-    // The projector's facts and checks are released at chain time, not through the observation delay: delayed events
-    // are re-stamped at their release slot, which would put every chain-state fact past maxStateSlotLag (raised with
-    // the supervisor, DECISIONS).
-    return facts === undefined ? own : [...own, ...facts.observe(row, rowMoment(row), this.blockHeight)];
+    if (facts === undefined) return own;
+    // The projector's facts, checks and read landings reach the engine through the same observation delay as the pool
+    // tape (supervisor ruling): seen late, never with a changed chain slot. Freshness is judged against the observed
+    // tip (the study strategy's GateContext.observedTip), so a uniform delay alone makes nothing stale.
+    const built = facts.observe(row, rowMoment(row), this.blockHeight);
+    const o = this.#opts.observe;
+    if (o === null) return [...own, ...built];
+    for (const e of built) {
+      if (e.kind !== 'market') throw new RangeError(`the fact projector built a ${e.kind} event`);
+      this.#enqueue(e.moment.slot + BigInt(o.slots), e, true);
+    }
+    return own;
   }
 
   #row(row: DatasetRow): FeedEvent[] {
