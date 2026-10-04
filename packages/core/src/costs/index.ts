@@ -31,6 +31,12 @@ export interface RoundTrip {
   readonly tokens: bigint;
   /** Lamports received on exit, fees taken. */
   readonly proceeds: bigint;
+  /**
+   * Lamports received selling the same tokens at once, in the buy's own transaction, on the reserves the buy left: the
+   * sequence H15's simulation runs (a buy, then a sell). On PumpSwap `proceeds` prices the exit from the reserves
+   * before entry (the plan's exit, with both impacts paid), which is less; H15 compares like with like.
+   */
+  readonly immediateProceeds: bigint;
   readonly entryFees: bigint;
   readonly exitFees: bigint;
   readonly entryImpact: bigint;
@@ -48,7 +54,8 @@ export const pumpCurveRoundTrip = (state: CurveState, ctx: CurveFeeContext): Rou
   return {
     ok: true,
     trade: {
-      spend, paid: b.userQuote, tokens: b.tokens, proceeds: x.userQuote,
+      // The exit is priced on the curve as the buy left it: already the sequence the simulation runs.
+      spend, paid: b.userQuote, tokens: b.tokens, proceeds: x.userQuote, immediateProceeds: x.userQuote,
       entryFees: b.lpFee + b.protocolFee + b.creatorFee, exitFees: x.lpFee + x.protocolFee + x.creatorFee,
       entryImpact: b.impact, exitImpact: x.impact,
     },
@@ -64,10 +71,13 @@ export const pumpSwapRoundTrip = (pool: PoolState, ctx: PoolFeeContext): RoundTr
   const sell = poolSell({ ...pool, quoteVault: pool.quoteVault + added, virtualQuoteReserves: pool.virtualQuoteReserves - added }, b.base, ctx);
   if (!sell.ok) return sell;
   const x = sell.trade;
+  // H15's sequence: the same tokens sold at once on the pool the buy left (its `after`, v2 fee offsets included).
+  const now = poolSell(b.after, b.base, ctx);
+  if (!now.ok) return now;
   return {
     ok: true,
     trade: {
-      spend, paid: b.userQuote, tokens: b.base, proceeds: x.userQuote,
+      spend, paid: b.userQuote, tokens: b.base, proceeds: x.userQuote, immediateProceeds: now.trade.userQuote,
       entryFees: b.lpFee + b.protocolFee + b.creatorFee, exitFees: x.lpFee + x.protocolFee + x.creatorFee,
       entryImpact: b.impact, exitImpact: x.impact,
     },
