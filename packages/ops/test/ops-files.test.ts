@@ -517,6 +517,7 @@ describe('key rotation in the Deploy workflow (KEY-ROTATE-SAFE, ops/deploy/publi
     expect(r.status).toBe(0);
     expect(r.puts).toEqual(['TELEGRAM_BOT_TOKEN']);
     expect(r.out).toContain('::warning::Key rotation refused: an offer is still waiting for the server; nothing rotated.');
+    expect(r.out).toContain('left set, every later Deploy overwrites a pending key the server may hold and can cut it off');
     // No watchdog fields: the server keeps the key it already has (zeroed-pair stores one only with WATCHDOG_URL).
     expect(r.bundle).toEqual(['ZEROED_BUNDLE', 'ISSUED', 'HELIUS_API_KEY', 'ALCHEMY_API_KEY', 'JUPITER_API_KEY', 'TELEGRAM_BOT_TOKEN']);
     // Anything but the exact value yes is no override.
@@ -528,7 +529,7 @@ describe('key rotation in the Deploy workflow (KEY-ROTATE-SAFE, ops/deploy/publi
     const r = await rotate({ slot: '{"heartbeat":"legacy","webhook":"legacy","pending":true}', pickup: true, force: 'yes' });
     expect(r.status).toBe(0);
     expect(r.puts).toEqual(['TELEGRAM_BOT_TOKEN', 'HEARTBEAT_HMAC_KEY_A', 'TELEGRAM_WEBHOOK_SECRET_A']);
-    expect(r.out).toContain('FORCE_KEY_ROTATE=yes: the key still on offer is replaced. Delete the variable now.');
+    expect(r.out).toContain('FORCE_KEY_ROTATE=yes: the key still on offer is replaced. Delete the variable now: left set, every later Deploy overwrites a pending key the server may hold and can cut it off.');
     expect(r.bundle).toContain('HEARTBEAT_HMAC_KEY');
   }, 30_000);
 

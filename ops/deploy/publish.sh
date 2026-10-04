@@ -85,7 +85,7 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
     # A key on offer may already be on the server (a fresh server waiting for /pair, or a run the server picked up
     # but has not restarted for yet). Replacing it would cut the server off, so nothing is rotated: the bundle goes
     # without watchdog keys and the server keeps the ones it has. The owner's override: FORCE_KEY_ROTATE=yes.
-    msg="Key rotation refused: an offer is still waiting for the server; nothing rotated. The API keys are still handed over. To rotate anyway, set the repository variable FORCE_KEY_ROTATE to yes, run Deploy, then delete the variable (ops/README.md, Watchdog)."
+    msg="Key rotation refused: an offer is still waiting for the server; nothing rotated. The API keys are still handed over. To rotate anyway, set the repository variable FORCE_KEY_ROTATE to yes, run Deploy, then delete the variable: left set, every later Deploy overwrites a pending key the server may hold and can cut it off (ops/README.md, Watchdog)."
     echo "::warning::$msg"
     [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '**%s**\n' "$msg" >>"$GITHUB_STEP_SUMMARY"
     rotate=no
@@ -93,7 +93,7 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
     other() { if [ "$1" = A ]; then echo B; else echo A; fi; }
     hb_slot="$(other "$hb_active")"
     wh_slot="$(other "$wh_active")"
-    [ "$pending" = false ] || echo "::warning::FORCE_KEY_ROTATE=yes: the key still on offer is replaced. Delete the variable now."
+    [ "$pending" = false ] || echo "::warning::FORCE_KEY_ROTATE=yes: the key still on offer is replaced. Delete the variable now: left set, every later Deploy overwrites a pending key the server may hold and can cut it off."
     printf '%s' "$HEARTBEAT_HMAC_KEY" | $WRANGLER secret put "HEARTBEAT_HMAC_KEY_$hb_slot" >/dev/null
     printf '%s' "$hook_secret" | $WRANGLER secret put "TELEGRAM_WEBHOOK_SECRET_$wh_slot" >/dev/null
     echo "New heartbeat key in slot $hb_slot and webhook secret in slot $wh_slot (active: $hb_active, $wh_active); the watchdog switches when the server uses them."
