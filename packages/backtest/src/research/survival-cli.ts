@@ -1,10 +1,13 @@
 // RES-5 survival study on practice days (docs/research/survival.md). Exploration, not proof. Two commands, one look:
-//   node packages/backtest/src/research/survival-cli.ts freeze --dataset <dir> --sol-usd <file> [--window <file>] [--registry <file>] [--out research/survival]
-//     chooses the rule on the find-days, reads no check-day label, writes <out>/frozen.json (refuses to overwrite it).
-//     Commit frozen.json before running `check`.
+//   node packages/backtest/src/research/survival-cli.ts freeze --dataset <dir> --sol-usd <file> [--window <file>] [--registry <file>]
+//     chooses the rule on the find-days, reads no check-day label, writes research/survival/frozen.json (refuses when
+//     one exists or is committed). Commit frozen.json before running `check`.
 //   node packages/backtest/src/research/survival-cli.ts check --dataset <dir> --sol-usd <file> [same options]
-//     refuses unless frozen.json matches this dataset and these find-days; refuses to overwrite results.json; counts runs.
+//     logs the attempt in research/survival/runs.log first, then refuses unless frozen.json is committed, unchanged
+//     against HEAD and matches this dataset and these find-days; refuses to overwrite results.json.
+// The paths are fixed (no --out): the one look is the one in this repository's history.
 // The wall is RES-3's committed one (research/signals/window.json); --window may only move it earlier.
+import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../../core/src/config/index.ts';
@@ -33,12 +36,24 @@ const flag = (name: string, fallback?: string): string => {
 const SEED = 'res5-1';
 const BOOTSTRAP_REPLICATES = 2000;
 
+const out = join(ROOT, 'research', 'survival');
+const FROZEN = 'research/survival/frozen.json';
+const frozenPath = join(ROOT, FROZEN);
+const git = (...a: string[]) => spawnSync('git', a, { cwd: ROOT, encoding: 'utf8' });
+/** frozen.json is tracked by git (`git ls-files --error-unmatch`). */
+const frozenTracked = (): boolean => git('ls-files', '--error-unmatch', '--', FROZEN).status === 0;
+mkdirSync(out, { recursive: true });
+const runsLog = join(out, 'runs.log');
+// Every check attempt is logged before anything can refuse it, so refused looks are counted too.
+if (command === 'check') appendFileSync(runsLog, `${new Date().toISOString()} check attempt ${JSON.stringify(args)}\n`);
+if (args.includes('--out')) throw new Error('--out is not an option: the paths are fixed under research/survival');
+
 const dataset = flag('dataset');
+
 const committed = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
 const registryPath = args.includes('--registry') ? flag('registry') : join(ROOT, 'docs', 'evidence', 'bt2', 'registry.json');
 const registry = existsSync(registryPath) ? (JSON.parse(readFileSync(registryPath, 'utf8')) as StudyRegistry) : null;
 const window = resolveWindow(committed, args.includes('--window') ? loadWindow(flag('window')) : committed, registry);
-const out = flag('out', join(ROOT, 'research', 'survival'));
 verifySums(dataset);
 const manifest = loadManifest(dataset);
 const datasetHash = `sha256:${manifestHash(dataset)}`;
@@ -83,11 +98,8 @@ interface Frozen {
   readonly findLabelled: number;
 }
 
-mkdirSync(out, { recursive: true });
-const frozenPath = join(out, 'frozen.json');
-
 if (command === 'freeze') {
-  if (existsSync(frozenPath)) throw new Error(`${frozenPath} exists: the rule is frozen once`);
+  if (existsSync(frozenPath) || frozenTracked()) throw new Error(`${FROZEN} exists or is committed: the rule is frozen once`);
   const find = labelSide(split.find);
   const rule = freezeRule(find, practiceDays(), PERMUTATIONS, 17);
   const frozen: Frozen = {
@@ -97,14 +109,17 @@ if (command === 'freeze') {
   writeFileSync(frozenPath, JSON.stringify(frozen, null, 2) + '\n');
   console.log(JSON.stringify({ frozen: frozenPath, rule: rule.none ?? rule.conds, hash: rule.hash, findDays: split.find.length, checkDays: split.check.length }, null, 2));
 } else {
-  if (!existsSync(frozenPath)) throw new Error(`${frozenPath} is missing: run freeze and commit frozen.json first`);
+  if (!existsSync(frozenPath)) throw new Error(`${FROZEN} is missing: run freeze and commit frozen.json first`);
+  if (!frozenTracked()) throw new Error(`${FROZEN} is not committed: commit it before the check`);
+  if (git('diff', '--quiet', 'HEAD', '--', FROZEN).status !== 0) throw new Error(`${FROZEN} differs from its committed version`);
   const frozen = JSON.parse(readFileSync(frozenPath, 'utf8')) as Frozen;
   if (frozen.dataset !== datasetHash) throw new Error(`frozen.json was made on ${frozen.dataset}, this dataset is ${datasetHash}`);
   if (JSON.stringify(frozen.findDays) !== JSON.stringify(split.find) || JSON.stringify(frozen.checkDays) !== JSON.stringify(split.check)) throw new Error('frozen.json was made on other find- or check-days');
   const resultsPath = join(out, 'results.json');
   if (existsSync(resultsPath)) throw new Error(`${resultsPath} exists: the check-days are looked at once`);
-  appendFileSync(join(out, 'runs.log'), `${new Date().toISOString()} check ${datasetHash} rule ${frozen.rule.hash}\n`);
-  const runs = readFileSync(join(out, 'runs.log'), 'utf8').trim().split('\n').length;
+  appendFileSync(runsLog, `${new Date().toISOString()} check ${datasetHash} rule ${frozen.rule.hash}\n`);
+  // Attempts so far, refused ones included.
+  const runs = readFileSync(runsLog, 'utf8').split('\n').filter((l) => l.includes(' check attempt ')).length;
   const rule = frozen.rule;
 
   const findSide = labelSide(frozen.findDays);

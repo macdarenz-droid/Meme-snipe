@@ -78,18 +78,20 @@ On the check-days, with one exit for every rule (STATS-1's triple barrier throug
 - s_creator_surv, s_creator_rugs and s_market_surv see only graduates in DATA's sample; they are rates within the sample.
 - One exit design for every rule; the bot's real exits (policy per universe) may score differently.
 - Days are few: with the practice days DATA-1 publishes (09-21 back to 08-29), a feature needs a large effect to pass Holm across 45 tests.
+- The permutation test shuffles labels within day × stratum cells, which assumes the decisions in a cell are exchangeable. When survival is strongly shared by graduates of the same creator, it is anti-conservative: in the review's extreme case a rule was chosen in 23 of 40 null runs. s_creator_surv and s_creator_rugs are the features this touches; a creator-block permutation for those two is not built.
+- s_market_surv barely changes within a day, so its within-day test has almost no power: a "no" for it says little.
 
 ## 7a. Code and how to run
 
 `packages/backtest/src/research/`: `survival-label.ts` (the pure label rule), `survival.ts` (feature stage), `survival-outcome.ts` (labels, second pass), `survival-analysis.ts` (split, strata, Mantel–Haenszel, Wilson, day bootstrap, Holm, trade measures), `survival-compare.ts` (the survival rule, RES-4's feature rules, comparison with S0), `survival-cli.ts`. Tests: `packages/backtest/test/survival.test.ts` on a synthetic market with known fates (`survival-fixture.ts`): label thresholds, a label time after "now" refused, creator and market history only from matured labels of other graduates, a planted future swap moves no earlier feature, no outcome import in the feature stage, labels per fate and censoring, the wall in both stages, RENT-1 refund, a Simpson's-paradox case and a hand-computed Mantel–Haenszel weight, a planted feature holding up after Holm while noise does not, the trade measures, the CLI.
 
 ```
-node packages/backtest/src/research/survival-cli.ts freeze --dataset <DATA dir> --sol-usd <SOL/USD series> [--out research/survival]
+node packages/backtest/src/research/survival-cli.ts freeze --dataset <DATA dir> --sol-usd <SOL/USD series>
 # commit research/survival/frozen.json, then:
-node packages/backtest/src/research/survival-cli.ts check --dataset <DATA dir> --sol-usd <SOL/USD series> [--out research/survival]
+node packages/backtest/src/research/survival-cli.ts check --dataset <DATA dir> --sol-usd <SOL/USD series>
 ```
 
-**One look, enforced:** `freeze` chooses the rule on the find-days, reads no check-day label, and writes `frozen.json` (the rule and its hash, the dataset's manifest hash, the find- and check-days, B, the bootstrap count and the seed; the seed and counts are constants in code, not run options). It refuses to overwrite `frozen.json`. **`frozen.json` is committed before `check` runs.** `check` refuses unless `frozen.json` matches the dataset and the days, refuses to overwrite `results.json`, and appends every run to `runs.log`. The comparison table is marked "unadjusted, 10 intervals, exploration", and each RES-4 row says it is not RES-4's registered test (its G1 is BT-2's SPA).
+**One look, enforced:** `freeze` chooses the rule on the find-days, reads no check-day label, and writes `frozen.json` (the rule and its hash, the dataset's manifest hash, the find- and check-days, B, the bootstrap count and the seed; the seed and counts are constants in code, not run options). It refuses when `frozen.json` exists or is committed. **`frozen.json` is committed before `check` runs.** `check` first logs the attempt in `runs.log`, then refuses unless `frozen.json` is tracked by git, unchanged against HEAD, and matches the dataset and the days; it refuses to overwrite `results.json`. Every attempt, refused ones included, is counted. The paths are fixed under `research/survival/` (no `--out`), so the one look is the one in this repository's history. The comparison table is marked "unadjusted, 10 intervals, exploration", and each RES-4 row says it is not RES-4's registered test (its G1 is BT-2's SPA).
 
 ## 8. Changes to the plan
 
@@ -101,6 +103,12 @@ node packages/backtest/src/research/survival-cli.ts check --dataset <DATA dir> -
 - 2026-10-04, before any data was read (external audit): the survival rule was chosen by check-day p-values and then scored on the same check-days (selection leakage). It is now chosen on the find-days alone, frozen with a hash, and scored once on the check-days; the find-day selection runs its own 45 counted tests.
 
 - 2026-10-04, before any data was read (review of #120 at 8a7856e): the day-bootstrap p was not a valid test (a percentile read as a test, often exactly 0, no (1 + k)/(1 + B)), and selection chose rules from pure noise. Now: a within day × stratum permutation test with B = 18,000, a 10-find-day minimum, a null-calibration test, and freeze/check as two commands with `frozen.json` committed in between. Days are split from the readable data, not from the labelled decisions.
+
+- 2026-10-04, before any data was read (re-review of #120 at cd084b09):
+  - A null-calibration case with a day effect that moves survival and five features together, with no link within a day. It fails if the permutation cells drop the day (a stratum-only shuffle chose a rule in 36 of 40 runs).
+  - Both null calibrations use the exact one-sided binomial criterion: at most 4 of 40 runs choose a rule (P(X ≥ 5) = 0.048 at a true rate of α).
+  - One look enforced in git: the fixed paths and the refusals in §7a.
+  - The exchangeability and s_market_surv limits in §7.
 
 ## 9. Results
 

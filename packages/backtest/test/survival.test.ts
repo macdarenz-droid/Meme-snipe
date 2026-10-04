@@ -253,6 +253,16 @@ describe('matched strata', () => {
     expect(rule.none).toMatch(/fewer than 10 find-days \(3\)/);
   });
 
+  // 40 null runs through the real selection, 10 find-days, the registered B. Exact one-sided binomial criterion: at a
+  // true rate of α = 5%, P(X ≥ 5 of 40) = 0.048 ≤ α, so 5 or more chosen rejects "the rate is at most α".
+  const NULL_RUNS = 40;
+  const NULL_MAX_CHOSEN = 4;
+  const chosenOf = (gen: (seed: number) => LabelledDecision[]): number => {
+    let chosen = 0;
+    for (let r = 0; r < NULL_RUNS; r++) if (selectSurvivalRule(gen(1000 + r), days.slice(0, 10), PERMUTATIONS, r).conds.length > 0) chosen++;
+    return chosen;
+  };
+
   test('null calibration: on pure noise at three ages and 15 random features, a rule is chosen at most α of the time', () => {
     // Every feature random, survival independent of all of them; 10 find-days, the registered B.
     const noise = (seed: number): LabelledDecision[] => {
@@ -269,11 +279,29 @@ describe('matched strata', () => {
       }
       return xs;
     };
-    const runs = 40;
-    let chosen = 0;
-    for (let r = 0; r < runs; r++) if (selectSurvivalRule(noise(1000 + r), days.slice(0, 10), PERMUTATIONS, r).conds.length > 0) chosen++;
-    // The observed rate is consistent with α: its 95% Clopper–Pearson lower bound does not exceed α.
-    expect(clopperPearsonLower(chosen, runs)).toBeLessThanOrEqual(ALPHA);
+    expect(chosenOf(noise)).toBeLessThanOrEqual(NULL_MAX_CHOSEN);
+  }, 300_000);
+
+  test('null calibration, day-confounded: a day effect moves survival and five features together, with no within-day link; a rule is chosen at most α of the time', () => {
+    // Pooled across days, the five features and survival rise together; within a day they are independent. Only
+    // shuffling within day × stratum cells keeps the day effect out of the null (review of #120, B1').
+    const confounded = (seed: number): LabelledDecision[] => {
+      const u = rnd(seed);
+      const xs: LabelledDecision[] = [];
+      let i = 0;
+      for (const day of days.slice(0, 10)) {
+        const dv = u();
+        for (const ageMs of [60, 240, 1440].map((m) => m * 60_000)) {
+          for (let k = 0; k < 30; k++) {
+            const stratum = `${ageMs}|${u() < 0.5 ? 'a' : 'b'}`;
+            const features = Object.fromEntries(SURVIVAL_FEATURES.map((f, j) => [f, j < 5 ? dv + 0.3 * u() : u()])) as Record<SurvivalFeature, number>;
+            xs.push({ id: `${seed}:${i++}`, day, ageMs, stratum, features, survived: u() < 0.02 + 0.3 * dv });
+          }
+        }
+      }
+      return xs;
+    };
+    expect(chosenOf(confounded)).toBeLessThanOrEqual(NULL_MAX_CHOSEN);
   }, 300_000);
 
   test('no check-day value reaches selection: a check-only signal is never chosen, and a planted check-day marker leaves the frozen rule identical', () => {
@@ -327,39 +355,70 @@ test('fixture sanity: graduates migrate on the practice days', () => {
 });
 
 describe('cli', () => {
-  test('freeze reads no check-day label and writes frozen.json once; check needs it, matches it, runs once, counts runs', async () => {
-    const { existsSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  test('one look: freeze reads no check-day label and freezes once; check logs every attempt, needs frozen.json committed and unchanged, matches it, runs once', async () => {
+    const { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { execFileSync, spawnSync } = await import('node:child_process');
     const { writeDataset } = await import('./dataset-writer.ts');
+    // The CLI writes to fixed paths in its own repository, so it runs from a copy of the sources in a scratch git repo.
+    const REPO = join(import.meta.dirname, '..', '..', '..');
     const dir = mkdtempSync(join(tmpdir(), 'res5-'));
+    const repo = join(dir, 'repo');
     try {
+      for (const rel of ['packages/core/src', 'packages/backtest/src', 'research/signals/window.json', 'research/edge/preregistration.json']) cpSync(join(REPO, rel), join(repo, rel), { recursive: true });
+      const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: repo, encoding: 'utf8' });
+      git('init', '-q');
+      git('add', '.');
+      git('commit', '-qm', 'sources');
       writeDataset(join(dir, 'data'), fx.rows);
       writeFileSync(join(dir, 'sol.csv'), ['# name: SOL/USD', '# tag: fixed', '# bar_ms: 3600000', `# fetched_at: ${new Date(S_T0).toISOString()}`, 'start,close',
         ...SURV_SOL_USD.bars.map((b) => `${new Date(b.start).toISOString()},${b.close}`)].join('\n'));
-      const cmd = (c: string, data = 'data') => [join(SRC, 'survival-cli.ts'), c, '--dataset', join(dir, data), '--sol-usd', join(dir, 'sol.csv'), '--out', join(dir, 'out')];
-      const run = (c: string, data?: string) => spawnSync(process.execPath, ['--no-warnings', ...cmd(c, data)], { encoding: 'utf8' });
-      // check before freeze is refused.
+      const out = join(repo, 'research', 'survival');
+      const cmd = (c: string, data = 'data', extra: string[] = []) => [join(repo, 'packages', 'backtest', 'src', 'research', 'survival-cli.ts'), c, '--dataset', join(dir, data), '--sol-usd', join(dir, 'sol.csv'), ...extra];
+      const run = (c: string, data?: string, extra?: string[]) => spawnSync(process.execPath, ['--no-warnings', ...cmd(c, data, extra)], { encoding: 'utf8' });
+      const attempts = () => readFileSync(join(out, 'runs.log'), 'utf8').split('\n').filter((l) => l.includes(' check attempt ')).length;
+      // check before freeze is refused, and the attempt is logged first.
       expect(run('check').stderr).toMatch(/frozen\.json is missing/);
+      expect(attempts()).toBe(1);
+      // No --out: the paths are fixed.
+      expect(run('freeze', 'data', ['--out', join(dir, 'elsewhere')]).stderr).toMatch(/--out is not an option/);
+      expect(run('check', 'data', ['--out', join(dir, 'elsewhere')]).stderr).toMatch(/--out is not an option/);
+      expect(attempts()).toBe(2);
       const frozen = JSON.parse(execFileSync(process.execPath, ['--no-warnings', ...cmd('freeze')], { encoding: 'utf8' })) as { rule: unknown; findDays: number };
       // The fixture covers few practice days: fewer than 10 find-days, so no rule, said so.
       expect(String(frozen.rule)).toMatch(/fewer than 10 find-days/);
       expect(run('freeze').stderr).toMatch(/frozen once/);
-      const f = JSON.parse(readFileSync(join(dir, 'out', 'frozen.json'), 'utf8')) as { dataset: string; permutations: number; seed: string; findDays: string[] };
+      const f = JSON.parse(readFileSync(join(out, 'frozen.json'), 'utf8')) as { dataset: string; permutations: number; seed: string; findDays: string[] };
       expect(f.permutations).toBe(PERMUTATIONS);
       expect(f.seed).toBe('res5-1');
+      // Not committed yet: refused.
+      expect(run('check').stderr).toMatch(/frozen\.json is not committed/);
+      git('add', 'research/survival/frozen.json');
+      git('commit', '-qm', 'freeze');
+      // Committed: freeze refuses even with the file gone from disk.
+      rmSync(join(out, 'frozen.json'));
+      expect(run('freeze').stderr).toMatch(/exists or is committed: the rule is frozen once/);
+      git('checkout', '--', 'research/survival/frozen.json');
+      // Changed against HEAD: refused.
+      const text = readFileSync(join(out, 'frozen.json'), 'utf8');
+      writeFileSync(join(out, 'frozen.json'), text.replace('"res5-1"', '"res5-2"'));
+      expect(run('check').stderr).toMatch(/frozen\.json differs from its committed version/);
+      writeFileSync(join(out, 'frozen.json'), text);
+      expect(attempts()).toBe(4);
       const checked = JSON.parse(execFileSync(process.execPath, ['--no-warnings', ...cmd('check')], { encoding: 'utf8' })) as { checkRun: number };
-      expect(checked.checkRun).toBe(1);
-      const res = JSON.parse(readFileSync(join(dir, 'out', 'results.json'), 'utf8')) as { label: string; frozen: { rule: { hash: string } }; comparison: { note: string; results: { rule: string }[] }[] };
+      // The run count is every attempt so far, refused ones included.
+      expect(checked.checkRun).toBe(5);
+      const res = JSON.parse(readFileSync(join(out, 'results.json'), 'utf8')) as { label: string; frozen: { rule: { hash: string } }; comparison: { note: string; results: { rule: string }[] }[] };
       expect(res.label).toBe('exploration, not proof');
       expect(res.comparison[0]!.note).toBe('unadjusted, 10 intervals, exploration');
       expect(res.comparison[0]!.results.filter((r) => r.rule.startsWith('H')).every((r) => r.rule.endsWith("not RES-4's registered test; its G1 is BT-2's SPA"))).toBe(true);
-      // A second check is refused and still counted; a check on another dataset is refused.
+      // A second check is refused and logged; a check on another dataset is refused.
       expect(run('check').stderr).toMatch(/looked at once/);
       writeDataset(join(dir, 'other'), fx.rows.slice(0, fx.rows.length - 1000));
-      rmSync(join(dir, 'out', 'results.json'));
+      rmSync(join(out, 'results.json'));
       expect(run('check', 'other').stderr).toMatch(/frozen\.json was made on/);
-      expect(existsSync(join(dir, 'out', 'runs.log'))).toBe(true);
+      expect(attempts()).toBe(7);
+      expect(existsSync(join(dir, 'elsewhere'))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
