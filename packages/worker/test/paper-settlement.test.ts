@@ -1,7 +1,7 @@
 // PAPER-1: paper settlement matches the historical backtest's (audit of d92b73e, items M4, M5 and M8's rent part).
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FILL_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
 import { openLedger } from '../../core/src/ledger/index.ts';
 import { emptyBook } from '../../core/src/lifecycle/index.ts';
@@ -73,6 +73,33 @@ const flows = (dir: string, net = FILL_CONFIG.network) => {
   return v;
 };
 
+describe('a restart books what account.json missed', () => {
+  it('an open trade whose entry fill the saved account never booked is booked at the restart, once', async () => {
+    const h = makeWorker({ scenario: { ...LANDS, dustPpm: 0n } });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    expect(await until(m, 60_000, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open' && p.quantity > 0n), () => {
+      m.slot();
+      m.pool();
+    })).toBe(true);
+    const settled = wallet(h.stateDir);
+    await h.worker.stop();
+    // A process that stopped after the fill reconciled but before account.json took it.
+    const file = join(h.stateDir, 'account.json');
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { walletLamports: { $n: string }; trades: { booked: { $n: string } }[] };
+    const booked = BigInt(saved.trades[0]!.booked.$n);
+    expect(booked).toBeLessThan(0n);
+    saved.walletLamports = { $n: String(settled - booked) };
+    saved.trades[0]!.booked = { $n: '0' };
+    writeFileSync(file, JSON.stringify(saved));
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario: { ...LANDS, dustPpm: 0n } });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    expect(wallet(h.stateDir)).toBe(settled);
+    await h2.worker.stop();
+  });
+});
+
 describe('M8: paper rent follows the account-close outcome (RENT-1, shared with the backtest)', () => {
   it('a landed sell-and-close returns the rent: the trade nets its flows and fees only', async () => {
     const h = makeWorker({ scenario: { ...LANDS, closeSuccessPpm: 1_000_000n, dustPpm: 0n } });
@@ -91,6 +118,34 @@ describe('M8: paper rent follows the account-close outcome (RENT-1, shared with 
     expect(closedTrade(h.stateDir).netLamports).toBe(flows(h.stateDir) - FILL_CONFIG.network.tokenAccountRent);
     // The retry's transaction no longer closes the account.
     expect(h.legs.filter((l) => l.leg === 'exit').at(-1)!.closes).toBe(false);
+    await h.worker.stop();
+  });
+
+  it('a landed failed sell lowers the wallet by its fee as it lands, before the book hears of it', async () => {
+    const h = makeWorker({ scenario: { ...LANDS, closeSuccessPpm: 0n, dustPpm: 0n } });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+    // The paper world reports the failure to the book through the feed; read the wallet the moment that report arrives.
+    let seen: { before: bigint; after: bigint; fee: bigint } | null = null;
+    let before = wallet(h.stateDir);
+    const feed = h.worker.feed;
+    const ingest = feed.ingest.bind(feed);
+    vi.spyOn(feed, 'ingest').mockImplementation((...args: Parameters<typeof feed.ingest>) => {
+      const e = args[1] as { type: string; event?: { type: string; intentId?: string; event?: { result?: string; signature?: string } } };
+      const sig = e.type === 'world' && e.event?.type === 'intent' && e.event.event?.result === 'failed' ? e.event.event.signature : undefined;
+      const a = sig === undefined ? undefined : attempts(h.stateDir).find((x) => x.signature === sig);
+      if (seen === null && a?.purpose === 'exit') seen = { before, after: wallet(h.stateDir), fee: attemptFee(FILL_CONFIG.network, a.priorityFee, 'failed') };
+      return ingest(...args);
+    });
+    expect(await until(m, 120_000, () => seen !== null, () => {
+      before = wallet(h.stateDir);
+      m.slot();
+      m.pool(700_000n);
+    })).toBe(true);
+    expect(seen!.fee).toBeGreaterThan(0n);
+    expect(seen!.after).toBe(seen!.before - seen!.fee);
     await h.worker.stop();
   });
 
@@ -140,6 +195,36 @@ describe('M5: paper dollar results use the backtest report rule (each cash flow 
     const [r] = views.trades(inputs) as { netUsd: string; netSol: string; tradingUsd: string; solMoveUsd: string }[];
     expect(r).toMatchObject({ netUsd: '-0.08', netSol: '0.004000000', tradingUsd: '0.32', solMoveUsd: '-0.4' });
     expect(views.stats(inputs)).toMatchObject({ netUsd: '-0.08', netSol: '0.004000000', solMoveUsd: '-0.4' });
+  });
+
+  describe('the app shows the rent the trade paid, got back and kept', () => {
+    // The same trade with the real rent (1,513,840 lamports): paid at the entry's SOL price, returned at the close's.
+    const rented = { ...net, tokenAccountRent: FILL_CONFIG.network.tokenAccountRent };
+    const px = (d: number) => BigInt(d * 1_000_000) as MicroUsd;
+    const shown = (closes: boolean, pxOut: MicroUsd) => {
+      const l: PaperLegs = { ...legs(true), network: rented, closedAccount: () => closes };
+      const account = new PaperAccount(accountFile(tempState()), 20_000_000n as MicroUsd, T, 0n);
+      account.price(px(100), T);
+      const base = { positionId: 'p1', mint: 'M', reasons: ['notional 2000000'] };
+      account.filled({ ...base, purpose: 'entry', book: book(false), atMs: T + 1_000 }, px(100), { ...legs(false), network: rented, closedAccount: () => closes });
+      account.filled({ ...base, purpose: 'exit', book: book(true), atMs: T + 2_000 }, pxOut, l);
+      const inputs = { book: book(true), legs: l, attempts: l.attempts, trades: account.state.trades, symbol: () => 'M', strategyVersion: 's', policyVersion: 'p', solPrice: pxOut } as unknown as ApiInputs;
+      const [r] = views.trades(inputs) as { costs: { rentPaidUsd: string; rentReturnedUsd: string; totalUsd: string } }[];
+      const kept = (views.charts(inputs) as { costsByKind: { kind: string; amountUsd: string }[] }).costsByKind.find((k) => k.kind === 'rentKeptUsd')!.amountUsd;
+      return { ...r!.costs, kept, netLamports: account.state.trades[0]!.netLamports };
+    };
+
+    it('a sell that closes the account: the rent comes back, nothing is kept', () => {
+      // $0.151384 out at $100, the same lamports back at $100.
+      expect(shown(true, px(100))).toMatchObject({ rentPaidUsd: '0.151384', rentReturnedUsd: '0.151384', kept: '0', netLamports: 4_000_000n });
+      // Back at $80 it is worth $0.121107: the $0.030277 between is SOL's move on the rent, kept as a cost.
+      expect(shown(true, px(80))).toMatchObject({ rentPaidUsd: '0.151384', rentReturnedUsd: '0.121107', kept: '0.030277', netLamports: 4_000_000n });
+    });
+
+    it('a sell that leaves the account open (failed close or dust): nothing comes back, the whole rent is kept', () => {
+      expect(shown(false, px(100))).toMatchObject({ rentPaidUsd: '0.151384', rentReturnedUsd: '0', kept: '0.151384', netLamports: 4_000_000n - 1_513_840n });
+      expect(shown(false, px(80))).toMatchObject({ rentPaidUsd: '0.151384', rentReturnedUsd: '0', kept: '0.151384', totalUsd: '0.151384' });
+    });
   });
 
   it('a sell that landed but is not yet in the book moves nothing: the position still holds those tokens', () => {
