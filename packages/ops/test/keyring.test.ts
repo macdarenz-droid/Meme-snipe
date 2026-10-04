@@ -63,7 +63,7 @@ function harness(env: Partial<Env>) {
   };
   const hook = async (secret: string) =>
     (await dob.fetch(new Request('https://w.test/telegram', { method: 'POST', body: '{}', headers: { 'x-telegram-bot-api-secret-token': secret } }))).status;
-  const slot = async () => (await (await dob.fetch(new Request('https://w.test/slot'))).json()) as { heartbeat: string; webhook: string };
+  const slot = async () => (await (await dob.fetch(new Request('https://w.test/slot'))).json()) as { heartbeat: string; webhook: string; pending: boolean };
   /** A Deploy run: new secrets on the same Durable Object (wrangler secret put makes a new version). */
   const redeploy = (over: Partial<Env>) => {
     e = { ...e, ...over };
@@ -77,12 +77,13 @@ describe('rotation on the watchdog', () => {
     // Today's single-slot order would have replaced HEARTBEAT_HMAC_KEY here and refused K0 from then on.
     const h = harness({ HEARTBEAT_HMAC_KEY: K0, TELEGRAM_WEBHOOK_SECRET: 'w0' });
     expect(await h.beat(K0)).toBe(200);
-    expect(await h.slot()).toEqual({ heartbeat: 'legacy', webhook: 'legacy' });
+    expect(await h.slot()).toEqual({ heartbeat: 'legacy', webhook: 'legacy', pending: false });
     h.redeploy({ HEARTBEAT_HMAC_KEY_A: K1, TELEGRAM_WEBHOOK_SECRET_A: 'w1' });
     expect(await h.beat(K0)).toBe(200);
     expect(await h.hook('w0')).toBe(200);
-    expect(await h.slot()).toEqual({ heartbeat: 'legacy', webhook: 'legacy' });
-    // A re-run writes over the same pending slot; the old key still beats.
+    // The offer is reported as pending: Deploy then refuses to rotate again (publish.sh, FORCE_KEY_ROTATE overrides).
+    expect(await h.slot()).toEqual({ heartbeat: 'legacy', webhook: 'legacy', pending: true });
+    // Forced over (FORCE_KEY_ROTATE=yes): the same pending slot is written; the old key still beats.
     h.redeploy({ HEARTBEAT_HMAC_KEY_A: K2 });
     expect(await h.beat(K0)).toBe(200);
     vi.unstubAllGlobals();
@@ -98,10 +99,10 @@ describe('rotation on the watchdog', () => {
     expect((await h.slot()).heartbeat).toBe('A');
     expect(await h.beat(K0)).toBe(401);
     expect(await h.resume(K0)).toBe(401);
-    // The webhook secret switches on Telegram's first request with the new one.
-    expect(await h.hook('w1')).toBe(200);
-    expect(await h.slot()).toEqual({ heartbeat: 'A', webhook: 'A' });
+    // The webhook secret came in the same bundle: it switched with the key, without waiting for a Telegram update.
+    expect(await h.slot()).toEqual({ heartbeat: 'A', webhook: 'A', pending: false });
     expect(await h.hook('w0')).toBe(401);
+    expect(await h.hook('w1')).toBe(200);
     // The next rotation writes B; A keeps working until the server uses B.
     h.redeploy({ HEARTBEAT_HMAC_KEY_B: K2 });
     expect(await h.beat(K1)).toBe(200);
@@ -123,6 +124,8 @@ describe('rotation on the watchdog', () => {
     const t0 = Date.now();
     expect((await h.check(t0)).alerts).toEqual([]);
     h.redeploy({ HEARTBEAT_HMAC_KEY_A: K1 });
+    // A heartbeat key alone on offer is pending too.
+    expect(await h.slot()).toEqual({ heartbeat: 'legacy', webhook: 'legacy', pending: true });
     // The heartbeat itself stays fresh in these checks: only the offer can alert.
     const at = async (ms: number) => {
       const st = h.mem.get('hb') as { hb: unknown; receivedAt: number };
@@ -142,6 +145,26 @@ describe('rotation on the watchdog', () => {
     // Used: the server beats with it, the offer is gone and the alert clears.
     expect(await h.beat(K2)).toBe(200);
     expect((await at(t0 + 52 * H)).sent).toEqual([expect.stringMatching(/^CLEARED Key offer pending/)]);
+    vi.unstubAllGlobals();
+  });
+
+  it('a second Deploy before the server\'s first use is refused, and the first offer still works', async () => {
+    // A fresh server waiting for /pair holds K1 from run 1 but has not beaten with it yet.
+    const h = harness({ HEARTBEAT_HMAC_KEY: K0, TELEGRAM_WEBHOOK_SECRET: 'w0' });
+    h.redeploy({ HEARTBEAT_HMAC_KEY_A: K1, TELEGRAM_WEBHOOK_SECRET_A: 'w1' });
+    // Run 2 reads /slot, sees pending and writes nothing (publish.sh; tested in ops-files.test.ts), so the env stays.
+    expect((await h.slot()).pending).toBe(true);
+    expect(await h.beat(K1)).toBe(200);
+    expect(await h.slot()).toEqual({ heartbeat: 'A', webhook: 'A', pending: false });
+    vi.unstubAllGlobals();
+  });
+
+  it('Telegram\'s first request with the offered webhook secret also switches it (no heartbeat needed)', async () => {
+    const h = harness({ HEARTBEAT_HMAC_KEY: K0, TELEGRAM_WEBHOOK_SECRET: 'w0' });
+    h.redeploy({ TELEGRAM_WEBHOOK_SECRET_A: 'w1' });
+    expect(await h.hook('w1')).toBe(200);
+    expect(await h.slot()).toEqual({ heartbeat: 'legacy', webhook: 'A', pending: false });
+    expect(await h.hook('w0')).toBe(401);
     vi.unstubAllGlobals();
   });
 

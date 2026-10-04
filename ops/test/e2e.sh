@@ -396,11 +396,11 @@ sleep 1
 [ "$(wc -l <"$STATE/telegram.jsonl")" = "$n0" ] || fail "watchdog alerted while heartbeats are fresh"
 [ "$(hook 777 /pause)" = 200 ] && [ "$(wc -l <"$STATE/telegram.jsonl")" = "$n0" ] || fail "stranger's /pause got an answer"
 [ "$(hook "$T_CHAT" /pause wrong-secret)" = 401 ] || fail "webhook accepted a wrong secret"
-# KEY-ROTATE-SAFE: the server's heartbeats made slot A active; the first request with the new webhook secret does too,
-# and the old values are refused from then on.
+# KEY-ROTATE-SAFE: the server's heartbeats made slot A active for the key and the webhook secret (one bundle), and the
+# old values are refused from then on.
 curl -s http://127.0.0.1:443/slot | grep -q '"heartbeat":"A"' || fail "the server's heartbeats did not make its key active"
 hook 777 /status >/dev/null
-curl -s http://127.0.0.1:443/slot | grep -qx '{"heartbeat":"A","webhook":"A"}' || fail "the new webhook secret did not become active"
+curl -s http://127.0.0.1:443/slot | grep -qx '{"heartbeat":"A","webhook":"A","pending":false}' || fail "the new webhook secret did not become active"
 [ "$(hook "$T_CHAT" /status "$T_OLD_HOOK")" = 401 ] || fail "the old webhook secret still works after the switch"
 t_old="$(date +%s)"
 sig_old="$(printf '%s\nPOST\n/resume\n{}' "$t_old" | openssl dgst -sha256 -hmac "$T_OLD_HMAC" | sed 's/^.* //')"

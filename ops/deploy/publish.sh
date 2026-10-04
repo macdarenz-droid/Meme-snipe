@@ -14,6 +14,7 @@
 # touched. The watchdog switches when the server first uses the new key, so a bundle the server never opens (no pickup,
 # a stale or wrong DEPLOY_CODE) changes nothing it relies on.
 # Test knobs: PICKUP_TIMEOUT_S, PICKUP_POLL_S, PICKUP_GRACE_S, TELEGRAM_API, CLOUDFLARE_API_URL, WATCHDOG_PROBE_URL, SLOT_POLL_S.
+# Owner override (repository variable): FORCE_KEY_ROTATE=yes rotates even while an offer is pending.
 #
 # Never prints or stores a value: no set -x; the code, the derived identity and the plaintext only pass
 # through pipes and the process environment; only the ciphertext is ever a file.
@@ -47,6 +48,7 @@ recipient="$(printf '%s' "$DEPLOY_CODE" | node "$here/../host/files/usr/local/li
 WATCHDOG_URL=""
 HEARTBEAT_HMAC_KEY=""
 WEBHOOK_SECRET=""
+rotate=no
 if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || die "CLOUDFLARE_ACCOUNT_ID is missing."
   [ -n "${WRANGLER:-}" ] || die "WRANGLER is not set."
@@ -68,21 +70,35 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   # A new version can take a few seconds to serve everywhere, so it is asked up to 6 times, 10 s apart.
   hb_active=""
   wh_active=""
+  pending=""
   for _ in 1 2 3 4 5 6; do
     slots="$(curl -sS -m 30 -X GET "${WATCHDOG_PROBE_URL:-$WATCHDOG_URL}/slot" 2>/dev/null || true)"
     hb_active="$(printf '%s' "$slots" | jq -r '.heartbeat // empty' 2>/dev/null || true)"
     wh_active="$(printf '%s' "$slots" | jq -r '.webhook // empty' 2>/dev/null || true)"
-    [[ "$hb_active" =~ ^(legacy|A|B)$ && "$wh_active" =~ ^(legacy|A|B)$ ]] && break
+    pending="$(printf '%s' "$slots" | jq -r 'if (.pending | type) == "boolean" then .pending else empty end' 2>/dev/null || true)"
+    [[ "$hb_active" =~ ^(legacy|A|B)$ && "$wh_active" =~ ^(legacy|A|B)$ && "$pending" =~ ^(true|false)$ ]] && break
     sleep "${SLOT_POLL_S:-10}"
   done
-  [[ "$hb_active" =~ ^(legacy|A|B)$ && "$wh_active" =~ ^(legacy|A|B)$ ]] || die "The watchdog did not say which key slot is active (GET /slot); nothing was rotated."
-  other() { if [ "$1" = A ]; then echo B; else echo A; fi; }
-  hb_slot="$(other "$hb_active")"
-  wh_slot="$(other "$wh_active")"
-  printf '%s' "$HEARTBEAT_HMAC_KEY" | $WRANGLER secret put "HEARTBEAT_HMAC_KEY_$hb_slot" >/dev/null
+  [[ "$hb_active" =~ ^(legacy|A|B)$ && "$wh_active" =~ ^(legacy|A|B)$ && "$pending" =~ ^(true|false)$ ]] || die "The watchdog did not say which key slot is active (GET /slot); nothing was rotated."
   printf '%s' "$TELEGRAM_BOT_TOKEN" | $WRANGLER secret put TELEGRAM_BOT_TOKEN >/dev/null
-  printf '%s' "$hook_secret" | $WRANGLER secret put "TELEGRAM_WEBHOOK_SECRET_$wh_slot" >/dev/null
-  echo "New heartbeat key in slot $hb_slot and webhook secret in slot $wh_slot (active: $hb_active, $wh_active); the watchdog switches when the server uses them."
+  if [ "$pending" = true ] && [ "${FORCE_KEY_ROTATE:-}" != yes ]; then
+    # A key on offer may already be on the server (a fresh server waiting for /pair, or a run the server picked up
+    # but has not restarted for yet). Replacing it would cut the server off, so nothing is rotated: the bundle goes
+    # without watchdog keys and the server keeps the ones it has. The owner's override: FORCE_KEY_ROTATE=yes.
+    msg="Key rotation refused: an offer is still waiting for the server; nothing rotated. The API keys are still handed over. To rotate anyway, set the repository variable FORCE_KEY_ROTATE to yes, run Deploy, then delete the variable (ops/README.md, Watchdog)."
+    echo "::warning::$msg"
+    [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '**%s**\n' "$msg" >>"$GITHUB_STEP_SUMMARY"
+    rotate=no
+  else
+    other() { if [ "$1" = A ]; then echo B; else echo A; fi; }
+    hb_slot="$(other "$hb_active")"
+    wh_slot="$(other "$wh_active")"
+    [ "$pending" = false ] || echo "::warning::FORCE_KEY_ROTATE=yes: the key still on offer is replaced. Delete the variable now."
+    printf '%s' "$HEARTBEAT_HMAC_KEY" | $WRANGLER secret put "HEARTBEAT_HMAC_KEY_$hb_slot" >/dev/null
+    printf '%s' "$hook_secret" | $WRANGLER secret put "TELEGRAM_WEBHOOK_SECRET_$wh_slot" >/dev/null
+    echo "New heartbeat key in slot $hb_slot and webhook secret in slot $wh_slot (active: $hb_active, $wh_active); the watchdog switches when the server uses them."
+    rotate=yes
+  fi
   # The Telegram webhook is set by the server, not here: it reads /pair through getUpdates first, which
   # Telegram refuses while a webhook is set. The secret travels to it in the encrypted bundle.
   WEBHOOK_SECRET="$hook_secret"
@@ -96,7 +112,7 @@ bundle="$(mktemp -d)/bundle.age"
   printf 'ZEROED_BUNDLE=1\n'
   printf 'ISSUED=%s\n' "$ISSUED"
   for n in "${NAMES[@]}"; do printf '%s=%s\n' "$n" "${!n}"; done
-  if [ -n "$WATCHDOG_URL" ]; then
+  if [ -n "$WATCHDOG_URL" ] && [ "$rotate" = yes ]; then
     printf 'WATCHDOG_URL=%s\n' "$WATCHDOG_URL"
     printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$WEBHOOK_SECRET"
     printf 'HEARTBEAT_HMAC_KEY=%s\n' "$HEARTBEAT_HMAC_KEY"

@@ -71,9 +71,9 @@ createServer(async (req, res) => {
   }
   if (p === '/slot' && req.method === 'GET') {
     // The watchdog's active key slots (KEY-ROTATE-SAFE): $STATE/watchdog-slot.json, else none promoted yet. The stub
-    // wrangler cannot run the watchdog, so no slot is ever promoted here: each Deploy writes slot A.
+    // wrangler cannot run the watchdog, so no slot is ever promoted or reported pending here: each Deploy writes slot A.
     const f = join(STATE, 'watchdog-slot.json');
-    return send(200, existsSync(f) ? readFileSync(f, 'utf8') : JSON.stringify({ heartbeat: 'legacy', webhook: 'legacy' }));
+    return send(200, existsSync(f) ? readFileSync(f, 'utf8') : JSON.stringify({ heartbeat: 'legacy', webhook: 'legacy', pending: false }));
   }
   if ((m = /^\/client\/v4\/accounts\/([^/]+)\/workers\/subdomain$/.exec(p))) {
     // Cloudflare: the account starts without a workers.dev subdomain; PUT registers one.

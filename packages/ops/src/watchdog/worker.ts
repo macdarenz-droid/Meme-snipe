@@ -112,7 +112,13 @@ export class Watchdog {
     const prev = await this.state.storage.get<Stored>('hb');
     if (!isNewer(prev, hb)) return json({ error: 'replayed heartbeat' }, 409);
     // The server beats with the offered key: it has the new key, so the old one is retired from now on.
-    if (!used.active) await this.state.storage.put(`ring:${HB}`, await promote(await this.ring(HB), this.env, HB, used.slot));
+    if (!used.active) {
+      await this.state.storage.put(`ring:${HB}`, await promote(await this.ring(HB), this.env, HB, used.slot));
+      // The webhook secret came in the same bundle and the server sets it with the key, so it switches too: waiting for
+      // Telegram's next update could leave it on offer for days.
+      const wh = (await candidates(await this.ring(WH), this.env, WH)).find((c) => !c.active);
+      if (wh) await this.state.storage.put(`ring:${WH}`, await promote(await this.ring(WH), this.env, WH, wh.slot));
+    }
     await this.state.storage.put('hb', { hb, receivedAt: Date.now() } satisfies Stored);
     // The owner's chat comes only from the server's signed heartbeat (paired there with /pair).
     if (typeof hb.owner_chat_id === 'string' && /^-?\d{1,20}$/.test(hb.owner_chat_id)) await this.state.storage.put('owner_chat', hb.owner_chat_id);
@@ -125,9 +131,14 @@ export class Watchdog {
     return isRing(r) ? r : NEW_RING;
   }
 
-  /** Which slot is active per rotated secret: all the Deploy workflow needs to write the other one. Names only. */
+  /** Which slot is active per rotated secret, and whether an offer is pending: what the Deploy workflow needs. Names only. */
   private async slots(): Promise<Response> {
-    return json({ heartbeat: (await this.ring(HB)).active, webhook: (await this.ring(WH)).active });
+    const hb = await this.ring(HB);
+    const wh = await this.ring(WH);
+    // Pending: a new key or secret the server has not used yet. Deploy then refuses to rotate again, so a second run
+    // never replaces a key the server may already hold.
+    const pending = (await candidates(hb, this.env, HB)).some((c) => !c.active) || (await candidates(wh, this.env, WH)).some((c) => !c.active);
+    return json({ heartbeat: hb.active, webhook: wh.active, pending });
   }
 
   private async lease(body: string): Promise<Response> {
@@ -199,7 +210,7 @@ export class Watchdog {
       const offer = await trackOffer((await s.get<Offer>(`offer:${base}`)) ?? null, await this.ring(base), this.env, base, now);
       await s.put(`offer:${base}`, offer);
       if (offer !== null && now - offer.since > OFFER_ALERT_MS) {
-        current.push({ key: `key_offer_${base}`, text: `Key offer pending: the new ${what} (slot ${offer.slot}) has not been used for ${Math.floor((now - offer.since) / 3_600_000)} h, so the server does not have it. Check DEPLOY_CODE and run Deploy again.` });
+        current.push({ key: `key_offer_${base}`, text: `Key offer pending: the new ${what} (slot ${offer.slot}) has not been used for ${Math.floor((now - offer.since) / 3_600_000)} h, so the server does not have it. Check DEPLOY_CODE, then run Deploy with FORCE_KEY_ROTATE=yes (ops/README.md, Watchdog).` });
       }
     }
     const { lines, next } = planAlerts((await s.get<Record<string, ActiveAlert>>('alerts')) ?? {}, current, now, limits);

@@ -1442,6 +1442,11 @@ A wrong `DEPLOY_CODE` broke it the same way, because that server downloads the b
   - reads the active slots from the unsigned `GET /slot`, which reveals only `legacy`, `A` or `B`, and asks up to 6 times while a new version spreads;
   - writes only the other slot, and never touches the active one;
   - fails closed with "nothing was rotated" when the watchdog does not answer.
+- **No second rotation over a pending offer (supervisor ruling (a), after the ops review of 5a8a314):**
+  - **The gap:** a second run could overwrite an offer the server already holds but has not used yet (a fresh server waiting for `/pair`, or a routine Deploy while `DEPLOY_CODE` is still set). That would cut the server off.
+  - **The fix:** `GET /slot` also reports `pending`, and `publish.sh` then refuses to rotate. It warns in the log and the step summary, hands over the API keys without watchdog keys (`zeroed-pair` stores a heartbeat key only when `WATCHDOG_URL` comes with it) and exits as usual, so the code update lands.
+  - **The override:** the owner's repository variable `FORCE_KEY_ROTATE=yes`, mapped into the publish step's env (a one-line `deploy.yml` addition, approved). It is deleted after use (ops/README.md).
+- **The webhook secret switches with the heartbeat key:** they come in one bundle and the server sets both, so waiting for Telegram's next update could leave the webhook offer pending for days. It would then block rotations and raise the 24 h alert for no reason. A Telegram request with the new secret still switches it on its own.
 - **A stale offer alerts:** an offer left unused for more than 24 h raises the watchdog alert "Key offer pending" (supervisor condition), so it cannot sit unseen as a second valid key. The alert goes through `planAlerts` and clears when the offer is used or replaced; a replaced offer gets its own 24 h.
 - **The bundle to the server is unchanged:** the same names, and no host change.
 
