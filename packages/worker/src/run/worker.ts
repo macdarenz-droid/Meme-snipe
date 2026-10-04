@@ -16,7 +16,7 @@ import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
-import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts';
+import { attemptFee, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
@@ -872,6 +872,7 @@ export class Worker {
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
       book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
+      exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
         const r = this.reservesOf(mint);

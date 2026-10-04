@@ -1432,8 +1432,13 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **Evidence.** `packages/worker/test/growth-sweep.test.ts`: the UTF-8 test fails on the base `journalLines`; the guard fails on the base deployer store and runner; hand mutants G1–G7 are killed.
 
 ## Open trade as a live trade (APP-TRADE, `run/api.ts` `openPnl`, `lib/money.ts` `returnHundredths`, `dashboard/Sections.tsx` `OpenPosition`)
-- **2026-10-05 · The P&L has one definition.** `openPnl` (worker) is the rest's liquidation quote (net of the pool's fees), plus what exits already sold for, less what the entry paid and every network fee paid so far. It is in exact lamports. Once nothing is left it equals the closed trade's net in `account.ts` (test on a real closed trade).
-  - "Unrealized" is its gross (before network fees), "Costs so far" its fees, and "P&L" its net.
+- **2026-10-05 · The P&L has one definition: net if closed now.** `openPnl` (worker) works in exact lamports. It is:
+  - the rest's liquidation quote (net of the pool's fees),
+  - less the close's own network fee (`exitFee`: base + the exit ladder's first priority fee + tip, the paper fill's charge for a filled exit attempt; supervisor ruling under the paper-as-real rule),
+  - plus what exits already sold for,
+  - less what the entry paid and every network fee paid so far.
+  - With nothing left there is no close to pay for. It then equals the closed trade's net in `account.ts` (test on a real closed trade).
+  - "Unrealized" is its gross (before the fees already paid, after the close's fee), "Costs so far" the fees actually paid, and "P&L" its net.
   - Before this, Unrealized left out a partial exit's proceeds (review N1 pins it after a real partial).
   - In dollars (`openUsd`, review N2), Unrealized and Costs so far round on the safe side, like a closed trade's net: gains down, losses and costs up.
   - P&L is their exact difference, so P&L = Unrealized − Costs so far to the micro-dollar. On screen each row is rounded to the cent on its own.
@@ -1467,3 +1472,4 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
     - The link without the mint check; copying the short address; a false "Copied" (twice: the click and the copy-command fallback).
     - The copy or link click reaching the row; the journal without the buttons.
     - Review N1/N2: Unrealized as the rest less the whole entry; Unrealized or Costs rounded toward zero; P&L rounded on its own (in `openUsd` and in the served row).
+    - The exit fee: left out; charged with nothing left; from the ladder's second rung; without the tip.

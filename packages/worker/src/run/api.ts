@@ -154,6 +154,11 @@ export interface ApiInputs {
   readonly decisions: readonly DecisionRow[];
   readonly funnel: FunnelState;
   readonly solPrice: MicroUsd | null;
+  /**
+   * The network fee a close would pay now (lamports): base + the exit ladder's first priority fee + tip, the paper fill's
+   * model for a filled exit attempt (paper-world `#broadcast`, fills `attemptFee`). The open P&L counts it (APP-TRADE).
+   */
+  readonly exitFee: bigint;
   readonly symbol: (mint: string) => string;
   /** Positions whose due exit waits for its first fresh quote, and since when (EXIT-1c). */
   readonly waitingExits: ReadonlyMap<string, number>;
@@ -192,16 +197,16 @@ export const checksOf = (gates: DiscoveredInput['gates']): 'passed' | 'failed' |
 };
 
 /**
- * The open position's P&L so far (APP-TRADE), in lamports, the one definition both P&L rows use: `gross` is what
- * selling the rest now returns (the liquidation quote, net of the pool's fees) plus what its exits already sold for,
- * less what the entry paid; `fees` is every network fee paid so far (entry and exits); `net` is gross less fees. Once
- * nothing is left it is the closed trade's net (account.ts `filled`). A rest that cannot be quoted counts as worth
- * nothing (the safe side).
+ * The open position's P&L if closed now (APP-TRADE), in lamports, the one definition the P&L rows use: `gross` is what
+ * selling the rest now returns (the liquidation quote, net of the pool's fees, less the close's own network fee
+ * `exitFee`) plus what its exits already sold for, less what the entry paid; `fees` is every network fee paid so far
+ * (entry and exits); `net` is gross less fees. With nothing left (and no close to pay for) it is the closed trade's net
+ * (account.ts `filled`). A rest that cannot be quoted counts as worth nothing (the safe side); its close still costs.
  */
-export const openPnl = (liquidation: bigint | null, fills: readonly PaperAttempt[]): { readonly gross: bigint; readonly fees: bigint; readonly net: bigint } => {
+export const openPnl = (liquidation: bigint | null, fills: readonly PaperAttempt[], exitFee: bigint): { readonly gross: bigint; readonly fees: bigint; readonly net: bigint } => {
   const sum = (purpose: PaperAttempt['purpose'], f: (a: NonNullable<PaperAttempt['fill']>) => bigint) =>
     fills.filter((a) => a.purpose === purpose && a.fill !== null).reduce((s, a) => s + f(a.fill!), 0n);
-  const gross = (liquidation ?? 0n) + sum('exit', (f) => f.sol) - sum('entry', (f) => f.sol);
+  const gross = (liquidation ?? 0n) - exitFee + sum('exit', (f) => f.sol) - sum('entry', (f) => f.sol);
   const fees = sum('entry', (f) => f.fees) + sum('exit', (f) => f.fees);
   return { gross, fees, net: gross - fees };
 };
@@ -342,7 +347,7 @@ export const views = {
     if (p === undefined) return null;
     const o = i.open(p);
     const liq = o?.liquidation ?? null;
-    const pnl = openPnl(liq, fillsOf(i, p.id));
+    const pnl = openPnl(liq, fillsOf(i, p.id), p.quantity > 0n ? i.exitFee : 0n);
     const usd = i.solPrice === null ? { unrealized: 0n, costs: 0n } : openUsd(pnl, i.solPrice);
     // The mark: our rest's executable price now (the liquidation quote per token held), the price the stops judge.
     const mark = liq === null || p.quantity <= 0n || i.solPrice === null ? null : priceText(liq, p.quantity, i.solPrice);

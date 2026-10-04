@@ -8,6 +8,8 @@ import { openPnl, openUsd, pnlMicroUsd, priceText, route, usdText } from '../src
 import { toMicro } from '../../../apps/web/src/lib/money.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import type { MicroUsd } from '../../core/src/units/index.ts';
+import { attemptFee } from '../../core/src/fills/index.ts';
+import { FILL_CONFIG } from '../../core/src/config/index.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 const HELD = { heldPoolFacts: true } as const;
@@ -18,16 +20,19 @@ const fill = (purpose: 'entry' | 'exit', sol: bigint, fees: bigint): PaperAttemp
 describe('the open trade\'s P&L (APP-TRADE)', () => {
   it('is the rest\'s liquidation value plus exits sold, less the entry and every network fee, exactly', () => {
     // A gain: bought for 1 SOL (5000 lamports fee), the rest now sells for 1.2 SOL.
-    expect(openPnl(1_200_000_000n, [fill('entry', 1_000_000_000n, 5_000n)])).toEqual({ gross: 200_000_000n, fees: 5_000n, net: 199_995_000n });
+    expect(openPnl(1_200_000_000n, [fill('entry', 1_000_000_000n, 5_000n)], 0n)).toEqual({ gross: 200_000_000n, fees: 5_000n, net: 199_995_000n });
     // A loss, and a partial exit already sold: its proceeds and its fee count.
-    expect(openPnl(300_000_000n, [fill('entry', 1_000_000_000n, 5_000n), fill('exit', 500_000_000n, 7_000n)])).toEqual({ gross: -200_000_000n, fees: 12_000n, net: -200_012_000n });
+    expect(openPnl(300_000_000n, [fill('entry', 1_000_000_000n, 5_000n), fill('exit', 500_000_000n, 7_000n)], 0n)).toEqual({ gross: -200_000_000n, fees: 12_000n, net: -200_012_000n });
     // Flat before fees is a loss of the fees, never zero.
-    expect(openPnl(1_000n, [fill('entry', 1_000n, 1n)]).net).toBe(-1n);
+    expect(openPnl(1_000n, [fill('entry', 1_000n, 1n)], 0n).net).toBe(-1n);
+    // A close costs its own network fee: the rest's value less that fee (review ruling a: net if closed now).
+    expect(openPnl(1_200_000_000n, [fill('entry', 1_000_000_000n, 5_000n)], 25_000n)).toEqual({ gross: 199_975_000n, fees: 5_000n, net: 199_970_000n });
     // A rest that cannot be quoted counts as worth nothing (the safe side); fills not filled do not count.
     const failed = { ...fill('exit', 9n, 9n), fill: null } as unknown as PaperAttempt;
-    expect(openPnl(null, [fill('entry', 10n, 1n), failed])).toEqual({ gross: -10n, fees: 1n, net: -11n });
+    expect(openPnl(null, [fill('entry', 10n, 1n), failed], 0n)).toEqual({ gross: -10n, fees: 1n, net: -11n });
+    expect(openPnl(null, [fill('entry', 10n, 1n)], 3n)).toEqual({ gross: -13n, fees: 1n, net: -14n });
     // Big sizes stay exact (no floats).
-    expect(openPnl(10n ** 18n + 1n, [fill('entry', 10n ** 18n, 3n)]).net).toBe(-2n);
+    expect(openPnl(10n ** 18n + 1n, [fill('entry', 10n ** 18n, 3n)], 0n).net).toBe(-2n);
   });
 
   it('the three rows round one way and P&L is their exact difference: a loss at a cent boundary (review N2)', () => {
@@ -66,7 +71,10 @@ describe('the open trade\'s P&L (APP-TRADE)', () => {
     const fills = [...inputs.attempts.values()].filter((a) => a.trade === p.id && a.outcome === 'filled');
     const fees = fills.reduce((s, a) => s + a.fill!.fees, 0n);
     expect(fees).toBeGreaterThan(0n);
-    const gross = o.liquidation! - p.cost;
+    // The close's own fee: base + the exit ladder's first priority fee + tip, as the paper fill charges a filled exit.
+    expect(inputs.exitFee).toBe(attemptFee(FILL_CONFIG.network, BigInt(inputs.policy.exits.ladder.steps[0]!.priorityFeeLamports), 'filled'));
+    expect(inputs.exitFee > 0n).toBe(true);
+    const gross = o.liquidation! - inputs.exitFee - p.cost;
     expect(pos!['unrealizedUsd']).toBe(usdText(pnlMicroUsd(gross, inputs.solPrice!)));
     expect(pos!['costsSoFarUsd']).toBe(usdText(-pnlMicroUsd(-fees, inputs.solPrice!)));
     // P&L = Unrealized − Costs so far, exactly (review N2), at SOL prices that leave fractions of a micro-dollar.
@@ -78,6 +86,11 @@ describe('the open trade\'s P&L (APP-TRADE)', () => {
     expect(pos!['markPriceUsd']).toBe(priceText(o.liquidation!, p.quantity, inputs.solPrice));
     expect(pos!['markedAt']).toBe(new Date(h.worker.poolOf(MINT)!.atMs).toISOString());
     expect(o.markedAtMs).toBe(h.worker.poolOf(MINT)!.atMs);
+
+    // Nothing left to sell (all of it sold, the close not booked yet): no close to pay for.
+    const empty = { ...inputs, book: { ...inputs.book, positions: { ...inputs.book.positions, [p.id]: { ...p, quantity: 0n as typeof p.quantity } } }, open: () => ({ ...o, liquidation: 0n }) };
+    const emptyPos = (route(PATHS.position('paper'), () => empty).body as { data: Record<string, string> }).data;
+    expect(emptyPos['unrealizedUsd']).toBe(usdText(pnlMicroUsd(-p.cost, inputs.solPrice!)));
 
     // No SOL price: no P&L and no mark, never a made-up zero.
     const noPrice = (route(PATHS.position('paper'), () => ({ ...inputs, solPrice: null })).body as { data: Record<string, unknown> }).data;
@@ -92,7 +105,7 @@ describe('the open trade\'s P&L (APP-TRADE)', () => {
     const closed = after.trades.find((t) => t.closedAtMs !== null)!;
     const closedFills = [...after.attempts.values()].filter((a) => a.trade === closed.positionId && a.outcome === 'filled');
     expect(closedFills.map((a) => a.purpose)).toEqual(['entry', 'exit']);
-    expect(openPnl(0n, closedFills).net).toBe(closed.netLamports);
+    expect(openPnl(0n, closedFills, 0n).net).toBe(closed.netLamports);
     await h.worker.stop();
   });
 });
@@ -113,8 +126,8 @@ describe('Unrealized after a partial exit (APP-TRADE, review N1)', () => {
     expect(fills.map((a) => a.purpose)).toEqual(['entry', 'exit']);
     const liq = inputs.open(p)!.liquidation!;
     const pos = checkEnvelope(JSON.parse(JSON.stringify(route(PATHS.position('paper'), () => inputs).body)), 'paper', schemaFor('position', 'paper')).data as Record<string, string>;
-    const gross = openPnl(liq, fills).gross;
-    expect(gross).toBe(liq + fills[1]!.fill!.sol - p.cost);
+    const gross = openPnl(liq, fills, inputs.exitFee).gross;
+    expect(gross).toBe(liq - inputs.exitFee + fills[1]!.fill!.sol - p.cost);
     expect(pos['unrealizedUsd']).toBe(usdText(pnlMicroUsd(gross, inputs.solPrice!)));
     // The old rows (the rest's value less the whole entry) read a large loss here; the served one does not.
     expect(pos['unrealizedUsd']).not.toBe(usdText(pnlMicroUsd(liq - p.cost, inputs.solPrice!)));
