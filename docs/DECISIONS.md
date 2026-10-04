@@ -342,6 +342,60 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **Holdout attempt rules live in core.** Once STATS-1c lands, α, the attempt index, the reasons an attempt may be spent (each proven against the store) and the required size (n_power recorded at registration, never taken from the caller) are decided in `core/src/stats/holdout.ts` only.
 - **One implementation for shared facts.** FACTS-1's graduates aggregation is exported and used by both the live producer and BT-2; the live worker evaluates gates per read stage (`only`) as the backtest does, so both record the same reject reasons for G3.
 
+### Afternoon decisions (2026-10-04, owner and supervisor)
+
+Owner decisions (the owner's words, recorded by the supervisor):
+- **G1 gates on the SPA test** (2:33 PM, "Spa"). The clamped per-trade DSR is still reported, but no longer gates. STATS-1f (#109) makes G1's test a registered choice (`g1Test`), fixed per attempt; a registration without it fails G1.
+- **A G1 test switch is a later upgrade, not now** (2:36 PM): the owner may later choose SPA or DSR in a setting. Both paths stay implemented and tested; no switch is built.
+- **Code-only Deploy runs** (2:45 PM): the supervisor may run the Deploy workflow to move the server to new code, never to send keys.
+  - The `DEPLOY_CODE` secret was deleted by the owner at 2:47 PM, because the old code had been shown in chat.
+  - A run must log "No DEPLOY_CODE secret: code update only, no keys sent." The first run, 37174740782, did.
+- **CI-2 allowed** (#104): feature branches run CI through their PR only, drafts wait, and a newer PR head cancels the older run.
+
+Supervisor rulings:
+- **Never remove a guard.** A change that drops an existing guard is reverted, even if the reviewer calls it redundant: guards are cheap and their absence is found only by the failure they prevent. Applied three times: `hardAllowsEntry` (#106), the deployer-check max-guard (#99) and the `#lifecycle` waiting line (#107).
+- **A halt raised before the restore keeps both layers:** the worker's restart ordering (#82) and the strategy's restore gate (#102). Neither replaces the other.
+- **Deployer rug checks (WORKER-1c item 1):**
+  - one cached answer per creator;
+  - a slot guard on every answer (an older answer never overwrites a newer one);
+  - at most one check in flight per creator;
+  - roll forward only;
+  - the credit budget reserved before the read.
+- **Executable marks (RISK-MARK):**
+  - Each open position is marked at the worst executable rung, with a fresh SOL price.
+  - Without a mark, the exit fallback value applies.
+  - An exception while marking an entry is caught.
+  - Of #99 and #103, whichever merges second takes the day and week boundary marks from the marked account.
+- **A restored position keeps its clock (EXIT-1f).**
+  - Its open time is the exact timestamp of its ledger open event.
+  - The slot-time bound is only a fallback.
+  - A time stop can never restart after a restart.
+- **G3 observation tail:**
+  - The tail is at least the maximum hold plus the exit ladder.
+  - Decisions are cut at the evaluation time, and outcomes are read up to the cut plus the tail.
+  - Censoring is symmetric.
+- **Observation delay re-stamps receipt time only.** `GateContext.observedTip` is required in live and in the backtest (live uses the feed tip), never backtest-only, with a test that live decisions stay byte-identical.
+- **BT-2's funder cluster comes from the funding supplement.** A missing supplement fails G2; it never passes by default.
+- **The real-worker switch waits for #82, #99 and #103,** so the dry run cannot latch the weekly limit on unmarked positions. The switch (`ops/host-config.json` `"worker": "release"`) is its own reviewed PR, followed by a code-only Deploy.
+- **`zeroed-tailscale` never calls Funnel** (OPS-1h #108). `tailscale funnel … off` first runs Funnel's capability check, which can block forever on a tailnet that never enabled Funnel.
+  - The script checks first that HTTPS certificates and the `https` capability are present.
+  - It bounds every call and never hides a prompt.
+  - It accepts only the exact serve config: TCP 443 HTTPS, one web host proxying `/` to 127.0.0.1:8788, and no Funnel.
+  - The tailnet's DNS name is kept out of the repo.
+- **Stored data:** `account.json` marks, `deployer-state.json` and `fill-budget.json` hold only the bot's own state and public market data. The supervisor approved them under the stored-data ruling.
+- **No merge without CI.** If GitHub Actions is locked, nothing merges, whatever local runs show; the merge rule needs green checks on the exact head. On 4 Oct the owner's declined GitHub Pro payments locked the account from 3:15 to 3:23 PM and again from 3:37 PM.
+- **The archive's block is respected.**
+  - Old Faithful has answered 429 to our scanner's User-Agent since 8:43 AM. At 3:19 PM a 60-byte request with curl's default agent still got data. So the block targets our scanner, and only Triton can lift it.
+  - Triton's terms bar getting around a block (a changed name, address or tool) and bar a blocked user from seeking other Triton access without Triton's OK. So no request goes to Old Faithful from any runner, session or container until Triton answers.
+  - The data-source survey's own diagnostic requests (four requests of at most 60 bytes, 3:19–3:31 PM) were the last. They broke the morning rule "no archive access from development containers", and will not be repeated.
+  - Chained scan run 37171679398 is stopped, so it no longer retries against the block.
+- **History source: Helius whole blocks, after a free pilot (DATA-2).**
+  - The survey ranked: (1) Helius `getBlock` over 19 Jul – 3 Oct with our own pump.fun and PumpSwap filter. Whole blocks also catch the trades that reach the programs only through lookup tables. (2) Old Faithful with Triton's written OK. (3) QuickNode, about 3.5 times Helius's cost.
+  - Before any spend, a pilot uses about 13k of the free plan's 1M credits. It reads blocks at both ends of the window and one hour of 2 Oct, and compares every decoded row with our Old Faithful slice of that day. The comparison is on decoded rows, not raw bytes.
+  - The full pull needs the owner's approval: Developer plan US$49, plus extra credits capped at 10M at US$5 per million, so at most US$99 that month (prices checked 4 Oct). The cap is set after measuring the live dry run's credit use on the same account, so the pull cannot starve the live feed.
+  - Raw Helius responses never go into public releases until their terms are confirmed for derived files.
+  - A message to Triton (lift the block, or a set rate or bucket, and permission to publish derived day files) is the owner's choice, and keeps the free route open.
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
@@ -663,6 +717,70 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **2026-10-04 · The #52 review round (holdout-regime, mutants, cluster labels).** Fail the holdout only on a platform change inside the window whose economics changed or were not reviewed; an inside change marked unchanged (B5) needs its before/after report, not a failure (the fixed-window ruling put E at 10-20, so B5 is inside). Tests kill the `done('pass')` early-return mutant (R2) and the walk-forward-cluster-label mutant (U2). In n_power's simulation a creator or funder seen on several walk-forward days keeps its id across repeat draws (a prolific deployer makes most coins); only a single-day creator gets a fresh id. MIN_DAYS stays 10: at α 0.02, 0.005 and 0.0025 every per-tail false-positive rate at D = 10 (ρ 0.05 and 0.1, 8k–24k runs) is at or below nominal within Monte Carlo error. The G3 registration should be hashed into the worker's run journal at start so "fixed before the run" can be checked later — a WORKER follow-up, because the stats module is pure (no crypto) and the worker does not yet call G3.
 - **2026-10-04 · G4's blocked-exit evidence is a bound.** 0 blocked exits in 30 trades still allows about 9.5% (one-sided 95%); G4 reports `blockedExitUpper95` and says so in its notes.
 
+## STATS-1c implementation (2026-10-04)
+
+Built to the supervisor's revised spec and the consensus rulings that followed it; these entries replace the first STATS-1c draft (day-level DSR as the gate, count-driven extension), which those rulings withdrew.
+
+- **2026-10-04 · G1's gate is unchanged: the per-trade DSR over every registered trial, with clamped moments.** Skewness is clamped to min(sample, 0) and kurtosis to max(sample, 3), the normal floor, registered in code before any data (`DSR_KURTOSIS_FLOOR`). For a positive Sharpe above the benchmark this only widens the PSR denominator, so it is tighten-only. The paper's worked example is pinned: 0.9004 at N = 100, 0.9505 at N = 46, and 0.9505 at N = 88 with normal moments. Simulated pass rate of this gate at a true +5% edge on 50 days (best of N): 3 trades a day 0.5–2%, 10 a day 9.5–14% (N = 10, 72, 200). That is the evidence for the owner's SPA sign-off.
+- **2026-10-04 · Reported only, never gating:**
+  - the day-level DSR under raw N, configuration-de-duplicated N (repeated runs of one config id count once; different configurations with identical or scaled returns stay distinct), and effective N (`trials.ts` clustering);
+  - the block-bootstrap Sharpe of the selected trial's days, with the full statistic recomputed per replicate. Its null p-value is calibrated (5.0% at zero Sharpe, D = 50). Its percentile interval covered only 90–92%, so the interval is not reported as calibrated.
+- **2026-10-04 · The SPA test to the ruled spec** (`spa.ts`):
+  - both benchmarks in one test: 2K statistics, one critical value, and a variant passes only if both of its statistics exceed it;
+  - a step-down for the selected configuration;
+  - stationary bootstrap at expected block lengths 3, 5 and 7, with the largest p promoting;
+  - resampling only within registered regimes;
+  - variants active on fewer than 10 days, or all zero, left out before outcomes are read;
+  - a registered SE floor;
+  - p = (k + 1)/(B + 1), with B ≥ 20/α.
+
+  Both studentisations were calibrated at T = 50 across 12 scenarios (300 runs each, zero edge). Hansen's fixed ω̂ rejected globally in 12–42% of runs and passed a variant in up to 9.3%. Re-studentising every replicate rejected globally in at most 3.0% and passed a variant in at most 0.33%. The re-studentised form is frozen (`SPA_STUDENTISATION`). Power is in `stats-simulation.test.ts`; the headline is a +10%-a-trade rule among 8 × 9 variants: SPA passes it 60%, the day-level DSR 29.5%. G1 reports SPA every time and gates on it only when `RESEARCH_CONFIG.g1EdgeTest` is `spa`, which stays `dsr` until the owner signs off.
+- **2026-10-04 · Holdout registry** (`holdout.ts`):
+  - **Attempts:** an attempt is spent when its configuration is registered (attempt 1 at 0.04, attempt k at 0.01/2^(k−1)). A halted, abandoned or short window is a failed attempt, and the next registration takes level k + 1.
+  - **Windows:** every window has a fixed entry cutoff E, at most 28 entry days, and a registered observation tail. Attempt 1 of every universe shares one window. Attempt k ≥ 2 is registered only after the previous attempt is spent, starts the first whole UTC day after its registration and runs exactly 28 days.
+  - **Family size** counts every universe ever registered, so it cannot shrink.
+  - **Requirement:** max(300, n_power, closed form) and the n_power seed are frozen before any count is read.
+  - **Opening:** the seal opens only after the tail and a G1 pass. There is no count-driven extension: `extendHoldout` always refuses.
+  - **Storage:** a fresh registry would reset the attempt count. That is a storage rule (one append-only registry, BT-1c's `holdout-registry` branch) that this pure module cannot enforce.
+- **2026-10-04 · G2 takes its level from the registry** and refuses a bootstrap with fewer than 20/level replicates. Its false-pass rate for a positive-edge claim is α/2, because the test is two-sided. The error budget is at most 0.05 family error across attempts; the bound requires valid testing under each attempt's registered selection, stopping and dependence assumptions.
+- **2026-10-04 · n_power per attempt is reported with the chance of reaching n by E** (`holdoutPlan`: practice-day entry counts in 3-day runs) and the overall pass probability (P(reach) × power given n).
+- **2026-10-04 · G3 is judged at an end registered with the strategy** (`G3Registration.evaluateAtMs`: at least 48 h after the start, and never earlier). Power at 48 h / 7 days / 10 days: candidate rate halved, one reason's share doubled and a 0.75-point median fill gap are always caught; a 5-point mean shift is caught 27.6% / 60% / 74.2%.
+- **2026-10-04 · Demotion power, per universe at its own cap** (−10% decay, 20 trades a day, 30 days, ρ 0 / 0.05 / 0.1):
+  - U2 (cap +30%): 0.987 / 0.983 / 0.927.
+  - **U1 (cap +40%): 0.713 / 0.613 / 0.523, below the 80% target.** U1 would need 40 trading days (1.0 / 0.99 / 0.93) or a −12.5% detectable decay at 30 days (0.997 / 0.987 / 0.91). Supervisor ruling (2026-10-04): the shortfall is recorded as is and nothing changes in STATS-1c. Follow-up STATS-1d: U1 runs the current window plus a 40-day window and demotes on either (more demotion is the safe direction, so the owner is not needed), reporting the combined false-demotion rate and power. Until then the risk layer's hard limits are the backstop.
+- **2026-10-04 · STATS-1e: SPA resamples short regimes merged, calibrated on the real layout** (supervisor ruling after the #62 review).
+  - **Merge rule, registered in advance (`mergeShortRegimes`):** a regime shorter than the longest expected block (7 days) merges, for resampling only, into its preceding neighbour, or into the following one when it is first. No day is dropped.
+  - **On the real practice layout:** 07-20 to 09-21, 64 days, with B2 on day 1, B3 on day 51 and B4 on day 54. The registered regimes [0,1) [1,51) [51,54) [54,64) resample as [0,54) [54,64). `spaTest` reports the regimes it used (`resampleRegimes`).
+  - **Calibration:** 300 runs per scenario at zero edge on independent seeds, all 12 scenarios. The promotion rule, which gates, passed a variant in at most 0.67% of runs (duplicates). The global test rejected in at most 4.3% (duplicates, autocorrelated), so both stay under 5%.
+  - **Before the merge:** the reviewer measured up to 7.0% global (common shock) and 1.3% for the promotion rule. Per-scenario numbers are in `stats-simulation.test.ts`, and CI repeats the first 40 runs.
+  - **Review of #96:**
+    - A deterministic test shows the bootstrap resamples within the merged regimes: with the same seeds, the registered layout gives exactly the merged layout's p-values and passing set, and not the unmerged one's (this kills mutant S1).
+    - CI pins the exact counts of the 40 seeded runs.
+    - The full 300-run calibration runs by hand in `.github/workflows/spa-calibration.yml`, which uploads its counts as an artifact for the sign-off pack.
+  - **G1:** stays on the clamped DSR until the owner signs off.
+  - **G3 wording:** the dry-run inputs are cut at the registered end for decisions, and outcomes of trades entered by then are read to the end plus the outcome tail.
+- **2026-10-04 · STATS-1d: a 40-day trailing reverse e-process beside the full-history one, for every universe** (supervisor ruling for U1; applying it to U2 too is safe, because it only adds a trigger). Measured with daily evaluation, 100 runs per cell:
+  - **Decay from the start:** the window adds nothing within 30 days, because the two detectors see the same days. U1 stays at 0.71 at ρ 0, as STATS-1c measured. This part of the shortfall remains, and the risk layer's hard limits stay its backstop.
+  - **Decay after a good stretch** (60 days at +5%, then −10%): caught within 40 days of the decay by U1 in 1.0 / 0.95 of runs, and by U2 in 1.0 / 1.0 (ρ 0 / 0.1).
+  - **Full history alone** catches that late decay in at most 0.17 of runs. After a good stretch it has spent weeks betting on a decay that did not come, and it has lost the wealth it needs. This was a hole for every universe, and the window closes it.
+  - **No false demotion** occurred during the good stretch.
+  - **False demotion at zero edge over 120 days:** U1 0 / 0.01, U2 0 / 0.21 (ρ 0 / 0.1). U2's 0.21 at ρ 0.1 comes from its +30% cap clipping the day shocks, the intended safe side: full history alone gives 0.18. The window adds at most 5 points.
+  - `DEMOTION_TRAILING_DAYS` is fixed at 40 and is not an override.
+- **2026-10-04 · STATS-1c review fixes (STATS reviewer, at 7c13f54).**
+  - **G2 opens at the frozen day requirement.** It used MIN_DAYS, so a holdout frozen at any other day count could never be scored. A frozen day count under MIN_DAYS fails G2, and freezeRequirement refuses one outside a test rule.
+  - **The DSR moment clamp is pinned by a gate test:** a two-point return with skewness 0.87 and kurtosis 1.76 gives 0.9509 unclamped and 0.9388 clamped, so G1 fails.
+  - **G3 is judged exactly at its registered end:** the judged data must end within 1 minute of `evaluateAtMs`. The inputs are cut at that moment by the G3 report tool, so a run that kept going past its end, uncut, fails.
+  - **M6:** a dedicated core test shows that the seal stays closed and unburned after a G1 fail.
+  - **SPA sign-off pack:** an independent-seed calibration was run at the registry's real T, the 64 practice days from 07-20 to 09-21, with 300 runs per scenario at zero edge. The global test rejected in at most 3.0% of runs and the promotion rule in at most 0.33%, both under 5%. The worst cases were the common-shock and rule-grid scenarios (3.0%, 0) and the autocorrelated one (2.0%, 0.33%). CI repeats the first 40 runs.
+- **2026-10-04 · The backtest's holdout layer (BT-1c, BT-1d) runs on the STATS-1c registry** (supervisor rulings: the PR that changes an interface updates its callers; α, the registration day, the attempt budget and the end rule live in the core registry). #73 merged first, so #62 adapted it. Only the call sites changed:
+  - **Registration:** `registerAttempt` / `authoriseHoldout` register each holdout's entry days [fromDay, cutoff) with today's UTC day. In the same write they freeze its requirement from the walk-forward: required trades and days, n_power and its seed (`holdout-register --required-trades --required-days --n-power --n-power-seed`).
+  - **Attempt and α:** the attempt index is the core registry's next round (`nextAttemptIndex`). Core `registerHoldout` refuses a holdout whose universe is on another attempt. α and the tail end come from the core registry (`ATTEMPT_ALPHA`, `attemptAlpha`); `RULED_ALPHA` is the core constant.
+  - **End rule:** the eligibility rule moved into core as `spendHoldout` (g1-failed, short and never-run, each proven against the registry, only after the tail). 'short' reads the frozen trades and days, never a caller's numbers. `endAttempt` takes no size argument any more.
+  - **Opening:** `openSealedHoldout` passes the core registry its G1 result and the UTC day. A seal opens only after the tail and only at the frozen trades and days. G2's sample check also needs the frozen days (never fewer than MIN_DAYS).
+  - **Windows:** runs, overlap checks and research-day guards use the run window [fromDay, tailEnd). A holdout with no frozen requirement is refused before anything runs. Attempt k ≥ 2 starts exactly on the day after registration.
+  - **Floor (BT review):** `freezeRequirement` refuses anything below the owner's 300 trades on 10 entry days (`REQUIREMENT_FLOOR`, kept in the registry's attempt rule). Only a test rule on synthetic data sits lower (`setHoldoutPlan`'s test-only floor, never passed by the CLI), and G2 still refuses any requirement below max(300, n_power, closed form).
+  - **Tests:** every BT-1c and BT-1d test is kept (R3, R4, E1, attempt k ≥ 2, typed sections and the rest). Their setup adds the frozen requirement where callers used to pass sizes, and opens after the synthetic tail. No assertion was loosened. The cutoff test now puts its one entry day before the data, because an empty window is refused.
+
 ## Worker (WORKER-1, `packages/worker/src/run`, `packages/worker/src/engine`, `packages/worker/src/main.ts`)
 
 - **2026-10-04 · The worker is the shared engine on FEED-1's live Feed with a paper world.** `main.ts` implements the §12.4 process contract (config, `--reconcile`, health and drills on loopback, journal, signals, exit codes 0/1/2/3). The engine, strategy, gates, risk and exits are the same code BT-1/BT-2 run; only the feed (live), the clock (release clock) and the effect runner (`PaperWorld`) are live parts. Paper only: no signing key, and no module in `src/run`, `src/engine` or `main.ts` names a send method (guard test).
@@ -753,6 +871,26 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - **Redactions in recorded files are listed.** Each redaction is named, with its count, in the manifest's `coverage_gaps`, so a replay difference there is explained.
   - **Simulation lines carry `finalExit`, `simulatedSlot` and `standIn`** in full, null when unknown.
   - **The rehearsal workflow runs S0 with a paper-only edge of 400,000 ppm.** The supervisor approved this as a `.github` change. It lets trades open, so the restart drills can run mid-trade.
+- **2026-10-04 · RUN-1d contract (WORKER-1b).**
+  - `pending_exits`: every trade whose position is exit-requested, pending or blocked, or that has an exit intent not yet final.
+  - `open_position.universe`: from the plan, else the entry key.
+  - `recovered` is journaled once per full start, after the reconcile. Its source is `chain` when the state dir began with no ledger (marked by `cold_start` until a full start journals it), else `state`. It lists `pending_exits` and each open position with its universe. A genuine first boot therefore reports `recovered` with source `chain` and nothing kept. A position with no universe on record is listed as `none on record` (the runner counts it as missing, and the worker starts sell-only and flattens it). A boot whose ledger cannot be opened stops before its `start` line (the ledger opens first), so the journal has no line for that boot; the error is in the process log and the exit code.
+  - `POST /drill/drop-rpc {ms}` (same token and codes as drop-feed) does three things:
+    - drops every feed;
+    - refuses every provider RPC through `RpcCut` (a network error, never a shed);
+    - makes `exit_capable` false until the cut ends.
+  - `--reconcile-only` does the following:
+    - reconciles on its own state dir and journals `recovered`;
+    - serves only `/health`: no API, drills, heartbeat, seed or fact producers;
+    - drains the live feeds unread, so `exit_capable` is real while nothing is decided;
+    - runs until SIGTERM.
+  - The contract types arrive with #64. Until then the two health fields ride on top of `Health`, and `recovered` widens the journal kind.
+- **2026-10-04 · A restored position whose universe the policy lacks (EXIT-1b review, supervisor ruling).** Exits are never blocked, so the worker still starts, as follows:
+  - it runs sell-only for the whole process: an entry halt reason per such position, journaled and logged as an alert;
+  - the reasons are listed in the start line's `sell_only`;
+  - the strategy flattens the position through the global exit ladder: that universe's exit block is replaced by one with zero time stops and no take-profit, so the whole position goes at once;
+  - the exit's decision line carries `universe missing: flatten`.
+  Before this, `exitsFor` threw and the position got no exit decision.
 - **2026-10-04 · Rehearsal 37148935094 (S0): the first start no longer reads 14 days of creates over RPC.** That read spent about 4,000 Helius credits in the first minutes; at roughly 64,000 creates a day, a full look-back is far beyond the free month. It also held the start, so the loop and every exit waited. A partial read leaves H14 not covered anyway.
   - A first start now seeds from day releases only. There are none on the host yet, so the look-back is a gap until the live watch has run through it.
   - Restarts still fill the downtime over RPC.
@@ -765,6 +903,7 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - Tests: an exit during a seed that never answers, before `seedMaxMs` (fails when the loop waits for the seed); a restart whose fill misses the cap is not covered across the downtime and stops its RPC; the restart drill's seed is taken in full, never refused (fails without the held-back events); no call after an abort.
 - **2026-10-04 · A restart rebuilds the stored book before it decides, and a killed process writes no state file (root cause of the one-off `--reconcile` failure).** The worker's own start facts (`worker:halt`, `worker:restore`) are dated 1 ms after the stored book's world frames, so every restored event sorts before them whatever the clock's resolution.
   - The failure: all those frames are placed in the same off-chain slot, so a tie on receipt time was broken by id, and `worker:halt` sorts before `world#…` ("work" < "worl"). The strategy then saw an intent the ledger had already carried to sent, cancelled it ("no slot height yet"), and the engine refused the restored `prepare`, `sign` and `submit` that followed. The two books ended apart: `--reconcile` reported success from the engine's and wrote `open_intents` 1 from the ledger's. It reproduced about once in 50 runs of the test under full-suite load, never alone.
+  - The saved exit plans come before the halt fact (1 ms apart). With both dated after the restored frames at one instant, the halt sorted first by id; the strategy manages positions on any market event, so on the halt it built a fresh plan and tracker from the fill and could exit on them (a tracker that had met its flat target got the flat time stop) before the saved plans arrived. Test: a restored tracker past its flat deadline with `flatMet` keeps its position (fails with the halt first).
   - A refused world event the ledger already holds is now a divergence: entries halt until a restart, with a journal line, instead of the books quietly differing.
   - A paper simulation can answer after the worker was killed or stopped. `PaperWorld.stop()` ends its state writes, so a dead process never writes `paper.json` or `open_intents` over what the next one (the host unit's ExecStartPre) wrote.
   - Tests: the restored events are released before the halt fact on a tying clock (8 of them came after it before the fix); a simulation answering after a kill leaves both files as the successor wrote them.
@@ -848,7 +987,7 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **2026-10-03 · A holdout's code id includes uncommitted and untracked code.** The CLI records the commit plus a hash of any uncommitted diff and of every untracked file under packages/, so a registered configuration cannot be run on different code under the same id.
 - **2026-10-03 · Holdout cannot be bypassed (review H1–H3, D1–D3, supervisor rulings).** Research runs read practice days only: never a day at or after the research config's reserved start (2026-09-22, UTC data day) nor one inside a registered window; with no `--days` they keep practice days. A window overlapping one already started cannot be registered or run under any other id or universe, and a universe the strategy does not produce is refused. The registry lives on the remote `holdout-registry` branch so it survives fresh clones, with a local copy at a path fixed in the research config inside the code's own repository (never from the working directory; a symlink is refused). Every command fetches that branch first and refuses a local copy that differs (a fresh clone takes the remote's); every write (registered, started, refused, failed, sealed) is committed onto it and pushed with a plain push before the command goes on, so a failed push or a race means no run.
 - **2026-10-04 · Attempts end, α is pinned (BT-1d R3, R4).** `endAttempt` ends an attempt after its tail when it was not opened, only for a reason the store proves for each of its holdouts not yet burned or opened: `g1-failed` (its latest G1 is not a pass for the registered configuration), `short` (not ready for the required trades and days, passed in) or `never-run` (still registered); any other reason, or a ready attempt with a G1 pass, is refused, so a mandatory opening is never skipped (review E1). Those holdouts are burned `spent` and the next attempt can register; before the tail it is refused. When STATS-1c (#62) moves α into the core registry, this eligibility rule moves there with it. The plan's α must be the ruled budget (attempt 1 at 0.04, attempt k ≥ 2 at 0.01 / 2^(k-1)); any other plan is refused. G2 uses the attempt's α as its family α (Holm across the attempt's universes).
-- **2026-10-04 · One holdout registry (BT-1d, supervisor ruling).** The registry on the `holdout-registry` branch has typed sections: `plan` (window, entry cutoff and tail end, which must equal the research config's; family size; tie salt; α schedule, attempt 1 at 0.04 and attempt k ≥ 2 at 0.01 / 2^(k-1); decoder boundaries; procedure; other fixed details), `windows` (STATS-1's registry), `attempts` (index, α, holdouts and config ids, registered, started and ended times), `g1` (appended results) and `runs`. BT-2 writes through this API instead of its own file. The plan is fixed once set. Registering an attempt commits it; a skipped or repeated index is refused and burns the holdouts it names (and, when repeated, the earlier attempt's). A run must feed every holdout of its attempt. `openSealedHoldout` refuses unless the latest G1 record is a pass for the registered configuration. Every change is one pushed commit; a call that changes nothing writes nothing. Attempt k ≥ 2 is registered only after every earlier holdout is scored or burned; its window starts on the first whole UTC day after registration (a requested start may be later, never earlier), has 28 entry days and the plan's tail length, is written into the attempt at registration, and may not overlap any earlier attempt.
+- **2026-10-04 · One holdout registry (BT-1d, supervisor ruling).** The registry on the `holdout-registry` branch has typed sections: `plan` (window, entry cutoff and tail end, which must equal the research config's; family size; tie salt; α schedule, attempt 1 at 0.04 and attempt k ≥ 2 at 0.01 / 2^(k-1); decoder boundaries; procedure; other fixed details), `windows` (STATS-1's registry), `attempts` (index, α, holdouts and config ids, registered, started and ended times), `g1` (appended results) and `runs`. BT-2 writes through this API instead of its own file. The plan is fixed once set. Registering an attempt commits it; a skipped or repeated index is refused and burns the holdouts it names (and, when repeated, the earlier attempt's). A run must feed every holdout of its attempt. `openSealedHoldout` refuses unless the latest G1 record is a pass for the registered configuration. Every change is one pushed commit; a call that changes nothing writes nothing. Attempt k ≥ 2 is registered only after every earlier holdout is scored or burned; its window starts exactly on the first whole UTC day after registration (STATS-1c core rule; a requested start on any other day is refused), has 28 entry days and the plan's tail length, is written into the attempt at registration, and may not overlap any earlier attempt.
 - **2026-10-04 · One holder rebuild (BT-1d, agreed with BT-2).** `dataset/holders.ts` (`HolderBook`) is the only holder rebuild; BT-2 consumes it. It keeps every token account of a mint (owner, amount, delegate, delegated amount, GATE-1e's `HolderAccount` shape), fed in chain order (refused otherwise), and answers as of the last input. A swap credits or debits its `user_token_owner`'s `user_token_account`, never `user` or the signer; a boost buy-and-burn credits nobody; a movement moves between accounts, and a row with an empty owner is left out whole. The mint's holders read `unresolved` (holder facts abstain) from: an empty swap owner, a coverage `unresolved` note once the replay reaches it, activity during the lead-in without movements, a mint searched only in its pump transactions, an owner change or mismatch, or a balance below zero at the end of a transaction. Delegates come from raw account operations through `applyAccountOps`; the handling is stricter than a balance-only rebuild: an account owner change marks the mint unresolved rather than moving the balance silently, and BT-2 keeps holder reads `partial` until DATA-1 keeps every approval-changing transaction. The loader accepts schema 3 only.
 - **2026-10-04 · Holder rebuild gives live's account set (BT-1d R1, supervisor ruling).** `holdersAsOf` returns the supply and every account with a balance, the venue accounts included, so the gate sees what live's complete holder read sees. The curve's token account is the curve's real token reserves after each trade plus the tokens it holds back for migration (total supply minus the initial real reserves, from the create), owner the bonding-curve PDA; a migration moves `mint_amount` out of it. A pool's base vault (its associated token account) holds the pool's base reserve after each swap, or its base amount at creation, owner the pool. Supply is the create's total minus burns (boost buy-and-burn included) plus mints. It reads unresolved when no create was seen or the balances do not sum to the supply, mirroring live's `checkHolders`.
 - **2026-10-04 · Owner programs from a supplement (BT-1d R2, supervisor ruling).** GATE-1e needs each owner's program to tell a locker from an unknown program. Off-curve owners' programs come from a hash-checked supplement, fetched once with getMultipleAccounts (`scripts/owner-programs.ts`; manifest with its sha256, rows, calls and accounts; the RPC URL is never written). As-of risk: a PDA's owning program is fixed when the account is created and practically never changes, so a later read stands for the decision time. An off-curve owner missing from the supplement leaves its mint unresolved.
@@ -864,6 +1003,83 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **2026-10-04 · In a run.** FEED-1's socket watch takes an optional `fill` hook. Once a reconnect gap is ready to close (resubscribed, page backfill done, a live slot seen), it asks `fill({ address, fromSlot, toSlot })` for exactly that range and keeps the gap open meanwhile. True closes it with a `resume` (even if the single page alone looked lossy). False or a throw closes it as a bounded lossy gap. A drop while the fill runs discards its answer, and the next connection asks again. `ingestingFill` is the hook body WORKER-1 wires: it fills `fromSlot`..`toSlot` and ingests each transaction into the live feed as a backfilled lookup `tx` frame. The feed places what is already released after it and drops duplicates by signature. An unknown gap start answers false. Without the hook, FEED-1 behaves as before.
 - **2026-10-04 · Fail safe and budget.** Until a fill completes, the gap stands and H5/H11 reject. A partial, skipped or failed fill is lossy, never covered. One credit cap per restart (config, passed by WORKER-1) is shared: open positions first at P2, then candidates at P3, oldest gap first. Positions fill at P2, below live open-position monitoring at P1, because exits never wait (supervisor ruling on the #70 review). A test shows a P1 call admitted at once while a long position fill holds its P2 share. Each gap reads at most `maxPagesPerFill` signature pages (default 10, i.e. 10,000 signatures); a busier gap stops as `page-cap`, partial, and stays a gap. A gap reached after the cap is spent is skipped and closed as lossy; a cap that runs out inside a gap stops it there (partial). Each fill reports credits, calls, retries, latency, futures dropped and why it stopped.
 - **2026-10-04 · Evidence.** Real PumpSwap transactions from DEC-1's fixtures. Tests: a complete fill makes coverage continuous, a partial fill stays a gap, filled events equal the stream's, nothing is dated after the process start, over budget leaves the gap, the empty fill, and the in-run hook (complete, false, throw, a drop mid-fill, `ingestingFill` into a live feed). 13 of 14 mutations fail the tests. The close's 1 ms margin is tested with the feed's real start id (`coverage:<stream>:start#<seq>`, which sorts before the fill's ids on a tie), here and in SEED-1's tests, which had used an id that hid it (#70 review). The survivor is the hook's "asked once" guard, unreachable today: the socket checks a gap's close once per connection. It is kept as a guard against a double fill.
+
+## Fault injection (TEST-3, `packages/worker/test/fault-injection.test.ts`)
+
+- **Scripted faults on the real worker.** Each §18 case runs on the worker harness with the virtual clock. Waits are "until the effect, within a virtual-time bound", never a fixed wall-clock window. The only seam added to production code is `WorkerDeps.worldFault`. Every paper-world answer passes through it: null loses the answer, and another event replaces it. Tests set it; `main.ts` never does.
+- **Cases and their guards.** Mutation evidence: each guard was removed in turn, and the case fails without it.
+  - Timeout after a send. The send times out and the landing notice is lost, so the fill is found by the status read after expiry. It is booked once, with no second buy. Guards: `send_timeout` leads to unknown plus a status read (`lifecycle/intent.ts`), and so does a tick past the last valid height.
+  - 429s. The first burst stays inside the window above the exit floor. After a 429 the provider gets nothing for one window. An exit-class read then goes before the queued reads, a refused read makes no fact, and the open position still exits on its stop. Guards: `penalize()` on a 429 and the scheduler floors. Class order is masked by the floor here; `scheduler.test.ts` covers it.
+    - Entries under rate limits (supervisor ruling on the #83 review). A rate limit stops entries through the gates failing closed on the fact it withholds. It is not a global halt, so one limited provider never stops entries that do not need it. Halts stay for critical feeds, the owner pause, the seed and a ledger divergence.
+    - Test: every read answers 429, and a candidate passes every gate but the third-party cross-check, which only a read can bring. Its reads are refused (counted failed, no fact), and each reject from then on is "H16 missing no xcheck". It is never entered, and no halt reason is raised. If the gate is made to pass on a missing cross-check, the candidate enters and the test fails.
+  - Kill mid-trade, with the stop's exit in flight. The restart settles the old attempt unfilled before any entry. The stop then exits on the first slot, in full, once. Guards: a paper attempt in flight at a restart is lost, and the `#sendExit` fix below.
+  - A restart with a signed, unsent transaction. The ledger holds the sign but not the submit, and no paper attempt exists. The intent becomes unknown, is never sent, settles as expired with no fill, and is released before any entry. Guards: restart turns `signed` into unknown with no rebroadcast, and an unseen signature is reported past its last valid height.
+    - The reconcile's `status === 'signed'` skip is not reachable here. The restart event always turns `signed` into unknown before the cancel pass, so removing the skip changes nothing (an equivalent mutant).
+  - Feed gap. A critical feed goes silent past `staleFeedMs`, while the chain feed keeps its slots. No entry is proposed while it is out, exits stay able, and the candidate enters only after it is back. When the chain feed goes silent, `exit_capable` turns false. Guards: the stale clause in `#checkHalt`, the strategy failing closed on the halt fact, and the freshness check in `#exitCapable`.
+- **Found and fixed: an exit before the first slot was booked blocked.** A restart's reconcile runs before the feeds start, so it has no slot height yet. `#sendExit` booked such an exit blocked ("no slot height yet"), so the stop waited out `blockedRetryMs` (60 s) and went as a single last-rung retry. The owner now waits for the first slot, said once in the log. The kill-mid-trade case fails without the fix (exit not sent within 1 s of the first slot).
+- **Found, not fixed here (EXIT-1 follow-up).** An exit decided during the start reconcile without a fresh quote is booked blocked by `exitBookEvents` ("no executable quote") and waits 60 s. Examples: the time stop after downtime longer than T_max, or the deployer trigger. That is timing, not a dead pool, the same reasoning as EXIT-1b's `pendingFull`.
+- **Stale feed with an open position (§18 case 1).** Built by WATCH-1; see "Position watch (WATCH-1)".
+- **Ordering note for SIGN-1.** In the paper worker the engine runs effects (the paper broadcast) inside `drain`, before the desk writes the ledger. Live signing must store the signed attempt before the first broadcast, as the `attempt` table says.
+
+## Position watch (WATCH-1, `packages/worker/src/run/watch.ts`, `run/snapshot.ts`)
+
+- **2026-10-04 · What.** An independent timer (`ZEROED_WATCH_EVERY_MS`, default 1 s) looks at every open position. It runs on the worker's timers, outside the engine step, and needs no feed event.
+  - When the market the position is priced at is older than `ZEROED_WATCH_STALE_MS` (default 3 s), it reads a coherent snapshot through the second path.
+  - The snapshot is the pool, both vaults, the mint, PumpSwap's GlobalConfig and its pump-fees FeeConfig, read in one `getMultipleAccounts` at confirmed: one bank, one context slot.
+  - The read goes through Alchemy over HTTP (not the Helius socket the feed runs on), through Alchemy's quota scheduler at P1, above fills and seeds. It costs 20 CU (Alchemy's compute-unit page, checked 2026-10-04).
+  - The vault addresses are learned from one read of the pool account and kept. A snapshot that fails the vault or mint checks drops them, so the next read learns them again.
+- **The snapshot is the whole market.** `decodeSnapshot` builds the pool state and the full fee context from that read alone:
+  - the FeeConfig tiers;
+  - canonical, from pump's pool-authority PDA;
+  - the SOL quote;
+  - the live mint supply for the tier's market cap;
+  - the coin creator and the pool's own creator fee;
+  - mayhem mode;
+  - active Token-2022 transfer fee or hook;
+  - GlobalConfig's buyback share.
+  It goes on the feed as `worker:snapshot:<mint>` (recorded, so a replay makes the same decisions). The strategy's `#market` and the paper world's market take it whole when it is newer than the pool fact. Its reserves are never mixed with the feed's fee terms.
+  - Evidence: on a real mainnet read (`fixtures/watch-snapshot.json`), the pool's next swap, quoted from the snapshot alone, matches the chain to the lamport: LP, protocol, creator and buyback fees, and the amount paid. Edited real accounts prove each field's source.
+- **Failure is never "fine".** A read that fails, or that cannot be trusted, raises the critical alert once per episode:
+  - a journal `alert` line;
+  - Health `critical`, which the heartbeat carries;
+  - the watchdog's `worker_critical` alert to the owner.
+  The position is read again every period, and nothing is sent without a price. The alert clears on the first good snapshot.
+- **Acceptance (§18 case 1), on the real worker and virtual time.** The feed dies with a position open and the pool falls 40%.
+  - The watch reads the snapshot.
+  - The stop exit is submitted within the stale limit + one period + the feed's stale release + a step (6.5 s), its quote equal to `poolSell` on the snapshot.
+  - The price stays fresh for the 5 minutes.
+  - The position closes when the feed returns.
+  - A failing second path alerts once, retries every period, sends nothing, then clears and exits when the path recovers.
+  - Mutation evidence: 19 of 19 mutants fail the tests (7 on the watch and the strategy, 12 on the snapshot decoder).
+- **Limits.** A paper exit lands only on new slots, so with the slot feed dead it is submitted but lands when the feed returns. Exits are not halted by the feed state, but `exit_capable` still reports the chain feed.
+- **Found while building: live positions had no fresh pool state.** After the entry nothing refreshed a held position's pool fact (only candidate reads and the survival read make one). Until POS-1 prices held positions from their swap events, the watch is their only live price source: one 20 CU read per open position every stale period. With positions open around the clock that is about 0.58 M CU a day, against Alchemy's 30 M a month.
+- **2026-10-04 · Review of #87 (risk reviewer): no gap between snapshots.**
+  - Exits treat a market older than the policy's `maxQuoteAgeMs` (2 s) as no quote. The watch is now tied to it: the oldest a watched market can be when an exit is judged is staleMs + everyMs + latencyMs + the feed's release (2 slots × 400 ms, while slots arrive).
+  - `watchTimingProblem` refuses any setting where that sum reaches the quote age. The entry exits 2, and the Worker refuses to build.
+  - New defaults: period 200 ms, stale 500 ms, latency 400 ms (`ZEROED_WATCH_LATENCY_MS`). An answer later than the latency is not used: it raises the alert and is read again.
+  - Found by the new entry test: `boot/environment.ts`'s allowlist had not passed the three settings at all. Fixed.
+  - Test: slots arrive, no pool fact does, and every read answers 300 ms late. Over 20 s the position's market age stays below 2 s at every 100 ms step, and the market moves with each snapshot.
+- **Paper fills and fees.**
+  - A paper exit that lands after a snapshot is filled on the snapshot's reserves and fee context. The test computes the expected fill from its own decode of the read, not through the worker.
+  - The 40%-fall case asserts that the feed's own fee terms would have priced the exit differently.
+- **Newest by slot.** A snapshot is newer than the pool fact by slot when both carry one; the receipt time only breaks a tie or stands in for a slotless fact (`snapshotWins`).
+- **FeeConfig owner.** The FeeConfig must be owned by pump-fees.
+- **Cost, at the new period.** A held position with no fresh pool fact is read about every 0.7–1.1 s.
+  - About 2.2 M CU a day if held around the clock, or about 0.18 M CU per 120-minute hold, against Alchemy's 30 M a month.
+  - The watch reads at **P0** (review of #87, risk reviewer). It prices an exit, only for open positions, only while their market is stale, at most T_max each, so the monthly budget's halt (every class but P0, at 70%) never removes the price an exit needs. Its worst case is about 0.18 M CU per position per full-outage hold. Tested: a P0 read goes through at the halt.
+  - POS-1's swap-derived pool facts make the watch idle while a pool trades. A quiet pool (no swap for a stale period) is still read.
+- **On POS-1's merge (agreed with its builder):**
+  - poolOf null, or a pool fact flagged `partial`, reads at once.
+  - The flag is checked only when the pool fact is the newest whole market, so a newer snapshot still wins.
+- **Mutation evidence:** 27 of 27 mutants fail the tests. That is the 19 above plus the eight review mutants: timing not tied to the policy, a late answer used, snapshot reserves with the feed's fee fact, the paper world on the pool fact, newest by receipt time only, FeeConfig owner unchecked, settings not passed from the environment, and the paper market mixing the feed's fees.
+- **2026-10-04 · Entries stop when the second path cannot serve** (review of #87). The halt reason "second price path unavailable" is raised when no second path is configured, or when its provider's budget is halted. A position entered then could lose its price with no read to recover it; exits go on. Both cases are tested.
+- **The feed's observed fee terms.** In the 40%-fall case the held mint also has fee terms observed on its swaps, and the exit is still priced with the snapshot's FeeConfig. The reviewer's mutant (`ctx: this.observedFees(mint) ?? snap.ctx`) fails it. In all, 4 more of 4 mutants fail (that one, the two halt cases, and P1 instead of P0).
+
+- **2026-10-04 · No gap at the open (risk review B1).** Under POS-1 a quiet pool's last fact was read before the entry was sent, so at the open it was already past the quote age (4.85 s against 2 s), and no price stop could fire for up to one watch cycle. Two fixes:
+  - The watch also covers an entry in flight (reserved through pending, unknown or confirmed, and on through its fill until the position shows its quantity), on its decision's pool, with the same read rule, so a fresh snapshot already exists when it lands and an alert is not cleared and raised again across the open. An entry that settles unfilled (failed, expired, rejected, cancelled, abandoned) drops out, as does one whose position closed, and the watch stops reading for it.
+  - A position that opens is read once at once (`PositionWatch.opened`, from the worker's step), whatever its market's age, for an entry that lands faster than one cycle.
+  - Tests: the held market's age, measured from the step the position opens with no skipped window, stays under `maxQuoteAgeMs` (failed before at 4,850 ms); an unlanded entry's market stays fresh while it is in flight and gets no read after it settles; `opened` reads at once, never twice at a time, and not once stopped. The open is read in the step that books it; a closed position gets no read after. A read already in flight for the mint stands in for the open read. Mutants killed: 8 of 8 (no in-flight entries, settled entries kept, confirmed fills left out, closed positions' entries kept, no `opened` call, `opened` a no-op or ignoring the in-flight or stopped guard).
+- **2026-10-04 · With POS-1 (merge rule M).** The strategy's `#market` and the worker's `poolOf` (which the paper world and the watch's `marketAt` use) take the newest whole market first: the snapshot when it is newer than the pool fact, by slot then receipt time. Only when the pool fact wins is POS-1's flag checked, and a flagged fact is no market at all, so the watch sees it as stale and reads. Test: a held position whose swap stream gaps, so its pool fact is flagged, with no swap after; a 30% drop seen only by the snapshot fires the stop within `staleMs + everyMs` and one step (measured 600 ms of the 800 ms bound). Mutants killed: the flag check dropped, or run before the snapshot, in the worker or the strategy (3/3). TEST-3's fault cases that are not about the price path use POS-1's `heldPoolFacts` test switch.
 
 ## Position market from swaps (POS-1, `packages/core/src/facts/producer.ts`, `packages/core/src/fills/pool.ts`)
 
