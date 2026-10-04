@@ -124,6 +124,8 @@ The integration branch is ccr-14987baf-i6lrsl, not main. Never push to main.
 
 **After the takeover prompt (8:29 AM):** #209 step 2 pushed at 6d7ce423 (base merged; restarts/exits/crash_sites in the summary; EVENT tightened so host:port can't pass; file/line may both be null; 14/14 mutants). Full check running; then worker/runner to the facts reviewer and summary.ts to the ops reviewer. WORKER-HARDEN can't see the host, so the crash site shows only after #209 deploys.
 
+**8:32 AM:** #198 PAPER-2 run/CI FAIL at 64972b76 (test gap only, code correct): a late GAIN is untested in the app's totals (the mutant dropping positive late events survives 89 tests). Needed: one test where a late sale's gain shows in net, the calendar day and the curve on its booking day, but not in risk costs or the daily-loss meter. Non-blocking: a late fee is missing from the chart's costsByKind (note it in DECISIONS, or count it as networkFeeUsd). Base merge is clean. Not routed yet: send it to #198's builder (probably the PAPER builder session_01JrFutz1ZxstamsdeSWN5XM, branch claude/paper-1; not verified).
+
 **Never:** commit secrets; enable live trading; raise a limit; push to main; rewrite someone else's branch; skip or loosen a test; work around a denial; put a model id in a repo file; record the tailnet address.
 
 
