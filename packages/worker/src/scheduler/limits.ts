@@ -36,10 +36,12 @@ export const ALCHEMY_FREE: SchedulerSpec = {
 /** Alchemy WebSocket billing: 0.0002 CU per byte (data.md §0, §4). */
 export const ALCHEMY_WS_CU_PER_BYTE = 0.0002;
 /** Alchemy CU per call (compute-unit-costs page, checked 2026-10-03). */
-export const ALCHEMY_CU: Readonly<Record<'getTransaction' | 'getSignaturesForAddress' | 'getAccountInfo', number>> = {
+export const ALCHEMY_CU: Readonly<Record<'getTransaction' | 'getSignaturesForAddress' | 'getAccountInfo' | 'getMultipleAccounts', number>> = {
   getTransaction: 40,
   getSignaturesForAddress: 40,
   getAccountInfo: 10,
+  // Checked on the same page 2026-10-04 (WATCH-1's snapshot read).
+  getMultipleAccounts: 20,
 };
 
 /**
