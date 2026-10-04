@@ -65,6 +65,16 @@ if (has('dataset') && mode === 'gate') {
   if (!RELEASE_TAG.test(flag('release'))) throw new Error(`--release must be an assembled window release (data-FROM-TO), not ${flag('release')}`);
 }
 if (has('sol-usd') && has('synthetic')) throw new Error('--synthetic uses its own SOL/USD series');
+if (has('dataset') && has('release')) {
+  // The folder must be that release: its SHA256SUMS byte for byte the release's published one (runEvidence then checks
+  // every file it reads against it). Checked here, with the arguments, so a mismatch refuses before anything else.
+  const dir = resolve(flag('dataset'));
+  const sums = mkdtempSync(join(tmpdir(), 'bt3-sums-'));
+  execFileSync('gh', ['release', 'download', flag('release'), '--repo', REPO, '--pattern', 'SHA256SUMS', '--dir', sums], { stdio: 'inherit' });
+  if (!existsSync(join(dir, 'SHA256SUMS')) || !readFileSync(join(dir, 'SHA256SUMS')).equals(readFileSync(join(sums, 'SHA256SUMS')))) {
+    throw new Error(`${dir}: SHA256SUMS is not release ${flag('release')}'s`);
+  }
+}
 
 const top = git('rev-parse', '--show-toplevel');
 // The registry belongs to the code's own repository, never the working directory's (the study CLI's rule).
@@ -98,17 +108,8 @@ if (has('synthetic')) {
   windows = [{ dir, release: 'synthetic' }];
   range = 'synthetic';
 } else if (has('dataset')) {
-  if (has('release')) {
-    // The folder must be that release: its SHA256SUMS byte for byte the release's published one (runEvidence then
-    // checks every file it reads against it).
-    const dir = resolve(flag('dataset'));
-    const sums = join(work, 'published-sums');
-    execFileSync('gh', ['release', 'download', flag('release'), '--repo', REPO, '--pattern', 'SHA256SUMS', '--dir', sums], { stdio: 'inherit' });
-    if (!existsSync(join(dir, 'SHA256SUMS')) || !readFileSync(join(dir, 'SHA256SUMS')).equals(readFileSync(join(sums, 'SHA256SUMS')))) {
-      throw new Error(`${dir}: SHA256SUMS is not release ${flag('release')}'s`);
-    }
-    windows = [{ dir, release: flag('release') }];
-  } else windows = all('dataset').map((d) => ({ dir: resolve(d) }));
+  if (has('release')) windows = [{ dir: resolve(flag('dataset')), release: flag('release') }];
+  else windows = all('dataset').map((d) => ({ dir: resolve(d) }));
   range = 'local';
 } else {
   const { from, to } = fetchRange!;

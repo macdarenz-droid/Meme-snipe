@@ -48,4 +48,32 @@ describe('the evidence script refuses before it touches anything', () => {
     // The labelled mode needs no release: it passes the argument checks and goes on.
     expect(run('--dataset', 'some/dir', '--no-lead-in', '--sol-usd', 'x.csv').called).toContain('git ');
   });
+
+  test('a --dataset folder named as a release must carry that release\'s SHA256SUMS (review W1b)', () => {
+    const tag = 'data-2026-09-06-2026-09-20';
+    const published = join(dir, 'published-SHA256SUMS');
+    writeFileSync(published, 'aaaa  manifest.json\n');
+    // A gh that serves the release's SHA256SUMS for `release download <tag> ... --pattern SHA256SUMS --dir <d>`.
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "gh $*" >> "${calls}"\nwhile [ $# -gt 0 ]; do [ "$1" = --dir ] && { mkdir -p "$2"; cp "${published}" "$2/SHA256SUMS"; exit 0; }; shift; done\nexit 1\n`);
+    const folder = join(dir, 'window');
+    mkdirSync(folder, { recursive: true });
+    const out = join(dir, 'out');
+    const go = () => run('--dataset', folder, '--release', tag, '--sol-usd', 'x.csv', '--out', out);
+    // No SHA256SUMS in the folder: refused.
+    let r = go();
+    expect(r.stderr).toContain(`SHA256SUMS is not release ${tag}'s`);
+    expect(r.called).toContain(`gh release download ${tag}`);
+    expect(r.called).not.toContain('git ');
+    // A different one: refused, before any git step, and no evidence written.
+    writeFileSync(join(folder, 'SHA256SUMS'), 'bbbb  manifest.json\n');
+    r = go();
+    expect(r.stderr).toContain(`SHA256SUMS is not release ${tag}'s`);
+    expect(r.called).not.toContain('git ');
+    expect(existsSync(out)).toBe(false);
+    // The release's own: the check passes and the run goes on (to its first git step, which the fake fails).
+    writeFileSync(join(folder, 'SHA256SUMS'), readFileSync(published));
+    r = go();
+    expect(r.stderr).not.toContain('is not release');
+    expect(r.called).toContain('git ');
+  });
 });
