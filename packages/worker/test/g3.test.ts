@@ -15,7 +15,7 @@ import { scoreCounterfactual } from '../src/research/counterfactual.ts';
 import { readRecording } from '../src/research/recording.ts';
 import { FILL_CONFIG, RUG_CONFIG } from '../../core/src/config/index.ts';
 import { ACCOUNT_KEY, HALT_KEY } from '../src/engine/strategy.ts';
-import { LANDS, MINT, T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
+import { LANDS, MINT, POOL_ADDRESS, T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const XCHECK = passingFacts().get(xcheckKey(MINT))!.value as { obs: Record<string, unknown> };
@@ -180,6 +180,29 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     const exitMs = (parseTyped(readFileSync(join(k.stateDir, 'account.json'), 'utf8')) as { trades: { closedAtMs: number }[] }).trades[0]!.closedAtMs;
     expect(readRun(k.stateDir, exitMs - 1).kept).toEqual([]);
     expect(readRun(k.stateDir, exitMs).kept).toHaveLength(1);
+  }, 120_000);
+
+  it('a path that crosses a recorded gap in the pool\'s trade stream is censored, never scored as quiet (REC-1)', async () => {
+    const h = await session(true);
+    const { session: s2, strategy } = runStrategy(readRun(h.stateDir).start);
+    const frames = readRecording(h.stateDir).flatMap((b) => b.frames);
+    const score = (fs: typeof frames) => scoreCounterfactual({ mint: MINT, frames: fs, session: s2, rugs: RUG_CONFIG, strategy, scenario: LANDS, network: FILL_CONFIG.network, seed: 'gap' });
+    const clean = await score(frames);
+    expect(clean).toMatchObject({ entered: true, censored: false });
+    const gapAt = (ms: number, toSlot: bigint | null) => {
+      const k = frames.findIndex((f) => f.receivedAt >= ms);
+      const f = { ...frames[k]!, seq: frames[k]!.seq, body: { type: 'offchain' as const, key: `coverage:trades:${POOL_ADDRESS}:gap`, value: { fromSlot: 1n, toSlot, reason: 'disconnect', via: 'logs:x' } } };
+      return [...frames.slice(0, k), f, ...frames.slice(k)];
+    };
+    // A gap reported while the position is open.
+    const during = await score(gapAt(clean.enteredAtMs! + 1_000, null));
+    expect(during).toMatchObject({ entered: true, censored: true, r: null });
+    expect(during.censoredReason).toMatch(/^the path crosses a gap on trades:/);
+    // A gap still open when the position was entered.
+    const before = await score(gapAt(clean.enteredAtMs! - 5_000, null));
+    expect(before.censoredReason).toMatch(/^the path starts inside a gap/);
+    // A gap closed before the entry does not touch the path.
+    expect(await score(gapAt(clean.enteredAtMs! - 5_000, 5n))).toMatchObject({ censored: false, r: clean.r });
   }, 120_000);
 
   it('a veto counts only when the strategy would have entered without the live-only checks', async () => {

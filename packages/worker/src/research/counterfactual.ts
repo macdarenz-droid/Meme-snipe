@@ -80,6 +80,28 @@ const dueTimers = (start: number): Timers & { set(ms: number): void } => {
   };
 };
 
+/**
+ * Why the path from `fromMs` to `toMs` on `pool`'s trade stream is not fully known, or null: a `coverage:trades:<pool>:gap`
+ * frame received inside it, or one still open (no `toSlot`) when it began.
+ */
+export const gapCrossed = (frames: readonly Frame[], pool: string | null, fromMs: number | null, toMs: number): string | null => {
+  if (pool === null || fromMs === null) return pool === null && fromMs !== null ? 'the position\'s pool is not known, so its stream\'s coverage cannot be checked' : null;
+  const key = `coverage:trades:${pool}:gap`;
+  let open: string | null = null;
+  for (const f of frames) {
+    const b = f.body;
+    if ((b.type !== 'offchain' && b.type !== 'fact') || b.key !== key) continue;
+    const v = (typeof b.value === 'object' && b.value !== null ? b.value : {}) as Record<string, unknown>;
+    const what = `gap on trades:${pool} from slot ${String(v['fromSlot'])}${v['toSlot'] == null ? ' (open)' : ` to ${String(v['toSlot'])}`}: ${String(v['reason'] ?? 'no reason')}`;
+    if (f.receivedAt < fromMs) {
+      open = v['toSlot'] == null ? what : null;
+      continue;
+    }
+    if (f.receivedAt <= toMs) return `the path crosses a ${what}`;
+  }
+  return open === null ? null : `the path starts inside a ${open}`;
+};
+
 /** Scores one vetoed candidate. Never touches the run's state directory. */
 export const scoreCounterfactual = async (o: CounterfactualInput): Promise<CounterfactualTrade> => {
   const dir = mkdtempSync(join(tmpdir(), 'zeroed-g3-'));
@@ -130,6 +152,7 @@ export const scoreCounterfactual = async (o: CounterfactualInput): Promise<Count
     }
     const book = worker.book;
     const position = Object.values(book.positions).find((p) => p.mint === o.mint);
+    const poolAddress = position === undefined ? null : (worker.poolOf(o.mint)?.address ?? worker.strategy.saved()[position.id]?.pool ?? null);
     const trade = worker.apiInputs().trades.find((t) => t.mint === o.mint);
     const check = {
       refused: worker.desk.illegal + worker.desk.ledgerRefusals,
@@ -147,6 +170,12 @@ export const scoreCounterfactual = async (o: CounterfactualInput): Promise<Count
     const cost = entry === undefined ? null : entry.fills.reduce((t, f) => t + f.sol + f.fees, 0n);
     if (entry === undefined || cost === null || cost === 0n) return none;
     const closed = position.status === 'closed' && trade !== undefined && trade.closedAtMs !== null && trade.netLamports !== null;
+    // REC-1's contract: a span inside a recorded gap of the pool's trade stream is unknown, never quiet. A trade whose
+    // path crosses one (a gap open at its entry, or one reported before it closed) is censored, never given a return.
+    const crossed = gapCrossed(o.frames, poolAddress, trade?.openedAtMs ?? null, closed ? trade!.closedAtMs! : Number.POSITIVE_INFINITY);
+    if (crossed !== null) {
+      return { mint: o.mint, entered: true, enteredAtMs: trade?.openedAtMs ?? null, closedAtMs: null, cost, net: null, r: null, censored: true, censoredReason: crossed, exitReasons: [], check };
+    }
     return {
       mint: o.mint, entered: true, enteredAtMs: trade?.openedAtMs ?? null, closedAtMs: closed ? trade!.closedAtMs : null, cost,
       net: closed ? trade!.netLamports : null, r: closed ? Number(trade!.netLamports) / Number(cost) : null, censored: !closed,
