@@ -52,7 +52,7 @@ import { loadState, saveState } from '../persist/index.ts';
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export const PERSIST_FILE = 'deployer-state.json';
 export const PERSIST_EVERY_MS = 5 * 60_000;
-import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
+import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { type PoolFact, parsePool } from '../../../core/src/gates/index.ts';
 
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
@@ -200,6 +200,8 @@ export class Worker {
   readonly #ledger: Ledger;
   readonly #control: StateFile<Control>;
   readonly #exitsFile: ReturnType<typeof exitsFile>;
+  readonly #seedsFile: ReturnType<typeof seedsFile>;
+  #savedSeeds = '';
   readonly #account: PaperAccount;
   readonly #feed: LiveFeed;
   readonly #facts: EngineFeed;
@@ -296,6 +298,7 @@ export class Worker {
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
     this.#exitsFile = exitsFile(c.stateDir);
+    this.#seedsFile = seedsFile(c.stateDir);
     this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
 
     this.#feed = new LiveFeed({
@@ -412,7 +415,7 @@ export class Worker {
     // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen }, startAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}) }, startAt);
     this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt + 1);
     if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt + 1);
     if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt + 1);
@@ -611,6 +614,13 @@ export class Worker {
     this.#engine.drain();
     this.#recorder?.flush();
     this.#watchOpened();
+    // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
+    // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
+    const seeds = jsonText(this.#strategy.seeds());
+    if (seeds !== this.#savedSeeds) {
+      this.#seedsFile.write(this.#strategy.seeds());
+      this.#savedSeeds = seeds;
+    }
     const records = this.#engine.records as LogRecord[];
     const n = records.length;
     for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);

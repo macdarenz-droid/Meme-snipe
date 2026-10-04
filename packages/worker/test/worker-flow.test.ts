@@ -5,6 +5,7 @@ import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } 
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
+import { isTerminal } from '../../core/src/lifecycle/index.ts';
 import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
@@ -18,7 +19,7 @@ import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts
 import { oneTimeRent } from '../src/run/settings.ts';
 import { views } from '../src/run/api.ts';
 import { runSeed } from '../src/run/seed-start.ts';
-import { exitsFile } from '../src/run/state.ts';
+import { exitsFile, seedsFile } from '../src/run/state.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
 import type { SeedRpc } from '../src/seed/rpc.ts';
@@ -106,6 +107,13 @@ describe('a paper trade end to end', () => {
       m.slot();
       m.pool();
     })).toBe(true);
+    // An entry that ended without a fill has its saved decision seed dropped; only entries still live keep theirs (EXIT-1h).
+    await m.run(400, 400, () => m.slot());
+    const kept = Object.keys(seedsFile(h.stateDir).read({}));
+    const live = Object.values(h.worker.book.intents).filter((i) => i.intent.purpose === 'entry' && !isTerminal(i)).map((i) => String(i.intent.id));
+    expect(abandoned().length).toBeGreaterThan(0);
+    for (const a of abandoned()) expect(kept).not.toContain(String(a['intent']));
+    expect(kept.sort()).toEqual(live.sort());
     await h.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
   });
@@ -812,6 +820,45 @@ describe('sell-only recovery for a position without its own plan (EXIT-1g, audit
     const entryPx = (p.cost * PRICE_SCALE) / p.bought;
     expect(r.b.worker.strategy.saved()[pid]!.plan.stopPrice).toBe(entryPx - (entryPx * BigInt(TRIAL_POLICY.loss.stopMaxBps)) / 10_000n);
     await r.b.worker.stop();
+  });
+});
+
+describe('the entry decision survives a kill before its plan is made (EXIT-1h)', () => {
+  it('killed after the entry fills but before the next market event makes its plan: the restart rebuilds the real plan and does not sell', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    // Step until the entry has filled, and stop there: its plan is made on the market event after the fill.
+    expect(await until(m, 30_000, () => positions(h).some((p) => p.status === 'open'), () => {
+      m.slot();
+      m.pool();
+    })).toBe(true);
+    const p = positions(h).find((x) => x.status === 'open')!;
+    const seed = seedsFile(h.stateDir).read({})[p.entryIntentId];
+    expect(seed).toBeDefined();
+    expect(exitsFile(h.stateDir).read({})[p.id]).toBeUndefined();
+    await h.worker.kill();
+    const { b, m: m2, first, mine } = await reboot(h, LANDS);
+    expect(await until(m2, 4_000, () => b.worker.strategy.saved()[p.id] !== undefined, () => m2.slot())).toBe(true);
+    // The plan is the decision's own (its stop), not a recovery.
+    expect(first('recovery exit')).toEqual([]);
+    expect(first('no entry plan')).toEqual([]);
+    expect(b.worker.strategy.saved()[p.id]!.plan).toMatchObject({ stopPrice: seed!.stopPrice, universe: seed!.universe, notional: seed!.notional });
+    // Dated at the fill as the ledger booked it, never at the restart.
+    const ledger = openLedgerReader(join(h.stateDir, 'ledger.sqlite'));
+    const booked = Number(ledger.positionEvents().find((e) => e.positionId === p.id && e.status === 'open')!.ts);
+    ledger.close();
+    expect(b.worker.strategy.saved()[p.id]!.plan.openedAtMs).toBe(booked);
+    // At an unchanged price nothing sells.
+    await m2.run(4_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    expect(mine().some((l) => l['action'] === 'trigger_exit')).toBe(false);
+    expect(b.worker.book.positions[p.id]!.status).toBe('open');
+    // The seed is gone once its plan is made.
+    expect(seedsFile(h.stateDir).read({})[p.entryIntentId]).toBeUndefined();
+    await b.worker.stop();
   });
 });
 
