@@ -216,6 +216,8 @@ export class Worker {
   #lastSlot: bigint | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
+  /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
+  #pricedSettle = false;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
   #pools = new Map<string, unknown>();
@@ -505,12 +507,14 @@ export class Worker {
     else if (m.key === SOL_PRICE_KEY) {
       const p = isObj(m.value) && typeof m.value['value'] === 'bigint' && m.value['value'] > 0n ? { price: m.value['value'] } : null;
       if (p !== null) {
-        const first = this.#account.state.walletLamports === null || this.#account.state.oneTimePaid !== true;
         this.#solPrice = p.price as MicroUsd;
         this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
-        // The paper wallet exists from the first price on: risk needs its balance (R4).
-        if (first && this.#account.state.walletLamports !== null && this.#reconciled) {
+        // The paper wallet exists from the first price on: risk needs its balance (R4). Every process settles once at its
+        // first price after the reconcile: fees of entries that ended unfilled while no price was known (in that
+        // reconcile, a restart's) are booked here, not at some later book event.
+        if (!this.#pricedSettle && this.#account.state.walletLamports !== null && this.#reconciled) {
+          this.#pricedSettle = true;
           this.#settle();
           this.#publishAccount();
         }
@@ -858,7 +862,8 @@ export class Worker {
     // The feed is drained here: the slot for SEED-1's events, ahead of the account fact below and every live event.
     this.#reserved = this.#feed.reserveSlot();
     this.#writeOpenIntents();
-    // Fees a stopped process left unsettled (an entry that ended with no fill before its sweep), each signature once.
+    // A guard: it re-books open trades from the restored book. No SOL price is known yet in a new process, so stray fees
+    // wait for the first price (above).
     this.#settle();
     this.#publishAccount();
     const positions = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { FILL_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
 import { openLedger } from '../../core/src/ledger/index.ts';
-import { emptyBook } from '../../core/src/lifecycle/index.ts';
+import { emptyBook, isTerminal } from '../../core/src/lifecycle/index.ts';
 import { NO_LATCHES, melbourneWeek, riskSnapshot } from '../../core/src/risk/index.ts';
 import { attemptFee } from '../../core/src/fills/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
@@ -19,7 +19,7 @@ import { Desk } from '../src/run/desk.ts';
 import { type ApiInputs, views } from '../src/run/api.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
-import { LANDS, SOL_PRICE, T, makeWorker, passingMarket, tempState, until } from './worker-harness.ts';
+import { LANDS, Market, SOL_PRICE, T, makeWorker, passingMarket, tempState, until } from './worker-harness.ts';
 
 const HELD = { heldPoolFacts: true } as const;
 const bigints = (_k: string, v: unknown) => (v !== null && typeof v === 'object' && '$n' in v ? BigInt((v as { $n: string }).$n) : v);
@@ -102,6 +102,42 @@ describe('a restart books what account.json missed', () => {
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario: { ...LANDS, dustPpm: 0n } });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
     expect(wallet(h.stateDir)).toBe(settled);
+    await h2.worker.stop();
+  });
+});
+
+describe('a restart books a failed entry\'s fees at its first SOL price', () => {
+  it('an entry that ends unfilled during the restart reconcile (no price yet) has its fee booked by the first price', async () => {
+    const scenario = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
+    const h = makeWorker({ scenario });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    // Stop as soon as an entry attempt has landed failed, while its intent is still running.
+    const failed = () => attempts(h.stateDir).filter((a) => a.outcome === 'failed');
+    const running = () => Object.values(h.worker.book.intents).some((i) => i.intent.purpose === 'entry' && !isTerminal(i));
+    expect(await until(m, 60_000, () => failed().length >= 1 && running(), () => {
+      m.slot();
+      m.pool();
+    })).toBe(true);
+    const fees = failed().reduce((s, a) => s + attemptFee(FILL_CONFIG.network, a.priorityFee, 'failed'), 0n);
+    const unbooked = wallet(h.stateDir);
+    await h.worker.stop();
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    // The reconcile ended the entry with no SOL price in this process: nothing booked yet.
+    expect(Object.values(h2.worker.book.intents).every((i) => i.intent.purpose !== 'entry' || isTerminal(i))).toBe(true);
+    expect(wallet(h.stateDir)).toBe(unbooked);
+    // The first price, and nothing else: the fee is booked, once.
+    const m2 = new Market(h2);
+    m2.solPrice();
+    m2.slot();
+    await m2.run(400, 100);
+    expect(wallet(h.stateDir)).toBe(unbooked - fees);
+    m2.solPrice();
+    m2.slot();
+    await m2.run(400, 100);
+    expect(wallet(h.stateDir)).toBe(unbooked - fees);
     await h2.worker.stop();
   });
 });
