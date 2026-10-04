@@ -174,10 +174,12 @@ export interface SavedExit {
   readonly flow?: { readonly minutes: readonly (readonly [number, bigint])[]; readonly ids: readonly (readonly [string, number])[] };
   /** PERSIST-3: the mint's deployer (creator and the create's signer) and total supply, from its create; null when never seen. */
   readonly deployer?: { readonly sellers: readonly string[]; readonly supply: bigint | null } | null;
+  /**
+   * PERSIST-3: set when a restart could not restore these inputs. Saved with the exit, so every later restart keeps the
+   * position flattened (sell-only) instead of reading the inputs written since as complete.
+   */
+  readonly inputsLost?: true;
 }
-
-/** PERSIST-3: flow dedupe ids are saved for this many minutes before the newest one (a fill may re-release the edge). */
-const FLOW_IDS_KEPT_MINUTES = 2;
 
 export interface RestoreFact {
   readonly exits: Readonly<Record<string, SavedExit>>;
@@ -346,11 +348,10 @@ export class LiveStrategy implements Strategy {
     const sales = this.#deployerSales.get(mint);
     const f = this.#flow.get(mint);
     const minutes = [...(f?.minutes ?? [])].filter(([start]) => start <= until).sort((a, b) => a[0] - b[0]);
-    const newest = minutes.at(-1)?.[0] ?? Number.NEGATIVE_INFINITY;
     return {
       deployer: this.#deployerMemo.get(mint) ?? null,
       deployerSales: { ids: [...(sales?.ids ?? [])].sort(), list: (sales?.list ?? []).filter((x) => x.atMs <= until) },
-      flow: { minutes, ids: [...(f?.ids ?? [])].filter(([, start]) => start <= until && start >= newest - FLOW_IDS_KEPT_MINUTES * FLOW_MINUTE_MS).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)) },
+      flow: { minutes, ids: [...(f?.ids ?? [])].filter(([, start]) => start <= until).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)) },
     };
   }
 
@@ -383,12 +384,10 @@ export class LiveStrategy implements Strategy {
   readonly #deployerSales = new Map<string, { readonly ids: Set<string>; readonly list: { readonly atMs: number; readonly amount: bigint }[] }>();
   /**
    * WORKER-1e: one-minute net SOL flow (pool side: buys' quoteAmountIn − sells' quoteAmountOut) on each held mint's
-   * pool, from released swaps, deduplicated like the deployer's sales; EXIT-1's negative-flow trigger reads it. Kept in
-   * memory only: after a restart the run of negative minutes starts again (the trigger fires later, never earlier).
+   * pool, from released swaps, deduplicated like the deployer's sales (each id with its minute); EXIT-1's negative-flow trigger reads
+   * it. Saved with each held position's exit (PERSIST-3), every id included, so a restart continues the run of minutes.
    */
   readonly #flow = new Map<string, { readonly ids: Map<string, number>; readonly minutes: Map<number, bigint> }>();
-  /** PERSIST-3: held positions whose deployer sales or flow could not be restored: flattened through the global exit ladder. */
-  readonly #unrestored = new Set<string>();
   /** PERSIST-3: each held mint's deployer as last read from its create (a restart does not see the create again). */
   readonly #deployerMemo = new Map<string, { readonly sellers: readonly string[]; readonly supply: bigint | null }>();
   /** Positions whose deployer-sell trigger could not be judged, reported once each. */
@@ -591,15 +590,17 @@ export class LiveStrategy implements Strategy {
     const flow = isObj(fl) && Array.isArray(fl['minutes']) && fl['minutes'].every((x) => pair(x, 'bigint')) && Array.isArray(fl['ids']) && fl['ids'].every((x) => pair(x, 'number'))
       ? { minutes: fl['minutes'] as [number, bigint][], ids: fl['ids'] as [string, number][] } : null;
     if (sales === null || flow === null) return 'malformed';
+    // As of the restore: an entry dated after it (a host clock behind the save) refuses the inputs whole, like a future
+    // seed (PERSIST-2); dropping it alone would keep its dedupe id and lose a real sale.
+    if (sales.list.some((x) => x.atMs > atMs) || flow.minutes.some(([start]) => start > atMs) || flow.ids.some(([, start]) => start > atMs)) return 'dated after the restore';
     if (deployer !== null && !this.#deployerMemo.has(mint)) this.#deployerMemo.set(mint, deployer);
-    // As of the restore: nothing dated after it (a host clock behind the save) is taken.
     const s0 = this.#deployerSales.get(mint) ?? { ids: new Set<string>(), list: [] };
     for (const id of sales.ids) s0.ids.add(id);
-    s0.list.push(...sales.list.filter((x) => x.atMs <= atMs));
+    s0.list.push(...sales.list);
     this.#deployerSales.set(mint, s0);
     const f0 = this.#flow.get(mint) ?? { ids: new Map<string, number>(), minutes: new Map<number, bigint>() };
-    for (const [start, net] of flow.minutes) if (start <= atMs) f0.minutes.set(start, (f0.minutes.get(start) ?? 0n) + net);
-    for (const [id, start] of flow.ids) if (start <= atMs) f0.ids.set(id, start);
+    for (const [start, net] of flow.minutes) f0.minutes.set(start, (f0.minutes.get(start) ?? 0n) + net);
+    for (const [id, start] of flow.ids) f0.ids.set(id, start);
     this.#flow.set(mint, f0);
     return null;
   }
@@ -618,16 +619,15 @@ export class LiveStrategy implements Strategy {
         out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
         continue;
       }
-      const saved = s as unknown as SavedExit;
+      // PERSIST-3: the exit inputs come back as saved; without them (or lost at an earlier restart, the flag kept in the
+      // file) the position's deployer_sell and negative_flow exits would count from zero, so it is flattened instead.
+      const why = s['inputsLost'] !== undefined ? 'lost at an earlier restart' : this.#restoreInputs(this.#mintOf(pid), s, atMs);
+      const saved: SavedExit = why === null ? s as unknown as SavedExit : { ...(s as unknown as SavedExit), inputsLost: true };
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
       if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
       if (saved.spot != null) this.#spot.set(pid, saved.spot);
-      // PERSIST-3: the exit inputs come back as saved, nothing dated after this restore; without them the position's
-      // deployer_sell and negative_flow exits would count from zero, so it is flattened instead (sell-only recovery).
-      const why = this.#restoreInputs(this.#mintOf(pid), s, atMs);
       if (why !== null) {
-        this.#unrestored.add(pid);
         out.push({ action: null, reasons: ['sell-only', pid, `exit inputs not restored (${why}); flattened through the global exit ladder`] });
       }
       n++;
@@ -1099,7 +1099,7 @@ export class LiveStrategy implements Strategy {
       // Exits are never blocked: no throw, no missing decision.
       const inPolicy = Object.hasOwn(this.#d.session.policy.exits.universes, saved.plan.universe);
       // PERSIST-3: a position whose exit inputs did not come back is flattened the same way (reported at the restore).
-      const known = inPolicy && !this.#unrestored.has(p.id);
+      const known = inPolicy && saved.inputsLost === undefined;
       if (!inPolicy && !this.#flattening.has(p.id)) {
         this.#flattening.add(p.id);
         out.push({ action: null, reasons: ['universe missing', p.id, `${String(saved.plan.universe)} is not in policy ${this.#d.session.versionHash}; flattened through the global exit ladder`] });
@@ -1118,7 +1118,7 @@ export class LiveStrategy implements Strategy {
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
-      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : ['universe missing: flatten']);
+      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : [inPolicy ? 'exit inputs lost: flatten' : 'universe missing: flatten']);
     }
   }
 

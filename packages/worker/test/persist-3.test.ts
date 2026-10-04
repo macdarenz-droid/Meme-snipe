@@ -36,11 +36,22 @@ const heldAndKilled = async () => {
   return h;
 };
 
-const restart = async (h: H) => {
-  const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18994', ZEROED_API_ADDR: '127.0.0.1:18995' } });
+const restart = async (h: H, port = 18994) => {
+  const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
   expect(await h2.worker.reconcile()).toEqual({ ok: true });
   return { h2, m2: new Market(h2, HELD) };
 };
+
+type Saved = Record<string, Record<string, unknown> & { deployer: { sellers: unknown[] } | null; deployerSales: { ids: string[]; list: { atMs: number; amount: unknown }[] }; flow: { minutes: [number, bigint][]; ids: [string, number][] } }>;
+/** Rewrites the saved exits file of a killed worker. */
+const edit = (h: H, f: (s: Saved[string]) => void) => {
+  const path = join(h.stateDir, 'exits.json');
+  const saved = parseTyped(readFileSync(path, 'utf8')) as Saved;
+  for (const s of Object.values(saved)) f(s);
+  writeFileSync(path, typedText(saved));
+};
+const sellOnly = (h: H, why: string) => mine(h).some((r) => r[0] === 'sell-only' && r[2] === `exit inputs not restored (${why}); flattened through the global exit ladder`);
+const flattened = (h: H) => mine(h).some((r) => r[0] === 'exit' && r.includes('exit inputs lost: flatten'));
 
 describe('PERSIST-3: exit inputs across a restart', () => {
   it('60% of the threshold sold before the restart and 60% after: deployer_sell fires (the create is not seen again)', async () => {
@@ -71,37 +82,83 @@ describe('PERSIST-3: exit inputs across a restart', () => {
     await h2.worker.stop();
   });
 
-  it('is as-of honest: a saved sale dated after the restart moment is not taken', async () => {
+  it.each([
+    ['a sale', (s: Saved[string], at: number) => s.deployerSales.list.push({ atMs: at, amount: 1n })],
+    ['a flow minute', (s: Saved[string], at: number) => s.flow.minutes.push([at, -1n])],
+    ['a flow id', (s: Saved[string], at: number) => s.flow.ids.push(['later', at])],
+  ])('is as-of honest: %s dated after the restore refuses the inputs whole (sell-only), never dropped alone', async (_, add) => {
     const h = await heldAndKilled();
-    const path = join(h.stateDir, 'exits.json');
-    const saved = parseTyped(readFileSync(path, 'utf8')) as Record<string, { deployerSales: { ids: string[]; list: { atMs: number; amount: bigint }[] } }>;
-    // A file claiming a large sale a day ahead (a host clock behind the save): with it the threshold would be crossed.
-    for (const s of Object.values(saved)) s.deployerSales.list.push({ atMs: h.timers.now() + 86_400_000, amount: SHARE * 2n });
-    writeFileSync(path, typedText(saved));
+    // A host clock behind the save: the file holds an entry a day ahead of the restore.
+    edit(h, (s) => add(s, h.timers.now() + 86_400_000));
     const { h2, m2 } = await restart(h);
     await keep(m2, 4_000);
-    expect(mine(h2).some((r) => r[0] === 'exit' && r.some((x) => x.startsWith('deployer_sell')))).toBe(false);
+    expect(sellOnly(h2, 'dated after the restore')).toBe(true);
+    expect(flattened(h2)).toBe(true);
+    await h2.worker.stop();
+  });
+
+  it.each([
+    ['a sale amount as a number', (s: Saved[string]) => { s.deployerSales.list[0]!.amount = 1; }],
+    ['a deployer without sellers', (s: Saved[string]) => { s.deployer!.sellers = []; }],
+  ])('a malformed field (%s) flattens the position (sell-only)', async (_, spoil) => {
+    const h = await heldAndKilled();
+    edit(h, (s) => {
+      expect(s.deployer).not.toBeNull();
+      expect(s.deployerSales.list).toHaveLength(1);
+      spoil(s);
+    });
+    const { h2, m2 } = await restart(h);
+    await keep(m2, 4_000);
+    expect(sellOnly(h2, 'malformed')).toBe(true);
+    expect(flattened(h2)).toBe(true);
+    await h2.worker.stop();
+  });
+
+  it('stays sell-only across a second restart: the lost inputs are flagged in the file, not read as complete', async () => {
+    const h = await heldAndKilled();
+    edit(h, (s) => {
+      for (const k of ['deployer', 'deployerSales', 'flow']) delete s[k];
+    });
+    const { h2, m2 } = await restart(h);
+    // Slots only: no pool read, so the flatten waits for a quote and the position is still held at the kill.
+    await m2.run(2_000, 400, () => m2.slot());
+    expect(sellOnly(h2, 'not in the saved exit')).toBe(true);
+    expect(position(h2)?.status).toBe('open');
+    await h2.worker.kill();
+    expect(readFileSync(join(h.stateDir, 'exits.json'), 'utf8')).toContain('inputsLost');
+    const { h2: h3, m2: m3 } = await restart(h2, 18998);
+    await keep(m3, 4_000);
+    expect(sellOnly(h3, 'lost at an earlier restart')).toBe(true);
+    expect(flattened(h3)).toBe(true);
+    await h3.worker.stop();
+  });
+
+  it('restores the deployer sale ids: the same sale released again after the restart counts once', async () => {
+    const h = await heldAndKilled();
+    let id = '';
+    edit(h, (s) => {
+      expect(s.deployerSales.ids).toHaveLength(1);
+      id = s.deployerSales.ids[0]!;
+    });
+    const { h2, m2 } = await restart(h);
+    await keep(m2, 2_000);
+    const [signature, user, base] = id.split('|');
+    expect([user, base]).toEqual([DEV, String(SHARE)]);
+    m2.fact(`logs:pump_amm:SellEvent:${POOL_ADDRESS}:again`, { event: { program: 'pump_amm', name: 'SellEvent', data: { pool: POOL_ADDRESS, user: DEV, baseAmountIn: SHARE, quoteAmountOut: 1n, baseSupply: SUPPLY } }, signature });
+    await keep(m2, 4_000);
+    expect(mine(h2).some((r) => r[0] === 'exit')).toBe(false);
     expect(position(h2)?.status).toBe('open');
     await h2.worker.stop();
   });
 
-  it('net selling for 3 whole minutes before the restart and 3 after: negative_flow fires across it', async () => {
-    const h = makeWorker({ config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18996', ZEROED_API_ADDR: '127.0.0.1:18997' } });
+  /** Net selling for 3 whole minutes on a held position (swaps tagged `a`, numbered from 1), then killed. */
+  const flowKilled = async (port: number) => {
+    const h = makeWorker({ config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
     expect(await h.worker.reconcile()).toEqual({ ok: true });
     const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await keep(m, 10_000);
     expect(position(h)?.status).toBe('open');
-    // Swaps with their own signatures, so the two processes' swaps never share an id.
-    let n = 0;
-    const flow = (mk: Market, tag: string) => () => {
-      mk.slot();
-      mk.pool();
-      for (const [name, quote] of [['SellEvent', 300_000_000n], ['BuyEvent', 100_000_000n]] as const) {
-        const k = ++n;
-        mk.fact(`logs:pump_amm:${name}:${POOL_ADDRESS}:${tag}${k}`, { event: { program: 'pump_amm', name, data: { pool: POOL_ADDRESS, user: `u${k}`, ...(name === 'SellEvent' ? { baseAmountIn: 1_000n, quoteAmountOut: quote } : { baseAmountOut: 1_000n, quoteAmountIn: quote }) } }, signature: `${tag}-${k}` });
-      }
-    };
     // Up to just inside the fourth minute after a minute boundary: three whole negative minutes.
     const start = Math.ceil(m.now / 60_000) * 60_000;
     await m.run(start - m.now, 400, () => {
@@ -111,9 +168,42 @@ describe('PERSIST-3: exit inputs across a restart', () => {
     await m.run(3 * 60_000 + 1_000, 400, flow(m, 'a'));
     expect(lines(h).some((l) => l['kind'] === 'decision' && ((l['reasons'] as string[]) ?? []).some((x) => x.startsWith('negative_flow')))).toBe(false);
     await h.worker.kill();
+    return h;
+  };
+  /** Each step: one sell of 0.3 SOL and one buy of 0.1 SOL, each with its own signature `<tag>-<n>` (n from 1 per tag). */
+  const flow = (mk: Market, tag: string) => {
+    let n = 0;
+    return () => {
+      mk.slot();
+      mk.pool();
+      for (const [name, quote] of [['SellEvent', 300_000_000n], ['BuyEvent', 100_000_000n]] as const) {
+        const k = ++n;
+        mk.fact(`logs:pump_amm:${name}:${POOL_ADDRESS}:${tag}${k}`, { event: { program: 'pump_amm', name, data: { pool: POOL_ADDRESS, user: `u${k}`, ...(name === 'SellEvent' ? { baseAmountIn: 1_000n, quoteAmountOut: quote } : { baseAmountOut: 1_000n, quoteAmountIn: quote }) } }, signature: `${tag}-${k}` });
+      }
+    };
+  };
+
+  it('net selling for 3 whole minutes before the restart and 3 after: negative_flow fires across it', async () => {
+    const h = await flowKilled(18996);
     const { h2, m2 } = await restart(h);
     await m2.run(2 * 60_000 + 2_000, 400, flow(m2, 'b'));
     expect(mine(h2).some((r) => r[0] === 'exit' && r.some((x) => x.startsWith('negative_flow')))).toBe(true);
+    await h2.worker.stop();
+  });
+
+  it('restores every flow id, the oldest minute too: swaps released again after the restart count once', async () => {
+    const h = await flowKilled(18996);
+    edit(h, (s) => {
+      // Ids from the first of the three minutes, more than 2 minutes before the newest, are kept.
+      const first = s.flow.minutes[0]![0];
+      expect(s.flow.minutes.at(-1)![0] - first).toBeGreaterThanOrEqual(3 * 60_000);
+      expect(s.flow.ids.some(([, at]) => at === first)).toBe(true);
+    });
+    const { h2, m2 } = await restart(h);
+    // The same swaps again (a fill re-releasing them): with their ids restored, no minute after the restart is negative.
+    await m2.run(3 * 60_000 + 2_000, 400, flow(m2, 'a'));
+    expect(mine(h2).some((r) => r.some((x) => x.startsWith('negative_flow')))).toBe(false);
+    expect(position(h2)?.status).toBe('open');
     await h2.worker.stop();
   });
 });
