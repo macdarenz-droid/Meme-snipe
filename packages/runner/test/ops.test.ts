@@ -6,7 +6,7 @@ import { item4 } from '../src/item4.ts';
 import { makePlan } from '../src/plan.ts';
 import { checkQuota, coverageGaps, FREE_PLANS, lookupLatency, quotaReport, rejections, type BootTotals } from '../src/quota.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Ops, type RunMeta, type Sample } from '../src/report.ts';
-import { exposedTrades, freshMark, moveBps, tradeIdsComplete, withChainMoves } from '../src/runner.ts';
+import { exposedTrades, freshMark, moveBps, openPositions, tradeIdsComplete, withChainMoves } from '../src/runner.ts';
 import { fullDrills, OPS_OK } from './fixtures.ts';
 
 const H = 3_600_000;
@@ -219,6 +219,16 @@ describe('unprotected exposure', () => {
     expect(tradeIdsComplete(h({ unresolved_intents: { count: 1, oldest_age_s: 0, trades: [''] } }))).toBe(false);
     expect(tradeIdsComplete(h({ open_position: { trade: '' } }))).toBe(false);
     expect(tradeIdsComplete(h({ open_position: { trade: 't1' }, unresolved_intents: { count: 1, oldest_age_s: 0, trades: ['t2'] } }))).toBe(true);
+  });
+  it('every open position counts (WORKER-1c open_positions); a worker without the list is read from open_position', () => {
+    const h = (o: Record<string, unknown>): Health => ({ ts: 1, open_position: null, unresolved_intents: { count: 0, oldest_age_s: null, trades: [] }, ...o }) as unknown as Health;
+    const two = { open_position: { trade: 't1' }, open_positions: [{ trade: 't1' }, { trade: 't4' }] };
+    expect(exposedTrades(h({ ...two, unresolved_intents: { count: 1, oldest_age_s: 0, trades: ['t2'] } }))).toEqual(['t1', 't4', 't2']);
+    expect(tradeIdsComplete(h({ open_position: { trade: 't1' }, open_positions: [{ trade: 't1' }, { trade: '' }] }))).toBe(false);
+    expect(openPositions(h(two)).map((p) => p.trade)).toEqual(['t1', 't4']);
+    expect(openPositions(h({ open_position: { trade: 't9' } })).map((p) => p.trade)).toEqual(['t9']);
+    expect(openPositions(h({ open_positions: [] }))).toEqual([]);
+    expect(openPositions(null)).toEqual([]);
   });
   it('a stale mark is unmeasured; an entry in flight is exposed', () => {
     const h = (o: Record<string, unknown>): Health => ({ ts: 100_000, open_position: null, unresolved_intents: { count: 0, oldest_age_s: null, trades: [] }, ...o }) as unknown as Health;

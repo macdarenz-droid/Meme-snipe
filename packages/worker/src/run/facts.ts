@@ -38,10 +38,15 @@ export interface FactContext {
    * replay of the recording rebuilds the same facts.
    */
   readonly ingest: Ingest;
-  /** Each candidate's migration time, its last evaluation and that evaluation's typed reasons (null before the first). */
+  /**
+   * Each candidate's migration time, its last evaluation and that evaluation's typed reasons (null before the first),
+   * the spend it sized (H15) and its creator once the create was seen (RUG-1c).
+   */
   readonly candidates: () => ReadonlyMap<string, CandidateView>;
   /** The newest slot the feed has seen (the decision slot for point-in-time reads), or null before any. */
   readonly tip: () => bigint | null;
+  /** RUG-1c: the deployer index's mints by `creator` known at `nowMs` (each with its launch time), for a deployer check. */
+  readonly priorMints?: (creator: string, nowMs: number) => readonly { readonly mint: string; readonly createdAtMs: number }[];
 }
 
 export interface FactSource {
