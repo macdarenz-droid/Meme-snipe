@@ -153,6 +153,11 @@ export interface WorkerDeps {
    * the feed. Null loses it (an API call that timed out after the send); another event replaces it. Tests only.
    */
   readonly worldFault?: (event: BookEvent) => BookEvent | null;
+  /**
+   * ALERT-EXIT's seam: each step's engine records pass through it on their way to the worker's alert store (not to the
+   * desk), so a test can add a critical alert no harness path raises (a double fill). Tests only.
+   */
+  readonly alertRecords?: (records: readonly LogRecord[]) => readonly LogRecord[];
   /** OPS-SUMMARY's fault seam: called before each summary reads the worker's state; a throw fails that summary. Tests only. */
   readonly summaryFault?: () => void;
   /** Test seam: the desk calls it right after each of a fill's two durable writes (ARCHITECTURE §12.4). */
@@ -698,7 +703,8 @@ export class Worker {
     }
     const records = this.#engine.records as LogRecord[];
     const n = records.length;
-    for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);
+    if (this.#d.alertRecords === undefined) for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);
+    else for (const r of this.#d.alertRecords(records.slice(0, n))) this.#afterRecord(r);
     this.#desk.consume(records.slice(0, n));
     // Consumed records are dropped so a 48 h run keeps its memory flat; the engine keeps the log's hash.
     records.splice(0, n);

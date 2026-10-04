@@ -607,6 +607,34 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     await b.worker.stop();
   });
 
+  it('a critical book alert in the worker\'s store reaches /health and the signed heartbeat under its own name (ALERT-EXIT, ops review)', async () => {
+    // No harness path raises a real double fill, so one record carrying the alert is added to a step's records on their
+    // way to the alert store: the worker's own wiring from there to /health and the heartbeat is what is tested.
+    let added = false;
+    const sent: { body?: string }[] = [];
+    const h = makeWorker({
+      key: 'k',
+      http: async (req) => {
+        sent.push(req);
+        return { status: 200, header: () => null, text: JSON.stringify({ ok: true, paused: false }) };
+      },
+      alertRecords: (records) => {
+        if (added || records.length === 0) return records;
+        added = true;
+        return [...records, { type: 'world', seq: 0, at: { slot: 0n, receivedAt: 1_000 }, eventId: 'test', inputs: [], action: null, reasons: [], result: 'applied', effects: [{ effect: { type: 'alert', level: 'critical', code: 'double_fill', subject: 'i:test' }, dispatch: 'runner' }] } as unknown as LogRecord];
+      },
+    });
+    const m = await entered(h);
+    expect(added).toBe(true);
+    const line = h.worker.health().critical.find((c) => c.startsWith('double_fill i:test (at '));
+    expect(line).toBeDefined();
+    await h.worker.heartbeat();
+    const hb = parseHeartbeat(sent.at(-1)!.body!)!;
+    expect(hb.critical).toContain(line);
+    expect(evaluate({ hb, receivedAt: m.now }, m.now, limitsFrom({}), { slot: null, heldMints: null }).map((a) => a.key)).toContain('worker_critical:double_fill i:test');
+    await h.worker.stop();
+  });
+
   it('a wait that ends another way (a refusal books it blocked) stops being reported (#100 N1)', async () => {
     const { h, pid } = await dueAfterDowntime();
     const { b, m: m2, first } = await reboot(h);

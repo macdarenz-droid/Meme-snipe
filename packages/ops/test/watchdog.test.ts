@@ -116,7 +116,11 @@ describe('checks', () => {
     const big = parseHeartbeat(JSON.stringify(hb({ open_positions: Array.from({ length: 70 }, (_, i) => p(i)), critical: Array.from({ length: 80 }, (_, i) => `c${i}`) })))!;
     expect(big.open_positions).toHaveLength(MAX_LISTED);
     expect(big.critical).toHaveLength(MAX_LISTED);
-    expect(big.critical!.slice(-2)).toEqual([`70 open positions reported, only the first ${MAX_LISTED} are checked`, `18 more critical alerts (see the app)`]);
+    expect(big.critical!.slice(-2)).toEqual([`open positions cut (70 reported, the first ${MAX_LISTED} are checked)`, 'critical alerts cut (18 more; see the app)']);
+    // A changing count is the same alert: one key each, whatever the numbers.
+    const keys = (n: number) => evaluate(stored(parseHeartbeat(JSON.stringify(hb({ open_positions: Array.from({ length: n }, (_, i) => ({ ...p(i), mark: 1 })), critical: Array.from({ length: n }, (_, i) => `c${i}`) })))!), T0, L, noChain).map((a) => a.key).filter((k) => k.includes(' cut'));
+    expect(keys(70)).toEqual(['worker_critical:open positions cut', 'worker_critical:critical alerts cut']);
+    expect(keys(90)).toEqual(keys(70));
     expect(big.critical![61]).toBe('c61');
     const small = parseHeartbeat(JSON.stringify(hb({ open_positions: [p(1)], critical: ['c'] })))!;
     expect(small.critical).toEqual(['c']);

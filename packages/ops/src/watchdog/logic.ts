@@ -119,15 +119,15 @@ export function parseHeartbeat(body: string): Heartbeat | null {
   const ui = h['unresolved_intents'] as Record<string, unknown> | undefined;
   if (typeof ui !== 'object' || ui === null || !num(ui['count'])) return null;
   // Bounded (ALERT-EXIT review): at most MAX_LISTED positions and critical lines are kept; what is cut is named in a
-  // critical line of its own, never dropped silently.
+  // critical line of its own, never dropped silently. Its name (before " (") is fixed, so a changing count is one alert.
   const cut: string[] = [];
   if (Array.isArray(h['open_positions']) && h['open_positions'].length > MAX_LISTED) {
-    cut.push(`${h['open_positions'].length} open positions reported, only the first ${MAX_LISTED} are checked`);
+    cut.push(`open positions cut (${h['open_positions'].length} reported, the first ${MAX_LISTED} are checked)`);
     h['open_positions'] = h['open_positions'].slice(0, MAX_LISTED);
   }
   if (Array.isArray(h['critical']) && h['critical'].length + cut.length > MAX_LISTED) {
     const keep = MAX_LISTED - 1 - cut.length;
-    cut.push(`${h['critical'].length - keep} more critical alerts (see the app)`);
+    cut.push(`critical alerts cut (${h['critical'].length - keep} more; see the app)`);
     h['critical'] = h['critical'].slice(0, keep);
   }
   if (cut.length) h['critical'] = [...(Array.isArray(h['critical']) ? h['critical'] : []), ...cut];

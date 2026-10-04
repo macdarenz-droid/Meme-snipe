@@ -1303,7 +1303,7 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - `criticalLines` builds the whole list.
   - Tests: one per class, from the alert record to the critical list to the heartbeat to the watchdog's push. A second subject of a class is a second alert. Warnings are not pushed. A cleared exit block has no line.
   - Mutants 4 of 4 killed: the book's lines dropped, exit_blocked not filtered, one line for all, the subject left out.
-  - Residual: the worker's call that passes its alert list into `criticalLines` is covered by its type only. No harness path raises a real double fill or late landing.
+  - The worker's wiring (ops review): a test seam, `alertRecords`, adds a record carrying a double fill to a step's records on their way to the alert store. No harness path raises a real one. The test checks that `/health`'s `critical` lists it, and so does the signed heartbeat sent to the watchdog, under the key `worker_critical:double_fill <subject>`. The mutant that passes `[]` instead of the store fails it.
 - **2026-10-05 · Every open position is watched (audit N3).**
   - The heartbeat carried only the first open position, so the watchdog's stop and wallet checks were blind past `maxOpen` 1.
   - It now sends `open_positions`, every position in /health's order. `open_position` stays as the first, for older readers.
@@ -1319,6 +1319,7 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - **Also, under the golden rule.**
     - The old keys `stop`, `position` and `worker_critical` are dropped once, with no misleading cleared line; their alerts come back under the new keys.
     - A heartbeat is read with at most 64 open positions and 64 critical lines. What is cut is named in a critical line of its own, never dropped silently.
+    - Each cut line has a fixed name (`open positions cut`, `critical alerts cut`), with the count in brackets, so a changing count stays one alert (ops review).
   - **Tests.**
     - 30 long lines go out as several messages, each at most 4,096 characters, every line once.
     - Telegram refusing the second message: the rest goes out on the next check, nothing twice.
