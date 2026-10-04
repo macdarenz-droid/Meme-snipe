@@ -1298,7 +1298,8 @@ install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
 # never stopped for it. The trial runs beside the running worker and touches none of its state or ports:
 #   - as transient systemd units under the worker unit's own sandbox: every hardening, limit and environment setting of
 #     zeroed-worker.service is read from the installed unit and applied, with the worker's user, its environment file,
-#     and memory capped at SMOKE_MEMORY_MAX (the host has 1 GB and the live worker keeps running);
+#     memory capped at SMOKE_MEMORY_MAX and the first to go under memory pressure (OOMScoreAdjust=1000), since the host
+#     has 1 GB and the live worker keeps running;
 #   - no credentials (provider keys are not needed to start; a worker without providers runs degraded, entries halted),
 #     a scratch state directory as the only writable path, health and API on the SMOKE_* loopback ports;
 #   - --reconcile (the unit's ExecStartPre) must exit 0; then the worker must answer its health route in paper mode
@@ -1343,7 +1344,7 @@ trial() {
   local unit="$1" log="$2" opts=() args=()
   if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi
   systemd-run --quiet --unit="$unit" "${opts[@]}" "${props[@]}" \
-    -p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="$SMOKE_MEMORY_MAX" -p TimeoutStopSec=30 \
+    -p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="$SMOKE_MEMORY_MAX" -p OOMScoreAdjust=1000 -p TimeoutStopSec=30 \
     -p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp" \
     -p StandardOutput=append:"$log" -p StandardError=append:"$log" \
     --setenv=NODE_ENV=production --setenv=ZEROED_MODE=paper --setenv=ZEROED_RECORDER=on --setenv=ZEROED_SIMULATE=on \
