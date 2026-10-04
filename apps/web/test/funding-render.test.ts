@@ -38,7 +38,9 @@ describe('Deposit', () => {
     const html = renderToStaticMarkup(h(DepositPanel, { wallet: fixtureWallet, gatePassed: false }));
     expect(html).not.toContain(fixtureWallet.botAddress!);
     expect(html).not.toContain('<svg');
-    expect(text(h(DepositPanel, { wallet: fixtureWallet, gatePassed: false }))).toContain('Shown after the gate passes');
+    // Labels and data only: the gate's state, no line explaining what happens after it (APP-WORDS N2).
+    expect(text(h(DepositPanel, { wallet: fixtureWallet, gatePassed: false }))).toContain('Pre-funding gate Not passed');
+    expect(text(h(DepositPanel, { wallet: fixtureWallet, gatePassed: false }))).not.toContain('Shown after the gate passes');
   });
 
   it('shows dashes, not zeros, when the balance is unknown', () => {
@@ -53,6 +55,12 @@ describe('Withdraw', () => {
     expect(text(h(WithdrawPanel, { wallet: fixtureWallet, stepUp: approvingStepUp }))).toContain('Available to send 137.705995 SOL');
     expect(text(h(WithdrawPanel, { wallet: fixtureWallet, stepUp: approvingStepUp }))).toContain('Request transfer');
     expect(text(h(WithdrawPanel, { wallet: fixtureWallet, stepUp: approvingStepUp }))).toContain('Change saved wallet');
+  });
+
+  it('labels and data only: no line explaining the rules (AGENTS.md UI copy); the 24 h notice stays (§19 asks for it)', () => {
+    const t = text(h(WithdrawPanel, { wallet: fixtureWallet, stepUp: approvingStepUp }));
+    for (const gone of ['the only address Withdraw accepts', 'Balance minus the protected reserve', 'Signing comes later']) expect(t).not.toContain(gone);
+    expect(readFileSync(new URL('../src/funding/WithdrawPanel.tsx', import.meta.url), 'utf8')).toContain('A new address takes effect 24 hours after you confirm with your passkey.');
   });
 
   it('shows a dash for the amount available when the balance is unknown', () => {

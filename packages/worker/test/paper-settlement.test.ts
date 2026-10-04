@@ -1,12 +1,12 @@
 // PAPER-1: paper settlement matches the historical backtest's (audit of d92b73e, items M4, M5 and M8's rent part).
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { FILL_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
 import { openLedger } from '../../core/src/ledger/index.ts';
 import { emptyBook, isTerminal } from '../../core/src/lifecycle/index.ts';
 import { NO_LATCHES, melbourneWeek, riskSnapshot } from '../../core/src/risk/index.ts';
-import { attemptFee } from '../../core/src/fills/index.ts';
+import { attemptFee, lateFillOf } from '../../core/src/fills/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import type { Book } from '../../core/src/lifecycle/index.ts';
 import { positionId, type Fill, type IntentId } from '../../core/src/domain/index.ts';
@@ -357,6 +357,55 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
       { atMs: start + 1_000, amount: usdOf(recent[0]!), kind: 'failed_entry' },
     ]);
     ledger.close();
+  });
+
+  it('a fee not yet booked (no SOL price) is never folded past: it is charged once when the price comes (risk review of #133)', () => {
+    const dir = tempState();
+    const file = accountFile(dir);
+    const start = melbourneWeek(T).start;
+    const account = new PaperAccount(file, 20_000_000n as MicroUsd, start - 20 * DAY, 0n);
+    account.price(PRICE, start - 20 * DAY);
+    const opening = account.state.walletLamports!;
+    const a = failedAttempt('a', start - 9 * DAY, 20_000n);
+    const b = failedAttempt('b', start - 2 * DAY, 30_000n);
+    // b is booked in its week; a's entry has not ended yet then.
+    const pendingA = { positions: {}, intents: { ...bookOf([b]).intents, ...bookOf([a], 'broadcast').intents } } as unknown as Book;
+    account.settle(pendingA, legsOf([a, b]), PRICE, start - DAY);
+    expect(Object.keys(account.state.strayFees!)).toEqual(['b']);
+    // A new process in the next week, no SOL price yet: a's entry has ended, but its fee cannot be priced. The fold must
+    // not pass it.
+    const restarted = new PaperAccount(file, 20_000_000n as MicroUsd, start + 1_000, 0n);
+    restarted.settle(bookOf([a, b]), legsOf([a, b]), null, start + 1_000);
+    expect(restarted.state.strayFolded === undefined || restarted.state.strayFolded.atMs < a.sentAtMs!).toBe(true);
+    // The first price: a is charged, once.
+    restarted.settle(bookOf([a, b]), legsOf([a, b]), PRICE, start + 2_000);
+    restarted.settle(bookOf([a, b]), legsOf([a, b]), PRICE, start + 3_000);
+    const fees = attemptFee(net, 20_000n, 'failed') + attemptFee(net, 30_000n, 'failed');
+    expect(restarted.state.walletLamports).toBe(opening - fees);
+  });
+
+  it('an ended entry whose attempt cost nothing (dropped) does not hold the fold back', () => {
+    const dir = tempState();
+    const start = melbourneWeek(T).start;
+    const account = new PaperAccount(accountFile(dir), 20_000_000n as MicroUsd, start - 20 * DAY, 0n);
+    account.price(PRICE, start - 20 * DAY);
+    const paid = failedAttempt('a', start - 3 * DAY, 20_000n);
+    const dropped: PaperAttempt = { ...failedAttempt('z', start - 5 * DAY, 20_000n), outcome: 'dropped', reason: 'never reached a block (drawn)', landedSlot: null };
+    account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), null, start + 1_000);
+    account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), PRICE, start + 1_000);
+    expect(account.state.strayFees).toEqual({});
+    expect(account.state.strayFolded?.lamports).toBe(attemptFee(net, 20_000n, 'failed'));
+  });
+
+  it('a stray fee\'s dollar cost rounds up (a loss is never understated)', () => {
+    const dir = tempState();
+    const account = new PaperAccount(accountFile(dir), 20_000_000n as MicroUsd, T - DAY, 0n);
+    account.price(PRICE, T - DAY);
+    // 5,000 base + 20,001 priority = 25,001 lamports = $0.00375015 at $150: 3,751 micro-dollars, not 3,750.
+    const x = failedAttempt('odd', T - 60_000, 20_001n);
+    account.settle(bookOf([x]), legsOf([x]), PRICE, T);
+    expect(attemptFee(net, 20_001n, 'failed')).toBe(25_001n);
+    expect(account.state.strayFees!['odd']!.cost).toBe(3_751n);
   });
 
   it('an entry still unresolved holds the fold back to before its first attempt', () => {
@@ -852,6 +901,32 @@ describe('PAPER-2: a failed sell landing after its trade closed', () => {
     // Their fees are the closed trade's too: its net, and the wallet through it.
     expect(trade().netLamports).toBe(closed - fees);
     expect(trade().booked).toBe(closed - fees);
+    await h2.worker.stop();
+  });
+});
+
+describe('a late buy cannot come from paper (reachability; risk review of #133)', () => {
+  it('a paper buy still in flight at a restart is lost and never lands: no orphan_fill, no late_buy', async () => {
+    // Buys land 30 slots after they are sent, so the process stops with one in flight.
+    const scenario = { ...LANDS, landingSlots: [30], landingTail: { ...LANDS.landingTail, ppm: 0n } };
+    const h = makeWorker({ scenario });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    const buy = () => (existsSync(join(h.stateDir, 'paper.json')) ? attempts(h.stateDir).find((a) => a.purpose === 'entry') : undefined);
+    expect(await until(m, 60_000, () => buy() !== undefined, () => { m.slot(); m.pool(); })).toBe(true);
+    expect(buy()!.outcome).toBe('in_flight');
+    await h.worker.stop();
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    await m2.run(30_000, 400, () => { m2.slot(); m2.solPrice(); });
+    expect(buy()).toMatchObject({ outcome: 'expired', reason: 'lost in a restart (paper attempts die with the process)', fill: null });
+    // The entry ended unfilled; nothing was bought late.
+    expect(Object.values(h2.worker.book.positions).every((p) => p.quantity === 0n && lateFillOf(p.id) === null)).toBe(true);
+    expect(Object.values(h2.worker.book.orphans)).toEqual([]);
+    const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8');
+    expect(journal.includes('"late_buy"')).toBe(false);
+    expect(h2.worker.health().halt_reasons).not.toContain(LATE_BUY);
     await h2.worker.stop();
   });
 });

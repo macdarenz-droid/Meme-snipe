@@ -8,7 +8,7 @@ import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, opti
  * decimal anywhere rejects the whole response.
  */
 
-export type Endpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'calendar' | 'trades' | 'charts' | 'stats';
+export type Endpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'calendar' | 'trades' | 'charts' | 'stats' | 'discovered';
 
 const MINT = re(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'a base58 address');
 const SIGNATURE = re(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/, 'a base58 signature');
@@ -48,6 +48,10 @@ function build(m: Mode): Record<Endpoint, Check> {
       risk: arr(obj({ mode, kind: oneOf('open-exposure', 'daily-loss', 'weekly-loss', 'session-loss'), usedUsd: usd, limitUsd: nullable(usd) }), 10),
       haltReasons: optional(arr(obj({ mode, code: oneOf(...HALT_CODES), source: nullable(str) }), 50)),
       exitCapable: optional(bool),
+      session: optional(obj({
+        state: oneOf('running', 'paused', 'ended'), bankrollUsd: usd, entryUsd: usd, maxEntryUsd: usd, maxOpenPositions: int,
+        dailyLossLimitUsd: usd, weeklyLossLimitUsd: usd, sessionLossLimitUsd: nullable(usd), startable: bool,
+      })),
       alerts: optional(arr(obj({ mode, code: oneOf(...ALERT_CODES), subject: str, at: iso }), 50)),
       regime: optional(nullable(obj({ state: oneOf('on', 'off'), at: iso, current: bool, reasons: arr(obj({ mode, code: oneOf(...REGIME_REASON_CODES), input: nullable(str) }), 20), waived: arr(oneOf(...WAIVED_PARTS), 4) }))),
     }),
@@ -164,6 +168,13 @@ function build(m: Mode): Record<Endpoint, Check> {
       meanNetUsd: nullable(usd),
       meanR: nullable(dec),
       ci95: nullable(obj({ lowUsd: usd, highUsd: usd })),
+    }),
+    discovered: obj({
+      mode,
+      tokens: arr(obj({
+        mode, mint: MINT, symbol: nullable(str), migratedAt: iso, venue: oneOf('PumpSwap'), liquidityUsd: nullable(usd),
+        checks: oneOf('passed', 'failed', 'missing'), checkedAt: nullable(iso),
+      }), 200),
     }),
   };
 }
