@@ -66,4 +66,16 @@ describe('the recorder manifest (G4c)', () => {
     expect(files[0]!.sha256).not.toBe(sha(readFileSync(p)));
     expect(files[1]!.sha256).toBe(sha(readFileSync(join(rec.dir, files[1]!.path))));
   });
+
+  it('a crashed boot\'s attachments (the saved-state copy it restored from) stay listed after the next start seals it', () => {
+    const root = tempState();
+    const rec = new Recorder({ root, boot: 'b1', gitSha: 'abc', rotateBytes: 1 << 20 });
+    const copy = { file: 'deployer-state.json', sha256: 'ab'.repeat(32), bytes: 1234 };
+    rec.attach(copy.file, copy.sha256, copy.bytes);
+    rec.delay({ n: 1 }, Date.parse('2026-10-04T00:00:00Z'));
+    rec.flush(); // killed here: no close
+    expect(sealLeftovers(root, 'b2')).toEqual(['b1']);
+    expect((JSON.parse(readFileSync(join(rec.dir, 'manifest.json'), 'utf8')) as { attachments: unknown[] }).attachments).toEqual([copy]);
+  });
 });
+
