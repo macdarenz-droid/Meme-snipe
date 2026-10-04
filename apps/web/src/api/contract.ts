@@ -37,6 +37,8 @@ export interface Envelope<T> {
   mode: Mode;
   asOf: Iso;
   data: T;
+  /** API-1: the server does not run this mode (data is null); the reason, for the record. Never shown as an error. */
+  notRunning?: string;
 }
 
 /** Paper and live data older than this shows as stale. A backtest is a finished run and never goes stale. */
@@ -88,10 +90,70 @@ export interface RiskMeter extends Moded {
   limitUsd: Usd | null;
 }
 
+/** Why entries are off (API-1); `other` is a reason this app does not name. */
+export const HALT_CODES = [
+  'starting', 'feed-stale', 'feed-disconnected', 'feed-dropped', 'paused', 'seeding', 'divergence', 'budget',
+  // The account's risk stops (core risk's tripped entry controls); 'risk' is any other, its code the source.
+  'daily-loss', 'weekly-loss', 'weekly-review', 'kill-switch', 'wallet-below-kill-line', 'loss-cooldown', 'loss-day-pause',
+  'loss-review', 'session-ended', 'max-open-positions', 'risk', 'risk-unknown',
+  'other',
+] as const;
+export type HaltCode = (typeof HALT_CODES)[number];
+
+/** The engine's alert codes (AlertCode in the core lifecycle types). */
+export const ALERT_CODES = [
+  'cancel_after_broadcast',
+  'status_balance_mismatch',
+  'late_landing',
+  'unbooked_landing',
+  'double_fill',
+  'oversold',
+  'orphan_cleared',
+  'exit_blocked',
+  'restart_recovery',
+] as const;
+export type AlertCode = (typeof ALERT_CODES)[number];
+
+/** Parts the S0 diagnostic set does not judge (WORKER-1e, S0DiagnosticPart in core's regime gate). */
+export const WAIVED_PARTS = ['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage'] as const;
+export type WaivedPart = (typeof WAIVED_PARTS)[number];
+
+export const REGIME_REASON_CODES = ['regime-off', 'unknown', 'exec-health', 'policy-session-ended'] as const;
+export type RegimeReasonCode = (typeof REGIME_REASON_CODES)[number];
+
 export interface WorkerStatus extends Moded {
   connected: boolean;
   flags: StatusFlag[];
   risk: RiskMeter[];
+  /** API-1. Absent from a worker that does not serve them: the app then shows nothing for them. */
+  haltReasons?: (Moded & { code: HaltCode; source: string | null })[];
+  exitCapable?: boolean;
+  /** Critical alerts since the worker started. */
+  alerts?: (Moded & { code: AlertCode; subject: string; at: Iso })[];
+  /** The latest regime evaluation; null before the first candidate. */
+  /** The session the worker runs (APP-HOME): its state and the policy's limits; `startable` false when it runs its own. */
+  session?: { state: 'running' | 'paused' | 'ended'; bankrollUsd: Usd; entryUsd: Usd; maxEntryUsd: Usd; maxOpenPositions: number; dailyLossLimitUsd: Usd; weeklyLossLimitUsd: Usd; sessionLossLimitUsd: Usd | null; startable: boolean };
+  regime?: { state: 'on' | 'off'; at: Iso; /** At most two candidate evaluation steps old as of asOf. */ current: boolean; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[]; /** Not judged (S0 diagnostic): an "on" with any is practice only. */ waived: WaivedPart[] } | null;
+}
+
+// Discovered -----------------------------------------------------------
+
+/** One token the bot is watching (APP-HOME): public market data and the bot's own checks only. */
+export interface DiscoveredToken extends Moded {
+  mint: string;
+  /** Null until the token's symbol is read. */
+  symbol: string | null;
+  migratedAt: Iso;
+  venue: 'PumpSwap';
+  /** Both sides of the pool at its price; null until the pool and the SOL price are read. */
+  liquidityUsd: Usd | null;
+  /** The last evaluation's token checks (the hard gates): missing before one or while evidence is missing. */
+  checks: 'passed' | 'failed' | 'missing';
+  checkedAt: Iso | null;
+}
+
+export interface DiscoveredView extends Moded {
+  tokens: DiscoveredToken[];
 }
 
 // Funnel ---------------------------------------------------------------
@@ -145,6 +207,12 @@ export interface PositionRecord extends Moded {
   liquidationValueUsd: Usd;
   unrealizedUsd: Usd;
   costsSoFarUsd: Usd;
+  /** P&L so far: liquidation value plus exits sold, less the entry and every fee paid (APP-TRADE); null without a SOL price. */
+  pnlUsd?: Usd | null;
+  /** Our rest's executable price now, $/token, the price the stops judge; null when it cannot be quoted. */
+  markPriceUsd?: Dec | null;
+  /** When the pool behind that price was read. */
+  markedAt?: Iso | null;
   exitRules: (Moded & { rule: ExitRule; trigger: string; state: 'armed' | 'triggered' })[];
   exit: 'none' | 'pending' | 'blocked';
   worker: 'watching' | 'exiting' | 'reconciling';
@@ -256,6 +324,7 @@ export interface DashboardApi {
   trades(mode: Mode): Promise<Envelope<TradeRecord[]>>;
   charts(mode: Mode): Promise<Envelope<ChartsView>>;
   stats(mode: Mode): Promise<Envelope<StatsView>>;
+  discovered(mode: Mode): Promise<Envelope<DiscoveredView>>;
   /** The newest backtest report file; null before the first one. */
   backtestReport(): Promise<Envelope<BacktestReport | null>>;
 }
@@ -270,5 +339,6 @@ export const PATHS = {
   trades: (m: Mode) => `/api/v1/${m}/trades`,
   charts: (m: Mode) => `/api/v1/${m}/charts`,
   stats: (m: Mode) => `/api/v1/${m}/stats`,
+  discovered: (m: Mode) => `/api/v1/${m}/discovered`,
   backtestReport: () => '/api/v1/backtest/report',
 } as const;

@@ -17,7 +17,10 @@ const toConfig = (raw: RawFeeConfig): FeeConfig => ({
   feeTiers: raw.fee_tiers.map((t) => ({ marketCapThreshold: BigInt(t.market_cap_lamports_threshold), fees: split(t.fees) })),
 });
 
-const configs = readFixture<{ pump: RawFeeConfig; amm: RawFeeConfig }>('fee-configs.json');
+// Mainnet snapshots shared with RES-4's cost math (research/edge/snapshot), kept outside the test tree.
+const SNAPSHOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'research', 'edge', 'snapshot');
+const readSnapshot = <T>(name: string): T => JSON.parse(readFileSync(join(SNAPSHOT, name), 'utf8')) as T;
+const configs = readSnapshot<{ pump: RawFeeConfig; amm: RawFeeConfig }>('fee-configs.json');
 /** Live pump-fees FeeConfig for the bonding curve (8Wf5…) and for PumpSwap (5PHirr…). */
 export const PUMP_FEE_CONFIG = toConfig(configs.pump);
 export const AMM_FEE_CONFIG = toConfig(configs.amm);
@@ -30,7 +33,7 @@ export const ok = <T>(q: Quote<T>): T => {
 /** Normal coin: no mayhem mode, no Token-2022 transfer fee or hook. */
 export const NORMAL_COIN = { mayhemMode: false, transferFee: false, transferHook: false } as const;
 
-const g = readFixture<Record<string, string>>('pump-global.json');
+const g = readSnapshot<Record<string, string>>('pump-global.json');
 /** pump Global launch parameters as read on chain (fixture, with its source slot). */
 export const PUMP_GLOBAL = {
   initialVirtualTokenReserves: BigInt(g['initialVirtualTokenReserves']!),

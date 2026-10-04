@@ -1,11 +1,12 @@
-import type { ReactNode } from 'react';
-import { type CheckResult, type DecisionRecord, type FunnelView, MODES, type Mode, type PositionRecord, type RiskMeter, type StatsView, type StatusFlag, type WorkerStatus } from '../api/contract.ts';
+import { type ReactNode, useEffect, useState } from 'react';
+import { type CheckResult, type DecisionRecord, type FunnelView, MODES, STALE_AFTER_SECONDS, type Mode, type PositionRecord, type RiskMeter, type StatsView, type StatusFlag, type WorkerStatus } from '../api/contract.ts';
 import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
+import { TokenActions } from '../components/TokenActions.tsx';
 import { Badge, Empty } from '../components/ui.tsx';
-import { shortAddress } from '../lib/format.ts';
-import { formatPriceDec, formatR, formatShare, formatUsdExact, toMicro, toneOf } from '../lib/money.ts';
-import { CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL } from './labels.ts';
-import { melDateTime } from './time.ts';
+import { formatDuration, shortAddress } from '../lib/format.ts';
+import { formatPrice4, formatPriceDec, formatR, formatReturn, formatShare, formatUsdExact, returnHundredths, toMicro, toneOf, toneOfReturn } from '../lib/money.ts';
+import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_CODE_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL, WORKER_CODE_LABEL } from './labels.ts';
+import { ago, melDateTime } from './time.ts';
 
 export const NOT_ENOUGH = 'Not enough trades';
 
@@ -30,8 +31,14 @@ export function ModeTag({ mode }: { mode: Mode }) {
   );
 }
 
+/**
+ * A worker that answers with connected false has no market feed connected (api.ts: reconciled and any feed up; its API
+ * starts only after the reconcile), so it reads "Feeds down", never "Worker not connected" (APP-WIRE, supervisor ruling).
+ */
+export const NOT_CONNECTED = 'Feeds down';
+
 export function StatusFlags({ status }: { status: WorkerStatus }) {
-  if (!status.connected) return <span className="badge badge-neutral">Worker not connected</span>;
+  if (!status.connected) return <span className="badge badge-neutral">{NOT_CONNECTED}</span>;
   if (status.flags.length === 0) return <span className="muted small">No alerts</span>;
   return (
     <ul className="dash-flags" aria-label="Worker state">
@@ -51,34 +58,61 @@ const ENTRY_OFF: readonly (readonly [StatusFlag, string])[] = [
   ['regime-off', 'regime'],
   ['waiting-for-evidence', 'no evidence'],
 ];
-const ALERTS: readonly StatusFlag[] = ['unknown-tx-result', 'low-fee-reserve', 'rate-limited'];
+const ALERT_FLAGS: readonly StatusFlag[] = ['unknown-tx-result', 'low-fee-reserve', 'rate-limited'];
+
+const label = <K extends string>(labels: Readonly<Record<K, string>>, k: unknown): string | null =>
+  typeof k === 'string' && Object.hasOwn(labels, k) ? labels[k as K] : null;
+const unique = (xs: readonly (string | null)[]): string[] => [...new Set(xs.filter((x): x is string => x !== null))];
+const list = <T,>(v: unknown): readonly T[] | null => (Array.isArray(v) ? (v as T[]) : null);
 
 export interface StatusRow {
-  readonly label: 'Entries' | 'Candidates' | 'Exits' | 'Alerts';
+  readonly label: 'Entries' | 'Regime' | 'Candidates' | 'Exits' | 'Alerts';
   readonly value: string;
   readonly alert: boolean;
 }
 
 /**
- * The worker card's rows, from the status flags the worker serves. A row appears only when a flag proves it: the
- * status endpoint does not carry halt reasons, exit readiness or the regime's reason yet (docs/DECISIONS.md, APP-3),
- * so "Entries: On" or "Exits: Ready" is never shown. Unknown flags add nothing.
+ * The worker card's rows. A row appears only when a served field proves it: the flags, and (API-1) the halt reasons,
+ * exit readiness, critical alerts and the latest regime evaluation. A field the worker does not serve, or a value
+ * this app does not know, adds nothing. "Entries: On" needs the halt reasons empty, the regime on and no stopping flag.
  */
 export const statusRows = (status: WorkerStatus): StatusRow[] => {
-  const has = new Set<string>(Array.isArray(status.flags) ? status.flags : []);
+  const has = new Set<string>(list<string>(status.flags) ?? []);
+  const halts = list<{ code?: unknown }>(status.haltReasons);
+  const regime = status.regime !== null && typeof status.regime === 'object' && (status.regime.state === 'on' || status.regime.state === 'off') ? status.regime : null;
   const rows: StatusRow[] = [];
-  const off = ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why);
-  if (off.length > 0) rows.push({ label: 'Entries', value: `Off: ${off.join(', ')}`, alert: false });
+  const waived = regime === null ? null : list<unknown>(regime.waived);
+
+  const off = unique([...ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why), ...(halts ?? []).map((h) => label(HALT_LABEL, h.code))]);
+  if (off.length > 0 || (halts !== null && halts.length > 0)) rows.push({ label: 'Entries', value: off.length > 0 ? `Off: ${off.join(', ')}` : 'Off', alert: false });
+  // On only with every stop served and none active (the account's risk stops are among the halts), and a regime
+  // evaluation that is on and current (at most two candidate evaluation steps old: the worker's regimeMaxAgeMs).
+  // Any part the S0 diagnostic set did not judge makes the regime's "on" practice only: never a plain "On".
+  else if (halts !== null && regime?.state === 'on' && regime.current === true && waived !== null) rows.push({ label: 'Entries', value: waived.length > 0 ? 'On (practice)' : 'On', alert: false });
+
+  if (regime !== null && regime.current !== true) rows.push({ label: 'Regime', value: 'Not checked lately', alert: false });
+  else if (regime !== null && regime.state === 'on' && waived === null) rows.push({ label: 'Regime', value: 'Unknown', alert: false });
+  else if (regime !== null && regime.state === 'on' && waived !== null && waived.length > 0) {
+    const parts = unique(waived.map((w) => label(WAIVED_LABEL, w) ?? null));
+    rows.push({ label: 'Regime', value: parts.length > 0 ? `On (practice: ${parts.join(', ')} not judged)` : 'On (practice)', alert: false });
+  } else if (regime !== null) {
+    const why = unique((list<{ code?: unknown; input?: unknown }>(regime.reasons) ?? []).map((r) => (r.code === 'unknown' ? (label(REGIME_INPUT_LABEL, r.input) ?? null) : label(REGIME_REASON_LABEL, r.code))));
+    rows.push({ label: 'Regime', value: regime.state === 'on' ? 'On' : why.length > 0 ? `Off: ${why.join(', ')}` : 'Off', alert: false });
+  }
   if (has.has('no-eligible-candidate')) rows.push({ label: 'Candidates', value: 'None yet', alert: false });
+
   if (has.has('exit-blocked')) rows.push({ label: 'Exits', value: 'Blocked', alert: true });
   else if (has.has('exit-pending')) rows.push({ label: 'Exits', value: 'Pending', alert: false });
-  const alerts = ALERTS.filter((f) => has.has(f)).map((f) => FLAG_LABEL[f]);
+  else if (status.exitCapable === true) rows.push({ label: 'Exits', value: 'Ready', alert: false });
+  else if (status.exitCapable === false) rows.push({ label: 'Exits', value: 'Not ready', alert: true });
+
+  const alerts = unique([...ALERT_FLAGS.filter((f) => has.has(f)).map((f) => FLAG_LABEL[f]), ...(list<{ code?: unknown }>(status.alerts) ?? []).map((a) => label(ALERT_LABEL, a.code))]);
   if (alerts.length > 0) rows.push({ label: 'Alerts', value: alerts.join(', '), alert: true });
   return rows;
 };
 
 export function StatusCard({ status }: { status: WorkerStatus }) {
-  if (!status.connected) return <span className="badge badge-neutral">Worker not connected</span>;
+  if (!status.connected) return <span className="badge badge-neutral">{NOT_CONNECTED}</span>;
   const rows = statusRows(status);
   // No proven row: nothing. "No alerts" would claim what the flags cannot show.
   if (rows.length === 0) return null;
@@ -139,7 +173,7 @@ export function Funnel({ funnel }: { funnel: FunnelView }) {
       </ol>
       {rejected.length > 0 && (
         <>
-          <h3 className="dash-sub">Rejected by</h3>
+          <h3 className="dash-sub">Rejections</h3>
           <dl className="dash-rejects">
             {rejected.map((r) => (
               <div key={r.check}>
@@ -165,7 +199,45 @@ const OUTCOME: Record<DecisionRecord['outcome'], string> = { entered: 'Entered',
 export function headline(d: DecisionRecord): string {
   const failed = d.checks.find((c) => c.result !== 'pass');
   if (failed) return `${CHECK_LABEL[failed.check]}${failed.value ? `: ${failed.value}` : ''}${failed.limit ? ` (needs ${failed.limit})` : ''}`;
-  return d.reasons[0] ?? 'All checks passed';
+  // An entry that names no reason passed every check; a decision with no known reason says what it was (review N3).
+  return decisionReasons(d.reasons)[0] ?? (d.outcome === 'entered' ? 'All checks passed' : OUTCOME[d.outcome]);
+}
+
+const own = (m: Record<string, string>, k: unknown): string | null => (typeof k === 'string' && Object.hasOwn(m, k) ? m[k]! : null);
+
+/** One typed reason (gate and code) in words; null for one this app does not know. */
+function reasonLabel(gate: unknown, code: unknown): string | null {
+  if (typeof gate !== 'string') return null;
+  if (/^H\d+$/.test(gate)) return own(CHECK_LABEL, gate);
+  if (gate === 'regime') return code === 'unknown' ? 'Market regime unknown' : CHECK_LABEL.regime;
+  if (/^R\d+$/.test(gate)) return own(RISK_CODE_LABEL, code);
+  if (gate === 'worker' || gate === 'stop') return own(WORKER_CODE_LABEL, code) ?? (gate === 'stop' ? 'Stop distance' : null);
+  return null;
+}
+
+/**
+ * A decision's reasons in words (APP-WORDS a). The worker serves its journal lines; the app reads the typed ones (the
+ * `gate_reasons` list, the S0 practice parts and a paper fill) and shows each label once. Free text and codes this
+ * app does not know are left out: never a raw line or code on screen.
+ */
+export function decisionReasons(reasons: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const line of reasons) {
+    if (line === 'entry filled (paper)') out.push('Filled (paper)');
+    else if (line.startsWith('gate_reasons ')) {
+      let typed: unknown;
+      try {
+        typed = JSON.parse(line.slice('gate_reasons '.length));
+      } catch {
+        continue;
+      }
+      if (Array.isArray(typed)) for (const r of typed) if (r && typeof r === 'object') out.push(reasonLabel((r as { gate?: unknown }).gate, (r as { code?: unknown }).code) ?? '');
+    } else if (line.startsWith('s0_diagnostic ')) {
+      const parts = unique(line.slice('s0_diagnostic '.length).split(',').map((p) => own(WAIVED_LABEL, p.trim())));
+      if (parts.length > 0) out.push(`Practice: ${parts.join(', ')} not judged`);
+    }
+  }
+  return [...new Set(out.filter((x) => x !== ''))];
 }
 
 export function Journal({ decisions, onOpen }: { decisions: DecisionRecord[]; onOpen: (d: DecisionRecord) => void }) {
@@ -183,6 +255,7 @@ export function Journal({ decisions, onOpen }: { decisions: DecisionRecord[]; on
             </span>
             <span className="mono muted small">{melDateTime(d.at)}</span>
           </button>
+          <TokenActions mint={d.mint} />
         </li>
       ))}
     </ul>
@@ -228,7 +301,7 @@ export function DecisionDetail({ decision }: { decision: DecisionRecord }) {
         <div>
           <dt>Token</dt>
           <dd>
-            <strong>{decision.symbol}</strong> <span className="mono muted">{shortAddress(decision.mint)}</span>
+            <strong>{decision.symbol}</strong> <span className="mono muted">{shortAddress(decision.mint)}</span> <TokenActions mint={decision.mint} />
           </dd>
         </div>
         <div>
@@ -244,11 +317,11 @@ export function DecisionDetail({ decision }: { decision: DecisionRecord }) {
           <dd className="num">{decision.ruleScore ?? '—'}</dd>
         </div>
       </dl>
-      {decision.reasons.length > 0 && (
+      {decisionReasons(decision.reasons).length > 0 && (
         <>
           <h3>Reasons</h3>
           <ul className="dash-reasons">
-            {decision.reasons.map((r) => (
+            {decisionReasons(decision.reasons).map((r) => (
               <li key={r}>{r}</li>
             ))}
           </ul>
@@ -265,16 +338,54 @@ export function DecisionDetail({ decision }: { decision: DecisionRecord }) {
 const EXIT_STATE: Record<PositionRecord['exit'], string> = { none: 'Watching', pending: 'Exit pending', blocked: 'Exit blocked' };
 const WORKER_STATE: Record<PositionRecord['worker'], string> = { watching: 'Watching', exiting: 'Exiting', reconciling: 'Reconciling' };
 
-export function OpenPosition({ position }: { position: PositionRecord }) {
+/** The open trade's clock: re-reads the time every second, so Running and the mark's age stay true on screen. */
+export const RUNNING_TICK_MS = 1_000;
+
+function useNow(fixed: number | undefined): number {
+  const [tick, setTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (fixed !== undefined) return;
+    const timer = setInterval(() => setTick(Date.now()), RUNNING_TICK_MS);
+    return () => clearInterval(timer);
+  }, [fixed]);
+  return fixed ?? tick;
+}
+
+/** Time since the server's openedAt (APP-TRADE), never the phone's own start. */
+export const runningSeconds = (openedAt: string, now: number): number => Math.max(0, Math.floor((now - Date.parse(openedAt)) / 1000));
+
+/** The mark is stale past the app's stale rule for any answer (STALE_AFTER_SECONDS). */
+export const markStale = (markedAt: string, now: number): boolean => now - Date.parse(markedAt) > STALE_AFTER_SECONDS * 1000;
+
+function PriceNow({ position, now }: { position: PositionRecord; now: number }) {
+  const { markPriceUsd: mark, markedAt } = position;
+  if (mark == null) return <>—</>;
+  if (markedAt == null) return <>{formatPrice4(mark)}</>;
+  const stale = markStale(markedAt, now);
+  return (
+    <>
+      <span className={stale ? 'loss' : ''}>{formatPrice4(mark)}</span> <span className={stale ? 'loss small' : 'muted small'}>{ago(markedAt, now)}</span>
+    </>
+  );
+}
+
+export function OpenPosition({ position, now: fixed }: { position: PositionRecord; now?: number }) {
+  const now = useNow(fixed);
+  const pnl = position.pnlUsd ?? null;
+  const ret = pnl === null ? null : returnHundredths(pnl, position.sizeUsd);
   const rows: [string, ReactNode, string?][] = [
-    ['Token', <><strong>{position.symbol}</strong> <span className="mono muted">{shortAddress(position.mint)}</span></>],
+    ['Token', <><strong>{position.symbol}</strong> <span className="mono muted">{shortAddress(position.mint)}</span> <TokenActions mint={position.mint} /></>],
     ['Venue', VENUE_LABEL[position.venue]],
     ['Opened', <span className="mono">{melDateTime(position.openedAt)}</span>],
+    ['Running', formatDuration(runningSeconds(position.openedAt, now)), 'num'],
     ['Entry price', formatPriceDec(position.entryPriceUsd), 'num'],
+    ['Price now', <PriceNow position={position} now={now} />, 'num'],
     ['Size', formatUsdExact(position.sizeUsd), 'num'],
     ['Liquidation value', formatUsdExact(position.liquidationValueUsd), 'num'],
     ['Unrealized', formatUsdExact(position.unrealizedUsd, true), `num ${toneOf(position.unrealizedUsd)}`],
     ['Costs so far', formatUsdExact(position.costsSoFarUsd), 'num'],
+    ['P&L', pnl === null ? '—' : formatUsdExact(pnl, true), `num ${pnl === null ? '' : toneOf(pnl)}`],
+    ['Return', formatReturn(ret), `num ${toneOfReturn(ret)}`],
     ['Worker', WORKER_STATE[position.worker]],
   ];
   return (

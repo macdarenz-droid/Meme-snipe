@@ -2,7 +2,9 @@
 # Code updates by the same pull path: fetch the "deploy" tag and accept its commit only if
 #  1. GitHub signed it (the merge-commit key pinned at install, i.e. a pull-request merge),
 #  2. it is on the integration branch,
-#  3. every check run on it finished green (public GitHub API), and
+#  3. its checks are green (public GitHub API; logic.sh deploy gate): GitHub Actions' `check` passed on it and no
+#     other GitHub Actions run failed, and the ops end-to-end (`e2e`) passed on the newest commit at or before it
+#     that touched the e2e paths, and
 #  4. no qualifying dry run is active (its unit, or an unfinished named run in the evidence), and
 #  5. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
 # Then apply the new release's host files (install.sh --update: scripts, units, RUN-1's units), and only once
@@ -56,17 +58,20 @@ if ! git -C "$REPO_DIR" merge-base --is-ancestor "$commit" "refs/remotes/origin/
   exit 1
 fi
 
-runs="$(curl -fsS -m 30 -H 'Accept: application/vnd.github+json' \
-  "$ZEROED_API_URL/repos/$ZEROED_REPO/commits/$commit/check-runs?per_page=100" || true)"
-# The Deploy job's own check run (job name zeroed-deploy) is left out: it says nothing about the code.
-verdict="$(printf '%s' "$runs" | jq -r '[(.check_runs // [])[] | select(.name != "zeroed-deploy")] as $r
-  | if (.total_count // 0) > ((.check_runs // []) | length) then "none"
-    elif ($r | length) == 0 then "none"
-    elif any($r[]; .status != "completed") then "pending"
-    elif all($r[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
-    else "red" end' 2>/dev/null || echo none)"
+check_runs() { curl -fsS -m 30 -H 'Accept: application/vnd.github+json' "$ZEROED_API_URL/repos/$ZEROED_REPO/commits/$1/check-runs?per_page=100" || true; }
+# The same gate as the Deploy workflow (ops/deploy/tag.sh): named runs from GitHub Actions, never "any green run".
+verdict="$(check_runs "$commit" | commit_verdict check)"
+if [ "$verdict" = green ]; then
+  e2e="$(e2e_commit "$REPO_DIR" "$commit")"
+  if [ -z "$e2e" ]; then
+    verdict="none: no commit at or before it touched the ops end-to-end paths"
+  else
+    v="$(check_runs "$e2e" | commit_verdict e2e)"
+    [ "$v" = green ] || verdict="${v%%:*}: the ops end-to-end of ${e2e:0:12}: ${v#*: }"
+  fi
+fi
 if [ "$verdict" != green ]; then
-  log "Waiting on ${commit:0:12}: its checks are ${verdict/none/not reported yet}."
+  log "Waiting on ${commit:0:12}: its checks are $verdict."
   exit 0
 fi
 

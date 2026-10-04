@@ -3,7 +3,7 @@
 // the month's credit use (FEED-1), the deployer index and rug labeller wiring (GATE-1b, RUG-1), the confirmed create of a
 // shortlisted mint, and SEED-1's hook before any live source.
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, openSync, readdirSync, readFileSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
@@ -25,7 +25,7 @@ import { HELIUS_FREE } from '../src/scheduler/index.ts';
 import { REGISTERED_STRATEGIES, SLOT_MS, UNREADABLE, parseConfig, watchTimingProblem } from '../src/run/config.ts';
 import { Desk } from '../src/run/desk.ts';
 import type { FactContext } from '../src/run/facts.ts';
-import { Journal } from '../src/run/journal.ts';
+import { Journal, lastLines } from '../src/run/journal.ts';
 import { redact, setSecretValues } from '../src/run/redact.ts';
 import { CreditBook } from '../src/run/sources.ts';
 import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
@@ -166,6 +166,52 @@ describe('journal (§12.4)', () => {
     b.write('start');
     expect(readFileSync(path, 'utf8').trim().split('\n').map((l) => (JSON.parse(l) as { seq: number }).seq)).toEqual([1, 2, 3]);
   });
+});
+
+describe('the journal is opened from its tail (EXIT-1g review N1)', () => {
+  /** The last two lines and their start offsets, from the whole text (the reading the tail replaces). */
+  const whole = (text: string) => {
+    const lines = text.split('\n');
+    if (lines[lines.length - 1] === '') lines.pop();
+    const offsets: number[] = [];
+    let at = 0;
+    for (const l of lines) {
+      offsets.push(at);
+      at += Buffer.byteLength(l) + 1;
+    }
+    return { lines: lines.slice(-2), offsets: offsets.slice(-2) };
+  };
+  it('read in chunks of any size, the tail is the whole text\'s last two lines', () => {
+    const dir = tempState();
+    const path = join(dir, 'j.jsonl');
+    const texts = ['', '\n', '\n\n', 'a', 'a\n', '{"seq":1}\n{"seq":2,"r":"é€"}\n', '{"seq":1}\n{"seq":2}\n{"seq":3,"ts":"2026', 'x\n\ny\n', `${'z'.repeat(300)}\n${'w'.repeat(200)}`];
+    for (const text of texts) {
+      writeFileSync(path, text);
+      for (const chunk of [1, 2, 7, 64, 65_536]) expect(lastLines(path, chunk), `${JSON.stringify(text)} in chunks of ${chunk}`).toEqual(whole(text));
+    }
+  });
+  it('a journal of about 200 MB opens within 2 s and 100 MB of resident memory (a separate process), torn last line cut', () => {
+    const dir = tempState();
+    const path = join(dir, 'big.jsonl');
+    const fd = openSync(path, 'w');
+    const filler = JSON.stringify({ seq: 1, ts: new Date(T).toISOString(), boot: 'b1', kind: 'decision', reasons: ['x'.repeat(200)] });
+    const block = `${Array.from({ length: 10_000 }, () => filler).join('\n')}\n`;
+    for (let k = 0; k < 75; k++) writeSync(fd, block);
+    writeSync(fd, `${JSON.stringify({ seq: 7, ts: new Date(T).toISOString(), boot: 'b1', kind: 'decision' })}\n{"seq":8,"ts":"2026`);
+    closeSync(fd);
+    const size = statSync(path).size;
+    expect(size).toBeGreaterThan(200_000_000);
+    const script = `import { Journal } from ${JSON.stringify(join(import.meta.dirname, '../src/run/journal.ts'))};
+const t = performance.now(); const j = new Journal(${JSON.stringify(path)}, 'b2', () => ${T});
+console.log(JSON.stringify({ seq: j.seq, repaired: j.repaired, previousMs: j.previousMs, ms: performance.now() - t, maxRssKb: process.resourceUsage().maxRSS }));`;
+    const out = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+    expect(out.status, out.stderr).toBe(0);
+    const res = JSON.parse(out.stdout.trim().split('\n').at(-1)!) as { seq: number; repaired: boolean; previousMs: number; ms: number; maxRssKb: number };
+    expect(res).toMatchObject({ seq: 7, repaired: true, previousMs: T });
+    expect(statSync(path).size).toBe(size - '{"seq":8,"ts":"2026'.length);
+    expect(res.ms).toBeLessThan(2_000);
+    expect(res.maxRssKb).toBeLessThan(100 * 1024);
+  }, 120_000);
 });
 
 describe('heartbeat and the watchdog pause (ops/README.md worker contract)', () => {

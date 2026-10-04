@@ -9,11 +9,11 @@ Sections 1–7 are the **pre-registered plan**. They were written and committed 
 - Decision window: 2026-08-03 to 2026-10-01 (60 days, ARCHITECTURE.md §6.5). DATA-1 adds a 14-day lead-in from 2026-07-20, which features may read as history (never as decision days).
 - **Days are Melbourne days** (AEST/AEDT), as in the STATS-1 registry and the reports. Dataset files are UTC days: a file is opened only if it ends at or before the wall's instant (Melbourne midnight), so a UTC day that straddles the wall stays unread.
 - The holdout is the latest days of the window, set by BT-2 in the STATS-1 registry. **RES-3 never reads, loads or computes anything on a holdout day**, and never on the embargo day before it.
-- Practice days = decision days strictly before `holdoutFrom − embargo`. Embargo = 1 full day (longer than the 2 h horizon plus the exit ladder, ARCHITECTURE.md §13.2).
+- Practice days = decision days strictly before `holdoutFrom − embargo`. The wall is 10 h before the holdout's first UTC instant, longer than the 2 h horizon plus the exit ladder (ARCHITECTURE.md §13.2).
 - The wall is in code: `packages/backtest/src/research/practice.ts` loads the boundary from `research/signals/window.json`, refuses any holdout or embargo day before a file is opened, and throws if any row at or after the wall reaches the analysis. A guard test plants a holdout-day row and expects the refusal.
-- Until BT-2 registers the boundary, the wall is **the B4 day, 2026-09-12** (`holdoutFrom` 2026-09-13; supervisor, 2026-10-04). It may then move only to the registered boundary, never later. In code: a run can never use a wall later than the committed `window.json` (a later `--window` file is refused), and a window marked confirmed is refused unless the STATS-1 registry is given and the wall is the Melbourne day with the same date as every registered holdout's first day. The registry's `fromDay` is a UTC data day (BT-2 `study-1`), so the wall starts 10–11 h before the registered holdout (conservative; supervisor ruling in ARCHITECTURE.md §14).
+- **The wall is the start of Melbourne day 2026-09-22 (2026-09-21T14:00Z)**, 10 h before the sealed holdout (UTC days from 2026-09-22 to the 2026-10-20 entry cutoff, with the tail to 2026-10-21; `RESEARCH_CONFIG.holdout`, DECISIONS sealed-window ruling @ a947f0f, supervisor 2026-10-04). `window.json`: holdoutFrom 2026-09-23 (Melbourne), embargo 1. A test pins it. In code, a run can never use a later wall than the committed `window.json` (a later `--window` file is refused). The wall must always agree with `RESEARCH_CONFIG.holdout.fromDay`; when BT-2's holdout store exists (`RESEARCH_CONFIG.holdout.registryPath`, research/holdout/registry.json, or `--registry`), it is read with BT-2's reader and its plan's `fromDay` and every registered entry's `fromDay` must agree too, or the run is refused (`wall.ts`). A missing store does not block: the config date holds.
 - A candidate whose outcome window (decision + 120 min horizon + exit ladder) would reach the wall is dropped (purge at the wall), and so is one whose hold would cross a regime boundary (BT-2's rule).
-- BT-2 (2026-10-04, `study-1`, PR #41): holdout UTC days 2026-09-22 to 2026-10-01; practice ends 2026-09-21 14:00 UTC (the start of Melbourne 22 Sep). The wall moves there only when the registry (`docs/evidence/bt2/registry.json`) holds the entries; until then it stays on the B4 day.
+- BT-2 (2026-10-04, `study-1`, PR #41): holdout UTC days from 2026-09-22 to the 2026-10-20 entry cutoff, tail to 2026-10-21; practice ends 2026-09-21 14:00 UTC (the start of Melbourne 22 Sep). BT-2's registry plan (`holdout.fromDay` 2026-09-22) agrees.
 
 ## 2. Universes and decision points
 
@@ -49,7 +49,7 @@ Price is the pool's spot price (quote reserve incl. virtual quote / base reserve
 | f_hl | 1 if the lowest price of the last 30 min is above the lowest of the 30 min before it, else 0 | Higher low | U2 hypothesis |
 | f_vol60 | standard deviation of 1-min log returns, 60 min | Risk | |
 | f_liq | log of quote reserve (SOL) | Liquidity | H8, R12 |
-| f_liqchg60 | quote reserve now ÷ 60 min ago − 1 | Liquidity | liquidity pulls (safety.md) |
+| f_liqchg60 | quote vault now ÷ 60 min ago − 1 (it also falls on ordinary sells, not only on liquidity pulls) | Liquidity, flow | liquidity pulls (safety.md) |
 | f_age | minutes since migration (log) | Age | §3.2 |
 | f_2side60 | share of SOL volume from wallets that both bought and sold in 60 min | Wash | §7.2 item 3 |
 | f_top60 | share of SOL volume from the single largest wallet, 60 min | Concentration | §7.2 item 3 |
@@ -103,11 +103,11 @@ Every result is reported per regime: base mean, the final rule's mean, and the w
 
 ## 6. Stopping rule and what is handed to BT-2
 
-**One configuration per universe.** The barriers are tried in the fixed order **B1 → B2 → B3**; the first whose verdict passes every check below is handed over and later ones are not considered. The candidate is the rule the procedure picks on **all** practice days with that barrier, with its exact thresholds (`research/signals/handoff.json`, one entry per universe, with BT-2's `edgePpm`: the out-of-sample one-sided 95% lower bound in ppm, and `medianTargetBps`: the median out-of-sample winner). BT-2's `U1Rules`/`U2Rules` are fixed shapes; a feature-filter rule needs BT-2 to add a matching rule kind or map the conditions, which BT-2 decides. A verdict passes only if **all** of these hold on the pooled walk-forward out-of-sample trades (conservative scenario):
+**One configuration per universe.** The barriers are tried in the fixed order **B1 → B2 → B3**; the first whose verdict passes every check below is handed over and later ones are not considered. The candidate is the rule the procedure picks on **all** practice days with that barrier, with its exact thresholds (`research/signals/handoff.json`, one entry per universe, with BT-2's `edgePpm`: the out-of-sample one-sided 95% lower bound in ppm, and `medianTargetBps`: the median out-of-sample winner; if BT-2 uses it as a take-profit, that counts as a trial in BT-2's registry). BT-2's `U1Rules`/`U2Rules` are fixed shapes; a feature-filter rule needs BT-2 to add a matching rule kind or map the conditions, which BT-2 decides. A verdict passes only if **all** of these hold on the pooled walk-forward out-of-sample trades (conservative scenario):
 
 1. Mean `r_net` > 0 at the one-sided 95% day-block lower bound.
 2. The paired difference against base on the same days > 0 at the one-sided 95% lower bound.
-3. Deflated Sharpe ratio ≥ 0.95 and PBO ≤ 0.25 from the registry.
+3. Deflated Sharpe ratio ≥ 0.95 and PBO ≤ 0.25 from the registry. Both are RES-3's own screen and descriptive for the proof: the proof's G1 gates on SPA (owner, 2026-10-04), never on this DSR.
 4. ≥ 100 out-of-sample trades on ≥ 10 days.
 5. Top 1% of trades ≤ 50% of P&L; no day > 25% of P&L; `y_severe` ≤ 10%; blocked exits ≤ 5%.
 6. The rule chosen in each fold uses the same feature group as the final rule in at least 3 of 4 folds (stability).
@@ -124,7 +124,7 @@ Stopping: one main run when the supervisor says the practice days are in. At mos
 - The 60-day window holds roughly 2.6% graduations of ~50k launches a day, sampled by mint hash (DATA-1); the U2 sample per day depends on that sample rate.
 - f_dep24 and f_grad24 count only mints in DATA-1's hash sample, so they scale with the sample rate (fine as a ranking within the data, not as absolute counts).
 - Only eligible candidates are scored; rejected ones keep their reject reasons and features but get no label in this study (§13.1's audit of rejects is BT-2's run).
-- **Few or no post-B4 practice days.** With the default wall (the B4 day) there are none, so check 7 fails and no candidate can be handed over until BT-2 registers a later boundary (the supervisor's plan, holdoutFrom 2026-09-22, would leave 13–21 Sep as post-B4 practice days). Most practice evidence is from B2, whose economics no longer match today's.
+- **Few post-B4 practice days.** Post-B4 practice runs from 2026-09-12 15:24 UTC to the wall, about 8.9 days; check 7 needs ≥ 30 out-of-sample trades there, which may not be reached. Most practice evidence is from B2, whose economics no longer match today's.
 - Practice-day results say nothing final: only BT-2's sealed holdout is proof (pre-funding item 6).
 
 ## 7a. Code and how to run
@@ -141,6 +141,9 @@ Writes `research/signals/results.json`, `research/signals/handoff.json` (one con
 - 2026-10-04, before any data was read (the data had not landed): written while building the code. U1 liquidity and the H8/H11 proxies now follow GATE-1's exact reading (effective quote reserve; candle high ÷ open); the selection score is the deterministic CR1 t-bound instead of a seeded bootstrap; PBO uses STATS-1's CSCV; exit-cost details, common random numbers and no-quote handling are written out (§4); three features added from the literature pass (f_liqmig, f_turn60, f_early_sold). No result existed when these were made.
 - 2026-10-04, before any data was read: regimes added at the supervisor's request (§5a and check 7 in §6), after UPG-1b found boundaries B2, B3 and B4.
 - 2026-10-04, before any data was read, after the PR #47 review: Melbourne days; default wall moved to the B4 day; the wall can never move later than the committed file, and a confirmed window must match the STATS-1 registry; regimes tagged by exact instant; one configuration per universe by the fixed barrier order; the DSR counts selectable trials and runs once on the full registry; the univariate quintiles are trials. Re-review: holds crossing a regime boundary are purged (BT-2's rule); a confirmed holdoutFrom must equal the registry's fromDay; the latest regime comes from the window (B4), B5 stored.
+- 2026-10-04, review of #56 at afbf0f9: the registry check read a file shape BT-2 does not write, so it never ran. The wall is now checked against `RESEARCH_CONFIG.holdout.fromDay` always, and against BT-2's holdout store (read with BT-2's reader) when it exists. An earlier `--window` copy carries no ruling (`confirmedBy` null). The DSR is labelled descriptive in results.json (G1 gates on SPA).
+- 2026-10-04, before any data was read: the wall set to the start of Melbourne 22 Sep by the supervisor's sealed-window ruling; a missing registry no longer blocks, a present one must agree.
+- 2026-10-04, before any data was read: a U1-only 4 h time-stop barrier was proposed (f80ea8a) and withdrawn (67c20b1) because ARCHITECTURE.md §9 caps T_max at 120 min in phase 1. It never ran, so it adds no trial.
 
 ## 9. Literature and evidence
 
