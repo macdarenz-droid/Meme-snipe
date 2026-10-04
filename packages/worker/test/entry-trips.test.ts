@@ -103,6 +103,30 @@ describe('an entry-path trip latches only from a fully marked account', () => {
     });
   }
 
+  it('(d) the same candidate refused first on a stale mark, then on a fresh one: the second reject is written with `trip weekly_loss` and R9 latches', async () => {
+    const seam = { mode: 'stale' as Seam };
+    const mark: typeof markedHistory = (...a) => steered(seam.mode, maxAge)(...a);
+    const stateDir = tempState();
+    const h = makeWorker({ stateDir, markedHistory: mark });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    const tick = () => {
+      m.slot();
+      m.pool();
+    };
+    await m.run(10_000, 400, tick);
+    const latched = () => (controlFile(stateDir).read({ paused: false, latches: {} } as never).latches as unknown as Record<string, unknown>)['weeklyTrippedAtMs'] ?? null;
+    const before = rejects(readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; reasons?: string[] }));
+    expect(before.some((r) => r.some((x) => x.startsWith('risk ') && x.includes('trip weekly_loss')))).toBe(true);
+    expect(latched()).toBeNull();
+    seam.mode = 'dip';
+    await m.run(10_000, 400, tick);
+    await h.worker.stop();
+    const after = rejects(readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; reasons?: string[] })).slice(before.length);
+    expect(after.some((r) => r.includes('trip weekly_loss') && r[2] === before.at(-1)![2])).toBe(true);
+    expect(typeof latched()).toBe('number');
+  });
+
   it('(c) the same position with a fresh mark showing a real fall: `trip weekly_loss` on the reject, and R9 latched', async () => {
     const { lines, latches } = await run(tempState(), steered('dip', maxAge));
     expect(rejects(lines).some((r) => r.includes('trip weekly_loss'))).toBe(true);
