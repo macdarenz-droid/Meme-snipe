@@ -17,6 +17,11 @@ export interface WorkerConfig {
   readonly gitSha: string;
   readonly watchdogUrl: string | null;
   readonly heartbeatMs: number;
+  /**
+   * WATCH-1: how often the position watch looks, and how old a held position's market may get before a snapshot is read
+   * through the second path (ZEROED_WATCH_EVERY_MS, ZEROED_WATCH_STALE_MS).
+   */
+  readonly watch: { readonly everyMs: number; readonly staleMs: number; readonly latencyMs: number };
   /** The bot wallet's public address, when the signer has made one: the dry-run builds use it. */
   readonly wallet: string | null;
   /** Funded public wallets that stand in for the unfunded bot wallet in simulations (TEST-2). */
@@ -28,6 +33,20 @@ export interface WorkerConfig {
    */
   readonly strategy: { readonly name: string; readonly paperEdgePpm: bigint | null; readonly qualifying: boolean };
 }
+
+/**
+ * WATCH-1 keeps a held position's market younger than the policy's quote age: a market is read again once it is
+ * `staleMs` old, seen at most one period late, its answer used only within `latencyMs`, and released by the feed within
+ * `releaseMs` (its horizon while slots arrive). So the oldest a market can be when an exit is judged is
+ * staleMs + everyMs + latencyMs + releaseMs, which must stay below `maxQuoteAgeMs` (exits treat an older market as no
+ * quote). Null when the timing holds; else why not (the entry exits 2, the worker refuses to build).
+ */
+export const watchTimingProblem = (w: WorkerConfig['watch'], maxQuoteAgeMs: number, releaseMs: number): string | null =>
+  w.staleMs + w.everyMs + w.latencyMs + releaseMs < maxQuoteAgeMs ? null
+    : `refused: ZEROED_WATCH_STALE_MS + ZEROED_WATCH_EVERY_MS + ZEROED_WATCH_LATENCY_MS + the feed's release (${w.staleMs} + ${w.everyMs} + ${w.latencyMs} + ${releaseMs}) must stay below the policy's quote age of ${maxQuoteAgeMs} ms`;
+
+/** Solana's target slot time; the feed releases an off-chain fact once its horizon of slots has passed. */
+export const SLOT_MS = 400;
 
 export type Parsed = { readonly ok: true; readonly config: WorkerConfig } | { readonly ok: false; readonly code: number; readonly message: string };
 
@@ -43,6 +62,8 @@ export const parseConfig = (
   env: Readonly<Record<string, string | undefined>>, release: () => string | null,
   /** The qualifying run's name (packages/runner/qualifying-run.json): null when none is asked for. */
   qualifyingRun: string | null | typeof UNREADABLE = null,
+  /** `--reconcile-only`: no API is served, so its address is not checked against the health port. */
+  o: { readonly reconcileOnly?: boolean } = {},
 ): Parsed => {
   const refuse = (message: string): Parsed => ({ ok: false, code: EXIT.config, message });
   const stateDir = env['STATE_DIRECTORY'] ?? env['ZEROED_STATE_DIR'];
@@ -64,9 +85,15 @@ export const parseConfig = (
   const apiAddr = env['ZEROED_API_ADDR'] ?? '127.0.0.1:8788';
   if (!isLoopback(apiAddr)) return refuse('refused: the API address must be loopback (OPS publishes it to the tailnet)');
   const api = hostPort(apiAddr);
-  if (api === null || apiAddr === addr) return refuse('refused: the API port is out of range or the same as the health port');
+  if (api === null || (apiAddr === addr && o.reconcileOnly !== true)) return refuse('refused: the API port is out of range or the same as the health port');
   const beat = env['ZEROED_HEARTBEAT_MS'] === undefined ? 20_000 : Number(env['ZEROED_HEARTBEAT_MS']);
   if (!Number.isSafeInteger(beat) || beat < 1_000) return refuse('refused: ZEROED_HEARTBEAT_MS must be a whole number of at least 1000');
+  const watchEvery = env['ZEROED_WATCH_EVERY_MS'] === undefined ? 200 : Number(env['ZEROED_WATCH_EVERY_MS']);
+  if (!Number.isSafeInteger(watchEvery) || watchEvery < 100) return refuse('refused: ZEROED_WATCH_EVERY_MS must be a whole number of at least 100');
+  const watchStale = env['ZEROED_WATCH_STALE_MS'] === undefined ? 500 : Number(env['ZEROED_WATCH_STALE_MS']);
+  if (!Number.isSafeInteger(watchStale) || watchStale < watchEvery) return refuse('refused: ZEROED_WATCH_STALE_MS must be a whole number of at least ZEROED_WATCH_EVERY_MS');
+  const watchLatency = env['ZEROED_WATCH_LATENCY_MS'] === undefined ? 400 : Number(env['ZEROED_WATCH_LATENCY_MS']);
+  if (!Number.isSafeInteger(watchLatency) || watchLatency < 50) return refuse('refused: ZEROED_WATCH_LATENCY_MS must be a whole number of at least 50');
   const wallet = env['ZEROED_WALLET'] ?? null;
   if (wallet !== null && !ADDRESS.test(wallet)) return refuse('refused: ZEROED_WALLET is not an address');
   const standIns = (env['ZEROED_STANDINS'] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
@@ -98,7 +125,7 @@ export const parseConfig = (
       runId: env['ZEROED_RUN_ID'] ?? null, runLabel: env['ZEROED_RUN_LABEL'] ?? null,
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
-      heartbeatMs: beat, wallet, standIns,
+      heartbeatMs: beat, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency }, wallet, standIns,
       strategy: { name, paperEdgePpm, qualifying },
     },
   };

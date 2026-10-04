@@ -130,10 +130,16 @@ if (command === 'holdout-plan' || command === 'holdout-register' || command === 
   } else if (command === 'holdout-register') {
     const holdoutId = flag('holdout-id');
     const index = Number(flag('attempt'));
-    const st = authoriseHoldout(authority, { attempt: index, holdouts: [{ holdoutId, universe }] }, base);
+    // The size requirement max(300, n_power, closed form) in trades and days, n_power and its seed come from the
+    // walk-forward; they are frozen with the registration, before any holdout count exists (STATS-1c).
+    const requirement = {
+      requiredTrades: Number(flag('required-trades')), requiredDays: Number(flag('required-days')), nPower: Number(flag('n-power')), nPowerSeed: Number(flag('n-power-seed')),
+    };
+    const st = authoriseHoldout(authority, { attempt: index, holdouts: [{ holdoutId, universe, requirement }] }, base);
     const attempt = st.attempts.find((x) => x.index === index)!;
-    // The attempt's own window (attempt k >= 2 has its own), and the α G2 spends on it.
-    console.log(JSON.stringify({ registered: holdoutId, attempt: index, alpha: attempt.alpha, ...attempt.window }));
+    // The attempt's own window (attempt k >= 2 has its own), the α G2 spends on it (from the STATS-1c registry) and the
+    // frozen requirement.
+    console.log(JSON.stringify({ registered: holdoutId, attempt: index, alpha: attempt.alpha, requirement, ...attempt.window }));
   } else {
     const sealed = runAndSealHoldout({ ...base, ledgerPath: flag('ledger') }, { ...authority, byUniverse: { [universe]: flag('holdout-id') }, window });
     console.log(JSON.stringify(sealed));

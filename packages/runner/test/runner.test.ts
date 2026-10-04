@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { STUB_ENTRY } from '../src/contract.ts';
 import { LocalControl } from '../src/control.ts';
 import { reportMarkdown, type DrillOutcome, type Report } from '../src/report.ts';
-import { runSegment } from '../src/runner.ts';
+import { httpHealth, runSegment } from '../src/runner.ts';
 import { scanPaths } from '../src/scan.ts';
 
 const root = join(import.meta.dirname, '..', '..', '..');
@@ -54,6 +54,12 @@ const setup = async (envOver: Record<string, string> = {}) => {
 };
 
 const quiet = (): void => {};
+/** Health replies handed to the runner `ms` after the worker wrote them. */
+const staleHealth = (ms: number) => async (addr: string) => {
+  const h = await httpHealth(addr);
+  if (ms > 0) await new Promise((r) => setTimeout(r, ms));
+  return h;
+};
 
 describe('runner with the stub worker', () => {
   it('runs restart and feed drills, survives a job handover, and writes complete evidence', async () => {
@@ -124,10 +130,12 @@ describe('runner with the stub worker', () => {
     expect(scanPaths([t.dir], new Map(Object.entries(FAKE))).map((f) => f.what)).toEqual(['HELIUS_API_KEY']);
   }, 60_000);
 
-  it('drills every cause: crash, reboot, host loss from backup, chain rebuild and RPC loss', async () => {
+  // CI-1: under parallel load a reply describes the worker a moment before the runner acts on it (the trade it shows
+  // may close before the kill or the copy). 150 ms old replies reproduced it every time; the runner must not care.
+  it.each([['fresh replies', 0], ['replies 150 ms old (a loaded runner)', 150]])('drills every cause: crash, reboot, host loss from backup, chain rebuild and RPC loss, %s', async (_, staleMs) => {
     const t = await setup();
     const res = await runSegment({
-      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy',
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy', fetchHealth: staleHealth(staleMs),
       sampleMs: 100, recoverMs: 6000, log: quiet, control: t.control(), segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'wipe', backupEveryMs: 1500,
       newRun: { runId: 'run', targetMs: 24_000, entry: STUB_ENTRY, restarts: 6, restartWindowMs: 2000, feedDropMs: 500, rpcDrops: 1, rpcDropMs: 700 },
     });
@@ -149,11 +157,11 @@ describe('runner with the stub worker', () => {
     expect(reportMarkdown(r)).toContain("## Recovery by cause");
   }, 90_000);
 
-  it('on the qualifying host, host loss and chain rebuild run as a reconcile-only tabletop beside the live worker', async () => {
+  it.each([['fresh replies', 0], ['replies 150 ms old (a loaded runner)', 150]])('on the qualifying host, host loss and chain rebuild run as a reconcile-only tabletop beside the live worker, %s', async (_, staleMs) => {
     const t = await setup();
     const control = t.control();
     const res = await runSegment({
-      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy',
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy', fetchHealth: staleHealth(staleMs),
       sampleMs: 100, recoverMs: 6000, log: quiet, control, segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'tabletop', offsiteBackup: false, backupEveryMs: 1000,
       newRun: { runId: 'run', targetMs: 12_000, entry: STUB_ENTRY, restarts: 3, causes: ['host-loss', 'chain-rebuild', 'crash'], restartWindowMs: 1500, rpcDrops: 0 },
     });
