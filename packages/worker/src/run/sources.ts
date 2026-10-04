@@ -7,7 +7,7 @@
 // trades (RUG-1's wiring rule).
 import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, type TransactionRecord } from '../../../core/src/chain/index.ts';
 import type { SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
-import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
+import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher, decodable } from '../providers/index.ts';
 import {
   ALCHEMY_FREE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P0, P1, P2, P3,
   RUGCHECK_FREE, Scheduler, type SchedulerSpec,
@@ -193,11 +193,15 @@ export class LiveProviders {
     return this.#fetcher === null ? null : this.#fetcher.fetch(signature, P3);
   }
 
-  /** A transaction at confirmed (P2), put on the feed; true when found. */
+  /**
+   * A transaction at confirmed (P2), put on the feed; true when found and readable. One DEC-1 cannot decode reads as
+   * not found, so a cut trade log it was fetched for still becomes a rugs gap (a decode failure is a fact gap).
+   */
   async fetchTx(signature: string): Promise<boolean> {
     if (this.#fetcher === null) return false;
     try {
-      return (await this.#fetcher.fetch(signature, P2)) !== null;
+      const record = await this.#fetcher.fetch(signature, P2);
+      return record !== null && decodable(record);
     } catch {
       return false;
     }
