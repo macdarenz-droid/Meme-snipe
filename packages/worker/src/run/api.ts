@@ -157,9 +157,39 @@ export interface ApiInputs {
   readonly symbol: (mint: string) => string;
   /** Positions whose due exit waits for its first fresh quote, and since when (EXIT-1c). */
   readonly waitingExits: ReadonlyMap<string, number>;
+  /**
+   * The strategy's candidates, the tokens it is watching (APP-HOME): public market data and its own checks only. The
+   * pool's quote reserve (lamports) is null until the pool is read; gates are the last evaluation's, null before one.
+   */
+  readonly discovered: readonly DiscoveredInput[];
   /** The open position's plan and our size's liquidation value now (lamports, null when it cannot be quoted). */
   readonly open: (p: PositionState) => { readonly stopPrice: bigint; readonly trail: bigint | null; readonly liquidation: bigint | null; readonly openedAtMs: number; readonly universe: string } | null;
 }
+
+export interface DiscoveredInput {
+  readonly mint: string;
+  /** The token's symbol once read, else null (never a made-up one). */
+  readonly symbol: string | null;
+  readonly migratedAtMs: number;
+  readonly lastEvalMs: number | null;
+  readonly gates: readonly { readonly gate: string; readonly code: string }[] | null;
+  readonly quoteReserve: bigint | null;
+}
+
+/** At most this many discovered tokens are served, newest migration first. */
+export const DISCOVERED_MAX = 200;
+
+/**
+ * The token checks of a candidate's last evaluation (APP-HOME): `failed` when a hard gate (H1–H15, H17) rejected it,
+ * `missing` before any evaluation or while evidence, the regime or the worker's own inputs stopped it before the hard
+ * gates judged it (H16, regime, worker), `passed` otherwise (it cleared the hard gates; later stops are not checks).
+ */
+export const checksOf = (gates: DiscoveredInput['gates']): 'passed' | 'failed' | 'missing' => {
+  if (gates === null) return 'missing';
+  if (gates.some((g) => /^H\d+$/.test(g.gate) && g.gate !== 'H16')) return 'failed';
+  if (gates.some((g) => g.gate === 'H16' || g.gate === 'regime' || g.gate === 'worker')) return 'missing';
+  return 'passed';
+};
 
 const fillsOf = (i: ApiInputs, pid: string): PaperAttempt[] =>
   [...i.attempts.values()].filter((a) => a.trade === pid && a.outcome === 'filled' && a.fill !== null).sort((a, b) => (a.sentAtMs ?? 0) - (b.sentAtMs ?? 0));
@@ -242,6 +272,14 @@ export const views = {
         { mode: MODE, kind: 'open-exposure', usedUsd: usdText(open), limitUsd: null },
         { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText(dailyLimit) },
       ],
+      // The session this worker runs (APP-HOME): it starts its own paper session on the policy it loaded, so the app
+      // never offers to start one (startable: false). Limits come from that policy; it has no session loss limit.
+      session: {
+        state: i.paused ? 'paused' : halts.some((h) => h.code === 'session-ended') ? 'ended' : 'running',
+        bankrollUsd: usdText(bankroll), entryUsd: usdText(i.policy.capital.minNotional), maxEntryUsd: usdText(i.policy.capital.maxNotional),
+        maxOpenPositions: i.policy.positions.maxOpen, dailyLossLimitUsd: usdText(dailyLimit),
+        weeklyLossLimitUsd: usdText((bankroll * BigInt(i.policy.loss.weeklyBps)) / 10_000n), sessionLossLimitUsd: null, startable: false,
+      },
     };
   },
 
@@ -339,6 +377,16 @@ export const views = {
     };
   },
 
+  discovered: (i: ApiInputs) => ({
+    mode: MODE,
+    tokens: [...i.discovered].sort((a, b) => b.migratedAtMs - a.migratedAtMs || (a.mint < b.mint ? -1 : 1)).slice(0, DISCOVERED_MAX).map((d) => ({
+      mode: MODE, mint: d.mint, symbol: d.symbol, migratedAt: iso(d.migratedAtMs), venue: 'PumpSwap',
+      // Pool liquidity as both sides at the pool's price: twice the quote reserve; unknown without a pool or SOL price.
+      liquidityUsd: d.quoteReserve === null || i.solPrice === null ? null : usdText(lamportsUsd(2n * d.quoteReserve, i.solPrice)),
+      checks: checksOf(d.gates), checkedAt: d.lastEvalMs === null ? null : iso(d.lastEvalMs),
+    })),
+  }),
+
   stats: (i: ApiInputs) => {
     const closed = i.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).sort((a, b) => a.closedAtMs! - b.closedAtMs!);
     const nets = closed.map((t) => t.netPnl!);
@@ -416,8 +464,8 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
 const OTHER_MODES = ['live', 'backtest'] as const;
 export const NOT_RUNNING = 'this server runs paper only';
 
-export type ApiEndpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'trades' | 'charts' | 'stats';
-const ENDPOINTS: readonly ApiEndpoint[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats'];
+export type ApiEndpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'trades' | 'charts' | 'stats' | 'discovered';
+const ENDPOINTS: readonly ApiEndpoint[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats', 'discovered'];
 
 /** The envelope of one endpoint, or null for a path this worker does not serve. */
 export const route = (path: string, inputs: () => ApiInputs): { readonly status: number; readonly body: unknown } => {
