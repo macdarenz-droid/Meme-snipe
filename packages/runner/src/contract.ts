@@ -163,7 +163,12 @@ export type JournalKind =
   /** CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature (found or why not, pages, credits). */
   | 'create_lookup'
   /** PERSIST-2: a graduates seed taken or refused (`source`, `accepted`, `added`, `reason`). */
-  | 'graduates_seed';
+  | 'graduates_seed'
+  /**
+   * STRATEGY-HEALTH-OBS: one observation of an episode that became final (`lineage`, `episode`, `z`, `s`, `from`, `to`,
+   * `display`). Observation only: nothing reads it; `display` always says "observed; entries not stopped".
+   */
+  | 'strategy_health';
 
 /**
  * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A
