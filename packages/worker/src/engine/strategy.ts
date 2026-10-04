@@ -1044,8 +1044,17 @@ export class LiveStrategy implements Strategy {
         else if (i.status === 'exposure_reserved') this.#sendEntry(i, ctx, out);
         continue;
       }
-      if (i.status === 'exposure_reserved') this.#sendExit(i.intent.id, i.intent.positionId, mint, i.intent.quantity, 0, ctx, out);
-      else if (i.status === 'reconciled' && i.fills.length === 0) this.#replaceExit(i, ctx, out);
+      if (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0)) continue;
+      // Never more than the position holds now (a late sale may have taken some or all of it, PAPER-2); nothing left:
+      // the exit is cancelled, never sent.
+      const held = ctx.book.positions[i.intent.positionId]?.quantity ?? 0n;
+      if (held === 0n) {
+        out.push({ action: { type: 'intent', intentId: i.intent.id, event: { type: 'cancel' } }, reasons: ['exit cancelled', mint, 'nothing left to sell'] });
+        continue;
+      }
+      const quantity = i.intent.quantity < held ? i.intent.quantity : held;
+      if (i.status === 'exposure_reserved') this.#sendExit(i.intent.id, i.intent.positionId, mint, quantity, 0, ctx, out);
+      else this.#replaceExit(i, quantity, ctx, out);
     }
   }
 
@@ -1131,7 +1140,7 @@ export class LiveStrategy implements Strategy {
   }
 
   /** An exit owner whose attempt resolved without a fill: the next rung while its budget lasts, else blocked. */
-  #replaceExit(i: IntentState, ctx: StrategyContext, out: Decision[]): void {
+  #replaceExit(i: IntentState, quantity: bigint, ctx: StrategyContext, out: Decision[]): void {
     if (i.intent.purpose !== 'exit') return;
     const pid = i.intent.positionId;
     const used = exitAttemptsOf(ctx.book.intents, pid);
@@ -1142,7 +1151,7 @@ export class LiveStrategy implements Strategy {
       out.push({ action: { type: 'exit_blocked', positionId: pid, reason: `exit attempts used: ${i.attempts.length} on this exit, ${used} on the position` }, reasons: ['exit blocked', i.intent.mint, 'attempts used'] });
       return;
     }
-    this.#sendExit(i.intent.id, pid, i.intent.mint, i.intent.quantity, i.attempts.length, ctx, out);
+    this.#sendExit(i.intent.id, pid, i.intent.mint, quantity, i.attempts.length, ctx, out);
   }
 
   /** Every open position: one EXIT-1 step per call, as book events. Exits are never blocked by risk (evaluateExit). */

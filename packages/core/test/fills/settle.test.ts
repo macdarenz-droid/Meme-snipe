@@ -63,6 +63,19 @@ describe('fees and rent (M4, M8)', () => {
     expect(dust.settle(leg('exit', 100n, 'b'), scenario(1_000_000n, 1_000_000n))).toEqual({ ok: true, closedAccount: false });
   });
 
+  test('a sell beyond the balance fails as on chain and moves nothing (PAPER-2)', () => {
+    const leg = (purpose: 'entry' | 'exit', tokens: bigint, sig: string) => ({ purpose, mint: 'M', tokens, closeSeed: `s:${sig}`, dustSeed: `s:M:${sig}` });
+    const s = scenario(1_000_000n, 0n);
+    const a = new TokenAccounts();
+    a.settle(leg('entry', 100n, 'a'), s);
+    expect(a.settle(leg('exit', 101n, 'b'), s)).toEqual({ ok: false, reason: 'sell beyond balance' });
+    expect(a.held('M')).toBe(100n);
+    expect(a.settle(leg('exit', 100n, 'c'), s)).toEqual({ ok: true, closedAccount: true });
+    // Nothing left: any sell is refused.
+    expect(a.settle(leg('exit', 1n, 'd'), s)).toEqual({ ok: false, reason: 'sell beyond balance' });
+    expect(a.held('M')).toBe(0n);
+  });
+
   test('a restore rebuilds the same state from settled attempts without drawing a close again', () => {
     const s = scenario(0n, 0n);
     const leg = (purpose: 'entry' | 'exit', tokens: bigint, sig: string) => ({ purpose, mint: 'M', tokens, closeSeed: `s:${sig}`, dustSeed: `s:M:${sig}` });

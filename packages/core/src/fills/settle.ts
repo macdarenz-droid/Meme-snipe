@@ -24,7 +24,7 @@ export interface AccountLeg {
   readonly dustSeed: string;
 }
 
-export type AccountSettlement = { readonly ok: false; readonly reason: 'close failed' } | { readonly ok: true; readonly closedAccount: boolean };
+export type AccountSettlement = { readonly ok: false; readonly reason: 'close failed' | 'sell beyond balance' } | { readonly ok: true; readonly closedAccount: boolean };
 
 /**
  * Our token accounts, one per mint, from our own fills (§11, RENT-1). A sell of the whole balance closes the account in
@@ -47,6 +47,8 @@ export class TokenAccounts {
 
   /** A landed attempt whose swap executed: the close is drawn here; a failed close fails the attempt. */
   settle(l: AccountLeg, s: FillScenario): AccountSettlement {
+    // The token program refuses a transfer beyond the balance: the swap fails on chain, its fee paid (PAPER-2).
+    if (l.purpose === 'exit' && l.tokens > this.held(l.mint)) return { ok: false, reason: 'sell beyond balance' };
     const closes = l.purpose === 'exit' && this.closes(l.mint, l.tokens);
     if (closes && !closeSucceeds(l.closeSeed, s)) {
       this.#sellOnly.add(l.mint);

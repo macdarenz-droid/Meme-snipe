@@ -522,3 +522,68 @@ describe('a late-landing sell reaches the paper account (risk review of #133)', 
     await h2.worker.stop();
   });
 });
+
+describe('PAPER-2: a sell never goes beyond what is held', () => {
+  /**
+   * An open position; exit X1 sells `share` of it and is sent, then the book believes it dead (not found past its height)
+   * and gives it up, and X2 is triggered for the whole position. The paper world lands X1 after all.
+   */
+  const lateSale = async (sharePct: bigint) => {
+    const h = makeWorker({ scenario: { ...LANDS, closeSuccessPpm: 1_000_000n, dustPpm: 0n } });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    const open = () => Object.values(h.worker.book.positions).find((p) => p.status === 'open' && p.quantity > 0n);
+    expect(await until(m, 60_000, () => open() !== undefined, () => { m.slot(); m.pool(); })).toBe(true);
+    const p = open()!;
+    const q = p.quantity;
+    const sold = (q * sharePct) / 100n;
+    const height = BigInt(h.worker.health().last_processed_slot!);
+    const X1 = 'x-late-1' as IntentId;
+    const X2 = 'x-late-2' as IntentId;
+    const sellQuote = { ...quote, inAmount: sold, quotedOut: 1n, minOut: 1n, quotedAtSlot: height };
+    const a1 = { ...fxAttempt(X1, 91, height + 150n), quote: sellQuote };
+    const world = (events: BookEvent[]) => {
+      for (const event of events) h.worker.feed.ingest('worker', { type: 'world', event }, { receivedAt: m.now });
+    };
+    world([
+      { type: 'trigger_exit', positionId: p.id, reasons: ['stop'], intentId: X1, quantity: raw(sold) },
+      on(X1, { type: 'prepare', quote: sellQuote }), on(X1, { type: 'sign', attempt: a1 }), on(X1, { type: 'submit' }),
+    ]);
+    m.slot();
+    await m.run(100, 100);
+    world([
+      on(X1, { type: 'status', signature: a1.signature, result: 'not_found', commitment: null, blockHeight: height + 151n, searchedHistory: true }),
+      on(X1, { type: 'reconcile', fills: [], blockHeight: height + 151n }),
+      on(X1, { type: 'abandon' }),
+      { type: 'trigger_exit', positionId: p.id, reasons: ['max_hold'], intentId: X2, quantity: raw(q) },
+    ]);
+    const done = () => { const x = h.worker.book.intents[X2]; return x !== undefined && isTerminal(x); };
+    expect(await until(m, 60_000, done, () => { m.slot(); m.pool(); })).toBe(true);
+    await m.run(4_000, 400, () => { m.slot(); m.pool(); });
+    const exits = attempts(h.stateDir).filter((a) => a.trade === p.id && a.purpose === 'exit');
+    const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8');
+    return { h, p, q, sold, X1, X2, exits, journal };
+  };
+
+  it('X1 sold everything: X2\'s send is refused on landing (fee paid), then X2 is cancelled; the wallet holds the one sale', async () => {
+    const r = await lateSale(100n);
+    expect(r.h.worker.book.positions[r.p.id]?.quantity).toBe(0n);
+    expect(r.h.worker.book.intents[r.X2]!.status).toBe('cancelled');
+    expect(r.exits.filter((a) => a.outcome === 'filled').map((a) => a.intentId)).toEqual([r.X1]);
+    expect(r.exits.filter((a) => a.intentId === r.X2).every((a) => a.outcome === 'failed' && a.reason === 'sell beyond balance')).toBe(true);
+    expect(r.journal.includes('"oversold"')).toBe(false);
+    // One sale's proceeds, every fee (X2's refused attempt included), the rent back.
+    expect(closedTrade(r.h.stateDir).netLamports).toBe(flows(r.h.stateDir));
+    await r.h.worker.stop();
+  });
+
+  it('X1 sold 40%: X2 sells only the 60% left, never the whole position', async () => {
+    const r = await lateSale(40n);
+    expect(r.h.worker.book.positions[r.p.id]).toMatchObject({ status: 'closed', quantity: 0n });
+    const filled = r.exits.filter((a) => a.outcome === 'filled');
+    expect(filled.map((a) => [a.intentId, a.fill!.tokens])).toEqual([[r.X1, r.sold], [r.X2, r.q - r.sold]]);
+    expect(r.journal.includes('"oversold"')).toBe(false);
+    expect(closedTrade(r.h.stateDir).netLamports).toBe(flows(r.h.stateDir));
+    await r.h.worker.stop();
+  });
+});
