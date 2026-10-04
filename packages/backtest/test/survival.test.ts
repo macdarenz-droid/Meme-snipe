@@ -7,7 +7,7 @@ import { collectCandidates, PLAN_DRIVE, solUsdAsOf } from '../src/research/candi
 import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
 import { HoldoutWallError, type PracticeWindow } from '../src/research/practice.ts';
 import { collectSurvival, SURVIVAL_FEATURES, type SurvivalFeature } from '../src/research/survival.ts';
-import { ALPHA, dayBootstrap, featureTests, type LabelledDecision, mhRiskDifference, PERMUTATIONS, permutationTest, splitDays, tradeMeasures, wilson } from '../src/research/survival-analysis.ts';
+import { ALPHA, CREATOR_FEATURES, dayBootstrap, FAMILY_TESTS, featureTests, type LabelledDecision, mhRiskDifference, PERMUTATIONS, permutationTest, splitDays, tradeMeasures, wilson } from '../src/research/survival-analysis.ts';
 import { clopperPearsonLower } from '../../core/src/stats/index.ts';
 import { freezeRule, passesFeatures, passesSurvival, selectSurvivalRule } from '../src/research/survival-compare.ts';
 import { LabelTimeError, SURVIVAL_RULE, survivalLabel } from '../src/research/survival-label.ts';
@@ -303,6 +303,84 @@ describe('matched strata', () => {
     };
     expect(chosenOf(confounded)).toBeLessThanOrEqual(NULL_MAX_CHOSEN);
   }, 300_000);
+
+  test('null calibration, creator-clustered: survival shared within a creator and creator features fixed per creator, unrelated to each other; a rule is chosen at most α of the time', () => {
+    // Each day and age has 3 creators of 10 graduates. A creator's graduates share its survival chance (0.05 or 0.7), and
+    // the two creator features are constants per creator drawn apart from it. Decisions of one creator are not
+    // exchangeable one by one; only the creator-block test keeps this null (review of #120, N5).
+    const clustered = (seed: number): LabelledDecision[] => {
+      const u = rnd(seed);
+      const xs: LabelledDecision[] = [];
+      let i = 0;
+      for (const day of days.slice(0, 10)) {
+        for (const ageMs of [60, 240, 1440].map((m) => m * 60_000)) {
+          for (let c = 0; c < 3; c++) {
+            const cluster = `${seed}:${day}:${ageMs}:c${c}`;
+            const q = u() < 0.5 ? 0.05 : 0.7;
+            const surv = u();
+            const rugs = Math.floor(5 * u());
+            for (let k = 0; k < 10; k++) {
+              const stratum = `${ageMs}|${u() < 0.5 ? 'a' : 'b'}`;
+              const features = Object.fromEntries(SURVIVAL_FEATURES.map((f) => [f, f === 's_creator_surv' ? surv : f === 's_creator_rugs' ? rugs : u()])) as Record<SurvivalFeature, number>;
+              xs.push({ id: `${seed}:${i++}`, day, ageMs, stratum, cluster, features, survived: u() < q });
+            }
+          }
+        }
+      }
+      return xs;
+    };
+    expect(chosenOf(clustered)).toBeLessThanOrEqual(NULL_MAX_CHOSEN);
+  }, 300_000);
+
+  test('null calibration, creator features under a day effect: the creator blocks stay inside day × stratum cells', () => {
+    // A day effect moves survival and both creator features (constant per creator within the day); within a day
+    // there is no link. Blocks that ignored the day would read the day effect as signal.
+    const confounded = (seed: number): LabelledDecision[] => {
+      const u = rnd(seed);
+      const xs: LabelledDecision[] = [];
+      let i = 0;
+      for (const day of days.slice(0, 10)) {
+        const dv = u();
+        for (const ageMs of [60, 240, 1440].map((m) => m * 60_000)) {
+          for (let c = 0; c < 6; c++) {
+            const cluster = `${seed}:${day}:${ageMs}:c${c}`;
+            const surv = dv + 0.3 * u();
+            const rugs = dv + 0.3 * u();
+            for (let k = 0; k < 5; k++) {
+              const stratum = `${ageMs}|${u() < 0.5 ? 'a' : 'b'}`;
+              const features = Object.fromEntries(SURVIVAL_FEATURES.map((f) => [f, f === 's_creator_surv' ? surv : f === 's_creator_rugs' ? rugs : u()])) as Record<SurvivalFeature, number>;
+              xs.push({ id: `${seed}:${i++}`, day, ageMs, stratum, cluster, features, survived: u() < 0.02 + 0.3 * dv });
+            }
+          }
+        }
+      }
+      return xs;
+    };
+    expect(chosenOf(confounded)).toBeLessThanOrEqual(NULL_MAX_CHOSEN);
+  }, 300_000);
+
+  test('creator features are tested on creator blocks: a creator effect on the feature is still found', () => {
+    // The feature carries the creator's survival chance: a real creator-level signal must still pass.
+    const u = rnd(41);
+    const xs: LabelledDecision[] = [];
+    let i = 0;
+    for (const day of days.slice(0, 10)) {
+      for (let c = 0; c < 20; c++) {
+        const q = u();
+        for (let k = 0; k < 4; k++) {
+          const features = Object.fromEntries(SURVIVAL_FEATURES.map((f) => [f, f === 's_creator_surv' ? q : u()])) as Record<SurvivalFeature, number>;
+          xs.push({ id: `p${i++}`, day, ageMs: 3_600_000, stratum: 'a', cluster: `${day}:c${c}`, features, survived: u() < 0.05 + 0.6 * q });
+        }
+      }
+    }
+    expect(CREATOR_FEATURES.has('s_creator_surv')).toBe(true);
+    const r = permutationTest(xs, 's_creator_surv', 0.5, PERMUTATIONS, 3);
+    expect(r.est!).toBeGreaterThan(0.2);
+    expect(r.p!).toBeLessThan(ALPHA / FAMILY_TESTS);
+    // p = (1 + k) / (1 + B), never 0.
+    expect(r.p!).toBeGreaterThanOrEqual(1 / (PERMUTATIONS + 1));
+    expect(Number.isInteger(Math.round(r.p! * (PERMUTATIONS + 1) * 1e6) / 1e6)).toBe(true);
+  }, 120_000);
 
   test('no check-day value reaches selection: a check-only signal is never chosen, and a planted check-day marker leaves the frozen rule identical', () => {
     const C = new Set(split.check);

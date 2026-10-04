@@ -9,9 +9,17 @@ export interface LabelledDecision {
   readonly day: string;
   readonly ageMs: number;
   readonly stratum: string;
+  /** The creator (cluster) of the coin; absent means a cluster of its own. Read only by the creator features' test. */
+  readonly cluster?: string;
   readonly features: Readonly<Record<SurvivalFeature, number | null>>;
   readonly survived: boolean;
 }
+
+/**
+ * Features fixed per creator: graduates of one creator share both the feature and, often, their fate, so their
+ * decisions are not exchangeable one by one (review of #120, N5). These are tested on creator blocks.
+ */
+export const CREATOR_FEATURES: ReadonlySet<SurvivalFeature> = new Set(['s_creator_surv', 's_creator_rugs']);
 
 /** Earliest ceil(2/3) of the days find features; the rest check them (survival.md §4). Pass the window's readable days. */
 export const splitDays = (days: readonly string[]): { readonly find: string[]; readonly check: string[] } => {
@@ -123,6 +131,7 @@ const logChoose = (n: number, k: number): number => logFact(n) - logFact(k) - lo
  * p = (1 + k) / (1 + B) with k the permutations at least as extreme (Phipson & Smyth 2010).
  */
 export const permutationTest = (xs: readonly LabelledDecision[], f: SurvivalFeature, split: number, permutations: number, seed: number): { readonly est: number | null; readonly p: number | null } => {
+  if (CREATOR_FEATURES.has(f)) return creatorBlockTest(xs, f, split, permutations, seed);
   const est = mhRiskDifference(xs, f, split);
   if (est === null) return { est, p: null };
   const strataIds = new Map<string, number>();
@@ -181,6 +190,89 @@ export const permutationTest = (xs: readonly LabelledDecision[], f: SurvivalFeat
     let num = 0;
     for (let s = 0; s < S; s++) if (w[s]! > 0) num += w[s]! * (xHi[s]! / hn[s]! - (kTot[s]! - xHi[s]!) / ln[s]!);
     if (Math.abs(num / wSum) >= abs) k++;
+  }
+  return { est, p: (1 + k) / (1 + permutations) };
+};
+
+/**
+ * The creator features' permutation test (RES-5c). Within each day × stratum cell, one creator's decisions form one
+ * unit; the unit is high when its first decision's value (in time order as given) is above the split, and every
+ * decision of the unit counts on that side. The permutation shuffles high and low among the units of a cell, keeping
+ * each unit's decisions and survivors together, so survival shared within a creator can no longer pass as signal.
+ * The statistic is the matched (Mantel–Haenszel) difference over decisions; two-sided; p = (1 + k) / (1 + B).
+ */
+const creatorBlockTest = (xs: readonly LabelledDecision[], f: SurvivalFeature, split: number, permutations: number, seed: number): { readonly est: number | null; readonly p: number | null } => {
+  const strataIds = new Map<string, number>();
+  const cells = new Map<string, { stratum: number; units: Map<string, { m: number; k: number; high: boolean }> }>();
+  for (const x of xs) {
+    const v = x.features[f];
+    if (v === null || !Number.isFinite(v)) continue;
+    const sid = strataIds.get(x.stratum) ?? strataIds.size;
+    strataIds.set(x.stratum, sid);
+    const key = `${x.day}|${x.stratum}`;
+    const c = cells.get(key) ?? { stratum: sid, units: new Map() };
+    const id = x.cluster ?? `id:${x.id}`;
+    const u = c.units.get(id) ?? { m: 0, k: 0, high: v > split };
+    u.m++;
+    if (x.survived) u.k++;
+    c.units.set(id, u);
+    cells.set(key, c);
+  }
+  const S = strataIds.size;
+  const list = [...cells.values()].map((c) => ({ stratum: c.stratum, units: [...c.units.values()], highs: [...c.units.values()].filter((u) => u.high).length }));
+  const hk = new Float64Array(S);
+  const hn = new Float64Array(S);
+  const lk = new Float64Array(S);
+  const ln = new Float64Array(S);
+  const mh = (): number | null => {
+    let num = 0;
+    let den = 0;
+    for (let s = 0; s < S; s++) {
+      if (hn[s]! === 0 || ln[s]! === 0) continue;
+      const w = (hn[s]! * ln[s]!) / (hn[s]! + ln[s]!);
+      num += w * (hk[s]! / hn[s]! - lk[s]! / ln[s]!);
+      den += w;
+    }
+    return den === 0 ? null : num / den;
+  };
+  const add = (stratum: number, u: { m: number; k: number }, high: boolean): void => {
+    if (high) {
+      hn[stratum]! += u.m;
+      hk[stratum]! += u.k;
+    } else {
+      ln[stratum]! += u.m;
+      lk[stratum]! += u.k;
+    }
+  };
+  const reset = (): void => {
+    hk.fill(0);
+    hn.fill(0);
+    lk.fill(0);
+    ln.fill(0);
+  };
+  for (const c of list) for (const u of c.units) add(c.stratum, u, u.high);
+  const est = mh();
+  if (est === null) return { est, p: null };
+  const rng = createRng(seed);
+  const abs = Math.abs(est) - 1e-12;
+  let k = 0;
+  const order: number[] = [];
+  for (let b = 0; b < permutations; b++) {
+    reset();
+    for (const c of list) {
+      // A uniform choice of which `highs` units of the cell are high (partial Fisher–Yates).
+      order.length = 0;
+      for (let i = 0; i < c.units.length; i++) order.push(i);
+      for (let i = 0; i < c.highs; i++) {
+        const j = i + nextInt(rng, c.units.length - i);
+        const t = order[i]!;
+        order[i] = order[j]!;
+        order[j] = t;
+      }
+      for (let i = 0; i < c.units.length; i++) add(c.stratum, c.units[order[i]!]!, i < c.highs);
+    }
+    const v = mh();
+    if (v !== null && Math.abs(v) >= abs) k++;
   }
   return { est, p: (1 + k) / (1 + permutations) };
 };
