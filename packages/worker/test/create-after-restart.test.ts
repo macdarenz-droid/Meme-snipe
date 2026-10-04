@@ -11,9 +11,12 @@ import { passingFacts } from '../../core/test/gates/world.ts';
 import { MINT as FIX_MINT, RECORDS } from '../../core/test/facts/helpers.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import { DeployerStore } from '../src/run/deployer-store.ts';
+import { OFF_CHAIN } from '../../core/src/engine/index.ts';
+import { DeployerIndex, RugLabeller } from '../../core/src/gates/index.ts';
+import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
+import { type DailyBudget, PERSIST_FILE, saveState } from '../src/persist/index.ts';
 import { CREATE_LOOKUP_CREDITS, CreditBook, type CreateLookup, LiveProviders, findCreate } from '../src/run/sources.ts';
 import { DEFAULT_LIVE_FEED, FakeSocketHub, LiveFeed, rpcHandler, scriptedHttp, type Frame } from '../src/providers/index.ts';
-import type { DailyBudget } from '../src/persist/index.ts';
 import { ManualTimers } from '../src/scheduler/index.ts';
 import { blockNetwork, recordOf, testSecrets, tx } from './helpers.ts';
 import { MINT, T, Market, dueTimers, makeWorker, passingMarket, slotAt, tempState } from './worker-harness.ts';
@@ -204,14 +207,20 @@ const landCreate = (m: Market): void => {
 };
 
 /** A worker over a state dir whose deployer store holds `creates`, with the passing market minus the create fact. */
-const restarted = async (o: { creates?: readonly MarketEvent[]; findCreate?: (mint: string) => Promise<CreateLookup>; seed?: readonly MarketEvent[] } = {}) => {
+const restarted = async (o: { creates?: readonly MarketEvent[]; findCreate?: (mint: string) => Promise<CreateLookup>; seed?: readonly MarketEvent[]; savedState?: boolean; createSigsMax?: number } = {}) => {
   const stateDir = tempState();
   const store = new DeployerStore(stateDir);
   for (const e of o.creates ?? []) store.keep(e);
+  if (o.savedState === true) {
+    // A saved index that restores (WORKER-GROW): the store's creates then stay in its file only.
+    const at = { slot: slotAt(T - 16 * 86_400_000 - 60_000), txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: T - 16 * 86_400_000 - 60_000 };
+    saveState(join(stateDir, PERSIST_FILE), { asOf: at, index: new DeployerIndex().snapshot(at), labeller: new RugLabeller(RUG_CONFIG).snapshot(), coverage: [] });
+  }
   const fetched: string[] = [];
   const h = makeWorker({
     stateDir, fetched, found: true,
     ...(o.findCreate === undefined ? {} : { findCreate: o.findCreate }),
+    ...(o.createSigsMax === undefined ? {} : { createSigsMax: o.createSigsMax }),
     ...(o.seed === undefined ? {} : { seed: async () => ({ mode: 'fill' as const, creates: o.seed!, coverage: [], report: 'test fill' }) }),
   });
   expect(await h.worker.reconcile()).toEqual({ ok: true });
@@ -242,6 +251,28 @@ describe('a candidate created before the start reaches H9 with its real create',
     landCreate(m);
     await m.run(10_000, 400, tick(m));
     expect(entered(stateDir)).toBe(true);
+    await h.worker.stop();
+  });
+
+  it('the same when a saved index restores and the store\'s creates stay in its file only (WORKER-GROW)', async () => {
+    const { h, fetched } = await restarted({ creates: [stored(`log:${STORED_SIG}:0003`)], savedState: true });
+    expect(h.logs.some((l) => l.startsWith('Saved state restored'))).toBe(true);
+    const m = await passingMarket(h, { omit: [createKey(MINT)] });
+    await m.run(4_000, 400, tick(m));
+    expect(fetched).toEqual([STORED_SIG]);
+    await h.worker.stop();
+  });
+
+  it('past the cap, the newest stored creates are the ones kept, in store order (WORKER-GROW)', async () => {
+    // Three stored creates of the candidate's mint, oldest first, and a cap of two: the newest signature wins.
+    const older = SIG('A');
+    const newest = SIG('C');
+    const at = (id: string, k: number): MarketEvent => ({ ...stored(id), moment: { ...stored(id).moment, receivedAt: stored(id).moment.receivedAt + k } });
+    const other = (k: number, c: string): MarketEvent => ({ ...at(`log:${SIG(c)}:0003`, k), key: `${LOG_CREATE_PREFIX}Other${k}` });
+    const { h, fetched } = await restarted({ creates: [at(`log:${older}:0003`, 1), other(2, 'B'), at(`log:${newest}:0003`, 3), other(4, 'D')], savedState: true, createSigsMax: 2 });
+    const m = await passingMarket(h, { omit: [createKey(MINT)] });
+    await m.run(4_000, 400, tick(m));
+    expect(fetched).toEqual([newest]);
     await h.worker.stop();
   });
 

@@ -1,22 +1,42 @@
 // Worker state files in the state directory, each written whole and atomically (temp file, fsync, rename), in lossless
 // JSON. A file that is missing reads as its default; a file that exists but cannot be read stops the start (stored
 // state is never guessed).
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Latches } from '../../../core/src/risk/index.ts';
 import { NO_LATCHES } from '../../../core/src/risk/index.ts';
 import type { EntrySeed, SavedExit } from '../engine/strategy.ts';
 import { parseTyped, typedText } from './json.ts';
 
-export const atomicWrite = (path: string, text: string): void => {
+/** The low-level write: bytes written, which can be fewer than asked (a nearly full disk). Tests pass a short one. */
+export type WriteFn = (fd: number, buf: Uint8Array, offset: number, length: number) => number;
+
+/**
+ * Writes all of `text`, looping on short writes; a write that makes no progress throws (#159 review N2: `writeSync`'s
+ * count was ignored, so a short write on a nearly full disk renamed a cut file over the good one).
+ */
+export const writeAll = (fd: number, text: string, write: WriteFn = writeSync): void => {
+  const buf = Buffer.from(text, 'utf8');
+  for (let off = 0; off < buf.length;) {
+    const n = write(fd, buf, off, buf.length - off);
+    if (!(n > 0)) throw new Error(`short write: ${off} of ${buf.length} bytes written`);
+    off += n;
+  }
+};
+
+/** Temp file, every byte written and flushed, then renamed over `path`. A failed write leaves `path` as it was. */
+export const atomicWrite = (path: string, text: string, write: WriteFn = writeSync): void => {
   const tmp = `${path}.tmp`;
   const fd = openSync(tmp, 'w', 0o600);
   try {
-    writeSync(fd, text);
+    writeAll(fd, text, write);
     fsyncSync(fd);
-  } finally {
+  } catch (e) {
     closeSync(fd);
+    rmSync(tmp, { force: true });
+    throw e;
   }
+  closeSync(fd);
   renameSync(tmp, path);
 };
 

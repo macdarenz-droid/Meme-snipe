@@ -4,6 +4,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CappedMap } from '../src/run/capped-map.ts';
+import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
+import { migrationKey } from '../../core/src/gates/index.ts';
+import { Market, makeWorker, slotAt, virtualTimers } from './worker-harness.ts';
 
 describe('CappedMap', () => {
   it('keeps the newest `max` keys, forgets the oldest-inserted first, and an update keeps its place', () => {
@@ -45,3 +48,31 @@ describe('no oldest-key eviction by iteration in the worker (guard)', () => {
     expect(readFileSync(join(import.meta.dirname, '..', 'src', 'run', 'worker.ts'), 'utf8')).not.toMatch(/keys\(\)\.next\(\)/);
   });
 });
+
+describe('the live create signatures stay at their cap (review of #179)', () => {
+  interface Case { readonly mint: string; readonly transactions: readonly (RpcTransactionBase64 & { readonly signature: string })[] }
+  // Real mainnet creates (each case's first transaction is its pump CreateV2), three different mints.
+  const CASES = (JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures', 'rug-replay.json'), 'utf8')) as { cases: Case[] }).cases.slice(0, 3);
+
+  it('three live creates at a cap of two keep the newest two; the oldest mint\'s shortlist reads nothing', async () => {
+    const recs = CASES.map((c) => recordFromRpc(c.transactions[0]!.signature, c.transactions[0]!, null));
+    const fetched: string[] = [];
+    const h = makeWorker({ timers: virtualTimers(Math.max(...recs.map((r) => (r.blockTime ?? 0) * 1000))), fetched, createSigsMax: 2 });
+    await h.worker.reconcile();
+    for (const [i, rec] of recs.entries()) {
+      h.worker.feed.ingest('helius', { type: 'slot', slot: rec.slot + 3n, parent: rec.slot + 2n, root: null }, { receivedAt: h.timers.now() });
+      h.worker.feed.ingest('helius', { type: 'logs', signature: CASES[i]!.transactions[0]!.signature, slot: rec.slot, err: rec.err, via: 'pump', logs: rec.logMessages ?? [] }, { receivedAt: h.timers.now() });
+      h.worker.step();
+    }
+    const m = new Market(h);
+    m.slot(slotAt(h.timers.now()) + 10n ** 9n);
+    const migrate = (mint: string): void => m.fact(migrationKey(mint), { obs: { provider: 'test', slot: null, receivedAt: h.timers.now(), quality: [], commitment: 'confirmed' }, graduatedAtMs: h.timers.now(), migratedAtMs: h.timers.now(), pool: mint, quoteAtMigration: 1n, price: { quote: 1n, base: 1n } });
+    for (const c of CASES) migrate(c.mint);
+    await m.run(3_000);
+    // The oldest (first) create was forgotten; the two newest are read by their signatures.
+    expect(fetched.sort()).toEqual([CASES[1]!.transactions[0]!.signature, CASES[2]!.transactions[0]!.signature].sort());
+    expect(h.logs.some((l) => l.includes(`Shortlisted ${CASES[0]!.mint}`))).toBe(true);
+    await h.worker.stop();
+  });
+});
+

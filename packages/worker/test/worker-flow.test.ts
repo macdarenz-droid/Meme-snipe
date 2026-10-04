@@ -871,21 +871,42 @@ describe('sell-only recovery for a position without its own plan (EXIT-1g, audit
   });
 });
 
+/**
+ * The state a kill between an entry's fill and its plan leaves on disk: the fill booked, the decision's seed saved,
+ * no exit plan. The fill's report and the account fact it publishes come in arrival order since FILL-ORDER, so the
+ * plan is made on that account fact in the fill's own step and no market event falls between them in a test run: the
+ * seed is read while the entry is in flight, and after the run the plan is taken back off disk and the seed put back,
+ * as the kill would have left them.
+ */
+const killedAtFill = async (h: ReturnType<typeof makeWorker>, m: Market) => {
+  const inFlight = () => Object.values(h.worker.book.intents).some((i) => i.intent.purpose === 'entry');
+  expect(await until(m, 30_000, inFlight, () => {
+    m.slot();
+    m.pool();
+  })).toBe(true);
+  const seeds = seedsFile(h.stateDir).read({});
+  expect(Object.keys(seeds)).toHaveLength(1);
+  expect(await until(m, 30_000, () => positions(h).some((p) => p.status === 'open') && Object.keys(exitsFile(h.stateDir).read({})).length > 0, () => {
+    m.slot();
+    m.pool();
+  })).toBe(true);
+  const p = positions(h).find((x) => x.status === 'open')!;
+  await h.worker.kill();
+  const exits = exitsFile(h.stateDir);
+  exits.write(Object.fromEntries(Object.entries(exits.read({})).filter(([k]) => k !== p.id)));
+  seedsFile(h.stateDir).write(seeds);
+  return { p, seed: seeds[p.entryIntentId] };
+};
+
 describe('the entry decision survives a kill before its plan is made (EXIT-1h)', () => {
   it('killed after the entry fills but before the next market event makes its plan: the restart rebuilds the real plan and does not sell', async () => {
     const h = makeWorker();
     expect(await h.worker.reconcile()).toEqual({ ok: true });
     const m = await passingMarket(h, HELD);
-    // Step until the entry has filled, and stop there: its plan is made on the market event after the fill.
-    expect(await until(m, 30_000, () => positions(h).some((p) => p.status === 'open'), () => {
-      m.slot();
-      m.pool();
-    })).toBe(true);
-    const p = positions(h).find((x) => x.status === 'open')!;
-    const seed = seedsFile(h.stateDir).read({})[p.entryIntentId];
+    // Killed after the entry filled and before its plan was made.
+    const { p, seed } = await killedAtFill(h, m);
     expect(seed).toBeDefined();
     expect(exitsFile(h.stateDir).read({})[p.id]).toBeUndefined();
-    await h.worker.kill();
     const { b, m: m2, first, mine } = await reboot(h, LANDS);
     expect(await until(m2, 4_000, () => b.worker.strategy.saved()[p.id] !== undefined, () => m2.slot())).toBe(true);
     // The plan is the decision's own (its stop), not a recovery.
@@ -913,13 +934,8 @@ describe('the entry decision survives a kill before its plan is made (EXIT-1h)',
     const h = makeWorker();
     expect(await h.worker.reconcile()).toEqual({ ok: true });
     const m = await passingMarket(h, HELD);
-    expect(await until(m, 30_000, () => positions(h).some((p) => p.status === 'open'), () => {
-      m.slot();
-      m.pool();
-    })).toBe(true);
-    const p = positions(h).find((x) => x.status === 'open')!;
+    const { p } = await killedAtFill(h, m);
     expect(exitsFile(h.stateDir).read({})[p.id]).toBeUndefined();
-    await h.worker.kill();
     return { h, p };
   };
   it('the plan reaches disk before its seed leaves it: a kill at the seeds write of the step that makes the plan keeps the plan (review B1)', async () => {
@@ -983,13 +999,8 @@ describe('the entry decision survives a kill before its plan is made (EXIT-1h)',
     const h = makeWorker();
     expect(await h.worker.reconcile()).toEqual({ ok: true });
     const m = await passingMarket(h, HELD);
-    expect(await until(m, 30_000, () => positions(h).some((p) => p.status === 'open'), () => {
-      m.slot();
-      m.pool();
-    })).toBe(true);
-    const p = positions(h).find((x) => x.status === 'open')!;
+    const { p } = await killedAtFill(h, m);
     expect(exitsFile(h.stateDir).read({})[p.id]).toBeUndefined();
-    await h.worker.kill();
     const seeds = seedsFile(h.stateDir);
     seeds.write(Object.fromEntries(Object.entries(seeds.read({})).filter(([k]) => k !== String(p.entryIntentId))));
     const { b, m: m2, first, mine } = await reboot(h, LANDS);
