@@ -1,0 +1,14 @@
+34
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  test/engine.test.ts > runtime trap > the setup file traps every engine test: a strategy reading the clock, randomness or the locale fails the run
+ FAIL  test/engine.test.ts > runtime trap > a strategy factory that reads the clock is trapped too
+ FAIL  test/gates/s0-diagnostic.test.ts > S0 diagnostic set > names exactly four parts
+ FAIL  test/gates/s0-diagnostic.test.ts > S0 diagnostic set > regime survival: a missing graduates series turns the regime off, and with the set is logged but not judged
+ Test Files  2 failed | 65 passed (67)
+      Tests  4 failed | 2865 passed (2869)
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  test/research.test.ts > outcome stage > a decision whose outcome window would reach the wall is purged, not scored
+ Test Files  1 failed | 14 passed (15)
+      Tests  1 failed | 563 passed (564)
+
+[exited with code 0]

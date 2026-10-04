@@ -1,0 +1,9 @@
+ packages/worker/test/rec-tail.test.ts       | 159 +++++++++++++++
+ packages/worker/test/streams.test.ts        |  23 +++
+ 24 files changed, 2311 insertions(+), 258 deletions(-)
+ Test Files  139 passed (139)
+      Tests  4345 passed (4345)
+d0bf01d
+14:54
+
+[exited with code 0]

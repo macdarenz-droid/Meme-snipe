@@ -1,0 +1,12 @@
+28579f5 WORKER-1b: wait for the paper effect instead of a fixed window in the abandon test
+178:export const universeOfKey = (key: string): ExitUniverse | null => {
+248:  readonly #flattening = new Set<string>();
+694:        const u = entry === undefined ? null : universeOfKey(entry.intent.key);
+735:      if (!known && !this.#flattening.has(p.id)) {
+736:        this.#flattening.add(p.id);
+739:      const step = decideExit(known ? this.#settings : this.#flatten(saved.plan.universe), saved.plan, holding, saved.tracker, {
+755:  #flatten(universe: string): ExitSettings {
+758:    const flat = { ...base, tFlatMs: 0, tMaxMs: 0, partialAtRBps: Number.MAX_SAFE_INTEGER, partialAtGainBps: Number.MAX_SAFE_INTEGER };
+801:    const universe = seed?.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key));
+
+[exited with code 0]
