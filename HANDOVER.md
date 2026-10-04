@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, 5:20 PM Melbourne (AEDT).
+**Last updated:** Sun 4 Oct 2026, 6:07 PM Melbourne (AEDT).
 
 ## 1. Read first, in this order
 
@@ -66,49 +66,49 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
   - One concurrency group; it stops on HTTP 429 and resumes with back-off.
   - Each finished UTC day is published as a release tagged `data-day-YYYY-MM-DD`.
 
-## 4. Current state (4 Oct, 5:20 PM)
+## 4. Current state (4 Oct, 6:07 PM)
 
 **GitHub:** the owner's account is on GitHub Pro since about 3:47 PM (40 jobs at once). Declined Pro payments locked Actions from 3:15 to 3:23 PM and from 3:37 to 3:42 PM. If "The job was not started because your account is locked due to a billing issue" returns:
 - nothing merges, the server takes no update and no data job runs;
 - send the owner to github.com/settings/billing;
 - tell the builders a red check with that annotation is not theirs.
 
-**Merged since 10:25 AM** (28): FACTS-1e #84, FACTS-1d #78, BT-1e #86, RUN-1e #76, flake fix #85, RUN-1f #91, POS-1 #88, POOL-1 #101, GATE-2 #94, PERSIST-1 #71, BT-1f #92, EXIT-1c #93, DATA-1c #77, EXIT-1e #102 (with EXIT-1d #100), REC-1 #95, STATS-1c #62, WATCH-1 #87, STATS-1d/1e #96, CI-1 #105, WORKER-1b #82, CI-2 #104, OPS-1h #108, TEST-1 #90, BT-3 #89, RISK-MARK #103, APP-3 #97, DATA-2 #111, MEM-1 #112 (6:16 PM). Base head 910472e.
+**Merged since 10:25 AM** (31): FACTS-1e #84, FACTS-1d #78, BT-1e #86, RUN-1e #76, flake fix #85, RUN-1f #91, POS-1 #88, POOL-1 #101, GATE-2 #94, PERSIST-1 #71, BT-1f #92, EXIT-1c #93, DATA-1c #77, EXIT-1e #102 (with EXIT-1d #100), REC-1 #95, STATS-1c #62, WATCH-1 #87, STATS-1d/1e #96, CI-1 #105, WORKER-1b #82, CI-2 #104, OPS-1h #108, TEST-1 #90, BT-3 #89, RISK-MARK #103, APP-3 #97, DATA-2 #111, MEM-1 #112 (5:16 PM), STATS-1f #109 (5:29 PM), WORKER-1c #99 (5:51 PM), WATCH-1b #113 (6:05 PM). Base head 8706826.
 
-**Merge queue.** Before each merge, check that the PR's files don't overlap a critical-path PR that is in a merge check. Merging #90 forced #103 into another base merge.
+**Merge queue.** Before each merge, check that the PR's files don't overlap a critical-path PR that is in a merge check. Merging #90 forced #103 into another base merge. Every merge makes the other PR heads stale (each needs a base update and a CI run of about 8–10 min), so the critical path goes first and docs pushes ride right after a merge.
 
 | Order | PR | State | Note |
 |---|---|---|---|
-| 1 | WORKER-1c #99 | 2fc1fd1: risk PASS (017PBU), worker side verified (01NZwy); FAIL on a test port clash (persist-worker.test 18860/18861) → 019cEN fixing + base merge | last real-worker prerequisite |
-| 2 | WATCH-1b #113 | PASS c899f04 (017PBU); 01WGpx pushing the (a1') guard and DECISIONS commit for a quick delta | merges right after #99 (worker.ts overlap); stops healthy-feed Alchemy reads |
-| 3 | SWITCH-1 #110 | FAIL 8e82dce (01Ty8L): smoke hold + worker.env, post-switch health hold + rollback, confined trial (MemoryMax) → 01VM97 | then Deploy (code only) and check Online |
-| 4 | WORKER-1e #117 | cb0a219 in review (017PBU risk, 012QdD facts) | makes the S0 shakedown able to trade: `ZEROED_S0_DIAGNOSTIC` (regime volume, exec-health measured, H14 creates, regime survival), live H15 sim, exit flow |
-| 5 | STATS-1f #109 | PASS 7a52940 (01FHfb); green dfcc1fc/aef06b8 | no overlap with the critical path |
-| 6 | RENT-1 #114 | PASS 484d50a (012efQ) + required ARCH:307 doc fix and two-sided bands → 016KSN | conservative scoring refunds rent per the modelled close |
-| 7 | EXIT-1f #107 | PASS ce7c78b (01UXzG) | after #99 (overlap); then EXIT-1g |
-| 8 | TEST-3 G3 report #98 | PASS c1f3f45 (01FHfb) | after #99; then the G3 fold |
-| 9 | FACTS-1f #106 | 403924e in merge check (012QdD; TEST-3 reject text gains the staged suffix) | — |
-| 10 | RES-4 #115 | pre-registration PASS (01FHfb, bf56528); cost math FAIL (012efQ: fixed costs must use the outcome stage's constants) → 018esL | research doc + pre-registration; no bot change |
-| 11 | CI-1b #116 | 82c49a1 in review (01DdN4) | memory-bound guard; `openedSince`; `universe` on entry journal lines |
+| 2 | BT-2e data pull #119 | PASS 083af50 (01DKMn) + test-only a26c2c5 (supervisor checked); base update in CI | then dispatch data-scan: mode scan, source helius, day 2026-09-21, max_credits 270000, rpc_rps 5 |
+| 1 | SWITCH-1 #110 | delta PASS 692862e (01Ty8L: trial OOMScoreAdjust +1000, worker −500); base update in CI | then Deploy (code only) and check Online |
+| 4 | RENT-1 #114 | PASS; green 0eae86d (identical to 02d5f1d) | before #115 (one rent model) |
+| 3 | WORKER-1e #117 | PASS both sides cb0a219 (017PBU, 012QdD); push asked (open-minute flow test, REPORT H15 line, approve_risk label, dedupe key) → 012QdD quick delta | makes practice trades possible |
+| 6 | FACTS-1f #106 | merge check PASS 403924e (012QdD) | after #117; adapts to #117's path (trial merge 48/48 done locally) |
+| 7 | CI-1b #116 | PASS 82c49a1 (01DdN4); green 38b6743 before #99 merged | needs a base update (overlapped #99); nit 1 (keep double count) on its next push |
+| 8 | EXIT-1f #107 | PASS ce7c78b (01UXzG) | then EXIT-1g |
+| 9 | TEST-3 G3 report #98 | PASS c1f3f45 (01FHfb) | then the G3 fold |
+| 10 | API-1 #118 | FAIL 7433148 (01DdN4): "Entries: On" while a risk stop refuses entries; notRunning accepted for paper → 01VM97 | after #110 |
+| 11 | RES-4 #115 | C1 fixed d8e500b; ruling: one rent model (#114's), term export only as a pure refactor with a golden test | then 012efQ re-checks C1 |
+| — | BT-TAIL (new) | the slot-tail change leaves #56/#120 into its own PR (018esL; 012efQ) | proof-scoring change, test fails before and passes after |
 
-Merged this evening: DATA-2 #111 (Helius reader, pilot, ARCHIVE-CHECK; 6:03 PM), APP-3 #97, RISK-MARK #103, MEM-1 #112.
+Merged this evening: WATCH-1b #113 (8706826, 6:05 PM), WORKER-1c #99 (d92b73e, 5:51 PM), STATS-1f #109, MEM-1 #112, DATA-2 #111, APP-3 #97, RISK-MARK #103.
 
 **In review or building:**
 
 | Card | PR / branch | State | Next |
 |---|---|---|---|
-| Helius pilot | run 37181739639 (dispatched 5:04 PM) | free plan, ≤15k credits; compares one 20-min 1 Oct unit by digest, reads both window ends, projects the full pull | 01XHH3k reports; then the free practice-day pull (09-20, 09-21) for BT-2e and RES-5 |
+| Helius pilot | run 37181739639 | PASSED: parity on all tables (raw logs = Agave's cut), full history depth, 5,225 credits, 5 blocks/s on free. Full pull ≈ 18.95M credits (≈ US$94 on Developer, 5–6 days best case, unmeasured) | the owner chose free only (one day per ~14 h); paid month not before a finished product |
 | ARCHIVE-CHECK | live on the default branch | one ≤64-byte request every 3 h with our real User-Agent; dispatches the scan only on a 206 | 01XHH3k reports the first answers |
 | BT-2 study | #41 (draft) 501200d in review (012efQ) | funder cluster, `observedTip`, STATS-1c freeze | next: RES-4's six hypotheses as one SPA family (k = 6), the pre-registration hash check, one trial log per registry, the BT-2e runner (01VBTf, about 8 PM – 2 AM) |
 | BT-2e early look | 01VBTf | U2 plus RES-4's U2 ideas plus S0 on the free days, labelled "early look, not proof" | about Tue 6 – Wed 7 Oct |
-| RES-5 survival markers | `claude/res-5` (018esL) | owner's idea: what separates the ~9% survivors from look-alike losers at buy time; research only, nothing into the bot or app; tell the owner only if it beats what we have | Phase A about 3 h; Phase B on the free days |
-| WATCH-1c | 01WGpx | coverage-proven freshness for quiet held pools (0 reads while the trade stream is continuous), a non-swap transaction makes the chain stale, a 30 s verify read against vault donations, measured p99 slot time in the guard | after #113 |
+| RES-5 survival markers | #120 (draft, 018esL) | owner's idea: what separates the ~9% survivors from look-alike losers at buy time; research only, nothing into the bot or app; tell the owner only if it beats what we have | Phase A code up (7c9f0ef); Phase B on the free days, after #115 and BT-TAIL |
+| WATCH-1c | #121 (01WGpx; 017PBU reviewing 12ae9f5) | coverage-proven freshness for quiet held pools (0 reads while the trade stream is continuous), a non-swap transaction makes the chain stale, a 30 s verify read against vault donations, measured p99 slot time in the guard | after #113 |
 | PERSIST-2 | 01F7UF | save and seed the graduates series; list every input a restart resets | after #117 |
 | EXIT-ROUTE | — | wire `sellRoute` so the no_route exit can fire | before the qualifying run |
 | EXIT-1g | 016KSN | N4, N6, N7 (bounded journal read at start) | after #107 |
 | WORKER-1d | 019cEN | prune saved coverage before long runs | after #99 |
 | G3 fold | 01WGpx | `worker:*` reasons folded for G3 | after #98 |
-| API-1 | 01VM97 | answer non-running modes with `data:null` so the app shows "Not running"; the /health docs | after #110 |
+| API-1 | #118 (01VM97) | status serves why entries are off; FAIL 7433148 → serve risk stops (daily, weekly, session, kill latch, loss pauses) as read-only halt codes, fresh regime only; fall back to APP-3's never-On rule if risk/** would change | after #110 |
 | RES-3b | #56 (draft) | wall at 2026-09-21T14:00Z | after the study's inputs |
 
 **Blocked or parked:**
@@ -147,10 +147,11 @@ Sessions belong to the current supervisor's account. A supervisor on another acc
 
 | Milestone | When | Depends on |
 |---|---|---|
-| Real worker on the server (paper), Online in the app | Sun 4 Oct about 9 PM – Mon 1 AM (±3 h) | #99, #113, SWITCH-1 #110, Deploy |
-| Practice trades (S0 shakedown with the labelled diagnostic set) | about Mon 5 Oct (could slip into the evening) | WORKER-1e #117 |
+| Real worker on the server (paper), Online in the app | Sun 4 Oct about 7–9 PM (about midnight if a check fails) | SWITCH-1 #110, Deploy (#99 and #113 merged) |
+| Practice trades (S0 shakedown with the labelled diagnostic set) | tonight about 10 PM – 1 AM (owner asked for speed, quality unchanged); else Mon morning | WORKER-1e #117, a second code-only Deploy |
 | Live dry run (48 h minimum) with restart drills | starts once the real worker runs; the qualifying run waits for the registered strategy | real worker |
-| Historical days (19 Jul – 3 Oct) | about Fri 9 – Sun 11 Oct (±1–2 days) if the pilot runs Mon 5 Oct and the owner approves Helius | Actions unlocked, the Helius pilot, the owner's US$99 approval |
+| Free practice days (09-21, then 09-20, 09-19) | one day per about 14 h on Helius free; 09-21 starts tonight after #119 | #119 |
+| Historical days (19 Jul – 3 Oct) | not scheduled: the owner wants a finished product before any spend (paid month about US$94, 5–6 days best case) | owner decision after Online, practice trades and the early look |
 | Funnel count, study, G1 on SPA | after the practice days and their look-back are published | data |
 | Strategy registered (configs frozen, attempt committed) | was planned for Fri 9 – Sat 10 Oct; slips with the data | G1 pass on practice days |
 | Holdout entry cutoff E | 20 Oct (UTC), fixed | — |
@@ -163,7 +164,7 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 
 - **Now:** nothing.
 - **Before the qualifying run:** the execution-health limits (live risk limits; a proposal from the shakedown's measured figures).
-- **History source:** after the free Helius pilot, the owner decides the paid month (US$49 plus at most US$50 of credits). The Triton email was sent by the owner; forward any reply.
+- **History source:** free Helius only, one day at a time (owner, about 5:35 PM). No paid month until the owner has seen a finished product: the server Online, practice trades in the app and the early-look report (owner, about 5:40 PM). The Triton email was sent by the owner; ARCHIVE-CHECK keeps asking politely every 3 h. Disguising the scanner was declined (terms, ban risk).
 - **Done today:**
   - setup parts A–D at 2:31 PM (server re-install at pin e28788a, Tailscale with HTTPS and serve, the APK, and ruleset 24441882 on `holdout-registry`);
   - SPA chosen for G1 at 2:33 PM;
