@@ -17,7 +17,7 @@ import { leakTest, type ProofReport, shiftTest } from '../proofs.ts';
 import type { RunResult } from '../run.ts';
 import { replayHashes } from '../proofs.ts';
 import { type StudyConfig, configId, configTag, studyHash } from '../strategy/config.ts';
-import { g0, g1, g2NotProven, gateG2, type G2Short, pboMatrix, powerOf, trialOf } from './gates.ts';
+import { g0, g1, g1NotEvaluated, g2NotProven, gateG2, type G2Short, pboMatrix, powerOf, trialOf } from './gates.ts';
 import { foldSummary, holdoutPlanOf, purge, regimeOf, studyPlan, type StudyPlan } from './plan.ts';
 import { attemptAlpha, g1Blocks, type HoldoutAuthority, type HoldoutStore, readHoldoutStore, recordHoldoutG1, recordHoldoutG2, recordTrials, registerAttempt, RULED_ALPHA, setHoldoutPlan, type StoredTrial } from '../holdout.ts';
 import type { Preregistration } from '../strategy/preregistration.ts';
@@ -263,16 +263,21 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // G1 per universe and regime (§6.5: never pooled silently); the pooled figure is reported under its own label.
   const regimes = [...new Set(scored.kept.map((t) => t.regime))].sort();
   const G1: Record<string, GateResult> = {};
+  // G1 reads its test from the holdout registry as stored (readHoldoutStore); a diagnostic run before any registry
+  // exists has none, so G1 is not evaluated there.
+  const g1Registry = storeNow()?.registry ?? null;
+  const g1Of = (u: Parameters<typeof g1>[0], seed: number, before: boolean): GateResult =>
+    (g1Registry === null ? g1NotEvaluated('no holdout registry yet (diagnostic run): G1 is not evaluated') : g1(u, trials, matrix, seed, before, g1Registry));
   for (const u of universes) {
     const e = store?.registry.entries.find((x) => x.holdoutId === holdoutIdOf(u));
     const before = e !== undefined && e.seal !== 'opened' && e.configId === ids[u];
     for (const g of [...regimes, 'pooled']) {
       const pick = <T extends { regime: string }>(xs: readonly T[]) => (g === 'pooled' ? xs : xs.filter((t) => t.regime === g));
-      G1[`${u} ${g === 'pooled' ? 'all regimes (pooled)' : `regime ${g}`}`] = g1({ universe: u, configId: ids[u]!, trades: pick(tradesOf(u)), control: pick(controlOf(u)) }, trials, matrix, seedNumber(`${i.seed}:g1:${u}:${g}`), before);
+      G1[`${u} ${g === 'pooled' ? 'all regimes (pooled)' : `regime ${g}`}`] = g1Of({ universe: u, configId: ids[u]!, trades: pick(tradesOf(u)), control: pick(controlOf(u)) }, seedNumber(`${i.seed}:g1:${u}:${g}`), before);
     }
     // Sensitivity, reported and never gating: the same trades with the token-account rent never returned (fills-2 note).
     const noRent = <T extends { rNetNoRent: number }>(xs: readonly T[]) => xs.map((t) => ({ ...t, rNet: t.rNetNoRent }));
-    G1[`${u} all regimes (pooled), sensitivity: no rent recovery`] = g1({ universe: u, configId: ids[u]!, trades: noRent(tradesOf(u)), control: noRent(controlOf(u)) }, trials, matrix, seedNumber(`${i.seed}:g1:${u}:norent`), before);
+    G1[`${u} all regimes (pooled), sensitivity: no rent recovery`] = g1Of({ universe: u, configId: ids[u]!, trades: noRent(tradesOf(u)), control: noRent(controlOf(u)) }, seedNumber(`${i.seed}:g1:${u}:norent`), before);
     // Coverage exclusions on the pooled line: candidates abstained for missing evidence, count and share (not rejects).
     const ex = research[tagFor[u]!]?.coverageExclusions;
     const pooled = G1[`${u} all regimes (pooled)`]!;

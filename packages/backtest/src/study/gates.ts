@@ -24,11 +24,18 @@ export const trialOf = (configId: string, trades: readonly DayReturn[]): TrialRe
   return { trialId: configId, sharpe: Number.isFinite(s) ? s : 0, nTrades: trades.length };
 };
 
-export const g1 = (u: G1Universe, registry: readonly TrialRecord[], matrix: Readonly<Record<string, readonly number[]>>, seed: number, registeredBeforeHoldout: boolean): GateResult =>
+/**
+ * G1 for one universe. `holdoutRegistry` is the registry as read from the holdout store (readHoldoutStore), never a
+ * constructed object: its stored G1 test decides which multiple-testing check gates (STATS-1f).
+ */
+export const g1 = (u: G1Universe, registry: readonly TrialRecord[], matrix: Readonly<Record<string, readonly number[]>>, seed: number, registeredBeforeHoldout: boolean, holdoutRegistry: HoldoutRegistry): GateResult =>
   gateG1({
     scenario: 'conservative', rulesRegisteredBeforeHoldout: registeredBeforeHoldout, trades: u.trades, control: u.control, selectedTrialId: u.configId,
-    registry, pboMatrix: matrix, modelUsed: false, calibrationSlope: null, rng: createRng(seed),
+    registry, pboMatrix: matrix, modelUsed: false, calibrationSlope: null, rng: createRng(seed), holdoutRegistry,
   });
+
+/** G1 not evaluated (a diagnostic run before any registry exists): never a pass. */
+export const g1NotEvaluated = (why: string): GateResult => ({ gate: 'G1', passed: false, status: 'not-proven', checks: [{ name: 'G1 test', passed: false, detail: why }], reasons: [why], notes: [], metrics: {} });
 
 export const g0 = (input: G0Input): GateResult => gateG0(input);
 

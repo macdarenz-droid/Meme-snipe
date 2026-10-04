@@ -1,6 +1,6 @@
 // The whole BT-2 study on a synthetic multi-day market: walk-forward, S0, G1, registration, the sealed holdout run
 // once, G2 "not proven" with the seals closed, G0 proofs and the ledger replay check.
-import { existsSync, statSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -123,6 +123,15 @@ describe('BT-2 study', () => {
     // Without a registered configuration G1 fails its pre-registration check; registered, it is not proven on 2 days.
     for (const g of Object.values(evaluated.gates.G1)) expect(g.checks.find((x) => x.name === 'pre-registration')?.passed).toBe(false);
     for (const g of Object.values(again.gates.G1)) expect(g.status).toBe('not-proven');
+    // G1's test is the one stored in the holdout registry, read from the file (STATS-1f), never a constructed object:
+    // a stored test G1 does not know fails G1's test check.
+    for (const g of Object.values(again.gates.G1)) expect(g.checks.find((x) => x.name === 'G1 test')).toMatchObject({ passed: true, detail: `stored in the registry: ${reg.registry.g1Test}` });
+    const path = join(dir, 'registry.json');
+    const stored = readFileSync(path, 'utf8');
+    writeFileSync(path, stored.replace(`"g1Test": "${reg.registry.g1Test}"`, '"g1Test": "bogus"'));
+    const tampered = runFullStudy(inputs({ regimeGate: 'evaluate' }));
+    writeFileSync(path, stored);
+    for (const g of Object.values(tampered.gates.G1)) expect(g.checks.find((x) => x.name === 'G1 test')).toMatchObject({ passed: false });
     expect(evaluated.holdoutRegime).toBe('B4');
     expect(evaluated.gates.G2.status).toBe('not-proven');
     expect(evaluated.holdout.ran).toBe(false);

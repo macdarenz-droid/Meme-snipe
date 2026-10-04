@@ -556,6 +556,9 @@ describe('RPC stream', () => {
       t.hub.last.push(slotNote(100, 606)); // any traffic runs the budget check
       expect(t.scheduler.halted).toBe(true);
       expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
+      // Raised to P1 while halted: kept (review N7).
+      expect(t.stream.setPriority(2, P1)).toBe(true);
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
       expect(t.stream.setPriority(2, P3)).toBe(true);
       expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: null, reason: 'halted', via: VIA }]);
       expect(t.stream.setPriority(2, P1)).toBe(false);
