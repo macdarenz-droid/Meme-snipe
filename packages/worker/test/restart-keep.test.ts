@@ -335,7 +335,12 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       /** A swap on another pool: only the block-time anchor moves (its txSlot, at the open slot like a fill's). */
       const anchor = (txSlot: bigint, blockMs: number, recv: number, momentSlot = txSlot) =>
         ev(`logs:pump_amm:BuyEvent:other-pool`, { event: { program: 'pump_amm', name: 'BuyEvent', data: { pool: 'other-pool', timestamp: BigInt(Math.floor(blockMs / 1000)) } }, signature: `a${seq}`, txSlot }, recv, momentSlot);
-      return { strategy, read, anchor, bars: () => strategy.barsOf(MINT) };
+      /** A swap on the candidate's own pool at `txSlot`, then its pool update (FACTS-1's chain) at the same slot. */
+      const own = (txSlot: bigint, blockMs: number, recv: number) => {
+        ev(`logs:pump_amm:BuyEvent:${POOL_ADDRESS}`, { event: { program: 'pump_amm', name: 'BuyEvent', data: { pool: POOL_ADDRESS, user: 'u', timestamp: BigInt(Math.floor(blockMs / 1000)) } }, signature: `o${seq}`, txSlot }, recv);
+        read(txSlot, recv);
+      };
+      return { strategy, read, anchor, own, bars: () => strategy.barsOf(MINT) };
     };
     const minute = (ms: number) => Math.floor(ms / MIN) * MIN;
 
@@ -367,6 +372,58 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       w.anchor(S, m0, m0 + 300_000, S + 500n);
       w.read(S + 50n, m0 + 300_000);
       expect(w.bars().map((b) => b.startMs)).toEqual([minute(m0 + 20_000)]);
+    });
+
+    it('a swap\'s pool update takes its own swap\'s block time, even after another pool\'s swap at a higher slot moved the anchor (run/CI B1)', () => {
+      const w = world();
+      const twelve = minute(m0) + 2 * MIN; // a whole minute
+      // Pool B's swap at S + 10 (12:00:03) is released before pool A's swap at S (12:00:00, a fill behind live).
+      w.anchor(S + 10n, twelve + 3_000, twelve + 5_000);
+      w.own(S, twelve, twelve + 6_000);
+      // From the anchor it would be 11:59:59; its own swap says 12:00:00, as the rebuild and the backtest date it.
+      expect(w.bars().map((b) => b.startMs)).toEqual([twelve]);
+    });
+
+    it('an older swap of the pool released after a newer one (a fill) still dates its own pool update', () => {
+      const w = world();
+      const t = minute(m0) + 2 * MIN;
+      w.own(S + 200n, t + 30_000, t + 31_000); // live, minute t
+      w.own(S, t - 50_000, t + 32_000); // a fill behind live: its block time is the minute before
+      expect(w.bars().map((b) => b.startMs)).toEqual([minute(t - 50_000), minute(t + 30_000)]);
+    });
+
+    it('the estimate is 400 ms a slot: 45 slots from an anchor 40 s into a minute stay in that minute (450 ms would not)', () => {
+      const w = world();
+      w.anchor(S, m0, m0 + 500);
+      w.read(S + 45n, m0 + 30_000);
+      expect(w.bars().map((b) => b.startMs)).toEqual([minute(m0)]);
+    });
+
+    it('the anchor only moves forward by slot: an older swap released later does not replace a newer one', () => {
+      const w = world();
+      const t = minute(m0) + 10_000;
+      // The newer swap's slots ran slow (500 ms): S + 100 at t + 50 s. An older one, S at t, arrives after it (a fill).
+      w.anchor(S + 100n, t + 50_000, t + 51_000);
+      w.anchor(S, t, t + 52_000);
+      // S + 110 from the newer anchor: t + 54 s, the next minute; from the older one it would be t + 44 s, this minute.
+      w.read(S + 110n, t + 70_000);
+      expect(w.bars().map((b) => b.startMs)).toEqual([minute(t + 54_000)]);
+      expect(minute(t + 54_000)).not.toBe(minute(t + 44_000));
+    });
+
+    it('the 150-slot bound: at 150 slots the anchor still estimates, at 151 the receipt time is taken', () => {
+      const t = minute(m0) + 10_000;
+      const at = world();
+      at.anchor(S, t, t + 500);
+      at.read(S + 150n, t + 130_000); // estimate t + 60 s (the next minute); received t + 130 s, two minutes on
+      expect(at.bars().map((b) => b.startMs)).toEqual([minute(t + 60_000)]);
+      expect(minute(t + 60_000)).not.toBe(minute(t + 130_000));
+      const past = world();
+      past.anchor(S, t, t + 500);
+      // 151 slots: would estimate t + 60.4 s (the next minute); received t + 130 s, two minutes on.
+      past.read(S + 151n, t + 130_000);
+      expect(past.bars().map((b) => b.startMs)).toEqual([minute(t + 130_000)]);
+      expect(minute(t + 60_400)).not.toBe(minute(t + 130_000));
     });
 
     it('a late sample in an earlier bar widens it, keeps the order, and never moves its close back (K4, K5)', () => {

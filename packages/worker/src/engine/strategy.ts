@@ -1079,7 +1079,7 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
-    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#migrationSlot]) m.delete(mint);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#migrationSlot, this.#swapAt]) m.delete(mint);
   }
 
   #noteMigrationSlot(mint: string, slot: bigint | null): void {
@@ -1112,6 +1112,8 @@ export class LiveStrategy implements Strategy {
       const slot = typeof v['txSlot'] === 'bigint' ? v['txSlot'] : e.moment.slot;
       const ms = Number(d['timestamp']) * 1000;
       if (this.#blockClock === null || slot >= this.#blockClock.slot) this.#blockClock = { slot, ms };
+      // The pool's last released swap, in any slot order: its pool update comes next (a fill's older swap included).
+      if (mint !== undefined) this.#swapAt.set(mint, { slot, ms });
     }
     if (mint === undefined) return;
     this.#gapBarTrade(mint, e, v, ev, d);
@@ -1230,7 +1232,7 @@ export class LiveStrategy implements Strategy {
     // RESTART-KEEP (run/CI ruling): bars are on block time, the one clock live, a restart's rebuild and a replay share
     // (the backtest has only block time). A swap's pool update is at the swap's block time; any other update (an account
     // read, a snapshot) at its slot's time from the newest block-time anchor, never past the engine clock.
-    const start = Math.floor(this.#sampleAt(e, ctx.now.receivedAt) / barMs) * barMs;
+    const start = Math.floor(this.#sampleAt(e, mint, ctx.now.receivedAt) / barMs) * barMs;
     const add = (key: string): void => {
       const bars = this.#bars.get(key) ?? [];
       const last = bars[bars.length - 1];
@@ -1259,15 +1261,20 @@ export class LiveStrategy implements Strategy {
   static readonly ANCHOR_MAX_SLOTS = 150n;
   /**
    * The newest block-time anchor from any PumpSwap swap released: slot (the swap's own `txSlot`: a fill's trades sit
-   * at the open slot) and block time. A swap's own pool update comes right after it at the same moment, so a swap at or
-   * after the anchor's slot is dated exactly; an older one (a fill behind live) by the estimate.
+   * at the open slot) and block time. Only an update with no swap of its own (an account read, a snapshot) is dated
+   * from it; a swap's pool update takes its own swap's time (`#swapAt`).
    */
   #blockClock: { slot: bigint; ms: number } | null = null;
+  /** Each watched mint's pool's last released swap: its slot and block time, which date that swap's pool update. */
+  readonly #swapAt = new Map<string, { readonly slot: bigint; readonly ms: number }>();
 
   /** The block time a pool update belongs to (see `#track`); the engine clock when nothing dates it. */
-  #sampleAt(e: MarketEvent, nowMs: number): number {
+  #sampleAt(e: MarketEvent, mint: string, nowMs: number): number {
     const v = unwrap(e.value);
     const slot = isObj(v) && isObj(v['obs']) && typeof v['obs']['slot'] === 'bigint' ? v['obs']['slot'] : isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null;
+    // The pool's own swap at this slot: its exact block time, whatever other pools' swaps moved the anchor to.
+    const own = this.#swapAt.get(mint);
+    if (own !== undefined && slot !== null && own.slot === slot) return Math.min(own.ms, nowMs);
     const a = this.#blockClock;
     if (a === null || slot === null) return nowMs;
     // A stale anchor (supervisor ruling): past ANCHOR_MAX_SLOTS the 400 ms guess drifts tens of seconds (slots run
