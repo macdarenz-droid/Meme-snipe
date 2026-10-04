@@ -1,0 +1,101 @@
+{
+  "task": "RES-4",
+  "written": "2026-10-04T17:30+11:00 (Melbourne), before any practice day was read by RES-4",
+  "status": "pre-registered; every hypothesis is one trial in BT-2's registry family (SPA handles the multiple tries); no holdout day is ever read",
+  "dataRead": "none: written from repo research (docs/research/*.md) and cited sources only",
+  "shape": "BT-2 UniverseConfig (packages/backtest/src/strategy/config.ts on claude/backtest-2): window, rules, edgePpm, medianTargetBps; rules.kind 'features' uses RES-3's as-of tracker features (packages/backtest/src/research/tracker.ts)",
+  "thresholds": "fixed from priors and the cited evidence, never fitted; a changed value is a new trial",
+  "sizing": "policy capital.minNotional ($2 trial); edgePpm 50000 is §14's smallest edge worth trading (+5% net), not an estimate",
+  "exits": {
+    "note": "the policy's per-universe exit blocks (CFG-2), copied here so a later policy change cannot silently change a registered hypothesis; T_max at the phase-1 cap of 120 min (§9). A test fails if the policy and this copy differ.",
+    "U1": { "stopAtrTenths": 30, "tFlatMs": 1800000, "flatMinRBps": 5000, "tMaxMs": 7200000, "partialMinShareBps": 5000, "partialAtRBps": 20000, "partialAtGainBps": 10000, "atrPeriod": 14, "atrBarMs": 300000, "trailAtrTenths": 30 },
+    "U2": { "stopAtrTenths": 30, "tFlatMs": 900000, "flatMinRBps": 5000, "tMaxMs": 7200000, "partialMinShareBps": 5000, "partialAtRBps": 15000, "partialAtGainBps": 10000, "atrPeriod": 14, "atrBarMs": 60000, "trailAtrTenths": 30 }
+  },
+  "definitions": {
+    "note": "Fixed before any data (external audit, 2026-10-04). BT-2's rule evaluation must follow these.",
+    "holderGrowth": "H3's holderGrowthBps: growth in the number of distinct owners (wallet owner addresses, never token accounts: several accounts of one owner count once) holding a positive balance of the mint, excluding the pool vaults, the curve account, the mayhem vault, lockers, burn addresses and program-owned accounts (H12's exclusions), counted at the start of the range and at the check from the same data coverage; if either count's coverage is incomplete the condition is unknown and fails.",
+    "nonCreatorUserFlow": "H4's net flow (U2 rules): net SOL from swaps whose user is not the creator's exact address. Limit: a wallet the creator funded still counts, because funding links are not in the data. It is not 'independent' buying.",
+    "f_indep60": "H2's buyer count: wallets that bought and did not sell in the last 60 min. Shared funders are not excluded (not in the data)."
+  },
+  "hypotheses": [
+    {
+      "id": "H1-U1-dip-reversal",
+      "rank": 1,
+      "universe": "U1",
+      "window": { "universe": "U1", "fromMs": 86400000, "toMs": 1209600000, "everyMs": 300000, "minQuoteLamports": "100000000000" },
+      "rules": { "kind": "features", "conds": [
+        { "f": "f_dd", "dir": "le", "t": "-0.35" },
+        { "f": "f_ret60", "dir": "ge", "t": "-0.03" },
+        { "f": "f_hl", "dir": "ge", "t": "1" },
+        { "f": "f_liqchg60", "dir": "ge", "t": "-0.10" },
+        { "f": "f_2side60", "dir": "le", "t": "0.6" }
+      ], "stopBelowBps": 1500 },
+      "edgePpm": "50000",
+      "medianTargetBps": 1500
+    },
+    {
+      "id": "H2-U1-quiet-accumulation",
+      "rank": 2,
+      "universe": "U1",
+      "window": { "universe": "U1", "fromMs": 86400000, "toMs": 1209600000, "everyMs": 300000, "minQuoteLamports": "100000000000" },
+      "rules": { "kind": "features", "conds": [
+        { "f": "f_net60", "dir": "ge", "t": "0.01" },
+        { "f": "f_indep60", "dir": "ge", "t": "8" },
+        { "f": "f_2side60", "dir": "le", "t": "0.4" },
+        { "f": "f_ret60", "dir": "le", "t": "0.10" },
+        { "f": "f_turn60", "dir": "le", "t": "0.5" }
+      ], "stopBelowBps": 1500 },
+      "edgePpm": "50000",
+      "medianTargetBps": 1500
+    },
+    {
+      "id": "H3-U1-range-breakout",
+      "rank": 3,
+      "universe": "U1",
+      "window": { "universe": "U1", "fromMs": 86400000, "toMs": 1209600000, "everyMs": 300000, "minQuoteLamports": "100000000000" },
+      "rules": { "kind": "U1", "rangeMs": 21600000, "recentMs": 900000, "volumeTenths": 20, "holderGrowthBps": 500, "minMarketCapLamports": "1470000000000", "stopLowMs": 3600000, "stopBelowLowBps": 100 },
+      "edgePpm": "50000",
+      "medianTargetBps": 2000
+    },
+    {
+      "id": "H4-U2-reclaim",
+      "rank": 4,
+      "universe": "U2",
+      "window": { "universe": "U2", "fromMs": 3600000, "toMs": 14400000, "everyMs": 60000, "minQuoteLamports": "0" },
+      "rules": { "kind": "U2", "flushBps": 3000, "higherLowBps": 500, "recentMs": 900000, "stopBelowLowBps": 100 },
+      "edgePpm": "50000",
+      "medianTargetBps": 3000
+    },
+    {
+      "id": "H5-U2-exhausted-dump",
+      "rank": 5,
+      "universe": "U2",
+      "window": { "universe": "U2", "fromMs": 3600000, "toMs": 14400000, "everyMs": 60000, "minQuoteLamports": "0" },
+      "rules": { "kind": "features", "conds": [
+        { "f": "f_dd", "dir": "le", "t": "-0.60" },
+        { "f": "f_early_sold", "dir": "ge", "t": "0.80" },
+        { "f": "f_devnet", "dir": "le", "t": "0.01" },
+        { "f": "f_net15", "dir": "ge", "t": "0" },
+        { "f": "f_hl", "dir": "ge", "t": "1" }
+      ], "stopBelowBps": 2000 },
+      "edgePpm": "50000",
+      "medianTargetBps": 3000
+    },
+    {
+      "id": "H6-U1-dip-reversal-sol-up",
+      "rank": 6,
+      "universe": "U1",
+      "window": { "universe": "U1", "fromMs": 86400000, "toMs": 1209600000, "everyMs": 300000, "minQuoteLamports": "100000000000" },
+      "rules": { "kind": "features", "conds": [
+        { "f": "f_dd", "dir": "le", "t": "-0.35" },
+        { "f": "f_ret60", "dir": "ge", "t": "-0.03" },
+        { "f": "f_hl", "dir": "ge", "t": "1" },
+        { "f": "f_liqchg60", "dir": "ge", "t": "-0.10" },
+        { "f": "f_2side60", "dir": "le", "t": "0.6" },
+        { "f": "f_sol24", "dir": "ge", "t": "0" }
+      ], "stopBelowBps": 1500 },
+      "edgePpm": "50000",
+      "medianTargetBps": 1500
+    }
+  ]
+}

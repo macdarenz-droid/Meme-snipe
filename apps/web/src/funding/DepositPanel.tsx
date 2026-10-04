@@ -64,10 +64,6 @@ export function DepositPanel({ wallet, gatePassed }: { wallet: WalletView; gateP
             <span className="field-label">Pre-funding gate</span>
             <span className="muted">Not passed</span>
           </div>
-          <div className="field-block">
-            <span className="field-label">Bot wallet</span>
-            <span className="muted">Shown after the gate passes</span>
-          </div>
         </>
       )}
 
