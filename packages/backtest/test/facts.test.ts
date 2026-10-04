@@ -42,6 +42,23 @@ const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | 
 const PLAN: MintPlan = { label: 'good', createSlot: 10, graduateAfter: 20 * MIN };
 const SLOTS = 10 + 20 * MIN + 72 * MIN;
 
+describe('SOL/USD release (BT review S1 of b1b9fdb)', () => {
+  it('each close is released when it becomes usable, with no candidate checked, so a held position never marks at an older close', () => {
+    // No mints: nothing is checked, yet every hourly close usable inside the run reaches the engine at its first block.
+    const hours = 4;
+    const { events } = replay([], hours * 60 * MIN);
+    const sol = events.filter((e) => e.key === SOL_USD_KEY).map((e) => ({ at: e.moment.receivedAt, newest: parseSolUsd(e.value)!.points.at(-1)! }));
+    // Each close is usable one bar after its stamp (stamp + 1 h); the run's first block is at W0, when the close stamped
+    // W0 - 1 h becomes usable, and the next three follow on the hour.
+    const usableIn = solUsd.bars.map((b) => b.start + 3_600_000).filter((t) => t + 3_600_000 >= W0 && t + 3_600_000 < W0 + hours * 3_600_000);
+    expect(sol.map((x) => x.newest.tMs)).toEqual(usableIn);
+    for (const x of sol) {
+      expect(x.at).toBeGreaterThanOrEqual(x.newest.tMs + 3_600_000);
+      expect(x.at - (x.newest.tMs + 3_600_000)).toBeLessThan(SLOT_MS);
+    }
+  });
+});
+
 describe('fact projector', () => {
   const { events, mints } = replay([PLAN], SLOTS);
   const m = mints[0]!;

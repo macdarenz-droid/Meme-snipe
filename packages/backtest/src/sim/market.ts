@@ -121,6 +121,11 @@ export interface MarketOptions {
   readonly hook: (h: Hook) => void;
   /** True while dataset rows remain. */
   readonly hasRows: () => boolean;
+  /**
+   * The slot of the next dataset row not yet released, null at the end (driver-only; the engine never sees it). The
+   * observation release skips empty slots up to it rather than arming a hook per empty slot; no block can come sooner.
+   */
+  readonly nextRowSlot?: () => bigint | null;
   /** Puts a derived event (a discovery, a delayed observation) into the replay. */
   readonly schedule: (e: FeedEvent) => void;
   /** Slots where the chain's programs changed (DATA-1 manifest): a `regime` event at the first block at or after each. */
@@ -250,7 +255,11 @@ export class Market {
     if (!this.#armed || slot !== this.#armedAt) return;
     this.#armed = false;
     const o = this.#opts.observe!;
-    const next = () => (this.#opts.hasRows() ? this.#arm(slot + 1n, this.blockTime * 1000) : this.#drop());
+    const next = () => {
+      if (!this.#opts.hasRows()) return this.#drop();
+      const row = this.#opts.nextRowSlot?.() ?? null;
+      this.#arm(row !== null && row > slot + 1n ? row : slot + 1n, this.blockTime * 1000);
+    };
     if (this.slot !== slot) return next();
     const t = this.blockTime * 1000 + o.providerMs;
     if (this.#inBlackout(t)) return next();

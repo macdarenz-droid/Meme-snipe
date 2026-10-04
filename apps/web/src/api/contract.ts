@@ -207,6 +207,12 @@ export interface PositionRecord extends Moded {
   liquidationValueUsd: Usd;
   unrealizedUsd: Usd;
   costsSoFarUsd: Usd;
+  /** P&L so far: liquidation value plus exits sold, less the entry and every fee paid (APP-TRADE); null without a SOL price. */
+  pnlUsd?: Usd | null;
+  /** Our rest's executable price now, $/token, the price the stops judge; null when it cannot be quoted. */
+  markPriceUsd?: Dec | null;
+  /** When the pool behind that price was read. */
+  markedAt?: Iso | null;
   exitRules: (Moded & { rule: ExitRule; trigger: string; state: 'armed' | 'triggered' })[];
   exit: 'none' | 'pending' | 'blocked';
   worker: 'watching' | 'exiting' | 'reconciling';
@@ -267,7 +273,13 @@ export interface TradeRecord extends Moded {
   sizeUsd: Usd;
   grossUsd: Usd;
   costs: TradeCosts;
+  /** Each cash flow at its own SOL price (entry at the entry, exit at the close). */
   netUsd: Usd;
+  /** The result in SOL, with no exchange rate. */
+  netSol: Dec;
+  /** netUsd in two parts: the SOL result at the close's SOL price, and SOL's own price move over the trade. */
+  tradingUsd: Usd;
+  solMoveUsd: Usd;
   plannedR: Dec | null;
   realizedR: Dec | null;
   /** Best and worst marks while open, in R. */
@@ -299,6 +311,9 @@ export interface StatsView extends Moded {
   /** The worker's own requirement (§14); the app applies MIN_TRADES as a floor. */
   requiredTrades: number | null;
   netUsd: Usd;
+  /** The closed trades' result in SOL, and the part of netUsd that is SOL's own price move. */
+  netSol: Dec;
+  solMoveUsd: Usd;
   maxDrawdownUsd: Usd;
   winRate: Dec | null;
   meanNetUsd: Usd | null;

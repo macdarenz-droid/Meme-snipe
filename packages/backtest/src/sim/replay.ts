@@ -192,6 +192,11 @@ export class StreamReplay<R> {
     return this.#earliest() !== null;
   }
 
+  /** The slot of the next row not yet released; null at the end. */
+  nextRowSlot(): bigint | null {
+    return this.#head?.moment.slot ?? null;
+  }
+
   /** Ends the dataset early (a run window's end): rows after it are never released. */
   hasRows(): boolean {
     return this.#head !== null || this.#buffer.length > 0;

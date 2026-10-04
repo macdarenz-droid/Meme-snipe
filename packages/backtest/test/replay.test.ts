@@ -125,6 +125,36 @@ describe('projector facts through the observation delay (supervisor ruling)', ()
   });
 });
 
+describe('observation release over empty slots', () => {
+  test('with no block at the due slot, the release waits for the next row\'s slot without a hook per empty slot, and releases there', async () => {
+    const { Market } = await import('../src/sim/market.ts');
+    const hooks: { slot: bigint; run: () => void }[] = [];
+    const scheduled: { key: string; slot: bigint }[] = [];
+    let armed = 0;
+    const facts = {
+      observe: (row: { slot: bigint }, m: { slot: bigint; txIndex: number; ixIndex: number; receivedAt: number }) => [
+        { kind: 'market' as const, id: `f:${row.slot}`, moment: m, key: 'holders:m', value: { obs: { slot: row.slot } } },
+      ],
+    } as unknown as NonNullable<ConstructorParameters<typeof Market>[0]['facts']>;
+    // Sparse blocks, as a lead-in of one block an hour: 10, then 100,000.
+    let nextRow: bigint | null = 100_000n;
+    const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, observe: { slots: 3, providerMs: 0, blackouts: [], seed: 's' },
+      volumeWindowSlots: 150, hook: (h) => { armed++; hooks.push({ slot: h.moment.slot, run: h.run }); }, hasRows: () => nextRow !== null, nextRowSlot: () => nextRow,
+      schedule: (x) => { if (x.kind === 'market') scheduled.push({ key: x.key, slot: x.moment.slot }); }, facts });
+    const runHooks = (upTo: bigint) => {
+      for (let h = hooks.findIndex((x) => x.slot <= upTo); h >= 0; h = hooks.findIndex((x) => x.slot <= upTo)) hooks.splice(h, 1)[0]!.run();
+    };
+    market.release({ kind: 'block', slot: 10n, blockTime: 10, parentSlot: 9n });
+    runHooks(99_999n);
+    nextRow = null;
+    market.release({ kind: 'block', slot: 100_000n, blockTime: 100_000, parentSlot: 99_999n });
+    runHooks(100_000n);
+    expect(scheduled.filter((x) => x.key === 'holders:m')).toEqual([{ key: 'holders:m', slot: 100_000n }]);
+    // Armed at the due slot 13, then at the next row's slot: never once per empty slot.
+    expect(armed).toBeLessThanOrEqual(3);
+  });
+});
+
 describe('market volume per window (BT-1c A1)', () => {
   test('a window\'s volume reads the same at its boundary and long after, so the network chain never walks over zeros', async () => {
     const { Market } = await import('../src/sim/market.ts');

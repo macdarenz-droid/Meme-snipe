@@ -113,6 +113,8 @@ export interface StudyReport {
     /** Value still held when the data ended (blocked or never exited), lamports at the last rung's quote. */
     readonly strandedLamports: string;
     readonly maxDrawdownUsd: string;
+    /** Closes and marks valued at a SOL/USD close older than 2 h (still booked; the dollar conversion may be off). */
+    readonly staleSolUsd: { readonly closes: number; readonly marks: number };
     readonly killSwitchTrips: number;
     readonly weeklyTrips: number;
     readonly rejectedOpportunities: Readonly<Record<string, number>>;
@@ -310,7 +312,10 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // 3b. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14): max(300, n_power,
   // closed form) on MIN_DAYS days, with n_power's seed, frozen with the registration before any holdout count exists.
   const powerSeed = (u: string) => seedNumber(`${i.seed}:power:${u}`);
-  const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), familySize, powerSeed(u), alpha)]));
+  // n_power's inputs, defined once: G2 is handed exactly these (walkForward, walkForwardControl), so its fingerprint check
+  // compares like with like (STATS-1g M2).
+  const powerInputs = (u: string) => ({ walkForward: sameRegime(tradesOf(u)), walkForwardControl: sameRegime(controlOf(u)) });
+  const power = Object.fromEntries(universes.map((u) => [u, powerOf(powerInputs(u).walkForward, powerInputs(u).walkForwardControl, familySize, powerSeed(u), alpha)]));
   const unsized = holdoutUniverses.filter((u) => !power[u]!.ok);
   if (c.frozen && !diagnostic && holdoutUniverses.length > 0 && !holdoutUniverses.every(registered) && unsized.length === 0) {
     if (holdoutUniverses.some(registered)) throw new RangeError('only some universes of this attempt are registered: the registry needs repair before the study runs');
@@ -403,7 +408,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       scenario: 'conservative', registry: store!.registry, nowMs: Date.parse(i.startedAt), rng: createRng(seedNumber(`${i.seed}:g2`)),
       universes: ready.map((u) => ({
         universe: u, configId: ids[u]!, holdoutId: holdoutIdOf(u), ledgerHash: open.sealHash, trades: open.outcomes.strategy[u] ?? [],
-        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), g1Passed: g1Passed(u), walkForward: sameRegime(tradesOf(u)), walkForwardControl: sameRegime(controlOf(u)), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
+        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), g1Passed: g1Passed(u), ...powerInputs(u), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
       })),
     }, { familyAlpha: alpha });
     store = recordHoldoutG2(i.holdout, r.registry);
@@ -494,6 +499,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
         spa,
         stats: dep.stats, trades: tr.length, netLamports: netOf(depAll).toString(),
         strandedLamports: tradesOfRun(dep, i.fills).trades.filter((t) => t.exitReason === 'blocked').reduce((a, t) => a + t.exitSol, 0n).toString(),
+        staleSolUsd: { closes: ds?.staleSolUsdCloses ?? 0, marks: ds?.staleSolUsdMarks ?? 0 },
         maxDrawdownUsd: (ds?.maxDrawdownUsd ?? 0n).toString(), killSwitchTrips: ds?.trips.filter((x) => x.trip === 'kill_switch').length ?? 0,
         weeklyTrips: ds?.trips.filter((x) => x.trip === 'weekly_loss').length ?? 0, rejectedOpportunities: ds?.rejected ?? {},
         notes: ['Signal priority: the earliest fully eligible signal wins; checks due at the same block break ties by sha256(salt | universe | mint), the salt fixed in the study configuration.', 'S0 runs under the same account, capacity, timing and cost rules (control).'],

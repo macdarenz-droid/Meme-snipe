@@ -161,6 +161,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
     volumeWindowSlots: scenario.congestion.windowSlots,
     hook: (h) => replay!.hook(h),
     hasRows: () => replay!.hasRows(),
+    nextRowSlot: () => replay!.nextRowSlot(),
     schedule: (e) => replay!.schedule(e),
     ...(o.regimeBoundaries === undefined ? {} : { regimeBoundaries: [...o.regimeBoundaries].sort((a, b) => (a.slot < b.slot ? -1 : 1)) }),
     series: o.series.map((s) => ({ key: s.name === 'SOL/USD' ? 'sol-usd' : s.name, releases: seriesReleases(s) })),

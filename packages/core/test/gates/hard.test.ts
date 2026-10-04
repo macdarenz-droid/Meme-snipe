@@ -365,8 +365,8 @@ describe('boundaries found by mutation testing', () => {
   it('e: the H15 tolerance is the rounding bound exactly; a simulated spend that differs is inconsistent', () => {
     const q = roundTrip();
     if (!q.ok) throw new Error('quote');
-    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.proceeds - 16n }), 'H15')).toEqual([]);
-    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.proceeds - 17n }), 'H15')).toEqual(['sim-loss']);
+    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.immediateProceeds - 16n }), 'H15')).toEqual([]);
+    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.immediateProceeds - 17n }), 'H15')).toEqual(['sim-loss']);
     expect(reasonsOf(patch(passingFacts(), simKey(MINT), { spend: SPEND + 1n }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'sim', neededBy: 'H15' }));
   });
 
