@@ -83,7 +83,21 @@ export interface PaperTrade {
   closeSolPrice?: MicroUsd | null;
   /** The book's exit reasons of the closing exit. */
   exitReasons?: readonly string[];
+  /**
+   * What landed after the trade closed (PAPER-2): each change to its net, in lamports and in micro-dollars (negative: a
+   * loss), dated when it was booked. The close's own `netLamports`/`netPnl` stay as they were, so a day already checked
+   * is never rewritten; a late loss counts toward the day it is booked (risk's `late_settlement` cost).
+   */
+  late?: { readonly atMs: number; readonly lamports: bigint; readonly usd: MicroUsd | null }[];
 }
+
+/** A trade's whole SOL result: at its close, and what landed after (PAPER-2). Null while open. */
+export const tradeSol = (t: PaperTrade): bigint | null =>
+  t.netLamports === null ? null : (t.late ?? []).reduce((s, x) => s + x.lamports, t.netLamports);
+
+/** A trade's whole dollar result: at its close, and what landed after (PAPER-2). Null while open or unvalued. */
+export const tradePnl = (t: PaperTrade): MicroUsd | null =>
+  t.netPnl === null ? null : ((t.late ?? []).reduce((s, x) => s + (x.usd ?? 0n), t.netPnl as bigint) as MicroUsd);
 
 export interface AccountState {
   readonly openedAtMs: number;
@@ -230,7 +244,7 @@ export class PaperAccount {
     }
     // A sale booked late can change trades already closed: its own (a late sell) and its entry's others (a sell that
     // closed the shared account returns the rent to the entry's first trade).
-    if (p !== undefined) this.#resettleClosed(r.book, p.entryIntentId, legs);
+    if (p !== undefined) this.#resettleClosed(r.book, p.entryIntentId, legs, r.atMs);
     this.#file.write(this.#s);
   }
 
@@ -239,15 +253,15 @@ export class PaperAccount {
    * an attempt that landed after its trade closed, or a sale or account close booked after it. The wallet moves by the
    * change, and the trade's net is valued again at its own open and close prices. True when anything moved.
    */
-  resettle(book: Book, positionId: string, legs: PaperLegs): boolean {
+  resettle(book: Book, positionId: string, legs: PaperLegs, nowMs: number): boolean {
     const p = book.positions[positionId];
     if (p === undefined) return false;
-    const moved = this.#resettleClosed(book, p.entryIntentId, legs);
+    const moved = this.#resettleClosed(book, p.entryIntentId, legs, nowMs);
     if (moved) this.#file.write(this.#s);
     return moved;
   }
 
-  #resettleClosed(book: Book, entryIntentId: string, legs: PaperLegs): boolean {
+  #resettleClosed(book: Book, entryIntentId: string, legs: PaperLegs, nowMs: number): boolean {
     let moved = false;
     for (const t of this.#s.trades) {
       if (t.closedAtMs === null || book.positions[t.positionId]?.entryIntentId !== entryIntentId) continue;
@@ -256,8 +270,15 @@ export class PaperAccount {
       if (l === null) continue;
       // The wallet may have moved already (`filled` books its own position first); the trade's results follow it here.
       if (t.booked !== before) moved = true;
-      if (tradeNet(l) === t.netLamports) continue;
-      this.#value(t, l);
+      const sol = tradeSol(t)!;
+      const now = tradeNet(l);
+      if (now === sol) continue;
+      // The change is dated now, as a late entry: the close's results, and the day they counted toward, stay as they were.
+      const pxIn = t.openSolPrice ?? null;
+      const pxOut = t.closeSolPrice ?? null;
+      const was = tradePnl(t);
+      const usd = was === null || pxIn === null || pxOut === null ? null : ((tradeUsd(l, pxIn, pxOut).net - was) as MicroUsd);
+      (t.late ??= []).push({ atMs: nowMs, lamports: now - sol, usd });
       moved = true;
     }
     return moved;
@@ -392,6 +413,9 @@ export class PaperAccount {
     const sf = this.#s.strayFolded;
     if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: sf.cost, kind: 'failed_entry' });
     for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: r.cost, kind: 'failed_entry' });
+    // A loss that landed after its trade closed counts on the day it was booked (PAPER-2); a late gain is not counted
+    // (the safe side: a day's loss is never lowered after the fact).
+    for (const t of this.#s.trades) for (const x of t.late ?? []) if (x.usd !== null && x.usd < 0n) costs.push({ atMs: x.atMs, amount: -x.usd as MicroUsd, kind: 'late_settlement' });
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id).reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);

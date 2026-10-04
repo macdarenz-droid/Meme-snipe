@@ -11,7 +11,7 @@ import type { Book, ExitReason as BookExitReason, PositionState } from '../../..
 import { melbourneDay } from '../../../core/src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../../core/src/units/index.ts';
 import { type TradeUsd, tradeUsd } from '../../../core/src/fills/index.ts';
-import { type PaperLegs, type PaperTrade, paperTradeLamports } from './account.ts';
+import { type PaperLegs, type PaperTrade, paperTradeLamports, tradePnl, tradeSol } from './account.ts';
 import type { PaperAttempt } from './paper-world.ts';
 import { SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
@@ -258,7 +258,9 @@ export const views = {
     if (Object.values(i.book.intents).some((s) => s.status === 'unknown')) flags.add('unknown-tx-result');
     if (i.funnel.stage.size === 0) flags.add('no-eligible-candidate');
     const day = melbourneDay(i.nowMs);
-    const lossToday = i.trades.filter((t) => t.closedAtMs !== null && t.closedAtMs >= day.start && (t.netPnl ?? 0n) < 0n).reduce((s, t) => s - (t.netPnl ?? 0n), 0n);
+    // As risk counts it: a close's loss on its day, and a loss that landed after a close on the day it was booked (PAPER-2).
+    const lossToday = i.trades.filter((t) => t.closedAtMs !== null && t.closedAtMs >= day.start && (t.netPnl ?? 0n) < 0n).reduce((s, t) => s - (t.netPnl ?? 0n), 0n)
+      + i.trades.flatMap((t) => t.late ?? []).filter((x) => x.atMs >= day.start && x.usd !== null && x.usd < 0n).reduce((s, x) => s - x.usd!, 0n);
     const open = Object.values(i.book.positions).filter((p) => p.status !== 'closed').reduce((s, p) => s + lamportsUsd(p.cost, i.solPrice), 0n);
     const bankroll = i.policy.capital.bankroll as bigint;
     const dailyLimit = (bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n;
@@ -346,7 +348,7 @@ export const views = {
       const date = melbourneDate(t.closedAtMs);
       if (!date.startsWith(month)) continue;
       const d = byDay.get(date) ?? { net: 0n, ids: [] };
-      d.net += t.netPnl ?? 0n;
+      d.net += tradePnl(t) ?? 0n;
       d.ids.push(t.positionId);
       byDay.set(date, d);
     }
@@ -363,9 +365,10 @@ export const views = {
     const costsDaily = new Map<string, bigint>();
     const kinds = new Map<string, bigint>();
     const cumulative = closed.map((t) => {
-      cum += t.netPnl ?? 0n;
+      const pnl = tradePnl(t) ?? 0n;
+      cum += pnl;
       const date = melbourneDate(t.closedAtMs!);
-      daily.set(date, (daily.get(date) ?? 0n) + (t.netPnl ?? 0n));
+      daily.set(date, (daily.get(date) ?? 0n) + pnl);
       const c = costsOf(i, t);
       costsDaily.set(date, (costsDaily.get(date) ?? 0n) + c.total);
       for (const [k, v] of Object.entries(c.kinds)) kinds.set(k, (kinds.get(k) ?? 0n) + v);
@@ -392,7 +395,7 @@ export const views = {
 
   stats: (i: ApiInputs) => {
     const closed = i.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).sort((a, b) => a.closedAtMs! - b.closedAtMs!);
-    const nets = closed.map((t) => t.netPnl!);
+    const nets = closed.map((t) => tradePnl(t)!);
     const net = nets.reduce((s, x) => s + x, 0n);
     let peak = 0n;
     let cum = 0n;
@@ -403,10 +406,10 @@ export const views = {
       if (peak - cum > dd) dd = peak - cum;
     }
     const n = closed.length;
-    const netSol = closed.reduce((s, t) => s + (t.netLamports ?? 0n), 0n);
+    const netSol = closed.reduce((s, t) => s + (tradeSol(t) ?? 0n), 0n);
     const solMove = closed.reduce((s, t) => {
       const v = settledUsd(i, t);
-      return s + (v === null ? 0n : t.netPnl! - v.trading);
+      return s + (v === null ? 0n : tradePnl(t)! - v.trading);
     }, 0n);
     return {
       mode: MODE, trades: n, requiredTrades: 30, netUsd: usdText(net), netSol: solText(netSol), solMoveUsd: usdText(solMove), maxDrawdownUsd: usdText(dd),
@@ -455,7 +458,8 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
   const sol = (xs: PaperAttempt[]) => xs.reduce((s, a) => s + (a.fill?.sol ?? 0n), 0n);
   const tok = (xs: PaperAttempt[]) => xs.reduce((s, a) => s + (a.fill?.tokens ?? 0n), 0n);
   const c = costsOf(i, t);
-  const net = t.netPnl ?? 0n;
+  // The trade's whole result: its close and what landed after it (PAPER-2).
+  const net = tradePnl(t) ?? 0n;
   // The dollar result split in two: the SOL result at the close's price, and SOL's own move over the trade.
   const trading = c.v === null ? net : c.v.trading;
   const attemptsOf = (intent: string) => i.book.intents[intent]?.attempts.length ?? 1;
@@ -471,7 +475,7 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
       tipUsd: usdText(c.kinds.tipUsd), networkFeeUsd: usdText(c.kinds.networkFeeUsd), slippageUsd: usdText(c.kinds.slippageUsd),
       rentPaidUsd: usdText(c.v?.costs.rentPaid ?? 0n), rentReturnedUsd: usdText(c.v?.costs.rentReturned ?? 0n), totalUsd: usdText(c.total),
     },
-    netUsd: usdText(net), netSol: solText(t.netLamports ?? 0n), tradingUsd: usdText(trading), solMoveUsd: usdText(net - trading),
+    netUsd: usdText(net), netSol: solText(tradeSol(t) ?? 0n), tradingUsd: usdText(trading), solMoveUsd: usdText(net - trading),
     plannedR: null, realizedR: null, mfeR: null, maeR: null,
     exitReason: reason === undefined ? 'blocked' : EXIT_REASON[reason], reasons: [...(t.exitReasons ?? [])], checks: [],
     fills: fills.map((a) => {

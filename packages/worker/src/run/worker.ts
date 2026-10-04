@@ -406,7 +406,7 @@ export class Worker {
       // A landed failure paid its fee (PAPER-1, M4): the account settles it and risk sees the new snapshot.
       landedFailed: (a) => {
         // Its trade may have closed already (PAPER-2): that trade is settled again with this fee.
-        const late = this.#account.resettle(this.#desk.book, a.trade, this.#legs());
+        const late = this.#account.resettle(this.#desk.book, a.trade, this.#legs(), this.#d.timers.now());
         if (this.#settle() || late) this.#publishAccount();
       },
     });
