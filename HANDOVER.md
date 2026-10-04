@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, 3:30 PM Melbourne (AEDT).
+**Last updated:** Sun 4 Oct 2026, 3:50 PM Melbourne (AEDT).
 
 ## 1. Read first, in this order
 
@@ -66,31 +66,28 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
   - One concurrency group; it stops on HTTP 429 and resumes with back-off.
   - Each finished UTC day is published as a release tagged `data-day-YYYY-MM-DD`.
 
-## 4. Current state (4 Oct, 3:30 PM)
+## 4. Current state (4 Oct, 3:50 PM)
 
-**Blocker since 3:20 PM:** every GitHub Actions job fails before it starts with "The job was not started because your account is locked due to a billing issue". The repository is public, so Actions should be free; the lock is a billing flag on the owner's account (a failed payment or card check). Steps went to the owner at 3:23 PM, with a push notification. Until it is lifted:
-- nothing merges (the rule needs green CI);
-- the server takes no code update (its gate needs green CI on the tagged commit);
-- the data scan cannot run.
+**GitHub billing lock (now, owner-only):** the owner's GitHub Pro upgrade was declined by the card, and each declined try locks the account. While it is locked, every Actions job fails before it starts with "The job was not started because your account is locked due to a billing issue". It happened from 3:15 to 3:23 PM and again from 3:37 PM.
+- The owner was sent steps at 3:40 PM: go back to Free at github.com/settings/billing/plans, or pay through PayPal, or ask GitHub Support. The repository is public, so Actions costs nothing on Free.
+- While locked, nothing merges, the server takes no update, and no data job runs.
+- Tell the builders that a red check carrying that annotation is not theirs.
 
-Builders and reviewers keep working and testing locally; a red check carrying that annotation says nothing about the code.
-
-**Merged since 10:25 AM** (19): FACTS-1e #84, FACTS-1d #78, BT-1e #86, RUN-1e #76, flake fix #85, RUN-1f #91, POS-1 #88, POOL-1 #101, GATE-2 #94, PERSIST-1 #71, BT-1f #92, EXIT-1c #93, DATA-1c #77, EXIT-1e #102 (with EXIT-1d #100), REC-1 #95, STATS-1c #62, WATCH-1 #87, STATS-1d/1e #96, CI-1 #105. Base head 768a174.
+**Merged since 10:25 AM** (20): FACTS-1e #84, FACTS-1d #78, BT-1e #86, RUN-1e #76, flake fix #85, RUN-1f #91, POS-1 #88, POOL-1 #101, GATE-2 #94, PERSIST-1 #71, BT-1f #92, EXIT-1c #93, DATA-1c #77, EXIT-1e #102 (with EXIT-1d #100), REC-1 #95, STATS-1c #62, WATCH-1 #87, STATS-1d/1e #96, CI-1 #105, WORKER-1b #82 (3:41 PM).
 
 **Merge queue** (review passed; each needs an update and green CI at its turn):
 
 | Order | PR | Reviewed head | Note |
 |---|---|---|---|
-| 1 | CI-2 #104 | 92d8109 (supervisor's ci.yml; owner said "Allow") | — |
-| 2 | OPS-1h #108 | PASS 932f670 (01Ty8L) | fixes the `zeroed-tailscale` hang |
-| 3 | WORKER-1b #82 | merge check PASS 4ba930b (01UXzG) | real-worker prerequisite |
-| 4 | WORKER-1c #99 | merge check PASS 66a534f (01NZwy) | real-worker prerequisite |
-| 5 | RISK-MARK #103 | PASS f644ede (01NrMe) | real-worker prerequisite; whichever of #99 and #103 merges second takes the boundary marks from the marked account |
-| 6 | TEST-1 #90 | 5a07ed1 (PASS af6b9b5 plus a base merge, change lines identical) | — |
-| 7 | FACTS-1f #106 | PASS d79e9db (012QdD) | carries REC-1's backstop and same-event test |
-| 8 | TEST-3 G3 report #98 | PASS c1f3f45 (01FHfb) | then the `worker:*` fold PR (01WGpx) |
-| 9 | BT-3 #89 | 3cdf71e | — |
-| 10 | APP-3 #97 | 0056506 | then API-1 (01VM97) |
+| 1 | CI-2 #104 | PASS ddf8969 (01NZwy); green at ee89bdf before #82 merged | owner said "Allow" |
+| 2 | OPS-1h #108 | PASS 932f670 (01Ty8L); green at 5177794 before #82 merged | fixes the `zeroed-tailscale` hang |
+| 3 | WORKER-1c #99 | merge check PASS 66a534f (01NZwy) | real-worker prerequisite |
+| 4 | RISK-MARK #103 | PASS f644ede (01NrMe) | real-worker prerequisite; whichever of #99 and #103 merges second takes the boundary marks from the marked account |
+| 5 | TEST-1 #90 | 5a07ed1 (PASS af6b9b5 plus a base merge, change lines identical) | — |
+| 6 | FACTS-1f #106 | PASS d79e9db (012QdD) | carries REC-1's backstop and same-event test |
+| 7 | TEST-3 G3 report #98 | PASS c1f3f45 (01FHfb) | then the `worker:*` fold PR (01WGpx) |
+| 8 | BT-3 #89 | 3cdf71e | — |
+| 9 | APP-3 #97 | 0056506 | then API-1 (01VM97) |
 
 **In review or building:**
 
@@ -99,13 +96,13 @@ Builders and reviewers keep working and testing locally; a red check carrying th
 | EXIT-1f | #107 (1ba212c) | exact open time from the ledger's open event; per-field restored-state check; `#lifecycle` line kept | 01UXzG review |
 | STATS-1f | #109 (8e9d7f1) | G1 gates on the registered `g1Test` (`'spa'`, the owner's decision) | 01FHfb review: `g1Test` fixed per attempt in the registration |
 | BT-2 study | #41 (draft) | `GateContext.observedTip` in live and backtest; funder cluster from the supplement | then the 09-21 funnel count and a credit estimate → 012efQ review |
-| Real-worker switch | new PR | `ops/host-config.json` `"worker": "release"` | after #82, #99 and #103; review, CI, merge, then Deploy (code only) and check the server reports Online |
+| SWITCH-1 (real worker) | `claude/switch-1` (01VM97) | an e2e case proving the release worker starts on the host (paper, no node_modules, loopback, keys never logged), a pre-switch smoke check in `zeroed-update`, the `"worker": "release"` flip | merge after #82, #99 and #103; review 01Ty8L; then Deploy (code only) and check the server reports Online |
 | WORKER-1d | — | prune saved coverage before long runs | 019cEN after #99 |
 | G3 fold | — | `worker:*` reasons folded for G3, per-code counts still reported; WATCH-1 `calls.length` pin | 01WGpx after #98 |
 | API-1 | — | includes the alert when `zeroed-check`'s serve reset fails (#108 nit) | 01VM97 after #97 |
-| research.test.ts memory | — | peaks about 5.6 GB RSS and was SIGKILLed under parallel load | 01VgCL: shrink or stream, plus a memory assertion |
+| MEM-1 | `claude/mem-1` (01VgCL) | `research.test.ts` peaks about 5.6 GB RSS and was SIGKILLed under parallel load | shrink at the root, plus a memory assertion |
 | RES-3b | #56 (draft) | wall at 2026-09-21T14:00Z | after the study's inputs |
-| Historical data | data-scan | the archive answered 429 to every request for 5 h; run 1 published nothing; chained run 37171679398 still queued, and now blocked by the lock | data-source survey (BigQuery, Old Faithful mirrors and Filecoin, Triton bucket access, paid providers) in progress; if the archive keeps refusing, ask the owner to request bucket access or limits from Triton (GitHub issues on rpcpool/yellowstone-faithful, Triton Telegram, lk@triton.one) |
+| Historical data | DATA-2 (01XHH3k) | The Old Faithful archive blocks our scanner by its User-Agent: 429 since 8:43 AM, while curl's default agent still got data at 3:19 PM. Only Triton can lift it, and getting around the block would break their terms. The survey (workflow, 4 Oct 3:41 PM) ranked (1) Helius whole blocks (`getBlock`, about 19M blocks, our existing account; full pull needs Developer US$49 plus up to US$50 of extra credits, at most US$99), (2) Old Faithful with Triton's written OK (free; reply time unknown), (3) QuickNode (about US$316–353). | DATA-2: a `getBlock` reader plus a free Helius pilot (about 13k of 1M free credits: both window ends and one hour of 2 Oct compared row by row with our Old Faithful slice). It runs when Actions works. The owner decides the US$99 cap and the Triton message. No more requests to Old Faithful from anywhere until Triton answers. |
 
 **Blocked or parked:**
 - The server → GitHub evidence uploader (OPS-1d, stopped by the safety check) needs the owner's decision later. Evidence stays on the host.
@@ -114,8 +111,8 @@ Builders and reviewers keep working and testing locally; a red check carrying th
 
 | Role | Card | Session |
 |---|---|---|
-| Builder | data scans, data source | session_01XHH3k24fjmkpmmt28xSaYv |
-| Builder | WORKER-1b #82 | session_01F7UFCa8r4aee38kW7687Y3 |
+| Builder | data scans, DATA-2 (Helius pilot) | session_01XHH3k24fjmkpmmt28xSaYv |
+| Builder | WORKER-1b (merged); free for the next worker card | session_01F7UFCa8r4aee38kW7687Y3 |
 | Builder | FACTS-1f #106, TEST-1 #90 | session_01GDycboQzFrFWxVniy6B6Ps |
 | Builder | WORKER-1c #99, WORKER-1d | session_019cENcTEidMc4LEhPydYAZK |
 | Builder | TEST-3 #98, G3 fold | session_01WGpxEWFacSgAuXL5KAzrKc |
@@ -123,8 +120,8 @@ Builders and reviewers keep working and testing locally; a red check carrying th
 | Builder | EXIT-1f #107, BT-3 #89 | session_016KSN98NC2xQxetiZkpCVtT |
 | Builder | BT-2 #41 | session_01VBTfAwrhgoCssEzST2J2q5 |
 | Builder | STATS-1f #109 | session_01J9yEWHRunNxvo5CaTbuYSe |
-| Builder | CI-1 (merged), research.test.ts memory | session_01VgCLpHWaM7FjpwofRcgrwM |
-| Builder | OPS-1h #108, API-1 | session_01VM97q6A98GgtoPKCamoiT6 |
+| Builder | CI-1 (merged), MEM-1 (research.test.ts memory) | session_01VgCLpHWaM7FjpwofRcgrwM |
+| Builder | OPS-1h #108, SWITCH-1, API-1 | session_01VM97q6A98GgtoPKCamoiT6 |
 | Builder | RES-3b #56 | session_018esLCVLp9yCExK5cdnzCz8 |
 | Reviewer | DATA | session_01DKMnUiqVLxVjHbaqdoBnJD |
 | Reviewer | WORKER, FACTS | session_012QdDAuRuYt57E9PCjHfuKT |
@@ -143,10 +140,9 @@ Sessions belong to the current supervisor's account. A supervisor on another acc
 
 | Milestone | When | Depends on |
 |---|---|---|
-| GitHub billing lock lifted | owner | owner's billing page or GitHub Support |
-| Real worker on the server (paper), Online in the app | Sun 4 Oct about 9 PM – Mon 1 AM if the lock lifts by about 5 PM; later by the length of the lock | #104, #108, #82, #99, #103, the switch PR, Deploy |
+| Real worker on the server (paper), Online in the app | Sun 4 Oct about 9 PM – Mon 1 AM (±3 h) | #82, #99, #103, SWITCH-1 (e2e proof, smoke check, flip), Deploy |
 | Live dry run (48 h minimum) with restart drills | starts once the real worker runs; the qualifying run waits for the registered strategy | real worker |
-| Historical days (pre-holdout first) | unknown until a working source is confirmed | archive 429s, the data-source survey, the lock |
+| Historical days (19 Jul – 3 Oct) | about Fri 9 – Sun 11 Oct (±1–2 days) if the pilot runs Mon 5 Oct and the owner approves Helius | Actions unlocked, the Helius pilot, the owner's US$99 approval |
 | Funnel count, study, G1 on SPA | after the practice days and their look-back are published | data |
 | Strategy registered (configs frozen, attempt committed) | was planned for Fri 9 – Sat 10 Oct; slips with the data | G1 pass on practice days |
 | Holdout entry cutoff E | 20 Oct (UTC), fixed | — |
@@ -157,8 +153,10 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 
 ## 7. Waiting on the owner
 
-- **Now:** lift the GitHub billing lock (steps sent 3:23 PM).
-- **Maybe soon:** if the archive keeps refusing, a request to Triton for bucket access or limits (the owner had declined asking for a faster download; this would be about access at all).
+- **Now:** lift the GitHub billing lock: back to Free, or pay by PayPal (steps sent at 3:40 PM).
+- **History source:**
+  - approve Helius Developer (US$49) with an extra-credit cap (at most US$99 this month) once the free pilot passes;
+  - send, or let us send, a short message to Triton asking to lift the block or for a set rate or bucket, and whether day files built from their data may be published.
 - **Done today:**
   - setup parts A–D at 2:31 PM (server re-install at pin e28788a, Tailscale with HTTPS and serve, the APK, and ruleset 24441882 on `holdout-registry`);
   - SPA chosen for G1 at 2:33 PM;
@@ -231,8 +229,11 @@ If attempt 1 is not proven or fails, attempt 2 (α 0.005) starts only after its 
 
 ## 10. Risks being watched
 
-- **GitHub billing lock (now):** stops CI, merges, server updates and the data scan. Only the owner can clear it.
-- **Historical data:** the archive refused every request for 5 h. Without a working source there is no backtest, no G1 and no registration, so the proof timeline slips day for day.
+- **GitHub billing lock:** from declined GitHub Pro payments (3:15–3:23 PM and from 3:37 PM, 4 Oct). It stops CI, merges, server updates and data jobs, and only the owner can clear it.
+- **Historical data:** the archive blocks our scanner. Without a working source there is no backtest, no G1 and no registration, so the proof timeline slips day for day.
+  - Helius is untested for this use: its history depth, newer transaction versions, reply-size limits and our speed are all unknown, which is why the free pilot comes before any spend.
+  - Helius's terms forbid passing on their service, so raw files stay out of public releases until the terms are confirmed.
+  - The pull shares credits with the live dry run, so measure the dry run's use before setting the cap.
 - **U2 holdout size:** the holdout may hold fewer than 300 U2 trades. The funnel count decides, and "not proven yet" is a valid outcome.
 - **Live data gaps:** live regime volume comes from our own published day assets, lagged to D−3, so it is unknown until the scan reaches those days. Lead-in days have no token movements, so ownership is unresolved early in the window.
 - **Free-tier credits:** Helius serves getProgramAccounts at 10 credits a call; Alchemy answered 429 to back-to-back calls and is unmeasured. The RPC fill runs once per host (PERSIST-1).

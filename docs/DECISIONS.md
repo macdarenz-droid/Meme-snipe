@@ -383,7 +383,18 @@ Supervisor rulings:
   - It accepts only the exact serve config: TCP 443 HTTPS, one web host proxying `/` to 127.0.0.1:8788, and no Funnel.
   - The tailnet's DNS name is kept out of the repo.
 - **Stored data:** `account.json` marks, `deployer-state.json` and `fill-budget.json` hold only the bot's own state and public market data. The supervisor approved them under the stored-data ruling.
-- **No merge without CI.** While GitHub Actions is locked (owner billing, from 3:20 PM), nothing merges, whatever local runs show. The merge rule needs green checks on the exact head.
+- **No merge without CI.** If GitHub Actions is locked, nothing merges, whatever local runs show; the merge rule needs green checks on the exact head. On 4 Oct the owner's declined GitHub Pro payments locked the account from 3:15 to 3:23 PM and again from 3:37 PM.
+- **The archive's block is respected.**
+  - Old Faithful has answered 429 to our scanner's User-Agent since 8:43 AM. At 3:19 PM a 60-byte request with curl's default agent still got data. So the block targets our scanner, and only Triton can lift it.
+  - Triton's terms bar getting around a block (a changed name, address or tool) and bar a blocked user from seeking other Triton access without Triton's OK. So no request goes to Old Faithful from any runner, session or container until Triton answers.
+  - The data-source survey's own diagnostic requests (four requests of at most 60 bytes, 3:19–3:31 PM) were the last. They broke the morning rule "no archive access from development containers", and will not be repeated.
+  - Chained scan run 37171679398 is stopped, so it no longer retries against the block.
+- **History source: Helius whole blocks, after a free pilot (DATA-2).**
+  - The survey ranked: (1) Helius `getBlock` over 19 Jul – 3 Oct with our own pump.fun and PumpSwap filter. Whole blocks also catch the trades that reach the programs only through lookup tables. (2) Old Faithful with Triton's written OK. (3) QuickNode, about 3.5 times Helius's cost.
+  - Before any spend, a pilot uses about 13k of the free plan's 1M credits. It reads blocks at both ends of the window and one hour of 2 Oct, and compares every decoded row with our Old Faithful slice of that day. The comparison is on decoded rows, not raw bytes.
+  - The full pull needs the owner's approval: Developer plan US$49, plus extra credits capped at 10M at US$5 per million, so at most US$99 that month (prices checked 4 Oct). The cap is set after measuring the live dry run's credit use on the same account, so the pull cannot starve the live feed.
+  - Raw Helius responses never go into public releases until their terms are confirmed for derived files.
+  - A message to Triton (lift the block, or a set rate or bucket, and permission to publish derived day files) is the owner's choice, and keeps the free route open.
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
