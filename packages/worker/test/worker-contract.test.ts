@@ -71,7 +71,12 @@ describe('config and exit codes (§12.4)', () => {
     const policyAge = TRIAL_POLICY.gates.maxQuoteAgeMs;
     const release = DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS;
     expect(watchTimingProblem(watch({})!, policyAge, release)).toBeNull();
+    // Both bounds at the defaults (ruling (a1')): steady 500 + 200 + 400 + 800 = 1900 < 2000; at a feed's stop
+    // 800 + 1900 = 2700 <= 2000 + 800, the 0.7 s window an exit waits out (EXIT-1d).
+    expect(release).toBe(800);
     expect(200 + 500 + 400 + release).toBeLessThan(policyAge);
+    expect(release + 200 + 500 + 400 + release).toBe(2700);
+    expect(release + 200 + 500 + 400 + release).toBeLessThanOrEqual(policyAge + release);
     expect(watchTimingProblem({ everyMs: 200, staleMs: 600, latencyMs: 400 }, policyAge, release)).toMatch(/must stay below the policy's quote age of 2000 ms/);
     expect(watchTimingProblem({ everyMs: 200, staleMs: 599, latencyMs: 400 }, policyAge, release)).toBeNull();
     expect(() => makeWorker({ config: { ZEROED_WATCH_STALE_MS: '1500' } })).toThrow(/quote age/);

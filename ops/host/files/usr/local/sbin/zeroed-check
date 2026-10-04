@@ -35,7 +35,10 @@ if command -v tailscale >/dev/null 2>&1; then
         log "$msg"
         notify "$msg" || log "Could not send that alert to Telegram."
       else
-        log "Could not turn Funnel off or take the live view down."
+        # Neither worked: the API may still be public, which needs the owner.
+        msg="ALERT Zeroed host: Tailscale Funnel could not be turned off and the live view could not be taken down, so the worker API may be public. Run zeroed-tailscale --off on the server console."
+        log "$msg"
+        notify "$msg" || log "Could not send that alert to Telegram."
       fi
     fi
   else
