@@ -123,6 +123,36 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 
 ## 4. Current state (4 Oct, about 7:45 PM)
 
+### New-account queue (live; updated about 8:30 PM)
+
+**Merge order** (serial; each merge needs ready → update branch → green `check` (and `Ops end-to-end` for ops) → contains base → change identical to the reviewed SHA):
+
+| # | Card | Reviewed SHA | Verdict (new account unless noted) | Note |
+|---|---|---|---|---|
+| 116 | CI-1b | c5aaf88 | PASS (first account) | MERGED bf62839 (~8:15 PM) |
+| 114 | RENT-1 | 10ec76a (02d5f1d) | PASS (first account) | update 2e40997 in CI; then tell res, exit (BT-3 re-run), PAPER-1 |
+| 134 | OPS-GATE (O2) | 8c3aef3 | PASS (ops reviewer) | builder merged fff0017 at 59a8055; whichever of #134/#137 merges second re-pins install.sh; push e2e must be green before any Deploy |
+| 106 | FACTS-1f | d06ebdb | PASS (first account) | |
+| 107 | EXIT-1f | ce7c78b | PASS (first account) | then the EXIT builder retargets #128 |
+| 125 | PERSIST-2 | 8f82e5d | PASS (PERSIST reviewer, 13/13 mutants) | |
+| 130 | EXIT-ROUTE (M6) | 8a6a71e | PASS (worker/facts reviewer) | needs base merge |
+| 98 | TEST-3 G3 report | c1f3f45 | PASS (first account) | then the WATCH builder's G3 fold |
+| 122 | BT-TAIL | b6200d1 | PASS (BT reviewer, 4518/4518 on a local merge) | needs base merge; before #120 |
+| 115 | RES-4 | dc728ad | stats PASS; BT reviewer re-review of C1b pending | stacked on #114 |
+
+**In review or fixing:** #118 API-1 (base merge running, then run/CI delta); #121 WATCH-1c (risk delta); #123 WORKER-ORDER (fixed at b677fb5, worker/facts re-review); #124 RISK-LATCH (fixing); #127 DATA-4 (fixing, after DATA-PUB); #128 EXIT-1g (FAIL B1: recovery not durable once its exit is taken; fixing); #129 STATS-1g and #120 RES-5 (stats reviewer); #131 PERSIST-3 (FAIL B1–B3; fixing); #132 RISK-PARTIAL and #133 PAPER-1 (risk and worker reviews); #135 PNPM-CLAIMS (ops review); #137 OPS-1i (pin re-pin after #134); #139 WORKER-1d (worker/facts review); #140 SAMPLE-QR (run/CI review); #141 WATCH-1d (risk review); #41 BT-2 (audit fixes building; S2 estimand passed with conditions C1–C6).
+
+**New cards from the six read-audits (all assigned, §5):**
+- DATA-PUB (urgent): data-scan.yml would publish a Helius-source day (raw getBlock responses in raw.jsonl.zst) to a public release and a 14-day artifact; chained runs use the workflow on the branch, so the gate must merge before the 09-21 chain's last run (about 11:30 PM–1 AM).
+- PRACTICE-ON (top priority): as deployed, the paper worker makes no practice trades (ZEROED_STRATEGY defaults to none, ZEROED_STANDINS and ZEROED_WALLET unset, ZEROED_S0_DIAGNOSTIC dropped by ENV_NAMES); the earlier "practice trades start once the real worker runs" was wrong and the owner was told.
+- WORKER-HARDEN: crash paths (canonical.ts 'tx' decode, ENOSPC loop, DelayProbe), stuck exits invisible to the watchdog, holder-scan cap lost on restart, credit-halt vs ledger, unbounded growth (recorder, journal, deployers.jsonl, AsOfStore, FactProducer maps, DeployerIndex).
+- OPS-1j: backups miss the worker's JSON state (control.json pause and latches, credits, exits, account); update gate skips the open-intents check when the worker isn't active; deploy.yml key handoff on `!cancelled()`.
+- SAMPLE-QR, APP-WIRE (app screens never wired to the worker), APP-WORDS (raw reason codes on screen; copy guard gaps; tests that cannot fail), screenshots.
+- BT-WALL: evidence path has no holdout wall; the leak test's labels check can never fire; publish-report delete-then-upload; synthetic BT-3 evidence labelled gate.
+- DATA-5 now also covers holdout day files 10-02..10-19 (nothing can fetch them today).
+- SANDBOX-TIDY: blocked by the environment's safety check ("Modify Shared Resources") on `git rm`; not worked around; waits on the owner. DOCS-ALIGN and CORE-TIDY are being built.
+
+
 **Base:** `ccr-14987baf-i6lrsl` at 7d5e203 (#126, deployed to the server), plus the handover docs commits. 76 PRs merged since midnight on 4 Oct. This evening: DATA-2 #111, MEM-1 #112, STATS-1f #109, WORKER-1c #99 (5:51 PM), WATCH-1b #113 (6:02 PM), SWITCH-1 #110 (6:15 PM), BT-2e data path #119 (6:27 PM), WORKER-1e #117 (6:42 PM), E2E-DRILL #126 (about 7:30 PM).
 
 **GitHub:** the owner is on GitHub Pro. Declined payments locked Actions twice on 4 Oct (3:15–3:23 and 3:37–3:42 PM). If "account is locked due to a billing issue" returns, nothing merges or deploys: send the owner to github.com/settings/billing.
