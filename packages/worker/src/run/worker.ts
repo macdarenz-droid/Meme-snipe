@@ -42,6 +42,7 @@ import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { Summarizer, nextSummaryDelay } from './summary.ts';
+import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
@@ -215,6 +216,10 @@ export const CREATE_RETRY_MS = 60_000;
 /** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
 const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
 
+/** The most create signatures (CREATE-AFTER-RESTART) and token symbols a process keeps, oldest forgotten first. */
+export const CREATE_SIGS_MAX = 200_000;
+export const SYMBOLS_MAX = 200_000;
+
 /**
  * The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. The
  * journal of a long run is large and this runs at every boot, so it is streamed in chunks (`journalLines`) and only
@@ -278,7 +283,8 @@ export class Worker {
   #watch: PositionWatch | null = null;
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
-  #createSig = new Map<string, string>();
+  /** CREATE-AFTER-RESTART: each known create's signature by mint, the newest CREATE_SIGS_MAX. */
+  readonly #createSig = new CappedMap<string, string>(CREATE_SIGS_MAX);
   /** Mints shortlisted while the seed is being built, with no create signature yet: the downtime fill may bring it. */
   #createPending: string[] = [];
   /** Mints whose create this process has looked up (once each). */
@@ -325,7 +331,7 @@ export class Worker {
   /** The app's views: recent candidate decisions, the funnel, token symbols seen on creates. */
   readonly #rows: DecisionRow[] = [];
   readonly #funnel = { fromMs: 0, stage: new Map<string, { day: string; stage: number; check: string | null }>(), enteredByDay: new Map<string, number>() };
-  readonly #symbols = new Map<string, string>();
+  readonly #symbols = new CappedMap<string, string>(SYMBOLS_MAX);
   #stopping = false;
   #sources: readonly FeedSource[] = [];
 
@@ -629,7 +635,6 @@ export class Worker {
       const sym = m.value['event']['data']['symbol'];
       if (typeof sym === 'string' && sym.trim() !== '') {
         this.#symbols.set(m.key.slice('logs:pump:CreateEvent:'.length), sym.trim().slice(0, 32));
-        if (this.#symbols.size > 200_000) this.#symbols.delete(this.#symbols.keys().next().value!);
       }
     }
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
@@ -637,7 +642,6 @@ export class Worker {
 
   #noteCreateSig(mint: string, signature: string): void {
     this.#createSig.set(mint, signature);
-    if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
   }
 
   /**
