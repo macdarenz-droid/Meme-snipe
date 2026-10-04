@@ -154,6 +154,9 @@ export class PaperWorld implements EffectRunner {
   readonly #sentHeight = new Map<string, bigint>();
 
   constructor(d: PaperWorldDeps) {
+    // An exit's unknown fee falls back to the top rung's; with no rung there is no fee to charge, so it never starts (as
+    // the backtest's World refuses; policy validation already requires a step).
+    if (d.ladderFees.length === 0) throw new RangeError('the exit ladder is empty');
     this.#d = d;
     this.#attempts = new Map(Object.entries(d.file.read({ attempts: {} }).attempts).map(([k, v]) => [k, { ...v }]));
     // Paper attempts die with the process that made them: one still in flight at a restart never lands.

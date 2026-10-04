@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { attemptFee } from '../../core/src/fills/index.ts';
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
+import { PaperWorld, type PaperWorldDeps } from '../src/run/paper-world.ts';
 import { makeWorker, passingMarket } from './worker-harness.ts';
 
 const HELD = { heldPoolFacts: true } as const;
@@ -52,5 +53,16 @@ describe('a paper exit pays its plan\'s priority fee (PAPER-FEE-RUNG)', () => {
     const { h, exits } = await partialThenStop();
     for (const a of exits) expect(h.worker.strategy.exitFee(a.signature)).toBeNull();
     await h.worker.stop();
+  });
+});
+
+describe('an empty exit ladder (PAPER-FEE-RUNG review)', () => {
+  it('the paper world refuses to start, as the backtest\'s World refuses, instead of charging no fee', () => {
+    const deps = (ladderFees: bigint[]) => ({
+      ladderFees, exitFee: () => null, network: FILL_CONFIG.network, scenario: FILL_CONFIG.scenarios.base,
+      file: { read: (d: unknown) => d, write: () => undefined },
+    }) as unknown as PaperWorldDeps;
+    expect(() => new PaperWorld(deps([]))).toThrow('the exit ladder is empty');
+    expect(() => new PaperWorld(deps([20_000n]))).not.toThrow();
   });
 });

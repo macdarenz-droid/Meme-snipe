@@ -52,13 +52,13 @@ export const survivalRows = (graduates: readonly Graduate[], hours: number): Sur
         rows.push({ kind: 'event', slot, blockTime, txIdx: tx, evIdx: 0, signature: sig(`c:${x.name}`), program: 'pump', event: 'CreateEvent',
           fields: { mint: x.mint, creator: x.creator, user: x.creator, token_total_supply: '1000000000000000' } });
         rows.push({ kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 1, signature: sig(`c:${x.name}`), mint: x.mint, isBuy: true, solAmount: 1_000_000_000n, tokenAmount: 30_000_000_000_000n,
-          virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: 763_000_000_000_000n, mayhem: false, quoteMint: NATIVE_MINT, user: x.creator, userTokenAccount: key(`ata:${x.creator}:${x.mint}`), userTokenOwner: x.creator });
+          virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: 763_000_000_000_000n, mayhem: false, quoteMint: NATIVE_MINT, extraHex: '', user: x.creator, userTokenAccount: key(`ata:${x.creator}:${x.mint}`), userTokenOwner: x.creator });
         tx++;
       }
       if (s === x.create + 5) {
         for (let b = 0; b < 3; b++) {
           rows.push({ kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 0, signature: sig(`cb:${x.name}:${b}`), mint: x.mint, isBuy: true, solAmount: 2_000_000_000n, tokenAmount: 50_000_000_000_000n,
-            virtualSolReserves: 40_000_000_000n, virtualTokenReserves: 900_000_000_000_000n, realSolReserves: 10_000_000_000n, realTokenReserves: 600_000_000_000_000n, mayhem: false, quoteMint: NATIVE_MINT, user: key(`early:${x.name}:${b}`), userTokenAccount: key(`ata:early:${x.name}:${b}`), userTokenOwner: key(`early:${x.name}:${b}`) });
+            virtualSolReserves: 40_000_000_000n, virtualTokenReserves: 900_000_000_000_000n, realSolReserves: 10_000_000_000n, realTokenReserves: 600_000_000_000_000n, mayhem: false, quoteMint: NATIVE_MINT, extraHex: '', user: key(`early:${x.name}:${b}`), userTokenAccount: key(`ata:early:${x.name}:${b}`), userTokenOwner: key(`early:${x.name}:${b}`) });
           tx++;
         }
       }
@@ -96,7 +96,7 @@ export const survivalRows = (graduates: readonly Graduate[], hours: number): Sur
         kind: 'amm', slot, blockTime, txIdx: tx, evIdx: 0, signature: sig(`sw:${x.name}:${s}`), pool: x.pool, baseMint: x.mint, quoteMint: NATIVE_MINT,
         side: buy ? 'buy' : 'sell', mode: buy ? 'exact-quote-in' : 'exact-base', amount, baseAmount: 0n, quoteAmount: 0n, userQuote: 0n, pre: x.state,
         fees: FEES, baseSupply: 1_000_000_000_000_000n, ixName: buy ? 'buy_exact_quote_in' : 'sell', user: key(`u:${x.name}:${s % 97}`),
-        userTokenAccount: key(`ata:u:${x.name}:${s % 97}`), userTokenOwner: key(`u:${x.name}:${s % 97}`),
+        userTokenAccount: key(`ata:u:${x.name}:${s % 97}`), userTokenOwner: key(`u:${x.name}:${s % 97}`), lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '',
       };
       const q = replaySwap(x.state, swap);
       if (!q.ok) continue;

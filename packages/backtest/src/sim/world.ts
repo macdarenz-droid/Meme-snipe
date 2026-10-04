@@ -138,12 +138,18 @@ export class World implements EffectRunner {
 
   /**
    * An exit pays the fee its plan put on the transaction (PAPER-FEE-RUNG), never one re-derived from the intent's attempt
-   * count. A strategy that plans none: the highest rung's fee, so a cost is never under-counted.
+   * count: the strategy's planned fee first, then the fee written into the signed bytes (BT-2's `;fee=`, entries too), then
+   * an entry's network fee. An exit with neither: the highest rung's fee, so a cost is never under-counted.
    */
-  #priorityFee(i: IntentState, signature: Signature): bigint {
-    if (i.intent.purpose === 'entry') return this.#d.network.entryPriorityFee;
+  #priorityFee(i: IntentState, signature: Signature, signedBytesRef: string): bigint {
     if (this.#d.ladder.length === 0) throw new RangeError('the exit ladder is empty');
-    return this.#d.exitFee(signature) ?? this.#d.ladder.reduce((m, s) => (s.priorityFeeLamports > m ? s.priorityFeeLamports : m), 0n);
+    const exit = i.intent.purpose === 'exit';
+    const planned = exit ? this.#d.exitFee(signature) : null;
+    if (planned !== null) return planned;
+    const signed = /;fee=(\d+)$/.exec(signedBytesRef);
+    if (signed !== null) return BigInt(signed[1]!);
+    if (!exit) return this.#d.network.entryPriorityFee;
+    return this.#d.ladder.reduce((m, s) => (s.priorityFeeLamports > m ? s.priorityFeeLamports : m), 0n);
   }
 
   #broadcast(intentId: IntentId, signature: Signature, now: Moment): void {
@@ -167,7 +173,7 @@ export class World implements EffectRunner {
       this.#exitAttempts.set(position, exitRetry + 1);
     }
     const rec: AttemptRecord = {
-      intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i, signature),
+      intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i, signature, attempt.signedBytesRef),
       lastValidBlockHeight: attempt.lastValidBlockHeight, outcome: 'in_flight', reason: draw.fate,
       landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null, congested, forcedDrop, exitRetry, closedAccount: false,
     };
