@@ -223,6 +223,18 @@ describe('owner review commands: the Durable Object', () => {
     expect((await h.beat({ review: { ...REVIEW, override: OVERRIDE } })).commands?.map((c) => c.id)).toEqual([`override-${DAY}-1:4`]);
   });
 
+  it('the worker\'s `old` answer to an /override reaches the owner once and clears the queue', async () => {
+    const h = harness();
+    await h.beat({ review: { ...REVIEW, override: OVERRIDE } });
+    await h.tg('/override');
+    await h.tg(`/override confirm override-${DAY}-1`);
+    expect((await h.beat({ review: { ...REVIEW, override: OVERRIDE } })).commands?.map((c) => c.id)).toEqual([`override-${DAY}-1:3`]);
+    const r = await h.beat({ review: { ...REVIEW, override: OVERRIDE }, acked: [{ id: `override-${DAY}-1:3`, result: 'old' }] });
+    expect(h.sent.at(-1)).toBe('Not applied: those figures are too old. Send /override to see the current figures.');
+    expect(h.mem.get('owner_cmds')).toEqual([]);
+    expect(r.commands).toBeUndefined();
+  });
+
   it('a stale acknowledgement tells the owner the trip was refused', async () => {
     const h = harness();
     await h.beat({ review: REVIEW });

@@ -628,7 +628,7 @@ describe('owner commands through the heartbeat (worker harness)', () => {
   });
 
 
-  it('/override offers are kept by time, not by count: a confirm 70 heartbeats later applies; one past the window is `old`', async () => {
+  it('/override offers are kept by time, not by count: a confirm 70 heartbeats and 17 minutes later applies; one past the window is `old`', async () => {
     const seam = { lost: false };
     const mark: typeof markedHistory = (h0, held, sol, nowMs, st) => {
       const lost = { mint: 'MintH' as never, openedAtMs: nowMs - 120_000, closedAtMs: nowMs - 60_000, notional: 3_000_000n as never, netPnl: -1_600_000n as never, stoppedOut: true };
@@ -662,11 +662,12 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     // Past the window (the 15-minute confirm window plus 5): the figures are too old.
     const a = await beat(t0 + 1);
     expect(await confirm(a, t0 + 1 + OFFER_KEEP_MS + 1_000)).toBe('old');
-    // 70 heartbeats a second apart after an offer (more than the 64 once kept), all inside the window: it applies.
+    // 70 heartbeats a second apart after an offer (more than the 64 once kept), and the confirm 17 minutes after it
+    // (inside the 15-minute window's 5-minute margin): it applies.
     const t1 = h.timers.now();
     const b = await beat(t1 + 1_000);
     for (let i = 2; i <= 71; i++) await beat(t1 + i * 1_000);
-    expect(await confirm(b, t1 + 72_000)).toBe('applied');
+    expect(await confirm(b, t1 + 1_000 + 17 * 60_000)).toBe('applied');
     await h.worker.stop();
   });
 });
