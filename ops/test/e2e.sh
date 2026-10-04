@@ -87,10 +87,12 @@ mkdir -p "$STATE/checks"
 # The server also needs a green e2e on the newest commit at or before the deployed one that touched the
 # ops end-to-end paths (logic.sh e2e_commit, OPS-GATE): mark those green.
 e2e_of() { (. "$ROOT/ops/host/files/usr/local/lib/zeroed/logic.sh" && e2e_commit "$BARE" "$1"); }
+# A test commit that is its own e2e commit gets its checks file in its own case below: written here, the
+# update timer would deploy it before the gate cases run.
 for c in "$signed" "$signed2" "$unsigned"; do
   e="$(e2e_of "$c")"
   [ -n "$e" ] || fail "no commit at or before ${c:0:12} touched the ops end-to-end paths"
-  echo success >"$STATE/checks/$e"
+  case "$e" in "$signed" | "$signed2" | "$unsigned") ;; *) echo success >"$STATE/checks/$e" ;; esac
 done
 git -C "$BARE" update-server-info
 printf '%s' "$T_TELEGRAM" >"$STATE/telegram-token"
