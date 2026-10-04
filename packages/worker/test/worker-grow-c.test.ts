@@ -46,4 +46,24 @@ describe('the recorder manifest (G4c)', () => {
     expect(files).toHaveLength(1);
     expect(files[0]!.sha256).toBe(sha(readFileSync(join(rec.dir, files[0]!.path))));
   });
+
+  it('a crashed boot\'s sealed files keep the hash its manifest listed at their seal (review N1)', () => {
+    const root = tempState();
+    const at = Date.parse('2026-10-04T00:00:00Z');
+    const rec = new Recorder({ root, boot: 'b1', gitSha: 'abc', rotateBytes: 1 });
+    rec.delay({ n: 1 }, at);
+    rec.flush();
+    rec.delay({ n: 2 }, at); // seals the first file; the second stays open
+    rec.flush(); // killed here: no close
+    const sealed = manifestOf(rec.dir).days[0]!.files[0]!;
+    const p = join(rec.dir, sealed.path);
+    const bytes = readFileSync(p);
+    writeFileSync(p, Buffer.concat([bytes, Buffer.from('x')])); // changed between the crash and the restart
+    expect(sealLeftovers(root, 'b2')).toEqual(['b1']);
+    const files = manifestOf(rec.dir).days[0]!.files;
+    expect(files).toHaveLength(2);
+    expect(files[0]).toEqual(sealed);
+    expect(files[0]!.sha256).not.toBe(sha(readFileSync(p)));
+    expect(files[1]!.sha256).toBe(sha(readFileSync(join(rec.dir, files[1]!.path))));
+  });
 });

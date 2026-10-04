@@ -275,6 +275,22 @@ const writeManifest = (dir: string, s: ManifestState, hashes: FileHashes = new M
   renameSync(join(dir, 'manifest.json.tmp'), join(dir, 'manifest.json'));
 };
 
+/** The well-formed `days[].files` entries of a manifest (anything else is skipped and hashed afresh). */
+const listedFiles = (days: unknown): { readonly path: string; readonly bytes: number; readonly sha256: string }[] => {
+  if (!Array.isArray(days)) return [];
+  const out: { path: string; bytes: number; sha256: string }[] = [];
+  for (const d of days) {
+    const files = typeof d === 'object' && d !== null ? (d as { files?: unknown }).files : undefined;
+    if (!Array.isArray(files)) continue;
+    for (const f of files) {
+      if (typeof f !== 'object' || f === null) continue;
+      const { path, bytes, sha256 } = f as { path?: unknown; bytes?: unknown; sha256?: unknown };
+      if (typeof path === 'string' && Number.isSafeInteger(bytes) && typeof sha256 === 'string' && /^[0-9a-f]{64}$/.test(sha256)) out.push({ path, bytes: bytes as number, sha256 });
+    }
+  }
+  return out;
+};
+
 /**
  * At start, before this boot records anything: earlier boots' folders that a crash left with plain `.jsonl` files get
  * them compressed and their manifest rewritten (counts and coverage as the files show them). Returns the folders fixed.
@@ -305,10 +321,13 @@ export const sealLeftovers = (root: string, current: string): string[] => {
       }
     }
     if (open === 0) continue;
-    let prev: { git_sha?: string | null; coverage?: Coverage; coverage_gaps?: unknown[]; commitments?: Record<string, string> | null; units?: { frames?: number; raw?: number; releases?: number }[] } = {};
+    let prev: { git_sha?: string | null; coverage?: Coverage; coverage_gaps?: unknown[]; commitments?: Record<string, string> | null; units?: { frames?: number; raw?: number; releases?: number }[]; days?: unknown } = {};
     try {
       prev = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as typeof prev;
     } catch {}
+    // Files the crashed boot had sealed keep the size and hash its manifest listed at their seal (G4c review N1), so a
+    // change made to one between the crash and this start shows as a mismatch, not a fresh hash.
+    for (const f of listedFiles(prev.days)) if (!hashes.has(f.path)) hashes.set(f.path, { bytes: f.bytes, sha256: f.sha256 });
     writeManifest(dir, {
       boot, git_sha: prev.git_sha ?? null,
       coverage: prev.coverage ?? { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null },
