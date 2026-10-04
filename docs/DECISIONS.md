@@ -1525,6 +1525,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - The risk meters: open exposure in lamports. The daily-loss used and limit are the policy's dollars converted at the current SOL price (used up, limit down), until SOL-BOOKS gives core's own SOL limits.
   - `status.solPriceUsd`: the current SOL price.
   - The dollar fields stay. The app's schema takes every lamport field as `optional()`, so a worker without them still loads and shows dollars as before. An app older than the fields refuses them and reads "App update needed" (APP-COMPAT).
+- **2026-10-05 · Review B1/N1.**
+  - The interim daily-loss meter's rounding is pinned at a SOL price that does not divide the dollar figures ($150.000001): used is rounded up, the limit down.
+  - Whenever the dollars say the limit is reached, so does SOL.
+  - A trade whose lamport net is unknown fails closed. The SOL totals it belongs to (stats, a calendar day, the charts from it on, the trade's own net and gross) are not served, and the app shows their dollars. It never counts as 0 SOL.
+  - Mutants caught: the limit rounded up, used rounded down, an unknown net summed as 0, stats served regardless, a trade's net as 0.
 - **2026-10-05 · The app shows SOL first.**
   - "+0.0123 SOL": four decimals, rounded half away from zero. Under 0.0001 SOL it keeps four significant digits ("0.000005 SOL"), so a fee never reads 0.0000. Exact from the integer.
   - The dollars sit in a small line under it at the current SOL price, never toned, never the headline. Without a price there is no dollar line.

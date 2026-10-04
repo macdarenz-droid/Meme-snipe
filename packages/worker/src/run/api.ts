@@ -32,6 +32,14 @@ export const usdText = (micro: bigint): string => {
 /** Lamports as the contract's `Lamports`: an exact signed integer string (APP-SOL: the owner counts results in SOL). */
 export const lamText = (l: bigint): string => l.toString();
 
+/**
+ * A lamport sum that fails closed (APP-SOL review N1): a trade with no lamport net makes the sum unknown (null), so the
+ * figure is not served in lamports and the app shows its dollars; it never counts as 0 SOL.
+ */
+const addLam = (sum: bigint | null, x: bigint | null): bigint | null => (sum === null || x === null ? null : sum + x);
+/** A lamport field only when known. */
+const lamField = <K extends string>(key: K, v: bigint | null): Partial<Record<K, string>> => (v === null ? {} : ({ [key]: lamText(v) } as Record<K, string>));
+
 /** Micro-dollars in lamports at a SOL price, signed; null without a price (APP-SOL: dollar-native figures shown in SOL). */
 const usdLamports = (micro: bigint, price: MicroUsd | null, rounding: 'floor' | 'ceil'): string | null => {
   if (price === null) return null;
@@ -388,52 +396,52 @@ export const views = {
   trades: (i: ApiInputs) => i.trades.filter((t) => t.closedAtMs !== null).map((t) => tradeRecord(i, t)).reverse(),
 
   calendar: (i: ApiInputs, month: string) => {
-    const byDay = new Map<string, { net: bigint; lam: bigint; ids: string[] }>();
+    const byDay = new Map<string, { net: bigint; lam: bigint | null; ids: string[] }>();
     for (const t of i.trades) {
       if (t.closedAtMs === null) continue;
       const date = melbourneDate(t.closedAtMs);
       if (!date.startsWith(month)) continue;
       const d = byDay.get(date) ?? { net: 0n, lam: 0n, ids: [] };
       d.net += t.netPnl ?? 0n;
-      d.lam += t.netLamports ?? 0n;
+      d.lam = addLam(d.lam, t.netLamports);
       d.ids.push(t.positionId);
       byDay.set(date, d);
     }
     return {
       mode: MODE, month, timeZone: 'Australia/Melbourne',
-      days: [...byDay].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, d]) => ({ mode: MODE, date, netUsd: usdText(d.net), netLamports: lamText(d.lam), trades: d.ids.length, pauses: 0, tradeIds: d.ids })),
+      days: [...byDay].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, d]) => ({ mode: MODE, date, netUsd: usdText(d.net), ...lamField('netLamports', d.lam), trades: d.ids.length, pauses: 0, tradeIds: d.ids })),
     };
   },
 
   charts: (i: ApiInputs) => {
     const closed = i.trades.filter((t) => t.closedAtMs !== null).sort((a, b) => a.closedAtMs! - b.closedAtMs!);
     // Each figure in dollars and, exactly, in lamports (APP-SOL), summed side by side.
-    type Pair = { usd: bigint; lam: bigint };
-    const add = (m: Map<string, Pair>, k: string, usd: bigint, lam: bigint) => {
+    type Pair = { usd: bigint; lam: bigint | null };
+    const add = (m: Map<string, Pair>, k: string, usd: bigint, lam: bigint | null) => {
       const p = m.get(k) ?? { usd: 0n, lam: 0n };
-      m.set(k, { usd: p.usd + usd, lam: p.lam + lam });
+      m.set(k, { usd: p.usd + usd, lam: addLam(p.lam, lam) });
     };
     let cum = 0n;
-    let cumLam = 0n;
+    let cumLam: bigint | null = 0n;
     const daily = new Map<string, Pair>();
     const costsDaily = new Map<string, Pair>();
     const kinds = new Map<string, Pair>();
     const cumulative = closed.map((t) => {
       cum += t.netPnl ?? 0n;
-      cumLam += t.netLamports ?? 0n;
+      cumLam = addLam(cumLam, t.netLamports);
       const date = melbourneDate(t.closedAtMs!);
-      add(daily, date, t.netPnl ?? 0n, t.netLamports ?? 0n);
+      add(daily, date, t.netPnl ?? 0n, t.netLamports);
       const c = costsOf(i, t);
       add(costsDaily, date, c.total, c.totalLamports);
       for (const [k, v] of Object.entries(c.kinds)) add(kinds, k, v, c.lamports[k as keyof typeof c.lamports]);
-      return { mode: MODE, at: iso(t.closedAtMs!), cumNetUsd: usdText(cum), cumNetLamports: lamText(cumLam) };
+      return { mode: MODE, at: iso(t.closedAtMs!), cumNetUsd: usdText(cum), ...lamField('cumNetLamports', cumLam) };
     });
     return {
       mode: MODE, cumulative,
-      daily: [...daily].map(([date, v]) => ({ mode: MODE, date, netUsd: usdText(v.usd), netLamports: lamText(v.lam) })),
+      daily: [...daily].map(([date, v]) => ({ mode: MODE, date, netUsd: usdText(v.usd), ...lamField('netLamports', v.lam) })),
       rBuckets: [],
-      costsDaily: [...costsDaily].map(([date, v]) => ({ mode: MODE, date, totalUsd: usdText(v.usd), totalLamports: lamText(v.lam) })),
-      costsByKind: [...kinds].map(([kind, v]) => ({ mode: MODE, kind, amountUsd: usdText(v.usd), amountLamports: lamText(v.lam) })),
+      costsDaily: [...costsDaily].map(([date, v]) => ({ mode: MODE, date, totalUsd: usdText(v.usd), ...lamField('totalLamports', v.lam) })),
+      costsByKind: [...kinds].map(([kind, v]) => ({ mode: MODE, kind, amountUsd: usdText(v.usd), ...lamField('amountLamports', v.lam) })),
     };
   },
 
@@ -464,13 +472,15 @@ export const views = {
       return dd;
     };
     const dd = drawdown(nets);
+    // Fails closed (review N1): any trade without its lamport net leaves the SOL figures unserved, never 0 SOL.
+    const known = closed.every((t) => t.netLamports !== null);
     const lams = closed.map((t) => t.netLamports ?? 0n);
     const netLam = lams.reduce((s, x) => s + x, 0n);
     const n = closed.length;
     return {
       mode: MODE, trades: n, requiredTrades: 30, netUsd: usdText(net), maxDrawdownUsd: usdText(dd),
       winRate: n === 0 ? null : (nets.filter((x) => x > 0n).length / n).toFixed(4), meanNetUsd: n === 0 ? null : usdText(net / BigInt(n)),
-      netLamports: lamText(netLam), maxDrawdownLamports: lamText(drawdown(lams)), meanNetLamports: n === 0 ? null : lamText(netLam / BigInt(n)),
+      ...(known ? { netLamports: lamText(netLam), maxDrawdownLamports: lamText(drawdown(lams)), meanNetLamports: n === 0 ? null : lamText(netLam / BigInt(n)) } : {}),
       meanR: null, ci95: null,
     };
   },
@@ -506,7 +516,7 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
     entryPriceUsd: priceText(sol(buys), tok(buys), t.openSolPrice ?? price), exitPriceUsd: priceText(sol(sells), tok(sells), price),
     sizeUsd: usdText(t.notional), grossUsd: usdText(net + c.total),
     // In lamports, exact (APP-SOL): what the entry swapped in, the trade's net (account.ts), and gross as net plus its costs.
-    sizeLamports: lamText(sol(buys)), netLamports: lamText(t.netLamports ?? 0n), grossLamports: lamText((t.netLamports ?? 0n) + c.totalLamports),
+    sizeLamports: lamText(sol(buys)), ...lamField('netLamports', t.netLamports), ...lamField('grossLamports', t.netLamports === null ? null : t.netLamports + c.totalLamports),
     costs: {
       venueFeeUsd: usdText(c.kinds.venueFeeUsd), creatorFeeUsd: usdText(c.kinds.creatorFeeUsd), priorityFeeUsd: usdText(c.kinds.priorityFeeUsd),
       tipUsd: usdText(c.kinds.tipUsd), networkFeeUsd: usdText(c.kinds.networkFeeUsd), slippageUsd: usdText(c.kinds.slippageUsd),

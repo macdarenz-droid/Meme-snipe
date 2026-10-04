@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor, type Endpoint } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
-import { openPnl, route, usdText } from '../src/run/api.ts';
+import { openPnl, route, usdText, views } from '../src/run/api.ts';
+import type { MicroUsd } from '../../core/src/units/index.ts';
 import { makeWorker, passingMarket } from './worker-harness.ts';
 
 const HELD = { heldPoolFacts: true } as const;
@@ -64,5 +65,73 @@ describe('lamports beside dollars (APP-SOL)', () => {
     expect(cal.days.reduce((s, d) => s + BigInt(d.netLamports), 0n)).toBe(net);
 
     await h.worker.stop();
+  });
+});
+
+describe('the interim daily-loss meter in SOL rounds on the safe side (review B1)', () => {
+  // $150.000001 per SOL: dollar figures that do not divide into whole lamports.
+  const PRICE = 150_000_001n as MicroUsd;
+  const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b;
+  const served = (lossMicro: bigint) => {
+    const h = makeWorker();
+    const base = h.worker.apiInputs();
+    void h.worker.stop();
+    const closed = { positionId: 'p1', mint: 'm', openedAtMs: base.nowMs - 120_000, closedAtMs: base.nowMs - 60_000, notional: 2_000_000n, netLamports: -1n, netPnl: -lossMicro, stoppedOut: false, booked: 0n, openSolPrice: PRICE };
+    const i = { ...base, solPrice: PRICE, trades: [closed] };
+    const status = views.status(i as never) as { risk: { kind: string; usedUsd: string; limitUsd: string | null; usedLamports: string | null; limitLamports: string | null }[] };
+    return { meter: status.risk.find((r) => r.kind === 'daily-loss')!, limitMicro: (BigInt(base.policy.capital.bankroll) * BigInt(base.policy.loss.dailyBps)) / 10_000n };
+  };
+
+  it('used is rounded up and the limit down, exactly', () => {
+    const { meter, limitMicro } = served(1_234_567n);
+    expect(meter.usedUsd).toBe('1.234567');
+    expect(BigInt(meter.usedLamports!)).toBe(ceilDiv(1_234_567n * 1_000_000_000n, PRICE));
+    expect(BigInt(meter.limitLamports!)).toBe((limitMicro * 1_000_000_000n) / PRICE);
+    // Neither divides evenly here, so rounding the other way would read differently.
+    expect((1_234_567n * 1_000_000_000n) % PRICE).not.toBe(0n);
+    expect((limitMicro * 1_000_000_000n) % PRICE).not.toBe(0n);
+  });
+
+  it('whenever the dollars say the limit is reached, so do the SOL figures (never more room in SOL)', () => {
+    const { limitMicro } = served(0n);
+    for (const loss of [limitMicro, limitMicro + 1n, limitMicro - 1n, limitMicro / 2n]) {
+      const { meter } = served(loss);
+      const reachedUsd = loss >= limitMicro;
+      const reachedSol = BigInt(meter.usedLamports!) >= BigInt(meter.limitLamports!);
+      if (reachedUsd) expect(reachedSol, String(loss)).toBe(true);
+    }
+    // At the boundary itself: used equals the limit in dollars, and in SOL used is at least the limit.
+    const at = served(limitMicro).meter;
+    expect(BigInt(at.usedLamports!) >= BigInt(at.limitLamports!)).toBe(true);
+  });
+});
+
+describe('a trade with no lamport net fails closed (review N1)', () => {
+  it('is never counted as 0 SOL: the SOL totals it is part of are not served, so the app shows dollars', () => {
+    const h = makeWorker();
+    const base = h.worker.apiInputs();
+    void h.worker.stop();
+    const t = (id: string, closedAtMs: number, netLamports: bigint | null) => ({ positionId: id, mint: 'm', openedAtMs: closedAtMs - 60_000, closedAtMs, notional: 2_000_000n, netLamports, netPnl: -100_000n, stoppedOut: false, booked: 0n, openSolPrice: null });
+    const day = base.nowMs - 3_600_000;
+    const i = { ...base, trades: [t('a', day, -5_000n), t('b', day + 1_000, null)] };
+    const stats = views.stats(i as never) as Record<string, unknown>;
+    expect(stats).not.toHaveProperty('netLamports');
+    expect(stats).not.toHaveProperty('maxDrawdownLamports');
+    expect(stats).toMatchObject({ netUsd: '-0.2' });
+    const charts = views.charts(i as never) as { cumulative: Record<string, unknown>[]; daily: Record<string, unknown>[] };
+    expect(charts.cumulative[0]).toHaveProperty('cumNetLamports', '-5000');
+    expect(charts.cumulative[1]).not.toHaveProperty('cumNetLamports');
+    expect(charts.daily[0]).not.toHaveProperty('netLamports');
+    const month = new Date(day).toISOString().slice(0, 7);
+    const cal = views.calendar(i as never, month) as { days: Record<string, unknown>[] };
+    expect(cal.days[0]).not.toHaveProperty('netLamports');
+    const trades = views.trades(i as never) as Record<string, unknown>[];
+    const b = trades.find((x) => x['id'] === 'b')!;
+    expect(b).not.toHaveProperty('netLamports');
+    expect(b).not.toHaveProperty('grossLamports');
+    expect(trades.find((x) => x['id'] === 'a')).toHaveProperty('netLamports', '-5000');
+    // With every trade known, the same figures are served in lamports.
+    const all = { ...base, trades: [t('a', day, -5_000n), t('b', day + 1_000, -7_000n)] };
+    expect(views.stats(all as never)).toMatchObject({ netLamports: '-12000' });
   });
 });
