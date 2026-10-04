@@ -9,13 +9,15 @@ import { approvingStepUp } from '../src/funding/stepUp.ts';
 import { WithdrawPanel } from '../src/funding/WithdrawPanel.tsx';
 import { EMPTY_WALLET } from '../src/screens/types.ts';
 
+// A real-shaped bot wallet; sample data never holds one (SAMPLE-QR, samples.test.ts).
+const realWallet = { ...fixtureWallet, botAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' };
 const text = (el: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticMarkup(el).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
 describe('Deposit', () => {
   it('shows the address, a QR code, copy, the balance in SOL and AUD, and the network warning', () => {
-    const html = renderToStaticMarkup(h(DepositPanel, { wallet: fixtureWallet, gatePassed: true }));
-    const t = text(h(DepositPanel, { wallet: fixtureWallet, gatePassed: true }));
-    expect(t).toContain(fixtureWallet.botAddress!);
+    const html = renderToStaticMarkup(h(DepositPanel, { wallet: realWallet, gatePassed: true }));
+    const t = text(h(DepositPanel, { wallet: realWallet, gatePassed: true }));
+    expect(t).toContain(realWallet.botAddress);
     expect(html).toMatch(/<svg[^>]*role="img"[^>]*aria-label="QR code of the bot wallet address"/);
     expect(t).toContain('Copy address');
     expect(t).toContain('138.456 SOL');
