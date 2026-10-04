@@ -30,7 +30,8 @@ const TAIL = minOutcomeTailMs(TRIAL_POLICY, FILL_CONFIG.network);
 const session = async (veto: boolean, edgePpm?: bigint, holdMs = 0): Promise<H> => {
   const h = makeWorker(edgePpm === undefined ? {} : { edgePpm });
   expect(await h.worker.reconcile()).toEqual({ ok: true });
-  const m = await passingMarket(h, veto ? { omit: [xcheckKey(MINT)] } : {});
+  // The price path is not this file's subject: the pool fact keeps coming while held (POS-1's test switch).
+  const m = await passingMarket(h, { heldPoolFacts: true, ...(veto ? { omit: [xcheckKey(MINT)] } : {}) });
   const tick = (scale: bigint) => () => {
     m.slot();
     m.pool(scale);
