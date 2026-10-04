@@ -187,7 +187,10 @@ export class PaperAccount {
       const before = t.partialSold ?? 0n;
       const lamports = (exitNet - (t.partialNet ?? 0n)) - (soldBasis(basis, p.bought, p.sold) - soldBasis(basis, p.bought, before));
       if (p.sold !== before || exitNet !== (t.partialNet ?? 0n)) {
-        const lostShare = p.bought <= 0n ? 0n : (t.notional * (p.sold - before) + p.bought - 1n) / p.bought;
+        // No SOL price: the part's loss is its share of the whole cost in dollars, the notional and the entry fees (at
+        // the entry's own SOL-to-dollar rate, notional over entry SOL), rounded up (risk review, golden rule).
+        const den = p.bought * (p.cost > 0n ? p.cost : 1n);
+        const lostShare = p.bought <= 0n ? 0n : (t.notional * (p.cost > 0n ? basis : 1n) * (p.sold - before) + den - 1n) / den;
         (t.partials ??= []).push({ atMs: r.atMs, lamports, pnl: pnlUsd(lamports, solPrice ?? t.openSolPrice ?? null, lostShare as MicroUsd) });
         t.partialSold = p.sold;
         t.partialNet = exitNet;

@@ -8,7 +8,13 @@ import { openLedger } from '../../core/src/ledger/index.ts';
 import type { Book } from '../../core/src/lifecycle/index.ts';
 import { type AccountHistory, NO_LATCHES, melbourneDay, riskSnapshot } from '../../core/src/risk/index.ts';
 import type { MicroUsd } from '../../core/src/units/index.ts';
+import { type IntentId, positionId } from '../../core/src/domain/index.ts';
+import { OFF_CHAIN, type LogRecord } from '../../core/src/engine/index.ts';
+import { type BookEvent, emptyBook } from '../../core/src/lifecycle/index.ts';
+import { raw } from '../../core/src/units/index.ts';
+import { attempt as fxAttempt, entryToSubmitted, fill as fx, on, quote, sig } from '../../core/test/fixtures.ts';
 import { PaperAccount, accountFile } from '../src/run/account.ts';
+import { Desk } from '../src/run/desk.ts';
 import { tempState } from './worker-harness.ts';
 
 const HOUR = 3_600_000;
@@ -154,5 +160,114 @@ describe('partial sales (RISK-PARTIAL)', () => {
     y.a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: lost, atMs: T - HOUR / 4, reasons: ['partial exit'] }, null);
     expect(y.a.state.trades[0]!.partials!.map((p) => p.pnl)).toEqual([0n, -usd(1.25)]);
     y.ledger.close();
+  });
+
+  it('no price at all, a part sold at a loss counts its share of the notional and the entry fees, rounded up (risk review)', () => {
+    const { ledger, a } = setup();
+    // $5 of SOL and $0.20 of entry fees; then half sold for $1 with no SOL price known at the fill or the open.
+    const fees = [{ sol: lam(5), fees: lam(0.2) }];
+    a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, fees, []), atMs: T - HOUR, reasons: ['notional 5000000'] }, null);
+    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 500n, sold: 500n, status: 'open' }, fees, [[{ sol: lam(1), fees: 0n }]]), atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
+    const pnl = a.state.trades[0]!.partials![0]!.pnl;
+    expect(pnl <= -(usd(5) + usd(0.2)) / 2n).toBe(true);
+    expect(pnl).toBe(-usd(2.6));
+    // Rounded up: a third sold, $5.20 / 3 is $1.733333..., so $1.733334.
+    const b = setup();
+    const third = [{ sol: lam(5), fees: lam(0.2) }];
+    b.a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 999n, sold: 0n, status: 'open', bought: 999n }, third, []), atMs: T - HOUR, reasons: ['notional 5000000'] }, null);
+    b.a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 666n, sold: 333n, status: 'open', bought: 999n }, third, [[{ sol: lam(0.1), fees: 0n }]]), atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
+    expect(b.a.state.trades[0]!.partials![0]!.pnl).toBe(-1_733_334n);
+    ledger.close();
+    b.ledger.close();
+  });
+});
+
+describe('a late-landing sell after a partial books its part when it lands (risk review of #132)', () => {
+  it('an exit\'s sell booked by orphan_fill on day D books its part at D; the close on D+1 shows only its own result', () => {
+    const { dir, a } = setup();
+    // A backtest ledger takes the reservation as an event (as the PAPER-1 orphan test does).
+    const ledger = openLedger(join(dir, 'desk.sqlite'), 'backtest');
+    const desk = new Desk({
+      ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
+      journal: () => undefined, report: () => 'world#unused', accountChanged: () => undefined, intentsChanged: () => undefined,
+      reserved: () => undefined, diverged: () => undefined, filled: (r) => a.filled(r, SOL),
+    });
+    const E1 = 'e1' as IntentId;
+    const P = positionId('p1');
+    const status = (id: IntentId, n: number, result: 'succeeded' | 'not_found', h: bigint) =>
+      on(id, { type: 'status', signature: sig(n), result, commitment: result === 'succeeded' ? 'finalized' : null, blockHeight: h, searchedHistory: true });
+    const exit = (id: IntentId, n: number, tokens: bigint): BookEvent[] => [
+      { type: 'trigger_exit', positionId: P, reasons: ['take_profit'], intentId: id, quantity: raw(tokens) },
+      on(id, { type: 'prepare', quote }),
+      on(id, { type: 'sign', attempt: fxAttempt(id, n, 2_500n) }),
+      on(id, { type: 'submit' }),
+    ];
+    const X1 = 'x1' as IntentId;
+    const X2 = 'x2' as IntentId;
+    const X3 = 'x3' as IntentId;
+    // Day D: 1,000 tokens bought for 16,000,000 lamports (+10,000 fees); 500 sold for 9,000,000; then 250 more are
+    // sold for 6,000,000 by an exit that expired unseen and ended, its sell found landed afterwards (orphan_fill).
+    const dayD: BookEvent[] = [
+      ...entryToSubmitted(1, 1_000n),
+      status(E1, 1, 'succeeded', 900n),
+      on(E1, { type: 'reconcile', fills: [fx(E1, 1, 1_000n)], blockHeight: 900n }),
+      ...exit(X1, 11, 500n),
+      status(X1, 11, 'succeeded', 2_400n),
+      on(X1, { type: 'reconcile', fills: [fx(X1, 11, 500n, 9_000_000n)], blockHeight: 2_400n }),
+      ...exit(X2, 12, 250n),
+      status(X2, 12, 'not_found', 2_501n),
+      on(X2, { type: 'reconcile', fills: [], blockHeight: 2_501n }),
+      on(X2, { type: 'abandon' }),
+      status(X2, 12, 'succeeded', 2_600n),
+      { type: 'orphan_fill', fill: fx(X2, 12, 250n, 6_000_000n) },
+    ];
+    // Day D+1: the last 250 sold for 3,990,000 net of its fee... (4,000,000 less 10,000).
+    const dayD1: BookEvent[] = [...exit(X3, 13, 250n), status(X3, 13, 'succeeded', 2_400n), on(X3, { type: 'reconcile', fills: [fx(X3, 13, 250n, 4_000_000n)], blockHeight: 2_400n })];
+    const feed = (events: BookEvent[], at: number, from: number) => desk.consume(events.map((event, k) => ({ type: 'world', seq: from + k, at: { slot: 1n, txIndex: OFF_CHAIN, ixIndex: 0, receivedAt: at }, eventId: `w${from + k}`, event, result: 'applied', effects: [] }) as unknown as LogRecord));
+    const D = T;
+    const D1 = T + 24 * HOUR;
+    expect(melbourneDay(D1).start).toBeGreaterThan(D);
+    feed(dayD, D, 0);
+    expect(desk.illegal + desk.ledgerRefusals).toBe(0);
+    expect(desk.book.positions[P]?.status).toBe('open');
+    const t = () => a.state.trades.find((x) => x.positionId === 'p1')!;
+    // Both parts are booked at D, the late one with its own share of the basis (16,010,000 for 1,000 tokens).
+    const basis = 16_010_000n;
+    const left = (n: bigint) => (basis * n + 999n) / 1_000n;
+    expect(t().partials!.map((x) => x.atMs)).toEqual([D, D]);
+    expect(t().partials![1]!.lamports).toBe((6_000_000n - 10_000n) - (left(500n) - left(250n)));
+    feed(dayD1, D1, dayD.length);
+    expect(desk.illegal + desk.ledgerRefusals).toBe(0);
+    expect(t().closedAtMs).toBe(D1);
+    // What D+1 realizes is the last 250 tokens' result alone: a small loss, no gain carried over from day D's sale.
+    const last = (4_000_000n - 10_000n) - left(250n);
+    expect(last < 0n).toBe(true);
+    const atD1 = t().netPnl! - t().partials!.reduce((s, x) => s + x.pnl, 0n);
+    expect(atD1).toBe(-((-last * SOL + 999_999_999n) / 1_000_000_000n));
+    ledger.close();
+  });
+
+  it('a late-landing buy (an entry\'s orphan_fill) opens its own position and is not booked as a paper trade', () => {
+    const ledger = openLedger(join(tempState(), 'desk.sqlite'), 'backtest');
+    const filled: string[] = [];
+    const desk = new Desk({
+      ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
+      journal: () => undefined, report: () => 'world#unused', accountChanged: () => undefined, intentsChanged: () => undefined,
+      reserved: () => undefined, diverged: () => undefined, filled: (r) => void filled.push(`${r.purpose} ${r.positionId}`),
+    });
+    const E1 = 'e1' as IntentId;
+    const events: BookEvent[] = [
+      ...entryToSubmitted(1, 1_000n),
+      on(E1, { type: 'status', signature: sig(1), result: 'not_found', commitment: null, blockHeight: 1_001n, searchedHistory: true }),
+      on(E1, { type: 'reconcile', fills: [], blockHeight: 1_001n }),
+      on(E1, { type: 'abandon' }),
+      on(E1, { type: 'status', signature: sig(1), result: 'succeeded', commitment: 'finalized', blockHeight: 1_100n, searchedHistory: true }),
+      { type: 'orphan_fill', fill: fx(E1, 1, 1_000n) },
+    ];
+    desk.consume(events.map((event, seq) => ({ type: 'world', seq, at: { slot: 1n, txIndex: OFF_CHAIN, ixIndex: 0, receivedAt: T }, eventId: `w${seq}`, event, result: 'applied', effects: [] }) as unknown as LogRecord));
+    expect(desk.illegal + desk.ledgerRefusals).toBe(0);
+    expect(Object.values(desk.book.positions).some((x) => x.status === 'open')).toBe(true);
+    expect(filled).toEqual([]);
+    ledger.close();
   });
 });
