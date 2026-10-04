@@ -123,7 +123,7 @@ describe('S0 shakedown settings (supervisor ruling 2026-10-04)', () => {
     expect(q({ ZEROED_RUN_ID: 'qual-1' }, 'qual-1')).toBe('refused: the qualifying run needs a registered strategy in ZEROED_STRATEGY');
     expect(q({ ZEROED_RUN_ID: 'qual-1' }, UNREADABLE)).toBe('refused: packages/runner/qualifying-run.json is unreadable');
     // Any other run (a rehearsal, the shakedown) is never qualifying.
-    expect(q({ ZEROED_RUN_ID: 'shakedown-1', ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' }, 'qual-1')).toEqual({ name: 'S0', paperEdgePpm: 250_000n, qualifying: false });
+    expect(q({ ZEROED_RUN_ID: 'shakedown-1', ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' }, 'qual-1')).toEqual({ name: 'S0', paperEdgePpm: 250_000n, qualifying: false, s0Diagnostic: false });
     expect(REGISTERED_STRATEGIES).toEqual([]);
   });
 
@@ -137,14 +137,14 @@ describe('S0 shakedown settings (supervisor ruling 2026-10-04)', () => {
     expect(q({ ZEROED_RUN_ID: '', ZEROED_STRATEGY: 'S0' }, 'qual-1')).toBe('refused: S0 and ZEROED_PAPER_EDGE_PPM are never used in the qualifying run');
     expect(q({}, 'qual-1')).toBe('refused: the qualifying run needs a registered strategy in ZEROED_STRATEGY');
     // No file in the release: nothing is qualifying, so S0 runs (the shakedown).
-    expect(q({ ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' }, null)).toEqual({ name: 'S0', paperEdgePpm: 250_000n, qualifying: false });
+    expect(q({ ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' }, null)).toEqual({ name: 'S0', paperEdgePpm: 250_000n, qualifying: false, s0Diagnostic: false });
   });
 
   it('S0 is selectable and always non-qualifying; unset is none with no edge', () => {
     const p = parseConfig({ ...base, ZEROED_STRATEGY: 'S0', ZEROED_PAPER_EDGE_PPM: '250000' }, () => null);
-    expect(p.ok && p.config.strategy).toEqual({ name: 'S0', paperEdgePpm: 250_000n, qualifying: false });
+    expect(p.ok && p.config.strategy).toEqual({ name: 'S0', paperEdgePpm: 250_000n, qualifying: false, s0Diagnostic: false });
     const q = parseConfig(base, () => null);
-    expect(q.ok && q.config.strategy).toEqual({ name: 'none', paperEdgePpm: null, qualifying: false });
+    expect(q.ok && q.config.strategy).toEqual({ name: 'none', paperEdgePpm: null, qualifying: false, s0Diagnostic: false });
   });
 });
 

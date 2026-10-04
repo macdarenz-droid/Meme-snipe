@@ -14,6 +14,7 @@
 import type { EvidenceCode } from '../../../core/src/gates/index.ts';
 import type { Policy } from '../../../core/src/config/index.ts';
 import { producerOptions } from '../../../core/src/facts/index.ts';
+import type { ExecStats, SimRead } from '../../../core/src/facts/raw.ts';
 import { heliusRpcUrl, type HttpClient, type Secrets } from '../providers/index.ts';
 import type { Scheduler } from '../scheduler/index.ts';
 import { ASSUMPTIONS } from './budget.ts';
@@ -34,6 +35,10 @@ export interface LiveReaders {
   readSolUsd(hoursBack: number): Promise<boolean>;
   /** The regime's chain volume (FACTS-1d); absent when no release source is wired. */
   readChainVolume?(regime: ChainVolumeWindow): Promise<boolean>;
+  /** H15's round-trip simulation at the candidate's own spend (WORKER-1e); absent when the worker wires none. */
+  readSim?(mint: string, spend: bigint): Promise<boolean>;
+  /** The worker's own execution statistics onto the feed (`read:exec-health`). */
+  ingestExecStats?(stats: ExecStats): void;
 }
 
 /** The policy's volume window, for the chain-volume read. */
@@ -64,6 +69,8 @@ export interface LiveFactsOptions {
   readonly mintHistory: Omit<MintHistoryOptions, 'asOfSlot'>;
   /** The volume window: with it (and a reader that has a release source), chain volume is read each hour. */
   readonly chainVolume?: ChainVolumeWindow;
+  /** WORKER-1e: the worker's execution statistics, published every `everyMs` (S0's diagnostic: measured, not judged). */
+  readonly execStats?: { readonly read: () => ExecStats | null; readonly everyMs: number };
 }
 
 /** The counter fact: reads per UTC day by kind and outcome. Never read by a gate. */
@@ -78,7 +85,7 @@ const EVIDENCE: ReadonlySet<string> = new Set<EvidenceCode>(['missing', 'malform
 /** The inputs a read can supply, by read kind. Every other input is stream-built or has no free live source. */
 const ACCOUNTS: ReadonlySet<string> = new Set(['mint', 'pool', 'lp']);
 
-type Kind = 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'survival' | 'sol-usd' | 'chain-volume';
+type Kind = 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'sim' | 'survival' | 'sol-usd' | 'chain-volume';
 
 /** What one candidate's last reasons ask the source to read; empty when it must not read. */
 export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
@@ -96,6 +103,7 @@ export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
     if (ACCOUNTS.has(g.input)) out.add('accounts');
     else if (g.input === 'xcheck') out.add('xcheck');
     else if (g.input === 'insiders') out.add('mint-history');
+    else if (g.input === 'sim') out.add('sim');
     else if (g.input === 'holders') out.add(g.code === 'not-covered' ? 'holders-all' : 'holders');
     if (g.input !== 'holders') holdersOnly = false;
   }
@@ -120,6 +128,7 @@ export class LiveFacts implements FactSource {
   readonly #survivalDone = new Set<string>();
   readonly #historyDone = new Set<string>();
   #solHour = -1;
+  #execAt = Number.NEGATIVE_INFINITY;
   #day = -1;
   #counts: Record<string, { ok: number; failed: number }> = {};
 
@@ -149,6 +158,14 @@ export class LiveFacts implements FactSource {
     const ctx = this.#ctx;
     if (ctx === null) return;
     const now = ctx.timers.now();
+    const exec = this.#o.execStats;
+    if (exec !== undefined && now - this.#execAt >= exec.everyMs) {
+      const s = exec.read();
+      if (s !== null && this.#readers?.ingestExecStats !== undefined) {
+        this.#execAt = now;
+        this.#readers.ingestExecStats(s);
+      }
+    }
     const hour = Math.floor(now / HOUR_MS);
     if (hour !== this.#solHour) {
       const first = this.#solHour < 0;
@@ -160,7 +177,7 @@ export class LiveFacts implements FactSource {
     }
     for (const [mint, c] of ctx.candidates()) {
       if (!this.#survivalDone.has(mint)) this.#survival.set(mint, c.migratedAtMs);
-      for (const kind of readsFor(c.gates)) this.#read(kind, mint, now);
+      for (const kind of readsFor(c.gates)) this.#read(kind, mint, now, c.spend);
     }
     for (const [mint, at] of this.#survival) {
       if (now < at + this.#o.survivalAfterMs + this.#o.survivalReadDelayMs) continue;
@@ -170,7 +187,7 @@ export class LiveFacts implements FactSource {
     }
   }
 
-  #read(kind: Kind, mint: string, now: number): void {
+  #read(kind: Kind, mint: string, now: number, spend: bigint | null = null): void {
     const last = this.#lastAt.get(`${kind}:${mint}`);
     if (last !== undefined && now - last < this.#o.minReadGapMs) return;
     switch (kind) {
@@ -178,6 +195,11 @@ export class LiveFacts implements FactSource {
       case 'holders': return this.#run(kind, mint, (r) => r.readHolders(mint));
       case 'holders-all': return this.#run(kind, mint, (r) => r.readHoldersAll(mint));
       case 'xcheck': return this.#run(kind, mint, async (r) => (await r.readCrossChecks(mint)).some(Boolean));
+      case 'sim': {
+        // At the spend the evaluation sized: H15 refuses a simulation at any other.
+        if (spend === null) return;
+        return this.#run(kind, mint, (r) => r.readSim?.(mint, spend) ?? Promise.resolve(false));
+      }
       case 'mint-history': {
         if (this.#historyDone.has(mint)) return;
         const tip = this.#ctx?.tip() ?? null;
@@ -237,16 +259,30 @@ export interface LiveFactsWiring {
    * the worker's state dir for verified days. Without it, live chain volume is unknown.
    */
   readonly github?: { readonly api: Scheduler; readonly downloads: Scheduler; readonly stateDir?: string };
+  /** H15's round-trip simulation (WORKER-1e, `simReader`); without it H15 rejects every candidate live. */
+  readonly sim?: (ctx: FactContext) => SimFn;
+  /** The paper world's execution statistics (WORKER-1e, S0's diagnostic only); without it no exec-health fact is made. */
+  readonly execStats?: () => ExecStats | null;
 }
+
+/** How often the paper execution statistics are published: logged, never judged, so freshness does not bind it. */
+export const EXEC_STATS_EVERY_MS = 10_000;
+
+type SimFn = (mint: string, spend: bigint, ingest: (read: SimRead) => void) => Promise<boolean>;
 
 /** Mint-history page caps (trial values, configuration): 20 signature pages, then 3 pages and 10 transactions a funder. */
 export const MINT_HISTORY_CAPS = { maxPages: 20, funderPages: 3, funderTransactions: 10 } as const;
 
+/** The readers with H15's simulation, its answer going onto the feed through the readers' own `ingestSim`. */
+const withSim = (r: FactReaders, sim: SimFn | undefined): LiveReaders =>
+  sim === undefined ? r : Object.assign(r, { readSim: (mint: string, spend: bigint) => sim(mint, spend, (read) => r.ingestSim(read)) });
+
 /** The production source: FACTS-1's readers on the worker's Feed and schedulers, sized from the locked policy. */
+
 export const liveFacts = (w: LiveFactsWiring): LiveFacts => {
   const p = producerOptions(w.policy);
   return new LiveFacts({
-    readers: (ctx) => new FactReaders({
+    readers: (ctx) => withSim(new FactReaders({
       feed: ctx.ingest, http: w.http, timers: ctx.timers, timeoutMs: 10_000,
       rpc: new FactRpc({ url: () => heliusRpcUrl(w.secrets), http: w.http, scheduler: ctx.schedulers.helius, timeoutMs: 10_000 }),
       rugcheck: { scheduler: ctx.schedulers.rugcheck }, goplus: { scheduler: w.goplus },
@@ -258,7 +294,8 @@ export const liveFacts = (w: LiveFactsWiring): LiveFacts => {
           alert: (detail: string) => ctx.sink.fact(CHAIN_VOLUME_ALERT_KEY, { detail, atMs: ctx.timers.now() }),
         },
       }),
-    }),
+    }), w.sim?.(ctx)),
+    ...(w.execStats === undefined ? {} : { execStats: { read: w.execStats, everyMs: EXEC_STATS_EVERY_MS } }),
     ...(w.github === undefined ? {} : { chainVolume: { volumeLagDays: w.policy.regime.volumeLagDays, volumeWindowDays: w.policy.regime.volumeWindowDays } }),
     tickMs: 1_000,
     minReadGapMs: 60_000 / ASSUMPTIONS.evaluationsPerMinute,

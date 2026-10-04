@@ -52,7 +52,9 @@ describe('readsFor: what a candidate\'s last reasons ask for', () => {
     expect(readsFor([H16('xcheck', 'stale')])).toEqual(['xcheck']);
     expect(readsFor([H16('insiders', 'not-covered')])).toEqual(['mint-history']);
     expect(readsFor([H16('holders')])).toEqual(['holders']);
-    expect(readsFor([H16('sim'), H16('stream', 'gap'), H16('candles', 'not-covered')])).toEqual([]);
+    expect(readsFor([H16('stream', 'gap'), H16('candles', 'not-covered')])).toEqual([]);
+    // WORKER-1e: H15's simulation is a live read now.
+    expect(readsFor([H16('sim'), H16('stream', 'gap'), H16('candles', 'not-covered')])).toEqual(['sim']);
     expect(readsFor([{ gate: 'worker', code: 'no-market' }])).toEqual(['accounts']);
     expect(readsFor([{ gate: 'worker', code: 'no-sol-price' }])).toEqual([]);
   });
@@ -61,7 +63,7 @@ describe('readsFor: what a candidate\'s last reasons ask for', () => {
     expect(readsFor([H16('holders', 'not-covered')])).toEqual(['holders-all']);
     expect(readsFor([H16('holders', 'not-covered'), H16('mint')])).toEqual(['accounts', 'holders']);
     expect(readsFor([H16('holders', 'not-covered'), { gate: 'worker', code: 'no-market' }])).toEqual(['accounts', 'holders']);
-    expect(readsFor([H16('holders', 'not-covered'), H16('sim')])).toEqual(['holders']);
+    expect(readsFor([H16('holders', 'not-covered'), H16('sim')])).toEqual(['holders', 'sim']);
   });
 });
 
@@ -175,6 +177,57 @@ describe('LiveFacts', () => {
     await s.flush();
     expect(s.f.calls.slice(4)).toEqual([['accounts', 'M1'], ['holders', 'M1'], ['xcheck', 'M1']]);
     s.src.stop();
+  });
+
+  it('WORKER-1e: simulates at the spend the candidate was judged at, never without one, once a gap', async () => {
+    const s = setup();
+    const sims: [string, bigint][] = [];
+    const src = new LiveFacts({
+      readers: () => ({ ...s.f.readers, readSim: async (m, spend) => (sims.push([m, spend]), true) }), tickMs: 1_000, minReadGapMs: MIN, survivalAfterMs: 30 * MIN,
+      survivalReadDelayMs: 5_000, solUsdStartHours: 27, mintHistory: { maxPages: 20, funderPages: 3, funderTransactions: 10, insiderSlots: 2, firstBuyers: 20 },
+    });
+    src.start(s.ctx);
+    s.cands.set('M1', { migratedAtMs: T0, gates: [H16('sim')], spend: null } as never);
+    s.cands.set('M2', { migratedAtMs: T0, gates: [H16('sim', 'stale')], spend: 13_000_000n } as never);
+    s.timers.advance(1_000);
+    await s.flush();
+    expect(sims).toEqual([['M2', 13_000_000n]]);
+    s.timers.advance(MIN - 2_000);
+    await s.flush();
+    expect(sims).toHaveLength(1);
+    s.timers.advance(2_000);
+    await s.flush();
+    expect(sims).toEqual([['M2', 13_000_000n], ['M2', 13_000_000n]]);
+    src.stop();
+  });
+
+  it('WORKER-1e: publishes the execution statistics every period, only when wired', async () => {
+    const s = setup();
+    const got: unknown[] = [];
+    const stats = { attempts: 2, failed: 1, landingSlotsP50: 3, quoteErrorBpsP50: 40 };
+    const src = new LiveFacts({
+      readers: () => ({ ...s.f.readers, ingestExecStats: (x) => void got.push(x) }), tickMs: 1_000, minReadGapMs: MIN, survivalAfterMs: 30 * MIN,
+      survivalReadDelayMs: 5_000, solUsdStartHours: 27, mintHistory: { maxPages: 20, funderPages: 3, funderTransactions: 10, insiderSlots: 2, firstBuyers: 20 },
+      execStats: { read: () => stats, everyMs: 10_000 },
+    });
+    src.start(s.ctx);
+    expect(got).toEqual([stats]);
+    s.timers.advance(9_000);
+    expect(got).toHaveLength(1);
+    s.timers.advance(1_000);
+    expect(got).toEqual([stats, stats]);
+    src.stop();
+    // Not wired: nothing, whatever the readers can do.
+    const t = setup();
+    const quiet: unknown[] = [];
+    const src2 = new LiveFacts({
+      readers: () => ({ ...t.f.readers, ingestExecStats: (x) => void quiet.push(x) }), tickMs: 1_000, minReadGapMs: MIN, survivalAfterMs: 30 * MIN,
+      survivalReadDelayMs: 5_000, solUsdStartHours: 27, mintHistory: { maxPages: 20, funderPages: 3, funderTransactions: 10, insiderSlots: 2, firstBuyers: 20 },
+    });
+    src2.start(t.ctx);
+    t.timers.advance(30_000);
+    expect(quiet).toEqual([]);
+    src2.stop();
   });
 
   it('reads nothing for a candidate blocked by a non-evidence reason, and the complete scan only when holders are last', async () => {
@@ -357,7 +410,7 @@ describe('the strategy keeps each candidate\'s last reasons with their inputs (w
     // The critical feed is up, so entries are not halted and candidates are evaluated.
     h.worker.feed.ingest('helius', { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: c.sink.now() });
     const m = await passingMarket(h);
-    expect(c.candidates().get(MINT2)).toEqual({ migratedAtMs: T + 3 * MIN, lastEvalMs: null, gates: null });
+    expect(c.candidates().get(MINT2)).toEqual({ migratedAtMs: T + 3 * MIN, lastEvalMs: null, gates: null, spend: null });
     // Every fact kept current except a holder read that cannot be parsed: the reject names the holders as evidence.
     await m.run(3_000, 400, () => {
       m.slot();
