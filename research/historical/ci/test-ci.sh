@@ -475,6 +475,38 @@ day_up = next(i for i, st in enumerate(steps) if st.get("with", {}).get("name") 
 assert order("Note the upload start") < day_up < order("Note the publish start") < order("Publish this day") < order("Log the publish duration")
 PY
 
+# ---- rpcscan: the scanner's own sources through symlinks; the IDLs byte-identical ----
+rs="$here/../rpcscan"; sc="$here/../scanner"; bad=""
+for f in $(cd "$sc" && git ls-files '*.go' | grep -v '_test.go$' | grep -v '^main.go$') go.mod go.sum; do
+  [[ -L "$rs/$f" && "$(readlink "$rs/$f")" == "../scanner/$f" ]] || bad+=" $f"
+done
+for f in "$rs"/*.go; do
+  b=$(basename "$f"); [[ -L "$f" ]] && { [[ -e "$sc/$b" && "$b" != main.go && "$b" != *_test.go ]] || bad+=" stray-link:$b"; }
+done
+for f in $(cd "$sc/idl" && ls); do cmp -s "$sc/idl/$f" "$rs/idl/$f" || bad+=" idl/$f"; done
+[[ -z "$bad" ]] && ok "rpcscan: every scanner source but main.go is a symlink to ../scanner (no copied decoder), and the embedded IDLs equal the scanner's" || no "rpcscan links:$bad"
+
+# ---- data-helius-pilot.yml: dispatch only, a hard credit stop, the key in one step, only the report out ----
+python3 - "$here/../../../.github/workflows/data-helius-pilot.yml" <<'PY' && ok "helius pilot workflow: dispatch only, read-only token, credit stop checked first (at most 15000), HELIUS_API_KEY only in the pilot step's env, inputs only through env, only the report uploaded" || no "helius pilot workflow structure"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+assert list(wf[True].keys()) == ["workflow_dispatch"], wf[True]
+assert wf["permissions"] == {"contents": "read"}, wf["permissions"]
+steps = wf["jobs"]["pilot"]["steps"]
+assert steps[0]["name"] == "Check the credit stop" and "MAX_CREDITS > 15000" in steps[0]["run"], steps[0]
+for st in steps:
+    if "checkout" in st.get("uses", ""):
+        assert st["with"]["persist-credentials"] is False, st
+    assert "${{" not in st.get("run", ""), st  # inputs and secrets reach the shell only through env
+sec = [st for st in steps if "secrets." in str(st)]
+assert len(sec) == 1 and sec[0]["env"] == {"HELIUS_API_KEY": "${{ secrets.HELIUS_API_KEY }}", "MAX_CREDITS": "${{ inputs.max_credits }}"}, sec
+r = sec[0]["run"]
+assert "zeroed-rpcscan pilot" in r and '-max-credits "$MAX_CREDITS"' in r and "-sample 0.05" in r and "HELIUS_API_KEY" not in r, r
+up = [st for st in steps if "upload-artifact" in st.get("uses", "")]
+assert len(up) == 1 and up[0]["with"]["path"].endswith("/report/pilot-report.json"), up
+assert "github.token" not in open(sys.argv[1]).read()
+PY
+
 # ---- check-day.sh: phase durations; a 429 in the determinism rescan is resumable (75) ----
 C="$T/cdbin"; mkdir -p "$C"
 cat > "$C/zeroed-scan" <<'STUB'
@@ -520,6 +552,103 @@ dg=$(FAKE_AVAIL=24000000000 bash "$here/disk-guard.sh" "$T" 24000000000 "the sca
   ok "disk-guard: passes at exactly the needed free space and logs it" || no "disk-guard pass: $dg"
 dg=$(FAKE_AVAIL=23999999999 bash "$here/disk-guard.sh" "$T" 24000000000 "the scan" 2>&1) && no "disk-guard passed one byte short" ||
   { [[ "$dg" == *"not enough disk"*"the scan"* ]] && ok "disk-guard: fails one byte short with a clear message" || no "disk-guard message: $dg"; }
+
+# ---- archive-check.sh: one request with the scanner's agent; dispatch only on success, never while a scan runs ----
+A="$T/ac"; mkdir -p "$A/bin"
+cat > "$A/bin/gh" <<'SH'
+#!/usr/bin/env bash
+echo "gh $*" >> "$AC/gh.log"
+case "$1 $2" in
+  "run list") echo "${AC_ACTIVE:-0}" ;;
+  "api repos/"*) day=${2##*data-day-}; grep -qx "$day" "$AC/published" 2>/dev/null ;;
+  "workflow run") echo "$*" >> "$AC/dispatch.log" ;;
+esac
+SH
+cat > "$A/bin/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$AC/curl.args"; echo x >> "$AC/curl.calls"
+hdr=; while (( $# )); do [[ $1 == -D ]] && hdr=$2; shift; done
+[[ "$AC_STATUS" == 000 ]] && exit 7
+printf 'HTTP/2 %s\r\ncf-ray: 8abc123-SYD\r\n\r\n' "$AC_STATUS" > "$hdr"
+head -c "${AC_BYTES:-64}" /dev/zero
+exit "${AC_EXIT:-0}"
+SH
+chmod +x "$A/bin/"*
+ac() { rm -f "$A"/*.log "$A/curl.calls" "$A/curl.args"; : > "$A/summary.md"
+  AC="$A" GH_BIN="$A/bin/gh" CURL_BIN="$A/bin/curl" GH_REPO=o/r REF=main GITHUB_STEP_SUMMARY="$A/summary.md" "$@" bash "$here/archive-check.sh" > "$A/out.txt" 2>&1; }
+ua=$(sed -n 's/^const userAgent = "\(.*\)"$/\1/p' "$here/../scanner/archive.go")
+ac env AC_ACTIVE=1 AC_STATUS=206
+[[ ! -e "$A/curl.calls" && ! -e "$A/dispatch.log" ]] && grep -q "active or queued" "$A/summary.md" &&
+  ok "archive-check: a scan run active or queued means no request and no dispatch" || no "archive-check active no-op"
+ac env AC_STATUS=429
+[[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -qx -- "-A" "$A/curl.args" && grep -qxF -- "$ua" "$A/curl.args" &&
+  grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 64 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
+  ok "archive-check: a 429 makes exactly one 64-byte request with the scanner's agent, logs status and cf-ray, dispatches nothing" || no "archive-check 429"
+printf '2026-09-21\n2026-09-19\n' > "$A/published"
+ac env AC_STATUS=206
+[[ $(wc -l < "$A/curl.calls") == 1 && $(wc -l < "$A/dispatch.log") == 1 ]] &&
+  grep -q -- "data-scan.yml --repo o/r --ref main -f mode=scan -f days=2026-09-20,2026-09-18,2026-09-17,2026-09-16,2026-09-15,2026-09-14,2026-09-13,2026-09-12 -f max_mbps=80" "$A/dispatch.log" &&
+  ok "archive-check: a 206 dispatches once, the next 8 unpublished pre-holdout days at 80 MB/s" || no "archive-check 206 dispatch: $(cat "$A/dispatch.log" 2>/dev/null)"
+d=2026-09-21; : > "$A/published"; while [[ "$d" > 2026-07-19 ]]; do echo "$d" >> "$A/published"; d=$(date -u -d "$d - 1 day" +%F); done
+ac env AC_STATUS=206
+grep -q -- "-f days=2026-10-01,2026-09-30,2026-09-29,2026-09-28,2026-09-27,2026-09-26,2026-09-25,2026-09-24 " "$A/dispatch.log" &&
+  ok "archive-check: holdout days only after every pre-holdout day is published" || no "archive-check holdout order: $(cat "$A/dispatch.log" 2>/dev/null)"
+ac env AC_STATUS=206 AC_BYTES=65
+[[ ! -e "$A/dispatch.log" ]] && ok "archive-check: a 206 of more than 64 bytes is not served" || no "archive-check oversized 206"
+ac env AC_STATUS=206 AC_EXIT=18
+[[ ! -e "$A/dispatch.log" ]] && grep -q "| 206 | 64 | 18 |" "$A/summary.md" && ok "archive-check: a 206 whose transfer failed (curl exit kept across the pipe) is not served" || no "archive-check 206 with curl error: $(cat "$A/summary.md")"
+ac env AC_STATUS=200
+[[ ! -e "$A/dispatch.log" ]] && ok "archive-check: a 200 is not served, whatever its size" || no "archive-check 200"
+ac env AC_STATUS=000
+[[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && ok "archive-check: a network failure dispatches nothing" || no "archive-check failure"
+
+# A real curl against a local server: one that ignores the range and streams a chunked
+# 200 forever, one that answers 206 with 64 bytes. The stream is cut at 65 bytes within
+# seconds and nothing is dispatched; the honest 206 dispatches.
+cat > "$A/srv.py" <<'PY'
+import http.server, sys, time
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def do_GET(self):
+        if self.path == "/stream":
+            self.send_response(200); self.send_header("Transfer-Encoding", "chunked"); self.end_headers()
+            try:
+                while True:
+                    self.wfile.write(b"4000\r\n" + b"x" * 0x4000 + b"\r\n"); self.wfile.flush(); time.sleep(0.01)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+        self.send_response(206); self.send_header("Content-Length", "64"); self.send_header("cf-ray", "ok-1"); self.end_headers()
+        self.wfile.write(b"y" * 64)
+    def log_message(self, *a): pass
+s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+print(s.server_port, flush=True); s.serve_forever()
+PY
+python3 "$A/srv.py" > "$A/port" & srv=$!
+for _ in $(seq 50); do [[ -s "$A/port" ]] && break; sleep 0.1; done
+port=$(cat "$A/port"); : > "$A/published"
+t0=$(date +%s)
+ac env -u CURL_BIN CURL_BIN=curl NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ARCHIVE_CHECK_URL="http://127.0.0.1:$port/stream"
+t1=$(date +%s)
+row=$(grep "^| 20" "$A/summary.md" | tail -1); IFS='|' read -r _ _ st by ex _ <<< "$row"
+[[ ! -e "$A/dispatch.log" ]] && (( t1 - t0 < 10 )) && (( ${st// /} == 200 && ${by// /} <= 65 && ${ex// /} != 0 )) &&
+  ok "archive-check: a server ignoring the range and streaming a chunked 200 is cut (${by// /} bytes, curl exit ${ex// /}) in $((t1 - t0)) s, nothing dispatched" || no "archive-check streaming: $row"
+ac env -u CURL_BIN CURL_BIN=curl NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ARCHIVE_CHECK_URL="http://127.0.0.1:$port/ok"
+[[ $(wc -l < "$A/dispatch.log" 2>/dev/null) == 1 ]] && grep -q "| 206 | 64 | 0 | ok-1 |" "$A/summary.md" &&
+  ok "archive-check: a real 206 of 64 bytes dispatches once" || no "archive-check real 206: $(cat "$A/summary.md")"
+kill $srv 2>/dev/null; wait $srv 2>/dev/null
+
+python3 - "$here/../../../.github/workflows/archive-check.yml" <<'PY' && ok "archive-check workflow: every 3 hours plus dispatch, one job of one script step, token only there, no inputs in the shell, credentials not persisted" || no "archive-check workflow structure"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+on = wf[True]
+assert set(on) == {"schedule", "workflow_dispatch"} and on["schedule"] == [{"cron": "41 */3 * * *"}], on
+assert wf["permissions"] == {"contents": "read", "actions": "write"}, wf["permissions"]
+steps = wf["jobs"]["check"]["steps"]
+assert len(steps) == 2 and steps[0]["with"]["persist-credentials"] is False, steps
+assert steps[1]["run"] == "research/historical/ci/archive-check.sh" and "github.token" in steps[1]["env"]["GH_TOKEN"], steps[1]
+assert all("${{" not in st.get("run", "") for st in steps)
+assert not any(k in str(steps) for k in ("ARCHIVE_CHECK_URL", "CURL_BIN", "GH_BIN")), "test-only overrides in the workflow"
+PY
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
