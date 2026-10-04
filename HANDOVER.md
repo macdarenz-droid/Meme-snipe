@@ -7,7 +7,8 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 **New account (from about 8:00 PM, 4 Oct).**
 - Supervisor: session_012En9L5mnYQtEz7oyp1Eryf. It read AGENTS.md, CLAUDE.md, this file, all 22 session notes and the supervisor log, and re-listed the open PRs (heads matched §4).
 - 24 new sessions were started at about 8:05 PM, one per card line, each from its predecessor's notes: 10 builders, 8 reviewers and 6 read-audit sessions (the owner asked for every file in the repo to be read; the audits cover all 2,015 tracked files in six slices and report findings only). The table is in §5.
-- Base CI was red on 456d58fe (push run 37190077658): `packages/runner/test/runner.test.ts:179`, the host-loss tabletop, `recovered_state: false`. The only change since the green 35d31f4e was HANDOVER.md, so it is the known stub write-order flake, which CI-1b #116 fixes (20e8d5f: the stub journals an exit before its state drops the position). #116 went first in the queue.
+- Base CI was red on 456d58fe (push run 37190077658): `packages/runner/test/runner.test.ts:179`, the host-loss tabletop, `recovered_state: false`. The only change since the green 35d31f4e was HANDOVER.md, so it is the known stub write-order flake, which CI-1b #116 fixes (20e8d5f: the stub journals an exit before its state drops the position). #116 merged first, at about 8:15 PM (bf62839; check green on 80b50d1, change identical to the reviewed c5aaf88).
+- The first account's supervisor (session_01Bne9GqXR99gJn6D9U2mJFZ) pushed two docs commits after the handover (a8165aa, fff0017 at 7:59 PM). The owner was asked to pause it so only one supervisor acts.
 
 ## 0. Account transition (read this first)
 
