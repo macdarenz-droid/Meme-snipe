@@ -4,10 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { loadCoverage, loadDay, loadManifest, loadMovements, regimeBoundariesOf, SUPPORTED_SCHEMA, tableOf, verifySums } from '../src/dataset/dataset.ts';
+import { loadCoverage, loadDay, loadManifest, loadMovements, loadVolumeHours, regimeBoundariesOf, SUPPORTED_SCHEMA, tableOf, verifySums } from '../src/dataset/dataset.ts';
 import type { CoverageRow, MovementRow } from '../src/dataset/rows.ts';
 import { readSeries, usableFrom } from '../src/dataset/offchain.ts';
 import { writeDataset } from '../src/dataset/writer.ts';
+import { decodeBase58, toBase64 } from '../../core/src/chain/index.ts';
 import { SOL_USD, syntheticRows, T0 } from '../src/dataset/synthetic.ts';
 import { RESEARCH_CONFIG } from '../../core/src/config/index.ts';
 
@@ -48,6 +49,57 @@ describe('DATA-1 reader', () => {
     }
   });
 
+  test('raw records are read, reduced and placed after their transaction', () => {
+    const d2 = mkdtempSync(join(tmpdir(), 'ds2-'));
+    try {
+      const fx = JSON.parse(readFileSync(join(import.meta.dirname, '../../worker/test/fixtures/rug-replay.json'), 'utf8')) as {
+        cases: { mint: string; transactions: { signature: string; slot: number; blockTime: number; transaction: [string, string]; meta: { innerInstructions: { index: number; instructions: { data: string }[] }[]; loadedAddresses: unknown } }[] }[];
+      };
+      const x = fx.cases[0]!.transactions[0]!;
+      const inner = x.meta.innerInstructions.map((g) => ({ ...g, instructions: g.instructions.map((i) => ({ ...i, data: toBase64(decodeBase58(i.data)) })) }));
+      const line = JSON.stringify({ slot: x.slot, blockTime: x.blockTime, txIndex: 3, signature: x.signature, transaction: x.transaction[0], err: null, mints: [fx.cases[0]!.mint], meta: { loadedAddresses: x.meta.loadedAddresses, innerInstructions: inner } });
+      const block = { kind: 'block' as const, slot: BigInt(x.slot), blockTime: x.blockTime, parentSlot: BigInt(x.slot - 1) };
+      writeDataset(d2, [block], { raw: [line] });
+      const m = loadManifest(d2);
+      expect(m.schema).toBe(3);
+      const back = m.days.flatMap((d) => loadDay(d2, d));
+      expect(back.map((r) => r.kind)).toEqual(['raw', 'block']);
+      expect(back[0]!.kind === 'raw' && back[0]!.ops.some((o) => o.op === 'init-mint')).toBe(true);
+    } finally {
+      rmSync(d2, { recursive: true, force: true });
+    }
+  });
+
+  test('volume hours are read through the core parser; a malformed day is refused whole', () => {
+    const dv = mkdtempSync(join(tmpdir(), 'dsv-'));
+    try {
+      const first = rows.slice(0, 3);
+      const day = new Date(first[0]!.blockTime * 1000).toISOString().slice(0, 10);
+      const n = Date.parse(`${day}T00:00:00Z`) / 86_400_000;
+      const csvOf = (bad: boolean) => ['hour_start_ms,lamports,covered', ...Array.from({ length: 24 }, (_, i) => `${n * 86_400_000 + i * 3_600_000},${bad && i === 5 ? '-1' : 1_000 + i},1`)].join('\n') + '\n';
+      writeDataset(dv, first, { volumeHours: { [day]: csvOf(false) } });
+      const m = loadManifest(dv);
+      const hours = loadVolumeHours(dv, m.days[0]!);
+      expect(hours).toHaveLength(24);
+      expect(hours[3]).toEqual({ hourStartMs: n * 86_400_000 + 3 * 3_600_000, lamports: 1_003n, covered: true });
+      rmSync(dv, { recursive: true, force: true });
+      writeDataset(dv, first, { volumeHours: { [day]: csvOf(true) } });
+      expect(loadVolumeHours(dv, loadManifest(dv).days[0]!)).toEqual([]);
+    } finally {
+      rmSync(dv, { recursive: true, force: true });
+    }
+  });
+
+  test('an unknown schema is refused', () => {
+    const d3 = mkdtempSync(join(tmpdir(), 'ds3-'));
+    try {
+      writeDataset(d3, rows.slice(0, 3), { schema: 2 });
+      expect(() => loadManifest(d3)).toThrow(/schema 2 is not supported/);
+    } finally {
+      rmSync(d3, { recursive: true, force: true });
+    }
+  });
+
   test('table names of day files', () => {
     expect(tableOf('days/2026-09-01/amm_trades-003.csv.zst')).toBe('amm_trades');
     expect(tableOf('events.jsonl.zst')).toBe('events');
@@ -78,7 +130,7 @@ describe('command line on an on-disk dataset', () => {
     const ev = join(dir, 'evidence.json');
     const cli = join(import.meta.dirname, '..', 'src', 'cli.ts');
     const stdout = execFileSync('node', [cli, 'run', '--dataset', dir, '--sol-usd', sol, '--scenario', 'base', '--replays', '3', '--out', out, '--evidence', ev],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     const summary = JSON.parse(stdout.trim().split('\n').pop()!) as Record<string, unknown>;
     expect(summary['identical']).toBe(true);
     expect(summary['leak']).toBe(true);

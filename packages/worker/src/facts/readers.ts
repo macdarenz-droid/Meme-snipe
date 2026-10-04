@@ -32,6 +32,32 @@ export interface Ingest {
   ingest(source: Source, body: FrameBody, o: IngestOptions): unknown;
 }
 
+/** Puts one raw answer (`offchain` frame) somewhere: the feed, or a batch's list. */
+type Put = (source: Source, key: string, value: unknown) => void;
+
+/** H15's round-trip simulation at `spend`, handing its answer to `ingest` (the worker's `simReader`). */
+export type SimFn = (mint: string, spend: bigint, ingest: (read: SimRead) => void) => Promise<boolean>;
+
+/** What one coherent batch reads besides the accounts (READ-COHERENT): the holder view, the simulation, the cross-checks. */
+export interface BatchRequest {
+  /** The largest accounts (a bounded view), the complete scan, or no holder read. */
+  readonly holders: 'largest' | 'all' | null;
+  /** H15's simulation at this spend (the candidate's own), or none. */
+  readonly spend: bigint | null;
+  readonly xcheck: boolean;
+}
+
+
+/** Raw reads whose facts are judged by slot lag (evidence.ts 'state'): a batch's age is its oldest of these. */
+const LAG_BOUND: ReadonlySet<string> = new Set(['read:accounts:', 'read:holders:', 'read:holders-all:']);
+
+/** A batch's parts, named as the reads they replace (the `worker:fact-reads` counter's kinds). */
+export type BatchPart = 'accounts' | 'holders' | 'holders-all' | 'sim' | 'xcheck';
+/** Whether each part the batch asked for landed (a refused or failed part is false). */
+export type BatchResult = Partial<Record<BatchPart, boolean>>;
+
+type Scan = { readonly gpa: Awaited<ReturnType<FactRpc['getProgramAccounts']>>; readonly filter: Token2022Filter; readonly fallback: boolean };
+
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const U64 = /^(0|[1-9][0-9]{0,19})$/;
@@ -268,6 +294,20 @@ export interface ReadOutcome {
   readonly detail: string;
 }
 
+/** The off-curve owners (PDAs) of a scan's token accounts, sorted; an account that does not decode is skipped (the producer refuses the set). */
+const offCurveOwners = (accounts: readonly { readonly owner: string; readonly data: string }[]): string[] => {
+  const owners = new Set<string>();
+  for (const a of accounts) {
+    try {
+      const o = decodeTokenAccount(fromBase64(a.data), a.owner as Address).owner;
+      if (!isOnCurve(decodeBase58(o))) owners.add(o);
+    } catch {
+      // Nothing to classify.
+    }
+  }
+  return [...owners].sort();
+};
+
 export class FactReaders {
   readonly #o: FactReadersOptions;
   /** Vault and LP addresses per mint, once its pool was read. */
@@ -289,6 +329,9 @@ export class FactReaders {
   #ingest(source: Source, key: string, value: unknown): void {
     this.#o.feed.ingest(source, { type: 'offchain', key, value }, { receivedAt: this.#o.timers.now() });
   }
+
+  /** Where a read puts its answer: the feed now, or a batch's list until the whole batch has landed (`readBatch`). */
+  readonly #now: Put = (source, key, value) => this.#ingest(source, key, value);
 
   async #guard(read: string, f: () => Promise<string>): Promise<boolean> {
     try {
@@ -383,32 +426,9 @@ export class FactReaders {
       if (m.account === null) throw new Error('mint account missing');
       // Supply first (slot A), then the scan at a bank no older than A (slot B >= A): with no mint authority the supply
       // can only fall, so balances summing to the supply at A prove nothing was left out and nothing burned between.
-      let filter: Token2022Filter = this.#o.token2022Filter ?? 'mintOnly';
-      let fallback = false;
-      let gpa: Awaited<ReturnType<FactRpc['getProgramAccounts']>>;
-      try {
-        gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority, filter);
-      } catch (e) {
-        // Only the refusal of a too-large mint-only scan (-32600) earns one indexed retry, counted as its own scan. Every
-        // other failure (a 429, a timeout, "minimum context slot not reached", a legacy program) propagates: no retry.
-        // The retry's result stays fail-safe: an extension-less account holding tokens breaks the sum and no fact forms.
-        if (!(e instanceof FactRpcError && e.rpcCode === GPA_TOO_MANY_ACCOUNTS && m.account.owner === TOKEN_2022_PROGRAM && filter === 'mintOnly')) throw e;
-        if (!this.#takeScan()) throw new Error('mint-only scan refused and the daily scan cap is reached');
-        filter = 'indexed';
-        fallback = true;
-        gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority, filter);
-      }
+      const { gpa, filter, fallback } = await this.#scan(m.account.owner, mint, m.slot, priority);
       if (gpa.slot < m.slot) throw new Error(`scan at slot ${gpa.slot} is older than the supply read at ${m.slot}`);
-      const owners = new Set<string>();
-      for (const a of gpa.accounts) {
-        try {
-          const o = decodeTokenAccount(fromBase64(a.data), a.owner as Address).owner;
-          if (!isOnCurve(decodeBase58(o))) owners.add(o);
-        } catch {
-          // The producer refuses the set; nothing to classify here.
-        }
-      }
-      const offCurve = [...owners].sort();
+      const offCurve = offCurveOwners(gpa.accounts);
       const ownerPrograms: { owner: string; program: string | null }[] = [];
       for (let i = 0; i < offCurve.length; i += 100) {
         const chunk = offCurve.slice(i, i + 100);
@@ -421,6 +441,208 @@ export class FactReaders {
       });
       return `${gpa.accounts.length} accounts at slot ${gpa.slot}, ${filter}${fallback ? ' after a refused mint-only scan' : ''}, ${this.#o.timers.now() - started} ms`;
     });
+  }
+
+  /** The mint, canonical pool, both vaults and the LP mint, learning the vault and LP addresses from the pool once. */
+  async #layoutOf(mint: string, priority: Priority): Promise<{ readonly addresses: readonly string[]; readonly slot: bigint | null }> {
+    const known = this.#layout.get(mint);
+    if (known !== undefined) return { addresses: known, slot: null };
+    const pool = FactReaders.canonicalPool(mint);
+    const r = await this.#o.rpc.getMultipleAccounts([mint, pool], priority);
+    const p = r.accounts[1];
+    if (p === null || p === undefined) throw new Error(`no pool account at ${pool}`);
+    const decoded = decodePool(fromBase64(p.data)).value;
+    const addresses = [mint, pool, decoded.poolBaseTokenAccount, decoded.poolQuoteTokenAccount, decoded.lpMint];
+    const m = r.accounts[0];
+    if (m !== null && m !== undefined) this.#mintProgram.set(mint, m.owner);
+    this.#layout.set(mint, addresses);
+    return { addresses, slot: r.slot };
+  }
+
+  /** Owners of the mint's holders seen so far (largest-account discovery and scans), so one bank can classify them. */
+  readonly #owners = new Map<string, Set<string>>();
+
+  /**
+   * READ-COHERENT: a candidate's stage-2 and stage-3 read inputs as one coherent batch, so every fact the decision
+   * needs is fresh at one moment. Inputs judged by slot lag (mint, pool, LP, holders) come from ONE bank: the mint,
+   * pool, vaults and LP mint, the listed holder accounts and their owners in one getMultipleAccounts (slot A). The
+   * complete scan (slot B), the simulation and the cross-checks run alongside it, never after it. What is only
+   * discovery comes first and is never a fact: the pool layout, and the largest accounts with their owners (which
+   * accounts to list, which owners to classify). Nothing is put on the feed until the whole batch has answered; then
+   * every answer goes on at once between `read-batch:<mint>` and `reads:<mint>` (RAW.batchOpen, RAW.batchClose), and the
+   * strategy judges the candidate at the close, on the batch alone.
+   *
+   * Refused parts (no frame, so the gate rejects): a largest-account list whose owners at A were not all in the bank; a
+   * scan older than A (H12/H13: the supply must be read first) or with an off-curve owner the bank did not classify
+   * (remembered, so the next batch classifies it); a scan past the daily cap. The listed accounts are only which ones
+   * the view lists: balances, supply and owners are all at A, and GATE-1d bounds whatever the list leaves out.
+   */
+  async readBatch(mint: string, req: BatchRequest, priority: Priority = P2): Promise<BatchResult> {
+    const frames: { source: Source; key: string; value: unknown }[] = [];
+    const put: Put = (source, key, value) => void frames.push({ source, key, value });
+    // Each part's outcome under its old read kind, so the coverage report counts reads as before.
+    const parts: Promise<readonly [BatchPart, boolean]>[] = [];
+    const as = (part: BatchPart) => (ok: boolean) => [part, ok] as const;
+    let banked = false;
+    const prep = await this.#attempt(`batch-prep:${mint}`, async () => {
+      const layout = await this.#layoutOf(mint, priority);
+      const known = this.#owners.get(mint) ?? new Set<string>();
+      this.#owners.set(mint, known);
+      let listed: readonly string[] = [];
+      let minSlot = layout.slot ?? 0n;
+      if (req.holders !== null) {
+        const largest = await this.#o.rpc.getTokenLargestAccounts(mint, priority);
+        listed = largest.accounts.map((a) => a.address);
+        minSlot = largest.slot > minSlot ? largest.slot : minSlot;
+        if (listed.length > 0) {
+          const toks = await this.#o.rpc.getMultipleAccounts(listed, priority);
+          for (const t of toks.accounts) {
+            if (t === null) continue;
+            try {
+              known.add(decodeTokenAccount(fromBase64(t.data), t.owner as Address).owner);
+            } catch {
+              // Not a token account: the bank's decode refuses it.
+            }
+          }
+        }
+      }
+      return { value: { layout: layout.addresses, listed: req.holders === 'largest' ? listed : [], minSlot }, detail: `${listed.length} listed, ${known.size} owners` };
+    });
+    const p = prep;
+    if (p !== null) {
+      const ownersOf = [...(this.#owners.get(mint) ?? [])].filter((o) => !p.layout.includes(o) && !p.listed.includes(o)).sort();
+      const addresses = [...p.layout, ...p.listed, ...ownersOf];
+      // The scan's program is the mint's owner, learnt from the layout read (the mint is in every bank).
+      const mintOwner = this.#mintProgram.get(mint);
+      const scanned = req.holders === 'all' && mintOwner !== undefined && this.#takeScan();
+      if (req.holders === 'all' && !scanned) this.outcomes.push({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : 'daily scan cap reached' });
+      // The final round: every call at once.
+      const bank = addresses.length <= 100 ? this.#o.rpc.getMultipleAccounts(addresses, priority) : Promise.reject(new Error(`${addresses.length} accounts do not fit one bank`));
+      const scan = scanned ? this.#scan(mintOwner!, mint, p.minSlot, priority) : null;
+      bank.catch(() => undefined);
+      scan?.catch(() => undefined);
+      if (req.spend !== null && this.simulate !== null) {
+        const sim = this.simulate;
+        const spend = req.spend;
+        parts.push(sim(mint, spend, (read) => {
+          if (parseSimRead(read) === null) throw new RangeError('malformed simulation read');
+          put('helius', RAW.sim(read.mint), read);
+        }).catch(() => false).then(as('sim')));
+      }
+      if (req.xcheck) parts.push(this.readCrossChecks(mint, priority, put).then((x) => x.some(Boolean)).then(as('xcheck')));
+      banked = await this.#guard(`accounts:${mint}`, async () => {
+        const b = await bank;
+        const at = (address: string) => b.accounts[addresses.indexOf(address)] ?? null;
+        const m = at(mint);
+        if (m !== null) this.#mintProgram.set(mint, m.owner);
+        put('helius', RAW.accounts(mint), { mint, slot: b.slot, commitment: 'confirmed', accounts: p.layout.map((address) => ({ address, owner: at(address)?.owner ?? null, data: at(address)?.data ?? null })) } satisfies AccountsRead);
+        if (req.holders === 'largest') parts.push(this.#guard(`holders:${mint}`, async () => this.#bankedHolders(mint, b.slot, p.listed, at, put)).then(as('holders')));
+        if (scan !== null) parts.push(this.#guard(`holders-all:${mint}`, async () => this.#bankedScan(mint, b.slot, await scan, at, put)).then(as('holders-all')));
+        return `slot ${b.slot}`;
+      });
+      if (!banked) await scan?.catch(() => undefined);
+    }
+    const done = await Promise.all(parts);
+    if (frames.length > 0) {
+      // The batch's age by slot: its oldest input judged by slot lag (mint, pool, LP, holders).
+      const slots = frames.filter((f) => LAG_BOUND.has(f.key.slice(0, f.key.lastIndexOf(':') + 1))).map((f) => (isObj(f.value) && typeof f.value['slot'] === 'bigint' ? f.value['slot'] : null)).filter((x): x is bigint => x !== null);
+      const oldest = slots.length === 0 ? null : slots.reduce((a, b) => (b < a ? b : a));
+      const keys = frames.map((f) => f.key).sort();
+      // One synchronous block: the members never reach the feed without their close.
+      this.#ingest('worker', RAW.batchOpen(mint), { mint, members: keys });
+      try {
+        for (const f of frames) this.#ingest(f.source, f.key, f.value);
+      } finally {
+        this.#ingest('worker', RAW.batchClose(mint), { mint, slot: oldest, members: keys });
+      }
+    }
+    // Every part asked for is counted: one that never ran (no prep, no bank, no scan) failed.
+    const out: Partial<Record<BatchPart, boolean>> = { accounts: banked };
+    if (req.holders !== null) out[req.holders === 'all' ? 'holders-all' : 'holders'] = false;
+    if (req.spend !== null && this.simulate !== null) out.sim = false;
+    if (req.xcheck) out.xcheck = false;
+    for (const [part, ok] of done) out[part] = ok;
+    return out;
+  }
+
+  /** `#guard` for a step that returns a value: null (and a failed outcome) when it throws. */
+  async #attempt<T>(read: string, f: () => Promise<{ readonly value: T; readonly detail: string }>): Promise<T | null> {
+    let out: T | null = null;
+    await this.#guard(read, async () => {
+      const r = await f();
+      out = r.value;
+      return r.detail;
+    });
+    return out;
+  }
+
+  /** The program of each mint (Token or Token-2022), from its last bank: the scan's program. */
+  readonly #mintProgram = new Map<string, string>();
+
+  /** H15's simulation, set by the worker's wiring (`withSim`); a batch asks it for the candidate's spend. */
+  simulate: SimFn | null = null;
+
+  /** The largest accounts at the bank's slot: balances, supply and owners' programs all from that one bank. */
+  #bankedHolders(mint: string, slot: bigint, listed: readonly string[], at: (address: string) => { owner: string; data: string } | null, put: Put): string {
+    const m = at(mint);
+    if (m === null) throw new Error('mint account missing');
+    const supply = decodeMint(fromBase64(m.data), m.owner as Address).supply;
+    const known = this.#owners.get(mint)!;
+    const accounts: HoldersRead['accounts'][number][] = [];
+    const unclassified: string[] = [];
+    for (const address of listed) {
+      const v = at(address);
+      if (v === null) continue;
+      const t = decodeTokenAccount(fromBase64(v.data), v.owner as Address);
+      if (t.mint !== mint) throw new Error(`token account ${address} is not of ${mint}`);
+      const owner = t.owner as string;
+      if (!known.has(owner)) {
+        known.add(owner);
+        unclassified.push(owner);
+        continue;
+      }
+      const o = at(owner);
+      // A plain wallet (System-owned) or an account that does not exist is a system wallet: null.
+      accounts.push({ address, owner, ownerProgram: o === null || o.owner === SYSTEM_PROGRAM ? null : o.owner, amount: t.amount, delegate: t.delegate as string | null, delegatedAmount: t.delegatedAmount });
+    }
+    if (unclassified.length > 0) throw new Error(`owners ${unclassified.sort().join(', ')} were not in the bank`);
+    put('helius', RAW.holders(mint), { mint, slot, commitment: 'confirmed', supply, accounts } satisfies HoldersRead);
+    return `${accounts.length} accounts, slot ${slot}`;
+  }
+
+  /** The complete scan, refused unless at or after the bank's supply read and with every off-curve owner classified by it. */
+  #bankedScan(mint: string, slot: bigint, s: Scan, at: (address: string) => { owner: string; data: string } | null, put: Put): string {
+    const m = at(mint);
+    if (m === null) throw new Error('mint account missing');
+    if (s.gpa.slot < slot) throw new Error(`scan at slot ${s.gpa.slot} is older than the supply read at ${slot}`);
+    const known = this.#owners.get(mint)!;
+    const offCurve = offCurveOwners(s.gpa.accounts);
+    const missing = offCurve.filter((o) => !known.has(o));
+    for (const o of missing) known.add(o);
+    if (missing.length > 0) throw new Error(`off-curve owners ${missing.join(', ')} were not in the bank`);
+    put('helius', RAW.holdersAll(mint), {
+      mint, slot: s.gpa.slot, commitment: 'confirmed', program: m.owner, mintSlot: slot, mintData: m.data, accounts: s.gpa.accounts,
+      ownerPrograms: offCurve.map((o) => ({ owner: o, program: at(o)?.owner ?? null })),
+      filter: m.owner === TOKEN_2022_PROGRAM ? s.filter : 'legacy', fallback: s.fallback,
+    });
+    return `${s.gpa.accounts.length} accounts at slot ${s.gpa.slot}, ${s.filter}`;
+  }
+
+  /**
+   * One getProgramAccounts of the mint's token accounts at a bank no older than `minSlot` (the scan already taken off
+   * the daily cap). Only the refusal of a too-large mint-only scan (-32600) earns one indexed retry, counted as its own
+   * scan. Every other failure (a 429, a timeout, "minimum context slot not reached", a legacy program) propagates: no
+   * retry. The retry's result stays fail-safe: an extension-less account holding tokens breaks the sum and no fact forms.
+   */
+  async #scan(program: string, mint: string, minSlot: bigint, priority: Priority): Promise<Scan> {
+    const filter: Token2022Filter = this.#o.token2022Filter ?? 'mintOnly';
+    try {
+      return { gpa: await this.#o.rpc.getProgramAccounts(program, mint, minSlot, priority, filter), filter, fallback: false };
+    } catch (e) {
+      if (!(e instanceof FactRpcError && e.rpcCode === GPA_TOO_MANY_ACCOUNTS && program === TOKEN_2022_PROGRAM && filter === 'mintOnly')) throw e;
+      if (!this.#takeScan()) throw new Error('mint-only scan refused and the daily scan cap is reached');
+      return { gpa: await this.#o.rpc.getProgramAccounts(program, mint, minSlot, priority, 'indexed'), filter: 'indexed', fallback: true };
+    }
   }
 
   #scanDay = -1;
@@ -554,7 +776,7 @@ export class FactReaders {
   }
 
   /** RugCheck's report, trimmed to the authorities (`read:rugcheck:<mint>`). Both fields must be present. */
-  async readRugCheck(mint: string, priority: Priority = P2): Promise<boolean> {
+  async readRugCheck(mint: string, priority: Priority = P2, put: Put = this.#now): Promise<boolean> {
     const s = this.#o.rugcheck;
     if (s === undefined) return false;
     return this.#guard(`rugcheck:${mint}`, async () => {
@@ -563,13 +785,13 @@ export class FactReaders {
       const a = v['mintAuthority'];
       const f = v['freezeAuthority'];
       if (!(a === null || typeof a === 'string') || !(f === null || typeof f === 'string')) throw new ProviderError('rugcheck', 'shape', 'report authorities are malformed');
-      this.#ingest('rugcheck', RAW.rugcheck(mint), { mint, mintAuthority: a === '' ? null : a, freezeAuthority: f === '' ? null : f });
+      put('rugcheck', RAW.rugcheck(mint), { mint, mintAuthority: a === '' ? null : a, freezeAuthority: f === '' ? null : f });
       return 'ok';
     });
   }
 
   /** GoPlus token security, trimmed to `mintable` and `freezable` status (`read:goplus:<mint>`). */
-  async readGoPlus(mint: string, priority: Priority = P2): Promise<boolean> {
+  async readGoPlus(mint: string, priority: Priority = P2, put: Put = this.#now): Promise<boolean> {
     const s = this.#o.goplus;
     if (s === undefined) return false;
     return this.#guard(`goplus:${mint}`, async () => {
@@ -577,13 +799,13 @@ export class FactReaders {
       const r = isObj(v) && isObj(v['result']) ? v['result'][mint] : undefined;
       if (!isObj(v) || v['code'] !== 1 || !isObj(r)) throw new ProviderError('goplus', 'shape', 'token_security has no result for this mint');
       const status = (x: unknown): string | null => (isObj(x) && (x['status'] === '0' || x['status'] === '1') ? x['status'] : null);
-      this.#ingest('goplus', RAW.goplus(mint), { mint, mintable: status(r['mintable']), freezable: status(r['freezable']) });
+      put('goplus', RAW.goplus(mint), { mint, mintable: status(r['mintable']), freezable: status(r['freezable']) });
       return 'ok';
     });
   }
 
   /** Jupiter Tokens `audit` authority flags (`read:jupiter-audit:<mint>`). */
-  async readJupiterAudit(mint: string, priority: Priority = P2): Promise<boolean> {
+  async readJupiterAudit(mint: string, priority: Priority = P2, put: Put = this.#now): Promise<boolean> {
     const s = this.#o.jupiter;
     if (s === undefined) return false;
     return this.#guard(`jupiter:${mint}`, async () => {
@@ -592,14 +814,14 @@ export class FactReaders {
       if (!isObj(row)) throw new ProviderError('jupiter', 'shape', 'tokens/search has no row for this mint');
       const audit = isObj(row['audit']) ? row['audit'] : {};
       const flag = (x: unknown): boolean | null => (typeof x === 'boolean' ? x : null);
-      this.#ingest('jupiter', RAW.jupiter(mint), { mint, mintAuthorityDisabled: flag(audit['mintAuthorityDisabled']), freezeAuthorityDisabled: flag(audit['freezeAuthorityDisabled']) });
+      put('jupiter', RAW.jupiter(mint), { mint, mintAuthorityDisabled: flag(audit['mintAuthorityDisabled']), freezeAuthorityDisabled: flag(audit['freezeAuthorityDisabled']) });
       return 'ok';
     });
   }
 
   /** Every cross-check source configured, in parallel. H16 needs at least one answer under 2 s old at the decision. */
-  async readCrossChecks(mint: string, priority: Priority = P2): Promise<boolean[]> {
-    return Promise.all([this.readRugCheck(mint, priority), this.readGoPlus(mint, priority), this.readJupiterAudit(mint, priority)]);
+  async readCrossChecks(mint: string, priority: Priority = P2, put: Put = this.#now): Promise<boolean[]> {
+    return Promise.all([this.readRugCheck(mint, priority, put), this.readGoPlus(mint, priority, put), this.readJupiterAudit(mint, priority, put)]);
   }
 
   /**

@@ -5,9 +5,6 @@ export interface TokenRowView {
   ageSeconds: number;
   venue: string;
   liquidityUsd: number | null;
-  volume24hUsd: number | null;
-  holders: number | null;
-  topHolderShare: number | null;
   security: 'passed' | 'failed' | 'missing';
   promoted: boolean;
   dataAgeSeconds: number | null;

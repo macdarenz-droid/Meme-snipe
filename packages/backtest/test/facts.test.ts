@@ -1,0 +1,293 @@
+// BT-2 fact projector: historical gate facts as of each check moment, creates for the deployer index, rug coverage
+// and unjudged mints outside the sample.
+import { describe, expect, it } from 'vitest';
+import { DELEGATES_PARTIAL } from '../src/strategy/study.ts';
+import { RUG_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { isCanonicalPool, type Pool, TOKEN_2022_PROGRAM, toAddress } from '../../core/src/chain/index.ts';
+import type { FeedEvent, MarketEvent } from '../../core/src/engine/index.ts';
+import {
+  coverageKeys, createKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp,
+  CURVE_VOLUME_KEY, GRADUATES_KEY, parseGraduates, parseMigration, parseMint, parsePool, parseSolUsd, poolKey, RUG_UNJUDGED_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey,
+} from '../../core/src/gates/index.ts';
+import { seriesReleases } from '../src/dataset/offchain.ts';
+import { FactProjector, type FactOptions, LANDED_PREFIX, mintHashFraction, tieHash } from '../src/sim/facts.ts';
+import { landings, READ_LATENCY } from '../src/study/reads.ts';
+import { producerOptions } from '../../core/src/facts/index.ts';
+import { Market, rowMoment } from '../src/sim/market.ts';
+import { SOL_USD } from '../src/dataset/synthetic.ts';
+import { SLOT_MS, studyWorld, SUPPLY, W0, type MintPlan } from './study-world.ts';
+
+const MIN = 60_000 / SLOT_MS;
+const U2 = { universe: 'U2', fromMs: 60 * 60_000, toMs: 70 * 60_000, everyMs: 5 * 60_000, minQuoteLamports: 0n };
+
+const solUsd = { ...SOL_USD, bars: SOL_USD.bars.map((b, k) => ({ ...b, start: W0 - 6 * 3_600_000 + k * 3_600_000 })) };
+
+const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts'], delegatesComplete = true, readLatency?: FactOptions['readLatency'], survival?: FactOptions['survival'], volumeHours?: FactOptions['volumeHours']) => {
+  const { rows, mints, ownerPrograms } = studyWorld({ mints: plans, slots });
+  const facts = new FactProjector({
+    holders: { ownerPrograms },
+    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete, ...(readLatency === undefined ? {} : { readLatency }), ...(survival === undefined ? {} : { survival }), ...(volumeHours === undefined ? {} : { volumeHours }),
+    ...(tradesFromMs === undefined ? {} : { tradesFromMs }), ...(poolAccounts === undefined ? {} : { poolAccounts }),
+  });
+  const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {}, facts });
+  const events: FeedEvent[] = [];
+  for (const r of rows) {
+    const out = market.release(r);
+    for (const e of out) expect(e.moment).toEqual(rowMoment(r));
+    events.push(...out);
+  }
+  return { events: events.filter((e): e is MarketEvent => e.kind === 'market'), mints, facts };
+};
+
+const PLAN: MintPlan = { label: 'good', createSlot: 10, graduateAfter: 20 * MIN };
+const SLOTS = 10 + 20 * MIN + 72 * MIN;
+
+describe('SOL/USD release (BT review S1 of b1b9fdb)', () => {
+  it('each close is released when it becomes usable, with no candidate checked, so a held position never marks at an older close', () => {
+    // No mints: nothing is checked, yet every hourly close usable inside the run reaches the engine at its first block.
+    const hours = 4;
+    const { events } = replay([], hours * 60 * MIN);
+    const sol = events.filter((e) => e.key === SOL_USD_KEY).map((e) => ({ at: e.moment.receivedAt, newest: parseSolUsd(e.value)!.points.at(-1)! }));
+    // Each close is usable one bar after its stamp (stamp + 1 h); the run's first block is at W0, when the close stamped
+    // W0 - 1 h becomes usable, and the next three follow on the hour.
+    const usableIn = solUsd.bars.map((b) => b.start + 3_600_000).filter((t) => t + 3_600_000 >= W0 && t + 3_600_000 < W0 + hours * 3_600_000);
+    expect(sol.map((x) => x.newest.tMs)).toEqual(usableIn);
+    for (const x of sol) {
+      expect(x.at).toBeGreaterThanOrEqual(x.newest.tMs + 3_600_000);
+      expect(x.at - (x.newest.tMs + 3_600_000)).toBeLessThan(SLOT_MS);
+    }
+  });
+});
+
+describe('fact projector', () => {
+  const { events, mints } = replay([PLAN], SLOTS);
+  const m = mints[0]!;
+  const checks = events.filter((e) => e.key === `check:${m.mint}`);
+  const at = (key: string, check: MarketEvent) => events.filter((e) => e.key === key && e.moment.slot === check.moment.slot).at(-1)?.value;
+
+  it('checks a graduate inside its window, at the set cadence, never outside it', () => {
+    expect(checks.map((c) => (c.value as { n: number }).n)).toEqual([1, 2, 3]);
+    for (const c of checks) {
+      const since = c.moment.receivedAt - (W0 + m.migrateSlot * SLOT_MS);
+      expect(since).toBeGreaterThanOrEqual(U2.fromMs - 1000);
+      expect(since).toBeLessThanOrEqual(U2.toMs);
+      expect(typeof (c.value as { blockHeight: unknown }).blockHeight).toBe('bigint');
+    }
+  });
+
+  it('builds every gate fact in the shape the gates read, as of the check', () => {
+    const c = checks[0]!;
+    const mint = parseMint(at(mintKey(m.mint), c))!;
+    expect(mint.owner).toBe(TOKEN_2022_PROGRAM);
+    expect(mint.account).toMatchObject({ mintAuthority: null, freezeAuthority: null, supply: SUPPLY });
+    expect(mint.account!.extensions.map((e) => e.kind)).toEqual(['MetadataPointer', 'TokenMetadata']);
+    const pool = parsePool(at(poolKey(m.mint), c))!;
+    expect(pool.address).toBe(m.pool);
+    expect(isCanonicalPool(pool.pool as unknown as Pool, toAddress(m.pool))).toBe(true);
+    expect(pool.pool.isMayhemMode).toBe(false);
+    expect(parseLp(at(lpKey(m.mint), c))).toMatchObject({ lpMint: m.lpMint, supply: 0n });
+    expect(parseCreate(at(createKey(m.mint), c))!.creator).toBe(m.creator);
+    const mig = parseMigration(at(migrationKey(m.mint), c))!;
+    expect(mig.migratedAtMs).toBe(Math.floor((W0 + m.migrateSlot * SLOT_MS) / 1000) * 1000);
+    const holders = parseHolders(at(holdersKey(m.mint), c))!;
+    expect(holders.obs.quality).toEqual([]);
+    expect(holders.accounts.reduce((t, a) => t + a.amount, 0n)).toBe(SUPPLY);
+    const candles = parseCandles(at(candlesKey(m.mint), c))!;
+    expect(candles.candles.length).toBeGreaterThan(0);
+    expect(candles.candles.every((k) => k.startMs <= c.moment.receivedAt)).toBe(true);
+    expect(parseInsiders(at(insidersKey(m.mint), c))!.complete).toBe(false);
+    const sol = parseSolUsd(at(SOL_USD_KEY, c))!;
+    expect(sol.points.every((p) => p.tMs <= c.moment.receivedAt + 3_600_000)).toBe(true);
+    // Every state fact is observed at the check's own slot: fresh by construction, never from a later row.
+    for (const key of [mintKey(m.mint), poolKey(m.mint), holdersKey(m.mint), candlesKey(m.mint)]) {
+      expect((at(key, c) as { obs: { slot: bigint } }).obs.slot).toBe(c.moment.slot);
+    }
+    expect(TRIAL_POLICY.gates.maxStateSlotLag).toBeGreaterThanOrEqual(0);
+  });
+
+  it('sends every create to the deployer index and starts creates and rug coverage at the first row', () => {
+    expect(events.filter((e) => e.key === `${TX_CREATE_PREFIX}${m.mint}`)).toHaveLength(1);
+    for (const stream of ['creates', 'rugs']) expect(events.filter((e) => e.key === coverageKeys(stream).start)).toHaveLength(1);
+  });
+
+  it('marks a create outside the sample unjudged, and keeps no state for it', () => {
+    const r = replay([PLAN], 20, 0);
+    const u = r.events.filter((e) => e.key === `${RUG_UNJUDGED_PREFIX}${r.mints[0]!.mint}`);
+    expect(u).toHaveLength(1);
+    expect((u[0]!.value as { reason: string }).reason).toMatch(/outside the dataset sample/);
+    expect(r.facts.state(r.mints[0]!.mint)).toBeUndefined();
+  });
+
+  it('in an assembled window, a launch from a lead-in day keeps its create but is unjudged, and rug coverage starts with the trades', () => {
+    const from = W0 + 5 * 60_000;
+    const r = replay([PLAN], SLOTS, 1, from);
+    const mint = r.mints[0]!.mint;
+    const u = r.events.filter((e) => e.key === `${RUG_UNJUDGED_PREFIX}${mint}`);
+    expect((u[0]!.value as { reason: string }).reason).toMatch(/lead-in day/);
+    const start = r.events.find((e) => e.key === coverageKeys('rugs').start)!;
+    expect(start.moment.receivedAt).toBeGreaterThanOrEqual(from);
+    expect(r.events.some((e) => e.key === createKey(mint))).toBe(true);
+  });
+
+  it('follows the scanner hash for the sample', () => {
+    const h = mintHashFraction(m.mint)!;
+    expect(h).toBeGreaterThanOrEqual(0);
+    expect(h).toBeLessThan(1);
+    expect(mintHashFraction('not-an-address')).toBeNull();
+  });
+
+  it('carries a delegate approved on a token account into the holder read (GATE-1e)', () => {
+    const r = replay([{ ...PLAN, devBuyBps: 300, devDelegate: 1_000n }], SLOTS);
+    const c = r.events.find((e) => e.key.startsWith('check:'))!;
+    const holders = parseHolders(r.events.filter((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
+    const delegated = holders.accounts.filter((a) => a.delegate !== null);
+    expect(delegated).toHaveLength(1);
+    expect(delegated[0]!.delegatedAmount).toBe(1_000n);
+    expect(delegated[0]!.owner).toBe(r.mints[0]!.creator);
+    expect(holders.accounts.filter((a) => a.delegate === null).every((a) => a.delegatedAmount === 0n)).toBe(true);
+  });
+
+  it('adds the pool account record (H17) only as of the moment it is known; without it the fields stay absent', () => {
+    const poolOf = (r: ReturnType<typeof replay>) => {
+      const c = r.events.find((e) => e.key.startsWith('check:'))!;
+      return parsePool(r.events.filter((e) => e.key === poolKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
+    };
+    const none = poolOf(replay([PLAN], SLOTS));
+    expect(none.accountBytes).toBeUndefined();
+    expect(none.pool.isCashbackCoin).toBeUndefined();
+    const rec = { knownAtMs: 0, accountBytes: 300, isCashbackCoin: false, coinCreator: 'C' };
+    const known = poolOf(replay([PLAN], SLOTS, 1, undefined, 'test-salt', () => rec));
+    expect(known).toMatchObject({ accountBytes: 300, pool: { isCashbackCoin: false, coinCreator: 'C' } });
+    const late = poolOf(replay([PLAN], SLOTS, 1, undefined, 'test-salt', () => ({ ...rec, knownAtMs: Number.MAX_SAFE_INTEGER })));
+    expect(late.accountBytes).toBeUndefined();
+    expect(late.pool.isCashbackCoin).toBeUndefined();
+  });
+
+  it('marks every holder read partial while the dataset may miss approvals (the permissive direction)', () => {
+    const r = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, false);
+    const c = r.events.find((e) => e.key.startsWith('check:'))!;
+    const h = parseHolders(r.events.filter((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
+    expect(h.obs.quality).toEqual(['partial']);
+    // Tagged as a delegate-only gap, the tag H3's owner count reads (BT review N1); with complete delegations, neither.
+    const raw = r.events.filter((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value as { partialReason?: string };
+    expect(raw.partialReason).toBe(DELEGATES_PARTIAL);
+    const full = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, true);
+    const fc = full.events.find((e) => e.key.startsWith('check:'))!;
+    const fh = full.events.filter((e) => e.key === holdersKey(full.mints[0]!.mint) && e.moment.slot === fc.moment.slot).at(-1)?.value as { obs: { quality: string[] }; partialReason?: string };
+    expect([fh.obs.quality, fh.partialReason]).toEqual([[], undefined]);
+    // The mint read is unaffected.
+    const mint = parseMint(r.events.filter((e) => e.key === mintKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
+    expect(mint.obs.quality).toEqual([]);
+  });
+
+  it('lands stage-2 answers after the account read and release, stage-3 after the holder scan and release, facts as of then', () => {
+    const r = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, true, READ_LATENCY);
+    const c = r.events.find((e) => e.key.startsWith('check:'))!;
+    const n = (c.value as { n: number }).n;
+    const land = r.events.filter((e) => e.key === `${LANDED_PREFIX}${r.mints[0]!.mint}` && (e.value as { n: number }).n === n);
+    expect(land.map((e) => (e.value as { stage: number }).stage)).toEqual([2, 3]);
+    const at = landings(c.moment.receivedAt, READ_LATENCY);
+    // Released at the first block at or after each landing time (a block every slot, 400 ms).
+    expect(land[0]!.moment.receivedAt).toBeGreaterThanOrEqual(at.stage2);
+    expect(land[0]!.moment.receivedAt - at.stage2).toBeLessThan(SLOT_MS * 2);
+    expect(land[1]!.moment.receivedAt).toBeGreaterThanOrEqual(at.stage3);
+    expect(land[1]!.moment.receivedAt - at.stage3).toBeLessThan(SLOT_MS * 2);
+    expect(at.stage3 - c.moment.receivedAt).toBe(500 + 5_000 + 2 * READ_LATENCY.feedReleaseMs);
+    // The facts are released again with each landing, as of that moment.
+    const holdersAt = (m: number) => r.events.some((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.receivedAt === m);
+    expect(holdersAt(land[1]!.moment.receivedAt)).toBe(true);
+  });
+
+  it('releases graduate survival from FACTS-1\'s producer: the pool\'s reserve at migration + 30 min, once its trades are covered', () => {
+    const r = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, true, undefined, producerOptions(TRIAL_POLICY));
+    const grads = r.events.filter((e) => e.key === GRADUATES_KEY);
+    expect(grads.length).toBeGreaterThan(0);
+    const g = parseGraduates(grads.at(-1)!.value)!;
+    expect(g).not.toBeNull();
+    const m = r.mints[0]!;
+    expect(g.items.map((x) => x.mint)).toEqual([m.mint]);
+    const migratedAt = W0 + m.migrateSlot * SLOT_MS;
+    expect(Math.abs(g.items[0]!.migratedAtMs - migratedAt)).toBeLessThan(1_000);
+    expect(g.items[0]!.reserveAfter).toBeGreaterThan(0n);
+    // Released only once the mark (migration + 30 min) has passed.
+    expect(grads[0]!.moment.receivedAt).toBeGreaterThanOrEqual(g.items[0]!.migratedAtMs + TRIAL_POLICY.regime.survivalAfterMs);
+    // Without the producer nothing is released: the regime then reads graduates as unknown.
+    expect(replay([PLAN], SLOTS).events.some((e) => e.key === GRADUATES_KEY)).toBe(false);
+  });
+
+  it('releases the regime\'s curve volume from FACTS-1\'s producer: whole covered days only, each hour once it has ended', () => {
+    const d0 = Math.floor((W0 - 2 * 86_400_000) / 86_400_000);
+    const hours = (day: number, uncovered = -1) => Array.from({ length: 24 }, (_, i) => ({ hourStartMs: day * 86_400_000 + i * 3_600_000, lamports: 1_000n, covered: i !== uncovered }));
+    const vh = [...hours(d0), ...hours(d0 + 1, 7)];
+    const r = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, true, undefined, producerOptions(TRIAL_POLICY), vh);
+    const cv = r.events.filter((e) => e.key === CURVE_VOLUME_KEY);
+    expect(cv.length).toBeGreaterThan(0);
+    // The covered day is complete; the day with an uncovered hour is unknown, never a smaller volume.
+    expect((cv.at(-1)!.value as { days: unknown[] }).days).toEqual([{ day: d0, volumeLamports: 24_000n }]);
+    // Released only after the day's last hour had ended.
+    expect(cv[0]!.moment.receivedAt).toBeGreaterThanOrEqual((d0 + 1) * 86_400_000);
+  });
+
+  it('takes holders from BT-1d\'s book: a swap with no token owner leaves the mint unresolved, with no fact and its reason counted', () => {
+    const r = replay([{ ...PLAN, emptyOwnerAfter: 30 * MIN }], SLOTS);
+    const mint = r.mints[0]!.mint;
+    const checks = r.events.filter((e) => e.key === `check:${mint}`);
+    expect(checks.length).toBeGreaterThan(0);
+    // Every check is after the unknown owner (migration + 30 min < the first check at + 60 min): no holder fact at any.
+    for (const c of checks) expect(r.events.some((e) => e.key === holdersKey(mint) && e.moment.slot === c.moment.slot)).toBe(false);
+    expect(r.facts.counts.holderAbstentions).toEqual({ swap_owner_unknown: checks.length });
+    expect([...r.facts.holderAbstainedMints['swap_owner_unknown']!]).toEqual([mint]);
+    // The same world without it has a resolved holder read at every check.
+    const ok = replay([PLAN], SLOTS);
+    expect(ok.facts.counts.holderAbstentions).toEqual({});
+  });
+
+  it('releases a pool\'s first trade event since migration and every event with a tail, for H5', () => {
+    expect(events.filter((e) => e.key.startsWith(`pump_amm:`) && e.key.endsWith(m.pool))).toHaveLength(1);
+    const r = replay([{ ...PLAN, tail: { after: 30 * MIN, hex: '0100000000000000' } }], SLOTS);
+    const tails = r.events.filter((e) => e.key.startsWith('pump_amm:'));
+    expect(tails).toHaveLength(2);
+    expect(tails[1]!.value).toMatchObject({ event: { trailing: 8, extra: '0100000000000000' } });
+    expect(typeof (tails[1]!.value as { txSlot: unknown }).txSlot).toBe('bigint');
+  });
+
+  it('releases checks due at one block in salted-hash order, so a fixed salt decides true ties', () => {
+    const plans: MintPlan[] = ['a', 'b', 'c', 'd'].map((label) => ({ ...PLAN, label }));
+    const firstBlock = (salt: string) => {
+      const checks = replay(plans, SLOTS, 1, undefined, salt).events.filter((e) => e.key.startsWith('check:'));
+      const at = checks[0]!.moment.slot;
+      return checks.filter((e) => e.moment.slot === at).map((e) => (e.value as { mint: string }).mint);
+    };
+    for (const salt of ['test-salt', 'other-salt']) {
+      const order = firstBlock(salt);
+      expect(order).toHaveLength(4);
+      expect(order).toEqual([...order].sort((x, y) => (tieHash(salt, 'U2', x) < tieHash(salt, 'U2', y) ? -1 : 1)));
+    }
+    // The same salt always gives the same order.
+    expect(firstBlock('test-salt')).toEqual(firstBlock('test-salt'));
+  });
+
+  it('drops a launch that never graduates after a week, and a graduate past every window', () => {
+    const { rows, mints, ownerPrograms } = studyWorld({ mints: [{ ...PLAN, graduateAfter: 10 ** 9 }, PLAN], slots: SLOTS });
+    const facts = new FactProjector({ holders: { ownerPrograms }, sampleRate: 1, rugs: RUG_CONFIG, windows: [U2], solUsd: [], solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt: 'test-salt' });
+    const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {}, facts });
+    for (const r of rows) market.release(r);
+    expect(facts.state(mints[0]!.mint)).toBeDefined();
+    const last = rows[rows.length - 1]!;
+    for (let h = 1; h <= 8 * 24; h++) {
+      const slot = last.slot + BigInt(h * 9000);
+      market.release({ kind: 'block', slot, blockTime: last.blockTime + h * 3600, parentSlot: slot - 1n });
+    }
+    expect(facts.state(mints[0]!.mint)).toBeUndefined();
+    expect(facts.state(mints[1]!.mint)).toBeUndefined();
+    expect(facts.tracked).toBe(0);
+  });
+
+  it('leaves out the mint fact when the create\'s raw record is missing; holders still come from the trade rows', () => {
+    const r = replay([{ ...PLAN, noCreateRaw: true }], SLOTS);
+    const mint = r.mints[0]!.mint;
+    expect(r.events.some((e) => e.key === mintKey(mint))).toBe(false);
+    // Holders come from the trade rows (BT-1d's book), not from raw records: they are still known.
+    expect(r.events.some((e) => e.key === holdersKey(mint))).toBe(true);
+  });
+});

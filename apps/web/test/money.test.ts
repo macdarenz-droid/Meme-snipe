@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addUsd, drawdownsUsd, formatPriceDec, formatR, formatUsdExact, fromMicro, isUsd, MoneyError, toMicro, toneOf } from '../src/lib/money.ts';
+import { addUsd, drawdownsUsd, formatPriceDec, formatR, formatSolExact, formatUsdExact, fromMicro, isUsd, MoneyError, toMicro, toneOf } from '../src/lib/money.ts';
 
 describe('exact money', () => {
   it('adds decimal strings without float error', () => {
@@ -46,5 +46,16 @@ describe('exact money', () => {
     expect(formatR('1.5')).toBe('+1.50R');
     expect(formatR('-0.8')).toBe('−0.80R');
     expect(formatR('0.001')).toBe('0.00R');
+  });
+});
+
+describe('SOL amounts (PAPER-1)', () => {
+  it('prints the exact SOL result, signed on request, never rounded', () => {
+    expect(formatSolExact('0.004000000', true)).toBe('+0.004 SOL');
+    expect(formatSolExact('-0.004000000', true)).toBe('−0.004 SOL');
+    expect(formatSolExact('0.000000001')).toBe('0.000000001 SOL');
+    expect(formatSolExact('1234.5')).toBe('1,234.5 SOL');
+    expect(formatSolExact('0.000000000', true)).toBe('0 SOL');
+    expect(() => formatSolExact('1e3')).toThrow(MoneyError);
   });
 });
