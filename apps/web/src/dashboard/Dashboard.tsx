@@ -11,7 +11,7 @@ import { BacktestReportView } from './BacktestReport.tsx';
 import { Boundary } from './Boundary.tsx';
 import { PnlCalendar } from './Calendar.tsx';
 import { CostsChart, CumulativeChart, DailyPnlChart, FunnelChart, RDistribution } from './Charts.tsx';
-import { DecisionDetail, Funnel, Journal, ModeTag, NOT_ENOUGH, OpenPosition, RiskList, Stats, StatusFlags } from './Sections.tsx';
+import { DecisionDetail, Funnel, Journal, ModeTag, NOT_ENOUGH, OpenPosition, RiskList, Stats, StatusCard } from './Sections.tsx';
 import { Load } from './State.tsx';
 import { melMonth, shiftMonth } from './time.ts';
 import { TradeDetail, TradeTable } from './Trades.tsx';
@@ -114,7 +114,7 @@ export function DashboardBody({ mode, month, setMonth, loaded, session }: { mode
     <>
       <Section aside={tag} title="Worker" className="span-2 dash-status">
         <Load loaded={status} rows={1}>
-          {(s) => <StatusFlags status={s} />}
+          {(s) => <StatusCard status={s} />}
         </Load>
       </Section>
 
