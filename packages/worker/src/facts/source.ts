@@ -11,7 +11,11 @@
 // Three reads do not follow a candidate's reasons: hourly SOL/USD bars (H8, regime), hourly chain volume from DATA-1c's
 // day releases (regime, FACTS-1d), and one pool read just after each graduate's survival mark (regime), for every
 // migration the strategy shortlisted.
-import type { EvidenceCode } from '../../../core/src/gates/index.ts';
+import { RUG_LABELS_UNAVAILABLE, rugCheckFromMs, type EvidenceCode } from '../../../core/src/gates/index.ts';
+import { RUG_CHECK_CONFIG, RUG_CONFIG, type RugConfig } from '../../../core/src/config/rugs.ts';
+import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
+import { P2 } from '../scheduler/index.ts';
+import { RpcHttp, rpcHistorySource, type RugCheckRequest } from '../providers/index.ts';
 import type { Policy } from '../../../core/src/config/index.ts';
 import { producerOptions } from '../../../core/src/facts/index.ts';
 import { heliusRpcUrl, type HttpClient, type Secrets } from '../providers/index.ts';
@@ -32,6 +36,8 @@ export interface LiveReaders {
   readCrossChecks(mint: string): Promise<boolean[]>;
   readMintHistory(mint: string, o: MintHistoryOptions): Promise<boolean>;
   readSolUsd(hoursBack: number): Promise<boolean>;
+  /** RUG-1c's deployer check; absent when no history source is wired. */
+  readDeployerCheck?(req: RugCheckRequest): Promise<boolean>;
   /** The regime's chain volume (FACTS-1d); absent when no release source is wired. */
   readChainVolume?(regime: ChainVolumeWindow): Promise<boolean>;
 }
@@ -64,6 +70,8 @@ export interface LiveFactsOptions {
   readonly mintHistory: Omit<MintHistoryOptions, 'asOfSlot'>;
   /** The volume window: with it (and a reader that has a release source), chain volume is read each hour. */
   readonly chainVolume?: ChainVolumeWindow;
+  /** RUG-1c: H14's look-back and the rug windows, for each check's `rugCheckFromMs`. Without it no deployer is checked. */
+  readonly deployerCheck?: { readonly lookbackMs: number; readonly rugs: RugConfig };
 }
 
 /** The counter fact: reads per UTC day by kind and outcome. Never read by a gate. */
@@ -77,8 +85,10 @@ const DAY_MS = 86_400_000;
 const EVIDENCE: ReadonlySet<string> = new Set<EvidenceCode>(['missing', 'malformed', 'stale', 'degraded', 'gap', 'not-covered', 'inconsistent']);
 /** The inputs a read can supply, by read kind. Every other input is stream-built or has no free live source. */
 const ACCOUNTS: ReadonlySet<string> = new Set(['mint', 'pool', 'lp']);
+/** H14's detail when the rug half is not covered and the deployer check is missing or not accepted (gates/hard.ts). */
+const DEPLOYER_CHECK_DETAIL = `${RUG_LABELS_UNAVAILABLE}: `;
 
-type Kind = 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'survival' | 'sol-usd' | 'chain-volume';
+type Kind = 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'survival' | 'sol-usd' | 'chain-volume' | 'deployer-check';
 
 /** What one candidate's last reasons ask the source to read; empty when it must not read. */
 export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
@@ -97,6 +107,9 @@ export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
     else if (g.input === 'xcheck') out.add('xcheck');
     else if (g.input === 'insiders') out.add('mint-history');
     else if (g.input === 'holders') out.add(g.code === 'not-covered' ? 'holders-all' : 'holders');
+    // H14's rug half not covered and its deployer check missing or not accepted (RUG-1c): check the deployer. The
+    // creates half (also input `coverage`) is not something a deployer check can cover, so it reads nothing.
+    else if (g.input === 'coverage' && g.code === 'not-covered' && g.neededBy === 'H14' && g.detail?.startsWith(DEPLOYER_CHECK_DETAIL) === true) out.add('deployer-check');
     if (g.input !== 'holders') holdersOnly = false;
   }
   // The complete scan is the last read (and the dearest): only when nothing else is missing.
@@ -160,7 +173,7 @@ export class LiveFacts implements FactSource {
     }
     for (const [mint, c] of ctx.candidates()) {
       if (!this.#survivalDone.has(mint)) this.#survival.set(mint, c.migratedAtMs);
-      for (const kind of readsFor(c.gates)) this.#read(kind, mint, now);
+      for (const kind of readsFor(c.gates)) this.#read(kind, mint, now, c.creator ?? null);
     }
     for (const [mint, at] of this.#survival) {
       if (now < at + this.#o.survivalAfterMs + this.#o.survivalReadDelayMs) continue;
@@ -170,7 +183,7 @@ export class LiveFacts implements FactSource {
     }
   }
 
-  #read(kind: Kind, mint: string, now: number): void {
+  #read(kind: Kind, mint: string, now: number, creator: string | null = null): void {
     const last = this.#lastAt.get(`${kind}:${mint}`);
     if (last !== undefined && now - last < this.#o.minReadGapMs) return;
     switch (kind) {
@@ -188,6 +201,17 @@ export class LiveFacts implements FactSource {
           if (ok) this.#historyDone.add(mint);
           return ok;
         });
+      }
+      case 'deployer-check': {
+        const ctx = this.#ctx;
+        const tip = ctx?.tip() ?? null;
+        const w = this.#o.deployerCheck;
+        // Point in time, for a known creator, with the index's prior mints: otherwise nothing to check yet.
+        if (ctx === null || tip === null || creator === null || w === undefined || ctx.priorMints === undefined) return;
+        const fromMs = rugCheckFromMs(now - w.lookbackMs, w.rugs);
+        const mints = ctx.priorMints(creator, now).filter((m) => m.mint !== mint && m.createdAtMs >= fromMs);
+        const asOf = { slot: tip, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now };
+        return this.#run(kind, mint, (r) => (r.readDeployerCheck === undefined ? Promise.resolve(false) : r.readDeployerCheck({ creator, mints, fromMs, asOf, asOfMs: now })));
       }
       default: return;
     }
@@ -251,6 +275,11 @@ export const liveFacts = (w: LiveFactsWiring): LiveFacts => {
       rpc: new FactRpc({ url: () => heliusRpcUrl(w.secrets), http: w.http, scheduler: ctx.schedulers.helius, timeoutMs: 10_000 }),
       rugcheck: { scheduler: ctx.schedulers.rugcheck }, goplus: { scheduler: w.goplus },
       jupiter: { scheduler: ctx.schedulers.jupiter, secrets: w.secrets }, coinbase: { scheduler: w.coinbase },
+      // RUG-1c: each check's RPC goes through the Helius scheduler at P2, under the per-candidate credit cap.
+      rugCheck: {
+        history: rpcHistorySource(new RpcHttp({ provider: 'helius', url: () => heliusRpcUrl(w.secrets), http: w.http, scheduler: ctx.schedulers.helius, timeoutMs: 10_000 }), P2),
+        rugs: RUG_CONFIG, config: RUG_CHECK_CONFIG,
+      },
       ...(w.github === undefined ? {} : {
         releases: {
           api: { scheduler: w.github.api }, downloads: { scheduler: w.github.downloads },
@@ -259,6 +288,7 @@ export const liveFacts = (w: LiveFactsWiring): LiveFacts => {
         },
       }),
     }),
+    deployerCheck: { lookbackMs: w.policy.gates.deployerRugLookbackDays * DAY_MS, rugs: RUG_CONFIG },
     ...(w.github === undefined ? {} : { chainVolume: { volumeLagDays: w.policy.regime.volumeLagDays, volumeWindowDays: w.policy.regime.volumeWindowDays } }),
     tickMs: 1_000,
     minReadGapMs: 60_000 / ASSUMPTIONS.evaluationsPerMinute,

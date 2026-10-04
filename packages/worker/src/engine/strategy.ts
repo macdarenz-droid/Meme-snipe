@@ -28,7 +28,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type GateContext, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
+  type Coverage, type GateContext, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
@@ -65,6 +65,9 @@ export interface CandidateReason {
   readonly gate: string;
   readonly code: string;
   readonly input?: string;
+  /** The gate an evidence reason is needed by (H16 `neededBy`), and its detail: FACTS-1b and RUG-1c read them. */
+  readonly neededBy?: string;
+  readonly detail?: string;
 }
 
 /** `{ halted, reasons }`: entries stop while a critical feed is down or stale (§18); exits and monitoring go on. */
@@ -163,6 +166,8 @@ interface Candidate {
   tries: number;
   /** The reasons of the last evaluation (null before the first, empty after a pass). */
   gates: readonly CandidateReason[] | null;
+  /** The mint's creator, from its released create (null until it is seen): RUG-1c checks this deployer. */
+  creator?: string | null;
 }
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
@@ -220,8 +225,8 @@ export class LiveStrategy implements Strategy {
   }
 
   /** Each candidate's migration time and the typed reasons of its last evaluation (FACTS-1b stages its reads on them). */
-  candidates(): ReadonlyMap<string, { readonly migratedAtMs: number; readonly lastEvalMs: number | null; readonly gates: readonly CandidateReason[] | null }> {
-    return new Map([...this.#cands].map(([m, c]) => [m, { migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates }]));
+  candidates(): ReadonlyMap<string, { readonly migratedAtMs: number; readonly lastEvalMs: number | null; readonly gates: readonly CandidateReason[] | null; readonly creator: string | null }> {
+    return new Map([...this.#cands].map(([m, c]) => [m, { migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates, creator: c.creator ?? null }]));
   }
 
   /** Mints that need live facts: candidates in their window and every position not closed. */
@@ -862,6 +867,9 @@ export class LiveStrategy implements Strategy {
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
       if (Object.values(ctx.book.intents).some((i) => i.intent.mint === cand.mint && !isTerminal(i))) continue;
       cand.lastEvalMs = now;
+      const created = ctx.lookup(createKey(cand.mint));
+      const cf = created.ok ? parseCreate(created.value) : null;
+      if (cf !== null) cand.creator = cf.creator;
       const r = this.#evaluate(cand, ctx, gctx, out);
       cand.gates = r === null ? [] : this.#lastNeeds;
       // A reject is logged when its reason changes (numbers aside), so a long wait does not fill the journal.
@@ -880,7 +888,10 @@ export class LiveStrategy implements Strategy {
 
   #fail(text: string, gates: readonly GateReasonLine[], needs: readonly CandidateReason[] = gates): string {
     this.#lastGates = gates;
-    this.#lastNeeds = needs.map((x) => ({ gate: x.gate, code: x.code, ...(x.input === undefined ? {} : { input: x.input }) }));
+    this.#lastNeeds = needs.map((x) => ({
+      gate: x.gate, code: x.code, ...(x.input === undefined ? {} : { input: x.input }), ...(x.neededBy === undefined ? {} : { neededBy: x.neededBy }),
+      ...(x.detail === undefined ? {} : { detail: x.detail }),
+    }));
     return text;
   }
 

@@ -11,6 +11,7 @@ import {
   SupplementRecorder, checkDeployer, checkFacts, rpcHistorySource, supplementSource, type RugHistorySource, type RugSupplement,
 } from '../src/providers/deployer-check.ts';
 import { RpcHttp, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
+import { FactReaders, FactRpc } from '../src/facts/index.ts';
 import { HELIUS_FREE, ManualTimers, P2, Scheduler } from '../src/scheduler/index.ts';
 import { blockNetwork, settle } from './helpers.ts';
 
@@ -292,5 +293,42 @@ describe('live source', () => {
     // Every page is asked of a node that has seen the slot before the as-of slot.
     expect(seen[0]).toEqual(['getSignaturesForAddress', { commitment: 'confirmed', limit: 1_000, minContextSlot: Number(lastSlot(RUG)) }]);
     expect(seen.slice(1).every((x) => (x as [string, { commitment: string }])[1].commitment === 'confirmed')).toBe(true);
+  });
+});
+
+describe('the deployer check through the live readers (WORKER-1c)', () => {
+  const readersWith = (source: RugHistorySource, cfg = CFG) => {
+    const timers = new ManualTimers(5);
+    const ingested: { key: string; value: unknown }[] = [];
+    const http = async () => ({ status: 500, text: '', header: () => null }) as unknown as import('../src/providers/http.ts').HttpResponse;
+    const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers }), timeoutMs: 1_000 });
+    const readers = new FactReaders({ feed: { ingest: (_s, b) => void (b.type === 'offchain' && ingested.push({ key: b.key, value: b.value })) }, rpc, http, timers, timeoutMs: 1_000, rugCheck: { history: source, rugs: RUG_CONFIG, config: cfg } });
+    return { readers, ingested };
+  };
+  const req = { creator: DEV, mints: [launch(RUG)], fromMs: 0, asOf: at(lastSlot(RUG) + 1n), asOfMs: launch(RUG).createdAtMs + 200_000 };
+
+  it('ingests the labels, then the deployer\'s coverage fact, exactly as checkFacts gives them', async () => {
+    const { readers, ingested } = readersWith(fixtureSource([RUG]).source);
+    expect(await readers.readDeployerCheck(req)).toBe(true);
+    const direct = await checkDeployer(fixtureSource([RUG]).source, RUG_CONFIG, CFG, req, 5);
+    expect(ingested).toEqual(checkFacts(direct));
+    expect(ingested.at(-1)!.key).toBe(`${RUG_CHECK_PREFIX}${DEV}`);
+    expect(ingested.some((f) => f.key.startsWith('rug:'))).toBe(true);
+  });
+
+  it('a capped or failed check is still ingested (H14 sees why) and reads as incomplete', async () => {
+    const capped = readersWith(fixtureSource([RUG]).source, { ...CFG, creditCapPerCandidate: 1 });
+    expect(await capped.readers.readDeployerCheck(req)).toBe(false);
+    expect(capped.ingested.at(-1)).toMatchObject({ key: `${RUG_CHECK_PREFIX}${DEV}` });
+    const down = readersWith(fixtureSource([RUG], true).source);
+    expect(await down.readers.readDeployerCheck(req)).toBe(false);
+    expect(down.ingested.at(-1)).toMatchObject({ key: `${RUG_CHECK_PREFIX}${DEV}` });
+  });
+
+  it('without a configured source nothing is read', async () => {
+    const timers = new ManualTimers(5);
+    const http = async () => ({ status: 500, text: '', header: () => null }) as unknown as import('../src/providers/http.ts').HttpResponse;
+    const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers }), timeoutMs: 1_000 });
+    expect(await new FactReaders({ feed: { ingest: () => undefined }, rpc, http, timers, timeoutMs: 1_000 }).readDeployerCheck(req)).toBe(false);
   });
 });

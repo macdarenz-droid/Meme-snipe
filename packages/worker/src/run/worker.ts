@@ -697,6 +697,7 @@ export class Worker {
         sink: { fact: (key, value) => this.#fact(key, value), now: () => d.timers.now() },
         timers: d.timers, schedulers: d.schedulers, watched: () => this.#strategy.watched(),
         ingest: this.#feed, candidates: () => this.#strategy.candidates(), tip: () => this.#feed.tip,
+        priorMints: (creator, nowMs) => this.#strategy.deployers.factFor(creator, { slot: this.#feed.tip ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: nowMs }, 0).mints,
       };
       for (const f of d.facts) f.start(ctx);
     }

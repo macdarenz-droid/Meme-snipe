@@ -9,7 +9,10 @@ import { zstdDecompressSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { RAW, producerOptions } from '../../core/src/facts/index.ts';
 import { TRIAL_POLICY } from '../../core/src/config/index.ts';
-import { holdersKey, migrationKey, mintKey, parsePool, poolKey } from '../../core/src/gates/index.ts';
+import { RUG_LABELS_UNAVAILABLE, holdersKey, migrationKey, mintKey, parsePool, poolKey, rugCheckFromMs } from '../../core/src/gates/index.ts';
+import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
+import { OFF_CHAIN } from '../../core/src/engine/index.ts';
+import type { RugCheckRequest } from '../src/providers/index.ts';
 import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { FIX } from '../../core/test/facts/helpers.ts';
 import { feesKey, type CandidateReason } from '../src/engine/strategy.ts';
@@ -32,6 +35,19 @@ blockNetwork();
 const H16 = (input: string, code = 'missing'): CandidateReason => ({ gate: 'H16', code, input });
 
 describe('readsFor: what a candidate\'s last reasons ask for', () => {
+  it('H14\'s rug half not covered asks for a deployer check; the creates half and a missing labeller do not (WORKER-1c)', () => {
+    const cov = (detail: string, neededBy = 'H14'): CandidateReason => ({ gate: 'H16', code: 'not-covered', input: 'coverage', neededBy, detail });
+    const rugHalf = `${RUG_LABELS_UNAVAILABLE}: rugs-1 coverage: no rugs coverage; deployer check: no rug-check fact`;
+    expect(readsFor([cov(rugHalf)])).toEqual(['deployer-check']);
+    expect(readsFor([cov(rugHalf), H16('pool')])).toEqual(['accounts', 'deployer-check']);
+    expect(readsFor([cov('no creates coverage from 1 to 2')])).toEqual([]);
+    expect(readsFor([cov(RUG_LABELS_UNAVAILABLE)])).toEqual([]);
+    expect(readsFor([cov(rugHalf, 'H13')])).toEqual([]);
+    expect(readsFor([{ ...cov(rugHalf), code: 'missing' }])).toEqual([]);
+    // A reject that is not missing evidence still means no read at all.
+    expect(readsFor([cov(rugHalf), { gate: 'H14', code: 'prior-rug' }])).toEqual([]);
+  });
+
   it('reads nothing before the first evaluation or after a pass', () => {
     expect(readsFor(null)).toEqual([]);
     expect(readsFor([])).toEqual([]);
@@ -357,7 +373,7 @@ describe('the strategy keeps each candidate\'s last reasons with their inputs (w
     // The critical feed is up, so entries are not halted and candidates are evaluated.
     h.worker.feed.ingest('helius', { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: c.sink.now() });
     const m = await passingMarket(h);
-    expect(c.candidates().get(MINT2)).toEqual({ migratedAtMs: T + 3 * MIN, lastEvalMs: null, gates: null });
+    expect(c.candidates().get(MINT2)).toEqual({ migratedAtMs: T + 3 * MIN, lastEvalMs: null, gates: null, creator: null });
     // Every fact kept current except a holder read that cannot be parsed: the reject names the holders as evidence.
     await m.run(3_000, 400, () => {
       m.slot();
@@ -366,8 +382,10 @@ describe('the strategy keeps each candidate\'s last reasons with their inputs (w
     });
     const gates = c.candidates().get(MINT)?.gates ?? null;
     expect(gates).not.toBeNull();
-    expect(gates).toContainEqual({ gate: 'H16', code: 'malformed', input: 'holders' });
+    expect(gates).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'holders', neededBy: expect.any(String), detail: expect.any(String) }));
     expect(readsFor(gates)).toEqual(['holders']);
+    // Evaluated: the candidate's creator is known from its released create (RUG-1c checks that deployer).
+    expect(c.candidates().get(MINT)?.creator).toEqual(expect.any(String));
     await h.worker.stop();
   });
 });
@@ -385,6 +403,55 @@ describe('a passing evaluation clears the candidate\'s reasons', () => {
     expect(h.worker.strategy.candidates().get(MINT)?.gates).toEqual([]);
     expect(readsFor(h.worker.strategy.candidates().get(MINT)!.gates)).toEqual([]);
     await h.worker.stop();
+  });
+});
+
+describe('LiveFacts: the deployer check (WORKER-1c)', () => {
+  const rugHalf: CandidateReason = { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: x coverage: y; deployer check: z` };
+  const lookbackMs = TRIAL_POLICY.gates.deployerRugLookbackDays * 86_400_000;
+  const make = (creator: string | null, tip: bigint | null = 900n) => {
+    const timers = new ManualTimers(T0);
+    const asked: RugCheckRequest[] = [];
+    const f = fake();
+    const readers: LiveReaders = { ...f.readers, readDeployerCheck: async (r) => (asked.push(r), true) };
+    const cands = new Map([['CAND', { migratedAtMs: T0, lastEvalMs: T0, gates: [rugHalf], creator }]]);
+    const from = rugCheckFromMs(T0 - lookbackMs, RUG_CONFIG);
+    const prior = [{ mint: 'OLD', createdAtMs: from - 1 }, { mint: 'EDGE', createdAtMs: from }, { mint: 'NEW', createdAtMs: T0 - 1_000 }, { mint: 'CAND', createdAtMs: T0 - 500 }];
+    const ctx = {
+      sink: { fact: () => undefined, now: () => timers.now() }, timers, watched: () => new Set<string>(), candidates: () => cands, tip: () => tip,
+      priorMints: (c: string) => (c === creator ? prior : []),
+    } as unknown as FactContext;
+    const src = new LiveFacts({
+      readers: () => readers, tickMs: 1_000, minReadGapMs: MIN, survivalAfterMs: 30 * MIN, survivalReadDelayMs: 5_000, solUsdStartHours: 27,
+      mintHistory: { maxPages: 20, funderPages: 3, funderTransactions: 10, insiderSlots: 2, firstBuyers: 20 }, deployerCheck: { lookbackMs, rugs: RUG_CONFIG },
+    });
+    return { timers, asked, ctx, src, from };
+  };
+  const flush = async (): Promise<void> => {
+    for (let k = 0; k < 5; k++) await Promise.resolve();
+  };
+
+  it('checks the candidate\'s creator with the index\'s mints from rugCheckFromMs on (the candidate excepted), as of the tip, at most once a gap', async () => {
+    const m = make('DEV');
+    m.src.start(m.ctx);
+    await flush();
+    expect(m.asked).toEqual([{ creator: 'DEV', mints: [{ mint: 'EDGE', createdAtMs: m.from }, { mint: 'NEW', createdAtMs: T0 - 1_000 }], fromMs: m.from, asOf: { slot: 900n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: T0 }, asOfMs: T0 }]);
+    m.timers.advance(MIN - 1_000);
+    await flush();
+    expect(m.asked).toHaveLength(1);
+    m.timers.advance(1_000);
+    await flush();
+    expect(m.asked).toHaveLength(2);
+    m.src.stop();
+  });
+
+  it('no creator seen yet, or no tip: nothing is checked', async () => {
+    for (const m of [make(null), make('DEV', null)]) {
+      m.src.start(m.ctx);
+      await flush();
+      expect(m.asked).toEqual([]);
+      m.src.stop();
+    }
   });
 });
 
