@@ -4,7 +4,7 @@ import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
 import { Badge, Empty } from '../components/ui.tsx';
 import { shortAddress } from '../lib/format.ts';
 import { formatPriceDec, formatR, formatShare, formatUsdExact, toMicro, toneOf } from '../lib/money.ts';
-import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL } from './labels.ts';
+import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_CODE_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL, WORKER_CODE_LABEL } from './labels.ts';
 import { melDateTime } from './time.ts';
 
 export const NOT_ENOUGH = 'Not enough trades';
@@ -172,7 +172,7 @@ export function Funnel({ funnel }: { funnel: FunnelView }) {
       </ol>
       {rejected.length > 0 && (
         <>
-          <h3 className="dash-sub">Rejected by</h3>
+          <h3 className="dash-sub">Rejections</h3>
           <dl className="dash-rejects">
             {rejected.map((r) => (
               <div key={r.check}>
@@ -198,7 +198,45 @@ const OUTCOME: Record<DecisionRecord['outcome'], string> = { entered: 'Entered',
 export function headline(d: DecisionRecord): string {
   const failed = d.checks.find((c) => c.result !== 'pass');
   if (failed) return `${CHECK_LABEL[failed.check]}${failed.value ? `: ${failed.value}` : ''}${failed.limit ? ` (needs ${failed.limit})` : ''}`;
-  return d.reasons[0] ?? 'All checks passed';
+  // An entry that names no reason passed every check; a decision with no known reason says what it was (review N3).
+  return decisionReasons(d.reasons)[0] ?? (d.outcome === 'entered' ? 'All checks passed' : OUTCOME[d.outcome]);
+}
+
+const own = (m: Record<string, string>, k: unknown): string | null => (typeof k === 'string' && Object.hasOwn(m, k) ? m[k]! : null);
+
+/** One typed reason (gate and code) in words; null for one this app does not know. */
+function reasonLabel(gate: unknown, code: unknown): string | null {
+  if (typeof gate !== 'string') return null;
+  if (/^H\d+$/.test(gate)) return own(CHECK_LABEL, gate);
+  if (gate === 'regime') return code === 'unknown' ? 'Market regime unknown' : CHECK_LABEL.regime;
+  if (/^R\d+$/.test(gate)) return own(RISK_CODE_LABEL, code);
+  if (gate === 'worker' || gate === 'stop') return own(WORKER_CODE_LABEL, code) ?? (gate === 'stop' ? 'Stop distance' : null);
+  return null;
+}
+
+/**
+ * A decision's reasons in words (APP-WORDS a). The worker serves its journal lines; the app reads the typed ones (the
+ * `gate_reasons` list, the S0 practice parts and a paper fill) and shows each label once. Free text and codes this
+ * app does not know are left out: never a raw line or code on screen.
+ */
+export function decisionReasons(reasons: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const line of reasons) {
+    if (line === 'entry filled (paper)') out.push('Filled (paper)');
+    else if (line.startsWith('gate_reasons ')) {
+      let typed: unknown;
+      try {
+        typed = JSON.parse(line.slice('gate_reasons '.length));
+      } catch {
+        continue;
+      }
+      if (Array.isArray(typed)) for (const r of typed) if (r && typeof r === 'object') out.push(reasonLabel((r as { gate?: unknown }).gate, (r as { code?: unknown }).code) ?? '');
+    } else if (line.startsWith('s0_diagnostic ')) {
+      const parts = unique(line.slice('s0_diagnostic '.length).split(',').map((p) => own(WAIVED_LABEL, p.trim())));
+      if (parts.length > 0) out.push(`Practice: ${parts.join(', ')} not judged`);
+    }
+  }
+  return [...new Set(out.filter((x) => x !== ''))];
 }
 
 export function Journal({ decisions, onOpen }: { decisions: DecisionRecord[]; onOpen: (d: DecisionRecord) => void }) {
@@ -277,11 +315,11 @@ export function DecisionDetail({ decision }: { decision: DecisionRecord }) {
           <dd className="num">{decision.ruleScore ?? '—'}</dd>
         </div>
       </dl>
-      {decision.reasons.length > 0 && (
+      {decisionReasons(decision.reasons).length > 0 && (
         <>
           <h3>Reasons</h3>
           <ul className="dash-reasons">
-            {decision.reasons.map((r) => (
+            {decisionReasons(decision.reasons).map((r) => (
               <li key={r}>{r}</li>
             ))}
           </ul>
