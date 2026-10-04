@@ -616,8 +616,9 @@ A="$T/ac"; mkdir -p "$A/bin"
 cat > "$A/bin/gh" <<'SH'
 #!/usr/bin/env bash
 echo "gh $*" >> "$AC/gh.log"
+jqx=; for ((i = 1; i <= $#; i++)); do [[ "${!i}" == --jq ]] && { j=$((i + 1)); jqx=${!j}; }; done
 case "$1 $2" in
-  "run list") echo "${AC_ACTIVE:-0}" ;;
+  "run list") printf '%s' "${AC_RUNS:-[]}" | jq -r "$jqx" ;;
   "api repos/"*) day=${2##*data-day-}; grep -qx "$day" "$AC/published" 2>/dev/null ;;
   "workflow run") echo "$*" >> "$AC/dispatch.log" ;;
 esac
@@ -635,9 +636,28 @@ chmod +x "$A/bin/"*
 ac() { rm -f "$A"/*.log "$A/curl.calls" "$A/curl.args"; : > "$A/summary.md"
   AC="$A" GH_BIN="$A/bin/gh" CURL_BIN="$A/bin/curl" GH_REPO=o/r REF=main GITHUB_STEP_SUMMARY="$A/summary.md" "$@" bash "$here/archive-check.sh" > "$A/out.txt" 2>&1; }
 ua=$(sed -n 's/^const userAgent = "\(.*\)"$/\1/p' "$here/../scanner/archive.go")
-ac env AC_ACTIVE=1 AC_STATUS=206
-[[ ! -e "$A/curl.calls" && ! -e "$A/dispatch.log" ]] && grep -q "active or queued" "$A/summary.md" &&
-  ok "archive-check: a scan run active or queued means no request and no dispatch" || no "archive-check active no-op"
+# Active runs by title (data-scan.yml's run-name): helius-only, archive, a run from before
+# run-name ("data-scan"), the volume mode, anything unexpected.
+runs() { python3 -c 'import json,sys; print(json.dumps([{"status": a.split("|")[0], "displayTitle": a.split("|")[1]} for a in sys.argv[1:]]))' "$@"; }
+H="in_progress|data-scan scan source=helius"
+bad=""
+for set in "in_progress|data-scan scan source=archive" "queued|data-scan scan source=archive" "in_progress|data-scan" "queued|data-scan volume source=archive" \
+           "in_progress|data-scan scan source=helius2" "in_progress|data-scan scan source=helius " "$H;in_progress|data-scan" "$H;queued|data-scan scan source=archive"; do
+  IFS=';' read -ra a <<< "$set"
+  ac env AC_RUNS="$(runs "${a[@]}" "completed|data-scan scan source=archive")" AC_STATUS=206
+  [[ ! -e "$A/curl.calls" && ! -e "$A/dispatch.log" ]] && grep -q "may read the archive active or queued; no request made" "$A/summary.md" || bad+=" [$set]"
+done
+[[ -z "$bad" ]] && ok "archive-check: a run that may read the archive (archive source, no source in its title, anything unexpected) means no request and no dispatch" || no "archive-check archive-run no-op:$bad"
+bad=""
+for set in "$H" "queued|data-scan scan source=helius" "$H;queued|data-scan scan source=helius"; do
+  IFS=';' read -ra a <<< "$set"
+  ac env AC_RUNS="$(runs "${a[@]}" "completed|data-scan scan source=archive")" AC_STATUS=206
+  [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && ! -e "$A/dispatch.log" ]] && grep -q "served; nothing dispatched while" "$A/summary.md" || bad+=" [$set]"
+  grep -q 'gh run list --repo o/r --workflow data-scan.yml --limit 50 --json status,displayTitle' "$A/gh.log" || bad+=" [list-call]"
+done
+ac env AC_RUNS="$(runs "$H")" AC_STATUS=429
+[[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -q "not served" "$A/summary.md" || bad+=" [429]"
+[[ -z "$bad" ]] && ok "archive-check: only Helius runs active or queued (title source=helius): exactly one request; served is reported but nothing is dispatched beside them" || no "archive-check helius-only:$bad"
 ac env AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -qx -- "-A" "$A/curl.args" && grep -qxF -- "$ua" "$A/curl.args" &&
   grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 64 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
@@ -733,6 +753,12 @@ saq = next(s for s in steps if s.get("name") == "Save progress after QA")
 assert "inputs.source == 'helius'" in saq["if"] and "always()" in saq["if"], saq["if"]
 PY
 
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan run-name carries mode and source (archive-check reads it): data-scan scan source=helius / source=archive" || no "data-scan run-name"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+assert wf["run-name"] == "data-scan ${{ inputs.mode }} source=${{ inputs.source || 'archive' }}", wf.get("run-name")
+assert wf[True]["workflow_dispatch"]["inputs"]["source"]["default"] == "archive"
+PY
 # ---- DATA-PUB: a day read over RPC (source helius) is never published or uploaded ----
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: no day artifact, no data-day or data-volume publish; the packaged assets go only to the actions cache (data-rpc-assets-DAY-*)" || no "data-scan helius publish gate"
 import sys, yaml
