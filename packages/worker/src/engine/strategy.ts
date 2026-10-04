@@ -205,6 +205,8 @@ export interface RestoreFact {
   readonly exits: Readonly<Record<string, SavedExit>>;
   /** Each position's entry fill moment as the ledger booked it (its first `open` event), by position (EXIT-1f). */
   readonly openedAt?: Readonly<Record<string, number>>;
+  /** Entry decisions' plan inputs by entry intent, saved before the intent was booked (EXIT-1h). */
+  readonly seeds?: Readonly<Record<string, EntrySeed>>;
   /** Where each booking sits against the boots (`live`, `reconcile`, or `unplaced: why`), from the journal (EXIT-1f N2). */
   readonly bookedWhen?: Readonly<Record<string, string>>;
 }
@@ -289,7 +291,8 @@ interface Candidate {
 }
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
-interface EntrySeed {
+/** An entry decision's own plan inputs, saved before its intent is booked (EXIT-1h) so a restart rebuilds its plan. */
+export interface EntrySeed {
   readonly mint: string;
   readonly universe: ExitUniverse;
   readonly notional: MicroUsd;
@@ -363,6 +366,15 @@ export class LiveStrategy implements Strategy {
   #lastMoment: Moment | null = null;
   readonly #cands = new Map<string, Candidate>();
   readonly #seeds = new Map<string, EntrySeed>();
+  /** Seeds that came from the restore, not from a decision in this process: their fill's moment is not this process's. */
+  readonly #restoredSeeds = new Set<string>();
+  /** Entry intents whose saved seed the restore refused: their positions go into sell-only recovery, saying so. */
+  readonly #refusedSeeds = new Set<string>();
+
+  /** Entry decisions' plan inputs not yet made into a plan, by entry intent: saved before the intent is booked (EXIT-1h). */
+  seeds(): Record<string, EntrySeed> {
+    return Object.fromEntries(this.#seeds);
+  }
   readonly #exits = new Map<string, SavedExit>();
   readonly #bars = new Map<string, PriceBar[]>();
   /** Per exit owner: the rung its first attempt uses and how many attempts it may sign (EXIT-1's decision). */
@@ -613,6 +625,17 @@ export class LiveStrategy implements Strategy {
     this.#restoreSeen = true;
     if (isObj(v) && isObj(v['openedAt'])) {
       for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
+    }
+    if (isObj(v) && isObj(v['seeds'])) {
+      for (const [id, x] of Object.entries(v['seeds'])) {
+        if (isObj(x) && typeof x['mint'] === 'string' && typeof x['universe'] === 'string' && typeof x['notional'] === 'bigint' && typeof x['stopPrice'] === 'bigint' && typeof x['entryReserve'] === 'bigint') {
+          this.#seeds.set(id, x as unknown as EntrySeed);
+          this.#restoredSeeds.add(id);
+        } else {
+          out.push({ action: null, reasons: ['restore seed refused', id, 'malformed saved seed'] });
+          this.#refusedSeeds.add(id);
+        }
+      }
     }
     if (isObj(v) && isObj(v['bookedWhen'])) {
       for (const [pid, when] of Object.entries(v['bookedWhen'])) if (typeof when === 'string') this.#bookedWhen.set(pid, when);
@@ -926,6 +949,20 @@ export class LiveStrategy implements Strategy {
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
     // A waiting owner that settled or was booked another way no longer waits. #manage also ends the saved wait from the
     // book on every step (which covers a restart, when this list is empty); both are kept.
+    // A seed whose entry ended without a fill is never made into a plan (EXIT-1h).
+    // A restored seed whose intent is not in the rebuilt book (the kill came before the desk booked it) never will be:
+    // dropped at the restore's first step, so the file does not grow by one per such kill (EXIT-1h review N1).
+    for (const id of this.#seeds.keys()) {
+      const e = ctx.book.intents[id];
+      if (e !== undefined && isTerminal(e) && e.fills.length === 0) {
+        this.#seeds.delete(id);
+        this.#restoredSeeds.delete(id);
+      } else if (e === undefined && this.#restoredSeeds.has(id)) {
+        this.#seeds.delete(id);
+        this.#restoredSeeds.delete(id);
+        out.push({ action: null, reasons: ['restored seed dropped', id, 'its intent never reached the book'] });
+      }
+    }
     for (const [id, pid] of this.#waitingMarket) {
       const i = ctx.book.intents[id];
       if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
@@ -1187,6 +1224,9 @@ export class LiveStrategy implements Strategy {
   /** The entry plan of a position that just filled, from its decision seed and the fill. */
   #planFromFill(pid: PositionId, entryId: IntentId, ctx: StrategyContext, out: Decision[]): SavedExit | null {
     const seed = this.#seeds.get(entryId);
+    // A seed saved by an earlier process (EXIT-1h) rebuilds the plan, but its fill was not seen here: dated like a fill
+    // without one (the booked moment, else the slot), never at this process's clock.
+    const seen = seed !== undefined && !this.#restoredSeeds.has(entryId);
     const entry = ctx.book.intents[entryId];
     const p = ctx.book.positions[pid]!;
     // The open time: the fill's moment when this process saw it (it holds the decision seed); else the moment the ledger
@@ -1200,10 +1240,10 @@ export class LiveStrategy implements Strategy {
     const booked = this.#bookedOpenAt.get(pid);
     const when = this.#bookedWhen.get(pid);
     let fillAt = ctx.now.receivedAt;
-    if (seed === undefined && booked !== undefined && !(when === 'reconcile' && fill !== undefined)) {
+    if (!seen && booked !== undefined && !(when === 'reconcile' && fill !== undefined)) {
       fillAt = Math.min(booked, ctx.now.receivedAt);
       if (when !== undefined && when.startsWith('unplaced')) out.push({ action: null, reasons: ['open time from the booking', p.mint, when] });
-    } else if (seed === undefined && fill !== undefined) {
+    } else if (!seen && fill !== undefined) {
       if (this.#height === null) {
         if (!this.#planWaitsForSlot.has(pid)) {
           this.#planWaitsForSlot.add(pid);
@@ -1221,7 +1261,7 @@ export class LiveStrategy implements Strategy {
     const recovery = seed === undefined || entry === undefined;
     let why: string | null = null;
     if (recovery) {
-      why = this.#recoveryWhy.get(pid) ?? (this.#restoreSeen && !this.#exits.has(pid) && this.#bookedOpenAt.has(pid) ? 'no saved plan' : 'no decision seed');
+      why = this.#recoveryWhy.get(pid) ?? (this.#refusedSeeds.has(entryId) ? 'saved seed refused' : null) ?? (this.#restoreSeen && !this.#exits.has(pid) && this.#bookedOpenAt.has(pid) ? 'no saved plan' : 'no decision seed');
       out.push({ action: null, reasons: ['no entry plan', p.mint, 'sell-only recovery'] });
       out.push({ action: null, reasons: ['recovery exit', pid, why, 'the whole holding exits at the next fresh quote'] });
     }
@@ -1239,6 +1279,7 @@ export class LiveStrategy implements Strategy {
     this.#bars.set(pid, [...saved.bars]);
     this.#exits.set(pid, saved);
     this.#seeds.delete(entryId);
+    this.#restoredSeeds.delete(entryId);
     out.push({ action: null, reasons: ['entry plan', p.mint, `stop ${stopPrice}`, `1R ${riskUnit} lamports`] });
     return saved;
   }
