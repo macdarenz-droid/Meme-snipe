@@ -133,6 +133,14 @@ export const RAW = {
   solUsd: 'sol-usd',
   volumeHour: 'read:chain-volume-hour',
   exec: 'read:exec-health',
+  /**
+   * READ-COHERENT: a coherent batch of reads goes on the feed between these two frames (`{ mint, members }`, then
+   * `{ mint, slot, members }`, `slot` the oldest member judged by slot lag, or null). At one moment events are released
+   * in key order, so the open comes before every `read:` key and the close after: the decision on the batch is made at
+   * the close, on its members alone. A backtest supplying the same reads emits the same three parts.
+   */
+  batchOpen: (mint: string) => `read-batch:${mint}`,
+  batchClose: (mint: string) => `reads:${mint}`,
 } as const;
 
 // ---------- Shape checks ----------
