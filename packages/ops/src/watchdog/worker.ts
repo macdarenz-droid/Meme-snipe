@@ -257,10 +257,10 @@ export class Watchdog {
       await this.say('Entries paused. Exits keep running. The worker applies it on its next heartbeat.');
     } else if (cmd === 'status') {
       await this.say(await this.status(Date.now()));
-    } else if (cmd === 'review' || cmd === 'rearm' || cmd === 'weekly') {
+    } else if (cmd === 'review' || cmd === 'rearm' || cmd === 'weekly' || cmd === 'override') {
       await this.ownerCommand(cmd, confirmedTrip(update, (await this.state.storage.get<string>('owner_chat')) ?? ''));
     } else if (cmd === 'other') {
-      await this.say('Commands: /pause, /status, /review, /rearm, /weekly');
+      await this.say('Commands: /pause, /status, /review, /rearm, /weekly, /override');
     }
     return new Response('ok');
   }

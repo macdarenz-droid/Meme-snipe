@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import { TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
 import { costAtSize, feasibleSize, fixedCosts } from '../../src/costs/index.ts';
-import { type EntryAllowed, evaluateEntry, evaluateExit, lossReviewTrip, maxTradeCosts, melbourneWeek, opsReserve } from '../../src/risk/index.ts';
+import { type ClosedTrade, type DayOverride, type EntryAllowed, type Latches, activeOverride, evaluateEntry, evaluateExit, lossReviewTrip, maxTradeCosts, melbourneDay, melbourneWeek, opsReserve } from '../../src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
 import {
   DAY_START, DEEP_POOL, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest,
@@ -254,6 +254,64 @@ describe('R7 daily loss edges', () => {
     expect(evaluateEntry(baseInput({ account: account({ openPositions: [open] }) }), baseRequest()).snapshot).toMatchObject({
       openExposure: usd('1.5'), equity: usd('19.5'),
     });
+  });
+});
+
+describe('OWNER-REVIEW /override of the day-level stops', () => {
+  const limit = usd('1.5');
+  const MIN = 60_000;
+  const ov = (patch: Partial<DayOverride> = {}): DayOverride => ({ atMs: DAY_START + 2 * HOUR, dayStartMs: DAY_START, dayLossAt: limit, streak: false, count: 1, ...patch });
+  const lost = (loss: bigint, o: DayOverride | null, l: Partial<Latches> = {}) =>
+    evaluateEntry(baseInput({ account: account({ closedTrades: [{ ...trade(DAY_START + HOUR, '0'), notional: usd('5'), netPnl: neg(loss) }] }), latches: latches({ dayOverride: o, ...l }) }), baseRequest());
+  test('R7 overridden: R7 lifts until the loss grows by another full daily limit, costs of the entry included', () => {
+    expect(codes(lost(limit, null))).toContain('daily_loss');
+    expect(codes(lost(limit, ov()))).not.toContain('daily_loss');
+    expect(codes(lost(2n * limit - C_USD, ov()))).toContain('daily_loss');
+    expect(codes(lost(2n * limit - C_USD - 1n, ov()))).not.toContain('daily_loss');
+    expect(codes(lost(2n * limit, ov()))).toContain('daily_loss');
+  });
+  test('it holds only on its Melbourne day and from its moment: yesterday\'s or a future one changes nothing', () => {
+    expect(codes(lost(limit, ov({ dayStartMs: DAY_START - 24 * HOUR })))).toContain('daily_loss');
+    expect(codes(lost(limit, ov({ atMs: NOW + 1 })))).toContain('daily_loss');
+    expect(codes(lost(limit, ov({ atMs: NOW })))).not.toContain('daily_loss');
+  });
+  test('it ends at Melbourne midnight, also on the 23-hour day daylight saving starts (4 Oct 2026)', () => {
+    const day = melbourneDay(Date.UTC(2026, 9, 4, 2, 0));
+    expect(day.end - day.start).toBe(23 * HOUR);
+    const o = ov({ atMs: day.start + HOUR, dayStartMs: day.start });
+    const holds = (t: number) => activeOverride(latches({ dayOverride: o }), melbourneDay(t).start, t) !== null;
+    expect(holds(day.end - 1)).toBe(true);
+    expect(holds(day.end)).toBe(false);
+    expect(holds(day.start + 23.5 * HOUR)).toBe(false);
+  });
+  test('an override given while R7 was not tripped never moves its line', () => {
+    expect(codes(lost(limit - C_USD, ov({ dayLossAt: null, streak: true })))).toContain('daily_loss');
+    expect(codes(lost(limit - C_USD - 1n, ov({ dayLossAt: null, streak: true })))).not.toContain('daily_loss');
+  });
+  const small = (t: number) => trade(t, '-0.1');
+  const streak = (closed: ClosedTrade[], o: DayOverride | null) => codes(evaluateEntry(baseInput({ account: account({ closedTrades: closed }), latches: latches({ dayOverride: o }) }), baseRequest()));
+  test('R8 streaks overridden: only trades after the override count, so a new streak trips again', () => {
+    const before = [small(NOW - 50 * MIN), small(NOW - 40 * MIN), small(NOW - 35 * MIN)];
+    expect(streak(before, null)).toEqual(expect.arrayContaining(['loss_cooldown', 'loss_day_pause']));
+    const o = ov({ atMs: NOW - 30 * MIN, dayLossAt: null, streak: true });
+    expect(streak(before, o)).not.toEqual(expect.arrayContaining(['loss_cooldown']));
+    expect(streak(before, o)).not.toContain('loss_day_pause');
+    expect(streak([...before, small(NOW - 20 * MIN)], o)).not.toContain('loss_cooldown');
+    expect(streak([...before, small(NOW - 20 * MIN), small(NOW - 10 * MIN)], o)).toContain('loss_cooldown');
+    expect(streak([...before, small(NOW - 20 * MIN), small(NOW - 10 * MIN), small(NOW - 5 * MIN)], o)).toContain('loss_day_pause');
+    // A trade closed at the override's moment counts before it.
+    expect(streak([...before, small(NOW - 30 * MIN), small(NOW - 10 * MIN)], o)).not.toContain('loss_cooldown');
+  });
+  test('an override given while no streak pause was open leaves the streak counting all trades', () => {
+    const before = [small(NOW - 50 * MIN), small(NOW - 40 * MIN)];
+    expect(streak(before, ov({ atMs: NOW - 45 * MIN, dayLossAt: limit, streak: false }))).toContain('loss_cooldown');
+  });
+  test('the weekly loss, the kill switch and the loss review still refuse entries under an override', () => {
+    const o = ov({ streak: true });
+    expect(codes(lost(limit, o, { killTrippedAtMs: DAY_START }))).toContain('kill_switch');
+    expect(codes(lost(limit, o, { weeklyTrippedAtMs: DAY_START }))).toContain('weekly_review');
+    const review = [1, 2, 3, 4, 5].map((i) => trade(NOW - HOUR - (6 - i) * MIN, '-0.1'));
+    expect(codes(evaluateEntry(baseInput({ account: account({ closedTrades: review }), latches: latches({ dayOverride: ov({ atMs: NOW - 1, dayLossAt: null, streak: true }) }) }), baseRequest()))).toContain('loss_review');
   });
 });
 

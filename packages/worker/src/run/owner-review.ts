@@ -4,12 +4,12 @@
 // the review moment into the latches (control.json) only on a match, and acknowledges the result in its next heartbeat
 // (`acked`). Each command clears only its own stop; a command applied once is never applied again.
 import type { Policy } from '../../../core/src/config/index.ts';
-import type { ClosedTrade, Latches, RiskSnapshot } from '../../../core/src/risk/index.ts';
-import { lossReviewTrip } from '../../../core/src/risk/index.ts';
-import { melbourneWeek } from '../../../core/src/risk/melbourne.ts';
+import type { ClosedTrade, DayOverride, Latches, RiskSnapshot } from '../../../core/src/risk/index.ts';
+import { activeOverride, lossReviewTrip } from '../../../core/src/risk/index.ts';
+import { melbourneDay, melbourneWeek } from '../../../core/src/risk/melbourne.ts';
 
-export type OwnerKind = 'review' | 'rearm' | 'weekly';
-export const OWNER_KINDS: readonly OwnerKind[] = ['review', 'rearm', 'weekly'];
+export type OwnerKind = 'review' | 'rearm' | 'weekly' | 'override';
+export const OWNER_KINDS: readonly OwnerKind[] = ['review', 'rearm', 'weekly', 'override'];
 
 /** A command from the watchdog: its id, what it clears, the trip the owner confirmed, and when (watchdog time). */
 export interface ReplyCommand {
@@ -46,14 +46,21 @@ export interface OpenStop {
   /** The trip's moment: the review written must be strictly later. */
   readonly atMs: number;
   readonly evidence: Evidence;
+  /** /override only: the override an applied confirm writes (its `atMs` set when applied). */
+  readonly override?: Omit<DayOverride, 'atMs'>;
 }
 
 export type OpenStops = Readonly<Record<OwnerKind, OpenStop | null>>;
 
 export const tripId = (kind: OwnerKind, atMs: number): string => `${kind}-${atMs}`;
+/** /override's trip: the Melbourne day and how many overrides it already had, so a confirm fits one override only. */
+export const overrideTrip = (dayStartMs: number, count: number): string => `override-${dayStartMs}-${count}`;
 
 const ID = /^[A-Za-z0-9:_-]{1,64}$/;
-const TRIP = /^(review|rearm|weekly)-\d{1,16}$/;
+const TRIP = /^((review|rearm|weekly)-\d{1,16}|override-\d{1,16}-\d{1,4})$/;
+
+/** Risk's day-level stops the owner can override (R7, and R8's streak pauses; never the R8 review). */
+const DAY_CODES = ['daily_loss', 'loss_cooldown', 'loss_day_pause'] as const;
 
 export interface StopInputs {
   readonly latches: Latches;
@@ -63,6 +70,12 @@ export interface StopInputs {
   readonly netLamports: (fromMs: number, toMs: number) => bigint | null;
   /** The latest valuation, for the SOL figures; null before the first one. */
   readonly snapshot: RiskSnapshot | null;
+  /** Risk's reason codes on that valuation (its exit check), for the day-level stops; empty before the first one. */
+  readonly codes: readonly string[];
+  /** Micro-dollars as lamports at the current SOL price, or null without one (SOL figures until SOL-BOOKS). */
+  readonly toLamports: (usd: bigint) => bigint | null;
+  /** The daily loss limit (micro-dollars). */
+  readonly dailyLimit: bigint;
 }
 
 const lamports = (v: bigint | null): string | null => (v === null ? null : v.toString());
@@ -92,15 +105,36 @@ export const openStops = (i: StopInputs): OpenStops => {
       trip: tripId('weekly', l.weeklyTrippedAtMs), atMs: l.weeklyTrippedAtMs,
       evidence: { tripped_ms: l.weeklyTrippedAtMs, week_ends_ms: melbourneWeek(l.weeklyTrippedAtMs).end, equity_lamports: lamports(s?.equitySol ?? null) },
     },
+    override: overrideStop(i),
   };
 };
 
+/** /override: open while risk's last valuation shows a day-level stop on today's Melbourne day. */
+const overrideStop = (i: StopInputs): OpenStop | null => {
+  const s = i.snapshot;
+  const daily = i.codes.includes('daily_loss');
+  const streak = i.codes.includes('loss_cooldown') || i.codes.includes('loss_day_pause');
+  if (s === null || !DAY_CODES.some((c) => i.codes.includes(c))) return null;
+  const prev = i.latches.dayOverride ?? null;
+  const count = prev !== null && prev.dayStartMs === s.dayStartMs ? prev.count : 0;
+  return {
+    trip: overrideTrip(s.dayStartMs, count), atMs: s.dayStartMs,
+    evidence: {
+      daily: daily ? 1 : 0, streak: streak ? s.lossStreak : 0, day_loss_lamports: lamports(i.toLamports(s.dayLoss)),
+      day_limit_lamports: lamports(i.toLamports(i.dailyLimit)), overrides: count, day_ends_ms: s.dayStartMs + melbourneDayLength(s.dayStartMs),
+    },
+    override: { dayStartMs: s.dayStartMs, dayLossAt: daily ? s.dayLoss : null, streak, count: count + 1 },
+  };
+};
+
+/** The length of the Melbourne day starting at `dayStartMs` (23, 24 or 25 hours across daylight saving). */
+const melbourneDayLength = (dayStartMs: number): number => melbourneDay(dayStartMs).end - dayStartMs;
+
 /** The heartbeat's `review` block: the open stops by kind, null when none is open. */
-export const reviewBlock = (stops: OpenStops): Record<OwnerKind, { readonly trip: string; readonly evidence: Evidence } | null> => ({
-  review: stops.review === null ? null : { trip: stops.review.trip, evidence: stops.review.evidence },
-  rearm: stops.rearm === null ? null : { trip: stops.rearm.trip, evidence: stops.rearm.evidence },
-  weekly: stops.weekly === null ? null : { trip: stops.weekly.trip, evidence: stops.weekly.evidence },
-});
+export const reviewBlock = (stops: OpenStops): Record<OwnerKind, { readonly trip: string; readonly evidence: Evidence } | null> => {
+  const out = (s: OpenStop | null) => (s === null ? null : { trip: s.trip, evidence: s.evidence });
+  return { review: out(stops.review), rearm: out(stops.rearm), weekly: out(stops.weekly), override: out(stops.override) };
+};
 
 /**
  * The commands in a heartbeat reply. Signed by nobody (it is the watchdog's answer), so every field is checked: an
@@ -121,9 +155,12 @@ export const commandsOf = (raw: unknown): ReplyCommand[] => {
 
 const isKind = (k: string): k is OwnerKind => (OWNER_KINDS as readonly string[]).includes(k);
 
-/** The latches with `kind`'s review moment written: only its own field. */
-const reviewed = (l: Latches, kind: OwnerKind, atMs: number): Latches =>
-  kind === 'review' ? { ...l, lossReviewedAtMs: atMs } : kind === 'rearm' ? { ...l, killRearmedAtMs: atMs } : { ...l, weeklyReviewedAtMs: atMs };
+/** The latches with `kind`'s review moment written: only its own field (for /override, the day override). */
+const reviewed = (l: Latches, kind: OwnerKind, atMs: number, stop: OpenStop): Latches =>
+  kind === 'review' ? { ...l, lossReviewedAtMs: atMs }
+    : kind === 'rearm' ? { ...l, killRearmedAtMs: atMs }
+      : kind === 'weekly' ? { ...l, weeklyReviewedAtMs: atMs }
+        : stop.override === undefined ? l : { ...l, dayOverride: { ...stop.override, atMs } };
 
 /**
  * One command against the open stops. Applied only when it was confirmed within COMMAND_TTL_MS, its kind's stop is open,
@@ -141,8 +178,13 @@ export const handleCommand = (
   if (Math.abs(nowMs - c.at) > COMMAND_TTL_MS) return done('expired');
   const stop = stops[c.kind];
   if (stop === null || stop.trip !== c.trip || nowMs <= stop.atMs) return done('stale');
-  return done('applied', reviewed(latches, c.kind, nowMs));
+  if (c.kind === 'override' && stop.override === undefined) return done('stale');
+  return done('applied', reviewed(latches, c.kind, nowMs, stop));
 };
+
+/** A journal line's fields: an `entry` made while the owner's day override holds (core activeOverride) says so. */
+export const withOverrideTag = (kind: string, fields: Readonly<Record<string, unknown>>, latches: Latches, nowMs: number): Readonly<Record<string, unknown>> =>
+  kind === 'entry' && activeOverride(latches, melbourneDay(nowMs).start, nowMs) !== null ? { ...fields, override: true } : fields;
 
 /** The handled list with `entry` added, newest last, capped. */
 export const keepHandled = (handled: readonly HandledCommand[], entry: HandledCommand): HandledCommand[] => [...handled, entry].slice(-KEEP_HANDLED);

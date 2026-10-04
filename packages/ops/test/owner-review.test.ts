@@ -20,6 +20,8 @@ const REVIEW = {
   rearm: { trip: `rearm-${KILL_AT}`, evidence: { tripped_ms: KILL_AT, equity_lamports: '140000000', nav_lamports: '130000000', nav_peak_lamports: '200000000' } },
   weekly: null,
 };
+const DAY = 1_799_938_800_000;
+const OVERRIDE = { trip: `override-${DAY}-1`, evidence: { daily: 1, streak: 2, day_loss_lamports: '16000000', day_limit_lamports: '15000000', overrides: 1, day_ends_ms: DAY + 86_400_000 } };
 const upd = (text: string, chat = 42) => JSON.stringify({ message: { chat: { id: chat }, text } });
 
 function harness(mem = new Map<string, unknown>(), extraEnv: Partial<Env> = {}) {
@@ -60,7 +62,11 @@ describe('owner review commands: parsing', () => {
     expect(parseCommand(u('/review'), '42')).toBe('review');
     expect(parseCommand(u('/rearm@ZeroedBot confirm rearm-1'), '42')).toBe('rearm');
     expect(parseCommand(u('/WEEKLY'), '42')).toBe('weekly');
-    expect(parseCommand(u('/override'), '42')).toBe('other');
+    expect(parseCommand(u('/override'), '42')).toBe('override');
+    expect(parseCommand(u('/overrides'), '42')).toBe('other');
+    expect(confirmedTrip(u(`/override confirm override-${DAY}-0`), '42')).toBe(`override-${DAY}-0`);
+    expect(confirmedTrip(u(`/override confirm override-${DAY}`), '42')).toBeNull();
+    expect(confirmedTrip(u(`/override confirm override-${DAY}-12345`), '42')).toBeNull();
     expect(parseCommand(u('/review'), '7')).toBeNull();
     // No paired chat yet: nothing is a command, not even from a chat with an empty id.
     expect(parseCommand(u('/review'), '')).toBeNull();
@@ -86,8 +92,12 @@ describe('owner review commands: parsing', () => {
     expect(r.review).toBeNull();
     expect(r.weekly).toBeNull();
     expect(r.rearm).toEqual({ trip: `rearm-${KILL_AT}`, evidence: { tripped_ms: KILL_AT, equity_lamports: '140000000' } });
-    expect(reviewOf(hb())).toEqual({ review: null, rearm: null, weekly: null });
-    expect(reviewOf(hb({ review: 'x' }))).toEqual({ review: null, rearm: null, weekly: null });
+    expect(reviewOf(hb())).toEqual({ review: null, rearm: null, weekly: null, override: null });
+    expect(reviewOf(hb({ review: 'x' }))).toEqual({ review: null, rearm: null, weekly: null, override: null });
+    // An override trip has its own form (the day and its overrides); another kind's form is dropped.
+    expect(reviewOf(hb({ review: { override: OVERRIDE } })).override).toEqual(OVERRIDE);
+    expect(reviewOf(hb({ review: { override: { ...OVERRIDE, trip: `override-${DAY}` } } })).override).toBeNull();
+    expect(reviewOf(hb({ review: { rearm: { ...OVERRIDE } } })).rearm).toBeNull();
   });
 
   it('shows lamports as exact SOL', () => {
@@ -109,6 +119,13 @@ describe('owner review commands: parsing', () => {
     expect(text).toContain(`/review confirm review-${R8_AT}`);
     expect(stopText('rearm', r.rearm)).toContain('Equity 0.14 SOL, NAV 0.13 SOL, NAV peak 0.2 SOL');
     expect(stopText('weekly', r.weekly)).toBe('Weekly loss (R9): not tripped.');
+    const o = stopText('override', reviewOf(hb({ review: { override: OVERRIDE } })).override);
+    expect(o).toContain('daily loss and 2 losses in a row');
+    expect(o).toContain('Day loss 0.016 SOL (daily limit 0.015 SOL)');
+    expect(o).toContain('Overrides today: 1');
+    expect(o).toContain('The weekly loss, the kill switch and the loss review still apply.');
+    expect(o).toContain(`/override confirm override-${DAY}-1`);
+    expect(stopText('override', null)).toBe('Day stop (R7, R8 streak): not tripped.');
   });
 
   it('queues a confirm only for the trip open for that command, one per command; acks settle each once', () => {
@@ -173,7 +190,19 @@ describe('owner review commands: the Durable Object', () => {
     await h.tg('/review');
     expect(h.sent.at(-1)).toBe('Loss review (R8): not tripped.');
     await h.tg('/help');
-    expect(h.sent.at(-1)).toBe('Commands: /pause, /status, /review, /rearm, /weekly');
+    expect(h.sent.at(-1)).toBe('Commands: /pause, /status, /review, /rearm, /weekly, /override');
+  });
+
+  it('/override shows the day stop and queues its confirm like the others', async () => {
+    const h = harness();
+    await h.beat({ review: { ...REVIEW, override: OVERRIDE } });
+    await h.tg('/override');
+    expect(h.sent.at(-1)).toContain(`/override confirm override-${DAY}-1`);
+    await h.tg(`/override confirm override-${DAY}-0`);
+    expect(h.sent.at(-1)).toContain('Not queued');
+    await h.tg(`/override confirm override-${DAY}-1`);
+    expect(h.sent.at(-1)).toContain('Queued');
+    expect((await h.beat({ review: { ...REVIEW, override: OVERRIDE } })).commands?.map((c) => c.trip)).toEqual([`override-${DAY}-1`]);
   });
 
   it('a stale acknowledgement tells the owner the trip was refused', async () => {

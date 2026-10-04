@@ -5,14 +5,23 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { NO_LATCHES, type Latches } from '../../core/src/risk/index.ts';
+import { melbourneDay } from '../../core/src/risk/melbourne.ts';
+import { NO_LATCHES, type DayOverride, type Latches, type RiskSnapshot } from '../../core/src/risk/index.ts';
 import { accountFile } from '../src/run/account.ts';
-import { COMMAND_TTL_MS, type HandledCommand, type OpenStops, handleCommand, commandsOf, openStops, tripId } from '../src/run/owner-review.ts';
+import { COMMAND_TTL_MS, type HandledCommand, type OpenStops, handleCommand, commandsOf, openStops, tripId, withOverrideTag } from '../src/run/owner-review.ts';
 import { controlFile, NO_CONTROL } from '../src/run/state.ts';
 import type { HttpRequest } from '../src/providers/index.ts';
 import { replySigned, sendHeartbeat, signReply } from '../src/run/heartbeat.ts';
 import { sign, signReply as watchdogSignReply } from '../../ops/src/watchdog/logic.ts';
-import { makeWorker } from './worker-harness.ts';
+import { SOL_PRICE_KEY } from '../src/engine/strategy.ts';
+import { Market, SOL_PRICE, makeWorker } from './worker-harness.ts';
+
+/** A fresh SOL/USD price and a new slot, then one worker step (the account valuation runs on it). */
+const priced = (h: ReturnType<typeof makeWorker>, m: Market): void => {
+  m.slot();
+  m.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: m.now - 50 });
+  h.worker.step();
+};
 
 const LOSS = { reviewWindowTrades: 20, reviewLosses: 5 };
 const lines = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -24,7 +33,8 @@ describe('owner commands against the open stops', () => {
   // Five losses, then a win: the window runs past the trip.
   const trades = [1, 2, 3, 4, 5, 6].map((i) => ({ mint: `M${i}`, openedAtMs: T - 7_200_000 + i, closedAtMs: T - 3_600_000 + i * 60_000, notional: 2_000_000n, netPnl: i === 6 ? 50_000n : -100_000n, stoppedOut: i !== 6 }) as never);
   // A stand-in sum that shows which closes it was asked for.
-  const stops = (l: Latches): OpenStops => openStops({ latches: l, closed: trades, loss: LOSS, netLamports: (from, to) => BigInt(to - from), snapshot: null });
+  const stops = (l: Latches): OpenStops =>
+    openStops({ latches: l, closed: trades, loss: LOSS, netLamports: (from, to) => BigInt(to - from), snapshot: null, codes: [], toLamports: (v) => v * 10n, dailyLimit: 1_500_000n });
 
   it('names each open stop by kind and moment; a cleared one is not open', () => {
     const s = stops(latched);
@@ -33,7 +43,7 @@ describe('owner commands against the open stops', () => {
     expect(s.rearm).toMatchObject({ trip: `rearm-${T - 600_000}`, atMs: T - 600_000 });
     expect(s.weekly?.evidence['week_ends_ms']).toBeGreaterThan(T - 1_200_000);
     const cleared = stops({ ...latched, killRearmedAtMs: T - 1, weeklyReviewedAtMs: T - 1, lossReviewedAtMs: T - 1 });
-    expect(cleared).toEqual({ review: null, rearm: null, weekly: null });
+    expect(cleared).toEqual({ review: null, rearm: null, weekly: null, override: null });
     // A re-arm at or before the trip clears nothing (evaluate.ts R10: strictly after).
     expect(stops({ ...latched, killRearmedAtMs: T - 600_000 }).rearm).not.toBeNull();
   });
@@ -69,6 +79,55 @@ describe('owner commands against the open stops', () => {
     expect(c(T - COMMAND_TTL_MS - 1)?.entry.result).toBe('expired');
     expect(c(T - COMMAND_TTL_MS - 1)?.latches).toBe(latched);
     expect(c(T + COMMAND_TTL_MS + 1)?.entry.result).toBe('expired');
+  });
+
+  describe('/override', () => {
+    const DAY = melbourneDay(T).start;
+    const snap = { dayStartMs: DAY, dayLoss: 1_600_000n, lossStreak: 2 } as unknown as RiskSnapshot;
+    const day = (codes: string[], l: Latches = NO_LATCHES, snapshot: RiskSnapshot | null = snap) =>
+      openStops({ latches: l, closed: [], loss: LOSS, netLamports: () => 0n, snapshot, codes, toLamports: (v) => v * 10n, dailyLimit: 1_500_000n });
+    const at = (o: Partial<DayOverride>): Latches => ({ ...NO_LATCHES, dayOverride: { atMs: DAY + 1, dayStartMs: DAY, dayLossAt: null, streak: true, count: 1, ...o } });
+
+    it('is open while risk shows a day-level stop, with the day loss and limit in SOL, and names the day and its overrides', () => {
+      const s = day(['daily_loss', 'loss_cooldown', 'entries_per_day']).override;
+      expect(s?.trip).toBe(`override-${DAY}-0`);
+      expect(s?.evidence).toEqual({ daily: 1, streak: 2, day_loss_lamports: '16000000', day_limit_lamports: '15000000', overrides: 0, day_ends_ms: melbourneDay(T).end });
+      expect(day(['loss_day_pause']).override?.evidence).toMatchObject({ daily: 0, streak: 2 });
+      expect(day(['daily_loss']).override?.evidence).toMatchObject({ daily: 1, streak: 0 });
+      // Not a day-level stop, or no valuation yet: nothing to override.
+      expect(day(['loss_review', 'weekly_review', 'kill_switch']).override).toBeNull();
+      expect(day(['daily_loss'], NO_LATCHES, null).override).toBeNull();
+      // Yesterday's override does not count toward today's.
+      expect(day(['daily_loss'], at({ dayStartMs: DAY - 86_400_000, count: 3 })).override?.trip).toBe(`override-${DAY}-0`);
+      expect(day(['daily_loss'], at({ count: 1 })).override?.trip).toBe(`override-${DAY}-1`);
+    });
+
+    it('applies only what was tripped: R7 from the loss at the override, the streak if a streak pause was open', () => {
+      const apply = (codes: string[], l: Latches = NO_LATCHES) => {
+        const s = day(codes, l);
+        return handleCommand({ id: 'o', kind: 'override', trip: s.override!.trip, at: T }, s, l, [], T);
+      };
+      expect(apply(['daily_loss'])?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: 1_600_000n, streak: false, count: 1 });
+      expect(apply(['loss_cooldown'])?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: null, streak: true, count: 1 });
+      expect(apply(['daily_loss', 'loss_day_pause'], at({ count: 1 }))?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: 1_600_000n, streak: true, count: 2 });
+      // Only the day override changes.
+      const r = apply(['daily_loss'], { ...NO_LATCHES, killTrippedAtMs: 5 });
+      expect({ ...r?.latches, dayOverride: undefined }).toEqual({ ...NO_LATCHES, killTrippedAtMs: 5, dayOverride: undefined });
+      // An earlier override's confirm (count 0) after one was applied (count 1) is stale.
+      const s = day(['daily_loss'], at({ count: 1 }));
+      expect(handleCommand({ id: 'old', kind: 'override', trip: `override-${DAY}-0`, at: T }, s, at({ count: 1 }), [], T)?.entry.result).toBe('stale');
+      // Nothing open: stale.
+      expect(handleCommand({ id: 'x', kind: 'override', trip: `override-${DAY}-0`, at: T }, day([]), NO_LATCHES, [], T)?.entry.result).toBe('stale');
+    });
+  });
+
+  it('tags an entry line made while the day override holds, and nothing else', () => {
+    const day = melbourneDay(T).start;
+    const o: Latches = { ...NO_LATCHES, dayOverride: { atMs: T - 1, dayStartMs: day, dayLossAt: null, streak: true, count: 1 } };
+    expect(withOverrideTag('entry', { trade: 'p' }, o, T)).toEqual({ trade: 'p', override: true });
+    expect(withOverrideTag('exit', { trade: 'p' }, o, T)).toEqual({ trade: 'p' });
+    expect(withOverrideTag('entry', { trade: 'p' }, NO_LATCHES, T)).toEqual({ trade: 'p' });
+    expect(withOverrideTag('entry', { trade: 'p' }, o, melbourneDay(T).end)).toEqual({ trade: 'p' });
   });
 
   it('reads only well-formed commands from the reply', () => {
@@ -319,6 +378,44 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     const ctl = controlFile(f.stateDir).read(NO_CONTROL);
     expect(ctl.latches).toEqual(f.latches);
     expect(ctl.commands?.map((c) => c.result)).toEqual(['expired']);
+    await h.worker.stop();
+  });
+
+  it('/override: a day stop from a real valuation is overridden by a signed confirm and the next valuation lets entries resume', async () => {
+    const h0 = makeWorker();
+    expect(await h0.worker.reconcile()).toEqual({ ok: true });
+    const m0 = new Market(h0);
+    await m0.run(2_000, 400, () => priced(h0, m0));
+    await h0.worker.stop();
+    const now = h0.timers.now();
+    const file = accountFile(h0.stateDir);
+    const a = file.read(null as never);
+    // Two losses closed just now, $1 each: past the $1.50 daily limit, and two in a row (cooldown).
+    const lost = 7_000_000n;
+    const trades = [1, 2].map((i) => ({ positionId: `p:o:${i}`, mint: `MintO${i}`, openedAtMs: now - 120_000 + i, notional: 2_000_000n, closedAtMs: now - 60_000 + i * 1_000, netLamports: -lost, netPnl: -1_000_000n, stoppedOut: true, booked: -lost }));
+    file.write({ ...a, walletLamports: a.walletLamports === null ? null : a.walletLamports - 2n * lost, trades } as never);
+    expect(melbourneDay(now - 60_000).start).toBe(melbourneDay(now).start);
+    const timers = h0.timers;
+    const w = watchdog(() => timers.now());
+    const h = makeWorker({ stateDir: h0.stateDir, timers, key: 'k', http: w.http });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h);
+    await m.run(2_000, 400, () => priced(h, m));
+    await h.worker.heartbeat();
+    const stop = (w.sent.at(-1)!['review'] as Record<string, { trip: string; evidence: Record<string, unknown> } | null>)['override'];
+    const dayStart = melbourneDay(timers.now()).start;
+    expect(stop?.trip).toBe(`override-${dayStart}-0`);
+    expect(stop?.evidence).toMatchObject({ daily: 1, streak: 2, overrides: 0 });
+    w.reply([{ id: stop!.trip, kind: 'override', trip: stop!.trip }]);
+    await h.worker.heartbeat();
+    const applied = controlFile(h.stateDir).read(NO_CONTROL).latches.dayOverride;
+    expect(applied).toMatchObject({ dayStartMs: dayStart, streak: true, count: 1 });
+    expect(applied?.dayLossAt).toBeGreaterThanOrEqual(2_000_000n);
+    w.reply(undefined);
+    await m.run(2_000, 400, () => priced(h, m));
+    await h.worker.heartbeat();
+    expect((w.sent.at(-1)!['review'] as Record<string, unknown>)['override']).toBeNull();
+    expect(ownerLines(h.stateDir).map((l) => [l['command'], l['result']])).toEqual([['override', 'applied']]);
     await h.worker.stop();
   });
 });

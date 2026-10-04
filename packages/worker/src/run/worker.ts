@@ -17,7 +17,7 @@ import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import { attemptFee, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
-import type { MicroUsd } from '../../../core/src/units/index.ts';
+import { type MicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { NO_UNIVERSE, type SavedGraduates, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
@@ -41,7 +41,7 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
-import { type HandledCommand, type OpenStops, ackedOf, type commandsOf, handleCommand, keepHandled, openStops, reviewBlock } from './owner-review.ts';
+import { type HandledCommand, type OpenStops, ackedOf, type commandsOf, handleCommand, keepHandled, openStops, reviewBlock, withOverrideTag } from './owner-review.ts';
 import { Summarizer, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
@@ -252,6 +252,8 @@ export class Worker {
   #solPriceAt: number | null = null;
   /** OWNER-REVIEW: the latest account valuation, for the SOL evidence of the owner's stops. */
   #lastSnapshot: RiskSnapshot | null = null;
+  /** OWNER-REVIEW /override: risk's reason codes on that valuation (the day-level stops open then). */
+  #lastCodes: readonly string[] = [];
   /** RISK-FAULT: why risk last could not value the account, while it still cannot (logged once per episode). */
   #valuationFault: string | null = null;
   /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
@@ -430,7 +432,8 @@ export class Worker {
     } else if (restored.reason !== 'no saved state') d.log(`Saved state discarded (${restored.reason}): starting as a fresh process.`);
     this.#desk = new Desk({
       ledger: this.#ledger, config: bookConfig, restored: stored.book,
-      journal: (kind, fields) => this.#journal.write(kind, fields),
+      // OWNER-REVIEW /override: an entry made while the owner's day override holds says so in its line.
+      journal: (kind, fields) => this.#journal.write(kind, withOverrideTag(kind, fields, this.#ctl.latches, this.#d.timers.now())),
       // Fill lines written before a kill that came ahead of the ledger: the restart books those fills again, once.
       journaledFills: journaledFillKeys(this.#fillLines),
       solUsd: () => this.#solPrice,
@@ -829,6 +832,7 @@ export class Worker {
     const snapshot = riskSnapshot(input);
     if (snapshot === null) return;
     this.#lastSnapshot = snapshot;
+    this.#lastCodes = exit.tripped.map((r) => r.code);
     const maxAge = policy.gates.maxQuoteAgeMs;
     const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
     // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
@@ -1436,8 +1440,12 @@ export class Worker {
     if (!this.#reconciled) return null;
     const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, now);
     const trades = this.#account.state.trades;
+    const policy = this.#d.session.policy;
+    const price = this.#solPrice;
     return openStops({
-      latches: this.#ctl.latches, closed: fact.history.closedTrades, loss: this.#d.session.policy.loss, snapshot: this.#lastSnapshot,
+      latches: this.#ctl.latches, closed: fact.history.closedTrades, loss: policy.loss, snapshot: this.#lastSnapshot, codes: this.#lastCodes,
+      toLamports: (v) => (price === null || price <= 0n || v < 0n ? null : microUsdToLamports(v as MicroUsd, price, 'ceil')),
+      dailyLimit: mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), 10_000n, 'floor'),
       netLamports: (fromMs, toMs) => {
         let net = 0n;
         for (const t of trades) {

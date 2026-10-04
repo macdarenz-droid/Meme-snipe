@@ -203,6 +203,30 @@ export interface Latches {
   readonly lossReviewedAtMs: number | null;
   /** The owner approved sizes above the minimum (after G5, §14). Until then every trade is at the minimum. */
   readonly sizeStepUpApproved: boolean;
+  /** OWNER-REVIEW /override: the owner lifted today's day-level stops (absent in files from before). */
+  readonly dayOverride?: DayOverride | null;
+}
+
+/**
+ * The owner's override of the day-level stops that were open when it was given, for the rest of that Melbourne day
+ * (it ends at midnight). Only what was tripped is lifted, and only until it trips again:
+ * - R7, if the daily loss trigger was reached (`dayLossAt` set): entries resume until the day's loss grows by another
+ *   full daily limit beyond the loss at the override;
+ * - R8's streak pauses, if one was open (`streak`): the streak counts only trades closed after the override, so a new
+ *   streak trips them again.
+ * Weekly, kill switch, the R8 review, the owner pause and every limit are untouched.
+ */
+export interface DayOverride {
+  /** When it was applied. */
+  readonly atMs: number;
+  /** The Melbourne day it holds for. */
+  readonly dayStartMs: number;
+  /** The day's loss when it was applied, if R7 was tripped then; null otherwise (R7 unchanged). */
+  readonly dayLossAt: MicroUsd | null;
+  /** A streak pause (cooldown or day pause) was open when it was applied. */
+  readonly streak: boolean;
+  /** Overrides applied that day, this one included: names the next one, so an old confirm never applies. */
+  readonly count: number;
 }
 
 export const NO_LATCHES: Latches = {

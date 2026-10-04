@@ -1,4 +1,4 @@
-export { evaluateEntry, evaluateExit, economicNav, evaluateWithdrawal, lossReviewTrip, maxTradeCosts, opsReserve, riskSnapshot, type LossReviewTrip } from './evaluate.ts';
+export { activeOverride, evaluateEntry, evaluateExit, economicNav, evaluateWithdrawal, lossReviewTrip, maxTradeCosts, opsReserve, riskSnapshot, type LossReviewTrip } from './evaluate.ts';
 export {
   EPOCH_YEAR, MELBOURNE_RULES, MS_PER_MINUTE, RULE_FROM_YEAR,
   civilFromDays, daylightEndUtc, daylightStartUtc, daysFromCivil, melbourneDay, melbourneDayNumber, melbourneMidnightUtc,

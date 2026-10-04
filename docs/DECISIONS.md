@@ -1562,6 +1562,18 @@ Card OWNER-REVIEW, design approved by the supervisor (4 Oct 2026, about 2:00 AM 
 - **Restart-safe and once only.** Every handled command (id, command, trip, result, time) is saved in `control.json` (newest 32, written atomically) and journaled as `owner_command`. A repeat, after a restart too, is a no-op. Its result goes back in every heartbeat's `acked`: the watchdog drops the command and tells the owner once. The queue lives in the Durable Object, so it survives a watchdog restart. Before the worker's start reconcile nothing is handled, and the watchdog sends the command again. Stored-data ruling: the bot's own control records only, so the supervisor approves the shape.
 - **Evidence (golden rule, SOL first):** R8 shows the window's losses and trades, its first and last close, and the net lamports of the paper trades closed in it. R10 shows the trip time and equity, NAV and NAV peak in SOL. R9 shows the trip time, when the week ends, and equity in SOL. Until SOL-BOOKS, the SOL figures are risk's dollar figures converted at the latest SOL price (`equitySol`, `navSol`, `navHighWaterMarkSol`).
 
+## Owner day override (OWNER-REVIEW part b, core `DayOverride`/`activeOverride`, `run/owner-review.ts`)
+
+Part (b) of the approved design: `/override` resumes entries for the rest of the Melbourne day after a day-level stop, through the same signed channel as part (a). The supervisor set the re-trip rule.
+
+- **What it lifts: only what was tripped when it was applied.** `Latches.dayOverride = {atMs, dayStartMs, dayLossAt, streak, count}`.
+  - **R7:** if the daily loss trigger was reached, `dayLossAt` is the day's loss at that moment. R7 then trips again when the loss reaches `dayLossAt + dailyLimit`, which is another full daily limit; the per-entry check (loss plus the entry's costs) uses the same line.
+  - **R8 streaks:** if a cooldown or a day pause was open, `streak` is set, and the streak counts only trades closed after the override, so a new streak of 2 or 3 trips again.
+  - **Not tripped, not touched.** An override given while R7 was not tripped never moves R7's line. Literally, "suppressed until `dayLossAt + dailyLimit`" would have widened R7 for an override of a streak alone, which the golden rule refuses. Likewise, an override without an open streak pause leaves the streak counting every trade.
+- **When it ends.** It holds only on its Melbourne day (`dayStartMs` equals today's start, so it is daylight-saving safe through `melbourneDay`; tested on the 23-hour day of 4 Oct 2026) and only from its moment. Weekly, the kill switch, the R8 review, the owner pause and every limit are untouched; tests show each still refuses under an override.
+- **Trip id:** `override-<dayStartMs>-<count>`, where count is the overrides already applied that day. A confirm therefore fits one override only: after it is applied, the old id is stale. The stop is open while risk's last valuation (its exit check) shows `daily_loss`, `loss_cooldown` or `loss_day_pause`. The evidence is whether R7 tripped, the streak, the day loss and limit in SOL, the overrides so far, and when the day ends.
+- **Record:** the `owner_command` line, and every entry made while the override holds carries `override: true` in its journal line.
+
 ## Growing files read whole (GROWTH-SWEEP, `runner/src/lines.ts`, `run/deployer-store.ts`, `run/booked.ts`, `runner/src/runner.ts`)
 
 - **2026-10-04 · One chunked line reader for files that grow all run.** `fileLines` (runner) reads 1 MiB at a time through a `StringDecoder`. `booked.journalLines` now uses it: its own reader decoded each chunk alone, so a multi-byte character cut by a chunk boundary became U+FFFD (test).

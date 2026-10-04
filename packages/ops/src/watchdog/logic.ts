@@ -216,8 +216,8 @@ export function planAlerts(active: Record<string, ActiveAlert>, current: Alert[]
   return { lines, next };
 }
 
-export type OwnerKind = 'review' | 'rearm' | 'weekly';
-export const OWNER_KINDS: readonly OwnerKind[] = ['review', 'rearm', 'weekly'];
+export type OwnerKind = 'review' | 'rearm' | 'weekly' | 'override';
+export const OWNER_KINDS: readonly OwnerKind[] = ['review', 'rearm', 'weekly', 'override'];
 const isOwnerKind = (k: unknown): k is OwnerKind => typeof k === 'string' && (OWNER_KINDS as readonly string[]).includes(k);
 
 /** The owner's message text, only from the owner's chat; null for anything else. */
@@ -248,7 +248,7 @@ export function confirmedTrip(update: unknown, ownerChatId: string): string | nu
 
 // ---------- OWNER-REVIEW ----------
 
-const TRIP = /^(review|rearm|weekly)-\d{1,16}$/;
+const TRIP = /^((review|rearm|weekly)-\d{1,16}|override-\d{1,16}-\d{1,4})$/;
 const EVIDENCE_KEY = /^[a-z_]{1,24}$/;
 
 /** A stop the worker reported, with its evidence (counts, moments in ms, lamports as decimal strings). */
@@ -276,7 +276,7 @@ export type AckResult = 'applied' | 'stale' | 'invalid' | 'expired';
 
 /** The heartbeat's review block, checked field by field (signed, but never trusted blindly). Anything malformed reads as none. */
 export function reviewOf(hb: Heartbeat | undefined): Review {
-  const out: Review = { review: null, rearm: null, weekly: null };
+  const out: Review = { review: null, rearm: null, weekly: null, override: null };
   const r = hb?.review;
   if (typeof r !== 'object' || r === null) return out;
   for (const kind of OWNER_KINDS) {
@@ -317,7 +317,7 @@ export function melbourneText(ms: string | number | null | undefined): string {
   return `${new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms))} Melbourne`;
 }
 
-const NAMES: Record<OwnerKind, string> = { review: 'Loss review (R8)', rearm: 'Kill switch (R10)', weekly: 'Weekly loss (R9)' };
+const NAMES: Record<OwnerKind, string> = { review: 'Loss review (R8)', rearm: 'Kill switch (R10)', weekly: 'Weekly loss (R9)', override: 'Day stop (R7, R8 streak)' };
 
 /** What /review, /rearm or /weekly answers: the stop's evidence in SOL and the exact confirm line, or that none is open. */
 export function stopText(kind: OwnerKind, stop: ReportedStop | null): string {
@@ -336,6 +336,14 @@ export function stopText(kind: OwnerKind, stop: ReportedStop | null): string {
       `${NAMES.rearm}: tripped ${melbourneText(e['tripped_ms'])}.`,
       `Equity ${solText(e['equity_lamports'])}, NAV ${solText(e['nav_lamports'])}, NAV peak ${solText(e['nav_peak_lamports'])}.`,
       `Re-arming also restarts the peak. To re-arm, send: ${confirm}`,
+    ].join('\n');
+  }
+  if (kind === 'override') {
+    const stops = [e['daily'] === 1 ? 'daily loss' : null, typeof e['streak'] === 'number' && e['streak'] > 0 ? `${e['streak']} losses in a row` : null].filter((x) => x !== null);
+    return [
+      `${NAMES.override}: ${stops.join(' and ') || 'tripped'}. Day loss ${solText(e['day_loss_lamports'])} (daily limit ${solText(e['day_limit_lamports'])}). Overrides today: ${e['overrides'] ?? '?'}.`,
+      `Overriding resumes entries until midnight (${melbourneText(e['day_ends_ms'])}). Another full daily limit of loss, or a new losing streak, stops them again. The weekly loss, the kill switch and the loss review still apply.`,
+      `To override, send: ${confirm}`,
     ].join('\n');
   }
   return [
