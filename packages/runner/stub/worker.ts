@@ -229,12 +229,23 @@ const tick = (): void => {
     state.intent = { trade, leg: 'exit' };
     saveState(state);
     if (simulationOn) journal('simulation', { trade, leg: 'exit', ...stubSimulation() });
+    // The exit is journaled before the state lets the position go (an entry the other way round): a kill between the
+    // two leaves a state holding more than the journal says, never less, so what the runner reads from the journal is
+    // always there to recover (RUN-1d contract).
+    journal('exit', { trade, position: 'closed', reasons: ['stub: hold time reached'] });
+    stall(exitGapMs);
     state.position = null;
     state.intent = null;
     saveState(state);
-    journal('exit', { trade, position: 'closed', reasons: ['stub: hold time reached'] });
   }
 };
+
+// Test hook: the process stalls between the two writes of an exit (journal line, then state) (a descheduled process under load), so a kill can
+// land between them.
+const exitGapMs = Number(env['ZEROED_STUB_EXIT_GAP_MS'] ?? 0);
+function stall(ms: number): void {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 let rpcDownUntil = 0;
 const dropFeed = (name: string, ms: number): void => {

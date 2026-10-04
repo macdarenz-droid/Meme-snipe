@@ -161,3 +161,34 @@ describe('a trade opened between the reply and the kill (the mirror case)', () =
     expect(d.exposure?.trades).toHaveLength(1);
   }, 40_000);
 });
+
+describe('a kill between the two writes of an exit', () => {
+  it('never asks the restart for a position the state no longer holds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ci1-gap-'));
+    const addr = `127.0.0.1:${await freePort()}`;
+    const stateDir = join(dir, 'state');
+    const evidenceDir = join(dir, 'ev');
+    // The stub opens at start (6 s cycle), exits at 3.6 s and stalls 2.5 s between the exit's two writes. A reply showing
+    // the open position is handed back unchanged; the crash falls due at 4 s, inside the stall.
+    let frozen: { h: Health; until: number } | null = null;
+    const fetchHealth = async (a: string): Promise<Health | null> => {
+      if (frozen && Date.now() < frozen.until) return frozen.h;
+      const h = await httpHealth(a);
+      if (frozen === null && h?.reconciled && h.open_position) frozen = { h, until: Date.now() + 9000 };
+      return h;
+    };
+    const control = new LocalControl({
+      entry: STUB_ENTRY, cwd: root, logPath: join(evidenceDir, 'w.log'), stateDir, restartDelayMs: 200,
+      env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_CYCLE_MS: '6000', ZEROED_STUB_OPEN_AT_START: '1', ZEROED_STUB_EXIT_GAP_MS: '2500' },
+    });
+    await runSegment({
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: addr, stateDir, evidenceDir, keepRecorded: 'copy', sampleMs: 100, recoverMs: 8000,
+      log: () => {}, control, segmentEnd: Date.now() + 14_000, hostDrills: 'wipe', fetchHealth, handover: false,
+      newRun: { runId: 'run', targetMs: 80_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'], restartWindowMs: 3000, rpcDrops: 0 },
+    });
+    const drills = JSON.parse(readFileSync(join(evidenceDir, 'drills.json'), 'utf8')) as DrillOutcome[];
+    const d = drills.find((x) => x.id === 'restart-1')!;
+    expect(d.state).toMatchObject({ state_ok: true, missing: [] });
+    expect(d.pass).toBe(true);
+  }, 40_000);
+});
