@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FIX, MINT, POOL } from '../../core/test/facts/helpers.ts';
 import {
-  ASSUMPTIONS, FACT_RPC_METHODS, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, SUPPLEMENT_FILE, candidateCapacity, freePlanPerMinute, perCandidate,
+  ASSUMPTIONS, FACT_RPC_METHODS, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, SUPPLEMENT_FILE, candidateCapacity, freePlanPerMinute, holderScanCredits, holderScanCreditsPerDay, perCandidate,
   HOLDER_SCANS_PER_DAY, holderFilters, readSupplement, supplementRow, writeSupplement, type Ingest,
 } from '../src/facts/index.ts';
 import type { FrameBody, Source } from '../src/providers/index.ts';
@@ -410,5 +410,18 @@ describe('budget per candidate per minute', () => {
     expect(cap.rugcheck).toBe(13);
     expect(cap.goplus).toBe(12);
     expect(ASSUMPTIONS.evaluationsPerMinute).toBe(1);
+  });
+
+  it('counts the complete holder scans and their fallback: about 1,200 Helius credits a day at the 100-scan cap', () => {
+    // The mint read, one getProgramAccounts at 10 credits, one owner batch; a fallback is one more getProgramAccounts.
+    expect(holderScanCredits()).toEqual({ scan: 12, fallback: 10 });
+    expect(holderScanCreditsPerDay()).toBe(1_200);
+    expect(holderScanCreditsPerDay(10)).toBe(120);
+    // Taken off the top before candidates: what is left still carries 3 at one evaluation a minute.
+    const left = freePlanPerMinute().heliusCredits - 1_200 / 1_440;
+    expect(left).toBeCloseTo(15.4, 1);
+    expect(candidateCapacity().helius).toBe(Math.floor(left / perCandidate().heliusCreditsPerMinute));
+    // A dearer scan (more owner batches) lowers the capacity, never raises it.
+    expect(candidateCapacity({ ...ASSUMPTIONS, ownerBatchesPerScan: 400 } as unknown as typeof ASSUMPTIONS).helius).toBeLessThan(candidateCapacity().helius);
   });
 });

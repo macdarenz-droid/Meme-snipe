@@ -22,26 +22,21 @@ import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 
 /** Virtual time: a wait moves the clock by its length and resolves on the next turn of the event loop. */
-/** The timers a test drives: it moves the clock, and may say how many callbacks are queued (see `virtualTimers`). */
-export type TestTimers = Timers & { set(ms: number): void; waiting?: () => number };
+/** The timers a test drives: it moves the clock. */
+export type TestTimers = Timers & { set(ms: number): void };
 
-export const virtualTimers = (start: number): TestTimers & { waiting(): number } => {
+export const virtualTimers = (start: number): TestTimers => {
   let now = start;
   let next = 1;
-  let waiting = 0;
   const cancelled = new Set<number>();
   return {
     now: () => now,
     set: (ms) => {
       if (ms > now) now = ms;
     },
-    /** How many callbacks are queued and not run yet: a `run` waits for them, so its timeline never depends on load. */
-    waiting: () => waiting,
     setTimeout: (fn, ms) => {
       const id = next++;
-      waiting++;
       setImmediate(() => {
-        waiting--;
         if (cancelled.delete(id)) return;
         now += Math.max(0, ms);
         fn();
@@ -82,27 +77,27 @@ export const dueTimers = (start: number): TestTimers => {
   };
 };
 
-/**
- * A clock that moves 1 ms every `everyNth` reads: the host's own, where the restored book's frames and the start facts
- * can fall on either side of a millisecond and ties are broken by id. The timers are otherwise `virtualTimers`'.
- */
-export const tickingTimers = (start: number, everyNth: number): TestTimers => {
-  const base = virtualTimers(start);
-  let reads = 0;
-  return {
-    ...base,
-    now: () => {
-      const t = base.now();
-      if (++reads % everyNth === 0) base.set(t + 1);
-      return t;
-    },
-  };
-};
-
 export const tempState = (): string => mkdtempSync(join(tmpdir(), 'zeroed-worker-'));
 
+/**
+ * Default health and API ports, distinct per test worker process and per worker made in it: test files run in
+ * parallel processes, and a fixed default (the health port 18790, the API's live 8788) let two of them bind the same
+ * address, failing one start. 21000 and up, clear of the fixed 18xxx ports some tests name.
+ */
+let made = 0;
+const defaultPorts = (): { readonly health: number; readonly api: number } => {
+  const pool = Number(process.env['VITEST_POOL_ID'] ?? '1') % 40;
+  const k = made++ % 100;
+  const health = 21_000 + pool * 200 + k * 2;
+  return { health, api: health + 1 };
+};
+
 export const testConfig = (stateDir: string, over: Record<string, string> = {}): WorkerConfig => {
-  const p = parseConfig({ ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: '127.0.0.1:18790', ZEROED_GIT_SHA: 'testsha', ...over }, () => null);
+  const ports = defaultPorts();
+  const p = parseConfig({
+    ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on',
+    ZEROED_HEALTH_ADDR: `127.0.0.1:${ports.health}`, ZEROED_API_ADDR: `127.0.0.1:${ports.api}`, ZEROED_GIT_SHA: 'testsha', ...over,
+  }, () => null);
   if (!p.ok) throw new Error(p.message);
   return p.config;
 };
@@ -139,8 +134,14 @@ export interface Harness {
   readonly session: PolicySession;
 }
 
-/** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
-export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n } };
+/**
+ * The conservative paper scenario, with every attempt landing, in its regular landing window, unless a test asks
+ * otherwise (RUN-1d). The draws are the same in every process anyway: the boot is pinned (`boot-<n>`).
+ */
+export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n }, landingTail: { ...FILL_CONFIG.scenarios[PAPER_SCENARIO].landingTail, ppm: 0n } };
+
+/** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
+const boots = new Map<string, number>();
 
 export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord> } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
@@ -150,7 +151,10 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
   const logs: string[] = [];
   const sources: ReturnType<typeof scriptedSource>[] = [];
   const order: string[] = [];
+  const n = boots.get(stateDir) ?? 0;
+  boots.set(stateDir, n + 1);
   const worker = new Worker({
+    boot: `boot-${n}`,
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
     strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }) },
@@ -179,9 +183,9 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     },
     seedWaitMs: o.seedWaitMs ?? 1_000,
     ...(o.seedMaxMs === undefined ? {} : { seedMaxMs: o.seedMaxMs }),
+    ...(o.cutRpc === undefined ? {} : { cutRpc: o.cutRpc }),
     ...(o.exposureRpc === undefined ? {} : { exposureRpc: o.exposureRpc }),
     ...(o.ops === undefined ? {} : { ops: o.ops }),
-    ...(o.cutRpc === undefined ? {} : { cutRpc: o.cutRpc }),
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },
     ...(o.facts === undefined ? {} : { facts: o.facts, schedulers: { helius: new Scheduler(HELIUS_FREE, { timers }), alchemy: new Scheduler(ALCHEMY_FREE, { timers }), jupiter: new Scheduler(JUPITER_FREE, { timers }), rugcheck: new Scheduler(RUGCHECK_FREE, { timers }) } }),
     reconcileTimeoutMs: o.reconcileTimeoutMs ?? 120_000, loopMs: 100, staleFeedMs: 10_000, log: (l) => void logs.push(l),

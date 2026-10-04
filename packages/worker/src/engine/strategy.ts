@@ -60,6 +60,13 @@ export interface GateReasonLine {
   readonly detail: string;
 }
 
+/** A reason of a candidate's last evaluation with the fact it is about, if any (FACTS-1b reads what evidence reasons name). */
+export interface CandidateReason {
+  readonly gate: string;
+  readonly code: string;
+  readonly input?: string;
+}
+
 /** `{ halted, reasons }`: entries stop while a critical feed is down or stale (§18); exits and monitoring go on. */
 export const HALT_KEY = 'worker:halt';
 export const feesKey = (mint: string): string => `worker:fees:${mint}`;
@@ -154,6 +161,8 @@ interface Candidate {
   lastEvalMs: number | null;
   lastReason: string | null;
   tries: number;
+  /** The reasons of the last evaluation (null before the first, empty after a pass). */
+  gates: readonly CandidateReason[] | null;
 }
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
@@ -226,6 +235,11 @@ export class LiveStrategy implements Strategy {
     return out;
   }
 
+  /** Each candidate's migration time and the typed reasons of its last evaluation (FACTS-1b stages its reads on them). */
+  candidates(): ReadonlyMap<string, { readonly migratedAtMs: number; readonly lastEvalMs: number | null; readonly gates: readonly CandidateReason[] | null }> {
+    return new Map([...this.#cands].map(([m, c]) => [m, { migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates }]));
+  }
+
   /** Mints that need live facts: candidates in their window and every position not closed. */
   watched(): Set<string> {
     const out = new Set(this.#cands.keys());
@@ -296,6 +310,10 @@ export class LiveStrategy implements Strategy {
 
   onMarket(e: MarketEvent, ctx: StrategyContext): readonly Decision[] {
     const out: Decision[] = [];
+    // FACTS-1b: reads that landed on earlier events are judged now, after the facts their own release made (FactFeed
+    // releases a read's facts right after it, at its moment). A mark set below applies from the next event on.
+    const due = this.#due;
+    this.#due = new Map();
     if (e.key === HALT_KEY) this.#seedWait(unwrap(e.value));
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
@@ -305,6 +323,7 @@ export class LiveStrategy implements Strategy {
       if (isObj(s) && typeof s['slot'] === 'bigint' && (this.#height === null || s['slot'] > this.#height)) this.#height = s['slot'];
     }
     this.#discover(e, ctx, out);
+    this.#readLanded(e);
     this.#poolTrade(e, ctx);
     if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
@@ -315,7 +334,7 @@ export class LiveStrategy implements Strategy {
     this.#lifecycle(ctx, out);
     this.#manage(ctx, out);
     // At most one entry step per call, and only while nothing else acted: ctx.book is the book before these decisions.
-    if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out);
+    if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
     return out;
   }
 
@@ -423,7 +442,7 @@ export class LiveStrategy implements Strategy {
       const mint = e.key.slice(MIGRATION_PREFIX.length);
       if (f !== null) this.#notePool(mint, f.pool);
       if (f !== null && !this.#cands.has(mint)) {
-        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0 });
+        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0, gates: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
       }
       return;
@@ -439,7 +458,7 @@ export class LiveStrategy implements Strategy {
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
-    this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0 });
+    this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0, gates: null });
     out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${migratedAtMs}`] });
   }
 
@@ -826,7 +845,39 @@ export class LiveStrategy implements Strategy {
     return saved;
   }
 
-  #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[]): void {
+  /** Candidates whose read landed, with the read's slot (null for an off-chain read) and receipt: judged once more at the
+   * next event, outside the evaluation cadence, while the read is still fresh (FACTS-1e). */
+  #due = new Map<string, { readonly slot: bigint | null; readonly receivedAt: number }>();
+
+  /** Whether a landed read is still fresh at `now`: chain reads by slot lag, off-chain reads by age (evidence.ts's rules). */
+  #fresh(read: { readonly slot: bigint | null; readonly receivedAt: number }, now: StrategyContext['now']): boolean {
+    const g = this.#d.session.policy.gates;
+    return read.slot !== null ? now.slot - read.slot <= BigInt(g.maxStateSlotLag) : now.receivedAt - read.receivedAt <= g.maxQuoteAgeMs;
+  }
+
+  /**
+   * A raw read (`read:<kind>:<mint>`) landing for a candidate marks it for one more evaluation, so its fact is judged
+   * while fresh instead of at the next cadence tick (supervisor ruling: the read's own recorded frame is the trigger,
+   * so a replay re-evaluates at the same release position). Freshness follows evidence.ts and is judged when the mark
+   * is used, at the next event: a chain read more than the state lag behind, or an off-chain read (RugCheck, GoPlus,
+   * Jupiter: no slot) older than the quote age, brings no evaluation (a quiet feed can outlive a read). Only
+   * candidates are evaluated, so a mark for any other mint is never used.
+   */
+  #readLanded(e: MarketEvent): void {
+    if (!e.key.startsWith('read:')) return;
+    const mint = e.key.slice(e.key.indexOf(':', 'read:'.length) + 1);
+    const v = unwrap(e.value);
+    // Judged fresh when the mark is used (`#landedFresh`): at the read's own moment it cannot be older than that.
+    this.#due.set(mint, { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt });
+  }
+
+  /** A read landed for the mint and is still fresh now: a slower event after it (a quiet feed) can outlive it. */
+  #landedFresh(due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>, mint: string, ctx: StrategyContext): boolean {
+    const read = due.get(mint);
+    return read !== undefined && this.#fresh(read, ctx.now);
+  }
+
+  #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[], due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>): void {
     const now = ctx.now.receivedAt;
     const c = this.#d.config;
     // Fails closed: entries only on a readable halt fact that says not halted.
@@ -845,12 +896,13 @@ export class LiveStrategy implements Strategy {
         out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
         continue;
       }
-      if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs)) continue;
+      if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
       if (Object.values(ctx.book.intents).some((i) => i.intent.mint === cand.mint && !isTerminal(i))) continue;
       cand.lastEvalMs = now;
       const r = this.#evaluate(cand, ctx, gctx, out);
+      cand.gates = r === null ? [] : this.#lastNeeds;
       // A reject is logged when its reason changes (numbers aside), so a long wait does not fill the journal.
       const key = (x: string | null) => (x === null ? null : x.replace(/\d+/g, '#'));
       if (r !== null && key(r) !== key(cand.lastReason)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`] });
@@ -862,8 +914,12 @@ export class LiveStrategy implements Strategy {
   /** The typed reasons of the last reject `#evaluate` returned (RUN-1c's `gate_reasons`). */
   #lastGates: readonly GateReasonLine[] = [];
 
-  #fail(text: string, gates: readonly GateReasonLine[]): string {
+  /** The same reasons with their inputs, for the candidate (not journaled: gate_reasons keeps its shape). */
+  #lastNeeds: readonly CandidateReason[] = [];
+
+  #fail(text: string, gates: readonly GateReasonLine[], needs: readonly CandidateReason[] = gates): string {
     this.#lastGates = gates;
+    this.#lastNeeds = needs.map((x) => ({ gate: x.gate, code: x.code, ...(x.input === undefined ? {} : { input: x.input }) }));
     return text;
   }
 
@@ -873,7 +929,7 @@ export class LiveStrategy implements Strategy {
     const session = this.#d.session;
     const policy = session.policy;
     const regime = evaluateRegime(gctx, { session, mode: 'live' });
-    if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })));
+    if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
     const m = this.#market(ctx, cand.mint);
@@ -882,7 +938,7 @@ export class LiveStrategy implements Strategy {
     const spend = microUsdToLamports(notional, sol.value, 'ceil');
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     const hard = evaluateHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1' }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
-    if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })));
+    if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
