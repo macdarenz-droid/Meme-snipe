@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, about 10:32 PM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
+**Last updated:** Sun 4 Oct 2026, about 10:45 PM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
 
 **New account (from about 8:00 PM, 4 Oct).**
 - Supervisor: session_012En9L5mnYQtEz7oyp1Eryf. It read AGENTS.md, CLAUDE.md, this file, all 22 session notes and the supervisor log, and re-listed the open PRs (heads matched §4).
@@ -133,7 +133,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 
 ## 4. Current state (4 Oct, about 7:45 PM)
 
-### New-account queue (live; updated about 10:32 PM)
+### New-account queue (live; updated about 10:45 PM)
 
 **Merge order** (serial; each merge needs ready → update branch → green `check` (and `Ops end-to-end` for ops) → contains base → change identical to the reviewed SHA). For a stacked or re-based PR whose diff comparison is noisy, the identity check is `git merge-tree --write-tree <base> <reviewed SHA>` giving the same tree as the CI-tested head:
 
@@ -164,7 +164,8 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 | 142 | EXIT-1h | 448a03e | PASS (EXIT reviewer, 5/5 mutants) | MERGED 7e9270c (~10:31 PM; tree identical to merge-tree of 448a03e with the base) |
 | 146 | CORE-TIDY | 7172643 | PASS (run/CI reviewer) | needs base merge; follow-up pins the read count against a copying parse (mutant F4) |
 | 141 | WATCH-1d (+ #121 WATCH-1c) | 05b0d85 | PASS (risk reviewer, 11/11 mutants; #121's import union and carry mutants re-checked) | needs base merge (a risk delta check only if the merge touches watch.ts, strategy.ts or the carry/snapshot code); then close #121 as merged via #141 |
-| 118 | API-1 | cd9d60f → ded20fb | PASS (run/CI reviewer; hand merge of one strategy.ts block checked, 3/3 mutants, 4678 tests) | needs base merge |
+| 133 | PAPER-1 | 3e3e1b3 | PASS (worker/facts: restart settle and the rest; run/CI: desk orphan_fill, late-buy guard, late-sell close) | after #123: the builder merges the base and carries #123's solUsd with its own legs; does not wait for #132 |
+| 118 | API-1 | cd9d60f → ded20fb | PASS (run/CI reviewer; hand merge of one strategy.ts block checked, 3/3 mutants, 4678 tests) | MERGED bfb2384 (~10:44 PM; check and e2e green on 88ee313, tree identical to merge-tree of ded20fb with the base); a code-only Deploy follows once its push CI is green |
 | 124 | RISK-LATCH | 5594923 | PASS (risk reviewer, 5/7 mutants, 2 equivalent or optional) | needs base merge; #147 then needs the risk reviewer's strategy.ts delta check; #132 keeps both DECISIONS sections |
 | 147 | RISK-FAULT | 911eac6 | PASS (risk reviewer, 4/4 mutants) | after #124: base merge, keep the latchable gate plus the fault line, log a valuation fault once per episode, then a risk delta check |
 | 125 | PERSIST-2 | 8f82e5d | PASS (PERSIST reviewer, 13/13 mutants) | base merged by hand at d8db7f1: PERSIST merge check PASS (change identical apart from the import union; seed still lands before the first read; 8/8 mutants) |
@@ -174,7 +175,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 | 131 | PERSIST-3 | 8fb5c23 | PASS (PERSIST reviewer, 12/13 mutants) | needs base merge after #125 |
 | 115 | RES-4 | debd4f7 | PASS (BT reviewer: C1c and C1d closed; stats reviewer: §4 line, preregistration sha, holderGrowth) | needs base merge |
 
-**In review or fixing:** #121 WATCH-1c (risk delta); #127 DATA-4 (PASS at 6854871; the gate-test exemption at 18094b4 is in a short data re-check; merges only after the chain ends, then ledger init with 700000);   #132 RISK-PARTIAL (risk review);    #41 BT-2 (FAIL at 9c1bc67: the study wiring of the SPA plan and capacity is untested; fixing); #133 PAPER-1 (desk.ts orphan_fill FAIL at 761e1b2: a late stop exit is not marked stopped out, and a re-trigger between abandon and late landing leaves the trade open; fixing in the desk, plus a late-buy guard that alerts and halts entries until M8);  #149 OPS-1j (ops review after #145 and #137); #135 PNPM-CLAIMS (ops review);   #140 SAMPLE-QR (run/CI review); #141 WATCH-1d (fix at 4418faa, base re-merge pending; full risk review after #147); #41 BT-2 (audit fixes building; S2 estimand passed with conditions C1–C6).
+**In review or fixing:** #121 WATCH-1c (risk delta); #127 DATA-4 (PASS at 6854871; the gate-test exemption at 18094b4 is in a short data re-check; merges only after the chain ends, then ledger init with 700000);   #132 RISK-PARTIAL (risk review);    #41 BT-2 (fix head 0b134bb: stats PASS; BT and worker/facts (core/gates staged) reviews pending; M1/M2 after #129 merges); PAPER-2 after #133 (an emptied position's owning exit can oversell in paper, giving phantom proceeds; #why must stay bounded);  #149 OPS-1j (ops review after #145 and #137); #135 PNPM-CLAIMS (ops review);   #140 SAMPLE-QR (run/CI review); #141 WATCH-1d (fix at 4418faa, base re-merge pending; full risk review after #147); #41 BT-2 (audit fixes building; S2 estimand passed with conditions C1–C6).
 
 **New cards from the six read-audits (all assigned, §5):**
 - DATA-PUB (urgent): data-scan.yml would publish a Helius-source day (raw getBlock responses in raw.jsonl.zst) to a public release and a 14-day artifact; chained runs use the workflow on the branch, so the gate must merge before the 09-21 chain's last run (about 11:30 PM–1 AM).
