@@ -32,7 +32,7 @@ import {
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
-import { markSettings, riskAccount } from './marks.ts';
+import { type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
 
 export const ACCOUNT_KEY = 'worker:account';
@@ -138,6 +138,8 @@ export interface StrategyDeps {
   readonly session: PolicySession;
   readonly rugs: RugConfig;
   readonly config: StrategyConfig;
+  /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
+  readonly markedHistory?: typeof markedHistory;
 }
 
 const NORMAL = { mayhemMode: false, transferFee: false, transferHook: false } as const;
@@ -934,8 +936,16 @@ export class LiveStrategy implements Strategy {
     const id = intentId(`en:${cand.mint}:${cand.tries}`);
     const rid = reservationId(`r:${cand.mint}:${cand.tries}`);
     const reserveLiq = effectiveQuoteReserve(m.pool);
+    // A failure while marking refuses this candidate (fail closed); it never stops the worker.
+    let account: AccountHistory;
+    try {
+      account = this.#marked(acct.history, ctx, sol, { fallback: false });
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : 'error';
+      return this.#fail(`risk mark failed: ${detail}`, [{ gate: 'worker', code: 'risk-mark-failed', detail }]);
+    }
     const r = evaluateEntry(
-      { session, mode: 'paper', clock: { now: () => ctx.now }, account: this.#marked(acct.history, ctx, sol, { fallback: false }), latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
+      { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
       {
         intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
         quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
@@ -967,7 +977,7 @@ export class LiveStrategy implements Strategy {
       if (p === undefined) return undefined;
       const m = this.#market(ctx, mint);
       return { quantity: p.quantity, market: typeof m === 'string' ? null : m };
-    }, sol, ctx.now.receivedAt, markSettings(this.#d.session.policy, this.#d.config.network), o);
+    }, sol, ctx.now.receivedAt, markSettings(this.#d.session.policy, this.#d.config.network), { ...o, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
   }
 }
 

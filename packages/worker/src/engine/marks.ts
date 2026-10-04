@@ -50,11 +50,16 @@ export const markedHistory = (h: AccountHistory, held: (mint: string) => HeldMar
 /**
  * The account risk judges, for entries and exits alike. On an exit (`fallback`), any failure while marking gives the
  * unmarked account back (every open position a total loss, as before marks existed): an exit is never blocked by it.
+ * On an entry it throws, and the strategy refuses that candidate. `mark` replaces `markedHistory` (tests inject a fault).
  */
-export const riskAccount = (h: AccountHistory, held: (mint: string) => HeldMarket | undefined, sol: Timed<MicroUsd> | null, nowMs: number, s: MarkSettings, o: { readonly fallback: boolean }): AccountHistory => {
-  if (!o.fallback) return markedHistory(h, held, sol, nowMs, s);
+export const riskAccount = (
+  h: AccountHistory, held: (mint: string) => HeldMarket | undefined, sol: Timed<MicroUsd> | null, nowMs: number, s: MarkSettings,
+  o: { readonly fallback: boolean; readonly mark?: typeof markedHistory },
+): AccountHistory => {
+  const mark = o.mark ?? markedHistory;
+  if (!o.fallback) return mark(h, held, sol, nowMs, s);
   try {
-    return markedHistory(h, held, sol, nowMs, s);
+    return mark(h, held, sol, nowMs, s);
   } catch {
     return h;
   }

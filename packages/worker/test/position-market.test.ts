@@ -9,7 +9,7 @@ import { parsePool, poolKey } from '../../core/src/gates/index.ts';
 import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { executableMark } from '../../core/src/exits/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
-import { markSettings } from '../src/engine/marks.ts';
+import { markSettings, markedHistory } from '../src/engine/marks.ts';
 import { MARK_PREFIX, TRIPPED_PREFIX } from '../src/engine/strategy.ts';
 import { DEV, MINT, Market, SOL_PRICE, SUPPLY, makeWorker, passingMarket } from './worker-harness.ts';
 
@@ -124,6 +124,35 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     expect(exit).toContain(`${MARK_PREFIX}unknown`);
     expect(exit.find((x) => x.startsWith(TRIPPED_PREFIX))?.split(',').some((c) => c.endsWith('mark_unknown'))).toBe(true);
     expect(h.worker.book.positions[pid]!.status).not.toBe('open');
+    await h.worker.stop();
+  });
+
+  it('a failure while marking refuses the entry (logged), never stops the worker, and the exit still fires on the unmarked account', async () => {
+    let fail = true;
+    const faulty: typeof markedHistory = (...args) => {
+      if (fail) throw new Error('injected mark fault');
+      return markedHistory(...args);
+    };
+    const h = makeWorker({ markedHistory: faulty });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h);
+    m.tradesStart(h.worker.feed.releasedThrough - 100n);
+    m.accountsRead(h.worker.feed.releasedThrough);
+    await until(m, () => false, 8_000, () => m.pool());
+    expect(position(h)).toBeUndefined();
+    expect(decisions(h).some((r) => r.some((x) => x.includes('risk mark failed: injected mark fault')))).toBe(true);
+    expect(h.logs.some((l) => l.includes('Engine step failed'))).toBe(false);
+    // Still stepping: with marking healthy again, the same candidate enters.
+    fail = false;
+    expect(await until(m, () => position(h)?.status === 'open', 40_000, () => m.pool())).toBe(true);
+    const pid = position(h)!.id;
+    await until(m, () => false, 2_000, ticks(h, m));
+    // Marking fails again: the stop still fires, judged on the unmarked account (the position a total loss).
+    fail = true;
+    m.chainSwap('sell', (m.chainState.baseReserve * 20n) / 100n, h.worker.feed.openSlot);
+    expect(await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 20_000, ticks(h, m))).toBe(true);
+    expect(decisions(h).find((r) => r[0] === 'exit')).toContain(`${MARK_PREFIX}unknown`);
+    expect(h.logs.some((l) => l.includes('Engine step failed'))).toBe(false);
     await h.worker.stop();
   });
 
