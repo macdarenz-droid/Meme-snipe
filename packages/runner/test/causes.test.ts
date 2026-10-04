@@ -149,9 +149,10 @@ describe('helpers', () => {
     expect(readdirSync(dir)).toEqual([]);
     expect(calls[0]).toMatch(/^\/bin\/sh -c .*age -d -i \/etc\/zeroed\/age\/host\.key .*tar -x -C "\$1"/);
     expect(calls[0]!.endsWith(` sh ${dir}`)).toBe(true);
-    expect(calls[1]).toBe('systemctl start zeroed-worker-tabletop.service');
+    expect(calls[1]).toBe(`chown -R zeroed-worker:zeroed-worker ${dir}`);
+    expect(calls[2]).toBe('systemctl start zeroed-worker-tabletop.service');
     await c.tabletop({ restore: false });
-    expect(calls.slice(2)).toEqual(['systemctl start zeroed-worker-tabletop.service']);
+    expect(calls.slice(3)).toEqual([`chown -R zeroed-worker:zeroed-worker ${dir}`, 'systemctl start zeroed-worker-tabletop.service']);
     writeFileSync(join(dir, 'journal.jsonl'), 'j');
     await c.endTabletop();
     expect(calls.at(-1)).toBe('systemctl stop zeroed-worker-tabletop.service');
