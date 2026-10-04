@@ -1679,7 +1679,7 @@ From the external audit of d92b73e (items M4, M5 and M8's rent part). One settle
 - **2026-10-04 · What a restart still resets** (in memory only; each named so the qualifying run's restart drills cannot blank a gate silently):
   - Creates coverage (H14): continuous only when the downtime fill completes within 90 s; otherwise a lossy gap restarts the 14 days (PERSIST-1, WORKER-1e).
   - Graduates whose survival mark falls inside the downtime (`producer.#pending`): never measured, so those days hold fewer samples.
-  - Candidates (`strategy.#cands`): a migration seen before the restart is forgotten, so a coin inside its 60–240 min window is neither evaluated nor recorded as a counterfactual after it.
+  - Candidates (`strategy.#cands`) and REC-1's tail watches (`strategy.#tail`): kept since RESTART-KEEP (below), with the candidates' price bars. The pool's trade state comes back through S0-ZERO's catch-up from the saved migration slot.
   - Candles and pool trade state (`producer.#books`, `#reserves`, `#chains`, `#streams`): rebuilt from live events; pool trade streams get a restart gap and FILL-2's top-up; until it closes, H5/H11 and held pool facts are flagged.
   - Insider and funder reads (`producer.#funders`, `#walletMints`, `#insidersSeen`): read again on demand (one mint-history read per candidate).
   - SOL/USD (`producer.#sol`): re-read at start over the kept window (27 h), so the regime's SOL change is known within one read.
@@ -1740,6 +1740,16 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 
   The worker codes or drops anything that fails (`fits`) before building the summary. The watchdog refuses the body if either guard fails. Tests plant an age key, GitHub tokens, IPv4 and IPv6 addresses, a tailnet name, URLs, hostnames, a Telegram token, a UUID key, a 64-byte secret, an email address, a PEM header and a chat id in every free-text field on both sides. Residual: an amount field can hold any digits, but the worker fills amounts only from its own numbers.
 - **Risk recorded, fixed separately (KEY-ROTATE-SAFE, next card):** a Deploy run while `DEPLOY_CODE` holds an already-used code gives the watchdog a new `HEARTBEAT_HMAC_KEY` (`publish.sh` deploys and sets it before pickup). The server has wiped its code (`zeroed-pair`, `shred -u "$DEPLOY_CODE_FILE"`) and exits before downloading, so it keeps the old key. Every heartbeat then gets 401: a stale-heartbeat alert fires and `/pause` stops reaching the worker. It does not occur today: tonight's Deploy log says "No DEPLOY_CODE secret: code update only, no keys sent." The fix rotates the watchdog key only after pickup is confirmed, and keeps or restores the old key on a timeout.
+- **2026-10-05 · When it posts (SUMMARY-CLOCK, supervisor card).**
+  - **The bug.** The timer started at each start, 30 minutes later, and nothing about it was kept on disk. A worker restarting more often than every 30 minutes never posted (5 Oct: deploy 5:41, a restart about 6:27, nothing in the reports).
+  - **The fix.** `SummaryClock` posts on the Melbourne wall-clock slots of `ZEROED_SUMMARY_MS` (:00 and :30, one minute after) and just after Melbourne midnight. It also posts once 3 minutes after each reconciled start, unless the watchdog took a post less than 10 minutes before. That moment is `last_posted_ms` in `summary.json`, the bot's own state (supervisor-approved). The midnight final is unchanged: the day that ended is posted `final` until the watchdog takes it. A process that starts at midnight itself posts the final on the 00:01 slot.
+  - **Evidence.** `packages/worker/test/summary.test.ts` "SUMMARY-CLOCK" runs processes on one manual clock and one state directory:
+    - restarts every 20 minutes for 6 hours post on all 12 half-hours;
+    - restarts every 5 seconds post on every half-hour and never twice within 10 minutes;
+    - restarts every 4 minutes post 3 minutes in only after a 10-minute quiet;
+    - midnight gives exactly one final.
+
+    All four fail on the old schedule (hand mutant M1). M2 (no 10-minute check), M3 (`last_posted_ms` not kept) and M4 (no midnight post) are each killed.
 
 ## Growing files read whole (GROWTH-SWEEP, `runner/src/lines.ts`, `run/deployer-store.ts`, `run/booked.ts`, `runner/src/runner.ts`)
 
@@ -1977,3 +1987,99 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **In the daily summary.** Each real boot's start line names its restart kind and how the previous process ended (`exit`: clean, crash, killed or planned). `worker` in the summary gains `restarts: {planned, deploy, unplanned}` (that day's boots), `exits` (counts by that fixed enum) and `crash_sites` (`{error, file, line, event, count}`, at most 8, most frequent first, folded from the crashing process's own stop line). The watchdog's exact-shape check grew with them (supervisor approval: the bot's own diagnostic data, no personal data): `ERROR` is an Error's name, `FILE` a path under `packages/<pkg>/(src|test)/` with no ':', and `EVENT` up to 3 ':'-joined parts that each start with a letter and have no '.', so a URL, a host:port or a message fits none of them; a file that does not fit drops its line too, and `FORBIDDEN` still runs over the whole text. Both sides ship in one release (Deploy runs reports.sh, which redeploys the watchdog).
   - **Planned restarts.** The runner writes `planned_restart` just before a crash or reboot drill (a SIGKILL otherwise reads as an OOM) and removes it if the kill or reboot throws.
   - **Evidence.** `packages/worker/test/restart-alert.test.ts`: each exit kind through real stops, a crash stop, a kill and the worker's own loop; a planted URL with `api-key=` never reaches the stop line, `last_exit` or the heartbeat; the pre-step's handoff of a crash and of a drill marker, a first start's null handoff, the pre-step's start line not counted, the restart recorded once, and the counts dropping a day later. `packages/runner/test/runner.test.ts`: the marker is written before a drill and removed when the kill fails. `packages/ops/test/summary.test.ts`: a URL, a host:port and a message-like string are refused in each new field, and the new shape is exact. The worker summary test folds six unit starts (two crashes at one site, a drill, a clean stop, a kill) into the counts and a summary the watchdog accepts, with no trace of the planted URL. The hand mutants of each guard are killed.
+
+## Money totals with the account's costs (APP-MONEY, AUDIT-RM1 F4, `run/api.ts` `moneyEvents`, `run/account.ts` `costs`)
+- **2026-10-05 · One list of account costs.**
+  - `PaperAccount.costs()` is the account's costs that are no trade's (today the wallet's setup rent). Risk reads it in `fact()`, and the app's API reads the same list.
+  - `moneyEvents` puts each closed trade's net at its close and each account cost (as a loss) when booked, oldest first. These are the items core risk counts in equity.
+- **2026-10-05 · The totals use it.**
+  - Stats net and max drawdown: trades and costs in time order.
+  - Charts: cumulative and daily net; costs by day; costs by kind, where setup rent is `rentKeptUsd` and a failed entry's fees (PAPER-1's `failed_entry`, once merged) are `networkFeeUsd`.
+  - Calendar: a day's net (its trade count stays trades only).
+  - Win rate and mean net stay per trade.
+  - The backtest report already counts its stray costs this way, so the two compare.
+- **2026-10-05 · The daily-loss meter is R7's figure.**
+  - The strategy's status read (`#readStops`, the same input the entry path judges: account fact, marks, SOL price) now keeps core's `riskSnapshot.dayLoss`. It covers trades, account costs and marked open losses, with gains offsetting.
+  - The meter shows it while that read is current. Unknown or old: no meter (never a 0); the risk-unknown chip shows.
+  - Between a fill and the next read, today's realised loss (trades and costs, gains offsetting) also counts, for the meter and the daily-loss chip (API-1's probe).
+    - It is never more than R7's figure on the same data, because marked losses only add.
+    - Before, the meter summed today's losing trades only, without costs or offsetting gains.
+- **2026-10-05 · Partial sales at their own time (risk review 2).**
+  - `moneyEvents` counts each partial sale's result at its own time, open trades' too, and a closed trade's remainder (its net less its parts) at the close. Core risk counts equity the same way after RISK-PARTIAL (#132).
+  - The meter's realised figure, the calendar, the charts and stats net therefore split days as core does.
+  - It reads #132's `partials` shape (`atMs`, `pnl`).
+- **2026-10-05 · Stray fees and SOL net (base merge after #133 and #132).**
+  - PAPER-1's stray fees of entries that never filled (`strayFees`, `strayFolded`) are now in `PaperAccount.costs()` as `failed_entry`, so risk's `fact()` and the app's totals read one list. `costRecords()` is the same list with each cost's lamports.
+  - The base's SOL net in stats (`netSol`) counts the account costs' lamports too, so it equals the dollar net's items.
+  - The core comparison for partials is added: a history with a partial yesterday and the close today gives core's `dayLoss` and the app's meter the same figure.
+  - `open_trade` (#168) is not in the base, so no mapping is added; it comes with whichever lands second.
+- **2026-10-05 · Evidence.**
+  - `packages/worker/test/app-money.test.ts`: 11 tests, all failing before. They cover:
+    - setup and no trades: net, drawdown, curve, day and kind all read −setup;
+    - trades with costs in time order;
+    - a real worker's inputs carry the account's costs;
+    - the meter equals core's `dayLoss` on the same inputs;
+    - a cost booked today counts;
+    - a gain offsets;
+    - unknown or old risk means no meter;
+    - a current R7 read from before a losing close or a cost shows the higher realised figure (risk review 1);
+    - a partial yesterday and the close today split as core splits them, and an open trade's partial counts;
+    - the day split equals core risk's `dayLoss` on the same history.
+  - `paper-settlement.test.ts`: setup and one failed entry, no trades, reach the app's totals through `costs()`.
+  - `status-stops.test.ts` gains the new field in its expectations; its probe still passes.
+  - Hand mutants, all caught (21):
+    - stats, drawdown, charts or calendar on trades only; the wrong kind;
+    - the meter from realised loss only; the meter as R7 only; no realised chip; 0 when unknown; an old read accepted; realised from losing items only;
+    - the strategy without `dayLoss`; the worker without costs; mean net with costs;
+    - partials counted at the close; the close's whole net; open trades' partials ignored;
+    - stray records left out of `costs()`; `netSol` without costs; a failed entry under the wrong kind; partials at the close against core.
+
+## Candidates across restarts (RESTART-KEEP, `persist/state.ts` `candidates`, `run/worker.ts`)
+
+- **2026-10-05 · Why.** S0 evaluates a coin 60–240 min after its migration, and candidates lived only in memory, so every Deploy forgot every candidate before its moment (S0-ZERO investigation at d3cfc14). After a restart a coin created before it also rejected at H9 and H12–H14: its create was fetched only when this process had seen its create log.
+- **2026-10-05 · Design: saved candidates plus the downtime's migrations (supervisor approval, hybrid A + B for the downtime only).**
+  - **Saved.** The saved state gains an optional `candidates` field. Each entry holds mint, pool, migration time and slot, `tries`, the last evaluation's time and reason, its price bars, and the signatures of its create, curve completion and migration (null when not seen). These are public chain data plus the strategy's own state: supervisor approval 2026-10-04 under the stored-data ruling of 2026-10-03. The price bars (public market data) were added after the design and approved by the supervisor under the same rule on 2026-10-05. A file without the field (written before RESTART-KEEP) loads with no candidates. A malformed entry, a mint named twice, or an entry dated after the saved moment discards the file, as any other defect does.
+  - **Restored as of the restore.** The candidates come back with the restore fact, which is recorded, so a replay rebuilds them. One migrated, evaluated or with a bar after the restore moment refuses the whole list (`candidates refused`). Each restored candidate is named (`candidate restored`). Gates and spend are judged again; nothing is carried over as passed.
+  - **Read again at confirmed.** Once the seed is placed, each restored candidate's migration and curve-completion transactions are fetched again. Its create is fetched too, or looked up when this process never saw it.
+  - **A create this process never saw** (a restored candidate's, or any coin created before this start) goes through CREATE-AFTER-RESTART's `#createFor`: by its signature when one is known (saved or seeded), else SEED-2's lookup from the mint's oldest signature, once, journaled and budget-charged. (RESTART-KEEP built its own lookup first; it was dropped in the base merge for the one in the base.)
+  - **The downtime's migrations.** The migration authority's signatures after the saved slot, up to the head seen after the live watch started, are read with SEED-1's paging and budget rules (`DOWNTIME_CREDIT_CAP` 3,000). Each transaction goes on the feed at confirmed as the live watch's fetch would put it; the feed drops what both read. A curve completion in its own transaction is read from the curve: the last transactions before the migration, 1 page of 5. A partial read is logged, and the coins it missed are not candidates.
+  - **REC-1 tail watches.** The saved state also gains `tails` (mint, pool, until when; optional, checked on save and load). They come back with the restore fact, so a rejected candidate's counterfactual pool stays watched to windowEnd + tMax across a restart; the downtime stays a gap on that pool's stream. One that ended by the restore is dropped and takes no place under the cap; past the cap the rest are logged `no tail`.
+  - **Intent ids.** An entry's try number is past both the book's entry intents for the mint and the saved `tries`, so a restart never repeats an intent id.
+  - **One budget object.** The downtime reads spend from `main.ts`'s single fill budget (S0-ZERO's), shared with the seed and the pool fills, so none overwrites another's spend.
+- **2026-10-05 · Full B rejected.** Rediscovering 240 min of migrations on every start would pay for coins the saved list already holds, and busy pools' fills hit the 10,000-signature page cap. A covers the candidates held at the save; B over the downtime covers only what migrated while the worker was down.
+- **2026-10-05 · The pool's trades from the migration (with S0-ZERO, #166).** The restore puts each candidate's saved migration slot into S0-ZERO's `#migrationSlot`, so the restored pool is watched with `coverFrom` at its migration. Its catch-up fill then reads the pool from its creation, which H11 needs; without the saved slot every restored candidate would reject as H16 `gap` (S0-ZERO builder's finding). The candidate's own copy of the slot is gone; the map is what is saved.
+- **2026-10-05 · The downtime's price bars, from the filled trades (supervisor ruling: blocking).** The entry's ATR stop needs a contiguous run of 14 bars (U2: 1-minute bars, so 14 minutes). The saved bars end at the save, so after a restart the run broke and the entry waited 14 fresh minutes, inside the 60–240 min window. (An earlier note here said 70 minutes; that was U1's 5-minute bars, not S0's U2.) The rule is parity: the rebuilt bars are the ones a never-restarted worker would hold.
+  - **What live holds.** `#track` samples a candidate's spot only when a pool fact arrives. For a candidate that is after each swap (FACTS-1's chain puts the pool after the swap) and at an account read; nothing reads it on a timer. So a minute with no trade and no read has no bar, and the ATR's run restarts there.
+  - **One clock: block time (run/CI ruling, golden rule).** Live used to bucket a sample by its receipt time, the rebuild by block time, so a trade received after its minute ended landed in different bars. Both now use block time, which is also the only time the historical backtest has. The anchor is the newest released PumpSwap swap: its own `txSlot` (a fill's trades sit at the open slot, so not the event's moment slot) and its `timestamp`. A swap's pool update is dated by that pool's own last released swap, exactly (its pool fact follows it at the same moment), whatever other pools' swaps moved the anchor to and in any slot order, so a fill's older swap is dated exactly too. Only an update with no swap of its own (an account read, a snapshot) is dated at its slot from the anchor, 400 ms a slot, never past the engine clock. Positions' bars follow the same rule.
+  - **Stale anchor (supervisor ruling, 2026-10-05).** More than 150 slots (about 60 s) from the anchor, the 400 ms estimate can drift by tens of seconds (1,500 slots at 420 ms is 30 s), enough to cross a minute and move the ATR. A sample that far from its anchor is dated at its receipt time, capped at the engine clock, as with no anchor at all. The anchor comes only from released events, so a replay dates every sample the same way.
+  - **Late trades, choice (a).** A trade whose block time falls in a bar that has already ended is still added to that bar. This is deterministic in live, a restart and a replay alike. The ATR stays blind: it counts a bar only once the engine clock is past its end, and a bar it already counted can still widen with a late trade. Holding bars back by a finality margin (b) would delay every ATR by the margin for a case one block wide. Per pool, swaps arrive in chain order, so a late trade never lands behind a later bar of the same pool. A slot-estimated sample that falls in an earlier bar only widens it and never moves its close back. If no bar exists there, it makes one, so an estimated read can create a bar in an otherwise quiet minute (deterministically, in live and replay alike).
+  - **The rebuild.** The restore marks each candidate's downtime, from its saved last bar's minute (or its migration) to the restore. Each swap of it the catch-up releases is sampled as live samples it: the pool right after the swap (`swapEventState`, the producer's own chain step), at `#track`'s spot formula, in the swap's block-time minute, deduplicated by signature and reserves. A quiet minute gets no bar.
+  - **Order.** The fill's trades and its close reach the feed at one moment, where events go in id order (signature order), not chain order. So the close is noted and the merge waits for the first later event. The trades are put in chain order by their reserves: each one's before-state is the previous one's after-state. That chain must take every trade into one run with block times that never go back, which also proves none is missing.
+  - **The merge.** On a complete close (`resume`) the rebuilt bars go in. The saved last bar takes the trades after the save, and a bar that live samples made after the restart keeps its own close.
+  - **Stays unknown.** After a lossy close (a bounded gap), a broken chain or a swap that does not replay, the downtime has no bars and the ATR waits for a fresh run. A bar is never guessed.
+  - **Not rebuilt.** An account read inside the downtime cannot be rebuilt (none happens on a timer for candidates).
+  - **Not exact, named.** After a restart the anchor is empty until the first swap is released, so a read before it takes its receipt time. Block times are whole seconds, so an estimate from an anchor can be up to 1 s early.
+- **2026-10-05 · Found while testing, for #166 (S0-ZERO); fixed in the base by FILL-ORDER.** A fill's transactions placed `after` reached the engine at one moment in id order, not chain order. FILL-ORDER now keeps their chain order; the rebuild still orders the downtime's trades by their reserve chain, so it does not depend on arrival order either way.
+- **2026-10-05 · Evidence.** `packages/worker/test/restart-keep.test.ts`, 40 tests:
+  - the saved shape;
+  - a restart restores the candidate, reads its migration and create again, and evaluates it once its window opens;
+  - the strategy refuses lists dated after the restore or malformed;
+  - the saved tries make the next entry `en:<mint>:6` after five saved tries, an entry that needs the restored bars;
+  - a restored candidate whose create was never seen is looked up through `#createFor` once the seed is placed;
+  - the downtime read asks the migration authority from the saved slot;
+  - a mainnet migration during the downtime is read with its curve completion and shortlisted;
+  - tail watches restored (a live one watched, an ended one dropped without taking a place under the cap, the cap logged, a malformed list refused) and saved again after a restart;
+  - a restored pool is watched from its saved migration slot (strategy and worker);
+  - parity (worker A never restarted, worker B saved, restarted and caught up on the same real swaps; the fill replays every trade since the migration):
+    - `#track` (strategy, slots advancing with time): a fresh anchor dates a read by its slot, and an estimate past now lands in now's bar; 45 slots are 18 s (400 ms a slot); the bound at 150 slots still estimates and 151 takes the receipt time; a stale anchor (1,500 slots) gives the receipt time, not an estimate a minute early; the anchor takes the swap's `txSlot`, not its open slot, and moves only forward; a swap's pool update takes its own swap's block time after another pool's swap at a higher slot moved the anchor (12:00:00 stays minute 12), and a fill's older swap released after a newer one is dated by its own time; a late sample in an earlier bar widens it, keeps the order and keeps its close;
+    - a complete catch-up gives the same bars, bar for bar, including a quiet minute with none, the saved last bar's minute, a trade at block time 11:59.8 received at 12:00.3 (minute 11 in both), and the restart's minute with a live read, and the same ATR;
+    - trades in any arrival order give the same bars;
+    - the same trade from a confirmed and a processed log, after a newer one in its minute, counts once;
+    - after a lossy close, a swap that does not replay, or a fill missing a trade, the downtime has no bars;
+  - discarded files: a candidate dated after the saved moment, named twice or malformed, a tail list malformed or naming a mint twice;
+  - saveState refuses a candidate migrated, evaluated or with a bar after the snapshot moment, or named twice, and the old file stays whole (a bad save would make the next load discard the index and coverage);
+  - a v1 file (before G4b) is checked the same way on load;
+  - an older file loads.
+
+  Hand mutants, each killed: 55 across the strategy, worker and state (no save, no restore, tries from the book only, each dated-after and malformed check, bars or tries not restored, the migration signature not noted, restored transactions not read, no create lookup at restore, no downtime read, saved signatures not reseeded, no load check, no duplicate check, no curve read, records not ingested, credits not counted; tails not saved, not restored, not in the restore fact, ended kept, no cap, malformed accepted; the migration slot not given to the catch-up; bars: a quiet minute filled flat, no dedupe, no merge, a lossy close merged, a refused swap ignored, arrival order kept, the chain not checked, the merge at the close's own moment, the opening gap taken as the close, no downtime marked, the restart minute's live close or the saved bar's close not kept, the price before the trade; no save-side candidate check; no load-side tail check; the rebuild's minute one second late (R9); live bars on receipt time; the estimate not capped at now; no earlier-bar branch; the earlier bar's close moved; the anchor on the moment slot; no stale bound; every anchor stale; the pool's own swap not used; 450 ms a slot; the anchor in any order; the bound at 151 or taken at 150; the pool's own swap kept forward only). One equivalent mutant: taking trades from before the downtime only adds back prices the saved bars already hold.
+

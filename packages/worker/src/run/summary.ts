@@ -18,6 +18,8 @@ import type { PaperTrade } from './account.ts';
 import { lamportsUsd, melbourneDate, usdText } from './api.ts';
 import { SEEDING } from '../engine/strategy.ts';
 import { StateFile } from './state.ts';
+import { melbourneDay } from '../../../core/src/risk/index.ts';
+import type { TimerHandle, Timers } from '../scheduler/timers.ts';
 
 /** One day's counts, folded from its journal lines. */
 export interface DayFold {
@@ -44,6 +46,8 @@ export interface SummaryState {
   days: Record<string, DayFold>;
   /** The last day posted (kept across restarts), so the day that ended gets its final post once. */
   lastDay?: string | null;
+  /** When the watchdog last took a post (SUMMARY-CLOCK): a start soon after one does not post again. */
+  last_posted_ms?: number | null;
 }
 
 export const emptySummaryState = (): SummaryState => ({ v: 1, offset: 0, halts: [], days: {}, lastDay: null });
@@ -390,6 +394,11 @@ export class Summarizer {
     return this.#state;
   }
 
+  /** When the watchdog last took a post, kept across restarts; null before the first. */
+  get lastPostedMs(): number | null {
+    return this.#state.last_posted_ms ?? null;
+  }
+
   async tick(): Promise<void> {
     if (this.#busy) return;
     this.#busy = true;
@@ -407,7 +416,7 @@ export class Summarizer {
     const cutoff = new Date(now - FOLD_DAYS_MS).toISOString();
     const size = await stat(this.#d.journalPath).then((x) => x.size, () => null);
     // A journal shorter than the offset was replaced: count again from its start.
-    if (size !== null && size < this.#state.offset) this.#state = { ...emptySummaryState(), lastDay: this.#state.lastDay ?? null };
+    if (size !== null && size < this.#state.offset) this.#state = { ...emptySummaryState(), lastDay: this.#state.lastDay ?? null, last_posted_ms: this.#state.last_posted_ms ?? null };
     const state = this.#state;
     const r = await foldNewLines(this.#d.journalPath, state.offset, (text) => foldText(state, text, cutoff), (offset) => {
       state.offset = offset;
@@ -422,9 +431,13 @@ export class Summarizer {
     this.#save();
     if (ended !== null && (await this.#post(ended, true, now))) {
       this.#state.lastDay = today;
+      this.#state.last_posted_ms = now;
       this.#save();
     }
-    await this.#post(today, false, now);
+    if (await this.#post(today, false, now)) {
+      this.#state.last_posted_ms = now;
+      this.#save();
+    }
   }
 
   #save(): void {
@@ -455,17 +468,71 @@ export class Summarizer {
   }
 }
 
-/** Milliseconds to the next post: every `everyMs`, and just after the next Melbourne midnight. */
+/** The scheduled posts land this long after each wall-clock slot (:00 and :30 with the default 30 minutes). */
+const SLOT_LAG_MS = 60_000;
+/** A reconciled start posts once, this long after it. */
+export const SUMMARY_AFTER_START_MS = 180_000;
+/** ... unless the watchdog took a post less than this long before. */
+export const SUMMARY_MIN_GAP_MS = 600_000;
+
+/**
+ * Milliseconds to the next scheduled post: the next Melbourne wall-clock slot (every `everyMs` from local midnight, so
+ * :00 and :30 with 30 minutes) plus a short lag, or just after the next Melbourne midnight when that comes first. The
+ * slots come from the clock alone, never from when the process started, so a worker that restarts often still posts.
+ */
 export const nextSummaryDelay = (nowMs: number, everyMs: number): number => {
-  const today = melbourneDate(nowMs);
-  // The first minute boundary at which the Melbourne date changes, found by stepping (DST-safe, at most a day).
-  let lo = nowMs;
-  let hi = nowMs + everyMs;
-  if (melbourneDate(hi) === today) return everyMs;
-  while (hi - lo > 1000) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (melbourneDate(mid) === today) lo = mid;
-    else hi = mid;
-  }
-  return Math.max(1000, hi - nowMs + 5_000);
+  const day = melbourneDay(nowMs);
+  const lag = Math.min(SLOT_LAG_MS, Math.floor(everyMs / 30));
+  const slot = day.start + (Math.floor((nowMs - day.start - lag) / everyMs) + 1) * everyMs + lag;
+  return Math.max(1000, Math.min(slot, day.end + 5_000) - nowMs);
 };
+
+export interface SummaryClockDeps {
+  readonly timers: Timers;
+  readonly everyMs: number;
+  /** One summary post; resolves when done and never rejects (Summarizer.tick). */
+  readonly tick: () => Promise<void>;
+  /** When the watchdog last took a post (Summarizer.lastPostedMs, from summary.json). */
+  readonly lastPostedMs: () => number | null;
+}
+
+/**
+ * SUMMARY-CLOCK: when the summary posts. On every wall-clock slot and just after Melbourne midnight (nextSummaryDelay),
+ * and once SUMMARY_AFTER_START_MS after a reconciled start unless the watchdog took a post less than
+ * SUMMARY_MIN_GAP_MS before (so a worker restarting every few seconds does not post on every start).
+ */
+export class SummaryClock {
+  readonly #d: SummaryClockDeps;
+  #slot: TimerHandle | null = null;
+  #afterStart: TimerHandle | null = null;
+  #stopped = false;
+
+  constructor(d: SummaryClockDeps) {
+    this.#d = d;
+  }
+
+  start(): void {
+    const d = this.#d;
+    const run = (): void => {
+      if (this.#stopped) return;
+      void d.tick().finally(() => {
+        if (!this.#stopped) this.#slot = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.everyMs));
+      });
+    };
+    this.#slot = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.everyMs));
+    this.#afterStart = d.timers.setTimeout(() => {
+      this.#afterStart = null;
+      if (this.#stopped) return;
+      const last = d.lastPostedMs();
+      const ago = last === null ? null : d.timers.now() - last;
+      if (ago !== null && ago >= 0 && ago < SUMMARY_MIN_GAP_MS) return;
+      void d.tick();
+    }, SUMMARY_AFTER_START_MS);
+  }
+
+  stop(): void {
+    this.#stopped = true;
+    if (this.#slot !== null) this.#d.timers.clearTimeout(this.#slot);
+    if (this.#afterStart !== null) this.#d.timers.clearTimeout(this.#afterStart);
+  }
+}

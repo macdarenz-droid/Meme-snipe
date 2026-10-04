@@ -10,8 +10,10 @@ import type { MicroUsd } from '../../core/src/units/index.ts';
 import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
 import {
-  Summarizer, buildSummary, emptySummaryState, foldLine, foldNewLines, foldText, haltCode, nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
+  SUMMARY_AFTER_START_MS, SUMMARY_MIN_GAP_MS, Summarizer, SummaryClock, buildSummary, emptySummaryState, foldLine, foldNewLines, foldText, haltCode,
+  nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
 } from '../src/run/summary.ts';
+import { ManualTimers } from '../src/scheduler/timers.ts';
 import { MINT, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
 // 2026-10-04 12:00 Melbourne (AEDT, UTC+11) = 01:00 UTC.
@@ -345,8 +347,11 @@ describe('the post', () => {
     expect(posts[1]!.t).toBeGreaterThan(posts[0]!.t);
   });
 
-  it('posts every 30 minutes and just after Melbourne midnight', () => {
-    expect(nextSummaryDelay(NOON, 1_800_000)).toBe(1_800_000);
+  it('posts on the Melbourne :00 and :30 slots (plus a minute) and just after Melbourne midnight', () => {
+    // 12:00 Melbourne: the next post is 12:01; from 12:01 itself, 12:31; from 12:17, 12:31.
+    expect(nextSummaryDelay(NOON, 1_800_000)).toBe(60_000);
+    expect(nextSummaryDelay(NOON + 60_000, 1_800_000)).toBe(1_800_000);
+    expect(nextSummaryDelay(NOON + 17 * 60_000, 1_800_000)).toBe(14 * 60_000);
     const late = Date.parse('2026-10-04T12:50:00.000Z');
     expect(nextSummaryDelay(late, 1_800_000)).toBeGreaterThanOrEqual(10 * 60_000 + 5_000);
     expect(nextSummaryDelay(late, 1_800_000)).toBeLessThanOrEqual(10 * 60_000 + 6_000);
@@ -413,5 +418,112 @@ describe('the summary timer', () => {
     const after = posts.length;
     await new Promise((r) => setTimeout(r, 100));
     expect(posts.length).toBe(after);
+  });
+});
+
+// SUMMARY-CLOCK: the posts follow the Melbourne wall clock, not the process's start, and a start soon after a post does
+// not post again. Each worker process is a Summarizer and a SummaryClock on the same state directory (summary.json),
+// stopped when the next one starts, on one manual clock moved in small steps.
+describe('SUMMARY-CLOCK: a worker that restarts still posts', () => {
+  // 2026-10-05 18:00 Melbourne (AEDT, UTC+11).
+  const EVENING = Date.parse('2026-10-05T07:00:00.000Z');
+  const HALF = 1_800_000;
+  type Post = { day: string; final: boolean; at: number };
+
+  const simulate = async (o: { from: number; hours: number; everyMs: number; stepMs: number; guard?: boolean }) => {
+    const dir = tempState();
+    const timers = new ManualTimers(o.from);
+    const posts: Post[] = [];
+    const http: HttpClient = async (req) => {
+      const b = JSON.parse(req.body!) as { day: string; final: boolean; generated_at: string };
+      posts.push({ day: b.day, final: b.final, at: Date.parse(b.generated_at) });
+      return { status: 200, header: () => null, text: '{"ok":true,"written":true}' };
+    };
+    // Each step waits for the posts it started (file and HTTP work is real I/O), so a process stops between posts.
+    const inflight: Promise<void>[] = [];
+    const flush = async () => {
+      while (inflight.length > 0) await inflight.shift();
+    };
+    const end = o.from + o.hours * 3_600_000;
+    let starts = 0;
+    while (timers.now() < end) {
+      starts++;
+      // Each process writes its start line, as the worker does (the day's counts the final post is made from).
+      appendFileSync(join(dir, 'journal.jsonl'), `${JSON.stringify({ seq: starts, ts: at(timers.now()), boot: `b${starts}`, kind: 'start', git_sha: 'a'.repeat(40), entry_rule: 'S0', recorder: true })}\n`);
+      const sz = new Summarizer({
+        journalPath: join(dir, 'journal.jsonl'), stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => timers.now(), log: () => {},
+        live: () => inputs(),
+      });
+      const clock = new SummaryClock({ timers, everyMs: HALF, tick: () => {
+        const p = sz.tick();
+        inflight.push(p);
+        return p;
+      }, lastPostedMs: () => (o.guard === false ? null : sz.lastPostedMs) });
+      clock.start();
+      const stopAt = Math.min(end, timers.now() + o.everyMs);
+      while (timers.now() < stopAt) {
+        timers.advance(Math.min(o.stepMs, stopAt - timers.now()));
+        await flush();
+      }
+      clock.stop();
+      await flush();
+    }
+    return { posts, starts };
+  };
+  /** Every :01 and :31 Melbourne in [from, to). */
+  const slots = (from: number, to: number) => {
+    const out: number[] = [];
+    for (let t = from - (from % HALF) + 60_000; t < to; t += HALF) if (t >= from) out.push(t);
+    return out;
+  };
+
+  it('restarted every 20 minutes for 6 hours, it posts at every half-hour it is up', async () => {
+    const { posts, starts } = await simulate({ from: EVENING, hours: 6, everyMs: 20 * 60_000, stepMs: 5_000 });
+    expect(starts).toBe(18);
+    const want = slots(EVENING, EVENING + 6 * 3_600_000);
+    expect(want).toHaveLength(12);
+    for (const t of want) expect(posts.some((p) => p.at === t), new Date(t).toISOString()).toBe(true);
+    // Plus the one after the first start (nothing posted before it); the later starts are within 10 minutes of a post
+    // or 3 minutes after one: 18:03 is 2 minutes after 18:01, so it is skipped too.
+    expect(posts.every((p) => !p.final)).toBe(true);
+  });
+
+  it('restarted every 5 seconds, it posts at most once per 10 minutes, and still on the half-hours', async () => {
+    const { posts, starts } = await simulate({ from: EVENING, hours: 2, everyMs: 5_000, stepMs: 1_000 });
+    expect(starts).toBe(1440);
+    for (const t of slots(EVENING, EVENING + 2 * 3_600_000)) expect(posts.some((p) => p.at === t), new Date(t).toISOString()).toBe(true);
+    for (let k = 1; k < posts.length; k++) expect(posts[k]!.at - posts[k - 1]!.at).toBeGreaterThanOrEqual(SUMMARY_MIN_GAP_MS);
+  });
+
+  it('restarted every 4 minutes, a start posts 3 minutes in only when nothing was taken in the 10 minutes before (kept in summary.json)', async () => {
+    const { posts } = await simulate({ from: EVENING, hours: 2, everyMs: 4 * 60_000, stepMs: 5_000 });
+    const onSlot = (t: number) => t % HALF === 60_000;
+    const afterStart = posts.filter((p) => !onSlot(p.at));
+    expect(afterStart.length).toBeGreaterThan(0);
+    for (const p of afterStart) {
+      expect((p.at - EVENING) % (4 * 60_000)).toBe(SUMMARY_AFTER_START_MS);
+      const before = posts.filter((q) => q.at < p.at).at(-1);
+      if (before !== undefined) expect(p.at - before.at).toBeGreaterThanOrEqual(SUMMARY_MIN_GAP_MS);
+    }
+    for (const t of slots(EVENING, EVENING + 2 * 3_600_000)) expect(posts.some((p) => p.at === t)).toBe(true);
+    // Without the check every start would post: the check is what holds it to one per 10 minutes.
+    const unguarded = await simulate({ from: EVENING, hours: 2, everyMs: 4 * 60_000, stepMs: 5_000, guard: false });
+    const gaps = unguarded.posts.slice(1).map((p, k) => p.at - unguarded.posts[k]!.at);
+    expect(Math.min(...gaps)).toBeLessThan(SUMMARY_MIN_GAP_MS);
+  });
+
+  it('across Melbourne midnight, restarting or not, the day that ended gets exactly one final post, first after midnight', async () => {
+    // 2026-10-05 22:00 to 2026-10-06 02:00 Melbourne.
+    const from = Date.parse('2026-10-05T11:00:00.000Z');
+    const midnight = Date.parse('2026-10-05T13:00:00.000Z');
+    for (const everyMs of [20 * 60_000, 4 * 3_600_000]) {
+      const { posts } = await simulate({ from, hours: 4, everyMs, stepMs: 5_000 });
+      const finals = posts.filter((p) => p.final);
+      expect(finals.map((p) => [p.day, p.final]), `restart every ${everyMs} ms`).toEqual([['2026-10-05', true]]);
+      // Just after midnight; a process that starts at midnight itself posts it on the first slot, 00:01.
+      expect(finals[0]!.at).toBe(everyMs === 20 * 60_000 ? midnight + 60_000 : midnight + 5_000);
+      expect(posts.filter((p) => p.at >= midnight)[0]).toEqual(finals[0]);
+      expect(posts.filter((p) => p.at >= midnight).slice(1).every((p) => p.day === '2026-10-06' && !p.final)).toBe(true);
+    }
   });
 });
