@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Mon 5 Oct 2026, about 12:38 AM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
+**Last updated:** Mon 5 Oct 2026, about 12:55 AM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
 
 **New account (from about 8:00 PM, 4 Oct).**
 - Supervisor: session_012En9L5mnYQtEz7oyp1Eryf. It read AGENTS.md, CLAUDE.md, this file, all 22 session notes and the supervisor log, and re-listed the open PRs (heads matched §4).
@@ -169,7 +169,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 | 128 | EXIT-1g | fa52906 | PASS (EXIT reviewer) | MERGED f8465f9 (~10:16 PM; check green on c3025e8, whose tree equals `git merge-tree` of the reviewed fa52906 with the base) |
 | 56 | RES-3b | b8f8968 | PASS (stats reviewer) | MERGED bde154c (~11:31 PM; tree identical to merge-tree of b8f8968 with the base) |
 | 150 | DATA-STORE (docs) | 26099c7 | PASS (data reviewer) | needs base merge |
-| 151 | APP-WORDS part 1 | 923aac3 | PASS (run/CI reviewer) | after #153 (its f4e73b8 is #153's change); next part carries N1 (drop the 24 h notice's second sentence) and N2 (DepositPanel explaining lines) |
+| 151 | APP-WORDS part 1 | 923aac3 | MERGED about 12:54 AM Mon 5 Oct (483df20; check green on e4f70b6, merge-tree identical to 923aac3). PASS (run/CI reviewer) | after #153 (its f4e73b8 is #153's change); next part carries N1 (drop the 24 h notice's second sentence) and N2 (DepositPanel explaining lines) |
 | 129 | STATS-1g | d89df54 | PASS (stats reviewer, 9/9 mutants; CR2/BM coverage within MC error at α/4 and α/8) | MERGED 6fcc3d4 (~11:18 PM; tree identical to merge-tree of d89df54 with the base); follow-up STATS-1h refuses alpha > 0.0125 in clusterWelchBounds |
 | 148 | WORKER-CRASH | e69bf8c | PASS (data reviewer, 7/7 mutants) | needs base merge |
 | 123 | WORKER-ORDER | a8e4e0b → a7ac102 (readFileSync import restored after the #118/#128/#142 merge) | PASS (worker/facts reviewer, ruling (a): entries line-first; 13 mutants over two rounds) | MERGED 16555b5 (~11:05 PM; check green on a7ac102; worker/facts PASS at e03a45a plus the one-line import fix) |
