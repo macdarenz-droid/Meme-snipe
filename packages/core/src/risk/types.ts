@@ -136,11 +136,15 @@ export interface CashFlow {
   readonly navBefore: MicroUsd;
 }
 
-/** A cost of the account itself, not of a trade. `amount` is what was paid (zero or more). */
+/**
+ * A cost of the account itself, not of a trade. `amount` is what was paid (zero or more). `failed_entry`: the fees of
+ * an entry that never filled (the backtest's stray costs, PAPER-1): it lowers equity and counts toward the day's and
+ * week's loss like any cost, and is never a trade (R8, R11, R15 and statistics do not see it).
+ */
 export interface AccountCost {
   readonly atMs: number;
   readonly amount: MicroUsd;
-  readonly kind: 'wallet_setup';
+  readonly kind: 'wallet_setup' | 'failed_entry';
 }
 
 /** An economic NAV (`economicNav`) the worker observed and recorded; the NAV high-water mark is the peak of these. */

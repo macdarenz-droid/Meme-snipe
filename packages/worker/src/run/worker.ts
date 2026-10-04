@@ -16,7 +16,7 @@ import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
-import { attemptFee, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
+import { attemptFee, type FillNetwork, type FillScenario, lateFillOf } from '../../../core/src/fills/index.ts';
 import { type MicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
@@ -28,7 +28,7 @@ import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
-import { PaperAccount, accountFile } from './account.ts';
+import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
@@ -52,18 +52,21 @@ import { type RiskInput, type RiskSnapshot, evaluateExit, riskSnapshot } from '.
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
+import type { CreateLookup } from './sources.ts';
 
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export const PERSIST_FILE = 'deployer-state.json';
 export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
-import { type PoolFact, S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
+import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
 
+/** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
+export const LATE_BUY = 'late buy not settled by paper; entries off';
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
 export const SECOND_PATH_UNAVAILABLE = 'second price path unavailable';
 /** The window the paper execution statistics cover (WORKER-1e). */
@@ -121,6 +124,11 @@ export interface WorkerDeps {
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
   readonly fetchTx: (signature: string, why: 'create' | 'cut-log') => Promise<boolean>;
+  /**
+   * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
+   * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
+   */
+  readonly findCreate?: (mint: string) => Promise<CreateLookup>;
   /**
    * SEED-1: the deployer index's seed (first start: days and RPC up to the live creates watch's first slot) or the
    * downtime fill (restart from saved state), built by `buildSeed`. `untilSlot` is null when the live watch did not
@@ -203,6 +211,10 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
+/** CREATE-AFTER-RESTART: the wait before the one retry of a create lookup stopped by a transient error. */
+export const CREATE_RETRY_MS = 60_000;
+/** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
+const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
 
 /**
  * The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. The
@@ -248,6 +260,8 @@ export class Worker {
   #lastSlot: bigint | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
+  /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
+  #pricedSettle = false;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
   /** OWNER-REVIEW: the latest account valuation, for the SOL evidence of the owner's stops. */
@@ -270,6 +284,10 @@ export class Worker {
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
   #createSig = new Map<string, string>();
+  /** Mints shortlisted while the seed is being built, with no create signature yet: the downtime fill may bring it. */
+  #createPending: string[] = [];
+  /** Mints whose create this process has looked up (once each). */
+  readonly #createLookups = new Set<string>();
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
   #intentAt = new Map<string, number>();
@@ -410,6 +428,10 @@ export class Worker {
       now: () => d.timers.now(),
       file: new StateFile<PaperState>(c.stateDir, 'paper.json', (v) => (isObj(v) && isObj(v['attempts']) ? (v as unknown as PaperState) : null)),
       changed: () => this.#writeOpenIntents(),
+      // A landed failure paid its fee (PAPER-1, M4): the account settles it and risk sees the new snapshot.
+      landedFailed: () => {
+        if (this.#settle()) this.#publishAccount();
+      },
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
@@ -419,6 +441,8 @@ export class Worker {
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
     this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
+    // CREATE-AFTER-RESTART: the creates earlier processes saw, kept in the store even when PERSIST-1's state replaces it.
+    this.#noteCreates(this.#saved.creates);
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
     // downtime fill starts at the saved moment, closing the restart gap on the live creates watch.
@@ -439,7 +463,11 @@ export class Worker {
       solUsd: () => this.#solPrice,
       ...(d.crashPoint === undefined ? {} : { crashPoint: d.crashPoint }),
       report: (event) => this.#report(event),
-      accountChanged: () => this.#publishAccount(),
+      // An entry that ended with no fill books its failed attempts' fees here (PAPER-1, M4), before the snapshot.
+      accountChanged: () => {
+        this.#settle();
+        this.#publishAccount();
+      },
       intentsChanged: () => this.#writeOpenIntents(),
       // Entries stop for the rest of this process; exits go on. A restart rebuilds the book from the ledger.
       diverged: (reason) => {
@@ -447,10 +475,16 @@ export class Worker {
         this.#diverged = ['ledger and book diverged'];
         this.#checkHalt(this.#d.timers.now());
       },
+      // A late buy's position is not settled by paper yet (risk ruling on #133): one alert, and entries stay off while
+      // the book holds such a position (#checkHalt reads the book, so a restart keeps the halt). Exits go on.
+      lateBuy: (r) => {
+        this.#journal.write('alert', { level: 'critical', code: 'late_buy', trade: r.positionId, intent: r.intentId, mint: r.mint, signature: r.signature, reasons: [LATE_BUY] });
+        this.#checkHalt(this.#d.timers.now());
+      },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       filled: (r) => {
         // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
-        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice);
+        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
     });
@@ -579,13 +613,18 @@ export class Worker {
     else if (m.key === SOL_PRICE_KEY) {
       const p = isObj(m.value) && typeof m.value['value'] === 'bigint' && m.value['value'] > 0n ? { price: m.value['value'] } : null;
       if (p !== null) {
-        const first = this.#account.state.walletLamports === null || this.#account.state.oneTimePaid !== true;
         this.#solPrice = p.price as MicroUsd;
         this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
         if (this.#accountBehind.length > 0) this.#catchUpAccount();
-        // The paper wallet exists from the first price on: risk needs its balance (R4).
-        if (first && this.#account.state.walletLamports !== null && this.#reconciled) this.#publishAccount();
+        // The paper wallet exists from the first price on: risk needs its balance (R4). Every process settles once at its
+        // first price after the reconcile: fees of entries that ended unfilled while no price was known (in that
+        // reconcile, a restart's) are booked here, not at some later book event.
+        if (!this.#pricedSettle && this.#account.state.walletLamports !== null && this.#reconciled) {
+          this.#pricedSettle = true;
+          this.#settle();
+          this.#publishAccount();
+        }
       }
     } else if (m.key === 'coverage:rugs:start') {
       const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
@@ -599,10 +638,57 @@ export class Worker {
         if (this.#symbols.size > 200_000) this.#symbols.delete(this.#symbols.keys().next().value!);
       }
     }
-    if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') {
-      this.#createSig.set(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
-      if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
+    if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
+  }
+
+  #noteCreateSig(mint: string, signature: string): void {
+    this.#createSig.set(mint, signature);
+    if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
+  }
+
+  /**
+   * CREATE-AFTER-RESTART: each saved or seeded create's signature, so a coin created before this start is read by its
+   * signature (one call) when it is shortlisted. The store keeps creates compacted, without the signature field; the
+   * event id carries it (`log:<signature>:…` live, `ev:<signature>:…` fetched). Oldest first, so the newest stay.
+   */
+  #noteCreates(events: readonly MarketEvent[]): void {
+    for (const e of events) {
+      const mint = e.key.startsWith(LOG_CREATE_PREFIX) ? e.key.slice(LOG_CREATE_PREFIX.length) : e.key.startsWith(TX_CREATE_PREFIX) ? e.key.slice(TX_CREATE_PREFIX.length) : null;
+      const sig = isObj(e.value) && typeof e.value['signature'] === 'string' ? e.value['signature'] : CREATE_ID.exec(e.id)?.[1];
+      if (mint !== null && mint !== '' && sig !== undefined) this.#noteCreateSig(mint, sig);
     }
+  }
+
+  /**
+   * A shortlisted mint's create: read by its signature when one is known; held while the seed is built (its downtime
+   * fill may bring it); else looked up once from the mint's oldest signature. A lookup that fails leaves it missing.
+   */
+  #createFor(mint: string): void {
+    const sig = this.#createSig.get(mint);
+    if (sig !== undefined) return void this.#d.fetchTx(sig, 'create');
+    if (this.#seeding) return void this.#createPending.push(mint);
+    const find = this.#d.findCreate;
+    if (find === undefined) return this.#d.log(`Shortlisted ${mint}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
+    if (this.#createLookups.has(mint)) return;
+    this.#createLookups.add(mint);
+    this.#lookupCreate(find, mint, 1);
+  }
+
+  /**
+   * One create lookup, journaled. A lookup stopped by a transient error (a rate limit, a timeout) is tried once more
+   * after CREATE_RETRY_MS, within the same budget; a mint whose history answered (not the create, no signature, the
+   * cap) is never retried: that answer stands.
+   */
+  #lookupCreate(find: NonNullable<WorkerDeps['findCreate']>, mint: string, attempt: 1 | 2): void {
+    const failed = (): CreateLookup => ({ mint, found: false, signature: null, slot: null, pages: 0, credits: 0, stopped_by: 'error', latency_ms: 0 });
+    void find(mint).catch(failed).then((r) => {
+      this.#journal.write('create_lookup', { ...r, attempt });
+      const retry = r.stopped_by === 'error' && attempt === 1 && !this.#stopping;
+      this.#d.log(r.found
+        ? `Shortlisted ${mint}: its create (slot ${r.slot}) found from the mint's oldest signature, ${r.credits} credits.`
+        : `Shortlisted ${mint}: create lookup stopped (${r.stopped_by}, ${r.credits} credits)${retry ? '; trying once more in a minute' : ''}; H9 and H12-H14 wait for it.`);
+      if (retry) this.#d.timers.setTimeout(() => (this.#stopping ? undefined : this.#lookupCreate(find, mint, 2)), CREATE_RETRY_MS);
+    });
   }
 
   /** WORKER-1e: the paper attempts' execution statistics over the last 24 h (S0's diagnostic exec-health). */
@@ -688,6 +774,16 @@ export class Worker {
   #paperMarket(mint: string): PaperMarket | null {
     const m = this.poolOf(mint);
     return m === null ? null : { pool: m.state, ctx: m.ctx };
+  }
+
+  /** What the paper account settles a trade from: the paper world's attempts and token accounts (PAPER-1). */
+  #legs(): PaperLegs {
+    return { network: this.#d.network, attempts: this.#world.attempts, closedAccount: (sig) => this.#world.closedAccount(sig) };
+  }
+
+  /** Fees paid outside fills, each signature once (PAPER-1, M4); true when the wallet moved. */
+  #settle(): boolean {
+    return this.#account.settle(this.#desk.book, this.#legs(), this.#solPrice, this.#d.timers.now());
   }
 
   #publishAccount(): void {
@@ -793,7 +889,7 @@ export class Worker {
       const fromLine = lineRate(line);
       const known = fromLine !== undefined;
       const rate = known ? fromLine : this.#solPrice;
-      this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate);
+      this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate, this.#legs());
       this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two)${known ? '' : `; ${FILL_RATE_UNKNOWN}`}.`);
     }
     this.#accountBehind = [];
@@ -872,9 +968,7 @@ export class Worker {
     if (r.type !== 'decision') return;
     if (r.reasons[0] === SHORTLIST) {
       const mint = r.reasons[2];
-      const sig = mint === undefined ? undefined : this.#createSig.get(mint);
-      if (sig !== undefined) void this.#d.fetchTx(sig, 'create');
-      else this.#d.log(`Shortlisted ${mint ?? '?'}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
+      if (mint !== undefined) this.#createFor(mint);
     }
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
@@ -927,7 +1021,7 @@ export class Worker {
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
-      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
+      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
       exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
@@ -957,6 +1051,7 @@ export class Worker {
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
+    if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
     if (same) return;
@@ -999,6 +1094,9 @@ export class Worker {
     // The feed is drained here: the slot for SEED-1's events, ahead of the account fact below and every live event.
     this.#reserved = this.#feed.reserveSlot();
     this.#writeOpenIntents();
+    // A guard: it re-books open trades from the restored book. No SOL price is known yet in a new process, so stray fees
+    // wait for the first price (above).
+    this.#settle();
     this.#publishAccount();
     const positions = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
     this.#journal.write('reconcile', { ok: true, restored_events: this.#ledgerEvents(), cancelled: asked.size, open_positions: positions });
@@ -1081,6 +1179,10 @@ export class Worker {
       await this.#seedIndex(this.#reserved);
     } finally {
       this.#seeding = false;
+      // CREATE-AFTER-RESTART: the shortlists that waited for the seed, now with every saved and seeded create known.
+      const pending = this.#createPending;
+      this.#createPending = [];
+      for (const mint of pending) this.#createFor(mint);
       this.#checkHalt(d.timers.now());
     }
     if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
@@ -1179,6 +1281,7 @@ export class Worker {
       history: coverage.map((e, k) => ({ ...e, id: `${e.id}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
     });
     for (const e of [...result.creates, ...result.coverage, ...extra]) this.#deployerStore.keep(e);
+    this.#noteCreates(result.creates);
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
   }
 
