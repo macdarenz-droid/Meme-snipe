@@ -478,6 +478,33 @@ describe('exits never wait at a restart (EXIT-1c)', () => {
   });
 });
 
+/** Every exit attempt lands failed (none dropped). */
+const FAILS = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
+
+/** A boot of `stateDir` on the shared clock, reconciled, with its own decision lines. */
+const reboot = async (h: ReturnType<typeof makeWorker>, scenario = FAILS) => {
+  const b = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+  expect(await b.worker.reconcile()).toEqual({ ok: true });
+  const mine = () => lines(h.stateDir).filter((l) => l['boot'] === b.worker.boot && l['kind'] === 'decision');
+  const first = (r: string) => mine().filter((l) => (l['reasons'] as string[])[0] === r);
+  return { b, m: new Market(b), mine, first };
+};
+
+/** Entered, killed, then down past T_max: the time stop is due at the next boot. */
+const dueAfterDowntime = async () => {
+  const h = makeWorker();
+  const m = await entered(h);
+  const pid = positions(h).find((p) => p.status === 'open')!.id;
+  await h.worker.kill();
+  h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
+  return { h, pid };
+};
+
+/** Runs slots only until the clock reaches `at`. */
+const slotsUntil = async (m: Market, at: number) => {
+  while (m.now < at) await m.run(Math.min(400, at - m.now), Math.min(400, at - m.now), () => m.slot());
+};
+
 describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)', () => {
   it('an attempt that fails while the pool state goes stale: the replacement waits for the first fresh market, visibly, then goes on the next rung', async () => {
     const h = makeWorker();
@@ -518,8 +545,89 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     expect(second).toHaveLength(1);
     expect(second[0]!['reasons']).toContain('rung 1');
     expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    // Sent: the wait is over (#93 N1), whatever the position's status says.
+    expect(h2.worker.strategy.waitingExits().has(pid)).toBe(false);
     await h2.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+
+  it('a fresh market that refuses the sale is a real refusal: booked blocked with its "no quote" reason, and no wait', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const { b, m: m2, mine, first } = await reboot(h);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    await m2.run(800, 400, () => m2.slot());
+    expect(first('submit exit (paper)')).toHaveLength(1);
+    // From here every read is fresh and the pool holds no SOL: the replacement cannot be quoted.
+    expect(await until(m2, 60_000, () => mine().some((l) => l['action'] === 'exit_blocked'), () => {
+      m2.slot();
+      m2.pool(0n);
+    })).toBe(true);
+    const blocked = mine().find((l) => l['action'] === 'exit_blocked')!;
+    expect((blocked['reasons'] as string[]).some((r) => r.startsWith('no quote: '))).toBe(true);
+    expect(first('exit waiting for a fresh market')).toEqual([]);
+    expect(b.worker.book.positions[pid]!.status).toBe('exit_blocked');
+    expect(b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    await b.worker.stop();
+  });
+
+  it('a wait that ends another way (a refusal books it blocked) stops being reported (#100 N1)', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const { b, m: m2, first } = await reboot(h);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    await m2.run(800, 400, () => m2.slot());
+    expect(await until(m2, 60_000, () => first('exit waiting for a fresh market').length > 0, () => m2.slot())).toBe(true);
+    expect(b.worker.strategy.waitingExits().has(pid)).toBe(true);
+    // A fresh pool that refuses the sale: booked blocked, so the wait is no longer reported as one.
+    m2.pool(0n);
+    await m2.run(800, 400, () => {
+      m2.slot();
+      m2.pool(0n);
+    });
+    expect(b.worker.book.positions[pid]!.status).toBe('exit_blocked');
+    expect(b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    await b.worker.stop();
+  });
+
+  it('a restart keeps the wait start: the alert comes at the first boot\'s start + blockedRetryMs, for an EXIT-1c and an EXIT-1d wait (B2, #93 N3)', async () => {
+    const retry = TRIAL_POLICY.exits.blockedRetryMs;
+    const alerted = (w: ReturnType<typeof makeWorker>) => views.status(w.worker.apiInputs()).flags.includes('exit-blocked');
+    // EXIT-1c: a due exit with no quote yet, killed mid-wait.
+    const one = await dueAfterDowntime();
+    const c2 = await reboot(one.h, LANDS);
+    await c2.m.run(2_000, 400, () => c2.m.slot());
+    const since1c = c2.b.worker.strategy.waitingExits().get(one.pid)!;
+    expect(since1c).toBeDefined();
+    await c2.m.run(20_000, 400, () => c2.m.slot());
+    await c2.b.worker.kill();
+    const c3 = await reboot(one.h, LANDS);
+    await c3.m.run(400, 400, () => c3.m.slot());
+    expect(c3.b.worker.strategy.waitingExits().get(one.pid)).toBe(since1c);
+    await slotsUntil(c3.m, since1c + retry - 400);
+    expect(alerted(c3.b)).toBe(false);
+    await slotsUntil(c3.m, since1c + retry);
+    expect(alerted(c3.b)).toBe(true);
+    await c3.b.worker.stop();
+    // EXIT-1d: an owner's replacement waiting for a fresh market, killed mid-wait.
+    const two = await dueAfterDowntime();
+    const d2 = await reboot(two.h);
+    await d2.m.run(800, 400, () => d2.m.slot());
+    d2.m.pool();
+    await d2.m.run(800, 400, () => d2.m.slot());
+    expect(await until(d2.m, 60_000, () => d2.first('exit waiting for a fresh market').length > 0, () => d2.m.slot())).toBe(true);
+    const since1d = d2.b.worker.strategy.waitingExits().get(two.pid)!;
+    await d2.m.run(20_000, 400, () => d2.m.slot());
+    await d2.b.worker.kill();
+    const d3 = await reboot(two.h);
+    await d3.m.run(400, 400, () => d3.m.slot());
+    expect(d3.b.worker.strategy.waitingExits().get(two.pid)).toBe(since1d);
+    await slotsUntil(d3.m, since1d + retry - 400);
+    expect(alerted(d3.b)).toBe(false);
+    await slotsUntil(d3.m, since1d + retry);
+    expect(alerted(d3.b)).toBe(true);
+    expect(d3.mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    await d3.b.worker.stop();
   });
 });
 

@@ -259,17 +259,26 @@ export class LiveStrategy implements Strategy {
   /** Each held position's latest mark (executable price, PRICE_SCALE) with when it was read. */
   readonly #marks = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
 
-  /** Exit owners waiting for a fresh market before their next attempt (EXIT-1d), by intent; in memory only. */
-  readonly #waitingMarket = new Map<string, { readonly pid: string; readonly sinceMs: number }>();
+  /**
+   * Exit owners said to be waiting for a fresh market in this process (EXIT-1d), by intent, with their position. The wait
+   * start itself is the position's saved `waitingSinceMs`, so a restart keeps it.
+   */
+  readonly #waitingMarket = new Map<string, string>();
 
   /**
-   * Positions whose exit waits for a fresh quote, with the moment it started waiting: a due full exit not yet owned
-   * (EXIT-1c, saved with the plan) or an exit owner's next attempt (EXIT-1d, counted from this process's start).
+   * Positions whose exit waits for a fresh quote, with the moment it started waiting (saved with the plan, so a restart
+   * keeps it): a due full exit not yet owned (EXIT-1c) or an exit owner's next attempt (EXIT-1d).
    */
   waitingExits(): ReadonlyMap<string, number> {
-    const out = new Map([...this.#exits].flatMap(([pid, s]) => (s.waitingSinceMs == null ? [] : [[pid, s.waitingSinceMs] as const])));
-    for (const w of this.#waitingMarket.values()) out.set(w.pid, Math.min(out.get(w.pid) ?? w.sinceMs, w.sinceMs));
-    return out;
+    return new Map([...this.#exits].flatMap(([pid, s]) => (s.waitingSinceMs == null ? [] : [[pid, s.waitingSinceMs] as const])));
+  }
+
+  /** Starts (keeping an earlier start) or ends a position's wait for a fresh quote. */
+  #setWaiting(pid: string, nowMs: number | null): void {
+    const saved = this.#exits.get(pid);
+    if (saved === undefined) return;
+    const since = nowMs === null ? null : (saved.waitingSinceMs ?? nowMs);
+    if (since !== (saved.waitingSinceMs ?? null)) this.#exits.set(pid, { ...saved, waitingSinceMs: since });
   }
 
   markOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
@@ -616,9 +625,12 @@ export class LiveStrategy implements Strategy {
   /** Entry intents that resolved without a fill end; exit owners that did get a new attempt or are booked blocked. */
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
     // A waiting owner that settled or was booked another way no longer waits.
-    for (const id of this.#waitingMarket.keys()) {
+    for (const [id, pid] of this.#waitingMarket) {
       const i = ctx.book.intents[id];
-      if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) this.#waitingMarket.delete(id);
+      if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
+        this.#waitingMarket.delete(id);
+        if (ctx.book.positions[pid]?.status !== 'open') this.#setWaiting(pid, null);
+      }
     }
     for (const i of Object.values(ctx.book.intents)) {
       if (isTerminal(i)) continue;
@@ -682,22 +694,28 @@ export class LiveStrategy implements Strategy {
     const rung = Math.min(signed === 0 && owner !== undefined ? owner.startRung : Math.max(lastRung === null ? 0 : lastRung + 1, used), last);
     const height = this.#height;
     const q = height === null ? 'no slot height yet' : this.#sellQuote(ctx, mint, quantity, rung);
-    if (typeof q === 'string' && height !== null && !q.startsWith(NO_QUOTE)) {
-      // No fresh market state yet (unknown, malformed, no fee terms, or stale) is timing, not a refusal: the owner waits
-      // for the first fresh market, said once and kept visible (EXIT-1d). Booked blocked, it would wait out the
-      // blocked-retry time and go as a single last-rung retry. Blocked stays for a market that refuses the sale.
+    if (typeof q === 'string' && !q.startsWith(NO_QUOTE)) {
+      // No slot yet (a restart's reconcile runs before the feeds start) or no fresh market state (unknown, malformed, no
+      // fee terms, or stale) is timing, not a refusal: the owner waits for the first fresh market, said once and kept
+      // visible (EXIT-1d; the no-slot case is also TEST-3's, #83). Booked blocked, it would wait out the blocked-retry
+      // time and go as a single last-rung retry. Blocked stays for a market that refuses the sale.
       if (!this.#waitingMarket.has(id)) {
-        this.#waitingMarket.set(id, { pid, sinceMs: ctx.now.receivedAt });
+        this.#waitingMarket.set(id, pid);
         out.push({ action: null, reasons: ['exit waiting for a fresh market', mint, q] });
       }
+      this.#setWaiting(pid, ctx.now.receivedAt);
       return;
     }
+    // Sent or booked blocked below: the wait, of this owner or of the due exit it carries (EXIT-1c), is over.
     this.#waitingMarket.delete(id);
+    this.#setWaiting(pid, null);
     if (typeof q === 'string' || height === null) {
       out.push({ action: { type: 'exit_blocked', positionId: pid, reason: String(q) }, reasons: ['exit blocked', mint, String(q)] });
       return;
     }
-    if (saved !== undefined) this.#exits.set(pid, { ...saved, tracker: noteAttempt(saved.tracker, rung) });
+    // Read again: the wait was just cleared on this same saved exit.
+    const now = this.#exits.get(pid);
+    if (now !== undefined) this.#exits.set(pid, { ...now, tracker: noteAttempt(now.tracker, rung) });
     const attempt = this.#attempt(id, signed + 1, q, height);
     if (signed === 0) {
       out.push({ action: { type: 'intent', intentId: id, event: { type: 'prepare', quote: q } }, reasons: ['prepare exit', mint, `rung ${rung}`] });
@@ -785,9 +803,11 @@ export class LiveStrategy implements Strategy {
       });
       // A due full exit with no quote yet is held, remembered in the tracker (EXIT-1c): said once, and kept visible as
       // pending (and as an alert once it has waited the blocked-retry time) until the first fresh quote takes it.
+      // Only an open position's wait is decided here; an exit owner's wait (EXIT-1d) is #sendExit's.
       const waiting = p.status === 'open' && step.tracker.pendingFull !== null;
       if (waiting && saved.waitingSinceMs == null) out.push({ action: null, reasons: ['exit waiting for a fresh quote', p.mint, step.tracker.pendingFull!.join(', ')] });
-      saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs: waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null };
+      const waitingSinceMs = p.status !== 'open' ? (saved.waitingSinceMs ?? null) : waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null;
+      saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
       this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out);
