@@ -1574,9 +1574,10 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - A catch-up costs one signature page plus one credit per transaction between the migration and the subscribe.
   - Graduations: about 1,290 a day by RESEARCH.md (49.7k launches × 2.6%), about 17 an hour (about 410 a day) as the host saw on 5 Oct at about 12:30 AM.
   - With about 5–15 transactions each, that is about 2,500–20,600 credits a day, against 3,870 shared with the restart fills. The low end fits and the high end does not.
+  - CREATE-AFTER-RESTART's create lookups spend from the same 3,870 a day: up to 25 credits each, only for creates in neither the saved store nor the downtime fill. Their `create_lookup` lines count against the same allowance in the shakedown's reading.
   - A catch-up the budget cannot pay is skipped (`trades_fill` `stopped_by: skipped-no-budget`). H11 then rejects that candidate: a wrongly rejected trade.
   - The first shakedown hours measure both numbers from the `trades_fill` lines. If skips appear, the choices are a larger `FILL_SHARE`, catch-ups only for candidates no cheaper final gate has already rejected, or Helius Developer. That last is a paid service and the owner's call (ARCHITECTURE: "only when logs show it is needed").
-- **2026-10-05 · Known gaps (separate card, PERSIST builder).** Candidates are still forgotten at a restart, and a coin created before the process started still misses its create (H9, H12–H14).
+- **2026-10-05 · Known gaps (separate card, PERSIST builder).** Candidates are still forgotten at a restart, and a coin created before the process started still misses its create (H9, H12–H14; fixed by CREATE-AFTER-RESTART, below).
   - S0 judges a candidate 60–240 min after its migration, so until that card lands every deploy restart costs the shakedown up to 4 h of candidates.
 - **2026-10-05 · Evidence.** `packages/worker/test/s0-zero.test.ts`:
   - the stream: complete, false, failed or missing fill; no `coverFrom` or one not before the next slot; held notifications after the fill's transactions, as off-chain lookups in arrival order; overflow; a drop during the catch-up; unwatch;
@@ -1632,6 +1633,33 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - The copy or link click reaching the row; the journal without the buttons.
     - Review N1/N2: Unrealized as the rest less the whole entry; Unrealized or Costs rounded toward zero; P&L rounded on its own (in `openUsd` and in the served row).
     - The exit fee: left out; charged with nothing left; from the ladder's second rung; without the tip.
+- **2026-10-04 · A repeat fetch of a known transaction is found, not "not found".** `TxFetcher.fetch` resolved to null for a signature it had already put on the feed, and null means not found. So a cut trade log whose transaction the stream had already fetched became a false `coverage:rugs:gap` (H14 then not covered, the candidate refused), and the delay probe recorded `found: false` for a create the creates watch had fetched. The fetcher now remembers each fetched signature's slot and first arrival (wall and monotonic time, a few dozen bytes; never the record) for the same newest 50,000, and a repeat ask resolves to that arrival marked `again`. The probe records the first confirmed arrival. Evidence: `packages/worker/test/tx-fetcher-known.test.ts` (all four fail on the base); hand mutants M1–M5 are killed.
+
+
+## A candidate's create after a restart (CREATE-AFTER-RESTART, S0-ZERO finding 3; `worker.ts` `#createFor`, `sources.ts` `findCreate`)
+
+- **2026-10-05 · The bug.** A create seen only at processed makes no fact. The create transaction was read at confirmed on shortlist only when this process had seen the create log. So after any restart, every coin created before it and migrating after it rejected on H9 (and H12–H14) with "missing create", for the whole S0 window. These were wrongly rejected candidates, not genuine rejects.
+- **2026-10-05 · The fix, cheapest source first.** Never a pass on a guessed create.
+  - **The saved store.** `deployers.jsonl` keeps every create an earlier process saw (15 days). It does so even when PERSIST-1's state replaces it for the index. Its compacted events drop the signature field, but the event id carries it (`log:<signature>…` live, `ev:<signature>:…` fetched). At construction those signatures fill the create map, oldest first under its 200,000 cap, so the newest stay. A shortlisted mint among them is read by its signature: one call, as before.
+  - **The downtime fill.** A shortlist while the seed is built waits for it. The seeded creates are noted when it is placed, and then the waiting mints are served.
+  - **Any other.** The mint is looked up once per process: its signatures paged back to the start (1,000 a page), and its oldest successful transaction read at confirmed by the lookup itself. Only when it holds this mint's pump CreateEvent is it put on the worker's feed, and the producer makes the create fact from it as from any fetched create. A history longer than the cap, a transaction that cannot be read, one that is not the create, or no feed yet leaves the create missing.
+  - **Not through the shared fetcher (review).** After TX-FETCHER-KNOWN (#184) the fetcher answers with an arrival stamp, not the record, and a repeat ask with no record at all. A non-null answer is therefore never taken as found; only the transaction itself proves the create.
+  - **One retry, for transient errors only (review, golden rule).** A lookup stopped by an `error` (a rate limit, a timeout) is tried once more after `CREATE_RETRY_MS` (60 s), within the same budget, and journaled with `attempt` 2. An answered history (not the create, no signature, the cap, not found, no budget) stands and is never retried.
+- **2026-10-05 · Budget.**
+  - Each lookup may spend at most `CREATE_LOOKUP_CREDITS` (25: up to 24 pages and the read), and never more than the fills' daily budget has left (`FILL_CREDITS_PER_DAY`, shared with the restart fill and the trade catch-ups).
+  - The whole cap is counted before the first call and the unused part given back after, so lookups running together never overspend. With fewer than two credits left, no call is made.
+  - Each lookup is journaled as `create_lookup`: found or why not, pages, credits, latency. The run report counts lookups found, skipped for want of budget, and credits.
+- **2026-10-05 · Demand risk (golden rule).** Lookups happen only for mints in neither the store nor the downtime fill, which mostly means the first hours after a first start or after a store loss. Each costs about 2–25 credits. A `create_lookup` skipped for want of budget is a wrongly rejected candidate; the levers are the same as for the trade fills (FILL_SHARE, or the owner's Helius Developer upgrade).
+- **2026-10-05 · Evidence.** `packages/worker/test/create-after-restart.test.ts`, 23 tests:
+  - the lookup on a real mainnet create (paging, failed transactions passed over, not-create, not-found, no signature, cap, budget floor, concurrent lookups, RPC error);
+  - the Helius wiring and budget charge, the create put on the feed, and no feed meaning not found;
+  - the retry: an error then found, two errors with no third try, and the five answered stops never retried;
+  - the worker reading a stored create by its signature (live and fetched ids) and then entering;
+  - a lookup found, then entering, and journaled;
+  - a lookup not found, so H9 keeps refusing;
+  - a re-shortlist not looked up again;
+  - the seed's creates served after it is placed, and the lookup when the seed lacks the create.
+  - Eighteen hand mutants, all caught (eleven, then seven for the review's changes: a retry for any miss, no retry, unlimited retries, an undelayed retry, the feed fed before the check, no-feed ignored, and the provider never putting it on the feed). Among them: the old shortlist path with no lookup, the store not read, no hold while seeding, no create check, no refund, a failed transaction taken as the create, and the once-per-mint guard dropped.
 
 ## Coherent reads (READ-COHERENT, `packages/worker/src/facts/{readers,source}.ts`, `engine/strategy.ts`, core `RAW.batchOpen/batchClose`)
 
