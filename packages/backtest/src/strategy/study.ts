@@ -3,8 +3,8 @@
 // evaluated so the reject mix is logged), its universe's pre-registered setup holds, the stop fits §9 and RISK-1
 // sizes a trade; exits are EXIT-1's on executable liquidation value with its escalation ladder.
 //
-// S0 mode is the random control for each universe (§3.2): the same checks, gates, risk and exits, no setup rule.
-// At a candidate's first check it draws one of the window's check slots at random (seeded) and enters at the first
+// S0 mode is the random control for each universe (§3.2): the same checks, that universe's gates, risk and exits, no
+// setup rule. At a candidate's first check it draws one of the window's check slots at random (seeded) and enters at the first
 // eligible check from there; the draw reads nothing but the seeded rng, so it cannot depend on outcomes.
 //
 // The backtest takes every eligible candidate (§14): RISK-1 judges each entry against a fresh account at the trial
@@ -335,7 +335,6 @@ export class StudyStrategy implements Strategy {
     };
   }
 
-  /** The hard rejects of the given gates as of now, every one evaluated. */
   /**
    * The chain tip as observed now: the newest chain slot among the observations released so far (the market's
    * `tip:observed`, with an observation delay). Absent (recorded receipt times), the clock's own slot, as live.
@@ -346,11 +345,15 @@ export class StudyStrategy implements Strategy {
     return typeof slot === 'bigint' ? slot : undefined;
   }
 
+  /**
+   * The hard rejects of the given gates as of now, every one evaluated. S0 runs its universe's gates (audit B1: U2's
+   * chase check, U1's liquidity floor); it differs from the universe only in which check it enters at.
+   */
   #gates(ctx: StrategyContext, u: UniverseConfig, mint: string, roundTrip: ReturnType<ReturnType<typeof pumpSwapRoundTrip>>, spend: bigint, only: readonly HardGate[]): HardResult {
     const policy = this.#o.session.policy;
     const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, observedTip: this.#tip(ctx) ?? ctx.now.slot };
     return evaluateHardRejects(gctx, { session: this.#o.session, mode: 'backtest', rugLabeller: 'RUG-1' },
-      { mint, universe: (this.#s0 ? 'S0' : u.universe) as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip }, { stopAtFirst: false, only });
+      { mint, universe: u.universe as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip }, { stopAtFirst: false, only });
   }
 
   #check(e: MarketEvent, ctx: StrategyContext, out: Decision[]): void {
