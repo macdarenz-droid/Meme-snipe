@@ -109,9 +109,18 @@ export interface HoldoutEntry {
   readonly burnReason: BurnReason | null;
 }
 
+/**
+ * The significance test that gates G1 (owner decision, 2026-10-04: 'spa'). Stored in the registry when it is created,
+ * with the plan and before any G1 evaluation it governs, and never changed: G1 reads it from here, never from a caller.
+ */
+export type G1Test = 'spa' | 'dsr';
+export const G1_TESTS: readonly G1Test[] = ['spa', 'dsr'];
+
 export interface HoldoutRegistry {
   /** Universes in the Holm family (U1–U3), fixed before the n_power simulation; counts every universe ever registered. */
   readonly familySize: number;
+  /** G1's significance test, fixed at creation (a registry stored before STATS-1f has none and fails G1 closed). */
+  readonly g1Test: G1Test;
   readonly rule: AttemptRule;
   readonly entries: readonly HoldoutEntry[];
 }
@@ -201,16 +210,18 @@ export const dayFromNumber = (n: number): string => {
  */
 export const createHoldoutRegistry = (
   familySize: number,
+  g1Test: G1Test,
   rule: Pick<AttemptRule, 'windowDays' | 'tailDays'> & Partial<Pick<AttemptRule, 'minTrades' | 'minDays'>> = DEFAULT_ATTEMPT_RULE,
 ): HoldoutRegistry => {
   if (!Number.isInteger(familySize) || familySize < 1 || familySize > 3) throw new RangeError(`familySize must be 1, 2 or 3, got ${familySize}`);
+  if (!(G1_TESTS as readonly unknown[]).includes(g1Test)) throw new RangeError(`the registry needs G1's test, one of ${G1_TESTS.join(', ')}; got ${JSON.stringify(g1Test)}`);
   if (!Number.isInteger(rule.windowDays) || rule.windowDays < 1 || !Number.isInteger(rule.tailDays) || rule.tailDays < 0) {
     throw new RangeError('the attempt rule needs windowDays >= 1 and tailDays >= 0, both integers');
   }
   const minTrades = rule.minTrades ?? REQUIREMENT_FLOOR.minTrades;
   const minDays = rule.minDays ?? REQUIREMENT_FLOOR.minDays;
   if (!Number.isInteger(minTrades) || minTrades < 1 || !Number.isInteger(minDays) || minDays < 1) throw new RangeError('the requirement floor needs integers >= 1');
-  return { familySize, rule: { windowDays: rule.windowDays, tailDays: rule.tailDays, minTrades, minDays }, entries: [] };
+  return { familySize, g1Test, rule: { windowDays: rule.windowDays, tailDays: rule.tailDays, minTrades, minDays }, entries: [] };
 };
 
 const find = (registry: HoldoutRegistry, holdoutId: string): HoldoutEntry => {
