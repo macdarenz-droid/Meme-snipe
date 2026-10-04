@@ -45,7 +45,9 @@ const credits = new CreditBook(config.stateDir, timers);
 const rpcCut = new RpcCut(timers);
 const http = liveHttp(rpcCut, fetchHttp);
 const providerHttp = http.providers;
-const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits });
+// FILL-2's daily fill budget, one instance for the restart fill and the pool watches' in-run fills (S0-ZERO).
+const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now());
+const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits, fillBudget });
 const policy = session.policy;
 const timing = watchTimingProblem(config.watch, policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
 if (timing !== null) {
@@ -83,8 +85,6 @@ const fatal = (e: unknown): never => {
 process.on('uncaughtException', fatal);
 process.on('unhandledRejection', fatal);
 
-// One budget object for every fill-budget reader in this process, so their spends never overwrite each other's file.
-const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now());
 try {
   worker = new Worker({
     config, session, rugs: RUG_CONFIG, strategy: strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG, config.strategy.paperEdgePpm ?? 0n, config.strategy.name === 'S0' ? { timing: 'random', salt: config.runId ?? 'S0', s0Diagnostic: config.strategy.s0Diagnostic } : { timing: 'gates', salt: '' }),
