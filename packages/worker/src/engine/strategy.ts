@@ -31,7 +31,7 @@ import {
   type Coverage, type DeployerIndexState, type GateContext, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
-import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
 
@@ -447,9 +447,19 @@ export class LiveStrategy implements Strategy {
       const sol = this.#spotSol(ctx);
       const account = this.#marked(risk.history, ctx, sol, { fallback: false });
       const input = { session: this.#d.session, mode: 'paper' as const, clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' as const } };
-      if (riskSnapshot(input) === null) return void (this.#stops = { atMs: now, codes: null });
+      const snap = riskSnapshot(input);
+      if (snap === null) return void (this.#stops = { atMs: now, codes: null });
       const r = evaluateExit(input);
-      this.#stops = { atMs: now, codes: [...new Set(r.tripped.map((x) => x.code))].sort() };
+      const codes = new Set<string>(r.tripped.map((x) => x.code));
+      // R7 per entry, as evaluateEntry judges it (API-1 N2a): when today's loss plus one trade's worst-case costs reaches
+      // the daily limit, no entry can pass, so the status serves the daily-loss stop instead of "Entries: On".
+      if (sol !== null) {
+        const policy = this.#d.session.policy;
+        const limit = mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), BPS, 'floor');
+        const costs = maxTradeCosts(policy, { network: this.#d.config.network, rent: { ...this.#d.config.rent, oneTime: risk.oneTimeRent } }).total;
+        if (snap.dayLoss + lamportsToMicroUsd(costs, sol.value, 'ceil') >= limit) codes.add('daily_loss');
+      }
+      this.#stops = { atMs: now, codes: [...codes].sort() };
     } catch {
       this.#stops = { atMs: now, codes: null };
     }
@@ -1304,7 +1314,11 @@ export class LiveStrategy implements Strategy {
     cand.spend = spend;
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     const hard = evaluateHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
-    if (hard.notes.some((n) => n.code === 's0-diagnostic')) this.#waived.push('h14-creates-coverage');
+    if (hard.notes.some((n) => n.code === 's0-diagnostic')) {
+      this.#waived.push('h14-creates-coverage');
+      // Served with the regime too: the card never reads a plain "On" while any part of the set is waived (API-1 N1).
+      if (this.#regime !== null) this.#regime = { ...this.#regime, waived: [...this.#regime.waived, 'h14-creates-coverage'] };
+    }
     if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);

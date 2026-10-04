@@ -621,6 +621,12 @@ Supervisor rulings, late evening:
   - Regime freshness. "Entries: On" and "Regime: On" need a regime evaluation at most `regimeMaxAgeMs` old: two candidate evaluation steps (`evaluateEveryMs`, which is the policy's `maxQuoteAgeMs`, 2 s on the trial policy, settings.ts). The worker evaluates the regime first for every candidate at that step, so an older evaluation means no candidate is being judged. Status serves `regime.current`; when it is false the card shows "Regime: Not checked lately".
   - S0 diagnostic (supervisor ruling, after WORKER-1e): status serves `regime.waived`, the regime parts the diagnostic set did not judge. With any of them the card reads "Regime: On (practice: <parts> not judged)" and "Entries: On (practice)", never a plain "On"; a regime with no waived list served shows neither.
   - A paper answer with `notRunning` is bad data (`bad-shape`), never "Not running": every server runs paper.
+
+  Delta review fixes (run/CI reviewer's FAIL at 62242b3, supervisor rulings):
+  - B1: worker-1e's shakedown now reads the served status. With the diagnostic set it serves every waived part, and without it `[]`. Before this, serving `waived: []` passed every worker test.
+  - N1: `h14-creates-coverage` counts as waived too. The strategy adds it to the served regime when H14 relies on the set, so the card never reads a plain "On" while any part of the set is waived.
+  - N2(a): "Entries: On" only when an entry can pass. The status applies the entry path's per-entry R7 rule (core `evaluateEntry`): when today's loss plus one trade's worst-case costs (`maxTradeCosts`, the same network and rent inputs) reaches the daily limit, it serves `daily-loss`. Worker only; nothing under `packages/core/src/risk/**` changed.
+  - N2(b), before live: in paper, "Exits: Ready" means an exit could be simulated now, not that one would land on chain. Before any live session, the card's Exits row must mean a live exit can be signed and sent (SIGN-1).
 - **2026-10-04 · Live view setup never waits unseen (OPS-1h).** This came from real use: after a successful Tailscale login, `zeroed-tailscale` sat silent. The cause is in Tailscale's CLI source (v1.104, `cmd/tailscale/cli` serve_v2.go and serve_legacy.go, `enableFeatureInteractive`):
   - `tailscale serve --https` needs the node capability `https`. Without it, serve prints a link to turn HTTPS on and blocks until it is on.
   - `tailscale funnel … off` checks the `https` and `funnel` capabilities first, even to turn Funnel off. On a tailnet without Funnel it blocks forever.

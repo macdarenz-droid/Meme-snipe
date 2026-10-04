@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession, usd } from '../../core/src/config/index.ts';
 import type { MarketEvent, StrategyContext } from '../../core/src/engine/index.ts';
 import { emptyBook } from '../../core/src/lifecycle/book.ts';
-import { type Latches, NO_LATCHES } from '../../core/src/risk/index.ts';
-import { lamports } from '../../core/src/units/index.ts';
+import { type Latches, NO_LATCHES, maxTradeCosts } from '../../core/src/risk/index.ts';
+import { BPS_DENOMINATOR, lamports, lamportsToMicroUsd, mulDiv } from '../../core/src/units/index.ts';
 import { DAY_START, HOUR, MINUTE, NOW, PRICE, SOL, WEEK_START, account, latches, trade } from '../../core/test/risk/helpers.ts';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor } from '../../../apps/web/src/api/schemas.ts';
@@ -49,6 +49,18 @@ describe('the strategy reads the account stops from its risk state', () => {
   });
   it('daily loss reached (R7)', () => {
     expect(codes(account({ closedTrades: [trade(DAY_START + HOUR, '-1.5', { notional: usd('5') })] }))).toContain('daily_loss');
+  });
+  it('no room for one more trade today (R7 per entry, API-1 N2a): today\'s loss plus one trade\'s worst-case costs reaching the limit is daily-loss', () => {
+    // The entry path's own rule (core evaluateEntry R7): L_day + C >= the daily limit refuses every entry.
+    const policy = startSession(TRIAL_POLICY).policy;
+    const config = strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG);
+    const limit = mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), BPS_DENOMINATOR, 'floor');
+    const costs = lamportsToMicroUsd(maxTradeCosts(policy, { network: config.network, rent: { ...config.rent, oneTime: 0n } }).total, PRICE, 'ceil');
+    expect(costs).toBeGreaterThan(0n);
+    const lost = (micro: bigint) => account({ closedTrades: [trade(DAY_START + HOUR, `-${micro / 1_000_000n}.${String(micro % 1_000_000n).padStart(6, '0')}`)] });
+    expect(codes(lost(limit - costs - 1n))).toEqual([]);
+    expect(codes(lost(limit - costs))).toEqual(['daily_loss']);
+    expect(codes(lost(limit - 1n))).toEqual(['daily_loss']);
   });
   it('2 losses in a row: the 2 h cooldown (R8)', () => {
     expect(codes(account({ closedTrades: [small(NOW - 3 * HOUR), small(NOW - HOUR)] }))).toContain('loss_cooldown');
