@@ -45,6 +45,11 @@ export interface SegmentOptions {
   /** Host tabletop: how long before its file's time a backup may have read the database (default BACKUP_WINDOW_MS). */
   readonly backupWindowMs?: number;
   /**
+   * Host: a host-loss tabletop that could only self-report is tried again this long after the backup it restored
+   * (default HOST_RETRY_AFTER_MS: the hourly zeroed-backup.timer plus a margin, so the next backup exists and is done).
+   */
+  readonly hostRetryAfterMs?: number;
+  /**
    * How host loss and chain rebuild are drilled. `wipe` (rehearsal): the bot state is deleted (and the backup restored
    * for host loss). `tabletop` (the qualifying host): a second worker in `--reconcile-only` mode cold-starts beside the
    * live one, from the newest backup or an empty state dir; the live worker and the evidence are untouched. On the
@@ -199,7 +204,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   const dropFeed = o.dropFeed ?? httpDropFeed;
   const ev = o.evidenceDir;
   mkdirSync(ev, { recursive: true });
-  const P = { meta: join(ev, 'run.json'), samples: join(ev, 'samples.jsonl'), drills: join(ev, 'drills.json'), segments: join(ev, 'segments.json'), manifest: join(ev, 'recorded.json'), boots: join(ev, 'boots.json'), backup: join(ev, 'backup.json'), reboot: join(ev, 'pending-reboot.json') };
+  const P = { meta: join(ev, 'run.json'), samples: join(ev, 'samples.jsonl'), drills: join(ev, 'drills.json'), segments: join(ev, 'segments.json'), manifest: join(ev, 'recorded.json'), boots: join(ev, 'boots.json'), backup: join(ev, 'backup.json'), reboot: join(ev, 'pending-reboot.json'), retry: join(ev, 'host-loss-retry.json') };
   const resumed = existsSync(P.meta);
   if (!resumed && !o.newRun) throw new Error(`no run in ${ev} and no new-run options`);
 
@@ -209,6 +214,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   const manifest: RecordedFile[] = readJson(P.manifest, []);
   const backupDir = join(ev, 'backup');
   let backup: { at: number; expect: Kept } | null = readJson(P.backup, null);
+  // A host-loss tabletop that could only self-report is tried again after the host's next backup (kept on disk across
+  // segments). Each try is its own drill, labelled; only a compared one exercises host loss on a VPS run.
+  let retry = readJson<HostLossRetry | null>(P.retry, null);
   const prev = segments[segments.length - 1];
   const segStart = Date.now();
   segments.push({ start: segStart, end: null, lastInTrade: false, lastBoot: null });
@@ -271,6 +279,11 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   // Back from a host reboot drill: the runner died with the host, so this drill is timed on the wall clock.
   // Kept on disk until the drill is recorded, so a runner crash before then cannot lose it.
   const done = new Set(outcomes.map((d) => d.id));
+  // A retry already recorded (the runner stopped between recording it and deleting the file) is never run twice.
+  if (retry !== null && done.has(retryId(retry))) {
+    rmSync(P.retry, { force: true });
+    retry = null;
+  }
   const rebooted = readJson<RestartPending | null>(P.reboot, null);
   // Already recorded (the runner stopped between recording it and deleting the file): never run it twice.
   if (rebooted && done.has(rebooted.drill.id)) rmSync(P.reboot, { force: true });
@@ -296,6 +309,12 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
 
     if (pending === null) {
       const due = meta.plan.find((d) => !done.has(d.id) && d.atMs <= rel);
+      if (due === undefined && retry !== null && t >= retry.dueAt) {
+        const orig = meta.plan.find((d): d is Extract<Drill, { kind: 'restart' }> => d.id === retry!.drill && d.kind === 'restart');
+        if (orig) pending = { kind: 'restart', drill: { ...orig, id: retryId(retry) }, since: t };
+        // The file stays until the try is recorded, so a runner crash mid-try runs it again after the restart.
+        retry = null;
+      }
       if (due?.kind === 'restart') pending = { kind: 'restart', drill: due, since: t };
       else if (due?.kind === 'rpc') {
         pending = { kind: 'rpc', drill: due, since: t, sinceMono: performance.now(), requested: false, boot: s.boot, sawIncapable: false, sawHalt: false, stayedUp: true, shedBefore: h ? exitShed(h) : null, pendingBefore: kept(h).pending_exits };
@@ -441,6 +460,15 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
               worst_move_bps: unknown ? null : moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const,
             }
           : undefined;
+        if (hostTable && p.backupKept === undefined) {
+          const root = p.drill.id.replace(/-retry-\d+$/, '');
+          const attempt = p.drill.id === root ? 1 : Number(p.drill.id.slice(root.length + '-retry-'.length)) + 1;
+          if (attempt <= HOST_LOSS_RETRIES) {
+            retry = { drill: root, attempt, dueAt: (p.table!.backup?.at ?? k) + (o.hostRetryAfterMs ?? HOST_RETRY_AFTER_MS) };
+            writeFileSync(P.retry, JSON.stringify(retry));
+            notes.push(`tried again after the next backup (try ${attempt} of ${HOST_LOSS_RETRIES})`);
+          } else notes.push(`no compared restore after ${HOST_LOSS_RETRIES} retries`);
+        }
         record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (pending !== null && p.killedAt !== undefined && since() > recoverMs) {
@@ -557,6 +585,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   function record(d: DrillOutcome): void {
     // Any record of the drill on disk ends it, whether it was loaded at start or written in this segment.
     if (readJson<RestartPending | null>(P.reboot, null)?.drill.id === d.id) rmSync(P.reboot, { force: true });
+    // A host-loss retry ends when its own try is recorded (a self-reported try has already written the next one).
+    const r = readJson<HostLossRetry | null>(P.retry, null);
+    if (r !== null && retryId(r) === d.id) rmSync(P.retry, { force: true });
     outcomes.push(d);
     done.add(d.id);
     saveDrills();
@@ -801,6 +832,20 @@ export const recoveredState = (journal: readonly JournalLine[], boot: string, ca
   if (cause === 'host-loss') notes.push('restored from the latest backup');
   return { source, expected_pending_exits: expect.pending_exits, recovered_pending_exits: recoveredExits, missing, lost: [], state_ok: missing.length === 0, universe_ok: universesNamed && changed.length === 0, notes };
 };
+
+interface HostLossRetry {
+  /** The planned drill's id. */
+  readonly drill: string;
+  readonly attempt: number;
+  readonly dueAt: number;
+}
+
+const retryId = (r: HostLossRetry): string => `${r.drill}-retry-${r.attempt}`;
+
+/** Retries of a self-reported host-loss tabletop, at most; each starts the tabletop worker once. */
+export const HOST_LOSS_RETRIES = 3;
+/** The hourly host backup plus 2 min, so the next backup has finished and its window has samples on both sides. */
+export const HOST_RETRY_AFTER_MS = 3_600_000 + 120_000;
 
 /** How long before its file's time a host backup may have read the database (sqlite .backup, its check, packing). */
 export const BACKUP_WINDOW_MS = 120_000;
