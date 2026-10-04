@@ -5,7 +5,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, w
 import { join } from 'node:path';
 import type { Latches } from '../../../core/src/risk/index.ts';
 import { NO_LATCHES } from '../../../core/src/risk/index.ts';
-import type { SavedExit } from '../engine/strategy.ts';
+import type { EntrySeed, SavedExit } from '../engine/strategy.ts';
 import { parseTyped, typedText } from './json.ts';
 
 export const atomicWrite = (path: string, text: string): void => {
@@ -76,6 +76,10 @@ export interface Exposed {
 export const NO_EXPOSED: Exposed = { trades: [], fromMs: 0 };
 export const exposedFile = (dir: string) =>
   new StateFile<Exposed>(dir, 'exposure.json', (v) => (isObj(v) && Array.isArray(v['trades']) && typeof v['fromMs'] === 'number' ? (v as unknown as Exposed) : null));
+
+/** Entry decisions' plan inputs by entry intent, saved before the intent is booked (EXIT-1h). */
+export const seedsFile = (dir: string) =>
+  new StateFile<Record<string, EntrySeed>>(dir, 'entry-seeds.json', (v) => (isObj(v) && Object.values(v).every((s) => isObj(s) && typeof s['mint'] === 'string') ? (v as Record<string, EntrySeed>) : null));
 
 /** Exit plans, trackers and bars per open position (EXIT-1 restart acceptance). */
 export const exitsFile = (dir: string) =>

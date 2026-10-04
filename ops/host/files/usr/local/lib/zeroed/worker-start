@@ -3,13 +3,20 @@
 # environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
 # endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
 # publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
-# ops/host-config.json says "worker": "release"; until then the host's stand-in. Live is never set here or in
-# any environment file: the worker refuses any mode but paper.
+# ops/host-config.json says "worker": "release"; until then the host's stand-in. The release's worker also takes the
+# S0 shakedown settings of that file's "shakedown" block (PRACTICE-ON). Live is never set here or in any environment
+# file: the worker refuses any mode but paper.
 set -euo pipefail
 . /usr/local/lib/zeroed/logic.sh
+entry="$(worker_entry /opt/zeroed/current)"
+if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
+  # The release's S0 shakedown settings (PRACTICE-ON, its host-config "shakedown" block): public values only, judged
+  # again by the worker. A block that cannot be read is refused like any refused setting (exit 2).
+  settings="$(worker_shakedown /opt/zeroed/current)" || { echo "refused: the release's host-config shakedown settings" >&2; exit 2; }
+  while IFS= read -r line; do [ -z "$line" ] || export "$line"; done <<<"$settings"
+fi
 export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
 export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
-entry="$(worker_entry /opt/zeroed/current)"
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current
   exec /usr/local/bin/node --no-warnings "$entry" "$@"
