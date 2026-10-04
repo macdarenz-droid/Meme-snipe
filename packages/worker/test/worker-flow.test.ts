@@ -503,7 +503,7 @@ describe('a restart restores the saved exit plans before it manages a position',
   it('a tracker that met its flat target is not judged by a fresh one: no time_flat exit after the restart', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -521,7 +521,7 @@ describe('a restart restores the saved exit plans before it manages a position',
     h.timers.set(plan.openedAtMs + x.tFlatMs + 5 * 60_000);
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    const m2 = new Market(h2);
+    const m2 = new Market(h2, HELD);
     await m2.run(10_000, 400, () => {
       m2.slot();
       m2.pool();

@@ -11,6 +11,9 @@ import { resolveUniverse, sellOnlyReason } from '../src/engine/strategy.ts';
 import { exitsFile } from '../src/run/state.ts';
 import { LANDS, Market, T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
+/** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
+const HELD = { heldPoolFacts: true } as const;
+
 const lines = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as JournalLine);
 const token = (dir: string) => readFileSync(join(dir, 'drill.token'), 'utf8').trim();
 
@@ -18,7 +21,7 @@ const pending = (h: ReturnType<typeof makeWorker>): string[] => [...h.worker.hea
 
 const entered = async (h: ReturnType<typeof makeWorker>) => {
   expect(await h.worker.reconcile()).toEqual({ ok: true });
-  const m = await passingMarket(h);
+  const m = await passingMarket(h, HELD);
   await m.run(4_000, 100, () => m.pool());
   await m.run(10_000, 400, () => {
     m.slot();
@@ -80,7 +83,7 @@ describe('the drop-rpc drill', () => {
     expect((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ ms: 2_592_000_000 }) })).status).toBe(202);
     expect(cuts).toEqual([2_592_000_000]);
     // Every feed went down by the drill, and came back when it ended (the harness clock runs each timer at once).
-    await new Market(h).run(400, 400);
+    await new Market(h, HELD).run(400, 400);
     const feedLines = lines(h.stateDir).filter((l) => l.kind === 'feed');
     expect(feedLines.some((l) => l['feed'] === 'all providers' && l['cause'] === 'drop-rpc drill')).toBe(true);
     for (const s of h.sources) expect(feedLines.filter((l) => l['feed'] === s.name && l['cause'] === 'drill').length).toBe(1);
@@ -105,7 +108,7 @@ describe('--reconcile-only (the host-loss tabletop)', () => {
     expect(lines(dir).find((l) => l.kind === 'recovered')).toMatchObject({ source: 'chain', positions: [] });
     // Market events arrive and are drained unread: no decision is ever taken.
     const before = lines(dir).filter((l) => l.kind === 'decision').length;
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     expect(lines(dir).filter((l) => l.kind === 'decision').length).toBe(before);
     expect(h.worker.book.positions).toEqual({});
@@ -128,7 +131,7 @@ describe('a restored position whose universe the loaded policy lacks (EXIT-1b re
     const start = lines(h.stateDir).filter((l) => l.kind === 'start').at(-1)!;
     expect(start['sell_only']).toEqual([expect.stringMatching(new RegExp(`lacks universe U9 of ${pid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))]);
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    const m = new Market(h2);
+    const m = new Market(h2, HELD);
     // The first decision may meet only the stale pre-kill quote and book the exit blocked; it retries within minutes.
     await m.run(150_000, 1_000, () => {
       m.slot();
@@ -155,7 +158,7 @@ describe('a restored position whose universe the loaded policy lacks (EXIT-1b re
     file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, universe: 'U9' as never }, tracker: { ...saved[pid]!.tracker, flatMet: true } } });
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    const m = new Market(h2);
+    const m = new Market(h2, HELD);
     const t0 = h2.timers.now();
     // Well inside an hour: a time max left at a universe's own value would hold the position past this run. As in the
     // test above, the first decision may meet only the stale pre-kill quote and book the exit blocked; it retries.
@@ -214,7 +217,7 @@ describe('a restored position whose universe the loaded policy lacks (EXIT-1b re
       expect(start['sell_only']).toEqual([`sell-only: no universe on record for ${pid}`]);
       expect(await h2.worker.reconcile()).toEqual({ ok: true });
       const t0 = h2.timers.now();
-      const m = new Market(h2);
+      const m = new Market(h2, HELD);
       await m.run(150_000, 1_000, () => {
         m.slot();
         m.pool();
