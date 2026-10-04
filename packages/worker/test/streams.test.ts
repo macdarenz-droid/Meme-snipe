@@ -339,6 +339,20 @@ describe('RPC stream', () => {
       }
     });
 
+    it('a watch raised to P1 in place keeps its coverage (no gap, no new start) and survives the halt; lowered while halted, it is dropped', async () => {
+      const t = run(() => [], { used: 699_000 });
+      // The logs watch is the second one run() adds (the slot watch is first).
+      expect(t.stream.setPriority(2, P1)).toBe(true);
+      expect(t.stream.setPriority(1, P1)).toBe(false);
+      t.scheduler.meter(1_000);
+      t.hub.last.push(slotNote(100, 606)); // any traffic runs the budget check
+      expect(t.scheduler.halted).toBe(true);
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
+      expect(t.stream.setPriority(2, P3)).toBe(true);
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: null, reason: 'halted', via: VIA }]);
+      expect(t.stream.setPriority(2, P1)).toBe(false);
+    });
+
     it('a watch dropped at the 70% halt leaves an open-ended gap; after resetBudget it can watch again and starts anew', async () => {
       const t = run(() => [], { used: 699_000 });
       t.scheduler.meter(1_000);
