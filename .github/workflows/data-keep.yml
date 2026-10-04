@@ -1,0 +1,74 @@
+name: data-keep
+
+# DATA-KEEP: the packaged assets of a helius day exist only in the actions cache
+# (data-rpc-assets-DAY-*; DATA-PUB never publishes them). GitHub removes a cache entry
+# not accessed for 7 days and, at the 10 GB cap, the least recently accessed first.
+# Every 3 days this restores each data-rpc-assets-* entry, which counts as an access,
+# checks its files against SHA256SUMS-DAY (manifest included), and proves the access
+# refreshed the entry's last_accessed_at (the job fails if it did not).
+# It never uploads an artifact, never creates or edits a release, never prints file
+# contents and uses no Helius key. The token reads the cache API only (actions: read).
+# Script: research/historical/ci/keep-check.sh.
+
+on:
+  schedule:
+    - cron: "23 4 */3 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: data-keep
+  cancel-in-progress: false
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      entries: ${{ steps.list.outputs.entries }}
+      count: ${{ steps.list.outputs.count }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: List the kept helius assets
+        id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: research/historical/ci/keep-check.sh list
+
+  # One entry per job, one at a time: a day's assets are about 4 GB.
+  keep:
+    needs: list
+    if: needs.list.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(needs.list.outputs.entries) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Same path as the save in data-scan.yml, which the cache version depends on.
+      - name: Restore the entry
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/work/assets
+          key: ${{ matrix.entry.key }}
+          fail-on-cache-miss: true
+      - name: Check its files against SHA256SUMS
+        env:
+          DAY: ${{ matrix.entry.day }}
+        run: research/historical/ci/keep-check.sh verify "$DAY" "$RUNNER_TEMP/work/assets"
+      - name: Prove the restore refreshed its last access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ matrix.entry.key }}
+          BEFORE: ${{ matrix.entry.before }}
+        run: research/historical/ci/keep-check.sh touched "$KEY" "$BEFORE"
