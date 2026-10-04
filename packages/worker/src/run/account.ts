@@ -88,6 +88,13 @@ export interface PaperTrade {
    * (`priceLate`) instead of a fill-time rate. Absent when every leg had its own rate.
    */
   pricedLate?: readonly ('open' | 'close')[];
+  /**
+   * RISK-PARTIAL: each partial sale's realized result (proceeds after its fees less its share of the basis), and the
+   * tokens and net exit lamports those parts cover. Absent in files from before (no partial booked).
+   */
+  partials?: { readonly atMs: number; readonly lamports: bigint; readonly pnl: MicroUsd }[];
+  partialSold?: bigint;
+  partialNet?: bigint;
 }
 
 export interface AccountState {
@@ -140,6 +147,22 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 
 export const accountFile = (dir: string) =>
   new StateFile<AccountState>(dir, 'account.json', (v) => (isObj(v) && typeof v['openedAtMs'] === 'number' && typeof v['openingEquity'] === 'bigint' && Array.isArray(v['trades']) && Array.isArray(v['entries']) ? (v as unknown as AccountState) : null));
+
+/**
+ * The share of the basis (entry SOL and fees) that `sold` of `bought` tokens carries: the rest keeps its share rounded
+ * up, so what is still held is never under-costed.
+ */
+const soldBasis = (basis: bigint, bought: bigint, sold: bigint): bigint => {
+  if (bought <= 0n) return 0n;
+  const left = sold >= bought ? 0n : bought - sold;
+  return basis - (basis * left + bought - 1n) / bought;
+};
+
+/** Lamports in micro-dollars, a loss rounded up; no price: a gain counts as nothing and a loss as `whole` (the safe side). */
+const pnlUsd = (l: bigint, price: MicroUsd | null, whole: MicroUsd): MicroUsd => {
+  if (price === null) return (l >= 0n ? 0n : -whole) as MicroUsd;
+  return (l >= 0n ? lamportsToMicroUsd(l as Lamports, price, 'floor') : -lamportsToMicroUsd((-l) as Lamports, price, 'ceil')) as MicroUsd;
+};
 
 const STOPS = new Set(['stop', 'trailing_stop', 'thesis_lost', 'liquidity']);
 const EXIT_REASONS = new Set(['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency']);
@@ -232,6 +255,23 @@ export class PaperAccount {
     }
     const t = this.#s.trades.find((x) => x.positionId === r.positionId);
     const l = this.#book(t, r.book, legs);
+    // RISK-PARTIAL: a sale that leaves tokens held realizes its share now; the close books the whole trade below. Its SOL
+    // and fees are the trade's paper legs so far (PAPER-1: every attempt's fee), so the parts and the close agree.
+    if (r.purpose === 'exit' && t !== undefined && l !== null && p !== undefined && p.status !== 'closed' && t.closedAtMs === null) {
+      const exitNet = l.exitSol - l.legs.exit.networkBase - l.legs.exit.priority - l.legs.exit.tip;
+      const basis = l.entrySol + l.legs.entry.networkBase + l.legs.entry.priority + l.legs.entry.tip;
+      const before = t.partialSold ?? 0n;
+      const lamports = (exitNet - (t.partialNet ?? 0n)) - (soldBasis(basis, p.bought, p.sold) - soldBasis(basis, p.bought, before));
+      if (p.sold !== before || exitNet !== (t.partialNet ?? 0n)) {
+        // No SOL price: the part's loss is its share of the whole cost in dollars, the notional and the entry fees (at
+        // the entry's own SOL-to-dollar rate, notional over entry SOL), rounded up (risk review, golden rule).
+        const den = p.bought * (p.cost > 0n ? p.cost : 1n);
+        const lostShare = p.bought <= 0n ? 0n : (t.notional * (p.cost > 0n ? basis : 1n) * (p.sold - before) + den - 1n) / den;
+        (t.partials ??= []).push({ atMs: r.atMs, lamports, pnl: pnlUsd(lamports, solPrice ?? t.openSolPrice ?? null, lostShare as MicroUsd) });
+        t.partialSold = p.sold;
+        t.partialNet = exitNet;
+      }
+    }
     if (t !== undefined && l !== null && p !== undefined && (p.status === 'closed' || r.closes === true) && t.closedAtMs === null) {
       t.closedAtMs = r.atMs;
       t.netLamports = tradeNet(l);
@@ -434,9 +474,10 @@ export class PaperAccount {
   }
 
   /**
-   * ACCOUNT-RATE F1: what each open trade has already paid outside its basis (risk's open-position notional is the
-   * tokens' cost plus the fills' fees): every failed attempt's fees, dated when it was sent, and the token-account rent
-   * not yet returned, dated at the entry. They have left the paper wallet, so risk's equity and the day's and week's loss
+   * ACCOUNT-RATE F1: what each open trade has already paid outside its basis (risk's open-position notional is the entry
+   * SOL and every entry attempt's fees, less the share partial sales realized): every failed exit attempt's fees, an
+   * opening entry's failed fees (not an open position yet), each dated when first seen, and the token-account rent not
+   * yet returned, dated at the entry. They have left the paper wallet, so risk's equity and the day's and week's loss
    * count them as costs now; when the trade closes they are in its net P&L instead. A late buy's position is no paper
    * trade, and an entry that ended unfilled is a stray cost (`settle`): neither is counted here. Valued at the SOL price
    * now (the trade's open price when none is known), rounded up.
@@ -452,7 +493,9 @@ export class PaperAccount {
         if (lamports > 0n) out.push({ atMs: Math.min(atMs, nowMs), amount: lamportsToMicroUsd(lamports as Lamports, px, 'ceil'), kind: 'open_trade' });
       };
       for (const i of Object.values(book.intents)) {
-        if (i.intent.positionId !== p.id || (i.intent.purpose === 'entry' && isTerminal(i) && i.fills.length === 0)) continue;
+        // An entry's failed fees are in the open position's basis once it holds tokens (with RISK-PARTIAL's parts): here
+        // only while it is still opening (not yet an open position risk values), so each fee counts once.
+        if (i.intent.positionId !== p.id || (i.intent.purpose === 'entry' && ((isTerminal(i) && i.fills.length === 0) || p.status !== 'opening'))) continue;
         for (const att of i.attempts) {
           const a = legs.attempts.get(att.signature);
           if (a === undefined || a.outcome !== 'failed') continue;
@@ -474,6 +517,7 @@ export class PaperAccount {
     const { version, value: held } = ledger.withSnapshot(() => ledger.heldExposure());
     const closedTrades: ClosedTrade[] = this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).map((t) => ({
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
+      partials: (t.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),
     }));
     // The wallet's setup rent is an account cost (RISK-1b `costs`): it lowers equity and counts toward the day's and
     // week's loss, and it is never a trade (R8, R11, R15 and statistics do not see it).
@@ -486,12 +530,22 @@ export class PaperAccount {
     costs.push(...this.#openTradeCosts(book, legs, solPrice, nowMs));
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
-      const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id).reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);
-      const basis = (p.cost + fees) as Lamports;
-      // No SOL price: the basis (the tokens' cost and the entry fees) at the entry's own SOL-to-dollar rate (notional over
-      // entry SOL), rounded up, as #132's no-price share (ACCOUNT-RATE; golden rule): never the notional alone.
-      const atEntryRate = t === undefined ? (0n as MicroUsd) : p.cost > 0n ? (((t.notional * basis) + p.cost - 1n) / p.cost) as MicroUsd : t.notional;
-      return { mint: p.mint, openedAtMs: t?.openedAtMs ?? nowMs, notional: solPrice === null ? atEntryRate : lamportsToMicroUsd(basis, solPrice, 'ceil'), mark: null, markAtMs: null };
+      // The basis (entry SOL and every entry attempt's fees, failed ones included: the same basis RISK-PARTIAL's parts
+      // take, from the paper legs), less the share its partial sales realized, so each fee counts once across the parts
+      // and what is still held (ACCOUNT-RATE). Tokens gone without a booked sale keep their basis here, so their loss shows
+      // in the mark. Without the legs (no trade record): the tokens' cost and the entry fills' fees.
+      const l = paperTradeLamports(book, p.id, legs);
+      const fillFees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'entry').reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);
+      const full = l === null ? p.cost + fillFees : l.entrySol + l.legs.entry.networkBase + l.legs.entry.priority + l.legs.entry.tip;
+      const sold = t?.partialSold ?? 0n;
+      const basis = (full - soldBasis(full, p.bought, sold)) as Lamports;
+      // No SOL price: that basis at the entry's own SOL-to-dollar rate (notional over entry SOL), rounded up, as #132's
+      // no-price share (golden rule): never the notional alone, never without the entry fees.
+      const atEntryRate = t === undefined ? (0n as MicroUsd) : p.cost > 0n ? (((t.notional * basis) + p.cost - 1n) / p.cost) as MicroUsd : (t.notional - (p.bought <= 0n ? 0n : (t.notional * sold) / p.bought)) as MicroUsd;
+      return {
+        mint: p.mint, openedAtMs: t?.openedAtMs ?? nowMs, notional: solPrice === null ? atEntryRate : lamportsToMicroUsd(basis, solPrice, 'ceil'), mark: null, markAtMs: null,
+        partials: (t?.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),
+      };
     });
     const history: AccountHistory = {
       openingEquity: this.#s.openingEquity, openedAtMs: this.#s.openedAtMs, flows: [], closedTrades, costs, openPositions,

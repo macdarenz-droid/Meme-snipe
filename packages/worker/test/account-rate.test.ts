@@ -25,7 +25,7 @@ const attempt = (intentId: string, signature: string, purpose: 'entry' | 'exit',
   costs: { venueFee: 0n, creatorFee: 0n, slippage: 0n, base: 0n, priority: 0n, tip: 0n }, sentAtMs: 0,
 });
 const book = (closed: boolean) => ({
-  positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: closed ? 'closed' : 'open', quantity: closed ? 0n : 1_000_000n, cost: 20_000_000n } },
+  positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: closed ? 'closed' : 'open', quantity: closed ? 0n : 1_000_000n, bought: 1_000_000n, sold: closed ? 1_000_000n : 0n, cost: 20_000_000n } },
   intents: {
     in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, fills: [fill('in', 'e1', 20_000_000n)], attempts: [{ signature: 'e1' }] },
     ...(closed ? { out: { intent: { id: 'out', purpose: 'exit', positionId: 'p1', mint: 'M' }, fills: [fill('out', 'x1', 24_000_000n)], attempts: [{ signature: 'x1' }] } } : {}),
@@ -114,7 +114,7 @@ describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
   const failed = (signature: string, sentAtMs: number): PaperAttempt => ({ ...attempt('out', signature, 'exit', 0n), priorityFee: 500_000n, outcome: 'failed', reason: 'failed', fill: null, sentAtMs });
   const sigs = ['f1', 'f2', 'f3'];
   const openBook = {
-    positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n, cost: 20_000_000n } },
+    positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n, bought: 1_000_000n, sold: 0n, cost: 20_000_000n } },
     intents: {
       in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, fills: [fill('in', 'e1', 20_000_000n)], attempts: [{ signature: 'e1' }] },
       out: { intent: { id: 'out', purpose: 'exit', positionId: 'p1', mint: 'M' }, fills: [], attempts: sigs.map((signature) => ({ signature })) },
@@ -191,7 +191,7 @@ describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
     const att: PaperAttempt = { ...failed('s', T - HOUR), intentId: 'in', purpose: 'entry' };
     const l: PaperLegs = { network: realNet, closedAccount: () => false, attempts: new Map([['s', att]]) };
     const at = (intent: string, position: string) => ({
-      positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: position, quantity: 0n, cost: 0n } },
+      positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: position, quantity: 0n, bought: 0n, sold: 0n, cost: 0n } },
       intents: { in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, status: intent, fills: [], attempts: [{ signature: 's' }] } },
     }) as unknown as Book;
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
@@ -212,7 +212,7 @@ describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
     const a = new PaperAccount(accountFile(dir), usd(20), T - 30 * HOUR, 0n);
     a.price(usd(100), T - 25 * HOUR);
     const late = {
-      positions: { 'p1.o1': { id: 'p1.o1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n, cost: 20_000_000n } },
+      positions: { 'p1.o1': { id: 'p1.o1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n, bought: 1_000_000n, sold: 0n, cost: 20_000_000n } },
       intents: { out: { intent: { id: 'out', purpose: 'exit', positionId: 'p1.o1', mint: 'M' }, fills: [], attempts: [{ signature: 'f1' }] } },
     } as unknown as Book;
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
@@ -276,14 +276,58 @@ describe('ACCOUNT-RATE: no-price loss paths count the entry fees', () => {
     // An entry of 0.02 SOL for a $2 notional ($100 a SOL), with 15,001 lamports of fill fees.
     const feeFill = { ...fill('in', 'e1', 20_000_000n), fees: 15_001n };
     const b = {
-      positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n, cost: 20_000_000n } },
+      positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n, bought: 1_000_000n, sold: 0n, cost: 20_000_000n } },
       intents: { in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, fills: [feeFill], attempts: [{ signature: 'e1' }] } },
     } as unknown as Book;
-    a.filled({ ...base, purpose: 'entry', book: b, atMs: T - 2 * HOUR }, usd(100), legs(false));
+    // The paper legs carry the fee (the entry attempt's priority): the basis risk reads comes from them.
+    const feeLegs: PaperLegs = { ...legs(false), attempts: new Map([['e1', { ...attempt('in', 'e1', 'entry', 20_000_000n), priorityFee: 15_001n }]]) };
+    a.filled({ ...base, purpose: 'entry', book: b, atMs: T - 2 * HOUR }, usd(100), feeLegs);
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
-    const [p] = a.fact(ledger, b, NO_LATCHES, null, T, legs(false)).history.openPositions;
+    const [p] = a.fact(ledger, b, NO_LATCHES, null, T, feeLegs).history.openPositions;
     // $2 × 20,015,001 / 20,000,000 = $2.0015001, rounded up to whole micro-dollars.
     expect(p!.notional).toBe(2_001_501n);
+    ledger.close();
+  });
+});
+
+describe('ACCOUNT-RATE with RISK-PARTIAL: each entry fee counts once', () => {
+  it('an entry with a failed attempt, half sold: the part\'s basis share and the open remainder\'s basis add up to entry SOL and every entry fee, once', () => {
+    const net = FILL_CONFIG.network;
+    const PX = 123_456_789n as MicroUsd;
+    const fee = (priority: bigint, outcome: 'filled' | 'failed') => net.signaturesPerTx * net.baseFeePerSignature + priority + (outcome === 'filled' ? net.tip : 0n);
+    const at = (intentId: string, signature: string, purpose: 'entry' | 'exit', sol: bigint, priorityFee: bigint, outcome: 'filled' | 'failed'): PaperAttempt => ({
+      ...attempt(intentId, signature, purpose, sol), priorityFee, outcome, reason: outcome, fill: outcome === 'failed' ? null : attempt(intentId, signature, purpose, sol).fill, sentAtMs: T - 3 * HOUR,
+    });
+    const e0 = at('in', 'e0', 'entry', 20_000_000n, 300_000n, 'failed');
+    const e1 = at('in', 'e1', 'entry', 20_000_000n, 100_000n, 'filled');
+    const x1 = at('out', 'x1', 'exit', 12_000_000n, 0n, 'filled');
+    const entryFill = { ...fill('in', 'e1', 20_000_000n), fees: fee(100_000n, 'filled') };
+    const bookAt = (sold: bigint) => ({
+      positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n - sold, bought: 1_000_000n, sold, cost: 20_000_000n } },
+      intents: {
+        in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, status: 'reconciled', fills: [entryFill], attempts: [{ signature: 'e0' }, { signature: 'e1' }] },
+        ...(sold > 0n ? { out: { intent: { id: 'out', purpose: 'exit', positionId: 'p1', mint: 'M' }, status: 'reconciled', fills: [{ ...fill('out', 'x1', 12_000_000n), tokens: sold, fees: fee(0n, 'filled') }], attempts: [{ signature: 'x1' }] } } : {}),
+      },
+    }) as unknown as Book;
+    const legsAt = (sold: bigint): PaperLegs => ({ network: net, closedAccount: () => false, attempts: new Map([['e0', e0], ['e1', e1], ...(sold > 0n ? [['x1', x1] as const] : [])]) });
+    const dir = tempState();
+    const a = new PaperAccount(accountFile(dir), usd(20), T - 30 * HOUR, 0n);
+    a.price(PX, T - 25 * HOUR);
+    a.filled({ ...base, purpose: 'entry', book: bookAt(0n), atMs: T - 2 * HOUR }, PX, legsAt(0n));
+    a.filled({ ...base, purpose: 'exit', book: bookAt(500_000n), atMs: T - HOUR, reasons: ['partial exit'] }, PX, legsAt(500_000n));
+    const t = a.state.trades[0]!;
+    expect(t.partials).toHaveLength(1);
+    // Entry SOL and both entry attempts' fees, the failed one included.
+    const full = 20_000_000n + fee(300_000n, 'failed') + fee(100_000n, 'filled');
+    const exitNet = 12_000_000n - fee(0n, 'filled');
+    const soldShare = exitNet - t.partials![0]!.lamports;
+    const remaining = (full * 500_000n + 1_000_000n - 1n) / 1_000_000n;
+    expect(soldShare + remaining).toBe(full);
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const fact = a.fact(ledger, bookAt(500_000n), NO_LATCHES, PX, T, legsAt(500_000n));
+    expect(fact.history.openPositions[0]!.notional).toBe(lamportsToMicroUsd(remaining as Lamports, PX, 'ceil'));
+    // No entry fee again as an open-trade cost: only the rent the open account still holds.
+    expect(fact.history.costs.filter((c) => c.kind === 'open_trade').map((c) => c.amount)).toEqual([lamportsToMicroUsd(net.tokenAccountRent as Lamports, PX, 'ceil')]);
     ledger.close();
   });
 });

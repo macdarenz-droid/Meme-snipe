@@ -18,6 +18,10 @@ export interface JournalReport {
    * written before lines carried `sol_usd` (`alert` lines with code `unpriced_fill`), as `trade|purpose`.
    */
   readonly unpriced_fills: readonly string[];
+  /** S0-ZERO: the pool watches' in-run fills (`trades_fill` lines): how many, how many complete, transactions read and Helius credits. */
+  readonly trades_fill: { readonly lines: number; readonly complete: number; readonly transactions: number; readonly credits: number };
+  /** CREATE-AFTER-RESTART: the create lookups (`create_lookup` lines): how many, how many found, skipped for want of budget, and Helius credits. */
+  readonly create_lookup: { readonly lines: number; readonly found: number; readonly skipped_no_budget: number; readonly credits: number };
   readonly complete: boolean;
   readonly problems: readonly string[];
   /** Each boot's entry rule as its `start` line states it (WORKER-1: entry_rule, paper_edge_ppm, qualifying, s0_salt). */
@@ -70,6 +74,8 @@ export const checkJournalLines = (raw: Iterable<string>, opts: { readonly allowT
   const diagnosed: Record<string, number> = {};
   const h15 = { lines: 0, run: 0, credits: 0 };
   const unpriced: string[] = [];
+  const fills = { lines: 0, complete: 0, transactions: 0, credits: 0 };
+  const lookups = { lines: 0, found: 0, skipped_no_budget: 0, credits: 0 };
   const starts: StartFields[] = [];
   let count = 0;
   let index = 0;
@@ -83,6 +89,18 @@ export const checkJournalLines = (raw: Iterable<string>, opts: { readonly allowT
       if (typeof l['credits'] === 'number' && Number.isFinite(l['credits'])) h15.credits += l['credits'];
     }
     if (l.kind === 'alert' && l['code'] === 'unpriced_fill') unpriced.push(`${String(l.trade)}|${String(l['purpose'])}`);
+    if (l.kind === 'trades_fill') {
+      fills.lines += 1;
+      if (l['complete'] === true) fills.complete += 1;
+      if (typeof l['transactions'] === 'number' && Number.isFinite(l['transactions'])) fills.transactions += l['transactions'];
+      if (typeof l['credits'] === 'number' && Number.isFinite(l['credits'])) fills.credits += l['credits'];
+    }
+    if (l.kind === 'create_lookup') {
+      lookups.lines += 1;
+      if (l['found'] === true) lookups.found += 1;
+      if (l['stopped_by'] === 'skipped-no-budget') lookups.skipped_no_budget += 1;
+      if (typeof l['credits'] === 'number' && Number.isFinite(l['credits'])) lookups.credits += l['credits'];
+    }
     if (l.kind === 'decision' && Array.isArray(parts)) for (const p of parts) diagnosed[String(p)] = (diagnosed[String(p)] ?? 0) + 1;
     if (l.kind === 'start') starts.push({ boot: l.boot, entry_rule: l['entry_rule'], paper_edge_ppm: l['paper_edge_ppm'], qualifying: l['qualifying'], s0_salt: l['s0_salt'], s0_diagnostic: l['s0_diagnostic'] ?? null });
     if (l.seq !== expect) add(`seq ${l.seq} where ${expect} expected`);
@@ -141,5 +159,5 @@ export const checkJournalLines = (raw: Iterable<string>, opts: { readonly allowT
     held = { text, at: index };
   }
   if (held !== null) take(held, true);
-  return { lines: count, boots: bootsSeen.size, entries, exits, simulations, repairs, s0_diagnostic: diagnosed, h15_sim: h15, unpriced_fills: unpriced, complete: problems.length === 0, problems, starts };
+  return { lines: count, boots: bootsSeen.size, entries, exits, simulations, repairs, s0_diagnostic: diagnosed, h15_sim: h15, unpriced_fills: unpriced, trades_fill: fills, create_lookup: lookups, complete: problems.length === 0, problems, starts };
 };
