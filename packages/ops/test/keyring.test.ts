@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { sign, type Heartbeat } from '../src/watchdog/logic.ts';
 import { NEW_RING, candidates, nextSlot, promote, sha256 } from '../src/watchdog/keyring.ts';
 import worker, { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
+import { goodSummary } from './summary-fixture.ts';
 
 const K0 = 'key-zero-0123456789abcdef0123456789';
 const K1 = 'key-one-0123456789abcdef0123456789a';
@@ -44,8 +45,7 @@ function harness(env: Partial<Env>) {
   let dob = new Watchdog(state, e);
   let seq = 0;
   let lastBody = '';
-  const raw = async (path: string, body: string, key: string) => {
-    const t = Math.floor(Date.now() / 1000);
+  const raw = async (path: string, body: string, key: string, t = Math.floor(Date.now() / 1000)) => {
     return (await dob.fetch(new Request(`https://w.test${path}`, { method: 'POST', body, headers: { 'x-zeroed-signature': `t=${t},v1=${await sign(key, t, 'POST', path, body)}` } }))).status;
   };
   const beat = async (key: string) => {
@@ -99,10 +99,13 @@ describe('rotation on the watchdog', () => {
     expect((await h.slot()).heartbeat).toBe('A');
     expect(await h.beat(K0)).toBe(401);
     expect(await h.resume(K0)).toBe(401);
-    // The webhook secret came in the same bundle: it switched with the key, without waiting for a Telegram update.
+    // The webhook secret came in the same bundle: it is adopted with the key (not pending), and the old secret still works
+    // until Telegram sends the new one, so a /pause in between is never refused.
+    expect(await h.slot()).toEqual({ heartbeat: 'A', webhook: 'legacy', pending: false });
+    expect(await h.hook('w0')).toBe(200);
+    expect(await h.hook('w1')).toBe(200);
     expect(await h.slot()).toEqual({ heartbeat: 'A', webhook: 'A', pending: false });
     expect(await h.hook('w0')).toBe(401);
-    expect(await h.hook('w1')).toBe(200);
     // The next rotation writes B; A keeps working until the server uses B.
     h.redeploy({ HEARTBEAT_HMAC_KEY_B: K2 });
     expect(await h.beat(K1)).toBe(200);
@@ -155,7 +158,28 @@ describe('rotation on the watchdog', () => {
     // Run 2 reads /slot, sees pending and writes nothing (publish.sh; tested in ops-files.test.ts), so the env stays.
     expect((await h.slot()).pending).toBe(true);
     expect(await h.beat(K1)).toBe(200);
+    expect(await h.slot()).toEqual({ heartbeat: 'A', webhook: 'legacy', pending: false });
+    vi.unstubAllGlobals();
+  });
+
+  it('an adopted webhook secret: the old one works until 24 h, then the new one alone, with no offer alert', async () => {
+    const H = 3_600_000;
+    const h = harness({ HEARTBEAT_HMAC_KEY: K0, TELEGRAM_WEBHOOK_SECRET: 'w0' });
+    h.redeploy({ HEARTBEAT_HMAC_KEY_A: K1, TELEGRAM_WEBHOOK_SECRET_A: 'w1' });
+    expect(await h.beat(K1)).toBe(200);
+    const t0 = Date.now();
+    const at = async (ms: number) => {
+      const st = h.mem.get('hb') as { hb: unknown; receivedAt: number };
+      h.mem.set('hb', { ...st, receivedAt: ms });
+      return h.check(ms);
+    };
+    expect((await at(t0 + 23 * H)).alerts).toEqual([]);
+    expect(await h.hook('w0')).toBe(200);
+    // Past 24 h: the new secret alone, and no "Key offer pending" for it at any point.
+    expect((await at(t0 + 25 * H)).alerts).toEqual([]);
     expect(await h.slot()).toEqual({ heartbeat: 'A', webhook: 'A', pending: false });
+    expect(await h.hook('w0')).toBe(401);
+    expect(await h.hook('w1')).toBe(200);
     vi.unstubAllGlobals();
   });
 
@@ -165,6 +189,19 @@ describe('rotation on the watchdog', () => {
     expect(await h.hook('w1')).toBe(200);
     expect(await h.slot()).toEqual({ heartbeat: 'legacy', webhook: 'A', pending: false });
     expect(await h.hook('w0')).toBe(401);
+    vi.unstubAllGlobals();
+  });
+
+  it('/summary keeps working through a rotation: signed with the offer it is taken and switches nothing', async () => {
+    // Before this, /summary checked HEARTBEAT_HMAC_KEY alone: a server on its new key (slot A) got 401 here.
+    const h = harness({ HEARTBEAT_HMAC_KEY: K0 });
+    h.redeploy({ HEARTBEAT_HMAC_KEY_A: K1 });
+    const t = Math.floor(Date.now() / 1000);
+    expect(await h.raw('/summary', JSON.stringify(goodSummary()), K1, t)).toBe(200);
+    expect((await h.slot()).heartbeat).toBe('legacy');
+    expect(await h.beat(K1)).toBe(200);
+    expect(await h.raw('/summary', JSON.stringify(goodSummary({ day: '2026-10-05' })), K1, t + 1)).toBe(200);
+    expect(await h.raw('/summary', JSON.stringify(goodSummary({ day: '2026-10-06' })), K0, t + 2)).toBe(401);
     vi.unstubAllGlobals();
   });
 

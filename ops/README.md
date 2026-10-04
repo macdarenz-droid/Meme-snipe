@@ -108,7 +108,8 @@ Checks:
 - unresolved intents past blockhash expiry;
 - SOL reserve below the floor;
 - signer unreachable;
-- a new heartbeat key or webhook secret on offer for more than 24 h ("Key offer pending").
+- a new heartbeat key or webhook secret on offer for more than 24 h ("Key offer pending");
+- daily summary not written (below).
 
 Alerts go to Telegram once, repeat every 5 minutes during the first hour and hourly after that, and always send a "cleared" line. Chain lookups are bounded (5 s), so a hung RPC never delays the heartbeat check.
 
@@ -124,7 +125,7 @@ The Deploy workflow deploys it only together with a key handoff, so the server a
 - **The switch:** the watchdog accepts the active value, and the new value while it is on offer. The server's first heartbeat signed with the new key makes that slot active and refuses the old key from then on. Telegram's first request with the new webhook secret does the same for the webhook. The watchdog keeps only the active slot and hashes of the values it retired, never a key.
 - **When the server never gets the bundle** (no pickup, or a `DEPLOY_CODE` that is stale or wrong), nothing it uses changes: the server keeps beating with its key, and a later good Deploy writes over the same pending slot. A new key left unused for 24 hours raises the alert "Key offer pending", so a second valid key never sits unseen. It clears when the server uses the key or a forced Deploy replaces it.
 - **While an offer is pending, Deploy does not rotate again.** The server may already hold the offered key: a fresh server waiting for `/pair`, or a run it picked up but has not restarted for yet. Replacing that key would cut the server off. So the run says "Key rotation refused: an offer is still waiting for the server; nothing rotated" as a warning in the log and in the run's summary. It still hands over the API keys, without watchdog keys, so the server keeps the ones it has, and the code update still lands.
-- **The webhook secret switches with the key.** It comes in the same bundle and the server sets it with the key, so the server's first heartbeat with the new key switches both. A Telegram request carrying the new secret also switches it.
+- **The webhook secret is adopted with the key.** It comes in the same bundle, so the server's first heartbeat with the new key marks the new secret adopted: it is no longer pending and raises no offer alert. The old secret keeps working until Telegram's first request with the new one, or 24 hours, so a `/pause` sent during the switch is never refused.
 
 **To rotate anyway** (only when the alert says the server never got the key, for example after a wrong `DEPLOY_CODE`):
 1. In GitHub, open Settings → Secrets and variables → Actions → **Variables** → **New repository variable**. Name `FORCE_KEY_ROTATE`, value `yes`.
@@ -140,6 +141,33 @@ To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in G
 If the chat is re-paired later (`zeroed-pair-code`), the server turns the webhook off to read `/pair` and sets it again as soon as the pairing ends.
 
 A failed webhook set is tried again after 1, 2, 4 and 8 minutes, then every 30 minutes. After 5 failed tries in a row the owner gets one notice in the paired chat (alerts still arrive; only `/pause` and `/status` are cut off), and a line when it works again.
+
+## Daily summary (OPS-SUMMARY)
+
+Each day the worker sends a summary of what it did to a private GitHub repository the supervisor can read. It covers:
+- decision counts, and refusals by reason;
+- halts and alerts by code;
+- each paper trade and the day's paper P&L;
+- the worker's commit and entry rule.
+
+It never holds a key, token, address, host name, chat id, wallet or personal data. The worker posts it signed to the watchdog every 30 minutes and just after Melbourne midnight. The watchdog checks it again and writes `reports/<day>.json` and `reports/latest.json`. Before every write the watchdog checks that the repository is private and is not this one. If that check or the write fails, nothing is written and Telegram gets a "Daily summary not written" alert, repeated and cleared like every watchdog alert. Trading and recording never wait on it. No new secret goes on the server, and nothing is typed at the console.
+
+Owner steps, once:
+1. Open github.com/new. Owner `macdarenz-droid`, name `zeroed-data`, select **Private**, tick **Add a README file**, then **Create repository**. (This is the same repository DATA-STORE uses.)
+2. Open github.com/settings/personal-access-tokens/new.
+   - Token name: `zeroed-data`. Expiration: 90 days.
+   - Repository access: **Only select repositories**, then `zeroed-data`.
+   - Permissions: **Contents: Read and write**.
+   - Select **Generate token** and copy the token.
+3. In this repository, open Settings → Secrets and variables → Actions.
+   - **New repository secret**: name `DATA_STORE_TOKEN`, value: the token.
+   - Then the **Variables** tab → **New repository variable**: name `DATA_REPO`, value `macdarenz-droid/zeroed-data`.
+4. Open github.com/settings/installations → **Claude** → **Configure**. Under Repository access add `zeroed-data`, then **Save**, so agents can read `reports/`.
+5. Actions → **Deploy** → **Run workflow**.
+
+If DATA-STORE's steps are already done, only steps 4 and 5 remain. When the token expires, the watchdog alerts "Daily summary not written: repository check HTTP 401". To fix it, make a new token as in step 2, replace `DATA_STORE_TOKEN`, and run Deploy.
+
+The Deploy step (`ops/deploy/reports.sh`) runs only when `CLOUDFLARE_API_TOKEN` and `DATA_STORE_TOKEN` exist, and only after the deploy tag moved. It deploys the watchdog's code from the commit the deploy tag names (the one the server runs), with `DATA_REPO`, and sets one secret, `REPORTS_TOKEN`, from stdin. It never touches the heartbeat key or any other secret, which a deploy keeps. It also refuses this repository's own name.
 
 ## Host checks
 
@@ -188,6 +216,7 @@ A server installed from an earlier line (before this fix) has its webhook off af
 - Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
 - Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
 - Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.
+- Post the daily summary (`packages/ops/src/watchdog/summary.ts` shape) to `/summary` every `ZEROED_SUMMARY_MS` (default 30 minutes) and just after Melbourne midnight, signed over `t\nPOST\n/summary\nbody` with a signature time newer than the last one. Never wait on it.
 
 ## Test it
 

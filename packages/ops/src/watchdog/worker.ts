@@ -15,8 +15,11 @@ import {
   type ChainView,
   type Lease,
   type Stored,
+  summaryAlert,
 } from './logic.ts';
-import { NEW_RING, OFFER_ALERT_MS, candidates, isRing, promote, trackOffer, type Candidate, type Offer, type Ring } from './keyring.ts';
+import { NEW_RING, OFFER_ALERT_MS, candidates, isRing, promote, sha256, trackOffer, type Candidate, type Offer, type Ring } from './keyring.ts';
+import { writeReports } from './reports.ts';
+import { checkSummary } from './summary.ts';
 
 interface DurableStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -50,6 +53,10 @@ export interface Env {
   TELEGRAM_API?: string;
   CHAIN_RPC_URL?: string;
   CHAIN_TIMEOUT_MS?: string;
+  /** OPS-SUMMARY: the private reports repository (owner/name, a plain var) and its fine-grained token (a secret). */
+  DATA_REPO?: string;
+  REPORTS_TOKEN?: string;
+  GITHUB_API?: string;
   [k: string]: unknown;
 }
 
@@ -63,7 +70,7 @@ const TOKEN_PROGRAMS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQd
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const { pathname } = new URL(req.url);
-    const post = req.method === 'POST' && ['/heartbeat', '/telegram', '/lease', '/resume'].includes(pathname);
+    const post = req.method === 'POST' && ['/heartbeat', '/telegram', '/lease', '/resume', '/summary'].includes(pathname);
     if (!post && !(req.method === 'GET' && pathname === '/slot')) return new Response('Not found', { status: 404 });
     return env.WATCHDOG.get(env.WATCHDOG.idFromName('primary')).fetch(req);
   },
@@ -103,6 +110,7 @@ export class Watchdog {
     if (pathname === '/heartbeat') return this.heartbeat(body, used);
     if (pathname === '/lease') return this.lease(body);
     if (pathname === '/resume') return this.resume(t);
+    if (pathname === '/summary') return this.summary(t, body);
     return new Response('Not found', { status: 404 });
   }
 
@@ -114,10 +122,11 @@ export class Watchdog {
     // The server beats with the offered key: it has the new key, so the old one is retired from now on.
     if (!used.active) {
       await this.state.storage.put(`ring:${HB}`, await promote(await this.ring(HB), this.env, HB, used.slot));
-      // The webhook secret came in the same bundle and the server sets it with the key, so it switches too: waiting for
-      // Telegram's next update could leave it on offer for days.
+      // The webhook secret came in the same bundle and the server sets it with the key: mark it adopted. It no longer
+      // counts as pending or alerts, but the old secret stays accepted until Telegram's first request with the new one
+      // (or 24 h), so a /pause sent while Telegram still uses the old one is never refused.
       const wh = (await candidates(await this.ring(WH), this.env, WH)).find((c) => !c.active);
-      if (wh) await this.state.storage.put(`ring:${WH}`, await promote(await this.ring(WH), this.env, WH, wh.slot));
+      if (wh) await this.state.storage.put(`adopted:${WH}`, { slot: wh.slot, hash: await sha256(wh.value), since: Date.now() } satisfies Offer);
     }
     await this.state.storage.put('hb', { hb, receivedAt: Date.now() } satisfies Stored);
     // The owner's chat comes only from the server's signed heartbeat (paired there with /pair).
@@ -137,8 +146,45 @@ export class Watchdog {
     const wh = await this.ring(WH);
     // Pending: a new key or secret the server has not used yet. Deploy then refuses to rotate again, so a second run
     // never replaces a key the server may already hold.
-    const pending = (await candidates(hb, this.env, HB)).some((c) => !c.active) || (await candidates(wh, this.env, WH)).some((c) => !c.active);
+    const adopted = (await this.state.storage.get<Offer>(`adopted:${WH}`)) ?? null;
+    const isAdopted = async (c: Candidate) => adopted !== null && adopted.slot === c.slot && adopted.hash === (await sha256(c.value));
+    const whOffers = (await candidates(wh, this.env, WH)).filter((c) => !c.active);
+    const pending = (await candidates(hb, this.env, HB)).some((c) => !c.active) || (await Promise.all(whOffers.map(async (c) => !(await isAdopted(c))))).some(Boolean);
     return json({ heartbeat: hb.active, webhook: wh.active, pending });
+  }
+
+  /**
+   * OPS-SUMMARY: a signed daily summary from the worker. Checked again here (shape and forbidden patterns), then written
+   * to the private reports repository. A failed write is stored as the "summary" alert for the next check and never
+   * changes the heartbeat, the pause or the lease. The reply only says whether it was written; the worker ignores it.
+   */
+  private async summary(t: number, body: string): Promise<Response> {
+    const last = (await this.state.storage.get<number>('last_summary_t')) ?? 0;
+    if (t <= last) return json({ error: 'replayed summary' }, 409);
+    const c = checkSummary(body);
+    if (!c.ok) {
+      await this.state.storage.put('summary_failure', { reason: `refused (${c.reason})`, at: Date.now() });
+      return json({ error: 'bad summary' }, 400);
+    }
+    await this.state.storage.put('last_summary_t', t);
+    // Not set up yet (neither the repository nor the token): nothing to write and nothing to alert. One of the two
+    // without the other is a broken setup and alerts below.
+    if (!this.env.DATA_REPO && !this.env.REPORTS_TOKEN) {
+      // A failure stored before the setup was removed must not keep alerting.
+      await this.state.storage.put('summary_failure', null);
+      return json({ ok: true, written: false });
+    }
+    // latest.json only moves forward: a late final for yesterday never replaces today's.
+    const latestDay = (await this.state.storage.get<string>('summary_latest_day')) ?? '';
+    const env = { DATA_REPO: this.env.DATA_REPO, REPORTS_TOKEN: this.env.REPORTS_TOKEN, GITHUB_API: this.env.GITHUB_API };
+    const r = await writeReports(env, c.summary.day, c.text, (u, i) => fetch(u, i), 10_000, c.summary.day >= latestDay);
+    if (r.ok) {
+      if (c.summary.day > latestDay) await this.state.storage.put('summary_latest_day', c.summary.day);
+      await this.state.storage.put('summary_failure', null);
+    } else {
+      await this.state.storage.put('summary_failure', { reason: r.reason, at: Date.now() });
+    }
+    return json({ ok: true, written: r.ok });
   }
 
   private async lease(body: string): Promise<Response> {
@@ -170,7 +216,10 @@ export class Watchdog {
     const used = (await candidates(await this.ring(WH), this.env, WH)).find((c) => sameText(given, c.value));
     if (!used) return new Response('Unauthorized', { status: 401 });
     // Telegram sends the offered secret: the server set the webhook with it, so the old one is retired.
-    if (!used.active) await this.state.storage.put(`ring:${WH}`, await promote(await this.ring(WH), this.env, WH, used.slot));
+    if (!used.active) {
+      await this.state.storage.put(`ring:${WH}`, await promote(await this.ring(WH), this.env, WH, used.slot));
+      await this.state.storage.put(`adopted:${WH}`, null);
+    }
     let update: unknown;
     try {
       update = JSON.parse(body);
@@ -206,6 +255,15 @@ export class Watchdog {
     const current = evaluate(stored, now, limits, chain);
     // KEY-ROTATE-SAFE: a new key left on offer for 24 h is a second valid key nobody uses; say so until it is used or
     // replaced.
+    // An adopted webhook secret (the server switched with its key) becomes the only one after 24 h even if Telegram has
+    // not sent a request with it yet. This runs before the offer alert at the same threshold, so it never alerts.
+    const adopted = (await s.get<Offer>(`adopted:${WH}`)) ?? null;
+    const whOffer = (await candidates(await this.ring(WH), this.env, WH)).find((c) => !c.active);
+    const whAdopted = adopted !== null && whOffer !== undefined && adopted.slot === whOffer.slot && adopted.hash === (await sha256(whOffer.value));
+    if (whAdopted && now - adopted.since > OFFER_ALERT_MS) {
+      await s.put(`ring:${WH}`, await promote(await this.ring(WH), this.env, WH, whOffer.slot));
+      await s.put(`adopted:${WH}`, null);
+    }
     for (const [base, what] of [[HB, 'heartbeat key'], [WH, 'webhook secret']] as const) {
       const offer = await trackOffer((await s.get<Offer>(`offer:${base}`)) ?? null, await this.ring(base), this.env, base, now);
       await s.put(`offer:${base}`, offer);
@@ -213,6 +271,8 @@ export class Watchdog {
         current.push({ key: `key_offer_${base}`, text: `Key offer pending: the new ${what} (slot ${offer.slot}) has not been used for ${Math.floor((now - offer.since) / 3_600_000)} h, so the server does not have it. Check DEPLOY_CODE, then run Deploy with FORCE_KEY_ROTATE=yes (ops/README.md, Watchdog).` });
       }
     }
+    const failed = await s.get<{ reason: string; at: number }>('summary_failure');
+    if (failed) current.push(summaryAlert(failed.reason));
     const { lines, next } = planAlerts((await s.get<Record<string, ActiveAlert>>('alerts')) ?? {}, current, now, limits);
     await s.put('alerts', next);
     if (lines.length) await this.say(lines.join('\n'));
