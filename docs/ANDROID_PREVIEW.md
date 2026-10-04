@@ -1,6 +1,6 @@
 # Android preview
 
-An installable build of the dashboard for checking the UI on a phone. It wraps `apps/web` with Capacitor 8 (app name Zeroed, id `com.macdarenz.zeroed`). It has no live data, no wallet and no store listing.
+An installable build of the dashboard for checking the UI on a phone. It wraps `apps/web` with Capacitor 8 (app name Zeroed, id `com.macdarenz.zeroed`). It shows sample data, and the server's live view once the phone and the server share the owner's tailnet (Server screen; ARCHITECTURE §17 "Live view"). It has no wallet and no store listing.
 
 Download (always the newest build): https://github.com/macdarenz-droid/Meme-snipe/releases/download/preview/zeroed-preview.apk
 
@@ -16,7 +16,7 @@ Download (always the newest build): https://github.com/macdarenz-droid/Meme-snip
 - Pull requests and other branches upload the APK as a workflow artifact only. A push or manual run on `ccr-14987baf-i6lrsl` also replaces the single asset `zeroed-preview.apk` of the `preview` prerelease (`.github/scripts/publish-preview.sh`): the new file is uploaded as `zeroed-preview.apk.new` first and checked (state uploaded, same size), the old asset is swapped out only after that succeeds (and put back if the swap fails), and the tag and notes change last, so a failed upload leaves the fixed link working. A release run skips itself if the branch has moved on.
 
 ## Keystore
-A debug keystore is created on a cache miss and kept in `actions/cache` under the key `zeroed-preview-debug-keystore-v1`. Nothing key-like is committed (`*.keystore` and `*.jks` are ignored). If GitHub evicts the cache (unused for 7 days, or storage pressure), the next build creates a new key and the phone needs one uninstall. Caches made by a pull request are not visible to the integration branch, so releases always use the integration branch's own key. Pull requests from forks never restore or save the cache (a pull request can read its base branch's caches); they build with a throwaway key.
+A debug keystore is created on a cache miss and kept in `actions/cache` under the key `zeroed-preview-debug-keystore-v1`. Nothing key-like is committed (`*.keystore` and `*.jks` are ignored). If GitHub evicts the cache (unused for 7 days, or storage pressure), the next build creates a new key and the phone needs one uninstall. Caches made by a pull request are not visible to the integration branch, so releases always use the integration branch's own key. The `if:` guard in `android-preview.yml` keeps this workflow's pull-request runs from creating the key, but a pull-request run does restore the base branch's cache (run 37188909095 did), and a fork's pull request runs the fork's own workflow files, so the guard does not stop a fork from restoring the key unless fork-run approval does. SEC-1 (#136, open) is built to remove this: pull requests always sign with a throwaway key and never restore the cache, and the integration branch signs with a pinned keystore from secrets. The old cache entry stays readable until it is deleted (owner or supervisor step).
 
 Every third-party action in `.github/workflows` is pinned to a full commit SHA with its tag in a comment (`test/android-workflow.test.ts` fails on a tag-only pin).
 

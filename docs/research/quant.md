@@ -383,9 +383,9 @@ The order is research → shadow → $2 canary → owner decision on a size incr
 
 ### Gate 1: research → shadow (historical replay)
 
-- Untouched final holdout of ≥ 7 consecutive days with **≥ 150 simulated trades**.
+- Untouched final holdout of ≥ 7 consecutive days with **≥ 150 simulated trades** (superseded: the project requires n ≥ max(300, n_power) out-of-sample holdout trades and at least 10 trade days in a fixed window to 2026-10-20; `CLAUDE.md`, DECISIONS 2026-10-03 promotion row and the consensus rulings of 2026-10-04).
 - Mean net per trade **> 0 at the one-sided 95% lower bound** (day-block bootstrap), **conservative scenario**.
-- **DSR ≥ 0.95**, with N taken from the experiment registry.
+- **DSR ≥ 0.95**, with N taken from the experiment registry (superseded for the project's G1: it gates on the SPA test, owner, 2026-10-04; the DSR is still reported).
 - **PBO ≤ 0.25** (CSCV, S = 16 day-blocks).
 - Share of P&L from the top 1% of trades ≤ 50%.
 - `y_severe` rate ≤ 10%, with its 95% upper bound ≤ 15%.

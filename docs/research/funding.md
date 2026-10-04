@@ -352,6 +352,8 @@ The verdict "No" is confirmed from Stripe's own docs.
 
 ### Fixes to apply to the sections above
 
+Status, checked 2026-10-04: none of these is applied yet; all seven stay open. The app's Deposit and Withdraw screens (`apps/web/src/funding/exchanges.ts`) show the A$0.29 and A$0.46 Independent Reserve figures, which include half the spread (fix 5).
+
 1. Section 2, Stripe row: delete the Treasury snippet; replace with "Stripe Treasury stablecoin payouts do not support AUD or Australia, hold USDC only (not SOL), and are business-only".
 2. Section 2, MoonPay row: PayID buying becomes [U]; minimum becomes "$20, currency unstated"; AU bank-transfer payout becomes [U] (Visa push-to-card lists Australia).
 3. Section 2, Banxa row: mark "payout account in your own verified name" and card payout [U]; add that Banxa's own page says PayID costs "around 1%" all-in.

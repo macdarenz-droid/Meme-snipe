@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exits when any Actions run created after $1 (UTC ISO) has a job that started for real (in_progress or success).
+# Exits when any Actions run created after $1 (UTC ISO) has concluded with success (so jobs start again); checks every 3 min, up to 6 h.
 since="$1"
 for i in $(seq 1 120); do
   out=$(curl -s "https://api.github.com/repos/macdarenz-droid/Meme-snipe/actions/runs?per_page=30" | python3 -c "
