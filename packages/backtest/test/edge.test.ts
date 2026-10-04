@@ -5,8 +5,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
-import { BRACKETS, breakEvenWinRate, costRow, rows, SETUPS } from '../src/research/edge-costs.ts';
+import { BRACKETS, breakEvenWinRate, costRow, rows, SETUPS, terms } from '../src/research/edge-costs.ts';
 import { replaySwap, observedFeeContext } from '../../core/src/fills/index.ts';
+import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
 import type { AmmSwapRow } from '../src/dataset/rows.ts';
 import { collectCandidates, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
 import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
@@ -50,20 +51,40 @@ describe('cost math', () => {
     for (const r of now) expect(r.fixedLamports).toBe(Math.round(expected));
   });
 
-  test('parity: on a still pool the outcome stage\'s mean loss equals the cost math, within its sampling error', () => {
-    // No swap after 50 min: every entry and exit trades on the same pool, so −r_net × cost is fees, impact and fixed costs only.
+  // No swap after 50 min: every entry and exit trades on the same pool, so −r_net × cost is fees, impact and fixed costs only.
+  // Built on first use, inside a test's time limit.
+  let fx: ReturnType<typeof fixture> | undefined;
+  const fixture = () => {
     const still = synth.filter((r) => r.kind !== 'amm' || r.blockTime * 1000 < T0 + 50 * 60_000);
     const win: PracticeWindow = { decisionFrom: '2026-09-19', decisionTo: '2026-10-01', holdoutFrom: '2026-09-25', embargoDays: 1, confirmedBy: 'test' };
     const c = collectCandidates(still, { window: win, policy: TRIAL_POLICY, solUsd: solUsdAsOf(SOL_USD, 3 * 3_600_000), ...PLAN_DRIVE }).candidates[0]!;
-    const targets = Array.from({ length: 2000 }, (_, i) => ({ id: `${c.id}#${i}`, pool: c.pool, decisionSlot: c.decisionSlot, decisionMs: c.decisionMs, solUsd: c.solUsd }));
-    const out = scoreCandidates(still, targets, { window: win, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'parity', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps });
-    const losses = out.filter((o) => o.labels[0]!.entryFilled && o.labels[0]!.rNet !== null).map((o) => -o.labels[0]!.rNet! * Number(o.entryCost));
-    expect(losses.length).toBeGreaterThan(800);
     const sw = still.filter((r): r is AmmSwapRow => r.kind === 'amm' && r.pool === c.pool).at(-1)!;
     const st = replaySwap(sw.pre, sw);
     if (!st.ok) throw new Error('fixture swap does not replay');
     const spend = BigInt(Math.floor((Number(TRIAL_POLICY.capital.minNotional) / 1e6 / c.solUsd) * 1e9));
     const row = costRow('fixture', 2, 120, st.trade.after, observedFeeContext(sw.fees, sw.baseSupply, { mayhemMode: false, transferFee: false, transferHook: false }), spend);
+    // The table's exit sells at the pre-entry price (pumpSwapRoundTrip: our entry impact never comes back); on a still
+    // pool the outcome stage sells into the pool our buy left, which hands part of that impact back. Exact, in lamports.
+    const ctx = observedFeeContext(sw.fees, sw.baseSupply, { mayhemMode: false, transferFee: false, transferHook: false });
+    const buy = poolBuyExactQuoteIn(st.trade.after, spend, ctx);
+    if (!buy.ok) throw new Error('fixture buy does not quote');
+    const sell = poolSell(buy.trade.after, buy.trade.base, ctx);
+    if (!sell.ok) throw new Error('fixture sell does not quote');
+    const givenBack = BigInt(row.proportional) - (buy.trade.userQuote - sell.trade.userQuote);
+    return { still, win, c, row, givenBack };
+  };
+  /** Each filled, scored candidate's loss in lamports (−r_net × entry cost), from the outcome stage under `fills`. */
+  const lossesUnder = (n: number, fills: typeof FILL_CONFIG): number[] => {
+    const { still, win, c } = (fx ??= fixture());
+    const targets = Array.from({ length: n }, (_, i) => ({ id: `${c.id}#${i}`, pool: c.pool, decisionSlot: c.decisionSlot, decisionMs: c.decisionMs, solUsd: c.solUsd }));
+    const out = scoreCandidates(still, targets, { window: win, policy: TRIAL_POLICY, fills, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'parity', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps });
+    return out.filter((o) => o.labels[0]!.entryFilled && o.labels[0]!.rNet !== null).map((o) => -o.labels[0]!.rNet! * Number(o.entryCost));
+  };
+
+  test('parity: on a still pool the outcome stage\'s mean loss equals the cost math, within its sampling error', () => {
+    const losses = lossesUnder(2000, FILL_CONFIG);
+    const { row } = fx!;
+    expect(losses.length).toBeGreaterThan(800);
     const mean = losses.reduce((a, b) => a + b, 0) / losses.length;
     const sd = Math.sqrt(losses.reduce((a, b) => a + (b - mean) ** 2, 0) / (losses.length - 1));
     const expected = row.proportional + row.fixedLamports;
@@ -71,6 +92,30 @@ describe('cost math', () => {
     // And the same in break-even terms: the mean loss over what was paid is the break-even move.
     expect(Math.abs((100 * mean) / row.paid - row.breakEvenPct)).toBeLessThan((400 * sd) / Math.sqrt(losses.length) / row.paid);
   }, 120_000);
+
+  // Exact parity (review C1b): with the scenario's draws forced, every trade pays the same, so the outcome stage's loss must
+  // equal the cost math to the lamport. Each case isolates terms the sampled test above cannot see: the exit tip, the
+  // failed-close fee, the rent and the dust rule. A change to either side alone fails here.
+  const cons = FILL_CONFIG.scenarios.conservative;
+  const forced = (closeSuccessPpm: bigint, dustPpm: bigint): typeof FILL_CONFIG => ({
+    ...FILL_CONFIG,
+    scenarios: { ...FILL_CONFIG.scenarios, conservative: { ...cons, landPpm: { ...cons.landPpm, pumpswap: 1_000_000n }, closeSuccessPpm, dustPpm } },
+  });
+  const landed = terms.entryLanded + terms.exitFixed;
+  test.each([
+    { name: 'every attempt lands, the close lands, no dust: rent back', close: 1_000_000n, dust: 0n, fixed: landed },
+    { name: 'the close always fails without dust: rent kept plus one failed exit', close: 0n, dust: 0n, fixed: landed + terms.rent + terms.failedExit },
+    { name: 'every account gets dust: rent kept, no failed-close fee', close: 1_000_000n, dust: 1_000_000n, fixed: landed + terms.rent },
+  ])('exact parity, zero variance: $name', ({ close, dust, fixed }) => {
+    const losses = lossesUnder(20, forced(close, dust));
+    expect(losses.length).toBe(20);
+    const { row, givenBack } = fx!;
+    // The impact given back is small next to the fees (under 2% of the proportional cost here) and never negative.
+    expect(givenBack).toBeGreaterThanOrEqual(0n);
+    expect(givenBack * 50n).toBeLessThan(BigInt(row.proportional));
+    const expected = BigInt(row.proportional) - givenBack + fixed;
+    for (const l of losses) expect(BigInt(Math.round(l))).toBe(expected);
+  }, 60_000);
 
   test('a bigger trade has a lower hurdle on every setup; break-even win rate formula', () => {
     for (const id of ['young', 'u1', 'u1-1.15']) {
