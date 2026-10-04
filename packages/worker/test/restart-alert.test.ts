@@ -110,3 +110,31 @@ describe('where a crash happened, never what it said (RESTART-ALERT)', () => {
     await next.worker.stop();
   });
 });
+
+describe('restarts in the last 24 h, planned and not, in the heartbeat', () => {
+  it('counts each restart after the first start, a drill\'s as planned; older than 24 h drops out', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const boot = async (): Promise<ReturnType<typeof makeWorker>> => makeWorker({ stateDir, timers });
+    const a = await boot();
+    expect(a.worker.health().restarts_24h).toEqual({ planned: 0, unplanned: 0 });
+    await a.worker.reconcile();
+    await a.worker.kill();
+    const b = await boot(); // an unplanned restart
+    expect(b.worker.health().restarts_24h).toEqual({ planned: 0, unplanned: 1 });
+    await b.worker.reconcile();
+    await b.worker.kill();
+    writeFileSync(join(stateDir, STATE_FILES.plannedRestart), JSON.stringify({ cause: 'drill restart-1 (crash)', at: timers.now() }));
+    const c = await boot(); // a planned one
+    expect(c.worker.health().restarts_24h).toEqual({ planned: 1, unplanned: 1 });
+    expect(JSON.parse(heartbeatBody(c.worker.health(), null, null))).toMatchObject({ restarts_24h: { planned: 1, unplanned: 1 } });
+    await c.worker.reconcile();
+    await c.worker.stop();
+    timers.set(timers.now() + 86_400_000);
+    const d = await boot(); // a clean restart a day later: only it is in the window
+    expect(d.worker.health().restarts_24h).toEqual({ planned: 0, unplanned: 1 });
+    // The saved list keeps only the window: it never grows past a day of restarts.
+    expect((JSON.parse(readFileSync(join(stateDir, 'restarts.json'), 'utf8')) as unknown[]).length).toBe(1);
+    await d.worker.stop();
+  });
+});

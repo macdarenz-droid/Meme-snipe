@@ -26,6 +26,8 @@ export interface Heartbeat {
   uptime_s?: number;
   rss_bytes?: number;
   last_exit?: string | null;
+  /** Restarts in the last 24 h, planned (runner drills) and not. */
+  restarts_24h?: { planned: number; unplanned: number };
 }
 
 export interface Stored {

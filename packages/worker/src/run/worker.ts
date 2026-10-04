@@ -57,7 +57,7 @@ import type { CreateLookup } from './sources.ts';
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export { PERSIST_FILE } from '../persist/index.ts';
 export const PERSIST_EVERY_MS = 5 * 60_000;
-import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
+import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, restartsAfterBoot, restartsFile } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -277,6 +277,8 @@ export class Worker {
   readonly #boot: string;
   /** How the previous process ended (RESTART-ALERT): a planned restart's marker, else the journal's last line. */
   readonly #lastExit: string | null;
+  readonly #restartsFile: ReturnType<typeof restartsFile>;
+  #restarts: readonly Restart[];
   readonly #started: number;
   readonly #journal: Journal;
   readonly #recorder: Recorder | null;
@@ -383,6 +385,10 @@ export class Worker {
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
     this.#lastExit = plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? this.#journal.previousExit;
+    // RESTART-ALERT: restarts in the last 24 h, planned (a runner drill) or not, for the heartbeat and the daily summary.
+    this.#restartsFile = restartsFile(c.stateDir);
+    this.#restarts = restartsAfterBoot(this.#restartsFile.read([]), now, this.#lastExit);
+    this.#restartsFile.write([...this.#restarts]);
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
     const seed = `paper:${this.#boot}`;
@@ -1530,7 +1536,7 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, restarts_24h: this.#restartCounts(now), mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
@@ -1651,6 +1657,13 @@ export class Worker {
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
     await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));
     return code;
+  }
+
+  /** Restarts in the 24 h before `now`, planned (a runner drill's marker) and not. */
+  #restartCounts(now: number): { readonly planned: number; readonly unplanned: number } {
+    const recent = this.#restarts.filter((r) => r.at <= now && now - r.at < 86_400_000);
+    const planned = recent.filter((r) => r.planned).length;
+    return { planned, unplanned: recent.length - planned };
   }
 
   /**

@@ -97,6 +97,20 @@ export const NO_EXPOSED: Exposed = { trades: [], fromMs: 0 };
 export const exposedFile = (dir: string) =>
   new StateFile<Exposed>(dir, 'exposure.json', (v) => (isObj(v) && Array.isArray(v['trades']) && typeof v['fromMs'] === 'number' ? (v as unknown as Exposed) : null));
 
+/** RESTART-ALERT: each restart in the last 24 h (when the boot started, and whether the runner planned it). */
+export interface Restart {
+  readonly at: number;
+  readonly planned: boolean;
+}
+export const restartsFile = (dir: string) =>
+  new StateFile<Restart[]>(dir, 'restarts.json', (v) => (Array.isArray(v) && v.every((r) => isObj(r) && typeof r['at'] === 'number' && typeof r['planned'] === 'boolean') ? (v as Restart[]) : null));
+
+/** The restarts kept: the last 24 h before `nowMs`, plus this boot's when it follows an earlier process. */
+export const restartsAfterBoot = (saved: readonly Restart[], nowMs: number, lastExit: string | null): Restart[] => [
+  ...saved.filter((r) => r.at <= nowMs && nowMs - r.at < 86_400_000),
+  ...(lastExit === null ? [] : [{ at: nowMs, planned: lastExit.startsWith('planned: ') }]),
+];
+
 /** Entry decisions' plan inputs by entry intent, saved before the intent is booked (EXIT-1h). */
 export const seedsFile = (dir: string) =>
   new StateFile<Record<string, EntrySeed>>(dir, 'entry-seeds.json', (v) => (isObj(v) && Object.values(v).every((s) => isObj(s) && typeof s['mint'] === 'string') ? (v as Record<string, EntrySeed>) : null));
