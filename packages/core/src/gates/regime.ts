@@ -73,7 +73,7 @@ const median = (xs: readonly Frac[]): Frac => {
 const unknown = (condition: RegimeCondition, input: FactName, code: EvidenceCode, detail: string): ConditionResult => ({ condition, ok: null, code, input, detail });
 
 /** Survival share of graduates whose +30 min mark falls in the 24 h before `at`, against the median of the 14 days before. */
-const survival = (g: GraduatesFact, at: number, p: Policy['regime']): ConditionResult => {
+export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regime']): ConditionResult => {
   const known = g.items.filter((i) => i.migratedAtMs + p.survivalAfterMs <= at);
   const share = (from: number, to: number): Frac | null => {
     const inWindow = known.filter((i) => i.migratedAtMs + p.survivalAfterMs > from && i.migratedAtMs + p.survivalAfterMs <= to);
@@ -129,7 +129,7 @@ const solChange = (s: SolUsdFact, at: number, p: Policy['regime']): ConditionRes
 };
 
 const check = (atMs: number, g: GraduatesFact, v: CurveVolumeFact, s: SolUsdFact, p: Policy['regime']): RegimeCheck => {
-  const conditions = [survival(g, atMs, p), volumeCondition(v, atMs, p), solChange(s, atMs, p)];
+  const conditions = [survivalCondition(g, atMs, p), volumeCondition(v, atMs, p), solChange(s, atMs, p)];
   const ok = conditions.some((c) => c.ok === null) ? null : conditions.every((c) => c.ok === true);
   return { atMs, ok, conditions };
 };
