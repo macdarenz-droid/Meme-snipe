@@ -28,8 +28,12 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type GraduatesFact, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
+import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
+
+/** PERSIST-2: the graduates series as saved (a `GraduatesSeed` without its source). */
+export type SavedGraduates = Omit<GraduatesSeed, 'source'>;
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, type markedHistory, markSettings, riskAccount } from './marks.ts';
@@ -603,11 +607,17 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[] } | null {
+  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
-    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts] };
+    // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
+    // the save moment (the fact itself is never newer than the last released event).
+    const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
+    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items } };
   }
+
+  /** PERSIST-2: the newest graduates fact released (the regime's survival series), for the saved state. */
+  #graduatesFact: GraduatesFact | null = null;
 
   get deployers(): DeployerIndex {
     return this.#deployers;
@@ -624,6 +634,7 @@ export class LiveStrategy implements Strategy {
     // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
     if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
+    if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
