@@ -147,7 +147,7 @@ export function WithdrawPanel({ wallet, stepUp }: { wallet: WalletView; stepUp: 
       </div>
       {pending && (
         <p className="callout" role="status">
-          Change requested to <span className="address">{pending.next}</span>. It takes effect {melDateTime(pending.effectiveAt)} Melbourne time. Until then, Withdraw sends to the current wallet.
+          Change requested to <span className="address">{pending.next}</span>. It takes effect {melDateTime(pending.effectiveAt)} Melbourne time.
         </p>
       )}
       {changing ? (
@@ -167,7 +167,7 @@ export function WithdrawPanel({ wallet, stepUp }: { wallet: WalletView; stepUp: 
               aria-invalid={changeError !== null}
               aria-describedby={changeError ? ids.nextErr : undefined}
             />
-            <span className="small muted">A new address takes effect 24 hours after you confirm with your passkey. Until then, Withdraw keeps using the current one.</span>
+            <span className="small muted">A new address takes effect 24 hours after you confirm with your passkey.</span>
             {changeError && (
               <p id={ids.nextErr} className="field-error" role="alert">
                 {changeError}

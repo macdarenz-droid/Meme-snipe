@@ -1,6 +1,27 @@
+import { useMemo } from 'react';
+import { apiFor } from '../api/client.ts';
+import { connection, useConnection } from '../api/connection.ts';
+import type { DashboardApi, DiscoveredView } from '../api/contract.ts';
+import { schemaFor } from '../api/schemas.ts';
+import { useEndpoint, type Loaded } from '../api/useEndpoint.ts';
 import { Empty, Section } from '../components/ui.tsx';
+import { Load, OfflineContext } from '../dashboard/State.tsx';
 import { formatDuration, formatPercent, formatUsd, shortAddress } from '../lib/format.ts';
+import { usdToPlot } from '../lib/money.ts';
 import type { TokenRowView } from './types.ts';
+
+const NONE = '—';
+const seconds = (fromIso: string, toMs: number) => Math.max(0, Math.round((toMs - Date.parse(fromIso)) / 1000));
+
+/** The worker's discovered tokens as table rows, timed at the answer's asOf. What it does not serve stays null. */
+export function rowsOf(view: DiscoveredView, asOf: string): TokenRowView[] {
+  const at = Date.parse(asOf);
+  return view.tokens.map((t) => ({
+    mint: t.mint, symbol: t.symbol, ageSeconds: seconds(t.migratedAt, at), venue: t.venue,
+    liquidityUsd: t.liquidityUsd === null ? null : usdToPlot(t.liquidityUsd), volume24hUsd: null, holders: null, topHolderShare: null,
+    security: t.checks, promoted: false, dataAgeSeconds: t.checkedAt === null ? null : seconds(t.checkedAt, at),
+  }));
+}
 
 const SECURITY: Record<TokenRowView['security'], string> = { passed: 'Passed', failed: 'Failed', missing: 'Missing checks' };
 
@@ -25,35 +46,54 @@ export function TokenTable({ rows }: { rows: TokenRowView[] }) {
             <tr key={r.mint}>
               <td>
                 <span className="token-cell">
-                  <span className="token-symbol">{r.symbol}</span>
+                  {r.symbol !== null && <span className="token-symbol">{r.symbol}</span>}
                   <span className="mono muted">{shortAddress(r.mint)}</span>
                   {r.promoted && <span className="badge badge-neutral">Promoted</span>}
                 </span>
               </td>
               <td className="num">{formatDuration(r.ageSeconds)}</td>
               <td>{r.venue}</td>
-              <td className="num">{formatUsd(r.liquidityUsd)}</td>
-              <td className="num">{formatUsd(r.volume24hUsd)}</td>
+              <td className="num">{r.liquidityUsd === null ? NONE : formatUsd(r.liquidityUsd)}</td>
+              <td className="num">{r.volume24hUsd === null ? NONE : formatUsd(r.volume24hUsd)}</td>
               <td className="num">
-                {r.holders} <span className="muted">top {formatPercent(r.topHolderShare, 0)}</span>
+                {r.holders === null ? NONE : r.holders}
+                {r.topHolderShare !== null && <span className="muted"> top {formatPercent(r.topHolderShare, 0)}</span>}
               </td>
               <td className={r.security === 'passed' ? '' : 'muted'}>{SECURITY[r.security]}</td>
-              <td className="num">{formatDuration(r.dataAgeSeconds)}</td>
+              <td className="num">{r.dataAgeSeconds === null ? NONE : formatDuration(r.dataAgeSeconds)}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      {rows.length === 0 && <Empty title="No tokens discovered" detail="Waiting for the data feed" />}
     </div>
   );
 }
 
-export function Home({ rows = [] }: { rows?: TokenRowView[] }) {
+/** The paper worker's discovered tokens (the only mode a worker runs today), or why there are none to show. */
+function Discovered({ api }: { api: DashboardApi }) {
+  return <DiscoveredBody loaded={useEndpoint<DiscoveredView>('paper', 'discovered', schemaFor('discovered', 'paper'), () => api.discovered('paper'))} />;
+}
+
+/** The Discovered section for one loaded answer: the tokens, "No tokens discovered", or the reason there is no answer. */
+export function DiscoveredBody({ loaded }: { loaded: Loaded<DiscoveredView> }) {
+  const aside = loaded.state === 'ready' ? <span className="muted num">{loaded.data.tokens.length} tokens</span> : undefined;
+  return (
+    <Section title="Discovered" className="span-2" {...(aside ? { aside } : {})}>
+      <Load loaded={loaded} isEmpty={(d) => d.tokens.length === 0} empty={<Empty title="No tokens discovered" />}>
+        {(d) => <TokenTable rows={rowsOf(d, loaded.state === 'ready' ? loaded.asOf : new Date().toISOString())} />}
+      </Load>
+    </Section>
+  );
+}
+
+export function Home({ api }: { api?: DashboardApi }) {
+  const conn = useConnection();
+  const source = useMemo(() => api ?? apiFor(conn.origin, connection()), [api, conn.origin]);
   return (
     <div className="screen-grid">
-      <Section title="Discovered" className="span-2" aside={<span className="muted num">{rows.length} tokens</span>}>
-        <TokenTable rows={rows} />
-      </Section>
+      <OfflineContext.Provider value={{ state: conn.state, lastOk: conn.lastOk }}>
+        <Discovered key={api ? 'given' : (conn.origin ?? 'none')} api={source} />
+      </OfflineContext.Provider>
     </div>
   );
 }
