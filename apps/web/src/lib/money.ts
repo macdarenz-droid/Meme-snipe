@@ -97,13 +97,67 @@ export function formatPriceDec(s: string): string {
  * percent, exact, rounded half away from zero. Null when the size is not above zero.
  */
 export function returnHundredths(netUsd: string, sizeUsd: string): bigint | null {
-  const size = toMicro(sizeUsd);
-  if (size <= 0n) return null;
-  const n = toMicro(netUsd) * 10_000n;
-  const a = n < 0n ? -n : n;
-  const q = (2n * a + size) / (2n * size);
-  return n < 0n ? -q : q;
+  return ratioHundredths(toMicro(netUsd), toMicro(sizeUsd));
 }
+
+/** n ÷ d in hundredths of a percent, exact, rounded half away from zero; null when d is not above zero. */
+export function ratioHundredths(n: bigint, d: bigint): bigint | null {
+  if (d <= 0n) return null;
+  const x = n * 10_000n;
+  const a = x < 0n ? -x : x;
+  const q = (2n * a + d) / (2n * d);
+  return x < 0n ? -q : q;
+}
+
+/** Return on SOL (APP-SOL, the owner's measure): net lamports ÷ entry lamports, as `returnHundredths`. */
+export const returnLamports = (net: string, size: string): bigint | null => ratioHundredths(toLamports(net), toLamports(size));
+
+const LAMPORTS_RE = /^-?\d{1,20}$/;
+const PER_SOL = 1_000_000_000n;
+
+/** "−12500" → −12500n. Throws on anything that is not an exact whole number of lamports. */
+export function toLamports(s: string): bigint {
+  if (!LAMPORTS_RE.test(s)) throw new MoneyError(`not lamports: ${JSON.stringify(s)}`);
+  return BigInt(s);
+}
+
+/**
+ * Lamports as SOL (APP-SOL): "+0.0123 SOL". Four decimals, rounded half away from zero; an amount under 0.0001 SOL
+ * keeps four significant digits ("0.000005 SOL"), so a fee never reads 0.0000. Exact from the integer, never a float.
+ */
+export function formatSol(lamports: string, signed = false): string {
+  const v = toLamports(lamports);
+  const a = v < 0n ? -v : v;
+  let body: string;
+  if (a === 0n) body = '0.0000';
+  else if (a >= 100_000n) {
+    const t = (a + 50_000n) / 100_000n; // ten-thousandths of a SOL
+    body = `${group((t / 10_000n).toString())}.${(t % 10_000n).toString().padStart(4, '0')}`;
+  } else {
+    const digits = a.toString().length;
+    const drop = digits > 4 ? 10n ** BigInt(digits - 4) : 1n;
+    const r = ((a + drop / 2n) / drop) * drop;
+    body = `0.${r.toString().padStart(9, '0').replace(/0+$/, '')}`;
+  }
+  const sign = v < 0n ? MINUS : signed && v > 0n ? '+' : '';
+  return `${sign}${body} SOL`;
+}
+
+/** Lamports in dollars at a SOL price (micro-dollars per SOL as a dollar string): the small line under a SOL figure. */
+export function lamportsAtPrice(lamports: string, solPriceUsd: string, signed = false): string {
+  const v = toLamports(lamports);
+  const micro = (v * toMicro(solPriceUsd)) / PER_SOL;
+  return formatUsdExact(fromMicro(micro), signed);
+}
+
+/** Colour follows the sign of the SOL amount: any non-zero amount is printed non-zero. */
+export const toneOfLamports = (s: string): 'gain' | 'loss' | '' => {
+  const v = toLamports(s);
+  return v > 0n ? 'gain' : v < 0n ? 'loss' : '';
+};
+
+/** Lamports as SOL for drawing only. */
+export const lamportsToPlot = (s: string): number => Number(toLamports(s)) / 1e9;
 
 /** A return, signed with 2 places: "+12.35%", "−0.40%", "0.00%"; "—" when there is none. */
 export function formatReturn(h: bigint | null): string {

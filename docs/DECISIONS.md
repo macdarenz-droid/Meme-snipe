@@ -1508,3 +1508,29 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - The copy or link click reaching the row; the journal without the buttons.
     - Review N1/N2: Unrealized as the rest less the whole entry; Unrealized or Costs rounded toward zero; P&L rounded on its own (in `openUsd` and in the served row).
     - The exit fee: left out; charged with nothing left; from the ladder's second rung; without the tip.
+
+## Money in SOL first (APP-SOL, owner 2026-10-05: success is counted in SOL; `components/Money.tsx`, `lib/money.ts` `formatSol`)
+- **2026-10-05 · The worker serves lamports beside every dollar figure.** Exact integer strings from the lamports it already holds:
+  - Trades: size (what the entry swapped in), net (the paper account's `netLamports`), gross (net plus costs), each cost kind, the fills.
+  - The open trade: size, liquidation value, Unrealized, Costs so far and P&L (`openPnl`, so P&L = Unrealized − Costs so far holds in lamports too).
+  - Stats net, drawdown and mean; the charts' cumulative, daily and costs; the calendar's day net.
+  - The risk meters: open exposure in lamports. The daily-loss used and limit are the policy's dollars converted at the current SOL price (used up, limit down), until SOL-BOOKS gives core's own SOL limits.
+  - `status.solPriceUsd`: the current SOL price.
+  - The dollar fields stay. The app's schema takes every lamport field as `optional()`, so a worker without them still loads and shows dollars as before. An app older than the fields refuses them and reads "App update needed" (APP-COMPAT).
+- **2026-10-05 · The app shows SOL first.**
+  - "+0.0123 SOL": four decimals, rounded half away from zero. Under 0.0001 SOL it keeps four significant digits ("0.000005 SOL"), so a fee never reads 0.0000. Exact from the integer.
+  - The dollars sit in a small line under it at the current SOL price, never toned, never the headline. Without a price there is no dollar line.
+  - Colour follows the SOL sign.
+  - It covers the open trade, the trades list and detail (with every cost and fill), Results, the risk meters, the Daily P&L calendar (cells, day sheet, month net), and the Net P&L, daily and costs charts.
+  - A chart or calendar uses SOL only when every point carries lamports; else dollars.
+  - The backtest report stays in dollars (its figures are dollar-native).
+- **2026-10-05 · Return is on SOL.** It is net lamports ÷ entry lamports, exact (`returnLamports`, the same rounding as the dollar return). A trade that lost SOL reads as a loss even if the dollars rose.
+- **2026-10-05 · Evidence.**
+  - `apps/web/test/app-sol.test.ts` and `packages/worker/test/app-sol-api.test.ts`: 8 tests, 7 failing before. The eighth pins the older-worker dollar fallback.
+  - The real worker's lamports match their sources: trade net, entry swaps, gross = net + costs, stats, charts and calendar sums, `openPnl`, open exposure, the SOL price.
+  - Hand mutants, all caught (15):
+    - Return on dollars (open trade, trades);
+    - small amounts at four decimals; SOL truncated;
+    - dollars first; the dollar line at the wrong scale;
+    - meters, charts or calendar in dollars despite lamports;
+    - the worker's net, size, stats or calendar from the wrong source; gross without costs; no SOL price.

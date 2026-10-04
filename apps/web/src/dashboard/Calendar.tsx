@@ -1,7 +1,8 @@
 import type { CalendarMonth, DayRecord } from '../api/contract.ts';
 import { totalUsd } from '../api/modes.ts';
 import { formatUsdCompact } from '../lib/format.ts';
-import { formatUsdExact, toMicro, toneOf, usdToPlot } from '../lib/money.ts';
+import { formatSol, formatUsdExact, toLamports, toMicro, toneOf, toneOfLamports, usdToPlot } from '../lib/money.ts';
+import { Money } from '../components/Money.tsx';
 import { CALENDAR_TINT_MAX } from '../theme/contrast.ts';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -18,10 +19,14 @@ export const monthTitle = (month: string) => {
   return monthName.format(new Date(Date.UTC(y, m - 1, 1)));
 };
 
+/** The month is shown in SOL when every day carries its lamports (APP-SOL); else in dollars, as before. */
+const inSol = (cal: CalendarMonth): boolean => cal.days.every((d) => d.netLamports != null);
+
 /** Month total: exact, and only from days of the calendar's own mode. */
 export function monthTotals(cal: CalendarMonth) {
   return {
     netUsd: totalUsd(cal.mode, cal.days, (d) => d.netUsd),
+    netLamports: inSol(cal) ? cal.days.reduce((s, d) => s + toLamports(d.netLamports!), 0n).toString() : null,
     trades: cal.days.reduce((s, d) => s + d.trades, 0),
     pauses: cal.days.reduce((s, d) => s + d.pauses, 0),
   };
@@ -34,8 +39,10 @@ export function PnlCalendar({ cal, onPrev, onNext, onSelectDay }: { cal: Calenda
   const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
   const lead = (first.getUTCDay() + 6) % 7;
   const byDate = new Map(cal.days.map((d) => [d.date, d]));
-  // Tint strength only: the largest day, in micro-dollars, not a sum.
-  const maxAbs = cal.days.map((d) => absMicro(d.netUsd)).reduce((mx, a) => (a > mx ? a : mx), 0n);
+  const sol = inSol(cal);
+  // Tint strength only: the largest day, in lamports or micro-dollars, not a sum.
+  const absOf = (d: DayRecord) => (sol ? (toLamports(d.netLamports!) < 0n ? -toLamports(d.netLamports!) : toLamports(d.netLamports!)) : absMicro(d.netUsd));
+  const maxAbs = cal.days.map(absOf).reduce((mx, a) => (a > mx ? a : mx), 0n);
   const totals = monthTotals(cal);
   const cells: (number | null)[] = [...Array<null>(lead).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
   while (cells.length % 7) cells.push(null);
@@ -74,8 +81,9 @@ export function PnlCalendar({ cal, onPrev, onNext, onSelectDay }: { cal: Calenda
                   </div>
                 );
               }
-              const tone = toneOf(d.netUsd) || 'flat';
-              const abs = absMicro(d.netUsd);
+              const tone = (sol ? toneOfLamports(d.netLamports!) : toneOf(d.netUsd)) || 'flat';
+              const abs = absOf(d);
+              const net = sol ? formatSol(d.netLamports!, true) : formatUsdExact(d.netUsd, true);
               const strength = maxAbs > 0n ? 10 + Number((abs * BigInt(CALENDAR_TINT_MAX - 10)) / maxAbs) : 0;
               const pauses = d.pauses ? `, ${d.pauses} ${d.pauses === 1 ? 'pause' : 'pauses'}` : '';
               return (
@@ -85,13 +93,13 @@ export function PnlCalendar({ cal, onPrev, onNext, onSelectDay }: { cal: Calenda
                     className={`calendar-button calendar-${tone}`}
                     style={{ ['--tint' as string]: `${strength}%` }}
                     onClick={() => onSelectDay(d)}
-                    aria-label={`${label}: ${formatUsdExact(d.netUsd, true)}, ${d.trades} ${d.trades === 1 ? 'trade' : 'trades'}${pauses}`}
+                    aria-label={`${label}: ${net}, ${d.trades} ${d.trades === 1 ? 'trade' : 'trades'}${pauses}`}
                   >
                     <span className="calendar-day">
                       {day}
                       {d.pauses > 0 && <span className="dash-pause" aria-hidden="true" />}
                     </span>
-                    <span className="calendar-net num">{formatUsdCompact(usdToPlot(d.netUsd), true)}</span>
+                    <span className="calendar-net num">{sol ? net.replace(' SOL', '') : formatUsdCompact(usdToPlot(d.netUsd), true)}</span>
                     <span className="dash-day-count num" aria-hidden="true">
                       {d.trades}
                     </span>
@@ -105,7 +113,7 @@ export function PnlCalendar({ cal, onPrev, onNext, onSelectDay }: { cal: Calenda
       <dl className="dash-month-total">
         <div>
           <dt>Month net</dt>
-          <dd className={`num ${toneOf(totals.netUsd)}`}>{cal.days.length ? formatUsdExact(totals.netUsd, true) : '—'}</dd>
+          <dd className={`num ${totals.netLamports !== null ? toneOfLamports(totals.netLamports) : toneOf(totals.netUsd)}`}>{cal.days.length ? <Money lamports={totals.netLamports} usd={totals.netUsd} signed /> : '—'}</dd>
         </div>
         <div>
           <dt>Trades</dt>

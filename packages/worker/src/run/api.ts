@@ -9,7 +9,7 @@ import { createServer, type Server } from 'node:http';
 import type { Policy } from '../../../core/src/config/index.ts';
 import type { Book, ExitReason as BookExitReason, PositionState } from '../../../core/src/lifecycle/index.ts';
 import { melbourneDay } from '../../../core/src/risk/index.ts';
-import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../../core/src/units/index.ts';
+import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../../core/src/units/index.ts';
 import type { PaperTrade } from './account.ts';
 import type { PaperAttempt } from './paper-world.ts';
 import { SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
@@ -27,6 +27,16 @@ export const usdText = (micro: bigint): string => {
   const a = neg ? -micro : micro;
   const frac = (a % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '');
   return `${neg ? '-' : ''}${a / 1_000_000n}${frac === '' ? '' : `.${frac}`}`;
+};
+
+/** Lamports as the contract's `Lamports`: an exact signed integer string (APP-SOL: the owner counts results in SOL). */
+export const lamText = (l: bigint): string => l.toString();
+
+/** Micro-dollars in lamports at a SOL price, signed; null without a price (APP-SOL: dollar-native figures shown in SOL). */
+const usdLamports = (micro: bigint, price: MicroUsd | null, rounding: 'floor' | 'ceil'): string | null => {
+  if (price === null) return null;
+  const v = microUsdToLamports((micro < 0n ? -micro : micro) as MicroUsd, price, rounding);
+  return lamText(micro < 0n ? -v : v);
 };
 
 /** Signed lamports in micro-dollars at a SOL price (rounded toward zero; 0 without a price). */
@@ -290,21 +300,23 @@ export const views = {
     if (i.funnel.stage.size === 0) flags.add('no-eligible-candidate');
     const day = melbourneDay(i.nowMs);
     const lossToday = i.trades.filter((t) => t.closedAtMs !== null && t.closedAtMs >= day.start && (t.netPnl ?? 0n) < 0n).reduce((s, t) => s - (t.netPnl ?? 0n), 0n);
-    const open = Object.values(i.book.positions).filter((p) => p.status !== 'closed').reduce((s, p) => s + lamportsUsd(p.cost, i.solPrice), 0n);
+    const openLamports = Object.values(i.book.positions).filter((p) => p.status !== 'closed').reduce((s, p) => s + p.cost, 0n);
+    const open = lamportsUsd(openLamports, i.solPrice);
     const bankroll = i.policy.capital.bankroll as bigint;
     const dailyLimit = (bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n;
     const halts = [...i.halted.map(haltOf), ...i.budgetHalted.map((p) => ({ code: 'budget', source: p })), ...stopHalts(i.stops, i.nowMs)];
     // The meter below and core risk count today's loss from the same trades; either at its limit stops entries.
     if (lossToday >= dailyLimit && !halts.some((h) => h.code === 'daily-loss')) halts.push({ code: 'daily-loss', source: null });
     return {
-      mode: MODE, connected: i.connected, flags: [...flags],
+      mode: MODE, connected: i.connected, flags: [...flags], solPriceUsd: i.solPrice === null ? null : usdText(i.solPrice),
       haltReasons: halts.map((h) => ({ mode: MODE, ...h })),
       exitCapable: i.exitCapable,
       alerts: i.alerts.map((a) => ({ mode: MODE, code: a.code, subject: a.subject, at: iso(a.atMs) })),
       regime: i.regime === null ? null : { state: i.regime.on ? 'on' : 'off', at: iso(i.regime.atMs), current: i.nowMs - i.regime.atMs <= i.regimeMaxAgeMs, reasons: i.regime.reasons.map((r) => ({ mode: MODE, code: r.code, input: r.input })), waived: [...i.regime.waived] },
       risk: [
-        { mode: MODE, kind: 'open-exposure', usedUsd: usdText(open), limitUsd: null },
-        { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText(dailyLimit) },
+        { mode: MODE, kind: 'open-exposure', usedUsd: usdText(open), limitUsd: null, usedLamports: lamText(openLamports), limitLamports: null },
+        // The policy's limits are dollars until SOL-BOOKS: shown in SOL at the current price (loss up, limit down).
+        { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText(dailyLimit), usedLamports: usdLamports(lossToday, i.solPrice, 'ceil'), limitLamports: usdLamports(dailyLimit, i.solPrice, 'floor') },
       ],
       // The session this worker runs (APP-HOME): it starts its own paper session on the policy it loaded, so the app
       // never offers to start one (startable: false). Limits come from that policy; it has no session loss limit.
@@ -361,6 +373,7 @@ export const views = {
       entryPriceUsd: priceText(p.cost, p.bought, i.solPrice), sizeUsd: usdText(lamportsUsd(p.cost, i.solPrice)),
       liquidationValueUsd: usdText(lamportsUsd(liq ?? 0n, i.solPrice)), unrealizedUsd: usdText(usd.unrealized),
       costsSoFarUsd: usdText(usd.costs), pnlUsd: i.solPrice === null ? null : usdText(usd.unrealized - usd.costs),
+      sizeLamports: lamText(p.cost), liquidationValueLamports: lamText(liq ?? 0n), unrealizedLamports: lamText(pnl.gross), costsSoFarLamports: lamText(pnl.fees), pnlLamports: lamText(pnl.net),
       markPriceUsd: mark, markedAt: mark === null || o?.markedAtMs == null ? null : iso(o.markedAtMs),
       exitRules: [
         { mode: MODE, rule: 'price-stop', trigger: atOrBelow(o?.stopPrice, i.solPrice), state: p.exitOwner?.reasons.includes('stop') ? 'triggered' : 'armed' },
@@ -375,43 +388,52 @@ export const views = {
   trades: (i: ApiInputs) => i.trades.filter((t) => t.closedAtMs !== null).map((t) => tradeRecord(i, t)).reverse(),
 
   calendar: (i: ApiInputs, month: string) => {
-    const byDay = new Map<string, { net: bigint; ids: string[] }>();
+    const byDay = new Map<string, { net: bigint; lam: bigint; ids: string[] }>();
     for (const t of i.trades) {
       if (t.closedAtMs === null) continue;
       const date = melbourneDate(t.closedAtMs);
       if (!date.startsWith(month)) continue;
-      const d = byDay.get(date) ?? { net: 0n, ids: [] };
+      const d = byDay.get(date) ?? { net: 0n, lam: 0n, ids: [] };
       d.net += t.netPnl ?? 0n;
+      d.lam += t.netLamports ?? 0n;
       d.ids.push(t.positionId);
       byDay.set(date, d);
     }
     return {
       mode: MODE, month, timeZone: 'Australia/Melbourne',
-      days: [...byDay].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, d]) => ({ mode: MODE, date, netUsd: usdText(d.net), trades: d.ids.length, pauses: 0, tradeIds: d.ids })),
+      days: [...byDay].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, d]) => ({ mode: MODE, date, netUsd: usdText(d.net), netLamports: lamText(d.lam), trades: d.ids.length, pauses: 0, tradeIds: d.ids })),
     };
   },
 
   charts: (i: ApiInputs) => {
     const closed = i.trades.filter((t) => t.closedAtMs !== null).sort((a, b) => a.closedAtMs! - b.closedAtMs!);
+    // Each figure in dollars and, exactly, in lamports (APP-SOL), summed side by side.
+    type Pair = { usd: bigint; lam: bigint };
+    const add = (m: Map<string, Pair>, k: string, usd: bigint, lam: bigint) => {
+      const p = m.get(k) ?? { usd: 0n, lam: 0n };
+      m.set(k, { usd: p.usd + usd, lam: p.lam + lam });
+    };
     let cum = 0n;
-    const daily = new Map<string, bigint>();
-    const costsDaily = new Map<string, bigint>();
-    const kinds = new Map<string, bigint>();
+    let cumLam = 0n;
+    const daily = new Map<string, Pair>();
+    const costsDaily = new Map<string, Pair>();
+    const kinds = new Map<string, Pair>();
     const cumulative = closed.map((t) => {
       cum += t.netPnl ?? 0n;
+      cumLam += t.netLamports ?? 0n;
       const date = melbourneDate(t.closedAtMs!);
-      daily.set(date, (daily.get(date) ?? 0n) + (t.netPnl ?? 0n));
+      add(daily, date, t.netPnl ?? 0n, t.netLamports ?? 0n);
       const c = costsOf(i, t);
-      costsDaily.set(date, (costsDaily.get(date) ?? 0n) + c.total);
-      for (const [k, v] of Object.entries(c.kinds)) kinds.set(k, (kinds.get(k) ?? 0n) + v);
-      return { mode: MODE, at: iso(t.closedAtMs!), cumNetUsd: usdText(cum) };
+      add(costsDaily, date, c.total, c.totalLamports);
+      for (const [k, v] of Object.entries(c.kinds)) add(kinds, k, v, c.lamports[k as keyof typeof c.lamports]);
+      return { mode: MODE, at: iso(t.closedAtMs!), cumNetUsd: usdText(cum), cumNetLamports: lamText(cumLam) };
     });
     return {
       mode: MODE, cumulative,
-      daily: [...daily].map(([date, v]) => ({ mode: MODE, date, netUsd: usdText(v) })),
+      daily: [...daily].map(([date, v]) => ({ mode: MODE, date, netUsd: usdText(v.usd), netLamports: lamText(v.lam) })),
       rBuckets: [],
-      costsDaily: [...costsDaily].map(([date, v]) => ({ mode: MODE, date, totalUsd: usdText(v) })),
-      costsByKind: [...kinds].map(([kind, v]) => ({ mode: MODE, kind, amountUsd: usdText(v) })),
+      costsDaily: [...costsDaily].map(([date, v]) => ({ mode: MODE, date, totalUsd: usdText(v.usd), totalLamports: lamText(v.lam) })),
+      costsByKind: [...kinds].map(([kind, v]) => ({ mode: MODE, kind, amountUsd: usdText(v.usd), amountLamports: lamText(v.lam) })),
     };
   },
 
@@ -429,18 +451,26 @@ export const views = {
     const closed = i.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).sort((a, b) => a.closedAtMs! - b.closedAtMs!);
     const nets = closed.map((t) => t.netPnl!);
     const net = nets.reduce((s, x) => s + x, 0n);
-    let peak = 0n;
-    let cum = 0n;
-    let dd = 0n;
-    for (const x of nets) {
-      cum += x;
-      if (cum > peak) peak = cum;
-      if (peak - cum > dd) dd = peak - cum;
-    }
+    // The largest fall from a running peak of the cumulative net, in the units given.
+    const drawdown = (xs: readonly bigint[]): bigint => {
+      let peak = 0n;
+      let cum = 0n;
+      let dd = 0n;
+      for (const x of xs) {
+        cum += x;
+        if (cum > peak) peak = cum;
+        if (peak - cum > dd) dd = peak - cum;
+      }
+      return dd;
+    };
+    const dd = drawdown(nets);
+    const lams = closed.map((t) => t.netLamports ?? 0n);
+    const netLam = lams.reduce((s, x) => s + x, 0n);
     const n = closed.length;
     return {
       mode: MODE, trades: n, requiredTrades: 30, netUsd: usdText(net), maxDrawdownUsd: usdText(dd),
       winRate: n === 0 ? null : (nets.filter((x) => x > 0n).length / n).toFixed(4), meanNetUsd: n === 0 ? null : usdText(net / BigInt(n)),
+      netLamports: lamText(netLam), maxDrawdownLamports: lamText(drawdown(lams)), meanNetLamports: n === 0 ? null : lamText(netLam / BigInt(n)),
       meanR: null, ci95: null,
     };
   },
@@ -450,12 +480,12 @@ export const views = {
 const costsOf = (i: ApiInputs, t: PaperTrade) => {
   const price = t.closeSolPrice ?? t.openSolPrice ?? i.solPrice;
   const sum = (f: (c: NonNullable<PaperAttempt['costs']>) => bigint) => fillsOf(i, t.positionId).reduce((s, a) => s + (a.costs === undefined ? 0n : f(a.costs)), 0n);
-  const kinds = {
-    venueFeeUsd: lamportsUsd(sum((c) => c.venueFee), price), creatorFeeUsd: lamportsUsd(sum((c) => c.creatorFee), price),
-    priorityFeeUsd: lamportsUsd(sum((c) => c.priority), price), tipUsd: lamportsUsd(sum((c) => c.tip), price),
-    networkFeeUsd: lamportsUsd(sum((c) => c.base), price), slippageUsd: lamportsUsd(sum((c) => c.slippage), price), rentKeptUsd: 0n,
+  const lamports = {
+    venueFeeUsd: sum((c) => c.venueFee), creatorFeeUsd: sum((c) => c.creatorFee), priorityFeeUsd: sum((c) => c.priority), tipUsd: sum((c) => c.tip),
+    networkFeeUsd: sum((c) => c.base), slippageUsd: sum((c) => c.slippage), rentKeptUsd: 0n,
   };
-  return { kinds, total: Object.values(kinds).reduce((s, v) => s + v, 0n) };
+  const kinds = Object.fromEntries(Object.entries(lamports).map(([k, v]) => [k, lamportsUsd(v, price)])) as Record<keyof typeof lamports, bigint>;
+  return { kinds, total: Object.values(kinds).reduce((s, v) => s + v, 0n), lamports, totalLamports: Object.values(lamports).reduce((s, v) => s + v, 0n) };
 };
 
 const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
@@ -475,10 +505,14 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
     holdSeconds: Math.max(0, Math.round((t.closedAtMs! - t.openedAtMs) / 1000)),
     entryPriceUsd: priceText(sol(buys), tok(buys), t.openSolPrice ?? price), exitPriceUsd: priceText(sol(sells), tok(sells), price),
     sizeUsd: usdText(t.notional), grossUsd: usdText(net + c.total),
+    // In lamports, exact (APP-SOL): what the entry swapped in, the trade's net (account.ts), and gross as net plus its costs.
+    sizeLamports: lamText(sol(buys)), netLamports: lamText(t.netLamports ?? 0n), grossLamports: lamText((t.netLamports ?? 0n) + c.totalLamports),
     costs: {
       venueFeeUsd: usdText(c.kinds.venueFeeUsd), creatorFeeUsd: usdText(c.kinds.creatorFeeUsd), priorityFeeUsd: usdText(c.kinds.priorityFeeUsd),
       tipUsd: usdText(c.kinds.tipUsd), networkFeeUsd: usdText(c.kinds.networkFeeUsd), slippageUsd: usdText(c.kinds.slippageUsd),
       rentPaidUsd: '0', rentReturnedUsd: '0', totalUsd: usdText(c.total),
+      venueFeeLamports: lamText(c.lamports.venueFeeUsd), creatorFeeLamports: lamText(c.lamports.creatorFeeUsd), priorityFeeLamports: lamText(c.lamports.priorityFeeUsd),
+      tipLamports: lamText(c.lamports.tipUsd), networkFeeLamports: lamText(c.lamports.networkFeeUsd), slippageLamports: lamText(c.lamports.slippageUsd), rentPaidLamports: '0', rentReturnedLamports: '0', totalLamports: lamText(c.totalLamports),
     },
     netUsd: usdText(net), plannedR: null, realizedR: null, mfeR: null, maeR: null,
     exitReason: reason === undefined ? 'blocked' : EXIT_REASON[reason], reasons: [...(t.exitReasons ?? [])], checks: [],
@@ -492,6 +526,7 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
       return {
         mode: MODE, side: buy ? 'buy' : 'sell', at: iso(a.sentAtMs ?? t.openedAtMs), slot: null, signature: null,
         priceUsd: priceText(f.sol, f.tokens, price), quotedUsd: usdText(lamportsUsd(quoted, price)), filledUsd: usdText(lamportsUsd(filled, price)),
+        quotedLamports: lamText(quoted), filledLamports: lamText(filled),
         slippageBps: shortBps, attempts: attemptsOf(a.intentId),
       };
     }),
