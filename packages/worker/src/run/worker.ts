@@ -1414,6 +1414,12 @@ export class Worker {
       this.#d.log(`Heartbeat not accepted: ${r.reason}.`);
       return;
     }
+    if (!r.signed) {
+      // Fail closed: an unsigned reply may keep or start a pause, never lift one, and carries no command.
+      this.#d.log('Heartbeat reply not signed: an un-pause and any owner command in it are ignored.');
+      if (r.paused) this.applyPause(true);
+      return;
+    }
     this.applyPause(r.paused);
     this.applyOwnerCommands(r.commands);
   }

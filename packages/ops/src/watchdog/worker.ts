@@ -4,6 +4,8 @@ import {
   ackedOf,
   confirmedTrip,
   evaluate,
+  expireUnsent,
+  signReply,
   queueConfirm,
   reviewOf,
   settleAcks,
@@ -115,14 +117,14 @@ export class Watchdog {
       }
     }
     if (t === null || used === null) return json({ error: 'bad signature' }, 401);
-    if (pathname === '/heartbeat') return this.heartbeat(body, used);
+    if (pathname === '/heartbeat') return this.heartbeat(body, used, req.headers.get('x-zeroed-signature') ?? '');
     if (pathname === '/lease') return this.lease(body);
     if (pathname === '/resume') return this.resume(t);
     if (pathname === '/summary') return this.summary(t, body);
     return new Response('Not found', { status: 404 });
   }
 
-  private async heartbeat(body: string, used: Candidate): Promise<Response> {
+  private async heartbeat(body: string, used: Candidate, signature: string): Promise<Response> {
     const hb = parseHeartbeat(body);
     if (!hb) return json({ error: 'bad heartbeat' }, 400);
     const prev = await this.state.storage.get<Stored>('hb');
@@ -140,14 +142,21 @@ export class Watchdog {
     // The owner's chat comes only from the server's signed heartbeat (paired there with /pair).
     if (typeof hb.owner_chat_id === 'string' && /^-?\d{1,20}$/.test(hb.owner_chat_id)) await this.state.storage.put('owner_chat', hb.owner_chat_id);
     const paused = await this.state.storage.get<{ at: number }>('paused');
-    // OWNER-REVIEW: commands the worker handled leave the queue and the owner hears the result once; the rest go in the reply.
+    // OWNER-REVIEW: commands the worker handled leave the queue and the owner hears the result once; confirms too old to
+    // send expire; the rest go in the reply, and are marked sent.
+    const now = Date.now();
     const settled = settleAcks((await this.state.storage.get<PendingCommand[]>('owner_cmds')) ?? [], ackedOf(hb));
-    if (settled.lines.length > 0) {
-      await this.state.storage.put('owner_cmds', settled.pending);
-      await this.say(settled.lines.join('\n'));
-    }
-    const commands = settled.pending.map(({ id, kind, trip }) => ({ id, kind, trip }));
-    return json({ ok: true, paused: Boolean(paused), ...(commands.length > 0 ? { commands } : {}) });
+    const fresh = expireUnsent(settled.pending, now);
+    const lines = [...settled.lines, ...fresh.lines];
+    const pending = fresh.pending.map((p) => ({ ...p, sent: true }));
+    if (pending.length > 0 || lines.length > 0) await this.state.storage.put('owner_cmds', pending);
+    if (lines.length > 0) await this.say(lines.join('\n'));
+    const commands = pending.map(({ id, kind, trip, at }) => ({ id, kind, trip, at }));
+    // The reply is signed with the key that verified this heartbeat, bound to its signature (logic.ts signReply).
+    const text = JSON.stringify({ ok: true, paused: Boolean(paused), ...(commands.length > 0 ? { commands } : {}) });
+    const t = Math.floor(now / 1000);
+    const v1 = /v1=([0-9a-f]{64})$/.exec(signature)?.[1] ?? '';
+    return new Response(text, { status: 200, headers: { 'content-type': 'application/json', 'x-zeroed-signature': `t=${t},v1=${await signReply(used.value, t, '/heartbeat', v1, text)}` } });
   }
 
   private async ring(base: string): Promise<Ring> {
@@ -308,6 +317,12 @@ export class Watchdog {
       if (offer !== null && !(base === WH && whAdopted) && now - offer.since > OFFER_ALERT_MS) {
         current.push({ key: `key_offer_${base}`, text: `Key offer pending: the new ${what} (slot ${offer.slot}) has not been used for ${Math.floor((now - offer.since) / 3_600_000)} h, so the server does not have it. Check DEPLOY_CODE, then run Deploy with FORCE_KEY_ROTATE=yes (ops/README.md, Watchdog).` });
       }
+    }
+    // OWNER-REVIEW: a confirm the worker never received within 15 minutes expires here, so the owner hears it promptly.
+    const unsent = expireUnsent((await s.get<PendingCommand[]>('owner_cmds')) ?? [], now);
+    if (unsent.lines.length > 0) {
+      await s.put('owner_cmds', unsent.pending);
+      await this.say(unsent.lines.join('\n'));
     }
     const failed = await s.get<{ reason: string; at: number }>('summary_failure');
     if (failed) current.push(summaryAlert(failed.reason));

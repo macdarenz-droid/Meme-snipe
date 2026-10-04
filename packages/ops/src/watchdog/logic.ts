@@ -96,6 +96,19 @@ export async function verifySignature(header: string | null, method: string, pat
   return sameText(await sign(key, t, method, path, body), m[2] ?? '') ? t : null;
 }
 
+/**
+ * OWNER-REVIEW (ops ruling): the heartbeat reply is signed too, with the key that verified the heartbeat, over
+ * "t\nREPLY\npath\n<the request's v1>\nbody". Binding the request's signature means an old reply never fits a new
+ * heartbeat. The worker applies an unsigned or badly signed reply only to keep or start a pause (never an un-pause, never
+ * a command).
+ */
+export const replyText = (t: number, path: string, requestV1: string, body: string) => `${t}\nREPLY\n${path}\n${requestV1}\n${body}`;
+
+export async function signReply(key: string, t: number, path: string, requestV1: string, body: string): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return hex(await crypto.subtle.sign('HMAC', k, enc.encode(replyText(t, path, requestV1, body))));
+}
+
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
 /** Shape check for a signed heartbeat. Signed by the host, but still never trusted blindly. */
@@ -250,10 +263,16 @@ export interface PendingCommand {
   id: string;
   kind: OwnerKind;
   trip: string;
+  /** When the owner confirmed it: the worker refuses it after COMMAND_TTL_MS (`expired`). */
   at: number;
+  /** Sent in a heartbeat reply at least once: from then on only the worker's acknowledgement settles it. */
+  sent?: boolean;
 }
 
-export type AckResult = 'applied' | 'stale' | 'invalid';
+/** A confirm counts for 15 minutes: a /rearm never applies days later on evidence the owner saw long before. */
+export const COMMAND_TTL_MS = 15 * 60_000;
+
+export type AckResult = 'applied' | 'stale' | 'invalid' | 'expired';
 
 /** The heartbeat's review block, checked field by field (signed, but never trusted blindly). Anything malformed reads as none. */
 export function reviewOf(hb: Heartbeat | undefined): Review {
@@ -279,7 +298,7 @@ export function reviewOf(hb: Heartbeat | undefined): Review {
 export function ackedOf(hb: Heartbeat): { id: string; result: AckResult }[] {
   if (!Array.isArray(hb.acked)) return [];
   return hb.acked.filter((a): a is { id: string; result: AckResult } =>
-    typeof a === 'object' && a !== null && typeof (a as { id?: unknown }).id === 'string' && ['applied', 'stale', 'invalid'].includes((a as { result?: unknown }).result as string));
+    typeof a === 'object' && a !== null && typeof (a as { id?: unknown }).id === 'string' && ['applied', 'stale', 'invalid', 'expired'].includes((a as { result?: unknown }).result as string));
 }
 
 /** Lamports (a decimal string) as SOL, exact: up to 9 decimals, trailing zeros dropped. */
@@ -345,8 +364,27 @@ export function settleAcks(pending: readonly PendingCommand[], acked: readonly {
       left.push(p);
       continue;
     }
-    lines.push(a.result === 'applied' ? `Applied: /${p.kind} for ${p.trip}.` : a.result === 'stale' ? `Refused: /${p.kind} for ${p.trip} is no longer the current trip.` : `Refused: /${p.kind} for ${p.trip} was not understood.`);
+    lines.push(
+      a.result === 'applied' ? `Applied: /${p.kind} for ${p.trip}.`
+        : a.result === 'stale' ? `Refused: /${p.kind} for ${p.trip} is no longer the current trip.`
+          : a.result === 'expired' ? `Expired: /${p.kind} for ${p.trip} reached the worker more than 15 minutes after the confirm. Send it again.`
+            : `Refused: /${p.kind} for ${p.trip} was not understood.`,
+    );
   }
+  return { pending: left, lines };
+}
+
+/**
+ * Confirms never sent to the worker within COMMAND_TTL_MS are dropped, one line each. A command already sent waits for
+ * the worker's answer (it refuses one past the TTL itself), so the owner is never told "expired" about one it applied.
+ */
+export function expireUnsent(pending: readonly PendingCommand[], now: number): { pending: PendingCommand[]; lines: string[] } {
+  const lines: string[] = [];
+  const left = pending.filter((p) => {
+    if (p.sent === true || now - p.at <= COMMAND_TTL_MS) return true;
+    lines.push(`Expired: /${p.kind} for ${p.trip} was not delivered within 15 minutes. Send it again.`);
+    return false;
+  });
   return { pending: left, lines };
 }
 

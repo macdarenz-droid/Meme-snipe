@@ -25,6 +25,7 @@ import { HELIUS_FREE } from '../src/scheduler/index.ts';
 import { REGISTERED_STRATEGIES, SLOT_MS, UNREADABLE, parseConfig, watchTimingProblem } from '../src/run/config.ts';
 import { Desk } from '../src/run/desk.ts';
 import type { FactContext } from '../src/run/facts.ts';
+import { signReply } from '../src/run/heartbeat.ts';
 import { Journal, lastLines } from '../src/run/journal.ts';
 import { redact, setSecretValues } from '../src/run/redact.ts';
 import { CreditBook } from '../src/run/sources.ts';
@@ -219,9 +220,14 @@ describe('heartbeat and the watchdog pause (ops/README.md worker contract)', () 
     const sent: HttpRequest[] = [];
     let paused = true;
     const key = 'test-heartbeat-key';
+    let signed = true;
     const h = makeWorker({ key, http: async (req) => {
       sent.push(req);
-      return { status: 200, header: () => null, text: JSON.stringify({ ok: true, paused }) };
+      // Signed as the watchdog signs it (OWNER-REVIEW ops ruling), bound to this heartbeat's signature.
+      const text = JSON.stringify({ ok: true, paused });
+      const v1 = /v1=([0-9a-f]{64})$/.exec(req.headers!['x-zeroed-signature']!)![1]!;
+      const t = Math.floor(h.timers.now() / 1000);
+      return { status: 200, header: (n: string) => (signed && n === 'x-zeroed-signature' ? `t=${t},v1=${signReply(key, t, v1, text)}` : null), text };
     } });
     await h.worker.reconcile();
     await h.worker.heartbeat();
@@ -243,8 +249,12 @@ describe('heartbeat and the watchdog pause (ops/README.md worker contract)', () 
     expect(h.worker.book.paused).toContain('owner');
     expect(JSON.parse(readFileSync(join(h.stateDir, 'control.json'), 'utf8'))).toMatchObject({ paused: true });
     expect(lines(h.stateDir).filter((l) => l['kind'] === 'halt').at(-1)!['reasons']).toEqual(expect.arrayContaining(['owner pause (watchdog)']));
-    // paused: false allows entries again.
+    // An unsigned paused: false is not applied (fail closed); a signed one allows entries again.
     paused = false;
+    signed = false;
+    await h.worker.heartbeat();
+    expect(JSON.parse(readFileSync(join(h.stateDir, 'control.json'), 'utf8'))).toMatchObject({ paused: true });
+    signed = true;
     await h.worker.heartbeat();
     await new Market(h).run(3_000);
     expect(h.worker.book.paused).not.toContain('owner');

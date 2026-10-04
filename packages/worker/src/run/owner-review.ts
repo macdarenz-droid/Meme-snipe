@@ -11,14 +11,18 @@ import { melbourneWeek } from '../../../core/src/risk/melbourne.ts';
 export type OwnerKind = 'review' | 'rearm' | 'weekly';
 export const OWNER_KINDS: readonly OwnerKind[] = ['review', 'rearm', 'weekly'];
 
-/** A command from the watchdog: its id, what it clears, and the trip the owner confirmed. */
-export interface OwnerCommand {
+/** A command from the watchdog: its id, what it clears, the trip the owner confirmed, and when (watchdog time). */
+export interface ReplyCommand {
   readonly id: string;
-  readonly kind: OwnerKind;
+  readonly kind: string;
   readonly trip: string;
+  readonly at: number | null;
 }
 
-export type OwnerResult = 'applied' | 'stale' | 'invalid';
+export type OwnerResult = 'applied' | 'stale' | 'invalid' | 'expired';
+
+/** A confirm counts for 15 minutes (ops ruling): a /rearm never applies days later on evidence the owner saw long before. */
+export const COMMAND_TTL_MS = 15 * 60_000;
 
 /** A command handled, kept in control.json so a repeat is a no-op and its result is acknowledged. */
 export interface HandledCommand {
@@ -103,14 +107,14 @@ export const reviewBlock = (stops: OpenStops): Record<OwnerKind, { readonly trip
  * entry that is not an object with a well-formed id, kind and trip is dropped here; one with a good id but a bad kind or
  * trip is kept so it is answered `invalid`.
  */
-export const commandsOf = (raw: unknown): { readonly id: string; readonly kind: string; readonly trip: string }[] => {
+export const commandsOf = (raw: unknown): ReplyCommand[] => {
   if (!Array.isArray(raw)) return [];
-  const out: { id: string; kind: string; trip: string }[] = [];
+  const out: ReplyCommand[] = [];
   for (const c of raw.slice(0, 8)) {
     if (typeof c !== 'object' || c === null) continue;
-    const { id, kind, trip } = c as Record<string, unknown>;
+    const { id, kind, trip, at } = c as Record<string, unknown>;
     if (typeof id !== 'string' || !ID.test(id) || typeof kind !== 'string' || typeof trip !== 'string') continue;
-    out.push({ id, kind: kind.slice(0, 16), trip: trip.slice(0, 40) });
+    out.push({ id, kind: kind.slice(0, 16), trip: trip.slice(0, 40), at: typeof at === 'number' && Number.isSafeInteger(at) ? at : null });
   }
   return out;
 };
@@ -122,16 +126,19 @@ const reviewed = (l: Latches, kind: OwnerKind, atMs: number): Latches =>
   kind === 'review' ? { ...l, lossReviewedAtMs: atMs } : kind === 'rearm' ? { ...l, killRearmedAtMs: atMs } : { ...l, weeklyReviewedAtMs: atMs };
 
 /**
- * One command against the open stops. Applied only when its kind's stop is open, its trip is that stop's trip, and the
- * review moment is strictly after the trip; otherwise stale (or invalid for a bad kind or trip) and nothing changes.
+ * One command against the open stops. Applied only when it was confirmed within COMMAND_TTL_MS, its kind's stop is open,
+ * its trip is that stop's trip, and the review moment is strictly after the trip; otherwise expired, stale (or invalid
+ * for a bad kind, trip or time) and nothing changes.
  * A command already handled returns null: it is never applied twice.
  */
 export const handleCommand = (
-  c: { readonly id: string; readonly kind: string; readonly trip: string }, stops: OpenStops, latches: Latches, handled: readonly HandledCommand[], nowMs: number,
+  c: ReplyCommand, stops: OpenStops, latches: Latches, handled: readonly HandledCommand[], nowMs: number,
 ): { readonly latches: Latches; readonly entry: HandledCommand } | null => {
   if (handled.some((h) => h.id === c.id)) return null;
   const done = (result: OwnerResult, l: Latches = latches) => ({ latches: l, entry: { id: c.id, kind: c.kind, trip: c.trip, result, atMs: nowMs } });
-  if (!isKind(c.kind) || !TRIP.test(c.trip) || !c.trip.startsWith(`${c.kind}-`)) return done('invalid');
+  if (!isKind(c.kind) || !TRIP.test(c.trip) || !c.trip.startsWith(`${c.kind}-`) || c.at === null) return done('invalid');
+  // Confirmed more than 15 minutes ago, or stamped that far ahead of this clock: the owner confirms it again.
+  if (Math.abs(nowMs - c.at) > COMMAND_TTL_MS) return done('expired');
   const stop = stops[c.kind];
   if (stop === null || stop.trip !== c.trip || nowMs <= stop.atMs) return done('stale');
   return done('applied', reviewed(latches, c.kind, nowMs));

@@ -1,7 +1,7 @@
 // OWNER-REVIEW on the watchdog: /review, /rearm and /weekly show the worker's evidence and queue a confirm only for the
 // trip the worker reports open; the heartbeat reply carries the queue and the worker's acknowledgements settle it.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { confirmedTrip, parseCommand, queueConfirm, reviewOf, settleAcks, sign, solText, stopText, type Heartbeat, type PendingCommand, type Review } from '../src/watchdog/logic.ts';
+import { COMMAND_TTL_MS, confirmedTrip, parseCommand, queueConfirm, reviewOf, settleAcks, sign, signReply, solText, stopText, type Heartbeat, type PendingCommand, type Review } from '../src/watchdog/logic.ts';
 import { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
 
 const KEY = 'test-hmac-key-0123456789abcdef';
@@ -22,7 +22,7 @@ const REVIEW = {
 };
 const upd = (text: string, chat = 42) => JSON.stringify({ message: { chat: { id: chat }, text } });
 
-function harness(mem = new Map<string, unknown>()) {
+function harness(mem = new Map<string, unknown>(), extraEnv: Partial<Env> = {}) {
   const state: DurableState = {
     storage: { get: async <T>(k: string) => mem.get(k) as T | undefined, put: async (k, v) => void mem.set(k, structuredClone(v)) },
     blockConcurrencyWhile: (fn) => fn(),
@@ -32,19 +32,24 @@ function harness(mem = new Map<string, unknown>()) {
     if (String(url).includes('/sendMessage')) sent.push((JSON.parse(String(init?.body)) as { text: string }).text);
     return new Response(JSON.stringify({ ok: true }));
   }));
-  const env = { HEARTBEAT_HMAC_KEY: KEY, TELEGRAM_BOT_TOKEN: 'TEST-token', TELEGRAM_WEBHOOK_SECRET: SECRET, TELEGRAM_API: 'https://tg.test' } as Env;
+  const env = { HEARTBEAT_HMAC_KEY: KEY, TELEGRAM_BOT_TOKEN: 'TEST-token', TELEGRAM_WEBHOOK_SECRET: SECRET, TELEGRAM_API: 'https://tg.test', ...extraEnv } as Env;
   const dob = new Watchdog(state, env);
   const post = (path: string, body: string, headers: Record<string, string> = {}) => dob.fetch(new Request(`https://w.test${path}`, { method: 'POST', body, headers }));
   let seq = 0;
-  const beat = async (over: Partial<Heartbeat> = {}) => {
+  /** One signed heartbeat; the reply, its signature header and the heartbeat's own v1 are kept in `last`. */
+  const last = { text: '', sig: '', v1: '' };
+  const beat = async (over: Partial<Heartbeat> = {}, key = KEY) => {
     seq++;
     const body = JSON.stringify(hb({ seq, ts: T0 + seq, ...over }));
     const t = Math.floor(Date.now() / 1000);
-    const r = await post('/heartbeat', body, { 'x-zeroed-signature': `t=${t},v1=${await sign(KEY, t, 'POST', '/heartbeat', body)}` });
-    return (await r.json()) as { ok: boolean; paused: boolean; commands?: { id: string; kind: string; trip: string }[] };
+    last.v1 = await sign(key, t, 'POST', '/heartbeat', body);
+    const r = await post('/heartbeat', body, { 'x-zeroed-signature': `t=${t},v1=${last.v1}` });
+    last.text = await r.text();
+    last.sig = r.headers.get('x-zeroed-signature') ?? '';
+    return JSON.parse(last.text) as { ok: boolean; paused: boolean; commands?: { id: string; kind: string; trip: string; at: number }[] };
   };
   const tg = (text: string, chat = 42, secret = SECRET) => post('/telegram', upd(text, chat), { 'x-telegram-bot-api-secret-token': secret });
-  return { mem, sent, beat, tg };
+  return { mem, sent, beat, tg, last, dob };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -57,6 +62,10 @@ describe('owner review commands: parsing', () => {
     expect(parseCommand(u('/WEEKLY'), '42')).toBe('weekly');
     expect(parseCommand(u('/override'), '42')).toBe('other');
     expect(parseCommand(u('/review'), '7')).toBeNull();
+    // No paired chat yet: nothing is a command, not even from a chat with an empty id.
+    expect(parseCommand(u('/review'), '')).toBeNull();
+    expect(parseCommand({ message: { chat: {}, text: '/rearm' } }, '')).toBeNull();
+    expect(confirmedTrip({ message: { chat: {}, text: `/rearm confirm rearm-${KILL_AT}` } }, '')).toBeNull();
     expect(confirmedTrip(u(`/rearm confirm rearm-${KILL_AT}`), '42')).toBe(`rearm-${KILL_AT}`);
     expect(confirmedTrip(u(`/rearm Confirm rearm-${KILL_AT}`), '42')).toBe(`rearm-${KILL_AT}`);
     expect(confirmedTrip(u(`/rearm confirm rearm-${KILL_AT}`, 7), '42')).toBeNull();
@@ -136,7 +145,7 @@ describe('owner review commands: the Durable Object', () => {
     // A restart of the Durable Object between the confirm and the next heartbeat keeps the command.
     const after = harness(h.mem);
     const r1 = await after.beat({ review: REVIEW, seq: 10, ts: T0 + 10 });
-    expect(r1.commands).toEqual([{ id: `rearm-${KILL_AT}`, kind: 'rearm', trip: `rearm-${KILL_AT}` }]);
+    expect(r1.commands).toEqual([{ id: `rearm-${KILL_AT}`, kind: 'rearm', trip: `rearm-${KILL_AT}`, at: expect.any(Number) }]);
     // Not acknowledged yet (the worker was not ready): sent again.
     expect((await after.beat({ review: REVIEW, seq: 11, ts: T0 + 11 })).commands).toHaveLength(1);
     const r2 = await after.beat({ review: { ...REVIEW, rearm: null }, acked: [{ id: `rearm-${KILL_AT}`, result: 'applied' }], seq: 12, ts: T0 + 12 });
@@ -174,5 +183,49 @@ describe('owner review commands: the Durable Object', () => {
     await h.beat({ review: REVIEW, acked: [{ id: `review-${R8_AT}`, result: 'stale' }] });
     expect(h.sent.at(-1)).toBe(`Refused: /review for review-${R8_AT} is no longer the current trip.`);
     expect(h.mem.get('owner_cmds')).toEqual([]);
+  });
+  it('signs every heartbeat reply with the key that verified it, bound to that heartbeat, through a key rotation too', async () => {
+    const h = harness(new Map(), { HEARTBEAT_HMAC_KEY_A: 'offered-key-0123456789abcdef' });
+    const r = await h.beat({ review: REVIEW });
+    expect(r).toEqual({ ok: true, paused: false });
+    const m = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(h.last.sig)!;
+    expect(m[2]).toBe(await signReply(KEY, Number(m[1]), '/heartbeat', h.last.v1, h.last.text));
+    // Bound to the heartbeat: the same reply under another heartbeat's signature does not verify.
+    expect(m[2]).not.toBe(await signReply(KEY, Number(m[1]), '/heartbeat', '0'.repeat(64), h.last.text));
+    // The server beats with the offered key: the reply is signed with that key, and the offer becomes active.
+    await h.beat({ review: REVIEW }, 'offered-key-0123456789abcdef');
+    const n = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(h.last.sig)!;
+    expect(n[2]).toBe(await signReply('offered-key-0123456789abcdef', Number(n[1]), '/heartbeat', h.last.v1, h.last.text));
+    expect(h.mem.get('ring:HEARTBEAT_HMAC_KEY')).toMatchObject({ active: 'A' });
+  });
+
+  it('a confirm not delivered within 15 minutes expires with a line; one already sent waits for the worker, which may answer expired', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(T0);
+      const h = harness();
+      await h.beat({ review: REVIEW });
+      await h.tg(`/rearm confirm rearm-${KILL_AT}`);
+      await h.tg(`/review confirm review-${R8_AT}`);
+      // The review confirm is sent; the worker then goes quiet.
+      vi.setSystemTime(T0 + 60_000);
+      expect((await h.beat({ review: REVIEW })).commands?.map((c) => [c.kind, c.at])).toEqual([['rearm', T0], ['review', T0]]);
+      await h.tg(`/rearm confirm rearm-${KILL_AT}`);
+      // At exactly 15 minutes nothing expires.
+      vi.setSystemTime(T0 + 60_000 + COMMAND_TTL_MS);
+      await h.dob.check(Date.now());
+      expect((h.mem.get('owner_cmds') as PendingCommand[]).map((p) => p.kind)).toEqual(['review', 'rearm']);
+      vi.setSystemTime(T0 + 60_000 + COMMAND_TTL_MS + 1);
+      await h.dob.check(Date.now());
+      // The rearm confirm (re-sent at +1 min, never delivered) expires; the review one was delivered and waits.
+      expect(h.sent.at(-1)).toBe(`Expired: /rearm for rearm-${KILL_AT} was not delivered within 15 minutes. Send it again.`);
+      expect((h.mem.get('owner_cmds') as PendingCommand[]).map((p) => p.kind)).toEqual(['review']);
+      // The worker answers expired: the owner is told to send it again.
+      await h.beat({ review: REVIEW, acked: [{ id: `review-${R8_AT}`, result: 'expired' }] });
+      expect(h.sent.at(-1)).toBe(`Expired: /review for review-${R8_AT} reached the worker more than 15 minutes after the confirm. Send it again.`);
+      expect(h.mem.get('owner_cmds')).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

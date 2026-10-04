@@ -65,7 +65,7 @@ export interface Control {
 }
 export const NO_CONTROL: Control = { paused: false, pausedAtMs: null, latches: NO_LATCHES };
 const isHandled = (c: unknown): boolean =>
-  isObj(c) && typeof c['id'] === 'string' && typeof c['kind'] === 'string' && typeof c['trip'] === 'string' && ['applied', 'stale', 'invalid'].includes(c['result'] as string) && typeof c['atMs'] === 'number';
+  isObj(c) && typeof c['id'] === 'string' && typeof c['kind'] === 'string' && typeof c['trip'] === 'string' && ['applied', 'stale', 'invalid', 'expired'].includes(c['result'] as string) && typeof c['atMs'] === 'number';
 export const controlFile = (dir: string) =>
   new StateFile<Control>(dir, 'control.json', (v) => (isObj(v) && typeof v['paused'] === 'boolean' && isObj(v['latches'])
     && (v['commands'] === undefined || (Array.isArray(v['commands']) && v['commands'].every(isHandled))) ? (v as unknown as Control) : null));
