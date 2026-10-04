@@ -14,7 +14,7 @@ import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src
 import { markSettings } from '../src/engine/marks.ts';
 import { MARK_PREFIX, TRIPPED_PREFIX } from '../src/engine/strategy.ts';
 import { type AccountState, PaperAccount, accountFile } from '../src/run/account.ts';
-import { MINT, Market, SOL_PRICE, makeWorker, passingMarket, noLegs } from './worker-harness.ts';
+import { MINT, Market, SOL_PRICE, makeWorker, passingMarket } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const lines = (h: H) => readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -126,7 +126,7 @@ describe('boundary marks from the marked account (RISK-MARK)', () => {
     // larger, so the trip itself does not single out either measure.
     const ledger = openLedger(join(h.stateDir, 'ledger.sqlite'), 'paper');
     const a = new PaperAccount(accountFile(h.stateDir), account(h2).openingEquity, at, 0n);
-    const fact = a.fact(ledger, h2.worker.book, NO_LATCHES, SOL_PRICE as MicroUsd, at, noLegs);
+    const fact = a.fact(ledger, h2.worker.book, NO_LATCHES, SOL_PRICE as MicroUsd, at, h2.worker.legs);
     ledger.close();
     const history = { ...fact.history, openPositions: fact.history.openPositions.map((o) => ({ ...o, mark: exitMark as MicroUsd, markAtMs: at })) };
     const snap = riskSnapshot({

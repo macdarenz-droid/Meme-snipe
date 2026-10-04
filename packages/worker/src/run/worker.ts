@@ -520,6 +520,11 @@ export class Worker {
     return this.#boot;
   }
 
+  /** The paper legs the account settles from (attempts, network, closed accounts): what an account fact reads. */
+  get legs(): PaperLegs {
+    return this.#legs();
+  }
+
   get book(): Book {
     return this.#engine.book;
   }
