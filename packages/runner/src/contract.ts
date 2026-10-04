@@ -158,6 +158,8 @@ export type JournalKind =
   | 'exit_capable'
   /** H15's round-trip simulation of a candidate (WORKER-1e: SIM-1's `SimRecord`, or `not-run` with its reason). Not item 4's `simulation`. */
   | 'h15_sim'
+  /** S0-ZERO: one in-run fill of a watched pool's trade gap (a candidate's catch-up from its migration, a reconnect): size, credits, complete. */
+  | 'trades_fill'
   /** PERSIST-2: a graduates seed taken or refused (`source`, `accepted`, `added`, `reason`). */
   | 'graduates_seed'
   /**

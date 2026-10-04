@@ -120,6 +120,9 @@ describe('when a valuation may latch R9 or R10 (RISK-LATCH review)', () => {
     expect(latchable(with_(1n, NOW - AGE - 1), SOL, NOW, AGE)).toBe(false);
     expect(latchable(with_(1n, NOW + 1), SOL, NOW, AGE)).toBe(false);
     expect(latchable(with_(1n, NOW - AGE), SOL, NOW, AGE)).toBe(true);
+    // A negative mark is no mark to core (a total-loss stand-in), so it never latches; zero is a real mark.
+    expect(latchable(with_(-1n, NOW), SOL, NOW, AGE)).toBe(false);
+    expect(latchable(with_(0n, NOW), SOL, NOW, AGE)).toBe(true);
   });
 });
 
