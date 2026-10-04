@@ -103,10 +103,10 @@ describe('the status serves them as halt reasons', () => {
 });
 
 describe('what the app reads: no stop and a current regime only when both are true', () => {
-  type Served = { haltReasons: { code: string; source: string | null }[]; regime: { state: string; current: boolean } | null };
+  type Served = { haltReasons: { code: string; source: string | null }[]; regime: { state: string; current: boolean; waived: string[] } | null };
   const served = (patch: Record<string, unknown>): Served => {
     const h = makeWorker();
-    const i = { ...h.worker.apiInputs(), halted: [], budgetHalted: [], nowMs: NOW, regime: { atMs: NOW - 1_000, on: true, reasons: [] }, stops: { atMs: NOW, codes: [] as string[] }, ...patch };
+    const i = { ...h.worker.apiInputs(), halted: [], budgetHalted: [], nowMs: NOW, regime: { atMs: NOW - 1_000, on: true, reasons: [], waived: [] as string[] }, stops: { atMs: NOW, codes: [] as string[] }, ...patch };
     const body = JSON.parse(JSON.stringify({ mode: 'paper', asOf: new Date(NOW).toISOString(), data: views.status(i as never) }));
     void h.worker.stop();
     return (checkEnvelope(body, 'paper', schemaFor('status', 'paper')) as { data: Served }).data;
@@ -130,12 +130,16 @@ describe('what the app reads: no stop and a current regime only when both are tr
   it('the probe: daily loss used 2.00 of 1.00 on the meter serves daily-loss even before core risk reads it', () => {
     expect(halts(served({ trades: [{ closedAtMs: NOW - MINUTE, netPnl: -2_000_000n }] }))).toEqual(['daily-loss']);
   });
+  it('the regime parts the S0 diagnostic set waived are served with the regime', () => {
+    expect(served({ regime: { atMs: NOW - 1_000, on: true, reasons: [], waived: ['regime-volume'] } }).regime).toMatchObject({ state: 'on', current: true, waived: ['regime-volume'] });
+    expect(served({}).regime?.waived).toEqual([]);
+  });
   it('a regime evaluation older than regimeMaxAgeMs is not current', () => {
     const h = makeWorker();
     const max = h.worker.apiInputs().regimeMaxAgeMs;
     void h.worker.stop();
     expect(max).toBe(2 * TRIAL_POLICY.gates.maxQuoteAgeMs);
-    expect(served({ regime: { atMs: NOW - max, on: true, reasons: [] } }).regime?.current).toBe(true);
-    expect(served({ regime: { atMs: NOW - max - 1, on: true, reasons: [] } }).regime?.current).toBe(false);
+    expect(served({ regime: { atMs: NOW - max, on: true, reasons: [], waived: [] as string[] } }).regime?.current).toBe(true);
+    expect(served({ regime: { atMs: NOW - max - 1, on: true, reasons: [], waived: [] as string[] } }).regime?.current).toBe(false);
   });
 });

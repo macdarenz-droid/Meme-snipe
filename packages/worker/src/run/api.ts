@@ -100,7 +100,7 @@ export interface ApiInputs {
   /** Critical engine alerts since boot. */
   readonly alerts: readonly { readonly code: string; readonly subject: string; readonly atMs: number }[];
   /** The latest regime evaluation; null before the first candidate. */
-  readonly regime: { readonly atMs: number; readonly on: boolean; readonly reasons: readonly { readonly code: string; readonly input: string | null }[] } | null;
+  readonly regime: { readonly atMs: number; readonly on: boolean; readonly reasons: readonly { readonly code: string; readonly input: string | null }[]; readonly waived: readonly string[] } | null;
   /**
    * How old a regime evaluation may be and still count as current: two of the strategy's candidate evaluation steps
    * (`evaluateEveryMs`, settings.ts: the policy's maxQuoteAgeMs). While any candidate is in its window the regime is
@@ -198,7 +198,7 @@ export const views = {
       haltReasons: halts.map((h) => ({ mode: MODE, ...h })),
       exitCapable: i.exitCapable,
       alerts: i.alerts.map((a) => ({ mode: MODE, code: a.code, subject: a.subject, at: iso(a.atMs) })),
-      regime: i.regime === null ? null : { state: i.regime.on ? 'on' : 'off', at: iso(i.regime.atMs), current: i.nowMs - i.regime.atMs <= i.regimeMaxAgeMs, reasons: i.regime.reasons.map((r) => ({ mode: MODE, code: r.code, input: r.input })) },
+      regime: i.regime === null ? null : { state: i.regime.on ? 'on' : 'off', at: iso(i.regime.atMs), current: i.nowMs - i.regime.atMs <= i.regimeMaxAgeMs, reasons: i.regime.reasons.map((r) => ({ mode: MODE, code: r.code, input: r.input })), waived: [...i.regime.waived] },
       risk: [
         { mode: MODE, kind: 'open-exposure', usedUsd: usdText(open), limitUsd: null },
         { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText(dailyLimit) },

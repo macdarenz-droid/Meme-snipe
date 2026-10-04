@@ -87,6 +87,14 @@ export const REGIME_INPUT_LABEL: Record<string, string> = {
   'exec-health': 'execution health unknown',
 };
 
+/** S0 diagnostic parts not judged: the regime's "on" is practice only. */
+export const WAIVED_LABEL: Record<string, string> = {
+  'regime-volume': 'volume',
+  'regime-survival': 'survival',
+  'exec-health': 'execution health',
+  'h14-creates-coverage': 'creates coverage',
+};
+
 /** Flags that need the owner's eye are drawn in the loss colour; the rest stay neutral. */
 export const FLAG_ALERT: ReadonlySet<StatusFlag> = new Set(['exit-blocked', 'unknown-tx-result', 'low-fee-reserve', 'stale-data', 'rate-limited']);
 

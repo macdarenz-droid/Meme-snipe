@@ -4,7 +4,7 @@ import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
 import { Badge, Empty } from '../components/ui.tsx';
 import { shortAddress } from '../lib/format.ts';
 import { formatPriceDec, formatR, formatShare, formatUsdExact, toMicro, toneOf } from '../lib/money.ts';
-import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL } from './labels.ts';
+import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL } from './labels.ts';
 import { melDateTime } from './time.ts';
 
 export const NOT_ENOUGH = 'Not enough trades';
@@ -74,15 +74,21 @@ export const statusRows = (status: WorkerStatus): StatusRow[] => {
   const halts = list<{ code?: unknown }>(status.haltReasons);
   const regime = status.regime !== null && typeof status.regime === 'object' && (status.regime.state === 'on' || status.regime.state === 'off') ? status.regime : null;
   const rows: StatusRow[] = [];
+  const waived = regime === null ? null : list<unknown>(regime.waived);
 
   const off = unique([...ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why), ...(halts ?? []).map((h) => label(HALT_LABEL, h.code))]);
   if (off.length > 0 || (halts !== null && halts.length > 0)) rows.push({ label: 'Entries', value: off.length > 0 ? `Off: ${off.join(', ')}` : 'Off', alert: false });
   // On only with every stop served and none active (the account's risk stops are among the halts), and a regime
   // evaluation that is on and current (at most two candidate evaluation steps old: the worker's regimeMaxAgeMs).
-  else if (halts !== null && regime?.state === 'on' && regime.current === true) rows.push({ label: 'Entries', value: 'On', alert: false });
+  // Any part the S0 diagnostic set did not judge makes the regime's "on" practice only: never a plain "On".
+  else if (halts !== null && regime?.state === 'on' && regime.current === true && waived !== null) rows.push({ label: 'Entries', value: waived.length > 0 ? 'On (practice)' : 'On', alert: false });
 
   if (regime !== null && regime.current !== true) rows.push({ label: 'Regime', value: 'Not checked lately', alert: false });
-  else if (regime !== null) {
+  else if (regime !== null && regime.state === 'on' && waived === null) rows.push({ label: 'Regime', value: 'Unknown', alert: false });
+  else if (regime !== null && regime.state === 'on' && waived !== null && waived.length > 0) {
+    const parts = unique(waived.map((w) => label(WAIVED_LABEL, w) ?? null));
+    rows.push({ label: 'Regime', value: parts.length > 0 ? `On (practice: ${parts.join(', ')} not judged)` : 'On (practice)', alert: false });
+  } else if (regime !== null) {
     const why = unique((list<{ code?: unknown; input?: unknown }>(regime.reasons) ?? []).map((r) => (r.code === 'unknown' ? (label(REGIME_INPUT_LABEL, r.input) ?? null) : label(REGIME_REASON_LABEL, r.code))));
     rows.push({ label: 'Regime', value: regime.state === 'on' ? 'On' : why.length > 0 ? `Off: ${why.join(', ')}` : 'Off', alert: false });
   }

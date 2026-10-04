@@ -78,8 +78,8 @@ describe('dashboard', () => {
 describe('worker card with the API-1 fields', () => {
   const at = '2026-10-04T01:00:00.000Z';
   const halt = (code: string, source: string | null = null) => ({ mode: 'paper' as const, code, source }) as NonNullable<WorkerStatus['haltReasons']>[number];
-  const reg = (state: 'on' | 'off', reasons: [string, string | null][] = [], current = true): NonNullable<WorkerStatus['regime']> =>
-    ({ state, at, current, reasons: reasons.map(([code, input]) => ({ mode: 'paper', code, input })) }) as NonNullable<WorkerStatus['regime']>;
+  const reg = (state: 'on' | 'off', reasons: [string, string | null][] = [], current = true, waived: string[] = []): NonNullable<WorkerStatus['regime']> =>
+    ({ state, at, current, reasons: reasons.map(([code, input]) => ({ mode: 'paper', code, input })), waived }) as NonNullable<WorkerStatus['regime']>;
   const alert = (code: string) => ({ mode: 'paper' as const, code, subject: 'p1', at }) as NonNullable<WorkerStatus['alerts']>[number];
   const with_ = (extra: Partial<WorkerStatus>, flags: readonly string[] = []) => statusRows({ ...status(flags), ...extra }).map((r) => `${r.label}: ${r.value}`);
 
@@ -134,6 +134,16 @@ describe('worker card with the API-1 fields', () => {
       expect(r[0]).toMatch(/^Entries: Off: /);
     },
   );
+
+  it('with the S0 diagnostic set waiving regime parts, the card never shows a plain "On"', () => {
+    expect(with_({ haltReasons: [], regime: reg('on', [], true, ['regime-volume']) })).toEqual(['Entries: On (practice)', 'Regime: On (practice: volume not judged)']);
+    expect(with_({ haltReasons: [], regime: reg('on', [], true, ['regime-volume', 'regime-survival', 'exec-health']) })).toEqual(['Entries: On (practice)', 'Regime: On (practice: volume, survival, execution health not judged)']);
+    // No waived list served: neither plain On.
+    const r = with_({ haltReasons: [], regime: { state: 'on', at, current: true, reasons: [] } as unknown as NonNullable<WorkerStatus['regime']> });
+    expect(r).not.toContain('Entries: On');
+    expect(r).not.toContain('Regime: On');
+    expect(findBanned(with_({ haltReasons: [], regime: reg('on', [], true, ['regime-volume']) }).join(' '))).toEqual([]);
+  });
 
   it('a regime evaluation that is not current never shows "Entries: On" or "Regime: On"', () => {
     expect(with_({ haltReasons: [], regime: reg('on', [], false) })).toEqual(['Regime: Not checked lately']);
@@ -207,7 +217,7 @@ describe('status schema (API-1 fields optional, strict when present)', () => {
     const check = schemaFor('status', 'paper');
     const base = { mode: 'paper', connected: true, flags: [], risk: [] };
     expect(() => check(base, '$')).not.toThrow();
-    const full = { ...base, haltReasons: [{ mode: 'paper', code: 'budget', source: 'helius' }], exitCapable: true, alerts: [{ mode: 'paper', code: 'oversold', subject: 'p1', at: '2026-10-04T01:00:00.000Z' }], regime: { state: 'off', at: '2026-10-04T01:00:00.000Z', current: true, reasons: [{ mode: 'paper', code: 'unknown', input: 'sol-usd' }] } };
+    const full = { ...base, haltReasons: [{ mode: 'paper', code: 'budget', source: 'helius' }], exitCapable: true, alerts: [{ mode: 'paper', code: 'oversold', subject: 'p1', at: '2026-10-04T01:00:00.000Z' }], regime: { state: 'off', at: '2026-10-04T01:00:00.000Z', current: true, reasons: [{ mode: 'paper', code: 'unknown', input: 'sol-usd' }], waived: [] } };
     expect(() => check(full, '$')).not.toThrow();
     expect(() => check({ ...full, regime: null }, '$')).not.toThrow();
     for (const bad of [
@@ -218,6 +228,8 @@ describe('status schema (API-1 fields optional, strict when present)', () => {
       { ...full, regime: { state: 'maybe', at: full.regime.at, reasons: [] } },
       { ...full, regime: { ...full.regime, extra: 1 } },
       { ...full, regime: { state: 'on', at: full.regime.at, reasons: [] } },
+      { ...full, regime: { ...full.regime, waived: ['nope'] } },
+      { ...full, regime: { ...full.regime, waived: undefined } },
       { ...full, unknownField: 1 },
     ]) expect(() => check(bad, '$')).toThrow();
   });

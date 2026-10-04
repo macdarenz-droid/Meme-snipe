@@ -60,6 +60,8 @@ export interface RegimeView {
   readonly atMs: number;
   readonly on: boolean;
   readonly reasons: readonly { readonly code: string; readonly input: string | null }[];
+  /** Regime parts the S0 diagnostic set did not judge (WORKER-1e): an "on" with any of these is practice only. */
+  readonly waived: readonly string[];
 }
 /**
  * The account-level entry stops as of `atMs`: the codes of every entry control core risk reports tripped with no trade
@@ -1291,7 +1293,7 @@ export class LiveStrategy implements Strategy {
     const diag = c.s0Diagnostic === true ? { s0Diagnostic: true } as const : {};
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
-    this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })) };
+    this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };
     if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);

@@ -1,4 +1,4 @@
-import { ALERT_CODES, HALT_CODES, REGIME_REASON_CODES, STATUS_FLAGS, type Mode } from './contract.ts';
+import { ALERT_CODES, HALT_CODES, REGIME_REASON_CODES, STATUS_FLAGS, WAIVED_PARTS, type Mode } from './contract.ts';
 import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, optional, re, str, usd, type Check } from './schema.ts';
 
 /**
@@ -49,7 +49,7 @@ function build(m: Mode): Record<Endpoint, Check> {
       haltReasons: optional(arr(obj({ mode, code: oneOf(...HALT_CODES), source: nullable(str) }), 50)),
       exitCapable: optional(bool),
       alerts: optional(arr(obj({ mode, code: oneOf(...ALERT_CODES), subject: str, at: iso }), 50)),
-      regime: optional(nullable(obj({ state: oneOf('on', 'off'), at: iso, current: bool, reasons: arr(obj({ mode, code: oneOf(...REGIME_REASON_CODES), input: nullable(str) }), 20) }))),
+      regime: optional(nullable(obj({ state: oneOf('on', 'off'), at: iso, current: bool, reasons: arr(obj({ mode, code: oneOf(...REGIME_REASON_CODES), input: nullable(str) }), 20), waived: arr(oneOf(...WAIVED_PARTS), 4) }))),
     }),
     funnel: obj({
       mode,

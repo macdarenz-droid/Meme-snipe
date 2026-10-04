@@ -97,10 +97,10 @@ describe('/api/v1/paper/status (API-1)', () => {
     const s = strict({ mode: 'paper', asOf: new Date(0).toISOString(), data: views.status({
       ...i,
       alerts: [{ code: 'exit_blocked', subject: 'p1', atMs: 5_000 }],
-      regime: { atMs: 6_000, on: false, reasons: [{ code: 'unknown', input: 'curve-volume' }, { code: 'regime-off', input: null }] },
+      regime: { atMs: 6_000, on: false, reasons: [{ code: 'unknown', input: 'curve-volume' }, { code: 'regime-off', input: null }], waived: [] },
     }) }).data;
     expect(s.alerts).toEqual([{ mode: 'paper', code: 'exit_blocked', subject: 'p1', at: new Date(5_000).toISOString() }]);
-    expect(s.regime).toEqual({ state: 'off', at: new Date(6_000).toISOString(), current: i.nowMs - 6_000 <= i.regimeMaxAgeMs, reasons: [{ mode: 'paper', code: 'unknown', input: 'curve-volume' }, { mode: 'paper', code: 'regime-off', input: null }] });
+    expect(s.regime).toEqual({ state: 'off', at: new Date(6_000).toISOString(), current: i.nowMs - 6_000 <= i.regimeMaxAgeMs, reasons: [{ mode: 'paper', code: 'unknown', input: 'curve-volume' }, { mode: 'paper', code: 'regime-off', input: null }], waived: [] });
     await h.worker.stop();
   });
 });

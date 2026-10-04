@@ -114,6 +114,10 @@ export const ALERT_CODES = [
 ] as const;
 export type AlertCode = (typeof ALERT_CODES)[number];
 
+/** Parts the S0 diagnostic set does not judge (WORKER-1e, S0DiagnosticPart in core's regime gate). */
+export const WAIVED_PARTS = ['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage'] as const;
+export type WaivedPart = (typeof WAIVED_PARTS)[number];
+
 export const REGIME_REASON_CODES = ['regime-off', 'unknown', 'exec-health', 'policy-session-ended'] as const;
 export type RegimeReasonCode = (typeof REGIME_REASON_CODES)[number];
 
@@ -127,7 +131,7 @@ export interface WorkerStatus extends Moded {
   /** Critical alerts since the worker started. */
   alerts?: (Moded & { code: AlertCode; subject: string; at: Iso })[];
   /** The latest regime evaluation; null before the first candidate. */
-  regime?: { state: 'on' | 'off'; at: Iso; /** At most two candidate evaluation steps old as of asOf. */ current: boolean; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[] } | null;
+  regime?: { state: 'on' | 'off'; at: Iso; /** At most two candidate evaluation steps old as of asOf. */ current: boolean; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[]; /** Not judged (S0 diagnostic): an "on" with any is practice only. */ waived: WaivedPart[] } | null;
 }
 
 // Funnel ---------------------------------------------------------------
