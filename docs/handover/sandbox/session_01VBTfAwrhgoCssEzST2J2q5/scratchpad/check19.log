@@ -1,0 +1,197 @@
+
+> meme-snipe@ check /home/user/Meme-snipe
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /home/user/Meme-snipe
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/runner typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+apps/web typecheck: Done
+packages/backtest typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: Done
+
+> meme-snipe@ test /home/user/Meme-snipe
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:22415) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:22414) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:22608) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |heavy| packages/backtest/test/run.test.ts (45 tests | 2 failed) 460596ms
+   ❯ proofs on a dataset run (4)
+     × +1-slot shift test 11750ms
+   ❯ signing heights and skipped slots (2)
+     × with no dropped attempts and landing under 150 slots, nothing expires, whatever the seed and scenario 12219ms
+ ❯ |heavy| packages/backtest/test/full-study.test.ts (7 tests | 2 failed) 854917ms
+   ❯ BT-2 study (7)
+     × runs the walk-forward cleanly through the real engine and scores it outside 12ms
+     × registers one configuration per universe before any holdout run, and G1 is not proven on 2 days 151895ms
+ ❯ |light| packages/backtest/test/dataset.test.ts (15 tests | 1 failed) 53329ms
+   ❯ command line on an on-disk dataset (2)
+     × run: report, evidence, identical replays and a passing leak test 3215ms
+(node:24545) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:24631) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:24641) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+(node:25305) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25314) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25321) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25377) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25793) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25863) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:25877) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:26436) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:26863) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:27044) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:27058) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:27098) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:27159) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:27250) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:27271) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:27500) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |heavy| packages/backtest/test/full-study.test.ts > BT-2 study > runs the walk-forward cleanly through the real engine and scores it outside
+AssertionError: expected 0 to be greater than 0
+ ❯ packages/backtest/test/full-study.test.ts:66:45
+     64|     // Every walk-forward trade opened and closed inside the walk-forw…
+     65|     for (const t of first.walkForward.trades) expect(t.closedAt).toBeL…
+     66|     expect(first.walkForward.trades.length).toBeGreaterThan(0);
+       |                                             ^
+     67|     // S0 ran under the same deployment constraints, and the SPA panel…
+     68|     expect(first.deployment.control).toHaveLength(config.s0SeedsWalkFo…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  |heavy| packages/backtest/test/full-study.test.ts > BT-2 study > registers one configuration per universe before any holdout run, and G1 is not proven on 2 days
+AssertionError: expected [ 'U1 all regimes (pooled)', …(3) ] to deeply equal ArrayContaining{…}
+
+- Expected
++ Received
+
+- ArrayContaining [
++ [
+    "U1 all regimes (pooled)",
++   "U1 all regimes (pooled), sensitivity: no rent recovery",
+    "U2 all regimes (pooled)",
+-   "U2 regime B4",
++   "U2 all regimes (pooled), sensitivity: no rent recovery",
+  ]
+
+ ❯ packages/backtest/test/full-study.test.ts:110:41
+    108|     // Reported per regime (here every trade is after B4) and pooled u…
+    109|     // trades); 2 days are too few.
+    110|     expect(Object.keys(first.gates.G1)).toEqual(expect.arrayContaining…
+       |                                         ^
+    111|     for (const k of Object.keys(first.gates.G1)) expect(k).toMatch(/^U…
+    112|     for (const g of Object.values(evaluated.gates.G1)) expect(g.status…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  |heavy| packages/backtest/test/run.test.ts > proofs on a dataset run > +1-slot shift test
+AssertionError: expected [ Array(1) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "the delayed run differs at record 5: {\"action\":null,\"at\":{\"ixIndex\":4173,\"receivedAt\":1789866567200,\"slot\":{\"$n\":\"400010419\"},\"txIndex\":9007199254740989},\"effects\":[],\"eventId\":\"tip:400010419\",\"inputs\":[\"tip:400010419\"],\"reasons\":[\"not signing\",\"event tip:observed carries no block height\"],\"result\":\"abstained\",\"seq\":5,\"type\":\"decision\"} vs {\"action\":null,\"at\":{\"ixIndex\":4173,\"receivedAt\":1789866567200,\"slot\":{\"$n\":\"400010419\"},\"txIndex\":9007199254740989},\"effects\":[],\"eventId\":\"tip:400010420\",\"inputs\":[\"tip:400010420\"],\"reasons\":[\"not signing\",\"event tip:observed carries no block height\"],\"result\":\"abstained\",\"seq\":5,\"type\":\"decision\"}",
++ ]
+
+ ❯ packages/backtest/test/run.test.ts:184:31
+    182|   test('+1-slot shift test', () => {
+    183|     const report = shiftTest(opts(), rows);
+    184|     expect(report.violations).toEqual([]);
+       |                               ^
+    185|   });
+    186| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  |heavy| packages/backtest/test/run.test.ts > signing heights and skipped slots > with no dropped attempts and landing under 150 slots, nothing expires, whatever the seed and scenario
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ packages/backtest/test/run.test.ts:579:96
+    577|         betweenHeartbeats += acted.filter((x) => x.type === 'decision'…
+    578|         onLifecycle += acted.filter((x) => x.type === 'decision' && x.…
+    579|         expect(r.records.some((x) => x.type === 'decision' && x.reason…
+       |                                                                                                ^
+    580|       }
+    581|     }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  |light| packages/backtest/test/dataset.test.ts > command line on an on-disk dataset > run: report, evidence, identical replays and a passing leak test
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/backtest/test/dataset.test.ts:142:30
+    140|     const report = JSON.parse(readFileSync(out, 'utf8')) as { schemaVe…
+    141|     expect(report.schemaVersion).toBe(1);
+    142|     expect(summary['shift']).toBe(true);
+       |                              ^
+    143|     // Three replays and the inputs this run does not measure keep G0 …
+    144|     expect(report.gates.find((g) => g.gate === 'G0')?.state).toBe('fai…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  3 failed | 145 passed (148)
+      Tests  5 failed | 4380 passed (4385)
+   Start at  04:10:08
+   Duration  1310.96s (tests 91%, import 9%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+ ELIFECYCLE  Command failed with exit code 1.
+exit 1
