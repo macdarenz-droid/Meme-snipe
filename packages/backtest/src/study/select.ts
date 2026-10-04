@@ -5,7 +5,10 @@
 // fill the holdout, the highest min(zVsZero, zVsS0), ties broken by file order; none, that universe gets no holdout
 // configuration (p = 1 in Holm, "not proven").
 import { createRng, SPA_MIN_ACTIVE_DAYS, SPA_STUDENTISATION, type SpaResult, spaTest } from '../../../core/src/stats/index.ts';
-import { LATER_ATTEMPT_ENTRY_DAYS } from '../holdout.ts';
+import { type HoldoutPlan, LATER_ATTEMPT_ENTRY_DAYS } from '../holdout.ts';
+import type { ClusteredReturn, DayReturn } from '../../../core/src/stats/index.ts';
+import { powerOf } from './gates.ts';
+import { HOLDOUT_FAMILY_SIZE } from './plan.ts';
 import type { SpaVariant } from './spa.ts';
 
 export interface SpaSettings {
@@ -27,6 +30,27 @@ export interface Capacity {
   readonly entriesPerDay: number;
   readonly required: number | null;
 }
+
+/**
+ * The SPA settings the selection uses (01FHfb): a stored plan's, frozen with it; a stored plan without them gives none
+ * (no selection). Without a stored plan only a diagnostic run (which registers nothing) uses the configuration.
+ */
+export const spaSettingsOf = (plan: HoldoutPlan | null | undefined, diagnostic: boolean, config: SpaSettings): SpaSettings | null => {
+  if (plan !== null && plan !== undefined) return plan.spa === undefined ? null : { seFloor: plan.spa.seFloorOfBase, replicates: plan.spa.replicates, alpha: plan.spa.alpha };
+  return diagnostic ? config : null;
+};
+
+/**
+ * One hypothesis's capacity for the fill filter (01FHfb): its practice entries per calendar day (every day of the
+ * calendar, active or not) and the requirement it would freeze, sized over the Holm family of 2 at the attempt's α.
+ */
+export const capacityOf = (
+  trades: readonly ClusteredReturn[], control: readonly DayReturn[], calendarDays: number, alpha: number, seed: number, power: typeof powerOf = powerOf,
+): Capacity => {
+  if (!(calendarDays > 0)) throw new RangeError('the practice calendar has no days');
+  const p = power(trades, control, HOLDOUT_FAMILY_SIZE, seed, alpha);
+  return { entriesPerDay: trades.length / calendarDays, required: p.ok ? p.required : null };
+};
 
 /** Entry days of a holdout attempt: a hypothesis must be able to fill its requirement in them (01FHfb). */
 export const HOLDOUT_ENTRY_DAYS = LATER_ATTEMPT_ENTRY_DAYS;

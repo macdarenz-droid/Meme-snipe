@@ -24,7 +24,7 @@ import type { Preregistration } from '../strategy/preregistration.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { type FunnelSummary } from './funnel.ts';
 import { type SpaPanel, spaPanel, type SpaVariant, spaVariant } from './spa.ts';
-import { type Selection, selectHypotheses } from './select.ts';
+import { capacityOf, type Selection, selectHypotheses, spaSettingsOf } from './select.ts';
 import { holdoutSummary } from './summary.ts';
 import { melbourneDay } from '../report.ts';
 import { microUsdToLamports, solPriceMicroUsd } from '../../../core/src/units/index.ts';
@@ -226,8 +226,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // The plan is fixed once, before any practice-day statistic is computed: the SPA settings (01FHfb's SE floor) are
   // read from it, so no run can change them after seeing practice-day ω.
   if (!diagnostic) setHoldoutPlan(i.holdout, holdoutPlanOf(c, plan, RULED_ALPHA, i.preregistration), i.research);
-  const frozenSpa = storeNow()?.plan?.spa;
-  const spaSettings = frozenSpa !== undefined ? { seFloor: frozenSpa.seFloorOfBase, replicates: frozenSpa.replicates, alpha: frozenSpa.alpha } : diagnostic ? c.spa : null;
+  const spaSettings = spaSettingsOf(storeNow()?.plan, diagnostic, c.spa);
   // The attempt's α: the STATS-1c registry's schedule (attempt 1: 0.04), the same before and after registration.
   const alpha = attemptAlpha({ alpha: RULED_ALPHA }, c.holdoutAttempt);
 
@@ -275,10 +274,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       const regimes = cut.map((from, k) => ({ from, to: cut[k + 1] ?? calendar.length }));
       // 01FHfb's fill filter: each hypothesis's practice entries per calendar day, and the holdout requirement it would
       // freeze at the plan's α over the Holm family of 2 (max(300, n_power, closed form)); null when it cannot be sized.
-      const capacity = Object.fromEntries(family.hypotheses.map((h) => {
-        const p = powerOf(familyTrades[h.id!]!, s0Trades[h.universe] ?? [], HOLDOUT_FAMILY_SIZE, seedNumber(`${i.seed}:family-power:${h.id}`), alpha);
-        return [h.id!, { entriesPerDay: familyTrades[h.id!]!.length / calendar.length, required: p.ok ? p.required : null }];
-      }));
+      const capacity = Object.fromEntries(family.hypotheses.map((h) => [h.id!, capacityOf(familyTrades[h.id!]!, s0Trades[h.universe] ?? [], calendar.length, alpha, seedNumber(`${i.seed}:family-power:${h.id}`))]));
       selection = selectHypotheses(familyPanel, family.hypotheses.map((h) => h.id!), universeOf, s0Daily, spaSettings, regimes, seedNumber(`${i.seed}:spa`), capacity);
     }
   }

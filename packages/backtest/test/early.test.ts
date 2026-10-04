@@ -68,7 +68,8 @@ describe('early look on the command line', () => {
       const cli = join(import.meta.dirname, '..', 'src', 'study', 'cli.ts');
       const run = (days: string) => execFileSync('node', ['--no-warnings', cli, 'early', '--dataset', join(dir, 'ds'), '--sol-usd', join(dir, 'sol.csv'), '--days', days, '--seeds', '1', '--out', join(dir, 'out'), '--regime-assumed-on'],
         { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-      const summary = JSON.parse(run('2026-09-20')) as { runId: string; label: string; days: { day: string; trades: Record<string, number> }[] };
+      const stdout = run('2026-09-20');
+      const summary = JSON.parse(stdout) as { runId: string; label: string; days: { day: string; trades: Record<string, number> }[] };
       expect(summary.label).toBe(EARLY_LABEL);
       expect(summary.days.map((d) => d.day)).toEqual(['2026-09-20']);
       expect(Object.keys(summary.days[0]!.trades)).toEqual(['U2']);
@@ -79,7 +80,10 @@ describe('early look on the command line', () => {
       // Engine validity, the funnel and descriptive figures only: no G1 or SPA verdict, no test, no interval, and no
       // wording that implies one (supervisor ruling; 01FHfb: no G1 or SPA under 10 days).
       const text = readFileSync(join(dir, 'out', `${summary.runId}.json`), 'utf8');
-      expect(text).not.toMatch(/\bG[12]\b|\bSPA\b|p-?value|significan|verdict|interval|confidence|lower|upper|\bpass(es|ed)?\b|\bbeats?\b|\bedge\b|winRate95|meanNet95/i);
+      const verdict = /\bG[12]\b|\bSPA\b|p-?value|significan|verdict|interval|confidence|lower|upper|\bpass(es|ed)?\b|\bbeats?\b|\bedge\b|winRate95|meanNet95/i;
+      expect(text).not.toMatch(verdict);
+      // The summary printed to stdout too.
+      expect(stdout).not.toMatch(verdict);
       expect(JSON.parse(text).days[0].variants[0]).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
       expect(() => run('2026-09-22')).toThrow(/holdout day: the early look never reads one/);
       // A day outside the practice window, and a practice day the dataset does not hold complete, are refused too.

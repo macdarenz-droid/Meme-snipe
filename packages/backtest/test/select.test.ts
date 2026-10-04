@@ -3,7 +3,8 @@
 import { describe, expect, it } from 'vitest';
 import { createRng, nextNormal } from '../../core/src/stats/index.ts';
 import type { SpaResult } from '../../core/src/stats/index.ts';
-import { pickOf, selectHypotheses } from '../src/study/select.ts';
+import { capacityOf, pickOf, selectHypotheses, spaSettingsOf } from '../src/study/select.ts';
+import type { HoldoutPlan } from '../src/holdout.ts';
 import type { SpaVariant } from '../src/study/spa.ts';
 
 const T = 40;
@@ -72,5 +73,37 @@ describe('the pick rule', () => {
 
   it('never picks a hypothesis that did not pass the SPA test', () => {
     expect(pickOf(spa([{ id: 'H4-U2-reclaim', zVsZero: 9, zVsS0: 9, passed: false }]), order6, universeOf, { 'H4-U2-reclaim': roomy }).byUniverse['U2']).toBeNull();
+  });
+});
+
+// The study's wiring of 01FHfb's rulings (stats review of 9c1bc67): the SPA settings come from the stored plan, and
+// each hypothesis's capacity is sized over the family of 2 at the attempt's α per calendar day.
+describe('the selection\'s inputs', () => {
+  const config = { seFloor: 0.0005, replicates: 2000, alpha: 0.05 };
+  const plan = (spa?: HoldoutPlan['spa']) => ({ ...(spa === undefined ? {} : { spa }) }) as HoldoutPlan;
+
+  it('a stored plan\'s SPA settings win over a different configuration, in every run', () => {
+    const stored = plan({ seFloorOfBase: 0.0004, replicates: 3000, alpha: 0.05 });
+    expect(spaSettingsOf(stored, false, config)).toEqual({ seFloor: 0.0004, replicates: 3000, alpha: 0.05 });
+    expect(spaSettingsOf(stored, true, config)).toEqual({ seFloor: 0.0004, replicates: 3000, alpha: 0.05 });
+  });
+
+  it('a stored plan without SPA settings gives none (no selection); without a plan only a diagnostic run uses the configuration', () => {
+    expect(spaSettingsOf(plan(), false, config)).toBeNull();
+    expect(spaSettingsOf(plan(), true, config)).toBeNull();
+    expect(spaSettingsOf(null, false, config)).toBeNull();
+    expect(spaSettingsOf(undefined, true, config)).toEqual(config);
+  });
+
+  it('capacity: entries per calendar day, the requirement sized over the family of 2 at the attempt\'s α', () => {
+    const seen: unknown[][] = [];
+    const power = ((...a: unknown[]) => (seen.push(a), { ok: true, required: 420 })) as never;
+    const trades = Array.from({ length: 56 }, (_, k) => ({ day: `2026-08-${String(1 + (k % 4)).padStart(2, '0')}`, rNet: 0.01, creatorCluster: 'c', funderCluster: 'f' }));
+    // 56 trades on 4 active days of a 28-day calendar: 2 a day, not 14.
+    expect(capacityOf(trades, [], 28, 0.04, 7, power)).toEqual({ entriesPerDay: 2, required: 420 });
+    expect(seen[0]!.slice(2)).toEqual([2, 7, 0.04]);
+    const unsizable = (() => ({ ok: false, why: 'x' })) as never;
+    expect(capacityOf(trades, [], 28, 0.04, 7, unsizable).required).toBeNull();
+    expect(() => capacityOf(trades, [], 0, 0.04, 7, power)).toThrow(RangeError);
   });
 });
