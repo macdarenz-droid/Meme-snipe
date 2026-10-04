@@ -302,6 +302,9 @@ git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-serve
 pass "update: waits on failed and pending checks and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
 # ---------- 9. Backup and restore drill ----------
+# A JSON state file as the real worker keeps beside the ledger (exit plans): the backup must hold it (OPS-1j).
+EXITS="{\"e2e\":\"$(rnd 8)\"}"
+in_c "printf '%s\n' '$EXITS' > /var/lib/zeroed/exits.json && chown zeroed-worker: /var/lib/zeroed/exits.json"
 in_c "systemctl start zeroed-backup.service" || fail "backup failed"
 bk="$(in_c "ls -1 /var/backups/zeroed/ | tail -1")"
 [[ "$bk" =~ ^zeroed-[0-9]{8}T[0-9]{6}Z\.tar\.age$ ]] || fail "no backup file"
@@ -309,9 +312,17 @@ in_c "zeroed-restore-drill /etc/zeroed/age/host.key" >"$LOGS/drill-host.txt" 2>&
 in_c "cp /var/backups/zeroed/$bk /root/tampered.age && printf 'x' | dd of=/root/tampered.age bs=1 seek=200 conv=notrunc 2>/dev/null"
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key /root/tampered.age" >"$LOGS/drill-tampered.txt" 2>&1 && fail "tampered backup passed"
 in_c "rm -f /root/tampered.age"
-grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
+grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^  exits.json: ' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
 in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalendar --value zeroed-backup.timer" | grep -q 'OnCalendar=\*-\*-\* \*:00:00' || fail "backup timer is not hourly"
-pass "backup: hourly timer, $bk encrypted; restore drill PASS into a scratch directory, FAIL on a tampered file"
+# Real restore: the newer exit plans go aside, the backup's come back, the evidence stays, the worker starts again.
+in_c "printf '{\"newer\":true}\n' > /var/lib/zeroed/exits.json && printf '{\"seq\":1}\n' >> /var/lib/zeroed/journal.jsonl && wc -l < /var/lib/zeroed/journal.jsonl" >"$LOGS/journal-before.txt"
+in_c "zeroed-restore /etc/zeroed/age/host.key" >"$LOGS/restore.txt" 2>&1 || { cat "$LOGS/restore.txt"; fail "restore"; }
+[ "$(in_c "cat /var/lib/zeroed/exits.json")" = "$EXITS" ] || fail "restore did not bring back exits.json"
+in_c "grep -lx '{\"newer\":true}' /var/lib/zeroed-prerestore/*/exits.json" >/dev/null || fail "restore did not keep the replaced state aside"
+[ "$(in_c "wc -l < /var/lib/zeroed/journal.jsonl")" = "$(cat "$LOGS/journal-before.txt")" ] || fail "restore touched the evidence"
+in_c "test ! -e /var/lib/zeroed/MANIFEST.sha256 && stat -c %U /var/lib/zeroed/exits.json" | grep -qx zeroed-worker || fail "restored files not the worker's"
+in_c "for i in \$(seq 60); do systemctl is-active --quiet zeroed-worker.service && exit 0; sleep 1; done; exit 1" || fail "worker not back after restore"
+pass "backup: hourly timer, $bk encrypted, worker JSON state included; restore drill PASS into a scratch directory, FAIL on a tampered file; zeroed-restore brings the state back, keeps the evidence and the replaced state, restarts the worker"
 
 # Off-server copy: the owner's backup code (shown once, never stored), then a silent Telegram document.
 BCODE="$(in_c "zeroed-backup-code" | tee "$LOGS/console/backup-code.txt" | sed -n 's/^  \([a-z -]*\)$/\1/p')"

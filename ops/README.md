@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/a45fc86ef6ff2456b9ee5088bf6ae0ce5565ae66/ops/install.sh -o i && echo '45827123f3797bef2fc7ae66b4ee158b6ed971b574d52b1aaefe1f28316594ea  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/a45fc86ef6ff2456b9ee5088bf6ae0ce5565ae66/ops/install.sh -o i && echo '5c321be7940f67d9b9d31a6505328df1a20a74873609d8c18cbb16cf06e27867  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/a45fc86e
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `45827123f3797bef2fc7ae66b4ee158b6ed971b574d52b1aaefe1f28316594ea`
+SHA-256 of `install.sh`: `5c321be7940f67d9b9d31a6505328df1a20a74873609d8c18cbb16cf06e27867`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -73,7 +73,7 @@ First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). 
 
 ## Backups
 
-Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies the worker's bot state: every file under `/var/lib/zeroed` except the run's evidence (`journal.jsonl`, `recorder/`), the drill token and files still being written. SQLite files go through SQLite's online backup and its integrity check; the JSON state files (paper account, exit plans, deployer index, budgets, controls) are copied whole and must parse. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
 **Off-server copy (free, no R2): off until the owner approves.** Sending backups to Telegram is sending data to a third party, which needs the owner's approval (CLAUDE.md). The timer is installed but disabled, and `zeroed-backup-offsite` refuses to send while `ops/host-config.json` says `"offsite_backup": false` (the default). Switching it on is a reviewed commit that sets it to `true`; the next code update (`zeroed-update`) applies it.
 
@@ -81,13 +81,9 @@ Once on: run `zeroed-backup-code` once at the console. It shows a 6-word backup 
 
 To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.age | tar -x`.
 
-`zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It prints PASS once the manifest, the integrity check and the tables all match, and never touches the live files.
+`zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It lists every file and prints PASS once the manifest matches, the SQLite files pass the integrity check with the live tables, and the JSON files parse. It never touches the live files.
 
-To restore for real:
-1. `systemctl stop zeroed-worker`
-2. Decrypt and unpack the bundle into `/var/lib/zeroed`.
-3. `chown -R zeroed-worker: /var/lib/zeroed`
-4. `systemctl start zeroed-worker` (it reconciles first).
+To restore for real: `zeroed-restore /etc/zeroed/age/host.key` (or the identity made from the words, and optionally a backup file). It runs the drill on the backup first, stops the worker, moves the bot state it has to `/var/lib/zeroed-prerestore/<UTC time>/`, puts the backup's files in its place (the evidence stays), gives them to the worker and starts it; the worker reconciles before it trades.
 
 ## Watchdog (OPS-1b)
 

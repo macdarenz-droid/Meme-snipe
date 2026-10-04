@@ -77,12 +77,11 @@ if [ -n "$run" ]; then
   exit 0
 fi
 
-if systemctl is-active --quiet zeroed-worker.service; then
-  open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
-  if [ "$open" != 0 ]; then
-    log "Waiting on ${commit:0:12}: the worker has open intents ($open)."
-    exit 0
-  fi
+# Fails closed: a worker that is starting, reconciling, restarting or stopped holds the update too unless its
+# last count is 0 (logic.sh intents_hold).
+if intents_hold "$(systemctl is-active zeroed-worker.service 2>/dev/null || true)" /var/lib/zeroed; then
+  log "Waiting on ${commit:0:12}: the worker has open intents ($(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown))."
+  exit 0
 fi
 
 dest="/opt/zeroed/releases/$commit"

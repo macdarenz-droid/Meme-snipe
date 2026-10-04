@@ -146,11 +146,11 @@ webhook_off() {
   printf 'none\n' > "$STATE_DIR/webhook_expected"
 }
 
-# worker_busy: true while a qualifying dry run is active or the worker reports open intents (or cannot say).
+# worker_busy: true while a qualifying dry run is active or the worker reports open intents (or cannot say),
+# whether the worker is active or not (logic.sh intents_hold).
 worker_busy() {
   [ -z "$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")" ] || return 0
-  systemctl is-active --quiet zeroed-worker.service || return 1
-  [ "$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)" != 0 ]
+  intents_hold "$(systemctl is-active zeroed-worker.service 2>/dev/null || true)" /var/lib/zeroed
 }
 
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }

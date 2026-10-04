@@ -1107,11 +1107,11 @@ webhook_off() {
   printf 'none\n' > "$STATE_DIR/webhook_expected"
 }
 
-# worker_busy: true while a qualifying dry run is active or the worker reports open intents (or cannot say).
+# worker_busy: true while a qualifying dry run is active or the worker reports open intents (or cannot say),
+# whether the worker is active or not (logic.sh intents_hold).
 worker_busy() {
   [ -z "$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")" ] || return 0
-  systemctl is-active --quiet zeroed-worker.service || return 1
-  [ "$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)" != 0 ]
+  intents_hold "$(systemctl is-active zeroed-worker.service 2>/dev/null || true)" /var/lib/zeroed
 }
 
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }
@@ -1292,6 +1292,28 @@ worker_entry() {
 
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
+
+# backup_files STATE_DIR: the worker's bot state, one path relative to STATE_DIR per line, sorted. That is every
+# file except the run's evidence (journal.jsonl and recorder/, RUN-1's EVIDENCE_FILES), the per-boot drill token,
+# files still being written (*.tmp: the worker renames a finished copy over the real name) and SQLite's side files
+# (-wal, -shm, -journal: SQLite's online backup reads through them).
+backup_files() {
+  (cd "$1" && find . -type f ! -path ./journal.jsonl ! -path './recorder/*' ! -path ./drill.token \
+    ! -name '*.tmp' ! -name '*-wal' ! -name '*-shm' ! -name '*-journal' -printf '%P\n') | LC_ALL=C sort
+}
+
+# intents_hold ACTIVE STATE_DIR: true while a code update or a worker restart must wait for open intents. ACTIVE
+# is "active" when zeroed-worker.service is active. The worker's count (STATE_DIR/open_intents) must read
+# exactly 0, whether the worker is active or not (activating, reconciling, restarting, stopped). A missing or
+# unreadable count holds, except on a host with no worker state at all (no count and no ledger.sqlite), where
+# nothing can be open.
+intents_hold() {
+  local n
+  n="$(cat "$2/open_intents" 2>/dev/null)" || n=unknown
+  [ "$n" = 0 ] && return 1
+  [ "$1" != active ] && [ ! -e "$2/open_intents" ] && [ ! -e "$2/ledger.sqlite" ] && return 1
+  return 0
+}
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1405,12 +1427,15 @@ exec /usr/local/bin/node "$entry" "$@"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
-# Hourly encrypted backup of every SQLite file under /var/lib/zeroed. Each file is copied with SQLite's
-# online backup (consistent under WAL), checked, listed in a manifest with its SHA-256, packed and
-# encrypted with age to /etc/zeroed/backup-recipients (the host key, plus the owner's key once the
-# Deploy workflow delivered one). Keeps the newest 72 locally.
+# Hourly encrypted backup of the worker's bot state under /var/lib/zeroed (logic.sh backup_files: everything but
+# the run's evidence, the drill token and files mid-write). SQLite files are copied with SQLite's online backup
+# (consistent under WAL) and checked; every other file is copied whole: the worker writes its state files to a
+# temporary name and renames them, so a copy reads one complete version. JSON files must parse. Each file is listed
+# in a manifest with its SHA-256, packed and encrypted with age to /etc/zeroed/backup-recipients (the host key, plus
+# the owner's key once the Deploy workflow delivered one). Keeps the newest 72 locally.
 set -euo pipefail
 umask 077
+. "${ZEROED_LIB:-/usr/local/lib/zeroed}/logic.sh"
 
 SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
@@ -1418,26 +1443,42 @@ RECIPIENTS="${ZEROED_BACKUP_RECIPIENTS:-/etc/zeroed/backup-recipients}"
 KEEP="${ZEROED_BACKUP_KEEP:-72}"
 
 [ -s "$RECIPIENTS" ] || { echo "No backup recipients yet (keys not delivered); nothing backed up."; exit 0; }
-mapfile -t dbs < <(cd "$SRC" && find . -type f \( -name '*.sqlite' -o -name '*.db' \) | sed 's#^\./##' | LC_ALL=C sort)
-[ "${#dbs[@]}" -gt 0 ] || { echo "No SQLite files yet; nothing backed up."; exit 0; }
+[ -d "$SRC" ] || { echo "No worker state yet; nothing backed up."; exit 0; }
+mapfile -t found < <(backup_files "$SRC")
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/snap"
-for rel in "${dbs[@]}"; do
+files=()
+for rel in "${found[@]}"; do
   mkdir -p "$work/snap/$(dirname "$rel")"
-  sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'"
-  check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
-  [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
+  case "$rel" in
+    *.sqlite | *.db)
+      sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'"
+      check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
+      [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
+      ;;
+    *)
+      if ! cp -p -- "$SRC/$rel" "$work/snap/$rel" 2>/dev/null; then
+        # Removed by the worker since the listing: not part of this backup.
+        [ -e "$SRC/$rel" ] || continue
+        echo "Could not copy $rel."
+        exit 1
+      fi
+      case "$rel" in *.json) jq empty "$work/snap/$rel" >/dev/null 2>&1 || { echo "Backup copy of $rel is not valid JSON."; exit 1; } ;; esac
+      ;;
+  esac
+  files+=("$rel")
 done
-(cd "$work/snap" && sha256sum -- "${dbs[@]}") > "$work/snap/MANIFEST.sha256"
+[ "${#files[@]}" -gt 0 ] || { echo "No worker state yet; nothing backed up."; exit 0; }
+(cd "$work/snap" && sha256sum -- "${files[@]}") > "$work/snap/MANIFEST.sha256"
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
 tar -C "$work/snap" -c . | age -R "$RECIPIENTS" -o "$OUT/zeroed-$ts.tar.age.new"
 mv -f "$OUT/zeroed-$ts.tar.age.new" "$OUT/zeroed-$ts.tar.age"
 ls -1 "$OUT"/zeroed-*.tar.age | LC_ALL=C sort -r | tail -n +"$((KEEP + 1))" | xargs -r rm -f
-echo "Backup zeroed-$ts.tar.age: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
+echo "Backup zeroed-$ts.tar.age: ${#files[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup-code 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1731,11 +1772,56 @@ fi
 log "Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
 log "One try only, within 30 minutes; a wrong or late code needs a new one from here."
 __ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-restore 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# Restores the worker's bot state from a backup (host loss): runs the restore drill on the backup first, stops the
+# worker, moves the bot state it has aside to /var/lib/zeroed-prerestore/<UTC time>/ (the run's evidence,
+# journal.jsonl and recorder/, stays where it is), puts every file of the backup in its place, gives them to the
+# worker and starts it; it reconciles first.
+#   zeroed-restore IDENTITY_FILE [BACKUP_FILE]    (default: the newest backup)
+set -euo pipefail
+umask 077
+
+SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
+OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
+ASIDE="${ZEROED_RESTORE_ASIDE:-/var/lib/zeroed-prerestore}"
+DRILL="${ZEROED_RESTORE_DRILL:-/usr/local/sbin/zeroed-restore-drill}"
+identity="${1:?usage: zeroed-restore IDENTITY_FILE [BACKUP_FILE]}"
+backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1)}"
+[ -n "$backup" ] && [ -f "$backup" ] || { echo "No backup found; nothing restored."; exit 1; }
+
+"$DRILL" "$identity" "$backup" || { echo "The backup failed the restore drill; nothing restored."; exit 1; }
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+age -d -i "$identity" "$backup" | tar -x -C "$work" --no-same-owner
+(cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null
+
+systemctl stop zeroed-worker.service
+mkdir -p "$SRC"
+aside="$ASIDE/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$aside"
+moved=0
+while IFS= read -r name; do
+  case "$name" in journal.jsonl | recorder) continue ;; esac
+  mv -- "$SRC/$name" "$aside/$name"
+  moved=$((moved + 1))
+done < <(find "$SRC" -mindepth 1 -maxdepth 1 -printf '%P\n')
+files=0
+while read -r _ rel; do
+  mkdir -p "$SRC/$(dirname "$rel")"
+  cp -p -- "$work/$rel" "$SRC/$rel"
+  files=$((files + 1))
+done < "$work/MANIFEST.sha256"
+chown -R zeroed-worker:zeroed-worker "$SRC"
+systemctl start zeroed-worker.service
+echo "Restored $(basename "$backup"): $files file(s); $moved earlier item(s) kept in $aside. The worker reconciles before it trades."
+__ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-restore-drill 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Restore drill: decrypts a backup with the given age identity into a scratch directory (never over the
-# live files), checks every file against the manifest, runs SQLite's integrity check, and compares the
-# tables with the live database. Prints PASS or FAIL; exits non-zero on FAIL.
+# live files) and checks every file against the manifest. SQLite files must pass the integrity check and have
+# the live database's tables; JSON state files must parse. Prints each file, then PASS or FAIL; exits non-zero
+# on FAIL.
 #   zeroed-restore-drill IDENTITY_FILE [BACKUP_FILE]    (default: the newest backup)
 set -euo pipefail
 umask 077
@@ -1757,15 +1843,24 @@ age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 
 files=0
 while read -r _ rel; do
   files=$((files + 1))
-  [ "$(sqlite3 "$work/$rel" 'PRAGMA integrity_check;')" = ok ] || fail "$rel failed the integrity check"
-  tables="$(sqlite3 "$work/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;")"
-  for t in $tables; do
-    printf '  %s %s: %s rows\n' "$rel" "$t" "$(sqlite3 "$work/$rel" "SELECT count(*) FROM \"$t\";")"
-  done
-  if [ -f "$SRC/$rel" ]; then
-    live="$(sqlite3 -readonly "$SRC/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
-    [ "$live" = "$tables" ] || fail "$rel tables differ from the live database"
-  fi
+  case "$rel" in
+    *.sqlite | *.db)
+      [ "$(sqlite3 "$work/$rel" 'PRAGMA integrity_check;')" = ok ] || fail "$rel failed the integrity check"
+      tables="$(sqlite3 "$work/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;")"
+      for t in $tables; do
+        printf '  %s %s: %s rows\n' "$rel" "$t" "$(sqlite3 "$work/$rel" "SELECT count(*) FROM \"$t\";")"
+      done
+      if [ -f "$SRC/$rel" ]; then
+        live="$(sqlite3 -readonly "$SRC/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
+        [ "$live" = "$tables" ] || fail "$rel tables differ from the live database"
+      fi
+      ;;
+    *.json)
+      jq empty "$work/$rel" >/dev/null 2>&1 || fail "$rel is not valid JSON"
+      printf '  %s: %s bytes\n' "$rel" "$(wc -c < "$work/$rel")"
+      ;;
+    *) printf '  %s: %s bytes\n' "$rel" "$(wc -c < "$work/$rel")" ;;
+  esac
 done < "$work/MANIFEST.sha256"
 [ "$files" -gt 0 ] || fail "backup holds no files"
 echo "PASS: $(basename "$backup"), $files file(s) restored to a scratch directory and verified."
@@ -2166,12 +2261,11 @@ if [ -n "$run" ]; then
   exit 0
 fi
 
-if systemctl is-active --quiet zeroed-worker.service; then
-  open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
-  if [ "$open" != 0 ]; then
-    log "Waiting on ${commit:0:12}: the worker has open intents ($open)."
-    exit 0
-  fi
+# Fails closed: a worker that is starting, reconciling, restarting or stopped holds the update too unless its
+# last count is 0 (logic.sh intents_hold).
+if intents_hold "$(systemctl is-active zeroed-worker.service 2>/dev/null || true)" /var/lib/zeroed; then
+  log "Waiting on ${commit:0:12}: the worker has open intents ($(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown))."
+  exit 0
 fi
 
 dest="/opt/zeroed/releases/$commit"

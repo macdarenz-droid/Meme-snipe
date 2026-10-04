@@ -116,3 +116,25 @@ worker_entry() {
 
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
+
+# backup_files STATE_DIR: the worker's bot state, one path relative to STATE_DIR per line, sorted. That is every
+# file except the run's evidence (journal.jsonl and recorder/, RUN-1's EVIDENCE_FILES), the per-boot drill token,
+# files still being written (*.tmp: the worker renames a finished copy over the real name) and SQLite's side files
+# (-wal, -shm, -journal: SQLite's online backup reads through them).
+backup_files() {
+  (cd "$1" && find . -type f ! -path ./journal.jsonl ! -path './recorder/*' ! -path ./drill.token \
+    ! -name '*.tmp' ! -name '*-wal' ! -name '*-shm' ! -name '*-journal' -printf '%P\n') | LC_ALL=C sort
+}
+
+# intents_hold ACTIVE STATE_DIR: true while a code update or a worker restart must wait for open intents. ACTIVE
+# is "active" when zeroed-worker.service is active. The worker's count (STATE_DIR/open_intents) must read
+# exactly 0, whether the worker is active or not (activating, reconciling, restarting, stopped). A missing or
+# unreadable count holds, except on a host with no worker state at all (no count and no ledger.sqlite), where
+# nothing can be open.
+intents_hold() {
+  local n
+  n="$(cat "$2/open_intents" 2>/dev/null)" || n=unknown
+  [ "$n" = 0 ] && return 1
+  [ "$1" != active ] && [ ! -e "$2/open_intents" ] && [ ! -e "$2/ledger.sqlite" ] && return 1
+  return 0
+}

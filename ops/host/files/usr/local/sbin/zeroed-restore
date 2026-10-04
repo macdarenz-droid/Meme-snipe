@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Restores the worker's bot state from a backup (host loss): runs the restore drill on the backup first, stops the
+# worker, moves the bot state it has aside to /var/lib/zeroed-prerestore/<UTC time>/ (the run's evidence,
+# journal.jsonl and recorder/, stays where it is), puts every file of the backup in its place, gives them to the
+# worker and starts it; it reconciles first.
+#   zeroed-restore IDENTITY_FILE [BACKUP_FILE]    (default: the newest backup)
+set -euo pipefail
+umask 077
+
+SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
+OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
+ASIDE="${ZEROED_RESTORE_ASIDE:-/var/lib/zeroed-prerestore}"
+DRILL="${ZEROED_RESTORE_DRILL:-/usr/local/sbin/zeroed-restore-drill}"
+identity="${1:?usage: zeroed-restore IDENTITY_FILE [BACKUP_FILE]}"
+backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1)}"
+[ -n "$backup" ] && [ -f "$backup" ] || { echo "No backup found; nothing restored."; exit 1; }
+
+"$DRILL" "$identity" "$backup" || { echo "The backup failed the restore drill; nothing restored."; exit 1; }
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+age -d -i "$identity" "$backup" | tar -x -C "$work" --no-same-owner
+(cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null
+
+systemctl stop zeroed-worker.service
+mkdir -p "$SRC"
+aside="$ASIDE/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$aside"
+moved=0
+while IFS= read -r name; do
+  case "$name" in journal.jsonl | recorder) continue ;; esac
+  mv -- "$SRC/$name" "$aside/$name"
+  moved=$((moved + 1))
+done < <(find "$SRC" -mindepth 1 -maxdepth 1 -printf '%P\n')
+files=0
+while read -r _ rel; do
+  mkdir -p "$SRC/$(dirname "$rel")"
+  cp -p -- "$work/$rel" "$SRC/$rel"
+  files=$((files + 1))
+done < "$work/MANIFEST.sha256"
+chown -R zeroed-worker:zeroed-worker "$SRC"
+systemctl start zeroed-worker.service
+echo "Restored $(basename "$backup"): $files file(s); $moved earlier item(s) kept in $aside. The worker reconciles before it trades."
