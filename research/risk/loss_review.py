@@ -118,7 +118,7 @@ def stress_samples(seed):
     z = base.copy()
     for i in range(1, TRADES):
         z[:, i] = np.where((z[:, i - 1] < 0) & (u[:, i] < 0.6), losses[:, i], base[:, i])
-    out["clustered losses (S3)"] = z
+    out["clustered losses (S3; mean < 0: alarms wanted)"] = z
     # Rare -105% (a blocked exit with failed-attempt fees): 1% of S3's entries, the rest S3.
     rng = rngs[4]
     z = draw(rng, S3, (PATHS, TRADES))
@@ -130,25 +130,33 @@ def stress_samples(seed):
     return out
 
 
+# The change scenarios start at the design edge: S3's shape shifted to a +5% mean (G2's target), so that -8 points
+# turns a strategy worth trading into a losing one (S3 itself, at +12.9%, stays profitable after either change).
+EDGE = 0.05
+S3_EDGE = [(p, r - (mean_of(S3) - EDGE)) for p, r in S3]
+
+
 def change_samples(seed):
-    """Episodes 1..50 from S3, 51..100 shifted. Streams 7..9."""
+    """Episodes 1..50 at the design edge (+5%), 51..100 shifted. Streams 7..9."""
     rngs = streams(seed)
     out = {}
-    # -2 points, additive: every return 2 points lower.
+    # -2 points, additive: every return 2 points lower (+3% after).
     rng = rngs[7]
-    z = draw(rng, S3, (PATHS, TRADES))
+    z = draw(rng, S3_EDGE, (PATHS, TRADES))
     z[:, CHANGE_AT:] -= 0.02
     out["-2 points, every return lower"] = z
-    # -2 points by mix: the same returns, but 2 points of mean moved by turning some +25% wins into -18% losses.
+    # -2 points by mix: the same return sizes, 2 points of mean moved by turning some of the second-best wins into
+    # losses of the second-worst size.
     rng = rngs[8]
-    k = 0.02 / (0.25 + 0.18)
-    s3_mixed = [(0.04, -0.95 - V), (0.42 + k, -0.18 - V), (0.32 - k, 0.25 - V), (0.22, 0.90 - V)]
-    z = draw(rng, S3, (PATHS, TRADES))
-    z[:, CHANGE_AT:] = draw(rng, s3_mixed, (PATHS, TRADES - CHANGE_AT))
+    (p0, r0), (p1, r1), (p2, r2), (p3, r3) = S3_EDGE
+    k = 0.02 / (r2 - r1)
+    mixed = [(p0, r0), (p1 + k, r1), (p2 - k, r2), (p3, r3)]
+    z = draw(rng, S3_EDGE, (PATHS, TRADES))
+    z[:, CHANGE_AT:] = draw(rng, mixed, (PATHS, TRADES - CHANGE_AT))
     out["-2 points, more losses (same sizes)"] = z
-    # -8 points, additive.
+    # -8 points, additive (-3% after: losing).
     rng = rngs[9]
-    z = draw(rng, S3, (PATHS, TRADES))
+    z = draw(rng, S3_EDGE, (PATHS, TRADES))
     z[:, CHANGE_AT:] -= 0.08
     out["-8 points, every return lower"] = z
     return out
@@ -186,6 +194,7 @@ def choose_h(samples):
 
 
 def main():
+    global KAPPA
     binomial_table()
     counterexample()
 
@@ -201,10 +210,12 @@ def main():
     print(f"  {'model':<34} {'mean':>7} {'R8 trip':>9} {'CUSUM':>9}   (CUSUM bound {pct(bound).strip()})")
     ok = True
     for name, z in valid.items():
-        r8 = float((r8_first_trip(z) > 0).mean())
+        t8 = r8_first_trip(z)
+        r8 = float((t8 > 0).mean())
         cu = float((cusum_first_alarm(z, h) > 0).mean())
         ok &= cu <= bound
-        print(f"  {name:<34} {100 * mean_of(IN_CONTROL[name]):+6.2f}% {pct(r8)} {pct(cu)}")
+        first = int(np.median(t8[t8 > 0])) if (t8 > 0).any() else 0
+        print(f"  {name:<34} {100 * mean_of(IN_CONTROL[name]):+6.2f}% {pct(r8)} {pct(cu)}   R8's median first pause: episode {first}")
     print(f"  validation {'holds' if ok else 'FAILS'}")
     print()
 
@@ -215,7 +226,7 @@ def main():
         print(f"  {name:<34} mean {100 * float(z.mean()):+6.2f}%  R8 {pct(r8)}  CUSUM {pct(cu)}")
     print()
 
-    print(f"Change after episode {CHANGE_AT} (S3 before; validation seed): detection after the change, and delay")
+    print(f"Change after episode {CHANGE_AT} (S3 shaped, +5% before; validation seed): detection after the change, and delay")
     for name, z in change_samples(VALID_SEED).items():
         for rule, first in (("R8", r8_first_trip(z)), ("CUSUM", cusum_first_alarm(z, h))):
             before = float(((first > 0) & (first <= CHANGE_AT)).mean())
@@ -223,6 +234,18 @@ def main():
             delays = first[after] - CHANGE_AT
             med = int(np.median(delays)) if delays.size else 0
             print(f"  {name:<36} {rule:<5} before {pct(before)}  after {pct(float(after.mean()))}  median delay {med}")
+    print()
+
+    print("Sensitivity, reported only (the registered kappa stays 0.005): h re-chosen on the training seed by the same rule")
+    registered = KAPPA
+    for kappa in (0.005, 0.0, -0.01, -0.02):
+        KAPPA = kappa
+        hk, _ = choose_h(train)
+        fa = max(float((cusum_first_alarm(z, hk) > 0).mean()) for z in valid.values())
+        det = [float((cusum_first_alarm(z, hk) > CHANGE_AT).mean()) for z in change_samples(VALID_SEED).values()]
+        print(f"  kappa {kappa:+.3f}: h {hk:5.2f}, worst in-control alarm {pct(fa)}, detected after the change"
+              f" (-2 add, -2 mix, -8): {', '.join(pct(d).strip() for d in det)}")
+    KAPPA = registered
     print()
     print("All results are synthetic: properties of the rules on invented return models, not the bot's performance.")
 
