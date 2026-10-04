@@ -155,7 +155,7 @@ One token-bucket scheduler per provider with four priority classes; discovery is
 ### 6.4 Regime gate (hypothesis, tested in the backtest)
 
 Live entries only when all hold; otherwise paper only, exits keep running ([venues.md](research/venues.md) §7, [risk.md](research/risk.md) §5.4):
-- survival of recent graduates (pool effective quote reserves above 30 SOL at +30 min) ≥ its 14-day median;
+- survival of recent graduates (pool effective quote reserves above 30 SOL at +30 min) ≥ its 14-day median; the recent 24 h and each median day need at least 100 graduates (`regime.survivalMinGraduates`, locked), and fewer is unknown;
 - pump.fun curve volume of day D−3 (D is the check's UTC day) ≥ the 25th percentile of the days from the series start (2026-07-20) to D−3, capped at 365 days; fewer than 28 days, or any day missing, is unknown;
 - SOL 24 h change > −8%;
 - the bot's own execution health is green (failure share, landing delay, quote-versus-fill error).

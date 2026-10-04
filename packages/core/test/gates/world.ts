@@ -121,10 +121,11 @@ export const balanced = (accounts: readonly HolderAccount[]): HolderAccount[] =>
 
 const GRAD_ITEMS = (() => {
   const items: { mint: string; migratedAtMs: number; reserveAfter: bigint }[] = [];
-  // 16 days of graduates, 24 a day; 1 in 3 survives, and slightly more in the last day.
-  for (let d = 0; d < 16 * 24; d++) {
-    const migratedAtMs = T - 30 * MINUTE_MS - d * HOUR_MS;
-    const survives = d < 24 ? d % 2 === 0 : d % 3 === 0;
+  // 16 days of graduates, 120 a day (one every 12 min, above the policy's survivalMinGraduates); 1 in 3 survives,
+  // and slightly more in the last day.
+  for (let d = 0; d < 16 * 120; d++) {
+    const migratedAtMs = T - 30 * MINUTE_MS - d * 12 * MINUTE_MS;
+    const survives = d < 120 ? d % 2 === 0 : d % 3 === 0;
     items.push({ mint: `G${d}`, migratedAtMs, reserveAfter: survives ? 40_000_000_000n : 10_000_000_000n });
   }
   return items;
