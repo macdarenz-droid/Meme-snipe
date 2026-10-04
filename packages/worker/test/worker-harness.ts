@@ -18,7 +18,7 @@ import {
   CREATED_AT, DEV, FEE_CONTEXT, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, SUPPLY, T, passingFacts, roundTrip,
 } from '../../core/test/gates/world.ts';
 import { EXEC_HEALTH_KEY, TX_CREATE_PREFIX, holdersKey, lpKey, migrationKey, poolKey, simKey, softKey, streamKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
-import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
+import { SOL_PRICE_KEY, feesKey, type StrategyConfig } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import type { PoolState } from '../../core/src/amm/index.ts';
 import { RAW, STREAMS } from '../../core/src/facts/index.ts';
@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory'] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint'] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -161,7 +161,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     boot: `boot-${n}`,
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
-    strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }) },
+    strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }), ...o.strategy },
     scenario: o.scenario ?? LANDS, network: FILL_CONFIG.network, timers,
     sources: o.sources ?? (() => {
       order.push('sources');
@@ -194,6 +194,8 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },
     ...(o.facts === undefined ? {} : { facts: o.facts, schedulers: o.schedulers ?? { helius: new Scheduler(HELIUS_FREE, { timers }), alchemy: new Scheduler(ALCHEMY_FREE, { timers }), jupiter: new Scheduler(JUPITER_FREE, { timers }), rugcheck: new Scheduler(RUGCHECK_FREE, { timers }) } }),
     ...(o.worldFault === undefined ? {} : { worldFault: o.worldFault }),
+    ...(o.summaryFault === undefined ? {} : { summaryFault: o.summaryFault }),
+    ...(o.crashPoint === undefined ? {} : { crashPoint: o.crashPoint }),
     // A second path is configured unless a test says none (null); unscripted, every read fails.
     ...(o.watchRead === null ? {} : { watchRead: o.watchRead ?? (() => Promise.reject(new Error('no second path scripted'))) }),
     ...(o.watchHalted === undefined ? {} : { watchHalted: o.watchHalted }),
@@ -223,6 +225,8 @@ export class Market {
    * default, as live (POS-1): after entry nothing re-reads the pool, and its state moves only with `chainSwap`.
    */
   heldPoolFacts = false;
+  /** The SOL/USD price the `pool()` and `solPrice()` facts carry (micro-dollars). */
+  solUsd: bigint = SOL_PRICE;
   /** The pool's reserves as the last `accountsRead` or `chainSwap` left them. */
   #chain: PoolState | null = null;
 
@@ -267,7 +271,7 @@ export class Market {
     const base = now(poolKey(MINT)) as unknown as Record<string, unknown>;
     if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
     if (this.withFees) this.fact(feesKey(MINT), FEE_CONTEXT);
-    this.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: this.now - 50 });
+    this.fact(SOL_PRICE_KEY, { value: this.solUsd, atMs: this.now - 50 });
     for (const k of [lpKey(MINT), holdersKey(MINT), softKey(MINT), xcheckKey(MINT), EXEC_HEALTH_KEY]) this.fact(k, now(k));
     // The simulation of the spend the worker will judge: q_min at the SOL price, rounded up to whole lamports.
     const spend = microUsdToLamports(TRIAL_POLICY.capital.minNotional, SOL_PRICE as MicroUsd, 'ceil');
@@ -280,7 +284,7 @@ export class Market {
 
   /** A fresh live SOL/USD price (what the price stream keeps current). */
   solPrice(): void {
-    this.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: this.now - 50 });
+    this.fact(SOL_PRICE_KEY, { value: this.solUsd, atMs: this.now - 50 });
   }
 
   /** A position on the passing mint is open or closing. */

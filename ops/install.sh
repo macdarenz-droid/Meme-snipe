@@ -1290,8 +1290,63 @@ worker_entry() {
   fi
 }
 
+# The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
+# "shakedown" block. Mode, recorder, simulation, drills and addresses stay with worker-start; live is never one of them.
+SHAKEDOWN_NAMES='ZEROED_STRATEGY ZEROED_S0_DIAGNOSTIC ZEROED_PAPER_EDGE_PPM ZEROED_STANDINS ZEROED_WALLET'
+
+# worker_shakedown RELEASE_DIR: the release's shakedown settings, one NAME=value per line; nothing when it has no
+# "shakedown" block. Fails (jq says why on stderr) when the block is not an object, names anything outside
+# SHAKEDOWN_NAMES, or holds a value that is not a string of 1 to 400 letters, digits and commas. The worker judges each
+# value itself and refuses with exit 2 (S0 and its settings in a release with a qualifying run, among others).
+worker_shakedown() {
+  jq -r --arg names "$SHAKEDOWN_NAMES" '($names | split(" ")) as $ok | (.shakedown // {}) as $s
+    | if ($s | type) != "object" then error("the shakedown block is not an object") else $s | to_entries[]
+      | if (.key | IN($ok[]) | not) then error("\(.key) is not a shakedown setting")
+        elif (.value | type) != "string" or (.value | test("\\A[A-Za-z0-9,]{1,400}\\z") | not) then error("\(.key) is not 1 to 400 letters, digits and commas")
+        else "\(.key)=\(.value)" end end' "$1/ops/host-config.json"
+}
+
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
+
+# ---------- Deploy gate (OPS-GATE): what "green" means, shared by the server (zeroed-update) and the Deploy
+# workflow (ops/deploy/tag.sh), so the two always agree. ----------
+# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does.
+DEPLOY_CHECK_APP=github-actions
+DEPLOY_SELF_JOB=zeroed-deploy
+# The paths whose change runs the ops end-to-end (.github/workflows/ops-e2e.yml `paths`; a test keeps them equal).
+E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml)
+
+# commit_verdict NAME: reads a commit's check-runs reply (GitHub API) on stdin and prints one line, "green" or
+# "red|pending|none: <why>". Green needs a successful run named NAME from GitHub Actions on that commit, every
+# other GitHub Actions run finished and none failed. A run from another app, or an all-skipped set, never makes
+# it green; a listing GitHub cut short (more runs than returned) is "none".
+commit_verdict() {
+  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" '
+    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self)] as $r
+    | ([$r[] | select(.name == $name)] | sort_by(.completed_at // .started_at // "") | last) as $n
+    | if (.total_count // 0) > ((.check_runs // []) | length) then "none: more check runs than GitHub listed"
+      elif any($r[]; .status != "completed") then "pending: \([$r[] | select(.status != "completed") | .name] | unique | join(", ")) still running"
+      elif any($r[]; (.conclusion // "") as $c | ($c != "success" and $c != "neutral" and $c != "skipped")) then "red: \([$r[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped") | .name] | unique | join(", ")) failed"
+      elif $n == null then "none: no \($name) run from GitHub Actions"
+      elif $n.conclusion != "success" then "red: \($name) was \($n.conclusion), not success"
+      else "green" end' 2>/dev/null || echo "none: unreadable check runs"
+}
+
+# e2e_commit REPO REF: the newest commit on REF's first-parent history (at most 500 back) whose change to its
+# first parent touches E2E_PATHS: the commit whose ops end-to-end decides whether REF may deploy. Prints nothing
+# when none is found.
+e2e_commit() {
+  local c
+  for c in $(git -C "$1" rev-list --first-parent --max-count=500 "$2"); do
+    if git -C "$1" rev-parse --verify --quiet "$c^1" >/dev/null; then
+      git -C "$1" diff --quiet "$c^1" "$c" -- "${E2E_PATHS[@]}" || { printf '%s\n' "$c"; return 0; }
+    elif [ -n "$(git -C "$1" ls-tree -r --name-only "$c" -- "${E2E_PATHS[@]}")" ]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+}
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1332,6 +1387,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The release's S0 shakedown settings, as worker-start gives them (PRACTICE-ON): a release whose worker refuses them
+# never becomes current.
+shakedown=()
+settings="$(worker_shakedown "$dir" 2>"$tmp/shakedown.err")" || { echo "its host-config shakedown settings are refused: $(tr -cd '[:print:]' <"$tmp/shakedown.err" | cut -c1-160)"; exit 1; }
+while IFS= read -r line; do [ -z "$line" ] || shakedown+=(--setenv="$line"); done <<<"$settings"
+
 # The worker unit's sandbox, limits and environment settings (unit_sandbox), applied to the trial.
 props=()
 while IFS= read -r line; do
@@ -1340,15 +1401,15 @@ done < <(unit_sandbox "$UNIT_FILE")
 [ "${#props[@]}" -gt 40 ] || { echo "the worker unit's sandbox could not be read from $UNIT_FILE"; exit 1; }
 
 # trial UNIT LOG MODE: the release's worker as a transient unit with that sandbox, the worker's environment file, the
-# RUN-1 environment (worker-start) on the trial's state directory and ports, and the memory cap. MODE "reconcile" runs
-# its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
+# RUN-1 environment and shakedown settings (worker-start) on the trial's state directory and ports, and the memory cap.
+# MODE "reconcile" runs its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
 trial() {
   local unit="$1" log="$2" opts=() args=()
   if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi
   systemd-run --quiet --unit="$unit" "${opts[@]}" "${props[@]}" \
     -p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="$SMOKE_MEMORY_MAX" -p OOMScoreAdjust=1000 -p TimeoutStopSec=30 \
     -p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp" \
-    -p StandardOutput=append:"$log" -p StandardError=append:"$log" \
+    -p StandardOutput=append:"$log" -p StandardError=append:"$log" "${shakedown[@]}" \
     --setenv=NODE_ENV=production --setenv=ZEROED_MODE=paper --setenv=ZEROED_RECORDER=on --setenv=ZEROED_SIMULATE=on \
     --setenv=ZEROED_DRILLS=on --setenv=ZEROED_STATE_DIR="$tmp/state" --setenv=ZEROED_GIT_SHA="$(basename "$dir")" \
     --setenv=ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" --setenv=ZEROED_API_ADDR="$SMOKE_API_ADDR" \
@@ -1390,13 +1451,20 @@ install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
 # environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
 # endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
 # publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
-# ops/host-config.json says "worker": "release"; until then the host's stand-in. Live is never set here or in
-# any environment file: the worker refuses any mode but paper.
+# ops/host-config.json says "worker": "release"; until then the host's stand-in. The release's worker also takes the
+# S0 shakedown settings of that file's "shakedown" block (PRACTICE-ON). Live is never set here or in any environment
+# file: the worker refuses any mode but paper.
 set -euo pipefail
 . /usr/local/lib/zeroed/logic.sh
+entry="$(worker_entry /opt/zeroed/current)"
+if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
+  # The release's S0 shakedown settings (PRACTICE-ON, its host-config "shakedown" block): public values only, judged
+  # again by the worker. A block that cannot be read is refused like any refused setting (exit 2).
+  settings="$(worker_shakedown /opt/zeroed/current)" || { echo "refused: the release's host-config shakedown settings" >&2; exit 2; }
+  while IFS= read -r line; do [ -z "$line" ] || export "$line"; done <<<"$settings"
+fi
 export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
 export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
-entry="$(worker_entry /opt/zeroed/current)"
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current
   exec /usr/local/bin/node --no-warnings "$entry" "$@"
@@ -2091,7 +2159,9 @@ install_file /usr/local/sbin/zeroed-update 0755 <<'__ZEROED_FILE__'
 # Code updates by the same pull path: fetch the "deploy" tag and accept its commit only if
 #  1. GitHub signed it (the merge-commit key pinned at install, i.e. a pull-request merge),
 #  2. it is on the integration branch,
-#  3. every check run on it finished green (public GitHub API), and
+#  3. its checks are green (public GitHub API; logic.sh deploy gate): GitHub Actions' `check` passed on it and no
+#     other GitHub Actions run failed, and the ops end-to-end (`e2e`) passed on the newest commit at or before it
+#     that touched the e2e paths, and
 #  4. no qualifying dry run is active (its unit, or an unfinished named run in the evidence), and
 #  5. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
 # Then apply the new release's host files (install.sh --update: scripts, units, RUN-1's units), and only once
@@ -2145,17 +2215,20 @@ if ! git -C "$REPO_DIR" merge-base --is-ancestor "$commit" "refs/remotes/origin/
   exit 1
 fi
 
-runs="$(curl -fsS -m 30 -H 'Accept: application/vnd.github+json' \
-  "$ZEROED_API_URL/repos/$ZEROED_REPO/commits/$commit/check-runs?per_page=100" || true)"
-# The Deploy job's own check run (job name zeroed-deploy) is left out: it says nothing about the code.
-verdict="$(printf '%s' "$runs" | jq -r '[(.check_runs // [])[] | select(.name != "zeroed-deploy")] as $r
-  | if (.total_count // 0) > ((.check_runs // []) | length) then "none"
-    elif ($r | length) == 0 then "none"
-    elif any($r[]; .status != "completed") then "pending"
-    elif all($r[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
-    else "red" end' 2>/dev/null || echo none)"
+check_runs() { curl -fsS -m 30 -H 'Accept: application/vnd.github+json' "$ZEROED_API_URL/repos/$ZEROED_REPO/commits/$1/check-runs?per_page=100" || true; }
+# The same gate as the Deploy workflow (ops/deploy/tag.sh): named runs from GitHub Actions, never "any green run".
+verdict="$(check_runs "$commit" | commit_verdict check)"
+if [ "$verdict" = green ]; then
+  e2e="$(e2e_commit "$REPO_DIR" "$commit")"
+  if [ -z "$e2e" ]; then
+    verdict="none: no commit at or before it touched the ops end-to-end paths"
+  else
+    v="$(check_runs "$e2e" | commit_verdict e2e)"
+    [ "$v" = green ] || verdict="${v%%:*}: the ops end-to-end of ${e2e:0:12}: ${v#*: }"
+  fi
+fi
 if [ "$verdict" != green ]; then
-  log "Waiting on ${commit:0:12}: its checks are ${verdict/none/not reported yet}."
+  log "Waiting on ${commit:0:12}: its checks are $verdict."
   exit 0
 fi
 

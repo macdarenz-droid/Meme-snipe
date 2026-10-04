@@ -35,9 +35,9 @@ const ADDRESSES = [
   'So11111111111111111111111111111111111111112',
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
   '4Nd1mYQ7sXcWZ4yq1fB9cT8uJ3VhKzRrPpX2eLwG6',
-  fixtureWallet.botAddress!,
-  fixtureWallet.savedWallet!,
 ];
+// A real-shaped bot wallet for the panel; sample data never holds one (SAMPLE-QR, samples.test.ts).
+const wallet = { ...fixtureWallet, botAddress: ADDRESSES[2]! };
 
 describe('QR code', () => {
   it('decodes back to exactly the address, for addresses of 32 to 44 characters', () => {
@@ -48,7 +48,7 @@ describe('QR code', () => {
   });
 
   it('decodes a different value when one character of the address changes', () => {
-    const a = fixtureWallet.botAddress!;
+    const a = wallet.botAddress;
     const changed = a.slice(0, 20) + (a[20] === 'A' ? 'B' : 'A') + a.slice(21);
     expect(decode(changed)).toBe(changed);
     expect(decode(changed)).not.toBe(decode(a));
@@ -57,7 +57,7 @@ describe('QR code', () => {
   it('uses error correction level M or higher in byte mode', () => {
     // Format information, copy beside the top-left finder: bits 14 and 13 are m[8][0] and m[8][1], stored xor 0x5412.
     // Level indicator: L = 01, M = 00, Q = 11, H = 10.
-    const m = encodeQr(fixtureWallet.botAddress!);
+    const m = encodeQr(wallet.botAddress);
     const level = ((m[8]![0] ? 1 : 0) ^ 1) * 2 + ((m[8]![1] ? 1 : 0) ^ 0);
     expect(level).not.toBe(0b01);
     expect(level).toBe(0b00);
@@ -66,7 +66,7 @@ describe('QR code', () => {
   });
 
   it('draws the same address in the text, the QR code and the copy button', () => {
-    const html = renderToStaticMarkup(h(DepositPanel, { wallet: fixtureWallet, gatePassed: true }));
+    const html = renderToStaticMarkup(h(DepositPanel, { wallet, gatePassed: true }));
     const shown = /data-testid="bot-address">([^<]+)</.exec(html)?.[1];
     const copied = /data-copy="([^"]+)"/.exec(html)?.[1];
     const path = /<path d="([^"]+)" fill="#000000"/.exec(html)?.[1] ?? '';
@@ -76,7 +76,7 @@ describe('QR code', () => {
     for (const [, x, y, w] of path.matchAll(/M(\d+) (\d+)h(\d+)v1/g)) for (let i = 0; i < Number(w); i++) m[Number(y) - 4]![Number(x) - 4 + i] = true;
     const { data, side } = toImage(m);
     const decoded = jsQR(data, side, side)?.data;
-    expect(shown).toBe(fixtureWallet.botAddress);
+    expect(shown).toBe(wallet.botAddress);
     expect(copied).toBe(shown);
     expect(decoded).toBe(shown);
   });

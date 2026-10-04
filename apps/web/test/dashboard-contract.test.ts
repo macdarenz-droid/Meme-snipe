@@ -17,6 +17,7 @@ const CALLS: Record<Endpoint, Call> = {
   trades: (a, m) => a.trades(m),
   charts: (a, m) => a.charts(m),
   stats: (a, m) => a.stats(m),
+  discovered: (a, m) => a.discovered(m),
 };
 
 const NOW = Date.parse('2026-10-03T00:00:00Z');
@@ -71,7 +72,10 @@ describe('worker API contract', () => {
       (charts.costsByKind[0] as unknown as Record<string, unknown>)['amountUsd'] = 12.5;
       expect(state('charts', charts)).toEqual({ state: 'error', reason: 'bad-data' });
       const renamed = await paper((a) => a.charts('paper'));
-      (renamed.costsByKind[0] as unknown as Record<string, unknown>)['usd'] = 'abc';
+      // A renamed field: the known one is missing, so this is bad data, not a newer worker (APP-COMPAT).
+      const cost = renamed.costsByKind[0] as unknown as Record<string, unknown>;
+      delete cost['amountUsd'];
+      cost['usd'] = 'abc';
       expect(state('charts', renamed)).toEqual({ state: 'error', reason: 'bad-data' });
     });
 
@@ -99,7 +103,8 @@ describe('worker API contract', () => {
 
     it('unknown and missing fields are refused', async () => {
       const stats = await paper((a) => a.stats('paper'));
-      expect(state('stats', { ...stats, extra: '1' })).toEqual({ state: 'error', reason: 'bad-data' });
+      // Still refused; a field the app does not know reads as a newer worker (APP-COMPAT).
+      expect(state('stats', { ...stats, extra: '1' })).toEqual({ state: 'error', reason: 'update-needed' });
       const { netUsd: _drop, ...noNet } = stats;
       expect(state('stats', noNet)).toEqual({ state: 'error', reason: 'bad-data' });
       expect(() => checkEnvelope({ mode: 'paper', asOf: at, data: stats, extra: 1 }, 'paper', schemaFor('stats', 'paper'))).toThrow(/unknown field/);
