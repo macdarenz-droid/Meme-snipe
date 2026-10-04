@@ -20,6 +20,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | #171 EXIT-1h follow-up | 46aefee5 (EXIT delta pending) | — |
 | #191 RES-5c | d10f2f85 (stats delta PASS 9:15) | stream 5b: CI slots go to streams 1–4 first; merges when the core line is clear |
 | #115 RES-4 | dcb931e8 (BT + stats delta PASS 9:15) | stream 5b, same reason |
+| #154 BT-WALL | 3d277751 (base merged 10:19; BT delta sent) | stream 5a early look; after the core money/exit PRs |
 | #122 BT-TAIL | b6200d15 (BT PASS) | stream 5a (early look); after the core money/exit PRs |
 | #149 OPS-1j | 7abab0b9 (ops PASS, delta checked at 8:55) | CI green on ebd90eb2 at 9:13, now behind 97d27652; merge commit only (install pin names 06ea0325) |
 
@@ -32,7 +33,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | 01WFmrB | WORKER-1d builder | #139 8ac236fd, #168 eb1918dd | waiting reviews | — |
 | 01XVYJj | persist builder | #172 7f2ce17b; #130 base merge local (not pushed) | full check running | push #130 for the EXIT reviewer |
 | 012uJsL | WATCH builder | #141 pushed 23787229 (9:16) | parked | risk delta sent 9:18 |
-| 01AYk3q | BT builder | #154 base merge | active | BT delta |
+| 01AYk3q | BT builder | #154 at 3d277751 | waiting BT delta | — |
 | 01L9Zdh | EXIT builder | #176 97b25025 and #171 46aefee5 in review | parked 10:14 | branch claude/exit-downtime ba785bc (downtime held-pool fill, stacked on #176, no PR) built before the park message; not on the board; decide after #176 merges |
 | 01QvPYM | RES builder | #191, #115 full checks | stream 5b, low priority | park after these heads |
 | 01TSRXx | READ-COHERENT builder | FEES-KEEP + no-market split (9:53) | active | persist review |
@@ -47,7 +48,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | 01AeE2x | EXIT reviewer | #130 PASS 9:09 | waiting | #130 merge delta, #176 |
 | 014EaQV | persist reviewer | #172, #139 deltas | active | #176 |
 | 018aCfZ | ops reviewer | waits #209 fix | idle (nothing due) | DISK-GUARD, BACKUP-STATE |
-| 01L7Gdf | BT reviewer | waits #154 | idle (nothing due) | #115 |
+| 01L7Gdf | BT reviewer | #154 delta (10:20) | active | — |
 | 017ngaD | stats reviewer | waits #191 | idle (nothing due) | — |
 
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
