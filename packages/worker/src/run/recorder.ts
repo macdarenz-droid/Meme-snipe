@@ -80,6 +80,7 @@ export class Recorder {
   readonly #buffer = new Map<Table, string[]>();
   readonly #coverage: Coverage = { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null };
   readonly #gaps: unknown[] = [];
+  readonly #attachments: Attachment[] = [];
   #frames = 0;
   #raw = 0;
   #releases = 0;
@@ -203,8 +204,14 @@ export class Recorder {
     this.#writeManifest();
   }
 
+  /** A file written into this boot's folder beside the recording (the restored saved state), listed in the manifest. */
+  attach(file: string, sha256: string, bytes: number): void {
+    this.#attachments.push({ file, sha256, bytes });
+    this.#writeManifest();
+  }
+
   #writeManifest(): void {
-    writeManifest(this.#dir, { boot: this.#o.boot, git_sha: this.#o.gitSha, coverage: this.#coverage, coverage_gaps: this.#gaps, counts: this.#sealed, commitments: this.#o.commitments ?? null });
+    writeManifest(this.#dir, { boot: this.#o.boot, git_sha: this.#o.gitSha, coverage: this.#coverage, coverage_gaps: this.#gaps, counts: this.#sealed, commitments: this.#o.commitments ?? null, attachments: this.#attachments });
   }
 }
 
@@ -223,6 +230,14 @@ interface ManifestState {
   readonly coverage_gaps: readonly unknown[];
   readonly counts: { readonly frames: number; readonly raw: number; readonly releases: number; readonly pre?: number; readonly delays?: number };
   readonly commitments?: Readonly<Record<string, string>> | null;
+  /** Files kept beside the recording (WORKER-GROW: the saved state the boot restored from), each with its sha256 and size. */
+  readonly attachments?: readonly Attachment[];
+}
+
+export interface Attachment {
+  readonly file: string;
+  readonly sha256: string;
+  readonly bytes: number;
 }
 
 /** The manifest of one recorder folder, from the sealed files on disk. */
@@ -248,6 +263,7 @@ const writeManifest = (dir: string, s: ManifestState): void => {
     coverage: s.coverage,
     coverage_gaps: s.coverage_gaps,
     commitments: s.commitments ?? null,
+    attachments: s.attachments ?? [],
     chain_breaks: [],
     decode_failures: 0,
     units: [{ boot: s.boot, schema: RECORDER_SCHEMA, ...s.counts, unknown_events: {}, newer_layouts: {} }],
@@ -287,7 +303,7 @@ export const sealLeftovers = (root: string, current: string): string[] => {
       }
     }
     if (open === 0) continue;
-    let prev: { git_sha?: string | null; coverage?: Coverage; coverage_gaps?: unknown[]; commitments?: Record<string, string> | null; units?: { frames?: number; raw?: number; releases?: number }[] } = {};
+    let prev: { git_sha?: string | null; coverage?: Coverage; coverage_gaps?: unknown[]; commitments?: Record<string, string> | null; attachments?: Attachment[]; units?: { frames?: number; raw?: number; releases?: number }[] } = {};
     try {
       prev = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as typeof prev;
     } catch {}
@@ -296,6 +312,7 @@ export const sealLeftovers = (root: string, current: string): string[] => {
       coverage: prev.coverage ?? { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null },
       coverage_gaps: [...(prev.coverage_gaps ?? []), { reason: 'worker stopped without a clean stop; files sealed at the next start' }],
       commitments: prev.commitments ?? null,
+      attachments: prev.attachments ?? [],
       counts: {
         frames: (prev.units?.[0]?.frames ?? 0) + counts.frames, raw: (prev.units?.[0]?.raw ?? 0) + counts.raw,
         releases: (prev.units?.[0]?.releases ?? 0) + counts.releases,
