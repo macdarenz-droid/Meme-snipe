@@ -297,28 +297,39 @@ export class PaperAccount {
       moved ||= t.booked !== before;
     }
     if (solPrice !== null && this.#s.walletLamports !== null) {
-      const folded = this.#s.strayFolded;
-      for (const i of Object.values(book.intents)) {
-        if (i.intent.purpose !== 'entry' || !isTerminal(i) || i.fills.length > 0) continue;
-        for (const att of i.attempts) {
-          const a = legs.attempts.get(att.signature);
-          if (a === undefined) continue;
-          const f = feeParts(legs.network, a.priorityFee, a.outcome);
-          const lamports = f.base + f.priority + f.tip;
-          // Paper attempts carry their send time; one from an older file without it counts as sent when the account opened.
-          const atMs = a.sentAtMs ?? this.#s.openedAtMs;
-          if (lamports === 0n || this.#s.strayFees?.[a.signature] !== undefined || (folded !== undefined && atMs <= folded.atMs)) continue;
-          // Dated when booked if that is later than its send (ACCOUNT-RATE F3): a fee found after midnight counts in the day it
-          // is booked, never only in a day already past. Booking is never before the send, so the fold's rule still holds.
-          (this.#s.strayFees ??= {})[a.signature] = { atMs: Math.max(atMs, nowMs), lamports, cost: lamportsToMicroUsd(lamports as Lamports, solPrice, 'ceil') };
-          this.#s.walletLamports -= lamports;
-          moved = true;
-        }
+      for (const { signature, atMs, lamports } of this.#unbookedStrays(book, legs)) {
+        // Dated when booked if that is later than its send (ACCOUNT-RATE F3): a fee found after midnight counts in the day it
+        // is booked, never only in a day already past. Booking is never before the send, so the fold's rule still holds.
+        (this.#s.strayFees ??= {})[signature] = { atMs: Math.max(atMs, nowMs), lamports, cost: lamportsToMicroUsd(lamports as Lamports, solPrice, 'ceil') };
+        this.#s.walletLamports -= lamports;
+        moved = true;
       }
     }
     const folded = this.#fold(book, legs, nowMs);
     if (moved || folded || seen) this.#file.write(this.#s);
     return moved;
+  }
+
+  /**
+   * Fees of entries that ended with no fill and are not booked yet (nor folded): what `settle` books as stray costs once
+   * a fresh SOL price is known. Each with its send time (an older file's attempt without one: when the account opened).
+   */
+  #unbookedStrays(book: Book, legs: PaperLegs): { readonly signature: string; readonly atMs: number; readonly lamports: bigint }[] {
+    const out: { signature: string; atMs: number; lamports: bigint }[] = [];
+    const folded = this.#s.strayFolded;
+    for (const i of Object.values(book.intents)) {
+      if (i.intent.purpose !== 'entry' || !isTerminal(i) || i.fills.length > 0) continue;
+      for (const att of i.attempts) {
+        const a = legs.attempts.get(att.signature);
+        if (a === undefined) continue;
+        const f = feeParts(legs.network, a.priorityFee, a.outcome);
+        const lamports = f.base + f.priority + f.tip;
+        const atMs = a.sentAtMs ?? this.#s.openedAtMs;
+        if (lamports === 0n || this.#s.strayFees?.[a.signature] !== undefined || (folded !== undefined && atMs <= folded.atMs)) continue;
+        out.push({ signature: a.signature, atMs, lamports });
+      }
+    }
+    return out;
   }
 
   /**
@@ -488,8 +499,9 @@ export class PaperAccount {
     return {
       history, latches, solBalance: this.#s.walletLamports === null ? null : { value: this.#s.walletLamports as Lamports, atMs: nowMs }, paper: true,
       oneTimeRent: this.#s.oneTimePaid === true ? 0n : this.#oneTimeRent,
-      // A close booked with no fresh SOL price is left out of `closedTrades` until `priceLate` values it: risk is told.
-      unvalued: this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl === null).length,
+      // A close booked with no fresh SOL price is left out of `closedTrades` until `priceLate` values it, and a stray fee
+      // is out of `costs` until a fresh price books it: risk is told, and refuses entries until both are in.
+      unvalued: this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl === null).length + this.#unbookedStrays(book, legs).length,
     };
   }
 }

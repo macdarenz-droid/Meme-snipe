@@ -236,7 +236,8 @@ export class Worker {
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
   /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
-  #pricedSettle = false;
+  /** The latest released event's receipt time: the clock a booking's SOL price is judged fresh by (as risk's `ctx.now`). */
+  #releasedAt = Number.MIN_SAFE_INTEGER;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
   /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
@@ -542,6 +543,7 @@ export class Worker {
 
   #onRelease(e: { readonly kind: string; readonly key?: string; readonly value?: unknown; readonly moment: { readonly receivedAt: number } }, r: Release): void {
     this.#recorder?.release(r, e.moment.receivedAt);
+    if (e.moment.receivedAt > this.#releasedAt) this.#releasedAt = e.moment.receivedAt;
     if (e.kind !== 'market') return;
     const m = e as unknown as MarketEvent;
     // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
@@ -557,17 +559,20 @@ export class Worker {
     else if (m.key === SOL_PRICE_KEY) {
       const p = isObj(m.value) && typeof m.value['value'] === 'bigint' && m.value['value'] > 0n ? { price: m.value['value'] } : null;
       if (p !== null) {
+        // Whether bookings had a fresh price just before this one (ACCOUNT-RATE F2: a stale price is none).
+        const wasFresh = this.#bookingPrice() !== null;
         this.#solPrice = p.price as MicroUsd;
         this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
         if (this.#accountBehind.length > 0) this.#catchUpAccount();
         // ACCOUNT-RATE: legs booked before any price (a start reconcile) are valued here, before risk sees the account.
         if (this.#account.priceLate(this.#desk.book, this.#legs(), this.#solPrice, m.moment.receivedAt) && this.#reconciled) this.#publishAccount();
-        // The paper wallet exists from the first price on: risk needs its balance (R4). Every process settles once at its
-        // first price after the reconcile: fees of entries that ended unfilled while no price was known (in that
-        // reconcile, a restart's) are booked here, not at some later book event.
-        if (!this.#pricedSettle && this.#account.state.walletLamports !== null && this.#reconciled) {
-          this.#pricedSettle = true;
+        // The paper wallet exists from the first price on: risk needs its balance (R4). Stray fees are booked only with a
+        // fresh price, so the account settles whenever the price turns fresh (the first fresh price of a process, or the
+        // first after a stale stretch): fees of entries that ended unfilled while no fresh price was known (in a restart's
+        // reconcile, or while the feed was quiet) are booked here, not at some later book event. Until then the account
+        // fact counts them as unvalued and no entry is judged.
+        if (this.#bookingPrice() !== null && !wasFresh && this.#account.state.walletLamports !== null && this.#reconciled) {
           this.#settle();
           this.#publishAccount();
         }
@@ -670,12 +675,13 @@ export class Worker {
 
   /**
    * ACCOUNT-RATE F2: the SOL/USD price a fill, a close or a stray fee is booked at: the latest price while it is no older
-   * than risk's freshness limit (`maxQuoteAgeMs`), else none. A leg booked with none is valued at the first price after
-   * it (`priceLate`), as when no price was ever seen: a stale price is never a fill's rate.
+   * than risk's freshness limit (`maxQuoteAgeMs`) at the latest released event, else none. Judged on the event clock,
+   * as risk judges it (the feed releases an event a little after its receipt, so the wall clock would call every price
+   * stale). A leg booked with none is valued at the first price after it (`priceLate`): a stale price is never a rate.
    */
   #bookingPrice(): MicroUsd | null {
     if (this.#solPrice === null || this.#solPriceAt === null) return null;
-    return this.#d.timers.now() - this.#solPriceAt <= this.#d.session.policy.gates.maxQuoteAgeMs ? this.#solPrice : null;
+    return this.#releasedAt - this.#solPriceAt <= this.#d.session.policy.gates.maxQuoteAgeMs ? this.#solPrice : null;
   }
 
   /** Fees paid outside fills, each signature once (PAPER-1, M4); true when the wallet moved. */

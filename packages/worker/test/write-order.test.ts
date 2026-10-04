@@ -508,5 +508,83 @@ describe('ACCOUNT-RATE: restarts, missed fills and stale prices', () => {
     expect(after.some((l) => l['action'] === 'approve_risk' && Date.parse(l.ts) > at)).toBe(true);
     await h.worker.stop();
   });
+
+  it('F2: with the price feed live, a round trip is booked at its own fresh prices: never valued late', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    const open = () => Object.values(h.worker.book.positions).find((p) => p.status === 'open');
+    expect(await until(m, () => open() !== undefined, 30_000, tick(m))).toBe(true);
+    const pid = open()!.id;
+    expect(await until(m, () => h.worker.book.positions[pid]?.status === 'closed', 30_000, tick(m, 700_000n))).toBe(true);
+    const t = accountFile(h.stateDir).read(null as unknown as AccountState).trades.find((x) => x.positionId === pid)!;
+    expect(t.pricedLate).toBeUndefined();
+    expect(String(t.openSolPrice)).toBe(String(SOL_PRICE));
+    expect(String(t.closeSolPrice)).toBe(String(SOL_PRICE));
+    expect(t.netPnl).not.toBeNull();
+    for (const l of lines(h.stateDir).filter((x) => (x.kind === 'entry' || x.kind === 'exit') && x['trade'] === pid)) expect(l['sol_usd']).toBe(String(SOL_PRICE));
+    await h.worker.stop();
+  });
+
+  describe('a stray fee booked while the SOL price is stale', () => {
+    // Every attempt lands failed: the entry ends unfilled, and its fee is a stray cost (PAPER-1).
+    const scenario = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
+    const wallet = (dir: string) => BigInt(String(accountFile(dir).read(null as unknown as AccountState).walletLamports));
+    const fees = (dir: string) => {
+      const paper = JSON.parse(readFileSync(join(dir, 'paper.json'), 'utf8'), (_k, v) => (v !== null && typeof v === 'object' && '$n' in v ? BigInt((v as { $n: string }).$n) : v)) as { attempts: Record<string, { priorityFee: bigint }> };
+      return Object.values(paper.attempts).reduce((x, a) => x + attemptFee(FILL_CONFIG.network, a.priorityFee, 'failed'), 0n);
+    };
+    /** Trades until the first entry intent appears, then withholds the SOL price until that entry has ended unfilled. */
+    const staleStray = async () => {
+      const h = makeWorker({ scenario });
+      expect(await h.worker.reconcile()).toEqual({ ok: true });
+      const m = await passingMarket(h, { heldPoolFacts: true });
+      expect(await until(m, () => Object.keys(h.worker.book.intents).length > 0, 30_000, tick(m))).toBe(true);
+      const lastPrice = m.now;
+      m.omit = new Set([SOL_PRICE_KEY]);
+      const ended = () => Object.values(h.worker.book.intents).every((i) => i.status === 'abandoned' || i.status === 'cancelled' || i.status === 'rejected');
+      expect(await until(m, ended, 30_000, tick(m))).toBe(true);
+      // It ended after the price had gone stale, so its fee was not booked then.
+      expect(m.now - lastPrice).toBeGreaterThan(h.session.policy.gates.maxQuoteAgeMs);
+      expect(fees(h.stateDir)).toBeGreaterThan(0n);
+      return { h, m, before: wallet(h.stateDir) };
+    };
+
+    it('a fresh price after the stale stretch, with no book event, books the fee before any entry is judged', async () => {
+      const { h, m, before } = await staleStray();
+      const seq = h.worker.health().journal_seq;
+      m.omit = new Set();
+      // Only prices: no slot, no pool, no book event (the feed releases a fact about 2 s after it is received). Each step:
+      // no entry approved while the fee is still out of the wallet.
+      let approvedEarly = false;
+      for (let k = 0; k < 10; k++) {
+        await m.run(400, 400, () => m.solPrice());
+        const approved = lines(h.stateDir).some((l) => l.seq > seq && l['action'] === 'approve_risk');
+        if (approved && wallet(h.stateDir) === before) approvedEarly = true;
+      }
+      expect(wallet(h.stateDir)).toBe(before - fees(h.stateDir));
+      expect(approvedEarly).toBe(false);
+      // The candidate on the price's own event saw the unbooked fee in the account and was refused.
+      const refused = lines(h.stateDir).filter((l) => l.seq > seq && ((l.reasons ?? []) as string[]).some((r) => r.includes('account unvalued')));
+      expect(refused.length).toBeGreaterThan(0);
+      const firstApprove = lines(h.stateDir).find((l) => l.seq > seq && l['action'] === 'approve_risk');
+      if (firstApprove !== undefined) expect(firstApprove.seq).toBeGreaterThan(refused[0]!.seq);
+      await h.worker.stop();
+    });
+
+    it('a restart whose first price is stale books the fee at the first fresh price after it', async () => {
+      const { h, before } = await staleStray();
+      await h.worker.stop();
+      const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+      expect(await h2.worker.reconcile()).toEqual({ ok: true });
+      const m2 = new Market(h2, { heldPoolFacts: true });
+      // The first price after boot is ten seconds old.
+      await m2.run(4_000, 400, () => m2.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: m2.now - 10_000 }));
+      expect(wallet(h.stateDir)).toBe(before);
+      await m2.run(4_000, 400, () => m2.solPrice());
+      expect(wallet(h.stateDir)).toBe(before - fees(h.stateDir));
+      await h2.worker.stop();
+    });
+  });
 });
 

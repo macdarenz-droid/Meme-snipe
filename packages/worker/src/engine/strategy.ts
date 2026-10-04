@@ -202,8 +202,9 @@ export interface AccountFact {
   /** Rent of the one-time accounts this wallet still lacks (0 once its setup made them): risk's `rent.oneTime`. */
   readonly oneTimeRent: bigint;
   /**
-   * ACCOUNT-RATE (risk ruling): closed trades not yet valued in dollars (booked with no fresh SOL price). Their loss is
-   * not in `history` yet, so no entry is judged until a snapshot with none is released. Absent in older recordings: 0.
+   * ACCOUNT-RATE (risk ruling): closed trades not yet valued in dollars, and stray fees not yet booked (both wait for a
+   * fresh SOL price). Their loss is not in `history` yet, so no entry is judged until a snapshot with none is released.
+   * Absent in older recordings: 0.
    */
   readonly unvalued?: number;
 }
@@ -1505,7 +1506,7 @@ export class LiveStrategy implements Strategy {
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
     if ((acct.unvalued ?? 0) > 0) {
-      const detail = `${acct.unvalued} closed trade(s) not yet valued in dollars; waiting for a snapshot with them valued`;
+      const detail = `${acct.unvalued} closed trade(s) or fee(s) not yet in dollars; waiting for a snapshot with them in`;
       return this.#fail(`account unvalued: ${detail}`, [{ gate: 'worker', code: 'account-unvalued', detail }]);
     }
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
