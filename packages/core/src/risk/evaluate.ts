@@ -385,14 +385,26 @@ export const riskSnapshot = (input: RiskInput): RiskSnapshot | null => {
 /**
  * Exits are never blocked by any risk control. This reports which entry controls are tripped, for the log, and returns
  * new trips (R9, R10) so that a marked dip seen while managing an exit is latched even if it recovers before the next
- * entry is evaluated. It never throws, whatever the inputs.
+ * entry is evaluated. It never throws, whatever the inputs: an internal failure is returned as `fault` (and the
+ * `risk_fault` code), so a caller can tell "nothing tripped" from "could not evaluate" (RISK-FAULT).
  */
 export const evaluateExit = (input: RiskInput): ExitDecision => {
   try {
     const check = accountCheck(input, clockNow(input));
-    return { allow: true, tripped: check.reasons, trips: check.trips };
+    return { allow: true, tripped: check.reasons, trips: check.trips, fault: null };
+  } catch (e) {
+    // RISK-FAULT: still allowed, but marked as not evaluated, so no caller reads it as a clean account.
+    const fault = faultText(e);
+    return { allow: true, tripped: [reason('risk_fault', `risk could not be evaluated: ${fault}`)], trips: [], fault };
+  }
+};
+
+/** A thrown value as text, without calling anything on it that could throw again. */
+const faultText = (e: unknown): string => {
+  try {
+    return e instanceof Error && typeof e.message === 'string' && e.message !== '' ? e.message : 'unknown error';
   } catch {
-    return { allow: true, tripped: [], trips: [] };
+    return 'unknown error';
   }
 };
 

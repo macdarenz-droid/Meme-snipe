@@ -252,6 +252,8 @@ export class Worker {
   #solPriceAt: number | null = null;
   /** OWNER-REVIEW: the latest account valuation, for the SOL evidence of the owner's stops. */
   #lastSnapshot: RiskSnapshot | null = null;
+  /** RISK-FAULT: why risk last could not value the account, while it still cannot (logged once per episode). */
+  #valuationFault: string | null = null;
   /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
   readonly #fillLines: Record<string, unknown>[];
   /** Fills the ledger holds and account.json does not, recorded once a SOL price is known. */
@@ -819,6 +821,11 @@ export class Worker {
       session: this.#d.session, mode: 'paper', clock: { now: () => ({ slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now }) },
       account, latches: fact.latches, market: { solPrice: sol, solBalance: fact.solBalance, regime: 'unknown' },
     };
+    // RISK-FAULT: a valuation risk cannot make is said once when it starts and once when it clears, never silent.
+    const exit = evaluateExit(input);
+    if (exit.fault !== null && this.#valuationFault === null) this.#d.log(`Risk could not value the account: ${exit.fault}. Nothing is latched from it until it can.`);
+    if (exit.fault === null && this.#valuationFault !== null) this.#d.log('Risk can value the account again.');
+    this.#valuationFault = exit.fault;
     const snapshot = riskSnapshot(input);
     if (snapshot === null) return;
     this.#lastSnapshot = snapshot;
@@ -828,7 +835,7 @@ export class Worker {
     // exit is being evaluated, so a breach that recovers before the next one still holds until the owner reviews it.
     // Only a fully marked valuation at a fresh SOL price latches: an unknown mark is a stand-in loss, not a breach.
     if (latchable(account, sol, now, maxAge)) {
-      const trips = evaluateExit(input).trips;
+      const trips = exit.trips;
       if (trips.length > 0) {
         this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity}, NAV ${snapshot.nav ?? 'unknown'}).`);
         this.#latch(trips, now);
