@@ -448,6 +448,21 @@ Supervisor rulings:
   - "Focus on the 9% that survive" became RES-5: research only, comparing survivors with look-alike losers at buy time, using exploration days before RES-3's wall only. Nothing goes into the bot from it; the owner hears only if it beats the current ideas.
   - "An agent backtests with the bot's reasoning" became BT-2e: the bot's own backtest on free days.
 
+### Evening decisions (2026-10-04, owner and supervisor)
+
+Owner decisions (the owner's words, recorded by the supervisor):
+- **Helius free plan only, one practice day at a time** (about 5:35 PM: "1 day every 14 hrs. Thats enough. We can see a little progress from that to check if the bots logic is working or not"). The pilot passed: parity on every table (raw logs equal Agave's 10,000-byte cut), full history depth, 5,225 credits, 5 blocks/s on free. The full 19 Jul – 3 Oct pull projects to about 18.95M credits (about US$94 on Developer; 5–6 days at 40 blocks/s is unmeasured and could take 1–3 weeks).
+- **No spend before a finished product** (about 5:40 PM: "I want to see a finished product first before spending"). Spend decisions wait for the server Online, practice trades in the app and the early-look report.
+- **Tailscale key expiry disabled** for the `zeroed` node (about 4:27 PM), so the server stays on the tailnet without a re-login.
+- **The bot is the owner's investment** (about 5:55 PM: "make sure you produce high quality from the bot"). Nothing about the pre-funding gate changes: no deposit before all six items pass, the bar is never lowered to fit a result, and an unproven strategy stays in paper.
+
+Supervisor rulings:
+- **One rent model in the proof's scoring.** RENT-1 (#114) is the only rent model: per candidate, core's `accountGetsDust` and `closeSucceeds` decide whether rent comes back (the close lands with no dust) or a failed close pays one failed exit attempt. RES-4's cost math reads the same terms (P(back) = (1 − dust) × close, P(failed close) = (1 − dust)(1 − close)) and adds no second model to `outcome.ts`. RES-4's `scoringTerms()` export is allowed only as a pure refactor, proven by a golden test that the outcome stage scores byte-identically.
+- **Proof-scoring changes get their own PR.** The slot-counted observation tail (from RES-3b) changes how outcomes are scored, so it leaves the research PRs (#56, #120) for BT-TAIL, with a test that fails before and passes after and the BT reviewer.
+- **"Entries: On" only when it is true (API-1).** The app's status card may say entries are on only when no halt, no risk stop (daily, weekly or session loss reached, the kill latch, the loss pauses) and no stale regime evaluation stands. The worker serves the risk stops read-only as halt codes; if that needs a change under `packages/core/src/risk/**`, the card keeps APP-3's rule and never says "On". A notRunning reply is refused for paper, so it can never mask a paper outage.
+- **The practice-day pull fails closed on credits (#119).** A credit booking that fails stops the day (exit 1, not resumable), the usage file is written atomically, and `rpc_rps` is bounded 1–50 (5 on the free plan).
+- **The live worker owns exits, so it is the last process the kernel kills (SWITCH-1).** `zeroed-worker.service` runs at OOMScoreAdjust −500 under its MemoryMax (its own cgroup kills first); the switch's confined trial runs at +1000 and never copies the worker's score. SIGN-1's signer unit gets −500 when it lands.
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
