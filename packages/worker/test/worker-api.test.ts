@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor, type Endpoint } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
-import { COMMANDS, NOT_RUNNING, route } from '../src/run/api.ts';
+import { COMMANDS, NOT_RUNNING, route, triggerPrice } from '../src/run/api.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 /** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
@@ -68,6 +68,28 @@ describe('the app API (UI-2 contract)', () => {
     for (const path of ['/api/v1/demo/status', '/api/v1/live/nothing', '/api/v1/live/calendar', '/api/v1/live/status/2026-10', '/api/v1/paper/nothing']) expect(get(path).status, path).toBe(404);
     expect(get(PATHS.backtestReport()).body).toMatchObject({ mode: 'backtest', data: null });
     await h.worker.stop();
+  });
+
+  it('an open position\'s exit triggers are in a trader\'s words (APP-WORDS a)', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+    const r = route(PATHS.position('paper'), () => h.worker.apiInputs());
+    const pos = checkEnvelope(JSON.parse(JSON.stringify(r.body)), 'paper', schemaFor('position', 'paper')).data as { mint: string; exitRules: { rule: string; trigger: string }[] } | null;
+    expect(pos).not.toBeNull();
+    expect(pos!.mint).toBe(MINT);
+    for (const x of pos!.exitRules) expect(x.trigger, x.rule).toMatch(/^(Price at or below \$\d+(\.\d+)?|After \d+ min|At \+\d+(\.\d+)?R or \+\d+(\.\d+)?%)$/);
+    expect(pos!.exitRules.map((x) => x.rule)).toEqual(expect.arrayContaining(['price-stop', 'time-stop', 'take-profit']));
+    await h.worker.stop();
+  });
+
+  it('an exit trigger price is dollars per token with 4 significant digits (APP-WORDS a)', () => {
+    // 666,666,667 scaled = 6.67e-4 lamports per raw unit = 666.7 lamports per token; at $150 per SOL, $0.0001.
+    expect(triggerPrice(666_666_667n, 150_000_000n as never)).toBe('$0.0001');
+    expect(triggerPrice(123_456_789_000n, 150_000_000n as never)).toBe('$0.01852');
+    expect(triggerPrice(1n, null)).toBeNull();
   });
 
   it('listens on loopback only, separate from health; GET only', async () => {

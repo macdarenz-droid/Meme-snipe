@@ -35,6 +35,11 @@ const b58digits = (n: number, width: number) => String(n).padStart(width, '1').r
 const FAKE_MINT = (n: number) => `FAKEmint${b58digits(n, 4)}${'x'.repeat(32)}`;
 const FAKE_SIG = (n: number) => `FAKEsig${b58digits(n, 5)}${'x'.repeat(76)}`;
 
+/** The book's exit code (core BookExitReason) behind each exit reason the app shows. */
+const BOOK_EXIT: Partial<Record<ExitReason, string>> = {
+  'price-stop': 'stop', trail: 'trailing_stop', 'take-profit': 'take_profit', 'time-stop': 'max_hold', 'thesis-stop': 'thesis_lost', 'liquidity-drop': 'liquidity',
+};
+
 function rng(seed: number) {
   let s = seed;
   return () => {
@@ -61,7 +66,7 @@ const passChecks = (mode: Mode): CheckResult[] =>
       ['H13', '8.4%', '≤ 15%'],
       ['H15', '2.3% round trip', '≤ 4.0%'],
       ['cost', '3.1%', '≤ 5%'],
-      ['size', 'q_min', '≥ q_min'],
+      ['size', '$500.00', '≥ $500.00'],
     ] as const
   ).map(([check, value, limit]) => ({ mode, check, result: 'pass', value, limit }));
 
@@ -120,7 +125,8 @@ function makeTrades(mode: Mode, count: number, start: number, spanDays: number, 
       mfeR: hundredths(realized > 0n ? realized + 40n : 35n),
       maeR: hundredths(realized < 0n ? realized - 10n : -30n),
       exitReason: (net > 0n ? WIN_EXITS[i % 3] : LOSS_EXITS[i % 4]) ?? 'price-stop',
-      reasons: ['Pullback held above the migration price with net SOL inflow over 5 minutes.', 'Round-trip quote and costs inside limits at this size.'],
+      // The worker serves the book's exit codes (APP-WORDS a); the app labels them.
+      reasons: [BOOK_EXIT[(net > 0n ? WIN_EXITS[i % 3] : LOSS_EXITS[i % 4]) ?? 'price-stop'] ?? 'stop'],
       checks: passChecks(mode),
       fills: (['buy', 'sell'] as const).map((side, k) => {
         const quoted = side === 'buy' ? size : size + gross;
@@ -278,7 +284,7 @@ function decisions(mode: Mode): DecisionRecord[] {
     outcome: 'entered',
     checks: t.checks,
     ruleScore: '0.71',
-    reasons: t.reasons,
+    reasons: ['entry filled (paper)'],
     tradeId: t.id,
   }));
   const fromRejects: DecisionRecord[] = rejected.map((r, i) => ({
