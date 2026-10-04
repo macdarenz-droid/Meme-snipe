@@ -118,11 +118,14 @@ export interface ClosedTrade {
   readonly late?: readonly LateEntry[];
 }
 
-/** A change to a closed trade's result booked after its close: lamports, and dollars when a SOL price was known. */
+/**
+ * A change to a closed trade's result booked after its close: lamports, and micro-dollars when a SOL price was known.
+ * The same shape as the paper account's `late` entries (PAPER-2), so the worker hands them over unchanged.
+ */
 export interface LateEntry {
   readonly atMs: number;
   readonly lamports: Lamports;
-  readonly pnl: MicroUsd | null;
+  readonly usd: MicroUsd | null;
 }
 
 /** An open position. `mark` is the executable liquidation value of the whole position, net of fees (§9), or null if unknown. */

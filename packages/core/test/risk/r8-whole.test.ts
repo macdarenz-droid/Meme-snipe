@@ -10,7 +10,7 @@ import { type ClosedTrade, type EntryAllowed, type LateEntry, evaluateEntry, ris
 import { type Lamports, type MicroUsd, lamports } from '../../src/units/index.ts';
 import { DAY_START, HOUR, NOW, PRICE, SOL, WEEK_START, account, baseInput, baseRequest, clockAt, codes, latches, trade } from './helpers.ts';
 
-const late = (atMs: number, pnl: MicroUsd | null, lam = -1_000_000n): LateEntry => ({ atMs, lamports: lam as Lamports, pnl });
+const late = (atMs: number, usd: MicroUsd | null, lam = -1_000_000n): LateEntry => ({ atMs, lamports: lam as Lamports, usd });
 const fee = (atMs: number) => late(atMs, -usd('0.2') as MicroUsd);
 const gain = (atMs: number) => late(atMs, usd('0.5'), 3_000_000n);
 const withLate = (t: ClosedTrade, ...xs: LateEntry[]): ClosedTrade => ({ ...t, late: xs });

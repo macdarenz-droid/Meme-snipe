@@ -29,7 +29,7 @@ const contextWith = (rows: readonly Row[], base: Facts = passingFacts(), now: Mo
     store.record(k, v, m, `${k}@${m.slot}`);
   }
   clock.advanceTo(now);
-  return { now, lookup: (k, a) => store.lookup(k, a), history: (k, f, t) => store.history(k, f, t), ...(deployers ? { deployers } : {}) };
+  return { now, observedTip: now.slot, lookup: (k, a) => store.lookup(k, a), history: (k, f, t) => store.history(k, f, t), ...(deployers ? { deployers } : {}) };
 };
 const h14 = (ctx: GateContext, rug?: 'RUG-1'): readonly GateReason[] =>
   evaluateHardRejects(ctx, deps('live', session(), rug), request(), { stopAtFirst: false }).reasons.filter((r) => r.gate === 'H14' || r.neededBy === ('H14' as HardGate));
@@ -439,7 +439,7 @@ describe('leak test with the deployer index in the engine', () => {
         onMarket: (e, ctx) => {
           idx.observe(e);
           if (e.key !== 'tick') return [];
-          const r = evaluateHardRejects({ now: ctx.now, lookup: ctx.lookup, history: ctx.history, deployers: idx }, deps('backtest'), request(), { stopAtFirst: false });
+          const r = evaluateHardRejects({ now: ctx.now, observedTip: ctx.now.slot, lookup: ctx.lookup, history: ctx.history, deployers: idx }, deps('backtest'), request(), { stopAtFirst: false });
           return [{ action: null, reasons: [...r.reasons.map((x) => `${x.gate}:${x.code}:${x.input ?? ''}:${x.detail}`), `pass=${r.pass}`] }];
         },
       };

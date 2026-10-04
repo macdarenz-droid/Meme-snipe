@@ -41,11 +41,11 @@ const lossAt = (t: ClosedTrade, nowMs: number): number | null => {
   if (t.netPnl < 0n) return t.closedAtMs;
   let whole: bigint = t.netPnl;
   for (const x of [...(t.late ?? [])].filter((e) => e.atMs <= nowMs).sort((a, b) => a.atMs - b.atMs)) {
-    if (x.pnl === null) {
+    if (x.usd === null) {
       if (x.lamports < 0n) return x.atMs;
       continue;
     }
-    whole += x.pnl;
+    whole += x.usd;
     if (whole < 0n) return x.atMs;
   }
   return null;

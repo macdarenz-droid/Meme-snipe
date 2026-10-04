@@ -83,6 +83,11 @@ export interface SpaInput {
   readonly variants: Readonly<Record<string, readonly number[]>>;
   /** S0's daily net P&L on the same calendar. */
   readonly s0: readonly number[];
+  /**
+   * A variant's own S0 when variants of different universes share one family (BT-2, RES-4: each hypothesis against
+   * its universe's random entry). A variant without one is compared with `s0`.
+   */
+  readonly s0Of?: Readonly<Record<string, readonly number[]>>;
   /** Variant id → days with any trading activity (counted before outcomes are read). */
   readonly activeDays: Readonly<Record<string, number>>;
   readonly registration: SpaRegistration;
@@ -244,6 +249,11 @@ export const spaTest = (input: SpaInput, opts: SpaOptions): SpaResult => {
     for (const x of s) if (!Number.isFinite(x)) throw new RangeError(`variant ${id} has a non-finite daily P&L`);
   }
   for (const x of input.s0) if (!Number.isFinite(x)) throw new RangeError('S0 has a non-finite daily P&L');
+  for (const [id, b] of Object.entries(input.s0Of ?? {})) {
+    if (!ids.includes(id)) throw new RangeError(`S0 given for ${id}, which is not a variant`);
+    if (b.length !== T) throw new RangeError(`S0 of ${id} has ${b.length} days, expected ${T}: put every series on one calendar`);
+    for (const x of b) if (!Number.isFinite(x)) throw new RangeError(`S0 of ${id} has a non-finite daily P&L`);
+  }
   if (T < SPA_MIN_ACTIVE_DAYS) throw new RangeError(`the SPA test needs at least ${SPA_MIN_ACTIVE_DAYS} days, got ${T}`);
   const reg = input.registration;
   if (!(reg.seFloor > 0) || !Number.isFinite(reg.seFloor)) throw new RangeError('the registered SE floor must be a positive number');
@@ -267,9 +277,9 @@ export const spaTest = (input: SpaInput, opts: SpaOptions): SpaResult => {
     if (allZero || (input.activeDays[id] ?? 0) < SPA_MIN_ACTIVE_DAYS) excluded.push(id);
     else kept.push(id);
   }
-  const s0 = Float64Array.from(input.s0);
   const build = (): Stat[] => kept.flatMap((id) => {
     const x = input.variants[id]!;
+    const s0 = input.s0Of?.[id] ?? input.s0;
     return [Float64Array.from(x), Float64Array.from(x, (v, t) => v - s0[t]!)].map((series) => ({ series, mean: meanOf(series, null), omega: 0, centre: 0 }));
   });
   const pBy: Record<number, number> = {};

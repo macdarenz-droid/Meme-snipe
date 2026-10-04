@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -20,10 +20,10 @@ import { attemptFee, type FillNetwork, type FillScenario, lateFillOf } from '../
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
-import { NO_UNIVERSE, type SavedGraduates, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
+import { CANDIDATE_RESTORED, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
@@ -34,14 +34,18 @@ import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, open
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
-import type { SeedRpc } from '../seed/rpc.ts';
+import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
+import { transactionEvents } from '../../../core/src/chain/index.ts';
+import { P2, P3 } from '../scheduler/scheduler.ts';
+import { callCost } from '../providers/solana-http.ts';
+import { PUMP_MIGRATION_AUTHORITY } from './sources.ts';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
 import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
-import { Summarizer, nextSummaryDelay } from './summary.ts';
+import { Summarizer, SummaryClock } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
@@ -49,12 +53,16 @@ import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
-import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
-import { loadState, saveState } from '../persist/index.ts';
+import type { DeployerIndex, DeployerIndexState, RugLabeller, RugLabellerState } from '../../../core/src/gates/index.ts';
+import { PERSIST_FILE, fileSha256, loadState, saveState, type SavedCandidateState } from '../persist/index.ts';
 import type { CreateLookup } from './sources.ts';
 
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
-export const PERSIST_FILE = 'deployer-state.json';
+export { PERSIST_FILE } from '../persist/index.ts';
+/** RESTART-KEEP: the downtime migrations' credit cap. */
+export const DOWNTIME_CREDIT_CAP = 3_000;
+/** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
+const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
@@ -107,6 +115,8 @@ export interface WorkerDeps {
   readonly strategy: StrategyConfig;
   /** Test seam: replaces the strategy's position marking (marks.ts `markedHistory`). */
   readonly markedHistory?: StrategyDeps['markedHistory'];
+  /** Test seam: replaces the strategy's entry-size probe result (`StrategyDeps.sizeProbe`). */
+  readonly sizeProbe?: StrategyDeps['sizeProbe'];
   readonly scenario: FillScenario;
   readonly network: FillNetwork;
   readonly timers: Timers;
@@ -122,7 +132,12 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log') => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore') => Promise<boolean>;
+  /**
+   * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime.
+   * Without it they are not read: coins that migrated while the worker was down are not candidates.
+   */
+  readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } };
   /**
    * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
    * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
@@ -141,6 +156,10 @@ export interface WorkerDeps {
    * every exit, waits for the seed (rehearsal 37148935094: a slow seed held the start for minutes).
    */
   readonly seedMaxMs?: number;
+  /** The most create signatures kept (default `CREATE_SIGS_MAX`; a test passes a small one). */
+  readonly createSigsMax?: number;
+  /** The seed cap when no saved index restores (default `MAX_SEED_CREATES`; a test passes a small one). */
+  readonly maxSeedCreates?: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
   readonly delayProbe?: { readonly confirmed: DelayProbeOptions['confirmed']; readonly via: string; readonly everyMs: number };
   /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
@@ -207,6 +226,14 @@ interface FeedState {
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+/** Refused API commands journaled one by one per minute; more are counted on one line. */
+export const COMMAND_LINES_PER_MINUTE = 10;
+const errorText = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : 'error');
+/**
+ * The most saved creates a start seeds the index with when no saved index restores (WORKER-GROW): about three days of
+ * creates, which a boot holds well under MemoryMax (measured: docs/DECISIONS.md, WORKER-GROW G4b). Past it the seed is refused whole.
+ */
+export const MAX_SEED_CREATES = 200_000;
 
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
@@ -214,6 +241,16 @@ const COLD_START = 'cold_start';
 export const CREATE_RETRY_MS = 60_000;
 /** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
 const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
+
+/** The most create signatures a process keeps (CREATE-AFTER-RESTART), oldest forgotten first. */
+export const CREATE_SIGS_MAX = 200_000;
+
+/** A create event's mint and signature (the field, else the id), or null when it is not a create or names neither. */
+const createSigOf = (e: MarketEvent): readonly [string, string] | null => {
+  const mint = e.key.startsWith(LOG_CREATE_PREFIX) ? e.key.slice(LOG_CREATE_PREFIX.length) : e.key.startsWith(TX_CREATE_PREFIX) ? e.key.slice(TX_CREATE_PREFIX.length) : null;
+  const sig = isObj(e.value) && typeof e.value['signature'] === 'string' ? e.value['signature'] : CREATE_ID.exec(e.id)?.[1];
+  return mint !== null && mint !== '' && sig !== undefined ? [mint, sig] : null;
+};
 
 /**
  * The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. The
@@ -239,7 +276,14 @@ export class Worker {
   readonly #boot: string;
   readonly #started: number;
   readonly #journal: Journal;
-  readonly #recorder: Recorder | null;
+  #recorder: Recorder | null = null;
+  /**
+   * The recorder's first failure (a full disk, ENOSPC): recording stops, entries halt for the rest of the process and
+   * the alert goes up; exits and the rest of the worker go on. Never a crash, so a disk that stays full is no crash loop.
+   */
+  #recorderFault: string | null = null;
+  /** API command refusals journaled in the current minute, and those counted only (see `#commandRefused`). */
+  readonly #refusals = { since: -Infinity, written: 0, dropped: 0 };
   readonly #ledger: Ledger;
   readonly #control: StateFile<Control>;
   readonly #exitsFile: ReturnType<typeof exitsFile>;
@@ -279,6 +323,13 @@ export class Worker {
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
   #createSig = new Map<string, string>();
+  /** RESTART-KEEP: each mint's curve completion and migration transactions, as seen (logs or fetched). */
+  readonly #completeSig = new Map<string, string>();
+  readonly #migrationSig = new Map<string, string>();
+  /** RESTART-KEEP: the saved state's slot (the downtime's migrations are looked up after it); null on a fresh start. */
+  #downtimeFrom: bigint | null = null;
+  /** RESTART-KEEP: restored candidates whose transactions wait for the sources to start. */
+  readonly #restoredMints: string[] = [];
   /** Mints shortlisted while the seed is being built, with no create signature yet: the downtime fill may bring it. */
   #createPending: string[] = [];
   /** Mints whose create this process has looked up (once each). */
@@ -312,13 +363,15 @@ export class Worker {
   /** The empty slot the reconcile reserved for SEED-1's events (see `#seedIndex`). */
   #reserved: bigint | null = null;
   /** PERSIST-1: the saved index and labeller this process restores (null on a fresh start). */
-  #restored: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState } | null = null;
+  #restored: { readonly asOf: Moment; readonly ref: SavedStateRef } | null = null;
+  /** The restored index and labeller, given once to the strategy when it applies the seed that names them. */
+  #handoff: { readonly ref: SavedStateRef; readonly index: DeployerIndex; readonly labeller: RugLabeller } | null = null;
   #lastSaveMs = 0;
   #saveRefused = false;
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
-  #summaryTimer: ReturnType<Timers['setTimeout']> | null = null;
+  #summaryClock: SummaryClock | null = null;
   #summary: Summarizer | null = null;
   #server: Server | null = null;
   #api: Server | null = null;
@@ -327,6 +380,14 @@ export class Worker {
   readonly #funnel = { fromMs: 0, stage: new Map<string, { day: string; stage: number; check: string | null }>(), enteredByDay: new Map<string, number>() };
   readonly #symbols = new Map<string, string>();
   #stopping = false;
+  /** The code of the stop under way (the first `stop` call's). */
+  #stopCode: number = EXIT.clean;
+  #stoppingNow: (code: number) => void = () => {};
+  #stoppedNow: (code: number) => void = () => {};
+  /** Resolves with the stop's code when a stop begins (a signal, a refused start or a loop crash). */
+  readonly stopping = new Promise<number>((r) => (this.#stoppingNow = r));
+  /** Resolves with the stop's code once the stop has finished: the entry exits with it (a loop crash exits 1). */
+  readonly stopped = new Promise<number>((r) => (this.#stoppedNow = r));
   #sources: readonly FeedSource[] = [];
 
   constructor(d: WorkerDeps) {
@@ -345,11 +406,19 @@ export class Worker {
     const seed = `paper:${this.#boot}`;
 
     const recRoot = join(c.stateDir, STATE_FILES.recorder);
-    mkdirSync(recRoot, { recursive: true });
-    for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
-    this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
-    const rec = this.#recorder;
-    this.#probe = d.delayProbe === undefined || rec === null ? null : new DelayProbe({ timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs, record: (row, at) => rec.delay(row, at) });
+    try {
+      mkdirSync(recRoot, { recursive: true });
+      for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
+      this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
+    } catch (e) {
+      if (c.recorder) this.#recorderFailed(e);
+      else d.log(`Recorder: leftovers not sealed: ${errorText(e)}.`);
+    }
+    this.#probe = d.delayProbe === undefined || this.#recorder === null ? null : new DelayProbe({
+      timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs,
+      record: (row, at) => this.#record((r) => r.delay(row, at)),
+      onError: (e) => d.log(`Delay probe: sample not recorded: ${errorText(e)}.`),
+    });
 
     // RUN-1d: no ledger at all means a cold start (host lost with no backup): what comes back comes from the chain. A
     // paper position is not on chain, so nothing does. Marked until a full start journals its `recovered` line.
@@ -366,7 +435,7 @@ export class Worker {
       onFrame: (f) => this.#onFrame(f),
       onRelease: (e, r) => this.#onRelease(e, r),
     });
-    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }) });
+    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, savedState: (ref) => this.savedStateFor(ref), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }), ...(d.sizeProbe === undefined ? {} : { sizeProbe: d.sizeProbe }) });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
     // RUN-1c: trades open or in flight when the previous process stopped writing, kept until a full start journals them.
@@ -437,17 +506,65 @@ export class Worker {
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
-    this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
-    // CREATE-AFTER-RESTART: the creates earlier processes saw, kept in the store even when PERSIST-1's state replaces it.
-    this.#noteCreates(this.#saved.creates);
+    const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
     // downtime fill starts at the saved moment, closing the restart gap on the live creates watch.
-    const restored = loadState(join(c.stateDir, PERSIST_FILE), d.rugs);
+    // WORKER-GROW: the boot's recording keeps a byte copy of the saved state, and the restore reads that copy; the seed
+    // names it by the sha256 of those bytes, so the parity replay restores exactly what this boot restored.
+    const statePath = join(c.stateDir, PERSIST_FILE);
+    let loadFrom = statePath;
+    if (this.#recorder !== null && existsSync(statePath)) {
+      const copy = join(this.#recorder.dir, PERSIST_FILE);
+      try {
+        copyFileSync(statePath, copy);
+        loadFrom = copy;
+      } catch (e) {
+        d.log(`Recorder: the saved state was not copied (${e instanceof Error ? e.message : 'error'}); restored from the state dir, and this boot cannot be replayed.`);
+      }
+    }
+    const restored = loadState(loadFrom, d.rugs);
+    // WORKER-GROW: the store is trimmed either way; its creates are held in memory only when they seed the index.
+    // CREATE-AFTER-RESTART: the creates earlier processes saw are noted (mint and signature) as the store streams, even
+    // when PERSIST-1's state replaces them for the index and they stay in the file only.
+    // Only the newest CREATE_SIGS_MAX are kept, in a ring while the store streams, then noted once: noting a million
+    // creates one by one into the capped map cost 360 MB and 75 s more at boot (measured, 1M creates).
+    const sigsMax = d.createSigsMax ?? CREATE_SIGS_MAX;
+    const ring: (readonly [string, string])[] = [];
+    let seen = 0;
+    const noteCreate = (e: MarketEvent): void => {
+      const p = createSigOf(e);
+      if (p === null) return;
+      ring[seen % sigsMax] = p;
+      seen++;
+    };
+    this.#saved = this.#deployerStore.load(storeFrom, restored.ok ? { keepCreates: false, onCreate: noteCreate } : { maxCreates: d.maxSeedCreates ?? MAX_SEED_CREATES, onCreate: noteCreate });
+    for (let i = Math.max(0, seen - sigsMax); i < seen; i++) {
+      const [mint, sig] = ring[i % sigsMax]!;
+      this.#noteCreateSig(mint, sig);
+    }
+    ring.length = 0;
+    if (this.#saved.refused !== undefined) d.log(`Deployer store not seeded (${this.#saved.refused}): H14 is not covered until the look-back passes.`);
     let graduates: SavedGraduates | null = null;
+    let candidates: readonly SavedCandidateState[] = [];
+    let tails: readonly SavedTail[] = [];
     if (restored.ok) {
       graduates = restored.graduates;
-      this.#restored = { asOf: restored.asOf, index: restored.index.snapshot(restored.asOf), labeller: restored.labeller.snapshot() };
+      // RESTART-KEEP: the saved candidates go back to the strategy with the restore fact; their transactions are read
+      // again once the sources are up, and the migrations of the downtime are looked up from the saved slot.
+      candidates = restored.candidates;
+      tails = restored.tails;
+      this.#downtimeFrom = restored.asOf.slot;
+      for (const c of candidates) {
+        for (const [k, map] of [['create', this.#createSig], ['complete', this.#completeSig], ['migration', this.#migrationSig]] as const) {
+          const sig = c.signatures[k];
+          if (sig !== null && !map.has(c.mint)) map.set(c.mint, sig);
+        }
+      }
+      const ref: SavedStateRef = { file: PERSIST_FILE, sha256: fileSha256(loadFrom), version: restored.version };
+      if (loadFrom !== statePath) this.#record((r) => r.attach(PERSIST_FILE, ref.sha256, statSync(loadFrom).size));
+      this.#restored = { asOf: restored.asOf, ref };
+      this.#handoff = { ref, index: restored.index, labeller: restored.labeller };
       this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
       d.log(`Saved state restored as of slot ${restored.asOf.slot}; ${restored.coverage.length} coverage facts, ${restored.fills.length} gaps to fill.`);
     } else if (restored.reason !== 'no saved state') d.log(`Saved state discarded (${restored.reason}): starting as a fresh process.`);
@@ -478,6 +595,8 @@ export class Worker {
         this.#checkHalt(this.#d.timers.now());
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
+      // The recorder fault refuses entries from the moment it is found, ahead of its halt fact (WORKER-CRASH review B1).
+      entriesBlocked: () => this.#recorderFault,
       filled: (r) => {
         // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
         this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
@@ -506,7 +625,7 @@ export class Worker {
     // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}) }, startAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}), candidates, tails }, startAt);
     // PERSIST-2: the saved graduates series goes to the producer as a raw read (recorded, so a replay rebuilds it), so
     // the regime's survival check keeps its 15 days across a restart.
     if (graduates !== null) this.#feed.ingest('worker', { type: 'offchain', key: RAW.graduatesSeed, value: { source: 'persist', ...graduates } }, { receivedAt: startAt });
@@ -570,8 +689,72 @@ export class Worker {
     this.#feed.ingest('worker', { type: 'fact', key, value }, { receivedAt: atMs });
   }
 
+  /**
+   * A refused API command, journaled; at most COMMAND_LINES_PER_MINUTE lines a minute, so a client on the tailnet cannot
+   * grow the journal without bound. The refusals past that are counted on one line when the next minute's first comes.
+   */
+  #commandRefused(command: string, auth: string | null): void {
+    const now = this.#d.timers.now();
+    const r = this.#refusals;
+    if (now - r.since >= 60_000) {
+      this.#countRefusals();
+      r.since = now;
+      r.written = 0;
+    }
+    if (r.written >= COMMAND_LINES_PER_MINUTE) {
+      r.dropped++;
+      return;
+    }
+    r.written++;
+    this.#journal.write('decision', { action: 'command_refused', reasons: [`command ${command.slice(0, 32)} refused`, auth === null ? 'unknown command' : `needs ${auth}`] });
+  }
+
+  /** The refusals counted but not journaled, on one line; also at the heartbeat once the minute is over (a flood that stopped). */
+  #countRefusals(): void {
+    const r = this.#refusals;
+    if (r.dropped === 0) return;
+    this.#journal.write('decision', { action: 'command_refused', reasons: [`${r.dropped} more commands refused`, `not journaled one by one (over ${COMMAND_LINES_PER_MINUTE} a minute)`] });
+    r.dropped = 0;
+  }
+
+  /** Every recorder write goes through here: a throw (ENOSPC) is the recorder's fault, never the caller's crash. */
+  #record(write: (r: Recorder) => void): void {
+    const r = this.#recorder;
+    if (r === null || this.#recorderFault !== null) return;
+    try {
+      write(r);
+    } catch (e) {
+      this.#recorderFailed(e);
+    }
+  }
+
+  /**
+   * The recorder failed: it records nothing more in this process (its open files are sealed by the next start), entries
+   * halt with the reason from the next step on, and the critical alert goes up in /health and the heartbeat. It does not
+   * ingest or halt here: it can run inside the feed's ingest.
+   */
+  #recorderFailed(e: unknown): void {
+    if (this.#recorderFault !== null) return;
+    const code = isObj(e) && typeof e['code'] === 'string' ? e['code'] : e instanceof Error ? e.name : 'error';
+    this.#recorderFault = `recorder failed (${code}): recording stopped, entries off until a restart`;
+    this.#d.log(`Recorder failed: ${errorText(e)}. Recording stopped; entries halt, exits go on.`);
+    try {
+      this.#journal.write('alert', { level: 'critical', code: 'recorder_failed', reasons: [this.#recorderFault, errorText(e)] });
+    } catch (j) {
+      this.#d.log(`Journal: the recorder alert was not written: ${errorText(j)}.`);
+    }
+  }
+
+  /** The strategy's `savedState`: the restored index and labeller, once, only for the seed that names exactly them. */
+  savedStateFor(ref: SavedStateRef): { readonly index: DeployerIndex; readonly labeller: RugLabeller } {
+    const h = this.#handoff;
+    if (h === null || h.ref.file !== ref.file || h.ref.sha256 !== ref.sha256 || h.ref.version !== ref.version) throw new Error('the saved state the seed names is not the one this process restored');
+    this.#handoff = null;
+    return h;
+  }
+
   #onFrame(f: Frame): void {
-    this.#recorder?.frame(f);
+    this.#record((r) => r.frame(f));
     this.#probe?.frame(f);
     for (const s of this.#feeds.values()) if (s.src.sources.includes(f.source)) s.last = f.receivedAt;
     const b = f.body;
@@ -590,12 +773,12 @@ export class Worker {
         this.#liveStartAt = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: f.receivedAt };
       }
     }
-    if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:.+:gap$/.test(b.key)) this.#recorder?.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt });
+    if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:.+:gap$/.test(b.key)) this.#record((r) => r.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt }));
     if (b.type === 'offchain' || b.type === 'fact') this.#coverageJournal.fact(b.key, b.value, f.receivedAt);
   }
 
   #onRelease(e: { readonly kind: string; readonly key?: string; readonly value?: unknown; readonly moment: { readonly receivedAt: number } }, r: Release): void {
-    this.#recorder?.release(r, e.moment.receivedAt);
+    this.#record((rec) => rec.release(r, e.moment.receivedAt));
     if (e.kind !== 'market') return;
     const m = e as unknown as MarketEvent;
     // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
@@ -637,11 +820,12 @@ export class Worker {
       }
     }
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
+    this.#noteSignature(m);
   }
 
   #noteCreateSig(mint: string, signature: string): void {
     this.#createSig.set(mint, signature);
-    if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
+    if (this.#createSig.size > (this.#d.createSigsMax ?? CREATE_SIGS_MAX)) this.#createSig.delete(this.#createSig.keys().next().value!);
   }
 
   /**
@@ -651,10 +835,96 @@ export class Worker {
    */
   #noteCreates(events: readonly MarketEvent[]): void {
     for (const e of events) {
-      const mint = e.key.startsWith(LOG_CREATE_PREFIX) ? e.key.slice(LOG_CREATE_PREFIX.length) : e.key.startsWith(TX_CREATE_PREFIX) ? e.key.slice(TX_CREATE_PREFIX.length) : null;
-      const sig = isObj(e.value) && typeof e.value['signature'] === 'string' ? e.value['signature'] : CREATE_ID.exec(e.id)?.[1];
-      if (mint !== null && mint !== '' && sig !== undefined) this.#noteCreateSig(mint, sig);
+      const p = createSigOf(e);
+      if (p !== null) this.#noteCreateSig(p[0], p[1]);
     }
+  }
+
+  /** RESTART-KEEP: each restored candidate's migration, curve completion and create, read again at confirmed. */
+  #readRestored(): void {
+    for (const mint of this.#restoredMints.splice(0)) {
+      const sigs = [this.#migrationSig.get(mint), this.#completeSig.get(mint)];
+      for (const sig of sigs) if (sig !== undefined) void this.#d.fetchTx(sig, 'restore');
+      // The create: fetched again by its saved signature, or looked up from the mint's oldest transaction (SEED-2).
+      this.#createFor(mint);
+      if (sigs[0] === undefined) this.#d.log(`Restored candidate ${mint}: its migration was not seen; H9 waits for it.`);
+    }
+  }
+
+  /**
+   * RESTART-KEEP: the migrations of the downtime, from the migration authority's signatures after the saved slot up
+   * to the head seen now (the live watch, started before, covers the rest; the feed drops what both read). Each
+   * transaction goes on the feed at confirmed, as the live watch's fetch would put it, so the producer and the strategy
+   * find those candidates as they would live. A curve completion in its own transaction is read from the curve.
+   * Charged to the fill budget; a partial read is logged and the coins it missed are not candidates.
+   */
+  async #downtimeMigrations(): Promise<void> {
+    const rr = this.#d.restartReads;
+    const from = this.#downtimeFrom;
+    if (rr === undefined || from === null) return;
+    for (let i = 0; this.#lastSlot === null && i < 100 && !this.#stopping; i++) await new Promise<void>((r) => this.#d.timers.setTimeout(r, 200));
+    const until = this.#lastSlot;
+    if (until === null || until <= from) {
+      this.#d.log(`Downtime migrations not read: ${until === null ? 'no slot seen' : 'no downtime'}.`);
+      return;
+    }
+    const now = this.#d.timers.now();
+    const cap = Math.min(DOWNTIME_CREDIT_CAP, rr.budget.remaining(now));
+    rr.budget.spend(cap, now);
+    let used = 0;
+    try {
+      const res = await backfillAddress({ rpc: rr.rpc, timers: this.#d.timers, afterSlot: from, untilSlot: until, creditCap: cap, provider: 'helius', address: PUMP_MIGRATION_AUTHORITY, priority: P2, accept: () => [] });
+      used = res.creditsUsed;
+      let migrations = 0;
+      for (const record of res.records) {
+        this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
+        const evs = transactionEvents(record);
+        const m = evs.find((e) => e.name === 'CompletePumpAmmMigrationEvent');
+        if (m === undefined) continue;
+        migrations++;
+        if (!evs.some((e) => e.name === 'CompleteEvent') && 'bondingCurve' in m.data) used += await this.#readCompletion(rr, String(m.data.bondingCurve), record.signature, cap - used);
+      }
+      this.#d.log(`Downtime migrations: ${migrations} from slot ${from + 1n} to ${until}, ${used} credits, ${res.stoppedBy}${res.gaps.length > 0 ? `, ${res.gaps.length} unread` : ''}.`);
+    } finally {
+      rr.budget.refund(Math.max(0, cap - used), this.#d.timers.now());
+    }
+  }
+
+  /** The curve's completing transaction just before its migration (after it nothing trades on the curve): 1 page. */
+  async #readCompletion(rr: NonNullable<WorkerDeps['restartReads']>, curve: string, migration: string, credits: number): Promise<number> {
+    const cost = callCost('helius', 'getSignaturesForAddress');
+    if (credits < cost + COMPLETION_READS * callCost('helius', 'getTransaction')) return 0;
+    let used = cost;
+    try {
+      const sigs = await rr.rpc.getSignaturesForAddress(curve, { before: migration, limit: COMPLETION_READS }, P2);
+      for (const x of sigs) {
+        if (x.err !== null) continue;
+        used += callCost('helius', 'getTransaction');
+        const record = await rr.rpc.getTransaction(x.signature, P2);
+        if (record === null) continue;
+        this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
+        if (transactionEvents(record).some((e) => e.name === 'CompleteEvent')) break;
+      }
+    } catch (e) {
+      this.#d.log(`Curve completion of ${curve} not read: ${e instanceof Error ? e.message : 'error'}.`);
+    }
+    return used;
+  }
+
+  /**
+   * RESTART-KEEP: the transactions a candidate's gate facts come from (its curve completion and its migration, from a
+   * log or a fetched transaction; a fetched create too), so the saved state can name them for a restart to read again.
+   */
+  #noteSignature(m: MarketEvent): void {
+    const tx = /^ev:([^:]+):/.exec(m.id);
+    const at = /^(?:logs:)?pump:(CreateEvent|CompleteEvent|CompletePumpAmmMigrationEvent):(.+)$/.exec(m.key);
+    if (at === null) return;
+    const sig = tx !== null && !m.key.startsWith('logs:') ? tx[1]! : isObj(m.value) && typeof m.value['signature'] === 'string' ? m.value['signature'] : null;
+    if (sig === null) return;
+    const map = at[1] === 'CreateEvent' ? this.#createSig : at[1] === 'CompleteEvent' ? this.#completeSig : this.#migrationSig;
+    if (map === this.#createSig && m.key.startsWith('logs:')) return;
+    if (!map.has(at[2]!)) map.set(at[2]!, sig);
+    if (map.size > 200_000) map.delete(map.keys().next().value!);
   }
 
   /**
@@ -806,10 +1076,10 @@ export class Worker {
   /** One engine step: release what is due, decide, record, write. */
   step(): void {
     const now = this.#d.timers.now();
-    this.#recorder?.flush();
+    this.#record((r) => r.flush());
     this.#feed.advance(now);
     this.#engine.drain();
-    this.#recorder?.flush();
+    this.#record((r) => r.flush());
     this.#watchOpened();
     // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
     // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
@@ -862,7 +1132,9 @@ export class Worker {
       return false;
     }
     try {
-      saveState(join(this.#d.config.stateDir, PERSIST_FILE), state);
+      // RESTART-KEEP: each candidate with the transactions a restart reads again for its gate facts.
+      const candidates = state.state.candidates.map((c) => ({ ...c, signatures: { create: this.#createSig.get(c.mint) ?? null, complete: this.#completeSig.get(c.mint) ?? null, migration: this.#migrationSig.get(c.mint) ?? null } }));
+      saveState(join(this.#d.config.stateDir, PERSIST_FILE), { ...state.state, candidates }, { mintRows: state.mintRows });
       return true;
     } catch (e) {
       this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
@@ -966,6 +1238,7 @@ export class Worker {
       const mint = r.reasons[2];
       if (mint !== undefined) this.#createFor(mint);
     }
+    if (r.reasons[0] === CANDIDATE_RESTORED && r.reasons[2] !== undefined) this.#restoredMints.push(r.reasons[2]);
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);
@@ -1017,7 +1290,7 @@ export class Worker {
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
-      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
+      book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costRecords(), attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
       exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
@@ -1047,6 +1320,7 @@ export class Worker {
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
+    if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
     if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
@@ -1067,7 +1341,7 @@ export class Worker {
     // restart's status reads first.
     const asked = new Set<string>();
     for (;;) {
-      if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start reconcile' };
+      if (this.#stopping) return { ok: false, code: this.#stopCode, message: 'stopped during the start reconcile' };
       this.step();
       const book = this.#engine.book;
       for (const i of Object.values(book.intents)) {
@@ -1127,9 +1401,7 @@ export class Worker {
       return { ok: false, code: EXIT.crash, message: `health server: ${e instanceof Error ? e.message : 'error'}` };
     }
     try {
-      this.#api = await startApiServer(d.config.api.host, d.config.api.port, () => this.apiInputs(), (command, auth) => {
-        this.#journal.write('decision', { action: 'command_refused', reasons: [`command ${command} refused`, auth === null ? 'unknown command' : `needs ${auth}`] });
-      });
+      this.#api = await startApiServer(d.config.api.host, d.config.api.port, () => this.apiInputs(), (command, auth) => this.#commandRefused(command, auth));
     } catch (e) {
       return { ok: false, code: EXIT.crash, message: `API server: ${e instanceof Error ? e.message : 'error'}` };
     }
@@ -1181,7 +1453,11 @@ export class Worker {
       for (const mint of pending) this.#createFor(mint);
       this.#checkHalt(d.timers.now());
     }
-    if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
+    // RESTART-KEEP: after the seed (whose fill reserves the shared budget while it runs), in the background.
+    this.#readRestored();
+    void this.#downtimeMigrations().catch((e: unknown) => d.log(`Downtime migrations not read: ${e instanceof Error ? e.message : 'error'}.`));
+    // A loop crash during the seed stopped the worker with the crash code: the start reports that code, never 0.
+    if (this.#stopping) return { ok: false, code: this.#stopCode, message: 'stopped during the start' };
     d.log(`Worker up: boot ${this.#boot}, release ${d.config.gitSha.slice(0, 12)}, recorder ${d.config.recorder ? 'on' : 'off'}, simulation ${d.config.simulate ? 'on' : 'off'}, ${this.#sources.length} feeds.`);
     return { ok: true };
   }
@@ -1269,13 +1545,15 @@ export class Worker {
     if (reserved === null) d.log('Deployer index: no coverage seeded (no free slot ahead of the live events); H14 not covered until the look-back passes.');
     const pos = (k: number): Moment => ({ slot: reserved ?? 0n, txIndex: 0, ixIndex: k, receivedAt: now });
     this.#fact(SEED_KEY, {
-      ...(this.#restored === null ? {} : { state: { index: this.#restored.index, labeller: this.#restored.labeller } }),
+      ...(this.#restored === null ? {} : { state: { ref: this.#restored.ref } }),
       creates: order(result.mode === 'fill' ? saved.creates : [...saved.creates, ...result.creates]),
       coverage: order(coverage.filter((e) => e.key.startsWith('coverage:creates:') && compareMoments(e.moment, asOf) <= 0)),
       fill: order(result.mode === 'fill' ? result.creates : []),
       rugs: order(saved.rugs), asOf,
       history: coverage.map((e, k) => ({ ...e, id: `${e.id}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
     });
+    // The restored index is in the seed now (and the strategy's index): this copy is released (WORKER-GROW).
+    this.#restored = null;
     for (const e of [...result.creates, ...result.coverage, ...extra]) this.#deployerStore.keep(e);
     this.#noteCreates(result.creates);
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
@@ -1447,8 +1725,8 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
       ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
@@ -1457,19 +1735,16 @@ export class Worker {
   }
 
   /**
-   * OPS-SUMMARY: the daily summary, posted every `summaryMs` and just after Melbourne midnight. Only with a watchdog
-   * and its key; it runs beside the loop and never touches the engine, the ledger or the journal (it only reads it).
+   * OPS-SUMMARY: the daily summary, posted on the Melbourne wall-clock slots of `summaryMs`, just after Melbourne
+   * midnight, and once shortly after this (reconciled) start (SUMMARY-CLOCK). Only with a watchdog and its key; it runs
+   * beside the loop and never touches the engine, the ledger or the journal (it only reads it).
    */
   #startSummary(): void {
     const d = this.#d;
-    if (this.#summarizer() === null) return;
-    const run = (): void => {
-      if (this.#stopping) return;
-      void this.summaryNow().finally(() => {
-        if (!this.#stopping) this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
-      });
-    };
-    this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
+    const s = this.#summarizer();
+    if (s === null || this.#stopping) return;
+    this.#summaryClock = new SummaryClock({ timers: d.timers, everyMs: d.config.summaryMs, tick: () => this.summaryNow(), lastPostedMs: () => s.lastPostedMs });
+    this.#summaryClock.start();
   }
 
   /** The summarizer, made on first use; null without a watchdog or its key. */
@@ -1504,6 +1779,7 @@ export class Worker {
     const hb = this.#d.heartbeat;
     const url = this.#d.config.watchdogUrl;
     this.#beatSeq++;
+    if (this.#d.timers.now() - this.#refusals.since >= 60_000) this.#countRefusals();
     if (url === null || hb.key === null) return;
     const h = this.health();
     const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
@@ -1536,12 +1812,26 @@ export class Worker {
 
   /** Clean stop: entries stop, simulations finish (bounded), journal and recorder close, the ledger closes. */
   async stop(code: number = EXIT.clean): Promise<number> {
-    if (this.#stopping) return code;
+    if (this.#stopping) return this.stopped;
     this.#stopping = true;
+    this.#stopCode = code;
+    this.#stoppingNow(code);
+    try {
+      await this.#stop(code);
+    } catch (e) {
+      // A stop that fails half way (a full disk) still ends the process, as a crash.
+      this.#d.log(`Stop failed: ${errorText(e)}.`);
+      this.#stopCode = code = EXIT.crash;
+    }
+    this.#stoppedNow(code);
+    return code;
+  }
+
+  async #stop(code: number): Promise<void> {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
-    if (this.#summaryTimer !== null) d.timers.clearTimeout(this.#summaryTimer);
+    this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
     this.#watch?.stop();
@@ -1561,12 +1851,11 @@ export class Worker {
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
     this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: [code === EXIT.clean ? 'signal' : 'crash'] });
-    this.#recorder?.close();
+    this.#record((r) => r.close());
     this.#ledger.close();
     if (code === EXIT.clean) writeFileSync(join(d.config.stateDir, STATE_FILES.cleanStop), new Date(d.timers.now()).toISOString());
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
     await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));
-    return code;
   }
 
   /**
@@ -1576,10 +1865,14 @@ export class Worker {
    */
   async kill(): Promise<void> {
     this.#stopping = true;
+    // A killed process ends with no code of its own; a later `stop` on this object returns at once, as a crash.
+    this.#stopCode = EXIT.crash;
+    this.#stoppingNow(EXIT.crash);
+    this.#stoppedNow(EXIT.crash);
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
-    if (this.#summaryTimer !== null) this.#d.timers.clearTimeout(this.#summaryTimer);
+    this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#watch?.stop();
     this.#ledger.close();
@@ -1592,7 +1885,7 @@ export class Worker {
     const r = await this.reconcile();
     // A signal during the reconcile runs the clean stop, which closes both.
     if (!this.#stopping) {
-      this.#recorder?.close();
+      this.#record((r) => r.close());
       this.#ledger.close();
     }
     return r;

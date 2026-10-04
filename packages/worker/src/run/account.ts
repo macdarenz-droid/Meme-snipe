@@ -439,6 +439,31 @@ export class PaperAccount {
     return out;
   }
 
+  /**
+   * The account's costs that are no trade's (RISK-1b `costs`), dated and in micro-dollars: the one list risk reads (in
+   * `fact`) and the app's money totals add to the trades (APP-MONEY). The wallet's setup rent is one: it lowers equity and
+   * counts toward the day's and week's loss, and it is never a trade (R8, R11, R15 and trade statistics do not see it).
+   */
+  costs(): AccountCost[] {
+    return this.costRecords().map(({ atMs, amount, kind }) => ({ atMs, amount, kind }));
+  }
+
+  /** The same costs with their lamports, for the app's SOL totals (APP-MONEY). */
+  costRecords(): (AccountCost & { readonly lamports: bigint })[] {
+    const su = this.#s.setup;
+    const costs: (AccountCost & { readonly lamports: bigint })[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, lamports: su.lamports, kind: 'wallet_setup' }];
+    // Fees of entries that never filled (PAPER-1): account costs too, never trades.
+    const sf = this.#s.strayFolded;
+    if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: sf.cost, lamports: sf.lamports, kind: 'failed_entry' });
+    for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: r.cost, lamports: r.lamports, kind: 'failed_entry' });
+    // A loss that landed after its trade closed counts on the day it was booked (PAPER-2); a late gain is not counted
+    // (the safe side: a day's loss is never lowered after the fact).
+    for (const t of this.#s.trades) {
+      for (const x of t.late ?? []) if (x.usd !== null && x.usd < 0n) costs.push({ atMs: x.atMs, amount: -x.usd as MicroUsd, lamports: -x.lamports, kind: 'late_settlement' });
+    }
+    return costs;
+  }
+
   /** The account snapshot risk reads, with the ledger's held reservations and version read in one transaction. */
   fact(ledger: Ledger, book: Book, latches: Latches, solPrice: MicroUsd | null, nowMs: number): AccountFact {
     const { version, value: held } = ledger.withSnapshot(() => ledger.heldExposure());
@@ -446,19 +471,9 @@ export class PaperAccount {
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
       partials: (t.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),
       // R8-WHOLE: what landed after the close, for the win/loss class only (the money reaches equity as late_settlement).
-      ...(t.late === undefined || t.late.length === 0 ? {} : { late: t.late.map((x) => ({ atMs: x.atMs, lamports: x.lamports as Lamports, pnl: x.usd })) }),
+      ...(t.late === undefined || t.late.length === 0 ? {} : { late: t.late.map((x) => ({ atMs: x.atMs, lamports: x.lamports as Lamports, usd: x.usd })) }),
     }));
-    // The wallet's setup rent is an account cost (RISK-1b `costs`): it lowers equity and counts toward the day's and
-    // week's loss, and it is never a trade (R8, R11, R15 and statistics do not see it).
-    const su = this.#s.setup;
-    const costs: AccountCost[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, kind: 'wallet_setup' }];
-    // Fees of entries that never filled (PAPER-1): account costs too, never trades.
-    const sf = this.#s.strayFolded;
-    if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: sf.cost, kind: 'failed_entry' });
-    for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: r.cost, kind: 'failed_entry' });
-    // A loss that landed after its trade closed counts on the day it was booked (PAPER-2); a late gain is not counted
-    // (the safe side: a day's loss is never lowered after the fact).
-    for (const t of this.#s.trades) for (const x of t.late ?? []) if (x.usd !== null && x.usd < 0n) costs.push({ atMs: x.atMs, amount: -x.usd as MicroUsd, kind: 'late_settlement' });
+    const costs = this.costs();
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'entry').reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);
