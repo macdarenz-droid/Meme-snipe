@@ -86,7 +86,7 @@ interface CoverageGap {
 type Watch =
   | { readonly kind: 'slot'; readonly priority: Priority; handle: number }
   | {
-    readonly kind: 'logs'; readonly address: string; readonly opts: WatchOptions; readonly priority: Priority; handle: number; lastSignature: string | null;
+    readonly kind: 'logs'; readonly address: string; readonly opts: WatchOptions; priority: Priority; handle: number; lastSignature: string | null;
     /** Subscribed on the current connection. */
     acked: boolean; started: boolean; startPending: boolean; gap: CoverageGap | null;
     /** Slot of the last live log notification, and of the coverage start: where a gap opened now must begin. */
@@ -216,6 +216,22 @@ export class RpcStream {
    */
   onDropped(fn: (id: number, reason: 'halted' | 'refused') => void): void {
     this.#dropped.push(fn);
+  }
+
+  /**
+   * Moves a logs watch to another priority in place: the subscription and its coverage go on, with no gap (POS-1: a
+   * pool that becomes held keeps its trade stream). Returns false for an unknown or non-logs watch. Raising a watch is
+   * always allowed; a watch lowered above P1 while halted is dropped, as at the halt (and reported to `onDropped`).
+   */
+  setPriority(id: number, priority: Priority): boolean {
+    const w = this.#watches.get(id);
+    if (w === undefined || w.kind !== 'logs') return false;
+    w.priority = priority;
+    if (this.#halted && priority > P1) {
+      this.unwatch(id, 'halted');
+      for (const fn of this.#dropped) fn(id, 'halted');
+    }
+    return true;
   }
 
   unwatch(id: number, reason = 'unwatched'): void {
