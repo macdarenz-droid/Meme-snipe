@@ -17,6 +17,15 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 2. its predecessor's notes file;
 3. the PR's branch.
 
+**Handover completeness (checked at about 7:50 PM):**
+- **Session notes:** 22 of 23 first-account sessions wrote `docs/handover/sessions/<id>.md`. The missing one is the EXIT reviewer (session_01UXzG7h8LWHGLxtJzf7C95N). The owner had paused it in its own chat, and it stayed paused, so it didn't act on the handover order. Its finished verdicts are in `docs/handover/supervisor/supervisor-log.md`: POS-1 #88, EXIT-1c #93, EXIT-1d #100, EXIT-1e #102, WORKER-1b #82, and EXIT-1f #107 PASS at ce7c78b. Its #128 review was unfinished, with no verdict.
+- **Sandbox data:** 21 folders in `docs/handover/sandbox/` (20 sessions plus the supervisor's), each with a MANIFEST.md of every file, committed or excluded with the reason. Three are missing:
+  - the risk reviewer (017PBU): its copy command was refused by the environment's permission check, and its findings are in its notes;
+  - WATCH/G3 builder (01WGpx): the supervisor's request was refused by the same check, and its code and WIP branches are pushed;
+  - the EXIT reviewer (01UXzG): paused by the owner.
+  None of these was worked around. The owner can allow it, or resume those sessions, if the raw scratch files are wanted.
+- **Kept out of the public repo on purpose** (each listed in the manifests with a source or regenerate command): secrets, third-party pages, papers and clones, raw provider data (Helius terms), raw GeckoTerminal OHLCV, node_modules and worktrees.
+
 **What keeps running with nobody watching:**
 - **Server** (Vultr `zeroed`, Frankfurt): still on the pinned install with the stand-in (stub) worker. The real worker arrives only with a code-only Deploy after the e2e fix (#126) is merged and green on its merge commit. See "First steps" below.
 - **GitHub Actions:**
@@ -131,8 +140,9 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 | 128 | EXIT-1g: sell-only recovery (audit M7), N4, N6, N7 | ed0cdc0 | in review (01UXzG) | review; merges after #107 |
 | 132 | RISK-PARTIAL (audit M3): partial sales realise proceeds minus their share of the entry basis; core `RealizedPart`; whole-trade stats kept | a244707 | not yet reviewed; 22/22 mutants killed; 4504 tests; the audit example now gives $20.50 equity and no day loss. `account.json` trade records gain partial fields (the bot's own data) | risk review (017PBU); trivial DECISIONS merge with #124 |
 | 133 | PAPER-1 (audit M4, M5, M8 rent): one settlement module `core/src/fills/settle.ts` used by backtest and paper; fees per signature; `strayFees`; 'failed_entry'; dollars at each flow's own price; rent per the shared model | 65283f8 | not yet reviewed; 4537 tests; 7 of 10 new tests fail on base; 12/12 mutants. One existing test changed (boundary-marks NAV peak needs a 40% rise because rent now leaves at entry; assertion unchanged); a fill counted before reconcile fixed | risk review of the kind (017PBU) and a worker review |
-| 134 | OPS-GATE (audit O2): server and tag.sh share `commit_verdict`/`e2e_commit` (named `check`, no failed or running runs, full listing, e2e on the newest ops-touching commit); preview release waits for `check` | ec0d3e4 | not yet reviewed; 4529 tests; fixture fails on old files | ops review (01Ty8L) |
-| (new) | PNPM-CLAIMS (audit O3): `minimumReleaseAge 10080`, `trustPolicy no-downgrade`, `blockExoticSubdeps true` in pnpm-workspace.yaml (supervisor approved), with an offline test of each | 231dc8b on `claude/pnpm-claims` (draft PR being opened at the handover) | not yet reviewed | ops review |
+| 134 | OPS-GATE (audit O2): server and tag.sh share `commit_verdict`/`e2e_commit` (named `check`, no failed or running runs, full listing, e2e on the newest ops-touching commit); preview release waits for `check` | 8c3aef3 | not yet reviewed; 4529 tests. Its own e2e was red at ec0d3e4 (the e2e marked the newest signed merge green too early); 8c3aef3 fixes it, CI not yet seen | CI, ops review |
+| 135 | PNPM-CLAIMS (audit O3): `minimumReleaseAge 10080`, `trustPolicy no-downgrade`, `blockExoticSubdeps true` in pnpm-workspace.yaml (supervisor approved), with an offline test of each (3fc13c3 strips pnpm's npm_config_* from child installs; 4/4 under `pnpm test`, full check unfinished) | 3fc13c3 | not yet reviewed | full check, ops review |
+| 136 | SEC-1 (audit O1): preview APK signing out of the Actions cache; exposure verified without touching the key (run 37188909095 restored the keystore cache); plan and owner steps in docs/ANDROID_PREVIEW.md on the branch | 6280ae5 (WIP) | not yet reviewed; android-workflow tests pass (9); conflicts with #134 in the release job | finish after #134; owner creates the secret |
 | 129 | STATS-1g: audit S1 (α/4 per part, t-bound execution allowance), S3 (exact canonical fingerprint, n_power revalidated on an independent seed, MC SE), S4 (CR1 cluster-robust by creator, 17.5% → 4.45% miss rate) | 89df086 | not yet reviewed; `pnpm check` green locally (4,520) | stats review, then mark ready for CI |
 | 130 | EXIT-ROUTE: sell route from the held pool's quote (audit M6) | 8a6a71e | not yet reviewed; full suite green locally (4,522) | worker/facts review |
 | 131 | PERSIST-3: deployer, deployerSales and flow saved with the exits file; unrestorable means sell-only | 561ee38 | new draft; its 4 tests pass, full suite not run | full check, review (PERSIST reviewer) |
