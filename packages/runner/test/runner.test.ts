@@ -5,7 +5,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { STUB_ENTRY } from '../src/contract.ts';
+import { type Health, STUB_ENTRY } from '../src/contract.ts';
 import { LocalControl } from '../src/control.ts';
 import { reportMarkdown, type DrillOutcome, type Report } from '../src/report.ts';
 import { httpHealth, runSegment } from '../src/runner.ts';
@@ -155,6 +155,46 @@ describe('runner with the stub worker', () => {
       if (d.midTrade) expect(d.state!.notes.join(' ')).toMatch(/paper position\(s\) lost|^reconciled/);
     }
     expect(reportMarkdown(r)).toContain("## Recovery by cause");
+  }, 90_000);
+
+  // Root cause of the intermittent "drills every cause" failure (supervisor card, 2026-10-05): under load a reply can
+  // show a trade that closes before the kill. That drill has nothing to keep, so it passes but does not exercise its
+  // cause, and a cause planned once then failed drills_by_cause. Here it happens on purpose: while the boot the reboot
+  // drill kills is up, every trade is shown only once it has closed, so that kill always finds nothing to keep.
+  it('a restart that kills with nothing to keep is tried again, so its cause is still exercised (drills_by_cause)', async () => {
+    const t = await setup();
+    const boots = new Set<string>();
+    let held: Health | null = null;
+    const lateTrades = async (addr: string): Promise<Health | null> => {
+      const h = await httpHealth(addr);
+      if (h === null) return h;
+      boots.add(h.boot);
+      // The second boot is the one the reboot drill kills (a crash first); every other boot is shown as it is.
+      if (boots.size !== 2 || h.boot !== [...boots][1]) return h;
+      const open = h.open_position !== null || h.unresolved_intents.count > 0;
+      if (open) {
+        held ??= h;
+        return { ...h, open_position: null, open_positions: [], pending_exits: [], unresolved_intents: { ...h.unresolved_intents, count: 0, oldest_age_s: null, trades: [] } };
+      }
+      // Closed: the reply that showed it open arrives now, too late.
+      const late = held;
+      held = null;
+      return late ?? h;
+    };
+    const res = await runSegment({
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy', fetchHealth: lateTrades,
+      sampleMs: 100, recoverMs: 6000, log: quiet, control: t.control(), segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'wipe', backupEveryMs: 1500,
+      newRun: { runId: 'run', targetMs: 24_000, entry: STUB_ENTRY, restarts: 4, causes: ['crash', 'reboot', 'host-loss', 'chain-rebuild'] as const, restartWindowMs: 2000, feedDropMs: 500, rpcDrops: 1, rpcDropMs: 700 },
+    });
+    const r = res.report as Report;
+    const reboots = r.drills.filter((d) => d.kind === 'restart' && d.cause === 'reboot');
+    // The planned reboot passed with nothing to keep, and was tried again.
+    expect(reboots[0]).toMatchObject({ pass: true, keep: 0 });
+    expect(reboots[0]!.notes.join(' ')).toContain('nothing to keep at the kill: tried again (try 1 of 3)');
+    expect(reboots.length).toBeGreaterThan(1);
+    expect(reboots.at(-1)!.id).toMatch(/^restart-2-retry-\d$/);
+    expect(r.recovery_by_cause['reboot']!.exercised).toBeGreaterThan(0);
+    expect(r.checks).toMatchObject({ drills_by_cause: true, every_drill_passed: true, recovered_state: true });
   }, 90_000);
 
   it.each([['fresh replies', 0], ['replies 150 ms old (a loaded runner)', 150]])('on the qualifying host, host loss and chain rebuild run as a reconcile-only tabletop beside the live worker, %s', async (_, staleMs) => {

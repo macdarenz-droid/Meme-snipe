@@ -894,6 +894,28 @@ Supervisor rulings, late evening:
 - **2026-10-04 · RUN-1d drill causes.** Restarts are drilled by cause: crash, reboot, host loss (backup restore) and chain rebuild (no backup), plus RPC loss; recovery is timed to "reconciled and able to exit" on the monotonic clock. On the qualifying host the reboot is real (zeroed-dryrun-reboot, installed through OPS-1d), and host loss and chain rebuild are a tabletop: a second, reconcile-only worker (zeroed-worker-tabletop) cold-starts beside the live one from the newest backup or an empty state dir, so the run's ledger and evidence are never wiped; the report states that off-site backup is off. The tabletop leaves the live worker running rather than stopping it as first planned: the drill measures the cold start, and stopping the live worker would only add down time to the qualifying run. The journal and recorder are evidence and survive every drill. A paper position cannot be rebuilt from chain, so a chain rebuild reports such positions as lost rather than asking for their chain-rebuilt exposure. The runner's local backup copies files while the worker runs; a SQLite ledger copied that way can be torn, which only the rehearsal can hit (the host uses SQLite's online backup).
 - **2026-10-04 · RUN-1e tabletop follow-ups (review of #64).** A host tabletop host loss is compared with the live worker's own health replies, not a separate record at backup time: each sample keeps what a restart would have to keep, and the restore is held to the state those samples show, unchanged and without a gap, over the 120 s before the backup file's time (`zeroed-backup` stamps the file after its SQLite online backup and integrity check, so the read falls in that window). A change, a gap or an invalid reply in that window makes the drill "self-reported, not compared to the backup" rather than guessing which side of the change the backup caught. The runner `chown`s the tabletop dir to `zeroed-worker` after every restore, because systemd re-owns a StateDirectory only when its top folder's owner differs, so a second tabletop's root-extracted files would otherwise be unreadable. A VPS run on `--strategy none` says it is not qualifying, named or not; `qualifying_start` fails every VPS run without a name and judges a named one by its start lines.
 - **2026-10-04 · RUN-1f: only a compared host loss counts.** On a VPS run, `drills_by_cause` counts a host-loss tabletop only when its restore was compared with the live worker at the backup; a self-reported one stays in the report, labelled, and is tried again after the next hourly backup, at most 3 times (each try starts the tabletop worker once, a few credits). Three tries cover about three hours of quiet state around a backup; a run that never gets one fails `drills_by_cause` rather than passing on the worker's own word.
+- **2026-10-05 · A restart with nothing to keep is tried again (root cause of the intermittent "drills every cause" failure).**
+  - **The defect.** A restart drill counts toward `drills_by_cause` only when it had something to keep. Under load a health reply can show a trade that closes before the kill. The runner rightly finds that close in the journal and counts nothing to keep, so the drill passes without exercising its cause.
+  - **How it showed.** A cause planned once then failed `drills_by_cause` on timing alone, in the test with 150 ms-old replies and equally in a real run. The test failed 1 in 8 under full CPU load: the reboot's only drill had "closed between the last reply and the kill" and keep 0. It was never a flake.
+  - **The fix.** `unexercisedRetry` tries such a drill again, one drill window later, at most 3 times. The conditions:
+    - it passed;
+    - it had nothing to keep;
+    - no drill of its cause has been exercised;
+    - it ran on the live worker (a tabletop keeps RUN-1f's own retry);
+    - no other retry is waiting.
+  - A failed drill is never retried: its failure stands. Each try is its own labelled drill (`<id>-retry-<n>`), as with host loss.
+  - **Tests.**
+    - The runner with the stub. While the boot the reboot drill kills is up, every trade is shown only once it has closed, so that kill always finds nothing to keep. The reboot is tried again and exercised, and `drills_by_cause` holds. It failed before.
+    - Unit cases for every condition.
+  - **Mutants.** 8 of 8 killed:
+    - keep ignored;
+    - exercised ignored;
+    - no tries;
+    - a failed drill retried;
+    - a tabletop retried;
+    - a waiting retry ignored;
+    - the try limit off by one;
+    - the retry never scheduled.
 
 
 ## External review of the promotion gates (STATS-1b)

@@ -521,7 +521,19 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
             notes.push(`tried again after the next backup (try ${attempt} of ${HOST_LOSS_RETRIES})`);
           } else notes.push(`no compared restore after ${HOST_LOSS_RETRIES} retries`);
         }
-        record({ ...base, midTrade: p.midTrade === true, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
+        const pass = p.ok === true && state.state_ok && state.universe_ok && !unknown;
+        // A drill that passed with nothing to keep did not exercise its cause: the trade closed between the reply and the
+        // kill, or none opened in the window. It proves nothing, so the cause is tried again one window later while no
+        // drill of it has been exercised and tries remain (a cause planned once otherwise fails drills_by_cause on timing).
+        const again = unexercisedRetry({ id: p.drill.id, cause, pass, keep: p.keep ?? 0, offRun: hostTable, retryPending: retry !== null, outcomes });
+        if (again === 'retry') {
+          const root = p.drill.id.replace(/-retry-\d+$/, '');
+          const attempt = p.drill.id === root ? 1 : Number(p.drill.id.slice(root.length + '-retry-'.length)) + 1;
+          retry = { drill: root, attempt, dueAt: Date.now() + p.drill.windowMs };
+          writeFileSync(P.retry, JSON.stringify(retry));
+          notes.push(`nothing to keep at the kill: tried again (try ${attempt} of ${UNEXERCISED_RETRIES})`);
+        } else if (again === 'used') notes.push(`nothing to keep at the kill after ${UNEXERCISED_RETRIES} retries`);
+        record({ ...base, midTrade: p.midTrade === true, at: k, pass, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (pending !== null && p.killedAt !== undefined && since() > recoverMs) {
         if (p.table) await endTabletop(p.drill.id, p.table);
@@ -932,6 +944,24 @@ interface HostLossRetry {
 }
 
 const retryId = (r: HostLossRetry): string => `${r.drill}-retry-${r.attempt}`;
+
+/** Retries of a restart drill that passed with nothing to keep (its cause not exercised), at most. */
+export const UNEXERCISED_RETRIES = 3;
+
+/** A passed restart of `cause` that had something to keep: the report's `exercised` (report.ts recoveryByCause). */
+const exercised = (d: DrillOutcome, cause: string): boolean => d.kind === 'restart' && (d.cause ?? 'crash') === cause && d.pass && d.skipped !== true && (d.keep ?? 0) > 0;
+
+/**
+ * Whether a restart drill just recorded is tried again because it did not exercise its cause: it passed with nothing to
+ * keep, no drill of its cause has been exercised, it ran on the live worker (a tabletop has its own retry) and no other
+ * retry is waiting. A failed drill is never retried: its failure stands. 'used' when the tries are spent.
+ */
+export const unexercisedRetry = (d: { readonly id: string; readonly cause: string; readonly pass: boolean; readonly keep: number; readonly offRun: boolean; readonly retryPending: boolean; readonly outcomes: readonly DrillOutcome[] }): 'retry' | 'used' | null => {
+  if (d.offRun || d.retryPending || !d.pass || d.keep > 0 || d.outcomes.some((o) => exercised(o, d.cause))) return null;
+  const m = /-retry-(\d+)$/.exec(d.id);
+  const attempt = m === null ? 1 : Number(m[1]) + 1;
+  return attempt <= UNEXERCISED_RETRIES ? 'retry' : 'used';
+};
 
 /** Retries of a self-reported host-loss tabletop, at most; each starts the tabletop worker once. */
 export const HOST_LOSS_RETRIES = 3;
