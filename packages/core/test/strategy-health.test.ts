@@ -67,7 +67,7 @@ describe('strategy health reducer (observation only)', () => {
     // S gains about 0.955 per loss less 0.015 per win: past h = 7.1 at the eighth loss (episode 40).
     expect(firstPause).toBe(39);
     const signs = r.observations.map((o) => (o.z < 0 ? 1 : 0));
-    for (let i = 0; i + 20 <= signs.length; i++) expect(signs.slice(i, i + 20).reduce((x, y) => x + y, 0)).toBeLessThan(5);
+    for (let i = 0; i + 20 <= signs.length; i++) expect(signs.slice(i, i + 20).reduce((x: number, y) => x + y, 0)).toBeLessThan(5);
   });
 
   test('4. a failed entry that paid fees and opened no position is one observation', () => {
