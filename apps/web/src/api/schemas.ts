@@ -91,6 +91,10 @@ function build(m: Mode): Record<Endpoint, Check> {
         liquidationValueUsd: usd,
         unrealizedUsd: usd,
         costsSoFarUsd: usd,
+        // APP-TRADE: optional() so a worker from before them still loads.
+        pnlUsd: optional(nullable(usd)),
+        markPriceUsd: optional(nullable(dec)),
+        markedAt: optional(nullable(iso)),
         exitRules: arr(obj({ mode, rule: EXIT_RULE, trigger: str, state: oneOf('armed', 'triggered') }), 20),
         exit: oneOf('none', 'pending', 'blocked'),
         worker: oneOf('watching', 'exiting', 'reconciling'),

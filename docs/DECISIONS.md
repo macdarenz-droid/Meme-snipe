@@ -1423,3 +1423,24 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - `packages/ops/test/host-logic.test.ts`: `worker_shakedown`, the `worker-start` and `worker-smoke` wiring.
   - `ops/test/e2e.sh` 10b2: the release built from this commit shows S0 and the four parts in `/health`, the start line (not qualifying, the edge) and the worker's environment. The trial refuses the shakedown in a release with a qualifying run, and a block with a name outside the five.
   - Hand mutants, all caught: `ENV_NAMES` without the name; parity without the set; a fixed `entry_rule`; the wallet refusal only when qualifying; the edge one lower and one higher; a tip-account stand-in; `worker_shakedown` with no name check, a longer value limit, or shell characters allowed.
+
+## Open trade as a live trade (APP-TRADE, `run/api.ts` `openPnl`, `lib/money.ts` `returnHundredths`, `dashboard/Sections.tsx` `OpenPosition`)
+- **2026-10-05 · The P&L has one definition.** `openPnl` (worker) is the rest's liquidation quote (net of the pool's fees), plus what exits already sold for, less what the entry paid and every network fee paid so far. It is in exact lamports. Once nothing is left it equals the closed trade's net in `account.ts` (test on a real closed trade).
+  - "Unrealized" is its gross (before network fees), "Costs so far" its fees, and "P&L" its net. So P&L = Unrealized − Costs so far.
+  - Before this, Unrealized left out a partial exit's proceeds.
+  - P&L is converted to dollars like a closed trade's net: gains rounded down, losses up. It is null without a SOL price, and a rest that cannot be quoted counts as worth nothing.
+- **2026-10-05 · Return has one formula.** It is net ÷ size, exact on micro-dollars, rounded half away from zero to 0.01%.
+  - The open trade uses the P&L. Closed trades (list and detail) use Net ÷ Size.
+  - It is never computed on gross. It is toned by the printed value.
+- **2026-10-05 · Price now.** It is the rest's executable price (liquidation quote per token held), the price the stops judge. It uses the triggers' "$" and 4 significant digits.
+  - `markedAt` is when its pool was read. Past the app's stale rule (15 s) both turn the loss colour.
+  - "Running" counts from the server's `openedAt`, re-read every second, never from the phone.
+- **2026-10-05 · No margin row.** The bot buys outright (spot swaps on the pool, no borrowing, no leverage), so the size is the whole amount at risk, and a margin row would only repeat Size.
+- **2026-10-05 · Older workers.** `pnlUsd`, `markPriceUsd` and `markedAt` are `optional()` in the app's schema, so a worker without them loads and shows "—".
+  - An app older than these fields refuses them. After APP-COMPAT (#162) it reads "App update needed".
+- **2026-10-05 · Discovered.**
+  - "Volume 24h" and "Holders" are removed. The worker has no 24-hour volume for tokens minutes old, and its holder read is the largest accounts, not a count. A column that is always "—" says nothing.
+  - Liquidity was "—" until the pool's first swap was seen. It came from `poolOf`, which also needs the pool's fee terms (from a fees fact or the latest swap). It now reads only the reserves (`reservesOf`). The owner's 1m19s token fits this cause; the phone's data can't be replayed, so that is not proven.
+- **2026-10-05 · Evidence.**
+  - `apps/web/test/app-trade.test.ts` and `packages/worker/test/app-trade-api.test.ts`: 15 tests, all failing before.
+  - Hand mutants, all caught: Return on gross; Running from the mark's time; Running from the phone's clock; P&L without fees; P&L without exit proceeds; Return truncated; stale at exactly 15 s; Discovered back on `poolOf`; the mark at the entry price; losses rounded toward zero.

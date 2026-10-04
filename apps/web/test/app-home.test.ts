@@ -115,7 +115,7 @@ describe('Home: Discovered', () => {
     expect(t).toContain('FAKE1');
     expect(t).not.toMatch(/Waiting for the data feed|No tokens discovered|Not started/);
     const rows = rowsOf(view, AT);
-    expect(rows[0]).toMatchObject({ ageSeconds: 7 * 60, volume24hUsd: null, holders: null, security: 'passed', dataAgeSeconds: 2 });
+    expect(rows[0]).toMatchObject({ ageSeconds: 7 * 60, security: 'passed', dataAgeSeconds: 2 });
     expect(rows[4]!.liquidityUsd).toBeNull();
     expect(rows[5]).toMatchObject({ symbol: null, dataAgeSeconds: null });
     expect(t).toContain('—');

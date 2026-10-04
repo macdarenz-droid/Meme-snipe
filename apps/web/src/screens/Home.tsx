@@ -6,7 +6,7 @@ import { schemaFor } from '../api/schemas.ts';
 import { useEndpoint, type Loaded } from '../api/useEndpoint.ts';
 import { Empty, Section } from '../components/ui.tsx';
 import { Load, OfflineContext } from '../dashboard/State.tsx';
-import { formatDuration, formatPercent, formatUsd, shortAddress } from '../lib/format.ts';
+import { formatDuration, formatUsd, shortAddress } from '../lib/format.ts';
 import { usdToPlot } from '../lib/money.ts';
 import type { TokenRowView } from './types.ts';
 
@@ -18,7 +18,7 @@ export function rowsOf(view: DiscoveredView, asOf: string): TokenRowView[] {
   const at = Date.parse(asOf);
   return view.tokens.map((t) => ({
     mint: t.mint, symbol: t.symbol, ageSeconds: seconds(t.migratedAt, at), venue: t.venue,
-    liquidityUsd: t.liquidityUsd === null ? null : usdToPlot(t.liquidityUsd), volume24hUsd: null, holders: null, topHolderShare: null,
+    liquidityUsd: t.liquidityUsd === null ? null : usdToPlot(t.liquidityUsd),
     security: t.checks, promoted: false, dataAgeSeconds: t.checkedAt === null ? null : seconds(t.checkedAt, at),
   }));
 }
@@ -35,8 +35,6 @@ export function TokenTable({ rows }: { rows: TokenRowView[] }) {
             <th scope="col" className="num">Age</th>
             <th scope="col">Venue</th>
             <th scope="col" className="num">Liquidity</th>
-            <th scope="col" className="num">Volume 24h</th>
-            <th scope="col" className="num">Holders</th>
             <th scope="col">Security</th>
             <th scope="col" className="num">Data age</th>
           </tr>
@@ -54,11 +52,6 @@ export function TokenTable({ rows }: { rows: TokenRowView[] }) {
               <td className="num">{formatDuration(r.ageSeconds)}</td>
               <td>{r.venue}</td>
               <td className="num">{r.liquidityUsd === null ? NONE : formatUsd(r.liquidityUsd)}</td>
-              <td className="num">{r.volume24hUsd === null ? NONE : formatUsd(r.volume24hUsd)}</td>
-              <td className="num">
-                {r.holders === null ? NONE : r.holders}
-                {r.topHolderShare !== null && <span className="muted"> top {formatPercent(r.topHolderShare, 0)}</span>}
-              </td>
               <td className={r.security === 'passed' ? '' : 'muted'}>{SECURITY[r.security]}</td>
               <td className="num">{r.dataAgeSeconds === null ? NONE : formatDuration(r.dataAgeSeconds)}</td>
             </tr>
