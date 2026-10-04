@@ -8,7 +8,7 @@ import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { attemptAlpha, authoriseHoldout, endAttempt, holdoutConfigId, type HoldoutPlan, openSealedHoldout, readHoldoutStore, recordHoldoutG1, type RegistryVcs, registerAttempt, researchDays, runAndSealHoldout, runHoldout, setHoldoutPlan, writeHoldoutStore } from '../src/holdout.ts';
 import { gitRegistryVcs } from '../src/registry-git.ts';
-import { holdoutReady } from '../../core/src/stats/index.ts';
+import { holdoutReady, registerHoldout } from '../../core/src/stats/index.ts';
 import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
 import { buildReport } from '../src/report.ts';
 import { runBacktest, type RunOptions } from '../src/run.ts';
@@ -204,13 +204,20 @@ describe('holdout mode', () => {
     fromDay: o.research.holdout.fromDay, entryCutoffDay: o.research.holdout.entryCutoffDay, tailEndDay: o.research.holdout.tailEndDay, familySize,
     tieSalt: 'test-ties', alpha: { first: 0.04, laterBase: 0.01 }, decoderBoundaries: [], procedure: ['test procedure'], details: {},
   });
+  // STATS-1c: registering freezes each holdout's size requirement and n_power seed. The synthetic run has a few trades,
+  // so the tests that open a holdout freeze 1.
+  const REQ = { requiredTrades: 1, requiredDays: 1, nPower: 1, nPowerSeed: 1 };
+  // That needs the test-only requirement floor (production keeps the owner's 300 trades on 10 days).
+  const TEST_FLOOR = { minTrades: 1, minDays: 1 };
   /** Sets the plan if the registry has none, then registers S0's attempt for one U2 holdout. */
-  const register = (a: Parameters<typeof authoriseHoldout>[0], holdoutId: string, o: RunOptions = opts(), attempt = 1, familySize = 1) => {
+  const register = (a: Parameters<typeof authoriseHoldout>[0], holdoutId: string, o: RunOptions = opts(), attempt = 1, familySize = 1, requirement = REQ) => {
     a.vcs?.check();
-    if (!existsSync(a.registryPath) || readHoldoutStore(a.registryPath).plan === null) setHoldoutPlan(a, planOf(o, familySize), o.research);
-    return authoriseHoldout(a, { attempt, holdouts: [{ holdoutId, universe: 'U2' }] }, o);
+    if (!existsSync(a.registryPath) || readHoldoutStore(a.registryPath).plan === null) setHoldoutPlan(a, planOf(o, familySize), o.research, TEST_FLOOR);
+    return authoriseHoldout(a, { attempt, holdouts: [{ holdoutId, universe: 'U2', requirement }] }, o);
   };
   const window = { fromDay: '2026-09-20', toDay: '2026-09-20' };
+  // The synthetic tail ends 2026-09-21: the STATS-1c registry opens a seal only from then on.
+  const TAIL_END = Date.parse('2026-09-21T00:00:00Z');
 
   test('seals in the STATS-1 registry; the size check reads the counts alone', () => {
     const a = authority('seal');
@@ -264,18 +271,55 @@ describe('holdout mode', () => {
   test('a window started under one id cannot be registered or run again under another id or universe (H2)', () => {
     const a = authority('overlap');
     register(a, 'h-first', opts(), 1, 2);
-    expect(() => authoriseHoldout(a, { attempt: 2, holdouts: [{ holdoutId: 'h-u1', universe: 'U1' }] }, opts())).toThrow(/produces U2/);
+    expect(() => authoriseHoldout(a, { attempt: 2, holdouts: [{ holdoutId: 'h-u1', universe: 'U1', requirement: REQ }] }, opts())).toThrow(/produces U2/);
     runAndSealHoldout({ ...opts(), ledgerPath: join(dir, 'overlap1.sqlite') }, { ...a, byUniverse: { U2: 'h-first' }, window });
     // Another id on the same window: refused (attempt 2 waits for attempt 1 to be scored, then may not overlap it; see the
     // attempt k ≥ 2 test).
     expect(() => register(a, 'h-second', opts(), 2, 2)).toThrow(/not scored yet/);
   });
 
+  test('the STATS-1c registry owns α, the tail, the frozen requirement and the earliest open', () => {
+    const a = authority('core');
+    const o = opts();
+    const st = register(a, 'h-core');
+    expect(st.registry.entries[0]).toMatchObject({ attempt: 1, alpha: 0.04, requirement: REQ, fromDay: '2026-09-20', toDay: '2026-09-20', tailEnd: '2026-09-21' });
+    expect(st.registry.rule).toEqual({ windowDays: 28, tailDays: 0, ...TEST_FLOOR });
+    // Without the test floor, the owner's 300 trades on 10 days hold: a smaller requirement is refused, nothing written.
+    const p = authority('floor');
+    setHoldoutPlan(p, planOf(o, 1), o.research);
+    expect(() => authoriseHoldout(p, { attempt: 1, holdouts: [{ holdoutId: 'h-floor', universe: 'U2', requirement: REQ }] }, o)).toThrow(/below the floor of 300 on 10/);
+    expect(readHoldoutStore(p.registryPath).registry.entries).toEqual([]);
+    const configId = holdoutConfigId(o, a);
+    const sealed = runAndSealHoldout({ ...o, ledgerPath: join(dir, 'core.sqlite') }, { ...a, byUniverse: { U2: 'h-core' }, window });
+    recordHoldoutG1(a, { holdoutId: 'h-core', configId, passed: true, evaluatedOn: 'practice' });
+    const open = (nowMs: number, requiredTrades = 1) => openSealedHoldout(a, 'h-core', { configId, ledgerHash: sealed.ledgerHash, requiredTrades, minDays: 1, nowMs });
+    // Before the tail has matured: refused, nothing burned.
+    expect(() => open(TAIL_END - 1)).toThrow(/stays sealed until 2026-09-21/);
+    // A requirement other than the frozen one: refused, nothing burned.
+    expect(() => open(TAIL_END, 2)).toThrow(/froze 1 trades/);
+    expect(readHoldoutStore(a.registryPath).registry.entries[0]).toMatchObject({ seal: 'sealed', burned: false });
+    // 'short' reads the frozen requirement (1 trade on 1 day) from the registry: this holdout is ready, so not short.
+    expect(() => endAttempt(a, 1, 'short', new Date(TAIL_END))).toThrow(/is ready/);
+    expect(open(TAIL_END).registry.entries[0]).toMatchObject({ seal: 'opened', burnReason: 'scored' });
+    // A holdout registered without a frozen requirement (an older registry) is refused before anything runs.
+    const l = authority('legacy');
+    setHoldoutPlan(l, planOf(o, 1), o.research, TEST_FLOOR);
+    const store = readHoldoutStore(l.registryPath);
+    const reg = registerHoldout(store.registry, { holdoutId: 'h-legacy', universe: 'U2', configId: holdoutConfigId(o, l), fromDay: '2026-09-20', toDay: '2026-09-20', registeredOnDay: '2026-09-01' });
+    writeHoldoutStore(l.registryPath, { ...store, registry: reg, attempts: [{ index: 1, alpha: 0.04, window: { fromDay: '2026-09-20', entryCutoffDay: '2026-09-21', tailEndDay: '2026-09-21' }, holdoutIds: ['h-legacy'], configIds: { 'h-legacy': holdoutConfigId(o, l) }, registeredAt: 'x', started: null, ended: null }] });
+    expect(() => runAndSealHoldout({ ...o, ledgerPath: join(dir, 'legacy.sqlite') }, { ...l, byUniverse: { U2: 'h-legacy' }, window })).toThrow(/no frozen size requirement/);
+    expect(existsSync(join(dir, 'legacy.sqlite'))).toBe(false);
+  });
+
   test('entries stop at the cutoff while the run keeps observing (final holdout form)', () => {
     const a = authority('cutoff');
-    const early = opts({ research: { ...RESEARCH, holdout: { ...RESEARCH.holdout, entryCutoffDay: '2026-09-20' } } });
+    // STATS-1c: a window has at least one entry day, so the only entry day (09-19) comes before the data and the data's
+    // day (09-20) is the observation tail.
+    const empty = opts({ research: { ...RESEARCH, holdout: { ...RESEARCH.holdout, entryCutoffDay: '2026-09-20' } } });
+    expect(() => register(authority('cutoff-empty'), 'h-empty', empty)).toThrow(/in order/);
+    const early = opts({ research: { ...RESEARCH, holdout: { ...RESEARCH.holdout, fromDay: '2026-09-19', entryCutoffDay: '2026-09-20' } } });
     register(a, 'h-cut', early);
-    const out = runAndSealHoldout({ ...early, ledgerPath: join(dir, 'cutoff.sqlite') }, { ...a, byUniverse: { U2: 'h-cut' }, window });
+    const out = runAndSealHoldout({ ...early, ledgerPath: join(dir, 'cutoff.sqlite') }, { ...a, byUniverse: { U2: 'h-cut' }, window: { fromDay: '2026-09-19', toDay: '2026-09-20' } });
     expect(out.counts['U2']?.entries ?? 0).toBe(0);
     expect(out.ledgerHash).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -390,18 +434,18 @@ describe('holdout mode', () => {
     const commits: string[] = [];
     const a = { ...authority('typed'), vcs: { check: () => {}, commit: (m: string) => { commits.push(m); } } };
     const o = opts();
-    expect(() => registerAttempt(a, { index: 1, entries: [{ holdoutId: 'x', universe: 'U2', configId: 'c' }] })).toThrow(/plan/);
+    expect(() => registerAttempt(a, { index: 1, entries: [{ holdoutId: 'x', universe: 'U2', configId: 'c', requirement: REQ }] })).toThrow(/plan/);
     expect(() => setHoldoutPlan(a, { ...planOf(o, 2), entryCutoffDay: '2026-10-19' }, o.research)).toThrow(/research config/);
-    setHoldoutPlan(a, planOf(o, 2), o.research);
-    setHoldoutPlan(a, planOf(o, 2), o.research);
+    setHoldoutPlan(a, planOf(o, 2), o.research, TEST_FLOOR);
+    setHoldoutPlan(a, planOf(o, 2), o.research, TEST_FLOOR);
     expect(() => setHoldoutPlan(a, { ...planOf(o, 2), tieSalt: 'other' }, o.research)).toThrow(/fixed once set/);
     // A skipped index is refused, recorded, and burns what it names (nothing registered yet, so nothing to burn).
-    expect(() => registerAttempt(a, { index: 2, entries: [{ holdoutId: 'h-a', universe: 'U2', configId: 'c' }] })).toThrow(/next is 1/);
-    const s1 = authoriseHoldout(a, { attempt: 1, holdouts: [{ holdoutId: 'h-a', universe: 'U2' }] }, o);
+    expect(() => registerAttempt(a, { index: 2, entries: [{ holdoutId: 'h-a', universe: 'U2', configId: 'c', requirement: REQ }] })).toThrow(/next is 1/);
+    const s1 = authoriseHoldout(a, { attempt: 1, holdouts: [{ holdoutId: 'h-a', universe: 'U2', requirement: REQ }] }, o);
     expect(s1.attempts).toMatchObject([{ index: 1, alpha: 0.04, holdoutIds: ['h-a'], started: null, ended: null }]);
     expect(s1.registry.entries[0]).toMatchObject({ holdoutId: 'h-a', fromDay: o.research.holdout.fromDay });
     // A repeated index is refused and burns the earlier attempt's holdouts.
-    expect(() => registerAttempt(a, { index: 1, entries: [{ holdoutId: 'h-b', universe: 'U1', configId: 'c' }] })).toThrow(/next is 2/);
+    expect(() => registerAttempt(a, { index: 1, entries: [{ holdoutId: 'h-b', universe: 'U1', configId: 'c', requirement: REQ }] })).toThrow(/next is 2/);
     expect(readHoldoutStore(a.registryPath).registry.entries.find((e) => e.holdoutId === 'h-a')).toMatchObject({ burned: true, burnReason: 'reconfigured' });
     // Attempt k ≥ 2 spends 0.01 / 2^(k-1).
     expect([1, 2, 3].map((k) => attemptAlpha(planOf(o, 2), k))).toEqual([0.04, 0.005, 0.0025]);
@@ -418,7 +462,7 @@ describe('holdout mode', () => {
     expect(st.attempts[0]!.started).not.toBeNull();
     expect(st.attempts[0]!.ended).toMatchObject({ outcome: 'sealed' });
     const configId = st.registry.entries[0]!.configId;
-    const open = () => openSealedHoldout(a, 'h-open', { configId, ledgerHash: sealed.ledgerHash, requiredTrades: 1, minDays: 1, nowMs: 0 });
+    const open = () => openSealedHoldout(a, 'h-open', { configId, ledgerHash: sealed.ledgerHash, requiredTrades: 1, minDays: 1, nowMs: TAIL_END });
     expect(open).toThrow(/no G1 result/);
     recordHoldoutG1(a, { holdoutId: 'h-open', configId, passed: false, evaluatedOn: 'practice' });
     expect(open).toThrow(/did not pass/);
@@ -436,15 +480,17 @@ describe('holdout mode', () => {
     register(a, 'first');
     const o = opts();
     const configId = holdoutConfigId(o, a);
-    const second = (now: string, fromDay?: string) => registerAttempt(a, { index: 2, entries: [{ holdoutId: 'second', universe: 'U2', configId }], ...(fromDay === undefined ? {} : { fromDay }) }, new Date(now));
+    const second = (now: string, fromDay?: string) => registerAttempt(a, { index: 2, entries: [{ holdoutId: 'second', universe: 'U2', configId, requirement: REQ }], ...(fromDay === undefined ? {} : { fromDay }) }, new Date(now));
     expect(() => second('2026-09-25T10:00:00Z')).toThrow(/not scored yet \(first\)/);
     const sealed = runAndSealHoldout({ ...o, ledgerPath: join(dir, 'second-1.sqlite') }, { ...a, byUniverse: { U2: 'first' }, window });
     recordHoldoutG1(a, { holdoutId: 'first', configId, passed: true, evaluatedOn: 'practice' });
-    openSealedHoldout(a, 'first', { configId, ledgerHash: sealed.ledgerHash, requiredTrades: 1, minDays: 1, nowMs: 0 });
+    openSealedHoldout(a, 'first', { configId, ledgerHash: sealed.ledgerHash, requiredTrades: 1, minDays: 1, nowMs: TAIL_END });
     // Registered the day before attempt 1's window: the next whole day overlaps it.
     expect(() => second('2026-09-19T12:00:00Z')).toThrow(/overlaps attempt 1/);
     // A requested start before the first whole day after registration.
     expect(() => second('2026-09-25T10:00:00Z', '2026-09-25')).toThrow(/cannot start before 2026-09-26/);
+    // Nor later (the STATS-1c rule: exactly the first whole UTC day after registration).
+    expect(() => second('2026-09-25T10:00:00Z', '2026-09-27')).toThrow(/or after it/);
     const st = second('2026-09-25T10:00:00Z');
     // The synthetic plan has no tail (cutoff = tail end), so neither has attempt 2.
     expect(st.attempts[1]).toMatchObject({ index: 2, alpha: 0.005, window: { fromDay: '2026-09-26', entryCutoffDay: '2026-10-24', tailEndDay: '2026-10-24' } });
@@ -463,17 +509,17 @@ describe('holdout mode', () => {
   test('an attempt that fails G1 or ends short is spent after its tail, so the next attempt can register (R3)', () => {
     for (const why of ['g1-failed', 'short'] as const) {
       const a = authority(`spent-${why}`);
-      register(a, 'one');
+      // The frozen requirement (300 trades on 10 days) is the one 'short' is judged against.
+      register(a, 'one', opts(), 1, 1, { requiredTrades: 300, requiredDays: 10, nPower: 300, nPowerSeed: 1 });
       const o = opts();
       const configId = holdoutConfigId(o, a);
       runAndSealHoldout({ ...o, ledgerPath: join(dir, `spent-${why}.sqlite`) }, { ...a, byUniverse: { U2: 'one' }, window });
       if (why === 'g1-failed') recordHoldoutG1(a, { holdoutId: 'one', configId, passed: false, evaluatedOn: 'practice' });
-      const two = () => registerAttempt(a, { index: 2, entries: [{ holdoutId: 'two', universe: 'U2', configId }] }, new Date('2026-09-25T10:00:00Z'));
+      const two = () => registerAttempt(a, { index: 2, entries: [{ holdoutId: 'two', universe: 'U2', configId, requirement: REQ }] }, new Date('2026-09-25T10:00:00Z'));
       expect(two).toThrow(/not scored yet/);
       // Not before the attempt's tail has ended (the synthetic tail ends 2026-09-21).
-      const size = { requiredTrades: 300, minDays: 10 };
-      expect(() => endAttempt(a, 1, why, new Date('2026-09-20T12:00:00Z'), size)).toThrow(/tail/);
-      const st = endAttempt(a, 1, why, new Date('2026-09-22T00:00:00Z'), size);
+      expect(() => endAttempt(a, 1, why, new Date('2026-09-20T12:00:00Z'))).toThrow(/tail/);
+      const st = endAttempt(a, 1, why, new Date('2026-09-22T00:00:00Z'));
       expect(st.registry.entries.find((e) => e.holdoutId === 'one')).toMatchObject({ burned: true, burnReason: 'spent' });
       expect(st.attempts[0]!.ended).toMatchObject({ outcome: 'spent', why });
       expect(two().attempts.map((x) => x.index)).toEqual([1, 2]);
@@ -488,7 +534,8 @@ describe('holdout mode', () => {
     runAndSealHoldout({ ...o, ledgerPath: join(dir, 'mandatory.sqlite') }, { ...a, byUniverse: { U2: 'ready' }, window });
     recordHoldoutG1(a, { holdoutId: 'ready', configId, passed: true, evaluatedOn: 'practice' });
     const after = new Date('2026-09-22T00:00:00Z');
-    expect(() => endAttempt(a, 1, 'short', after, { requiredTrades: 1, minDays: 1 })).toThrow(/is ready/);
+    // Ready against its frozen requirement (1 trade on 1 day), so not short.
+    expect(() => endAttempt(a, 1, 'short', after)).toThrow(/is ready/);
     expect(() => endAttempt(a, 1, 'g1-failed', after)).toThrow(/G1 passed/);
     expect(() => endAttempt(a, 1, 'never-run', after)).toThrow(/was run/);
     expect(() => endAttempt(a, 1, 'tired' as never, after)).toThrow(/reason/);
@@ -502,8 +549,8 @@ describe('holdout mode', () => {
   test('a run must feed every holdout of its attempt', () => {
     const a = authority('whole');
     const o = opts();
-    setHoldoutPlan(a, planOf(o, 2), o.research);
-    registerAttempt(a, { index: 1, entries: [{ holdoutId: 'w-u2', universe: 'U2', configId: holdoutConfigId(o, a) }, { holdoutId: 'w-u1', universe: 'U1', configId: 'u1-config' }] });
+    setHoldoutPlan(a, planOf(o, 2), o.research, TEST_FLOOR);
+    registerAttempt(a, { index: 1, entries: [{ holdoutId: 'w-u2', universe: 'U2', configId: holdoutConfigId(o, a), requirement: REQ }, { holdoutId: 'w-u1', universe: 'U1', configId: 'u1-config', requirement: REQ }] });
     expect(() => runAndSealHoldout({ ...o, ledgerPath: join(dir, 'whole.sqlite') }, { ...a, byUniverse: { U2: 'w-u2' }, window })).toThrow(/every holdout of its registered attempt/);
     expect(existsSync(join(dir, 'whole.sqlite'))).toBe(false);
   });

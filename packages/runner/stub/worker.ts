@@ -232,7 +232,7 @@ const tick = (): void => {
     state.position = null;
     state.intent = null;
     saveState(state);
-    journal('exit', { trade, reasons: ['stub: hold time reached'] });
+    journal('exit', { trade, position: 'closed', reasons: ['stub: hold time reached'] });
   }
 };
 
@@ -303,6 +303,7 @@ const health = (): Health => {
     lookups: { counts: lookupCounts },
     entries_halted: halted,
     halt_reasons: haltReasons(now),
+    critical: [],
     feeds: feedHealth,
     journal_seq: seq,
     signing_key: false,

@@ -11,8 +11,10 @@ export const entryPrice = (p: { readonly cost: bigint; readonly quantity: bigint
 export interface PositionSources {
   /** When the account saw the position open; null when it has no record (sorted last). */
   readonly openedAt: (id: string) => number | null;
-  /** The saved exit plan's stop and universe; null without a saved plan. */
-  readonly plan: (id: string) => { readonly stopPrice: bigint; readonly universe: string } | null;
+  /** The saved exit plan's stop; null without a saved plan. */
+  readonly plan: (id: string) => { readonly stopPrice: bigint } | null;
+  /** The universe the position was entered under: its plan, else its entry key, else none on record (RUN-1d). */
+  readonly universe: (id: string) => string;
   readonly mark: (id: string) => { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null;
 }
 
@@ -27,8 +29,7 @@ export const openPositionsHealth = (positions: readonly PositionState[], s: Posi
         trade: p.id, mint: p.mint, qty: String(p.quantity), entry: String(entryPrice(p)), stop: plan === null ? 'unknown' : String(plan.stopPrice),
         // No mark read yet: the entry, seen at time 0, which the runner reads as unmeasured (older than 30 s).
         mark: String(mark?.price ?? entryPrice(p)), mark_slot: mark === null ? 0 : Number(mark.slot), mark_ts: mark?.atMs ?? 0,
-        // The universe the position was entered under (CFG-2; RUN-1d contract); no saved plan: unknown, which fails the drill.
-        universe: plan === null ? 'unknown' : plan.universe,
+        universe: s.universe(p.id),
       };
     });
 };

@@ -8,15 +8,16 @@ import { EXIT } from '../../runner/src/contract.ts';
 import { DryRunRpc } from './dryrun/index.ts';
 import { liveFacts } from './facts/index.ts';
 import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE } from './scheduler/index.ts';
-import { fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
+import { DEFAULT_LIVE_FEED, fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
 import { systemTimers } from './scheduler/index.ts';
-import { parseConfig } from './run/config.ts';
+import { SLOT_MS, parseConfig, watchTimingProblem } from './run/config.ts';
 import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders, PUMP_CREATE_AUTHORITY } from './run/sources.ts';
 import { redact, setSecretValues } from './run/redact.ts';
 import { join } from 'node:path';
 import { DailyBudget } from './persist/index.ts';
+import { RpcCut, liveHttp } from './run/rpc-cut.ts';
 import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, runSeed } from './run/seed-start.ts';
 import { Worker } from './run/worker.ts';
 
@@ -24,7 +25,8 @@ const environment = readEnvironment();
 setSecretValues(environment.secretValues());
 const log = (line: string): void => console.log(redact(line));
 const fail = (line: string): void => console.error(redact(line));
-const parsed = parseConfig(environment.env, environment.release, environment.qualifyingRun());
+const observeOnly = environment.argv.includes('--reconcile-only');
+const parsed = parseConfig(environment.env, environment.release, environment.qualifyingRun(), { reconcileOnly: observeOnly });
 if (!parsed.ok) {
   fail(parsed.message);
   process.exit(parsed.code);
@@ -37,9 +39,17 @@ const config = parsed.config;
 const timers = systemTimers();
 const session = startSession(TRIAL_POLICY);
 const credits = new CreditBook(config.stateDir, timers);
-const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: fetchHttp, factory: globalSocketFactory, credits });
+const rpcCut = new RpcCut(timers);
+const http = liveHttp(rpcCut, fetchHttp);
+const providerHttp = http.providers;
+const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits });
 const policy = session.policy;
-const rpc = new DryRunRpc({ url: () => heliusRpcUrl(environment.secrets), http: fetchHttp, scheduler: providers.helius, timeoutMs: 10_000 });
+const timing = watchTimingProblem(config.watch, policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
+if (timing !== null) {
+  fail(timing);
+  process.exit(EXIT.config);
+}
+const rpc = new DryRunRpc({ url: () => heliusRpcUrl(environment.secrets), http: providerHttp, scheduler: providers.helius, timeoutMs: 10_000 });
 let worker: Worker | null = null;
 const simulate = liveSimulator({
   rpc, wallet: config.wallet, standIns: config.standIns,
@@ -69,13 +79,16 @@ try {
     seedWaitMs: 30_000,
     seedMaxMs: 90_000,
     ops: () => providers.ops(),
+    cutRpc: (ms) => rpcCut.cut(ms),
     // FACTS-1b: FACTS-1's readers on the worker's Feed; core's producer makes the gate facts from what they read.
-    facts: [liveFacts({ policy, secrets: environment.secrets, http: fetchHttp, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir }, stateDir: config.stateDir })],
+    facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir }, stateDir: config.stateDir })],
     schedulers: { helius: providers.helius, alchemy: providers.alchemy, jupiter: providers.jupiter, rugcheck: providers.rugcheck },
     exposureRpc: providers.seedRpc(),
+    watchRead: providers.watchRead(),
+    watchHalted: () => providers.alchemy.halted,
     delayProbe: { confirmed: (sig) => providers.confirmed(sig), via: `logs:${PUMP_CREATE_AUTHORITY}`, everyMs: 60_000 },
     commitments: FEED_COMMITMENTS,
-    heartbeat: { http: fetchHttp, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },
+    heartbeat: { http: http.heartbeat, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },
     reconcileTimeoutMs: 60_000, loopMs: 100, staleFeedMs: 10_000, log,
   });
 } catch (e) {
@@ -107,7 +120,9 @@ if (environment.argv.includes('--reconcile')) {
   process.exit(EXIT.clean);
 }
 
-const started = await w.start();
+// `--reconcile-only` (RUN-1d's host-loss tabletop): reconcile, journal `recovered`, serve /health, send nothing; it
+// runs until SIGTERM. Otherwise the full start.
+const started = observeOnly ? await w.observeOnly() : await w.start();
 if (!started.ok && !stopping) {
   fail(started.message);
   await w.stop(started.code);
