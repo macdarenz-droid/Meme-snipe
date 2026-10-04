@@ -3,9 +3,9 @@
 // a file or the network. Thresholds default to the documented values; overrides may only tighten them
 // (loosening needs the owner and a change to the defaults here).
 
-import { dayBlockMeanDiffInterval, dayBlockMeanInterval, type DayReturn } from './bootstrap.ts';
+import { dayBlockMeanDiffInterval, dayBlockMeanInterval, DEFAULT_REPLICATES, type DayReturn } from './bootstrap.ts';
 import { describeSummary, G2_SENSITIVITY_VARIANTS, g2Rule, g2Sensitivity, MIN_DAYS, sameSummary, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
-import { burnHoldout, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
+import { burnHoldout, dayFromNumber, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
 import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
 import { mean, median, sd, variance } from './descriptive.ts';
@@ -16,7 +16,8 @@ import { meanPredictiveInterval, type SampleSummary } from './predictive.ts';
 import type { TripleBarrierLabel } from './labeller.ts';
 import type { Rng } from './rng.ts';
 import { incompleteGammaUpper, studentTQuantile } from './special.ts';
-import { deflatedSharpe, type TrialRecord } from './sharpe.ts';
+import { deflatedSharpe, deflatedSharpeDaily, sharpeBootstrap, type TrialRecord } from './sharpe.ts';
+import { SPA_STUDENTISATION, spaTest } from './spa.ts';
 
 export type GateName = 'G0' | 'G1' | 'G2' | 'G3' | 'G4' | 'G5';
 /** 'not-proven': too little data to decide (collect more, never lower n). */
@@ -130,7 +131,19 @@ export const RETURN_FLOOR = -1.1;
 const SEVERE_RETURN = -0.5;
 
 const MS_PER_DAY = 86_400_000;
+const MS_PER_HOUR = MS_PER_DAY / 24;
+/** Level of the SPA test when it gates G1 (one test over the whole registry). */
+const SPA_ALPHA = 0.05;
 const COVERAGE_WINDOW = 100;
+/**
+ * Days of the trailing reverse e-process that runs beside the full-history one (STATS-1d). After a good stretch the
+ * full-history process has bet against the strategy for weeks and lost wealth, so a later decay barely moves it
+ * (U1, −10% after 60 days at +5%: caught within 40 days in under 1% of runs); a process restarted on the last 40 days
+ * catches it. Demotion fires on either. Fixed, not an override: it only adds a trigger.
+ */
+export const DEMOTION_TRAILING_DAYS = 40;
+/** How far the judged dry-run data may end from G3's registered end (inputs are cut at it). */
+export const G3_END_TOLERANCE_MS = MS_PER_HOUR / 60;
 
 // ---- helpers ----------------------------------------------------------------------------------------------------
 
@@ -230,11 +243,24 @@ export interface G1Input {
   /** Every trial ever evaluated (experiment registry). */
   readonly registry: readonly TrialRecord[];
   /**
-   * Per-trial returns per time row (e.g. per day) for PBO, keyed by trialId. Must hold exactly the registry's trials
-   * (a subset would lower PBO), every one with the same rows.
+   * Per-trial daily P&L for PBO and the day-level DSR, keyed by trialId: every trial on one calendar, idle days as 0
+   * with their costs. Must hold exactly the registry's trials (a subset would lower PBO and the DSR's N), every one with
+   * the same rows.
    */
   readonly pboMatrix: Readonly<Record<string, readonly number[]>>;
   readonly pboBlocks?: number;
+  /**
+   * Which multiple-testing check gates G1 (STATS-1c (e)): 'dsr' (default, day-level DSR ≥ 0.95 over every registered
+   * trial) or 'spa' (the joint day-block bootstrap SPA test at familyAlpha). The other one is always reported. 'spa'
+   * stays off until the owner signs off on the calibration evidence; the setting lives in RESEARCH_CONFIG.g1EdgeTest.
+   */
+  readonly edgeTest?: 'dsr' | 'spa';
+  /**
+   * The joint SPA test's other inputs, on the calendar of `pboMatrix` (whose rows are the variants' daily net P&L over a
+   * fixed capital base): S0's daily P&L, each variant's active days (counted before outcomes) and the registered SE
+   * floor and regimes. Without them SPA is not run (and cannot gate).
+   */
+  readonly spa?: { readonly s0Daily: readonly number[]; readonly activeDays: Readonly<Record<string, number>>; readonly seFloor: number; readonly regimes?: readonly { readonly from: number; readonly to: number }[] };
   readonly modelUsed: boolean;
   readonly calibrationSlope: number | null;
   readonly rng: Rng;
@@ -261,24 +287,72 @@ export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>):
   metrics.lowerBound95 = ci.lower;
   c.add('mean', ci.lower > th.lowerBoundMin, `one-sided 95% lower bound ${fmt(ci.lower)} (need > ${th.lowerBoundMin})`);
 
-  if (!input.registry.some((t) => t.trialId === input.selectedTrialId)) {
-    c.add('registry', false, `selected trial "${input.selectedTrialId}" is not in the experiment registry`);
-  } else {
-    try {
-      const d = deflatedSharpe(returns, input.registry);
-      metrics.dsr = d.dsr;
-      metrics.trials = d.trials;
-      c.add('DSR', d.dsr >= th.dsrMin, `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} trials (need >= ${th.dsrMin})`);
-    } catch (e) {
-      c.add('DSR', false, (e as Error).message);
-    }
-  }
   const ids = input.registry.map((t) => t.trialId);
   const keys = Object.keys(input.pboMatrix);
   const missing = ids.filter((id) => !Object.hasOwn(input.pboMatrix, id));
   const extra = keys.filter((k) => !ids.includes(k));
-  if (missing.length > 0 || extra.length > 0) {
-    c.add('PBO', false, `PBO matrix must hold exactly the registry's ${ids.length} trials (missing ${missing.length}: ${missing.slice(0, 5).join(', ')}; not in registry ${extra.length}: ${extra.slice(0, 5).join(', ')})`);
+  const matrixOk = missing.length === 0 && extra.length === 0;
+  const matrixProblem = `the daily P&L matrix must hold exactly the registry's ${ids.length} trials (missing ${missing.length}: ${missing.slice(0, 5).join(', ')}; not in registry ${extra.length}: ${extra.slice(0, 5).join(', ')})`;
+
+  if (!input.registry.some((t) => t.trialId === input.selectedTrialId)) {
+    c.add('registry', false, `selected trial "${input.selectedTrialId}" is not in the experiment registry`);
+  } else if (!matrixOk) {
+    c.add('DSR', false, matrixProblem);
+  } else {
+    // Reported only (STATS-1c): the day-level DSR under raw, configuration-de-duplicated and effective N, the
+    // block-bootstrap Sharpe p-value of the selected trial's days, and the joint SPA test.
+    let diag = '';
+    let spaP: number | null = null;
+    let spaDetail = '';
+    try {
+      const configOf = Object.fromEntries(input.registry.map((t) => [t.trialId, t.configId ?? t.trialId]));
+      const d = deflatedSharpeDaily(input.pboMatrix, input.selectedTrialId, configOf);
+      metrics.dailySharpe = d.sharpe;
+      metrics.dsrDays = d.days;
+      metrics.dsrDaily = d.raw.dsr;
+      metrics.dsrDailyDeduplicated = d.deduplicated.dsr;
+      metrics.trialsDeduplicated = d.deduplicated.trials;
+      metrics.dsrDailyEffective = d.effective.dsr;
+      metrics.trialsEffective = d.effective.trials;
+      const sb = sharpeBootstrap(input.pboMatrix[input.selectedTrialId]!, { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) });
+      metrics.dailySharpeP = sb.pNull;
+      diag = `day-level DSR ${fmt(d.raw.dsr)} over ${d.raw.trials} trials and ${d.days} days, ${fmt(d.deduplicated.dsr)} over ${d.deduplicated.trials} configurations, `
+        + `${fmt(d.effective.dsr)} over ${d.effective.trials} effective trials; day-level Sharpe ${fmt(d.sharpe)}, bootstrap p ${fmt(sb.pNull)}`;
+      if (input.spa) {
+        const spa = spaTest(
+          { variants: input.pboMatrix, s0: input.spa.s0Daily, activeDays: input.spa.activeDays,
+            registration: { seFloor: input.spa.seFloor, studentisation: SPA_STUDENTISATION, ...(input.spa.regimes ? { regimes: input.spa.regimes } : {}) } },
+          { rng: input.rng, replicates: Math.max(input.replicates ?? DEFAULT_REPLICATES, Math.ceil(20 / SPA_ALPHA)), alpha: SPA_ALPHA },
+        );
+        // The selected configuration needs its own simultaneous evidence (step-down), not only a global rejection.
+        spaP = spa.passing.includes(input.selectedTrialId) ? spa.pValue : 1;
+        metrics.spaP = spa.pValue;
+        metrics.spaStatistic = spa.statistic;
+        spaDetail = `SPA over ${spa.variants.length} variants (${spa.excluded.length} left out for activity) and ${spa.days} days: p ${fmt(spa.pValue)} (max over blocks 3, 5, 7); `
+          + `${input.selectedTrialId} ${spa.passing.includes(input.selectedTrialId) ? 'passes' : 'does not pass'} against zero and S0`;
+      } else {
+        spaDetail = 'SPA not run (no S0 calendar or activity counts)';
+      }
+    } catch (e) {
+      diag = `diagnostics unavailable: ${(e as Error).message}`;
+    }
+    if (input.edgeTest === 'spa') {
+      c.add('SPA', spaP !== null && spaP < SPA_ALPHA, `${spaDetail || diag} (need < ${SPA_ALPHA})`);
+    } else {
+      // The gate until the owner signs off STATS-1c: the per-trade DSR over every registered trial, with the moments
+      // clamped (skewness ≤ 0, kurtosis ≥ the registered floor), which can only make a pass harder.
+      try {
+        const d = deflatedSharpe(returns, input.registry, { clamp: true });
+        metrics.dsr = d.dsr;
+        metrics.trials = d.trials;
+        c.add('DSR', d.dsr >= th.dsrMin, `deflated Sharpe ${fmt(d.dsr)} over ${d.trials} trials, moments clamped (need >= ${th.dsrMin}); reported only: ${diag}; ${spaDetail}`);
+      } catch (e) {
+        c.add('DSR', false, (e as Error).message);
+      }
+    }
+  }
+  if (!matrixOk) {
+    c.add('PBO', false, `PBO ${matrixProblem.replace('the daily P&L matrix', 'matrix')}`);
   } else try {
     const p = probabilityOfBacktestOverfitting(ids.map((id) => input.pboMatrix[id]!), input.pboBlocks === undefined ? {} : { blocks: input.pboBlocks });
     metrics.pbo = p.pbo;
@@ -349,6 +423,8 @@ export interface G2Universe {
   readonly walkForward: readonly ClusteredReturn[];
   /** n_power from `simulateG2Power` on the walk-forward data with the registry's family size. */
   readonly power: G2PowerResult;
+  /** G1 passed for this configuration: a precondition for opening the seal (a G1 fail keeps it sealed). */
+  readonly g1Passed: boolean;
 }
 
 export interface G2Input {
@@ -401,7 +477,10 @@ export interface G2Result extends GateResult {
 /**
  * G2 Holdout (proof, owner rule 6), ARCHITECTURE.md §14. Per universe at its Holm-adjusted level: n ≥ max(300, n_power)
  * (n_power simulated; the closed form is a lower-bound check), the day-block CI of mean net return above 0 and the paired
- * CI against S0 above 0. Size comes from the sealed counts; a short universe stays sealed and is "not proven". Every
+ * CI against S0 above 0. The test is two-sided at each level, so the false-pass rate for a positive-edge claim is α/2
+ * (one-sided 0.025 at 0.05). The level comes from the registry's attempt; the requirement is the number frozen before
+ * any count; the seal opens only after the tail and a G1 pass. Size comes from the sealed counts; a universe short at
+ * its cutoff is a spent attempt ('short') and "not proven". Every
  * entering seal is verified first (hash, configuration, entry count) and only then opened; any mismatch burns that
  * holdout and fails the gate without opening the others. A burned holdout fails on integrity. Passes when at least one
  * universe passes; the predictive interval is a note, not a check.
@@ -412,9 +491,21 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   const notes: string[] = [];
   let registry = input.registry;
   const failWith = (): G2Result => ({ ...result('G2', c, 'fail', {}), universes: [], registry });
-  const level0 = th.familyAlpha / registry.familySize;
+  // Each universe's holdout attempt sets its family α in the registry (0.04 first, then 0.01 / 2^(k − 1)); a call tests
+  // every universe at the smallest α among them, never above the familyAlpha threshold.
+  const alphaOf = (holdoutId: string): number => {
+    const e = registry.entries.find((x) => x.holdoutId === holdoutId);
+    return Math.min(th.familyAlpha, e ? e.alpha : th.familyAlpha);
+  };
+  const alpha = Math.min(...input.universes.map((u) => alphaOf(u.holdoutId)), th.familyAlpha);
+  const level0 = alpha / registry.familySize;
+  const nowDay = dayFromNumber(Math.floor(input.nowMs / MS_PER_DAY));
+  // p-values resolve the smallest Holm level: about 20 / level replicates.
+  const replicates = input.replicates ?? DEFAULT_REPLICATES;
+  const minReplicates = Math.ceil(20 / level0);
 
   // Integrity that needs no outcome and changes nothing.
+  c.add('replicates', replicates >= minReplicates, `${replicates} bootstrap replicates (need >= 20 / ${fmt(level0)} = ${minReplicates})`);
   c.add('scenario', input.scenario === 'conservative', `scenario "${input.scenario}" (need "conservative")`);
   c.add('universes', input.universes.length > 0 && input.universes.length <= registry.familySize,
     `${input.universes.length} universes (need 1..${registry.familySize}, the family size fixed in the registry)`);
@@ -428,9 +519,14 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     else if (e.burned) c.add(tag, false, `holdout ${u.holdoutId} is burned (${e.burnReason}): integrity`);
     else if (e.universe !== u.universe) c.add(tag, false, `holdout ${u.holdoutId} belongs to ${e.universe}`);
     else if (e.seal !== 'sealed') c.add(tag, false, `holdout ${u.holdoutId} is ${e.seal}, not sealed`);
+    if (e && !e.burned) {
+      c.add(`n_power seed ${u.universe}`, e.requirement !== null && u.power.seed === e.requirement.nPowerSeed,
+        `n_power seed ${u.power.seed}, frozen ${e.requirement?.nPowerSeed ?? 'none'}`);
+      c.add(`G1 ${u.universe}`, u.g1Passed, u.g1Passed ? 'G1 passed' : `G1 did not pass for ${u.configId}: the holdout stays sealed`);
+    }
     c.add(`S0 ${u.universe}`, u.controlRuns.length >= th.minControlSeeds, `${u.controlRuns.length} S0 seeds (need >= ${th.minControlSeeds})`);
     c.add(`n_power ${u.universe}`, Math.abs(u.power.level - level0) < 1e-12,
-      `n_power was simulated at level ${fmt(u.power.level)}, the registry's family of ${registry.familySize} needs ${fmt(level0)}`);
+      `n_power was simulated at level ${fmt(u.power.level)}, attempt α ${fmt(alpha)} over the registry's family of ${registry.familySize} needs ${fmt(level0)}`);
     const missingUnits = G2_SENSITIVITY_VARIANTS.filter((x) => !u.power.units.includes(x));
     c.add(`n_power units ${u.universe}`, missingUnits.length === 0,
       `n_power simulated without ${missingUnits.join(', ') || 'none'} (need every resampling unit of the rule)`);
@@ -444,18 +540,36 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     c.add(`walk-forward clusters ${u.universe}`, wfUnclustered === 0, `${wfUnclustered} walk-forward trades without a creator or funder cluster (need 0)`);
   }
   if (c.failed.length > 0) return failWith();
+  // The seal opens only after the observation tail has matured; before that nothing changes and nothing is proven.
+  for (const u of input.universes) {
+    const e = registry.entries.find((x) => x.holdoutId === u.holdoutId)!;
+    c.add(`tail ${u.universe}`, nowDay >= e.tailEnd, `today ${nowDay}; the seal stays closed until ${e.tailEnd}`);
+  }
+  if (c.failed.length > 0) return { ...result('G2', c, 'not-proven', {}), universes: [], registry };
 
-  // Size from the sealed counts alone.
+  // Size from the sealed counts alone, against the requirement frozen before any count was read. The frozen number is
+  // the requirement; it may not sit below max(300, n_power, closed form) recomputed now.
   const sized = input.universes.map((u) => {
     const e = registry.entries.find((x) => x.holdoutId === u.holdoutId)!;
     const wf = u.walkForward.map((t) => t.rNet);
     const closed = wf.length >= 2 && sd(wf) > 0 ? nPower(sd(wf), 0.05, { alpha: level0 }) : 0;
-    const required = Math.max(th.minTradesFloor, u.power.nPower, closed);
-    const ready = holdoutReady(e, required, MIN_DAYS);
+    const computed = Math.max(th.minTradesFloor, u.power.nPower, closed);
+    const required = e.requirement!.requiredTrades;
+    c.add(`requirement ${u.universe}`, required >= computed,
+      `frozen ${required} trades (need >= max(${th.minTradesFloor}, simulated n_power ${u.power.nPower}, closed form ${closed}) = ${computed})`);
+    // The frozen days are the day requirement; they may not sit below the gate's MIN_DAYS.
+    const days = e.requirement!.requiredDays;
+    c.add(`requirement days ${u.universe}`, days >= MIN_DAYS, `frozen ${days} entry days (need >= ${MIN_DAYS})`);
+    const ready = holdoutReady(e, required, days);
     c.add(`sample ${u.universe}`, ready,
-      `${e.counts!.entries} sealed entries on ${e.counts!.entryDays} days (need >= max(${th.minTradesFloor}, simulated n_power ${u.power.nPower}, closed form ${closed}) = ${required}, on >= ${MIN_DAYS} days)`);
-    return { u, e, required, ready };
+      `${e.counts!.entries} sealed entries on ${e.counts!.entryDays} days at the cutoff (need >= ${required}, on >= ${days} days)`);
+    return { u, e, required, ready, fits: required >= computed && days >= MIN_DAYS };
   });
+  if (sized.some((x) => !x.fits)) return failWith();
+  // A window short at its cutoff is a failed attempt: it is recorded as spent ('short') and is "not proven".
+  for (const { e, ready } of sized) {
+    if (!ready) registry = burnHoldout(registry, e.holdoutId, 'short', `${e.counts!.entries} entries on ${e.counts!.entryDays} days at the cutoff`).registry;
+  }
   const entering = sized.filter((x) => x.ready);
 
   // Verify every entering seal before opening any: configuration, hash and the entry count of the file to score.
@@ -473,7 +587,9 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   if (c.list.some((x) => !x.passed && x.name.startsWith('seal '))) return failWith();
 
   for (const { u, e, required } of entering) {
-    const step = openHoldout(registry, e.holdoutId, { configId: u.configId, ledgerHash: u.ledgerHash, requiredTrades: required, minDays: MIN_DAYS, nowMs: input.nowMs });
+    const step = openHoldout(registry, e.holdoutId, {
+      configId: u.configId, ledgerHash: u.ledgerHash, requiredTrades: required, minDays: e.requirement!.requiredDays, nowMs: input.nowMs, nowDay, g1Passed: u.g1Passed,
+    });
     registry = step.registry;
     if (!step.ok) {
       c.add(`seal ${u.universe}`, false, step.reason);
@@ -482,13 +598,13 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   }
 
   // Score: the G2 rule per universe, then Holm across the universes that entered.
-  const opts = { rng: input.rng, ...(input.replicates === undefined ? {} : { replicates: input.replicates }) };
+  const opts = { rng: input.rng, replicates };
   // The primary rule (1-day blocks), then every other resampling unit (review STATS-1b): the universe's p is the
   // largest, so it passes only if every CI excludes zero. The intervals are reported at the family level (95%).
   const scored = entering.map(({ u }) => {
     const control = u.controlRuns.flat();
-    const primary = g2Rule(u.trades, control, th.familyAlpha, opts);
-    const rest = primary.p < th.familyAlpha ? g2Sensitivity(u.trades, control, th.familyAlpha, opts, ['days-2', 'days-3', 'creator', 'funder']) : [];
+    const primary = g2Rule(u.trades, control, alpha, opts);
+    const rest = primary.p < alpha ? g2Sensitivity(u.trades, control, alpha, opts, ['days-2', 'days-3', 'creator', 'funder']) : [];
     const rows: G2SensitivityRow[] = [
       { variant: 'days-1', blocks: primary.mean.days, lower: primary.mean.lower, upper: primary.mean.upper, diffVsS0Lower: primary.vsControl.lower, p: primary.p },
       ...rest.map((x) => ({ variant: x.variant, blocks: x.mean?.days ?? null, lower: x.mean?.lower ?? null, upper: x.mean?.upper ?? null, diffVsS0Lower: x.vsControl?.lower ?? null, p: x.p })),
@@ -499,7 +615,7 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
   // Holm over the whole family fixed in the registry: universes that did not enter count as p = 1, so a universe scored
   // now, or one scored in a later call, is never tested at a looser level than its place in the full family allows.
   const familyP = [...scored.map((r) => r.p), ...Array<number>(registry.familySize - scored.length).fill(1)];
-  const h = holm(familyP, th.familyAlpha);
+  const h = holm(familyP, alpha);
   const perUniverse: G2UniverseResult[] = sized.map(({ u, e, required, ready }) => {
     const k = entering.findIndex((x) => x.u === u);
     if (!ready || k < 0) {
@@ -538,6 +654,11 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
 export interface G3Input {
   /** The run is the single qualifying dry run (on the VPS, same commit; ARCHITECTURE.md §15), not a rehearsal. */
   readonly qualifyingRun: boolean;
+  /**
+   * Hours from dryRunStartMs to the registered end. Decisions (candidates, entries, rejects, simulations) are cut at
+   * registration.evaluateAtMs; outcomes of trades entered by then are read up to evaluateAtMs plus the outcome tail
+   * (the G3 report tool's outcomeTailMs), so every judged trade can finish.
+   */
   readonly dryRunHours: number;
   /** Net returns of the dry-run paper trades (the candidates live kept). */
   readonly dryRunReturns: readonly number[];
@@ -580,6 +701,11 @@ export interface G3Input {
  */
 export interface G3Registration {
   readonly registeredAtMs: number;
+  /**
+   * When the run is judged, fixed when the strategy is registered: the end of the holdout tail or 48 h after the start
+   * if that is later (supervisor ruling, "Qualifying-run length"); never a stop chosen from results.
+   */
+  readonly evaluateAtMs: number;
   readonly thresholds: Partial<typeof G3_DEFAULTS>;
   readonly expectedSimulationErrors: readonly string[];
 }
@@ -701,6 +827,16 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   c.add('registration', input.registration.registeredAtMs <= input.dryRunStartMs,
     `agreement plan registered at ${input.registration.registeredAtMs}, run started at ${input.dryRunStartMs} (need registered before the run)`);
   c.add('duration', input.dryRunHours >= th.minHours, `${fmt(input.dryRunHours)} h (need >= ${th.minHours})`);
+  // G3 is judged at its registered end, neither earlier (a run judged early could stop on a good stretch) nor later (a
+  // run judged late could wait for one). The inputs are cut at evaluateAtMs (the G3 report tool does the cut); the
+  // judged data must end there, within G3_END_TOLERANCE_MS.
+  const runEndMs = input.dryRunStartMs + input.dryRunHours * MS_PER_HOUR;
+  const endAt = input.registration.evaluateAtMs;
+  const reached = runEndMs >= endAt - G3_END_TOLERANCE_MS;
+  const cut = runEndMs <= endAt + G3_END_TOLERANCE_MS;
+  c.add('registered end', endAt >= input.dryRunStartMs + th.minHours * MS_PER_HOUR && reached && cut,
+    `run ends ${runEndMs}, registered end ${endAt} (need the judged data to end there within ${(G3_END_TOLERANCE_MS / MS_PER_HOUR) * 60} min, cut at it, and it at least ${th.minHours} h after the start)`);
+  if (!reached) extend.add('registered end');
   c.add('parity', input.parityTestPassed, input.parityTestPassed ? 'parity passed on the recorded dry-run data' : 'parity failed on the recorded dry-run data');
 
   // Paper outcomes against the holdout's expected distribution: the mean and the severe-outcome share.
@@ -988,6 +1124,14 @@ export const evaluateDemotion = (input: DemotionInput, overrides?: Partial<typeo
     const rev = reverseEProcess(input.returns, { cap: input.returnCap, threshold: th.reverseWealth });
     metrics.reverseWealthMax = rev.maxWealth;
     c.add('reverse e-process', rev.maxWealth < th.reverseWealth, `max reverse wealth ${fmt(rev.maxWealth)} (demote at >= ${th.reverseWealth})`);
+    // The same detector restarted on the last DEMOTION_TRAILING_DAYS trading days (days with returns).
+    const days = [...new Set(input.returns.map((t) => t.day))];
+    const from = days[Math.max(0, days.length - DEMOTION_TRAILING_DAYS)];
+    const recent = from === undefined ? [] : input.returns.filter((t) => t.day >= from);
+    const trail = reverseEProcess(recent, { cap: input.returnCap, threshold: th.reverseWealth });
+    metrics.trailingReverseWealthMax = trail.maxWealth;
+    c.add(`reverse e-process (last ${DEMOTION_TRAILING_DAYS} days)`, trail.maxWealth < th.reverseWealth,
+      `max reverse wealth over the last ${Math.min(days.length, DEMOTION_TRAILING_DAYS)} trading days ${fmt(trail.maxWealth)} (demote at >= ${th.reverseWealth})`);
   }
   c.add('drift', !input.driftAlarm, input.driftAlarm ? 'drift alarm on calibration or log loss' : 'no drift alarm');
   if (input.coverage && input.coverage.covered.length >= COVERAGE_WINDOW) {

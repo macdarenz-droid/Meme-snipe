@@ -11,9 +11,10 @@ import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
 import { HALT_KEY, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
-import { FILL_CONFIG } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
+import { views } from '../src/run/api.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { exitsFile } from '../src/run/state.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
@@ -427,6 +428,245 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
   });
 });
 
+describe('exits never wait at a restart (EXIT-1c)', () => {
+  it('downtime longer than T_max: the time stop decided at the reconcile has no quote yet, is never booked blocked, and goes on the first pool read', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    const qty = h.worker.book.positions[pid]!.quantity;
+    await h.worker.kill();
+    // Down for longer than the universe's maximum hold: the last pool state is long stale.
+    h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    // Slots only, no pool read: the exit waits, open, with nothing booked blocked, and it is visible: said once in the
+    // log, pending in the status flags, the position view and the heartbeat's pending exits.
+    await m2.run(4_000, 400, () => m2.slot());
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    const said = () => mine().filter((l) => (l['reasons'] as string[])[0] === 'exit waiting for a fresh quote');
+    expect(said()).toHaveLength(1);
+    expect(said()[0]!['reasons']).toContain('max_hold');
+    expect(h2.worker.health().pending_exits).toEqual([pid]);
+    expect(views.status(h2.worker.apiInputs()).flags).toContain('exit-pending');
+    expect(views.status(h2.worker.apiInputs()).flags).not.toContain('exit-blocked');
+    expect(views.position(h2.worker.apiInputs())).toMatchObject({ exit: 'pending' });
+    // Once it has waited the blocked-retry time, it is also an alert; still nothing booked blocked, still said once.
+    await m2.run(TRIAL_POLICY.exits.blockedRetryMs, 400, () => m2.slot());
+    expect(views.status(h2.worker.apiInputs()).flags).toEqual(expect.arrayContaining(['exit-pending', 'exit-blocked']));
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    expect(said()).toHaveLength(1);
+    // The first pool read: the exit goes at once on the ladder's first rung and sells the whole holding.
+    const at = m2.now;
+    m2.pool();
+    await m2.run(6_000, 400, () => { m2.slot(); m2.pool(); });
+    const exit = mine().find((l) => (l['reasons'] as string[])[0] === 'exit');
+    expect(exit).toBeDefined();
+    expect((exit!['reasons'] as string[]).some((r) => r.startsWith('time_max'))).toBe(true);
+    expect(Date.parse(exit!['ts'] as string) - at).toBeLessThanOrEqual(400);
+    expect(mine().find((l) => (l['reasons'] as string[])[0] === 'prepare exit')!['reasons']).toContain('rung 0');
+    await m2.run(20_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    expect(h2.worker.book.positions[pid]).toMatchObject({ status: 'closed', sold: qty });
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    expect(h2.worker.health().pending_exits).toEqual([]);
+    expect(views.status(h2.worker.apiInputs()).flags).not.toContain('exit-pending');
+    await h2.worker.stop();
+    expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+});
+
+/** Every exit attempt lands failed (none dropped). */
+const FAILS = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
+
+/** A boot of `stateDir` on the shared clock, reconciled, with its own decision lines. */
+const reboot = async (h: ReturnType<typeof makeWorker>, scenario = FAILS) => {
+  const b = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+  expect(await b.worker.reconcile()).toEqual({ ok: true });
+  const mine = () => lines(h.stateDir).filter((l) => l['boot'] === b.worker.boot && l['kind'] === 'decision');
+  const first = (r: string) => mine().filter((l) => (l['reasons'] as string[])[0] === r);
+  return { b, m: new Market(b, HELD), mine, first };
+};
+
+/** Entered, killed, then down past T_max: the time stop is due at the next boot. */
+const dueAfterDowntime = async () => {
+  const h = makeWorker();
+  const m = await entered(h);
+  const pid = positions(h).find((p) => p.status === 'open')!.id;
+  await h.worker.kill();
+  h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
+  return { h, pid };
+};
+
+/** Runs slots only until the clock reaches `at`. */
+const slotsUntil = async (m: Market, at: number) => {
+  while (m.now < at) await m.run(Math.min(400, at - m.now), Math.min(400, at - m.now), () => m.slot());
+};
+
+describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)', () => {
+  it('an attempt that fails while the pool state goes stale: the replacement waits for the first fresh market, visibly, then goes on the next rung', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    await h.worker.kill();
+    // Every exit attempt of the second boot lands failed (none dropped), and the time stop is due at once.
+    h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario: { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n } });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    const first = (r: string) => mine().filter((l) => (l['reasons'] as string[])[0] === r);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    // The first attempt goes; then slots only, so the pool state is stale when the attempt resolves failed.
+    await m2.run(800, 400, () => m2.slot());
+    expect(first('submit exit (paper)')).toHaveLength(1);
+    const failed = await until(m2, 60_000, () => first('exit waiting for a fresh market').length > 0, () => m2.slot());
+    expect(failed).toBe(true);
+    expect(first('exit waiting for a fresh market')[0]!['reasons']).toContain('pool state is stale');
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    expect(h2.worker.book.positions[pid]!.status).not.toBe('exit_blocked');
+    expect(h2.worker.health().pending_exits).toEqual([pid]);
+    expect(views.status(h2.worker.apiInputs()).flags).toContain('exit-pending');
+    expect(views.status(h2.worker.apiInputs()).flags).not.toContain('exit-blocked');
+    // After the blocked-retry time of waiting it is also an alert; still said once, still not booked blocked.
+    await m2.run(TRIAL_POLICY.exits.blockedRetryMs, 400, () => m2.slot());
+    expect(views.status(h2.worker.apiInputs()).flags).toEqual(expect.arrayContaining(['exit-pending', 'exit-blocked']));
+    expect(first('exit waiting for a fresh market')).toHaveLength(1);
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    // The first fresh market: attempt 2 goes at once, one rung up.
+    const at = m2.now;
+    m2.pool();
+    expect(await until(m2, 4_000, () => first('exit attempt 2').length > 0, () => m2.slot())).toBe(true);
+    const second = first('exit attempt 2');
+    expect(Date.parse(second[0]!['ts'] as string) - at).toBeLessThanOrEqual(400);
+    expect(second).toHaveLength(1);
+    expect(second[0]!['reasons']).toContain('rung 1');
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    // Sent: the wait is over (#93 N1), whatever the position's status says.
+    expect(h2.worker.strategy.waitingExits().has(pid)).toBe(false);
+    await h2.worker.stop();
+    expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+
+  it('a fresh market that refuses the sale is a real refusal: booked blocked with its "no quote" reason, and no wait', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const { b, m: m2, mine, first } = await reboot(h);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    await m2.run(800, 400, () => m2.slot());
+    expect(first('submit exit (paper)')).toHaveLength(1);
+    // From here every read is fresh and the pool holds no SOL: the replacement cannot be quoted.
+    expect(await until(m2, 60_000, () => mine().some((l) => l['action'] === 'exit_blocked'), () => {
+      m2.slot();
+      m2.pool(0n);
+    })).toBe(true);
+    const blocked = mine().find((l) => l['action'] === 'exit_blocked')!;
+    expect((blocked['reasons'] as string[]).some((r) => r.startsWith('no quote: '))).toBe(true);
+    expect(first('exit waiting for a fresh market')).toEqual([]);
+    expect(b.worker.book.positions[pid]!.status).toBe('exit_blocked');
+    expect(b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    await b.worker.stop();
+  });
+
+  it('a wait that ends another way (a refusal books it blocked) stops being reported (#100 N1)', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const { b, m: m2, first } = await reboot(h);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    await m2.run(800, 400, () => m2.slot());
+    expect(await until(m2, 60_000, () => first('exit waiting for a fresh market').length > 0, () => m2.slot())).toBe(true);
+    expect(b.worker.strategy.waitingExits().has(pid)).toBe(true);
+    // A fresh pool that refuses the sale: booked blocked, so the wait is no longer reported as one.
+    m2.pool(0n);
+    await m2.run(800, 400, () => {
+      m2.slot();
+      m2.pool(0n);
+    });
+    expect(b.worker.book.positions[pid]!.status).toBe('exit_blocked');
+    expect(b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    await b.worker.stop();
+  });
+
+  it('a restart keeps the wait start: the alert comes at the first boot\'s start + blockedRetryMs, for an EXIT-1c and an EXIT-1d wait (B2, #93 N3)', async () => {
+    const retry = TRIAL_POLICY.exits.blockedRetryMs;
+    const alerted = (w: ReturnType<typeof makeWorker>) => views.status(w.worker.apiInputs()).flags.includes('exit-blocked');
+    // EXIT-1c: a due exit with no quote yet, killed mid-wait.
+    const one = await dueAfterDowntime();
+    const c2 = await reboot(one.h, LANDS);
+    await c2.m.run(2_000, 400, () => c2.m.slot());
+    const since1c = c2.b.worker.strategy.waitingExits().get(one.pid)!;
+    expect(since1c).toBeDefined();
+    await c2.m.run(20_000, 400, () => c2.m.slot());
+    await c2.b.worker.kill();
+    const c3 = await reboot(one.h, LANDS);
+    await c3.m.run(400, 400, () => c3.m.slot());
+    expect(c3.b.worker.strategy.waitingExits().get(one.pid)).toBe(since1c);
+    await slotsUntil(c3.m, since1c + retry - 400);
+    expect(alerted(c3.b)).toBe(false);
+    await slotsUntil(c3.m, since1c + retry);
+    expect(alerted(c3.b)).toBe(true);
+    await c3.b.worker.stop();
+    // EXIT-1d: an owner's replacement waiting for a fresh market, killed mid-wait.
+    const two = await dueAfterDowntime();
+    const d2 = await reboot(two.h);
+    await d2.m.run(800, 400, () => d2.m.slot());
+    d2.m.pool();
+    await d2.m.run(800, 400, () => d2.m.slot());
+    expect(await until(d2.m, 60_000, () => d2.first('exit waiting for a fresh market').length > 0, () => d2.m.slot())).toBe(true);
+    const since1d = d2.b.worker.strategy.waitingExits().get(two.pid)!;
+    await d2.m.run(20_000, 400, () => d2.m.slot());
+    await d2.b.worker.kill();
+    const d3 = await reboot(two.h);
+    await d3.m.run(400, 400, () => d3.m.slot());
+    expect(d3.b.worker.strategy.waitingExits().get(two.pid)).toBe(since1d);
+    await slotsUntil(d3.m, since1d + retry - 400);
+    expect(alerted(d3.b)).toBe(false);
+    await slotsUntil(d3.m, since1d + retry);
+    expect(alerted(d3.b)).toBe(true);
+    expect(d3.mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    await d3.b.worker.stop();
+  });
+});
+
+describe('a restored position is never managed from a plan it was not entered with (EXIT-1e)', () => {
+  it('boot 2 sees a market event before its restore fact: no "no entry plan" line, no stop from the policy-maximum plan, the saved plan kept', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    const before = h.worker.strategy.saved()[pid]!;
+    await h.worker.kill();
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    const m2 = new Market(h2, HELD);
+    // Market events published right after the boot's start facts. The saved plans now come first, 1 ms before the halt
+    // (WORKER-1b), so no market event reaches the strategy before the restore at all; the strategy's own gate for one
+    // that does is proved by replay (worker-recorder, "two market events before the restore…").
+    m2.slot();
+    m2.pool();
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    await m2.run(2_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    expect(mine().filter((l) => (l['reasons'] as string[])[0] === 'no entry plan')).toEqual([]);
+    expect(mine().filter((l) => (l['reasons'] as string[])[0] === 'entry plan')).toEqual([]);
+    expect(h2.worker.strategy.saved()[pid]!.plan).toEqual(before.plan);
+    expect(h2.worker.strategy.saved()[pid]!.tracker.peak).toBe(before.tracker.peak);
+    // No wait was needed (the restore came first); nothing exits at an unchanged price; the position stays open and
+    // managed after the restore.
+    expect(mine().filter((l) => (l['reasons'] as string[])[0] === 'positions wait for the restore')).toEqual([]);
+    expect(mine().some((l) => l['action'] === 'trigger_exit')).toBe(false);
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    await h2.worker.stop();
+  });
+});
+
 describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
   it('settles what a killed worker left open, writes open_intents 0 and exits 0, as a separate process', async () => {
     const h = makeWorker();
@@ -497,6 +737,43 @@ describe('a restart rebuilds the stored book before it decides', () => {
     },
     60_000,
   );
+});
+
+describe('a restart restores the saved exit plans before it manages a position', () => {
+  it('a tracker that met its flat target is not judged by a fresh one: no time_flat exit after the restart', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    await h.worker.kill();
+    // Met its flat target before the kill; the restart comes after the flat deadline and well before the time max.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    const plan = saved[pid]!.plan;
+    file.write({ ...saved, [pid]: { ...saved[pid]!, tracker: { ...saved[pid]!.tracker, flatMet: true } } });
+    const x = h.session.policy.exits.universes[plan.universe]!;
+    expect(x.tMaxMs).toBeGreaterThan(x.tFlatMs + 10 * 60_000);
+    h.timers.set(plan.openedAtMs + x.tFlatMs + 5 * 60_000);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    await m2.run(10_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    // Before the fix the halt fact came before the saved plans at the same instant: the position got a fresh plan and
+    // tracker (flatMet false), and the flat time stop sold it.
+    const mine = lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    expect(mine.filter((l) => (l['reasons'] as string[])[0] === 'no entry plan')).toEqual([]);
+    expect(mine.filter((l) => (l['reasons'] as string[]).some((r) => r.startsWith('time_flat')))).toEqual([]);
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    await h2.worker.stop();
+  }, 60_000);
 });
 
 describe('a killed worker writes no state file afterwards', () => {
