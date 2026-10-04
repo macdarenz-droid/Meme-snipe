@@ -9,7 +9,10 @@ import { usd } from '../../core/src/config/amounts.ts';
 import { createKey, poolKey } from '../../core/src/gates/index.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { rejections } from '../../runner/src/quota.ts';
-import { GATE_REASONS_PREFIX, REJECT_STAGES, SOL_PRICE_KEY, STAGE_PREFIX, WORKER_REJECT_STAGES, rejectStage } from '../src/engine/strategy.ts';
+import { GATE_REASONS_PREFIX, REJECT_STAGES, SOL_PRICE_KEY, STAGE_PREFIX, WORKER_REJECT_STAGES, failStage, rejectStage } from '../src/engine/strategy.ts';
+import { startSession, TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { OFF_CHAIN } from '../../core/src/engine/index.ts';
+import { evaluateRegime } from '../../core/src/gates/index.ts';
 import { markedHistory } from '../src/engine/marks.ts';
 import { accountFile } from '../src/run/account.ts';
 import { journalFields } from '../src/run/desk.ts';
@@ -116,6 +119,27 @@ describe('every refusal site\'s stage comes from its own reason (review of af16f
     expect(rejectStage({ gate: 'H9', code: 'too-young' })).toBeNull();
     expect(rejectStage({ gate: 'H16', code: 'missing' })).toBeNull();
     expect(rejectStage({ gate: 'worker', code: 'not-a-code' })).toBeNull();
+  });
+
+  it('a refusal with no reason, or none the table names, is journaled as `inputs`; a given stage always wins', () => {
+    expect(failStage([])).toBe('inputs');
+    expect(failStage([{ gate: 'worker', code: 'not-a-code', detail: '' }])).toBe('inputs');
+    expect(failStage([], 'regime')).toBe('regime');
+    expect(failStage([{ gate: 'H9', code: 'too-young', detail: '' }], 'hard-1')).toBe('hard-1');
+    expect(failStage([{ gate: 'R7', code: 'daily_loss', detail: '' }])).toBe('risk');
+  });
+
+  it('the regime is never off without a reason, so its refusal always names its stage from its own first reason', () => {
+    const session = startSession(TRIAL_POLICY);
+    const at = { slot: 1n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: T };
+    const ctx = { now: at, lookup: () => ({ ok: false as const, reason: 'missing' as const }), history: () => [] } as never;
+    const ended = evaluateRegime(ctx, { session: { ...session, running: false } as never, mode: 'live' });
+    const missing = evaluateRegime(ctx, { session, mode: 'live' });
+    for (const r of [ended, missing]) {
+      expect(r.on).toBe(false);
+      expect(r.reasons.length).toBeGreaterThan(0);
+      expect(failStage(r.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })))).toBe('regime');
+    }
   });
 
   const runWith = async (o: { omit?: readonly string[]; markedHistory?: typeof markedHistory }) => {

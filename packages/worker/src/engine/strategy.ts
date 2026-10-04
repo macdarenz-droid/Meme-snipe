@@ -135,6 +135,14 @@ export const rejectStage = (first: { readonly gate: string; readonly code: strin
 };
 const workerLine = (code: WorkerRejectCode, detail: string): GateReasonLine => ({ gate: 'worker', code, detail });
 
+/**
+ * The stage `#fail` journals: the one a hard gate group or the regime gives, else the first reason's. A refusal whose
+ * stage cannot be named (no reason, or a code outside the table) is journaled as made before the hard gates, so the
+ * funnel never counts it as having passed a stage it may not have reached.
+ */
+export const failStage = (gates: readonly GateReasonLine[], given?: RejectStage): RejectStage =>
+  given ?? (gates[0] === undefined ? null : rejectStage(gates[0])) ?? 'inputs';
+
 /** A gate reason as journaled: its input and the gate that needed it, when it has them. */
 const reasonLine = (x: { readonly gate: string; readonly code: string; readonly detail: string; readonly input?: FactName; readonly neededBy?: HardGate }): GateReasonLine =>
   ({ gate: x.gate, code: x.code, detail: x.detail, ...(x.input === undefined ? {} : { input: x.input }), ...(x.neededBy === undefined ? {} : { needed_by: x.neededBy }) });
@@ -1568,9 +1576,7 @@ export class LiveStrategy implements Strategy {
   #lastNeeds: readonly CandidateReason[] = [];
 
   #fail(text: string, gates: readonly GateReasonLine[], needs: readonly CandidateReason[] = gates, hardStage?: RejectStage): string {
-    // A refusal whose stage cannot be named (no reason, or a code outside the table) is journaled as made before the
-    // hard gates: the funnel never counts it as having passed a stage it may not have reached.
-    this.#lastStage = hardStage ?? (gates[0] === undefined ? null : rejectStage(gates[0])) ?? 'inputs';
+    this.#lastStage = failStage(gates, hardStage);
     this.#lastGates = gates;
     this.#lastNeeds = needs.map((x) => ({
       gate: x.gate, code: x.code, ...(x.input === undefined ? {} : { input: x.input }), ...(x.neededBy === undefined ? {} : { neededBy: x.neededBy }),
