@@ -76,9 +76,20 @@ On the check-days, with one exit for every rule (STATS-1's triple barrier throug
 - One exit design for every rule; the bot's real exits (policy per universe) may score differently.
 - Days are few: with the practice days DATA-1 publishes (09-21 back to 08-29), a feature needs a large effect to pass Holm across 45 tests.
 
+## 7a. Code and how to run
+
+`packages/backtest/src/research/`: `survival-label.ts` (the pure label rule), `survival.ts` (feature stage), `survival-outcome.ts` (labels, second pass), `survival-analysis.ts` (split, strata, Mantel–Haenszel, Wilson, day bootstrap, Holm, trade measures), `survival-compare.ts` (the survival rule, RES-4's feature rules, comparison with S0), `survival-cli.ts`. Tests: `packages/backtest/test/survival.test.ts` on a synthetic market with known fates (`survival-fixture.ts`): label thresholds, a label time after "now" refused, creator and market history only from matured labels of other graduates, a planted future swap moves no earlier feature, no outcome import in the feature stage, labels per fate and censoring, the wall in both stages, RENT-1 refund, a Simpson's-paradox case and a hand-computed Mantel–Haenszel weight, a planted feature holding up after Holm while noise does not, the trade measures, the CLI.
+
+```
+node packages/backtest/src/research/survival-cli.ts --dataset <DATA dir> --sol-usd <SOL/USD series> [--out research/survival]
+```
+
 ## 8. Changes to the plan
 
-None yet.
+- 2026-10-04, before any data was read, while building:
+  - The comparison (§5) runs at the study's own decision points: U2 rules (H5, S0's U2 part) at 60 and 240 min, U1 rules (H1, H2, H6, S0's U1 part) at 24 h, on decisions that pass RES-3's base filters for that universe. BT-2 checks every minute (U2) or 5 minutes (U1), so its numbers will differ; this is a like-for-like comparison among rules, not BT-2's backtest.
+  - The market survival rate leaves out the graduate's own label.
+  - The outcome stage now waits for the exit ladder in slots, not in wall-clock seconds, so a ladder is fully observed whatever the slot time (found on the 10-second-slot test market, where trades were wrongly censored).
 
 ## 9. Results
 

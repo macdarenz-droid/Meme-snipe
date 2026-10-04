@@ -51,6 +51,12 @@ export interface OutcomeOptions {
   readonly seed: string;
   /** Least accepted entry output below the decision quote (research config `s0.entryMinOutBelowBps`). */
   readonly entryMinOutBelowBps: number;
+  /**
+   * RENT-1 (DECISIONS "Rent"): the token-account rent comes back when the atomic sell-and-close lands, with this
+   * probability (ppm; conservative: 900,000 × 95% no dust = 855,000), drawn once per candidate with a seeded draw.
+   * Absent: the scenario's own `rentRecovery` decides (all or nothing).
+   */
+  readonly rentRefundPpm?: bigint;
 }
 
 export interface Outcome {
@@ -96,9 +102,9 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   const failedExit = base + ladder.steps[Math.min(2, ladder.steps.length - 1)]!.priorityFeeLamports;
   const failProbability = 1 - Number(scen.landPpm.pumpswap) / 1e6;
   const rent = net.tokenAccountRent;
-  const maxHorizon = Math.max(...o.barriers.map((b) => b.horizonMs));
-  // Time after the horizon for the exit ladder, at 1 s per slot: conservative, since slots run ~0.27–0.4 s (more slots fit).
-  const tail = (ladder.maxAttempts + 1) * latency * 1000;
+  // Slots after the last horizon for the exit ladder: every attempt (latency + retries) plus one more, counted in
+  // slots, so the ladder is fully observed whatever the slot time.
+  const tailSlots = BigInt((ladder.maxAttempts + 1) * latency);
 
   const byPool = new Map<string, Pending[]>();
   const all: Pending[] = [];
@@ -120,12 +126,14 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   const realState = new Map<string, ShiftedPool>();
   const out = new Map<string, Outcome>();
 
+  const rentBack = (p: Pending): boolean =>
+    o.rentRefundPpm === undefined ? scen.rentRecovery : createRng(seedOf(`${o.seed}:${p.t.id}:rent`)).next() * 1e6 < Number(o.rentRefundPpm);
   const value = (p: Pending): bigint | null => {
     const s = p.shifted!.state;
     if (s === null || p.fees === null) return null;
     const q = poolSell(s, p.tokens, observedFeeContext(p.fees, p.baseSupply, NORMAL));
     if (!q.ok) return null;
-    const v = q.trade.userQuote - exitFixed + (scen.rentRecovery ? rent : 0n);
+    const v = q.trade.userQuote - exitFixed + (rentBack(p) ? rent : 0n);
     return v > 0n ? v : 0n;
   };
   const point = (p: Pending, slot: bigint): void => {
@@ -240,7 +248,8 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
         o.barriers.forEach((b, i) => {
           if (p.vertical[i] === null && ms >= p.entryMs + b.horizonMs) p.vertical[i] = row.slot;
         });
-        if (ms >= p.entryMs + maxHorizon + tail) finish(p, row.slot);
+        const last = p.vertical.reduce<bigint | null>((m, v) => (v === null || m === null ? null : v > m ? v : m), 0n);
+        if (last !== null && row.slot >= last + tailSlots) finish(p, row.slot);
       }
     }
     if (active.some((p) => p.phase === 'done')) active = active.filter((p) => p.phase !== 'done');
