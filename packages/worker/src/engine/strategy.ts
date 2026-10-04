@@ -388,6 +388,8 @@ export class LiveStrategy implements Strategy {
   readonly #seeds = new Map<string, EntrySeed>();
   /** Seeds that came from the restore, not from a decision in this process: their fill's moment is not this process's. */
   readonly #restoredSeeds = new Set<string>();
+  /** Positions whose saved exit came from the restore, until the first step checks them against the rebuilt book. */
+  readonly #restoredExits = new Set<string>();
   /** Entry intents whose saved seed the restore refused: their positions go into sell-only recovery, saying so. */
   readonly #refusedSeeds = new Set<string>();
 
@@ -728,6 +730,7 @@ export class LiveStrategy implements Strategy {
         saved = { ...saved, tracker: { ...newTracker(), pendingFull: ['emergency'] }, recovery: 'saved tracker refused' };
       }
       this.#exits.set(pid, saved);
+      this.#restoredExits.add(pid);
       this.#bars.set(pid, [...saved.bars]);
       if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
       if (saved.spot != null) this.#spot.set(pid, saved.spot);
@@ -1028,6 +1031,18 @@ export class LiveStrategy implements Strategy {
         this.#restoredSeeds.delete(id);
         out.push({ action: null, reasons: ['restored seed dropped', id, 'its intent never reached the book'] });
       }
+    }
+    // A restored saved exit whose position is not in the rebuilt book (the plans are written before the desk books the
+    // step, so a kill between the two leaves one) never will be: dropped at the restore's first step, so exits.json
+    // keeps only booked positions (EXIT-1h follow-up).
+    for (const pid of this.#restoredExits) {
+      this.#restoredExits.delete(pid);
+      if (ctx.book.positions[pid] !== undefined) continue;
+      this.#exits.delete(pid);
+      this.#bars.delete(pid);
+      this.#spot.delete(pid);
+      this.#forget(this.#mintOf(pid));
+      out.push({ action: null, reasons: ['restored exit dropped', pid, 'its position never reached the book'] });
     }
     for (const [id, pid] of this.#waitingMarket) {
       const i = ctx.book.intents[id];
