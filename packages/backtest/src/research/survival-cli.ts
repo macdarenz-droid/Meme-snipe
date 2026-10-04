@@ -81,7 +81,7 @@ const labelSide = (days: readonly string[]): (LabelledDecision & { readonly d: S
   const labels = new Map(labelDecisions(rows(), side.map(({ id, pool, labelAtMs }) => ({ id, pool, labelAtMs })), window).map((x) => [x.id, x.label]));
   return side.flatMap((d) => {
     const l = labels.get(d.id);
-    return l === null || l === undefined ? [] : [{ id: d.id, day: d.day, ageMs: d.ageMs, stratum: d.stratum, features: d.features, survived: l.survived, d }];
+    return l === null || l === undefined ? [] : [{ id: d.id, day: d.day, ageMs: d.ageMs, stratum: d.stratum, cluster: d.creator ?? d.id, features: d.features, survived: l.survived, d }];
   });
 };
 

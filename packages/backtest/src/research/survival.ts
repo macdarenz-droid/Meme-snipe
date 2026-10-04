@@ -39,6 +39,8 @@ export interface SurvivalDecision {
   readonly mcapSol: number | null;
   readonly quoteSol: number | null;
   readonly stratum: string;
+  /** The coin's creator, or null when the feature stage never saw its create: the creator-block test's cluster. */
+  readonly creator: string | null;
   readonly features: Readonly<Record<SurvivalFeature, number | null>>;
   /** RES-3's features at the same moment (RES-4's rules read these). */
   readonly f: Features;
@@ -166,7 +168,7 @@ export const collectSurvival = (rows: Iterable<DatasetRow>, o: SurvivalOptions):
     const rejects = px === null ? ['H16 SOL/USD unknown'] : baseRejects(t, p, u, now, px, drive);
     decisions.push({
       id: `S:${p.mint}:${ageMs / MIN}m`, mint: p.mint, pool: p.pool, ageMs, day, regime: regimeAt(o.window, now), decisionMs: now, decisionSlot: slot,
-      migratedAtMs: p.migratedAtMs!, labelAtMs, solUsd: px ?? 0, mcapSol, quoteSol, stratum: stratumOf(ageMs, mcapSol, quoteSol),
+      migratedAtMs: p.migratedAtMs!, labelAtMs, solUsd: px ?? 0, mcapSol, quoteSol, stratum: stratumOf(ageMs, mcapSol, quoteSol), creator: m?.creator ?? null,
       features: {
         s_indep60: f.f_indep60, s_new60: new60, s_bundle: f.f_bundle, s_top10: f.f_top10, s_top10chg: top10chg, s_devnet: f.f_devnet,
         s_early_sold: f.f_early_sold, s_liqmig: f.f_liqmig, s_liqchg60: f.f_liqchg60, s_c2g: f.f_c2g, s_net60: f.f_net60, s_ret60: f.f_ret60,
