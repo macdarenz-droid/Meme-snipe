@@ -683,7 +683,39 @@ describe('deploy gate (OPS-GATE): named runs from GitHub Actions, shared by the 
     expect(e2e(opsCommit)).toBe(opsCommit);
     expect(e2e(root0)).toBe('');
     git('echo 3 > packages/ops/src/y && git add packages && git commit -q -m pkg');
-    expect(e2e('HEAD')).toBe(git('git rev-parse HEAD'));
+    const pkg = git('git rev-parse HEAD');
+    expect(e2e('HEAD')).toBe(pkg);
+    // A side branch that adds and then removes an ops file, merged into int: its first-parent change is empty, so
+    // pkg (whose e2e ran) still decides. Walking every parent would pick the side commit that removed the file.
+    git('git checkout -q -b side && echo 4 > ops/z && git add ops && GIT_COMMITTER_DATE=2030-01-01T00:00:00Z git commit -q -m side-on');
+    git('git rm -q ops/z && GIT_COMMITTER_DATE=2030-01-02T00:00:00Z git commit -q -m side-off');
+    git('git checkout -q int && GIT_COMMITTER_DATE=2030-01-03T00:00:00Z git merge -q --no-ff -m merge side');
+    expect(e2e('HEAD')).toBe(pkg);
+  });
+
+  it("zeroed-update's own gate, run in bash: check on the commit, then e2e on its e2e commit", () => {
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const gate = update.slice(update.indexOf('check_runs() {'), update.indexOf('if [ "$verdict" != green ]; then'));
+    expect(gate).toContain('commit_verdict e2e');
+    const C = 'c'.repeat(40);
+    const E = 'e'.repeat(40);
+    const run = (check: Run[], e2e: Run[], e2eCommit = E) =>
+      sh(
+        `curl() { case "$*" in *"/commits/$C/"*) printf '%s' "$CHECK" ;; *"/commits/$E/"*) printf '%s' "$E2E" ;; *) return 22 ;; esac; }
+e2e_commit() { printf '%s' "$E2E_COMMIT"; }
+ZEROED_API_URL=https://api.github.test ZEROED_REPO=o/r REPO_DIR=/nonexistent commit="$C"
+${gate}
+printf '%s\n' "$verdict"`,
+        '',
+        { C, E, CHECK: reply(check), E2E: reply(e2e), E2E_COMMIT: e2eCommit },
+      ).out;
+    const ok = [{ name: 'check' }];
+    expect(run(ok, [{ name: 'e2e' }])).toBe('green');
+    expect(run(ok, [{ name: 'e2e', conclusion: 'failure' }])).toBe('red: the ops end-to-end of eeeeeeeeeeee: e2e failed');
+    expect(run(ok, [{ name: 'e2e', status: 'in_progress', conclusion: null }])).toBe('pending: the ops end-to-end of eeeeeeeeeeee: e2e still running');
+    expect(run(ok, [])).toBe('none: the ops end-to-end of eeeeeeeeeeee: no e2e run from GitHub Actions');
+    expect(run(ok, [{ name: 'e2e' }], '')).toBe('none: no commit at or before it touched the ops end-to-end paths');
+    expect(run([{ name: 'check', conclusion: 'failure' }], [{ name: 'e2e' }])).toBe('red: check failed');
   });
 
   it('uses the same paths the ops end-to-end workflow runs on, and both callers use the shared gate', () => {

@@ -61,6 +61,13 @@ describe('android-preview workflow', () => {
       runs({ name: 'check', status: 'in_progress', conclusion: null, app: gha }),
       runs(),
     ]) expect(run([bad]).status).toBe(1);
+    // The default wait ends with ~4 min to spare before the release job's timeout, so the job reports why it stopped.
+    const waits = [...readFileSync(script, 'utf8').matchAll(/\$\{WAIT_S:-(\d+)\}/g)].map((m) => Number(m[1]));
+    const timeout = Number(/timeout-minutes: (\d+)/.exec(releaseJob)?.[1]);
+    expect(waits.length).toBe(2);
+    expect(new Set(waits).size).toBe(1);
+    expect(waits[0]! + 240).toBeLessThanOrEqual(timeout * 60);
+    expect(waits[0]).toBe(timeout * 60 - 240);
     // A re-run counts: the newest run of check decides.
     expect(run([runs({ name: 'check', status: 'completed', conclusion: 'failure', started_at: '2026-10-04T01:00:00Z', app: gha }, { name: 'check', status: 'completed', conclusion: 'success', started_at: '2026-10-04T02:00:00Z', app: gha })]).status).toBe(0);
   });
