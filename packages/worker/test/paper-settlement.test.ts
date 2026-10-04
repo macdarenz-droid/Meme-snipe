@@ -578,6 +578,25 @@ describe('a late-landing sell reaches the paper account (risk review of #133)', 
     d.close();
   });
 
+  it('a stop that fills in part, then another of its own attempts lands late with the rest: the trade is still a stop', () => {
+    const d = deskWithAccount();
+    d.feed([
+      ...ENTRY,
+      { type: 'trigger_exit', positionId: P1, reasons: ['stop'], intentId: X1, quantity: raw(1_000n) },
+      on(X1, { type: 'prepare', quote }), on(X1, { type: 'sign', attempt: fxAttempt(X1, 11, 2_500n) }), on(X1, { type: 'submit' }),
+      // Attempt 11 is not found in time; its replacement, attempt 12, sells 600 of the 1,000 and the exit ends.
+      status(X1, 11, 'not_found', 2_501n), on(X1, { type: 'reconcile', fills: [], blockHeight: 2_501n }),
+      on(X1, { type: 'sign_replacement', attempt: fxAttempt(X1, 12, 2_700n), blockHeight: 2_501n }), on(X1, { type: 'submit' }),
+      status(X1, 12, 'succeeded', 2_600n), on(X1, { type: 'reconcile', fills: [fx(X1, 12, 600n, 18_000_000n)], blockHeight: 2_600n }),
+    ]);
+    expect(d.desk.book.positions[P1]).toMatchObject({ status: 'open', quantity: 400n });
+    // Attempt 11 landed after all, with the other 400: the trade closes, still as the stop it was sold for.
+    d.feed([status(X1, 11, 'succeeded', 2_800n), { type: 'orphan_fill', fill: fx(X1, 11, 400n, 12_000_000n) }]);
+    expect(d.desk.book.positions[P1]?.status).toBe('closed');
+    expect(trade(d.account)).toMatchObject({ closed: true, stoppedOut: true, exitReasons: ['stop'] });
+    d.close();
+  });
+
   it('a late sell that leaves tokens keeps the trade open', () => {
     const d = deskWithAccount();
     d.feed([...ENTRY, ...exitEndsUnseen(X1, 11, ['stop']), status(X1, 11, 'succeeded', 2_600n), { type: 'orphan_fill', fill: fx(X1, 11, 400n, 12_000_000n) }]);
