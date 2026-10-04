@@ -15,7 +15,10 @@ import {
   type ChainView,
   type Lease,
   type Stored,
+  summaryAlert,
 } from './logic.ts';
+import { writeReports } from './reports.ts';
+import { checkSummary } from './summary.ts';
 
 interface DurableStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -44,6 +47,10 @@ export interface Env {
   TELEGRAM_API?: string;
   CHAIN_RPC_URL?: string;
   CHAIN_TIMEOUT_MS?: string;
+  /** OPS-SUMMARY: the private reports repository (owner/name, a plain var) and its fine-grained token (a secret). */
+  DATA_REPO?: string;
+  REPORTS_TOKEN?: string;
+  GITHUB_API?: string;
   [k: string]: unknown;
 }
 
@@ -54,7 +61,7 @@ const TOKEN_PROGRAMS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQd
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const { pathname } = new URL(req.url);
-    if (req.method !== 'POST' || !['/heartbeat', '/telegram', '/lease', '/resume'].includes(pathname)) return new Response('Not found', { status: 404 });
+    if (req.method !== 'POST' || !['/heartbeat', '/telegram', '/lease', '/resume', '/summary'].includes(pathname)) return new Response('Not found', { status: 404 });
     return env.WATCHDOG.get(env.WATCHDOG.idFromName('primary')).fetch(req);
   },
   async scheduled(_event: unknown, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -83,6 +90,7 @@ export class Watchdog {
     if (pathname === '/heartbeat') return this.heartbeat(body);
     if (pathname === '/lease') return this.lease(body);
     if (pathname === '/resume') return this.resume(t);
+    if (pathname === '/summary') return this.summary(t, body);
     return new Response('Not found', { status: 404 });
   }
 
@@ -96,6 +104,36 @@ export class Watchdog {
     if (typeof hb.owner_chat_id === 'string' && /^-?\d{1,20}$/.test(hb.owner_chat_id)) await this.state.storage.put('owner_chat', hb.owner_chat_id);
     const paused = await this.state.storage.get<{ at: number }>('paused');
     return json({ ok: true, paused: Boolean(paused) });
+  }
+
+  /**
+   * OPS-SUMMARY: a signed daily summary from the worker. Checked again here (shape and forbidden patterns), then written
+   * to the private reports repository. A failed write is stored as the "summary" alert for the next check and never
+   * changes the heartbeat, the pause or the lease. The reply only says whether it was written; the worker ignores it.
+   */
+  private async summary(t: number, body: string): Promise<Response> {
+    const last = (await this.state.storage.get<number>('last_summary_t')) ?? 0;
+    if (t <= last) return json({ error: 'replayed summary' }, 409);
+    const c = checkSummary(body);
+    if (!c.ok) {
+      await this.state.storage.put('summary_failure', { reason: `refused (${c.reason})`, at: Date.now() });
+      return json({ error: 'bad summary' }, 400);
+    }
+    await this.state.storage.put('last_summary_t', t);
+    // Not set up yet (neither the repository nor the token): nothing to write and nothing to alert. One of the two
+    // without the other is a broken setup and alerts below.
+    if (!this.env.DATA_REPO && !this.env.REPORTS_TOKEN) return json({ ok: true, written: false });
+    // latest.json only moves forward: a late final for yesterday never replaces today's.
+    const latestDay = (await this.state.storage.get<string>('summary_latest_day')) ?? '';
+    const env = { DATA_REPO: this.env.DATA_REPO, REPORTS_TOKEN: this.env.REPORTS_TOKEN, GITHUB_API: this.env.GITHUB_API };
+    const r = await writeReports(env, c.summary.day, c.text, (u, i) => fetch(u, i), 10_000, c.summary.day >= latestDay);
+    if (r.ok) {
+      if (c.summary.day > latestDay) await this.state.storage.put('summary_latest_day', c.summary.day);
+      await this.state.storage.put('summary_failure', null);
+    } else {
+      await this.state.storage.put('summary_failure', { reason: r.reason, at: Date.now() });
+    }
+    return json({ ok: true, written: r.ok });
   }
 
   private async lease(body: string): Promise<Response> {
@@ -158,6 +196,8 @@ export class Watchdog {
     const limitMs = Number(this.env.CHAIN_TIMEOUT_MS ?? 5000);
     const chain = stored ? await Promise.race([this.chain(stored.hb.wallet ?? null, limitMs).catch(() => none), new Promise<ChainView>((r) => setTimeout(() => r(none), limitMs))]) : none;
     const current = evaluate(stored, now, limits, chain);
+    const failed = await s.get<{ reason: string; at: number }>('summary_failure');
+    if (failed) current.push(summaryAlert(failed.reason));
     const { lines, next } = planAlerts((await s.get<Record<string, ActiveAlert>>('alerts')) ?? {}, current, now, limits);
     await s.put('alerts', next);
     if (lines.length) await this.say(lines.join('\n'));

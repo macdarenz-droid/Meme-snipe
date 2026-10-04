@@ -39,6 +39,7 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
+import { Summarizer, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
@@ -262,6 +263,8 @@ export class Worker {
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
+  #summaryTimer: ReturnType<Timers['setTimeout']> | null = null;
+  #summary: Summarizer | null = null;
   #server: Server | null = null;
   #api: Server | null = null;
   /** The app's views: recent candidate decisions, the funnel, token symbols seen on creates. */
@@ -921,6 +924,7 @@ export class Worker {
       });
     };
     beat();
+    this.#startSummary();
     // The loop already runs (exits never wait for the seed); entries resume once the seed is placed or given up.
     try {
       await this.#seedIndex(this.#reserved);
@@ -1201,6 +1205,46 @@ export class Worker {
     return h;
   }
 
+  /**
+   * OPS-SUMMARY: the daily summary, posted every `summaryMs` and just after Melbourne midnight. Only with a watchdog
+   * and its key; it runs beside the loop and never touches the engine, the ledger or the journal (it only reads it).
+   */
+  #startSummary(): void {
+    const d = this.#d;
+    if (this.#summarizer() === null) return;
+    const run = (): void => {
+      if (this.#stopping) return;
+      void this.summaryNow().finally(() => {
+        if (!this.#stopping) this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
+      });
+    };
+    this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
+  }
+
+  /** The summarizer, made on first use; null without a watchdog or its key. */
+  #summarizer(): Summarizer | null {
+    const d = this.#d;
+    const url = d.config.watchdogUrl;
+    const key = d.heartbeat.key;
+    if (url === null || key === null) return null;
+    this.#summary ??= new Summarizer({
+      journalPath: join(d.config.stateDir, STATE_FILES.journal), stateDir: d.config.stateDir, http: d.heartbeat.http,
+      watchdogUrl: url, key, now: () => d.timers.now(), log: d.log,
+      live: () => ({
+        gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',
+        uptimeS: (d.timers.now() - this.#started) / 1000, trades: this.#account.state.trades,
+        openPositions: Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').length,
+        solPrice: this.#solPrice, credits: d.ops?.().quota ?? [],
+      }),
+    });
+    return this.#summary;
+  }
+
+  /** One summary post now (the timer's and the tests' entry). Resolves when done; never rejects. */
+  async summaryNow(): Promise<void> {
+    await this.#summarizer()?.tick();
+  }
+
   /** One signed heartbeat; the reply's pause is applied both ways. */
   async heartbeat(): Promise<void> {
     const hb = this.#d.heartbeat;
@@ -1243,6 +1287,7 @@ export class Worker {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
+    if (this.#summaryTimer !== null) d.timers.clearTimeout(this.#summaryTimer);
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
     this.#watch?.stop();
@@ -1280,6 +1325,7 @@ export class Worker {
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
+    if (this.#summaryTimer !== null) this.#d.timers.clearTimeout(this.#summaryTimer);
     for (const s of this.#sources) s.stop();
     this.#watch?.stop();
     this.#ledger.close();

@@ -1,0 +1,292 @@
+// OPS-SUMMARY, worker side: counts folded from the journal (restart-safe), the day's summary, both guards with planted
+// secrets in every free-text field, the signed post, and a worker that keeps trading when the watchdog is unreachable or
+// refuses the post.
+import { appendFileSync, existsSync, readFileSync, truncateSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { verifySignature } from '../../ops/src/watchdog/logic.ts';
+import { SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, checkSummary } from '../../ops/src/watchdog/summary.ts';
+import type { MicroUsd } from '../../core/src/units/index.ts';
+import type { HttpClient } from '../src/providers/index.ts';
+import type { PaperTrade } from '../src/run/account.ts';
+import {
+  Summarizer, buildSummary, emptySummaryState, foldLine, haltCode, nextSummaryDelay, readNewLines, signSummary, summaryBody, type SummaryInputs,
+} from '../src/run/summary.ts';
+import { MINT, makeWorker, passingMarket, tempState } from './worker-harness.ts';
+
+// 2026-10-04 12:00 Melbourne (AEDT, UTC+11) = 01:00 UTC.
+const NOON = Date.parse('2026-10-04T01:00:00.000Z');
+const DAY = '2026-10-04';
+const at = (ms: number) => new Date(ms).toISOString();
+const M1 = 'So11111111111111111111111111111111111111112';
+const M2 = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const M3 = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+
+const line = (kind: string, ms: number, f: Record<string, unknown> = {}) => ({ seq: 1, ts: at(ms), boot: 'b', kind, ...f });
+const reject = (ms: number, mint: string, gate: string, code: string) =>
+  line('decision', ms, { action: 'reject', reasons: ['reject', 'U2', mint, `hard reject ${gate}`], gate_reasons: [{ gate, code, detail: 'x' }] });
+
+const trade = (o: Partial<PaperTrade> = {}): PaperTrade => ({
+  positionId: 'p1', mint: M1, openedAtMs: NOON, notional: 3_000_000n as MicroUsd, closedAtMs: NOON + 60_000, netLamports: -1_500_000n,
+  netPnl: -300_000n as MicroUsd, stoppedOut: true, booked: 0n, exitReasons: ['stop'], ...o,
+});
+const inputs = (o: Partial<SummaryInputs> = {}): SummaryInputs => ({
+  day: DAY, final: false, nowMs: NOON + 3_600_000, fold: undefined, gitSha: 'a'.repeat(40), entryRule: 'S0', recorder: 'on', uptimeS: 3600,
+  trades: [], openPositions: 0, solPrice: 200_000_000n as MicroUsd, credits: [{ provider: 'helius', credits_used: 1234, monthly_credits: 1_000_000 }], ...o,
+});
+
+describe('counts from the journal', () => {
+  it('counts starts, critical alerts, halts as they start, and each candidate once with its last refusal', () => {
+    const s = emptySummaryState();
+    const lines = [
+      line('start', NOON, { git_sha: 'b'.repeat(40), entry_rule: 'S0', recorder: true }),
+      line('halt', NOON + 1, { reasons: ['starting'] }),
+      line('halt', NOON + 2, { reasons: ['feed helius-ws stale'] }),
+      line('halt', NOON + 3, { reasons: ['feed helius-ws stale', 'owner pause (watchdog)'] }),
+      line('resume', NOON + 4, { reasons: ['all critical feeds fresh, no pause'] }),
+      line('halt', NOON + 5, { reasons: ['feed helius-ws stale'] }),
+      line('alert', NOON + 6, { level: 'critical', code: 'position_unpriced', mint: M1 }),
+      line('alert', NOON + 7, { level: 'cleared', code: 'position_unpriced', mint: M1 }),
+      line('decision', NOON + 8, { reasons: ['shortlist', 'U2', M1, 'migrated'] }),
+      reject(NOON + 9, M1, 'H5', 'low-liquidity'),
+      reject(NOON + 10, M1, 'H7', 'top-holders'),
+      reject(NOON + 11, M2, 'H7', 'top-holders'),
+      line('decision', NOON + 12, { reasons: ['enter', 'U2', M3, 'notional 3'] }),
+      line('entry', NOON + 13, { mint: M3, trade: 'p1', reasons: ['entry filled (paper)'] }),
+      line('entry', NOON + 14, { mint: M3, trade: 'p1', reasons: ['entry filled (paper)'] }),
+      line('start', NOON + 15, { git_sha: 'c'.repeat(40), entry_rule: 'S0', recorder: true }),
+      line('halt', NOON + 16, { reasons: ['starting'] }),
+    ];
+    for (const l of lines) foldLine(s, l);
+    const d = s.days[DAY]!;
+    expect(d.starts).toBe(2);
+    expect(d.gitSha).toBe('c'.repeat(40));
+    expect(d.recorder).toBe('on');
+    expect(d.alerts).toEqual({ position_unpriced: 1 });
+    // starting twice (one per boot), feed-stale twice (it ended at the resume), the pause once.
+    expect(d.halts).toEqual({ starting: 2, 'feed-stale': 2, 'owner-pause': 1 });
+    const sum = buildSummary(inputs({ fold: d }));
+    expect(sum.candidates).toEqual({ seen: 3, entered: 1, refused: 2, refused_by_reason: [{ gate: 'H7', code: 'top-holders', count: 2 }], refused_other: 0 });
+  });
+
+  it('puts each line in its Melbourne day (AEDT midnight is 13:00 UTC)', () => {
+    const s = emptySummaryState();
+    foldLine(s, line('start', Date.parse('2026-10-04T12:59:59.000Z'), { git_sha: 'a'.repeat(40) }));
+    foldLine(s, line('start', Date.parse('2026-10-04T13:00:00.000Z'), { git_sha: 'a'.repeat(40) }));
+    expect(Object.keys(s.days).sort()).toEqual(['2026-10-04', '2026-10-05']);
+  });
+
+  it('names halts by fixed codes only', () => {
+    expect(haltCode('feed helius-ws dropped by drill')).toBe('feed-drill');
+    expect(haltCode('feed pumpportal disconnected')).toBe('feed-disconnected');
+    expect(haltCode('second price path unavailable')).toBe('second-path-unavailable');
+    expect(haltCode('deployer index seeding')).toBe('seeding');
+    expect(haltCode('sell-only: no new entries; the positions below are flattened')).toBe('sell-only');
+    expect(haltCode('ledger and book diverged; entries off until a restart')).toBe('ledger-diverged');
+    // The feed's name is never kept, whatever it holds.
+    expect(haltCode('feed https://10.0.0.1 stale')).toBe('feed-stale');
+    expect(haltCode('anything else: 10.0.0.1')).toBe('other');
+  });
+});
+
+describe('reading the journal', () => {
+  it('reads only whole lines, keeps the offset at a line end, resumes there and restarts on a shorter file', async () => {
+    const p = join(tempState(), 'journal.jsonl');
+    writeFileSync(p, `${JSON.stringify({ a: 1 })}\n${JSON.stringify({ a: 2 })}\n{"a":3`);
+    const r1 = await readNewLines(p, 0, 7);
+    expect(r1.lines).toEqual([{ a: 1 }, { a: 2 }]);
+    expect(r1.offset).toBe(16);
+    appendFileSync(p, '}\n{"a":4}\n');
+    const r2 = await readNewLines(p, r1.offset);
+    expect(r2.lines).toEqual([{ a: 3 }, { a: 4 }]);
+    truncateSync(p, 8);
+    const r3 = await readNewLines(p, r2.offset);
+    expect(r3).toMatchObject({ reset: true, lines: [{ a: 1 }], offset: 8 });
+    expect(await readNewLines(join(tempState(), 'none'), 5)).toEqual({ lines: [], offset: 5, reset: false });
+  });
+
+  it('a restart neither loses nor double-counts a line (the offset is saved with the counts)', async () => {
+    const dir = tempState();
+    const p = join(dir, 'journal.jsonl');
+    const deps = (now: number) => ({ journalPath: p, stateDir: dir, http: (async () => ({ status: 200, header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient, watchdogUrl: 'https://w.test', key: 'k', now: () => now, log: () => {}, live: () => inputs() });
+    appendFileSync(p, `${JSON.stringify(line('start', NOON))}\n`);
+    await new Summarizer(deps(NOON)).tick();
+    appendFileSync(p, `${JSON.stringify(line('start', NOON + 1))}\n`);
+    const second = new Summarizer(deps(NOON + 2));
+    await second.tick();
+    expect(second.state.days[DAY]!.starts).toBe(2);
+    expect(existsSync(join(dir, 'summary.json'))).toBe(true);
+    // An unreadable summary.json never stops anything: it counts again from the journal's start.
+    writeFileSync(join(dir, 'summary.json'), 'not json');
+    const logs: string[] = [];
+    const third = new Summarizer({ ...deps(NOON + 3), log: (l) => void logs.push(l) });
+    await third.tick();
+    expect(third.state.days[DAY]!.starts).toBe(2);
+    expect(logs).toContain('summary.json unreadable; counting again from the journal.');
+  });
+});
+
+describe('the summary', () => {
+  it('lists the day\'s trades with exact paper net, sums the closed ones, and counts top reasons and the rest', () => {
+    const fold = { ...emptySummaryState().days[DAY], starts: 1, recorder: 'on' as const, gitSha: null, entryRule: null, alerts: {}, halts: {}, cands: {} as Record<string, { gate: string | null; code: string | null; entered: boolean }> };
+    for (let k = 0; k < SUMMARY_TOP_REASONS + 2; k++) fold.cands[`${M1.slice(0, 40)}${k}`] = { gate: 'H1', code: `c${k}`, entered: false };
+    const trades = [
+      trade(),
+      trade({ positionId: 'p2', mint: M2, closedAtMs: NOON + 120_000, netLamports: 4_000_000n, netPnl: 800_000n as MicroUsd, stoppedOut: false, exitReasons: ['take_profit'] }),
+      trade({ positionId: 'p3', mint: M3, closedAtMs: null, netLamports: null, netPnl: null, exitReasons: [] }),
+      trade({ positionId: 'p0', openedAtMs: NOON - 86_400_000, closedAtMs: NOON - 86_000_000 }),
+    ];
+    const s = buildSummary(inputs({ fold, trades, openPositions: 1 }));
+    expect(s.trades.map((t) => [t.mint, t.exit_reason, t.net_lamports, t.net_usd])).toEqual([
+      [M1, 'stop', '-1500000', '-0.3'], [M2, 'take_profit', '4000000', '0.8'], [M3, null, null, null],
+    ]);
+    expect(s.pnl).toEqual({ closed_trades: 2, net_lamports: '2500000', net_usd: '0.5' });
+    expect(s.candidates.refused_by_reason).toHaveLength(SUMMARY_TOP_REASONS);
+    expect(s.candidates.refused_other).toBe(2);
+    expect(s.provider_credits).toEqual([{ provider: 'helius', used_since_boot: 1234, monthly: 1_000_000 }]);
+    expect(s.worker).toEqual({ git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on' });
+    const b = summaryBody(s);
+    expect('body' in b && checkSummary(b.body).ok).toBe(true);
+    // A final summary leaves out trades still open from another day.
+    expect(buildSummary(inputs({ trades: [trade({ openedAtMs: NOON - 86_400_000, closedAtMs: null })], final: true })).trades).toEqual([]);
+  });
+
+  it('caps the trade list and fits the size cap, still counting every trade', () => {
+    const trades = Array.from({ length: SUMMARY_MAX_TRADES + 20 }, (_, k) => trade({ positionId: `p${k}`, openedAtMs: NOON + k }));
+    const s = buildSummary(inputs({ trades }));
+    expect(s.trades).toHaveLength(SUMMARY_MAX_TRADES);
+    expect(s.trades_dropped).toBe(20);
+    const b = summaryBody(s);
+    expect('body' in b).toBe(true);
+    if ('body' in b) {
+      const c = checkSummary(b.body);
+      expect(c.ok).toBe(true);
+      if (c.ok) expect(c.summary.trades.length + c.summary.trades_dropped).toBe(SUMMARY_MAX_TRADES + 20);
+    }
+  });
+});
+
+/** Values that must never reach a summary, planted in every free-text field a journal line or a trade can carry. */
+const PLANTED = [
+  'AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ',
+  'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUV',
+  '203.0.113.42', '2001:db8:85a3::8a2e:370:7334', 'zeroed.tail1234.ts.net', 'https://zeroed-abc.workers.dev/heartbeat',
+  '5566778899', // a chat id
+  '4wBqpZM9xaSheZzJSMawUKKwhdpChKbZ5eu5ky4Vigw7Tz6zAqF6GzdXUDtPvACqNAmrzu8qQpRQnhm5Ws5ZK6U2', // a 64-byte base58 secret
+  '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ', 'f3b1c2d4-1111-4222-8333-944455556666', 'owner@example.com',
+];
+
+describe('secrets never reach a summary (worker side)', () => {
+  it('drops or codes every planted value and the body passes both guards', () => {
+    for (const secret of PLANTED) {
+      const s = emptySummaryState();
+      const lines = [
+        line('start', NOON, { git_sha: secret, entry_rule: secret, recorder: secret, label: secret, run_id: secret, pid: secret }),
+        line('halt', NOON + 1, { reasons: [secret, `feed ${secret} stale`] }),
+        line('alert', NOON + 2, { level: 'critical', code: secret, mint: secret, reasons: [secret] }),
+        line('decision', NOON + 3, { reasons: ['reject', secret, secret, secret], gate_reasons: [{ gate: secret, code: secret, detail: secret }] }),
+        line('decision', NOON + 4, { reasons: ['reject', 'U2', M1, secret], gate_reasons: [{ gate: 'H1', code: secret, detail: secret }] }),
+        line('entry', NOON + 5, { mint: secret, trade: secret, reasons: [secret] }),
+        line('feed', NOON + 6, { feed: secret, detail: secret, connected: false }),
+        line(secret, NOON + 7, { [secret]: secret }),
+      ];
+      for (const l of lines) foldLine(s, l);
+      const sum = buildSummary(inputs({
+        fold: s.days[DAY], gitSha: secret, entryRule: secret,
+        trades: [trade({ mint: secret, exitReasons: [secret] }), trade({ positionId: 'p2', exitReasons: [secret] })],
+        credits: [{ provider: secret, credits_used: 1, monthly_credits: null }],
+      }));
+      const b = summaryBody(sum);
+      expect('body' in b, secret).toBe(true);
+      if (!('body' in b)) continue;
+      expect(b.body, secret).not.toContain(secret);
+      expect(checkSummary(b.body).ok, secret).toBe(true);
+    }
+  });
+});
+
+describe('the post', () => {
+  it('is signed for /summary only: the watchdog accepts it there and refuses it as a heartbeat', async () => {
+    const body = '{"x":1}';
+    const t = 1_800_000_000;
+    const h = `t=${t},v1=${signSummary('k', t, body)}`;
+    expect(await verifySignature(h, 'POST', '/summary', body, 'k', t)).toBe(t);
+    expect(await verifySignature(h, 'POST', '/heartbeat', body, 'k', t)).toBeNull();
+  });
+
+  it('never throws on an unreachable watchdog or a 401, and posts the day that ended once, marked final', async () => {
+    const dir = tempState();
+    const p = join(dir, 'journal.jsonl');
+    writeFileSync(p, `${JSON.stringify(line('start', NOON))}\n`);
+    const posts: { day: string; final: boolean; t: number }[] = [];
+    let mode: 'down' | '401' | 'ok' = 'down';
+    const http: HttpClient = async (req) => {
+      if (mode === 'down') throw Object.assign(new Error('x'), { name: 'TypeError' });
+      if (mode === '401') return { status: 401, header: () => null, text: '{"error":"bad signature"}' };
+      const s = JSON.parse(req.body!) as { day: string; final: boolean };
+      posts.push({ day: s.day, final: s.final, t: Number(/t=(\d+)/.exec(req.headers!['x-zeroed-signature']!)![1]) });
+      return { status: 200, header: () => null, text: '{"ok":true,"written":true}' };
+    };
+    let now = NOON;
+    const logs: string[] = [];
+    const sz = new Summarizer({ journalPath: p, stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => now, log: (l) => void logs.push(l), live: () => inputs() });
+    await expect(sz.tick()).resolves.toBeUndefined();
+    mode = '401';
+    await expect(sz.tick()).resolves.toBeUndefined();
+    expect(logs).toEqual([`Summary for ${DAY} not accepted: TypeError.`, `Summary for ${DAY} not accepted: HTTP 401.`]);
+    // Past Melbourne midnight while the watchdog refuses: the final for the 4th waits and is sent once it answers.
+    now = Date.parse('2026-10-04T13:00:30.000Z');
+    await sz.tick();
+    mode = 'ok';
+    await sz.tick();
+    await sz.tick();
+    expect(posts.map((x) => [x.day, x.final])).toEqual([[DAY, true], ['2026-10-05', false], ['2026-10-05', false]]);
+    // Two posts in one second get increasing signature times (the watchdog takes each once).
+    expect(posts[1]!.t).toBeGreaterThan(posts[0]!.t);
+  });
+
+  it('posts every 30 minutes and just after Melbourne midnight', () => {
+    expect(nextSummaryDelay(NOON, 1_800_000)).toBe(1_800_000);
+    const late = Date.parse('2026-10-04T12:50:00.000Z');
+    expect(nextSummaryDelay(late, 1_800_000)).toBeGreaterThanOrEqual(10 * 60_000 + 5_000);
+    expect(nextSummaryDelay(late, 1_800_000)).toBeLessThanOrEqual(10 * 60_000 + 6_000);
+  });
+});
+
+describe('the worker keeps trading when the summary fails', () => {
+  for (const failure of ['unreachable', '401'] as const) {
+    it(`with the watchdog ${failure}: entries, journal and the position go on, and the stop is clean`, async () => {
+      const summaries: string[] = [];
+      const http: HttpClient = async (req) => {
+        if (req.url.endsWith('/summary')) {
+          summaries.push(req.body!);
+          if (failure === 'unreachable') throw Object.assign(new Error('x'), { name: 'TypeError' });
+          return { status: 401, header: () => null, text: '{"error":"bad signature"}' };
+        }
+        return { status: 200, header: () => null, text: JSON.stringify({ ok: true, paused: false }) };
+      };
+      const h = makeWorker({ key: 'k', http });
+      expect(await h.worker.reconcile()).toEqual({ ok: true });
+      const m = await passingMarket(h, { heldPoolFacts: true });
+      await m.run(4_000, 100, () => m.pool());
+      await h.worker.summaryNow();
+      const seqBefore = h.worker.health().journal_seq;
+      await m.run(10_000, 400, () => {
+        m.slot();
+        m.pool();
+      });
+      await h.worker.summaryNow();
+      expect(summaries.length).toBeGreaterThanOrEqual(2);
+      expect(h.worker.health().journal_seq).toBeGreaterThan(seqBefore);
+      expect(Object.values(h.worker.apiInputs().book.positions).some((p) => String(p.mint) === String(MINT) && p.status === 'open')).toBe(true);
+      expect(h.logs.some((l) => l.startsWith('Summary for ') && l.includes('not accepted'))).toBe(true);
+      // The summary that was refused was valid and named the entry.
+      const c = checkSummary(summaries.at(-1)!);
+      expect(c.ok).toBe(true);
+      if (c.ok) expect(c.summary.candidates.entered).toBe(1);
+      expect(await h.worker.stop()).toBe(0);
+      const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8');
+      expect(journal).toContain('"kind":"stop"');
+    });
+  }
+});

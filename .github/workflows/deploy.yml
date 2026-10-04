@@ -71,6 +71,19 @@ jobs:
           WRANGLER: ops/watchdog/deploy/node_modules/.bin/wrangler --config packages/ops/wrangler.toml
         run: bash ops/deploy/publish.sh
 
+      # OPS-SUMMARY: the watchdog's code and its one reports secret. No DEPLOY_CODE needed, and it never touches
+      # the heartbeat key or any other secret (ops/deploy/reports.sh). Runs after the handoff, so a handoff's
+      # watchdog deploy also ends with DATA_REPO set.
+      - name: Set up the daily summary
+        if: ${{ !cancelled() }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          WRANGLER: ops/watchdog/deploy/node_modules/.bin/wrangler --config packages/ops/wrangler.toml
+        run: bash ops/deploy/reports.sh
+
       - name: Remove the handoff release
         if: ${{ always() }}
         run: gh release delete handoff --yes --cleanup-tag >/dev/null 2>&1 || true

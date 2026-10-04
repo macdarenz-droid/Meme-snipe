@@ -446,3 +446,97 @@ describe('workers.dev subdomain (ops/deploy/cf-subdomain.sh) against a fake Clou
     expect(other.calls.map((c) => c.method)).toEqual(['GET']);
   });
 });
+
+describe('daily summary deploy step (OPS-SUMMARY, ops/deploy/reports.sh)', () => {
+  /** The workflow step's env block, as name -> source expression. */
+  const stepEnv = (name: string): Record<string, string> => {
+    const wf = read('.github/workflows/deploy.yml').split('\n');
+    const start = wf.findIndex((l) => l.trim() === `- name: ${name}`);
+    expect(start, name).toBeGreaterThan(0);
+    const env: Record<string, string> = {};
+    let inEnv = false;
+    for (const l of wf.slice(start + 1)) {
+      if (/^\s{6}- /.test(l)) break;
+      if (/^\s{8}env:\s*$/.test(l)) inEnv = true;
+      else if (/^\s{8}\S/.test(l)) inEnv = false;
+      else if (inEnv) {
+        const m = /^\s{10}([A-Z_]+): (.*)$/.exec(l);
+        if (m) env[m[1]!] = m[2]!;
+      }
+    }
+    return env;
+  };
+
+  it('the step gets exactly these secrets and the DATA_REPO variable, and DATA_STORE_TOKEN reaches no other step', () => {
+    const env = stepEnv('Set up the daily summary');
+    const secrets = Object.values(env).flatMap((v) => [...v.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1])).sort();
+    expect(secrets).toEqual(['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'DATA_STORE_TOKEN']);
+    expect(env['DATA_REPO']).toBe('${{ vars.DATA_REPO }}');
+    const wf = read('.github/workflows/deploy.yml');
+    expect(wf.match(/secrets\.DATA_STORE_TOKEN/g)).toHaveLength(1);
+    expect(wf).toContain('run: bash ops/deploy/reports.sh');
+    // The script names no other secret to set, and never the heartbeat key.
+    const s = read('ops/deploy/reports.sh').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    expect([...s.matchAll(/secret put (\S+)/g)].map((m) => m[1])).toEqual(['REPORTS_TOKEN']);
+    expect(s).not.toMatch(/HEARTBEAT_HMAC_KEY|TELEGRAM|DEPLOY_CODE|secret (delete|bulk|list)|--secrets-file/);
+  });
+
+  async function deploy(env: Record<string, string>) {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: true, result: { subdomain: 'owners-pick' } }));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const dir = mkdtempSync(join(tmpdir(), 'zeroed-reports-'));
+    const log = join(dir, 'calls.log');
+    // A stand-in wrangler: records each call's arguments and what it read on stdin.
+    writeFileSync(join(dir, 'wrangler'), `#!/usr/bin/env bash\nset -euo pipefail\nin=""\nif [ "\${1:-}" = secret ]; then in="$(cat)"; fi\nprintf 'ARGS %s | STDIN %s\\n' "$*" "$in" >> "${log}"\nif [ "\${1:-}" = deploy ]; then echo "Deployed https://zeroed-watchdog.owners-pick.workers.dev"; fi\n`);
+    chmodSync(join(dir, 'wrangler'), 0o755);
+    const child = spawn('bash', [join(root, 'ops/deploy/reports.sh')], {
+      env: { PATH: process.env['PATH'] ?? '', CLOUDFLARE_API_URL: `http://127.0.0.1:${port}/client/v4`, WRANGLER: join(dir, 'wrangler'), GITHUB_REPOSITORY: 'macdarenz-droid/Meme-snipe', ...env },
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const status = await new Promise<number | null>((r) => child.on('close', r));
+    server.close();
+    const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+    rmSync(dir, { recursive: true, force: true });
+    return { status, out, calls };
+  }
+  const TOKEN = 'github_pat_TESTtoken0123456789abcdefghij';
+  const FULL = { CLOUDFLARE_API_TOKEN: 'TESTcf', CLOUDFLARE_ACCOUNT_ID: 'acc', DATA_STORE_TOKEN: TOKEN, DATA_REPO: 'macdarenz-droid/zeroed-data' };
+
+  it('deploys the code with DATA_REPO and sets only REPORTS_TOKEN, the token on stdin and in no output', async () => {
+    const r = await deploy(FULL);
+    expect(r.status).toBe(0);
+    expect(r.calls).toEqual([
+      'ARGS deploy --var DATA_REPO:macdarenz-droid/zeroed-data | STDIN ',
+      `ARGS secret put REPORTS_TOKEN | STDIN ${TOKEN}`,
+    ]);
+    expect(r.calls.filter((c) => c.split(' | STDIN')[0]!.includes(TOKEN))).toEqual([]);
+    expect(r.out).not.toContain(TOKEN);
+    expect(r.out).toContain('Its other secrets are unchanged.');
+  });
+
+  it('changes nothing without the Cloudflare token or DATA_STORE_TOKEN', async () => {
+    for (const drop of ['CLOUDFLARE_API_TOKEN', 'DATA_STORE_TOKEN']) {
+      const env: Record<string, string> = { ...FULL };
+      delete env[drop];
+      const r = await deploy(env);
+      expect(r.status, drop).toBe(0);
+      expect(r.calls, drop).toEqual([]);
+      expect(r.out).toContain('the daily summary is not set up');
+    }
+  });
+
+  it('refuses this public repository (any case), a missing or malformed DATA_REPO, before any call', async () => {
+    for (const repo of ['macdarenz-droid/Meme-snipe', 'MACDARENZ-DROID/MEME-SNIPE', '', 'https://github.com/x/y', 'zeroed-data']) {
+      const r = await deploy({ ...FULL, DATA_REPO: repo });
+      expect(r.status, repo).not.toBe(0);
+      expect(r.calls, repo).toEqual([]);
+      expect(r.out).not.toContain(TOKEN);
+    }
+  });
+});
