@@ -36,7 +36,7 @@ describe('AsOfStore.prune', () => {
     expect(s.history('chain:slot', at(cut))).toEqual(before.from);
     // The newest entry before the cut stays, so a lookup just before the cut still answers.
     expect(s.history('chain:slot', at(0))).toHaveLength(26);
-    expect((s.history('chain:slot', at(0)) as { source: string }[])[0]!.source).toBe(`chain:slot@${cut - 10 * 60_000}`);
+    expect((s.history('chain:slot', at(0)) as unknown as { source: string }[])[0]!.source).toBe(`chain:slot@${cut - 10 * 60_000}`);
     expect(clock.now().receivedAt).toBe(10 * HOUR);
   });
 
