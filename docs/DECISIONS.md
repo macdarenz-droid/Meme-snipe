@@ -1694,7 +1694,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 ## The fee a paper exit pays (PAPER-FEE-RUNG, `run/paper-world.ts`, `engine/strategy.ts` `exitFee`, backtest `sim/world.ts`, `strategy/s0.ts`)
 - **2026-10-05 · The problem.** The paper world charged an exit attempt `ladderFees[this intent's attempts − 1]`. The strategy's rung climbs across the position's exit intents (core `nextExitRung`: after a partial, the next exit starts one rung up), so a full exit after a partial paid rung 0's fee while its plan was rung 1's. The trade's costs were under-counted, so its net was over-stated. The dry-run simulation of that leg carried the same wrong fee.
 - **2026-10-05 · The fix.** When `#sendExit` signs an attempt, it keeps the rung's fee by signature (`exitFee`; dropped when the position closes). The paper world charges that fee, and the simulated leg carries it too.
-  - Unknown fee (an attempt signed before a restart, broadcast after it): the highest rung's fee. A cost is never under-counted.
+  - The map lives in memory only; nothing new is saved. After a restart, an attempt signed before it and broadcast after it has no planned fee, so it pays the highest rung's fee. A cost is never under-counted. An attempt already broadcast is in `paper.json` with the fee it was charged.
   - Entries keep the network's entry priority fee.
 - **2026-10-05 · The backtest.** `World` re-derived the fee the same way. S0 climbs within an intent only, so its fees matched, but any other strategy would be charged wrongly.
   - The world now asks the strategy (`PlannedFees.exitFee`); S0 keeps its planned fees.
