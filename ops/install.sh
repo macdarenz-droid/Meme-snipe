@@ -1747,15 +1747,31 @@ install_file /usr/local/sbin/zeroed-tailscale 0755 <<'__ZEROED_FILE__'
 # API (loopback 127.0.0.1:8788) to the tailnet only, over HTTPS, with Funnel off. No public port opens.
 #   zeroed-tailscale         set up (again): safe to repeat
 #   zeroed-tailscale --off   stop publishing the worker API (Tailscale stays installed)
-# The login link is shown here and sent to the paired Telegram chat, so it can be opened on the phone.
+# The login link is shown here and sent to the paired Telegram chat, so it can be opened on the phone. So is anything
+# the owner must turn on in the Tailscale admin console first (MagicDNS, HTTPS Certificates): every tailscale call is
+# bounded in time and nothing it asks the owner to do is hidden.
 set -euo pipefail
 umask 022
 . /usr/local/lib/zeroed/common.sh
 TS_FPR=2596A99EAAB33821893C0A79458CA832957F5868
 KEYRING=/usr/share/keyrings/tailscale-archive-keyring.gpg
+TS_WAIT="${ZEROED_TS_WAIT:-60}"
+TS_DNS_PAGE=https://login.tailscale.com/admin/dns
+
+# Every tailscale call runs under a time limit, so a step waiting on something the owner cannot see ends with a
+# "Stopped:" line instead of a silent hang. The login runs the binary itself: it has its own --timeout=15m and runs in
+# the background, where it must stay one process the script can kill.
+tailscale() {
+  local rc=0
+  timeout "$TS_WAIT" "$(type -P tailscale)" "$@" || rc=$?
+  if [ "$rc" = 124 ]; then
+    log "Stopped: 'tailscale ${1:-}' did not finish within ${TS_WAIT}s." >&2
+  fi
+  return "$rc"
+}
 
 if [ "${1:-}" = --off ]; then
-  command -v tailscale >/dev/null || { log "Tailscale is not installed; nothing to turn off."; exit 0; }
+  type -P tailscale >/dev/null || { log "Tailscale is not installed; nothing to turn off."; exit 0; }
   tailscale serve reset
   rm -f "$STATE_DIR/live_view"
   log "Live view off: the worker API is no longer published to the tailnet."
@@ -1763,7 +1779,7 @@ if [ "${1:-}" = --off ]; then
 fi
 [ $# = 0 ] || { log "Usage: zeroed-tailscale [--off]"; exit 2; }
 
-if ! command -v tailscale >/dev/null; then
+if ! type -P tailscale >/dev/null; then
   log "Installing Tailscale from pkgs.tailscale.com"
   got="$(gpg --show-keys --with-colons /etc/zeroed/tailscale-archive.asc 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')"
   [ "$got" = "$TS_FPR" ] || { log "Stopped: the Tailscale signing key does not match its pinned fingerprint."; exit 1; }
@@ -1782,7 +1798,7 @@ if [ "$(state)" != Running ]; then
   out="$(mktemp)"
   trap 'rm -f "$out"; [ -z "${up_pid:-}" ] || kill "$up_pid" 2>/dev/null || true' EXIT
   # No Tailscale SSH, no routes or DNS taken from the tailnet: the server only offers the one HTTPS page.
-  tailscale up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m >"$out" 2>&1 &
+  command tailscale up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m >"$out" 2>&1 &
   up_pid=$!
   url=""
   for _ in $(seq 1 60); do
@@ -1802,9 +1818,34 @@ fi
 
 # The intended target is checked before anything is published: the worker API on loopback, nothing else.
 [[ "$WORKER_API_ADDR" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]] || { log "Stopped: the worker API address is not loopback."; exit 1; }
+
+# tailscale serve needs MagicDNS and HTTPS Certificates on the tailnet. Without them it prints a link to turn HTTPS on
+# and waits for the owner (its "https" node capability); so both are checked first and named here.
+st="$(tailscale status --json)" || { log "Stopped: could not read Tailscale's status."; exit 1; }
+need=()
+jq -e '.CurrentTailnet.MagicDNSEnabled == true' <<<"$st" >/dev/null || need+=("MagicDNS")
+jq -e '((.Self.CapMap // {}) | has("https")) and ((.CertDomains // []) | length > 0)' <<<"$st" >/dev/null || need+=("HTTPS Certificates")
+if [ "${#need[@]}" -gt 0 ]; then
+  what="${need[0]}${need[1]:+ and ${need[1]}}"
+  msg="the live view needs $what on your tailnet. Open $TS_DNS_PAGE, turn on $what, then run zeroed-tailscale again."
+  log "Stopped: $msg"
+  notify "Zeroed host: $msg" && log "(This was also sent to your Telegram chat.)" || true
+  exit 3
+fi
+
 tailscale funnel --https=443 off >/dev/null 2>&1 || true
-tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >/dev/null
+served="$(mktemp)"
+trap 'rm -f "$served" "${out:-}"' EXIT
+if ! tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >"$served" 2>&1; then
+  # Whatever tailscale printed (an error, or a link to act on) is shown, never dropped.
+  cat "$served"
+  tailscale serve reset >/dev/null 2>&1 || true
+  rm -f "$STATE_DIR/live_view"
+  log "Stopped: tailscale serve did not finish. Nothing is published."
+  exit 1
+fi
 if ! tailscale serve status --json | serve_ok; then
+  cat "$served"
   # Anything else than exactly that (another target, another port, Funnel on) is taken down at once.
   tailscale serve reset >/dev/null 2>&1 || true
   tailscale funnel --https=443 off >/dev/null 2>&1 || true
