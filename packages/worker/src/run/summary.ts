@@ -9,7 +9,7 @@
 import { createHmac } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import {
-  EXIT_KINDS, PATTERNS, SUMMARY_MAX_BYTES, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
+  EXIT_KINDS, PATTERNS, RESTART_CAUSE_KEYS, SUMMARY_MAX_BYTES, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
   type CodeCount, type CrashSite, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
 } from '../../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
@@ -320,6 +320,13 @@ export const buildSummary = (i: SummaryInputs): Summary => {
   };
 };
 
+/** The summary without RESTART-CAUSE's keys of `worker`, the shape a watchdog from before them accepts. */
+export const withoutRestartCause = (s: Summary): Summary => {
+  const w: Record<string, unknown> = { ...s.worker };
+  for (const k of RESTART_CAUSE_KEYS) delete w[k];
+  return { ...s, worker: w as unknown as Summary['worker'] };
+};
+
 /** The body to post, or null with the reason when either guard refuses it (then nothing is sent). */
 export const summaryBody = (s: Summary): { readonly body: string } | { readonly refused: string } => {
   let body = JSON.stringify(s);
@@ -453,18 +460,29 @@ export class Summarizer {
     const { watchdogUrl: url, key } = this.#d;
     if (url === null || key === null) return false;
     const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day] });
+    let res = await this.#send(day, s, url, key, now);
+    // A watchdog from before RESTART-CAUSE refuses its keys (a deploy is not atomic): the day goes again without them.
+    if (res !== null && !res.ok && res.reason === 'HTTP 400') {
+      this.#d.log(`Summary for ${day} refused; sent again without the restart counts.`);
+      res = await this.#send(day, withoutRestartCause(s), url, key, now);
+    }
+    if (res === null) return false;
+    if (!res.ok) this.#d.log(`Summary for ${day} not accepted: ${res.reason}.`);
+    else if (!res.written) this.#d.log(`Summary for ${day} accepted, not written (the watchdog alerts why).`);
+    return res.ok;
+  }
+
+  /** One checked, signed post; null when the guards refuse the summary (nothing is sent). */
+  async #send(day: string, s: Summary, url: string, key: string, now: number): Promise<PostResult | null> {
     const b = summaryBody(s);
     if ('refused' in b) {
       this.#d.log(`Summary for ${day} not sent: ${b.refused}.`);
-      return false;
+      return null;
     }
     // The watchdog takes each signature time once: two posts in one second get consecutive times.
     const t = Math.max(Math.floor(now / 1000), this.#lastT + 1);
     this.#lastT = t;
-    const res = await postSummary(this.#d.http, url, key, b.body, t);
-    if (!res.ok) this.#d.log(`Summary for ${day} not accepted: ${res.reason}.`);
-    else if (!res.written) this.#d.log(`Summary for ${day} accepted, not written (the watchdog alerts why).`);
-    return res.ok;
+    return postSummary(this.#d.http, url, key, b.body, t);
   }
 }
 

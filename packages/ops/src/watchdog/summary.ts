@@ -68,12 +68,14 @@ export interface Summary {
     /** Worker starts journaled that day (the first boot of the day counts too). */
     readonly starts: number;
     readonly recorder: 'on' | 'off' | null;
-    /** Restarts that day other than the first boot, by kind (RESTART-CAUSE). */
-    readonly restarts: { readonly planned: number; readonly deploy: number; readonly unplanned: number };
+    // RESTART-CAUSE: all three or none. A worker from before them still posts (a deploy is not atomic: the watchdog
+    // and the server update minutes or hours apart, in either order).
+    /** Restarts that day other than the first boot, by kind. */
+    readonly restarts?: { readonly planned: number; readonly deploy: number; readonly unplanned: number };
     /** How each previous process ended, as read at that day's boots; codes from EXIT_KINDS. */
-    readonly exits: readonly CodeCount[];
+    readonly exits?: readonly CodeCount[];
     /** That day's crashes by site, most frequent first, at most SUMMARY_MAX_CRASH_SITES. */
-    readonly crash_sites: readonly CrashSite[];
+    readonly crash_sites?: readonly CrashSite[];
   };
   /** Critical alerts raised that day, by code. */
   readonly alerts: readonly CodeCount[];
@@ -178,6 +180,14 @@ const restarts = (x: unknown) => exact(x, ['planned', 'deploy', 'unplanned']) &&
 const credits = (x: unknown) =>
   exact(x, ['provider', 'used_since_boot', 'monthly']) && str(x['provider'], PATTERNS.CODE) && count(x['used_since_boot']) && (x['monthly'] === null || count(x['monthly']));
 
+const WORKER_KEYS = ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder'] as const;
+/** RESTART-CAUSE's keys of `worker`: present all together or not at all. */
+export const RESTART_CAUSE_KEYS = ['restarts', 'exits', 'crash_sites'] as const;
+const restartCause = (w: Record<string, unknown>): boolean =>
+  RESTART_CAUSE_KEYS.some((k) => Object.hasOwn(w, k))
+    ? exact(w, [...WORKER_KEYS, ...RESTART_CAUSE_KEYS]) && restarts(w['restarts']) && list(w['exits'], EXIT_KINDS.length, exitCount) && list(w['crash_sites'], SUMMARY_MAX_CRASH_SITES, crashSite)
+    : exact(w, WORKER_KEYS);
+
 /** The keys of every object in the shape, for the key-name test. */
 export const SHAPE_KEYS: readonly string[] = [
   'v', 'day', 'final', 'generated_at', 'mode', 'worker', 'alerts', 'halts', 'candidates', 'trades', 'trades_dropped', 'pnl', 'open_positions', 'provider_credits',
@@ -198,9 +208,8 @@ export const isSummary = (x: unknown): x is Summary => {
   const p = x['pnl'];
   return (
     x['v'] === SUMMARY_VERSION && str(x['day'], PATTERNS.DAY) && typeof x['final'] === 'boolean' && str(x['generated_at'], PATTERNS.TIME) && x['mode'] === 'paper' &&
-    exact(w, ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder', 'restarts', 'exits', 'crash_sites']) && str(w['git_sha'], PATTERNS.SHA) && str(w['entry_rule'], PATTERNS.RULE) &&
+    isObj(w) && restartCause(w) && str(w['git_sha'], PATTERNS.SHA) && str(w['entry_rule'], PATTERNS.RULE) &&
     count(w['uptime_s']) && count(w['starts']) && (w['recorder'] === null || w['recorder'] === 'on' || w['recorder'] === 'off') &&
-    restarts(w['restarts']) && list(w['exits'], EXIT_KINDS.length, exitCount) && list(w['crash_sites'], SUMMARY_MAX_CRASH_SITES, crashSite) &&
     list(x['alerts'], 64, codeCount) && list(x['halts'], 64, codeCount) &&
     exact(c, ['seen', 'entered', 'refused', 'refused_by_reason', 'refused_other']) && count(c['seen']) && count(c['entered']) && count(c['refused']) &&
     list(c['refused_by_reason'], SUMMARY_TOP_REASONS, reasonCount) && count(c['refused_other']) &&

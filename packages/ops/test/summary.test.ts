@@ -93,7 +93,7 @@ describe('the summary guards', () => {
       }
     }
     const ok = (over: Record<string, unknown>) => checkSummary(JSON.stringify(goodSummary({ worker: { ...goodSummary().worker, ...over } as Summary['worker'] }))).ok;
-    const site = goodSummary().worker.crash_sites[0]!;
+    const site = goodSummary().worker.crash_sites![0]!;
     expect(ok({ exits: [{ code: 'killed', count: 1 }, { code: 'clean', count: 1 }], crash_sites: [{ ...site, file: null, line: null, event: null, error: 'non-error' }] })).toBe(true);
     expect(ok({ exits: [{ code: 'other', count: 1 }] })).toBe(false);
     expect(ok({ crash_sites: [{ ...site, file: null }] })).toBe(false);
@@ -102,9 +102,19 @@ describe('the summary guards', () => {
     expect(ok({ crash_sites: [{ ...site, note: 'x' }] })).toBe(false);
     expect(ok({ crash_sites: Array.from({ length: 9 }, () => site) })).toBe(false);
     expect(ok({ restarts: { planned: 0, deploy: 0 } })).toBe(false);
+    expect(ok({ restarts: { planned: 0, deploy: 0, unplanned: 0, other: 0 } })).toBe(false);
     expect(ok({ restarts: { planned: 0, deploy: 0, unplanned: 1.5 } })).toBe(false);
-    const { crash_sites: _, ...noSites } = goodSummary().worker;
-    expect(checkSummary(JSON.stringify(goodSummary({ worker: noSites as Summary['worker'] }))).ok).toBe(false);
+  });
+
+  it('accept a worker from before RESTART-CAUSE (none of its keys), never some of them (a deploy is not atomic)', () => {
+    const w = goodSummary().worker as Record<string, unknown>;
+    const { restarts, exits, crash_sites, ...old } = w;
+    expect(checkSummary(JSON.stringify(goodSummary({ worker: old as Summary['worker'] }))).ok).toBe(true);
+    for (const part of [{ restarts }, { exits }, { crash_sites }, { restarts, exits }, { restarts, crash_sites }, { exits, crash_sites }]) {
+      expect(checkSummary(JSON.stringify(goodSummary({ worker: { ...old, ...part } as unknown as Summary['worker'] }))).ok, Object.keys(part).join()).toBe(false);
+    }
+    expect(checkSummary(JSON.stringify(goodSummary({ worker: { ...old, restarts, exits, crash_sites } as Summary['worker'] }))).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(goodSummary({ worker: { ...old, note: 1 } as unknown as Summary['worker'] }))).ok).toBe(false);
   });
 
   it('name each forbidden kind, and never flag a mint address or a normal summary', () => {
