@@ -670,7 +670,9 @@ describe('a restored position is never managed from a plan it was not entered wi
     await h.worker.kill();
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     const m2 = new Market(h2, HELD);
-    // A market event dated before the boot's restore fact (the start facts are dated 1 ms after the last restored frame).
+    // Market events published right after the boot's start facts. The saved plans now come first, 1 ms before the halt
+    // (WORKER-1b), so no market event reaches the strategy before the restore at all; the strategy's own gate for one
+    // that does is proved by replay (worker-recorder, "two market events before the restore…").
     m2.slot();
     m2.pool();
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
@@ -683,8 +685,9 @@ describe('a restored position is never managed from a plan it was not entered wi
     expect(mine().filter((l) => (l['reasons'] as string[])[0] === 'entry plan')).toEqual([]);
     expect(h2.worker.strategy.saved()[pid]!.plan).toEqual(before.plan);
     expect(h2.worker.strategy.saved()[pid]!.tracker.peak).toBe(before.tracker.peak);
-    // The wait is said once; nothing exits at an unchanged price; the position stays open and managed after the restore.
-    expect(mine().filter((l) => (l['reasons'] as string[])[0] === 'positions wait for the restore')).toHaveLength(1);
+    // No wait was needed (the restore came first); nothing exits at an unchanged price; the position stays open and
+    // managed after the restore.
+    expect(mine().filter((l) => (l['reasons'] as string[])[0] === 'positions wait for the restore')).toEqual([]);
     expect(mine().some((l) => l['action'] === 'trigger_exit')).toBe(false);
     expect(h2.worker.book.positions[pid]!.status).toBe('open');
     await h2.worker.stop();
@@ -825,6 +828,43 @@ describe('a restart rebuilds the stored book before it decides', () => {
     },
     60_000,
   );
+});
+
+describe('a restart restores the saved exit plans before it manages a position', () => {
+  it('a tracker that met its flat target is not judged by a fresh one: no time_flat exit after the restart', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    await h.worker.kill();
+    // Met its flat target before the kill; the restart comes after the flat deadline and well before the time max.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    const plan = saved[pid]!.plan;
+    file.write({ ...saved, [pid]: { ...saved[pid]!, tracker: { ...saved[pid]!.tracker, flatMet: true } } });
+    const x = h.session.policy.exits.universes[plan.universe]!;
+    expect(x.tMaxMs).toBeGreaterThan(x.tFlatMs + 10 * 60_000);
+    h.timers.set(plan.openedAtMs + x.tFlatMs + 5 * 60_000);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    await m2.run(10_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    // Before the fix the halt fact came before the saved plans at the same instant: the position got a fresh plan and
+    // tracker (flatMet false), and the flat time stop sold it.
+    const mine = lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    expect(mine.filter((l) => (l['reasons'] as string[])[0] === 'no entry plan')).toEqual([]);
+    expect(mine.filter((l) => (l['reasons'] as string[]).some((r) => r.startsWith('time_flat')))).toEqual([]);
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    await h2.worker.stop();
+  }, 60_000);
 });
 
 describe('a killed worker writes no state file afterwards', () => {

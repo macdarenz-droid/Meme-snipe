@@ -233,11 +233,27 @@ export const s0EntryAt = (salt: string, mint: string, from: number, to: number):
 };
 
 /** The universe in an entry intent key's decision id (`entry:<mint>:<universe>.<rest>`), or null for an older key. */
+/** The plan universe of a position with none on record (no saved plan universe, no universe in its entry key). */
+export const NO_UNIVERSE = 'none on record' as ExitUniverse;
+
 export const universeOfKey = (key: string): ExitUniverse | null => {
   const local = key.split(':')[2] ?? '';
   const u = local.split('.')[0] ?? '';
   return (EXIT_UNIVERSES as readonly string[]).includes(u) ? (u as ExitUniverse) : null;
 };
+
+/** A position's universe: its saved plan's, else its entry key's; null when neither has one. */
+export const resolveUniverse = (saved: string | undefined, entryKey: string | undefined): string | null =>
+  saved ?? (entryKey === undefined ? null : universeOfKey(entryKey));
+
+/**
+ * Why a restored position puts the process in sell-only (no new entries; it is flattened through the global exit
+ * ladder): its universe is not in the loaded policy, or none is on record (unknown means no entry). Null: neither.
+ */
+export const sellOnlyReason = (pid: string, universe: string | null, universes: Readonly<Record<string, unknown>>, policyVersion: string): string | null =>
+  universe === null ? `sell-only: no universe on record for ${pid}`
+    : Object.hasOwn(universes, universe) ? null
+      : `sell-only: policy ${policyVersion} lacks universe ${universe} of ${pid}`;
 
 /** A sell quote the pool refused: the one #sellQuote failure that is a real refusal, not missing market data. */
 const NO_QUOTE = 'no quote: ';
@@ -348,6 +364,9 @@ export class LiveStrategy implements Strategy {
   markOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
     return this.#marks.get(pid) ?? null;
   }
+
+  /** Positions whose universe the policy lacks, being flattened (said once each). */
+  readonly #flattening = new Set<string>();
 
   /** Positions whose partials were checked against the book in this process. */
   readonly #fromBook = new Set<string>();
@@ -892,9 +911,10 @@ export class LiveStrategy implements Strategy {
         // A plan saved before universes were stored: its universe from the entry's intent key, never a default.
         const entry = ctx.book.intents[p.entryIntentId];
         const u = entry === undefined ? null : universeOfKey(entry.intent.key);
-        saved = { ...saved, plan: { ...saved.plan, universe: u ?? this.#d.config.universe } };
+        // None on record: unknown is never guessed. The position is flattened like one whose universe the policy lacks.
+        saved = { ...saved, plan: { ...saved.plan, universe: u ?? NO_UNIVERSE } };
         this.#exits.set(p.id, saved);
-        out.push({ action: null, reasons: ['plan universe restored', p.id, u === null ? `no universe on record; ${this.#d.config.universe}, the only universe this worker trades` : u] });
+        out.push({ action: null, reasons: ['plan universe restored', p.id, u === null ? 'no universe on record; flattened through the global exit ladder' : u] });
       }
       if (!this.#fromBook.has(p.id)) {
         // Once per position per process (after a restart): partials come from the book, not the saved file. Each exit
@@ -928,7 +948,15 @@ export class LiveStrategy implements Strategy {
         const liq = liquidationValue({ venue: 'pumpswap', pool: m.pool, ctx: m.ctx }, p.quantity);
         if (liq.ok) this.#marks.set(p.id, { price: execPrice(liq.value, p.quantity), atMs: m.atMs, slot: ctx.now.slot });
       }
-      const step = decideExit(this.#settings, saved.plan, holding, saved.tracker, {
+      // A universe the loaded policy no longer has (a restart under a policy that dropped it): its own time stops and
+      // partials are unknown, so the position is flattened at once through the global exit ladder (supervisor ruling).
+      // Exits are never blocked: no throw, no missing decision.
+      const known = Object.hasOwn(this.#d.session.policy.exits.universes, saved.plan.universe);
+      if (!known && !this.#flattening.has(p.id)) {
+        this.#flattening.add(p.id);
+        out.push({ action: null, reasons: ['universe missing', p.id, `${String(saved.plan.universe)} is not in policy ${this.#d.session.versionHash}; flattened through the global exit ladder`] });
+      }
+      const step = decideExit(known ? this.#settings : this.#flatten(saved.plan.universe), saved.plan, holding, saved.tracker, {
         nowMs: ctx.now.receivedAt, slotClose: true,
         market: typeof m === 'string' ? null : { atMs: m.atMs, value: { venue: 'pumpswap', pool: m.pool, ctx: m.ctx } },
         deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: [], bars: this.#bars.get(p.id) ?? saved.bars,
@@ -946,17 +974,28 @@ export class LiveStrategy implements Strategy {
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
-      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out);
+      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : ['universe missing: flatten']);
     }
   }
 
-  #exitDecision(pid: PositionId, mint: string, exitSeq: number, d: ExitDecision, ctx: StrategyContext, out: Decision[]): void {
+  /**
+   * Exit settings for a universe the policy lacks: the global ladder and limits, with that universe's block set to
+   * flatten (time stops at 0, so the whole position goes at once; no partial or trail is ever taken).
+   */
+  #flatten(universe: string): ExitSettings {
+    const s = this.#settings;
+    const base = Object.values(s.exits.universes)[0]!;
+    const flat = { ...base, tFlatMs: 0, tMaxMs: 0, partialAtRBps: Number.MAX_SAFE_INTEGER, partialAtGainBps: Number.MAX_SAFE_INTEGER };
+    return { ...s, exits: { ...s.exits, universes: { ...s.exits.universes, [universe]: flat } } };
+  }
+
+  #exitDecision(pid: PositionId, mint: string, exitSeq: number, d: ExitDecision, ctx: StrategyContext, out: Decision[], note: readonly string[] = []): void {
     if (d.kind === 'hold') return;
     // A merge that adds no new reason to the exit owner changes nothing: not logged, not stored.
     const owner = ctx.book.positions[pid]?.exitOwner;
     if (d.kind === 'merge' && owner != null && d.reasons.every((x) => owner.reasons.includes(x))) return;
     const risk = this.#account(ctx);
-    const why = d.fired.map((t) => `${t.code}: ${t.detail}`);
+    const why = [...note, ...d.fired.map((t) => `${t.code}: ${t.detail}`)];
     if (risk !== null) {
       // Exits are never blocked; tripped controls are logged and latched.
       const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account: risk.history, latches: risk.latches, market: { solPrice: this.#spotSol(ctx), solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
@@ -1014,8 +1053,8 @@ export class LiveStrategy implements Strategy {
     const riskUnit = cost - stopValue > 0n ? cost - stopValue : 1n;
     // The universe the entry was made under: its plan, else its intent key (`entry:<mint>:<universe>.<version>.<n>`).
     const universe = seed?.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key));
-    if (universe === null) out.push({ action: null, reasons: ['no entry universe', p.mint, `managed with ${this.#d.config.universe}'s exits, the only universe this worker trades`] });
-    const plan: EntryPlan = { openedAtMs: fillAt, universe: universe ?? this.#d.config.universe, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
+    if (universe === null) out.push({ action: null, reasons: ['no entry universe', p.mint, 'no universe on record; flattened through the global exit ladder'] });
+    const plan: EntryPlan = { openedAtMs: fillAt, universe: universe ?? NO_UNIVERSE, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
     const saved: SavedExit = { plan, tracker: newTracker(), bars: this.#bars.get(p.mint) ?? [] };
     this.#bars.set(pid, [...saved.bars]);
     this.#exits.set(pid, saved);
