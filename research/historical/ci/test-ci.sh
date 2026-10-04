@@ -718,7 +718,10 @@ assert "rpc-day.sh" in steps[[s.get("id") for s in steps].index("scan")]["run"]
 caches = [s for s in steps if "actions/cache" in s.get("uses", "") and "work/data" in s["with"]["path"]]
 assert caches and all(s["with"]["key"].startswith("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-") for s in caches), caches
 r = wf["jobs"]["continue"]["steps"][0]["run"]
-assert '-f source="$SOURCE" -f max_credits="$MAX_CREDITS"' in r, r
+assert '-f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS"' in r, r
+assert 'rpc_rps must be from 1 to 50' in plan and ins["rpc_rps"]["default"] == "5"
+for s in key:
+    assert s["env"]["RPC_RPS"] == "${{ inputs.rpc_rps }}", s["env"]
 assert "secrets." not in str(wf["jobs"]["continue"]) and "secrets." not in str(wf["jobs"]["plan"])
 PY
 

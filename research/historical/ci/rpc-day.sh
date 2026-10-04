@@ -45,7 +45,7 @@ left=$(( start + budget_s - $(date +%s) ))
 # off is reread by the next run.
 rm -f "$out/rpc-usage-run.json"
 timeout -s INT -k 120 "$left" zeroed-rpcscan rpc-run -out "$out" -from "$day" -to "$next" -sample 0.05 \
-  -rps "${RPC_RPS:-8}" -conc "${RPC_CONC:-4}" -max-credits "$left_credits" -usage-out "$out/rpc-usage-run.json"
+  -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits "$left_credits" -usage-out "$out/rpc-usage-run.json"
 rc=$?
 "$here/rpc-credits.sh" add "$out" "$out/rpc-usage-run.json"
 used=$("$here/rpc-credits.sh" get "$out")

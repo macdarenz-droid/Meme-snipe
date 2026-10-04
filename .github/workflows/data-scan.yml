@@ -91,6 +91,10 @@ on:
         description: "scan with source helius: hard credit cap per day, across chained runs (1 to 1000000)"
         required: false
         default: "0"
+      rpc_rps:
+        description: "scan with source helius: getBlock requests a second (1 to 50; free plan measured at 5, Developer's limit 50)"
+        required: false
+        default: "5"
 
 permissions:
   contents: read
@@ -122,6 +126,7 @@ jobs:
           MAX_MBPS: ${{ inputs.max_mbps }}
           SOURCE: ${{ inputs.source }}
           MAX_CREDITS: ${{ inputs.max_credits }}
+          RPC_RPS: ${{ inputs.rpc_rps }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import datetime, json, os, re, sys
@@ -135,6 +140,8 @@ jobs:
                   sys.exit("source helius is for mode scan only")
               if not re.fullmatch(r"[0-9]+", os.environ["MAX_CREDITS"]) or not 1 <= int(os.environ["MAX_CREDITS"]) <= 1000000:
                   sys.exit("source helius needs max_credits from 1 to 1000000 (the free plan's month)")
+              if not re.fullmatch(r"[0-9]+", os.environ["RPC_RPS"]) or not 1 <= int(os.environ["RPC_RPS"]) <= 50:
+                  sys.exit("rpc_rps must be from 1 to 50")
           days = []
           if os.environ["MODE"] in ("scan", "volume"):
               for d in [x.strip() for x in os.environ["DAYS"].split(",") if x.strip()]:
@@ -262,6 +269,7 @@ jobs:
           MAX_MBPS: ${{ inputs.max_mbps }}
           SOURCE: ${{ inputs.source }}
           MAX_CREDITS: ${{ inputs.max_credits }}
+          RPC_RPS: ${{ inputs.rpc_rps }}
           # Only a helius day gets the key; the archive scan never sees it.
           HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
         # source helius: rpc-day.sh exits 75 like a back-off (resumable) and 3 when the
@@ -308,6 +316,7 @@ jobs:
           MAX_MBPS: ${{ inputs.max_mbps }}
           SOURCE: ${{ inputs.source }}
           RPC_CREDIT_CAP: ${{ inputs.max_credits }}
+          RPC_RPS: ${{ inputs.rpc_rps }}
           HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
         # rc 75: the determinism rescan met a 429 (back-off persisted): resumable.
         run: |
@@ -445,6 +454,7 @@ jobs:
           CHAIN: ${{ inputs.chain }}
           SOURCE: ${{ inputs.source }}
           MAX_CREDITS: ${{ inputs.max_credits }}
+          RPC_RPS: ${{ inputs.rpc_rps }}
         run: |
           set -euo pipefail
           [[ "$CHAIN" =~ ^[0-9]+$ ]] || { echo "bad chain '$CHAIN'"; exit 1; }
@@ -458,7 +468,7 @@ jobs:
             exit 1
           fi
           next=$((CHAIN + 1))
-          gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next" -f source="$SOURCE" -f max_credits="$MAX_CREDITS"
+          gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next" -f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS"
           echo "resumable stop ($resume): dispatched chained run $next of at most $MAX_CHAIN" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Back-fill of data-volume-DAY for days already published (DATA-1c): rebuilt from each

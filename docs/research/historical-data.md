@@ -305,7 +305,9 @@ Old Faithful refuses our scanner (see `docs/DECISIONS.md`, "The archive's block 
   - `max_credits` (1 to 1,000,000) caps the whole day across chained runs. Each run and the rescan add their credits to `rpc-credits-used` in the day's progress, and each run may spend only what is left.
   - A spent cap stops the chain (exit 3). A rate-limit back-off or the time budget stops it resumably (exit 75).
   - The key reaches only the scan and QA steps, and only for helius. Progress is cached under `data-rpc-DAY`, apart from archive progress.
+  - `rpc_rps` (1 to 50, default 5) sets the pace. The pilot measured 5 blocks/s on the free plan, with 429s at 8. Developer's stated limit is 50, unused while the owner keeps the free plan; every 429 still backs off.
   - Measured by the pilot: about 250k credits a day (plus up to about 18k for the planner's margin units), about 14 h of reading at the free plan's 5 blocks/s, so about 3 chained runs.
+  - The free plan's 1M credits "reset monthly" (Helius docs), and access stops "until the next billing cycle" when they run out. The docs don't give the reset date; the owner's Helius dashboard shows it.
 - **Measured before the pilot** (public mainnet RPC, 25 blocks of the comparison unit, including the busiest pump blocks and the first block of each event kind):
   - every blocks, curve, amm, failed, movements and events row is byte-identical to the archive's;
   - 114 of 118 raw records are byte-identical.
