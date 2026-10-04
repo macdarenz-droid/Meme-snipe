@@ -19,11 +19,14 @@ type History = ReturnType<typeof account>;
 const moment = (ms: number) => ({ slot: BigInt(ms), txIndex: 0, ixIndex: 0, receivedAt: ms });
 
 /** The strategy's stops after one event at `now`, with this account (null: no account fact) and a fresh SOL price. */
-const stopsOf = (h: History | null, l: Latches = NO_LATCHES, o: { now?: number; running?: boolean } = {}) => {
+const stopsOf = (h: History | null, l: Latches = NO_LATCHES, o: { now?: number; running?: boolean; markFails?: boolean } = {}) => {
   const now = o.now ?? NOW;
   const base = startSession(TRIAL_POLICY);
   const session = o.running === false ? { ...base, running: false } : base;
-  const s = new LiveStrategy({ session, rugs: RUG_CONFIG, config: strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG) });
+  const s = new LiveStrategy({
+    session, rugs: RUG_CONFIG, config: strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG),
+    ...(o.markFails === true ? { markedHistory: () => { throw new Error('mark failed'); } } : {}),
+  });
   const facts: Record<string, unknown> = {
     [SOL_PRICE_KEY]: { value: PRICE, atMs: now },
     ...(h === null ? {} : { [ACCOUNT_KEY]: { history: h, latches: l, solBalance: { value: lamports(SOL), atMs: now }, paper: true, oneTimeRent: 0n } }),
@@ -67,6 +70,14 @@ describe('the strategy reads the account stops from its risk state', () => {
   });
   it('the policy session ended (R15)', () => {
     expect(codes(account(), NO_LATCHES, { running: false })).toContain('session_not_running');
+  });
+  it('core cannot evaluate the account (its account check throws, evaluateExit then reports nothing): unknown, never none', () => {
+    // A moment before 2008: the Melbourne rules refuse it, so core's account check throws and the entry is refused.
+    const old = Date.UTC(2007, 0, 1);
+    expect(stopsOf(account({ openedAtMs: old - HOUR }), NO_LATCHES, { now: old })).toEqual({ atMs: old, codes: null });
+  });
+  it('marking fails (the entry path refuses with risk-mark-failed): unknown, never the unmarked account', () => {
+    expect(stopsOf(account(), NO_LATCHES, { markFails: true })).toEqual({ atMs: NOW, codes: null });
   });
   it('no account fact: unknown, never none', () => {
     expect(stopsOf(null)).toEqual({ atMs: NOW, codes: null });
