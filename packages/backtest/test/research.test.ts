@@ -9,7 +9,7 @@ import { evaluate, handoffs, type Obs, passes, type Registry, ruleId, score, sel
 import { type Candidate, collectCandidates, type DriveOptions, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
 import { PLAN_BARRIERS, scoreCandidates, type ScoreTarget } from '../src/research/outcome.ts';
 import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
-import { observedFeeContext, replaySwap } from '../../core/src/fills/index.ts';
+import { accountGetsDust, closeSucceeds, observedFeeContext, replaySwap } from '../../core/src/fills/index.ts';
 import { bps } from '../../core/src/units/index.ts';
 import {
   addDays, assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, latestRegime, melbourneStart, type PracticeWindow, readableDays, regimeAt, resolveWindow, wallDay, wallMs,
@@ -203,18 +203,52 @@ describe('outcome stage', () => {
       expect(o.entryCost).toBe(cost);
       const sell = poolSell(buy.trade.after, buy.trade.base, ctx);
       if (!sell.ok) throw new Error('no sell quote');
-      const value = sell.trade.userQuote - (base + steps[0]!.priorityFeeLamports + net.tip);
-      const failed = BigInt(b2.blocked ? b2.nExitAttempts : b2.nExitAttempts - 1) * (base + steps[2]!.priorityFeeLamports);
+      // RENT-1: the rent comes back when the final sell-and-close lands; dust keeps it locked; a failed close costs one
+      // failed attempt and keeps it locked. Drawn per candidate, as the outcome stage draws it.
+      const dust = accountGetsDust(`${opts.seed}:${c.id}`, FILL_CONFIG.scenarios.conservative);
+      const closes = !dust && closeSucceeds(`${opts.seed}:${c.id}`, FILL_CONFIG.scenarios.conservative);
+      const failedFee = base + steps[2]!.priorityFeeLamports;
+      const value = sell.trade.userQuote - (base + steps[0]!.priorityFeeLamports + net.tip) + (closes ? net.tokenAccountRent : 0n) - (!dust && !closes ? failedFee : 0n);
+      const failed = BigInt(b2.blocked ? b2.nExitAttempts : b2.nExitAttempts - 1) * failedFee;
       const expected = Number(value - cost - failed) / Number(cost);
       expect(Math.abs(b2.rNet! - expected)).toBeLessThan(1e-9);
-      expect(b2.rNet!).toBeLessThan(-0.10);
-      expect(b2.rNet!).toBeGreaterThan(-0.14);
+      // A flat trade costs about 2.6% with the rent back, about 11% without it.
+      if (closes) {
+        expect(b2.rNet!).toBeGreaterThan(-0.05);
+        expect(b2.rNet!).toBeLessThan(-0.01);
+      } else {
+        expect(b2.rNet!).toBeGreaterThan(-0.14);
+        expect(b2.rNet!).toBeLessThan(-0.10);
+      }
       // B1 never touches its barriers on a still pool, sees the same exit draws, and ends where B2 does.
       expect(o.labels[0]!.yTb).toBe(0);
       expect(o.labels[0]!.rNet).toBeCloseTo(b2.rNet!, 12);
       checked++;
     }
     expect(checked).toBeGreaterThan(0);
+  });
+
+  describe('the rent follows the close outcome in the scored scenario (RENT-1)', () => {
+    const withClose = (closeSuccessPpm: bigint, dustPpm: bigint) => ({
+      ...opts, fills: { ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, conservative: { ...FILL_CONFIG.scenarios.conservative, closeSuccessPpm, dustPpm } } },
+    });
+    const flat = (o: typeof opts) => scoreCandidates(still, targets(stillCands), o).map((x) => x.labels[1]!).filter((l) => l.entryFilled).map((l) => l.rNet!);
+    test('a flat conservative trade whose close lands gets its rent back; one with a failed close or dust does not', () => {
+      const back = flat(withClose(1_000_000n, 0n));
+      const failed = flat(withClose(0n, 0n));
+      const dusty = flat(withClose(1_000_000n, 1_000_000n));
+      expect(back.length).toBeGreaterThan(0);
+      for (const r of back) expect(r).toBeGreaterThan(-0.05);
+      for (const r of [...failed, ...dusty]) expect(r).toBeLessThan(-0.10);
+      // A failed close costs a failed attempt on top of the locked rent; dust only locks the rent.
+      failed.forEach((r, i) => expect(r).toBeLessThan(dusty[i]!));
+    });
+    test('conservative ≤ base ≤ optimistic still holds on the same draws', () => {
+      const mean = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+      const by = (scenario: 'conservative' | 'base' | 'optimistic') => mean(scoreCandidates(still, targets(stillCands), { ...opts, scenario }).flatMap((x) => x.labels.filter((l) => l.entryFilled).map((l) => l.rNet!)));
+      expect(by('conservative')).toBeLessThanOrEqual(by('base'));
+      expect(by('base')).toBeLessThanOrEqual(by('optimistic'));
+    });
   });
 
   test('the exit pays the fees in force at the exit, not at the entry', () => {
