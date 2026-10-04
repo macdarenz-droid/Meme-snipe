@@ -154,6 +154,11 @@ export interface ApiInputs {
   readonly decisions: readonly DecisionRow[];
   readonly funnel: FunnelState;
   readonly solPrice: MicroUsd | null;
+  /**
+   * The network fee a close would pay now (lamports): base + the exit ladder's first priority fee + tip, the paper fill's
+   * model for a filled exit attempt (paper-world `#broadcast`, fills `attemptFee`). The open P&L counts it (APP-TRADE).
+   */
+  readonly exitFee: bigint;
   readonly symbol: (mint: string) => string;
   /** Positions whose due exit waits for its first fresh quote, and since when (EXIT-1c). */
   readonly waitingExits: ReadonlyMap<string, number>;
@@ -163,7 +168,7 @@ export interface ApiInputs {
    */
   readonly discovered: readonly DiscoveredInput[];
   /** The open position's plan and our size's liquidation value now (lamports, null when it cannot be quoted). */
-  readonly open: (p: PositionState) => { readonly stopPrice: bigint; readonly trail: bigint | null; readonly liquidation: bigint | null; readonly openedAtMs: number; readonly universe: string } | null;
+  readonly open: (p: PositionState) => { readonly stopPrice: bigint; readonly trail: bigint | null; readonly liquidation: bigint | null; readonly openedAtMs: number; readonly universe: string; readonly markedAtMs: number | null } | null;
 }
 
 export interface DiscoveredInput {
@@ -189,6 +194,35 @@ export const checksOf = (gates: DiscoveredInput['gates']): 'passed' | 'failed' |
   if (gates.some((g) => /^H\d+$/.test(g.gate) && g.gate !== 'H16')) return 'failed';
   if (gates.some((g) => g.gate === 'H16' || g.gate === 'regime' || g.gate === 'worker')) return 'missing';
   return 'passed';
+};
+
+/**
+ * The open position's P&L if closed now (APP-TRADE), in lamports, the one definition the P&L rows use: `gross` is what
+ * selling the rest now returns (the liquidation quote, net of the pool's fees, less the close's own network fee
+ * `exitFee`) plus what its exits already sold for, less what the entry paid; `fees` is every network fee paid so far
+ * (entry and exits); `net` is gross less fees. With nothing left (and no close to pay for) it is the closed trade's net
+ * (account.ts `filled`). A rest that cannot be quoted counts as worth nothing (the safe side); its close still costs.
+ */
+export const openPnl = (liquidation: bigint | null, fills: readonly PaperAttempt[], exitFee: bigint): { readonly gross: bigint; readonly fees: bigint; readonly net: bigint } => {
+  const sum = (purpose: PaperAttempt['purpose'], f: (a: NonNullable<PaperAttempt['fill']>) => bigint) =>
+    fills.filter((a) => a.purpose === purpose && a.fill !== null).reduce((s, a) => s + f(a.fill!), 0n);
+  const gross = (liquidation ?? 0n) - exitFee + sum('exit', (f) => f.sol) - sum('entry', (f) => f.sol);
+  const fees = sum('entry', (f) => f.fees) + sum('exit', (f) => f.fees);
+  return { gross, fees, net: gross - fees };
+};
+
+/** Net lamports in micro-dollars as a closed trade's net is (account.ts): gains rounded down, losses rounded up. */
+export const pnlMicroUsd = (l: bigint, price: MicroUsd): bigint =>
+  l >= 0n ? lamportsToMicroUsd(l as Lamports, price, 'floor') : -lamportsToMicroUsd((-l) as Lamports, price, 'ceil');
+
+/**
+ * The open P&L's three rows in micro-dollars, one rounding for all (review N2): each on the safe side like a closed
+ * trade's net (gains down, losses and costs up), and P&L their exact difference, so P&L = Unrealized − Costs so far.
+ */
+export const openUsd = (pnl: ReturnType<typeof openPnl>, price: MicroUsd): { readonly unrealized: bigint; readonly costs: bigint; readonly pnl: bigint } => {
+  const unrealized = pnlMicroUsd(pnl.gross, price);
+  const costs = -pnlMicroUsd(-pnl.fees, price);
+  return { unrealized, costs, pnl: unrealized - costs };
 };
 
 const fillsOf = (i: ApiInputs, pid: string): PaperAttempt[] =>
@@ -312,8 +346,11 @@ export const views = {
     const p = Object.values(i.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
     if (p === undefined) return null;
     const o = i.open(p);
-    const fees = fillsOf(i, p.id).reduce((s, a) => s + (a.fill?.fees ?? 0n), 0n);
     const liq = o?.liquidation ?? null;
+    const pnl = openPnl(liq, fillsOf(i, p.id), p.quantity > 0n ? i.exitFee : 0n);
+    const usd = i.solPrice === null ? { unrealized: 0n, costs: 0n } : openUsd(pnl, i.solPrice);
+    // The mark: our rest's executable price now (the liquidation quote per token held), the price the stops judge.
+    const mark = liq === null || p.quantity <= 0n || i.solPrice === null ? null : priceText(liq, p.quantity, i.solPrice);
     const exit = p.status === 'exit_blocked' ? 'blocked' : p.status === 'open' && !i.waitingExits.has(p.id) ? 'none' : 'pending';
     // The exits of the universe the position was entered under (CFG-2); unknown plan: the strategy's universe.
     const u = o?.universe ?? 'U2';
@@ -322,8 +359,9 @@ export const views = {
     return {
       mode: MODE, id: p.id, mint: p.mint, symbol: i.symbol(p.mint), venue: 'pumpswap', openedAt: iso(o?.openedAtMs ?? i.nowMs),
       entryPriceUsd: priceText(p.cost, p.bought, i.solPrice), sizeUsd: usdText(lamportsUsd(p.cost, i.solPrice)),
-      liquidationValueUsd: usdText(lamportsUsd(liq ?? 0n, i.solPrice)), unrealizedUsd: usdText(lamportsUsd((liq ?? 0n) - p.cost, i.solPrice)),
-      costsSoFarUsd: usdText(lamportsUsd(fees, i.solPrice)),
+      liquidationValueUsd: usdText(lamportsUsd(liq ?? 0n, i.solPrice)), unrealizedUsd: usdText(usd.unrealized),
+      costsSoFarUsd: usdText(usd.costs), pnlUsd: i.solPrice === null ? null : usdText(usd.unrealized - usd.costs),
+      markPriceUsd: mark, markedAt: mark === null || o?.markedAtMs == null ? null : iso(o.markedAtMs),
       exitRules: [
         { mode: MODE, rule: 'price-stop', trigger: atOrBelow(o?.stopPrice, i.solPrice), state: p.exitOwner?.reasons.includes('stop') ? 'triggered' : 'armed' },
         { mode: MODE, rule: 'time-stop', trigger: `After ${Math.round(ux.tMaxMs / 60_000)} min`, state: p.exitOwner?.reasons.includes('max_hold') ? 'triggered' : 'armed' },
