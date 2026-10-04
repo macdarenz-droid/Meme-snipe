@@ -52,7 +52,8 @@ import { loadState, saveState } from '../persist/index.ts';
 export const PERSIST_FILE = 'deployer-state.json';
 export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
-import { type PoolFact, parsePool } from '../../../core/src/gates/index.ts';
+import { type PoolFact, S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
+import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
@@ -60,6 +61,8 @@ import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
 
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
 export const SECOND_PATH_UNAVAILABLE = 'second price path unavailable';
+/** The window the paper execution statistics cover (WORKER-1e). */
+export const EXEC_STATS_WINDOW_MS = 86_400_000;
 
 /** An entry between reservation and its outcome: WATCH-1 keeps its pool's market fresh for the moment it lands. */
 const ENTRY_IN_FLIGHT: ReadonlySet<string> = new Set(['exposure_reserved', 'prepared', 'signed', 'submitted', 'pending', 'unknown', 'confirmed_fill']);
@@ -216,6 +219,8 @@ export class Worker {
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
   #pools = new Map<string, unknown>();
+  /** When each mint's latest pool fact was released to the engine (WATCH-1 judges a feed fact by its release). */
+  readonly #poolReleasedAt = new Map<string, number>();
   #fees = new Map<string, PoolFeeContext>();
   /** WATCH-1's latest snapshot per held mint, as released. */
   #snapshots = new Map<string, SnapshotFact>();
@@ -322,6 +327,7 @@ export class Worker {
       git_sha: c.gitSha, run_id: c.runId, label: c.runLabel, recorder: c.recorder, simulation: c.simulate, mode: c.mode,
       policy_version: d.session.versionHash, strategy: d.strategy.version, seed, pid: process.pid,
       entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
+      s0_diagnostic: d.strategy.s0Diagnostic === true ? S0_DIAGNOSTIC_PARTS : null,
       sell_only: [...this.#sellOnly],
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
@@ -359,7 +365,7 @@ export class Worker {
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
-      if (e.key.startsWith(POOL_PREFIX)) this.#pools.set(e.key.slice(POOL_PREFIX.length), e.value);
+      if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
@@ -482,7 +488,7 @@ export class Worker {
     if (!r.late) this.#deployerStore.keep(m);
     // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
     if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) this.#lastSlot = m.value['slot'];
-    else if (m.key.startsWith(POOL_PREFIX)) this.#pools.set(m.key.slice(POOL_PREFIX.length), m.value);
+    else if (m.key.startsWith(POOL_PREFIX)) this.#setPool(m.key.slice(POOL_PREFIX.length), m.value);
     else if (m.key.startsWith('worker:fees:')) this.#fees.set(m.key.slice('worker:fees:'.length), m.value as PoolFeeContext);
     else if (m.key.startsWith(SNAPSHOT_PREFIX)) {
       const snap = parseSnapshotFact(m.value);
@@ -516,6 +522,11 @@ export class Worker {
     }
   }
 
+  /** WORKER-1e: the paper attempts' execution statistics over the last 24 h (S0's diagnostic exec-health). */
+  execStats(): ExecStats {
+    return this.#world.execStats(this.#d.timers.now(), EXEC_STATS_WINDOW_MS);
+  }
+
   /** The latest pool fact of a mint, with its fee context: what the paper fill and the dry-run build use. */
   /** Gate facts core's producer has released to the engine so far (FACTS-1b). */
   get factsReleased(): number {
@@ -531,6 +542,24 @@ export class Worker {
    * The mint's newest whole market (merge rule M, as the strategy's #market): WATCH-1's snapshot when it is newer than
    * the pool fact; else the pool fact, unless POS-1 flagged it (a stale swap stream), which is no market at all.
    */
+  #setPool(mint: string, value: unknown): void {
+    this.#pools.set(mint, value);
+    this.#poolReleasedAt.set(mint, this.#d.timers.now());
+  }
+
+  /**
+   * The moment WATCH-1 judges a held mint's market by (null: no market). A pool fact from the feed counts from its
+   * release: a healthy feed releases one every slot, already up to the horizon old by design, so judging it by receipt
+   * would read the second path all the time. WATCH-1's own snapshot counts from its read, as its age bound needs.
+   */
+  #watchMarketAt(mint: string): number | null {
+    const p = parsePool(this.#pools.get(mint));
+    const snap = this.#snapshots.get(mint);
+    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return snap.atMs;
+    if (this.poolOf(mint) === null) return null;
+    return this.#poolReleasedAt.get(mint) ?? null;
+  }
+
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
     const p = parsePool(this.#pools.get(mint));
     const snap = this.#snapshots.get(mint);
@@ -1100,7 +1129,7 @@ export class Worker {
         const seen = new Set(open.map((h) => h.mint));
         return [...open, ...entering.filter((e) => !seen.has(e.mint) && seen.add(e.mint))];
       },
-      marketAt: (mint) => this.poolOf(mint)?.atMs ?? null,
+      marketAt: (mint) => this.#watchMarketAt(mint),
       read: d.watchRead ?? (() => Promise.reject(new Error('no second path configured'))),
       put: (snap, atMs) => this.#fact(snapshotKey(snap.mint), { pool: snap.pool, slot: snap.slot, atMs, state: snap.state, ctx: snap.ctx }),
       alert: (mint, reason) => {
@@ -1158,6 +1187,7 @@ export class Worker {
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
       rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
     };
     return h;
   }

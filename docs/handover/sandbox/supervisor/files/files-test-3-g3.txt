@@ -1,0 +1,9 @@
+packages/worker/scripts/g3.ts
+packages/worker/src/engine/strategy.ts
+packages/worker/src/research/counterfactual.ts
+packages/worker/src/research/g3.ts
+packages/worker/src/research/recording.ts
+packages/worker/src/run/worker.ts
+packages/worker/test/g3.test.ts
+packages/worker/test/run1c.test.ts
+packages/worker/test/worker-harness.ts

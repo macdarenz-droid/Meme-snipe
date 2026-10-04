@@ -1,0 +1,92 @@
+# Data quality report
+
+Dataset window 2026-10-02 to 2026-10-03 (exclusive). Generated 2026-10-03T14:50:36.028Z.
+
+## Coverage
+
+Scanned slots 452542500 to 452735999 (block times 2026-10-02T07:27:23.000Z to 2026-10-02T21:49:58.000Z). Every block's parent is the previous scanned block (0 breaks), so no block is missing in between.
+
+| Day | Whole day covered | Blocks | Warm-up | Curve trades | AMM trades |
+|---|---|---|---|---|---|
+| 2026-10-02 | partly | 193388 | yes | 159870 | 239892 |
+
+## Decoding
+
+Decode failures: 0. Unknown events: {"amm:82a42461e48287a5":333,"pump:742b4dbd117a482b":692,"pump:a943276d6686b6e8":139}. Newer layouts than the IDL: {"amm:BuyEvent":2610742,"amm:SellEvent":2874410,"pump:TradeEvent":1513156}. Coverage gaps: [].
+
+## Reserve chain
+
+Bonding curve real reserves: 158423 of 158423 consecutive trade pairs rebuild exactly (100.0000%). Virtual reserves: 123961 of 123961 (100.0000%) on regular curves; on mayhem-mode curves, where the program re-prices virtual reserves, 12722 of 34462.
+PumpSwap: 239892 of 239892 trades start from exactly the rebuilt reserves (100.0000%); 4715 liquidity, boost and pool-creation events applied.
+
+## Against recorded account balances
+
+Curves quoted in a token other than SOL: 4377 trades; their quote token account equals real_quote_reserves in 3765 of 4351 checks and is never below it in 4351 (the excess is quote tokens held by the curve outside its reserves, such as fees awaiting distribution; real reserves themselves rebuild exactly). Bonding curve token account: 152898 of 152898 checks equal real_token_reserves plus the reserved migration tokens exactly (100.0000%). Lamports: 152445 of 152460 checks keep the same rent offset as the previous check (598 of them changed exactly at an account extension) (99.9902%). Most common offsets (reserved tokens | rent): [["206900000000000|1417320",128005],["206900000000000|1285240",12865],["206900000000000|1366520",12230],["206900000000000|1417321",807]].
+PumpSwap: 235807 of 235807 checks match both vault balances exactly (100.0000%).
+
+## Live on-chain checks
+
+54 of 54 idle curves and pools match their current on-chain state within 1 raw unit.
+
+| Kind | Account | Last event slot | Latest chain tx slot | Result |
+|---|---|---|---|---|
+| curve | GSjxnjiP7F4fC6Derh8zh2MBTT4GWybHsevjWZcd1xfh | 452593932 | 452593932 | match |
+| curve | A2NQSXJ6NuidesnNjcYS4FMaq6fK8YCY1JqQmEj3wFGZ | 452607585 | 452607585 | match |
+| curve | AvpQJ1KFnzYbsSYnuTjEYDn9Yy7Rq8xvPfDSz1T7qo7a | 452699437 | 452699437 | match |
+| curve | 4xqYhVwQUxhnC4MK971rxr658QscUUXDHdCxY4LLyHAE | 452608044 | 452608044 | match |
+| curve | 3QDFQLHdk8mC2ruqqB6kKuxE2pZQJq5S93aykzoP8udU | 452661135 | 452661135 | match |
+| curve | Bb29bvrJr1idHsKbJZK6VYeKLL5s8DYwPfFSzdTu8pi6 | 452664882 | 452664882 | match |
+| curve | G522sp7WSEr1G1jZJ8T5hFKhZ41Y8WYUMhxEv2vxTzyE | 452641990 | 452641990 | match |
+| curve | Bgi5Tf7z5EUbLXpapNqwvC33woTZTHgBA4T1swAt21PD | 452692387 | 452692387 | match |
+| curve | 6hrzeCh43RjKLTy7sfUkiZ6okVXfiJdHgT6gopkiqS3w | 452642457 | 452642457 | match |
+| curve | D5uQTdDCA11mDFwKEMUJizrDfpGQ19eBinMHMcUtPdiM | 452646647 | 452646647 | match |
+| curve | 43usbwiAFsfvJ6BxAS885bdqLf7xnQoY1EQ6wwGBZKcN | 452719988 | 452719988 | match |
+| curve | 6VM9VDx7FsnttsQGXwstiqcNzspX42sASeUGWLn6adTq | 452722210 | 452722210 | match |
+| curve | 3jktfgqjQuJoKkoygZtZDW5g27S3LfuffCPMn7jLdCEh | 452715197 | 452715197 | match |
+| curve | C6dWWCHzmMQ2qRjV4FyaEfyUSxkRRaj99eheNBTAfX4X | 452564803 | 452564803 | match |
+| curve | 6pnUgnZy9wbh1fyZYJ1HggGG7k6zSi4W5FEkvfWTwhGG | 452605417 | 452605417 | match |
+| curve | AxCrNZS8RhCZMYXzSK13zYEhnJhfySduojYNMjRsDDDA | 452644923 | 452644923 | match |
+| curve | GehzyGLwMDCGinwBFHmahvxDjhRZpo1vWyUn5zSAuw96 | 452652940 | 452652940 | match |
+| curve | CauMWXiyRbBFwBHADMeQitGitDqikhtVcztBfSQxq2wt | 452700380 | 452700380 | match |
+| curve | DtW4ygYAqjmCTZs6Qr9cEmJoZ79gERgyBnnqy5t9KZWT | 452727221 | 452727221 | match |
+| curve | z7pG7C8am1Cm7vEuA4AaZEeuvmvmCv2WfmRFpQ8doMH | 452724408 | 452724408 | match |
+| curve | GE2mofJJitCuxoawVGhgqPi1bXBd9xMZHcXubLP4QVDu | 452574159 | 452574159 | match |
+| curve | 8qzZkWVgNoG6qrSrtN6KrJFQ13WQipbpRyVP1S7xPZCe | 452727762 | 452727762 | match |
+| curve | 5Za2NSvNiQ9iiHS2Qyv5GjdwahJuacruS1kRjRnxUhKx | 452720631 | 452720631 | match |
+| curve | FUZ6xG8GatSpZaQ3RrbkAUfAiLfQGa83tYA2wrLHi3E3 | 452705388 | 452705388 | match |
+| curve | 2N6SyWoAL1T46ZwwSgmpX1GGN1ypiEFXRacPLcmk9kK2 | 452722467 | 452722467 | match |
+| curve | 6qS7vVa4HEpLdzNYrmGCvSsBn3Cm9ppYmyKZoemw6oGh | 452718294 | 452718294 | match |
+| curve | B9vNjUFipnrJX1qgUVCaazmFvYhW97gPdCtzCYVDQwDH | 452646280 | 452646280 | match |
+| curve | 8t3ADLSwSPZbsvbPPMJkaV1f1Lh15eTYagKRtYSfqcZ6 | 452708478 | 452708478 | match |
+| curve | 8FEtVz9hG12qf5mho1UV5EfwrjqG2Si8s7n2EqrjVSrf | 452700516 | 452700516 | match |
+| curve | 9Vs341b3KebAd12uV2ZWyLHmSjVMA3Rk8ziECytxpYsB | 452593855 | 452593855 | match |
+| curve | 4LJD6omCZQwQ1YnrbJh47hNyJRmysKDNGCpRZy4BcLrW | 452614298 | 452614298 | match |
+| curve | 8bWD8o5UdGQiKvzj4SgWgLVYNyrVx9khPLmbBJnyUX1R | 452635010 | 452635010 | match |
+| curve | DfKGvFfXsU3s3hTYJv2V2oyt5xGhEvYaziKFrtZa9sdS | 452663074 | 452663074 | match |
+| curve | 5b5hTf6NcFxXG3gDVhuZm1aSHBuB6E2eqqfyt8hmTh7j | 452669536 | 452669536 | match |
+| curve | 48AWitkDiZstSdGNwK4iSsM73DkXu8D3Ag1dwNPB4SUU | 452590749 | 452590749 | match |
+| curve | BEqLFi1owue6J5Lxic4ad7JRoCGGc9WYVHnPK1Wgms4X | 452700187 | 452700187 | match |
+| pool | 4Ry2p5G9MsiYcsJ62EcySP7DL7PWhGseEeCBfmznLYJZ | 452730394 | 452730394 | match |
+| pool | 622L8Vi2oJYo2o78NGFAtTGnqHSGsqop2LZBnkPRuAN3 | 452719349 | 452719349 | match |
+| pool | 62jTpYEzdU7a8ayjgedtU7J43fqesgYRfJAi8rX7VgJS | 452546744 | 452546744 | match |
+| pool | 89nmyKA6DAgREgWzfrLPVByxRRRvwLCVdQ1upYhAG42f | 452730397 | 452730397 | match |
+| pool | 8io3bsEYTE4qzrvCZ2K1EjcuobyvdMXo61gHTzGGrkZ3 | 452730400 | 452730400 | match |
+| pool | 9uoX1f2N3z7SuL4NmPwzoT6winBZYCRuK6PHr6Wd7Yvp | 452730992 | 452730992 | match |
+| pool | AeMNXwPNYCZA1Vm3JbSVKwnANwJaeUwX75EpuKcfPyE8 | 452730403 | 452730403 | match |
+| pool | BAhH9a6q2BLMNbxuMbQj2xgtnRoZ1bEBJwGahxwSKgup | 452734844 | 452734844 | match |
+| pool | BbWLUe7xHefUQ49SCmRdJgApDZ7FBGUwxrY9Xwa3KvHq | 452634760 | 452634760 | match |
+| pool | BgspQBa7QCQwXHdV6WvbWpShjar28GZ3qZM8dSLC8reh | 452708227 | 452708227 | match |
+| pool | EPX71kVLpJMkkkvr6bz93cVbQJpfDEYtKTK8shEG1n8S | 452664069 | 452664069 | match |
+| pool | EXTHW1TrRDGgDLPDgJUPGLycdojS57uvUME6oVf8CTbd | 452724595 | 452731487 | match |
+| pool | FtqXQfKE42jrBUJbPpgcXJfvEXg4fnDD1rCh6NcZ8wfb | 452675468 | 452675468 | match |
+| pool | G1FPME8mQJpjo6DvZSRxeG8RNxmgf8oHQwiMS72DRwXP | 452730608 | 452730608 | match |
+| pool | G2F1Q5KbCExRUdjM4MYrm3PwRVnTs8o4ant7NxAdTGKe | 452721998 | 452721998 | match |
+| pool | Gx9iDhXBUjbMGiGFsMmBGuzv5NLMZ5oZtVvS4BtDA1Zf | 452730399 | 452730399 | match |
+| pool | HSZbqBVYkgXhVbFEXifCXbyJJuWBXvwpKVqwibU64cHt | 452712504 | 452712504 | match |
+| pool | btSD3jo43VfK8nWWJrwFZDr5Uw69GoyuFnBCLLF5tKX | 452711608 | 452711608 | match |
+
+## GeckoTerminal comparison
+
+10 pools, 232 minutes: median absolute relative difference 0.011978285882559003, 90th percentile 0.06885236967163133.
+
+Our price: post-trade (pool quote + virtual quote) / pool base of the last trade in each minute. GeckoTerminal: 1-minute close in SOL (currency=token). Only these statistics are kept.

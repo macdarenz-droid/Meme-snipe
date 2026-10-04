@@ -1,0 +1,12 @@
+0 KILLED evaluate.ts dayChange === null ? 0n : -dayChange
+1 KILLED evaluate.ts weekChange === null ? 0n : -weekChange
+2 KILLED evaluate.ts const dayChange = a.markedAtDayStart === null ? null : equit
+3 KILLED evaluate.ts const weekChange = a.markedAtWeekStart === null ? null : equ
+4 KILLED account.ts if (this.#s.dayMark?.startMs !== s.dayStartMs) {
+5 SURVIVED account.ts if (this.#s.weekMark?.startMs !== s.weekStartMs) {
+6 KILLED account.ts const stale = peak !== undefined && rearmAtMs !== null && pe
+7 KILLED account.ts (peak === undefined || stale || s.nav > peak.nav)
+8 SURVIVED account.ts s.nav !== null && s.nav > 0n && 
+9 KILLED account.ts     if (changed) this.#file.write(this.#s); 
+
+[exited with code 144]

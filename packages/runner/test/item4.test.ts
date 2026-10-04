@@ -128,6 +128,17 @@ describe('report', () => {
     expect(block).toBe(readFileSync(join(import.meta.dirname, 'golden', 'item4.md'), 'utf8'));
     expect(r.item4.counts).toBe(true);
   });
+  it('prints H15\'s simulations and credits beside the quota table (WORKER-1e)', () => {
+    const meta: RunMeta = { runId: 'r', label: 'rehearsal', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
+    const j = (seq: number, kind: string, more: Record<string, unknown> = {}) => JSON.stringify({ seq, ts: '2026-10-04T00:00:00.000Z', boot: 'b', kind, ...more });
+    const journal = checkJournal([j(1, 'start'), j(2, 'h15_sim', { outcome: 'simulated', credits: 3 }), j(3, 'h15_sim', { outcome: 'not-run', credits: 0 })].join('\n'));
+    const md = reportMarkdown(buildReport(meta, [], 10, 100, journal, [], [], item4([], 'rehearsal', false), OPS_OK));
+    const quota = md.indexOf('## Quota and coverage');
+    const line = md.indexOf('H15 simulations: 1 run of 2, 3 Helius credits');
+    expect(quota).toBeGreaterThan(-1);
+    expect(line).toBeGreaterThan(quota);
+  });
+
   it('never prints a pass for a run that does not count', () => {
     const meta: RunMeta = { runId: 'r', label: 'rehearsal', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan: makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 }) };
     const md = (lines: JournalLine[]) => reportMarkdown(buildReport(meta, [], 10, 100, checkJournal(''), [], [], item4(lines, 'rehearsal', false), OPS_OK));

@@ -1,0 +1,2 @@
+no manifest.json in ds4
+usage: node research/historical/qa/check.mjs <dataset-dir> [--live N] [--gecko N] [--strict] [--lead-in-days N]

@@ -1,0 +1,12 @@
+Supervisor, owner addition to the handover: migrate ALL data from your sandbox too, not only the notes. One more short task, then stop again.
+1. On `claude/handover-notes`, create `docs/handover/sandbox/<your session id>/` and commit every file YOU produced in this container that isn't already in the repo: scripts, probes, outputs, measurements, logs, CSV/JSON results, images and drafts. Keep the relative paths. One file at most 50 MB; split or summarise anything bigger and say how to regenerate it.
+2. Add `docs/handover/sandbox/<your session id>/MANIFEST.md`. List every remaining file in your working and scratch folders outside the repo checkout (path, size, sha256, and "committed" or "excluded: reason").
+3. Exclude, and list in the manifest with the source URL or the command that regenerates it:
+   - secrets and anything holding keys;
+   - node_modules, build outputs and package tarballs;
+   - third-party copyrighted pages, papers and docs;
+   - raw provider data (Helius terms: no republishing).
+   The repo is public.
+4. Commit only under your own folder, then `git pull --rebase origin claude/handover-notes && git push`, retrying on a non-fast-forward.
+5. Reply "SANDBOX DONE" with the commit SHA, then stop and stay idle.
+If you have nothing beyond what's already in the repo, write the manifest saying so.

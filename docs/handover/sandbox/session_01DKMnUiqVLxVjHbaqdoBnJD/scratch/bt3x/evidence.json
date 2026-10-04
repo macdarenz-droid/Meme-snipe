@@ -1,0 +1,74 @@
+{
+  "commit": "3cdf71e403c5a96c7ce4335f66d73afda2378fe6",
+  "configs": {
+    "fills": "fills-2",
+    "policy": "trial",
+    "research": "research-2"
+  },
+  "gate": true,
+  "kind": "pre-funding gate items 1 and 2",
+  "mode": "gate",
+  "pass": true,
+  "replays": 2,
+  "scenario": "conservative",
+  "seed": "bt3",
+  "windows": [
+    {
+      "counts": {
+        "attempts_dropped": 0,
+        "attempts_expired": 0,
+        "attempts_failed": 4,
+        "attempts_filled": 8,
+        "attempts_in_flight": 0,
+        "candidates": 5,
+        "decisions": 63,
+        "entryIntents": 5,
+        "events": 56188,
+        "positions": 5,
+        "rows": 270004,
+        "skippedSwaps": 0,
+        "unquotableSwaps": 0
+      },
+      "crash": null,
+      "crashes": 0,
+      "days": [
+        "2026-09-20"
+      ],
+      "dir": "synthetic",
+      "elapsedMs": [
+        1148,
+        980
+      ],
+      "filesChecked": 4,
+      "hashes": [
+        "733ef72c3e12b3f3833d0dcb8d6463c80994999f1dc33831a157291dd906826a",
+        "733ef72c3e12b3f3833d0dcb8d6463c80994999f1dc33831a157291dd906826a"
+      ],
+      "identicalReplays": true,
+      "illegalStates": 0,
+      "leadInDays": 14,
+      "ledgerReplay": {
+        "counts": {
+          "events": 94,
+          "intentRows": 94,
+          "intents": 9,
+          "positionRows": 22,
+          "positions": 5
+        },
+        "failure": null,
+        "ok": true
+      },
+      "manifestSha256": "08c301b664f8cd7c89b631805471ec56eb1de8f6c2daff6ae02588b8aaa4adf2",
+      "mirrorMatches": true,
+      "pass": true,
+      "release": "synthetic",
+      "scannerRevisions": [],
+      "sha256sumsSha256": "31d45eba25428b3cca8f908fd31847ccf6e09eb33abc996cd7ca3ac07e213da2",
+      "unreconciledIntents": 0,
+      "window": {
+        "from": "2026-09-20",
+        "toExclusive": "2026-09-21"
+      }
+    }
+  ]
+}
