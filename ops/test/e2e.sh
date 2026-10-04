@@ -510,6 +510,8 @@ in_c "zeroed-status" | has 'Evidence:  /var/lib/zeroed-dryrun/evidence (1 runs)'
 pass "install.sh --update through zeroed-update: failing host files keep the old release and the worker (one alert, cleared later); an installer that fails after writing files (bad firewall) is rolled back to byte-identical host files, units and ruleset; RUN-1 units from the release installed (tick timer on, template off), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on, health on 127.0.0.1:8787 and API on 127.0.0.1:8788, the stand-in until the release switches to its own worker; worker API on loopback only lists the evidence kept on the host"
 
 # ---------- 10b2. The release's own worker (SWITCH-1) ----------
+# reset-failed first: this test restarts the worker more often than its unit's start limit (10 in 10 minutes) allows.
+wrestart() { in_c "systemctl reset-failed zeroed-worker 2>/dev/null; ${1:+$1 && }systemctl restart zeroed-worker"; }
 orig="$(current)"
 rel="$orig"
 if [ "$STANDIN" = 1 ]; then
@@ -529,7 +531,7 @@ in_c "! ss -ltn | grep -q ':879[78] ' && ! pgrep -u zeroed-worker -f -- '$rel/pa
 # server, so its heartbeats fail, which it logs and survives). Section 9b's plain-http address comes back at the end.
 wd0="$(in_c "sed -n 's/^WATCHDOG_URL=//p' /etc/zeroed/worker.env")"
 in_c "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=https://zeroed-watchdog.e2e.workers.dev#' /etc/zeroed/worker.env"
-in_c "ln -sfn '$rel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && systemctl restart zeroed-worker"
+wrestart "ln -sfn '$rel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the release's worker running" "docker exec $C systemctl is-active zeroed-worker"
 in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has '^/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/worker/src/main.ts $' || fail "zeroed-worker does not run the release's main.ts under the host's node"
 inv() { in_c "journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)"; }
@@ -557,11 +559,11 @@ sleep 30
 in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" | jq -e '.entries_halted == true and (.halt_reasons | length > 0)' >/dev/null || fail "without providers the worker is not degraded with entries halted"
 # A restart comes back clean, reconciling first.
 boot0="$(jq -r .boot "$LOGS/health-real.json")"
-in_c "systemctl restart zeroed-worker"
+wrestart
 wait_for 60 "the worker back after a restart" "docker exec $C curl -fsS -m 2 http://127.0.0.1:8787/health | jq -e '.boot != \"$boot0\" and .reconciled == true' >/dev/null"
 inv | has 'Reconcile: done, open intents written.' || fail "the restart did not reconcile first"
 # Any mode but paper is refused: the wrapper sets paper over the environment file, and the worker itself refuses live.
-in_c "echo ZEROED_MODE=live >> /etc/zeroed/worker.env && systemctl restart zeroed-worker"
+wrestart "echo ZEROED_MODE=live >> /etc/zeroed/worker.env"
 wait_for 60 "the worker after a live setting" "docker exec $C systemctl is-active zeroed-worker"
 in_c "tr '\\0' '\\n' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/environ" | has -x 'ZEROED_MODE=paper' || fail "the environment file switched the worker out of paper"
 in_c "sed -i '/^ZEROED_MODE=live\$/d' /etc/zeroed/worker.env"
@@ -597,7 +599,7 @@ in_c "rm -rf '/opt/zeroed/releases/$signed2'"
 upd_run || fail "zeroed-update after the deploy tag came back"
 [ "$(current)" = "$rel" ] || fail "current moved after the deploy tag came back"
 # Back to the stand-in and the local watchdog for the sections that follow.
-in_c "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=$wd0#' /etc/zeroed/worker.env && ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && systemctl restart zeroed-worker"
+wrestart "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=$wd0#' /etc/zeroed/worker.env && ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the stand-in back" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager -n 5 | grep -q 'Stub worker up'"
 pass "release's worker (SWITCH-1): zeroed-worker runs the release's main.ts under the host's Node 22 with no node_modules; --reconcile first (exit 0); start line and journal say paper with recorder, simulation and drills on; 3 keys read from systemd credentials and none in its output; health on 127.0.0.1:8787 and API on 127.0.0.1:8788, loopback only; without providers it runs degraded, entries halted, no restarts; a restart comes back reconciled; live is refused; zeroed-status names the worker; worker-smoke passes it beside the running worker and refuses a syntax error, a missing file and a refused config; zeroed-update keeps a green signed release whose worker cannot start off current, keeps the worker running and alerts once"
 
