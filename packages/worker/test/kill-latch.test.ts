@@ -320,16 +320,17 @@ describe('a boot that lost its latches or account holds entries until the owner 
     await h3.worker.stop();
   });
 
-  it('a restore without account.json, or a cold start with no ledger, holds entries too', async () => {
+  it('a restore without account.json, or one that lost only the ledger (control.json and account.json kept), holds entries too', async () => {
     for (const gone of ['account.json', 'ledger'] as const) {
       const h = await latchedRun();
       if (gone === 'account.json') rmSync(accountFile(h.stateDir).path);
-      else for (const f of ['ledger.sqlite', 'ledger.sqlite-wal', 'ledger.sqlite-shm', 'control.json', 'account.json']) rmSync(`${h.stateDir}/${f}`, { force: true });
+      // The ledger alone (positions, fills and reservations gone), with control.json and account.json still there.
+      else for (const f of ['ledger.sqlite', 'ledger.sqlite-wal', 'ledger.sqlite-shm']) rmSync(`${h.stateDir}/${f}`, { force: true });
       const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
       expect(await h2.worker.reconcile()).toEqual({ ok: true });
       const m = new Market(h2);
       await m.run(1_200, 400, () => priced(h2, m, 1_000_000n));
-      expect(held(h2), gone).toHaveLength(1);
+      expect(held(h2), gone).toEqual([expect.stringContaining(gone === 'ledger' ? 'the ledger' : 'account.json')]);
       await h2.worker.stop();
     }
   });
