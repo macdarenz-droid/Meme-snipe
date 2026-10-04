@@ -281,6 +281,7 @@ const health = (): Health => {
     last_processed_slot: slot,
     feed_ages_ms: ages,
     open_position: state.position ? { trade: state.position.trade, mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1', mark_slot: slot, mark_ts: now, universe: state.position.universe } : null,
+    open_positions: state.position ? [{ trade: state.position.trade, mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1', mark_slot: slot, mark_ts: now, universe: state.position.universe }] : [],
     unresolved_intents: { count: state.intent ? 1 : 0, oldest_age_s: state.intent ? 0 : null, trades: state.intent ? [state.intent.trade] : [] },
     signer: 'none',
     lease_epoch: null,

@@ -35,15 +35,22 @@ export interface WorkerConfig {
 }
 
 /**
- * WATCH-1 keeps a held position's market younger than the policy's quote age: a market is read again once it is
- * `staleMs` old, seen at most one period late, its answer used only within `latencyMs`, and released by the feed within
- * `releaseMs` (its horizon while slots arrive). So the oldest a market can be when an exit is judged is
- * staleMs + everyMs + latencyMs + releaseMs, which must stay below `maxQuoteAgeMs` (exits treat an older market as no
- * quote). Null when the timing holds; else why not (the entry exits 2, the worker refuses to build).
+ * WATCH-1's two quote-age bounds (DECISIONS "Released-fact freshness", supervisor ruling (a1')). A feed pool fact is
+ * judged from its release, the watch's own snapshot from its read, each read used only within `latencyMs` and released
+ * by the feed within `releaseMs` (its horizon while slots arrive).
+ * - Steady (a quiet pool kept on snapshots): staleMs + everyMs + latencyMs + releaseMs must stay below `maxQuoteAgeMs`.
+ * - Transition (a pool's feed facts stop: the last one may already be one release old): releaseMs + staleMs + everyMs +
+ *   latencyMs + releaseMs must stay within `maxQuoteAgeMs` + one release; for that window an exit waits for a fresh
+ *   market (EXIT-1d). With integer settings the steady bound implies this one; both are checked so neither can drift.
+ * Null when both hold; else why not (the entry exits 2, the worker refuses to build).
  */
-export const watchTimingProblem = (w: WorkerConfig['watch'], maxQuoteAgeMs: number, releaseMs: number): string | null =>
-  w.staleMs + w.everyMs + w.latencyMs + releaseMs < maxQuoteAgeMs ? null
-    : `refused: ZEROED_WATCH_STALE_MS + ZEROED_WATCH_EVERY_MS + ZEROED_WATCH_LATENCY_MS + the feed's release (${w.staleMs} + ${w.everyMs} + ${w.latencyMs} + ${releaseMs}) must stay below the policy's quote age of ${maxQuoteAgeMs} ms`;
+export const watchTimingProblem = (w: WorkerConfig['watch'], maxQuoteAgeMs: number, releaseMs: number): string | null => {
+  const steady = w.staleMs + w.everyMs + w.latencyMs + releaseMs;
+  if (!(steady < maxQuoteAgeMs)) return `refused: ZEROED_WATCH_STALE_MS + ZEROED_WATCH_EVERY_MS + ZEROED_WATCH_LATENCY_MS + the feed's release (${w.staleMs} + ${w.everyMs} + ${w.latencyMs} + ${releaseMs}) must stay below the policy's quote age of ${maxQuoteAgeMs} ms`;
+  const transition = releaseMs + steady;
+  if (!(transition <= maxQuoteAgeMs + releaseMs)) return `refused: at a feed's stop the market can reach ${transition} ms (release + stale + every + latency + release), beyond the policy's quote age of ${maxQuoteAgeMs} ms plus one release (${releaseMs} ms)`;
+  return null;
+};
 
 /** Solana's target slot time; the feed releases an off-chain fact once its horizon of slots has passed. */
 export const SLOT_MS = 400;
