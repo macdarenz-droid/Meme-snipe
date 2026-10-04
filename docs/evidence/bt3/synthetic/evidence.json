@@ -1,5 +1,5 @@
 {
-  "commit": "c4fe73a6183f13f3313d41bbfa14bf3f2543e22e",
+  "commit": "1b90413ce9a43b9d070a2157e9cefea8432b8f02",
   "configs": {
     "fills": "fills-3",
     "policy": "trial",
@@ -36,16 +36,16 @@
       ],
       "dir": "synthetic",
       "elapsedMs": [
-        2324,
-        1747,
-        1980,
-        1649,
-        1771,
-        2203,
-        1756,
-        1813,
-        2018,
-        1630
+        2659,
+        2525,
+        2948,
+        2029,
+        2329,
+        2684,
+        1931,
+        2357,
+        2408,
+        1951
       ],
       "filesChecked": 4,
       "hashes": [

@@ -3,7 +3,7 @@
 Pre-funding gate items 1 and 2. Synthetic mode: a gate-shaped synthetic window that proves the run itself; never gate evidence.
 
 - Result: **pass**
-- Commit: `c4fe73a6183f13f3313d41bbfa14bf3f2543e22e`
+- Commit: `1b90413ce9a43b9d070a2157e9cefea8432b8f02`
 - Replays per window: 10; scenario conservative; seed bt3
 - Configs: fills fills-3, research research-4, policy trial
 - Scanner revisions: none recorded
