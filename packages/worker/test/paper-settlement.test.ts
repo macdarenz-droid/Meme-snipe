@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { FILL_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
 import { openLedger } from '../../core/src/ledger/index.ts';
 import { emptyBook, isTerminal } from '../../core/src/lifecycle/index.ts';
-import { NO_LATCHES, melbourneWeek, riskSnapshot } from '../../core/src/risk/index.ts';
+import { NO_LATCHES, melbourneDay, melbourneWeek, riskSnapshot } from '../../core/src/risk/index.ts';
 import { attemptFee, lateFillOf } from '../../core/src/fills/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import type { Book } from '../../core/src/lifecycle/index.ts';
@@ -826,6 +826,32 @@ describe('PAPER-2: a closed trade is settled again when something lands after it
     expect(views.calendar(inputs, month).days.map((d) => d.netUsd)).toEqual([usdText(tradePnl(t)!)]);
     // Nothing more lands: nothing moves.
     expect(account.resettle(closedBook(), 'p1', legs, T + DAY + 1)).toBe(false);
+  });
+
+  it('two late losses on two Melbourne days: risk counts each exactly once on its own day, summing to the whole change', () => {
+    const account = opened();
+    const start = account.state.walletLamports! - account.state.trades[0]!.booked;
+    opening = () => start;
+    account.filled({ ...base, purpose: 'exit', book: closedBook(), atMs: T + 2 }, PX, legsOf(closeLegs, ['x1']));
+    const atClose = { ...check(account) };
+    // A failed sell lands a day after the close, another one a day later (each its own fee, 10,000 and 30,000 priority).
+    const late1 = { ...att('out', 'x2', 'exit', 'failed', 'p1', null), priorityFee: 10_000n };
+    const late2 = { ...att('out', 'x3', 'exit', 'failed', 'p1', null), priorityFee: 30_000n };
+    const day1 = T + DAY;
+    const day2 = T + 2 * DAY;
+    expect(account.resettle(closedBook(), 'p1', legsOf([...closeLegs, late1], ['x1']), day1)).toBe(true);
+    expect(account.resettle(closedBook(), 'p1', legsOf([...closeLegs, late1, late2], ['x1']), day2)).toBe(true);
+    const t = check(account);
+    const feeUsd = (x: PaperAttempt) => lamportsToMicroUsd(attemptFee(NET, x.priorityFee, 'failed') as Lamports, PX, 'ceil');
+    const ledger = openLedger(join(tempState(), 'ledger.sqlite'), 'paper');
+    const costs = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, PX, day2).history.costs.filter((c) => c.kind === 'late_settlement');
+    ledger.close();
+    // Each loss once, on its own day.
+    expect(costs).toEqual([{ atMs: day1, amount: feeUsd(late1), kind: 'late_settlement' }, { atMs: day2, amount: feeUsd(late2), kind: 'late_settlement' }]);
+    expect(melbourneDay(day1).start).not.toBe(melbourneDay(day2).start);
+    // Together they are exactly the trade's whole-result change since its close.
+    expect(costs.reduce((s, c) => s + c.amount, 0n)).toBe(atClose.netPnl! - tradePnl(t)!);
+    expect(t.netPnl).toBe(atClose.netPnl);
   });
 
   it('a sale booked after the close: the trade\'s net follows the wallet (item 3)', () => {
