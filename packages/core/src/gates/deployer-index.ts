@@ -204,7 +204,7 @@ export class DeployerIndex {
    * Entries older than `retainFromMs` are left out, and the index's own start moves up to it, so the restored index
    * never claims to have watched what it no longer holds.
    */
-  snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER): DeployerIndexState {
+  snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER, o: { readonly mints?: boolean } = {}): DeployerIndexState {
     if (this.#last !== null && compareMoments(this.#last, asOf) > 0) throw new RangeError('the index has observed events after the snapshot moment');
     const keep = <V>(m: Map<string, Map<string, V>>, ms: (v: V) => number) =>
       [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => ms(v) >= retainFromMs)] as const)
@@ -213,14 +213,29 @@ export class DeployerIndex {
     const first = this.#first === null ? null : this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs };
     return {
       asOf, first, last: this.#last, seeded: this.#seeded,
-      mints: keep(this.#mints, (t) => t), rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
+      // Without `mints` (WORKER-GROW), the rows are left to `mintRows`, for a save that streams them.
+      mints: o.mints === false ? [] : keep(this.#mints, (t) => t), rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
       createVias: [...this.#createVias].sort(),
       lost: [...this.#lost].filter(([, l]) => l.atMs >= retainFromMs).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     };
   }
 
-  /** PERSIST-1: an index restored from `snapshot`. A malformed state throws; the caller then discards the file. */
-  static restore(s: DeployerIndexState): DeployerIndex {
+  /**
+   * WORKER-GROW: the snapshot's mint rows one creator at a time (`snapshot(asOf, retainFromMs).mints` without building
+   * them all), in the same order, for a save that streams them.
+   */
+  *mintRows(retainFromMs = Number.MIN_SAFE_INTEGER): Generator<readonly [string, readonly (readonly [string, number])[]]> {
+    for (const creator of [...this.#mints.keys()].sort()) {
+      const inner = [...this.#mints.get(creator)!].filter(([, t]) => t >= retainFromMs);
+      if (inner.length > 0) yield [creator, inner] as const;
+    }
+  }
+
+  /**
+   * PERSIST-1: an index restored from `snapshot`. A malformed state throws; the caller then discards the file.
+   * `mintRows` (WORKER-GROW), when given, holds the mint rows in place of `s.mints`, read one at a time from a streamed file.
+   */
+  static restore(s: DeployerIndexState, mintRows?: Iterable<unknown>): DeployerIndex {
     const idx = new DeployerIndex();
     const moment = (m: unknown): Moment | null => {
       if (m === null) return null;
@@ -232,8 +247,8 @@ export class DeployerIndex {
     const asOf = moment(s.asOf);
     if (asOf === null) throw new RangeError('a snapshot needs its as-of moment');
     const pairs = <V>(rows: unknown, into: Map<string, Map<string, V>>, value: (v: unknown) => V, ms: (v: V) => number) => {
-      if (!Array.isArray(rows)) throw new RangeError('bad table');
-      for (const row of rows as unknown[]) {
+      if (!Array.isArray(rows) && !(typeof rows === 'object' && rows !== null && Symbol.iterator in rows)) throw new RangeError('bad table');
+      for (const row of rows as Iterable<unknown>) {
         if (!Array.isArray(row) || typeof row[0] !== 'string' || !Array.isArray(row[1])) throw new RangeError('bad row');
         const m = new Map<string, V>();
         for (const e of row[1] as unknown[]) {
@@ -249,7 +264,8 @@ export class DeployerIndex {
       if (!Number.isSafeInteger(v)) throw new RangeError('bad time');
       return v as number;
     };
-    pairs(s.mints, idx.#mints, ms, (t) => t);
+    if (mintRows !== undefined && Array.isArray(s.mints) && s.mints.length > 0) throw new RangeError('mint rows given twice');
+    pairs(mintRows ?? s.mints, idx.#mints, ms, (t) => t);
     // A label keeps its kind exactly: a string, or null for a label that named no rule (RUG-1c).
     const known = (v: unknown): Known => {
       if (typeof v !== 'object' || v === null) throw new RangeError('bad label');

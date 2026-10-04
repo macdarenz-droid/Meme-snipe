@@ -2,12 +2,13 @@
 // (creates, rug labels, unjudged mints) and every creates and rugs coverage fact, appended as it is released, so a
 // restart re-seeds the index and puts the coverage history back into the engine instead of blanking H14 for a whole
 // look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start.
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync } from 'node:fs';
+import { fileLines } from '../../../runner/src/lines.ts';
 import { join } from 'node:path';
 import type { MarketEvent } from '../../../core/src/engine/index.ts';
 import { LOG_CREATE_PREFIX, RUG_PREFIX, RUG_UNJUDGED_PREFIX, TX_CREATE_PREFIX, pruneCoverage } from '../../../core/src/gates/index.ts';
 import { parseTyped, typedText } from './json.ts';
-import { atomicWrite } from './state.ts';
+import { writeAll, type WriteFn } from './state.ts';
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -32,13 +33,19 @@ export interface SavedDeployers {
   readonly coverage: readonly MarketEvent[];
   /** The newest moment saved (slot and receipt time): where a downtime fill starts. */
   readonly last: { readonly slot: bigint; readonly ms: number } | null;
+  /** Why the saved seed was refused whole (over the cap), if it was. */
+  readonly refused?: string;
 }
 
 export class DeployerStore {
   readonly #path: string;
 
-  constructor(stateDir: string) {
+  readonly #write: WriteFn | undefined;
+
+  /** `write` is for tests (a short write); the default checks every write's count. */
+  constructor(stateDir: string, write?: WriteFn) {
     this.#path = join(stateDir, 'deployers.jsonl');
+    this.#write = write;
   }
 
   /** Keeps a released event when the index or H14's coverage reads it. */
@@ -52,24 +59,79 @@ export class DeployerStore {
    * last line from a kill is dropped). Older coverage facts are cut by `pruneCoverage` (WORKER-1d), not dropped: a
    * start older than the window is what says the stream has run since before it, and an open gap stays open.
    */
-  load(fromMs: number): SavedDeployers {
+  load(fromMs: number, o: { readonly keepCreates?: boolean; readonly maxCreates?: number; readonly onCreate?: (e: MarketEvent) => void } = {}): SavedDeployers {
     if (!existsSync(this.#path)) return { creates: [], rugs: [], coverage: [], last: null };
-    let kept: MarketEvent[] = [];
-    for (const line of readFileSync(this.#path, 'utf8').split('\n')) {
-      if (line === '') continue;
-      let e: MarketEvent;
+    // WORKER-GROW: with a restored index the creates are already in it, so they stay in the file only (`keepCreates`
+    // false). Without one they seed the index, at most `maxCreates` of them: past that the seed is refused whole (no
+    // creates, rugs or coverage), so H14 reads not covered until the look-back passes, which is fail safe; seeding the
+    // coverage without all of its creates would not be.
+    const keepCreates = o.keepCreates ?? true;
+    const maxCreates = o.maxCreates ?? Number.POSITIVE_INFINITY;
+    let creates = 0;
+    // WORKER-1d: which coverage facts to keep is decided over all of them first (`pruneCoverage`: the latest start per
+    // stream and watch, a watch's history while it has an open gap, unreadable ones). Only coverage lines are held, and
+    // after the first pruned load they are few.
+    const coverageFacts: MarketEvent[] = [];
+    for (const line of fileLines(this.#path)) {
+      if (!line.includes('"coverage:')) continue;
       try {
-        e = parseTyped(line) as MarketEvent;
+        const e = parseTyped(line) as MarketEvent;
+        if (isCoverage(e.key)) coverageFacts.push(e);
       } catch {
-        continue;
+        // a torn line: skipped below too
       }
-      if (isCoverage(e.key) || e.moment.receivedAt >= fromMs) kept.push(e);
     }
-    const coverage = new Set(pruneCoverage(kept.filter((e) => isCoverage(e.key)), fromMs));
-    kept = kept.filter((e) => !isCoverage(e.key) || coverage.has(e));
-    atomicWrite(this.#path, kept.map((e) => `${typedText(e)}\n`).join(''));
+    const keepSet = new Set(pruneCoverage(coverageFacts, fromMs));
+    const keepCoverage = coverageFacts.map((e) => keepSet.has(e));
+    let coverageAt = 0;
     let last: { slot: bigint; ms: number } | null = null;
-    for (const e of kept) if (last === null || e.moment.slot > last.slot) last = { slot: e.moment.slot, ms: e.moment.receivedAt };
+    const kept: MarketEvent[] = [];
+    // Streamed in chunks and rewritten in 1 MiB batches (GROWTH-SWEEP): 15 days of creates is about a million lines, too big
+    // to hold as one string and its split beside the parsed events under the worker's MemoryMax.
+    const tmp = `${this.#path}.tmp`;
+    const fd = openSync(tmp, 'w', 0o600);
+    let out: string[] = [];
+    let outBytes = 0;
+    const flush = (): void => {
+      if (out.length > 0) writeAll(fd, out.join(''), this.#write);
+      out = [];
+      outBytes = 0;
+    };
+    try {
+      for (const line of fileLines(this.#path)) {
+        if (line === '') continue;
+        let e: MarketEvent;
+        try {
+          e = parseTyped(line) as MarketEvent;
+        } catch {
+          continue;
+        }
+        if (!isCoverage(e.key) && e.moment.receivedAt < fromMs) continue;
+        if (last === null || e.moment.slot > last.slot) last = { slot: e.moment.slot, ms: e.moment.receivedAt };
+        // A coverage fact the prune drops is neither kept nor written back (it is older than `fromMs`).
+        if (isCoverage(e.key) && keepCoverage[coverageAt++] !== true) continue;
+        if (isCreate(e.key)) {
+          creates++;
+          // CREATE-AFTER-RESTART: every create in the window is shown to `onCreate` (its mint and signature), kept or not.
+          o.onCreate?.(e);
+          if (keepCreates && creates <= maxCreates) kept.push(e);
+        } else kept.push(e);
+        const text = `${typedText(e)}\n`;
+        out.push(text);
+        outBytes += text.length;
+        if (outBytes >= 1 << 20) flush();
+      }
+      flush();
+      fsyncSync(fd);
+    } catch (e) {
+      // A short write (a nearly full disk) or a read error: the old file stays whole and the start stops with the error.
+      closeSync(fd);
+      rmSync(tmp, { force: true });
+      throw e;
+    }
+    closeSync(fd);
+    renameSync(tmp, this.#path);
+    if (keepCreates && creates > maxCreates) return { creates: [], rugs: [], coverage: [], last: null, refused: `${creates} saved creates, over the seed cap of ${maxCreates}` };
     return { creates: kept.filter((e) => isCreate(e.key)), rugs: kept.filter((e) => isRugFact(e.key)), coverage: kept.filter((e) => isCoverage(e.key)), last };
   }
 }
