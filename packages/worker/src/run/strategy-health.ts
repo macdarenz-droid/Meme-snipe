@@ -29,6 +29,13 @@ export const entryOrigin = (i: IntentState): { readonly universe: string; readon
   return parts.length >= 3 ? { universe: parts[0]!, version: parts.slice(1, -1).join('.') } : { universe: local, version: local };
 };
 
+/**
+ * A closed trade's whole SOL result: its net at the close plus every settlement booked after it (PAPER-2, #198, keeps
+ * those in `late` and exports the same sum as `tradeSol`). Before PAPER-2 a trade has no `late` and this is its net.
+ */
+export const tradeSolNet = (t: PaperTrade & { readonly late?: readonly { readonly lamports: bigint }[] }): bigint =>
+  (t.netLamports ?? 0n) + (t.late ?? []).reduce((sum, l) => sum + l.lamports, 0n);
+
 export class HealthMonitor {
   readonly #file: StateFile<HealthState>;
   readonly #config: HealthConfig;
@@ -59,7 +66,7 @@ export class HealthMonitor {
         const p = book.positions[id];
         if (t === undefined || p === undefined || p.status !== 'closed' || t.closedAtMs === null || t.netLamports === null) return null;
         const ids = new Set([p.entryIntentId as string, ...Object.values(book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === id).map((i) => i.intent.id as string)]);
-        return inFlight(ids) ? null : { net: t.netLamports, atMs: t.closedAtMs };
+        return inFlight(ids) ? null : { net: tradeSolNet(t), atMs: t.closedAtMs };
       },
       strayFees: (id) => {
         let lamports = 0n;

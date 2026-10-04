@@ -122,7 +122,8 @@ describe('when the worker counts an episode as final (unit)', () => {
     const m = monitor();
     const b = book('closed', [intent('e1', 'entry', 'reconciled', 1)]);
     expect(m.update(b, legs([]), trades).map((o) => [o.kind, o.z])).toEqual([['episode', -0.25]]);
-    const later = [{ ...trades[0]!, netLamports: -SPEND / 4n - 20_000n }] as unknown as PaperTrade[];
+    // PAPER-2 keeps the net at the close and books what lands later in `late` (#198).
+    const later = [{ ...trades[0]!, late: [{ atMs: 200, lamports: -20_000n, usd: null }] }] as unknown as PaperTrade[];
     expect(m.update(b, legs([]), later).map((o) => [o.kind, o.z])).toEqual([['correction', -20_000 / Number(SPEND)]]);
     expect(m.update(b, legs([]), later)).toEqual([]);
     expect(m.state.finished['e1']!.netLamports).toBe(-SPEND / 4n - 20_000n);
