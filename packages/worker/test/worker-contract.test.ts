@@ -275,7 +275,7 @@ describe('the reservation goes through the ledger with the snapshot\'s account v
       reports.push(e);
       return `world#${reports.length}`;
     },
-    accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined,
+    accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined, lateBuy: () => undefined,
     diverged: (r) => void diverged.push(r),
   });
 
@@ -296,7 +296,7 @@ describe('the reservation goes through the ledger with the snapshot\'s account v
     const desk = new Desk({
       ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
       journal: (_kind, f) => void journal.push(f), report: () => 'world#unused',
-      accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined,
+      accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined, lateBuy: () => undefined,
       diverged: (r) => void diverged.push(r),
     });
     const refused = (eventId: string) => ({ type: 'world', seq: 1, at, eventId, event: { type: 'intent', intentId: intentId('x'), event: { type: 'prepare' } }, result: 'illegal', reason: 'prepare needs reserved exposure (from cancelled)', effects: [] }) as unknown as LogRecord;

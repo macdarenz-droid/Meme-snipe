@@ -15,7 +15,7 @@ import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
-import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts';
+import { type FillNetwork, type FillScenario, lateFillOf } from '../../../core/src/fills/index.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
@@ -59,6 +59,8 @@ import type { ExecStats } from '../../../core/src/facts/raw.ts';
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
 
+/** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
+export const LATE_BUY = 'late buy not settled by paper; entries off';
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
 export const SECOND_PATH_UNAVAILABLE = 'second price path unavailable';
 /** The window the paper execution statistics cover (WORKER-1e). */
@@ -399,6 +401,12 @@ export class Worker {
       diverged: (reason) => {
         if (this.#diverged.length === 0) this.#journal.write('halt', { reasons: ['ledger and book diverged; entries off until a restart', reason] });
         this.#diverged = ['ledger and book diverged'];
+        this.#checkHalt(this.#d.timers.now());
+      },
+      // A late buy's position is not settled by paper yet (risk ruling on #133): one alert, and entries stay off while
+      // the book holds such a position (#checkHalt reads the book, so a restart keeps the halt). Exits go on.
+      lateBuy: (r) => {
+        this.#journal.write('alert', { level: 'critical', code: 'late_buy', trade: r.positionId, intent: r.intentId, mint: r.mint, signature: r.signature, reasons: [LATE_BUY] });
         this.#checkHalt(this.#d.timers.now());
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
@@ -820,6 +828,7 @@ export class Worker {
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
+    if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
     if (same) return;

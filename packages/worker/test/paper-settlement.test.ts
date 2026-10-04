@@ -9,13 +9,14 @@ import { NO_LATCHES, melbourneWeek, riskSnapshot } from '../../core/src/risk/ind
 import { attemptFee } from '../../core/src/fills/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import type { Book } from '../../core/src/lifecycle/index.ts';
-import { positionId, type IntentId } from '../../core/src/domain/index.ts';
+import { positionId, type Fill, type IntentId } from '../../core/src/domain/index.ts';
 import { OFF_CHAIN, type LogRecord } from '../../core/src/engine/index.ts';
 import type { BookEvent } from '../../core/src/lifecycle/index.ts';
 import { raw } from '../../core/src/units/index.ts';
 import { attempt as fxAttempt, entryToSubmitted, fill as fx, on, quote, sig } from '../../core/test/fixtures.ts';
 import { PaperAccount, type PaperLegs, accountFile } from '../src/run/account.ts';
 import { Desk } from '../src/run/desk.ts';
+import { LATE_BUY } from '../src/run/worker.ts';
 import { type ApiInputs, views } from '../src/run/api.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
@@ -377,10 +378,11 @@ describe('a late-landing sell reaches the paper account (risk review of #133)', 
     // A backtest ledger takes the reservation as an event; the paper one only through the risk snapshot (not under test).
     const ledger = openLedger(join(tempState(), 'ledger.sqlite'), 'backtest');
     const filled: { purpose: string; positionId: string; closed: boolean }[] = [];
+    const late: string[] = [];
     const desk = new Desk({
       ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
       journal: () => undefined, report: () => 'world#unused', accountChanged: () => undefined, intentsChanged: () => undefined,
-      reserved: () => undefined, diverged: () => undefined,
+      reserved: () => undefined, diverged: () => undefined, lateBuy: (r) => void late.push(r.positionId),
       filled: (r) => void filled.push({ purpose: r.purpose, positionId: r.positionId, closed: r.book.positions[r.positionId]?.status === 'closed' }),
     });
     const E1 = 'e1' as IntentId;
@@ -407,6 +409,45 @@ describe('a late-landing sell reaches the paper account (risk review of #133)', 
     expect(desk.illegal + desk.ledgerRefusals).toBe(0);
     expect(desk.book.positions[positionId('p1')]?.status).toBe('closed');
     expect(filled).toEqual([{ purpose: 'entry', positionId: 'p1', closed: false }, { purpose: 'exit', positionId: 'p1', closed: true }]);
+    expect(late).toEqual([]);
     ledger.close();
+  });
+
+  it('a late buy is no trade fill: the desk hands it to lateBuy and the worker halts entries with an alert', async () => {
+    // Every attempt lands failed, so the entry ends unfilled; then its buy is found landed after all.
+    const scenario = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
+    const h = makeWorker({ scenario });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    const ended = () => Object.values(h.worker.book.intents).find((i) => i.intent.purpose === 'entry' && isTerminal(i) && i.fills.length === 0);
+    expect(await until(m, 60_000, () => ended() !== undefined, () => {
+      m.slot();
+      m.pool();
+    })).toBe(true);
+    const i = ended()!;
+    const trades = () => read<{ trades: unknown[] }>(h.stateDir, 'account.json').trades.length;
+    const before = trades();
+    const fill = { intentId: i.intent.id, signature: i.attempts[0]!.signature, slot: 1n, commitment: 'confirmed', tokens: 1_000_000n, sol: 20_000_000n, fees: 0n } as Fill;
+    h.worker.feed.ingest('worker', { type: 'world', event: { type: 'orphan_fill', fill } }, { receivedAt: m.now });
+    m.slot();
+    await m.run(800, 100, () => { m.slot(); m.pool(); });
+    const pid = `${i.intent.positionId}.o1`;
+    expect(h.worker.book.positions[pid]?.status).toBe('open');
+    const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(journal.filter((l) => l['kind'] === 'alert' && l['code'] === 'late_buy').map((l) => l['trade'])).toEqual([pid]);
+    expect(h.worker.health().halt_reasons).toContain(LATE_BUY);
+    // No paper trade for the late position, and no entry line for it.
+    expect(trades()).toBe(before);
+    expect(journal.some((l) => l['kind'] === 'entry' && l['trade'] === i.intent.positionId)).toBe(false);
+    await h.worker.stop();
+    // A restart keeps entries off while the book holds the late position.
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2);
+    m2.slot();
+    await m2.run(400, 100);
+    expect(h2.worker.health().halt_reasons).toContain(LATE_BUY);
+    await h2.worker.stop();
   });
 });

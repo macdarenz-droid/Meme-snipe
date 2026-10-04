@@ -29,6 +29,11 @@ export interface DeskDeps {
   readonly diverged: (reason: string) => void;
   /** A reservation was stored (the account's entry record). */
   readonly reserved: (r: { readonly intentId: string; readonly mint: string; readonly amount: bigint; readonly atMs: number }) => void;
+  /**
+   * A buy landed after its entry ended (`orphan_fill` of an entry, LEDGER-1b): its own position opens, which paper does
+   * not settle yet. The worker raises an alert and stops entries (risk ruling on #133, until the late-landing card).
+   */
+  readonly lateBuy: (r: { readonly intentId: string; readonly positionId: string; readonly mint: string; readonly signature: string; readonly atMs: number }) => void;
   /** A position filled or closed (the paper wallet and closed-trade records). */
   readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[] }) => void;
 }
@@ -155,9 +160,18 @@ export class Desk {
   /**
    * A reconcile that booked fills, or a late-landing sell booked after its exit ended (`orphan_fill`): the `entry` or
    * `exit` line (after its `simulation` line) and the trade record. A late buy opens its own position, which is not a
-   * paper trade (DECISIONS, PAPER-1).
+   * paper trade: it goes to `lateBuy` instead (DECISIONS, PAPER-1).
    */
   #fills(before: Book, event: BookEvent, ts: number): void {
+    if (event.type === 'orphan_fill') {
+      const i = this.#book.intents[event.fill.intentId];
+      const was = before.intents[event.fill.intentId];
+      if (i?.intent.purpose === 'entry' && i.fills.length > (was?.fills.length ?? 0)) {
+        const positionId = `${i.intent.positionId}.o${i.fills.length}`;
+        this.#d.lateBuy({ intentId: i.intent.id, positionId, mint: i.intent.mint, signature: event.fill.signature, atMs: ts });
+        return;
+      }
+    }
     const id = event.type === 'intent' && event.event.type === 'reconcile' ? event.intentId
       : event.type === 'orphan_fill' && this.#book.intents[event.fill.intentId]?.intent.purpose === 'exit' ? event.fill.intentId : null;
     if (id === null) return;
