@@ -72,6 +72,7 @@ export function StaleNote({ asOf, now: fixed }: { asOf: string; now?: number }) 
 export function Load<T>({ loaded, children, empty, isEmpty, rows }: { loaded: Loaded<T>; children: (data: T) => ReactNode; empty?: ReactNode; isEmpty?: (data: T) => boolean; rows?: number }) {
   if (loaded.state === 'loading') return <Loading {...(rows ? { rows } : {})} />;
   if (loaded.state === 'error') return loaded.reason === 'offline' ? <OfflineState /> : <ErrorState reason={loaded.reason} />;
+  if (loaded.state === 'not-running') return <Empty title="Not running" />;
   const body = isEmpty?.(loaded.data) ? empty : children(loaded.data);
   // New data remounts the boundary, so a section recovers once the data is good again.
   return (

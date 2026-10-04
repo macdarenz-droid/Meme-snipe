@@ -8,6 +8,8 @@ import type { Check } from './schema.ts';
 export type Loaded<T> =
   | { state: 'loading' }
   | { state: 'error'; reason: 'offline' | 'mixed-modes' | 'bad-data' | 'failed' }
+  /** The server answered that it does not run this mode (API-1). */
+  | { state: 'not-running' }
   | { state: 'ready'; data: T; asOf: string; stale: boolean };
 
 export function isStale(mode: Mode, asOf: string, now: number): boolean {
@@ -23,6 +25,7 @@ export function settle<T>(mode: Mode, check: Check, result: { ok: true; value: u
   }
   try {
     const env: Envelope<T> = checkEnvelope<T>(result.value, mode, check);
+    if (env.notRunning !== undefined) return { state: 'not-running' };
     return { state: 'ready', data: env.data, asOf: env.asOf, stale: isStale(mode, env.asOf, now) };
   } catch (e) {
     return settle<T>(mode, check, { ok: false, error: e }, now);
