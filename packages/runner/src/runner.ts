@@ -455,6 +455,11 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
             p.keep = atKill.positions.length + atKill.pending_exits.length + (p.inFlight ?? 0);
           }
           p.trades = (p.trades ?? []).filter((x) => !closed.includes(x));
+          // Nothing left open, planned to exit or in flight: the kill was not mid-trade and exposed nothing.
+          if (!heldAtKill(atKill, p.inFlight ?? 0)) {
+            p.midTrade = false;
+            p.open = false;
+          }
           notes.push(`closed between the last reply and the kill (journal): ${closed.join(', ')}`);
         }
         let state = recoveredState(lines, ws.boot!, cause, hostTable ? (p.backupKept ?? { pending_exits: [], positions: [] }) : (p.expect ?? null), p.atKill ?? { pending_exits: [], positions: [] });
@@ -494,7 +499,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
             notes.push(`tried again after the next backup (try ${attempt} of ${HOST_LOSS_RETRIES})`);
           } else notes.push(`no compared restore after ${HOST_LOSS_RETRIES} retries`);
         }
-        record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
+        record({ ...base, midTrade: p.midTrade === true, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (pending !== null && p.killedAt !== undefined && since() > recoverMs) {
         if (p.table) await endTabletop(p.drill.id, p.table);
@@ -935,7 +940,10 @@ export const closedSince = (journal: readonly JournalLine[], boot: string | null
     ? []
     : [...new Set(journal.filter((l) => l.boot === boot && l.seq > seq && l.kind === 'exit' && l['position'] === 'closed' && typeof l.trade === 'string').map((l) => l.trade!))].sort();
 
-const withoutTrades = (k: Kept, gone: readonly string[]): Kept => ({
+/** The worker held something at the kill: a position, a pending exit or an entry in flight. */
+export const heldAtKill = (k: Kept, inFlight: number): boolean => k.positions.length + k.pending_exits.length + inFlight > 0;
+
+export const withoutTrades = (k: Kept, gone: readonly string[]): Kept => ({
   pending_exits: k.pending_exits.filter((x) => !gone.includes(x)),
   positions: k.positions.filter((x) => !gone.includes(x.trade)),
 });
