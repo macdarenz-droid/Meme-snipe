@@ -190,4 +190,36 @@ describe('the watch\'s read latency (review of #87)', () => {
     expect(put).toEqual([]);
     expect(alerts).toEqual(['no answer within 400 ms']);
   });
+
+  it('a position that opens is read at once, however fresh its market; never twice at a time, and not once stopped', async () => {
+    const timers = new ManualTimers(0);
+    const put: unknown[] = [];
+    const accounts = read();
+    const reads: number[] = [];
+    const w = new PositionWatch({
+      timers, everyMs: 200, staleMs: 500, latencyMs: 400,
+      held: () => [{ mint: F.mint, pool: F.pool }], marketAt: () => timers.now(),
+      read: (addresses) => {
+        reads.push(timers.now());
+        return Promise.resolve({ slot: BigInt(F.slot), accounts: addresses.length === 1 ? [accounts[0]!] : accounts });
+      },
+      put: (s) => void put.push(s), alert: () => undefined, cleared: () => undefined,
+    });
+    w.start();
+    timers.advance(1_000);
+    await new Promise<void>((r) => setImmediate(r));
+    // A fresh market: the timer reads nothing.
+    expect(reads).toEqual([]);
+    w.opened(F.mint, F.pool);
+    w.opened(F.mint, F.pool);
+    for (let k = 0; k < 5; k++) await new Promise<void>((r) => setImmediate(r));
+    // One read for the vault layout, then the coherent read, both at the open; the second call found it in flight.
+    expect(reads).toEqual([1_000, 1_000]);
+    expect(put).toHaveLength(1);
+    w.opened(F.mint, null);
+    w.stop();
+    w.opened(F.mint, F.pool);
+    for (let k = 0; k < 5; k++) await new Promise<void>((r) => setImmediate(r));
+    expect(reads).toHaveLength(2);
+  });
 });

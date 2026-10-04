@@ -52,6 +52,9 @@ import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
 export const SECOND_PATH_UNAVAILABLE = 'second price path unavailable';
 
+/** An entry between reservation and its outcome: WATCH-1 keeps its pool's market fresh for the moment it lands. */
+const ENTRY_IN_FLIGHT: ReadonlySet<string> = new Set(['exposure_reserved', 'prepared', 'signed', 'submitted', 'pending', 'unknown', 'confirmed_fill']);
+
 /** One live source the worker runs (a provider stream). Its name is a health feed name, fixed for the whole run. */
 export interface FeedSource {
   readonly name: string;
@@ -203,6 +206,8 @@ export class Worker {
   /** WATCH-1's latest snapshot per held mint, as released. */
   #snapshots = new Map<string, SnapshotFact>();
   #watch: PositionWatch | null = null;
+  /** Positions open at the last step (WATCH-1 reads once when one opens). */
+  #opened = new Set<string>();
   #createSig = new Map<string, string>();
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
@@ -522,6 +527,7 @@ export class Worker {
     this.#feed.advance(now);
     this.#engine.drain();
     this.#recorder?.flush();
+    this.#watchOpened();
     const records = this.#engine.records as LogRecord[];
     const n = records.length;
     for (let k = 0; k < n; k++) this.#afterRecord(records[k]!);
@@ -864,13 +870,33 @@ export class Worker {
   }
 
   /** WATCH-1: the independent watch on held positions, on its own timer. */
+  /** WATCH-1: each position that opened since the last step gets one read at once. */
+  #watchOpened(): void {
+    const open = new Set<string>();
+    for (const p of Object.values(this.#engine.book.positions)) {
+      if (p.status === 'closed' || p.quantity <= 0n) continue;
+      open.add(p.id);
+      if (!this.#opened.has(p.id)) this.#watch?.opened(String(p.mint), this.poolOf(p.mint)?.address ?? this.#strategy.saved()[p.id]?.pool ?? null);
+    }
+    this.#opened = open;
+  }
+
   #positionWatch(): PositionWatch {
     const d = this.#d;
     return new PositionWatch({
       timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs,
-      held: () => Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed' && p.quantity > 0n).map((p) => ({
-        mint: p.mint, pool: this.poolOf(p.mint)?.address ?? this.#strategy.saved()[p.id]?.pool ?? null,
-      })),
+      held: () => {
+        const book = this.#engine.book;
+        const open = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.quantity > 0n).map((p) => ({
+          mint: String(p.mint), pool: this.poolOf(p.mint)?.address ?? this.#strategy.saved()[p.id]?.pool ?? null,
+        }));
+        // Entries in flight, on the pool their decision priced, through the fill until the position shows its quantity;
+        // ones settled unfilled (rejected, cancelled, failed, expired) drop out, and a closed position takes its entry along.
+        const entering = Object.values(book.intents).filter((i) => i.intent.purpose === 'entry' && (ENTRY_IN_FLIGHT.has(i.status) || i.fills.length > 0) && book.positions[i.intent.positionId]?.status !== 'closed')
+          .map((i) => ({ mint: String(i.intent.mint), pool: this.poolOf(i.intent.mint)?.address ?? null }));
+        const seen = new Set(open.map((h) => h.mint));
+        return [...open, ...entering.filter((e) => !seen.has(e.mint) && seen.add(e.mint))];
+      },
       marketAt: (mint) => this.poolOf(mint)?.atMs ?? null,
       read: d.watchRead ?? (() => Promise.reject(new Error('no second path configured'))),
       put: (snap, atMs) => this.#fact(snapshotKey(snap.mint), { pool: snap.pool, slot: snap.slot, atMs, state: snap.state, ctx: snap.ctx }),

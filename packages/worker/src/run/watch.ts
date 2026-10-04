@@ -20,7 +20,10 @@ export interface PositionWatchOptions {
   readonly staleMs: number;
   /** An answer later than this is not used: it would already be too old to quote (config: ZEROED_WATCH_LATENCY_MS). */
   readonly latencyMs: number;
-  /** Open positions: the mint and the pool it trades on (null when no pool is known yet). */
+  /**
+   * Open positions, and entries in flight (so a fresh snapshot already exists when the entry lands): the mint and the
+   * pool it trades on (null when no pool is known yet).
+   */
   readonly held: () => readonly { readonly mint: string; readonly pool: string | null }[];
   /** When the market the position is priced at was observed (ms), or null when it has none. */
   readonly marketAt: (mint: string) => number | null;
@@ -70,6 +73,16 @@ export class PositionWatch {
     this.#running = false;
     if (this.#timer !== null) this.#o.timers.clearTimeout(this.#timer);
     this.#timer = null;
+  }
+
+  /**
+   * A position just opened: read now, whatever the market's age, so an entry that lands faster than one period is not
+   * left a period without a fresh price. Nothing when a read for the mint is already in flight.
+   */
+  opened(mint: string, pool: string | null): void {
+    if (!this.#running || pool === null || this.#inFlight.has(mint)) return;
+    this.#inFlight.add(mint);
+    void this.#snapshot(mint, pool).finally(() => this.#inFlight.delete(mint));
   }
 
   /** One look at the held positions (the timer calls it). */

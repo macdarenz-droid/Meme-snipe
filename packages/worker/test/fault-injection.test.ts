@@ -388,12 +388,15 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     const timers = dueTimers(T - 16 * 86_400_000);
     let h!: H;
     h = makeWorker({ timers, sources: () => feeds, watchRead: (a) => scaledRead(h, () => scale, calls)(a), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18904', ZEROED_API_ADDR: '127.0.0.1:18905' } });
-    const m = new Market(h);
+    // The pool fact keeps coming until the feed dies (POS-1's test switch), so the watch has nothing to read before.
+    const m = new Market(h, { heldPoolFacts: true });
     await boot(h, m, feeds);
     await passingMarket(h);
     await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(m), 100);
     const p0 = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!;
-    expect(calls).toEqual([]);
+    // The entry in flight and the open were watched already (risk review B1): the vault layout was learned then.
+    expect(calls[0]).toEqual([POOL_ADDRESS]);
+    const before = calls.length;
     // Swaps on the pool give the strategy observed fee terms of its own, before the feed dies.
     for (let k = 0; k < 3; k++) {
       m.swap('BuyEvent', `buyer${k}`, 1_000_000n);
@@ -409,12 +412,11 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     // Within the set time: the stale limit, one watch period, the feed's stale release, and a step.
     const w = (parseConfig({ ZEROED_STATE_DIR: '/x', ZEROED_MODE: 'paper' }, () => null) as { config: { watch: { staleMs: number; everyMs: number } } }).config.watch;
     expect(took).toBeLessThanOrEqual(w.staleMs + w.everyMs + 2_000 + 500);
-    // One read for the vault layout, then the coherent read: pool, vaults, mint, GlobalConfig, FeeConfig.
-    expect(calls[0]).toEqual([POOL_ADDRESS]);
-    expect(calls[1]).toEqual([POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenAccount, MINT, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG]);
+    // The vault layout is known: the first read after the feed died is the coherent read (pool, vaults, mint, GlobalConfig, FeeConfig).
+    expect(calls[before]).toEqual([POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenAccount, MINT, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG]);
     // The exit is the price stop, priced from the snapshot alone: its reserves and its fee context.
     expect(mine().find((l) => l['action'] === 'trigger_exit')!['reasons']).toEqual(expect.arrayContaining([expect.stringMatching(/^price_stop/)]));
-    const snap = decodeSnapshot(MINT, POOL_ADDRESS, 0n, calls[1]!.map((a) => (a === POOL.poolQuoteTokenAccount ? { ...chainAccount(a)!, data: (() => {
+    const snap = decodeSnapshot(MINT, POOL_ADDRESS, 0n, calls[before]!.map((a) => (a === POOL.poolQuoteTokenAccount ? { ...chainAccount(a)!, data: (() => {
       const d = chainAccount(a)!.data.slice();
       new DataView(d.buffer, d.byteOffset, d.byteLength).setBigUint64(64, (QUOTE_VAULT * 600_000n) / 1_000_000n, true);
       return d;
@@ -451,7 +453,7 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
       watchRead: (a) => (failing ? (calls.push([...a]), Promise.reject(new Error('alchemy timed out'))) : scaledRead(h, () => 600_000n, calls)(a)),
       config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18906', ZEROED_API_ADDR: '127.0.0.1:18907' },
     });
-    const m = new Market(h);
+    const m = new Market(h, { heldPoolFacts: true });
     await boot(h, m, feeds);
     await passingMarket(h);
     await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(m), 100);
@@ -479,14 +481,26 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     const calls: string[][] = [];
     const feeds = [scriptedSource('helius-ws', true, ['helius'])];
     let h!: H;
-    h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, watchRead: (a) => scaledRead(h, () => scale, calls)(a), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18912', ZEROED_API_ADDR: '127.0.0.1:18913' } });
+    const isOpen = () => Object.values(h.worker.book.positions).some((p) => p.status !== 'closed' && p.quantity > 0n);
+    const readAt: { ms: number; open: boolean }[] = [];
+    h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, watchRead: (a) => {
+      readAt.push({ ms: h.timers.now(), open: isOpen() });
+      return scaledRead(h, () => scale, calls)(a);
+    }, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18912', ZEROED_API_ADDR: '127.0.0.1:18913' } });
     const m = new Market(h);
     await boot(h, m, feeds);
     const pm = await passingMarket(h);
     const readSlot = h.worker.feed.releasedThrough;
     pm.tradesStart(readSlot - 100n);
     pm.accountsRead(readSlot);
-    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(pm), 100);
+    let seenOpenAt = Number.NaN;
+    await until(m, () => isOpen(), 30_000, () => {
+      tick(pm)();
+      if (Number.isNaN(seenOpenAt) && isOpen()) seenOpenAt = m.now;
+    }, 100);
+    if (Number.isNaN(seenOpenAt)) seenOpenAt = m.now;
+    // The open is read at once, in the step that books it, whatever its market's age (no later than the test sees it).
+    expect(readAt.find((r) => r.open)!.ms).toBeLessThanOrEqual(seenOpenAt);
     const p0 = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!;
     // The re-subscribe leaves a gap: the producer re-releases the pool fact flagged, and no swap comes after it.
     pm.tradesGap(h.worker.feed.openSlot, null);
@@ -506,24 +520,58 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     await h.worker.stop();
   }, 60_000);
 
+  it('an entry in flight is watched on its decision\'s pool, and once it settles unfilled the watch stops reading for it', async () => {
+    const calls: string[][] = [];
+    const at: number[] = [];
+    const feeds = [scriptedSource('helius-ws', true, ['helius'])];
+    let h!: H;
+    // Nothing lands: the entry stays in flight until it expires unfilled.
+    h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), scenario: { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n } }, sources: () => feeds, watchRead: (a) => {
+      at.push(h.timers.now());
+      return scaledRead(h, () => 1_000_000n, calls)(a);
+    }, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18914', ZEROED_API_ADDR: '127.0.0.1:18915' } });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    const pm = await passingMarket(h);
+    const entries = () => Object.values(h.worker.book.intents).filter((i) => i.intent.purpose === 'entry');
+    const live = new Set(['exposure_reserved', 'prepared', 'signed', 'submitted', 'pending', 'unknown']);
+    await until(m, () => entries().some((i) => live.has(i.status)), 30_000, tick(pm), 100);
+    // In flight: the pool fact stops (held), and the watch keeps the market younger than the quote age.
+    const ages: number[] = [];
+    await until(m, () => !entries().some((i) => live.has(i.status)), 60_000, () => {
+      m.slot();
+      if (entries().some((i) => live.has(i.status))) ages.push(m.now - h.worker.poolOf(MINT)!.atMs);
+    }, 100);
+    expect(ages.length).toBeGreaterThan(5);
+    expect(Math.max(...ages)).toBeLessThan(TRIAL_POLICY.gates.maxQuoteAgeMs);
+    expect(calls.length).toBeGreaterThan(0);
+    // Settled unfilled: no read starts after it.
+    const settledAt = m.now;
+    await m.run(10_000, 100, () => m.slot());
+    expect(at.filter((t) => t > settledAt)).toEqual([]);
+    await h.worker.stop();
+  }, 60_000);
+
   it('slots arrive but no pool fact does: the watched market stays younger than the quote age every step, and the paper exit fills on the snapshot\'s reserves', async () => {
     let scale = 1_000_000n;
     const calls: string[][] = [];
     const feeds = [scriptedSource('helius-ws', true, ['helius'])];
     let h!: H;
     // Every read answers 300 ms late (inside the 400 ms the timing allows).
-    h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, watchRead: (a) => scaledRead(h, () => scale, calls, 300)(a), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18910', ZEROED_API_ADDR: '127.0.0.1:18911' } });
+    const isOpen = () => Object.values(h.worker.book.positions).some((p) => p.status !== 'closed' && p.quantity > 0n);
+    const readAt: { ms: number; open: boolean }[] = [];
+    h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, watchRead: (a) => {
+      readAt.push({ ms: h.timers.now(), open: isOpen() });
+      return scaledRead(h, () => scale, calls, 300)(a);
+    }, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18910', ZEROED_API_ADDR: '127.0.0.1:18911' } });
     const m = new Market(h);
     await boot(h, m, feeds);
     await passingMarket(h);
-    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(m), 100);
+    await until(m, () => isOpen(), 30_000, tick(m), 100);
     const p0 = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!;
     // From here only slot notices and no swap: the position's pool fact never moves again (a quiet pool under POS-1).
-    // The market went quiet when the entry was sent; the watch looks at open positions, so the first snapshot comes
-    // one watch cycle after the open.
-    const openAt = m.now;
-    await until(m, () => h.worker.poolOf(MINT)!.atMs > openAt, 2_000, () => m.slot(), 100);
-    const ages: number[] = [];
+    // Measured from the step the position opens: the watch kept the entry's pool fresh while it was in flight.
+    const ages: number[] = [m.now - h.worker.poolOf(MINT)!.atMs];
     const seen = new Set<number>();
     for (let k = 0; k < 200; k++) {
       await m.run(100, 100, () => m.slot());
@@ -548,6 +596,10 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     const attempt = exit.attempts.find((a) => a.signature === sold.signature)!;
     expect(sold.sol).toBe(withSlippage(at.trade.userQuote, attempt.quote.quotedOut, LANDS.slippagePpm));
     expect(snap.snapshot.state.quoteVault).toBe((QUOTE_VAULT * 600_000n) / 1_000_000n);
+    // Closed: the watch reads nothing more for it (its entry no longer counts either).
+    const closedAt = m.now;
+    await m.run(5_000, 100, () => m.slot());
+    expect(readAt.filter((r) => r.ms > closedAt)).toEqual([]);
     await h.worker.stop();
   }, 60_000);
 
