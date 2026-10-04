@@ -3,6 +3,8 @@
 // state. Day releases are not read yet (none are downloaded on the server), so their range is RPC's or a gap.
 import { HELIUS_FREE, type Timers } from '../scheduler/index.ts';
 import { SIM_READS_PER_HOUR } from './sim-read.ts';
+import { DEPLOYER_CHECK_CREDITS_PER_DAY } from '../facts/deployer-checks.ts';
+import { holderScanCreditsPerDay } from '../facts/budget.ts';
 import { buildSeed } from '../seed/seed.ts';
 import type { SeedRpc } from '../seed/rpc.ts';
 import type { DailyBudget } from '../persist/index.ts';
@@ -12,10 +14,16 @@ import type { SeedRequest, SeedResult } from './worker.ts';
 export const SEED_CREDIT_CAP = 150_000;
 /**
  * Helius credits a day the code itself caps on recurring non-exit reads (S0-ZERO budget review), a ceiling, not a
- * measurement: H15's simulations (`SIM_READS_PER_HOUR`, each one market read and one simulate), the stand-in's funding
- * check (at most once a minute, `standInCheckMs` 60 s in main.ts) and the delay probe (one confirmed read a minute).
+ * measurement. Five reads:
+ * - H15's simulations: `SIM_READS_PER_HOUR`, each one market read and one simulate (5,760);
+ * - the stand-in's funding check: at most once a minute, `standInCheckMs` 60 s in main.ts (1,440);
+ * - the delay probe: one confirmed read a minute (1,440);
+ * - RUG-1c's deployer checks: `DEPLOYER_CHECK_CREDITS_PER_DAY` (5,000);
+ * - the complete holder scans: `HOLDER_SCANS_PER_DAY` at the dearer of a scan and its indexed fallback, which takes a
+ *   scan of its own from the same cap (`holderScanCreditsPerDay`, 1,200).
+ * Socket bytes, migration fetches and the per-candidate fact reads are not capped in code and are not in it.
  */
-export const CAPPED_READ_CREDITS_PER_DAY = SIM_READS_PER_HOUR * 24 * 2 + 24 * 60 + 24 * 60;
+export const CAPPED_READ_CREDITS_PER_DAY = SIM_READS_PER_HOUR * 24 * 2 + 24 * 60 + 24 * 60 + DEPLOYER_CHECK_CREDITS_PER_DAY + holderScanCreditsPerDay();
 /**
  * The share of what is left of Helius's non-exit allowance (the monthly credits up to the 70% halt, less the capped
  * reads) that the fills may use; the rest is for the uncapped reads (socket bytes, migration fetches, fact reads) until
@@ -25,7 +33,7 @@ export const FILL_SHARE = 0.5;
 /**
  * Credits the fills may spend in a UTC day, across restarts (PERSIST-1's `DailyBudget`, wired by WORKER-1c; one budget
  * for the restart's downtime fill and the pool watches' in-run fills, S0-ZERO). Derived from the plan, not fixed:
- * (1,000,000 × 0.7 − 31 × 8,640) × 0.5 / 31 = 6,970 a day on Helius Free. A 31-day month keeps it inside any month.
+ * (1,000,000 × 0.7 − 31 × 14,840) × 0.5 / 31 = 3,870 a day on Helius Free. A 31-day month keeps it inside any month.
  * Every call is also metered by the Helius scheduler, whose 70% halt refuses non-exit calls whatever is left here.
  */
 export const FILL_CREDITS_PER_DAY = Math.floor(((HELIUS_FREE.budget!.monthlyCredits * HELIUS_FREE.budget!.haltShare) - 31 * CAPPED_READ_CREDITS_PER_DAY) * FILL_SHARE / 31);

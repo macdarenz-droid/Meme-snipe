@@ -17,6 +17,8 @@ import {
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import { HELIUS_FREE, ManualTimers, P1, P3, Scheduler, type Timers } from '../src/scheduler/index.ts';
 import { CAPPED_READ_CREDITS_PER_DAY, FILL_CREDITS_PER_DAY } from '../src/run/seed-start.ts';
+import { DEPLOYER_CHECK_CREDITS_PER_DAY } from '../src/facts/deployer-checks.ts';
+import { holderScanCreditsPerDay } from '../src/facts/budget.ts';
 import { fillTradeGaps, type SeedRpc } from '../src/seed/index.ts';
 import { PoolWatch } from '../src/run/pool-watch.ts';
 import { CreditBook, LiveProviders, TRADES_FILL_CREDITS, tradesFill } from '../src/run/sources.ts';
@@ -491,8 +493,13 @@ describe('the daily fill budget is derived from the Helius plan, not fixed', () 
   it('fills plus the capped recurring reads stay inside the non-exit allowance of a 31-day month, with room left', () => {
     const allowance = HELIUS_FREE.budget!.monthlyCredits * HELIUS_FREE.budget!.haltShare;
     expect(allowance).toBe(700_000);
-    expect(CAPPED_READ_CREDITS_PER_DAY).toBe(120 * 24 * 2 + 1_440 + 1_440);
-    expect(FILL_CREDITS_PER_DAY).toBe(6_970);
+    // Five capped reads: H15 (5,760), the stand-in check (1,440), the delay probe (1,440), the deployer checks (5,000) and
+    // the holder scans (100 a day × 12 credits).
+    expect(CAPPED_READ_CREDITS_PER_DAY).toBe(120 * 24 * 2 + 1_440 + 1_440 + DEPLOYER_CHECK_CREDITS_PER_DAY + holderScanCreditsPerDay());
+    expect(DEPLOYER_CHECK_CREDITS_PER_DAY).toBe(5_000);
+    expect(holderScanCreditsPerDay()).toBe(1_200);
+    expect(CAPPED_READ_CREDITS_PER_DAY).toBe(14_840);
+    expect(FILL_CREDITS_PER_DAY).toBe(3_870);
     expect(31 * (CAPPED_READ_CREDITS_PER_DAY + FILL_CREDITS_PER_DAY)).toBeLessThan(allowance);
     // Half of what is left stays for the uncapped reads (socket bytes, migration fetches, fact reads).
     expect(allowance - 31 * (CAPPED_READ_CREDITS_PER_DAY + FILL_CREDITS_PER_DAY)).toBeGreaterThanOrEqual(31 * FILL_CREDITS_PER_DAY);
