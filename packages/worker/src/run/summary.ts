@@ -17,6 +17,7 @@ import type { HttpClient } from '../providers/index.ts';
 import type { PaperTrade } from './account.ts';
 import { lamportsUsd, melbourneDate, usdText } from './api.ts';
 import { SEEDING } from '../engine/strategy.ts';
+import { DISK_LOW } from './disk.ts';
 import { StateFile } from './state.ts';
 
 /** One day's counts, folded from its journal lines. */
@@ -61,6 +62,7 @@ export const haltCode = (reason: string): string => {
   if (reason === 'owner pause (watchdog)') return 'owner-pause';
   if (reason === 'second price path unavailable') return 'second-path-unavailable';
   if (reason === SEEDING) return 'seeding';
+  if (reason === DISK_LOW) return 'disk-low';
   if (reason === 'starting') return 'starting';
   if (reason.startsWith('sell-only')) return 'sell-only';
   if (reason.startsWith('ledger and book diverged') || reason.startsWith('ledger refused')) return 'ledger-diverged';

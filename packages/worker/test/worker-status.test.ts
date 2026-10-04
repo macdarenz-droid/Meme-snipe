@@ -6,6 +6,7 @@ import { schemaFor } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { SEEDING } from '../src/engine/strategy.ts';
+import { DISK_LOW } from '../src/run/disk.ts';
 import { type AlertSeen, collectAlerts, haltOf, MAX_ALERTS, route, stopHalts, views } from '../src/run/api.ts';
 import { makeWorker, passingMarket } from './worker-harness.ts';
 
@@ -20,6 +21,7 @@ describe('haltOf', () => {
     ['feed helius dropped by drill', 'feed-dropped', 'helius'],
     ['owner pause (watchdog)', 'paused', null],
     [SEEDING, 'seeding', null],
+    [DISK_LOW, 'disk-low', null],
     ['ledger and book diverged', 'divergence', null],
     ['something new', 'other', null],
     ['feed helius stale and more', 'other', null],

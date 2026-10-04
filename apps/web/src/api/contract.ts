@@ -92,7 +92,7 @@ export interface RiskMeter extends Moded {
 
 /** Why entries are off (API-1); `other` is a reason this app does not name. */
 export const HALT_CODES = [
-  'starting', 'feed-stale', 'feed-disconnected', 'feed-dropped', 'paused', 'seeding', 'divergence', 'budget',
+  'starting', 'feed-stale', 'feed-disconnected', 'feed-dropped', 'paused', 'seeding', 'divergence', 'budget', 'disk-low',
   // The account's risk stops (core risk's tripped entry controls); 'risk' is any other, its code the source.
   'daily-loss', 'weekly-loss', 'weekly-review', 'kill-switch', 'wallet-below-kill-line', 'loss-cooldown', 'loss-day-pause',
   'loss-review', 'session-ended', 'max-open-positions', 'risk', 'risk-unknown',

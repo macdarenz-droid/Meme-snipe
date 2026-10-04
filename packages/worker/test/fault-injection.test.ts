@@ -25,6 +25,7 @@ import { DEFAULT_LIVE_FEED } from '../src/providers/live-feed.ts';
 import { SECOND_PATH_UNAVAILABLE } from '../src/run/worker.ts';
 import { gatesOfStages, parsePool, xcheckKey } from '../../core/src/gates/index.ts';
 import { NOT_EVALUATED } from '../src/engine/strategy.ts';
+import { DEFAULT_DISK_POLICY, DISK_LOW, type DiskSample } from '../src/run/disk.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
@@ -677,6 +678,77 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     halted = false;
     h.worker.step();
     expect(h.worker.health().halt_reasons).toEqual([]);
+    await h.worker.stop();
+  });
+});
+
+describe('DISK-GUARD: free space runs low (golden rule: a full disk is an outage)', () => {
+  it('the recorder pauses first, then entries are refused with exits going on; each comes back above its resume line', async () => {
+    const P = DEFAULT_DISK_POLICY;
+    let free = 10 * 1024 ** 3;
+    const reads: number[] = [];
+    const disk = (atMs: number): DiskSample => (reads.push(atMs), { atMs, freeBytes: free, totalBytes: 25 * 1024 ** 3, recorderBytes: 7 });
+    const feeds = [scriptedSource('helius-ws', true, ['helius']), scriptedSource('coinbase-ws', true, ['coinbase'])];
+    const h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, disk, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18904', ZEROED_API_ADDR: '127.0.0.1:18905' } });
+    const m = new Market(h, { heldPoolFacts: true });
+    await boot(h, m, feeds);
+    // Both feeds stay fresh throughout: the SOL price feed says it is up with every market step.
+    const step = (scalePpm = 1_000_000n) => () => {
+      up(h, m, 'coinbase');
+      tick(m, scalePpm)();
+    };
+    await until(m, () => h.worker.health().disk?.free_bytes === free, 70_000, step(), 400);
+    expect(h.worker.health().disk).toEqual({ free_bytes: free, total_bytes: 25 * 1024 ** 3, recorder_bytes: 7, days_to_full: null, recorder: 'on', entries_refused: false });
+    // Read once a minute, not every step.
+    const n = reads.length;
+    await m.run(30_000, 400, step());
+    expect(reads.length - n).toBeLessThanOrEqual(1);
+    await passingMarket(h);
+    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, step(), 400);
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+
+    // Below the recorder's line: recording pauses, entries do not stop.
+    free = P.recorderPauseBytes - 1;
+    await until(m, () => h.worker.health().disk?.recorder === 'paused', 70_000, step(), 400);
+    expect(h.worker.health().disk?.entries_refused).toBe(false);
+    expect(h.worker.health().halt_reasons).not.toContain(DISK_LOW);
+    expect(kinds(h.stateDir, 'disk').map((l) => l['step'])).toEqual(['recorder_paused']);
+    const man = JSON.parse(readFileSync(join(h.stateDir, 'recorder', readdirSync(join(h.stateDir, 'recorder'))[0]!, 'manifest.json'), 'utf8')) as { coverage_gaps: { reason: string; to_ms: unknown }[] };
+    expect(man.coverage_gaps.filter((g) => g.reason.startsWith('recorder paused'))).toEqual([expect.objectContaining({ to_ms: null })]);
+
+    // Below the entry floor: entries are refused ('disk low') and the open position still exits on its stop.
+    free = P.entryFloorBytes - 1;
+    await until(m, () => h.worker.health().halt_reasons.includes(DISK_LOW), 70_000, step(), 400);
+    expect(h.worker.health()).toMatchObject({ entries_halted: true, disk: { entries_refused: true, recorder: 'paused' } });
+    expect(kinds(h.stateDir, 'halt').at(-1)!['reasons']).toEqual([DISK_LOW]);
+    await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 30_000, step(700_000n));
+    const entered = entries(h).length;
+    await passingMarket(h);
+    await m.run(20_000, 400, step());
+    expect(entries(h).length).toBe(entered);
+
+    // Back above the entry floor but under its resume line: still refused. At the resume line: allowed, recorder still paused.
+    free = P.entryResumeBytes - 1;
+    await m.run(70_000, 400, step());
+    expect(h.worker.health().disk?.entries_refused).toBe(true);
+    free = P.entryResumeBytes;
+    await until(m, () => !h.worker.health().halt_reasons.includes(DISK_LOW), 70_000, step(), 400);
+    expect(h.worker.health().disk?.recorder).toBe('paused');
+    free = P.recorderResumeBytes;
+    await until(m, () => h.worker.health().disk?.recorder === 'on', 70_000, step(), 400);
+    expect(kinds(h.stateDir, 'disk').map((l) => l['step'])).toEqual(['recorder_paused', 'entries_refused', 'entries_allowed', 'recorder_resumed']);
+    await h.worker.stop();
+  });
+
+  it('without a reading (statfs failed) entries are refused; the recorder keeps recording', async () => {
+    let ok = true;
+    const feeds = [scriptedSource('helius-ws', true, ['helius'])];
+    const h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, disk: (atMs) => (ok ? { atMs, freeBytes: 10 * 1024 ** 3, totalBytes: 25 * 1024 ** 3, recorderBytes: 0 } : null), config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18906', ZEROED_API_ADDR: '127.0.0.1:18907' } });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    ok = false;
+    await until(m, () => h.worker.health().halt_reasons.includes(DISK_LOW), 70_000, () => m.slot(), 400);
+    expect(h.worker.health().disk).toMatchObject({ free_bytes: null, recorder: 'on', entries_refused: true });
     await h.worker.stop();
   });
 });

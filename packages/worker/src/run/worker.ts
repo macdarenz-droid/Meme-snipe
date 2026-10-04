@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -18,7 +18,7 @@ import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import { attemptFee, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
-import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
+import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type DiskHealth, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { NO_UNIVERSE, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
@@ -43,6 +43,7 @@ import { Summarizer, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
+import { DEFAULT_DISK_POLICY, DISK_EVERY_MS, DISK_HISTORY_FILE, DISK_LOW, DISK_OK, addPoint, daysToFull, nextDiskState, parseHistory, type DiskPoint, type DiskPolicy, type DiskSample, type DiskState } from './disk.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
@@ -164,6 +165,13 @@ export interface WorkerDeps {
   readonly watchRead?: (addresses: readonly string[]) => Promise<WatchRead>;
   /** True while the second path's provider budget is halted (its scheduler's haltShare): entries stop. */
   readonly watchHalted?: () => boolean;
+  /**
+   * DISK-GUARD: one reading of free space on the state directory's filesystem and of the recorder's bytes (main passes
+   * `readDisk`; null when it cannot read). Without it (tests) the guard is off and health carries no disk reading.
+   */
+  readonly disk?: (atMs: number) => DiskSample | null;
+  /** DISK-GUARD's steps (default DEFAULT_DISK_POLICY). */
+  readonly diskPolicy?: DiskPolicy;
 }
 
 export interface SeedRequest {
@@ -262,6 +270,11 @@ export class Worker {
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
   #intentAt = new Map<string, number>();
+  /** DISK-GUARD: the steps taken, the latest reading, when it was read, and the hourly readings for the slope. */
+  #disk: DiskState = DISK_OK;
+  #diskSample: DiskSample | null = null;
+  #diskAt: number | null = null;
+  #diskHistory: DiskPoint[] = [];
   /** Entries start halted: nothing enters before the first feed check says otherwise. */
   #halted: readonly string[] = ['starting'];
   /** SEED-1's seed is not placed yet: entries halt (SEEDING), exits run. */
@@ -323,7 +336,18 @@ export class Worker {
     const recRoot = join(c.stateDir, STATE_FILES.recorder);
     mkdirSync(recRoot, { recursive: true });
     for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
-    this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
+    this.#recorder = c.recorder
+      ? new Recorder({
+        root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }),
+        now: () => d.timers.now(),
+        // A write failed for lack of space: read the disk now, so entries stop without waiting for the next minute.
+        onNoSpace: () => {
+          d.log('Recorder: a write failed (no space left on the device); recording paused.');
+          this.#diskAt = null;
+        },
+      })
+      : null;
+    this.#diskHistory = parseHistory(existsSync(join(c.stateDir, DISK_HISTORY_FILE)) ? readFileSync(join(c.stateDir, DISK_HISTORY_FILE), 'utf8') : '[]');
     const rec = this.#recorder;
     this.#probe = d.delayProbe === undefined || rec === null ? null : new DelayProbe({ timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs, record: (row, at) => rec.delay(row, at) });
 
@@ -713,7 +737,51 @@ export class Worker {
     this.#saveExits();
     this.#markAccount(now);
     if (now - this.#lastSaveMs >= PERSIST_EVERY_MS) this.#persist(now);
+    if (this.#diskAt === null || now - this.#diskAt >= DISK_EVERY_MS) this.#checkDisk(now);
     this.#checkHalt(now);
+  }
+
+  /**
+   * DISK-GUARD: reads free space, takes or undoes each step, journals and logs every change, and keeps an hourly reading
+   * for the slope. The recorder stays paused while it paused itself on a failed write until free space is back above its
+   * resume line.
+   */
+  #checkDisk(now: number): void {
+    const read = this.#d.disk;
+    if (read === undefined) return;
+    this.#diskAt = now;
+    const s = read(now);
+    const policy = this.#d.diskPolicy ?? DEFAULT_DISK_POLICY;
+    let next = nextDiskState(this.#disk, s, policy);
+    const rec = this.#recorder;
+    if (rec !== null && rec.paused && !next.recorderPaused && (s === null || s.freeBytes < policy.recorderResumeBytes)) next = { ...next, recorderPaused: true };
+    this.#diskSample = s;
+    const free = s === null ? null : s.freeBytes;
+    if (next.recorderPaused !== this.#disk.recorderPaused || (rec !== null && rec.paused !== next.recorderPaused)) {
+      if (next.recorderPaused) rec?.pause(now, free === null ? 'free space unknown' : `free space ${free} bytes, below ${policy.recorderPauseBytes}`);
+      else rec?.resume(now);
+      if (next.recorderPaused !== this.#disk.recorderPaused) {
+        this.#journal.write('disk', { step: next.recorderPaused ? 'recorder_paused' : 'recorder_resumed', free_bytes: free, reasons: [next.recorderPaused ? 'free space low' : 'free space back'] });
+        this.#d.log(`Disk: ${free ?? 'unknown'} bytes free; recording ${next.recorderPaused ? 'paused' : 'resumed'}.`);
+      }
+    }
+    if (next.entriesRefused !== this.#disk.entriesRefused) {
+      this.#journal.write('disk', { step: next.entriesRefused ? 'entries_refused' : 'entries_allowed', free_bytes: free, reasons: [next.entriesRefused ? DISK_LOW : 'free space back'] });
+      this.#d.log(`Disk: ${free ?? 'unknown'} bytes free; new entries ${next.entriesRefused ? 'refused (exits continue)' : 'allowed again'}.`);
+    }
+    this.#disk = next;
+    if (s !== null) {
+      const h = addPoint(this.#diskHistory, s);
+      if (h !== this.#diskHistory) {
+        this.#diskHistory = h;
+        try {
+          writeFileSync(join(this.#d.config.stateDir, `${DISK_HISTORY_FILE}.tmp`), JSON.stringify(h));
+          renameSync(join(this.#d.config.stateDir, `${DISK_HISTORY_FILE}.tmp`), join(this.#d.config.stateDir, DISK_HISTORY_FILE));
+        } catch {
+          // no room for it: the slope waits for the next hour
+        }
+      }
+    }
   }
 
   /**
@@ -919,6 +987,7 @@ export class Worker {
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
+    if (this.#disk.entriesRefused) reasons.push(DISK_LOW);
     reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
     if (same) return;
@@ -1310,12 +1379,25 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      rss_bytes: process.memoryUsage().rss,
+      ...(this.#d.disk === undefined ? {} : { disk: this.#diskHealth() }),
+      mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
     };
     return h;
+  }
+
+  /** DISK-GUARD's reading for health and the heartbeat: null fields until the first reading or when it failed. */
+  #diskHealth(): DiskHealth {
+    const s = this.#diskSample;
+    return {
+      free_bytes: s?.freeBytes ?? null, total_bytes: s?.totalBytes ?? null, recorder_bytes: s?.recorderBytes ?? null,
+      days_to_full: s === null ? null : daysToFull(this.#diskHistory, s),
+      recorder: this.#recorder?.paused === true ? 'paused' : this.#recorder === null ? 'off' : 'on',
+      entries_refused: this.#disk.entriesRefused,
+    };
   }
 
   /**

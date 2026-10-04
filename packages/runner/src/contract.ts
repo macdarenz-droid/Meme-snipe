@@ -111,6 +111,8 @@ export interface Health {
   readonly pid: number;
   readonly uptime_s: number;
   readonly rss_bytes: number;
+  /** DISK-GUARD: the state directory's filesystem, the recorder's bytes, and the steps taken as space runs low. */
+  readonly disk?: DiskHealth;
   readonly mode: 'paper';
   readonly recorder: 'on' | 'off';
   readonly simulation: 'on' | 'off';
@@ -135,8 +137,21 @@ export interface Health {
   readonly entry_rule?: string;
 }
 
+/** DISK-GUARD's reading in health and the heartbeat; the byte fields are null until read or when the read failed. */
+export interface DiskHealth {
+  readonly free_bytes: number | null;
+  readonly total_bytes: number | null;
+  readonly recorder_bytes: number | null;
+  /** At the slope of the last day or more (6 hours at least); null without enough history or while space is not falling. */
+  readonly days_to_full: number | null;
+  readonly recorder: 'on' | 'paused' | 'off';
+  readonly entries_refused: boolean;
+}
+
 export type JournalKind =
   | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair'
+  /** DISK-GUARD: a step taken or undone (`step`: recorder_paused, recorder_resumed, entries_refused, entries_allowed). */
+  | 'disk'
   /** A coverage gap of a discovery stream: journaled when it opens (to_ts null) and again when it closes, same gap_id. */
   | 'coverage_gap'
   /** After a restart with an open position: the worst price move over the down window, rebuilt from chain history. */
