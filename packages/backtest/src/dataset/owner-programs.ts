@@ -14,6 +14,12 @@ export interface OwnerProgramRow {
   readonly program: string | null;
 }
 
+/** A dataset the owners were read from: its release tag (or directory) and the sha256 of its manifest.json. */
+export interface DatasetSource {
+  readonly tag: string;
+  readonly manifestSha256: string;
+}
+
 export interface OwnerProgramManifest {
   readonly file: string;
   readonly sha256: string;
@@ -24,6 +30,8 @@ export interface OwnerProgramManifest {
   /** Where it was read (provider name, never a key) and when (ISO). */
   readonly source: string;
   readonly fetchedAt: string;
+  /** The datasets whose owners it covers (BT-1e). Absent in supplements written before it. */
+  readonly datasets?: readonly DatasetSource[];
 }
 
 export const OWNER_PROGRAMS_FILE = 'owner-programs.jsonl';
@@ -34,11 +42,18 @@ export const ACCOUNTS_PER_CALL = 100;
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 /** Writes rows sorted by owner (the same bytes for the same rows) and the manifest. */
-export const writeOwnerPrograms = (dir: string, rows: readonly OwnerProgramRow[], cost: { readonly calls: number; readonly source: string; readonly fetchedAt: string }): OwnerProgramManifest => {
+export const writeOwnerPrograms = (
+  dir: string,
+  rows: readonly OwnerProgramRow[],
+  cost: { readonly calls: number; readonly source: string; readonly fetchedAt: string; readonly datasets?: readonly DatasetSource[] },
+): OwnerProgramManifest => {
   mkdirSync(dir, { recursive: true });
   const sorted = [...rows].sort((a, b) => (a.owner < b.owner ? -1 : a.owner > b.owner ? 1 : 0));
   const body = sorted.map((r) => JSON.stringify({ owner: r.owner, program: r.program })).join('\n') + (rows.length > 0 ? '\n' : '');
-  const m: OwnerProgramManifest = { file: OWNER_PROGRAMS_FILE, sha256: sha256(body), rows: rows.length, calls: cost.calls, accounts: rows.length, source: cost.source, fetchedAt: cost.fetchedAt };
+  const m: OwnerProgramManifest = {
+    file: OWNER_PROGRAMS_FILE, sha256: sha256(body), rows: rows.length, calls: cost.calls, accounts: rows.length, source: cost.source, fetchedAt: cost.fetchedAt,
+    ...(cost.datasets === undefined ? {} : { datasets: cost.datasets }),
+  };
   writeFileSync(join(dir, OWNER_PROGRAMS_FILE), body);
   writeFileSync(join(dir, OWNER_PROGRAMS_MANIFEST), `${JSON.stringify(m, null, 1)}\n`);
   return m;
