@@ -1,0 +1,917 @@
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 9fe8fe6..2f18f5d 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -382,10 +382,11 @@ Defined by RUN-1 (2026-10-03); WORKER-1 implements it, and `packages/runner/stub
+ | State dir | `STATE_DIRECTORY` (systemd) or `ZEROED_STATE_DIR`. Holds `ledger.sqlite` (LEDGER-1), `journal.jsonl`, `recorder/` (raw live inputs in the backtest dataset format, one file per boot or rotation), `open_intents`, `drill.token` (0600, written at start when drills are on) and `clean_stop` (written on a graceful stop, removed at start). |
+ | Config | `ZEROED_MODE=paper` (unset or anything else exits 2; live is never set from the environment). `ZEROED_RECORDER=on` and `ZEROED_SIMULATE=on` for the dry run from its first minute. `ZEROED_HEALTH_ADDR` (default `127.0.0.1:8787`, loopback only, else exit 2). `ZEROED_DRILLS=on` enables the drill endpoint. `ZEROED_RUN_ID`, `ZEROED_RUN_LABEL`, `ZEROED_GIT_SHA` go into the `start` line. `git_sha`: `ZEROED_GIT_SHA` when set (fallback), otherwise the worker reads its own release at start (`readlink /opt/zeroed/current`, whose folder is named by its commit); the runner's `one_commit` check on the host relies on this, so a deploy mid-run shows as a second commit. `WATCHDOG_URL`, `ZEROED_HEARTBEAT_MS` as in OPS-1. |
+ | Credentials | Files `helius_api_key`, `alchemy_api_key`, `jupiter_api_key`, `telegram_bot_token` under `CREDENTIALS_DIRECTORY` (host), or the upper-case environment variables (GitHub Actions). Never printed, recorded, journaled or put in a URL that is logged. Stdout limit: the worker's stdout and stderr hold no secret and no URL with a key; in the fallback they go only to `logs/worker.log`, which is scanned before upload, while the job log shows the runner's own lines (copied to `logs/runner-<n>.log`, scanned after the fact: a hit there means the value was already public, so that key is rotated). Public or keyless endpoints where they serve. No signing key: the runner refuses to start when an environment name looks like key material, and the health reply carries `signing_key: false`. |
+-| Health | `GET /health` → JSON: the heartbeat fields of [security.md](research/security.md) §5.2 (`seq`, `ts`, `git_sha`, `policy_version`, `last_processed_slot`, `feed_ages_ms`, `open_position`, `unresolved_intents`, `signer`, `lease_epoch`, `sol_reserve`, `paused`) plus `boot`, `pid`, `uptime_s`, `rss_bytes`, `mode`, `recorder`, `simulation`, `reconciled`, `entries_halted`, `halt_reasons`, `feeds` (per feed: `connected`, `age_ms`, `critical`, `dropped_by_drill`), `journal_seq`, `signing_key`; `exit_capable` (reconciled, an exit quote source and a landing path up: an exit could go now); `open_position.trade`, `.mark` (the latest price, a plain decimal string), `.mark_slot` and `.mark_ts` (when it was seen; a mark older than 30 s is unmeasured); `unresolved_intents.trades` (an entry in flight has an intent and no position); `quota` (one entry per provider, Helius, Alchemy and Jupiter at least: FEED-1's scheduler counters plus `credits_by_class` P0–P3 that sum to `credits_used`, all whole numbers, and the plan's `monthly_credits`, null for rate-only providers; counters start at 0 each boot); `lookups.counts` (historical-lookup latency histogram over the bucket bounds in `LOOKUP_BOUNDS_MS`). The feed names are fixed for the whole run (the runner fails `feeds_fixed`, or refuses a resume, when they change). `reconciled` is true once the start reconcile succeeded; a reconcile that cannot settle every intent exits 3 instead of serving `reconciled: false`. The same payload, HMAC-signed, is the heartbeat POSTed to the watchdog. |
+-| Drills | `POST /drill/drop-feed` with `{feed, ms}` and header `x-zeroed-drill-token` (the `drill.token` file): close that feed and keep it closed for `ms`, then reconnect; 202 on accept, 404 when drills are off. Losing a `critical` feed halts entries (§18) while exits and monitoring continue. |
+-| Journal | `journal.jsonl`, one JSON line per event, appended synchronously so a kill can tear only the last line (repaired at start with a `journal_repair` line). `seq` runs 1, 2, 3 … across restarts; each boot opens with `start`; `decision`, `entry`, `exit`, `halt` and `resume` carry `reasons`; each paper entry and exit is preceded by its `simulation` line (`trade`, `leg`, then TEST-2's `DryRunRecord` fields with bigints as decimal strings: `outcome`, `success`, `error`, `standIn`, `quotedOut`, `simulatedOut`, `amountErrorE4`, `quoteAgeSlots`, `rentDeclared`, `rentPaid`, `balancesFrom`); a line without a known `outcome` fails journal completeness. `decision` lines that reject carry GATE-1's typed `gate_reasons` (`gate`, `code`, …) next to the text `reasons`. `coverage_gap` lines mark discovery coverage holes: one when the gap opens (`stream`: creates, trades or rugs; `gap_id`; `from_ts`; `to_ts` null; `reason`) and one when it closes (same `gap_id`, `to_ts` set), so a kill cannot lose a gap. After a restart, one `exposure` line per trade that was open or in flight at the kill (`trade`, `from_ts`, `to_ts`, `worst_move_bps`) gives the worst price move over the down window, rebuilt from chain history. The run report scores these lines with TEST-2's `dryRunReport` into an item 4 block (each bound, outcomes, closes omitted, stand-in legs, median quote age), which counts only for a VPS run with the real worker. A quota and coverage block (credits by provider and class with a linear 30-day projection judged against the runner's own `FREE_PLANS` (Helius 1M credits, Alchemy 30M CU, Jupiter rate-only; a worker figure that disagrees fails), with every boot required to report every plan provider with valid counters; lookup latency median and p95, coverage gaps by stream with each boot's down window counted in every stream and a gap open at a stop running to the next start, rejection rate by gate reason with H16 not-covered named) fails the run when a projection passes a free plan or any P0 or P1 request was shed. Every restart drill with an open position reports its unprotected exposure: kill → reconciled → exit capable, and the worst price move in that window (the two fresh marks, or the worker's chain rebuild when worse). A move that cannot be measured, or (real worker) an exposed trade without its chain rebuild, fails the run. |
++| Health | `GET /health` → JSON: the heartbeat fields of [security.md](research/security.md) §5.2 (`seq`, `ts`, `git_sha`, `policy_version`, `last_processed_slot`, `feed_ages_ms`, `open_position`, `unresolved_intents`, `signer`, `lease_epoch`, `sol_reserve`, `paused`) plus `boot`, `pid`, `uptime_s`, `rss_bytes`, `mode`, `recorder`, `simulation`, `reconciled`, `entries_halted`, `halt_reasons`, `feeds` (per feed: `connected`, `age_ms`, `critical`, `dropped_by_drill`), `journal_seq`, `signing_key`; `exit_capable` (reconciled, an exit quote source and a landing path up: an exit could go now); `open_position.trade`, `.mark` (the latest price, a plain decimal string), `.mark_slot` and `.mark_ts` (when it was seen; a mark older than 30 s is unmeasured); `open_position.universe` (CFG-2: its exit parameters come from it); `pending_exits` (trade ids with an exit planned or signed and not final); `unresolved_intents.trades` (an entry in flight has an intent and no position); `quota` (one entry per provider, Helius, Alchemy and Jupiter at least: FEED-1's scheduler counters plus `credits_by_class` P0–P3 that sum to `credits_used`, all whole numbers, and the plan's `monthly_credits`, null for rate-only providers; counters start at 0 each boot); `lookups.counts` (historical-lookup latency histogram over the bucket bounds in `LOOKUP_BOUNDS_MS`). The feed names are fixed for the whole run (the runner fails `feeds_fixed`, or refuses a resume, when they change). `reconciled` is true once the start reconcile succeeded; a reconcile that cannot settle every intent exits 3 instead of serving `reconciled: false`. The same payload, HMAC-signed, is the heartbeat POSTed to the watchdog. |
++| Drills | `POST /drill/drop-feed` with `{feed, ms}` and header `x-zeroed-drill-token` (the `drill.token` file): close that feed and keep it closed for `ms`, then reconnect; 202 on accept, 404 when drills are off. `POST /drill/drop-rpc` with `{ms}`, same header: every RPC and WebSocket provider is cut at once for `ms` (entries halt, `exit_capable` is false until a provider is back; no P0 or P1 request is shed). Losing a `critical` feed halts entries (§18) while exits and monitoring continue. |
++| Journal | `journal.jsonl`, one JSON line per event, appended synchronously so a kill can tear only the last line (repaired at start with a `journal_repair` line). `seq` runs 1, 2, 3 … across restarts; each boot opens with `start`; `decision`, `entry`, `exit`, `halt` and `resume` carry `reasons`; each paper entry and exit is preceded by its `simulation` line (`trade`, `leg`, then TEST-2's `DryRunRecord` fields with bigints as decimal strings: `outcome`, `success`, `error`, `standIn`, `quotedOut`, `simulatedOut`, `amountErrorE4`, `quoteAgeSlots`, `rentDeclared`, `rentPaid`, `balancesFrom`); a line without a known `outcome` fails journal completeness. `decision` lines that reject carry GATE-1's typed `gate_reasons` (`gate`, `code`, …) next to the text `reasons`. `coverage_gap` lines mark discovery coverage holes: one when the gap opens (`stream`: creates, trades or rugs; `gap_id`; `from_ts`; `to_ts` null; `reason`) and one when it closes (same `gap_id`, `to_ts` set), so a kill cannot lose a gap. Right after the start reconcile, one `recovered` line (`source`: `state`, or `chain` when the worker found no state and rebuilt from wallet balances and pending signatures by address; `pending_exits`; `positions` as `[{trade, universe}]`) says what the boot kept. After a restart, one `exposure` line per trade that was open or in flight at the kill (`trade`, `from_ts`, `to_ts`, `worst_move_bps`) gives the worst price move over the down window, rebuilt from chain history. The run report scores these lines with TEST-2's `dryRunReport` into an item 4 block (each bound, outcomes, closes omitted, stand-in legs, median quote age), which counts only for a VPS run with the real worker. A quota and coverage block (credits by provider and class with a linear 30-day projection judged against the runner's own `FREE_PLANS` (Helius 1M credits, Alchemy 30M CU, Jupiter rate-only; a worker figure that disagrees fails), with every boot required to report every plan provider with valid counters; lookup latency median and p95, coverage gaps by stream with each boot's down window counted in every stream and a gap open at a stop running to the next start, rejection rate by gate reason with H16 not-covered named) fails the run when a projection passes a free plan or any P0 or P1 request was shed. Every restart drill with an open position reports its unprotected exposure: kill → reconciled → exit capable, and the worst price move in that window (the two fresh marks, or the worker's chain rebuild when worse). A move that cannot be measured, or (real worker) an exposed trade without its chain rebuild, fails the run. |
+ | Signals | SIGTERM or SIGINT: stop entries, finish the journal and recorder, checkpoint the ledger, write `clean_stop`, exit 0 within 25 s (the unit's `TimeoutStopSec=30`). SIGKILL is the restart drill. |
++| Restart causes | The runner drills each cause (DECISIONS, Standby): `crash` (SIGKILL), `reboot` (everything stops, runtime files go, cold start; on the host a real reboot through `zeroed-dryrun-reboot.service`, finished after boot on the wall clock), `host-loss` (bot state deleted and the latest backup restored; on the host the restore drill `zeroed-restore-drill` runs beside the run instead, labelled off the qualifying run, with the off-site backup state), `chain-rebuild` (bot state deleted, no backup, rebuild from chain; rehearsal only, since on the host it would wipe the run's ledger), and RPC loss. `journal.jsonl` and `recorder/` are the run's evidence and survive every drill; everything else in the state dir is bot state. Each restart is timed kill → reconciled → able to exit on the monotonic clock, and the boot's `recovered` line must hold every pending exit and position the boot before had (the backup's, for host loss) with the same universe. |
+ | Exit codes | 0 clean stop; 1 crash; 2 config refused (mode not paper, non-loopback health, missing state dir); 3 reconcile failed (intents left unresolved). The runner's own: 0 done, 1 crash, 2 refused, 4 aborted; the host unit never restarts 2 or 4. |
+ 
+ The runner (`packages/runner`) checks the first health reply (paper, recorder on, simulation on, no signing key, feeds listed) and refuses the run otherwise. It fixes the drill plan before any drill: at least 6 restarts at evenly spaced times (each kills at the first open trade or unresolved intent within its window) and one drop per reported feed, halfway between restarts. Evidence goes to `evidence/dryrun/<label>-<UTC start>-<commit12>/`: `run.json` (commit, plan), `samples.jsonl`, `drills.json`, `recorded.json` (sha256 of every recorded file and where it is kept), `journal.jsonl`, `report.json` and `REPORT.md`. On the host, a merged `packages/runner/qualifying-run.json` (`{"run": "<name>"}`) starts `zeroed-dryrun@<name>` once (pull-based, `zeroed-dryrun-tick.timer`), and the same name resumes it after a reboot or a runner crash; the runner never creates a run on its own, and `run.json` records the unit (`systemd:zeroed-worker.service`) instead of an entry. In the fallback, the "Dry-run rehearsal" workflow chains the jobs: at most 72 h and the jobs the run needs plus 2; only a commit on the integration branch (or the run's own ref head) and only the worker or stub entry run with the keys; restored state that names another label or commit is refused before the worker starts; a 48 h rehearsal fails the 99% uptime check by design, because the gaps between jobs count as down time.
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index ce5539a..8224579 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -529,3 +529,5 @@ The second reviewer, the third opinion and the supervisor reached one position o
+   - Ruling: download 2026-07-20 to 10-01 as planned. The lead-in features (deployer and creator history) do not depend on BOOST, so B2 inside the lead-in is harmless. Use B2, B3 and B4 as labelled regime boundaries, place the sealed holdout after B4, and report walk-forward results per regime.
+   - Options considered: (a) this ruling; (b) start the decision window at 09-13. (b) leaves about 19 days, below the owner's 30-day minimum. (a) is the safest that still meets it.
+ - **2026-10-03 · QA change needed before the 60-day download.** DATA-1's `verdict.mjs` fails a day on any "older layout". Every day before B4 has TradeEvent, BuyEvent and SellEvent 16 bytes shorter, so every such day would fail. The rule should allow exactly that layout, and only before slot 446,462,733 (PumpSwap) or 446,462,760 (pump). It should also list B2, B3 and B4 beside 2026-10-02 as regime boundaries. This is DATA-1's change, not made here.
++- **2026-10-04 · RUN-1d drill causes.** Restarts are drilled by cause: crash, reboot, host loss (backup restore) and chain rebuild (no backup), plus RPC loss; recovery is timed to "reconciled and able to exit" on the monotonic clock. On the qualifying host the reboot is real (zeroed-dryrun-reboot, installed through OPS-1d), host loss is the off-run restore drill with the off-site backup state stated, and the chain rebuild is rehearsal-only because it would wipe the run's ledger. The journal and recorder are evidence and survive every drill. A paper position cannot be rebuilt from chain, so a chain rebuild reports such positions as lost rather than asking for their chain-rebuilt exposure. The runner's local backup copies files while the worker runs; a SQLite ledger copied that way can be torn, which only the rehearsal can hit (the host uses SQLite's online backup).
++
+diff --git a/packages/runner/src/cli.ts b/packages/runner/src/cli.ts
+index ff1905e..b0ef39b 100644
+--- a/packages/runner/src/cli.ts
++++ b/packages/runner/src/cli.ts
+@@ -48,6 +48,15 @@ const runs = (rootDir: string): { id: string; meta: { name?: string }; finished:
+ 
+ const runByName = (rootDir: string, name: string): string | undefined => runs(rootDir).find((r) => r.meta.name === name)?.id;
+ 
++/** The host's off-site backup switch (ops/host-config.json in the deployed release); off unless it says true. */
++const offsiteBackupOn = (): boolean => {
++  try {
++    return (JSON.parse(readFileSync('/opt/zeroed/current/ops/host-config.json', 'utf8')) as { offsite_backup?: unknown }).offsite_backup === true;
++  } catch {
++    return false;
++  }
++};
++
+ const output = (k: string, v: string): void => {
+   const f = process.env['GITHUB_OUTPUT'];
+   if (f) appendFileSync(f, `${k}=${v}\n`);
+@@ -76,6 +85,7 @@ if (cmd === 'scan') {
+       'recorded-artifact': { type: 'string' },
+       commit: { type: 'string' },
+       'sample-ms': { type: 'string' },
++      'backup-minutes': { type: 'string', default: '60' },
+       'run-name': { type: 'string' },
+       segment: { type: 'string', default: '1' },
+     },
+@@ -123,6 +133,7 @@ if (cmd === 'scan') {
+           entry: v.entry,
+           cwd: process.cwd(),
+           logPath: join(evidenceDir, 'logs', 'worker.log'),
++          stateDir,
+           env: {
+             ...process.env,
+             ZEROED_STATE_DIR: stateDir,
+@@ -146,6 +157,8 @@ if (cmd === 'scan') {
+     segmentEnd,
+     keepRecorded: mode === 'systemd' ? 'host' : 'copy',
+     handover: mode === 'local',
++    // Wipe drills and the runner's own backups exist only where losing the state loses nothing real.
++    ...(mode === 'local' ? { wipeAllowed: true, backupEveryMs: Number(v['backup-minutes']) * 60_000 } : { offsiteBackup: offsiteBackupOn() }),
+     ...(v['recorded-dir'] ? { recordedDir: resolve(v['recorded-dir']) } : {}),
+     ...(v['recorded-artifact'] ? { recordedArtifact: v['recorded-artifact'] } : {}),
+     sampleMs,
+diff --git a/packages/runner/src/contract.ts b/packages/runner/src/contract.ts
+index b05886f..69ccae7 100644
+--- a/packages/runner/src/contract.ts
++++ b/packages/runner/src/contract.ts
+@@ -29,6 +29,16 @@ export const SECRET_NAMES = ['HELIUS_API_KEY', 'ALCHEMY_API_KEY', 'JUPITER_API_K
+ /** Environment names that would mean key material is present. No signing key exists in a dry run. */
+ export const KEY_ENV = /PRIVATE_KEY|SECRET_KEY|KEYPAIR|SEED|MNEMONIC|WALLET_KEY/i;
+ 
++/** Why the worker went down in a restart drill (DECISIONS "Follow-up rulings", Standby). */
++export type RestartCause = 'crash' | 'reboot' | 'host-loss' | 'chain-rebuild';
++export const RESTART_CAUSES: readonly RestartCause[] = ['crash', 'reboot', 'host-loss', 'chain-rebuild'];
++
++/**
++ * Evidence in the state dir: kept through a host-loss or chain-rebuild drill (the runner copies them aside and back),
++ * because they are the run's record, not the bot's state. Everything else in the state dir is bot state.
++ */
++export const EVIDENCE_FILES: readonly string[] = ['journal.jsonl', 'recorder'];
++
+ export const STATE_FILES = {
+   journal: 'journal.jsonl',
+   recorder: 'recorder',
+@@ -82,7 +92,11 @@ export interface Health {
+   readonly open_position: {
+     readonly trade: string; readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string;
+     readonly mark: string; readonly mark_slot: number; readonly mark_ts: number;
++    /** The universe the position was entered under (CFG-2: its exit parameters come from it). */
++    readonly universe: string;
+   } | null;
++  /** Trade ids with an exit planned or signed and not yet final: what a restart must not lose. */
++  readonly pending_exits: readonly string[];
+   /** `trades`: the trade ids of the unresolved intents (an entry in flight has an intent and no position yet). */
+   readonly unresolved_intents: { readonly count: number; readonly oldest_age_s: number | null; readonly trades: readonly string[] };
+   readonly signer: string;
+@@ -116,7 +130,13 @@ export type JournalKind =
+   /** A coverage gap of a discovery stream: journaled when it opens (to_ts null) and again when it closes, same gap_id. */
+   | 'coverage_gap'
+   /** After a restart with an open position: the worst price move over the down window, rebuilt from chain history. */
+-  | 'exposure';
++  | 'exposure'
++  /**
++   * Written once per boot right after the start reconcile: what the worker found and kept. `source`: 'state' (its
++   * own files) or 'chain' (no state: rebuilt from wallet balances and pending signatures by address);
++   * `pending_exits` (trade ids); `positions` ([{trade, universe}]).
++   */
++  | 'recovered';
+ 
+ /** One line of journal.jsonl. Written with a synchronous append per line, so a crash can tear only the last line. */
+ export interface JournalLine {
+diff --git a/packages/runner/src/control.ts b/packages/runner/src/control.ts
+index c340355..0b32505 100644
+--- a/packages/runner/src/control.ts
++++ b/packages/runner/src/control.ts
+@@ -2,15 +2,31 @@
+ // zeroed-worker systemd unit of the OPS-1 host (VPS). Only the runner's drills kill; restarts come from the
+ // supervisor (here, or systemd's Restart=always), and every start reconciles first.
+ import { spawn, execFile, type ChildProcess } from 'node:child_process';
+-import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+-import { dirname } from 'node:path';
++import { cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, type WriteStream } from 'node:fs';
++import { dirname, join } from 'node:path';
+ import { promisify } from 'node:util';
++import { EVIDENCE_FILES, STATE_FILES } from './contract.ts';
++
++export interface RestoreDrillResult {
++  readonly pass: boolean;
++  readonly output: string;
++}
+ 
+ export interface WorkerControl {
+   /** Bring the worker up (or confirm the host keeps it up). */
+   start(): Promise<void>;
+-  /** The restart drill: SIGKILL, no warning, no cleanup. The supervisor restarts it. */
++  /** Process crash: SIGKILL, no warning, no cleanup. The supervisor restarts it. */
+   kill(): Promise<void>;
++  /** Reboot: everything stops at once and runtime state (tmpfs) is gone; a cold start follows. */
++  reboot(): Promise<void>;
++  /**
++   * Host loss: the worker dies and its bot state is gone. With `restoreFrom`, the latest backup is restored first
++   * (host-loss); without it the worker cold-starts with no state and rebuilds from chain (chain-rebuild). Evidence
++   * files (journal, recorder) are kept: they are the run's record. Not possible on the qualifying host.
++   */
++  wipe(o: { readonly restoreFrom?: string }): Promise<void>;
++  /** The host's restore drill (VPS): restore the newest backup into scratch and verify it; never touches live state. */
++  restoreDrill?(): Promise<RestoreDrillResult>;
+   /** Graceful stop (SIGTERM) at the end of a fallback job. */
+   stop(): Promise<void>;
+ }
+@@ -20,15 +36,21 @@ export interface LocalOptions {
+   readonly cwd: string;
+   readonly env: NodeJS.ProcessEnv;
+   readonly logPath: string;
++  /** The worker's state dir, for reboot and wipe drills. */
++  readonly stateDir?: string;
+   /** Same as the host unit's RestartSec. */
+   readonly restartDelayMs?: number;
+   readonly stopTimeoutMs?: number;
+ }
+ 
++/** Files a reboot clears: runtime files that live on tmpfs under systemd (the drill token is per boot anyway). */
++const RUNTIME_FILES = [STATE_FILES.drillToken];
++
+ /** Supervises the worker like systemd does: `--reconcile` first, then the worker; restart after any exit. */
+ export class LocalControl implements WorkerControl {
+   private child: ChildProcess | null = null;
+   private stopping = false;
++  private holding = false;
+   private log: WriteStream | null = null;
+   private restartTimer: NodeJS.Timeout | null = null;
+   private readonly o: LocalOptions;
+@@ -53,9 +75,9 @@ export class LocalControl implements WorkerControl {
+   }
+ 
+   private async launch(): Promise<void> {
+-    if (this.stopping) return;
++    if (this.stopping || this.holding) return;
+     const code = await new Promise<number | null>((res) => this.run(['--reconcile']).on('exit', (c) => res(c)));
+-    if (this.stopping) return;
++    if (this.stopping || this.holding) return;
+     if (code !== 0) {
+       this.line(`reconcile exited ${code}; retrying`);
+       this.scheduleRestart();
+@@ -71,18 +93,55 @@ export class LocalControl implements WorkerControl {
+     });
+   }
+ 
+-  private scheduleRestart(): void {
+-    if (this.stopping) return;
+-    this.restartTimer = setTimeout(() => void this.launch(), this.o.restartDelayMs ?? 5000);
++  private scheduleRestart(delayMs = this.o.restartDelayMs ?? 5000): void {
++    if (this.stopping || this.holding) return;
++    if (this.restartTimer) clearTimeout(this.restartTimer);
++    this.restartTimer = setTimeout(() => void this.launch(), delayMs);
+   }
+ 
+   private line(s: string): void {
+     this.log?.write(`[runner ${new Date().toISOString()}] ${s}\n`);
+   }
+ 
++  /** SIGKILL, then `prepare` while restarts are held, then the supervisor's restart after `delayMs`. */
++  private async killThen(what: string, prepare: () => void, delayMs?: number): Promise<void> {
++    this.holding = true;
++    if (this.restartTimer) clearTimeout(this.restartTimer);
++    const c = this.child;
++    this.line(`drill: ${what}`);
++    if (c && c.exitCode === null && c.signalCode === null) {
++      const exited = new Promise<void>((res) => c.once('exit', () => res()));
++      c.kill('SIGKILL');
++      await exited;
++    }
++    prepare();
++    this.holding = false;
++    this.scheduleRestart(delayMs);
++  }
++
+   async kill(): Promise<void> {
+-    this.line('drill: SIGKILL');
+-    this.child?.kill('SIGKILL');
++    await this.killThen('SIGKILL', () => {});
++  }
++
++  async reboot(): Promise<void> {
++    const dir = this.stateDir();
++    // A reboot takes longer than a crash restart: the host boots before systemd starts the unit.
++    await this.killThen('reboot', () => RUNTIME_FILES.forEach((f) => rmSync(join(dir, f), { force: true })), 2 * (this.o.restartDelayMs ?? 5000));
++  }
++
++  async wipe(o: { readonly restoreFrom?: string }): Promise<void> {
++    const dir = this.stateDir();
++    await this.killThen(o.restoreFrom ? 'host loss, restore from backup' : 'host loss, no backup: rebuild from chain', () => {
++      for (const name of readdirSync(dir)) if (!EVIDENCE_FILES.includes(name)) rmSync(join(dir, name), { recursive: true, force: true });
++      if (o.restoreFrom && existsSync(o.restoreFrom)) {
++        for (const name of readdirSync(o.restoreFrom)) if (!EVIDENCE_FILES.includes(name)) cpSync(join(o.restoreFrom, name), join(dir, name), { recursive: true });
++      }
++    });
++  }
++
++  private stateDir(): string {
++    if (!this.o.stateDir) throw new Error('reboot and wipe drills need the state dir');
++    return this.o.stateDir;
+   }
+ 
+   async stop(): Promise<void> {
+@@ -101,9 +160,16 @@ export class LocalControl implements WorkerControl {
+   }
+ }
+ 
++/** Copies the bot state (not the evidence) into `to`: the runner's own backup for local host-loss drills. */
++export const snapshotState = (stateDir: string, to: string): void => {
++  rmSync(to, { recursive: true, force: true });
++  mkdirSync(to, { recursive: true });
++  for (const name of readdirSync(stateDir)) if (!EVIDENCE_FILES.includes(name)) cpSync(join(stateDir, name), join(to, name), { recursive: true });
++};
++
+ const exec = promisify(execFile);
+ 
+-/** VPS: the OPS-1 unit owns the process (Restart=always, ExecStartPre reconcile). The runner only kills. */
++/** VPS: the OPS-1 unit owns the process (Restart=always, ExecStartPre reconcile). The runner only drills. */
+ export class SystemdControl implements WorkerControl {
+   private readonly unit: string;
+   constructor(unit = 'zeroed-worker.service') {
+@@ -115,6 +181,22 @@ export class SystemdControl implements WorkerControl {
+   async kill(): Promise<void> {
+     await exec('systemctl', ['kill', '--signal=SIGKILL', this.unit]);
+   }
++  async reboot(): Promise<void> {
++    // zeroed-dryrun-reboot.service reboots the host; this runner dies with it and resumes by name after boot.
++    await exec('systemctl', ['start', '--no-block', 'zeroed-dryrun-reboot.service']);
++  }
++  async wipe(): Promise<void> {
++    throw new Error('wipe drills are never run on the qualifying host');
++  }
++  async restoreDrill(): Promise<RestoreDrillResult> {
++    try {
++      const { stdout } = await exec('/usr/local/sbin/zeroed-restore-drill', ['/etc/zeroed/age/host.key'], { timeout: 300_000 });
++      return { pass: /^PASS:/m.test(stdout), output: stdout.trim().split('\n').slice(-1)[0] ?? '' };
++    } catch (e) {
++      const out = (e as { stdout?: string }).stdout ?? '';
++      return { pass: false, output: out.trim().split('\n').slice(-1)[0] || String((e as Error).message).slice(0, 200) };
++    }
++  }
+   async stop(): Promise<void> {
+     // The qualifying run ends with the worker still running: it is the bot, not a test process.
+   }
+diff --git a/packages/runner/src/plan.ts b/packages/runner/src/plan.ts
+index a41f692..1ca659d 100644
+--- a/packages/runner/src/plan.ts
++++ b/packages/runner/src/plan.ts
+@@ -1,43 +1,58 @@
+ // Drill plan: fixed before the run starts and written to the evidence folder, so drill times are pre-set,
+ // never chosen while watching the market. Pure.
++import type { RestartCause } from './contract.ts';
+ 
+ export type Drill =
+-  | { readonly id: string; readonly kind: 'restart'; readonly atMs: number; readonly windowMs: number }
+-  | { readonly id: string; readonly kind: 'feed'; readonly atMs: number; readonly feed: string; readonly dropMs: number };
++  | { readonly id: string; readonly kind: 'restart'; readonly cause: RestartCause; readonly atMs: number; readonly windowMs: number }
++  | { readonly id: string; readonly kind: 'feed'; readonly atMs: number; readonly feed: string; readonly dropMs: number }
++  /** Every RPC and WebSocket provider lost at once for dropMs. */
++  | { readonly id: string; readonly kind: 'rpc'; readonly atMs: number; readonly dropMs: number };
++
++/**
++ * Restart causes in plan order. Crashes come first and most often (the accept needs at least 3 of them mid-trade);
++ * every other cause appears at least once in a plan of 6 or more restarts.
++ */
++export const DEFAULT_CAUSES: readonly RestartCause[] = ['crash', 'reboot', 'crash', 'host-loss', 'crash', 'chain-rebuild', 'crash', 'reboot'];
+ 
+ export interface PlanOptions {
+   readonly durationMs: number;
+   readonly feeds: readonly string[];
+   /** Restart drills; the accept needs at least 3 mid-trade kills, so plan more than 3 to absorb quiet windows. */
+   readonly restarts?: number;
++  /** Cause of each restart, in order; defaults to DEFAULT_CAUSES (repeated if more restarts are asked for). */
++  readonly causes?: readonly RestartCause[];
+   /** After a restart drill's time, wait this long for an open trade before killing anyway. */
+   readonly restartWindowMs?: number;
+   readonly feedDropMs?: number;
++  /** RPC-loss drills (all providers at once). */
++  readonly rpcDrops?: number;
++  readonly rpcDropMs?: number;
+ }
+ 
+ const H = 3_600_000;
+ 
+ /**
+- * Restarts at evenly spaced points of the run (never in its first or last 5%); one drop per feed, placed halfway
+- * between restarts so the two kinds never overlap.
++ * Restarts at evenly spaced points of the run (never in its first or last 5%); one drop per feed and then the RPC
++ * drops, each halfway between two restarts, so drills never overlap.
+  */
+ export const makePlan = (o: PlanOptions): readonly Drill[] => {
+-  const restarts = o.restarts ?? 6;
++  const causes = o.causes ?? DEFAULT_CAUSES;
++  const restarts = o.restarts ?? (o.causes ? o.causes.length : DEFAULT_CAUSES.length);
+   const windowMs = o.restartWindowMs ?? Math.min(H, o.durationMs / (4 * (restarts + 1)));
+   const dropMs = o.feedDropMs ?? Math.min(120_000, o.durationMs / 200);
++  const rpcDrops = o.rpcDrops ?? 2;
++  const rpcDropMs = o.rpcDropMs ?? dropMs;
+   if (!(o.durationMs > 0) || restarts < 3) throw new Error('plan needs a positive duration and at least 3 restarts');
+   const step = (o.durationMs * 0.9) / restarts;
+   const first = o.durationMs * 0.05;
+   const drills: Drill[] = [];
+   for (let i = 0; i < restarts; i++) {
+-    drills.push({ id: `restart-${i + 1}`, kind: 'restart', atMs: Math.round(first + i * step), windowMs: Math.round(windowMs) });
++    drills.push({ id: `restart-${i + 1}`, kind: 'restart', cause: causes[i % causes.length]!, atMs: Math.round(first + i * step), windowMs: Math.round(windowMs) });
+   }
++  // Halfway between restart i and i+1, wrapping to later gaps when there are more drops than gaps.
++  const at = (i: number): number => Math.round(first + (i % restarts) * step + step / 2 + Math.floor(i / restarts) * (step / 8));
+   const feeds = [...o.feeds].sort();
+-  feeds.forEach((feed, i) => {
+-    // Halfway between restart i and i+1, wrapping to later gaps when there are more feeds than gaps.
+-    const gap = i % restarts;
+-    const at = first + gap * step + step / 2 + Math.floor(i / restarts) * (step / 8);
+-    drills.push({ id: `feed-${feed}`, kind: 'feed', atMs: Math.round(at), feed, dropMs: Math.round(dropMs) });
+-  });
++  feeds.forEach((feed, i) => drills.push({ id: `feed-${feed}`, kind: 'feed', atMs: at(i), feed, dropMs: Math.round(dropMs) }));
++  for (let j = 0; j < rpcDrops; j++) drills.push({ id: `rpc-${j + 1}`, kind: 'rpc', atMs: at(feeds.length + j), dropMs: Math.round(rpcDropMs) });
+   return drills.sort((a, b) => a.atMs - b.atMs || a.id.localeCompare(b.id));
+ };
+diff --git a/packages/runner/src/report.ts b/packages/runner/src/report.ts
+index 80ac015..6eb688d 100644
+--- a/packages/runner/src/report.ts
++++ b/packages/runner/src/report.ts
+@@ -1,4 +1,5 @@
+ // The dry-run report: uptime, memory, journal, drills, recorded data. Pure; the runner feeds it.
++import { RESTART_CAUSES, type RestartCause } from './contract.ts';
+ import type { Item4 } from './item4.ts';
+ import type { JournalReport } from './journal.ts';
+ import type { CoverageReport, LookupLatency, QuotaReport, Rejections } from './quota.ts';
+@@ -31,6 +32,8 @@ export interface Sample {
+ 
+ /** Unprotected exposure of a restart drill with an open position: the watchdog can alert but cannot sell. */
+ export interface Exposure {
++  /** `unknown`: no health reply at the window's end, so nothing can be said; it fails like an unmeasured one. */
++  readonly status?: 'measured' | 'unmeasured' | 'unknown';
+   /** Kill → the new boot is exit capable; null when it never got there within the recovery limit. */
+   readonly duration_ms: number | null;
+   readonly reconciled_ms: number | null;
+@@ -46,9 +49,30 @@ export interface Exposure {
+   readonly move_source: 'marks' | 'chain';
+ }
+ 
++export interface RecoveredState {
++  readonly source: string | null;
++  readonly expected_pending_exits: readonly string[];
++  readonly recovered_pending_exits: readonly string[];
++  /** Expected but not recovered: pending exits and positions a restart lost. */
++  readonly missing: readonly string[];
++  /** Chain rebuild: positions open at the kill that the chain could not give back (paper positions are not on chain). */
++  readonly lost: readonly string[];
++  readonly state_ok: boolean;
++  readonly universe_ok: boolean;
++  readonly notes: readonly string[];
++}
++
+ export interface DrillOutcome {
+   readonly id: string;
+-  readonly kind: 'restart' | 'feed' | 'handover';
++  readonly kind: 'restart' | 'feed' | 'handover' | 'rpc';
++  readonly cause?: RestartCause;
++  /** Recovery as "reconciled and able to exit", ms after the kill (rpc: after the providers came back). */
++  readonly recovery?: { readonly reconciled_ms: number | null; readonly exit_capable_ms: number | null; readonly clock: 'monotonic' | 'wall' };
++  readonly state?: RecoveredState;
++  /** VPS host loss: the restore drill ran beside the qualifying run, not in it. */
++  readonly off_run?: boolean;
++  /** Not run here (VPS chain rebuild); proven in the rehearsal. */
++  readonly skipped?: boolean;
+   readonly plannedAt: number | null;
+   readonly at: number;
+   readonly pass: boolean;
+@@ -96,6 +120,7 @@ export interface Report {
+   readonly stub: boolean;
+   readonly journal: JournalReport;
+   readonly drills: readonly DrillOutcome[];
++  readonly recovery_by_cause: Readonly<Record<string, CauseSummary>>;
+   readonly drills_summary: {
+     readonly restarts_mid_trade_passed: number;
+     readonly feeds_planned: readonly string[];
+@@ -112,6 +137,17 @@ export interface Report {
+   readonly exposure: { readonly drills: number; readonly worst_duration_ms: number | null; readonly worst_move_bps: number | null };
+ }
+ 
++export interface CauseSummary {
++  readonly planned: number;
++  readonly drills: number;
++  readonly passed: number;
++  readonly mid_trade: number;
++  readonly off_run: number;
++  readonly skipped: number;
++  readonly exit_capable_ms: { readonly median: number | null; readonly worst: number | null };
++  readonly exposure: { readonly drills: number; readonly worst_duration_ms: number | null; readonly worst_move_bps: number | null };
++}
++
+ export interface Ops {
+   readonly quota: QuotaReport;
+   readonly lookups: LookupLatency;
+@@ -161,7 +197,10 @@ export const buildReport = (
+   const firstUp = samples.find((s) => s.up);
+   const upSamples = samples.filter((s) => s.up);
+   const stub = upSamples.some((s) => s.stub);
+-  const restartsMidTrade = drills.filter((d) => d.kind === 'restart' && d.pass && d.midTrade === true).length;
++  // The accept's "kill mid-trade at least 3 times" counts process crashes; the other causes are counted per cause.
++  const restartsMidTrade = drills.filter((d) => d.kind === 'restart' && (d.cause ?? 'crash') === 'crash' && d.pass && d.midTrade === true).length;
++  const restarts = drills.filter((d) => d.kind === 'restart');
++  const byCause = recoveryByCause(meta, drills);
+   const feedsPlanned = meta.plan.flatMap((d) => (d.kind === 'feed' ? [d.feed] : []));
+   const feedsPassed = [...new Set(drills.flatMap((d) => (d.kind === 'feed' && d.pass && d.feed !== undefined ? [d.feed] : [])))].sort();
+   const durationMs = endedAt - meta.startedAt;
+@@ -186,14 +225,21 @@ export const buildReport = (
+     exposure_measured: drills.every(
+       (d) =>
+         d.exposure === undefined ||
+-        (d.exposure.duration_ms !== null &&
++        (d.exposure.status !== 'unknown' &&
++          d.exposure.duration_ms !== null &&
+           d.exposure.worst_move_bps !== null &&
+           // Exposed with no trade ids, or fewer ids than intents, cannot be checked: it fails, never passes vacuously.
+           d.exposure.trades.length > 0 &&
+           d.exposure.trades_complete &&
+-          (stub || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
++          // A chain rebuild cannot rebuild a paper position's path: those trades are reported lost instead (state.lost).
++          (stub || d.cause === 'chain-rebuild' || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
+     ),
+     coverage_valid: ops.coverage.problems.length === 0,
++    // RUN-1d: every planned cause drilled and passed (a crash, a reboot, a host loss, a chain rebuild, RPC loss).
++    drills_by_cause: [...RESTART_CAUSES, 'rpc'].every((c) => byCause[c]!.planned > 0 && byCause[c]!.passed > 0),
++    // Nothing a restart had to keep was lost, and every restored position kept its universe (CFG-2).
++    recovered_state: restarts.every((d) => d.skipped === true || d.off_run === true || d.state?.state_ok === true),
++    restored_universe_kept: restarts.every((d) => d.skipped === true || d.off_run === true || d.state?.universe_ok === true),
+   };
+   const exposed = drills.flatMap((d) => (d.exposure ? [d.exposure] : []));
+   const maxOf = (xs: readonly (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);
+@@ -218,6 +264,7 @@ export const buildReport = (
+     stub,
+     journal,
+     drills,
++    recovery_by_cause: byCause,
+     drills_summary: {
+       restarts_mid_trade_passed: restartsMidTrade,
+       feeds_planned: feedsPlanned,
+@@ -233,6 +280,36 @@ export const buildReport = (
+   };
+ };
+ 
++const median = (xs: readonly number[]): number | null => {
++  if (xs.length === 0) return null;
++  const s = [...xs].sort((a, b) => a - b);
++  const m = Math.floor(s.length / 2);
++  return s.length % 2 ? s[m]! : Math.round((s[m - 1]! + s[m]!) / 2);
++};
++
++/** Per restart cause and for RPC loss: how often it was drilled, and how long it took to be able to exit again. */
++export const recoveryByCause = (meta: RunMeta, drills: readonly DrillOutcome[]): Record<string, CauseSummary> => {
++  const out: Record<string, CauseSummary> = {};
++  for (const c of [...RESTART_CAUSES, 'rpc'] as const) {
++    const planned = meta.plan.filter((d) => (c === 'rpc' ? d.kind === 'rpc' : d.kind === 'restart' && (d.cause ?? 'crash') === c)).length;
++    const ds = drills.filter((d) => (c === 'rpc' ? d.kind === 'rpc' : d.kind === 'restart' && (d.cause ?? 'crash') === c));
++    const exits = ds.flatMap((d) => (d.recovery?.exit_capable_ms != null ? [Math.round(d.recovery.exit_capable_ms)] : []));
++    const ex = ds.flatMap((d) => (d.exposure ? [d.exposure] : []));
++    const worst = (xs: (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);
++    out[c] = {
++      planned,
++      drills: ds.length,
++      passed: ds.filter((d) => d.pass).length,
++      mid_trade: ds.filter((d) => d.midTrade === true).length,
++      off_run: ds.filter((d) => d.off_run === true).length,
++      skipped: ds.filter((d) => d.skipped === true).length,
++      exit_capable_ms: { median: median(exits), worst: exits.length ? Math.max(...exits) : null },
++      exposure: { drills: ex.length, worst_duration_ms: worst(ex.map((e) => e.duration_ms)), worst_move_bps: worst(ex.map((e) => e.worst_move_bps)) },
++    };
++  }
++  return out;
++};
++
+ const round = (x: number, d: number): number => Math.round(x * 10 ** d) / 10 ** d;
+ const r1 = (x: number | null): number | null => (x === null ? null : round(x, 1));
+ 
+@@ -271,6 +348,20 @@ export const reportMarkdown = (r: Report): string => {
+         } | ${yes(d.pass)} | ${d.notes.join('; ').replace(/\|/g, '/')} |`,
+     ),
+   ];
++  const sec = (ms: number | null): string => (ms === null ? '-' : `${(ms / 1000).toFixed(1)} s`);
++  lines.push(
++    '',
++    '## Recovery by cause',
++    '',
++    'Recovered means reconciled and able to exit, timed from the kill on the monotonic clock (a host reboot is timed on the wall clock).',
++    '',
++    '| Cause | Planned | Drilled | Passed | Mid-trade | Exit capable, median | Exit capable, worst | Exposed | Longest exposure | Worst move |',
++    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
++    ...Object.entries(r.recovery_by_cause).map(
++      ([c, v]) =>
++        `| ${c}${v.off_run ? ' (off the qualifying run)' : ''}${v.skipped ? ' (rehearsal only)' : ''} | ${v.planned} | ${v.drills} | ${v.passed} | ${v.mid_trade} | ${sec(v.exit_capable_ms.median)} | ${sec(v.exit_capable_ms.worst)} | ${v.exposure.drills} | ${sec(v.exposure.worst_duration_ms)} | ${v.exposure.worst_move_bps === null ? '-' : `${v.exposure.worst_move_bps} bps`} |`,
++    ),
++  );
+   const q = r.ops.quota;
+   lines.push(
+     '',
+diff --git a/packages/runner/src/runner.ts b/packages/runner/src/runner.ts
+index 60f23d3..7b62eb0 100644
+--- a/packages/runner/src/runner.ts
++++ b/packages/runner/src/runner.ts
+@@ -3,14 +3,15 @@
+ // which resumes from the evidence folder and worker state the previous job saved.
+ import { createHash } from 'node:crypto';
+ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
++import { performance } from 'node:perf_hooks';
+ import { join } from 'node:path';
+-import { checkStartHealth, LOOKUP_BOUNDS_MS, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
+-import type { WorkerControl } from './control.ts';
++import { checkStartHealth, LOOKUP_BOUNDS_MS, type RestartCause, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
++import { snapshotState, type WorkerControl } from './control.ts';
+ import { item4 } from './item4.ts';
+ import { checkQuota, coverageGaps, lookupLatency, quotaReport, rejections, type BootTotals } from './quota.ts';
+ import { checkJournal } from './journal.ts';
+ import { makePlan, type Drill } from './plan.ts';
+-import { buildReport, reportMarkdown, type DrillOutcome, type Label, type RecordedFile, type Report, type RunMeta, type Sample } from './report.ts';
++import { buildReport, reportMarkdown, type DrillOutcome, type Label, type RecordedFile, type RecoveredState, type Report, type RunMeta, type Sample } from './report.ts';
+ 
+ export interface SegmentOptions {
+   readonly control: WorkerControl;
+@@ -21,7 +22,10 @@ export interface SegmentOptions {
+   /** Who this runner is: computed from where it runs, never read from restored state. A resumed run must match. */
+   readonly identity: { readonly label: Label; readonly commit: string };
+   /** New runs only. `entry` is the worker entry (local) or `systemd:<unit>` (host). */
+-  readonly newRun?: { readonly runId: string; readonly name?: string; readonly targetMs: number; readonly entry: string; readonly restarts?: number; readonly restartWindowMs?: number; readonly feedDropMs?: number };
++  readonly newRun?: {
++    readonly runId: string; readonly name?: string; readonly targetMs: number; readonly entry: string; readonly restarts?: number;
++    readonly causes?: readonly RestartCause[]; readonly restartWindowMs?: number; readonly feedDropMs?: number; readonly rpcDrops?: number; readonly rpcDropMs?: number;
++  };
+   /** Wall-clock end of this segment (ms epoch). The run itself ends at startedAt + targetMs. */
+   readonly segmentEnd: number;
+   /** Where recorded data is kept: `copy` into evidenceDir/recorded (fallback artifacts), or `host` (left in place on the VPS). */
+@@ -35,6 +39,13 @@ export interface SegmentOptions {
+    */
+   readonly handover?: boolean;
+   readonly sampleMs?: number;
++  /** Local only: take the runner's own backup of the bot state this often, for host-loss drills. */
++  readonly backupEveryMs?: number;
++  /** Local only: wipe drills (host loss with a restore, chain rebuild) may delete the bot state. Never on the host. */
++  readonly wipeAllowed?: boolean;
++  /** The host's off-site backup switch (ops/host-config.json), reported with the restore drill. */
++  readonly offsiteBackup?: boolean;
++  readonly dropRpc?: (addr: string, token: string, ms: number) => Promise<boolean>;
+   /** A restart counts as recovered when the new boot is ready within this time. */
+   readonly recoverMs?: number;
+   readonly startTimeoutMs?: number;
+@@ -60,6 +71,20 @@ export const httpHealth = async (addr: string): Promise<Health | null> => {
+   }
+ };
+ 
++export const httpDropRpc = async (addr: string, token: string, ms: number): Promise<boolean> => {
++  try {
++    const res = await fetch(`http://${addr}/drill/drop-rpc`, {
++      method: 'POST',
++      headers: { 'content-type': 'application/json', 'x-zeroed-drill-token': token },
++      body: JSON.stringify({ ms }),
++      signal: AbortSignal.timeout(3000),
++    });
++    return res.status === 202;
++  } catch {
++    return false;
++  }
++};
++
+ export const httpDropFeed = async (addr: string, token: string, feed: string, ms: number): Promise<boolean> => {
+   try {
+     const res = await fetch(`http://${addr}/drill/drop-feed`, {
+@@ -110,14 +135,45 @@ const readLines = <T>(p: string): T[] =>
+     : [];
+ 
+ type Pending =
++  | RestartPending
+   | {
+-      kind: 'restart'; drill: Extract<Drill, { kind: 'restart' }>; since: number; killedAt?: number; prevBoot?: string | null; midTrade?: boolean;
+-      /** A position was open at the kill: measure the unprotected exposure until the new boot is exit capable. */
+-      open?: boolean; trades?: readonly string[]; tradesComplete?: boolean; markBefore?: string | null; reconciledAt?: number; ok?: boolean;
++      kind: 'rpc'; drill: Extract<Drill, { kind: 'rpc' }>; since: number; sinceMono: number; requested: boolean; boot: string | null;
++      sawIncapable: boolean; sawHalt: boolean; stayedUp: boolean; shedBefore: number | null; pendingBefore: readonly string[];
+     }
+   | { kind: 'feed'; drill: Extract<Drill, { kind: 'feed' }>; since: number; sawDown: boolean; sawHalt: boolean; critical: boolean; boot: string | null; stayedUp: boolean; requested: boolean }
+   | { kind: 'handover'; since: number; prevBoot: string | null; midTrade: boolean; plannedAt: number };
+ 
++interface Kept {
++  readonly pending_exits: readonly string[];
++  readonly positions: readonly { readonly trade: string; readonly universe: string }[];
++}
++
++/** A restart drill in progress. Durations run on the monotonic clock, except across a host reboot (wall, from the journal). */
++interface RestartPending {
++  kind: 'restart';
++  drill: Extract<Drill, { kind: 'restart' }>;
++  since: number;
++  killedAt?: number;
++  killedMono?: number;
++  prevBoot?: string | null;
++  midTrade?: boolean;
++  /** A position was open at the kill: measure the unprotected exposure until the new boot is exit capable. */
++  open?: boolean;
++  trades?: readonly string[];
++  tradesComplete?: boolean;
++  markBefore?: string | null;
++  /** What the health reply before the kill held, and what the new boot must recover (null: nothing, chain rebuild). */
++  atKill?: Kept;
++  expect?: Kept | null;
++  reconciledAt?: number;
++  ok?: boolean;
++}
++
++const kept = (h: Health | null): Kept => ({
++  pending_exits: h && Array.isArray(h.pending_exits) ? [...h.pending_exits] : [],
++  positions: h?.open_position ? [{ trade: h.open_position.trade, universe: h.open_position.universe }] : [],
++});
++
+ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
+   const log = o.log ?? ((s: string) => console.log(s));
+   const sampleMs = o.sampleMs ?? 10_000;
+@@ -126,7 +182,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
+   const dropFeed = o.dropFeed ?? httpDropFeed;
+   const ev = o.evidenceDir;
+   mkdirSync(ev, { recursive: true });
+-  const P = { meta: join(ev, 'run.json'), samples: join(ev, 'samples.jsonl'), drills: join(ev, 'drills.json'), segments: join(ev, 'segments.json'), manifest: join(ev, 'recorded.json'), boots: join(ev, 'boots.json') };
++  const P = { meta: join(ev, 'run.json'), samples: join(ev, 'samples.jsonl'), drills: join(ev, 'drills.json'), segments: join(ev, 'segments.json'), manifest: join(ev, 'recorded.json'), boots: join(ev, 'boots.json'), backup: join(ev, 'backup.json'), reboot: join(ev, 'pending-reboot.json') };
+   const resumed = existsSync(P.meta);
+   if (!resumed && !o.newRun) throw new Error(`no run in ${ev} and no new-run options`);
+ 
+@@ -134,6 +190,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
+   const boots: Record<string, BootTotals> = readJson(P.boots, {});
+   const segments: { start: number; end: number | null; lastInTrade: boolean; lastBoot: string | null }[] = readJson(P.segments, []);
+   const manifest: RecordedFile[] = readJson(P.manifest, []);
++  const backupDir = join(ev, 'backup');
++  let backup: { at: number; expect: Kept } | null = readJson(P.backup, null);
+   const prev = segments[segments.length - 1];
+   const segStart = Date.now();
+   segments.push({ start: segStart, end: null, lastInTrade: false, lastBoot: null });
+@@ -178,6 +236,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
+       ...(n.restarts === undefined ? {} : { restarts: n.restarts }),
+       ...(n.restartWindowMs === undefined ? {} : { restartWindowMs: n.restartWindowMs }),
+       ...(n.feedDropMs === undefined ? {} : { feedDropMs: n.feedDropMs }),
++      ...(n.causes === undefined ? {} : { causes: n.causes }),
++      ...(n.rpcDrops === undefined ? {} : { rpcDrops: n.rpcDrops }),
++      ...(n.rpcDropMs === undefined ? {} : { rpcDropMs: n.rpcDropMs }),
+     });
+     meta = { runId: n.runId, ...(n.name === undefined ? {} : { name: n.name }), label: o.identity.label, commit: o.identity.commit, startedAt: segStart, targetMs: n.targetMs, entry: n.entry, plan };
+     writeFileSync(P.meta, JSON.stringify(meta, null, 2));
+@@ -189,6 +250,12 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
+   // A fallback job boundary is a restart drill too: the previous job stopped the worker, this one restored state.
+   let pending: Pending | null =
+     resumed && prev && o.handover !== false ? { kind: 'handover', since: segStart, prevBoot: prev.lastBoot, midTrade: prev.lastInTrade, plannedAt: prev.end ?? segStart } : null;
++  // Back from a host reboot drill: the runner died with the host, so this drill is timed on the wall clock.
++  const rebooted: RestartPending | null = readJson(P.reboot, null);
++  if (rebooted) {
++    rmSync(P.reboot, { force: true });
++    pending = rebooted;
++  }
+   const done = new Set(outcomes.map((d) => d.id));
+   const handovers = outcomes.filter((d) => d.kind === 'handover').length;
+ 
+@@ -215,10 +282,19 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
+     last = s;
+     const rel = t - meta.startedAt;
+ 
++    // The runner's own backup of the bot state for local host-loss drills, with what it should restore.
++    if (o.backupEveryMs !== undefined && pending === null && h?.reconciled && (backup === null || t - backup.at >= o.backupEveryMs)) {
++      snapshotState(o.stateDir, backupDir);
++      backup = { at: t, expect: kept(h) };
++      writeFileSync(P.backup, JSON.stringify(backup));
++    }
++
+     if (pending === null) {
+       const due = meta.plan.find((d) => !done.has(d.id) && d.atMs <= rel);
+       if (due?.kind === 'restart') pending = { kind: 'restart', drill: due, since: t };
+-      else if (due?.kind === 'feed') pending = { kind: 'feed', drill: due, since: t, sawDown: false, sawHalt: false, critical: false, boot: s.boot, stayedUp: true, requested: false };
++      else if (due?.kind === 'rpc') {
++        pending = { kind: 'rpc', drill: due, since: t, sinceMono: performance.now(), requested: false, boot: s.boot, sawIncapable: false, sawHalt: false, stayedUp: true, shedBefore: h ? exitShed(h) : null, pendingBefore: kept(h).pending_exits };
++      } else if (due?.kind === 'feed') pending = { kind: 'feed', drill: due, since: t, sawDown: false, sawHalt: false, critical: false, boot: s.boot, stayedUp: true, requested: false };
+     }
+ 
+     if (pending?.kind === 'handover') {
+@@ -232,7 +308,11 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
+       }
+     } else if (pending?.kind === 'restart') {
+       const p = pending;
+-      const base = { id: p.drill.id, kind: 'restart' as const, plannedAt: meta.startedAt + p.drill.atMs, midTrade: p.midTrade === true };
++      const cause = p.drill.cause ?? 'crash';
++      const base = { id: p.drill.id, kind: 'restart' as const, cause, plannedAt: meta.startedAt + p.drill.atMs, midTrade: p.midTrade === true };
++      // Elapsed since the kill on the clock the drill started with.
++      const since = (): number => (p.killedMono !== undefined ? performance.now() - p.killedMono : Date.now() - p.killedAt!);
++      const clock = p.killedMono !== undefined ? ('monotonic' as const) : ('wall' as const);
+       if (p.killedAt === undefined) {
+         if (s.in_trade || t - p.since >= p.drill.windowMs) {
+           p.prevBoot = s.boot;
+@@ -242,28 +322,95 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
+           p.trades = h ? exposedTrades(h) : [];
+           p.tradesComplete = h !== null && tradeIdsComplete(h);
+           p.markBefore = h ? freshMark(h) : null;
+-          p.killedAt = Date.now();
+-          await o.control.kill();
+-          log(`Drill ${p.drill.id}: killed${p.midTrade ? ' mid-trade' : ' (no trade open in the window)'}.`);
++          p.atKill = kept(h);
++          p.expect = cause === 'chain-rebuild' ? null : cause === 'host-loss' ? (backup?.expect ?? { pending_exits: [], positions: [] }) : p.atKill;
++          if (cause === 'host-loss' && o.control.restoreDrill) {
++            // On the qualifying host a real host loss would end the run: the restore drill runs off the run instead.
++            const r = await o.control.restoreDrill();
++            record({ ...base, at: t, pass: r.pass, off_run: true, recoveredMs: null, notes: [`restore drill off the qualifying run: ${r.output}`, offsiteNote(o.offsiteBackup)] });
++            pending = null;
++          } else if (cause === 'chain-rebuild' && !o.wipeAllowed) {
++            record({ ...base, at: t, pass: true, skipped: true, recoveredMs: null, notes: ['not run on the qualifying host: it would wipe the run\'s ledger; proven in the rehearsal'] });
++            pending = null;
++          } else {
++            p.killedAt = Date.now();
++            p.killedMono = performance.now();
++            if (cause === 'reboot' && !o.wipeAllowed) {
++              // The host reboots and takes this runner with it: keep the drill on disk to finish it after boot.
++              const onDisk: RestartPending = { ...p };
++              delete onDisk.killedMono;
++              writeFileSync(P.reboot, JSON.stringify(onDisk));
++            }
++            if (cause === 'crash') await o.control.kill();
++            else if (cause === 'reboot') await o.control.reboot();
++            else if (cause === 'host-loss') await o.control.wipe({ restoreFrom: backupDir });
++            else await o.control.wipe({});
++            log(`Drill ${p.drill.id} (${cause}): down${p.midTrade ? ' mid-trade' : ' (no trade open in the window)'}.`);
++          }
+         }
+       } else if (p.reconciledAt === undefined && s.ready && s.boot !== p.prevBoot) {
+-        p.reconciledAt = t;
++        p.reconciledAt = since();
+         p.ok = reconciledFirst(o.stateDir, s.boot!);
+       }
+-      if (p.killedAt !== undefined && p.reconciledAt !== undefined && (!p.open || (s.exit_capable && s.boot !== p.prevBoot))) {
++      // Recovered means reconciled and able to exit (DECISIONS, Standby), timed for every restart, open position or not.
++      if (pending !== null && p.killedAt !== undefined && p.reconciledAt !== undefined && s.exit_capable && s.boot !== p.prevBoot) {
+         const k = p.killedAt;
+-        const notes = [p.ok ? 'reconciled before any entry' : 'no successful reconcile before entry'];
++        const exitMs = since();
++        const state = recoveredState(journalLines(o.stateDir), s.boot!, cause, p.expect ?? null, p.atKill ?? { pending_exits: [], positions: [] });
++        const notes = [p.ok ? 'reconciled before any entry' : 'no successful reconcile before entry', ...state.notes];
++        if (clock === 'wall') notes.push('timed on the wall clock across the reboot');
+         const exposure = p.open
+-          ? { duration_ms: t - k, reconciled_ms: p.reconciledAt - k, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: h ? freshMark(h) : null, worst_move_bps: moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const }
++          ? { status: 'measured' as const, duration_ms: exitMs, reconciled_ms: p.reconciledAt, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: h ? freshMark(h) : null, worst_move_bps: moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const }
+           : undefined;
+-        if (exposure) notes.push(`exit capable ${(exposure.duration_ms / 1000).toFixed(1)} s after the kill`);
+-        record({ ...base, at: k, pass: p.ok === true, recoveredMs: p.reconciledAt - k, ...(exposure ? { exposure } : {}), notes });
++        record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok, recoveredMs: p.reconciledAt, recovery: { reconciled_ms: p.reconciledAt, exit_capable_ms: exitMs, clock }, state, ...(exposure ? { exposure } : {}), notes });
+         pending = null;
+-      } else if (p.killedAt !== undefined && t - p.killedAt > recoverMs) {
++      } else if (pending !== null && p.killedAt !== undefined && since() > recoverMs) {
+         const stage = p.reconciledAt === undefined ? 'not ready' : 'not exit capable';
+-        record({ ...base, at: p.killedAt, pass: false, recoveredMs: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, ...(p.open ? { exposure: { duration_ms: null, reconciled_ms: p.reconciledAt === undefined ? null : p.reconciledAt - p.killedAt, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: null, worst_move_bps: null, move_source: 'marks' as const } } : {}), notes: [`${stage} ${recoverMs / 1000} s after the kill`] });
++        // No reply at all at the window's end: the exposure is unknown, never assumed.
++        const status = h === null ? ('unknown' as const) : ('unmeasured' as const);
++        record({
++          ...base, at: p.killedAt, pass: false, recoveredMs: p.reconciledAt ?? null, recovery: { reconciled_ms: p.reconciledAt ?? null, exit_capable_ms: null, clock },
++          ...(p.open ? { exposure: { status, duration_ms: null, reconciled_ms: p.reconciledAt ?? null, trades: p.trades ?? [], trades_complete: p.tradesComplete === true, chain_trades: [], mark_before: p.markBefore ?? null, mark_after: null, worst_move_bps: null, move_source: 'marks' as const } } : {}),
++          notes: [`${stage} ${recoverMs / 1000} s after the kill${status === 'unknown' ? ' (no health reply)' : ''}`],
++        });
+         pending = null;
+       }
++    } else if (pending?.kind === 'rpc') {
++      const p = pending;
++      const d = p.drill;
++      if (!p.requested) {
++        p.requested = true;
++        const token = readToken(o.stateDir);
++        const accepted = token !== null && (await (o.dropRpc ?? httpDropRpc)(o.healthAddr, token, d.dropMs));
++        if (!accepted) {
++          record({ id: d.id, kind: 'rpc', plannedAt: meta.startedAt + d.atMs, at: t, pass: false, notes: ['drop request refused or drill token missing'] });
++          pending = null;
++        } else log(`Drill ${d.id}: all providers dropped for ${d.dropMs / 1000} s.`);
++      } else {
++        if (!s.up || s.boot !== p.boot) p.stayedUp = false;
++        if (h && !h.exit_capable) p.sawIncapable = true;
++        if (s.entries_halted) p.sawHalt = true;
++        const elapsed = performance.now() - p.sinceMono;
++        const back = elapsed > d.dropMs && h !== null && h.exit_capable;
++        if (back || elapsed > d.dropMs + recoverMs) {
++          const notes: string[] = [];
++          if (!p.sawHalt) notes.push('entries not halted while every provider was down');
++          if (!p.sawIncapable) notes.push('worker reported itself exit capable with no provider');
++          if (!p.stayedUp) notes.push('worker went down during the drop');
++          if (!back) notes.push('not exit capable after the providers came back');
++          const shedAfter = h ? exitShed(h) : null;
++          if (p.shedBefore !== null && shedAfter !== null && shedAfter > p.shedBefore) notes.push(`${shedAfter - p.shedBefore} P0/P1 requests shed`);
++          const lost = p.pendingBefore.filter((x) => !(h?.pending_exits ?? []).includes(x));
++          if (lost.length) notes.push(`pending exits lost: ${lost.join(', ')}`);
++          record({
++            id: d.id, kind: 'rpc', plannedAt: meta.startedAt + d.atMs, at: p.since, pass: notes.length === 0,
++            recoveredMs: back ? Math.max(0, Math.round(elapsed - d.dropMs)) : null,
++            recovery: { reconciled_ms: null, exit_capable_ms: back ? Math.max(0, Math.round(elapsed - d.dropMs)) : null, clock: 'monotonic' },
++            notes: notes.length ? notes : ['entries halted, no exit capacity shed, exit capable again'],
++          });
++          pending = null;
++        }
++      }
+     } else if (pending?.kind === 'feed') {
+       const p = pending;
+       const d = p.drill;
+@@ -473,3 +620,47 @@ export const withChainMoves = (outcomes: readonly DrillOutcome[], journal: reado
+     const worse = chain !== null && (e.worst_move_bps === null || chain > e.worst_move_bps);
+     return { ...d, exposure: { ...e, chain_trades, ...(worse ? { worst_move_bps: chain, move_source: 'chain' as const } : {}) } };
+   });
++
++/** P0 and P1 requests shed so far in this boot (exits and position monitoring). */
++export const exitShed = (h: Health): number | null =>
++  Array.isArray(h.quota) ? h.quota.reduce((n, q) => n + (Array.isArray(q.shed) ? (q.shed[0] ?? 0) + (q.shed[1] ?? 0) : 0), 0) : null;
++
++export const offsiteNote = (on: boolean | undefined): string =>
++  on === true
++    ? 'off-site backup is on'
++    : 'off-site backup is off: a real host loss would lose the local snapshots too, and recovery would rebuild from chain (wallet balances, pending signatures by address) with a fresh seed';
++
++/**
++ * Compares the new boot's `recovered` line with what it had to recover: the state at the kill (crash, reboot), the
++ * backup's (host loss), or nothing (chain rebuild, which must say it rebuilt from chain). Every restored position
++ * must keep its universe (CFG-2), so its exit parameters still apply.
++ */
++export const recoveredState = (journal: readonly JournalLine[], boot: string, cause: RestartCause, expect: Kept | null, atKill: Kept): RecoveredState => {
++  const line = journal.find((l) => l.boot === boot && l.kind === 'recovered');
++  const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v is string => typeof v === 'string' && v !== '') : []);
++  if (!line) {
++    return { source: null, expected_pending_exits: expect?.pending_exits ?? [], recovered_pending_exits: [], missing: [], lost: [], state_ok: false, universe_ok: false, notes: ['no recovered line after the restart'] };
++  }
++  const recoveredExits = strings(line['pending_exits']);
++  const positions = (Array.isArray(line['positions']) ? line['positions'] : []) as { trade?: unknown; universe?: unknown }[];
++  const recoveredPos = new Map(positions.flatMap((x) => (typeof x?.trade === 'string' ? [[x.trade, x.universe] as const] : [])));
++  const source = typeof line['source'] === 'string' ? line['source'] : null;
++  const notes: string[] = [];
++  const universesNamed = [...recoveredPos.values()].every((u) => typeof u === 'string' && u !== '');
++  if (!universesNamed) notes.push('a restored position has no universe');
++  if (expect === null) {
++    const lost = atKill.positions.map((x) => x.trade).filter((t) => !recoveredPos.has(t));
++    if (source !== 'chain') notes.push(`chain rebuild reported source ${String(source)}`);
++    if (lost.length) notes.push(`${lost.length} paper position(s) lost: paper positions are not on chain`);
++    return { source, expected_pending_exits: [], recovered_pending_exits: recoveredExits, missing: [], lost, state_ok: source === 'chain', universe_ok: universesNamed, notes };
++  }
++  const missing = [
++    ...expect.pending_exits.filter((x) => !recoveredExits.includes(x)).map((x) => `exit ${x}`),
++    ...expect.positions.filter((x) => !recoveredPos.has(x.trade)).map((x) => `position ${x.trade}`),
++  ];
++  const changed = expect.positions.filter((x) => recoveredPos.has(x.trade) && recoveredPos.get(x.trade) !== x.universe);
++  if (missing.length) notes.push(`not recovered: ${missing.join(', ')}`);
++  if (changed.length) notes.push(`universe changed for ${changed.map((x) => x.trade).join(', ')}`);
++  if (cause === 'host-loss') notes.push('restored from the latest backup');
++  return { source, expected_pending_exits: expect.pending_exits, recovered_pending_exits: recoveredExits, missing, lost: [], state_ok: missing.length === 0, universe_ok: universesNamed && changed.length === 0, notes };
++};
+diff --git a/packages/runner/systemd/zeroed-dryrun-reboot.service b/packages/runner/systemd/zeroed-dryrun-reboot.service
+new file mode 100644
+index 0000000..e5ea38a
+--- /dev/null
++++ b/packages/runner/systemd/zeroed-dryrun-reboot.service
+@@ -0,0 +1,11 @@
++# RUN-1d reboot drill: the runner (zeroed-dryrun@<name>) starts this unit at a pre-set time of the qualifying
++# run. The host reboots; zeroed-dryrun-tick.timer resumes the run by name after boot, and the runner finishes the
++# drill from the journal (wall clock: last line before the reboot to the next start, then exit capable).
++# Installed only through OPS-1d's install path, never by hand.
++[Unit]
++Description=Zeroed dry run: reboot drill
++DefaultDependencies=no
++
++[Service]
++Type=oneshot
++ExecStart=/usr/bin/systemctl reboot

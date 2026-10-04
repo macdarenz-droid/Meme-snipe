@@ -1,0 +1,19 @@
+[
+ ["packages/core/src/risk/evaluate.ts", "{ at: c.closedAtMs, amount: c.netPnl - sumBig(parts.map((x) => x.pnl)) }", "{ at: c.closedAtMs, amount: c.netPnl }"],
+ ["packages/core/src/risk/evaluate.ts", "return [...parts.map((x) => ({ at: x.atMs, amount: x.pnl as bigint })), ", "return [...parts.map((x) => ({ at: c.closedAtMs, amount: x.pnl as bigint })), "],
+ ["packages/core/src/risk/evaluate.ts", "  ...a.openPositions.flatMap((p) => (p.partials ?? []).map((x) => ({ at: x.atMs, amount: x.pnl as bigint }))),\n];", "];"],
+ ["packages/core/src/risk/evaluate.ts", "...a.closedTrades.map((c) => c.closedAtMs), ...partialTimes(a),", "...a.closedTrades.map((c) => c.closedAtMs),"],
+ ["packages/core/src/risk/evaluate.ts", "...account.closedTrades.map((c) => c.closedAtMs), ...partialTimes(account),", "...account.closedTrades.map((c) => c.closedAtMs),"],
+ ["packages/core/src/risk/evaluate.ts", "[...a.closedTrades.flatMap((c) => c.partials ?? []), ...a.openPositions", "[...a.openPositions"],
+ ["packages/core/src/risk/evaluate.ts", "...realized(a).map((r): AccountEvent", "...realized(a).filter(() => false).map((r): AccountEvent"],
+ ["packages/worker/src/run/account.ts", "return basis - (basis * left + bought - 1n) / bought;", "return basis - (basis * left) / bought;"],
+ ["packages/worker/src/run/account.ts", "const basis = p.cost + sum('entry', 'fees');", "const basis = p.cost;"],
+ ["packages/worker/src/run/account.ts", "(exitNet - (t.partialNet ?? 0n)) - (soldBasis", "(exitNet) - (soldBasis"],
+ ["packages/worker/src/run/account.ts", "- soldBasis(basis, p.bought, before));", ");"],
+ ["packages/worker/src/run/account.ts", "        t.partialSold = p.sold;\n", ""],
+ ["packages/worker/src/run/account.ts", "      partials: (t.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),\n    }));", "    }));"],
+ ["packages/worker/src/run/account.ts", "const basis = (full - soldBasis(full, p.bought, sold)) as Lamports;", "const basis = full as Lamports;"],
+ ["packages/worker/src/run/account.ts", "i.intent.positionId === p.id && i.intent.purpose === 'entry')", "i.intent.positionId === p.id)"],
+ ["packages/worker/src/run/account.ts", "        partials: (t?.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),\n", ""],
+ ["packages/worker/src/run/account.ts", "p.status !== 'closed' && t.closedAtMs === null) {\n      const exitNet", "p.status === 'never' && t.closedAtMs === null) {\n      const exitNet"]
+]

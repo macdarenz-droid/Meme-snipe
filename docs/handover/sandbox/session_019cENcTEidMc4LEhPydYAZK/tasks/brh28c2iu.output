@@ -1,0 +1,7 @@
+import { blockNetwork } from './helpers.ts';
+import { MINT, Market, T, makeWorker, passingMarket } from './worker-harness.ts';
+
+const MINT2 = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
+
+
+[exited with code 0]

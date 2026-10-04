@@ -1,0 +1,10 @@
+import { writeFileSync } from 'node:fs';
+import { writeDataset } from '/home/user/Meme-snipe/packages/backtest/test/dataset-writer.ts';
+import { studyWorld, W0 } from '/home/user/Meme-snipe/packages/backtest/test/study-world.ts';
+const MIN = 150;
+const reclaim = (since: number) => (since < 5 * MIN ? 0.5 : since < 50 * MIN ? 0.15 : 0.55);
+const { rows } = studyWorld({ leadInDays: 15, blockEvery: 25, slots: 10 + 20 * MIN + 280 * MIN, mints: [{ label: 'a', createSlot: 10, graduateAfter: 20 * MIN, migrationQuote: 400_000_000_000n, buyBias: reclaim, swapEvery: 10, buySize: 3e9, sellDivisor: 8 }] });
+writeDataset(process.argv[2]!, rows, { schema: 2, manifest: { sampling: { launch_rate: 1, retention: 'curve-all,canonical-all' } } });
+const lines = ['# name: SOL/USD', '# source: synthetic', '# tag: fixed', '# bar_ms: 3600000', '# fetched_at: ' + new Date(W0).toISOString(), 'start,close'];
+for (let k = 0; k < 24 * 20; k++) lines.push(`${new Date(W0 - 16 * 86_400_000 + k * 3_600_000).toISOString()},120.00`);
+writeFileSync(process.argv[3]!, lines.join('\n') + '\n');
