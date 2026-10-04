@@ -47,6 +47,9 @@ export interface TradeRecord {
 export interface StrayCost {
   readonly at: number;
   readonly lamports: bigint;
+  /** The entry intent the attempt was for, and the position it would have opened (its tag, in the study). */
+  readonly intentId: string;
+  readonly positionId: string;
 }
 
 const fees = (a: AttemptRecord, base: bigint, tip: bigint) => ({
@@ -116,7 +119,7 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
       sol: fillsOf.reduce((t, f) => t + f.sol, 0n), tokens: fillsOf.reduce((t, f) => t + f.tokens, 0n), at: Math.min(...landings),
     };
     if (entryFill === null) {
-      for (const a of entryAttempts) if (a.fee > 0n) stray.push({ at: a.landedAt ?? r.endedAt, lamports: a.fee });
+      for (const a of entryAttempts) if (a.fee > 0n) stray.push({ at: a.landedAt ?? r.endedAt, lamports: a.fee, intentId: p.entryIntentId, positionId: p.id });
       continue;
     }
     const exitIntents = Object.values(r.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === p.id).map((i) => i.intent.id);

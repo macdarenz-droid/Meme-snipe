@@ -29,7 +29,7 @@ import { holdoutSummary } from './summary.ts';
 import { melbourneDay } from '../report.ts';
 import { microUsdToLamports, solPriceMicroUsd } from '../../../core/src/units/index.ts';
 import { openSealed, runSealedHoldout, sealedReady } from './sealed.ts';
-import { countsOf, type FunderOf, rejectMix, scoreRun, type ScoredTrade } from './score.ts';
+import { countsOf, type FunderOf, rejectMix, scoreRun, scoreRunAll, type ScoredTrade } from './score.ts';
 import { completenessManifest, type ManifestRow, missingEvidence } from './completeness.ts';
 import { tradesOf as tradesOfRun } from '../trades.ts';
 import type { DeploymentStats, StudyStrategy } from '../strategy/study.ts';
@@ -233,16 +233,19 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       const universeOf = Object.fromEntries(family.hypotheses.map((h) => [h.id!, h.universe]));
       familyPanel = family.hypotheses.map((h) => {
         const hc = { ...c, universes: [h] };
-        const trades = scoreRun(runStudy({ ...wfOpts, study: hc, mode: 'deployment', seed: `${i.seed}:family:${h.id}` }), i.fills, i.funderOf).filter((t) => t.tag === h.id);
+        const all = scoreRunAll(runStudy({ ...wfOpts, study: hc, mode: 'deployment', seed: `${i.seed}:family:${h.id}` }), i.fills, i.funderOf);
+        const trades = all.trades.filter((t) => t.tag === h.id);
         familyTrials.push({ ...trialOf(configId(hc, h.id!), trades), configId: configId(hc, h.id!), tag: h.id!, evaluatedOn: `deployment replay ${wfDays[0]}..${wfDays[wfDays.length - 1]}` });
-        return spaVariant(h.id!, trades, calendar, base);
+        return spaVariant(h.id!, trades, calendar, base, all.uncarried.filter((x) => x.tag === h.id));
       });
       // S0's daily P&L per universe: the mean over its seeds of the same one-account replay.
       const s0Daily: Record<string, number[]> = {};
       for (const u of [...new Set(family.hypotheses.map((h) => h.universe))]) {
         const h = family.hypotheses.find((x) => x.universe === u)!;
-        const seeds = Array.from({ length: c.s0SeedsWalkForward }, (_, k) =>
-          spaVariant(`S0-${u}`, scoreRun(runStudy({ ...wfOpts, study: { ...c, universes: [h] }, mode: 'deployment-s0', seed: `${i.seed}:family-s0:${u}:${k}` }), i.fills, i.funderOf).filter((t) => t.tag === `S0-${u}`), calendar, base).daily);
+        const seeds = Array.from({ length: c.s0SeedsWalkForward }, (_, k) => {
+          const all = scoreRunAll(runStudy({ ...wfOpts, study: { ...c, universes: [h] }, mode: 'deployment-s0', seed: `${i.seed}:family-s0:${u}:${k}` }), i.fills, i.funderOf);
+          return spaVariant(`S0-${u}`, all.trades.filter((t) => t.tag === `S0-${u}`), calendar, base, all.uncarried.filter((x) => x.tag === `S0-${u}`)).daily;
+        });
         s0Daily[u] = calendar.map((_, d) => seeds.reduce((a, x) => a + x[d]!, 0) / Math.max(1, seeds.length));
       }
       // Regimes as day ranges of the calendar (market boundaries only), so no bootstrap block crosses one.
@@ -459,18 +462,21 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     }),
     deployment: (() => {
       const ds = depStats as DeploymentStats | null;
-      const tr = scoreRun(dep, i.fills, i.funderOf);
+      const depAll = scoreRunAll(dep, i.fills, i.funderOf);
+      const tr = depAll.trades;
+      // Portfolio net: every trade (each carrying its tag's failed entries) and the failed entries no trade carries.
+      const netOf = (x: ReturnType<typeof scoreRunAll>) => x.trades.reduce((a, t) => a + BigInt(t.net), 0n) - x.uncarried.reduce((a, s) => a + BigInt(s.lamports), 0n);
       // SPA panel: every variant's daily P&L over one fixed capital base on the walk-forward's Melbourne calendar.
       const base = capitalBase;
-      const s0Scored = depS0.map((r, k) => ({ k, trades: scoreRun(r, i.fills, i.funderOf) }));
+      const s0Scored = depS0.map((r, k) => ({ k, all: scoreRunAll(r, i.fills, i.funderOf) }));
       const spa = base === null || base <= 0n ? null : spaPanel([
-        ...universes.map((u) => ({ variant: tagFor[u]!, trades: tr.filter((t) => t.tag === tagFor[u]) })),
-        ...s0Scored.flatMap(({ k, trades }) => universes.map((u) => ({ variant: `S0-${u} seed ${k}`, trades: trades.filter((t) => t.tag === `S0-${u}`) }))),
+        ...universes.map((u) => ({ variant: tagFor[u]!, trades: tr.filter((t) => t.tag === tagFor[u]), uncarried: depAll.uncarried.filter((x) => x.tag === tagFor[u]) })),
+        ...s0Scored.flatMap(({ k, all }) => universes.map((u) => ({ variant: `S0-${u} seed ${k}`, trades: all.trades.filter((t) => t.tag === `S0-${u}`), uncarried: all.uncarried.filter((x) => x.tag === `S0-${u}`) }))),
       ], calendar, base);
       return {
-        control: depS0.map((r, k) => ({ seed: k, stats: r.stats, trades: s0Scored[k]!.trades.length, netLamports: s0Scored[k]!.trades.reduce((a, t) => a + BigInt(t.net), 0n).toString() })),
+        control: depS0.map((r, k) => ({ seed: k, stats: r.stats, trades: s0Scored[k]!.all.trades.length, netLamports: netOf(s0Scored[k]!.all).toString() })),
         spa,
-        stats: dep.stats, trades: tr.length, netLamports: tr.reduce((a, t) => a + BigInt(t.net), 0n).toString(),
+        stats: dep.stats, trades: tr.length, netLamports: netOf(depAll).toString(),
         strandedLamports: tradesOfRun(dep, i.fills).trades.filter((t) => t.exitReason === 'blocked').reduce((a, t) => a + t.exitSol, 0n).toString(),
         maxDrawdownUsd: (ds?.maxDrawdownUsd ?? 0n).toString(), killSwitchTrips: ds?.trips.filter((x) => x.trip === 'kill_switch').length ?? 0,
         weeklyTrips: ds?.trips.filter((x) => x.trip === 'weekly_loss').length ?? 0, rejectedOpportunities: ds?.rejected ?? {},

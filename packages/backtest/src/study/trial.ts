@@ -24,6 +24,8 @@ export interface TrialPart {
   readonly entries: number;
   /** Strategy trades by universe tag (U1, U2) and S0's first seed (S0-U1, S0-U2). */
   readonly trades: readonly (Omit<TradeRecord, BigKey | 'legs'> & Record<BigKey, string> & { readonly legs: Record<'entry' | 'exit', Record<LegKey, string>>; readonly tag: string })[];
+  /** Failed entries' landed fees by tag (audit B5): a real cost, booked in its group's results at its own time. */
+  readonly stray: readonly { readonly tag: string; readonly at: number; readonly lamports: string }[];
 }
 
 type BigKey = 'entrySol' | 'tokens' | 'exitSol' | 'networkBase' | 'priority' | 'tip' | 'venueFee' | 'creatorFee' | 'slippage' | 'rentPaid' | 'rentReturned' | 'net';
@@ -69,10 +71,11 @@ export const trialReport = (i: TrialInput): BacktestReportV1 => {
   for (const p of i.parts) {
     if (p.kind !== 'BT-2 trial part') throw new RangeError(`${p.runId} is not a trial part`);
     if (p.commit !== i.commit) throw new RangeError(`${p.runId} ran on ${p.commit}, the report is for ${i.commit}`);
-    assertPractice(i.config, p.days, p.trades);
+    assertPractice(i.config, p.days, [...p.trades, ...p.stray.map((x) => ({ openedAt: x.at, closedAt: x.at }))]);
   }
   const all = i.parts.flatMap((p) => p.trades);
   const group = (tag: string) => all.filter((t) => t.tag === tag).map(fromPartTrade);
+  const strayOf = (tags: readonly string[]) => i.parts.flatMap((p) => p.stray).filter((x) => tags.includes(x.tag)).map((x) => ({ at: x.at, lamports: BigInt(x.lamports), intentId: '', positionId: '' }));
   const sum = (f: (p: TrialPart) => number) => i.parts.reduce((s, p) => s + f(p), 0);
   const ok = (f: (p: TrialPart) => boolean) => i.parts.every(f);
   const g0: ReportGate = {
@@ -98,8 +101,8 @@ export const trialReport = (i: TrialInput): BacktestReportV1 => {
   const to = dayStart(days[days.length - 1]!) + 86_400_000;
   const s0 = [...group('S0-U1'), ...group('S0-U2')].sort((a, b) => a.closedAt - b.closedAt || (a.id < b.id ? -1 : 1));
   const groups = [
-    ...(['U1', 'U2'] as const).map((u) => ({ group: u, trades: group(u), stray: [] })),
-    { group: 'S0' as const, trades: s0, stray: [] },
+    ...(['U1', 'U2'] as const).map((u) => ({ group: u, trades: group(u), stray: strayOf([u]) })),
+    { group: 'S0' as const, trades: s0, stray: strayOf(['S0-U1', 'S0-U2']) },
   ];
   return buildReport({
     runId: `trial-${days[0]}-${days[days.length - 1]}-${i.commit.slice(0, 8)}`, generatedAt: i.generatedAt, codeCommit: i.commit, policy: i.policy, fills: i.fills,

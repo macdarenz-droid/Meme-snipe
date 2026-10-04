@@ -22,7 +22,7 @@ const trade = (id: string, day: string, net: bigint): TradeRecord => ({
 const part = (days: string[], trades: TrialPart['trades'], over: Partial<TrialPart> = {}): TrialPart => ({
   kind: 'BT-2 trial part', runId: `trial-${days[0]}`, commit: COMMIT, datasetId: `sha256:${days[0]}`, days,
   engine: { replays: 10, identicalReplays: true, crashes: 0, illegalStates: 0, unreconciledIntents: 0, leak: true, ledgerReplay: true },
-  candidates: 10, entries: trades.length, trades, ...over,
+  candidates: 10, entries: trades.length, trades, stray: [], ...over,
 });
 const sol = { name: 'SOL/USD', source: 'test', tag: 'fixed' as const, barMs: 3_600_000, fetchedAt: at('2026-07-01', 0), bars: Array.from({ length: 24 * 100 }, (_, k) => ({ start: at('2026-07-15', k), close: '150.00' })) };
 const input = (parts: TrialPart[]) => ({ parts, config: STUDY_CONFIG, policy: TRIAL_POLICY, fills: FILL_CONFIG, solUsd: sol, commit: COMMIT, generatedAt: '2026-10-06T00:00:00Z' });
@@ -40,6 +40,14 @@ describe('trial report', () => {
     expect(r.candidates).toBe(20);
     // The publish step refuses any report that names the sealed window.
     expect(/holdout/i.test(JSON.stringify(r))).toBe(false);
+  });
+
+  it('books each failed entry\'s fee in its group\'s net (audit B5)', () => {
+    const clean = trialReport(input([a, b])).results.find((x) => x.group === 'U2')!;
+    const withFee = part(['2026-09-10', '2026-09-11', '2026-09-12'], a.trades, { stray: [{ tag: 'U2', at: at('2026-09-11', 5), lamports: '1000000' }] });
+    const r = trialReport(input([withFee, b])).results.find((x) => x.group === 'U2')!;
+    // 0.001 SOL at $150.
+    expect(Number(clean.netUsd) - Number(r.netUsd)).toBeCloseTo(0.15, 6);
   });
 
   it('refuses every day of the sealed window, a trade reaching it, and a day outside the window', () => {

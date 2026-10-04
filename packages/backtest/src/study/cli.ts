@@ -219,12 +219,14 @@ if (command === 'day' || command === 'trial') {
   writeFileSync(join(out, `${runId}.json`), json(evidence));
   if (command === 'trial') {
     // The trial part the cumulative report is merged from (trial.ts): practice days only, checked again on merge.
+    const strayOf = (x: typeof r, tags: readonly string[]) => tradesOf(x, FILL_CONFIG).stray.map((y) => ({ tag: tagOf(y.positionId), at: y.at, lamports: y.lamports.toString() })).filter((y) => tags.includes(y.tag));
     const tagged = (x: typeof r, tags: readonly string[]) => tradesOf(x, FILL_CONFIG).trades.map((t) => toPartTrade(t, tagOf(t.id))).filter((t) => tags.includes(t.tag));
     const part: TrialPart = {
       kind: 'BT-2 trial part', runId, commit, datasetId, days, regimeAssumedOn: has('regime-assumed-on'),
       engine: { replays: hashes.length, identicalReplays: engine.identicalReplays, crashes: r.stats.crashes, illegalStates: r.stats.illegalStates, unreconciledIntents: r.stats.unreconciledIntents, leak: leak.ok, ledgerReplay: replayCheck.ok },
       candidates: Object.values(countsOf(r)).reduce((t, c) => t + c.candidates, 0), entries: Object.values(countsOf(r)).reduce((t, c) => t + c.entries, 0),
       trades: [...tagged(r, ['U1', 'U2']), ...(s0[0] === undefined ? [] : tagged(s0[0], ['S0-U1', 'S0-U2']))],
+      stray: [...strayOf(r, ['U1', 'U2']), ...(s0[0] === undefined ? [] : strayOf(s0[0], ['S0-U1', 'S0-U2']))],
     };
     assertPractice(STUDY_CONFIG, part.days, part.trades);
     writeFileSync(join(out, `trial-part-${days[0]}-${days[days.length - 1]}.json`), json(part));

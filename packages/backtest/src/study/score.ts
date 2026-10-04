@@ -6,7 +6,7 @@ import type { ClusteredReturn, TradeOutcome } from '../../../core/src/stats/inde
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 import { melbourneDay } from '../report.ts';
 import type { RunResult } from '../run.ts';
-import { type TradeRecord, tradesOf } from '../trades.ts';
+import { type StrayCost, type TradeRecord, tradesOf } from '../trades.ts';
 
 /** A trade with its universe tag (U1, U2, S0-U1, S0-U2) and its labels. */
 export interface ScoredTrade extends TradeOutcome, ClusteredReturn {
@@ -21,6 +21,17 @@ export interface ScoredTrade extends TradeOutcome, ClusteredReturn {
   readonly censored: boolean;
   /** Sensitivity line: the same trade with the token-account rent never returned (reported, never gating). */
   readonly rNetNoRent: number;
+  /**
+   * Failed entries of its tag this trade carries (audit B5): each landed fee, at its own time. `net`, `rNet` and
+   * `rNetNoRent` already include them; the SPA's daily series books each on its own day.
+   */
+  readonly stray: readonly StrayCharge[];
+}
+
+/** One failed entry's landed fee (lamports, decimal), at its landing time. */
+export interface StrayCharge {
+  readonly at: number;
+  readonly lamports: string;
 }
 
 /** The universe tag of a study position id `p:<tag>:<mint>`. */
@@ -53,21 +64,53 @@ const creatorsOf = (records: readonly LogRecord[]): Map<string, string> => {
   return out;
 };
 
-export const scoreRun = (r: RunResult, fills: FillConfig, funderOf: FunderOf = () => null): ScoredTrade[] => {
-  const { trades } = tradesOf(r, fills);
+/**
+ * Every trade of a run with its labels, and the failed-entry fees no trade carries (audit B5). A failed entry is a
+ * real cost of the strategy that decided it: its fee is charged to the next trade of the same tag opened at or after
+ * it (else the tag's last trade before it), so the per-trade inputs of G1, G2 and the power estimate carry it without
+ * adding a trade; a tag with no trade at all keeps it in `uncarried`, which the portfolio and SPA series still book.
+ */
+export const scoreRunAll = (r: RunResult, fills: FillConfig, funderOf: FunderOf = () => null): { readonly trades: ScoredTrade[]; readonly uncarried: readonly (StrayCharge & { readonly tag: string })[] } => {
+  const { trades, stray } = tradesOf(r, fills);
   const creators = creatorsOf(r.records);
-  return trades.map((t) => {
-    const rNet = Number(t.net) / Number(t.entrySol);
-    const rNetNoRent = Number(t.net - t.rentReturned) / Number(t.entrySol);
-    const blocked = t.exitReason === 'blocked';
-    return {
-      tag: tagOf(t.id), mint: t.mint, day: melbourneDay(t.openedAt), rNet, ySevere: blocked || rNet <= -0.5, blocked,
-      openedAt: t.openedAt, closedAt: t.closedAt, net: t.net.toString(), entrySol: t.entrySol.toString(), exitReason: t.exitReason,
-      censored: blocked && t.closedAt >= r.endedAt, rNetNoRent,
-      creatorCluster: creators.get(`${tagOf(t.id)}|${t.mint}`) ?? NO_CLUSTER, funderCluster: funderOf(t.mint) ?? NO_CLUSTER,
-    };
-  });
+  const charged = new Map<number, StrayCost[]>();
+  const uncarried: (StrayCharge & { tag: string })[] = [];
+  for (const s of [...stray].sort((a, b) => a.at - b.at || (a.intentId < b.intentId ? -1 : a.intentId > b.intentId ? 1 : 0))) {
+    const tag = tagOf(s.positionId);
+    let k = -1;
+    trades.forEach((t, j) => {
+      if (tagOf(t.id) !== tag) return;
+      const best = k < 0 ? null : trades[k]!;
+      const after = t.openedAt >= s.at;
+      if (best === null) return void (k = j);
+      const bestAfter = best.openedAt >= s.at;
+      // The earliest trade at or after the failed entry; with none, the latest before it.
+      if (after ? !bestAfter || t.openedAt < best.openedAt : !bestAfter && t.openedAt > best.openedAt) k = j;
+    });
+    if (k < 0) uncarried.push({ tag, at: s.at, lamports: s.lamports.toString() });
+    else charged.set(k, [...(charged.get(k) ?? []), s]);
+  }
+  return {
+    uncarried,
+    trades: trades.map((t, j) => {
+      const mine = charged.get(j) ?? [];
+      const fee = mine.reduce((a, s) => a + s.lamports, 0n);
+      const net = t.net - fee;
+      const rNet = Number(net) / Number(t.entrySol);
+      const rNetNoRent = Number(net - t.rentReturned) / Number(t.entrySol);
+      const blocked = t.exitReason === 'blocked';
+      return {
+        tag: tagOf(t.id), mint: t.mint, day: melbourneDay(t.openedAt), rNet, ySevere: blocked || rNet <= -0.5, blocked,
+        openedAt: t.openedAt, closedAt: t.closedAt, net: net.toString(), entrySol: t.entrySol.toString(), exitReason: t.exitReason,
+        censored: blocked && t.closedAt >= r.endedAt, rNetNoRent, stray: mine.map((s) => ({ at: s.at, lamports: s.lamports.toString() })),
+        creatorCluster: creators.get(`${tagOf(t.id)}|${t.mint}`) ?? NO_CLUSTER, funderCluster: funderOf(t.mint) ?? NO_CLUSTER,
+      };
+    }),
+  };
 };
+
+/** The trades of `scoreRunAll`, each carrying its tag's failed-entry fees. */
+export const scoreRun = (r: RunResult, fills: FillConfig, funderOf: FunderOf = () => null): ScoredTrade[] => scoreRunAll(r, fills, funderOf).trades;
 
 /** Candidates (first check logged per universe and mint), entries and entry days per tag, from the log and fills only. */
 export const countsOf = (r: RunResult): Record<string, { candidates: number; entries: number; entryDays: number }> => {
