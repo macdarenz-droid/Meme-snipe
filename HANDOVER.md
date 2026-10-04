@@ -33,7 +33,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 - **Kept out of the public repo on purpose** (each listed in the manifests with a source or regenerate command): secrets, third-party pages, papers and clones, raw provider data (Helius terms), raw GeckoTerminal OHLCV, node_modules and worktrees.
 
 **What keeps running with nobody watching:**
-- **Server** (Vultr `zeroed`, Frankfurt): still on the pinned install with the stand-in (stub) worker. The real worker arrives only with a code-only Deploy after the e2e fix (#126) is merged and green on its merge commit. See "First steps" below.
+- **Server** (Vultr `zeroed`, Frankfurt): the code-only Deploy at about 7:28 PM tagged 7d5e203, which runs the release's own worker in paper mode (SWITCH-1; `ops/host-config.json` has `"worker": "release"`). Whether the switch succeeded is confirmed only by the owner's Online check. See "First steps" below.
 - **GitHub Actions:**
   - The free-day Helius pull for 2026-09-21 is running: `data-scan.yml` run 37185822426, dispatched 07:27 UTC, about 14 h, chained runs. It books credits per run and caps at 270,000.
   - ARCHIVE-CHECK runs every 3 h on a cron and makes one ≤64-byte request with our real User-Agent. It no-ops while a data-scan runs.
@@ -114,7 +114,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
   - The `DEPLOY_CODE` secret stays absent: the owner deleted it at 2:47 PM because the old code had been shown in chat. Never reuse that code.
   - A run must log "No DEPLOY_CODE secret: code update only, no keys sent." (first run 37174740782 did).
   - Deploy moves the `deploy` tag to the newest GitHub-signed merge commit. Every 5 min, `zeroed-update` on the server switches to it if CI on that commit is green, no dry run is active and no intents are open.
-  - The real worker also needs `ops/host-config.json` `"worker": "release"` (it is `"stub"` now), which goes in its own reviewed PR.
+  - The real worker needs `ops/host-config.json` `"worker": "release"`; SWITCH-1 #110 set it (merged 669de71).
 - **After merging anything under `ops/**`:** the push run of `Ops end-to-end` on the merge commit must be green before Deploy. The PR run tests a different path from the push run (on push, the update step already deploys the signed merge). On 4 Oct, 669de71 passed on its PR and failed twice on push; #126 fixed the test's wait. Until OPS-GATE merges, the deploy gate would accept a later commit that ran no e2e at all, so check it by hand.
 - **Data downloads** run on GitHub Actions (`data-scan.yml`), not in a session:
   - Dispatch inputs: `mode=scan`, `days=<UTC days, newest first, comma-separated>`, `max_mbps=80`. `assemble` builds a dataset window.
@@ -361,7 +361,7 @@ Times count from when the new supervisor resumes (R).
 - **Server:** Vultr, Frankfurt, `zeroed`, Ubuntu 24.04, US$6/month, re-installed at pin e28788a on 4 Oct.
   - Paired with the Telegram bot @Zeroed_alerts_bot.
   - The worker API binds to loopback 127.0.0.1:8788 and is published on the tailnet by `tailscale serve`. Health is on :8787.
-  - It runs the stub worker until the switch PR.
+  - Since the 7d5e203 deploy it runs the release's worker (paper), unless zeroed-update kept or rolled back to the old release on a failed check (an alert goes to Telegram).
 - **Keys:** GitHub secrets only: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. `DEPLOY_CODE` is deliberately absent. Never in the repo or in chat.
 - **Watchdog:** Cloudflare Workers, free plan, `workers.dev`. No custom domain.
 - **App:** Android preview APK at the fixed `preview` release link (see `PROJECT_STATE.md`).
