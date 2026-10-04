@@ -72,6 +72,9 @@ export const HALT_KEY = 'worker:halt';
 export const feesKey = (mint: string): string => `worker:fees:${mint}`;
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
+/** REC-1: a rejected candidate's pool not watched past its window because `maxTails` were already watched. */
+export const NO_TAIL = 'no tail';
+
 /** Reason on a `shortlist` decision: the worker fetches the mint's confirmed create (live H9, H12–H14). */
 export const SHORTLIST = 'shortlist';
 export const TRIP_PREFIX = 'trip ';
@@ -127,6 +130,8 @@ export interface StrategyConfig {
   readonly barMs: number;
   /** Bars kept per mint. */
   readonly keepBars: number;
+  /** REC-1: rejected candidates' pools watched past their window at once; one more is logged `no tail` (`tail cap`). */
+  readonly maxTails: number;
 }
 
 export interface StrategyDeps {
@@ -868,7 +873,11 @@ export class LiveStrategy implements Strategy {
       const to = cand.migratedAtMs + c.windowToMs;
       if (now >= to) {
         const pool = this.#poolOfMint.get(cand.mint);
-        if (cand.lastReason !== null && pool !== undefined) this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
+        if (cand.lastReason !== null && pool !== undefined) {
+          // At the cap the pool is not watched: logged, so G3 censors that coin with the reason, never imputes it.
+          if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, cand.mint, `tail cap ${c.maxTails}`] });
+          else this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
+        }
         this.#cands.delete(cand.mint);
         this.#bars.delete(cand.mint);
         this.#forget(cand.mint);

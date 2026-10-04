@@ -2,9 +2,9 @@
 // maximum hold, so the recording holds every swap a counterfactual entry would need (G3). Engine level, exact clock.
 import { describe, expect, it } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, exitsFor, startSession } from '../../core/src/config/index.ts';
-import { Engine } from '../../core/src/engine/index.ts';
+import { Engine, type LogRecord } from '../../core/src/engine/index.ts';
 import { migrationKey } from '../../core/src/gates/index.ts';
-import { HALT_KEY, LiveStrategy } from '../src/engine/strategy.ts';
+import { HALT_KEY, LiveStrategy, NO_TAIL } from '../src/engine/strategy.ts';
 import { DEFAULT_LIVE_FEED, LiveFeed, type FrameBody, type Source } from '../src/providers/index.ts';
 import { engineFeed } from '../src/run/engine-feed.ts';
 import { PoolWatch } from '../src/run/pool-watch.ts';
@@ -22,9 +22,9 @@ const session = startSession(TRIAL_POLICY);
 const config = strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, 0n, { timing: 'gates', salt: '' });
 const T_MAX = exitsFor(session.policy.exits, config.universe).tMaxMs;
 
-const world = () => {
+const world = (o: { readonly maxTails?: number } = {}) => {
   const feed = new LiveFeed(DEFAULT_LIVE_FEED);
-  const strategy = new LiveStrategy({ session, rugs: RUG_CONFIG, config });
+  const strategy = new LiveStrategy({ session, rugs: RUG_CONFIG, config: o.maxTails === undefined ? config : { ...config, maxTails: o.maxTails } });
   const engine = new Engine({ clock: feed.clock, feed: engineFeed(feed, session.policy).feed, strategy, runner: { run: () => undefined }, seed: 'rec-1', book: { maxOpenPositions: session.policy.positions.maxOpen } });
   let now = T0;
   let slot = 500_000_000n;
@@ -40,12 +40,13 @@ const world = () => {
     engine.drain();
   };
   /** A candidate that migrated `agoMs` ago, with its PumpSwap pool. */
-  const shortlist = (mint: string, agoMs: number): void => {
+  const shortlist = (mint: string, agoMs: number, pool = POOL): void => {
     const obs = { provider: 'test', slot: null, receivedAt: now, quality: [], commitment: 'confirmed' };
-    put('worker', { type: 'fact', key: migrationKey(mint), value: { obs, graduatedAtMs: now - agoMs, migratedAtMs: now - agoMs, pool: POOL, quoteAtMigration: 1n, price: { quote: 1n, base: 1n } } });
+    put('worker', { type: 'fact', key: migrationKey(mint), value: { obs, graduatedAtMs: now - agoMs, migratedAtMs: now - agoMs, pool, quoteAtMigration: 1n, price: { quote: 1n, base: 1n } } });
   };
   put('worker', { type: 'fact', key: HALT_KEY, value: { halted: false, reasons: [] } });
-  return { strategy, jump, shortlist, now: () => now };
+  const noTails = (): string[][] => (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' && r.reasons[0] === NO_TAIL ? [r.reasons.slice(2)] : []));
+  return { strategy, jump, shortlist, noTails, now: () => now };
 };
 
 describe('REC-1: a rejected candidate\'s pool is watched until its window end plus the maximum hold', () => {
@@ -107,5 +108,32 @@ describe('REC-1: a rejected candidate\'s pool is watched until its window end pl
     watch.sync();
     expect(calls).toEqual([`watch ${POOL} P${P3}`, 'unwatch 1 not watched']);
     expect(P3).toBeGreaterThan(P1);
+  });
+
+  it('at most maxTails (default 3) at once: one more is not watched and is logged `no tail` with the cap, a freed slot is used again', () => {
+    expect(config.maxTails).toBe(3);
+    const w = world({ maxTails: 1 });
+    const A = M1;
+    const B = 'CuieVDEDtLo7FypA9SbLM9saXFdb1dsshEkyErMqkRQq';
+    const C = '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin';
+    const poolOf = { [A]: POOL, [B]: 'TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM', [C]: 'So11111111111111111111111111111111111111112' };
+    w.shortlist(A, config.windowToMs - 5_000, poolOf[A]);
+    w.shortlist(B, config.windowToMs - 5_000, poolOf[B]);
+    w.jump(400);
+    w.jump(6_000);
+    // A took the one tail; B is logged, not watched.
+    expect([...w.strategy.tail.keys()]).toHaveLength(1);
+    const kept = [...w.strategy.tail.keys()][0]!;
+    const refused = kept === A ? B : A;
+    expect(w.noTails()).toEqual([[refused, 'tail cap 1']]);
+    expect(w.strategy.watchedPools().has(poolOf[refused]!)).toBe(false);
+    // After the first tail ends, the next rejected candidate gets the slot.
+    w.jump(T_MAX + 1_000);
+    expect(w.strategy.tail.size).toBe(0);
+    w.shortlist(C, config.windowToMs - 5_000, poolOf[C]);
+    w.jump(400);
+    w.jump(6_000);
+    expect([...w.strategy.tail.keys()]).toEqual([C]);
+    expect(w.noTails()).toHaveLength(1);
   });
 });
