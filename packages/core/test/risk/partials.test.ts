@@ -1,14 +1,13 @@
 // RISK-PARTIAL (audit M3): what a partial sale realized counts in equity at its own time; a closed trade's whole result
 // stays one trade for the statistics, its partial parts at their times and the rest at the close.
 import { describe, expect, test } from 'vitest';
-import { usd } from '../../src/config/index.ts';
 import { NO_LATCHES, evaluateEntry, riskSnapshot } from '../../src/risk/index.ts';
-import type { MicroUsd } from '../../src/units/index.ts';
-import { DAY_START, HOUR, MINT_A, NOW, account, baseInput, baseRequest, codes, trade } from './helpers.ts';
+import type { Lamports } from '../../src/units/index.ts';
+import { DAY_START, HOUR, MINT_A, NOW, account, baseInput, baseRequest, codes, trade, usd } from './helpers.ts';
 
-const neg = (x: string) => -usd(x) as MicroUsd;
+const neg = (x: string) => -usd(x) as Lamports;
 const snap = (a: ReturnType<typeof account>) => riskSnapshot(baseInput({ account: a }))!;
-const held = (partials: { atMs: number; pnl: MicroUsd }[], notional = usd('2.5')) =>
+const held = (partials: { atMs: number; pnl: Lamports }[], notional = usd('2.5')) =>
   ({ mint: MINT_A, openedAtMs: DAY_START - 3 * HOUR, notional, mark: notional, markAtMs: NOW - 500, partials });
 
 describe('partial sales in the account figures (RISK-PARTIAL)', () => {

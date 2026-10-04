@@ -1,13 +1,12 @@
 // One test per control R1 to R16 (docs/ARCHITECTURE.md §8). Each refuses an entry for that control's reason and shows
 // that an exit on the same inputs still passes: no risk control ever blocks an exit.
 import { describe, expect, test } from 'vitest';
-import { TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
+import { TRIAL_POLICY, startSession } from '../../src/config/index.ts';
 import { type EntryAllowed, evaluateEntry, evaluateExit, maxTradeCosts } from '../../src/risk/index.ts';
-import { type MicroUsd, lamports, lamportsToMicroUsd } from '../../src/units/index.ts';
+import { type Lamports, lamports, lamportsToMicroUsd } from '../../src/units/index.ts';
 import {
   DAY_START, HOUR, MINT_A, MINT_B, MINUTE, NETWORK, NOW, PRICE, RENT, SHALLOW_POOL, SOL, WEEK_START,
-  account, baseInput, baseRequest, clockAt, codes, expectRefusedButExitPasses, latches, quoterFor, trade,
-} from './helpers.ts';
+  account, baseInput, baseRequest, clockAt, codes, expectRefusedButExitPasses, latches, quoterFor, trade, usd, atOpening } from './helpers.ts';
 
 const allowed = (d: ReturnType<typeof evaluateEntry>): EntryAllowed => {
   if (!d.allow) throw new Error(`expected allow, got ${JSON.stringify(d.reasons)}`);
@@ -19,7 +18,7 @@ const EARLIER_THIS_WEEK = WEEK_START + 5 * HOUR;
 describe('baseline', () => {
   test('a healthy account and a sound entry is allowed at the minimum size, with a reservation of q + C', () => {
     const d = allowed(evaluateEntry(baseInput(), baseRequest()));
-    expect(d.notional).toBe(TRIAL_POLICY.capital.minNotional);
+    expect(d.notional).toBe(atOpening(TRIAL_POLICY.capital.minNotional, 'ceil'));
     expect(d.reservation.amount).toBe(d.spendLamports + d.maxCostsLamports);
     expect(d.reservation.limits.maxCount).toBe(TRIAL_POLICY.positions.maxOpen);
     expect(d.trips).toEqual([]);
@@ -38,14 +37,11 @@ describe('baseline', () => {
 });
 
 describe('R1 bankroll and valuation', () => {
-  test('no SOL price refuses', () => {
-    const input = baseInput();
-    expectRefusedButExitPasses({ ...input, market: { ...input.market, solPrice: null } }, baseRequest(), 'sol_price_unknown', true);
-  });
-  test('a stale SOL price refuses', () => {
-    const input = baseInput();
-    const stale = { value: PRICE, atMs: NOW - TRIAL_POLICY.gates.maxQuoteAgeMs - 1 };
-    expectRefusedButExitPasses({ ...input, market: { ...input.market, solPrice: stale } }, baseRequest(), 'sol_price_stale', true);
+  test('SOL-BOOKS: no valid opening SOL price refuses (the bankroll cannot be fixed in SOL), and the exit still passes', () => {
+    for (const openingSolPrice of [0n, -1n]) {
+      const input = baseInput({ account: { ...account(), openingSolPrice: openingSolPrice as never } });
+      expectRefusedButExitPasses(input, baseRequest(), 'bankroll_invalid', true);
+    }
   });
   test('an open position with no executable value refuses, and so does a stale one', () => {
     const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('2'), mark: null, markAtMs: null };
@@ -61,14 +57,12 @@ describe('R1 bankroll and valuation', () => {
 
 describe('R2 trade size range', () => {
   test('sizes stay at the minimum until the owner approves a step-up, then rise within the maximum', () => {
-    expect(allowed(evaluateEntry(baseInput(), baseRequest())).notional).toBe(TRIAL_POLICY.capital.minNotional);
+    expect(allowed(evaluateEntry(baseInput(), baseRequest())).notional).toBe(atOpening(TRIAL_POLICY.capital.minNotional, 'ceil'));
     const up = allowed(evaluateEntry(baseInput({ latches: latches({ sizeStepUpApproved: true }) }), baseRequest()));
-    expect(up.notional).toBeGreaterThan(TRIAL_POLICY.capital.minNotional);
-    expect(up.notional).toBeLessThanOrEqual(TRIAL_POLICY.capital.maxNotional);
-    // The reported notional (the q that R15 compares next time) is the spend valued rounded down.
-    const spendUsd = (r: 'floor' | 'ceil') => lamportsToMicroUsd(lamports(up.spendLamports), PRICE, r);
-    expect(spendUsd('ceil')).not.toBe(spendUsd('floor'));
-    expect(up.notional).toBe(spendUsd('floor'));
+    expect(up.notional).toBeGreaterThan(atOpening(TRIAL_POLICY.capital.minNotional, 'ceil'));
+    expect(up.notional).toBeLessThanOrEqual(atOpening(TRIAL_POLICY.capital.maxNotional));
+    // SOL-BOOKS: the reported notional (the q that R15 compares next time) is the SOL spent, exactly.
+    expect(up.notional).toBe(lamports(up.spendLamports));
   });
   test('a 10% drawdown from the high-water mark returns to the minimum', () => {
     const input = baseInput({
@@ -76,7 +70,7 @@ describe('R2 trade size range', () => {
       account: account({ closedTrades: [trade(LAST_WEEK - HOUR, '5'), trade(LAST_WEEK, '-2.5', { notional: usd('5') })] }),
     });
     const d = allowed(evaluateEntry(input, baseRequest()));
-    expect(d.notional).toBe(TRIAL_POLICY.capital.minNotional);
+    expect(d.notional).toBe(atOpening(TRIAL_POLICY.capital.minNotional, 'ceil'));
     expect(d.caps.some((c) => c.name.includes('drawdown'))).toBe(true);
   });
   test('a pool too small for the minimum is refused (the size range is never broken)', () => {
@@ -172,7 +166,7 @@ describe('R7 daily loss', () => {
   });
   test('across the 2026-10-04 change: the 23-hour day ends at 00:00 AEDT, 2026-10-04T13:00Z', () => {
     const at = (ms: number) => baseInput({
-      clock: clockAt(ms), market: { solPrice: { value: PRICE, atMs: ms }, solBalance: { value: lamports(SOL), atMs: ms }, regime: 'on' },
+      clock: clockAt(ms), market: { solBalance: { value: lamports(SOL), atMs: ms }, regime: 'on' },
       account: account({ closedTrades: [trade(Date.UTC(2026, 9, 3, 14, 30), '-1.5', { notional: usd('5') })] }),
     });
     const req = (ms: number) => baseRequest({ quoteAtMs: ms });
@@ -205,7 +199,7 @@ describe('R8 consecutive losses', () => {
     const tomorrow = DAY_START + 24 * HOUR + MINUTE;
     const next = baseInput({
       ...input, clock: clockAt(tomorrow),
-      market: { solPrice: { value: PRICE, atMs: tomorrow }, solBalance: { value: lamports(SOL), atMs: tomorrow }, regime: 'on' },
+      market: { solBalance: { value: lamports(SOL), atMs: tomorrow }, regime: 'on' },
     });
     expect(codes(evaluateEntry(next, baseRequest({ quoteAtMs: tomorrow })))).not.toContain('loss_day_pause');
   });
@@ -235,7 +229,7 @@ describe('R9 weekly loss', () => {
     const nextWeek = WEEK_START + 7 * 24 * HOUR + HOUR;
     const mk = (l: ReturnType<typeof latches>) => baseInput({
       latches: l, clock: clockAt(nextWeek),
-      market: { solPrice: { value: PRICE, atMs: nextWeek }, solBalance: { value: lamports(SOL), atMs: nextWeek }, regime: 'on' },
+      market: { solBalance: { value: lamports(SOL), atMs: nextWeek }, regime: 'on' },
     });
     expect(codes(evaluateEntry(mk(latches({ weeklyTrippedAtMs: tripped })), baseRequest({ quoteAtMs: nextWeek })))).toContain('weekly_review');
     allowed(evaluateEntry(mk(latches({ weeklyTrippedAtMs: tripped, weeklyReviewedAtMs: tripped + HOUR })), baseRequest({ quoteAtMs: nextWeek })));
@@ -260,7 +254,7 @@ describe('R10 kill switch', () => {
     expect(codes(evaluateEntry(input, baseRequest()))).toContain('kill_switch');
   });
   test('a withdrawal lowers equity and the mark together and does not trip it', () => {
-    const input = baseInput({ account: account({ flows: [{ atMs: LAST_WEEK, amount: -usd('4') as MicroUsd }] }) });
+    const input = baseInput({ account: account({ flows: [{ atMs: LAST_WEEK, amount: -usd('4') as Lamports }] }) });
     const d = allowed(evaluateEntry(input, baseRequest()));
     expect(d.snapshot).toMatchObject({ equity: usd('16'), highWaterMark: usd('16') });
   });
@@ -392,7 +386,7 @@ describe('R15 no martingale, policy locked', () => {
   });
   test('the same minimum size after a loss at the minimum is allowed (lamport rounding of q_min is not a raise)', () => {
     const input = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK, '-0.3')] }) });
-    expect(allowed(evaluateEntry(input, baseRequest())).notional).toBe(TRIAL_POLICY.capital.minNotional);
+    expect(allowed(evaluateEntry(input, baseRequest())).notional).toBe(atOpening(TRIAL_POLICY.capital.minNotional, 'ceil'));
   });
 });
 
@@ -434,10 +428,11 @@ describe('every reason names its control, and exits survive anything', () => {
     // A clean account with nothing tripped is told apart: no fault.
     expect(evaluateExit(baseInput()).fault).toBeNull();
   });
-  test('a figure check: the snapshot reports loss in micro-dollars against Melbourne boundaries', () => {
+  test('a figure check: the snapshot reports loss in lamports against Melbourne boundaries', () => {
     const input = baseInput({ account: account({ closedTrades: [trade(DAY_START + HOUR, '-0.75')] }) });
     const d = evaluateEntry(input, baseRequest());
     expect(d.snapshot).toMatchObject({ dayStartMs: DAY_START, weekStartMs: WEEK_START, dayLoss: usd('0.75'), weekLoss: usd('0.75') });
-    expect(lamportsToMicroUsd(lamports(SOL), PRICE, 'floor')).toBe(PRICE);
+    // $0.75 at the $100 opening price is 0.0075 SOL.
+    expect(usd('0.75')).toBe(7_500_000n);
   });
 });

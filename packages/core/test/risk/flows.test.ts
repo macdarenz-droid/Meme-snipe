@@ -3,18 +3,18 @@
 // equity, so the drawdown percentage is unchanged. The daily limit is a fixed dollar amount, so today's loss is counted
 // in dollars, flow-neutral. Every test here uses a flow; the same figures without the flow are checked alongside.
 import { describe, expect, test } from 'vitest';
-import { TRIAL_POLICY, usd } from '../../src/config/index.ts';
+import { TRIAL_POLICY } from '../../src/config/index.ts';
 import { type EntryAllowed, NO_LATCHES, economicNav, evaluateEntry, evaluateExit, evaluateWithdrawal, maxTradeCosts, opsReserve } from '../../src/risk/index.ts';
-import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
+import { type Lamports, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
 import { fixedCosts } from '../../src/costs/index.ts';
-import { DAY_START, HOUR, MINUTE, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest, codes, latches, trade } from './helpers.ts';
+import { DAY_START, HOUR, MINUTE, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest, codes, latches, trade, usd, atOpening } from './helpers.ts';
 
 const ofBpsUsd = (amount: bigint, bps: number) => mulDiv(amount, BigInt(bps), 10_000n, 'floor');
 
 const LAST_WEEK = WEEK_START - 30 * HOUR;
 const THIS_WEEK = WEEK_START + 5 * HOUR;
-const neg = (v: bigint) => -v as MicroUsd;
-const flow = (atMs: number, amount: bigint) => ({ atMs, amount: amount as MicroUsd });
+const neg = (v: bigint) => -v as Lamports;
+const flow = (atMs: number, amount: bigint) => ({ atMs, amount: amount as Lamports });
 
 describe('R10 and R6a: drawdown is time-weighted', () => {
   test('withdrawing $4 at E $15 / HWM $20 does not trip the kill switch (drawdown stays 25%)', () => {
@@ -25,13 +25,13 @@ describe('R10 and R6a: drawdown is time-weighted', () => {
     expect(d.trips).not.toContain('kill_switch');
     expect(evaluateExit(input).trips).toEqual([]);
     expect(d.snapshot).toMatchObject({ equity: usd('11') });
-    expect(d.snapshot?.highWaterMark).toBe(usd('14.666667')); // 20 x 11/15, rounded up
+    expect(d.snapshot?.highWaterMark).toBe(146_666_667n); // 20 x 11/15 in lamports (2e8 x 11/15), rounded up
   });
   test('a deposit during a drawdown does not hide it: the mark scales up with equity', () => {
     const closed = [trade(LAST_WEEK - HOUR, '-5', { notional: usd('5') })];
     const d = evaluateEntry(baseInput({ account: account({ closedTrades: closed, flows: [flow(LAST_WEEK, usd('5'))] }) }), baseRequest());
     expect(d.snapshot).toMatchObject({ equity: usd('20') });
-    expect(d.snapshot?.highWaterMark).toBe(usd('26.666667')); // 20 x 20/15: still a 25% drawdown
+    expect(d.snapshot?.highWaterMark).toBe(266_666_667n); // 20 x 20/15 in lamports, rounded up: still a 25% drawdown
   });
   test('the same 25% drawdown trips nothing with or without a flow, and 30% trips with or without one', () => {
     for (const f of [[], [flow(LAST_WEEK, neg(usd('4')))], [flow(LAST_WEEK, usd('10'))]]) {
@@ -96,9 +96,9 @@ describe('RISK-1b item 2: planned R, stressed executable loss and reserved loss'
   test('$2 at a 20% stop with 25% emergency slippage: stressed loss is $0.80 plus C; reserved is q + C', () => {
     const d = evaluateEntry(baseInput(), baseRequest({ stopBps: 2000 })) as EntryAllowed;
     expect(d.allow).toBe(true);
-    const c = lamportsToMicroUsd(d.maxCostsLamports, PRICE, 'ceil');
+    const c = d.maxCostsLamports;
     expect(d.loss.stressed).toBe(usd('0.8') + c);
-    expect(d.loss.reserved).toBe(lamportsToMicroUsd(d.reservation.amount, PRICE, 'ceil'));
+    expect(d.loss.reserved).toBe(d.reservation.amount);
     expect(d.reservation.amount).toBe(d.spendLamports + d.maxCostsLamports);
   });
   test('for every stop the figures are ordered, and the reservation bounds the stressed loss', () => {
@@ -107,7 +107,7 @@ describe('RISK-1b item 2: planned R, stressed executable loss and reserved loss'
       if (!d.allow) continue;
       expect(d.loss.plannedRisk, String(stopBps)).toBeLessThanOrEqual(d.loss.stressed);
       expect(d.loss.stressed, String(stopBps)).toBeLessThanOrEqual(d.loss.reserved);
-      expect(d.loss.plannedRisk, String(stopBps)).toBeLessThanOrEqual(ofBpsUsd(TRIAL_POLICY.capital.bankroll, TRIAL_POLICY.loss.plannedRiskBps));
+      expect(d.loss.plannedRisk, String(stopBps)).toBeLessThanOrEqual(ofBpsUsd(atOpening(TRIAL_POLICY.capital.bankroll), TRIAL_POLICY.loss.plannedRiskBps));
     }
   });
 });
@@ -118,7 +118,7 @@ describe('RISK-1b edges (mutation)', () => {
     // Trade first: E $15 at HWM $20, then the withdrawal scales the mark to $14.67 (25% down). Flow first would give
     // HWM $16 and E $11, a 31% drawdown and a false kill.
     const input = baseInput({ account: account({ closedTrades: [trade(LAST_WEEK, '-5', { notional: usd('5') })], flows: [flow(LAST_WEEK, neg(usd('4')))] }) });
-    expect(evaluateEntry(input, baseRequest()).snapshot?.highWaterMark).toBe(usd('14.666667'));
+    expect(evaluateEntry(input, baseRequest()).snapshot?.highWaterMark).toBe(146_666_667n);
     expect(kill(input)).toBe(false);
   });
   test('money added after equity reached zero does not erase the drawdown', () => {
@@ -138,34 +138,36 @@ describe('RISK-1b edges (mutation)', () => {
   });
   test('the weekly base follows equity through the week: a loss before a withdrawal sets the ratio', () => {
     const input = baseInput({ account: account({ closedTrades: [trade(THIS_WEEK, '-1', { notional: usd('5') })], flows: [flow(THIS_WEEK + HOUR, neg(usd('5')))] }) });
-    expect(evaluateEntry(input, baseRequest()).snapshot?.weekBase).toBe(usd('14.736843')); // 20 x 14/19, rounded up
+    expect(evaluateEntry(input, baseRequest()).snapshot?.weekBase).toBe(147_368_422n); // 20 x 14/19 in lamports, rounded up
   });
   test('the dollar count alone trips at its exact limit (rounded down) after a deposit', () => {
-    // $20.000001 at week start, +$10 deposit, then -$4: $4 = floor(20% of 20.000001) in dollars; the time-weighted
-    // count ($4 of a $30.000001 base) is far from its limit.
+    // 200,000,001 lamports at week start, +$10 deposit, then -$4: 40,000,000 = floor(20% of 200,000,001); the
+    // time-weighted count ($4 of a $30 base) is far from its limit.
     const closed = [trade(THIS_WEEK + 2 * HOUR, '-4', { notional: usd('5') })];
-    const input = baseInput({ account: account({ openingEquity: usd('20.000001'), closedTrades: closed, flows: [flow(THIS_WEEK + HOUR, usd('10'))] }) });
+    const input = baseInput({ account: account({ openingEquity: 200_000_001n as Lamports, closedTrades: closed, flows: [flow(THIS_WEEK + HOUR, usd('10'))] }) });
     expect(evaluateExit(input).tripped.map((r) => r.code)).toContain('weekly_loss');
   });
   test('the time-weighted count alone trips at its exact limit (rounded down) after a withdrawal', () => {
-    // $20, withdraw $9.999999 → base $10.000001; then -$2 = floor(20% of the base); in dollars $2 is far from $4.
+    // $20, withdraw 99,999,996 lamports → base 100,000,004; then -$2 (20,000,000) = floor(20% of the base, 20,000,000.8);
+    // in lamports against week-start equity $2 is far from $4.
     const closed = [trade(THIS_WEEK + 2 * HOUR, '-2', { notional: usd('5') })];
-    const input = baseInput({ account: account({ closedTrades: closed, flows: [flow(THIS_WEEK + HOUR, neg(usd('9.999999')))] }) });
+    const input = baseInput({ account: account({ closedTrades: closed, flows: [flow(THIS_WEEK + HOUR, neg(99_999_996n))] }) });
     const d = evaluateExit(input);
     expect(d.trips).toContain('weekly_loss');
-    expect(evaluateEntry(input, baseRequest()).snapshot?.weekBase).toBe(usd('10.000001'));
+    expect(evaluateEntry(input, baseRequest()).snapshot?.weekBase).toBe(100_000_004n);
   });
   test('after a deposit the dollar count can be the tighter room', () => {
-    // -$1.30 then +$10: in dollars $2.70 remains (q + C, about $2.79, does not fit); time-weighted about $4.14 would.
-    const input = baseInput({ account: account({ closedTrades: [trade(THIS_WEEK, '-1.3', { notional: usd('5') })], flows: [flow(THIS_WEEK + HOUR, usd('10'))] }) });
+    // -$1.40 then +$10: against week-start equity $2.60 remains (q + C, about $2.66 at the $100 opening price, does not
+    // fit); time-weighted about $4.00 would.
+    const input = baseInput({ account: account({ closedTrades: [trade(THIS_WEEK, '-1.4', { notional: usd('5') })], flows: [flow(THIS_WEEK + HOUR, usd('10'))] }) });
     expect(codes(evaluateEntry(input, baseRequest()))).toEqual(['full_loss_week']);
   });
   test('the loss figures are exact: planned R rounded up with F, stressed loss rounded up with C', () => {
     const d = evaluateEntry(baseInput({ latches: { killTrippedAtMs: null, killRearmedAtMs: null, weeklyTrippedAtMs: null, weeklyReviewedAtMs: null, lossReviewedAtMs: null, sizeStepUpApproved: true } }), baseRequest({ stopBps: 1777 })) as EntryAllowed;
     expect(d.allow).toBe(true);
     const q = d.notional;
-    const f = lamportsToMicroUsd(fixedCosts(NETWORK, RENT).total as Lamports, PRICE, 'ceil');
-    const c = lamportsToMicroUsd(d.maxCostsLamports, PRICE, 'ceil');
+    const f = (fixedCosts(NETWORK, RENT).total as Lamports);
+    const c = d.maxCostsLamports;
     const plannedNum = q * BigInt(1777 + TRIAL_POLICY.costGate.maxRoundTripBps);
     expect(plannedNum % 10_000n).not.toBe(0n); // so rounding shows
     expect(d.loss.plannedRisk).toBe(mulDiv(q, BigInt(1777 + TRIAL_POLICY.costGate.maxRoundTripBps), 10_000n, 'ceil') + f);
@@ -183,11 +185,11 @@ describe('equity units use one executable valuation before and after each flow',
     // 11/15 (not by realized 16/20), so the drawdown stays 25% and nothing trips.
     const f = { atMs: LAST_WEEK, amount: neg(usd('4')), navBefore: usd('15') };
     const input = baseInput({ account: account({ flows: [f] }) });
-    expect(evaluateEntry(input, baseRequest()).snapshot?.highWaterMark).toBe(usd('14.666667'));
+    expect(evaluateEntry(input, baseRequest()).snapshot?.highWaterMark).toBe(146_666_667n);
   });
   test('a flow without a positive valuation is refused (unknown is never assumed)', () => {
     for (const navBefore of [0n, -1n]) {
-      const input = baseInput({ account: account({ flows: [{ atMs: LAST_WEEK, amount: usd('1'), navBefore: navBefore as MicroUsd }] }) });
+      const input = baseInput({ account: account({ flows: [{ atMs: LAST_WEEK, amount: usd('1'), navBefore: navBefore as Lamports }] }) });
       expect(codes(evaluateEntry(input, baseRequest())), String(navBefore)).toContain('bankroll_invalid');
     }
   });
@@ -298,22 +300,21 @@ describe('daily and weekly boundaries: the stricter of the realized-boundary los
 });
 
 // ---------- Third-opinion rulings: capital measured in SOL as well ----------
-describe('capital is the lower of ledger equity and wallet-marked equity', () => {
-  // Wallet-marked equity: wallet SOL above the operations floor at a fresh SOL/USD price, plus open positions marked as
-  // today. Ledger equity stays $20 throughout these tests; only the wallet's value moves.
-  const walletAt = (usdValue: string, price = PRICE) => {
-    const lamportsFor = microUsdToLamports(usd(usdValue), price, 'ceil') + TRIAL_POLICY.reserve.opsFloor;
+describe('capital is the lower of ledger equity and the wallet\'s SOL (SOL-BOOKS)', () => {
+  // Wallet-marked equity: the wallet's SOL (the operations floor included, as in opening equity) plus open positions
+  // marked as today. Ledger equity stays $20 at the opening price (2e8 lamports) throughout; only the wallet's SOL moves.
+  const walletAt = (usdValue: string) => {
     const i = baseInput();
-    return { ...i, market: { ...i.market, solBalance: { value: lamports(lamportsFor), atMs: NOW }, solPrice: { value: price, atMs: NOW } } };
+    return { ...i, market: { ...i.market, solBalance: { value: usd(usdValue), atMs: NOW } } };
   };
-  test('a 30% fall in SOL reaches the kill line: the kill switch trips on economic NAV and latches', () => {
+  test('a wallet 30% short of its SOL reaches the kill line: the kill switch trips on economic NAV and latches', () => {
     const d = evaluateEntry(walletAt('14'), baseRequest());
     expect(codes(d)).toEqual(expect.arrayContaining(['kill_switch', 'wallet_below_kill_line']));
     expect(d.snapshot?.walletEquity).toBe(usd('14'));
     expect(d.snapshot?.nav).toBe(usd('14'));
     expect(d.trips).toEqual(['kill_switch']); // supervisor, 2026-10-03: economic NAV in both directions, latched
   });
-  test('a smaller fall tightens planned risk (R5) and the weekly room before anything trips', () => {
+  test('a smaller shortfall tightens planned risk (R5) and the weekly room before anything trips', () => {
     // $17 of wallet capital: 2.75% is $0.4675, so 1R at a 20% stop (plus the 5% cost ceiling) no longer fits $2;
     // at $20 it does.
     expect(codes(evaluateEntry(walletAt('17'), baseRequest({ stopBps: 2000 })))).toEqual(['planned_risk']);
@@ -321,7 +322,7 @@ describe('capital is the lower of ledger equity and wallet-marked equity', () =>
     // $12: 20% is $2.40, less than q + C.
     expect(codes(evaluateEntry(walletAt('12'), baseRequest()))).toContain('full_loss_week');
   });
-  test('a rise in SOL loosens nothing', () => {
+  test('more SOL in the wallet than the ledger shows loosens nothing', () => {
     const at20 = evaluateEntry(walletAt('20'), baseRequest()) as EntryAllowed;
     const at40 = evaluateEntry(walletAt('40'), baseRequest()) as EntryAllowed;
     expect(at20.allow && at40.allow).toBe(true);
@@ -329,10 +330,10 @@ describe('capital is the lower of ledger equity and wallet-marked equity', () =>
     expect(at40.caps.map((c) => [c.name, c.notional]).filter(([n]) => n !== 'cash after the operations reserve'))
       .toEqual(at20.caps.map((c) => [c.name, c.notional]).filter(([n]) => n !== 'cash after the operations reserve'));
   });
-  test('a stale or missing SOL price, or no balance, means no entry', () => {
+  test('no balance means no entry; no SOL/USD price is read at all', () => {
     const i = walletAt('20');
-    expect(codes(evaluateEntry({ ...i, market: { ...i.market, solPrice: null } }, baseRequest()))).toContain('sol_price_unknown');
     expect(codes(evaluateEntry({ ...i, market: { ...i.market, solBalance: null } }, baseRequest()))).toContain('balance_unknown');
+    expect(Object.keys(i.market).sort()).toEqual(['regime', 'solBalance']);
   });
   test('after a withdrawal the weekly room is at most 20% of what remains', () => {
     // No loss this week; $15 withdrawn leaves $5 of capital: the room is $1, so q + C cannot fit.
@@ -345,10 +346,11 @@ describe('capital is the lower of ledger equity and wallet-marked equity', () =>
 describe('R10 on economic NAV per unit', () => {
   // Economic NAV: wallet SOL above the operations floor at the fresh price, plus positions at their executable marks,
   // gains included. Ledger equity stays $20 in these tests unless a trade says otherwise.
-  const lamportsFor = (usdValue: string) => microUsdToLamports(usd(usdValue), PRICE, 'ceil') + TRIAL_POLICY.reserve.opsFloor;
-  const at = (wallet: string, patch: Parameters<typeof account>[0] = {}, extra: Partial<Parameters<typeof baseInput>[0]> = {}) => {
+  // SOL-BOOKS: the wallet's whole SOL, the operations floor included as in opening equity; a bigint is raw lamports.
+  const lamportsFor = (value: string | bigint) => (typeof value === 'bigint' ? value : usd(value));
+  const at = (wallet: string | bigint, patch: Parameters<typeof account>[0] = {}, extra: Partial<Parameters<typeof baseInput>[0]> = {}) => {
     const i = baseInput({ account: account(patch), ...extra });
-    return { ...i, market: { ...i.market, solBalance: { value: lamports(lamportsFor(wallet)), atMs: NOW }, solPrice: { value: PRICE, atMs: NOW } } };
+    return { ...i, market: { ...i.market, solBalance: { value: lamports(lamportsFor(wallet)), atMs: NOW } } };
   };
   const mark = (atMs: number, nav: string) => ({ atMs, nav: usd(nav) });
 
@@ -401,9 +403,9 @@ describe('R10 on economic NAV per unit', () => {
         const i = at('15', { navMarks: peak, closedTrades: [trade(NOW - 100, '0')] });
         return { ...i, market: { ...i.market, solBalance: { value: i.market.solBalance?.value ?? lamports(0n), atMs: NOW - 200 } } };
       })()],
-      ['a stale SOL price', (() => {
+      ['a stale balance', (() => {
         const i = at('15', { navMarks: peak });
-        return { ...i, market: { ...i.market, solPrice: { value: PRICE, atMs: NOW - 60_000 } } };
+        return { ...i, market: { ...i.market, solBalance: { value: i.market.solBalance?.value ?? lamports(0n), atMs: NOW - 60_000 } } };
       })()],
     ];
     for (const [name, input] of cases) {
@@ -451,25 +453,22 @@ describe('R10 on economic NAV per unit', () => {
     expect(roomy.reservation.limits.maxHeld).toBeLessThanOrEqual(ledgerOnly.reservation.limits.maxHeld);
   });
 
-  test('the ledger kill line still applies when a rise in SOL lifts NAV', () => {
-    // A $6 trading loss: ledger equity $14, its kill line $14. NAV is $40 at a higher SOL price.
+  test('the ledger kill line still applies when the wallet holds more SOL than the ledger', () => {
+    // A $6 trading loss: ledger equity $14, its kill line $14. The wallet holds $40 of SOL (at the opening price).
     const d = evaluateEntry(at('40', { closedTrades: [trade(LAST_WEEK, '-6', { notional: usd('5') })] }), baseRequest());
     expect(d.snapshot?.nav).toBe(usd('40'));
     expect(d.trips).toEqual(['kill_switch']);
   });
 
-  test('daily and weekly loss count trading only: a fall in SOL is not a loss there', () => {
+  test('daily and weekly loss count trading only: SOL leaving the wallet outside a trade is not a trading loss there', () => {
     const d = evaluateEntry(at('17'), baseRequest());
     expect(d.snapshot).toMatchObject({ dayLoss: 0n, weekLoss: 0n, weekBaseLoss: 0n, nav: usd('17') });
   });
 
-  test('figures are reported in SOL as well, and not without a price', () => {
+  test('SOL-BOOKS: every figure is in lamports, with the bankroll and the day and week limits in the snapshot', () => {
     const d = evaluateEntry(at('21', { navMarks: [mark(LAST_WEEK, '30')] }), baseRequest());
-    const inSol = (v: string) => microUsdToLamports(usd(v), PRICE, 'floor');
-    expect(d.snapshot).toMatchObject({ equitySol: inSol('20'), capitalSol: inSol('20'), navSol: inSol('21'), navHighWaterMarkSol: inSol('30') });
-    const i = at('21');
-    const none = evaluateEntry({ ...i, market: { ...i.market, solPrice: null } }, baseRequest());
-    expect(none.snapshot).toMatchObject({ equitySol: null, capitalSol: null, navSol: null, navHighWaterMarkSol: null });
+    // B = $20 at the opening price; R7 at 7.5% of B, R9 at 20% of week-start equity.
+    expect(d.snapshot).toMatchObject({ equity: usd('20'), capital: usd('20'), nav: usd('21'), navHighWaterMark: usd('30'), bankroll: usd('20'), dailyLimit: usd('1.5'), weeklyLimit: usd('4') });
   });
 
   test('a recorded NAV that is not positive or from the future is refused', () => {
@@ -478,18 +477,19 @@ describe('R10 on economic NAV per unit', () => {
   });
 
   test('economicNav is the one definition: SOL above the floor plus every mark; no valid mark, no value', () => {
-    const p = (m: MicroUsd | null) => ({ mint: MINT_B, openedAtMs: NOW, notional: usd('5'), mark: m, markAtMs: NOW });
-    expect(economicNav(TRIAL_POLICY, lamports(lamportsFor('10')), PRICE, [p(usd('3')), p(usd('7'))])).toBe(usd('20'));
-    expect(economicNav(TRIAL_POLICY, lamports(lamportsFor('10')), PRICE, [p(null)])).toBeNull();
-    expect(economicNav(TRIAL_POLICY, lamports(lamportsFor('10')), PRICE, [p(neg(1n))])).toBeNull();
+    const p = (m: Lamports | null) => ({ mint: MINT_B, openedAtMs: NOW, notional: usd('5'), mark: m, markAtMs: NOW });
+    expect(economicNav(lamports(lamportsFor('10')), [p(usd('3')), p(usd('7'))])).toBe(usd('20'));
+    expect(economicNav(lamports(lamportsFor('10')), [p(null)])).toBeNull();
+    expect(economicNav(lamports(lamportsFor('10')), [p(neg(1n))])).toBeNull();
   });
 });
 
 describe('RISK-1b edges (mutation): NAV, capital in SOL, withdrawals', () => {
-  const lamportsFor = (usdValue: string) => microUsdToLamports(usd(usdValue), PRICE, 'ceil') + TRIAL_POLICY.reserve.opsFloor;
-  const at = (wallet: string, patch: Parameters<typeof account>[0] = {}, extra: Partial<Parameters<typeof baseInput>[0]> = {}) => {
+  // SOL-BOOKS: the wallet's whole SOL, the operations floor included as in opening equity; a bigint is raw lamports.
+  const lamportsFor = (value: string | bigint) => (typeof value === 'bigint' ? value : usd(value));
+  const at = (wallet: string | bigint, patch: Parameters<typeof account>[0] = {}, extra: Partial<Parameters<typeof baseInput>[0]> = {}) => {
     const i = baseInput({ account: account(patch), ...extra });
-    return { ...i, market: { ...i.market, solBalance: { value: lamports(lamportsFor(wallet)), atMs: NOW }, solPrice: { value: PRICE, atMs: NOW } } };
+    return { ...i, market: { ...i.market, solBalance: { value: lamports(lamportsFor(wallet)), atMs: NOW } } };
   };
   const mark = (atMs: number, nav: string) => ({ atMs, nav: usd(nav) });
   const req = (amount: bigint, reconciled = true) => ({ amount: lamports(amount), network: NETWORK, rent: RENT, reconciled });
@@ -510,36 +510,37 @@ describe('RISK-1b edges (mutation): NAV, capital in SOL, withdrawals', () => {
     expect(evaluateEntry(at('15', { navMarks: peak }, { latches: future }), baseRequest()).snapshot?.navHighWaterMark).toBe(usd('30'));
   });
 
-  test('the NAV kill line rounds up, to the micro-dollar', () => {
-    const peak = { navMarks: [mark(LAST_WEEK, '30.000001')] }; // 70% is 21.0000007
-    expect(evaluateEntry(at('21.000001', peak), baseRequest()).trips).toEqual(['kill_switch']);
-    expect(evaluateEntry(at('21.000002', peak), baseRequest()).trips).toEqual([]);
+  test('the NAV kill line rounds up, to the lamport', () => {
+    const peak = { navMarks: [{ atMs: LAST_WEEK, nav: 300_000_001n as Lamports }] }; // 70% is 210,000,000.7
+    expect(evaluateEntry(at(210_000_001n, peak), baseRequest()).trips).toEqual(['kill_switch']);
+    expect(evaluateEntry(at(210_000_002n, peak), baseRequest()).trips).toEqual([]);
   });
 
-  test('a zero mark is a valid mark, and a NAV of one micro-dollar is a valid record', () => {
+  test('a zero mark is a valid mark, and a NAV of one lamport is a valid record', () => {
     const p = { mint: MINT_B, openedAtMs: NOW, notional: usd('5'), mark: usd('0'), markAtMs: NOW };
-    expect(economicNav(TRIAL_POLICY, lamports(lamportsFor('10')), PRICE, [p])).toBe(usd('10'));
-    expect(codes(evaluateEntry(at('20', { navMarks: [{ atMs: LAST_WEEK, nav: 1n as MicroUsd }] }), baseRequest()))).not.toContain('bankroll_invalid');
+    expect(economicNav(lamports(lamportsFor('10')), [p])).toBe(usd('10'));
+    expect(codes(evaluateEntry(at('20', { navMarks: [{ atMs: LAST_WEEK, nav: 1n as Lamports }] }), baseRequest()))).not.toContain('bankroll_invalid');
   });
 
   test('wallet-marked equity adds the open positions, and a zero capital is reported as zero SOL', () => {
     const open = { mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('5'), mark: usd('3'), markAtMs: NOW - 100 };
     expect(evaluateEntry(at('10', { openPositions: [open] }), baseRequest()).snapshot?.walletEquity).toBe(usd('13'));
     const empty = evaluateEntry(at('0'), baseRequest()).snapshot;
-    expect(empty).toMatchObject({ walletEquity: 0n, capital: 0n, capitalSol: 0n, navSol: 0n });
+    expect(empty).toMatchObject({ walletEquity: 0n, capital: 0n, nav: 0n });
   });
 
-  test('a price of one micro-dollar is still a price', () => {
-    const i = baseInput();
-    const d = evaluateEntry({ ...i, market: { ...i.market, solPrice: { value: 1n as MicroUsd, atMs: NOW } } }, baseRequest());
-    expect(d.snapshot?.walletEquity).not.toBeNull();
+  test('an opening price of one micro-dollar is still a price', () => {
+    const i = baseInput({ account: { ...account(), openingSolPrice: 1n as never } });
+    const d = evaluateEntry(i, baseRequest());
+    expect(codes(d)).not.toContain('bankroll_invalid');
+    expect(d.snapshot?.bankroll).toBe(20_000_000n * 1_000_000_000n);
   });
 
-  test('the weekly room of 20% of capital rounds down, to the micro-dollar', () => {
-    // Capital $19.000003: 20% is $3.8000006, the tightest room (kill room $5.000003, weekly room $4).
-    const d = evaluateEntry(at('19.000003'), baseRequest()) as EntryAllowed;
+  test('the weekly room of 20% of capital rounds down, to the lamport', () => {
+    // Capital 190,000,003 lamports: 20% is 38,000,000.6, the tightest room (kill room about $5, weekly room $4).
+    const d = evaluateEntry(at(190_000_003n), baseRequest()) as EntryAllowed;
     expect(d.allow).toBe(true);
-    expect(d.reservation.limits.maxHeld).toBe(microUsdToLamports(usd('3.8'), PRICE, 'floor'));
+    expect(d.reservation.limits.maxHeld).toBe(38_000_000n);
   });
 
   test('the marked week change is net of this week\'s flows', () => {
@@ -653,3 +654,26 @@ describe('a withdrawal that leaves no positive valuation is refused (RISK-1b rev
     expect(invalid(d)).not.toContain('a withdrawal leaves no positive valuation');
   });
 });
+
+// SOL-BOOKS (owner, 2026-10-05: the books are in SOL): each limit in SOL is its dollar limit at the opening SOL price,
+// rounded so it is never looser; no live price enters, so a SOL/USD move alone changes no figure and no limit.
+describe('SOL-BOOKS: limits in SOL equal their dollar meaning at the opening price, never looser', () => {
+  const ofBpsFloor = (v: bigint, b: number) => (v * BigInt(b)) / 10_000n;
+  for (const opening of ['100', '119.46', '87.123456', '250']) {
+    test(`at an opening price of $${opening}`, () => {
+      const price = solPriceMicroUsd(opening);
+      const a = { ...account(), openingSolPrice: price, openingEquity: microUsdToLamports(TRIAL_POLICY.capital.bankroll, price, 'floor') };
+      const s = evaluateEntry(baseInput({ account: a }), baseRequest()).snapshot!;
+      const toLamports = (v: bigint) => microUsdToLamports(v as never, price, 'floor');
+      // B and R7: the dollar figures converted at the opening price, rounded down, so never more SOL than the dollar limit.
+      expect(s.bankroll).toBe(toLamports(TRIAL_POLICY.capital.bankroll));
+      expect(s.dailyLimit).toBe(ofBpsFloor(s.bankroll, TRIAL_POLICY.loss.dailyBps));
+      expect(s.dailyLimit <= toLamports(ofBpsFloor(TRIAL_POLICY.capital.bankroll, TRIAL_POLICY.loss.dailyBps))).toBe(true);
+      // R9 at week start equal to B: the same share of the same SOL bankroll.
+      expect(s.weeklyLimit).toBe(ofBpsFloor(s.bankroll, TRIAL_POLICY.loss.weeklyBps));
+      // R10: the kill line is 70% of the opening SOL, and NAV equals its high-water mark with nothing traded.
+      expect(s.nav).toBe(s.navHighWaterMark);
+    });
+  }
+});
+

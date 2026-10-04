@@ -1,18 +1,17 @@
 // Exact edges of each control: every comparison is tested on both sides of its boundary, and every latch term on its
 // own, so a changed comparison or a dropped term fails a test (RISK-1 review, mutation testing).
 import { describe, expect, test } from 'vitest';
-import { TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
+import { TRIAL_POLICY, startSession, usd as dollars } from '../../src/config/index.ts';
 import { costAtSize, feasibleSize, fixedCosts } from '../../src/costs/index.ts';
 import { type EntryAllowed, evaluateEntry, evaluateExit, maxTradeCosts, melbourneWeek, opsReserve } from '../../src/risk/index.ts';
-import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
+import { type Lamports, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
 import {
   DAY_START, DEEP_POOL, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest,
-  clockAt, codes, latches, quoterFor, trade,
-} from './helpers.ts';
+  clockAt, codes, latches, quoterFor, trade, usd, atOpening, LAMPORT_UNIT, policyUsd } from './helpers.ts';
 
 const at = (ms: number, patch: Parameters<typeof baseInput>[0] = {}) => baseInput({
   clock: clockAt(ms),
-  market: { solPrice: { value: PRICE, atMs: ms }, solBalance: { value: lamports(SOL), atMs: ms }, regime: 'on' },
+  market: { solBalance: { value: lamports(SOL), atMs: ms }, regime: 'on' },
   ...patch,
 });
 const req = (ms: number, patch: Parameters<typeof baseRequest>[0] = {}) => baseRequest({ quoteAtMs: ms, ...patch });
@@ -63,7 +62,7 @@ describe('R9 latch on its own (no loss this week)', () => {
 describe('R14 cost gate at its exact edges', () => {
   // The extra proportional cost moves the round trip about 1 ppm per ppm, so the tests can land on an exact value.
   const roundTripAt = (extraPpm: bigint) => {
-    const spend = microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil');
+    const spend = atOpening(TRIAL_POLICY.capital.minNotional, 'ceil');
     const c = costAtSize(quoterFor(DEEP_POOL), spend, NETWORK, RENT, extraPpm);
     if (!c.ok) throw new Error('unquotable');
     const num = c.trade.totalLoss * 1_000_000n;
@@ -117,9 +116,9 @@ describe('R14 cost gate at its exact edges', () => {
 
 // ---------- Exact cost figures used by the edge tests ----------
 const costs = maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent: RENT });
-const C_USD = lamportsToMicroUsd(costs.total, PRICE, 'ceil');
-const LADDER_USD = lamportsToMicroUsd(lamports(costs.ladderWorst), PRICE, 'ceil');
-const neg = (v: bigint) => -v as MicroUsd;
+const C_USD = costs.total;
+const LADDER_USD = lamports(costs.ladderWorst);
+const neg = (v: bigint) => -v as Lamports;
 const LAST_WEEK = WEEK_START - 30 * HOUR;
 const THIS_WEEK = WEEK_START + 5 * HOUR;
 
@@ -153,10 +152,12 @@ describe('R6 terms', () => {
 
 describe('R10 kill line and high-water mark', () => {
   test('the kill line rounds up: equity a fraction above 70% of the mark still trips', () => {
-    const at70 = baseInput({ account: account({ openingEquity: usd('20.000001'), closedTrades: [trade(LAST_WEEK, '-6', { notional: usd('5') })] }) });
-    expect(codes(evaluateEntry(at70, baseRequest()))).toContain('kill_switch'); // 14.000001 <= ceil(14.0000007)
-    const above = baseInput({ account: account({ openingEquity: usd('20.000004'), closedTrades: [trade(LAST_WEEK, '-6', { notional: usd('5') })] }) });
-    expect(codes(evaluateEntry(above, baseRequest()))).not.toContain('kill_switch'); // 14.000004 > ceil(14.0000028)
+    // In lamports (SOL-BOOKS): opening 200,000,001 less 60,000,000 is 140,000,001 <= ceil(140,000,000.7).
+    const at70 = baseInput({ account: account({ openingEquity: 200_000_001n as Lamports, closedTrades: [trade(LAST_WEEK, '-6', { notional: usd('5') })] }) });
+    expect(codes(evaluateEntry(at70, baseRequest()))).toContain('kill_switch');
+    // 140,000,004 > ceil(140,000,002.8).
+    const above = baseInput({ account: account({ openingEquity: 200_000_004n as Lamports, closedTrades: [trade(LAST_WEEK, '-6', { notional: usd('5') })] }) });
+    expect(codes(evaluateEntry(above, baseRequest()))).not.toContain('kill_switch');
   });
   test('after a re-arm the mark restarts and then follows gains', () => {
     const closed = [trade(LAST_WEEK, '-6', { notional: usd('5') }), trade(LAST_WEEK + 2 * HOUR, '1')];
@@ -173,18 +174,19 @@ describe('R10 kill line and high-water mark', () => {
 
 describe('R2 size range', () => {
   test('a tighter maximum caps a stepped-up size', () => {
-    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, maxNotional: usd('2.5') } });
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, maxNotional: dollars('2.5') } });
     const d = evaluateEntry(baseInput({ session, latches: latches({ sizeStepUpApproved: true }) }), baseRequest()) as EntryAllowed;
     expect(d.allow).toBe(true);
     expect(d.notional).toBeLessThanOrEqual(usd('2.5'));
     expect(d.notional).toBeGreaterThan(usd('2.4'));
   });
   test('when the minimum does not clear its costs but larger sizes do, only a step-up trades', () => {
-    const r = { stopBps: 500, edgePpm: 60_000n, medianTargetBps: 9000, rent: { ...RENT, oneTime: 600_000n } };
+    // SOL-BOOKS: q_min is $2 at the $100 opening price (20,000,000 lamports); a 5% edge puts it under its fixed costs.
+    const r = { stopBps: 500, edgePpm: 50_000n, medianTargetBps: 9000, rent: { ...RENT, oneTime: 600_000n } };
     expect(codes(evaluateEntry(baseInput(), baseRequest(r)))).toEqual(['expected_net_not_positive']);
     const up = evaluateEntry(baseInput({ latches: latches({ sizeStepUpApproved: true }) }), baseRequest(r)) as EntryAllowed;
     expect(up.allow).toBe(true);
-    expect(up.notional).toBeGreaterThan(TRIAL_POLICY.capital.minNotional);
+    expect(up.notional).toBeGreaterThan(atOpening(TRIAL_POLICY.capital.minNotional, 'ceil'));
   });
 });
 
@@ -205,7 +207,7 @@ describe('R4 reserve and cash', () => {
     const rent = { ...RENT, transient: 500_000_000n }; // a large transient need: cash binds while the wallet's value stays high
     const reserve = opsReserve(TRIAL_POLICY, { rent }, costs.perExitAttempt);
     const c = maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent }).total;
-    const minSpend = microUsdToLamports(usd('2.000001'), PRICE, 'ceil');
+    const minSpend = usd('2.000001');
     const withBalance = (v: bigint) => { const i = baseInput(); return { ...i, market: { ...i.market, solBalance: { value: lamports(v), atMs: NOW } } }; };
     const enough = reserve + c + rent.transient + minSpend;
     expect(evaluateEntry(withBalance(enough), baseRequest({ rent })).allow).toBe(true);
@@ -337,10 +339,11 @@ describe('R12, R15, R16 edges', () => {
 });
 
 describe('freshness edges', () => {
-  const withPrice = (atMs: number) => { const i = baseInput(); return { ...i, market: { ...i.market, solPrice: { value: PRICE, atMs } } }; };
-  test('a price exactly at the age limit is fresh; one from the future is not', () => {
-    expect(evaluateEntry(withPrice(NOW - TRIAL_POLICY.gates.maxQuoteAgeMs), baseRequest()).allow).toBe(true);
-    expect(codes(evaluateEntry(withPrice(NOW + 1), baseRequest()))).toContain('sol_price_stale');
+  // SOL-BOOKS: risk reads no SOL/USD price; the wallet balance is the fresh input every figure needs.
+  const withBalanceAt = (atMs: number) => { const i = baseInput(); return { ...i, market: { ...i.market, solBalance: { value: lamports(SOL), atMs } } }; };
+  test('a balance exactly at the age limit is fresh; one from the future is not', () => {
+    expect(evaluateEntry(withBalanceAt(NOW - TRIAL_POLICY.gates.maxQuoteAgeMs), baseRequest()).allow).toBe(true);
+    expect(codes(evaluateEntry(withBalanceAt(NOW + 1), baseRequest()))).toContain('balance_stale');
   });
 });
 
@@ -384,21 +387,21 @@ describe('history and marks', () => {
   test('negative held reservations are refused', () => {
     expect(codes(evaluateEntry(baseInput({ account: account({ heldReservations: -1n as Lamports }) }), baseRequest()))).toContain('bankroll_invalid');
   });
-  const pos = (mark: MicroUsd | null, markAtMs: number | null) => ({ mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('2'), mark, markAtMs });
+  const pos = (mark: Lamports | null, markAtMs: number | null) => ({ mint: MINT_B, openedAtMs: NOW - HOUR, notional: usd('2'), mark, markAtMs });
   test('a mark with no time, or a negative mark, is unknown and counts as a total loss', () => {
-    for (const p of [pos(usd('2'), null), pos(-1n as MicroUsd, NOW - 100), pos(null, NOW - 100)]) {
+    for (const p of [pos(usd('2'), null), pos(-1n as Lamports, NOW - 100), pos(null, NOW - 100)]) {
       const d = evaluateEntry(baseInput({ account: account({ openPositions: [p] }) }), baseRequest());
       expect(codes(d)).toContain('mark_unknown');
       expect(d.snapshot).toMatchObject({ equity: usd('18'), openExposure: 0n });
     }
   });
   test('a mark of zero is a known total loss, not an unknown one', () => {
-    const d = evaluateEntry(baseInput({ account: account({ openPositions: [pos(0n as MicroUsd, NOW - 100)] }) }), baseRequest());
+    const d = evaluateEntry(baseInput({ account: account({ openPositions: [pos(0n as Lamports, NOW - 100)] }) }), baseRequest());
     expect(codes(d)).not.toContain('mark_unknown');
     expect(d.snapshot).toMatchObject({ equity: usd('18'), openExposure: 0n });
   });
   test('a fresh mark is not stale, and a one-micro-dollar mark is worth one micro-dollar', () => {
-    const d = evaluateEntry(baseInput({ account: account({ openPositions: [pos(1n as MicroUsd, NOW - 100)] }) }), baseRequest());
+    const d = evaluateEntry(baseInput({ account: account({ openPositions: [pos(1n as Lamports, NOW - 100)] }) }), baseRequest());
     expect(codes(d)).not.toContain('mark_stale');
     expect(codes(d)).not.toContain('mark_unknown');
     expect(d.snapshot?.openExposure).toBe(1n);
@@ -410,7 +413,7 @@ describe('history and marks', () => {
     expect(codes(evaluateEntry(tiny, baseRequest()))).not.toContain('bankroll_invalid');
     const emptyWeek = baseInput({ account: account({ openingEquity: usd('0'), flows: [{ atMs: THIS_WEEK, amount: usd('20') }] }) });
     expect(codes(evaluateEntry(emptyWeek, baseRequest()))).toContain('bankroll_invalid');
-    const tinyWeek = baseInput({ account: account({ openingEquity: 1n as MicroUsd, flows: [{ atMs: THIS_WEEK, amount: usd('20') }] }) });
+    const tinyWeek = baseInput({ account: account({ openingEquity: 1n as Lamports, flows: [{ atMs: THIS_WEEK, amount: usd('20') }] }) });
     expect(codes(evaluateEntry(tinyWeek, baseRequest()))).not.toContain('bankroll_invalid');
   });
   test('a bad clock throws from an entry and never from an exit', () => {
@@ -421,13 +424,14 @@ describe('history and marks', () => {
 });
 
 describe('price and costs', () => {
-  const withPrice = (value: bigint) => { const i = baseInput(); return { ...i, market: { ...i.market, solPrice: { value: value as MicroUsd, atMs: NOW } } }; };
-  test('a zero SOL price is refused without dividing by it', () => {
-    expect(codes(evaluateEntry(withPrice(0n), baseRequest()))).toEqual(['sol_price_stale']);
+  // SOL-BOOKS: the only price risk uses is the session's opening SOL price, which fixes the policy's dollars in SOL.
+  const withOpening = (value: bigint) => baseInput({ account: { ...account(), openingSolPrice: value as never } });
+  test('a zero opening SOL price is refused without dividing by it', () => {
+    expect(codes(evaluateEntry(withOpening(0n), baseRequest()))).toContain('bankroll_invalid');
   });
-  test('a one-micro-dollar SOL price is a price (the trade then fails on cash, not on the price)', () => {
-    const c = codes(evaluateEntry(withPrice(1n), baseRequest()));
-    expect(c).not.toContain('sol_price_stale');
+  test('a one-micro-dollar opening price is a price (the trade then fails on cash, not on the price)', () => {
+    const c = codes(evaluateEntry(withOpening(1n), baseRequest()));
+    expect(c).not.toContain('bankroll_invalid');
     expect(c).toContain('ops_reserve');
   });
   test('costs that cannot be computed refuse as quote_failed', () => {
@@ -492,29 +496,31 @@ describe('R8 review window', () => {
 });
 
 describe('rounding edges', () => {
-  test('the daily trigger rounds down: with B = $19.999999 a loss of $1.499999 trips it', () => {
-    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, bankroll: usd('19.999999') } });
-    const input = baseInput({ session, account: account({ closedTrades: [trade(DAY_START + HOUR, '-1.499999')] }) });
+  test('the daily trigger rounds down: with B = $19.999999 (199,999,990 lamports) a loss of 14,999,999 lamports trips it', () => {
+    // 7.5% of 199,999,990 is 14,999,999.25: rounded down, the loss reaches it; rounded up it would not.
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, bankroll: dollars('19.999999') } });
+    const input = baseInput({ session, account: account({ closedTrades: [trade(DAY_START + HOUR, '0', { netPnl: -14_999_999n as Lamports })] }) });
     expect(evaluateExit(input).tripped.map((r) => r.code)).toContain('daily_loss');
   });
-  test('the weekly trigger rounds down: with $20.000001 at week start a $4 loss trips it', () => {
-    const input = baseInput({ account: account({ openingEquity: usd('20.000001'), closedTrades: [trade(THIS_WEEK, '-4', { notional: usd('5') })] }) });
+  test('the weekly trigger rounds down: with 200,000,001 lamports at week start a 40,000,000 loss trips it', () => {
+    // 20% is 40,000,000.2: rounded down, a $4 loss reaches it.
+    const input = baseInput({ account: account({ openingEquity: 200_000_001n as Lamports, closedTrades: [trade(THIS_WEEK, '-4', { notional: usd('5') })] }) });
     expect(evaluateExit(input).tripped.map((r) => r.code)).toContain('weekly_loss');
   });
   test('R4 cash: one lamport short of the minimum spend refuses', () => {
     const rent = { ...RENT, transient: 500_000_000n }; // a large transient need: cash binds while the wallet's value stays high
     const reserve = opsReserve(TRIAL_POLICY, { rent }, costs.perExitAttempt);
     const c = maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent }).total;
-    const minSpendUsd = lamportsToMicroUsd(microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil'), PRICE, 'ceil');
-    const need = reserve + c + rent.transient + microUsdToLamports(minSpendUsd, PRICE, 'ceil');
+    const minSpendUsd = atOpening(TRIAL_POLICY.capital.minNotional, 'ceil');
+    const need = reserve + c + rent.transient + minSpendUsd;
     const withBalance = (v: bigint) => { const i = baseInput(); return { ...i, market: { ...i.market, solBalance: { value: lamports(v), atMs: NOW } } }; };
     expect(evaluateEntry(withBalance(need), baseRequest({ rent })).allow).toBe(true);
     expect(codes(evaluateEntry(withBalance(need - 1n), baseRequest({ rent })))).toEqual(['ops_reserve']);
   });
   test('held reservations are valued rounded up: the first refused amount matches the exact rule', () => {
     // Weekly allowance binds: 4,000,000 - ceil(usd(held)) - C >= minimum spend (micro-dollars) to trade.
-    const minSpendUsd = lamportsToMicroUsd(microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil'), PRICE, 'ceil');
-    const fits = (held: bigint) => usd('4') - lamportsToMicroUsd(lamports(held), PRICE, 'ceil') - C_USD >= minSpendUsd;
+    const minSpendUsd = atOpening(TRIAL_POLICY.capital.minNotional, 'ceil');
+    const fits = (held: bigint) => usd('4') - lamports(held) - C_USD >= minSpendUsd;
     const allowed = (held: bigint) => evaluateEntry(baseInput({ account: account({ heldReservations: lamports(held) }) }), baseRequest()).allow;
     let lo = 0n;
     let hi = SOL;
@@ -522,21 +528,18 @@ describe('rounding edges', () => {
     expect(fits(lo)).toBe(true);
     expect(fits(hi)).toBe(false);
   });
-  test("an open position's exit ladder is valued rounded up", () => {
-    // At $119.461 the ladder is not a whole number of micro-dollars, so the rounding shows.
-    const price = solPriceMicroUsd('119.461');
-    const ladder = lamportsToMicroUsd(lamports(costs.ladderWorst), price, 'ceil');
-    expect(ladder).not.toBe(lamportsToMicroUsd(lamports(costs.ladderWorst), price, 'floor'));
-    const c = lamportsToMicroUsd(costs.total, price, 'ceil');
-    // full_loss_kill_line appears once 6,000,000 - x - ceil(ladder) - C < q_min.
+  test("an open position's exit ladder counts in full, to the lamport", () => {
+    // SOL-BOOKS: the ladder and C are lamports already, with no rounding of their own.
+    const ladder = costs.ladderWorst;
+    const c = costs.total;
+    // full_loss_kill_line appears once $6 - x - ladder - C < q_min.
     const appears = (x: bigint) => {
-      const i = baseInput({ account: account({ openPositions: [
-        { mint: MINT_B, openedAtMs: NOW - HOUR, notional: x as MicroUsd, mark: x as MicroUsd, markAtMs: NOW - 100 },
+      const input = baseInput({ account: account({ openPositions: [
+        { mint: MINT_B, openedAtMs: NOW - HOUR, notional: x as Lamports, mark: x as Lamports, markAtMs: NOW - 100 },
       ] }) });
-      const input = { ...i, market: { ...i.market, solPrice: { value: price, atMs: NOW } } };
       return codes(evaluateEntry(input, baseRequest())).includes('full_loss_kill_line');
     };
-    const first = usd('6') - ladder - c - TRIAL_POLICY.capital.minNotional + 1n;
+    const first = usd('6') - ladder - c - atOpening(TRIAL_POLICY.capital.minNotional, 'ceil') + 1n;
     expect(appears(first)).toBe(true);
     expect(appears(first - 1n)).toBe(false);
     expect(appears(usd('0.01'))).toBe(false);
@@ -545,12 +548,12 @@ describe('rounding edges', () => {
    * First one-time rent (lamports) at which R5's cap, with the given roundings, falls below what a trade needs: q_min as
    * a whole number of lamports, valued rounded up.
    */
-  const r5Edge = (bankroll: MicroUsd, qMinNotional: MicroUsd, stopBps: number, planned: 'floor' | 'ceil', division: 'floor' | 'ceil') => {
-    const qMin = lamportsToMicroUsd(microUsdToLamports(qMinNotional, PRICE, 'ceil'), PRICE, 'ceil');
+  const r5Edge = (bankroll: Lamports, qMinNotional: Lamports, stopBps: number, planned: 'floor' | 'ceil', division: 'floor' | 'ceil') => {
+    const qMin = qMinNotional;
     const d = BigInt(stopBps + TRIAL_POLICY.costGate.maxRoundTripBps);
     const budget = mulDiv(bankroll, BigInt(TRIAL_POLICY.loss.plannedRiskBps), 10_000n, planned);
     const capAt = (oneTime: bigint) => {
-      const fUsd = lamportsToMicroUsd(lamports(fixedCosts(NETWORK, { ...RENT, oneTime }).total), PRICE, 'ceil');
+      const fUsd = (lamports(fixedCosts(NETWORK, { ...RENT, oneTime }).total));
       return mulDiv(budget - fUsd, 10_000n, d, division);
     };
     let lo = 0n;
@@ -560,40 +563,41 @@ describe('rounding edges', () => {
   };
   test('R5 divides rounding down: at the exact edge planned_risk refuses', () => {
     // Find a (q_min, stop) where rounding the division up would move the edge (it never can at q_min = $2).
-    let found: { qMin: MicroUsd; stop: number; edge: bigint } | null = null;
-    for (let q = 0; q < 60 && !found; q++) {
-      const qMin = (usd('1.99999') + BigInt(q)) as MicroUsd;
+    let found: { qMin: Lamports; stop: number; edge: bigint } | null = null;
+    // q_min steps by 10 lamports ($0.000001 at the opening price), so each candidate is an exact policy dollar amount.
+    for (let q = 0; q < 600 && !found; q++) {
+      const qMin = (usd('1.99999') + 10n * BigInt(q)) as Lamports;
       for (let stop = 1000; stop <= 2000 && !found; stop++) {
-        const floorEdge = r5Edge(TRIAL_POLICY.capital.bankroll, qMin, stop, 'floor', 'floor');
-        if (r5Edge(TRIAL_POLICY.capital.bankroll, qMin, stop, 'floor', 'ceil') > floorEdge) found = { qMin, stop, edge: floorEdge };
+        const floorEdge = r5Edge(atOpening(TRIAL_POLICY.capital.bankroll), qMin, stop, 'floor', 'floor');
+        if (r5Edge(atOpening(TRIAL_POLICY.capital.bankroll), qMin, stop, 'floor', 'ceil') > floorEdge) found = { qMin, stop, edge: floorEdge };
       }
     }
     expect(found).not.toBeNull();
     const { qMin, stop, edge } = found!;
-    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, minNotional: qMin } });
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, minNotional: policyUsd(qMin) } });
     expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: stop, rent: { ...RENT, oneTime: edge } })))).toContain('planned_risk');
     expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: stop, rent: { ...RENT, oneTime: edge - 1n } })))).not.toContain('planned_risk');
   });
   test('R5 takes 2.75% of the bankroll rounding down: at the exact edge planned_risk refuses', () => {
     const bankroll = usd('19.999999');
-    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, bankroll } });
-    const floorEdge = r5Edge(bankroll, TRIAL_POLICY.capital.minNotional, 1500, 'floor', 'floor');
-    const ceilEdge = r5Edge(bankroll, TRIAL_POLICY.capital.minNotional, 1500, 'ceil', 'floor');
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, bankroll: policyUsd(bankroll) } });
+    const floorEdge = r5Edge(bankroll, atOpening(TRIAL_POLICY.capital.minNotional, 'ceil'), 1500, 'floor', 'floor');
+    const ceilEdge = r5Edge(bankroll, atOpening(TRIAL_POLICY.capital.minNotional, 'ceil'), 1500, 'ceil', 'floor');
     expect(ceilEdge).toBeGreaterThan(floorEdge);
     expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: 1500, rent: { ...RENT, oneTime: floorEdge } })))).toContain('planned_risk');
     expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ stopBps: 1500, rent: { ...RENT, oneTime: floorEdge - 1n } })))).not.toContain('planned_risk');
   });
   test('sizing adds no hidden cost: the break-even edge matches CORE-2 exactly', () => {
-    const minSpend = microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil');
+    const minSpend = atOpening(TRIAL_POLICY.capital.minNotional, 'ceil');
     const big = usd('100');
     // The same top of the range as the evaluator: its tightest cap other than the minimum-size stage.
     const ref = evaluateEntry(baseInput(), baseRequest()) as EntryAllowed;
     const qCap = ref.caps.filter((c) => !c.name.startsWith('minimum')).reduce((m, c) => (c.notional < m ? c.notional : m), big);
     const coreTrades = (edgePpm: bigint) => {
       const r = feasibleSize({
-        quote: quoterFor(DEEP_POOL), solPrice: PRICE, edgePpm, network: NETWORK, rent: RENT, extraPpm: 0n,
-        policy: { minNotional: TRIAL_POLICY.capital.minNotional, maxNotional: qCap, maxImpactPpm: 10_000n },
-        caps: { lossAllowance: big, riskBudget: big, executableDepth: big, cash: big },
+        quote: quoterFor(DEEP_POOL), solPrice: LAMPORT_UNIT, edgePpm, network: NETWORK, rent: RENT, extraPpm: 0n,
+        policy: { minNotional: minSpend as never, maxNotional: qCap as never, maxImpactPpm: 10_000n },
+        caps: { lossAllowance: big as never, riskBudget: big as never, executableDepth: big as never, cash: big as never },
       });
       return r.trade && r.range.minLamports <= minSpend;
     };
@@ -608,19 +612,19 @@ describe('rounding edges', () => {
     for (const stepUp of [false, true]) {
       const d = evaluateEntry(baseInput({ session, latches: latches({ sizeStepUpApproved: stepUp }) }), baseRequest()) as EntryAllowed;
       expect(d.allow).toBe(true);
-      expect(d.spendLamports).toBe(microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil'));
+      expect(d.spendLamports).toBe(atOpening(TRIAL_POLICY.capital.minNotional, 'ceil'));
     }
   });
   test('the caps list names the maximum notional', () => {
     const d = evaluateEntry(baseInput(), baseRequest()) as EntryAllowed;
-    expect(d.caps.find((c) => c.name === 'maximum notional')?.notional).toBe(TRIAL_POLICY.capital.maxNotional);
+    expect(d.caps.find((c) => c.name === 'maximum notional')?.notional).toBe(atOpening(TRIAL_POLICY.capital.maxNotional));
   });
 });
 
 describe('risk re-review of 0f7d142', () => {
   test("today's profit does not offset the costs of the next trade: L_day is floored at zero", () => {
     // B = $6: the daily trigger is $0.45, below C (about $0.49). A +$0.20 day must not make room for C.
-    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, bankroll: usd('6'), minNotional: usd('0.5'), maxNotional: usd('1') } });
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, bankroll: dollars('6'), minNotional: dollars('0.5'), maxNotional: dollars('1') } });
     const input = baseInput({ session, account: account({ openingEquity: usd('6'), closedTrades: [trade(NOW - HOUR, '0.2')] }) });
     const d = evaluateEntry(input, baseRequest());
     expect(d.snapshot?.dayLoss).toBe(0n);
@@ -628,10 +632,10 @@ describe('risk re-review of 0f7d142', () => {
   });
   test('the notional multiple cap is liquidity / multiple, to the micro-dollar', () => {
     const session = startSession({ ...TRIAL_POLICY, liquidity: { ...TRIAL_POLICY.liquidity, floorNotionalMultiple: 10_000 } });
-    const minSpendUsd = lamportsToMicroUsd(microUsdToLamports(TRIAL_POLICY.capital.minNotional, PRICE, 'ceil'), PRICE, 'ceil');
-    const liquidity = (minSpendUsd * 10_000n) as MicroUsd;
+    const minSpendUsd = atOpening(TRIAL_POLICY.capital.minNotional, 'ceil');
+    const liquidity = (minSpendUsd * 10_000n) as Lamports;
     expect(evaluateEntry(baseInput({ session }), baseRequest({ poolLiquidity: liquidity })).allow).toBe(true);
-    expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ poolLiquidity: (liquidity - 1n) as MicroUsd })))).toEqual(['liquidity_floor']);
+    expect(codes(evaluateEntry(baseInput({ session }), baseRequest({ poolLiquidity: (liquidity - 1n) as Lamports })))).toEqual(['liquidity_floor']);
   });
 });
 

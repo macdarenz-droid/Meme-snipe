@@ -5,16 +5,15 @@ import { describe, expect, test } from 'vitest';
 import { openLedger } from '../../src/ledger/index.ts';
 import { entryIntent } from '../fixtures.ts';
 import { tempPath } from '../ledger/helpers.ts';
-import { PolicyError, TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
+import { PolicyError, TRIAL_POLICY, startSession } from '../../src/config/index.ts';
 import { type Mint, intentId, reservationId } from '../../src/domain/index.ts';
 import {
   type ClosedTrade, type EntryAllowed, type OpenPosition, type ReservationRequest, type ReservationStore, type RiskInput, evaluateEntry, maxTradeCosts,
   melbourneWeek, reserve,
 } from '../../src/risk/index.ts';
-import { type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
+import { type Lamports, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../src/units/index.ts';
 import {
-  HOUR, MINT_A, MINT_B, MemoryReservationStore, NETWORK, NOW, PRICE, RENT, SOL, account, baseInput, baseRequest, clockAt, codes, trade,
-} from './helpers.ts';
+  HOUR, MINT_A, MINT_B, MemoryReservationStore, NETWORK, NOW, PRICE, RENT, SOL, account, baseInput, baseRequest, clockAt, codes, trade, usd } from './helpers.ts';
 
 const request = (amount: bigint, maxHeld: bigint, maxCount = 1, n = 1, accountVersion = 0n): ReservationRequest => ({
   reservationId: reservationId(`r-${n}`), intentId: intentId(`i-${n}`), amount: lamports(amount), limits: { maxHeld: lamports(maxHeld), maxCount },
@@ -47,16 +46,16 @@ describe('reservation edge cases', () => {
     const d = evaluateEntry(baseInput(), baseRequest()) as EntryAllowed;
     expect(d.allow).toBe(true);
     // Allowance = min(E - 0.7 HWM, 0.2 E_week_start - L_week) = min($6, $4) = $4, in lamports.
-    expect(d.reservation.limits.maxHeld).toBe(microUsdToLamports(usd('4'), PRICE, 'floor'));
+    expect(d.reservation.limits.maxHeld).toBe(usd('4'));
     expect(reserve(new MemoryReservationStore(), d.reservation, NOW)).toEqual({ ok: true, heldAfter: d.reservation.amount });
   });
   test('an allowance that only just fits the minimum entry is allowed; one that misses by a cent is refused', () => {
     const probe = evaluateEntry(baseInput(), baseRequest()) as EntryAllowed;
-    const needUsd = lamportsToMicroUsd(probe.reservation.amount, PRICE, 'ceil');
+    const needUsd = probe.reservation.amount;
     // Weekly allowance = 0.2 * 20 - L_week. A loss earlier this week leaves just enough, or a cent too little.
     const room = usd('4') - needUsd;
     const withLoss = (loss: bigint) => baseInput({
-      account: account({ closedTrades: [{ ...trade(NOW - 30 * HOUR, '0'), netPnl: -loss as MicroUsd }] }),
+      account: account({ closedTrades: [{ ...trade(NOW - 30 * HOUR, '0'), netPnl: -loss as Lamports }] }),
     });
     expect(codes(evaluateEntry(withLoss(room - usd('0.01')), baseRequest()))).toEqual([]);
     expect(codes(evaluateEntry(withLoss(room + usd('0.01')), baseRequest()))).toContain('full_loss_week');
@@ -100,18 +99,18 @@ const oracleLimitLamports = (input: RiskInput, weekStart: number): bigint => {
   const kill = eq - mulDiv(hwm, BigInt(TRIAL_POLICY.loss.killSwitchFloorBps), 10_000n, 'ceil');
   const week = mulDiv(weekStartEq, BigInt(TRIAL_POLICY.loss.weeklyBps), 10_000n, 'floor') - (weekStartEq - eq > 0n ? weekStartEq - eq : 0n);
   const allowance = kill < week ? kill : week;
-  return allowance > 0n ? microUsdToLamports(allowance as MicroUsd, PRICE, 'floor') : 0n;
+  return allowance > 0n ? (allowance as Lamports) : 0n;
 };
 
 describe('property: no sequence of inputs lets the total reserved exceed the limit', () => {
-  const ladderUsd = lamportsToMicroUsd(lamports(maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent: RENT }).ladderWorst), PRICE, 'ceil');
+  const ladderUsd = (lamports(maxTradeCosts(TRIAL_POLICY, { network: NETWORK, rent: RENT }).ladderWorst));
   test.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])('seed %i, 300 steps', (seed) => {
     const r = rng(seed);
     const store = new MemoryReservationStore();
     const session = startSession(TRIAL_POLICY);
     let now = NOW;
     const closed: ClosedTrade[] = [];
-    const held: { id: string; mint: Mint; amount: bigint; notional: MicroUsd }[] = [];
+    const held: { id: string; mint: Mint; amount: bigint; notional: Lamports }[] = [];
     const open: (OpenPosition & { amount: bigint })[] = [];
     let n = 0;
     let reserved = 0;
@@ -122,7 +121,7 @@ describe('property: no sequence of inputs lets the total reserved exceed the lim
         closedTrades: [...closed], unresolvedEntries: held.map((h) => ({ mint: h.mint })), heldReservations: lamports(store.total),
         openPositions: open.map((p) => ({ ...p, markAtMs: now })), version: store.version,
       }),
-      market: { solPrice: { value: PRICE, atMs: now }, solBalance: { value: lamports(SOL * BigInt(1 + Math.floor(r() * 3))), atMs: now }, regime: 'on' },
+      market: { solBalance: { value: lamports(SOL * BigInt(1 + Math.floor(r() * 3))), atMs: now }, regime: 'on' },
     });
     let old = snapshot();
     for (let step = 0; step < 300; step++) {
@@ -143,7 +142,7 @@ describe('property: no sequence of inputs lets the total reserved exceed the lim
           held.push({ id: d.reservation.reservationId, mint: reqs[0]!.mint, amount: d.reservation.amount, notional: d.notional });
           // Checked against the account as it is now, not as the decision saw it.
           const limit = oracleLimitLamports(snapshot(), melbourneWeek(now).start);
-          const openLamports = open.reduce((t, p) => t + microUsdToLamports((p.notional + ladderUsd) as MicroUsd, PRICE, 'ceil'), 0n);
+          const openLamports = open.reduce((t, p) => t + ((p.notional + ladderUsd) as Lamports), 0n);
           expect(store.total + openLamports).toBeLessThanOrEqual(limit);
         }
       } else if (action < 0.6 && held.length > 0) {
@@ -155,8 +154,8 @@ describe('property: no sequence of inputs lets the total reserved exceed the lim
         // The position closes with a loss up to its full reservation, or a gain.
         const p = open.shift()!;
         store.touch();
-        const worst = lamportsToMicroUsd(lamports(p.amount), PRICE, 'ceil');
-        closed.push({ ...trade(now, '0'), mint: p.mint, notional: p.notional, netPnl: BigInt(Math.floor((r() * 1.5 - 1) * Number(worst))) as MicroUsd });
+        const worst = lamports(p.amount);
+        closed.push({ ...trade(now, '0'), mint: p.mint, notional: p.notional, netPnl: BigInt(Math.floor((r() * 1.5 - 1) * Number(worst))) as Lamports });
       } else {
         now += Math.floor(r() * 30 * HOUR);
       }
