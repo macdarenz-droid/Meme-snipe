@@ -129,6 +129,8 @@ export interface Health {
   /** Always false in a dry run: no signing key exists. */
   readonly signing_key: false;
   readonly stub?: true;
+  /** WORKER-1e: S0's diagnostic set (its parts) when the shakedown runs with it; absent otherwise. */
+  readonly s0_diagnostic?: readonly string[];
 }
 
 export type JournalKind =
@@ -149,7 +151,9 @@ export type JournalKind =
    * The first moment in a boot the worker is able to exit: times a host reboot from the worker's own journal. Written
    * before /health first reports `exit_capable: true` in that boot.
    */
-  | 'exit_capable';
+  | 'exit_capable'
+  /** H15's round-trip simulation of a candidate (WORKER-1e: SIM-1's `SimRecord`, or `not-run` with its reason). Not item 4's `simulation`. */
+  | 'h15_sim';
 
 /**
  * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A
