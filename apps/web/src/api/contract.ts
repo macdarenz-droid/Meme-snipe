@@ -207,6 +207,12 @@ export interface PositionRecord extends Moded {
   liquidationValueUsd: Usd;
   unrealizedUsd: Usd;
   costsSoFarUsd: Usd;
+  /** P&L so far: liquidation value plus exits sold, less the entry and every fee paid (APP-TRADE); null without a SOL price. */
+  pnlUsd?: Usd | null;
+  /** Our rest's executable price now, $/token, the price the stops judge; null when it cannot be quoted. */
+  markPriceUsd?: Dec | null;
+  /** When the pool behind that price was read. */
+  markedAt?: Iso | null;
   exitRules: (Moded & { rule: ExitRule; trigger: string; state: 'armed' | 'triggered' })[];
   exit: 'none' | 'pending' | 'blocked';
   worker: 'watching' | 'exiting' | 'reconciling';

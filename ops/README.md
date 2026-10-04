@@ -132,7 +132,8 @@ Checks:
 - stop breached with no exit attempt in 60 s;
 - unresolved intents past blockhash expiry;
 - SOL reserve below the floor;
-- signer unreachable.
+- signer unreachable;
+- daily summary not written (below).
 
 Alerts go to Telegram once, repeat every 5 minutes during the first hour and hourly after that, and always send a "cleared" line. Chain lookups are bounded (5 s), so a hung RPC never delays the heartbeat check.
 
@@ -152,6 +153,33 @@ To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in G
 If the chat is re-paired later (`zeroed-pair-code`), the server turns the webhook off to read `/pair` and sets it again as soon as the pairing ends.
 
 A failed webhook set is tried again after 1, 2, 4 and 8 minutes, then every 30 minutes. After 5 failed tries in a row the owner gets one notice in the paired chat (alerts still arrive; only `/pause` and `/status` are cut off), and a line when it works again.
+
+## Daily summary (OPS-SUMMARY)
+
+Each day the worker sends a summary of what it did to a private GitHub repository the supervisor can read. It covers:
+- decision counts, and refusals by reason;
+- halts and alerts by code;
+- each paper trade and the day's paper P&L;
+- the worker's commit and entry rule.
+
+It never holds a key, token, address, host name, chat id, wallet or personal data. The worker posts it signed to the watchdog every 30 minutes and just after Melbourne midnight. The watchdog checks it again and writes `reports/<day>.json` and `reports/latest.json`. Before every write the watchdog checks that the repository is private and is not this one. If that check or the write fails, nothing is written and Telegram gets a "Daily summary not written" alert, repeated and cleared like every watchdog alert. Trading and recording never wait on it. No new secret goes on the server, and nothing is typed at the console.
+
+Owner steps, once:
+1. Open github.com/new. Owner `macdarenz-droid`, name `zeroed-data`, select **Private**, tick **Add a README file**, then **Create repository**. (This is the same repository DATA-STORE uses.)
+2. Open github.com/settings/personal-access-tokens/new.
+   - Token name: `zeroed-data`. Expiration: 90 days.
+   - Repository access: **Only select repositories**, then `zeroed-data`.
+   - Permissions: **Contents: Read and write**.
+   - Select **Generate token** and copy the token.
+3. In this repository, open Settings → Secrets and variables → Actions.
+   - **New repository secret**: name `DATA_STORE_TOKEN`, value: the token.
+   - Then the **Variables** tab → **New repository variable**: name `DATA_REPO`, value `macdarenz-droid/zeroed-data`.
+4. Open github.com/settings/installations → **Claude** → **Configure**. Under Repository access add `zeroed-data`, then **Save**, so agents can read `reports/`.
+5. Actions → **Deploy** → **Run workflow**.
+
+If DATA-STORE's steps are already done, only steps 4 and 5 remain. When the token expires, the watchdog alerts "Daily summary not written: repository check HTTP 401". To fix it, make a new token as in step 2, replace `DATA_STORE_TOKEN`, and run Deploy.
+
+The Deploy step (`ops/deploy/reports.sh`) runs only when `CLOUDFLARE_API_TOKEN` and `DATA_STORE_TOKEN` exist, and only after the deploy tag moved. It deploys the watchdog's code from the commit the deploy tag names (the one the server runs), with `DATA_REPO`, and sets one secret, `REPORTS_TOKEN`, from stdin. It never touches the heartbeat key or any other secret, which a deploy keeps. It also refuses this repository's own name.
 
 ## Host checks
 
@@ -200,6 +228,7 @@ A server installed from an earlier line (before this fix) has its webhook off af
 - Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
 - Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
 - Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.
+- Post the daily summary (`packages/ops/src/watchdog/summary.ts` shape) to `/summary` every `ZEROED_SUMMARY_MS` (default 30 minutes) and just after Melbourne midnight, signed over `t\nPOST\n/summary\nbody` with a signature time newer than the last one. Never wait on it.
 
 ## Test it
 
