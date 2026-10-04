@@ -63,6 +63,14 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - TX-1 → SIGN-1: maxSolOut needs about 1.5M lamports of PumpSwap headroom; the policy charges Token-2022 ATAs at 170 bytes.
 - Repo tidy-up: branch `claude/ledger-replay-schema-v1` duplicates PR #23's 611a4bb; the safety check refused its deletion, so the owner may delete it.
 
+## Last part (before funding)
+Owner, Mon 5 Oct about 5:07 AM (three marked screenshots): "These are future updates, when all task is done. When we reach production area and I'm about to put money. To be done in last part." Built after every other task, before the owner funds the bot; not started earlier.
+- **Stats tab.** The bottom tab "Samples" (the preview-only sample-data screen) becomes "Stats": every visual on real data (stats, charts, diagrams). The sample-data screen leaves the app.
+- **Settings screen** (new). It holds:
+  - the Server card (address, status, last update, access, Change and Remove), also kept on Snipe;
+  - the theme choice (Paper or Silent Black), which leaves Home.
+- **Header.** The "Paper" chip beside the logo reads "Zeroed". The trading mode (Paper or Live) stays visible on every screen in another place (supervisor: knowing whether real money is at stake is a safety display; the builder picks where, for example the status line).
+
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
 - API keys are in GitHub repository secrets and verified: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` (bot @Zeroed_alerts_bot). Never in chat or in the repo.
