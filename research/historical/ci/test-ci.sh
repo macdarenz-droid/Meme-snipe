@@ -623,11 +623,15 @@ mkdir -p "$T/rel/helius-ledger"; echo '{"period": "x"' > "$T/rel/helius-ledger/l
 rc=0; led bash "$here/rpc-ledger.sh" reserve r0 2026-09-20 500 500 "$L/res" 2>"$L/err" || rc=$?
 [[ $rc == 1 && ! -e "$L/res" && ! -e "$T/rel/helius-ledger/ledger.lock" ]] && ok "rpc-ledger: an unreadable ledger fails closed, and the lock is released" || no "rpc-ledger unreadable: rc=$rc $(cat "$L/err")"
 rm -f "$T/rel/helius-ledger/ledger.json"; echo held > "$T/rel/helius-ledger/ledger.lock"
-rc=0; led bash "$here/rpc-ledger.sh" init 2026-10 1000 300 100 2>/dev/null || rc=$?
+rc=0; led bash "$here/rpc-ledger.sh" init 2026-10 700700 700000 100 2>/dev/null || rc=$?
 [[ $rc == 1 && ! -e "$T/rel/helius-ledger/ledger.json" ]] && ok "rpc-ledger: init waits for the lock too (fails closed while another job holds it)" || no "rpc-ledger init lock: rc=$rc"
 rm -rf "$T/rel/helius-ledger"
-led bash "$here/rpc-ledger.sh" init 2026-10 1000 300 100 2026-09-21=100 >/dev/null && [[ $(lj 'l["used"], l["days"]') == "(100, {'2026-09-21': 100})" ]] &&
-  ! led bash "$here/rpc-ledger.sh" init 2026-10 1000 0 2>/dev/null && [[ $(lj 'l["worker_budget"]') == 300 ]] &&
+rc=0; led bash "$here/rpc-ledger.sh" init 2026-10 1000000 699999 100 2>"$L/err" || rc=$?
+[[ $rc == 1 && ! -e "$T/rel/helius-ledger/ledger.json" ]] && grep -q "below the worker's own halt of 700000" "$L/err" &&
+  ok "rpc-ledger: init refuses a worker share below the worker's own 700000 halt" || no "rpc-ledger init worker min: rc=$rc $(cat "$L/err")"
+led bash "$here/rpc-ledger.sh" init 2026-10 700700 700000 100 2026-09-21=100 > "$L/init" &&
+  grep -qx "rpc-ledger: the live worker's Helius halt must be exactly 700000 credits (the worker share held back here)" "$L/init" && [[ $(lj 'l["used"], l["days"]') == "(100, {'2026-09-21': 100})" ]] &&
+  ! led bash "$here/rpc-ledger.sh" init 2026-10 800000 700000 2>/dev/null && [[ $(lj 'l["worker_budget"]') == 700000 ]] &&
   ok "rpc-ledger: init creates the ledger with what was spent before it; a second init is refused" || no "rpc-ledger init"
 # The day cap counts what the day already used and what it holds reserved.
 rc=0; led bash "$here/rpc-ledger.sh" reserve rD 2026-09-21 150 800 "$L/rD" >/dev/null || rc=$?
@@ -639,7 +643,7 @@ rc=0; led bash "$here/rpc-ledger.sh" reserve r1 2026-09-20 500 800 "$L/r1" >/dev
 rc2=0; led bash "$here/rpc-ledger.sh" reserve r2 2026-09-19 900 800 "$L/r2" >/dev/null || rc2=$?
 rc3=0; led bash "$here/rpc-ledger.sh" reserve r3 2026-09-18 900 800 "$L/r3" >/dev/null 2>&1 || rc3=$?
 [[ $rc == 0 && $(cat "$L/r1") == 500 && $rc2 == 0 && $(cat "$L/r2") == 100 && $rc3 == 3 && ! -e "$L/r3" ]] &&
-  ok "rpc-ledger: reservations take the least of the run budget, the day cap and the month after the worker's share (500, then 100 of 1000 - 300 - 100), then exit 3" || no "rpc-ledger reserve: $rc $rc2 $rc3 $(cat "$L/r1" "$L/r2" 2>/dev/null)"
+  ok "rpc-ledger: reservations take the least of the run budget, the day cap and the month after the worker's share (500, then 100 of 700700 - 700000 - 100), then exit 3" || no "rpc-ledger reserve: $rc $rc2 $rc3 $(cat "$L/r1" "$L/r2" 2>/dev/null)"
 rc=0; led bash "$here/rpc-ledger.sh" reserve r1 2026-09-20 500 1 "$L/rx" 2>/dev/null || rc=$?
 [[ $rc == 1 ]] && ok "rpc-ledger: an id already holding a reservation is refused" || no "rpc-ledger duplicate id: rc=$rc"
 w="$L/w1"; mkdir -p "$w"; : > "$w/rpc-started-scan"; echo '{"credits": 120, "final": true}' > "$w/rpc-usage-scan.json"
@@ -672,7 +676,7 @@ rc=0; led FAKE_GH_CLOBBER_FAIL=1 GITHUB_STEP_SUMMARY="$L/sum" bash "$here/rpc-le
   grep -q '"rB"' "$L/sum" && grep -q "could not write the ledger" "$L/err" &&
   ok "rpc-ledger: reserve fails (no amount written) when replacing ledger.json fails after gh deleted it; ledger.next.json keeps every reservation, and the ledger goes to the step summary" || no "rpc-ledger clobber fail reserve: rc=$rc $(cat "$L/err")"
 led bash "$here/rpc-ledger.sh" show | grep -q '"rB"' && ok "rpc-ledger: readers fall back to ledger.next.json" || no "rpc-ledger show next"
-rc=0; led bash "$here/rpc-ledger.sh" init 2026-10 1000 0 2>"$L/err" || rc=$?
+rc=0; led bash "$here/rpc-ledger.sh" init 2026-10 800000 700000 2>"$L/err" || rc=$?
 [[ $rc == 1 && ! -e "$HL/ledger.json" && -e "$HL/ledger.next.json" ]] && grep -q "a ledger already exists (ledger.next.json" "$L/err" && ok "rpc-ledger: init refuses while only ledger.next.json exists" || no "rpc-ledger init next: rc=$rc"
 mkdir -p "$L/wB"; led bash "$here/rpc-ledger.sh" settle rB "$L/wB" >/dev/null && [[ ! -e "$HL/ledger.next.json" && ! -e "$HL/ledger.lock" ]] &&
   [[ $(lj '[o["id"] for o in l["outstanding"]], [s["id"] for s in l["settled"]][-1]') == "(['r7'], 'rB')" ]] &&

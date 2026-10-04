@@ -8,7 +8,11 @@
 #   rpc-ledger.sh init PERIOD LIMIT WORKER_BUDGET [USED_SO_FAR [DAY=USED ...]]
 #       creates the ledger for a billing period (refused when one exists). WORKER_BUDGET
 #       is the live worker's share of the period, held back from every reservation
-#       (the worker spends on the same account but cannot write here).
+#       (the worker spends on the same account but cannot write here). It must be the
+#       same figure as the worker's own Helius halt, which counts only the worker's use:
+#       until that halt is configurable (WORKER-CREDITS), it is fixed at 70% of the free
+#       plan's 1,000,000 (packages/worker/src/scheduler/limits.ts), so init refuses any
+#       WORKER_BUDGET below 700000, and prints the figure the worker's halt must be.
 #   rpc-ledger.sh reserve ID DAY DAY_CAP RUN_BUDGET OUT_FILE
 #       books min(RUN_BUDGET, what is left of DAY_CAP for DAY, what is left of the
 #       period after the worker's share) as outstanding under ID and writes the amount to
@@ -123,6 +127,9 @@ if rest:
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", d), d
         days[d] = int(n)
 limit, worker = int(limit), int(worker)
+WORKER_HALT = 700000  # the worker's current hard halt (supervisor ruling 2026-10-04); lower only once WORKER-CREDITS makes it a setting
+if worker < WORKER_HALT:
+    print(f"rpc-ledger: worker_budget {worker} is below the worker's own halt of {WORKER_HALT}: the two must be the same figure, or history and the worker together can pass the month's credits", file=sys.stderr); sys.exit(1)
 assert 0 < limit and 0 <= worker < limit and used >= 0 and sum(days.values()) <= used, "bad init values"
 json.dump({"period": period, "limit": limit, "worker_budget": worker, "used": used, "days": days,
            "outstanding": [], "settled": []}, open(out, "w"), indent=1, sort_keys=True)
@@ -133,6 +140,7 @@ PY
       "$gh" release create "$tag" --title "Helius credit ledger" --notes "Account-wide Helius credit ledger (DATA-4, research/historical/ci/rpc-ledger.sh). Edited by the data-scan workflow only." -- "$tmp/ledger.json" >/dev/null
     fi
     echo "rpc-ledger: ledger created for $1: limit $2, worker share $3"
+    echo "rpc-ledger: the live worker's Helius halt must be exactly $3 credits (the worker share held back here)" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
     ;;
   reserve)
     [ $# -eq 5 ] || { echo "usage: rpc-ledger.sh reserve ID DAY DAY_CAP RUN_BUDGET OUT_FILE" >&2; exit 2; }
