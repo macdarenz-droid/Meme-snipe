@@ -23,6 +23,9 @@ import type { SeedRpc } from '../src/seed/rpc.ts';
 import type { SimLeg } from '../src/run/paper-world.ts';
 import { DEV, LANDS, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SOL_PRICE, SUPPLY, T, dueTimers, makeWorker, okSimulation, passingMarket, slotAt, tempState, until, virtualTimers } from './worker-harness.ts';
 
+/** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
+const HELD = { heldPoolFacts: true } as const;
+
 const journalText = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
 const lines = (dir: string) => journalText(dir).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
 const kinds = (dir: string, kind: string) => lines(dir).filter((l) => l['kind'] === kind);
@@ -32,7 +35,7 @@ const positions = (h: ReturnType<typeof makeWorker>) => Object.values(h.worker.b
 const entered = async (h: ReturnType<typeof makeWorker>) => {
   const r = await h.worker.reconcile();
   expect(r).toEqual({ ok: true });
-  const m = await passingMarket(h);
+  const m = await passingMarket(h, HELD);
   await m.run(4_000, 100, () => m.pool());
   await m.run(10_000, 400, () => {
     m.slot();
@@ -137,7 +140,7 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
   it('with no fee-context fact, the terms of the latest swap on the pool price the entry', async () => {
     const without = makeWorker();
     expect(await without.worker.reconcile()).toEqual({ ok: true });
-    const m0 = await passingMarket(without, { fees: false });
+    const m0 = await passingMarket(without, { ...HELD, fees: false });
     await m0.run(4_000, 100, () => m0.pool());
     expect(positions(without)).toEqual([]);
     await without.worker.stop();
@@ -150,7 +153,7 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
     pre.fact(migrationKey(MINT), passingFacts().get(migrationKey(MINT))!.value);
     pre.swap('BuyEvent', 'someone', 1_000n);
     h.worker.step();
-    const m = await passingMarket(h, { fees: false });
+    const m = await passingMarket(h, { ...HELD, fees: false });
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -168,7 +171,7 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
     const pre = new Market(h);
     pre.create();
     h.worker.step();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -208,7 +211,7 @@ describe('a stalled feed (supervisor ruling 2026-10-04: stale state never become
   it('while nothing new arrives, the clock keeps running, the facts age and the stale-data reject fires', async () => {
     const h = makeWorker();
     expect(await h.worker.reconcile()).toEqual({ ok: true });
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     // The feed stalls before the passing facts are released: only the clock moves (and slots, so the engine runs).
     await m.run(6_000, 400, () => m.slot());
     expect(positions(h)).toEqual([]);
@@ -275,7 +278,7 @@ describe('entry halts fail closed (review of f679188, items 5 and 6)', () => {
     h.worker.step();
     // A halt fact that cannot be read: the passing market that enters otherwise (the end-to-end test) makes no entry.
     new Market(h).fact(HALT_KEY, { halted: 'no' });
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     expect(positions(h)).toEqual([]);
     await h.worker.stop();
@@ -380,7 +383,7 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
     file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, universe: 'U1' } } });
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    await new Market(h2).run(1_000, 400, () => undefined);
+    await new Market(h2, HELD).run(1_000, 400, () => undefined);
     expect(h2.worker.strategy.saved()[pid]!.plan.universe).toBe('U1');
     await h2.worker.kill();
     // A plan saved before universes were stored: the universe comes from the entry's intent key.
@@ -389,7 +392,7 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
     file.write({ ...old, [pid]: { ...old[pid]!, plan: plan as typeof old[string]['plan'] } });
     const h3 = makeWorker({ stateDir: h.stateDir, timers: h.timers, universe: 'U1' });
     expect(await h3.worker.reconcile()).toEqual({ ok: true });
-    await new Market(h3).run(1_000, 400, () => undefined);
+    await new Market(h3, HELD).run(1_000, 400, () => undefined);
     expect(h3.worker.strategy.saved()[pid]!.plan.universe).toBe('U2');
     expect(kinds(h.stateDir, 'decision').some((d) => (d['reasons'] as string[])[0] === 'plan universe restored')).toBe(true);
     await h3.worker.stop();
@@ -400,7 +403,7 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
   it('an attempt in flight at the kill never lands: the restart settles it before any entry', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     // Run until the entry is submitted, then kill before its landing slot.
     await m.run(4_000, 100, () => m.pool());
     const live = Object.values(h.worker.book.intents).filter((i) => i.status === 'pending' || i.status === 'submitted');
@@ -436,7 +439,7 @@ describe('exits never wait at a restart (EXIT-1c)', () => {
     h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    const m2 = new Market(h2);
+    const m2 = new Market(h2, HELD);
     const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
     // Slots only, no pool read: the exit waits, open, with nothing booked blocked, and it is visible: said once in the
     // log, pending in the status flags, the position view and the heartbeat's pending exits.
@@ -478,6 +481,33 @@ describe('exits never wait at a restart (EXIT-1c)', () => {
   });
 });
 
+/** Every exit attempt lands failed (none dropped). */
+const FAILS = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
+
+/** A boot of `stateDir` on the shared clock, reconciled, with its own decision lines. */
+const reboot = async (h: ReturnType<typeof makeWorker>, scenario = FAILS) => {
+  const b = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+  expect(await b.worker.reconcile()).toEqual({ ok: true });
+  const mine = () => lines(h.stateDir).filter((l) => l['boot'] === b.worker.boot && l['kind'] === 'decision');
+  const first = (r: string) => mine().filter((l) => (l['reasons'] as string[])[0] === r);
+  return { b, m: new Market(b, HELD), mine, first };
+};
+
+/** Entered, killed, then down past T_max: the time stop is due at the next boot. */
+const dueAfterDowntime = async () => {
+  const h = makeWorker();
+  const m = await entered(h);
+  const pid = positions(h).find((p) => p.status === 'open')!.id;
+  await h.worker.kill();
+  h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
+  return { h, pid };
+};
+
+/** Runs slots only until the clock reaches `at`. */
+const slotsUntil = async (m: Market, at: number) => {
+  while (m.now < at) await m.run(Math.min(400, at - m.now), Math.min(400, at - m.now), () => m.slot());
+};
+
 describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)', () => {
   it('an attempt that fails while the pool state goes stale: the replacement waits for the first fresh market, visibly, then goes on the next rung', async () => {
     const h = makeWorker();
@@ -488,7 +518,7 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario: { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n } });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    const m2 = new Market(h2);
+    const m2 = new Market(h2, HELD);
     const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
     const first = (r: string) => mine().filter((l) => (l['reasons'] as string[])[0] === r);
     await m2.run(800, 400, () => m2.slot());
@@ -518,8 +548,89 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     expect(second).toHaveLength(1);
     expect(second[0]!['reasons']).toContain('rung 1');
     expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    // Sent: the wait is over (#93 N1), whatever the position's status says.
+    expect(h2.worker.strategy.waitingExits().has(pid)).toBe(false);
     await h2.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+
+  it('a fresh market that refuses the sale is a real refusal: booked blocked with its "no quote" reason, and no wait', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const { b, m: m2, mine, first } = await reboot(h);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    await m2.run(800, 400, () => m2.slot());
+    expect(first('submit exit (paper)')).toHaveLength(1);
+    // From here every read is fresh and the pool holds no SOL: the replacement cannot be quoted.
+    expect(await until(m2, 60_000, () => mine().some((l) => l['action'] === 'exit_blocked'), () => {
+      m2.slot();
+      m2.pool(0n);
+    })).toBe(true);
+    const blocked = mine().find((l) => l['action'] === 'exit_blocked')!;
+    expect((blocked['reasons'] as string[]).some((r) => r.startsWith('no quote: '))).toBe(true);
+    expect(first('exit waiting for a fresh market')).toEqual([]);
+    expect(b.worker.book.positions[pid]!.status).toBe('exit_blocked');
+    expect(b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    await b.worker.stop();
+  });
+
+  it('a wait that ends another way (a refusal books it blocked) stops being reported (#100 N1)', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const { b, m: m2, first } = await reboot(h);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    await m2.run(800, 400, () => m2.slot());
+    expect(await until(m2, 60_000, () => first('exit waiting for a fresh market').length > 0, () => m2.slot())).toBe(true);
+    expect(b.worker.strategy.waitingExits().has(pid)).toBe(true);
+    // A fresh pool that refuses the sale: booked blocked, so the wait is no longer reported as one.
+    m2.pool(0n);
+    await m2.run(800, 400, () => {
+      m2.slot();
+      m2.pool(0n);
+    });
+    expect(b.worker.book.positions[pid]!.status).toBe('exit_blocked');
+    expect(b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    await b.worker.stop();
+  });
+
+  it('a restart keeps the wait start: the alert comes at the first boot\'s start + blockedRetryMs, for an EXIT-1c and an EXIT-1d wait (B2, #93 N3)', async () => {
+    const retry = TRIAL_POLICY.exits.blockedRetryMs;
+    const alerted = (w: ReturnType<typeof makeWorker>) => views.status(w.worker.apiInputs()).flags.includes('exit-blocked');
+    // EXIT-1c: a due exit with no quote yet, killed mid-wait.
+    const one = await dueAfterDowntime();
+    const c2 = await reboot(one.h, LANDS);
+    await c2.m.run(2_000, 400, () => c2.m.slot());
+    const since1c = c2.b.worker.strategy.waitingExits().get(one.pid)!;
+    expect(since1c).toBeDefined();
+    await c2.m.run(20_000, 400, () => c2.m.slot());
+    await c2.b.worker.kill();
+    const c3 = await reboot(one.h, LANDS);
+    await c3.m.run(400, 400, () => c3.m.slot());
+    expect(c3.b.worker.strategy.waitingExits().get(one.pid)).toBe(since1c);
+    await slotsUntil(c3.m, since1c + retry - 400);
+    expect(alerted(c3.b)).toBe(false);
+    await slotsUntil(c3.m, since1c + retry);
+    expect(alerted(c3.b)).toBe(true);
+    await c3.b.worker.stop();
+    // EXIT-1d: an owner's replacement waiting for a fresh market, killed mid-wait.
+    const two = await dueAfterDowntime();
+    const d2 = await reboot(two.h);
+    await d2.m.run(800, 400, () => d2.m.slot());
+    d2.m.pool();
+    await d2.m.run(800, 400, () => d2.m.slot());
+    expect(await until(d2.m, 60_000, () => d2.first('exit waiting for a fresh market').length > 0, () => d2.m.slot())).toBe(true);
+    const since1d = d2.b.worker.strategy.waitingExits().get(two.pid)!;
+    await d2.m.run(20_000, 400, () => d2.m.slot());
+    await d2.b.worker.kill();
+    const d3 = await reboot(two.h);
+    await d3.m.run(400, 400, () => d3.m.slot());
+    expect(d3.b.worker.strategy.waitingExits().get(two.pid)).toBe(since1d);
+    await slotsUntil(d3.m, since1d + retry - 400);
+    expect(alerted(d3.b)).toBe(false);
+    await slotsUntil(d3.m, since1d + retry);
+    expect(alerted(d3.b)).toBe(true);
+    expect(d3.mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    await d3.b.worker.stop();
   });
 });
 
@@ -557,7 +668,7 @@ describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
   it('settles what a killed worker left open, writes open_intents 0 and exits 0, as a separate process', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await h.worker.kill();
     expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('1\n');
@@ -759,7 +870,7 @@ describe('exits never wait for the seed (review of 9fdf837)', () => {
   it('a restart with an open position and a seed that never answers: the stop exits during the wait, before seedMaxMs; entries halt', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -778,7 +889,7 @@ describe('exits never wait for the seed (review of 9fdf837)', () => {
       for (let k = 0; k < 4; k++) await new Promise<void>((r) => setImmediate(r));
     };
     for (let k = 0; k < 600 && !h2.order.includes('start helius-ws'); k++) await tick();
-    const m2 = new Market(h2);
+    const m2 = new Market(h2, HELD);
     const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
     let exit: Record<string, unknown> | undefined;
     for (let k = 0; k < 300 && exit === undefined; k++) {
