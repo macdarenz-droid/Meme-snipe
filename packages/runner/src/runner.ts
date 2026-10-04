@@ -2,7 +2,7 @@
 // One call runs one segment: the whole run on the VPS, or one ~5 h 50 min GitHub Actions job in the fallback,
 // which resumes from the evidence folder and worker state the previous job saved.
 import { createHash } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { dirname, join } from 'node:path';
 import { checkStartHealth, LOOKUP_BOUNDS_MS, type RestartCause, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
@@ -153,6 +153,8 @@ type Pending =
   | {
       kind: 'rpc'; drill: Extract<Drill, { kind: 'rpc' }>; since: number; sinceMono: number; requested: boolean; boot: string | null;
       sawIncapable: boolean; sawHalt: boolean; stayedUp: boolean; shedBefore: number | null; pendingBefore: readonly string[];
+      /** The reply's journal_seq when pendingBefore was read: an exit journaled after it finished, it was not lost. */
+      seqBefore: number | null;
     }
   | { kind: 'feed'; drill: Extract<Drill, { kind: 'feed' }>; since: number; sawDown: boolean; sawHalt: boolean; critical: boolean; boot: string | null; stayedUp: boolean; requested: boolean }
   | { kind: 'handover'; since: number; prevBoot: string | null; midTrade: boolean; plannedAt: number };
@@ -183,6 +185,9 @@ interface RestartPending {
   snapped?: boolean;
   /** The health reply at the kill was present and valid (pending exits are ids; an open position names its universe). */
   killValid?: boolean;
+  /** The reply's journal_seq: journal lines after it were written between the reply and the kill. */
+  killSeq?: number | null;
+  inFlight?: number;
   /** Things the restart had to keep: positions, in-flight entries and pending exits (for host loss, the backup's). */
   keep?: number;
   /** Opened after the backup (host loss): reported, not expected back. */
@@ -213,7 +218,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   const segments: { start: number; end: number | null; lastInTrade: boolean; lastBoot: string | null }[] = readJson(P.segments, []);
   const manifest: RecordedFile[] = readJson(P.manifest, []);
   const backupDir = join(ev, 'backup');
-  let backup: { at: number; expect: Kept } | null = readJson(P.backup, null);
+  let backup = readJson<{ at: number; expect: Kept } | null>(P.backup, null);
   // A host-loss tabletop that could only self-report is tried again after the host's next backup (kept on disk across
   // segments). Each try is its own drill, labelled; only a compared one exercises host loss on a VPS run.
   let retry = readJson<HostLossRetry | null>(P.retry, null);
@@ -302,9 +307,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
 
     // The runner's own backup of the bot state for local host-loss drills, with what it should restore.
     if (o.backupEveryMs !== undefined && pending === null && h?.reconciled && (backup === null || t - backup.at >= o.backupEveryMs)) {
-      snapshotState(o.stateDir, backupDir);
-      backup = { at: t, expect: kept(h) };
-      writeFileSync(P.backup, JSON.stringify(backup));
+      await takeBackup(h, t);
     }
 
     if (pending === null) {
@@ -317,7 +320,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       }
       if (due?.kind === 'restart') pending = { kind: 'restart', drill: due, since: t };
       else if (due?.kind === 'rpc') {
-        pending = { kind: 'rpc', drill: due, since: t, sinceMono: performance.now(), requested: false, boot: s.boot, sawIncapable: false, sawHalt: false, stayedUp: true, shedBefore: h ? exitShed(h) : null, pendingBefore: kept(h).pending_exits };
+        pending = { kind: 'rpc', drill: due, since: t, sinceMono: performance.now(), requested: false, boot: s.boot, sawIncapable: false, sawHalt: false, stayedUp: true, shedBefore: h ? exitShed(h) : null, pendingBefore: kept(h).pending_exits, seqBefore: h?.journal_seq ?? null };
       } else if (due?.kind === 'feed') pending = { kind: 'feed', drill: due, since: t, sawDown: false, sawHalt: false, critical: false, boot: s.boot, stayedUp: true, requested: false };
     }
 
@@ -338,16 +341,19 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       const since = (): number => (p.killedMono !== undefined ? performance.now() - p.killedMono : Date.now() - p.killedAt!);
       const clock = p.killedMono !== undefined ? ('monotonic' as const) : ('wall' as const);
       const hostLossWipe = cause === 'host-loss' && o.hostDrills !== 'tabletop';
+      // The runner's own backups (a rehearsal, wipe or tabletop): host loss restores the copy it takes for the drill.
+      const localHostLoss = cause === 'host-loss' && o.backupEveryMs !== undefined;
       if (p.killedAt === undefined) {
         const due = s.in_trade || t - p.since >= p.drill.windowMs;
-        if (hostLossWipe && o.backupEveryMs !== undefined && !p.snapped) {
-          // Rehearsal host loss: back up at the first trade of the window and lose the host one sample later, so the
-          // backup always holds something to restore (a host loss with nothing in the backup proves nothing).
+        if (localHostLoss && !p.snapped && t - p.since >= 2 * p.drill.windowMs) {
+          record({ ...base, at: t, pass: false, recoveredMs: null, notes: ['no backup to restore: the worker\'s state never held still for a copy'] });
+          pending = null;
+        } else if (localHostLoss && !p.snapped) {
+          // Rehearsal host loss: back up at the first trade of the window (a copy the replies around it confirm) and
+          // lose the host one sample later, so the backup always holds something to restore (a host loss with nothing
+          // in the backup proves nothing).
           if (due && h?.reconciled) {
-            snapshotState(o.stateDir, backupDir);
-            backup = { at: t, expect: kept(h) };
-            writeFileSync(P.backup, JSON.stringify(backup));
-            p.snapped = true;
+            p.snapped = await takeBackup(h, t);
           }
         } else if (due && hostLossWipe && backup === null) {
           record({ ...base, at: t, pass: false, recoveredMs: null, notes: ['no backup to restore'] });
@@ -362,6 +368,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
           p.tradesComplete = h !== null && tradeIdsComplete(h);
           p.markBefore = h ? freshMark(h) : null;
           p.atKill = p.killValid ? kept(h) : { pending_exits: [], positions: [] };
+          p.killSeq = h?.journal_seq ?? null;
+          p.inFlight = h?.unresolved_intents.count ?? 0;
           p.expect = cause === 'chain-rebuild' ? null : cause === 'host-loss' ? (backup?.expect ?? { pending_exits: [], positions: [] }) : p.atKill;
           const inFlight = h?.unresolved_intents.count ?? 0;
           p.keep =
@@ -432,6 +440,19 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
           notes.push(fromJournal ? 'timed on the wall clock across the reboot, from the journal' : 'timed on the wall clock across the reboot (no exit_capable line: upper bound)');
         }
         const hostTable = p.table !== undefined && cause === 'host-loss' && o.backupEveryMs === undefined;
+        // The reply came a moment before the kill: a trade the worker closed in between (its exit line is in the
+        // journal, after the reply) was not there to keep. The journal is written synchronously, so it is exact.
+        const closed = p.table ? [] : closedSince(lines, p.prevBoot ?? null, p.killSeq ?? null);
+        if (closed.length) {
+          const atKill = withoutTrades(p.atKill ?? { pending_exits: [], positions: [] }, closed);
+          p.atKill = atKill;
+          if (cause === 'crash' || cause === 'reboot') {
+            p.expect = atKill;
+            p.keep = atKill.positions.length + atKill.pending_exits.length + (p.inFlight ?? 0);
+          }
+          p.trades = (p.trades ?? []).filter((x) => !closed.includes(x));
+          notes.push(`closed between the last reply and the kill (journal): ${closed.join(', ')}`);
+        }
         let state = recoveredState(lines, ws.boot!, cause, hostTable ? (p.backupKept ?? { pending_exits: [], positions: [] }) : (p.expect ?? null), p.atKill ?? { pending_exits: [], positions: [] });
         if (p.table && cause === 'host-loss' && state.source !== 'state') state = { ...state, state_ok: false, notes: [...state.notes, `restored from the backup but reported source ${String(state.source)}`] };
         // Tabletop host loss: what the backup held is what the tabletop worker restored.
@@ -493,7 +514,12 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         if (!accepted) {
           record({ id: d.id, kind: 'rpc', plannedAt: meta.startedAt + d.atMs, at: t, pass: false, notes: ['drop request refused or drill token missing'] });
           pending = null;
-        } else log(`Drill ${d.id}: all providers dropped for ${d.dropMs / 1000} s.`);
+        } else {
+          // The drop starts when the worker accepts it, not when the drill fell due (a loaded runner acts later).
+          p.since = Date.now();
+          p.sinceMono = performance.now();
+          log(`Drill ${d.id}: all providers dropped for ${d.dropMs / 1000} s.`);
+        }
       } else {
         if (!s.up || s.boot !== p.boot) p.stayedUp = false;
         if (h && !h.exit_capable) p.sawIncapable = true;
@@ -508,7 +534,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
           if (!back) notes.push('not exit capable after the providers came back');
           const shedAfter = h ? exitShed(h) : null;
           if (p.shedBefore !== null && shedAfter !== null && shedAfter > p.shedBefore) notes.push(`${shedAfter - p.shedBefore} P0/P1 requests shed`);
-          const lost = p.pendingBefore.filter((x) => !(h?.pending_exits ?? []).includes(x));
+          // A pending exit that finished (its exit is in the journal) was not lost.
+          const finished = closedSince(journalLines(o.stateDir), p.boot, p.seqBefore);
+          const lost = p.pendingBefore.filter((x) => !(h?.pending_exits ?? []).includes(x) && !finished.includes(x));
           if (lost.length) notes.push(`pending exits lost: ${lost.join(', ')}`);
           record({
             id: d.id, kind: 'rpc', plannedAt: meta.startedAt + d.atMs, at: p.since, pass: notes.length === 0,
@@ -530,7 +558,11 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         if (!accepted) {
           record({ id: d.id, kind: 'feed', feed: d.feed, plannedAt: meta.startedAt + d.atMs, at: t, pass: false, notes: ['drop request refused or drill token missing'] });
           pending = null;
-        } else log(`Drill ${d.id}: dropped ${d.feed} for ${d.dropMs / 1000} s.`);
+        } else {
+          // The drop starts when the worker accepts it: entries are counted from then, not from when it fell due.
+          p.since = Date.now();
+          log(`Drill ${d.id}: dropped ${d.feed} for ${d.dropMs / 1000} s.`);
+        }
       } else {
         if (!s.up || s.boot !== p.boot) p.stayedUp = false;
         if (s.feeds_down.includes(d.feed)) p.sawDown = true;
@@ -570,6 +602,28 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       problems: [...new Set(problems)].map((p) => (p.startsWith('boot ') ? p : `boot ${h.boot}: ${p}`)),
     };
     writeFileSync(P.boots, JSON.stringify(boots));
+  }
+
+  /**
+   * The runner's own backup (local host-loss drills). A reply describes the worker a moment before the copy, and the
+   * worker keeps trading while it runs, so the copy counts only when a second reply after it holds the same state:
+   * a trade only moves forward (opened, exit planned, closed; a new trade has a new id), so equal before and after
+   * means equal during the copy. Otherwise the previous backup stays and the next sample tries again.
+   */
+  async function takeBackup(h: Health, t: number): Promise<boolean> {
+    if (!killReplyValid(h)) return false;
+    const tmp = `${backupDir}.new`;
+    snapshotState(o.stateDir, tmp);
+    const after = await fetchHealth(o.healthAddr);
+    if (after === null || after.boot !== h.boot || !killReplyValid(after) || keptKey(kept(after)) !== keptKey(kept(h))) {
+      rmSync(tmp, { recursive: true, force: true });
+      return false;
+    }
+    rmSync(backupDir, { recursive: true, force: true });
+    renameSync(tmp, backupDir);
+    backup = { at: t, expect: kept(h) };
+    writeFileSync(P.backup, JSON.stringify(backup));
+    return true;
   }
 
   /** Ends a tabletop drill: its worker's journal goes into the evidence folder first. */
@@ -867,6 +921,17 @@ export const keptAt = (samples: readonly Sample[], at: number, sampleMs: number,
   const keys = new Set(win.map((s) => keptKey(s.kept!)));
   return keys.size === 1 ? { kept: win[0]!.kept! } : { why: 'the state changed while the backup was taken' };
 };
+
+/** Trades whose exit the boot journaled after the given seq (after the reply, before the kill), sorted. */
+export const closedSince = (journal: readonly JournalLine[], boot: string | null, seq: number | null): string[] =>
+  boot === null || seq === null
+    ? []
+    : [...new Set(journal.filter((l) => l.boot === boot && l.seq > seq && l.kind === 'exit' && typeof l.trade === 'string').map((l) => l.trade!))].sort();
+
+const withoutTrades = (k: Kept, gone: readonly string[]): Kept => ({
+  pending_exits: k.pending_exits.filter((x) => !gone.includes(x)),
+  positions: k.positions.filter((x) => !gone.includes(x.trade)),
+});
 
 /** A CFG-2 universe with its own exit parameters (U1, U2). 'unknown', or anything else, counts as missing. */
 export const knownUniverse = (u: unknown): boolean => typeof u === 'string' && (EXIT_UNIVERSES as readonly string[]).includes(u);
