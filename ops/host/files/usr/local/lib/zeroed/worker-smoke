@@ -36,6 +36,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The release's S0 shakedown settings, as worker-start gives them (PRACTICE-ON): a release whose worker refuses them
+# never becomes current.
+shakedown=()
+settings="$(worker_shakedown "$dir" 2>"$tmp/shakedown.err")" || { echo "its host-config shakedown settings are refused: $(tr -cd '[:print:]' <"$tmp/shakedown.err" | cut -c1-160)"; exit 1; }
+while IFS= read -r line; do [ -z "$line" ] || shakedown+=(--setenv="$line"); done <<<"$settings"
+
 # The worker unit's sandbox, limits and environment settings (unit_sandbox), applied to the trial.
 props=()
 while IFS= read -r line; do
@@ -44,15 +50,15 @@ done < <(unit_sandbox "$UNIT_FILE")
 [ "${#props[@]}" -gt 40 ] || { echo "the worker unit's sandbox could not be read from $UNIT_FILE"; exit 1; }
 
 # trial UNIT LOG MODE: the release's worker as a transient unit with that sandbox, the worker's environment file, the
-# RUN-1 environment (worker-start) on the trial's state directory and ports, and the memory cap. MODE "reconcile" runs
-# its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
+# RUN-1 environment and shakedown settings (worker-start) on the trial's state directory and ports, and the memory cap.
+# MODE "reconcile" runs its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
 trial() {
   local unit="$1" log="$2" opts=() args=()
   if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi
   systemd-run --quiet --unit="$unit" "${opts[@]}" "${props[@]}" \
     -p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="$SMOKE_MEMORY_MAX" -p OOMScoreAdjust=1000 -p TimeoutStopSec=30 \
     -p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp" \
-    -p StandardOutput=append:"$log" -p StandardError=append:"$log" \
+    -p StandardOutput=append:"$log" -p StandardError=append:"$log" "${shakedown[@]}" \
     --setenv=NODE_ENV=production --setenv=ZEROED_MODE=paper --setenv=ZEROED_RECORDER=on --setenv=ZEROED_SIMULATE=on \
     --setenv=ZEROED_DRILLS=on --setenv=ZEROED_STATE_DIR="$tmp/state" --setenv=ZEROED_GIT_SHA="$(basename "$dir")" \
     --setenv=ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" --setenv=ZEROED_API_ADDR="$SMOKE_API_ADDR" \

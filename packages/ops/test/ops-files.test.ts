@@ -204,7 +204,14 @@ describe('deploy code', () => {
 
 describe('off-server backup gate', () => {
   it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
-    expect(JSON.parse(read('ops/host-config.json'))).toEqual({ offsite_backup: false, worker: 'release' });
+    expect(JSON.parse(read('ops/host-config.json'))).toEqual({
+      offsite_backup: false, worker: 'release',
+      // PRACTICE-ON: the S0 shakedown (packages/worker/test/practice-on.test.ts checks each value).
+      shakedown: {
+        ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092',
+        ZEROED_STANDINS: 'CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM', ZEROED_WALLET: 'FdmNGWTvFJfkioV6jPg6HCC1ng3T5vGo4fBKAgX3vTTf',
+      },
+    });
     expect(read('ops/host/install-main.sh')).not.toMatch(/enable[^\n]*zeroed-backup-offsite/);
     const send = read('ops/host/files/usr/local/sbin/zeroed-backup-offsite');
     expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeGreaterThan(0);

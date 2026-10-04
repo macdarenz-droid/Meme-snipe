@@ -4,7 +4,7 @@ import { appendFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import {
   bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, deflatedSharpe, deflatedSharpeDaily, designEffect, expectedMaxSharpe, mean,
-  gateG3, meanPredictiveInterval, sharpeBootstrap, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, SPA_STUDENTISATION, spaTest, type G3Input, type Rng,
+  gateG3, meanPredictiveInterval, sharpeBootstrap, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, SPA_STUDENTISATION, spaTest, type G3Input, type Rng, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, clusterWelchBounds,
 } from '../src/stats/index.ts';
 import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey, SPA_SCENARIOS } from './stats-fixtures.ts';
 
@@ -322,15 +322,15 @@ describe('G3 power at 48 h, 7 days and 10 days (STATS-1b, STATS-1c)', () => {
     const f = hours / 48;
     return {
       qualifyingRun: true, liveOnlyVetoes: { vetoed: Math.round(20 * f), eligible: Math.round(1000 * f) }, dryRunHours: hours,
-      dryRunReturns: bracketTrades(41, holdoutMean, Math.round(2 * f), 30).map((t) => t.rNet),
+      ...(() => { const xs = bracketTrades(41, holdoutMean, Math.round(2 * f), 30).map((t) => t.rNet); return { dryRunReturns: xs, dryRunClusters: xs.map((_, i) => `k${i}`) }; })(),
       holdout: { n: 500, mean: holdoutMean, sd: bracketSd(holdoutMean) }, holdoutSevereRate: 0.075,
-      holdoutLower: { value: 0.06, level: 1 - 0.05 / 3 },
+      holdoutLower: { value: 0.06, level: VETO_COMPOSITE_LEVEL },
       candidates: { dryRunCount: Math.round(960 * f), dryRunHours: hours, backtestCount: 20_000, backtestHours: 1000 },
       rejectMix: { dryRun: { H8: Math.round(210 * f), H9: Math.round(700 * f), H11: Math.round(70 * f) }, backtest: bt },
       fillDifferences: Array.from({ length: Math.round(120 * f) }, (_, i) => 0.003 + 0.001 * Math.sin(i)), parityTestPassed: true,
       registration: { registeredAtMs: 0, evaluateAtMs: 1 + hours * HOUR, thresholds: {}, expectedSimulationErrors: [] }, dryRunStartMs: 1,
       simulations: { attempted: Math.round(120 * f), succeeded: Math.round(120 * f), errors: {} },
-      vetoCounterfactuals: { returns: bracketTrades(42, holdoutMean, 1, Math.round(20 * f)).map((t) => t.rNet), censored: 0 }, returnCap: 0.3,
+      vetoCounterfactuals: (() => { const xs = bracketTrades(42, holdoutMean, 1, Math.round(20 * f)).map((t) => t.rNet); return { returns: xs, clusters: xs.map((_, i) => `v${i}`), censored: 0 }; })(), returnCap: 0.3,
     };
   };
   const powerAt = (hours: number) => {
@@ -345,7 +345,7 @@ describe('G3 power at 48 h, 7 days and 10 days (STATS-1b, STATS-1c)', () => {
     return {
       rate: caughtAt(1, (rng) => ({ candidates: { ...base.candidates, dryRunCount: poisson(rng, 480 * f) } }), /^candidate rate$/),
       mix: caughtAt(2, (rng) => ({ rejectMix: { dryRun: multinomial(rng, Math.round(980 * f), { H8: 2 * btShare.H8, H9: btShare.H9 - btShare.H8 / 2, H11: btShare.H11 - btShare.H8 / 2 }), backtest: bt } }), /^reject mix/),
-      meanShift: caughtAt(3, (rng) => ({ dryRunReturns: Array.from({ length: Math.round(60 * f) }, () => bracketDraw(rng, holdoutMean - 0.05)) }), /^mean$/),
+      meanShift: caughtAt(3, (rng) => { const xs = Array.from({ length: Math.round(60 * f) }, () => bracketDraw(rng, holdoutMean - 0.05)); return { dryRunReturns: xs, dryRunClusters: xs.map((_, i) => `k${i}`) }; }, /^mean$/),
       fill: caughtAt(4, (rng) => ({ fillDifferences: Array.from({ length: Math.round(120 * f) }, () => Math.abs(0.0075 / 0.6745 * nextNormal(rng))) }), /^fills$/),
     };
   };
@@ -399,5 +399,76 @@ describe('block-bootstrap Sharpe (STATS-1c)', () => {
       if (sharpeBootstrap(x, { rng: createRng(9_000_000 + r), replicates: 1000 }).pNull < ALPHA) rej++;
     }
     expect(rej / 400).toBeLessThanOrEqual(ALPHA + 2 * Math.sqrt((ALPHA * (1 - ALPHA)) / 400));
+  }, SLOW);
+});
+
+// External audit S4: G3's veto-gap bound assumed kept and vetoed trades independent within a run. Trades of one creator
+// share a shock (ICC 0.5, true gap 0). The classic one-sided Welch upper bound misses the true gap far more often than
+// its level; the cluster-robust bound G3 uses (CR2 with Bell–McCaffrey df, STATS-1g review B1) holds it, also when one
+// creator makes half the trades, where CR1 with G − 1 df did not. Bounds are the level plus two Monte Carlo standard
+// errors. Measured at 2,000 runs, 20 equal creators a side: classic 17.5%, cluster-robust 4.45% at 0.05. Measured at
+// 4,000 runs and α/4 = 0.0125 (one creator at 50%): G 10 of 50 trades, CR1 5.35%, CR2 1.23%; G 20 of 100, CR1 8.38%,
+// CR2 1.43%; equal sizes, both 1.02% (G 10) and 1.07% (G 20). At α/8 (the two-sided gap's side): CR2 0.50% and 0.63%.
+describe('cluster-robust veto gap (STATS-1g, audit S4)', () => {
+  /** Trades split over creators: `dominant` of them from the first creator, the rest spread evenly over the others. */
+  const sizes = (n: number, creators: number, dominant: number): number[] => {
+    const first = dominant > 0 ? Math.round(n * dominant) : Math.floor(n / creators) + (n % creators > 0 ? 1 : 0);
+    const k = creators - 1;
+    const rest = n - first;
+    return [first, ...Array.from({ length: k }, (_, i) => Math.floor(rest / k) + (i < rest % k ? 1 : 0))];
+  };
+  const side = (rng: Rng, prefix: string, perCreator: readonly number[]) => {
+    const xs: number[] = [];
+    const cs: string[] = [];
+    perCreator.forEach((m, g) => {
+      const shock = nextNormal(rng);
+      for (let i = 0; i < m; i++) {
+        xs.push(shock + nextNormal(rng));
+        cs.push(`${prefix}${g}`);
+      }
+    });
+    return { xs, cs };
+  };
+  const bound = (alpha: number, runs: number) => alpha + 2 * Math.sqrt((alpha * (1 - alpha)) / runs);
+  /** Share of runs whose one-sided upper bound at α sits below the true gap 0. */
+  const missRate = (perCreator: readonly number[], alpha: number, runs: number, seed: number): number => {
+    let miss = 0;
+    for (let r = 0; r < runs; r++) {
+      const rng = createRng(seed + r);
+      const a = side(rng, 'v', perCreator);
+      const b = side(rng, 'k', perCreator);
+      if (clusterWelchBounds(a.xs, a.cs, b.xs, b.cs, alpha).upper < 0) miss++;
+    }
+    return miss / runs;
+  };
+  test('with creator-shared shocks the classic bound under-covers; the cluster-robust bound holds its level', () => {
+    const RUNS = 2000;
+    const equal = sizes(100, 20, 0);
+    expect(equal).toEqual(Array<number>(20).fill(5));
+    let iidMiss = 0;
+    for (let r = 0; r < RUNS; r++) {
+      const rng = createRng(400_000 + r);
+      const a = side(rng, 'v', equal);
+      const b = side(rng, 'k', equal);
+      // Every trade its own creator: the classic Welch bound (independence assumed).
+      if (clusterWelchBounds(a.xs, a.xs.map((_, i) => `a${i}`), b.xs, b.xs.map((_, i) => `b${i}`), 0.05).upper < 0) iidMiss++;
+    }
+    expect(iidMiss / RUNS).toBeGreaterThan(0.12);
+    expect(missRate(equal, 0.05, RUNS, 400_000)).toBeLessThanOrEqual(bound(0.05, RUNS));
+    expect(missRate(equal, VETO_COMPOSITE_ALPHA, RUNS, 400_000)).toBeLessThanOrEqual(bound(VETO_COMPOSITE_ALPHA, RUNS));
+  });
+  test('one creator with half the trades: the bound holds α/4 and α/8, with 10 and 20 creators (review B1)', () => {
+    const RUNS = 4000;
+    const cases = [
+      { per: sizes(50, 10, 0.5), seed: 410_000 },
+      { per: sizes(100, 20, 0.5), seed: 420_000 },
+      { per: sizes(50, 10, 0), seed: 430_000 },
+      { per: sizes(100, 20, 0), seed: 440_000 },
+    ];
+    expect(cases.map((c) => c.per[0])).toEqual([25, 50, 5, 5]);
+    for (const { per, seed } of cases) {
+      expect(missRate(per, VETO_COMPOSITE_ALPHA, RUNS, seed)).toBeLessThanOrEqual(bound(VETO_COMPOSITE_ALPHA, RUNS));
+      expect(missRate(per, VETO_COMPOSITE_ALPHA / 2, RUNS, seed)).toBeLessThanOrEqual(bound(VETO_COMPOSITE_ALPHA / 2, RUNS));
+    }
   }, SLOW);
 });
