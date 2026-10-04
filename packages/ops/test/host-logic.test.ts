@@ -768,3 +768,52 @@ printf '%s\n' "$verdict"`,
     expect(tag).toContain('. "$here/../host/files/usr/local/lib/zeroed/logic.sh"');
   });
 });
+
+describe('DISK-GUARD on the host', () => {
+  it('prunable_releases keeps the current release, the roll-back target, the 3 newest, the last 7 days and half-written ones', () => {
+    const root = join(tmp, 'releases');
+    const now = 2_000_000_000;
+    const day = 86_400;
+    const make = (name: string, ageDays: number) => {
+      mkdirSync(join(root, name), { recursive: true });
+      spawnSync('touch', ['-d', `@${now - ageDays * day}`, join(root, name)]);
+    };
+    make('r1', 30);
+    make('r2', 20);
+    make('cur', 15);
+    make('prev', 14);
+    make('r5', 12);
+    make('r6', 10);
+    make('r7', 9);
+    make('r8', 8);
+    make('r9', 3);
+    make('x.new', 40);
+    const out = (cur: string, prev: string) => sh(`prunable_releases "${root}" "${join(root, cur)}" "${join(root, prev)}" ${now}`).out.split('\n').filter(Boolean).map((p) => p.slice(root.length + 1)).sort();
+    // Newest three (r9, r8, r7) stay; cur and prev stay; r6 (10 days), r5 and the older ones go; x.new is never touched.
+    expect(out('cur', 'prev')).toEqual(['r1', 'r2', 'r5', 'r6']);
+    expect(out('r1', 'r2')).toEqual(['cur', 'prev', 'r5', 'r6']);
+    // With three newer releases, one exactly 7 days old is kept; one second more and it goes.
+    make('n1', 1);
+    make('n2', 1);
+    make('n3', 1);
+    make('r6', 7);
+    expect(out('cur', 'prev')).toEqual(['r1', 'r2', 'r5', 'r7', 'r8']);
+    spawnSync('touch', ['-d', `@${now - 7 * day - 1}`, join(root, 'r6')]);
+    expect(out('cur', 'prev')).toEqual(['r1', 'r2', 'r5', 'r6', 'r7', 'r8']);
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root);
+    expect(sh(`prunable_releases "${root}" a b ${now}`).out).toBe('');
+  });
+
+  it('zeroed-update prunes only after a deploy that stayed up, and the system journal has a size cap the installer applies', () => {
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const prune = update.indexOf('prunable_releases /opt/zeroed/releases "$dest" "$prev"');
+    expect(prune).toBeGreaterThan(update.indexOf('if ! why="$(holds)"; then rollback "$why"; fi'));
+    expect(prune).toBeLessThan(update.indexOf('log "Deployed ${commit:0:12}. Worker: $worker."'));
+    const conf = read('ops/host/files/etc/systemd/journald.conf.d/zeroed-journal.conf');
+    expect(conf.split('\n')).toEqual(expect.arrayContaining(['[Journal]', 'SystemMaxUse=500M', 'SystemKeepFree=2G']));
+    const main = read('ops/host/install-main.sh');
+    expect(main).toContain('/etc/systemd/journald.conf.d/zeroed-*) return 0 ;;');
+    expect(main).toContain('[[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald');
+  });
+});

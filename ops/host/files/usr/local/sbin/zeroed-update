@@ -189,5 +189,9 @@ if [ -s "$CRED_DIR/helius_api_key" ]; then
   worker="restarted and up"
   alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
+# DISK-GUARD: old releases go once the new one runs; it and the one before it (the roll-back target) stay.
+for old in $(prunable_releases /opt/zeroed/releases "$dest" "$prev" "$(date +%s)"); do
+  rm -rf -- "$old" && log "Removed the old release $(basename "$old" | cut -c1-12) (DISK-GUARD)."
+done
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true

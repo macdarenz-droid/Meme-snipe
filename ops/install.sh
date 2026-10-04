@@ -73,6 +73,7 @@ managed() {
   case "$p" in
     /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
+    /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
   return 1
@@ -112,6 +113,7 @@ roll_back() {
     b=$((b + 1))
   done < "$JOURNAL"
   systemctl daemon-reload
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
   while read -r kind p en act; do
     [ "$kind" = unit ] && [[ "$p" =~ ^zeroed-[A-Za-z0-9@._-]+$ ]] || continue
     [ "$en" != 1 ] || systemctl enable "$p" >/dev/null 2>&1
@@ -245,6 +247,13 @@ table inet zeroed {
     meta skuid "zeroed-worker" drop
   }
 }
+__ZEROED_FILE__
+install_file /etc/systemd/journald.conf.d/zeroed-journal.conf 0644 <<'__ZEROED_FILE__'
+# DISK-GUARD: the system journal never takes the room the worker's state, ledger and journal need. At most 500 MB,
+# and it leaves at least 2 GB free (systemd's defaults on a 25 GB disk are 2.5 GB and 15%).
+[Journal]
+SystemMaxUse=500M
+SystemKeepFree=2G
 __ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup-offsite.service 0644 <<'__ZEROED_FILE__'
 [Unit]
@@ -1372,6 +1381,23 @@ intents_hold() {
   [ "$1" != active ] && [ ! -e "$2/open_intents" ] && [ ! -e "$2/ledger.sqlite" ] && return 1
   return 0
 }
+
+# prunable_releases ROOT CURRENT PREV NOW_S: release folders under ROOT that may go (DISK-GUARD), one per line. Kept:
+# the current release, the one before it (the roll-back target), the 3 newest, anything changed in the last 7 days and
+# anything half-written (*.new). Each release is a full copy of the repository, and every update adds one.
+prunable_releases() {
+  local root="$1" cur="$2" prev="$3" now="$4" d
+  local -a all=()
+  while IFS= read -r d; do all+=("$d"); done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
+  local i=0
+  for d in "${all[@]}"; do
+    i=$((i + 1))
+    [ "$i" -gt 3 ] || continue
+    [ "$d" != "$cur" ] && [ "$d" != "$prev" ] || continue
+    [ "$(( now - $(stat -c %Y "$d") ))" -gt 604800 ] || continue
+    printf '%s\n' "$d"
+  done
+}
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -2451,6 +2477,10 @@ if [ -s "$CRED_DIR/helius_api_key" ]; then
   worker="restarted and up"
   alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
+# DISK-GUARD: old releases go once the new one runs; it and the one before it (the roll-back target) stay.
+for old in $(prunable_releases /opt/zeroed/releases "$dest" "$prev" "$(date +%s)"); do
+  rm -rf -- "$old" && log "Removed the old release $(basename "$old" | cut -c1-12) (DISK-GUARD)."
+done
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true
 __ZEROED_FILE__
@@ -10330,6 +10360,8 @@ printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
 
 say "Services"
 systemctl daemon-reload
+# DISK-GUARD: journald reads its size limits only when it starts.
+[[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null

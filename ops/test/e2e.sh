@@ -153,7 +153,8 @@ in_c "stat -c '%a %U' /etc/zeroed/deploy-code /etc/zeroed/age/host.key" | sort -
 in_c "nft list ruleset" >"$LOGS/nft.txt"
 grep -q 'hook input priority filter; policy drop;' "$LOGS/nft.txt" && ! grep -q 'dport 22' "$LOGS/nft.txt" || fail "inbound not closed"
 in_c "systemctl is-enabled unattended-upgrades && grep -q 'Unattended-Upgrade \"1\"' /etc/apt/apt.conf.d/20auto-upgrades" >/dev/null || fail "unattended security updates not on"
-pass "install: 6-word EFF deploy code shown (root-only 0400 on disk), signer up, worker waiting, timers on, inbound policy drop with no SSH, unattended upgrades on"
+in_c "grep -qx 'SystemMaxUse=500M' /etc/systemd/journald.conf.d/zeroed-journal.conf && grep -qx 'SystemKeepFree=2G' /etc/systemd/journald.conf.d/zeroed-journal.conf" || fail "the system journal has no size cap (DISK-GUARD)"
+pass "install: 6-word EFF deploy code shown (root-only 0400 on disk), signer up, worker waiting, timers on, inbound policy drop with no SSH, unattended upgrades on, system journal capped"
 
 # ---------- 3. Deploy with a wrong code fails cleanly ----------
 publish() { # issued log code [extra env...]
@@ -646,6 +647,9 @@ code="$(in_c "curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' http://127.
 [ "$code" = 403 ] || fail "the drill endpoint is not on (HTTP $code, want 403; 404 is drills off, 000 is not listening)"
 in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" >"$LOGS/health-real.json" || fail "health does not answer on 127.0.0.1:8787"
 jq -e '.mode == "paper" and .signing_key == false and .reconciled == true' "$LOGS/health-real.json" >/dev/null || fail "health is not paper, reconciled, without a signing key"
+# DISK-GUARD: the worker reads the host's disk (the state directory's filesystem) once a minute, from its first step.
+in_c "for i in \$(seq 90); do curl -fsS -m 3 http://127.0.0.1:8787/health | jq -e '.disk.free_bytes > 0 and .disk.total_bytes >= .disk.free_bytes' >/dev/null && exit 0; sleep 1; done; exit 1" || fail "the worker's health has no disk reading"
+in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" | jq -e '.disk.entries_refused == false and .disk.recorder == "on"' >/dev/null || fail "the worker refused entries or paused its recorder on a host with room"
 # PRACTICE-ON: the S0 shakedown with S0's diagnostic set, from the release's host-config, in the worker's environment,
 # /health and start line; journaled as not qualifying, with the paper edge.
 parts='["regime-volume","regime-survival","exec-health","h14-creates-coverage"]'
