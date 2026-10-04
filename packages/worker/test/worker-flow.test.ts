@@ -11,7 +11,7 @@ import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
 import { HALT_KEY, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
-import { FILL_CONFIG } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
 import { runSeed } from '../src/run/seed-start.ts';
@@ -415,6 +415,43 @@ describe('restart drill mid-trade (EXIT-1 restore acceptance)', () => {
     expect(['abandoned', 'cancelled']).toContain(i.status);
     expect(i.reservation?.status).toBe('released');
     expect(readFileSync(join(h.stateDir, 'open_intents'), 'utf8')).toBe('0\n');
+    await h2.worker.stop();
+    expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+});
+
+describe('exits never wait at a restart (EXIT-1c)', () => {
+  it('downtime longer than T_max: the time stop decided at the reconcile has no quote yet, is never booked blocked, and goes on the first pool read', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    const qty = h.worker.book.positions[pid]!.quantity;
+    await h.worker.kill();
+    // Down for longer than the universe's maximum hold: the last pool state is long stale.
+    h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2);
+    const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    // Slots only, no pool read: the exit waits, open, with nothing booked blocked.
+    await m2.run(4_000, 400, () => m2.slot());
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    // The first pool read: the exit goes at once on the ladder's first rung and sells the whole holding.
+    const at = m2.now;
+    m2.pool();
+    await m2.run(6_000, 400, () => { m2.slot(); m2.pool(); });
+    const exit = mine().find((l) => (l['reasons'] as string[])[0] === 'exit');
+    expect(exit).toBeDefined();
+    expect((exit!['reasons'] as string[]).some((r) => r.startsWith('time_max'))).toBe(true);
+    expect(Date.parse(exit!['ts'] as string) - at).toBeLessThanOrEqual(400);
+    expect(mine().find((l) => (l['reasons'] as string[])[0] === 'prepare exit')!['reasons']).toContain('rung 0');
+    await m2.run(20_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    expect(h2.worker.book.positions[pid]).toMatchObject({ status: 'closed', sold: qty });
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
     await h2.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
   });
