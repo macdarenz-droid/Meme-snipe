@@ -24,7 +24,7 @@
 
 Notes on the WIP branches:
 - `claude/watch-1d` is built on WATCH-1c 6725a30 plus base 5087bd4. It does not yet contain c8227ea, the latest #121 test. Merge `claude/watch-1c` into it.
-- `claude/watch-1c` head 26d992a: the full `pnpm check` on this exact head did not finish before the handover. The same content minus a stray `node_modules` link was mid-check. Re-run `pnpm check` before review.
+- `claude/watch-1c` head 26d992a: the full `pnpm check` on 0715095 passed, 4525/4525. 26d992a only removes a stray `node_modules` link from that commit, so the code is the same.
 
 ## Done (with paths)
 - **TEST-3:** the §18 fault cases in `packages/worker/test/fault-injection.test.ts`.
@@ -52,7 +52,7 @@ Notes on the WIP branches:
      - Test 1 (`position-market.test.ts`): "a carry never dates an entry ... R13". It fails with the carry back at evaluate.
      - Test 2: "an entry evaluated on a quote nearly at the age limit is cancelled at the send...". It fails with the carry back at send (verified by mutant). It uses the chain read's reserves (`m.chainState`) so the carry applies.
    - DECISIONS no longer calls the send mutant "equivalent".
-   - Needs: a full `pnpm check` on 26d992a, then 017PBU's delta.
+   - Needs: 017PBU's delta. `pnpm check` passed, 4525/4525, on the same code.
 2. **WATCH-1d (`claude/watch-1d`, 221f291).**
    - Audit fix in place:
      - `minContextSlot` = live head − `maxStateSlotLag` (`solana-http.ts getMultipleAccounts`, `sources.watchRead`);
@@ -77,7 +77,7 @@ Notes on the WIP branches:
    - The supervisor also asked for `expect(calls.length).toBe(before)` before the feed dies in the fault test. That is now covered on WATCH-1b/1c (the healthy-minute pin), so it is not needed on this branch.
 
 ## Next steps (in order)
-1. On `claude/watch-1c`: `pnpm check`. If green, tell the supervisor that the head is ready for 017PBU's delta.
+1. `claude/watch-1c` 26d992a is ready for 017PBU's delta (check green on the same code).
 2. On `claude/watch-1d`:
    - `git merge origin/claude/watch-1c`, then merge the base (`origin/ccr-14987baf-i6lrsl`), with merge commits;
    - `pnpm check`;
