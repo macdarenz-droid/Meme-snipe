@@ -251,6 +251,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 - Archives a session when its task is merged and no follow-up needs it. A reviewer stays until the follow-ups of its PR have merged.
 - Owner chat:
   - Post only exact owner steps, direct answers to the owner, and new APK links. Otherwise reply ".".
+  - Owner, Mon 5 Oct 4:55 AM (screenshot of the "✅ Server update 1 is done" and "✅ Restart builder" lines): "Update me only like this. The rest, dot". So the only update form is one ✅ line per DONE task: **who (its job):** what it did as a simple idea, start → finish (duration), next. Everything else is ".".
   - Give times in Melbourne time, 12-hour clock, with elapsed/remaining time and the uncertainty.
   - For anything the owner must do while away, send one push notification (under 200 characters, action first).
 - Never:
