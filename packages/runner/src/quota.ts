@@ -302,6 +302,7 @@ export const entryRule = (starts: readonly StartFields[], expected: string, regi
     if (l.entry_rule !== expected) problems.push(`boot ${l.boot}: entry rule ${JSON.stringify(l.entry_rule ?? null)}, the run's strategy is ${expected}`);
     if (l.paper_edge_ppm !== null && l.paper_edge_ppm !== undefined) problems.push(`boot ${l.boot}: paper edge ${String(l.paper_edge_ppm)} ppm`);
     if (l.qualifying !== true) problems.push(`boot ${l.boot}: qualifying ${JSON.stringify(l.qualifying ?? null)}`);
+    if (l.s0_diagnostic !== null && l.s0_diagnostic !== undefined) problems.push(`boot ${l.boot}: S0 diagnostic ${JSON.stringify(l.s0_diagnostic)}`);
   }
   if (seen.length > 1) problems.push(`entry rule changed between boots: ${seen.join(', ')}`);
   if (salts.size > 1) problems.push('random-entry salt changed between boots');
