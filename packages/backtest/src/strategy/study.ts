@@ -336,11 +336,6 @@ export class StudyStrategy implements Strategy {
    * The chain tip as observed now: the newest chain slot among the observations released so far (the market's
    * `tip:observed`, with an observation delay). Absent (recorded receipt times), the clock's own slot, as live.
    */
-  #tipOf(ctx: StrategyContext): { observedTip?: bigint } {
-    const tip = this.#tip(ctx);
-    return tip === undefined ? {} : { observedTip: tip };
-  }
-
   #tip(ctx: StrategyContext): bigint | undefined {
     const r = ctx.lookup(OBSERVED_TIP_KEY);
     const slot = r.ok ? (r.value as { readonly slot?: unknown }).slot : undefined;
@@ -349,7 +344,7 @@ export class StudyStrategy implements Strategy {
 
   #gates(ctx: StrategyContext, u: UniverseConfig, mint: string, roundTrip: ReturnType<ReturnType<typeof pumpSwapRoundTrip>>, spend: bigint, only: readonly HardGate[]): HardResult {
     const policy = this.#o.session.policy;
-    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, ...this.#tipOf(ctx) };
+    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, observedTip: this.#tip(ctx) ?? ctx.now.slot };
     return evaluateHardRejects(gctx, { session: this.#o.session, mode: 'backtest', rugLabeller: 'RUG-1' },
       { mint, universe: (this.#s0 ? 'S0' : u.universe) as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip }, { stopAtFirst: false, only });
   }
@@ -380,7 +375,7 @@ export class StudyStrategy implements Strategy {
     if (c.checks === 1 || c.target === c.checks) say('candidate', `check ${c.checks}`);
     // The regime gate first, as live (worker strategy: regime off rejects before any hard reject). Off is its own
     // funnel stage, never skipped: "not covered" when its inputs are unknown, adverse when its conditions fail.
-    const gctxR: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, ...this.#tipOf(ctx) };
+    const gctxR: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, observedTip: this.#tip(ctx) ?? ctx.now.slot };
     const regime = this.#o.regime === 'assume-on' ? null : evaluateRegime(gctxR, { session: this.#o.session, mode: 'backtest' });
     if (regime !== null && !regime.on) {
       const unknown = regime.reasons.length > 0 && regime.reasons.every((r) => r.code === 'unknown');

@@ -14,7 +14,7 @@
 //   disc:<mint>   the bot learns of a graduation, after the modelled discovery lag (Discovery)
 //   slot          a block: height and time (every block while trading is active, otherwise a heartbeat)
 //   sol-usd       the SOL/USD close once it is usable (offchain.ts)
-//   tip:observed  the newest chain slot among released observations (`{ slot }`), before each delayed release
+//   tip:observed  the newest chain slot among released observations (`{ slot }`), updated in chain order
 // The fact projector's facts, checks and read landings go through the same delay, values unchanged.
 import { poolAddress, pumpPoolAuthority, toAddress } from '../../../core/src/chain/index.ts';
 import type { FeedEvent, MarketEvent, Moment } from '../../../core/src/engine/index.ts';
@@ -261,10 +261,14 @@ export class Market {
     // Released at this block's moment, which only places them in the engine's order; every value keeps its chain slot.
     // The projector's facts go as built (their observations carry their own slots); feed observations get the block
     // height known now.
-    // The tip first, so every decision in the batch judges freshness against what has been seen, this batch included.
-    for (const { e } of batch) if (e.moment.slot > this.#tip) this.#tip = e.moment.slot;
-    if (batch.length > 0) this.#opts.schedule({ kind: 'market', id: `tip:${slot}`, moment: { slot, txIndex: BLOCK_TX, ixIndex: 2 + this.#seq++, receivedAt: t }, key: OBSERVED_TIP_KEY, value: { slot: this.#tip } });
     for (const { e, asIs } of batch) {
+      // The tip moves as the batch goes, in chain order: each event is judged against what had been seen when it
+      // arrived (itself included), never against a later slot of the same batch. Only with the fact projector (the
+      // study's gates read it); BT-1's runs see no extra event.
+      if (e.moment.slot > this.#tip) {
+        this.#tip = e.moment.slot;
+        if (this.#opts.facts !== undefined) this.#opts.schedule({ kind: 'market', id: `tip:${this.#seq}`, moment: { slot, txIndex: BLOCK_TX, ixIndex: 2 + this.#seq++, receivedAt: t }, key: OBSERVED_TIP_KEY, value: { slot: this.#tip } });
+      }
       const moment = { slot, txIndex: BLOCK_TX, ixIndex: 2 + this.#seq++, receivedAt: t };
       this.#opts.schedule(asIs ? { ...e, moment } : { ...e, moment, value: { ...(e.value as Readonly<Record<string, unknown>>), blockHeight: this.blockHeight } });
     }

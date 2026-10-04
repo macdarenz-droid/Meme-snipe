@@ -17,10 +17,12 @@ export interface GateContext {
   /** Our own deployer index, fed with every released event (GATE-1b). Without it H14 reads a stored deployer fact. */
   readonly deployers?: DeployerIndex;
   /**
-   * The chain tip as the process has observed it (a backtest with an observation delay: the delay is in when an event
-   * is seen, never in its chain slot). Chain state is judged fresh against it. Absent, the tip is `now.slot` (live).
+   * The chain tip as the process has observed it: the newest chain slot among the events released to the engine. Chain
+   * state is judged fresh against it, the same rule live and in a backtest (supervisor ruling). Live, events are
+   * released at their own chain slots, so it is the clock's slot; a backtest with an observation delay passes the
+   * newest chain slot it has released, never the release moment's. A tip ahead of `now` is not believed.
    */
-  readonly observedTip?: bigint;
+  readonly observedTip: bigint;
 }
 
 /**
@@ -109,8 +111,7 @@ export class Evidence {
     if (obs.slot === null) return evidenceReason(name, 'malformed', neededBy, `${name} is chain state without a slot`);
     const lag = BigInt(maxStateSlotLag);
     // Never past now: a tip ahead of the clock cannot have been observed.
-    const given = this.#ctx.observedTip;
-    const tip = given !== undefined && given < now.slot ? given : now.slot;
+    const tip = this.#ctx.observedTip < now.slot ? this.#ctx.observedTip : now.slot;
     if (obs.stream === undefined) {
       const behind = tip - obs.slot;
       return behind > lag ? evidenceReason(name, 'stale', neededBy, `${name} read at slot ${obs.slot}, ${behind} slots behind`, String(behind), String(lag)) : null;

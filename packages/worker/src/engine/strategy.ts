@@ -370,7 +370,8 @@ export class LiveStrategy implements Strategy {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
       this.#coverage = createsCoverage(this.#history(ctx), ctx.now, ctx.now.receivedAt - this.#d.session.policy.gates.deployerRugLookbackDays * 86_400_000);
     }
-    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: this.#history(ctx), deployers: this.#deployers };
+    // The feed releases events at their own chain slots, so the newest chain slot released is the clock's slot.
+    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: this.#history(ctx), deployers: this.#deployers, observedTip: ctx.now.slot };
     this.#track(e, ctx);
     this.#lifecycle(ctx, out);
     this.#manage(ctx, out);

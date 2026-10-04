@@ -82,7 +82,7 @@ describe('regime boundaries', () => {
     expect(at(13)).toEqual([]);
     expect(market.regime).toBe('pump-2026-10-02');
     expect(at(14)).toEqual([]);
-    expect(at(15)).toEqual([{ key: 'tip:observed', slot: 15n }, { key: 'regime', slot: 15n }]);
+    expect(at(15)).toEqual([{ key: 'regime', slot: 15n }]);
   });
 });
 
@@ -116,11 +116,12 @@ describe('projector facts through the observation delay (supervisor ruling)', ()
     expect(at(12)).toEqual([]);
     // Due at 13; the next block row is 20: released there, re-stamped only in the engine's order.
     const out = at(20);
-    expect(out.map((x) => [x.key, x.slot])).toEqual([[OBSERVED_TIP_KEY, 20n], ['holders:m', 20n], ['check:m', 20n], ['holders:m', 20n], ['check:m', 20n]]);
-    // The tip is the newest chain slot seen (12, not the release block's 20), so a uniform delay makes nothing stale.
-    expect(out[0]!.value).toEqual({ slot: 12n });
+    expect(out.map((x) => [x.key, x.slot])).toEqual([[OBSERVED_TIP_KEY, 20n], ['holders:m', 20n], ['check:m', 20n], [OBSERVED_TIP_KEY, 20n], ['holders:m', 20n], ['check:m', 20n]]);
+    // The tip is the newest chain slot seen when each event arrives (10, then 12; never the release block's 20, nor a
+    // later slot of the same batch), so a uniform delay makes nothing stale.
+    expect([out[0]!.value, out[3]!.value]).toEqual([{ slot: 10n }, { slot: 12n }]);
     // Values go as built: the chain slots stay 10 and 12, and nothing is added.
-    expect(out.slice(1).map((x) => x.value)).toEqual([{ obs: { slot: 10n } }, { n: 10 }, { obs: { slot: 12n } }, { n: 12 }]);
+    expect([out[1], out[2], out[4], out[5]].map((x) => x!.value)).toEqual([{ obs: { slot: 10n } }, { n: 10 }, { obs: { slot: 12n } }, { n: 12 }]);
   });
 });
 
