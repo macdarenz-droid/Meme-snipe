@@ -351,10 +351,12 @@ Question for the owner to send Helius (only Helius can answer (b)–(d) and §3.
 ### Size of one helius day
 
 The 09-21 chain (run 37185822426) was still running when this was written, so these are estimates, not measurements.
-- **What is packaged** (`ci/package-day.sh`): the day's units as `units-DAY.tar.part*` (1,900 MiB parts), `events-DAY.tar` (each unit's events, stats and blocks), and the small QA, parity, manifest and checksum files. An RPC unit has the same files as an archive unit (`rpcscan/rpcunit.go:177`), so a day is about **6.4 to 8.5 GB** as estimated above ("Sizes against GitHub's release limits").
+- **What is packaged** (`ci/package-day.sh`): the day's units as `units-DAY.tar.part*` (1,900 MiB parts), `events-DAY.tar` (each unit's events, stats and blocks), and the small QA, parity, manifest and checksum files. An RPC unit has the same files as an archive unit (`rpcscan/rpcunit.go:177`).
 - **`raw.jsonl.zst` is not whole `getBlock` responses.** It holds one record per kept transaction (wire bytes plus meta, `scanner/raw.go`): the 5% hash sample's pump and PumpSwap transactions plus every create and migration. The rest of each response is dropped.
-- **Raw share, estimated:** the pilot baseline unit (1 Oct, 4,496 blocks) has 17,614 raw records, 45,600 curve rows and 142,598 PumpSwap rows (`pilot/baseline-…json.zst`, stats). A day is about 72 such units, so about 1.27M raw records. Units built from the three fixture blocks (`rpcscan/testdata/rpc`, run locally) give about 14 KB per raw record uncompressed and 2.8 to 3.1 KB compressed in tiny files; rows compress from about 300 B there to the 185 B measured in full files, so raw is put at about 1.9 to 3.1 KB. That gives **about 2.4 to 3.9 GB of raw a day, roughly 40 to 55% of the day**, against about 2.5 GB of curve and PumpSwap rows plus about 0.1 GB of movements. Error is about ±50% with the hour of day, as for the day total.
-- **80 days:** about 510 to 680 GB with raw, about 250 to 400 GB without.
+- **Raw share, estimated:** the pilot baseline unit (1 Oct, 4,496 blocks) has 17,614 raw records, 45,600 curve rows and 142,598 PumpSwap rows (`pilot/baseline-…json.zst`, stats). A day is about 72 such units, so about 1.27M raw records. Units built from the three fixture blocks (`rpcscan/testdata/rpc`, run locally) give about 14 KB per raw record uncompressed and 2.8 to 3.1 KB compressed in tiny files; rows compress from about 300 B there to the 185 B measured in full files, so raw is put at about 1.9 to 3.1 KB. That gives about 2.4 to 3.9 GB of raw a day.
+- **Day total, one basis (the sum of these components):** raw 2.4 to 3.9 GB, curve and PumpSwap rows about 2.5 GB (3.3M and 10.3M rows at about 185 B), movements about 0.1 GB, so **about 5.0 to 6.5 GB a day, raw about 48 to 60% of it**, and about 2.6 GB a day without raw. Error is about ±50% with the hour of day.
+- **Against the earlier estimate** ("Sizes against GitHub's release limits": 6.4 to 8.5 GB): that one counts canonical pools at up to 3.8 GB, where the 1 Oct unit's PumpSwap count gives about 1.9 GB. The two overlap inside the ±50%; this section uses the component sum, and the first measured helius day replaces both.
+- **80 days:** about 400 to 520 GB with raw, about 210 GB without (±50%).
 
 ### Options
 
@@ -372,20 +374,23 @@ A **private GitHub repository** (for example `macdarenz-droid/zeroed-data`) hold
 
 Owner steps (no agent can do them: an account action and a secret):
 1. Create a private repository (for example `zeroed-data`) under the owner's account.
-2. Create a fine-grained personal access token with access to that repository only, permission Contents: read and write, expiry long enough for the proof.
+2. Create a fine-grained personal access token with access to that repository only (no other repository), permission Contents: read and write, and an expiry long enough for the proof; put a calendar reminder a week before the expiry. An expired token fails closed: the publish step refuses, and that day then lives only in the 7-day cache until a new token is added.
 3. Add it to this repository as the Actions secret `DATA_STORE_TOKEN`, and the repository name as the variable `DATA_REPO`.
 
-Minimum code change (one builder card, `.github` changes approved by the supervisor):
-- `ci/publish-day.sh`: a helius day (manifest unit with `root_cid` `rpc:getBlock`) is published to `$DATA_REPO` only, never to `$GITHUB_REPOSITORY`. Before uploading it checks `gh api repos/$DATA_REPO --jq .private` is `true` and `$DATA_REPO` differs from `$GITHUB_REPOSITORY`; anything else refuses (fail closed). Archive days are unchanged.
-- `ci/publish-volume.sh`: the same rule for `data-volume-DAY` of a helius day.
-- `ci/assemble.sh` and `ci/volume-day.sh`: read a day from `$DATA_REPO` when it is not in this repository; a window containing a helius day creates its `data-FROM-TO` release in `$DATA_REPO` only.
-- `data-scan.yml`: `DATA_STORE_TOKEN` reaches only those publish and download steps; the `data-rpc-assets` cache save can stay as a same-week fallback.
-- `ci/test-ci.sh`: a helius day never targets this repository; a public or missing `DATA_REPO` is refused; an archive day still publishes here.
+Minimum code change (one builder card, `.github` changes approved by the supervisor). DATA-PUB's guarantee holds on every path: nothing from a helius day reaches this public repository or anyone outside the private one.
+- **One fail-closed check before every upload of helius data**, shared by all paths: `gh api repos/$DATA_REPO --jq .private` prints `true`, and `$DATA_REPO` differs from `$GITHUB_REPOSITORY` compared case-insensitively. Anything else (unset, public, unreadable, same repository) refuses before any upload.
+- `ci/publish-day.sh`: a helius day (manifest unit with `root_cid` `rpc:getBlock`) goes to `$DATA_REPO` only, after the check. Archive days are unchanged.
+- `ci/publish-volume.sh` and `ci/volume-day.sh` (volume back-fill): the same check before any `data-volume-DAY` upload of a helius day.
+- `ci/assemble.sh`: reads a day from `$DATA_REPO` when it is not in this repository. A window containing a helius day runs the same check and creates its `data-FROM-TO` release in `$DATA_REPO` only; assembled datasets carry raw files (`scanner/finalize.go:292`).
+- `data-scan.yml`: the helius publish is its own helius-only step whose `GH_TOKEN` is `secrets.DATA_STORE_TOKEN`, never `github.token`; the archive publish step keeps `github.token` and never runs for helius. The same holds for the assemble and volume steps that touch `$DATA_REPO`. The `day-DAY` artifact stays off for helius (the `inputs.source != 'helius'` condition on `upload-artifact` stays). The `data-rpc-assets` cache save can stay as a same-week fallback.
+- A gate test (as #127 does for the ledger steps) fails if `DATA_STORE_TOKEN` appears in any step other than the named helius steps.
+- `ci/test-ci.sh`: a helius day never targets this repository; a public, missing or same-name (any case) `DATA_REPO` is refused on each path (publish, volume, assemble); an archive day still publishes here.
 
 Risks:
 - **Leaks through public logs and artifacts:** jobs in this public repository print no data rows, and no helius file is uploaded as an artifact (the DATA-PUB rule stays). Mitigation: the tests above, plus the existing refusal in `publish-day.sh`.
 - **Token scope:** a leaked token reaches only the private data repository. Mitigation: fine-grained, one repository, used in named steps only.
-- **GitHub capacity:** about 0.5 to 0.7 TB is far more than GitHub's guidance for repositories, though releases have no stated cap. Mitigation: derived-only as the fallback; size per day is logged in each job summary.
+- **Visibility change (owner):** never make the data repository public, or change its visibility at all. The check runs only at publish time, so it cannot protect files already stored there.
+- **GitHub capacity:** about 0.4 to 0.5 TB (±50%) is far more than GitHub's guidance for repositories, though releases have no stated cap. Mitigation: derived-only as the fallback; size per day is logged in each job summary.
 - **Terms change:** recheck helius.dev/terms before each paid month.
 
 ## How to extend
