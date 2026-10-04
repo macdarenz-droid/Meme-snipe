@@ -17,7 +17,7 @@ import { attempt as fxAttempt, entryToSubmitted, fill as fx, on, quote, sig } fr
 import { PaperAccount, type PaperLegs, type PaperTrade, accountFile, tradePnl, tradeSol } from '../src/run/account.ts';
 import { Desk } from '../src/run/desk.ts';
 import { LATE_BUY } from '../src/run/worker.ts';
-import { type ApiInputs, moneyEvents, usdText, views } from '../src/run/api.ts';
+import { type ApiInputs, moneyEvents, realisedLossToday, usdText, views } from '../src/run/api.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
 import { LANDS, Market, SOL_PRICE, T, makeWorker, passingMarket, tempState, until } from './worker-harness.ts';
@@ -874,6 +874,10 @@ describe('PAPER-2: a closed trade is settled again when something lands after it
     const inputs = { book: closedBook(), legs, attempts: legs.attempts, trades: account.state.trades, accountCosts: account.costRecords(), symbol: () => 'M', strategyVersion: 's', policyVersion: 'p', solPrice: PX } as unknown as ApiInputs;
     expect(views.trades(inputs)).toMatchObject([{ netUsd: usdText(tradePnl(t)!), netSol: (Number(tradeSol(t)!) / 1e9).toFixed(9) }]);
     expect(views.stats(inputs)).toMatchObject({ netUsd: usdText(tradePnl(t)!), netSol: (Number(tradeSol(t)!) / 1e9).toFixed(9), meanNetUsd: usdText(tradePnl(t)!) });
+    // The late fee is in the trade's costs (read from its paper legs): the chart's priority fees are all three attempts'
+    // (entry, sell, the late failed sell: 10,000 lamports each at $100), on the close's day, not again as an account cost.
+    const kinds = views.charts(inputs).costsByKind;
+    expect(kinds.find((k) => k.kind === 'priorityFeeUsd')?.amountUsd).toBe(usdText(3n * lamportsToMicroUsd(10_000n as Lamports, PX, 'ceil')));
     // The calendar: the close on its day, the late fee on the day it was booked.
     const month = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit' }).format(T + 2);
     expect(views.calendar(inputs, month).days.map((d) => d.netUsd)).toEqual([usdText(before.netPnl!), usdText(-feeUsd)]);
@@ -936,6 +940,42 @@ describe('PAPER-2: a closed trade is settled again when something lands after it
     const ledger = openLedger(join(tempState(), 'ledger.sqlite'), 'paper');
     expect(account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, PX, T + 3).history.costs.filter((c) => c.kind === 'late_settlement')).toEqual([]);
     ledger.close();
+  });
+
+  it('a late gain shows in the app on its booking day (net, calendar, curve) but never in risk\'s costs or the day-loss meter', () => {
+    const account = opened();
+    const start = account.state.walletLamports! - account.state.trades[0]!.booked;
+    opening = () => start;
+    account.filled({ ...base, purpose: 'exit', book: closedBook(), atMs: T + 2 }, PX, legsOf(closeLegs, ['x1']));
+    const atClose = { ...check(account) };
+    // A day later a sale of this trade is booked late: a gain.
+    const day = T + DAY;
+    const lateFill = fillOf('late', 'x3', 400n, 5_000_000n);
+    const book = closedBook([{ id: 'late', purpose: 'exit', pid: 'p1', fills: [lateFill], sigs: ['x3'] }]);
+    const legs = legsOf([...closeLegs, att('late', 'x3', 'exit', 'filled', 'p1', lateFill)], ['x1']);
+    account.filled({ ...base, purpose: 'exit', book, atMs: day }, PX, legs);
+    const t = check(account);
+    const gain = tradePnl(t)! - atClose.netPnl!;
+    expect(gain > 0n).toBe(true);
+    // Another loss booked the same day (an account cost), so the meter has something to measure.
+    const other = { atMs: day + 60_000, amount: gain * 3n, lamports: 0n, kind: 'wallet_setup' };
+    const inputs = { book, legs, attempts: legs.attempts, trades: account.state.trades, accountCosts: [...account.costRecords(), other], symbol: () => 'M', strategyVersion: 's', policyVersion: 'p', solPrice: PX, nowMs: day + 120_000 } as unknown as ApiInputs;
+    // Net: the trade's whole result (and the other cost).
+    expect(views.stats(inputs)).toMatchObject({ netUsd: usdText(tradePnl(t)! - other.amount) });
+    // Calendar: the close on its day, the gain (less the other cost) on its booking day.
+    const month = (ms: number) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit' }).format(ms);
+    const days = month(T + 2) === month(day) ? views.calendar(inputs, month(day)).days : [...views.calendar(inputs, month(T + 2)).days, ...views.calendar(inputs, month(day)).days];
+    expect(days.map((d) => d.netUsd)).toEqual([usdText(atClose.netPnl!), usdText(gain - other.amount)]);
+    // Curve: after the close, the gain at its booking time.
+    const curve = views.charts(inputs).cumulative;
+    const at = curve.findIndex((c) => c.at === new Date(day).toISOString());
+    expect(at > 0).toBe(true);
+    const micro = (x: string) => BigInt(Math.round(Number(x) * 1e6));
+    expect(micro(curve[at]!.cumNetUsd) - micro(curve[at - 1]!.cumNetUsd)).toBe(gain);
+    expect(curve[at - 1]!.at).toBe(new Date(T + 2).toISOString());
+    // Risk: no cost for a gain. The day-loss meter: the other cost alone, the late gain not offsetting it.
+    expect(account.costs().filter((c) => c.kind === 'late_settlement')).toEqual([]);
+    expect(realisedLossToday(inputs)).toBe(other.amount);
   });
 
   it('a sibling\'s sell closes the shared account after the main trade closed: the rent comes back to the main trade (item 4)', () => {

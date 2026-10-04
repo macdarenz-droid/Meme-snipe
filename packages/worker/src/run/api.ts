@@ -307,6 +307,16 @@ export const moneyEvents = (i: ApiInputs): MoneyEvent[] => {
   return out.sort((x, y) => x.atMs - y.atMs);
 };
 
+/**
+ * Today's realised loss (Melbourne day), gains offsetting, from the money events; a late gain is left out, as risk
+ * leaves it out (PAPER-2: a day's loss is never lowered after the fact), so the meter never reads below risk's view.
+ */
+export const realisedLossToday = (i: ApiInputs): bigint => {
+  const start = melbourneDay(i.nowMs).start;
+  const realised = -moneyEvents(i).filter((e) => e.atMs >= start && !(e.kind === 'late' && e.net > 0n)).reduce((s, e) => s + e.net, 0n);
+  return realised > 0n ? realised : 0n;
+};
+
 /** An account cost under the app's cost kinds: the wallet's setup rent is rent kept; a failed entry's fees are network fees. */
 const ACCOUNT_COST_KIND: Readonly<Record<string, string>> = { wallet_setup: 'rentKeptUsd', failed_entry: 'networkFeeUsd', late_settlement: 'networkFeeUsd' };
 
@@ -338,8 +348,7 @@ export const views = {
     // the meter and the daily-loss stop (in `halts`, from the same snapshot) agree. Between a fill and the snapshot's
     // next read, today's realised loss (trades and account costs, gains offsetting) counts too: it is never more than
     // R7's figure on the same data (marked losses only add), so it only closes that gap. Unknown: no meter, never 0.
-    const realised = -moneyEvents(i).filter((e) => e.atMs >= melbourneDay(i.nowMs).start).reduce((s, e) => s + e.net, 0n);
-    const realisedLoss = realised > 0n ? realised : 0n;
+    const realisedLoss = realisedLossToday(i);
     if (realisedLoss >= dailyLimit && !halts.some((h) => h.code === 'daily-loss')) halts.push({ code: 'daily-loss', source: null });
     const fresh = i.stops !== null && i.stops.codes !== null && i.nowMs - i.stops.atMs <= STOPS_MAX_AGE_MS;
     const r7 = fresh ? (i.stops!.dayLoss ?? null) : null;
