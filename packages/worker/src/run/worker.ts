@@ -88,7 +88,9 @@ export interface SourcesContext {
   readonly feed: LiveFeed;
   readonly timers: Timers;
   /** The pools to watch for swaps: candidates' and open positions' (the strategy's `watchedPools`). */
-  readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean }>;
+  readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }>;
+  /** Writes a journal line (S0-ZERO: each in-run fill of a pool's trade gap, `trades_fill`). */
+  readonly journal?: (kind: 'trades_fill', fields: Readonly<Record<string, unknown>>) => void;
 }
 
 export interface WorkerDeps {
@@ -1042,7 +1044,7 @@ export class Worker {
     // Entries wait for the seed; this halt is released ahead of every live event, so the index waits with them.
     this.#seeding = true;
     this.#checkHalt(d.timers.now());
-    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => this.#strategy.watchedPools() });
+    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => this.#strategy.watchedPools(), journal: (kind, fields) => this.#journal.write(kind, fields) });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
     try {
       this.#server = await startHealthServer(d.config.health.host, d.config.health.port, {
