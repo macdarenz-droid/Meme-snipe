@@ -758,7 +758,13 @@ printf '{\n  "units": [\n    {\n      "root_cid": "rpc:getBlock"\n    }\n  ]\n}\
 rm -rf "$T/rel/data-day-$d"; : > "$T/created.log"
 out=$(bash "$here/publish-day.sh" $d "$rp" 2>&1) && no "publish-day published a day read over RPC" ||
   { [[ "$out" == *"read over RPC"* && ! -e "$T/rel/data-day-$d" && ! -s "$T/created.log" ]] && ok "publish-day: a day whose manifest lists an RPC unit (root_cid rpc:getBlock) is refused before any gh call" || no "publish-day rpc: $out"; }
-rv="$T/rpcvol"; rm -rf "$rv"; mkdir -p "$rv"; vrows > "$rv/volume-hours-2026-09-30.csv"; echo '{"mismatches": [], "problems": []}' > "$rv/volume-check-2026-09-30.json"
+sp="$T/strictpub"; rm -rf "$sp"; cp -r "$rp" "$sp"; d2=2026-09-27
+(cd "$sp" && for f in *; do mv "$f" "${f//$d/$d2}"; done && echo '{"units": []}' > manifest-$d2.json && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-$d2 &&
+  sed -i "s/^\(.\{20\}\)[0-9a-f]*\(  qa-$d2.md\)\$/\1\2/" SHA256SUMS-$d2)
+rm -rf "$T/rel/data-day-$d2"; : > "$T/created.log"
+out=$(bash "$here/publish-day.sh" $d2 "$sp" 2>&1) && no "publish-day published with a truncated hash line" ||
+  { grep -q "^.\{20\}  qa-$d2.md\$" "$sp/SHA256SUMS-$d2" && [[ ! -e "$T/rel/data-day-$d2" && ! -s "$T/created.log" ]] && ok "publish-day: a truncated hash line in SHA256SUMS fails (sha256sum --strict)" || no "publish-day strict: $out"; }
+: > "$T/created.log"; rv="$T/rpcvol"; rm -rf "$rv"; mkdir -p "$rv"; vrows > "$rv/volume-hours-2026-09-30.csv"; echo '{"mismatches": [], "problems": []}' > "$rv/volume-check-2026-09-30.json"
 cp "$rp/manifest-$d.json" "$rv/manifest-2026-09-30.json"; rm -rf "$T/rel/data-volume-2026-09-30"
 out=$(bash "$here/publish-volume.sh" 2026-09-30 "$rv" 2>&1) && no "publish-volume published a day read over RPC" ||
   { [[ "$out" == *"read over RPC"* && ! -e "$T/rel/data-volume-2026-09-30" && ! -s "$T/created.log" ]] && ok "publish-volume: a day whose manifest lists an RPC unit is refused before any gh call" || no "publish-volume rpc: $out"; }
@@ -821,6 +827,7 @@ shift; url="" jqx=""
 while (( $# )); do case "$1" in --jq) jqx=$2; shift ;; repos/*) url=$1 ;; esac; shift; done
 echo "$url" >> "$KG/calls.log"
 case "$url" in
+  repos/o/r) f="$KG/repo.json" ;;
   */actions/cache/usage) f="$KG/usage.json" ;;
   */actions/caches*) f="$KG/caches.json" ;;
   *) exit 2 ;;
@@ -832,24 +839,30 @@ kc() { KG="$K" GH_BIN="$K/bin/gh" GITHUB_REPOSITORY=o/r GITHUB_STEP_SUMMARY="$K/
 kcache() { python3 - "$K/caches.json" "$@" <<'PY'
 import json, sys
 out, *rows = sys.argv[1:]
-json.dump({"actions_caches": [{"key": r.split(",")[0], "size_in_bytes": int(r.split(",")[1]), "last_accessed_at": r.split(",")[2]} for r in rows]}, open(out, "w"))
+json.dump({"actions_caches": [{"key": r.split(",")[0], "size_in_bytes": int(r.split(",")[1]), "last_accessed_at": r.split(",")[2],
+                                "ref": (r.split(",") + ["refs/heads/ccr-x"])[3]} for r in rows]}, open(out, "w"))
 PY
 }
-: > "$K/sum"; : > "$K/out"; kcache; echo '{"active_caches_size_in_bytes": 1000}' > "$K/usage.json"
+: > "$K/sum"; : > "$K/out"; kcache; echo '{"active_caches_size_in_bytes": 1000}' > "$K/usage.json"; echo '{"default_branch": "ccr-x"}' > "$K/repo.json"
 kc list >/dev/null && grep -qx "count=0" "$K/out" && grep -qx "entries=\[\]" "$K/out" && grep -q "0 entries" "$K/sum" &&
   ok "keep-check list: no entry gives count=0 (the keep job is skipped)" || no "keep-check list empty: $(cat "$K/out")"
 : > "$K/sum"; : > "$K/out"
-kcache "data-rpc-assets-2026-09-21-37185822426-1,4100000000,2026-10-05T01:00:00Z" "data-rpc-scan-2026-09-21-1-1,9,2026-10-05T01:00:00Z" "data-rpc-assets-2026-09-20-3-1,4000000000,2026-10-06T01:00:00Z"
+kcache "data-rpc-assets-2026-09-21-37185822426-1,4100000000,2026-10-05T01:00:00Z" "data-rpc-scan-2026-09-21-1-1,9,2026-10-05T01:00:00Z" "data-rpc-assets-2026-09-20-3-1,4000000000,2026-10-06T01:00:00Z" \
+  "data-rpc-assets-2026-09-19-7-1,3000000000,2026-10-06T01:00:00Z,refs/pull/5/merge" "data-rpc-assets-2026-09-18-8-1,3000000000,2026-10-06T01:00:00Z,refs/heads/other"
 echo '{"active_caches_size_in_bytes": 8200000000}' > "$K/usage.json"
 kc list > "$K/stdout" && grep -qx 'count=2' "$K/out" &&
   grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z"},{"key":"data-rpc-assets-2026-09-21-37185822426-1","day":"2026-09-21","before":"2026-10-05T01:00:00Z"}\]' "$K/out" &&
   grep -q "| \`data-rpc-assets-2026-09-21-37185822426-1\` | 4.10 GB |" "$K/sum" && grep -q "2 entries, 8.10 GB; all repository caches 8.20 GB of 10 GB" "$K/sum" &&
   grep -q "Warning: repository caches above 7 GB" "$K/sum" && grep -q "::warning::" "$K/stdout" &&
-  ok "keep-check list: only data-rpc-assets-* entries, with key, day and last access; sizes and total in the summary, a warning above 7 GB" || no "keep-check list: $(cat "$K/out" "$K/sum")"
+  ! grep -q "2026-09-19\|2026-09-18" "$K/out" "$K/sum" &&
+  ok "keep-check list: only data-rpc-assets-* entries of the default branch (a PR-ref or other-branch entry is dropped), with key, day and last access; sizes and total in the summary, a warning above 7 GB" || no "keep-check list: $(cat "$K/out" "$K/sum")"
 : > "$K/sum"; echo '{"active_caches_size_in_bytes": 7000000000}' > "$K/usage.json"
 kc list > "$K/stdout" && ! grep -q "Warning" "$K/sum" && ! grep -q "::warning::" "$K/stdout" && ok "keep-check list: no warning at 7 GB or less" || no "keep-check list no warning"
 kcache "data-rpc-assets-bad,1,2026-10-05T01:00:00Z"; kc list >/dev/null 2>&1 && no "keep-check list accepted a malformed key" || ok "keep-check list: a malformed data-rpc-assets key fails"
 echo '{"active_caches_size_in_bytes": null}' > "$K/usage.json"; kcache; kc list >/dev/null 2>&1 && no "keep-check list accepted unreadable usage" || ok "keep-check list: an unreadable cache usage fails"
+echo '{"active_caches_size_in_bytes": 1}' > "$K/usage.json"; echo '{"default_branch": null}' > "$K/repo.json"
+kc list >/dev/null 2>&1 && no "keep-check list accepted an unreadable default branch" || ok "keep-check list: an unreadable default branch fails"
+echo '{"default_branch": "ccr-x"}' > "$K/repo.json"
 ka="$K/assets"; d=2026-09-21
 mkka() { rm -rf "$ka"; mkdir -p "$ka"; for f in units-$d.tar.part00 events-$d.tar qa-$d.md qa-$d.json parity-$d.json manifest-$d.json; do echo "secret-body-$f" > "$ka/$f"; done; (cd "$ka" && sha256sum units-* events-* qa-* parity-* manifest-* > SHA256SUMS-$d); }
 mkka; : > "$K/sum"
@@ -861,13 +874,14 @@ mkka; echo x > "$ka/extra.bin"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" ext
 mkka; rm "$ka/parity-$d.json"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" missing"
 mkka; rm "$ka/manifest-$d.json"; (cd "$ka" && grep -v manifest SHA256SUMS-$d > s && mv s SHA256SUMS-$d); kc verify $d "$ka" >/dev/null 2>&1 && bad+=" no-manifest"
 mkka; rm "$ka/SHA256SUMS-$d"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" no-sums"
-[[ -z "$bad" ]] && ok "keep-check verify: a changed, extra or missing file, no manifest or no sums fails, without printing contents" || no "keep-check verify:$bad"
+mkka; sed -i "s/^\(.\{20\}\)[0-9a-f]*\(  qa-$d.md\)\$/\1\2/" "$ka/SHA256SUMS-$d"; grep -q "^.\{20\}  qa-$d.md\$" "$ka/SHA256SUMS-$d" || bad+=" garble-setup"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" garbled"
+[[ -z "$bad" ]] && ok "keep-check verify: a changed, extra or missing file, no manifest, no sums or a truncated hash line fails, without printing contents" || no "keep-check verify:$bad"
 kcache "data-rpc-assets-2026-09-21-1-1,5,2026-10-07T03:00:00Z"
 kc touched data-rpc-assets-2026-09-21-1-1 2026-10-07T02:00:00Z >/dev/null && ok "keep-check touched: a later last_accessed_at proves the restore refreshed the entry" || no "keep-check touched later"
 rc=0; KEEP_WAIT=2 kc touched data-rpc-assets-2026-09-21-1-1 2026-10-07T03:00:00Z >/dev/null 2>&1 || rc=$?
 rc2=0; KEEP_WAIT=0 kc touched data-rpc-assets-2026-09-21-9-9 2026-10-07T03:00:00Z >/dev/null 2>&1 || rc2=$?
 [[ $rc == 1 && $rc2 == 1 ]] && ok "keep-check touched: an unchanged last access (after the wait) or a vanished entry fails" || no "keep-check touched unchanged: $rc $rc2"
-! grep -qv '^repos/o/r/actions/cache' "$K/calls.log" && ok "keep-check: the only API calls are cache reads" || no "keep-check calls: $(sort -u "$K/calls.log")"
+! grep -qv '^repos/o/r/actions/cache\|^repos/o/r$' "$K/calls.log" && ok "keep-check: the only API calls are cache reads and the default branch" || no "keep-check calls: $(sort -u "$K/calls.log")"
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

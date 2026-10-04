@@ -20,14 +20,20 @@ gh=${GH_BIN:-gh}
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 cmd=${1:-}
 shift || true
-caches() { # every data-rpc-assets-* entry as "key<TAB>size<TAB>last_accessed_at", sorted
+caches() { # every data-rpc-assets-* entry of the default branch as "key<TAB>size<TAB>last_accessed_at", sorted
+  # Only the default branch's entries: a scheduled run can restore those, and data-scan
+  # saves there; an entry of another ref (a PR, a branch) is not ours to keep.
+  local branch ref
+  branch=$("$gh" api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')
+  [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ && "$branch" != null ]] || { echo "keep-check: unreadable default branch '$branch'" >&2; exit 1; }
+  ref="refs/heads/$branch"
   "$gh" api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?key=data-rpc-assets-&per_page=100" \
-    --jq '.actions_caches[] | select(.key | startswith("data-rpc-assets-")) | [.key, (.size_in_bytes|tostring), .last_accessed_at] | @tsv' | LC_ALL=C sort
+    --jq '.actions_caches[] | select(.key | startswith("data-rpc-assets-")) | select(.ref == "'"$ref"'") | [.key, (.size_in_bytes|tostring), .last_accessed_at] | @tsv' | LC_ALL=C sort
 }
 case $cmd in
   list)
     rows=$(mktemp); trap 'rm -f "$rows"' EXIT
-    caches > "$rows"
+    caches > "$rows" || exit 1
     usage=$("$gh" api "repos/$GITHUB_REPOSITORY/actions/cache/usage" --jq '.active_caches_size_in_bytes')
     [[ "$usage" =~ ^[0-9]+$ ]] || { echo "keep-check: unreadable cache usage '$usage'" >&2; exit 1; }
     python3 - "$rows" "$usage" "$summary" "${GITHUB_OUTPUT:-/dev/null}" <<'PY'
@@ -68,7 +74,7 @@ PY
     listed=$(awk '{print $2}' "$dir/$sums" | LC_ALL=C sort)
     have=$(cd "$dir" && find . -maxdepth 1 -type f ! -name "$sums" -printf '%f\n' | LC_ALL=C sort)
     [ "$listed" = "$have" ] || { echo "keep-check: files differ from $sums: $(diff <(echo "$listed") <(echo "$have") | grep '^[<>]' | tr '\n' ' ')" >&2; exit 1; }
-    (cd "$dir" && sha256sum -c --quiet "$sums") || { echo "keep-check: a file of $day does not match $sums" >&2; exit 1; }
+    (cd "$dir" && sha256sum -c --strict --quiet "$sums") || { echo "keep-check: a file of $day does not match $sums" >&2; exit 1; }
     n=$(wc -l <<<"$listed")
     echo "| $day | $n files + $sums | intact |" | tee -a "$summary"
     ;;
