@@ -180,7 +180,9 @@ describe('landing draws', () => {
     const c = FILL_CONFIG.scenarios.conservative;
     expect(c.slippagePpm).toBe(1_500_000n);
     expect(c.takeProfit).toBe('close');
-    expect(c.rentRecovery).toBe(false);
+    // RENT-1: no scenario drops the rent outright; conservative gets it back only through the harshest close outcome.
+    expect('rentRecovery' in c).toBe(false);
+    expect(c.closeSuccessPpm).toBeLessThan(1_000_000n);
     expect(Math.min(...c.landingSlots)).toBeGreaterThanOrEqual(Math.max(...base.landingSlots));
   });
 });
@@ -340,10 +342,9 @@ describe('scenario ordering', () => {
   better('finalization lag', c.finalizeSlots, b.finalizeSlots, o.finalizeSlots, lower);
   better('extra slippage', c.slippagePpm, b.slippagePpm, o.slippagePpm, (x, y) => x >= y);
   better('take-profit basis (close is worse than wick)', c.takeProfit, b.takeProfit, o.takeProfit, (x, y) => x === 'close' || y === 'wick');
-  better('rent recovery', c.rentRecovery, b.rentRecovery, o.rentRecovery, (x, y) => !x || y);
   better('account close success', c.closeSuccessPpm, b.closeSuccessPpm, o.closeSuccessPpm, (x, y) => x <= y);
   better('dust left in the account', c.dustPpm, b.dustPpm, o.dustPpm, (x, y) => x >= y);
   test('the test covers every scenario field', () => {
-    expect(Object.keys(b).sort()).toEqual(['closeSuccessPpm', 'confirmSlots', 'congestion', 'delay', 'discoverySlots', 'dropPpm', 'dustPpm', 'exitRetryHaircutPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'landingTail', 'name', 'rentRecovery', 'slippagePpm', 'takeProfit']);
+    expect(Object.keys(b).sort()).toEqual(['closeSuccessPpm', 'confirmSlots', 'congestion', 'delay', 'discoverySlots', 'dropPpm', 'dustPpm', 'exitRetryHaircutPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'landingTail', 'name', 'slippagePpm', 'takeProfit']);
   });
 });
