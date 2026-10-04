@@ -1430,3 +1430,32 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · The deployer store loads by streaming.** `deployers.jsonl` gains about 64k create lines a day and is trimmed only at a start, to the look-back plus a day (about 15 days, about a million lines). `load` read it whole, split it and rewrote it from one joined string. Measured on 300,000 lines (168 MB, about 4.7 days of creates): peak RSS 1,036 MB before, over the unit's MemoryMax of 800M, so a restart after about four to five days of running would be killed at boot; 432 MB after. Streaming does not bound the parsed events the index seed keeps: at that rate about 8–9 days of creates still reach 800 MB. Bounding them is WORKER-GROW's (card 4).
 - **2026-10-04 · The runner streams the worker's journal.** The end-of-run report checks the journal with `checkJournalLines` over `fileLines`, the same check as `checkJournal` (pinned: a line that is not JSON is a problem unless it is the last one and a torn tail is allowed). It parses the journal once, where it used to read it whole three times. `readLines` streams. `reconciledFirst` and `entriesBetween` scan without building an array. `closedSince`, `journalTimes`, `item4`, `coverageGaps`, `rejections` and `withChainMoves` still take parsed arrays, which grow with the journal: bounding those needs journal rotation (card 4).
 - **Evidence.** `packages/worker/test/growth-sweep.test.ts`: the UTF-8 test fails on the base `journalLines`; the guard fails on the base deployer store and runner; hand mutants G1–G7 are killed.
+
+## Money totals with the account's costs (APP-MONEY, AUDIT-RM1 F4, `run/api.ts` `moneyEvents`, `run/account.ts` `costs`)
+- **2026-10-05 · One list of account costs.**
+  - `PaperAccount.costs()` is the account's costs that are no trade's (today the wallet's setup rent). Risk reads it in `fact()`, and the app's API reads the same list.
+  - `moneyEvents` puts each closed trade's net at its close and each account cost (as a loss) when booked, oldest first. These are the items core risk counts in equity.
+- **2026-10-05 · The totals use it.**
+  - Stats net and max drawdown: trades and costs in time order.
+  - Charts: cumulative and daily net; costs by day; costs by kind, where setup rent is `rentKeptUsd` and a failed entry's fees (PAPER-1's `failed_entry`, once merged) are `networkFeeUsd`.
+  - Calendar: a day's net (its trade count stays trades only).
+  - Win rate and mean net stay per trade.
+  - The backtest report already counts its stray costs this way, so the two compare.
+- **2026-10-05 · The daily-loss meter is R7's figure.**
+  - The strategy's status read (`#readStops`, the same input the entry path judges: account fact, marks, SOL price) now keeps core's `riskSnapshot.dayLoss`. It covers trades, account costs and marked open losses, with gains offsetting.
+  - The meter shows it while that read is current. Unknown or old: no meter (never a 0); the risk-unknown chip shows.
+  - Between a fill and the next read, today's realised loss (trades and costs, gains offsetting) also counts, for the meter and the daily-loss chip (API-1's probe).
+    - It is never more than R7's figure on the same data, because marked losses only add.
+    - Before, the meter summed today's losing trades only, without costs or offsetting gains.
+- **2026-10-05 · Not yet.** The stray fees of entries that never filled (`strayFees`, `strayFolded`) come with PAPER-1 (#133, not merged). They reach these totals through `costs()` when it merges, and their test ("setup + one stray") lands then.
+- **2026-10-05 · Evidence.**
+  - `packages/worker/test/app-money.test.ts`: 7 tests, all failing before. They cover:
+    - setup and no trades: net, drawdown, curve, day and kind all read −setup;
+    - trades with costs in time order;
+    - a real worker's inputs carry the account's costs;
+    - the meter equals core's `dayLoss` on the same inputs;
+    - a cost booked today counts;
+    - a gain offsets;
+    - unknown or old risk means no meter.
+  - `status-stops.test.ts` gains the new field in its expectations; its probe still passes.
+  - Hand mutants, all caught (13): stats, drawdown, charts or calendar on trades only; the wrong kind; the meter from realised loss only; no realised chip; 0 when unknown; an old read accepted; realised from losing items only; the strategy without `dayLoss`; the worker without costs; mean net with costs.

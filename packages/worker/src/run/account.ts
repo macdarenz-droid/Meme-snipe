@@ -185,16 +185,23 @@ export class PaperAccount {
     return out;
   }
 
+  /**
+   * The account's costs that are no trade's (RISK-1b `costs`), dated and in micro-dollars: the one list risk reads (in
+   * `fact`) and the app's money totals add to the trades (APP-MONEY). The wallet's setup rent is one: it lowers equity and
+   * counts toward the day's and week's loss, and it is never a trade (R8, R11, R15 and trade statistics do not see it).
+   */
+  costs(): AccountCost[] {
+    const su = this.#s.setup;
+    return su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, kind: 'wallet_setup' }];
+  }
+
   /** The account snapshot risk reads, with the ledger's held reservations and version read in one transaction. */
   fact(ledger: Ledger, book: Book, latches: Latches, solPrice: MicroUsd | null, nowMs: number): AccountFact {
     const { version, value: held } = ledger.withSnapshot(() => ledger.heldExposure());
     const closedTrades: ClosedTrade[] = this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).map((t) => ({
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
     }));
-    // The wallet's setup rent is an account cost (RISK-1b `costs`): it lowers equity and counts toward the day's and
-    // week's loss, and it is never a trade (R8, R11, R15 and statistics do not see it).
-    const su = this.#s.setup;
-    const costs: AccountCost[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, kind: 'wallet_setup' }];
+    const costs = this.costs();
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id).reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);

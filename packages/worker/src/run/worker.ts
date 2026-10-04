@@ -859,7 +859,7 @@ export class Worker {
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
-      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
+      book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costs(), attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
         const m = this.poolOf(mint);
