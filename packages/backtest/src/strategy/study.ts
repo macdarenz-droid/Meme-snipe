@@ -623,7 +623,7 @@ export class StudyStrategy implements Strategy {
       const bars = tape?.bars() ?? [];
       const supply = view?.baseSupply ?? 0n;
       const dev = bars.filter((b) => b.startMs + BAR_MS > t.plan!.openedAtMs).reduce((s, b) => s + b.deployerSold, 0n);
-      const flow: FlowMinute[] = bars.filter((b) => b.startMs >= t.plan!.openedAtMs - BAR_MS).map((b) => ({ startMs: b.startMs, net: b.netIndependent }));
+      const flow: FlowMinute[] = bars.filter((b) => b.startMs >= t.plan!.openedAtMs - BAR_MS).map((b) => ({ startMs: b.startMs, net: b.netNonCreatorUser }));
       const exitFills = Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === pid);
       const realized = exitFills.reduce((s, i) => s + i.fills.reduce((x, f) => x + f.sol, 0n), 0n);
       const net = this.#o.fills.network;
@@ -735,7 +735,7 @@ export const gateCodes = (g: HardResult): string[] =>
 const lowOf = (bars: readonly { low: bigint }[]): bigint | null => (bars.length === 0 ? null : bars.reduce((m, b) => (b.low < m ? b.low : m), bars[0]!.low));
 const highOf = (bars: readonly { high: bigint }[]): bigint | null => (bars.length === 0 ? null : bars.reduce((m, b) => (b.high > m ? b.high : m), bars[0]!.high));
 
-/** U2: flush, higher low, reclaim of the VWAP since migration, positive independent net flow (§3.2). */
+/** U2: flush, higher low, reclaim of the VWAP since migration, positive non-creator-user flow (§3.2, #115 definitions). */
 export const u2Setup = (r: U2Rules, tape: PoolTape, spot: bigint, now: number, migration: { quote: bigint; base: bigint }): { ok: true; stopSpot: bigint } | { ok: false; why: string } => {
   const migSpot = (migration.quote * PRICE_SCALE) / migration.base;
   const all = tape.between(tape.startedAtMs - BAR_MS, now + BAR_MS);
@@ -749,8 +749,8 @@ export const u2Setup = (r: U2Rules, tape: PoolTape, spot: bigint, now: number, m
   if (recentLow * BPS < flush * (BPS + BigInt(r.higherLowBps))) return { ok: false, why: `no higher low: ${recentLow} vs flush ${flush}` };
   const vwap = tape.vwap();
   if (vwap === null || spot <= vwap) return { ok: false, why: `below the VWAP since migration (${spot} vs ${vwap})` };
-  const flow = recent.reduce((s, b) => s + b.netIndependent, 0n);
-  if (flow <= 0n) return { ok: false, why: `independent net flow ${flow} over the recent window` };
+  const flow = recent.reduce((s, b) => s + b.netNonCreatorUser, 0n);
+  if (flow <= 0n) return { ok: false, why: `non-creator-user flow ${flow} over the recent window` };
   return { ok: true, stopSpot: (recentLow * (BPS - BigInt(r.stopBelowLowBps))) / BPS };
 };
 

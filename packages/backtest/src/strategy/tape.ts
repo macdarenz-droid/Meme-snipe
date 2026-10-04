@@ -13,8 +13,11 @@ export interface Bar extends PriceBar {
   /** SOL in from buys and out to sells (what traders paid and received), lamports. */
   buyQuote: bigint;
   sellQuote: bigint;
-  /** SOL from buys minus SOL to sells, leaving out the deployer's own trades. */
-  netIndependent: bigint;
+  /**
+   * Non-creator-user flow (#115 definitions.nonCreatorUserFlow): SOL from buys minus SOL to sells of every user but the
+   * creator's exact address. Not independent buying: a wallet the creator funded still counts (no funding links here).
+   */
+  netNonCreatorUser: bigint;
   /** Tokens the deployer sold in the bar. */
   deployerSold: bigint;
   trades: number;
@@ -54,7 +57,7 @@ export class PoolTape {
     const start = Math.floor(atMs / BAR_MS) * BAR_MS;
     let bar = this.tail[this.tail.length - 1];
     if (bar === undefined || bar.startMs !== start) {
-      bar = { startMs: start, open: p, high: p, low: p, close: p, buyQuote: 0n, sellQuote: 0n, netIndependent: 0n, deployerSold: 0n, trades: 0 };
+      bar = { startMs: start, open: p, high: p, low: p, close: p, buyQuote: 0n, sellQuote: 0n, netNonCreatorUser: 0n, deployerSold: 0n, trades: 0 };
       this.tail.push(bar);
       if (this.tail.length > this.#tailMax) this.tail.shift();
       if (this.head.length < this.#headMax) this.head.push(bar);
@@ -66,10 +69,10 @@ export class PoolTape {
     const own = deployer !== null && view.user === deployer;
     if (view.side === 'buy') {
       bar.buyQuote += view.userQuote;
-      if (!own) bar.netIndependent += view.userQuote;
+      if (!own) bar.netNonCreatorUser += view.userQuote;
     } else {
       bar.sellQuote += view.userQuote;
-      if (!own) bar.netIndependent -= view.userQuote;
+      if (!own) bar.netNonCreatorUser -= view.userQuote;
       if (own) bar.deployerSold += view.baseAmount;
     }
     this.quoteVolume += view.userQuote;

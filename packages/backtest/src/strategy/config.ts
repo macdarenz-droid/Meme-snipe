@@ -13,7 +13,8 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
-/** U2, post-graduation reclaim (§3.2): flush, higher low, reclaim of the volume-weighted price, positive net flow. */
+/** U2, post-graduation reclaim (§3.2): flush, higher low, reclaim of the volume-weighted price, positive
+ * non-creator-user flow (swaps by anyone but the creator's exact address; not independent buying). */
 export interface U2Rules {
   readonly kind: 'U2';
   /** The lowest price since migration is at least this far below the migration price. */
