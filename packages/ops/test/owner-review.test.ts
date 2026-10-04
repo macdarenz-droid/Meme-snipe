@@ -21,7 +21,7 @@ const REVIEW = {
   weekly: null,
 };
 const DAY = 1_799_938_800_000;
-const OVERRIDE = { trip: `override-${DAY}-1`, evidence: { daily: 1, streak: 2, day_loss_lamports: '16000000', day_limit_lamports: '15000000', overrides: 1, day_ends_ms: DAY + 86_400_000 } };
+const OVERRIDE = { trip: `override-${DAY}-1`, evidence: { daily: 1, streak: 2, day_loss_lamports: '16000000', day_line_lamports: '15000000', overrides: 1, day_ends_ms: DAY + 86_400_000 } };
 const upd = (text: string, chat = 42) => JSON.stringify({ message: { chat: { id: chat }, text } });
 
 function harness(mem = new Map<string, unknown>(), extraEnv: Partial<Env> = {}) {
@@ -121,15 +121,15 @@ describe('owner review commands: parsing', () => {
     expect(stopText('weekly', r.weekly)).toBe('Weekly loss (R9): not tripped.');
     const o = stopText('override', reviewOf(hb({ review: { override: OVERRIDE } })).override);
     expect(o).toContain('daily loss and 2 losses in a row');
-    expect(o).toContain('Day loss 0.016 SOL (daily limit 0.015 SOL)');
+    expect(o).toContain('Day loss 0.016 SOL (stop line 0.015 SOL)');
     expect(o).toContain('Overrides today: 1');
     expect(o).toContain('The weekly loss, the kill switch and the loss review still apply.');
     expect(o).toContain(`/override confirm override-${DAY}-1`);
     expect(stopText('override', null)).toBe('Day stop (R7, R8 streak): not tripped.');
     // A streak alone, and the daily loss alone: each names only what tripped.
     const only = (e: object) => stopText('override', reviewOf(hb({ review: { override: { ...OVERRIDE, evidence: { ...OVERRIDE.evidence, ...e } } } })).override);
-    expect(only({ daily: 0, streak: 3 }).split('\n')[0]).toBe('Day stop (R7, R8 streak): 3 losses in a row. Day loss 0.016 SOL (daily limit 0.015 SOL). Overrides today: 1.');
-    expect(only({ daily: 1, streak: 0 }).split('\n')[0]).toBe('Day stop (R7, R8 streak): daily loss. Day loss 0.016 SOL (daily limit 0.015 SOL). Overrides today: 1.');
+    expect(only({ daily: 0, streak: 3 }).split('\n')[0]).toBe('Day stop (R7, R8 streak): 3 losses in a row. Day loss 0.016 SOL (stop line 0.015 SOL). Overrides today: 1.');
+    expect(only({ daily: 1, streak: 0 }).split('\n')[0]).toBe('Day stop (R7, R8 streak): daily loss. Day loss 0.016 SOL (stop line 0.015 SOL). Overrides today: 1.');
   });
 
   it('queues a confirm only for the trip open for that command, one per command; acks settle each once', () => {

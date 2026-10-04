@@ -5,7 +5,7 @@
 // (`acked`). Each command clears only its own stop; a command applied once is never applied again.
 import type { Policy } from '../../../core/src/config/index.ts';
 import type { ClosedTrade, DayOverride, Latches, RiskSnapshot } from '../../../core/src/risk/index.ts';
-import { activeOverride, lossReviewTrip } from '../../../core/src/risk/index.ts';
+import { lossReviewTrip } from '../../../core/src/risk/index.ts';
 import { melbourneDay, melbourneWeek } from '../../../core/src/risk/melbourne.ts';
 
 export type OwnerKind = 'review' | 'rearm' | 'weekly' | 'override';
@@ -79,8 +79,8 @@ export interface StopInputs {
   readonly latchable: boolean;
   /** Micro-dollars as lamports at the current SOL price, or null without one (SOL figures until SOL-BOOKS). */
   readonly toLamports: (usd: bigint) => bigint | null;
-  /** The daily loss limit (micro-dollars). */
-  readonly dailyLimit: bigint;
+  /** R7's line in force on that valuation's day (core dayLossLine: the limit, or beyond an override), micro-dollars. */
+  readonly dayLine: bigint;
 }
 
 const lamports = (v: bigint | null): string | null => (v === null ? null : v.toString());
@@ -126,9 +126,9 @@ const overrideStop = (i: StopInputs): OpenStop | null => {
     trip: overrideTrip(s.dayStartMs, count), atMs: s.dayStartMs,
     evidence: {
       daily: daily ? 1 : 0, streak: streak ? s.lossStreak : 0, day_loss_lamports: lamports(i.toLamports(s.dayLoss)),
-      day_limit_lamports: lamports(i.toLamports(i.dailyLimit)), overrides: count, day_ends_ms: s.dayStartMs + melbourneDayLength(s.dayStartMs),
+      day_line_lamports: lamports(i.toLamports(i.dayLine)), overrides: count, day_ends_ms: s.dayStartMs + melbourneDayLength(s.dayStartMs),
     },
-    override: { dayStartMs: s.dayStartMs, dayLossAt: daily ? s.dayLoss : null, streak, count: count + 1 },
+    override: { dayStartMs: s.dayStartMs, dayLossAt: daily ? s.dayLoss : null, streak, count: count + 1, ...(count > 0 && prev !== null ? { firstAtMs: prev.firstAtMs ?? prev.atMs } : {}) },
   };
 };
 
@@ -165,7 +165,7 @@ const reviewed = (l: Latches, kind: OwnerKind, atMs: number, stop: OpenStop): La
   kind === 'review' ? { ...l, lossReviewedAtMs: atMs }
     : kind === 'rearm' ? { ...l, killRearmedAtMs: atMs }
       : kind === 'weekly' ? { ...l, weeklyReviewedAtMs: atMs }
-        : stop.override === undefined ? l : { ...l, dayOverride: { ...stop.override, atMs } };
+        : stop.override === undefined ? l : { ...l, dayOverride: { firstAtMs: atMs, ...stop.override, atMs } };
 
 /**
  * One command against the open stops. Applied only when it was confirmed within COMMAND_TTL_MS, its kind's stop is open,
@@ -187,9 +187,16 @@ export const handleCommand = (
   return done('applied', reviewed(latches, c.kind, nowMs, stop));
 };
 
-/** A journal line's fields: an `entry` made while the owner's day override holds (core activeOverride) says so. */
-export const withOverrideTag = (kind: string, fields: Readonly<Record<string, unknown>>, latches: Latches, nowMs: number): Readonly<Record<string, unknown>> =>
-  kind === 'entry' && activeOverride(latches, melbourneDay(nowMs).start, nowMs) !== null ? { ...fields, override: true } : fields;
+/**
+ * A journal line's fields: an `entry` decided while an owner day override held says so. Judged at the entry intent's
+ * decision moment, not at the fill: an entry decided before the override and filled after it is not tagged. The day's
+ * first override counts (a later one on the same day replaces it in the latches). Unknown decision moment: not tagged.
+ */
+export const withOverrideTag = (kind: string, fields: Readonly<Record<string, unknown>>, latches: Latches, decidedAtMs: number | null): Readonly<Record<string, unknown>> => {
+  const o = latches.dayOverride ?? null;
+  if (kind !== 'entry' || decidedAtMs === null || o === null || melbourneDay(decidedAtMs).start !== o.dayStartMs) return fields;
+  return decidedAtMs >= (o.firstAtMs ?? o.atMs) ? { ...fields, override: true } : fields;
+};
 
 /** The handled list with `entry` added, newest last, capped. */
 export const keepHandled = (handled: readonly HandledCommand[], entry: HandledCommand): HandledCommand[] => [...handled, entry].slice(-KEEP_HANDLED);

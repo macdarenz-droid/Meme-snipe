@@ -15,7 +15,7 @@ import { replySigned, sendHeartbeat, signReply } from '../src/run/heartbeat.ts';
 import { sign, signReply as watchdogSignReply } from '../../ops/src/watchdog/logic.ts';
 import { SOL_PRICE_KEY } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
-import { MINT, Market, SOL_PRICE, makeWorker, passingMarket, until } from './worker-harness.ts';
+import { MINT, Market, SOL_PRICE, makeWorker, passingMarket, tempState, until } from './worker-harness.ts';
 import { markedHistory } from '../src/engine/marks.ts';
 
 /** A fresh SOL/USD price and a new slot, then one worker step (the account valuation runs on it). */
@@ -36,7 +36,7 @@ describe('owner commands against the open stops', () => {
   const trades = [1, 2, 3, 4, 5, 6].map((i) => ({ mint: `M${i}`, openedAtMs: T - 7_200_000 + i, closedAtMs: T - 3_600_000 + i * 60_000, notional: 2_000_000n, netPnl: i === 6 ? 50_000n : -100_000n, stoppedOut: i !== 6 }) as never);
   // A stand-in sum that shows which closes it was asked for.
   const stops = (l: Latches): OpenStops =>
-    openStops({ latches: l, closed: trades, loss: LOSS, netLamports: (from, to) => BigInt(to - from), snapshot: null, codes: [], latchable: true, toLamports: (v) => v * 10n, dailyLimit: 1_500_000n });
+    openStops({ latches: l, closed: trades, loss: LOSS, netLamports: (from, to) => BigInt(to - from), snapshot: null, codes: [], latchable: true, toLamports: (v) => v * 10n, dayLine: 1_500_000n });
 
   it('names each open stop by kind and moment; a cleared one is not open', () => {
     const s = stops(latched);
@@ -87,13 +87,13 @@ describe('owner commands against the open stops', () => {
     const DAY = melbourneDay(T).start;
     const snap = { dayStartMs: DAY, dayLoss: 1_600_000n, lossStreak: 2 } as unknown as RiskSnapshot;
     const day = (codes: string[], l: Latches = NO_LATCHES, snapshot: RiskSnapshot | null = snap, latchable = true) =>
-      openStops({ latches: l, closed: [], loss: LOSS, netLamports: () => 0n, snapshot, codes, latchable, toLamports: (v) => v * 10n, dailyLimit: 1_500_000n });
+      openStops({ latches: l, closed: [], loss: LOSS, netLamports: () => 0n, snapshot, codes, latchable, toLamports: (v) => v * 10n, dayLine: 1_500_000n });
     const at = (o: Partial<DayOverride>): Latches => ({ ...NO_LATCHES, dayOverride: { atMs: DAY + 1, dayStartMs: DAY, dayLossAt: null, streak: true, count: 1, ...o } });
 
     it('is open while risk shows a day-level stop, with the day loss and limit in SOL, and names the day and its overrides', () => {
       const s = day(['daily_loss', 'loss_cooldown', 'entries_per_day']).override;
       expect(s?.trip).toBe(`override-${DAY}-0`);
-      expect(s?.evidence).toEqual({ daily: 1, streak: 2, day_loss_lamports: '16000000', day_limit_lamports: '15000000', overrides: 0, day_ends_ms: melbourneDay(T).end });
+      expect(s?.evidence).toEqual({ daily: 1, streak: 2, day_loss_lamports: '16000000', day_line_lamports: '15000000', overrides: 0, day_ends_ms: melbourneDay(T).end });
       expect(day(['loss_day_pause']).override?.evidence).toMatchObject({ daily: 0, streak: 2 });
       expect(day(['daily_loss']).override?.evidence).toMatchObject({ daily: 1, streak: 0 });
       // Not a day-level stop, or no valuation yet: nothing to override.
@@ -111,9 +111,12 @@ describe('owner commands against the open stops', () => {
         const s = day(codes, l);
         return handleCommand({ id: 'o', kind: 'override', trip: s.override!.trip, at: T }, s, l, [], T);
       };
-      expect(apply(['daily_loss'])?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: 1_600_000n, streak: false, count: 1 });
-      expect(apply(['loss_cooldown'])?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: null, streak: true, count: 1 });
-      expect(apply(['daily_loss', 'loss_day_pause'], at({ count: 1 }))?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: 1_600_000n, streak: true, count: 2 });
+      expect(apply(['daily_loss'])?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: 1_600_000n, streak: false, count: 1, firstAtMs: T });
+      expect(apply(['loss_cooldown'])?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: null, streak: true, count: 1, firstAtMs: T });
+      expect(apply(['daily_loss', 'loss_day_pause'], at({ count: 1 }))?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: 1_600_000n, streak: true, count: 2, firstAtMs: DAY + 1 });
+      // The day's first override's moment is kept through later ones; yesterday's does not carry over.
+      expect(apply(['daily_loss'], at({ count: 2, atMs: DAY + 50, firstAtMs: DAY + 7 }))?.latches.dayOverride?.firstAtMs).toBe(DAY + 7);
+      expect(apply(['daily_loss'], at({ dayStartMs: DAY - 86_400_000, atMs: DAY - 5, firstAtMs: DAY - 9 }))?.latches.dayOverride?.firstAtMs).toBe(T);
       // Only the day override changes.
       const r = apply(['daily_loss'], { ...NO_LATCHES, killTrippedAtMs: 5 });
       expect({ ...r?.latches, dayOverride: undefined }).toEqual({ ...NO_LATCHES, killTrippedAtMs: 5, dayOverride: undefined });
@@ -132,6 +135,14 @@ describe('owner commands against the open stops', () => {
     expect(withOverrideTag('exit', { trade: 'p' }, o, T)).toEqual({ trade: 'p' });
     expect(withOverrideTag('entry', { trade: 'p' }, NO_LATCHES, T)).toEqual({ trade: 'p' });
     expect(withOverrideTag('entry', { trade: 'p' }, o, melbourneDay(T).end)).toEqual({ trade: 'p' });
+    // Judged at the decision: before the override, or unknown, is not tagged.
+    expect(withOverrideTag('entry', { trade: 'p' }, o, T - 2)).toEqual({ trade: 'p' });
+    expect(withOverrideTag('entry', { trade: 'p' }, o, T - 1)).toEqual({ trade: 'p', override: true });
+    expect(withOverrideTag('entry', { trade: 'p' }, o, null)).toEqual({ trade: 'p' });
+    // A second override that day replaces the first in the latches; an entry decided between the two still counts.
+    const second: Latches = { ...NO_LATCHES, dayOverride: { atMs: T + 100, dayStartMs: day, dayLossAt: null, streak: true, count: 2, firstAtMs: T - 1 } };
+    expect(withOverrideTag('entry', { trade: 'p' }, second, T)).toEqual({ trade: 'p', override: true });
+    expect(withOverrideTag('entry', { trade: 'p' }, second, T - 2)).toEqual({ trade: 'p' });
   });
 
   it('reads only well-formed commands from the reply', () => {
@@ -426,10 +437,12 @@ describe('owner commands through the heartbeat (worker harness)', () => {
   it('/override is offered and applied only on a fully marked valuation: an unknown mark\'s total-loss stand-in is not evidence', async () => {
     // A held position whose marking the test steers (as the RISK-LATCH review does), plus a $1.60 loss closed today:
     // R7 ($1.50) trips either way; with the mark unknown, risk counts the position as a total loss on top.
-    const seam = { lost: false, unmarked: false };
+    const seam = { lost: false, more: false, unmarked: false };
     const mark: typeof markedHistory = (h0, held, sol, nowMs, st) => {
       const lost = { mint: 'MintD' as never, openedAtMs: nowMs - 120_000, closedAtMs: nowMs - 60_000, notional: 3_000_000n as never, netPnl: -1_600_000n as never, stoppedOut: true };
-      const r = markedHistory(seam.lost ? { ...h0, closedTrades: [...h0.closedTrades, lost] } : h0, held, sol, nowMs, st);
+      const again = { ...lost, mint: 'MintE' as never, openedAtMs: nowMs - 100_000, closedAtMs: nowMs - 50_000 };
+      const extra = [...(seam.lost ? [lost] : []), ...(seam.more ? [again] : [])];
+      const r = markedHistory({ ...h0, closedTrades: [...h0.closedTrades, ...extra] }, held, sol, nowMs, st);
       return seam.unmarked ? { ...r, openPositions: r.openPositions.map((o) => ({ ...o, mark: null, markAtMs: null })) } : r;
     };
     const clock = { now: () => 0 };
@@ -478,6 +491,47 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     expect(o?.dayLossAt).toBeGreaterThan(1_600_000n);
     expect(o?.dayLossAt).toBeLessThan(1_600_000n + BigInt(notional));
     expect(String(microUsdToLamports(o!.dayLossAt!, SOL_PRICE as MicroUsd, 'ceil'))).toBe(stop?.evidence['day_loss_lamports']);
+    // Before the override the line shown was the plain limit ($1.50).
+    expect(stop?.evidence['day_line_lamports']).toBe(String(microUsdToLamports(1_500_000n as MicroUsd, SOL_PRICE as MicroUsd, 'ceil')));
+    // Another $1.60 lost: R7 trips again past the moved line, and the second offer shows that line, not the plain limit.
+    w.reply(undefined);
+    seam.more = true;
+    await until(m, 2_000, () => false, tick);
+    const again = await offered();
+    expect(again?.trip).toBe(`override-${melbourneDay(h.timers.now()).start}-1`);
+    expect(again?.evidence['day_line_lamports']).toBe(String(microUsdToLamports((o!.dayLossAt! + 1_500_000n) as MicroUsd, SOL_PRICE as MicroUsd, 'ceil')));
+    expect(again?.evidence).toMatchObject({ daily: 1, overrides: 1 });
     await h.worker.stop();
+  });
+
+  it('an entry line is tagged `override` by its decision moment: decided before the override and filled after is not', async () => {
+    /** One paper entry from a fresh state, with an override (or none) already in control.json; its journal lines. */
+    const enter = async (dayOverride: DayOverride | null) => {
+      // control.json is read when the worker is made, so it is written first.
+      const stateDir = tempState();
+      if (dayOverride !== null) controlFile(stateDir).write({ ...NO_CONTROL, latches: { ...NO_LATCHES, dayOverride } });
+      const h = makeWorker({ stateDir });
+      expect(await h.worker.reconcile()).toEqual({ ok: true });
+      const m = await passingMarket(h, { heldPoolFacts: true });
+      const entered = () => lines(h.stateDir).some((l) => l['kind'] === 'entry');
+      expect(await until(m, 30_000, entered, () => { m.slot(); m.pool(); })).toBe(true);
+      const all = lines(h.stateDir);
+      await h.worker.stop();
+      const entry = all.find((l) => l['kind'] === 'entry')!;
+      const decided = all.find((l) => l['kind'] === 'decision' && JSON.stringify(l).includes(String(entry['intent'])))!;
+      return { entry, decidedAt: Date.parse(String(decided['ts'])), filledAt: Date.parse(String(entry['ts'])) };
+    };
+    const first = await enter(null);
+    expect(first.entry['override']).toBeUndefined();
+    expect(first.decidedAt).toBeLessThan(first.filledAt);
+    const day = melbourneDay(first.decidedAt).start;
+    const o = (atMs: number): DayOverride => ({ atMs, dayStartMs: day, dayLossAt: null, streak: true, count: 1, firstAtMs: atMs });
+    // The same run (the harness is deterministic) with the override given after the decision (whose line is written at
+    // or after its moment) and before the fill: the fill's line is not tagged.
+    const between = await enter(o(first.filledAt - 1));
+    expect([between.decidedAt, between.filledAt]).toEqual([first.decidedAt, first.filledAt]);
+    expect(between.entry['override']).toBeUndefined();
+    // With it in force from the start of that day: tagged.
+    expect((await enter(o(day + 1))).entry['override']).toBe(true);
   });
 });

@@ -48,7 +48,7 @@ import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
-import { type RiskInput, type RiskSnapshot, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { type RiskInput, type RiskSnapshot, dayLossLine, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
@@ -459,7 +459,7 @@ export class Worker {
     this.#desk = new Desk({
       ledger: this.#ledger, config: bookConfig, restored: stored.book,
       // OWNER-REVIEW /override: an entry made while the owner's day override holds says so in its line.
-      journal: (kind, fields) => this.#journal.write(kind, withOverrideTag(kind, fields, this.#ctl.latches, this.#d.timers.now())),
+      journal: (kind, fields) => this.#journal.write(kind, withOverrideTag(kind, fields, this.#ctl.latches, kind === 'entry' ? (this.#intentAt.get(String(fields['intent'])) ?? null) : null)),
       // Fill lines written before a kill that came ahead of the ledger: the restart books those fills again, once.
       journaledFills: journaledFillKeys(this.#fillLines),
       solUsd: () => this.#solPrice,
@@ -1551,7 +1551,7 @@ export class Worker {
     return openStops({
       latches: this.#ctl.latches, closed: fact.history.closedTrades, loss: policy.loss, snapshot: this.#lastSnapshot, codes: this.#lastCodes, latchable: this.#lastLatchable,
       toLamports: (v) => (price === null || price <= 0n || v < 0n ? null : microUsdToLamports(v as MicroUsd, price, 'ceil')),
-      dailyLimit: mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), 10_000n, 'floor'),
+      dayLine: dayLossLine(policy, this.#ctl.latches, this.#lastSnapshot?.dayStartMs ?? 0, now),
       netLamports: (fromMs, toMs) => {
         let net = 0n;
         for (const t of trades) {

@@ -341,7 +341,7 @@ export function stopText(kind: OwnerKind, stop: ReportedStop | null): string {
   if (kind === 'override') {
     const stops = [e['daily'] === 1 ? 'daily loss' : null, typeof e['streak'] === 'number' && e['streak'] > 0 ? `${e['streak']} losses in a row` : null].filter((x) => x !== null);
     return [
-      `${NAMES.override}: ${stops.join(' and ') || 'tripped'}. Day loss ${solText(e['day_loss_lamports'])} (daily limit ${solText(e['day_limit_lamports'])}). Overrides today: ${e['overrides'] ?? '?'}.`,
+      `${NAMES.override}: ${stops.join(' and ') || 'tripped'}. Day loss ${solText(e['day_loss_lamports'])} (stop line ${solText(e['day_line_lamports'])}). Overrides today: ${e['overrides'] ?? '?'}.`,
       `Overriding resumes entries until midnight (${melbourneText(e['day_ends_ms'])}). Another full daily limit of loss, or a new losing streak, stops them again. The weekly loss, the kill switch and the loss review still apply.`,
       `To override, send: ${confirm}`,
     ].join('\n');

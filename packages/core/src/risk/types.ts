@@ -231,6 +231,8 @@ export interface DayOverride {
   readonly streak: boolean;
   /** Overrides applied that day, this one included: names the next one, so an old confirm never applies. */
   readonly count: number;
+  /** When that day's first override was applied (the record of which entries were made under one); absent before. */
+  readonly firstAtMs?: number;
 }
 
 export const NO_LATCHES: Latches = {
