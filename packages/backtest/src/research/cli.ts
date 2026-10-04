@@ -1,21 +1,21 @@
 // RES-3 signal research on practice days (docs/research/signals.md).
-//   node packages/backtest/src/research/cli.ts --dataset <dir> --sol-usd <file> [--window <file>] [--registry <STATS-1 registry json>]
+//   node packages/backtest/src/research/cli.ts --dataset <dir> --sol-usd <file> [--window <file>] [--registry <BT-2 holdout store json>]
 //        [--out research/signals] [--seed res3-1] [--replicates 2000]
-// The wall comes from the committed research/signals/window.json; --window may only move it earlier. A confirmed window
-// needs the STATS-1 registry. Holdout and embargo days are dropped before any file is opened; a row past the wall stops
+// The wall comes from the committed research/signals/window.json; --window may only move it earlier. It must agree with
+// RESEARCH_CONFIG.holdout.fromDay and, when it exists, BT-2's holdout store (research/holdout/registry.json). Holdout and embargo days are dropped before any file is opened; a row past the wall stops
 // the run.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../../core/src/config/index.ts';
 import type { ScenarioName } from '../../../core/src/fills/index.ts';
 import { loadDay, loadManifest, manifestHash, verifySums } from '../dataset/dataset.ts';
 import { readSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
-import type { HoldoutRegistry } from '../../../core/src/stats/index.ts';
 import { evaluate, handoffs, type Obs, type Registry, univariate, withRegistry } from './analysis.ts';
 import { type Candidate, collectCandidates, PLAN_DRIVE, solUsdAsOf, type Universe } from './candidates.ts';
 import { type Outcome, PLAN_BARRIERS, scoreCandidates } from './outcome.ts';
-import { assertReadable, latestRegime, loadWindow, readableDays, resolveWindow, wallDay } from './practice.ts';
+import { assertReadable, latestRegime, readableDays, wallDay } from './practice.ts';
+import { researchWindow } from './wall.ts';
 
 const args = process.argv.slice(2);
 const flag = (name: string, fallback?: string): string => {
@@ -26,9 +26,7 @@ const flag = (name: string, fallback?: string): string => {
 };
 
 const dataset = flag('dataset');
-const committed = loadWindow(join(import.meta.dirname, '..', '..', '..', '..', 'research', 'signals', 'window.json'));
-const registry = args.includes('--registry') ? (JSON.parse(readFileSync(flag('registry'), 'utf8')) as HoldoutRegistry) : null;
-const window = resolveWindow(committed, args.includes('--window') ? loadWindow(flag('window')) : committed, registry);
+const window = researchWindow({ ...(args.includes('--window') ? { windowPath: flag('window') } : {}), ...(args.includes('--registry') ? { storePath: flag('registry') } : {}) });
 const out = flag('out', 'research/signals');
 const seed = flag('seed', 'res3-1');
 const replicates = Number(flag('replicates', '2000'));
@@ -88,7 +86,9 @@ const counts = Object.fromEntries((['U1', 'U2'] as const).map((u) => [u, {
 }]));
 const result = {
   task: 'RES-3', dataset: `sha256:${manifestHash(dataset)}`, wall: wallDay(window), window, days: days.map((d) => d.day), seed,
-  purged: drive.purged, unquotableSwaps: drive.unquotableSwaps, counts, trials: reg.rows.length, handoff, verdicts: final, baseScenario: context, univariate: views,
+  purged: drive.purged, unquotableSwaps: drive.unquotableSwaps, counts, trials: reg.rows.length,
+  dsrNote: "descriptive: the deflated Sharpe ratio is RES-3's own handoff screen; the proof's G1 gates on SPA (owner, 2026-10-04)",
+  handoff, verdicts: final, baseScenario: context, univariate: views,
 };
 writeFileSync(join(out, 'results.json'), JSON.stringify(result, (_, v) => (typeof v === 'bigint' ? v.toString() : v), 2));
 writeFileSync(join(out, 'handoff.json'), JSON.stringify(handoff, (_, v) => (typeof v === 'bigint' ? v.toString() : v), 2));

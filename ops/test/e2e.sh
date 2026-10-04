@@ -93,6 +93,16 @@ done
 [ -n "$signed" ] && [ -n "$signed2" ] && [ -n "$unsigned" ] || fail "test repo needs two GitHub-signed and an unsigned commit on $BRANCH"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null
 mkdir -p "$STATE/checks"
+# The server also needs a green e2e on the newest commit at or before the deployed one that touched the
+# ops end-to-end paths (logic.sh e2e_commit, OPS-GATE): mark those green.
+e2e_of() { (. "$ROOT/ops/host/files/usr/local/lib/zeroed/logic.sh" && e2e_commit "$BARE" "$1"); }
+# A test commit that is its own e2e commit gets its checks file in its own case below: written here, the
+# update timer would deploy it before the gate cases run.
+for c in "$signed" "$signed2" "$unsigned"; do
+  e="$(e2e_of "$c")"
+  [ -n "$e" ] || fail "no commit at or before ${c:0:12} touched the ops end-to-end paths"
+  case "$e" in "$signed" | "$signed2" | "$unsigned") ;; *) echo success >"$STATE/checks/$e" ;; esac
+done
 git -C "$BARE" update-server-info
 printf '%s' "$T_TELEGRAM" >"$STATE/telegram-token"
 STATE="$STATE" GIT_ROOT="$E2E/git" PORT="$PORT" node "$ROOT/ops/test/fake-services.mjs" >"$LOGS/fake-services.log" 2>&1 &
@@ -286,6 +296,14 @@ echo pending >"$STATE/checks/$signed"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with a pending check"
 echo success >"$STATE/checks/$signed"
+e2e_signed="$(e2e_of "$signed")"
+if [ "$e2e_signed" != "$signed" ]; then
+  # A green merge that left ops alone still waits on the red end-to-end of the ops change before it.
+  echo failure >"$STATE/checks/$e2e_signed"
+  upd_run || true
+  [ -z "$(current)" ] || fail "deployed with the ops end-to-end of ${e2e_signed:0:12} red"
+  echo success >"$STATE/checks/$e2e_signed"
+fi
 in_c "echo 2 > /var/lib/zeroed/open_intents"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with open intents"
@@ -294,12 +312,13 @@ upd_run || fail "update failed on a green, GitHub-signed commit"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current release not switched"
 in_c "journalctl -u zeroed-update -o cat --no-pager" >"$LOGS/update-journal.txt"
 grep -q 'its checks are red' "$LOGS/update-journal.txt" && grep -q 'its checks are pending' "$LOGS/update-journal.txt" && grep -q 'open intents (2)' "$LOGS/update-journal.txt" || fail "update reasons not logged"
+[ "$e2e_signed" = "$signed" ] || grep -q "its checks are red: the ops end-to-end of ${e2e_signed:0:12}" "$LOGS/update-journal.txt" || fail "the red ops end-to-end was not logged"
 git -C "$BARE" tag -f deploy "$unsigned" >/dev/null && git -C "$BARE" update-server-info
 echo success >"$STATE/checks/$unsigned"
 upd_run && fail "an unsigned commit was deployed"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current moved to an unsigned commit"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
-pass "update: waits on failed and pending checks and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
+pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e2e_signed:0:12} and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
 # ---------- 9. Backup and restore drill ----------
 in_c "systemctl start zeroed-backup.service" || fail "backup failed"
@@ -531,6 +550,14 @@ if [ "$STANDIN" = 1 ]; then
   rel="$orig-switch"
   in_c "cp -a '$orig' '$rel' && jq '.worker = \"release\"' '$rel/ops/host-config.json' > /tmp/hc && mv /tmp/hc '$rel/ops/host-config.json'"
 fi
+# PRACTICE-ON: the signed release under test can predate this commit's worker and host-config. The release tried
+# here takes both from this commit (git archive: tracked files only), so its worker runs the S0 shakedown that its
+# host-config's "shakedown" block sets.
+prac="$orig-practice"
+in_c "rm -rf '$prac' && cp -a '$rel' '$prac' && rm -rf '$prac/packages'"
+git -C "$ROOT" archive HEAD packages ops/host-config.json | docker exec -i "$C" tar -x -C "$prac" || fail "this commit's worker could not be added to the test release"
+rel="$prac"
+in_c "jq -e '.worker == \"release\" and (.shakedown | type) == \"object\"' '$rel/ops/host-config.json'" >/dev/null || fail "this commit's host-config does not run the release's worker with shakedown settings"
 # No node_modules: the worker runs on Node 22's type stripping with no runtime dependency.
 in_c "find '$rel' -name node_modules | grep -q ." && fail "the release carries node_modules"
 in_c "/usr/local/bin/node --version" | has -x 'v22\.[0-9]*\.[0-9]*' || fail "host node is not Node 22"
@@ -571,6 +598,15 @@ code="$(in_c "curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' http://127.
 [ "$code" = 403 ] || fail "the drill endpoint is not on (HTTP $code, want 403; 404 is drills off, 000 is not listening)"
 in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" >"$LOGS/health-real.json" || fail "health does not answer on 127.0.0.1:8787"
 jq -e '.mode == "paper" and .signing_key == false and .reconciled == true' "$LOGS/health-real.json" >/dev/null || fail "health is not paper, reconciled, without a signing key"
+# PRACTICE-ON: the S0 shakedown with S0's diagnostic set, from the release's host-config, in the worker's environment,
+# /health and start line; journaled as not qualifying, with the paper edge.
+parts='["regime-volume","regime-survival","exec-health","h14-creates-coverage"]'
+jq -e --argjson p "$parts" '.entry_rule == "S0" and .s0_diagnostic == $p' "$LOGS/health-real.json" >/dev/null || fail "health does not show the S0 shakedown with its diagnostic set: $(jq -c '{entry_rule, s0_diagnostic}' "$LOGS/health-real.json")"
+edge="$(jq -r '.shakedown.ZEROED_PAPER_EDGE_PPM' "$ROOT/ops/host-config.json")"
+jq -e --argjson p "$parts" --arg e "$edge" '.entry_rule == "S0" and .qualifying == false and (.paper_edge_ppm | tostring) == $e and .s0_diagnostic == $p' "$LOGS/worker-start-record.json" >/dev/null || fail "the start record is not the non-qualifying S0 shakedown with its edge and set: $(cat "$LOGS/worker-start-record.json")"
+in_c "tr '\\0' '\\n' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/environ" >"$LOGS/worker-real-env.txt"
+jq -r '.shakedown | to_entries[] | "\(.key)=\(.value)"' "$ROOT/ops/host-config.json" | while IFS= read -r want; do grep -qxF -- "$want" "$LOGS/worker-real-env.txt" || { echo "missing $want"; exit 1; }; done || fail "the worker's environment lacks a shakedown setting"
+grep -qx 'ZEROED_MODE=paper' "$LOGS/worker-real-env.txt" || fail "the shakedown settings moved the worker out of paper"
 in_c "curl -fsS -m 3 http://127.0.0.1:8788/api/v1/paper/status" >"$LOGS/api-real.json" || fail "the API does not answer on 127.0.0.1:8788"
 jq -e '.mode == "paper" and .data.mode == "paper"' "$LOGS/api-real.json" >/dev/null || fail "the API status is not paper"
 for port in 8787 8788; do curl -s -m 3 -o /dev/null "http://$CIP:$port/" && fail "the worker answered on the public interface ($port)"; done
@@ -600,14 +636,19 @@ broken() { # NAME: a copy of this release with the switch on, to break
 broken smoke-syntax && in_c "printf 'const = ;\n' >> /opt/zeroed/releases/smoke-syntax/packages/worker/src/run/api.ts"
 broken smoke-missing && in_c "rm /opt/zeroed/releases/smoke-missing/packages/worker/src/run/config.ts"
 broken smoke-config && in_c "echo '{not json' > /opt/zeroed/releases/smoke-config/packages/runner/qualifying-run.json"
+# PRACTICE-ON: the shakedown in a release that names a qualifying run (the worker refuses S0 there), and a shakedown
+# block that names a setting outside the allowed five.
+broken smoke-qualifying && in_c "echo '{\"run\": \"e2e-q1\"}' > /opt/zeroed/releases/smoke-qualifying/packages/runner/qualifying-run.json"
+broken smoke-shakedown && in_c "jq '.shakedown.ZEROED_MODE = \"live\"' /opt/zeroed/releases/smoke-shakedown/ops/host-config.json > /tmp/hc && mv /tmp/hc /opt/zeroed/releases/smoke-shakedown/ops/host-config.json"
 # A worker that answers, then dies 15 s later: the trial's hold catches it.
 broken smoke-dies && in_c "sed -i '1i if (!process.argv.includes(\"--reconcile\")) setTimeout(() => process.exit(1), 15_000);' /opt/zeroed/releases/smoke-dies/packages/worker/src/main.ts"
-for b in smoke-syntax smoke-missing smoke-config smoke-dies; do
+for b in smoke-syntax smoke-missing smoke-config smoke-qualifying smoke-shakedown smoke-dies; do
   rc=0; in_c "/usr/local/lib/zeroed/worker-smoke /opt/zeroed/releases/$b" >"$LOGS/$b.txt" 2>&1 || rc=$?
   [ "$rc" = 1 ] && [ "$(wc -l < "$LOGS/$b.txt")" = 1 ] || { cat "$LOGS/$b.txt"; fail "worker-smoke passed a broken release ($b, exit $rc)"; }
 done
 grep -q 'exited 1' "$LOGS/smoke-syntax.txt" && grep -q 'exited 1' "$LOGS/smoke-missing.txt" && grep -q 'exited 2' "$LOGS/smoke-config.txt" && grep -q 'exited 1 within 30 s of answering' "$LOGS/smoke-dies.txt" || fail "worker-smoke reasons: $(cat "$LOGS"/smoke-*.txt)"
-in_c "rm -rf /opt/zeroed/releases/smoke-missing /opt/zeroed/releases/smoke-config /opt/zeroed/releases/smoke-dies && mv /opt/zeroed/releases/smoke-syntax '/opt/zeroed/releases/$signed2'"
+grep -q 'exited 2: refused: S0 and ZEROED_PAPER_EDGE_PPM are never used in the qualifying run' "$LOGS/smoke-qualifying.txt" && grep -q 'its host-config shakedown settings are refused: .*ZEROED_MODE is not a shakedown setting' "$LOGS/smoke-shakedown.txt" || fail "worker-smoke shakedown reasons: $(cat "$LOGS/smoke-qualifying.txt" "$LOGS/smoke-shakedown.txt")"
+in_c "rm -rf /opt/zeroed/releases/smoke-missing /opt/zeroed/releases/smoke-config /opt/zeroed/releases/smoke-qualifying /opt/zeroed/releases/smoke-shakedown /opt/zeroed/releases/smoke-dies && mv /opt/zeroed/releases/smoke-syntax '/opt/zeroed/releases/$signed2'"
 # Through zeroed-update: a green, GitHub-signed release with that broken worker stays undeployed; one alert.
 pid0="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
 n0="$(wc -l < "$STATE/telegram.jsonl")"
@@ -643,7 +684,7 @@ upd_run || fail "zeroed-update after the deploy tag came back"
 # Back to the stand-in and the local watchdog for the sections that follow.
 wrestart "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=$wd0#' /etc/zeroed/worker.env && ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the stand-in back" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager -n 5 | grep -q 'Stub worker up'"
-pass "release's worker (SWITCH-1): zeroed-worker runs the release's main.ts under the host's Node 22 with no node_modules; --reconcile first (exit 0); start line and journal say paper with recorder, simulation and drills on; 3 keys read from systemd credentials and none in its output; health on 127.0.0.1:8787 and API on 127.0.0.1:8788, loopback only; without providers it runs degraded, entries halted, no restarts; a restart comes back reconciled; live is refused; zeroed-status names the worker; worker-smoke passes it beside the running worker in the unit's sandbox and memory cap, and refuses a syntax error, a missing file, a refused config and a worker that dies after answering; zeroed-update keeps a green signed release whose worker cannot start off current, keeps the worker running and alerts once; a release whose worker passes the trial but dies under the unit is rolled back (current, deployed record, worker), alerted once and not tried again"
+pass "release's worker (SWITCH-1): zeroed-worker runs the release's main.ts under the host's Node 22 with no node_modules; --reconcile first (exit 0); start line and journal say paper with recorder, simulation and drills on; PRACTICE-ON: the release's shakedown settings reach it, /health and the start line show S0 with its diagnostic set, not qualifying, with the paper edge; 3 keys read from systemd credentials and none in its output; health on 127.0.0.1:8787 and API on 127.0.0.1:8788, loopback only; without providers it runs degraded, entries halted, no restarts; a restart comes back reconciled; live is refused; zeroed-status names the worker; worker-smoke passes it beside the running worker in the unit's sandbox and memory cap, and refuses a syntax error, a missing file, a refused config, the shakedown in a release with a qualifying run, a shakedown setting outside the five and a worker that dies after answering; zeroed-update keeps a green signed release whose worker cannot start off current, keeps the worker running and alerts once; a release whose worker passes the trial but dies under the unit is rolled back (current, deployed record, worker), alerted once and not tried again"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on

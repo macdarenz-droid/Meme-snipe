@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   abandonHoldout, ATTEMPT_ALPHA, attemptAlpha, nextAttemptIndex, spendHoldout, burnHoldout, createHoldoutRegistry, dayFromNumber, daysBetween, extendHoldout, freezeRequirement, nextDay, HOLDOUT_COUNT_FIELDS, createRng, dayBlockMeanInterval, holm, MIN_DAYS, nPower, openHoldout, registerHoldout,
-  holdoutPlan, sd, sealHoldout, simulateG2Power,
+  holdoutPlan, sd, sealHoldout, simulateG2Power, simulateG2PowerOnStream,
 } from '../src/stats/index.ts';
 import { bracketTrades } from './stats-fixtures.ts';
 
@@ -213,6 +213,23 @@ describe('n_power by simulating the G2 rule', () => {
     const nSpread = simulateG2Power({ walkForward: spread, control: c, seed: 4, ...opts }).nPower;
     const nFew = simulateG2Power({ walkForward: few, control: c, seed: 4, ...opts, maxTrades: 200_000 }).nPower;
     expect(nFew).toBeGreaterThan(1.2 * nSpread);
+  }, 600_000);
+
+  // Review B2 of STATS-1g: the chosen n is re-simulated on a stream no search step used (seed·STRIDE + STRIDE − 1 − n,
+  // search streams are seed·STRIDE + n), and both powers carry their Monte Carlo standard error √(p(1 − p)/simulations).
+  test('the validation re-simulates the chosen n on its own stream and reports its standard error', () => {
+    const STRIDE = 1_000_003;
+    const o = { walkForward: own(bracketTrades(841, 0, 30, 5)), control: control(842, 30, 5), seed: 5, simulations: 100, replicates: 100, familySize: 1, units: ['days-1'] } as const;
+    const r = simulateG2Power(o);
+    expect(r.validation.n).toBe(r.nPower);
+    expect(r.powerAtN).toBe(simulateG2PowerOnStream(o, r.nPower, o.seed * STRIDE + r.nPower));
+    expect(r.validation.power).toBe(simulateG2PowerOnStream(o, r.nPower, o.seed * STRIDE + STRIDE - 1 - r.nPower));
+    // Pinned case: the independent draws give another power than the search did (a shared stream would repeat it).
+    expect(r.validation.power).not.toBe(r.powerAtN);
+    expect(r.standardError).toBe(Math.sqrt((r.powerAtN * (1 - r.powerAtN)) / 100));
+    expect(r.validation.standardError).toBe(Math.sqrt((r.validation.power * (1 - r.validation.power)) / 100));
+    expect(r.validation.standardError).toBeGreaterThan(0);
+    expect(r.settings).toEqual({ targetMean: 0.05, familySize: 1, alpha: 0.05, power: 0.8, simulations: 100, replicates: 100, maxTrades: 50_000, units: ['days-1'], seed: 5 });
   }, 600_000);
 
   test('a control as good as the strategy makes the S0 comparison bind', () => {

@@ -256,12 +256,14 @@ describe('Durable Object', () => {
     vi.unstubAllGlobals();
   });
 
-  it('the Worker exposes only the four POST routes', async () => {
+  it('the Worker exposes only the five POST routes', async () => {
     const calls: string[] = [];
     const env = { WATCHDOG: { idFromName: () => 'id', get: () => ({ fetch: async (r: Request) => (calls.push(new URL(r.url).pathname), new Response('ok')) }) } } as unknown as Env;
     expect((await worker.fetch(new Request('https://w.test/check', { method: 'POST' }), env)).status).toBe(404);
     expect((await worker.fetch(new Request('https://w.test/heartbeat'), env)).status).toBe(404);
+    expect((await worker.fetch(new Request('https://w.test/summary'), env)).status).toBe(404);
     await worker.fetch(new Request('https://w.test/heartbeat', { method: 'POST', body: '{}' }), env);
-    expect(calls).toEqual(['/heartbeat']);
+    await worker.fetch(new Request('https://w.test/summary', { method: 'POST', body: '{}' }), env);
+    expect(calls).toEqual(['/heartbeat', '/summary']);
   });
 });

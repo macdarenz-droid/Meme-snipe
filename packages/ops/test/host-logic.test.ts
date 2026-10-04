@@ -244,6 +244,40 @@ describe('worker start and API address', () => {
     expect(JSON.parse(read('ops/host-config.json')).worker).toBe('release');
   });
 
+  it("PRACTICE-ON: the release's shakedown settings, and only those, go to its worker", () => {
+    const rel = join(tmp, 'release-shakedown');
+    mkdirSync(join(rel, 'ops'), { recursive: true });
+    const cfg = (o: unknown) => writeFileSync(join(rel, 'ops/host-config.json'), typeof o === 'string' ? o : JSON.stringify(o));
+    const run = () => sh(`worker_shakedown "${rel}"`);
+    cfg({ worker: 'release' });
+    expect(run()).toMatchObject({ status: 0, out: '' });
+    cfg({ worker: 'release', shakedown: { ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092', ZEROED_STANDINS: 'A1,B2', ZEROED_WALLET: 'C3' } });
+    expect(run()).toMatchObject({ status: 0, out: 'ZEROED_STRATEGY=S0\nZEROED_S0_DIAGNOSTIC=on\nZEROED_PAPER_EDGE_PPM=178092\nZEROED_STANDINS=A1,B2\nZEROED_WALLET=C3' });
+    // Nothing else, and nothing that could carry a second line, a space or a shell character.
+    for (const bad of [
+      { ZEROED_MODE: 'live' }, { ZEROED_RUN_ID: 'x' }, { HELIUS_API_KEY: 'x' }, { zeroed_strategy: 'S0' },
+      { ZEROED_STRATEGY: 'S0\nZEROED_MODE=live' }, { ZEROED_STRATEGY: 'S0\n' }, { ZEROED_STRATEGY: 'S0 x' }, { ZEROED_STRATEGY: '$(id)' }, { ZEROED_STRATEGY: '' },
+      { ZEROED_PAPER_EDGE_PPM: 178092 }, { ZEROED_STANDINS: ['A1'] }, { ZEROED_STANDINS: 'A'.repeat(401) },
+    ]) {
+      cfg({ worker: 'release', shakedown: bad });
+      expect(run(), JSON.stringify(bad)).toMatchObject({ status: 5, out: '' });
+    }
+    cfg({ worker: 'release', shakedown: ['ZEROED_STRATEGY=S0'] });
+    expect(run().status).not.toBe(0);
+    cfg('{not json');
+    expect(run().status).not.toBe(0);
+    // The wrapper exports them for the release's worker only, before its fixed settings; the trial passes the same.
+    const w = read('ops/host/files/usr/local/lib/zeroed/worker-start');
+    const take = w.indexOf('settings="$(worker_shakedown /opt/zeroed/current)" || {');
+    expect(take).toBeGreaterThan(w.indexOf('if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then'));
+    expect(take).toBeLessThan(w.indexOf('export ZEROED_MODE=paper'));
+    expect(w).toContain('exit 2; }');
+    const smoke = read('ops/host/files/usr/local/lib/zeroed/worker-smoke');
+    expect(smoke).toContain('settings="$(worker_shakedown "$dir" 2>"$tmp/shakedown.err")" || {');
+    expect(smoke).toContain('shakedown+=(--setenv="$line")');
+    expect(smoke).toContain('"${shakedown[@]}" \\\n    --setenv=NODE_ENV=production');
+  });
+
   it("SWITCH-1: zeroed-update tries the new release's worker before anything changes", () => {
     const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
     const smoke = upd.indexOf('/usr/local/lib/zeroed/worker-smoke "$dest"');
@@ -638,5 +672,67 @@ describe('install.sh --update', () => {
     expect(s).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
     // The new release's RUN-1 units, not the running one's.
     expect(main).toContain('RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"');
+  });
+});
+
+describe('deploy gate (OPS-GATE): named runs from GitHub Actions, shared by the server and tag.sh', () => {
+  type Run = { name: string; status?: string; conclusion?: string | null; app?: string; completed_at?: string };
+  const reply = (runs: Run[], total = runs.length) =>
+    JSON.stringify({ total_count: total, check_runs: runs.map((r) => ({ status: 'completed', conclusion: 'success', completed_at: '2026-10-04T00:00:00Z', ...r, app: { slug: r.app ?? 'github-actions' } })) });
+  const verdict = (runs: Run[], name = 'check', total?: number) => sh(`commit_verdict ${name}`, reply(runs, total)).out;
+
+  it('is green only with a successful named run from GitHub Actions and nothing failed or running', () => {
+    expect(verdict([{ name: 'check' }, { name: 'historical-data' }])).toBe('green');
+    expect(verdict([{ name: 'check' }, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null }])).toBe('green');
+  });
+  it.each([
+    ['a lone unrelated success', [{ name: 'historical-data' }], /^none: no check run from GitHub Actions$/],
+    ['an all-skipped set', [{ name: 'check', conclusion: 'skipped' }, { name: 'e2e', conclusion: 'skipped' }], /^red: check was skipped, not success$/],
+    ['check from another app', [{ name: 'check', app: 'some-bot' }], /^none: no check run/],
+    ['no runs at all', [], /^none: no check run/],
+    ['another GitHub Actions run failed', [{ name: 'check' }, { name: 'historical-data', conclusion: 'failure' }], /^red: historical-data failed$/],
+    ['a run still going', [{ name: 'check' }, { name: 'e2e', status: 'in_progress', conclusion: null }], /^pending: e2e still running$/],
+    ['a cancelled check', [{ name: 'check', conclusion: 'cancelled' }], /^red: check failed$/],
+  ])('refuses %s', (_, runs, why) => {
+    expect(verdict(runs as Run[])).toMatch(why);
+  });
+  it('refuses a listing GitHub cut short, and reads the latest run of a re-run name', () => {
+    expect(verdict([{ name: 'check' }], 'check', 101)).toMatch(/^none: more check runs/);
+    expect(verdict([{ name: 'e2e', conclusion: 'success', completed_at: '2026-10-04T01:00:00Z' }, { name: 'e2e', conclusion: 'neutral', completed_at: '2026-10-04T00:00:00Z' }], 'e2e')).toBe('green');
+  });
+
+  it('finds the newest first-parent commit that touched the ops end-to-end paths', () => {
+    const repo = join(tmp, 'gate-repo');
+    const env = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' };
+    const git = (cmd: string) => spawnSync('bash', ['-c', cmd], { cwd: repo, encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', HOME: tmp, ...env } }).stdout.trim();
+    mkdirSync(repo, { recursive: true });
+    git('git init -q -b int . && mkdir -p ops packages/ops/src && echo a > f && git add f && git commit -q -m root');
+    const root0 = git('git rev-parse HEAD');
+    git('echo 1 > ops/x && git add ops && git commit -q -m ops');
+    const opsCommit = git('git rev-parse HEAD');
+    git('echo 2 >> f && git commit -qam app');
+    const app = git('git rev-parse HEAD');
+    const e2e = (ref: string) => sh(`e2e_commit "${repo}" ${ref}`).out;
+    expect(e2e(app)).toBe(opsCommit);
+    expect(e2e(opsCommit)).toBe(opsCommit);
+    expect(e2e(root0)).toBe('');
+    git('echo 3 > packages/ops/src/y && git add packages && git commit -q -m pkg');
+    expect(e2e('HEAD')).toBe(git('git rev-parse HEAD'));
+  });
+
+  it('uses the same paths the ops end-to-end workflow runs on, and both callers use the shared gate', () => {
+    const wf = read('.github/workflows/ops-e2e.yml');
+    const paths = [...wf.matchAll(/paths: \[([^\]]*)\]/g)].map((m) => m[1]!.split(',').map((p) => p.trim().replace(/^'|'$/g, '').replace(/\/\*\*$/, '')));
+    expect(paths.length).toBe(2);
+    for (const p of paths) expect([...p].sort()).toEqual(sh('printf "%s\\n" "${E2E_PATHS[@]}"').out.split('\n').sort());
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const tag = read('ops/deploy/tag.sh');
+    for (const s of [update, tag]) {
+      expect(s).toContain('commit_verdict check');
+      expect(s).toContain('commit_verdict e2e');
+      expect(s).toMatch(/e2e_commit /);
+      expect(s).not.toMatch(/conclusion == "skipped"/);
+    }
+    expect(tag).toContain('. "$here/../host/files/usr/local/lib/zeroed/logic.sh"');
   });
 });

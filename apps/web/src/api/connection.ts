@@ -10,7 +10,8 @@ import { clearServer, loadSeen, loadServer, saveSeen, saveServer, type KeyValue 
  */
 export interface Connection {
   origin: string | null;
-  state: 'none' | 'connecting' | 'online' | 'error' | 'offline';
+  /** `update`: the server answered, but only with fields this app does not know (it is newer than the app; APP-COMPAT). */
+  state: 'none' | 'connecting' | 'online' | 'error' | 'update' | 'offline';
   lastOk: string | null;
   lastAnswer: string | null;
 }
@@ -28,8 +29,8 @@ export class ConnectionStore {
   private value: Connection;
   private readonly listeners = new Set<Listener>();
   private readonly kv: KeyValue | null | undefined;
-  /** Endpoints whose last answer was bad, with when that answer came. */
-  private readonly bad = new Map<string, number>();
+  /** Endpoints whose last answer was bad, with when that answer came and whether only new fields refused it. */
+  private readonly bad = new Map<string, { at: number; cause: 'error' | 'update' }>();
 
   /** `kv` defaults to localStorage. */
   constructor(kv?: KeyValue | null) {
@@ -75,20 +76,25 @@ export class ConnectionStore {
     if (origin !== this.value.origin) return;
     this.bad.delete(endpoint);
     saveSeen(origin, at, this.kv);
-    this.set({ origin, state: this.anyBad(at) ? 'error' : 'online', lastOk: at, lastAnswer: at });
+    this.set({ origin, state: this.badState(at) ?? 'online', lastOk: at, lastAnswer: at });
   }
 
-  /** `origin` answered for `endpoint`, but with an HTTP error or data that failed the checks: not an update. */
-  reportBad(origin: string, at: string, endpoint = ''): void {
+  /**
+   * `origin` answered for `endpoint`, but with an HTTP error or data that failed the checks: not an update. `cause`
+   * 'update' when only fields this app does not know refused it (APP-COMPAT); any real error outranks it.
+   */
+  reportBad(origin: string, at: string, endpoint = '', cause: 'error' | 'update' = 'error'): void {
     if (origin !== this.value.origin) return;
-    this.bad.set(endpoint, Date.parse(at));
-    this.set({ ...this.value, state: 'error', lastAnswer: at });
+    this.bad.set(endpoint, { at: Date.parse(at), cause });
+    this.set({ ...this.value, state: this.badState(at) ?? 'error', lastAnswer: at });
   }
 
-  private anyBad(at: string): boolean {
+  /** "error" while any endpoint's last bad answer is a real error, else "update" while any is new fields only; null when none. */
+  private badState(at: string): 'error' | 'update' | null {
     const now = Date.parse(at);
-    for (const [k, when] of this.bad) if (now - when >= BAD_ANSWER_TTL_MS) this.bad.delete(k);
-    return this.bad.size > 0;
+    for (const [k, b] of this.bad) if (now - b.at >= BAD_ANSWER_TTL_MS) this.bad.delete(k);
+    const causes = [...this.bad.values()].map((b) => b.cause);
+    return causes.includes('error') ? 'error' : causes.includes('update') ? 'update' : null;
   }
 
   /** A request to `origin` could not reach it. */
