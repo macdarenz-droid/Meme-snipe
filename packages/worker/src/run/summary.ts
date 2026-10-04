@@ -15,7 +15,7 @@ import {
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import type { HttpClient } from '../providers/index.ts';
 import type { PaperTrade } from './account.ts';
-import { lamportsUsd, melbourneDate, usdText } from './api.ts';
+import { lamportsUsd, melbourneDate, tradeNetUsd, usdText } from './api.ts';
 import { SEEDING } from '../engine/strategy.ts';
 import { StateFile } from './state.ts';
 
@@ -235,7 +235,8 @@ export const buildSummary = (i: SummaryInputs): Summary => {
   const listed = inScope.filter((t) => fits(t.mint, PATTERNS.MINT));
   const closed = i.trades.filter((t) => inDay(t.closedAtMs));
   const netL = closed.reduce((s, t) => s + (t.netLamports ?? 0n), 0n);
-  const netU = closed.reduce((s, t) => s + BigInt(t.netPnl ?? 0n), 0n);
+  // SOL-BOOKS: a trade with no dollar figure is valued from its lamports (api's tradeNetUsd), never read as zero.
+  const netU = closed.reduce((s, t) => s + (tradeNetUsd(i, t) ?? 0n), 0n);
   const trades: SummaryTrade[] = listed.slice(0, SUMMARY_MAX_TRADES).map((t) => ({
     mint: t.mint,
     opened_at: iso(t.openedAtMs),

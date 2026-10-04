@@ -36,6 +36,19 @@ export const lamportsUsd = (l: bigint, price: MicroUsd | null): bigint => {
   return l < 0n ? -v : v;
 };
 
+/**
+ * SOL-BOOKS: a closed trade's net in micro-dollars for display. The trade's own dollar figure when it has one, else its
+ * lamports at the close's, the open's or the current SOL price, a loss rounded up (never shown smaller than it was).
+ * Null (no figure) only without any price at all.
+ */
+export const tradeNetUsd = (i: { readonly solPrice: MicroUsd | null }, t: PaperTrade): bigint | null => {
+  if (t.netPnl !== null) return t.netPnl;
+  const price = t.closeSolPrice ?? t.openSolPrice ?? i.solPrice;
+  if (t.netLamports === null || price === null) return null;
+  const l = t.netLamports;
+  return l >= 0n ? lamportsToMicroUsd(l as Lamports, price, 'floor') : -lamportsToMicroUsd((-l) as Lamports, price, 'ceil');
+};
+
 /** A token price in dollars per whole token, as a `Dec` with 12 places: lamports paid for `tokens` raw units. */
 export const priceText = (lamports: bigint, tokens: bigint, price: MicroUsd | null): string => {
   if (tokens <= 0n || price === null) return '0';
@@ -289,7 +302,7 @@ export const views = {
     if (Object.values(i.book.intents).some((s) => s.status === 'unknown')) flags.add('unknown-tx-result');
     if (i.funnel.stage.size === 0) flags.add('no-eligible-candidate');
     const day = melbourneDay(i.nowMs);
-    const lossToday = i.trades.filter((t) => t.closedAtMs !== null && t.closedAtMs >= day.start && (t.netPnl ?? 0n) < 0n).reduce((s, t) => s - (t.netPnl ?? 0n), 0n);
+    const lossToday = i.trades.filter((t) => t.closedAtMs !== null && t.closedAtMs >= day.start && (tradeNetUsd(i, t) ?? 0n) < 0n).reduce((s, t) => s - (tradeNetUsd(i, t) ?? 0n), 0n);
     const open = Object.values(i.book.positions).filter((p) => p.status !== 'closed').reduce((s, p) => s + lamportsUsd(p.cost, i.solPrice), 0n);
     const bankroll = i.policy.capital.bankroll as bigint;
     const dailyLimit = (bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n;
@@ -381,7 +394,7 @@ export const views = {
       const date = melbourneDate(t.closedAtMs);
       if (!date.startsWith(month)) continue;
       const d = byDay.get(date) ?? { net: 0n, ids: [] };
-      d.net += t.netPnl ?? 0n;
+      d.net += tradeNetUsd(i, t) ?? 0n;
       d.ids.push(t.positionId);
       byDay.set(date, d);
     }
@@ -398,9 +411,9 @@ export const views = {
     const costsDaily = new Map<string, bigint>();
     const kinds = new Map<string, bigint>();
     const cumulative = closed.map((t) => {
-      cum += t.netPnl ?? 0n;
+      cum += tradeNetUsd(i, t) ?? 0n;
       const date = melbourneDate(t.closedAtMs!);
-      daily.set(date, (daily.get(date) ?? 0n) + (t.netPnl ?? 0n));
+      daily.set(date, (daily.get(date) ?? 0n) + (tradeNetUsd(i, t) ?? 0n));
       const c = costsOf(i, t);
       costsDaily.set(date, (costsDaily.get(date) ?? 0n) + c.total);
       for (const [k, v] of Object.entries(c.kinds)) kinds.set(k, (kinds.get(k) ?? 0n) + v);
@@ -426,8 +439,8 @@ export const views = {
   }),
 
   stats: (i: ApiInputs) => {
-    const closed = i.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).sort((a, b) => a.closedAtMs! - b.closedAtMs!);
-    const nets = closed.map((t) => t.netPnl!);
+    const closed = i.trades.filter((t) => t.closedAtMs !== null && tradeNetUsd(i, t) !== null).sort((a, b) => a.closedAtMs! - b.closedAtMs!);
+    const nets = closed.map((t) => tradeNetUsd(i, t)!);
     const net = nets.reduce((s, x) => s + x, 0n);
     let peak = 0n;
     let cum = 0n;
@@ -466,7 +479,7 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
   const sol = (xs: PaperAttempt[]) => xs.reduce((s, a) => s + (a.fill?.sol ?? 0n), 0n);
   const tok = (xs: PaperAttempt[]) => xs.reduce((s, a) => s + (a.fill?.tokens ?? 0n), 0n);
   const c = costsOf(i, t);
-  const net = t.netPnl ?? 0n;
+  const net = tradeNetUsd(i, t) ?? 0n;
   const attemptsOf = (intent: string) => i.book.intents[intent]?.attempts.length ?? 1;
   const reason = (t.exitReasons ?? []).find((r): r is BookExitReason => r in EXIT_REASON);
   return {

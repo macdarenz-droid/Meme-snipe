@@ -189,3 +189,18 @@ describe('the worker records the marks', () => {
     await h.worker.stop();
   });
 });
+
+describe('SOL-BOOKS: a closed trade with no dollar figure is shown from its lamports, never as zero', () => {
+  it('values the lamports at the close, open or current price, a loss rounded up; null only without any price', async () => {
+    const { tradeNetUsd } = await import('../src/run/api.ts');
+    const t = { positionId: 'p', mint: 'm', openedAtMs: 0, notional: 1n, closedAtMs: 1, netLamports: -1_000_001n, netPnl: null, stoppedOut: true, booked: 0n } as never;
+    // -1,000,001 lamports at $150 is -150,000.15 micro-dollars: shown as -150,001.
+    expect(tradeNetUsd({ solPrice: usd(150) }, t)).toBe(-150_001n);
+    expect(tradeNetUsd({ solPrice: usd(100) }, { ...(t as object), closeSolPrice: usd(150) } as never)).toBe(-150_001n);
+    expect(tradeNetUsd({ solPrice: usd(100) }, { ...(t as object), openSolPrice: usd(150) } as never)).toBe(-150_001n);
+    expect(tradeNetUsd({ solPrice: usd(150) }, { ...(t as object), netLamports: 1_000_001n } as never)).toBe(150_000n);
+    expect(tradeNetUsd({ solPrice: null }, t)).toBeNull();
+    // A trade with its own figure keeps it.
+    expect(tradeNetUsd({ solPrice: usd(150) }, { ...(t as object), netPnl: -7n } as never)).toBe(-7n);
+  });
+});
