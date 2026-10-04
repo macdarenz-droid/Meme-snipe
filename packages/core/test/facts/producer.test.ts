@@ -5,10 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { transactionEvents, type TransactionRecord } from '../../src/chain/index.ts';
 import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { pumpSwapRoundTrip } from '../../src/costs/index.ts';
-import { OFF_CHAIN, createReplay, type MarketEvent, type Moment } from '../../src/engine/index.ts';
+import { OFF_CHAIN, compareEvents, createReplay, type MarketEvent, type Moment } from '../../src/engine/index.ts';
 import {
   CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, SOL_USD_KEY, Evidence, evaluateSoftFeatures, candlesKey, createKey, curveKey, evaluateHardRejects, evaluateRegime,
-  holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
+  holdersKey, insidersKey, softKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
 import { FACT_KINDS, FactFeed, FactProducer, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, insiderLinks, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
@@ -419,6 +419,24 @@ describe('insiders', () => {
     if (opts.head ?? true) w.push(slotNotice(last.slot + 3n, atOf(last) + 2000));
     return w;
   };
+
+  it('the insiders and soft facts made before the migration go out again with it, as last made (WORKER-GROW)', () => {
+    const w = new FactWorld();
+    w.push(coverage(stream, 'start', { fromSlot: s0, via: `sigs:${MINT}` }, s0 - 1n, atOf(create) - 1000));
+    const all = [...window, complete, migrate].filter((r, i, xs) => xs.findIndex((x) => x.signature === r.signature) === i);
+    w.push(...all.flatMap((r) => txEvents(r)).sort(compareEvents));
+    const mig = w.facts(migrationKey(MINT)).at(-1)!;
+    expect(mig).toBeDefined();
+    for (const key of [insidersKey(MINT), softKey(MINT)]) {
+      const xs = w.facts(key);
+      const src = (x: MarketEvent) => x.id.split('~')[0];
+      const at = xs.findIndex((x) => src(x) === src(mig));
+      expect(at, key).toBeGreaterThan(0);
+      // Released with the migration fact: the value last made before it, at the migration's moment.
+      expect(xs[at]!.value, key).toEqual(xs[at - 1]!.value);
+      expect(xs[at]!.moment, key).toEqual(mig.moment);
+    }
+  });
 
   it('creation-slot buyers and dev-funded first buyers, complete only with coverage and every funder found', () => {
     const w = run();

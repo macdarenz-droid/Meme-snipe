@@ -276,8 +276,11 @@ interface Account {
 interface Track {
   readonly mint: string;
   create?: { readonly creator: string; readonly atMs: number; readonly slot: bigint; readonly signature: string };
-  /** The create fact as first made: released again, unchanged, with the migration fact (see `#migration`). */
-  createFact?: unknown;
+  /**
+   * The mint's facts made before its migration that the gates read at its candidacy (create, insiders, soft), as last
+   * made: released again, unchanged, with the migration fact (see `#migration`).
+   */
+  readonly early: Map<string, unknown>;
   completeAtMs?: number;
   /** Slot of the CompleteEvent: no curve buy can follow it. */
   completeSlot?: bigint;
@@ -373,10 +376,16 @@ export class FactProducer {
     return [...out].map(([key, value]) => ({ key, value }));
   }
 
+  /** Puts a fact the gates read at the mint's candidacy and keeps it for the release at migration (until then only). */
+  #early(t: Track, key: string, value: unknown, put: (k: string, v: unknown) => void): void {
+    if (!t.migrationWritten) t.early.set(key, value);
+    put(key, value);
+  }
+
   #track(mint: string): Track {
     let t = this.#mints.get(mint);
     if (t === undefined) {
-      t = { mint, migrationWritten: false, pools: new Map(), buyers: new Map(), devBuySameTx: false, xcheck: new Map() };
+      t = { mint, migrationWritten: false, pools: new Map(), buyers: new Map(), devBuySameTx: false, xcheck: new Map(), early: new Map() };
       this.#mints.set(mint, t);
     }
     return t;
@@ -397,8 +406,7 @@ export class FactProducer {
         if (atMs === null || t.create !== undefined) return;
         t.create = { creator: d.creator, atMs, slot: seen.slot, signature: seen.signature };
         this.#walletMints.set(d.creator, (this.#walletMints.get(d.creator) ?? new Set<string>()).add(d.mint));
-        t.createFact = { obs: obs(seen.slot), createdAtMs: atMs, creator: d.creator };
-        put(createKey(d.mint), t.createFact);
+        this.#early(t, createKey(d.mint), { obs: obs(seen.slot), createdAtMs: atMs, creator: d.creator }, put);
         this.#prune(t);
         this.#insiders(t, e, put);
         return;
@@ -466,9 +474,10 @@ export class FactProducer {
       graduatedAtMs: t.completeAtMs, migratedAtMs: m.atMs, pool: m.pool, quoteAtMigration: created.quote, price: p,
     });
     // The coin is a candidate only from its migration, which can come days after its create. The engine's store keeps a
-    // per-mint fact for about a day (WORKER-GROW retention), so the create fact goes out again here, the same value
-    // (its own obs, slot and time): the candidate reads what it would have read, and the store need not hold every create.
-    if (t.createFact !== undefined) put(createKey(t.mint), t.createFact);
+    // per-mint fact for about a day (WORKER-GROW retention), so its earlier facts go out again here, the same values
+    // (their own obs, slot and time): the candidate reads what it would have read, and the store need not hold every mint.
+    for (const [k, v] of t.early) put(k, v);
+    t.early.clear();
     this.#pending.set(m.pool, { mint: t.mint, pool: m.pool, migratedAtMs: m.atMs, slot: m.slot });
     if (this.#books.has(m.pool)) this.#writeCandles(m.pool, sourceOf(e), e.moment.receivedAt, put);
   }
@@ -626,7 +635,7 @@ export class FactProducer {
     const sig = JSON.stringify([fact.complete, insiders, devCluster, creationBuyers.length, t.devBuySameTx, devFunder, funders.map((f) => f?.funder ?? null)]);
     if (this.#insidersSeen.get(t.mint) === sig) return;
     this.#insidersSeen.set(t.mint, sig);
-    put(insidersKey(t.mint), fact);
+    this.#early(t, insidersKey(t.mint), fact, put);
     const soft: Record<string, unknown> = { obs: fact.obs, completeness: fact.complete ? 'complete' : 'unresolved' };
     if (windowCovered) {
       soft['creationSlotBuyers'] = creationBuyers.length;
@@ -651,7 +660,7 @@ export class FactProducer {
       soft['supportedIndependentOwners'] = independent;
       soft['unresolvedOwners'] = unresolved;
     }
-    put(softKey(t.mint), soft as unknown as SoftFact);
+    this.#early(t, softKey(t.mint), soft, put);
   }
 
   // ---------- Streams, slots and holes ----------

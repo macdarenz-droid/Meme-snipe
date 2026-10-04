@@ -124,7 +124,9 @@ describe('the rule set (engineRetention, retentionFor)', () => {
     expect(r.rule('coverage:creates:start')).toBe('all');
     expect(r.rule('coverage:rugs:gap')).toBe('all');
     for (const k of [...poolTradeKeys('P'), ...curveTradeKeys('M')]) expect(r.rule(k), k).toEqual({ horizonMs: (TRIAL_POLICY.gates.deployerRugLookbackDays + 1) * DAY, dropStale: true });
-    for (const k of [createKey('M'), 'gates/pool:M', 'gates/holders:M', 'gates/deployer:C', 'logs:pump:CreateEvent:M', 'pump:CreateEvent:M', 'pump_amm:CreatePoolEvent:P', 'account:A']) {
+    // A raw create event keeps its newest entry: the exits' deployer-sell trigger and the gates' create alias read it.
+    for (const k of ['logs:pump:CreateEvent:M', 'pump:CreateEvent:M']) expect(r.rule(k), k).toEqual({ horizonMs: HOUR, dropStale: false });
+    for (const k of [createKey('M'), 'gates/pool:M', 'gates/holders:M', 'gates/deployer:C', 'pump:CompleteEvent:M', 'pump_amm:CreatePoolEvent:P', 'account:A']) {
       expect(r.rule(k), k).toEqual({ horizonMs: DAY, dropStale: true });
     }
     for (const k of ['chain:slot', 'seen:logs:X', 'gates/sol-usd', 'worker:halt', 'logs:truncated:logs:X', 'gates/stream:chain']) expect(r.rule(k), k).toEqual({ horizonMs: HOUR, dropStale: false });

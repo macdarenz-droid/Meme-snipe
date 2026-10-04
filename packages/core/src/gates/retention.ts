@@ -6,14 +6,21 @@
 // - `history` is read only by the coverage readers (`createsCoverage`: every `coverage:*` entry from the start) and the
 //   trade-tail checks (GATE-1c: a candidate pool's trades since migration, its curve trades with no start).
 // - Everything else is read by `lookup` as of now: the newest entry. Keeping each key's newest entry keeps every answer.
-import { EXIT_UNIVERSES, type Policy } from '../config/index.ts';
+import { DAY_MS, EXIT_UNIVERSES, HOUR_MS, type Policy } from '../config/index.ts';
 import type { Retention, RetentionRule } from '../engine/index.ts';
 
-const HOUR = 3_600_000;
-const DAY = 24 * HOUR;
+const HOUR = HOUR_MS;
+const DAY = DAY_MS;
 
 /** Trade-event keys the tail checks read (`poolTradeKeys`, `curveTradeKeys`), in their decoded and log forms. */
 const TRADE = /^(logs:)?(pump_amm:(BuyEvent|SellEvent)|pump:TradeEvent):/;
+/**
+ * A mint's raw create event (`TX_CREATE_PREFIX`, `LOG_CREATE_PREFIX`). Read by lookup long after it happened: the exits'
+ * deployer-sell trigger (`#deployerOf`) and the gates' create alias, for a coin that migrates days after its create. Its
+ * newest entry is kept like any key read by lookup, never dropped, until a compact create record replaces those reads
+ * (WORKER-GROW G4b).
+ */
+const RAW_CREATE = /^(logs:)?pump:CreateEvent:/;
 /** Keys of one object: a mint's gate facts, a chain event of one mint or pool, an account. Read only near their time. */
 const PER_OBJECT = /^(gates\/(mint|pool|lp|curve|create|migration|candles|holders|insiders|deployer|sim|xcheck|soft):|(logs:)?(pump|pump_amm):|account:)/;
 
@@ -31,6 +38,7 @@ export interface RetentionInputs {
  * - `coverage:*`: every entry (its readers replay the stream from the start; the stream is a few lines a day);
  * - trade-event keys: the look-back plus a day, then gone (a candidate's tape since migration is hours old; a curve
  *   tape older than that is the same as one never seen, which the curve check already accepts);
+ * - raw create events: the newest entry kept (see `RAW_CREATE`);
  * - per-object keys: a day, or the candidate window plus the longest hold plus an hour if longer, then gone (a coin
  *   that migrates later has its create fetched again at its shortlist; a missing fact rejects, never passes);
  * - everything else: the newest entry plus an hour of history (read by lookup only).
@@ -42,7 +50,7 @@ export const engineRetention = (i: RetentionInputs): Retention => {
   const rest: RetentionRule = { horizonMs: HOUR, dropStale: false };
   return {
     everyMs: HOUR,
-    rule: (key) => (key.startsWith('coverage:') ? 'all' : TRADE.test(key) ? trade : PER_OBJECT.test(key) ? perObject : rest),
+    rule: (key) => (key.startsWith('coverage:') ? 'all' : TRADE.test(key) ? trade : RAW_CREATE.test(key) ? rest : PER_OBJECT.test(key) ? perObject : rest),
   };
 };
 

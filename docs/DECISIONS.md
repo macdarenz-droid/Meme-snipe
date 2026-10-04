@@ -1427,12 +1427,14 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - **Rules (`retentionFor`, from the policy and the strategy window):**
     - `coverage:*`: every entry kept;
     - trade-event keys: the look-back plus a day (15 days), then the key goes;
-    - per-object keys (a mint's `gates/*` facts, `pump`/`pump_amm` chain events, accounts): a day, or the candidate window plus the longest hold plus an hour if that is longer, then the key goes;
+    - raw create events (`pump:CreateEvent`, `logs:pump:CreateEvent`): the newest entry kept, never dropped. The exits' deployer-sell trigger (`#deployerOf`) and the gates' create alias read them for a coin that migrates days after its create. The full suite showed it: a 1-day drop left a held position's deployer sale unjudged (`worker-flow` deployer-sell test);
+    - other per-object keys (a mint's `gates/*` facts, other `pump`/`pump_amm` chain events, accounts): a day, or the candidate window plus the longest hold plus an hour if that is longer, then the key goes;
     - everything else: the newest entry plus an hour.
-  - **Effect on decisions.**
-    - The create fact: create facts alone measure about 67 MB a day, too much to keep for the look-back. The producer emits a mint's create fact once (`t.create`), so a re-fetch would not bring it back. So the producer now releases it again, unchanged, with the migration fact (`#migration`), from which point the coin is a candidate. The candidate then reads the same value inside the per-object horizon, whatever the gap between create and migration (test: a store pruned between them still answers it; it fails without the second release).
-    - A curve tape older than 15 days reads like one never seen, which the curve check already accepts.
-    - Any other per-object fact is made near its candidate's window and read within it. A missing fact rejects, never passes.
-  - **Who uses it.** Live, the parity replay and the backtest all pass the same rule set (guard test).
-  - **Measured.** Through the engine with slots, create sightings, create logs and create facts at live rates: heap +201, +402, +606, +801 MB after days 1–4 without retention; +134, +138, +137, +137 MB with it, about one day of per-object keys.
-  - **Tests.** `packages/core/test/facts/producer.test.ts` (the create fact at migration). `packages/core/test/retention.test.ts`: lookups and in-horizon history unchanged; the same decision log hash with and without retention over 3 days; a store that stays the same size from day 2 to day 6; the rules; refusals. Hand mutants A1–A7 are killed.
+  - **Facts made before the migration.** The producer keeps a mint's create, insiders and soft facts as last made before its migration, and releases them again, unchanged, with the migration fact (`#migration`). That is the moment the coin becomes a candidate. The candidate then reads the same values inside the per-object horizon, whatever the gap: live the create often comes as processed logs (no fact), but the backtest replays confirmed data, where these facts are made at the create. Create facts alone measure about 67 MB a day, too much to keep for the look-back.
+  - **Effect on decisions.** A curve tape older than 15 days reads like one never seen, which the curve check already accepts. Every other per-object fact is made, or released again, near its candidate's window and read within it.
+  - **Who uses it.** Live, the parity replay and the backtest pass the same rule set (guard test).
+  - **Measured.** Through the engine with slots, create sightings, create logs and create facts at live rates: heap +201, +402, +606, +801 MB after days 1–4 without retention. With it, about +87 MB a day (+134, +220, +310, +392, +489, +570 MB after days 1–6), nearly all of it raw create events. **So G4a slows the growth; it does not bound it.** Bounding it needs a compact per-mint create record that `#deployerOf` and the gates' alias read, so raw creates can go after a day (G4b, with the deployer index).
+  - **Tests.**
+    - `packages/core/test/retention.test.ts`: lookups and in-horizon history unchanged; the same decision log hash with and without retention over 3 days; a store that stays the same size from day 2 to day 6; the rules; refusals.
+    - `packages/core/test/facts/producer.test.ts`: create, insiders and soft released again at migration; a store pruned between create and migration still answers the create.
+    - Hand mutants A1–A8 and E1–E3 are killed.
