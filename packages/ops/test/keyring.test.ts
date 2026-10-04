@@ -25,6 +25,12 @@ describe('key slots', () => {
     expect(nextSlot('B')).toBe('A');
     expect(await promote(r1, env, 'HB', 'A')).toBe(r1);
   });
+
+  it('never take the legacy slot as an offer, nor an active value that was retired', async () => {
+    // A watchdog that started with no legacy value, then had one set later: legacy is not an offer while A is active.
+    expect((await candidates({ active: 'A', retired: [] }, { HB: K0, HB_A: K1 }, 'HB')).map((c) => c.slot)).toEqual(['A']);
+    expect(await candidates({ active: 'A', retired: [await sha256(K1)] }, { HB_A: K1 }, 'HB')).toEqual([]);
+  });
 });
 
 function harness(env: Partial<Env>) {
