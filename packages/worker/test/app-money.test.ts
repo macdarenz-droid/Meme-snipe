@@ -113,11 +113,44 @@ describe('the daily-loss meter is R7\'s figure (APP-MONEY)', () => {
     expect(meter(servedWith({ stops, trades }).status)).toMatchObject({ usedUsd: '0.1' });
   });
 
+  it('a current R7 read from before a losing close or a cost: the meter shows the higher realised figure (risk review 1)', () => {
+    const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START + HOUR, closedAtMs: NOW - 500, notional: 2_000_000n, netLamports: 0n, netPnl: -500_000n, stoppedOut: false, booked: 0n, openSolPrice: null };
+    const read = { atMs: NOW - 1_000, codes: [] as string[], dayLoss: 100_000n };
+    expect(meter(servedWith({ stops: read, trades: [t] }).status)).toMatchObject({ usedUsd: '0.5' });
+    expect(meter(servedWith({ stops: read, accountCosts: [{ atMs: NOW - 500, amount: 700_000n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.7' });
+    // R7's own figure when it is the higher (marked losses only it can see).
+    expect(meter(servedWith({ stops: { ...read, dayLoss: 900_000n }, trades: [t] }).status)).toMatchObject({ usedUsd: '0.9' });
+  });
+
   it('unknown or old risk: no meter (never a 0), and the risk-unknown chip', () => {
     for (const stops of [null, { atMs: NOW, codes: null, dayLoss: null }, { atMs: NOW - 60_000, codes: [], dayLoss: 0n }]) {
       const s = servedWith({ stops });
       expect(meter(s.status), JSON.stringify(stops, (_k, v) => (typeof v === 'bigint' ? String(v) : v))).toBeUndefined();
       expect(s.status.haltReasons.map((x) => x.code)).toContain('risk-unknown');
     }
+  });
+});
+
+describe('partial sales count at their own time, as core risk counts them (risk review 2, RISK-PARTIAL #132\'s shape)', () => {
+  // A partial sale yesterday (+0.3) and the close today: the whole trade nets −0.2, so the close's remainder is −0.5.
+  const part = { atMs: DAY_START - HOUR, lamports: 0n, pnl: 300_000n };
+  const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START - 2 * HOUR, closedAtMs: DAY_START + HOUR, notional: 2_000_000n, netLamports: 0n, netPnl: -200_000n, stoppedOut: false, booked: 0n, openSolPrice: null, partials: [part] };
+
+  it('the day split, the meter, the curve and the net', () => {
+    const s = servedWith({ trades: [t], stops: { atMs: NOW, codes: [] as string[], dayLoss: 0n } });
+    // Today's realised loss is the close's remainder, not the whole trade's −0.2.
+    expect(meter(s.status)).toMatchObject({ usedUsd: '0.5' });
+    expect(s.charts.cumulative.map((c) => c.cumNetUsd)).toEqual(['0.3', '-0.2']);
+    expect(s.charts.daily.map((d) => d.netUsd)).toEqual(['0.3', '-0.5']);
+    expect(s.stats).toMatchObject({ trades: 1, netUsd: '-0.2', maxDrawdownUsd: '0.5' });
+    // Both days are in the same month (helpers: 6 and 7 October, Melbourne).
+    expect(s.calendar.days.map((d) => [d.netUsd, d.trades])).toEqual([['0.3', 0], ['-0.5', 1]]);
+  });
+
+  it('an open trade\'s partial is realised already: it counts in net and on its day', () => {
+    const open = { ...t, closedAtMs: null, netPnl: null, partials: [{ ...part, atMs: DAY_START + HOUR }] };
+    const s = servedWith({ trades: [open] });
+    expect(s.stats).toMatchObject({ trades: 0, netUsd: '0.3' });
+    expect(s.charts.daily.map((d) => d.netUsd)).toEqual(['0.3']);
   });
 });

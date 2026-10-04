@@ -1477,15 +1477,25 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Between a fill and the next read, today's realised loss (trades and costs, gains offsetting) also counts, for the meter and the daily-loss chip (API-1's probe).
     - It is never more than R7's figure on the same data, because marked losses only add.
     - Before, the meter summed today's losing trades only, without costs or offsetting gains.
+- **2026-10-05 · Partial sales at their own time (risk review 2).**
+  - `moneyEvents` counts each partial sale's result at its own time, open trades' too, and a closed trade's remainder (its net less its parts) at the close. Core risk counts equity the same way after RISK-PARTIAL (#132).
+  - The meter's realised figure, the calendar, the charts and stats net therefore split days as core does.
+  - It reads #132's `partials` shape (`atMs`, `pnl`), and #169 merges after #132. Its core comparison is added on that merge.
 - **2026-10-05 · Not yet.** The stray fees of entries that never filled (`strayFees`, `strayFolded`) come with PAPER-1 (#133, not merged). They reach these totals through `costs()` when it merges, and their test ("setup + one stray") lands then.
 - **2026-10-05 · Evidence.**
-  - `packages/worker/test/app-money.test.ts`: 7 tests, all failing before. They cover:
+  - `packages/worker/test/app-money.test.ts`: 10 tests, all failing before. They cover:
     - setup and no trades: net, drawdown, curve, day and kind all read −setup;
     - trades with costs in time order;
     - a real worker's inputs carry the account's costs;
     - the meter equals core's `dayLoss` on the same inputs;
     - a cost booked today counts;
     - a gain offsets;
-    - unknown or old risk means no meter.
+    - unknown or old risk means no meter;
+    - a current R7 read from before a losing close or a cost shows the higher realised figure (risk review 1);
+    - a partial yesterday and the close today split as core splits them, and an open trade's partial counts.
   - `status-stops.test.ts` gains the new field in its expectations; its probe still passes.
-  - Hand mutants, all caught (13): stats, drawdown, charts or calendar on trades only; the wrong kind; the meter from realised loss only; no realised chip; 0 when unknown; an old read accepted; realised from losing items only; the strategy without `dayLoss`; the worker without costs; mean net with costs.
+  - Hand mutants, all caught (17):
+    - stats, drawdown, charts or calendar on trades only; the wrong kind;
+    - the meter from realised loss only; the meter as R7 only; no realised chip; 0 when unknown; an old read accepted; realised from losing items only;
+    - the strategy without `dayLoss`; the worker without costs; mean net with costs;
+    - partials counted at the close; the close's whole net; open trades' partials ignored.

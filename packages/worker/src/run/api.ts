@@ -236,15 +236,31 @@ export const stopHalts = (stops: { readonly atMs: number; readonly codes: readon
   return stops.codes.map((c) => (STOP_HALT[c] !== undefined ? { code: STOP_HALT[c], source: null } : { code: 'risk', source: c }));
 };
 
+/** A trade's partial sales (RISK-PARTIAL #132's `partials`: each part's realised result at its time); none before it. */
+const partsOf = (t: PaperTrade): readonly { readonly atMs: number; readonly pnl: bigint }[] =>
+  (t as PaperTrade & { readonly partials?: readonly { readonly atMs: number; readonly pnl: bigint }[] }).partials ?? [];
+
+export type MoneyEvent =
+  | { readonly kind: 'close'; readonly atMs: number; readonly net: bigint; readonly trade: PaperTrade }
+  | { readonly kind: 'partial'; readonly atMs: number; readonly net: bigint; readonly trade: PaperTrade }
+  | { readonly kind: 'cost'; readonly atMs: number; readonly net: bigint; readonly costKind: string };
+
 /**
- * Every realised money movement the app totals (APP-MONEY), oldest first: each closed trade's net at its close, and each
- * account cost (as a loss) when it was booked. The same items core risk counts in equity, so the app's totals agree with
- * the wallet and with the backtest report (which counts its stray costs the same way).
+ * Every realised money movement the app totals (APP-MONEY), oldest first, counted as core risk counts equity: each
+ * partial sale's result at its own time (open trades' too), each closed trade's remainder (its net less its parts) at its
+ * close, and each account cost (as a loss) when it was booked. So the app's totals agree with the wallet, with risk's day
+ * split and with the backtest report (which counts its stray costs the same way).
  */
-export const moneyEvents = (i: ApiInputs): { readonly atMs: number; readonly net: bigint; readonly trade: PaperTrade | null; readonly costKind: string | null }[] => [
-  ...i.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).map((t) => ({ atMs: t.closedAtMs!, net: t.netPnl! as bigint, trade: t, costKind: null })),
-  ...i.accountCosts.map((c) => ({ atMs: c.atMs, net: -c.amount, trade: null, costKind: c.kind })),
-].sort((x, y) => x.atMs - y.atMs);
+export const moneyEvents = (i: ApiInputs): MoneyEvent[] => {
+  const out: MoneyEvent[] = [];
+  for (const t of i.trades) {
+    const parts = partsOf(t);
+    for (const p of parts) out.push({ kind: 'partial', atMs: p.atMs, net: p.pnl, trade: t });
+    if (t.closedAtMs !== null && t.netPnl !== null) out.push({ kind: 'close', atMs: t.closedAtMs, net: t.netPnl - parts.reduce((s, p) => s + p.pnl, 0n), trade: t });
+  }
+  for (const c of i.accountCosts) out.push({ kind: 'cost', atMs: c.atMs, net: -c.amount, costKind: c.kind });
+  return out.sort((x, y) => x.atMs - y.atMs);
+};
 
 /** An account cost under the app's cost kinds: the wallet's setup rent is rent kept; a failed entry's fees are network fees. */
 const ACCOUNT_COST_KIND: Readonly<Record<string, string>> = { wallet_setup: 'rentKeptUsd', failed_entry: 'networkFeeUsd' };
@@ -365,7 +381,7 @@ export const views = {
       if (!date.startsWith(month)) continue;
       const d = byDay.get(date) ?? { net: 0n, ids: [] };
       d.net += e.net;
-      if (e.trade !== null) d.ids.push(e.trade.positionId);
+      if (e.kind === 'close') d.ids.push(e.trade.positionId);
       byDay.set(date, d);
     }
     return {
@@ -385,7 +401,8 @@ export const views = {
       cum += e.net;
       const date = melbourneDate(e.atMs);
       daily.set(date, (daily.get(date) ?? 0n) + e.net);
-      const c = e.trade === null ? { total: -e.net, kinds: { [ACCOUNT_COST_KIND[e.costKind ?? ''] ?? 'networkFeeUsd']: -e.net } } : costsOf(i, e.trade);
+      // A trade's costs are shown at its close; an account cost under its kind; a partial's result has none of its own.
+      const c = e.kind === 'cost' ? { total: -e.net, kinds: { [ACCOUNT_COST_KIND[e.costKind] ?? 'networkFeeUsd']: -e.net } } : e.kind === 'close' ? costsOf(i, e.trade) : { total: 0n, kinds: {} };
       costsDaily.set(date, (costsDaily.get(date) ?? 0n) + c.total);
       for (const [k, v] of Object.entries(c.kinds)) kinds.set(k, (kinds.get(k) ?? 0n) + v);
       return { mode: MODE, at: iso(e.atMs), cumNetUsd: usdText(cum) };
