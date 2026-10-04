@@ -57,7 +57,7 @@ import type { CreateLookup } from './sources.ts';
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export { PERSIST_FILE } from '../persist/index.ts';
 export const PERSIST_EVERY_MS = 5 * 60_000;
-import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, restartsAfterBoot, restartsFile } from './state.ts';
+import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -482,7 +482,8 @@ export class Worker {
       s0_diagnostic: d.strategy.s0Diagnostic === true ? S0_DIAGNOSTIC_PARTS : null,
       sell_only: [...this.#sellOnly],
       // RESTART-CAUSE: the unit's `--reconcile` pre-step is marked, so the daily summary counts real boots only.
-      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : {}),
+      // The main boot names its restart's kind and how the previous process ended, for the daily summary's counts.
+      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit) }),
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {

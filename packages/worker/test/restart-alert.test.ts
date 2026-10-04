@@ -3,7 +3,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { crashSite, eventKind } from '../src/run/crash-site.ts';
 import { RESTARTS_MAX, restartsAfterBoot } from '../src/run/state.ts';
-import { emptySummaryState, foldText } from '../src/run/summary.ts';
+import { buildSummary, emptySummaryState, foldText, parseCrashSite, summaryBody } from '../src/run/summary.ts';
+import { checkSummary } from '../../ops/src/watchdog/summary.ts';
+import { melbourneDate } from '../src/run/api.ts';
 import { heartbeatBody } from '../src/run/heartbeat.ts';
 import { EXIT, STATE_FILES } from '../../runner/src/contract.ts';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -193,6 +195,14 @@ describe('crash-site guarantees (review of #209)', () => {
     expect(crashSite(caused)).toBe('Error at no frame in packages/');
   });
 
+  it('a crash site is split into fields that each fit the watchdog\'s pattern, or are left out', () => {
+    expect(parseCrashSite('TypeError at packages/core/src/engine/engine.ts:151 during logs:pump:CreateEvent')).toEqual({ error: 'TypeError', file: 'packages/core/src/engine/engine.ts', line: 151, event: 'logs:pump:CreateEvent' });
+    expect(parseCrashSite('non-error at no frame in packages/')).toEqual({ error: 'non-error', file: null, line: null, event: null });
+    expect(parseCrashSite('RangeError at packages/X/src/a.ts:3 during seen:rpc.example')).toEqual({ error: 'RangeError', file: null, line: null, event: null });
+    expect(parseCrashSite('Error at packages/worker/src/evil.com.ts:3')).toEqual({ error: 'Error', file: null, line: null, event: null });
+    for (const bad of ['', 'Error', 'fetch failed: https://x.example/?api-key=1', 'Bad Name at no frame in packages/', `${'E'.repeat(41)} at no frame in packages/`]) expect(parseCrashSite(bad), bad).toBeNull();
+  });
+
   it('an event key keeps its kind: ids and long segments are left out', () => {
     expect(eventKind(`logs:pump:CreateEvent:${'M'.repeat(44)}`)).toBe('logs:pump:CreateEvent');
     expect(eventKind(`pool:${'a'.repeat(30)}:state`)).toBe('pool:state');
@@ -251,6 +261,51 @@ describe('the unit\'s --reconcile pre-step (RESTART-CAUSE)', () => {
     const s = emptySummaryState();
     for (const l of text.split('\n')) foldText(s, l, new Date(T - 30 * 86_400_000).toISOString());
     expect(Object.values(s.days).reduce((n, d) => n + d.starts, 0)).toBe(2);
+  });
+
+  it('the daily summary counts restarts and previous exits by kind, and crashes by site, never the message', async () => {
+    const SECRET = 'https://mainnet.helius-rpc.com/?api-key=sk-live-0123456789abcdef';
+    // One throw site, so two crashes share a frame.
+    const boom = (): Error => new TypeError(`fetch failed for ${SECRET}`);
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const a = await unitStart(stateDir, timers);
+    await a.worker.reconcile();
+    a.worker.crashed(boom());
+    await a.worker.kill();
+    const b = await unitStart(stateDir, timers);
+    await b.worker.reconcile();
+    b.worker.crashed(boom());
+    await b.worker.kill();
+    const c = await unitStart(stateDir, timers);
+    await c.worker.reconcile();
+    await c.worker.kill();
+    writeFileSync(join(stateDir, STATE_FILES.plannedRestart), JSON.stringify({ cause: 'drill restart-1 (crash)', at: timers.now() }));
+    const d = await unitStart(stateDir, timers);
+    await d.worker.reconcile();
+    await d.worker.stop();
+    const e = await unitStart(stateDir, timers);
+    await e.worker.reconcile();
+    await e.worker.kill();
+    const f = await unitStart(stateDir, timers);
+    await f.worker.reconcile();
+    await f.worker.stop();
+    const text = readFileSync(join(stateDir, STATE_FILES.journal), 'utf8');
+    const s = emptySummaryState();
+    for (const l of text.split('\n')) foldText(s, l, new Date(T - 30 * 86_400_000).toISOString());
+    const day = melbourneDate(timers.now());
+    const summary = buildSummary({
+      day, final: false, nowMs: timers.now(), fold: s.days[day], gitSha: 'a'.repeat(40), entryRule: 'S0', recorder: 'off', uptimeS: 1,
+      trades: [], openPositions: 0, solPrice: null, credits: [],
+    });
+    expect(summary.worker.starts).toBe(6);
+    // a is the first boot; b and c follow crashes, d a drill's kill (planned), e a clean stop, f a kill.
+    expect(summary.worker.restarts).toEqual({ planned: 1, deploy: 0, unplanned: 4 });
+    expect(summary.worker.exits).toEqual([{ code: 'crash', count: 2 }, { code: 'clean', count: 1 }, { code: 'killed', count: 1 }, { code: 'planned', count: 1 }]);
+    expect(summary.worker.crash_sites).toEqual([{ error: 'TypeError', file: 'packages/worker/test/restart-alert.test.ts', line: expect.any(Number), event: null, count: 2 }]);
+    const body = summaryBody(summary);
+    expect('body' in body && checkSummary(body.body).ok).toBe(true);
+    expect(JSON.stringify(body)).not.toMatch(/api-key|sk-live|helius|fetch failed/);
   });
 
   it('the counts are read at report time: a day later with no restart, they are back to zero', async () => {

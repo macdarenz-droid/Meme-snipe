@@ -119,6 +119,10 @@ export const RESTARTS_MAX = 1_000;
  * The boots kept after this one: the last 24 h before `nowMs` plus this boot, at most RESTARTS_MAX (newest kept). This
  * boot's kind compares its release with the newest saved boot's.
  */
+/** How the previous process ended, as a fixed code for the daily summary's `exits` (null on a first start). */
+export const exitKind = (lastExit: string | null): 'clean' | 'crash' | 'killed' | 'planned' | null =>
+  lastExit === null ? null : lastExit.startsWith('planned: ') ? 'planned' : lastExit === 'stop: signal' ? 'clean' : lastExit.startsWith('stop: crash') ? 'crash' : 'killed';
+
 export const restartsAfterBoot = (saved: readonly Restart[], nowMs: number, lastExit: string | null, gitSha: string): Restart[] => {
   const prev = saved[saved.length - 1];
   const kind: RestartKind = lastExit === null ? 'first' : lastExit.startsWith('planned: ') ? 'planned' : prev !== undefined && prev.git_sha !== gitSha ? 'deploy' : 'unplanned';

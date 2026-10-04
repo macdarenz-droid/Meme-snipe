@@ -194,7 +194,7 @@ describe('the summary', () => {
     expect(s.candidates.refused_by_reason).toHaveLength(SUMMARY_TOP_REASONS);
     expect(s.candidates.refused_other).toBe(2);
     expect(s.provider_credits).toEqual([{ provider: 'helius', used_since_boot: 1234, monthly: 1_000_000 }]);
-    expect(s.worker).toEqual({ git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on' });
+    expect(s.worker).toEqual({ git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on', restarts: { planned: 0, deploy: 0, unplanned: 0 }, exits: [], crash_sites: [] });
     const b = summaryBody(s);
     expect('body' in b && checkSummary(b.body).ok).toBe(true);
     // A final summary leaves out trades still open from another day.
