@@ -39,6 +39,8 @@ apply_host() {
 
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
 [ "$commit" != "$current" ] || exit 0
+# A release that was switched to and rolled back (its worker did not stay up) is not tried again; a newer deploy is.
+[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0
 
 # GitHub signs every merge it makes with its web-flow key; nothing else is accepted.
 status="$(GNUPGHOME=/etc/zeroed/gnupg git -C "$REPO_DIR" verify-commit --raw "$commit" 2>&1 || true)"
@@ -89,8 +91,17 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# The release's own worker must start before anything changes (SWITCH-1): a trial start beside the running worker
+# (worker-smoke). If it cannot start, nothing switches, the running worker is untouched, and the owner gets one alert.
+if ! why="$(/usr/local/lib/zeroed/worker-smoke "$dest" 2>&1)"; then
+  log "The worker of ${commit:0:12} did not start in a trial ($why); still on the old release, trying again next run."
+  alert worker-smoke "ALERT Zeroed host: the worker of ${commit:0:12} did not start in a trial ($why), so the server stays on the release it runs. It tries again every 5 minutes."
+  exit 1
+fi
+alert_clear worker-smoke "CLEARED Zeroed host: the worker of ${commit:0:12} starts."
 # Host files first: on failure nothing switches and the worker keeps running the release it has.
 apply_host "$commit" "$dest" || exit 1
+prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
@@ -102,10 +113,61 @@ else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
 
-# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
+# answers: the worker's health route says paper. The release's worker serves it on WORKER_HEALTH_ADDR; the host's
+# stand-in on the API address.
+answers() {
+  local a
+  for a in "$WORKER_HEALTH_ADDR" "$WORKER_API_ADDR"; do
+    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# holds: the restarted worker answers its health route in paper within 60 s, then runs SWITCH_HOLD_S more with no
+# restart and still answering. Prints why when it does not.
+holds() {
+  local up=0 n0
+  for _ in $(seq 1 60); do
+    if systemctl is-active --quiet zeroed-worker.service && answers; then up=1; break; fi
+    sleep 1
+  done
+  [ "$up" = 1 ] || { echo "its health route did not answer within 60 s"; return 1; }
+  n0="$(systemctl show -p NRestarts --value zeroed-worker.service)"
+  sleep "$SWITCH_HOLD_S"
+  systemctl is-active --quiet zeroed-worker.service && [ "$(systemctl show -p NRestarts --value zeroed-worker.service)" = "$n0" ] ||
+    { echo "it stopped or restarted within ${SWITCH_HOLD_S} s of answering"; return 1; }
+  answers || { echo "its health route stopped answering within ${SWITCH_HOLD_S} s"; return 1; }
+}
+
+# rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),
+# its commit as deployed, its worker restarted; the new commit is not tried again; one alert.
+rollback() {
+  local why="$1"
+  if [ -z "$prev" ] || [ ! -d "$prev" ] || [ "$prev" = "$dest" ]; then
+    alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), and there is no earlier release to go back to."
+    exit 1
+  fi
+  printf '%s\n' "$commit" > "$STATE_DIR/failed_release"
+  ln -sfn "$prev" /opt/zeroed/current.new
+  mv -Tf /opt/zeroed/current.new /opt/zeroed/current
+  printf '%s\n' "$current" > "$STATE_DIR/deployed"
+  apply_host "${current:-$(basename "$prev")}" "$prev" || true
+  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+  systemctl restart zeroed-worker.service || true
+  log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
+  alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is."
+  exit 1
+}
+
+# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all. After a restart the
+# new worker must stay up, or the server goes back to the release it ran (SWITCH-1).
 worker="not started (no keys yet)"
 if [ -s "$CRED_DIR/helius_api_key" ]; then
-  if systemctl restart zeroed-worker.service; then worker=restarted; else worker="failed to start"; fi
+  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+  systemctl restart zeroed-worker.service || rollback "it failed to start"
+  if ! why="$(holds)"; then rollback "$why"; fi
+  worker="restarted and up"
+  alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true

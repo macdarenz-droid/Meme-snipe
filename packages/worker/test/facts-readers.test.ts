@@ -9,13 +9,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FIX, MINT, POOL } from '../../core/test/facts/helpers.ts';
 import {
-  ASSUMPTIONS, FACT_RPC_METHODS, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, SUPPLEMENT_FILE, candidateCapacity, freePlanPerMinute, holderScanCredits, holderScanCreditsPerDay, perCandidate,
+  ASSUMPTIONS, DEPLOYER_CHECK_CREDITS_PER_DAY, FACT_RPC_METHODS, plannedHeliusPerDay, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, SUPPLEMENT_FILE, candidateCapacity, freePlanPerMinute, holderScanCredits, holderScanCreditsPerDay, perCandidate,
   HOLDER_SCANS_PER_DAY, holderFilters, readSupplement, supplementRow, writeSupplement, type Ingest,
 } from '../src/facts/index.ts';
 import type { FrameBody, Source } from '../src/providers/index.ts';
 import type { HttpClient, HttpRequest, HttpResponse } from '../src/providers/http.ts';
 import { COINBASE_PUBLIC, GOPLUS_FREE, HELIUS_FREE, ManualTimers, RUGCHECK_FREE, Scheduler } from '../src/scheduler/index.ts';
 import { blockNetwork, settle, testSecrets } from './helpers.ts';
+import { RUG_CHECK_CONFIG } from '../../core/src/config/rugs.ts';
 
 blockNetwork();
 
@@ -405,7 +406,8 @@ describe('budget per candidate per minute', () => {
     // 1M credits a month, halted at 70%: about 16.2 credits a minute for everything.
     expect(f.heliusCredits).toBeCloseTo(16.2, 1);
     const cap = candidateCapacity();
-    expect(cap.helius).toBe(3);
+    // After the holder-scan and deployer-check daily caps come off the top (WORKER-1c): 2 candidates.
+    expect(cap.helius).toBe(2);
     expect(cap.alchemy).toBeGreaterThan(cap.helius);
     expect(cap.rugcheck).toBe(13);
     expect(cap.goplus).toBe(12);
@@ -417,11 +419,24 @@ describe('budget per candidate per minute', () => {
     expect(holderScanCredits()).toEqual({ scan: 12, fallback: 10 });
     expect(holderScanCreditsPerDay()).toBe(1_200);
     expect(holderScanCreditsPerDay(10)).toBe(120);
-    // Taken off the top before candidates: what is left still carries 3 at one evaluation a minute.
-    const left = freePlanPerMinute().heliusCredits - 1_200 / 1_440;
-    expect(left).toBeCloseTo(15.4, 1);
+    // Taken off the top before candidates, with the deployer checks' 5,000 a day: what is left carries 2.
+    const left = freePlanPerMinute().heliusCredits - (1_200 + DEPLOYER_CHECK_CREDITS_PER_DAY) / 1_440;
+    expect(left).toBeCloseTo(11.9, 1);
     expect(candidateCapacity().helius).toBe(Math.floor(left / perCandidate().heliusCreditsPerMinute));
     // A dearer scan (more owner batches) lowers the capacity, never raises it.
     expect(candidateCapacity({ ...ASSUMPTIONS, ownerBatchesPerScan: 400 } as unknown as typeof ASSUMPTIONS).helius).toBeLessThan(candidateCapacity().helius);
+  });
+
+  it('counts the deployer checks (WORKER-1c): a first check per candidate up to the per-candidate cap, all of them inside a daily cap, and the planned worst case stays under the halt share', () => {
+    expect(perCandidate().deployerCheckCreditsOnce).toBe(RUG_CHECK_CONFIG.creditCapPerCandidate);
+    expect(RUG_CHECK_CONFIG.creditCapPerCandidate).toBe(500);
+    const { planned, allowed } = plannedHeliusPerDay();
+    // Both daily caps spent in full and the planned candidates evaluated all day: under the 70% share of the month.
+    expect(planned).toBe(1_200 + DEPLOYER_CHECK_CREDITS_PER_DAY + candidateCapacity().helius * perCandidate().heliusCreditsPerMinute * 1_440);
+    expect(planned).toBeLessThanOrEqual(allowed);
+    expect(allowed).toBeCloseTo(1_000_000 * 0.7 / 30, 0);
+    // The reviewer's unbounded case (20 candidates an hour, 180 checks each at 500 credits) cannot happen: every
+    // check spends from the daily cap, which is a fifth of a day's share.
+    expect(DEPLOYER_CHECK_CREDITS_PER_DAY / allowed).toBeLessThan(0.25);
   });
 });

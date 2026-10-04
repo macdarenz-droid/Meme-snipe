@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { dirname, join } from 'node:path';
-import { checkStartHealth, LOOKUP_BOUNDS_MS, type RestartCause, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
+import { checkStartHealth, LOOKUP_BOUNDS_MS, type RestartCause, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine, type OpenPositionHealth } from './contract.ts';
 import { snapshotState, type Tabletop, type WorkerControl } from './control.ts';
 import { EXIT_UNIVERSES } from '../../core/src/config/index.ts';
 import { item4 } from './item4.ts';
@@ -196,9 +196,13 @@ interface RestartPending {
   ok?: boolean;
 }
 
+/** Every open position the reply lists: `open_positions` (WORKER-1c), else the single `open_position` of older workers. */
+export const openPositions = (h: Health | null): readonly OpenPositionHealth[] =>
+  h === null ? [] : Array.isArray(h.open_positions) ? h.open_positions : h.open_position ? [h.open_position] : [];
+
 const kept = (h: Health | null): Kept => ({
   pending_exits: h && Array.isArray(h.pending_exits) ? [...h.pending_exits] : [],
-  positions: h?.open_position ? [{ trade: h.open_position.trade, universe: h.open_position.universe }] : [],
+  positions: openPositions(h).map((p) => ({ trade: p.trade, universe: p.universe })),
 });
 
 export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
@@ -451,6 +455,11 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
             p.keep = atKill.positions.length + atKill.pending_exits.length + (p.inFlight ?? 0);
           }
           p.trades = (p.trades ?? []).filter((x) => !closed.includes(x));
+          // Nothing left open, planned to exit or in flight: the kill was not mid-trade and exposed nothing.
+          if (!heldAtKill(atKill, p.inFlight ?? 0)) {
+            p.midTrade = false;
+            p.open = false;
+          }
           notes.push(`closed between the last reply and the kill (journal): ${closed.join(', ')}`);
         }
         let state = recoveredState(lines, ws.boot!, cause, hostTable ? (p.backupKept ?? { pending_exits: [], positions: [] }) : (p.expect ?? null), p.atKill ?? { pending_exits: [], positions: [] });
@@ -490,7 +499,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
             notes.push(`tried again after the next backup (try ${attempt} of ${HOST_LOSS_RETRIES})`);
           } else notes.push(`no compared restore after ${HOST_LOSS_RETRIES} retries`);
         }
-        record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
+        record({ ...base, midTrade: p.midTrade === true, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (pending !== null && p.killedAt !== undefined && since() > recoverMs) {
         if (p.table) await endTabletop(p.drill.id, p.table);
@@ -799,17 +808,17 @@ const lookupsOk = (x: unknown): x is { counts: number[] } => {
   return Array.isArray(c) && c.length === LOOKUP_BOUNDS_MS.length + 1 && c.every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0);
 };
 
-/** The trade ids exposed when the worker dies: the open position's and every unresolved intent's. */
+/** The trade ids exposed when the worker dies: every open position's and every unresolved intent's. */
 export const exposedTrades = (h: Health): string[] =>
-  [...new Set([...(h.open_position ? [h.open_position.trade] : []), ...(Array.isArray(h.unresolved_intents.trades) ? h.unresolved_intents.trades : [])])].filter(
+  [...new Set([...openPositions(h).map((p) => p.trade), ...(Array.isArray(h.unresolved_intents.trades) ? h.unresolved_intents.trades : [])])].filter(
     (t) => typeof t === 'string' && t !== '',
   );
 
-/** Every exposed trade has an id: the open position's, and one per unresolved intent. */
+/** Every exposed trade has an id: each open position's, and one per unresolved intent. */
 export const tradeIdsComplete = (h: Health): boolean => {
   const id = (t: unknown): boolean => typeof t === 'string' && t !== '';
   const u = h.unresolved_intents;
-  return (h.open_position === null || id(h.open_position.trade)) && Array.isArray(u.trades) && u.trades.length === u.count && u.trades.every(id);
+  return openPositions(h).every((p) => id(p.trade)) && Array.isArray(u.trades) && u.trades.length === u.count && u.trades.every(id);
 };
 
 /** The open position's mark when it is fresh (seen at most MARK_MAX_AGE_MS before the reply); otherwise unmeasured. */
@@ -931,7 +940,10 @@ export const closedSince = (journal: readonly JournalLine[], boot: string | null
     ? []
     : [...new Set(journal.filter((l) => l.boot === boot && l.seq > seq && l.kind === 'exit' && l['position'] === 'closed' && typeof l.trade === 'string').map((l) => l.trade!))].sort();
 
-const withoutTrades = (k: Kept, gone: readonly string[]): Kept => ({
+/** The worker held something at the kill: a position, a pending exit or an entry in flight. */
+export const heldAtKill = (k: Kept, inFlight: number): boolean => k.positions.length + k.pending_exits.length + inFlight > 0;
+
+export const withoutTrades = (k: Kept, gone: readonly string[]): Kept => ({
   pending_exits: k.pending_exits.filter((x) => !gone.includes(x)),
   positions: k.positions.filter((x) => !gone.includes(x.trade)),
 });
@@ -939,12 +951,12 @@ const withoutTrades = (k: Kept, gone: readonly string[]): Kept => ({
 /** A CFG-2 universe with its own exit parameters (U1, U2). 'unknown', or anything else, counts as missing. */
 export const knownUniverse = (u: unknown): boolean => typeof u === 'string' && (EXIT_UNIVERSES as readonly string[]).includes(u);
 
-/** The reply at a kill can be trusted: pending exits are ids, and an open position names a known universe. */
+/** The reply at a kill can be trusted: pending exits are ids, and every open position names a known universe. */
 export const killReplyValid = (h: Health | null): boolean =>
   h !== null &&
   Array.isArray(h.pending_exits) &&
   h.pending_exits.every((x) => typeof x === 'string' && x !== '') &&
-  (h.open_position === null || knownUniverse(h.open_position.universe));
+  openPositions(h).every((p) => knownUniverse(p.universe));
 
 /** Across a host reboot: reconciled and exit capable from the new boot's own journal lines, ms after the kill. */
 export const journalTimes = (journal: readonly JournalLine[], boot: string, killedAt: number): { reconciled_ms: number; exit_capable_ms: number } | null => {

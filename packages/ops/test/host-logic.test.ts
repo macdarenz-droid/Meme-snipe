@@ -240,8 +240,53 @@ describe('worker start and API address', () => {
     expect(entry()).toBe(STUB); // asked for, but the release has no worker
     writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
     expect(entry()).toBe(STUB);
-    // The repository ships with the stand-in: the switch is its own reviewed commit.
-    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('stub');
+    // SWITCH-1 is the reviewed switch: the repository now runs the release's own worker.
+    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('release');
+  });
+
+  it("SWITCH-1: zeroed-update tries the new release's worker before anything changes", () => {
+    const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const smoke = upd.indexOf('/usr/local/lib/zeroed/worker-smoke "$dest"');
+    expect(smoke).toBeGreaterThan(0);
+    // Before the host files apply and before current moves; a failed trial alerts and exits.
+    expect(smoke).toBeLessThan(upd.indexOf('apply_host "$commit" "$dest" || exit 1'));
+    expect(smoke).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    expect(upd.slice(smoke, upd.indexOf('apply_host "$commit" "$dest" || exit 1'))).toMatch(/alert worker-smoke "ALERT[^\n]*stays on the release it runs[^\n]*"\n\s+exit 1\n/);
+    const s = read('ops/host/files/usr/local/lib/zeroed/worker-smoke');
+    // Beside the running worker: its own ports, a scratch state directory, the worker's user, paper only.
+    expect(sh('echo "$SMOKE_HEALTH_ADDR $SMOKE_API_ADDR"').out).toBe('127.0.0.1:8797 127.0.0.1:8798');
+    expect(s).toContain('--setenv=ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" --setenv=ZEROED_API_ADDR="$SMOKE_API_ADDR"');
+    expect(s).toContain('--setenv=ZEROED_STATE_DIR="$tmp/state"');
+    expect(s).toContain('--setenv=ZEROED_MODE=paper');
+    expect(s).not.toMatch(/ZEROED_MODE=(?!paper )/);
+    expect(s).not.toMatch(/CREDENTIALS_DIRECTORY|credstore|LoadCredential/);
+    expect(s).toContain('if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi');
+    // The worker's own arguments go after the program, never among systemd-run's options.
+    expect(s).toContain('/usr/local/bin/node --no-warnings "$entry" "${args[@]}"');
+    // Review #110: a transient unit under the worker unit's sandbox, capped in memory, the worker's environment file,
+    // the scratch directory its only writable path; and it must stay up for a hold after its first answer.
+    expect(sh('echo "$SMOKE_MEMORY_MAX $SMOKE_HOLD_S $SWITCH_HOLD_S"').out).toBe('280M 30 30');
+    expect(s).toMatch(/systemd-run --quiet --unit="\$unit" "\$\{opts\[@\]\}" "\$\{props\[@\]\}" \\\n\s+-p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="\$SMOKE_MEMORY_MAX" -p OOMScoreAdjust=1000 /);
+    expect(s).toContain('-p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp"');
+    expect(s).toContain('done < <(unit_sandbox "$UNIT_FILE")');
+    expect(s).toContain('for _ in $(seq 1 "$SMOKE_HOLD_S"); do');
+    const unit = read('ops/host/files/etc/systemd/system/zeroed-worker.service');
+    const sandbox = sh(`unit_sandbox "${join(root, 'ops/host/files/etc/systemd/system/zeroed-worker.service')}"`).out.split('\n');
+    // Every hardening and limit line of the unit reaches the trial; nothing that would give it identity, keys or state.
+    for (const l of unit.slice(unit.indexOf('# Hardening'), unit.indexOf('[Install]')).split('\n').filter((x) => /^[A-Z]/.test(x))) expect(sandbox, l).toContain(l);
+    for (const k of ['UMask=0077', 'TasksMax=256', 'LimitCORE=0', 'NoNewPrivileges=yes', 'ProtectSystem=strict', 'PrivateTmp=yes', 'CapabilityBoundingSet=']) expect(sandbox).toContain(k);
+    for (const l of sandbox) expect(l).not.toMatch(/^(User|Group|SupplementaryGroups|LoadCredential|LoadCredentialEncrypted|ImportCredential|StateDirectory|MemoryMax|OOMScoreAdjust|ExecStart|ExecStartPre|Restart|EnvironmentFile)=/);
+    // Under memory pressure the kernel takes the trial first and the live worker (which owns exits) last.
+    expect(unit).toMatch(/^OOMScoreAdjust=-500$/m);
+    expect(s).toContain('-p OOMScoreAdjust=1000');
+    expect(sandbox.length).toBeGreaterThan(25);
+    // After the switch: the new worker must stay up, else back to the release that ran, not tried again, one alert.
+    const after = upd.slice(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    expect(upd.indexOf('prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"')).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    expect(after).toMatch(/systemctl restart zeroed-worker\.service \|\| rollback "it failed to start"\n\s+if ! why="\$\(holds\)"; then rollback "\$why"; fi/);
+    const rb = upd.slice(upd.indexOf('rollback() {'), upd.indexOf('# Restart with reconcile first'));
+    for (const want of ['printf \'%s\\n\' "$commit" > "$STATE_DIR/failed_release"', 'ln -sfn "$prev" /opt/zeroed/current.new', 'printf \'%s\\n\' "$current" > "$STATE_DIR/deployed"', 'apply_host', 'systemctl restart zeroed-worker.service', 'alert worker-switch "ALERT']) expect(rb, want).toContain(want);
+    expect(upd).toContain('[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0');
   });
 
   it('health for the runner on 127.0.0.1:8787 and the worker API on 127.0.0.1:8788, as WORKER-1 and RUN-1 expect', () => {
@@ -315,6 +360,8 @@ describe('live view (tailscale serve)', () => {
     // never stays public with only an alert.
     const fb = check.slice(check.indexOf('timeout 30 tailscale funnel --https="${hp##*:}" off'));
     expect(fb).toMatch(/\|\| off=0; done\n\s+if \[ "\$off" = 0 \]; then[^]*?timeout 30 tailscale serve reset[^]*?rm -f "\$STATE_DIR\/live_view"[^]*?notify "\$msg"/);
+    // OPS-1h review nit: if serve reset fails too, the owner is told on Telegram, not only in the log.
+    expect(fb).toMatch(/else\n\s+# Neither worked[^]*?msg="ALERT Zeroed host: Tailscale Funnel could not be turned off and the live view could not be taken down[^"]*"\n\s+log "\$msg"\n\s+notify "\$msg"/);
     expect(check).toContain('alert funnel-on "ALERT');
     expect(check).toContain('tailscale funnel --https="${hp##*:}" off');
     expect(check).toContain('alert_clear funnel-on "CLEARED');

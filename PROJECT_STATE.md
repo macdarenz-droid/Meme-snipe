@@ -12,10 +12,12 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D, 4 Oct 4:25 PM Melbourne. 65 PRs merged since midnight on 4 Oct (the latest in `HANDOVER.md` §4). The owner finished the server, Tailscale, APK and ruleset steps at 2:31 PM, chose SPA for G1 at 2:33 PM, authorised code-only Deploy runs at 2:45 PM, moved the GitHub account to Pro at about 3:47 PM, chose the free Helius plan for now, and emailed Triton.
-- **Server:** re-installed at pin e28788a, paired, published on the tailnet only. It runs the stub worker, so the app shows "Server error" until SWITCH-1 (after RISK-MARK #103 and WORKER-1c #99): expected about 9 PM – 1 AM (±3 h).
-- **History:** the Old Faithful archive blocks our scanner. A check every 3 hours uses our real identity, never a disguise. DATA-2 (#111, a Helius `getBlock` reader) is in review; its free pilot runs after merge. An early look (BT-2e) runs the bot's own backtest on 1–2 free practice days, about Tue 6 – Wed 7 Oct.
-- **Building:** #103/#99 merges, SWITCH-1, STATS-1f, FACTS-1f, APP-3, EXIT-1g, MEM-1, ARCHIVE-CHECK, BT-2e.
+Wave D, 4 Oct 6:05 PM Melbourne. 72 PRs merged since midnight on 4 Oct (the latest in `HANDOVER.md` §4).
+- **Server:** re-installed at pin e28788a and on the tailnet (key expiry off). WORKER-1c #99 and WATCH-1b #113 merged (5:51 and 6:05 PM); the real worker comes with SWITCH-1 #110, then a code-only Deploy: about 7–9 PM (could slip to about midnight if a check fails).
+- **Practice trades:** WORKER-1e #117 (passed both reviews, a last small push in progress) wires H15 and paper exec-health and adds the labelled S0-only diagnostic set, which the qualifying run refuses. Pulled forward at the owner's request (6:01 PM, quality unchanged): tonight about 10 PM – 1 AM, else Mon morning.
+- **History:** the Helius free pilot passed (parity on every table). The owner chose free only, one day per about 14 h, and no spend before a finished product. #119 (the practice-day pull with a fail-closed credit cap) is merging; 09-21 starts tonight. ARCHIVE-CHECK keeps asking the archive every 3 hours. Early look on free days: about Tue 6 – Wed 7 Oct.
+- **Research:** RES-4 cost math fixed (break-even 4.4–5.0% at $2, 2.2–3.1% at $20 per trade, as scored); it now takes RENT-1's rent model. RES-5 Phase A (survivors vs look-alike losers at buy time, research only) is up; Phase B runs on the free days.
+- **Owner's estimate:** under about 2% chance of proof today (judgement), first measured numbers with the early look. The pre-funding gate is unchanged: no deposit before all six items pass.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -30,11 +32,12 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 
 | Task | What | State | Estimate (Melbourne) |
 |---|---|---|---|
-| Merge queue | #103, #99, SWITCH-1, #107, #98, #106, #97, #109, #111; merged this afternoon: #82, #104, #108, #90, #89 | moving one at a time | about 10–15 min each plus merge checks |
-| SWITCH-1 | e2e proof that the release worker starts on the host, a pre-switch smoke check, the `"worker": "release"` flip; then Deploy (code only) | building (01VM97); merges after #99 and #103 | Sun 4 Oct about 9 PM – Mon 1 AM (±3 h) |
-| EXIT-1f #107, STATS-1f #109 | exact restored open time; G1 on the registered SPA test | in review | today |
-| BT-2 #41 | study: observedTip in live and backtest, funder cluster, funnel count | building | needs historical days |
-| Historical data | DATA-2 #111 (in review), pilot, ARCHIVE-CHECK; BT-2e early look on 1–2 free days | free plan only (owner) | early look about Tue 6 – Wed 7 Oct; all days about Fri 9 – Sun 11 Oct (±1–2 days) only if the owner approves the paid month or Triton allows |
+| Merge queue | #110, #119, #114, #117, #106, #116, #107, #98, #118, #115 (see HANDOVER §4) | moving one at a time | about 10 min each plus merge checks |
+| SWITCH-1 #110 | the release worker on the host, pre-switch smoke check, OOM priority; then Deploy (code only) | passed review (692862e); merging next | Sun 4 Oct about 7–9 PM |
+| WORKER-1e #117 | live H15 sim, paper exec-health, S0 diagnostic set | passed both reviews; last small push (about 6:20 PM), then a quick check and a second Deploy | practice trades tonight about 10 PM – 1 AM, else Mon morning |
+| API-1 #118 | app status says why entries are off | review FAIL → fixing (risk stops on the card) | after #110 |
+| BT-2 #41 | study: RES-4's six ideas as one SPA family, BT-2e runner | building | early look about Tue 6 – Wed 7 Oct |
+| Historical data | #119 free practice days; ARCHIVE-CHECK | free plan only (owner) | 09-21 tonight, then one day per ~14 h; all days not scheduled (owner: finished product first) |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -63,7 +66,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
 - API keys are in GitHub repository secrets and verified: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` (bot @Zeroed_alerts_bot). Never in chat or in the repo.
-- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Set up on 2026-10-04: keys stored (4), Telegram paired, signer active. Re-installed by the owner at pin e28788a (OPS-1g) on 4 Oct, with Tailscale (HTTPS on, `tailscale serve` to the tailnet only) and the holdout-registry ruleset, all done at 2:31 PM. Host code changes arrive through code-only Deploy runs (the supervisor may run them; `DEPLOY_CODE` stays deleted) and the server's update gate. The app shows "Server error" until the real worker runs.
+- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Tailscale key expiry disabled for it by the owner (4 Oct, about 4:27 PM). Set up on 2026-10-04: keys stored (4), Telegram paired, signer active. Re-installed by the owner at pin e28788a (OPS-1g) on 4 Oct, with Tailscale (HTTPS on, `tailscale serve` to the tailnet only) and the holdout-registry ruleset, all done at 2:31 PM. Host code changes arrive through code-only Deploy runs (the supervisor may run them; `DEPLOY_CODE` stays deleted) and the server's update gate. The app shows "Server error" until the real worker runs.
 - Cloudflare: Account API token (Edit Cloudflare Workers template, 1-year expiry) is in GitHub secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, verified active from CI. Renew before 2027-10-03.
 - Domain: none, and none will be bought (owner rule in CLAUDE.md). Watchdog on the free `workers.dev` address; live dashboard access later through Tailscale's free personal plan.
 - Telegram bot display name: change with /setname in BotFather (optional).

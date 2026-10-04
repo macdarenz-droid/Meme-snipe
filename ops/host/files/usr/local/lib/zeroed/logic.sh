@@ -7,6 +7,11 @@ WEBHOOK_MAX_TRIES=5        # the owner is told after this many failed tries in a
 WORKER_API_ADDR=127.0.0.1:8788 # the worker API, loopback only; tailscale serve publishes it to the tailnet
 WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RUN-1's default), never published
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
+SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
+SMOKE_API_ADDR=127.0.0.1:8798
+SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
+SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
+SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
@@ -84,6 +89,14 @@ serve_ok() {
     and ((.Web // {}) | length == 1)
     and ((.Web // {}) | to_entries[0] | (.key | endswith(":443")) and .value == {"Handlers": {"/": {"Proxy": $target}}})
     and ((.AllowFunnel // {}) | to_entries | all(.value != true))' >/dev/null 2>&1
+}
+
+# unit_sandbox UNIT_FILE: the unit's [Service] settings that make its sandbox, limits and environment, one per line, for
+# worker-smoke's trial: everything except its identity and groups, credentials, state directory, restarts, start and
+# stop commands, its memory limit and its OOM score (the trial sets its own user, cap, OOM score and stop timeout).
+unit_sandbox() {
+  sed -n '/^\[Service\]/,/^\[/p' "$1" | grep -E '^[A-Z][A-Za-z]*=' |
+    grep -Ev '^(Type|User|Group|SupplementaryGroups|Environment|EnvironmentFile|ExecStart|ExecStartPre|ExecStop|Restart|RestartSec|TimeoutStopSec|LoadCredential|LoadCredentialEncrypted|ImportCredential|SetCredential|StateDirectory|StateDirectoryMode|MemoryMax|OOMScoreAdjust)=' || true
 }
 
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes

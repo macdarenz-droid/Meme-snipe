@@ -1,6 +1,6 @@
 import { STATUS_FLAGS } from '../api/contract.ts';
 import { Empty, Section } from '../components/ui.tsx';
-import { StatusFlags } from '../dashboard/Sections.tsx';
+import { StatusCard, StatusFlags } from '../dashboard/Sections.tsx';
 import { ErrorState, Loading, StaleNote } from '../dashboard/State.tsx';
 
 const STALE_AT = new Date(Date.now() - 42_000).toISOString();
@@ -25,6 +25,7 @@ export function States() {
       </Section>
       <Section title="Worker states" className="span-2">
         <StatusFlags status={{ mode: 'paper', connected: true, flags: [...STATUS_FLAGS], risk: [] }} />
+        <StatusCard status={{ mode: 'paper', connected: true, flags: [...STATUS_FLAGS], risk: [] }} />
       </Section>
     </>
   );

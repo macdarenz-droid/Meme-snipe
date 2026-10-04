@@ -25,7 +25,10 @@ export interface PositionWatchOptions {
    * pool it trades on (null when no pool is known yet).
    */
   readonly held: () => readonly { readonly mint: string; readonly pool: string | null }[];
-  /** When the market the position is priced at was observed (ms), or null when it has none. */
+  /**
+   * When the position's market was last renewed (ms), or null when it has none: a feed pool fact counts from its release
+   * (a live feed releases one each slot while the pool trades), the watch's own snapshot from its read.
+   */
   readonly marketAt: (mint: string) => number | null;
   /** The second path: one getMultipleAccounts at confirmed, through the quota scheduler at P1. */
   readonly read: (addresses: readonly string[]) => Promise<WatchRead>;
