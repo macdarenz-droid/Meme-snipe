@@ -877,6 +877,23 @@ describe('graduates fact (pinned across the graduatesFact refactor)', () => {
     });
   });
 
+  it('the producer keeps only the kept graduates: past the window its list is empty, not just the fact (WORKER-GROW)', () => {
+    const run = (graduatesKeepMs: number) => {
+      const w = new FactWorld({ ...OPTIONS, graduatesKeepMs });
+      w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete));
+      w.push(...txEvents(migrate), slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
+      w.push(slotNotice(migrate.slot + 4600n, 1_791_032_673_000 + 30 * 60_000 + 5));
+      return w;
+    };
+    const kept = run(OPTIONS.graduatesKeepMs);
+    expect((kept.last(GRADUATES_KEY) as { items: unknown[] }).items).toHaveLength(1);
+    expect(kept.producer.graduatesHeld).toBe(1);
+    // A window shorter than the graduate's age: the fact lists none, and the producer holds none either.
+    const aged = run(1);
+    expect((aged.last(GRADUATES_KEY) as { items: unknown[] }).items).toEqual([]);
+    expect(aged.producer.graduatesHeld).toBe(0);
+  });
+
   it('graduatesFact keeps items inside the window, drops older ones, sorts by migration then mint', () => {
     const items = [
       { mint: 'B', migratedAtMs: 5_000, reserveAfter: 2n },

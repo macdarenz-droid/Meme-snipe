@@ -51,7 +51,8 @@ export const engineRetention = (i: RetentionInputs, oneShot: readonly string[] =
   const trade: RetentionRule = { horizonMs: (i.lookbackDays + 1) * DAY, dropStale: true };
   const perObject: RetentionRule = { horizonMs: Math.max(DAY, i.candidateWindowMs + i.maxHoldMs + HOUR), dropStale: true };
   const oneHour: RetentionRule = { horizonMs: HOUR, dropStale: true };
-  return (key) => (key.startsWith('coverage:') ? null : once.has(key) ? oneHour : TRADE.test(key) ? trade : RAW_CREATE.test(key) ? HOUR : PER_OBJECT.test(key) ? perObject : HOUR);
+  const rule = (key: string): RetentionRule => (key.startsWith('coverage:') ? null : once.has(key) ? oneHour : TRADE.test(key) ? trade : RAW_CREATE.test(key) ? HOUR : PER_OBJECT.test(key) ? perObject : HOUR);
+  return Object.assign(rule, { sweep: true as const });
 };
 
 /** The rule set from the policy (look-back, the longest hold over every exit universe) and the strategy's window. */
@@ -60,3 +61,20 @@ export const retentionFor = (policy: Policy, candidateWindowMs: number, oneShot:
   candidateWindowMs,
   maxHoldMs: Math.max(...EXIT_UNIVERSES.map((u) => policy.exits.universes[u].tMaxMs)),
 }, oneShot);
+
+/** The worker's facts that are only observed as released (its seed, carrying the saved deployer index). */
+export const LIVE_ONE_SHOT: readonly string[] = ['worker:seed'];
+
+const live = new WeakMap<Policy, Map<number, Retention>>();
+
+/**
+ * The one rule object of everything that claims live parity: the live worker, the parity replay and the backtest's
+ * default (not BT-2's study, which keeps its own `STUDY_RETENTION`). The same policy and window give the same object.
+ */
+export const liveRetention = (policy: Policy, candidateWindowMs: number): Retention => {
+  let byWindow = live.get(policy);
+  if (byWindow === undefined) live.set(policy, (byWindow = new Map()));
+  let r = byWindow.get(candidateWindowMs);
+  if (r === undefined) byWindow.set(candidateWindowMs, (r = retentionFor(policy, candidateWindowMs, LIVE_ONE_SHOT)));
+  return r;
+};

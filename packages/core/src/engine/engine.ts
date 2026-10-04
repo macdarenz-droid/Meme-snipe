@@ -69,7 +69,7 @@ export interface EngineDeps {
   /** Keep every record in memory (default true). The hash is kept either way. */
   readonly keepLog?: boolean;
   /**
-   * How long each key's past stays in the as-of store (default: everything). See `Retention`. With one, the engine also
+   * How long each key's past stays in the as-of store (default: everything). See `Retention`. With `sweep`, the engine also
    * sweeps the whole store at each hour of the event clock (the received time of the events, never the wall clock, so a
    * replay of the same events sweeps at the same points), for keys not written again and for stale keys (WORKER-GROW).
    */
@@ -185,7 +185,7 @@ export class Engine {
 
   /** At the first market event at or past a boundary: prune to the horizon before that boundary (deterministic in the events). */
   #prune(atMs: number): void {
-    if (this.#retention === null || atMs < this.#pruneAt) return;
+    if (this.#retention === null || this.#retention.sweep !== true || atMs < this.#pruneAt) return;
     const boundary = Math.floor(atMs / HOUR_MS) * HOUR_MS;
     this.#pruneAt = boundary + HOUR_MS;
     this.#store.prune(boundary);

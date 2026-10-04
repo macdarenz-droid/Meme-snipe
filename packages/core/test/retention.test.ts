@@ -1,13 +1,13 @@
 // WORKER-GROW G4a: the engine's as-of store is pruned to each key's horizon at fixed points of the event clock. Inside
 // the horizon every lookup and history answers as before, so a strategy that reads within it decides the same; the
 // store stays bounded over a long run; live, the parity replay and the backtest use one rule set built from the policy.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { TRIAL_POLICY } from '../src/config/index.ts';
 import {
   AsOfStore, createReplay, createRng, Engine, OFF_CHAIN, runToEnd, SimClock, type Decision, type FeedEvent, type Moment, type Retention,
   type Strategy, type StrategyContext,
 } from '../src/engine/index.ts';
-import { createKey, engineRetention, poolTradeKeys, curveTradeKeys, retentionFor } from '../src/gates/index.ts';
+import { LIVE_ONE_SHOT, createKey, engineRetention, liveRetention, poolTradeKeys, curveTradeKeys, retentionFor } from '../src/gates/index.ts';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -105,7 +105,7 @@ describe('the engine prunes at fixed points of the event clock and decides the s
     runToEnd(replay, engine);
     return engine;
   };
-  const RULES: Retention = (k) => (k.startsWith('coverage:') ? null : k.startsWith('gates/create:') ? { horizonMs: 2 * HOUR, dropStale: true } : 2 * HOUR);
+  const RULES: Retention = Object.assign((k: string) => (k.startsWith('coverage:') ? null : k.startsWith('gates/create:') ? { horizonMs: 2 * HOUR, dropStale: true as const } : 2 * HOUR), { sweep: true as const });
 
   it('the same decision log, byte for byte, with and without retention, and the pruned store stays bounded', () => {
     const events = stream(3, 'g4a');
@@ -154,13 +154,35 @@ describe('the rule set (engineRetention, retentionFor)', () => {
   });
 });
 
-describe('one rule set for live, the parity replay and the backtest (guard)', () => {
-  it('each builds its Engine with retentionFor from its policy and its strategy window', async () => {
+describe('one rule object for live, the parity replay and the backtest (guard)', () => {
+  it('liveRetention gives the same object for the same policy and window; each site that claims live parity calls it', async () => {
+    expect(liveRetention(TRIAL_POLICY, 240 * 60_000)).toBe(liveRetention(TRIAL_POLICY, 240 * 60_000));
+    expect(liveRetention(TRIAL_POLICY, 240 * 60_000)).not.toBe(liveRetention(TRIAL_POLICY, 241 * 60_000));
+    expect(LIVE_ONE_SHOT).toEqual(['worker:seed']);
+    expect(liveRetention(TRIAL_POLICY, 240 * 60_000)('worker:seed')).toEqual({ horizonMs: HOUR, dropStale: true });
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const src = (p: string) => readFileSync(join(import.meta.dirname, '..', '..', p), 'utf8');
-    expect(src('worker/src/run/worker.ts')).toContain('retention: retentionFor(d.session.policy, d.strategy.windowToMs, [SEED_KEY])');
-    expect(src('worker/src/run/parity.ts')).toContain('retention: retentionFor(d.session.policy, d.strategy.windowToMs, [SEED_KEY])');
-    expect(src('backtest/src/run.ts')).toContain('retention: o.retention ?? retentionFor(o.policy, config.windowToMs)');
+    expect(src('worker/src/run/worker.ts')).toContain('retention: liveRetention(d.session.policy, d.strategy.windowToMs)');
+    expect(src('worker/src/run/parity.ts')).toContain('retention: liveRetention(d.session.policy, d.strategy.windowToMs)');
+    expect(src('backtest/src/run.ts')).toContain('retention: o.retention ?? liveRetention(o.policy, config.windowToMs)');
+    for (const p of ['worker/src/run/worker.ts', 'worker/src/run/parity.ts', 'backtest/src/run.ts']) expect(src(p), p).not.toMatch(/retentionFor\(/);
+  });
+});
+
+describe('the hourly sweep runs only for rules that ask for it (BT-2\'s study keeps #41\'s behaviour)', () => {
+  const run = (retention: Retention) => {
+    const spy = vi.spyOn(AsOfStore.prototype, 'prune');
+    const events: FeedEvent[] = [];
+    for (let ms = 1_000; ms < 5 * HOUR; ms += 60_000) events.push({ kind: 'market', id: `e:${ms}`, moment: at(ms), key: 'k', value: ms });
+    const replay = createReplay(events);
+    runToEnd(replay, new Engine({ clock: replay.clock, feed: replay.feed, strategy: { onMarket: () => [] }, runner: { run: () => undefined }, seed: 's', book: { maxOpenPositions: 1 }, keepLog: false, retention }));
+    const calls = spy.mock.calls.length;
+    spy.mockRestore();
+    return calls;
+  };
+  it('a plain function (the study\'s STUDY_RETENTION shape) is never swept; the live rules are, once an hour', () => {
+    expect(run((k) => (k === 'coverage:x' ? null : 0))).toBe(0);
+    expect(run(liveRetention(TRIAL_POLICY, 240 * 60_000))).toBe(5);
   });
 });

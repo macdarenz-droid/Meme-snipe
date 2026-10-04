@@ -340,7 +340,7 @@ export class FactProducer {
   readonly #reserves = new Map<string, Reserve>();
   readonly #chains = new Map<string, PoolChain>();
   readonly #pending = new Map<string, Pending>();
-  readonly #graduates: GraduatesFact['items'][number][] = [];
+  #graduates: GraduatesFact['items'][number][] = [];
   readonly #sol = new Map<number, bigint>();
   readonly #volume: ChainVolumeDays;
   #abstain = new Map<string, number>();
@@ -1073,11 +1073,17 @@ export class FactProducer {
     this.#flushGraduates(e, put);
   }
 
+  /** How many graduates the producer holds (the kept window only), for the retention tests. */
+  get graduatesHeld(): number {
+    return this.#graduates.length;
+  }
+
   #flushGraduates(e: MarketEvent, put: (k: string, v: unknown) => void): void {
     if (!this.#graduatesChanged) return;
     this.#graduatesChanged = false;
     const g = graduatesFact(this.#graduates, e.moment.receivedAt, this.#o.graduatesKeepMs);
-    this.#graduates.splice(0, this.#graduates.length, ...g.kept);
+    // Only the kept items stay (a plain reassignment: spreading them into splice throws past about 100k items).
+    this.#graduates = g.kept;
     put(GRADUATES_KEY, g.value);
   }
 }

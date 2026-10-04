@@ -157,3 +157,10 @@ describe('the downtime fill\'s daily budget (PERSIST-1 DailyBudget, wired by WOR
     expect(calls).toBe(0);
   });
 });
+
+describe('the worker\'s one-shot seed key is the one the live rules drop after an hour (WORKER-GROW)', () => {
+  it('SEED_KEY is in LIVE_ONE_SHOT', async () => {
+    const { LIVE_ONE_SHOT } = await import('../../core/src/gates/index.ts');
+    expect(LIVE_ONE_SHOT).toContain(SEED_KEY);
+  });
+});

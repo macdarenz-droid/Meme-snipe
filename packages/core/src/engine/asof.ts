@@ -22,7 +22,11 @@ export type Lookup = ({ readonly ok: true } & AsOfEntry) | { readonly ok: false;
  * at or before the horizon (a per-object key, such as one mint's facts, that nobody reads after its horizon).
  */
 export type RetentionRule = number | null | { readonly horizonMs: number; readonly dropStale: true };
-export type Retention = (key: string) => RetentionRule;
+/**
+ * `sweep: true` (WORKER-GROW) asks the engine to also run `prune` at each hour of the event clock. A plain function (BT-2's
+ * study) is applied only by the trim on record, exactly as before the sweep existed.
+ */
+export type Retention = ((key: string) => RetentionRule) & { readonly sweep?: true };
 
 const horizonOf = (r: RetentionRule): number | null => (r === null || typeof r === 'number' ? r : r.horizonMs);
 

@@ -6,14 +6,14 @@
 // reported with its event. The session's ledger is replayed too, by the check the caller hands in (core's
 // `replayLedgerFile`: worker source never reaches ledger internals, packages/core/test/ledger/guard.ts).
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { retentionFor } from '../../../core/src/gates/retention.ts';
+import { liveRetention } from '../../../core/src/gates/retention.ts';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
 import { Engine, type LogRecord } from '../../../core/src/engine/index.ts';
 import { Ledger } from '../../../core/src/ledger/index.ts';
 import { STATE_FILES } from '../../../runner/src/contract.ts';
-import { LiveStrategy, SEED_KEY, type StrategyConfig } from '../engine/strategy.ts';
+import { LiveStrategy, type StrategyConfig } from '../engine/strategy.ts';
 import { replayRecorded, type Frame, type Release } from '../providers/index.ts';
 import { journalFields } from './desk.ts';
 import { engineFeed } from './engine-feed.ts';
@@ -95,7 +95,7 @@ export interface ParityDeps {
 export const replayBoot = (b: Pick<BootInput, 'seed' | 'frames' | 'releases'>, d: ParityDeps): string[] => {
   const { clock, feed } = replayRecorded(b.frames, b.releases);
   const strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy });
-  const engine = new Engine({ clock, feed: engineFeed(feed, d.session.policy).feed, strategy, runner: { run: () => undefined }, seed: b.seed, book: { maxOpenPositions: d.session.policy.positions.maxOpen }, retention: retentionFor(d.session.policy, d.strategy.windowToMs, [SEED_KEY]) });
+  const engine = new Engine({ clock, feed: engineFeed(feed, d.session.policy).feed, strategy, runner: { run: () => undefined }, seed: b.seed, book: { maxOpenPositions: d.session.policy.positions.maxOpen }, retention: liveRetention(d.session.policy, d.strategy.windowToMs) });
   engine.drain();
   return (engine.records as readonly LogRecord[]).flatMap((r) => {
     const line = replayLine(r);
