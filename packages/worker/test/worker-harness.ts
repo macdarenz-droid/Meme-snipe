@@ -22,7 +22,10 @@ import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 
 /** Virtual time: a wait moves the clock by its length and resolves on the next turn of the event loop. */
-export const virtualTimers = (start: number): Timers & { set(ms: number): void } => {
+/** The timers a test drives: it moves the clock. */
+export type TestTimers = Timers & { set(ms: number): void };
+
+export const virtualTimers = (start: number): TestTimers => {
   let now = start;
   let next = 1;
   const cancelled = new Set<number>();
@@ -48,7 +51,7 @@ export const virtualTimers = (start: number): Timers & { set(ms: number): void }
  * Timers that fire only once the virtual clock reaches them (the test moves it with `set`): for a wait, such as the
  * seed's cap, that must not elapse at its first turn as `virtualTimers` lets it.
  */
-export const dueTimers = (start: number): Timers & { set(ms: number): void } => {
+export const dueTimers = (start: number): TestTimers => {
   let now = start;
   let next = 1;
   const due = new Map<number, { readonly at: number; readonly fn: () => void }>();
@@ -76,8 +79,25 @@ export const dueTimers = (start: number): Timers & { set(ms: number): void } => 
 
 export const tempState = (): string => mkdtempSync(join(tmpdir(), 'zeroed-worker-'));
 
+/**
+ * Default health and API ports, distinct per test worker process and per worker made in it: test files run in
+ * parallel processes, and a fixed default (the health port 18790, the API's live 8788) let two of them bind the same
+ * address, failing one start. 21000 and up, clear of the fixed 18xxx ports some tests name.
+ */
+let made = 0;
+const defaultPorts = (): { readonly health: number; readonly api: number } => {
+  const pool = Number(process.env['VITEST_POOL_ID'] ?? '1') % 40;
+  const k = made++ % 100;
+  const health = 21_000 + pool * 200 + k * 2;
+  return { health, api: health + 1 };
+};
+
 export const testConfig = (stateDir: string, over: Record<string, string> = {}): WorkerConfig => {
-  const p = parseConfig({ ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: '127.0.0.1:18790', ZEROED_GIT_SHA: 'testsha', ...over }, () => null);
+  const ports = defaultPorts();
+  const p = parseConfig({
+    ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on',
+    ZEROED_HEALTH_ADDR: `127.0.0.1:${ports.health}`, ZEROED_API_ADDR: `127.0.0.1:${ports.api}`, ZEROED_GIT_SHA: 'testsha', ...over,
+  }, () => null);
   if (!p.ok) throw new Error(p.message);
   return p.config;
 };
@@ -107,19 +127,23 @@ export interface Harness {
   /** The scripted sources, once start() built them; and the start order (seed hook, sources built, each start). */
   readonly sources: ReturnType<typeof scriptedSource>[];
   readonly order: string[];
-  readonly timers: ReturnType<typeof virtualTimers>;
+  readonly timers: TestTimers;
   readonly legs: SimLeg[];
   readonly logs: string[];
   readonly stateDir: string;
   readonly session: PolicySession;
 }
 
-/** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
-// Every attempt lands, and in its regular landing window: the paper draw is seeded by the boot id, which holds the
-// process id, so a landing-tail draw would make a test's outcome depend on the test process's pid.
+/**
+ * The conservative paper scenario, with every attempt landing, in its regular landing window, unless a test asks
+ * otherwise (RUN-1d). The draws are the same in every process anyway: the boot is pinned (`boot-<n>`).
+ */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n }, landingTail: { ...FILL_CONFIG.scenarios[PAPER_SCENARIO].landingTail, ppm: 0n } };
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number } = {}): Harness => {
+/** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
+const boots = new Map<string, number>();
+
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord> } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -127,7 +151,10 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
   const logs: string[] = [];
   const sources: ReturnType<typeof scriptedSource>[] = [];
   const order: string[] = [];
+  const n = boots.get(stateDir) ?? 0;
+  boots.set(stateDir, n + 1);
   const worker = new Worker({
+    boot: `boot-${n}`,
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
     strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }) },
@@ -145,7 +172,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       sources.push(...made);
       return made;
     }),
-    simulate: okSimulation(legs),
+    simulate: o.simulate ?? okSimulation(legs),
     fetchTx: async (sig) => {
       o.fetched?.push(sig);
       return o.found ?? false;
@@ -261,6 +288,17 @@ export class Market {
     this.#h.worker.step();
   }
 }
+
+/**
+ * Runs market time in slices until `ready` holds, up to `maxMs`; returns whether it held. Paper effects land through
+ * timers, so a busy machine moves when one lands inside the virtual timeline, never whether it lands: an assertion on
+ * an effect waits for it instead of assuming a fixed window.
+ */
+export const until = async (m: Market, maxMs: number, ready: () => boolean, each?: () => void): Promise<boolean> => {
+  const end = m.now + maxMs;
+  while (!ready() && m.now < end) await m.run(400, 400, each);
+  return ready();
+};
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
 export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly omit?: readonly string[] } = {}): Promise<Market> => {
