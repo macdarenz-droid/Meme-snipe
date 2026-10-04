@@ -38,7 +38,9 @@ describe('Deposit', () => {
     const html = renderToStaticMarkup(h(DepositPanel, { wallet: fixtureWallet, gatePassed: false }));
     expect(html).not.toContain(fixtureWallet.botAddress!);
     expect(html).not.toContain('<svg');
-    expect(text(h(DepositPanel, { wallet: fixtureWallet, gatePassed: false }))).toContain('Shown after the gate passes');
+    // Labels and data only: the gate's state, no line explaining what happens after it (APP-WORDS N2).
+    expect(text(h(DepositPanel, { wallet: fixtureWallet, gatePassed: false }))).toContain('Pre-funding gate Not passed');
+    expect(text(h(DepositPanel, { wallet: fixtureWallet, gatePassed: false }))).not.toContain('Shown after the gate passes');
   });
 
   it('shows dashes, not zeros, when the balance is unknown', () => {

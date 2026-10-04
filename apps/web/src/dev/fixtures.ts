@@ -31,8 +31,10 @@ export const fixtureSession: SessionView = {
   maxEntryUsd: MAX_ENTRY,
   maxOpenPositions: 3,
   dailyLossLimitUsd: 500,
+  weeklyLossLimitUsd: 750,
   sessionLossLimitUsd: 1000,
   workerConnected: true,
+  startable: false,
 };
 
 /**
