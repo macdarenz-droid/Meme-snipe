@@ -244,6 +244,40 @@ describe('worker start and API address', () => {
     expect(JSON.parse(read('ops/host-config.json')).worker).toBe('release');
   });
 
+  it("PRACTICE-ON: the release's shakedown settings, and only those, go to its worker", () => {
+    const rel = join(tmp, 'release-shakedown');
+    mkdirSync(join(rel, 'ops'), { recursive: true });
+    const cfg = (o: unknown) => writeFileSync(join(rel, 'ops/host-config.json'), typeof o === 'string' ? o : JSON.stringify(o));
+    const run = () => sh(`worker_shakedown "${rel}"`);
+    cfg({ worker: 'release' });
+    expect(run()).toMatchObject({ status: 0, out: '' });
+    cfg({ worker: 'release', shakedown: { ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092', ZEROED_STANDINS: 'A1,B2', ZEROED_WALLET: 'C3' } });
+    expect(run()).toMatchObject({ status: 0, out: 'ZEROED_STRATEGY=S0\nZEROED_S0_DIAGNOSTIC=on\nZEROED_PAPER_EDGE_PPM=178092\nZEROED_STANDINS=A1,B2\nZEROED_WALLET=C3' });
+    // Nothing else, and nothing that could carry a second line, a space or a shell character.
+    for (const bad of [
+      { ZEROED_MODE: 'live' }, { ZEROED_RUN_ID: 'x' }, { HELIUS_API_KEY: 'x' }, { zeroed_strategy: 'S0' },
+      { ZEROED_STRATEGY: 'S0\nZEROED_MODE=live' }, { ZEROED_STRATEGY: 'S0\n' }, { ZEROED_STRATEGY: 'S0 x' }, { ZEROED_STRATEGY: '$(id)' }, { ZEROED_STRATEGY: '' },
+      { ZEROED_PAPER_EDGE_PPM: 178092 }, { ZEROED_STANDINS: ['A1'] }, { ZEROED_STANDINS: 'A'.repeat(401) },
+    ]) {
+      cfg({ worker: 'release', shakedown: bad });
+      expect(run(), JSON.stringify(bad)).toMatchObject({ status: 5, out: '' });
+    }
+    cfg({ worker: 'release', shakedown: ['ZEROED_STRATEGY=S0'] });
+    expect(run().status).not.toBe(0);
+    cfg('{not json');
+    expect(run().status).not.toBe(0);
+    // The wrapper exports them for the release's worker only, before its fixed settings; the trial passes the same.
+    const w = read('ops/host/files/usr/local/lib/zeroed/worker-start');
+    const take = w.indexOf('settings="$(worker_shakedown /opt/zeroed/current)" || {');
+    expect(take).toBeGreaterThan(w.indexOf('if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then'));
+    expect(take).toBeLessThan(w.indexOf('export ZEROED_MODE=paper'));
+    expect(w).toContain('exit 2; }');
+    const smoke = read('ops/host/files/usr/local/lib/zeroed/worker-smoke');
+    expect(smoke).toContain('settings="$(worker_shakedown "$dir" 2>"$tmp/shakedown.err")" || {');
+    expect(smoke).toContain('shakedown+=(--setenv="$line")');
+    expect(smoke).toContain('"${shakedown[@]}" \\\n    --setenv=NODE_ENV=production');
+  });
+
   it("SWITCH-1: zeroed-update tries the new release's worker before anything changes", () => {
     const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
     const smoke = upd.indexOf('/usr/local/lib/zeroed/worker-smoke "$dest"');

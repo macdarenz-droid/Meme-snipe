@@ -4,7 +4,7 @@
 // to the owner's tailnet with `tailscale serve`, so the worker never binds anything else. Reads only: no command is
 // served here (pause stays with the watchdog's /pause; commands need their own auth level, never "it came from
 // loopback").
-import { exitsFor } from '../../../core/src/config/index.ts';
+import { PRICE_SCALE, exitsFor } from '../../../core/src/config/index.ts';
 import { createServer, type Server } from 'node:http';
 import type { Policy } from '../../../core/src/config/index.ts';
 import type { Book, ExitReason as BookExitReason, PositionState } from '../../../core/src/lifecycle/index.ts';
@@ -12,6 +12,8 @@ import { melbourneDay } from '../../../core/src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../../core/src/units/index.ts';
 import type { PaperTrade } from './account.ts';
 import type { PaperAttempt } from './paper-world.ts';
+import { SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
+import type { LogRecord } from '../../../core/src/engine/index.ts';
 
 const MODE = 'paper' as const;
 const LAMPORTS_PER_SOL = 1_000_000_000n;
@@ -40,6 +42,45 @@ export const priceText = (lamports: bigint, tokens: bigint, price: MicroUsd | nu
   const scaled = (lamports * price * TOKEN_UNIT * 10n ** BigInt(PRICE_PLACES)) / (LAMPORTS_PER_SOL * tokens * 1_000_000n);
   const s = scaled.toString().padStart(PRICE_PLACES + 1, '0');
   return `${s.slice(0, -PRICE_PLACES)}.${s.slice(-PRICE_PLACES)}`;
+};
+
+/** A scaled executable price (PRICE_SCALE: lamports per raw token) in dollars per token, 4 significant digits; null without a SOL price. */
+export const triggerPrice = (scaled: bigint, price: MicroUsd | null): string | null =>
+  price === null ? null : `$${Number(priceText(scaled, PRICE_SCALE, price)).toLocaleString('en-US', { maximumSignificantDigits: 4, useGrouping: false })}`;
+
+/** The app's longest text (its schema's `str`). */
+const TEXT_MAX = 500;
+const GATE_REASONS = 'gate_reasons ';
+
+/**
+ * One decision reason as served (review N2): a typed `gate_reasons` line keeps valid JSON, cut by entries (gate and
+ * code only, the detail the app does not show is dropped) so it fits the app's text limit; any other line is cut at it.
+ */
+export const servedReason = (r: string): string => {
+  if (r.startsWith(GATE_REASONS)) {
+    let typed: unknown;
+    try {
+      typed = JSON.parse(r.slice(GATE_REASONS.length));
+    } catch {
+      typed = null;
+    }
+    if (Array.isArray(typed)) {
+      const kept: { gate: unknown; code: unknown }[] = [];
+      for (const x of typed) {
+        const next = [...kept, { gate: (x as { gate?: unknown })?.gate ?? null, code: (x as { code?: unknown })?.code ?? null }];
+        if (GATE_REASONS.length + JSON.stringify(next).length > TEXT_MAX) break;
+        kept.push(next[next.length - 1]!);
+      }
+      return `${GATE_REASONS}${JSON.stringify(kept)}`;
+    }
+  }
+  return r.length > TEXT_MAX ? `${r.slice(0, TEXT_MAX - 3)}...` : r;
+};
+
+/** An exit rule's trigger in a trader's words (APP-WORDS a): a dollar price, a hold time, an R multiple or a gain. */
+const atOrBelow = (scaled: bigint | null | undefined, price: MicroUsd | null): string => {
+  const usd = scaled == null ? null : triggerPrice(scaled, price);
+  return usd === null ? 'Price unknown' : `Price at or below ${usd}`;
 };
 
 export const melbourneDate = (ms: number): string => {
@@ -91,6 +132,22 @@ export interface ApiInputs {
   readonly connected: boolean;
   readonly halted: readonly string[];
   readonly paused: boolean;
+  /** /health's exit_capable: an exit could be sent now (paper: simulated). */
+  readonly exitCapable: boolean;
+  /** Providers whose request budget is spent (the scheduler refuses all but P0). */
+  readonly budgetHalted: readonly string[];
+  /** Critical engine alerts since boot. */
+  readonly alerts: readonly { readonly code: string; readonly subject: string; readonly atMs: number }[];
+  /** The latest regime evaluation; null before the first candidate. */
+  readonly regime: { readonly atMs: number; readonly on: boolean; readonly reasons: readonly { readonly code: string; readonly input: string | null }[]; readonly waived: readonly string[] } | null;
+  /**
+   * How old a regime evaluation may be and still count as current: two of the strategy's candidate evaluation steps
+   * (`evaluateEveryMs`, settings.ts: the policy's maxQuoteAgeMs). While any candidate is in its window the regime is
+   * evaluated at least once per step; the second step allows for the gap to the next event.
+   */
+  readonly regimeMaxAgeMs: number;
+  /** The account's entry stops (strategy RiskStopsView); null before the first event. */
+  readonly stops: { readonly atMs: number; readonly codes: readonly string[] | null } | null;
   readonly book: Book;
   readonly trades: readonly PaperTrade[];
   readonly attempts: ReadonlyMap<string, PaperAttempt>;
@@ -100,12 +157,82 @@ export interface ApiInputs {
   readonly symbol: (mint: string) => string;
   /** Positions whose due exit waits for its first fresh quote, and since when (EXIT-1c). */
   readonly waitingExits: ReadonlyMap<string, number>;
+  /**
+   * The strategy's candidates, the tokens it is watching (APP-HOME): public market data and its own checks only. The
+   * pool's quote reserve (lamports) is null until the pool is read; gates are the last evaluation's, null before one.
+   */
+  readonly discovered: readonly DiscoveredInput[];
   /** The open position's plan and our size's liquidation value now (lamports, null when it cannot be quoted). */
   readonly open: (p: PositionState) => { readonly stopPrice: bigint; readonly trail: bigint | null; readonly liquidation: bigint | null; readonly openedAtMs: number; readonly universe: string } | null;
 }
 
+export interface DiscoveredInput {
+  readonly mint: string;
+  /** The token's symbol once read, else null (never a made-up one). */
+  readonly symbol: string | null;
+  readonly migratedAtMs: number;
+  readonly lastEvalMs: number | null;
+  readonly gates: readonly { readonly gate: string; readonly code: string }[] | null;
+  readonly quoteReserve: bigint | null;
+}
+
+/** At most this many discovered tokens are served, newest migration first. */
+export const DISCOVERED_MAX = 200;
+
+/**
+ * The token checks of a candidate's last evaluation (APP-HOME): `failed` when a hard gate (H1–H15, H17) rejected it,
+ * `missing` before any evaluation or while evidence, the regime or the worker's own inputs stopped it before the hard
+ * gates judged it (H16, regime, worker), `passed` otherwise (it cleared the hard gates; later stops are not checks).
+ */
+export const checksOf = (gates: DiscoveredInput['gates']): 'passed' | 'failed' | 'missing' => {
+  if (gates === null) return 'missing';
+  if (gates.some((g) => /^H\d+$/.test(g.gate) && g.gate !== 'H16')) return 'failed';
+  if (gates.some((g) => g.gate === 'H16' || g.gate === 'regime' || g.gate === 'worker')) return 'missing';
+  return 'passed';
+};
+
 const fillsOf = (i: ApiInputs, pid: string): PaperAttempt[] =>
   [...i.attempts.values()].filter((a) => a.trade === pid && a.outcome === 'filled' && a.fill !== null).sort((a, b) => (a.sentAtMs ?? 0) - (b.sentAtMs ?? 0));
+
+/** The most critical alerts the app's status lists: a bounded memory, not a log (the engine log holds them all). */
+export const MAX_ALERTS = 50;
+export interface AlertSeen { readonly code: string; readonly subject: string; readonly atMs: number }
+
+/** Adds a record's critical alerts to `alerts` (first sighting of each code and subject), keeping the newest MAX_ALERTS. */
+export const collectAlerts = (alerts: AlertSeen[], r: LogRecord): void => {
+  if (r.type !== 'decision' && r.type !== 'world') return;
+  for (const { effect: e } of r.effects) {
+    if (e.type !== 'alert' || e.level !== 'critical' || alerts.some((a) => a.code === e.code && a.subject === e.subject)) continue;
+    alerts.push({ code: e.code, subject: e.subject, atMs: r.at.receivedAt });
+  }
+  if (alerts.length > MAX_ALERTS) alerts.splice(0, alerts.length - MAX_ALERTS);
+};
+
+/** A halt reason as the app names it, and the feed or provider it is about. Text this does not know is 'other'. */
+export const haltOf = (reason: string): { readonly code: string; readonly source: string | null } => {
+  const feed = /^feed (\S+) (stale|disconnected|dropped by drill)$/.exec(reason);
+  if (feed !== null) return { code: feed[2] === 'stale' ? 'feed-stale' : feed[2] === 'disconnected' ? 'feed-disconnected' : 'feed-dropped', source: feed[1]! };
+  if (reason === 'starting') return { code: 'starting', source: null };
+  if (reason === 'owner pause (watchdog)') return { code: 'paused', source: null };
+  if (reason === SEEDING) return { code: 'seeding', source: null };
+  if (reason.startsWith('ledger and book diverged')) return { code: 'divergence', source: null };
+  return { code: 'other', source: null };
+};
+
+/** Account stops older than this are unknown: they are read at least once per STOPS_EVERY_MS of event time. */
+export const STOPS_MAX_AGE_MS = 5 * STOPS_EVERY_MS;
+/** The core risk codes the app names one by one; any other tripped entry control is 'risk', with its code as source. */
+const STOP_HALT: Readonly<Record<string, string>> = {
+  daily_loss: 'daily-loss', weekly_loss: 'weekly-loss', weekly_review: 'weekly-review', kill_switch: 'kill-switch',
+  wallet_below_kill_line: 'wallet-below-kill-line', loss_cooldown: 'loss-cooldown', loss_day_pause: 'loss-day-pause',
+  loss_review: 'loss-review', session_not_running: 'session-ended', max_open_positions: 'max-open-positions',
+};
+
+/** The account stops as halts: each tripped control, or 'risk-unknown' when they are not known as of now. */
+export const stopHalts = (stops: ApiInputs['stops'], nowMs: number): { readonly code: string; readonly source: string | null }[] => {
+  if (stops === null || stops.codes === null || nowMs - stops.atMs > STOPS_MAX_AGE_MS) return [{ code: 'risk-unknown', source: null }];
+  return stops.codes.map((c) => (STOP_HALT[c] !== undefined ? { code: STOP_HALT[c], source: null } : { code: 'risk', source: c }));
+};
 
 export const views = {
   status: (i: ApiInputs) => {
@@ -131,12 +258,28 @@ export const views = {
     const lossToday = i.trades.filter((t) => t.closedAtMs !== null && t.closedAtMs >= day.start && (t.netPnl ?? 0n) < 0n).reduce((s, t) => s - (t.netPnl ?? 0n), 0n);
     const open = Object.values(i.book.positions).filter((p) => p.status !== 'closed').reduce((s, p) => s + lamportsUsd(p.cost, i.solPrice), 0n);
     const bankroll = i.policy.capital.bankroll as bigint;
+    const dailyLimit = (bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n;
+    const halts = [...i.halted.map(haltOf), ...i.budgetHalted.map((p) => ({ code: 'budget', source: p })), ...stopHalts(i.stops, i.nowMs)];
+    // The meter below and core risk count today's loss from the same trades; either at its limit stops entries.
+    if (lossToday >= dailyLimit && !halts.some((h) => h.code === 'daily-loss')) halts.push({ code: 'daily-loss', source: null });
     return {
       mode: MODE, connected: i.connected, flags: [...flags],
+      haltReasons: halts.map((h) => ({ mode: MODE, ...h })),
+      exitCapable: i.exitCapable,
+      alerts: i.alerts.map((a) => ({ mode: MODE, code: a.code, subject: a.subject, at: iso(a.atMs) })),
+      regime: i.regime === null ? null : { state: i.regime.on ? 'on' : 'off', at: iso(i.regime.atMs), current: i.nowMs - i.regime.atMs <= i.regimeMaxAgeMs, reasons: i.regime.reasons.map((r) => ({ mode: MODE, code: r.code, input: r.input })), waived: [...i.regime.waived] },
       risk: [
         { mode: MODE, kind: 'open-exposure', usedUsd: usdText(open), limitUsd: null },
-        { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText((bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n) },
+        { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText(dailyLimit) },
       ],
+      // The session this worker runs (APP-HOME): it starts its own paper session on the policy it loaded, so the app
+      // never offers to start one (startable: false). Limits come from that policy; it has no session loss limit.
+      session: {
+        state: i.paused ? 'paused' : halts.some((h) => h.code === 'session-ended') ? 'ended' : 'running',
+        bankrollUsd: usdText(bankroll), entryUsd: usdText(i.policy.capital.minNotional), maxEntryUsd: usdText(i.policy.capital.maxNotional),
+        maxOpenPositions: i.policy.positions.maxOpen, dailyLossLimitUsd: usdText(dailyLimit),
+        weeklyLossLimitUsd: usdText((bankroll * BigInt(i.policy.loss.weeklyBps)) / 10_000n), sessionLossLimitUsd: null, startable: false,
+      },
     };
   },
 
@@ -162,7 +305,7 @@ export const views = {
     [...i.decisions].reverse().map((d) => ({
       mode: MODE, id: d.id, at: iso(d.atMs), mint: d.mint, symbol: i.symbol(d.mint), venue: 'pumpswap', outcome: d.outcome,
       checks: d.check === null ? [] : [{ mode: MODE, check: d.check, result: 'fail', value: null, limit: null }],
-      ruleScore: null, reasons: d.reasons.slice(0, 40).map((r) => (r.length > 500 ? `${r.slice(0, 497)}...` : r)), tradeId: d.tradeId,
+      ruleScore: null, reasons: d.reasons.slice(0, 40).map(servedReason), tradeId: d.tradeId,
     })),
 
   position: (i: ApiInputs) => {
@@ -182,10 +325,10 @@ export const views = {
       liquidationValueUsd: usdText(lamportsUsd(liq ?? 0n, i.solPrice)), unrealizedUsd: usdText(lamportsUsd((liq ?? 0n) - p.cost, i.solPrice)),
       costsSoFarUsd: usdText(lamportsUsd(fees, i.solPrice)),
       exitRules: [
-        { mode: MODE, rule: 'price-stop', trigger: o === null ? 'unknown' : `executable price at or below ${o.stopPrice}`, state: p.exitOwner?.reasons.includes('stop') ? 'triggered' : 'armed' },
-        { mode: MODE, rule: 'time-stop', trigger: `held ${Math.round(ux.tMaxMs / 60_000)} min`, state: p.exitOwner?.reasons.includes('max_hold') ? 'triggered' : 'armed' },
-        { mode: MODE, rule: 'take-profit', trigger: `+${ux.partialAtRBps / 100}% of R or +${ux.partialAtGainBps / 100}%`, state: p.exitOwner?.reasons.includes('take_profit') ? 'triggered' : 'armed' },
-        ...(o?.trail == null ? [] : [{ mode: MODE, rule: 'trail', trigger: `executable price at or below ${o.trail}`, state: p.exitOwner?.reasons.includes('trailing_stop') ? 'triggered' : 'armed' }]),
+        { mode: MODE, rule: 'price-stop', trigger: atOrBelow(o?.stopPrice, i.solPrice), state: p.exitOwner?.reasons.includes('stop') ? 'triggered' : 'armed' },
+        { mode: MODE, rule: 'time-stop', trigger: `After ${Math.round(ux.tMaxMs / 60_000)} min`, state: p.exitOwner?.reasons.includes('max_hold') ? 'triggered' : 'armed' },
+        { mode: MODE, rule: 'take-profit', trigger: `At +${ux.partialAtRBps / 10_000}R or +${ux.partialAtGainBps / 100}%`, state: p.exitOwner?.reasons.includes('take_profit') ? 'triggered' : 'armed' },
+        ...(o?.trail == null ? [] : [{ mode: MODE, rule: 'trail', trigger: atOrBelow(o.trail, i.solPrice), state: p.exitOwner?.reasons.includes('trailing_stop') ? 'triggered' : 'armed' }]),
       ],
       exit, worker: p.status === 'open' ? 'watching' : p.status === 'exit_blocked' ? 'watching' : 'exiting',
     };
@@ -233,6 +376,16 @@ export const views = {
       costsByKind: [...kinds].map(([kind, v]) => ({ mode: MODE, kind, amountUsd: usdText(v) })),
     };
   },
+
+  discovered: (i: ApiInputs) => ({
+    mode: MODE,
+    tokens: [...i.discovered].sort((a, b) => b.migratedAtMs - a.migratedAtMs || (a.mint < b.mint ? -1 : 1)).slice(0, DISCOVERED_MAX).map((d) => ({
+      mode: MODE, mint: d.mint, symbol: d.symbol, migratedAt: iso(d.migratedAtMs), venue: 'PumpSwap',
+      // Pool liquidity as both sides at the pool's price: twice the quote reserve; unknown without a pool or SOL price.
+      liquidityUsd: d.quoteReserve === null || i.solPrice === null ? null : usdText(lamportsUsd(2n * d.quoteReserve, i.solPrice)),
+      checks: checksOf(d.gates), checkedAt: d.lastEvalMs === null ? null : iso(d.lastEvalMs),
+    })),
+  }),
 
   stats: (i: ApiInputs) => {
     const closed = i.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).sort((a, b) => a.closedAtMs! - b.closedAtMs!);
@@ -307,8 +460,12 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
   };
 };
 
-export type ApiEndpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'trades' | 'charts' | 'stats';
-const ENDPOINTS: readonly ApiEndpoint[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats'];
+/** The app's other modes: this worker runs paper only, so their paths answer "not running" (API-1). */
+const OTHER_MODES = ['live', 'backtest'] as const;
+export const NOT_RUNNING = 'this server runs paper only';
+
+export type ApiEndpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'trades' | 'charts' | 'stats' | 'discovered';
+const ENDPOINTS: readonly ApiEndpoint[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats', 'discovered'];
 
 /** The envelope of one endpoint, or null for a path this worker does not serve. */
 export const route = (path: string, inputs: () => ApiInputs): { readonly status: number; readonly body: unknown } => {
@@ -320,7 +477,13 @@ export const route = (path: string, inputs: () => ApiInputs): { readonly status:
   const m = /^\/api\/v1\/([a-z]+)\/([a-z]+)(?:\/(\d{4}-(?:0[1-9]|1[0-2])))?$/.exec(path);
   if (m === null) return { status: 404, body: { error: 'not found' } };
   const [, mode, endpoint, month] = m;
-  if (mode !== MODE) return { status: 404, body: { error: `this worker serves paper data only, not ${mode}` } };
+  if (mode !== MODE) {
+    // A mode this worker does not run (API-1): every app path of it answers, with no data and the reason, so the app
+    // shows "Not running" for that mode instead of a server error. Unknown modes and paths stay 404.
+    if (!OTHER_MODES.includes(mode as (typeof OTHER_MODES)[number])) return { status: 404, body: { error: 'not found' } };
+    if (!(endpoint === 'calendar' ? month !== undefined : month === undefined && ENDPOINTS.includes(endpoint as ApiEndpoint))) return { status: 404, body: { error: 'not found' } };
+    return { status: 200, body: { mode, asOf: iso(inputs().nowMs), data: null, notRunning: NOT_RUNNING } };
+  }
   const i = inputs();
   if (endpoint === 'calendar' && month !== undefined) return { status: 200, body: { mode: MODE, asOf: asOf(i), data: views.calendar(i, month) } };
   if (month !== undefined || !ENDPOINTS.includes(endpoint as ApiEndpoint)) return { status: 404, body: { error: 'not found' } };

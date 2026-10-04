@@ -20,6 +20,7 @@ export const offlineApi: DashboardApi = {
   trades: offline,
   charts: offline,
   stats: offline,
+  discovered: offline,
   backtestReport: offline,
 };
 
@@ -73,6 +74,7 @@ export function httpApi(origin: string, get: Getter = defaultGetter, reach?: Rea
     trades: (m) => call(PATHS.trades(m), m, schemaFor('trades', m)),
     charts: (m) => call(PATHS.charts(m), m, schemaFor('charts', m)),
     stats: (m) => call(PATHS.stats(m), m, schemaFor('stats', m)),
+    discovered: (m) => call(PATHS.discovered(m), m, schemaFor('discovered', m)),
     backtestReport: () => call(PATHS.backtestReport(), 'backtest', reportData),
   };
 }
