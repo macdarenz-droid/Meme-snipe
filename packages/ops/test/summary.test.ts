@@ -3,22 +3,34 @@
 import { describe, expect, it, vi } from 'vitest';
 import { sign, type Heartbeat } from '../src/watchdog/logic.ts';
 import { CODE_REPO, writeReports } from '../src/watchdog/reports.ts';
-import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, checkSummary, forbiddenIn, isSummary, type Summary } from '../src/watchdog/summary.ts';
+import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, checkSummary, forbiddenIn, isSummary, type Summary, type SummaryV1 } from '../src/watchdog/summary.ts';
 import { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
 
 const KEY = 'test-hmac-key-0123456789abcdef';
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export const goodSummary = (over: Partial<Summary> = {}): Summary => ({
-  v: 1, day: '2026-10-04', final: false, generated_at: '2026-10-04T02:00:00.000Z', mode: 'paper',
+  v: 2, day: '2026-10-04', final: false, generated_at: '2026-10-04T02:00:00.000Z', mode: 'paper',
   worker: { git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on' },
   alerts: [{ code: 'position_unpriced', count: 1 }], halts: [{ code: 'feed-stale', count: 2 }],
   candidates: { seen: 3, entered: 1, refused: 2, refused_by_reason: [{ gate: 'H7', code: 'top-holders', count: 2 }], refused_other: 0 },
   trades: [{ mint: MINT, opened_at: '2026-10-04T01:00:00.000Z', closed_at: '2026-10-04T01:01:00.000Z', size_usd: '3', exit_reason: 'stop', net_lamports: '-1500000', net_usd: '-0.3' }],
   trades_dropped: 0, pnl: { closed_trades: 1, net_lamports: '-1500000', net_usd: '-0.3' }, open_positions: 0,
   provider_credits: [{ provider: 'helius', used_since_boot: 1234, monthly: 1_000_000 }],
+  headline: { balance_sol: '2', equity_sol: '2.012', day_net_sol: '-0.0015', open_marked_net_sol: '-0.003', day_change_sol: '-0.0045' },
+  open: {
+    positions: [{ mint: MINT, opened_at: '2026-10-04T01:30:00.000Z', cost_lamports: '15000000', value_lamports: '12000000', marked_net_lamports: '-3000000' }],
+    marked_net_lamports: '-3000000', unquotable: 0, unlisted: 0,
+  },
+  memory: { rss_min_bytes: 180_000_000, rss_max_bytes: 320_000_000, rss_last_bytes: 320_000_000, rss_change_bytes: 140_000_000 },
   ...over,
 });
+
+/** The same day as version 1 sent it (a worker not yet updated). */
+const goodV1 = (): SummaryV1 => {
+  const { headline: _h, open: _o, memory: _m, ...rest } = goodSummary();
+  return { ...rest, v: 1 };
+};
 
 /** The same planted values as the worker side's test, one per forbidden kind. */
 const PLANTED = [
@@ -41,9 +53,15 @@ const STRING_FIELDS: readonly ((s: Record<string, any>, v: string) => void)[] = 
   (s, v) => (s.pnl.net_lamports = v), (s, v) => (s.pnl.net_usd = v), (s, v) => (s.provider_credits[0].provider = v),
   // A field that is not in the shape.
   (s, v) => (s.worker.host = v), (s, v) => (s.note = v), (s, v) => (s.trades[0].wallet = v),
+  // Version 2: the SOL headline, open positions and memory.
+  (s, v) => (s.headline.balance_sol = v), (s, v) => (s.headline.equity_sol = v), (s, v) => (s.headline.day_net_sol = v),
+  (s, v) => (s.headline.open_marked_net_sol = v), (s, v) => (s.headline.day_change_sol = v), (s, v) => (s.headline.usd = v),
+  (s, v) => (s.open.positions[0].mint = v), (s, v) => (s.open.positions[0].opened_at = v), (s, v) => (s.open.positions[0].cost_lamports = v),
+  (s, v) => (s.open.positions[0].value_lamports = v), (s, v) => (s.open.positions[0].marked_net_lamports = v), (s, v) => (s.open.marked_net_lamports = v),
+  (s, v) => (s.open.positions[0].wallet = v), (s, v) => (s.memory.host = v), (s, v) => (s.memory.rss_last_bytes = v),
 ];
 
-const AMOUNT_FIELDS = new Set([13, 15, 16, 17, 18]);
+const AMOUNT_FIELDS = new Set([13, 15, 16, 17, 18, 23, 24, 25, 26, 27, 31, 32, 33, 34]);
 
 describe('the summary guards', () => {
   it('accept the exact shape and refuse a missing, extra or mistyped field', () => {
@@ -52,7 +70,73 @@ describe('the summary guards', () => {
     expect(checkSummary(JSON.stringify(missing))).toEqual({ ok: false, reason: 'not the summary shape' });
     expect(checkSummary(JSON.stringify({ ...goodSummary(), extra: 1 })).ok).toBe(false);
     expect(checkSummary(JSON.stringify(goodSummary({ open_positions: -1 }))).ok).toBe(false);
-    expect(checkSummary(JSON.stringify(goodSummary({ v: 2 as 1 }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ v: 3 as 2 }))).ok).toBe(false);
+    // Version 1 from a worker not yet updated is still taken, but never a mix of the two.
+    expect(checkSummary(JSON.stringify(goodV1())).ok).toBe(true);
+    expect(checkSummary(JSON.stringify({ ...goodV1(), v: 2 })).ok).toBe(false);
+    expect(checkSummary(JSON.stringify({ ...goodSummary(), v: 1 })).ok).toBe(false);
+    // Open positions: a value and its marked net are both known or both null; a negative count or a non-integer change fails.
+    const pos = goodSummary().open.positions[0]!;
+    const withPos = (p: object) => JSON.stringify(goodSummary({ open: { ...goodSummary().open, positions: [{ ...pos, ...p }] } }));
+    // An unquotable position: its marked net leaves the total and it is counted (the headline follows the total).
+    const nullPos = JSON.stringify(goodSummary({
+      headline: { ...goodSummary().headline, equity_sol: null, open_marked_net_sol: '0' },
+      open: { positions: [{ ...pos, value_lamports: null, marked_net_lamports: null }], marked_net_lamports: '0', unquotable: 1, unlisted: 0 },
+    }));
+    expect(checkSummary(nullPos).ok).toBe(true);
+    // The figures must agree with each other: total vs listed nets, unquotable vs null values, headline vs total.
+    expect(checkSummary(withPos({ value_lamports: null, marked_net_lamports: null })).ok).toBe(false);
+    // A total that disagrees with the listed nets, even when the headline agrees with the total.
+    expect(checkSummary(JSON.stringify(goodSummary({ headline: { ...goodSummary().headline, open_marked_net_sol: '-0.002999999' }, open: { ...goodSummary().open, marked_net_lamports: '-2999999' } }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ open: { ...goodSummary().open, unquotable: 1 } }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ headline: { ...goodSummary().headline, open_marked_net_sol: '-0.004' } }))).ok).toBe(false);
+    // With some unlisted, the total may hold more than the listed nets, but unquotable is never below the listed nulls.
+    expect(checkSummary(JSON.stringify(goodSummary({ open: { ...goodSummary().open, marked_net_lamports: '-3000000', unlisted: 2, unquotable: 1 } }))).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(goodSummary({
+      headline: { ...goodSummary().headline, open_marked_net_sol: '0' },
+      open: { positions: [{ ...pos, value_lamports: null, marked_net_lamports: null }], marked_net_lamports: '0', unquotable: 0, unlisted: 3 },
+    }))).ok).toBe(false);
+    expect(checkSummary(withPos({ value_lamports: null })).ok).toBe(false);
+    expect(checkSummary(withPos({ value_lamports: '0', marked_net_lamports: null })).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ open: { ...goodSummary().open, unquotable: -1 } }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_change_bytes: -5 } }))).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_change_bytes: 1.5 } }))).ok).toBe(false);
+    // Ops review of c741adf (golden rule): each headline figure agrees with the figures it comes from.
+    const hl = (h: object, over: Partial<Summary> = {}) => JSON.stringify(goodSummary({ ...over, headline: { ...goodSummary().headline, ...h } }));
+    // (a) the day's net is the closed net in SOL.
+    expect(checkSummary(hl({ day_net_sol: '-0.0016' })).ok).toBe(false);
+    expect(checkSummary(hl({ day_net_sol: '-0.0016' }, { pnl: { ...goodSummary().pnl, net_lamports: '-1600000' } })).ok).toBe(true);
+    // (b) a position's marked net is its value less its cost (the total and the headline moved with it).
+    expect(checkSummary(JSON.stringify(goodSummary({
+      headline: { ...goodSummary().headline, open_marked_net_sol: '-0.002' },
+      open: { ...goodSummary().open, marked_net_lamports: '-2000000', positions: [{ ...pos, marked_net_lamports: '-2000000' }] },
+    }))).ok).toBe(false);
+    // (c) equity now is the balance plus every value, unknown exactly when the balance or a value is.
+    expect(checkSummary(hl({ equity_sol: '2.013' })).ok).toBe(false);
+    expect(checkSummary(hl({ equity_sol: null })).ok).toBe(false);
+    expect(checkSummary(hl({ balance_sol: null })).ok).toBe(false);
+    expect(checkSummary(hl({ balance_sol: null, equity_sol: null })).ok).toBe(true);
+    expect(checkSummary(hl({ balance_sol: '1.5', equity_sol: '1.512' })).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(goodSummary({
+      headline: { ...goodSummary().headline, open_marked_net_sol: '0' },
+      open: { positions: [{ ...pos, value_lamports: null, marked_net_lamports: null }], marked_net_lamports: '0', unquotable: 1, unlisted: 0 },
+    }))).ok).toBe(false);
+    // With positions unlisted, equity now cannot be summed from the list and is not checked.
+    expect(checkSummary(JSON.stringify(goodSummary({ headline: { ...goodSummary().headline, equity_sol: '9' }, open: { ...goodSummary().open, marked_net_lamports: '-3000000', unlisted: 2 } }))).ok).toBe(true);
+    // (d) a final post: equity is the day's last sample (not summed now), and no day change without it.
+    expect(checkSummary(hl({ equity_sol: '9' }, { final: true })).ok).toBe(true);
+    expect(checkSummary(hl({ equity_sol: null }, { final: true })).ok).toBe(false);
+    expect(checkSummary(hl({ equity_sol: null, day_change_sol: null }, { final: true })).ok).toBe(true);
+    // rss counts are non-negative integers, all known or all unknown, and lowest <= last <= highest.
+    const mem = (m: object) => JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, ...m } }));
+    for (const k of ['rss_min_bytes', 'rss_max_bytes', 'rss_last_bytes']) {
+      for (const bad of [-1, 1.5, '1']) expect(checkSummary(mem({ [k]: bad })).ok, `${k}=${JSON.stringify(bad)}`).toBe(false);
+    }
+    expect(checkSummary(mem({ rss_min_bytes: null, rss_max_bytes: null, rss_last_bytes: null, rss_change_bytes: null })).ok).toBe(true);
+    expect(checkSummary(mem({ rss_min_bytes: null })).ok).toBe(false);
+    expect(checkSummary(mem({ rss_min_bytes: 400_000_000 })).ok).toBe(false);
+    expect(checkSummary(mem({ rss_last_bytes: 400_000_000 })).ok).toBe(false);
+    expect(checkSummary(mem({ rss_last_bytes: 100_000_000 })).ok).toBe(false);
     expect(checkSummary('not json')).toEqual({ ok: false, reason: 'not JSON' });
     expect(checkSummary(' '.repeat(70_000))).toEqual({ ok: false, reason: 'too large' });
   });

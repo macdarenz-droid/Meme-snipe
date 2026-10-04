@@ -7,7 +7,9 @@
 // narrow pattern, no free text), and `forbiddenIn` refuses the whole text if any secret- or host-like pattern appears.
 // No Cloudflare or Node API here: the worker imports this file too.
 
-export const SUMMARY_VERSION = 1;
+export const SUMMARY_VERSION = 2;
+/** The most open positions one summary lists; the rest are counted in `open.unlisted`. */
+export const SUMMARY_MAX_OPEN = 64;
 /** The largest body the watchdog accepts (bytes); the worker caps trades so a day fits. */
 export const SUMMARY_MAX_BYTES = 64 * 1024;
 /** The most trades one summary lists; the rest are counted in `trades_dropped`. */
@@ -38,7 +40,51 @@ export interface ProviderCredits {
   readonly used_since_boot: number;
   readonly monthly: number | null;
 }
-export interface Summary {
+/** An open paper position, valued now at what selling the whole size would return (null when it cannot be quoted). */
+export interface SummaryOpenPosition {
+  readonly mint: string;
+  readonly opened_at: string;
+  readonly cost_lamports: string;
+  readonly value_lamports: string | null;
+  readonly marked_net_lamports: string | null;
+}
+export interface Summary extends Omit<SummaryV1, 'v'> {
+  readonly v: 2;
+  /**
+   * The owner's measure (CLAUDE.md, 2026-10-05): profit is counted in SOL, never dollars; dollar fields elsewhere are
+   * secondary. Equity is the paper wallet plus what selling every open position would return now; it is null while a
+   * position cannot be quoted or before the wallet has a SOL amount, never a guess.
+   */
+  readonly headline: {
+    /** The paper wallet's SOL balance (never its address). */
+    readonly balance_sol: string | null;
+    readonly equity_sol: string | null;
+    /** Trades closed this day. */
+    readonly day_net_sol: string;
+    /** Open positions, quotable ones only (see open.unquotable). */
+    readonly open_marked_net_sol: string;
+    /** This day's last equity minus the last equity of the previous day that has one; null without both. */
+    readonly day_change_sol: string | null;
+  };
+  /** Open paper positions marked to their liquidation value now. An unquotable one is counted, never read as zero. */
+  readonly open: {
+    readonly positions: readonly SummaryOpenPosition[];
+    /** Sum over the quotable positions only. */
+    readonly marked_net_lamports: string;
+    readonly unquotable: number;
+    readonly unlisted: number;
+  };
+  /** The worker's resident memory (process.memoryUsage().rss, as /health reports it), sampled at each post that day. */
+  readonly memory: {
+    readonly rss_min_bytes: number | null;
+    readonly rss_max_bytes: number | null;
+    readonly rss_last_bytes: number | null;
+    /** Today's last sample minus the previous day's last sample; null without both. */
+    readonly rss_change_bytes: number | null;
+  };
+}
+/** The first version (OPS-SUMMARY #155), still accepted from a worker that has not updated yet. */
+export interface SummaryV1 {
   readonly v: 1;
   /** The Melbourne date (YYYY-MM-DD) this summary covers. */
   readonly day: string;
@@ -90,6 +136,8 @@ export const PATTERNS = {
   GATE: /^(?=[0-9]*[A-Za-z])[A-Za-z0-9]{1,16}$/,
   MINT: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,
   LAMPORTS: /^-?\d{1,20}$/,
+  /** SOL as an exact decimal (lamports / 1e9, trailing zeros dropped). */
+  SOL: /^-?\d{1,11}(\.\d{1,9})?$/,
   USD: /^-?\d{1,15}(\.\d{1,6})?$/,
 } as const;
 
@@ -125,6 +173,14 @@ export const forbiddenIn = (text: string): string | null => {
 /** A value fits a field: it matches the field's pattern and holds no forbidden pattern. The worker keeps only these. */
 export const fits = (v: unknown, re: RegExp): v is string => typeof v === 'string' && re.test(v) && forbiddenIn(v) === null;
 
+/** Lamports as an exact SOL decimal string. */
+export const solText = (lamports: bigint): string => {
+  const neg = lamports < 0n;
+  const a = neg ? -lamports : lamports;
+  const frac = (a % 1_000_000_000n).toString().padStart(9, '0').replace(/0+$/, '');
+  return `${neg ? '-' : ''}${a / 1_000_000_000n}${frac === '' ? '' : `.${frac}`}`;
+};
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const exact = (v: unknown, keys: readonly string[]): v is Record<string, unknown> =>
   isObj(v) && Object.keys(v).length === keys.length && keys.every((k) => Object.hasOwn(v, k));
@@ -152,16 +208,102 @@ export const SHAPE_KEYS: readonly string[] = [
   'mint', 'opened_at', 'closed_at', 'size_usd', 'exit_reason', 'net_lamports', 'net_usd',
   'closed_trades',
   'provider', 'used_since_boot', 'monthly',
+  'open', 'memory', 'positions', 'cost_lamports', 'value_lamports', 'marked_net_lamports', 'unquotable', 'unlisted',
+  'rss_min_bytes', 'rss_max_bytes', 'rss_last_bytes', 'rss_change_bytes',
+  'headline', 'balance_sol', 'equity_sol', 'day_net_sol', 'open_marked_net_sol', 'day_change_sol',
 ];
 
-/** True only for a value of exactly the summary's shape. */
-export const isSummary = (x: unknown): x is Summary => {
-  if (!exact(x, SHAPE_KEYS.slice(0, 14))) return false;
+const V1_KEYS = SHAPE_KEYS.slice(0, 14);
+const int = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v);
+const countOrNull = (v: unknown): boolean => v === null || count(v);
+const openPosition = (x: unknown) =>
+  exact(x, ['mint', 'opened_at', 'cost_lamports', 'value_lamports', 'marked_net_lamports']) && str(x['mint'], PATTERNS.MINT) && str(x['opened_at'], PATTERNS.TIME) &&
+  str(x['cost_lamports'], PATTERNS.LAMPORTS) && strOrNull(x['value_lamports'], PATTERNS.LAMPORTS) && strOrNull(x['marked_net_lamports'], PATTERNS.LAMPORTS) &&
+  (x['value_lamports'] === null) === (x['marked_net_lamports'] === null);
+
+/** True only for a value of exactly the summary's shape (version 2, or version 1 from a worker not yet updated). */
+export const isSummary = (x: unknown): x is Summary | SummaryV1 => {
+  if (isObj(x) && x['v'] === 2) {
+    if (!exact(x, [...V1_KEYS, 'headline', 'open', 'memory'])) return false;
+    const hl = x['headline'];
+    if (!(exact(hl, ['balance_sol', 'equity_sol', 'day_net_sol', 'open_marked_net_sol', 'day_change_sol']) && strOrNull(hl['balance_sol'], PATTERNS.SOL) &&
+      strOrNull(hl['equity_sol'], PATTERNS.SOL) && str(hl['day_net_sol'], PATTERNS.SOL) && str(hl['open_marked_net_sol'], PATTERNS.SOL) &&
+      strOrNull(hl['day_change_sol'], PATTERNS.SOL))) return false;
+    const o = x['open'];
+    const m = x['memory'];
+    if (!(exact(o, ['positions', 'marked_net_lamports', 'unquotable', 'unlisted']) && list(o['positions'], SUMMARY_MAX_OPEN, openPosition) &&
+      str(o['marked_net_lamports'], PATTERNS.LAMPORTS) && count(o['unquotable']) && count(o['unlisted']))) return false;
+    if (!(exact(m, ['rss_min_bytes', 'rss_max_bytes', 'rss_last_bytes', 'rss_change_bytes']) && countOrNull(m['rss_min_bytes']) &&
+      countOrNull(m['rss_max_bytes']) && countOrNull(m['rss_last_bytes']) && (m['rss_change_bytes'] === null || int(m['rss_change_bytes'])))) return false;
+    if (!consistent(o as Summary['open'], m as Summary['memory'], hl as Summary['headline'], x['pnl'] as Summary['pnl'], x['final'] === true)) return false;
+    const { headline: _h, open: _o, memory: _m, ...rest } = x;
+    return isCommon({ ...rest, v: 1 });
+  }
+  return isCommon(x);
+};
+
+/**
+ * Version 2's figures agree with each other (golden rule: a report that contradicts itself is refused, not stored):
+ * the headline's day net is the closed net in SOL; each position's marked net is its value less its cost (the shape
+ * already makes it null exactly when the value is); with every position listed, the marked total is the sum of the
+ * listed marked nets and `unquotable` is the number of null values (with some unlisted, at least that many); the
+ * headline's open marked net is the same total in SOL; memory is all known or all unknown, and lowest ≤ last ≤ highest. Equity now (not final, every position listed) is the
+ * balance plus every value, and unknown exactly when the balance or a value is; a final post without equity has no
+ * day change.
+ */
+const consistent = (o: Summary['open'], m: Summary['memory'], hl: Summary['headline'], pnl: Summary['pnl'], final: boolean): boolean => {
+  // Shapes are checked before this; a bad number string still refuses rather than throws.
+  try {
+    return figuresAgree(o, m, hl, pnl, final);
+  } catch {
+    return false;
+  }
+};
+
+/** An exact SOL decimal string (PATTERNS.SOL) as lamports. */
+const solLamports = (text: string): bigint => {
+  const neg = text.startsWith('-');
+  const [whole = '0', frac = ''] = (neg ? text.slice(1) : text).split('.');
+  const v = BigInt(whole) * 1_000_000_000n + BigInt(frac.padEnd(9, '0'));
+  return neg ? -v : v;
+};
+
+const figuresAgree = (o: Summary['open'], m: Summary['memory'], hl: Summary['headline'], pnl: Summary['pnl'], final: boolean): boolean => {
+  // The day's closed net is the same figure in SOL.
+  if (hl.day_net_sol !== solText(BigInt(pnl.net_lamports))) return false;
+  // Each position with a value: its marked net is value less cost (the shape check already pairs the two nulls).
+  for (const p of o.positions) {
+    if (p.value_lamports !== null && BigInt(p.marked_net_lamports!) !== BigInt(p.value_lamports) - BigInt(p.cost_lamports)) return false;
+  }
+  const nulls = o.positions.filter((p) => p.value_lamports === null).length;
+  if (o.unlisted === 0) {
+    const sum = o.positions.reduce((a, p) => a + (p.marked_net_lamports === null ? 0n : BigInt(p.marked_net_lamports)), 0n);
+    if (sum !== BigInt(o.marked_net_lamports) || o.unquotable !== nulls) return false;
+  } else if (o.unquotable < nulls) return false;
+  if (hl.open_marked_net_sol !== solText(BigInt(o.marked_net_lamports))) return false;
+  const known = [m.rss_min_bytes, m.rss_max_bytes, m.rss_last_bytes].filter((v) => v !== null).length;
+  if (known !== 0 && known !== 3) return false;
+  if (known === 3 && !(m.rss_min_bytes! <= m.rss_last_bytes! && m.rss_last_bytes! <= m.rss_max_bytes!)) return false;
+  if (final) {
+    // A final post's equity and day change both come from the day's last equity sample: no change without it.
+    if (hl.equity_sol === null && hl.day_change_sol !== null) return false;
+  } else if (o.unlisted === 0) {
+    // Equity now is the balance plus every value: unknown exactly when the balance or any value is.
+    const unknown = hl.balance_sol === null || o.unquotable > 0;
+    if ((hl.equity_sol === null) !== unknown) return false;
+    if (!unknown && hl.equity_sol !== solText(o.positions.reduce((a, p) => a + BigInt(p.value_lamports!), solLamports(hl.balance_sol!)))) return false;
+  }
+  return true;
+};
+
+/** The fields both versions share, checked as version 1. */
+const isCommon = (x: unknown): boolean => {
+  if (!exact(x, V1_KEYS)) return false;
   const w = x['worker'];
   const c = x['candidates'];
   const p = x['pnl'];
   return (
-    x['v'] === SUMMARY_VERSION && str(x['day'], PATTERNS.DAY) && typeof x['final'] === 'boolean' && str(x['generated_at'], PATTERNS.TIME) && x['mode'] === 'paper' &&
+    x['v'] === 1 && str(x['day'], PATTERNS.DAY) && typeof x['final'] === 'boolean' && str(x['generated_at'], PATTERNS.TIME) && x['mode'] === 'paper' &&
     exact(w, ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder']) && str(w['git_sha'], PATTERNS.SHA) && str(w['entry_rule'], PATTERNS.RULE) &&
     count(w['uptime_s']) && count(w['starts']) && (w['recorder'] === null || w['recorder'] === 'on' || w['recorder'] === 'off') &&
     list(x['alerts'], 64, codeCount) && list(x['halts'], 64, codeCount) &&
@@ -173,7 +315,7 @@ export const isSummary = (x: unknown): x is Summary => {
   );
 };
 
-export type SummaryCheck = { readonly ok: true; readonly summary: Summary; readonly text: string } | { readonly ok: false; readonly reason: string };
+export type SummaryCheck = { readonly ok: true; readonly summary: Summary | SummaryV1; readonly text: string } | { readonly ok: false; readonly reason: string };
 
 /** Both guards on a body: size, JSON, exact shape, then no forbidden pattern anywhere. The reason names no value. */
 export const checkSummary = (text: string): SummaryCheck => {
