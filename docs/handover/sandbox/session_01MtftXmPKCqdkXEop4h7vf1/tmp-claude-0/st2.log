@@ -1,0 +1,11 @@
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:1204) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 8 skipped (9)
+   Start at  03:13:55
+   Duration  7.02s (transform 76%, tests 14%, import 8%, setup 2%)
+

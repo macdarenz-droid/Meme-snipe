@@ -1,0 +1,4 @@
+days=3 find=2 null rules: 20/20
+days=4 find=3 null rules: 20/20
+days=6 find=4 null rules: 20/20
+days=15 find=10 null rules: 10/20

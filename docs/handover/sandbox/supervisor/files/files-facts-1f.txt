@@ -1,0 +1,8 @@
+packages/worker/src/engine/strategy.ts
+packages/worker/src/providers/solana-ws.ts
+packages/worker/src/run/pool-watch.ts
+packages/worker/test/facts-stages.test.ts
+packages/worker/test/fault-injection.test.ts
+packages/worker/test/rec-same-event.test.ts
+packages/worker/test/streams.test.ts
+packages/worker/test/worker-harness.ts

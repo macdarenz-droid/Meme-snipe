@@ -5,8 +5,8 @@ Research date: 2026-10-03. Scope: how Meme-snipe should label outcomes, validate
 Conventions used here:
 - Every claim links to its source. Source dates are shown where visible; otherwise the access date (2026-10-03) applies.
 - **Preprint** means an arXiv paper that has not been peer reviewed. Most 2025–2026 memecoin literature is preprint-only. Several of the strongest results come from one independent author with published corrigenda, and I mark that.
-- **Simulation** means my own seeded Monte Carlo (script `scratchpad/quantwork/samplesize.py`, output `scratchpad/quantwork/samplesize_out.txt`). It is a model, not market data.
-- **In-house data** means the sibling empirical study in `scratchpad/research/empirical-data/results/backfill_results.json`: 167 pump.fun graduates over a 6.5-hour window on 2026-10-02, with one-minute candles. The sample is small and covers one window.
+- **Simulation** means my own seeded Monte Carlo (script `research/supervisor/quantwork/samplesize.py`, output `research/supervisor/quantwork/samplesize_out.txt`). It is a model, not market data.
+- **In-house data** means the sibling empirical study in `research/empirical/results/backfill_results.json`: 167 pump.fun graduates over a 6.5-hour window on 2026-10-02, with one-minute candles. The sample is small and covers one window.
 - **Unverified** means I could not confirm the fact from a primary source.
 
 ---
