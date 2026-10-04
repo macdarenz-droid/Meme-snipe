@@ -28,7 +28,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
@@ -182,6 +182,33 @@ export const chooseMarket = (pool: PoolFact | null, snap: SnapshotFact | null, c
 
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
+/**
+ * FACTS-1f: the hard rejects in BT-2's stages (GATE-2), so live and the backtest name the same reasons for the same
+ * facts (G3 compares the reject mix): stage 1 (stream-derived), then stage 2 (account reads, cross-checks), then
+ * stages 3 and 4 (holder scan and funders, simulation). Inside a stage every gate is evaluated; the first stage group
+ * with a reject ends the evaluation, and the gates after it are listed as not evaluated, never as passed or failed.
+ */
+export const HARD_STAGE_GROUPS: readonly (readonly HardGate[])[] = [gatesOfStages([1]), gatesOfStages([2]), gatesOfStages([3, 4])];
+/** The part of a reject's reason naming the gates a staged evaluation did not reach (the same words as BT-2's log). */
+export const NOT_EVALUATED = 'not evaluated: ';
+
+export const stagedHardRejects = (gctx: GateContext, deps: GateDeps, req: GateRequest): { readonly hard: HardResult; readonly notEvaluated: readonly HardGate[] } => {
+  let hard: HardResult | null = null;
+  for (let k = 0; k < HARD_STAGE_GROUPS.length; k++) {
+    // Every gate of the stage, as BT-2's study evaluates them (its calibration log), not only the first reject.
+    const r = evaluateHardRejects(gctx, deps, req, { stopAtFirst: false, only: HARD_STAGE_GROUPS[k]! });
+    hard = hard === null ? r : {
+      ...r, pass: hard.pass && r.pass, evaluated: [...hard.evaluated, ...r.evaluated], passed: [...hard.passed, ...r.passed],
+      failed: [...hard.failed, ...r.failed], reasons: [...hard.reasons, ...r.reasons], notes: [...hard.notes, ...r.notes],
+    };
+    if (!hard.pass) return { hard: { ...hard, complete: false }, notEvaluated: HARD_STAGE_GROUPS.slice(k + 1).flat() };
+  }
+  const done = hard!;
+  return { hard: { ...done, complete: HARD_GATES.every((g) => done.evaluated.includes(g)) }, notEvaluated: [] };
+};
+
+/** GATE-2's entry rule (supervisor ruling): every hard gate evaluated and none with a reason; a staged pass alone only clears the gates it ran. */
+export const hardAllowsEntry = (hard: HardResult): boolean => hard.complete && hard.reasons.length === 0;
 /** REC-1: a rejected candidate's pool not watched past its window because `maxTails` were already watched. */
 export const NO_TAIL = 'no tail';
 
@@ -1241,6 +1268,8 @@ export class LiveStrategy implements Strategy {
     for (const cand of this.#cands.values()) {
       const from = cand.migratedAtMs + c.windowFromMs;
       const to = cand.migratedAtMs + c.windowToMs;
+      // Backstop: `#windowEnds` has already removed it on this event; an ended window is never an entry whatever the order.
+      if (now >= to) continue;
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
@@ -1303,9 +1332,15 @@ export class LiveStrategy implements Strategy {
     const spend = microUsdToLamports(notional, sol.value, 'ceil');
     cand.spend = spend;
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
-    const hard = evaluateHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
+    const { hard, notEvaluated } = stagedHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
+    // The S0 diagnostic set's H14 note, from whichever stages ran (WORKER-1e).
     if (hard.notes.some((n) => n.code === 's0-diagnostic')) this.#waived.push('h14-creates-coverage');
-    if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
+    if (!hardAllowsEntry(hard)) {
+      // Fails closed: a pass that left a gate out (groups that stop covering every hard gate) is no entry.
+      if (hard.reasons.length === 0) return this.#fail('hard rejects incomplete', [{ gate: 'worker', code: 'hard-incomplete', detail: 'not every hard gate was evaluated' }]);
+      const later = notEvaluated.length > 0 ? `; ${NOT_EVALUATED}${notEvaluated.join(',')}` : '';
+      return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}${later}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
+    }
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
