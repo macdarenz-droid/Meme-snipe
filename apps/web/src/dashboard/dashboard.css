@@ -163,7 +163,14 @@
 }
 
 .dash-journal li {
+  display: flex;
+  align-items: center;
   border-bottom: 1px solid var(--border);
+}
+
+.dash-journal li > .dash-journal-row {
+  flex: 1;
+  min-width: 0;
 }
 
 .dash-journal li:last-child {

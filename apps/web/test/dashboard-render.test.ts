@@ -110,9 +110,11 @@ describe('decisions, position and status', () => {
     for (const label of ['Liquidation value', 'Unrealized', 'Costs so far', 'Price stop', 'Take profit', 'Armed']) expect(out).toContain(label);
   });
 
-  it('shows worker states, and an offline worker plainly', () => {
+  it('shows worker states, and a worker with no feed connected plainly', () => {
     expect(text(html(h(StatusFlags, { status: { mode: 'paper', connected: true, flags: ['exit-blocked', 'paused'], risk: [] } })))).toContain('Exit blocked Paused');
-    expect(text(html(h(StatusFlags, { status: { mode: 'paper', connected: false, flags: [], risk: [] } })))).toContain('Worker not connected');
+    const down = text(html(h(StatusFlags, { status: { mode: 'paper', connected: false, flags: [], risk: [] } })));
+    expect(down.trim()).toBe('Feeds down');
+    expect(down).not.toContain('Worker not connected');
   });
 });
 
