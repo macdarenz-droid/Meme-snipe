@@ -13,10 +13,10 @@
 
 ## Phase
 Wave D, 4 Oct 3:30 PM Melbourne. 60 PRs merged since midnight on 4 Oct (the latest are listed in `HANDOVER.md` §4; all are in the git history). The owner finished the server, Tailscale, APK and ruleset steps at 2:31 PM, chose SPA for G1 at 2:33 PM, and authorised code-only Deploy runs at 2:45 PM.
-- **Blocker:** since 3:20 PM GitHub Actions refuses every job ("account is locked due to a billing issue"). Merges, server updates and the data scan wait for the owner to clear it.
+- **Blocker:** GitHub has locked the owner's account after declined GitHub Pro payments (3:15–3:23 PM, and again from 3:37 PM), so no Actions job runs. The owner has the steps: go back to Free, or pay by PayPal.
 - **Server:** re-installed at pin e28788a, paired, published on the tailnet only. It runs the stub worker, so the app shows "Server error" until the real-worker switch (after WORKER-1b #82, WORKER-1c #99 and RISK-MARK #103).
-- **History:** the Old Faithful archive answered 429 to every request for 5 hours, so scan run 1 published nothing. A survey of other sources is running.
-- **Building:** EXIT-1f, STATS-1f (G1 on SPA), the BT-2 study, the G3 report fold, WORKER-1d, API-1, MEM-1 and the merge queue in `HANDOVER.md` §4.
+- **History:** the Old Faithful archive blocks our scanner (since 8:43 AM), so scan run 1 published nothing. The survey ranked Helius whole blocks first: a free pilot, then at most US$99 with the owner's approval. Triton's written OK for Old Faithful is second.
+- **Building:** EXIT-1f, STATS-1f (G1 on SPA), the BT-2 study, the G3 report fold, WORKER-1d, SWITCH-1, API-1, MEM-1 and the merge queue in `HANDOVER.md` §4.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -31,11 +31,11 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 
 | Task | What | State | Estimate (Melbourne) |
 |---|---|---|---|
-| Merge queue | #104, #108, #82, #99, #103, #90, #106, #98, #89, #97 (all passed review) | waiting on the GitHub billing lock | about 10–15 min each once Actions runs |
-| Real-worker switch | `"worker": "release"`, then Deploy (code only) | after #82, #99, #103 | Sun 4 Oct about 9 PM – Mon 1 AM if the lock lifts by about 5 PM |
+| Merge queue | #104, #108, #99, #103, #90, #106, #98, #89, #97 (all passed review); WORKER-1b #82 merged 3:41 PM | held by the GitHub lock | about 10–15 min each once Actions runs |
+| SWITCH-1 | e2e proof that the release worker starts on the host, a pre-switch smoke check, the `"worker": "release"` flip; then Deploy (code only) | building (01VM97); merges after #99 and #103 | Sun 4 Oct about 9 PM – Mon 1 AM (±3 h) |
 | EXIT-1f #107, STATS-1f #109 | exact restored open time; G1 on the registered SPA test | in review | today |
 | BT-2 #41 | study: observedTip in live and backtest, funder cluster, funnel count | building | needs historical days |
-| Historical data | pre-holdout days, then holdout, then forward | blocked: archive 429s, then the lock | unknown until a source works |
+| Historical data | DATA-2: Helius `getBlock` reader and free pilot, then the full pull (19 Jul – 3 Oct) | archive blocked; the pilot waits for Actions | days about Fri 9 – Sun 11 Oct (±1–2 days) if the pilot runs Mon and the owner approves |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
