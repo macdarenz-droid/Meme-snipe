@@ -8,6 +8,7 @@ import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/confi
 import { BRACKETS, breakEvenWinRate, costRow, rows, SETUPS, terms } from '../src/research/edge-costs.ts';
 import { replaySwap, observedFeeContext } from '../../core/src/fills/index.ts';
 import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
+import { pumpSwapRoundTrip } from '../../core/src/costs/index.ts';
 import type { AmmSwapRow } from '../src/dataset/rows.ts';
 import { collectCandidates, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
 import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
@@ -64,14 +65,19 @@ describe('cost math', () => {
     const spend = BigInt(Math.floor((Number(TRIAL_POLICY.capital.minNotional) / 1e6 / c.solUsd) * 1e9));
     const row = costRow('fixture', 2, 120, st.trade.after, observedFeeContext(sw.fees, sw.baseSupply, { mayhemMode: false, transferFee: false, transferHook: false }), spend);
     // The table's exit sells at the pre-entry price (pumpSwapRoundTrip: our entry impact never comes back); on a still
-    // pool the outcome stage sells into the pool our buy left, which hands part of that impact back. Exact, in lamports.
+    // pool the outcome stage sells into the pool our buy left, which hands part of that impact back. Exact, in lamports,
+    // and computed apart from costRow, so costRow's fee and impact terms are checked too (review C1c).
     const ctx = observedFeeContext(sw.fees, sw.baseSupply, { mayhemMode: false, transferFee: false, transferHook: false });
+    const rt = pumpSwapRoundTrip(st.trade.after, ctx)(spend);
+    if (!rt.ok) throw new Error('fixture round trip does not quote');
+    const tableImpact = rt.trade.entryImpact + rt.trade.exitImpact;
     const buy = poolBuyExactQuoteIn(st.trade.after, spend, ctx);
     if (!buy.ok) throw new Error('fixture buy does not quote');
     const sell = poolSell(buy.trade.after, buy.trade.base, ctx);
     if (!sell.ok) throw new Error('fixture sell does not quote');
-    const givenBack = BigInt(row.proportional) - (buy.trade.userQuote - sell.trade.userQuote);
-    return { still, win, c, row, givenBack };
+    const givenBack = (rt.trade.paid - rt.trade.proceeds) - (buy.trade.userQuote - sell.trade.userQuote);
+    const fees = rt.trade.entryFees + rt.trade.exitFees;
+    return { still, win, c, row, givenBack, fees, tableImpact };
   };
   /** Each filled, scored candidate's loss in lamports (−r_net × entry cost), from the outcome stage under `fills`. */
   const lossesUnder = (n: number, fills: typeof FILL_CONFIG): number[] => {
@@ -109,10 +115,13 @@ describe('cost math', () => {
   ])('exact parity, zero variance: $name', ({ close, dust, fixed }) => {
     const losses = lossesUnder(20, forced(close, dust));
     expect(losses.length).toBe(20);
-    const { row, givenBack } = fx!;
-    // The impact given back is small next to the fees (under 2% of the proportional cost here) and never negative.
+    const { row, givenBack, fees, tableImpact } = fx!;
+    // The table's proportional cost is both legs' fees and impact exactly; the still pool hands back part of the impact,
+    // never more than all of it, and over 90% of it on this fixture.
+    expect(BigInt(row.proportional)).toBe(fees + tableImpact);
     expect(givenBack).toBeGreaterThanOrEqual(0n);
-    expect(givenBack * 50n).toBeLessThan(BigInt(row.proportional));
+    expect(givenBack).toBeLessThanOrEqual(tableImpact);
+    expect((tableImpact - givenBack) * 10n).toBeLessThan(tableImpact);
     const expected = BigInt(row.proportional) - givenBack + fixed;
     for (const l of losses) expect(BigInt(Math.round(l))).toBe(expected);
   }, 60_000);
