@@ -943,6 +943,23 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - Validation on seed 281011: each in-control alarm rate ≤ 5% + 2·SE (≈ 5.31%). A miss is reported as a failed calibration, never re-tuned on the validation seed.
   - Stress and change scenarios are reported, not tuned on. All results are synthetic.
   - Amendment (training seed only, before the validation seed was run): the grid to 4.00 held no h; S2 net's 95th percentile of the path maximum is 7.05 (median 3.37). The grid is extended to 12.00 with the same rule. That an S2-like marginal strategy needs h ≈ 7 is itself a finding: on raw fat-tailed returns a 5% false-alarm CUSUM tolerates about seven full losses beyond drift.
+  - **Acceptance, registered before the reducer is written** (observation only; each maps to a named test in `core/test/strategy-health.test.ts`; step 3's cases are tested in the wiring PR):
+    1. Same sign sequence, different amounts → different S and states.
+    2. A profitable strategy that loses often stays active.
+    3. Tiny wins with severe losses reach watch/paused while R8's sign count would not.
+    4. A failed entry that paid fees and opened no position is one observation (z = −fees/entry).
+    5. Retries then an exit are one episode.
+    6. Partial fills and partial exits are one episode.
+    7. A duplicate status (a replayed sequence number) changes nothing.
+    8. Restart at every durable-write boundary (serialize, restore, replay from the last checkpoint) gives the same transitions as one uninterrupted run.
+    9. Unfinished losers never vanish: an open episode stays in the state with its flows until it is final.
+    10. Equal timestamps are ordered by durable sequence; an out-of-order or conflicting sequence is refused.
+    11. A rename (display name) or a version or policy change within a lineage cannot reset its history; a paused lineage stays paused or requalifying.
+    12. Returns below −100% are not clipped.
+    13. A dropped attempt (nothing sent) is not an observation; a dropped episode carrying fees is refused rather than hidden.
+    14. An identity that is not registered is reported as unregistered, with its S still computed.
+    15. The reducer is pure: same events, same output; the core purity guard covers it.
+    16. Step 3 (wiring PR): existing decisions byte-identical with the monitor on; exits unaffected; no future labels; recorded-feed replay parity between worker and backtest.
 - **2026-10-04 · STATS-1g: external audit of core stats (S1, S3, S4); each item was reproduced before it was fixed.**
   - **S1, the G3 retained-expectancy budget.**
     - The bound subtracted four uncertain parts: the holdout lower bound, v⁺ and Δ⁺ at α/3 each, plus a 95% fill-error bound. The union bound is 3·(0.05/3) + 0.05 = 0.10, so only 90% joint coverage was established.
